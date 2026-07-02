@@ -303,6 +303,50 @@ void slabWithHole(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& 
     strip(hx0, hx1, hz1, z1);   // +Z rim (middle X band)
 }
 
+// An axis-aligned XZ rectangle (a slab exclusion: shaft hole or coplanar-overlap dedup).
+struct SlabRect { float x0, x1, z0, z1; };
+
+// A horizontal slab (cx,cy,cz, w x slabT x depth) MINUS a set of exclusion rects. Cuts the
+// X and Z ranges at every rect edge and emits one box per grid cell whose CENTER lies in no
+// exclusion — so the slab tiles the room minus the holes with NO overlap and NO gap. Used
+// for floors: shaft holes stay open; a coplanar-overlap dedup rect is left to the OWNER
+// room's slab (which fully covers it), killing the DOUBLED_FLOOR z-fight without a hole.
+void slabMinusRects(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
+                    float w, float slabT, float depth, float cx, float cy, float cz,
+                    x3::rhi::TextureHandle tex, const float color[4], uint32_t roomId,
+                    bool visible, const std::vector<SlabRect>& excl) {
+    const float hw = w * 0.5f, hd = depth * 0.5f, ht = slabT * 0.5f;
+    const float x0 = cx - hw, x1 = cx + hw, z0 = cz - hd, z1 = cz + hd;
+    if (excl.empty()) { addBox(s, d, p, hw, ht, hd, cx, cy, cz, tex, color, roomId, true, visible); return; }
+    std::vector<float> xs{ x0, x1 }, zs{ z0, z1 };
+    for (const SlabRect& r : excl) {
+        const float rx0 = std::max(x0, r.x0), rx1 = std::min(x1, r.x1);
+        const float rz0 = std::max(z0, r.z0), rz1 = std::min(z1, r.z1);
+        if (rx1 - rx0 < 0.02f || rz1 - rz0 < 0.02f) continue;   // no real overlap with this slab
+        xs.push_back(rx0); xs.push_back(rx1);
+        zs.push_back(rz0); zs.push_back(rz1);
+    }
+    auto uniq = [](std::vector<float>& v) {
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end(),
+                            [](float a, float b){ return std::fabs(a - b) < 0.01f; }), v.end());
+    };
+    uniq(xs); uniq(zs);
+    for (size_t i = 0; i + 1 < xs.size(); ++i) {
+        for (size_t j = 0; j + 1 < zs.size(); ++j) {
+            const float cxc = (xs[i] + xs[i + 1]) * 0.5f, czc = (zs[j] + zs[j + 1]) * 0.5f;
+            bool cut = false;
+            for (const SlabRect& r : excl)
+                if (cxc > r.x0 && cxc < r.x1 && czc > r.z0 && czc < r.z1) { cut = true; break; }
+            if (cut) continue;
+            const float cw = xs[i + 1] - xs[i], cd = zs[j + 1] - zs[j];
+            if (cw < 0.02f || cd < 0.02f) continue;
+            addBox(s, d, p, cw * 0.5f, ht, cd * 0.5f,
+                   (xs[i] + xs[i + 1]) * 0.5f, cy, czc, tex, color, roomId, true, visible);
+        }
+    }
+}
+
 // A wall running along X (plane z=const), spanning x in [x0,x1], rising floorY..floorY+h.
 void wallX(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
            float x0, float x1, float z, float floorY, float h,
@@ -1326,9 +1370,20 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // blocks/collides for both rooms. Two rooms that only PARTIALLY overlap keep both
     // walls (rare; never risks a gap). A room NEVER skips a face it also OWNS for a
     // different neighbour (that would strand the neighbour relying on it).
+    //
+    // UNION-HEIGHT owner walls (LAW 2): the owner requires only RUN-AXIS coverage (its wall
+    // run contains the neighbour's), NOT equal height. When the two rooms differ in floor
+    // and/or ceiling, the owner builds ONE wall spanning the UNION of both vertical extents
+    // (with the doorway cut) so a single panel seals both rooms — never two coplanar panels
+    // at different heights that the old cover test couldn't collapse (the Boss Approach/Arena
+    // + F2 corridor/theater DOUBLED_WALLs). `faceUnion`/`faceFloor`/`faceTop` carry the owner
+    // face's union extent; a face with equal heights just gets its own extent (no change).
     std::vector<unsigned char> skipFace(nRooms * 4, 0);   // [ri*4 + f], f: 0=-X 1=+X 2=-Z 3=+Z
+    std::vector<unsigned char> faceUnion(nRooms * 4, 0);
+    std::vector<float> faceFloor(nRooms * 4, 0.0f), faceTop(nRooms * 4, 0.0f);
     {
         std::vector<unsigned char> wantSkip(nRooms * 4, 0), ownFace(nRooms * 4, 0);
+        std::vector<float> uFloor(nRooms * 4, 1e30f), uTop(nRooms * 4, -1e30f);
         const float eps = 0.02f;
         auto faceX = [&](const CanonRoom& r, float planeX) {
             return (std::fabs(planeX - r.x0()) < std::fabs(planeX - r.x1())) ? 0 : 1;   // -X : +X
@@ -1336,14 +1391,12 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         auto faceZ = [&](const CanonRoom& r, float planeZ) {
             return (std::fabs(planeZ - r.z0()) < std::fabs(planeZ - r.z1())) ? 2 : 3;   // -Z : +Z
         };
-        auto coversY = [&](const CanonRoom& big, const CanonRoom& s) {
-            return big.y0() <= s.y0() + eps && big.y1() >= s.y1() - eps;
+        // RUN-AXIS coverage ONLY (Y independent): does `big`'s wall run contain `s`'s run?
+        auto runCovZ = [&](const CanonRoom& big, const CanonRoom& s) {   // axis 0: walls run in Z
+            return big.z0() <= s.z0() + eps && big.z1() >= s.z1() - eps;
         };
-        auto coversZ = [&](const CanonRoom& big, const CanonRoom& s) {
-            return big.z0() <= s.z0() + eps && big.z1() >= s.z1() - eps && coversY(big, s);
-        };
-        auto coversX = [&](const CanonRoom& big, const CanonRoom& s) {
-            return big.x0() <= s.x0() + eps && big.x1() >= s.x1() - eps && coversY(big, s);
+        auto runCovX = [&](const CanonRoom& big, const CanonRoom& s) {   // axis 1: walls run in X
+            return big.x0() <= s.x0() + eps && big.x1() >= s.x1() - eps;
         };
         for (const CanonDoorway& dw : floor.doorways) {
             if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
@@ -1351,19 +1404,32 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                 continue;                       // GapBridge rooms keep solid walls (own corridor)
             const CanonRoom& A = floor.rooms[dw.a];
             const CanonRoom& B = floor.rooms[dw.b];
-            int fa, fb; bool aCovB, bCovA;
+            int fa, fb; bool aCov, bCov;
             if (dw.axis == 0) {                 // shared X plane; the shared walls run along Z
                 fa = faceX(A, dw.cx); fb = faceX(B, dw.cx);
-                aCovB = coversZ(A, B); bCovA = coversZ(B, A);
+                aCov = runCovZ(A, B); bCov = runCovZ(B, A);
             } else {                            // shared Z plane; the shared walls run along X
                 fa = faceZ(A, dw.cz); fb = faceZ(B, dw.cz);
-                aCovB = coversX(A, B); bCovA = coversX(B, A);
+                aCov = runCovX(A, B); bCov = runCovX(B, A);
             }
-            if (aCovB)      { wantSkip[dw.b * 4 + fb] = 1; ownFace[dw.a * 4 + fa] = 1; }
-            else if (bCovA) { wantSkip[dw.a * 4 + fa] = 1; ownFace[dw.b * 4 + fb] = 1; }
-            // else: partial overlap — keep both walls (no skip, no hole).
+            const float uf = std::min(A.y0(), B.y0()), ut = std::max(A.y1(), B.y1());
+            if (aCov) {                         // A owns the shared face; build it union-height
+                wantSkip[dw.b * 4 + fb] = 1; ownFace[dw.a * 4 + fa] = 1;
+                uFloor[dw.a * 4 + fa] = std::min(uFloor[dw.a * 4 + fa], uf);
+                uTop  [dw.a * 4 + fa] = std::max(uTop  [dw.a * 4 + fa], ut);
+            } else if (bCov) {
+                wantSkip[dw.a * 4 + fa] = 1; ownFace[dw.b * 4 + fb] = 1;
+                uFloor[dw.b * 4 + fb] = std::min(uFloor[dw.b * 4 + fb], uf);
+                uTop  [dw.b * 4 + fb] = std::max(uTop  [dw.b * 4 + fb], ut);
+            }
+            // else: partial run overlap — keep both walls (rare corner touch; never a hole).
         }
-        for (uint32_t i = 0; i < nRooms * 4; ++i) skipFace[i] = wantSkip[i] && !ownFace[i];
+        for (uint32_t i = 0; i < nRooms * 4; ++i) {
+            skipFace[i] = wantSkip[i] && !ownFace[i];
+            if (ownFace[i] && uTop[i] > uFloor[i]) {
+                faceUnion[i] = 1; faceFloor[i] = uFloor[i]; faceTop[i] = uTop[i];
+            }
+        }
     }
 
     // ---- ELEVATOR-SHAFT HOLES. A CrossLevel doorway whose two rooms are BOTH near-surface
@@ -1393,6 +1459,25 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         (void)upper; (void)lower;
     }
 
+    // ---- COPLANAR-OVERLAP FLOOR DEDUP (kills DOUBLED_FLOOR z-fight at L-junctions where an
+    // Overlap-doored pair interpenetrates at a corner and both lay a floor slab at the SAME
+    // height). The SMALLER-footprint room omits its floor over the overlap rect; the larger
+    // "owner" room's slab fully covers that rect (it contains the overlap by definition), so
+    // the walking surface stays continuous with a single slab there — no coincident boxes. ----
+    std::vector<std::vector<SlabRect>> floorExcl(nRooms);
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind != DoorwayKind::Overlap) continue;
+        if (dw.a >= nRooms || dw.b >= nRooms) continue;
+        const CanonRoom& A = floor.rooms[dw.a];
+        const CanonRoom& B = floor.rooms[dw.b];
+        if (std::fabs(A.y0() - B.y0()) > 0.05f) continue;   // not coplanar: a step, not a z-fight
+        const float ox0 = std::max(A.x0(), B.x0()), ox1 = std::min(A.x1(), B.x1());
+        const float oz0 = std::max(A.z0(), B.z0()), oz1 = std::min(A.z1(), B.z1());
+        if (ox1 - ox0 < 0.02f || oz1 - oz0 < 0.02f) continue;
+        const uint32_t skipper = (A.w * A.d <= B.w * B.d) ? dw.a : dw.b;   // smaller room omits
+        floorExcl[skipper].push_back({ ox0, ox1, oz0, oz1 });
+    }
+
     // ---- Build each room shell. ----
     for (uint32_t ri = 0; ri < nRooms; ++ri) {
         const CanonRoom& r = floor.rooms[ri];
@@ -1401,17 +1486,18 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         float tint[4]; tintFor(r.type, tint);
         const x3::rhi::TextureHandle wTex = wallVariants[ri % 3];
 
-        // Floor slab (top flush with floorY) — split around a shaft hole if one passes
-        // up through this room's floor (the upper lobby of an elevator shaft).
+        // Floor slab (top flush with floorY) — cut around a shaft hole (upper lobby of an
+        // elevator shaft) AND around any coplanar-overlap dedup rect (L-junction z-fight).
         // Hallways walk on the POLISHED tile variant (same albedo, roughness *0.35)
         // so the warm sconce pools streak down the hall floor via SSR (the Bible's
         // walk-strip); every other room keeps the standard worn tiles.
         const bool isHall = r.type.find("Hallway") != std::string::npos;
-        slabWithHole(scene, device, physics, r.w, 0.10f, r.d,
-                     r.cx, floorY - 0.05f, r.cz, isHall ? hallFloorTex : floorTex,
-                     tint, ri, floorVis,
-                     floorHole[ri].has, floorHole[ri].x, floorHole[ri].z,
-                     kShaftHoleHalf, kShaftHoleHalf);
+        std::vector<SlabRect> fExcl = floorExcl[ri];
+        if (floorHole[ri].has)
+            fExcl.push_back({ floorHole[ri].x - kShaftHoleHalf, floorHole[ri].x + kShaftHoleHalf,
+                              floorHole[ri].z - kShaftHoleHalf, floorHole[ri].z + kShaftHoleHalf });
+        slabMinusRects(scene, device, physics, r.w, 0.10f, r.d,
+                       r.cx, floorY - 0.05f, r.cz, isHall ? hallFloorTex : floorTex, tint, ri, floorVis, fExcl);
         // Ceiling lid (collision-only, invisible — GLB ceiling drapes over) — split around
         // a shaft hole if one rises out of this room's ceiling (the lower lobby).
         slabWithHole(scene, device, physics, r.w, kCeilT, r.d,
@@ -1425,10 +1511,19 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         // SAME plane, so the neighbour (the "owner") builds it for both rooms — this room
         // skips it (no coincident opaque box, no flicker; the owner still renders + collides
         // from both sides because it's in this room's PVS).
-        if (!skipFace[ri * 4 + 0]) buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), floorY, h, gapXneg[ri], wTex, tint);   // -X wall (runs in Z)
-        if (!skipFace[ri * 4 + 1]) buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
-        if (!skipFace[ri * 4 + 2]) buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
-        if (!skipFace[ri * 4 + 3]) buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
+        // An owner face flagged `faceUnion` builds over the UNION of both rooms' vertical
+        // extents (spans a taller/lower neighbour) so one panel seals both — no z-fight.
+        auto faceY = [&](int f, float& fy, float& fh) {
+            fy = floorY; fh = h;
+            const uint32_t k = ri * 4 + (uint32_t)f;
+            if (faceUnion[k]) { fy = std::min(floorY, faceFloor[k]);
+                                fh = std::max(floorY + h, faceTop[k]) - fy; }
+        };
+        float fy, fh;
+        if (!skipFace[ri * 4 + 0]) { faceY(0, fy, fh); buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), fy, fh, gapXneg[ri], wTex, tint); }   // -X wall (runs in Z)
+        if (!skipFace[ri * 4 + 1]) { faceY(1, fy, fh); buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), fy, fh, gapXpos[ri], wTex, tint); }   // +X wall
+        if (!skipFace[ri * 4 + 2]) { faceY(2, fy, fh); buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), fy, fh, gapZneg[ri], wTex, tint); }   // -Z wall (runs in X)
+        if (!skipFace[ri * 4 + 3]) { faceY(3, fy, fh); buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), fy, fh, gapZpos[ri], wTex, tint); }   // +Z wall
     }
 
     // ---- THRESHOLD RAMPS at doored/adjacent/overlap openings with a FLOOR-HEIGHT
@@ -1533,7 +1628,15 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const float topY = std::min(a.y0(), b.y0());      // floor of the higher room
         const float botY = std::max(a.y0(), b.y0());      // floor of the LOWER (deeper) room
         const float yLo = std::min(topY, botY), yHi = std::max(topY, botY);
-        const float th = (yHi - yLo) + 1.0f;
+        // A DEEP isolated-room tube (cave/sub-level, no floor hole cut here — the room's
+        // slab stays solid) must NOT protrude above the upper room's floor, or its 1 m lip
+        // fences off the upper room's centre and walls the player out (the golden-path
+        // block: the Cave tube stood a 1 m ring around the Hidden Supply Cache centre, the
+        // Sub-Level tube around the Elevator Lobby centre). Cap its TOP flush with the upper
+        // floor so the shaft is entirely sub-floor latent geometry and the room surface is
+        // fully walkable. Near-surface elevator shafts (holes cut) keep the +1 m lip.
+        const bool deepTube = std::min(a.cy, b.cy) < -50.0f;
+        const float th = (yHi - yLo) + (deepTube ? 0.0f : 1.0f);
         const float tx = dw.cx, tz = dw.cz;
         const float thx = kCanonShaftHalf, thz = kCanonShaftHalf;  // 3 m square tube
         // 4 thin walls of the tube (open top/bottom).

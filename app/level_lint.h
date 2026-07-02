@@ -86,4 +86,11 @@ bool runLevelLintSelfTest();
 // chain completes.
 bool runGoldenPathSelfTest();
 
+// --test-doorscan: entity-level door/frame seat scan (the data lint's blind spot).
+// Builds Floor 1 + the fused building WITH door slabs, then scans every Tag::Door
+// entity and asserts it is seated in a real wall opening (on a wall plane of an
+// adjacent room, inside an Overlap interpenetration, or an intentional CrossLevel
+// elevator-shaft portal). Returns true iff no free-standing door/frame is found.
+bool runDoorFrameScanSelfTest();
+
 } // namespace x3::game
