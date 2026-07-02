@@ -40,6 +40,7 @@
 #include "space/ship_damage.h"
 #include "space/space_layer.h"   // x3::space::SpaceLayer (S0 spine; AtmoDescent runner host)
 #include "space/descent.h"       // x3::space::AtmoDescent (the ion-pulse on-rails coast-down)
+#include "mesh_prims.h"          // P0-1: procedural ship/capital meshes for the LIVE dogfight render
 
 #include <algorithm>
 #include <cmath>
@@ -262,6 +263,70 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     const bool live = (hc.window != nullptr && hc.device != nullptr);
 
+    // ---- P0-1: LIVE dogfight render resources (built once; headless untouched) --
+    // Reuses host_space's deep-space render conventions: analytic sky OFF (so the
+    // dark clear shows through), SSAO + SSGI OFF (the Pascal raster-fallback paints
+    // an empty-space scene black), and a few BRIGHT point lights near the fight so
+    // the metal reads (deep space has no bounced fill). Procedural box meshes for the
+    // pilot ship, the enemy wing, and the HUGE capital objective — the GLB ship cast
+    // isn't in this baseline, and the boxes guarantee visible geometry every frame.
+    // ALL rendering is READ-ONLY over the deterministic sim state below.
+    x3::rhi::MeshHandle shipMesh{}, capitalMesh{};
+    x3::rhi::TextureHandle shipTex{}, capitalTex{};
+    if (live) {
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; hc.device->setSkyParams(sp); }
+        { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; hc.device->setSsaoParams(ap); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; hc.device->setGiParams(gp); }
+        // Key/fill/rim near the capital (at +X ~280) so the fight reads against dark space.
+        x3::rhi::PointLight pl[3]{};
+        pl[0].pos[0] = 180.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f; pl[0].range = 900.0f;
+        pl[0].color[0] = 60.0f; pl[0].color[1] = 56.0f; pl[0].color[2] = 48.0f;   // warm key "sun"
+        pl[1].pos[0] =  40.0f; pl[1].pos[1] =  60.0f; pl[1].pos[2] =  20.0f; pl[1].range = 500.0f;
+        pl[1].color[0] = 15.0f; pl[1].color[1] = 18.0f; pl[1].color[2] = 24.0f;   // cool fill (player side)
+        pl[2].pos[0] = 300.0f; pl[2].pos[1] = -40.0f; pl[2].pos[2] = -60.0f; pl[2].range = 700.0f;
+        pl[2].color[0] = 10.0f; pl[2].color[1] =  7.0f; pl[2].color[2] =  5.0f;   // warm rim behind capital
+        hc.device->setPointLights(pl, 3);
+        // Fighter-scale box (~2 m) for the pilot + each enemy; a big slab for the capital.
+        x3::prims::PrimMesh sbm = x3::prims::makeBox(2.0f, 0.6f, 1.2f, 0, 0, 0, 0.25f);
+        shipMesh = hc.device->createMesh(sbm.verts.data(), (uint32_t)sbm.verts.size(),
+                                         sbm.index.data(), (uint32_t)sbm.index.size());
+        auto sTex = x3::prims::makeCheckerRGBA(64, 8, 180, 190, 210, 60, 70, 90);
+        shipTex = hc.device->createTexture(sTex.data(), 64, 64, true);
+        x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 0.5f, 0.6f, 0, 0, 0, 0.25f); // unit; scaled HUGE per-draw
+        capitalMesh = hc.device->createMesh(cbm.verts.data(), (uint32_t)cbm.verts.size(),
+                                            cbm.index.data(), (uint32_t)cbm.index.size());
+        auto cTex = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
+        capitalTex = hc.device->createTexture(cTex.data(), 64, 64, true);
+    }
+    // Orient a ship box from a forward heading (yaw about +Y) at pos, uniform scale.
+    auto shipXform = [](const float pos[3], const float fwd[3], float scale, float out[16]) {
+        float fx = fwd[0], fz = fwd[2];
+        const float fl = std::sqrt(fx*fx + fz*fz);
+        if (fl > 1e-3f) { fx /= fl; fz /= fl; } else { fx = 1.0f; fz = 0.0f; }
+        // col0 = forward (+X local), col2 = right (+Z local) from the yaw; col1 = +Y.
+        out[0]=fx*scale; out[1]=0; out[2]=fz*scale; out[3]=0;
+        out[4]=0; out[5]=scale; out[6]=0; out[7]=0;
+        out[8]=-fz*scale; out[9]=0; out[10]=fx*scale; out[11]=0;
+        out[12]=pos[0]; out[13]=pos[1]; out[14]=pos[2]; out[15]=1;
+    };
+
+    // P0-2: real boresight raycast vs a contact's bounding sphere (dir normalized).
+    // Returns true on a forward intersection OR when the origin is inside the sphere
+    // (point-blank). This is what turns the player's ACTUAL aim into hit odds — no
+    // more guaranteed hit. Deterministic: the headless "competent" pilot flies dead
+    // down its +X boresight straight at the on-axis capital, so it still connects.
+    auto rayHitsSphere = [](const float o[3], const float d[3],
+                            const float c[3], float radius) -> bool {
+        const float ocx = o[0]-c[0], ocy = o[1]-c[1], ocz = o[2]-c[2];
+        const float ocd = ocx*d[0] + ocy*d[1] + ocz*d[2];
+        const float oc2 = ocx*ocx + ocy*ocy + ocz*ocz;
+        const float cc  = oc2 - radius*radius;
+        if (cc <= 0.0f) return true;               // inside the sphere (point-blank)
+        const float disc = ocd*ocd - cc;
+        if (disc < 0.0f) return false;             // the ray line misses the sphere
+        return (-ocd - std::sqrt(disc)) > 0.0f;    // nearest intersection is forward
+    };
+
     for (int step = 0; step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
@@ -318,20 +383,36 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         }
         targeting.setContacts(contacts, nc);
 
-        // ---- Player fire -> resolve onto the capital's subsystems. ----
+        // ---- Player fire -> REAL raycast from the boresight onto the capital's
+        //      subsystems. The guaranteed-hit fake is gone: a shot only lands when
+        //      the pilot's forward axis actually intersects the capital's hull
+        //      sphere, so player aim skill drives the hit rate -> how fast the ship
+        //      is crippled -> the escaped/shot_down branch probability. ----
         if (fire && pilot.fireLaser(dt)) {
             ++localShotsFired;
-            // Deterministic "competent" hit model: when crippling is still
-            // possible, route a hit to a subsystem (shields down first), counting
-            // a hit. (Live aim quality will replace this with a real raycast in a
-            // later phase; the metric semantics stay the same.)
-            const int subIdx = std::min(localSubsDestroyed, kMaxSubsystems - 1);
-            x3::space::ShipDamage::applyDamage(capital, 60,
-                (x3::space::Subsystem)subIdx);
-            ++localShotsHit;
-            if (x3::space::ShipDamage::subsystemDown(capital,
-                    (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
-                ++localSubsDestroyed;
+            // Boresight ray: from the ship nose along its forward. The capital is
+            // contact id 1000 at {280,0,0}; its hull sphere is sized to the drawn
+            // ~90 m slab (radius 55 = a forgiving lock window on a capital-scale hull).
+            const x3::phys::Vec3 pP = pilot.pos();
+            const x3::phys::Vec3 pF = pilot.forward();
+            float dn[3] = { pF.x, pF.y, pF.z };
+            const float dl = std::sqrt(dn[0]*dn[0] + dn[1]*dn[1] + dn[2]*dn[2]);
+            if (dl > 1e-4f) { dn[0]/=dl; dn[1]/=dl; dn[2]/=dl; }
+            const float origin[3]  = { pP.x, pP.y, pP.z };
+            const float capCenter[3] = { 280.0f, 0.0f, 0.0f };
+            if (rayHitsSphere(origin, dn, capCenter, 55.0f)) {
+                // Hit: shields absorb first, then subsystems fall in order. Counting
+                // a hit here is what the skill metric reads.
+                const int subIdx = std::min(localSubsDestroyed, kMaxSubsystems - 1);
+                x3::space::ShipDamage::applyDamage(capital, 60,
+                    (x3::space::Subsystem)subIdx);
+                ++localShotsHit;
+                if (x3::space::ShipDamage::subsystemDown(capital,
+                        (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
+                    ++localSubsDestroyed;
+            }
+            // A miss simply burns a shot (lower accuracy -> slower cripple -> the
+            // roll is likelier to land on SHOT_DOWN). No target damage.
         }
         x3::space::ShipDamage::tick(capital, dt);
 
@@ -340,13 +421,55 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             crippled = true; crippleTime = tNow;
         }
 
-        // ---- Live render (3P chase of the pilot; minimal, reuses host_space art
-        //      conventions). Headless skips drawing entirely. ----
+        // ---- Live render (3P chase of the pilot; reuses host_space art
+        //      conventions). Headless skips drawing entirely. READ-ONLY over sim
+        //      state — never mutates the deterministic brain above. ----
         if (live) {
             float cx, cy, cz, cyaw, cpit;
             pilot.camera(cx, cy, cz, cyaw, cpit);
             hc.device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
             auto frame = hc.device->beginFrame();
+            if (frame.valid) {
+                // Player ship (only in 3P; a 1P chase cam would clip its own hull).
+                if (pilot.isThirdPerson()) {
+                    const x3::phys::Vec3 pp2 = pilot.pos();
+                    const x3::phys::Vec3 pf  = pilot.forward();
+                    const x3::phys::Vec3 pu  = pilot.up();
+                    const x3::phys::Vec3 pr  = pilot.right();
+                    const float m[16] = {
+                        pf.x, pf.y, pf.z, 0,
+                        pu.x, pu.y, pu.z, 0,
+                        pr.x, pr.y, pr.z, 0,
+                        pp2.x, pp2.y, pp2.z, 1 };
+                    const float tint[4] = { 0.75f, 0.85f, 1.05f, 1.0f };
+                    hc.device->drawMesh(frame, shipMesh, shipTex, tint, m);
+                }
+                // Enemy wing — oriented along each ship's firing heading.
+                for (uint32_t i = 0; i < enemies.count(); ++i) {
+                    const auto& e = enemies.ship(i);
+                    float m[16]; shipXform(e.pos, e.fwd, 1.4f, m);
+                    const float tint[4] = { 1.15f, 0.55f, 0.5f, 1.0f };   // hostile red
+                    hc.device->drawMesh(frame, shipMesh, shipTex, tint, m);
+                }
+                // The HUGE capital objective at the priority-contact position. Scaled
+                // huge (~90 m long) so it dominates the frame; emissive-ish tint reads
+                // as running lights against the dark. Damage/subsystem climax (P1) will
+                // dress this further; here it makes the objective unmistakably present.
+                {
+                    const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+                    const float sx = 90.0f, sy = 22.0f, sz = 30.0f;
+                    const float m[16] = {
+                        sx, 0,  0,  0,
+                        0,  sy, 0,  0,
+                        0,  0,  sz, 0,
+                        capPos[0], capPos[1], capPos[2], 1 };
+                    // Darken once each subsystem falls (visual feedback on the climax).
+                    const float dmg = (float)localSubsDestroyed / (float)kMaxSubsystems;
+                    const float tint[4] = { 0.55f - 0.25f*dmg, 0.60f - 0.20f*dmg,
+                                            0.80f - 0.20f*dmg, 1.0f };
+                    hc.device->drawMesh(frame, capitalMesh, capitalTex, tint, m);
+                }
+            }
             hc.device->endFrame(frame);
         }
 
@@ -368,6 +491,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             ? (float)pilot.hull() / (float)pilot.maxHull() : 0.0f;
         m.timeToCrippleSec  = crippled ? crippleTime : 0.0f;
         m.windowDurationSec = std::max(beat.timeoutSec, 1.0f);
+    }
+
+    // Release the LIVE dogfight render resources (headless never created them).
+    if (live) {
+        if (shipMesh.valid())    hc.device->destroyMesh(shipMesh);
+        if (capitalMesh.valid()) hc.device->destroyMesh(capitalMesh);
+        if (shipTex.valid())     hc.device->destroyTexture(shipTex);
+        if (capitalTex.valid())  hc.device->destroyTexture(capitalTex);
     }
 
     phys->shutdown();
