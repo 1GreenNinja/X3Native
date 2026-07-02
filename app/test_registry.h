@@ -45,6 +45,7 @@ struct TestFlags {
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;
     bool testWorldStream = false, testWorldMap = false, testAi = false, testBestiary = false;
+    bool testMonsterPerception = false;  // --test-monsterperception (P1 fix regression gate)
     bool testBosses = false, testAct2Bosses = false, testSpireMid = false, testNexus = false;
     bool testAdaptiveHide = false;   // --test-adaptive-hide (canon-aliens rotate-damage rhythm)
     bool testCanonAliens = false;    // --test-canonaliens (canon-alien roster: Mantis/Grey/Reptilian/Nordic)

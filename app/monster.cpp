@@ -125,7 +125,13 @@ float rng01(uint32_t& s) {
     return (float)(s >> 8) * (1.0f / 16777216.0f);
 }
 
+// --verbose-ai TEMP diagnostic toggle (see monster.h setAiVerbose/aiVerbose).
+bool g_aiVerbose = false;
+
 } // namespace
+
+void setAiVerbose(bool v) { g_aiVerbose = v; }
+bool aiVerbose() { return g_aiVerbose; }
 
 const char* aiStateName(AiState s) {
     switch (s) {
@@ -731,6 +737,31 @@ int MonsterSystem::effectiveDamage() const {
 }
 
 // ---------------------------------------------------------------------------
+// Hearing (P1 monster-perception fix): a noise stimulus (gunshot, etc.) pulls an
+// unaware monster into investigating even without LOS. See monster.h for the
+// contract; the decision-cadence "no LOS" branch (update(), above) turns
+// m_heardNoiseTimer > 0 into a Search toward m_lastKnown (set here to the noise
+// position), exactly mirroring the "just lost LOS -> Search last-known" path.
+// ---------------------------------------------------------------------------
+void MonsterSystem::hearNoise(const x3::phys::Vec3& pos, float radius) {
+    if (!m_alive || m_entity == kNoLink) return;
+    const float dx = pos.x - m_pos.x, dz = pos.z - m_pos.z;
+    const float d2 = dx * dx + dz * dz;
+    if (d2 > radius * radius) return;   // out of earshot
+    // Already actively tracking the REAL player (has LOS this decision, or mid
+    // engage) -> the noise adds nothing; don't let it downgrade a live sighting.
+    if (m_hasLos || m_ai == AiState::Advance || m_ai == AiState::Attack ||
+        m_ai == AiState::Strafe) {
+        return;
+    }
+    m_lastKnown       = pos;
+    m_heardNoiseTimer = kAiSearchTime;
+    x3::logInfo("[ai] entity " + std::to_string(m_entity) +
+                " heard a noise " + std::to_string(std::sqrt(d2)) +
+                "m away -> investigating");
+}
+
+// ---------------------------------------------------------------------------
 // Per-frame: decay hit-flash; run the death pop; else face + chase the player.
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -882,6 +913,11 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         m_dmgMemory -= dt;
         if (m_dmgMemory <= 0.0f) { m_dmgMemory = 0.0f; m_dmgWindowHp = 0; }
     }
+    // Heard-noise investigation window decays like m_searchTimer (hearNoise()).
+    if (m_heardNoiseTimer > 0.0f) {
+        m_heardNoiseTimer -= dt;
+        if (m_heardNoiseTimer < 0.0f) m_heardNoiseTimer = 0.0f;
+    }
     m_stateTime += dt;
 
     // ---- Periodic decision: re-evaluate the behaviour state on a jittered cadence
@@ -896,6 +932,23 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // LOS: ray from our center toward the player's eye; clear if no Static wall
         // blocks it before the player. Skip past our own collision box first (the
         // Static mask also matches Enemy bodies, so a center-origin ray self-hits).
+        //
+        // ROOT-CAUSE FIX (P1 "monsters never perceive the player"): this used to
+        // skip a FIXED kMonsterHalf.x+0.15 (0.65 m) regardless of the monster's
+        // actual hitbox. The skeleton-fit scale fix (719310b) + per-species
+        // Tuning.modelScale (many >1.08, e.g. chief_martinez @1.30-1.45, "tall
+        // elite"/"8ft predecessor"/"12ft frame") made the REAL hitbox half-width
+        // m_hitHalfXZ exceed that fixed skip for any large-scale enemy. The ray
+        // origin then landed INSIDE the monster's own (now bigger) Enemy-layer
+        // box, so physics.rayCast immediately re-hit the monster's OWN body (the
+        // Static mask matches Enemy) and `los` read false forever — permanent
+        // blindness for exactly the big/tall creatures this bug report is about.
+        // The movement wall-probe below (kAiTurnRate section) was already fixed
+        // this same way after an earlier "froze melee enemies at spawn range"
+        // regression; this brings LOS in line with that fix, using the same
+        // corner-safe skip (m_hitHalfXZ * sqrt2 + margin) PLUS an explicit
+        // self-hit discard (matching realHit()'s ignore-self below) as a second,
+        // independent guard against ever reading our own body as "a wall".
         bool los = true;
         if (target) {
             const x3::phys::Vec3 from0{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
@@ -904,14 +957,32 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
             if (dl < 1e-4f) dl = 1e-4f;
             const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
-            const float skip = kMonsterHalf.x + 0.15f;
+            const float skip = m_hitHalfXZ * 1.4142f + 0.20f;   // past our box CORNER + margin
             const x3::phys::Vec3 from{ from0.x + nd.x*skip, from0.y + nd.y*skip,
                                        from0.z + nd.z*skip };
             float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
             x3::phys::RayHit wall = (losLen > 1e-3f)
                 ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
                 : x3::phys::RayHit{};
-            los = !wall.hit;
+            const bool selfHit = wall.hit && m_body.valid() && wall.body.id == m_body.id;
+            los = !wall.hit || selfHit;   // a self-hit is NOT a real wall
+            if (g_aiVerbose) {
+                m_diagTimer -= kAiDecisionPeriod;   // decision cadence advances this
+                if (m_diagTimer <= 0.0f) {
+                    m_diagTimer = 1.0f;
+                    x3::logInfo("[ai-diag] entity " + std::to_string(m_entity) +
+                        " state=" + aiStateName(m_ai) +
+                        " d=" + std::to_string(dl) + "m" +
+                        " los=" + (los ? "1" : "0") +
+                        " hitHalfXZ=" + std::to_string(m_hitHalfXZ) +
+                        (wall.hit
+                            ? (" wallHit body=" + std::to_string(wall.body.id) +
+                               " selfBody=" + std::to_string(m_body.id) +
+                               (selfHit ? " [SELF-HIT discarded]" : " [real wall]") +
+                               " dist=" + std::to_string(wall.distance))
+                            : std::string(" wallHit=none")));
+                }
+            }
         } else {
             los = false;   // no target -> nothing to see -> Search/Idle
         }
@@ -976,13 +1047,26 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             }
         } else {
             // No LOS. If we ever saw the player, Search the last-known spot for a
-            // while, then give up to Idle. Never saw them -> Idle.
+            // while, then give up to Idle. Never saw them -> Idle. HEARING (P1 fix):
+            // a heard-but-unseen noise (hearNoise(), m_heardNoiseTimer > 0) drives the
+            // exact same Search-toward-m_lastKnown behaviour, even though the player
+            // was never actually SEEN there — this is the "investigate a gunshot"
+            // beat wired to the alert-stimuli system (AlertSystem::reportGunshot).
+            const bool heardNoise = (m_heardNoiseTimer > 0.0f);
             if (m_everSawPlayer && m_searchTimer > 0.0f) {
                 want = AiState::Search;
             } else if (m_everSawPlayer && m_ai != AiState::Search && m_ai != AiState::Idle) {
                 // Just lost LOS: begin a fresh Search.
                 want = AiState::Search;
                 m_searchTimer = kAiSearchTime;
+            } else if (heardNoise && m_ai != AiState::Search) {
+                // Investigate the noise (not a real sighting, so m_everSawPlayer stays
+                // whatever it was; m_lastKnown was set to the NOISE position by
+                // hearNoise()).
+                want = AiState::Search;
+                m_searchTimer = kAiSearchTime;
+            } else if (heardNoise) {
+                want = AiState::Search;   // still investigating; keep searching
             } else if (m_searchTimer <= 0.0f) {
                 want = AiState::Idle;
             }
@@ -1328,8 +1412,14 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                     float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
                     if (dl < 1e-4f) dl = 1e-4f;
                     x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
-                    // Clear our own collision box before testing for walls.
-                    const float skip = kMonsterHalf.x + 0.15f;
+                    // Clear our own collision box before testing for walls. ROOT-CAUSE
+                    // FIX (same class of bug as the decision-LOS check above): the old
+                    // fixed kMonsterHalf.x+0.15 skip no longer clears a skeleton-fit
+                    // SCALED hitbox for large-scale enemies, so a self-hit read as "a
+                    // wall" and every ranged shot from a big enemy silently "missed"
+                    // even while correctly in Attack state. Use the real scaled
+                    // half-extent (corner-safe) + explicitly discard a self-hit.
+                    const float skip = m_hitHalfXZ * 1.4142f + 0.20f;
                     x3::phys::Vec3 from{ muzzle.x + nd.x * skip,
                                          muzzle.y + nd.y * skip,
                                          muzzle.z + nd.z * skip };
@@ -1337,7 +1427,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                     x3::phys::RayHit wall = (losLen > 1e-3f)
                         ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
                         : x3::phys::RayHit{};
-                    landed = !wall.hit;
+                    const bool selfHit2 = wall.hit && m_body.valid() && wall.body.id == m_body.id;
+                    landed = !wall.hit || selfHit2;
                     if (fx) {
                         // Tracer from the muzzle to the impact (player) or the wall.
                         x3::phys::Vec3 end = wall.hit ? wall.point : tp;
@@ -1798,6 +1889,10 @@ uint32_t MonsterManager::aliveCount() const {
     for (const auto& m : m_monsters)
         if (m->alive()) ++n;
     return n;
+}
+
+void MonsterManager::hearNoise(const x3::phys::Vec3& pos, float radius) {
+    for (auto& m : m_monsters) m->hearNoise(pos, radius);
 }
 
 void MonsterManager::shutdown() {
@@ -2794,6 +2889,183 @@ bool runAiSelfTest() {
     x3::logInfo(std::string("[ai-test] ") + std::to_string(ai_pass) + " passed, " +
                 std::to_string(ai_fail) + " failed");
     return ai_fail == 0;
+}
+
+// ===========================================================================
+// P1 MONSTER-PERCEPTION regression gate (--test-monsterperception). See
+// monster.h for the full contract. Root cause: the decision-cadence LOS ray (and
+// the ranged-attack hitscan LOS ray) used to skip a FIXED kMonsterHalf.x+0.15
+// (0.65 m) past the monster's own body before testing for walls. The skeleton-
+// fit scale fix + per-species Tuning.modelScale (many >1.08, e.g. the bestiary's
+// tall-elite/boss rows @1.30-1.45) grew the REAL hitbox half-width (m_hitHalfXZ)
+// past that fixed skip, so the ray origin landed INSIDE the monster's own
+// Enemy-layer box; since the Static ray-mask also matches Enemy bodies, it
+// immediately re-hit ITSELF and read as "a wall" -> `los` was false forever.
+// This test uses exactly that large-scale regime (modelScale 1.45, box fallback
+// so it's asset-independent) to prove detection actually happens.
+// ===========================================================================
+namespace {
+
+int mp_pass = 0, mp_fail = 0;
+void mpcheck(bool cond, const char* name) {
+    if (cond) { ++mp_pass; x3::logInfo(std::string("[monsterperception-test] PASS ") + name); }
+    else      { ++mp_fail; x3::logError(std::string("[monsterperception-test] FAIL ") + name); }
+}
+
+// A LARGE/TALL monster: modelScale 1.45 is exactly the "8ft predecessor reads
+// tall" bestiary tuning (defRigged(t, "marcus_webb.glb", 1.45f)) that pushed the
+// real hitbox half-width (hw = 0.6 * max(modelScale,0.8) = 0.87 m) past the OLD
+// fixed 0.65 m LOS skip. modelFile left empty (box fallback) so the test needs
+// no on-disk GLB asset — the hitbox-scale math is identical either way (it keys
+// off m_modelScale, not the model source). Melee, short wind-up so behaviour
+// (including the attack swing) reads within a few simulated seconds.
+MonsterSystem::Tuning mpBigTuning() {
+    MonsterSystem::Tuning t;
+    t.type           = MonsterType::Guard;
+    t.hp              = 150;
+    t.chaseSpeed      = 3.0f;
+    t.damage          = 12;
+    t.attackRange     = 2.0f;
+    t.attackCooldown  = 0.6f;
+    t.attackWindup    = 0.05f;
+    t.ranged          = false;
+    t.modelScale      = 1.45f;   // the exact scale regime that broke LOS
+    return t;
+}
+
+} // namespace
+
+bool runMonsterPerceptionSelfTest() {
+    mp_pass = mp_fail = 0;
+    HeadlessDevice device;
+
+    // ---- (1) CLEAR LOS within range -> Aggro (Advance/Attack/Strafe) within ~1s.
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0,0.4f,0 }, mpBigTuning());
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };   // 8 m ahead, open ground, clear LOS
+        bool aggroed = false; int aggroTick = -1;
+        for (int i = 0; i < 60; ++i) {   // 1.0 s @ 60 Hz
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            const AiState s = m.aiState();
+            if (!aggroed && (s == AiState::Advance || s == AiState::Attack || s == AiState::Strafe)) {
+                aggroed = true; aggroTick = i;
+            }
+        }
+        x3::logInfo(std::string("[monsterperception-test] (1) hitHalfXZ=") +
+                    std::to_string(m.hitHalfXZ()) + " los=" + (m.hasLineOfSight()?"1":"0") +
+                    " state=" + aiStateName(m.aiState()) + " aggroed=" + (aggroed?"1":"0") +
+                    " atTick=" + std::to_string(aggroTick));
+        mpcheck(aggroed, "T1 clear-LOS large-scale enemy enters Advance/Attack/Strafe within 1s");
+        w->shutdown();
+    }
+
+    // ---- (2) A REAL wall genuinely blocks LOS -> stays Idle. Proves the LOS
+    // check wasn't just deleted/short-circuited to "fix" the bug. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        // Tall double-sided Static wall at z=-4, spanning x in [-20,20], y in [0,5] --
+        // squarely between the stationary enemy (origin) and the player beyond it.
+        {
+            float wx0=-20, wx1=20, wy0=0, wy1=5, wz=-4.0f;
+            float v[] = { wx0,wy0,wz, wx1,wy0,wz, wx1,wy1,wz, wx0,wy1,wz };
+            uint32_t idx[] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 };   // double-sided
+            w->addStaticMesh(v, 4, idx, 12);
+        }
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0,0.4f,0 }, mpBigTuning());
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };   // same distance as (1), but wall between
+        bool everAggroed = false; bool everLos = false;
+        for (int i = 0; i < 180; ++i) {   // 3 s -- generous, must NEVER trip
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            const AiState s = m.aiState();
+            if (s == AiState::Advance || s == AiState::Attack || s == AiState::Strafe) everAggroed = true;
+            if (m.hasLineOfSight()) everLos = true;
+        }
+        x3::logInfo(std::string("[monsterperception-test] (2) everLos=") + (everLos?"1":"0") +
+                    " everAggroed=" + (everAggroed?"1":"0") + " finalState=" + aiStateName(m.aiState()));
+        mpcheck(!everLos && !everAggroed && m.aiState() == AiState::Idle,
+                "T2 a REAL wall blocks LOS -> stays Idle (not self-intersection-blind either)");
+        w->shutdown();
+    }
+
+    // ---- (3) A heard noise (gunshot/alert stimulus) while LOS-blocked ->
+    // Search/investigate. Reuses (2)'s wall so this is provably NOT a sighting. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        {
+            float wx0=-20, wx1=20, wy0=0, wy1=5, wz=-4.0f;
+            float v[] = { wx0,wy0,wz, wx1,wy0,wz, wx1,wy1,wz, wx0,wy1,wz };
+            uint32_t idx[] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 };
+            w->addStaticMesh(v, 4, idx, 12);
+        }
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0,0.4f,0 }, mpBigTuning());
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };   // behind the wall the whole time
+        // Settle a moment first: confirm it's genuinely blind (no LOS) before the shot.
+        for (int i = 0; i < 30; ++i) {
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        const bool blindBeforeShot = !m.hasLineOfSight() && m.aiState() == AiState::Idle;
+        // A gunshot rings out just beyond the wall, within earshot (well under the
+        // default kAiHearGunshotRadius). Never actually seen -> LOS-blocked throughout.
+        m.hearNoise(x3::phys::Vec3{ 0.0f, 1.6f, -4.5f }, kAiHearGunshotRadius);
+        bool everSearch = false; bool everLosDuring = false;
+        for (int i = 0; i < 180; ++i) {   // 3 s
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            if (m.aiState() == AiState::Search) everSearch = true;
+            if (m.hasLineOfSight()) everLosDuring = true;
+        }
+        x3::logInfo(std::string("[monsterperception-test] (3) blindBeforeShot=") +
+                    (blindBeforeShot?"1":"0") + " everSearch=" + (everSearch?"1":"0") +
+                    " everLosDuring=" + (everLosDuring?"1":"0"));
+        mpcheck(blindBeforeShot && everSearch && !everLosDuring,
+                "T3 heard noise (LOS-blocked) -> Search/investigate, not a real sighting");
+        w->shutdown();
+    }
+
+    // ---- (4) Once detected, the monster actually CLOSES DISTANCE and fires an
+    // EnemyAttack cue (the attack anim+sound path) -- not just a state flip. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0,0.4f,0 }, mpBigTuning());
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };
+        int attackCues = 0;
+        m.setCueSink([&](const GameCue& c) { if (c.kind == CueKind::EnemyAttack) ++attackCues; });
+        const float startDist = 8.0f;
+        float minDist = startDist;
+        for (int i = 0; i < 360; ++i) {   // 6 s -- plenty to close + swing at least once
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            const float dx = tgt.eye.x - m.pos().x, dz = tgt.eye.z - m.pos().z;
+            const float d = std::sqrt(dx*dx + dz*dz);
+            if (d < minDist) minDist = d;
+        }
+        const bool closedDistance = minDist < startDist - 3.0f;   // meaningfully closer
+        x3::logInfo(std::string("[monsterperception-test] (4) minDist=") + std::to_string(minDist) +
+                    " attackCues=" + std::to_string(attackCues) + " finalState=" + aiStateName(m.aiState()));
+        mpcheck(closedDistance && attackCues > 0,
+                "T4 detected enemy CLOSES DISTANCE and fires the attack anim+sound cue");
+        w->shutdown();
+    }
+
+    x3::logInfo(std::string("[monsterperception-test] ") + std::to_string(mp_pass) + " passed, " +
+                std::to_string(mp_fail) + " failed");
+    return mp_fail == 0;
 }
 
 // ===========================================================================

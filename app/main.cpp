@@ -238,6 +238,11 @@ int main(int argc, char** argv) {
     x3::apphost::CliOptions o;
     x3::apphost::parseCli(argc, argv, o);
 
+    // --verbose-ai (P1 monster-perception bug-hunt diagnostic toggle). Applied
+    // before EITHER the headless test dispatch or normal boot, so it covers both
+    // --test-monsterperception and real interactive play. Off by default.
+    x3::game::setAiVerbose(o.aiVerbose);
+
     // Fleet asset-store manifest check (Phase A, docs/ASSET_DISTRIBUTION.md):
     // auto-fetch any manifest asset missing locally (D: cache -> G: share), or
     // log ONE line telling the dev to run `python tools/asset_store.py fetch
@@ -299,6 +304,7 @@ int main(int argc, char** argv) {
         _tf.testWorldMap = o.testWorldMap;
         _tf.testAi = o.testAi;
         _tf.testBestiary = o.testBestiary;
+        _tf.testMonsterPerception = o.testMonsterPerception;
         _tf.testBosses = o.testBosses;
         _tf.testAdaptiveHide = o.testAdaptiveHide;
         _tf.testAct2Bosses = o.testAct2Bosses;
