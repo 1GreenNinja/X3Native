@@ -2702,8 +2702,8 @@ int runDefaultHost(HostContext& hc) {
                 // text sized to the projected panel (so --screenshot --shot-cam at the
                 // cell verifies the on-glass text, not just the glowing panel). Mirrors
                 // the interactive on-glass overlay via the shared helper.
-                if (game.secret().terminal().built()) {
-                    const auto& term = game.secret().terminal();
+                if (canonHoloBuilt ? canonHolo.built() : game.secret().terminal().built()) {
+                    const auto& term = canonHoloBuilt ? canonHolo : game.secret().terminal();
                     // The readout text is now baked ON the glass (stb_truetype into the
                     // hologram texture) so it tilts with the panel. Only fall back to the
                     // legacy 2D worldToScreen overlay if the on-glass bake is unavailable.
@@ -3705,6 +3705,15 @@ int runDefaultHost(HostContext& hc) {
     bool  prevMapKey = false, prevMapEnter = false;
     float travelFadeT = 0.0f;           // fast-travel fade-to-black cover (s left)
 
+    // ---- The ACTIVE cell terminal for E-interaction / VIGIL Q&A / override-code entry.
+    // The HERO canon terminal (canonHolo) when the canonical level built it (the shipping
+    // default world); otherwise the legacy secret-room terminal (older Level-1 builds).
+    // Every termMode / VIGIL / code-entry call site routes through this reference so the
+    // player talks to the terminal they actually SEE in Jake's cell (the known gap: the
+    // wiring used to point only at the legacy secret-room terminal, which the data-driven
+    // canon floor never builds — so the hero terminal took no input). ----
+    x3::game::HoloTerminal& activeTerm = canonHoloBuilt ? canonHolo : game.secret().terminal();
+
     // ---- Main loop ----
     bool bootReported = false;   // [boot] one-shot: report on the FIRST presented frame
     int  bootTestExit = 0;       // --test-boottime verdict (0 pass / 1 over budget)
@@ -3797,7 +3806,7 @@ int runDefaultHost(HostContext& hc) {
         bool mapEscEdge = false;        // routed into the world-map screen (confirm prompt)
         if (escNow && !kpEscPrev) {
             if (codeMode) { codeMode = false; keypad.clear(); }
-            else if (termMode) { termMode = false; game.secret().terminal().setActive(false);
+            else if (termMode) { termMode = false; activeTerm.setActive(false);
                                  if (llmBusy && llm) llm->cancel(llmChat); }   // stop streaming
             else if (worldMapOpen) {
                 if (worldMap.confirmOpen()) mapEscEdge = true;   // back out of the prompt
@@ -4137,13 +4146,13 @@ int runDefaultHost(HostContext& hc) {
                             std::to_string(nexus.savedCount()));
             } else if (subLevels.onRescue(eye)) {  // SL3 Dr. Chen rescue (the Return-Mission payoff)
                 x3::logInfo("use: Dr. Chen freed — the Return Mission is complete");
-            } else if (!termMode && game.secret().terminal().built() &&
-                       [&]{ const x3::phys::Vec3 a = game.secret().terminal().anchor();
+            } else if (!termMode && activeTerm.built() &&
+                       [&]{ const x3::phys::Vec3 a = activeTerm.anchor();
                             const float ddx = eye.x - a.x, ddz = eye.z - a.z;
                             return ddx*ddx + ddz*ddz < 9.0f; }()) {
                 // Near the cell HoloTerminal: open terminal-entry mode (type the override
                 // code, Enter submits to the sink -> the trapdoor opens on 1127).
-                termMode = true; game.secret().terminal().setActive(true);
+                termMode = true; activeTerm.setActive(true);
                 // Prime the typed-char edge state from the keys CURRENTLY held so
                 // the E press that opened the terminal doesn't leak an 'E' into
                 // the input line this same frame (rising-edge false positive).
@@ -4273,7 +4282,7 @@ int runDefaultHost(HostContext& hc) {
         // terminal is active. Enter calls submit() -> the terminal's sink (which opens
         // the floor-hatch trapdoor on the correct code 1127). Esc-cancel handled below. --
         if (termMode && !terrainWorld) {
-            x3::game::HoloTerminal& term = game.secret().terminal();
+            x3::game::HoloTerminal& term = activeTerm;
             for (int dgt = 0; dgt < 10; ++dgt) {
                 bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
                 if (dn && !tmDigitPrev[dgt]) term.pushChar((char)('0' + dgt));
@@ -4341,11 +4350,11 @@ int runDefaultHost(HostContext& hc) {
         // ---- VIGIL reply streaming: drain LLM tokens onto the terminal glass.
         // Throttled to ~10 Hz (each apply re-bakes the 1024^2 hologram texture).
         // NOT gated on termMode: an Esc-cancelled generation still drains to done.
-        if (llmBusy && llm && !terrainWorld && game.secret().terminal().built()) {
+        if (llmBusy && llm && !terrainWorld && activeTerm.built()) {
             llmBakeAcc += dt;
             if (llmBakeAcc >= 0.10f) {
                 llmBakeAcc = 0.0f;
-                x3::game::HoloTerminal& vterm = game.secret().terminal();
+                x3::game::HoloTerminal& vterm = activeTerm;
                 x3::llm::PollResult pr = llm->poll(llmChat);
                 llmReplyLog += pr.newTokens;
                 if (!pr.newTokens.empty()) {
@@ -5548,12 +5557,12 @@ int runDefaultHost(HostContext& hc) {
                 // + blinking cursor appear once the player is in termMode (pressed E).
                 // The text SIZE is derived from the panel's on-screen height so it scales
                 // to the glass at any distance — clearly readable from a few meters.
-                if (!terrainWorld && game.secret().terminal().built() &&
-                    !game.secret().terminal().textOnGlass()) {
+                if (!terrainWorld && activeTerm.built() &&
+                    !activeTerm.textOnGlass()) {
                     // FALLBACK only: the readout normally lives ON the glass (baked into
                     // the hologram texture so it tilts with the panel). This 2D overlay
                     // runs solely if the on-glass font bake failed.
-                    const auto& term = game.secret().terminal();
+                    const auto& term = activeTerm;
                     const x3::phys::Vec3 a = term.anchor();
                     // Player eye for the range/visibility gate.
                     float pex, pey, pez, pyaw, ppitch;
@@ -5634,8 +5643,8 @@ int runDefaultHost(HostContext& hc) {
                     // render as a subtle BOTTOM-CENTER HUD hint (not a world-space
                     // float over the panel) and DROP the "(code 1278)" spoiler -- the
                     // player should discover the code, not have it handed to them.
-                    if (game.secret().terminal().built()) {
-                        const x3::phys::Vec3 a = game.secret().terminal().anchor();
+                    if (activeTerm.built()) {
+                        const x3::phys::Vec3 a = activeTerm.anchor();
                         const float dx = pex - a.x, dz = pez - a.z;
                         if (dx*dx + dz*dz < 9.0f) {
                             uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
@@ -6197,7 +6206,7 @@ int runDefaultHost(HostContext& hc) {
                 if (tag == "console")     return hud.consoleOpen();
                 if (tag == "menu")        return !gameUi.playing();
                 if (tag == "worldmap")    return worldMapOpen;
-                if (tag == "terminal")    return termMode && game.secret().terminal().active();
+                if (tag == "terminal")    return termMode && activeTerm.active();
                 if (tag == "keypad")      return codeMode;
                 if (tag == "dialog")      return chatTrees.active();
                 if (tag == "npc_dialog")  return npcDialog.active();
