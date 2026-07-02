@@ -350,6 +350,11 @@ struct CliOptions {
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.
     bool        showroomShot = false;
     std::string showroomShotPath = "G:/X3Native/showroom.png";
+    // INTRO DOGFIGHT proof (--screenshot-dogfight [dir]): headless stills of the
+    // playable dogfight (pilot + enemy wing + the HUGE capital, god-rays/lens live)
+    // — a mid-fight beauty frame + a subsystem-climax frame. See captureIntroDogfight.
+    bool        dogfightShot = false;
+    std::string dogfightShotDir = "captures/intro_cinematic";
     // HERO CAR showcase (--screenshot-car [outDir]): load the converted hero-car
     // GLB (assets/converted_glb/Vehicles/CTR.glb — clearcoat paint + emissive
     // lights), pose it INSIDE the Unity showroom on a polished reflector slab

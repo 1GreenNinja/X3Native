@@ -152,6 +152,14 @@ std::string defaultGameStoryFlagsPath();
 // ---------------------------------------------------------------------------
 IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc);
 
+// Headless PROOF capture of the playable dogfight (--screenshot-dogfight [dir]).
+// Requires hc.device (a real Vulkan device); no window needed. Drives the same
+// synthetic-pilot dogfight the interactive beat runs and writes two stills into
+// `outDir`: a mid-fight beauty frame (pilot + enemy wing + the HUGE capital, with
+// the merged god-rays + lens-flare live) and a subsystem-climax frame (the capital
+// heavily damaged). Returns 0 on success (both PNGs written), 1 otherwise.
+int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir);
+
 // --test-introorch self-test (headless, deterministic, no window/Vulkan): asserts
 // beat sequencing order; deterministic outcome for a fixed (seed, skill); the
 // skill->p mapping bounds (skill 0 -> p=0.07, skill 1 -> p=0.40, monotonic); the

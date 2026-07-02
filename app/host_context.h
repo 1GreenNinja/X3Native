@@ -96,6 +96,7 @@ struct HostContext {
     bool        ddgiShot = false;       std::string ddgiShotDir;
     bool        rtshShot = false;       std::string rtshShotDir;
     bool        showroomShot = false;   std::string showroomShotPath;
+    bool        dogfightShot = false;   std::string dogfightShotDir;
     bool        planetShot = false;     std::string planetShotPath;
     bool        nightskyShot = false;   std::string nightskyShotPath;
     bool        cutsceneShot = false;   std::string cutsceneShotPath;

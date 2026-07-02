@@ -16,6 +16,7 @@
 
 #include "host_context.h"
 #include "screenshot_hosts.h"
+#include "intro_orchestrator.h"   // captureIntroDogfight (P0 proof stills)
 #include "showroom_tod.h"
 #include "cinematic.h"
 #include "scene.h"
@@ -93,6 +94,19 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool captureFootIk = hc.captureFootIk;  const std::string& captureFootIkPath = hc.captureFootIkPath;
 
     // ==== VERBATIM handler bodies (device.get() -> device) ====
+    // ---- INTRO DOGFIGHT proof (--screenshot-dogfight [dir]) ----------------------
+    // Headless stills of the PLAYABLE dogfight (P0-1 render): pilot + enemy wing +
+    // the HUGE capital objective, with the merged god-rays + lens-flare live. Writes
+    // a mid-fight beauty frame + a subsystem-climax frame. The render kit mirrors the
+    // interactive beat, so this doubles as the P0-1 visual regression gate.
+    if (hc.dogfightShot) {
+        const int rc = x3::intro::captureIntroDogfight(hc, hc.dogfightShotDir);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return rc;
+    }
+
     // ---- Headless editor PROOF (--screenshot-editor [path.png]) ------------------
     // Inits ImGui in the headless device (a hidden GLFW window backs the GLFW backend;
     // rendering goes into the offscreen color image), renders ONE frame with the

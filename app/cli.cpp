@@ -280,6 +280,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.showroomShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.showroomShotPath = argv[++i];
         }
+        else if (a == "--screenshot-dogfight") {
+            o.dogfightShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.dogfightShotDir = argv[++i];
+        }
         else if (a == "--screenshot-car") {
             o.carShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.carShotDir = argv[++i];

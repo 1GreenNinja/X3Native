@@ -46,6 +46,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -662,6 +663,147 @@ bool runIonDescentBeat(x3::apphost::HostContext& hc) {
     // escape branch).
     return true;
 }
+
+} // namespace  (close the internal-linkage helpers; captureIntroDogfight below
+  //             needs EXTERNAL linkage — it's called from screenshot_hosts.cpp)
+
+// ---------------------------------------------------------------------------
+// PROOF CAPTURE (--screenshot-dogfight) — headless still of the playable
+// dogfight. Reuses the exact render kit the interactive beat builds (deep-space
+// look, three point lights, procedural pilot / enemy / capital boxes) but with a
+// bespoke cinematic camera + a scripted synthetic pilot so a couple of
+// representative frames can be written headless (no window). This is both the
+// P0-1 render proof and the gate's mid-dogfight + subsystem-climax captures.
+// ---------------------------------------------------------------------------
+int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir) {
+    if (!hc.device) { x3::logError("--screenshot-dogfight: no device"); return 1; }
+    auto* device = hc.device;
+    std::error_code mkec; std::filesystem::create_directories(outDir, mkec);
+    x3::logInfo("--screenshot-dogfight: writing dogfight proof stills to " + outDir);
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
+    if (!phys->init()) { x3::logError("--screenshot-dogfight: physics init failed"); return 1; }
+
+    x3::game::SpacePilotController pilot;
+    pilot.spawn(*phys, 0.0f, 0.0f, 0.0f);
+
+    const int kEnemies = 4;
+    x3::space::EnemyShipManager enemies;
+    enemies.init(kEnemies);
+    for (int i = 0; i < kEnemies; ++i) {
+        const float ang = (float)i * 1.3f;
+        const float pos[3] = { 150.0f + 30.0f * (float)i, 20.0f * std::sin(ang), 40.0f * std::cos(ang) };
+        enemies.spawn(pos);
+    }
+    auto capital = x3::space::ShipDamage::makeCapital(400, 2000, 120);
+
+    // Deep-space render kit (mirrors runInteractiveBeat / host_space).
+    { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+    { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; device->setSsaoParams(ap); }
+    { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+    device->setBloom(0.35f);                       // hero glow on the emissive windows
+    device->setFrustumCullEnabled(false);          // robust against nested-AABB culling for the still
+    {
+        x3::rhi::PointLight pl[3]{};
+        pl[0].pos[0] = 180.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f; pl[0].range = 900.0f;
+        pl[0].color[0] = 60.0f; pl[0].color[1] = 56.0f; pl[0].color[2] = 48.0f;
+        pl[1].pos[0] =  20.0f; pl[1].pos[1] =  60.0f; pl[1].pos[2] =  40.0f; pl[1].range = 500.0f;
+        pl[1].color[0] = 18.0f; pl[1].color[1] = 22.0f; pl[1].color[2] = 30.0f;
+        pl[2].pos[0] = 240.0f; pl[2].pos[1] = -40.0f; pl[2].pos[2] = -60.0f; pl[2].range = 700.0f;
+        pl[2].color[0] = 22.0f; pl[2].color[1] = 14.0f; pl[2].color[2] = 9.0f;
+        device->setPointLights(pl, 3);
+    }
+    x3::prims::PrimMesh sbm = x3::prims::makeBox(2.0f, 0.6f, 1.2f, 0, 0, 0, 0.25f);
+    auto shipMesh = device->createMesh(sbm.verts.data(), (uint32_t)sbm.verts.size(),
+                                       sbm.index.data(), (uint32_t)sbm.index.size());
+    auto sTexD = x3::prims::makeCheckerRGBA(64, 8, 180, 190, 210, 60, 70, 90);
+    auto shipTex = device->createTexture(sTexD.data(), 64, 64, true);
+    x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 0.5f, 0.6f, 0, 0, 0, 0.25f);
+    auto capitalMesh = device->createMesh(cbm.verts.data(), (uint32_t)cbm.verts.size(),
+                                          cbm.index.data(), (uint32_t)cbm.index.size());
+    auto cTexD = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
+    auto capitalTex = device->createTexture(cTexD.data(), 64, 64, true);
+
+    const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+    const float dt = 1.0f / 60.0f;
+
+    auto drawScene = [&](const x3::rhi::FrameContext& fr, int subsDestroyed) {
+        // Pilot ship (3P by default).
+        const x3::phys::Vec3 pp = pilot.pos();
+        const x3::phys::Vec3 pf = pilot.forward();
+        const x3::phys::Vec3 pu = pilot.up();
+        const x3::phys::Vec3 pr = pilot.right();
+        const float pm[16] = { pf.x,pf.y,pf.z,0, pu.x,pu.y,pu.z,0, pr.x,pr.y,pr.z,0, pp.x,pp.y,pp.z,1 };
+        const float ptint[4] = { 0.75f, 0.85f, 1.05f, 1.0f };
+        device->drawMesh(fr, shipMesh, shipTex, ptint, pm);
+        // Enemy wing.
+        for (uint32_t i = 0; i < enemies.count(); ++i) {
+            const auto& e = enemies.ship(i);
+            float fx = e.fwd[0], fz = e.fwd[2];
+            const float fl = std::sqrt(fx*fx+fz*fz); if (fl>1e-3f){fx/=fl;fz/=fl;} else {fx=1;fz=0;}
+            const float S = 1.6f;
+            const float m[16] = { fx*S,0,fz*S,0, 0,S,0,0, -fz*S,0,fx*S,0, e.pos[0],e.pos[1],e.pos[2],1 };
+            const float etint[4] = { 1.2f, 0.55f, 0.5f, 1.0f };
+            device->drawMesh(fr, shipMesh, shipTex, etint, m);
+        }
+        // HUGE capital (darkens as subsystems fall).
+        const float sx=90.f, sy=22.f, sz=30.f;
+        const float m[16] = { sx,0,0,0, 0,sy,0,0, 0,0,sz,0, capPos[0],capPos[1],capPos[2],1 };
+        const float dmg = (float)subsDestroyed / (float)kMaxSubsystems;
+        const float ctint[4] = { 0.55f-0.25f*dmg, 0.60f-0.20f*dmg, 0.80f-0.20f*dmg, 1.0f };
+        device->drawMesh(fr, capitalMesh, capitalTex, ctint, m);
+    };
+
+    // A cinematic 3/4 chase: eye behind + above the pilot, looking toward the
+    // capital (+X) so the fighter reads in the foreground and the capital fills
+    // the background. atan2(dz,dx)=0 -> +X forward; slight downward pitch.
+    auto framePilot = [&](int subsDestroyed) {
+        const x3::phys::Vec3 pp = pilot.pos();
+        const float ex = pp.x - 34.0f, ey = pp.y + 12.0f, ez = pp.z + 16.0f;
+        const float lx = pp.x + 60.0f - ex, ly = pp.y - ey, lz = pp.z - ez;
+        const float len = std::max(std::sqrt(lx*lx+ly*ly+lz*lz), 1e-3f);
+        device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly/len), 60.0f);
+    };
+
+    int shotFails = 0;
+    auto capture = [&](const std::string& name, int subsDestroyed) {
+        const std::string path = outDir + "/" + name + ".png";
+        const int kSettle = 48;                    // TAA + auto-exposure + bloom settle
+        for (int i = 0; i < kSettle; ++i) {
+            framePilot(subsDestroyed);
+            if (i == kSettle - 1) device->armCapture(path.c_str());
+            auto fr = device->beginFrame();
+            if (fr.valid) drawScene(fr, subsDestroyed);
+            device->endFrame(fr);
+        }
+        if (device->captureFrame(path.c_str())) x3::logInfo("--screenshot-dogfight: wrote " + path);
+        else { x3::logError("--screenshot-dogfight: capture FAILED " + path); ++shotFails; }
+    };
+
+    // Fly the synthetic pilot up the engagement until the capital (at +X 280) sits
+    // inside the 200 m camera far plane, so the beauty frame shows the fighter in
+    // the foreground WITH the capital looming behind. (In the live dogfight the same
+    // approach brings the capital into view as the player closes the distance.)
+    x3::game::PlayerInput in{}; in.moveFwd = 1.0f;
+    for (int s = 0; s < 1200 && pilot.pos().x < 150.0f; ++s) { pilot.update(in, dt, *phys);
+        const x3::phys::Vec3 pp = pilot.pos(); const float ppos[3] = { pp.x, pp.y, pp.z };
+        const x3::phys::Vec3 pv = pilot.velocity(); const float pvel[3] = { pv.x, pv.y, pv.z };
+        enemies.update(dt, ppos, pvel); }
+    capture("02_dogfight_capital_fx", /*subsDestroyed*/ 1);
+
+    // Cripple the capital's subsystems for the CLIMAX frame (hull sphere hit model
+    // is exercised live; here we drive the damage model straight for the still).
+    for (int sub = 0; sub < kMaxSubsystems; ++sub)
+        x3::space::ShipDamage::applyDamage(capital, 100000, (x3::space::Subsystem)sub);
+    capture("03_subsystem_climax", /*subsDestroyed*/ kMaxSubsystems);
+
+    device->destroyMesh(shipMesh); device->destroyMesh(capitalMesh);
+    device->destroyTexture(shipTex); device->destroyTexture(capitalTex);
+    phys->shutdown();
+    return shotFails == 0 ? 0 : 1;
+}
+
+namespace {   // reopen the internal-linkage helper region
 
 // Source the deterministic save seed (Phase 4 — the REAL per-save seed).
 //   * If the host threaded an explicit seed (hc.introSeed != 0), use it verbatim
