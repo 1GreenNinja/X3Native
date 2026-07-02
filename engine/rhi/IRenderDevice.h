@@ -265,6 +265,27 @@ public:
                                        // camera-only reprojection (pre-velocity
                                        // behavior). No-op when taa is off or
                                        // velocity.spv is absent (graceful fallback).
+        // VOLUMETRIC GOD-RAYS / light shafts (screen-space radial scatter). The
+        // shaft buffer is computed from the HDR scene + depth, clamped, and added
+        // into the HDR scene BEFORE ACES (composite). godrays 0 -> the shaft pass
+        // is skipped AND the composite's add is forced off -> byte-identical base.
+        bool  godrays         = true;  // r_godrays: master on/off
+        float godraysIntensity= 0.55f; // overall shaft strength (tasteful default;
+                                       // <=0 forces the whole effect off / base A/B)
+        float godraysDensity  = 0.6f;  // r_godrays_density: march step-length scale
+        float godraysDecay    = 0.96f; // r_godrays_decay:   per-step attenuation
+        float godraysWeight   = 0.35f; // r_godrays_weight:  per-sample contribution
+        // ---- Lens flare + anamorphic streak (Abrams/SFC cinematic look) ----
+        // Generated after bloom (reusing the bright-pass mip0) and composited into
+        // the linear HDR scene BEFORE tonemap (ACES rolls the added radiance off).
+        // r_lensflare 0 skips the whole pass -> the composite guards the sample so
+        // the render is byte-identical to the no-flare build.
+        bool  lensFlare          = true;   // r_lensflare: on/off
+        // COMPOSITE-INTRO TUNING: restrained so the flare composes WITH god-rays as a
+        // tasteful accent in the emissive-dense cold open (0.5 sprayed ghosts -> parody).
+        float lensFlareIntensity = 0.18f;  // r_lensflare_intensity: restrained cinematic default
+        float lensFlareStreak    = 0.3f;   // r_lensflare_streak: anamorphic streak strength
+        int   lensFlareGhosts    = 3;      // r_lensflare_ghosts: ghost-chain count (1..8)
     };
     virtual void setPostFX(const PostFXParams&) {}
 

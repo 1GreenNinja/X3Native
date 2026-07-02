@@ -12,6 +12,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/IntroHero/SpaceStation_Cylindrical.glb",
+      "sha256": "aca8612adc20a5ad9fa0a571f8e1d29d8a2170171a9023d65e41160719bc8211",
+      "size": 32857700,
+      "source_note": "Cylindrical clean-geometric station (Sci-Fi Space Stations Creator / Cylinderical_Example20) for the Kelvin-Trek cold-open beauty beat; White hull (metal capped .35 so it reads bright in dark space) + warm-recolored Emission1 windows (strength 9) + x3Clearcoat .85; converted via tools/convert_station_glb.py 2026-06-24. PLACEHOLDER pending Tim STFC ref shots \u2014 manifest swap."
+    },
+    {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Ceiling_A.glb",
       "sha256": "97ec6ed484b0236ffbd7c1db4c0cc64cc7d0ddea92b289033eb477fb48eadacc",
       "size": 20498916,

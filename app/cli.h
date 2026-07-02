@@ -340,6 +340,11 @@ struct CliOptions {
     // --notaa A/B: disable TAA only (jitter fully off + resolve skipped) so
     // before/after screenshots isolate exactly the TAA contribution.
     bool        noTaa = false;
+    // --nogodrays / --nolensflare A/B: disable the named post effect only (the pass
+    // is skipped + its composite add forced off) so before/after captures isolate
+    // exactly that effect's contribution AND the off path is byte-identical to base.
+    bool        noGodrays = false;
+    bool        noLensflare = false;
     // Showroom preview (--screenshot-showroom [path.png]): load the baked Unity scene
     // export (assets/converted_glb/ShowRoom_Vol30/Example_01.glb), frame the camera on
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.

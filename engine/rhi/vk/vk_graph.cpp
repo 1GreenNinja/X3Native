@@ -235,6 +235,15 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         for (uint32_t i = 0; i < kBloomMips; ++i)
             rgMip[i] = m_graph.importImage("bloom.mip", m_bloomMips[i].img,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // God-rays half-res shaft buffer (the godrays pass writes it, the composite
+        // reads it). UNDEFINED import: fully overwritten by its producing pass.
+        RgResource rgGodrays = m_graph.importImage("scene.godrays", m_godraysImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // Lens-flare buffer (half-res HDR). Imported UNDEFINED each frame (fully
+        // overwritten by the lens pass when it runs; never read when the pass is
+        // skipped). The composite reads it only when the flare is active this frame.
+        RgResource rgLens = m_graph.importImage("lens.flare", m_lensImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
 
         // SSAO images (half-res). Imported UNDEFINED each frame (fully overwritten
         // by their producing pass). Only used when SSAO is enabled this frame.
@@ -1572,6 +1581,188 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         const bool bloomOn = m_post.bloomEnabled;
         if (bloomOn) addBloomPasses(rgPostSrc, rgMip);
 
+        // ================================================================
+        // VOLUMETRIC GOD-RAYS / LIGHT SHAFTS (screen-space radial scatter).
+        // ----------------------------------------------------------------
+        // A half-res full-screen pass marches each pixel toward the sun's SCREEN
+        // position, accumulating occluder-masked brightness from the HDR scene +
+        // depth (godrays.frag) -> a shaft buffer the composite ADDS before ACES.
+        // Gated on r_godrays AND the effect intensity > 0 AND the pipeline existing.
+        // The sun is projected with THIS frame's view-proj (worldToScreen); if it's
+        // behind the camera or far off-frame, sunOnScreen=0 and the shader early-outs
+        // to black (the additive compose then contributes nothing). r_godrays 0 skips
+        // this pass entirely AND forces the composite add off -> byte-identical base.
+        const bool godraysOn = m_post.godrays && (m_godraysPipe != VK_NULL_HANDLE)
+                            && (m_godraysImg != VK_NULL_HANDLE) && (m_post.godraysIntensity > 0.0f);
+        if (godraysOn) {
+            // Project the sun (m_sky.sunDir is the direction TOWARD the sun) to a
+            // far world point, then to screen UV via the cached view-proj. Mirrors
+            // worldToScreen()'s clip math but yields UV in [0,1] + an on-screen flag.
+            const glm::vec3 sd = glm::normalize(glm::vec3(
+                m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
+            const glm::vec3 sunWorld = m_camPos + sd * 1.0e6f;  // sun "at infinity"
+            const glm::vec4 clip = m_lastViewProj * glm::vec4(sunWorld, 1.0f);
+            int sunOnScreen = 0;
+            float su = 0.5f, sv = 0.5f;
+            if (clip.w > 1e-4f) {
+                const float nx = clip.x / clip.w, ny = clip.y / clip.w;
+                su = nx * 0.5f + 0.5f;
+                sv = ny * 0.5f + 0.5f;
+                // Accept a margin past the frame so shafts from a just-off-screen sun
+                // still rake across the image (classic radial-scatter behavior).
+                if (nx > -1.6f && nx < 1.6f && ny > -1.6f && ny < 1.6f) sunOnScreen = 1;
+            }
+            m_godraysPush = GodraysPush{};
+            m_godraysPush.sunUV[0]   = su;
+            m_godraysPush.sunUV[1]   = sv;
+            m_godraysPush.density    = (m_post.godraysDensity > 0.0f) ? m_post.godraysDensity : 0.6f;
+            m_godraysPush.decay      = (m_post.godraysDecay > 0.0f)   ? m_post.godraysDecay   : 0.96f;
+            m_godraysPush.weight     = (m_post.godraysWeight > 0.0f)  ? m_post.godraysWeight  : 0.35f;
+            m_godraysPush.exposure   = 1.0f;     // overall scale rides in the composite add
+            m_godraysPush.threshold  = 1.10f;    // bright-pass knee (linear) for the occluder
+            m_godraysPush.numSamples = 48;       // deterministic march length
+            m_godraysPush.sunOnScreen= sunOnScreen;
+
+            m_godraysAttach = VkRenderingAttachmentInfo{};
+            m_godraysAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_godraysAttach.imageView = m_godraysView;
+            m_godraysAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_godraysAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // fully overwritten
+            m_godraysAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc gr{};
+            gr.name = "god-rays";
+            // WRITE the half-res shaft buffer.
+            gr.addUse(ResourceUse{
+                rgGodrays, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // READ the finished HDR scene (occluder/brightness source).
+            gr.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            // READ the scene depth (occlusion gate); DEPTH_READ_ONLY as data.
+            gr.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            gr.usesDynamicRendering = true;
+            m_godraysRenderInfo = VkRenderingInfo{};
+            m_godraysRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_godraysRenderInfo.renderArea = { {0,0}, m_godraysExtent };
+            m_godraysRenderInfo.layerCount = 1;
+            m_godraysRenderInfo.colorAttachmentCount = 1;
+            m_godraysRenderInfo.pColorAttachments = &m_godraysAttach;
+            gr.renderInfo = m_godraysRenderInfo;
+            gr.recordCtx = this;
+            gr.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkViewport vp{ 0.0f, 0.0f, (float)self->m_godraysExtent.width,
+                               (float)self->m_godraysExtent.height, 0.0f, 1.0f };
+                VkRect2D scis{ {0,0}, self->m_godraysExtent };
+                vkCmdSetViewport(c, 0, 1, &vp);
+                vkCmdSetScissor(c, 0, 1, &scis);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_godraysPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_godraysLayout,
+                                        0, 1, &self->m_setGodrays, 0, nullptr);
+                vkCmdPushConstants(c, self->m_godraysLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(GodraysPush), &self->m_godraysPush);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(gr));
+        }
+
+        // ---- LENS FLARE + ANAMORPHIC STREAK -------------------------------
+        // Generated AFTER bloom (reuses the bright-pass mip0) and BEFORE composite
+        // (added into linear HDR before tonemap). Gated on r_lensflare AND bloom
+        // (the bright-pass is the input). When OFF, the pass is skipped and the
+        // composite's lensIntensity is forced 0 (its shader guards the sample) ->
+        // byte-identical to the no-flare build. Deterministic: no time jitter.
+        const bool lensOn = m_post.lensFlare && bloomOn && (m_lensPipe != VK_NULL_HANDLE);
+        m_lensActiveThisFrame = lensOn;
+        if (lensOn) {
+            // Project the sun (directional; SkyParams.sunDir is TOWARD the sun) to
+            // screen UV + clip depth. A far point along sunDir from the camera.
+            LensUBO lu{};
+            lu.intensity      = std::max(0.0f, m_post.lensFlareIntensity);
+            lu.streak         = std::max(0.0f, m_post.lensFlareStreak);
+            lu.ghosts         = (float)std::clamp(m_post.lensFlareGhosts, 0, 8);
+            lu.aspect         = (float)m_extent.width / (float)std::max(1u, m_extent.height);
+            lu.streakTint[0]  = 0.30f; lu.streakTint[1] = 0.55f; lu.streakTint[2] = 1.0f; // cool blue
+            lu.ghostDispersal = 0.30f;
+            lu.haloWidth      = 0.45f;
+            lu.chroma         = 0.012f;
+            lu.sunSize        = 0.10f;
+            lu.maxRadiance    = 4.0f;   // energy clamp (white-out guard)
+            lu.sunValid       = 0.0f;
+            lu.sunScreen[0]   = 0.5f; lu.sunScreen[1] = 0.5f;
+            lu.sunDepth       = 1.0f;
+            if (m_sky.enabled) {
+                const glm::vec3 sd = glm::normalize(glm::vec3(
+                    m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
+                const glm::vec3 sunPt = m_camPos + sd * 1.0e6f;   // ~at infinity
+                const glm::vec4 clip = m_lastViewProj * glm::vec4(sunPt, 1.0f);
+                if (clip.w > 1e-4f) {
+                    const float nx = clip.x / clip.w;
+                    const float ny = clip.y / clip.w;
+                    const float nz = clip.z / clip.w;          // [0..1] Vulkan depth
+                    // UV: clip [-1,1] -> [0,1]. The clip is reverse-Y for Vulkan, so
+                    // the framebuffer Y is (ny*0.5+0.5) directly (matches sky/HUD).
+                    const float ux = nx * 0.5f + 0.5f;
+                    const float uy = ny * 0.5f + 0.5f;
+                    // On-screen (with a small margin so an edge sun still streaks).
+                    if (ux > -0.2f && ux < 1.2f && uy > -0.2f && uy < 1.2f) {
+                        lu.sunScreen[0] = ux; lu.sunScreen[1] = uy;
+                        lu.sunDepth = std::clamp(nz, 0.0f, 1.0f);
+                        lu.sunValid = 1.0f;
+                    }
+                }
+            }
+            std::memcpy(m_lensUboMapped[m_frameIdx], &lu, sizeof(LensUBO));
+
+            m_lensAttach = VkRenderingAttachmentInfo{};
+            m_lensAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_lensAttach.imageView = m_lensView;
+            m_lensAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_lensAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // fully written
+            m_lensAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            m_lensRenderInfo = VkRenderingInfo{};
+            m_lensRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_lensRenderInfo.renderArea = { {0,0}, m_lensExtent };
+            m_lensRenderInfo.layerCount = 1;
+            m_lensRenderInfo.colorAttachmentCount = 1;
+            m_lensRenderInfo.pColorAttachments = &m_lensAttach;
+
+            RenderPassDesc lf{};
+            lf.name = "lens-flare";
+            lf.addUse(ResourceUse{
+                rgLens, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            lf.addUse(ResourceUse{
+                rgMip[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            lf.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            lf.usesDynamicRendering = true;
+            lf.renderInfo = m_lensRenderInfo;
+            lf.recordCtx = this;
+            lf.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                self->postViewport(c, self->m_lensExtent);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_lensPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_lensLayout,
+                                        0, 1, &self->m_lensSet[self->m_frameIdx], 0, nullptr);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(lf));
+        }
+
         // Composite: HDR scene + bloom mip0 -> ACES tonemap -> LDR final target.
         // The HUD is recorded here (after tonemap) so it composites on the LDR
         // image. The pass writes the swapchain/offscreen color (rgColor).
@@ -1601,6 +1792,23 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 rgMip[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            // READ the god-rays shaft buffer (binding 3). Declared UNCONDITIONALLY
+            // (same pattern as bloom mip0 above): the graph transitions it to
+            // SHADER_READ_ONLY so the bound descriptor's layout matches even when
+            // god-rays is off this frame; the composite shader's godraysIntensity>0
+            // guard then never actually samples it (byte-identical base A/B).
+            comp.addUse(ResourceUse{
+                rgGodrays, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            // Lens-flare buffer (binding 4): only declared as a read when the flare
+            // ran this frame (otherwise the image is UNDEFINED + the shader's
+            // lensIntensity>0 guard never samples it).
+            if (lensOn)
+                comp.addUse(ResourceUse{
+                    rgLens, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             comp.usesDynamicRendering = true;
             m_compositeRenderInfo = VkRenderingInfo{};
             m_compositeRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -1641,6 +1849,18 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                     ? std::max(0.0f, self->m_post.taaSharpen) : 0.0f;
                 cp.texelW  = 1.0f / (float)std::max(1u, self->m_extent.width);
                 cp.texelH  = 1.0f / (float)std::max(1u, self->m_extent.height);
+                // God-rays additive strength: forced 0 unless the shaft pass ran this
+                // frame (r_godrays + intensity>0). The shader's >0 guard then never
+                // samples the shaft target -> r_godrays 0 is byte-identical to base.
+                cp.godraysIntensity = (self->m_post.godrays && self->m_godraysPipe != VK_NULL_HANDLE
+                                       && self->m_post.godraysIntensity > 0.0f)
+                    ? self->m_post.godraysIntensity : 0.0f;
+                // Lens flare: forced 0 when the pass didn't run this frame (the
+                // shader's >0 guard then never samples the untouched buffer ->
+                // byte-identical to the no-flare composite). The flare radiance was
+                // already gain-scaled in lens_flare.frag, so this is a 0/1 enable
+                // (the generated buffer carries the user intensity).
+                cp.lensIntensity = self->m_lensActiveThisFrame ? 1.0f : 0.0f;
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);

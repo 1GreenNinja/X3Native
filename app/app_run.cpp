@@ -389,6 +389,29 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_bloom",          "1",    "bloom on/off (0 skips the whole downsample/upsample chain)");
     console.registerCVar("r_bloomintensity", "-1",   "bloom strength override; <0 = keep the scene-tuned value (default)");
     console.registerCVar("r_bloomthreshold", "1.10", "bloom bright-pass threshold (linear luminance; soft knee)");
+    // VOLUMETRIC GOD-RAYS / light shafts (screen-space radial scatter). Shafts are
+    // computed from the HDR scene + depth (occluder-masked toward the sun) and
+    // added into the HDR scene BEFORE ACES. r_godrays 0 -> the pass is skipped and
+    // the composite add is forced off -> byte-identical to the pre-godrays path.
+    console.registerCVar("r_godrays",         "1",    "volumetric god-rays / light shafts (screen-space radial scatter): 0 = off (byte-identical base)");
+    console.registerCVar("r_godrays_intensity","0.55", "god-rays overall shaft strength (<=0 = effect off)");
+    console.registerCVar("r_godrays_density", "0.6",  "god-rays march step-length scale toward the sun (~0.4..1.0)");
+    console.registerCVar("r_godrays_decay",   "0.96", "god-rays per-step attenuation (~0.92..0.99; higher = longer shafts)");
+    console.registerCVar("r_godrays_weight",  "0.35", "god-rays per-sample contribution weight");
+    // Lens flare + anamorphic streak (Abrams/Star-Trek-Fleet-Command cinematic look):
+    // procedural ghosts/halo + a blue horizontal streak + an occlusion-tested SUN
+    // flare, generated after bloom and composited BEFORE tonemap (ACES rolls it off).
+    // Restrained defaults; the intensity cvar can push it for the intro. r_lensflare 0
+    // skips the whole pass -> byte-identical to the no-flare build.
+    console.registerCVar("r_lensflare",           "1",    "lens flare + anamorphic streak: 1 = on (default), 0 = off (byte-identical no-flare path)");
+    // COMPOSITE-INTRO TUNING: the cold open is DENSE with emissives (station windows,
+    // engine/charge glows, bolts) and the flare keys off the whole bloom bright-pass,
+    // so the lens-branch's isolated 0.5 default sprayed ghosts/streaks everywhere
+    // (parody). Dialed to a restrained gain that composes WITH god-rays as a tasteful
+    // Abrams accent instead of overwhelming the frame; push per-shot for a lone sun.
+    console.registerCVar("r_lensflare_intensity", "0.18", "lens flare overall gain (restrained cinematic default; push for a lone-sun beat)");
+    console.registerCVar("r_lensflare_streak",    "0.3",  "anamorphic horizontal streak strength (the blue light-streak)");
+    console.registerCVar("r_lensflare_ghosts",    "3",    "lens-ghost chain count (1..8)");
     console.registerCVar("r_autoexposure",   "1",    "auto-exposure (eye adaptation): scene log-luminance drives exposure; r_exposure becomes a bias");
     console.registerCVar("r_aespeed",        "1.5",  "auto-exposure adaptation speed (1/s; higher = faster eye)");
     console.registerCVar("r_aemin",          "0.7",  "auto-exposure clamp floor (max darkening of bright scenes)");
@@ -635,6 +658,17 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     // (r_velocity, default 0 = byte-identical camera-only reproj). The device
     // gates on TAA being active + velocity.spv present (graceful fallback).
     px.velocity   = console.getInt("r_velocity") != 0;
+    // Lens flare (live): r_lensflare gates the whole pass; the rest tune it.
+    px.lensFlare          = console.getInt("r_lensflare") != 0;
+    px.lensFlareIntensity = console.getFloat("r_lensflare_intensity");
+    px.lensFlareStreak    = console.getFloat("r_lensflare_streak");
+    px.lensFlareGhosts    = console.getInt("r_lensflare_ghosts");
+    // God-rays (live): r_godrays gates the shaft pass + composite add.
+    px.godrays          = console.getInt("r_godrays") != 0;
+    px.godraysIntensity = console.getFloat("r_godrays_intensity");
+    px.godraysDensity   = console.getFloat("r_godrays_density");
+    px.godraysDecay     = console.getFloat("r_godrays_decay");
+    px.godraysWeight    = console.getFloat("r_godrays_weight");
     device.setPostFX(px);
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));
@@ -785,6 +819,8 @@ int runDefaultHost(HostContext& hc) {
     const bool noRtShadows = hc.noRtShadows;
     const int legacyPost = hc.legacyPost;
     const bool noTaa = hc.noTaa;
+    const bool noGodrays = hc.noGodrays;
+    const bool noLensflare = hc.noLensflare;
     const bool noRefl = hc.noRefl;
     const bool skipIntro = hc.skipIntro;
     const bool editorMode = hc.editorMode;
@@ -1787,6 +1823,8 @@ int runDefaultHost(HostContext& hc) {
         console->set("r_ssr", "0");              // --norefl: reflections off, TAA untouched
         console->set("r_rtreflections", "0");
     }
+    if (noGodrays)   console->set("r_godrays", "0");   // --nogodrays: pin so the per-frame sync keeps god-rays off (byte-identical base)
+    if (noLensflare) console->set("r_lensflare", "0"); // --nolensflare: pin so the per-frame sync keeps lens-flare off (byte-identical base)
     if (noRtShadows) {
         console->set("r_rtshadows", "0");        // --nortshadows: CSM-only (bit-identical A/B)
         x3::rhi::IRenderDevice::RtShadowParams rp{};

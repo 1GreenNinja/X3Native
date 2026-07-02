@@ -2253,6 +2253,69 @@ private:
     BloomMip      m_bloomMips[kBloomMips];
     VkSampler     m_postSampler = VK_NULL_HANDLE;   // CLAMP linear sampler (post passes)
 
+    // ---- Lens flare + anamorphic streak (Abrams/SFC cinematic look) ---------
+    // A HALF-RES HDR buffer (same extent as bloom mip0) the lens-flare pass writes
+    // (ghosts + halo + anamorphic streak + occlusion-tested sun flare), generated
+    // AFTER bloom (reusing mip0's bright-pass) and ADDED into the linear scene by
+    // the composite BEFORE tonemap (ACES rolls the radiance off -> no white-out).
+    // Recreated with the bloom targets (tracks the extent; allocationCount stays 0).
+    VkImage       m_lensImg   = VK_NULL_HANDLE;
+    VmaAllocation m_lensAlloc = nullptr;
+    VkImageView   m_lensView  = VK_NULL_HANDLE;
+    VkExtent2D    m_lensExtent{};
+    // Lens-flare pipeline: set0 = { bloom mip0 sampler, depth sampler, LensUBO }.
+    VkDescriptorSetLayout m_lensSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      m_lensLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_lensPipe      = VK_NULL_HANDLE;
+    VkDescriptorSet       m_lensSet[kFramesInFlight] = {};    // mip0 + depth + UBO[frame]
+    VkSampler             m_lensDepthSampler = VK_NULL_HANDLE; // NEAREST clamp (depth as data)
+    // Per-frame LensUBO (sun screen pos/occlusion + tunables); one per frame in
+    // flight so a CPU write never races the GPU read of the previous frame.
+    VkBuffer      m_lensUboBuf[kFramesInFlight]    = {};
+    VmaAllocation m_lensUboAlloc[kFramesInFlight]  = {};
+    void*         m_lensUboMapped[kFramesInFlight] = {};
+    // LensUBO layout MUST match shaders/lens_flare.frag (std140).
+    struct LensUBO {
+        float sunScreen[2];   // sun UV [0..1]
+        float sunValid;       // 1 = on-screen
+        float sunDepth;       // sun clip depth [0..1]
+        float intensity;      // r_lensflare_intensity
+        float streak;         // r_lensflare_streak
+        float ghosts;         // r_lensflare_ghosts (as float)
+        float aspect;         // viewport w/h
+        float streakTint[3];  // cool-blue anamorphic tint
+        float ghostDispersal; // ghost-chain spacing
+        float haloWidth;      // halo ring radius
+        float chroma;         // chromatic-aberration magnitude
+        float sunSize;        // sun flare angular size
+        float maxRadiance;    // energy clamp (white-out guard) -> 64 bytes, std140-clean
+    };
+    VkRenderingAttachmentInfo m_lensAttach{};
+    VkRenderingInfo           m_lensRenderInfo{};
+    bool m_lensActiveThisFrame = false;   // set per frame (drives the composite guard)
+
+    // ---- VOLUMETRIC GOD-RAYS (screen-space radial scatter, godrays.frag) ------
+    // A half-res HDR shaft buffer computed from the HDR scene + depth (occluder-
+    // masked toward the sun), then ADDED into the HDR scene in composite.frag
+    // BEFORE ACES. Its own 2-sampler set layout (scene + depth) + push-const
+    // pipeline. Created/destroyed alongside the bloom targets; the target view is
+    // written into both composite sets (binding 3). r_godrays 0 skips the pass and
+    // forces the composite add off -> byte-identical to the pre-godrays render.
+    VkDescriptorSetLayout m_godraysSetLayout = VK_NULL_HANDLE; // scene + depth samplers
+    VkPipelineLayout      m_godraysLayout    = VK_NULL_HANDLE; // set0=2 samplers + push
+    VkPipeline            m_godraysPipe      = VK_NULL_HANDLE;
+    VkDescriptorSet       m_setGodrays       = VK_NULL_HANDLE; // scene(b0) + depth(b1)
+    VkImage       m_godraysImg   = VK_NULL_HANDLE;             // half-res shaft buffer
+    VmaAllocation m_godraysAlloc = nullptr;
+    VkImageView   m_godraysView  = VK_NULL_HANDLE;
+    VkExtent2D    m_godraysExtent{};
+    VkSampler     m_godraysDepthSampler = VK_NULL_HANDLE;      // NEAREST clamp for depth-as-data
+    VkRenderingAttachmentInfo m_godraysAttach{};
+    VkRenderingInfo           m_godraysRenderInfo{};
+    struct GodraysPush { float sunUV[2]; float density, decay, weight, exposure, threshold;
+                         int32_t numSamples, sunOnScreen; float pad0, pad1, pad2; };
+    GodraysPush m_godraysPush{};
+
     // Post (HDR/bloom/composite) pipelines + layouts.
     VkDescriptorSetLayout m_postSetLayout1 = VK_NULL_HANDLE; // 1 sampler (down/up)
     VkDescriptorSetLayout m_postSetLayout2 = VK_NULL_HANDLE; // 2 samplers (composite)
@@ -2284,7 +2347,7 @@ private:
     // record lambdas; no per-frame heap alloc).
     struct BloomPush { float srcTexel[2]; float threshold, knee, intensity; int firstPass; float pad0, pad1; };
     struct CompositePush { float bloomIntensity, exposure; int32_t tonemapMode, aeEnabled;
-                           float sharpen, texelW, texelH, pad0; };
+                           float sharpen, texelW, texelH, godraysIntensity, lensIntensity; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
 

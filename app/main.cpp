@@ -547,18 +547,22 @@ int main(int argc, char** argv) {
     // renderer. --notaa: disable ONLY TAA (jitter fully off + resolve skipped) so
     // before/after captures isolate the TAA contribution. Both also pin the cvars
     // so the interactive per-frame cvar sync doesn't re-enable the feature.
-    if (o.legacyPost || o.noTaa) {
-        x3::rhi::IRenderDevice::PostFXParams px{};
+    if (o.legacyPost || o.noTaa || o.noGodrays || o.noLensflare) {
+        x3::rhi::IRenderDevice::PostFXParams px{};   // engine defaults (both effects on)
         if (o.legacyPost) {
             px.autoExposure = false;             // legacy = no eye adaptation
             px.taa = false;                      // legacy = no TAA jitter/resolve
             if (o.legacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; }
         }
         if (o.noTaa) px.taa = false;
+        if (o.noGodrays)   px.godrays   = false;  // A/B: god-rays off (byte-identical base)
+        if (o.noLensflare) px.lensFlare = false;  // A/B: lens-flare off (byte-identical base)
         device->setPostFX(px);
-        // Reflections ride the TAA history, so TAA-off already disables them in
-        // the device; push an explicit OFF too so the A/B state is unambiguous.
-        device->setReflectionParams(x3::rhi::IRenderDevice::ReflectionParams{});
+        if (o.legacyPost || o.noTaa) {
+            // Reflections ride the TAA history, so TAA-off already disables them in
+            // the device; push an explicit OFF too so the A/B state is unambiguous.
+            device->setReflectionParams(x3::rhi::IRenderDevice::ReflectionParams{});
+        }
         // (The interactive path additionally pins the matching cvars right after
         // the console exists, so the per-frame cvar sync can't re-enable these.)
     }
@@ -683,6 +687,8 @@ int main(int argc, char** argv) {
     _hc.noRtShadows     = o.noRtShadows;
     _hc.legacyPost      = o.legacyPost;
     _hc.noTaa           = o.noTaa;
+    _hc.noGodrays       = o.noGodrays;
+    _hc.noLensflare     = o.noLensflare;
     _hc.noRefl          = o.noRefl;
     _hc.skipIntro       = o.skipIntro;
     _hc.introForce      = o.introForce;        // DEV --intro-force outcome override

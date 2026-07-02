@@ -105,6 +105,12 @@ captures/
 # so they stay out of LFS (the kit is the source of truth).
 assets/converted_glb/ShowRoom_Vol30/*
 !assets/converted_glb/ShowRoom_Vol30/Example_01.glb
+
+# IntroHero assets (A3 station + future hero GLBs): distributed via the fleet
+# asset store (assets/manifest.json + tools/asset_store.py), NOT git/LFS. The
+# GLB stays on disk for local builds/screenshots; only the manifest is committed.
+# Boot auto-fetch (app/asset_manifest_check.h) restores it on fresh clones.
+assets/converted_glb/IntroHero/
 .staging/
 
 # Performance-shop build save (per-machine player state)

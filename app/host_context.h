@@ -126,6 +126,8 @@ struct HostContext {
     bool        noRtShadows = false;
     int         legacyPost = 0;
     bool        noTaa = false;
+    bool        noGodrays = false;
+    bool        noLensflare = false;
     bool        noRefl = false;
     bool        skipIntro = false;
     // ---- Interactive intro (Phase 4 branch wiring) ----

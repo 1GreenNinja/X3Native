@@ -289,6 +289,33 @@ bool VulkanRenderDevice::createBloomTargets() {
             }
         }
 
+        // ---- God-rays shaft buffer (half-res, HDR) ---------------------------
+        // Half resolution: the radial scatter is low-frequency, so half-res is
+        // cheap and reads fine (bilinear-upsampled in the composite). COLOR_ATTACH
+        // (the godrays pass renders it) + SAMPLED (the composite reads it).
+        {
+            const uint32_t gw = std::max(1u, W / 2), gh = std::max(1u, H / 2);
+            m_godraysExtent = { gw, gh };
+            if (!createColorTarget(kHdrFormat, gw, gh,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                   m_godraysImg, m_godraysAlloc, m_godraysView)) {
+                logError("[rhi] god-rays target create failed"); return false;
+            }
+        }
+        // Lens-flare buffer: HALF-RES (matches bloom mip0) HDR. COLOR_ATTACHMENT
+        // (the lens pass renders into it) + SAMPLED (the composite reads it). The
+        // flare is generated at half res (cheap; it's all soft glow) and the
+        // composite up-samples it with the post sampler.
+        {
+            const uint32_t lw = std::max(1u, W / 2), lh = std::max(1u, H / 2);
+            m_lensExtent = { lw, lh };
+            if (!createColorTarget(kHdrFormat, lw, lh,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                   m_lensImg, m_lensAlloc, m_lensView)) {
+                logError("[rhi] lens-flare target create failed"); return false;
+            }
+        }
+
         // ---- Scene-color COPY target (glass refraction/frost, spec §3.1) -----
         // A mip-chained HDR image: mip0 (full-res) receives a vkCmdCopyImage of the
         // opaque HDR scene; mips 1..N are progressively blurred (M4 frost). Usage:
@@ -346,6 +373,12 @@ void VulkanRenderDevice::destroyBloomTargets() {
             m.extent = {};
         }
         destroySceneCopyTarget();
+        if (m_godraysView) { vkDestroyImageView(m_dev.device, m_godraysView, nullptr); m_godraysView = VK_NULL_HANDLE; }
+        if (m_godraysImg)  { vmaDestroyImage(m_alloc, m_godraysImg, m_godraysAlloc); m_godraysImg = VK_NULL_HANDLE; m_godraysAlloc = nullptr; }
+        m_godraysExtent = {};
+        if (m_lensView) { vkDestroyImageView(m_dev.device, m_lensView, nullptr); m_lensView = VK_NULL_HANDLE; }
+        if (m_lensImg)  { vmaDestroyImage(m_alloc, m_lensImg, m_lensAlloc); m_lensImg = VK_NULL_HANDLE; m_lensAlloc = nullptr; }
+        m_lensExtent = {};
         if (m_taaOutView)  { vkDestroyImageView(m_dev.device, m_taaOutView, nullptr); m_taaOutView = VK_NULL_HANDLE; }
         if (m_taaOutImg)   { vmaDestroyImage(m_alloc, m_taaOutImg, m_taaOutAlloc); m_taaOutImg = VK_NULL_HANDLE; m_taaOutAlloc = nullptr; }
         if (m_taaHistView) { vkDestroyImageView(m_dev.device, m_taaHistView, nullptr); m_taaHistView = VK_NULL_HANDLE; }
@@ -520,8 +553,12 @@ bool VulkanRenderDevice::createPost() {
             logError("[rhi] post set layout (1) failed"); return false;
         }
         // Descriptor set layout: 2 combined image samplers (composite: HDR + bloom)
-        // + the auto-exposure SSBO (binding 2, fragment-read).
-        VkDescriptorSetLayoutBinding b2[3]{};
+        // + the auto-exposure SSBO (binding 2, fragment-read) + the god-rays shaft
+        // buffer (binding 3) + the lens-flare buffer (binding 4), both fragment
+        // samplers. COMPOSITE-INTRO UNION: both effect buffers are always BOUND
+        // (valid views even when the effect is off) so the layout is satisfied; the
+        // composite shader only SAMPLES each when its intensity > 0 (base A/B holds).
+        VkDescriptorSetLayoutBinding b2[5]{};
         b2[0].binding = 0; b2[0].descriptorCount = 1;
         b2[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b2[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -531,10 +568,30 @@ bool VulkanRenderDevice::createPost() {
         b2[2].binding = 2; b2[2].descriptorCount = 1;
         b2[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         b2[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b2[3].binding = 3; b2[3].descriptorCount = 1;   // god-rays shaft buffer
+        b2[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b2[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b2[4].binding = 4; b2[4].descriptorCount = 1;   // lens-flare buffer
+        b2[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b2[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo s2{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        s2.bindingCount = 3; s2.pBindings = b2;
+        s2.bindingCount = 5; s2.pBindings = b2;
         if (vkCreateDescriptorSetLayout(m_dev.device, &s2, nullptr, &m_postSetLayout2) != VK_SUCCESS) {
             logError("[rhi] post set layout (2) failed"); return false;
+        }
+        // God-rays set layout: b0 = HDR scene (LINEAR sampler), b1 = scene depth
+        // (NEAREST clamp, sampled as data). Both fragment-stage (godrays.frag).
+        VkDescriptorSetLayoutBinding gb[2]{};
+        gb[0].binding = 0; gb[0].descriptorCount = 1;
+        gb[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        gb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        gb[1].binding = 1; gb[1].descriptorCount = 1;
+        gb[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        gb[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo sg{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        sg.bindingCount = 2; sg.pBindings = gb;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &sg, nullptr, &m_godraysSetLayout) != VK_SUCCESS) {
+            logError("[rhi] god-rays set layout failed"); return false;
         }
         // Auto-exposure set layout: b0 = HDR scene sampler, b1 = exposure SSBO
         // (both compute-stage; the reduce/adapt runs in autoexposure.comp).
@@ -584,6 +641,39 @@ bool VulkanRenderDevice::createPost() {
         if (vkCreateSampler(m_dev.device, &tds, nullptr, &m_taaDepthSampler) != VK_SUCCESS) {
             logError("[rhi] TAA depth sampler failed"); return false;
         }
+        // God-rays depth sampler: NEAREST clamp (depth read as data in godrays.frag).
+        if (vkCreateSampler(m_dev.device, &tds, nullptr, &m_godraysDepthSampler) != VK_SUCCESS) {
+            logError("[rhi] god-rays depth sampler failed"); return false;
+        }
+
+        // Lens-flare set layout: b0 = bloom mip0 sampler (bright source), b1 = depth
+        // sampler (sun occlusion), b2 = the per-frame LensUBO (sun pos + tunables).
+        VkDescriptorSetLayoutBinding lb[3]{};
+        lb[0].binding = 0; lb[0].descriptorCount = 1;
+        lb[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        lb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        lb[1].binding = 1; lb[1].descriptorCount = 1;
+        lb[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        lb[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        lb[2].binding = 2; lb[2].descriptorCount = 1;
+        lb[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        lb[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo sl{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        sl.bindingCount = 3; sl.pBindings = lb;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &sl, nullptr, &m_lensSetLayout) != VK_SUCCESS) {
+            logError("[rhi] lens-flare set layout failed"); return false;
+        }
+        // NEAREST clamp sampler for reading depth as data in the lens sun-occlusion
+        // test (same role as the TAA/SSAO depth samplers).
+        VkSamplerCreateInfo lds{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        lds.magFilter = VK_FILTER_NEAREST; lds.minFilter = VK_FILTER_NEAREST;
+        lds.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        lds.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        lds.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        lds.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &lds, nullptr, &m_lensDepthSampler) != VK_SUCCESS) {
+            logError("[rhi] lens depth sampler failed"); return false;
+        }
 
         // Descriptor pool: (HDR set + kBloomMips mip sets + TAA-out set)
         // single-sampler sets + 2 composite sets (2 samplers + 1 SSBO each: raw-HDR
@@ -591,14 +681,19 @@ bool VulkanRenderDevice::createPost() {
         // per-frame TAA resolve sets (4 samplers + 1 UBO each: scene/hist/depth +
         // the #4 velocity sampler at b4). Sized exactly; no UPDATE_AFTER_BIND.
         const uint32_t single = 1 + kBloomMips + 1;     // HDR + each mip + TAA out
+        // COMPOSITE-INTRO UNION: composite sets are now 4 samplers each (HDR + bloom
+        // + god-rays + lens) x2 variants; + 2 AE; + 4 TAA/frame (scene/hist/depth/
+        // velocity); + the god-rays own set (2: scene + depth); + the lens own sets
+        // (2 samplers/frame: mip0 + depth). Lens UBO/frame joins the TAA UBO/frame.
         VkDescriptorPoolSize ps[3]{
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-              single + 2*2 + 1*2 + 4*kFramesInFlight },
+              single + 4*2 + 1*2 + 4*kFramesInFlight + 2 + 2*kFramesInFlight },
             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         4 },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight + kFramesInFlight },
         };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = single + 4 + kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
+        // UNION: base sets + AE(4) + TAA/frame + the god-rays set (+1) + lens sets/frame.
+        pci.maxSets = single + 4 + kFramesInFlight + 1 + kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
         if (x3CreateDescriptorPool(&pci, nullptr, &m_postPool) != VK_SUCCESS) {
             logError("[rhi] post desc pool failed"); return false;
         }
@@ -620,6 +715,13 @@ bool VulkanRenderDevice::createPost() {
             }
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setCompositeTaa) != VK_SUCCESS) {
                 logError("[rhi] post set alloc (composite-taa) failed"); return false;
+            }
+        }
+        {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_godraysSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setGodrays) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (god-rays) failed"); return false;
             }
         }
         {
@@ -652,6 +754,29 @@ bool VulkanRenderDevice::createPost() {
                 logError("[rhi] TAA UBO alloc failed"); return false;
             }
             m_taaUboMapped[i] = ainfo.pMappedData;
+        }
+
+        // Lens-flare sets + per-frame LensUBO: the sun screen pos + tunables change
+        // every frame, so one set + one buffer PER FRAME in flight — a CPU write
+        // never races the GPU read of the previous frame's set. The mip0 + depth
+        // samplers are identical across frames (written once in writePostDescriptors).
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_lensSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_lensSet[i]) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (lens) failed"); return false;
+            }
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(LensUBO); bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo ainfo{};
+            if (x3vmaCreateBuffer(&bci, &aci, &m_lensUboBuf[i], &m_lensUboAlloc[i], &ainfo) != VK_SUCCESS) {
+                logError("[rhi] lens UBO alloc failed"); return false;
+            }
+            m_lensUboMapped[i] = ainfo.pMappedData;
         }
 
         // Auto-exposure SSBO: 16 bytes { adapted, avgLog, pad, pad }, persistent
@@ -709,6 +834,14 @@ bool VulkanRenderDevice::createPost() {
         if (vkCreatePipelineLayout(m_dev.device, &cl, nullptr, &m_compositeLayout) != VK_SUCCESS) {
             logError("[rhi] composite pipeline layout failed"); return false;
         }
+        // God-rays pipeline layout (scene + depth set + GodraysPush).
+        VkPushConstantRange pcGr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GodraysPush) };
+        VkPipelineLayoutCreateInfo gl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        gl.setLayoutCount = 1; gl.pSetLayouts = &m_godraysSetLayout;
+        gl.pushConstantRangeCount = 1; gl.pPushConstantRanges = &pcGr;
+        if (vkCreatePipelineLayout(m_dev.device, &gl, nullptr, &m_godraysLayout) != VK_SUCCESS) {
+            logError("[rhi] god-rays pipeline layout failed"); return false;
+        }
 
         // Build the three full-screen-triangle pipelines.
         if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\bloom_down.frag.spv",
@@ -723,6 +856,26 @@ bool VulkanRenderDevice::createPost() {
         if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\composite.frag.spv",
                                       m_compositeLayout, m_format, /*additiveBlend=*/false, m_compositePipe))
             return false;
+        // God-rays: full-screen pass writing the HDR-format half-res shaft buffer
+        // (opaque write; the composite reads + adds it). kHdrFormat so the shaft
+        // radiance stays linear-HDR before the additive compose.
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\godrays.frag.spv",
+                                      m_godraysLayout, kHdrFormat, /*additiveBlend=*/false, m_godraysPipe))
+            return false;
+
+        // Lens flare: full-screen pass into the HDR half-res lens buffer. All
+        // parameters ride in the LensUBO -> no push constants. Opaque write (the
+        // composite scales + adds it; this pass fully overwrites the buffer).
+        {
+            VkPipelineLayoutCreateInfo ll{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            ll.setLayoutCount = 1; ll.pSetLayouts = &m_lensSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &ll, nullptr, &m_lensLayout) != VK_SUCCESS) {
+                logError("[rhi] lens-flare pipeline layout failed"); return false;
+            }
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\lens_flare.frag.spv",
+                                          m_lensLayout, kHdrFormat, /*additiveBlend=*/false, m_lensPipe))
+                return false;
+        }
 
         // TAA resolve: full-screen pass writing the HDR-format TAA output. All
         // parameters ride in the per-frame UBO -> no push constants.
@@ -819,11 +972,14 @@ void VulkanRenderDevice::writePostDescriptors() {
         write1(m_setTaaOut, m_taaOutView);   // bloom bright-pass source when TAA is on
 
         // Composite set: binding 0 = HDR scene, binding 1 = bloom mip0,
-        // binding 2 = auto-exposure SSBO.
+        // binding 2 = auto-exposure SSBO, binding 3 = god-rays shaft buffer,
+        // binding 4 = lens-flare buffer (COMPOSITE-INTRO UNION).
         VkDescriptorImageInfo d0{ m_postSampler, m_hdrView,           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo d1{ m_postSampler, m_bloomMips[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo d3{ m_postSampler, m_godraysView,       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo d4{ m_postSampler, m_lensView,          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorBufferInfo db{ m_aeBuf, 0, VK_WHOLE_SIZE };
-        VkWriteDescriptorSet cw[3]{};
+        VkWriteDescriptorSet cw[5]{};
         cw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[0].dstSet = m_setComposite; cw[0].dstBinding = 0; cw[0].descriptorCount = 1;
         cw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[0].pImageInfo = &d0;
@@ -833,7 +989,25 @@ void VulkanRenderDevice::writePostDescriptors() {
         cw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[2].dstSet = m_setComposite; cw[2].dstBinding = 2; cw[2].descriptorCount = 1;
         cw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; cw[2].pBufferInfo = &db;
-        vkUpdateDescriptorSets(m_dev.device, 3, cw, 0, nullptr);
+        cw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw[3].dstSet = m_setComposite; cw[3].dstBinding = 3; cw[3].descriptorCount = 1;
+        cw[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[3].pImageInfo = &d3;
+        cw[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw[4].dstSet = m_setComposite; cw[4].dstBinding = 4; cw[4].descriptorCount = 1;
+        cw[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[4].pImageInfo = &d4;
+        vkUpdateDescriptorSets(m_dev.device, 5, cw, 0, nullptr);
+
+        // God-rays set: b0 = HDR scene (LINEAR), b1 = scene depth (NEAREST).
+        VkDescriptorImageInfo g0{ m_postSampler,        m_hdrView,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo g1{ m_godraysDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet grw[2]{};
+        grw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        grw[0].dstSet = m_setGodrays; grw[0].dstBinding = 0; grw[0].descriptorCount = 1;
+        grw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; grw[0].pImageInfo = &g0;
+        grw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        grw[1].dstSet = m_setGodrays; grw[1].dstBinding = 1; grw[1].descriptorCount = 1;
+        grw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; grw[1].pImageInfo = &g1;
+        vkUpdateDescriptorSets(m_dev.device, 2, grw, 0, nullptr);
 
         // Auto-exposure set: b0 = HDR scene (sampled by the compute reduce; the
         // view changes on resize, hence rewritten here), b1 = the exposure SSBO.
@@ -849,9 +1023,10 @@ void VulkanRenderDevice::writePostDescriptors() {
 
         // ---- TAA variants + per-frame resolve sets ---------------------------
         // Composite-TAA set: binding 0 = the TAA RESOLVE OUTPUT (instead of the
-        // raw HDR scene), binding 1 = bloom mip0, binding 2 = AE SSBO.
+        // raw HDR scene), binding 1 = bloom mip0, binding 2 = AE SSBO, binding 3 =
+        // god-rays shaft buffer, binding 4 = lens-flare buffer (COMPOSITE-INTRO UNION).
         VkDescriptorImageInfo t0{ m_postSampler, m_taaOutView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkWriteDescriptorSet tw[3]{};
+        VkWriteDescriptorSet tw[5]{};
         tw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         tw[0].dstSet = m_setCompositeTaa; tw[0].dstBinding = 0; tw[0].descriptorCount = 1;
         tw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[0].pImageInfo = &t0;
@@ -861,7 +1036,35 @@ void VulkanRenderDevice::writePostDescriptors() {
         tw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         tw[2].dstSet = m_setCompositeTaa; tw[2].dstBinding = 2; tw[2].descriptorCount = 1;
         tw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; tw[2].pBufferInfo = &db;
-        vkUpdateDescriptorSets(m_dev.device, 3, tw, 0, nullptr);
+        tw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        tw[3].dstSet = m_setCompositeTaa; tw[3].dstBinding = 3; tw[3].descriptorCount = 1;
+        tw[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[3].pImageInfo = &d3;
+        tw[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        tw[4].dstSet = m_setCompositeTaa; tw[4].dstBinding = 4; tw[4].descriptorCount = 1;
+        tw[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[4].pImageInfo = &d4;
+        vkUpdateDescriptorSets(m_dev.device, 5, tw, 0, nullptr);
+
+        // ---- Lens-flare sets (one per frame in flight) -----------------------
+        // b0 = bloom mip0 (bright source), b1 = depth (sun occlusion), b2 = the
+        // per-frame LensUBO. The image bindings are identical across frames; the
+        // UBO is the per-frame buffer so a CPU write never races the GPU read.
+        VkDescriptorImageInfo lm0{ m_postSampler,      m_bloomMips[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo ldp{ m_lensDepthSampler, m_depthView,         VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (!m_lensSet[i] || !m_lensUboBuf[i]) continue;
+            VkDescriptorBufferInfo lub{ m_lensUboBuf[i], 0, sizeof(LensUBO) };
+            VkWriteDescriptorSet lw[3]{};
+            lw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lw[0].dstSet = m_lensSet[i]; lw[0].dstBinding = 0; lw[0].descriptorCount = 1;
+            lw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; lw[0].pImageInfo = &lm0;
+            lw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lw[1].dstSet = m_lensSet[i]; lw[1].dstBinding = 1; lw[1].descriptorCount = 1;
+            lw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; lw[1].pImageInfo = &ldp;
+            lw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lw[2].dstSet = m_lensSet[i]; lw[2].dstBinding = 2; lw[2].descriptorCount = 1;
+            lw[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; lw[2].pBufferInfo = &lub;
+            vkUpdateDescriptorSets(m_dev.device, 3, lw, 0, nullptr);
+        }
 
         // AE-TAA set: meter the TAA output (b0) + the same exposure SSBO (b1).
         VkWriteDescriptorSet atw[2]{};
@@ -907,6 +1110,19 @@ void VulkanRenderDevice::writePostDescriptors() {
 
 void VulkanRenderDevice::destroyPost() {
         destroyBloomTargets();
+        // Lens flare (images are torn down by destroyBloomTargets; pipeline/UBOs here).
+        if (m_lensPipe)       { vkDestroyPipeline(m_dev.device, m_lensPipe, nullptr); m_lensPipe = VK_NULL_HANDLE; }
+        if (m_lensLayout)     { vkDestroyPipelineLayout(m_dev.device, m_lensLayout, nullptr); m_lensLayout = VK_NULL_HANDLE; }
+        if (m_lensSetLayout)  { vkDestroyDescriptorSetLayout(m_dev.device, m_lensSetLayout, nullptr); m_lensSetLayout = VK_NULL_HANDLE; }
+        if (m_lensDepthSampler){ vkDestroySampler(m_dev.device, m_lensDepthSampler, nullptr); m_lensDepthSampler = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_lensUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_lensUboBuf[i], m_lensUboAlloc[i]); m_lensUboBuf[i] = VK_NULL_HANDLE; m_lensUboAlloc[i] = nullptr; m_lensUboMapped[i] = nullptr; }
+        }
+        // God-rays pipeline/layout/sampler (its half-res image is freed by destroyBloomTargets).
+        if (m_godraysPipe)    { vkDestroyPipeline(m_dev.device, m_godraysPipe, nullptr); m_godraysPipe = VK_NULL_HANDLE; }
+        if (m_godraysLayout)  { vkDestroyPipelineLayout(m_dev.device, m_godraysLayout, nullptr); m_godraysLayout = VK_NULL_HANDLE; }
+        if (m_godraysSetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_godraysSetLayout, nullptr); m_godraysSetLayout = VK_NULL_HANDLE; }
+        if (m_godraysDepthSampler){ vkDestroySampler(m_dev.device, m_godraysDepthSampler, nullptr); m_godraysDepthSampler = VK_NULL_HANDLE; }
         if (m_taaPipe)        { vkDestroyPipeline(m_dev.device, m_taaPipe, nullptr); m_taaPipe = VK_NULL_HANDLE; }
         if (m_taaLayout)      { vkDestroyPipelineLayout(m_dev.device, m_taaLayout, nullptr); m_taaLayout = VK_NULL_HANDLE; }
         if (m_taaSetLayout)   { vkDestroyDescriptorSetLayout(m_dev.device, m_taaSetLayout, nullptr); m_taaSetLayout = VK_NULL_HANDLE; }

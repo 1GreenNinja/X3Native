@@ -56,6 +56,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--legacypost")  o.legacyPost = 1;   // A/B: auto-exposure OFF (pre-strike look)
         else if (a == "--legacypost2") o.legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough
         else if (a == "--notaa")       o.noTaa = true;     // A/B: TAA off (jitter + resolve disabled)
+        else if (a == "--nogodrays")   o.noGodrays = true;   // A/B: god-rays off (byte-identical base)
+        else if (a == "--nolensflare") o.noLensflare = true; // A/B: lens-flare off (byte-identical base)
         else if (a == "--norefl")      o.noRefl = true;    // A/B: reflections off (TAA stays on)
         else if (a == "--test-rt") { o.smoketest = true; o.testRt = true; }
         else if (a == "--test-reflections") { o.smoketest = true; o.testReflections = true; }

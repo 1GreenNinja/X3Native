@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -201,6 +202,15 @@ bool StoryFlags::deserialize(std::string_view text) {
 }
 
 bool StoryFlags::saveFile(const std::string& path) const {
+    // Ensure the parent directory exists — on a FRESH install the save dir
+    // (e.g. %LOCALAPPDATA%/X3Native/) may not have been created yet, and an
+    // ofstream to a missing directory silently fails (the narrative flag would
+    // never persist -> the intro's surface hand-off marker would be lost). This
+    // makes game_flags / timeline persistence robust everywhere (also fixes the
+    // T9b intro-orchestrator gate on a clean box).
+    std::error_code ec;
+    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent, ec);
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) return false;
     const std::string blob = serialize();

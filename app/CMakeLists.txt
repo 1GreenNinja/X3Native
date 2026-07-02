@@ -160,6 +160,8 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/bloom_down.frag
     ${CMAKE_SOURCE_DIR}/shaders/bloom_up.frag
     ${CMAKE_SOURCE_DIR}/shaders/composite.frag
+    ${CMAKE_SOURCE_DIR}/shaders/godrays.frag
+    ${CMAKE_SOURCE_DIR}/shaders/lens_flare.frag
     ${CMAKE_SOURCE_DIR}/shaders/taa_resolve.frag
     ${CMAKE_SOURCE_DIR}/shaders/autoexposure.comp
     ${CMAKE_SOURCE_DIR}/shaders/depth.vert
