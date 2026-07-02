@@ -992,6 +992,11 @@ private:
     // Per-instance pseudo-random seed so decision cadence + jitter desync between
     // enemies (no per-frame heap alloc; a tiny LCG advanced in the hot path).
     uint32_t m_rng          = 0x9E3779B9u;
+    // SEPARATE RNG stream for the taunt-cue jitter, so vocalization timing NEVER
+    // perturbs the movement/decision RNG sequence (m_rng). Unified-merge fix: the
+    // taunt draws consumed m_rng and shifted the strafe/advance decisions enough
+    // that melee species stalled in the deterministic bestiary window.
+    uint32_t m_tauntRng     = 0xB5297A4Du;
     bool     m_aiInit       = false;         // seeded the RNG / decision timer yet
     // Enemy-SFX (vocalization): countdown to the next idle/harass TAUNT cue while the
     // enemy is alive + engaged (has LOS). Reseeded to a jittered interval each taunt so

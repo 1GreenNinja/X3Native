@@ -1253,7 +1253,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         m_ai != AiState::Idle && m_ai != AiState::Search) {
         m_tauntTimer -= dt;
         if (m_tauntTimer <= 0.0f) {
-            m_tauntTimer = kAiTauntPeriod + kAiTauntJitter * (2.0f * rng01(m_rng) - 1.0f);
+            m_tauntTimer = kAiTauntPeriod + kAiTauntJitter * (2.0f * rng01(m_tauntRng) - 1.0f);
             emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyTaunt,
                 x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 0.8f });
         }
