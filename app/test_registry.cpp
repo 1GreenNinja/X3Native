@@ -408,6 +408,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running data-driven enemy bestiary roster self-test...");
         return x3::game::runBestiarySelfTest() ? 0 : 1;
     }
+    if (tf.testMonsterPerception) {
+        x3::logInfo("running P1 monster-perception regression self-test "
+                    "(LOS aggro / real-wall block / heard-noise investigate / "
+                    "detect-then-close-and-attack)...");
+        return x3::game::runMonsterPerceptionSelfTest() ? 0 : 1;
+    }
     if (tf.testBosses) {
         x3::logInfo("running EFLZ Act-1 mid-boss roster + machine-extension "
                     "(multi-pod + scripted pre-fight hook) self-test...");

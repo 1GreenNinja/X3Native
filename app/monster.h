@@ -1177,6 +1177,23 @@ bool runPhase2bSelfTest();
 // No window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
 bool runAiSelfTest();
 
+// Headless self-test (--test-monsterperception, P1 fix regression gate). Guards
+// the self-intersecting-LOS-ray root-cause fix (a skeleton-fit-SCALED monster's
+// LOS ray used to skip a fixed 0.65 m past its own body — not enough once a
+// large Tuning.modelScale grew the REAL hitbox past that, so the ray re-hit the
+// monster's own Enemy-layer body and read as "a wall" -> permanent blindness for
+// exactly the big/tall creatures). Uses a LARGE-scale (1.45x) tuning, the same
+// regime the bestiary's tall-elite/boss rows use. Asserts:
+//   (1) clear LOS within range -> Advance/Attack/Strafe within ~1 simulated sec;
+//   (2) a REAL wall genuinely blocks LOS -> stays Idle (proves the LOS check
+//       wasn't just deleted to "fix" the bug);
+//   (3) a heard noise (hearNoise()) while LOS-blocked -> Search/investigate
+//       (hearing wired to the alert-stimuli system), NOT a real sighting;
+//   (4) once detected, the monster actually CLOSES DISTANCE and fires an
+//       EnemyAttack cue (the attack anim+sound path), not just a state flip.
+// Logs PASS/FAIL T#, returns true iff all pass. No window/Vulkan.
+bool runMonsterPerceptionSelfTest();
+
 // ---------------------------------------------------------------------------
 // MonsterDef — one row of the data-driven bestiary roster (bestiary pass). Pure
 // data: a species' display name + a fully-populated MonsterSystem::Tuning (stats /

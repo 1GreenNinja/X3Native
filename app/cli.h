@@ -579,6 +579,19 @@ struct CliOptions {
     // forced back to 1280x720 below regardless of these flags.
     uint32_t    winW = 1600, winH = 900;   // bigger windowed default (NOT maximized)
     bool loadedWinSize = false;   // a saved "SET AS DEFAULT" window size was found
+    // --verbose-ai (P1 monster-perception bug-hunt diagnostic): every live monster
+    // logs one line/second — state, distance to player, LOS hit-or-miss, and (on a
+    // miss) what the LOS ray actually hit (own body vs. a real wall). Off by
+    // default (no log spam in normal play/tests). See monster.h setAiVerbose().
+    bool aiVerbose = false;
+    // --test-monsterperception (P1 fix regression test): spawns the canonical
+    // world + a monster near the player and asserts (1) clear LOS within range ->
+    // Aggro/Attack inside 1 simulated second, (2) a REAL wall genuinely blocks
+    // detection (proves the LOS check wasn't just deleted), (3) a gunshot heard
+    // out of LOS -> investigate/Search, (4) once detected, the monster actually
+    // closes distance + attacks (not just a state-enum flip). See monster.cpp
+    // runMonsterPerceptionSelfTest().
+    bool testMonsterPerception = false;
 };
 
 // Parse argv into o. Mirrors main()'s old inline loop byte-for-byte (o.-prefixed).

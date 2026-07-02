@@ -97,6 +97,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-terrainplace") o.testTerrainPlace = true;
         else if (a == "--test-streaming") o.testStreaming = true;
         else if (a == "--test-ai") o.testAi = true;
+        else if (a == "--verbose-ai") o.aiVerbose = true;
+        else if (a == "--test-monsterperception") o.testMonsterPerception = true;
         else if (a == "--test-bestiary") o.testBestiary = true;
         else if (a == "--test-bosses") o.testBosses = true;
         else if (a == "--test-adaptive-hide") o.testAdaptiveHide = true;
