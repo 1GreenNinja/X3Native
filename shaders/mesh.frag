@@ -276,10 +276,12 @@ vec3 terrainShade(vec3 wpos, inout vec3 wn, uvec2 pack, out vec3 emissive) {
     // Radial gate: 0 in the playable bowl, 1 out on the ranges — biome colour
     // only asserts on the far mountains so the tower/city ground stays natural.
     float r        = length(wpos.xz);
-    float biomeAmt = smoothstep(520.0, 1350.0, r);
+    float biomeAmt = smoothstep(360.0, 1050.0, r);
     vec4  bw       = biomeWeights(wpos.xz) * biomeAmt;
-    // Range height factor: biome rock treatment strengthens up the flanks.
-    float highF    = smoothstep(60.0, 170.0, hN);
+    // Range height factor: biome rock/accent treatment strengthens up the flanks.
+    // Kept LOW-onset so ranges that fall on a low "pass" for this seed still read
+    // their biome accents on modest hills (not only the tallest peaks).
+    float highF    = smoothstep(30.0, 130.0, hN);
 
     // Tint the ROCK per biome (basalt / sandstone / crystal-grey), and carry a
     // per-biome grass/snow bias so each compass reads distinct on the skyline.
@@ -288,9 +290,10 @@ vec3 terrainShade(vec3 wpos, inout vec3 wn, uvec2 pack, out vec3 emissive) {
     float snowBias = 0.0;   // + lowers the snow line (whiter peaks)
     float grassMul = 1.0;   // barren biomes suppress the green
 
-    // N — SNOW: cool white peaks, snow line pulled down, faint blue rock.
+    // N — SNOW: cool white peaks, snow line pulled WAY down (so even a low northern
+    // pass gets white caps), faint blue rock.
     rockTint = mix(rockTint, vec3(0.86, 0.90, 1.02), bw.x);
-    snowBias += bw.x * 45.0;
+    snowBias += bw.x * 130.0;
     grassMul  = mix(grassMul, 0.85, bw.x);
 
     // E — VOLCANIC: dark basalt, red-black, ember glow in the mid crevices.
@@ -331,8 +334,14 @@ vec3 terrainShade(vec3 wpos, inout vec3 wn, uvec2 pack, out vec3 emissive) {
 
     // Sand/dirt SHORELINE band: a narrow beach hugging the waterline (rises into
     // sand just under sea level, fades back to grass by kSandTop).
-    float sandBand = smoothstep(kSeaLevel - 4.0, kSeaLevel - 1.0, hN) *
-                     (1.0 - smoothstep(kSeaLevel + 1.0, kSandTop - 2.0, hN));
+    // Kept TIGHT to the true waterline (fully off by ~kSeaLevel) so authored pads
+    // that sit a few metres up (the city pad at y=16) read as GRASS, not beach.
+    float sandBand = smoothstep(kSeaLevel - 8.0, kSeaLevel - 5.0, hN) *
+                     (1.0 - smoothstep(kSeaLevel - 4.0, kSeaLevel - 1.5, hN));
+    // Beaches are FLAT + LOW: gate to near-level ground below the sea band so dry
+    // rolling hills / the raised city pad (y=16) don't get a tan scar — only true
+    // low flats (deep basins / the ocean shore) read as sand.
+    sandBand *= smoothstep(0.94, 0.99, slope);
     // Sandstone biome also lays sand up the lower flanks (mesa apron).
     sandBand = max(sandBand, bw.z * (1.0 - highF) * smoothstep(20.0, 60.0, hN));
     albedo = mix(albedo, sand, clamp(sandBand, 0.0, 1.0));
@@ -348,6 +357,30 @@ vec3 terrainShade(vec3 wpos, inout vec3 wn, uvec2 pack, out vec3 emissive) {
     rockBand = clamp(rockBand + (bw.y + bw.z) * highF * 0.5, 0.0, 1.0);
     albedo = mix(albedo, rock, rockBand);
 
+    // Biome GROUND tint — carries the compass identity down to ground level so a
+    // range that falls on a LOW pass (no tall peaks / snow-caps for this seed) still
+    // reads its biome: N frost-cool grass, E ashen volcanic ground, S dry sandstone
+    // scrub, W mossy blue-green crystal-highland. Radial-gated (bw already scaled by
+    // biomeAmt) so the playable bowl stays neutral.
+    vec3 biomeGround = vec3(1.0);
+    biomeGround = mix(biomeGround, vec3(1.02, 1.07, 1.16), bw.x);  // N frost-cool
+    biomeGround = mix(biomeGround, vec3(0.82, 0.78, 0.72), bw.y);  // E ashen/olive
+    biomeGround = mix(biomeGround, vec3(1.16, 1.02, 0.74), bw.z);  // S dry tan
+    biomeGround = mix(biomeGround, vec3(0.80, 1.03, 1.06), bw.w);  // W mossy blue-green
+    albedo *= biomeGround;
+    // Northern FROST dusting on the ground itself (mix toward snow-white) so the
+    // snow biome reads even on a low pass; heavier on higher/flatter patches.
+    float frost = clamp(bw.x * (0.30 + 0.55 * highF), 0.0, 0.85);
+    albedo = mix(albedo, snow * 0.95, frost);
+    // Western crystal GLINTS on the ground (sparse, low-height too) so the crystal
+    // highland reads even where it doesn't rise into steep flanks.
+    {
+        float cl2 = smoothstep(0.80, 0.99, tnoise(wpos.xz * 0.10 + 21.0));
+        float hue2 = tnoise(wpos.xz * 0.02 + 8.0);
+        vec3  sp2 = mix(vec3(1.1, 0.25, 0.9), vec3(0.15, 0.8, 1.3), hue2);
+        emissive += sp2 * cl2 * bw.w * 0.7;
+    }
+
     // Subtle macro tint variation so large flat areas aren't a flat colour.
     float macro = tfbm(wpos.xz * (kMacroScale * 0.5));
     albedo *= mix(0.80, 1.18, macro);
@@ -356,8 +389,8 @@ vec3 terrainShade(vec3 wpos, inout vec3 wn, uvec2 pack, out vec3 emissive) {
     float lush = tnoise(wpos.xz * 0.0033 + 17.0);
     float grassW = clamp(1.0 - rockBand - snowBand - sandBand, 0.0, 1.0);
     albedo *= mix(vec3(0.80, 0.92, 0.66), vec3(1.10, 1.06, 0.94), lush); // olive<->lush
-    float dirt = smoothstep(0.62, 0.90, tnoise(wpos.xz * 0.011 + 41.0)) * grassW;
-    albedo = mix(albedo, albedo * vec3(1.18, 0.92, 0.66), dirt * 0.6);   // dirt clearings
+    float dirt = smoothstep(0.72, 0.93, tnoise(wpos.xz * 0.011 + 41.0)) * grassW;
+    albedo = mix(albedo, albedo * vec3(1.14, 0.94, 0.72), dirt * 0.4);   // dirt clearings
 
     // ==== PROCEDURAL DETAIL NORMAL — fold micro-relief into wn so raking sun
     // sculpts the surface. Strength scales with material (rock/scree strongest,

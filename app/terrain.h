@@ -150,6 +150,16 @@ bool     worldFreewaySampleArc(float s, float outCenter[3], float outTangent[2])
 // is set up (the ribbon does not stream — the whole route is a bounded static mesh).
 uint32_t buildFreewayRibbon(Scene& scene, x3::rhi::IRenderDevice& device);
 
+// Build the WORLD LANDMARKS at their canon coords (BABYLON_WORLD_REFERENCE):
+//   * the facility TOWER stand-in (white concrete + dark glass) on the origin pad,
+//   * the Scrapyard CITY massing/silhouette (lit blocks) near (-600, 500),
+//   * the LNG TANK set piece (spherical gas tank + legs + pipes + hazard) at the
+//     industrial edge near (-500, 525).
+// All anchored ON the terrain surface (terrainHeightAtWorld), rough massing only —
+// this is the world-scale LAYOUT the hero composition frames, not final art. Static
+// scene meshes (do not stream); call once after the terrain/freeway is set up.
+void buildWorldLandmarks(Scene& scene, x3::rhi::IRenderDevice& device);
+
 // The LOD level a tile is currently meshed at. 0 = full density (also used for
 // collision), 1 = half, 2 = quarter. Increasing = coarser/cheaper.
 enum class TerrainLod : uint8_t { Full = 0, Half = 1, Quarter = 2, Count = 3 };

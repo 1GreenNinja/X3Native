@@ -1571,8 +1571,12 @@ int runDefaultHost(HostContext& hc) {
                              tcfg, sx, sz, /*radius=*/8);
         // Lay the FREEWAY asphalt ribbon (static geometry along the graded corridor).
         // Dry-land terrain only — in ocean mode the low route would be awash.
-        if (!oceanWorld)
+        if (!oceanWorld) {
             x3::game::buildFreewayRibbon(scene, *device);
+            // World landmarks: facility tower + Scrapyard City massing + LNG tank set
+            // piece, at their canon coords, anchored on the terrain (static geometry).
+            x3::game::buildWorldLandmarks(scene, *device);
+        }
         if (oceanWorld)
             x3::logInfo("--world ocean: STREAMED terrain + animated ocean (walk the shore, WASD)");
         else

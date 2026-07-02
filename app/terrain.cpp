@@ -689,6 +689,228 @@ uint32_t buildFreewayRibbon(Scene& scene, x3::rhi::IRenderDevice& device) {
 }
 
 // ===========================================================================
+// WORLD LANDMARKS (see terrain.h). The facility TOWER stand-in, the Scrapyard
+// CITY massing, and the LNG TANK set piece — placed at their canon coords, each
+// anchored on the terrain surface. Rough massing (boxes/sphere) so the hero
+// composition + horizon have their silhouettes; not final art. Clean-room, built
+// entirely from mesh_prims + the public Scene/IRenderDevice API.
+// ===========================================================================
+namespace {
+
+// Column-major model matrix: uniform scale `s` + translation (tx,ty,tz).
+inline void scaleTranslate(float s, float tx, float ty, float tz, float out[16]) {
+    for (int i = 0; i < 16; ++i) out[i] = 0.0f;
+    out[0] = s; out[5] = s; out[10] = s; out[15] = 1.0f;
+    out[12] = tx; out[13] = ty; out[14] = tz;
+}
+
+// A flat metallic-roughness texture (glTF packing: B=metallic, G=roughness). One
+// texel is enough — the material is constant. Routes the entity through drawMeshPBR
+// so the surface gets real Cook-Torrance + IBL/SSR reflection (chrome/steel look).
+inline x3::rhi::TextureHandle makeMR(x3::rhi::IRenderDevice& device,
+                                     float metallic, float roughness) {
+    const uint32_t N = 4;
+    auto px = x3::prims::makeSolidRGBA(N, 0,
+                (uint8_t)std::clamp(roughness * 255.0f, 0.0f, 255.0f),
+                (uint8_t)std::clamp(metallic  * 255.0f, 0.0f, 255.0f));
+    return device.createTexture(px.data(), N, N, /*srgb=*/false);
+}
+
+// Add a world-baked PrimMesh (identity transform) as a static scene entity with a
+// base tint + optional emissive + optional metallic-roughness map. Returns id.
+uint32_t addPrim(Scene& scene, x3::rhi::IRenderDevice& device,
+                 const x3::prims::PrimMesh& m, x3::rhi::TextureHandle tex,
+                 const float col[4], const float emis[4],
+                 x3::rhi::TextureHandle mr = {}) {
+    Entity e;
+    e.mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                               m.index.data(), (uint32_t)m.index.size());
+    e.tex = tex;
+    e.mrTex = mr;
+    for (int i = 0; i < 4; ++i) { e.baseColor[i] = col[i]; e.emissive[i] = emis ? emis[i] : 0.0f; }
+    for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
+    e.tag = (uint32_t)Tag::Static;
+    e.visible = true;
+    return scene.add(e);
+}
+
+} // namespace
+
+void buildWorldLandmarks(Scene& scene, x3::rhi::IRenderDevice& device) {
+    using x3::prims::makeBox;
+    using x3::prims::makeUVSphere;
+    using x3::prims::makeCrystal;
+    const float kNoEmis[4] = { 0, 0, 0, 0 };
+
+    // Shared flat textures (procedural — no disk dependency).
+    auto whiteTex = device.createTexture(x3::prims::makeCleanPanelRGBA(256, 6).data(),
+                                         256, 256, /*srgb=*/true);
+    auto darkTex  = device.createTexture(x3::prims::makeSolidRGBA(4, 12, 14, 20).data(),
+                                         4, 4, /*srgb=*/true);
+    auto steelTex = device.createTexture(x3::prims::makeSolidRGBA(4, 168, 172, 178).data(),
+                                         4, 4, /*srgb=*/true);
+    auto redTex   = device.createTexture(x3::prims::makeSolidRGBA(4, 150, 30, 26).data(),
+                                         4, 4, /*srgb=*/true);
+    auto mrGlass  = makeMR(device, /*metal*/0.9f, /*rough*/0.08f);  // near-black mirror glass
+
+    // =====================================================================
+    // (1) FACILITY TOWER stand-in — white concrete monolith + dark reflective
+    // glass curtain + parapet crown + a cyan neon crest, on the origin pad (y=0).
+    // A layout STAND-IN for the real feat/tower-white-concrete asset (noted for Tim).
+    // =====================================================================
+    {
+        const float bx = 0.0f, bz = 0.0f;
+        const float baseY = terrainHeightAtWorld(bx, bz);   // origin pad ~ 0
+        const float hx = 13.0f, hz = 17.0f;                 // 26 x 34 m footprint
+        const float H  = 72.0f;                             // ~71 m per spec
+        const float white[4] = { 1.0f, 1.0f, 1.02f, 1.0f }; // cool white concrete
+        const float glassCol[4] = { 0.10f, 0.12f, 0.16f, 1.0f };
+        // White concrete core (the frame/skeleton the glass is set into).
+        addPrim(scene, device, makeBox(hx, H * 0.5f, hz, bx, baseY + H * 0.5f, bz, 0.25f),
+                whiteTex, white, kNoEmis);
+        // Dark glass curtain: a slightly PROUD near-black reflective slab on each of
+        // the four faces (reads as the dark-glass-gridded-by-white-skeleton facade).
+        const float gInset = 1.6f, gT = 0.5f;
+        const float gy0 = baseY + 4.0f, gH = H - 8.0f;      // glass from +4 m to crown
+        addPrim(scene, device, makeBox(hx - gInset, gH * 0.5f, gT, bx, gy0 + gH * 0.5f, bz + hz - 0.2f, 0.4f),
+                darkTex, glassCol, kNoEmis, mrGlass);        // +Z face
+        addPrim(scene, device, makeBox(hx - gInset, gH * 0.5f, gT, bx, gy0 + gH * 0.5f, bz - hz + 0.2f, 0.4f),
+                darkTex, glassCol, kNoEmis, mrGlass);        // -Z face
+        addPrim(scene, device, makeBox(gT, gH * 0.5f, hz - gInset, bx + hx - 0.2f, gy0 + gH * 0.5f, bz, 0.4f),
+                darkTex, glassCol, kNoEmis, mrGlass);        // +X face
+        addPrim(scene, device, makeBox(gT, gH * 0.5f, hz - gInset, bx - hx + 0.2f, gy0 + gH * 0.5f, bz, 0.4f),
+                darkTex, glassCol, kNoEmis, mrGlass);        // -X face
+        // White spandrel bands (the substantial ~1.35 m concrete bands, lab.jpg rhythm)
+        // wrapping every ~6 m — a proud white ring the glass sits between.
+        for (float fy = gy0 + 6.0f; fy < baseY + H - 4.0f; fy += 6.0f) {
+            addPrim(scene, device, makeBox(hx + 0.3f, 0.6f, hz + 0.3f, bx, fy, bz, 0.3f),
+                    whiteTex, white, kNoEmis);
+        }
+        // Parapet crown + a cyan neon crest strip (the tower's signal-cyan crown).
+        addPrim(scene, device, makeBox(hx + 0.8f, 1.4f, hz + 0.8f, bx, baseY + H + 1.2f, bz, 0.3f),
+                whiteTex, white, kNoEmis);
+        const float cyan[4] = { 0.1f, 1.6f, 2.2f, 3.0f };   // HDR cyan (blooms)
+        addPrim(scene, device, makeBox(hx + 0.9f, 0.25f, hz + 0.9f, bx, baseY + H + 2.6f, bz, 0.3f),
+                whiteTex, cyan, cyan);
+        // Rooftop antenna mast.
+        addPrim(scene, device, makeBox(0.4f, 6.0f, 0.4f, bx + hx * 0.4f, baseY + H + 8.0f, bz, 0.5f),
+                steelTex, white, kNoEmis);
+    }
+
+    // =====================================================================
+    // (2) SCRAPYARD CITY massing near (-600, 500) — a tight cluster of lit blocks
+    // giving the neon-city silhouette on the flat pad. Deterministic layout (a small
+    // LCG) so it is stable across runs; lit windows + a few cyan/amber neon crowns.
+    // =====================================================================
+    {
+        const float ccx = -600.0f, ccz = 500.0f;
+        uint32_t rng = 0xC1701Fu;
+        auto rnd = [&]() { rng = rng * 1664525u + 1013904223u; return (float)((rng >> 8) & 0xFFFF) / 65535.0f; };
+        const int kBuildings = 22;
+        for (int i = 0; i < kBuildings; ++i) {
+            const float ang = rnd() * 6.2831853f;
+            const float rad = 20.0f + rnd() * 150.0f;
+            const float x = ccx + std::cos(ang) * rad;
+            const float z = ccz + std::sin(ang) * rad * 0.8f;
+            const float gy = terrainHeightAtWorld(x, z);
+            const float w  = 7.0f + rnd() * 9.0f;
+            const float d  = 7.0f + rnd() * 9.0f;
+            const float h  = 10.0f + rnd() * 40.0f;      // varied massing 10..50 m
+            // Cool concrete/steel body with faint window-lit emissive.
+            float bodyTint = 0.55f + rnd() * 0.35f;
+            const float col[4] = { bodyTint * 0.9f, bodyTint * 0.95f, bodyTint * 1.05f, 1.0f };
+            // Windows glow: sample the clean-panel tex, add a low emissive so the
+            // cluster reads as INHABITED at dusk (feeds bloom, subtle).
+            const float lit = 0.10f + rnd() * 0.18f;
+            const float emis[4] = { lit * 0.6f, lit * 0.8f, lit * 1.1f, lit };
+            addPrim(scene, device, makeBox(w, h * 0.5f, d, x, gy + h * 0.5f, z, 0.5f),
+                    whiteTex, col, emis);
+            // ~1 in 3 gets a neon crown strip (alternating cyan / amber).
+            if (rnd() > 0.62f) {
+                const bool cyanCrown = rnd() > 0.5f;
+                float neon[4];
+                if (cyanCrown) { neon[0] = 0.1f; neon[1] = 1.4f; neon[2] = 2.0f; neon[3] = 2.6f; }
+                else           { neon[0] = 2.2f; neon[1] = 1.1f; neon[2] = 0.2f; neon[3] = 2.4f; }
+                addPrim(scene, device, makeBox(w + 0.4f, 0.5f, d + 0.4f, x, gy + h + 0.6f, z, 0.5f),
+                        whiteTex, neon, neon);
+            }
+        }
+    }
+
+    // =====================================================================
+    // (3) LNG TANK set piece near (-500, 525) — a building-scale spherical natural-
+    // gas tank on a support skirt of canted legs, with base pipes + a hazard band +
+    // a red aircraft-warning beacon. Metallic (drawMeshPBR) so it reads as real steel
+    // catching the sky. THE bold industrial silhouette on the city's edge.
+    // =====================================================================
+    {
+        const float tx = -500.0f, tz = 525.0f;
+        const float gy = terrainHeightAtWorld(tx, tz);
+        const float R  = 24.0f;                 // sphere radius (huge — building scale)
+        const float legH = 20.0f;               // legs raise the sphere off the ground
+        const float cy = gy + legH + R;         // sphere center height
+        // Painted light-steel (bright dielectric). The DIFFUSE path (drawMeshEmissive)
+        // is used deliberately — it carries hemispheric ambient FILL so the tank reads
+        // as a lit light-grey body; the full-metallic PBR path goes near-black without
+        // a bright captured IBL env (as the city buildings on the same path prove).
+        const float steel[4] = { 0.82f, 0.85f, 0.90f, 1.0f };
+        const float tankCol[4] = { 0.90f, 0.93f, 0.98f, 1.0f };
+
+        // Sphere body (unit sphere scaled by R, translated to center).
+        {
+            auto s = makeUVSphere(40, 64);
+            Entity e;
+            e.mesh = device.createMesh(s.verts.data(), (uint32_t)s.verts.size(),
+                                       s.index.data(), (uint32_t)s.index.size());
+            e.tex = steelTex;
+            for (int i = 0; i < 4; ++i) e.baseColor[i] = tankCol[i];
+            scaleTranslate(R, tx, cy, tz, e.transform);
+            e.tag = (uint32_t)Tag::Static; e.visible = true;
+            scene.add(e);
+        }
+        // Equatorial hazard band (a slightly-proud red ring segment set — 8 boxes).
+        const float redHaz[4] = { 1.0f, 0.30f, 0.24f, 1.0f };
+        for (int i = 0; i < 8; ++i) {
+            const float a = (float)i / 8.0f * 6.2831853f;
+            const float px = tx + std::cos(a) * (R + 0.3f);
+            const float pz = tz + std::sin(a) * (R + 0.3f);
+            addPrim(scene, device, makeBox(2.6f, 2.2f, 2.6f, px, cy, pz, 0.5f),
+                    redTex, redHaz, kNoEmis);
+        }
+        // Support skirt: 8 canted steel legs from the ground up to the lower hemisphere.
+        for (int i = 0; i < 8; ++i) {
+            const float a = (float)i / 8.0f * 6.2831853f;
+            const float footR = R * 0.72f, topR = R * 0.42f;
+            const float fx = tx + std::cos(a) * footR, fz = tz + std::sin(a) * footR;
+            const float px = tx + std::cos(a) * topR,  pz = tz + std::sin(a) * topR;
+            const float rox = std::cos(a), roz = std::sin(a);
+            addPrim(scene, device,
+                    x3::prims::makeCantedStrut(fx, gy, fz, px, cy - R * 0.72f, pz,
+                                               1.4f, 1.4f, rox, roz, 0.4f),
+                    steelTex, steel, kNoEmis);
+        }
+        // Cross-bracing ring (a low steel band tying the legs together).
+        addPrim(scene, device, makeBox(R * 0.75f, 0.5f, 1.0f, tx, gy + legH * 0.5f, tz + R * 0.5f, 0.5f),
+                steelTex, steel, kNoEmis);
+        addPrim(scene, device, makeBox(R * 0.75f, 0.5f, 1.0f, tx, gy + legH * 0.5f, tz - R * 0.5f, 0.5f),
+                steelTex, steel, kNoEmis);
+        // Base pipe manifold: a few horizontal pipes running out toward the city.
+        for (int i = 0; i < 3; ++i) {
+            const float pz = tz - 6.0f + i * 6.0f;
+            addPrim(scene, device, makeBox(30.0f, 0.9f, 0.9f, tx + 24.0f, gy + 1.4f + i * 0.6f, pz, 0.4f),
+                    steelTex, steel, kNoEmis);
+        }
+        // Red aircraft-warning beacon on top (HDR emissive — blooms as a point of danger).
+        const float beacon[4] = { 3.0f, 0.2f, 0.1f, 4.0f };
+        addPrim(scene, device, makeBox(1.2f, 1.2f, 1.2f, tx, cy + R + 1.5f, tz, 0.5f),
+                redTex, beacon, beacon);
+    }
+
+    x3::logInfo("[terrain] world landmarks: facility tower (origin) + city massing "
+                "(-600,500) + LNG tank (-500,525) placed on terrain");
+}
+
+// ===========================================================================
 // Terrain (B2 fixed grid) — unchanged behavior, now built on the shared free
 // helpers. Used by --screenshot-terrain + --test-terrain.
 // ===========================================================================

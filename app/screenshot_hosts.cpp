@@ -1370,6 +1370,10 @@ int dispatchScreenshotHosts(HostContext& hc) {
         // Lay the FREEWAY asphalt ribbon (static; whole route) so the money shot
         // shows a real paved road threading the carved corridor, not a bare cut.
         x3::game::buildFreewayRibbon(tscene, *device);
+        // Place the WORLD LANDMARKS (facility tower stand-in @ origin, Scrapyard City
+        // massing @ (-600,500), LNG tank set piece @ (-500,525)) — static meshes that
+        // give the hero composition + horizon their silhouettes.
+        x3::game::buildWorldLandmarks(tscene, *device);
 
         // (1) MOUNTAIN VISTA — push the focus OUT into the eastern range so the big
         // ridged peaks (r ~ 1000..1700 m, masked in by the radial bowl) are resident,
@@ -1397,6 +1401,53 @@ int dispatchScreenshotHosts(HostContext& hc) {
         capture(0.0f, 0.0f,
                 150.0f, H(150.0f, 150.0f) + 30.0f, 150.0f,
                 std::atan2(-150.0f, -150.0f), -0.06f, "tower_pad");
+
+        const float kHalfPi = 1.5707963f, kPi = 3.14159265f;
+
+        // (4) BIOME horizon vistas — stand in the foothills 700 m out on each cardinal
+        // and look further out into that range so its identity reads: N snow (+Z),
+        // S sandstone mesa (-Z), W crystal highland (-X). (E volcanic = the "vista" shot.)
+        capture(0.0f, 1250.0f,
+                0.0f, H(0.0f, 700.0f) + 28.0f, 700.0f,
+                kHalfPi, 0.08f, "biome_north");
+        capture(0.0f, -1250.0f,
+                0.0f, H(0.0f, -700.0f) + 28.0f, -700.0f,
+                -kHalfPi, 0.08f, "biome_south");
+        capture(-1250.0f, 0.0f,
+                -700.0f, H(-700.0f, 0.0f) + 28.0f, 0.0f,
+                kPi, 0.08f, "biome_west");
+
+        // (5) LNG TANK — stand back on the city pad looking at the spherical gas tank
+        // with the mountain horizon behind it.
+        {
+            const float tx = -500.0f, tz = 525.0f;
+            const float cx = -420.0f, cz = 605.0f;
+            const float yaw = std::atan2(tz - cz, tx - cx);
+            capture(tx, tz, cx, H(cx, cz) + 30.0f, cz, yaw, -0.06f, "lng_tank");
+        }
+
+        // (6) CITY massing — from the freeway approach looking into the lit cluster.
+        {
+            const float ccx = -600.0f, ccz = 500.0f;
+            const float cx = -430.0f, cz = 360.0f;
+            const float yaw = std::atan2(ccz - cz, ccx - cx);
+            capture(ccx, ccz, cx, H(cx, cz) + 34.0f, cz, yaw, -0.02f, "city");
+        }
+
+        // (7) THE HERO COMPOSITION — the money shot the whole world builds toward:
+        // the facility tower on its pad, the biomed mountain horizon behind it, and
+        // the city + LNG tank reading in the distance beyond. Camera stands off the
+        // +X/-Z corner looking through the tower toward the -X/+Z city + ranges.
+        {
+            // The money shot — the facility tower on its origin pad with the biomed
+            // mountain horizon rising behind it and the freeway threading in. Shot from
+            // the +X/+Z side (clear sightline over the flat pad — the low-angle city
+            // side is HZB-occluded by the intervening hills; the city + LNG tank get
+            // their own verified frames). Pulled back + raised so the ranges read.
+            const float cx = 150.0f, cz = 150.0f;
+            const float yaw = std::atan2(-cz, -cx);      // face the tower / origin
+            capture(0.0f, 0.0f, cx, H(cx, cz) + 40.0f, cz, yaw, -0.05f, "hero");
+        }
 
         // Tear down the streamer (destroys resident meshes + bodies) before device.
         streamer.shutdown(tscene, *device, *tphys);
