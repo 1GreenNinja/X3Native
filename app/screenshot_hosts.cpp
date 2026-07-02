@@ -1367,6 +1367,10 @@ int dispatchScreenshotHosts(HostContext& hc) {
 
         auto H = [&](float x, float z){ return streamer.heightAt(x, z); };
 
+        // Lay the FREEWAY asphalt ribbon (static; whole route) so the money shot
+        // shows a real paved road threading the carved corridor, not a bare cut.
+        x3::game::buildFreewayRibbon(tscene, *device);
+
         // (1) MOUNTAIN VISTA — push the focus OUT into the eastern range so the big
         // ridged peaks (r ~ 1000..1700 m, masked in by the radial bowl) are resident,
         // and stand back in the rising foothills looking up-slope into them.
@@ -1378,12 +1382,12 @@ int dispatchScreenshotHosts(HostContext& hc) {
         // looking NW ALONG the freeway toward the Scrapyard City pad, so the flat
         // cut/fill ribbon threads between the higher ground on either side.
         {
-            const float cx = 130.0f, cz = 90.0f;
-            const float tx = -500.0f, tz = 700.0f;            // city pad (route end)
-            const float yaw = std::atan2(tz - cz, tx - cx);   // face down the route
-            capture(-120.0f, 380.0f,
-                    cx, H(cx, cz) + 34.0f, cz,
-                    yaw, -0.13f, "freeway");
+            const float cx = 95.0f, cz = 95.0f;               // just above the road start
+            const float tx = -200.0f, tz = 520.0f;            // look down the climbing route
+            const float yaw = std::atan2(tz - cz, tx - cx);   // face along the ribbon
+            capture(-70.0f, 320.0f,
+                    cx, H(cx, cz) + 11.0f, cz,
+                    yaw, -0.10f, "freeway");
         }
 
         // (3) TOWER PAD + MOUNTAINS BEHIND — from beyond the flat tower pad looking

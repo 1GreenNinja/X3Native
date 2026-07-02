@@ -587,6 +587,94 @@ void placeOnTerrain(float x, float z, float outPos[3]) {
     outPos[2] = z;
 }
 
+// ---------------------------------------------------------------------------
+// FREEWAY asphalt ribbon (see terrain.h). A single static strip mesh swept along
+// the graded centerline (worldFreewaySampleArc), laid just above the carved deck,
+// with a procedurally-painted asphalt + lane-lines texture. Visual only; the car
+// drives the flat carved terrain deck underneath. Clean-room (the same value-noise
+// used for terrain, applied to a road cross-section paint).
+// ---------------------------------------------------------------------------
+uint32_t buildFreewayRibbon(Scene& scene, x3::rhi::IRenderDevice& device) {
+    const float len = worldFreewayLength();
+    if (len < 1.0f) return kNoLink;
+    const float halfW = worldFreewayHalfWidth();
+
+    // ---- Asphalt + lane-lines texture. U = ACROSS the deck (0..1), V = ALONG it;
+    // one V tile spans kTileLen metres of road so the dashes repeat at a real-world
+    // cadence. Dark asphalt grain + solid white edge lines + a dashed yellow center
+    // line + faint dashed lane dividers (a 4-lane divided look).
+    const uint32_t TW = 96, TH = 128;      // across x along texels
+    const float    kTileLen = 8.0f;        // metres of road per V tile
+    std::vector<uint8_t> tpx((size_t)TW * TH * 4);
+    for (uint32_t y = 0; y < TH; ++y) {
+        for (uint32_t x = 0; x < TW; ++x) {
+            const float nx = (x + 0.5f) / (float)TW;   // across [0,1]
+            const float ny = (y + 0.5f) / (float)TH;   // along  [0,1]
+            const float grain = valueNoise(nx * 37.0f, ny * 43.0f, 5150u);
+            int base = 44 + (int)(grain * 18.0f);       // 44..62 dark grey
+            int r = base, g = base, b = base + 3;
+            auto band = [&](float c, float hw) { return std::fabs(nx - c) < hw; };
+            if (band(0.055f, 0.018f) || band(0.945f, 0.018f)) {          // edge lines
+                r = g = b = 225;
+            } else if (band(0.5f, 0.017f) && ny > 0.10f && ny < 0.52f) { // center dash
+                r = 236; g = 206; b = 66;
+            } else if ((band(0.28f, 0.010f) || band(0.72f, 0.010f)) &&
+                       ny > 0.55f && ny < 0.88f) {                       // lane dividers
+                r = g = b = 165;
+            }
+            uint8_t* p = &tpx[((size_t)y * TW + x) * 4];
+            p[0] = (uint8_t)r; p[1] = (uint8_t)g; p[2] = (uint8_t)b; p[3] = 255;
+        }
+    }
+    x3::rhi::TextureHandle tex = device.createTexture(tpx.data(), TW, TH, /*srgb=*/true);
+
+    // ---- Sweep the ribbon. Two edge verts per along-step; wound to match the
+    // terrain's up-facing convention: with along = tangent and across = up x along,
+    // triangles {A,C,B / B,C,D} face +Y. Deck lifted a touch above the carved
+    // corridor (which the carve holds flat within halfW) to avoid z-fighting.
+    std::vector<x3::rhi::MeshVertex> verts;
+    std::vector<uint32_t>            idx;
+    const int   steps = std::max(2, (int)(len / 3.0f));   // ~3 m per segment
+    const float yLift = 0.16f;
+    verts.reserve((size_t)(steps + 1) * 2);
+    idx.reserve((size_t)steps * 6);
+    for (int i = 0; i <= steps; ++i) {
+        const float s = (float)i / (float)steps;
+        float c[3], t[2];
+        worldFreewaySampleArc(s, c, t);
+        // across = up x tangent = (t.z, 0, -t.x); A = -across edge, B = +across edge.
+        const float ax = t[1], az = -t[0];
+        const float v  = (s * len) / kTileLen;
+        x3::rhi::MeshVertex A, B;
+        A.pos[0] = c[0] - ax * halfW; A.pos[1] = c[1] + yLift; A.pos[2] = c[2] - az * halfW;
+        B.pos[0] = c[0] + ax * halfW; B.pos[1] = c[1] + yLift; B.pos[2] = c[2] + az * halfW;
+        A.normal[0] = 0.0f; A.normal[1] = 1.0f; A.normal[2] = 0.0f;
+        B.normal[0] = 0.0f; B.normal[1] = 1.0f; B.normal[2] = 0.0f;
+        A.uv[0] = 0.0f; A.uv[1] = v;
+        B.uv[0] = 1.0f; B.uv[1] = v;
+        verts.push_back(A);
+        verts.push_back(B);
+    }
+    for (int i = 0; i < steps; ++i) {
+        const uint32_t a = (uint32_t)(i * 2), b = a + 1, cc = a + 2, d = a + 3;
+        idx.insert(idx.end(), { a, cc, b,  b, cc, d });
+    }
+    x3::rhi::MeshHandle mesh = device.createMesh(verts.data(), (uint32_t)verts.size(),
+                                                 idx.data(), (uint32_t)idx.size());
+
+    Entity e;
+    e.mesh = mesh;
+    e.tex  = tex;
+    for (int i = 0; i < 4; ++i)  e.baseColor[i] = 1.0f;
+    for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
+    e.tag = (uint32_t)Tag::Static;
+    e.visible = true;
+    const uint32_t id = scene.add(e);
+    x3::logInfo("[terrain] freeway ribbon: " + std::to_string(verts.size()) + " verts, " +
+                std::to_string(idx.size() / 3) + " tris over " + std::to_string((int)len) + " m");
+    return id;
+}
+
 // ===========================================================================
 // Terrain (B2 fixed grid) — unchanged behavior, now built on the shared free
 // helpers. Used by --screenshot-terrain + --test-terrain.

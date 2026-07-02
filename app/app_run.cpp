@@ -1569,10 +1569,14 @@ int runDefaultHost(HostContext& hc) {
         // Residency radius 8 tiles (= 256 m) => up to 17x17 = 289 tiles resident.
         terrainStreamer.init(scene, *device, *physics, terrainJobs.get(),
                              tcfg, sx, sz, /*radius=*/8);
+        // Lay the FREEWAY asphalt ribbon (static geometry along the graded corridor).
+        // Dry-land terrain only — in ocean mode the low route would be awash.
+        if (!oceanWorld)
+            x3::game::buildFreewayRibbon(scene, *device);
         if (oceanWorld)
             x3::logInfo("--world ocean: STREAMED terrain + animated ocean (walk the shore, WASD)");
         else
-            x3::logInfo("--world terrain: STREAMED unbounded terrain world (walk/fly the hills, WASD)");
+            x3::logInfo("--world terrain: STREAMED unbounded terrain world + freeway (walk/drive, WASD)");
     }
 
     // ---- Combat FX (gameplay-feel pass): shot tracers + muzzle flash. The

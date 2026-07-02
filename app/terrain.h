@@ -141,6 +141,15 @@ float    worldFreewayLength();
 // ribbon builder (mesh sweep) + the grade self-test (dDeckY/ds <= max grade).
 bool     worldFreewaySampleArc(float s, float outCenter[3], float outTangent[2]);
 
+// Build the FREEWAY asphalt ribbon (deck surface + painted lane lines) as a single
+// static scene mesh swept along the graded centerline, laid just above the carved
+// corridor. Visual only — the DRIVABLE collision is the flat carved terrain deck
+// underneath (a car drives the freeway via the ordinary terrain heightfield). Uses
+// its own procedurally-generated asphalt+lane-lines texture. Returns the scene
+// entity id (kNoLink if the route is degenerate). Call once after the world/terrain
+// is set up (the ribbon does not stream — the whole route is a bounded static mesh).
+uint32_t buildFreewayRibbon(Scene& scene, x3::rhi::IRenderDevice& device);
+
 // The LOD level a tile is currently meshed at. 0 = full density (also used for
 // collision), 1 = half, 2 = quarter. Increasing = coarser/cheaper.
 enum class TerrainLod : uint8_t { Full = 0, Half = 1, Quarter = 2, Count = 3 };
