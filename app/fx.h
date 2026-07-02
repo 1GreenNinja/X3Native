@@ -41,6 +41,7 @@ enum class WeaponFxKind : uint8_t {
     Chaingun,
     Plasma,
     Lightning,
+    Rocket,      // heavy explosive: big orange launch flash, fireball impact
 };
 
 // Map a WeaponDef FX-id string (e.g. "muzzle_plasma", "impact_bullet") onto a
@@ -54,6 +55,7 @@ inline WeaponFxKind fxKindFromId(std::string_view id) {
     if (has("shotgun"))   return WeaponFxKind::Shotgun;
     if (has("smg"))       return WeaponFxKind::Smg;
     if (has("pistol"))    return WeaponFxKind::Pistol;
+    if (has("rocket") || has("explosion")) return WeaponFxKind::Rocket;
     return WeaponFxKind::Default;
 }
 
@@ -75,6 +77,23 @@ constexpr int   kMaxTracers      = 8;
 // (kTracerTime): at 300 m/s a 28 m beam fully connects in ~0.093 s (< 0.12 s life),
 // so the tip is still visibly travelling yet always reaches the hit point.
 constexpr float kLightningBoltSpeed = 300.0f;
+// Lightning ZIGZAG re-roll period (seconds). The kink pattern of the held beam is
+// deterministic within one bucket of this clock and JUMPS to a new pattern each
+// bucket — a living, crackling zigzag that dances ~15x/s instead of strobing a new
+// shape every frame (Tim: "sharp zigzag lightning", re-randomize every ~50-80 ms).
+constexpr float kLightningRerollPeriod = 0.065f;
+// Target zigzag segment length (m): straight runs meeting at hard 15-45 deg kinks.
+constexpr float kLightningSegLen = 0.9f;
+// Core / glow thickness (m): a bright white-hot core box inside a wider blue glow
+// box, both emissive (HDR) so bloom builds the halo. The old single 0.016-0.028 m
+// LDR beam read as a pencil line (playtest).
+constexpr float kLightningCoreThick = 0.035f;
+constexpr float kLightningGlowThick = 0.10f;
+
+// ---- Electric-arc tendril ring (lightning impact violence) ----
+// Short-lived mini zigzag arcs crawling on the surface at a lightning hit point.
+constexpr int   kMaxArcs   = 12;
+constexpr float kArcLife   = 0.14f;   // seconds one tendril lives
 
 // ---- Muzzle flash tuning ----
 // How long (seconds) the muzzle flash quad stays visible.
@@ -133,6 +152,12 @@ public:
     // lightning = white-cyan, etc.); the default keeps the original metal-spark look.
     void spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
     void spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal, WeaponFxKind kind);
+    // PROJECTILE BOLT visual (playtest: plasma read hitscan-looking — bolts were
+    // INVISIBLE in flight). Call once per frame per live projectile: drops a hot
+    // additive core billboard at the bolt position + a dimmer trail speck behind it
+    // (60 fps of overlapping cores reads as a continuous glowing bolt with a fading
+    // tail). Rocket additionally puffs alpha smoke so the exhaust trail lingers.
+    void boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind);
     // Hit on an enemy: a short spray of dark-red alpha blood along the shot `dir`.
     void spawnBlood(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
     // Enemy death: a burst of debris chunks (alpha, gravity) + a lingering smoke
@@ -197,12 +222,24 @@ private:
                              const x3::phys::Vec3& eye, float width,
                              const float color[4]) const;
 
-    // Draw a JAGGED lightning bolt a->b: subdivide into segments with random
-    // perpendicular offsets (re-rolled per call so it crackles), each drawn via
-    // drawBeam. The last vertex lands exactly on `b` (the hit point).
+    // Draw a HARD-ANGLE ZIGZAG lightning bolt a->b (Tim spec): straight segments
+    // (~kLightningSegLen each) meeting at sharp 15-45 deg kinks (alternating-sign
+    // perpendicular offsets), 1-2 short thinner/dimmer BRANCH forks off random kink
+    // points, a bright white-hot core box inside a wider blue glow box (both HDR
+    // emissive so bloom builds the halo). The kink pattern is DETERMINISTIC from
+    // `seed` — the caller keys it to a kLightningRerollPeriod time bucket so the
+    // bolt holds a shape ~65 ms then jumps (a dancing, crackling zigzag, not a
+    // per-frame strobe). The last vertex lands exactly on `b` (the hit point).
     void drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                            const x3::phys::Vec3& a, const x3::phys::Vec3& b,
-                           float thickness, const float color[4]) const;
+                           const x3::phys::Vec3& eye,
+                           float coreThick, uint32_t seed, float brightness) const;
+    // Draw one straight zigzag SEGMENT as a camera-facing GLOW ribbon + a thinner
+    // white-hot CORE ribbon, both via drawMeshEmissive (HDR emissive -> bloom halo).
+    void drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                         const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                         const x3::phys::Vec3& eye,
+                         float coreThick, float brightness) const;
 
     // A centered unit box mesh (half-extent 0.5 each axis) reused for all FX,
     // scaled per draw via the model matrix.

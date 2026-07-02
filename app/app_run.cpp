@@ -7662,6 +7662,9 @@ int runDefaultHost(HostContext& hc) {
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
+        // CHARGE weapon (Lightning): mark the beam HELD so Arsenal::tick drains its
+        // charge pool continuously (~10/s) while fire is held (IDKFA bypasses drain).
+        arsenal.setBeamHeld(fireHeld && playerArmed && player.isAlive());
         if (wantFire && playerArmed && player.isAlive() && arsenal.canFire()) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
@@ -7815,7 +7818,11 @@ int runDefaultHost(HostContext& hc) {
         // start a second voice because we hold a single fireLoop handle. ----
         {
             const x3::game::WeaponDef& cw = arsenal.current();
-            const bool hasAmmo = arsenal.infiniteAmmo() || arsenal.currentState().ammoInMag > 0;
+            // CHARGE weapons (Lightning) have no mag — the beam whine should cut when
+            // charge runs out, not when a (never-consumed) magazine hits 0.
+            const bool hasAmmo = arsenal.infiniteAmmo() ||
+                (cw.usesCharge ? arsenal.currentState().charge > 0.0f
+                               : arsenal.currentState().ammoInMag > 0);
             const bool wantLoop = cw.fireSfxLoop && fireHeld && playerArmed &&
                                   player.isAlive() && !arsenal.isReloading() && hasAmmo;
             const x3::audio::SoundHandle desired = wantLoop ? currentFireSfx() : x3::audio::SoundHandle{};
@@ -7872,13 +7879,22 @@ int runDefaultHost(HostContext& hc) {
                         if (rs.hitMonster) r = rs;
                     }
                     combatFx.addTracer(b.pos, eh.point);
+                    // Rocket detonates in a fireball; other bolts splash at the hit.
+                    if (b.impactKind == x3::game::WeaponFxKind::Rocket)
+                        combatFx.spawnExplosion(eh.point, 1.4f);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
                         audio->playSound3D(sndDeath, eh.point.x, eh.point.y, eh.point.z, 1.0f, 1.0f); }
                     else combatFx.spawnBlood(eh.point, ndir);
                     consumed = true;
                 } else {
                     x3::phys::RayHit sh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Static);
-                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal, b.impactKind); combatFx.addTracer(b.pos, sh.point);
+                    if (sh.hit) {
+                        // Rocket -> violent fireball; energy/ballistic bolts -> per-kind splash.
+                        if (b.impactKind == x3::game::WeaponFxKind::Rocket)
+                            combatFx.spawnExplosion(sh.point, 1.4f);
+                        else
+                            combatFx.spawnImpact(sh.point, sh.normal, b.impactKind);
+                        combatFx.addTracer(b.pos, sh.point);
                         if (b.impactSnd.valid())
                             audio->playSound3D(b.impactSnd, sh.point.x, sh.point.y, sh.point.z, 0.6f, 1.0f);
                         consumed = true; }
@@ -7886,6 +7902,9 @@ int runDefaultHost(HostContext& hc) {
                 if (!consumed) {
                     b.pos = x3::phys::Vec3{ b.pos.x + b.vel.x*dt, b.pos.y + b.vel.y*dt, b.pos.z + b.vel.z*dt };
                     b.traveled += stepLen;
+                    // Make the travelling bolt VISIBLE in flight (glowing core + trail;
+                    // rocket also puffs exhaust smoke) — bolts were invisible before.
+                    combatFx.boltFx(b.pos, b.vel, b.impactKind);
                     if (b.traveled >= b.range) consumed = true;   // out of range -> despawn
                 }
                 if (consumed) { projectiles[pi] = projectiles.back(); projectiles.pop_back(); }
@@ -8603,6 +8622,12 @@ int runDefaultHost(HostContext& hc) {
                     hm.weapon = wd.name.c_str();
                     hm.ammoInMag = ws.ammoInMag; hm.ammoReserve = ws.reserve;
                     hm.reloading = arsenal.isReloading();
+                    // CHARGE weapon (Lightning): show a CHARGE readout instead of ammo.
+                    if (wd.usesCharge) {
+                        hm.isCharge  = true;
+                        hm.chargeCur = (int)(ws.charge + 0.5f);
+                        hm.chargeCap = (int)(wd.chargeCap + 0.5f);
+                    }
                 }
 
                 // ---- Minimap RADAR + enemy NAMEPLATE feed ----------------------
