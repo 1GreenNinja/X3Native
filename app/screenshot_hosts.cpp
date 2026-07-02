@@ -31,6 +31,7 @@
 #include "editor/editor_host.h"
 #include "asset_root.h"
 #include "holo_terminal.h"   // --screenshot-holoterm: HERO cell terminal proof
+#include "holo_panel.h"      // --screenshot-holoterm <variant>: reusable HoloPanel variants
 
 #include <memory>
 #include <string>
@@ -286,44 +287,77 @@ int dispatchScreenshotHosts(HostContext& hc) {
         addShell(x3::prims::makeBox(0.1f, 1.4f, 2.0f,-2.0f,  1.3f, -0.6f), 0.52f, 0.53f, 0.57f); // left wall
         addShell(x3::prims::makeBox(0.1f, 1.4f, 2.0f, 2.0f,  1.3f, -0.6f), 0.52f, 0.53f, 0.57f); // right wall
 
-        // ---- The HERO terminal on the back wall, facing +Z into the cell (yaw=pi,
-        // double-sided readable face). Seed VIGIL's boot readout. ----
         const x3::phys::Vec3 termPos{ 0.0f, 1.45f, -1.40f };  // clear of the back-wall face (z=-1.6)
-        x3::game::HoloTerminal term;
-        term.build(cellScene, *device, termPos, /*yaw*/0.0f,
-                   /*w*/0.85f, /*h*/1.05f, /*ceilingY*/2.4f);
-        if (!std::getenv("HOLO_NOSETLINES")) term.setLines({
-            "LAB ZERO // DETENTION CONSOLE  --  CELL 07",
-            "VIGIL ONLINE.  SUBJECT: JAKE.",
-            "STATUS: AUGMENTED.  RESTRAINTS: FAILING.",
-            "CRADLE PROTOCOL: ACTIVE.",
-            "",
-            "ASK ME SOMETHING, JAKE.",
-        });
 
-        // ---- Lighting: low cool VOID ambient (matches the canon detention drop) +
-        // a soft BLUE motivated point light pooling in front of the terminal so its
-        // glass body is scene-lit (the on-glass blue text reads) and a pool spills
-        // into the cell corner. ----
+        // Lighting: low cool VOID ambient (matches the canon detention drop). The
+        // per-fixture glow pool is added below (terminal's own, or the HoloPanel's).
         device->setAmbient(0.12f, 0.125f, 0.15f);
         std::vector<x3::rhi::PointLight> pls;
-        x3::rhi::PointLight pl{};
-        pl.pos[0] = termPos.x; pl.pos[1] = termPos.y; pl.pos[2] = termPos.z + 0.55f;
-        pl.range  = 3.4f;
-        pl.color[0] = 0.32f; pl.color[1] = 0.66f; pl.color[2] = 1.55f;  // blue (premultiplied)
-        pls.push_back(pl);
+
+        // ---- Variant dispatch. Empty/"terminal" = the flagship HoloTerminal (with the
+        // live VIGIL readout + input state machine). "keypad"/"elevator"/"placard" prove
+        // the reusable HoloPanel platform: each is ~a dozen lines of params + a bake. ----
+        x3::game::HoloTerminal term;   // flagship
+        x3::game::HoloPanel    panel;  // variants
+        bool usePanel = false;
+
+        if (variant.empty() || variant == "terminal") {
+            term.build(cellScene, *device, termPos, /*yaw*/0.0f, /*w*/0.85f, /*h*/1.05f, /*ceilingY*/2.4f);
+            term.setLines({
+                "LAB ZERO // DETENTION CONSOLE  --  CELL 07",
+                "VIGIL ONLINE.  SUBJECT: JAKE.",
+                "STATUS: AUGMENTED.  RESTRAINTS: FAILING.",
+                "CRADLE PROTOCOL: ACTIVE.",
+                "",
+                "ASK ME SOMETHING, JAKE.",
+            });
+            x3::rhi::PointLight pl{};
+            pl.pos[0]=termPos.x; pl.pos[1]=termPos.y; pl.pos[2]=termPos.z+0.55f; pl.range=3.4f;
+            pl.color[0]=0.32f; pl.color[1]=0.66f; pl.color[2]=1.55f;
+            pls.push_back(pl);
+        } else {
+            usePanel = true;
+            x3::game::HoloPanelParams pp;
+            pp.pos = termPos; pp.yaw = 0.0f; pp.ceilingY = 2.4f;
+            if (variant == "keypad") {
+                // (3) KEYPAD variant — compact, wall-flush, pipe frame.
+                pp.width=0.56f; pp.height=0.74f; pp.mount=x3::game::HoloMount::WallFlush;
+                pp.contentBake=[](uint32_t n){ return x3::game::bakeKeypad(n, "1127"); };
+            } else if (variant == "elevator") {
+                // (2) ELEVATOR FLOOR-SELECT — the elevator panel re-skinned onto HoloPanel.
+                pp.width=0.80f; pp.height=1.10f; pp.mount=x3::game::HoloMount::CeilingPipe;
+                pp.contentBake=[](uint32_t n){ return x3::game::bakeFloorSelect(n,
+                    { "F7  ROOFTOP", "F5  SYNTH BAY", "F4  ATRIUM", "F1  DETENTION", "SL3  SUBLEVEL", "CLUB 1127" }, 3); };
+            } else { // placard
+                // (4) FREESTANDING AMBER INFO PLACARD — bezel frame, floor stand.
+                pp.width=0.70f; pp.height=0.48f; pp.pos.y=1.35f;
+                pp.mount=x3::game::HoloMount::FreeStand; pp.frame=x3::game::HoloFrame::Bezel;
+                pp.floorY=0.05f; pp.paneDarkness=0.04f;   // stand reaches the cell floor (y=0)
+                pp.glowColor[0]=1.35f; pp.glowColor[1]=0.72f; pp.glowColor[2]=0.22f;   // amber pool
+                pp.emissiveStrength=2.1f;
+                pp.contentBake=[](uint32_t n){ return x3::game::bakePlacard(n,
+                    { "LAB ZERO", "AUTHORIZED PERSONNEL ONLY", "SECTOR 7  --  DETENTION", "CONTAINMENT PROTOCOL ACTIVE" }); };
+            }
+            panel.build(cellScene, *device, pp);
+            if (panel.hasGlowLight()) {
+                x3::rhi::PointLight pl{};
+                pl.pos[0]=panel.glowLightPos()[0]; pl.pos[1]=panel.glowLightPos()[1]; pl.pos[2]=panel.glowLightPos()[2];
+                pl.range=panel.glowLightRange();
+                pl.color[0]=panel.glowLightColor()[0]; pl.color[1]=panel.glowLightColor()[1]; pl.color[2]=panel.glowLightColor()[2];
+                pls.push_back(pl);
+            }
+        }
         device->setPointLights(pls.data(), (uint32_t)pls.size());
 
-        // ---- Jake's eye: ~1.6 m in front of the terminal, eye height 1.5 m,
-        // looking straight down -Z (yaw=-pi/2 => forward (0,0,-1)) with a hair of
-        // downward pitch so the panel sits centered. FOV 55 for a natural read. ----
+        // ---- Jake's eye: ~1.5 m in front, eye height 1.5 m, looking down -Z
+        // (yaw=-pi/2 => forward (0,0,-1)) with a hair of downward pitch. ----
         device->setCamera(0.0f, 1.5f, 0.05f, -1.5707963f, -0.04f, 55.0f);
 
         bool ok = false;
-        const int kFrames = 16;   // settle bloom/shimmer; terminal.update drives the sweep
+        const int kFrames = 16;   // settle bloom/shimmer
         for (int f = 0; f < kFrames; ++f) {
             const bool last = (f == kFrames - 1);
-            term.update(1.0f / 60.0f);   // advance shimmer + bake any dirty readout
+            if (usePanel) panel.update(1.0f / 60.0f); else term.update(1.0f / 60.0f);
             glfwPollEvents();
             if (last) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();

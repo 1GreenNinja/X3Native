@@ -640,6 +640,14 @@ x3::prims::PrimMesh makeCylinderY(float r, float halfH, uint32_t seg = 20) {
 }
 } // namespace
 
+// Shared with HoloPanel (the platform): bake the flagship console hologram — the
+// rich multi-color status HUD + readout text — into an RGBA8 n×n buffer, so the
+// terminal SKIN of a HoloPanel is a single call.
+std::vector<uint8_t> bakeConsoleHologram(uint32_t n, const std::vector<std::string>& lines,
+                                         const std::string& input) {
+    return makeHologramRGBA(n, lines, input);
+}
+
 void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
                          x3::phys::Vec3 pos, float yaw, float width, float height,
                          float ceilingY) {

@@ -135,6 +135,12 @@ private:
     static constexpr size_t kMaxInput = 72;   // freeform questions need room (was 32)
 };
 
+// Bake the flagship CONSOLE hologram UI (multi-color status HUD + readout text)
+// into an RGBA8 n×n buffer. Shared with HoloPanel so the terminal SKIN is one call.
+// `input` (optional) is the live "> code_" prompt line, baked in amber.
+std::vector<uint8_t> bakeConsoleHologram(uint32_t n, const std::vector<std::string>& lines,
+                                         const std::string& input = "");
+
 // Headless self-test (--test-holoterm): boot readout is present (not blank), typing
 // builds the input line, backspace edits it, submit calls the sink with the value
 // and clears (accept) / keeps a reject line, and the cursor blinks. Asserts H0-H4.
