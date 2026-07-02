@@ -108,12 +108,6 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
         paired[pairKey(dw.a, dw.b)].push_back(di);
         ++degree[dw.a]; ++degree[dw.b];
     }
-    auto pairHasKind = [&](uint32_t a, uint32_t b, DoorwayKind k) {
-        auto it = paired.find(pairKey(a, b));
-        if (it == paired.end()) return false;
-        for (uint32_t di : it->second) if (floor.doorways[di].kind == k) return true;
-        return false;
-    };
     auto pairAdjacentDoorway = [&](uint32_t a, uint32_t b) -> const CanonDoorway* {
         auto it = paired.find(pairKey(a, b));
         if (it == paired.end()) return nullptr;
@@ -232,14 +226,14 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
         auto faceZ = [&](const CanonRoom& r, float planeZ) {
             return (std::fabs(planeZ - r.z0()) < std::fabs(planeZ - r.z1())) ? 2 : 3;
         };
-        auto coversY = [&](const CanonRoom& big, const CanonRoom& s) {
-            return big.y0() <= s.y0() + eps && big.y1() >= s.y1() - eps;
+        // RUN-AXIS coverage only (Y independent): mirrors the builder's union-height owner —
+        // a run-covering neighbour OWNS the shared face (building it at the union of both
+        // heights), so the covered room's face is NOT built (no coplanar z-fight panel).
+        auto runCovZ = [&](const CanonRoom& big, const CanonRoom& s) {
+            return big.z0() <= s.z0() + eps && big.z1() >= s.z1() - eps;
         };
-        auto coversZ = [&](const CanonRoom& big, const CanonRoom& s) {
-            return big.z0() <= s.z0() + eps && big.z1() >= s.z1() - eps && coversY(big, s);
-        };
-        auto coversX = [&](const CanonRoom& big, const CanonRoom& s) {
-            return big.x0() <= s.x0() + eps && big.x1() >= s.x1() - eps && coversY(big, s);
+        auto runCovX = [&](const CanonRoom& big, const CanonRoom& s) {
+            return big.x0() <= s.x0() + eps && big.x1() >= s.x1() - eps;
         };
         for (const CanonDoorway& dw : floor.doorways) {
             if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
@@ -248,11 +242,11 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
             if (dw.a >= n || dw.b >= n) continue;
             const CanonRoom& A = floor.rooms[dw.a];
             const CanonRoom& B = floor.rooms[dw.b];
-            int fa, fb; bool aCovB, bCovA;
-            if (dw.axis == 0) { fa = faceX(A, dw.cx); fb = faceX(B, dw.cx); aCovB = coversZ(A, B); bCovA = coversZ(B, A); }
-            else              { fa = faceZ(A, dw.cz); fb = faceZ(B, dw.cz); aCovB = coversX(A, B); bCovA = coversX(B, A); }
-            if (aCovB)      { wantSkip[dw.b * 4 + fb] = 1; ownFace[dw.a * 4 + fa] = 1; }
-            else if (bCovA) { wantSkip[dw.a * 4 + fa] = 1; ownFace[dw.b * 4 + fb] = 1; }
+            int fa, fb; bool aCov, bCov;
+            if (dw.axis == 0) { fa = faceX(A, dw.cx); fb = faceX(B, dw.cx); aCov = runCovZ(A, B); bCov = runCovZ(B, A); }
+            else              { fa = faceZ(A, dw.cz); fb = faceZ(B, dw.cz); aCov = runCovX(A, B); bCov = runCovX(B, A); }
+            if (aCov)      { wantSkip[dw.b * 4 + fb] = 1; ownFace[dw.a * 4 + fa] = 1; }
+            else if (bCov) { wantSkip[dw.a * 4 + fa] = 1; ownFace[dw.b * 4 + fb] = 1; }
         }
         for (uint32_t i = 0; i < n * 4; ++i) skipFace[i] = wantSkip[i] && !ownFace[i];
     }
@@ -277,15 +271,10 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
                         (std::max(A.x0(), B.x0()) + std::min(A.x1(), B.x1())) * 0.5f,
                         std::max(A.y0(), B.y0()),
                         (std::max(A.z0(), B.z0()) + std::min(A.z1(), B.z1())) * 0.5f);
-                } else if (std::fabs(A.y0() - B.y0()) < kCoplanarEps &&
-                           pairHasKind(i, j, DoorwayKind::Overlap)) {
-                    add(LintCategory::Seam, "DOUBLED_FLOOR",
-                        fmt("%s and %s overlap with coplanar floor slabs (z-fight in the overlap)",
-                            rn(i).c_str(), rn(j).c_str()),
-                        (std::max(A.x0(), B.x0()) + std::min(A.x1(), B.x1())) * 0.5f,
-                        A.y0(),
-                        (std::max(A.z0(), B.z0()) + std::min(A.z1(), B.z1())) * 0.5f);
                 }
+                // A coplanar Overlap-doored pair is NOT a DOUBLED_FLOOR any more: the builder's
+                // floor dedup makes the smaller room omit its slab over the overlap rect, so a
+                // single continuous slab covers the L-junction (no coincident boxes).
                 continue;
             }
 
