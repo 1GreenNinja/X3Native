@@ -219,16 +219,33 @@ public:
     void applyLook(x3::rhi::IRenderDevice& device) {
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
-        sp.sunDir[0] = 0.10f; sp.sunDir[1] = 0.18f; sp.sunDir[2] = 0.97f;   // toward the Sun body (+Z behind)
-        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.88f;
-        sp.sunIntensity = 0.06f;                       // DEEP SPACE: any higher and the analytic
-                                                       // haze floor washes the lower dome grey
+        // RAKING KEY SUN (menace-relight). The MESH directional sun's color is a
+        // hardcoded full-strength constant (shaders/mesh.frag:156, kSunColor); only
+        // its DIRECTION comes from here (SkyParams.sunDir), and sunIntensity scales
+        // ONLY the analytic sky dome/disc — NOT the hulls. The old dir (0.10,0.18,0.97)
+        // was nearly axial with the reveal camera, so the capital's camera-facing hull
+        // got a flat, near-frontal light with no modeling (a pale slab). We now RAKE the
+        // key up + to the right (still generally BEHIND, +Z, so the "ambush out of the
+        // sun" backlight reads) so one flank/top edge takes a hard sunlit KICKER while
+        // the bulk falls to shadow — a menacing dark mass with a bright rim. The visible
+        // sun DISC is a separate FORGE3D body anchored in load() (unmoved), so raking the
+        // lighting does not move the on-screen sun.
+        sp.sunDir[0] = 0.70f; sp.sunDir[1] = 0.45f; sp.sunDir[2] = 0.55f;   // hard side-top rake
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.95f; sp.sunColor[2] = 0.86f;
+        // sunIntensity scales ONLY the analytic sky disc/glow, NOT the hulls (kSunColor
+        // is full-strength in mesh.frag). Set to 0 so raking the KEY direction for hull
+        // sculpting does not spawn a stray second sun disc — the on-screen "sun" is the
+        // FORGE3D body anchored in load(); the ambush still comes out of it.
+        sp.sunIntensity = 0.0f;
         sp.haze = 0.0f; sp.exposure = 1.0f;
         sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.010f;
         sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.020f;
         device.setSkyParams(sp);
-        device.setAmbient(0.17f, 0.18f, 0.25f);        // cool starlight fill — carries the hulls
-        device.setBloom(0.30f);                        // hero glow: engines / bolts / the sun
+        // Lower + cooler starlight fill so the SHADOW side reads as a dark hull (not a
+        // pale wash) — the raking sun + the running lights carry the form. (Was 0.17/
+        // 0.18/0.25, which — with the old flat emissive — flattened the ship to clay.)
+        device.setAmbient(0.085f, 0.095f, 0.135f);     // cool starlight fill — dark-side lift only
+        device.setBloom(0.34f);                        // hero glow: engines / red running lights / bolts
     }
 
     // Restore the device state the cutscene touched to the engine defaults the
