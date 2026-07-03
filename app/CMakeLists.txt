@@ -68,6 +68,7 @@ add_executable(X3Engine WIN32
     objective.cpp
     trigger.cpp
     rescue.cpp
+    npc_character.cpp
     npc_dialog.cpp
     story_ops.cpp
     chat_tree.cpp
