@@ -19,14 +19,20 @@
 // Authoring style mirrors act2_caves' Scene-prop helpers: every portal is a
 // vertical round "tech-gate" ring built from N tangent box segments (two
 // concentric layers — outer + inner — so the gate reads as a framed
-// doorway), a small octagonal emissive floor-plate, and a thin emissive
-// "shimmer disk" at the center of the ring as the portal's energy core. A
+// doorway), a small octagonal emissive floor-plate, and an EVENT-HORIZON
+// MEMBRANE filling the ring opening as the portal's energy surface: a
+// vertical pool of blue-white energy built from concentric bands of thin
+// tangent box segments, brightest at the center and fading to deep blue at
+// the rim (the outermost band bleeds a fraction of the destination tint). A
 // wider AABB trigger sits underneath. No GLB asset needed.
 //
-// SHIMMER ANIMATION: Rifthub::tick(dt) runs each frame and pulses the ring's
-// + the shimmer disk's emissive intensity via sin(time * freq + phase), with
-// a per-portal phase offset so the gates ripple around the hub instead of
-// pulsing in unison. See rifthub.cpp's tick() for the constants.
+// SHIMMER ANIMATION: Rifthub::tick(dt) runs each frame and (a) pulses the
+// ring frame's emissive intensity via sin(time * freq + phase) with a
+// per-portal phase offset so the gates ripple around the hub, and (b) drives
+// the membrane's LIQUID RIPPLE: each concentric band's emissive is phased by
+// sin(time*w - radius*k) so bright crests travel outward from the center
+// like rings on a pond, plus a slow angular swirl term per segment. See
+// rifthub.cpp's tick() for the constants.
 
 #include "scene.h"
 #include "trigger.h"
@@ -84,6 +90,13 @@ struct RiftPortal {
     // in sequence (the wormhole generator "charging" the field). Contiguous span.
     uint32_t       nodeEntFirst = 0;      // first rim emitter-node entity id
     uint32_t       nodeEntCount = 0;      // number of rim emitter nodes
+    // Event-horizon membrane — the visible portal SURFACE: concentric bands of
+    // thin emissive segments filling the ring opening (a vertical blue-white
+    // energy pool). Contiguous span, authored band 0 (innermost) outward,
+    // kMembraneSegs entities per band; tick() phases each band's emissive with
+    // sin(time*w - bandRadius*k) so ripples propagate center -> rim.
+    uint32_t       membraneEntFirst = 0;  // first membrane-band entity id
+    uint32_t       membraneEntCount = 0;  // bands * segments entities
 };
 
 // The Portal-Hub area. Build once after the device + physics + a TriggerSystem
@@ -102,10 +115,13 @@ public:
                x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers);
 
     // Per-frame shimmer animation. Pulses each portal's ring-segment emissive
-    // strength + its inner shimmer-disk strength using sin(m_time*freq+phase),
-    // with a small per-portal phase offset so the gates ripple around the hub
-    // instead of pulsing in unison. The pulse is RANGE-mapped to {ring 1.5..4,
-    // core 3..6.5} so the energy core always outshines the frame.
+    // strength using sin(m_time*freq+phase) with a small per-portal phase
+    // offset so the gates ripple around the hub instead of pulsing in unison,
+    // pulses the core center disks, chase-pulses the rim emitter nodes, and
+    // drives the event-horizon membrane's liquid ripple: each concentric
+    // band's emissive follows sin(m_time*w - bandRadius*k) (crests travel
+    // center -> rim) plus a slow per-segment swirl. All emissive pokes are
+    // in-place on the authored entities — no per-frame heap.
     // `scene` is the Scene the portals were authored into (build()'s scene).
     void tick(float dt, Scene& scene);
 
@@ -159,14 +175,16 @@ private:
 // Headless self-test (--test-rifthub). Builds the hub on a HeadlessDevice + Jolt
 // world and asserts:
 //   * the hub builds with exactly 8 portals (one per --world target);
-//   * each portal owns a trigger volume + a contiguous span of ring/core/node
-//     scene entities;
+//   * each portal owns a trigger volume + a contiguous span of ring/core/node/
+//     membrane scene entities;
 //   * entering a portal's trigger (via TriggerSystem::update with a point inside
 //     the volume) latches that portal's `activated` flag + the HUD prompt flips
 //     to "Rift activated: <name>" — and only AFTER every portal is entered does
 //     allActivated() become true;
-//   * tick(dt) advances the shimmer: a ring-segment + core emissive intensity
-//     changes across two ticks at different times (the pulse is live);
+//   * tick(dt) advances the shimmer: a ring-segment + core + membrane emissive
+//     intensity changes across two ticks at different times (the pulse is
+//     live), and two membrane bands at different radii sit at DIFFERENT
+//     emissive levels at the same instant (the ripple really is radial);
 //   * all 8 portal worldNames map to REAL --world targets the host accepts.
 // Prints "rifthub: X/Y passed"; returns true iff all pass. No window/Vulkan.
 bool runRifthubSelfTest();

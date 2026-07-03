@@ -57,10 +57,12 @@ inline float plateHalfTangent() {
     return kPlateRingR * std::sin(pi / (float)kPlateSegments) * 1.04f;
 }
 
-// ---- Shimmer disk (energy core) -----------------------------------------------
-// A thin vertical slab at the ring center, facing radially back toward the hub.
-constexpr float    kCoreHalfW      = 0.75f;  // 1.5m wide
-constexpr float    kCoreHalfH      = 0.75f;  // 1.5m tall
+// ---- Pool center (energy-core hot spot) -----------------------------------------
+// Two small thin vertical slabs at the exact ring center — the brightest
+// blue-white point of the event-horizon pool (the membrane bands fill the rest
+// of the opening around them). Small so the round membrane silhouette wins.
+constexpr float    kCoreHalfW      = 0.30f;  // 0.6m wide hot-center slab
+constexpr float    kCoreHalfH      = 0.30f;  // 0.6m tall
 constexpr float    kCoreHalfT      = 0.025f; // 0.05m thick (thin disk)
 
 // ---- Trigger volume -----------------------------------------------------------
@@ -82,9 +84,9 @@ constexpr float    kRingMaxEmissive   = 4.0f;            // ring pulse max
 // distinguishable), but the energy core + rim emitter nodes are a unifying
 // electric blue — every portal reads as a blue wormhole inside a colored housing.
 constexpr float    kCoreBlue[3]       = { 0.15f, 0.55f, 1.00f };  // electric blue
-constexpr float    kCoreInnerBlue[3]  = { 0.60f, 0.85f, 1.00f };  // brighter inner (near-white-blue)
-constexpr float    kCoreInnerHalfW    = 0.42f;          // inner disk half-width
-constexpr float    kCoreInnerHalfH    = 0.42f;          // inner disk half-height
+constexpr float    kCoreInnerBlue[3]  = { 0.82f, 0.93f, 1.00f };  // hot center (near-white-blue)
+constexpr float    kCoreInnerHalfW    = 0.17f;          // inner hot-spot half-width
+constexpr float    kCoreInnerHalfH    = 0.17f;          // inner hot-spot half-height
 constexpr float    kCoreInnerHalfT    = 0.020f;         // inner disk half-thickness
 constexpr float    kCoreBlueMinEm     = 4.0f;           // core blue pulse min
 constexpr float    kCoreBlueMaxEm     = 9.0f;           // core blue pulse max (bright)
@@ -109,6 +111,55 @@ constexpr float    kNodeChaseHz       = 0.85f;          // chase peak revolution
 constexpr float    kNodeMinEm         = 0.5f;           // node trough
 constexpr float    kNodeMaxEm         = 7.5f;           // node peak (when the chase hits it)
 constexpr float    kNodeChaseSharp    = 6.0f;           // higher = tighter/brighter peak
+
+// ---- Event-horizon membrane (the visible portal SURFACE) -----------------------
+// A vertical POOL of blue-white energy filling the ring opening — the portal's
+// "liquid surface". Built ONCE in build() as kMembraneBands concentric bands of
+// kMembraneSegs thin tangent box segments each (same tangent-segment technique
+// as the frame ring, but flat thin sheets in the ring plane), butted radially so
+// the opening reads as an unbroken membrane. Bands alternate between three
+// slight depth planes along the outward axis for parallax + no z-fighting.
+//
+// tick() animates the pool as a standing pond hit by a stone: each band's
+// emissive strength follows sin(m_time*w - bandRadius*k), so bright crests
+// travel OUTWARD from the center to the rim (radially-propagating ripple), plus
+// a slow low-amplitude per-segment swirl sin(theta - t*ws + r*twist) so the
+// surface shimmers and churns instead of strobing. Colors are fixed at build:
+// blue-white at the center fading to deep blue at the rim; ONLY the outermost
+// band lerps a fraction toward the portal's destination tint (accent bleed) so
+// the pool itself always reads Stargate-blue.
+constexpr uint32_t kMembraneBands     = 5;               // concentric ripple bands
+constexpr uint32_t kMembraneSegs      = 14;              // tangent segments per band
+constexpr float    kMembraneInnerR    = 0.45f;           // innermost band center radius
+constexpr float    kMembraneStepR     = 0.25f;           // radial spacing between bands
+constexpr float    kMembraneHalfR     = 0.135f;          // band radial half-width (bands butt)
+constexpr float    kMembraneHalfT     = 0.018f;          // band half-thickness (thin sheet)
+constexpr float    kMembraneDepthStep = 0.030f;          // parallax depth-plane offset (outward)
+// Pool gradient: near-white-blue center -> deep blue rim.
+constexpr float    kPoolCenterBlue[3] = { 0.72f, 0.90f, 1.00f };
+constexpr float    kPoolRimBlue[3]    = { 0.08f, 0.32f, 0.95f };
+constexpr float    kPoolEdgeTintMix   = 0.22f;           // rim-band lerp toward destination tint
+// Ripple drive: crests travel center -> rim (phase = t*w - r*k). Subtle + continuous.
+constexpr float    kRippleFreqHz      = 1.15f;           // ripple oscillation rate (Hz)
+constexpr float    kRippleK           = 9.5f;            // radial wavenumber (rad/m, ~0.66 m wavelength)
+constexpr float    kSwirlHz           = 0.30f;           // slow angular swirl (rev/s)
+constexpr float    kSwirlAmp          = 0.55f;           // swirl emissive contribution (subtle)
+constexpr float    kSwirlTwist        = 2.2f;            // radial twist of the swirl arm (rad/m)
+// Membrane emissive: base fades center -> rim; the ripple wave rides on top.
+constexpr float    kPoolBaseEmCenter  = 5.5f;            // innermost band base strength
+constexpr float    kPoolBaseEmRim     = 2.4f;            // outermost band base strength
+constexpr float    kPoolRippleAmp     = 1.8f;            // travelling-crest amplitude
+constexpr float    kPoolMinEm         = 0.35f;           // trough clamp (never fully dark)
+// Membrane band center radius for band j (0 = innermost).
+inline float membraneBandR(uint32_t band) {
+    return kMembraneInnerR + (float)band * kMembraneStepR;
+}
+// Band segment half-tangent — half the chord between adjacent segment centers
+// with a 6% overlap so the bands read as unbroken liquid, not a bead chain.
+inline float membraneHalfTangent(float bandR) {
+    const float pi = 3.14159265358979f;
+    return bandR * std::sin(pi / (float)kMembraneSegs) * 1.06f;
+}
 
 // Portal authoring table — ORDER is the clockwise arrangement around the hub
 // starting at +X (angle 0 -> -X around -Y rotation; we iterate i=0..7 at
@@ -211,9 +262,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_portals.reserve(kPortalCount);
     // Each portal authors: (2 layers * kRingSegments ring boxes) + kPlateSegments
     // floor wedges + kStrutCount emitter struts + kNodeCount rim nodes + 2 core
-    // disks = 2*24 + 8 + 4 + 8 + 2 = 70 meshes.
+    // disks + (kMembraneBands * kMembraneSegs) event-horizon membrane segments
+    // = 2*24 + 8 + 4 + 8 + 2 + 5*14 = 140 meshes.
     m_portalMeshes.reserve(kPortalCount *
-        (2 * kRingSegments + kPlateSegments + kStrutCount + kNodeCount + 2));
+        (2 * kRingSegments + kPlateSegments + kStrutCount + kNodeCount + 2 +
+         kMembraneBands * kMembraneSegs));
 
     const float twoPi = 6.2831853f;
     for (uint32_t i = 0; i < kPortalCount; ++i) {
@@ -379,11 +432,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.nodeEntFirst = nodeEntFirst;
         p.nodeEntCount = kNodeCount;
 
-        // ---- Energy core: electric-blue disk + brighter inner disk -----------
-        // The wormhole itself — a vertical blue slab at the ring center facing
-        // back toward the hub, with a smaller near-white-blue disk in front of
-        // it for depth. Both pulse blue (NOT the destination tint) so every
-        // portal reads as a blue wormhole regardless of its frame color.
+        // ---- Pool center: electric-blue disk + near-white-blue hot spot ------
+        // The brightest point of the event-horizon pool — a small vertical blue
+        // slab at the exact ring center facing back toward the hub, with an even
+        // smaller near-white-blue disk in front of it for depth. Both pulse blue
+        // (NOT the destination tint); the membrane bands below fill the rest of
+        // the ring opening around them.
         const float coreLocX[3] = { rightX, 0.0f, rightZ };          // along the ring's right axis
         const float coreLocY[3] = { 0.0f,    1.0f, 0.0f    };        // world up
         const float coreLocZ[3] = { outwardX, 0.0f, outwardZ };      // thin axis = outward
@@ -407,6 +461,59 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_portalMeshes.push_back(coreInner.mesh);
         p.coreInnerEnt = coreInner.entityId;
 
+        // ---- Event-horizon membrane (the portal SURFACE) ----------------------
+        // Concentric bands of thin tangent segments filling the ring opening — a
+        // vertical, unbroken pool of blue-white energy standing on its edge. Same
+        // tangent-segment construction as the frame ring, but each segment is a
+        // flat thin sheet in the ring plane (local +X = tangent, +Y = radial,
+        // +Z = outward/thin) so the bands butt radially into a solid membrane.
+        // Authored band 0 (innermost, brightest, blue-white) outward to band
+        // N-1 (rim, deep blue + a bleed of the destination tint), contiguous so
+        // tick() can phase each band's emissive by its radius for the ripple.
+        // Bands cycle through three slight outward depth planes for parallax.
+        const uint32_t membraneEntFirst = scene.size();
+        for (uint32_t b = 0; b < kMembraneBands; ++b) {
+            const float bandR    = membraneBandR(b);
+            const float halfTang = membraneHalfTangent(bandR);
+            // Color gradient center -> rim; only the RIM band bleeds the tint.
+            const float g = (kMembraneBands > 1)
+                          ? (float)b / (float)(kMembraneBands - 1) : 0.0f;
+            float bandCol[3];
+            for (int c = 0; c < 3; ++c)
+                bandCol[c] = kPoolCenterBlue[c] + (kPoolRimBlue[c] - kPoolCenterBlue[c]) * g;
+            if (b == kMembraneBands - 1)
+                for (int c = 0; c < 3; ++c)
+                    bandCol[c] += (sp.tint[c] - bandCol[c]) * kPoolEdgeTintMix;
+            // Depth plane: -1 / 0 / +1 steps along outward (parallax, no z-fight).
+            const float depth = ((float)(b % 3) - 1.0f) * kMembraneDepthStep;
+            const float bcx = cx + outwardX * depth;
+            const float bcz = cz + outwardZ * depth;
+            const float baseEm = kPoolBaseEmCenter +
+                                 (kPoolBaseEmRim - kPoolBaseEmCenter) * g;
+            for (uint32_t s = 0; s < kMembraneSegs; ++s) {
+                const float th = (float)s * (twoPi / (float)kMembraneSegs);
+                const float ct = std::cos(th);
+                const float st = std::sin(th);
+                // Segment center in the ring plane (right/up), off the depth plane.
+                const float mcx = bcx    + bandR * ct * rightX;
+                const float mcy = kRingY + bandR * st;
+                const float mcz = bcz    + bandR * ct * rightZ;
+                // Local +X = tangent, +Y = radial-out (band width), +Z = outward.
+                const float locX[3] = { -st * rightX, ct, -st * rightZ };
+                const float locY[3] = {  ct * rightX, st,  ct * rightZ };
+                const float locZ[3] = {  outwardX,   0.0f, outwardZ };
+                AddedEntity ae = addOrientedEmissiveBox(
+                    scene, device,
+                    halfTang, kMembraneHalfR, kMembraneHalfT,
+                    locX, locY, locZ,
+                    mcx, mcy, mcz,
+                    bandCol, baseEm);
+                m_portalMeshes.push_back(ae.mesh);
+            }
+        }
+        p.membraneEntFirst = membraneEntFirst;
+        p.membraneEntCount = kMembraneBands * kMembraneSegs;
+
         m_portals.push_back(p);
 
         // Trigger volume: wider than the ring so the player only needs to
@@ -420,7 +527,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_built = true;
     x3::logInfo("[rifthub] hub built with " + std::to_string(m_portals.size()) +
                 " portals (round tech-gate rings, " + std::to_string(kRingSegments) +
-                " segments/ring x 2 layers + octagonal plate + shimmer disk)");
+                " segments/ring x 2 layers + octagonal plate + event-horizon membrane, " +
+                std::to_string(kMembraneBands) + " bands x " +
+                std::to_string(kMembraneSegs) + " segments)");
 }
 
 void Rifthub::tick(float dt, Scene& scene) {
@@ -431,6 +540,8 @@ void Rifthub::tick(float dt, Scene& scene) {
     const float ringOmega = twoPi * kShimmerFreqHz;   // destination-tint frame pulse
     const float coreOmega = twoPi * kCoreFreqHz;       // faster blue energy pulse
     const float chaseOmega = twoPi * kNodeChaseHz;     // rim-node chase rotation
+    const float ripOmega   = twoPi * kRippleFreqHz;    // membrane ripple oscillation
+    const float swirlOmega = twoPi * kSwirlHz;         // membrane slow swirl rotation
     auto& ents = scene.entities();
     const uint32_t sceneN = (uint32_t)ents.size();
 
@@ -464,6 +575,31 @@ void Rifthub::tick(float dt, Scene& scene) {
             const float c01  = 0.5f * (std::cos(nodePhase) + 1.0f);   // [0,1]
             const float peak = std::pow(c01, kNodeChaseSharp);        // sharpen to a tight peak
             ents[p.nodeEntFirst + n].emissive[3] = kNodeMinEm + (kNodeMaxEm - kNodeMinEm) * peak;
+        }
+
+        // --- Event-horizon membrane: outward-travelling liquid ripple --------
+        // Band b (center radius r) rides sin(t*w - r*k): as t advances the
+        // crest's radius grows, so bright rings expand from the center to the
+        // rim like a stone dropped in a standing pond. A slow low-amplitude
+        // swirl term sin(theta - t*ws + r*twist) rotates a soft bright arm
+        // through the pool so the surface churns instead of strobing. Base
+        // strength fades center -> rim (the middle stays the brightest point).
+        for (uint32_t m = 0; m < p.membraneEntCount; ++m) {
+            const uint32_t e = p.membraneEntFirst + m;
+            if (e >= sceneN) break;
+            const uint32_t band = m / kMembraneSegs;
+            const uint32_t seg  = m % kMembraneSegs;
+            const float r  = membraneBandR(band);
+            const float th = (float)seg * (twoPi / (float)kMembraneSegs);
+            const float g  = (kMembraneBands > 1)
+                           ? (float)band / (float)(kMembraneBands - 1) : 0.0f;
+            const float base   = kPoolBaseEmCenter +
+                                 (kPoolBaseEmRim - kPoolBaseEmCenter) * g;
+            const float ripple = std::sin(m_time * ripOmega - r * kRippleK + phase);
+            const float swirl  = std::sin(th - m_time * swirlOmega + r * kSwirlTwist);
+            float em = base + kPoolRippleAmp * ripple + kSwirlAmp * swirl;
+            if (em < kPoolMinEm) em = kPoolMinEm;
+            ents[e].emissive[3] = em;
         }
     }
 }
@@ -564,19 +700,22 @@ bool runRifthubSelfTest() {
             hub.portalCount() == 8,
             "T0 hub built with 8 portals (one per --world target)");
 
-    // T1 — each portal owns a contiguous span of ring + node entities + 2 core
-    //      disks, and the spans index valid scene entities.
+    // T1 — each portal owns a contiguous span of ring + node + event-horizon
+    //      membrane entities + 2 core disks, and the spans index valid scene
+    //      entities.
     {
         const uint32_t sceneN = scene.size();
         bool ok = sceneN > 0;
         for (uint32_t i = 0; i < hub.portalCount(); ++i) {
             const RiftPortal& p = hub.portal(i);
             if (p.ringEntCount == 0 || p.nodeEntCount == 0) ok = false;
+            if (p.membraneEntCount == 0)                    ok = false;
             if (p.ringEntFirst + p.ringEntCount > sceneN)   ok = false;
             if (p.coreEnt >= sceneN || p.coreInnerEnt >= sceneN) ok = false;
             if (p.nodeEntFirst + p.nodeEntCount > sceneN)   ok = false;
+            if (p.membraneEntFirst + p.membraneEntCount > sceneN) ok = false;
         }
-        rhCheck(ok, "T1 every portal owns valid ring/node/core entity spans");
+        rhCheck(ok, "T1 every portal owns valid ring/node/core/membrane entity spans");
     }
 
     // T2 — all 8 portal names map to REAL --world targets the host launches.
@@ -628,22 +767,36 @@ bool runRifthubSelfTest() {
                 "T4 each trigger latches its portal; allActivated() only after all 8");
     }
 
-    // T5 — tick(dt) advances the shimmer: a ring-segment + core emissive value
-    //      DIFFERS between two ticks taken at different times (the pulse is live).
+    // T5 — tick(dt) advances the shimmer: ring-segment + core + membrane emissive
+    //      values DIFFER between two ticks taken at different times (the pulse +
+    //      ripple are live), AND two membrane bands at different radii sit at
+    //      different emissive levels at the same instant (the ripple really is
+    //      a radial wave, not a uniform strobe).
     {
         const RiftPortal& p = hub.portal(0);
         hub.tick(0.0f, scene);   // seed m_time at a known phase
         const float ring0 = scene.entities()[p.ringEntFirst].emissive[3];
         const float core0 = scene.entities()[p.coreEnt].emissive[3];
-        // Advance ~a tenth of a second — enough for sin(2.5..3.2 Hz * 2pi * dt)
+        const float mem0  = scene.entities()[p.membraneEntFirst].emissive[3];
+        // Advance ~a tenth of a second — enough for sin(1.15..3.2 Hz * 2pi * dt)
         // to move appreciably.
         hub.tick(0.1f, scene);
         const float ring1 = scene.entities()[p.ringEntFirst].emissive[3];
         const float core1 = scene.entities()[p.coreEnt].emissive[3];
-        bool moved = std::fabs(ring1 - ring0) > 1e-3f && std::fabs(core1 - core0) > 1e-3f;
+        const float mem1  = scene.entities()[p.membraneEntFirst].emissive[3];
+        bool moved = std::fabs(ring1 - ring0) > 1e-3f &&
+                     std::fabs(core1 - core0) > 1e-3f &&
+                     std::fabs(mem1  - mem0)  > 1e-3f;
         // Ring pulse stays within its declared [min,max] band.
         bool bounded = ring1 >= kRingMinEmissive - 0.01f && ring1 <= kRingMaxEmissive + 0.01f;
-        rhCheck(moved && bounded, "T5 tick() advances ring + core shimmer (live, bounded)");
+        // Radial ripple: at the SAME instant, band 0 (segment 0) and band 2
+        // (segment 0) — 2*kMembraneStepR apart in radius — must be phased apart
+        // by their sin(t*w - r*k) terms, so their emissive levels differ.
+        const float bandA = scene.entities()[p.membraneEntFirst].emissive[3];
+        const float bandB = scene.entities()[p.membraneEntFirst + 2 * kMembraneSegs].emissive[3];
+        bool radial = std::fabs(bandA - bandB) > 1e-3f;
+        rhCheck(moved && bounded && radial,
+                "T5 tick() advances ring + core + membrane ripple (live, bounded, radial)");
     }
 
     hub.shutdown(device);
