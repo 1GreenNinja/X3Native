@@ -660,3 +660,35 @@ input[type="color"] { width: 44px; height: 30px; border: 1px solid var(--hairlin
 ::-webkit-scrollbar-thumb { background: rgba(140, 170, 210, 0.18); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(63, 208, 224, 0.35); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ===================== MOBILE (≤640px) — single column, desktop untouched ===================== */
+.mobile-back { display: none; }  /* hidden on desktop */
+@media (max-width: 640px) {
+  /* one column: sidebar OR room, never both squished side-by-side */
+  .workspace, .workspace.with-members { grid-template-columns: 1fr !important; }
+  .sidebar { grid-column: 1; grid-row: 1; }
+  .room-view { grid-column: 1; grid-row: 1; }
+  .member-panel { display: none; }   /* member panel is desktop-only for now */
+
+  /* default: show the channel list, hide the room */
+  .room-view { display: none; }
+  .sidebar { display: flex; }
+
+  /* when a room is open (mobile-room), flip: full-screen room, hide list */
+  .workspace.mobile-room .sidebar { display: none; }
+  .workspace.mobile-room .room-view { display: flex; }
+
+  /* the back chevron in the room header (mobile only) */
+  .mobile-back {
+    display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--cyan); cursor: pointer;
+    font-size: 30px; line-height: 1; padding: 0 12px 0 0; margin: -4px 0;
+  }
+  /* roomier touch targets */
+  .room-row { padding: 10px 16px; font-size: 16px; }
+  .section-head { padding: 14px 12px 6px 10px; }
+  .composer { margin: 0 12px 12px; }
+  .members-toggle { display: none; }  /* no member panel on mobile → hide its toggle */
+  /* full-height panes; iOS safe-area padding at the bottom */
+  .composer-input { font-size: 16px; }  /* ≥16px stops iOS auto-zoom on focus */
+}

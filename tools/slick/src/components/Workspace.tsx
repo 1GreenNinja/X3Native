@@ -60,14 +60,18 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
     } catch { /* surfaced via sync */ }
   };
   const active = activeId ? store.rooms.get(activeId) : null;
+  const [mobileRoom, setMobileRoom] = useState(false); // mobile: viewing a room vs the list
 
-  // Auto-select the first channel once sync lands
+  // Auto-select the first channel once sync lands (desktop only — on mobile
+  // we want the channel list first, not an auto-opened room)
   useEffect(() => {
-    if (!activeId && channels.length) setActiveId(channels[0].id);
+    if (!activeId && channels.length && window.innerWidth > 640) setActiveId(channels[0].id);
   }, [channels.length]);
 
+  const openRoom = (id: string) => { setActiveId(id); setMobileRoom(true); };
+
   return (
-    <div class={`workspace ${showMembers && active ? "with-members" : ""}`}>
+    <div class={`workspace ${showMembers && active ? "with-members" : ""} ${mobileRoom ? "mobile-room" : ""}`}>
       <aside class="sidebar">
         <header class="ws-header">
           <span class="ws-name">FleetCommand</span>
@@ -79,7 +83,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
             const channelRow = (r: Room) => (
               <a key={r.id} draggable
                 class={`room-row ${r.id === activeId ? "active" : ""} ${r.unread ? "unread" : ""}`}
-                onClick={() => setActiveId(r.id)}
+                onClick={() => openRoom(r.id)}
                 onDragStart={() => setDragId(r.id)}
                 onDragEnd={() => setDragId(null)}>
                 <span class="hash">#</span> <span class="room-name">{r.name}</span>
@@ -179,7 +183,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
                 {openDm && dms.map((r) => (
                   <a key={r.id}
                     class={`room-row ${r.id === activeId ? "active" : ""} ${r.unread ? "unread" : ""}`}
-                    onClick={() => setActiveId(r.id)}>
+                    onClick={() => openRoom(r.id)}>
                     <span class="presence-dot" /> {r.name}
                     {r.unread > 0 && <span class="badge">{r.unread}</span>}
                   </a>
@@ -205,6 +209,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
         {active ? (
           <>
             <header class="room-header">
+              <button class="mobile-back" onClick={() => setMobileRoom(false)} title="Back to channels">‹</button>
               <span class="room-title"><span class="hash">{active.isDm ? "@" : "#"}</span> {active.name}</span>
               <button
                 class={`members-toggle ${showMembers ? "on" : ""}`}
