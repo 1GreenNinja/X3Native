@@ -44,6 +44,12 @@ const char* kRelFusebox    = "SciFi_Warehouse_Kit/Fusebox 01.glb";
 const char* kRelWall       = "ModularSciFi_Interior/SM_Wall_A.glb";
 const char* kRelWallB      = "ModularSciFi_Interior/SM_Wall_B.glb";   // heavier paneling/greebles
 const char* kRelWallC      = "ModularSciFi_Interior/SM_Wall_C.glb";   // ribbed/detailed variant
+// ROUND 4 — a real CEILING: R3 left the graybox ceiling exposed (unlit near-black kit ->
+// the room read as OPEN VOID above the pipes). SM_Ceiling_A is the kit's 4x3 m horizontal
+// ceiling panel (authored in-situ at Y 4.0..4.4, underside at local Y=4.0); we tile it
+// under the graybox plane exactly like the wall panels so looking up reads as a built,
+// paneled service ceiling instead of night sky.
+const char* kRelCeiling    = "ModularSciFi_Interior/SM_Ceiling_A.glb";
 const char* kRelDoor       = "ModularSciFi_Interior/SM_Door_A.glb";
 const char* kRelDoorFrame  = "ModularSciFi_Interior/SM_DoorFrame_A.glb";
 const char* kRelDuctVent   = "SciFi_Warehouse_Kit/Duct Vent.glb";
@@ -69,6 +75,7 @@ constexpr Aabb kPalletAabb { -1.559f, 0.000f,-0.005f,  0.003f,0.198f,1.519f };
 constexpr Aabb kFuseAabb   { -0.329f,-0.936f,-0.245f, -0.144f,1.308f,0.396f };
 // ROUND 2: probed via tools/glb_node_bounds (M2 node-TRS convention).
 constexpr Aabb kWallAabb   { -1.431f,-0.043f, -0.000f,  0.000f,4.403f,3.000f };   // panel: face at X=0, 3m wide(Z), 4.4 tall
+constexpr Aabb kCeilAabb   { -5.100f, 4.000f,  0.000f, -1.100f,4.400f,3.000f };   // 4x3 m flat panel, underside at Y=4.0
 constexpr Aabb kDoorAabb   { -4.875f, 0.054f, -0.112f, -2.525f,3.554f,0.112f };   // 2.35 wide x 3.5 tall slab
 constexpr Aabb kDoorFrAabb { -6.250f,-0.043f, -0.277f, -0.000f,4.403f,0.277f };   // wide frame (we scale down)
 constexpr Aabb kVentAabb   { -0.327f,-0.327f,  0.000f,  0.327f,0.327f,0.999f };   // grate cube, depth in +Z
@@ -193,7 +200,9 @@ void CellDressing::addDustMotes(uint32_t moteMesh, int n, float x, float y, floa
         m.phase = h * 2.0f * kPi;
         m.rate = 0.20f + 0.30f * h2;
         m.riseY = riseY; m.span = span;
-        m.size = 0.012f + 0.020f * h;
+        // R4: 0.012+0.020h -> 0.005+0.008h — the big bright quads froze into white DASHES
+        // in stills (Tim read them as floating tracer garbage). Real dust is sub-cm.
+        m.size = 0.005f + 0.008f * h;
         m_motes.push_back(m);
     }
 }
@@ -251,6 +260,7 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     // ROUND 3 — richer paneled wall variants (drop-in, same slab AABB as SM_Wall_A).
     const uint32_t aWallB   = load(kRelWallB);
     const uint32_t aWallC   = load(kRelWallC);
+    const uint32_t aCeil    = load(kRelCeiling);   // ROUND 4 — the real ceiling panels
     const uint32_t aDoorFr  = load(kRelDoorFrame);
     (void)kRelDoor;   // SM_Door_A's sliding slab is owned by canonDoors; frame only here.
     const uint32_t aVent    = load(kRelDuctVent);
@@ -269,7 +279,9 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     // Consistent industrial palette tints so the warehouse-kit props read as one cohesive
     // dressed space (the raw GLBs vary from near-white to grey, which looks scattered).
     const float tCrate[4]  = { 0.66f, 0.60f, 0.52f, 1.0f };  // weathered crate (warm grey, lifted R3)
-    const float tBunk[4]   = { 0.58f, 0.60f, 0.70f, 1.0f };  // cot mattress (cool blue-grey, lifted R3)
+    const float tBunk[4]   = { 0.92f, 0.95f, 1.08f, 1.0f };  // cot mattress (R5: near-full albedo —
+                                                             // the crate tex is dark; 0.6x read as
+                                                             // black-gold trash bags under the pools)
     const float tBarrel[4] = { 0.46f, 0.34f, 0.25f, 1.0f };  // rusted drum (warm brown)
     const float tPallet[4] = { 0.48f, 0.38f, 0.26f, 1.0f };  // wood pallet
     // Wall/detail palette: keep the PBR wall near its real albedo but desaturate +
@@ -342,6 +354,26 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // slabbing the threshold.
         place(aWallC, kPi, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
               x1 - inset, fY, z0, nullptr, tWall);
+
+        // ROUND 4 — CEILING: tile SM_Ceiling_A flat under the graybox ceiling plane so
+        // looking up reads as a BUILT paneled service ceiling, not open void (the graybox
+        // ceiling is unlit near-black kit). 2 panels along X (4 m each) x 2 along Z (3 m
+        // each) covers the 7x6 cell; the 0.10 m inset keeps them clear of the graybox
+        // plane (no coplanar z-fight) and the walls occlude the slight X overshoot.
+        // Kept DARK (cool gunmetal) so the overhead stays moody — the pipes and fixtures
+        // read against panel lines instead of a black hole.
+        {
+            const float tCeil[4] = { 0.26f, 0.27f, 0.31f, 1.0f };
+            // 0.14 m in from the plane: the graybox slab is 0.2 m thick CENTERED on it, so
+            // its inner face is at -0.10 — 0.14 keeps the panel underside past it (no
+            // coplanar z-fight), same inset law the wall panels use.
+            const float cInset = 0.14f;
+            for (int ix = 0; ix < 2; ++ix)
+                for (int iz = 0; iz < 2; ++iz)
+                    place(aCeil, 0.0f, 1.0f, cx(kCeilAabb), kCeilAabb.miny, cz(kCeilAabb),
+                          x0 + 2.0f + 4.0f * ix, ceilY - cInset, z0 + 1.5f + 3.0f * iz,
+                          nullptr, tCeil);
+        }
     }
 
     // ================= WALL DETAIL — vents / conduit / cam / signage / sconces =====
@@ -354,43 +386,53 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
               ccx - 1.4f, fY + 2.7f, z0 + 0.16f, nullptr, tRust);
         place(aVent, 0.0f, 0.85f, cx(kVentAabb), cy(kVentAabb), kVentAabb.minz,
               ccx + 1.5f, fY + 2.9f, z0 + 0.16f, nullptr, tRust);
-        // A horizontal CONDUIT/DUCT run hugging the +Z wall near the ceiling (runs in X
-        // -> yaw +pi/2), scaled short to fit the cell width.
+        // A horizontal CONDUIT/DUCT run hugging the +Z wall, raised FLUSH under the new
+        // ceiling panels (R3 hung it 0.55 m down with no hangers -> a floating black box).
+        // Runs in X -> yaw +pi/2.
         const float ductS = 0.42f;
         place(aDuct, kPi * 0.5f, ductS, cx(kDuctAabb), kDuctAabb.maxy, cz(kDuctAabb),
-              x1 - 0.35f, ceilY - 0.55f, z1 - 0.30f, nullptr, tSteel);
-        // A vertical conduit DROP down the -X back wall (cable run feeding the cell).
-        place(aDuct, 0.0f, ductS * 0.6f, cx(kDuctAabb), kDuctAabb.maxy, cz(kDuctAabb),
-              x0 + 0.30f, ceilY - 0.50f, z0 + 0.9f, nullptr, tDark);
+              x1 - 0.35f, ceilY - 0.16f, z1 - 0.30f, nullptr, tSteel);
+        // R4: the R3 "vertical conduit DROP" was REMOVED — place() can only yaw (no
+        // pitch/roll), so the duct stayed HORIZONTAL and floated mid-air off the -X wall
+        // as a black plank (Tim's "black wires"). No legal vertical run in this kit.
         // SECURITY CAMERA in the +X/+Z upper corner watching the cell (it has no GLB
         // material -> dark-tinted so it reads as a black gunmetal housing, not white).
         place(aCam, kPi * 0.75f, 1.0f, cx(kCamAabb), cy(kCamAabb), cz(kCamAabb),
               x1 - 0.25f, ceilY - 0.35f, z1 - 0.25f, nullptr, tDark);
         addLight(bt.jakeCell, x1 - 0.4f, ceilY - 0.45f, z1 - 0.4f, 1.6f, 0.9f, 0.05f, 0.04f); // tiny red cam LED
-        // FIRE EXTINGUISHER mounted on the -X wall (red, lived-in facility detail).
-        place(aExt, kPi * 0.5f, 1.0f, cx(kExtAabb), kExtAabb.miny, cz(kExtAabb),
-              x0 + 0.18f, fY + 0.85f, z1 - 1.6f, nullptr, tRed);
+        // FIRE EXTINGUISHER — R5 final: BY THE DOOR on the +X wall (where extinguishers
+        // live — beside the exit). Every paneled wall is window-dominated (B/C panels
+        // carry cutouts at each panel center) and the -X wall also holds the trapdoor
+        // ladder; the +X door wall is the one guaranteed-solid surface. yaw 0 keeps the
+        // local +X mount-back facing the +X wall; back plane on the graybox face.
+        place(aExt, 0.0f, 1.0f, kExtAabb.maxx, kExtAabb.miny, cz(kExtAabb),
+              x1 - 0.10f, fY + 0.55f, ccz - 1.35f, nullptr, tRed);
         // More -X back-wall detail so the HERO diagonal (which faces this corner) reads as
-        // a built surface, not a bare panel: a wall-mounted fusebox/panel + a recessed vent
-        // + a stencilled hazard look via a small dark panel. These give the corner relief +
-        // grazing-lit highlights instead of flat light-grey.
-        place(aFuse, kPi * 0.5f, 0.85f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
-              x0 + 0.18f, fY + 1.45f, ccz + 0.6f, nullptr, tDark);
+        // a built surface, not a bare panel: a wall-mounted fusebox/panel + a recessed vent.
+        // R4: the fusebox is SLIMMED (0.55) and tinted mid-gunmetal — at tDark + 0.85 scale
+        // it was a featureless 2.2 m BLACK PLANK sticking 0.5 m off the wall.
+        const float tPanelBox[4] = { 0.30f, 0.32f, 0.36f, 1.0f };
+        place(aFuse, kPi * 0.5f, 0.55f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
+              x0 + 0.10f, fY + 1.45f, ccz + 0.6f, nullptr, tPanelBox);
         place(aVent, -kPi * 0.5f, 1.0f, cx(kVentAabb), cy(kVentAabb), kVentAabb.minz,
               x0 + 0.16f, fY + 2.6f, ccz - 0.6f, nullptr, tRust);
         // A grazing wall-wash on the -X wall so its normal-map relief CATCHES the light
         // (a low, side-skimming key — pools-and-shadow contrast, not flat front fill).
-        addLight(bt.jakeCell, x0 + 0.9f, fY + 1.6f, z1 - 1.0f, 3.0f, 1.4f, 1.25f, 1.0f);
+        addLight(bt.jakeCell, x0 + 0.9f, fY + 1.6f, z1 - 1.0f, 3.0f, 1.1f, 1.0f, 0.8f);
         // WALL SCONCES (the warehouse Wall Light) flanking the door + over the bunk so the
         // walls themselves emit pools of light (motivated). They self-glow + drive a fill.
-        const float emSconce[4] = { 1.0f, 0.86f, 0.62f, 1.8f };
-        place(aWLight, kPi, 1.0f, cx(kWLightAabb), cy(kWLightAabb), kWLightAabb.maxz,
-              x1 - 0.12f, fY + 2.2f, ccz + 1.4f, emSconce, tSteel);
+        // R4: the two YAWS WERE SWAPPED — the sconce's screen is its local -Z face, and
+        // local -Z maps to world (sin yaw, 0, -cos yaw). On the +X wall the screen must
+        // face -X -> yaw = -pi/2; on the -Z wall it must face +Z -> yaw = pi. R3 had them
+        // crossed, so each sconce pointed ALONG its wall and read as a floating white box.
+        const float emSconce[4] = { 1.0f, 0.86f, 0.62f, 1.3f };
         place(aWLight, -kPi * 0.5f, 1.0f, cx(kWLightAabb), cy(kWLightAabb), kWLightAabb.maxz,
-              x0 + 1.6f, fY + 2.2f, z0 + 0.17f, emSconce, tSteel);
+              x1 - 0.10f, fY + 2.2f, ccz + 1.4f, emSconce, tSteel);   // back ON the graybox face
+        place(aWLight, kPi, 1.0f, cx(kWLightAabb), cy(kWLightAabb), kWLightAabb.maxz,
+              x0 + 1.6f, fY + 2.2f, z0 + 0.145f, emSconce, tSteel);   // back ON the panel face
         // Sconce washes kept MODEST (they sit high; too bright flattens the wall to white).
-        addLight(bt.jakeCell, x1 - 0.4f, fY + 2.2f, ccz + 1.4f, 2.6f, 1.3f, 1.05f, 0.7f);
-        addLight(bt.jakeCell, x0 + 1.6f, fY + 2.2f, z0 + 0.4f, 2.6f, 1.2f, 1.0f, 0.65f);
+        addLight(bt.jakeCell, x1 - 0.4f, fY + 2.2f, ccz + 1.4f, 2.4f, 0.9f, 0.72f, 0.48f);
+        addLight(bt.jakeCell, x0 + 1.6f, fY + 2.2f, z0 + 0.4f, 2.4f, 0.85f, 0.70f, 0.46f);
     }
 
     // ================= CELL DOOR — a real reinforced slab in the +X opening =========
@@ -405,7 +447,7 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
               x1 - 0.06f, fY, ccz, nullptr, tSteel);
         // A static reinforced slab just inside the jamb (the cell door, slightly ajar look
         // is handled by canonDoors' animated slab; this is the heavy frame around it).
-        addLight(bt.jakeCell, x1 - 0.5f, fY + 1.0f, ccz, 3.4f, 2.4f, 0.12f, 0.06f); // red threshold wash
+        addLight(bt.jakeCell, x1 - 0.5f, fY + 1.0f, ccz, 3.0f, 1.5f, 0.08f, 0.04f); // red threshold wash
     }
 
     // ================= JAKE'S CELL — the hero opening space =================
@@ -422,32 +464,20 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
               bunkX, fY + 0.20f, bunkZ - 0.30f, nullptr, tBunk);
         place(aCrateL, 0.0f, 1.0f, cx(kCrateLAabb), kCrateLAabb.miny, cz(kCrateLAabb),
               bunkX, fY + 0.20f, bunkZ + 0.95f, nullptr, tBunk);
-        // A short crate at the bunk foot = a footlocker.
-        place(aCrateS, 0.4f, 1.0f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
+        // A short crate at the bunk foot = a footlocker. R4: squared to the wall (yaw 0) —
+        // a prisoner's cell is kept in ORDER; the 0.4 rad skew read as spilled cargo.
+        place(aCrateS, 0.0f, 1.0f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
               bunkX + 0.15f, fY + 0.02f, bunkZ + 2.1f, nullptr, tCrate);
-        // Warm fill light OVER the bunk so the cot/footlocker read (they sit against the
-        // -X wall, away from the center tube — without this they fall into shadow). Two
-        // fills span the bunk length so neither end goes black from the door-facing angles.
-        // Bunk fills: tight + warm so the cot/footlocker read as a pool of light WITHOUT
-        // washing the back walls flat (the walls keep their normal-map relief + albedo).
-        // Seated LOW + close so the cot top + footlocker catch a warm key (no black blob).
-        addLight(bt.jakeCell, bunkX + 0.8f, fY + 0.95f, bunkZ - 0.2f, 3.2f, 3.6f, 2.8f, 1.8f);
-        addLight(bt.jakeCell, bunkX + 0.8f, fY + 0.95f, bunkZ + 1.4f, 3.2f, 3.2f, 2.5f, 1.6f);
-        addLight(bt.jakeCell, bunkX + 0.6f, fY + 0.7f, bunkZ + 2.2f, 2.6f, 2.4f, 2.0f, 1.4f); // footlocker
-        // ROUND 3 — DEAD-CORNER KEY: the hero camera (in the +X/+Z corner) looks down on the
-        // bunk's room-FACING (+X/+Z) sides, which the overhead fills above can't reach — so
-        // R2 left them as black blobs. Add a key OUT IN FRONT of the bunk (toward the camera,
-        // higher) that rakes those exposed faces, plus a tighter warm kicker on the cot side
-        // so the corner READS with pools-and-shadow, not a flat blob.
-        // The hero camera (in the +X/+Z corner) sees the bunk's +X / +Z (room-facing) sides.
-        // Push the key OUT toward the camera (higher +X, slightly +Z) so it rakes exactly
-        // those faces; a low front fill lifts the cot/footlocker fronts so they READ.
-        addLight(bt.jakeCell, bunkX + 2.0f, fY + 1.5f, bunkZ + 1.2f, 5.5f, 6.0f, 4.9f, 3.4f); // corner key
-        addLight(bt.jakeCell, bunkX + 1.6f, fY + 0.65f, bunkZ + 0.4f, 4.0f, 4.4f, 3.6f, 2.5f); // low front fill
-        addLight(bt.jakeCell, bunkX + 1.5f, fY + 0.55f, bunkZ + 2.1f, 3.4f, 3.8f, 3.1f, 2.1f); // footlocker kicker
-        // A LOW, gentle floor fill so foreground props never read as pure-black blobs
-        // (kept dim so it lifts the shadows without flattening the contrast).
-        addLight(bt.jakeCell, ccx + 0.5f, fY + 0.5f, ccz + 0.5f, 5.0f, 0.9f, 0.85f, 0.75f);
+        // R4 — the R3 bunk stack (6 lights, corner key at 6.0) BLEW THE ROOM OUT: every
+        // wall went flat white and the warm blast turned the cot crates into gold blobs.
+        // Replaced with THREE restrained sources: a warm overhead pool on the cot, one
+        // moderate corner key raking the room-facing sides for the hero camera, and a dim
+        // floor fill. Pools-and-shadow, not floodlight.
+        // R5: pool pulled LOW + CLOSE over the cot — the crate tex is dark metal, so it
+        // needs direct grazing light to read as a made bunk instead of black lumps.
+        addLight(bt.jakeCell, bunkX + 0.7f, fY + 1.15f, bunkZ + 0.3f, 3.0f, 2.6f, 2.05f, 1.3f);  // warm cot pool
+        addLight(bt.jakeCell, bunkX + 1.9f, fY + 1.3f, bunkZ + 1.3f, 4.5f, 1.7f, 1.45f, 1.15f); // corner key (tamed)
+        addLight(bt.jakeCell, ccx + 0.5f, fY + 0.5f, ccz + 0.5f, 4.5f, 0.5f, 0.48f, 0.44f);     // dim floor fill
         // ROUND 3 — GROUND THE BUNK: soft contact-shadow blobs under the pallet base + the
         // footlocker so they sit on the floor instead of floating. (m_shadowDisc set below.)
         addShadowBlob(m_shadowDisc, bunkX, fY, bunkZ, 1.15f, 1.85f, 0.55f);          // bunk base
@@ -464,11 +494,14 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // the SCREEN facing +Z (into the room) -> yaw = +pi, anchored at its +Z (back) face.
         // Brighter screen content so the terminal reads as an ACTIVE panel with display
         // glow (HDR -> bloom), not a dim slab. The console body stays dark gunmetal.
-        const float emCyan[4]   = { 0.18f, 0.95f, 1.25f, 2.6f };
+        // R5: NO instance emissive — the per-instance glow is the fallback for EVERY
+        // drawable, so emCyan lit the console's whole BODY into a solid cyan toy (R4
+        // doorwall shot). The console reads as dark powered-down gunmetal; the cyan
+        // accent light alone sells the screen spill.
         const float darkMetal[4] = { 0.18f, 0.21f, 0.28f, 1.0f };  // painted gunmetal panel
         place(aConsole, kPi, 1.0f, cx(kConsAabb), kConsAabb.miny, kConsAabb.maxz,
-              tx, fY + 0.0f, tz, emCyan, darkMetal);
-        addLight(bt.jakeCell, tx, fY + 1.2f, tz + 0.6f, 3.8f, 0.20f, 1.0f, 1.35f); // cyan accent
+              tx, fY + 0.0f, tz, nullptr, darkMetal);
+        addLight(bt.jakeCell, tx, fY + 1.2f, tz + 0.6f, 3.2f, 0.16f, 0.75f, 1.0f); // cyan accent
     }
 
     // SINK / TOILET FIXTURE — a stainless basin in the -X/+Z corner (the warehouse bin
@@ -478,37 +511,37 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         const float fx = x0 + 0.55f, fz = z1 - 0.7f;
         place(aBin, 0.0f, 0.95f, cx(kBinAabb), kBinAabb.miny, cz(kBinAabb),
               fx, fY + 0.02f, fz, nullptr, tSteel);
-        addLight(bt.jakeCell, fx + 0.3f, fY + 1.4f, fz - 0.2f, 2.8f, 1.6f, 1.5f, 1.3f);
+        addLight(bt.jakeCell, fx + 0.3f, fY + 1.4f, fz - 0.2f, 2.4f, 0.9f, 0.85f, 0.75f);
         addShadowBlob(m_shadowDisc, fx, fY, fz, 0.5f, 0.5f, 0.5f);   // ground the basin
     }
 
     // PIPES running along the ceiling (two parallel runs along Z, near the -X wall) — the
     // industrial overhead that breaks up the flat ceiling.
+    // R4: (1) TINTED — raw SM_Pipes_A is glossy WHITE with bright RED accents; untinted
+    // under 17 lights it read as cartoon spaghetti. Dark steel/rust multiplies the texture
+    // down to worn service pipes. (2) FLUSH — R3 hung them 0.30 m below the ceiling with
+    // no hangers (floating); now they hug the new ceiling panels. (3) the two "vertical
+    // wall drop" placements were CUT — yaw-only place() kept them horizontal, so they
+    // floated mid-air off the +Z wall as black planks.
     {
-        const float py = ceilY - 0.30f;
+        const float py = ceilY - 0.18f;   // just under the R4 ceiling panels
         place(aPipes, 0.0f, 1.0f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              x0 + 0.45f, py, ccz);
+              x0 + 0.45f, py, ccz, nullptr, tSteel);
         place(aPipes, 0.0f, 1.0f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              x0 + 1.05f, py - 0.12f, ccz);
+              x0 + 1.05f, py, ccz, nullptr, tRust);
         // A cross pipe run along the back -Z wall near the ceiling (yaw +pi/2 -> runs in X).
         place(aPipes, kPi * 0.5f, 0.8f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              ccx, py, z0 + 0.5f);
-        // A vertical-ish wall cable drop on the +Z wall (rotated so the pipe run descends
-        // the wall) — breaks the flat panel + reads as conduit feeding the cell.
-        place(aPipes, kPi * 0.5f, 0.7f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              ccx + 1.4f, py, z1 - 0.45f);
-        place(aPipes, kPi * 0.5f, 0.7f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              ccx - 1.6f, py - 0.10f, z1 - 0.45f);
+              ccx, py, z0 + 0.5f, nullptr, tDark);
     }
 
     // FUSEBOX / wall panels (security + monitoring look) mounted on the -Z and +Z walls.
+    // R4: tinted mid-gunmetal — untinted they rendered raw WHITE plastic.
     {
-        // Fusebox sits low-ish on the -Z wall; its AABB min-Y is below 0, so anchor by maxy
-        // to hang it. Faces +Z (yaw +pi).
-        place(aFuse, kPi, 1.0f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
-              x0 + 0.6f, fY + 1.1f, z0 + 0.18f);
-        place(aFuse, 0.0f, 0.9f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
-              x1 - 0.6f, fY + 1.1f, z1 - 0.18f);
+        const float tPanelBox2[4] = { 0.30f, 0.32f, 0.36f, 1.0f };
+        place(aFuse, kPi, 0.8f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
+              x0 + 0.6f, fY + 1.1f, z0 + 0.18f, nullptr, tPanelBox2);
+        place(aFuse, 0.0f, 0.7f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
+              x1 - 0.6f, fY + 1.1f, z1 - 0.18f, nullptr, tPanelBox2);
     }
 
     // DEBRIS / CLUTTER cluster in the +X-near corner (lived-in, ransacked feel): a barrel,
@@ -531,36 +564,45 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
 
     // EXIT SIGN over the doorway (the warehouse exit sign has a green-emissive face).
     {
-        const float emGreen[4] = { 0.10f, 1.2f, 0.30f, 2.2f };
+        const float emGreen[4] = { 0.10f, 1.2f, 0.30f, 1.2f };
         place(aExit, -kPi * 0.5f, 1.0f, cx(kExitAabb), cy(kExitAabb), kExitAabb.maxz,
-              x1 - 0.12f, ceilY - 0.55f, ccz, emGreen, nullptr);
-        addLight(bt.jakeCell, x1 - 0.4f, ceilY - 0.6f, ccz, 1.8f, 0.10f, 0.7f, 0.18f);
+              x1 - 0.10f, ceilY - 0.55f, ccz, emGreen, nullptr);   // flush on the graybox face
+        addLight(bt.jakeCell, x1 - 0.4f, ceilY - 0.6f, ccz, 1.6f, 0.07f, 0.5f, 0.13f);
     }
 
     // CEILING LIGHT FIXTURE (the physical tube) at the cell center, with the FLICKERING
     // overhead light driven by tick(). It also gets a self-emissive so the tube glows.
     {
         const float lx = ccx, lz = ccz;
-        const float emWarm[4] = { 1.0f, 0.92f, 0.7f, 3.4f };
-        place(aLight, 0.0f, 1.4f, cx(kLightAabb), kLightAabb.miny, cz(kLightAabb),
-              lx, ceilY - 0.06f, lz, emWarm);
+        // R4: emissive 3.4 -> 2.1 + scale 1.4 -> 1.05 + steel body tint — at 3.4 the bloom
+        // ate the whole fixture into a shapeless white BAG hanging from the void. 2.1 keeps
+        // a glowing tube that still reads as a tube. Seated at the R4 ceiling panels.
+        // R5: seated BELOW the ceiling panels (underside ceilY-0.14) — the 3 cm strip was
+        // swallowed INSIDE the panel/graybox slab in every prior round and never visible.
+        const float emWarm[4] = { 1.0f, 0.92f, 0.7f, 2.1f };
+        place(aLight, 0.0f, 1.05f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),
+              lx, ceilY - 0.15f, lz, emWarm, tSteel);
         // A caged HANGING LIGHT lower over the bunk (a second, warmer pool — pools of
         // light + shadow rather than even fill). Hangs DOWN (kHLightAabb maxy=0).
-        const float emHang[4] = { 1.0f, 0.80f, 0.52f, 3.0f };
+        // R4: cage tDark -> tSteel (at 0.20 it silhouetted as a floating black shard
+        // against the bright fixture) + glow 3.0 -> 1.9.
+        const float emHang[4] = { 1.0f, 0.80f, 0.52f, 1.2f };
         place(aHLight, 0.0f, 1.0f, cx(kHLightAabb), kHLightAabb.maxy, cz(kHLightAabb),
-              x0 + 1.3f, ceilY - 0.10f, z0 + 1.6f, emHang, tDark);
-        addLight(bt.jakeCell, x0 + 1.3f, ceilY - 0.9f, z0 + 1.6f, 5.0f, 2.8f, 2.1f, 1.3f);
+              x0 + 1.3f, ceilY - 0.16f, z0 + 1.6f, emHang, tSteel);
+        addLight(bt.jakeCell, x0 + 1.3f, ceilY - 0.9f, z0 + 1.6f, 4.0f, 1.7f, 1.3f, 0.8f);
         // The motivated flickering tube (cool-white, stutters). Recorded as a flicker light.
         // Bright base + a SHALLOW flicker depth so the cell stays readable but the tube
         // visibly stutters (a failing fluorescent), not a strobe that blacks the room out.
+        // R4: 3.4/3.5/3.7 @ r8 -> 2.3/2.4/2.6 @ r7 — the old base was a floodlight that
+        // flattened every wall it reached.
         const uint32_t li = (uint32_t)m_lights.size();
-        addLight(bt.jakeCell, lx, ceilY - 0.35f, lz, 8.0f, 3.4f, 3.5f, 3.7f);
-        m_flickers.push_back({ li, 3.4f, 3.5f, 3.7f, 0.0f, 9.0f, 0.35f });
+        addLight(bt.jakeCell, lx, ceilY - 0.40f, lz, 7.0f, 2.3f, 2.4f, 2.6f);
+        m_flickers.push_back({ li, 2.3f, 2.4f, 2.6f, 0.0f, 9.0f, 0.35f });
     }
 
     // RED ALARM WASH near the door (a low, saturated red accent so the exit reads as a
     // guarded threshold — moody contrast against the warm interior).
-    addLight(bt.jakeCell, x1 - 0.6f, fY + 1.9f, ccz, 4.5f, 2.6f, 0.10f, 0.05f);
+    addLight(bt.jakeCell, x1 - 0.6f, fY + 1.9f, ccz, 3.5f, 1.4f, 0.07f, 0.04f);
 
     // ================= ATMOSPHERE — drifting dust motes in the light pools ==========
     // The engine has NO fog API. Atmosphere is sold by a scatter of tiny EMISSIVE DUST
@@ -578,10 +620,12 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     {
         const uint32_t moteMesh  = addProcMesh(device, makeMoteQuad());
         // Dust motes drifting through the central + bunk pools (caught in the light).
-        addDustMotes(moteMesh, 30, ccx, fY + 1.2f, ccz, 1.7f, 1.7f, fY + 0.3f, ceilY - fY - 0.6f,
-                     1.4f, 1.45f, 1.7f, 2.2f);
-        addDustMotes(moteMesh, 18, x0 + 1.3f, fY + 1.0f, z0 + 1.6f, 1.0f, 1.0f, fY + 0.3f, ceilY - fY - 0.8f,
-                     1.7f, 1.35f, 0.95f, 2.0f);
+        // R4: 48 -> 20 motes, glow 2.2/2.0 -> 1.1, neutral color — at the old count/glow
+        // they read as a field of frozen white tracers against the dark ceiling.
+        addDustMotes(moteMesh, 12, ccx, fY + 1.2f, ccz, 1.5f, 1.5f, fY + 0.3f, ceilY - fY - 0.6f,
+                     1.0f, 1.0f, 1.1f, 1.1f);
+        addDustMotes(moteMesh, 8, x0 + 1.3f, fY + 1.0f, z0 + 1.6f, 0.9f, 0.9f, fY + 0.3f, ceilY - fY - 0.8f,
+                     1.1f, 1.0f, 0.8f, 1.1f);
     }
 
     // ================= MAIN HALL MOUTH — the first room past the cell =================
@@ -594,18 +638,19 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         const float hCeil = H.y1();
         const float hx0 = H.x0();
         const float hz = H.cz;
-        // Pipes overhead near the hall's cell-facing (-X) end.
+        // Pipes overhead near the hall's cell-facing (-X) end. R4: tinted (raw = white/red
+        // plastic spaghetti — same offender as the cell ceiling).
         place(aPipes, kPi * 0.5f, 1.0f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              hx0 + 2.0f, hCeil - 0.35f, hz - 1.2f);
+              hx0 + 2.0f, hCeil - 0.35f, hz - 1.2f, nullptr, tSteel);
         place(aPipes, kPi * 0.5f, 1.0f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              hx0 + 2.0f, hCeil - 0.50f, hz + 1.2f);
+              hx0 + 2.0f, hCeil - 0.50f, hz + 1.2f, nullptr, tRust);
         // A wall terminal + cyan accent at the hall mouth.
         {
             const float tx = hx0 + 0.6f, tz = hz - 2.0f;
-            const float emCyan[4] = { 0.10f, 0.70f, 1.0f, 1.6f };
+            // R5: no instance emissive (same whole-body-glow bug as the cell console).
             const float darkMetal[4] = { 0.22f, 0.26f, 0.34f, 1.0f };
             place(aConsole, -kPi * 0.5f, 1.0f, cx(kConsAabb), kConsAabb.miny, kConsAabb.minz,
-                  tx, hfY, tz, emCyan, darkMetal);
+                  tx, hfY, tz, nullptr, darkMetal);
             addLight(bt.mainHall, tx + 0.6f, hfY + 1.3f, tz, 4.0f, 0.18f, 1.0f, 1.3f);
         }
         // Crates + a barrel stacked against the hall's -X wall (cover / clutter).
@@ -671,11 +716,17 @@ void CellDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
         for (const auto& d : a.drawables) {
             float fin[16];
             x3::asset::mulMat4(inst.transform, d.nodeTransform, fin);
-            // Material emissive (from the GLB) wins; otherwise the per-instance glow.
+            // Material emissive (from the GLB), SCALED by the instance glow strength
+            // (emissive[3]). R4 let material emissive win unconditionally — random kit
+            // pieces carry authored emissive (a yellow hazard panel in SM_Pipes_A, vent
+            // fan faces) that bloomed through every tint as glowing blobs. Now a prop
+            // placed with emissive=nullptr (alpha 0) shows NO authored glow; a prop that
+            // opts in (alpha > 0) shows the authored glow at that strength. Props with no
+            // material emissive keep the per-instance glow exactly as before.
             const bool matEmis = d.emissiveTexId != 0 ||
                 d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
             float emis[4];
-            if (matEmis) { emis[0]=d.emissiveFactor[0]; emis[1]=d.emissiveFactor[1]; emis[2]=d.emissiveFactor[2]; emis[3]=1.0f; }
+            if (matEmis) { emis[0]=d.emissiveFactor[0]; emis[1]=d.emissiveFactor[1]; emis[2]=d.emissiveFactor[2]; emis[3]=inst.emissive[3]; }
             else         { emis[0]=inst.emissive[0]; emis[1]=inst.emissive[1]; emis[2]=inst.emissive[2]; emis[3]=inst.emissive[3]; }
             // Per-instance baseColor tint (darken plain/white kit pieces to believable
             // dark metal/painted surfaces so they don't blow out under accent lights).
