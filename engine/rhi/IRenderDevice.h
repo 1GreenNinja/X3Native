@@ -265,8 +265,15 @@ public:
                                        // camera-only reprojection (pre-velocity
                                        // behavior). No-op when taa is off or
                                        // velocity.spv is absent (graceful fallback).
+        float vignette       = 0.0f;   // cinematic edge-darkening [0..1]; 0 = OFF
+                                       // (every existing scene byte-identical). Set
+                                       // per-scene via setVignette (e.g. the neon city).
     };
     virtual void setPostFX(const PostFXParams&) {}
+
+    // Cinematic vignette strength (composite post pass). 0 = off (default; unchanged
+    // scenes). Persists like the other post settings; a scene enables it for its grade.
+    virtual void setVignette(float) {}
 
     // Introspection for the app cvar layer (the r_velocity string-binding lives in
     // app/main.cpp; the engine exposes the live value + availability so the cvar

@@ -219,7 +219,7 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
     auto sidewalkTex = device.createTexture(x3::prims::makeSolidRGBA(4, 70, 72, 80).data(), 4, 4, true);
     auto darkTex     = device.createTexture(x3::prims::makeSolidRGBA(4, 10, 12, 16).data(), 4, 4, true);
     auto steelTex    = device.createTexture(x3::prims::makeSolidRGBA(4, 150, 154, 162).data(), 4, 4, true);
-    auto wetMR       = makeMRTex(device, /*metal*/0.35f, /*rough*/0.12f);  // wet reflective asphalt
+    auto wetMR       = makeMRTex(device, /*metal*/0.30f, /*rough*/0.05f);  // wet MIRROR asphalt (crisp neon SSR)
     auto chromeMR    = makeMRTex(device, /*metal*/0.9f,  /*rough*/0.18f);
 
     const float kNoEmis[4] = { 0, 0, 0, 0 };

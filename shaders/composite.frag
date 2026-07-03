@@ -30,7 +30,7 @@ layout(push_constant) uniform Push {
                            // the pre-sharpen composite). Forced 0 when TAA is off.
     float texelW;          // 1/extent for the sharpen cross taps
     float texelH;
-    float pad0;
+    float vignette;        // cinematic edge-darkening [0..1]; 0 = off (no-op)
 } pc;
 
 layout(location = 0) in  vec2 vUV;
@@ -71,5 +71,12 @@ void main() {
     // Tonemap: ACES (default) or a raw passthrough clamp for A/B debugging.
     if (pc.tonemapMode == 1) color = tonemapACES(color);
     else                     color = clamp(color, 0.0, 1.0);
+    // Cinematic vignette (post-tonemap): smooth radial edge-darkening. 0 = no-op.
+    if (pc.vignette > 0.0) {
+        vec2 d = vUV - vec2(0.5);
+        float r = dot(d, d);                         // squared radius from center
+        float vig = 1.0 - pc.vignette * smoothstep(0.10, 0.62, r);
+        color *= vig;
+    }
     outColor = vec4(color, 1.0);
 }

@@ -1641,6 +1641,7 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                     ? std::max(0.0f, self->m_post.taaSharpen) : 0.0f;
                 cp.texelW  = 1.0f / (float)std::max(1u, self->m_extent.width);
                 cp.texelH  = 1.0f / (float)std::max(1u, self->m_extent.height);
+                cp.vignette = self->m_post.vignette;   // cinematic edge-darkening (0 = off)
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);

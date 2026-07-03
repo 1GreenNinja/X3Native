@@ -1598,6 +1598,8 @@ int runDefaultHost(HostContext& hc) {
             // far facades/neon fade into fog instead of black, denser at street level.
             sp.fogDensity       = 0.011f;   // ~90 m visual falloff
             sp.fogHeightFalloff = 0.028f;   // haze pools low; rooftops clearer
+            // LENS GRADE (item 5): a cinematic vignette focuses the eye down the drag.
+            device->setVignette(0.34f);
         }
         device->setSkyParams(sp);
         // Spawn the player on the surface near the world origin, a little above so

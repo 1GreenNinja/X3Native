@@ -172,6 +172,7 @@ public:
     // synced per frame by the app. Toggling AE on re-arms the adaptation snap so
     // the first adapted frame lands on target instantly (no multi-second crawl).
     void setPostFX(const PostFXParams& p) override;
+    void setVignette(float v) override { m_post.vignette = v; }
     bool velocityEnabled() const override;
     bool velocityAvailable() const override;
 
@@ -2284,7 +2285,7 @@ private:
     // record lambdas; no per-frame heap alloc).
     struct BloomPush { float srcTexel[2]; float threshold, knee, intensity; int firstPass; float pad0, pad1; };
     struct CompositePush { float bloomIntensity, exposure; int32_t tonemapMode, aeEnabled;
-                           float sharpen, texelW, texelH, pad0; };
+                           float sharpen, texelW, texelH, vignette; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
 
