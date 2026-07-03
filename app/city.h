@@ -45,6 +45,7 @@ struct NeonDistrictStats {
     uint32_t vehicles     = 0;
     uint32_t signs        = 0;
     uint32_t hackables    = 0;   // objects registered into the HackableRegistry (if any)
+    uint32_t propClutter  = 0;   // scattered street-clutter prop instances (item 2)
     float    centerX = -600.0f, centerZ = 500.0f;
     float    groundY = 0.0f;     // terrain height at the district center (player spawn feet)
 };

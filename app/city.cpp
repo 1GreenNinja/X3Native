@@ -279,6 +279,11 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
     const Accent kMagenta{ 2.0f, 0.3f, 1.7f };
     const Accent accents[3] = { kCyan, kAmber, kMagenta };
 
+    // Record each building's street front so the PROP-CLUTTER pass (below) can hang
+    // AC condensers / vents / pipes on the facades without perturbing the building LCG.
+    struct Front { float bx, bz, faceZ, useH, w, d; };
+    std::vector<Front> fronts;
+
     for (int row = 0; row < 2; ++row) {
         const float rz = cz + (row == 0 ? 1.0f : -1.0f) * 15.0f;    // building front line
         const float faceZ = (row == 0 ? 1.0f : -1.0f);
@@ -340,6 +345,7 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
             // Rooftop parapet crest (thin cyan strip — the tower crown rhythm).
             const float crown[4] = { kCyan.r, kCyan.g, kCyan.b, 2.2f };
             addBox(bx, g + useH + 0.4f, bz, w + 0.3f, 0.25f, d + 0.3f, white, crown, steelTex);
+            fronts.push_back({ bx, bz, faceZ, useH, w, d });
 
             // ---- HACKABLE: a security CAMERA on the street-facing upper corner ----
             if (hax) {
@@ -351,6 +357,122 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
                 const float cyanMk[3] = { kCyan.r, kCyan.g, kCyan.b };
                 c.entity = addHackMarker(scene, device, camX, camY + 1.0f, camZ, cyanMk);
                 hax->add(c); st.hackables++;
+            }
+        }
+    }
+
+    // ================= 2.5) PROP CLUTTER (fill the empty street with life) =======
+    // The biggest non-AAA tell after the facades: AAA streets are DENSE. Scatter real
+    // HIVEMIND props (converted GLBs w/ their own PBR sets) — dumpsters/trash/pallets on
+    // the sidewalks, AC condensers + vents + pipes hung on the facades, real street lamps,
+    // and procedural overhead cables — so the eye never finds bare asphalt. Instanced via
+    // the EnvArtSystem (cached GLB upload, baked static entities). Deterministic prng so
+    // the layout is stable and INDEPENDENT of the building LCG.
+    if (facades) {
+        // Load each clutter GLB once (cached). UINT32_MAX => skip that prop (fallback).
+        auto LP = [&](const char* rel) { return facades->loadFacade(rel); };
+        const uint32_t pDumpster = LP("CityProps/Dumpster.glb");
+        const uint32_t pCondA    = LP("CityProps/Cond_A.glb");
+        const uint32_t pCondB    = LP("CityProps/Cond_B.glb");
+        const uint32_t pTrash1   = LP("CityProps/Trash_01.glb");
+        const uint32_t pTrash2   = LP("CityProps/Trash_02.glb");
+        const uint32_t pBag1     = LP("CityProps/Trashbag_01.glb");
+        const uint32_t pBag2     = LP("CityProps/Trashbag_02.glb");
+        const uint32_t pPallet   = LP("CityProps/Pallet.glb");
+        const uint32_t pCan      = LP("CityProps/TrashCan.glb");
+        const uint32_t pVentSq   = LP("CityProps/Vent_Sq.glb");
+        const uint32_t pVentR    = LP("CityProps/Vent_Round.glb");
+        const uint32_t pPipe     = LP("CityProps/Pipe_Wall.glb");
+        const uint32_t pLamp     = LP("CityProps/LampStreet.glb");
+
+        uint32_t prng = 0xC1A77Eu;
+        auto pr = [&]() { prng = prng * 1664525u + 1013904223u; return (float)((prng >> 8) & 0xFFFF) / 65535.0f; };
+        // Place one prop instance: real-world scale (uniform s), Y-rotated, seated on g.
+        auto place = [&](uint32_t pi, float x, float y, float z, float theta,
+                         float s, float emisScale, float baseGlow) {
+            if (pi == 0xFFFFFFFFu) return;
+            float xf[16];
+            makeFacadeXform(x, y, z, theta, s, s, s, 0, 0, 0, xf);
+            if (facades->bakeInto(scene, pi, xf, emisScale, baseGlow) > 0) st.propClutter++;
+        };
+        const float TWO_PI = 6.2831853f;
+
+        // (a) GROUND CLUTTER down BOTH sidewalks (z ~ ±11..±13), receding down the drag.
+        // Dense: a cluster every ~7 m, alternating sides, jittered + randomly rotated.
+        for (float x = cx - 84.0f; x <= cx + 84.0f; x += 7.0f) {
+            for (int side = 0; side < 2; ++side) {
+                const float sz = (side == 0 ? 1.0f : -1.0f);
+                const float baseZ = cz + sz * (11.0f + pr() * 2.5f);
+                const float jx = x + (pr() - 0.5f) * 3.0f;
+                const float th = pr() * TWO_PI;
+                const float roll = pr();
+                if (roll < 0.18f)      place(pDumpster, jx, g, baseZ, th, 1.0f, 0, 0.05f);
+                else if (roll < 0.34f) place(pTrash1, jx, g, baseZ, th, 0.8f + pr() * 0.4f, 0, 0.05f);
+                else if (roll < 0.48f) place(pTrash2, jx, g, baseZ, th, 0.8f + pr() * 0.4f, 0, 0.05f);
+                else if (roll < 0.64f) place(pCan, jx, g, baseZ, th, 1.0f, 0, 0.06f);
+                else if (roll < 0.80f) place(pPallet, jx, g, baseZ, th, 1.0f, 0, 0.05f);
+                else if (roll < 0.90f) place(pBag1, jx, g, baseZ, th, 1.0f, 0, 0.06f);
+                else                   place(pBag2, jx, g, baseZ, th, 1.0f, 0, 0.06f);
+                // A second small item next to ~half of them (piles read as piles).
+                if (pr() < 0.5f)
+                    place(pr() < 0.5f ? pBag1 : pCan, jx + (pr() - 0.5f) * 1.8f, g,
+                          baseZ + (pr() - 0.5f) * 1.8f, pr() * TWO_PI, 1.0f, 0, 0.06f);
+            }
+        }
+
+        // (b) WALL CLUTTER on the building fronts: AC condensers + vents + a riser pipe
+        // on the street-facing wall of each building, at varied heights (the busy-facade
+        // silhouette that sells a lived-in block).
+        for (const Front& f : fronts) {
+            const float wallZ = f.bz - f.faceZ * (f.d + 0.15f);   // just proud of the facade
+            const float faceTheta = (f.faceZ > 0.0f ? 0.0f : 3.14159265f);
+            // 2-3 AC condensers stacked/scattered up the wall.
+            const int nAC = 2 + (int)(pr() * 2.0f);
+            for (int k = 0; k < nAC; ++k) {
+                const float ax = f.bx + (pr() - 0.5f) * (f.w * 1.4f);
+                const float ay = g + 3.0f + pr() * (f.useH - 5.0f);
+                place(pr() < 0.5f ? pCondA : pCondB, ax, ay, wallZ, faceTheta, 1.0f, 0, 0.05f);
+            }
+            // A tall riser pipe up one side + a vent.
+            place(pPipe, f.bx + f.w * (pr() < 0.5f ? 0.9f : -0.9f), g + 0.2f, wallZ,
+                  faceTheta, 1.0f + pr() * 0.6f, 0, 0.04f);
+            place(pr() < 0.5f ? pVentSq : pVentR, f.bx + (pr() - 0.5f) * f.w,
+                  g + 2.5f + pr() * 3.0f, wallZ, faceTheta, 1.0f, 0, 0.05f);
+        }
+
+        // (c) REAL street-lamp meshes down the drag (richer than the box posts; the box
+        // lamp HEADS below still provide the emissive light-source pools).
+        if (pLamp != 0xFFFFFFFFu) {
+            int li = 0;
+            for (float lx = cx - 80.0f; lx <= cx + 80.0f; lx += 20.0f) {
+                const float lz = cz + (li++ % 2 == 0 ? 1.0f : -1.0f) * 10.5f;
+                place(pLamp, lx, g, lz, (lz > cz ? 0.0f : 3.14159265f), 1.0f, 1.6f, 0.0f);
+            }
+        }
+
+        // (d) OVERHEAD CABLES: thin near-taut strands strung high across the street. Kept
+        // SHALLOW-sag (small dy per segment) so the axis-aligned thin boxes read as wires,
+        // not blocks; strung high (~8 m) so they frame the sky, not the eyeline.
+        {
+            const float cableCol[4] = { 0.04f, 0.04f, 0.05f, 1.0f };
+            for (float lx = cx - 78.0f; lx <= cx + 78.0f; lx += 10.0f) {
+                const int segs = 10;
+                const float z0 = cz - 11.0f, z1 = cz + 11.0f;
+                const float sag = 0.35f + pr() * 0.35f;   // shallow -> reads as a wire
+                const float topY = g + 8.0f + pr() * 1.6f;
+                const float px = lx + (pr() - 0.5f) * 4.0f;
+                const float thick = 0.035f;
+                for (int s = 0; s < segs; ++s) {
+                    const float t0 = (float)s / segs, t1 = (float)(s + 1) / segs;
+                    const float za = z0 + (z1 - z0) * t0, zb = z0 + (z1 - z0) * t1;
+                    const float ya = topY - sag * 4.0f * t0 * (1.0f - t0);
+                    const float yb = topY - sag * 4.0f * t1 * (1.0f - t1);
+                    const float mz = (za + zb) * 0.5f, my = (ya + yb) * 0.5f;
+                    const float halfZ = std::fabs(zb - za) * 0.5f;
+                    const float halfY = std::fabs(yb - ya) * 0.5f + thick;   // span the small dy
+                    addBox(px, my, mz, thick, halfY, halfZ, cableCol, kNoEmis, darkTex);
+                    st.propClutter++;
+                }
             }
         }
     }
@@ -490,6 +612,7 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
                 "): " + std::to_string(st.buildings) + " buildings, " +
                 std::to_string(st.streetlights) + " lamps, " + std::to_string(st.vehicles) +
                 " vehicles, " + std::to_string(st.signs) + " signs, " +
+                std::to_string(st.propClutter) + " clutter props, " +
                 std::to_string(st.hackables) + " hackables");
     return st;
 }
