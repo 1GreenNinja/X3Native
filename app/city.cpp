@@ -242,15 +242,20 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
             const float winEmis[4] = { lit * 0.55f, lit * 0.8f, lit * 1.15f, lit };
             addBox(bx, by, bz, w, h * 0.5f, d, white, winEmis, panelTex);
             st.buildings++;
-            // Ground-floor shopfront: a warm lit band at the base facing the street.
-            const float shopWarm[4] = { 1.6f, 1.15f, 0.6f, 1.6f };
-            addBox(bx, g + 1.6f, bz - faceZ * (d - 0.1f), w * 0.9f, 1.4f, 0.25f,
-                   white, shopWarm, panelTex);
-            // ONE neon sign: a tall emissive strip up the street-facing corner.
+            // Ground-floor shopfront: a WARM lit interior band behind a dark mullion
+            // grid facing the street — a glow, not a blown-white wall (subtle strength).
+            const float shopWarm[4] = { 1.0f, 0.62f, 0.28f, 0.55f };
+            const float shopCol[4]  = { 0.5f, 0.4f, 0.3f, 1.0f };
+            addBox(bx, g + 1.5f, bz - faceZ * (d - 0.1f), w * 0.82f, 1.1f, 0.22f,
+                   shopCol, shopWarm, panelTex);
+            // A slim dark canopy over the shopfront (trim — sells the ground floor).
+            addBox(bx, g + 2.8f, bz - faceZ * (d + 0.35f), w * 0.85f, 0.12f, 0.5f,
+                   darkCol, kNoEmis, steelTex);
+            // ONE neon sign: an emissive strip up the street-facing corner (upper third).
             const Accent a = accents[(int)(rnd() * 3.0f) % 3];
-            const float neon[4] = { a.r, a.g, a.b, 2.6f };
-            addBox(bx + w * 0.8f, by + h * 0.15f, bz - faceZ * (d + 0.2f),
-                   0.3f, h * 0.35f, 0.3f, white, neon, steelTex);
+            const float neon[4] = { a.r, a.g, a.b, 2.1f };
+            addBox(bx + w * 0.8f, g + h * 0.72f, bz - faceZ * (d + 0.2f),
+                   0.28f, h * 0.22f, 0.28f, white, neon, steelTex);
             st.signs++;
             // Rooftop parapet crest (thin cyan strip — the tower crown rhythm).
             const float crown[4] = { kCyan.r, kCyan.g, kCyan.b, 2.2f };

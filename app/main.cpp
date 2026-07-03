@@ -505,7 +505,8 @@ int main(int argc, char** argv) {
         const bool sharedAudioWorld =
             (o.worldMode == "level1") || (o.worldMode == "elevator") ||
             (o.worldMode == "canonlevel") || (o.worldMode == "intro") ||
-            (o.worldMode == "terrain") || (o.worldMode == "ocean");
+            (o.worldMode == "terrain") || (o.worldMode == "ocean") ||
+            (o.worldMode == "city");
         if (!headless && sharedAudioWorld)
             bootAudioFut = std::async(std::launch::async, makeBootAudio);
     }

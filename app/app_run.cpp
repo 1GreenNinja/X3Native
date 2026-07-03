@@ -79,6 +79,7 @@
                                               // single source of truth for "what holds input capture"
                                               // (P0 fix/input-capture-lockup; --test-inputcapture)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
+#include "hackables.h"                        // WATCH-DOGS-2 environmental hacking layer (--world city, --test-hacking)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
 #include "club1127.h"
@@ -1037,7 +1038,12 @@ int runDefaultHost(HostContext& hc) {
     // sky + streaming all work identically) and additionally enables water at a
     // sea level; the only ocean-specific bit is the per-frame setWaterParams below.
     const bool oceanWorld   = (worldMode == "ocean");
-    const bool terrainWorld = (worldMode == "terrain") || oceanWorld;
+    // --world city: the NEON DISTRICT (Milestone 1). Reuses the entire streamed-terrain
+    // path (terrain + sky + freeway) but SPAWNS the player inside the Scrapyard City block
+    // at (-600,500), builds the art-directed neon district there, and arms the Watch-Dogs-2
+    // environmental-hacking layer (the NetHack highlight + [E] HACK + heat/karma).
+    const bool cityWorld    = (worldMode == "city");
+    const bool terrainWorld = (worldMode == "terrain") || oceanWorld || cityWorld;
     // --world elevator: a souped-up-elevator showcase. It reuses the Level-1 build
     // path (the strata/disco elevator lives in the Level-1 spire shaft), then logs
     // a hint + spawns the player AT the elevator so you can ride it and enter the
@@ -1099,6 +1105,22 @@ int runDefaultHost(HostContext& hc) {
     x3::game::AlertDoorLock alertDoorLock;
     bool  facilityAlertOn = false;   // armed only in the legacy Level-1 world
     float alertHudClock   = 0.0f;    // drives the lockdown HUD pulse
+    // NEON DISTRICT + WATCH-DOGS-2 HACKING (--world city). The district's hackable
+    // registry + civilian crowd + its own alert (heat) + karma. cityHighlight is the
+    // NetHack toggle (hold TAB); cityHackMsg is the transient HoloPanel confirm / scan
+    // card the last hack produced.
+    x3::game::HackableRegistry cityHax;
+    x3::game::CrowdSystem      cityCrowd;
+    x3::game::AlertSystem      cityAlert;
+    x3::game::TimelineState    cityTimeline;
+    bool     cityBuilt      = false;
+    bool     cityHighlight  = false;
+    bool     prevCityTab    = false;   // TAB rising-edge (highlight toggle)
+    bool     prevCityHack   = false;   // E  rising-edge (perform hack)
+    uint32_t cityLookTarget = x3::game::kNoLink;
+    std::vector<std::string> cityHackMsg;   // multi-line confirm / scan card
+    float    cityHackMsgT   = 0.0f;         // seconds remaining on the confirm panel
+    std::vector<uint32_t> cityMarkerEnts;   // marker entity ids (brightened on highlight)
     // B3: the terrain world is now STREAMED around the player via a residency
     // ring (TerrainStreamer) fed by the engine job system. Both are only created
     // in terrain mode; Level 1 is unaffected.
@@ -1553,12 +1575,22 @@ int runDefaultHost(HostContext& hc) {
         sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
         sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        // --world city: NIGHT. Drop the key to a low, cool, near-horizon moon so the
+        // neon signage + street lamps carry the scene (WORLD_ART_DIRECTION §0: real
+        // darkness between, the accent sings alone). The bright day sky washed the neon.
+        if (cityWorld) {
+            sp.sunDir[0] = 0.22f; sp.sunDir[1] = 0.07f; sp.sunDir[2] = -0.40f;   // just above horizon, deep dusk
+            sp.sunColor[0] = 0.40f; sp.sunColor[1] = 0.52f; sp.sunColor[2] = 0.82f; // cool moonlight
+            sp.sunIntensity = 0.16f; sp.haze = 0.18f; sp.exposure = 0.82f;
+        }
         device->setSkyParams(sp);
         // Spawn the player on the surface near the world origin, a little above so
         // the capsule settles onto the hill on the first frames. heightAt() is a
         // pure function of the config, valid before any tile exists. In OCEAN mode,
         // spawn on ground ABOVE the sea level so the player starts on a shore.
         float sx = 0.0f, sz = 0.0f;
+        // --world city spawns the player ON the district's main drag at (-600,500).
+        if (cityWorld) { sx = -600.0f; sz = 500.0f; }
         if (oceanWorld) {
             for (float r = 0.0f; r < 600.0f; r += 24.0f) {
                 if (x3::game::terrainHeightAt(tcfg, r, 0.0f) > oceanSeaLevel + 4.0f) { sx = r; sz = 0.0f; break; }
@@ -1573,13 +1605,55 @@ int runDefaultHost(HostContext& hc) {
         // Dry-land terrain only — in ocean mode the low route would be awash.
         if (!oceanWorld) {
             x3::game::buildFreewayRibbon(scene, *device);
-            // World landmarks: facility tower + Scrapyard City massing + LNG tank set
-            // piece, at their canon coords, anchored on the terrain (static geometry).
-            x3::game::buildWorldLandmarks(scene, *device);
+            if (cityWorld) {
+                // MILESTONE 1: the art-directed neon district at (-600,500) + the WD2
+                // hackable layer + civilian crowd (in place of the coarse landmark massing,
+                // which sits at the same coords). The freeway still threads in from origin.
+                x3::game::NeonDistrictStats ds =
+                    x3::game::buildNeonDistrict(scene, *device, *physics, &cityHax, &cityCrowd,
+                                                -600.0f, 500.0f);
+                cityAlert.configure(x3::game::defaultAlertConfig());
+                // Wire the hack sinks to the REAL systems (heat + karma + per-type effects).
+                x3::game::HackSinks sinks;
+                x3::game::AlertSystem*   alertP = &cityAlert;
+                x3::game::TimelineState* tlP    = &cityTimeline;
+                x3::game::Scene*         scP    = &scene;
+                auto* msgP  = &cityHackMsg; auto* msgTP = &cityHackMsgT;
+                sinks.onHeat  = [alertP](const x3::phys::Vec3& p, int) { alertP->reportTerminalHack(p); };
+                sinks.onKarma = [tlP](int d) { tlP->adjustKarma(d); };
+                sinks.onLightsOut = [scP](uint32_t ent) {
+                    // Cut the marker's glow to signal the grid drop (a stealth beat).
+                    if (ent < scP->size()) { auto& e = scP->get(ent); for (int i=0;i<4;++i) e.emissive[i] *= 0.15f; }
+                };
+                sinks.onVehicle = [](uint32_t){ /* alarm SFX hook (future) */ };
+                sinks.onResult  = [msgP, msgTP](const x3::game::HackResult& r) {
+                    msgP->clear();
+                    msgP->push_back(std::string("HACK OK - ") + x3::game::hackableTypeName(r.type));
+                    msgP->push_back(r.effect);
+                    if (!r.scanName.empty()) {
+                        msgP->push_back("NAME: " + r.scanName);
+                        msgP->push_back("ROLE: " + r.scanOccupation);
+                        if (!r.scanDetail.empty()) msgP->push_back("INTEL: " + r.scanDetail);
+                    }
+                    if (r.karma != 0) msgP->push_back(std::string("KARMA ") + (r.karma>0?"+":"") + std::to_string(r.karma));
+                    *msgTP = 4.5f;
+                };
+                cityHax.setSinks(sinks);
+                // Cache the marker entity ids so the highlight toggle can brighten them.
+                for (uint32_t i = 0; i < cityHax.count(); ++i)
+                    cityMarkerEnts.push_back(cityHax.at(i).entity);
+                cityBuilt = true;
+                x3::logInfo("--world city: NEON DISTRICT + Watch-Dogs-2 hacking online (" +
+                            std::to_string(ds.hackables) + " hackables; hold TAB = NetHack scan, E = HACK)");
+            } else {
+                // World landmarks: facility tower + Scrapyard City massing + LNG tank set
+                // piece, at their canon coords, anchored on the terrain (static geometry).
+                x3::game::buildWorldLandmarks(scene, *device);
+            }
         }
         if (oceanWorld)
             x3::logInfo("--world ocean: STREAMED terrain + animated ocean (walk the shore, WASD)");
-        else
+        else if (!cityWorld)
             x3::logInfo("--world terrain: STREAMED unbounded terrain world + freeway (walk/drive, WASD)");
     }
 
@@ -2418,6 +2492,25 @@ int runDefaultHost(HostContext& hc) {
             ssZ = C.z1() - 1.2f;
             ssYaw = 3.6f;                  // look toward the -X/-Z corner
             ssPitch = -0.05f;
+        }
+        // --world city default vantage: stand at the WEST end of the main drag at eye
+        // height and look EAST down the wet street so both building rows, the neon
+        // signage, the street lamps + the LNG tank recede into the frame (the CP2077
+        // street shot). Overridden by --shot-cam.
+        if (cityWorld && !shotCamOverride && !alertShot) {
+            const float ccx = -600.0f, ccz = 500.0f;
+            const float gy = x3::game::terrainHeightAt(x3::game::worldTerrainConfig(), ccx - 82.0f, ccz);
+            ssX = ccx - 82.0f;      // west end of the drag
+            ssY = gy + 1.7f;        // eye height
+            ssZ = ccz - 2.0f;
+            ssYaw = 0.06f;          // look east down the drag
+            ssPitch = -0.04f;       // slight down so the wet street reflections read
+            // X3_HACK_SCAN=1 forces the NetHack highlight ON for the capture (brightens
+            // every hackable's holo marker) so a headless screenshot shows the scan view.
+            if (std::getenv("X3_HACK_SCAN")) {
+                for (uint32_t mi : cityMarkerEnts)
+                    if (mi < scene.size()) scene.get(mi).emissive[3] = 3.2f;
+            }
         }
         // --screenshot-dialog: pose AT the F5 captive (Lena) and OPEN her chat
         // tree so the choice UI is in frame (drawn in the loop below).
@@ -4007,6 +4100,49 @@ int runDefaultHost(HostContext& hc) {
         // direction; if it hits a button linked to an UNLOCKED door, it opens.
         // (Door C refuses while locked — until the player is armed, §6.4.) ----
         bool eNow = keyDown(GLFW_KEY_E);
+
+        // ================= WATCH-DOGS-2 HACKING (--world city) =================
+        // Hold TAB = the NetHack scan (highlight every hackable via its holo marker);
+        // aim at one + press E = HACK (fires the effect, raises heat, moves karma).
+        if (cityBuilt) {
+            // TAB toggles the highlight; brighten/dim every marker entity.
+            const bool tabNow = keyDown(GLFW_KEY_TAB);
+            if (tabNow && !prevCityTab) {
+                cityHighlight = !cityHighlight;
+                for (uint32_t mi : cityMarkerEnts) {
+                    if (mi >= scene.size()) continue;
+                    auto& me = scene.get(mi);
+                    const float s = cityHighlight ? 3.0f : 0.5f;
+                    // Preserve hue, scale strength (channel 3 is the emissive strength).
+                    me.emissive[3] = s;
+                }
+                cityHax.setHighlight(cityHighlight);
+            }
+            prevCityTab = tabNow;
+
+            // The hackable the player is aiming at (eye + facing cone).
+            float cx2, cy2, cz2, cyaw, cpitch;
+            player.camera(cx2, cy2, cz2, cyaw, cpitch);
+            if (noclip) { cx2 = flyX; cy2 = flyY; cz2 = flyZ; cyaw = flyYaw; cpitch = flyPitch; }
+            const x3::phys::Vec3 ceye{ cx2, cy2, cz2 };
+            const x3::phys::Vec3 cfwd{ std::cos(cpitch) * std::cos(cyaw),
+                                       std::sin(cpitch),
+                                       std::cos(cpitch) * std::sin(cyaw) };
+            cityLookTarget = cityHax.lookTarget(ceye, cfwd, /*maxDist*/22.0f, /*cos*/0.985f);
+
+            // E performs the hack on the aimed-at target.
+            if (eNow && !prevCityHack && cityLookTarget != x3::game::kNoLink) {
+                cityHax.hack(cityLookTarget);
+            }
+            prevCityHack = eNow;
+
+            // Fade the confirm/scan card.
+            if (cityHackMsgT > 0.0f) cityHackMsgT -= dt;
+            // LIVING WORLD: civilians on the drag + the district's own heat decay.
+            if (cityCrowd.built()) cityCrowd.update(dt, scene);
+            cityAlert.update(dt, ceye, nullptr, 0, /*playerSeen*/false);
+        }
+
         if (eNow && !prevE && !terrainWorld) {
             float ex, ey, ez, yaw, pitch;
             player.camera(ex, ey, ez, yaw, pitch);   // in noclip the camera is the fly cam
@@ -6139,6 +6275,53 @@ int runDefaultHost(HostContext& hc) {
                 device->endEditorUI();
             }
         }
+        // ================= WATCH-DOGS-2 HACKING HUD (--world city) =================
+        if (cityBuilt) {
+            uint32_t hcW = 0, hcH = 0; device->hudSize(hcW, hcH);
+            const float sw = (hcW > 0) ? (float)hcW : 1280.0f;
+            const float sh = (hcH > 0) ? (float)hcH : 720.0f;
+            (void)sw;
+            const float cyan[4]   = { 0.55f, 0.95f, 1.0f, 1.0f };
+            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.75f };
+            const float amber[4]  = { 1.0f, 0.8f, 0.35f, 1.0f };
+            // NetHack scan-mode banner + hackable count while highlight is held.
+            if (cityHighlight) {
+                char banner[64];
+                std::snprintf(banner, sizeof(banner), "NETHACK SCAN  -  %u OBJECTS", cityHax.count());
+                device->drawHudTextF(frame, x3::rhi::FontRole::Menu, banner, 42.0f + 1.5f, 42.0f + 1.5f, 20.0f, shadow);
+                device->drawHudTextF(frame, x3::rhi::FontRole::Menu, banner, 42.0f, 42.0f, 20.0f, cyan);
+            } else {
+                device->drawHudTextF(frame, x3::rhi::FontRole::Menu, "[TAB] SCAN", 42.0f, 42.0f, 16.0f, cyan);
+            }
+            // The [E] HACK prompt anchored on the aimed-at hackable.
+            if (cityLookTarget != x3::game::kNoLink && cityLookTarget < cityHax.count()) {
+                const x3::game::HackableObject& o = cityHax.at(cityLookTarget);
+                float ssx, ssy;
+                if (device->worldToScreen(o.pos.x, o.pos.y + 0.9f, o.pos.z, ssx, ssy)) {
+                    std::string prompt = std::string("[E] HACK  -  ") + x3::game::hackableEffectVerb(o.type);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, prompt.c_str(), ssx + 1.5f, ssy + 1.5f, 18.0f, shadow);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, prompt.c_str(), ssx, ssy, 18.0f, amber);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, x3::game::hackableTypeName(o.type), ssx, ssy - 20.0f, 14.0f, cyan);
+                }
+            }
+            // The HoloPanel confirm / scan card (bottom-left stack), fading out.
+            if (cityHackMsgT > 0.0f && !cityHackMsg.empty()) {
+                float a = cityHackMsgT; if (a > 1.0f) a = 1.0f;
+                const float px = 44.0f;
+                float y = sh - 40.0f - (float)cityHackMsg.size() * 26.0f;
+                for (size_t li = 0; li < cityHackMsg.size(); ++li) {
+                    const bool header = (li == 0);
+                    const float* c = header ? cyan : amber;
+                    const float cc[4] = { c[0], c[1], c[2], a };
+                    const float sc[4] = { 0.0f, 0.0f, 0.0f, 0.75f * a };
+                    const float fpx = header ? 22.0f : 18.0f;
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, cityHackMsg[li].c_str(), px + 1.5f, y + 1.5f, fpx, sc);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, cityHackMsg[li].c_str(), px, y, fpx, cc);
+                    y += 26.0f;
+                }
+            }
+        }
+
         // BOOT hand-off overlay: the completed loading bar fades out OVER the live
         // game (menu already interactive beneath it) — see the hand-off note above.
         if (loadingOverlayLive) {
