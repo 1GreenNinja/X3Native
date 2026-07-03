@@ -5,6 +5,7 @@
 #include "city.h"
 #include "hackables.h"
 #include "crowd.h"
+#include "env_art.h"
 #include "headless_device.h"
 #include "mesh_prims.h"
 
@@ -152,13 +153,64 @@ uint32_t addHackMarker(Scene& scene, x3::rhi::IRenderDevice& device,
 
 } // namespace
 
+// Converted cyberpunk building facades (HIVEMIND Cyberpunk City, LOD0, base-centered,
+// solid-PBR re-skinned by tools/build_city_facades.py). nativeH = the GLB's native Y
+// extent (m) so the placer can non-uniform-scale each to a lot's target height. Placed
+// round-robin so the skyline is varied but deterministic.
+namespace {
+// nativeW/H/D = the GLB's native extent (m). lbx/lby/lbz = the local base-center
+// (footprint center X/Z + min Y) so the placer maps that point to the lot (bx,g,bz)
+// — the GLBs are NOT origin-centered, so this offset seats them on the ground.
+// The loader bakes the GLB's node transform (already base-centered on X/Z, base at
+// Y=0) into each drawable, so lb = (0,0,0) here; nativeW/H/D are the WORLD extents.
+struct FacadeDef { const char* rel; float nativeW, nativeH, nativeD; float lbx, lby, lbz; };
+const FacadeDef kFacades[] = {
+    { "CyberpunkCity/SM_MERGED_BP_Shop_B10.glb",      15.30f, 16.90f, 16.88f, 0,0,0 },
+    { "CyberpunkCity/SM_MERGED_BP_Shop_A20.glb",      14.01f,  8.59f, 15.24f, 0,0,0 },
+    { "CyberpunkCity/SM_MERGED_BP_Building9.glb",      8.60f, 17.91f, 16.40f, 0,0,0 },
+    { "CyberpunkCity/SM_MERGED_BP_House_Shop_E10.glb",12.48f, 22.70f, 12.48f, 0,0,0 },
+    { "CyberpunkCity/SM_MERGED_BP_Shop_B15.glb",      13.78f, 16.90f, 13.78f, 0,0,0 },
+    { "CyberpunkCity/SM_MERGED_BP_Building10_2.glb",   8.60f, 17.90f, 16.50f, 0,0,0 },
+};
+constexpr int kFacadeCount = (int)(sizeof(kFacades) / sizeof(kFacades[0]));
+// Compose T * RotY(theta) * Scale(sx,sy,sz) into a column-major 4x4, choosing T so
+// the local base-center point `lb` lands exactly at world (tx,ty,tz).
+inline void makeFacadeXform(float tx, float ty, float tz, float theta,
+                            float sx, float sy, float sz,
+                            float lbx, float lby, float lbz, float out[16]) {
+    const float c = std::cos(theta), s = std::sin(theta);
+    // R*S*lb (the base-center after rotate+scale) — subtract it from the target T.
+    const float px = c * (sx * lbx) + s * (sz * lbz);
+    const float py = sy * lby;
+    const float pz = -s * (sx * lbx) + c * (sz * lbz);
+    out[0]=c*sx;  out[1]=0;    out[2]=-s*sx; out[3]=0;
+    out[4]=0;     out[5]=sy;   out[6]=0;     out[7]=0;
+    out[8]=s*sz;  out[9]=0;    out[10]=c*sz; out[11]=0;
+    out[12]=tx-px; out[13]=ty-py; out[14]=tz-pz; out[15]=1;
+}
+} // namespace
+
 NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device,
                                     x3::phys::IPhysicsWorld& physics,
                                     HackableRegistry* hax, CrowdSystem* crowd,
-                                    float cx, float cz) {
+                                    float cx, float cz, EnvArtSystem* facades) {
     (void)physics;
     using x3::prims::makeBox;
     NeonDistrictStats st; st.centerX = cx; st.centerZ = cz;
+
+    // Preload the real facade GLBs once (cached upload; instanced across the block).
+    // facadeIdx[i] == UINT32_MAX if that GLB is missing -> that lot keeps its box body.
+    uint32_t facadeIdx[kFacadeCount];
+    for (int i = 0; i < kFacadeCount; ++i) facadeIdx[i] = 0xFFFFFFFFu;
+    int facadesReady = 0;
+    if (facades) {
+        for (int i = 0; i < kFacadeCount; ++i) {
+            facadeIdx[i] = facades->loadFacade(kFacades[i].rel);
+            if (facadeIdx[i] != 0xFFFFFFFFu) ++facadesReady;
+        }
+        x3::logInfo("buildNeonDistrict: " + std::to_string(facadesReady) + "/" +
+                    std::to_string(kFacadeCount) + " real GLB facades loaded");
+    }
 
     // ---- Shared materials (procedural — no disk dependency) ----
     auto concreteTex = device.createTexture(x3::prims::makeCleanPanelRGBA(256, 5).data(), 256, 256, true);
@@ -237,10 +289,38 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
             const float h  = 16.0f + rnd() * 46.0f;             // varied 16..62 m
             const float bz = rz + faceZ * (d + 3.0f);           // set back from the sidewalk
             const float by = g + h * 0.5f;
-            // Body: bone concrete with a cool emissive window-grid glow (inhabited dusk).
-            const float lit = 0.10f + rnd() * 0.16f;
-            const float winEmis[4] = { lit * 0.55f, lit * 0.8f, lit * 1.15f, lit };
-            addBox(bx, by, bz, w, h * 0.5f, d, white, winEmis, panelTex);
+            // ---- BODY: a REAL cyberpunk GLB facade when available, else the box. ----
+            // Round-robin a facade GLB; non-uniform-scale it to the lot (full width 2w,
+            // full depth 2d, height clamped to keep window proportions sane) and rotate
+            // to face the street. The GLB is base-centered so ty = ground g. The neon
+            // sign / shopfront / canopy / camera / crown below still key off `h`, so
+            // scaling the facade's height to `fh` keeps them registered.
+            bool placedFacade = false;
+            const float fh = std::clamp(h, 14.0f, 36.0f);   // facade target height (proportion cap)
+            if (facadesReady > 0) {
+                const int fi = (row * 8 + i) % kFacadeCount;
+                if (facadeIdx[fi] != 0xFFFFFFFFu) {
+                    const FacadeDef& F = kFacades[fi];
+                    const float sx = (2.0f * w) / F.nativeW;
+                    const float sy = fh / F.nativeH;
+                    const float sz = (2.0f * d) / F.nativeD;
+                    // Front faces the street: row 0 (+Z side) looks toward -Z, row 1 toward +Z.
+                    const float theta = (row == 0 ? 3.14159265f : 0.0f);
+                    float xf[16];
+                    makeFacadeXform(bx, g, bz, theta, sx, sy, sz, F.lbx, F.lby, F.lbz, xf);
+                    placedFacade = facades->bakeInto(scene, facadeIdx[fi], xf,
+                                                     /*emisScale=*/4.5f, /*baseGlow=*/0.09f) > 0;
+                }
+            }
+            const float useH = placedFacade ? fh : h;   // signage/crown key off the actual body height
+            if (!placedFacade) {
+                // Body: bone concrete with a cool emissive window-grid glow (inhabited dusk).
+                const float lit = 0.10f + rnd() * 0.16f;
+                const float winEmis[4] = { lit * 0.55f, lit * 0.8f, lit * 1.15f, lit };
+                addBox(bx, by, bz, w, h * 0.5f, d, white, winEmis, panelTex);
+            } else {
+                (void)by; rnd();   // keep the LCG stream aligned with the box path (deterministic layout)
+            }
             st.buildings++;
             // Ground-floor shopfront: a WARM lit interior band behind a dark mullion
             // grid facing the street — a glow, not a blown-white wall (subtle strength).
@@ -254,16 +334,16 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
             // ONE neon sign: an emissive strip up the street-facing corner (upper third).
             const Accent a = accents[(int)(rnd() * 3.0f) % 3];
             const float neon[4] = { a.r, a.g, a.b, 2.1f };
-            addBox(bx + w * 0.8f, g + h * 0.72f, bz - faceZ * (d + 0.2f),
-                   0.28f, h * 0.22f, 0.28f, white, neon, steelTex);
+            addBox(bx + w * 0.8f, g + useH * 0.72f, bz - faceZ * (d + 0.2f),
+                   0.28f, useH * 0.22f, 0.28f, white, neon, steelTex);
             st.signs++;
             // Rooftop parapet crest (thin cyan strip — the tower crown rhythm).
             const float crown[4] = { kCyan.r, kCyan.g, kCyan.b, 2.2f };
-            addBox(bx, g + h + 0.4f, bz, w + 0.3f, 0.25f, d + 0.3f, white, crown, steelTex);
+            addBox(bx, g + useH + 0.4f, bz, w + 0.3f, 0.25f, d + 0.3f, white, crown, steelTex);
 
             // ---- HACKABLE: a security CAMERA on the street-facing upper corner ----
             if (hax) {
-                const float camX = bx - w * 0.8f, camY = g + h - 2.0f, camZ = bz - faceZ * (d + 0.3f);
+                const float camX = bx - w * 0.8f, camY = g + useH - 2.0f, camZ = bz - faceZ * (d + 0.3f);
                 const float camLens[4] = { 2.0f, 0.2f, 0.2f, 1.4f };            // red lens dot
                 addBox(camX, camY, camZ, 0.35f, 0.22f, 0.5f, curbCol, camLens, steelTex);
                 HackableObject c; c.type = HackableType::Camera;

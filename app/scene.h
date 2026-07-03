@@ -78,6 +78,11 @@ struct Entity {
     // dielectric satin default. Invalid (default) => drawMeshEmissive, identical
     // to the old path for every existing entity.
     x3::rhi::TextureHandle mrTex;
+    // Optional TANGENT-SPACE NORMAL map. Only consulted on the PBR path (mrTex
+    // valid). Invalid (default) => geometry normal is used, identical to before.
+    // Set when baking converted GLB drawables (real building facades) into the
+    // Scene so their window-reveal / panel normals earn the light (§8).
+    x3::rhi::TextureHandle normalTex;
     float                  baseColor[4] = {1, 1, 1, 1}; // tint (multiplies texel)
     // Optional per-entity HDR EMISSIVE term { r, g, b, strength } added on top of
     // the lit result (independent of light). Default {0,0,0,0} == no glow, so

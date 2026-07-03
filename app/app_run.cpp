@@ -1111,6 +1111,7 @@ int runDefaultHost(HostContext& hc) {
     // card the last hack produced.
     x3::game::HackableRegistry cityHax;
     x3::game::CrowdSystem      cityCrowd;
+    x3::game::EnvArtSystem     cityFacades;   // persistent GLB-instancing host for real building facades (outlives Scene)
     x3::game::AlertSystem      cityAlert;
     x3::game::TimelineState    cityTimeline;
     bool     cityBuilt      = false;
@@ -1620,9 +1621,13 @@ int runDefaultHost(HostContext& hc) {
                 // MILESTONE 1: the art-directed neon district at (-600,500) + the WD2
                 // hackable layer + civilian crowd (in place of the coarse landmark massing,
                 // which sits at the same coords). The freeway still threads in from origin.
+                // Mount the converted cyberpunk facade GLBs (assets/converted_glb/
+                // CyberpunkCity) so the district lines the street with REAL building
+                // meshes instead of graybox boxes. Missing dir -> boxes kept (fallback).
+                cityFacades.mountFacades(*device, x3::game::convertedGlbRoot());
                 x3::game::NeonDistrictStats ds =
                     x3::game::buildNeonDistrict(scene, *device, *physics, &cityHax, &cityCrowd,
-                                                -600.0f, 500.0f);
+                                                -600.0f, 500.0f, &cityFacades);
                 cityAlert.configure(x3::game::defaultAlertConfig());
                 // Wire the hack sinks to the REAL systems (heat + karma + per-type effects).
                 x3::game::HackSinks sinks;
@@ -1650,6 +1655,41 @@ int runDefaultHost(HostContext& hc) {
                     *msgTP = 4.5f;
                 };
                 cityHax.setSinks(sinks);
+                // MOTIVATED LIGHT (§0): the night moon is a near-zero key, so the real
+                // GLB facades read as black without a source. Plant warm sodium-lamp
+                // POINT lights down the drag (one per street lamp, alternating sides,
+                // capped at 16) so the lower facades + wet street catch pools of light
+                // with dark gaps between — the CP2077 street look. Set once; the city
+                // path has no per-frame light rebuild, so this persists.
+                {
+                    std::vector<x3::rhi::PointLight> cityLights;
+                    const float lg = ds.groundY;
+                    // Two rows set BACK toward the facade fronts (z ~ ±16) so the pools
+                    // land on the building faces, not just the road; bright warm sodium.
+                    int side = 0;
+                    for (float lx = -600.0f - 80.0f; lx <= -600.0f + 80.0f && cityLights.size() < 14; lx += 20.0f) {
+                        const float lz = 500.0f + (side++ % 2 == 0 ? 16.0f : -16.0f);
+                        x3::rhi::PointLight pl;
+                        pl.pos[0] = lx; pl.pos[1] = lg + 7.0f; pl.pos[2] = lz;
+                        pl.range = 36.0f;
+                        pl.color[0] = 34.0f; pl.color[1] = 23.0f; pl.color[2] = 12.0f;  // warm sodium (bright pools)
+                        cityLights.push_back(pl);
+                    }
+                    // Two cool cyan fills so the depth reads (a second, quiet accent).
+                    for (float cxL : { -600.0f - 40.0f, -600.0f + 60.0f }) {
+                        x3::rhi::PointLight cool;
+                        cool.pos[0] = cxL; cool.pos[1] = lg + 5.0f; cool.pos[2] = 500.0f;
+                        cool.range = 46.0f; cool.color[0] = 2.4f; cool.color[1] = 6.0f; cool.color[2] = 8.0f;
+                        cityLights.push_back(cool);
+                    }
+                    device->setPointLights(cityLights.data(), (uint32_t)cityLights.size());
+                    x3::logInfo("--world city: " + std::to_string(cityLights.size()) +
+                                " street point-lights (warm lamp pools + cyan fills)");
+                    // Low COOL ambient (city sky-glow bounce) so the real facades lift
+                    // off pure black and their modeled window/panel detail reads, while
+                    // the emissive neon (values >1) still dominates the darkness (§0).
+                    device->setAmbient(0.10f, 0.11f, 0.155f);
+                }
                 // Cache the marker entity ids so the highlight toggle can brighten them.
                 for (uint32_t i = 0; i < cityHax.count(); ++i)
                     cityMarkerEnts.push_back(cityHax.at(i).entity);

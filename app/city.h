@@ -28,6 +28,7 @@ namespace x3::game {
 
 class HackableRegistry;   // hackables.h — the WD2 hacking layer (optional, populated by the district)
 class CrowdSystem;        // crowd.h — civilian crowd on the main drag (optional)
+class EnvArtSystem;       // env_art.h — persistent GLB-instancing host for real building facades (optional)
 
 // ===========================================================================
 // THE NEON DISTRICT (Milestone 1) — the art-directed, walkable/drivable CP2077-vibe
@@ -50,10 +51,16 @@ struct NeonDistrictStats {
 
 // Build the neon district onto `scene` at (cx, cz). Static geometry (no collision this
 // pass beyond the terrain it stands on) + optional hackables/crowd. Deterministic layout.
+// `facades` (optional): a persistent EnvArtSystem, already mounted on the converted-
+// GLB dir, that supplies REAL cyberpunk building facade meshes. When present + loaded,
+// each building's procedural box BODY is replaced by an instanced GLB facade (the neon
+// signage, lit shopfronts, lamps, hackables, crowd + LNG tank are unchanged). When null
+// / unmounted / a GLB fails, the procedural box body is kept (headless tests, no-assets).
 NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device,
                                     x3::phys::IPhysicsWorld& physics,
                                     HackableRegistry* hax, CrowdSystem* crowd,
-                                    float cx = -600.0f, float cz = 500.0f);
+                                    float cx = -600.0f, float cz = 500.0f,
+                                    EnvArtSystem* facades = nullptr);
 
 
 // City districts (the metropolis).

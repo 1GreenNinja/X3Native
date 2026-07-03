@@ -174,6 +174,57 @@ bool EnvArtSystem::buildFromGlbAt(x3::rhi::IRenderDevice& device,
     return true;
 }
 
+bool EnvArtSystem::mountFacades(x3::rhi::IRenderDevice& device, std::string_view dir) {
+    if (m_loader) return true;   // already mounted (idempotent)
+    m_assets.reset(x3::asset::createAssetSource());
+    if (!m_assets->mountDir(dir, 0)) {
+        x3::logWarn("[env-art] mountFacades failed: " + std::string(dir));
+        m_assets.reset();
+        return false;
+    }
+    m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    x3::logInfo("[env-art] city facades mounted: " + std::string(dir));
+    return true;
+}
+
+uint32_t EnvArtSystem::loadFacade(const std::string& relPath) {
+    if (!m_loader) return 0xFFFFFFFFu;
+    const uint32_t a = loadAsset(relPath);   // cached by path; ok=false yields a skip-drawable asset
+    if (a >= m_assetTable.size() || !m_assetTable[a].ok) return 0xFFFFFFFFu;
+    return a;
+}
+
+uint32_t EnvArtSystem::bakeInto(Scene& scene, uint32_t a, const float xf[16],
+                                float emisScale, float baseGlow) {
+    if (a >= m_assetTable.size() || !m_assetTable[a].ok) return 0;
+    uint32_t added = 0;
+    for (const auto& d : m_assetTable[a].drawables) {
+        float fin[16];
+        x3::asset::mulMat4(xf, d.nodeTransform, fin);
+        Entity e{};
+        e.mesh     = x3::rhi::MeshHandle{ d.meshId };
+        e.tex      = x3::rhi::TextureHandle{ d.baseColorTexId };
+        e.mrTex    = x3::rhi::TextureHandle{ d.mrTexId };     // valid => full PBR path in Scene::render
+        e.normalTex= x3::rhi::TextureHandle{ d.normalTexId }; // window-reveal / panel normals earn the light
+        for (int i = 0; i < 4; ++i) e.baseColor[i] = d.baseColorFactor[i];
+        const bool glow = d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
+        if (glow) {
+            // Material emissive (lit windows / neon signage) — scaled up for the bloom chain.
+            e.emissive[0] = d.emissiveFactor[0]; e.emissive[1] = d.emissiveFactor[1]; e.emissive[2] = d.emissiveFactor[2];
+            e.emissive[3] = emisScale;
+        } else if (baseGlow > 0.0f) {
+            // Concrete/steel mass: a faint self-glow (baseColor tint) so it reads at night.
+            e.emissive[0] = d.baseColorFactor[0]; e.emissive[1] = d.baseColorFactor[1]; e.emissive[2] = d.baseColorFactor[2];
+            e.emissive[3] = baseGlow;
+        }
+        for (int i = 0; i < 16; ++i) e.transform[i] = fin[i];
+        e.tag = (uint32_t)Tag::Static;
+        scene.add(e);
+        ++added;
+    }
+    return added;
+}
+
 void EnvArtSystem::setInstanceTransform(uint32_t idx, const float transform[16]) {
     if (idx >= m_instances.size() || !transform) return;
     for (int i = 0; i < 16; ++i) m_instances[idx].transform[i] = transform[i];
