@@ -328,6 +328,12 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
     // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
     console.registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    // Watch-Dogs-2 hack markers (the floating gem/diamond NetHack tags over hackables in
+    // --world city). DEFAULT ON for gameplay (markers show in normal play + on the TAB
+    // scan). `r_hackmarkers 0` HIDES every marker for a clean BEAUTY shot without touching
+    // the hacking logic (the registry + TAB-highlight + [E] HACK stay live). The
+    // --screenshot / hero path forces this OFF automatically.
+    console.registerCVar("r_hackmarkers", "1", "show WD2 hack markers in --world city (0 = hide for beauty shots)");
     // Hardware ray-traced ambient occlusion (RT AO — Vulkan ray-query path). Gated
     // + DEFAULT OFF: only takes effect on a device that supports ray tracing. Live-
     // tunable: `r_rtao 1` turns on ground-truth ray-traced contact occlusion (BLAS/
@@ -1122,6 +1128,7 @@ int runDefaultHost(HostContext& hc) {
     std::vector<std::string> cityHackMsg;   // multi-line confirm / scan card
     float    cityHackMsgT   = 0.0f;         // seconds remaining on the confirm panel
     std::vector<uint32_t> cityMarkerEnts;   // marker entity ids (brightened on highlight)
+    bool     cityMarkersShown = true;       // live r_hackmarkers state (0 = hidden for beauty)
     // B3: the terrain world is now STREAMED around the player via a residency
     // ring (TerrainStreamer) fed by the engine job system. Both are only created
     // in terrain mode; Level 1 is unaffected.
@@ -1700,8 +1707,17 @@ int runDefaultHost(HostContext& hc) {
                     device->setAmbient(0.10f, 0.11f, 0.155f);
                 }
                 // Cache the marker entity ids so the highlight toggle can brighten them.
-                for (uint32_t i = 0; i < cityHax.count(); ++i)
-                    cityMarkerEnts.push_back(cityHax.at(i).entity);
+                // Gate their visibility (r_hackmarkers): the --screenshot / hero path forces
+                // the floating gem markers OFF so beauty shots are clean, while the hacking
+                // registry + TAB scan stay fully live. Interactive runs default them ON and a
+                // live r_hackmarkers toggle (applied per-frame below) can hide them any time.
+                const bool showMarkersInit = !screenshot;
+                for (uint32_t i = 0; i < cityHax.count(); ++i) {
+                    const uint32_t ent = cityHax.at(i).entity;
+                    cityMarkerEnts.push_back(ent);
+                    if (ent < scene.size()) scene.get(ent).visible = showMarkersInit;
+                }
+                cityMarkersShown = showMarkersInit;
                 cityBuilt = true;
                 x3::logInfo("--world city: NEON DISTRICT + Watch-Dogs-2 hacking online (" +
                             std::to_string(ds.hackables) + " hackables; hold TAB = NetHack scan, E = HACK)");
@@ -4165,6 +4181,15 @@ int runDefaultHost(HostContext& hc) {
         // Hold TAB = the NetHack scan (highlight every hackable via its holo marker);
         // aim at one + press E = HACK (fires the effect, raises heat, moves karma).
         if (cityBuilt) {
+            // r_hackmarkers: live show/hide of the floating gem markers (a clean beauty
+            // mode without leaving the game). Toggling only flips entity visibility — the
+            // hacking registry, TAB scan, and [E] HACK stay fully live either way.
+            const bool wantMarkers = console->getInt("r_hackmarkers") != 0;
+            if (wantMarkers != cityMarkersShown) {
+                for (uint32_t mi : cityMarkerEnts)
+                    if (mi < scene.size()) scene.get(mi).visible = wantMarkers;
+                cityMarkersShown = wantMarkers;
+            }
             // TAB toggles the highlight; brighten/dim every marker entity.
             const bool tabNow = keyDown(GLFW_KEY_TAB);
             if (tabNow && !prevCityTab) {
