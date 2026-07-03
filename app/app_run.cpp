@@ -1698,6 +1698,24 @@ int runDefaultHost(HostContext& hc) {
                         cool.range = 46.0f; cool.color[0] = 2.4f; cool.color[1] = 6.0f; cool.color[2] = 8.0f;
                         cityLights.push_back(cool);
                     }
+                    // NEAR-FACADE COOL FILL (§0): the foreground facades read pale-flat grey
+                    // under the near-zero moon — their concrete normals / panel reveals never
+                    // catch the key, and the warm lamps are LOW pools that miss the upper
+                    // facade. Add a few DIM, HIGH, cool moonlight-bounce fills set back onto
+                    // the facade fronts (z ~ ±20) so the near buildings' surface detail reads,
+                    // WITHOUT washing the night: values <1 keep them a soft fill (never a key),
+                    // and the dark gaps between the warm lamp pools survive.
+                    for (float fx : { -600.0f - 66.0f, -600.0f - 18.0f, -600.0f + 42.0f }) {
+                        for (int fs = 0; fs < 2; ++fs) {
+                            x3::rhi::PointLight fill;
+                            fill.pos[0] = fx;
+                            fill.pos[1] = lg + 11.0f;                            // high -> rakes the upper facade
+                            fill.pos[2] = 500.0f + (fs == 0 ? 20.0f : -20.0f);   // set onto the fronts, both sides
+                            fill.range  = 36.0f;
+                            fill.color[0] = 1.3f; fill.color[1] = 1.9f; fill.color[2] = 2.6f;  // dim cool bounce
+                            cityLights.push_back(fill);
+                        }
+                    }
                     device->setPointLights(cityLights.data(), (uint32_t)cityLights.size());
                     x3::logInfo("--world city: " + std::to_string(cityLights.size()) +
                                 " street point-lights (warm lamp pools + cyan fills)");
