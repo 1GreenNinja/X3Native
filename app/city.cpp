@@ -257,10 +257,14 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
     // Two cross streets.
     addBox(cx - 45.0f, roadY, cz, 6.0f, 0.07f, halfBlock, white, kNoEmis, asphaltTex, wetMR);
     addBox(cx + 45.0f, roadY, cz, 6.0f, 0.07f, halfBlock, white, kNoEmis, asphaltTex, wetMR);
-    // Sidewalks flanking the drag (raised curbs, bone concrete).
-    const float curbCol[4] = { 0.55f, 0.57f, 0.62f, 1.0f };
-    addBox(cx, roadY + 0.12f, cz + 9.5f, halfBlock, 0.18f, 2.5f, curbCol, kNoEmis, sidewalkTex);
-    addBox(cx, roadY + 0.12f, cz - 9.5f, halfBlock, 0.18f, 2.5f, curbCol, kNoEmis, sidewalkTex);
+    // Sidewalks flanking the drag (raised curbs). DARK wet pavement so the hot sodium
+    // lamps read as pools ON pavement, not as continuous glowing cream bands (the old
+    // 0.55 albedo blew out under the bright point lights). curbCol (lighter) stays for
+    // the posts/poles/junction boxes below where a brighter concrete reads correctly.
+    const float curbCol[4]  = { 0.50f, 0.52f, 0.57f, 1.0f };
+    const float walkCol[4]  = { 0.24f, 0.25f, 0.29f, 1.0f };   // dark sidewalk pavement
+    addBox(cx, roadY + 0.12f, cz + 9.5f, halfBlock, 0.18f, 2.5f, walkCol, kNoEmis, sidewalkTex);
+    addBox(cx, roadY + 0.12f, cz - 9.5f, halfBlock, 0.18f, 2.5f, walkCol, kNoEmis, sidewalkTex);
     // Painted lane center-line (faint emissive so the wet street reads as a road).
     const float lane[4] = { 1.2f, 1.0f, 0.3f, 0.8f };
     for (float lx = cx - 80.0f; lx < cx + 80.0f; lx += 8.0f)
@@ -328,10 +332,12 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
             }
             st.buildings++;
             // Ground-floor shopfront: a WARM lit interior band behind a dark mullion
-            // grid facing the street — a glow, not a blown-white wall (subtle strength).
-            const float shopWarm[4] = { 1.0f, 0.62f, 0.28f, 0.55f };
+            // grid facing the street. Kept SLIM + dim (was a 2.2 m tall 0.55-strength band
+            // that bloomed into a continuous glowing-cream WALL down the block); now a
+            // ~1.2 m window strip at a subtle glow so it reads as lit shop interiors.
+            const float shopWarm[4] = { 0.85f, 0.5f, 0.22f, 0.22f };
             const float shopCol[4]  = { 0.5f, 0.4f, 0.3f, 1.0f };
-            addBox(bx, g + 1.5f, bz - faceZ * (d - 0.1f), w * 0.82f, 1.1f, 0.22f,
+            addBox(bx, g + 1.2f, bz - faceZ * (d - 0.1f), w * 0.82f, 0.6f, 0.22f,
                    shopCol, shopWarm, panelTex);
             // A slim dark canopy over the shopfront (trim — sells the ground floor).
             addBox(bx, g + 2.8f, bz - faceZ * (d + 0.35f), w * 0.85f, 0.12f, 0.5f,

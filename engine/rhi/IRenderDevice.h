@@ -456,6 +456,13 @@ public:
         float zenith[3]     = { 0.10f, 0.28f, 0.66f }; // overhead sky color (linear); per-scene (default = old global)
         float horizon[3]    = { 0.62f, 0.74f, 0.92f }; // horizon glow color (linear); per-scene (default = old global)
         float nebula        = 0.0f;                    // 0 = clean night sky; >0 = teal-rose nebula band + two crescent moons (alien-night; §2). Rides SkyUBO params.w.
+        // ---- Scene atmosphere (mesh-pass distance/height fog; feat/city-aaa) ----
+        // Exponential fog blended into the lit HDR color in mesh.frag so far geometry
+        // fades into a cool night haze (kills the "distance goes black" tell; neon glow
+        // bleeds into the air). 0 = OFF (every existing scene unchanged). Rides the two
+        // spare Camera-UBO floats camPos.w / sunDir.w — no UBO layout change.
+        float fogDensity       = 0.0f;   // per-meter distance density (~0.010 = ~100 m falloff)
+        float fogHeightFalloff = 0.0f;   // per-meter height attenuation (denser low; 0 = uniform)
     };
     // Set the active sky parameters for subsequent frames (cached + re-applied
     // each frame, like setPointLights). Calling with enabled=false disables it.

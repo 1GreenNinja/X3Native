@@ -1594,6 +1594,10 @@ int runDefaultHost(HostContext& hc) {
             sp.zenith[0]  = 0.010f; sp.zenith[1]  = 0.016f; sp.zenith[2]  = 0.035f;  // void zenith
             sp.horizon[0] = 0.020f; sp.horizon[1] = 0.030f; sp.horizon[2] = 0.055f;  // dark horizon (a touch of city-glow blue)
             sp.nebula     = 0.70f;                                                   // alien-night: nebula + two moons
+            // ATMOSPHERE (feat/city-aaa item 3): cool night haze so the drag has AIR —
+            // far facades/neon fade into fog instead of black, denser at street level.
+            sp.fogDensity       = 0.011f;   // ~90 m visual falloff
+            sp.fogHeightFalloff = 0.028f;   // haze pools low; rooftops clearer
         }
         device->setSkyParams(sp);
         // Spawn the player on the surface near the world origin, a little above so
@@ -1671,8 +1675,11 @@ int runDefaultHost(HostContext& hc) {
                         const float lz = 500.0f + (side++ % 2 == 0 ? 16.0f : -16.0f);
                         x3::rhi::PointLight pl;
                         pl.pos[0] = lx; pl.pos[1] = lg + 7.0f; pl.pos[2] = lz;
-                        pl.range = 36.0f;
-                        pl.color[0] = 34.0f; pl.color[1] = 23.0f; pl.color[2] = 12.0f;  // warm sodium (bright pools)
+                        pl.range = 28.0f;
+                        // Warm sodium POOLS — tamed from 34,23,12 (which saturated the
+                        // pavement into continuous cream bands) to discrete pools with
+                        // real dark between them (WORLD_ART_DIRECTION §0).
+                        pl.color[0] = 11.0f; pl.color[1] = 7.2f; pl.color[2] = 3.6f;
                         cityLights.push_back(pl);
                     }
                     // Two cool cyan fills so the depth reads (a second, quiet accent).

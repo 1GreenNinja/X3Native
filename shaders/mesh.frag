@@ -1000,5 +1000,22 @@ void main() {
         outA = clamp(baseOp + fres * 0.35, 0.0, 1.0);                 // edges firmer, face near-clear
         color += kSunColor * fres * 0.06;                            // subtle grazing rim only
     }
+    // ---- Scene atmosphere: exponential distance+height fog (feat/city-aaa) --------
+    // Gated by cam.camPos.w (fog density); 0 -> no-op (every non-city scene unchanged).
+    // Far geometry fades into a cool night haze so the street has AIR + depth, and the
+    // distance stops reading as pure black. Denser near the ground (haze pools at street
+    // level, thinner over the rooftops) via the sunDir.w height falloff.
+    float fogDensity = cam.camPos.w;
+    if (fogDensity > 0.0) {
+        float dist    = length(vWorldPos - cam.camPos.xyz);
+        float hf      = cam.sunDir.w;
+        float heightF = (hf > 0.0) ? exp(-max(vWorldPos.y, 0.0) * hf) : 1.0;
+        float f = 1.0 - exp(-dist * fogDensity * heightF);
+        f = clamp(f, 0.0, 0.90);                    // never fully swallow a surface
+        // Cool void-blue city haze (pre-tonemap HDR, gently lifted so it reads as glow,
+        // not just darkening); a whisper of city-glow so distant neon bleeds into air.
+        vec3 fogCol = vec3(0.055, 0.085, 0.150);
+        color = mix(color, fogCol, f);
+    }
     outColor = vec4(color, outA);   // HDR linear; tonemap is in composite.frag
 }

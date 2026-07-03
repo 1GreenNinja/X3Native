@@ -1576,9 +1576,10 @@ void VulkanRenderDevice::prepareFrameData() {
             ubo.lights[i].posRange = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.range);
             ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
         }
-        ubo.camPos = glm::vec4(m_camPos, 0.0f);   // PBR view vector (mesh.frag)
+        // camPos.w / sunDir.w carry the scene fog (mesh.frag); 0 = fog off (unchanged scenes).
+        ubo.camPos = glm::vec4(m_camPos, m_sky.fogDensity);   // PBR view vector + fog density
         // Per-scene sun direction for lighting + shadows (same source as the sky disk).
-        ubo.sunDir = glm::vec4(glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])), 0.0f);
+        ubo.sunDir = glm::vec4(glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])), m_sky.fogHeightFalloff);
         std::memcpy(fr.camMapped, &ubo, sizeof(FrameUBO));
 
         // Analytic sky UBO (open-world track, task A): the camera's INVERSE viewProj
