@@ -390,6 +390,7 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
         const uint32_t pVentR    = LP("CityProps/Vent_Round.glb");
         const uint32_t pPipe     = LP("CityProps/Pipe_Wall.glb");
         const uint32_t pLamp     = LP("CityProps/LampStreet.glb");
+        const uint32_t pBillboard = LP("CityProps/Billboard.glb");
 
         uint32_t prng = 0xC1A77Eu;
         auto pr = [&]() { prng = prng * 1664525u + 1013904223u; return (float)((prng >> 8) & 0xFFFF) / 65535.0f; };
@@ -444,6 +445,16 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
                   faceTheta, 1.0f + pr() * 0.6f, 0, 0.04f);
             place(pr() < 0.5f ? pVentSq : pVentR, f.bx + (pr() - 0.5f) * f.w,
                   g + 2.5f + pr() * 3.0f, wallZ, faceTheta, 1.0f, 0, 0.05f);
+            // ---- HOLO-AD BILLBOARD on the upper facade (item 4): a real cyberpunk ad
+            // panel (T_Billboard emissive), mounted flat on the street-facing wall so
+            // the block reads as advertised, not blank massing. ~65% of buildings get one.
+            if (pBillboard != 0xFFFFFFFFu && pr() < 0.65f) {
+                const float bs = 1.6f + pr() * 1.3f;                 // 8..15 m wide ad
+                const float by = g + f.useH * (0.42f + pr() * 0.32f);
+                const float btheta = (f.faceZ > 0.0f ? 1.5707963f : -1.5707963f);
+                const float bwz = f.bz - f.faceZ * (f.d + 0.30f);    // proud of the wall
+                place(pBillboard, f.bx + (pr() - 0.5f) * f.w * 0.5f, by, bwz, btheta, bs, 0.55f, 0.0f);
+            }
         }
 
         // (c) REAL street-lamp meshes down the drag (richer than the box posts; the box
