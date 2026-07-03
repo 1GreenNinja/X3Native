@@ -26,6 +26,8 @@
 
 #include "engine/core/x3_log.h"
 #include "engine/rhi/IRenderDevice.h"
+#include "engine/asset/IAssetSource.h"   // real ship GLBs: mount assets/rigged_glb
+#include "engine/asset/IModelLoader.h"   // load JakeFighterShip_crisp + SpaceShip4 at MAX DETAIL
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/audio/IAudioSystem.h"   // hc.audio threaded to the cinematic beats (Phase 5)
 
@@ -279,6 +281,121 @@ struct CameraFeel {
 };
 
 // ---------------------------------------------------------------------------
+// REAL SHIP GLB (P1 real-ships) — load an authored ship from assets/rigged_glb and
+// draw it at MAX DETAIL: full PBR (baseColor + normal + metallic-roughness +
+// emissive + clearcoat) via drawMeshPBR — the same path env_art uses for the AAA
+// building interiors. Replaces the procedural box / greebled-cube ships in the
+// intro with the hero assets (JakeFighterShip_crisp for the player Minerva; a
+// SpaceShip capital cast, scaled up dramatically, for the dreadnought).
+//
+// LIVE-ONLY: needs a real device. The headless deterministic brain never builds a
+// device, so this never runs under --test-introorch / --test-introbranch (the sim
+// gates stay byte-identical). READ-ONLY over the sim — pure visual swap.
+//
+// `fix` folds THREE authored corrections into one matrix applied as
+// world = placement * fix * nodeTransform:
+//   1) a Y-rotation so the model's authored nose (+Z for both the Jake fighter and
+//      the SpaceShip cast, verified from geometry) aligns with the caller's forward,
+//   2) a uniform scale (fighter ~natural size; capital blown up to dreadnought),
+//   3) a vertical recenter (the GLBs sit on y=0; we lift the origin to mid-height)
+//      so the hull centers on its sim position / hit sphere.
+// Owns its GPU handles; unload() frees them so allocationCount returns to 0.
+// ---------------------------------------------------------------------------
+struct ShipModel {
+    std::unique_ptr<x3::asset::IAssetSource> src;
+    std::unique_ptr<x3::asset::IModelLoader> loader;
+    x3::asset::Model model{};
+    std::vector<x3::asset::ModelDrawable> drawables;
+    float fix[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    bool  ok = false;
+
+    // forwardFixDeg: Y-rotation to bring the authored nose to the caller's forward.
+    // scale: uniform world scale. midY: model half-height (pre-scale) for recenter.
+    bool load(x3::rhi::IRenderDevice* dev, const char* file,
+              float forwardFixDeg, float scale, float midY) {
+        if (!dev) return false;
+        src.reset(x3::asset::createAssetSource());
+        src->mountDir(x3::game::riggedGlbRoot(), 0);
+        loader.reset(x3::asset::createModelLoader(dev, src.get()));
+        model = loader->load(file);
+        if (!model.ok) {
+            x3::logWarn(std::string("[intro] real ship GLB missing (procedural fallback): ") + file);
+            return false;
+        }
+        drawables = x3::asset::makeDrawables(model);
+        const float r = forwardFixDeg * 3.14159265358979f / 180.0f;
+        const float c = std::cos(r), s = std::sin(r);
+        // Column-major Ry(r) * uniformScale, with a Y recenter baked into the
+        // translation column (Ry leaves Y unaffected, so it is just -midY*scale).
+        fix[0]=c*scale; fix[1]=0; fix[2]=-s*scale; fix[3]=0;
+        fix[4]=0;       fix[5]=scale; fix[6]=0;    fix[7]=0;
+        fix[8]=s*scale; fix[9]=0; fix[10]=c*scale; fix[11]=0;
+        fix[12]=0; fix[13]=-midY*scale; fix[14]=0; fix[15]=1;
+        ok = true;
+        x3::logInfo(std::string("[intro] real ship GLB loaded: ") + file + " (" +
+                    std::to_string(drawables.size()) + " drawables, scale " +
+                    std::to_string(scale) + ")");
+        return true;
+    }
+
+    // Draw at object->world `placement` (unit-basis rotation + translation; scale is
+    // carried by `fix`). `bright` multiplies baseColor for deep-space readability
+    // (no bounced fill on dark scifi metal); `floor` adds a small constant lift so
+    // the faceted hull never crushes to black; `emisBoost` scales the material's OWN
+    // emissive (glowing accents); `emisAdd` is a FLAT per-object emissive injected on
+    // top (works even when the GLB carries no emissive map — used to drive the ember
+    // self-glow on the crippled capital so the subsystem climax reads on the hull).
+    void draw(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContext& fr,
+              const float placement[16], float bright, float floor, float emisBoost,
+              const float emisAdd[3]) const {
+        for (const auto& d : drawables) {
+            float xf[16], fin[16];
+            x3::asset::mulMat4(placement, fix, xf);       // placement * (Ry*scale*recenter)
+            x3::asset::mulMat4(xf, d.nodeTransform, fin); // * baked node transform
+            const float bc[4] = {
+                d.baseColorFactor[0]*bright + floor,
+                d.baseColorFactor[1]*bright + floor,
+                d.baseColorFactor[2]*bright + floor,
+                d.baseColorFactor[3] };
+            const float er = d.emissiveFactor[0]*emisBoost + (emisAdd ? emisAdd[0] : 0.0f);
+            const float eg = d.emissiveFactor[1]*emisBoost + (emisAdd ? emisAdd[1] : 0.0f);
+            const float eb = d.emissiveFactor[2]*emisBoost + (emisAdd ? emisAdd[2] : 0.0f);
+            const bool glow = er > 0.001f || eg > 0.001f || eb > 0.001f;
+            const float emis[4] = { er, eg, eb, glow ? 1.0f : 0.0f };
+            dev.drawMeshPBR(fr, x3::rhi::MeshHandle{ d.meshId },
+                            x3::rhi::TextureHandle{ d.baseColorTexId },
+                            x3::rhi::TextureHandle{ d.normalTexId },
+                            x3::rhi::TextureHandle{ d.mrTexId },
+                            bc, emis, fin, d.alphaMask, d.alphaBlend,
+                            x3::rhi::TextureHandle{ d.emissiveTexId },
+                            x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
+                            d.clearcoat, d.clearcoatRough);
+        }
+    }
+
+    void unload(x3::rhi::IRenderDevice& dev) {
+        if (ok && loader) loader->unload(model);
+        drawables.clear();
+        ok = false;
+    }
+};
+
+// The authored ship GLBs + their intro placement tuning. The player is the crisp
+// faceted delta-wing hero (Minerva); the capital is the largest SpaceShip cast,
+// blown up dramatically to read as a dreadnought (none of the SpaceShip*.glb is a
+// true capital hull — flagged for a future StarForge forge). Nose is +Z for both
+// (verified from mesh geometry), so the fighter needs +90 deg to face the pilot's
+// +X forward and the capital -90 deg to point its prow back down the +X approach.
+constexpr const char* kPlayerShipGlb  = "JakeFighterShip_crisp.glb";
+constexpr const char* kCapitalShipGlb = "SpaceShip4.glb";
+constexpr float kPlayerFwdDeg   =  90.0f;
+constexpr float kPlayerScale    =   1.15f;   // ~11.6 m fighter (natural ~10 m long)
+constexpr float kPlayerMidY     =   1.30f;   // crisp Y extent 0..2.60
+constexpr float kCapitalFwdDeg  = -90.0f;
+constexpr float kCapitalScale   =  30.0f;    // ~260 m dreadnought (SpaceShip4 ~8.7 m long)
+constexpr float kCapitalMidY    =   0.90f;   // SpaceShip4 Y extent 0..1.80
+
+// ---------------------------------------------------------------------------
 // T6 — DRESS THE PROCEDURAL CAPITAL so it reads as a SHIP, not a box (no GLB in
 // this baseline). A layered hull (main slab + keel + dorsal spine + aft command
 // tower + forward prow + engine pods) plus EMISSIVE running-light strips + hot
@@ -406,6 +523,11 @@ void runCinematicRevealBeat(x3::apphost::HostContext& hc) {
     x3::space::DecloakVfx decloak;
     decloak.init(*device);
 
+    // REAL capital GLB (max detail). Falls back to the dressed procedural cube if
+    // the asset is missing so the reveal still stages.
+    ShipModel capitalShip;
+    capitalShip.load(device, kCapitalShipGlb, kCapitalFwdDeg, kCapitalScale, kCapitalMidY);
+
     const float capPos[3] = { 280.0f, 0.0f, 0.0f };
     const float capScale[3] = { 90.0f, 22.0f, 30.0f };
     const float capModel[16] = {
@@ -473,14 +595,29 @@ void runCinematicRevealBeat(x3::apphost::HostContext& hc) {
             // layered hull + running lights fade in with revealAlpha under the shell.
             const float rev = x3::space::DecloakVfx::revealAlpha(decloakProg);
             const float flick = 0.6f + 0.4f * std::sin((float)step * 0.5f);
-            drawDressedCapital(*device, fr, capMesh, capTex, capPos,
-                               /*damage01*/0.0f, flick, /*reveal*/rev);
-            // The decloak shimmer overlay hugging the hull (fades out as it resolves).
-            decloak.render(*device, fr, /*viewProj16*/ nullptr, capModel, tNow, decloakProg);
+            if (capitalShip.ok) {
+                // Real dreadnought hull, resolving out of the dark: the decloak
+                // alpha drives brightness/emissive so it fades in under the shimmer.
+                const float placement[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                                              capPos[0], capPos[1], capPos[2], 1 };
+                // Cool running-light shimmer fading in with the decloak.
+                const float revGlow[3] = { 0.10f*rev*flick, 0.28f*rev*flick, 0.42f*rev*flick };
+                capitalShip.draw(*device, fr, placement,
+                                 /*bright*/1.35f*rev, /*floor*/0.06f*rev, /*emisBoost*/1.2f*rev, revGlow);
+            } else {
+                drawDressedCapital(*device, fr, capMesh, capTex, capPos,
+                                   /*damage01*/0.0f, flick, /*reveal*/rev);
+            }
+            // The decloak shimmer overlay hugs the procedural box silhouette; the real
+            // GLB hull instead resolves via its brightness fade (draw bright*rev above),
+            // so the box-shaped shell is only drawn for the fallback.
+            if (!capitalShip.ok)
+                decloak.render(*device, fr, /*viewProj16*/ nullptr, capModel, tNow, decloakProg);
         }
         device->endFrame(fr);
     }
 
+    capitalShip.unload(*device);
     decloak.shutdown(*device);
     env.shutdown(*device);
     device->destroyMesh(capMesh);
@@ -541,6 +678,9 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // ALL rendering is READ-ONLY over the deterministic sim state below.
     x3::rhi::MeshHandle shipMesh{}, capitalMesh{};
     x3::rhi::TextureHandle shipTex{}, capitalTex{};
+    // REAL ship GLBs (max detail): the player Minerva + the dreadnought capital.
+    // Loaded on the live path only; procedural boxes above remain the fallback.
+    ShipModel playerShip, capitalShip;
     // T3/T4 live-only render aux (headless never allocates these). CombatFx carries
     // ~256 KB of scratch, so it is heap-owned. CameraFeel is a tiny read-only pose
     // modifier. SpaceEnv gives the sun sprite/planet/starfield the god-rays + lens
@@ -590,6 +730,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                             cbm.index.data(), (uint32_t)cbm.index.size());
         auto cTex = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
         capitalTex = hc.device->createTexture(cTex.data(), 64, 64, true);
+        // Load the REAL hero + dreadnought GLBs (max-detail PBR). Missing assets
+        // degrade to the procedural boxes/dressing above.
+        playerShip.load(hc.device, kPlayerShipGlb, kPlayerFwdDeg, kPlayerScale, kPlayerMidY);
+        capitalShip.load(hc.device, kCapitalShipGlb, kCapitalFwdDeg, kCapitalScale, kCapitalMidY);
     }
     // Orient a ship box from a forward heading (yaw about +Y) at pos, uniform scale.
     auto shipXform = [](const float pos[3], const float fwd[3], float scale, float out[16]) {
@@ -769,8 +913,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         pu.x, pu.y, pu.z, 0,
                         pr.x, pr.y, pr.z, 0,
                         pp2.x, pp2.y, pp2.z, 1 };
-                    const float tint[4] = { 0.75f, 0.85f, 1.05f, 1.0f };
-                    hc.device->drawMesh(frame, shipMesh, shipTex, tint, m);
+                    if (playerShip.ok) {
+                        // The faceted chrome Minerva at full PBR (baseColor/normal/
+                        // metallic-roughness/clearcoat) — a cool lift so the hull reads.
+                        const float noAdd[3] = { 0, 0, 0 };
+                        playerShip.draw(*hc.device, frame, m, /*bright*/1.3f, /*floor*/0.10f, /*emis*/1.0f, noAdd);
+                    } else {
+                        const float tint[4] = { 0.75f, 0.85f, 1.05f, 1.0f };
+                        hc.device->drawMesh(frame, shipMesh, shipTex, tint, m);
+                    }
                 }
                 // Enemy wing — oriented along each ship's firing heading.
                 for (uint32_t i = 0; i < enemies.count(); ++i) {
@@ -788,8 +939,23 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     const float dmg = (float)localSubsDestroyed / (float)kMaxSubsystems;
                     const float flick = 0.5f + 0.5f * std::sin((float)step * 0.7f)
                                                     * std::sin((float)step * 0.23f);
-                    drawDressedCapital(*hc.device, frame, capitalMesh, capitalTex, capPos,
-                                       dmg, flick, /*reveal*/1.0f);
+                    if (capitalShip.ok) {
+                        // Real dreadnought hull. Damage drives an ember self-glow so
+                        // the subsystem climax still reads ON the ship (cool -> hot).
+                        const float placement[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                                                      capPos[0], capPos[1], capPos[2], 1 };
+                        // Cool cyan running lights healthy -> hot orange ember as
+                        // subsystems fall (mirrors the old dressed-capital ramp).
+                        const float g = flick;
+                        const float ember[3] = { (0.12f + 1.9f*dmg) * g,
+                                                 (0.30f - 0.10f*dmg) * g,
+                                                 (0.45f - 0.35f*dmg) * g };
+                        capitalShip.draw(*hc.device, frame, placement,
+                                         /*bright*/1.2f, /*floor*/0.07f, /*emisBoost*/1.0f, ember);
+                    } else {
+                        drawDressedCapital(*hc.device, frame, capitalMesh, capitalTex, capPos,
+                                           dmg, flick, /*reveal*/1.0f);
+                    }
                 }
                 // T4: combat FX (venting plumes, subsystem blasts, final detonation).
                 if (fxOwned) fxOwned->submit(*hc.device, frame);
@@ -819,6 +985,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     // Release the LIVE dogfight render resources (headless never created them).
     if (live) {
+        playerShip.unload(*hc.device);
+        capitalShip.unload(*hc.device);
         if (fxOwned)  fxOwned->shutdown(*hc.device);
         if (envOwned) envOwned->shutdown(*hc.device);
         if (shipMesh.valid())    hc.device->destroyMesh(shipMesh);
@@ -1053,6 +1221,12 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
     auto cTexD = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
     auto capitalTex = device->createTexture(cTexD.data(), 64, 64, true);
 
+    // REAL ship GLBs (max-detail PBR) for the proof captures — the faceted Minerva
+    // + the SpaceShip dreadnought. Boxes above stay as the missing-asset fallback.
+    ShipModel playerShip, capitalShip;
+    playerShip.load(device, kPlayerShipGlb, kPlayerFwdDeg, kPlayerScale, kPlayerMidY);
+    capitalShip.load(device, kCapitalShipGlb, kCapitalFwdDeg, kCapitalScale, kCapitalMidY);
+
     x3::space::SpaceEnv env;
     env.init(*device, 11000.0f);   // deep dome: enclose the capital (280 m) inside the far plane
     { const float sc[3] = { 1.6f, 1.4f, 1.15f }; env.setSun(sunDir, sc, 3.2f); }
@@ -1065,6 +1239,9 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
     fx.init(*device);
 
     const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+    // Decloak shimmer shell — sized to the PROCEDURAL fallback box (the shell is a
+    // box silhouette; on the real GLB hull it wouldn't match, so it's gated to the
+    // fallback and the real ship instead materializes via a brightness fade).
     const float capModel[16] = { 90.f,0,0,0, 0,22.f,0,0, 0,0,30.f,0, capPos[0],capPos[1],capPos[2],1 };
     const float dt = 1.0f / 60.0f;
 
@@ -1081,8 +1258,13 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
             const x3::phys::Vec3 pu = pilot.up();
             const x3::phys::Vec3 pr = pilot.right();
             const float pm[16] = { pf.x,pf.y,pf.z,0, pu.x,pu.y,pu.z,0, pr.x,pr.y,pr.z,0, pp.x,pp.y,pp.z,1 };
-            const float ptint[4] = { 0.75f, 0.85f, 1.05f, 1.0f };
-            device->drawMesh(fr, shipMesh, shipTex, ptint, pm);
+            if (playerShip.ok) {
+                const float noAdd[3] = { 0, 0, 0 };
+                playerShip.draw(*device, fr, pm, /*bright*/1.3f, /*floor*/0.10f, /*emis*/1.0f, noAdd);
+            } else {
+                const float ptint[4] = { 0.75f, 0.85f, 1.05f, 1.0f };
+                device->drawMesh(fr, shipMesh, shipTex, ptint, pm);
+            }
             for (uint32_t i = 0; i < enemies.count(); ++i) {
                 const auto& e = enemies.ship(i);
                 float fxd = e.fwd[0], fz = e.fwd[2];
@@ -1099,8 +1281,22 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
         const float dmg = (float)subsDestroyed / (float)kMaxSubsystems;
         const float rv = std::clamp(revealA, 0.0f, 1.0f);
         const float flick = 0.55f + 0.35f * std::sin(tSec * 33.0f);
-        drawDressedCapital(*device, fr, capitalMesh, capitalTex, capPos, dmg, flick, rv);
-        if (revealA < 1.0f) {
+        if (capitalShip.ok) {
+            const float placement[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                                          capPos[0], capPos[1], capPos[2], 1 };
+            // rv fades the hull in on the reveal frame; damage drives the ember glow.
+            const float g = flick * rv;
+            const float ember[3] = { (0.12f + 1.9f*dmg) * g,
+                                     (0.30f - 0.10f*dmg) * g,
+                                     (0.45f - 0.35f*dmg) * g };
+            capitalShip.draw(*device, fr, placement,
+                             /*bright*/1.25f*rv, /*floor*/0.07f*rv, /*emisBoost*/1.0f, ember);
+        } else {
+            drawDressedCapital(*device, fr, capitalMesh, capitalTex, capPos, dmg, flick, rv);
+        }
+        // The box-silhouette shimmer shell only matches the procedural fallback; the
+        // real GLB hull materializes via its brightness fade (bright*rv) instead.
+        if (revealA < 1.0f && !capitalShip.ok) {
             decloak.render(*device, fr, nullptr, capModel, tSec, rv);   // rv == decloak progress
         }
         fx.submit(*device, fr);
@@ -1138,6 +1334,31 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
         device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly/len), 50.0f);
         env.setCamera(ex, ey, ez);
     };
+    // PLAYER HERO framing (proof a): a tight front-quarter on the Minerva so its
+    // faceted chrome delta-wing hull + PBR materials fill the frame. Eye ahead +
+    // starboard + above the fighter, looking back at its nose.
+    auto framePlayerHero = [&]() {
+        const x3::phys::Vec3 pp = pilot.pos();
+        const float ex = pp.x + 15.0f, ey = pp.y + 5.5f, ez = pp.z + 13.0f;
+        const float lx = pp.x - ex, ly = pp.y - ey, lz = pp.z - ez;
+        const float len = std::max(std::sqrt(lx*lx+ly*ly+lz*lz), 1e-3f);
+        device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly/len), 40.0f);
+        env.setCamera(ex, ey, ez);
+    };
+    // SCALE-CONTRAST framing (proof b): the tiny fighter in the near foreground with
+    // the 260 m dreadnought looming huge behind it — the AAA scale sell. Eye close to
+    // the fighter's flank, looking down the +X approach at the capital.
+    auto frameScale = [&]() {
+        const x3::phys::Vec3 pp = pilot.pos();
+        // Eye pulled ~28 m behind + above + flank of the fighter so it reads as a
+        // clear foreground silhouette, looking down the +X approach past it at the
+        // dreadnought (which fills the background at that range).
+        const float ex = pp.x - 26.0f, ey = pp.y + 8.0f, ez = pp.z + 27.0f;
+        const float lx = 255.0f-ex, ly = 0.0f-ey, lz = 0.0f-ez;
+        const float len = std::max(std::sqrt(lx*lx+ly*ly+lz*lz), 1e-3f);
+        device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly/len), 60.0f);
+        env.setCamera(ex, ey, ez);
+    };
 
     int shotFails = 0;
     // One capture = a settle loop (TAA/exposure/bloom converge) with an optional
@@ -1162,9 +1383,9 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
 
     auto noHook = std::function<void(int)>{};
 
-    // (a) DECLOAK REVEAL — capital mid-decloak (progress ~0.45): shimmer shell over
-    // a half-resolved hull, lens flare off the sun, planet limb in shot.
-    capture("01_decloak_reveal", /*subs*/0, /*revealA=decloakProg*/0.45f,
+    // (a) DECLOAK REVEAL — the real dreadnought hull materializing out of the dark
+    // (brightness fade at ~0.72), lens flare off the sun, planet limb in shot.
+    capture("01_decloak_reveal", /*subs*/0, /*revealA=decloakProg*/0.72f,
             [&](int){ frameReveal(); }, noHook);
 
     // (b) GOD-RAYS THROUGH THE SUPERSTRUCTURE — fully resolved capital, sun behind it.
@@ -1178,6 +1399,16 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
         const x3::phys::Vec3 pp = pilot.pos(); const float ppos[3] = { pp.x, pp.y, pp.z };
         const x3::phys::Vec3 pv = pilot.velocity(); const float pvel[3] = { pv.x, pv.y, pv.z };
         enemies.update(dt, ppos, pvel); }
+
+    // PROOF (a) — MINERVA PLAYER HERO: tight front-quarter on the real Jake fighter
+    // so its faceted chrome delta-wing hull + PBR materials fill the frame.
+    capture("06_player_minerva_hero", /*subs*/0, /*revealA*/1.0f,
+            [&](int){ framePlayerHero(); }, noHook);
+
+    // PROOF (b) — SCALE CONTRAST: the tiny fighter in the foreground dwarfed by the
+    // ~260 m dreadnought looming behind (the AAA scale sell).
+    capture("07_scale_contrast", /*subs*/1, /*revealA*/1.0f,
+            [&](int){ frameScale(); }, noHook);
 
     // (c) MID-DOGFIGHT WITH SHAKE — a held trauma tilt (camera rolled off-axis) so
     // the shake reads in the frame (the HUD tilt Tim asked for). Deterministic.
@@ -1197,12 +1428,14 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
     capture("04_subsystem_venting", /*subs*/2, /*revealA*/1.0f,
             [&](int){ framePilot(0.0f, 0.0f, 65.0f); },
             [&](int i){
-                if (i % 6 == 0) {
-                    const int k = (i / 6) % 2;
-                    const x3::phys::Vec3 vent{ 280.0f - 20.0f + 40.0f * (float)k,
-                                               6.0f * std::sin((float)i), 10.0f };
+                // Plumes spread ALONG the ~260 m hull (X 200..360) on its upper
+                // surface, sized up so they read against the big dreadnought.
+                if (i % 4 == 0) {
+                    const int k = (i / 4) % 3;
+                    const x3::phys::Vec3 vent{ 220.0f + 60.0f * (float)k,
+                                               18.0f + 5.0f * std::sin((float)i), 12.0f };
                     fx.spawnSmoke(vent);
-                    if (i % 12 == 0) fx.spawnExplosion(vent, 7.0f);
+                    if (i % 8 == 0) fx.spawnExplosion(vent, 20.0f);
                 }
             });
 
@@ -1222,6 +1455,8 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
                 });
     }
 
+    playerShip.unload(*device);
+    capitalShip.unload(*device);
     fx.shutdown(*device);
     decloak.shutdown(*device);
     env.shutdown(*device);
