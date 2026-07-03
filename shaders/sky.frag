@@ -60,6 +60,44 @@ vec3 starField(vec3 dir, float t) {
     return acc;
 }
 
+// ---- Value-noise fBm for the nebula band (alien-night sky, §2 teal+rose). Low
+// frequency, cheap; sampled in lat-long UV so it wraps with the star sphere.
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = starHash(i + vec2(0.0, 0.0));
+    float b = starHash(i + vec2(1.0, 0.0));
+    float c = starHash(i + vec2(0.0, 1.0));
+    float d = starHash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float nebulaFbm(vec2 uv) {
+    float s = 0.0, amp = 0.5, frq = 1.0;
+    for (int i = 0; i < 4; ++i) { s += amp * vnoise(uv * frq); frq *= 2.03; amp *= 0.5; }
+    return s;
+}
+
+// ---- One crescent moon disk at world-direction md, angular radius `rad` (in
+// dot-space: larger = smaller moon), lit from `phase`. Adds a soft halo + a hard
+// body with a shaded terminator so it reads as a sphere, not a sticker.
+vec3 moon(vec3 dir, vec3 md, float rad, vec3 tint, vec3 phase) {
+    float cd = dot(dir, md);
+    // Soft outer halo (tight + faint) — the moon sits in a little glow, not a blob.
+    float halo = pow(max(cd, 0.0), 5000.0) * 0.22;
+    // Body: a crisp-edged disk.
+    float body = smoothstep(rad - 0.00012, rad + 0.00004, cd);
+    // Reconstruct the near-hemisphere surface normal so the phase light carves a real
+    // TERMINATOR across the disc (reads as a lit sphere, not a flat sticker — §8).
+    float angMax = acos(clamp(rad, -1.0, 1.0));
+    vec3 tangent = normalize(dir - md * cd + vec3(1e-6));
+    float fromCenter = clamp(acos(clamp(cd, -1.0, 1.0)) / max(angMax, 1e-5), 0.0, 1.0);
+    vec3 nrm = normalize(md * sqrt(max(1.0 - fromCenter * fromCenter, 0.0)) + tangent * fromCenter);
+    float lit = dot(nrm, phase);
+    // Hard-ish crescent: dark side stays deep (earthshine floor), lit side rolls up.
+    float shade = 0.04 + 0.96 * smoothstep(-0.15, 0.55, lit);
+    return tint * (body * shade * 1.35 + halo);
+}
+
 void main() {
     // Reconstruct the world-space view ray for this pixel. Unproject a near and a
     // far NDC point through the inverse viewProj, then take their difference.
@@ -101,6 +139,36 @@ void main() {
         float aboveW = smoothstep(0.0, 0.12, up);
         float spaceW = clamp(1.0 - haze * 2.0, 0.0, 1.0);
         col += starField(dir, sky.params.z) * (1.5 * night) * max(aboveW, spaceW);
+
+        // ---- ALIEN-NIGHT layer (§2): teal+rose nebula band + two crescent moons.
+        // Gated by params.w (nebula strength) AND to dark skies, so day/dusk scenes
+        // with w==0 are byte-for-byte unchanged. Rotates with the star sphere.
+        float neb = clamp(sky.params.w, 0.0, 1.0);
+        if (neb > 0.001) {
+            float c2 = cos(sky.params.z * 0.02), s2 = sin(sky.params.z * 0.02);
+            vec3 rd = vec3(c2 * dir.x + s2 * dir.z, dir.y, -s2 * dir.x + c2 * dir.z);
+            vec2 nuv = vec2(atan(rd.z, rd.x) * 0.1591549 + 0.5,
+                            asin(clamp(rd.y, -1.0, 1.0)) * 0.3183099 + 0.5);
+            // A soft diagonal galactic band + fBm clouds.
+            float band = exp(-pow((nuv.y - 0.52 - 0.10 * sin(nuv.x * 6.2831)) * 6.0, 2.0));
+            float clouds = nebulaFbm(nuv * vec2(6.0, 3.0) + 3.1);
+            clouds = smoothstep(0.45, 0.95, clouds);
+            float amt = (band * 0.6 + clouds * 0.5) * neb * night * aboveW;
+            // Teal in the troughs -> rose in the peaks (the crystal-spectrum night).
+            vec3 teal = vec3(0.045, 0.19, 0.27);
+            vec3 rose = vec3(0.30, 0.09, 0.23);
+            vec3 nebCol = mix(teal, rose, clamp(clouds * 1.15, 0.0, 1.0));
+            col += nebCol * amt * 1.05;
+
+            // Two crescent moons, lit from a shared GRAZING phase direction so the
+            // terminator crosses each disc (a real crescent). Fixed world directions.
+            float mgate = neb * night;
+            vec3 phase = normalize(vec3(-0.86, 0.10, 0.30));
+            vec3 mA = normalize(vec3( 0.42, 0.34, -0.84));   // larger, higher
+            vec3 mB = normalize(vec3(-0.66, 0.20,  0.62));   // smaller, opposite
+            col += moon(dir, mA, 0.99965, vec3(0.85, 0.86, 0.92), phase) * mgate;
+            col += moon(dir, mB, 0.99985, vec3(0.80, 0.72, 0.74), phase) * mgate;
+        }
     }
 
     // ---- Sun disk + glow, placed at the directional sun. ----

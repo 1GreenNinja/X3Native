@@ -455,6 +455,7 @@ public:
         float exposure      = 1.0f;
         float zenith[3]     = { 0.10f, 0.28f, 0.66f }; // overhead sky color (linear); per-scene (default = old global)
         float horizon[3]    = { 0.62f, 0.74f, 0.92f }; // horizon glow color (linear); per-scene (default = old global)
+        float nebula        = 0.0f;                    // 0 = clean night sky; >0 = teal-rose nebula band + two crescent moons (alien-night; §2). Rides SkyUBO params.w.
     };
     // Set the active sky parameters for subsequent frames (cached + re-applied
     // each frame, like setPointLights). Calling with enabled=false disables it.

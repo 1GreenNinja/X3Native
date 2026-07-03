@@ -260,8 +260,13 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.shotWeapon = argv[++i];
         }
         else if (a == "--shot-cam") {
-            // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
+            // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override. The value
+            // may START with '-' (a negative X — the neon city sits at X=-600), so
+            // accept a token that is a leading-minus-then-digit number, not just a flag.
+            auto looksNumeric = [](const char* t) {
+                return t && (t[0] != '-' || (t[1] >= '0' && t[1] <= '9') || t[1] == '.');
+            };
+            if (i + 1 < argc && looksNumeric(argv[i + 1])) {
                 const char* s = argv[++i];
                 int n = 0; char* end = nullptr;
                 while (n < 5 && *s) {

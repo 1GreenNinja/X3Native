@@ -1581,7 +1581,18 @@ int runDefaultHost(HostContext& hc) {
         if (cityWorld) {
             sp.sunDir[0] = 0.22f; sp.sunDir[1] = 0.07f; sp.sunDir[2] = -0.40f;   // just above horizon, deep dusk
             sp.sunColor[0] = 0.40f; sp.sunColor[1] = 0.52f; sp.sunColor[2] = 0.82f; // cool moonlight
-            sp.sunIntensity = 0.16f; sp.haze = 0.18f; sp.exposure = 0.82f;
+            sp.sunIntensity = 0.16f; sp.haze = 0.06f; sp.exposure = 0.92f;
+            // ROOT-CAUSE FIX (city night sky): the dusk sun/haze above was set, but
+            // zenith/horizon stayed at the DAYTIME blue defaults ({0.10,0.28,0.66} /
+            // {0.62,0.74,0.92}) — so the sky-dome read pale-blue AND the star gate
+            // (night = pow(1-skyLum,4)) never tripped. Drive both to a near-black
+            // void-blue so the dome goes NIGHT, the stars bloom, and the neon carries
+            // the street (WORLD_ART_DIRECTION §0 "real darkness between"). haze low so
+            // stars survive to the horizon; nebula>0 lights the alien-night layer
+            // (teal+rose band + two crescent moons — the §2 surface-exterior sky).
+            sp.zenith[0]  = 0.010f; sp.zenith[1]  = 0.016f; sp.zenith[2]  = 0.035f;  // void zenith
+            sp.horizon[0] = 0.020f; sp.horizon[1] = 0.030f; sp.horizon[2] = 0.055f;  // dark horizon (a touch of city-glow blue)
+            sp.nebula     = 0.70f;                                                   // alien-night: nebula + two moons
         }
         device->setSkyParams(sp);
         // Spawn the player on the surface near the world origin, a little above so
