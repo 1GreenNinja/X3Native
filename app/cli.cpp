@@ -123,6 +123,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-weather") o.testWeather = true;
         else if (a == "--test-worldregions") o.testWorldRegions = true;
         else if (a == "--test-city") o.testCity = true;
+        else if (a == "--test-hacking") o.testHacking = true;
         else if (a == "--test-oceanbase") o.testOceanBase = true;
         else if (a == "--test-doorcode") o.testDoorCode = true;
         else if (a == "--test-hatchcode") o.testHatchCode = true;

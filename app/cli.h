@@ -240,6 +240,7 @@ struct CliOptions {
     bool        testWeather = false;
     bool        testWorldRegions = false;   // --test-worldregions (open-world surface regions + mountains)
     bool        testCity = false;           // --test-city (open-world metropolis: districts + roads + tunnels)
+    bool        testHacking = false;        // --test-hacking (WD2 hackable-object registry + effects + heat/karma)
     bool        testOceanBase = false;      // --test-oceanbase (ocean + undersea base + submarine combat)
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the

@@ -26,6 +26,36 @@
 
 namespace x3::game {
 
+class HackableRegistry;   // hackables.h — the WD2 hacking layer (optional, populated by the district)
+class CrowdSystem;        // crowd.h — civilian crowd on the main drag (optional)
+
+// ===========================================================================
+// THE NEON DISTRICT (Milestone 1) — the art-directed, walkable/drivable CP2077-vibe
+// city block at the canon Scrapyard City center (-600, 500). A richer build than the
+// legacy graybox City below: a wet reflective street grid + sidewalks, varied building
+// massing with emissive window grids / lit shopfronts / neon signage, street lamps that
+// pool light, parked vehicles, and the LNG tank landmark at (-500, 525). When a
+// HackableRegistry is passed it also SCATTERS the Watch-Dogs-2 hackable objects (cameras,
+// junction boxes, ATMs, vehicles, traffic signals) + their holo MARKER entities; when a
+// CrowdSystem is passed it configures + builds a civilian crowd on the drag.
+struct NeonDistrictStats {
+    uint32_t buildings    = 0;
+    uint32_t streetlights = 0;
+    uint32_t vehicles     = 0;
+    uint32_t signs        = 0;
+    uint32_t hackables    = 0;   // objects registered into the HackableRegistry (if any)
+    float    centerX = -600.0f, centerZ = 500.0f;
+    float    groundY = 0.0f;     // terrain height at the district center (player spawn feet)
+};
+
+// Build the neon district onto `scene` at (cx, cz). Static geometry (no collision this
+// pass beyond the terrain it stands on) + optional hackables/crowd. Deterministic layout.
+NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device,
+                                    x3::phys::IPhysicsWorld& physics,
+                                    HackableRegistry* hax, CrowdSystem* crowd,
+                                    float cx = -600.0f, float cz = 500.0f);
+
+
 // City districts (the metropolis).
 enum class CityZone : uint32_t {
     ScrapyardCity = 0,   // salvage/scrap district (ramshackle)

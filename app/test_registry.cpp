@@ -87,6 +87,7 @@
 #include "world_stream.h"
 #include "world_map.h"
 #include "city.h"
+#include "hackables.h"
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
@@ -543,6 +544,11 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testOceanBase) {
         x3::logInfo("running EFLZ open-world ocean + undersea base + submarine combat self-test...");
         return x3::game::runOceanBaseSelfTest() ? 0 : 1;
+    }
+    if (tf.testHacking) {
+        x3::logInfo("running Watch-Dogs-2 environmental hacking (hackable-object registry + "
+                    "NetHack highlight + per-type effects + heat/karma) self-test...");
+        return x3::game::runHackingSelfTest() ? 0 : 1;
     }
     if (tf.testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");

@@ -325,6 +325,7 @@ int main(int argc, char** argv) {
         _tf.testAct2Caves = o.testAct2Caves;
         _tf.testWorldRegions = o.testWorldRegions;
         _tf.testCity = o.testCity;
+        _tf.testHacking = o.testHacking;
         _tf.testOceanBase = o.testOceanBase;
         _tf.testDoorCode = o.testDoorCode;
         _tf.testHatchCode = o.testHatchCode;

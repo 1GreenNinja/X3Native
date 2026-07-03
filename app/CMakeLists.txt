@@ -91,6 +91,7 @@ add_executable(X3Engine WIN32
     world_stream.cpp
     world_map.cpp
     city.cpp
+    hackables.cpp
     ocean_base.cpp
     save.cpp
     dialog.cpp
