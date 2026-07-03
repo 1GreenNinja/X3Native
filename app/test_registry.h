@@ -66,6 +66,7 @@ struct TestFlags {
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;
     bool testLightningCharge = false;
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;
+    bool testNpcLife = false;   // --test-npclife (LIVING CITY: schedules + robbery + traffic + karma)
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
     // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF

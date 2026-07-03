@@ -101,6 +101,7 @@
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
+#include "npc_life.h"                      // LIVING CITY: occupation NPCs + schedules + robbery + traffic (--test-npclife)
 #include "alert.h"                         // FACILITY ALERT LEVEL: the wanted system (--test-alert)
 #include "host_context.h"                  // #28 deep split: shared live-state struct for the --world hosts
 #include "world_hosts.h"                   // #28 deep split: dispatchWorldHost() + the extracted host TUs
@@ -1111,6 +1112,7 @@ int runDefaultHost(HostContext& hc) {
     // card the last hack produced.
     x3::game::HackableRegistry cityHax;
     x3::game::CrowdSystem      cityCrowd;
+    x3::game::NpcLife          cityNpcLife;    // LIVING CITY (#41): occupation NPCs + schedules + robbery + freeway traffic
     x3::game::EnvArtSystem     cityFacades;   // persistent GLB-instancing host for real building facades (outlives Scene)
     x3::game::AlertSystem      cityAlert;
     x3::game::TimelineState    cityTimeline;
@@ -1698,6 +1700,24 @@ int runDefaultHost(HostContext& hc) {
                     // off pure black and their modeled window/panel detail reads, while
                     // the emissive neon (values >1) still dominates the darkness (§0).
                     device->setAmbient(0.10f, 0.11f, 0.155f);
+                }
+                // LIVING CITY (W5 #41): authored occupation NPCs with daily home->work->
+                // leisure->home schedules, scan-card personalities (the 12 Fable archetypes),
+                // the bank-robbery set-piece, and freeway traffic — layered over the ambient
+                // crowd. Each NPC registers into the SAME cityHax as an NPC-scan hackable, so
+                // the marker-cache + NetHack highlight below pick them up for free. The alarm
+                // sink broadcasts real district heat when the heist strikes.
+                {
+                    x3::game::NpcLifeConfig nlcfg;
+                    nlcfg.centerX = -600.0f; nlcfg.centerZ = 500.0f; nlcfg.groundY = ds.groundY;
+                    cityNpcLife.build(nlcfg, scene, *device, &cityHax);
+                    x3::game::AlertSystem* alarmAlert = &cityAlert;
+                    cityNpcLife.setAlarmSink([alarmAlert](const x3::phys::Vec3& p, int){
+                        alarmAlert->reportTerminalHack(p);   // the bank alarm broadcasts heat
+                    });
+                    x3::logInfo("--world city: LIVING CITY online (" +
+                                std::to_string(cityNpcLife.agentCount()) +
+                                " occupation NPCs w/ schedules + robbery + freeway traffic)");
                 }
                 // Cache the marker entity ids so the highlight toggle can brighten them.
                 for (uint32_t i = 0; i < cityHax.count(); ++i)
@@ -2571,6 +2591,49 @@ int runDefaultHost(HostContext& hc) {
                 for (uint32_t mi : cityMarkerEnts)
                     if (mi < scene.size()) scene.get(mi).emissive[3] = 3.2f;
             }
+            // X3_SCAN_NPC=1 stages the LIVING-CITY scan-card proof: pre-tick the NPC layer
+            // so the occupation NPCs spread onto the drag (schedules), then stand right in
+            // front of a characterful NPC, aim at it, and FORCE its scan hack so the
+            // HoloPanel card (name / role / telling detail) is populated for the still.
+            if (std::getenv("X3_SCAN_NPC") && cityBuilt && cityNpcLife.built()) {
+                for (int f = 0; f < 480; ++f) cityNpcLife.update(1.0f/60.0f, scene);
+                uint32_t pick = x3::game::kNoLink; x3::phys::Vec3 npcPos{};
+                const x3::game::Archetype wants[] = {
+                    x3::game::Archetype::Kid, x3::game::Archetype::Baker,
+                    x3::game::Archetype::HotDogVendor, x3::game::Archetype::Preacher };
+                for (x3::game::Archetype wa : wants) {
+                    for (uint32_t i = 0; i < cityNpcLife.agentCount(); ++i) {
+                        const x3::game::NpcAgent& a = cityNpcLife.agent(i);
+                        if (a.arch == wa && a.hackReg != x3::game::kNoLink) { pick = a.hackReg; npcPos = a.pos; break; }
+                    }
+                    if (pick != x3::game::kNoLink) break;
+                }
+                if (pick != x3::game::kNoLink) {
+                    const float gy = x3::game::terrainHeightAt(x3::game::worldTerrainConfig(), npcPos.x, npcPos.z);
+                    ssX = npcPos.x + 3.2f; ssZ = npcPos.z + 0.4f; ssY = gy + 1.7f;
+                    const float dxp = npcPos.x - ssX, dzp = npcPos.z - ssZ;
+                    ssYaw = std::atan2(dzp, dxp); ssPitch = -0.03f;
+                    cityHighlight = true; cityHax.setHighlight(true);
+                    for (uint32_t mi : cityMarkerEnts)
+                        if (mi < scene.size()) scene.get(mi).emissive[3] = 3.2f;
+                    cityLookTarget = pick;
+                    cityHax.hack(pick);   // populate cityHackMsg via onResult + arm cityHackMsgT
+                }
+            }
+            // X3_CITY_LIFE=1 stages the LIVING-CITY street shot: pre-tick the NPC layer so
+            // the occupation NPCs walk out onto the drag (schedules), then frame the near
+            // sidewalk cluster from a 3/4 vantage so the varied archetypes read.
+            if (std::getenv("X3_CITY_LIFE") && cityBuilt && cityNpcLife.built()) {
+                for (int f = 0; f < 600; ++f) cityNpcLife.update(1.0f/60.0f, scene);
+                const float ccx = -600.0f, ccz = 500.0f;
+                const float gy = x3::game::terrainHeightAt(x3::game::worldTerrainConfig(), ccx-34.0f, ccz+3.0f);
+                ssX = ccx - 34.0f; ssZ = ccz + 3.0f; ssY = gy + 1.85f;   // road-level, just off the near sidewalk
+                ssYaw = std::atan2((ccz+9.0f) - ssZ, (ccx+16.0f) - ssX);  // east, along the +9 sidewalk cluster
+                ssPitch = -0.045f;
+                cityHighlight = true; cityHax.setHighlight(true);
+                for (uint32_t mi : cityMarkerEnts)
+                    if (mi < scene.size()) scene.get(mi).emissive[3] = 2.6f;
+            }
         }
         // --screenshot-dialog: pose AT the F5 captive (Lena) and OPEN her chat
         // tree so the choice UI is in frame (drawn in the loop below).
@@ -2873,6 +2936,30 @@ int runDefaultHost(HostContext& hc) {
                         const float sdx = a.x - ssX, sdy = a.y - ssY, sdz = a.z - ssZ;
                         if (std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz) < 14.0f)
                             drawHoloReadout(*device, frame, term, a, /*showInput*/false);
+                    }
+                }
+                // LIVING CITY scan-card in the capture: draw the HoloPanel card the forced
+                // NPC hack produced (name / role / telling detail), mirroring the live WD2
+                // HUD, so the still shows the Watch-Dogs profiler line. (X3_SCAN_NPC.)
+                if (cityBuilt && cityHackMsgT > 0.0f && !cityHackMsg.empty()) {
+                    uint32_t hcW=0, hcH=0; device->hudSize(hcW, hcH);
+                    const float sh = (hcH>0)?(float)hcH:720.0f;
+                    const float cyanC[4]={0.55f,0.95f,1.0f,1.0f};
+                    const float amberC[4]={1.0f,0.82f,0.35f,1.0f};
+                    const float px=46.0f;
+                    float y = sh - 54.0f - (float)cityHackMsg.size()*30.0f;
+                    const float tsh[4]={0,0,0,0.8f};
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, "NPC PROFILE  -  LIVING CITY", px+1.5f, y-34.0f+1.5f, 20.0f, tsh);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, "NPC PROFILE  -  LIVING CITY", px, y-34.0f, 20.0f, cyanC);
+                    for (size_t li=0; li<cityHackMsg.size(); ++li) {
+                        const bool header=(li==0);
+                        const float* c = header?cyanC:amberC;
+                        const float cc[4]={c[0],c[1],c[2],1.0f};
+                        const float scl[4]={0.0f,0.0f,0.0f,0.78f};
+                        const float fpx = header?23.0f:19.0f;
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, cityHackMsg[li].c_str(), px+1.5f, y+1.5f, fpx, scl);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, cityHackMsg[li].c_str(), px, y, fpx, cc);
+                        y += 30.0f;
                     }
                 }
             }
@@ -4193,14 +4280,23 @@ int runDefaultHost(HostContext& hc) {
             // E performs the hack on the aimed-at target.
             if (eNow && !prevCityHack && cityLookTarget != x3::game::kNoLink) {
                 cityHax.hack(cityLookTarget);
+                // LIVING CITY: hacking a converging cop spoofs his radio (misdirect the
+                // robbery response); hacking the robber pre-warns you of his plan.
+                if (cityNpcLife.built()) cityNpcLife.notifyHacked(cityLookTarget);
             }
             prevCityHack = eNow;
 
             // Fade the confirm/scan card.
             if (cityHackMsgT > 0.0f) cityHackMsgT -= dt;
-            // LIVING WORLD: civilians on the drag + the district's own heat decay.
+            // LIVING WORLD: ambient civilians + the authored occupation NPCs (daily
+            // schedules / the bank-robbery set-piece / freeway traffic) + the district's own
+            // heat decay. The street cops are the AlertSystem's eyes/ears, so the heist alarm
+            // is HEARD and the heat escalates through the chase.
             if (cityCrowd.built()) cityCrowd.update(dt, scene);
-            cityAlert.update(dt, ceye, nullptr, 0, /*playerSeen*/false);
+            if (cityNpcLife.built()) cityNpcLife.update(dt, scene);
+            x3::phys::Vec3 cityObs[8];
+            uint32_t cityNObs = cityNpcLife.built() ? cityNpcLife.copPositions(cityObs, 8) : 0;
+            cityAlert.update(dt, ceye, cityNObs ? cityObs : nullptr, cityNObs, /*playerSeen*/false);
         }
 
         if (eNow && !prevE && !terrainWorld) {

@@ -100,6 +100,7 @@
 #include "vehparts.h"
 #include "ecology.h"
 #include "crowd.h"
+#include "npc_life.h"
 #include "alert.h"
 #include "space_pilot.h"          // x3::game::runSpaceSelfTest (--test-space)
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
@@ -745,6 +746,13 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running CROWDS self-test "
                     "(idle clusters + wander points + scatter/cower on violence + return after calm)...");
         return x3::game::runCrowdSelfTest() ? 0 : 1;
+    }
+    if (tf.testNpcLife) {
+        x3::logInfo("running LIVING CITY / NpcLife self-test "
+                    "(12 archetype mix + time-of-day schedules + street routing + the bank-"
+                    "robbery set-piece [alarm+cop-converge+flee] + scan-card karma rules + "
+                    "freeway traffic + leak canary)...");
+        return x3::game::runNpcLifeSelfTest() ? 0 : 1;
     }
     if (tf.testAlert) {
         x3::logInfo("running FACILITY ALERT LEVEL self-test "

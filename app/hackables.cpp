@@ -72,7 +72,10 @@ HackResult computeHackEffect(const HackableObject& o) {
             r.effect = "SIGNAL SPOOFED - GRIDLOCK";
             break;
         case HackableType::Npc:
-            r.heat = 15; r.karma = -2;  // profiling + a pickpocket skim
+            r.heat = 15;
+            // Karma: the flat profiler default (-2), UNLESS the object carries a per-archetype
+            // override (NpcLife's moral texture — vulnerable NPCs cost more; neutral ones 0).
+            r.karma = o.karmaSet ? o.karmaValue : -2;
             r.credits = o.credits;
             r.effect = "PROFILE SCANNED - SKIMMED " + std::to_string(o.credits);
             r.scanName       = o.label.empty()      ? "UNKNOWN"  : o.label;

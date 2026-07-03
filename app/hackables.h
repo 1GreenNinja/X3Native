@@ -58,6 +58,11 @@ struct HackableObject {
     std::string label;                 // NPC scan-card name (or object label)
     std::string occupation;            // NPC scan-card occupation
     std::string detail;                // NPC scan-card one detail
+    // Per-object karma override (NpcLife's MORAL TEXTURE — the roster's rule that hacking
+    // the vulnerable, e.g. the kid/off-shift-drone/baker, costs MORE karma than the flat
+    // profiler default, while the fixer/robber are neutral). Only honored for Npc hacks.
+    bool        karmaSet   = false;    // false => the type default; true => use karmaValue
+    int         karmaValue = 0;
 };
 
 // What a hack produced — the host applies the numbers + shows the text.

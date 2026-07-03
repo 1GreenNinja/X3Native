@@ -48,7 +48,7 @@ struct CliOptions {
          // doesn't clobber a newer owner), ESC force-release, watchdog
          // reclaim of an orphaned owner.
          testInputCapture = false,
-         testEcology = false, testCrowd = false, testAlert = false;
+         testEcology = false, testCrowd = false, testAlert = false, testNpcLife = false;
     // --test-loader (EDITOR LevelDoc data-driven loader): author a doc in memory ->
     // save -> LOAD through the real loader -> assert the built world matches; then
     // modify + hot-reload -> assert the delta applied and the create/destroy ledgers
