@@ -1,0 +1,13 @@
+{
+  "_comment": "Fleet box registry for Wake-on-LAN (tools/fleet/wol.py). Add each box's MAC as its operator reports it (getmac /v, or ipconfig /all -> Physical Address). always_on boxes never sleep (homeserver/chair) and don't need WoL. GPU field mirrors the login password scheme.",
+  "boxes": {
+    "13700k": { "mac": "74:56:3C:E4:4D:E3", "ip": "192.168.7.230", "gpu": "1080ti x2 (3090Ti inbound)", "role": "homeserver + Integrator", "always_on": true },
+    "14900k": { "mac": null, "ip": null, "gpu": "rtx5090", "role": "primary mesh forge", "always_on": false },
+    "predator": { "mac": null, "ip": null, "gpu": "1080ti x2", "role": "image worker / validator", "always_on": false },
+    "djbooth": { "mac": null, "ip": null, "gpu": "1080ti", "role": "image worker / infra", "always_on": false },
+    "snake": { "mac": null, "ip": null, "gpu": "1080ti", "role": "art / image worker", "always_on": false },
+    "starforge": { "mac": null, "ip": null, "gpu": "1080ti", "role": "forge gateway", "always_on": false },
+    "i5000": { "mac": null, "ip": null, "gpu": "980ti", "role": "grinder / image worker", "always_on": false },
+    "oglaptop": { "mac": null, "ip": null, "gpu": "a2000", "role": "diagnostician / headless render", "always_on": false }
+  }
+}
