@@ -467,27 +467,34 @@ NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device
             }
         }
 
-        // (d) OVERHEAD CABLES: thin near-taut strands strung high across the street. Kept
-        // SHALLOW-sag (small dy per segment) so the axis-aligned thin boxes read as wires,
-        // not blocks; strung high (~8 m) so they frame the sky, not the eyeline.
+        // (d) OVERHEAD CABLES: a SPARSE set of genuinely THIN wires strung HIGH across the
+        // street. ROOT-CAUSE FIX (was: thick black bars slashing the hero). The old canopy
+        // inflated each segment's vertical half-extent (halfY = |dy|*0.5 + thick) to span the
+        // catenary drop, so every axis-aligned segment became a flat near-black RIBBON that
+        // presented a broad face straight down the street axis; 16 of them stacked in
+        // perspective read as solid black bars, not wires. Now: a CONSTANT 7 cm square
+        // cross-section (thick in X *and* Y) so each box is a true wire from any angle, a
+        // dark-GREY (not pure black) color, very shallow sag, few strands, raised to ~10.5 m
+        // so they sit ABOVE the eyeline and frame the sky instead of slashing across it. Z
+        // segments overlap (+thick) so the shallow vertical steps leave no visible gaps.
         {
-            const float cableCol[4] = { 0.04f, 0.04f, 0.05f, 1.0f };
-            for (float lx = cx - 78.0f; lx <= cx + 78.0f; lx += 10.0f) {
-                const int segs = 10;
+            const float cableCol[4] = { 0.09f, 0.09f, 0.11f, 1.0f };   // dark grey, not black
+            const float thick = 0.035f;                                // 7 cm square wire
+            for (float lx = cx - 70.0f; lx <= cx + 70.0f; lx += 26.0f) {   // sparse (~6 strands)
+                const int segs = 12;
                 const float z0 = cz - 11.0f, z1 = cz + 11.0f;
-                const float sag = 0.35f + pr() * 0.35f;   // shallow -> reads as a wire
-                const float topY = g + 8.0f + pr() * 1.6f;
-                const float px = lx + (pr() - 0.5f) * 4.0f;
-                const float thick = 0.035f;
+                const float sag  = 0.12f + pr() * 0.10f;      // very shallow -> reads as a wire
+                const float topY = g + 10.5f + pr() * 0.8f;   // high, above the eyeline
+                const float px   = lx + (pr() - 0.5f) * 4.0f;
                 for (int s = 0; s < segs; ++s) {
                     const float t0 = (float)s / segs, t1 = (float)(s + 1) / segs;
                     const float za = z0 + (z1 - z0) * t0, zb = z0 + (z1 - z0) * t1;
                     const float ya = topY - sag * 4.0f * t0 * (1.0f - t0);
                     const float yb = topY - sag * 4.0f * t1 * (1.0f - t1);
                     const float mz = (za + zb) * 0.5f, my = (ya + yb) * 0.5f;
-                    const float halfZ = std::fabs(zb - za) * 0.5f;
-                    const float halfY = std::fabs(yb - ya) * 0.5f + thick;   // span the small dy
-                    addBox(px, my, mz, thick, halfY, halfZ, cableCol, kNoEmis, darkTex);
+                    const float halfZ = std::fabs(zb - za) * 0.5f + thick;   // overlap -> no gaps
+                    // Constant square cross-section (thick x thick): a TRUE wire, never a ribbon.
+                    addBox(px, my, mz, thick, thick, halfZ, cableCol, kNoEmis, darkTex);
                     st.propClutter++;
                 }
             }
