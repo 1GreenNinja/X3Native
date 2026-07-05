@@ -517,8 +517,10 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         const float bedZ = z0 + 1.95f;              // spans z ~37.8..40.1, clear of the trapdoor ladder
         place(aCot, kPi * 0.5f, 1.0f, cx(kCotAabb), kCotAabb.miny, cz(kCotAabb),
               bedX, fY, bedZ, nullptr, nullptr);    // authored albedo — no tint needed
+        // Footlocker hugging the bed FOOT (bed half-length 1.15 + crate half 0.33): F3's
+        // +2.30 left it stranded mid-floor a metre past the frame.
         place(aCrateS, 0.0f, 1.0f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
-              bedX + 0.05f, fY + 0.02f, bedZ + 2.30f, nullptr, tCrate);   // footlocker
+              bedX + 0.05f, fY + 0.02f, bedZ + 1.55f, nullptr, tCrate);   // footlocker
         // Lighting kept to the R5 trio (pool + corner key + dim floor fill), pool
         // recentred low over the mattress so the fabric + plastic cover catch a warm
         // grazing key and the frame rails rim-light.
@@ -527,7 +529,7 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         addLight(bt.jakeCell, ccx + 0.5f, fY + 0.5f, ccz + 0.5f, 4.5f, 0.5f, 0.48f, 0.44f);     // dim floor fill
         // Ground the bed + footlocker (contact-shadow blobs; m_shadowDisc built above).
         addShadowBlob(m_shadowDisc, bedX, fY, bedZ, 0.80f, 1.40f, 0.55f);               // bed
-        addShadowBlob(m_shadowDisc, bedX + 0.05f, fY, bedZ + 2.30f, 0.55f, 0.55f, 0.5f); // footlocker
+        addShadowBlob(m_shadowDisc, bedX + 0.05f, fY, bedZ + 1.55f, 0.55f, 0.55f, 0.5f); // footlocker
     }
 
     // WALL TERMINAL (the cell's control panel) on the -Z wall, with a cyan glow + a cyan
@@ -616,34 +618,23 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         addLight(bt.jakeCell, x1 - 0.4f, ceilY - 0.6f, ccz, 1.6f, 0.07f, 0.5f, 0.13f);
     }
 
-    // CEILING LIGHT FIXTURE (the physical tube) at the cell center, with the FLICKERING
-    // overhead light driven by tick(). It also gets a self-emissive so the tube glows.
+    // CEILING LIGHTING — WAVE-1 DIRECTOR'S CUT: both physical fixtures REMOVED after the
+    // close-up survey identified them as the hero shot's worst cluster. SM_Light_A is not
+    // a tube — it's a bare L-shaped WIRE (0.03 m rod) that read as dangling cabling below
+    // the panels; the warehouse Hanging Light's bulb bloomed into the infamous white "bag"
+    // (its shade + the panel seam trim behind it were the black "wings"). The coffered
+    // R4 ceiling panels + light POOLS carry the read on their own — fixtures return only
+    // when a real industrial caged-light GLB exists.
     {
         const float lx = ccx, lz = ccz;
-        // R4: emissive 3.4 -> 2.1 + scale 1.4 -> 1.05 + steel body tint — at 3.4 the bloom
-        // ate the whole fixture into a shapeless white BAG hanging from the void. 2.1 keeps
-        // a glowing tube that still reads as a tube. Seated at the R4 ceiling panels.
-        // R5: seated BELOW the ceiling panels (underside ceilY-0.14) — the 3 cm strip was
-        // swallowed INSIDE the panel/graybox slab in every prior round and never visible.
-        const float emWarm[4] = { 1.0f, 0.92f, 0.7f, 2.1f };
-        place(aLight, 0.0f, 1.05f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),
-              lx, ceilY - 0.15f, lz, emWarm, tSteel);
-        // A caged HANGING LIGHT lower over the bunk (a second, warmer pool — pools of
-        // light + shadow rather than even fill). Hangs DOWN (kHLightAabb maxy=0).
-        // R4: cage tDark -> tSteel (at 0.20 it silhouetted as a floating black shard
-        // against the bright fixture) + glow 3.0 -> 1.9.
-        const float emHang[4] = { 1.0f, 0.80f, 0.52f, 1.2f };
-        place(aHLight, 0.0f, 1.0f, cx(kHLightAabb), kHLightAabb.maxy, cz(kHLightAabb),
-              x0 + 1.3f, ceilY - 0.16f, z0 + 1.6f, emHang, tSteel);
-        addLight(bt.jakeCell, x0 + 1.3f, ceilY - 0.9f, z0 + 1.6f, 4.0f, 1.7f, 1.3f, 0.8f);
-        // The motivated flickering tube (cool-white, stutters). Recorded as a flicker light.
-        // Bright base + a SHALLOW flicker depth so the cell stays readable but the tube
-        // visibly stutters (a failing fluorescent), not a strobe that blacks the room out.
-        // R4: 3.4/3.5/3.7 @ r8 -> 2.3/2.4/2.6 @ r7 — the old base was a floodlight that
-        // flattened every wall it reached.
+        // Warm pool over the bed corner (was the hanging light's pool; kept, dimmed).
+        addLight(bt.jakeCell, x0 + 1.3f, ceilY - 0.9f, z0 + 1.6f, 4.0f, 1.3f, 1.0f, 0.62f);
+        // The motivated flickering overhead (cool-white, stutters via tick()) — the failing
+        // fluorescent the player hears about; shallow depth so the room never goes black.
         const uint32_t li = (uint32_t)m_lights.size();
         addLight(bt.jakeCell, lx, ceilY - 0.40f, lz, 7.0f, 2.3f, 2.4f, 2.6f);
         m_flickers.push_back({ li, 2.3f, 2.4f, 2.6f, 0.0f, 9.0f, 0.35f });
+        (void)aLight; (void)aHLight;   // loaded (hall may reuse); no cell placement
     }
 
     // RED ALARM WASH near the door (a low, saturated red accent so the exit reads as a
