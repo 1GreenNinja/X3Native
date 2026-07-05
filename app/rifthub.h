@@ -17,22 +17,30 @@
 // point so the player can walk past all 8 by orbiting once.
 //
 // Authoring style mirrors act2_caves' Scene-prop helpers: every portal is a
-// vertical round "tech-gate" ring built from N tangent box segments (two
-// concentric layers — outer + inner — so the gate reads as a framed
-// doorway), a small octagonal emissive floor-plate, and an EVENT-HORIZON
-// MEMBRANE filling the ring opening as the portal's energy surface: a
-// vertical pool of blue-white energy built from concentric bands of thin
-// tangent box segments, brightest at the center and fading to deep blue at
-// the rim (the outermost band bleeds a fraction of the destination tint). A
-// wider AABB trigger sits underneath. No GLB asset needed.
+// Stargate-INSPIRED gateway (original procedural design, not a copy) —
+//   * a SUBSTANTIAL, thick grey-stone RING you walk through, built from a
+//     single circle of N deep tangent box segments with a beefy squarish
+//     cross-section (real radial thickness + depth). The ring is stone, it
+//     does NOT glow;
+//   * CHEVRON-like AMBER locking clamps ringing the gate's outer face (one at
+//     12 o'clock, the rest evenly spaced) — chunky triangular prisms that sit
+//     proud of the ring surface and glow amber, the "powered gate" cue;
+//   * a small octagonal emissive floor-plate (carries the per-destination
+//     accent tint, since the ring itself is neutral stone);
+//   * an EVENT-HORIZON MEMBRANE filling the ring opening as the portal's
+//     energy surface: a vertical pool of blue-white energy built from
+//     concentric bands of thin tangent box segments, brightest at the center
+//     and fading to deep blue at the rim (the outermost band bleeds a fraction
+//     of the destination tint as a second subtle signposting cue).
+// A wider AABB trigger sits underneath. No GLB asset needed.
 //
-// SHIMMER ANIMATION: Rifthub::tick(dt) runs each frame and (a) pulses the
-// ring frame's emissive intensity via sin(time * freq + phase) with a
-// per-portal phase offset so the gates ripple around the hub, and (b) drives
-// the membrane's LIQUID RIPPLE: each concentric band's emissive is phased by
-// sin(time*w - radius*k) so bright crests travel outward from the center
-// like rings on a pond, plus a slow angular swirl term per segment. See
-// rifthub.cpp's tick() for the constants.
+// ANIMATION: Rifthub::tick(dt) runs each frame and (a) flickers the amber
+// chevrons with a slow sin(time*freq + phase) per-chevron pulse (a powered
+// gate breathing), (b) pulses the blue core hot-spot, and (c) drives the
+// membrane's LIQUID RIPPLE: each concentric band's emissive is phased by
+// sin(time*w - radius*k) so bright crests travel outward from the center like
+// rings on a pond, plus a slow angular swirl term per segment. The grey-stone
+// ring is static (stone doesn't pulse). See rifthub.cpp's tick() for constants.
 
 #include "scene.h"
 #include "trigger.h"
@@ -63,33 +71,36 @@ enum class RifthubTrigger : uint32_t {
 constexpr uint32_t kRifthubTrigBase  = 200;
 constexpr uint32_t kRifthubTrigCount = 8;
 
-// One placed portal in the hub. The portal is a vertical round tech-gate ring
-// (two concentric layers of N tangent box segments) + an octagonal emissive
-// floor-plate + a thin "shimmer disk" energy core, anchored at `worldPos`.
+// One placed portal in the hub. The portal is a thick grey-stone Stargate-style
+// RING (a single circle of N deep tangent box segments) + amber CHEVRON locking
+// clamps on its outer face + an octagonal emissive floor-plate + a blue energy
+// core hot-spot + the event-horizon membrane pool, anchored at `worldPos`.
 // `triggerId` is the matching RifthubTrigger; `worldName` is the --world flag
 // the host should relaunch with to traverse this rift (NO runtime switch in
 // this draft).
 //
-// The host calls Rifthub::tick(dt) each frame to drive the shimmer pulse —
-// the per-portal entity-id ranges below let tick() poke emissive[3] on the
-// ring segments + the shimmer disk in-place without re-issuing render calls.
+// The host calls Rifthub::tick(dt) each frame to drive the animation — the
+// per-portal entity-id ranges below let tick() poke emissive[3] on the amber
+// chevrons, the blue core, and the membrane bands in-place without re-issuing
+// render calls. The stone ring is static (authored once, never animated).
 struct RiftPortal {
     const char*    worldName  = "";       // --world flag (e.g. "act2caves")
     uint32_t       triggerId  = 0;        // matching RifthubTrigger id
     x3::phys::Vec3 worldPos{};            // portal center (XZ); Y = floor
-    float          tint[3]    = {1,1,1};  // emissive color (portal-specific)
+    float          tint[3]    = {1,1,1};  // per-destination accent color
     bool           activated  = false;    // latched when the trigger fires
-    // Entity-id ranges for the shimmer animation. Each portal owns a contiguous
-    // span of ring-segment entities (outer ring then inner ring) and a single
-    // shimmer-disk entity; tick() walks these to pulse emissive strength.
+    // Entity-id ranges. The stone ring is a contiguous span (static, but tracked
+    // so shutdown/self-test can reason about it); the amber chevrons, blue core
+    // disks, and membrane bands are the animated spans tick() pokes.
     uint32_t       ringEntFirst = 0;      // first scene entity id in the ring span
-    uint32_t       ringEntCount = 0;      // number of ring-segment entities
-    uint32_t       coreEnt      = 0;      // shimmer disk entity id (energy core, blue)
+    uint32_t       ringEntCount = 0;      // number of stone ring-segment entities
+    uint32_t       coreEnt      = 0;      // core hot-spot disk entity id (blue)
     uint32_t       coreInnerEnt = 0;      // brighter inner blue disk (core depth)
-    // Rim emitter nodes — bright blue cubes on the outer ring that chase-pulse
-    // in sequence (the wormhole generator "charging" the field). Contiguous span.
-    uint32_t       nodeEntFirst = 0;      // first rim emitter-node entity id
-    uint32_t       nodeEntCount = 0;      // number of rim emitter nodes
+    // Amber CHEVRON locking clamps — chunky triangular prisms proud of the ring's
+    // outer face that flicker amber (the "powered gate" cue). Contiguous span,
+    // chevron 0 at 12 o'clock; tick() pulses each with a per-chevron phase.
+    uint32_t       chevronEntFirst = 0;   // first chevron entity id
+    uint32_t       chevronEntCount = 0;   // number of amber chevrons
     // Event-horizon membrane — the visible portal SURFACE: concentric bands of
     // thin emissive segments filling the ring opening (a vertical blue-white
     // energy pool). Contiguous span, authored band 0 (innermost) outward,
@@ -114,13 +125,12 @@ public:
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers);
 
-    // Per-frame shimmer animation. Pulses each portal's ring-segment emissive
-    // strength using sin(m_time*freq+phase) with a small per-portal phase
-    // offset so the gates ripple around the hub instead of pulsing in unison,
-    // pulses the core center disks, chase-pulses the rim emitter nodes, and
-    // drives the event-horizon membrane's liquid ripple: each concentric
-    // band's emissive follows sin(m_time*w - bandRadius*k) (crests travel
-    // center -> rim) plus a slow per-segment swirl. All emissive pokes are
+    // Per-frame animation. Flickers each portal's amber chevrons with a slow
+    // sin(m_time*freq + per-chevron phase) pulse (a powered gate breathing),
+    // pulses the blue core hot-spot disks, and drives the event-horizon
+    // membrane's liquid ripple: each concentric band's emissive follows
+    // sin(m_time*w - bandRadius*k) (crests travel center -> rim) plus a slow
+    // per-segment swirl. The grey-stone ring is static. All emissive pokes are
     // in-place on the authored entities — no per-frame heap.
     // `scene` is the Scene the portals were authored into (build()'s scene).
     void tick(float dt, Scene& scene);
@@ -163,10 +173,10 @@ private:
     std::vector<RiftPortal>    m_portals;
 
     // Owned render resources (freed in shutdown()). The portal mesh vector
-    // collects EVERY device-allocated mesh authored by build() — ring segments
-    // (outer + inner), floor-plate wedges, and shimmer-disk core — so shutdown
-    // can free them uniformly. The per-portal entity-id ranges in RiftPortal
-    // index into the Scene, not into this vector.
+    // collects EVERY device-allocated mesh authored by build() — stone ring
+    // segments, amber chevron prisms, floor-plate wedges, core disks, and
+    // membrane bands — so shutdown can free them uniformly. The per-portal
+    // entity-id ranges in RiftPortal index into the Scene, not into this vector.
     x3::rhi::MeshHandle        m_groundMesh;
     x3::rhi::TextureHandle     m_groundTex;
     std::vector<x3::rhi::MeshHandle> m_portalMeshes;
@@ -175,13 +185,13 @@ private:
 // Headless self-test (--test-rifthub). Builds the hub on a HeadlessDevice + Jolt
 // world and asserts:
 //   * the hub builds with exactly 8 portals (one per --world target);
-//   * each portal owns a trigger volume + a contiguous span of ring/core/node/
-//     membrane scene entities;
+//   * each portal owns a trigger volume + a contiguous span of ring/core/
+//     chevron/membrane scene entities;
 //   * entering a portal's trigger (via TriggerSystem::update with a point inside
 //     the volume) latches that portal's `activated` flag + the HUD prompt flips
 //     to "Rift activated: <name>" — and only AFTER every portal is entered does
 //     allActivated() become true;
-//   * tick(dt) advances the shimmer: a ring-segment + core + membrane emissive
+//   * tick(dt) advances the animation: a chevron + core + membrane emissive
 //     intensity changes across two ticks at different times (the pulse is
 //     live), and two membrane bands at different radii sit at DIFFERENT
 //     emissive levels at the same instant (the ripple really is radial);
