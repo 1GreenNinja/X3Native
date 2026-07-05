@@ -262,9 +262,13 @@ struct WeaponDef {
     // per distinct WAV at init alongside the fire sounds.
     std::string impactSfx    = "";
     // Per-weapon RELOAD sound (played once, non-positional, on the rising edge of a
-    // reload). Empty -> no reload sound. Plumbed as data so designers can wire a click/
-    // whir per weapon when reload WAVs are available (none ship today -> silent).
+    // reload). Empty -> no reload sound. W2-C: every roster weapon now ships the
+    // shared repo-local WAV (weapons/reload_generic.wav) — same graceful-miss
+    // semantics if the file is absent.
     std::string reloadSfx    = "";
+    // W2-C: empty-mag trigger click (same resolveAudio + graceful-miss semantics).
+    // Played by the host when ResolvedFire.dryFire is set.
+    std::string dryfireSfx   = "";
 };
 
 // One travelling projectile spawned by a Projectile-kind weapon. Pure data the
@@ -311,6 +315,12 @@ struct HitscanRay {
 // (cooldown not elapsed / empty mag / reloading) — nothing was consumed.
 struct ResolvedFire {
     bool                         fired = false;
+    // W2-C: true when the trigger pull was gated by an EMPTY MAG specifically (not
+    // mid-reload, not the fire-rate cooldown) — the host plays the weapon's
+    // dryfireSfx click on this. Cadence-respecting: the cooldown gate is checked
+    // first, so holding fire on an auto weapon clicks at the weapon's fire rate,
+    // not once per frame.
+    bool                         dryFire = false;
     std::vector<HitscanRay>      rays;          // FireKind::Hitscan (pellets entries)
     std::vector<ProjectileSpawn> projectiles;   // FireKind::Projectile (1 entry)
     float                        recoilPitchDeg = 0.0f;
@@ -462,6 +472,15 @@ private:
         int                                      fallbackIndex = -1; // -1 = own draws
     };
     std::vector<ViewModel> m_views;
+    // W2-C FIRST-PERSON ARMS: Jake's own arms baked into a static aim pose
+    // (assets/rigged_glb/FPArms_Jake.glb — tools/bake_fp_arms.ps1 bakes them from
+    // Jake_22_actions.glb: Rifleaimingidle pose frozen, arm/hand-weighted vertices
+    // only, origin re-centered on the NECK so rotating about the eye swings them
+    // like a body, not a prop). Drawn eye-anchored under every weapon by
+    // drawCurrentViewmodel. Missing GLB = graceful no-op (arms simply don't draw).
+    // Arms deliberately do NOT get kVmScaleBoost — the guns are 2x by design
+    // (Tim-approved oversized reads); human arms at 2x read as a giant.
+    ViewModel m_arms;
 };
 
 // Headless self-test (--test-weapons). Exercises the data-driven arsenal with NO

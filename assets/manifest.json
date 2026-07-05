@@ -168,6 +168,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/FPArms_Jake.glb",
+      "sha256": "085651e02950a83462afbe3060d2e83aaa4e1f39b05ee9d1ef9b89fce88e79ba",
+      "size": 5929440,
+      "source_note": "W2-C FP arms bake"
+    },
+    {
       "repo_path": "assets/rigged_glb/GreatWhiteSharkGameReady.glb",
       "sha256": "a61fd79e16217937b55458cc28284c114142acbf72409703e2231ea24804369e",
       "size": 5323600,
