@@ -184,6 +184,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_hp  = tuning.hp;
     m_chaseSpeed = tuning.chaseSpeed;
     for (int i = 0; i < 4; ++i) m_baseTint[i] = tuning.tint[i];
+    m_emissiveScale = tuning.emissiveScale;
     m_alive = true;
     m_flash = 0.0f;
 
@@ -1644,11 +1645,36 @@ void MonsterSystem::drawMonsterAt(x3::rhi::IRenderDevice& device,
         float mf[16], fin[16];
         x3::asset::mulMat4(model, m_modelFixup, mf);
         x3::asset::mulMat4(mf, d.nodeTransform, fin);
-        device.drawMesh(frame,
-                        x3::rhi::MeshHandle{ d.meshId },
-                        x3::rhi::TextureHandle{ d.baseColorTexId },
-                        color,
-                        fin);
+        // FULL PBR path (was the basic drawMesh): normal + metallic-roughness maps
+        // give the characters real shading (the flat path is why the drone read as
+        // a white bag with coal arms). Authored material emissive rides through
+        // SCALED by m_emissiveScale (Tuning) — same discipline as the cell dressing:
+        // strength 0 suppresses, 1 = as authored, never an uncontrolled bloom bomb.
+        // Hit-flash / phase / death tints stay folded into the base color exactly
+        // as before (`color` above already carries them).
+        const bool matEmis = d.emissiveTexId != 0 ||
+            d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f ||
+            d.emissiveFactor[2] > 0.001f;
+        const float emis[4] = {
+            matEmis ? d.emissiveFactor[0] : 0.0f,
+            matEmis ? d.emissiveFactor[1] : 0.0f,
+            matEmis ? d.emissiveFactor[2] : 0.0f,
+            matEmis ? m_emissiveScale : 0.0f,
+        };
+        device.drawMeshPBR(frame,
+                           x3::rhi::MeshHandle{ d.meshId },
+                           x3::rhi::TextureHandle{ d.baseColorTexId },
+                           x3::rhi::TextureHandle{ d.normalTexId },
+                           x3::rhi::TextureHandle{ d.mrTexId },
+                           color,
+                           emis,
+                           fin,
+                           d.alphaMask,
+                           d.alphaBlend,
+                           x3::rhi::TextureHandle{ d.emissiveTexId },
+                           x3::rhi::TextureHandle{ d.detailTexId },
+                           d.detailUvScale,
+                           d.clearcoat, d.clearcoatRough);
     }
 }
 
@@ -2828,7 +2854,12 @@ std::vector<MonsterDef> buildMonsterDefs() {
         t.ranged         = true;
         t.standoff       = combat::kRangedStandoff;         // ~7 m
         t.aiStrafeBias   = 0.60f;                           // flanks/coordinates (drone-ish)
-        t.tint[0]=0.45f; t.tint[1]=0.65f; t.tint[2]=1.0f;   // synthetic blue
+        // PBR pass: deep steel-blue gunmetal — the old 0.45/0.65/1.0 on the near-
+        // white Drone.glb shell washed to a blown-white bag under the cell tube
+        // light. Dark base + a modest authored-emissive boost = readable synthetic
+        // flier with a controlled eye/engine glow.
+        t.tint[0]=0.30f; t.tint[1]=0.36f; t.tint[2]=0.48f;
+        t.emissiveScale  = 1.3f;
         const bool realSynth = defBlueSynth(t, 1.0f);
         // The fallback Drone.glb is authored UPRIGHT (Y-up), NOT lying-flat like the
         // human characters — applying the Z->Y stand-up tipped it onto its side
@@ -3801,7 +3832,10 @@ std::vector<Act2EnemyDef> buildAct2EnemyDefs() {
         t.ranged         = true;
         t.standoff       = 5.0f;                            // closes in — not a sniper
         t.aiStrafeBias   = 0.70f;                           // active pursuit, flanks
-        t.tint[0]=0.85f; t.tint[1]=0.85f; t.tint[2]=0.95f;  // sky-grey
+        // PBR pass: mid grey-steel (0.85+ washed to white on the pale shell) —
+        // still clearly lighter than the indoor BlueSynth's deep steel-blue.
+        t.tint[0]=0.55f; t.tint[1]=0.57f; t.tint[2]=0.63f;
+        t.emissiveScale  = 1.3f;
         // Use the BlueSynth model-resolution helper (rigged blue_synth if present;
         // else Drone.glb fallback). Force standUpZtoY off (Drone.glb is Y-up).
         const bool realSynth = defBlueSynth(t, 1.0f);
