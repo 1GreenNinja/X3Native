@@ -14,6 +14,7 @@
 // physics queries, and grounded() for gameplay state.
 
 #include "engine/physics/IPhysicsWorld.h"
+#include "cues.h"   // GameCueFn / CueKind (PlayerPain / PlayerLand audio hooks)
 
 namespace x3::game {
 
@@ -169,6 +170,17 @@ public:
     // The save layer reads this to capture the player transform.
     x3::phys::Vec3 feet() const { return x3::phys::Vec3{ m_feetX, m_feetY, m_feetZ }; }
 
+    // ---- Audio hook (audio-assets pass, W2-B) ------------------------------
+    // Wire a cue sink so the host can give the PLAYER a voice: a PlayerPain cue
+    // fires when takeDamage() lands a real hit, a PlayerLand cue fires the frame
+    // the character transitions airborne -> grounded (louder for a bigger fall).
+    // Mirrors MonsterSystem::setCueSink (see app/monster.h / app/cues.h). Default
+    // is an empty std::function, which emitCueOrLog() turns into a throttled log
+    // line instead of a crash — so this compiles and runs with NO host wiring;
+    // the host only needs to call player.setCueSink(...) to hear it (see the
+    // one-line subscription noted in app/cues.h's PlayerPain/PlayerLand comment).
+    void setCueSink(const GameCueFn& sink) { m_cueSink = sink; }
+
 private:
     x3::phys::BodyId m_body;
     float m_yaw   = 0.0f;   // around +Y; 0 looks toward +X
@@ -198,6 +210,10 @@ private:
     float m_respawn   = 0.0f;           // remaining respawn countdown while dead (s)
     bool  m_god       = false;          // IDDQD: ignore all incoming damage
     bool  m_noclip    = false;          // IDCLIP: free-fly, no gravity/collision
+
+    // ---- Audio hook state (audio-assets pass, W2-B) -----------------------
+    GameCueFn m_cueSink;                // host-wired; empty => throttled log (see cues.h)
+    float     m_fallStartY = 0.0f;      // feet-Y captured the instant we left the ground
 };
 
 // Headless self-test (T1 walk, T2 wall-stop, T3 jump, T4 coyote). Builds its own

@@ -106,6 +106,12 @@ bool Player::takeDamage(int amount) {
         x3::logInfo("[player] took " + std::to_string(amount) +
                     " damage — HP now " + std::to_string(m_hp));
     }
+    // A real hit landed (not absorbed by god/iframe/dead) — give the player a
+    // pain vocal. Intensity scales with the hit size so a chip tap and a heavy
+    // blow don't sound identical; the host picks/alternates the actual clip
+    // (e.g. pain_1.wav / pain_2.wav) off this one cue kind.
+    const float painIntensity = std::min(1.0f, 0.35f + (float)amount / 40.0f);
+    emitCueOrLog(m_cueSink, GameCue{ CueKind::PlayerPain, damageTargetPos(), painIntensity });
     return true;
 }
 
@@ -219,9 +225,13 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
 
     // ---- Grounded state + coyote/jump-buffer timers.
     const bool grounded = physics.characterGrounded(m_body);
+    const bool wasGrounded = m_grounded;   // last frame's state, before we overwrite it
     m_grounded = grounded;
     if (grounded) m_coyote = kCoyoteTime;
     else          m_coyote = std::max(0.0f, m_coyote - dt);
+    // Track the height we left the ground at so a landing cue can be scaled by
+    // how far we fell (a short hop should be quieter than a big drop).
+    if (wasGrounded && !grounded) m_fallStartY = m_feetY;
 
     if (in.jumpPressed) m_jumpBuffer = kJumpBuffer;
     else                m_jumpBuffer = std::max(0.0f, m_jumpBuffer - dt);
@@ -252,6 +262,15 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
     // physics-world argument.
     const x3::phys::Vec3 feet = physics.getBodyPosition(m_body);
     m_feetX = feet.x; m_feetY = feet.y; m_feetZ = feet.z;
+
+    // Landed this frame (airborne -> grounded transition): fire a PlayerLand cue,
+    // louder for a bigger drop. A tiny step-off-a-curb hop still gets a soft cue
+    // (floor at 0.15 intensity) rather than total silence.
+    if (!wasGrounded && grounded) {
+        const float drop = std::max(0.0f, m_fallStartY - feet.y);
+        const float landIntensity = std::min(1.0f, 0.15f + drop / 3.0f);
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::PlayerLand, damageTargetPos(), landIntensity });
+    }
 }
 
 // ---------------------------------------------------------------------------
