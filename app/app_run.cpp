@@ -1154,6 +1154,19 @@ int runDefaultHost(HostContext& hc) {
         canonFloor = x3::game::loadCanonFloor(x3::game::canonProjectJsonPath(), 1);
         if (canonFloor.valid()) {
             x3::game::CanonBuildOpts copts; copts.doors = &canonDoors; copts.lockSecuredRooms = true;
+            // TRAPDOOR CARVE — the canon-cell SECRET-ROOM PORT (Tim's code-locked
+            // trapdoor was legacy-tower-only until now). Pick a hatch spot inside
+            // Jake's Cell clear of the dressing (bunk in the -X/-Z corner, debris in
+            // +X/+Z, console on the -Z wall) and have the floor builder leave the
+            // hole; the SecretRoom below covers it with flush code-locked panels.
+            const x3::game::CanonBeats cbt = x3::game::canonBeats(canonFloor);
+            float hatchCx = 0.0f, hatchCz = 0.0f;
+            if (cbt.jakeCell != x3::game::kNoRoom) {
+                const x3::game::CanonRoom& jc = canonFloor.rooms[cbt.jakeCell];
+                hatchCx = jc.cx + 1.4f; hatchCz = jc.cz - 1.1f;
+                copts.hatchRoom = cbt.jakeCell;
+                copts.hatchCx = hatchCx; copts.hatchCz = hatchCz; copts.hatchHalf = 0.9f;
+            }
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
             x3::boot::mark("canon floor geometry+doors");
             // Per-room ceiling lights: the data-driven floor skips the env_art Light_A
@@ -1167,6 +1180,28 @@ int runDefaultHost(HostContext& hc) {
             // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
             // truth; missing GLBs simply aren't drawn (the level never breaks).
             canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
+            // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
+            // stocked room below + the cell HoloTerminal, seated at the canon cell.
+            // The hatch registers in canonDoors (this host updates + draws it); the
+            // terminal E-interaction / code entry / loot payoff key off game.secret(),
+            // which the existing host paths already poll (they gate on built()).
+            // Every entity added here is room-tagged to Jake's Cell so the PVS cull +
+            // per-room lights include the feature (the room below is reachable only
+            // from the cell anyway).
+            if (cbt.jakeCell != x3::game::kNoRoom) {
+                const x3::game::CanonRoom& jc = canonFloor.rooms[cbt.jakeCell];
+                const uint32_t nBefore = scene.size();
+                // cellCenter.xz feeds ONLY the terminal spot (the hatch XZ is explicit
+                // above; SecretRoom offsets termPos by (0, +1.3, -2.6) from this):
+                // (cx-0.6, cz+0.9) hangs the holo terminal IN THE ROOM just -X of the
+                // hatch — support pipe to the ceiling per the HoloPanel design — clear
+                // of the -Z wall's window cutouts AND the dressing console at (cx+0.7).
+                game.buildCanonCellSecret(scene, *device, *physics, canonDoors,
+                                          x3::phys::Vec3{ jc.cx - 0.6f, jc.y0(), jc.cz + 0.9f },
+                                          hatchCx, hatchCz, jc.y1() - 0.16f);
+                for (uint32_t ei = nBefore; ei < scene.size(); ++ei)
+                    scene.get(ei).roomId = cbt.jakeCell;
+            }
             x3::logInfo("--world canonlevel: built canonical Floor 1 (" +
                         std::to_string(canonFloor.rooms.size()) + " rooms, " +
                         std::to_string(scene.size()) + " entities, " +

@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -58,9 +59,17 @@ public:
     // there so the existing door update/animation drives it). `modelDir` is the
     // loose-GLB dir for the secret weapon pickup. Wires the terminal submit sink to
     // unlock+open the hatch on the correct code. Call once.
+    // The three trailing params RELOCATE the feature for the data-driven canon cell
+    // (--world canonlevel): hatchCx/hatchCz place the floor-hatch opening in world XZ
+    // (NaN = the legacy level1.h kCellHatch* spot, so existing callers are
+    // byte-identical), and cellCeilY pins the terminal's ceiling support pipe to the
+    // REAL room ceiling (<= cellCenter.y means "legacy": cellCenter.y + 2.8).
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::IPhysicsWorld& physics, DoorSystem& doors,
-               const x3::phys::Vec3& cellCenter, std::string_view modelDir);
+               const x3::phys::Vec3& cellCenter, std::string_view modelDir,
+               float hatchCx = std::numeric_limits<float>::quiet_NaN(),
+               float hatchCz = std::numeric_limits<float>::quiet_NaN(),
+               float cellCeilY = 0.0f);
 
     // Advance one frame: tick the terminal cursor blink, and run pickup collection
     // against the player position (collecting health/nano/treasure within radius).
@@ -128,6 +137,10 @@ private:
     uint32_t       m_treasureGot = 0;
     uint32_t       m_healthGot   = 0;
     bool           m_built = false;
+    // AAA hatch read (R6): the status-light entity on the hatch rim — RED while the
+    // hatch is locked, flipped GREEN by tick() the frame it unlocks/opens.
+    uint32_t       m_statusEnt = kNoLink;
+    bool           m_statusGreen = false;
 };
 
 // Radius (m) within which walking into a secret-room pickup collects it (XZ plane).

@@ -100,6 +100,18 @@ public:
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::IPhysicsWorld& physics, std::string_view modelDir);
 
+    // CANON-CELL PORT (--world canonlevel): build ONLY the code-locked trapdoor +
+    // secret room + cell HoloTerminal (Tim's signature cell feature) into the
+    // data-driven canon world — no tower, no doors A-E, no legacy spawns. The hatch
+    // is registered in the HOST's DoorSystem (canonDoors) so the canon door update
+    // animates it; the hatch XZ must match the hole the canon floor builder carved
+    // (CanonBuildOpts hatch*). tick() then advances just the secret room (terminal
+    // blink, status light, loot collection) via the m_secretOnly mode.
+    void buildCanonCellSecret(Scene& scene, x3::rhi::IRenderDevice& device,
+                              x3::phys::IPhysicsWorld& physics, DoorSystem& hostDoors,
+                              const x3::phys::Vec3& cellCenter,
+                              float hatchCx, float hatchCz, float cellCeilY);
+
     // Optional: attach audio for event SFX (§9). Safe to skip (silent).
     void setAudio(const Level1Audio& audio) { m_audio = audio; }
 
@@ -420,6 +432,7 @@ private:
     bool m_martinezDeadLatch= false; // beat 10: unlock+open Door E once
     bool m_complete         = false; // beat 11: WIN (logged once)
     bool m_built            = false;
+    bool m_secretOnly       = false;  // canon-cell port: only the secret room is live
 };
 
 // ===========================================================================

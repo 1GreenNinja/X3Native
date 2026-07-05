@@ -95,18 +95,27 @@ uint32_t SecretRoom::addPickup(Scene& scene, x3::rhi::IRenderDevice& device,
 
 void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        x3::phys::IPhysicsWorld& physics, DoorSystem& doors,
-                       const x3::phys::Vec3& cellCenter, std::string_view modelDir) {
+                       const x3::phys::Vec3& cellCenter, std::string_view modelDir,
+                       float hatchCx, float hatchCz, float cellCeilY) {
     m_doorsPtr = &doors;
+
+    // Resolve the relocation params (NaN / <=floor => legacy values), so the legacy
+    // Level-1 tower call sites stay byte-identical while --world canonlevel can seat
+    // the feature at the canon cell's coordinates.
+    if (std::isnan(hatchCx)) hatchCx = kCellHatchCx;
+    if (std::isnan(hatchCz)) hatchCz = kCellHatchCz;
+    const float termCeilY = (cellCeilY > cellCenter.y) ? cellCeilY : (cellCenter.y + 2.8f);
 
     // ====================================================================
     // 1) THE FLOOR-HATCH TRAPDOOR in the cell floor (starts LOCKED).
     // ====================================================================
-    // Place it at the SHARED cell-hatch cutout location (level1.h kCellHatch*), so the
-    // hatch slab lines up exactly with the hole carved in the B1 plate floor — an open
+    // Place it at the shared cell-hatch cutout location (legacy: level1.h kCellHatch*;
+    // canon: the caller's hatchCx/hatchCz, matched to the hole the canon floor builder
+    // carved), so the hatch slab lines up exactly with the hole in the floor — an open
     // hatch then drops the player straight through. Only the Y comes from cellCenter
     // (the cell floor); the XZ is the world cutout center. It slides aside along +X by
     // its full width (2*halfWidth) to clear the opening.
-    const x3::phys::Vec3 hatchCenter{ kCellHatchCx, cellCenter.y, kCellHatchCz };
+    const x3::phys::Vec3 hatchCenter{ hatchCx, cellCenter.y, hatchCz };
     {
         DoorSpec h;
         h.doorwayCenter = hatchCenter;
@@ -127,6 +136,56 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
         h.floorTex = device.createTexture(floorPx.data(), kHatchTexN, kHatchTexN, true);
         h.floorTint[0]=0.55f; h.floorTint[1]=0.60f; h.floorTint[2]=0.75f; h.floorTint[3]=1.0f; // B1 tint
         m_hatchIdx = buildLevelDoor(scene, doors, device, physics, h);
+    }
+
+    // ---- AAA HATCH READ (R6): a raised industrial-yellow RIM framing the opening +
+    // a status light. Without these the flush panels read as floor (nobody finds the
+    // trapdoor); with them it reads as an engineered, code-locked deck hatch. The rim
+    // is four low curb boxes AROUND the opening (outside the panels' slide path — the
+    // panels part along X UNDER the rim ends), hazard yellow with a faint self-glow so
+    // it reads in the cell's pooled shadow. The status light sits on the -Z rim corner:
+    // RED while locked, flipped GREEN by tick() the frame the hatch unlocks/opens.
+    {
+        const float ho   = kCellHatchHalf;          // opening half-extent
+        const float curbW = 0.09f;                  // rim thickness (out from the opening)
+        const float curbH = 0.045f;                 // raised lip height above the floor
+        // Curb center: base 5 mm above the floor plane (no coplanar z-fight with the
+        // floor slab or the flush panels sliding underneath), top at ~floor + 0.095.
+        const float y     = cellCenter.y + curbH + 0.005f;
+        // Hazard AMBER, not toy yellow: desaturated warm base + a restrained glow so
+        // the rim reads as painted metal catching light, not an emissive plastic bar.
+        const float yellow[4] = { 0.58f, 0.42f, 0.08f, 1.0f };
+        const float glow[4]   = { 0.30f, 0.21f, 0.03f, 0.35f };
+        auto curb = [&](float hx, float hz, float ox, float oz) {
+            x3::prims::PrimMesh geo = x3::prims::makeBox(hx, curbH, hz, 0, 0, 0, 1.0f);
+            Entity e;
+            e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                       geo.index.data(), (uint32_t)geo.index.size());
+            e.baseColor[0]=yellow[0]; e.baseColor[1]=yellow[1]; e.baseColor[2]=yellow[2]; e.baseColor[3]=1.0f;
+            e.emissive[0]=glow[0]; e.emissive[1]=glow[1]; e.emissive[2]=glow[2]; e.emissive[3]=glow[3];
+            e.tag = (uint32_t)Tag::Prop;
+            e.transform[12]=hatchCenter.x+ox; e.transform[13]=y; e.transform[14]=hatchCenter.z+oz;
+            scene.add(e);
+        };
+        // Two long rims along X (the +/-Z sides, spanning the full opening + corners),
+        // two short rims along Z (the +/-X sides, between them).
+        curb(ho + curbW, curbW, 0.0f, -(ho + curbW * 0.5f) - 0.0f);
+        curb(ho + curbW, curbW, 0.0f,  (ho + curbW * 0.5f) + 0.0f);
+        curb(curbW, ho, -(ho + curbW * 0.5f), 0.0f);
+        curb(curbW, ho,  (ho + curbW * 0.5f), 0.0f);
+        // STATUS LIGHT: a small lens on the -X/-Z rim corner. Starts locked-RED.
+        {
+            x3::prims::PrimMesh geo = x3::prims::makeBox(0.055f, 0.03f, 0.055f, 0, 0, 0, 1.0f);
+            Entity e;
+            e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                       geo.index.data(), (uint32_t)geo.index.size());
+            e.baseColor[0]=0.12f; e.baseColor[1]=0.05f; e.baseColor[2]=0.05f; e.baseColor[3]=1.0f;
+            e.emissive[0]=1.0f; e.emissive[1]=0.08f; e.emissive[2]=0.05f; e.emissive[3]=2.0f;  // locked RED
+            e.tag = (uint32_t)Tag::Prop;
+            e.transform[12]=hatchCenter.x-(ho+curbW*0.5f); e.transform[13]=cellCenter.y+2.0f*curbH+0.03f;
+            e.transform[14]=hatchCenter.z-(ho+curbW*0.5f);
+            m_statusEnt = scene.add(e);
+        }
     }
 
     // ====================================================================
@@ -284,7 +343,7 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ====================================================================
     // Place the terminal on the +Z cell wall in front of the spawn, ~1.3 m high.
     const x3::phys::Vec3 termPos{ cellCenter.x, cellCenter.y + 1.3f, cellCenter.z - 2.6f };
-    m_terminal.build(scene, device, termPos, /*yaw*/kPI, 1.4f, 0.9f, cellCenter.y + 2.8f);
+    m_terminal.build(scene, device, termPos, /*yaw*/kPI, 1.4f, 0.9f, termCeilY);
     DoorSystem* dptr = &doors;
     uint32_t hatchIdx = m_hatchIdx;
     m_terminal.setSubmitSink([this, dptr, hatchIdx](const std::string& v) -> bool {
@@ -327,6 +386,19 @@ void SecretRoom::tick(float dt, Scene& scene, const x3::phys::Vec3& playerPos,
     if (!m_built) return;
     m_terminal.update(dt);
     m_weapon.update(dt, scene, playerPos);
+
+    // ---- Hatch STATUS LIGHT: locked-RED -> GREEN the frame the hatch unlocks (the
+    // correct code was accepted; the door leaves Closed/locked). One-way latch. ----
+    if (!m_statusGreen && m_statusEnt != kNoLink && m_statusEnt < scene.size() &&
+        m_doorsPtr && m_hatchIdx != kNoLink && m_hatchIdx < m_doorsPtr->count()) {
+        const Door& h = m_doorsPtr->at(m_hatchIdx);
+        if (!h.locked || h.state != DoorState::Closed) {
+            Entity& e = scene.get(m_statusEnt);
+            e.emissive[0]=0.12f; e.emissive[1]=1.0f; e.emissive[2]=0.30f; e.emissive[3]=2.2f;
+            e.baseColor[0]=0.04f; e.baseColor[1]=0.12f; e.baseColor[2]=0.06f;
+            m_statusGreen = true;
+        }
+    }
 
     // ---- Pickup collection: walk within radius (XZ) to collect. ----
     const float r2 = kSecretPickupRadius * kSecretPickupRadius;
