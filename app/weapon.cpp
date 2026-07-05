@@ -557,6 +557,14 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // W2-C: every weapon shares the repo-local reload + dry-fire WAVs (committed by
+    // the sound department under assets/audio/weapons/; resolveAudio silent-skips
+    // if absent). Per-weapon bespoke reload foley can override these later.
+    for (WeaponDef& w : r) {
+        w.reloadSfx  = "weapons/reload_generic.wav";
+        w.dryfireSfx = "weapons/dryfire_click.wav";
+    }
+
     return r;
 }
 
@@ -680,7 +688,22 @@ bool Arsenal::canFire() const {
 
 ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir, uint32_t& rngState) {
     ResolvedFire out;
-    if (!canFire()) return out;               // gated -> nothing consumed
+    if (!canFire()) {
+        // W2-C dry-fire: flag the EMPTY-MAG case specifically (cooldown elapsed,
+        // not mid-reload) so the host plays dryfireSfx. The click ARMS the normal
+        // fire-rate cooldown (no ammo consumed) — without that, holding fire on an
+        // auto weapon would click every frame instead of at trigger cadence.
+        if (m_sel >= 0) {
+            WeaponState& s = m_state[(size_t)m_sel];
+            if (s.cooldown <= 0.0f && s.reloadTimer <= 0.0f &&
+                s.ammoInMag <= 0 && !m_infiniteAmmo) {
+                out.dryFire = true;
+                const WeaponDef& d = m_defs[(size_t)m_sel];
+                s.cooldown = (d.fireRate > 0.0f) ? (1.0f / d.fireRate) : 0.25f;
+            }
+        }
+        return out;                           // gated -> nothing consumed
+    }
 
     const WeaponDef&  d = m_defs[(size_t)m_sel];
     WeaponState&      s = m_state[(size_t)m_sel];
@@ -827,6 +850,20 @@ void Arsenal::loadViewmodels(x3::rhi::IRenderDevice& device, std::string_view mo
         if (m_views[i].drawables.empty()) m_views[i].fallbackIndex = firstLoaded;
     if (firstLoaded < 0)
         x3::logWarn("[arsenal] no viewmodel GLB loaded; drawCurrentViewmodel is a no-op");
+
+    // W2-C: the shared FIRST-PERSON ARMS (see weapon.h m_arms). Same rigged dir;
+    // a miss is graceful — the viewmodel simply draws without arms.
+    m_arms.assets.reset(x3::asset::createAssetSource());
+    if (m_arms.assets->mountDir(modelDir, 0)) {
+        m_arms.loader.reset(x3::asset::createModelLoader(&device, m_arms.assets.get()));
+        m_arms.model = m_arms.loader->load("FPArms_Jake.glb");
+        if (m_arms.model.ok) m_arms.drawables = x3::asset::makeDrawables(m_arms.model);
+    }
+    if (!m_arms.drawables.empty())
+        x3::logInfo("[arsenal] FP arms <- FPArms_Jake.glb (" +
+                    std::to_string(m_arms.drawables.size()) + " prims)");
+    else
+        x3::logWarn("[arsenal] FPArms_Jake.glb missing — viewmodel draws without arms");
 }
 
 void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
@@ -890,6 +927,42 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
         device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
                         x3::rhi::TextureHandle{ dr.baseColorTexId },
                         litColor, fin);
+    }
+
+    // ---- W2-C FIRST-PERSON ARMS --------------------------------------------
+    // Jake's baked aim-pose arms, anchored to the EYE (not the gun): the GLB
+    // origin is his neck, hung slightly behind/below the camera and aligned to
+    // the RAW camera basis (no per-weapon vm offsets — arms are the body; the
+    // offsets are gun presentation). The bake reaches toward glTF +Z, which the
+    // viewmodel basis maps to -forward, so the basis is yaw-flipped (bx/bz
+    // negated) to aim the arms down the look direction. Scale 1.0 — deliberately
+    // NOT kVmScaleBoost (guns are 2x by design; arms at 2x read as a giant).
+    if (!m_arms.drawables.empty()) {
+        constexpr float kArmsFwd    = -0.06f;  // neck sits just behind the eye
+        constexpr float kArmsDown   =  0.24f;  // and below it (chin/chest drop)
+        constexpr float kArmsBright =  1.7f;   // lift skin/sleeves in dark rooms
+        const x3::phys::Vec3 apos{
+            eyeX + forward.x * kArmsFwd - up.x * kArmsDown,
+            eyeY + forward.y * kArmsFwd - up.y * kArmsDown,
+            eyeZ + forward.z * kArmsFwd - up.z * kArmsDown };
+        const x3::phys::Vec3 abx{ -right.x, -right.y, -right.z };  // yaw-pi flip
+        const x3::phys::Vec3 aby = up;
+        const x3::phys::Vec3 abz = forward;                        // = -(negFwd)
+        float amodel[16];
+        composeTRS(amodel, abx, aby, abz, 1.0f, apos);
+        for (const auto& dr : m_arms.drawables) {
+            float fin[16];
+            x3::asset::mulMat4(amodel, dr.nodeTransform, fin);
+            const float skin[4] = {
+                dr.baseColorFactor[0] * kArmsBright,
+                dr.baseColorFactor[1] * kArmsBright,
+                dr.baseColorFactor[2] * kArmsBright,
+                dr.baseColorFactor[3],
+            };
+            device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                            x3::rhi::TextureHandle{ dr.baseColorTexId },
+                            skin, fin);
+        }
     }
 }
 
