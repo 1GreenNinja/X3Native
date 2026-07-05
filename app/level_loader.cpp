@@ -1049,9 +1049,35 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         float tint[4]; tintFor(r.type, tint);
         const x3::rhi::TextureHandle wTex = wallVariants[ri % 3];
 
-        // Floor slab (top flush with floorY).
-        addBox(scene, device, physics, r.w * 0.5f, 0.05f, r.d * 0.5f,
-               r.cx, floorY - 0.05f, r.cz, floorTex, tint, ri, true, floorVis);
+        // Floor slab (top flush with floorY). When this room hosts the trapdoor
+        // (opts.hatchRoom — the canon-cell secret-room port), the slab is built as
+        // FOUR segments around the square hatch opening instead of one plate, so a
+        // body can drop through the open hatch (the SecretRoom's flush panels cover
+        // the hole and carry the collision while closed).
+        if (ri == opts.hatchRoom && opts.hatchHalf > 0.0f) {
+            const float ho  = opts.hatchHalf;
+            const float hcx = opts.hatchCx, hcz = opts.hatchCz;
+            const float fy  = floorY - 0.05f;
+            // -X / +X full-depth strips flanking the opening.
+            const float xw0 = (hcx - ho) - r.x0(), xw1 = r.x1() - (hcx + ho);
+            if (xw0 > 0.01f)
+                addBox(scene, device, physics, xw0 * 0.5f, 0.05f, r.d * 0.5f,
+                       r.x0() + xw0 * 0.5f, fy, r.cz, floorTex, tint, ri, true, floorVis);
+            if (xw1 > 0.01f)
+                addBox(scene, device, physics, xw1 * 0.5f, 0.05f, r.d * 0.5f,
+                       r.x1() - xw1 * 0.5f, fy, r.cz, floorTex, tint, ri, true, floorVis);
+            // -Z / +Z strips between them (spanning only the opening's X band).
+            const float zw0 = (hcz - ho) - r.z0(), zw1 = r.z1() - (hcz + ho);
+            if (zw0 > 0.01f)
+                addBox(scene, device, physics, ho, 0.05f, zw0 * 0.5f,
+                       hcx, fy, r.z0() + zw0 * 0.5f, floorTex, tint, ri, true, floorVis);
+            if (zw1 > 0.01f)
+                addBox(scene, device, physics, ho, 0.05f, zw1 * 0.5f,
+                       hcx, fy, r.z1() - zw1 * 0.5f, floorTex, tint, ri, true, floorVis);
+        } else {
+            addBox(scene, device, physics, r.w * 0.5f, 0.05f, r.d * 0.5f,
+                   r.cx, floorY - 0.05f, r.cz, floorTex, tint, ri, true, floorVis);
+        }
         // Ceiling lid (collision-only, invisible — GLB ceiling drapes over).
         addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
                r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);

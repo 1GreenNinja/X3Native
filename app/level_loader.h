@@ -247,6 +247,13 @@ struct CanonBuildOpts {
     // locks them. Left false by the geometry self-test so its open-passage assertions
     // (e.g. C11 "walk Main Hall -> Security through the gap-bridge") still hold.
     bool lockSecuredRooms = false;
+    // TRAPDOOR CARVE (the canon-cell secret-room port): when hatchRoom is a valid room
+    // index, that room's floor slab is built as FOUR segments around a square opening
+    // at (hatchCx, hatchCz) with half-extent hatchHalf — the hole the SecretRoom's
+    // flush floor-hatch panels cover (and drop the player through when open). Every
+    // other room keeps its single full slab.
+    uint32_t hatchRoom = kNoRoom;
+    float hatchCx = 0.0f, hatchCz = 0.0f, hatchHalf = 0.9f;
 };
 // NOTE: `floor` is taken by NON-const reference because the builder records each cut
 // doorway's DoorSystem slab index back into floor.doorways[].doorIndex (so the portal

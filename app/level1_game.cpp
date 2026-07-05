@@ -351,6 +351,19 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 4 triggers, 3 rescue victims (timers gated on F2-hub trigger), cell trapdoor + secret room");
 }
 
+void Level1Game::buildCanonCellSecret(Scene& scene, x3::rhi::IRenderDevice& device,
+                                      x3::phys::IPhysicsWorld& physics, DoorSystem& hostDoors,
+                                      const x3::phys::Vec3& cellCenter,
+                                      float hatchCx, float hatchCz, float cellCeilY) {
+    m_devicePtr = &device;
+    m_secretOnly = true;
+    m_secretRoom.build(scene, device, physics, hostDoors, cellCenter, riggedDir(),
+                       hatchCx, hatchCz, cellCeilY);
+    x3::logInfo("Level1Game: canon-cell secret port — trapdoor + secret room + holo "
+                "terminal built at the canon cell (hatch " + std::to_string(hatchCx) +
+                "," + std::to_string(hatchCz) + ")");
+}
+
 uint32_t Level1Game::doorIndex(char letter) const {
     int i = letter - 'A';
     if (i < 0 || i > 4) return kNoLink;
@@ -554,7 +567,12 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
 void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                       const x3::phys::Vec3& eye, const x3::phys::Vec3& playerPos,
                       IDamageSink* player, const AttackFxFn& attackFx) {
-    if (!m_built || !m_devicePtr) return;
+    if (!m_devicePtr) return;
+    // Canon-cell port: only the secret room lives — terminal blink, status light,
+    // loot collection. (The hatch itself animates in the HOST's DoorSystem update —
+    // canonDoors — not m_doors, which is empty in this mode.)
+    if (m_secretOnly) { m_secretRoom.tick(dt, scene, playerPos); return; }
+    if (!m_built) return;
 
     // ---- Melee cooldown advances (Phase 2b super-strength punch). ----
     m_melee.update(dt);
