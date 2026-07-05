@@ -36,6 +36,11 @@ enum class CueKind : uint32_t {
     EnemyAttack = 4,   // an attack swing/shot STARTS (the wind-up) — pos = enemy muzzle
     EnemyHit    = 5,   // the enemy TOOK damage (shot/melee) — pos = enemy body
     EnemyDeath  = 6,   // the enemy was KILLED (HP -> 0) — pos = enemy body
+    // ---- Player audio hooks (audio-assets pass, W2-B). Emitted by Player so the
+    // host can give the PLAYER a voice (pain grunt on a landed hit, a thud on
+    // landing from a jump/fall). Same append-only contract as the enemy kinds.
+    PlayerPain  = 7,   // Player::takeDamage() landed a real hit — pos = player eye
+    PlayerLand  = 8,   // Player transitioned airborne -> grounded — pos = player eye
 };
 
 // One emitted cue. Pure data: what + where (+ a 0..1 intensity the host may map
