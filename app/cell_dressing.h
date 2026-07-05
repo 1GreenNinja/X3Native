@@ -86,6 +86,12 @@ private:
         float    color[4]   = {1,1,1,1};      // baseColor factor (rgb, a = blend opacity for glass)
         float    emissive[4]= {0,0,0,0};      // rgb linear glow, w = strength
         bool     glass = false;               // true -> drawMeshGlass (soft volumetric shaft)
+        // Glass surface params (WINDOW GLAZING vs the soft shafts/shadow blobs): the
+        // shafts/blobs want a dead-matte non-reflective medium (rough 1 / spec 0, the
+        // old hardcoded values, kept as defaults); the cell's ARMORED GLASS panes want
+        // a smooth specular sheet so they catch the room lights and read as glass.
+        float    glassRough = 1.0f;
+        float    glassSpec  = 0.0f;
     };
     // A drifting dust mote: a tiny emissive instance whose transform is rebuilt each
     // tick() from a slow upward+lateral drift inside a light pool (so specks float in

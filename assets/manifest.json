@@ -12,6 +12,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/Detention/SM_Hospital_Bed.glb",
+      "sha256": "74d9f27986125b0757aa8f2a132ec3b6a213c48c3d8c6d031a643a9614f89bb4",
+      "size": 13308776,
+      "source_note": "F3: hospital cot for the canon detention cell (textures injected)"
+    },
+    {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Ceiling_A.glb",
       "sha256": "97ec6ed484b0236ffbd7c1db4c0cc64cc7d0ddea92b289033eb477fb48eadacc",
       "size": 20498916,
