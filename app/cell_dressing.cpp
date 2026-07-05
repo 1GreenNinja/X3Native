@@ -50,6 +50,10 @@ const char* kRelWallC      = "ModularSciFi_Interior/SM_Wall_C.glb";   // ribbed/
 // under the graybox plane exactly like the wall panels so looking up reads as a built,
 // paneled service ceiling instead of night sky.
 const char* kRelCeiling    = "ModularSciFi_Interior/SM_Ceiling_A.glb";
+// F3 — the REAL COT: the HorrorHospital bed (converted + ALB/NRM injected by
+// tools/f3_inject_bed_tex.py; worn institutional frame + plastic-covered mattress).
+// Replaces the crate-stack bunk that read as black-gold cargo, never a bed.
+const char* kRelCot        = "Detention/SM_Hospital_Bed.glb";
 const char* kRelDoor       = "ModularSciFi_Interior/SM_Door_A.glb";
 const char* kRelDoorFrame  = "ModularSciFi_Interior/SM_DoorFrame_A.glb";
 const char* kRelDuctVent   = "SciFi_Warehouse_Kit/Duct Vent.glb";
@@ -76,6 +80,7 @@ constexpr Aabb kFuseAabb   { -0.329f,-0.936f,-0.245f, -0.144f,1.308f,0.396f };
 // ROUND 2: probed via tools/glb_node_bounds (M2 node-TRS convention).
 constexpr Aabb kWallAabb   { -1.431f,-0.043f, -0.000f,  0.000f,4.403f,3.000f };   // panel: face at X=0, 3m wide(Z), 4.4 tall
 constexpr Aabb kCeilAabb   { -5.100f, 4.000f,  0.000f, -1.100f,4.400f,3.000f };   // 4x3 m flat panel, underside at Y=4.0
+constexpr Aabb kCotAabb    { -1.200f, 0.100f, -0.600f,  1.100f,1.200f,0.600f };   // hospital bed: 2.3 long(X); wheel-bottoms at Y=0.1
 constexpr Aabb kDoorAabb   { -4.875f, 0.054f, -0.112f, -2.525f,3.554f,0.112f };   // 2.35 wide x 3.5 tall slab
 constexpr Aabb kDoorFrAabb { -6.250f,-0.043f, -0.277f, -0.000f,4.403f,0.277f };   // wide frame (we scale down)
 constexpr Aabb kVentAabb   { -0.327f,-0.327f,  0.000f,  0.327f,0.327f,0.999f };   // grate cube, depth in +Z
@@ -261,6 +266,8 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     const uint32_t aWallB   = load(kRelWallB);
     const uint32_t aWallC   = load(kRelWallC);
     const uint32_t aCeil    = load(kRelCeiling);   // ROUND 4 — the real ceiling panels
+    const uint32_t aCot     = load(kRelCot);       // F3 — the real hospital cot
+    (void)aPallet;   // F3: pallet retired with the crate bunk (kept loaded for variants)
     const uint32_t aDoorFr  = load(kRelDoorFrame);
     (void)kRelDoor;   // SM_Door_A's sliding slab is owned by canonDoors; frame only here.
     const uint32_t aVent    = load(kRelDuctVent);
@@ -354,6 +361,55 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // slabbing the threshold.
         place(aWallC, kPi, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
               x1 - inset, fY, z0, nullptr, tWall);
+
+        // F3 — ARMORED GLASS GLAZING: the B/C wall panels carry authored cutouts (B = a
+        // big rounded window, C = arch slits) that today are OPEN HOLES into the
+        // neighbor rooms — a detention cell you could climb out of. One thin glass pane
+        // per dressed wall, sitting in the 4 cm gap BETWEEN the graybox inner face
+        // (plane+0.10) and the panel face (plane+0.14), spans the whole wall: the panel
+        // occludes it everywhere except through a cutout, so every window/arch reads as
+        // sealed armored glass regardless of the cutout's exact shape. Visual-only (the
+        // graybox stays the collision truth, matching this module's contract).
+        {
+            const uint32_t paneMesh = addProcMesh(device, makeMoteQuad());
+            const float gInset = 0.115f;                  // between graybox face and panel face
+            const float gy0 = fY + 0.45f, gy1 = ceilY - 0.9f;   // cutouts live in this band
+            auto addPane = [&](char axis, float plane, float a0, float a1) {
+                ProcDraw d; d.meshIdx = paneMesh; d.glass = true;
+                // Cool armored-glass tint, faint opacity, smooth + specular so the panes
+                // catch the room lights as a sheen (NOT the matte shaft defaults).
+                // R2: 0.16 opacity read as MILK (the pane mesh is double-sided, so the
+                // blend applies twice) — the neighbor-room depth vanished behind frosted
+                // teal. Near-clear + a restrained sheen keeps the see-through-but-sealed
+                // armored read.
+                // R3 (final): the glass pass pre-blends strongly (the reason the old
+                // light-shaft cones were scrapped), so even small alphas read frosted.
+                // 0.03 keeps a visible sheen while letting the most depth through the
+                // pass allows; the residual frost reads as detention privacy glass.
+                d.color[0] = 0.70f; d.color[1] = 0.80f; d.color[2] = 0.82f; d.color[3] = 0.03f;
+                d.glassRough = 0.10f; d.glassSpec = 0.45f;
+                const float w = a1 - a0, h = gy1 - gy0;
+                const float cyw = (gy0 + gy1) * 0.5f, caw = (a0 + a1) * 0.5f;
+                if (axis == 'x') {   // pane in the YZ plane at x=plane (quad local X -> world Z)
+                    d.transform[0]=0;  d.transform[1]=0; d.transform[2]=w;  d.transform[3]=0;
+                    d.transform[4]=0;  d.transform[5]=h; d.transform[6]=0;  d.transform[7]=0;
+                    d.transform[8]=1;  d.transform[9]=0; d.transform[10]=0; d.transform[11]=0;
+                    d.transform[12]=plane; d.transform[13]=cyw; d.transform[14]=caw; d.transform[15]=1;
+                } else {             // pane in the XY plane at z=plane (quad local X -> world X)
+                    d.transform[0]=w;  d.transform[1]=0; d.transform[2]=0;  d.transform[3]=0;
+                    d.transform[4]=0;  d.transform[5]=h; d.transform[6]=0;  d.transform[7]=0;
+                    d.transform[8]=0;  d.transform[9]=0; d.transform[10]=1; d.transform[11]=0;
+                    d.transform[12]=caw; d.transform[13]=cyw; d.transform[14]=plane; d.transform[15]=1;
+                }
+                m_proc.push_back(d);
+            };
+            addPane('x', x0 + gInset, z0, z1);            // -X wall (big B window + C cutouts)
+            addPane('z', z0 + gInset, x0, x1);            // -Z wall (arch slits into the south room)
+            addPane('z', z1 - gInset, x0, x1);            // +Z wall (window w/ the neighbor trapdoor view)
+            addPane('x', x1 - gInset, z0, z0 + 2.2f);     // +X door-wall stub — ends BEFORE the
+                                                          // door jamb (~z0+2.3) so no glass sliver
+                                                          // crosses the doorway
+        }
 
         // ROUND 4 — CEILING: tile SM_Ceiling_A flat under the graybox ceiling plane so
         // looking up reads as a BUILT paneled service ceiling, not open void (the graybox
@@ -451,37 +507,27 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     }
 
     // ================= JAKE'S CELL — the hero opening space =================
-    // BUNK against the -X (back-left) wall: a pallet base + two long crates stacked as the
-    // cot platform, with a short crate as a footlocker. This reads as a prison bunk.
+    // F3 — A REAL COT: the textured hospital bed against the -X wall replaces the
+    // pallet+crates stack (which read as black-gold cargo, never a bed, through five
+    // polish rounds). Long axis along Z (yaw pi/2 maps the bed's 2.3 m local X to Z);
+    // wheel-bottoms live at local Y=0.1, so anchoring that plane at fY seats the
+    // wheels ON the floor. One short crate stays as a footlocker at the bed's foot.
     {
-        const float bunkX = x0 + 1.05f;             // hugging the -X wall
-        const float bunkZ = z0 + 1.7f;              // toward the -Z corner
-        // Pallet base (flat on the floor), long axis along Z.
-        place(aPallet, 0.0f, 1.0f, cx(kPalletAabb), kPalletAabb.miny, cz(kPalletAabb),
-              bunkX, fY + 0.02f, bunkZ, nullptr, tPallet);
-        // The cot: a long crate laid on the pallet (raised slightly), long axis along Z.
-        place(aCrateL, 0.0f, 1.0f, cx(kCrateLAabb), kCrateLAabb.miny, cz(kCrateLAabb),
-              bunkX, fY + 0.20f, bunkZ - 0.30f, nullptr, tBunk);
-        place(aCrateL, 0.0f, 1.0f, cx(kCrateLAabb), kCrateLAabb.miny, cz(kCrateLAabb),
-              bunkX, fY + 0.20f, bunkZ + 0.95f, nullptr, tBunk);
-        // A short crate at the bunk foot = a footlocker. R4: squared to the wall (yaw 0) —
-        // a prisoner's cell is kept in ORDER; the 0.4 rad skew read as spilled cargo.
+        const float bedX = x0 + 0.76f;              // half-width 0.55 + 6 cm off the panel face
+        const float bedZ = z0 + 1.95f;              // spans z ~37.8..40.1, clear of the trapdoor ladder
+        place(aCot, kPi * 0.5f, 1.0f, cx(kCotAabb), kCotAabb.miny, cz(kCotAabb),
+              bedX, fY, bedZ, nullptr, nullptr);    // authored albedo — no tint needed
         place(aCrateS, 0.0f, 1.0f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
-              bunkX + 0.15f, fY + 0.02f, bunkZ + 2.1f, nullptr, tCrate);
-        // R4 — the R3 bunk stack (6 lights, corner key at 6.0) BLEW THE ROOM OUT: every
-        // wall went flat white and the warm blast turned the cot crates into gold blobs.
-        // Replaced with THREE restrained sources: a warm overhead pool on the cot, one
-        // moderate corner key raking the room-facing sides for the hero camera, and a dim
-        // floor fill. Pools-and-shadow, not floodlight.
-        // R5: pool pulled LOW + CLOSE over the cot — the crate tex is dark metal, so it
-        // needs direct grazing light to read as a made bunk instead of black lumps.
-        addLight(bt.jakeCell, bunkX + 0.7f, fY + 1.15f, bunkZ + 0.3f, 3.0f, 2.6f, 2.05f, 1.3f);  // warm cot pool
-        addLight(bt.jakeCell, bunkX + 1.9f, fY + 1.3f, bunkZ + 1.3f, 4.5f, 1.7f, 1.45f, 1.15f); // corner key (tamed)
+              bedX + 0.05f, fY + 0.02f, bedZ + 2.30f, nullptr, tCrate);   // footlocker
+        // Lighting kept to the R5 trio (pool + corner key + dim floor fill), pool
+        // recentred low over the mattress so the fabric + plastic cover catch a warm
+        // grazing key and the frame rails rim-light.
+        addLight(bt.jakeCell, bedX + 0.75f, fY + 1.15f, bedZ + 0.1f, 3.0f, 2.6f, 2.05f, 1.3f);  // warm cot pool
+        addLight(bt.jakeCell, bedX + 1.6f, fY + 1.3f, bedZ + 1.6f, 4.5f, 1.7f, 1.45f, 1.15f);   // corner key (tamed)
         addLight(bt.jakeCell, ccx + 0.5f, fY + 0.5f, ccz + 0.5f, 4.5f, 0.5f, 0.48f, 0.44f);     // dim floor fill
-        // ROUND 3 — GROUND THE BUNK: soft contact-shadow blobs under the pallet base + the
-        // footlocker so they sit on the floor instead of floating. (m_shadowDisc set below.)
-        addShadowBlob(m_shadowDisc, bunkX, fY, bunkZ, 1.15f, 1.85f, 0.55f);          // bunk base
-        addShadowBlob(m_shadowDisc, bunkX + 0.15f, fY, bunkZ + 2.1f, 0.55f, 0.55f, 0.5f); // footlocker
+        // Ground the bed + footlocker (contact-shadow blobs; m_shadowDisc built above).
+        addShadowBlob(m_shadowDisc, bedX, fY, bedZ, 0.80f, 1.40f, 0.55f);               // bed
+        addShadowBlob(m_shadowDisc, bedX + 0.05f, fY, bedZ + 2.30f, 0.55f, 0.55f, 0.5f); // footlocker
     }
 
     // WALL TERMINAL (the cell's control panel) on the -Z wall, with a cyan glow + a cyan
@@ -758,8 +804,8 @@ void CellDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             x3::rhi::IRenderDevice::GlassMaterial gm;
             gm.opacity = p.color[3];
             gm.refraction = 0.0f;        // a light shaft must NOT distort the scene behind it
-            gm.roughness = 1.0f;
-            gm.specular = 0.0f;
+            gm.roughness = p.glassRough; // 1.0 for shafts/blobs; low for the window panes
+            gm.specular = p.glassSpec;   // 0.0 for shafts/blobs; high for the window panes
             gm.tint[0] = p.color[0]; gm.tint[1] = p.color[1]; gm.tint[2] = p.color[2];
             device.drawMeshGlass(frame, mh, white, p.color, p.emissive, gm, p.transform);
         } else {
