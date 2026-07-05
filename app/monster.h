@@ -399,6 +399,11 @@ public:
         float chaseSpeed = kChaseSpeed;    // m/s toward the player (0 = stationary)
         float modelScale = -1.0f;          // <0 => use the per-model default scale
         float tint[4]    = { 1, 1, 1, 1 }; // multiplied into the model base color
+        // PBR draw path: scales the GLB's AUTHORED material emissive (visors, eyes,
+        // engine glow). 1 = as authored, 0 = suppressed, >1 = boosted. Kept modest
+        // per-archetype so no enemy blooms into a shapeless white blob (R5 lesson:
+        // uncontrolled material emissive + HDR bloom = glowing bags).
+        float emissiveScale = 1.0f;
 
         // ---- Model override (EFLZ art pass) -------------------------------
         // GLB filename to load (relative to the mounted modelDir). Empty => the
@@ -856,6 +861,7 @@ private:
     int   m_maxHp     = kMonsterHp;           // per-instance starting HP (Tuning)
     float m_chaseSpeed = kChaseSpeed;         // per-instance chase speed (Tuning)
     float m_baseTint[4] = { 1, 1, 1, 1 };     // per-instance color multiplier (Tuning)
+    float m_emissiveScale = 1.0f;             // authored-emissive scale (Tuning, PBR path)
     bool  m_alive     = true;
     float m_flash     = 0.0f;                 // remaining hit-flash time (s)
 
