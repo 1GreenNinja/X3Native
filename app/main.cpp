@@ -1596,6 +1596,15 @@ int main(int argc, char** argv) {
     // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
     bool        captureAi    = false;
     std::string captureAiDir = "G:/X3Native/ai_action";
+    // Rifthub-ripple capture mode (--capture-rifthub [outPath]): build the portal
+    // hub headless (same path as --world rifthub --headless) and render a short
+    // animated GIF of the event-horizon membrane RIPPLE from a close 3/4 vantage.
+    // Small (640x360, ~20 fps) so it streams over a double-remote link. Loops the
+    // sim at dt=1/20 s for ~54 frames (~2.7 s => a couple full 1.15 Hz ripple
+    // cycles), driving hub.tick()+physics+scene+render+capture each frame, then
+    // assembles the GIF. Default outPath: rifthub_ripple.gif (in the CWD).
+    bool        captureRifthub     = false;
+    std::string captureRifthubPath = "rifthub_ripple.gif";
     // Walk-capture mode (--capture-walk [outPath]): build ONE close-up animated
     // guard (the multi-clip *_anim.glb when present), drive the T1 locomotion blend
     // toward a steady WALK, settle the blend a fraction of a second, then capture a
@@ -1839,6 +1848,11 @@ int main(int argc, char** argv) {
             captureAi = true;
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') captureAiDir = argv[++i];
+        }
+        else if (a == "--capture-rifthub") {
+            captureRifthub = true;
+            // Optional output GIF path arg (next token, if it isn't another flag).
+            if (i + 1 < argc && argv[i + 1][0] != '-') captureRifthubPath = argv[++i];
         }
         else if (a == "--capture-walk") {
             captureWalk = true;
@@ -3478,7 +3492,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire;
+    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureRifthub || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -3492,10 +3506,14 @@ int main(int argc, char** argv) {
     // visible window uses the configurable winW/winH (default 1280x720), guarded
     // to a sane minimum so a typo can't create a 0-size surface.
     constexpr uint32_t kHeadlessW = 1280, kHeadlessH = 720;
+    // --capture-rifthub renders a SMALL clip (640x360) so the animated GIF streams
+    // cleanly over Tim's double-remote link; every other headless mode stays at the
+    // byte-stable 1280x720.
+    constexpr uint32_t kRifthubGifW = 640, kRifthubGifH = 360;
     if (winW < 320)  winW = 320;
     if (winH < 240)  winH = 240;
-    const uint32_t W = headless ? kHeadlessW : winW;
-    const uint32_t H = headless ? kHeadlessH : winH;
+    const uint32_t W = headless ? (captureRifthub ? kRifthubGifW : kHeadlessW) : winW;
+    const uint32_t H = headless ? (captureRifthub ? kRifthubGifH : kHeadlessH) : winH;
     // In headless mode we create NO window (no glfwCreateWindow at all). GLFW is
     // still initialized (cheap; some paths poll events) but never opens a surface.
     GLFWwindow* window = nullptr;
@@ -4151,6 +4169,131 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return (frameNo > 0 && gifOk) ? 0 : 1;
+    }
+
+    // ---- Rifthub-ripple capture (--capture-rifthub [outPath]) --------------
+    // Render a SHORT animated GIF of the portal event-horizon membrane RIPPLE,
+    // fully headless (no window). Builds the portal hub exactly like the
+    // --world rifthub --headless screenshot path, then loops the sim at a fixed
+    // dt driving hub.tick()+physics+scene+render+capture per frame so the
+    // outward-travelling ripple + swirl are captured live, and assembles the
+    // frames into a small looping GIF (public-domain gif.h, same encoder as
+    // --capture-ai). Small by design (640x360, ~20 fps) so it streams over a
+    // double-remote link. Reuses --screenshot-cam's shotCam[] override if given.
+    if (captureRifthub) {
+        namespace fs = std::filesystem;
+        x3::logInfo("--capture-rifthub: rendering portal-ripple GIF to " + captureRifthubPath);
+
+        // Frames land in a temp sibling dir of the GIF, assembled + removed after.
+        fs::path gifOut = fs::path(captureRifthubPath);
+        fs::path gifDir = gifOut.has_parent_path() ? gifOut.parent_path() : fs::path(".");
+        fs::path frameDir = gifDir / ".rifthub_frames_tmp";
+        std::error_code mkec;
+        fs::create_directories(frameDir, mkec);
+
+        // ---- Physics + scene + the hub (mirrors the rifthub headless path) ----
+        std::unique_ptr<x3::phys::IPhysicsWorld> rphys(x3::phys::createPhysicsWorld());
+        if (!rphys->init()) {
+            x3::logError("--capture-rifthub: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        x3::game::Scene rscene;
+        x3::game::TriggerSystem rtriggers;
+
+        // Neutral overhead sky — the portals do the lighting work via emission
+        // (same params as --world rifthub).
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.3f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.2f;
+            sp.sunColor[0] = 0.85f; sp.sunColor[1] = 0.85f; sp.sunColor[2] = 0.95f;
+            sp.sunIntensity = 0.65f; sp.haze = 0.45f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+
+        x3::game::Rifthub hub;
+        hub.build(rscene, *device, *rphys, rtriggers);
+
+        // ---- Camera: a CLOSE 3/4 vantage on the +Z portal (valley, cyan) at
+        // world (0, 2.2, 14) so the membrane ripple reads in detail. Offset to
+        // +X and slightly up, looking back at the pool center. yaw/pitch derived
+        // from forward=(cosP*cosY, sinP, cosP*sinY). The --screenshot-cam
+        // override (if given) wins so the vantage can be retuned without a rebuild.
+        float cam[6] = { 4.5f, 4.0f, 7.0f, 2.141f, -0.213f, 60.0f };
+        if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+
+        // ---- Capture loop: fixed dt, one GIF frame per sim step. 54 frames at
+        // dt=1/20 s => ~2.7 s of sim => ~3 full 1.15 Hz ripple cycles. ----
+        const float    dt          = 1.0f / 20.0f;
+        const int      totalFrames = 54;
+        std::vector<std::string> framePaths;
+        framePaths.reserve(totalFrames);
+
+        for (int f = 0; f < totalFrames; ++f) {
+            glfwPollEvents();
+            hub.tick(dt, rscene);          // advance the membrane ripple + shimmer
+            rphys->step(dt);
+            rscene.update(*rphys);
+            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], cam[5]);
+
+            char fpath[512];
+            std::snprintf(fpath, sizeof(fpath), "%s/frame_%03d.png",
+                          frameDir.string().c_str(), f);
+            device->armCapture(fpath);
+            auto frame = device->beginFrame();
+            if (frame.valid) rscene.render(*device, frame);
+            device->endFrame(frame);
+            if (device->captureFrame(fpath)) framePaths.emplace_back(fpath);
+        }
+
+        // ---- Assemble the animated GIF (gif.h, ~20 fps, looping). --------------
+        bool gifOk = false;
+        if (!framePaths.empty()) {
+            int gw = 0, gh = 0, gc = 0;
+            unsigned char* first = stbi_load(framePaths.front().c_str(), &gw, &gh, &gc, 4);
+            if (first && gw > 0 && gh > 0) {
+                GifWriter gif{};
+                const uint32_t delayCs = 5;   // 5/100 s per frame => 20 fps, looping
+                if (GifBegin(&gif, gifOut.string().c_str(), (uint32_t)gw, (uint32_t)gh, delayCs)) {
+                    GifWriteFrame(&gif, first, (uint32_t)gw, (uint32_t)gh, delayCs);
+                    for (size_t i = 1; i < framePaths.size(); ++i) {
+                        int w = 0, h = 0, c = 0;
+                        unsigned char* px = stbi_load(framePaths[i].c_str(), &w, &h, &c, 4);
+                        if (px && w == gw && h == gh) {
+                            GifWriteFrame(&gif, px, (uint32_t)gw, (uint32_t)gh, delayCs);
+                        }
+                        if (px) stbi_image_free(px);
+                    }
+                    gifOk = GifEnd(&gif);
+                }
+                stbi_image_free(first);
+            }
+        }
+
+        // ---- Clean up the temp PNG frames + report. --------------------------
+        std::error_code rmec;
+        fs::remove_all(frameDir, rmec);
+        std::error_code szec;
+        uintmax_t gifBytes = gifOk ? fs::file_size(gifOut, szec) : 0;
+        {
+            char sb[512];
+            std::snprintf(sb, sizeof(sb),
+                "--capture-rifthub: wrote GIF %s | %d frames @ %ux%u | %llu bytes",
+                gifOk ? fs::absolute(gifOut).string().c_str() : "(FAILED)",
+                (int)framePaths.size(), (unsigned)W, (unsigned)H,
+                (unsigned long long)gifBytes);
+            x3::logInfo(sb);
+        }
+
+        hub.shutdown(*device);
+        rphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return (gifOk && !framePaths.empty()) ? 0 : 1;
     }
 
     // ---- Walk-pose capture (--capture-walk [outPath]) ----------------------
