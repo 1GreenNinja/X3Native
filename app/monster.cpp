@@ -295,6 +295,11 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         m_walkClip = m_skinner.findClip({ "walk" });
         m_runClip  = m_skinner.findClip({ "run", "sprint", "jog" });
         m_jumpClip = m_skinner.findClip({ "jump", "leap" });
+        // W2-D: one-shot combat clips. Absent on today's retargeted rigs (Idle/Walk/
+        // Run[/Jump] only) — the attack_death_bake.py pipeline appends them; lookup
+        // degrades to -1 gracefully so this wiring is drop-in either way.
+        m_attackClip = m_skinner.findClip({ "attack", "strike", "swing", "punch", "bite", "swipe", "slash" });
+        m_deathClip  = m_skinner.findClip({ "death", "die", "collapse" });
         if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
         if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
         m_animActive = (m_idleClip >= 0);
@@ -316,6 +321,8 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                     " walk=" + std::to_string(m_walkClip) +
                     " run=" + std::to_string(m_runClip) +
                     " jump=" + std::to_string(m_jumpClip) +
+                    " attack=" + std::to_string(m_attackClip) +
+                    " death=" + std::to_string(m_deathClip) +
                     " locoBlend=" + (m_useLocoBlend ? "1" : "0"));
         // Pose the bind-pose mesh into the idle pose at t=0 once up front so the
         // very first rendered frame already shows the animated pose (not bind pose).
@@ -745,6 +752,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             // flop the model's skin to match (replaces the rigid topple for rigged
             // enemies). Unrigged enemies have no ragdoll; their draw path topples.
             if (m_ragdollActive) driveSkinFromRagdoll();
+            // W2-D: authored DEATH CLIP fallback — a rigged model whose ragdoll did
+            // NOT spawn (or a rig that ships a Death clip but no ragdoll support)
+            // plays the collapse clip once and freezes on its final frame; the draw
+            // path suppresses the rigid topple while it plays (m_deathAnimT >= 0).
+            // Ragdoll stays the PREFERRED death (physical, shove-reactive).
+            else if (m_animActive && m_device && m_deathClip >= 0) {
+                if (m_deathAnimT < 0.0f) m_deathAnimT = 0.0f;
+                const float dur = m_skinner.clipDuration((uint32_t)m_deathClip);
+                if (!m_deathClipDone) {
+                    m_deathAnimT += dt;
+                    if (m_deathAnimT >= dur) { m_deathAnimT = dur; m_deathClipDone = true; }
+                    m_skinner.apply(m_model, *m_device, (uint32_t)m_deathClip, m_deathAnimT);
+                }
+            }
             m_deathPop -= dt;
             if (m_deathPop <= 0.0f) {
                 m_deathPop = 0.0f;
@@ -1204,6 +1225,9 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             // Begin a new attack: start the wind-up; the hit lands when it elapses.
             m_winding     = true;
             m_windupTimer = m_attackWindup;
+            // W2-D: kick the one-shot ATTACK clip (if the rig has one). The anim
+            // block below plays it to completion, preempting locomotion.
+            if (m_animActive && m_attackClip >= 0) m_attackAnimT = 0.0f;
             // Telegraph FX up front (a beam toward the player) so the attack reads.
             if (fx) {
                 x3::phys::Vec3 tp = target->damageTargetPos();
@@ -1273,6 +1297,26 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         m_winding = false;
     }
 
+    // ---- W2-D: procedural attack TELL (visual-only). A melee enemy with NO
+    // authored Attack clip rears back through the first 70% of its wind-up, dips,
+    // then LUNGES at the player across the strike moment — a read-at-distance
+    // swing sold purely through the draw transform (the physics body, hitbox and
+    // damage timing are untouched). Rigs WITH an Attack clip skip this (the clip
+    // carries the read). Decays smoothly back to 0 after the strike. ----
+    {
+        float wantLunge = 0.0f, wantDip = 0.0f;
+        if (m_winding && !m_ranged && m_attackClip < 0 && m_attackWindup > 1e-4f) {
+            const float t = 1.0f - (m_windupTimer / m_attackWindup);   // 0..1 through wind-up
+            if (t < 0.7f) { const float k = t / 0.7f;        wantLunge = -0.16f * k; wantDip = 0.07f * k; }
+            else          { const float k = (t - 0.7f) / 0.3f; wantLunge = -0.16f + 0.62f * k; wantDip = 0.07f * (1.0f - k); }
+        }
+        // Snap toward the wind-up profile fast (it IS the motion), relax slower.
+        const float rate = (m_winding ? 30.0f : 8.0f) * dt;
+        const float k = std::min(1.0f, rate);
+        m_lunge    += (wantLunge - m_lunge) * k;
+        m_lungeDip += (wantDip  - m_lungeDip) * k;
+    }
+
     // ---- Bake the facing yaw into the render transform's upper-left 3x3, keeping
     // the uniform model scale, and set the translation to the (possibly moved)
     // body center. Scene::update only overwrites the translation column and
@@ -1288,12 +1332,22 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // Yaw about +Y: local +X -> (c,0,-s), +Z -> (s,0,c). The phase scale
         // multiplier up-scales the boss as it enrages (graybox phase feedback).
         const float scale = m_modelScale * m_phaseScaleMul;
+        // W2-D: fold the procedural attack-tell offset into the DRAW position only.
+        // Facing local -Z maps to world (-sin yaw, -cos yaw) (headingToFace docs),
+        // so a positive lunge pushes the visual toward whatever it faces.
+        x3::phys::Vec3 drawPos = m_pos;
+        if (m_lunge != 0.0f || m_lungeDip != 0.0f) {
+            const float fs = std::sin(m_yaw), fc = std::cos(m_yaw);
+            drawPos.x += -fs * m_lunge;
+            drawPos.z += -fc * m_lunge;
+            drawPos.y -= m_lungeDip;
+        }
         Entity& me = scene.get(m_entity);
         composeTRS(me.transform,
                    x3::phys::Vec3{ c, 0.0f, -s },
                    x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
                    x3::phys::Vec3{ s, 0.0f, c },
-                   scale, m_pos);
+                   scale, drawPos);
 
         // ---- Also turn the rigid body (D-ai). Our heading is a pure rotation about
         // +Y; the quaternion (x,y,z,w) for yaw `m_yaw` about +Y is
@@ -1317,6 +1371,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // continuity. When no real walk/run set exists we fall back to the legacy
     // idle/move clip switch. Re-uploads skinned vertices via the cached device. --
     if (m_animActive && m_device) {
+        // W2-D: the one-shot ATTACK clip preempts locomotion while it plays (kicked
+        // at wind-up start). Hard-cut in/out — consistent with the engine's existing
+        // clip switching; returns to the locomotion blend the frame after it ends.
+        if (m_attackAnimT >= 0.0f && m_attackClip >= 0) {
+            m_attackAnimT += dt;
+            const float dur = m_skinner.clipDuration((uint32_t)m_attackClip);
+            if (m_attackAnimT < dur && dur > 1e-4f) {
+                m_skinner.apply(m_model, *m_device, (uint32_t)m_attackClip, m_attackAnimT);
+                // (m_lastFootPhase untouched: locomotion phase is frozen during the
+                // swing, so no footstep-mark jump on resume.)
+                return;                    // locomotion resumes next frame after the swing
+            }
+            m_attackAnimT = -1.0f;         // finished -> fall through to locomotion
+        }
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         const float planarSpeed = (dt > 1e-5f)
             ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
@@ -1597,6 +1665,19 @@ void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
     }
 
     if (m_dying || m_corpse) {
+        // W2-D: when the authored DEATH CLIP drove the pose (no ragdoll spawned),
+        // the skin already holds the collapse — draw at the plain transform with
+        // just the kill flash, and SUPPRESS the rigid topple (the clip + topple
+        // together would fold the corpse twice).
+        if (m_deathAnimT >= 0.0f) {
+            const float fallT = m_corpse ? 1.0f
+                : (kDeathToppleTime > 0.0f ? (1.0f - m_deathPop / kDeathToppleTime) : 1.0f);
+            const float flash2  = (fallT < 0.35f) ? (1.0f - fallT / 0.35f) : 0.0f;
+            const float bright2 = 1.0f + 1.3f * flash2;
+            float t2[4] = { tint[0]*bright2, tint[1]*bright2, tint[2]*bright2, tint[3] };
+            drawMonsterAt(device, frame, e.transform, t2);
+            return;
+        }
         // ---- Death TOPPLE: the body falls over (rotates about its feet) and
         // settles flat as a lingering corpse — replaces the old shrink-poof. `fall`
         // eases 0 (upright) -> 1 (flat) across the topple window; a corpse is pinned

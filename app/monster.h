@@ -836,6 +836,18 @@ private:
     // to the legacy idle/move switch via the Skinner's graceful blend collapse.
     int                      m_runClip  = -1;
     int                      m_jumpClip = -1;
+    // W2-D: one-shot combat clips (fuzzy-found at bind; -1 = rig has none — the
+    // procedural lunge tell below carries the attack read instead).
+    int                      m_attackClip = -1;
+    int                      m_deathClip  = -1;
+    float                    m_attackAnimT = -1.0f;  // >=0 while the attack one-shot plays
+    float                    m_deathAnimT  = -1.0f;  // >=0 while the death clip plays
+    bool                     m_deathClipDone = false; // clip finished -> freeze final pose
+    // Procedural attack TELL (visual-only): a rear-back + lunge offset applied to the
+    // DRAW transform during the melee wind-up so attacks read at gameplay distance
+    // even on rigs with no authored Attack clip. Never touches the physics body.
+    float                    m_lunge    = 0.0f;      // metres along facing (- = rear back)
+    float                    m_lungeDip = 0.0f;      // metres of crouch dip (-Y)
     bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found

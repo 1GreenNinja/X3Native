@@ -259,9 +259,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/alien_crawler_anim.glb",
-      "sha256": "5b956edf59afadef18d0729803fb5a95d3f571bda07b87e3fe843b0967a0052f",
-      "size": 11092688,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "d1a9cbafba392235cf18e911b785743715d7beaf47e2f07988c0e9567a85fec4",
+      "size": 11105204,
+      "source_note": "W2-D attack+death one-shot clips appended"
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez.glb",
@@ -271,9 +271,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
-      "sha256": "5b0baab5e06aa9c7720d4dee01d01950273e514653087b415b5979876357a717",
-      "size": 64271296,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "b613f862545ec40e19290b27714e2c3d0dfecadc29a18945064ee7d899b57a46",
+      "size": 56267024,
+      "source_note": "W2-D attack+death one-shot clips appended"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
@@ -283,9 +283,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
-      "sha256": "d90074e7beab5d517d15e030d8b2c2c9c13954ee29569bec7eab671030ce77dc",
-      "size": 49092444,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "e87de1f4f3de0abbbeca67cfcc36dcbf7d943ef64c438a7cf399571f453c8078",
+      "size": 43416056,
+      "source_note": "W2-D attack+death one-shot clips appended"
     },
     {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",
