@@ -474,6 +474,11 @@ struct CliOptions {
     // omitted: G:\X3Native-wt-terrain\terrain.png.
     bool        terrainShot = false;
     std::string terrainShotPath = "G:/X3Native-wt-terrain/terrain.png";
+    // Surface-library material preview (--screenshot-matlib [outDir]): headless
+    // contact-sheet renders of every assets/surface_library set (ART_BIBLE §4
+    // realism mandate; sets curated by tools/tex_curate.py). FLAT output folder.
+    bool        matlibShot = false;
+    std::string matlibShotDir = "D:/GameDev/matlib_review";
     // Ocean vantage mode (--screenshot-ocean [path.png]): build the procedural
     // terrain world + an animated ocean at sea level under the sky/sun, pose a
     // camera on the shore looking out across the water toward the sun so the lit

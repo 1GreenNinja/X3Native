@@ -304,6 +304,366 @@
       "sha256": "b95225123a2f007691aabeaaa70cf9e96f3cb60211e8cbd028944b3946612814",
       "size": 7059860,
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/surface_library/cc_porous_cement/albedo.png",
+      "sha256": "aecbc4aae0d36f7b42b4b4a4c20180926bdd1e58d1ac420d07cabdc117442e2c",
+      "size": 1677186,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/cc_porous_cement/mr.png",
+      "sha256": "0fd62aa810e0c17d1de150d447f4a632ea4af501b5de2dc4cb01c73afc19a8cb",
+      "size": 1239511,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/cc_porous_cement/normal.png",
+      "sha256": "80f49f35d2c5caa5c89c60c473f980aae3192e343d3ee3028984986ea5a8771f",
+      "size": 8400283,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_ceiling_01a/albedo.png",
+      "sha256": "cd95230c9b49e4f710c9d99ddb0e2ec675043d0a3f9d677357d6d957d58d0156",
+      "size": 624891,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_ceiling_01a/mr.png",
+      "sha256": "2da899f3ddb01f08e4b087ebbeb0d9b95bade3f443668b01d982ad38839cc552",
+      "size": 643423,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_ceiling_01a/normal.png",
+      "sha256": "9e8a1127628316347189dd2502324c62934807a768d303af8bc5b894e3f7da83",
+      "size": 780709,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_floor_01a/albedo.png",
+      "sha256": "d688673a979129d1980482fe1688b54c1bc380c07aa885ea5091cb0c52a40048",
+      "size": 1014766,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_floor_01a/mr.png",
+      "sha256": "b208c15d186b5a8612a947ea1980025ab434233d66d94d884a93a5f66417e0a2",
+      "size": 690014,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_floor_01a/normal.png",
+      "sha256": "013a267747ae816a9f3c90dbe1997af94f7755215493eeaf1ae08bf653d189b1",
+      "size": 852650,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_wall_01a/albedo.png",
+      "sha256": "99f734cc93910f1b480fbb78f1c5311f6e19270e015a7eb0ce109385817964cb",
+      "size": 1134705,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_wall_01a/mr.png",
+      "sha256": "4a6301b5f1d8b53aa12bc6092ffc9ed734e96ec40b64d9430aeb2e5c5eee1545",
+      "size": 880533,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_wall_01a/normal.png",
+      "sha256": "0a8bc61554521b6a3bbd6b3cba40d5016f419d3668e0c16ce835b21041c1850c",
+      "size": 778665,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_panels_a/albedo.png",
+      "sha256": "a538fc7a8ff8c9324915ca4d98de0f770dcd2f0a008fd46217f90a56e754ba26",
+      "size": 7110881,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_panels_a/mr.png",
+      "sha256": "a25f70ce70af0de274c88ecfccfefe85c9bd4476d875d29c2cc55b68db1616d6",
+      "size": 7697843,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_panels_a/normal.png",
+      "sha256": "2aa6f3c4b93d011f703a7816f1a9471f5e7be918863bede276383a1fe28756c3",
+      "size": 3151749,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_panels_b/albedo.png",
+      "sha256": "b5944a8f5c88d81a97d4c25174ac7bbc22f0d4e289006f0436cea1f2a75503be",
+      "size": 8835048,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_panels_b/mr.png",
+      "sha256": "308005c2ad36987a8890b4d233578df91b500352a131fb1ec03dd24e70d9d501",
+      "size": 5246383,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_panels_b/normal.png",
+      "sha256": "a603b58606c41a31fcddae2c8f02ad7ff46aeaa8f3ed8b76b4a1dc49def129ef",
+      "size": 9254878,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_floor_trim/albedo.png",
+      "sha256": "d6cf638a50119f2f051196cc351a87cbc654226b769ee80a6f99191bfd1df525",
+      "size": 2916889,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_floor_trim/mr.png",
+      "sha256": "fbc18a1c94676fcdd7810221aba39f74d9e24982f3cf69cdb5fb5df8a2589fb6",
+      "size": 3213544,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_floor_trim/normal.png",
+      "sha256": "be2580b630c6f81091c951422bf753fed3999fb57aea75b50bf798a593f65823",
+      "size": 3140698,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_grate/albedo.png",
+      "sha256": "0a63f70085609e0443a4e43bba45b917afe9775b9d0e2985b0469eac534382e5",
+      "size": 4385695,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_grate/mr.png",
+      "sha256": "3d23df15e7354762f3b7323f81e5ccdc46174dd69489827e851bccd2baa3f34a",
+      "size": 4167572,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_grate/normal.png",
+      "sha256": "9d4c82a4f216124b905fbfcc9cef05a3f3afd5c162bf012a72239376908876c6",
+      "size": 6329590,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_panels_a/albedo.png",
+      "sha256": "9dc4650d32f1d80a3498f6320ce4f22ff0869e328c4219f4d175d6f42868a71e",
+      "size": 3824979,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_panels_a/mr.png",
+      "sha256": "99577cea96f4ff6fc70568e2eaaab349f37eb8dc4815c79f55accef045a6109f",
+      "size": 16916,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_panels_a/normal.png",
+      "sha256": "6185d077d79d38e3d9ed1add58c41dddab4d13ba4f92f5e8af816d4680b8c663",
+      "size": 4332539,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_trim_a/albedo.png",
+      "sha256": "4f9d8e672595d54d799c1481e16eac2ea6e6d2311a7da21ed6a3658cd36f47cb",
+      "size": 5130361,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_trim_a/mr.png",
+      "sha256": "e1a2a131dce620a59ef9bf1c366f1dd728245d28d4e68e8cb930dfc458597bce",
+      "size": 5052659,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_trim_a/normal.png",
+      "sha256": "d2a207596c354dcbcd8c6a8461deae2a4a86034fa651caf5a0e4fef79749b0c0",
+      "size": 7726682,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_trim_b/albedo.png",
+      "sha256": "a1992e5b8893f7cd0152ee1c10425887caa1ec7ea4f0f44760a4251ca22f5256",
+      "size": 3838158,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_trim_b/mr.png",
+      "sha256": "5ddeb9beccff0782161bf9b9f07020e453c96c2ae8c9577908ee3fff080740e2",
+      "size": 6769174,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_metal_trim_b/normal.png",
+      "sha256": "5a0ecd7f2491a2316866485d94f6d6563f49817fccfa932ccf95f9a77874756a",
+      "size": 5581576,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_plaster_painted/albedo.png",
+      "sha256": "8fc5215172ba7c2306eb987df30a1b297b3ff245ea409d74a5ae07cf73eaa831",
+      "size": 1208649,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_plaster_painted/mr.png",
+      "sha256": "c9e8bb72aff8df6cf79b25e762babceecfbe166274cd9e8f8e762b371c8f5f08",
+      "size": 4957565,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_plaster_painted/normal.png",
+      "sha256": "186bdab93629586c2aa6978579d6fc6d7fae67000a8cdbd7ffaa5f795f060214",
+      "size": 4657682,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_thermal_padding/albedo.png",
+      "sha256": "da4f3c733adddcfeb77cf46bde9876432d030ca0c778d7649dd63b65e4ce170c",
+      "size": 4446889,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_thermal_padding/mr.png",
+      "sha256": "9f54ff6599f70de1fa757dc7478fafc34b98cfeba59c0544c0788bf552e2764f",
+      "size": 4976849,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_thermal_padding/normal.png",
+      "sha256": "63c6cf877a55680c35188483c01ff63adae7e483fe01cd7f1c230ed2b88cfbbc",
+      "size": 7371656,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_wall_plastic/albedo.png",
+      "sha256": "c6803746bd001c294293ae682f2d5a916339ad86a072de0eac8f18c0cb8d55f2",
+      "size": 3560303,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_wall_plastic/mr.png",
+      "sha256": "e5b5b722ca39ff117194fde202246df7d78e2e3f98fbd170369d0bc8a01dd4f6",
+      "size": 957004,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_wall_plastic/normal.png",
+      "sha256": "5378721e866ef917cc833e18cee0574c876625fbddc9b19a0c54e0c8cfd995dd",
+      "size": 5858811,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_concrete_01/albedo.png",
+      "sha256": "be0cbab3174452613e654fc7ec3f51dd412d564bdfd29eda7098e1e4ed7b073d",
+      "size": 6331184,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_concrete_01/mr.png",
+      "sha256": "9d999db6ec5a63f495489ee6e02d13a0a30b633456b50654334ba3c97b2e38a6",
+      "size": 2648201,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_concrete_01/normal.png",
+      "sha256": "7381d107a1226c63714b3d4bc11283733f90e425643a7ded07e3f219bb6d6668",
+      "size": 7845628,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_concrete_a/albedo.png",
+      "sha256": "fa10f9c6dd0211fafd22be8adaac39497b1478e00b6291e50ee9cedd181ac359",
+      "size": 6623518,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_concrete_a/mr.png",
+      "sha256": "9393b6bd68117fe73f47a2cfa359a0232e28826e391441279bdcf19951ff998f",
+      "size": 5874571,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_concrete_a/normal.png",
+      "sha256": "839bf49fa17e896b632107abe79cfa98140c56608154ba37e3e489c31d1649c6",
+      "size": 8497821,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_floorstripes/albedo.png",
+      "sha256": "3f43dc9b9687ff568ed5cecdb8d659f6ab2d8473e5bbd1a078b6077f9fc369a1",
+      "size": 16917,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_floorstripes/mr.png",
+      "sha256": "b21da5901aa3fdee6485da005e0bf6e33226169860804893cc1434bab292ddc4",
+      "size": 3496423,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_floorstripes/normal.png",
+      "sha256": "843efd71196be9eaff921cb64b203c73647da3b7c92d1450cab178bd5a775caf",
+      "size": 7903279,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_b/albedo.png",
+      "sha256": "6b1c820ee489506630062af1124c4d465b2da784b196bc286939b485dad0f502",
+      "size": 16914,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_b/mr.png",
+      "sha256": "c5ac91143827681d7450b08f15dbee30759c57a86ba6b30f5751b04fdaae7c6b",
+      "size": 16915,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_b/normal.png",
+      "sha256": "f92a11409cf4d55b666cd0a25bae3618860718b7ec27f273deb2b9a708e92682",
+      "size": 3129635,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_lattice/albedo.png",
+      "sha256": "28539e16d359129959db7c71e1d558af74f99a3e96e89b281bd928c1dc99e318",
+      "size": 2874961,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_lattice/mr.png",
+      "sha256": "dd25a7ba33c9ee8649078e449b79f4723a60306347cf9d29c9f9a2f526c40cc9",
+      "size": 3784240,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_lattice/normal.png",
+      "sha256": "085b2c9201e23701eba7cbe4a7c96366477a15ea4f146d4b49bf5a872ff397c5",
+      "size": 2720149,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_rubberfloor/albedo.png",
+      "sha256": "c9142d6784decc306b89560d596e2061c39300037e4f8dab0e2e809e70244266",
+      "size": 820046,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_rubberfloor/mr.png",
+      "sha256": "35232202503c4bbc6da072a99820c3fe4d1696a7f127b06e10a391a8a2782ccc",
+      "size": 499618,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_rubberfloor/normal.png",
+      "sha256": "a148680eb43fe601e947f32965b55ef6bed93957e5227937f5437d5138f1d818",
+      "size": 2741423,
+      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
     }
   ]
 }

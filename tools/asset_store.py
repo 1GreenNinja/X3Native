@@ -54,7 +54,7 @@ DEFAULT_CACHE = r"D:\Assets\X3AssetStore"
 
 # Directories whose contents are managed by the store (used by `status` to
 # flag unpublished local files). Mirrors the pre-commit guard.
-MANAGED_DIRS = ("assets/rigged_glb", "assets/converted_glb")
+MANAGED_DIRS = ("assets/rigged_glb", "assets/converted_glb", "assets/surface_library")
 
 CHUNK = 4 * 1024 * 1024
 RETRIES = 4

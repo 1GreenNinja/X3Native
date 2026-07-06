@@ -71,6 +71,7 @@ add_executable(X3Engine WIN32
     level1_game.cpp
     canon_play.cpp
     cell_dressing.cpp
+    surface_library.cpp
     intro_coldopen.cpp
     cutscene.cpp
     spire_mid.cpp
