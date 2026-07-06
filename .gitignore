@@ -110,3 +110,10 @@ assets/converted_glb/ShowRoom_Vol30/*
 # Performance-shop build save (per-machine player state)
 vehbuild.json
 assets/surface_library/
+assets/converted_glb/Detention/
+assets/converted_glb/ModularSciFi_Interior/SM_Wall_B.glb
+assets/converted_glb/ModularSciFi_Interior/SM_Wall_C.glb
+assets/rigged_glb/FPArms_Jake.glb
+assets/rigged_glb/alien_crawler_anim.glb
+assets/rigged_glb/chief_martinez_anim.glb
+assets/rigged_glb/marcus_webb_anim.glb
