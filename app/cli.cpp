@@ -374,6 +374,12 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional output path arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') o.oceanShotPath = argv[++i];
         }
+        else if (a == "--screenshot-matlib") {
+            // Surface-library preview: one bay per curated texture set, a closeup
+            // per set + overview rows into a FLAT output dir.
+            o.matlibShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.matlibShotDir = argv[++i];
+        }
         else if (a == "--screenshot-destruct") {
             o.destructShot = true;
             // Optional output path arg (next token, if it isn't another flag).

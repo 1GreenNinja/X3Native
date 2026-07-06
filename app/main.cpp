@@ -100,6 +100,7 @@
 #include "host_context.h"                  // #28 deep split: shared live-state struct for the --world hosts
 #include "world_hosts.h"                   // #28 deep split: dispatchWorldHost() + the extracted host TUs
 #include "screenshot_hosts.h"              // #28 deep split: dispatchScreenshotHosts() (headless capture handlers)
+#include "surface_library.h"               // ART_BIBLE §4: curated texture-set preview (--screenshot-matlib)
 #include "app_run.h"                       // #28 deep split: runDefaultHost() (the interactive render loop)
 #include "cli.h"                           // #28 deep split: CliOptions + parseCli() (the arg-parse loop)
 #include "settings_io.h"                   // #28 deep split: window/audio settings persistence (shared)
@@ -437,7 +438,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.matlibShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -574,6 +575,17 @@ int main(int argc, char** argv) {
         device->setDdgiParams(dp);
         x3::logInfo(std::string("--ddgi: DDGI requested; device rayTracingSupported=") +
                     (device->rayTracingSupported() ? "YES" : "NO"));
+    }
+
+    // ---- --screenshot-matlib: surface-library preview (ART_BIBLE §4). Fully
+    // self-contained (its own meshes/textures/lights, no world build) — render
+    // the contact sheet and exit before any host machinery spins up. ----
+    if (o.matlibShot) {
+        const int rc = x3::game::runMatlibShot(*device, o.matlibShotDir);
+        device.reset();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return rc;
     }
 
     // ---- Level Architect EDITOR overlay init (--editor / --screenshot-editor) ----
