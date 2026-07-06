@@ -488,6 +488,11 @@ struct CliOptions {
     // this is the way to SEE the ocean. Default path: G:\X3Native-wt-water\ocean.png.
     bool        oceanShot = false;
     std::string oceanShotPath = "G:/X3Native-wt-water/ocean.png";
+    // Undersea base vantage (--screenshot-oceanbase [path.png]) — W3-4: builds the
+    // ocean_base zone (textured hull + practicals) under deep-water fog and captures
+    // an approach shot plus a dock closeup (shot 2 path gets a _dock suffix).
+    bool        oceanBaseShot = false;
+    std::string oceanBaseShotPath = "oceanbase.png";
     // Destruction shatter capture (--screenshot-destruct [path.png]): build the
     // destruction demo world (lit ground + a row of destructible crates), shoot +
     // explode the crates so they shatter into tumbling convex chunks, settle a few

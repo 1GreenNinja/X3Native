@@ -151,8 +151,9 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             device.drawMeshGlass(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.glass, e.transform);
         } else if (e.mrTex.valid()) {
             // Entity carries a metallic-roughness map: full PBR path (Cook-Torrance
-            // + IBL/SSR reflections). No normal map (geometry normal is used).
-            device.drawMeshPBR(frame, e.mesh, e.tex, x3::rhi::TextureHandle{}, e.mrTex,
+            // + IBL/SSR reflections). normalTex rides along when set (invalid =>
+            // geometry normal, exactly the old behaviour).
+            device.drawMeshPBR(frame, e.mesh, e.tex, e.normalTex, e.mrTex,
                                e.baseColor, e.emissive, e.transform);
         } else {
             device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);

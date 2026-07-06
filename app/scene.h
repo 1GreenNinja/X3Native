@@ -78,6 +78,11 @@ struct Entity {
     // dielectric satin default. Invalid (default) => drawMeshEmissive, identical
     // to the old path for every existing entity.
     x3::rhi::TextureHandle mrTex;
+    // Optional NORMAL map, forwarded on the drawMeshPBR route (W3-4: scene entities
+    // dressed from surface-library sets carry full albedo+normal+MR PBR; the PBR
+    // route used to hardcode an invalid normal handle). Invalid (default) =>
+    // identical to the old behaviour on every existing entity.
+    x3::rhi::TextureHandle normalTex;
     float                  baseColor[4] = {1, 1, 1, 1}; // tint (multiplies texel)
     // Optional per-entity HDR EMISSIVE term { r, g, b, strength } added on top of
     // the lit result (independent of light). Default {0,0,0,0} == no glow, so
