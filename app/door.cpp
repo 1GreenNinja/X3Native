@@ -77,28 +77,40 @@ const Door* DoorSystem::findByEntity(uint32_t entityId) const {
     return nullptr;
 }
 
+// W2-A2: 3D door-sound emission at the door's body position. Silent when the host
+// never wired audio (headless tests) or a WAV failed to load (clean machines).
+void DoorSystem::playDoorSound(const Door& d, x3::audio::SoundHandle h, float vol) const {
+    if (!m_audio || !h.valid()) return;
+    m_audio->playSound3D(h, d.closedPos.x, d.closedPos.y, d.closedPos.z, vol, 1.0f);
+}
+
 bool DoorSystem::startOpening(Door& d) const {
-    if (d.locked) return false;                  // §6.4: locked doors stay shut
+    if (d.locked) { playDoorSound(d, m_sndLocked, 0.55f); return false; }  // §6.4 + denied buzz
     if (d.state != DoorState::Closed) return false;
     d.state = DoorState::Opening;
     d.t = 0.0f;
+    playDoorSound(d, m_sndOpen, 0.8f);
     return true;
 }
 
 bool DoorSystem::toggle(Door& d) const {
     switch (d.state) {
         case DoorState::Closed:
-            if (d.locked) return false;          // locked doors stay shut (§6.4)
+            if (d.locked) { playDoorSound(d, m_sndLocked, 0.55f); return false; }  // §6.4
             d.state = DoorState::Opening;         // t is already 0
+            playDoorSound(d, m_sndOpen, 0.8f);
             return true;
         case DoorState::Open:
             d.state = DoorState::Closing;         // t is already == duration
+            playDoorSound(d, m_sndClose, 0.8f);
             return true;
         case DoorState::Opening:
             d.state = DoorState::Closing;         // reverse mid-slide (keep t)
+            playDoorSound(d, m_sndClose, 0.6f);
             return true;
         case DoorState::Closing:
             d.state = DoorState::Opening;         // reverse mid-slide (keep t)
+            playDoorSound(d, m_sndOpen, 0.6f);
             return true;
     }
     return false;
@@ -221,6 +233,9 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
 
     for (const Door& d : m_doors) {
         if (d.floorHatch) continue;   // horizontal hatch draws its own graybox box
+        // W2-A2: room-visibility gate — walls cull per-room; without this, slabs in
+        // culled rooms drew anyway and floated in void from outside-shell sightlines.
+        if (m_visQuery && !m_visQuery(d)) continue;
         // CURRENT world center of this door (the slide animation lerps closed->open
         // by the same factor DoorSystem::update() uses). closedPos/openPos are the
         // body CENTER positions; the slab bottom is center.y - height/2.

@@ -388,6 +388,12 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_bloom",          "1",    "bloom on/off (0 skips the whole downsample/upsample chain)");
     console.registerCVar("r_bloomintensity", "-1",   "bloom strength override; <0 = keep the scene-tuned value (default)");
     console.registerCVar("r_bloomthreshold", "1.10", "bloom bright-pass threshold (linear luminance; soft knee)");
+    // ---- W2-A2 / AD-1: painterly-lever LIVE OVERRIDES (canonlevel only; -1 = keep
+    // the zone's authored value). The zone opt-in itself lives in cell_dressing. ----
+    console.registerCVar("r_fogdensity",     "-1",   "depth-fog extinction per meter override (canonlevel; -1 = keep zone value)");
+    console.registerCVar("r_fogstart",       "-1",   "depth-fog clean-air start meters override (canonlevel; -1 = keep zone value)");
+    console.registerCVar("r_gradestrength",  "-1",   "filmic grade master strength override 0..1 (canonlevel; -1 = keep zone value)");
+    console.registerCVar("r_vignette",       "-1",   "vignette strength override 0..0.25 (canonlevel; -1 = keep zone value)");
     console.registerCVar("r_autoexposure",   "1",    "auto-exposure (eye adaptation): scene log-luminance drives exposure; r_exposure becomes a bias");
     console.registerCVar("r_aespeed",        "1.5",  "auto-exposure adaptation speed (1/s; higher = faster eye)");
     console.registerCVar("r_aemin",          "0.7",  "auto-exposure clamp floor (max darkening of bright scenes)");
@@ -862,10 +868,13 @@ int runDefaultHost(HostContext& hc) {
     const x3::audio::SoundHandle sndEnemyAttack = bootAudio.enemyAttack;
     const x3::audio::SoundHandle sndEnemyHit    = bootAudio.enemyHit;
     const x3::audio::SoundHandle sndEnemyDeath  = bootAudio.enemyDeath;
-    // Footsteps reuse the gunshot WAV pitched down + quiet (no dedicated footstep
-    // WAV in the inventory). It reads as a soft step; replace with a real footstep
-    // SFX later if one is added to the pack.
-    const x3::audio::SoundHandle sndStep = sndGun;
+    // W2-A2 (punch-list P1 #10): REAL footsteps. W2-B committed 4 concrete takes
+    // (assets/audio/footsteps/); the old behavior was the GUNSHOT pitched down.
+    // sndStep (first valid take) feeds the shared enemy cue sink; the player
+    // cadence below cycles all 4 takes. Falls back to the legacy pitched gunshot
+    // only if none of the takes loaded (clean-machine grace).
+    const x3::audio::SoundHandle sndStep =
+        bootAudio.footstepConcrete[0].valid() ? bootAudio.footstepConcrete[0] : sndGun;
     // Resolved path for the looping music/ambient bed (started after the world is
     // built, below). Spaceship-ambience-style sci-fi action loop.
     const std::string kMusicPath = x3::game::resolveAudio(
@@ -1168,6 +1177,32 @@ int runDefaultHost(HostContext& hc) {
                 copts.hatchCx = hatchCx; copts.hatchCz = hatchCz; copts.hatchHalf = 0.9f;
             }
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
+            // W2-A2 (punch-list P0 #5): DOOR SOUNDS — wire the audio system + the
+            // W2-B servo/denied WAVs into the door system itself, so every open/
+            // close/locked transition sounds regardless of which caller flipped it.
+            canonDoors.setAudio(audio.get(),
+                audio->load(x3::game::resolveAudio("doors/door_open.wav")),
+                audio->load(x3::game::resolveAudio("doors/door_close.wav")),
+                audio->load(x3::game::resolveAudio("doors/door_locked.wav")));
+            // W2-A2 (W2-E residual): PVS-gate the canon door slabs. Probe the two
+            // rooms flanking each slab (across the wall normal per Door::axis)
+            // against the frame's visible-room set; draw if either is visible.
+            // Unknown rooms (both probes in wall meat) draw — fail-safe, never pop.
+            canonDoors.setVisQuery(
+                [&canonFloor, &canonVisRooms](const x3::game::Door& d) -> bool {
+                    if (canonVisRooms.empty()) return true;   // vis not computed yet
+                    const float off = 0.7f;
+                    const float px = (d.axis == 0) ? off : 0.0f;
+                    const float pz = (d.axis == 0) ? 0.0f : off;
+                    const uint32_t rA = canonFloor.roomAt(d.closedPos.x + px,
+                                                          d.closedPos.y, d.closedPos.z + pz);
+                    const uint32_t rB = canonFloor.roomAt(d.closedPos.x - px,
+                                                          d.closedPos.y, d.closedPos.z - pz);
+                    if (rA == x3::game::kNoRoom && rB == x3::game::kNoRoom) return true;
+                    for (uint32_t v : canonVisRooms)
+                        if (v == rA || v == rB) return true;
+                    return false;
+                });
             x3::boot::mark("canon floor geometry+doors");
             // Per-room ceiling lights: the data-driven floor skips the env_art Light_A
             // fixtures the legacy level registers, so without these the rooms only get
@@ -1542,6 +1577,11 @@ int runDefaultHost(HostContext& hc) {
         // Level1Game fans the sink to its own groups (corridor/checkpoint/bossAdds/
         // Martinez/Chen) — current AND future spawns.
         game.setDeathFxSink(deathFx);
+        // W2-A2 (punch-list P0 #1): CanonPlay was NEVER handed this sink — its
+        // build() self-wired an empty default, so every --world canonlevel kill had
+        // ZERO gibs/blood. CanonPlay::setDeathFxSink fans to hall/cell-guard/
+        // attacker groups + Martinez + rescue bosses (post-build safe).
+        canonPlay.setDeathFxSink(deathFx);
         // Also fan it to the Spire-floor enemy groups + their bosses (those managers
         // live on the floor controllers, not Level1Game, so they don't get the fan
         // above). Each MonsterManager stores the sink + applies it to current + future
@@ -1639,6 +1679,34 @@ int runDefaultHost(HostContext& hc) {
     auto currentImpactSfx = [&]() -> x3::audio::SoundHandle {
         auto it = impactSfxByName.find(arsenal.current().name);
         return (it != impactSfxByName.end()) ? it->second : x3::audio::SoundHandle{};
+    };
+    // W2-A2 (punch-list P1 #8): reload + dry-fire sounds — same dedupe-by-path
+    // pattern as fire/impact above. W2-C put reloadSfx/dryfireSfx on every def;
+    // missing WAVs stay invalid handles (silent, clean-machine grace).
+    std::unordered_map<std::string, x3::audio::SoundHandle> reloadSfxByName, dryfireSfxByName;
+    {
+        std::unordered_map<std::string, x3::audio::SoundHandle> byPath;
+        auto loadOne = [&](const std::string& p) -> x3::audio::SoundHandle {
+            if (p.empty()) return {};
+            auto it = byPath.find(p);
+            if (it != byPath.end()) return it->second;
+            x3::audio::SoundHandle h = audio->load(x3::game::resolveAudio(p));
+            byPath.emplace(p, h);
+            return h;
+        };
+        for (int wi = 0; wi < arsenal.count(); ++wi) {
+            const x3::game::WeaponDef& wd = arsenal.def(wi);
+            reloadSfxByName[wd.name]  = loadOne(wd.reloadSfx);
+            dryfireSfxByName[wd.name] = loadOne(wd.dryfireSfx);
+        }
+    }
+    auto currentReloadSfx = [&]() -> x3::audio::SoundHandle {
+        auto it = reloadSfxByName.find(arsenal.current().name);
+        return (it != reloadSfxByName.end()) ? it->second : x3::audio::SoundHandle{};
+    };
+    auto currentDryfireSfx = [&]() -> x3::audio::SoundHandle {
+        auto it = dryfireSfxByName.find(arsenal.current().name);
+        return (it != dryfireSfxByName.end()) ? it->second : x3::audio::SoundHandle{};
     };
 
     // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
@@ -2433,6 +2501,20 @@ int runDefaultHost(HostContext& hc) {
                     canonDoors.drawMeshes(*device, frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 }
+                // W2-A2 (W2-C's queued hook): the --screenshot path NEVER drew the FP
+                // viewmodel — the "pistol" in every prior cell shot was the hovering
+                // pickup prop, which is why the floating-gun/no-arms problem was
+                // invisible in stills. Mirror the smoketest draw at the shot camera.
+                if (arsenal.viewmodelsLoaded()) {
+                    const VmPose vmPose = readViewmodelPose(*console);
+                    arsenal.drawCurrentViewmodel(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch,
+                        vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
+                        vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
+                        vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
+                        vmPose.fwd   - x3::game::kVmDefFwd,
+                        vmPose.right - x3::game::kVmDefRight,
+                        vmPose.down  - x3::game::kVmDefDown);
+                }
                 game.drawDoors(*device, frame);   // real SM_Door_A slabs (box hidden)
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -3088,6 +3170,30 @@ int runDefaultHost(HostContext& hc) {
     // in the detention cell), facing +X down the level spine — or, in the terrain
     // world, on the hills near the world center.
     x3::game::Player player;
+    // W2-A2 (punch-list P1 #11): the player's OWN pain + landing sounds. W2-B added
+    // the Player cue hook (mirrors the monster sink); this is the one-line host
+    // subscription its report asked for. Pain alternates the two takes; both play
+    // 2D (they're the player's own body, no spatialization).
+    {
+        auto painA = bootAudio.playerPain[0], painB = bootAudio.playerPain[1];
+        auto landH = bootAudio.playerLand;
+        auto* asys = audio.get();
+        player.setCueSink([asys, painA, painB, landH](const x3::game::GameCue& c) {
+            if (!asys) return;
+            static bool alt = false;
+            switch (c.kind) {
+                case x3::game::CueKind::PlayerPain: {
+                    const x3::audio::SoundHandle h = (alt = !alt) ? painA : painB;
+                    if (h.valid()) asys->playSound2D(h, std::min(0.9f, 0.45f + 0.4f * c.intensity), 1.0f);
+                    break;
+                }
+                case x3::game::CueKind::PlayerLand:
+                    if (landH.valid()) asys->playSound2D(landH, std::min(0.8f, 0.30f + 0.4f * c.intensity), 1.0f);
+                    break;
+                default: break;
+            }
+        });
+    }
     if (canonWorld && canonFloor.valid()) {
         // Spawn in Jake's Cell (the canonical detention spawn).
         uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
@@ -3373,6 +3479,24 @@ int runDefaultHost(HostContext& hc) {
     audio->setMasterSfxVolume(s_sfxVol);
     audio->setMusicVolume(s_musicVol);
     audio->setMusicEnabled(s_musicOn);
+    // W2-A2 (punch-list P1 #7): the detention-cell AMBIENT BED. The audio API has
+    // one looping channel (playMusic — taken by the action bed below), so the room
+    // tone + fluorescent buzz are steady-state loops RE-TRIGGERED on timers in the
+    // main loop (seam-tolerant hums chosen by W2-B for exactly this). 3D buzz sits
+    // at the cell's flickering tube; 2D room tone underlays everything. Handles
+    // stay invalid (silent) off-canon or on clean machines.
+    x3::audio::SoundHandle ambRoomTone, ambBuzz;
+    float ambRoomTimer = 1e9f, ambBuzzTimer = 1e9f;   // huge -> fire on first frame
+    x3::phys::Vec3 ambBuzzPos{ 0, 0, 0 };
+    if (canonWorld && canonFloor.valid()) {
+        ambRoomTone = audio->load(x3::game::resolveAudio("ambient/room_tone_cell.wav"));
+        ambBuzz     = audio->load(x3::game::resolveAudio("ambient/fluorescent_buzz.wav"));
+        const x3::game::CanonBeats abt = x3::game::canonBeats(canonFloor);
+        if (abt.jakeCell != x3::game::kNoRoom) {
+            const x3::game::CanonRoom& jc = canonFloor.rooms[abt.jakeCell];
+            ambBuzzPos = { jc.cx, jc.y1() - 0.4f, jc.cz };
+        }
+    }
     // M9: start the low-volume looping ambient/music bed at launch. playMusic remembers
     // the track + current music volume; when musicOn is false the bed stays silent.
     audio->playMusic(kMusicPath, /*loop*/true, s_musicVol);
@@ -3698,7 +3822,16 @@ int runDefaultHost(HostContext& hc) {
                 prevWeaponKey[wi] = down;
             }
             bool rNow = keyDown(GLFW_KEY_R);
-            if (rNow && !prevReload && game.armed()) arsenal.reload();
+            // W2-A2: canon parity (game is unbuilt on canonlevel — R was dead there)
+            // + audible reload when one actually STARTS (reload() returns false on
+            // full mag / no reserve / already reloading).
+            if (rNow && !prevReload &&
+                (game.armed() || (canonWorld && canonPlay.armed()))) {
+                if (arsenal.reload()) {
+                    const x3::audio::SoundHandle rh = currentReloadSfx();
+                    if (rh.valid()) audio->playSound2D(rh, 0.7f, 1.0f);
+                }
+            }
             prevReload = rNow;
             // MOUSE WHEEL cycles weapons (up = next, down = previous), wrapping.
             if (!termMode && !consoleOpen && g_weaponScroll != 0.0 && arsenal.count() > 0) {
@@ -4621,6 +4754,43 @@ int runDefaultHost(HostContext& hc) {
         // ---- M9: footsteps. Time them to horizontal speed while grounded (not in
         // noclip): estimate speed from the camera's XZ delta this frame; while
         // moving, play a quiet pitched-down step every kStepInterval seconds. ----
+        // W2-A2: ambient-bed retrigger (see the load site above playMusic). Timers
+        // restart each clip a hair before typical loop length; steady-state hums
+        // tolerate the overlap/seam. Also the fog/grade LIVE OVERRIDE cvars (AD-1's
+        // paste-block): any r_fog*/r_grade* >= 0 re-applies the canon zone params
+        // with that field overridden (console-tunable without a rebuild).
+        if (canonWorld) {
+            ambRoomTimer += dt; ambBuzzTimer += dt;
+            if (ambRoomTone.valid() && ambRoomTimer >= 18.0f) {
+                ambRoomTimer = 0.0f; audio->playSound2D(ambRoomTone, 0.22f, 1.0f);
+            }
+            if (ambBuzz.valid() && ambBuzzTimer >= 7.5f) {
+                ambBuzzTimer = 0.0f;
+                audio->playSound3D(ambBuzz, ambBuzzPos.x, ambBuzzPos.y, ambBuzzPos.z, 0.35f, 1.0f);
+            }
+            const float cvFogD = console->getFloat("r_fogdensity");
+            const float cvFogS = console->getFloat("r_fogstart");
+            const float cvGrd  = console->getFloat("r_gradestrength");
+            const float cvVig  = console->getFloat("r_vignette");
+            if (cvFogD >= 0.0f || cvFogS >= 0.0f) {
+                x3::rhi::IRenderDevice::FogParams f;   // canon detention zone values (ART_BIBLE)
+                f.enabled = true;
+                f.color[0] = 0.045f; f.color[1] = 0.040f; f.color[2] = 0.034f;
+                f.density = (cvFogD >= 0.0f) ? cvFogD : 0.0035f;
+                f.start   = (cvFogS >= 0.0f) ? cvFogS : 1.2f;
+                f.maxOpacity = 0.60f;
+                device->setFog(f);
+            }
+            if (cvGrd >= 0.0f || cvVig >= 0.0f) {
+                x3::rhi::IRenderDevice::GradeParams g; // canon detention zone values (ART_BIBLE)
+                g.strength = (cvGrd >= 0.0f) ? cvGrd : 0.85f;
+                g.shadowTint[0] = 0.94f; g.shadowTint[1] = 1.00f; g.shadowTint[2] = 1.03f;
+                g.highlightTint[0] = 1.04f; g.highlightTint[1] = 1.00f; g.highlightTint[2] = 0.95f;
+                g.saturation = 0.96f;
+                g.vignette = (cvVig >= 0.0f) ? cvVig : 0.10f;
+                device->setGrade(g);
+            }
+        }
         if (prevCamValid && !noclip && player.grounded() && dt > 0.0f) {
             const float dxc = camX - prevCamX, dzc = camZ - prevCamZ;
             const float speed = std::sqrt(dxc * dxc + dzc * dzc) / dt; // m/s
@@ -4630,7 +4800,15 @@ int runDefaultHost(HostContext& hc) {
                 stepTimer += dt;
                 if (stepTimer >= kStepInterval) {
                     stepTimer = 0.0f;
-                    audio->playSound2D(sndStep, 0.22f, 0.55f); // quiet, pitched down
+                    // W2-A2: cycle the 4 real concrete takes (subtle pitch wobble
+                    // keeps repeats alive). Legacy pitched-gunshot only if none loaded.
+                    static uint32_t stepIdx = 0;
+                    const x3::audio::SoundHandle tk =
+                        bootAudio.footstepConcrete[stepIdx++ & 3u];
+                    if (tk.valid())
+                        audio->playSound2D(tk, 0.30f, 0.96f + 0.04f * (float)(stepIdx & 1u));
+                    else
+                        audio->playSound2D(sndStep, 0.22f, 0.55f);
                 }
             } else {
                 stepTimer = 0.0f; // reset cadence when stopped
@@ -4702,6 +4880,13 @@ int runDefaultHost(HostContext& hc) {
                                 std::sin(camPitch),
                                 std::cos(camPitch) * std::sin(camYaw) };
             x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
+            // W2-A2 (punch-list P1 #8): dry-fire click on an empty-mag trigger pull.
+            // ResolvedFire.dryFire is cadence-gated in the arsenal (autos click at
+            // the weapon's fire rate, not per frame).
+            if (shot.dryFire) {
+                const x3::audio::SoundHandle dh = currentDryfireSfx();
+                if (dh.valid()) audio->playSound2D(dh, 0.5f, 1.0f);
+            }
             // Muzzle origin = the held viewmodel's barrel tip. The default origin sits
             // BELOW the eye line (down 0.30) so ballistic tracers visibly leave the gun.
             // LIGHTNING (director note) must emanate from the gun TIP, not from below
@@ -5533,9 +5718,18 @@ int runDefaultHost(HostContext& hc) {
                         hm.trapZ = game.secret().roomCenter().z;
                     }
 
-                    // Faint room outlines: the B1 combat-zone rects (cell / corridor /
-                    // armory / checkpoint / arena) from the authored layout. XZ center
-                    // + half-extents; the HUD transforms them player-relative.
+                    // Faint room outlines. W2-A2 (punch-list P1 #12): on canonlevel the
+                    // legacy `game` is UNBUILT — game.layout() fed stale/zeroed rects to
+                    // the minimap. Feed the REAL canon floor's room rects instead
+                    // (player-relative transform happens in the HUD as before).
+                    if (canonWorld && canonFloor.valid()) {
+                        for (const x3::game::CanonRoom& cr : canonFloor.rooms) {
+                            if (hm.roomCount >= x3::ui::HudModel::kMaxRooms) break;
+                            const int r = hm.roomCount++;
+                            hm.roomCx[r] = cr.cx;        hm.roomCz[r] = cr.cz;
+                            hm.roomHx[r] = cr.w * 0.5f;  hm.roomHz[r] = cr.d * 0.5f;
+                        }
+                    } else {
                     const x3::game::Level1Layout& lay = game.layout();
                     auto addRoom = [&](const x3::phys::Vec3& c, const x3::phys::Vec3& hf) {
                         if (hm.roomCount >= x3::ui::HudModel::kMaxRooms) return;
@@ -5548,6 +5742,7 @@ int runDefaultHost(HostContext& hc) {
                     addRoom(lay.armoryCenter,     lay.armoryHalf);
                     addRoom(lay.checkpointCenter, lay.checkpointHalf);
                     addRoom(lay.arenaCenter,      lay.arenaHalf);
+                    }
                 }
             }
             // Compose the UI input snapshot. Mouse position in framebuffer pixels;

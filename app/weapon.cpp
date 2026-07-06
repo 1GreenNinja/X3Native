@@ -938,9 +938,14 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // negated) to aim the arms down the look direction. Scale 1.0 — deliberately
     // NOT kVmScaleBoost (guns are 2x by design; arms at 2x read as a giant).
     if (!m_arms.drawables.empty()) {
+        // W2-A2 eye-round (first frame with the viewmodel actually IN a screenshot):
+        // 0.24 down left the mid-bicep CROP STUMPS visible in-frame — sunk to 0.36
+        // so the crop line sits below the frame edge at level pitch. 1.7x bright
+        // blew the suit albedo into flesh-pink mottle under the graded cell light —
+        // 1.15 keeps the sleeves readable without the blowout.
         constexpr float kArmsFwd    = -0.06f;  // neck sits just behind the eye
-        constexpr float kArmsDown   =  0.24f;  // and below it (chin/chest drop)
-        constexpr float kArmsBright =  1.7f;   // lift skin/sleeves in dark rooms
+        constexpr float kArmsDown   =  0.36f;  // below it (chin/chest drop + hide crop)
+        constexpr float kArmsBright =  1.15f;  // gentle lift; 1.7 read as pink blowout
         const x3::phys::Vec3 apos{
             eyeX + forward.x * kArmsFwd - up.x * kArmsDown,
             eyeY + forward.y * kArmsFwd - up.y * kArmsDown,

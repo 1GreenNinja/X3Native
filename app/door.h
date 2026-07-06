@@ -24,8 +24,10 @@
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
+#include "engine/audio/IAudioSystem.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -154,7 +156,33 @@ public:
     // True once the shared door GLB has loaded ok (a real mesh will be drawn).
     bool hasDoorMesh() const { return m_meshOk; }
 
+    // ---- W2-A2: door audio (P0 #5 — every door was silent). The host wires the
+    // audio system + the three WAV handles once; open/close/locked emissions fire
+    // from the state transitions themselves (toggle/startOpening/tryDoorCode), so
+    // EVERY caller path — E-use, buttons, keypads, unlockAndOpen events — sounds
+    // without per-call-site wiring. Invalid handles play silent (clean machines).
+    void setAudio(x3::audio::IAudioSystem* audio,
+                  x3::audio::SoundHandle open,
+                  x3::audio::SoundHandle close,
+                  x3::audio::SoundHandle locked) {
+        m_audio = audio; m_sndOpen = open; m_sndClose = close; m_sndLocked = locked;
+    }
+
+    // ---- W2-A2: room-visibility gate for drawMeshes (W2-E residual). Walls cull
+    // per-room but door slabs drew unconditionally — from outside the shell they
+    // floated in void. The host installs a query (canonlevel: probe the two rooms
+    // flanking the slab against the frame's PVS set); unset = draw everything.
+    using VisQueryFn = std::function<bool(const Door&)>;
+    void setVisQuery(VisQueryFn q) { m_visQuery = std::move(q); }
+
 private:
+    // Emit a door sound at the door's world position (3D). Silent if unwired.
+    void playDoorSound(const Door& d, x3::audio::SoundHandle h, float vol) const;
+
+    x3::audio::IAudioSystem* m_audio = nullptr;
+    x3::audio::SoundHandle   m_sndOpen, m_sndClose, m_sndLocked;
+    VisQueryFn               m_visQuery;
+
     std::vector<Door> m_doors;
 
     // ---- Shared real-door GLB (loaded once; reused for every door). Owns the

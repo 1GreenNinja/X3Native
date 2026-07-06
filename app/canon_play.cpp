@@ -320,14 +320,19 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
     if (bt.mainHall != kNoRoom) {
         const CanonRoom& H = floor.rooms[bt.mainHall];
         const float hy = roomFloorY(bt.mainHall, kEnemyFootUp);
-        // 4 enemies spread across the wide hall (44 m): a melee pair + a flanker + a ranged
-        // synth. Keep them inside the room footprint (margin from the walls).
+        // 4 enemies spread across the wide hall (44 m): a melee pair + two flankers.
+        // Keep them inside the room footprint (margin from the walls).
+        // W2-A2 (punch-list P0 #2): the 4th slot WAS BlueSynth — with no rigged
+        // blue_synth GLB on disk it fell back to the STATIC Drone.glb (0 anims,
+        // 0 skins): a prop that chased and hurt the player without moving a limb,
+        // in the very first fight. A second Verthani keeps the squad varied and
+        // fully animated; BlueSynth returns when its rig ships.
         struct E { float dx, dz; EnemyType t; };
         const E hall[] = {
             { -10.0f,  0.0f, EnemyType::DominionTrooper },
             {  -3.0f,  1.2f, EnemyType::Verthani        },
             {   4.0f, -1.0f, EnemyType::DominionTrooper },
-            {  11.0f,  0.5f, EnemyType::BlueSynth        },
+            {  11.0f,  0.5f, EnemyType::Verthani        },
         };
         for (const E& e : hall) {
             uint32_t i = m_mainHall.spawn(scene, device, physics, m_modelDir,
