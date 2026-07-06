@@ -44,6 +44,7 @@
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
+#include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "intro_orchestrator.h"              // Phase 3/4: runInteractiveIntro + IntroOutcome (branches the game start)
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
@@ -1058,6 +1059,7 @@ int runDefaultHost(HostContext& hc) {
     std::vector<uint32_t> canonVisRooms;       // per-frame PVS scratch (canonWorld only)
     std::vector<x3::game::CanonLight> canonLights; // per-room ceiling lights (canonWorld only)
     x3::game::CellDressing canonDressing;      // opening-space set-dressing + motivated lights (canonWorld only)
+    x3::game::RoomDressing canonRooms;         // WAVE-3 recipe dressing for the other 52 rooms (canonWorld only)
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
     // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
     // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
@@ -1215,6 +1217,24 @@ int runDefaultHost(HostContext& hc) {
             // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
             // truth; missing GLBs simply aren't drawn (the level never breaks).
             canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
+            // WAVE-3: recipe-dress every other classifiable room (surface-library
+            // panels + zone lights + hero props). Jake's cell stays CellDressing's.
+            // Recipe rooms OWN their light statement (bible: one key per room), so the
+            // generic warm buildCanonLights entry for those rooms is dropped before the
+            // recipe lights are appended — selectVisibleCanonLights budgets the rest.
+            {
+                const x3::game::CanonBeats rdBt = x3::game::canonBeats(canonFloor);
+                canonRooms.build(*device, x3::game::assetRoot() + "/surface_library",
+                                 x3::game::convertedGlbRoot(), canonFloor, rdBt);
+                if (canonRooms.roomsDressed() > 0) {
+                    canonLights.erase(std::remove_if(canonLights.begin(), canonLights.end(),
+                        [&](const x3::game::CanonLight& cl) {
+                            return canonRooms.hasRecipe(cl.room);
+                        }), canonLights.end());
+                    canonLights.insert(canonLights.end(),
+                                       canonRooms.lights().begin(), canonRooms.lights().end());
+                }
+            }
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the
@@ -2498,6 +2518,9 @@ int runDefaultHost(HostContext& hc) {
                 // characters (room-gated by the visible set above).
                 if (canonWorld && canonFloor.valid()) {
                     canonDressing.draw(*device, frame);
+                    canonRooms.draw(*device, frame, canonVisRooms);
+                    canonRooms.applyZoneAtmosphere(*device,
+                        canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z));
                     canonDoors.drawMeshes(*device, frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 }
@@ -3071,7 +3094,10 @@ int runDefaultHost(HostContext& hc) {
                 // Unified vis stats: PVS submission skips + flood ms for this frame.
                 device->setVisHostStats(scene.lastRoomCulled(), g_visPvsMs);
                 if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
-                if (canonWorld && canonFloor.valid()) canonDressing.draw(*device, frame); // opening-space props
+                if (canonWorld && canonFloor.valid()) {
+                    canonDressing.draw(*device, frame); // opening-space props
+                    canonRooms.draw(*device, frame, canonVisRooms);
+                }
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
                 if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
@@ -4768,6 +4794,11 @@ int runDefaultHost(HostContext& hc) {
                 ambBuzzTimer = 0.0f;
                 audio->playSound3D(ambBuzz, ambBuzzPos.x, ambBuzzPos.y, ambBuzzPos.z, 0.35f, 1.0f);
             }
+            // WAVE-3 zone atmosphere: re-tint the depth fog as the player crosses zone
+            // boundaries (teal halls / amber detention / green labs). Runs BEFORE the
+            // cvar overrides below so an explicit r_fog* setting still wins this frame.
+            if (canonFloor.valid())
+                canonRooms.applyZoneAtmosphere(*device, canonFloor.roomAt(camX, camY, camZ));
             const float cvFogD = console->getFloat("r_fogdensity");
             const float cvFogS = console->getFloat("r_fogstart");
             const float cvGrd  = console->getFloat("r_gradestrength");
@@ -5187,7 +5218,10 @@ int runDefaultHost(HostContext& hc) {
             // --world canonlevel OPENING-SPACE dressing: the bunk / terminal / pipes / debris
             // props over the cell + hall mouth (room-gated via the visible set already set on
             // the scene). Drawn before the characters so they sit in the dressed space.
-            if (canonWorld && canonFloor.valid()) canonDressing.draw(*device, frame);
+            if (canonWorld && canonFloor.valid()) {
+                canonDressing.draw(*device, frame);
+                canonRooms.draw(*device, frame, canonVisRooms);
+            }
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
