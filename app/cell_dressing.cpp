@@ -237,6 +237,31 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     }
     m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
 
+    // ---- PAINTERLY LEVERS OPT-IN (ART_BIBLE §5) — the detention-zone atmosphere.
+    // CellDressing::build only runs for the canon worlds, so this is the canonical
+    // "host opt-in" site: worlds that never build the dressing keep fog + grade
+    // fully OFF (byte-identical frames). Values = the bible's detention block:
+    // subtle amber-grey air (~3%/10 m), teal-shadow/warm-highlight split-tone,
+    // gentle vignette. Live-tunable later via the director's cvar block.
+    // NOTE (AD-1): deliberately placed in a file no other active agent owns;
+    // relocate to the app_run canon block when W2-A releases it if preferred.
+    {
+        x3::rhi::IRenderDevice::FogParams fog;
+        fog.enabled  = true;
+        fog.color[0] = 0.045f; fog.color[1] = 0.040f; fog.color[2] = 0.034f;
+        fog.density  = 0.0035f;
+        fog.start    = 1.2f;      // clean air around the viewmodel/arms
+        fog.maxOpacity = 0.60f;   // far walls never wash out
+        device.setFog(fog);
+        x3::rhi::IRenderDevice::GradeParams gr;
+        gr.strength = 0.85f;
+        gr.shadowTint[0] = 0.94f; gr.shadowTint[1] = 1.00f; gr.shadowTint[2] = 1.03f;  // teal shadows
+        gr.highlightTint[0] = 1.04f; gr.highlightTint[1] = 1.00f; gr.highlightTint[2] = 0.95f; // warm pools
+        gr.saturation = 0.96f;
+        gr.vignette   = 0.10f;
+        device.setGrade(gr);
+    }
+
     CanonBeats bt = canonBeats(floor);
     if (bt.jakeCell == kNoRoom) {
         x3::logWarn("[cell-dress] no Jake's Cell in this floor — dressing skipped");

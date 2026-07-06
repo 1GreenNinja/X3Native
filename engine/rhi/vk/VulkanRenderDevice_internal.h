@@ -165,6 +165,12 @@ public:
     // With auto-exposure ON this is the compensation BIAS on the adapted value.
     void setExposure(float e) override;
 
+    // Painterly levers (ART_BIBLE §5): per-zone depth fog + filmic grade. Host
+    // opt-in state, deliberately outside PostFXParams (setPostFX re-applies from
+    // cvars live and must not clobber a zone's atmosphere).
+    void setFog(const FogParams& f) override;
+    void setGrade(const GradeParams& g) override;
+
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
 
@@ -1186,7 +1192,8 @@ private:
     // blending (bloom upsample accumulation) vs. opaque write.
     bool createFullscreenPipeline(const char* vsPath, const char* fsPath,
                                   VkPipelineLayout layout, VkFormat colorFmt,
-                                  bool additiveBlend, VkPipeline& outPipe);
+                                  bool additiveBlend, VkPipeline& outPipe,
+                                  bool alphaBlend = false);
 
     // (Re)write the post descriptor sets to point at the current HDR + bloom mip
     // image views. Called after createBloomTargets() at init + every resize. The
@@ -2284,7 +2291,13 @@ private:
     // record lambdas; no per-frame heap alloc).
     struct BloomPush { float srcTexel[2]; float threshold, knee, intensity; int firstPass; float pad0, pad1; };
     struct CompositePush { float bloomIntensity, exposure; int32_t tonemapMode, aeEnabled;
-                           float sharpen, texelW, texelH, pad0; };
+                           float sharpen, texelW, texelH, gradeStrength;
+                           // vec4-aligned tails (GLSL push layout): rgb tint + packed extra.
+                           float shadowTint[4];      // rgb = shadow tint, w = saturation
+                           float highlightTint[4];   // rgb = highlight tint, w = vignette
+                         };
+    // Depth-fog fullscreen pass (ART_BIBLE §5). Push mirrors shaders/fog.frag.
+    struct FogPush { glm::mat4 invProj; glm::vec4 colorDensity; glm::vec4 startMax; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
 
@@ -2952,6 +2965,15 @@ private:
     // override via setBloom() (the showroom raises it for the glowing-spire hero look).
     float                   m_bloomIntensity = kBloomIntensity;
     float                   m_exposure = 1.0f;   // whole-scene brightness (composite pre-tonemap)
+    // ---- Painterly levers (ART_BIBLE §5): host-opted zone atmosphere + grade ----
+    FogParams               m_fogParams{};       // enabled=false -> fog pass never recorded
+    GradeParams             m_gradeParams{};     // strength=0 -> composite grade block inert
+    glm::mat4               m_fogInvProjCPU{ 1.0f };  // frame inverse-projection for fog.frag
+    VkPipelineLayout        m_fogLayout = VK_NULL_HANDLE;
+    VkPipeline              m_fogPipe   = VK_NULL_HANDLE;
+    VkDescriptorSet         m_setFog    = VK_NULL_HANDLE;   // b0 = main depth (TAA depth sampler)
+    VkRenderingAttachmentInfo m_fogAttach{};
+    VkRenderingInfo         m_fogRenderInfo{};
     // CPU per-object frustum cull (r_frustumcull). Default ON. m_frameFrustum is the
     // 6 normalized world-space planes for the frame being prepared (filled from the
     // camera viewProj in prepareFrameData, consumed by emitGroup).
