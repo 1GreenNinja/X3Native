@@ -77,6 +77,11 @@ struct CanonDoorway {
     // For a cut doorway: which axis the host wall runs along (matches DoorAxis):
     // 0 = wall plane is X=const (door thin in X), 1 = wall plane is Z=const (thin in Z).
     uint32_t axis = 0;
+    // W2-E connectivity fix (LAW 1): per-doorway cut half-width (Overlap junctions widen
+    // to their full shared throat) + the junction flag — an Overlap doorway is an OPEN
+    // corridor junction: no slab is ever placed there (a door never stands in open space).
+    float cutHalf = 0.8f;      // half-width of the wall cut (default kDoorHalf)
+    bool  junction = false;    // true = open junction (no door slab, widened throat)
     // Index into the host DoorSystem of the SM_Door_A slab that fills this doorway, or
     // kNoLink if this doorway has NO door (a doorless opening / gap-bridge mouth / cross-
     // level tube — visibility ALWAYS passes through it). Set by buildCanonFloor when it

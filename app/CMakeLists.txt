@@ -40,6 +40,7 @@ add_executable(X3Engine WIN32
     scene.cpp
     level.cpp
     level1.cpp
+    level_lint.cpp
     level_loader.cpp
     leveldoc_world.cpp
     player.cpp
