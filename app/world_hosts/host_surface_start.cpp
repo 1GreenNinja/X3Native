@@ -48,6 +48,7 @@
 #include "../rescue.h"
 #include "../monster.h"
 #include "../asset_root.h"
+#include "../surface_library.h"      // W3-3: real PBR concrete on the tower + apron (ART_BIBLE §4)
 #include "../intro_orchestrator.h"   // IntroOutcome / readOutcomeFlag / kIntroLandedFlag (--test-surfacestart)
 #include "../story_ops.h"            // x3::game::StoryFlags (the branch signal)
 #include "../headless_device.h"      // HeadlessRenderDevice (the headless scene-build self-test)
@@ -61,8 +62,14 @@ namespace {
 constexpr float kGroundY      = 0.0f;
 constexpr float kFacilityZ    = -42.0f;   // front glass wall plane
 constexpr float kFacilityHalfW= 26.0f;    // facility half-width  (X)
-constexpr float kFacilityHalfH= 9.0f;     // facility half-height (Y)
+// W3-3: the TOWER SPEC (Tim): white concrete + black glass bands, believable
+// proportions — 9 storeys x 4 m = 36 m (halfH 18). The old 9 m half was a squat
+// glass shoebox; the older-still art was 40-50 m too tall. 36 m is the middle.
+constexpr float kFacilityHalfH= 18.0f;    // facility half-height (Y) — 9 storeys
 constexpr float kFacilityHalfD= 16.0f;    // facility half-depth  (Z)
+constexpr float kStoreyH      = 4.0f;     // one storey
+constexpr float kBandH        = 1.8f;     // concrete spandrel band height per storey
+constexpr int   kStoreys      = 9;
 constexpr float kBreachHalfW  = 2.4f;     // entry breach half-width
 constexpr float kEntryReach   = 6.0f;     // distance to the breach that triggers the hand-off
 constexpr float kApproachZ    = -22.0f;   // crossing this advances "approach" objective
@@ -87,13 +94,18 @@ int hostSurfaceStart(HostContext& hc) {
         return 1;
     }
 
-    // ---- Sky + lighting: a low alien sun over a dim surface, so the glass reads.
+    // ---- Sky + lighting: GOLDEN HOUR (ART_BIBLE §3 surface zone — the sky is the
+    // accent). Low warm sun raking the tower face; warm horizon, cooling zenith.
     {
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
-        sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.55f; sp.sunDir[2] = -0.4f;
-        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.86f; sp.sunColor[2] = 0.72f;
-        sp.sunIntensity = 0.9f; sp.haze = 0.6f; sp.exposure = 1.0f;
+        sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.16f; sp.sunDir[2] = -0.35f;   // low, from the player's right
+        // (R4: 1.0/0.62/0.38 @1.5 baked every white surface ORANGE-BROWN — late
+        // golden, not cardboard. Softened toward amber so white concrete reads white-warm.)
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.78f; sp.sunColor[2] = 0.56f;
+        sp.sunIntensity = 1.25f; sp.haze = 0.45f; sp.exposure = 1.0f;
+        sp.zenith[0]  = 0.10f; sp.zenith[1]  = 0.15f; sp.zenith[2]  = 0.26f;  // cooling blue above
+        sp.horizon[0] = 0.55f; sp.horizon[1] = 0.34f; sp.horizon[2] = 0.20f;  // warm gold band
         device->setSkyParams(sp);
     }
     {
@@ -111,21 +123,45 @@ int hostSurfaceStart(HostContext& hc) {
 
     x3::game::Scene scene;
 
-    // ---- Ground plane (a wide static surface slab). ------------------------
+    // ---- SURFACE LIBRARY: real PBR concrete for the tower + apron (§4 realism
+    // mandate — no more checker ground / flat glass slab). Sets are curated +
+    // channel-law converted; loaded once here, drawn per-frame below.
+    x3::game::SurfaceLibrary surflib;
+    surflib.mount(x3::game::assetRoot() + "/surface_library");
+    // R3: cc_porous_cement rendered TAN under the golden sun (and the shader clamps
+    // baseColor factors, so lifting didn't read). mw_wall_plastic is the lightest
+    // albedo in the curated library — at facade distance its sheeting wrinkles read
+    // as weathered poured concrete, i.e. the WHITE band of the tower spec.
+    const x3::game::SurfaceSet& sTower  = surflib.get(*device, "mw_wall_plastic");
+    const x3::game::SurfaceSet& sApron  = surflib.get(*device, "sr_concrete_01");      // rough dark concrete apron
+    x3::logInfo(std::string("--world surface: surface sets tower=") +
+                (sTower.ok ? "cc_porous_cement OK" : "MISSING") + " apron=" +
+                (sApron.ok ? "sr_concrete_01 OK" : "MISSING"));
+
+    // ---- Ground: a DARK natural plain (collision + far read) with a textured
+    // concrete APRON panel between the landing site and the facility entrance.
     {
-        x3::prims::PrimMesh g = x3::prims::makeBox(120.0f, 0.5f, 120.0f, 0.0f, -0.5f, 0.0f, 8.0f);
+        x3::prims::PrimMesh g = x3::prims::makeBox(300.0f, 0.5f, 300.0f, 0.0f, -0.5f, 0.0f, 8.0f);
         auto gm = device->createMesh(g.verts.data(), (uint32_t)g.verts.size(),
                                      g.index.data(), (uint32_t)g.index.size());
-        auto gtD = x3::prims::makeCheckerRGBA(64, 16, 70, 68, 64, 52, 50, 46);
+        auto gtD = x3::prims::makeCheckerRGBA(64, 16, 46, 42, 36, 38, 35, 30);   // dark umber soil, low contrast
         auto gt = device->createTexture(gtD.data(), 64, 64, true);
         x3::game::Entity e{}; e.mesh = gm; e.tex = gt;
         e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 1.0f;
         e.tag = (uint32_t)x3::game::Tag::Static;
         scene.add(e);
         // Static collision floor so the Player capsule stands on it.
-        phys->addBox(x3::phys::Vec3{120.0f, 0.5f, 120.0f}, x3::phys::Vec3{0.0f, -0.5f, 0.0f},
+        phys->addBox(x3::phys::Vec3{300.0f, 0.5f, 300.0f}, x3::phys::Vec3{0.0f, -0.5f, 0.0f},
                      0.0f, x3::phys::Layer::Static);
     }
+    // Apron panel (visual, sits 2 cm over the soil so it wins the depth test):
+    // spans the walk from spawn to the front wall, wider than the facility face.
+    // (floor panels span x in [-w/2,w/2], z in [0,h] from the transform origin —
+    // anchor at z = kFacilityZ-4 so the slab runs from under the wall out past
+    // the landed ship at z=6 / the spawn at z=18.)
+    x3::rhi::MeshHandle apronMesh = surflib.makePanel(*device, /*floor*/1, 70.0f, 66.0f, 3.0f);
+    const float apronXform[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                                   0.0f, kGroundY + 0.02f, kFacilityZ - 4.0f, 1 };
 
     // ---- The GLASS FACILITY exterior. A large box walled in translucent glass:
     //      four glass walls (front split around the entry breach) + an opaque
@@ -136,15 +172,22 @@ int hostSurfaceStart(HostContext& hc) {
         x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 1.0f);
         auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
                                      m.index.data(), (uint32_t)m.index.size());
-        auto td = x3::prims::makeSolidRGBA(8, 150, 180, 210);
+        // W3-3: BLACK GLASS per the tower spec — dark, reflective, near-opaque
+        // (a corporate curtain wall at golden hour mirrors the sky; it does NOT
+        // read as light-blue aquarium glass). The concrete spandrel bands draw
+        // 5 cm proud of this plane, giving the banded facade.
+        auto td = x3::prims::makeSolidRGBA(8, 14, 16, 20);
         auto tx = device->createTexture(td.data(), 8, 8, true);
         x3::game::Entity e{}; e.mesh = mh; e.tex = tx;
-        e.transparent = true;
-        e.glass.opacity = 0.30f; e.glass.refraction = 0.04f;
-        e.glass.roughness = 0.05f; e.glass.specular = 0.7f;
-        e.glass.tint[0] = 0.72f; e.glass.tint[1] = 0.84f; e.glass.tint[2] = 0.95f;
-        e.emissive[0] = 0.10f; e.emissive[1] = 0.16f; e.emissive[2] = 0.24f; e.emissive[3] = 0.6f;
-        e.baseColor[3] = 0.30f;
+        // R4 FINAL: OPAQUE dark glazing. Three rounds proved the diagonal streaks
+        // are the glass pass shading the box triangulation (parameter-immune:
+        // survived spec 0.95->0.5, roughness 0.06->0.22, opacity 0.30->0.88).
+        // A day-lit black curtain wall reads opaque from outside anyway, so the
+        // glazing ships as dark glossy OPAQUE surface; true reflective glass
+        // returns when RT reflections cover scene entities (filed follow-up).
+        e.transparent = false;
+        e.baseColor[0] = 0.30f; e.baseColor[1] = 0.34f; e.baseColor[2] = 0.42f;
+        e.baseColor[3] = 1.0f;
         e.tag = (uint32_t)x3::game::Tag::Static;
         scene.add(e);
         phys->addBox(x3::phys::Vec3{hx, hy, hz}, x3::phys::Vec3{cx, cy, cz},
@@ -191,6 +234,56 @@ int hostSurfaceStart(HostContext& hc) {
         opaqueSlab(0.0f, kBreachHalfW + 1.0f, kFacilityZ, kBreachHalfW + 0.3f, 0.25f, wallT + 0.1f, 90, 200, 255);
         // The breach itself is the gap (no wall) — left open so the player walks in.
         x3::logInfo("--world surface: glass facility built (front wall split around the entry breach)");
+    }
+
+    // ---- W3-3: CONCRETE SPANDREL BANDS over the black glass (the tower spec).
+    // One reusable band quad per face size, instanced by transform: a 1.8 m
+    // concrete band at every storey line + a ground base + a rooftop parapet,
+    // drawn 5 cm proud of the glass planes. Front-face ground band splits around
+    // the breach; storey-1's band doubles as the entrance header.
+    const float kTowerH = 2.0f * kFacilityHalfH;                    // 36 m
+    x3::rhi::MeshHandle bandFB = surflib.makePanel(*device, 0, 2.0f * kFacilityHalfW + 0.8f, kBandH, 2.6f); // front/back span
+    x3::rhi::MeshHandle bandLR = surflib.makePanel(*device, 0, 2.0f * kFacilityHalfD + 0.8f, kBandH, 2.6f); // side span
+    x3::rhi::MeshHandle baseSeg = surflib.makePanel(*device, 0, (kFacilityHalfW - kBreachHalfW) - 0.6f, 1.2f, 2.6f); // breach-split base
+    struct BandDraw { x3::rhi::MeshHandle mesh; float xform[16]; };
+    std::vector<BandDraw> bands;
+    // yaw matrices: panels face -Z at yaw 0 (axis 0). yaw pi -> +Z (front face,
+    // toward the player); +-pi/2 -> +-X (sides).
+    auto pushBand = [&](x3::rhi::MeshHandle mesh, float yaw, float x, float y, float z) {
+        const float c = std::cos(yaw), s = std::sin(yaw);
+        BandDraw b{}; b.mesh = mesh;
+        float m[16] = { c,0,-s,0, 0,1,0,0, s,0,c,0, x,y,z,1 };
+        for (int i = 0; i < 16; ++i) b.xform[i] = m[i];
+        bands.push_back(b);
+    };
+    {
+        const float zF = kFacilityZ + wallT + 0.05f;                 // front plane, proud toward +Z
+        const float zB = kFacilityZ - 2.0f * kFacilityHalfD - wallT - 0.05f;
+        const float xL = -kFacilityHalfW - wallT - 0.05f;
+        const float xR =  kFacilityHalfW + wallT + 0.05f;
+        const float zC = kFacilityZ - kFacilityHalfD;                // side-face center
+        const float kPi = 3.14159265f;
+        for (int f = 1; f < kStoreys; ++f) {                         // storey lines
+            const float y = f * kStoreyH - kBandH * 0.5f;
+            pushBand(bandFB, kPi,        0.0f, y, zF);
+            pushBand(bandFB, 0.0f,       0.0f, y, zB);
+            pushBand(bandLR,  kPi*0.5f,  xL,   y, zC);   // R3: side yaws were swapped —
+            pushBand(bandLR, -kPi*0.5f,  xR,   y, zC);   // faces pointed INTO the tower
+        }
+        // Parapet crown (one band height, sitting atop the roof line).
+        pushBand(bandFB, kPi,       0.0f, kTowerH - 0.2f, zF);
+        pushBand(bandFB, 0.0f,      0.0f, kTowerH - 0.2f, zB);
+        pushBand(bandLR,  kPi*0.5f, xL,   kTowerH - 0.2f, zC);
+        pushBand(bandLR, -kPi*0.5f, xR,   kTowerH - 0.2f, zC);
+        // Ground base: full band on back/sides; split around the breach on front.
+        pushBand(bandFB, 0.0f,      0.0f, 0.0f, zB);
+        pushBand(bandLR,  kPi*0.5f, xL,   0.0f, zC);
+        pushBand(bandLR, -kPi*0.5f, xR,   0.0f, zC);
+        const float segOff = kBreachHalfW + 0.3f + ((kFacilityHalfW - kBreachHalfW) - 0.6f) * 0.5f;
+        pushBand(baseSeg, kPi, -segOff, 0.0f, zF);
+        pushBand(baseSeg, kPi,  segOff, 0.0f, zF);
+        x3::logInfo("--world surface: tower facade = " + std::to_string(bands.size()) +
+                    " concrete spandrel bands over black glass (9 storeys + parapet)");
     }
 
     // ---- Jake's LANDED SHIP (JakeFighterShip.glb; box fallback). Sits on the
@@ -305,6 +398,20 @@ int hostSurfaceStart(HostContext& hc) {
     auto drawWorld = [&](const x3::rhi::FrameContext& frame, float cx, float cy, float cz,
                          float yaw, float pitch) {
         scene.render(*device, frame);   // ground + glass facility + breach + Sarah's prop entity
+        // W3-3: the textured skin — concrete apron underfoot + spandrel bands on the tower.
+        if (sApron.ok) surflib.drawPanel(*device, frame, sApron, apronMesh, apronXform);
+        // Bands draw bespoke (not drawPanel): the library has no true WHITE concrete,
+        // so the porous-cement albedo gets a lifted, slightly-desaturated baseColor —
+        // texture relief stays, the tan reads as sun-washed white concrete.
+        if (sTower.ok) {
+            const float bcW[4]   = { 1.85f, 1.80f, 1.72f, 1.0f };
+            const float emis0[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            for (const auto& b : bands)
+                device->drawMeshPBR(frame, b.mesh, sTower.albedo, sTower.normal, sTower.mr,
+                                    bcW, emis0, b.xform, false, false,
+                                    x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                    1.0f, 0.0f, 0.0f);
+        }
         rescue.draw(*device, frame, scene);   // Sarah's GLB over her Prop entity
         drawShip(frame);
         drawWeapon(frame, cx, cy, cz, yaw, pitch);

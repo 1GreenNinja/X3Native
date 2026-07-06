@@ -35,11 +35,28 @@ int hostSpace(HostContext& hc) {
             device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
         }
 
-        // Sun-as-point-light + dim ambient via SkyParams (we leave SkyParams
-        // DISABLED so the analytic sky doesn't paint a daytime backdrop over
-        // deep space; the dark clear color shows through).
-        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false;
-          device->setSkyParams(sp); }
+        // W3-3 (AD-2 red-line): deep-space STARFIELD. The old host disabled the
+        // sky entirely, leaving the flat navy clear color behind the fleet. The
+        // analytic sky's procedural starfield is gated to DARK skies and, at
+        // haze == 0, paints stars on the FULL sphere (spaceW: a space scene
+        // looking "down" sees stars, not a ground plane) — so deep space is the
+        // sky ENABLED at near-black with zero haze, exactly like the nightsky
+        // host but with no horizon band at all.
+        { x3::rhi::IRenderDevice::SkyParams sp{};
+          sp.enabled = true;
+          sp.sunDir[0] = 0.6f; sp.sunDir[1] = 0.5f; sp.sunDir[2] = 0.62f;   // matches the key light corner
+          sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.90f;
+          sp.sunIntensity = 0.02f;                     // a distant star-disk glint, not daylight
+          sp.haze = 0.0f;                              // haze 0 == DEEP SPACE (stars on the full sphere)
+          sp.exposure = 1.0f;
+          sp.zenith[0]  = 0.003f; sp.zenith[1]  = 0.003f; sp.zenith[2]  = 0.008f;
+          sp.horizon[0] = 0.004f; sp.horizon[1] = 0.005f; sp.horizon[2] = 0.011f;
+          device->setSkyParams(sp);
+          device->setSkyTime(10.0f);                   // non-zero -> starfield twinkle/rotation phase
+          // R2: enabling the sky at near-zero sun replaced whatever ambient the
+          // disabled-sky path implied — the fleet went silhouette-black. Explicit
+          // cool ambient so hulls read while space stays dark (nightsky's trick).
+          device->setAmbient(0.11f, 0.12f, 0.16f); }
         // SSAO + SSGI screen-space passes raster the whole scene to black on a
         // black/empty space background (no nearby geometry to bounce off) -- the
         // 1080 Ti / no-RT fallback path documented in the memory bank. Disable
@@ -55,19 +72,23 @@ int hostSpace(HostContext& hc) {
         // lights + the hardcoded sun, attenuated by 1/r^2). The point-light
         // ranges + intensities are intentionally cranked: deep space has zero
         // bounced light, so anything subtle would render the ships as silhouettes.
+        // R3: with the REAL black sky in (starfield), the old light rig left the
+        // hulls as silhouettes — the navy "readability" of the old shot was just
+        // the clear color. Roughly doubled key/fill/rim so the fleet reads as lit
+        // metal against the stars.
         { x3::rhi::PointLight pl[3];
           // Key light: a "sun" anchored near the fleet so attenuation is gentle.
           pl[0].pos[0] =  120.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f;
           pl[0].range  =  600.0f;
-          pl[0].color[0] = 60.0f; pl[0].color[1] = 56.0f; pl[0].color[2] = 48.0f;
+          pl[0].color[0] = 130.0f; pl[0].color[1] = 121.0f; pl[0].color[2] = 104.0f;
           // Fill light from -X/+Y to bring out the camera-facing side.
           pl[1].pos[0] = -80.0f; pl[1].pos[1] =  60.0f; pl[1].pos[2] =  20.0f;
           pl[1].range  = 400.0f;
-          pl[1].color[0] = 15.0f; pl[1].color[1] = 18.0f; pl[1].color[2] = 24.0f;
+          pl[1].color[0] = 40.0f; pl[1].color[1] = 46.0f; pl[1].color[2] = 60.0f;
           // Rim/back light from +X/-Y to give the ships shape.
           pl[2].pos[0] =  200.0f; pl[2].pos[1] = -30.0f; pl[2].pos[2] = -50.0f;
           pl[2].range  = 500.0f;
-          pl[2].color[0] = 8.0f; pl[2].color[1] = 6.0f; pl[2].color[2] = 4.0f;
+          pl[2].color[0] = 24.0f; pl[2].color[1] = 19.0f; pl[2].color[2] = 13.0f;
           device->setPointLights(pl, 3); }
 
         // ---- Player ship (the SpacePilotController) -----------------------
