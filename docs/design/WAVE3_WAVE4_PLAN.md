@@ -51,3 +51,20 @@ almost for free — that is why recipes, not hand passes.
 ## Wave 5+ (Tim prioritizes when Waves 3-4 land)
 STFC intro stack fold · ship-interior cluster · 25-car roster + LATE NIGHT SPEED shops ·
 facility exterior to the tower spec (white concrete, black glass bands) · level 4.5 reveal.
+
+## RED-LINE (AD-2 whole-game survey, 66 shots, 2026-07-05 — director-verified)
+The renderer already produces bible-grade frames (20_planet, 06_showroom exterior,
+23_car, 26_ddgi). The gap is CONTENT-side, concentrated exactly where Wave 3 aims:
+1. Canon cell + hall: walls run bright/even (violates §2 darks-own-the-frame); hall is
+   a flat monochrome blue wash with no key, no warm-vs-cold, no accent discipline.
+   -> Wave 3 recipes + AD-1 fog/grade + AD-3 real materials. Priority ONE.
+2. --world space: NO STARFIELD (flat navy) behind an otherwise good capital-ship
+   composition — wire the existing nightsky starfield in. Cheap, do in Wave 3.
+3. --world surface: pure blockout (black plane + glass slab). Full dressing to the
+   white-concrete/black-glass tower spec = Wave 5 scope, noted.
+4. 25_alert is the closest interior to the bible — treat it as the internal reference;
+   fix: red becomes lenses/pools not a full wall wash; stop the door blowing pink-white.
+BUG LIST (filed, not art): --screenshot-showroom-ragdoll segfaults at shutdown after
+writing; main menu prints RESOLUTION: 0 x 0; worldmap POI labels overlap at center;
+RT lamp shots show black speckle at emitters; showroom-fp camera renders ~black;
+survey cameras outside the shell see kit backfaces (sightline containment).
