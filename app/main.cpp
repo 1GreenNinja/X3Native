@@ -281,6 +281,7 @@ int main(int argc, char** argv) {
         _tf.testAcoustics = o.testAcoustics;
         _tf.testLevel1 = o.testLevel1;
         _tf.testCanonLevel = o.testCanonLevel;
+        _tf.testLevelLint = o.testLevelLint;
         _tf.testCanonPlay = o.testCanonPlay;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;

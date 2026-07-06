@@ -258,19 +258,19 @@ void wallZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
 // level (else the lower room's lintel guillotines a climber — the head-clearance bug).
 void lintelX(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
              float xc, float z, float floorY, float h, float clearTop, x3::rhi::TextureHandle tex,
-             const float color[4], uint32_t room, bool vis) {
+             const float color[4], uint32_t room, bool vis, float halfW = kDoorHalf) {
     const float top = floorY + h;                  // ceiling underside
     const float lh = (top - clearTop) * 0.5f;
     if (lh <= 0.0f) return;                         // ceiling already above the clear opening
-    addBox(s, d, p, kDoorHalf, lh, kWallT * 0.5f, xc, clearTop + lh, z, tex, color, room, true, vis);
+    addBox(s, d, p, halfW, lh, kWallT * 0.5f, xc, clearTop + lh, z, tex, color, room, true, vis);
 }
 void lintelZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
              float x, float zc, float floorY, float h, float clearTop, x3::rhi::TextureHandle tex,
-             const float color[4], uint32_t room, bool vis) {
+             const float color[4], uint32_t room, bool vis, float halfW = kDoorHalf) {
     const float top = floorY + h;
     const float lh = (top - clearTop) * 0.5f;
     if (lh <= 0.0f) return;
-    addBox(s, d, p, kWallT * 0.5f, lh, kDoorHalf, x, clearTop + lh, zc, tex, color, room, true, vis);
+    addBox(s, d, p, kWallT * 0.5f, lh, halfW, x, clearTop + lh, zc, tex, color, room, true, vis);
 }
 
 // A walkable THRESHOLD RAMP at a doorway whose two rooms have different floor
@@ -711,6 +711,74 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
         }
     }
 
+    // ---- W2-E DOORWAY NORMALIZE (LAW 1 / GATE A). The resolver derives every opening
+    // from room-pair geometry (the JSON ships only [a,b] pairs), and three raw-output
+    // classes shipped as floating doors/lintels (2026-07-05 playtest): Overlap-junction
+    // slabs standing mid-corridor, gap-bridge mouths cut OUTSIDE the partner's face span
+    // (18 of them on the W/E service corridors -> the ward block), and gap-separated
+    // slabs floating between the two wall planes. Normalize every doorway ONCE here so
+    // the builder, PVS, ramps and --test-levellint all consume the same legal geometry.
+    {
+        uint32_t clamped = 0, seated = 0, junctions = 0;
+        for (CanonDoorway& dw : floor.doorways) {
+            if (dw.kind == DoorwayKind::CrossLevel || dw.kind == DoorwayKind::None) continue;
+            const CanonRoom& A = floor.rooms[dw.a];
+            const CanonRoom& B = floor.rooms[dw.b];
+            const bool planeIsX = (dw.axis == 0);
+            // Cross-axis spans of both rooms (where a cut can legally live in BOTH).
+            const float aLo = planeIsX ? A.z0() : A.x0(), aHi = planeIsX ? A.z1() : A.x1();
+            const float bLo = planeIsX ? B.z0() : B.x0(), bHi = planeIsX ? B.z1() : B.x1();
+            float cut = planeIsX ? dw.cz : dw.cx;
+            if (dw.kind == DoorwayKind::Overlap) {
+                // JUNCTION: interpenetrating corridors are an OPEN THROAT — widen the
+                // cut to the shared span, and never place a slab (a door must not stand
+                // in open space; this was the "door in the middle of the cell hall").
+                dw.junction = true;
+                const float span = std::min(aHi, bHi) - std::max(aLo, bLo);
+                dw.cutHalf = std::max(0.6f, std::min(span * 0.5f - 0.05f, 2.0f));
+                ++junctions;
+            }
+            const float m = dw.cutHalf + 0.05f;
+            const float winLo = std::max(aLo, bLo) + m, winHi = std::min(aHi, bHi) - m;
+            if (winLo <= winHi) {
+                const float c0 = cut;
+                cut = std::min(std::max(cut, winLo), winHi);
+                if (std::fabs(cut - c0) > 0.01f) ++clamped;
+            } else {
+                const float lo = std::max(aLo, bLo), hi = std::min(aHi, bHi);
+                if (hi > lo + 0.6f) {
+                    // Shared window narrower than the opening: center the cut on the
+                    // shared span and SHRINK the opening to fit (legal + seated).
+                    cut = (lo + hi) * 0.5f;
+                    dw.cutHalf = std::max(0.3f, (hi - lo) * 0.5f - 0.05f);
+                    ++clamped;
+                } else {
+                    // Disjoint cross-spans (hard diagonal): pull the cut between the
+                    // nearest edges; the lint keeps reporting it (data wants an
+                    // L-corridor here).
+                    cut = (std::min(aHi, bHi) + std::max(aLo, bLo)) * 0.5f;
+                    ++clamped;
+                    x3::logWarn("loadCanonFloor: diagonal gap-bridge '" + A.name +
+                                "' <-> '" + B.name + "' has no shared cross-span");
+                }
+            }
+            if (planeIsX) dw.cz = cut; else dw.cx = cut;
+            // SLAB SEAT: put an adjacency doorway's PLANE coordinate ON room a's nearest
+            // face plane (slab + ramps + portal center follow). The raw midpoint left the
+            // slab floating in the interstice whenever the rooms don't touch exactly.
+            if (dw.kind == DoorwayKind::AdjacentX || dw.kind == DoorwayKind::AdjacentZ) {
+                const float plane = planeIsX ? dw.cx : dw.cz;
+                const float a0 = planeIsX ? A.x0() : A.z0(), a1 = planeIsX ? A.x1() : A.z1();
+                const float pa = (std::fabs(plane - a0) < std::fabs(plane - a1)) ? a0 : a1;
+                if (std::fabs(pa - plane) > 0.01f) ++seated;
+                if (planeIsX) dw.cx = pa; else dw.cz = pa;
+            }
+        }
+        x3::logInfo("loadCanonFloor: doorway normalize — " + std::to_string(clamped) +
+                    " cut(s) clamped, " + std::to_string(seated) + " slab plane(s) seated, " +
+                    std::to_string(junctions) + " overlap junction(s) opened (no slab)");
+    }
+
     // ---- PORTAL PVS: for each room, the set of room ids reachable through a doorway
     // (itself + every directly-doored neighbour). This is the visibility set the cull
     // uses (current room + rooms you can see through a doorway from it). ----
@@ -899,7 +967,7 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // Each Gap carries its run coordinate `c` AND a `clearTop` — the Y the opening must
     // stay clear up to (raised at a step doorway to clear a player standing on the HIGHER
     // floor, so the lower room's lintel doesn't guillotine someone coming up the ramp).
-    struct Gap { float c; float clearTop; };
+    struct Gap { float c; float clearTop; float half; };   // half = per-doorway cut half-width (W2-E)
     std::vector<std::vector<Gap>> gapXneg(nRooms), gapXpos(nRooms), gapZneg(nRooms), gapZpos(nRooms);
 
     // Clear-passage top for a doorway between two rooms: high enough that a standing player
@@ -913,12 +981,12 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const float clearTop = doorwayClearTop(floor.rooms[dw.a], floor.rooms[dw.b]);
         if (dw.axis == 0) {
             // Door thin in X -> it lives on an X-plane wall (-X or +X) of the room.
-            if (std::fabs(dw.cx - r.x0()) < std::fabs(dw.cx - r.x1())) gapXneg[room].push_back({dw.cz, clearTop});
-            else                                                        gapXpos[room].push_back({dw.cz, clearTop});
+            if (std::fabs(dw.cx - r.x0()) < std::fabs(dw.cx - r.x1())) gapXneg[room].push_back({dw.cz, clearTop, dw.cutHalf});
+            else                                                        gapXpos[room].push_back({dw.cz, clearTop, dw.cutHalf});
         } else {
             // Door thin in Z -> a Z-plane wall (-Z or +Z) of the room.
-            if (std::fabs(dw.cz - r.z0()) < std::fabs(dw.cz - r.z1())) gapZneg[room].push_back({dw.cx, clearTop});
-            else                                                        gapZpos[room].push_back({dw.cx, clearTop});
+            if (std::fabs(dw.cz - r.z0()) < std::fabs(dw.cz - r.z1())) gapZneg[room].push_back({dw.cx, clearTop, dw.cutHalf});
+            else                                                        gapZpos[room].push_back({dw.cx, clearTop, dw.cutHalf});
         }
     };
     // For a GAP-BRIDGE the two rooms do NOT share a wall — a short corridor spans the
@@ -934,12 +1002,12 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const float clearTop = doorwayClearTop(r, o);
         if (dw.axis == 0) {
             // Corridor runs along X: mouth on this room's +X or -X wall at z = dw.cz.
-            if (o.cx > r.cx) gapXpos[room].push_back({dw.cz, clearTop});   // partner is to +X
-            else             gapXneg[room].push_back({dw.cz, clearTop});   // partner is to -X
+            if (o.cx > r.cx) gapXpos[room].push_back({dw.cz, clearTop, dw.cutHalf});   // partner is to +X
+            else             gapXneg[room].push_back({dw.cz, clearTop, dw.cutHalf});   // partner is to -X
         } else {
             // Corridor runs along Z: mouth on this room's +Z or -Z wall at x = dw.cx.
-            if (o.cz > r.cz) gapZpos[room].push_back({dw.cx, clearTop});   // partner is to +Z
-            else             gapZneg[room].push_back({dw.cx, clearTop});   // partner is to -Z
+            if (o.cz > r.cz) gapZpos[room].push_back({dw.cx, clearTop, dw.cutHalf});   // partner is to +Z
+            else             gapZneg[room].push_back({dw.cx, clearTop, dw.cutHalf});   // partner is to -Z
         }
     };
     for (const CanonDoorway& dw : floor.doorways) {
@@ -963,11 +1031,12 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         std::sort(g.begin(), g.end(), [](const Gap& a, const Gap& b){ return a.c < b.c; });
         float cursor = z0;
         for (const Gap& gap : g) {
-            float lo = gap.c - kDoorHalf, hi = gap.c + kDoorHalf;
+            const float gh = gap.half > 0.0f ? gap.half : kDoorHalf;
+            float lo = gap.c - gh, hi = gap.c + gh;
             if (lo < cursor) lo = cursor;        // clamp inside the wall run
             if (hi > z1) hi = z1;
             if (lo > cursor) wallZ(scene, device, physics, cursor, lo, x, floorY, h, tex, tint, ri, wallVis);
-            lintelZ(scene, device, physics, x, gap.c, floorY, h, gap.clearTop, tex, tint, ri, wallVis);
+            lintelZ(scene, device, physics, x, gap.c, floorY, h, gap.clearTop, tex, tint, ri, wallVis, gh);
             cursor = std::max(cursor, hi);
         }
         if (cursor < z1) wallZ(scene, device, physics, cursor, z1, x, floorY, h, tex, tint, ri, wallVis);
@@ -979,11 +1048,12 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         std::sort(g.begin(), g.end(), [](const Gap& a, const Gap& b){ return a.c < b.c; });
         float cursor = x0;
         for (const Gap& gap : g) {
-            float lo = gap.c - kDoorHalf, hi = gap.c + kDoorHalf;
+            const float gh = gap.half > 0.0f ? gap.half : kDoorHalf;
+            float lo = gap.c - gh, hi = gap.c + gh;
             if (lo < cursor) lo = cursor;
             if (hi > x1) hi = x1;
             if (lo > cursor) wallX(scene, device, physics, cursor, lo, z, floorY, h, tex, tint, ri, wallVis);
-            lintelX(scene, device, physics, gap.c, z, floorY, h, gap.clearTop, tex, tint, ri, wallVis);
+            lintelX(scene, device, physics, gap.c, z, floorY, h, gap.clearTop, tex, tint, ri, wallVis, gh);
             cursor = std::max(cursor, hi);
         }
         if (cursor < x1) wallX(scene, device, physics, cursor, x1, z, floorY, h, tex, tint, ri, wallVis);
@@ -1083,10 +1153,12 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);
 
         // 4 walls with doorway gaps where the resolver produced them.
-        buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), floorY, h, gapXneg[ri], wTex, tint);   // -X wall (runs in Z)
-        buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
-        buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
-        buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
+        // W2-E: consult the doorway wall dedup (it was computed above but never USED —
+        // every shared plane built BOTH rooms' coincident wall boxes -> z-fight shimmer).
+        if (!skipFace[ri * 4 + 0]) buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), floorY, h, gapXneg[ri], wTex, tint);   // -X wall (runs in Z)
+        if (!skipFace[ri * 4 + 1]) buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
+        if (!skipFace[ri * 4 + 2]) buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
+        if (!skipFace[ri * 4 + 3]) buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
     }
 
     // ---- THRESHOLD RAMPS at doored/adjacent/overlap openings with a FLOOR-HEIGHT
@@ -1117,6 +1189,54 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             // AdjacentX/overlap on an X-plane: ramp runs along X into the lower room.
             float sideSign = (lower.cx < dw.cx) ? -1.0f : +1.0f;
             doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, floorTex, rampTint, lowerId, floorVis);
+        }
+    }
+
+    // ---- W2-E DOORWAY REVEALS: adjacent rooms within wall-gap tolerance (0.05..1.0 m
+    // apart) cut BOTH walls, and the slab now seats on room a's plane — but the sliver
+    // between the two planes was raw VOID visible through the opening (LAW 2: never
+    // gapped). Fill the interstice with jambs + header + a floor strip so the doorway
+    // reads as one thick reinforced frame. Tagged to room a (in b's PVS via the door). ----
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ) continue;
+        const CanonRoom& ra = floor.rooms[dw.a];
+        const CanonRoom& rb = floor.rooms[dw.b];
+        const bool planeIsX = (dw.axis == 0);
+        const float pa = planeIsX ? dw.cx : dw.cz;   // slab plane (seated on a's face)
+        const float pb0 = planeIsX ? rb.x0() : rb.z0(), pb1 = planeIsX ? rb.x1() : rb.z1();
+        const float pb = (std::fabs(pa - pb0) < std::fabs(pa - pb1)) ? pb0 : pb1;   // b's cut plane
+        const float sep = std::fabs(pb - pa);
+        if (sep < 0.05f || sep > 1.0f) continue;     // touching (nothing to seal)
+        const float cut  = planeIsX ? dw.cz : dw.cx;
+        const float half = dw.cutHalf > 0.0f ? dw.cutHalf : kDoorHalf;
+        const float dLo = std::min(pa, pb) - kWallT * 0.5f, dHi = std::max(pa, pb) + kWallT * 0.5f;
+        const float dC = (dLo + dHi) * 0.5f, dH = (dHi - dLo) * 0.5f;
+        const float yFloor = std::max(ra.y0(), rb.y0());
+        const float yCeil  = std::min(ra.y1(), rb.y1());
+        const float clearTop = yFloor + kLintel;
+        const float jamT = kWallT;                    // jamb thickness along the cut axis
+        float rvTint[4]; tintFor(ra.type, rvTint);
+        if (planeIsX) {
+            // Interstice depth runs in X; cut runs in Z. Jambs flank the opening in Z.
+            addBox(scene, device, physics, dH, (yCeil - yFloor) * 0.5f, jamT * 0.5f,
+                   dC, (yFloor + yCeil) * 0.5f, cut - half - jamT * 0.5f, wallTexA, rvTint, dw.a, true, wallVis);
+            addBox(scene, device, physics, dH, (yCeil - yFloor) * 0.5f, jamT * 0.5f,
+                   dC, (yFloor + yCeil) * 0.5f, cut + half + jamT * 0.5f, wallTexA, rvTint, dw.a, true, wallVis);
+            if (yCeil > clearTop)                     // header above the clear opening
+                addBox(scene, device, physics, dH, (yCeil - clearTop) * 0.5f, half,
+                       dC, (clearTop + yCeil) * 0.5f, cut, wallTexA, rvTint, dw.a, true, wallVis);
+            addBox(scene, device, physics, dH, 0.05f, half,                       // floor strip
+                   dC, yFloor - 0.05f, cut, wallTexA, rvTint, dw.a, true, wallVis);
+        } else {
+            addBox(scene, device, physics, jamT * 0.5f, (yCeil - yFloor) * 0.5f, dH,
+                   cut - half - jamT * 0.5f, (yFloor + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
+            addBox(scene, device, physics, jamT * 0.5f, (yCeil - yFloor) * 0.5f, dH,
+                   cut + half + jamT * 0.5f, (yFloor + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
+            if (yCeil > clearTop)
+                addBox(scene, device, physics, half, (yCeil - clearTop) * 0.5f, dH,
+                       cut, (clearTop + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
+            addBox(scene, device, physics, half, 0.05f, dH,
+                   cut, yFloor - 0.05f, dC, wallTexA, rvTint, dw.a, true, wallVis);
         }
     }
 
@@ -1198,6 +1318,7 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
                 dw.kind != DoorwayKind::Overlap)
                 continue;
+            if (dw.junction) continue;   // W2-E: open corridor junction (LAW 1: no slab in open space)
             DoorSpec spec;
             spec.doorwayCenter = x3::phys::Vec3{ dw.cx, dw.cy, dw.cz };
             // axis 0 => door thin in X (wall plane X=const) => DoorAxis::AlongZ; axis 1 => AlongX.
