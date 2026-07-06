@@ -5,6 +5,8 @@
 #include "ocean_base.h"
 #include "headless_device.h"
 #include "mesh_prims.h"
+#include "surface_library.h"   // W3-4: real PBR sets on the base hull/seafloor
+#include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 
@@ -28,12 +30,24 @@ constexpr float kLevelH = 6.0f;        // disc level height
 void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics) {
     (void)physics;   // graybox undersea zone is visual-only this pass (no collision body)
 
+    // W3-4 REALISM PASS: the base is no longer flat-tinted graybox — architectural
+    // surfaces carry real surface-library PBR sets (ART_BIBLE §4: a wall without an
+    // albedo TEXTURE is a red-line offense). Tints stay as MULTIPLIERS so the deep-
+    // water palette (dark, desaturated, teal-leaning) rides on top of real material.
+    // On a headless device the set loads may no-op (invalid handles) — the entity
+    // then renders exactly like the old graybox, so --test-oceanbase is unchanged.
+    SurfaceLibrary surf;
+    surf.mount(assetRoot() + "/surface_library");
+    auto set = [&](const char* name) -> const SurfaceSet& { return surf.get(device, name); };
+
     auto addBoxProp = [&](float cx, float cy, float cz, float hx, float hy, float hz,
-                          const float col[4], const float emiss[4]) {
-        x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 0.5f);
+                          const float col[4], const float emiss[4],
+                          const SurfaceSet* s = nullptr, float uvScale = 0.5f) {
+        x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, uvScale);
         Entity e;
         e.mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
                                    m.index.data(), (uint32_t)m.index.size());
+        if (s && s->ok) { e.tex = s->albedo; e.normalTex = s->normal; e.mrTex = s->mr; }
         e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=col[3];
         if (emiss) { e.emissive[0]=emiss[0]; e.emissive[1]=emiss[1]; e.emissive[2]=emiss[2]; e.emissive[3]=emiss[3]; }
         e.tag = (uint32_t)Tag::Prop;
@@ -43,42 +57,74 @@ void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IP
     const float baseDeckY = kSeafloorY + (float)kLevels * kLevelH;   // top deck Y
 
     // ---- Ocean surface plane (large translucent blue slab at the surface). ----
+    // W3-4: widened 220 -> 620 half-extent — from sub depth the old plane's hard
+    // box EDGE hung in frame as a floating monolith; the surface must read endless.
     { const float water[4] = { 0.10f, 0.28f, 0.42f, 0.55f };
-      addBoxProp(kBaseCx, kSurfaceY, kBaseCz, 220.0f, 0.2f, 220.0f, water, nullptr); }
+      addBoxProp(kBaseCx, kSurfaceY, kBaseCz, 620.0f, 0.2f, 620.0f, water, nullptr); }
 
-    // ---- Seafloor pad. ----
-    { const float floorCol[4] = { 0.20f, 0.22f, 0.20f, 1.0f };
-      addBoxProp(kBaseCx, kSeafloorY - 0.5f, kBaseCz, 150.0f, 0.5f, 150.0f, floorCol, nullptr); }
+    // ---- Seafloor pad — rough dark stone, tiled coarse (8 m repeats read as rock
+    // shelf at sub scale, not bathroom tile). Deep-sediment tint over the albedo. ----
+    { const float floorCol[4] = { 0.42f, 0.42f, 0.38f, 1.0f };
+      addBoxProp(kBaseCx, kSeafloorY - 0.5f, kBaseCz, 150.0f, 0.5f, 150.0f, floorCol, nullptr,
+                 &set("sr_concrete_01"), 0.125f); }
 
-    // ---- The 3-level undersea disc base (square-graybox tiers, decreasing footprint). ----
-    { const float hull[4] = { 0.45f, 0.48f, 0.52f, 1.0f };
+    // ---- The 3-level undersea disc base — riveted steel hull plates (the AD-3
+    // star set), tinted to deep-steel so light falloff owns the read. 2 m repeats. ----
+    { const float hull[4] = { 0.52f, 0.56f, 0.62f, 1.0f };
       for (uint32_t l = 0; l < kLevels; ++l) {
           const float half = kBaseRadius * (1.0f - (float)l * 0.12f);
           const float cy   = kSeafloorY + ((float)l + 0.5f) * kLevelH;
-          addBoxProp(kBaseCx, cy, kBaseCz, half, kLevelH * 0.5f, half, hull, nullptr);
+          addBoxProp(kBaseCx, cy, kBaseCz, half, kLevelH * 0.5f, half, hull, nullptr,
+                     &set("mw_metal_trim_b"), 0.5f);
+          // Viewport band: a thin warm-lit window strip just under each level's top
+          // edge on all four faces (one thin emissive frame box per level) — the
+          // bible's "instruments glow": inhabited light leaking out, not floodlights.
+          const float bandEm[4] = { 0.95f, 0.72f, 0.38f, 1.25f };   // warm, not white-blown
+          const float bandCol[4] = { 0.10f, 0.10f, 0.10f, 1.0f };
+          addBoxProp(kBaseCx, cy + kLevelH * 0.28f, kBaseCz,
+                     half + 0.15f, 0.35f, half + 0.15f, bandCol, bandEm);
       } }
 
-    // ---- Central reactor (glowing) through the core. ----
+    // ---- Central reactor (glowing) through the core — its crown rises 4 m ABOVE
+    // the top deck so the glow reads as the base's landmark from approach range
+    // (fully inside the hull it was an invisible practical). ----
     { const float reactorCol[4] = { 0.30f, 0.20f, 0.10f, 1.0f };
-      const float reactorEm[4]  = { 0.95f, 0.45f, 0.10f, 2.5f };
-      addBoxProp(kBaseCx, kSeafloorY + (float)kLevels * kLevelH * 0.5f, kBaseCz,
-                 6.0f, (float)kLevels * kLevelH * 0.5f, 6.0f, reactorCol, reactorEm); }
+      const float reactorEm[4]  = { 0.95f, 0.45f, 0.10f, 2.2f };
+      const float coreH = ((float)kLevels * kLevelH + 4.0f) * 0.5f;
+      addBoxProp(kBaseCx, kSeafloorY + coreH, kBaseCz,
+                 6.0f, coreH, 6.0f, reactorCol, reactorEm,
+                 &set("sr_metal_lattice"), 1.0f); }
 
-    // ---- Sub-docking bay (a portal box at the base edge) + airlock chamber. ----
-    { const float dockCol[4] = { 0.35f, 0.38f, 0.42f, 1.0f };
-      addBoxProp(kBaseCx + kBaseRadius, baseDeckY - kLevelH, kBaseCz, 12.0f, 5.0f, 16.0f, dockCol, nullptr);  // dock bay
-      addBoxProp(kBaseCx + kBaseRadius - 14.0f, baseDeckY - kLevelH, kBaseCz, 4.0f, 4.0f, 4.0f, dockCol, nullptr); } // airlock
+    // ---- Sub-docking bay (a portal box at the base edge) + airlock chamber —
+    // industrial panel steel; the dock mouth gets a hazard-amber edge strip so a
+    // sub pilot reads the entry point from range (the zone's ONE accent). ----
+    { const float dockCol[4] = { 0.48f, 0.50f, 0.54f, 1.0f };
+      addBoxProp(kBaseCx + kBaseRadius, baseDeckY - kLevelH, kBaseCz, 12.0f, 5.0f, 16.0f, dockCol, nullptr,
+                 &set("mw_metal_panels_a"), 0.5f);   // dock bay
+      addBoxProp(kBaseCx + kBaseRadius - 14.0f, baseDeckY - kLevelH, kBaseCz, 4.0f, 4.0f, 4.0f, dockCol, nullptr,
+                 &set("mw_metal_grate"), 0.5f);      // airlock
+      // Dock-mouth entry marker: THIN amber frame strips (top bar + two posts)
+      // outlining the mouth on the +X face — a readable entry cue, not a billboard.
+      const float amberEm[4] = { 1.0f, 0.62f, 0.10f, 1.8f };
+      const float amberCol[4] = { 0.12f, 0.10f, 0.06f, 1.0f };
+      const float mx = kBaseCx + kBaseRadius + 12.05f;   // just proud of the dock +X face
+      const float my = baseDeckY - kLevelH;
+      addBoxProp(mx, my + 4.6f, kBaseCz, 0.25f, 0.30f, 15.5f, amberCol, amberEm);  // top bar
+      addBoxProp(mx, my, kBaseCz - 15.6f, 0.25f, 4.8f, 0.30f, amberCol, amberEm);  // post -Z
+      addBoxProp(mx, my, kBaseCz + 15.6f, 0.25f, 4.8f, 0.30f, amberCol, amberEm); } // post +Z
     m_plan.hasSubDock = true; m_plan.hasAirlock = true; m_plan.hasReactor = true;
 
     // ---- A player submarine at the dock + 3 enemy subs patrolling mid-water. ----
-    { const float subCol[4]  = { 0.30f, 0.45f, 0.40f, 1.0f };   // player sub (teal)
-      addBoxProp(kBaseCx + kBaseRadius + 16.0f, baseDeckY - kLevelH, kBaseCz, 6.0f, 2.0f, 2.0f, subCol, nullptr);
+    { const float subCol[4]  = { 0.35f, 0.48f, 0.44f, 1.0f };   // player sub (teal-steel)
+      addBoxProp(kBaseCx + kBaseRadius + 16.0f, baseDeckY - kLevelH, kBaseCz, 6.0f, 2.0f, 2.0f, subCol, nullptr,
+                 &set("sr_metal_b"), 1.0f);
       m_playerSub = true; }
-    { const float enemyCol[4] = { 0.45f, 0.20f, 0.18f, 1.0f };  // enemy subs (red)
+    { const float enemyCol[4] = { 0.40f, 0.22f, 0.20f, 1.0f };  // enemy subs (dark red-steel)
       const float ez[3] = { kBaseCz - 60.0f, kBaseCz + 40.0f, kBaseCz - 20.0f };
       const float ex[3] = { kBaseCx - 50.0f, kBaseCx + 30.0f, kBaseCx + 70.0f };
       for (int i = 0; i < 3; ++i)
-          addBoxProp(ex[i], -30.0f, ez[i], 7.0f, 2.5f, 2.5f, enemyCol, nullptr);
+          addBoxProp(ex[i], -30.0f, ez[i], 7.0f, 2.5f, 2.5f, enemyCol, nullptr,
+                     &set("sr_metal_b"), 1.0f);
       m_combat.enemySubs = 3; }
 
     // ---- Fill the plan + the (inert) submarine-combat model. ----

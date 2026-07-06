@@ -24,6 +24,7 @@
 #include "monster.h"
 #include "anim.h"
 #include "terrain.h"
+#include "ocean_base.h"        // W3-4: --screenshot-oceanbase undersea vantage
 #include "cutscene.h"
 #include "leveldoc_world.h"
 #include "level_loader.h"
@@ -88,6 +89,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool cutsceneShot = hc.cutsceneShot;    const std::string& cutsceneShotPath = hc.cutsceneShotPath;
     const bool terrainShot = hc.terrainShot;      const std::string& terrainShotPath = hc.terrainShotPath;
     const bool oceanShot = hc.oceanShot;          const std::string& oceanShotPath = hc.oceanShotPath;
+    const bool oceanBaseShot = hc.oceanBaseShot;  const std::string& oceanBaseShotPath = hc.oceanBaseShotPath;
     const bool captureAi = hc.captureAi;          const std::string& captureAiDir = hc.captureAiDir;
     const bool captureWalk = hc.captureWalk;      const std::string& captureWalkPath = hc.captureWalkPath;
     const bool captureFootIk = hc.captureFootIk;  const std::string& captureFootIkPath = hc.captureFootIkPath;
@@ -1460,6 +1462,84 @@ int dispatchScreenshotHosts(HostContext& hc) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return wrote ? 0 : 1;
+    }
+
+    // ---- Undersea base vantage (--screenshot-oceanbase [path.png]) ---------
+    // W3-4: build the ocean_base zone (textured hull + emissive practicals) and
+    // capture (1) a submarine-approach shot and (2) a dock closeup, under DEEP-
+    // WATER fog (ART_BIBLE: underwater reads DEPTH — light falls off, silhouettes
+    // + practicals over detail; never flat blue). Fog rides AD-1's graph pass.
+    if (oceanBaseShot) {
+        x3::logInfo("--screenshot-oceanbase: rendering the undersea base to " + oceanBaseShotPath);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> bphys(x3::phys::createPhysicsWorld());
+        bphys->init();
+        x3::game::Scene bscene;
+        x3::game::OceanBase base;
+        base.build(bscene, *device, *bphys);
+        const x3::game::OceanBasePlan& plan = base.plan();
+
+        // Deep-water column: a dim blue-green "surface glow" sun from above (what
+        // little light survives 60+ m of water) — the emissive practicals carry
+        // the composition; the sun only separates silhouettes.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.05f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.10f;
+        sp.sunColor[0] = 0.25f; sp.sunColor[1] = 0.55f; sp.sunColor[2] = 0.60f;
+        sp.sunIntensity = 0.35f; sp.haze = 0.9f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+
+        // The water column IS fog: teal-green, heavy, silhouette-preserving.
+        x3::rhi::IRenderDevice::FogParams fog{};
+        fog.enabled = true;
+        fog.color[0] = 0.012f; fog.color[1] = 0.050f; fog.color[2] = 0.055f;
+        fog.density = 0.016f;          // ~80% extinction at 100 m — depth, not soup
+        fog.start = 2.0f;
+        fog.maxOpacity = 0.94f;
+        device->setFog(fog);
+
+        auto renderShot = [&](float cx, float cy, float cz, float yaw, float pitch,
+                              const std::string& path) -> bool {
+            const int kFrames = 90;    // settle: shadows + TAA history + bloom
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                bphys->step(1.0f / 60.0f);
+                device->setCamera(cx, cy, cz, yaw, pitch, 70.0f);
+                if (i == kFrames - 1) device->armCapture(path.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) bscene.render(*device, frame);
+                device->endFrame(frame);
+            }
+            return device->captureFrame(path.c_str());
+        };
+
+        // Shot 1 — approach from the DOCK side, low in the water so the base LOOMS
+        // (deck-level eye, slight up-pitch): dock mouth frame + window bands + the
+        // reactor crown all in silhouette through the murk.
+        const float ax = plan.cx + plan.radius + 110.0f, ay = plan.baseDeckY - 4.0f, az = plan.cz + 34.0f;
+        const float aYaw = std::atan2(plan.cz - az, plan.cx - ax);
+        const bool w1 = renderShot(ax, ay, az, aYaw, 0.04f, oceanBaseShotPath);
+
+        // Shot 2 — dock closeup: the amber entry strip + panel steel + airlock.
+        std::string dockPath = oceanBaseShotPath;
+        const size_t dot = dockPath.find_last_of('.');
+        dockPath = (dot == std::string::npos) ? dockPath + "_dock"
+                                              : dockPath.substr(0, dot) + "_dock" + dockPath.substr(dot);
+        const float dx = plan.cx + plan.radius + 34.0f, dy = plan.baseDeckY - 2.0f, dz = plan.cz + 26.0f;
+        const float dYaw = std::atan2(plan.cz - dz, (plan.cx + plan.radius) - dx);
+        const bool w2 = renderShot(dx, dy, dz, dYaw, -0.06f, dockPath);
+
+        if (w1) x3::logInfo("--screenshot-oceanbase: wrote " + oceanBaseShotPath);
+        if (w2) x3::logInfo("--screenshot-oceanbase: wrote " + dockPath);
+        if (!w1 || !w2) x3::logError("--screenshot-oceanbase: capture FAILED");
+
+        x3::rhi::IRenderDevice::FogParams off{};
+        device->setFog(off);   // leave the device clean for whoever runs next
+        bphys->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return (w1 && w2) ? 0 : 1;
     }
 
     // ---- AI-action capture mode (--capture-ai [outDir]) --------------------

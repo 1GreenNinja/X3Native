@@ -438,7 +438,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.matlibShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.matlibShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -646,6 +646,7 @@ int main(int argc, char** argv) {
         _hc.cutsceneShot     = o.cutsceneShot;     _hc.cutsceneShotPath = o.cutsceneShotPath;
         _hc.terrainShot      = o.terrainShot;      _hc.terrainShotPath  = o.terrainShotPath;
         _hc.oceanShot        = o.oceanShot;        _hc.oceanShotPath    = o.oceanShotPath;
+        _hc.oceanBaseShot    = o.oceanBaseShot;    _hc.oceanBaseShotPath = o.oceanBaseShotPath;
         _hc.captureAi        = o.captureAi;        _hc.captureAiDir     = o.captureAiDir;
         _hc.captureWalk      = o.captureWalk;      _hc.captureWalkPath  = o.captureWalkPath;
         _hc.captureFootIk    = o.captureFootIk;    _hc.captureFootIkPath = o.captureFootIkPath;
