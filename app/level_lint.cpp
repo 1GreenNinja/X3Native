@@ -148,13 +148,29 @@ LevelLintReport lintCanonFloor(const CanonFloor& floor) {
 }
 
 bool runLevelLintSelfTest() {
-    CanonFloor floor = loadCanonFloor(canonProjectJsonPath(), 1);
+    // W3-2: lint the WHOLE TOWER (all floors merged + the elevator spine) — the same
+    // CanonFloor shape the game now builds, so the gate checks what ships.
+    CanonFloor floor = loadCanonTower(canonProjectJsonPath());
     if (!floor.valid()) {
         x3::logInfo("--test-levellint: SKIPPED (no canonical JSON) — pass (legacy fallback world)");
         return true;
     }
     LevelLintReport rep = lintCanonFloor(floor);
     for (const std::string& v : rep.violations) x3::logWarn("[levellint] " + v);
+    // Per-floor room counts (roomFloorNum is filled by loadCanonTower).
+    if (!floor.roomFloorNum.empty()) {
+        std::string byFloor;
+        int cur = 0, cnt = 0;
+        for (size_t i = 0; i <= floor.roomFloorNum.size(); ++i) {
+            const int f = (i < floor.roomFloorNum.size()) ? floor.roomFloorNum[i] : -1;
+            if (f != cur) {
+                if (cur != 0) byFloor += " F" + std::to_string(cur) + ":" + std::to_string(cnt);
+                cur = f; cnt = 0;
+            }
+            ++cnt;
+        }
+        x3::logInfo("[levellint] per-floor rooms:" + byFloor);
+    }
     x3::logInfo("[levellint] rooms=" + std::to_string(floor.rooms.size()) +
                 " doorways=" + std::to_string(floor.doorways.size()) +
                 " | door-seat=" + std::to_string(rep.doorSeat) +

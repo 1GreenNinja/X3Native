@@ -22,7 +22,15 @@ constexpr float kFloorLift = 0.012f;
 
 // ---- Zones (recipe ids). 0 = no recipe (room left graybox). -------------------------
 enum Zone : uint8_t { ZNone = 0, ZHall, ZCorridor, ZWard, ZSecurity, ZLab, ZBoss,
-                      ZLobby, ZStorage, ZCount };
+                      ZLobby, ZStorage,
+                      // W3-2 — the tower floors (ART_BIBLE §3 zone palettes):
+                      ZMedical,    // F2 Medical Bay — clinical sickly-green
+                      ZGenetics,   // F3 Genetics Lab — green pushed harder
+                      ZCyber,      // F4 Cybernetics — dark steel + cyan instruments
+                      ZDroneBay,   // F5 Drone Station — industrial hangar + amber caution
+                      ZSalvari,    // F6 Salvari — darkest, alien, biolume green
+                      ZExec,       // F7 Executive — clean dark luxury + brass (new bible entry)
+                      ZCount };
 
 // ---- Converted-kit props (paths + probed AABBs, from the cell_dressing tables). -----
 const char* kRelConsole = "ModularSciFi_Interior/SM_Console.glb";
@@ -93,6 +101,26 @@ const Recipe& recipeFor(uint8_t z) {
         /*ZStorage*/  { "mw_concrete_panels_b", 2.6f, "sr_concrete_a", 2.4f, "mw_metal_panels_a", 3.0f,
                         1.35f, 1.15f, 0.85f, 4.2f,   1.50f, 0.95f, 0.25f, 2.2f,
                         fogOf(0.045f, 0.040f, 0.034f, 0.0035f, 1.2f, 0.60f) },
+        // ---- W3-2 tower floors. Sets include AD-3's four previously-unused curated
+        // survivors (cc_porous_cement, mw_thermal_padding, sr_metal_b, mw_metal_grate). ----
+        /*ZMedical*/  { "hh_wall_01a", 3.0f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
+                        2.10f, 2.30f, 2.10f, 5.5f,   0.30f, 1.05f, 0.35f, 2.6f,
+                        fogOf(0.040f, 0.048f, 0.040f, 0.0032f, 1.4f, 0.55f) },
+        /*ZGenetics*/ { "mw_plaster_painted", 2.6f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
+                        1.90f, 2.30f, 1.95f, 5.5f,   0.20f, 1.20f, 0.30f, 2.8f,
+                        fogOf(0.034f, 0.052f, 0.036f, 0.0042f, 1.4f, 0.60f) },
+        /*ZCyber*/    { "sr_metal_b", 2.6f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
+                        1.45f, 1.60f, 1.85f, 5.0f,   0.16f, 0.85f, 1.05f, 2.6f,
+                        fogOf(0.024f, 0.032f, 0.040f, 0.0038f, 1.4f, 0.60f) },
+        /*ZDroneBay*/ { "mw_thermal_padding", 2.8f, "mw_metal_grate", 2.2f, "mw_metal_panels_a", 3.2f,
+                        1.75f, 1.65f, 1.45f, 6.5f,   1.55f, 0.95f, 0.25f, 2.8f,
+                        fogOf(0.035f, 0.035f, 0.032f, 0.0035f, 1.5f, 0.60f) },
+        /*ZSalvari*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_concrete_01", 3.2f,
+                        1.10f, 0.92f, 0.62f, 4.5f,   0.25f, 1.10f, 0.45f, 2.8f,
+                        fogOf(0.018f, 0.026f, 0.021f, 0.0060f, 1.2f, 0.72f) },
+        /*ZExec*/     { "cc_porous_cement", 3.2f, "sr_concrete_a", 2.6f, "mw_metal_panels_a", 3.2f,
+                        2.00f, 1.80f, 1.50f, 5.5f,   1.60f, 1.15f, 0.45f, 2.6f,
+                        fogOf(0.040f, 0.036f, 0.030f, 0.0025f, 1.6f, 0.50f) },
     };
     return kRecipes[z < ZCount ? z : ZNone];
 }
@@ -102,6 +130,35 @@ uint8_t classify(const CanonRoom& r, const CanonBeats& bt, uint32_t roomId) {
     if (roomId == bt.jakeCell) return ZNone;          // frozen hand-calibrated reference
     if (r.cy < -50.0f)         return ZNone;          // Cave / Hidden Sub-Level (organic zone, later)
     auto has = [&](const char* s) { return r.name.find(s) != std::string::npos; };
+
+    // ---- W3-2: TOWER FLOORS route by ELEVATION BAND (the data ships absolute
+    // elevations: F2 y~10, F3 ~20, F4 ~30, the F4.5 tiers 33..64, F5 ~65, F6 ~78,
+    // F7 ~91). Structural kinds keep the shared recipes; everything else takes the
+    // floor's zone. The F4.5 Cave-Chamber tiers stay ZNone (the organic monster
+    // zone is its own future pass, like the deep caves).
+    if (r.cy > 5.0f) {
+        if (r.type == "Cave Chamber")                return ZNone;   // 4.5 tiers / organic
+        if (has("Elevator"))                         return ZLobby;
+        // Long tower corridors (18-24 m) need the HALL treatment (light RHYTHM +
+        // trim walls) — a single mid key leaves them black tunnels (R2 eye round).
+        if (has("Hall") || has("Corridor"))
+            return (std::max(r.w, r.d) >= 14.0f) ? ZHall : ZCorridor;
+        if (has("Boss") || r.type == "Boss Arena")   return ZBoss;
+        if (r.type == "Holding Cell")                return ZWard;   // Quarantine / Sarah's cell
+        if (has("Security") || has("Guard") || has("Armory") || has("Weapons Locker"))
+                                                     return ZSecurity;
+        if (r.type == "Storage" || has("Storage") || has("Coolant") || has("Power Junction")
+            || has("Maintenance") || has("Recharge") || has("Cold Room")) return ZStorage;
+        const float y = r.cy;
+        if (y < 18.0f)  return ZMedical;             // F2 wards / theaters / pharmacy
+        if (y < 28.0f)  return ZGenetics;            // F3
+        if (y < 33.0f)  return ZCyber;               // F4
+        if (y < 76.0f)  return ZDroneBay;            // F5
+        if (y < 88.0f)  return ZSalvari;             // F6
+        return ZExec;                                // F7 + roof rooms
+    }
+
+    // ---- Floor 1 (unchanged from W3-1). ----
     if (has("Main Hall"))                            return ZHall;
     if (has("Hall") || has("Corridor"))              return ZCorridor;
     if (roomId == bt.security || has("Security") || has("Armory")) return ZSecurity;
@@ -425,6 +482,7 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             const uint32_t seed = ri * 2654435761u;
             const float jitter = ((seed >> 8 & 0xFF) / 255.0f - 0.5f) * 0.8f;
             switch (z) {
+                case ZMedical:   // W3-2: the F2 wards (Keisha/Emily/Aria) get real cots
                 case ZWard:
                     if (freeFace >= 0) {
                         // Cot long axis ALONG the wall: local X (2.3 m) -> face tangent.
@@ -439,6 +497,7 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                               nullptr, tSteel);
                     break;
                 case ZSecurity: case ZLobby: case ZLab:
+                case ZGenetics: case ZCyber: case ZExec:   // W3-2: console = the focal instrument
                     // R2: the task pool is the room's focal statement — keep it even when
                     // every face carries a doorway (small spine rooms); only the console
                     // prop needs the free wall.
@@ -477,6 +536,7 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                     shadowBlob(ri, r.cx - r.w * 0.28f, fY, r.cz - r.d * 0.22f, 0.55f, 0.55f, 0.45f);
                     shadowBlob(ri, r.cx + r.w * 0.30f, fY, r.cz + r.d * 0.18f, 0.55f, 0.55f, 0.45f);
                     break;
+                case ZDroneBay:   // W3-2: hangar clutter = the storage kit under amber caution
                 case ZStorage: {
                     placeProp(ri, aCrateL, jitter * 0.5f, 1.0f, acx(kCrateLAabb),
                               kCrateLAabb.miny, acz(kCrateLAabb), px, fY + 0.02f, pz,

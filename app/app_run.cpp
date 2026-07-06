@@ -1161,8 +1161,11 @@ int runDefaultHost(HostContext& hc) {
     x3::asset::joinModelPreload();
     x3::boot::mark("GLB preload joined");
     if (canonWorld) {
-        // ---- DATA-DRIVEN CANONICAL FLOOR 1 + per-room PVS cull. ----
-        canonFloor = x3::game::loadCanonFloor(x3::game::canonProjectJsonPath(), 1);
+        // ---- W3-2: DATA-DRIVEN CANONICAL TOWER (all 7 floors merged into one
+        // CanonFloor; floor-1 rooms first so every existing lookup is unchanged) +
+        // per-room PVS cull. Floors stack at the data's absolute elevations; the
+        // elevator lobbies are spine-joined; traversal = the E-use elevator travel. ----
+        canonFloor = x3::game::loadCanonTower(x3::game::canonProjectJsonPath());
         if (canonFloor.valid()) {
             x3::game::CanonBuildOpts copts; copts.doors = &canonDoors; copts.lockSecuredRooms = true;
             // TRAPDOOR CARVE — the canon-cell SECRET-ROOM PORT (Tim's code-locked
@@ -4002,6 +4005,45 @@ int runDefaultHost(HostContext& hc) {
                            npcBarkTimer = 3.0f; return true;
                        }()) {
                 // canon door interaction handled inside the lambda (toggle / unlock / keypad / message)
+            } else if (canonWorld && canonFloor.valid() &&
+                       [&]() -> bool {
+                           // ---- W3-2 ELEVATOR TRAVEL (the tower's vertical spine). Standing
+                           // in any Elevator Lobby + E -> ride to the NEXT floor's lobby
+                           // (wraps top->bottom). The lobbies stack at the same XZ in the
+                           // data, so arrival preserves the player's bearings; the fast-
+                           // travel blackout covers the teleport (same pattern as the world
+                           // map). Doors/motor read = the door SFX pair around the fade.
+                           const uint32_t rm = canonFloor.roomAt(eye.x, eye.y, eye.z);
+                           if (rm == x3::game::kNoRoom) return false;
+                           if (canonFloor.rooms[rm].type != "Elevator Lobby") return false;
+                           std::vector<uint32_t> lobbies;
+                           for (uint32_t i = 0; i < (uint32_t)canonFloor.rooms.size(); ++i)
+                               if (canonFloor.rooms[i].type == "Elevator Lobby") lobbies.push_back(i);
+                           std::sort(lobbies.begin(), lobbies.end(), [&](uint32_t a, uint32_t b) {
+                               return canonFloor.rooms[a].cy < canonFloor.rooms[b].cy;
+                           });
+                           if (lobbies.size() < 2) return false;       // single floor: nothing to ride
+                           size_t cur = 0;
+                           for (size_t i = 0; i < lobbies.size(); ++i) if (lobbies[i] == rm) { cur = i; break; }
+                           const uint32_t tgt = lobbies[(cur + 1) % lobbies.size()];
+                           const x3::game::CanonRoom& T = canonFloor.rooms[tgt];
+                           player.setFeetPosition(*physics, x3::phys::Vec3{ T.cx, T.y0() + 0.3f, T.cz });
+                           travelFadeT = 0.9f;                          // blackout cover
+                           static x3::audio::SoundHandle sElevClose{}, sElevOpen{};
+                           static bool sElevLoaded = false;
+                           if (!sElevLoaded && audio) {
+                               sElevClose = audio->load(x3::game::resolveAudio("doors/door_close.wav"));
+                               sElevOpen  = audio->load(x3::game::resolveAudio("doors/door_open.wav"));
+                               sElevLoaded = true;
+                           }
+                           if (audio) { audio->playSound2D(sElevClose, 0.8f, 1.0f);
+                                        audio->playSound2D(sElevOpen, 0.6f, 0.92f); }
+                           npcBarkText = std::string("ELEVATOR → ") + T.name;
+                           npcBarkTimer = 3.5f;
+                           x3::logInfo("use: elevator travel -> " + T.name);
+                           return true;
+                       }()) {
+                // elevator travel handled inside the lambda
             } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue

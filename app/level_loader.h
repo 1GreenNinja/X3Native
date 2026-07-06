@@ -127,6 +127,10 @@ struct CanonFloor {
     // resolver (the vertical descent tubes for Cave System / Hidden Sub-Level).
     uint32_t                   jsonDoorCount = 0;
     std::vector<std::vector<uint32_t>> pvs;   // pvs[room] = visible room set (incl. self)
+    // W3-2: per-room source floor number (filled by loadCanonTower; EMPTY on the
+    // single-floor loadCanonFloor path — treat empty as "floorNum for every room").
+    // Used for per-floor lint/diagnostic grouping only.
+    std::vector<int>           roomFloorNum;
 
     bool valid() const { return !rooms.empty(); }
 
@@ -195,6 +199,19 @@ CanonBeats canonBeats(const CanonFloor& floor);
 // a CanonFloor; on failure (file missing / parse error / floor absent) returns a floor
 // with valid()==false (rooms empty) so the caller can fall back to the legacy build.
 CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum);
+
+// W3-2 — load + MERGE every floor ("1", "2", ... while present, up to maxFloors) of the
+// v2 project into ONE CanonFloor: the whole tower. Each floor runs the FULL existing
+// per-floor pipeline (parse -> doorway resolve -> W2-E normalize -> PVS) via
+// loadCanonFloor; rooms/doorways/pvs are then appended with index offsets. The data
+// ships ABSOLUTE elevations (F1 y=0 .. F7 y=91), so rooms stack correctly and
+// roomAt()'s Y test disambiguates floors. Floor-1 rooms come FIRST, so every existing
+// roomByName / canonBeats / spawn lookup resolves exactly as before. Consecutive
+// floors' Elevator Lobby rooms are joined by SYNTHESIZED CrossLevel doorways (the
+// building's vertical spine: honest lint reachability + the builder's shaft tube),
+// recorded past jsonDoorCount like the resolver's other synthesized edges. Fills
+// roomFloorNum. Returns valid()==false if floor 1 itself fails (same fallback path).
+CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors = 16);
 
 // ---- PER-ROOM CEILING LIGHTING --------------------------------------------------------
 // One warm-white ceiling point-light tagged with the room it belongs to. The canonlevel

@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -711,6 +712,74 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
         }
     }
 
+    // ---- W3-2 DISCONNECTED-COMPONENT RESOLVER. The upper floors' JSON under-authors
+    // doors (F5 ships 4 doors for 9 rooms): rooms can have degree > 0 yet sit in a
+    // component with no path to the floor's main component — invisible to the
+    // degree-0 pass above, caught by the lint's REACH check (32 rooms, 2026-07-06).
+    // While more than one component exists: find the CLOSEST room pair bridging the
+    // main component to another, synthesize a doorway for it through the SAME
+    // classify() geometry path a JSON door would take (Adjacent / Overlap / GapBridge
+    // by proximity, CrossLevel by Y delta), and union. The W2-E normalize below then
+    // legalizes the new opening exactly like an authored one. ----
+    {
+        std::vector<uint32_t> comp(nRooms);
+        auto rebuildComponents = [&]() -> uint32_t {
+            for (uint32_t i = 0; i < nRooms; ++i) comp[i] = i;
+            std::function<uint32_t(uint32_t)> find = [&](uint32_t x) {
+                while (comp[x] != x) { comp[x] = comp[comp[x]]; x = comp[x]; }
+                return x;
+            };
+            for (const CanonDoorway& dw : floor.doorways) {
+                uint32_t ra = find(dw.a), rb = find(dw.b);
+                if (ra != rb) comp[ra] = rb;
+            }
+            uint32_t n = 0;
+            for (uint32_t i = 0; i < nRooms; ++i) if (find(i) == i) ++n;
+            for (uint32_t i = 0; i < nRooms; ++i) comp[i] = find(i);
+            return n;
+        };
+        uint32_t guard = 0;
+        while (rebuildComponents() > 1 && guard++ < nRooms) {
+            const uint32_t mainC = comp[0];                     // room 0's component = main
+            float bestD = 1e30f; uint32_t ba = 0, bb = 0; bool found = false;
+            for (uint32_t i = 0; i < nRooms; ++i) {
+                if (comp[i] != mainC) continue;
+                for (uint32_t j = 0; j < nRooms; ++j) {
+                    if (comp[j] == mainC) continue;
+                    const CanonRoom& Ri = floor.rooms[i];
+                    const CanonRoom& Rj = floor.rooms[j];
+                    const float dx = Ri.cx - Rj.cx;
+                    const float dy = Ri.cy - Rj.cy;
+                    const float dz = Ri.cz - Rj.cz;
+                    float d2 = dx * dx + dy * dy * 4.0f + dz * dz;      // penalize Y gaps
+                    // A legal doorway needs a SHARED CROSS-SPAN on one axis (Law 1: the
+                    // cut must land inside both rooms' face spans). Diagonal pairs make
+                    // illegal bridges (the Guard-Post lint fail) — penalize them hard so
+                    // an axis-aligned neighbour wins even at a larger distance.
+                    const float ovX = std::min(Ri.x1(), Rj.x1()) - std::max(Ri.x0(), Rj.x0());
+                    const float ovZ = std::min(Ri.z1(), Rj.z1()) - std::max(Ri.z0(), Rj.z0());
+                    if (std::max(ovX, ovZ) < 1.6f) d2 *= 25.0f;         // no span wide enough for a cut
+                    if (d2 < bestD) { bestD = d2; ba = i; bb = j; found = true; }
+                }
+            }
+            if (!found) break;
+            CanonDoorway dw; dw.a = ba; dw.b = bb;
+            const CanonRoom& ra = floor.rooms[ba];
+            const CanonRoom& rb = floor.rooms[bb];
+            if (std::fabs(ra.y0() - rb.y0()) > 3.0f) {
+                dw.kind = DoorwayKind::CrossLevel;              // real Y gap -> descent tube
+                const CanonRoom& hi = (ra.y0() > rb.y0()) ? ra : rb;
+                dw.cx = hi.cx; dw.cz = hi.cz; dw.cy = hi.y0(); dw.axis = 0;
+            } else {
+                dw.kind = classify(ra, rb, dw.cx, dw.cz, dw.axis);
+                dw.cy = std::max(ra.y0(), rb.y0());
+            }
+            floor.doorways.push_back(dw);
+            x3::logInfo("loadCanonFloor: bridged disconnected component: '" + ra.name +
+                        "' <-> '" + rb.name + "'");
+        }
+    }
+
     // ---- W2-E DOORWAY NORMALIZE (LAW 1 / GATE A). The resolver derives every opening
     // from room-pair geometry (the JSON ships only [a,b] pairs), and three raw-output
     // classes shipped as floating doors/lintels (2026-07-05 playtest): Overlap-junction
@@ -798,6 +867,70 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
                 std::to_string(nRooms) + " rooms, " + std::to_string(floor.doorways.size()) +
                 " doorways");
     return floor;
+}
+
+CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
+    // Floor 1 anchors the merge — if IT fails, return invalid so the caller takes the
+    // same legacy fallback it always has. Every floor is fully resolved (doorways,
+    // W2-E normalize, PVS) by loadCanonFloor before being appended, so the merge is
+    // pure index bookkeeping: no per-floor logic is duplicated here.
+    CanonFloor tower = loadCanonFloor(jsonPath, 1);
+    if (!tower.valid()) return tower;
+    tower.floorNum = 0;                      // 0 = "the whole tower"
+    tower.roomFloorNum.assign(tower.rooms.size(), 1);
+
+    for (int fn = 2; fn <= maxFloors; ++fn) {
+        CanonFloor f = loadCanonFloor(jsonPath, fn);
+        if (!f.valid()) break;               // floors are contiguous keys "1".."7"
+        const uint32_t off = (uint32_t)tower.rooms.size();
+        for (CanonRoom& r : f.rooms) tower.rooms.push_back(std::move(r));
+        tower.roomFloorNum.resize(tower.rooms.size(), fn);
+        for (CanonDoorway dw : f.doorways) {
+            dw.a += off; dw.b += off;
+            tower.doorways.push_back(dw);
+        }
+        tower.jsonDoorCount += f.jsonDoorCount;
+        for (std::vector<uint32_t>& p : f.pvs) {
+            for (uint32_t& id : p) id += off;
+            tower.pvs.push_back(std::move(p));
+        }
+        if (!f.name.empty()) tower.name += (tower.name.empty() ? "" : " + ") + f.name;
+    }
+
+    // ---- THE VERTICAL SPINE: join consecutive floors' Elevator Lobby rooms with
+    // synthesized CrossLevel doorways (same concept as the resolver's descent tubes).
+    // This makes the tower HONESTLY reachable for the lint's flood-fill and gives the
+    // builder its shaft; the gameplay traversal is the host's elevator travel. The
+    // lobbies stack at the same XZ in the data (x=22, z~-26), so the tube is a clean
+    // vertical run inside the building footprint.
+    {
+        // Ordered lobby list (one per floor, by ascending elevation).
+        std::vector<uint32_t> lobbies;
+        for (uint32_t i = 0; i < tower.rooms.size(); ++i)
+            if (tower.rooms[i].type == "Elevator Lobby") lobbies.push_back(i);
+        std::sort(lobbies.begin(), lobbies.end(), [&](uint32_t a, uint32_t b) {
+            return tower.rooms[a].cy < tower.rooms[b].cy;
+        });
+        for (size_t i = 0; i + 1 < lobbies.size(); ++i) {
+            const uint32_t a = lobbies[i], b = lobbies[i + 1];
+            if (tower.roomFloorNum[a] == tower.roomFloorNum[b]) continue; // same-floor dupe
+            CanonDoorway dw;
+            dw.a = a; dw.b = b; dw.kind = DoorwayKind::CrossLevel;
+            const CanonRoom& hi = tower.rooms[b];
+            dw.cx = hi.cx; dw.cz = hi.cz; dw.cy = hi.y0();
+            tower.doorways.push_back(dw);
+            tower.pvs[a].push_back(b);
+            tower.pvs[b].push_back(a);
+        }
+        x3::logInfo("loadCanonTower: spine joined " + std::to_string(lobbies.size()) +
+                    " elevator lobbies across floors");
+    }
+
+    x3::logInfo("loadCanonTower: merged " + std::to_string(tower.rooms.size()) +
+                " rooms, " + std::to_string(tower.doorways.size()) + " doorways (" +
+                std::to_string(tower.roomFloorNum.empty() ? 1 : tower.roomFloorNum.back()) +
+                " floors)");
+    return tower;
 }
 
 std::string canonProjectJsonPath() {

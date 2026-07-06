@@ -37,6 +37,11 @@ Two accents in one room is a red-line offense.
 - **Secret room / level 4.5 / monster spaces:** black-brown organic base · minimal warm
   practicals · **BLOOD-RED + BIOLUME GREEN** (the one two-accent exception; they never
   share a sightline with facility accents).
+- **Executive Suite (F7):** clean dark luxury — near-black calm surfaces (the
+  cleanest concrete, large calm tiling), warm clean key, **BRASS/AMBER** accent.
+  Wealth reads as ORDER: no grime, no clutter, the only pristine zone in the tower
+  (W3-2 addition; Sarah's holding cell on this floor keeps the WARD treatment —
+  her cell is the one detention room in paradise, and the contrast IS the story).
 - **Boss arena:** detention palette pushed to extremes — biggest darks, hottest key.
 - **Surface / facility exterior:** WHITE CONCRETE + BLACK GLASS BANDS (Tim's tower
   spec) · golden-hour sun key · the sky is the accent.
