@@ -527,6 +527,12 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         addLight(bt.jakeCell, bedX + 0.75f, fY + 1.15f, bedZ + 0.1f, 3.0f, 2.6f, 2.05f, 1.3f);  // warm cot pool
         addLight(bt.jakeCell, bedX + 1.6f, fY + 1.3f, bedZ + 1.6f, 4.5f, 1.7f, 1.45f, 1.15f);   // corner key (tamed)
         addLight(bt.jakeCell, ccx + 0.5f, fY + 0.5f, ccz + 0.5f, 4.5f, 0.5f, 0.48f, 0.44f);     // dim floor fill
+        // R7 — HATCH SPOT: a cool security downlight over the floor hatch (the same
+        // spot app_run picks: cell center +1.4x / -1.1z) so the code-locked trapdoor +
+        // its amber rim read evenly instead of sitting in the pooled shadow between
+        // the bunk and door lights. Cool white = "security fixture" (distinct from the
+        // warm bunk pools) and it quietly draws the eye to the way out.
+        addLight(bt.jakeCell, ccx + 1.4f, fY + 1.9f, ccz - 1.1f, 2.8f, 1.15f, 1.2f, 1.35f);
         // Ground the bed + footlocker (contact-shadow blobs; m_shadowDisc built above).
         addShadowBlob(m_shadowDisc, bedX, fY, bedZ, 0.80f, 1.40f, 0.55f);               // bed
         addShadowBlob(m_shadowDisc, bedX + 0.05f, fY, bedZ + 1.55f, 0.55f, 0.55f, 0.5f); // footlocker
@@ -602,12 +608,16 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
               dx - 0.9f, fY + 0.02f, dz - 0.2f, nullptr, tCrate);
         place(aCrateS, 0.3f, 0.9f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
               dx - 0.9f, fY + 0.56f, dz - 0.2f, nullptr, tCrate);   // stacked on the one below
+        // R7: the angled crate moved OFF the trapdoor — at (dx-0.4, dz-1.3) it lay
+        // across the hatch rim (hid the rim + status lens, and would FLOAT over the
+        // hole when the panels part). Now against the +Z wall beside the stack; the
+        // hatch keeps a clear 360 read + clear drop path.
         place(aCrateL, 1.3f, 1.0f, cx(kCrateLAabb), kCrateLAabb.miny, cz(kCrateLAabb),
-              dx - 0.4f, fY + 0.02f, dz - 1.3f, nullptr, tCrate);   // a third crate, angled
+              dx - 2.0f, fY + 0.02f, dz + 0.6f, nullptr, tCrate);   // a third crate, angled
         // Ground the debris cluster so it sits in the corner instead of floating.
         addShadowBlob(m_shadowDisc, dx, fY, dz, 0.55f, 0.55f, 0.5f);            // barrel
         addShadowBlob(m_shadowDisc, dx - 0.9f, fY, dz - 0.2f, 0.75f, 0.75f, 0.5f); // crate stack
-        addShadowBlob(m_shadowDisc, dx - 0.4f, fY, dz - 1.3f, 0.8f, 0.7f, 0.45f);  // angled crate
+        addShadowBlob(m_shadowDisc, dx - 2.0f, fY, dz + 0.6f, 0.8f, 0.7f, 0.45f);  // angled crate
     }
 
     // EXIT SIGN over the doorway (the warehouse exit sign has a green-emissive face).

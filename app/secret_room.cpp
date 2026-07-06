@@ -131,10 +131,16 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // the level uses (level1.cpp makeFloorGrateRGBA, kTexN=512, B1 cool-blue tint)
         // so the two parting panels read as the cell floor, not a grey block.
         constexpr uint32_t kHatchTexN = 512;
+        // R7: hazard=true — the yellow/black caution band bakes around each panel's UV
+        // edge, so each panel carries its own outline and the two inner edges meet as a
+        // striped CENTER SEAM ("parts here"), a read that TRAVELS with the panels when
+        // they slide (no extra entities). Tint lifted 0.55 -> 0.72: the hatch sits in
+        // the cell's pooled shadow and at 0.55 the panels rendered DARKER than the deck
+        // around them — an unreadable black patch (R6 review shots).
         auto floorPx = x3::prims::makeFloorGrateRGBA(kHatchTexN, /*tiles*/2,
-                                                     x3::prims::detail::kNoTint, /*hazard*/false);
+                                                     x3::prims::detail::kNoTint, /*hazard*/true);
         h.floorTex = device.createTexture(floorPx.data(), kHatchTexN, kHatchTexN, true);
-        h.floorTint[0]=0.55f; h.floorTint[1]=0.60f; h.floorTint[2]=0.75f; h.floorTint[3]=1.0f; // B1 tint
+        h.floorTint[0]=0.72f; h.floorTint[1]=0.78f; h.floorTint[2]=0.95f; h.floorTint[3]=1.0f;
         m_hatchIdx = buildLevelDoor(scene, doors, device, physics, h);
     }
 
@@ -154,8 +160,12 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const float y     = cellCenter.y + curbH + 0.005f;
         // Hazard AMBER, not toy yellow: desaturated warm base + a restrained glow so
         // the rim reads as painted metal catching light, not an emissive plastic bar.
-        const float yellow[4] = { 0.58f, 0.42f, 0.08f, 1.0f };
-        const float glow[4]   = { 0.30f, 0.21f, 0.03f, 0.35f };
+        // R7 (review shots): the near curb still BLEW OUT butter-yellow under the cell
+        // pools while the far curbs sat unlit — an asymmetric one-glowing-bar read.
+        // Darker base + near-off glow; the dedicated hatch downlight (cell_dressing)
+        // now carries an even read across all four curbs.
+        const float yellow[4] = { 0.40f, 0.29f, 0.06f, 1.0f };
+        const float glow[4]   = { 0.12f, 0.085f, 0.012f, 0.14f };
         auto curb = [&](float hx, float hz, float ox, float oz) {
             x3::prims::PrimMesh geo = x3::prims::makeBox(hx, curbH, hz, 0, 0, 0, 1.0f);
             Entity e;
@@ -175,15 +185,18 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
         curb(curbW, ho,  (ho + curbW * 0.5f), 0.0f);
         // STATUS LIGHT: a small lens on the -X/-Z rim corner. Starts locked-RED.
         {
-            x3::prims::PrimMesh geo = x3::prims::makeBox(0.055f, 0.03f, 0.055f, 0, 0, 0, 1.0f);
+            // R7: 0.055 -> 0.085 half-extent + hotter lens — unreadable from spawn range.
+            x3::prims::PrimMesh geo = x3::prims::makeBox(0.085f, 0.035f, 0.085f, 0, 0, 0, 1.0f);
             Entity e;
             e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                        geo.index.data(), (uint32_t)geo.index.size());
             e.baseColor[0]=0.12f; e.baseColor[1]=0.05f; e.baseColor[2]=0.05f; e.baseColor[3]=1.0f;
-            e.emissive[0]=1.0f; e.emissive[1]=0.08f; e.emissive[2]=0.05f; e.emissive[3]=2.0f;  // locked RED
+            e.emissive[0]=1.0f; e.emissive[1]=0.08f; e.emissive[2]=0.05f; e.emissive[3]=2.8f;  // locked RED
             e.tag = (uint32_t)Tag::Prop;
+            // R7: on the -X/+Z corner — the -Z corner sits at the code console's foot,
+            // occluded from every approach (bed, door, terminal). +Z faces the room.
             e.transform[12]=hatchCenter.x-(ho+curbW*0.5f); e.transform[13]=cellCenter.y+2.0f*curbH+0.03f;
-            e.transform[14]=hatchCenter.z-(ho+curbW*0.5f);
+            e.transform[14]=hatchCenter.z+(ho+curbW*0.5f);
             m_statusEnt = scene.add(e);
         }
     }
@@ -394,7 +407,7 @@ void SecretRoom::tick(float dt, Scene& scene, const x3::phys::Vec3& playerPos,
         const Door& h = m_doorsPtr->at(m_hatchIdx);
         if (!h.locked || h.state != DoorState::Closed) {
             Entity& e = scene.get(m_statusEnt);
-            e.emissive[0]=0.12f; e.emissive[1]=1.0f; e.emissive[2]=0.30f; e.emissive[3]=2.2f;
+            e.emissive[0]=0.12f; e.emissive[1]=1.0f; e.emissive[2]=0.30f; e.emissive[3]=3.0f;  // match the R7 hotter lens
             e.baseColor[0]=0.04f; e.baseColor[1]=0.12f; e.baseColor[2]=0.06f;
             m_statusGreen = true;
         }
