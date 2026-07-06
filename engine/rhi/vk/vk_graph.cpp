@@ -1433,6 +1433,66 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         }
 
         // ================================================================
+        // DEPTH FOG (ART_BIBLE §5 — atmospheric perspective). A fullscreen
+        // Beer-Lambert extinction blended over the finished HDR scene, AFTER the
+        // last HDR writer (particles) and BEFORE the TAA resolve so fogged
+        // radiance enters temporal history + bloom like real scene light. HOST
+        // OPT-IN ONLY (setFog): when disabled the pass is never added — worlds
+        // that don't opt in render byte-identical (r_bloom-0 discipline).
+        // ----------------------------------------------------------------
+        const bool fogOn = m_fogParams.enabled && m_fogParams.density > 0.0f
+                        && (m_fogPipe != VK_NULL_HANDLE);
+        if (fogOn) {
+            m_fogAttach = VkRenderingAttachmentInfo{};
+            m_fogAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_fogAttach.imageView = m_hdrView;
+            m_fogAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_fogAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;    // blend over the scene
+            m_fogAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc fog{};
+            fog.name = "depth-fog";
+            fog.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            fog.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            fog.usesDynamicRendering = true;
+            m_fogRenderInfo = VkRenderingInfo{};
+            m_fogRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_fogRenderInfo.renderArea = { {0,0}, m_extent };
+            m_fogRenderInfo.layerCount = 1;
+            m_fogRenderInfo.colorAttachmentCount = 1;
+            m_fogRenderInfo.pColorAttachments = &m_fogAttach;
+            fog.renderInfo = m_fogRenderInfo;
+            fog.recordCtx = this;
+            fog.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                self->postViewport(c, self->m_extent);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_fogPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_fogLayout,
+                                        0, 1, &self->m_setFog, 0, nullptr);
+                FogPush fp{};
+                fp.invProj      = self->m_fogInvProjCPU;
+                fp.colorDensity = glm::vec4(self->m_fogParams.color[0],
+                                            self->m_fogParams.color[1],
+                                            self->m_fogParams.color[2],
+                                            self->m_fogParams.density);
+                fp.startMax     = glm::vec4(self->m_fogParams.start,
+                                            self->m_fogParams.maxOpacity, 0.0f, 0.0f);
+                vkCmdPushConstants(c, self->m_fogLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(fp), &fp);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(fog));
+        }
+
+        // ================================================================
         // TAA RESOLVE (temporal anti-aliasing) — after the LAST HDR writer
         // (particles), BEFORE auto-exposure / bloom / composite, the standard
         // order: scene -> TAA -> bloom -> AE -> tonemap -> UI. Reads the finished
@@ -1641,6 +1701,18 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                     ? std::max(0.0f, self->m_post.taaSharpen) : 0.0f;
                 cp.texelW  = 1.0f / (float)std::max(1u, self->m_extent.width);
                 cp.texelH  = 1.0f / (float)std::max(1u, self->m_extent.height);
+                // Filmic grade (ART_BIBLE §5): strength 0 (the default) keeps the
+                // shader's grade block un-entered -> byte-identical composite.
+                const auto& gp = self->m_gradeParams;
+                cp.gradeStrength    = std::clamp(gp.strength, 0.0f, 1.0f);
+                cp.shadowTint[0]    = gp.shadowTint[0];
+                cp.shadowTint[1]    = gp.shadowTint[1];
+                cp.shadowTint[2]    = gp.shadowTint[2];
+                cp.shadowTint[3]    = gp.saturation;
+                cp.highlightTint[0] = gp.highlightTint[0];
+                cp.highlightTint[1] = gp.highlightTint[1];
+                cp.highlightTint[2] = gp.highlightTint[2];
+                cp.highlightTint[3] = std::clamp(gp.vignette, 0.0f, 0.25f);
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);

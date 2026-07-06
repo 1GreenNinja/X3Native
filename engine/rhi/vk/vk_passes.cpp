@@ -1456,6 +1456,9 @@ void VulkanRenderDevice::prepareFrameData() {
             SsaoUBO su{};
             su.proj    = proj;
             su.invProj = glm::inverse(proj);
+            // Depth-fog pass (ART_BIBLE §5): the SAME jitter-inclusive inverse
+            // projection SSAO reconstructs with, captured for fog.frag's push.
+            m_fogInvProjCPU = su.invProj;
             su.params0 = glm::vec4(m_ssao.radius, m_ssao.bias, m_ssao.intensity, m_ssao.power);
             su.params1 = glm::vec4((float)m_extent.width, (float)m_extent.height,
                                    (float)m_extent.width / 4.0f, (float)m_extent.height / 4.0f);

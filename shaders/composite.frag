@@ -30,7 +30,11 @@ layout(push_constant) uniform Push {
                            // the pre-sharpen composite). Forced 0 when TAA is off.
     float texelW;          // 1/extent for the sharpen cross taps
     float texelH;
-    float pad0;
+    // ---- FILMIC GRADE (ART_BIBLE.md §5) — gradeStrength 0 = the block is never
+    // entered -> byte-identical to the pre-grade composite (sharpen-guard law).
+    float gradeStrength;   // master lerp [0..1]; host opt-in (canonlevel)
+    vec4  shadowTint;      // rgb = shadow tint target (teal), w = saturation mul
+    vec4  highlightTint;   // rgb = highlight tint target (warm), w = vignette amt
 } pc;
 
 layout(location = 0) in  vec2 vUV;
@@ -71,5 +75,26 @@ void main() {
     // Tonemap: ACES (default) or a raw passthrough clamp for A/B debugging.
     if (pc.tonemapMode == 1) color = tonemapACES(color);
     else                     color = clamp(color, 0.0, 1.0);
+    // ---- FILMIC GRADE + SPLIT-TONE + VIGNETTE (ART_BIBLE.md §5), applied on the
+    // tonemapped LDR image, everything lerped by gradeStrength (0 = identity;
+    // the branch is never entered -> byte-identical output).
+    if (pc.gradeStrength > 0.0) {
+        vec3 graded = color;
+        // Gentle filmic S-curve (contrast about mid-grey via smoothstep blend).
+        vec3 curved = graded * graded * (3.0 - 2.0 * graded);
+        graded = mix(graded, curved, 0.35);
+        // Split-tone: shadows toward the teal target, highlights toward the warm
+        // target, weighted by luminance (complementary spine, ART_BIBLE zone law).
+        float luma = dot(graded, vec3(0.2126, 0.7152, 0.0722));
+        graded = mix(graded * pc.shadowTint.rgb,    graded, smoothstep(0.0, 0.45, luma));
+        graded = mix(graded, graded * pc.highlightTint.rgb, smoothstep(0.55, 1.0, luma));
+        // Saturation control (shadowTint.w): keeps the single-accent law in charge.
+        float l2 = dot(graded, vec3(0.2126, 0.7152, 0.0722));
+        graded = mix(vec3(l2), graded, pc.shadowTint.w);
+        // Vignette (highlightTint.w = amount, capped by the bible at ~0.12).
+        vec2 vc = vUV - 0.5;
+        graded *= 1.0 - pc.highlightTint.w * smoothstep(0.25, 0.75, dot(vc, vc) * 2.0);
+        color = mix(color, clamp(graded, 0.0, 1.0), pc.gradeStrength);
+    }
     outColor = vec4(color, 1.0);
 }

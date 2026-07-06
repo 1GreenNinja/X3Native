@@ -590,7 +590,7 @@ bool VulkanRenderDevice::createPost() {
         // + TAA variants) + 2 auto-exposure sets (1 sampler + 1 SSBO each) + the
         // per-frame TAA resolve sets (4 samplers + 1 UBO each: scene/hist/depth +
         // the #4 velocity sampler at b4). Sized exactly; no UPDATE_AFTER_BIND.
-        const uint32_t single = 1 + kBloomMips + 1;     // HDR + each mip + TAA out
+        const uint32_t single = 1 + kBloomMips + 1 + 1; // HDR + each mip + TAA out + fog(depth)
         VkDescriptorPoolSize ps[3]{
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
               single + 2*2 + 1*2 + 4*kFramesInFlight },
@@ -612,6 +612,7 @@ bool VulkanRenderDevice::createPost() {
         for (uint32_t i = 0; i < kBloomMips; ++i)
             if (!alloc1(m_setMip[i])) { logError("[rhi] post set alloc (mip) failed"); return false; }
         if (!alloc1(m_setTaaOut)) { logError("[rhi] post set alloc (taa-out) failed"); return false; }
+        if (!alloc1(m_setFog))    { logError("[rhi] post set alloc (fog) failed");     return false; }
         {
             VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_postSetLayout2;
@@ -723,6 +724,22 @@ bool VulkanRenderDevice::createPost() {
         if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\composite.frag.spv",
                                       m_compositeLayout, m_format, /*additiveBlend=*/false, m_compositePipe))
             return false;
+        // DEPTH FOG (ART_BIBLE §5): alpha-blends over the HDR scene target before
+        // the TAA resolve; only recorded when a host opted in (setFog). Layout =
+        // one depth sampler (postSetLayout1) + a FogPush of frame invProj + params.
+        {
+            VkPushConstantRange pcFog{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FogPush) };
+            VkPipelineLayoutCreateInfo fl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            fl.setLayoutCount = 1; fl.pSetLayouts = &m_postSetLayout1;
+            fl.pushConstantRangeCount = 1; fl.pPushConstantRanges = &pcFog;
+            if (vkCreatePipelineLayout(m_dev.device, &fl, nullptr, &m_fogLayout) != VK_SUCCESS) {
+                logError("[rhi] fog pipeline layout failed"); return false;
+            }
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\fog.frag.spv",
+                                          m_fogLayout, kHdrFormat, /*additiveBlend=*/false, m_fogPipe,
+                                          /*alphaBlend=*/true))
+                return false;
+        }
 
         // TAA resolve: full-screen pass writing the HDR-format TAA output. All
         // parameters ride in the per-frame UBO -> no push constants.
@@ -744,7 +761,8 @@ bool VulkanRenderDevice::createPost() {
 
 bool VulkanRenderDevice::createFullscreenPipeline(const char* vsPath, const char* fsPath,
                               VkPipelineLayout layout, VkFormat colorFmt,
-                              bool additiveBlend, VkPipeline& outPipe) {
+                              bool additiveBlend, VkPipeline& outPipe,
+                              bool alphaBlend) {
         VkShaderModule vs = loadShaderModule(vsPath);
         VkShaderModule fs = loadShaderModule(fsPath);
         if (!vs || !fs) return false;
@@ -776,6 +794,14 @@ bool VulkanRenderDevice::createFullscreenPipeline(const char* vsPath, const char
             cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
             cba.colorBlendOp = VK_BLEND_OP_ADD;
             cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        } else if (alphaBlend) {
+            // Classic over-blend (the fog pass: out = mix(scene, fogColor, f)).
+            cba.blendEnable = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cba.colorBlendOp = VK_BLEND_OP_ADD;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
             cba.alphaBlendOp = VK_BLEND_OP_ADD;
         } else {
             cba.blendEnable = VK_FALSE;
@@ -817,6 +843,16 @@ void VulkanRenderDevice::writePostDescriptors() {
         write1(m_setHdr, m_hdrView);
         for (uint32_t i = 0; i < kBloomMips; ++i) write1(m_setMip[i], m_bloomMips[i].view);
         write1(m_setTaaOut, m_taaOutView);   // bloom bright-pass source when TAA is on
+        // Fog pass: b0 = the MAIN DEPTH buffer sampled as data (same sampler +
+        // DEPTH_READ_ONLY layout the TAA resolve uses for its depth binding).
+        {
+            VkDescriptorImageInfo dfi{ m_taaDepthSampler, m_depthView,
+                                       VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet fw{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            fw.dstSet = m_setFog; fw.dstBinding = 0; fw.descriptorCount = 1;
+            fw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; fw.pImageInfo = &dfi;
+            vkUpdateDescriptorSets(m_dev.device, 1, &fw, 0, nullptr);
+        }
 
         // Composite set: binding 0 = HDR scene, binding 1 = bloom mip0,
         // binding 2 = auto-exposure SSBO.
@@ -919,6 +955,8 @@ void VulkanRenderDevice::destroyPost() {
         if (m_aeBuf)          { vmaDestroyBuffer(m_alloc, m_aeBuf, m_aeAlloc); m_aeBuf = VK_NULL_HANDLE; m_aeAlloc = nullptr; }
         if (m_aeSetLayout)    { vkDestroyDescriptorSetLayout(m_dev.device, m_aeSetLayout, nullptr); m_aeSetLayout = VK_NULL_HANDLE; }
         if (m_compositePipe)  { vkDestroyPipeline(m_dev.device, m_compositePipe, nullptr); m_compositePipe = VK_NULL_HANDLE; }
+        if (m_fogPipe)        { vkDestroyPipeline(m_dev.device, m_fogPipe, nullptr); m_fogPipe = VK_NULL_HANDLE; }
+        if (m_fogLayout)      { vkDestroyPipelineLayout(m_dev.device, m_fogLayout, nullptr); m_fogLayout = VK_NULL_HANDLE; }
         if (m_bloomUpPipe)    { vkDestroyPipeline(m_dev.device, m_bloomUpPipe, nullptr); m_bloomUpPipe = VK_NULL_HANDLE; }
         if (m_bloomDownPipe)  { vkDestroyPipeline(m_dev.device, m_bloomDownPipe, nullptr); m_bloomDownPipe = VK_NULL_HANDLE; }
         if (m_compositeLayout){ vkDestroyPipelineLayout(m_dev.device, m_compositeLayout, nullptr); m_compositeLayout = VK_NULL_HANDLE; }

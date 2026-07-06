@@ -202,6 +202,32 @@ public:
     // adapted value; with it OFF it is the absolute exposure, exactly as before.
     virtual void setExposure(float e) {}
 
+    // ---- PAINTERLY LEVERS (ART_BIBLE.md §5) — per-zone atmosphere + grade. ----
+    // Host opt-in ONLY: both default fully OFF, and the setters are deliberately
+    // SEPARATE from PostFXParams/setPostFX (which app_run re-applies live from
+    // cvars every frame) so a zone's opt-in is never clobbered by the cvar loop.
+    // Depth fog: a fullscreen Beer-Lambert extinction pass over the HDR scene,
+    // recorded ONLY when enabled && density > 0 — worlds that don't opt in render
+    // byte-identical (no pass, no pipeline runs). Non-pure (no-op default).
+    struct FogParams {
+        bool  enabled = false;
+        float color[3] = { 0.0f, 0.0f, 0.0f };  // linear HDR fog color
+        float density  = 0.0f;                   // extinction per meter (0.002-0.004 = subtle)
+        float start    = 0.0f;                   // meters of clean air (viewmodel guard)
+        float maxOpacity = 0.85f;                // far-wall cap (no milky wash law)
+    };
+    virtual void setFog(const FogParams& f) {}
+    // Filmic grade + split-tone + vignette in the composite pass, master-lerped by
+    // `strength` (0 = bit-identical passthrough — the shader never enters the block).
+    struct GradeParams {
+        float strength = 0.0f;                          // 0 = off (identity)
+        float shadowTint[3]    = { 1.0f, 1.0f, 1.0f };  // multiplied into shadows (teal)
+        float highlightTint[3] = { 1.0f, 1.0f, 1.0f };  // multiplied into highlights (warm)
+        float saturation = 1.0f;                        // 1 = unchanged
+        float vignette   = 0.0f;                        // 0..~0.12 per the bible
+    };
+    virtual void setGrade(const GradeParams& g) {}
+
     // CPU per-object frustum cull toggle (live r_frustumcull cvar; default ON). When
     // disabled the draw path is byte-identical to before the cull existed
     // (objectsDrawn == every submitted instance). Conservative world-sphere vs

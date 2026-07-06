@@ -573,6 +573,11 @@ void VulkanRenderDevice::setBloom(float intensity) { m_bloomIntensity = intensit
 
 void VulkanRenderDevice::setExposure(float e) { m_exposure = (e > 0.0f) ? e : 1.0f; }
 
+// Painterly levers (ART_BIBLE §5) — host-opted zone atmosphere + grade. Stored
+// outside PostFXParams so the live cvar loop (setPostFX) never clobbers them.
+void VulkanRenderDevice::setFog(const FogParams& f)     { m_fogParams = f; }
+void VulkanRenderDevice::setGrade(const GradeParams& g) { m_gradeParams = g; }
+
 void VulkanRenderDevice::setMetalAmbient(float s) { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
 
 void VulkanRenderDevice::setPostFX(const PostFXParams& p) {
