@@ -68,3 +68,17 @@ new sets below are PCM s16le 44.1kHz mono like the rest of the tree.
 | enemies/synth/attack.wav    | Sci-fi Evolution Gift Pack / Tonal Mech Gear 3.wav | none |
 | enemies/synth/hit.wav       | Sci-fi Evolution Gift Pack / Wrong Answer Mech Alert.wav | pitch x1.15 (variant) |
 | enemies/synth/death.wav     | Sci-fi Evolution Gift Pack / Deep Processor Mech Drone.wav | pitch x0.7 + fade (variant) |
+
+## Interact cues (trapdoor + elevator glow-up pass)
+The four keypad/servo cues the elevator has resolved from EXTERNAL pack roots
+since 288ce2a (silent on any box without the Unity packs) — now committed, and
+shared by the cell trapdoor's new SecretRoomSounds kit (keypad clicks, wrong-code
+buzz, access-granted chime, panel-slide servo loop; the seat thunk reuses
+doors/door_close.wav).
+
+| Repo path | Source | Processing |
+|---|---|---|
+| interact/keypad_click.wav | Sci-fi Evolution Gift Pack / Ceramic Menu Button.wav | none |
+| interact/chime.wav        | Sci-fi Evolution Gift Pack / Energy Bling.wav | none |
+| interact/buzz.wav         | Sci-fi Evolution Gift Pack / Negative Analog Computer Tone 2.wav | none |
+| interact/servo_loop.wav   | Sci-fi Evolution Gift Pack / Deep Processor Mech Drone.wav | none (looped by startLoop) |

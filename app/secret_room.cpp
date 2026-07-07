@@ -360,7 +360,14 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
     DoorSystem* dptr = &doors;
     uint32_t hatchIdx = m_hatchIdx;
     m_terminal.setSubmitSink([this, dptr, hatchIdx](const std::string& v) -> bool {
-        if (v != kSecretRoomCode) return false;            // reject any other code
+        if (v != kSecretRoomCode) {                        // reject any other code
+            // Wrong-code BUZZ at the terminal (the elevator's keypad reject cue).
+            if (m_audio && m_snd.buzz.valid()) {
+                const x3::phys::Vec3 a = m_terminal.anchor();
+                m_audio->playSound3D(m_snd.buzz, a.x, a.y, a.z, 0.8f, 1.0f);
+            }
+            return false;
+        }
         if (hatchIdx == kNoLink || hatchIdx >= dptr->count()) return false;
         Door& hatch = dptr->at(hatchIdx);
         // IDEMPOTENT ACCEPT: the D14 scripts/secret_room.lua path reacts to the
@@ -410,7 +417,37 @@ void SecretRoom::tick(float dt, Scene& scene, const x3::phys::Vec3& playerPos,
             e.emissive[0]=0.12f; e.emissive[1]=1.0f; e.emissive[2]=0.30f; e.emissive[3]=3.0f;  // match the R7 hotter lens
             e.baseColor[0]=0.04f; e.baseColor[1]=0.12f; e.baseColor[2]=0.06f;
             m_statusGreen = true;
+            // ACCESS-GRANTED CHIME on the same one-way unlock edge as the lens flip —
+            // this is the single choke point ALL open paths cross (terminal sink, the
+            // Lua script race, console/test submitCode), so the chime can never be
+            // missed or double-fired.
+            if (m_audio && m_snd.chime.valid()) {
+                const x3::phys::Vec3 hp = h.closedPos;
+                m_audio->playSound3D(m_snd.chime, hp.x, hp.y + 0.4f, hp.z, 0.9f, 1.0f);
+            }
         }
+    }
+
+    // ---- Hatch SERVO + THUNK (the elevator's motor treatment): a heavy looped
+    // servo voice while the panels slide, distance-attenuated at the hatch each
+    // frame, then a seat THUNK on the edge where travel completes (open OR closed).
+    // Driven off door STATE, so every open path sounds. ----
+    if (m_audio && m_doorsPtr && m_hatchIdx != kNoLink && m_hatchIdx < m_doorsPtr->count()) {
+        const Door& h = m_doorsPtr->at(m_hatchIdx);
+        const bool moving = (h.state == DoorState::Opening) || (h.state == DoorState::Closing);
+        const x3::phys::Vec3 hp = h.closedPos;
+        const float dx = playerPos.x - hp.x, dy = playerPos.y - hp.y, dz = playerPos.z - hp.z;
+        const float att = 1.0f / (1.0f + 0.18f * (dx*dx + dy*dy + dz*dz));   // soft rolloff
+        if (moving && !m_hatchWasMoving && m_snd.servo.valid())
+            m_servoVoice = m_audio->startLoop(m_snd.servo, 0.55f * att, 0.80f);  // deep + heavy
+        else if (moving && m_servoVoice.valid())
+            m_audio->setLoopParams(m_servoVoice, 0.55f * att, 0.80f);
+        if (!moving && m_hatchWasMoving) {
+            if (m_servoVoice.valid()) { m_audio->stopLoop(m_servoVoice); m_servoVoice = {}; }
+            if (m_snd.thunk.valid())
+                m_audio->playSound3D(m_snd.thunk, hp.x, hp.y, hp.z, 0.9f, 0.78f);  // heavy seat
+        }
+        m_hatchWasMoving = moving;
     }
 
     // ---- Pickup collection: walk within radius (XZ) to collect. ----

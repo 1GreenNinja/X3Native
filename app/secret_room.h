@@ -36,6 +36,16 @@ namespace x3::game {
 // + opens the floor hatch.
 inline constexpr const char* kSecretRoomCode = "1278";   // (1127 is Door C / Club 1127 — keep this distinct)
 
+// The hatch/terminal SFX kit (mirrors ElevatorSounds — the elevator Glow-Up
+// treatment applied to the trapdoor). All loads are graceful: an invalid handle
+// simply keeps that one cue silent, never a crash.
+struct SecretRoomSounds {
+    x3::audio::SoundHandle buzz;    // wrong override code (terminal reject)
+    x3::audio::SoundHandle chime;   // access granted — fires ONCE on the unlock edge
+    x3::audio::SoundHandle servo;   // looped heavy servo while the panels slide
+    x3::audio::SoundHandle thunk;   // panels seat at end of travel (open OR closed)
+};
+
 // One collectible in the secret room. A pickup prop with a kind, an emissive look,
 // and a collected latch (the player walking within radius collects it). HEALTH and
 // NANO carry a payload the host applies (heal amount / the nano upgrade flag).
@@ -81,6 +91,14 @@ public:
     // ---- HoloTerminal access (the host routes input / draws text over it). ----
     HoloTerminal&       terminal()       { return m_terminal; }
     const HoloTerminal& terminal() const { return m_terminal; }
+
+    // ---- Audio (the elevator treatment): wire once after boot audio exists.
+    // tick() drives the servo loop + thunk off the hatch door-state edges (so EVERY
+    // open path sounds — terminal sink, Lua script, console) and the chime off the
+    // status-lens unlock edge; the submit sink fires the wrong-code buzz. ----
+    void setSounds(x3::audio::IAudioSystem* audio, const SecretRoomSounds& s) {
+        m_audio = audio; m_snd = s;
+    }
 
     // ---- Hatch queries (HUD + the self-test). ----
     uint32_t  hatchDoorIndex() const { return m_hatchIdx; }       // index into the host DoorSystem
@@ -129,6 +147,11 @@ private:
     WeaponSystem   m_weapon;            // the secret weapon pickup
     DoorSystem*    m_doorsPtr = nullptr; // the host DoorSystem holding the hatch
     uint32_t       m_hatchIdx = kNoLink; // hatch index in the host DoorSystem
+    // ---- Hatch audio state (see setSounds). ----
+    x3::audio::IAudioSystem* m_audio = nullptr;
+    SecretRoomSounds m_snd{};
+    x3::audio::LoopHandle m_servoVoice{};   // live while the panels slide
+    bool           m_hatchWasMoving = false; // Opening/Closing edge tracker
     x3::phys::Vec3 m_roomCenter{};
     float          m_roomFloorY = 0.0f;
     std::vector<SecretPickup> m_pickups;

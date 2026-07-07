@@ -1466,6 +1466,19 @@ int runDefaultHost(HostContext& hc) {
         la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;
         la.gun = sndGun; la.death = sndDeath;
         game.setAudio(la);
+        // TRAPDOOR AUDIO (the elevator Glow-Up treatment on the hatch): wrong-code
+        // buzz at the terminal, an access-granted chime on the unlock edge, a heavy
+        // looped servo while the panels slide, and a seat thunk at end of travel.
+        // The interact WAVs are COMMITTED under assets/audio/interact/ (repo-local
+        // resolves first), so this sounds on a fresh clone with no external packs.
+        {
+            x3::game::SecretRoomSounds srs;
+            srs.buzz  = audio->load(x3::game::resolveAudio("interact/buzz.wav"));
+            srs.chime = audio->load(x3::game::resolveAudio("interact/chime.wav"));
+            srs.servo = audio->load(x3::game::resolveAudio("interact/servo_loop.wav"));
+            srs.thunk = audio->load(x3::game::resolveAudio("doors/door_close.wav"));
+            game.secret().setSounds(audio.get(), srs);
+        }
 
         // Game-feel CUE sink: route enemy footstep / impact cues onto 3D audio.
         // Footsteps reuse the (pitched-down, quiet) step WAV at the enemy's foot;
@@ -1512,15 +1525,16 @@ int runDefaultHost(HostContext& hc) {
             x3::game::ElevatorSounds es;
             es.doorOpen  = sndDoor;          // already loaded at boot (S_ScifiDoor_A)
             es.doorClose = sndDoor;
-            es.ding      = audio->load(x3::game::resolveAudio(
-                "Sci-fi Evolution Gift Pack/Energy Bling.wav"));
+            // The four cue WAVs are now COMMITTED under assets/audio/interact/
+            // (same takes the pack shipped: Energy Bling / Deep Processor Mech
+            // Drone / Ceramic Menu Button / Negative Analog Computer Tone 2), so
+            // the elevator sounds on a fresh clone — the old pack-relative paths
+            // resolved only on machines carrying the external Unity pack roots.
+            es.ding      = audio->load(x3::game::resolveAudio("interact/chime.wav"));
             if (!es.ding.valid()) es.ding = sndPickup;   // fallback: recharge chime
-            es.motor     = audio->load(x3::game::resolveAudio(
-                "Sci-fi Evolution Gift Pack/Deep Processor Mech Drone.wav"));
-            es.keyClick  = audio->load(x3::game::resolveAudio(
-                "Sci-fi Evolution Gift Pack/Ceramic Menu Button.wav"));
-            es.buzz      = audio->load(x3::game::resolveAudio(
-                "Sci-fi Evolution Gift Pack/Negative Analog Computer Tone 2.wav"));
+            es.motor     = audio->load(x3::game::resolveAudio("interact/servo_loop.wav"));
+            es.keyClick  = audio->load(x3::game::resolveAudio("interact/keypad_click.wav"));
+            es.buzz      = audio->load(x3::game::resolveAudio("interact/buzz.wav"));
             elevator.setSounds(es);
         }
         elevator.setClubStopY(x3::game::ElevatorSystem::kDefaultClubFloorY + cabHY);
@@ -4364,9 +4378,22 @@ int runDefaultHost(HostContext& hc) {
         // the floor-hatch trapdoor on the correct code 1127). Esc-cancel handled below. --
         if (termMode && !terrainWorld) {
             x3::game::HoloTerminal& term = game.secret().terminal();
+            // KEYPAD CLICKS (the elevator's keypad treatment): every accepted
+            // keystroke on the glass clicks — digits a touch brighter than letters,
+            // backspace lower. Lazy-loaded once; invalid handle = silent, never a
+            // crash (matches the elevator's graceful-cue rule).
+            static x3::audio::SoundHandle sTermClick{};
+            static bool sTermClickLoaded = false;
+            if (!sTermClickLoaded && audio) {
+                sTermClick = audio->load(x3::game::resolveAudio("interact/keypad_click.wav"));
+                sTermClickLoaded = true;
+            }
+            auto keyClick = [&](float pitch) {
+                if (audio && sTermClick.valid()) audio->playSound2D(sTermClick, 0.5f, pitch);
+            };
             for (int dgt = 0; dgt < 10; ++dgt) {
                 bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
-                if (dn && !tmDigitPrev[dgt]) term.pushChar((char)('0' + dgt));
+                if (dn && !tmDigitPrev[dgt]) { term.pushChar((char)('0' + dgt)); keyClick(1.08f); }
                 tmDigitPrev[dgt] = dn;
             }
             // Letters + space too, so the cell terminal is a REAL typable field (not
@@ -4374,14 +4401,14 @@ int runDefaultHost(HostContext& hc) {
             // they register while keyDown (all gameplay input) is gated off in termMode.
             for (int li = 0; li < 26; ++li) {
                 bool dn = rawKey(GLFW_KEY_A + li);
-                if (dn && !tmCharPrev[li]) term.pushChar((char)('A' + li));
+                if (dn && !tmCharPrev[li]) { term.pushChar((char)('A' + li)); keyClick(1.0f); }
                 tmCharPrev[li] = dn;
             }
             bool tspaceNow = rawKey(GLFW_KEY_SPACE);
-            if (tspaceNow && !tmSpacePrev) term.pushChar(' ');
+            if (tspaceNow && !tmSpacePrev) { term.pushChar(' '); keyClick(0.96f); }
             tmSpacePrev = tspaceNow;
             bool tbackNow = rawKey(GLFW_KEY_BACKSPACE);
-            if (tbackNow && !tmBackPrev) term.backspace();
+            if (tbackNow && !tmBackPrev) { term.backspace(); keyClick(0.85f); }
             tmBackPrev = tbackNow;
             bool tEnterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (tEnterNow && !tmEnterPrev) {
