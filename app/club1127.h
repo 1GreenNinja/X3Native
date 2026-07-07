@@ -54,6 +54,7 @@
 
 #include "scene.h"
 #include "monster.h"
+#include "surface_library.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -160,12 +161,17 @@ private:
     // A solid static box (render mesh + Jolt collision + Scene entity), tinted,
     // optionally emissive (for neon strips / tiles / blacklights / fixtures).
     // Center + half extents in world meters (Y already offset to kClubY by the
-    // caller). `collide=false` for thin decorative inlays. Returns the entity id.
+    // caller). `collide=false` for thin decorative inlays. `surf` (W6-3 texture
+    // pass) is an optional surface_library set: when provided + valid, the box
+    // carries a real albedo/normal/mr texture (the tint in `color` still
+    // multiplies it, so the venue's near-black palette is unchanged — the
+    // texture adds relief/roughness detail instead of a flat tinted box).
+    // Returns the entity id.
     uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device,
                     x3::phys::IPhysicsWorld& physics,
                     float cx, float cy, float cz, float hx, float hy, float hz,
                     const float color[4], const float emissive[4], bool collide,
-                    float uvScale = 1.0f);
+                    float uvScale = 1.0f, const SurfaceSet* surf = nullptr);
 
     // Inert character prop: a MonsterSystem with damage 0 / chaseSpeed 0 that
     // loads + draws + animates `modelFile`. Appends to m_chars.

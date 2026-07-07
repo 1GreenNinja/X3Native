@@ -20,6 +20,17 @@ MW = r"D:\Assets\Modular Warehouse Warehouse Industrial Warehouse Hangar Factory
 SR = r"D:\Assets\Modular Shooting Range Military Base Military Facility Shooting Range Army"
 HH = r"D:\Assets\Modular Abandoned Hospital Horror Hospital Abandoned hospital Hospital"
 CC = r"D:\Assets\Command Center"
+# Terrain splat sources (W6-3 misc-polish task 1 — real 2K albedos feeding
+# registerTerrainMaterial(grass/rock/snow/sand); rock reuses sr_concrete_01
+# above). Picked from docs/tex_catalog.json via grass/sand/snow/ground/dirt
+# stem search (2626 sets scanned): the catalog has ZERO texture sets with
+# "snow"/"ice"/"arctic"/"frost"/"winter" anywhere in pack or stem name — no
+# true snow asset exists in the library. ADT's MarbleWhite00 (light, cool,
+# cracked white stone) is the closest visual substitute and is used AS-IS for
+# the snow splat layer; this is a deliberate substitution, not an oversight.
+RHEP = r"D:\Assets\Rocky Hills Environment - Whitebark Pine\Toby Fredson\Rocky Hills Environment - Whitebark Pine\RHEWP_Demo\Textures\Textures_Terrain Tiles"
+LGP3 = r"D:\Assets\Landscape Ground Pack 3 Desert Dry Land Beach Sea Islands Coast\NatureManufacture Assets\Coast Environment\Ground\Textures"
+ADT  = r"D:\Assets\Ancient Desert Town\_DLNK\_DLNK Source\_DLNK Libraries\[dlnk Texture Library]\Materials\Marble\MarbleWhite00"
 
 def find(setdir, stem):
     """Locate files for stem under a root (search recursively; stems are unique enough)."""
@@ -63,6 +74,9 @@ SETS = {
     "hh_floor_01a":        (HH, "TX_Modular_Floor_01a",    0.10, 0.60),
     "hh_ceiling_01a":      (HH, "TX_Modular_Ceiling_01a",  0.05, 0.80),
     "cc_porous_cement":    (CC, "T_Porous_Cement_Wall",    0.00, 0.90),
+    "terrain_grass":       (RHEP, "GrassTileRHEP",         0.00, 0.85),
+    "terrain_sand":        (LGP3, "T_ground_sand_01",      0.00, 0.80),
+    "terrain_snow":        (ADT,  "MarbleWhite00",         0.00, 0.88),
 }
 
 def load_rgb(p, maxdim=2048):

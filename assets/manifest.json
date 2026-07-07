@@ -169,9 +169,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/FPArms_Jake.glb",
-      "sha256": "085651e02950a83462afbe3060d2e83aaa4e1f39b05ee9d1ef9b89fce88e79ba",
-      "size": 5929440,
-      "source_note": "W2-C FP arms bake"
+      "sha256": "3db505f53e84530b7ad52f291fff4d522aa9f186145b80ca0a15cbf5464b651a",
+      "size": 4085404,
+      "source_note": "W6-3: re-bake FPArms_Jake.glb with a sleeve hem (per-boundary-edge dark flap along the shoulder crop) hiding the raw stump edge; see tools/bake_fp_arms.py W6-3 notes for the 3 rejected geometry approaches"
     },
     {
       "repo_path": "assets/rigged_glb/GreatWhiteSharkGameReady.glb",
@@ -664,6 +664,60 @@
       "sha256": "a148680eb43fe601e947f32965b55ef6bed93957e5227937f5437d5138f1d818",
       "size": 2741423,
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_grass/albedo.png",
+      "sha256": "70ec6975c9b87bd358fc6bb5254d331be8e593355a3683681b413b1864d3ee5f",
+      "size": 9709509,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_grass/mr.png",
+      "sha256": "dd13e798cbebe01d37fc831e5484cda91c6965cd0f9923aa6a1d538ca280fc29",
+      "size": 16914,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_grass/normal.png",
+      "sha256": "63303a4464f68b48f73b1174583cb0770cefeb2998beb2328e50686f73e997e1",
+      "size": 11903409,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_sand/albedo.png",
+      "sha256": "eb5e6ee2f27cef69c13ae28085a8655b23011bc1e5b0186d1ad2625d2ec83978",
+      "size": 9669455,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_sand/mr.png",
+      "sha256": "840de65dc9e9bd3c80133f5fad6086894bdffa6b11286dd11cfb87cf54d58ade",
+      "size": 16914,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_sand/normal.png",
+      "sha256": "afa1a1ebd27461af865e2bec6d635f68b20398cca2c1ec56e610fe20abbacdb1",
+      "size": 10331297,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_snow/albedo.png",
+      "sha256": "19b2f4dacc565fb54ff6531882e2b2b034b1b11ca82faecb2880a73736a23264",
+      "size": 8067886,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_snow/mr.png",
+      "sha256": "e2a4e417b6f4f2ce49a374564f096f2e4a8da58b374fdfb29a3ff97a1bf9fe41",
+      "size": 16914,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_snow/normal.png",
+      "sha256": "ce5216f40795f21c54c698202bb317be41b0fd070e1e63085b64a609d5dea25b",
+      "size": 6616577,
+      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
     }
   ]
 }

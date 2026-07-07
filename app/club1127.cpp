@@ -34,6 +34,7 @@
 //       descent + teleports the player to spawn(); this module just builds the room.
 #include "club1127.h"
 #include "mesh_prims.h"
+#include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 
@@ -99,7 +100,7 @@ uint32_t Club1127World::addBox(Scene& scene, x3::rhi::IRenderDevice& device,
                                x3::phys::IPhysicsWorld& physics,
                                float cx, float cy, float cz, float hx, float hy, float hz,
                                const float color[4], const float emissive[4], bool collide,
-                               float uvScale) {
+                               float uvScale, const SurfaceSet* surf) {
     // Render + collision geometry authored in WORLD space (centered at cx,cy,cz),
     // so the Entity transform stays identity (static geometry — exactly like
     // buildTestLevel/env-art). The Scene draws it; addStaticMesh gives collision.
@@ -107,6 +108,7 @@ uint32_t Club1127World::addBox(Scene& scene, x3::rhi::IRenderDevice& device,
     Entity e;
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
+    if (surf && surf->ok) { e.tex = surf->albedo; e.normalTex = surf->normal; e.mrTex = surf->mr; }
     for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
     if (emissive) for (int i = 0; i < 4; ++i) e.emissive[i] = emissive[i];
     e.tag = (uint32_t)Tag::Static;
@@ -156,11 +158,33 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     const float LOUNGE_Y = 4.57f;     // 2nd story at 15 ft
 
     // Convenience: author a box at JS-local coords (Y offset to oy applied here).
+    // `sf` (W6-3 texture pass) optionally carries a real surface_library set.
     auto box = [&](float x, float y, float z, float hx, float hy, float hz,
-                   const float* col, const float* em, bool coll, float uv = 1.0f) {
+                   const float* col, const float* em, bool coll, float uv = 1.0f,
+                   const SurfaceSet* sf = nullptr) {
         return addBox(scene, device, physics, x, oy + y, z, hx, hy, hz, col,
-                      em ? em : kEmitOff, coll, uv);
+                      em ? em : kEmitOff, coll, uv, sf);
     };
+
+    // ==================================================================
+    // W6-3 TEXTURE PASS — real PBR sets from the pack library (ART_BIBLE §4)
+    // replacing the box-tint-only geometry (was: zero architecture textures,
+    // magenta neon accent only). Walls = dark venue concrete panels; floors +
+    // stage/booth platforms = rubber dance floor / brushed metal; bar = plastic
+    // laminate body + trim top. The magenta neon accent (kEmitNeon) is UNCHANGED
+    // — it's an emissive-only strip, not a texture, and stays bible-compliant.
+    // On a headless device with no assets fetched yet, SurfaceSet::ok is false
+    // and addBox falls back to the old flat-tinted box (never breaks the build).
+    // ==================================================================
+    SurfaceLibrary surf;
+    surf.mount(assetRoot() + "/surface_library");
+    auto set = [&](const char* name) -> const SurfaceSet& { return surf.get(device, name); };
+    const SurfaceSet& sWall  = set("mw_concrete_panels_a"); // dark venue walls
+    const SurfaceSet& sFloor = set("sr_rubberfloor");        // dance/club floor
+    const SurfaceSet& sMetal = set("mw_metal_trim_b");       // stage/booth platforms
+    const SurfaceSet& sBar   = set("mw_wall_plastic");       // bar body laminate
+    const SurfaceSet& sTrim  = set("mw_floor_trim");         // bar top / trim
+    const SurfaceSet& sStair = set("sr_concrete_a");         // stair treads
 
     m_stats.floorY    = oy;           // main floor center at world Y = -200
     m_stats.roomMinX  = -CW / 2;  m_stats.roomMaxX = CW / 2;
@@ -169,30 +193,30 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // ==================================================================
     // MAIN SHELL — floor, ceiling, four walls (the 50x100x30 ft room).
     // ==================================================================
-    box(0, 0.0f, 0, CW / 2, 0.1f, CL / 2, kFloor, kEmitOff, true, 0.4f);          // floor slab
-    box(0, CH,  0, CW / 2, 0.1f, CL / 2, kCeil,  kEmitOff, true, 0.4f);           // ceiling
+    box(0, 0.0f, 0, CW / 2, 0.1f, CL / 2, kFloor, kEmitOff, true, 0.4f, &sFloor);  // floor slab
+    box(0, CH,  0, CW / 2, 0.1f, CL / 2, kCeil,  kEmitOff, true, 0.4f);            // ceiling
     m_stats.ceilingY = oy + CH;
 
     // North wall (-Z) — gap for the engine room (ER_W wide, centered at x=0).
     const float erGap = ER_W;
     const float nwSide = (CW - erGap) / 2;
-    box(-(erGap / 2 + nwSide / 2), CH / 2, -CL / 2, nwSide / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
-    box( (erGap / 2 + nwSide / 2), CH / 2, -CL / 2, nwSide / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+    box(-(erGap / 2 + nwSide / 2), CH / 2, -CL / 2, nwSide / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f, &sWall);
+    box( (erGap / 2 + nwSide / 2), CH / 2, -CL / 2, nwSide / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f, &sWall);
     // South wall (+Z) — solid.
-    box(0, CH / 2, CL / 2, CW / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+    box(0, CH / 2, CL / 2, CW / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f, &sWall);
     // West long wall (-X) — solid (the ground-bar wall).
-    box(-CW / 2, CH / 2, 0, T / 2, CH / 2, CL / 2, kWall, kEmitOff, true, 0.5f);
+    box(-CW / 2, CH / 2, 0, T / 2, CH / 2, CL / 2, kWall, kEmitOff, true, 0.5f, &sWall);
     // East long wall (+X) — elevator entrance gap near the south end.
     {
         const float entrW = 3.5f;                      // elevator opening width
         const float entrZ = CL / 2 - entrW / 2 - 1.0f; // near the SE corner
         const float northLen = CL / 2 + (entrZ - entrW / 2);
-        box(CW / 2, CH / 2, -CL / 2 + northLen / 2, T / 2, CH / 2, northLen / 2, kWall, kEmitOff, true, 0.5f);
+        box(CW / 2, CH / 2, -CL / 2 + northLen / 2, T / 2, CH / 2, northLen / 2, kWall, kEmitOff, true, 0.5f, &sWall);
         const float southLen = CL / 2 - (entrZ + entrW / 2);
         if (southLen > 0.1f)
-            box(CW / 2, CH / 2, CL / 2 - southLen / 2, T / 2, CH / 2, southLen / 2, kWall, kEmitOff, true, 0.5f);
+            box(CW / 2, CH / 2, CL / 2 - southLen / 2, T / 2, CH / 2, southLen / 2, kWall, kEmitOff, true, 0.5f, &sWall);
         // Header above the elevator door.
-        box(CW / 2, 2.8f + (CH - 2.8f) / 2, entrZ, T / 2, (CH - 2.8f) / 2, entrW / 2, kWall, kEmitOff, true, 0.5f);
+        box(CW / 2, 2.8f + (CH - 2.8f) / 2, entrZ, T / 2, (CH - 2.8f) / 2, entrW / 2, kWall, kEmitOff, true, 0.5f, &sWall);
         // Player spawn: just inside the elevator opening on the floor, facing -X
         // (into the club toward the dance floor + DJ booth).
         m_spawn = x3::phys::Vec3{ CW / 2 - 1.6f, oy + 0.15f, entrZ };
@@ -204,17 +228,18 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // ==================================================================
     const float erZ0 = -CL / 2 - ER_D / 2;   // engine-room center Z
     auto erbox = [&](float x, float y, float z, float hx, float hy, float hz,
-                     const float* col, const float* em, bool coll, float uv = 1.0f) {
-        return box(x, y, erZ0 + z, hx, hy, hz, col, em, coll, uv);
+                     const float* col, const float* em, bool coll, float uv = 1.0f,
+                     const SurfaceSet* sf = nullptr) {
+        return box(x, y, erZ0 + z, hx, hy, hz, col, em, coll, uv, sf);
     };
-    erbox(0, 0.0f, 0, ER_W / 2, 0.1f, ER_D / 2, kFloor, kEmitOff, true, 0.5f);    // ER floor
+    erbox(0, 0.0f, 0, ER_W / 2, 0.1f, ER_D / 2, kFloor, kEmitOff, true, 0.5f, &sFloor); // ER floor
     erbox(0, CH,  0, ER_W / 2, 0.1f, ER_D / 2, kCeil,  kEmitOff, true, 0.5f);     // ER ceiling
-    erbox(0, CH / 2, -ER_D / 2, ER_W / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f); // back wall
-    erbox(-ER_W / 2, CH / 2, 0, T / 2, CH / 2, ER_D / 2, kWall, kEmitOff, true, 0.5f); // -X side
-    erbox( ER_W / 2, CH / 2, 0, T / 2, CH / 2, ER_D / 2, kWall, kEmitOff, true, 0.5f); // +X side
+    erbox(0, CH / 2, -ER_D / 2, ER_W / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f, &sWall); // back wall
+    erbox(-ER_W / 2, CH / 2, 0, T / 2, CH / 2, ER_D / 2, kWall, kEmitOff, true, 0.5f, &sWall); // -X side
+    erbox( ER_W / 2, CH / 2, 0, T / 2, CH / 2, ER_D / 2, kWall, kEmitOff, true, 0.5f, &sWall); // +X side
 
     // Lounge floor (2nd story) + railing + balusters.
-    erbox(0, LOUNGE_Y, 0, (ER_W - 0.2f) / 2, 0.1f, (ER_D - 0.2f) / 2, kFloor, kEmitOff, true, 0.5f);
+    erbox(0, LOUNGE_Y, 0, (ER_W - 0.2f) / 2, 0.1f, (ER_D - 0.2f) / 2, kFloor, kEmitOff, true, 0.5f, &sFloor);
     m_stats.hasLoungeFloor = true;
     erbox(0, LOUNGE_Y + 0.5f, ER_D / 2 - 0.1f, (ER_W - 0.4f) / 2, 0.5f, 0.03f, kRail, kEmitOff, true);
     for (int r = 0; r < 8; ++r) {
@@ -230,7 +255,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         for (int s = 0; s < stCt; ++s) {
             erbox(-ER_W / 2 + 0.65f, stR * (s + 0.5f), -ER_D / 2 + stD * (s + 0.5f),
                   0.5f, (stR * (s + 0.5f)) /* riser grows */ * 0.0f + 0.04f, (stD - 0.02f) / 2,
-                  kStair, kEmitOff, true);
+                  kStair, kEmitOff, true, 1.0f, &sStair);
             ++m_stats.stairSteps;
         }
     }
@@ -247,7 +272,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         const float westSectionW = ER_W / 2 - pierW / 2;
         const float headerH = CH - 2.4f;
         erbox(-(pierW / 2 + westSectionW / 2), 2.4f + headerH / 2, erSZ,
-              westSectionW / 2, headerH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+              westSectionW / 2, headerH / 2, T / 2, kWall, kEmitOff, true, 0.5f, &sWall);
         // Glass swing doors (2 leaves) + chrome handles (visual; non-colliding).
         const float ghw = glassDoorW / 2;
         for (int s = -1; s <= 1; s += 2) {
@@ -257,12 +282,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                   0.015f, 0.125f, 0.03f, kChrome, kEmitOff, false);
         }
         // Center pier.
-        erbox(0, CH / 2, erSZ, pierW / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+        erbox(0, CH / 2, erSZ, pierW / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f, &sWall);
         // East alcove: header + inset door + a pass-through cutout frame.
         const float eastSectionW = ER_W / 2 - pierW / 2;
         const float eastCenterX = pierW / 2 + eastSectionW / 2;
         const float alcoveDoorW = 1.2f;
-        erbox(eastCenterX, 2.2f + (CH - 2.2f) / 2, erSZ - 0.6f, alcoveDoorW / 2, (CH - 2.2f) / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+        erbox(eastCenterX, 2.2f + (CH - 2.2f) / 2, erSZ - 0.6f, alcoveDoorW / 2, (CH - 2.2f) / 2, T / 2, kWall, kEmitOff, true, 0.5f, &sWall);
         erbox(eastCenterX, 1.05f, erSZ - 0.57f, (alcoveDoorW - 0.04f) / 2, 1.05f, 0.03f, kStair, kEmitOff, false);
         erbox(eastCenterX, 0.61f, erSZ - 0.59f, 0.485f, 0.61f, 0.04f, kRail, kEmitOff, false); // cutout frame
         // Lounge overhang above the east alcove.
@@ -278,23 +303,23 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     {
         const float djW = 3.5f, djD = 2.5f, djH = 2.8f, djY = LOUNGE_Y;
         const float djZ = -CL / 2 + djD / 2 + 0.3f;
-        box(0, djY, djZ, djW / 2, 0.075f, djD / 2, kMetal, kEmitOff, true);             // booth floor
+        box(0, djY, djZ, djW / 2, 0.075f, djD / 2, kMetal, kEmitOff, true, 1.0f, &sMetal); // booth floor
         box(0, djY + djH, djZ, (djW + 0.1f) / 2, 0.05f, (djD + 0.1f) / 2, kCeil, kEmitOff, false); // booth ceiling
         m_stats.hasDjBooth = true;
 
         // Back wall (split around the keypad door).
         const float djBkW = (djW - 0.9f) / 2;
-        box(-(0.45f + djBkW / 2), djY + djH / 2, -CL / 2 + 0.3f, djBkW / 2, djH / 2, T / 2, kWall, kEmitOff, true);
-        box( (0.45f + djBkW / 2), djY + djH / 2, -CL / 2 + 0.3f, djBkW / 2, djH / 2, T / 2, kWall, kEmitOff, true);
+        box(-(0.45f + djBkW / 2), djY + djH / 2, -CL / 2 + 0.3f, djBkW / 2, djH / 2, T / 2, kWall, kEmitOff, true, 1.0f, &sWall);
+        box( (0.45f + djBkW / 2), djY + djH / 2, -CL / 2 + 0.3f, djBkW / 2, djH / 2, T / 2, kWall, kEmitOff, true, 1.0f, &sWall);
         // Secured keypad door + keypad.
         box(djW / 2 - 0.6f, djY + 1.1f, -CL / 2 + 0.3f, 0.45f, 1.1f, 0.04f, kStair, kEmitOff, false);
         box(djW / 2 - 0.1f, djY + 1.2f, -CL / 2 + 0.35f, 0.05f, 0.075f, 0.015f, kStair, kEmitKeypad, false);
         m_stats.hasKeypadDoor = true;
 
         // Low front + side walls (the booth railing).
-        box(0, djY + 0.55f, -CL / 2 + djD + 0.3f, djW / 2, 0.55f, T / 2, kWall, kEmitOff, true);
+        box(0, djY + 0.55f, -CL / 2 + djD + 0.3f, djW / 2, 0.55f, T / 2, kWall, kEmitOff, true, 1.0f, &sWall);
         for (int s = -1; s <= 1; s += 2)
-            box(s * djW / 2, djY + 0.55f, djZ, T / 2, 0.55f, djD / 2, kWall, kEmitOff, true);
+            box(s * djW / 2, djY + 0.55f, djZ, T / 2, 0.55f, djD / 2, kWall, kEmitOff, true, 1.0f, &sWall);
 
         // DJ mixer console + 2 turntables (cylinders -> flat boxes).
         box(0, djY + 1.05f, -CL / 2 + djD - 0.1f, 1.4f, 0.06f, 0.4f, kStair, kEmitDjCon, false);
@@ -322,9 +347,9 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // AERIAL BAR (beside the booth, neon underglow, polished top, railings).
         // ==============================================================
         const float abW = 4.0f, abD = 1.5f, abX = -djW / 2 - abW / 2 + 0.5f, abZ = djZ;
-        box(abX, djY, abZ, abW / 2, 0.06f, abD / 2, kMetal, kEmitOff, true);               // platform
-        box(abX, djY + 0.55f, -CL / 2 + djD + 0.1f, (abW - 0.4f) / 2, 0.55f, 0.25f, kMetal, kEmitOff, true); // counter
-        box(abX, djY + 1.13f, -CL / 2 + djD + 0.1f, (abW - 0.2f) / 2, 0.025f, 0.3f, kMetal, kEmitAbTop, false); // polished top
+        box(abX, djY, abZ, abW / 2, 0.06f, abD / 2, kMetal, kEmitOff, true, 1.0f, &sMetal);               // platform
+        box(abX, djY + 0.55f, -CL / 2 + djD + 0.1f, (abW - 0.4f) / 2, 0.55f, 0.25f, kMetal, kEmitOff, true, 1.0f, &sMetal); // counter
+        box(abX, djY + 1.13f, -CL / 2 + djD + 0.1f, (abW - 0.2f) / 2, 0.025f, 0.3f, kMetal, kEmitAbTop, false, 1.0f, &sMetal); // polished top
         m_stats.hasAerialBar = true;
         // Magenta neon strips under the platform edges.
         box(abX, djY - 0.08f, abZ + abD / 2, (abW - 0.4f) / 2, 0.02f, 0.02f, kWall, kEmitNeon, false);
@@ -455,7 +480,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 const float tx = -CW / 2 + tw / 2 + gx * tw;
                 const float tz = -CL / 2 + td / 2 + gz * td;
                 const float* em = ((gx + gz) % 2 == 0) ? kEmitTile1 : kEmitTile2;
-                box(tx, 0.12f, tz, (tw - 0.02f) / 2, 0.015f, (td - 0.02f) / 2, kFloor, em, false);
+                box(tx, 0.12f, tz, (tw - 0.02f) / 2, 0.015f, (td - 0.02f) / 2, kFloor, em, false, 1.0f, &sFloor);
             }
         m_stats.hasDanceFloor = true;
     }
@@ -480,8 +505,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // GROUND BAR + 7 STOOLS (west side).
     // ==================================================================
     {
-        box(-CW / 2 + 1.4f, 0.55f, CL / 4, 0.4f, 0.55f, 2.5f, kBar, kEmitOff, true);            // bar body
-        box(-CW / 2 + 1.4f, 1.13f, CL / 4, 0.475f, 0.03f, 2.55f, kBarTop, kEmitBarTop, false);  // bar top
+        box(-CW / 2 + 1.4f, 0.55f, CL / 4, 0.4f, 0.55f, 2.5f, kBar, kEmitOff, true, 1.0f, &sBar);     // bar body
+        box(-CW / 2 + 1.4f, 1.13f, CL / 4, 0.475f, 0.03f, 2.55f, kBarTop, kEmitBarTop, false, 1.0f, &sTrim); // bar top
         m_stats.hasGroundBar = true;
         addLight(m_lights, -CW / 2 + 1.4f, oy + 2.5f, CL / 4, 0.40f, 0.25f, 0.50f, 6.0f);       // bar light
         for (int i = 0; i < 7; ++i) {
