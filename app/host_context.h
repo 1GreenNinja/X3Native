@@ -104,6 +104,7 @@ struct HostContext {
     bool        terrainShot = false;    std::string terrainShotPath;
     bool        oceanShot = false;      std::string oceanShotPath;
     bool        oceanBaseShot = false;  std::string oceanBaseShotPath;   // W3-4 undersea base
+    bool        cityShot = false;       std::string cityShotPath;        // W8-3 city vantage
     bool        captureAi = false;      std::string captureAiDir;
     bool        captureWalk = false;    std::string captureWalkPath;
     bool        captureFootIk = false;  std::string captureFootIkPath;

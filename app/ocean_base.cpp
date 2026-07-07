@@ -27,7 +27,8 @@ constexpr uint32_t kLevels = 3;
 constexpr float kLevelH = 6.0f;        // disc level height
 } // namespace
 
-void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics) {
+void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                      SurfaceLibrary* sharedSurf) {
     (void)physics;   // graybox undersea zone is visual-only this pass (no collision body)
 
     // W3-4 REALISM PASS: the base is no longer flat-tinted graybox — architectural
@@ -36,8 +37,9 @@ void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IP
     // water palette (dark, desaturated, teal-leaning) rides on top of real material.
     // On a headless device the set loads may no-op (invalid handles) — the entity
     // then renders exactly like the old graybox, so --test-oceanbase is unchanged.
-    SurfaceLibrary surf;
-    surf.mount(assetRoot() + "/surface_library");
+    SurfaceLibrary localSurf;                         // W8-3: prefer the streamer's
+    SurfaceLibrary& surf = sharedSurf ? *sharedSurf : localSurf;   // shared PBR cache
+    if (!surf.mounted()) surf.mount(assetRoot() + "/surface_library");
     auto set = [&](const char* name) -> const SurfaceSet& { return surf.get(device, name); };
 
     auto addBoxProp = [&](float cx, float cy, float cz, float hx, float hy, float hz,

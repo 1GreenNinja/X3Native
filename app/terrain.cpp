@@ -179,7 +179,10 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
     }
 
     // ---- Crack-hiding SKIRT (not in the collision surface) ---------------
-    const float skirtDepth = cfg.heightScale * 0.25f + 1.0f;
+    // Features worlds carry real mountains (slopes far steeper than the base
+    // field), so LOD-decimation error at tile borders can exceed the old depth —
+    // drop the skirt further there.
+    const float skirtDepth = cfg.heightScale * 0.25f + (cfg.worldFeatures ? 40.0f : 0.0f) + 1.0f;
     auto addSkirtEdge = [&](uint32_t i0, uint32_t j0, uint32_t i1, uint32_t j1) {
         const uint32_t topA = j0 * vpe + i0;
         const uint32_t topB = j1 * vpe + i1;
@@ -330,13 +333,144 @@ TerrainLod lodForDist(const TerrainConfig& cfg, float dist) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Public height sampler. Gentle rolling hills: an fBm field shaped by a mild
-// power curve scaled to [0, heightScale]. Pure function of the config + (x,z).
+// W8-3 — the CANONICAL WORLD MAP layers (cfg.worldFeatures). Ported from the
+// Babylon X3 world's terrain personality (Q3Engine src/world/x3-world-terrain.js
+// ps2_heightAt + x3-mountains.js — layout/dimensions as CONTENT reference; the
+// math here is the engine's own value-noise/fBm, clean-room):
+//   * MACRO RELIEF — a ~2.5 km-wavelength amplitude field so the map reads as
+//     plains / rolling country / hill country instead of one noise character.
+//   * 4 MOUNTAIN RANGES ringing the world 7-10 km out (native compass, +Z = N):
+//     N snow (jagged, to ~480 m) / E volcanic (tallest, ~500 m) / S mesa
+//     (capped flat tops ~200 m) / W crystal highlands (rolling, ~350 m).
+//     Ridged noise along each range band => a chain of real peaks, not a blob.
+//   * FLAT PADS — facility/crash pad at the origin + the three city districts
+//     (Scrapyard / New District / Industrial), so streets + building rows sit
+//     level (the Babylon map flattens the same zones).
+//   * OCEAN BASIN — a shore-falloff depression around the offshore ocean_base
+//     region (1100,-1350) so the water plane reads as a sea with a beach ring,
+//     deepening to ~-90 m over the undersea disc.
+// Pure + deterministic in (cfg, x, z); shared by render, collision, and every
+// placeOnTerrain query, so content anchors to the same surface it draws on.
+// ---------------------------------------------------------------------------
+namespace {
+
+inline float sstep(float e0, float e1, float x) {
+    float t = (x - e0) / (e1 - e0);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// Distance from p to segment ab (XZ).
+inline float segDist(float px, float pz, float ax, float az, float bx, float bz) {
+    const float abx = bx - ax, abz = bz - az;
+    const float apx = px - ax, apz = pz - az;
+    const float len2 = abx * abx + abz * abz;
+    float t = (len2 > 1e-6f) ? (apx * abx + apz * abz) / len2 : 0.0f;
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const float dx = apx - abx * t, dz = apz - abz * t;
+    return std::sqrt(dx * dx + dz * dz);
+}
+
+// One mountain range: a band (segment + width) carrying ridged-noise peaks.
+struct RangeDef {
+    float ax, az, bx, bz;    // band spine (world XZ)
+    float coreW, outW;       // full-strength half-width / zero-strength half-width
+    float amp;               // peak amplitude (m above the base field)
+    float ridgeExp;          // ridge sharpness (higher = more jagged)
+    float jagAmp;            // extra high-freq jag amplitude (m)
+    float capY;              // clamp (mesa flat tops); <=0 = no cap
+};
+// Native compass: +Z = north (regions.json / world_regions gazetteer). Band
+// placement + peak heights follow the Babylon map (N z~8300 to 480 m snow /
+// E x~9200 to 500 m volcanic / S z~-9000 mesas ~200 m / W x~-8600 rolling 350 m).
+const RangeDef kRanges[4] = {
+    { -2200.0f,  8300.0f,  2800.0f,  8300.0f, 500.0f, 2200.0f, 380.0f, 2.2f, 45.0f,   0.0f }, // N snow
+    {  9200.0f, -2000.0f,  9200.0f,  2500.0f, 550.0f, 2300.0f, 460.0f, 2.0f, 45.0f,   0.0f }, // E volcanic
+    { -2800.0f, -9000.0f,  3500.0f, -9000.0f, 500.0f, 2100.0f, 230.0f, 1.1f,  0.0f, 195.0f }, // S mesa
+    { -8600.0f, -2000.0f, -8600.0f,  1800.0f, 600.0f, 2400.0f, 320.0f, 1.3f,  0.0f,   0.0f }, // W crystal hills
+};
+
+// Flat pads: blend the field toward padY inside r, fully the field by r*1.7.
+struct PadDef { float cx, cz, r, padY; };
+const PadDef kPads[4] = {
+    {    0.0f,   0.0f, 260.0f,  0.0f },   // facility/crash pad (the Spire grade)
+    { -600.0f, 500.0f, 250.0f, 16.0f },   // Scrapyard City
+    {  200.0f, 500.0f, 190.0f, 15.0f },   // New District
+    { -200.0f, 350.0f, 150.0f, 17.0f },   // Industrial Zone
+};
+
+// Ocean basin (matches app/ocean_base.cpp kBaseCx/kBaseCz).
+constexpr float kBasinCx = 1100.0f, kBasinCz = -1350.0f;
+
+float mountainHeight(float x, float z, uint32_t seed) {
+    float h = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        const RangeDef& r = kRanges[i];
+        const float d = segDist(x, z, r.ax, r.az, r.bx, r.bz);
+        if (d >= r.outW) continue;
+        const float mask = sstep(r.outW, r.coreW, d);   // 1 in the core band
+        // Ridged fBm along the band => a chain of peaks with V-valleys between.
+        const float n = fbm(x, z, 0.0011f, 3, seed + 7000u + (uint32_t)i * 131u);
+        float ridge = 1.0f - std::fabs(2.0f * n - 1.0f);
+        ridge = std::pow(ridge, r.ridgeExp);
+        float hm = mask * r.amp * (0.30f + 0.70f * ridge);
+        if (r.jagAmp > 0.0f) {
+            const float j = fbm(x, z, 0.006f, 3, seed + 9000u + (uint32_t)i * 197u);
+            hm += mask * (j - 0.5f) * 2.0f * r.jagAmp * ridge;   // jag rides the peaks
+        }
+        if (r.capY > 0.0f && hm > r.capY) hm = r.capY;           // mesa flat tops
+        if (hm > 0.0f) h += hm;
+    }
+    return h;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Public height sampler. Base field: gentle rolling hills — an fBm field shaped
+// by a mild power curve scaled to [0, heightScale]. With cfg.worldFeatures the
+// canonical world-map layers (relief/mountains/pads/basin) apply on top.
+// Pure function of the config + (x,z).
 // ---------------------------------------------------------------------------
 float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ) {
     float h = fbm(worldX, worldZ, cfg.noiseFreq, cfg.octaves, cfg.seed);
     h = h * h * (3.0f - 2.0f * h);
-    return h * cfg.heightScale;
+    h *= cfg.heightScale;
+    if (!cfg.worldFeatures) return h;
+
+    // MACRO RELIEF: modulate the base amplitude by a very-low-frequency field so
+    // some country is near-flat plain and some carries the full hill height.
+    // Factor stays in [0.35, 1.0] — the base field never exceeds heightScale.
+    const float macro = fbm(worldX, worldZ, 0.00028f, 2, cfg.seed ^ 0x5157u);
+    h *= 0.35f + 0.65f * sstep(0.25f, 0.75f, macro);
+
+    // MOUNTAIN RANGES (adds above heightScale by design).
+    h += mountainHeight(worldX, worldZ, cfg.seed);
+
+    // OCEAN BASIN: shore falloff into the offshore water, deepening over the
+    // undersea base so the disc sits in a real pit under the water plane.
+    {
+        const float dx = worldX - kBasinCx, dz = worldZ - kBasinCz;
+        const float d = std::sqrt(dx * dx + dz * dz);
+        if (d < 950.0f) {
+            const float t = sstep(950.0f, 300.0f, d);          // 1 at the core
+            const float target = -6.0f - 84.0f * sstep(0.35f, 1.0f, t);  // -6 shore .. -90 core
+            h = h + (target - h) * t;
+        }
+    }
+
+    // FLAT PADS (facility + city districts) — applied last so streets win.
+    for (int i = 0; i < 4; ++i) {
+        const PadDef& p = kPads[i];
+        const float dx = worldX - p.cx, dz = worldZ - p.cz;
+        const float d = std::sqrt(dx * dx + dz * dz);
+        const float outR = p.r * 1.7f;
+        if (d < outR) {
+            const float t = sstep(outR, p.r, d);               // 1 inside the pad
+            h = h + (p.padY - h) * t;
+        }
+    }
+    return h;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +481,14 @@ float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ) {
 // query and the rendered/streamed surface always agree.
 // ---------------------------------------------------------------------------
 const TerrainConfig& worldTerrainConfig() {
-    static const TerrainConfig kWorld{};   // defaults = the streamed world's config
+    // Defaults = the streamed world's config, with the CANONICAL WORLD FEATURES
+    // layer ON (mountain ranges / macro relief / city pads / ocean basin). Tests
+    // that build their own TerrainConfig keep worldFeatures=false (legacy field).
+    static const TerrainConfig kWorld = [] {
+        TerrainConfig c{};
+        c.worldFeatures = true;
+        return c;
+    }();
     return kWorld;
 }
 
@@ -379,6 +520,102 @@ void placeOnTerrain(float x, float z, float outPos[3]) {
     outPos[0] = x;
     outPos[1] = terrainHeightAtWorld(x, z);
     outPos[2] = z;
+}
+
+x3::rhi::TextureHandle makeTerrainSplatMarker(x3::rhi::IRenderDevice& device) {
+    return makeGroundTexture(device);
+}
+
+// ---------------------------------------------------------------------------
+// W8-3 — the horizon ring (far-terrain stitch). One static polar-grid mesh
+// sampled from the CANONICAL field (worldTerrainConfig), geometric ring
+// spacing, recessed by yBias so streamed LOD0 tiles win where they overlap.
+// ---------------------------------------------------------------------------
+uint32_t addTerrainHorizonRing(Scene& scene, x3::rhi::IRenderDevice& device,
+                               x3::rhi::TextureHandle splatMarker,
+                               const HorizonRingDesc& d) {
+    if (d.rings < 2 || d.segments < 8 || d.rInner <= 0.0f || d.rOuter <= d.rInner)
+        return kNoLink;
+
+    const uint32_t nR = d.rings + 1, nS = d.segments + 1;
+    const float logRatio = std::log(d.rOuter / d.rInner);
+
+    std::vector<x3::rhi::MeshVertex> verts;
+    std::vector<uint32_t> idx;
+    verts.reserve((size_t)nR * nS);
+    idx.reserve((size_t)d.rings * d.segments * 6);
+
+    auto ringHeight = [&](float wx, float wz, float r) -> float {
+        float h = terrainHeightAtWorld(wx, wz);
+        if (d.flatten) {
+            const float t = sstep(d.rInner, d.flattenBlendR, r);   // 0 at inner -> 1 out
+            h = d.flattenY + (h - d.flattenY) * t;
+        }
+        return h + d.yBias;
+    };
+
+    for (uint32_t ri = 0; ri < nR; ++ri) {
+        const float fr = (float)ri / (float)d.rings;
+        const float r  = d.rInner * std::exp(logRatio * fr);
+        // Local half-cell sizes: radial ring spacing + tangential arc length.
+        const float drHalf = r * (std::exp(logRatio / (float)d.rings) - 1.0f) * 0.5f;
+        const float daHalf = r * (6.2831853f / (float)d.segments) * 0.5f;
+        // Normal sampling eps scales with the local cell size (coarse far out).
+        const float eps = std::max(0.75f, drHalf * 0.5f);
+        for (uint32_t si = 0; si < nS; ++si) {
+            const float a  = (float)(si % d.segments) / (float)d.segments * 6.2831853f;
+            const float ca = std::cos(a), sa = std::sin(a);
+            const float wx = d.centerX + ca * r;
+            const float wz = d.centerZ + sa * r;
+            // LOWER-ENVELOPE height: min of the vertex sample + its half-cell
+            // neighbors, so the coarse mesh's linear interpolation stays AT or
+            // BELOW the true field between samples — the ring never pokes up
+            // through the full-detail streamed tiles or reads as floating
+            // sheets in valleys. Blended in with radius: near the center the
+            // ring IS the ground (the city host) and must track the field.
+            const float hC = ringHeight(wx, wz, r);
+            float hMin = hC;
+            hMin = std::min(hMin, ringHeight(wx + ca * drHalf, wz + sa * drHalf, r));
+            hMin = std::min(hMin, ringHeight(wx - ca * drHalf, wz - sa * drHalf, r));
+            hMin = std::min(hMin, ringHeight(wx - sa * daHalf, wz + ca * daHalf, r));
+            hMin = std::min(hMin, ringHeight(wx + sa * daHalf, wz - ca * daHalf, r));
+            const float env = sstep(150.0f, 500.0f, r);   // envelope strength by radius
+            const float h = hC + (hMin - hC) * env;
+            const float hl = ringHeight(wx - eps, wz, r);
+            const float hr = ringHeight(wx + eps, wz, r);
+            const float hd = ringHeight(wx, wz - eps, r);
+            const float hu = ringHeight(wx, wz + eps, r);
+            float nx = (hl - hr), nz = (hd - hu), ny = 2.0f * eps;
+            const float inv = 1.0f / std::sqrt(nx * nx + ny * ny + nz * nz);
+            x3::rhi::MeshVertex v{};
+            v.pos[0] = wx; v.pos[1] = h; v.pos[2] = wz;
+            v.normal[0] = nx * inv; v.normal[1] = ny * inv; v.normal[2] = nz * inv;
+            v.uv[0] = wx * 0.125f; v.uv[1] = wz * 0.125f;   // unused: splat is world-space
+            verts.push_back(v);
+        }
+    }
+    for (uint32_t ri = 0; ri < d.rings; ++ri) {
+        for (uint32_t si = 0; si < d.segments; ++si) {
+            const uint32_t a = ri * nS + si;
+            const uint32_t b = a + 1;
+            const uint32_t c = a + nS;
+            const uint32_t e = c + 1;
+            // Wind CCW as seen from +Y: tangential (b-a) x radial (c-a) => the
+            // face normal points UP (the first cut wound these downward — the
+            // whole ring rendered as backfaces: white/black sheets).
+            idx.insert(idx.end(), { a, b, c,  b, e, c });
+        }
+    }
+
+    Entity e;
+    e.mesh = device.createMesh(verts.data(), (uint32_t)verts.size(),
+                               idx.data(), (uint32_t)idx.size());
+    e.tex = splatMarker;
+    e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = e.baseColor[3] = 1.0f;
+    for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
+    e.tag = (uint32_t)Tag::Static;
+    e.visible = true;
+    return scene.add(e);
 }
 
 // ===========================================================================

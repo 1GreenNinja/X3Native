@@ -26,7 +26,17 @@ class SurfaceLibrary {
 public:
     // rootDir = <assetRoot>/surface_library. Loads lazily per set; caches.
     void mount(std::string rootDir) { m_root = std::move(rootDir); }
+    bool mounted() const { return !m_root.empty(); }
     const SurfaceSet& get(x3::rhi::IRenderDevice& device, const std::string& name);
+
+    // ---- W8-3 streaming support (the WorldStreamer's SHARED library). A
+    // streamer-lifetime library means textures are decoded ONCE per process, not
+    // per region realize (a city rebuild was a 2 s PNG-decode hitch), and the
+    // region ledger must EXCLUDE shared textures from per-region teardown:
+    // ownsTexture answers that; destroyAll releases everything at streamer
+    // shutdown (invalid handles skipped).
+    bool ownsTexture(uint32_t id) const;
+    void destroyAll(x3::rhi::IRenderDevice& device);
 
     // A flat tiled panel: a quad of w x h meters whose UVs repeat every
     // `tileMeters`, so texel density is uniform across every surface that uses

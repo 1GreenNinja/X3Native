@@ -492,6 +492,13 @@ struct CliOptions {
     // omitted: G:\X3Native-wt-terrain\terrain.png.
     bool        terrainShot = false;
     std::string terrainShotPath = "G:/X3Native-wt-terrain/terrain.png";
+    // City vantage mode (--screenshot-city [path.png]) — W8-3: builds the city
+    // region (Scrapyard / New District / Industrial blockout-plus) on the
+    // canonical world terrain + a horizon ring, and captures an establishing
+    // shot plus a street-level shot (suffix _street) and a skyline-from-the-pad
+    // shot (suffix _skyline).
+    bool        cityShot = false;
+    std::string cityShotPath = "city.png";
     // Surface-library material preview (--screenshot-matlib [outDir]): headless
     // contact-sheet renders of every assets/surface_library set (ART_BIBLE §4
     // realism mandate; sets curated by tools/tex_curate.py). FLAT output folder.

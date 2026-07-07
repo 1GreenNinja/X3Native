@@ -36,7 +36,7 @@
     },
     {
       "id": "surface_landmarks",
-      "name": "Keth'zar surface landmarks (crash site, outposts, 4 mountain ranges)",
+      "name": "Keth'zar surface landmarks (crash site, outposts, 4 mountain-range summit accents; the range TERRAIN itself is in the height field — terrain.cpp worldFeatures)",
       "builder": "worldregions",
       "anchor": [0.0, 0.0, 0.0],
       "radius": 9850.0,

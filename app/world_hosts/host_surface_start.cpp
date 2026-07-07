@@ -49,6 +49,8 @@
 #include "../monster.h"
 #include "../asset_root.h"
 #include "../surface_library.h"      // W3-3: real PBR concrete on the tower + apron (ART_BIBLE §4)
+#include "../terrain.h"              // W8-3: horizon ring (far-terrain stitch)
+#include "../city.h"                 // W8-3: city massing in the middle distance
 #include "../intro_orchestrator.h"   // IntroOutcome / readOutcomeFlag / kIntroLandedFlag (--test-surfacestart)
 #include "../story_ops.h"            // x3::game::StoryFlags (the branch signal)
 #include "../headless_device.h"      // HeadlessRenderDevice (the headless scene-build self-test)
@@ -172,6 +174,32 @@ int hostSurfaceStart(HostContext& hc) {
     x3::rhi::MeshHandle apronMesh = surflib.makePanel(*device, /*floor*/1, 70.0f, 66.0f, 3.0f);
     const float apronXform[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
                                    0.0f, kGroundY + 0.02f, kFacilityZ - 4.0f, 1 };
+
+    // ---- W8-3 HORIZON STITCH: the apron used to end at a hard 300 m plate edge
+    // against empty sky. The canonical world field (terrain.cpp worldFeatures)
+    // flattens a pad to Y=0 at the origin — exactly this apron's grade — so a
+    // horizon ring sampled from that SAME field meets the plate seamlessly and
+    // carries the countryside out to the 4 mountain ranges 7-10 km out. The CITY
+    // districts (app/city.cpp, the Babylon map's Scrapyard/New District at
+    // ~500-800 m NW) are built into the same scene so downtown reads in the
+    // middle distance, matching what the streamed world places there. Far plane
+    // raised so the ranges actually draw. Visual-only (no collision on the ring
+    // or the city — the playable apron stays the 300 m collision plate).
+    {
+        x3::rhi::TextureHandle splat = x3::game::makeTerrainSplatMarker(*device);
+        x3::game::HorizonRingDesc hr{};
+        hr.centerX = 0.0f; hr.centerZ = 0.0f;
+        hr.rInner = 285.0f;            // just inside the 300 m plate: seam hidden
+        hr.rOuter = 13000.0f;
+        hr.rings = 140; hr.segments = 160;
+        hr.yBias = -0.35f;             // recessed under the plate lip
+        x3::game::addTerrainHorizonRing(scene, *device, splat, hr);
+        x3::game::City horizonCity;
+        horizonCity.build(scene, *device, *phys);   // visual-only massing
+        device->setCameraFar(15000.0f);
+        x3::logInfo("--world surface: horizon stitch — terrain ring (mountain ranges) + "
+                    "city massing in the middle distance");
+    }
 
     // ---- The GLASS FACILITY exterior. A large box walled in translucent glass:
     //      four glass walls (front split around the entry breach) + an opaque
