@@ -338,6 +338,12 @@ float rtshPointVisibility(vec3 P, vec3 Ng, vec3 toL, float dist, inout uint seed
     float len = length(seg);
     float tMax = len - max(lr, 0.12);
     if (tMax <= 0.02) return 1.0;                        // too close to the source
+    // W6-1: near-source early-out. The 0.12 m clearance is smaller than typical
+    // FIXTURE geometry around a light, so surfaces near the lamp traced rays that
+    // clipped the fixture's own corners -> the black speckle RING around emitters
+    // (AD-2 survey, lamp_rtshadows_on). Within half a metre of a point light the
+    // surface counts lit — a light's own housing must not shadow its surroundings.
+    if (len < max(lr, 0.12) + 0.45) return 1.0;
     return rtshVisibility(origin, seg / max(len, 1e-4), tMax);
 }
 #endif
