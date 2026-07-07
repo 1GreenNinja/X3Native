@@ -172,6 +172,34 @@ public:
     const WeaponSystem& weapon() const { return m_weapon; }
     const GirlsDialog&  dialog() const { return m_dialog; }
 
+    // ---- W5-3: SARAH + THE ENDGAME SPINE -----------------------------------
+    // Sarah is a single standalone RescueVictim OWNED here (not in the F2
+    // RescueSystem — VictimId is a fixed 3-girl enum and rescue.{h,cpp} are
+    // another workstream's files this wave). Her captive timer NEVER runs
+    // (tick is fed hubReached=false), so she cannot expire: the endgame gate is
+    // the CLONE, not a clock. Lifecycle: Captive (containment field, gated on
+    // cloneDefeated) -> Companion (follows Jake) -> Extracted (reached the
+    // Helipad = the WIN state, latched for the host).
+    bool sarahPresent()   const { return m_sarahBuilt; }
+    const RescueVictim* sarah() const { return m_sarahBuilt ? &m_sarah : nullptr; }
+    // True once the F7 "Jake's Clone" ladder boss is dead (latched — stays true
+    // even after the corpse despawns). False until the ladder spawned him.
+    bool cloneDefeated() const;
+    // E-rescue on Sarah: refuses while the clone lives (the containment field is
+    // keyed to his bio-signature — the story gate), else flips her to Companion.
+    bool trySarahRescue(const x3::phys::Vec3& playerPos, float reach = kRescueReach);
+    // Latch: true exactly once, the frame she reaches the Helipad (the host runs
+    // the win sequence off this edge).
+    bool sarahExtractedThisFrame() { const bool f = m_sarahWinFrame; m_sarahWinFrame = false; return f; }
+    bool sarahExtracted() const { return m_sarahBuilt && m_sarah.extracted(); }
+    uint32_t sarahRoom()   const { return m_sarahRoom; }
+    uint32_t helipadRoom() const { return m_helipadRoom; }
+    // Test hook (--test-goldenpath): kill the F7 clone through the REAL fire path
+    // (a point-blank lethal shot at his body) so the endgame gate opens without
+    // simulating a full boss fight. Cheat-family method (like cheatArm). Returns
+    // true when he is confirmed dead.
+    bool testKillClone(Scene& scene, x3::phys::IPhysicsWorld& physics);
+
     // The canon room id a girl is in (Medical Bay / a ward), by victim index. kNoRoom if
     // unknown. Used by the host to surface her per-girl subtitle from the right state.
     uint32_t girlRoom(uint32_t victimIndex) const {
@@ -213,6 +241,15 @@ private:
     MonsterSystem  m_martinez;     // the Boss Arena boss
     RescueSystem   m_rescue;       // the 3 girls (Aria/Keisha/Emily) + their boss transforms
     GirlsDialog    m_dialog;       // per-girl 4-state lines
+    // W5-3: Sarah (standalone victim, see the public block) + the endgame state.
+    RescueVictim m_sarah;
+    bool     m_sarahBuilt   = false;
+    bool     m_sarahWinFrame = false;
+    uint32_t m_sarahRoom    = kNoRoom;
+    uint32_t m_helipadRoom  = kNoRoom;
+    int      m_cloneIdx     = -1;      // m_floorBosses index of "Jake's Clone"
+    mutable bool m_cloneDeadLatch = false;
+    float    m_heliX0 = 0, m_heliX1 = 0, m_heliZ0 = 0, m_heliZ1 = 0;   // helipad XZ rect
 
     std::vector<uint32_t> m_girlRooms;   // canon room per victim index
 
@@ -240,5 +277,14 @@ private:
 // lines per girl across the 4 states. Logs PASS/FAIL P#, returns true iff all pass. No
 // window / Vulkan. Skips cleanly (PASS) if the canonical JSON is absent on this machine.
 bool runCanonPlaySelfTest();
+
+// --test-goldenpath (W5-3): the ENDGAME SPINE check — the critical path from the cell
+// to the win, asserted at the state level (headless, no window): the full tower loads,
+// every spine room exists (wards / lobbies / Clone arena / Sarah's cell / Helipad),
+// Sarah spawns captive, the clone GATE holds (rescue refused while he lives), killing
+// him opens it, the rescue flips her to Companion, and reaching the Helipad extracts
+// her = the WIN latch. Also proves sarah.json loads + her first_meeting tree starts.
+// This is the Gate-C foundation. Logs PASS/FAIL G#, returns true iff all pass.
+bool runGoldenPathSelfTest();
 
 } // namespace x3::game

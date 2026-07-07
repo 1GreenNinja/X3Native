@@ -457,6 +457,47 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
             x3::logInfo("[canonplay] extraction point set: F2 Elevator Lobby");
         }
 
+        // ---- W5-3: SARAH — the person the whole game is about. A standalone
+        // RescueVictim in her F7 holding cell (her timer NEVER runs — tick gets
+        // hubReached=false; the endgame gate is the Clone, not a clock). Ivory
+        // tint marks her apart from the ward girls; she faces the cell door
+        // (toward the Clone Lab bridge, -X in the F7 data) so the first sight of
+        // her is her looking back at Jake.
+        if (const uint32_t sr = floor.roomByName("Sarah's Holding Cell"); sr != kNoRoom) {
+            const CanonRoom& S = floor.rooms[sr];
+            const MonsterSystem::Tuning dummy = tuningFor(EnemyType::DominionTrooper);
+            m_sarah.build(scene, device, physics, m_modelDir,
+                          x3::phys::Vec3{ S.cx, roomFloorY(sr, kEnemyFootUp), S.cz },
+                          VictimId::Aria /*slot unused — she is NOT in the F2 system*/,
+                          "Sarah", "AnnaBodySuit.glb",
+                          /*timer (never runs)*/ 600.0f, dummy);
+            m_sarah.setTint(1.0f, 0.94f, 0.90f, 1.0f);      // warm ivory — THE person
+            m_sarah.setFacing(std::atan2(1.0f, 0.0f));       // face -X: yaw=atan2(-dirX,-dirZ), dir=(-1,0)
+            m_sarahBuilt = true;
+            m_sarahRoom  = sr;
+            // Tag her Prop entity with the cell room (same nearest-untagged-prop trick
+            // the ward girls use — RescueVictim doesn't expose its entity id).
+            const x3::phys::Vec3 sp = m_sarah.pos();
+            uint32_t bestE = kNoLink; float bestD = 1.0f;
+            for (uint32_t e = 0; e < scene.size(); ++e) {
+                Entity& en = scene.get(e);
+                if (en.tag != (uint32_t)Tag::Prop || en.roomId != kNoRoom) continue;
+                const float dx = en.transform[12] - sp.x, dz = en.transform[14] - sp.z;
+                const float d2 = dx*dx + dz*dz;
+                if (d2 < bestD) { bestD = d2; bestE = e; }
+            }
+            if (bestE != kNoLink) scene.get(bestE).roomId = sr;
+            // The WIN volume: the Helipad room's XZ rect (companion inside = extracted).
+            if (const uint32_t hp = floor.roomByName("Helipad"); hp != kNoRoom) {
+                const CanonRoom& H = floor.rooms[hp];
+                m_helipadRoom = hp;
+                m_heliX0 = H.x0(); m_heliX1 = H.x1();
+                m_heliZ0 = H.z0(); m_heliZ1 = H.z1();
+            }
+            x3::logInfo("[canonplay] SARAH placed in her F7 holding cell (endgame live; helipad room "
+                        + std::to_string(m_helipadRoom) + ")");
+        }
+
         // Tag each victim's entity with its ward room (cull + lights include the captives).
         for (uint32_t vi = 0; vi < m_rescue.victimCount() && vi < (uint32_t)m_girlRooms.size(); ++vi) {
             // RescueVictim doesn't expose its entity id; tag by matching the Tag::Prop
@@ -545,6 +586,9 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
             const uint32_t i = m_floorBosses.spawn(scene, device, physics, m_modelDir,
                 x3::phys::Vec3{ A.cx, roomFloorY(room, kBossFootUp), A.cz }, t);
             tagRoom(scene, m_floorBosses.at(i), room);
+            // W5-3: remember which ladder slot is the F7 clone — his death is the
+            // endgame gate (Sarah's containment field is keyed to his bio-signature).
+            if (std::string(fb.show) == "Jake's Clone") m_cloneIdx = (int)i;
             ++m_taggedHostiles;
             ++spawned;
             x3::logInfo(std::string("[canonplay] floor boss spawned: ") + fb.show +
@@ -626,6 +670,37 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // Rescue: tick the girls' timers / companion follow, and (on expiry) spawn the boss.
     // The rescue clocks run once activated (the host activates on reaching the medical hub).
     m_rescue.tick(dt, scene, physics, eye);
+
+    // W5-3: Sarah — hubReached stays FALSE forever (her timer never runs; she cannot
+    // expire). As a Companion she follows the eye like the girls do. The frame she
+    // stands on the Helipad, she extracts = the WIN edge (latched for the host).
+    if (m_sarahBuilt) {
+        m_sarah.tick(dt, /*hubReached*/false, scene, physics, eye);
+        if (m_sarah.companion() && m_helipadRoom != kNoRoom) {
+            const x3::phys::Vec3 sp = m_sarah.pos();
+            if (sp.x > m_heliX0 && sp.x < m_heliX1 &&
+                sp.z > m_heliZ0 && sp.z < m_heliZ1) {
+                m_sarah.extract(scene, physics);
+                m_sarahWinFrame = true;
+                x3::logInfo("[canonplay] SARAH EXTRACTED at the Helipad — WIN");
+            }
+        }
+    }
+}
+
+// W5-3: the endgame gate — latched true once the F7 clone dies.
+bool CanonPlay::cloneDefeated() const {
+    if (m_cloneDeadLatch) return true;
+    if (m_cloneIdx >= 0 && (uint32_t)m_cloneIdx < m_floorBosses.count() &&
+        !m_floorBosses.at((uint32_t)m_cloneIdx).alive())
+        m_cloneDeadLatch = true;
+    return m_cloneDeadLatch;
+}
+
+// W5-3: E-rescue on Sarah, gated on the clone. Returns true the frame she frees.
+bool CanonPlay::trySarahRescue(const x3::phys::Vec3& playerPos, float reach) {
+    if (!m_sarahBuilt || !cloneDefeated()) return false;
+    return m_sarah.tryRescue(playerPos, reach);
 }
 
 FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
@@ -694,6 +769,9 @@ void CanonPlay::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     // both; the captive entities are room-tagged so Scene::render won't double-draw them
     // (their render mesh is invalid — draw() is the single source of truth).
     m_rescue.draw(device, frame, scene);
+    // W5-3: Sarah (her Prop entity is room-tagged like the girls'; RescueVictim::draw
+    // no-ops once Extracted, so the win state needs no special-casing here).
+    if (m_sarahBuilt) m_sarah.draw(device, frame, scene);
 }
 
 void CanonPlay::drawViewmodel(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
@@ -951,6 +1029,135 @@ bool runCanonPlaySelfTest() {
     play.shutdown();        // tear down any death-ragdoll bodies BEFORE the physics world
     physics->shutdown();
     x3::logInfo("--test-canonplay: " + std::to_string(g_cpass) + " passed, " +
+                std::to_string(g_cfail) + " failed");
+    return g_cfail == 0;
+}
+
+// ---- W5-3: the endgame test hook + the GOLDEN PATH self-test -------------------
+
+bool CanonPlay::testKillClone(Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    if (m_cloneIdx < 0 || (uint32_t)m_cloneIdx >= m_floorBosses.count()) return false;
+    MonsterSystem& clone = m_floorBosses.at((uint32_t)m_cloneIdx);
+    // Point-blank lethal shots through the REAL damage path (death = the same
+    // m_alive=false / body-removal flow a player kill takes). A few tries cover
+    // ray-vs-capsule grazing.
+    for (int shot = 0; shot < 8 && clone.alive(); ++shot) {
+        const x3::phys::Vec3 cp = clone.pos();
+        const x3::phys::Vec3 eye{ cp.x - 1.6f, cp.y + 1.0f, cp.z };
+        x3::phys::Vec3 dir{ cp.x - eye.x, (cp.y + 1.0f) - eye.y, cp.z - eye.z };
+        const float len = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
+        if (len > 1e-4f) { dir.x /= len; dir.y /= len; dir.z /= len; }
+        clone.fire(eye, dir, scene, physics, /*damage*/ 100000);
+    }
+    return !clone.alive();
+}
+
+bool runGoldenPathSelfTest() {
+    g_cpass = g_cfail = 0;
+
+    CanonFloor tower = loadCanonTower(canonProjectJsonPath());
+    if (!tower.valid()) {
+        x3::logInfo("--test-goldenpath: SKIPPED (no canonical JSON) — treating as PASS");
+        return true;
+    }
+
+    // ---- G1: the whole tower is present — 7 elevator lobbies (the spine's rungs). ----
+    {
+        int lobbies = 0;
+        for (const CanonRoom& r : tower.rooms)
+            if (r.type == "Elevator Lobby") ++lobbies;
+        pcheck(lobbies == 7, "G1 tower loaded with all 7 elevator lobbies (the vertical spine)");
+    }
+
+    // ---- G2: every spine room the ending needs exists in the merged tower. ----
+    const uint32_t rSarah   = tower.roomByName("Sarah's Holding Cell");
+    const uint32_t rHeli    = tower.roomByName("Helipad");
+    const uint32_t rArena   = tower.roomByName("F7 Boss: Jake's Clone");
+    const uint32_t rWardA   = tower.roomByName("Ward A: Keisha");
+    pcheck(rSarah != kNoRoom && rHeli != kNoRoom && rArena != kNoRoom && rWardA != kNoRoom,
+           "G2 spine rooms exist (Sarah's cell / Helipad / Clone arena / Ward A)");
+
+    HeadlessRenderDevice device;
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    Scene scene;
+    buildCanonFloor(tower, scene, device, *physics);
+
+    CanonPlay play;
+    play.build(tower, scene, device, *physics, riggedGlbRoot(), canonGirlsDialogPath());
+
+    // ---- G3: Sarah spawned captive in HER room; the win volume is armed. ----
+    pcheck(play.sarahPresent() && play.sarah() && play.sarah()->captive() &&
+           play.sarahRoom() == rSarah && play.helipadRoom() == rHeli,
+           "G3 Sarah captive in her F7 cell; Helipad win volume armed");
+
+    // ---- G4: THE GATE HOLDS — with the clone alive, the rescue is refused even
+    // point-blank (the containment field is keyed to his bio-signature). ----
+    {
+        const x3::phys::Vec3 sp = play.sarah()->pos();
+        pcheck(!play.cloneDefeated() && !play.trySarahRescue(sp),
+               "G4 gate holds: rescue refused while Jake's Clone lives");
+    }
+
+    // ---- G5: killing the clone (through the REAL fire/damage path) opens the gate. ----
+    {
+        const bool dead = play.testKillClone(scene, *physics);
+        pcheck(dead && play.cloneDefeated(),
+               "G5 clone killed via the real fire path -> cloneDefeated latched");
+    }
+
+    // ---- G6: the rescue now succeeds — Sarah becomes a Companion. ----
+    pcheck(play.trySarahRescue(play.sarah()->pos()) && play.sarah()->companion(),
+           "G6 rescue accepted -> Sarah is a Companion (follows Jake)");
+
+    // ---- G7+G8: walk her to the Helipad (the follow AI covers the distance; the
+    // eye IS the follow target) -> she extracts = the WIN latch fires exactly once. ----
+    {
+        const CanonRoom& H = tower.rooms[rHeli];
+        const x3::phys::Vec3 heli{ H.cx, H.y0() + 1.7f, H.cz };
+        bool won = false;
+        for (int i = 0; i < 3600 && !won; ++i) {         // 60 sim-seconds cap
+            play.tick(1.0f / 60.0f, scene, *physics, heli, nullptr, AttackFxFn{});
+            if (play.sarahExtractedThisFrame()) won = true;
+        }
+        pcheck(won && play.sarahExtracted(), "G7 companion follow reaches the Helipad -> extracted (WIN edge fired)");
+        pcheck(!play.sarahExtractedThisFrame(), "G8 the win latch is one-shot (second read is false)");
+    }
+
+    // ---- G9: her voice exists on disk — sarah.json is present + declares her tree.
+    // (The --test-chattree suite validates the RUNNER loads/parses every tree in the
+    // dir; here we just assert the endgame's dialog file shipped, without pulling the
+    // chat_tree JSON types into this TU's own JValue namespace.) ----
+    {
+        namespace fs = std::filesystem;
+        std::error_code gec;
+        fs::path exe;
+#ifdef _WIN32
+        { char buf[1024]; DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD)sizeof(buf));
+          exe = (n && n < sizeof(buf)) ? fs::path(std::string(buf, n)).parent_path() : fs::path("."); }
+#else
+        exe = fs::current_path();
+#endif
+        const fs::path rel = fs::path("docs") / "design" / "narrative" / "chat_trees" / "sarah.json";
+        const fs::path cands[] = { exe / ".." / ".." / ".." / rel, exe / rel, fs::path(".") / rel, rel };
+        std::string body;
+        for (const fs::path& c : cands) {
+            if (!fs::is_regular_file(c, gec)) continue;
+            std::ifstream f{ c };
+            std::stringstream ss; ss << f.rdbuf(); body = ss.str();
+            break;
+        }
+        const bool ok = !body.empty() &&
+                        body.find("\"npc\"") != std::string::npos &&
+                        body.find("sarah") != std::string::npos &&
+                        body.find("first_meeting") != std::string::npos &&
+                        body.find("clone.defeated") != std::string::npos;  // the gate branch
+        pcheck(ok, "G9 sarah.json shipped (npc/first_meeting/clone-gate present)");
+    }
+
+    play.shutdown();
+    physics->shutdown();
+    x3::logInfo("--test-goldenpath: " + std::to_string(g_cpass) + " passed, " +
                 std::to_string(g_cfail) + " failed");
     return g_cfail == 0;
 }

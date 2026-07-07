@@ -284,6 +284,7 @@ int main(int argc, char** argv) {
         _tf.testCanonLevel = o.testCanonLevel;
         _tf.testLevelLint = o.testLevelLint;
         _tf.testCanonPlay = o.testCanonPlay;
+        _tf.testGoldenPath = o.testGoldenPath;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;
         _tf.testIntroBranch = o.testIntroBranch;

@@ -1,0 +1,90 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "sarah",
+  "display": "SARAH",
+  "voice": "Sarah",
+  "_bio": "THE person. Taken before the game begins; the reason Jake flew into the kill-box. Held longest, on Floor 7 - the one detention cell in the Executive Suite's paradise. She has watched the tower run from the inside and kept herself whole by counting everything: patrols, meal cycles, the elevator's hum. Not broken. Furious, precise, and certain Jake would come.",
+  "trees": {
+    "first_meeting": {
+      "start": "fm0",
+      "nodes": [
+        {
+          "id": "fm0",
+          "if": [ { "flag": "sarah.met" } ],
+          "else": "fm0_first",
+          "line": "*she's standing at the field, exactly where you left her* Still here. Still counting. What's the plan, Jake?",
+          "choices": [
+            { "text": "Working on the field. Hold on.", "next": "fm_gate" }
+          ]
+        },
+        {
+          "id": "fm0_first",
+          "line": "*she turns before you make a sound - she knew your footsteps* Six months. They kept saying you were dead and I kept telling them they didn't know you. *her hand flat against the containment field* Hi.",
+          "fx": [ { "set": "sarah.met" }, { "karma": 2 } ],
+          "choices": [
+            { "text": "Hi. I'm getting you out.", "next": "fm1", "fx": [ { "love": 2 } ] },
+            { "text": "Six months? It's been two days for me since the crash.", "next": "fm1b" },
+            { "text": "What is this place, Sarah?", "next": "fm_intel" }
+          ]
+        },
+        {
+          "id": "fm1",
+          "line": "I know you are. *she almost smiles* I've had six months to learn this floor. The field on this cell isn't on the grid - it's keyed to a bio-signature. Theirs was a joke at first. Then they grew him.",
+          "choices": [
+            { "text": "Grew WHO?", "next": "fm_clone" }
+          ]
+        },
+        {
+          "id": "fm1b",
+          "line": "Two days. *she laughs once, no humor in it* They put you under, Jake. Six months on ice while they built things out of your file. One of those things walks around this floor wearing your face.",
+          "choices": [
+            { "text": "The clone. I've heard it moving.", "next": "fm_clone" }
+          ]
+        },
+        {
+          "id": "fm_intel",
+          "line": "A farm. Floor two grows soldiers out of women they take. Floor six is where the things that RUN this place live. And floor seven is where they keep the leverage. *she taps the field* I'm leverage.",
+          "fx": [ { "set": "sarah.intel" } ],
+          "choices": [
+            { "text": "Not anymore. How do I open this?", "next": "fm1" }
+          ]
+        },
+        {
+          "id": "fm_clone",
+          "line": "They call it the Successor. Your gait, your aim, your stubbornness - they measured all of it. The field reads HIS signature as the master key. *her eyes are steady* You understand what I'm telling you to do.",
+          "choices": [
+            { "text": "I kill me. Got it.", "next": "fm_gate", "fx": [ { "karma": 1 } ] },
+            { "text": "Where is it?", "next": "fm_where" }
+          ]
+        },
+        {
+          "id": "fm_where",
+          "line": "The arena past the observation deck. It trains there. Jake - *the first crack in her voice* - it fights exactly like you. Don't fight fair.",
+          "choices": [
+            { "text": "I never do. Stay alive.", "next": "fm_gate" }
+          ]
+        },
+        {
+          "id": "fm_gate",
+          "if": [ { "flag": "clone.defeated" } ],
+          "else": "fm_locked",
+          "line": "*the field stutters and dies before you reach her - she steps through the doorway like she's done it in her head a thousand times* There you are. Roof. Helipad. NOW - and Jake? *she takes the pistol off the dead guard by the door* I'm not cargo.",
+          "fx": [ { "follow": true }, { "set": "sarah.freed" }, { "love": 2 } ],
+          "choices": []
+        },
+        {
+          "id": "fm_locked",
+          "line": "*the field hums between you, indifferent* Still up. Still keyed to him. Go finish it - I'll be here. I'm ALWAYS here. *she says it like a joke; it isn't one*",
+          "choices": []
+        }
+      ]
+    }
+  },
+  "banter": [
+    { "line": "Six months I mapped this place in my head. Left at the dead ficus.", "weight": 3 },
+    { "line": "The girls on two - Keisha, Emily, Aria. Tell me you went back for them.", "weight": 3, "if": [ { "not": { "flag": "girl.freed.keisha" } } ] },
+    { "line": "You still walk too loud. I could hear you two rooms away. It's how I knew you weren't one of them.", "weight": 2 },
+    { "line": "Helipad. Beacon. Home. Say it back to me so I know you're not improvising.", "weight": 3 },
+    { "line": "When we're out, you're telling me EVERYTHING about the ship. You crashed it, didn't you.", "weight": 2 }
+  ]
+}

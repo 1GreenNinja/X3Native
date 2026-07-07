@@ -3548,6 +3548,10 @@ int runDefaultHost(HostContext& hc) {
     x3::game::NpcDialog npcDialog;
     float     npcBarkTimer = 0.0f;   // >0 while her companion one-liner is shown
     std::string npcBarkText;
+    // W5-3: the WIN card (Sarah extracted at the Helipad). Timer > 0 draws the
+    // centered end-card over the live scene; winLine2 carries the rescue tally.
+    float       winTimer = 0.0f;
+    std::string winLine2;
     bool      chatNumPrev[4] = {};   // chat-tree choice keys 1-4 edge state
     // CHAT-TREE talk target: the F5 captive 'Lena' (spire_mid) — the first NPC whose
     // dialog runs the data-driven x3.chattree runner instead of the shared 5-line
@@ -3583,6 +3587,22 @@ int runDefaultHost(HostContext& hc) {
                 whoOut = chatTrees.hasNpc(g.name()) ? g.name() : id;
                 posOut = gp; captiveOut = false;   // companion -> banter pool
                 return true;
+            }
+        }
+        // W5-3: SARAH (F7). While captive her authored tree carries the whole beat —
+        // the containment-field lore, the clone gate (the tree itself branches on the
+        // clone.defeated flag), and the {"follow"} fx that frees her. As a companion
+        // she talks through her banter pool like the girls.
+        if (canonWorld && canonPlay.built() && canonPlay.sarahPresent() &&
+            chatTrees.hasNpc("sarah")) {
+            const x3::game::RescueVictim* s = canonPlay.sarah();
+            if (s && !s->extracted()) {
+                const x3::phys::Vec3 sp = s->pos();
+                const float dx = at.x - sp.x, dz = at.z - sp.z;
+                if (dx * dx + dz * dz <= reach * reach) {
+                    whoOut = "sarah"; posOut = sp; captiveOut = s->captive();
+                    return true;
+                }
             }
         }
         return false;
@@ -4080,10 +4100,19 @@ int runDefaultHost(HostContext& hc) {
                 } else if (chatCaptive) {
                     // The follow sink — evaluated when her tree's {"follow"} fx fires
                     // (a later E), so it re-resolves the victim position at call time.
-                    chatTrees.ctx().follow = [&midFloors]() {
-                        const x3::game::RescueVictim* v = midFloors.victim();
-                        return v ? midFloors.onRescue(v->pos()) : false;
-                    };
+                    // W5-3: Sarah's sink routes to the CLONE-GATED rescue; everyone
+                    // else keeps the F5 midFloors path.
+                    if (chatWho == "sarah") {
+                        chatTrees.ctx().follow = [&canonPlay]() {
+                            const x3::game::RescueVictim* s = canonPlay.sarah();
+                            return s ? canonPlay.trySarahRescue(s->pos()) : false;
+                        };
+                    } else {
+                        chatTrees.ctx().follow = [&midFloors]() {
+                            const x3::game::RescueVictim* v = midFloors.victim();
+                            return v ? midFloors.onRescue(v->pos()) : false;
+                        };
+                    }
                     if (chatTrees.start(chatWho, "first_meeting"))
                         x3::logInfo("chat: [" + chatTrees.currentSpeaker() + "] " +
                                     chatTrees.currentLine());
@@ -5000,6 +5029,40 @@ int runDefaultHost(HostContext& hc) {
                                     " extracted at the F2 elevator (story flag set)");
                     }
                 }
+                // ---- W5-3: THE ENDGAME SPINE — flags, objectives, and the WIN. ----
+                {
+                    static bool winFired = false;
+                    // Clone down -> the field's key is dead. Flag drives Sarah's tree
+                    // branch (fm_gate); objective points the player back to her.
+                    if (canonPlay.cloneDefeated() && !chatTrees.flags().has("clone.defeated")) {
+                        chatTrees.flags().set("clone.defeated");
+                        npcBarkText  = "VIGIL: SUCCESSOR UNIT TERMINATED. HOLDING-FIELD KEY... INVALID.";
+                        npcBarkTimer = 6.0f;
+                        game.objectives().setText("THE FIELD IS DOWN — GET BACK TO SARAH");
+                        x3::logInfo("[endgame] clone defeated — Sarah's containment key is dead");
+                    }
+                    // Freed (her tree's follow fx fired) -> point at the roof.
+                    if (canonPlay.sarahPresent() && canonPlay.sarah()->companion() &&
+                        !chatTrees.flags().has("sarah.freed.sync")) {
+                        chatTrees.flags().set("sarah.freed.sync");
+                        chatTrees.flags().set("sarah.freed");   // belt + braces with the tree fx
+                        game.objectives().setText("GET SARAH TO THE HELIPAD");
+                        x3::logInfo("[endgame] Sarah is with you — objective: the helipad");
+                    }
+                    // THE WIN: she stands on the helipad. One-shot.
+                    if (!winFired && canonPlay.sarahExtractedThisFrame()) {
+                        winFired = true;
+                        chatTrees.flags().set("sarah.extracted");
+                        int saved = 1;   // Sarah
+                        for (const char* k : { "girl.extracted.aria", "girl.extracted.keisha",
+                                               "girl.extracted.emily" })
+                            if (chatTrees.flags().has(k)) ++saved;
+                        winLine2 = "RESCUED: " + std::to_string(saved) + " OF 4";
+                        winTimer = 12.0f;
+                        game.objectives().setText("TO BE CONTINUED");
+                        x3::logInfo("[endgame] WIN — Sarah extracted (" + winLine2 + ")");
+                    }
+                }
             }
             // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
             // loot collection (latching counts). Apply the gameplay EFFECTS here, where
@@ -5883,6 +5946,32 @@ int runDefaultHost(HostContext& hc) {
                                              bx + 1.5f, by + 1.5f, barkPx, bshadow);
                         device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(),
                                              bx, by, barkPx, bcol);
+                    }
+
+                    // ---- W5-3: THE WIN CARD — Sarah is out. Drawn over the live
+                    // helipad scene (no input freeze: the alien sky, the beacon, her
+                    // beside you — the moment IS the reward), fading in the last 2 s.
+                    if (winTimer > 0.0f) {
+                        winTimer -= dt;
+                        float a = winTimer > 2.0f ? 1.0f : winTimer * 0.5f;
+                        if (a < 0.0f) a = 0.0f;
+                        const float cxp = (hudW > 0) ? hudW * 0.5f : 640.0f;
+                        const float cyp = (hudH > 0) ? hudH * 0.34f : 240.0f;
+                        struct L { const char* t; float px; float dy; float r, g, b; };
+                        const L lines[3] = {
+                            { "YOU GOT HER OUT.", 54.0f,   0.0f, 0.95f, 0.90f, 0.82f },
+                            { winLine2.c_str(),   26.0f,  74.0f, 0.80f, 0.86f, 0.92f },
+                            { "TO BE CONTINUED",  22.0f, 116.0f, 0.55f, 0.75f, 0.80f },
+                        };
+                        for (const L& l : lines) {
+                            const float w = device->textAdvance(x3::rhi::FontRole::Menu, l.t, l.px);
+                            const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.8f * a };
+                            const float cl[4] = { l.r, l.g, l.b, a };
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, l.t,
+                                                 cxp - w * 0.5f + 2.0f, cyp + l.dy + 2.0f, l.px, sh);
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, l.t,
+                                                 cxp - w * 0.5f, cyp + l.dy, l.px, cl);
+                        }
                     }
                 }
                 // Strength terminal — the "Awakening" readout (EFLZ_SPIRE §3).
