@@ -103,8 +103,25 @@ public:
     // backend implements it (mirrors how the volume setters were added).
     virtual LoopHandle startLoop(SoundHandle sound, float vol = 1.0f, float pitch = 1.0f) = 0;
 
-    // Stop + free a loop voice started by startLoop(). Stopping an invalid/already-
-    // stopped handle is a safe no-op (double-stop is fine). Silent/no-device -> no-op.
+    // Start a 3D SPATIALIZED looping voice of `sound` at world position (x,y,z) and
+    // return a LoopHandle to control/stop it (same handle family as startLoop() —
+    // stopLoop()/setLoopParams() work on either). Use this for a fixed ambient
+    // emitter (a buzzing light fixture, a machine hum) instead of retriggering a
+    // one-shot on a timer: the loop wraps seamlessly (no pop/gap at the seam,
+    // mirroring how playMusic loops) AND, because spatialization is left ON and the
+    // position is set once here, miniaudio's engine re-derives distance attenuation
+    // + panning EVERY mix callback against the live listener (setListener) for as
+    // long as the loop runs — the same continuous mechanism a playSound3D one-shot
+    // rides while it plays, just sustained indefinitely instead of for one clip's
+    // duration. No occlusion routing (that stays a one-shot-only feature via
+    // setOcclusionProvider); ambient loops sit on the plain spatializer path.
+    // Invalid handle / silent / no-device -> invalid LoopHandle (graceful no-op).
+    virtual LoopHandle startLoop3D(SoundHandle sound, float x, float y, float z,
+                                    float vol = 1.0f, float pitch = 1.0f) = 0;
+
+    // Stop + free a loop voice started by startLoop()/startLoop3D(). Stopping an
+    // invalid/already-stopped handle is a safe no-op (double-stop is fine).
+    // Silent/no-device -> no-op.
     virtual void stopLoop(LoopHandle loop) = 0;
 
     // Update a live loop voice's volume/pitch (vol is master-SFX-scaled, like

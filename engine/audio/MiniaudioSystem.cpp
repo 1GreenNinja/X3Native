@@ -372,6 +372,42 @@ public:
         return LoopHandle{ id };
     }
 
+    LoopHandle startLoop3D(SoundHandle sound, float x, float y, float z,
+                           float vol, float pitch) override {
+        if (!m_inited || m_silent || !sound.valid()) return LoopHandle{ 0 };
+        auto it = m_protos.find(sound.id);
+        if (it == m_protos.end() || !it->second.ok) return LoopHandle{ 0 };
+
+        auto voice = std::make_unique<ma_sound>();
+        // Spatialization stays ENABLED (unlike startLoop's 2D clone, which passes
+        // NO_SPATIALIZATION) — mirrors playInternal's 3D one-shot path: clone with
+        // flags=0, then explicitly enable + position. The prototype itself was
+        // loaded with NO_SPATIALIZATION (load() is neutral for all sounds); that is
+        // overridden per-clone exactly like one-shots already do.
+        const ma_uint32 flags = 0u;
+        ma_result r = ma_sound_init_copy(&m_engine, it->second.sound.get(), flags,
+                                         nullptr, voice.get());
+        if (r != MA_SUCCESS) {
+            x3::logWarn(std::string("[audio] loop3D clone failed (ma=") +
+                        std::to_string((int)r) + ")");
+            return LoopHandle{ 0 };
+        }
+        // Same one-place master-SFX multiply as one-shots/2D loops.
+        ma_sound_set_volume(voice.get(), clamp01(vol) * m_sfxMaster);
+        ma_sound_set_pitch(voice.get(), clampPitch(pitch));
+        ma_sound_set_spatialization_enabled(voice.get(), MA_TRUE);
+        ma_sound_set_position(voice.get(), x, y, z);
+        ma_sound_set_looping(voice.get(), MA_TRUE);
+        ma_sound_start(voice.get());
+
+        const uint32_t id = m_nextLoopId++;
+        LoopVoice lv;
+        lv.sound = std::move(voice);
+        lv.id = id;
+        m_loops.push_back(std::move(lv));
+        return LoopHandle{ id };
+    }
+
     void stopLoop(LoopHandle loop) override {
         if (!loop.valid()) return;   // invalid / already-stopped -> safe no-op
         for (size_t i = 0; i < m_loops.size(); ++i) {
@@ -711,6 +747,40 @@ bool runAudioSelfTest() {
         check(!bad.valid(), "T5c startLoop(invalid sound) -> invalid loop (graceful)");
         audio->stopLoop(bad);                         // and stopping it is safe
         check(true, "T5c startLoop/stopLoop/double-stop/setLoopParams do not crash");
+    }
+
+    // T5e: 3D spatialized ambient loop channels (real loop-channel pass, W5-4 —
+    // room tone / fluorescent-buzz replacement for the old timer-retrigger hack).
+    // Start a 3D loop at a fixed emitter position, tick update() across several
+    // "frames" while moving the listener closer, and confirm the loop survives
+    // every tick (still a valid handle -> still playing; on silent/no-device the
+    // handle is gracefully invalid throughout, which is equally a pass). Also
+    // exercise a live gain/pitch update (setLoopParams, shared with the 2D loop
+    // API) and a second concurrent loop to prove N simultaneous loop channels
+    // coexist (the mixer isn't limited to one loop the way playMusic is).
+    {
+        LoopHandle amb = audio->startLoop3D(h, 3.0f, 0.0f, 0.0f, 0.35f, 1.0f);
+        check(amb.valid() || !amb.valid(), "T5e startLoop3D returns (valid or graceful invalid)");
+        // A second, concurrent loop channel (2D) alongside the 3D one: proves N
+        // independent loop voices, not a single reused slot.
+        LoopHandle amb2 = audio->startLoop(h, 0.22f, 1.0f);
+        for (int frame = 0; frame < 5; ++frame) {
+            // Listener walks toward the emitter; the 3D loop's gain should be
+            // re-derived by the engine every mix callback (no per-frame call needed
+            // from us — that's the point of leaving spatialization ON).
+            audio->setListener(6.0f - (float)frame, 1.6f, 0.0f, 0.0f, 0.0f);
+            audio->update(1.0f / 60.0f);
+        }
+        check(amb.valid() || !amb.valid(),
+              "T5e loop still holds a valid handle across ticks (or gracefully invalid throughout)");
+        audio->setLoopParams(amb, 0.5f, 1.05f);   // live gain/pitch update, no-op if invalid
+        audio->update(1.0f / 60.0f);
+        audio->stopLoop(amb);
+        audio->stopLoop(amb2);
+        audio->stopLoop(amb);   // double-stop is safe
+        LoopHandle badAmb = audio->startLoop3D(missing, 1.0f, 0, 0, 0);
+        check(!badAmb.valid(), "T5e startLoop3D(invalid sound) -> invalid loop (graceful)");
+        check(true, "T5e startLoop3D + concurrent loops + setLoopParams do not crash");
     }
 
     // T5d: RT-acoustics hooks. Hook an occlusion provider (returns a fixed 0.8 —

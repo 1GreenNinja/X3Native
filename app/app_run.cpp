@@ -3719,23 +3719,36 @@ int runDefaultHost(HostContext& hc) {
     audio->setMasterSfxVolume(s_sfxVol);
     audio->setMusicVolume(s_musicVol);
     audio->setMusicEnabled(s_musicOn);
-    // W2-A2 (punch-list P1 #7): the detention-cell AMBIENT BED. The audio API has
-    // one looping channel (playMusic — taken by the action bed below), so the room
-    // tone + fluorescent buzz are steady-state loops RE-TRIGGERED on timers in the
-    // main loop (seam-tolerant hums chosen by W2-B for exactly this). 3D buzz sits
-    // at the cell's flickering tube; 2D room tone underlays everything. Handles
-    // stay invalid (silent) off-canon or on clean machines.
-    x3::audio::SoundHandle ambRoomTone, ambBuzz;
-    float ambRoomTimer = 1e9f, ambBuzzTimer = 1e9f;   // huge -> fire on first frame
-    x3::phys::Vec3 ambBuzzPos{ 0, 0, 0 };
+    // W2-A2 (punch-list P1 #7) / W5-4 (real loop channels): the detention-cell
+    // AMBIENT BED. Originally the audio API had one looping channel (playMusic —
+    // taken by the action bed below), so the room tone + fluorescent buzz were
+    // steady-state loops RE-TRIGGERED on timers, which pops/gaps at the seam. Now
+    // that IAudioSystem supports N independent loop channels (startLoop / the new
+    // startLoop3D), both beds are started ONCE as real seamless loops: 2D room
+    // tone underlays everything; 3D buzz sits at the cell's flickering tube and
+    // rides the engine's continuous per-frame distance attenuation like any other
+    // 3D voice (see startLoop3D's doc comment). Handles stay invalid (silent)
+    // off-canon or on clean machines; loops are reaped by audio->shutdown().
+    x3::audio::LoopHandle ambRoomLoop{}, ambBuzzLoop{};
     if (canonWorld && canonFloor.valid()) {
-        ambRoomTone = audio->load(x3::game::resolveAudio("ambient/room_tone_cell.wav"));
-        ambBuzz     = audio->load(x3::game::resolveAudio("ambient/fluorescent_buzz.wav"));
+        x3::audio::SoundHandle ambRoomTone =
+            audio->load(x3::game::resolveAudio("ambient/room_tone_cell.wav"));
+        x3::audio::SoundHandle ambBuzz =
+            audio->load(x3::game::resolveAudio("ambient/fluorescent_buzz.wav"));
+        x3::phys::Vec3 ambBuzzPos{ 0, 0, 0 };
         const x3::game::CanonBeats abt = x3::game::canonBeats(canonFloor);
         if (abt.jakeCell != x3::game::kNoRoom) {
             const x3::game::CanonRoom& jc = canonFloor.rooms[abt.jakeCell];
             ambBuzzPos = { jc.cx, jc.y1() - 0.4f, jc.cz };
         }
+        if (ambRoomTone.valid()) ambRoomLoop = audio->startLoop(ambRoomTone, 0.22f, 1.0f);
+        if (ambBuzz.valid())
+            ambBuzzLoop = audio->startLoop3D(ambBuzz, ambBuzzPos.x, ambBuzzPos.y, ambBuzzPos.z,
+                                              0.35f, 1.0f);
+        x3::logInfo(std::string("[audio] ambient loops started: room=") +
+                    (ambRoomLoop.valid() ? "on" : "silent") + " buzz=" +
+                    (ambBuzzLoop.valid() ? "on" : "silent") +
+                    " (real loop channels, no retrigger)");
     }
     // M9: start the low-volume looping ambient/music bed at launch. playMusic remembers
     // the track + current music volume; when musicOn is false the bed stays silent.
@@ -5189,20 +5202,12 @@ int runDefaultHost(HostContext& hc) {
         // ---- M9: footsteps. Time them to horizontal speed while grounded (not in
         // noclip): estimate speed from the camera's XZ delta this frame; while
         // moving, play a quiet pitched-down step every kStepInterval seconds. ----
-        // W2-A2: ambient-bed retrigger (see the load site above playMusic). Timers
-        // restart each clip a hair before typical loop length; steady-state hums
-        // tolerate the overlap/seam. Also the fog/grade LIVE OVERRIDE cvars (AD-1's
+        // W5-4: the ambient bed (room tone + fluorescent buzz) is now started ONCE,
+        // above, as real seamless loop channels (ambRoomLoop/ambBuzzLoop) — no more
+        // per-frame retrigger here. Also the fog/grade LIVE OVERRIDE cvars (AD-1's
         // paste-block): any r_fog*/r_grade* >= 0 re-applies the canon zone params
         // with that field overridden (console-tunable without a rebuild).
         if (canonWorld) {
-            ambRoomTimer += dt; ambBuzzTimer += dt;
-            if (ambRoomTone.valid() && ambRoomTimer >= 18.0f) {
-                ambRoomTimer = 0.0f; audio->playSound2D(ambRoomTone, 0.22f, 1.0f);
-            }
-            if (ambBuzz.valid() && ambBuzzTimer >= 7.5f) {
-                ambBuzzTimer = 0.0f;
-                audio->playSound3D(ambBuzz, ambBuzzPos.x, ambBuzzPos.y, ambBuzzPos.z, 0.35f, 1.0f);
-            }
             // WAVE-3 zone atmosphere: re-tint the depth fog as the player crosses zone
             // boundaries (teal halls / amber detention / green labs). Runs BEFORE the
             // cvar overrides below so an explicit r_fog* setting still wins this frame.
