@@ -37,6 +37,7 @@ struct TestFlags {
     bool testSecretRoom = false, testHatch = false, testLlm = false, testEcs = false;
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
+    bool testKeypad = false;      // --test-keypad (realistic high-poly access keypad, KP1-KP6)
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
     bool testGoldenPath = false;  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)

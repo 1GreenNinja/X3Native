@@ -35,6 +35,7 @@ struct CliOptions {
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
+         testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->

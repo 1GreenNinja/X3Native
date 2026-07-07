@@ -6,6 +6,7 @@
 #include "level_loader.h"
 #include "mesh_prims.h"
 #include "asset_root.h"
+#include "keypad.h"    // PB fold: realistic high-poly keypad beside each secured-room lock
 
 #include "engine/core/x3_log.h"
 
@@ -1594,11 +1595,39 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                     const uint32_t ent = opts.doors->at(di).entity;
                     if (ent != kNoLink && ent < scene.size())
                         scene.get(ent).roomId = kNoRoom; // always-visible (seen from the approach side)
+
+                    // ---- REALISTIC KEYPAD beside the locked door (Tim's ask; re-homed from
+                    // playable-build). A high-poly wall access terminal mounted ~0.9 m to the
+                    // side of the opening, at eye-reachable height, facing the corridor. Red
+                    // screen = locked. (The existing door-code state machine drives the actual
+                    // unlock; this is the realistic physical anchor for it.)
+                    // FOLD FIX vs PB: PB mounted it on the SECURED room's wall PLANE (+0.06),
+                    // which on the canon gap-bridge geometry is the far side of the 1 m
+                    // inter-wall void — buried out of player sight (eye-verified). Mount it on
+                    // the APPROACH room's INTERIOR wall face instead (the wall the player walks
+                    // along), per the 0.14 m inset law (gotchas 3.5), front facing into the
+                    // approach room. ----
+                    const float kpY = dw.cy + 1.40f;         // reachable mount height (cy = floor-ish)
+                    const float kpOff = kDoorHalf + 0.55f;   // step to the side of the opening
+                    if (dw.axis == 0) {                       // mouth on an X-plane wall — keypad on the approach room's X wall
+                        const bool oPlusX = (o.cx > r.cx);    // approach room is +X of the secured room
+                        const float mountX = oPlusX ? (o.x0() + 0.14f) : (o.x1() - 0.14f);
+                        const KeypadFacing face = oPlusX ? KeypadFacing::PlusX : KeypadFacing::MinusX;
+                        buildKeypad(scene, device, mountX, kpY, dw.cz + kpOff, face,
+                                    KeypadStatus::Locked, kNoRoom);
+                    } else {                                  // mouth on a Z-plane wall
+                        const bool oPlusZ = (o.cz > r.cz);
+                        const float mountZ = oPlusZ ? (o.z0() + 0.14f) : (o.z1() - 0.14f);
+                        const KeypadFacing face = oPlusZ ? KeypadFacing::PlusZ : KeypadFacing::MinusZ;
+                        buildKeypad(scene, device, dw.cx + kpOff, kpY, mountZ, face,
+                                    KeypadStatus::Locked, kNoRoom);
+                    }
                     ++nSec;
                 }
             }
             x3::logInfo("buildCanonFloor: locked " + std::to_string(nSec) +
-                        " secured-room doors (Security=card|1701, Medical=2480, Armory=card+8896)");
+                        " secured-room doors + placed a realistic high-poly keypad at each "
+                        "(Security=card|1701, Medical=2480, Armory=card+8896)");
         }
     }
 
