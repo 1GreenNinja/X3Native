@@ -79,6 +79,7 @@
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
+#include "strata.h"   // R-3 fold: THE DESCENT — live strata shaft around the elevator column
 #include "club1127.h"
 #include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -1130,6 +1131,14 @@ int runDefaultHost(HostContext& hc) {
     // transport that mediates that exit. Built with the level (Level 1 only, not
     // terrain) so it appears in the screenshot/bench/smoketest paths too.
     x3::game::ElevatorSystem elevator;
+    // ---- R-3 fold (ed1a403): LIVE STRATA DESCENT. The geological shaft built AROUND
+    // the elevator's descent column (building base Y~=0 down to Club 1127 at Y=-200)
+    // so the cab's glass sees REAL layered rock on the 1127 disco descent. The in-cab
+    // strata readout matches by construction (ElevatorSystem::strata() and
+    // StrataWorld::bandAtY share band names/colors). Level-1 only.
+    x3::game::StrataWorld    liveStrata;
+    x3::game::TriggerSystem  liveStrataTriggers;
+    bool                     liveStrataBuilt = false;
     // ---- Spire mid floors (F3 Labs / F4 Offices / F5 Synth bay) encounter content.
     // Authored onto the same Spire plates buildLevel1() produced; reached via the
     // per-floor elevator stops below. Has its own enemy groups + a gated F5 rescue
@@ -1558,6 +1567,14 @@ int runDefaultHost(HostContext& hc) {
             elevator.setFloorLabels(labels);
         }
         elevator.buildVisuals(scene, *device);
+        // R-3 fold: build THE DESCENT around the live elevator column (same XZ), so
+        // riding the 1127 descent shows real geology out the glass. Reuses the strata
+        // module's build path (identical to --world strata; NOT a duplicate).
+        liveStrata.build(scene, *device, *physics, liveStrataTriggers,
+                         Lb.elevatorCenter.x, Lb.elevatorCenter.z, /*radius*/16.0f);
+        liveStrataBuilt = liveStrata.built();
+        x3::boot::mark("strata descent build");
+        x3::logInfo("level1: STRATA descent built around the elevator shaft — enter 1127 to ride to The Deep");
         x3::boot::mark("elevator build");
 
         // Author the F3/F4/F5 mid-floor encounters onto the Spire plates. The
@@ -4697,6 +4714,10 @@ int runDefaultHost(HostContext& hc) {
                         }
                     }
                 }
+                // R-3 fold: breathe the Crystal/Magma/Alien glow + flicker the magma
+                // mood lights of the strata shaft the cab rides through (cab-biased).
+                if (liveStrataBuilt)
+                    liveStrata.update(x3::net::kSimDt, scene, *device, elevator.cabCenter());
 
                 physics->step(x3::net::kSimDt);
                 scene.update(*physics);
@@ -4727,6 +4748,9 @@ int runDefaultHost(HostContext& hc) {
                 // World still advances so the level keeps simulating while inspecting
                 // (advance the elevator too; no carry — the fly cam isn't a rider).
                 if (elevator.built()) elevator.update(x3::net::kSimDt, scene, *physics);
+                if (liveStrataBuilt)
+                    liveStrata.update(x3::net::kSimDt, scene, *device,
+                                      x3::phys::Vec3{ flyX, flyY, flyZ });
                 physics->step(x3::net::kSimDt);
                 scene.update(*physics);
             }
@@ -4887,6 +4911,15 @@ int runDefaultHost(HostContext& hc) {
                     L.color[1] *= 1.0f - rs * 0.78f;
                     L.color[2] *= 1.0f - rs * 0.82f;
                 }
+            }
+            // R-3 fold: while the eye is below the facility base (riding the shaft),
+            // append the strata's breathing mood lights so the glowing depths light the
+            // descending cab. Y-gated: above-ground lighting untouched; capped under
+            // the device limit.
+            if (liveStrataBuilt && camY < 2.0f) {
+                const auto& sl = liveStrata.pointLights();
+                size_t take = sl.size() < 16 ? sl.size() : (size_t)16;
+                for (size_t i = 0; i < take; ++i) fl.push_back(sl[i]);
             }
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
@@ -5175,6 +5208,10 @@ int runDefaultHost(HostContext& hc) {
             // gated victim.
             for (uint32_t tid : topTriggers.update(camPos)) topFloors.onTrigger(tid);
             topFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            // R-3 fold: dispatch the strata shaft's triggers (descent entered, per-band
+            // offshoots, ClubArrival at Y=-200) as the player rides/walks down. Idempotent.
+            if (liveStrataBuilt)
+                for (uint32_t tid : liveStrataTriggers.update(camPos)) liveStrata.onTrigger(tid);
             // Floor 4.5 Nexus / The Chorus: dispatch its connector (which discovers +
             // arms the Chorus) then tick the multi-pod boss (inert until armed).
             for (uint32_t tid : nexusTriggers.update(camPos)) nexus.onTrigger(tid);

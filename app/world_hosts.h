@@ -30,7 +30,9 @@ int hostValley   (HostContext& hc);   // --world valley    (+ ecology proof)
 int hostCliffs   (HostContext& hc);   // --world cliffs
 int hostStreamed (HostContext& hc);   // --world streamed
 int hostSpace    (HostContext& hc);   // --world space     (Act-3 6DOF space pilot)
-int hostSurfaceStart(HostContext& hc);// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
+int hostSurfaceStart(HostContext& hc);
+int hostStrata   (HostContext& hc);   // --world strata (R-3 fold: THE DESCENT)
+int hostElevator (HostContext& hc);   // --world elevator-showcase (+ --screenshot-elevator)// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);

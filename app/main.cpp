@@ -285,6 +285,8 @@ int main(int argc, char** argv) {
         _tf.testLevelLint = o.testLevelLint;
         _tf.testCanonPlay = o.testCanonPlay;
         _tf.testGoldenPath = o.testGoldenPath;
+        _tf.testStrata = o.testStrata;
+        _tf.testElevatorShowcase = o.testElevatorShowcase;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;
         _tf.testIntroBranch = o.testIntroBranch;
@@ -652,6 +654,7 @@ int main(int argc, char** argv) {
         _hc.captureWalk      = o.captureWalk;      _hc.captureWalkPath  = o.captureWalkPath;
         _hc.captureFootIk    = o.captureFootIk;    _hc.captureFootIkPath = o.captureFootIkPath;
         _hc.destructShot     = o.destructShot;     _hc.destructShotPath = o.destructShotPath;
+        _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;
         _hc.carShot          = o.carShot;          _hc.carShotDir       = o.carShotDir;
         _hc.showroomFpShot   = o.showroomFpShot;   _hc.showroomFpShotPath = o.showroomFpShotPath;
         _hc.showroomRagdollShot = o.showroomRagdollShot; _hc.showroomRagdollShotPath = o.showroomRagdollShotPath;

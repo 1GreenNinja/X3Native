@@ -75,6 +75,8 @@ struct HostContext {
     bool        showroomCivShot = false;    std::string showroomCivShotPath;
 
     bool        destructShot = false;       std::string destructShotPath;
+    // R-4 fold: --screenshot-elevator beauty set (interior/exterior/strata trio)
+    bool        elevShot = false;           std::string elevShotDir = "docs/screenshots/elevator";
     bool        perfshopShot = false;       std::string perfshopShotDir;
     bool        ecologyShot = false;        std::string ecologyShotPath;
     bool        crowdShot = false;          std::string crowdShotPath;
