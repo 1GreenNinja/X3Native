@@ -47,6 +47,9 @@ namespace x3::game {
 namespace {
 
 constexpr float kPi = 3.14159265358979f;
+// The house tempo — matched to assets/audio/music/club_ascension.wav (~133 BPM)
+// so every beat-locked pulse (subs, tiles, dancers) rides the actual track.
+constexpr float kClubBpm = 133.0f;
 
 // ---- Tints (linear-ish; the device tonemaps) ------------------------------
 // Ported from the JS StandardMaterial diffuse colors (hex -> 0..1 RGB).
@@ -338,6 +341,25 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     const x3::rhi::TextureHandle mrChrome = device.createTexture(mrChromePx.data(), 1, 1, false);
     const x3::rhi::TextureHandle mrGlass  = device.createTexture(mrGlassPx.data(), 1, 1, false);
 
+    // OLED-GLASS: a screen entity becomes a REAL glass pane carrying its EQ
+    // frame as the pane texture — the transparent pass adds the fresnel grazing
+    // highlight (the panels SHINE like glass), near-solid opacity keeps the
+    // content readable, and a soft emissive floor lets update()'s shimmer
+    // breathe it like live video. (A separate glass pane OVER an opaque screen
+    // depth-occludes the content — the pane must BE the screen.)
+    auto oledGlass = [&](uint32_t id, x3::rhi::TextureHandle eq) {
+        Entity& e = scene.get(id);
+        e.tex = eq;
+        e.baseColor[0] = 2.0f; e.baseColor[1] = 2.0f; e.baseColor[2] = 2.1f; e.baseColor[3] = 1.0f;
+        e.emissive[0] = 0.55f; e.emissive[1] = 0.60f; e.emissive[2] = 0.75f; e.emissive[3] = 0.35f;
+        e.transparent = true;
+        e.glass.opacity = 0.94f;      // near-solid: the EQ content carries
+        e.glass.refraction = 0.0f;
+        e.glass.roughness = 0.05f;    // tight glossy highlight
+        e.glass.specular = 1.0f;      // full fresnel shine
+        e.glass.tint[0] = 0.80f; e.glass.tint[1] = 0.90f; e.glass.tint[2] = 1.0f;
+    };
+
     // Soft-furnishing palette (couches, stools, pillows) — used from the ground
     // bar onward, so declared with the shared resources.
     const float kLeather[4]  = { 0.14f, 0.10f, 0.09f, 1.0f };
@@ -523,9 +545,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 2.1f };
             const uint32_t dsId = box(xo, djY + 1.35f, -CL / 2 + djD - 0.35f, 0.175f, 0.125f, 0.015f,
                                       kTvFrame, emScr, false);
-            Entity& de = scene.get(dsId);
-            de.emissiveTex = texEq[i * 2];
-            de.mrTex = mrGlass;
+            oledGlass(dsId, texEq[i * 2]);
             m_oledEnts.push_back(dsId);
         }
         m_stats.hasDjScreens = true;
@@ -611,9 +631,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             box(x, y, z, (tvW + 0.05f) / 2, (tvH + 0.05f) / 2, 0.03f, kTvFrame, kEmitOff, false); // bezel
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.9f };
             const uint32_t scrId = box(x, y, z + 0.035f, tvW / 2, tvH / 2, 0.005f, kTvFrame, emScr, false);
-            Entity& se = scene.get(scrId);
-            se.emissiveTex = texEq[tvIdx % 4];   // the EQ frame gates WHERE it glows
-            se.mrTex = mrGlass;                  // PBR route (emissive map honoured)
+            oledGlass(scrId, texEq[tvIdx % 4]);
             m_oledEnts.push_back(scrId);
             ++tvIdx;
             ++m_stats.tvScreens;
@@ -854,9 +872,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             // Wide OLED band above the back-bar (registered for the live shimmer).
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.9f };
             const uint32_t bandId = box(wallX + 0.05f, 3.25f, bz, 0.015f, 0.42f, 2.35f, kTvFrame, emScr, false);
-            Entity& be = scene.get(bandId);
-            be.emissiveTex = texEq[1];
-            be.mrTex = mrGlass;
+            oledGlass(bandId, texEq[1]);
             m_oledEnts.push_back(bandId);
             // Bartender behind the counter, facing the room (+X).
             addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
@@ -970,9 +986,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         {
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.8f };
             const uint32_t lsId = box(ER_W / 2 - 0.12f, ly + 1.6f, lz, 0.015f, 0.35f, 0.62f, kTvFrame, emScr, false);
-            Entity& le = scene.get(lsId);
-            le.emissiveTex = texEq[3];
-            le.mrTex = mrGlass;
+            oledGlass(lsId, texEq[3]);
             m_oledEnts.push_back(lsId);
         }
         // A patron enjoying the lounge (inert idle prop, like the DJ/bouncer).
@@ -1130,7 +1144,7 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     // corner sub pulse lights, and the bright dance tiles — the whole room
     // breathes with the music instead of idling frozen. ---
     {
-        const float beatHz = 128.0f / 60.0f;
+        const float beatHz = kClubBpm / 60.0f;
         const float ph = std::sin(t * beatHz * kPi);          // one lobe per beat
         const float thump = std::pow(std::max(0.0f, ph), 6.0f);
         // Sub driver cones: amber surge on the hit, near-dark between.
@@ -1156,7 +1170,7 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         for (size_t i = 0; i < m_oledEnts.size(); ++i) {
             const uint32_t id = m_oledEnts[i];
             if (id >= scene.size()) continue;
-            scene.get(id).emissive[3] = 1.7f + 0.5f * std::sin(t * 2.3f + i * 1.9f) + 0.35f * thump;
+            scene.get(id).emissive[3] = 0.30f + 0.18f * std::sin(t * 2.3f + i * 1.9f) + 0.15f * thump;
         }
     }
 
@@ -1170,7 +1184,7 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     //   SWAY   — hips/heading rock at half-tempo (yaw oscillation);
     //   SHUFFLE— a slow personal-space drift around the home spot (XZ orbit).
     {
-        const float beatHz = 128.0f / 60.0f;
+        const float beatHz = kClubBpm / 60.0f;
         for (const Dancer& dn : m_dancers) {
             if (dn.charIdx >= m_chars.size()) continue;
             const float tp = t + dn.phase;

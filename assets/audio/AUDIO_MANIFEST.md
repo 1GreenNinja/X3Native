@@ -82,3 +82,9 @@ doors/door_close.wav).
 | interact/chime.wav        | Sci-fi Evolution Gift Pack / Energy Bling.wav | none |
 | interact/buzz.wav         | Sci-fi Evolution Gift Pack / Negative Analog Computer Tone 2.wav | none |
 | interact/servo_loop.wav   | Sci-fi Evolution Gift Pack / Deep Processor Mech Drone.wav | none (looped by startLoop) |
+
+## Music (club + elevator max-out)
+| Repo path | Source | Processing |
+|---|---|---|
+| music/club_ascension.wav | Free - Sci-Fi and Cyberpunk Music Pack / 01 Ascension.wav (~133 BPM) | -3 dB + 30 ms loop-seam crossfade |
+| interact/muzak_loop.wav  | Free - Sci-Fi and Cyberpunk Music Pack / 03 Descent.wav (~120 BPM) | mono mix, -10 dB (cabin background), loop crossfade — REPLACES the stdlib-synth loop |

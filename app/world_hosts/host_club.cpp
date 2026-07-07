@@ -5,6 +5,8 @@
 #include "../crowd.h"
 #include "../player.h"
 #include "../asset_root.h"
+#include "../audio_root.h"                 // resolveAudio (the committed club track)
+#include "engine/audio/IAudioSystem.h"
 
 namespace x3 { namespace apphost {
 
@@ -121,6 +123,15 @@ int hostClub(HostContext& hc) {
         }
 
         // ===== Walkable windowed path: full first-person controller + physics. ===
+        // THE MUSIC (max-out): the real club track — Ascension (~133 BPM, the
+        // tempo every beat-locked pulse in club1127.cpp rides) — looping 2D at
+        // house volume. Graceful: no device / missing WAV -> silent club.
+        std::unique_ptr<x3::audio::IAudioSystem> caudio(x3::audio::createAudioSystem());
+        x3::audio::LoopHandle clubTrack{};
+        if (caudio && caudio->init()) {
+            auto h = caudio->load(x3::game::resolveAudio("music/club_ascension.wav"));
+            if (h.valid()) clubTrack = caudio->startLoop(h, 0.75f, 1.0f);
+        }
         x3::game::Player cplayer;
         cplayer.spawn(*cphys, spawn.x, spawn.y, spawn.z);
 
