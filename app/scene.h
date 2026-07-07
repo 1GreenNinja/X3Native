@@ -83,6 +83,13 @@ struct Entity {
     // route used to hardcode an invalid normal handle). Invalid (default) =>
     // identical to the old behaviour on every existing entity.
     x3::rhi::TextureHandle normalTex;
+    // Optional EMISSIVE map, forwarded on the drawMeshPBR route (club max-out:
+    // OLED screens / speaker cones bake WHERE the surface glows; the shader
+    // multiplies it into the per-entity emissive term, so black texels stay
+    // dark). Invalid (default) => identical old behaviour (flat emissive).
+    // Only honoured on the PBR route (mrTex valid) — the emissive-path draw
+    // call has no emissive-map parameter.
+    x3::rhi::TextureHandle emissiveTex;
     float                  baseColor[4] = {1, 1, 1, 1}; // tint (multiplies texel)
     // Optional per-entity HDR EMISSIVE term { r, g, b, strength } added on top of
     // the lit result (independent of light). Default {0,0,0,0} == no glow, so

@@ -193,6 +193,14 @@ private:
     uint32_t                                       m_orbEnt = 0xFFFFFFFFu;
     bool                                           m_orbValid = false;
     float                                          m_orbY = 0.0f; // ORB center world-Y
+    // MAX-OUT pass (Tim 2026-07-07): animated fixture sets update() drives.
+    //   OLED screens: emissive shimmer phases so the wall content reads as LIVE
+    //   video, not frozen stills. Sub plates: the speaker cones thump on the
+    //   128 BPM beat clock. Bright dance tiles: breathe with the same beat.
+    std::vector<uint32_t>                         m_oledEnts;
+    std::vector<uint32_t>                         m_subPulseEnts;
+    std::vector<uint32_t>                         m_tilePulseEnts;
+    std::vector<size_t>                           m_subLightIdx;   // corner-sub pulse lights (into m_lights)
     // Running animation clock (seconds) advanced by update().
     float                                         m_time = 0.0f;
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).

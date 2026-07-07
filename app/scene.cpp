@@ -154,7 +154,9 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             // + IBL/SSR reflections). normalTex rides along when set (invalid =>
             // geometry normal, exactly the old behaviour).
             device.drawMeshPBR(frame, e.mesh, e.tex, e.normalTex, e.mrTex,
-                               e.baseColor, e.emissive, e.transform);
+                               e.baseColor, e.emissive, e.transform,
+                               /*alphaMask*/ false, /*alphaBlend*/ false,
+                               e.emissiveTex);
         } else {
             device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
         }
