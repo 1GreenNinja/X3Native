@@ -811,6 +811,14 @@ public:
     // Current body-center world position (D-ai: read by the ally query / regroup).
     x3::phys::Vec3 pos() const { return m_pos; }
 
+    // Club max-out: externally drive an INERT prop's pose (position + heading).
+    // Intended ONLY for chaseSpeed-0 / damage-0 character props (the Club 1127
+    // dancers) — the caller owns the choreography and calls this each frame
+    // BEFORE update(); the AI never moves an inert prop, so nothing fights it.
+    void setPropPose(const x3::phys::Vec3& p, float yaw) {
+        m_pos = p; m_yaw = yaw; m_yawTarget = yaw;
+    }
+
     // True if the real GLB loaded; false if the procedural fallback box is in use.
     // Valid after buildMonster().
     bool usingRealModel() const { return m_usingReal; }

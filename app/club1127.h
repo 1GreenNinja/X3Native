@@ -201,6 +201,19 @@ private:
     std::vector<uint32_t>                         m_subPulseEnts;
     std::vector<uint32_t>                         m_tilePulseEnts;
     std::vector<size_t>                           m_subLightIdx;   // corner-sub pulse lights (into m_lights)
+    // DANCERS (Tim: 'work on those dancers') — real skinned GLB characters on the
+    // floor, choreographed by update(): a beat-locked bounce + hip sway + a slow
+    // personal-space shuffle, phase-offset per dancer, layered over their idle
+    // clip via MonsterSystem::setPropPose. Replaces the pastel box crowd.
+    struct Dancer {
+        size_t charIdx = 0;         // index into m_chars
+        float  bx = 0, bz = 0;      // home spot on the floor (world XZ)
+        float  baseY = 0;           // feet Y (the dance-floor tile top)
+        float  yaw = 0;             // base facing
+        float  phase = 0;           // personal groove phase offset
+        float  energy = 1.0f;       // 0.6 chill .. 1.4 going off
+    };
+    std::vector<Dancer>                           m_dancers;
     // Running animation clock (seconds) advanced by update().
     float                                         m_time = 0.0f;
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).

@@ -1020,6 +1020,49 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // Bouncer near the elevator landing.
         addCharacter(scene, device, physics, modelDir, "RexBouncer.glb",
                      x3::phys::Vec3{ CW / 2 - 2.0f, oy + 0.0f, CL / 2 - 4.0f }, 1.0f, true, cool);
+
+        // ==============================================================
+        // DANCERS — ten real skinned characters on the floor (was: pastel
+        // box agents). Six distinct rigs cycled with varied neon-wash tints
+        // (the blacklit repeats read as different club-goers); update()
+        // choreographs a beat bounce + sway + shuffle per dancer.
+        // ==============================================================
+        {
+            // Roster: the four PROVEN-standing humanoid rigs only (chief_martinez
+            // is Z-up and lay flat on the floor with detached boots in the R3
+            // shot; the RexBouncer rig reads as a clawed bruiser — right for the
+            // door, wrong for the floor). Tint variety carries the crowd read.
+            const char* rigs[4] = { "AnnaBodySuit.glb", "marcus_webb.glb", "AnnaCasual.glb",
+                                    "AnnaTactical.glb" };
+            const float tints[5][4] = {
+                { 1.05f, 0.85f, 1.25f, 1.0f },   // violet wash
+                { 0.85f, 1.05f, 1.30f, 1.0f },   // cyan wash
+                { 1.25f, 0.90f, 1.00f, 1.0f },   // warm rose
+                { 0.90f, 1.20f, 0.95f, 1.0f },   // green tinge
+                { 1.10f, 1.05f, 0.90f, 1.0f },   // amber
+            };
+            // Spots: a loose ring on the dance floor + two by the DJ end. Kept off
+            // the bar lane and inside the tile field.
+            const float spots[10][3] = {   // x, z, base yaw
+                { -1.5f,  -3.0f,  0.6f }, {  1.8f,  -4.5f, -2.4f }, {  0.2f,  -6.5f,  3.0f },
+                {  3.0f,  -1.5f, -1.2f }, { -2.5f,   0.5f,  1.8f }, {  0.8f,   1.5f, -0.4f },
+                {  2.6f,   3.5f,  2.2f }, { -1.0f,   4.5f, -2.8f }, { -3.0f,  -6.0f,  0.2f },
+                {  4.0f,  -7.5f,  1.4f },
+            };
+            for (int d3 = 0; d3 < 10; ++d3) {
+                Dancer dn;
+                dn.charIdx = m_chars.size();
+                dn.bx = spots[d3][0]; dn.bz = spots[d3][1];
+                dn.baseY = oy + 0.14f;                     // on the glowing tile tops
+                dn.yaw = spots[d3][2];
+                dn.phase = (float)(clubHash((uint32_t)d3 * 97u + 13u) % 628u) / 100.0f;
+                dn.energy = 0.65f + 0.75f * ((clubHash((uint32_t)d3 * 41u + 7u) % 100u) / 100.0f);
+                addCharacter(scene, device, physics, modelDir, rigs[d3 % 4],
+                             x3::phys::Vec3{ dn.bx, dn.baseY, dn.bz }, 1.0f,
+                             false, tints[d3 % 5]);
+                m_dancers.push_back(dn);
+            }
+        }
     }
 
     m_stats.entities = (int)(scene.size() - entsBefore);
@@ -1119,6 +1162,27 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
 
     // Re-push the (now-moved) light set to the device so the orbiting lights animate.
     device.setPointLights(m_lights.data(), (uint32_t)m_lights.size());
+
+    // --- DANCERS: choreograph each dancer BEFORE its update() so the skinner
+    // draws the grooved pose this frame. Three layers, all beat-locked but
+    // phase-offset + energy-scaled per dancer so the floor never syncs up:
+    //   BOUNCE — a sharp knee-pop on every beat (the thump curve, in Y);
+    //   SWAY   — hips/heading rock at half-tempo (yaw oscillation);
+    //   SHUFFLE— a slow personal-space drift around the home spot (XZ orbit).
+    {
+        const float beatHz = 128.0f / 60.0f;
+        for (const Dancer& dn : m_dancers) {
+            if (dn.charIdx >= m_chars.size()) continue;
+            const float tp = t + dn.phase;
+            const float lobe = std::sin(tp * beatHz * kPi);
+            const float bounce = std::pow(std::max(0.0f, lobe), 4.0f) * 0.11f * dn.energy;
+            const float sway = std::sin(tp * beatHz * kPi * 0.5f) * 0.45f * dn.energy;
+            const float sx = dn.bx + std::sin(tp * 0.31f) * 0.30f;
+            const float sz = dn.bz + std::cos(tp * 0.23f) * 0.28f;
+            m_chars[dn.charIdx]->setPropPose(
+                x3::phys::Vec3{ sx, dn.baseY + bounce, sz }, dn.yaw + sway);
+        }
+    }
 
     // Tick the inert character props (idle clips; chaseSpeed 0 => no movement).
     for (auto& c : m_chars)

@@ -60,8 +60,16 @@ int hostClub(HostContext& hc) {
                             ccfg.centerX - 4.0f, ccfg.centerZ,
                             ccfg.centerX + 4.0f, ccfg.centerZ - 3.0f };
             ccfg.dance    = true;     // they sway/bob to the beat
-            ccfg.emissive = 0.35f;    // blacklight-neon glow so they read in the dark
-            clubCrowd.build(ccfg, cscene, *device);
+            // MAX-OUT (Tim: 'work on those dancers'): the pastel BOX agents are
+            // retired from the dance floor — Club1127World now owns ten real
+            // skinned GLB dancers with beat choreography. Keep a THIN box crowd
+            // (4) as dim far-corner wallflowers at the south end so the room
+            // feels populated beyond the floor (facility civilians still use
+            // the full CrowdSystem elsewhere).
+            // Box agents retired ENTIRELY in the club (they wandered back onto
+            // the floor as day-glo boxes next to the real dancers).
+            ccfg.count = 0;
+            (void)clubCrowd;
         }
 
         // Apply the neon/UV point-light set once (the orbiting spot/ring lights are
