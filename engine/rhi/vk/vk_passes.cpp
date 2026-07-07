@@ -23,15 +23,20 @@ void VulkanRenderDevice::recordGlassPassBody(VkCommandBuffer cmd) {
         // Need the glass pipeline AND its set-4 resources; without set 4 the bind
         // would be invalid, so the whole pass is skipped (M1 alpha still works on the
         // frames where set 4 exists — it always does if createGlassResources passed).
-        if (!m_glassPipeline || !m_glassLayout || !m_glassSet[m_frameIdx] || m_frameCmdCount == 0) return;
+        // W8-2: set 5 = the IBL set (env reflection); if IBL alloc ever failed the
+        // pass skips too (graceful, same contract as a failed glass pipeline).
+        if (!m_glassPipeline || !m_glassLayout || !m_glassSet[m_frameIdx] ||
+            !m_iblMeshSet || m_frameCmdCount == 0) return;
         auto& fr = m_frames[m_frameIdx];
         postViewport(cmd, m_extent);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassPipeline);
-        // The 4 shared mesh sets + the glass-only set 4 (scene-copy + GlassControl).
-        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet,
-                                    m_meshAoSet[m_frameIdx], m_glassSet[m_frameIdx] };
+        // The 4 shared mesh sets + the glass-only set 4 (scene-copy + GlassControl)
+        // + the IBL set at 5 (prefiltered env + BRDF LUT — glass env reflection).
+        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet,
+                                    m_meshAoSet[m_frameIdx], m_glassSet[m_frameIdx],
+                                    m_iblMeshSet };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassLayout,
-                                0, 5, sets, 0, nullptr);
+                                0, 6, sets, 0, nullptr);
         for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;

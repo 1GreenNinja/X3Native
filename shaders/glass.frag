@@ -17,8 +17,14 @@
 //   M2 (screen-space REFRACTION): sample a COPY of the scene captured before this
 //      pass at screenUV + (screen-space normal * refraction), so the scene behind
 //      the glass BENDS. Strength from GlassMaterial.refraction.
-//   M3 (fresnel + specular shimmer): later.
-//   M4 (roughness / frost): later.
+//   M3 (fresnel + specular shimmer): sun/point GGX glints + environment sheen.
+//   M3-R (W8-2): REAL environment reflection — the split-sum IBL cubes the opaque
+//      path uses (set 5 = the same m_iblMeshSet: prefiltered env + BRDF LUT), so
+//      glass MIRRORS the sky/environment with proper fresnel. This REPLACED the
+//      old world-position sine "glint band", which painted parameter-immune
+//      DIAGONAL STREAKS across large panes (the W3-3 tower artifact: a ~2.6 m
+//      period stripe field over any facade-sized surface).
+//   M4 (roughness / frost): frosted transmission via pre-blurred scene copy.
 // NON-glass fragments DISCARD here (they belong to the opaque pass).
 
 layout(set = 0, binding = 0) uniform sampler2D textures[];
@@ -34,13 +40,19 @@ layout(set = 1, binding = 1) uniform Camera {
     mat4 lightViewProj;
     vec4 ambientCount;              // rgb = ambient color, w = active light count
     PointLight lights[kMaxPointLights];
+    vec4 camPos;                    // xyz = camera world position (unused here; g.camPos wins)
+    vec4 sunDir;                    // xyz = per-scene direction TOWARD the sun (FrameUBO tail)
 } cam;
 
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
 
 layout(set = 3, binding = 0) uniform sampler2D ssaoTex;
+// Same UBO the opaque path reads (m_meshAoSet binding 1) — glass declares the
+// PREFIX it needs: ctrl + the IBL lane (x=valid, y=intensity, z=prefilter max
+// mip). Offsets match mesh.frag's fuller declaration by construction.
 layout(set = 3, binding = 1) uniform SsaoControl {
     vec4 ctrl;
+    vec4 ibl;         // x=IBL valid(0/1), y=IBL intensity, z=prefilter max mip
 } ssao;
 
 // ---- Glass-only set 4 -----------------------------------------------------
@@ -58,6 +70,14 @@ layout(set = 4, binding = 1) uniform GlassControl {
     vec4 camUp;      // xyz = camera UP axis (world)
 } g;
 layout(set = 4, binding = 2) uniform sampler2D sceneFrost;   // blurred scene (M4 frost)
+
+// ---- IBL set 5 (M3-R) — the SAME descriptor set the opaque mesh path binds at
+// set 4 (m_iblMeshSet): binding 1 = GGX-prefiltered env radiance (roughness in
+// the mip chain), binding 2 = split-sum BRDF LUT. Binding 0 (irradiance) exists
+// in the set but glass doesn't sample it (reflection only, no diffuse ambient).
+// Gated by ssao.ibl.x, exactly like mesh.frag.
+layout(set = 5, binding = 1) uniform samplerCube prefilterCube;
+layout(set = 5, binding = 2) uniform sampler2D brdfLUT;
 
 layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUV;
@@ -80,7 +100,10 @@ layout(location = 0) out vec4 outColor;
 
 const uint FLAG_GLASS = 2u;
 
-const vec3 kSunDir   = normalize(vec3(0.4, 1.0, 0.3));
+// Sun direction is PER-SCENE (cam.sunDir, filled from SkyParams — defaults to
+// the old hardcoded (0.4,1,0.3) when no sky is set, so indoor worlds are
+// unchanged). W8-2: the old const here meant a golden-hour host's LOW sun never
+// matched the glass specular — the glint sat where no sun was.
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);
 
 // 3x3 PCF (identical to mesh.frag) — glass is still lit by the sun so it doesn't
@@ -197,6 +220,7 @@ void main() {
     // The specular accumulator (M3) collects the bright glints the BODY lighting
     // would miss: a sharp lobe off the sun + the nearby point lights, scaled by the
     // material's specular and sharpened by (1 - roughness).
+    vec3 kSunDir = normalize(cam.sunDir.xyz);      // per-scene sun (Camera UBO tail)
     float specRough = mix(0.06, 0.6, roughness);   // polished -> sharp, frosted -> broad
     float ndl = max(dot(N, kSunDir), 0.0);
     float shadow = sampleShadow(vWorldPos, ndl);
@@ -224,23 +248,39 @@ void main() {
         specSum   += specLight(N, V, L, cam.lights[i].colorPad.rgb, specRough) * att;
     }
 
-    // ---- M3: Schlick FRESNEL + animated GLINT ----------------------------
+    // ---- M3-R: Schlick FRESNEL + REAL environment reflection --------------
     // Fresnel: glass reflects more at grazing angles + edges (cosTheta -> 0). This
-    // both BRIGHTENS the rim (an environment-tinted sheen) and LIFTS the alpha so a
-    // crystal-clear pane still reads as a surface instead of an invisible plane.
+    // both BRIGHTENS the rim and LIFTS the alpha so a crystal-clear pane still
+    // reads as a surface instead of an invisible plane.
+    //
+    // W8-2: the old "animated glint" here — smoothstep(sin(dot(vWorldPos, k)))
+    // — was a WORLD-SPACE STRIPE GENERATOR: on facade-sized panes it painted
+    // parallel diagonal streaks (~2.6 m period) that survived every material
+    // parameter change (the W3-3 tower artifact; only `specular` scaled it).
+    // REMOVED, replaced by the split-sum environment reflection the opaque path
+    // uses: prefiltered env radiance along R at the roughness mip, weighted by
+    // the BRDF LUT (which carries the fresnel rise toward grazing), with the
+    // same Reinhard energy rolloff mesh.frag applies so a mirror of the sun
+    // compresses gracefully instead of clipping to flat white.
     float cosV    = max(dot(N, V), 0.0);
     float fresnel = fresnelSchlick(cosV, 0.04);     // dielectric F0
-    // A subtle time-animated glint: a slow shimmer band scrolling across the surface
-    // (driven by world position + time) that rides on the fresnel rim, so polished
-    // glass catches a moving sparkle. Cheap sin band, kept gentle.
-    float band  = sin(dot(vWorldPos, vec3(0.7, 1.3, 0.9)) * 1.5 + time * 1.6);
-    float glint = smoothstep(0.86, 1.0, band) * (0.5 + 0.5 * fresnel);
+    vec3 envRefl;
+    if (ssao.ibl.x > 0.5) {
+        vec3 R = reflect(-V, N);
+        vec3 prefiltered = textureLod(prefilterCube, R, roughness * max(ssao.ibl.z, 0.0)).rgb;
+        vec2 ab = texture(brdfLUT, vec2(max(cosV, 1e-4), clamp(roughness, 0.0, 1.0))).rg;
+        vec3 spec = prefiltered * (vec3(0.04) * ab.x + ab.y) * ssao.ibl.y;
+        envRefl = spec / (1.0 + spec);              // Reinhard rolloff (mesh.frag parity)
+    } else {
+        // No baked environment: the old ambient-tinted fresnel sheen (minus the
+        // stripe band) so glass never reads as an invisible plane.
+        vec3 sheen = mix(kSunColor, ambient + vec3(0.04), 0.5);
+        envRefl = sheen * (fresnel * 0.6);
+    }
 
-    // The full specular term: GGX glints + fresnel sheen + animated glint, all
-    // scaled by the material's specular. A subtle environment-ish sheen colour
-    // (the ambient) tints the fresnel rim so it isn't pure white.
-    vec3 sheen   = mix(kSunColor, ambient + vec3(0.04), 0.5);
-    vec3 specOut = (specSum + sheen * (fresnel * 0.6 + glint * 0.5)) * max(specular, 0.0);
+    // The full specular term: GGX sun/point glints + the environment reflection,
+    // all scaled by the material's specular.
+    vec3 specOut = (specSum + envRefl) * max(specular, 0.0);
 
     // ---- Compose the glass colour ----------------------------------------
     // Split the body into its DIFFUSE part (the lit tinted surface — gated by opacity

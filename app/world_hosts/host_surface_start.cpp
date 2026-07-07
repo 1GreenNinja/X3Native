@@ -189,12 +189,14 @@ int hostSurfaceStart(HostContext& hc) {
         auto td = x3::prims::makeSolidRGBA(8, 14, 16, 20);
         auto tx = device->createTexture(td.data(), 8, 8, true);
         x3::game::Entity e{}; e.mesh = mh; e.tex = tx;
-        // R4 FINAL: OPAQUE dark glazing. Three rounds proved the diagonal streaks
-        // are the glass pass shading the box triangulation (parameter-immune:
-        // survived spec 0.95->0.5, roughness 0.06->0.22, opacity 0.30->0.88).
-        // A day-lit black curtain wall reads opaque from outside anyway, so the
-        // glazing ships as dark glossy OPAQUE surface; true reflective glass
-        // returns when RT reflections cover scene entities (filed follow-up).
+        // W8-2: this box is now the BACKING behind the real glass curtain wall —
+        // opaque near-black, it reads as (a) the dark mullion grid in the gaps
+        // between the glass panels and (b) the near-black transmission BEHIND
+        // each pane (the glass refraction path samples it through the panel).
+        // It still carries the collision. R4's streak diagnosis ("box
+        // triangulation shading") was wrong — the streaks were glass.frag's
+        // world-space sine glint band, killed in the shader (W8-2), which is
+        // what lets translucent glass ship on the tower now.
         e.transparent = false;
         e.baseColor[0] = 0.30f; e.baseColor[1] = 0.34f; e.baseColor[2] = 0.42f;
         e.baseColor[3] = 1.0f;
@@ -307,6 +309,112 @@ int hostSurfaceStart(HostContext& hc) {
         pushBand(baseSeg, kPi,  segOff, 0.0f, zF);
         x3::logInfo("--world surface: tower facade = " + std::to_string(bands.size()) +
                     " concrete spandrel bands over black glass (9 storeys + parapet)");
+    }
+
+    // ---- W8-2: REAL GLASS CURTAIN WALL — per-panel translucent glazing. ------
+    // The glass strips between the spandrel bands are re-glazed as INDIVIDUAL
+    // panes drawn through the glass pass (drawMeshGlass): each panel is a thin
+    // quad 2 cm proud of the near-black backing wall, separated by ~14 cm gaps
+    // where the dark backing shows through as the mullion grid. Every pane gets
+    // a hashed micro-variation — a fraction-of-a-degree TILT (so the low sun's
+    // mirror image walks across panels instead of igniting the whole face at
+    // once — the thing that makes real curtain walls read as glass), plus small
+    // tint / roughness / opacity jitter so the facade doesn't render as one
+    // continuous mirror. Reflections come from the engine's split-sum IBL
+    // (glass.frag M3-R): the golden-hour sky + sun are IN the prefiltered env,
+    // so panes mirror the sky gradient and catch the sun where geometry says so.
+    x3::prims::PrimMesh gpm = x3::prims::makeBox(0.5f, 0.5f, 0.015f, 0, 0, 0, 1.0f);
+    x3::rhi::MeshHandle glassPanelMesh = device->createMesh(
+        gpm.verts.data(), (uint32_t)gpm.verts.size(),
+        gpm.index.data(), (uint32_t)gpm.index.size());
+    auto glassTexD = x3::prims::makeSolidRGBA(8, 255, 255, 255);   // body color rides the factor
+    auto glassPanelTex = device->createTexture(glassTexD.data(), 8, 8, true);
+    struct GlassPanelDraw {
+        float xform[16];
+        float base[4];
+        x3::rhi::IRenderDevice::GlassMaterial mat;
+    };
+    std::vector<GlassPanelDraw> glassPanels;
+    {
+        // Integer-hash micro-variation (deterministic per pane).
+        auto h01 = [](uint32_t s) {
+            s ^= s >> 16; s *= 0x7feb352du; s ^= s >> 15; s *= 0x846ca68bu; s ^= s >> 16;
+            return (float)(s & 0xffffffu) / 16777216.0f;
+        };
+        // One pane: center (px,py,pz), outward-normal yaw (local +Z -> world),
+        // w x h meters, seeded jitter. M = T * RotY(yaw+dh) * RotX(dp) * S(w,h,1).
+        auto pushPane = [&](float yaw, float px, float py, float pz,
+                            float w, float h, uint32_t seed) {
+            const float r0 = h01(seed * 3u + 11u), r1 = h01(seed * 3u + 12u),
+                        r2 = h01(seed * 3u + 13u);
+            const float dh = (r0 - 0.5f) * 0.016f;   // heading tilt, ~±0.46 deg
+            const float dp = (r1 - 0.5f) * 0.016f;   // pitch tilt
+            const float c = std::cos(yaw + dh), s = std::sin(yaw + dh);
+            const float cp = std::cos(dp),      sp = std::sin(dp);
+            GlassPanelDraw p{};
+            const float m[16] = {
+                c * w,       0.0f,     -s * w,      0,
+                sp * s * h,  cp * h,    sp * c * h, 0,
+                cp * s,     -sp,        cp * c,     0,
+                px,          py,        pz,         1 };
+            for (int i = 0; i < 16; ++i) p.xform[i] = m[i];
+            // Dark body — a black-glass pane is mostly its reflection.
+            p.base[0] = 0.055f; p.base[1] = 0.065f; p.base[2] = 0.080f; p.base[3] = 1.0f;
+            p.mat.opacity    = 0.66f + (r1 - 0.5f) * 0.16f;    // 0.58..0.74 (dark transmission)
+            p.mat.refraction = 0.004f;                          // near-flat float glass
+            p.mat.roughness  = 0.035f + r0 * 0.10f;             // polished, pane-varied
+            p.mat.specular   = 1.0f;
+            p.mat.tint[0] = 0.60f + (r2 - 0.5f) * 0.10f;        // steel-blue family
+            p.mat.tint[1] = 0.66f + (r0 - 0.5f) * 0.08f;
+            p.mat.tint[2] = 0.70f + (r1 - 0.5f) * 0.10f;
+            glassPanels.push_back(p);
+        };
+        const float kPi = 3.14159265f;
+        // Glass planes sit 2 cm proud of the backing wall faces (bands are 5 cm
+        // proud -> panes read RECESSED 3 cm behind the concrete, like real infill).
+        const float gzF = kFacilityZ + wallT + 0.02f;                       // front, +Z out
+        const float gzB = kFacilityZ - 2.0f * kFacilityHalfD - wallT - 0.02f; // back, -Z out
+        const float gxL = -kFacilityHalfW - wallT - 0.02f;                  // left, -X out
+        const float gxR =  kFacilityHalfW + wallT + 0.02f;                  // right, +X out
+        const float zC  = kFacilityZ - kFacilityHalfD;                      // side-face center
+        // Glass strip per storey: between the base band / storey bands / parapet.
+        struct Strip { float yBot, yTop; };
+        Strip strips[kStoreys];
+        for (int f = 0; f < kStoreys; ++f) {
+            strips[f].yBot = (f == 0) ? kBandH                               // top of ground base band
+                                      : f * kStoreyH + kBandH * 0.5f;
+            strips[f].yTop = (f + 1 < kStoreys) ? (f + 1) * kStoreyH - kBandH * 0.5f
+                                                : kTowerH - 0.2f;            // parapet base
+        }
+        const float kGap = 0.14f;   // mullion gap (backing shows through as the grid)
+        // Front/back: 20 columns across the 52.8 m band span. Sides: 12 across 32.8 m.
+        const float spanFB = 2.0f * kFacilityHalfW + 0.8f;
+        const float spanLR = 2.0f * kFacilityHalfD + 0.8f;
+        const int   colsFB = 20, colsLR = 12;
+        uint32_t seed = 1u;
+        for (int f = 0; f < kStoreys; ++f) {
+            const float yc = (strips[f].yBot + strips[f].yTop) * 0.5f;
+            const float ph = (strips[f].yTop - strips[f].yBot) - 0.10f;
+            if (ph <= 0.2f) continue;
+            const float pitchFB = spanFB / colsFB, pwFB = pitchFB - kGap;
+            for (int i = 0; i < colsFB; ++i) {
+                const float x = -spanFB * 0.5f + (i + 0.5f) * pitchFB;
+                // Front strip 0: leave the breach + jamb zone unglazed (open entry).
+                const bool inBreachZone = (f == 0) &&
+                    (std::fabs(x) - pwFB * 0.5f) < (kBreachHalfW + 1.3f);
+                if (!inBreachZone) pushPane(0.0f, x, yc, gzF, pwFB, ph, seed++); else seed++;
+                pushPane(kPi, x, yc, gzB, pwFB, ph, seed++);
+            }
+            const float pitchLR = spanLR / colsLR, pwLR = pitchLR - kGap;
+            for (int i = 0; i < colsLR; ++i) {
+                const float z = zC - spanLR * 0.5f + (i + 0.5f) * pitchLR;
+                pushPane(-kPi * 0.5f, gxL, yc, z, pwLR, ph, seed++);
+                pushPane( kPi * 0.5f, gxR, yc, z, pwLR, ph, seed++);
+            }
+        }
+        x3::logInfo("--world surface: curtain wall re-glazed = " +
+                    std::to_string(glassPanels.size()) +
+                    " translucent panes (per-pane tilt/tint jitter; IBL sky reflections)");
     }
 
     // ---- Jake's LANDED SHIP (JakeFighterShip.glb; box fallback). Sits on the
@@ -455,7 +563,13 @@ int hostSurfaceStart(HostContext& hc) {
 
     auto drawWorld = [&](const x3::rhi::FrameContext& frame, float cx, float cy, float cz,
                          float yaw, float pitch) {
-        scene.render(*device, frame);   // ground + glass facility + breach + Sarah's prop entity
+        scene.render(*device, frame);   // ground + facility backing + breach + Sarah's prop entity
+        // W8-2: the glass curtain wall — every pane through the glass pass (drawn
+        // post-opaque; the backing wall behind supplies the dark transmission and
+        // the mullion grid in the gaps).
+        for (const auto& p : glassPanels)
+            device->drawMeshGlass(frame, glassPanelMesh, glassPanelTex,
+                                  p.base, nullptr, p.mat, p.xform);
         // W3-3: the textured skin — concrete apron underfoot + spandrel bands on the tower.
         if (sApron.ok) surflib.drawPanel(*device, frame, sApron, apronMesh, apronXform);
         // Bands draw bespoke (not drawPanel): cc_cement_white is genuinely white at
@@ -503,7 +617,11 @@ int hostSurfaceStart(HostContext& hc) {
             }
         rescue.draw(*device, frame, scene);   // Sarah's GLB over her Prop entity
         drawShip(frame);
-        drawWeapon(frame, cx, cy, cz, yaw, pitch);
+        // W8-2: the hip-prop pistol is anchored at a fixed camera offset, so any
+        // up-tilted custom --shot-cam catches it as a giant photobomb. Review
+        // cams (shotCamOverride) skip it; the default vantage + the windowed
+        // walk loop keep the armed read.
+        if (!shotCamOverride) drawWeapon(frame, cx, cy, cz, yaw, pitch);
     };
 
     // Advance the objective from the player's position (approach -> breach).
