@@ -102,7 +102,9 @@ int hostSurfaceStart(HostContext& hc) {
         sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.16f; sp.sunDir[2] = -0.35f;   // low, from the player's right
         // (R4: 1.0/0.62/0.38 @1.5 baked every white surface ORANGE-BROWN — late
         // golden, not cardboard. Softened toward amber so white concrete reads white-warm.)
-        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.78f; sp.sunColor[2] = 0.56f;
+        // W6-2: cooled again (0.78/0.56 -> 0.87/0.72) — golden hour lives in the SKY
+        // (horizon band), not baked into every lit surface; the white tower stays white.
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.87f; sp.sunColor[2] = 0.72f;
         sp.sunIntensity = 1.25f; sp.haze = 0.45f; sp.exposure = 1.0f;
         sp.zenith[0]  = 0.10f; sp.zenith[1]  = 0.15f; sp.zenith[2]  = 0.26f;  // cooling blue above
         sp.horizon[0] = 0.55f; sp.horizon[1] = 0.34f; sp.horizon[2] = 0.20f;  // warm gold band
@@ -119,6 +121,14 @@ int hostSurfaceStart(HostContext& hc) {
         pl[1].range = 50.0f;
         pl[1].color[0] = 7.0f; pl[1].color[1] = 6.0f; pl[1].color[2] = 5.0f;    // warm sun bounce on the ship
         device->setPointLights(pl, 2);
+        // W6-2: breach light spill — a warm interior glow leaking out of the entry
+        // (drawn as a third light; registered separately so the two fills above
+        // keep their indices for any code that assumes them).
+        x3::rhi::PointLight all[3] = { pl[0], pl[1], {} };
+        all[2].pos[0] = 0.0f; all[2].pos[1] = 2.2f; all[2].pos[2] = kFacilityZ + 1.5f;
+        all[2].range = 14.0f;
+        all[2].color[0] = 3.2f; all[2].color[1] = 2.2f; all[2].color[2] = 1.2f;  // amber spill at the breach
+        device->setPointLights(all, 3);
     }
 
     x3::game::Scene scene;
@@ -128,14 +138,14 @@ int hostSurfaceStart(HostContext& hc) {
     // channel-law converted; loaded once here, drawn per-frame below.
     x3::game::SurfaceLibrary surflib;
     surflib.mount(x3::game::assetRoot() + "/surface_library");
-    // R3: cc_porous_cement rendered TAN under the golden sun (and the shader clamps
-    // baseColor factors, so lifting didn't read). mw_wall_plastic is the lightest
-    // albedo in the curated library — at facade distance its sheeting wrinkles read
-    // as weathered poured concrete, i.e. the WHITE band of the tower spec.
-    const x3::game::SurfaceSet& sTower  = surflib.get(*device, "mw_wall_plastic");
+    // W6-2: cc_cement_white — a TRUE white concrete curated for the tower spec
+    // (Command Center 'Cement_Clean', albedo lifted to mean ~222 at curation time,
+    // neutral grey source = zero tan cast under the warm sun). Replaces the
+    // mw_wall_plastic stand-in whose sheet-plastic albedo baked tan at golden hour.
+    const x3::game::SurfaceSet& sTower  = surflib.get(*device, "cc_cement_white");
     const x3::game::SurfaceSet& sApron  = surflib.get(*device, "sr_concrete_01");      // rough dark concrete apron
     x3::logInfo(std::string("--world surface: surface sets tower=") +
-                (sTower.ok ? "cc_porous_cement OK" : "MISSING") + " apron=" +
+                (sTower.ok ? "cc_cement_white OK" : "MISSING") + " apron=" +
                 (sApron.ok ? "sr_concrete_01 OK" : "MISSING"));
 
     // ---- Ground: a DARK natural plain (collision + far read) with a textured
@@ -245,6 +255,8 @@ int hostSurfaceStart(HostContext& hc) {
     x3::rhi::MeshHandle bandFB = surflib.makePanel(*device, 0, 2.0f * kFacilityHalfW + 0.8f, kBandH, 2.6f); // front/back span
     x3::rhi::MeshHandle bandLR = surflib.makePanel(*device, 0, 2.0f * kFacilityHalfD + 0.8f, kBandH, 2.6f); // side span
     x3::rhi::MeshHandle baseSeg = surflib.makePanel(*device, 0, (kFacilityHalfW - kBreachHalfW) - 0.6f, 1.2f, 2.6f); // breach-split base
+    x3::rhi::MeshHandle jambSeg = surflib.makePanel(*device, 0, 1.0f, 4.2f, 2.6f);   // W6-2: entrance jamb piers
+    x3::rhi::MeshHandle signSeg = surflib.makePanel(*device, 0, 2.0f * kBreachHalfW, 0.7f, 2.6f); // W6-2: entrance sign strip
     struct BandDraw { x3::rhi::MeshHandle mesh; float xform[16]; };
     std::vector<BandDraw> bands;
     // yaw matrices: panels face -Z at yaw 0 (axis 0). yaw pi -> +Z (front face,
@@ -275,6 +287,17 @@ int hostSurfaceStart(HostContext& hc) {
         pushBand(bandFB, 0.0f,      0.0f, kTowerH - 0.2f, zB);
         pushBand(bandLR,  kPi*0.5f, xL,   kTowerH - 0.2f, zC);
         pushBand(bandLR, -kPi*0.5f, xR,   kTowerH - 0.2f, zC);
+        // W6-2: parapet-DEPTH extension — a second crown row rising past the roof
+        // slab so low near cameras never frame the slab's bare underside floating
+        // above the glass (the W3-3 framing quirk). Reads as a real parapet wall.
+        pushBand(bandFB, kPi,       0.0f, kTowerH - 0.2f + kBandH * 0.9f, zF);
+        pushBand(bandFB, 0.0f,      0.0f, kTowerH - 0.2f + kBandH * 0.9f, zB);
+        pushBand(bandLR,  kPi*0.5f, xL,   kTowerH - 0.2f + kBandH * 0.9f, zC);
+        pushBand(bandLR, -kPi*0.5f, xR,   kTowerH - 0.2f + kBandH * 0.9f, zC);
+        // W6-2: ENTRANCE PRESENCE — vertical jambs flanking the breach (the base
+        // band already splits around it; the jambs give the opening a built frame).
+        pushBand(jambSeg, kPi, -(kBreachHalfW + 0.55f), 2.1f, zF);
+        pushBand(jambSeg, kPi,  (kBreachHalfW + 0.55f), 2.1f, zF);
         // Ground base: full band on back/sides; split around the breach on front.
         pushBand(bandFB, 0.0f,      0.0f, 0.0f, zB);
         pushBand(bandLR,  kPi*0.5f, xL,   0.0f, zC);
@@ -307,6 +330,41 @@ int hostSurfaceStart(HostContext& hc) {
     auto shipBoxTex = device->createTexture(sbTexD.data(), 64, 64, true);
     // Ship placement: behind-right of the spawn, settled on the ground, nose -Z.
     const float kShipX = 9.0f, kShipY = 0.0f, kShipZ = 6.0f, kShipScale = 2.2f;
+
+    // ---- W6-2: APRON PROPS — a small service cluster near the facility corner
+    //      (warehouse kit via converted_glb; origins sit at the base per the kit
+    //      convention, so y=0 seats them on the apron). Grouped, not scattered.
+    std::unique_ptr<x3::asset::IAssetSource> propSrc(x3::asset::createAssetSource());
+    propSrc->mountDir(x3::game::convertedGlbRoot(), 0);
+    std::unique_ptr<x3::asset::IModelLoader> propLoader(x3::asset::createModelLoader(device, propSrc.get()));
+    x3::asset::Model barrelModel = propLoader->load("SciFi_Warehouse_Kit/Barrel.glb");
+    x3::asset::Model crateModel  = propLoader->load("SciFi_Warehouse_Kit/Crate Long.glb");
+    std::vector<x3::asset::ModelDrawable> barrelDrawables, crateDrawables;
+    if (barrelModel.ok) barrelDrawables = x3::asset::makeDrawables(barrelModel);
+    if (crateModel.ok)  crateDrawables  = x3::asset::makeDrawables(crateModel);
+    struct PropDraw { const std::vector<x3::asset::ModelDrawable>* drawables;
+                      float xform[16]; float tint[4]; };
+    std::vector<PropDraw> propDraws;
+    auto pushProp = [&](const std::vector<x3::asset::ModelDrawable>* dws,
+                        float yaw, float x, float z, float sc,
+                        float tr, float tg, float tb) {
+        if (!dws || dws->empty()) return;
+        const float c = std::cos(yaw) * sc, s = std::sin(yaw) * sc;
+        PropDraw p{}; p.drawables = dws;
+        const float m[16] = { c,0,-s,0, 0,sc,0,0, s,0,c,0, x, 0.0f, z, 1 };
+        for (int i = 0; i < 16; ++i) p.xform[i] = m[i];
+        p.tint[0]=tr; p.tint[1]=tg; p.tint[2]=tb; p.tint[3]=1.0f;
+        propDraws.push_back(p);
+    };
+    {
+        const float px = -kFacilityHalfW + 3.0f, pz = kFacilityZ + 7.0f;   // left of the breach lane
+        pushProp(&barrelDrawables, 0.3f,  px,        pz,        1.0f, 0.46f, 0.34f, 0.25f);
+        pushProp(&barrelDrawables, 1.4f,  px + 1.1f, pz + 0.5f, 1.0f, 0.42f, 0.42f, 0.40f);
+        pushProp(&crateDrawables,  0.1f,  px + 0.4f, pz + 2.1f, 1.0f, 0.60f, 0.55f, 0.48f);
+        pushProp(&crateDrawables,  1.65f, px + 2.0f, pz + 1.6f, 1.0f, 0.52f, 0.50f, 0.46f);
+        x3::logInfo("--world surface: apron props = " + std::to_string(propDraws.size()) +
+                    " (warehouse kit cluster by the breach lane)");
+    }
 
     // ---- SARAH (the rescue target) behind the glass. Reuses the RESCUE system
     //      (app/rescue.h): one Captive figure, framed facing the breach. The boss
@@ -400,11 +458,11 @@ int hostSurfaceStart(HostContext& hc) {
         scene.render(*device, frame);   // ground + glass facility + breach + Sarah's prop entity
         // W3-3: the textured skin — concrete apron underfoot + spandrel bands on the tower.
         if (sApron.ok) surflib.drawPanel(*device, frame, sApron, apronMesh, apronXform);
-        // Bands draw bespoke (not drawPanel): the library has no true WHITE concrete,
-        // so the porous-cement albedo gets a lifted, slightly-desaturated baseColor —
-        // texture relief stays, the tan reads as sun-washed white concrete.
+        // Bands draw bespoke (not drawPanel): cc_cement_white is genuinely white at
+        // the texture level now, so the factor stays near-neutral (a hair of lift
+        // only) — whiteness comes from albedo, not from fighting the clamp.
         if (sTower.ok) {
-            const float bcW[4]   = { 1.85f, 1.80f, 1.72f, 1.0f };
+            const float bcW[4]   = { 1.06f, 1.05f, 1.04f, 1.0f };
             const float emis0[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
             for (const auto& b : bands)
                 device->drawMeshPBR(frame, b.mesh, sTower.albedo, sTower.normal, sTower.mr,
@@ -412,6 +470,37 @@ int hostSurfaceStart(HostContext& hc) {
                                     x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
                                     1.0f, 0.0f, 0.0f);
         }
+        // W6-2: ENTRANCE SIGN — an amber-lit strip over the breach (the one emissive
+        // read on the facade; per the bible, emissives are instruments: it marks the
+        // way in). Drawn dark-bodied with a warm glow, not a white blowout.
+        if (sTower.ok && signSeg.valid()) {
+            const float kPi_ = 3.14159265f;
+            const float c = std::cos(kPi_), s = std::sin(kPi_);
+            const float m[16] = { c,0,-s,0, 0,1,0,0, s,0,c,0,
+                                  0.0f, 4.7f, kFacilityZ + wallT + 0.08f, 1 };
+            const float bcDark[4] = { 0.22f, 0.20f, 0.18f, 1.0f };
+            const float emAmber[4] = { 2.0f, 1.25f, 0.35f, 1.4f };
+            device->drawMeshPBR(frame, signSeg, sTower.albedo, sTower.normal, sTower.mr,
+                                bcDark, emAmber, m, false, false,
+                                x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                1.0f, 0.0f, 0.0f);
+        }
+        // W6-2: APRON PROPS — sparse, curated service clutter (bible: props sell a
+        // built place; SPARSE — four pieces, grouped, not scattered).
+        for (const auto& pd : propDraws)
+            for (const auto& dr : *pd.drawables) {
+                float fin[16];
+                x3::asset::mulMat4(pd.xform, dr.nodeTransform, fin);
+                const float emis0p[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                device->drawMeshPBR(frame, x3::rhi::MeshHandle{ dr.meshId },
+                                    x3::rhi::TextureHandle{ dr.baseColorTexId },
+                                    x3::rhi::TextureHandle{ dr.normalTexId },
+                                    x3::rhi::TextureHandle{ dr.mrTexId },
+                                    pd.tint, emis0p, fin, dr.alphaMask, dr.alphaBlend,
+                                    x3::rhi::TextureHandle{ dr.emissiveTexId },
+                                    x3::rhi::TextureHandle{ dr.detailTexId },
+                                    dr.detailUvScale, 0.0f, 0.0f);
+            }
         rescue.draw(*device, frame, scene);   // Sarah's GLB over her Prop entity
         drawShip(frame);
         drawWeapon(frame, cx, cy, cz, yaw, pitch);

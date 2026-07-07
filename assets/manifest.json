@@ -306,6 +306,24 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/surface_library/cc_cement_white/albedo.png",
+      "sha256": "eb4830ca3ab5f57000bd2f77ec6f68e8ff10f8046a829eaca6cbd62d83628e07",
+      "size": 3278108,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/surface_library/cc_cement_white/mr.png",
+      "sha256": "a4eb30d8e48caef568e250295ee7f488dc93d2e5ab578b00ce7097ad53324e9a",
+      "size": 5005678,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/surface_library/cc_cement_white/normal.png",
+      "sha256": "ade52d505fc8872a8a4dda6c9be3e4fa4f70161290533057378c2f7782e6b5f4",
+      "size": 11868273,
+      "source_note": ""
+    },
+    {
       "repo_path": "assets/surface_library/cc_porous_cement/albedo.png",
       "sha256": "aecbc4aae0d36f7b42b4b4a4c20180926bdd1e58d1ac420d07cabdc117442e2c",
       "size": 1677186,
