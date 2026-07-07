@@ -2815,6 +2815,14 @@ int runDefaultHost(HostContext& hc) {
                 x3::ui::UiInput uin{};
                 uin.mouseX = hoverX; uin.mouseY = hoverY;
                 x3::ui::HudModel hm{};
+                // W6-1 fix: this host zero-inits HudModel, so the menu printed
+                // "RESOLUTION: 0 x 0" — feed the render extent the same way the UI
+                // itself learns it (device hudSize; works windowed AND offscreen).
+                {
+                    uint32_t mcw = 0, mch = 0;
+                    device->hudSize(mcw, mch);
+                    hm.dispW = (int)mcw; hm.dispH = (int)mch;
+                }
                 demoUi.update(uin, *device, frame, hm, dt);
                 // --ui-demo fonts: a role sampler so every FontRole is eyeballable in
                 // one still (Title/Menu proportional, News/Console/Enemy). Each line
