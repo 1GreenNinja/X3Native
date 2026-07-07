@@ -70,6 +70,7 @@ add_executable(X3Engine WIN32
     mission.cpp
     level1_game.cpp
     canon_play.cpp
+    canon_45.cpp
     cell_dressing.cpp
     room_dressing.cpp
     surface_library.cpp

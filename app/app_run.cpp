@@ -43,6 +43,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
@@ -1095,6 +1096,7 @@ int runDefaultHost(HostContext& hc) {
     float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
     bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
+    x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
@@ -1181,7 +1183,8 @@ int runDefaultHost(HostContext& hc) {
     auto shutdownGameSystems = [&]() {
         game.shutdown();                               // every enemy group + Martinez + barrels
         nexus.shutdown();                              // F4.5 Chorus pod ragdolls
-        if (canonPlay.built()) canonPlay.shutdown();   // canonlevel enemy ragdolls
+        if (canonPlay.built()) canonPlay.shutdown();
+        if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
     };
     // Join the async boot-manifest GLB warmup (no-op when none was kicked): the
     // world build below takes model-cache hits instead of repeating parse/decode.
@@ -1265,6 +1268,13 @@ int runDefaultHost(HostContext& hc) {
                                        canonRooms.lights().begin(), canonRooms.lights().end());
                 }
             }
+            // ---- W5-1: LEVEL 4.5 — the Nexus Chamber. Builds the cavern shell over the
+            // open-ceiling Access room, the scaffold climb up the authored tiers, the
+            // two-accent horror dressing, and the sparse creatures (apex dormant). Its
+            // motivated lights ride the same canonLights feed (room-gated). ----
+            canon45.build(canonFloor, scene, *device, *physics,
+                          x3::game::riggedGlbRoot(),
+                          x3::game::assetRoot() + "/surface_library", canonLights);
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the
@@ -2626,6 +2636,7 @@ int runDefaultHost(HostContext& hc) {
                         canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z));
                     canonDoors.drawMeshes(*device, frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                if (canon45.built()) canon45.draw(*device, frame, scene);
                 }
                 // W2-A2 (W2-C's queued hook): the --screenshot path NEVER drew the FP
                 // viewmodel — the "pistol" in every prior cell shot was the hovering
@@ -2948,6 +2959,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         if (canonPlay.built()) canonPlay.shutdown();
+        if (canon45.built()) canon45.shutdown();
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -3204,6 +3216,7 @@ int runDefaultHost(HostContext& hc) {
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
                 if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                if (canon45.built()) canon45.draw(*device, frame, scene);
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -5031,6 +5044,11 @@ int runDefaultHost(HostContext& hc) {
                 }
                 const double _pt0 = glfwGetTime();
                 canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
+                // W5-1: the Nexus Chamber — whispers / the name-call / apex wake /
+                // cavern creatures. Creature-bucket vocals stand in for VO (none in
+                // the packs); pitched low they read as The Chorus murmuring.
+                canon45.update(dt, scene, *physics, camPos, &player, enemyAttackFx,
+                               audio.get(), bootAudio.spTaunt[1], bootAudio.spDeath[1]);
                 canonDressing.tick(dt);   // advance the flickering cell-tube phase
                 g_perf.tick += glfwGetTime() - _pt0;
                 // ---- W4-1: rescue story flags + the extraction goodbye. freed = she
@@ -5617,6 +5635,7 @@ int runDefaultHost(HostContext& hc) {
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
             if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                if (canon45.built()) canon45.draw(*device, frame, scene);
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).

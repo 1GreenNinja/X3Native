@@ -139,6 +139,10 @@ LevelLintReport lintCanonFloor(const CanonFloor& floor) {
         }
         for (uint32_t i = 0; i < rooms.size(); ++i)
             if (!seen[i]) {
+                // W5-1: open platforms (Nexus tiers) carry NO doorways by design — they
+                // hang inside the cavern and are reached by canon_45's scaffold stairs,
+                // which the doorway BFS cannot see. Exempt, not unreachable.
+                if (rooms[i].platform) continue;
                 ++rep.unreachable;
                 rep.violations.push_back(fmt("REACH     room %u '%s' unreachable from '%s'",
                                              i, roomName(i).c_str(), roomName(0).c_str()));
