@@ -463,9 +463,24 @@ bool RescueVictim::tryRescue(const x3::phys::Vec3& playerPos, float reach) {
     return true;
 }
 
+void RescueVictim::extract(Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    if (m_state != VictimState::Companion) return;
+    m_state = VictimState::Extracted;
+    // The Expired vanish pattern: hide the entity, drop the collision body. The
+    // loaded model stays owned (app lifetime) like every other character system.
+    if (m_entity != kNoLink && m_entity < scene.size()) {
+        Entity& me = scene.get(m_entity);
+        me.visible = false;
+        me.body = x3::phys::BodyId{};
+    }
+    if (m_body.valid()) { physics.removeBody(m_body); m_body = x3::phys::BodyId{}; }
+    x3::logInfo("[rescue] " + m_name + ": EXTRACTED — safe at the elevator, leaving the level");
+}
+
 void RescueVictim::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                         const Scene& scene) const {
     if (m_state == VictimState::Expired) return;     // the captive is gone (a boss now)
+    if (m_state == VictimState::Extracted) return;   // she left the level (W4-1)
     if (m_entity == kNoLink || m_entity >= scene.size()) return;
     const Entity& e = scene.get(m_entity);
     if (!e.visible) return;
@@ -544,7 +559,9 @@ void RescueSystem::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics
                         const x3::phys::Vec3& playerPos) {
     if (!m_built) return;
 
-    for (auto& v : m_victims) {
+    m_extractedThisFrame = UINT32_MAX;
+    for (size_t vi = 0; vi < m_victims.size(); ++vi) {
+        auto& v = m_victims[vi];
         const bool expiredNow = v->tick(dt, m_hubReached, scene, physics, playerPos);
         if (expiredNow && m_device) {
             // Spawn the boss the victim transforms into, at the victim's ward spot.
@@ -552,6 +569,15 @@ void RescueSystem::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics
             m_bosses.spawn(scene, *m_device, physics, m_modelDir, at, v->bossTuning());
             x3::logInfo("[rescue] " + v->name() + " transformed — boss spawned (" +
                         std::to_string(m_bosses.count()) + " rescue boss(es) active)");
+        }
+        // W4-1: a following companion that reaches the extraction point leaves the
+        // level. Checked AFTER the follow step so arriving-this-frame extracts now.
+        if (m_extractSet && v->companion()) {
+            const float ex = v->pos().x - m_extractPos.x, ez = v->pos().z - m_extractPos.z;
+            if (ex * ex + ez * ez <= m_extractR2) {
+                v->extract(scene, physics);
+                m_extractedThisFrame = (uint32_t)vi;   // host reads for bark + flag
+            }
         }
     }
 
@@ -760,6 +786,28 @@ bool runRescueSelfTest() {
         } else {
             rcheck(true, "R8 (no skinnable victim model on this checkout — drive still wired)");
         }
+    }
+
+    // ---- R9 (W4-1): EXTRACTION — a Companion that reaches the extraction point
+    // leaves the level: state flips to Extracted, extractedThisFrame reports its
+    // index, and the girl stops drawing/following. Uses a fresh system so the
+    // mixed states from the earlier asserts can't mask the transition.
+    {
+        RescueSystem ex;
+        Scene exScene;
+        ex.build(exScene, device, *physics, riggedGlbRoot(), wA, wB, wC, /*timer*/60.0f);
+        ex.activate();
+        const x3::phys::Vec3 player{ 0.5f, 0.4f, 0.5f };        // in reach of ward A
+        rcheck(ex.tryRescue(player, kRescueReach), "R9a companion rescued for extraction");
+        // Extraction point right where the companion will be after one follow tick.
+        ex.setExtractionPoint(x3::phys::Vec3{ ex.victim(0).pos().x, 0.4f,
+                                              ex.victim(0).pos().z }, 5.0f);
+        ex.tick(0.1f, exScene, *physics, player);
+        rcheck(ex.victim(0).extracted(), "R9b companion at the point EXTRACTS");
+        rcheck(ex.extractedThisFrame() == 0, "R9c extractedThisFrame reports the index");
+        ex.tick(0.1f, exScene, *physics, player);
+        rcheck(ex.extractedThisFrame() == UINT32_MAX && ex.victim(0).extracted(),
+               "R9d extraction is one-shot + terminal");
     }
 
     physics->shutdown();
