@@ -1018,12 +1018,15 @@ bool VulkanRenderDevice::createGraphics() {
         // (double-sided glass). GRACEFUL FALLBACK (spec §5): on any failure the
         // pipeline stays NULL and the glass pass is skipped — opaque is never affected.
         {
-            // Glass pipeline layout: the 4 shared mesh sets + the glass-only set 4.
-            VkDescriptorSetLayout glassSets[5] = {
+            // Glass pipeline layout: the 4 shared mesh sets + the glass-only set 4
+            // + the IBL set as set 5 (W8-2: the SAME set the opaque path binds at
+            // set 4 — prefiltered env + BRDF LUT — so glass.frag mirrors the real
+            // environment; m_iblMeshSetLayout was created above at mesh-layout time).
+            VkDescriptorSetLayout glassSets[6] = {
                 m_bindlessLayout, m_objSetLayout, m_shadowSetLayout,
-                m_meshAoSetLayout, m_glassSetLayout };
+                m_meshAoSetLayout, m_glassSetLayout, m_iblMeshSetLayout };
             VkPipelineLayoutCreateInfo gplci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-            gplci.setLayoutCount = 5; gplci.pSetLayouts = glassSets;
+            gplci.setLayoutCount = 6; gplci.pSetLayouts = glassSets;
             if (vkCreatePipelineLayout(m_dev.device, &gplci, nullptr, &m_glassLayout) != VK_SUCCESS) {
                 m_glassLayout = VK_NULL_HANDLE;
                 logError("[rhi] glass pipeline layout failed — glass pass disabled (opaque unaffected)");
