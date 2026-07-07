@@ -1211,19 +1211,26 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         float ml = std::sqrt(mx * mx + mz * mz);
         if (ml > 1e-4f) { mx /= ml; mz /= ml; }
         const float step  = chaseSpeed * dt;
-        // Clear our OWN (now generously-sized) hitbox before probing for walls: the
-        // Static mask also matches Enemy bodies, so a probe starting inside our box
-        // self-hits at ~0 and would block ALL movement. skip past the box half-width
-        // (m_hitHalfXZ, set in build()) + a margin, and probe at a mid-body height
-        // (the box spans m_pos.y - skirt .. + so feet-Y is inside it).
-        const float skip  = m_hitHalfXZ + 0.10f;        // clear our own (wider) box first
+        // Clear our OWN hitbox before probing for walls: the Static mask also matches
+        // Enemy bodies, so a probe starting inside our box self-hits at ~0 and would
+        // block ALL movement. R-2 (PB cbf7999 re-home): the box's square footprint
+        // reaches m_hitHalfXZ*sqrt2 at its CORNER — a face-width skip leaves the probe
+        // origin inside the box on diagonal headings for LARGE-tuning enemies (the
+        // x1.7-x3.0 boss ladder / apex bodies), freezing them at spawn range. Clear the
+        // full diagonal + margin, AND explicitly discard a self-hit on m_body so the
+        // probe holds at ANY scale.
+        const float skip  = m_hitHalfXZ * 1.4142f + 0.20f; // past the box CORNER + margin
         const float probe = step + 0.10f;               // look this far past the box
         const x3::phys::Vec3 mdir{ mx, 0.0f, mz };
         const float probeY = m_pos.y + m_hitCenterOff;  // mid-body (where a wall blocks)
         const x3::phys::Vec3 from{ m_pos.x + mx * skip, probeY, m_pos.z + mz * skip };
+        auto realHit = [&](x3::phys::Layer mask) -> bool {
+            x3::phys::RayHit h = physics.rayCast(from, mdir, probe, mask);
+            return h.hit && !(h.body.id == m_body.id);   // ignore self
+        };
         const bool blocked =
-            physics.rayCast(from, mdir, probe, x3::phys::Layer::Static).hit ||
-            physics.rayCast(from, mdir, probe, x3::phys::Layer::Dynamic).hit;
+            realHit(x3::phys::Layer::Static) ||
+            realHit(x3::phys::Layer::Dynamic);
         if (blocked) {
             m_strafeDir = -m_strafeDir;   // try a new line next frames
             m_wander   += 1.7f;
