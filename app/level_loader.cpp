@@ -236,6 +236,21 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
     return scene.add(e);
 }
 
+} // anonymous-namespace gap for the exported wrapper (reopened below)
+
+// W5-1: exported brush path for content modules (canon_45). Same pipeline as the
+// level's own boxes: scene entity + static collision + room-tagged vis.
+uint32_t canonAddBrush(Scene& scene, x3::rhi::IRenderDevice& device,
+                       x3::phys::IPhysicsWorld& physics,
+                       float hx, float hy, float hz, float cx, float cy, float cz,
+                       x3::rhi::TextureHandle tex, const float color[4], uint32_t roomId,
+                       bool collide, bool visible) {
+    return addBox(scene, device, physics, hx, hy, hz, cx, cy, cz,
+                  tex, color, roomId, collide, visible);
+}
+
+namespace {
+
 // A wall running along X (plane z=const), spanning x in [x0,x1], rising floorY..floorY+h.
 void wallX(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
            float x0, float x1, float z, float floorY, float h,
@@ -926,6 +941,50 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
                     " elevator lobbies across floors");
     }
 
+    // ---- W5-1: LEVEL 4.5 — THE NEXUS CHAMBER. The data authors the F4.5 tiers as
+    // thin slab rooms (h <= 1 m) hanging in the F4-F5 void above the "Nexus Chamber
+    // Access" room. Mark them OPEN PLATFORMS (floor-slab-only build, no walls/lid/
+    // minted light), open the Access room's ceiling (the cavern void IS its ceiling),
+    // strip every resolver doorway that touched a platform (tier "descent tubes" were
+    // nonsense doors through open air — canon_45's scaffold stairs are the climb), and
+    // union the cavern's PVS so the Access room and every platform see each other. ----
+    {
+        uint32_t accessId = kNoRoom;
+        std::vector<uint32_t> plats;
+        for (uint32_t i = 0; i < tower.rooms.size(); ++i) {
+            CanonRoom& r = tower.rooms[i];
+            if (r.h <= 1.0f && r.type.find("Cave") != std::string::npos)      r.platform = true;
+            if (r.h <= 1.0f && r.name.find("Tier") != std::string::npos)      r.platform = true;
+            if (r.h <= 1.0f && r.name.find("F4.5") != std::string::npos)      r.platform = true;
+            if (r.name.find("Nexus Chamber Access") != std::string::npos) {
+                r.openCeiling = true;
+                accessId = i;
+            }
+            if (r.platform) plats.push_back(i);
+        }
+        if (!plats.empty()) {
+            tower.doorways.erase(
+                std::remove_if(tower.doorways.begin(), tower.doorways.end(),
+                    [&](const CanonDoorway& dw) {
+                        return tower.rooms[dw.a].platform || tower.rooms[dw.b].platform;
+                    }),
+                tower.doorways.end());
+            // Cavern vis unit: access <-> every platform, platforms <-> each other.
+            auto link = [&](uint32_t a, uint32_t b) {
+                if (a == b) return;
+                auto& pa = tower.pvs[a];
+                if (std::find(pa.begin(), pa.end(), b) == pa.end()) pa.push_back(b);
+            };
+            for (uint32_t p : plats) {
+                if (accessId != kNoRoom) { link(p, accessId); link(accessId, p); }
+                for (uint32_t q : plats) link(p, q);
+            }
+            x3::logInfo("loadCanonTower: NEXUS CHAMBER — " + std::to_string(plats.size()) +
+                        " open platforms marked, cavern PVS unioned" +
+                        (accessId != kNoRoom ? " (access ceiling opened)" : ""));
+        }
+    }
+
     x3::logInfo("loadCanonTower: merged " + std::to_string(tower.rooms.size()) +
                 " rooms, " + std::to_string(tower.doorways.size()) + " doorways (" +
                 std::to_string(tower.roomFloorNum.empty() ? 1 : tower.roomFloorNum.back()) +
@@ -977,6 +1036,10 @@ std::vector<CanonLight> buildCanonLights(const CanonFloor& floor) {
 
     for (uint32_t ri = 0; ri < (uint32_t)floor.rooms.size(); ++ri) {
         const CanonRoom& r = floor.rooms[ri];
+        // W5-1: no warm-white mint for cave platforms or the open-ceiling Access room —
+        // the Nexus Chamber's light is canon_45's (biolume + work lights); a tungsten
+        // grid hanging in the void would gut the horror read.
+        if (r.platform || r.openCeiling) continue;
         // Emit just below the ceiling so the ceiling lid doesn't occlude the pool.
         const float lightY = r.y1() - 0.25f;
         // Range covers the room height + a margin so the floor of a tall room is lit.
@@ -1252,6 +1315,16 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         float tint[4]; tintFor(r.type, tint);
         const x3::rhi::TextureHandle wTex = wallVariants[ri % 3];
 
+        // W5-1: OPEN PLATFORM (Nexus tier) — the room IS its slab. No walls, no lid,
+        // no doorway cuts; collision on so it's walkable. Rock-dark tint (the cave
+        // dressing owns its look; this keeps the graybox read consistent if art off).
+        if (r.platform) {
+            const float platTint[4] = { 0.30f, 0.30f, 0.27f, 1.0f };
+            addBox(scene, device, physics, r.w * 0.5f, r.h * 0.5f, r.d * 0.5f,
+                   r.cx, r.cy, r.cz, floorTex, platTint, ri, true, floorVis);
+            continue;
+        }
+
         // Floor slab (top flush with floorY). When this room hosts the trapdoor
         // (opts.hatchRoom — the canon-cell secret-room port), the slab is built as
         // FOUR segments around the square hatch opening instead of one plate, so a
@@ -1282,8 +1355,11 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                    r.cx, floorY - 0.05f, r.cz, floorTex, tint, ri, true, floorVis);
         }
         // Ceiling lid (collision-only, invisible — GLB ceiling drapes over).
-        addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
-               r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);
+        // W5-1: openCeiling rooms (Nexus Access) get NO lid — the cavern void above
+        // is the ceiling; canon_45's shell seals the outer envelope.
+        if (!r.openCeiling)
+            addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
+                   r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);
 
         // 4 walls with doorway gaps where the resolver produced them.
         // W2-E: consult the doorway wall dedup (it was computed above but never USED —

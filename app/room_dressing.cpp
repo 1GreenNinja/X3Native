@@ -30,6 +30,8 @@ enum Zone : uint8_t { ZNone = 0, ZHall, ZCorridor, ZWard, ZSecurity, ZLab, ZBoss
                       ZDroneBay,   // F5 Drone Station — industrial hangar + amber caution
                       ZSalvari,    // F6 Salvari — darkest, alien, biolume green
                       ZExec,       // F7 Executive — clean dark luxury + brass (new bible entry)
+                      ZCave,       // W5-1 F4.5 Nexus Chamber — fog/atmosphere ONLY (canon_45
+                                   // hand-dresses the cavern; no panel recipe)
                       ZCount };
 
 // ---- Converted-kit props (paths + probed AABBs, from the cell_dressing tables). -----
@@ -121,6 +123,11 @@ const Recipe& recipeFor(uint8_t z) {
         /*ZExec*/     { "cc_porous_cement", 3.2f, "sr_concrete_a", 2.6f, "mw_metal_panels_a", 3.2f,
                         2.00f, 1.80f, 1.50f, 5.5f,   1.60f, 1.15f, 0.45f, 2.6f,
                         fogOf(0.040f, 0.036f, 0.030f, 0.0025f, 1.6f, 0.50f) },
+        // W5-1: the Nexus Chamber — no surfaces/lights (canon_45 owns the look);
+        // the fog IS the recipe: near-black, heavy, silhouettes-over-detail.
+        /*ZCave*/     { nullptr, 0, nullptr, 0, nullptr, 0,
+                        0, 0, 0, 0,   0, 0, 0, 0,
+                        fogOf(0.010f, 0.014f, 0.010f, 0.0140f, 0.8f, 0.88f) },
     };
     return kRecipes[z < ZCount ? z : ZNone];
 }
@@ -137,7 +144,10 @@ uint8_t classify(const CanonRoom& r, const CanonBeats& bt, uint32_t roomId) {
     // floor's zone. The F4.5 Cave-Chamber tiers stay ZNone (the organic monster
     // zone is its own future pass, like the deep caves).
     if (r.cy > 5.0f) {
-        if (r.type == "Cave Chamber")                return ZNone;   // 4.5 tiers / organic
+        // W5-1: the Nexus Chamber (4.5 tiers + the open-ceiling Access room) takes the
+        // CAVE zone — no panels (canon_45 hand-dresses), but the heavy near-black fog
+        // rides the zone-atmosphere path like every other zone.
+        if (r.type == "Cave Chamber" || r.platform || r.openCeiling) return ZCave;
         if (has("Elevator"))                         return ZLobby;
         // Long tower corridors (18-24 m) need the HALL treatment (light RHYTHM +
         // trim walls) — a single mid key leaves them black tunnels (R2 eye round).
@@ -358,6 +368,9 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
         if (z == ZNone) continue;
         m_roomZone[ri] = z;
         const Recipe& rec = recipeFor(z);
+        // W5-1: fog-only zones (ZCave — the Nexus Chamber) carry NO surface recipe;
+        // canon_45 hand-dresses them. The zone tag above still drives the fog.
+        if (!rec.wall) continue;
         const uint32_t wallSet  = setIdx(rec.wall);
         const uint32_t floorSet = setIdx(rec.floor);
         const uint32_t ceilSet  = setIdx(rec.ceil);

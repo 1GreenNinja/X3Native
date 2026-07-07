@@ -56,6 +56,14 @@ struct CanonRoom {
     float y1() const { return cy + h * 0.5f; }   // ceiling
     float z0() const { return cz - d * 0.5f; }
     float z1() const { return cz + d * 0.5f; }
+
+    // W5-1 (level 4.5): OPEN PLATFORMS — rooms authored as thin slabs (h <= 1 m, the
+    // Nexus Chamber tiers) build as a floor slab ONLY (no walls/lid/minted light) and
+    // take NO doorways (they hang inside a cavern; canon_45 provides the climb path).
+    bool platform = false;
+    // A room whose ceiling is deliberately ABSENT (the Nexus Chamber Access — the
+    // cavern void opens directly above it). Walls and floor build normally.
+    bool openCeiling = false;
 };
 
 // How a door pair was RESOLVED by the doorway resolver (diagnostics + the self-test).
@@ -284,6 +292,15 @@ struct CanonBuildOpts {
 void buildCanonFloor(CanonFloor& floor, Scene& scene,
                      x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                      const CanonBuildOpts& opts = {});
+
+// W5-1: the loader's textured-collidable-brush path, exported for content modules
+// (canon_45's cavern shell / scaffold stairs) so hand-built geometry rides the SAME
+// scene/physics/vis pipeline as the level itself. Half-extents + center, meters.
+uint32_t canonAddBrush(Scene& scene, x3::rhi::IRenderDevice& device,
+                       x3::phys::IPhysicsWorld& physics,
+                       float hx, float hy, float hz, float cx, float cy, float cz,
+                       x3::rhi::TextureHandle tex, const float color[4], uint32_t roomId,
+                       bool collide = true, bool visible = true);
 
 // Headless self-test (--test-canonlevel). Loads Floor 1, asserts the 53 rooms / 111
 // doors parse, the doorway resolver produces the expected kind histogram, room ids are
