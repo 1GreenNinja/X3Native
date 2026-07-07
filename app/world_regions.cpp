@@ -27,18 +27,30 @@ x3::phys::Vec3 surfaceAt(float x, float z, float yOff) {
     return x3::phys::Vec3{ p[0], p[1] + yOff, p[2] };
 }
 
-// ---- Region table (blueprint gazetteer §1). cx,cz world center; radius footprint;
-// peakH peak height above surface (0 = flat outpost); isMountain; biome one-liner. ----
+// ---- Region table (blueprint gazetteer §1, W8-3: re-centered on the REAL
+// terrain mountain ranges — terrain.cpp kRanges band midpoints; peak heights =
+// the ranges' terrain amplitudes). cx,cz world center; radius footprint; peakH
+// peak height above surface (0 = flat outpost); isMountain; biome one-liner. ----
 struct RegionDef { const char* name; const char* biome; float cx, cz, radius, peakH; bool mtn;
                    float r, g, b; float er, eg, eb, es; };  // tint + emissive(rgb,strength)
 const RegionDef kRegions[kWorldRegionCount] = {
     { "Crash Site",        "shuttle wreck — surface start point",        0.0f,     0.0f,  30.0f,   0.0f, false, 0.42f,0.42f,0.46f, 0,0,0,0 },
     { "East Outpost",      "military camp + antenna farm",             800.0f,   400.0f,  45.0f,   0.0f, false, 0.55f,0.50f,0.40f, 0,0,0,0 },
     { "West Outpost",      "drill rig + processing plant (industrial)",-880.0f,  -320.0f,  45.0f,   0.0f, false, 0.52f,0.40f,0.30f, 0,0,0,0 },
-    { "Northern Range",    "jagged snow-capped peaks",                   0.0f,  6000.0f, 800.0f, 250.0f, true,  0.90f,0.92f,0.96f, 0,0,0,0 },
-    { "Eastern Range",     "volcanic basalt + lava veins",            8000.0f,     0.0f, 800.0f, 200.0f, true,  0.18f,0.16f,0.18f, 0.85f,0.25f,0.05f, 2.2f },
-    { "Southern Range",    "mesa / plateau sandstone + ancient ruins",   0.0f, -7000.0f, 720.0f, 160.0f, true,  0.72f,0.55f,0.35f, 0,0,0,0 },
-    { "Western Highlands", "mossy rolling hills + crystal formations",-9000.0f,     0.0f, 820.0f, 120.0f, true,  0.30f,0.52f,0.40f, 0.30f,0.65f,0.95f, 1.6f },
+    { "Northern Range",    "jagged snow-capped peaks",                 300.0f,  8300.0f, 2500.0f, 380.0f, true,  0.90f,0.92f,0.96f, 0,0,0,0 },
+    { "Eastern Range",     "volcanic basalt + lava veins",            9200.0f,   250.0f, 2250.0f, 460.0f, true,  0.18f,0.16f,0.18f, 0.85f,0.25f,0.05f, 2.2f },
+    { "Southern Range",    "mesa / plateau sandstone + ancient ruins", 350.0f, -9000.0f, 3150.0f, 230.0f, true,  0.72f,0.55f,0.35f, 0,0,0,0 },
+    { "Western Highlands", "mossy rolling hills + crystal formations",-8600.0f, -100.0f, 1900.0f, 320.0f, true,  0.30f,0.52f,0.40f, 0.30f,0.65f,0.95f, 1.6f },
+};
+
+// The mountain-range band spines (MUST match terrain.cpp kRanges): summit
+// accent props are placed ALONG these on the real terrain surface.
+struct RangeBand { float ax, az, bx, bz; };
+const RangeBand kRangeBands[4] = {
+    { -2200.0f,  8300.0f,  2800.0f,  8300.0f },   // Northern
+    {  9200.0f, -2000.0f,  9200.0f,  2500.0f },   // Eastern
+    { -2800.0f, -9000.0f,  3500.0f, -9000.0f },   // Southern
+    { -8600.0f, -2000.0f, -8600.0f,  1800.0f },   // Western
 };
 
 } // namespace
@@ -89,16 +101,25 @@ void WorldRegions::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys:
                 addBoxProp(s[0], s[1] + bh[b] * 0.5f, s[2], 5.0f, bh[b] * 0.5f, 5.0f, col, nullptr);
             }
         } else {
-            // ---- MOUNTAIN: a stepped pyramidal massif (4 tiers, decreasing footprint,
-            // increasing Y) rising peakH above the surface. The top tier carries the
-            // accent emissive (lava / crystal) where the range has one. ----
-            const int tiers = 4;
-            const float tierH = d.peakH / (float)tiers;
-            for (int t = 0; t < tiers; ++t) {
-                const float half = d.radius * (1.0f - (float)t / (float)tiers * 0.78f) * 0.5f;
-                const float cy   = base[1] + ((float)t + 0.5f) * tierH;
-                addBoxProp(d.cx, cy, d.cz, half, tierH * 0.5f, half, col,
-                           (t == tiers - 1) ? emp : nullptr);   // accent only on the summit
+            // ---- MOUNTAIN (W8-3): the peaks are REAL TERRAIN now (terrain.cpp
+            // worldFeatures mountain ranges) — the old floating stepped-box
+            // massifs are retired. This lane places SUMMIT ACCENTS conformal to
+            // the terrain surface along the range's band spine: lava vents on
+            // the volcanic east / crystal shards on the western highlands (the
+            // emissive accent), ruin slabs on the southern mesas, rock cairns on
+            // the northern snow range. Small props — character up close, the
+            // RANGE ITSELF is the landmark from afar. ----
+            const RangeBand& band = kRangeBands[i - 3];   // regions 3..6 are the ranges
+            const float ts[4] = { 0.15f, 0.40f, 0.62f, 0.85f };
+            for (int a = 0; a < 4; ++a) {
+                const float px = band.ax + (band.bx - band.ax) * ts[a];
+                const float pz = band.az + (band.bz - band.az) * ts[a];
+                float s[3]; placeOnTerrain(px, pz, s);
+                // A conformal accent cluster: one main block + one lean-to shard.
+                const bool glow = (d.es > 0.0f) && (a % 2 == 0);   // accent every other site
+                addBoxProp(s[0], s[1] + 4.0f, s[2], 3.5f, 4.0f, 3.5f, col, glow ? emp : nullptr);
+                addBoxProp(s[0] + 5.0f, s[1] + 2.0f, s[2] - 3.0f, 1.6f, 2.4f, 1.6f, col,
+                           (d.es > 0.0f && a % 2 == 1) ? emp : nullptr);
             }
         }
         p.propCount = (uint32_t)m_props.size() - propsBefore;

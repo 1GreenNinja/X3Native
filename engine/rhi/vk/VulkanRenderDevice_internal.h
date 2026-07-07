@@ -148,6 +148,8 @@ public:
 
     void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) override;
 
+    void setCameraFar(float farMeters) override;   // W8-3: far-plane override
+
     void setAmbient(float r, float g, float b) override;
 
     // CPU per-object frustum cull toggle (r_frustumcull). Default ON. When OFF the
@@ -2947,6 +2949,7 @@ private:
     float m_camYaw = -1.5708f;   // look toward -Z
     float m_camPitch = -0.30f;   // slightly down
     float m_camFov = 60.0f;
+    float m_camFar = 200.0f;     // W8-3: far plane (the historic hardcode as default)
 
     // ---- Forward point lights (interior fill) -----------------------------
     // CPU-side cache set by setPointLights(); re-uploaded into each frame's UBO.

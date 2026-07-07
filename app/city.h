@@ -16,6 +16,7 @@
 
 #include "scene.h"
 #include "terrain.h"
+#include "surface_library.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -57,7 +58,11 @@ struct FreewayTunnelPlan {
 // Scene entities (drawn by the host's scene.render()).
 class City {
 public:
-    void build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
+    // `sharedSurf` (optional): a caller-lifetime SurfaceLibrary (the WorldStreamer's
+    // shared cache) so repeat realizes don't re-decode the PBR sets; when null the
+    // builder uses a local library (self-tests / one-shot hosts).
+    void build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+               SurfaceLibrary* sharedSurf = nullptr);
 
     // ---- Queries (host HUD + self-test) ----
     bool built() const { return m_built; }
@@ -65,13 +70,22 @@ public:
     const FreewayTunnelPlan& tunnel(uint32_t i) const { return m_tunnels[i]; }
     uint32_t tunnelCount() const { return kFreewayTunnelCount; }
     uint32_t roadSegmentCount() const { return m_roadSegments; }
-    uint32_t propCount() const { return (uint32_t)m_props.size(); }  // total graybox props
+    uint32_t propCount() const { return (uint32_t)m_props.size(); }  // total props
+    // W8-3 blockout-plus queries:
+    uint32_t buildingCount() const { return m_buildings; }       // all districts
+    uint32_t trafficLightCount() const { return m_trafficLights; }
+    uint32_t neonSignCount() const { return m_neonSigns; }
+    uint32_t windowBandCount() const { return m_windowBands; }
 
 private:
     bool m_built = false;
     CityZonePlan      m_zones[kCityZoneCount];
     FreewayTunnelPlan m_tunnels[kFreewayTunnelCount];
     uint32_t          m_roadSegments = 0;
+    uint32_t          m_buildings = 0;      // W8-3: total buildings (all districts)
+    uint32_t          m_trafficLights = 0;  // W8-3: signalized intersections
+    uint32_t          m_neonSigns = 0;      // W8-3: emissive shop signage strips
+    uint32_t          m_windowBands = 0;    // W8-3: dark-glass window strips
     std::vector<uint32_t> m_props;   // Scene entity ids
 };
 

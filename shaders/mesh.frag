@@ -169,18 +169,34 @@ const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white su
 // default heightScale (55 m). The sand band sits at the shoreline so it meets the
 // ocean cleanly; grass is low+flat; rock is steep slope; snow caps high peaks.
 // ---------------------------------------------------------------------------
-// NOTE these are calibrated to the actual streamed-world field (heightScale 55 m;
-// sampled height ~6..50 m, avg ~31 m; the fBm hills are GENTLE — slope normal.y
-// is almost never below ~0.85, so the rock thresholds sit high on purpose so the
-// steeper hillsides actually read as rock instead of rock never appearing).
-const float kSeaLevel    = 14.0;   // world Y of the ocean surface (matches host)
-const float kSandTop     = 18.0;   // sand fades out a few m above sea level
-const float kSnowBottom  = 36.0;   // snow begins on the high ground
-const float kSnowFull    = 47.0;   // fully snow by here
+// NOTE (W8-3) recalibrated to the CANONICAL WORLD FIELD (terrain.cpp
+// worldFeatures): base rolling field 0..55 m with macro relief, plus 4 mountain
+// ranges 7-10 km out whose peaks reach ~400-500 m. Bands are absolute world Y:
+//   * SAND is a SHORELINE material only — gated by proximity to the offshore
+//     ocean basin (kShoreXZ, matches terrain.cpp kBasinCx/Cz) so inland lows and
+//     the flattened city/facility pads don't read as beach.
+//   * SNOW lives on the high ranges only (kSnowBottom 180 — the base field can
+//     never reach it) and prefers flatter ground (it slides off cliffs).
+//   * ALPINE band: grass gives way to rock with altitude well below the snowline.
+//   * Slope-rock thresholds unchanged — on real mountainsides normal.y drops far
+//     below 0.90, so slopes saturate to full rock naturally.
+//   * Range-theme tints (kVolcanoXZ / kMesaXZ / kCrystalXZ, matched to terrain.cpp
+//     kRanges band midpoints): E volcanic = dark basalt rock + no snow; S mesa =
+//     warm sandstone rock; W highlands = mossier grass.
+const float kSeaLevel    = 4.0;    // world Y of the basin water surface (ocean_base)
+const float kSandTop     = 16.0;   // beach fades out by here (near the basin only)
+const float kSnowBottom  = 180.0;  // snow begins (mountain shoulders)
+const float kSnowFull    = 265.0;  // fully snow by here (high peaks)
+const float kAlpineLo    = 75.0;   // grass starts yielding to rock
+const float kAlpineHi    = 140.0;  // fully rock by here (below the snow line)
 const float kSlopeRockLo = 0.90;   // normal.y at/below this -> full rock (steep)
 const float kSlopeRockHi = 0.965;  // normal.y at/above this -> no rock (flat)
 const float kDetailScale = 0.18;   // world-space detail tiling (cycles / meter)
 const float kMacroScale  = 0.012;  // large-scale tint variation frequency
+const vec2  kShoreXZ     = vec2( 1100.0, -1350.0);  // ocean basin center
+const vec2  kVolcanoXZ   = vec2( 9200.0,   250.0);  // E range band midpoint
+const vec2  kMesaXZ      = vec2(  350.0, -9000.0);  // S range band midpoint
+const vec2  kCrystalXZ   = vec2(-8600.0,  -100.0);  // W range band midpoint
 
 // Cheap hash-based value noise on world XZ (self-contained; matches the CPU
 // terrain's value-noise idea so the breakup reads consistent). Returns [0,1).
@@ -233,6 +249,12 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
     float n   = tnoise(wpos.xz * kMacroScale) - 0.5;   // [-0.5,0.5]
     float hN  = h + n * 6.0;                            // height jittered by noise
 
+    // ---- Range-theme masks (biome tints keyed off world position; centers
+    // match terrain.cpp's kRanges band midpoints) ----
+    float volc  = 1.0 - smoothstep(1400.0, 3200.0, distance(wpos.xz, kVolcanoXZ));
+    float mesa  = 1.0 - smoothstep(2400.0, 4200.0, distance(wpos.xz, kMesaXZ));
+    float moss  = 1.0 - smoothstep(1600.0, 3400.0, distance(wpos.xz, kCrystalXZ));
+
     // ---- Base sample the four materials (world-space UVs) ----
     vec3 grass = detailXZ(grassIdx, wpos.xz);
     vec3 sand  = detailXZ(sandIdx,  wpos.xz);
@@ -240,26 +262,41 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
     // Rock uses triplanar so cliffs aren't stretched.
     vec3 rock  = triplanar(rockIdx, wpos, wn);
 
+    // Theme the materials: dark basalt in the volcanic east, warm sandstone in
+    // the southern mesas, mossier green in the western highlands.
+    rock  = mix(rock, rock * vec3(0.42, 0.34, 0.32), volc);
+    rock  = mix(rock, rock * vec3(1.15, 0.92, 0.68), mesa);
+    grass = mix(grass, grass * vec3(0.80, 1.08, 0.72), moss);
+
     // ---- Height bands (smoothstep transitions, never hard) ----
-    // Start as grass everywhere, then layer sand low, snow high, rock on slope.
+    // Start as grass everywhere, then layer beach sand at the basin shoreline,
+    // alpine rock with altitude, snow on the peaks, rock on slope.
     vec3 albedo = grass;
 
-    // Sand/dirt shoreline band: strongest right at/below sea level, fading out by
-    // kSandTop so it meets the ocean cleanly at the waterline.
-    float sandBand = 1.0 - smoothstep(kSeaLevel - 2.0, kSandTop, hN);
+    // Beach band: strongest right at/below the basin waterline, fading out by
+    // kSandTop — and gated to the SHORE (inland lows / city pads are not beach).
+    float shore = 1.0 - smoothstep(950.0, 1500.0, distance(wpos.xz, kShoreXZ));
+    float sandBand = (1.0 - smoothstep(kSeaLevel - 2.0, kSandTop, hN)) * shore;
     albedo = mix(albedo, sand, clamp(sandBand, 0.0, 1.0));
 
-    // Snow cap on the high ground.
-    float snowBand = smoothstep(kSnowBottom, kSnowFull, hN);
+    // Alpine band: grass yields to rock with altitude (below the snow line).
+    float alpine = smoothstep(kAlpineLo, kAlpineHi, hN);
+    albedo = mix(albedo, rock, alpine * 0.9);
+
+    // Snow cap on the high ranges: prefers flatter ground (slides off cliffs);
+    // suppressed over the volcanic east (basalt stays dark).
+    float snowBand = smoothstep(kSnowBottom, kSnowFull, hN)
+                   * smoothstep(0.55, 0.80, slope)
+                   * (1.0 - volc);
     albedo = mix(albedo, snow, clamp(snowBand, 0.0, 1.0));
 
     // ---- Slope rock: overrides whatever band where the surface is steep. The
-    // thresholds are high (see note above) because this terrain's hillsides are
-    // gentle; rock fades in below kSlopeRockHi and is full by kSlopeRockLo. ----
+    // thresholds sit high so even the gentle base field's steeper hillsides read
+    // as rock; real mountainsides drop normal.y far below 0.90 and saturate. ----
     float rockBand = 1.0 - smoothstep(kSlopeRockLo, kSlopeRockHi, slope);
     // Wobble the rock edge with noise so it isn't a clean contour line.
     rockBand = clamp(rockBand + n * 0.18, 0.0, 1.0);
-    albedo = mix(albedo, rock, rockBand);
+    albedo = mix(albedo, rock, rockBand * (1.0 - snowBand * 0.55));
 
     // Subtle macro tint variation so large flat areas aren't a flat colour.
     float macro = tnoise(wpos.xz * (kMacroScale * 0.5));

@@ -192,6 +192,16 @@ int hostStreamed(HostContext& hc) {
             wstream.init(wscene, *device, *wphys, wjobs.get(), wcfg,
                          legs[0].x, legs[0].z, /*radius=*/8);
             wstream.setUploadBudget(64);   // fill the visible ring fast for stills
+            // W8-3: horizon ring + long far plane so the mountain backdrop the
+            // leg-A caption promises actually draws behind the bare terrain.
+            {
+                x3::game::HorizonRingDesc hr{};
+                hr.centerX = -600.0f; hr.centerZ = 500.0f;   // the drive corridor
+                hr.rInner = 240.0f; hr.rOuter = 13000.0f;
+                hr.rings = 140; hr.segments = 160; hr.yBias = -3.0f;
+                x3::game::addTerrainHorizonRing(wscene, *device, wstream.groundTexture(), hr);
+                device->setCameraFar(15000.0f);
+            }
             wsm.buildStartRegions(wscene, *device, *wphys, legs[0].x, 0.0f, legs[0].z);
 
             float cx = legs[0].x, cz = legs[0].z;
@@ -257,6 +267,20 @@ int hostStreamed(HostContext& hc) {
         float sgr[3]; x3::game::placeOnTerrain(sax, saz, sgr);
         wstream.init(wscene, *device, *wphys, wjobs.get(), wcfg, sax, saz, /*radius=*/8);
         wsm.buildStartRegions(wscene, *device, *wphys, sax, sgr[1], saz);
+        // W8-3: the horizon stitch for the walkable world — one static ring from
+        // the same field (recessed under the streamed tiles) + a long far plane,
+        // so the 4 mountain ranges read from anywhere in the central map. Known
+        // limit: ring cells coarsen ~3%/ring with radius; near the ranges
+        // themselves (7 km+ from the spawn center) the local ring is coarse —
+        // recentering/re-baking the ring on long travel is a follow-up.
+        {
+            x3::game::HorizonRingDesc hr{};
+            hr.centerX = sax; hr.centerZ = saz;
+            hr.rInner = 240.0f; hr.rOuter = 13000.0f;
+            hr.rings = 140; hr.segments = 160; hr.yBias = -3.0f;
+            x3::game::addTerrainHorizonRing(wscene, *device, wstream.groundTexture(), hr);
+            device->setCameraFar(15000.0f);
+        }
 
         x3::game::Player wplayer;
         wplayer.spawn(*wphys, sax, sgr[1] + 2.0f, saz);

@@ -25,6 +25,7 @@
 #include "anim.h"
 #include "terrain.h"
 #include "ocean_base.h"        // W3-4: --screenshot-oceanbase undersea vantage
+#include "city.h"              // W8-3: --screenshot-city district vantage
 #include "cutscene.h"
 #include "leveldoc_world.h"
 #include "level_loader.h"
@@ -92,6 +93,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool terrainShot = hc.terrainShot;      const std::string& terrainShotPath = hc.terrainShotPath;
     const bool oceanShot = hc.oceanShot;          const std::string& oceanShotPath = hc.oceanShotPath;
     const bool oceanBaseShot = hc.oceanBaseShot;  const std::string& oceanBaseShotPath = hc.oceanBaseShotPath;
+    const bool cityShot = hc.cityShot;            const std::string& cityShotPath = hc.cityShotPath;
     const bool captureAi = hc.captureAi;          const std::string& captureAiDir = hc.captureAiDir;
     const bool captureWalk = hc.captureWalk;      const std::string& captureWalkPath = hc.captureWalkPath;
     const bool captureFootIk = hc.captureFootIk;  const std::string& captureFootIkPath = hc.captureFootIkPath;
@@ -1377,19 +1379,25 @@ int dispatchScreenshotHosts(HostContext& hc) {
     if (terrainShot) {
         x3::logInfo("--screenshot-terrain: rendering STREAMED terrain world to " + terrainShotPath);
 
-        // B3: this path now exercises the STREAMER under validation. A job system
+        // B3: this path exercises the STREAMER under validation. A job system
         // generates tiles async; the focus is SWEPT across the world during the
         // frame loop so stream-IN (createMesh + addStaticMesh) AND stream-OUT
         // (destroyMesh + removeBody) both run inside validated frames, proving the
-        // async upload + teardown barriers are validation-clean. The camera trails
-        // the swept focus so the final capture is a lit terrain vista.
+        // async upload + teardown barriers are validation-clean.
+        //
+        // W8-3: the host now builds from the CANONICAL world config (features on:
+        // macro relief / mountain ranges / pads / basin), raises the far plane so
+        // the horizon draws, adds a horizon ring (far-terrain stitch), and writes
+        // a SUITE: the classic sweep vista (base path) + a variability pair
+        // (_plains / _hills, auto-probed from the relief field) + the Northern
+        // Range framed from its foothills (_range).
         std::unique_ptr<x3::jobs::IJobSystem> tjobs(x3::jobs::createJobSystem());
         tjobs->init(0);
         std::unique_ptr<x3::phys::IPhysicsWorld> tphys(x3::phys::createPhysicsWorld());
         tphys->init();
         x3::game::Scene tscene;
         x3::game::TerrainStreamer streamer;
-        x3::game::TerrainConfig tcfg;   // 32 m tiles; unbounded (streamed)
+        const x3::game::TerrainConfig& tcfg = x3::game::worldTerrainConfig();
 
         // Turn ON the analytic sky with the SAME sun the shadow pass + mesh.frag
         // use (normalize(0.4,1,0.3)) so the disk sits where the world is lit from.
@@ -1399,19 +1407,37 @@ int dispatchScreenshotHosts(HostContext& hc) {
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
         sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
         device->setSkyParams(sp);
+        device->setCameraFar(15000.0f);   // W8-3: the ranges live 7-10 km out
+        device->setAmbient(0.30f, 0.32f, 0.38f);   // daylight sky fill (shadow sides read)
 
         // Start the focus well away from the origin (proves unbounded coords) and
         // bring up the ring there.
         float fx = -90.0f, fz = -120.0f;
         streamer.init(tscene, *device, *tphys, tjobs.get(), tcfg, fx, fz, /*radius=*/8);
+        streamer.setUploadBudget(64);
+
+        // W8-3 horizon stitch: a world-wide ring from the same field (recessed
+        // under the streamed tiles) so the mountain ranges read on the horizon,
+        // plus a finer local ring around the Northern-Range vantage so the peaks
+        // are not chunky in the _range framing.
+        {
+            x3::game::HorizonRingDesc hr{};
+            hr.centerX = 0.0f; hr.centerZ = 0.0f;
+            hr.rInner = 240.0f; hr.rOuter = 13000.0f;
+            hr.rings = 140; hr.segments = 160; hr.yBias = -3.0f;
+            x3::game::addTerrainHorizonRing(tscene, *device, streamer.groundTexture(), hr);
+            x3::game::HorizonRingDesc nr{};
+            nr.centerX = 1300.0f; nr.centerZ = 8900.0f;  // N-range vantage (sunlit NE side)
+            nr.rInner = 60.0f; nr.rOuter = 3600.0f;
+            nr.rings = 120; nr.segments = 140; nr.yBias = -1.5f;
+            x3::game::addTerrainHorizonRing(tscene, *device, streamer.groundTexture(), nr);
+        }
 
         const float sunYaw   = std::atan2(0.3f, 0.4f);  // toward the sun in XZ
         const float camPitch = -0.16f;                  // ~9deg down: hills + shadows + sky
 
         const float dt = 1.0f / 60.0f;
-        // Render a measured window of frames; report the averaged GPU-pass time
-        // (vsync-independent). Sweep the focus +X so tiles stream in/out during the
-        // validated loop. The capture is armed on the final frame.
+        // ---- Shot 1: the classic sweep vista (stream-in/out churn, measured). ----
         const int kFrames = 140, kWarmup = 40;
         double sumGpuMs = 0.0; int measured = 0;
         for (int i = 0; i < kFrames; ++i) {
@@ -1433,7 +1459,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
             const x3::rhi::RenderStats s = device->stats();
             if (i >= kWarmup) { sumGpuMs += s.gpuFrameMs; ++measured; }
         }
-        const bool wrote = device->captureFrame(terrainShotPath.c_str());
+        bool wrote = device->captureFrame(terrainShotPath.c_str());
         if (wrote) {
             const x3::rhi::RenderStats st = device->stats();
             const double avgGpu = measured ? sumGpuMs / measured : 0.0;
@@ -1449,6 +1475,67 @@ int dispatchScreenshotHosts(HostContext& hc) {
                 st.drawCalls, st.triangles, avgGpu, gpuFps);
             x3::logInfo(rb);
         } else x3::logError("--screenshot-terrain: capture FAILED");
+
+        // ---- W8-3 shots 2-4: relocate the focus + settle + capture. ------------
+        auto suffixed = [&](const char* tag) -> std::string {
+            std::string p = terrainShotPath;
+            const size_t dot = p.find_last_of('.');
+            return (dot == std::string::npos) ? p + tag : p.substr(0, dot) + tag + p.substr(dot);
+        };
+        auto shotAt = [&](float focusX, float focusZ, float camX, float camY, float camZ,
+                          float yaw, float pitch, const std::string& path) -> bool {
+            const int kF = 170;   // relocate + drain the new residency ring + settle
+            for (int i = 0; i < kF; ++i) {
+                glfwPollEvents();
+                tphys->step(dt);
+                // Nudge across a tile boundary once so the full ring re-enqueues.
+                const float nfx = (i == 1) ? (focusX + 40.0f) : focusX;
+                streamer.update(tscene, *device, *tphys, nfx, focusZ);
+                device->setCamera(camX, camY, camZ, yaw, pitch, 70.0f);
+                if (i == kF - 1) device->armCapture(path.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) tscene.render(*device, frame);
+                device->endFrame(frame);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            if (ok) x3::logInfo("--screenshot-terrain: wrote " + path);
+            else    x3::logError("--screenshot-terrain: capture FAILED for " + path);
+            return ok;
+        };
+
+        // Variability pair: probe candidate spots for local relief (stddev-ish of
+        // the field) and shoot the flattest as _plains, the hilliest as _hills.
+        {
+            const float cand[6][2] = { {-1500,-900}, {900,1400}, {-2300,1500},
+                                       {2100,-600}, {-600,-2300}, {1600,2300} };
+            int flat = 0, hilly = 0; float loVar = 1e30f, hiVar = -1e30f;
+            for (int c = 0; c < 6; ++c) {
+                float mn = 1e30f, mx = -1e30f;
+                for (int j = -2; j <= 2; ++j) for (int k = -2; k <= 2; ++k) {
+                    const float h = x3::game::terrainHeightAtWorld(
+                        cand[c][0] + (float)j * 45.0f, cand[c][1] + (float)k * 45.0f);
+                    mn = std::min(mn, h); mx = std::max(mx, h);
+                }
+                const float v = mx - mn;
+                if (v < loVar) { loVar = v; flat = c; }
+                if (v > hiVar) { hiVar = v; hilly = c; }
+            }
+            const float px = cand[flat][0],  pz = cand[flat][1];
+            const float hx2 = cand[hilly][0], hz2 = cand[hilly][1];
+            wrote &= shotAt(px, pz, px, x3::game::terrainHeightAtWorld(px, pz) + 16.0f, pz,
+                            sunYaw, -0.12f, suffixed("_plains"));
+            wrote &= shotAt(hx2, hz2, hx2, x3::game::terrainHeightAtWorld(hx2, hz2) + 20.0f, hz2,
+                            sunYaw, -0.14f, suffixed("_hills"));
+        }
+        // The Northern Range from its NE foothills looking SW along the chain, so
+        // the camera sees the SUNLIT faces (sun sits in the +X+Z sky): peaks with
+        // rock-by-slope + snow-sub-by-height filling the frame, slight up-pitch.
+        {
+            const float vx = 2200.0f, vz = 9700.0f;
+            const float vy = x3::game::terrainHeightAtWorld(vx, vz) + 110.0f;   // aerial
+            const float vYaw = std::atan2(8300.0f - vz, 300.0f - vx);   // toward the spine mid
+            wrote &= shotAt(vx, vz, vx, vy, vz, vYaw, -0.05f, suffixed("_range"));
+        }
 
         // Tear down the streamer (destroys resident meshes + bodies) before the
         // device/physics, then stop the job system.
@@ -1639,6 +1726,99 @@ int dispatchScreenshotHosts(HostContext& hc) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return (w1 && w2) ? 0 : 1;
+    }
+
+    // ---- City vantage (--screenshot-city [path.png]) — W8-3 -----------------
+    // Build the CITY REGION (Scrapyard / New District / Industrial blockout-plus,
+    // app/city.cpp) on the canonical world terrain and capture (1) a New-District
+    // establishing shot (varied skyscraper massing + street grid), (2) a street-
+    // level main-street shot (_street: shops + neon + towers), (3) the Scrapyard
+    // core (_scrapyard: the named-building roster + helipad tower). Ground is a
+    // full horizon ring (no streamer — the city anchors analytically via
+    // placeOnTerrain onto the same field), so the mountain ranges read behind
+    // the skyline.
+    if (cityShot) {
+        x3::logInfo("--screenshot-city: rendering the city districts to " + cityShotPath);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
+        cphys->init();
+        x3::game::Scene cscene;
+
+        // Daylight sky (the canonical outdoor sun) + a long far plane for the
+        // ranges behind the skyline.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        // AFTERNOON sun (low-ish, from the +X+Z sky): vertical massing catches
+        // real light — at noon every facade was a black silhouette.
+        sp.sunDir[0] = 0.62f; sp.sunDir[1] = 0.52f; sp.sunDir[2] = 0.46f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.93f; sp.sunColor[2] = 0.82f;
+        sp.sunIntensity = 1.5f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+        device->setCameraFar(15000.0f);
+        device->setAmbient(0.38f, 0.40f, 0.46f);   // daylight sky fill (shadow sides read)
+        device->setExposure(1.25f);                // entity-PBR path runs dim outdoors
+
+        // Ground: one fine-inner horizon ring centered between the districts —
+        // the flat city pads live in the field, so buildings/roads seat cleanly.
+        {
+            x3::rhi::TextureHandle splat = x3::game::makeTerrainSplatMarker(*device);
+            x3::game::HorizonRingDesc hr{};
+            hr.centerX = -200.0f; hr.centerZ = 450.0f;   // between Scrapyard + District
+            hr.rInner = 12.0f; hr.rOuter = 13000.0f;
+            hr.rings = 150; hr.segments = 160; hr.yBias = -0.05f;
+            x3::game::addTerrainHorizonRing(cscene, *device, splat, hr);
+        }
+
+        x3::game::City city;
+        city.build(cscene, *device, *cphys);
+
+        auto renderShot = [&](float cx, float cy, float cz, float yaw, float pitch,
+                              const std::string& path) -> bool {
+            const int kFrames = 90;    // settle: shadows + TAA history + bloom
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                cphys->step(1.0f / 60.0f);
+                device->setCamera(cx, cy, cz, yaw, pitch, 70.0f);
+                if (i == kFrames - 1) device->armCapture(path.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) cscene.render(*device, frame);
+                device->endFrame(frame);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            if (ok) x3::logInfo("--screenshot-city: wrote " + path);
+            else    x3::logError("--screenshot-city: capture FAILED for " + path);
+            return ok;
+        };
+        auto suffixed = [&](const char* tag) -> std::string {
+            std::string p = cityShotPath;
+            const size_t dot = p.find_last_of('.');
+            return (dot == std::string::npos) ? p + tag : p.substr(0, dot) + tag + p.substr(dot);
+        };
+
+        // The sun sits in the +X+Z sky — shoot FROM the north-east looking
+        // south-west so the camera sees lit faces, not the shadow sides.
+        // Shot 1 — New District establishing: elevated NE vantage, the skyscraper
+        // cluster + grid receding, ranges on the horizon.
+        float g[3]; x3::game::placeOnTerrain(330.0f, 620.0f, g);
+        const float eYaw = std::atan2(490.0f - 620.0f, 190.0f - 330.0f);
+        const bool w1 = renderShot(330.0f, g[1] + 55.0f, 620.0f, eYaw, -0.20f, cityShotPath);
+
+        // Shot 2 — street level on the District main street, looking west (lit
+        // +X faces of the shops/towers toward the camera).
+        float g2[3]; x3::game::placeOnTerrain(300.0f, 500.0f, g2);
+        const bool w2 = renderShot(300.0f, g2[1] + 2.1f, 500.0f, 3.14159f, 0.02f, suffixed("_street"));
+
+        // Shot 3 — the Scrapyard core from its NE corner: named roster + helipad
+        // tower + water tower, lit sides toward the camera.
+        float g3[3]; x3::game::placeOnTerrain(-480.0f, 580.0f, g3);
+        const float sYaw = std::atan2(480.0f - 580.0f, -620.0f + 480.0f);
+        const bool w3 = renderShot(-480.0f, g3[1] + 14.0f, 580.0f, sYaw, -0.08f, suffixed("_scrapyard"));
+
+        cphys->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return (w1 && w2 && w3) ? 0 : 1;
     }
 
     // ---- AI-action capture mode (--capture-ai [outDir]) --------------------

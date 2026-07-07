@@ -193,10 +193,20 @@ void WorldStreamer::kickParse(Region& r) {
 void WorldStreamer::captureLedger(Region& r, const Scene& scene) {
     std::unordered_set<uint32_t> meshIds, texIds, bodyIds;
     r.meshes.clear(); r.textures.clear(); r.bodies.clear();
+    // W8-3: capture EVERY texture channel an entity references (tex + normalTex
+    // + mrTex — normal/mr previously leaked on evict), EXCEPT textures owned by
+    // the streamer's shared surface library (destroyed once at shutdown, never
+    // per-region — other resident regions may reference the same set).
+    auto captureTex = [&](const x3::rhi::TextureHandle& t) {
+        if (!t.valid() || m_surflib.ownsTexture(t.id)) return;
+        if (texIds.insert(t.id).second) r.textures.push_back(t);
+    };
     for (uint32_t id : r.entities) {
         const Entity& e = scene.get(id);
         if (e.mesh.valid() && meshIds.insert(e.mesh.id).second) r.meshes.push_back(e.mesh);
-        if (e.tex.valid()  && texIds.insert(e.tex.id).second)   r.textures.push_back(e.tex);
+        captureTex(e.tex);
+        captureTex(e.normalTex);
+        captureTex(e.mrTex);
         if (e.body.valid() && bodyIds.insert(e.body.id).second) r.bodies.push_back(e.body);
     }
     m_meshesCreated   += r.meshes.size();
@@ -235,9 +245,9 @@ double WorldStreamer::realize(Region& r, Scene& scene, x3::rhi::IRenderDevice& d
         r.parse.reset();
 
     } else if (r.desc.builder == "city") {
-        City c; c.build(scene, device, physics);
+        City c; c.build(scene, device, physics, &m_surflib);
     } else if (r.desc.builder == "oceanbase") {
-        OceanBase ob; ob.build(scene, device, physics);
+        OceanBase ob; ob.build(scene, device, physics, &m_surflib);
     } else if (r.desc.builder == "worldregions") {
         WorldRegions wr; wr.build(scene, device, physics);
     } else {
@@ -453,6 +463,9 @@ void WorldStreamer::shutdown(Scene& scene, x3::rhi::IRenderDevice& device,
         r.state = RegionState::Unloaded;
         r.wanted = false;
     }
+    // W8-3: release the shared surface library's textures (decoded once per
+    // process; excluded from every per-region ledger above).
+    m_surflib.destroyAll(device);
 }
 
 WorldStreamer::~WorldStreamer() = default;
@@ -535,6 +548,21 @@ bool runWorldStreamSelfTest() {
            ws.state(iSurf)  == RegionState::Resident &&
            ws.state(iOcean) == RegionState::Unloaded,
            "W0c boot: start regions resident, far regions NOT built at boot");
+
+    // ---- W7 (W8-3): the CITY region actually loads + carries a real city ------
+    // The Spire spawn sits inside the city footprint (anchor -200,425 r750), so
+    // the city builds at boot. Assert it is resident AND that the builder placed
+    // Babylon-scale content (blockout-plus: buildings + bands + streets => the
+    // ledger owns hundreds of entities, not the old 27-prop graybox).
+    {
+        const bool cityResident = (ws.state(iCity) == RegionState::Resident);
+        const uint32_t cityEnts = ws.ownedEntityCount(iCity);
+        x3::logInfo("[worldstream-test] city region at boot: resident=" +
+                    std::to_string((int)cityResident) + " ownedEntities=" +
+                    std::to_string(cityEnts));
+        checkW(cityResident && cityEnts >= 200,
+               "W7 city region loads with blockout-plus content (>=200 owned entities)");
+    }
 
     // ---- the tour: Spire -> ocean base -> Spire, twice (lap2 = stability) -----
     const float walkSpeed = 7.0f;            // m/s (brisk walk/jog)

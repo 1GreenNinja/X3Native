@@ -17,6 +17,7 @@
 // (1100, -346, -1350); here laid at native graybox depth offshore.
 
 #include "scene.h"
+#include "surface_library.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -56,7 +57,8 @@ struct SubCombat {
 // terrain surface) — it is reached by submarine.
 class OceanBase {
 public:
-    void build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
+    void build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+               SurfaceLibrary* sharedSurf = nullptr);   // W8-3: streamer-shared PBR cache
 
     // Begin submarine combat (gated — the host calls this on engagement, NOT at load).
     void engage() { m_combat.engaged = true; }

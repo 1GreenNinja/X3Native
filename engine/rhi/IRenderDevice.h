@@ -175,6 +175,15 @@ public:
     // forward = (cos(pitch)*cos(yaw), sin(pitch), cos(pitch)*sin(yaw)).
     virtual void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) = 0;
 
+    // W8-3: camera FAR-PLANE override (meters). Default 200 m (the historic
+    // hardcode — every existing host is pixel-identical without calling this).
+    // Open-world vista hosts (surface start / terrain + city screenshot hosts /
+    // the streamed world) raise it (~15000 m) so the mountain ranges on the
+    // horizon actually draw. Standard-Z + D32F: distant depth precision
+    // coarsens, acceptable for horizon geometry (continuous meshes, no distant
+    // interleaving). Additive: default impl is a no-op (headless/test devices).
+    virtual void setCameraFar(float farMeters) { (void)farMeters; }
+
     // Scene ambient (hemispheric floor lift in mesh.frag, also the crude IBL term for
     // PBR meshes). Default is a small cool constant; raise it for bright daylit/outdoor
     // scenes (e.g. the showroom) so metal/glass surfaces aren't black. Non-pure (no-op

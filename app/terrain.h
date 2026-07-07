@@ -61,10 +61,20 @@ struct TerrainConfig {
     uint32_t tilesZ        = 32;      // grid rows    (Z) — fixed-grid path only
     float    tileSize      = 32.0f;   // world meters per tile edge
     uint32_t tileVerts     = 33;      // LOD0 vertices per tile edge (=> 32 quads)
-    float    heightScale   = 55.0f;   // peak terrain height (meters)
+    float    heightScale   = 55.0f;   // peak of the BASE rolling field (meters)
     float    noiseFreq     = 0.0042f; // base noise frequency (cycles / meter)
     uint32_t octaves       = 5;       // fBm octaves (detail layers)
     uint32_t seed          = 1337u;   // deterministic generation seed
+    // W8-3 (feat/babylon-world): the CANONICAL WORLD FEATURES layer — macro
+    // relief (plains vs hill country), the 4 mountain ranges of the Babylon/EFLZ
+    // world map (N snow / E volcanic / S mesa / W crystal-hills), the flattened
+    // city/facility pads and the offshore ocean basin. OFF by default so every
+    // self-test that builds a custom TerrainConfig keeps its exact legacy field
+    // (bounded [0, heightScale]); worldTerrainConfig() turns it ON, so every
+    // host/placement query built from the canonical config gets the full map.
+    // With features on, MOUNTAIN heights intentionally exceed heightScale
+    // (peaks ~400-500 m at 7-10 km out); the base field stays in [0, heightScale].
+    bool     worldFeatures = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +111,39 @@ void terrainNormalAtWorld(float x, float z, float outNormal[3]);
 // canonical surface at (x,z) — the anchor a building/Spire base snaps to. The
 // caller adds their own footprint/pivot offset on top (this stays minimal).
 void placeOnTerrain(float x, float z, float outPos[3]);
+
+// ---------------------------------------------------------------------------
+// W8-3 — HORIZON RING (the far-terrain stitch). A single static polar-grid mesh
+// sampled from the SAME canonical height field the streamer generates from, so
+// the mountains/city pads on the horizon match what streams in underfoot by
+// construction. Geometric ring spacing: fine cells near rInner, ~hundreds of
+// meters at rOuter — one mesh (~13k verts) covers 13 km of world. Drawn with
+// the terrain splat marker so it shades through the same height/slope splat as
+// the streamed tiles. `yBias` recesses the ring slightly so the full-detail
+// streamed tiles always win where the two overlap (no poke-through).
+// If `flattenY` is finite, heights blend FROM flattenY at rInner to the true
+// field by flattenBlendR — used by flat-pad hosts (the facility apron) so the
+// authored flat ground meets the countryside without a seam.
+// Returns the scene entity id (kNoLink on failure). Visual only (no collision).
+// ---------------------------------------------------------------------------
+struct HorizonRingDesc {
+    float    centerX = 0.0f, centerZ = 0.0f;
+    float    rInner = 230.0f, rOuter = 13000.0f;
+    uint32_t rings = 100, segments = 128;
+    float    yBias = -2.5f;             // recess under streamed LOD0 tiles
+    float    flattenY = 0.0f;           // blend-from height at rInner ...
+    bool     flatten = false;           // ... only when this is true
+    float    flattenBlendR = 600.0f;    // fully the true field beyond this radius
+};
+uint32_t addTerrainHorizonRing(Scene& scene, x3::rhi::IRenderDevice& device,
+                               x3::rhi::TextureHandle splatMarker,
+                               const HorizonRingDesc& desc);
+
+// Register the 4 terrain splat albedos (grass/rock/snow/sand) and return the
+// renderer's terrain MATERIAL MARKER handle — what a terrain-shaded entity's
+// `tex` must be. Terrain/TerrainStreamer make one internally (see
+// groundTexture()); ring-only hosts (no streamer) call this directly.
+x3::rhi::TextureHandle makeTerrainSplatMarker(x3::rhi::IRenderDevice& device);
 
 // The LOD level a tile is currently meshed at. 0 = full density (also used for
 // collision), 1 = half, 2 = quarter. Increasing = coarser/cheaper.
@@ -206,6 +249,11 @@ public:
                   x3::phys::IPhysicsWorld& physics);
 
     float heightAt(float worldX, float worldZ) const { return terrainHeightAt(m_cfg, worldX, worldZ); }
+
+    // The terrain splat MATERIAL MARKER this streamer registered (valid after
+    // init on a real device) — hand it to addTerrainHorizonRing so the horizon
+    // shades identically to the streamed tiles.
+    x3::rhi::TextureHandle groundTexture() const { return m_groundTex; }
 
     // ---- Tuning ----------------------------------------------------------
     void setRadius(int r) { m_radius = r; }

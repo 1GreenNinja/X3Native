@@ -396,6 +396,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.oceanBaseShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.oceanBaseShotPath = argv[++i];
         }
+        else if (a == "--screenshot-city") {        // W8-3 city establishing shots
+            o.cityShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.cityShotPath = argv[++i];
+        }
         else if (a == "--screenshot-matlib") {
             // Surface-library preview: one bay per curated texture set, a closeup
             // per set + overview rows into a FLAT output dir.

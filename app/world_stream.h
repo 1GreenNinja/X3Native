@@ -43,6 +43,7 @@
 
 #include "scene.h"
 #include "level_loader.h"
+#include "surface_library.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -220,6 +221,13 @@ private:
     x3::jobs::IJobSystem* m_jobs = nullptr;
     float    m_lookaheadS = 2.5f;
     uint32_t m_evictChunk = 48;
+
+    // W8-3: streamer-lifetime SHARED surface library. Builder regions (city /
+    // oceanbase) draw their PBR sets from here, so a region REBUILD costs zero
+    // PNG decode (the city was a 2 s realize hitch when it streamed back in) and
+    // the sets are decoded once per process. captureLedger EXCLUDES these
+    // textures from per-region teardown; shutdown() destroys them once.
+    SurfaceLibrary m_surflib;
     uint32_t m_proxyEngages = 0;
     uint64_t m_meshesCreated = 0, m_meshesDestroyed = 0;
     uint64_t m_texturesCreated = 0, m_texturesDestroyed = 0;

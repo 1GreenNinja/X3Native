@@ -1264,7 +1264,7 @@ void VulkanRenderDevice::prepareFrameData() {
                             std::sin(m_camPitch),
                             std::cos(m_camPitch) * std::sin(m_camYaw));
         glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
-        glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, 200.0f);
+        glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, m_camFar);
         proj[1][1] *= -1.0f;
 
         // ---- TAA: sub-pixel jitter + reprojection matrices --------------------
@@ -1651,7 +1651,7 @@ void VulkanRenderDevice::prepareFrameData() {
                 pu.camRight = glm::vec4(camRight, 0.0f);
                 pu.camUp    = glm::vec4(camUp, 0.0f);
                 pu.camPos   = glm::vec4(m_camPos, 1.0f);
-                pu.params   = glm::vec4(invW, invH, 0.1f, 200.0f);  // near/far match the proj
+                pu.params   = glm::vec4(invW, invH, 0.1f, m_camFar);  // near/far match the proj
                 std::memcpy(m_partUboMapped[m_frameIdx], &pu, sizeof(ParticleUBO));
             }
             if (m_decalUboMapped[m_frameIdx]) {

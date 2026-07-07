@@ -56,6 +56,27 @@ const SurfaceSet& SurfaceLibrary::get(x3::rhi::IRenderDevice& device,
     return m_cache.emplace(name, s).first->second;
 }
 
+bool SurfaceLibrary::ownsTexture(uint32_t id) const {
+    for (const auto& kv : m_cache) {
+        const SurfaceSet& s = kv.second;
+        if ((s.albedo.valid() && s.albedo.id == id) ||
+            (s.normal.valid() && s.normal.id == id) ||
+            (s.mr.valid()     && s.mr.id     == id)) return true;
+    }
+    return false;
+}
+
+void SurfaceLibrary::destroyAll(x3::rhi::IRenderDevice& device) {
+    for (auto& kv : m_cache) {
+        SurfaceSet& s = kv.second;
+        if (s.albedo.valid()) device.destroyTexture(s.albedo);
+        if (s.normal.valid()) device.destroyTexture(s.normal);
+        if (s.mr.valid())     device.destroyTexture(s.mr);
+        s = SurfaceSet{};
+    }
+    m_cache.clear();
+}
+
 x3::rhi::MeshHandle SurfaceLibrary::makePanel(x3::rhi::IRenderDevice& device, int axis,
                                               float w, float h, float tile) const {
     const float uMax = w / std::max(tile, 0.01f);

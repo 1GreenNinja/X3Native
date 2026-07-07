@@ -21,9 +21,9 @@
     { "id": "west_outpost",    "name": "West Outpost",              "type": "landmark", "region": "surface_landmarks", "pos": [-880.0, 0.0, -320.0],  "floor": 0, "discover_radius": 50.0,  "fast_travel": true  },
     { "id": "city",            "name": "Scrapyard City",            "type": "city",     "region": "city",              "pos": [-200.0, 0.0, 425.0],   "floor": 0, "discover_radius": 120.0, "fast_travel": true  },
     { "id": "ocean_base",      "name": "Undersea Disc Base",        "type": "base",     "region": "ocean_base",        "pos": [1100.0, -40.0, -1350.0], "floor": 0, "discover_radius": 80.0, "fast_travel": true  },
-    { "id": "northern_range",  "name": "Northern Range",            "type": "landmark", "region": "surface_landmarks", "pos": [0.0, 0.0, 6000.0],     "floor": 0, "discover_radius": 400.0, "fast_travel": false },
-    { "id": "eastern_range",   "name": "Eastern Range (Volcanic)",  "type": "landmark", "region": "surface_landmarks", "pos": [8000.0, 0.0, 0.0],     "floor": 0, "discover_radius": 400.0, "fast_travel": false },
-    { "id": "southern_range",  "name": "Southern Range (Mesas)",    "type": "landmark", "region": "surface_landmarks", "pos": [0.0, 0.0, -7000.0],    "floor": 0, "discover_radius": 400.0, "fast_travel": false },
-    { "id": "western_highlands", "name": "Western Highlands",       "type": "landmark", "region": "surface_landmarks", "pos": [-9000.0, 0.0, 0.0],    "floor": 0, "discover_radius": 400.0, "fast_travel": false }
+    { "id": "northern_range",  "name": "Northern Range",            "type": "landmark", "region": "surface_landmarks", "pos": [300.0, 0.0, 8300.0],   "floor": 0, "discover_radius": 400.0, "fast_travel": false },
+    { "id": "eastern_range",   "name": "Eastern Range (Volcanic)",  "type": "landmark", "region": "surface_landmarks", "pos": [9200.0, 0.0, 250.0],   "floor": 0, "discover_radius": 400.0, "fast_travel": false },
+    { "id": "southern_range",  "name": "Southern Range (Mesas)",    "type": "landmark", "region": "surface_landmarks", "pos": [350.0, 0.0, -9000.0],  "floor": 0, "discover_radius": 400.0, "fast_travel": false },
+    { "id": "western_highlands", "name": "Western Highlands",       "type": "landmark", "region": "surface_landmarks", "pos": [-8600.0, 0.0, -100.0], "floor": 0, "discover_radius": 400.0, "fast_travel": false }
   ]
 }
