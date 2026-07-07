@@ -141,6 +141,7 @@ struct HostContext {
     bool        fxDemo = false;
     bool        uiDemo = false;              std::string uiDemoPath; std::string uiDemoScreen;
     bool        dialogShot = false;
+    bool        vigilShot = false;    // W4-2: --screenshot-vigil (VIGIL chat on the glass)
     bool        alertShot = false;
     bool        captureSpire = false;        std::string captureSpireDir;
     std::string docWorldPath;

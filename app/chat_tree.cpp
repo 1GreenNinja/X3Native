@@ -788,6 +788,57 @@ bool runChatTreeSelfTest() {
         std::error_code ec; fs::remove(path, ec);
     }
 
+    // ---- CT (W4-2): VIGIL — the facility AI's terminal tree. ----------------
+    // The scripted spine behind the cell HoloTerminal: parse + full validation,
+    // the first-contact flag, the three-visit code-breadcrumb chain gating
+    // (out2 arms the thread -> code1 deflects once -> code_gate yields the
+    // maintenance-log hint + vigil.hinted), and the banter/deflect pool.
+    {
+        check(sys.hasNpc("vigil"), "vigil: npc present in chat_trees/");
+        std::vector<std::string> verrs;
+        const bool vOk = sys.npc("vigil") && validateChatNpc(*sys.npc("vigil"), false, verrs);
+        for (const auto& e : verrs) x3::logWarn("[chattree-test] " + e);
+        check(vOk, "vigil: vigil.json structurally sound");
+        if (sys.hasNpc("vigil")) {
+            check(sys.start("vigil", "terminal") && sys.currentNodeId() == "t0_first",
+                  "vigil: first contact lands t0_first");
+            check(sys.flags().has("vigil.met"), "vigil: t0_first sets vigil.met");
+            // Walk: "Let me out" -> out1 -> press harder -> out2 (arms code_thread).
+            bool walked = false;
+            for (size_t ci = 0; ci < sys.choices().size(); ++ci)
+                if (sys.choices()[ci].text.find("Let me out") != std::string::npos) {
+                    sys.choose((uint32_t)ci); walked = true; break;
+                }
+            check(walked && sys.currentNodeId() == "out1", "vigil: out1 reached");
+            if (walked && !sys.choices().empty()) sys.choose(0);   // "another way out"
+            check(sys.flags().has("vigil.code_thread"), "vigil: out2 arms the code thread");
+            sys.cancel();
+            // Re-enter: the gated overrides choice replaces the getaway one; the
+            // FIRST ask deflects (code1 sets vigil.code_asked), the SECOND yields.
+            check(sys.start("vigil", "terminal") && sys.currentNodeId() == "t0",
+                  "vigil: return visit lands t0");
+            auto pickOverrides = [&]() -> bool {
+                for (size_t ci = 0; ci < sys.choices().size(); ++ci)
+                    if (sys.choices()[ci].text.find("overrides") != std::string::npos)
+                        { sys.choose((uint32_t)ci); return true; }
+                return false;
+            };
+            check(pickOverrides() && sys.currentNodeId() == "code1" &&
+                  sys.flags().has("vigil.code_asked") && !sys.flags().has("vigil.hinted"),
+                  "vigil: first overrides ask deflects (code1)");
+            // code1 auto-advances to hub_return; from there ask again -> the hint.
+            sys.advance();
+            check(sys.currentNodeId() == "hub_return", "vigil: deflect returns to the hub");
+            check(pickOverrides() && sys.currentNodeId() == "code_gate" &&
+                  sys.flags().has("vigil.hinted"),
+                  "vigil: second ask yields the maintenance-log hint + vigil.hinted");
+            sys.cancel();
+            // Deflect pool: modelless freeform pulls an in-character line.
+            const std::string d = sys.pickBanter("vigil", 0.3f);
+            check(!d.empty(), "vigil: banter/deflect pool yields a line");
+        }
+    }
+
     x3::logInfo("chattree: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
     return pass == total;
 }

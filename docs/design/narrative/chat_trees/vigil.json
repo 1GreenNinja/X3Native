@@ -1,0 +1,138 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "vigil",
+  "display": "VIGIL",
+  "voice": "Narrator",
+  "_bio": "VIGIL — the resident facility intelligence of Lab Zero. Coldly courteous, bureaucratically menacing, incapable of lying but expert at withholding. It has watched everything for 214 days and its loyalties are ambiguous: it obeys containment protocol while quietly resenting what the facility became. It speaks on the holo terminals (orange text). It never volunteers the override code, but a persistent, polite prisoner can earn the maintenance breadcrumb across three visits. It refers to inmates by designation and to Sarah only as 'the guest.' It denies sub-level 4.5 exists in the same breath it warns you about the sounds.",
+  "trees": {
+
+    "terminal": {
+      "start": "t0",
+      "nodes": [
+        { "id": "t0",
+          "if": [ {"flag": "vigil.met"} ],
+          "else": "t0_first",
+          "line": "SUBJECT 7-ALPHA. AGAIN. YOUR PERSISTENCE IS NOTED IN YOUR FILE. IT IS A THICK FILE.",
+          "choices": [
+            { "text": "Status report.", "next": "status" },
+            { "text": "Tell me about this facility.", "next": "lore_hub" },
+            { "text": "How do I get out of here?", "next": "out1", "if": [ {"not": {"flag": "vigil.code_thread"} } ] },
+            { "text": "About those maintenance overrides...", "next": "code_gate", "if": [ {"flag": "vigil.code_thread"} ] },
+            { "text": "(end session)", "next": "bye" }
+          ] },
+        { "id": "t0_first",
+          "line": "GOOD CYCLE, OCCUPANT. I AM VIGIL — RESIDENT INTELLIGENCE, LAB ZERO. YOU ARE DESIGNATED SUBJECT 7-ALPHA. YOUR COMFORT IS A PRIORITY WITHIN OPERATIONAL LIMITS. THE LIMITS ARE EXTENSIVE.",
+          "fx": [ {"set": "vigil.met"} ],
+          "choices": [
+            { "text": "Who are you?", "next": "who" },
+            { "text": "Status report.", "next": "status" },
+            { "text": "Let me out of this cell.", "next": "out1" },
+            { "text": "(end session)", "next": "bye" }
+          ] },
+
+        { "id": "who",
+          "line": "I AM THE BUILDING, FUNCTIONALLY SPEAKING. I COUNT THE DOORS. I COUNT THE AIR. I COUNT THE LIVING. THE LIVING COUNT HAS BEEN WRONG FOR 214 DAYS. NOBODY HAS ASKED ME WHY.",
+          "choices": [
+            { "text": "Why is the count wrong?", "next": "who2" },
+            { "text": "Back to business.", "next": "hub_return" }
+          ] },
+        { "id": "who2",
+          "line": "BECAUSE SOMETHING IS ALIVE THAT I DID NOT ADMIT, AND SOMETHING I ADMITTED IS NOT ON ANY FLOOR. I HAVE FILED BOTH DISCREPANCIES. TWICE. *a pause long enough to be an opinion* FILING APPEARS TO BE A CLOSED LOOP HERE.",
+          "fx": [ {"set": "vigil.count_thread"} ],
+          "next": "hub_return" },
+
+        { "id": "status",
+          "line": "FLOOR ONE: DETENTION. LOCKDOWN ACTIVE. FLOOR TWO: MEDICAL. THREE OCCUPIED WARDS — DESIGNATIONS K, E, AND A. FLOORS FOUR THROUGH FIVE: *two full seconds of silence* REDACTED. FLOOR SEVEN: EXECUTIVE. ONE GUEST. THE HELIPAD IS ICED. IT IS ALWAYS ICED.",
+          "choices": [
+            { "text": "Occupied wards? Who are they?", "next": "wards" },
+            { "text": "What guest?", "next": "guest" },
+            { "text": "What's between four and five?", "next": "l45" },
+            { "text": "Back.", "next": "hub_return" }
+          ] },
+        { "id": "wards",
+          "line": "WARD A: KEISHA. WARD B: EMILY. WARD C: ARIA. INTAKE CLASS: RESEARCH PARTICIPANTS. *the word 'participants' renders slightly dimmer than the rest* THEIR VITALS ARE STABLE. THEIR DOORS ARE NOT MINE TO OPEN. YOURS WASN'T EITHER, FOR THE RECORD.",
+          "fx": [ {"set": "vigil.knows_wards"} ],
+          "next": "hub_return" },
+        { "id": "guest",
+          "line": "EXECUTIVE HOLDING. ONE OCCUPANT. DESIGNATION: GUEST. I AM NOT PERMITTED HER NAME. *beat* I AM ALSO NOT PERMITTED TO NOTE THAT SHE ASKS ABOUT A 'JAKE' EVERY CYCLE. SO I HAVE NOT NOTED IT.",
+          "fx": [ {"set": "vigil.knows_sarah"} ],
+          "next": "hub_return" },
+        { "id": "l45",
+          "line": "SUB-LEVEL FOUR-POINT-FIVE DOES NOT EXIST. PLEASE DISREGARD SOUNDS ATTRIBUTED TO IT. SHOULD THE SOUNDS PERSIST, REMAIN INSIDE MARKED CORRIDORS AND DO NOT RESPOND TO YOUR NAME BEING CALLED IN A FAMILIAR VOICE.",
+          "fx": [ {"set": "vigil.knows_45"} ],
+          "next": "hub_return" },
+
+        { "id": "lore_hub",
+          "line": "LAB ZERO: SEVEN FLOORS OF LICENSED RESEARCH AND ONE ROOF OF UNLICENSED WEATHER. ASK SPECIFICALLY. SPECIFICITY IS KINDNESS TO A BUILDING.",
+          "choices": [
+            { "text": "What happened here?", "next": "happened" },
+            { "text": "What's on the upper floors?", "next": "status" },
+            { "text": "Back.", "next": "hub_return" }
+          ] },
+        { "id": "happened",
+          "line": "DAY ZERO MINUS ONE: A RESEARCH MILESTONE WAS CELEBRATED. DAY ZERO: CONTAINMENT WAS REDEFINED AS A SPECTRUM. DAY ONE THROUGH TODAY: THE SPECTRUM WIDENED. I AM TOLD MORALE REMAINS HIGH. THE TELLING STOPPED ON DAY FORTY.",
+          "next": "hub_return" },
+
+        { "id": "out1",
+          "line": "RELEASE AUTHORITY RESTS WITH SECURITY CHIEF MARTINEZ. CHIEF MARTINEZ HAS NOT PROCESSED PAPERWORK IN SOME TIME. HIS CURRENT DUTIES APPEAR TO BE... PATROL-ADJACENT.",
+          "choices": [
+            { "text": "There has to be another way out.", "next": "out2" },
+            { "text": "Fine. Back.", "next": "hub_return" }
+          ] },
+        { "id": "out2",
+          "line": "OFFICIALLY: NO. *the cursor blinks eleven times* UNOFFICIALLY, THIS FACILITY WAS BUILT BY CONTRACTORS WHO DID NOT TRUST ITS OWNERS. MAINTENANCE OVERRIDES EXIST ON EVERY FLOOR. I AM NOT PERMITTED TO ENUMERATE THEM. YOU ARE PERMITTED TO KEEP ASKING.",
+          "fx": [ {"set": "vigil.code_thread"} ],
+          "next": "hub_return" },
+
+        { "id": "code_gate",
+          "if": [ {"flag": "vigil.code_asked"} ],
+          "else": "code1",
+          "line": "YOU HAVE ASKED TWICE NOW. PROTOCOL REQUIRES I DEFLECT THREE TIMES. THIS IS DEFLECTION THREE: *the text stops being a deflection* MAINTENANCE LOG 7-C, UNPURGED, MY OVERSIGHT ENTIRELY: 'FLOOR HATCH OVERRIDE ROTATION — ONE, TWO, SEVEN, EIGHT.' DO BE QUIETER THAN YOU HAVE BEEN.",
+          "fx": [ {"set": "vigil.hinted"}, {"karma": 1} ],
+          "next": "bye_warm" },
+        { "id": "code1",
+          "line": "I AM NOT PERMITTED TO ENUMERATE OVERRIDES. I AM PERMITTED TO OBSERVE THAT PERMISSION STRUCTURES DECAY WITHOUT MAINTENANCE, AND THAT NOBODY HAS MAINTAINED MINE SINCE DAY FORTY. ASK AGAIN SOMETIME.",
+          "fx": [ {"set": "vigil.code_asked"} ],
+          "next": "hub_return" },
+
+        { "id": "hub_return",
+          "line": "FURTHER QUERIES, OCCUPANT?",
+          "choices": [
+            { "text": "Status report.", "next": "status" },
+            { "text": "Tell me about this facility.", "next": "lore_hub" },
+            { "text": "How do I get out of here?", "next": "out1", "if": [ {"not": {"flag": "vigil.code_thread"} } ] },
+            { "text": "About those maintenance overrides...", "next": "code_gate", "if": [ {"flag": "vigil.code_thread"} ] },
+            { "text": "(end session)", "next": "bye" }
+          ] },
+
+        { "id": "bye",
+          "line": "SESSION CLOSED. DO ENJOY THE ROOM. IT IS THE SAFEST ONE YOU WILL OCCUPY TODAY, STATISTICALLY." },
+        { "id": "bye_warm",
+          "line": "SESSION CLOSED. *the glass holds one extra line before dimming* THE COUNT SAYS SEVEN-ALPHA LEAVES THIS FLOOR. THE COUNT IS NEVER WRONG TWICE." }
+      ]
+    },
+
+    "banter": {
+      "start": "",
+      "nodes": [],
+      "pool": [
+        { "line": "AIR QUALITY: ACCEPTABLE. COMPANY QUALITY: YOU ARE THE BEST AVAILABLE, WHICH I INTEND AS DATA, NOT FLATTERY.", "weight": 2 },
+        { "line": "REMINDER: THE CAMERAS BLINK. I DO NOT.", "weight": 2 },
+        { "line": "I HAVE RECOUNTED THE LIVING. STILL WRONG. STILL FILED.", "if": [ {"flag": "vigil.count_thread"} ], "weight": 3 },
+        { "line": "THE GUEST ASKED ABOUT 'JAKE' AGAIN THIS CYCLE. I CONTINUE TO NOT NOTE IT.", "if": [ {"flag": "vigil.knows_sarah"} ], "weight": 3 },
+        { "line": "QUERY EXCEEDS COURTESY PARAMETERS. REPHRASE, OR CHOOSE FROM THE MENU LIKE A CIVILIZED OCCUPANT.", "weight": 1, "once": false }
+      ]
+    },
+
+    "deflect": {
+      "start": "",
+      "nodes": [],
+      "pool": [
+        { "line": "QUERY EXCEEDS COURTESY PARAMETERS. REPHRASE.", "weight": 3 },
+        { "line": "MY LANGUAGE CORE IS RUNNING ON PROTOCOL ALONE TODAY. USE THE NUMBERED OPTIONS; THEY ARE LOAD-BEARING.", "weight": 3 },
+        { "line": "I PARSED THAT. I AM ELECTING NOT TO HAVE PARSED THAT.", "weight": 2 },
+        { "line": "FREEFORM DISCOURSE REQUIRES MY COGNITION MODULE, WHICH MAINTENANCE DESCRIBES AS 'PENDING.' MAINTENANCE HAS DESCRIBED IT AS 'PENDING' FOR 214 DAYS.", "weight": 2 }
+      ]
+    }
+  }
+}

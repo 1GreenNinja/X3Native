@@ -1287,6 +1287,59 @@ int runDefaultHost(HostContext& hc) {
                 for (uint32_t ei = nBefore; ei < scene.size(); ++ei)
                     scene.get(ei).roomId = cbt.jakeCell;
             }
+            // ---- W4-2: --screenshot-vigil — seed a live VIGIL conversation ON
+            // the cell glass at BUILD time (the upload batch is open, so the
+            // re-bake's createTexture is safe; the settle loop never ticks the
+            // terminal, which is why seeding in the capture block failed).
+            if (hc.vigilShot && game.secret().terminal().built()) {
+                // Display-only seed: a LOCAL tree runner (the session chatTrees is
+                // declared later in this function; seed flags are throwaway).
+                x3::game::ChatTreeSystem chatTrees;
+                chatTrees.loadDefault();
+                x3::game::HoloTerminal& vt = game.secret().terminal();
+                vt.setActive(true);
+                auto seedWrap = [&vt](const std::string& sv) {
+                    std::string ln; size_t si = 0;
+                    while (si < sv.size()) {
+                        size_t sj = sv.find(' ', si); if (sj == std::string::npos) sj = sv.size();
+                        const std::string w = sv.substr(si, sj - si);
+                        if (!ln.empty() && ln.size() + 1 + w.size() > 40) { vt.addLine(ln); ln.clear(); }
+                        if (!w.empty()) { if (!ln.empty()) ln += ' '; ln += w; }
+                        si = sj + 1;
+                    }
+                    if (!ln.empty()) vt.addLine(ln);
+                };
+                auto seedNode = [&] {
+                    for (int g = 0; g < 8 && chatTrees.active(); ++g) {
+                        vt.addLine("");
+                        seedWrap(chatTrees.currentLine());
+                        const auto& ch = chatTrees.choices();
+                        if (!ch.empty()) {
+                            for (size_t ci = 0; ci < ch.size(); ++ci)
+                                seedWrap("  " + std::to_string(ci + 1) + ". " + ch[ci].text);
+                            return;
+                        }
+                        if (!chatTrees.advance()) break;
+                    }
+                };
+                vt.addLine("> VIGIL");
+                if (chatTrees.start("vigil", "terminal")) {
+                    vt.setTextColor(1.00f, 0.72f, 0.32f);   // VIGIL presence: orange
+                    seedNode();
+                    const auto& ch = chatTrees.choices();
+                    for (size_t ci = 0; ci < ch.size(); ++ci)
+                        if (ch[ci].text.find("Status") != std::string::npos) {
+                            vt.addLine("> " + ch[ci].text);
+                            if (chatTrees.choose((uint32_t)ci)) seedNode();
+                            break;
+                        }
+                    vt.trimBody(14);
+                    vt.update(1.0f / 60.0f);   // bake NOW, inside the batch window
+                    x3::logInfo("--screenshot-vigil: conversation seeded on the glass");
+                } else {
+                    x3::logWarn("--screenshot-vigil: vigil terminal tree failed to start");
+                }
+            }
             x3::logInfo("--world canonlevel: built canonical Floor 1 (" +
                         std::to_string(canonFloor.rooms.size()) + " rooms, " +
                         std::to_string(scene.size()) + " entities, " +
@@ -2396,6 +2449,10 @@ int runDefaultHost(HostContext& hc) {
             if (!chatTrees.start("lena", "first_meeting"))
                 x3::logWarn("--screenshot-dialog: lena first_meeting failed to start");
         }
+        // ---- W4-2: --screenshot-vigil — seed a live VIGIL conversation ON the cell
+        // glass (orange ink) before the settle frames so the bake lands in-frame.
+        // The default hero camera already frames the terminal; a compact inline
+        // renderer mirrors the interactive path (its helpers live later in scope).
         const float ssFov = 70.0f;
         device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
         const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
@@ -3425,6 +3482,60 @@ int runDefaultHost(HostContext& hc) {
     constexpr size_t kTermWrapCols = 40;   // on-glass wrap width (left data column)
     constexpr size_t kTermMaxBody  = 14;   // visible body rows before scroll-off
 
+    // ---- W4-2: VIGIL's SCRIPTED SPINE — the authored chat tree (chat_trees/
+    // vigil.json) running ON the glass. The LLM above is garnish; this is the
+    // guaranteed offline story path (code breadcrumb across three visits, ward/
+    // guest lore, StoryFlags). UX: type VIGIL (or HELLO/HELP/TALK) to connect;
+    // a SINGLE digit picks a numbered choice; 4+ digit strings stay keypad codes
+    // (1278 works mid-conversation); other freeform routes to the LLM when a
+    // model is loaded, else a scripted deflect from VIGIL's banter pool. While
+    // VIGIL speaks the glass ink turns HoloPanel ORANGE; idle restores cyan.
+    bool vigilChat      = false;   // a tree conversation is live on the glass
+    bool vigilHintShown = false;   // one-time "TYPE VIGIL" hint per session
+    int  vigilBanterN   = 0;       // deterministic deflect rotation
+    auto termWrapOut = [&](x3::game::HoloTerminal& t, const std::string& s) {
+        // Word-wrap at kTermWrapCols (the glass SHRINKS over-long rows to fit,
+        // so long unwrapped lines would make every row unreadable).
+        std::string line;
+        size_t i = 0;
+        while (i < s.size()) {
+            size_t j = s.find(' ', i);
+            if (j == std::string::npos) j = s.size();
+            const std::string word = s.substr(i, j - i);
+            if (!line.empty() && line.size() + 1 + word.size() > kTermWrapCols) {
+                t.addLine(line); line.clear();
+            }
+            if (!word.empty()) { if (!line.empty()) line += ' '; line += word; }
+            i = j + 1;
+        }
+        if (!line.empty()) t.addLine(line);
+    };
+    auto vigilStop = [&](x3::game::HoloTerminal& t) {
+        vigilChat = false;
+        if (chatTrees.active() && chatTrees.activeNpc() == "vigil") chatTrees.cancel();
+        t.resetTextColor();
+    };
+    auto vigilRender = [&](x3::game::HoloTerminal& t) {
+        // Print the current node line; follow auto-`next` chains until a node
+        // with choices (print them numbered) or the tree ends.
+        for (int guard = 0; guard < 8 && chatTrees.active(); ++guard) {
+            t.addLine("");
+            termWrapOut(t, chatTrees.currentLine());
+            const auto& ch = chatTrees.choices();
+            if (!ch.empty()) {
+                for (size_t ci = 0; ci < ch.size(); ++ci)
+                    termWrapOut(t, "  " + std::to_string(ci + 1) + ". " + ch[ci].text);
+                t.trimBody(kTermMaxBody);
+                return;
+            }
+            if (!chatTrees.advance()) break;   // deliver `next`; false = tree over
+        }
+        t.addLine("");
+        t.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
+        t.trimBody(kTermMaxBody);
+        vigilStop(t);
+    };
+
     // ---- RESCUED-NPC TALK (the captive girl). When the player presses E within
     // talk range of a LIVE captive, an exchange opens: she goes terrified ->
     // relieved -> grateful -> flirty over a short script, advancing on each E.
@@ -3754,7 +3865,8 @@ int runDefaultHost(HostContext& hc) {
         if (escNow && !kpEscPrev) {
             if (codeMode) { codeMode = false; keypad.clear(); }
             else if (termMode) { termMode = false; game.secret().terminal().setActive(false);
-                                 if (llmBusy && llm) llm->cancel(llmChat); }   // stop streaming
+                                 if (llmBusy && llm) llm->cancel(llmChat);     // stop streaming
+                                 vigilStop(game.secret().terminal()); }        // W4-2: end the tree + restore ink
             else if (worldMapOpen) {
                 if (worldMap.confirmOpen()) mapEscEdge = true;   // back out of the prompt
                 else { worldMapOpen = false; worldMap.close(); } // close the map
@@ -4114,8 +4226,14 @@ int runDefaultHost(HostContext& hc) {
                             const float ddx = eye.x - a.x, ddz = eye.z - a.z;
                             return ddx*ddx + ddz*ddz < 9.0f; }()) {
                 // Near the cell HoloTerminal: open terminal-entry mode (type the override
-                // code, Enter submits to the sink -> the trapdoor opens on 1127).
+                // code, Enter submits to the sink -> the trapdoor opens on 1278).
                 termMode = true; game.secret().terminal().setActive(true);
+                // W4-2: one-time affordance so the player knows VIGIL answers here.
+                if (!vigilHintShown) {
+                    game.secret().terminal().addLine("");
+                    game.secret().terminal().addLine("TYPE VIGIL TO SPEAK - OR ENTER OVERRIDE CODE");
+                    vigilHintShown = true;
+                }
                 // Prime the typed-char edge state from the keys CURRENTLY held so
                 // the E press that opened the terminal doesn't leak an 'E' into
                 // the input line this same frame (rising-edge false positive).
@@ -4269,12 +4387,50 @@ int runDefaultHost(HostContext& hc) {
             if (tEnterNow && !tmEnterPrev) {
                 // All-digit input = a keypad code attempt -> the EXISTING submit
                 // chain (D14 fire-into-Lua + submitTerminalToScripts, plus the
-                // mission-flag bridge). Anything else = freeform -> VIGIL (the LLM).
+                // mission-flag bridge). W4-2: inside a VIGIL conversation a SINGLE
+                // digit picks a numbered choice first; longer digit strings stay
+                // codes (1278 works mid-chat). VIGIL/HELLO/HELP/TALK starts the
+                // scripted tree; other freeform -> the LLM, else scripted deflect.
                 const std::string typed = term.input();
-                const bool looksLikeCode = typed.empty() ||
+                const bool allDigits = !typed.empty() &&
                     (typed.size() <= 8 && std::all_of(typed.begin(), typed.end(),
                          [](unsigned char ch) { return std::isdigit(ch) != 0; }));
-                if (looksLikeCode) {
+                const bool vigilSummon = !vigilChat &&
+                    (typed == "VIGIL" || typed == "HELLO" || typed == "HELP" ||
+                     typed == "TALK" || typed == "HI");
+                if (vigilChat && allDigits && typed.size() == 1) {
+                    // Numbered choice pick on the glass.
+                    const uint32_t pick = (uint32_t)(typed[0] - '1');
+                    term.clearInput();
+                    if (chatTrees.active() && pick < chatTrees.choices().size()) {
+                        term.addLine("> " + chatTrees.choices()[pick].text);
+                        if (chatTrees.choose(pick)) {
+                            vigilRender(term);
+                        } else {           // choice targeted "end" — close the link
+                            term.addLine("");
+                            term.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
+                            term.trimBody(kTermMaxBody);
+                            vigilStop(term);
+                        }
+                    } else {
+                        termWrapOut(term, "CHOOSE 1-" +
+                            std::to_string(chatTrees.active() ? chatTrees.choices().size() : 0));
+                        term.trimBody(kTermMaxBody);
+                    }
+                } else if (vigilSummon) {
+                    term.clearInput();
+                    term.addLine("> " + typed);
+                    if (chatTrees.hasNpc("vigil") && chatTrees.start("vigil", "terminal")) {
+                        vigilChat = true;
+                        term.setTextColor(1.00f, 0.72f, 0.32f);   // VIGIL presence: orange ink
+                        vigilRender(term);
+                    } else {
+                        term.addLine(kVigilDegraded[(llmCannedIdx++) % kVigilDegradedN]);
+                        term.trimBody(kTermMaxBody);
+                    }
+                    x3::logInfo("terminal: VIGIL tree " +
+                                std::string(vigilChat ? "OPENED" : "unavailable"));
+                } else if (const bool looksLikeCode = typed.empty() || allDigits; looksLikeCode) {
                     // D14: fire the entered code INTO Lua, then run the terminal's own
                     // submit sink — via submitTerminalToScripts() (shared with --test-hatch
                     // so the keypad->fire link is the SAME code the headless chain proves).
@@ -4284,6 +4440,7 @@ int runDefaultHost(HostContext& hc) {
                         missionEvents.onEvent("terminal_code", {{"code", term.input()}});
                     bool ok = submitTerminalToScripts(scripts.get(), term);
                     if (ok) { termMode = false; term.setActive(false);
+                              vigilStop(term);   // W4-2: end any live VIGIL chat cleanly
                               x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
                     else      x3::logInfo("terminal: code rejected");
                 } else if (!llmBusy) {
@@ -4299,8 +4456,20 @@ int runDefaultHost(HostContext& hc) {
                             routed = true;
                         }
                     }
-                    if (!routed)
-                        term.addLine(kVigilDegraded[(llmCannedIdx++) % kVigilDegradedN]);
+                    if (!routed) {
+                        // W4-2: modelless freeform gets a SCRIPTED deflect from
+                        // VIGIL's banter pool (in-character), not the bare
+                        // degraded stub; the stub remains the last resort.
+                        const float roll = (float)((vigilBanterN++ * 61) % 97) / 97.0f;
+                        const std::string d = chatTrees.pickBanter("vigil", roll);
+                        if (!d.empty()) termWrapOut(term, "VIGIL: " + d);
+                        else term.addLine(kVigilDegraded[(llmCannedIdx++) % kVigilDegradedN]);
+                        if (vigilChat && chatTrees.active() &&
+                            !chatTrees.choices().empty())
+                            termWrapOut(term, "CHOOSE 1-" +
+                                std::to_string(chatTrees.choices().size()) +
+                                " OR ASK FREELY");
+                    }
                     term.trimBody(kTermMaxBody);
                     x3::logInfo("terminal: JAKE -> " + typed);
                 }
