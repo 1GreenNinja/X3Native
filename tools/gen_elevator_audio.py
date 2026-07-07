@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Generate the elevator cabin WAVs (muzak loop + cable creak) — offline port of
+the Babylon x3-elevator.js PROCEDURAL audio (Web Audio oscillators) to committed
+PCM, so the C++ cab plays the same charm through the miniaudio path.
+
+  assets/audio/interact/muzak_loop.wav — the 72 BPM pentatonic elevator melody
+      (the JS MUZAK_MELODY table, verbatim) over the soft A3 pad (220/223 beat +
+      330 triangle), gentle lowpass feel via harmonic rolloff. Exactly 24 beats
+      (20.0 s) so startLoop() wraps seamlessly.
+  assets/audio/interact/cable_creak.wav — a 0.55 s cable groan: a descending
+      saw sweep (like the JS playCreak 30-70 Hz -> x0.7) with a touch of noise.
+
+Deterministic (fixed seed), pure stdlib. Run from the repo root:
+    python tools/gen_elevator_audio.py
+"""
+import math
+import random
+import struct
+import wave
+
+SR = 44100
+
+def write_wav(path, samples):
+    data = b''.join(struct.pack('<h', max(-32767, min(32767, int(s * 32767)))) for s in samples)
+    w = wave.open(path, 'wb')
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(SR)
+    w.writeframes(data)
+    w.close()
+    print(f'wrote {path}: {len(samples)/SR:.2f}s')
+
+# ---- MUZAK (x3-elevator.js MUZAK_MELODY, 72 BPM, root A3 220 Hz) ------------
+MELODY = [  # [semitone, beats, velocity]
+    (0, 2, 0.6), (4, 1, 0.4), (7, 1, 0.5), (12, 2, 0.3),
+    (9, 1, 0.4), (7, 2, 0.5), (4, 1, 0.3), (0, 1, 0.4),
+    (2, 2, 0.5), (4, 1, 0.4), (7, 2, 0.6), (9, 1, 0.3),
+    (12, 2, 0.5), (9, 1, 0.4), (7, 1, 0.5), (4, 2, 0.3),
+]
+BPM = 72.0
+ROOT = 220.0
+BEAT = 60.0 / BPM
+TOTAL_BEATS = sum(d for _, d, _ in MELODY)          # 24 beats
+DUR = TOTAL_BEATS * BEAT                             # 20.0 s
+
+n = int(DUR * SR)
+buf = [0.0] * n
+
+# Pad: 220 + 223 (slow amplitude beat) sine + 330 triangle, with a very slow
+# tremolo standing in for the JS's 0.1 Hz LFO filter sweep.
+for i in range(n):
+    t = i / SR
+    lfo = 0.75 + 0.25 * math.sin(2 * math.pi * 0.1 * t)
+    pad = (math.sin(2 * math.pi * 220.0 * t) + math.sin(2 * math.pi * 223.0 * t)) * 0.5
+    tri = 2.0 / math.pi * math.asin(math.sin(2 * math.pi * 330.0 * t))
+    buf[i] += (pad * 0.030 + tri * 0.018) * lfo
+
+# Melody: soft sines w/ the JS envelope (50 ms attack, hold to 70 %, exp tail).
+pos = 0.0
+for semi, beats, vel in MELODY:
+    f = ROOT * (2.0 ** (semi / 12.0))
+    nd = beats * BEAT * 0.9
+    s0 = int(pos * SR)
+    for i in range(int(nd * SR)):
+        t = i / SR
+        if t < 0.05:
+            env = t / 0.05
+        elif t < nd * 0.7:
+            env = 1.0
+        else:
+            env = math.exp(-6.0 * (t - nd * 0.7) / max(1e-3, nd * 0.3))
+        # Fundamental + a whisper of the 2nd harmonic (the lowpass'd sine feel).
+        v = math.sin(2 * math.pi * f * t) + 0.15 * math.sin(2 * math.pi * 2 * f * t)
+        j = s0 + i
+        if j < n:
+            buf[j] += v * env * 0.045 * vel
+    pos += beats * BEAT
+
+# 30 ms loop-seam crossfade (fade the tail into the head so wrap is click-free).
+xf = int(0.03 * SR)
+for i in range(xf):
+    a = i / xf
+    buf[n - xf + i] = buf[n - xf + i] * (1 - a) + buf[i] * a
+write_wav('assets/audio/interact/muzak_loop.wav', buf)
+
+# ---- CABLE CREAK (playCreak: saw ~30-70 Hz gliding to x0.7, bandpassy) ------
+random.seed(1127)
+dur = 0.55
+n2 = int(dur * SR)
+buf2 = [0.0] * n2
+f0 = 30.0 + random.random() * 40.0
+phase = 0.0
+lp = 0.0
+for i in range(n2):
+    t = i / SR
+    f = f0 * (1.0 - 0.3 * (t / dur))                 # glide down to x0.7
+    phase += f / SR
+    saw = 2.0 * (phase - math.floor(phase + 0.5))
+    noise = (random.random() * 2 - 1) * 0.25
+    # One-pole lowpass ~250 Hz stands in for the JS bandpass Q=3 resonance.
+    x = saw * 0.8 + noise * 0.2
+    lp += (x - lp) * (2 * math.pi * 250.0 / SR)
+    if t < 0.05:
+        env = t / 0.05 * 0.9
+    else:
+        env = 0.9 * math.exp(-5.5 * (t - 0.05))
+    buf2[i] = lp * env * 0.85
+write_wav('assets/audio/interact/cable_creak.wav', buf2)

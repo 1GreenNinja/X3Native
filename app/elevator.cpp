@@ -287,6 +287,10 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
         case ElevState::DoorsClosing:
             if (!m_doorWasClosing) {              // state-entry edge: doors begin to seal
                 playOneShot(m_snd.doorClose, 0.7f, 1.0f);
+                // MUZAK: the trip's soundtrack starts as the doors seal (JS
+                // startMuzak) — a soft 72 BPM pentatonic loop; stopped on arrival.
+                if (m_audio && m_snd.muzak.valid() && !m_muzakLoop.valid())
+                    m_muzakLoop = m_audio->startLoop(m_snd.muzak, 0.55f, 1.0f);
                 m_doorWasClosing = true;
             }
             m_doorPct = std::max(0.0f, m_doorPct - dt / m_tune.doorSpeed);
@@ -332,6 +336,32 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_discoSlow = false;
             playOneShot(m_snd.ding, 0.85f, 1.0f);   // arrival chime
             m_lastDingStop = m_curStop;
+            // MUZAK off — the ride is over (JS stopMuzak on ARRIVING).
+            if (m_muzakLoop.valid()) { m_audio->stopLoop(m_muzakLoop); m_muzakLoop = {}; }
+            // HORROR EVENT (JS triggerHorror): 8 % on any arrival, ALWAYS on the
+            // bottom stop (the deep is never friendly). Two moods: a light-flicker
+            // + cable groan, or a full emergency stop (shake + klaxon). Skipped in
+            // disco mode — nothing kills a party like a klaxon.
+            if (!m_disco) {
+                m_rng = m_rng * 1664525u + 1013904223u;
+                const bool bottom = (m_curStop == 0);
+                if (bottom || (m_rng >> 16) % 100 < 8) {
+                    m_rng = m_rng * 1664525u + 1013904223u;
+                    if (!bottom && (m_rng & 1u)) {
+                        emergencyStop();                       // shake + klaxon (3 s)
+                    } else if (m_flickerT <= 0.0f && !m_lights.empty()) {
+                        m_flickerT = 0.45f;                    // interior dips dark
+                        m_lightSaveR = m_lights[0].color[0];
+                        m_lightSaveG = m_lights[0].color[1];
+                        m_lightSaveB = m_lights[0].color[2];
+                        m_lights[0].color[0] *= 0.12f;
+                        m_lights[0].color[1] *= 0.12f;
+                        m_lights[0].color[2] *= 0.12f;
+                        playOneShot(m_snd.creak, 0.8f, 0.85f);
+                        x3::logInfo("[elevator] ...the lights dip. Something shifts in the shaft.");
+                    }
+                }
+            }
             m_state = ElevState::DoorsOpening;
             m_stateTime = 0.0f;
             x3::logInfo("[elevator] arrived at stop " + std::to_string(m_target) +
@@ -378,6 +408,26 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_pos.y -= m_fsmSpeed * dt;
             m_totalDist += m_fsmSpeed * dt;
             break;
+    }
+
+    // Cable CREAKS while the cab travels (JS: every 3-5 s over 2 m/s) — the
+    // shaft complains under load. Jittered by the tiny LCG so trips differ.
+    if (m_fsmSpeed > 2.0f && m_snd.creak.valid()) {
+        m_creakTimer -= dt;
+        if (m_creakTimer <= 0.0f) {
+            m_rng = m_rng * 1664525u + 1013904223u;
+            playOneShot(m_snd.creak, 0.55f, 0.9f + 0.25f * (float)((m_rng >> 16) % 100) / 100.0f);
+            m_creakTimer = 3.0f + 2.0f * (float)((m_rng >> 8) % 100) / 100.0f;
+        }
+    }
+    // Horror light-flicker recovery: restore the interior fill when the dip ends.
+    if (m_flickerT > 0.0f) {
+        m_flickerT -= dt;
+        if (m_flickerT <= 0.0f && !m_lights.empty()) {
+            m_lights[0].color[0] = m_lightSaveR;
+            m_lights[0].color[1] = m_lightSaveG;
+            m_lights[0].color[2] = m_lightSaveB;
+        }
     }
 
     // Floor-passing dings while moving (procedural-audio hook).

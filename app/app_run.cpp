@@ -1554,6 +1554,11 @@ int runDefaultHost(HostContext& hc) {
             es.motor     = audio->load(x3::game::resolveAudio("interact/servo_loop.wav"));
             es.keyClick  = audio->load(x3::game::resolveAudio("interact/keypad_click.wav"));
             es.buzz      = audio->load(x3::game::resolveAudio("interact/buzz.wav"));
+            // Cabin experience (Babylon parity): the 72 BPM muzak loop that rides
+            // every trip + the cable groans while travelling. Committed WAVs
+            // (tools/gen_elevator_audio.py) — sound on a fresh clone.
+            es.muzak     = audio->load(x3::game::resolveAudio("interact/muzak_loop.wav"));
+            es.creak     = audio->load(x3::game::resolveAudio("interact/cable_creak.wav"));
             elevator.setSounds(es);
         }
         elevator.setClubStopY(x3::game::ElevatorSystem::kDefaultClubFloorY + cabHY);

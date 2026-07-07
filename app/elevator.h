@@ -51,6 +51,9 @@ struct ElevatorSounds {
     x3::audio::SoundHandle motor;      // looped motor/cable hum (pitched by speed)
     x3::audio::SoundHandle keyClick;   // keypad digit press
     x3::audio::SoundHandle buzz;       // wrong-code / emergency buzzer
+    // Cabin-experience cues (the Babylon x3-elevator.js parity pass):
+    x3::audio::SoundHandle muzak;      // looped 72 BPM pentatonic muzak (rides doors-close -> arrival)
+    x3::audio::SoundHandle creak;      // random cable groan while the cab travels
 };
 
 // ---------------------------------------------------------------------------
@@ -270,6 +273,14 @@ private:
     int    m_lastDingStop = -1;
     ElevatorSounds        m_snd{};            // host-wired SFX (any may be invalid)
     x3::audio::LoopHandle m_motorLoop{};      // live motor-hum voice (0 == none)
+    // Cabin experience (JS parity): muzak rides each trip; cable creaks fire on a
+    // jittered timer while travelling; HORROR events roll on arrival (8 %, or
+    // always on the SUB stop) — a light-flicker+creak or a brief emergency stop.
+    x3::audio::LoopHandle m_muzakLoop{};      // live muzak voice (0 == none)
+    float    m_creakTimer  = 4.0f;            // seconds to the next cable groan
+    float    m_flickerT    = 0.0f;            // >0: interior light is dipped (horror)
+    float    m_lightSaveR  = 0.0f, m_lightSaveG = 0.0f, m_lightSaveB = 0.0f;
+    uint32_t m_rng         = 0x1127u;         // tiny deterministic LCG (creak jitter + horror roll)
     bool   m_doorWasOpening = false;          // edge-detect for the door SFX
     bool   m_doorWasClosing = false;
 
