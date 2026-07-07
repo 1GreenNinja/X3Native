@@ -439,7 +439,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.matlibShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.matlibShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -653,6 +653,7 @@ int main(int argc, char** argv) {
         _hc.captureFootIk    = o.captureFootIk;    _hc.captureFootIkPath = o.captureFootIkPath;
         _hc.destructShot     = o.destructShot;     _hc.destructShotPath = o.destructShotPath;
         _hc.carShot          = o.carShot;          _hc.carShotDir       = o.carShotDir;
+        _hc.upperShot        = o.upperShot;        _hc.upperShotDir     = o.upperShotDir;
         _hc.showroomFpShot   = o.showroomFpShot;   _hc.showroomFpShotPath = o.showroomFpShotPath;
         _hc.showroomRagdollShot = o.showroomRagdollShot; _hc.showroomRagdollShotPath = o.showroomRagdollShotPath;
         _hc.showroomDeckShot = o.showroomDeckShot; _hc.showroomDeckShotPath = o.showroomDeckShotPath;

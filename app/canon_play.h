@@ -99,6 +99,33 @@ private:
 std::string canonGirlsDialogPath();
 
 // ---------------------------------------------------------------------------
+// R-5 (PB fold): UPPER-FLOOR item pickups. The upper floors scatter lightweight
+// room-tagged pickup props (ammo/health/weapon caches, keycards, the nano-booster,
+// lore terminals) so fighting UP the tower has an economy. Rendered as small
+// tinted box props (the same primitive the Floor-1 Security keycard uses);
+// grabbed on proximity in tick(). Re-homed from playable-build eb334e3.
+// ---------------------------------------------------------------------------
+enum class CanonItemKind : uint32_t {
+    Ammo        = 0,   // ammo crate (amber)
+    Health      = 1,   // medkit (red)
+    Weapon      = 2,   // a heavier weapon cache (orange)
+    Keycard     = 3,   // access keycard (cyan)
+    NanoBooster = 4,   // the nano-booster buff (green-cyan)
+    LoreTerminal= 5,   // a readable lore/data terminal (blue)
+    Count       = 6
+};
+const char* canonItemKindName(CanonItemKind k);
+
+// One placed pickup: a Tag::Prop entity (tinted box) at a room-tagged spot.
+struct CanonItem {
+    CanonItemKind kind   = CanonItemKind::Ammo;
+    uint32_t      room   = kNoRoom;   // canon room it sits in (room-tagged)
+    uint32_t      entity = kNoLink;   // its Scene Tag::Prop entity
+    x3::phys::Vec3 pos{};             // world position
+    bool          taken  = false;     // collected (hidden) once grabbed
+};
+
+// ---------------------------------------------------------------------------
 // CanonPlay — the canon Floor-1 gameplay controller.
 // ---------------------------------------------------------------------------
 class CanonPlay {
@@ -224,7 +251,26 @@ public:
     // Per-girl attacker count (Medical Bay interrupt-rescue enemies).
     uint32_t attackerCount() const { return m_attackers.count(); }
 
+    // R-5 (PB fold): upper-floor population + pickups (regular enemies on floors
+    // 2-7 by themed room name; item props with proximity grab).
+    uint32_t upperEnemyCount() const { return m_upperEnemies.count(); }
+    uint32_t upperItemCount()  const { return (uint32_t)m_upperItems.size(); }
+    uint32_t upperItemsTaken() const {
+        uint32_t n = 0; for (const auto& it : m_upperItems) if (it.taken) ++n; return n;
+    }
+    const std::vector<CanonItem>& upperItems() const { return m_upperItems; }
+
 private:
+    // R-5 (PB fold): spawn a themed squad in a named upper-floor room (deterministic
+    // zig scatter, depth-scaled hp/speed) / place one pickup prop / populate 2-7.
+    uint32_t spawnUpperEnemies(const CanonFloor& floor, Scene& scene,
+                               x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                               const char* roomName, const EnemyType* mix, uint32_t mixCount,
+                               int hpBonus, float speedBonus);
+    bool placeUpperItem(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& device,
+                        const char* roomName, CanonItemKind kind, float dx, float dz);
+    void buildUpperFloors(const CanonFloor& floor, Scene& scene,
+                          x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
     // Tag a freshly-spawned monster's Scene entity with `room` (so the cull + lights include
     // it). Returns the room id (for bookkeeping). Idempotent / bounds-checked.
     uint32_t tagRoom(Scene& scene, const MonsterSystem& m, uint32_t room);
@@ -238,6 +284,8 @@ private:
     MonsterManager m_cellGuards;   // a few enemies in side cells
     MonsterManager m_attackers;    // the per-girl Medical-Bay attackers (interrupt rescue)
     MonsterManager m_floorBosses;  // W4-1: the F2-F7 authored boss ladder (one per arena)
+    MonsterManager m_upperEnemies; // R-5 (PB fold): regular squads on floors 2-7
+    std::vector<CanonItem> m_upperItems;   // R-5: the upper-floor pickups
     MonsterSystem  m_martinez;     // the Boss Arena boss
     RescueSystem   m_rescue;       // the 3 girls (Aria/Keisha/Emily) + their boss transforms
     GirlsDialog    m_dialog;       // per-girl 4-state lines
