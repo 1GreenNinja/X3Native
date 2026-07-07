@@ -3445,12 +3445,36 @@ int runDefaultHost(HostContext& hc) {
                               std::string& whoOut, x3::phys::Vec3& posOut,
                               bool& captiveOut) -> bool {
         const x3::game::RescueVictim* v = midFloors.victim();
-        if (!v || v->expired() || !chatTrees.hasNpc(v->name())) return false;
-        const x3::phys::Vec3 vp = v->pos();
-        const float dx = at.x - vp.x, dz = at.z - vp.z;
-        if (dx * dx + dz * dz > reach * reach) return false;
-        whoOut = v->name(); posOut = vp; captiveOut = v->captive();
-        return true;
+        if (v && !v->expired() && chatTrees.hasNpc(v->name())) {
+            const x3::phys::Vec3 vp = v->pos();
+            const float dx = at.x - vp.x, dz = at.z - vp.z;
+            if (dx * dx + dz * dz <= reach * reach) {
+                whoOut = v->name(); posOut = vp; captiveOut = v->captive();
+                return true;
+            }
+        }
+        // W4-1: the rescue girls' authored chat trees (keisha/emily/aria.json — the
+        // full banter/trust/romance arcs) open for COMPANIONS following Jake. Captives
+        // keep the proven NpcDialog exchange (its completion IS the rescue trigger),
+        // so the tree never bypasses the rescue mechanics.
+        if (canonWorld && canonPlay.built()) {
+            const x3::game::RescueSystem& rs = canonPlay.rescue();
+            for (uint32_t i = 0; i < rs.victimCount(); ++i) {
+                const x3::game::RescueVictim& g = rs.victim(i);
+                if (!g.companion() || !chatTrees.hasNpc(g.name())) continue;
+                // Case: tree NPC ids are lowercase (keisha/emily/aria).
+                std::string id = g.name();
+                for (char& c : id) c = (char)tolower((unsigned char)c);
+                if (!chatTrees.hasNpc(g.name()) && !chatTrees.hasNpc(id)) continue;
+                const x3::phys::Vec3 gp = g.pos();
+                const float dx = at.x - gp.x, dz = at.z - gp.z;
+                if (dx * dx + dz * dz > reach * reach) continue;
+                whoOut = chatTrees.hasNpc(g.name()) ? g.name() : id;
+                posOut = gp; captiveOut = false;   // companion -> banter pool
+                return true;
+            }
+        }
+        return false;
     };
     // Find the nearest LIVE captive within `reach` of `at` (XZ). Returns true + its
     // name/world-pos. Shared by the E dispatch and the prompt/box draw so both see
@@ -4784,6 +4808,29 @@ int runDefaultHost(HostContext& hc) {
                 canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
                 canonDressing.tick(dt);   // advance the flickering cell-tube phase
                 g_perf.tick += glfwGetTime() - _pt0;
+                // ---- W4-1: rescue story flags + the extraction goodbye. freed = she
+                // became a Companion (E-rescue); extracted = she reached the F2 elevator
+                // lobby and left the level. Flags gate later content (chat trees /
+                // objectives); the goodbye rides the existing NPC bark line. ----
+                {
+                    static const char* kGirlKey[3] = { "aria", "keisha", "emily" };
+                    const auto& rs = canonPlay.rescue();
+                    for (uint32_t gi = 0; gi < rs.victimCount() && gi < 3; ++gi) {
+                        const auto& v = rs.victim(gi);
+                        const std::string freed = std::string("girl.freed.") + kGirlKey[gi];
+                        if ((v.companion() || v.extracted()) && !chatTrees.flags().has(freed))
+                            chatTrees.flags().set(freed);
+                    }
+                    const uint32_t ei = rs.extractedThisFrame();
+                    if (ei != UINT32_MAX && ei < 3) {
+                        chatTrees.flags().set(std::string("girl.extracted.") + kGirlKey[ei]);
+                        npcBarkText  = rs.victim(ei).name() +
+                                       ": Thank you, Jake. Find Sarah — end this place.";
+                        npcBarkTimer = 5.0f;
+                        x3::logInfo("[canon] " + rs.victim(ei).name() +
+                                    " extracted at the F2 elevator (story flag set)");
+                    }
+                }
             }
             // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
             // loot collection (latching counts). Apply the gameplay EFFECTS here, where

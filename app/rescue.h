@@ -50,7 +50,10 @@ namespace x3::game {
 //   * Captive  — alive in the ward, timer running; can be rescued (E in range).
 //   * Companion— rescued; follows the player (friendly), timer stopped/cleared.
 //   * Expired  — timer ran out; the captive is gone, its boss has been spawned.
-enum class VictimState : uint32_t { Captive = 0, Companion = 1, Expired = 2 };
+//   * Extracted— (W4-1) a Companion escorted to the extraction point (the F2
+//                elevator lobby): goodbye bark, leaves the level. Freed AND safe —
+//                distinct from Expired so story flags can tell the outcomes apart.
+enum class VictimState : uint32_t { Captive = 0, Companion = 1, Expired = 2, Extracted = 3 };
 
 // The three F2 victims (spec §5). Index doubles as the HUD timer slot order.
 enum class VictimId : uint32_t { Aria = 0, Keisha = 1, Emily = 2 };
@@ -138,6 +141,12 @@ public:
     bool  captive()   const { return m_state == VictimState::Captive; }
     bool  companion() const { return m_state == VictimState::Companion; }
     bool  expired()   const { return m_state == VictimState::Expired; }
+    bool  extracted() const { return m_state == VictimState::Extracted; }
+
+    // W4-1: a Companion reaching the extraction point leaves the level — hide the
+    // entity + drop the body (the Expired vanish pattern) but keep the model owned
+    // (app-lifetime, like everything else). No-op unless Companion. Idempotent.
+    void extract(Scene& scene, x3::phys::IPhysicsWorld& physics);
     float timeLeft()  const { return m_timeLeft; }   // seconds remaining (Captive)
     float timerMax()  const { return m_timerMax; }
     x3::phys::Vec3 pos() const { return m_pos; }
@@ -270,6 +279,18 @@ public:
     void activate() { m_hubReached = true; }
     void setHubReached(bool reached) { m_hubReached = reached; }
     bool hubReached() const { return m_hubReached; }
+
+    // ---- W4-1: extraction point (the safe hand-off) ------------------------
+    // When set, any Companion whose XZ distance to `pos` drops under `radius`
+    // EXTRACTS during tick(): she leaves the level (host reads extractedThisFrame
+    // right after tick() for the goodbye bark + story flag). Unset (default) =
+    // companions follow forever (legacy behavior, --test-rescue unchanged).
+    void setExtractionPoint(const x3::phys::Vec3& pos, float radius) {
+        m_extractPos = pos; m_extractR2 = radius * radius; m_extractSet = true;
+    }
+    // Victim index extracted during the LAST tick (girls arrive one at a time), or
+    // UINT32_MAX when none.
+    uint32_t extractedThisFrame() const { return m_extractedThisFrame; }
     // True iff the rescue clocks are running (the hub was reached / activate()d).
     bool active() const { return m_hubReached; }
 
@@ -324,6 +345,11 @@ private:
     x3::rhi::IRenderDevice* m_device = nullptr;
     bool m_hubReached = false;
     bool m_built = false;
+    // ---- W4-1 extraction point (see setExtractionPoint) --------------------
+    x3::phys::Vec3 m_extractPos{};
+    float          m_extractR2 = 0.0f;
+    bool           m_extractSet = false;
+    uint32_t       m_extractedThisFrame = UINT32_MAX;
 };
 
 // Headless self-test (--test-rescue). Builds three victims on a HeadlessDevice +

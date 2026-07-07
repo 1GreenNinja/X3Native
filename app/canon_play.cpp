@@ -401,6 +401,11 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
                                      mt);
         m_martinezSpawned = true;
         m_bossRoom = bt.bossArena;
+        // W4-1: cache the arena bounds + center for the one-shot ENTRANCE BEAT in
+        // tick() (tick has no floor reference; the beat needs an inside-arena test).
+        m_arenaX0 = A.x0(); m_arenaX1 = A.x1();
+        m_arenaZ0 = A.z0(); m_arenaZ1 = A.z1();
+        m_arenaCtr = x3::phys::Vec3{ A.cx, roomFloorY(bt.bossArena, 1.2f), A.cz };
         // Tag the boss entity with the Boss Arena room.
         const uint32_t be = m_martinez.entity();
         if (be != kNoLink && be < scene.size()) scene.get(be).roomId = bt.bossArena;
@@ -411,13 +416,24 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
     // being attacked by 1-2 enemies (the L2 interrupt-rescue): kill the attackers to save her
     // before the alien-DNA infection timer. saved -> grateful companion; expired -> boss. ----
     {
-        // The 3 wards: Medical Bay center, and the two flanking rooms (Research Lab above,
-        // Armory below) so the triage spans the spine. Fall back to the Medical Bay itself
-        // (offset spots) if a flanking room is absent.
-        uint32_t wRoomA = bt.medical;
-        uint32_t wRoomB = (bt.research != kNoRoom) ? bt.research : bt.medical;
-        uint32_t wRoomC = (bt.armory   != kNoRoom) ? bt.armory   : bt.medical;
+        // W4-1: the girls live in their AUTHORED F2 wards when the multi-floor tower is
+        // loaded ('Ward A: Keisha' / 'Ward B: Emily' / 'Ward C: Aria' — the ward rooms
+        // W3-2 dressed with hospital cots). Victim-index order is Aria=0/Keisha=1/Emily=2
+        // (RescueSystem's ward slots A/B/C), so map each girl to HER named ward. Fallback
+        // = the original F1 triage rooms (single-floor loads + legacy tests unchanged).
+        const uint32_t ariaWard   = floor.roomByName("Ward C: Aria");
+        const uint32_t keishaWard = floor.roomByName("Ward A: Keisha");
+        const uint32_t emilyWard  = floor.roomByName("Ward B: Emily");
+        const bool f2Wards = ariaWard != kNoRoom && keishaWard != kNoRoom && emilyWard != kNoRoom;
+        uint32_t wRoomA = f2Wards ? ariaWard
+                                  : bt.medical;                                    // Aria
+        uint32_t wRoomB = f2Wards ? keishaWard
+                                  : ((bt.research != kNoRoom) ? bt.research : bt.medical); // Keisha
+        uint32_t wRoomC = f2Wards ? emilyWard
+                                  : ((bt.armory   != kNoRoom) ? bt.armory   : bt.medical); // Emily
         m_girlRooms = { wRoomA, wRoomB, wRoomC };
+        if (f2Wards)
+            x3::logInfo("[canonplay] rescue girls placed in their F2 wards (Keisha/Emily/Aria)");
 
         auto wardPos = [&](uint32_t room, float dx, float dz) -> x3::phys::Vec3 {
             if (room == kNoRoom) return x3::phys::Vec3{ 0, 0, 0 };
@@ -430,6 +446,16 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
 
         // The girls + their boss-on-expiry transforms (RescueSystem owns the lifecycle).
         m_rescue.build(scene, device, physics, m_modelDir, wardA, wardB, wardC);
+
+        // W4-1: the SAFE HAND-OFF — a rescued companion escorted to the F2 elevator
+        // lobby extracts (goodbye + leaves the level). Only set when the tower's F2
+        // lobby exists; single-floor loads keep follow-forever (tests unchanged).
+        if (const uint32_t lob = floor.roomByName("F2: Elevator Lobby"); lob != kNoRoom) {
+            const CanonRoom& L = floor.rooms[lob];
+            m_rescue.setExtractionPoint(
+                x3::phys::Vec3{ L.cx, roomFloorY(lob, 1.0f), L.cz }, 3.5f);
+            x3::logInfo("[canonplay] extraction point set: F2 Elevator Lobby");
+        }
 
         // Tag each victim's entity with its ward room (cull + lights include the captives).
         for (uint32_t vi = 0; vi < m_rescue.victimCount() && vi < (uint32_t)m_girlRooms.size(); ++vi) {
@@ -472,6 +498,63 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
                     std::to_string(m_attackers.count()) + " attackers (room-tagged)");
     }
 
+    // ---- W4-1: THE BOSS LADDER — floors 2-7's authored bosses, spawned in their
+    // dressed Boss Arena rooms (data names 'F<N> Boss: <name>'). Bodies are the
+    // closest on-hand rigs; HP/damage climb the tower. NOTE the F2 boss's DATA name
+    // is 'Mutated Dr. Chen' — a name BANNED in Tim's writing canon — so every
+    // player-facing string says 'Mutated Overseer' until Tim rules on the data.
+    {
+        struct FB { const char* room; const char* show; const char* model;
+                    bool converted; float scale; int hp; int dmg; float speed;
+                    bool ranged; float r, g, b; };
+        const FB ladder[] = {
+            { "F2 Boss: Mutated Dr. Chen", "Mutated Overseer",  "marcus_webb_anim.glb",
+              false, 1.5f,  380, 16, 3.0f, false, 0.62f, 0.90f, 0.62f },  // sickly green
+            { "F3 Boss: Experiment #7",    "Experiment #7",     "alien_crawler_anim.glb",
+              false, 1.7f,  440, 18, 3.6f, false, 0.95f, 0.85f, 0.80f },  // pale lab-grown
+            { "F4 Boss: The Collective",   "The Collective",    "Characters/Drone.glb",
+              true,  2.2f,  500, 18, 3.2f, true,  0.35f, 0.40f, 0.50f },  // dark node
+            { "F5 Boss: Swarm Controller", "Swarm Controller",  "DroneOscillating.glb",
+              false, 1.9f,  560, 20, 3.4f, true,  0.90f, 0.70f, 0.30f },  // amber swarm
+            { "F6 Boss: Alien Overseer",   "Alien Overseer",    "OverLordEnforcer99.glb",
+              false, 1.5f,  640, 22, 3.3f, false, 0.80f, 0.75f, 0.90f },  // pale violet
+            { "F7 Boss: Jake's Clone",     "Jake's Clone",      "Jake_22_actions.glb",
+              false, 1.05f, 720, 24, 4.2f, false, 0.58f, 0.56f, 0.68f },  // the dark mirror
+              // (R2 eye round: 0.35 tint rendered him INVISIBLE in the dim Executive
+              //  arena — 0.58/0.56/0.68 keeps the cold pallor, reads at range)
+        };
+        int spawned = 0;
+        for (const FB& fb : ladder) {
+            const uint32_t room = floor.roomByName(fb.room);
+            if (room == kNoRoom) continue;   // single-floor load: no upper arenas
+            const CanonRoom& A = floor.rooms[room];
+            MonsterSystem::Tuning t = tuningFor(EnemyType::DominionTrooper);
+            t.type           = MonsterType::Boss;
+            t.hp             = fb.hp;
+            t.damage         = fb.dmg;
+            t.chaseSpeed     = fb.speed;
+            t.attackRange    = 2.4f;
+            t.attackCooldown = 1.1f;
+            t.attackWindup   = 0.30f;
+            t.ranged         = fb.ranged;
+            t.modelFile        = fb.model;
+            t.modelDirOverride = fb.converted ? convertedGlbRoot() : riggedGlbRoot();
+            t.standUpZtoY      = false;      // rigged sources + Drone.glb are Y-up
+            t.modelScale       = fb.scale;
+            t.tint[0] = fb.r; t.tint[1] = fb.g; t.tint[2] = fb.b; t.tint[3] = 1.0f;
+            const uint32_t i = m_floorBosses.spawn(scene, device, physics, m_modelDir,
+                x3::phys::Vec3{ A.cx, roomFloorY(room, kBossFootUp), A.cz }, t);
+            tagRoom(scene, m_floorBosses.at(i), room);
+            ++m_taggedHostiles;
+            ++spawned;
+            x3::logInfo(std::string("[canonplay] floor boss spawned: ") + fb.show +
+                        " (" + fb.room + ")");
+        }
+        if (spawned)
+            x3::logInfo("[canonplay] boss ladder: " + std::to_string(spawned) +
+                        " floor bosses live (F2-F7)");
+    }
+
     // ---- Per-girl dialog (staging JSON; baked fallback on absence). ----
     m_dialog.load(girlsDialogPath);
 
@@ -510,6 +593,7 @@ void CanonPlay::shutdown() {
     m_mainHall.shutdown();
     m_cellGuards.shutdown();
     m_attackers.shutdown();
+    m_floorBosses.shutdown();   // W4-1 boss ladder
     m_rescue.bosses().shutdown();
     if (m_martinezSpawned) m_martinez.shutdownRagdoll();
 }
@@ -524,8 +608,21 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     m_mainHall.update(dt, scene, physics, eye, player, attackFx);
     m_cellGuards.update(dt, scene, physics, eye, player, attackFx);
     m_attackers.update(dt, scene, physics, eye, player, attackFx);
+    m_floorBosses.update(dt, scene, physics, eye, player, attackFx);   // W4-1 boss ladder
     if (m_martinezSpawned)
         m_martinez.update(dt, scene, physics, eye, player, attackFx);
+    // W4-1: MARTINEZ ENTRANCE BEAT — the first time the player steps into the Boss
+    // Arena while Martinez lives, fire a one-shot taunt cue at the arena (the host's
+    // cue sink maps EnemyTaunt onto the creature vocal — an audible "he's HERE").
+    // A music sting is skipped honestly: the mixer has one music channel (task #11).
+    if (!m_bossIntroFired && m_martinezSpawned && m_martinez.alive() &&
+        m_bossRoom != kNoRoom &&
+        eye.x > m_arenaX0 && eye.x < m_arenaX1 &&
+        eye.z > m_arenaZ0 && eye.z < m_arenaZ1) {
+        m_bossIntroFired = true;
+        if (m_cueSink) m_cueSink(GameCue{ CueKind::EnemyTaunt, m_arenaCtr, 1.0f });
+        x3::logInfo("[canonplay] BOSS INTRO: Martinez marks the intruder");
+    }
     // Rescue: tick the girls' timers / companion follow, and (on expiry) spawn the boss.
     // The rescue clocks run once activated (the host activates on reaching the medical hub).
     m_rescue.tick(dt, scene, physics, eye);
@@ -550,6 +647,7 @@ FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& di
     if (tryGroup(m_mainHall)) return best;
     if (tryGroup(m_cellGuards)) return best;
     if (tryGroup(m_attackers)) return best;
+    if (tryGroup(m_floorBosses)) return best;   // W4-1 boss ladder
     if (tryGroup(m_rescue.bosses())) return best;
     if (m_martinezSpawned) {
         FireResult r = m_martinez.fire(eye, dir, scene, physics, damage, type);
@@ -585,6 +683,7 @@ void CanonPlay::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     drawManagerCulled(m_mainHall, device, frame, scene);
     drawManagerCulled(m_cellGuards, device, frame, scene);
     drawManagerCulled(m_attackers, device, frame, scene);
+    drawManagerCulled(m_floorBosses, device, frame, scene);   // W4-1 boss ladder
     // Martinez: gate by the Boss Arena room.
     if (m_martinezSpawned) {
         const uint32_t be = m_martinez.entity();
@@ -607,7 +706,7 @@ void CanonPlay::drawViewmodel(x3::rhi::IRenderDevice& device, const x3::rhi::Fra
 
 int CanonPlay::enemiesRemaining() const {
     int n = (int)(m_mainHall.aliveCount() + m_cellGuards.aliveCount() + m_attackers.aliveCount()
-                + m_rescue.bosses().aliveCount());
+                + m_floorBosses.aliveCount() + m_rescue.bosses().aliveCount());
     if (m_martinezSpawned && m_martinez.alive()) n += 1;
     return n;
 }
@@ -621,6 +720,7 @@ uint32_t CanonPlay::liveEnemyMarks(EnemyMark* out, uint32_t cap) const {
     addManager(m_mainHall,   "HOSTILE");
     addManager(m_cellGuards, "GUARD");
     addManager(m_attackers,  "ATTACKER");
+    addManager(m_floorBosses, "BOSS");   // W4-1 boss ladder (F2-F7)
     addManager(m_rescue.bosses(), "BOSS");
     if (m_martinezSpawned && m_martinez.alive() && n < cap) {
         out[n].pos = m_martinez.pos(); out[n].label = "MARTINEZ"; ++n;

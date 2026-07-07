@@ -209,6 +209,7 @@ private:
     MonsterManager m_mainHall;     // animated squad down the Main Hall
     MonsterManager m_cellGuards;   // a few enemies in side cells
     MonsterManager m_attackers;    // the per-girl Medical-Bay attackers (interrupt rescue)
+    MonsterManager m_floorBosses;  // W4-1: the F2-F7 authored boss ladder (one per arena)
     MonsterSystem  m_martinez;     // the Boss Arena boss
     RescueSystem   m_rescue;       // the 3 girls (Aria/Keisha/Emily) + their boss transforms
     GirlsDialog    m_dialog;       // per-girl 4-state lines
@@ -224,6 +225,11 @@ private:
     uint32_t m_taggedHostiles = 0;
     bool     m_martinezSpawned = false;
     bool     m_built           = false;
+    // W4-1: one-shot Martinez entrance beat (arena bounds cached at build — tick()
+    // has no floor reference to query rooms from).
+    bool     m_bossIntroFired = false;
+    float    m_arenaX0 = 0, m_arenaX1 = 0, m_arenaZ0 = 0, m_arenaZ1 = 0;
+    x3::phys::Vec3 m_arenaCtr{};
 };
 
 // Headless self-test (--test-canonplay). Loads Floor 1, builds the canon floor + CanonPlay
