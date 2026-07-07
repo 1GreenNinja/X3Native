@@ -11,6 +11,20 @@ project(X3Native
     LANGUAGES CXX
 )
 
+# ---- MSB3073 guard (W6-1) ----
+# vcpkg's applocal POST_BUILD bakes an ABSOLUTE pwsh path at configure time. With
+# Store PowerShell that path is versioned (WindowsApps/Microsoft.PowerShell_<ver>_...)
+# and MOVES on every auto-update, after which every already-configured build dir fails
+# post-build with MSB3073 ("pwsh.exe not found") even though the exe linked fine.
+# Pin vcpkg to the per-user app-execution ALIAS instead — a symlink Windows repoints
+# on every update — and FORCE it so stale caches self-heal on any reconfigure.
+if(WIN32 AND EXISTS "$ENV{LOCALAPPDATA}/Microsoft/WindowsApps/pwsh.exe")
+    set(Z_VCPKG_PWSH_PATH "$ENV{LOCALAPPDATA}/Microsoft/WindowsApps/pwsh.exe"
+        CACHE FILEPATH "pwsh via the stable app-execution alias (survives Store updates)" FORCE)
+    set(Z_VCPKG_POWERSHELL_PATH "$ENV{LOCALAPPDATA}/Microsoft/WindowsApps/pwsh.exe"
+        CACHE INTERNAL "The path to the PowerShell implementation to use.")
+endif()
+
 # ---- Global C++ settings ----
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
