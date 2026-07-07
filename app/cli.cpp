@@ -89,6 +89,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-canonlevel") o.testCanonLevel = true;
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-canonplay") o.testCanonPlay = true;
+        else if (a == "--test-goldenpath") o.testGoldenPath = true;   // W5-3 endgame spine
         else if (a == "--test-phase2a") o.testPhase2a = true;
         else if (a == "--test-phase2b") o.testPhase2b = true;
         else if (a == "--test-anim") o.testAnim = true;
