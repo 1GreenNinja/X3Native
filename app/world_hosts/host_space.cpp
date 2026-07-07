@@ -45,8 +45,12 @@ int hostSpace(HostContext& hc) {
         { x3::rhi::IRenderDevice::SkyParams sp{};
           sp.enabled = true;
           sp.sunDir[0] = 0.6f; sp.sunDir[1] = 0.5f; sp.sunDir[2] = 0.62f;   // matches the key light corner
-          sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.90f;
-          sp.sunIntensity = 0.02f;                     // a distant star-disk glint, not daylight
+          sp.sunColor[0] = 0.75f; sp.sunColor[1] = 0.82f; sp.sunColor[2] = 1.0f;
+          // W6-2: 0.02 -> 0.55 — a cool DIRECTIONAL starlight key. The sky sun feeds
+          // the PBR path (the surface tower proves it), and it's the only way hulls
+          // get real shading gradients out here: point rigs vanish at capital-ship
+          // scale, and a flat ambient floor reads as clay. Still far below daylight.
+          sp.sunIntensity = 0.55f;
           sp.haze = 0.0f;                              // haze 0 == DEEP SPACE (stars on the full sphere)
           sp.exposure = 1.0f;
           sp.zenith[0]  = 0.003f; sp.zenith[1]  = 0.003f; sp.zenith[2]  = 0.008f;
@@ -154,30 +158,45 @@ int hostSpace(HostContext& hc) {
         const float dt = 1.0f / 60.0f;
 
         // Draw a ship at a placement matrix (yaw-only for decor; full quat for
-        // the player ship). `bright` brightens the model so it reads in the
-        // dim space scene.
+        // the player ship). W6-2: ships ride the FULL PBR path now (normal/MR/
+        // authored emissive — the same conversion monsters got in Wave 1), so
+        // hulls catch the light rig as lit metal instead of the old basic-path
+        // "×4 + 0.45 floor" albedo hack that flattened them to silhouettes.
+        // `bright` is a gentle exposure assist for deep space (no bounce light),
+        // applied as a modest albedo scale, not a floor.
         auto drawShipAt = [&](const x3::rhi::FrameContext& frame,
                               const float xform[16], float bright) {
             if (shipModel.ok) {
                 for (const auto& dr : shipDrawables) {
                     float fin[16];
                     x3::asset::mulMat4(xform, dr.nodeTransform, fin);
-                    // Boost the ship brightness HARD: in deep space there is no
-                    // bounced light, so the GLB's baseColorFactor (often very
-                    // dark scifi metal) reads near-black under direct lighting
-                    // alone. The tint multiplier is the renderer's albedo
-                    // scale, so we crank it + add a constant floor for the
-                    // headless screenshot. The windowed flight feels the same
-                    // because the lights are also dialed up to match.
-                    float tint[4] = {
-                        dr.baseColorFactor[0] * bright * 4.0f + 0.45f,
-                        dr.baseColorFactor[1] * bright * 4.0f + 0.50f,
-                        dr.baseColorFactor[2] * bright * 4.0f + 0.55f,
+                    const float b = 1.0f + 1.2f * bright;   // exposure assist (no floor)
+                    const float tint[4] = {
+                        dr.baseColorFactor[0] * b,
+                        dr.baseColorFactor[1] * b,
+                        dr.baseColorFactor[2] * b,
                         dr.baseColorFactor[3]
                     };
-                    device->drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
-                                     x3::rhi::TextureHandle{ dr.baseColorTexId },
-                                     tint, fin);
+                    // Authored emissive (canopies/engine glow) at full strength, PLUS a
+                    // faint cool STARLIGHT AMBIENT floor: deep space has no bounce term,
+                    // so pure PBR renders near-black hulls invisible. The floor keeps the
+                    // silhouette readable as dim metal while normals/MR still shade from
+                    // the real light rig. Kept far below bloom threshold (bible: no blobs).
+                    const float amb = 0.020f * (1.0f + bright);   // R3: halved — the
+                                                                  // directional key carries
+                                                                  // the shading now
+                    const float emis[4] = { dr.emissiveFactor[0] + amb,
+                                            dr.emissiveFactor[1] + amb * 1.05f,
+                                            dr.emissiveFactor[2] + amb * 1.25f, 1.0f };
+                    device->drawMeshPBR(frame, x3::rhi::MeshHandle{ dr.meshId },
+                                        x3::rhi::TextureHandle{ dr.baseColorTexId },
+                                        x3::rhi::TextureHandle{ dr.normalTexId },
+                                        x3::rhi::TextureHandle{ dr.mrTexId },
+                                        tint, emis, fin,
+                                        dr.alphaMask, dr.alphaBlend,
+                                        x3::rhi::TextureHandle{ dr.emissiveTexId },
+                                        x3::rhi::TextureHandle{ dr.detailTexId },
+                                        dr.detailUvScale);
                 }
             } else {
                 const float white[4] = { bright, bright, bright, 1.0f };
