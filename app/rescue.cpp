@@ -374,9 +374,41 @@ void RescueVictim::driveSkinFromRagdoll() {
     m_skinner.applyExternalGlobals(m_model, *m_device, m_ragNodeGlobals.data(), nc);
 }
 
+// W5-2: shared expiry — the 5-min timer and the interrupt hard cutoff end the same
+// way (RESCUE_SETPIECE_DESIGN.md tier 3 reuses the existing transform path).
+void RescueVictim::expire(Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    m_timeLeft = 0.0f;
+    m_state = VictimState::Expired;
+    m_assaultActive = false;
+    if (m_entity != kNoLink && m_entity < scene.size()) {
+        Entity& me = scene.get(m_entity);
+        me.visible = false;
+        me.body = x3::phys::BodyId{};
+    }
+    if (m_body.valid()) { physics.removeBody(m_body); m_body = x3::phys::BodyId{}; }
+}
+
+void RescueVictim::resolveTier(RescueTier t) {
+    m_tier = t;
+    m_assaultActive = false;
+    m_assaultArmed  = false;   // the tell is over either way
+    if (t == RescueTier::Wounded) {
+        // Aftermath table (§2): subtle blood-multiply — she reads hurt, not gory —
+        // and the run clip is suppressed (walk-pace only) until a story beat clears it.
+        setTint(0.85f, 0.52f, 0.48f, 1.0f);
+        m_runCap = true;
+        x3::logInfo("[rescue] " + m_name + ": interrupt WOUNDED (window " +
+                    std::to_string(m_windowT) + "s) — she is hurt but saved");
+    } else {
+        x3::logInfo("[rescue] " + m_name + ": interrupt CLEAN (window " +
+                    std::to_string(m_windowT) + "s)");
+    }
+}
+
 bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
                         x3::phys::IPhysicsWorld& physics,
-                        const x3::phys::Vec3& playerPos) {
+                        const x3::phys::Vec3& playerPos,
+                        uint32_t aliveAttackers) {
     if (m_state == VictimState::Expired) return false;
 
     // ---- RAGDOLLED: she's collapsed — the host already stepped the shared physics
@@ -415,6 +447,9 @@ bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         float planarSpeed = (dt > 1e-5f) ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
         if (planarSpeed > kCompanionTeleport) planarSpeed = 0.0f;   // ignore snap jumps
+        // W5-2 Wounded aftermath: the run clip is suppressed — cap the locomotion
+        // input under the walk->run blend threshold so she never breaks into a run.
+        if (m_runCap && planarSpeed > 1.9f) planarSpeed = 1.9f;
         driveAnim(dt, planarSpeed);
         return false;
     }
@@ -430,20 +465,46 @@ bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
 
     // ---- Captive: run the countdown once the hub is reached. ----
     if (!hubReached) return false;
+
+    // ---- W5-2: the interrupt window (only when configured; legacy paths — and the
+    // pre-existing tests — see identical behavior when configureAssault was never
+    // called). Arm on approach (the door tell), open the window on close approach
+    // (the burst-in), resolve on last-attacker-death, hard-cutoff to Lost. ----
+    if (m_assaultConfigured && m_tier == RescueTier::None) {
+        const float pdx = playerPos.x - m_pos.x, pdz = playerPos.z - m_pos.z;
+        const float pd2 = pdx * pdx + pdz * pdz;
+        if (!m_assaultArmed && pd2 <= m_armR2) {
+            m_assaultArmed = true;
+            x3::logInfo("[rescue] " + m_name + ": assault ARMED — the door tell begins");
+        }
+        if (m_assaultArmed && !m_assaultActive && pd2 <= m_activeR2) {
+            m_assaultActive = true;
+            m_windowT = 0.0f;
+            x3::logInfo("[rescue] " + m_name + ": interrupt WINDOW OPEN (clean<=" +
+                        std::to_string(m_cleanS) + "s cutoff=" + std::to_string(m_woundedS) + "s)");
+        }
+        if (m_assaultActive) {
+            m_windowT += dt;
+            if (aliveAttackers == 0) {
+                resolveTier(m_windowT <= m_cleanS ? RescueTier::Clean : RescueTier::Wounded);
+            } else if (m_windowT > m_woundedS) {
+                resolveTier(RescueTier::Lost);
+                x3::logInfo("[rescue] " + m_name +
+                            ": interrupt LOST — the window closed with attackers alive");
+                expire(scene, physics);
+                return true;   // host spawns her boss this frame (same as timer expiry)
+            }
+        }
+    }
+
     if (m_timeLeft > 0.0f) {
         m_timeLeft -= dt;
         if (m_timeLeft <= 0.0f) {
             // ---- Timer expired: the captive transforms into a boss. Hide the
             // captive (its entity + body go away; the host spawns the boss via the
             // bossTuning getter so the new boss owns its own mesh/body). ----
-            m_timeLeft = 0.0f;
-            m_state = VictimState::Expired;
-            if (m_entity != kNoLink && m_entity < scene.size()) {
-                Entity& me = scene.get(m_entity);
-                me.visible = false;
-                me.body = x3::phys::BodyId{};
-            }
-            if (m_body.valid()) { physics.removeBody(m_body); m_body = x3::phys::BodyId{}; }
+            if (m_tier == RescueTier::None) m_tier = RescueTier::Lost;
+            expire(scene, physics);
             x3::logInfo("[rescue] " + m_name + ": TIMER EXPIRED — transforming into a boss");
             return true;   // signal the host to spawn the boss this frame
         }
@@ -551,8 +612,36 @@ void RescueSystem::build(Scene& scene, x3::rhi::IRenderDevice& device,
     }
 
     m_built = true;
+
+    // ---- W5-2: per-ward interrupt windows (RESCUE_SETPIECE_DESIGN.md §5 pacing).
+    // A (Aria, 2 attackers, the teaching ward): a generous first window. B (Keisha,
+    // 1 attacker): tight solo — her defiance rewards aggression. C (Emily, 2
+    // attackers): the hardest count, longest clock. Timings resolve on TIME-TO-KILL;
+    // the diegetic ring makes the clock visible (Tim's countdown hedge, rescue_ring).
+    configureAssault((uint32_t)VictimId::Aria,   20.0f, 38.0f);
+    configureAssault((uint32_t)VictimId::Keisha, 16.0f, 30.0f);
+    configureAssault((uint32_t)VictimId::Emily,  26.0f, 48.0f);
+
     x3::logInfo("RescueSystem::build complete — 3 victims (Aria/Keisha/Emily) on " +
-                std::to_string((int)timer) + "s timers (run once the F2 hub is reached)");
+                std::to_string((int)timer) + "s timers (run once the F2 hub is reached)"
+                "; interrupt windows armed (A 20/38, K 16/30, E 26/48)");
+}
+
+// W5-2: scene-truth attacker liveness. A dead monster drops its physics body AND
+// clears its entity's body link (monster.cpp kill path), so a LIVING attacker near
+// the victim is: Tag::Enemy entity, valid body link, within `radius` in XZ.
+uint32_t RescueSystem::aliveAttackersNear(const Scene& scene, const x3::phys::Vec3& pos,
+                                          float radius) {
+    const float r2 = radius * radius;
+    uint32_t n = 0;
+    for (uint32_t e = 0; e < scene.size(); ++e) {
+        const Entity& en = scene.get(e);
+        if (en.tag != (uint32_t)Tag::Monster) continue;
+        if (!en.body.valid()) continue;               // corpse: body link dropped at the kill
+        const float dx = en.transform[12] - pos.x, dz = en.transform[14] - pos.z;
+        if (dx * dx + dz * dz <= r2) ++n;
+    }
+    return n;
 }
 
 void RescueSystem::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -560,9 +649,28 @@ void RescueSystem::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics
     if (!m_built) return;
 
     m_extractedThisFrame = UINT32_MAX;
+    m_tierResolvedThisFrame = UINT32_MAX;
+    // W5-2: lazily build the countdown-ring pip on the first frame any window runs.
+    if (m_ringEnabled && !m_ringPip.valid() && m_device) {
+        bool anyActive = false;
+        for (const auto& v : m_victims) if (v->assaultActive()) { anyActive = true; break; }
+        if (anyActive) {
+            x3::prims::PrimMesh pip = x3::prims::makeBox(0.055f, 0.012f, 0.028f,
+                                                         0.0f, 0.0f, 0.0f, 1.0f);
+            m_ringPip = m_device->createMesh(pip.verts.data(), (uint32_t)pip.verts.size(),
+                                             pip.index.data(), (uint32_t)pip.index.size());
+        }
+    }
     for (size_t vi = 0; vi < m_victims.size(); ++vi) {
         auto& v = m_victims[vi];
-        const bool expiredNow = v->tick(dt, m_hubReached, scene, physics, playerPos);
+        // W5-2: scene-truth attacker count near this victim (7 m ward bubble); only
+        // meaningful while her window is armed/active — cheap either way (3 victims).
+        const uint32_t alive = aliveAttackersNear(scene, v->pos(), 7.0f);
+        const RescueTier tierBefore = v->tier();
+        const bool expiredNow = v->tick(dt, m_hubReached, scene, physics, playerPos, alive);
+        if (tierBefore == RescueTier::None &&
+            (v->tier() == RescueTier::Clean || v->tier() == RescueTier::Wounded))
+            m_tierResolvedThisFrame = (uint32_t)vi;   // host: flag + bark on Wounded
         if (expiredNow && m_device) {
             // Spawn the boss the victim transforms into, at the victim's ward spot.
             const x3::phys::Vec3 at{ v->pos().x, 0.4f, v->pos().z };
@@ -606,6 +714,32 @@ void RescueSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                         const Scene& scene) const {
     for (const auto& v : m_victims) v->draw(device, frame, scene);
     m_bosses.drawAll(device, frame, scene);
+
+    // ---- W5-2: the DIEGETIC countdown ring — a circle of emissive pips around an
+    // active tableau, pips dying as the window drains, amber -> red. In-world (not a
+    // HUD arc) per the bible's instrument law: the countdown is a thing in the room.
+    if (!m_ringEnabled || !m_ringPip.valid()) return;
+    constexpr int   kPips   = 24;
+    constexpr float kRingR  = 1.15f;
+    constexpr float kPi2    = 6.28318530718f;
+    const x3::rhi::TextureHandle white{ 0 };
+    for (const auto& v : m_victims) {
+        if (!v->assaultActive()) continue;
+        const float frac = v->windowFrac();               // 1 -> 0 as time drains
+        const int   lit  = (int)(frac * kPips + 0.5f);
+        const x3::phys::Vec3 p = v->pos();
+        // Amber early, blood-red as the window closes (lerp by remaining fraction).
+        const float cr = 1.0f, cg = 0.15f + 0.55f * frac, cb = 0.08f * frac;
+        for (int i = 0; i < lit; ++i) {
+            const float a = kPi2 * (float)i / (float)kPips;
+            const float c = std::cos(a), s = std::sin(a);
+            float t[16] = { c,0,-s,0,  0,1,0,0,  s,0,c,0,
+                            p.x + c * kRingR, p.y + 0.18f, p.z + s * kRingR, 1 };
+            const float col[4]  = { cr, cg, cb, 1.0f };
+            const float emis[4] = { cr, cg, cb, 1.35f };
+            device.drawMeshEmissive(frame, m_ringPip, white, col, emis, t);
+        }
+    }
 }
 
 std::vector<RescueTimerHud> RescueSystem::hudTimers() const {
@@ -808,6 +942,99 @@ bool runRescueSelfTest() {
         ex.tick(0.1f, exScene, *physics, player);
         rcheck(ex.extractedThisFrame() == UINT32_MAX && ex.victim(0).extracted(),
                "R9d extraction is one-shot + terminal");
+    }
+
+    // =======================================================================
+    // W5-2 — the INTERRUPT WINDOW (R10-R13). Fresh system per case; "attackers"
+    // are Tag::Enemy entities with live physics bodies (a kill = drop the body,
+    // exactly what monster.cpp does), so aliveAttackersNear sees scene truth.
+    // =======================================================================
+    auto spawnFakeAttacker = [&](Scene& sc, x3::phys::IPhysicsWorld& ph,
+                                 const x3::phys::Vec3& at) -> uint32_t {
+        Entity en;
+        en.tag = (uint32_t)Tag::Monster;
+        en.visible = true;
+        en.body = ph.addBox(x3::phys::Vec3{0.4f,0.9f,0.4f}, at, 0.0f, x3::phys::Layer::Enemy);
+        en.transform[12] = at.x; en.transform[13] = at.y; en.transform[14] = at.z;
+        return sc.add(en);
+    };
+    auto killFakeAttacker = [&](Scene& sc, x3::phys::IPhysicsWorld& ph, uint32_t e) {
+        Entity& en = sc.get(e);
+        if (en.body.valid()) ph.removeBody(en.body);
+        en.body = x3::phys::BodyId{};   // the monster kill path: body link dropped
+    };
+    const x3::phys::Vec3 farAway{ 999.0f, 0.4f, 999.0f };
+
+    // R10: approach ARMS the assault (the tell), close approach OPENS the window;
+    // killing the attacker inside the clean threshold resolves CLEAN (no tint change).
+    {
+        RescueSystem rs; Scene sc;
+        rs.build(sc, device, *physics, riggedGlbRoot(), wA, wB, wC, /*timer*/300.0f);
+        rs.activate();
+        uint32_t atk = spawnFakeAttacker(sc, *physics, x3::phys::Vec3{ wA.x + 1.2f, 0.4f, wA.z });
+        rs.tick(1.0f/60.0f, sc, *physics, farAway);
+        rcheck(!rs.victim(0).assaultArmed(), "R10a far player: not armed");
+        rs.tick(1.0f/60.0f, sc, *physics, x3::phys::Vec3{ wA.x + 10.0f, 0.4f, wA.z });
+        rcheck(rs.victim(0).assaultArmed() && rs.victim(0).tellActive() &&
+               !rs.victim(0).assaultActive(), "R10b approach arms the tell");
+        const x3::phys::Vec3 close{ wA.x + 3.0f, 0.4f, wA.z };
+        rs.tick(1.0f/60.0f, sc, *physics, close);
+        rcheck(rs.victim(0).assaultActive() && rs.victim(0).windowFrac() > 0.9f,
+               "R10c burst-in opens the window");
+        for (int i = 0; i < 120; ++i) rs.tick(1.0f/60.0f, sc, *physics, close);  // 2 s pass
+        rcheck(rs.victim(0).assaultActive() && rs.victim(0).tier() == RescueTier::None,
+               "R10d window runs while the attacker lives");
+        killFakeAttacker(sc, *physics, atk);
+        rs.tick(1.0f/60.0f, sc, *physics, close);
+        rcheck(rs.victim(0).tier() == RescueTier::Clean && !rs.victim(0).assaultActive(),
+               "R10e fast kill resolves CLEAN");
+        rcheck(rs.tierResolvedThisFrame() == 0, "R10f tierResolvedThisFrame reports it");
+    }
+
+    // R11: a LATE kill (past the clean threshold, inside the cutoff) resolves WOUNDED.
+    {
+        RescueSystem rs; Scene sc;
+        rs.build(sc, device, *physics, riggedGlbRoot(), wA, wB, wC, 300.0f);
+        rs.configureAssault(0, /*clean*/0.5f, /*cutoff*/30.0f);   // tight clean for the test
+        rs.activate();
+        uint32_t atk = spawnFakeAttacker(sc, *physics, x3::phys::Vec3{ wA.x + 1.2f, 0.4f, wA.z });
+        const x3::phys::Vec3 close{ wA.x + 3.0f, 0.4f, wA.z };
+        for (int i = 0; i < 90; ++i) rs.tick(1.0f/60.0f, sc, *physics, close);   // 1.5 s > clean
+        killFakeAttacker(sc, *physics, atk);
+        rs.tick(1.0f/60.0f, sc, *physics, close);
+        rcheck(rs.victim(0).tier() == RescueTier::Wounded, "R11a late kill resolves WOUNDED");
+        rcheck(rs.tierResolvedThisFrame() == 0, "R11b wounded resolution reported to host");
+    }
+
+    // R12: the HARD CUTOFF with attackers alive = LOST — immediate expiry + boss,
+    // exactly like the 5-min timer (shared expire path).
+    {
+        RescueSystem rs; Scene sc;
+        rs.build(sc, device, *physics, riggedGlbRoot(), wA, wB, wC, 300.0f);
+        rs.configureAssault(0, 0.3f, /*cutoff*/0.8f);
+        rs.activate();
+        spawnFakeAttacker(sc, *physics, x3::phys::Vec3{ wA.x + 1.2f, 0.4f, wA.z });
+        const x3::phys::Vec3 close{ wA.x + 3.0f, 0.4f, wA.z };
+        const uint32_t bossesBefore = rs.bosses().count();
+        for (int i = 0; i < 90; ++i) rs.tick(1.0f/60.0f, sc, *physics, close);   // 1.5 s > cutoff
+        rcheck(rs.victim(0).expired() && rs.victim(0).tier() == RescueTier::Lost,
+               "R12a cutoff with attackers alive = LOST (expired)");
+        rcheck(rs.bosses().count() > bossesBefore, "R12b LOST spawns her boss");
+    }
+
+    // R13: window state does NOT break rescue/extraction — a Clean-resolved captive
+    // rescues into a companion exactly as before (legacy flow preserved).
+    {
+        RescueSystem rs; Scene sc;
+        rs.build(sc, device, *physics, riggedGlbRoot(), wA, wB, wC, 300.0f);
+        rs.activate();
+        uint32_t atk = spawnFakeAttacker(sc, *physics, x3::phys::Vec3{ wA.x + 1.2f, 0.4f, wA.z });
+        const x3::phys::Vec3 close{ wA.x + 1.0f, 0.4f, wA.z };
+        rs.tick(1.0f/60.0f, sc, *physics, close);
+        killFakeAttacker(sc, *physics, atk);
+        rs.tick(1.0f/60.0f, sc, *physics, close);
+        rcheck(rs.victim(0).tier() == RescueTier::Clean && rs.tryRescue(close, kRescueReach) &&
+               rs.victim(0).companion(), "R13 clean tier -> rescue -> companion (flow intact)");
     }
 
     physics->shutdown();

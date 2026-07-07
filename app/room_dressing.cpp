@@ -444,6 +444,34 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             break;
         }
 
+        // ---- W5-2: the WARD DOOR TELL — a thin amber light-under-the-door strip at
+        // each ward threshold (RESCUE_SETPIECE_DESIGN.md §1.2: the read before the
+        // burst-in is sound + light bleeding under the door, never a visual of the
+        // act). Painted-glow discipline like the R2 guide strips: warm, low, floor-
+        // level, spanning the door mouth along the wall the cut runs in. Amber = the
+        // detention accent (§3), so the tell stays inside the zone's one-hue law.
+        // F2's named wards classify ZMedical (the elevation rule wins over the name
+        // rule), so cover BOTH: any ZWard room, or a Medical room actually named as
+        // a ward (Ward A: Keisha / Ward B: Emily / Ward C: Aria / Sarah's cell).
+        const bool wardTell = (z == ZWard) ||
+            (z == ZMedical && r.name.find("Ward") != std::string::npos);
+        if (wardTell) {
+            for (const CanonDoorway& d : floor.doorways) {
+                if (d.a != ri && d.b != ri) continue;
+                if (d.kind == DoorwayKind::CrossLevel || d.junction) continue;
+                const float span = d.cutHalf * 2.0f * 0.92f;   // just inside the jambs
+                ProcDraw s; s.room = ri;
+                // axis 0: wall plane X=const -> the mouth runs along Z (thin in X).
+                s.mesh = quadMesh(device, d.axis == 0 ? 0.14f : span,
+                                          d.axis == 0 ? span  : 0.14f, 1.0f);
+                makeTR(s.transform, 0, -kPi * 0.5f, d.cx, fY + kFloorLift + 0.003f, d.cz);
+                s.color[0] = 0.42f; s.color[1] = 0.26f; s.color[2] = 0.06f; s.color[3] = 1.0f;
+                s.emissive[0] = 1.0f; s.emissive[1] = 0.58f; s.emissive[2] = 0.12f;
+                s.emissive[3] = 0.85f;
+                m_proc.push_back(s);
+            }
+        }
+
         // ---- Guide strips (hall/corridor leading line, §3.2 wayfinding). ------------
         if (z == ZHall || z == ZCorridor) {
             const float len = (longX ? r.w : r.d) - 1.2f;
