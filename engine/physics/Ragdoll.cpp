@@ -91,7 +91,18 @@ public:
 
     ~JoltRagdoll() override {
         removeFromWorld();
-        // m_ragdoll Ref releases here; m_settings Ref too.
+        // W6-1: if the physics world already shut down, JPH::Ragdoll's OWN destructor
+        // still dereferences its stored PhysicsSystem (instrumentation proved the
+        // exit-139 segfault fired exactly at this Ref release, after the guarded
+        // removeFromWorld correctly skipped). The world's shutdown() already removed
+        // and destroyed every body, so nothing real is lost: deliberately DETACH the
+        // Ref (AddRef + null) and leak the small JPH::Ragdoll object. This only ever
+        // happens on the world-shutdown-before-scope-exit pattern, i.e. process exit.
+        if (m_world && m_world->nativeSystem() == nullptr && m_ragdoll != nullptr) {
+            m_ragdoll->AddRef();
+            m_ragdoll = nullptr;
+        }
+        // m_ragdoll Ref releases here (normal path); m_settings Ref too.
     }
 
     bool build(const RagdollBoneDesc* bones, uint32_t n) {
