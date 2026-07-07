@@ -496,15 +496,18 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.name        = "lightning";
         w.kind        = FireKind::Hitscan;   // instant-hit beam = hitscan path
         w.automatic   = true;                // held = continuous beam
-        w.damage      = 11;                  // per beam tick / per chained target (slight bump)
+        // R-1 (ATTENTION_FableAAA fold): TIM'S LIVE PLAYTEST TUNE from the
+        // playable-build line — heavier tick (14), slower cadence (8/s), a real
+        // charge cell (200/600). Preserved from the aborted merge; lands first.
+        w.damage      = 14;                  // per beam tick / per chained target
         w.type        = x3::DamageType::Energy;
-        w.fireRate    = 15.0f;               // "continuous" — many ticks/s
+        w.fireRate    = 8.0f;                // Tim's tune: weightier, less buzzsaw
         w.pellets     = 1;                   // 1 primary; chains add rays
         w.spreadDeg   = 0.0f;                // a beam is dead-accurate
         w.recoilDeg   = 0.12f;               // almost none (steady beam)
         w.range       = 30.0f;               // SHORT range (slightly extended)
-        w.magSize     = 80;                  // a "cell" of charge
-        w.reserveAmmo = 240;
+        w.magSize     = 200;                 // a "cell" of charge (Tim's tune)
+        w.reserveAmmo = 600;
         w.reloadTime  = 2.4f;
         w.beam        = true;                // render as a solid beam (host hint)
         w.chainTargets= 2;                   // primary + 2 chains = 3 targets
