@@ -24,6 +24,8 @@
 #include "engine/asset/IModelLoader.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"
+#include "strata.h"              // R-3 fold: runStrataSelfTest
+#include "elevator_showcase.h"  // R-4 fold: runElevatorShowcaseSelfTest
 #include "engine/physics/StructuralCollapse.h"
 #include "engine/physics/Ragdoll.h"
 #include "engine/physics/IVehicle.h"
@@ -282,6 +284,14 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testGoldenPath) {
         x3::logInfo("running the ENDGAME SPINE self-test (G1-G9: tower -> clone gate -> Sarah -> Helipad WIN)...");
         return x3::game::runGoldenPathSelfTest() ? 0 : 1;
+    }
+    if (tf.testStrata) {
+        x3::logInfo("running STRATA descent self-test (R-3 fold: bands + offshoots + on-foot route + club arrival)...");
+        return x3::game::runStrataSelfTest() ? 0 : 1;
+    }
+    if (tf.testElevatorShowcase) {
+        x3::logInfo("running CENTERPIECE elevator showcase self-test (R-4 fold: dark-glass cab + strata + 1127 club descent)...");
+        return x3::game::runElevatorShowcaseSelfTest() ? 0 : 1;
     }
     if (tf.testIntro) {
         x3::logInfo("running intro cold-open self-test (flight -> hit -> whiteout -> titlecard -> handoff; skippable)...");

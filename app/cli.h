@@ -36,6 +36,8 @@ struct CliOptions {
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
+         testStrata = false,        // --test-strata (R-3 fold: THE DESCENT chain)
+         testElevatorShowcase = false,  // --test-elevator-showcase (R-4 fold)
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
          // boot-loaded secret_room.lua -> registerGameBindings openTrapdoor ->
@@ -286,6 +288,9 @@ struct CliOptions {
     // when omitted: G:\X3Native\screenshot.png.
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
+    // R-4 fold: --screenshot-elevator [dir] (interior/exterior/strata beauty trio)
+    bool        elevShot = false;
+    std::string elevShotDir = "docs/screenshots/elevator";
     // Level Architect EDITOR mode (--editor): boot the live canon world with the Dear
     // ImGui (docking) editor overlay enabled. With no --editor flag ImGui never
     // initializes (zero cost — byte-for-byte the shipping game). Phase 0 draws only a

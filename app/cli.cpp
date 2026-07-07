@@ -89,7 +89,13 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-canonlevel") o.testCanonLevel = true;
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-canonplay") o.testCanonPlay = true;
-        else if (a == "--test-goldenpath") o.testGoldenPath = true;   // W5-3 endgame spine
+        else if (a == "--test-goldenpath") o.testGoldenPath = true;
+        else if (a == "--test-strata") o.testStrata = true;                       // R-3 fold
+        else if (a == "--test-elevator-showcase") o.testElevatorShowcase = true;  // R-4 fold
+        else if (a == "--screenshot-elevator") {                                  // R-4 beauty trio
+            o.elevShot = true; o.worldMode = "elevator-showcase"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.elevShotDir = argv[++i];
+        }   // W5-3 endgame spine
         else if (a == "--test-phase2a") o.testPhase2a = true;
         else if (a == "--test-phase2b") o.testPhase2b = true;
         else if (a == "--test-anim") o.testAnim = true;

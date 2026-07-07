@@ -39,7 +39,9 @@ struct TestFlags {
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
-    bool testGoldenPath = false;  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)
+    bool testGoldenPath = false;
+    bool testStrata = false;            // R-3 fold: THE DESCENT (strata module chain)
+    bool testElevatorShowcase = false;  // R-4 fold: THE CENTERPIECE showcase  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
