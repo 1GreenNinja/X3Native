@@ -1154,6 +1154,13 @@ void VulkanRenderDevice::setPacingParams(const PacingParams& pp) {
 
 void VulkanRenderDevice::armCapture(const char* path) {
         (void)path; // path is consumed by captureFrame() at finalize time
+        // W6-1: SNAP auto-exposure on the capture frame. Windowed --screenshot* hosts
+        // adapt AE on a real-time clock, so the exposure at the capture frame depended
+        // on machine load (heavy parallel builds -> under-adapted -> the "white-hot
+        // viewmodel" class of blown captures). Headless frames already snap; arming a
+        // capture now snaps too, making every screenshot's exposure converged and
+        // load-independent.
+        m_aeSnap = true;
         const bool ready = m_headless ? (m_offscreenColorImg != VK_NULL_HANDLE)
                                       : (m_swapchain && !m_swapImages.empty());
         if (!ready) {
