@@ -46,6 +46,13 @@ struct BootAudio {
     // scope: that line lives in app_run.cpp).
     x3::audio::SoundHandle playerPain[2];
     x3::audio::SoundHandle playerLand;
+    // Per-species enemy vocal buckets (guard-life pass, W4-3). Indexed by the
+    // host's species->bucket map: [0]=humanoid (Trooper/Illuminated — reuses the
+    // shared enemies/*.wav set, no dedicated files), [1]=creature (Verthani —
+    // assets/audio/enemies/creature/*), [2]=synth (BlueSynth/drones —
+    // assets/audio/enemies/synth/*). An absent WAV loads invalid and the cue
+    // sink falls back to the shared set, so every machine keeps a voice.
+    x3::audio::SoundHandle spTaunt[3], spAttack[3], spHit[3], spDeath[3];
 };
 
 inline BootAudio makeBootAudio() {
@@ -77,6 +84,19 @@ inline BootAudio makeBootAudio() {
     ba.playerPain[0] = ba.audio->load(x3::game::resolveAudio("player/pain_1.wav"));
     ba.playerPain[1] = ba.audio->load(x3::game::resolveAudio("player/pain_2.wav"));
     ba.playerLand    = ba.audio->load(x3::game::resolveAudio("player/land.wav"));
+    // Per-species enemy vocal buckets (guard-life W4-3). Bucket 0 (humanoid)
+    // aliases the shared set — the shared WAVs ARE the humanoid takes; buckets
+    // 1/2 load the committed creature/synth sets (see AUDIO_MANIFEST.md).
+    ba.spTaunt[0]  = ba.enemyTaunt;  ba.spAttack[0] = ba.enemyAttack;
+    ba.spHit[0]    = ba.enemyHit;    ba.spDeath[0]  = ba.enemyDeath;
+    ba.spTaunt[1]  = ba.audio->load(x3::game::resolveAudio("enemies/creature/taunt.wav"));
+    ba.spAttack[1] = ba.audio->load(x3::game::resolveAudio("enemies/creature/attack.wav"));
+    ba.spHit[1]    = ba.audio->load(x3::game::resolveAudio("enemies/creature/hit.wav"));
+    ba.spDeath[1]  = ba.audio->load(x3::game::resolveAudio("enemies/creature/death.wav"));
+    ba.spTaunt[2]  = ba.audio->load(x3::game::resolveAudio("enemies/synth/taunt.wav"));
+    ba.spAttack[2] = ba.audio->load(x3::game::resolveAudio("enemies/synth/attack.wav"));
+    ba.spHit[2]    = ba.audio->load(x3::game::resolveAudio("enemies/synth/hit.wav"));
+    ba.spDeath[2]  = ba.audio->load(x3::game::resolveAudio("enemies/synth/death.wav"));
     return ba;
 }
 

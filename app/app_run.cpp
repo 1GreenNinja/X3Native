@@ -146,26 +146,53 @@ namespace {
 // by BOTH the legacy Level 1 (game) AND --world canonlevel (canonPlay), which were
 // previously silent for the canon enemies (canonPlay had no cue sink wired at all —
 // the playtest "enemies make NO sounds" bug). Any invalid sound handle plays silent.
+// Guard-life (W4-3): the sink now picks PER-SPECIES vocal takes off the cue's
+// species tag (GameCue.species = the emitting EnemyType). Buckets: 0=humanoid
+// (Trooper/Illuminated + unknown/legacy emitters — the shared set), 1=creature
+// (Verthani), 2=synth (BlueSynth). An invalid bucket handle falls back to the
+// shared take, so a machine missing the new WAVs keeps the W2-B behaviour.
+// Passing ba=nullptr keeps the original single-set behaviour byte-identical.
 x3::game::GameCueFn makeEnemyCueSink(x3::audio::IAudioSystem* asys,
                                      x3::audio::SoundHandle step,
                                      x3::audio::SoundHandle gun,
                                      x3::audio::SoundHandle taunt,
                                      x3::audio::SoundHandle attack,
                                      x3::audio::SoundHandle hit,
-                                     x3::audio::SoundHandle death) {
-    return [asys, step, gun, taunt, attack, hit, death](const x3::game::GameCue& c) {
+                                     x3::audio::SoundHandle death,
+                                     const x3::apphost::BootAudio* ba = nullptr) {
+    struct Voices { x3::audio::SoundHandle t[3], a[3], h[3], d[3]; bool on = false; };
+    Voices v;
+    if (ba) {
+        v.on = true;
+        for (int i = 0; i < 3; ++i) {
+            v.t[i] = ba->spTaunt[i];  v.a[i] = ba->spAttack[i];
+            v.h[i] = ba->spHit[i];    v.d[i] = ba->spDeath[i];
+        }
+    }
+    return [asys, step, gun, taunt, attack, hit, death, v](const x3::game::GameCue& c) {
         if (!asys) return;
         auto play = [asys, &c](x3::audio::SoundHandle h, float vol, float pitch) {
             if (h.valid()) asys->playSound3D(h, c.pos.x, c.pos.y, c.pos.z, vol, pitch);
+        };
+        // Species -> bucket (see EnemyType): Verthani=creature, BlueSynth=synth,
+        // everything else (incl. kCueSpeciesNone legacy emitters) = humanoid/shared.
+        int b = 0;
+        if (v.on) {
+            if (c.species == (uint32_t)x3::game::EnemyType::Verthani)       b = 1;
+            else if (c.species == (uint32_t)x3::game::EnemyType::BlueSynth) b = 2;
+        }
+        auto pick = [&](const x3::audio::SoundHandle bucket[3],
+                        x3::audio::SoundHandle shared) {
+            return (v.on && bucket[b].valid()) ? bucket[b] : shared;
         };
         switch (c.kind) {
             case x3::game::CueKind::Footstep:     play(step,   0.12f * c.intensity, 0.55f); break;
             case x3::game::CueKind::BulletImpact:
             case x3::game::CueKind::MeleeImpact:  play(gun,    0.5f  * c.intensity, 0.7f);  break;
-            case x3::game::CueKind::EnemyTaunt:   play(taunt,  0.55f * c.intensity, 1.0f);  break;
-            case x3::game::CueKind::EnemyAttack:  play(attack, 0.7f  * c.intensity, 1.0f);  break;
-            case x3::game::CueKind::EnemyHit:     play(hit,    0.8f  * c.intensity, 1.0f);  break;
-            case x3::game::CueKind::EnemyDeath:   play(death,  0.95f * c.intensity, 1.0f);  break;
+            case x3::game::CueKind::EnemyTaunt:   play(pick(v.t, taunt),  0.55f * c.intensity, 1.0f); break;
+            case x3::game::CueKind::EnemyAttack:  play(pick(v.a, attack), 0.7f  * c.intensity, 1.0f); break;
+            case x3::game::CueKind::EnemyHit:     play(pick(v.h, hit),    0.8f  * c.intensity, 1.0f); break;
+            case x3::game::CueKind::EnemyDeath:   play(pick(v.d, death),  0.95f * c.intensity, 1.0f); break;
         }
     };
 }
@@ -1306,7 +1333,8 @@ int runDefaultHost(HostContext& hc) {
             // were silent (the playtest "enemies make NO sounds" bug for --world canonlevel).
             canonPlay.setCueSink(makeEnemyCueSink(audio.get(), sndStep, sndGun,
                                                   sndEnemyTaunt, sndEnemyAttack,
-                                                  sndEnemyHit, sndEnemyDeath));
+                                                  sndEnemyHit, sndEnemyDeath,
+                                                  &bootAudio));   // per-species buckets (W4-3)
             x3::boot::mark("canon gameplay spawns (GLB enemies)");
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
             // Jake's Cell, down the wide Main Hall, through Security/Research/Medical/
@@ -1393,7 +1421,8 @@ int runDefaultHost(HostContext& hc) {
         {
             game.setCueSink(makeEnemyCueSink(audio.get(), sndStep, sndGun,
                                              sndEnemyTaunt, sndEnemyAttack,
-                                             sndEnemyHit, sndEnemyDeath));
+                                             sndEnemyHit, sndEnemyDeath,
+                                             &bootAudio));   // per-species buckets (W4-3)
         }
 
         // Spire elevator: one stop per floor (B1..F7), 5 m apart, so a ride lands on

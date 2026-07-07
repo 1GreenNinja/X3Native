@@ -128,6 +128,7 @@ const char* aiStateName(AiState s) {
         case AiState::Strafe:  return "Strafe";
         case AiState::Retreat: return "Retreat";
         case AiState::Regroup: return "Regroup";
+        case AiState::Patrol:  return "Patrol";
     }
     return "?";
 }
@@ -198,6 +199,17 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_standoff       = tuning.standoff;
     m_aiStrafeBias   = tuning.aiStrafeBias;     // <0 => use the MonsterType default
     m_flyer          = tuning.flyer;            // hovering, center-origin enemy
+    // ---- Guard-life (W4-3): species stamp + patrol arming. The anchor is the
+    // SPAWN position (captured before the flyer hover lift below — patrols are
+    // ground behaviour and flyers never enable them anyway). A patrol-capable
+    // row STARTS in Patrol so a never-aggroed guard walks its beat from frame
+    // one; patrolRadius==0 (every existing tuning) keeps the original Idle. ----
+    m_species        = tuning.species;
+    m_patrolRadius   = tuning.patrolRadius > 0.0f ? tuning.patrolRadius : 0.0f;
+    m_patrolPauseSec = tuning.patrolPauseSec;
+    m_patrolSpeedMul = tuning.patrolSpeedMul;
+    m_patrolAnchor   = m_pos;
+    if (m_patrolRadius > 0.0f && !m_flyer) m_ai = AiState::Patrol;
 
     // ---- Flyers HOVER: lift the spawn position off the floor so the model floats
     // in the air instead of walking the ground. The AI only moves in x/z (m_pos.y
@@ -543,13 +555,15 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
         }
         // Enemy-SFX: a DEATH vocalization at the kill moment (host -> creature-death).
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyDeath,
-            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
+            (uint32_t)m_species });
     } else {
         x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
                     " — HP now " + std::to_string(m_hp));
         // Enemy-SFX: a TAKE-HIT grunt when it survives the shot (host -> creature-pain).
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
-            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
+            (uint32_t)m_species });
     }
     return r;
 }
@@ -603,13 +617,15 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
         }
         // Enemy-SFX: death vocalization (same as the shot kill path).
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyDeath,
-            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
+            (uint32_t)m_species });
     } else {
         x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
                     " — HP now " + std::to_string(m_hp));
         // Enemy-SFX: take-hit grunt on a surviving melee hit.
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
-            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
+            (uint32_t)m_species });
     }
     return dead;
 }
@@ -917,15 +933,19 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             }
         } else {
             // No LOS. If we ever saw the player, Search the last-known spot for a
-            // while, then give up to Idle. Never saw them -> Idle.
+            // while, then give up to the calm state. Never saw them -> calm state.
+            // Calm state = Patrol for patrol-capable rows (guard-life W4-3), else
+            // the original Idle — so give-up guards return to WALKING THEIR BEAT.
+            const AiState calm = (m_patrolRadius > 0.0f && !m_flyer)
+                                     ? AiState::Patrol : AiState::Idle;
             if (m_everSawPlayer && m_searchTimer > 0.0f) {
                 want = AiState::Search;
-            } else if (m_everSawPlayer && m_ai != AiState::Search && m_ai != AiState::Idle) {
+            } else if (m_everSawPlayer && m_ai != AiState::Search && m_ai != calm) {
                 // Just lost LOS: begin a fresh Search.
                 want = AiState::Search;
                 m_searchTimer = kAiSearchTime;
             } else if (m_searchTimer <= 0.0f) {
-                want = AiState::Idle;
+                want = calm;
             }
         }
 
@@ -962,7 +982,11 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // in headingToFace()). ----
     float mx = 0.0f, mz = 0.0f;          // desired planar move dir (un-normalized)
     bool  wantMove = false;
-    const float chaseSpeed = m_chaseSpeed * m_phaseSpeedMul;
+    // Patrol walks at a fraction of chase speed (guard-life W4-3) so the beat
+    // reads as a WALK (the locomotion blend picks the Walk clip off the lower
+    // speed) and the guard never looks like it's charging its own waypoints.
+    const float chaseSpeed = m_chaseSpeed * m_phaseSpeedMul *
+                             (m_ai == AiState::Patrol ? m_patrolSpeedMul : 1.0f);
 
     // ---- GENERAL navigation (optional): when a nav grid is attached, the agent
     // ROUTES AROUND walls instead of beelining. We rebuild an A* path to the move
@@ -1097,7 +1121,49 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             if (m_searchTimer <= 0.0f) m_searchTimer = 0.0f; // -> Idle next decision
         } break;
 
-        case AiState::Idle:
+        case AiState::Idle: {
+            // Idle: stand still, slow idle heading sweep so it doesn't look frozen.
+            wantMove = false;
+            m_searchSweep += dt * (kAiSearchSweepFreq * 0.3f);
+            m_yawTarget = m_yaw + 0.15f * std::sin(m_searchSweep) * dt;
+        } break;
+
+        case AiState::Patrol: {
+            // Guard-life (W4-3): walk a diamond waypoint loop around the spawn
+            // anchor at walk speed (the shared movement block below scales the
+            // step by m_patrolSpeedMul for this state). Pause-look at each
+            // waypoint; a blocked leg (wall/prop — counted by the movement
+            // block's stall counter) skips to the next waypoint so a guard
+            // never marches in place against a wall.
+            static const float kWpX[4] = { 1.0f, 0.0f, -1.0f,  0.0f };
+            static const float kWpZ[4] = { 0.0f, 1.0f,  0.0f, -1.0f };
+            const float wx = m_patrolAnchor.x + kWpX[m_patrolIdx & 3] * m_patrolRadius;
+            const float wz = m_patrolAnchor.z + kWpZ[m_patrolIdx & 3] * m_patrolRadius;
+            const float px = wx - m_pos.x, pz = wz - m_pos.z;
+            const float pl = std::sqrt(px * px + pz * pz);
+            if (m_patrolPause > 0.0f) {
+                // Waypoint pause: stand, sweep the head ("look around"), then move on.
+                m_patrolPause -= dt;
+                wantMove = false;
+                m_searchSweep += dt * (kAiSearchSweepFreq * 0.5f);
+                m_yawTarget = m_yaw + 0.35f * std::sin(m_searchSweep) * dt;
+                if (m_patrolPause <= 0.0f) {
+                    m_patrolIdx = (m_patrolIdx + 1) & 3;
+                    m_patrolStall = 0;
+                }
+            } else if (pl < 0.4f || m_patrolStall > 45) {
+                // Arrived (or the leg is wall-blocked ~0.75 s): begin the pause beat.
+                m_patrolPause = m_patrolPauseSec +
+                                0.6f * m_patrolPauseSec * (2.0f * rng01(m_rng) - 1.0f);
+                m_patrolStall = 0;
+                wantMove = false;
+            } else {
+                mx = px / pl; mz = pz / pl;
+                wantMove = true;
+                m_yawTarget = headingToFace(mx, mz);   // face where we're walking
+            }
+        } break;
+
         default: {
             // Idle: stand still, slow idle heading sweep so it doesn't look frozen.
             wantMove = false;
@@ -1161,11 +1227,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         if (blocked) {
             m_strafeDir = -m_strafeDir;   // try a new line next frames
             m_wander   += 1.7f;
+            // Guard-life (W4-3): a wall-blocked PATROL leg counts stall frames;
+            // the Patrol state skips to its next waypoint past the threshold so
+            // a guard never marches in place against a wall.
+            if (m_ai == AiState::Patrol) ++m_patrolStall;
         } else {
             m_pos.x += mx * step;
             m_pos.z += mz * step;
             physics.setBodyPosition(m_body,
                 x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z });
+            if (m_ai == AiState::Patrol) m_patrolStall = 0;
         }
     }
 
@@ -1185,11 +1256,26 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         if (m_tauntTimer <= 0.0f) {
             m_tauntTimer = kAiTauntPeriod + kAiTauntJitter * (2.0f * rng01(m_rng) - 1.0f);
             emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyTaunt,
-                x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 0.8f });
+                x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 0.8f,
+                (uint32_t)m_species });
         }
     } else {
         // Not engaged: hold a short delay so re-engaging doesn't instantly bark.
         m_tauntTimer = 0.8f;
+        // Guard-life (W4-3): a PATROLLING guard grunts QUIETLY on a long jittered
+        // cadence — the "something is around the corner" dread the player hears
+        // before seeing. Low intensity (the host maps intensity to volume) so it
+        // never reads as an engaged taunt; footsteps ride the normal locomotion
+        // cue and carry the rest of the presence.
+        if (m_dmg > 0 && m_ai == AiState::Patrol) {
+            m_patrolGrunt -= dt;
+            if (m_patrolGrunt <= 0.0f) {
+                m_patrolGrunt = 9.0f + 5.0f * rng01(m_rng);
+                emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyTaunt,
+                    x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 0.35f,
+                    (uint32_t)m_species });
+            }
+        }
     }
 
     // ---- Attack (Phase 2a, spec §6.5). Guard/Boss = melee within attackRange;
@@ -1238,7 +1324,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             // it onto a melee-bite / plasma-charge sound). Fired once per attack (the
             // wind-up gate), at the enemy muzzle, so attacks are AUDIBLE.
             emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyAttack,
-                x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 1.0f });
+                x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 1.0f,
+                (uint32_t)m_species });
         }
         if (m_winding) {
             m_windupTimer -= dt;
@@ -1287,7 +1374,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                         // Impact cue at the player so audio/FX can land a hit sound.
                         emitCueOrLog(m_cueSink, GameCue{
                             m_ranged ? CueKind::BulletImpact : CueKind::MeleeImpact,
-                            target->damageTargetPos(), 1.0f });
+                            target->damageTargetPos(), 1.0f, (uint32_t)m_species });
                     }
                 }
             }
@@ -1407,7 +1494,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 for (int s = prevMark; s < curMark; ++s) {
                     // Intensity scales with speed (faster -> louder/firmer step).
                     const float inten = std::min(1.0f, 0.4f + 0.2f * planarSpeed);
-                    emitCueOrLog(m_cueSink, GameCue{ CueKind::Footstep, m_pos, inten });
+                    emitCueOrLog(m_cueSink, GameCue{ CueKind::Footstep, m_pos, inten,
+                        (uint32_t)m_species });
                 }
             }
             m_lastFootPhase = phase;
@@ -2783,6 +2871,60 @@ bool runAiSelfTest() {
         w->shutdown();
     }
 
+    // ---- (g) PATROL (guard-life W4-3): a patrol-capable row WALKS ITS BEAT when
+    // calm, stays near the anchor, AGGROES off it on LOS, and RETURNS to Patrol
+    // after the search gives up. target=nullptr => los=false (the machine's own
+    // "nothing to see" lane), so phase 1/3 never sight the player. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        MonsterSystem::Tuning t = aiGuardTuning();
+        t.patrolRadius = 2.5f; t.patrolPauseSec = 0.25f;   // brisk loop for the test
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0, 0.4f, 0 }, t);
+        // Phase 1: no target at all -> patrols. Track displacement + confinement.
+        float maxDisp = 0.0f, maxFromAnchor = 0.0f; bool sawPatrol = false;
+        for (int i = 0; i < 900; ++i) {                    // 15 s of beat-walking
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, nullptr,
+                     AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            if (m.aiState() == AiState::Patrol) sawPatrol = true;
+            const float dx = m.pos().x, dz = m.pos().z;
+            const float d = std::sqrt(dx*dx + dz*dz);      // anchor = origin
+            if (d > maxDisp)      maxDisp = d;
+            if (d > maxFromAnchor) maxFromAnchor = d;
+        }
+        const bool walked   = sawPatrol && maxDisp > 1.0f;         // actually moved
+        const bool confined = maxFromAnchor < t.patrolRadius + 1.5f; // stayed on beat
+        // Phase 2: give it the player close with clear LOS -> engages (interrupt).
+        tgt.eye = x3::phys::Vec3{ m.pos().x + 5.0f, 1.6f, m.pos().z };
+        bool engaged = false;
+        for (int i = 0; i < 300 && !engaged; ++i) {
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt,
+                     AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            engaged = (m.aiState() == AiState::Advance || m.aiState() == AiState::Attack ||
+                       m.aiState() == AiState::Strafe);
+        }
+        // Phase 3: target vanishes -> Search runs dry -> back to Patrol.
+        bool backToPatrol = false;
+        for (int i = 0; i < 1200 && !backToPatrol; ++i) {  // 20 s > search timeout
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, nullptr,
+                     AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            backToPatrol = (m.aiState() == AiState::Patrol);
+        }
+        x3::logInfo(std::string("[ai-test] (g) sawPatrol=") + (sawPatrol?"1":"0") +
+                    " maxDisp=" + std::to_string(maxDisp) +
+                    " maxFromAnchor=" + std::to_string(maxFromAnchor) +
+                    " engaged=" + (engaged?"1":"0") +
+                    " backToPatrol=" + (backToPatrol?"1":"0"));
+        aicheck(walked && confined && engaged && backToPatrol,
+                "Tg patrol: walks the beat near the anchor, aggro interrupts, returns after search");
+        w->shutdown();
+    }
+
     x3::logInfo(std::string("[ai-test] ") + std::to_string(ai_pass) + " passed, " +
                 std::to_string(ai_fail) + " failed");
     return ai_fail == 0;
@@ -2877,6 +3019,8 @@ std::vector<MonsterDef> buildMonsterDefs() {
         t.aiStrafeBias   = 0.20f;                           // advances harder than it flanks
         t.tint[0]=0.80f; t.tint[1]=0.82f; t.tint[2]=0.86f;  // neutral steel
         defRigged(t, "marcus_webb.glb", 1.0f);             // ~1.8 m animated soldier
+        t.species      = EnemyType::DominionTrooper;   // guard-life: cue species
+        t.patrolRadius = 3.5f;                         // walks a beat when calm
         defs.push_back({ EnemyType::DominionTrooper, "DominionTrooper", t });
     }
 
@@ -2896,6 +3040,9 @@ std::vector<MonsterDef> buildMonsterDefs() {
         t.aiStrafeBias   = 0.80f;                           // STRAFE-HEAVY: orbits/flanks
         t.tint[0]=0.55f; t.tint[1]=0.95f; t.tint[2]=0.55f;  // chitin green
         defRigged(t, "alien_crawler.glb", 0.9f);           // non-humanoid insectoid look
+        t.species      = EnemyType::Verthani;          // guard-life: creature bucket
+        t.patrolRadius = 3.0f;                         // prowls when calm
+        t.patrolSpeedMul = 0.35f;                      // slow prowl vs its fast chase
         defs.push_back({ EnemyType::Verthani, "Verthani", t });
     }
 
@@ -2916,6 +3063,7 @@ std::vector<MonsterDef> buildMonsterDefs() {
         t.aiStrafeBias   = 0.10f;                           // STANDOFF: barely flanks, holds range
         t.tint[0]=1.0f; t.tint[1]=0.92f; t.tint[2]=0.55f;   // golden "illuminated" glow
         defRigged(t, "chief_martinez.glb", 1.15f);         // tall elite humanoid
+        t.species = EnemyType::Illuminated;            // guard-life: cue species (no patrol — elites hold post)
         defs.push_back({ EnemyType::Illuminated, "Illuminated", t });
     }
 
@@ -2948,6 +3096,7 @@ std::vector<MonsterDef> buildMonsterDefs() {
         t.standUpZtoY = false;
         x3::logInfo(std::string("[bestiary] BlueSynth model: ") +
                     (realSynth ? "rigged blue_synth GLB" : "fallback Drone.glb (blue tint)"));
+        t.species = EnemyType::BlueSynth;              // guard-life: synth bucket (no patrol — flier/watcher)
         defs.push_back({ EnemyType::BlueSynth, "BlueSynth", t });
     }
 
