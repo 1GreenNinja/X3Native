@@ -186,6 +186,23 @@ export async function createChannel(token: string, name: string): Promise<string
   return data.room_id;
 }
 
+/** Open a direct message with another user: a private, is_direct room with just
+ * the two of you (they're invited, and get equal power via trusted_private_chat).
+ * Returns the new room id; /sync names it after the other party. */
+export async function createDm(token: string, userId: string): Promise<string> {
+  const data = await req<{ room_id: string }>("/_matrix/client/v3/createRoom", {
+    method: "POST",
+    token,
+    body: {
+      preset: "trusted_private_chat",
+      visibility: "private",
+      is_direct: true,
+      invite: [userId],
+    },
+  });
+  return data.room_id;
+}
+
 /** Resolve a room alias (#admins:server) to its room id. */
 export async function resolveAlias(token: string, alias: string): Promise<string> {
   const data = await req<{ room_id: string }>(
@@ -337,6 +354,27 @@ export async function joinedMembers(token: string, roomId: string): Promise<Room
     userId,
     displayName: info.display_name || userId.split(":")[0].replace(/^@/, ""),
   }));
+}
+
+/** The fleet roster — everyone you share a channel with, de-duped. Unions the
+ * joined_members of the given rooms (your channels) and drops yourself. Sorted by
+ * display name. This is the Slack-style "people to DM" list for the sidebar. */
+export async function fleetRoster(
+  token: string,
+  roomIds: string[],
+  selfId: string,
+): Promise<RoomMember[]> {
+  const byId = new Map<string, RoomMember>();
+  const lists = await Promise.all(
+    roomIds.map((id) => joinedMembers(token, id).catch(() => [] as RoomMember[])),
+  );
+  for (const list of lists) {
+    for (const m of list) {
+      if (m.userId === selfId) continue;
+      if (!byId.has(m.userId)) byId.set(m.userId, m);
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
 /** Presence for a user: "online" | "offline" | "unavailable". */

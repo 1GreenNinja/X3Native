@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
-import { type Session, createChannel } from "../client";
-import { store, subscribe, startSyncLoop, type Room } from "../store";
+import { type Session, type RoomMember, createChannel, createDm, fleetRoster } from "../client";
+import { store, subscribe, startSyncLoop, findDmWith, type Room } from "../store";
 import {
   type CatConfig, loadCats, saveCats, addSection, removeSection, assignRoom, toggleCollapsed, toggleStar,
 } from "../categories";
@@ -48,6 +48,19 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
     return !a || !cats.sections.includes(a);
   });
   const [openStar, setOpenStar] = useState(true);
+  const [openPeople, setOpenPeople] = useState(true);
+  const [roster, setRoster] = useState<RoomMember[]>([]);
+
+  // Fleet roster — union of members across all your channels, refreshed when the
+  // channel list changes. This is the Slack-style "People" list to DM anyone.
+  useEffect(() => {
+    if (!channels.length) return;
+    let cancelled = false;
+    fleetRoster(session.token, channels.map((c) => c.id), session.userId)
+      .then((r) => { if (!cancelled) setRoster(r); })
+      .catch(() => { /* leave prior roster */ });
+    return () => { cancelled = true; };
+  }, [channels.length]);
 
   const createRoom = async () => {
     const name = newName.trim();
@@ -69,6 +82,18 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
   }, [channels.length]);
 
   const openRoom = (id: string) => { setActiveId(id); setMobileRoom(true); };
+
+  // Click a person in the roster: open the existing DM if there is one, else
+  // start a fresh DM and select it once /sync picks it up.
+  const openPerson = async (m: RoomMember) => {
+    const existing = findDmWith(m.userId);
+    if (existing) { openRoom(existing.id); return; }
+    try {
+      const id = await createDm(session.token, m.userId);
+      startSyncLoop(session);
+      setTimeout(() => openRoom(id), 1000);
+    } catch { /* surfaced via sync */ }
+  };
 
   return (
     <div class={`workspace ${showMembers && active ? "with-members" : ""} ${mobileRoom ? "mobile-room" : ""}`}>
@@ -190,6 +215,22 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
                 ))}
                 {openDm && dms.length === 0 && (
                   <div class="section-empty">{store.syncState === "live" ? "No DMs yet" : "Syncing…"}</div>
+                )}
+
+                {/* People — the full fleet roster; click anyone to DM them (Slack-style) */}
+                <div class="section-head">
+                  <button class="section-toggle" onClick={() => setOpenPeople((v) => !v)}>
+                    <span class="caret">{openPeople ? "▾" : "▸"}</span> People
+                    {roster.length > 0 && <span class="sec-count">{roster.length}</span>}
+                  </button>
+                </div>
+                {openPeople && roster.map((m) => (
+                  <a key={m.userId} class="room-row" title={m.userId} onClick={() => openPerson(m)}>
+                    <span class="presence-dot" /> {m.displayName}
+                  </a>
+                ))}
+                {openPeople && roster.length === 0 && (
+                  <div class="section-empty">{store.syncState === "live" ? "No members" : "Syncing…"}</div>
                 )}
               </>
             );

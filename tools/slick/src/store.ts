@@ -15,8 +15,15 @@ export interface Room {
   name: string;
   isDm: boolean;
   needsName?: boolean;  // DM whose name still needs an API member lookup
+  dmUserId?: string;    // for a DM, the other party's @user:server — matches roster clicks to existing rooms
   timeline: MatrixEvent[];
   unread: number;
+}
+
+/** The existing DM room with a given user, if one is already open. Lets the
+ * sidebar "People" list reuse a conversation instead of spawning duplicates. */
+export function findDmWith(userId: string): Room | undefined {
+  return [...store.rooms.values()].find((r) => r.isDm && r.dmUserId === userId);
 }
 
 export interface Store {
@@ -75,12 +82,14 @@ function explicitName(state: MatrixEvent[], timeline: MatrixEvent[]): string {
   return "";
 }
 
-/** For a DM, the OTHER person's display name (not me) from m.room.member events. */
-function otherMemberName(events: MatrixEvent[], myUserId: string): string {
+/** For a DM, the OTHER person (not me) from m.room.member events: their display
+ * name and user id. Null if this room has no other member yet. */
+function otherMember(events: MatrixEvent[], myUserId: string): { name: string; userId: string } | null {
   const members = events.filter((e) => e.type === "m.room.member" && e.state_key && e.state_key !== myUserId);
   const joined = members.find((e) => e.content?.membership === "join") ?? members[0];
-  if (!joined) return "";
-  return (joined.content?.displayname as string) || joined.state_key!.split(":")[0].replace(/^@/, "");
+  if (!joined) return null;
+  const name = (joined.content?.displayname as string) || joined.state_key!.split(":")[0].replace(/^@/, "");
+  return { name, userId: joined.state_key! };
 }
 
 function applySync(resp: SyncResponse, myUserId: string): void {
@@ -109,17 +118,19 @@ function applySync(resp: SyncResponse, myUserId: string): void {
       existing.unread = data.unread_notifications?.notification_count ?? existing.unread;
       if (named) existing.name = named;
       else {
-        const dm = otherMemberName(allState, myUserId);
-        if (dm) { existing.name = dm; existing.needsName = false; }
+        const dm = otherMember(allState, myUserId);
+        if (dm) { existing.name = dm.name; existing.dmUserId = dm.userId; existing.needsName = false; }
       }
     } else {
       let name = named;
       let needsName = false;
+      let dmUserId: string | undefined;
       if (!name) {
-        name = otherMemberName(allState, myUserId);
-        if (!name) { name = "Direct message"; needsName = true; } // resolved via API below
+        const dm = otherMember(allState, myUserId);
+        if (dm) { name = dm.name; dmUserId = dm.userId; }
+        else { name = "Direct message"; needsName = true; } // resolved via API below
       }
-      store.rooms.set(roomId, { id: roomId, name, isDm, needsName, timeline: newEvents, unread: data.unread_notifications?.notification_count ?? 0 });
+      store.rooms.set(roomId, { id: roomId, name, isDm, needsName, dmUserId, timeline: newEvents, unread: data.unread_notifications?.notification_count ?? 0 });
     }
   }
   bump();
@@ -133,7 +144,7 @@ async function resolveDmNames(token: string, myUserId: string): Promise<void> {
     try {
       const members = await joinedMembers(token, room.id);
       const other = members.find((m) => m.userId !== myUserId) ?? members[0];
-      if (other) { room.name = other.displayName; room.needsName = false; }
+      if (other) { room.name = other.displayName; room.dmUserId = other.userId; room.needsName = false; }
     } catch { /* leave as-is */ }
   }
   if (pending.length) bump();
