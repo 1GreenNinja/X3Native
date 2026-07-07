@@ -698,6 +698,17 @@ public:
     // True iff this boss carries an escape timer at all (data tag).
     bool  hasEscapeTimer() const { return m_escapeTimer > 0.0f; }
 
+    // ---- W5-2: scripted CALM LOOP (the assault tableau) ---------------------
+    // Resolve a clip by fuzzy name (e.g. "struggle", baked by tools/struggle_bake.py)
+    // and play it as the CALM-state animation instead of idle, while the monster is
+    // unaggroed and stationary. Aggro/attack/death preempt it exactly like idle —
+    // the loop is purely the "what you burst in on" pose. No-op when the clip is
+    // absent (unbaked rigs keep plain idle; the tableau still stands).
+    void setCalmLoop(const char* fuzzyName) {
+        if (m_animActive) m_calmLoopClip = m_skinner.findClip({ fuzzyName });
+    }
+    bool calmLoopActive() const { return m_calmLoopClip >= 0; }
+
     // ---- Combat-AI state (D-ai) -------------------------------------------
     // Current behaviour state + the heading (yaw, radians) the body is turning to.
     // Read by the HUD / self-test to observe that facing follows state.
@@ -852,6 +863,8 @@ private:
     DeathFxFn                m_deathFx;
     int                      m_idleClip = -1;
     int                      m_walkClip = -1;
+    int                      m_calmLoopClip = -1;   // W5-2 scripted calm loop (see setCalmLoop)
+    float                    m_calmLoopT    = 0.0f; // its looping playback clock
     // T1: separate Run / Jump clips for the locomotion blend (multi-clip *_anim.glb).
     // When a distinct Walk AND Run exist the 1D blend is driven by planar speed; on
     // single-locomotion-clip models (only Idle, or Idle+one move clip) it degrades

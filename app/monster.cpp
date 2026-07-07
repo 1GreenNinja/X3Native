@@ -1475,6 +1475,18 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         const float planarSpeed = (dt > 1e-5f)
             ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
+        // ---- W5-2: scripted CALM LOOP (the assault tableau — e.g. "Struggle").
+        // While unaggroed + effectively stationary, a set calm loop replaces idle so
+        // the burst-in reads as an act in progress, not guards loitering. Aggro or
+        // movement falls straight back to locomotion; the one-shot Attack above
+        // already preempts everything. Absent clip -> setCalmLoop left it -1 -> no-op.
+        if (m_calmLoopClip >= 0 &&
+            (m_ai == AiState::Idle || m_ai == AiState::Patrol) &&
+            planarSpeed < 0.15f) {
+            m_calmLoopT += dt;
+            m_skinner.apply(m_model, *m_device, (uint32_t)m_calmLoopClip, m_calmLoopT);
+            return;
+        }
         if (m_useLocoBlend) {
             m_skinner.setLocomotionSpeed(planarSpeed);
             m_skinner.applyLocomotion(m_model, *m_device, dt);

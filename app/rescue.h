@@ -55,6 +55,14 @@ namespace x3::game {
 //                distinct from Expired so story flags can tell the outcomes apart.
 enum class VictimState : uint32_t { Captive = 0, Companion = 1, Expired = 2, Extracted = 3 };
 
+// W5-2: how the interrupt-rescue resolved for a victim (RESCUE_SETPIECE_DESIGN.md §2).
+//   None    — no assault window has resolved (pre-arm, or window still running).
+//   Clean   — attackers killed inside the clean threshold: she is shaken but unhurt.
+//   Wounded — killed late: `<girl>.interrupted` dialog tier; blood tint + no running.
+//   Lost    — the hard cutoff passed with attackers alive: the existing expiry path
+//             fires immediately (boss transform) — same flow as the 5-min timer.
+enum class RescueTier : uint32_t { None = 0, Clean = 1, Wounded = 2, Lost = 3 };
+
 // The three F2 victims (spec §5). Index doubles as the HUD timer slot order.
 enum class VictimId : uint32_t { Aria = 0, Keisha = 1, Emily = 2 };
 
@@ -85,12 +93,45 @@ public:
                float timer, const MonsterSystem::Tuning& bossTuning);
 
     // Advance one frame. While Captive: count the timer down (only once `hubReached`
-    // — the timers run from when the player reaches the F2 rescue hub). While
-    // Companion: follow `playerPos` (light follow AI). Returns true the FRAME the
-    // timer crosses zero (the host then spawns the boss via the boss-tuning getter).
-    // No-op once Expired.
+    // — the timers run from when the player reaches the F2 rescue hub), and run the
+    // W5-2 INTERRUPT WINDOW (see configureAssault) — `aliveAttackers` is the count of
+    // living attacker enemies near this victim, computed by RescueSystem from the
+    // scene (dead monsters drop their entity body link, so liveness is scene truth).
+    // While Companion: follow `playerPos` (light follow AI). Returns true the FRAME
+    // the victim expires (5-min timer OR the interrupt hard cutoff) — the host then
+    // spawns the boss via the boss-tuning getter. No-op once Expired.
     bool tick(float dt, bool hubReached, Scene& scene,
-              x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& playerPos);
+              x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& playerPos,
+              uint32_t aliveAttackers = 0);   // defaulted: non-assault hosts (showroom
+                                              // gallery) tick 5-arg exactly as before
+
+    // ---- W5-2: the interrupt-rescue window (RESCUE_SETPIECE_DESIGN.md §1) ------
+    // The assault ARMS when the player first comes within `armRadius` (the door-tell
+    // beat: muffled audio + threshold light — the host reads tellActive() for the
+    // audio cue; the visual strip is room dressing). It goes ACTIVE (window clock
+    // running) when the player closes within `activeRadius` (the burst-in). The
+    // window resolves the first frame `aliveAttackers` hits zero: elapsed <= cleanS
+    // -> Clean; <= woundedS -> Wounded (blood tint + run suppressed + the host sets
+    // `<girl>.interrupted`); past woundedS with attackers alive -> Lost = immediate
+    // expiry (boss transform, same code path as the 5-min timer).
+    void configureAssault(float cleanS, float woundedS,
+                          float armRadius = 12.0f, float activeRadius = 6.5f) {
+        m_cleanS = cleanS; m_woundedS = woundedS;
+        m_armR2 = armRadius * armRadius; m_activeR2 = activeRadius * activeRadius;
+        m_assaultConfigured = true;
+    }
+    bool assaultArmed()  const { return m_assaultArmed; }
+    bool assaultActive() const { return m_assaultActive; }
+    // True while the door-tell should play (armed, window not yet running).
+    bool tellActive()    const { return m_assaultArmed && !m_assaultActive && captive(); }
+    RescueTier tier()    const { return m_tier; }
+    float windowElapsed() const { return m_windowT; }
+    // 0..1 fraction of the window REMAINING (1 = just opened, 0 = hard cutoff).
+    float windowFrac() const {
+        if (!m_assaultActive || m_woundedS <= 0.0f) return 0.0f;
+        const float f = 1.0f - m_windowT / m_woundedS;
+        return f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+    }
 
     // Try to rescue: if Captive, alive, and the player is within `reach`, flip to
     // Companion (stop the timer, retag friendly) and return true. Else false.
@@ -173,6 +214,14 @@ public:
     void load(const SaveState& s) { m_state = (VictimState)s.state; m_timeLeft = s.timeLeft; }
 
 private:
+    // W5-2: shared expiry (5-min timer AND the interrupt hard cutoff): hide the
+    // entity, drop the body, flip to Expired. Caller returns true to the host so it
+    // spawns the boss this frame.
+    void expire(Scene& scene, x3::phys::IPhysicsWorld& physics);
+    // W5-2: resolve the window at tier (Clean/Wounded): stop the clock; Wounded gets
+    // the blood tint + run suppression the design's aftermath table specifies.
+    void resolveTier(RescueTier t);
+
     void drawAt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                 const float model[16]) const;
     void bakeTransform(Scene& scene);   // write yaw + scale + pos into the entity
@@ -234,6 +283,18 @@ private:
     float           m_timeLeft  = kRescueTimer;
     float           m_timerMax  = kRescueTimer;
 
+    // ---- W5-2 interrupt-rescue window (see configureAssault) -------------------
+    bool  m_assaultConfigured = false;   // no config -> legacy behavior (tests R0-R9)
+    bool  m_assaultArmed      = false;   // player crossed armRadius: the tell plays
+    bool  m_assaultActive     = false;   // player crossed activeRadius: clock running
+    float m_windowT   = 0.0f;            // seconds since the window opened
+    float m_cleanS    = 18.0f;           // clean-save threshold
+    float m_woundedS  = 35.0f;           // hard cutoff (past this + attackers alive = Lost)
+    float m_armR2     = 144.0f;          // armRadius^2
+    float m_activeR2  = 42.25f;          // activeRadius^2
+    RescueTier m_tier = RescueTier::None;
+    bool  m_runCap    = false;           // Wounded: suppress the run clip + slow follow
+
     x3::phys::Vec3   m_pos{};
     uint32_t         m_entity = kNoLink;
     x3::phys::BodyId m_body;
@@ -291,6 +352,22 @@ public:
     // Victim index extracted during the LAST tick (girls arrive one at a time), or
     // UINT32_MAX when none.
     uint32_t extractedThisFrame() const { return m_extractedThisFrame; }
+
+    // ---- W5-2: interrupt-tier resolution (mirrors extractedThisFrame) ----------
+    // The victim index whose window RESOLVED during the last tick (Clean or Wounded;
+    // Lost reports via the boss spawn as before), or UINT32_MAX. The host reads this
+    // to set the `<girl>.interrupted` story flag on Wounded and to bark/SFX.
+    uint32_t tierResolvedThisFrame() const { return m_tierResolvedThisFrame; }
+    // Per-victim assault window config (call after build; victim order A/K/E = 0/1/2).
+    void configureAssault(uint32_t victimIdx, float cleanS, float woundedS,
+                          float armR = 12.0f, float activeR = 6.5f) {
+        if (victimIdx < m_victims.size())
+            m_victims[victimIdx]->configureAssault(cleanS, woundedS, armR, activeR);
+    }
+    // The diegetic countdown ring drawn around an active tableau (default ON; the
+    // host may gate it behind a `rescue_ring` cvar — see the W5-2 paste-block).
+    void setRingEnabled(bool on) { m_ringEnabled = on; }
+    bool ringEnabled() const { return m_ringEnabled; }
     // True iff the rescue clocks are running (the hub was reached / activate()d).
     bool active() const { return m_hubReached; }
 
@@ -350,6 +427,16 @@ private:
     float          m_extractR2 = 0.0f;
     bool           m_extractSet = false;
     uint32_t       m_extractedThisFrame = UINT32_MAX;
+
+    // ---- W5-2 -----------------------------------------------------------------
+    uint32_t m_tierResolvedThisFrame = UINT32_MAX;
+    bool     m_ringEnabled = true;
+    // Pip quad for the diegetic countdown ring (built lazily on first active window).
+    x3::rhi::MeshHandle m_ringPip{};
+    // Count living attackers near `pos`: Tag::Enemy entities whose body link is
+    // still valid (monster death drops the body — scene truth, no host wiring).
+    static uint32_t aliveAttackersNear(const Scene& scene, const x3::phys::Vec3& pos,
+                                       float radius);
 };
 
 // Headless self-test (--test-rescue). Builds three victims on a HeadlessDevice +
