@@ -18,8 +18,16 @@
 #      the eye point and they swing like a body, not like a prop.
 #   6. Exports a GLB (materials + Jake's texture carried through automatically).
 #
+# W6-3 (misc-polish): extended to cap the shoulder cut with a SLEEVE RING (a
+# short dark cuff tube) so the crop no longer shows raw open-mesh stumps, and
+# to note where the suit texture reads mottled (see the sleeve-ring UV comment
+# below) for whoever next revisits the material clamp.
+#
 # ASCII-only on purpose (see anim_build.ps1 note).
 import bpy
+import bmesh
+import mathutils
+import math
 import sys
 import os
 
@@ -124,9 +132,19 @@ try:
         raise SystemExit
 
     # ---- delete non-arm vertices -------------------------------------------------
-    import bmesh
     bm = bmesh.new()
     bm.from_mesh(baked)
+    # W6-3: the glTF import leaves the mesh fully vertex-SPLIT (every triangle
+    # owns its own unique BMVert trio, even where positions coincide -- normal
+    # for glTF's per-loop attribute model, but it means bmesh topology queries
+    # (is_boundary, connected components) see NO shared edges ANYWHERE, i.e.
+    # every triangle looks like its own island. Weld coincident-position verts
+    # first so the mesh is a real manifold for the island-cleanup + boundary-
+    # loop passes below; per-face UV survives (glTF UV is a per-LOOP attribute,
+    # not per-vertex, so a weld does not touch it) and skin weights at a welded
+    # point are identical anyway (same physical vertex, just UV/normal-split).
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
+    log("weld coincident verts: %d verts remain" % len(bm.verts))
     deform = bm.verts.layers.deform.active
     if deform is None:
         finish("FAIL: baked mesh has no deform layer (weights lost)")
@@ -142,9 +160,114 @@ try:
         else:
             kept += 1
     bmesh.ops.delete(bm, geom=doomed, context="VERTS")
+    log("vertex cut (weight threshold): kept=%d deleted=%d" % (kept, len(doomed)))
+
+    # ---- ISLAND CLEANUP: drop stray disconnected specks ------------------------
+    # The per-VERTEX weight threshold above is noisy at the shoulder blend zone:
+    # smooth Mixamo skinning leaves scattered low/high-weight outliers, so the
+    # raw cut is not one clean seam per arm but thousands of tiny pinhole islands
+    # (measured: 71856 boundary edges / 23952 disconnected loops on the first
+    # pass here -- a moth-eaten edge, not a crop). Flood-fill the kept mesh into
+    # connected components and drop everything below 2% of the largest island's
+    # vertex count: that keeps the real arm+hand(+finger) blobs (however many
+    # there turn out to be split into) and removes the speckle, so the boundary-
+    # loop pass below sees a small number of real loops instead of noise.
+    from collections import deque
+    visited = set()
+    islands = []
+    for v0 in bm.verts:
+        if v0 in visited:
+            continue
+        comp = []
+        dq = deque([v0]); visited.add(v0)
+        while dq:
+            cur = dq.popleft()
+            comp.append(cur)
+            for e in cur.link_edges:
+                nv = e.other_vert(cur)
+                if nv not in visited:
+                    visited.add(nv)
+                    dq.append(nv)
+        islands.append(comp)
+    islands.sort(key=len, reverse=True)
+    largest = len(islands[0]) if islands else 0
+    thresh = max(50, int(largest * 0.02))
+    keep_islands = [c for c in islands if len(c) >= thresh]
+    keep_set = set(v for c in keep_islands for v in c)
+    stray = [v for v in bm.verts if v not in keep_set]
+    if stray:
+        bmesh.ops.delete(bm, geom=stray, context="VERTS")
+    kept = len(keep_set)
+    log("island cleanup: %d islands total (sizes top5 %s), kept %d islands >= %d verts (%d verts), dropped %d stray verts" % (
+        len(islands), [len(c) for c in islands[:5]], len(keep_islands), thresh, kept, len(stray)))
+
+    # ---- SLEEVE HEM: fold a short dark lip out of every cut edge ---------------
+    # The vertex cut above leaves an open-mesh boundary at the shoulder crop
+    # (rough "stumps" - the bug this task fixes). THREE geometry strategies were
+    # tried and rejected here (each confirmed via a tools/preview_glb.py render):
+    #   1. hand-sorted "fan to a center point" (graph-walk order, then a
+    #      centroid-angle sort) -- both produced a self-crossing pleated fan,
+    #      because this weight-threshold cut boundary is not the simple convex
+    #      ring either sort assumes.
+    #   2. bmesh.ops.holes_fill (Blender's own hole-cap op) -- still odd/uneven
+    #      because it can only be as clean as its (gnarly) input loop.
+    #   3. a synthesized regular N-gon disc sized to the loop's max-radius --
+    #      technically clean, but the boundary is elongated/irregular enough
+    #      that "max distance from centroid" overshoots badly, producing a
+    #      giant flat coin far bigger than the actual gap.
+    # This is the fix that holds regardless of how gnarly/elongated the true cut
+    # boundary is: work PER EDGE, not per loop/hole. Every boundary edge gets a
+    # small quad flap extruded a fixed short distance along that edge's own
+    # local outward (vertex-normal) direction -- proportional to the edge
+    # itself, never a global shape estimate that can blow up. Across the whole
+    # boundary this reads as a short folded/rolled hem hugging the actual cut
+    # line, hiding the open-mesh edge without adding a disproportionate shape.
+    # UV: reuse the boundary's OWN uv (still valid on the kept verts' remaining
+    # faces) so the hem samples the exact dark sleeve-fabric texel at the cut
+    # edge - no new material, can't mismatch Jake's suit texture because it IS
+    # that texture, clamped to one texel. Both winding orders are emitted per
+    # face (SurfaceLibrary::makePanel precedent, app/surface_library.cpp: "wind
+    # both ways so panels read regardless of the viewer side").
+    uv_layer = bm.loops.layers.uv.active
+    if uv_layer is None:
+        log("WARNING: no UV layer -- skipping sleeve hem (cut stumps stay bare)")
+    else:
+        def vert_uv(v):
+            for lp in v.link_loops:
+                return lp[uv_layer].uv.copy()
+            return None
+
+        bm.normal_update()
+        boundary_edges = [e for e in bm.edges if e.is_boundary]
+        log("boundary edges after cut: %d" % len(boundary_edges))
+
+        def face_both_ways(verts, uv):
+            for order in (verts, tuple(reversed(verts))):
+                try:
+                    f = bm.faces.new(order)
+                    for lp in f.loops:
+                        lp[uv_layer].uv = uv
+                except ValueError:
+                    pass   # duplicate/degenerate -- non-fatal, skip
+
+        HEM_DEPTH = 0.015   # 1.5 cm folded lip per edge (proportional, not global)
+        hem_faces = 0
+        for e in boundary_edges:
+            va, vb = e.verts
+            nrm = va.normal + vb.normal
+            if nrm.length < 1e-6:
+                continue
+            nrm.normalize()
+            uv0 = vert_uv(va) or vert_uv(vb) or mathutils.Vector((0.1, 0.1))
+            pa = bm.verts.new(va.co + nrm * HEM_DEPTH)
+            pb = bm.verts.new(vb.co + nrm * HEM_DEPTH)
+            face_both_ways((va, vb, pb, pa), uv0)
+            hem_faces += 1
+        bm.normal_update()
+        log("sleeve hem: %d edge flaps added (depth=%.3f m)" % (hem_faces, HEM_DEPTH))
+
     bm.to_mesh(baked)
     bm.free()
-    log("vertex cut: kept=%d deleted=%d" % (kept, len(doomed)))
     if kept < 50:
         finish("FAIL: almost nothing kept (%d verts) - group matching wrong" % kept)
         raise SystemExit

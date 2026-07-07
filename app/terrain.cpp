@@ -28,10 +28,25 @@
 #include "terrain.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
+#include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/core/IJobSystem.h"
+
+// File-local STB copy for the real terrain splat albedos (same precedent as
+// surface_library.cpp / cinematic.cpp: each app TU that decodes PNGs hosts its
+// own STATIC instance so there's no symbol clash with the engine's copy).
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4244 4456 4457)
+#endif
+#include <stb_image.h>
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -248,6 +263,30 @@ std::vector<uint8_t> makeDetailRGBA(uint32_t n, uint32_t seed,
     return px;
 }
 
+// Load one surface_library set's real albedo (curated 2K PNG, tools/tex_curate.py
+// conventions) as an sRGB terrain detail texture. Falls back to the old
+// procedural noise tile (small, seamless) if the file is missing — e.g. a
+// headless CI box that hasn't run `asset_store.py fetch --all` yet — so terrain
+// always has SOMETHING to splat rather than failing to build.
+x3::rhi::TextureHandle loadTerrainAlbedo(x3::rhi::IRenderDevice& device,
+                                         const std::string& setName,
+                                         uint32_t fallbackSeed,
+                                         int fbR, int fbG, int fbB, int fbVar) {
+    const std::string path = x3::game::assetRoot() + "/surface_library/" + setName + "/albedo.png";
+    int w = 0, h = 0, comp = 0;
+    stbi_uc* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
+    if (px) {
+        x3::rhi::TextureHandle t = device.createTexture(px, (uint32_t)w, (uint32_t)h, /*srgb=*/true);
+        stbi_image_free(px);
+        if (t.valid()) return t;
+    }
+    x3::logWarn("[terrain] surface set '" + setName + "' missing/unreadable at " + path +
+               " -- falling back to procedural noise tile");
+    const uint32_t kN = 64;
+    auto fb = makeDetailRGBA(kN, fallbackSeed, fbR, fbG, fbB, fbVar, fbVar, fbVar);
+    return device.createTexture(fb.data(), kN, kN, /*srgb=*/true);
+}
+
 // Build the four ground DETAIL textures (grass / rock / snow / sand), register
 // them as the terrain MATERIAL set, and return the opaque MARKER handle the
 // renderer uses to flag terrain draws for the height+slope splat in mesh.frag.
@@ -255,16 +294,22 @@ std::vector<uint8_t> makeDetailRGBA(uint32_t n, uint32_t seed,
 // device's bindless array (freed at device shutdown, like the old ground tex).
 // If the device can't bind them (e.g. headless), the marker may be invalid and
 // terrain falls back to a flat tint — still correct, just not splatted.
+//
+// Real 2K albedos (curated via tools/tex_curate.py -> assets/surface_library/,
+// published via tools/asset_store.py) replace the old 64px procedural-noise
+// fill (W3-4's placeholder): rock reuses the already-game-ready sr_concrete_01
+// set; grass/sand/snow are new sets picked from docs/tex_catalog.json:
+//   grass -> terrain_grass (Rocky Hills Environment - Whitebark Pine, GrassTileRHEP)
+//   sand  -> terrain_sand  (Landscape Ground Pack 3, T_ground_sand_01)
+//   snow  -> terrain_snow  (Ancient Desert Town, MarbleWhite00 -- the catalog has
+//            NO texture set with "snow"/"ice"/"arctic"/"frost" anywhere in its
+//            2626 entries; this light cracked-white marble is the closest visual
+//            substitute and is used deliberately, not by oversight)
 x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
-    const uint32_t kN = 64;
-    auto grassPx = makeDetailRGBA(kN, 1001u,  78, 116,  56,  18, 22, 16); // green
-    auto rockPx  = makeDetailRGBA(kN, 2002u, 104, 100,  92,  26, 24, 22); // grey-brown
-    auto snowPx  = makeDetailRGBA(kN, 3003u, 222, 226, 235,  16, 14, 12); // bright white-blue
-    auto sandPx  = makeDetailRGBA(kN, 4004u, 178, 158, 118,  20, 18, 14); // tan
-    auto grass = device.createTexture(grassPx.data(), kN, kN, /*srgb=*/true);
-    auto rock  = device.createTexture(rockPx.data(),  kN, kN, /*srgb=*/true);
-    auto snow  = device.createTexture(snowPx.data(),  kN, kN, /*srgb=*/true);
-    auto sand  = device.createTexture(sandPx.data(),  kN, kN, /*srgb=*/true);
+    auto grass = loadTerrainAlbedo(device, "terrain_grass", 1001u,  78, 116,  56, 18); // green
+    auto rock  = loadTerrainAlbedo(device, "sr_concrete_01", 2002u, 104, 100,  92, 24); // grey-brown
+    auto snow  = loadTerrainAlbedo(device, "terrain_snow",  3003u, 222, 226, 235, 14); // bright white-blue
+    auto sand  = loadTerrainAlbedo(device, "terrain_sand",  4004u, 178, 158, 118, 18); // tan
     x3::rhi::TextureHandle marker =
         device.registerTerrainMaterial(grass, rock, snow, sand);
     // Fallback: if the material set couldn't be registered (no bindless), use the
