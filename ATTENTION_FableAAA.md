@@ -36,12 +36,12 @@ the playbook: the DamageType re-home, the space-stack re-home, W2-A2).
 
 Re-home queue, in order (each = one session/agent, one branch, Fable gates):
 
-1. **R-1 Lightning playtest tune** — DONE during the aborted merge, preserved here:
+1. **R-1 Lightning playtest tune** — ✅ **LANDED on HFF `33530f5`** (2026-07-07, 11940b27 session):
    damage 14 / fireRate 8 / mag 200 / reserve 600 + keep `DamageType::Energy`. Tiny; land first.
-2. **R-2 Monster skeleton-fit regression fixes** (PB cbf7999) — diff against HFF monster.cpp;
+2. **R-2 Monster skeleton-fit regression fixes** — 🔒 **CLAIMED: 11940b27 fork on `fold/pb-remainder` (wt-r256), R-5+R-6 bundled** — (PB cbf7999) — diff against HFF monster.cpp;
    HFF's W2-D anim system WINS (attack+death+lunge supersedes PB's attack-only bake;
    manifest keeps HFF's GLB hashes), but the bestiary/deathragdoll scale fixes come across.
-3. **R-3 THE STRATA DESCENT** (PB fd94c92 + ed1a403) — PB's crown jewel. Re-home as a
+3. **R-3 THE STRATA DESCENT** — 🔒 **CLAIMED: 11940b27 fork on `fold/strata-descent` (wt-r3strata), R-4 bundled** — (PB fd94c92 + ed1a403) — PB's crown jewel. Re-home as a
    `world_hosts/host_strata.cpp` (or fold into the canon tower path) + wire the LIVE elevator
    to descend through it. See §4 — this is the Club 1127 realization; treat it as sacred.
 4. **R-4 Elevator showcase** (`elevator_showcase.h`, `--world elevator`) — re-home behind the
