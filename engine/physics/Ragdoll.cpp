@@ -216,6 +216,15 @@ public:
 
     void removeFromWorld() override {
         if (!m_ragdoll || !m_inWorld) return;
+        // W6-1: if the world already shut down (JoltPhysicsWorld::shutdown resets its
+        // system; nativeSystem() goes null), every ragdoll body was ALREADY removed and
+        // destroyed by the world's own teardown — RemoveFromPhysicsSystem would then
+        // dereference freed Jolt internals (the --screenshot-showroom-ragdoll exit-139
+        // segfault: the host calls sphys->shutdown() before scope destructors run).
+        // Just drop our bookkeeping. Ordering contract: the world OBJECT must still
+        // outlive the ragdoll (declare the world first) — only its shutdown() may
+        // legally precede this destructor.
+        if (m_world && m_world->nativeSystem() == nullptr) { m_inWorld = false; return; }
         m_ragdoll->RemoveFromPhysicsSystem();
         m_inWorld = false;
     }
