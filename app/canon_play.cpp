@@ -964,6 +964,8 @@ void CanonPlay::buildUpperFloors(const CanonFloor& floor, Scene& scene,
     I("F2: Main Corridor",   CanonItemKind::Ammo);
     I("Operating Theater A", CanonItemKind::Health);
     I("Dr. Chen's Office",   CanonItemKind::LoreTerminal);
+    I("Quarantine Zone",     CanonItemKind::LoreTerminal); // W8-1 desc gold: infection
+                                                           // research (antidote mechanic)
 
     // F3 — GENETICS LAB.
     E("F3: Specimen Hall",     kInfected, 3, 15, 0.1f);
@@ -990,6 +992,7 @@ void CanonPlay::buildUpperFloors(const CanonFloor& floor, Scene& scene,
     I("Augmentation Bay", CanonItemKind::Health);
     I("F4: Augmentation Corridor", CanonItemKind::Ammo);
     I("Nexus Chamber Access (F4.5)", CanonItemKind::Keycard);
+    I("Prototype Testing", CanonItemKind::Ammo, 2.2f, 1.8f); // W8-1: the course's reward cache
 
     // F5 — DRONE STATION.
     E("F5: Main Corridor",   kDrones, 3, 45, 0.25f);
@@ -1014,6 +1017,9 @@ void CanonPlay::buildUpperFloors(const CanonFloor& floor, Scene& scene,
     I("Energy Nexus",          CanonItemKind::LoreTerminal);
     I("Analysis Lab",          CanonItemKind::Ammo);
     I("F6: Artifact Corridor", CanonItemKind::Health);
+    I("Salvari Containment",   CanonItemKind::LoreTerminal); // W8-1 desc gold: "3 prisoners.
+                                                             // Can be freed as allies."
+    I("Portal Chamber",        CanonItemKind::LoreTerminal, 3.0f, 2.0f); // homeworld/overload note
 
     // F7 — EXECUTIVE SUITE (Sarah's cell itself stays W5-3's scene; the Rooftop
     // guard pair is the last fight before the extraction).
@@ -1030,6 +1036,8 @@ void CanonPlay::buildUpperFloors(const CanonFloor& floor, Scene& scene,
     I("Helipad",                CanonItemKind::NanoBooster);  // extraction prep
     I("F7: Executive Corridor", CanonItemKind::Ammo);
     I("Observation Deck",       CanonItemKind::Health);
+    I("Clone Lab",              CanonItemKind::LoreTerminal); // W8-1 desc gold: Jake clone
+                                                              // data (mirror confrontation)
 
     x3::logInfo("[canonplay] upper floors populated: " + std::to_string(enemies) +
                 " squad enemies + " + std::to_string(items) + " pickups (F2-F7)");
