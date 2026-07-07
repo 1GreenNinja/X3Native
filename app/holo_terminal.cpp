@@ -274,7 +274,8 @@ float drawTextGlass(Canvas& c, const std::string& s, float penX, float topY, flo
 // below the data rows. Passing them in lets the text be rasterized ON the glass.
 std::vector<uint8_t> makeHologramRGBA(uint32_t n,
                                       const std::vector<std::string>& lines,
-                                      const std::string& inputLine) {
+                                      const std::string& inputLine,
+                                      const float* inkOverride = nullptr) {
     const float fn = (float)n;
 
     // ---- 1) GLASS BASE (under the line-art): deep-blue gradient + scanlines +
@@ -450,8 +451,13 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
         float ty = P(0.205f);                           // below the header strip
         for (size_t li = 1; li < lines.size(); ++li) {
             // first data row a touch brighter (the "SUBJECT" line), rest steady cyan.
+            // W4-2: when the host set an ink override (VIGIL presence = orange), body
+            // rows bake with m_textColor; the default path is byte-identical to before.
             const float aRow = (li == 1) ? HOT : 0.92f;
-            drawTextGlass(c, lines[li], lx0b, ty, bpx, CY_R*1.15f, CY_G, CY_B, aRow);
+            const float inkR = inkOverride ? inkOverride[0] * 1.15f : CY_R * 1.15f;
+            const float inkG = inkOverride ? inkOverride[1]          : CY_G;
+            const float inkB = inkOverride ? inkOverride[2]          : CY_B;
+            drawTextGlass(c, lines[li], lx0b, ty, bpx, inkR, inkG, inkB, aRow);
             ty += rowH;
         }
         // --- LIVE INPUT LINE in amber, just below the last data row. ---
@@ -826,7 +832,8 @@ void HoloTerminal::regenTexture() {
     if (m_active) inputLine = "> " + m_input + "_";
     m_lastInputShown = m_active;
 
-    std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, inputLine);
+    std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, inputLine,
+                                                 m_inkOverride ? m_textColor : nullptr);
     x3::rhi::TextureHandle fresh = m_device->createTexture(holo.data(), m_texN, m_texN, /*srgb*/true);
     if (!fresh.valid()) { m_texDirty = false; return; }   // keep the old tex on failure
 

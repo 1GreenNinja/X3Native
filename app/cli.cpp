@@ -234,6 +234,12 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.screenshotPath = o.dialogShotPath;
             if (i + 1 < argc && argv[i + 1][0] != '-') { o.dialogShotPath = argv[++i]; o.screenshotPath = o.dialogShotPath; }
         }
+        else if (a == "--screenshot-vigil") {
+            // W4-2: capture the cell HoloTerminal with a VIGIL conversation live
+            // on the glass (scripted tree, orange ink) — the AI's review host.
+            o.screenshot = true; o.vigilShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.screenshotPath = argv[++i];
+        }
         else if (a == "--screenshot") {
             o.screenshot = true;
             // Optional path arg (next token, if it isn't another flag).

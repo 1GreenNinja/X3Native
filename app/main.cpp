@@ -699,6 +699,7 @@ int main(int argc, char** argv) {
     _hc.fxDemo          = o.fxDemo;
     _hc.uiDemo          = o.uiDemo;            _hc.uiDemoPath = o.uiDemoPath; _hc.uiDemoScreen = o.uiDemoScreen;
     _hc.dialogShot      = o.dialogShot;
+    _hc.vigilShot       = o.vigilShot;
     _hc.alertShot       = o.alertShot;
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
     _hc.docWorldPath    = o.docWorldPath;

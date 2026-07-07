@@ -37,6 +37,17 @@ public:
     // High-contrast readout color the host uses for drawHudText (bright vs the blue
     // glass). Exposed so the in-app render layer matches the art direction.
     const float* textColor() const { return m_textColor; }
+    // W4-2 (HoloPanel platform): host-settable readout INK. While set, the on-glass
+    // bake tints body rows with this color (VIGIL presence = orange); resetTextColor()
+    // returns to the authored cyan ink. Default path is untouched (basin-safe).
+    void setTextColor(float r, float g, float b, float a = 1.0f) {
+        m_textColor[0] = r; m_textColor[1] = g; m_textColor[2] = b; m_textColor[3] = a;
+        m_inkOverride = true; m_texDirty = true;
+    }
+    void resetTextColor() {
+        m_textColor[0] = 0.85f; m_textColor[1] = 0.97f; m_textColor[2] = 1.0f; m_textColor[3] = 1.0f;
+        m_inkOverride = false; m_texDirty = true;
+    }
 
     void setSubmitSink(SubmitFn fn) { m_submit = std::move(fn); }
 
@@ -131,6 +142,7 @@ private:
     bool           m_cursorOn = true;
     SubmitFn       m_submit;
     float          m_textColor[4] = { 0.85f, 0.97f, 1.0f, 1.0f };  // bright cyan-white, high contrast
+    bool           m_inkOverride = false;   // W4-2: bake body rows with m_textColor (VIGIL orange)
     std::vector<uint32_t> m_decor;        // bezel / arm / trace entity ids (visual only)
     static constexpr size_t kMaxInput = 72;   // freeform questions need room (was 32)
 };

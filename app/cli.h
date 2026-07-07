@@ -312,6 +312,9 @@ struct CliOptions {
     // chat tree OPEN, so the choice UI can be judged headlessly. Additive.
     bool        dialogShot = false;
     std::string dialogShotPath = "docs/screenshots/dialog/lena_dialog.png";
+    // W4-2: --screenshot-vigil [path.png] — the cell HoloTerminal captured with a
+    // VIGIL chat-tree conversation live on the glass (orange ink). Additive.
+    bool        vigilShot = false;
     // Which UI screen the --ui-demo capture shows: "main" (default), "pause", or
     // "settings". Lets one flag document all three menu screens.
     std::string uiDemoScreen = "main";
