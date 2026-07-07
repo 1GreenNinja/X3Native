@@ -533,6 +533,9 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
                               x3::phys::Vec3{ a.ward.x + a.dx, a.ward.y, a.ward.z + a.dz },
                               tuningFor(a.t));
             tagRoom(scene, m_attackers.at(i), a.room);
+            // W5-2 wiring: calm attackers play the baked Struggle loop, so the ward
+            // reads as an assault IN PROGRESS (the looming tableau), not posted guards.
+            m_attackers.at(i).setCalmLoop("struggle");
             ++m_taggedHostiles;
         }
         x3::logInfo("[canonplay] Medical Bay rescue: 3 girls + " +

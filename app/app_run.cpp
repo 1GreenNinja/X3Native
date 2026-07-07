@@ -5055,6 +5055,20 @@ int runDefaultHost(HostContext& hc) {
                         x3::logInfo("[canon] " + rs.victim(ei).name() +
                                     " extracted at the F2 elevator (story flag set)");
                     }
+                    // W5-2 wiring: the frame an interrupt tier resolves, record it in the
+                    // dialog world. WOUNDED sets `<girl>.interrupted` — the raw-vs-composed
+                    // tree variants that were authored long ago become reachable — plus a
+                    // hurting bark so the moment lands. (Clean resolves silently: her own
+                    // rescue dialog carries it.)
+                    const uint32_t ti = rs.tierResolvedThisFrame();
+                    if (ti != UINT32_MAX && ti < 3 &&
+                        rs.victim(ti).tier() == x3::game::RescueTier::Wounded) {
+                        chatTrees.flags().set(std::string(kGirlKey[ti]) + ".interrupted");
+                        npcBarkText  = rs.victim(ti).name() + ": I... I'm okay. Just... get me out.";
+                        npcBarkTimer = 5.0f;
+                        x3::logInfo("[canon] " + rs.victim(ti).name() +
+                                    " rescue resolved WOUNDED (interrupted flag set)");
+                    }
                 }
                 // ---- W5-3: THE ENDGAME SPINE — flags, objectives, and the WIN. ----
                 {
