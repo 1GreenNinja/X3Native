@@ -35,6 +35,7 @@ struct CliOptions {
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
+         testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
          testStrata = false,        // --test-strata (R-3 fold: THE DESCENT chain)
          testElevatorShowcase = false,  // --test-elevator-showcase (R-4 fold)
@@ -354,6 +355,14 @@ struct CliOptions {
     // 4x SSAA. Writes <outDir>/car_*.png (default docs/screenshots/vehicles).
     bool        carShot = false;
     std::string carShotDir = "docs/screenshots/vehicles";
+    // Upper-floor CONTENT proof (--screenshot-upperfloors [outDir]): build the WHOLE
+    // canon tower (loadCanonTower) + CanonPlay's full content (floor-1 spine + the
+    // R-5 upper-floor squads/pickups), pose the camera INSIDE a few populated upper
+    // rooms (F2 operating theater, an F2 captive ward, an F5 drone bay, the F7
+    // executive corridor) and capture PNGs. Proves floors 2-7 are designed, populated
+    // spaces. Headless; exits after. (Re-homed from playable-build eab7ff4.)
+    bool        upperShot = false;
+    std::string upperShotDir = "docs/screenshots/upper_floors";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
     // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
     // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and

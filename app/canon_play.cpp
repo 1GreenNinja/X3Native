@@ -6,6 +6,7 @@
 #include "canon_play.h"
 #include "asset_root.h"
 #include "headless_device.h"
+#include "mesh_prims.h"   // R-5: x3::prims::makeBox for the upper-floor pickup props
 
 #include "engine/core/x3_log.h"
 
@@ -29,6 +30,7 @@ namespace {
 constexpr float kEnemyFootUp = 0.4f;
 constexpr float kBossFootUp  = 0.6f;
 constexpr float kPickupUp    = 1.0f;   // sidearm hovers ~1 m off the cell floor (waist height)
+constexpr float kCanonPickupReach = 1.4f;   // R-5: upper-floor item proximity grab radius
 
 // ---------------------------------------------------------------------------
 // Minimal JSON parser (self-contained — staging/girls_dialog.json). Same lean style as
@@ -602,6 +604,9 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
                         " floor bosses live (F2-F7)");
     }
 
+    // ---- R-5 (PB fold): regular squads + item pickups up the tower (floors 2-7). ----
+    buildUpperFloors(floor, scene, device, physics);
+
     // ---- Per-girl dialog (staging JSON; baked fallback on absence). ----
     m_dialog.load(girlsDialogPath);
 
@@ -621,6 +626,8 @@ void CanonPlay::setCueSink(const GameCueFn& sink) {
     m_mainHall.setCueSink(sink);
     m_cellGuards.setCueSink(sink);
     m_attackers.setCueSink(sink);
+    m_floorBosses.setCueSink(sink);    // R-5: was missing from the fan (W4-1 gap)
+    m_upperEnemies.setCueSink(sink);   // R-5: upper-floor squads
     if (m_martinezSpawned) m_martinez.setCueSink(sink);
     m_rescue.bosses().setCueSink(sink);
 }
@@ -630,6 +637,8 @@ void CanonPlay::setDeathFxSink(const DeathFxFn& sink) {
     m_mainHall.setDeathFxSink(sink);
     m_cellGuards.setDeathFxSink(sink);
     m_attackers.setDeathFxSink(sink);
+    m_floorBosses.setDeathFxSink(sink);    // R-5: was missing from the fan (W4-1 gap)
+    m_upperEnemies.setDeathFxSink(sink);   // R-5: upper-floor squads
     if (m_martinezSpawned) m_martinez.setDeathFxSink(sink);
     m_rescue.bosses().setDeathFxSink(sink);
 }
@@ -640,6 +649,7 @@ void CanonPlay::shutdown() {
     m_mainHall.shutdown();
     m_cellGuards.shutdown();
     m_attackers.shutdown();
+    m_upperEnemies.shutdown();   // R-5: upper-floor squads
     m_floorBosses.shutdown();   // W4-1 boss ladder
     m_rescue.bosses().shutdown();
     if (m_martinezSpawned) m_martinez.shutdownRagdoll();
@@ -656,6 +666,18 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     m_cellGuards.update(dt, scene, physics, eye, player, attackFx);
     m_attackers.update(dt, scene, physics, eye, player, attackFx);
     m_floorBosses.update(dt, scene, physics, eye, player, attackFx);   // W4-1 boss ladder
+    m_upperEnemies.update(dt, scene, physics, eye, player, attackFx);  // R-5: upper squads
+    // R-5: upper-floor pickup grab — walk within reach and it's collected (hidden).
+    for (auto& it : m_upperItems) {
+        if (it.taken || it.entity == kNoLink || it.entity >= scene.size()) continue;
+        const float ddx = eye.x - it.pos.x, ddy = eye.y - it.pos.y, ddz = eye.z - it.pos.z;
+        if (ddx*ddx + ddy*ddy + ddz*ddz <= kCanonPickupReach * kCanonPickupReach) {
+            it.taken = true;
+            scene.get(it.entity).visible = false;   // collected: stop drawing it
+            x3::logInfo(std::string("[canonplay] pickup collected: ") +
+                        canonItemKindName(it.kind));
+        }
+    }
     if (m_martinezSpawned)
         m_martinez.update(dt, scene, physics, eye, player, attackFx);
     // W4-1: MARTINEZ ENTRANCE BEAT — the first time the player steps into the Boss
@@ -726,6 +748,7 @@ FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& di
     if (tryGroup(m_cellGuards)) return best;
     if (tryGroup(m_attackers)) return best;
     if (tryGroup(m_floorBosses)) return best;   // W4-1 boss ladder
+    if (tryGroup(m_upperEnemies)) return best;  // R-5: upper-floor squads
     if (tryGroup(m_rescue.bosses())) return best;
     if (m_martinezSpawned) {
         FireResult r = m_martinez.fire(eye, dir, scene, physics, damage, type);
@@ -762,6 +785,7 @@ void CanonPlay::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     drawManagerCulled(m_cellGuards, device, frame, scene);
     drawManagerCulled(m_attackers, device, frame, scene);
     drawManagerCulled(m_floorBosses, device, frame, scene);   // W4-1 boss ladder
+    drawManagerCulled(m_upperEnemies, device, frame, scene);  // R-5: upper-floor squads
     // Martinez: gate by the Boss Arena room.
     if (m_martinezSpawned) {
         const uint32_t be = m_martinez.entity();
@@ -787,7 +811,8 @@ void CanonPlay::drawViewmodel(x3::rhi::IRenderDevice& device, const x3::rhi::Fra
 
 int CanonPlay::enemiesRemaining() const {
     int n = (int)(m_mainHall.aliveCount() + m_cellGuards.aliveCount() + m_attackers.aliveCount()
-                + m_floorBosses.aliveCount() + m_rescue.bosses().aliveCount());
+                + m_floorBosses.aliveCount() + m_upperEnemies.aliveCount()
+                + m_rescue.bosses().aliveCount());
     if (m_martinezSpawned && m_martinez.alive()) n += 1;
     return n;
 }
@@ -802,11 +827,212 @@ uint32_t CanonPlay::liveEnemyMarks(EnemyMark* out, uint32_t cap) const {
     addManager(m_cellGuards, "GUARD");
     addManager(m_attackers,  "ATTACKER");
     addManager(m_floorBosses, "BOSS");   // W4-1 boss ladder (F2-F7)
+    addManager(m_upperEnemies, "HOSTILE");   // R-5: upper-floor squads
     addManager(m_rescue.bosses(), "BOSS");
     if (m_martinezSpawned && m_martinez.alive() && n < cap) {
         out[n].pos = m_martinez.pos(); out[n].label = "MARTINEZ"; ++n;
     }
     return n;
+}
+
+// ===========================================================================
+// R-5 (PB fold, from playable-build eb334e3): UPPER-FLOOR POPULATION + PICKUPS.
+// Regular squads for floors 2-7 resolved by the data's unique room names, plus
+// lightweight tinted-box pickup props grabbed on proximity. Re-homed with three
+// deliberate drops (see the fold commit): PB's per-floor bosses (HFF's W4-1
+// ladder is endgame-integrated), PB's ward girls (HFF's RescueSystem owns F2),
+// and PB's F4.5 tier squads (HFF's W5-1 sparse-dread design wins).
+// ===========================================================================
+namespace {
+struct ItemViz { float hx, hy, hz, r, g, b; };
+ItemViz itemViz(CanonItemKind k) {
+    switch (k) {
+        case CanonItemKind::Ammo:         return { 0.18f, 0.12f, 0.12f, 0.95f, 0.80f, 0.15f }; // amber crate
+        case CanonItemKind::Health:       return { 0.16f, 0.16f, 0.10f, 0.95f, 0.20f, 0.20f }; // red medkit
+        case CanonItemKind::Weapon:       return { 0.30f, 0.08f, 0.08f, 1.00f, 0.55f, 0.15f }; // orange weapon
+        case CanonItemKind::Keycard:      return { 0.11f, 0.07f, 0.01f, 0.15f, 0.88f, 1.00f }; // cyan card
+        case CanonItemKind::NanoBooster:  return { 0.10f, 0.16f, 0.10f, 0.20f, 1.00f, 0.65f }; // green-cyan vial
+        case CanonItemKind::LoreTerminal: return { 0.22f, 0.30f, 0.10f, 0.25f, 0.45f, 1.00f }; // blue terminal
+        default:                          return { 0.15f, 0.15f, 0.15f, 0.8f, 0.8f, 0.8f };
+    }
+}
+} // namespace
+
+const char* canonItemKindName(CanonItemKind k) {
+    switch (k) {
+        case CanonItemKind::Ammo:         return "ammo";
+        case CanonItemKind::Health:       return "health";
+        case CanonItemKind::Weapon:       return "weapon";
+        case CanonItemKind::Keycard:      return "keycard";
+        case CanonItemKind::NanoBooster:  return "nano-booster";
+        case CanonItemKind::LoreTerminal: return "lore-terminal";
+        default:                          return "item";
+    }
+}
+
+uint32_t CanonPlay::spawnUpperEnemies(const CanonFloor& floor, Scene& scene,
+                                      x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                                      const char* roomName, const EnemyType* mix, uint32_t mixCount,
+                                      int hpBonus, float speedBonus) {
+    const uint32_t room = floor.roomByName(roomName);
+    if (room == kNoRoom || mixCount == 0) return 0;
+    const CanonRoom& R = floor.rooms[room];
+    const float fy = R.y0() + kEnemyFootUp;
+    // Spread the squad inside the room footprint with a wall margin (rooms are ~8-16 m).
+    const float halfW = std::max(0.5f, R.w * 0.5f - 1.6f);
+    const float halfD = std::max(0.5f, R.d * 0.5f - 1.6f);
+    uint32_t placed = 0;
+    for (uint32_t i = 0; i < mixCount; ++i) {
+        // Deterministic scatter (no RNG): lay enemies along a zig across the room so an
+        // arriving player is never dogpiled at the doorway spine.
+        const float t = (mixCount > 1) ? ((float)i / (float)(mixCount - 1)) : 0.5f;
+        const float dx = (t * 2.0f - 1.0f) * halfW;
+        const float dz = ((i % 2 == 0) ? 0.45f : -0.45f) * halfD;
+        MonsterSystem::Tuning tn = tuningFor(mix[i]);
+        tn.hp += hpBonus;                       // depth scaling: higher floor = tougher
+        tn.chaseSpeed += speedBonus;
+        const uint32_t mi = m_upperEnemies.spawn(scene, device, physics, m_modelDir,
+                                                 x3::phys::Vec3{ R.cx + dx, fy, R.cz + dz },
+                                                 tn);
+        tagRoom(scene, m_upperEnemies.at(mi), room);
+        ++m_taggedHostiles;
+        ++placed;
+    }
+    return placed;
+}
+
+bool CanonPlay::placeUpperItem(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& device,
+                               const char* roomName, CanonItemKind kind, float dx, float dz) {
+    const uint32_t room = floor.roomByName(roomName);
+    if (room == kNoRoom) return false;
+    const CanonRoom& R = floor.rooms[room];
+    const ItemViz v = itemViz(kind);
+    const x3::phys::Vec3 pos{ R.cx + dx, R.y0() + kPickupUp, R.cz + dz };
+
+    x3::prims::PrimMesh box = x3::prims::makeBox(v.hx, v.hy, v.hz, 0, 0, 0, 1.0f);
+    Entity e;
+    for (int i = 0; i < 16; ++i) e.transform[i] = 0.0f;
+    e.transform[0] = e.transform[5] = e.transform[10] = e.transform[15] = 1.0f;
+    e.transform[12] = pos.x; e.transform[13] = pos.y; e.transform[14] = pos.z;
+    e.mesh = device.createMesh(box.verts.data(), (uint32_t)box.verts.size(),
+                               box.index.data(), (uint32_t)box.index.size());
+    e.baseColor[0] = v.r; e.baseColor[1] = v.g; e.baseColor[2] = v.b; e.baseColor[3] = 1.0f;
+    e.tag     = (uint32_t)Tag::Prop;
+    e.visible = true;
+    e.roomId  = room;
+    const uint32_t ent = scene.add(e);
+
+    CanonItem it; it.kind = kind; it.room = room; it.entity = ent; it.pos = pos;
+    m_upperItems.push_back(it);
+    return true;
+}
+
+void CanonPlay::buildUpperFloors(const CanonFloor& floor, Scene& scene,
+                                 x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics) {
+    // Only meaningful when the whole tower is loaded (loadCanonTower). On a single-floor
+    // load the F2..F7 room names resolve to kNoRoom and every helper no-ops.
+    if (floor.roomByName("F2: Elevator Lobby") == kNoRoom) {
+        x3::logInfo("[canonplay] upper floors: tower rooms absent (single-floor load) — skipping");
+        return;
+    }
+
+    // Enemy mixes (themed per floor). Difficulty climbs F2->F7 via hpBonus/speedBonus.
+    static const EnemyType kHumanoidMelee[] = { EnemyType::DominionTrooper, EnemyType::Verthani };
+    static const EnemyType kInfected[]      = { EnemyType::Verthani, EnemyType::Verthani, EnemyType::DominionTrooper };
+    static const EnemyType kCyborg[]        = { EnemyType::DominionTrooper, EnemyType::Illuminated };
+    static const EnemyType kDrones[]        = { EnemyType::BlueSynth, EnemyType::BlueSynth, EnemyType::Illuminated };
+    static const EnemyType kSalvari[]       = { EnemyType::Illuminated, EnemyType::Verthani, EnemyType::BlueSynth };
+    static const EnemyType kExecGuard[]     = { EnemyType::Illuminated, EnemyType::Illuminated, EnemyType::DominionTrooper };
+
+    uint32_t enemies = 0, items = 0;
+    auto E = [&](const char* rn, const EnemyType* mix, uint32_t n, int hpB, float spB) {
+        enemies += spawnUpperEnemies(floor, scene, device, physics, rn, mix, n, hpB, spB);
+    };
+    auto I = [&](const char* rn, CanonItemKind k, float dx = 0.0f, float dz = 0.0f) {
+        if (placeUpperItem(floor, scene, device, rn, k, dx, dz)) ++items;
+    };
+
+    // F2 — MEDICAL BAY (the girls + their attackers + the boss are OWNED by the
+    // RescueSystem / W4-1 ladder; this adds only the rank-and-file + economy).
+    E("F2: Main Corridor",     kHumanoidMelee, 2, 0, 0.0f);
+    E("Operating Theater A",   kHumanoidMelee, 2, 0, 0.0f);
+    E("Operating Theater B",   kInfected,      3, 0, 0.0f);
+    E("Quarantine Zone",       kInfected,      2, 0, 0.0f);
+    E("Dr. Chen's Office",     kHumanoidMelee, 2, 0, 0.0f);   // DATA room name, not shown
+    I("Pharmacy",            CanonItemKind::Health);
+    I("Pharmacy",            CanonItemKind::NanoBooster,  0.8f, 0.0f);
+    I("F2: Main Corridor",   CanonItemKind::Ammo);
+    I("Operating Theater A", CanonItemKind::Health);
+    I("Dr. Chen's Office",   CanonItemKind::LoreTerminal);
+
+    // F3 — GENETICS LAB.
+    E("F3: Specimen Hall",     kInfected, 3, 15, 0.1f);
+    E("Growth Tank Array",     kInfected, 3, 15, 0.1f);
+    E("Spawning Chamber",      kInfected, 3, 15, 0.1f);
+    E("Hybridization Chamber", kInfected, 2, 15, 0.1f);
+    E("DNA Sequencing Lab",    kHumanoidMelee, 2, 15, 0.1f);
+    I("DNA Sequencing Lab", CanonItemKind::LoreTerminal);
+    I("Clone Storage",     CanonItemKind::Keycard);
+    I("Cold Room",         CanonItemKind::Ammo);
+    I("Decontamination",   CanonItemKind::Health);
+    I("F3: Specimen Hall", CanonItemKind::Ammo, -2.0f, 0.0f);
+
+    // F4 — CYBERNETICS WING (+ the 4.5 access keycard breadcrumb; the Nexus itself
+    // stays W5-1's sparse design).
+    E("F4: Augmentation Corridor", kCyborg, 2, 30, 0.2f);
+    E("Augmentation Bay",          kCyborg, 2, 30, 0.2f);
+    E("Neural Interface Lab",      kCyborg, 2, 30, 0.2f);
+    E("Prototype Testing",         kCyborg, 3, 30, 0.2f);
+    E("Workshop",                  kCyborg, 2, 30, 0.2f);
+    I("Workshop",       CanonItemKind::Weapon);
+    I("Power Junction", CanonItemKind::LoreTerminal);   // EMP craft note (data desc gold)
+    I("Coolant System", CanonItemKind::LoreTerminal);   // boss-weakness note
+    I("Augmentation Bay", CanonItemKind::Health);
+    I("F4: Augmentation Corridor", CanonItemKind::Ammo);
+    I("Nexus Chamber Access (F4.5)", CanonItemKind::Keycard);
+
+    // F5 — DRONE STATION.
+    E("F5: Main Corridor",   kDrones, 3, 45, 0.25f);
+    E("Drone Bay Alpha",     kDrones, 3, 45, 0.25f);
+    E("Drone Bay Beta",      kDrones, 3, 65, 0.25f);   // heavy-armor combat drones
+    E("Central Control Hub", kDrones, 2, 45, 0.25f);
+    E("Maintenance Bay",     kHumanoidMelee, 2, 45, 0.25f);
+    I("Central Control Hub", CanonItemKind::LoreTerminal);   // master-hack terminal
+    I("Weapons Locker",      CanonItemKind::Weapon);
+    I("Weapons Locker",      CanonItemKind::Ammo, 1.0f, 0.0f);
+    I("Recharge Station",    CanonItemKind::NanoBooster);
+    I("F5: Main Corridor",   CanonItemKind::Health);
+
+    // F6 — SALVARI LEVEL.
+    E("F6: Artifact Corridor", kSalvari, 3, 60, 0.3f);
+    E("Portal Chamber",        kSalvari, 3, 60, 0.3f);
+    E("Transformation Pods",   kSalvari, 2, 60, 0.3f);
+    E("Analysis Lab",          kSalvari, 2, 60, 0.3f);
+    E("Energy Nexus",          kSalvari, 2, 60, 0.3f);
+    I("Artifact Storage",      CanonItemKind::Weapon);
+    I("First Contact Chamber", CanonItemKind::LoreTerminal);
+    I("Energy Nexus",          CanonItemKind::LoreTerminal);
+    I("Analysis Lab",          CanonItemKind::Ammo);
+    I("F6: Artifact Corridor", CanonItemKind::Health);
+
+    // F7 — EXECUTIVE SUITE (Sarah's cell itself stays W5-3's scene; the Rooftop
+    // guard pair is the last fight before the extraction).
+    E("F7: Executive Corridor", kExecGuard, 3, 80, 0.35f);
+    E("Security Checkpoint",    kExecGuard, 3, 80, 0.35f);
+    E("Executive Offices",      kExecGuard, 2, 80, 0.35f);
+    E("Server Room",            kCyborg,    2, 80, 0.35f);
+    E("Guard Post A",           kDrones,    1, 80, 0.35f);
+    E("Guard Post B",           kDrones,    1, 80, 0.35f);
+    E("Rooftop",                kExecGuard, 2, 80, 0.35f);
+    I("Executive Offices",      CanonItemKind::LoreTerminal); // invasion plans
+    I("Comms Center",           CanonItemKind::LoreTerminal); // distress beacon
+    I("Server Room",            CanonItemKind::Keycard);
+    I("Helipad",                CanonItemKind::NanoBooster);  // extraction prep
+    I("F7: Executive Corridor", CanonItemKind::Ammo);
+    I("Observation Deck",       CanonItemKind::Health);
+
+    x3::logInfo("[canonplay] upper floors populated: " + std::to_string(enemies) +
+                " squad enemies + " + std::to_string(items) + " pickups (F2-F7)");
 }
 
 uint32_t CanonPlay::liveCompanionPositions(x3::phys::Vec3* out, uint32_t cap) const {
@@ -846,7 +1072,9 @@ bool inRoom(const CanonRoom& R, float x, float z, float m = 1.5f) {
 bool runCanonPlaySelfTest() {
     g_cpass = g_cfail = 0;
 
-    CanonFloor floor = loadCanonFloor(canonProjectJsonPath(), 1);
+    // R-5: load the WHOLE tower (floor-1 rooms come first, so every P1-P9 floor-1
+    // lookup behaves identically) — P10 asserts the upper-floor population.
+    CanonFloor floor = loadCanonTower(canonProjectJsonPath());
     if (!floor.valid()) {
         x3::logInfo("  SKIP canonical JSON not present on this machine; legacy build is the fallback");
         x3::logInfo("--test-canonplay: SKIPPED (no JSON) — treating as PASS");
@@ -918,43 +1146,52 @@ bool runCanonPlaySelfTest() {
     {
         bool ok = play.rescue().victimCount() == 3;
         if (ok) {
-            // Each girl's ward room is known; the captive entity nearest her must carry it.
+            // R-5 tower truth (W4-1): the girls live in their F2 WARDS. Each girl's room
+            // must be valid and the three rooms distinct (single-floor fallback: any
+            // valid room passes — the wards resolve to kNoRoom only when absent).
+            uint32_t rooms[3] = { kNoRoom, kNoRoom, kNoRoom };
             for (uint32_t vi = 0; vi < 3 && ok; ++vi) {
-                uint32_t gr = play.girlRoom(vi);
-                ok = gr != kNoRoom;
+                rooms[vi] = play.girlRoom(vi);
+                ok = rooms[vi] != kNoRoom;
             }
-            ok = ok && play.girlRoom(0) == bt.medical;   // Aria in Medical Bay
+            ok = ok && rooms[0] != rooms[1] && rooms[1] != rooms[2] && rooms[0] != rooms[2];
         }
-        pcheck(ok, "P4 3 rescue girls placed in Medical Bay + adjacent wards (room-tagged)");
+        pcheck(ok, "P4 3 rescue girls placed in DISTINCT valid rooms (F2 wards on the tower)");
     }
 
     // ---- P5: per-girl ATTACKERS spawned (the interrupt-rescue enemies), room-tagged. ----
     {
         bool ok = play.attackerCount() >= 3;
-        // Each attacker shares a tagged room with one of the ward rooms.
-        if (ok && bt.medical != kNoRoom) {
-            const CanonRoom& M = floor.rooms[bt.medical];
-            uint32_t nearMedical = 0;
+        // R-5 tower truth: each attacker is room-tagged to one of the GIRLS' rooms
+        // (the F2 wards on the tower; the F1 fallback rooms on a single-floor load).
+        if (ok) {
+            uint32_t inWards = 0;
             for (uint32_t e = entsAfterFloor; e < scene.size(); ++e) {
                 const Entity& en = scene.get(e);
-                if (en.roomId == bt.medical && inRoom(M, en.transform[12], en.transform[14])) ++nearMedical;
+                for (uint32_t vi = 0; vi < 3; ++vi)
+                    if (en.roomId != kNoRoom && en.roomId == play.girlRoom(vi)) { ++inWards; break; }
             }
-            ok = nearMedical >= 2;   // 2 attackers + the captive in the medical ward
+            ok = inWards >= 3;   // at least one attacker + captive entity per ward zone
         }
-        pcheck(ok, "P5 1-2 attackers per girl spawned in the wards (room-tagged)");
+        pcheck(ok, "P5 attackers room-tagged into the girls' ward rooms");
     }
 
     // ---- P6: enemiesRemaining() counts every spawned hostile (no false "AREA CLEAR"). ----
     {
+        // R-5 tower truth: enemiesRemaining() folds EVERY group (hall/cells/attackers/
+        // boss ladder/upper squads/rescue bosses/Martinez). liveEnemyMarks walks the
+        // exact same groups — the two independent folds must agree, and both must see
+        // the upper squads (er strictly greater than the floor-1 groups alone).
         const int er = play.enemiesRemaining();
-        const int expected = (int)(play.mainHallCount() + play.cellGuardCount() +
-                                   play.attackerCount()) + (play.martinezAlive() ? 1 : 0);
-        bool ok = er > 0 && er == expected;
-        x3::logInfo("    enemiesRemaining=" + std::to_string(er) + " expected=" + std::to_string(expected) +
-                    " (hall=" + std::to_string(play.mainHallCount()) + " cells=" +
-                    std::to_string(play.cellGuardCount()) + " attackers=" +
-                    std::to_string(play.attackerCount()) + " +Martinez)");
-        pcheck(ok, "P6 enemiesRemaining() folds every group + Martinez (objective reflects reality)");
+        static CanonPlay::EnemyMark marks[512];
+        const int marked = (int)play.liveEnemyMarks(marks, 512);
+        const int floor1Only = (int)(play.mainHallCount() + play.cellGuardCount() +
+                                     play.attackerCount()) + (play.martinezAlive() ? 1 : 0);
+        bool ok = er > 0 && er == marked && er >= floor1Only + (int)play.upperEnemyCount();
+        x3::logInfo("    enemiesRemaining=" + std::to_string(er) + " marks=" + std::to_string(marked) +
+                    " floor1=" + std::to_string(floor1Only) + " upper=" +
+                    std::to_string(play.upperEnemyCount()));
+        pcheck(ok, "P6 enemiesRemaining() == liveEnemyMarks() across ALL groups incl. upper squads");
     }
 
     // ---- P7: EVERY hostile spawn carries a VALID room id (the cull / lights include them). --
@@ -1027,6 +1264,35 @@ bool runCanonPlaySelfTest() {
         }
         pcheck(armed && connected && damaged,
                "P9 armed + a fired shot connects with an enemy + reduces HP (playable combat verb)");
+    }
+
+    // ---- P10 (R-5 fold): upper floors populated — squads + pickups on F2-F7, every
+    // item kind present (PB's U8 coverage), and a proximity grab collects an item
+    // (hides its prop + counts as taken). ----
+    {
+        bool pop = play.upperEnemyCount() >= 40 && play.upperItemCount() >= 20;
+        // PB U8: all needed pickup kinds exist across the tower (ammo/health/weapon/
+        // keycard/nano-booster/lore-terminal) — the economy is complete, not just big.
+        bool kinds[(size_t)CanonItemKind::Count] = {};
+        for (const auto& it : play.upperItems()) kinds[(size_t)it.kind] = true;
+        bool allKinds = true;
+        for (size_t k = 0; k < (size_t)CanonItemKind::Count; ++k) allKinds &= kinds[k];
+        bool grabbed = false;
+        if (pop && !play.upperItems().empty()) {
+            const CanonItem& it0 = play.upperItems().front();
+            const uint32_t takenBefore = play.upperItemsTaken();
+            // Stand ON the first pickup and tick once: it must collect (co-located
+            // items — e.g. the two Pharmacy pickups — may legitimately grab together).
+            play.tick(0.016f, scene, *physics, it0.pos, nullptr, {});
+            grabbed = play.upperItemsTaken() >= takenBefore + 1 &&
+                      !scene.get(it0.entity).visible;
+        }
+        x3::logInfo("    P10 upper: enemies=" + std::to_string(play.upperEnemyCount()) +
+                    " items=" + std::to_string(play.upperItemCount()) +
+                    " allKinds=" + std::to_string(allKinds ? 1 : 0) +
+                    " grabbed=" + std::to_string(grabbed ? 1 : 0));
+        pcheck(pop && allKinds && grabbed,
+               "P10 upper floors populated (>=40 squads, >=20 pickups, all 6 item kinds) + proximity grab collects");
     }
 
     play.shutdown();        // tear down any death-ragdoll bodies BEFORE the physics world

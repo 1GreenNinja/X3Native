@@ -87,6 +87,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-acoustics") o.testAcoustics = true;
         else if (a == "--test-level1") o.testLevel1 = true;
         else if (a == "--test-canonlevel") o.testCanonLevel = true;
+        else if (a == "--test-keypad") o.testKeypad = true;   // realistic keypad geometry (KP1-KP6)
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-canonplay") o.testCanonPlay = true;
         else if (a == "--test-goldenpath") o.testGoldenPath = true;
@@ -287,6 +288,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--screenshot-car") {
             o.carShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.carShotDir = argv[++i];
+        }
+        else if (a == "--screenshot-upperfloors") {   // R-5: floors 2-7 content proof
+            o.upperShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.upperShotDir = argv[++i];
         }
         else if (a == "--screenshot-showroom-fp") {
             // Headless first-person proof of the walkable --world showroom. Forces the
