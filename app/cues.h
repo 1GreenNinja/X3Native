@@ -43,12 +43,20 @@ enum class CueKind : uint32_t {
     PlayerLand  = 8,   // Player transitioned airborne -> grounded — pos = player eye
 };
 
+// Species tag for enemy-emitted cues (guard-life pass, W4-3): the numeric value
+// of x3::game::EnemyType for the EMITTING enemy, or kCueSpeciesNone for cues with
+// no species (player cues, legacy emitters). Kept as a raw uint32_t so this
+// header stays free of the monster.h include; hosts that don't read it are
+// unaffected (same append-only contract as CueKind).
+constexpr uint32_t kCueSpeciesNone = 0xFFFFFFFFu;
+
 // One emitted cue. Pure data: what + where (+ a 0..1 intensity the host may map
 // to volume/scale). No ownership, no allocation; passed by value.
 struct GameCue {
     CueKind        kind = CueKind::Footstep;
     x3::phys::Vec3 pos{};
     float          intensity = 1.0f;   // 0..1 (e.g. faster locomotion -> louder step)
+    uint32_t       species   = kCueSpeciesNone;   // emitting EnemyType (or None)
 };
 
 // The host-wired cue sink. Empty => the emitting system uses its built-in

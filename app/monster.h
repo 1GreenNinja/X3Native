@@ -130,8 +130,14 @@ const char* enemyTypeName(EnemyType t);
 //               distance, FACING AWAY from the player (toward the retreat point).
 //   * Regroup — fall back toward nearby allies to re-form; FACE the rally
 //               direction while moving, then re-engage (-> Advance/Attack).
+//   * Patrol  — (guard-life pass) the calm-state replacement for Idle on rows
+//               with Tuning.patrolRadius > 0: walk a small waypoint loop around
+//               the SPAWN anchor at walk speed, pause-look at each corner.
+//               Detection/aggro outranks it exactly like Idle; a given-up Search
+//               returns here instead of Idle.
 enum class AiState : uint32_t {
-    Idle = 0, Search = 1, Advance = 2, Attack = 3, Strafe = 4, Retreat = 5, Regroup = 6
+    Idle = 0, Search = 1, Advance = 2, Attack = 3, Strafe = 4, Retreat = 5, Regroup = 6,
+    Patrol = 7   // APPENDED (stable values per the log/test contract)
 };
 
 // Human-readable AI state name (for logs / the --test-ai transition trace).
@@ -443,6 +449,22 @@ public:
         // strafe-heavy ~0.80, Illuminated standoff-low ~0.10) so AI weighting is
         // DATA, not new code. Clamped to [0,1] when >= 0.
         float aiStrafeBias        = -1.0f;
+
+        // ---- Guard-life (W4-3): species identity + patrol ------------------
+        // Which bestiary species this row is. Carried into every GameCue the
+        // instance emits (cue.species) so the host can pick per-species vocal /
+        // footstep samples. tuningFor() stamps it per roster row; hand-built
+        // tunings keep the default and read as the baseline humanoid bucket.
+        EnemyType species         = EnemyType::DominionTrooper;
+        // PATROL: > 0 enables the Patrol calm state — a diamond waypoint loop of
+        // this radius (m) around the spawn anchor, walked at chaseSpeed *
+        // patrolSpeedMul with patrolPauseSec look-around beats at each corner.
+        // 0 (the default) keeps the original stand-still Idle for every existing
+        // enemy, test, and hand-built tuning — INERT-BY-DEFAULT per the Tuning
+        // hook house pattern.
+        float patrolRadius        = 0.0f;
+        float patrolPauseSec      = 1.6f;
+        float patrolSpeedMul      = 0.45f;   // walk fraction of chaseSpeed
 
         // ---- Boss phases (Phase 2b, spec §8) ------------------------------
         // Only consulted for type == Boss. HP-fraction thresholds (of maxHp)
@@ -1002,6 +1024,17 @@ private:
     // enemy is alive + engaged (has LOS). Reseeded to a jittered interval each taunt so
     // a squad doesn't vocalize in lockstep. <=0 fires a taunt (see update()).
     float    m_tauntTimer   = 0.0f;
+
+    // ---- Guard-life (W4-3): species + patrol state -------------------------
+    EnemyType m_species       = EnemyType::DominionTrooper;  // stamped from Tuning
+    float    m_patrolRadius   = 0.0f;        // 0 = patrol disabled (original Idle)
+    float    m_patrolPauseSec = 1.6f;
+    float    m_patrolSpeedMul = 0.45f;
+    x3::phys::Vec3 m_patrolAnchor{};         // spawn position (loop center)
+    int      m_patrolIdx      = 0;           // current waypoint (0..3 diamond)
+    float    m_patrolPause    = 0.0f;        // >0: paused at a waypoint, sweeping
+    int      m_patrolStall    = 0;           // consecutive blocked frames -> skip wp
+    float    m_patrolGrunt    = 6.0f;        // countdown to a quiet on-patrol grunt
 
     // ---- GENERAL navigation (optional, off by default) --------------------
     // Borrowed shared nav grid (nullptr => straight-line, original behaviour).

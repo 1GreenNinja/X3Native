@@ -53,3 +53,18 @@ very faint click on a sensitive system. If that's audible in practice, re-trim w
   all four enemy cues are assembled from synthetic/mechanical/organic-squelch one-shots
   already chosen by the original (pre-portability) `boot_audio.h` design, not new
   guesses by this pass.
+
+## Per-species enemy vocals (guard-life pass, W4-3)
+Buckets: humanoid = the shared `enemies/*.wav` set (no dedicated files); the two
+new sets below are PCM s16le 44.1kHz mono like the rest of the tree.
+
+| Repo path | Source | Processing |
+|---|---|---|
+| enemies/creature/taunt.wav  | Sci-fi Evolution Gift Pack / Alien Egg Sac Open 1.wav | none |
+| enemies/creature/attack.wav | Free Pack / Monster Bite.wav | none |
+| enemies/creature/hit.wav    | Free Pack / Monster Bite on Armor.wav | trimmed 1.2 s |
+| enemies/creature/death.wav  | Free Pack / Monster Bite.wav | pitch x0.75 (variant) |
+| enemies/synth/taunt.wav     | Sci-fi Evolution Gift Pack / Deep Processor Mech Drone.wav | 1.6 s + fade |
+| enemies/synth/attack.wav    | Sci-fi Evolution Gift Pack / Tonal Mech Gear 3.wav | none |
+| enemies/synth/hit.wav       | Sci-fi Evolution Gift Pack / Wrong Answer Mech Alert.wav | pitch x1.15 (variant) |
+| enemies/synth/death.wav     | Sci-fi Evolution Gift Pack / Deep Processor Mech Drone.wav | pitch x0.7 + fade (variant) |
