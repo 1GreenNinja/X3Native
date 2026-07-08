@@ -44,6 +44,7 @@
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "desc_mechanics.h"                 // W9-1: the desc-field Tier-A mechanics (interactables + status effects)
+#include "desc_mechanics_bc.h"              // W9-2: Tier B/C desc mechanics (allies/nexus/course/chairs/elder/holo)
 #include "item_db.h"                        // [W9-3 RPG] data-driven item defs (assets/items/items.json)
 #include "inventory.h"                      // [W9-3 RPG] backpack + key-section inventory
 #include "progression.h"                    // [W9-3 RPG] XP -> levels -> skill points
@@ -1106,6 +1107,8 @@ int runDefaultHost(HostContext& hc) {
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
     x3::game::DescMechanics descMech;          // W9-1: the desc-field Tier-A mechanics (coolant/EMP/hack/cold/antidote); built after chatTrees (flags owner) exists
     bool coolantGlowDead = false;              // W9-1: the coolant console glow was killed (one-shot on the sabotage edge)
+    x3::game::DescMechanicsBC descMechBC;      // W9-2: Tier B/C (Salvari allies / nexus overload / course / aug chairs / elder / clone-tank / beacon / memory holo)
+    bool portalGlowDead = false;               // W9-2: the Portal Chamber + Nexus glow was killed (one-shot on the seal edge)
     // ---- [W9-3 RPG] the RPG layer: item DB + backpack + XP/levels + skills. ----
     // Data loads at boot (JSON-or-baked); the live stat block (rpgMods) is
     // recomputed by applyRpgStats() whenever skills/mods change and is READ at
@@ -1216,6 +1219,7 @@ int runDefaultHost(HostContext& hc) {
         game.shutdown();                               // every enemy group + Martinez + barrels
         nexus.shutdown();                              // F4.5 Chorus pod ragdolls
         if (canonPlay.built()) canonPlay.shutdown();
+        if (descMechBC.built()) descMechBC.shutdown();  // W9-2 Salvari ally bodies
         if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
     };
     // Join the async boot-manifest GLB warmup (no-op when none was kicked): the
@@ -2098,6 +2102,30 @@ int runDefaultHost(HostContext& hc) {
             coolantGlowDead = true;
             x3::logInfo("[descmech] X3_DESCMECH_SABOTAGE=1 — booted in the sabotaged state");
         }
+        // ---- W9-2: the Tier-B/C sibling — Salvari allies, nexus overload chain,
+        // course, aug chairs, the elder + clone-tank/beacon beats, the memory holo.
+        descMechBC.build(canonFloor, canonPlay, chatTrees.flags(),
+                         scene, *device, *physics, x3::game::riggedGlbRoot());
+        x3::boot::mark("desc-mechanics (Tier B/C verbs)");
+        // Shot/test hook: X3_DESCMECH_SEALED=1 boots with the portal already
+        // sealed (dead glass + dead lights) for the screenshot path.
+        if (const char* sealed = std::getenv("X3_DESCMECH_SEALED"); sealed && sealed[0] == '1') {
+            chatTrees.flags().set("f6.portal_sealed");
+            x3::game::killRoomGlow(canonLights, descMechBC.portalRoom());
+            x3::game::killRoomGlow(canonLights, descMechBC.nexusRoom());
+            canonRooms.killRoomEmissives(descMechBC.portalRoom());
+            canonRooms.killRoomEmissives(descMechBC.nexusRoom());
+            portalGlowDead = true;
+            x3::logInfo("[descmech-bc] X3_DESCMECH_SEALED=1 — booted with the portal sealed");
+        }
+        // Shot/test hook: X3_DESCMECH_ALLIES=1 boots with the Salvari already
+        // freed (the followers exist for the screenshot path's fixed camera).
+        if (const char* al = std::getenv("X3_DESCMECH_ALLIES"); al && al[0] == '1') {
+            std::string ab;
+            if (const x3::game::InteractPoint* fp = descMechBC.points().find("salvari_free"))
+                descMechBC.onUse(fp->pos, &ab);
+            x3::logInfo("[descmech-bc] X3_DESCMECH_ALLIES=1 — booted with the Salvari freed");
+        }
     }
 
     // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the
@@ -2717,6 +2745,7 @@ int runDefaultHost(HostContext& hc) {
                         canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z));
                     canonDoors.drawMeshes(*device, frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                    if (descMechBC.built()) descMechBC.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
                 }
                 // W2-A2 (W2-C's queued hook): the --screenshot path NEVER drew the FP
@@ -3076,6 +3105,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         if (canonPlay.built()) canonPlay.shutdown();
+        if (descMechBC.built()) descMechBC.shutdown();
         if (canon45.built()) canon45.shutdown();
         physics->shutdown();
         device->shutdown();
@@ -3333,6 +3363,7 @@ int runDefaultHost(HostContext& hc) {
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
                 if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                if (canonWorld && descMechBC.built()) descMechBC.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
@@ -3749,6 +3780,18 @@ int runDefaultHost(HostContext& hc) {
                 }
             }
         }
+        // W9-2 (#13 First Contact): the Salvari elder at the F6 meeting circle.
+        // captiveOut=true so E always (re)starts first_meeting — the tree's own
+        // salvari_elder.met entry redirect handles the return-visit voice.
+        if (canonWorld && descMechBC.built() && descMechBC.elderPresent() &&
+            chatTrees.hasNpc("salvari_elder")) {
+            const x3::phys::Vec3 ep = descMechBC.elderPos();
+            const float dx = at.x - ep.x, dz = at.z - ep.z;
+            if (dx * dx + dz * dz <= reach * reach) {
+                whoOut = "salvari_elder"; posOut = ep; captiveOut = true;
+                return true;
+            }
+        }
         return false;
     };
     // Find the nearest LIVE captive within `reach` of `at` (XZ). Returns true + its
@@ -3791,6 +3834,14 @@ int runDefaultHost(HostContext& hc) {
         for (const std::string& mid : rpgAppliedMods)
             if (const x3::game::ItemDef* md = itemDb.find(mid))
                 x3::game::foldItemEffect(rpgMods, md->fx);
+        // W9-2 (#10 aug chairs): the chosen augmentation layers MULTIPLICATIVELY
+        // over the skills/mods fold (never at a fire site — no double-apply).
+        if (descMechBC.built()) {
+            const x3::game::DescMechanicsBC::AugMods& aug = descMechBC.augMods();
+            rpgMods.damageMult *= 1.0f + aug.damageMult;
+            rpgMods.speedMult  *= 1.0f + aug.speedMult;
+            rpgMods.maxHpBonus += aug.maxHpBonus;
+        }
         player.setMaxHpBonus(rpgMods.maxHpBonus);
         player.setSpeedMult(rpgMods.speedMult);
         arsenal.setReloadMult(rpgMods.reloadMult);
@@ -4013,6 +4064,8 @@ int runDefaultHost(HostContext& hc) {
         [&combatFx](const x3::phys::Vec3& from, const x3::phys::Vec3& to) {
             combatFx.addTracer(from, to);
         };
+    // W9-2: the Salvari allies' fire-support tracers ride the same FX path.
+    if (descMechBC.built()) descMechBC.setAttackFx(enemyAttackFx);
 
     // ---- GENERAL game-UI: main menu / pause / settings + production HUD --------
     // The interactive windowed game launches into a MAIN MENU (title + START /
@@ -4570,6 +4623,17 @@ int runDefaultHost(HostContext& hc) {
                            return true;
                        }()) {
                 // desc-mechanics interact handled inside the lambda
+            } else if (canonWorld && descMechBC.built() &&
+                       [&]() -> bool {
+                           // W9-2 Tier-B/C interact points (Salvari release / nexus
+                           // chain / aug chairs / beacon / memory station). Gated
+                           // points surface their missing-requirement bark instead.
+                           std::string bcBark;
+                           if (!descMechBC.onUse(eye, &bcBark)) return false;
+                           if (!bcBark.empty()) { npcBarkText = bcBark; npcBarkTimer = 4.5f; }
+                           return true;
+                       }()) {
+                // desc-mechanics B/C interact handled inside the lambda
             } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
@@ -5416,6 +5480,33 @@ int runDefaultHost(HostContext& hc) {
                         npcBarkText = dmPrompt; npcBarkTimer = 1.0f;
                     }
                 }
+                // ---- W9-2: Tier-B/C per frame — ally follow + fire support, the
+                // course trigger pair/clock, the clone-tank beat, timed radio
+                // chains, the memory panel shimmer/re-bake. Same text plumbing.
+                if (descMechBC.built()) {
+                    descMechBC.tick(dt, camPos, &player, scene, *physics);
+                    // The seal edge (or a loaded f6.portal_sealed): the Portal
+                    // Chamber + Nexus recipe lights AND dressed emissives die.
+                    if (!portalGlowDead &&
+                        (descMechBC.portalGlowKillPending() ||
+                         chatTrees.flags().has("f6.portal_sealed"))) {
+                        x3::game::killRoomGlow(canonLights, descMechBC.portalRoom());
+                        x3::game::killRoomGlow(canonLights, descMechBC.nexusRoom());
+                        canonRooms.killRoomEmissives(descMechBC.portalRoom());
+                        canonRooms.killRoomEmissives(descMechBC.nexusRoom());
+                        portalGlowDead = true;
+                    }
+                    // An aug chair fired (or a loaded save restored one): re-fold
+                    // the RPG stat layer so the pick reaches the live systems.
+                    if (descMechBC.augChangedPending()) applyRpgStats();
+                    for (std::string b = descMechBC.takeBark(); !b.empty(); b = descMechBC.takeBark()) {
+                        npcBarkText = b; npcBarkTimer = 4.5f;
+                    }
+                    const std::string bcPrompt = descMechBC.prompt(camPos);
+                    if (!bcPrompt.empty() && (npcBarkTimer <= 0.0f || npcBarkText == bcPrompt)) {
+                        npcBarkText = bcPrompt; npcBarkTimer = 1.0f;
+                    }
+                }
                 g_perf.tick += glfwGetTime() - _pt0;
                 // ---- W4-1: rescue story flags + the extraction goodbye. freed = she
                 // became a Companion (E-rescue); extracted = she reached the F2 elevator
@@ -6012,6 +6103,7 @@ int runDefaultHost(HostContext& hc) {
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
             if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
+            if (canonWorld && descMechBC.built()) descMechBC.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
@@ -6390,7 +6482,16 @@ int runDefaultHost(HostContext& hc) {
                     // steady while anything is held/active. The dumb text tag the
                     // parallel inventory system will replace.
                     if (descMech.built()) {
-                        const std::string tag = descMech.hudStatusLine();
+                        std::string tag = descMech.hudStatusLine();
+                        // W9-2: the Tier-B/C tag rides the same line (the course
+                        // countdown + the live Salvari escort count).
+                        if (descMechBC.built()) {
+                            const std::string bcTag = descMechBC.hudStatusLine();
+                            if (!bcTag.empty()) {
+                                if (!tag.empty()) tag += "  |  ";
+                                tag += bcTag;
+                            }
+                        }
                         if (!tag.empty()) {
                             const float tagPx = 16.0f;
                             const float tw = device->textAdvance(x3::rhi::FontRole::Menu, tag.c_str(), tagPx);
