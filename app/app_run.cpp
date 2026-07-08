@@ -2772,7 +2772,7 @@ int runDefaultHost(HostContext& hc) {
                         give("keycard_security", 1); give("keycard_access", 1);
                         give("sarah_photo", 1);
                         inventory.setQuickSlot(0);
-                        progression.addXp(760);          // ~level 5: points to show
+                        progression.addXp(1000);         // level 5: 4 pts earned, 3 spent -> 1 to spend (shows the BUY affordance)
                         skillTree.setOwned("cmb_dmg1");  // owned nodes for the capture
                         skillTree.setOwned("sur_hp1");
                         skillTree.setOwned("sal_ammo");

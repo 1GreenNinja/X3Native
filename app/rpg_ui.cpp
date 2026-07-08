@@ -108,21 +108,22 @@ void RpgUi::drawBackpack(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCon
 
     const float keyY = gy + kRows * (cell + gap) + 34.0f;
 
-    // ---- draw one slot cell -------------------------------------------------
-    auto drawCell = [&](int selIdx, const InvSlot& s, float x, float y) {
+    // ---- draw one slot cell (sz = cell size; the key row uses smaller cells) ----
+    auto drawCell = [&](int selIdx, const InvSlot& s, float x, float y, float sz) {
         const bool sel = (m_invSel == selIdx);
-        if (inRect(in.ui.mouseX, in.ui.mouseY, x, y, cell, cell)) {
+        if (inRect(in.ui.mouseX, in.ui.mouseY, x, y, sz, sz)) {
             m_invSel = selIdx;
         }
-        box(ui, x, y, cell, cell, sel ? kCellSel : kCell, sel ? kCellEdge : kLockEdge);
+        box(ui, x, y, sz, sz, sel ? kCellSel : kCell, sel ? kCellEdge : kLockEdge);
         if (!s.empty()) {
             const ItemDef* d = db.find(s.itemId);
             const char glyph[2] = { d ? d->glyph : '?', 0 };
             const float* gc = d ? d->color : kTextCol;
-            ui.textCentered(glyph, x + cell * 0.5f, y + 14.0f, 30.0f, gc, FontRole::Title);
+            const float gpx = sz * 0.44f;
+            ui.textCentered(glyph, x + sz * 0.5f, y + sz * 0.2f, gpx, gc, FontRole::Title);
             if (s.count > 1) {
                 char cnt[8]; std::snprintf(cnt, sizeof(cnt), "x%d", s.count);
-                ui.text(cnt, x + cell - 26.0f, y + cell - 18.0f, 13.0f, kTextCol, FontRole::HudMono);
+                ui.text(cnt, x + sz - 26.0f, y + sz - 18.0f, 13.0f, kTextCol, FontRole::HudMono);
             }
             if (selIdx < nBp && inv.quickSlot() == selIdx)
                 ui.text("Q", x + 4.0f, y + 3.0f, 13.0f, kWarnCol, FontRole::HudMono);
@@ -133,7 +134,7 @@ void RpgUi::drawBackpack(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCon
     for (int i = 0; i < nBp; ++i) {
         const float x = gx + (float)(i % kCols) * (cell + gap);
         const float y = gy + (float)(i / kCols) * (cell + gap);
-        drawCell(i, inv.slot(i), x, y);
+        drawCell(i, inv.slot(i), x, y, cell);
     }
     char used[48];
     std::snprintf(used, sizeof(used), "SLOTS %d / %d", inv.usedSlots(), nBp);
@@ -141,8 +142,9 @@ void RpgUi::drawBackpack(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCon
 
     // Key section row.
     ui.text("KEYCARDS + QUEST", gx, keyY - 22.0f, 15.0f, kDimCol);
+    // Smaller cells + tighter pitch so all 8 key cells stay LEFT of the detail panel.
     for (int i = 0; i < nKey; ++i)
-        drawCell(nBp + i, inv.keySlot(i), gx + (float)i * (cell + gap) * 0.72f, keyY);
+        drawCell(nBp + i, inv.keySlot(i), gx + (float)i * 50.0f, keyY, 44.0f);
 
     // ---- right: selected-item detail panel ---------------------------------
     const float px = gx + kCols * (cell + gap) + 26.0f;
@@ -377,17 +379,18 @@ void RpgUi::drawSkills(x3::rhi::IRenderDevice& device, const x3::rhi::FrameConte
         ui.panel(spX, dpY, spW, 110.0f, kPanel);
         ui.text("LIVE STATS", spX + 16.0f, dpY + 10.0f, 14.0f, kDimCol, FontRole::HudMono);
         const PlayerStatMods m = tree.mods();
-        char l1[96], l2[96];
-        std::snprintf(l1, sizeof(l1), "DMG x%.2f   HP +%d   SPD x%.2f   CRIT %d%%",
-                      m.damageMult, m.maxHpBonus, m.speedMult, (int)(m.critChance * 100 + 0.5f));
-        std::snprintf(l2, sizeof(l2), "RELOAD x%.2f   AMMO CAP x%.2f   XP x%.2f",
-                      m.reloadMult, m.ammoCapMult, m.xpMult);
-        ui.text(l1, spX + 16.0f, dpY + 36.0f, 14.0f, kGoodCol, FontRole::HudMono);
-        ui.text(l2, spX + 16.0f, dpY + 58.0f, 14.0f, kGoodCol, FontRole::HudMono);
-        const int spent = prog.spentPoints();
-        char l3[64];
-        std::snprintf(l3, sizeof(l3), "OWNED %d NODES   SPENT %d PTS", tree.ownedCount(), spent);
-        ui.text(l3, spX + 16.0f, dpY + 82.0f, 13.0f, kDimCol, FontRole::HudMono);
+        // Short mono lines sized to the 340 px panel (max ~26 cells at 12 px).
+        char l1[64], l2[64], l3[64], l4[64];
+        std::snprintf(l1, sizeof(l1), "DMG x%.2f   CRIT %d%%",
+                      m.damageMult, (int)(m.critChance * 100 + 0.5f));
+        std::snprintf(l2, sizeof(l2), "HP +%d   SPD x%.2f", m.maxHpBonus, m.speedMult);
+        std::snprintf(l3, sizeof(l3), "RELOAD x%.2f  AMMO x%.2f", m.reloadMult, m.ammoCapMult);
+        std::snprintf(l4, sizeof(l4), "XP x%.2f  OWN %d  SPENT %d",
+                      m.xpMult, tree.ownedCount(), prog.spentPoints());
+        ui.text(l1, spX + 16.0f, dpY + 32.0f, 12.0f, kGoodCol, FontRole::HudMono);
+        ui.text(l2, spX + 16.0f, dpY + 50.0f, 12.0f, kGoodCol, FontRole::HudMono);
+        ui.text(l3, spX + 16.0f, dpY + 68.0f, 12.0f, kGoodCol, FontRole::HudMono);
+        ui.text(l4, spX + 16.0f, dpY + 88.0f, 12.0f, kDimCol,  FontRole::HudMono);
     }
 
     ui.end();
