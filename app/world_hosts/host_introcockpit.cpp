@@ -298,6 +298,13 @@ int hostIntroCockpit(HostContext& hc) {
                 drawIntroShip(*device, frame, rig.capDraw, capital.pos, capital.fwd, capital.scale);
                 fx.draw(*device, frame, cam[0], cam[1], cam[2], cam[3], cam[4]);
                 fx.submit(*device, frame);
+                const float cyanHud[4] = { 0.45f, 0.85f, 1.0f, 0.85f };
+                device->drawHudTextF(frame, x3::rhi::FontRole::HudMono,
+                                     "HULL 100%  SHD 100%  CONTACTS 4",
+                                     24.0f, 24.0f, 18.0f, cyanHud);
+                const float redHud[4] = { 1.0f, 0.35f, 0.25f, 0.95f };
+                device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                     "LOCK", 24.0f, 48.0f, 20.0f, redHud);
             }
             device->endFrame(frame);
         }

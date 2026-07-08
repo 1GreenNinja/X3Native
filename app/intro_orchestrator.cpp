@@ -301,7 +301,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         const x3::phys::Vec3 pv = pilot.velocity();
         const float ppos[3] = { pp.x, pp.y, pp.z };
         const float pvel[3] = { pv.x, pv.y, pv.z };
+        std::vector<int> prevHull(enemies.count());
+        for (uint32_t i = 0; i < enemies.count(); ++i) prevHull[i] = enemies.ship(i).hull;
         enemies.update(dt, ppos, pvel);
+        if (fxOn) {
+            for (uint32_t i = 0; i < enemies.count() && i < prevHull.size(); ++i) {
+                const auto& e = enemies.ship(i);
+                if (prevHull[i] > 0 && e.hull <= 0) {   // died this tick
+                    fxPtr->spawnDeath({ e.pos[0], e.pos[1], e.pos[2] });
+                    fxPtr->spawnSmoke({ e.pos[0], e.pos[1], e.pos[2] });
+                }
+            }
+        }
         bool playerFiredThisStep = false;
         for (const auto& fe : enemies.fireEvents()) {
             if (fxOn) {
@@ -320,6 +331,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float d2 = dx*dx + dy*dy + dz*dz;
             if (d2 < 30.0f * 30.0f) {
                 pilot.takeDamage(x3::space::shipai::kLaserDamage);
+                if (fxOn) fxPtr->spawnImpact({ fe.to[0], fe.to[1], fe.to[2] },
+                                             { -dx, -dy, -dz });
             } else {
                 ++localSalvosDodged;
             }
@@ -335,6 +348,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                        { e.vel[0], e.vel[1], e.vel[2] }, true };
         }
         targeting.setContacts(contacts, nc);
+        // Cosmetic lock acquisition for the HUD (does not alter the metrics).
+        if (live) {
+            const float pfw[3] = { std::cos(pilot.pitch()) * std::cos(pilot.yaw()),
+                                   std::sin(pilot.pitch()),
+                                   std::cos(pilot.pitch()) * std::sin(pilot.yaw()) };
+            targeting.lockNearest(ppos, pfw);
+        }
 
         // ---- Player fire -> resolve onto the capital's subsystems. ----
         if (fire && pilot.fireLaser(dt)) {
@@ -347,6 +367,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const int subIdx = std::min(localSubsDestroyed, kMaxSubsystems - 1);
             x3::space::ShipDamage::applyDamage(capital, 60,
                 (x3::space::Subsystem)subIdx);
+            if (fxOn) {
+                float dxc = ppos[0] - 280.0f, dyc = ppos[1], dzc = ppos[2];
+                const float dl = std::sqrt(dxc*dxc + dyc*dyc + dzc*dzc);
+                if (dl > 1.0f) { dxc /= dl; dyc /= dl; dzc /= dl; }
+                fxPtr->spawnImpact({ 280.0f + dxc * 24.0f, dyc * 24.0f, dzc * 24.0f },
+                                   { dxc, dyc, dzc });
+            }
             ++localShotsHit;
             if (x3::space::ShipDamage::subsystemDown(capital,
                     (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
@@ -399,6 +426,24 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (fxOn) {
                     fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
                     fxPtr->submit(*hc.device, frame);
+                }
+                // ---- HUD readout: hull/shield, contacts, lock state ----
+                {
+                    char hud[96];
+                    const int hullPct = (int)(100.0f * (float)pilot.hull() /
+                                              (float)std::max(1, pilot.maxHull()));
+                    const int shPct   = (int)(100.0f * (float)pilot.shield() /
+                                              (float)std::max(1, pilot.maxShield()));
+                    std::snprintf(hud, sizeof(hud), "HULL %3d%%  SHD %3d%%  CONTACTS %u",
+                                  hullPct, shPct, enemies.aliveCount() + 1u);
+                    const float cyanHud[4] = { 0.45f, 0.85f, 1.0f, 0.85f };
+                    hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono, hud,
+                                            24.0f, 24.0f, 18.0f, cyanHud);
+                    if (targeting.hasLock()) {
+                        const float redHud[4] = { 1.0f, 0.35f, 0.25f, 0.95f };
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                                "LOCK", 24.0f, 48.0f, 20.0f, redHud);
+                    }
                 }
             }
             hc.device->endFrame(frame);
