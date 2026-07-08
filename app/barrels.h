@@ -60,6 +60,7 @@ private:
         x3::phys::DestructibleId id = 0;
         float center[3] = { 0, 0, 0 };
         bool  exploded  = false;        // detonation already processed
+        float sinceBoom = 0.0f;         // s since detonation (drives the ember-glow cool-down)
     };
     void detonate(Barrel& b);
 
@@ -70,7 +71,8 @@ private:
     std::vector<Barrel>           m_barrels;
 
     x3::rhi::MeshHandle    m_cube;
-    x3::rhi::TextureHandle m_tex;
+    x3::rhi::TextureHandle m_tex;      // rusty orange (intact-cube fallback)
+    x3::rhi::TextureHandle m_charTex;  // charred dark metal (debris shrapnel)
 
     // Real round barrel model (Barrel.glb), drawn for INTACT barrels; the cube +
     // fracture chunks remain the debris/fallback look. Empty drawables -> cube fallback.

@@ -352,6 +352,103 @@ void CombatFx::spawnSmoke(const x3::phys::Vec3& pos) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// spawnFireball: the Doom-style barrel blast. Layered so it reads as ONE violent
+// fireball: (1) a huge white-hot core flash (HDR additive -> heavy bloom) that
+// expands and dies in ~0.15 s, (2) a roiling ball of fat orange fire puffs flung
+// out/up that expand as they fade, (3) a hard spray of small hot embers bent by
+// gravity, (4) a dark smoke plume that rises and lingers, (5) one big ground
+// scorch decal. Everything is sized/thrown relative to the blast `radius` so a
+// bigger AoE reads bigger. Bounded pool spawns only — no per-frame heap.
+// ---------------------------------------------------------------------------
+void CombatFx::spawnFireball(const x3::phys::Vec3& center, float radius) {
+    const float r  = (radius > 1.0f) ? radius : 1.0f;
+    const float rs = r / 4.5f;   // throw-speed scale vs the barrel's 4.5 m blast
+
+    // (1) Core flash: three overlapping white-hot sprites that EXPAND — the
+    // "frame 1" of the fireball. Very short lives so it pops, not lingers.
+    for (int i = 0; i < 3; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * 0.15f,
+                                center.y + 0.15f + frand() * 0.25f,
+                                center.z + frandSym() * 0.15f };
+        p.vel = x3::phys::Vec3{ 0.0f, 0.6f, 0.0f };
+        p.life = p.maxLife = 0.10f + 0.05f * (float)i;
+        p.size0 = r * (0.26f + 0.09f * (float)i);
+        p.size1 = r * (0.55f + 0.12f * (float)i);
+        p.r = 16.0f; p.g = 11.0f; p.b = 4.5f;   // white-hot HDR -> bloom
+        p.a0 = 1.0f;
+        p.gravity = 0.0f; p.drag = 0.0f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (2) Roiling fire: fat orange puffs flung outward/up, expanding as they fade.
+    const int nFire = 20;
+    for (int i = 0; i < nFire; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * 0.2f,
+                                center.y + frandSym() * 0.2f,
+                                center.z + frandSym() * 0.2f };
+        const float speed = (2.0f + frand() * 3.5f) * rs;
+        p.vel = x3::phys::Vec3{ frandSym() * speed,
+                                (0.35f + frand() * 0.9f) * speed,
+                                frandSym() * speed };
+        p.life = p.maxLife = 0.28f + frand() * 0.30f;
+        p.size0 = r * (0.12f + frand() * 0.08f);
+        p.size1 = r * (0.30f + frand() * 0.12f);
+        p.r = 7.0f; p.g = 2.6f; p.b = 0.55f;    // hot orange fire
+        p.a0 = 1.0f;
+        p.gravity = -0.05f; p.drag = 2.5f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (3) Embers: a hard spray of small hot sparks, arcing under gravity.
+    const int nEmber = 30;
+    for (int i = 0; i < nEmber; ++i) {
+        Particle p;
+        p.pos = center;
+        const float speed = (6.0f + frand() * 9.0f) * rs;
+        p.vel = x3::phys::Vec3{ frandSym() * speed,
+                                (0.2f + frand() * 0.9f) * speed,
+                                frandSym() * speed };
+        p.life = p.maxLife = 0.45f + frand() * 0.50f;
+        p.size0 = 0.05f + frand() * 0.04f;
+        p.size1 = 0.012f;
+        p.r = 9.0f; p.g = 3.2f; p.b = 0.7f;     // ember-hot
+        p.a0 = 1.0f;
+        p.gravity = 1.1f; p.drag = 0.8f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (4) Smoke plume: dark alpha puffs that rise and grow — the lingering
+    // aftermath (bigger + longer than the generic spawnSmoke puff).
+    const int nSmoke = 8;
+    for (int i = 0; i < nSmoke; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * 0.3f,
+                                center.y + 0.2f + frand() * 0.4f,
+                                center.z + frandSym() * 0.3f };
+        p.vel = x3::phys::Vec3{ frandSym() * 0.7f,
+                                1.2f + frand() * 1.2f,
+                                frandSym() * 0.7f };
+        p.life = p.maxLife = 1.6f + frand() * 1.2f;
+        p.size0 = r * 0.10f; p.size1 = r * 0.45f;
+        p.r = 0.14f; p.g = 0.13f; p.b = 0.12f;  // near-black smoke
+        p.a0 = 0.45f;
+        p.gravity = -0.18f; p.drag = 1.1f; p.additive = false;
+        spawnParticle(p);
+    }
+    // (5) Ground scorch: one big blast mark under the explosion (up-facing, like
+    // the blood-pool decal path — claimed directly so we can size + tint it).
+    {
+        Decal& dc = m_decalsRing[m_nextDecal];
+        m_nextDecal = (m_nextDecal + 1) % kMaxDecals;
+        dc.center   = x3::phys::Vec3{ center.x, center.y - 0.55f, center.z };
+        dc.normal   = x3::phys::Vec3{ 0.0f, 1.0f, 0.0f };
+        dc.halfSize = r * 0.40f;
+        dc.angle    = frand() * 6.2831853f;
+        dc.life     = dc.maxLife = kDecalLife;
+        dc.color[0] = 0.02f; dc.color[1] = 0.015f; dc.color[2] = 0.01f;   // charred
+    }
+}
+
 void CombatFx::addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal) {
     Decal& d = m_decalsRing[m_nextDecal];
     m_nextDecal = (m_nextDecal + 1) % kMaxDecals;

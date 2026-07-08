@@ -1607,6 +1607,14 @@ int main(int argc, char** argv) {
     // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
     bool        captureAi    = false;
     std::string captureAiDir = "G:/X3Native/ai_action";
+    // Barrel-explosion capture (--capture-barrels [outPath]): build a tiny lit demo
+    // scene (ground + a cluster of 4 explosive barrels via the REAL BarrelSystem +
+    // CombatFx fireball sink), auto-fire a shot into the cluster at capture frame
+    // 10 so the blast + chain trigger on camera, then capture ~60 frames at 640x360
+    // / 20 fps straight into an animated GIF (gif.h). Headless / offscreen (no
+    // window) — the Doom-style fireball + shrapnel can be SEEN without a live run.
+    bool        captureBarrels     = false;
+    std::string captureBarrelsPath = "barrel_boom.gif";
     // Walk-capture mode (--capture-walk [outPath]): build ONE close-up animated
     // guard (the multi-clip *_anim.glb when present), drive the T1 locomotion blend
     // toward a steady WALK, settle the blend a fraction of a second, then capture a
@@ -1854,6 +1862,10 @@ int main(int argc, char** argv) {
             captureAi = true;
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') captureAiDir = argv[++i];
+        }
+        else if (a == "--capture-barrels") {
+            captureBarrels = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') captureBarrelsPath = argv[++i];
         }
         else if (a == "--capture-walk") {
             captureWalk = true;
@@ -3733,7 +3745,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire;
+    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureBarrels || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -4406,6 +4418,196 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return (frameNo > 0 && gifOk) ? 0 : 1;
+    }
+
+    // ---- Barrel-explosion capture mode (--capture-barrels [outPath]) --------
+    // Render the REAL BarrelSystem blast (barrel-anatomy shrapnel + chain) plus
+    // the CombatFx FIREBALL (the same spawnFireball sink the game wires) to an
+    // animated GIF, entirely headless/offscreen. A tiny demo scene: lit ground +
+    // a cluster of 4 barrels, a fixed 3/4 camera; a shot is auto-fired into the
+    // cluster at capture frame 10 so the boom + chain land on camera. Captures 60
+    // frames at 20 fps (3 sim steps of 1/60 s per frame = 3 s) and assembles the
+    // GIF at 640x360 (2x box-downsample of the fixed 1280x720 headless buffer).
+    if (captureBarrels) {
+        namespace fs = std::filesystem;
+        x3::logInfo("--capture-barrels: rendering the barrel explosion to " + captureBarrelsPath);
+        fs::path outp(captureBarrelsPath);
+        std::error_code mkec;
+        if (outp.has_parent_path()) fs::create_directories(outp.parent_path(), mkec);
+        // Frame PNGs go to a scratch dir next to the GIF (removed after assembly).
+        const fs::path frameDir =
+            (outp.has_parent_path() ? outp.parent_path() : fs::path(".")) / "barrel_frames_tmp";
+        fs::create_directories(frameDir, mkec);
+
+        // ---- Physics + a flat collision ground (CCW so +Y is solid). ----
+        std::unique_ptr<x3::phys::IPhysicsWorld> bphys(x3::phys::createPhysicsWorld());
+        bphys->init();
+        {
+            const float h = 60.0f;
+            float gv[] = { -h,0,-h,  h,0,-h,  h,0,h,  -h,0,h };
+            uint32_t gidx[] = { 0,2,1, 0,3,2 };
+            bphys->addStaticMesh(gv, 4, gidx, 6);
+        }
+
+        // Visible lit ground plane (neutral checker so the debris + scorch read).
+        std::vector<x3::rhi::MeshVertex> gvtx; std::vector<uint32_t> gixs;
+        x3::prims::makeGroundQuad(/*half=*/40.0f, /*tiles=*/20.0f, gvtx, gixs);
+        x3::rhi::MeshHandle groundMesh = device->createMesh(
+            gvtx.data(), (uint32_t)gvtx.size(), gixs.data(), (uint32_t)gixs.size());
+        auto groundPx = x3::prims::makeCheckerRGBA(64, 8, 110, 112, 118, 58, 60, 66);
+        x3::rhi::TextureHandle groundTex = device->createTexture(groundPx.data(), 64, 64, true);
+        const float modelGround[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float whiteTint[4] = { 1, 1, 1, 1 };
+
+        // Sky + a small ring of fills (same recipe as --capture-ai) so the barrels
+        // read clearly, while staying dim enough that the fireball HDR pops.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.40f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+        {
+            x3::rhi::PointLight pl[3];
+            auto setL = [](x3::rhi::PointLight& l, float x, float y, float z,
+                           float r, float g, float b, float range) {
+                l.pos[0]=x; l.pos[1]=y; l.pos[2]=z; l.range=range;
+                l.color[0]=r; l.color[1]=g; l.color[2]=b;
+            };
+            setL(pl[0],  0.0f, 6.0f,  4.0f,  4.5f, 4.4f, 4.0f, 34.0f);  // overhead key
+            setL(pl[1],  6.0f, 3.0f, -3.0f,  2.6f, 2.5f, 2.3f, 30.0f);  // warm fill
+            setL(pl[2], -5.0f, 3.0f,  5.0f,  2.3f, 2.5f, 2.8f, 30.0f);  // cool fill
+            device->setPointLights(pl, 3);
+        }
+
+        // ---- The REAL barrel system + combat FX, wired like the game wires them.
+        x3::game::CombatFx bfx;
+        bfx.init(*device);
+        x3::game::BarrelSystem barrels;
+        barrels.setFxSink([&bfx](const float c[3], float radius) {
+            bfx.spawnFireball(x3::phys::Vec3{ c[0], c[1], c[2] }, radius);
+        });
+        barrels.init(*device, *bphys);
+        // A tight cluster (all within the 4.5 m chain radius) so one shot cascades.
+        barrels.spawn( 0.0f, 0.0f, 0.0f);
+        barrels.spawn( 1.7f, 0.0f, 0.6f);
+        barrels.spawn( 0.9f, 0.0f, 1.9f);
+        barrels.spawn(-1.2f, 0.0f, 1.1f);
+        bphys->optimizeBroadphase();
+
+        // ---- Fixed 3/4 elevated camera framing the cluster (wide enough that
+        // the scattering shrapnel stays in frame for a few beats). ----
+        const float camX = 7.4f, camY = 4.6f, camZ = 9.0f;
+        const float lx = 0.3f, ly = 0.7f, lz = 0.8f;
+        const float ddx = lx - camX, ddy = ly - camY, ddz = lz - camZ;
+        const float dlen = std::sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+        const float yaw   = std::atan2(ddz, ddx);
+        const float pitch = std::asin(dlen > 1e-4f ? (ddy / dlen) : 0.0f);
+        device->setCamera(camX, camY, camZ, yaw, pitch, 55.0f);
+
+        {
+            // ---- Run the boom. 60 captured frames, 3 sim steps each (~3 s). ----
+            const float dt          = 1.0f / 60.0f;
+            const int   capFrames   = 60;
+            const int   stepsPerCap = 3;      // 20 captured fps
+            const int   shotFrame   = 10;     // auto-fire here (t = 0.5 s)
+            std::vector<std::string> framePaths;
+            framePaths.reserve(capFrames);
+
+            for (int f = 0; f < capFrames; ++f) {
+                for (int s = 0; s < stepsPerCap; ++s) {
+                    if (f == shotFrame && s == 0) {
+                        // Fire into the nearest barrel; a tracer so the shot reads.
+                        const float eye[3] = { 0.0f, 0.62f, -6.0f };
+                        const float dir[3] = { 0.0f, 0.0f, 1.0f };
+                        const bool hit = barrels.onShot(eye, dir);
+                        bfx.addTracer(x3::phys::Vec3{ eye[0], eye[1], eye[2] },
+                                      x3::phys::Vec3{ 0.0f, 0.62f, 0.0f });
+                        x3::logInfo(std::string("--capture-barrels: shot fired, hit=") +
+                                    (hit ? "1" : "0"));
+                    }
+                    barrels.update(dt);
+                    bphys->step(dt);
+                    bfx.update(dt);
+                }
+                glfwPollEvents();
+                char fpath[512];
+                std::snprintf(fpath, sizeof(fpath), "%s/frame_%03d.png",
+                              frameDir.generic_string().c_str(), f);
+                device->armCapture(fpath);
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    device->drawMesh(frame, groundMesh, groundTex, whiteTint, modelGround);
+                    barrels.render(frame);
+                    bfx.draw(*device, frame, camX, camY, camZ, yaw, pitch);
+                    bfx.submit(*device, frame);
+                }
+                device->endFrame(frame);
+                if (device->captureFrame(fpath)) framePaths.emplace_back(fpath);
+            }
+
+            // ---- Assemble the 640x360 GIF (20 fps => delay 5 cs, looping). ----
+            bool gifOk = false;
+            const uint32_t gw = 640, gh = 360;
+            if (!framePaths.empty()) {
+                std::vector<unsigned char> small(gw * gh * 4);
+                GifWriter gif{};
+                const uint32_t delayCs = 5;
+                if (GifBegin(&gif, captureBarrelsPath.c_str(), gw, gh, delayCs)) {
+                    gifOk = true;
+                    for (const auto& fp : framePaths) {
+                        int w = 0, h = 0, c = 0;
+                        unsigned char* px = stbi_load(fp.c_str(), &w, &h, &c, 4);
+                        if (!px) { gifOk = false; break; }
+                        const uint32_t sx = (uint32_t)w / gw, sy = (uint32_t)h / gh;
+                        if (sx >= 1 && sy >= 1) {
+                            // Box-downsample (2x2 for the 1280x720 headless buffer).
+                            for (uint32_t y = 0; y < gh; ++y)
+                                for (uint32_t x = 0; x < gw; ++x) {
+                                    uint32_t acc[4] = { 0, 0, 0, 0 };
+                                    for (uint32_t j = 0; j < sy; ++j)
+                                        for (uint32_t i2 = 0; i2 < sx; ++i2) {
+                                            const unsigned char* s4 =
+                                                px + (((y*sy + j) * (uint32_t)w + (x*sx + i2)) * 4);
+                                            acc[0]+=s4[0]; acc[1]+=s4[1]; acc[2]+=s4[2]; acc[3]+=s4[3];
+                                        }
+                                    unsigned char* d4 = small.data() + ((y * gw + x) * 4);
+                                    const uint32_t n = sx * sy;
+                                    d4[0]=(unsigned char)(acc[0]/n); d4[1]=(unsigned char)(acc[1]/n);
+                                    d4[2]=(unsigned char)(acc[2]/n); d4[3]=(unsigned char)(acc[3]/n);
+                                }
+                            GifWriteFrame(&gif, small.data(), gw, gh, delayCs);
+                        }
+                        stbi_image_free(px);
+                    }
+                    gifOk = GifEnd(&gif) && gifOk;
+                }
+            }
+            // Tidy the scratch PNG frames; report the result.
+            std::error_code rmec;
+            fs::remove_all(frameDir, rmec);
+            {
+                char sb[512];
+                std::error_code szec;
+                const uintmax_t gifBytes = gifOk ? fs::file_size(captureBarrelsPath, szec) : 0;
+                std::snprintf(sb, sizeof(sb),
+                    "--capture-barrels: %zu frames | exploded=%u debris=%u | GIF %s (%llu bytes)",
+                    framePaths.size(), barrels.explodedCount(), barrels.activeDebris(),
+                    gifOk ? captureBarrelsPath.c_str() : "(FAILED)",
+                    (unsigned long long)gifBytes);
+                x3::logInfo(sb);
+            }
+
+            barrels.shutdown();
+            bfx.shutdown(*device);
+            device->destroyMesh(groundMesh);
+            device->destroyTexture(groundTex);
+            bphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return (gifOk && !framePaths.empty()) ? 0 : 1;
+        }
     }
 
     // ---- Walk-pose capture (--capture-walk [outPath]) ----------------------
@@ -10198,14 +10400,11 @@ int main(int argc, char** argv) {
     x3::game::CombatFx combatFx;
     combatFx.init(*device);
 
-    // Explosive barrels FX: a cluster of impact bursts at the blast center so a shot
-    // barrel reads as a violent fireball (on top of its own scattering debris chunks).
+    // Explosive barrels FX: a Doom-style FIREBALL at the blast center — white-hot
+    // core flash + roiling fire + ember spray + smoke plume + ground scorch — so a
+    // shot barrel reads as a violent fireball (its scattering shrapnel is secondary).
     game.barrels().setFxSink([&combatFx](const float c[3], float radius) {
-        const x3::phys::Vec3 ctr{ c[0], c[1], c[2] };
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.7f, 0.5f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ -0.7f, 0.5f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.5f, 0.7f });
+        combatFx.spawnFireball(x3::phys::Vec3{ c[0], c[1], c[2] }, radius);
     });
 
     // ---- GIBS: monsters EXPLODE into chunks + blood when they die. -----------

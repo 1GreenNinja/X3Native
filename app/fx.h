@@ -134,6 +134,11 @@ public:
     void spawnDeath(const x3::phys::Vec3& pos);
     // Lingering smoke puff (alpha, slow rise) — used by death + as a generic cue.
     void spawnSmoke(const x3::phys::Vec3& pos);
+    // Doom-style explosion FIREBALL scaled to the blast `radius` (exploding
+    // barrels): a white-hot additive core flash, a roiling ball of expanding fire
+    // puffs, a hard spray of gravity-bent embers, a rising smoke plume, and a big
+    // ground scorch decal. The physical debris reads as secondary against it.
+    void spawnFireball(const x3::phys::Vec3& center, float radius);
     // Drop a scorch decal directly (bullet-hole / impact mark) at a hit point+normal.
     void addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
 
