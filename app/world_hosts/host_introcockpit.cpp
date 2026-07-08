@@ -90,8 +90,12 @@ bool buildIntroCockpitRig(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device,
             // collected + added LAST so they blend over the completed scene.
             se.alphaBlend = true;
             se.mrTex = rig.mrGlassy;                 // polished MR (PBR route)
-            se.baseColor[0] = 0.85f; se.baseColor[1] = 0.92f;
-            se.baseColor[2] = 1.0f;  se.baseColor[3] = 0.12f;   // the blend alpha
+            // Near-invisible film (the starfield must punch through — the milky
+            // 0.12 film buried the analytic sky, reading as grey fog from inside);
+            // the shine survives because the HDR interior rig's specular stays >1
+            // even scaled by this alpha.
+            se.baseColor[0] = 0.62f; se.baseColor[1] = 0.72f;
+            se.baseColor[2] = 0.85f; se.baseColor[3] = 0.045f;  // the blend alpha
             panes.push_back(se);
             ++rig.glassPanes;
             continue;

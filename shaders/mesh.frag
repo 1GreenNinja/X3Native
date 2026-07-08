@@ -889,11 +889,20 @@ void main() {
     // reflective pane. Gated on vFactor.a<0.99 so a=1 BLEND overlays (screens) stay solid.
     float outA = albedo.a;
     if (alphaBlend && vFactor.a < 0.99) {
-        float baseOp = mix(0.10, 0.32, clamp(vFactor.a, 0.0, 1.0));   // mostly SEE-THROUGH (was washing white)
         vec3  Vv     = normalize(cam.camPos.xyz - vWorldPos);
         float fres   = pow(1.0 - max(dot(N, Vv), 0.0), 5.0);
-        outA = clamp(baseOp + fres * 0.35, 0.0, 1.0);                 // edges firmer, face near-clear
-        color += kSunColor * fres * 0.06;                            // subtle grazing rim only
+        if (vFactor.a > 0.0 && vFactor.a < 0.07) {
+            // NEAR-CLEAR canopy glass: an authored tiny alpha is intentional —
+            // honor it literally so a starfield punches through (the 0.10 floor
+            // below washed deep-space canopies into grey fog). Kept out of the
+            // a==0 case, which stays the Unity-broken-material rescue.
+            outA = clamp(vFactor.a + fres * 0.12, 0.0, 1.0);          // faint fresnel edge shine
+            color += kSunColor * fres * 0.03;                        // whisper of grazing rim
+        } else {
+            float baseOp = mix(0.10, 0.32, clamp(vFactor.a, 0.0, 1.0));   // mostly SEE-THROUGH (was washing white)
+            outA = clamp(baseOp + fres * 0.35, 0.0, 1.0);                 // edges firmer, face near-clear
+            color += kSunColor * fres * 0.06;                            // subtle grazing rim only
+        }
     }
     outColor = vec4(color, outA);   // HDR linear; tonemap is in composite.frag
 }
