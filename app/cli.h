@@ -565,9 +565,10 @@ struct CliOptions {
     bool        captureSpire    = false;
     std::string captureSpireDir = "captures/spire";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
-    // (walk the hills) instead of the default interior Level 1. Anything else (or
-    // omitted) keeps Level 1 as the default, unchanged.
-    std::string worldMode = "level1";
+    // (walk the hills) instead of the default interior facility. The default is the
+    // CANONICAL data-driven facility (canonlevel — the owner's LevelArchitect Floor 1,
+    // PB fold c3538d3); the legacy hand-coded tower stays reachable via --world level1.
+    std::string worldMode = "canonlevel";
     bool        worldExplicit = false;   // --world was passed (vs the default)
     bool shotWorldMap = false;   // --screenshot-worldmap (headless map shot sequence)
     // Seamless world streaming tunables (--world streamed; see app/world_stream.*):

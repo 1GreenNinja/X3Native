@@ -3137,7 +3137,7 @@ int runDefaultHost(HostContext& hc) {
             x3::logInfo("smoketest: r_frustumcull 0 (X3_NOFRUSTUMCULL) — CPU frustum cull DISABLED");
         }
         audio->setListener(vmX, vmY, vmZ, vmYaw, vmPitch);
-        audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
+        audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.0f);   // playtest: muted by default (PB fold 4b9f067)
         const x3::phys::Vec3 eye{ vmX, vmY, vmZ };
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < 30; ++i) {
@@ -3955,10 +3955,12 @@ int runDefaultHost(HostContext& hc) {
     bool  prevCamValid = false;
 
     // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
-    // (defaults: music on, music vol 0.25 to match the launch bed, SFX 1.0), apply
-    // it to the audio system, THEN start the bed so it honors the saved volume/on. ----
+    // (playtest fix, PB fold 4b9f067: DEFAULT music vol 0 -> MUTED on boot; SFX
+    // stays 1.0). Still fully adjustable: readAudioSettings() below overrides from
+    // the saved cfg, and the in-game Music Volume slider raises it live. Applied to
+    // the audio system, THEN the bed starts so it honors the saved volume/on. ----
     bool  s_musicOn  = true;
-    float s_musicVol = 0.25f;
+    float s_musicVol = 0.0f;     // muted by default (was 0.25) — raise via the slider/cfg
     float s_sfxVol   = 1.0f;
     readAudioSettings(s_musicOn, s_musicVol, s_sfxVol);
     audio->setMasterSfxVolume(s_sfxVol);
@@ -6263,12 +6265,25 @@ int runDefaultHost(HostContext& hc) {
                                         ep.c_str(), (float)ep.size() * 4.4f);
                         }
                     }
-                    // Cell HoloTerminal: within ~3 m of its anchor.
+                    // Cell HoloTerminal: within ~3 m of its anchor. Playtest fix (PB
+                    // fold 4b9f067): a subtle BOTTOM-CENTER HUD hint (not a world-space
+                    // float over the panel), and the "(code 1278)" spoiler is DROPPED —
+                    // the player should discover the code, not have it handed to them.
                     if (game.secret().terminal().built()) {
                         const x3::phys::Vec3 a = game.secret().terminal().anchor();
                         const float dx = pex - a.x, dz = pez - a.z;
-                        if (dx*dx + dz*dz < 9.0f)
-                            floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1278)", 110.0f);
+                        if (dx*dx + dz*dz < 9.0f) {
+                            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                            const char* hint = "[E] Use Terminal";
+                            const float hsz = 18.0f;
+                            const float adv = device->textAdvance(x3::rhi::FontRole::Menu, hint, hsz);
+                            const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                            const float hy = (hh > 0) ? hh * 0.88f : 520.0f;   // bottom-center
+                            const float col[4]    = { 0.66f, 0.92f, 1.0f, 0.85f };
+                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx + 1.5f, hy + 1.5f, hsz, shadow);
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx, hy, hsz, col);
+                        }
                     }
                 }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.
