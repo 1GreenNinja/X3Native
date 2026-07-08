@@ -402,6 +402,20 @@ public:
     void setInfiniteAmmo(bool b) { m_infiniteAmmo = b; }
     bool infiniteAmmo() const { return m_infiniteAmmo; }
 
+    // ---- [W9-3 RPG] progression multiplier layer ---------------------------
+    // Multipliers LAYERED on the WeaponDef table (the defs are never mutated).
+    // The skill tree / weapon mods drive these via the host's applyRpgStats().
+    // Reload time multiplier (< 1 = faster; clamped [0.35, 1]).
+    void  setReloadMult(float m) { m_reloadMult = m < 0.35f ? 0.35f : (m > 1.0f ? 1.0f : m); }
+    float getReloadMult() const { return m_reloadMult; }
+    // Reserve-ammo CAP multiplier (>= 1) — raises where addReserve tops out.
+    void  setAmmoCapMult(float m) { m_ammoCapMult = m < 1.0f ? 1.0f : m; }
+    float getAmmoCapMult() const { return m_ammoCapMult; }
+    // Add reserve rounds to weapon `index` (the ammo-pack item's use verb),
+    // capped at reserveAmmo * ammoCapMult. Returns rounds actually added.
+    int addReserve(int index, int rounds);
+    int addReserveCurrent(int rounds) { return addReserve(m_sel, rounds); }
+
     // Advance the per-weapon timers by dt: decay the current weapon's fire cooldown
     // and, if reloading, the reload timer (completing the reload — moving rounds
     // from reserve into the mag — when it hits 0). Other weapons' cooldowns are also
@@ -481,6 +495,10 @@ private:
     // Arms deliberately do NOT get kVmScaleBoost — the guns are 2x by design
     // (Tim-approved oversized reads); human arms at 2x read as a giant.
     ViewModel m_arms;
+
+    // [W9-3 RPG] progression multiplier layer state (see setReloadMult/setAmmoCapMult).
+    float m_reloadMult  = 1.0f;
+    float m_ammoCapMult = 1.0f;
 };
 
 // Headless self-test (--test-weapons). Exercises the data-driven arsenal with NO

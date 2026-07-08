@@ -677,6 +677,9 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
         if (it.taken || it.entity == kNoLink || it.entity >= scene.size()) continue;
         const float ddx = eye.x - it.pos.x, ddy = eye.y - it.pos.y, ddz = eye.z - it.pos.z;
         if (ddx*ddx + ddy*ddy + ddz*ddz <= kCanonPickupReach * kCanonPickupReach) {
+            // [W9-3 RPG] when an item sink is wired, offer the pickup to the
+            // BACKPACK first: refused (bag full) => it stays in the world.
+            if (m_itemSink && !m_itemSink(it)) continue;
             it.taken = true;
             scene.get(it.entity).visible = false;   // collected: stop drawing it
             x3::logInfo(std::string("[canonplay] pickup collected: ") +

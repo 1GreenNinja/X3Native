@@ -37,6 +37,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>   // [W9-3 RPG] CanonItemSinkFn
 #include <string>
 #include <string_view>
 #include <vector>
@@ -174,6 +175,14 @@ public:
     // ---- Cue / death-FX fan-out (footsteps, impacts, gib bursts). Wire after build. ----
     void setCueSink(const GameCueFn& sink);
     void setDeathFxSink(const DeathFxFn& sink);
+
+    // ---- [W9-3 RPG] item sink: pickups deposit into the BACKPACK ------------
+    // When wired, a walked-over upper-floor pickup is offered to the sink INSTEAD
+    // of the silent auto-collect: return true = accepted (prop hides, item is in
+    // the bag / applied), false = refused (bag full — the pickup STAYS in the
+    // world). Unwired (headless tests) keeps the legacy collect-and-log behavior.
+    using CanonItemSinkFn = std::function<bool(const CanonItem&)>;
+    void setItemSink(const CanonItemSinkFn& sink) { m_itemSink = sink; }
 
     // Tear down any live death-ragdoll bodies across every enemy group + the boss. Call
     // BEFORE the physics world is shut down (mirrors MonsterManager::shutdown) so no Jolt
@@ -329,6 +338,7 @@ private:
 
     GameCueFn  m_cueSink;
     DeathFxFn  m_deathFx;
+    CanonItemSinkFn m_itemSink;   // [W9-3 RPG] backpack deposit (empty = legacy)
     std::string m_modelDir;
 
     uint32_t m_pickupRoom    = kNoRoom;

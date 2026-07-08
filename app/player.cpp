@@ -145,6 +145,24 @@ void Player::heal(int amount) {
     if (m_hp > m_maxHp) m_hp = m_maxHp;
 }
 
+// [W9-3 RPG] progression stat layer: max HP = kPlayerMaxHp + bonus (base constant
+// never mutated). Raising the cap also grants the delta as current HP (a level-up
+// feels good); lowering (mods removed on load) clamps current HP to the new cap.
+void Player::setMaxHpBonus(int bonus) {
+    if (bonus < 0) bonus = 0;
+    const int newMax = kPlayerMaxHp + bonus;
+    const int delta  = newMax - m_maxHp;
+    m_maxHp = newMax;
+    if (delta > 0 && m_alive) m_hp += delta;
+    if (m_hp > m_maxHp) m_hp = m_maxHp;
+}
+
+void Player::setSpeedMult(float m) {
+    if (m < 0.5f) m = 0.5f;
+    if (m > 2.0f) m = 2.0f;
+    m_speedMult = m;
+}
+
 void Player::resetHealth() {
     m_hp      = m_maxHp;
     m_alive   = true;
@@ -215,7 +233,8 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
     // (you move slower the lower your stance — crouch = half, prone/crawl = a slow crawl).
     const float stanceMul = (m_stance == Stance::Prone)  ? kProneSpeedMul :
                             (m_stance == Stance::Crouch) ? kCrouchSpeedMul : 1.0f;
-    const float speed = (in.sprint ? kSprintSpeed : kWalkSpeed) * stanceMul;
+    // [W9-3 RPG] the skill-layer speed multiplier rides ON the base constants.
+    const float speed = (in.sprint ? kSprintSpeed : kWalkSpeed) * stanceMul * m_speedMult;
     float wishX = (fx * in.moveFwd + rx * in.moveStrafe);
     float wishZ = (fz * in.moveFwd + rz * in.moveStrafe);
     // Normalize so diagonal isn't faster, then scale to speed.
