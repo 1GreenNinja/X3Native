@@ -43,6 +43,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "desc_mechanics.h"                 // W9-1: the desc-field Tier-A mechanics (interactables + status effects)
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
@@ -1097,6 +1098,8 @@ int runDefaultHost(HostContext& hc) {
     float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
     bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
+    x3::game::DescMechanics descMech;          // W9-1: the desc-field Tier-A mechanics (coolant/EMP/hack/cold/antidote); built after chatTrees (flags owner) exists
+    bool coolantGlowDead = false;              // W9-1: the coolant console glow was killed (one-shot on the sabotage edge)
     x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
@@ -1403,10 +1406,20 @@ int runDefaultHost(HostContext& hc) {
             // a VOICE (footsteps, attack swings, take-hit grunts, death, idle taunts) +
             // their impacts land audibly. canonPlay had NO cue sink before — its enemies
             // were silent (the playtest "enemies make NO sounds" bug for --world canonlevel).
-            canonPlay.setCueSink(makeEnemyCueSink(audio.get(), sndStep, sndGun,
-                                                  sndEnemyTaunt, sndEnemyAttack,
-                                                  sndEnemyHit, sndEnemyDeath,
-                                                  &bootAudio));   // per-species buckets (W4-3)
+            {
+                // W9-1: wrap the cue sink so desc-mechanics sees landed enemy hits
+                // (infection rolls on F2/F3 creature hits). descMech guards on its
+                // own built() — safe even though its build() runs later (it needs
+                // chatTrees, the StoryFlags owner, which is declared below).
+                auto baseCueSink = makeEnemyCueSink(audio.get(), sndStep, sndGun,
+                                                    sndEnemyTaunt, sndEnemyAttack,
+                                                    sndEnemyHit, sndEnemyDeath,
+                                                    &bootAudio);   // per-species buckets (W4-3)
+                canonPlay.setCueSink([baseCueSink, &descMech](const x3::game::GameCue& c) {
+                    descMech.onCue(c);
+                    baseCueSink(c);
+                });
+            }
             x3::boot::mark("canon gameplay spawns (GLB enemies)");
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
             // Jake's Cell, down the wide Main Hall, through Security/Research/Medical/
@@ -2039,6 +2052,16 @@ int runDefaultHost(HostContext& hc) {
                 return sp->eval(dlgScript, fn + "()") == "true";
             };
         }
+    }
+
+    // ---- W9-1: DESC-FIELD MECHANICS (Tier A). Registered onto the loaded tower
+    // here — after chatTrees (the one StoryFlags world) exists: the coolant
+    // sabotage / EMP bench / master hack / antidote bench interact points plus
+    // the cold-room chill + infection status verbs. build() re-applies the
+    // Collective multiplier if a loaded flags file already carries the sabotage.
+    if (canonWorld && canonFloor.valid() && canonPlay.built()) {
+        descMech.build(canonFloor, canonPlay, chatTrees.flags());
+        x3::boot::mark("desc-mechanics (Tier A verbs)");
     }
 
     // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the
@@ -4308,6 +4331,17 @@ int runDefaultHost(HostContext& hc) {
                            return true;
                        }()) {
                 // elevator travel handled inside the lambda
+            } else if (canonWorld && descMech.built() &&
+                       [&]() -> bool {
+                           // W9-1 desc-mechanics interact points (coolant console /
+                           // EMP bench / master hack / antidote bench). Gated points
+                           // surface their missing-requirement bark instead.
+                           std::string dmBark;
+                           if (!descMech.onUse(eye, &dmBark)) return false;
+                           if (!dmBark.empty()) { npcBarkText = dmBark; npcBarkTimer = 4.5f; }
+                           return true;
+                       }()) {
+                // desc-mechanics interact handled inside the lambda
             } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
@@ -4351,6 +4385,18 @@ int runDefaultHost(HostContext& hc) {
                 // code-entry keypad (digits 0-9, Enter to submit, Esc to cancel).
                 codeMode = true; keypad.clear();
                 x3::logInfo("use: locked keypad door — type the code, Enter to submit, Esc to cancel");
+            } else if (canonWorld && descMech.built() &&
+                       [&]() -> bool {
+                           // W9-1: held-item use — the E fell through every world
+                           // handler, so spend it on the antidote (only while
+                           // infected) or the EMP (discharges only when >= 1
+                           // synthetic is in range; the charge is held otherwise).
+                           std::string dmBark;
+                           if (!descMech.onUseItem(eye, &dmBark)) return false;
+                           if (!dmBark.empty()) { npcBarkText = dmBark; npcBarkTimer = 4.0f; }
+                           return true;
+                       }()) {
+                // held-item use handled inside the lambda
             } else if (elevator.built()) {
                 // Within ~4 m of the elevator shaft (XZ): call the cab to its next
                 // stop (cycles ground <-> top). Carries the rider on the way.
@@ -5109,6 +5155,32 @@ int runDefaultHost(HostContext& hc) {
                 canon45.update(dt, scene, *physics, camPos, &player, enemyAttackFx,
                                audio.get(), bootAudio.spTaunt[1], bootAudio.spDeath[1]);
                 canonDressing.tick(dt);   // advance the flickering cell-tube phase
+                // ---- W9-1: desc-mechanics per frame — cold-room dwell/chill,
+                // decontamination cure, pickup->flag polling, DoT ticks (damage
+                // lands through player.takeDamage so the pain cue fires free).
+                if (descMech.built()) {
+                    descMech.tick(dt, camPos, &player);
+                    // Late-arriving sabotage flag (a loaded save): re-apply the
+                    // Collective multiplier; the console glow dies on either edge.
+                    if (chatTrees.flags().has("f4.coolant_sabotaged") &&
+                        !canonPlay.coolantSabotaged())
+                        canonPlay.applyCoolantSabotage();
+                    if (!coolantGlowDead &&
+                        (descMech.coolantGlowKillPending() || canonPlay.coolantSabotaged())) {
+                        x3::game::killRoomGlow(canonLights, descMech.coolantRoom());
+                        coolantGlowDead = true;
+                    }
+                    // Queued barks (entry warnings / infection / decon) ride the
+                    // npcBark line; the "[E] ..." prompt holds the line while
+                    // it's otherwise free (full alpha in range, 1 s fade out).
+                    for (std::string b = descMech.takeBark(); !b.empty(); b = descMech.takeBark()) {
+                        npcBarkText = b; npcBarkTimer = 4.5f;
+                    }
+                    const std::string dmPrompt = descMech.prompt(camPos);
+                    if (!dmPrompt.empty() && (npcBarkTimer <= 0.0f || npcBarkText == dmPrompt)) {
+                        npcBarkText = dmPrompt; npcBarkTimer = 1.0f;
+                    }
+                }
                 g_perf.tick += glfwGetTime() - _pt0;
                 // ---- W4-1: rescue story flags + the extraction goodbye. freed = she
                 // became a Companion (E-rescue); extracted = she reached the F2 elevator
@@ -6061,6 +6133,26 @@ int runDefaultHost(HostContext& hc) {
                                              bx + 1.5f, by + 1.5f, barkPx, bshadow);
                         device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(),
                                              bx, by, barkPx, bcol);
+                    }
+
+                    // ---- W9-1: the desc-mechanics status tag (held items + active
+                    // statuses: "EMP READY | INFECTED | FREEZING"), bottom-center,
+                    // steady while anything is held/active. The dumb text tag the
+                    // parallel inventory system will replace.
+                    if (descMech.built()) {
+                        const std::string tag = descMech.hudStatusLine();
+                        if (!tag.empty()) {
+                            const float tagPx = 16.0f;
+                            const float tw = device->textAdvance(x3::rhi::FontRole::Menu, tag.c_str(), tagPx);
+                            const float tx = ((hudW > 0) ? hudW * 0.5f : 640.0f) - tw * 0.5f;
+                            const float ty = (hudH > 0) ? hudH - 46.0f : 660.0f;
+                            const float tsh[4] = { 0.0f, 0.0f, 0.0f, 0.65f };
+                            const float tcl[4] = { 0.62f, 0.88f, 0.95f, 0.9f };   // instrument cyan
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, tag.c_str(),
+                                                 tx + 1.5f, ty + 1.5f, tagPx, tsh);
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, tag.c_str(),
+                                                 tx, ty, tagPx, tcl);
+                        }
                     }
 
                     // ---- W5-3: THE WIN CARD — Sarah is out. Drawn over the live
