@@ -227,6 +227,28 @@ public:
     // true when he is confirmed dead.
     bool testKillClone(Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // ---- W9-1: DESC-MECHANICS HOOKS (docs/DESC_MECHANICS_TODO.md Tier A) ----
+    // Coolant sabotage (F4 "Coolant System" console): The Collective takes x1.5
+    // damage from now on (applied at damage application, so it works whether the
+    // flag lands before or after his spawn). Idempotent; false if he is absent
+    // (single-floor load). Keyed on StoryFlags `f4.coolant_sabotaged` by the host.
+    bool applyCoolantSabotage();
+    bool coolantSabotaged() const { return m_coolantSabotaged; }
+    // EMP discharge (F4-crafted device): stun every SYNTHETIC-species enemy
+    // (EnemyType::BlueSynth — the drone/synth bestiary row) within `radius` of
+    // `center` for `secs`. Regular groups only (the boss ladder is story-owned).
+    // Returns how many were stunned.
+    uint32_t empStun(const x3::phys::Vec3& center, float radius = 12.0f,
+                     float secs = 6.0f);
+    // Master hack (F5 "Central Control Hub"): permanently power down every
+    // BlueSynth squad enemy on floor `floorNum` (per roomFloorNum, resolved via
+    // floor.roomAt on each body). Killing them afterwards still counts. Returns
+    // how many powered down. Keyed on StoryFlags `f5.hacked` by the host.
+    uint32_t setDroneSpeciesDocile(const CanonFloor& floor, int floorNum);
+    // Ladder-boss lookup by display-name substring (test/diagnostic accessor;
+    // e.g. "The Collective"). nullptr when absent. Non-owning.
+    MonsterSystem* findLadderBoss(std::string_view showNameSub);
+
     // The canon room id a girl is in (Medical Bay / a ward), by victim index. kNoRoom if
     // unknown. Used by the host to surface her per-girl subtitle from the right state.
     uint32_t girlRoom(uint32_t victimIndex) const {
@@ -296,6 +318,10 @@ private:
     uint32_t m_sarahRoom    = kNoRoom;
     uint32_t m_helipadRoom  = kNoRoom;
     int      m_cloneIdx     = -1;      // m_floorBosses index of "Jake's Clone"
+    // W9-1 desc-mechanics: ladder bookkeeping + the coolant-sabotage latch.
+    std::vector<std::string> m_ladderNames;   // show name per m_floorBosses index
+    int      m_collectiveIdx = -1;     // m_floorBosses index of "The Collective"
+    bool     m_coolantSabotaged = false;
     mutable bool m_cloneDeadLatch = false;
     float    m_heliX0 = 0, m_heliX1 = 0, m_heliZ0 = 0, m_heliZ1 = 0;   // helipad XZ rect
 
