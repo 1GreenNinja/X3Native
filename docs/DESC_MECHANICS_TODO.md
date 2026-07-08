@@ -46,6 +46,13 @@ do NOT add bespoke E-branches. Decon cure (#8) already landed with Tier A.
    type lands. Pairs with Decontamination (below).
 
 ## Tier B — needs a small new system
+**STATUS: ALL BUILT (W9-2, feat/desc-mechanics-bc, --test-descmech-bc B1-B9).**
+Module: app/desc_mechanics_bc.{h,cpp} (DescMechanicsBC, beside W9-1's DescMechanics)
++ CanonPlay::allyStrike/spawnBonusCache + RoomDressing::killRoomEmissives.
+Tier C #12-#16 also landed (see below); #11 stays W5-1's. Flags:
+f6.salvari_freed / f6.nexus_fuse_a/b / f6.portal_sealed / f4.course_beaten /
+f4.aug_used(+_strength/_speed/_armor) / f6.first_contact / f7.clone_seen /
+f7.beacon_activated / f4.memory_viewed.
 6. **Salvari Containment (F6)** — "3 prisoners. Can be freed as allies."
    → Free-the-prisoners interact → 3 Salvari allies fight alongside (companion-follow
    already exists for rescue girls/Sarah — reuse follow+ally targeting). Cots + lore
@@ -66,6 +73,10 @@ do NOT add bespoke E-branches. Decon cure (#8) already landed with Tier A.
     Chairs (4 placed) + cyan pool are the anchor. Roguelite-flavored choice point.
 
 ## Tier C — story/scene beats (design-owned, bigger)
+**STATUS (W9-2): #12 minimal seal beat, #13 First Contact dialog (chat_trees/
+salvari_elder.json + the elder NPC), #14 clone-tank pre-scene, #15 comms beacon,
+#16 memory holo (HoloTerminal single-panel bake) BUILT. #11 unchanged (W5-1's).
+The #12 full portal set-piece (something comes through) stays design-owned.**
 11. **Nexus Chamber Access (F4) / The Chorus** — "3,472 consciousnesses." → W5-1's 4.5
     descent owns this; whisper beat live. No action here.
 12. **Portal Chamber (F6)** — "Active portal to alien homeworld." → portal visual +
