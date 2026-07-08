@@ -2062,6 +2062,16 @@ int runDefaultHost(HostContext& hc) {
     if (canonWorld && canonFloor.valid() && canonPlay.built()) {
         descMech.build(canonFloor, canonPlay, chatTrees.flags());
         x3::boot::mark("desc-mechanics (Tier A verbs)");
+        // Shot/test hook: X3_DESCMECH_SABOTAGE=1 boots with the coolant console
+        // already sabotaged (flag + Collective x1.5 + dead glow) so the state is
+        // capturable on the screenshot path, which never runs the live E-chain.
+        if (const char* sab = std::getenv("X3_DESCMECH_SABOTAGE"); sab && sab[0] == '1') {
+            chatTrees.flags().set("f4.coolant_sabotaged");
+            canonPlay.applyCoolantSabotage();
+            x3::game::killRoomGlow(canonLights, descMech.coolantRoom());
+            coolantGlowDead = true;
+            x3::logInfo("[descmech] X3_DESCMECH_SABOTAGE=1 — booted in the sabotaged state");
+        }
     }
 
     // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the
