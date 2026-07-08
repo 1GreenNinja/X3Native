@@ -258,6 +258,24 @@ public:
     // e.g. "The Collective"). nullptr when absent. Non-owning.
     MonsterSystem* findLadderBoss(std::string_view showNameSub);
 
+    // ---- W9-2: DESC-MECHANICS HOOKS (Tier B, docs/DESC_MECHANICS_TODO.md) ----
+    // ALLY STRIKE (F6 freed Salvari, #6): damage the NEAREST live hostile within
+    // `radius` of `from` (regular groups only — mainHall / cellGuards / attackers
+    // / upperEnemies; the boss ladder stays story-owned, mirroring empStun).
+    // Damage lands through takeMeleeDamage so the hit-flash / death path fire
+    // exactly like a player hit. `hitOut` (optional) gets the struck body center
+    // (the host draws the ally tracer to it). Returns 1 if a hostile was struck.
+    uint32_t allyStrike(const x3::phys::Vec3& from, float radius, int damage,
+                        Scene& scene, x3::phys::IPhysicsWorld& physics,
+                        x3::phys::Vec3* hitOut = nullptr);
+    // BONUS CACHE (F4 Prototype Testing course reward, #9): spawn a small pickup
+    // cluster (ammo + health + nano-booster) in `roomName` around (dx,dz) via the
+    // existing upper-item path (room-tagged props, proximity grab, item-sink
+    // aware). Returns how many pickups were placed.
+    uint32_t spawnBonusCache(const CanonFloor& floor, Scene& scene,
+                             x3::rhi::IRenderDevice& device,
+                             const char* roomName, float dx, float dz);
+
     // The canon room id a girl is in (Medical Bay / a ward), by victim index. kNoRoom if
     // unknown. Used by the host to surface her per-girl subtitle from the right state.
     uint32_t girlRoom(uint32_t victimIndex) const {

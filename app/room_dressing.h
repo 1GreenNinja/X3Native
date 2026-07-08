@@ -72,6 +72,12 @@ public:
 
     uint32_t roomsDressed() const { return m_roomsDressed; }
 
+    // W9-2 (desc-mechanics Tier B #7): kill every dressed EMISSIVE statement in
+    // `room` — prop instance emissive scales AND the procedural glow/glass quads
+    // (the Portal Chamber's layered portal glass, the Energy Nexus core) drop to
+    // dead. Visual-only, idempotent. Returns how many draws were dimmed.
+    uint32_t killRoomEmissives(uint32_t room);
+
 private:
     struct Panel {                    // one textured surface panel, prebuilt
         uint32_t room = kNoRoom;

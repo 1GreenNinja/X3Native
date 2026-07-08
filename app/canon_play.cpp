@@ -797,6 +797,48 @@ MonsterSystem* CanonPlay::findLadderBoss(std::string_view showNameSub) {
     return nullptr;
 }
 
+uint32_t CanonPlay::allyStrike(const x3::phys::Vec3& from, float radius, int damage,
+                               Scene& scene, x3::phys::IPhysicsWorld& physics,
+                               x3::phys::Vec3* hitOut) {
+    if (!m_built || damage <= 0) return 0;
+    // Nearest LIVE hostile in the regular groups (the boss ladder stays story-
+    // owned, mirroring empStun). Docile/allied bodies are not valid targets.
+    const float r2 = radius * radius;
+    MonsterManager* groups[] = { &m_mainHall, &m_cellGuards, &m_attackers,
+                                 &m_upperEnemies };
+    MonsterSystem* best = nullptr;
+    float bestD2 = r2;
+    for (MonsterManager* g : groups) {
+        for (uint32_t i = 0; i < g->count(); ++i) {
+            MonsterSystem& m = g->at(i);
+            if (!m.alive() || m.docile() || m.isAllied()) continue;
+            const x3::phys::Vec3 p = m.pos();
+            const float dx = p.x - from.x, dy = p.y - from.y, dz = p.z - from.z;
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > bestD2) continue;
+            bestD2 = d2;
+            best = &m;
+        }
+    }
+    if (!best) return 0;
+    if (hitOut) *hitOut = best->pos();
+    best->takeMeleeDamage(damage, scene, physics, x3::DamageType::Energy);
+    return 1;
+}
+
+uint32_t CanonPlay::spawnBonusCache(const CanonFloor& floor, Scene& scene,
+                                    x3::rhi::IRenderDevice& device,
+                                    const char* roomName, float dx, float dz) {
+    if (!m_built) return 0;
+    uint32_t n = 0;
+    if (placeUpperItem(floor, scene, device, roomName, CanonItemKind::Ammo,        dx - 0.55f, dz)) ++n;
+    if (placeUpperItem(floor, scene, device, roomName, CanonItemKind::Health,      dx + 0.55f, dz)) ++n;
+    if (placeUpperItem(floor, scene, device, roomName, CanonItemKind::NanoBooster, dx,        dz + 0.55f)) ++n;
+    x3::logInfo("[descmech-bc] bonus cache: " + std::to_string(n) + " reward pickup(s) in " +
+                std::string(roomName));
+    return n;
+}
+
 FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                              Scene& scene, x3::phys::IPhysicsWorld& physics, int damage,
                              x3::DamageType type) {

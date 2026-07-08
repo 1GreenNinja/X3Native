@@ -1275,6 +1275,28 @@ void RoomDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     }
 }
 
+uint32_t RoomDressing::killRoomEmissives(uint32_t room) {
+    if (room == kNoRoom) return 0;
+    uint32_t n = 0;
+    for (PropInst& p : m_props) {
+        if (p.room != room) continue;
+        // emissive[3] = 0 SUPPRESSES material-authored emissive too (gotcha 3.3).
+        p.emissive[0] = p.emissive[1] = p.emissive[2] = p.emissive[3] = 0.0f;
+        ++n;
+    }
+    for (ProcDraw& p : m_proc) {
+        if (p.room != room) continue;
+        p.emissive[0] = p.emissive[1] = p.emissive[2] = p.emissive[3] = 0.0f;
+        if (!p.glass) {   // dead glow quads also lose their bright base tone
+            p.color[0] *= 0.22f; p.color[1] *= 0.22f; p.color[2] *= 0.22f;
+        }
+        ++n;
+    }
+    x3::logInfo("[descmech-bc] room emissives killed: room=" + std::to_string(room) +
+                " draws dimmed=" + std::to_string(n));
+    return n;
+}
+
 void RoomDressing::applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t eyeRoom) {
     int zone = ZWard;   // detention default (matches the cell_dressing base opt-in)
     if (eyeRoom < m_roomZone.size() && m_roomZone[eyeRoom] != ZNone)
