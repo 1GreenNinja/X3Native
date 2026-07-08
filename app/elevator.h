@@ -264,6 +264,14 @@ private:
     // term; the OLED / terminal / mirror are tinted boxes (graybox) the car carries.
     uint32_t m_eGlass = kNoLink, m_eStrata = kNoLink, m_eMirror = kNoLink;
     uint32_t m_eOledL = kNoLink, m_eOledR = kNoLink, m_eTerm = kNoLink;
+    // OLED TELEMETRY (the Babylon twin-viewscreen parity): the two panels carry
+    // LIVE text textures — LEFT = geological survey (depth/stratum/speed/temp/
+    // odometer), RIGHT = floor directory with cur/target markers — rebaked ~3x/s
+    // by update() via stb_truetype (the HoloTerminal on-glass move). m_device is
+    // captured by buildVisuals() for the rebakes.
+    x3::rhi::IRenderDevice* m_oledDevice = nullptr;
+    x3::rhi::TextureHandle  m_oledTexL{}, m_oledTexR{}, m_oledMr{};
+    float                   m_oledTimer = 999.0f;   // first update bakes immediately
     uint32_t m_eDiscoBall = kNoLink, m_eCeil = kNoLink;
     // Twin sliding door panels (front +X wall) that part along Z with m_doorPct, an
     // indicator strip above the doors that tints by state, and a floor numeral plate.

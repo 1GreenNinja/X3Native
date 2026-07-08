@@ -10,6 +10,8 @@
 #include "mesh_prims.h"
 
 #include "engine/core/x3_log.h"
+#include "engine/rhi/font_robotomono.h"   // kRobotoMonoTTF — the OLED panel text
+#include <stb_truetype.h>                  // declarations only (impl in the engine TU)
 #include "engine/audio/IAudioSystem.h"
 
 #include <algorithm>
@@ -36,6 +38,94 @@ static const std::array<StrataLayer, 9> kStrata = {{
     {-320.0f, -260.0f, "Magma Zone",      {0.25f, 0.06f, 0.02f}, true,  {0.80f, 0.20f, 0.05f} },
     {-400.0f, -320.0f, "Alien Substrate", {0.08f, 0.04f, 0.12f}, true,  {0.20f, 0.04f, 0.40f} },
 }};
+
+// ---- OLED text raster (the HoloTerminal stb_truetype move, panel-sized) ----
+namespace {
+struct OledFont {
+    stbtt_fontinfo info{};
+    bool ready = false;
+    OledFont() {
+        const unsigned char* ttf = x3::rhi::kRobotoMonoTTF;
+        const int off = stbtt_GetFontOffsetForIndex(ttf, 0);
+        if (off >= 0 && stbtt_InitFont(&info, ttf, off)) ready = true;
+    }
+};
+const OledFont& oledFont() { static OledFont f; return f; }
+
+constexpr int kOledW = 256, kOledH = 168;
+
+void oledText(std::vector<uint8_t>& px, const std::string& s, float penX, float topY,
+              float ph, float r, float g, float b) {
+    const OledFont& f = oledFont();
+    if (!f.ready) return;
+    const float scale = stbtt_ScaleForPixelHeight(&f.info, ph);
+    int asc = 0, desc = 0, gap = 0;
+    stbtt_GetFontVMetrics(&f.info, &asc, &desc, &gap);
+    const float baseline = topY + asc * scale;
+    float pen = penX;
+    for (unsigned char ch : s) {
+        int adv = 0, lsb = 0;
+        stbtt_GetCodepointHMetrics(&f.info, ch, &adv, &lsb);
+        if (ch != ' ') {
+            int gw = 0, gh = 0, gxo = 0, gyo = 0;
+            unsigned char* bmp = stbtt_GetCodepointBitmap(&f.info, scale, scale, ch,
+                                                          &gw, &gh, &gxo, &gyo);
+            if (bmp) {
+                const float gx0 = pen + lsb * scale;
+                for (int yy = 0; yy < gh; ++yy)
+                    for (int xx = 0; xx < gw; ++xx) {
+                        const float cov = bmp[yy * gw + xx] / 255.0f;
+                        if (cov <= 0.003f) continue;
+                        const int X = (int)std::lround(gx0 + gxo + xx);
+                        const int Y = (int)std::lround(baseline + gyo + yy);
+                        if (X < 0 || X >= kOledW || Y < 0 || Y >= kOledH) continue;
+                        uint8_t* p = &px[((size_t)Y * kOledW + X) * 4];
+                        p[0] = (uint8_t)std::min(255.0f, p[0] + r * 255.0f * cov);
+                        p[1] = (uint8_t)std::min(255.0f, p[1] + g * 255.0f * cov);
+                        p[2] = (uint8_t)std::min(255.0f, p[2] + b * 255.0f * cov);
+                    }
+                stbtt_FreeBitmap(bmp, nullptr);
+            }
+        }
+        pen += adv * scale;
+    }
+}
+
+struct OledLine { std::string text; float r, g, b; float px; };
+
+x3::rhi::TextureHandle bakeOled(x3::rhi::IRenderDevice& device,
+                                const std::vector<OledLine>& lines) {
+    std::vector<uint8_t> px((size_t)kOledW * kOledH * 4);
+    for (int y = 0; y < kOledH; ++y)
+        for (int x = 0; x < kOledW; ++x) {
+            uint8_t* p = &px[((size_t)y * kOledW + x) * 4];
+            p[0] = 2; p[1] = 4; p[2] = 8; p[3] = 255;               // near-black glass
+            if ((y % 3) == 0) { p[0] = 1; p[1] = 2; p[2] = 5; }     // scanlines
+            const int edge = std::min(std::min(x, kOledW - 1 - x),
+                                      std::min(y, kOledH - 1 - y));
+            if (edge < 2) { p[0] = 10; p[1] = 30; p[2] = 45; }      // bezel line
+        }
+    float ty = 8.0f;
+    for (const OledLine& L : lines) {
+        oledText(px, L.text, 10.0f, ty, L.px, L.r, L.g, L.b);
+        ty += L.px + 4.0f;
+    }
+    // X3_OLED_DUMP=<dir>: write each bake as a PPM (debug proof of the panel
+    // content without hunting the cab with a camera).
+    if (const char* dump = std::getenv("X3_OLED_DUMP")) {
+        static int s_dumpN = 0;
+        char pth[512];
+        std::snprintf(pth, sizeof(pth), "%s/oled_%03d.ppm", dump, s_dumpN++);
+        if (FILE* f = std::fopen(pth, "wb")) {
+            std::fprintf(f, "P6\n%d %d\n255\n", kOledW, kOledH);
+            for (size_t i = 0; i < (size_t)kOledW * kOledH; ++i)
+                std::fwrite(&px[i * 4], 1, 3, f);
+            std::fclose(f);
+        }
+    }
+    return device.createTexture(px.data(), kOledW, kOledH, true);
+}
+} // namespace
 
 const std::array<StrataLayer, 9>& ElevatorSystem::strata() { return kStrata; }
 
@@ -451,6 +541,60 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
 
     updateMotorAudio(dt);
 
+    // ---- OLED TELEMETRY (Babylon twin-viewscreen parity): rebake both panel
+    // textures ~3x/s — LEFT: the geological survey (live depth, stratum, speed,
+    // ambient temp, lifetime odometer, deep-zone warning); RIGHT: the floor
+    // directory with > current / * target markers. stb_truetype raster into a
+    // fresh texture; the old one is destroyed (the HoloTerminal rebake move). ----
+    m_oledTimer += dt;
+    if (m_oledDevice && m_eOledL != kNoLink && m_eOledR != kNoLink && m_oledTimer >= 0.33f) {
+        m_oledTimer = 0.0f;
+        const float topY = m_stopsY.empty() ? m_pos.y : m_stopsY.back();
+        const float depth = std::max(0.0f, topY - m_pos.y);
+        char buf[64];
+        std::vector<OledLine> L;
+        L.push_back({ "GEOLOGICAL SURVEY", 0.25f, 0.55f, 0.85f, 13.0f });
+        std::snprintf(buf, sizeof(buf), "DEPTH   %7.1f m", depth);
+        L.push_back({ buf, 0.15f, 0.85f, 1.0f, 20.0f });
+        std::snprintf(buf, sizeof(buf), "STRATUM %s", currentStratum());
+        L.push_back({ buf, 0.55f, 0.65f, 0.80f, 14.0f });
+        std::snprintf(buf, sizeof(buf), "SPEED   %5.1f m/s", m_fsmSpeed);
+        L.push_back({ buf, 0.30f, 0.70f, 0.55f, 14.0f });
+        std::snprintf(buf, sizeof(buf), "AMBIENT %5.1f C", 18.0f + depth * 0.03f);
+        L.push_back({ buf, depth > 120.0f ? 0.85f : 0.30f, depth > 120.0f ? 0.35f : 0.55f, 0.30f, 14.0f });
+        std::snprintf(buf, sizeof(buf), "ODO     %6.0f m", m_totalDist);
+        L.push_back({ buf, 0.25f, 0.35f, 0.45f, 12.0f });
+        if (depth > 120.0f)
+            L.push_back({ "! ALIEN SUBSTRATE !", 1.0f, 0.25f, 0.20f, 13.0f });
+        x3::rhi::TextureHandle freshL = bakeOled(*m_oledDevice, L);
+
+        std::vector<OledLine> R;
+        R.push_back({ "FLOOR DIRECTORY", 0.55f, 0.35f, 0.80f, 13.0f });
+        const int n = (int)m_stopsY.size();
+        for (int i = n - 1; i >= 0 && (int)R.size() < 10; --i) {
+            const char mark = (i == m_curStop) ? '>' : (i == m_target && m_state != ElevState::Idle ? '*' : ' ');
+            std::snprintf(buf, sizeof(buf), "%c %s", mark, floorLabel(i).c_str());
+            const bool cur = (i == m_curStop);
+            R.push_back({ buf, cur ? 0.95f : 0.40f, cur ? 0.95f : 0.42f, cur ? 1.0f : 0.55f,
+                          cur ? 15.0f : 13.0f });
+        }
+        if (m_disco)
+            R.push_back({ "** DISCO MODE **", 1.0f, 0.20f, 0.90f, 13.0f });
+        x3::rhi::TextureHandle freshR = bakeOled(*m_oledDevice, R);
+
+        auto assign = [&](uint32_t ent, x3::rhi::TextureHandle& slot, x3::rhi::TextureHandle fresh) {
+            if (ent >= scene.size()) return;
+            Entity& e = scene.get(ent);
+            e.tex = fresh; e.emissiveTex = fresh; e.mrTex = m_oledMr;
+            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 0.9f; e.baseColor[3] = 1.0f;
+            e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.6f;
+            if (slot.valid()) m_oledDevice->destroyTexture(slot);
+            slot = fresh;
+        };
+        assign(m_eOledL, m_oledTexL, freshL);
+        assign(m_eOledR, m_oledTexR, freshR);
+    }
+
     // Disco light/strata/glass cue (animates the registered point lights + the
     // strata/disco-ball emissive). m_discoTime advances only in disco mode.
     const float t = m_discoTime;
@@ -583,8 +727,12 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     { const float c[4] = {0.92f, 0.92f, 0.95f, 1.0f};
       m_eMirror = addKit(scene, device, carW*0.32f, carH*0.30f, 0.02f, c, noEm); }
 
-    // Twin OLED viewscreens: left = geo survey, right = floor directory. Emissive
-    // cyan/violet graybox panels.
+    // Twin OLED viewscreens: left = geo survey, right = floor directory. LIVE
+    // text telemetry baked by update() (the graybox emissive is just the boot
+    // frame). Capture the device + a glossy MR texel for the PBR screen route.
+    m_oledDevice = &device;
+    { const uint8_t mr1[4] = { 255, 45, 30, 255 };   // G=rough(45) B=metal(30): glossy panel
+      m_oledMr = device.createTexture(mr1, 1, 1, false); }
     { const float c[4] = {0.0f, 0.05f, 0.10f, 1.0f};
       const float em[4] = {0.0f, 0.40f, 0.80f, 1.2f};
       m_eOledL = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em); }
