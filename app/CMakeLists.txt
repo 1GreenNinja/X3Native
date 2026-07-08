@@ -114,6 +114,11 @@ add_executable(X3Engine WIN32
     hud.cpp
     loading_screen.cpp
     canon_aliens.cpp
+    item_db.cpp
+    inventory.cpp
+    progression.cpp
+    skilltree.cpp
+    rpg_ui.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)

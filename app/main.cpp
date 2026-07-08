@@ -286,6 +286,9 @@ int main(int argc, char** argv) {
         _tf.testLevelLint = o.testLevelLint;
         _tf.testCanonPlay = o.testCanonPlay;
         _tf.testGoldenPath = o.testGoldenPath;
+        _tf.testInventory = o.testInventory;      // W9-3 RPG
+        _tf.testProgression = o.testProgression;  // W9-3 RPG
+        _tf.testSkillTree = o.testSkillTree;      // W9-3 RPG
         _tf.testStrata = o.testStrata;
         _tf.testElevatorShowcase = o.testElevatorShowcase;
         _tf.testIntro = o.testIntro;

@@ -26,6 +26,9 @@
 #include "engine/physics/Destruction.h"
 #include "strata.h"              // R-3 fold: runStrataSelfTest
 #include "elevator_showcase.h"  // R-4 fold: runElevatorShowcaseSelfTest
+#include "inventory.h"          // W9-3 RPG: runInventorySelfTest
+#include "progression.h"        // W9-3 RPG: runProgressionSelfTest
+#include "skilltree.h"          // W9-3 RPG: runSkillTreeSelfTest
 #include "engine/physics/StructuralCollapse.h"
 #include "engine/physics/Ragdoll.h"
 #include "engine/physics/IVehicle.h"
@@ -289,6 +292,18 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testGoldenPath) {
         x3::logInfo("running the ENDGAME SPINE self-test (G1-G9: tower -> clone gate -> Sarah -> Helipad WIN)...");
         return x3::game::runGoldenPathSelfTest() ? 0 : 1;
+    }
+    if (tf.testInventory) {   // W9-3 RPG
+        x3::logInfo("running the INVENTORY/BACKPACK self-test (I1-I7: item DB + stack/cap + keycard-gated door)...");
+        return x3::game::runInventorySelfTest() ? 0 : 1;
+    }
+    if (tf.testProgression) {   // W9-3 RPG
+        x3::logInfo("running the XP/LEVEL PROGRESSION self-test (X1-X6: curve + points + save round-trip)...");
+        return x3::game::runProgressionSelfTest() ? 0 : 1;
+    }
+    if (tf.testSkillTree) {   // W9-3 RPG
+        x3::logInfo("running the SKILL TREE self-test (S1-S7: prereq/cost + the stat fold reaching the player)...");
+        return x3::game::runSkillTreeSelfTest() ? 0 : 1;
     }
     if (tf.testStrata) {
         x3::logInfo("running STRATA descent self-test (R-3 fold: bands + offshoots + on-foot route + club arrival)...");

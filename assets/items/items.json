@@ -1,0 +1,78 @@
+{
+  "version": "x3.items/1",
+  "comment": "EFLZ item database (W9-3 RPG layer). Loaded by app/item_db.cpp; the baked fallback in code mirrors the core of this table. categories: consumable | keycard | mod | upgrade_part | quest. stack = max per backpack slot. effect fields: heal, ammo (reserve rounds to held weapon), keycard (door keycard id), xp, damageMult / reloadMult / ammoCapMult / critChance (mod fractions).",
+  "items": [
+    {
+      "id": "medkit", "name": "Medkit", "category": "consumable", "stack": 5,
+      "glyph": "+", "color": [0.95, 0.25, 0.25, 1.0],
+      "desc": "Field medkit. Restores 35 HP.",
+      "effect": { "heal": 35 }
+    },
+    {
+      "id": "ammo_pack", "name": "Ammo Pack", "category": "consumable", "stack": 5,
+      "glyph": "a", "color": [0.95, 0.75, 0.20, 1.0],
+      "desc": "Loose rounds. +30 reserve ammo for the held weapon.",
+      "effect": { "ammo": 30 }
+    },
+    {
+      "id": "nano_booster", "name": "Nano-Booster", "category": "consumable", "stack": 3,
+      "glyph": "N", "color": [0.20, 0.95, 0.75, 1.0],
+      "desc": "Salvari nanite serum. Fully restores HP.",
+      "effect": { "heal": 100, "xp": 25 }
+    },
+    {
+      "id": "keycard_security", "name": "Security Keycard", "category": "keycard", "stack": 1,
+      "glyph": "S", "color": [0.15, 0.88, 1.00, 1.0],
+      "desc": "Security-grade access card. Opens Security-locked doors.",
+      "effect": { "keycard": 1 }
+    },
+    {
+      "id": "keycard_access", "name": "Access Keycard", "category": "keycard", "stack": 1,
+      "glyph": "K", "color": [0.15, 0.60, 1.00, 1.0],
+      "desc": "Facility access card recovered from the upper floors.",
+      "effect": { "keycard": 2 }
+    },
+    {
+      "id": "mod_damage", "name": "Overcharge Coil", "category": "mod", "stack": 1,
+      "glyph": "D", "color": [1.00, 0.45, 0.15, 1.0],
+      "desc": "Weapon mod. +15% damage on every weapon. Apply from the backpack.",
+      "effect": { "damageMult": 0.15 }
+    },
+    {
+      "id": "mod_reload", "name": "Assist Servo", "category": "mod", "stack": 1,
+      "glyph": "R", "color": [0.60, 0.85, 1.00, 1.0],
+      "desc": "Weapon mod. 20% faster reloads. Apply from the backpack.",
+      "effect": { "reloadMult": 0.20 }
+    },
+    {
+      "id": "mod_extmag", "name": "Extended Racks", "category": "mod", "stack": 1,
+      "glyph": "M", "color": [0.75, 0.75, 0.30, 1.0],
+      "desc": "Weapon mod. +25% reserve ammo capacity. Apply from the backpack.",
+      "effect": { "ammoCapMult": 0.25 }
+    },
+    {
+      "id": "mod_precision", "name": "Precision Optic", "category": "mod", "stack": 1,
+      "glyph": "P", "color": [0.85, 0.35, 0.95, 1.0],
+      "desc": "Weapon mod. +8% crit chance (crits deal double damage).",
+      "effect": { "critChance": 0.08 }
+    },
+    {
+      "id": "emp_parts", "name": "EMP Components", "category": "upgrade_part", "stack": 5,
+      "glyph": "e", "color": [0.55, 0.55, 0.95, 1.0],
+      "desc": "Scavenged capacitors and coils. The F4 Power Junction bench can build an EMP from these.",
+      "effect": {}
+    },
+    {
+      "id": "antidote_parts", "name": "Antidote Components", "category": "upgrade_part", "stack": 5,
+      "glyph": "v", "color": [0.35, 0.90, 0.35, 1.0],
+      "desc": "Pharmacy compounds. Research notes mention an infection antidote.",
+      "effect": {}
+    },
+    {
+      "id": "sarah_photo", "name": "Photograph of Sarah", "category": "quest", "stack": 1,
+      "glyph": "Q", "color": [0.90, 0.80, 0.60, 1.0],
+      "desc": "A creased photograph. She is why you are still moving.",
+      "effect": {}
+    }
+  ]
+}
