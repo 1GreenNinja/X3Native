@@ -36,13 +36,21 @@ struct IntroCockpitRig {
     // so poseIntroCockpit can recompute world = shipPose * base each frame.
     std::vector<uint32_t>                entityIds;
     std::vector<std::array<float, 16>>   baseXf;
+    // Combat art for the interactive beats: the enemy fighter + the capital
+    // ship, drawn direct (host_space convention) out the canopy each frame.
+    x3::asset::Model                         enemyModel, capModel;
+    std::vector<x3::asset::ModelDrawable>    enemyDraw, capDraw;
+    // MFD/gauge screen entity ids (for the live screen-glow pulse).
+    std::vector<uint32_t>                    screenIds;
     // Gate diagnostics.
     uint32_t drawables = 0, entities = 0, glassPanes = 0, screens = 0;
 
     void shutdown(x3::rhi::IRenderDevice& device) {
         if (mrShared.valid()) device.destroyTexture(mrShared);
         if (mrGlassy.valid()) device.destroyTexture(mrGlassy);
-        if (model.ok && loader) loader->unload(model);
+        if (model.ok && loader)      loader->unload(model);
+        if (enemyModel.ok && loader) loader->unload(enemyModel);
+        if (capModel.ok && loader)   loader->unload(capModel);
     }
 };
 
@@ -64,5 +72,20 @@ void setIntroCockpitLook(x3::rhi::IRenderDevice& device);
 // docs/CONVENTIONS.md §3. Call each frame before scene.render().
 void poseIntroCockpit(IntroCockpitRig& rig,
                       float cx, float cy, float cz, float yaw, float pitch);
+
+// Load the beat combat art (enemy fighter SpaceShip.glb + capital SpaceShip4.glb
+// from rigged_glb) through the rig's own loader. Best-effort: a missing model
+// just isn't drawn. Returns true if at least the enemy fighter loaded.
+bool buildIntroCombatArt(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device);
+
+// Direct-draw a ship model at a world position facing `fwd` (XZ yaw), uniformly
+// scaled — the host_space drawMeshPBR convention. Call between begin/endFrame.
+void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                   const std::vector<x3::asset::ModelDrawable>& draws,
+                   const float pos[3], const float fwd[3], float scale);
+
+// Pulse the MFD/gauge screens' emissive strength (subtle alive flicker). Call
+// once per frame with the running time.
+void pulseIntroScreens(IntroCockpitRig& rig, float t);
 
 }} // namespace x3::apphost

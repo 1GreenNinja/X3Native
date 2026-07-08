@@ -24,6 +24,7 @@
 
 #include "intro_orchestrator.h"
 #include "intro_cockpit_rig.h"
+#include "fx.h"
 
 #include "engine/core/x3_log.h"
 #include "engine/rhi/IRenderDevice.h"
@@ -264,6 +265,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     const bool live = (hc.window != nullptr && hc.device != nullptr);
 
+    // Combat FX (tracers, muzzle flashes, crosshair) — live only. Heap-allocated:
+    // CombatFx carries ~256 KB of scratch (the host_space convention).
+    std::unique_ptr<x3::game::CombatFx> fxPtr;
+    const bool fxOn = live && cockpit != nullptr;
+    if (fxOn) { fxPtr = std::make_unique<x3::game::CombatFx>(); fxPtr->init(*hc.device); }
+    float beatT = 0.0f;
+
     for (int step = 0; step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
@@ -294,7 +302,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         const float ppos[3] = { pp.x, pp.y, pp.z };
         const float pvel[3] = { pv.x, pv.y, pv.z };
         enemies.update(dt, ppos, pvel);
+        bool playerFiredThisStep = false;
         for (const auto& fe : enemies.fireEvents()) {
+            if (fxOn) {
+                fxPtr->addTracer({ fe.from[0], fe.from[1], fe.from[2] },
+                             { fe.to[0],   fe.to[1],   fe.to[2] });
+                fxPtr->spawnMuzzleFlash({ fe.from[0], fe.from[1], fe.from[2] },
+                                    { fe.to[0] - fe.from[0], fe.to[1] - fe.from[1],
+                                      fe.to[2] - fe.from[2] });
+            }
             ++localSalvosFaced;
             // A salvo "lands" only if the player is near the fire line endpoint;
             // otherwise it is dodged. Cheap proximity test against the tracer end.
@@ -322,6 +338,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
         // ---- Player fire -> resolve onto the capital's subsystems. ----
         if (fire && pilot.fireLaser(dt)) {
+            playerFiredThisStep = true;
             ++localShotsFired;
             // Deterministic "competent" hit model: when crippling is still
             // possible, route a hit to a subsystem (shields down first), counting
@@ -345,16 +362,45 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // ---- Live render (3P chase of the pilot; minimal, reuses host_space art
         //      conventions). Headless skips drawing entirely. ----
         if (live) {
+            beatT += dt;
             float cx, cy, cz, cyaw, cpit;
             pilot.camera(cx, cy, cz, cyaw, cpit);
             hc.device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
             // THE VISIBLE LAYER (feat/intro-cockpit): the player flies the beat
-            // from inside the two-seat fighter cockpit — the rig is posed to the
-            // pilot camera each frame (classic FP cockpit lock), the analytic-sky
-            // starfield is the world-fixed backdrop.
-            if (cockpit) x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
+            // from inside the two-seat fighter cockpit — posed to the pilot camera
+            // each frame — with the enemy wing + the capital ship drawn out the
+            // canopy, laser tracers + muzzle flashes via CombatFx, and pulsing
+            // MFD screens. The analytic-sky starfield is the world-fixed backdrop.
+            if (cockpit) {
+                x3::apphost::pulseIntroScreens(*cockpit, beatT);
+                x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
+            }
+            if (fxOn && playerFiredThisStep) {
+                const float fh = std::cos(cpit);
+                const float fwx = fh * std::cos(cyaw);
+                const float fwy = std::sin(cpit);
+                const float fwz = fh * std::sin(cyaw);
+                fxPtr->addTracer({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f, cz + fwz * 2.0f },
+                             { cx + fwx * 600.0f, cy + fwy * 600.0f, cz + fwz * 600.0f });
+            }
+            if (fxOn) fxPtr->update(dt);
             auto frame = hc.device->beginFrame();
-            if (frame.valid && cockpit) cockpit->scene.render(*hc.device, frame);
+            if (frame.valid && cockpit) {
+                cockpit->scene.render(*hc.device, frame);
+                for (uint32_t i = 0; i < enemies.count(); ++i) {
+                    const auto& e = enemies.ship(i);
+                    if (e.hull <= 0) continue;
+                    x3::apphost::drawIntroShip(*hc.device, frame, cockpit->enemyDraw,
+                                  e.pos, e.fwd, 2.5f);
+                }
+                const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+                const float capFwd[3] = { -1.0f, 0.0f, 0.0f };
+                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 22.0f);
+                if (fxOn) {
+                    fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
+                    fxPtr->submit(*hc.device, frame);
+                }
+            }
             hc.device->endFrame(frame);
         }
 
@@ -362,6 +408,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (!pilot.isAlive()) break;
         if (crippled && enemies.aliveCount() == 0) break;
     }
+
+    if (fxOn) fxPtr->shutdown(*hc.device);
 
     // Fold this window's metrics into the running totals. The CLIMAX window owns
     // the hull/time-to-cripple snapshot (the roll inputs); both windows contribute
@@ -585,10 +633,12 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     std::unique_ptr<x3::apphost::IntroCockpitRig> cockpit;
     if (hc.window && hc.device) {
         cockpit = std::make_unique<x3::apphost::IntroCockpitRig>();
-        if (x3::apphost::buildIntroCockpitRig(*cockpit, *hc.device, /*includeBackdrop*/ false))
+        if (x3::apphost::buildIntroCockpitRig(*cockpit, *hc.device, /*includeBackdrop*/ false)) {
             x3::apphost::setIntroCockpitLook(*hc.device);
-        else
+            x3::apphost::buildIntroCombatArt(*cockpit, *hc.device);   // best-effort
+        } else {
             cockpit.reset();
+        }
     }
 
     // Play every beat UP TO the outcome stinger (flight, reveal, dodge, charge,

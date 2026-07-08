@@ -18,6 +18,7 @@
 // IRenderDevice) + in-tree precedents (leveldoc_world's drawable->Entity bridge,
 // club1127's emissiveTex + glass recipes, host_space's deep-space sky) only.
 #include "world_host_common.h"
+#include "../fx.h"
 #include "../intro_cockpit_rig.h"
 #include "../asset_root.h"
 #include "../headless_device.h"
@@ -105,10 +106,16 @@ bool buildIntroCockpitRig(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device,
                 se.emissiveTex = x3::rhi::TextureHandle{ d.emissiveTexId };
                 se.emissive[0] = 1.0f; se.emissive[1] = 1.0f;
                 se.emissive[2] = 1.0f; se.emissive[3] = 1.6f;
+                rig.screenIds.push_back(rig.entityIds.size() + 0u);  // fixed below
                 ++rig.screens;
             }
         }
-        rig.entityIds.push_back(rig.scene.add(se));
+        {
+            const uint32_t id = rig.scene.add(se);
+            if (!rig.screenIds.empty() && rig.screenIds.back() == rig.entityIds.size())
+                rig.screenIds.back() = id;           // resolve the pre-add marker
+            rig.entityIds.push_back(id);
+        }
         std::array<float, 16> bx{};
         for (int i = 0; i < 16; ++i) bx[i] = se.transform[i];
         rig.baseXf.push_back(bx);
@@ -187,6 +194,56 @@ void poseIntroCockpit(IntroCockpitRig& rig,
                            rig.scene.get(rig.entityIds[i]).transform);
 }
 
+bool buildIntroCombatArt(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device) {
+    (void)device;
+    if (!rig.assets || !rig.loader) return false;
+    rig.assets->mountDir(x3::game::riggedGlbRoot(), 1);
+    rig.enemyModel = rig.loader->load("SpaceShip.glb");
+    if (rig.enemyModel.ok) rig.enemyDraw = x3::asset::makeDrawables(rig.enemyModel);
+    rig.capModel = rig.loader->load("SpaceShip4.glb");
+    if (rig.capModel.ok) rig.capDraw = x3::asset::makeDrawables(rig.capModel);
+    x3::logInfo("[introcockpit] combat art: enemy=" +
+                std::to_string(rig.enemyDraw.size()) + " drawable(s), capital=" +
+                std::to_string(rig.capDraw.size()) + " drawable(s)");
+    return !rig.enemyDraw.empty();
+}
+
+void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                   const std::vector<x3::asset::ModelDrawable>& draws,
+                   const float pos[3], const float fwd[3], float scale) {
+    const float yaw = std::atan2(fwd[2], fwd[0]);
+    const float a = 1.5707963f - yaw;             // model +Z forward -> world yaw
+    const float ca = std::cos(a) * scale, sa = std::sin(a) * scale;
+    float T[16] = { ca, 0, -sa, 0,   0, scale, 0, 0,   sa, 0, ca, 0,
+                    pos[0], pos[1], pos[2], 1.0f };
+    const float tint[4] = { 1, 1, 1, 1 };
+    for (const auto& dr : draws) {
+        if (!dr.meshId) continue;
+        float fin[16];
+        x3::asset::mulMat4(T, dr.nodeTransform, fin);
+        const float emis[4] = { dr.emissiveFactor[0] + 0.02f,
+                                dr.emissiveFactor[1] + 0.022f,
+                                dr.emissiveFactor[2] + 0.026f, 1.0f };
+        device.drawMeshPBR(frame, x3::rhi::MeshHandle{ dr.meshId },
+                           x3::rhi::TextureHandle{ dr.baseColorTexId },
+                           x3::rhi::TextureHandle{ dr.normalTexId },
+                           x3::rhi::TextureHandle{ dr.mrTexId },
+                           tint, emis, fin,
+                           dr.alphaMask, dr.alphaBlend,
+                           x3::rhi::TextureHandle{ dr.emissiveTexId },
+                           x3::rhi::TextureHandle{ dr.detailTexId },
+                           dr.detailUvScale);
+    }
+}
+
+void pulseIntroScreens(IntroCockpitRig& rig, float t) {
+    for (size_t i = 0; i < rig.screenIds.size(); ++i) {
+        const float ph = (float)i * 1.7f;
+        rig.scene.get(rig.screenIds[i]).emissive[3] =
+            1.45f + 0.35f * std::sin(t * 2.7f + ph) * std::sin(t * 0.9f + ph * 0.5f);
+    }
+}
+
 int hostIntroCockpit(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
@@ -199,6 +256,17 @@ int hostIntroCockpit(HostContext& hc) {
         device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
     }
     setIntroCockpitLook(*device);
+    buildIntroCombatArt(rig, *device);     // dogfight preview out the canopy
+    auto fxp = std::make_unique<x3::game::CombatFx>(); auto& fx = *fxp; fx.init(*device);
+    // Static combat tableau (out the windshield = +Z): a 3-ship enemy wing
+    // arcing in + the capital looming behind them.
+    struct ShipPose { float pos[3]; float fwd[3]; float scale; };
+    const ShipPose wing[3] = {
+        { {   9.0f, 5.0f,  42.0f }, { -0.6f, 0.0f, -1.0f }, 4.0f },
+        { { -14.0f, 2.5f,  60.0f }, {  0.5f, 0.0f, -1.0f }, 4.0f },
+        { {   3.0f, 9.0f,  34.0f }, { -0.2f, 0.0f, -1.0f }, 4.0f },
+    };
+    const ShipPose capital = { { -8.0f, 26.0f, 240.0f }, { 0.2f, 0.0f, -1.0f }, 34.0f };
 
     // Pilot's-eye framing (proven in the modeltest review sweeps): eye between
     // the headrests, looking forward (+Z in engine coords) over the dash.
@@ -213,15 +281,30 @@ int hostIntroCockpit(HostContext& hc) {
         const int kFrames = 16;
         for (int i = 0; i < kFrames; ++i) {
             glfwPollEvents();
+            const float t = (float)i / 60.0f;
+            pulseIntroScreens(rig, t);
+            if (i % 5 == 0) {           // keep tracers alive through the settle
+                fx.addTracer({ 9.0f, 5.0f, 42.0f },   { -3.0f, 1.0f, -8.0f });
+                fx.addTracer({ 0.8f, 1.2f, 0.5f },     { 2.8f, 8.5f, 33.0f });
+            }
+            fx.update(1.0f / 60.0f);
             device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
             if (i == kFrames - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
-            if (frame.valid) rig.scene.render(*device, frame);
+            if (frame.valid) {
+                rig.scene.render(*device, frame);
+                for (const auto& w : wing)
+                    drawIntroShip(*device, frame, rig.enemyDraw, w.pos, w.fwd, w.scale);
+                drawIntroShip(*device, frame, rig.capDraw, capital.pos, capital.fwd, capital.scale);
+                fx.draw(*device, frame, cam[0], cam[1], cam[2], cam[3], cam[4]);
+                fx.submit(*device, frame);
+            }
             device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
         if (wrote) x3::logInfo("--world introcockpit: wrote " + outPath);
         else       x3::logError("--world introcockpit: capture FAILED");
+        fx.shutdown(*device);
         rig.shutdown(*device);
         device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
@@ -246,11 +329,25 @@ int hostIntroCockpit(HostContext& hc) {
             lastWd = cw; lastHd = chh;
             if (cw > 0 && chh > 0) device->onResize((uint32_t)cw, (uint32_t)chh);
         }
+        pulseIntroScreens(rig, t);
+        if (((int)(t * 60.0f)) % 45 == 0) {
+            fx.addTracer({ 12.0f, 6.0f, 70.0f }, { -3.0f, 1.0f, -8.0f });
+            fx.addTracer({ 0.8f, 1.2f, 0.5f },   { 4.5f, 10.0f, 54.0f });
+        }
+        fx.update(dt);
         device->setCamera(cam[0], cam[1], cam[2], yaw, pitch, 65.0f);
         auto frame = device->beginFrame();
-        if (frame.valid) rig.scene.render(*device, frame);
+        if (frame.valid) {
+            rig.scene.render(*device, frame);
+            for (const auto& w : wing)
+                drawIntroShip(*device, frame, rig.enemyDraw, w.pos, w.fwd, w.scale);
+            drawIntroShip(*device, frame, rig.capDraw, capital.pos, capital.fwd, capital.scale);
+            fx.draw(*device, frame, cam[0], cam[1], cam[2], yaw, pitch);
+            fx.submit(*device, frame);
+        }
         device->endFrame(frame);
     }
+    fx.shutdown(*device);
     rig.shutdown(*device);
     device->shutdown();
     if (window) glfwDestroyWindow(window); glfwTerminate();
@@ -302,6 +399,11 @@ bool runIntroCockpitSelfTest() {
     } else {
         icCheck(false, "C6 pose math (orch rig unavailable)");
     }
+    // C7: the beat combat art (enemy fighter + capital) loads via the rig loader.
+    const bool combat = buildIntroCombatArt(orch, device);
+    icCheck(combat && !orch.capDraw.empty(),
+            "C7 combat art loads (enemy=" + std::to_string(orch.enemyDraw.size()) +
+            ", capital=" + std::to_string(orch.capDraw.size()) + " drawables)");
     orch.shutdown(device);
     rig.shutdown(device);
     x3::logInfo(std::string("introcockpit: ") + std::to_string(g_pass) + "/" +
