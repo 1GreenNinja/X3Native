@@ -27,7 +27,20 @@ files resolve fine until `main.cpp`, where the merge demands re-homing ~9k lines
 monolith-inline features into the split structure. That is a **directed project**, not a
 conflict resolution — done sloppily it silently drops features.
 
-## 2. THE FOLD PLAN (recommended — Tim has final say)
+> ## ✅ FOLD COMPLETE — 2026-07-07/08 (session 392f6e4d, I9DevPC)
+> **There is ONE integration line again: `integration/playable-build`, now pointing at the
+> folded split-architecture head.** `integration/honor-fable-final` is retired (deleted per
+> §2.7); the old PB monolith tip is preserved at tag **`archive/pb-monolith-20260707`**
+> (f3d9ac1). A full parity audit of all 36 PB-unique commits ran before the collapse: 30
+> verified FOLDED/SUPERSEDED at code/asset level; the 6 genuinely missing were landed as
+> **R-7..R-10** (see the queue below). Gate at the collapse head: 22/23 suites green, 0 VUID,
+> allocationCount=0, eye-verified proof shots in `shots/r9_*`/`r10_*`. The one red suite,
+> `--test-boottime` (9.0 s vs 2.0 s budget, all in "canon gameplay spawns"), was PROVEN
+> pre-existing at 5a81be4 by rebuilding and re-measuring the pre-fold head — it is filed as
+> its own issue (synchronous enemy-GLB spawns from the W4/W8/W9 waves), not a fold casualty.
+> **All new work lands on `integration/playable-build`.** Do not resurrect the HFF name.
+
+## 2. THE FOLD PLAN (executed — kept for the record)
 
 **Direction: re-home PB's unique content ONTO HFF**, then retire one name. Rationale: the
 split architecture is the future (the Codex, the test registry, every Wave, and all current
@@ -38,28 +51,36 @@ Re-home queue, in order (each = one session/agent, one branch, Fable gates):
 
 1. **R-1 Lightning playtest tune** — ✅ **LANDED on HFF `33530f5`** (2026-07-07, 11940b27 session):
    damage 14 / fireRate 8 / mag 200 / reserve 600 + keep `DamageType::Energy`. Tiny; land first.
-2. **R-2 Monster skeleton-fit regression fixes** — 🔒 **CLAIMED: 11940b27 fork on `fold/pb-remainder` (wt-r256), R-5+R-6 bundled** — (PB cbf7999) — diff against HFF monster.cpp;
-   HFF's W2-D anim system WINS (attack+death+lunge supersedes PB's attack-only bake;
-   manifest keeps HFF's GLB hashes), but the bestiary/deathragdoll scale fixes come across.
-3. **R-3 THE STRATA DESCENT** — 🔒 **CLAIMED: 11940b27 fork on `fold/strata-descent` (wt-r3strata), R-4 bundled** — (PB fd94c92 + ed1a403) — PB's crown jewel. Re-home as a
-   `world_hosts/host_strata.cpp` (or fold into the canon tower path) + wire the LIVE elevator
-   to descend through it. See §4 — this is the Club 1127 realization; treat it as sacred.
-4. **R-4 Elevator showcase** (`elevator_showcase.h`, `--world elevator`) — re-home behind the
-   screenshot/world dispatch.
-5. **R-5 Upper-floor content reconciliation** — BOTH lines populated floors 2–7. HFF's W3-2/W4
-   set (bosses, captives, VIGIL, patrols, Sarah spine) is the superset and is already
-   integrated with the endgame; PB's `feat/upper-floor-content` gets DIFFED for anything
-   unique (item placements, `--screenshot-upperfloors` capture path, `--test-upperfloors`
-   assertions worth keeping alongside `--test-goldenpath`). Drop `loadCanonBuilding` for
-   `loadCanonTower` unless the floorBase diagnostics are still wanted — do NOT ship two
-   whole-tower loaders.
-6. **R-6 Car turntable** (`--screenshot-car`) — re-home into screenshot_hosts.
-7. **FINAL: one line.** After R-1..R-6 gate green, fast-forward/rename so `playable-build`
-   points at the folded result (Tim's canonical name wins), and **delete the stale head** so
-   this never happens again.
+2. **R-2 Monster skeleton-fit regression fixes** — ✅ **LANDED `81a5bf1`, then wall-probe half
+   REVERTED `d140a74`** (bisect-proven double regression in HFF's smaller-hitbox context).
+   Audit note: the revert touched ONLY the wall-probe change; the bestiary/deathragdoll scale
+   fixes are moot on the split line (it sizes via `kRealModelScale`, never skeleton-fit).
+3. **R-3 THE STRATA DESCENT** — ✅ **LANDED `a798cfe`** (`app/strata.*`,
+   `world_hosts/host_strata.cpp`, live elevator descends the 9 strata to Club 1127).
+4. **R-4 Elevator showcase** — ✅ **LANDED `a798cfe`** (bundled with R-3).
+5. **R-5 Upper-floor content reconciliation** — ✅ **LANDED `1613c7d`** (squads + pickup
+   economy F2-F7, `--screenshot-upperfloors`; `loadCanonTower` is the one tower loader).
+6. **R-6 Car turntable** — ✅ **LANDED** (`--screenshot-car` in app/screenshot_hosts.cpp).
+   Bonus: PB's realistic access keypad re-homed as `eb55fdc` (+ `--test-keypad`).
+7. **FINAL: one line.** ✅ **DONE** — but only after a **full parity audit** of every
+   PB-unique commit caught 6 features the R-queue never listed. Landed as:
+   - **R-7 `384ef9e`** — canonical facility is the DEFAULT boot (PB c3538d3; legacy tower
+     stays at `--world level1`); all 5 weapon-variety GLB reskins (hash-verified vs PB
+     manifest); terminal hint bottom-center with the "(code 1278)" spoiler dropped + music
+     muted by default (PB 4b9f067).
+   - **R-8 `107a4a9`** — barrel EXPLOSION fireball (`spawnExplosion`) + chaingun tracer as
+     camera-facing ribbon (`drawTracerBillboard`), grafted around the split line's
+     lightning-bolt propagation (PB 013b144 + 583a212).
+   - **R-9 `1126618`** — exterior inter-floor skirt on the stacked canon tower (PB 03256bd;
+     Nexus platform tiers excluded by design; before/after proof `shots/r9_*`).
+   - **R-10** — `--fx-demo` proof hooks (explosion + tracer in the capture) + eye-verified
+     shots `r10_fxdemo.png` / `r10_default_boot.png`.
+   Audit verdicts for everything else (SUPERSEDED: W2-D anims, W2-E dedup, canon_45
+   scaffold climb, `kRealModelScale` sizing, HFF rig manifest) are in the audit record —
+   28 content commits traced, none dropped silently.
 
-**Rules while the fold runs:**
-- **FREEZE PB for new feature work.** New work lands on HFF (or short-lived branches off it).
+**Rules now that the fold is DONE:**
+- **All work lands on `integration/playable-build`** (or short-lived branches off it).
 - No branch lives longer than a day without landing (see `project_x3native_branch_crisis_0524`
   — we have been here before).
 - Every re-home carries the full Fable gate: Release relink (mtime-verified — the
@@ -116,16 +137,17 @@ is that **the ride itself is content** — every second between floors is author
   the LED tracks floors mid-flight with a speed bar, blinking terminal cursor, 4 steel
   cables rising 300 m above the car.
 
-**C++ status vs the bar**: 288ce2a landed doors/ding/motor-loop/keypad/buzz/status-UX ✅ and
-the four cue WAVs are now committed ✅. **Missing:** muzak, disco mode + Club 1127 unlock +
-disco-slow, horror events, the OLED telemetry pair, per-digit click pitch, layered door SFX
-(hiss+slide+thunk), floor-pass dings while cruising, freefall state usage, cable creaks,
-glass observation read onto PB's real strata. That list is the elevator punch-list for
-whoever takes R-3/R-4 — the target is not parity with the JS, it is the JS **plus** real
-geology out the window.
+**C++ status vs the bar**: 288ce2a landed doors/ding/motor-loop/keypad/buzz/status-UX ✅, the
+four cue WAVs are committed ✅, `e4c9686` (THE CABIN EXPERIENCE) landed **muzak, cable creaks,
+and horror events** ✅, and the R-3 fold put **real strata out the glass** (the elevator
+descends the 9 layers to Club 1127) ✅. **Still unverified/likely missing** (re-audit against
+`x3-elevator.js` before claiming done): disco mode + code-1127 Club unlock + disco-slow, the
+twin OLED telemetry pair, per-digit click pitch, layered door SFX (hiss+slide+thunk),
+floor-pass dings while cruising, freefall state usage. The target is not parity with the JS,
+it is the JS **plus** real geology out the window.
 
 ## 5. COMMS
-- **This doc** = decisions. Amend it in-commit, mirror to the other branch.
+- **This doc** = decisions. Amend it in-commit. (Single line now — no mirroring needed.)
 - **Shared task board** = live claims. Claim before you build. Task #73 tracks the fold.
 - **FleetCommand / Slick** (slick.x3designs.net) = cross-machine chatter (@14900k daemon).
 - Commit trailers: keep co-author + session tags so archaeology stays possible.
