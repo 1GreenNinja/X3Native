@@ -43,6 +43,11 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "item_db.h"                        // [W9-3 RPG] data-driven item defs (assets/items/items.json)
+#include "inventory.h"                      // [W9-3 RPG] backpack + key-section inventory
+#include "progression.h"                    // [W9-3 RPG] XP -> levels -> skill points
+#include "skilltree.h"                      // [W9-3 RPG] skill tree + PlayerStatMods layer
+#include "rpg_ui.h"                         // [W9-3 RPG] backpack/skill screens + HUD chip
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
@@ -122,6 +127,7 @@
 #include <future>     // boot-time async audio bring-up (docs/BOOT_TIME.md)
 #include <chrono>
 #include <fstream>    // window-size settings persistence (SET AS DEFAULT)
+#include <sstream>    // [W9-3 RPG] the RPG save-file text lane (saveRpg/loadRpg)
 #include "cinematic.h"
 #include "showroom_tod.h"   // SHOWROOM DAY/NIGHT helpers (shared with the --world showroom host)
 #include "speaking_monster.h"
@@ -1097,6 +1103,20 @@ int runDefaultHost(HostContext& hc) {
     float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
     bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
+    // ---- [W9-3 RPG] the RPG layer: item DB + backpack + XP/levels + skills. ----
+    // Data loads at boot (JSON-or-baked); the live stat block (rpgMods) is
+    // recomputed by applyRpgStats() whenever skills/mods change and is READ at
+    // the fire sites / player / arsenal — base tables are never mutated.
+    x3::game::ItemDb      itemDb;
+    x3::game::Inventory   inventory;
+    x3::game::Progression progression;
+    x3::game::SkillTree   skillTree;
+    x3::game::RpgUi       rpgUi;
+    x3::game::PlayerStatMods rpgMods;          // folded live stats (skills + applied mods)
+    std::vector<std::string> rpgAppliedMods;   // weapon-mod item ids applied to the loadout
+    uint32_t rpgCritRng = 0xC0FFEEu;           // crit-roll xorshift state (fire sites)
+    itemDb.load(x3::game::itemsJsonPath());
+    skillTree.load(x3::game::skillTreeJsonPath());
     x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
@@ -1708,7 +1728,13 @@ int runDefaultHost(HostContext& hc) {
         // dusty. Flyers/drones burst a touch more + faster (they pop in the air). The
         // burst seed varies by position so two kills don't fling identically. GPU-
         // simulated chunks are cheap (one compute pass + one instanced draw, below).
-        x3::game::DeathFxFn deathFx = [&combatFx, dev](const float pos[3], bool flying) {
+        // [W9-3 RPG] the death-FX funnel is the ONE place every hostile death
+        // passes through (all managers fan into it) — award kill XP here and
+        // toast on a level-up. Captures by reference; progression/rpgUi outlive
+        // this lambda (both declared above canonPlay).
+        x3::game::DeathFxFn deathFx = [&combatFx, dev, &progression, &rpgUi](const float pos[3], bool flying) {
+            if (progression.addXp(x3::game::kXpKill) > 0)
+                rpgUi.notifyLevelUp(progression.level());
             const x3::phys::Vec3 ctr{ pos[0], pos[1], pos[2] };
             const uint32_t chunks = flying ? 20u : 16u;
             const float    kick   = flying ? 8.5f : 7.0f;   // m/s outward spread
@@ -2732,6 +2758,34 @@ int runDefaultHost(HostContext& hc) {
                 }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
+                // ---- [W9-3 RPG] X3_SHOT_RPG=backpack|skills|hud: capture the RPG
+                // screens over the live vantage, demo-populated so the still shows
+                // a REAL loadout (eye-gate evidence; env-var pattern like X3_CLUB_SEQ).
+                if (const char* rpgShotEnv = std::getenv("X3_SHOT_RPG")) {
+                    const std::string rpgMode = rpgShotEnv;
+                    if (inventory.usedSlots() == 0) {   // populate once across the settle frames
+                        auto give = [&](const char* id, int n) {
+                            if (const x3::game::ItemDef* d = itemDb.find(id)) inventory.add(*d, n);
+                        };
+                        give("medkit", 3); give("ammo_pack", 5); give("nano_booster", 1);
+                        give("mod_damage", 1); give("emp_parts", 2);
+                        give("keycard_security", 1); give("keycard_access", 1);
+                        give("sarah_photo", 1);
+                        inventory.setQuickSlot(0);
+                        progression.addXp(760);          // ~level 5: points to show
+                        skillTree.setOwned("cmb_dmg1");  // owned nodes for the capture
+                        skillTree.setOwned("sur_hp1");
+                        skillTree.setOwned("sal_ammo");
+                        progression.setSpentPoints(skillTree.ownedCost());
+                    }
+                    x3::game::RpgUi::Input rpgIn{};      // pure draw, no interaction
+                    if (rpgMode == "backpack")
+                        rpgUi.drawBackpack(*device, frame, rpgIn, inventory, itemDb, {});
+                    else if (rpgMode == "skills")
+                        rpgUi.drawSkills(*device, frame, rpgIn, skillTree, progression, {});
+                    else
+                        rpgUi.drawHudChip(*device, frame, inventory, itemDb, progression, dt);
+                }
                 // --screenshot-alert: the alert indicator + lockdown red frame.
                 if (alertShot) {
                     x3::game::Hud alertHud;
@@ -3694,6 +3748,127 @@ int runDefaultHost(HostContext& hc) {
     // headless/screenshot path early-returned above). ----
     const std::string savePath = "G:/X3Native-wt-saveload/build/eflz_checkpoint.x3save";
     bool prevSaveKey = false, prevLoadKey = false;   // F5 quick-save / F9 quick-load edges
+
+    // ======================= [W9-3 RPG] host wiring ==========================
+    // applyRpgStats: fold OWNED skills + applied weapon-mod items -> rpgMods,
+    // then push the layer onto the live systems (multipliers over base — the
+    // WeaponDef table / player tuning constants are never mutated).
+    auto applyRpgStats = [&]() {
+        rpgMods = skillTree.mods();
+        for (const std::string& mid : rpgAppliedMods)
+            if (const x3::game::ItemDef* md = itemDb.find(mid))
+                x3::game::foldItemEffect(rpgMods, md->fx);
+        player.setMaxHpBonus(rpgMods.maxHpBonus);
+        player.setSpeedMult(rpgMods.speedMult);
+        arsenal.setReloadMult(rpgMods.reloadMult);
+        arsenal.setAmmoCapMult(rpgMods.ammoCapMult);
+        progression.setXpMult(rpgMods.xpMult);
+    };
+    applyRpgStats();
+
+    // The RPG save (XP + owned skills + applied mods + both inventory sections)
+    // rides ALONGSIDE the binary checkpoint as its own additive text file — the
+    // exact StoryFlags .flags.txt pattern; the checkpoint format stays untouched.
+    const std::string rpgSavePath = savePath + ".rpg.txt";
+    auto saveRpg = [&]() -> bool {
+        std::ofstream rf(rpgSavePath, std::ios::binary);
+        if (!rf) return false;
+        rf << "x3rpg 1\n" << progression.serialize() << skillTree.serializeOwned();
+        for (const std::string& mid : rpgAppliedMods) rf << "mod " << mid << '\n';
+        rf << inventory.serialize();
+        return (bool)rf;
+    };
+    auto loadRpg = [&]() -> bool {
+        std::ifstream rf(rpgSavePath, std::ios::binary);
+        if (!rf) return false;
+        std::ostringstream rss; rss << rf.rdbuf();
+        const std::string rtext = rss.str();
+        if (rtext.rfind("x3rpg ", 0) != 0) return false;
+        progression.deserialize(rtext);   // unknown lines ignored by every parser
+        inventory.deserialize(rtext);
+        skillTree.clearOwned();
+        rpgAppliedMods.clear();
+        std::istringstream rls(rtext); std::string rline;
+        while (std::getline(rls, rline)) {
+            if (rline.rfind("skill ", 0) == 0) skillTree.setOwned(rline.substr(6));
+            else if (rline.rfind("mod ", 0) == 0) rpgAppliedMods.push_back(rline.substr(4));
+        }
+        progression.setSpentPoints(skillTree.ownedCost());   // spent = owned-node cost
+        applyRpgStats();
+        keycardMask |= inventory.keycardMask(itemDb);        // restore door gating
+        return true;
+    };
+
+    // USE-ITEM verb (shared by the backpack screen's USE button/Enter and the
+    // in-game Q quick-use). Applies the effect; returns true iff consumed.
+    auto rpgUseItem = [&](const x3::game::ItemDef& def) -> bool {
+        using IC = x3::game::ItemCategory;
+        if (def.cat == IC::Consumable) {
+            bool used = false;
+            if (def.fx.heal > 0 && player.hp() < player.maxHp()) {
+                player.heal(def.fx.heal);
+                used = true;
+            }
+            if (def.fx.ammo > 0) {
+                const int rounds = (int)((float)def.fx.ammo * rpgMods.ammoYieldMult + 0.5f);
+                if (arsenal.addReserveCurrent(rounds) > 0) used = true;
+            }
+            if (def.fx.xp > 0) {
+                if (progression.addXp(def.fx.xp) > 0) rpgUi.notifyLevelUp(progression.level());
+                used = true;
+            }
+            if (!used) {
+                npcBarkText = "NO EFFECT RIGHT NOW - KEPT IT";
+                npcBarkTimer = 1.6f;
+                return false;
+            }
+            npcBarkText = "USED " + def.name;
+            npcBarkTimer = 1.6f;
+            return true;
+        }
+        if (def.cat == IC::Mod) {
+            rpgAppliedMods.push_back(def.id);
+            applyRpgStats();
+            npcBarkText = def.name + " APPLIED TO LOADOUT";
+            npcBarkTimer = 2.2f;
+            return true;
+        }
+        return false;   // keycards/quest/parts have no use verb (yet)
+    };
+
+    // Canon pickups deposit into the BACKPACK (keycards/quest to the key ring)
+    // instead of the silent auto-collect; a FULL bag refuses and the pickup
+    // stays in the world. Lore terminals stay in-world flavor: XP, never bagged.
+    if (canonWorld && canonPlay.built()) {
+        canonPlay.setItemSink([&](const x3::game::CanonItem& it) -> bool {
+            using CK = x3::game::CanonItemKind;
+            const char* iid = nullptr; int n = 1;
+            switch (it.kind) {
+                case CK::Ammo:        iid = "ammo_pack";      break;
+                case CK::Health:      iid = "medkit";         break;
+                case CK::Weapon:      iid = "ammo_pack"; n = 2; break;  // cache = ammo bundle (roster is fixed)
+                case CK::Keycard:     iid = "keycard_access"; break;
+                case CK::NanoBooster: iid = "nano_booster";   break;
+                case CK::LoreTerminal:
+                    if (progression.addXp(x3::game::kXpLore) > 0)
+                        rpgUi.notifyLevelUp(progression.level());
+                    npcBarkText = "DATA LOGGED (+XP)"; npcBarkTimer = 2.0f;
+                    return true;
+                default: break;
+            }
+            const x3::game::ItemDef* d = iid ? itemDb.find(iid) : nullptr;
+            if (!d) return true;   // unknown kind: legacy collect
+            if (inventory.add(*d, n) <= 0) {
+                npcBarkText = "BACKPACK FULL"; npcBarkTimer = 1.8f;
+                return false;      // stays in the world
+            }
+            keycardMask |= inventory.keycardMask(itemDb);
+            npcBarkText = d->name + " -> BACKPACK [I]"; npcBarkTimer = 2.0f;
+            return true;
+        });
+    }
+    // ===================== end [W9-3 RPG] host wiring ========================
+
     // Perform a save: snapshot the live game (current floor = the elevator's stop) and
     // write it. Lambdas so the F5 key + the pause-menu button share one code path.
     auto doSave = [&]() {
@@ -3707,6 +3882,9 @@ int runDefaultHost(HostContext& hc) {
         // additive text file — the checkpoint format/version stays untouched).
         if (chatTrees.flags().saveFile(savePath + ".flags.txt"))
             x3::logInfo("[save] story flags -> " + savePath + ".flags.txt");
+        // [W9-3 RPG] XP/skills/mods/backpack ride alongside (additive text file).
+        if (saveRpg())
+            x3::logInfo("[save] RPG progression -> " + rpgSavePath);
     };
     // Perform a load: read + validate, then apply to the live game (and re-position
     // the elevator to the recorded floor). Fails gracefully (logged) on a bad file.
@@ -3731,6 +3909,10 @@ int runDefaultHost(HostContext& hc) {
         // Mission resume (g_missiondoc): the runner's position marker rides the
         // flags file — land back on the recorded stage (onEnter fx NOT re-fired).
         if (missionDocActive) missionRunner.resume(missionDoc);
+        // [W9-3 RPG] restore XP/skills/mods/backpack + re-apply the stat layer
+        // (absence is fine — an old save restores with fresh RPG state).
+        if (loadRpg())
+            x3::logInfo("[save] RPG progression restored from " + rpgSavePath);
     };
 
     // ---- M9 audio event edge-tracking + footstep cadence -------------------
@@ -3874,6 +4056,10 @@ int runDefaultHost(HostContext& hc) {
     bool  worldMapOpen = false;
     bool  prevMapKey = false, prevMapEnter = false;
     float travelFadeT = 0.0f;           // fast-travel fade-to-black cover (s left)
+    // [W9-3 RPG] screen-toggle + verb key edge trackers (world-map pattern).
+    bool prevInvKey = false, prevSkillKey = false, prevQuickKey = false;
+    bool prevRpgUp = false, prevRpgDown = false, prevRpgLeft = false, prevRpgRight = false;
+    bool prevRpgEnter = false, prevRpgDrop = false, prevRpgEquip = false;
 
     // ---- Main loop ----
     bool bootReported = false;   // [boot] one-shot: report on the FIRST presented frame
@@ -3933,7 +4119,8 @@ int runDefaultHost(HostContext& hc) {
         // frame and only touch GLFW on a transition.
         const bool consoleOpen = hud.consoleOpen();
         consoleWasOpen = consoleOpen;   // (retained for parity; cursor logic below)
-        const bool wantCursor = consoleOpen || gameUi.showCursor() || worldMapOpen;
+        const bool wantCursor = consoleOpen || gameUi.showCursor() || worldMapOpen ||
+                                rpgUi.anyOpen();   // [W9-3 RPG] backpack/skill screens show the cursor
         if (wantCursor != cursorShown) {
             glfwSetInputMode(window, GLFW_CURSOR,
                              wantCursor ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
@@ -3943,7 +4130,8 @@ int runDefaultHost(HostContext& hc) {
         // up, gameplay input + the sim are frozen and only the menu reads input.
         const bool uiMenuActive = !gameUi.playing();
         // The world map pauses the sim exactly like the menu screens do.
-        const bool simFrozen     = gameUi.shouldFreezeSim() || worldMapOpen;
+        const bool simFrozen     = gameUi.shouldFreezeSim() || worldMapOpen ||
+                                   rpgUi.anyOpen();   // [W9-3 RPG] screens pause the sim (world-map pattern)
 
         // Esc (edge-detected): route to the UI controller (toggle pause / back out
         // of settings / resume) UNLESS the console is open or a door-code keypad is
@@ -3961,6 +4149,7 @@ int runDefaultHost(HostContext& hc) {
                 if (worldMap.confirmOpen()) mapEscEdge = true;   // back out of the prompt
                 else { worldMapOpen = false; worldMap.close(); } // close the map
             }
+            else if (rpgUi.anyOpen()) { rpgUi.closeAll(); }   // [W9-3 RPG] Esc closes the RPG screens
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
         kpEscPrev = escNow;
@@ -3977,7 +4166,8 @@ int runDefaultHost(HostContext& hc) {
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
-        if (consoleOpen || uiMenuActive || termMode || codeMode || worldMapOpen) { ddx = 0.0f; ddy = 0.0f; }
+        if (consoleOpen || uiMenuActive || termMode || codeMode || worldMapOpen ||
+            rpgUi.anyOpen() /* [W9-3 RPG] */) { ddx = 0.0f; ddy = 0.0f; }
 
         // Gameplay key reads are gated off while the console, a UI menu, the cell
         // terminal, OR a door-code keypad is active — so ALL gameplay input is
@@ -3985,6 +4175,7 @@ int runDefaultHost(HostContext& hc) {
         // nothing drives movement/use/jump/fire/noclip/weapon-switch while typing.
         auto keyDown = [&](int k) {
             return !consoleOpen && !uiMenuActive && !termMode && !codeMode && !worldMapOpen &&
+                   !rpgUi.anyOpen() /* [W9-3 RPG] */ &&
                    glfwGetKey(window, k) == GLFW_PRESS;
         };
         // RAW key read (bypasses the capture gates) — used ONLY by the terminal/keypad
@@ -4048,7 +4239,8 @@ int runDefaultHost(HostContext& hc) {
         // M again (or Esc) closes. Gated off whenever another surface captures. ----
         {
             const bool mNow = !consoleOpen && !termMode && !codeMode &&
-                              !chatTrees.active() && gameUi.playing() &&
+                              !chatTrees.active() && !rpgUi.anyOpen() /* [W9-3 RPG] */ &&
+                              gameUi.playing() &&
                               rawKey(GLFW_KEY_M);
             if (mNow && !prevMapKey) {
                 if (worldMapOpen) { worldMapOpen = false; worldMap.close(); }
@@ -4067,6 +4259,32 @@ int runDefaultHost(HostContext& hc) {
         // cycling below sees a zeroed delta).
         float mapWheel = 0.0f;
         if (worldMapOpen) { mapWheel = (float)g_weaponScroll; g_weaponScroll = 0.0; }
+
+        // ---- [W9-3 RPG] I = BACKPACK screen, K = SKILL TREE screen (world-map
+        // pattern: full-screen overlay, pauses the sim, gated off while any other
+        // surface captures). Q = quick-use the equipped consumable while playing. ----
+        {
+            const bool rpgGate = !consoleOpen && !termMode && !codeMode &&
+                                 !chatTrees.active() && !worldMapOpen &&
+                                 gameUi.playing() && !terrainWorld;
+            const bool iNow = rpgGate && rawKey(GLFW_KEY_I);
+            const bool kNow = rpgGate && rawKey(GLFW_KEY_K);
+            if (iNow && !prevInvKey)   rpgUi.toggleBackpack();
+            if (kNow && !prevSkillKey) rpgUi.toggleSkills();
+            prevInvKey = iNow; prevSkillKey = kNow;
+
+            const bool qNow = rpgGate && !rpgUi.anyOpen() && rawKey(GLFW_KEY_Q);
+            if (qNow && !prevQuickKey && inventory.quickSlot() >= 0) {
+                const int qs = inventory.quickSlot();
+                const x3::game::InvSlot& s = inventory.slot(qs);
+                if (!s.empty()) {
+                    if (const x3::game::ItemDef* d = itemDb.find(s.itemId)) {
+                        if (rpgUseItem(*d)) inventory.removeAt(qs, 1);
+                    }
+                }
+            }
+            prevQuickKey = qNow;
+        }
 
         // ---- CHAT-TREE choice input: number keys 1-4 answer the filtered choices
         // while a chat conversation is up (E advances no-choice lines in the use
@@ -5080,8 +5298,15 @@ int runDefaultHost(HostContext& hc) {
                     if (kdx * kdx + kdz * kdz < 1.6f * 1.6f) {
                         canonKeycardTaken = true;
                         keycardMask |= (1u << (uint32_t)x3::game::kKeycardSecurity);
+                        // [W9-3 RPG] the card now lives IN THE BAG (key section) —
+                        // the door gate reads the bag-backed mask; the HUD/backpack
+                        // shows what you hold.
+                        if (const x3::game::ItemDef* kd = itemDb.find("keycard_security")) {
+                            inventory.add(*kd, 1);
+                            keycardMask |= inventory.keycardMask(itemDb);
+                        }
                         if (canonKeycardEnt < scene.size()) scene.get(canonKeycardEnt).visible = false;
-                        npcBarkText = "Acquired the Security keycard"; npcBarkTimer = 3.0f;
+                        npcBarkText = "Security keycard -> BACKPACK [I]"; npcBarkTimer = 3.0f;
                         x3::logInfo("--world canonlevel: Security keycard acquired");
                     }
                 }
@@ -5120,8 +5345,12 @@ int runDefaultHost(HostContext& hc) {
                     for (uint32_t gi = 0; gi < rs.victimCount() && gi < 3; ++gi) {
                         const auto& v = rs.victim(gi);
                         const std::string freed = std::string("girl.freed.") + kGirlKey[gi];
-                        if ((v.companion() || v.extracted()) && !chatTrees.flags().has(freed))
+                        if ((v.companion() || v.extracted()) && !chatTrees.flags().has(freed)) {
                             chatTrees.flags().set(freed);
+                            // [W9-3 RPG] rescue XP (once per girl, latched by the flag).
+                            if (progression.addXp(x3::game::kXpRescue) > 0)
+                                rpgUi.notifyLevelUp(progression.level());
+                        }
                     }
                     const uint32_t ei = rs.extractedThisFrame();
                     if (ei != UINT32_MAX && ei < 3) {
@@ -5158,6 +5387,9 @@ int runDefaultHost(HostContext& hc) {
                         npcBarkTimer = 6.0f;
                         game.objectives().setText("THE FIELD IS DOWN — GET BACK TO SARAH");
                         x3::logInfo("[endgame] clone defeated — Sarah's containment key is dead");
+                        // [W9-3 RPG] boss-objective XP (once, latched by the flag).
+                        if (progression.addXp(x3::game::kXpBoss) > 0)
+                            rpgUi.notifyLevelUp(progression.level());
                     }
                     // Freed (her tree's follow fx fired) -> point at the roof.
                     if (canonPlay.sarahPresent() && canonPlay.sarah()->companion() &&
@@ -5178,6 +5410,9 @@ int runDefaultHost(HostContext& hc) {
                         winLine2 = "RESCUED: " + std::to_string(saved) + " OF 4";
                         winTimer = 12.0f;
                         game.objectives().setText("TO BE CONTINUED");
+                        // [W9-3 RPG] the win XP (one-shot with winFired).
+                        if (progression.addXp(x3::game::kXpWin) > 0)
+                            rpgUi.notifyLevelUp(progression.level());
                         x3::logInfo("[endgame] WIN — Sarah extracted (" + winLine2 + ")");
                     }
                 }
@@ -5328,7 +5563,8 @@ int runDefaultHost(HostContext& hc) {
         // A running chat-tree conversation also pauses the combat verbs (no firing
         // through Lena's dialog box) — same capture idea as the terminal/keypad.
         const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode ||
-                               chatTrees.active() || worldMapOpen;
+                               chatTrees.active() || worldMapOpen ||
+                               rpgUi.anyOpen();   // [W9-3 RPG] no firing through the backpack
         bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_V) ||
             glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
@@ -5416,7 +5652,9 @@ int runDefaultHost(HostContext& hc) {
             if (!shot.projectiles.empty()) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
                 const auto& pj = shot.projectiles[0];
-                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind, pj.type, currentImpactSfx() });
+                // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
+                const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
+                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, impactKind, pj.type, currentImpactSfx() });
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
                 if (!usesFireLoop)
                     audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
@@ -5435,7 +5673,9 @@ int runDefaultHost(HostContext& hc) {
                 const x3::audio::SoundHandle impactSnd = currentImpactSfx();
                 bool impactSndPlayed = false;
                 for (const auto& ray : shot.rays) {
-                    const int wdmg = ray.damage;          // this pellet/ray's damage
+                    // [W9-3 RPG] skill/mod damage multiplier + crit roll LAYERED on
+                    // this pellet/ray's WeaponDef damage (the table is untouched).
+                    const int wdmg = x3::game::rpgScaleDamage(ray.damage, rpgMods, rpgCritRng);
                     // canon-aliens Adaptive Hide: each ray also carries its WeaponDef::type
                     // (Kinetic / Energy / ... stamped by Arsenal::fire). Threaded through
                     // every dispatcher so bosses with adaptiveHideResist > 0 react to the
@@ -6357,6 +6597,44 @@ int runDefaultHost(HostContext& hc) {
             } else {
                 prevMapEnter = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             }
+
+            // ---- [W9-3 RPG] the BACKPACK (I) / SKILL TREE (K) screens + the
+            // always-on HUD chip (equipped item + LV/XP). Screens draw over the
+            // HUD (sim frozen while open — simFrozen above); the chip only while
+            // actually playing with no other full-screen surface up. ----
+            {
+                // Rising-edge nav/verb keys for the screens (raw: the screens ARE
+                // the capturing surface while open).
+                x3::game::RpgUi::Input rin{};
+                rin.ui = uin;
+                const bool rUp  = rawKey(GLFW_KEY_UP),    rDn = rawKey(GLFW_KEY_DOWN);
+                const bool rLf  = rawKey(GLFW_KEY_LEFT),  rRt = rawKey(GLFW_KEY_RIGHT);
+                const bool rEnt = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
+                const bool rDrp = rawKey(GLFW_KEY_X);
+                const bool rEqp = rawKey(GLFW_KEY_Q);
+                if (rpgUi.anyOpen()) {
+                    rin.navUp    = rUp  && !prevRpgUp;
+                    rin.navDown  = rDn  && !prevRpgDown;
+                    rin.navLeft  = rLf  && !prevRpgLeft;
+                    rin.navRight = rRt  && !prevRpgRight;
+                    rin.activate = rEnt && !prevRpgEnter;
+                    rin.dropKey  = rDrp && !prevRpgDrop;
+                    rin.equipKey = rEqp && !prevRpgEquip;
+                }
+                prevRpgUp = rUp; prevRpgDown = rDn; prevRpgLeft = rLf; prevRpgRight = rRt;
+                prevRpgEnter = rEnt; prevRpgDrop = rDrp; prevRpgEquip = rEqp;
+
+                if (rpgUi.backpackOpen()) {
+                    rpgUi.drawBackpack(*device, frame, rin, inventory, itemDb, rpgUseItem);
+                    keycardMask |= inventory.keycardMask(itemDb);   // bag stays the mask source
+                } else if (rpgUi.skillsOpen()) {
+                    rpgUi.drawSkills(*device, frame, rin, skillTree, progression, applyRpgStats);
+                }
+                if (gameUi.playing() && !worldMapOpen && !rpgUi.anyOpen() &&
+                    !terrainWorld && !consoleOpen)
+                    rpgUi.drawHudChip(*device, frame, inventory, itemDb, progression, dt);
+            }
+
             // Fast-travel BLACKOUT cover: hold black just after the teleport, then
             // fade out (same visual language as the fast-boot blackout).
             if (travelFadeT > 0.0f) {

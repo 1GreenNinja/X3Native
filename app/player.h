@@ -128,6 +128,16 @@ public:
     // True for kPlayerIFrame seconds after a hit (no new damage lands).
     bool invulnerable() const { return m_iframe > 0.0f; }
 
+    // ---- [W9-3 RPG] progression stat layer -------------------------------
+    // Multipliers/bonuses LAYERED on the base tuning constants (kPlayerMaxHp /
+    // kWalkSpeed are never mutated). The skill tree's Survival branch drives
+    // these through the host's applyRpgStats().
+    // Max HP becomes kPlayerMaxHp + bonus; raising grants the delta as HP.
+    void  setMaxHpBonus(int bonus);
+    // Planar move-speed multiplier (clamped [0.5, 2.0]; default 1).
+    void  setSpeedMult(float m);
+    float speedMult() const { return m_speedMult; }
+
     // IDDQD god mode (console cheat): while on, takeDamage() absorbs everything.
     void setGod(bool g) { m_god = g; }
     bool god() const { return m_god; }
@@ -210,6 +220,9 @@ private:
     float m_respawn   = 0.0f;           // remaining respawn countdown while dead (s)
     bool  m_god       = false;          // IDDQD: ignore all incoming damage
     bool  m_noclip    = false;          // IDCLIP: free-fly, no gravity/collision
+
+    // [W9-3 RPG] progression stat layer (see setMaxHpBonus/setSpeedMult).
+    float m_speedMult = 1.0f;
 
     // ---- Audio hook state (audio-assets pass, W2-B) -----------------------
     GameCueFn m_cueSink;                // host-wired; empty => throttled log (see cues.h)
