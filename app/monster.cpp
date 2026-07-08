@@ -510,7 +510,10 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
         type == m_adaptiveHideType) {
         resistMul = 1.0f - m_adaptiveHideResist;
     }
-    const int shotDmg = (int)(baseDmg * incomingDamageMul() * resistMul + 0.5f);
+    // W9-1: m_damageTakenMul folds in the coolant-sabotage vulnerability (x1.5
+    // on The Collective once the F4 console is used; 1.0 for everything else).
+    const int shotDmg = (int)(baseDmg * incomingDamageMul() * resistMul *
+                              m_damageTakenMul + 0.5f);
     if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
     bool dead = applyDamage(&m_hp, shotDmg);
     // Latch the new type + reset the resist window AFTER applying damage. Only
@@ -587,7 +590,9 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
         resistMul = 1.0f - m_adaptiveHideResist;
     }
     // Act-1 boss gimmick (FE#7): memory-flash amplifies incoming melee too (1x else).
-    const int dmg = (int)(damage * incomingDamageMul() * resistMul + 0.5f);
+    // W9-1: m_damageTakenMul = the coolant-sabotage vulnerability (1.0 default).
+    const int dmg = (int)(damage * incomingDamageMul() * resistMul *
+                          m_damageTakenMul + 0.5f);
     bool dead = applyDamage(&m_hp, dmg);
     if (m_adaptiveHideResist > 0.0f) {
         m_adaptiveHideType  = type;
@@ -809,6 +814,19 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     }
 
     if (m_entity == kNoLink || m_entity >= scene.size()) return;
+
+    // ---- W9-1: EMP STUN / master-hack DOCILE. A stunned or docile enemy is
+    // FROZEN where it stands: no AI, no movement, no attack (any wind-up is
+    // cancelled). The death/corpse flow above and fire() damage are untouched,
+    // so a powered-down drone is still killable and still counts. Timers/flash
+    // decay above keeps running (the earlier blocks already ticked them). ----
+    if (m_stunTimer > 0.0f) {
+        m_stunTimer -= dt;
+        if (m_stunTimer < 0.0f) m_stunTimer = 0.0f;
+        m_winding = false;
+        return;
+    }
+    if (m_docile) { m_winding = false; return; }
 
     // Snapshot the pre-movement position so we can measure this frame's planar
     // speed (used to choose idle vs walk for the skeletal animation, below).
