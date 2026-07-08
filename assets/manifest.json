@@ -121,9 +121,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/AnnaCasual.glb",
-      "sha256": "e965b6bcdc5162ebac7d9334ceb893149d8b398fcfc278b7b442f14f43a1ea3c",
-      "size": 12124244,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "04da619319a0c049b2ab7591a4fc2813d4923272159196cdb5d4fa56cfb6ecc4",
+      "size": 12184604,
+      "source_note": "dance_bake.py: DanceGroove+DanceArms skeletal loops appended (club dancers)"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaCasual_anim.glb",
@@ -133,9 +133,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/AnnaTactical.glb",
-      "sha256": "ab9dcc33704699d7fc6964c9f8f59e250d5278d9de8dee9919d5c59cc3091e46",
-      "size": 14473096,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "7a41161826efc30982ebf2620c53a3a94832a1938d4be17c5993b2c9d689ea88",
+      "size": 14523712,
+      "source_note": "dance_bake.py: DanceGroove+DanceArms skeletal loops appended (club dancers)"
     },
     {
       "repo_path": "assets/rigged_glb/BartenderDanny.glb",

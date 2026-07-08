@@ -1086,9 +1086,11 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             // is Z-up and lay flat on the floor with detached boots in the R3
             // shot; the RexBouncer rig reads as a clawed bruiser — right for the
             // door, wrong for the floor). Tint variety carries the crowd read.
-            // Humans only on the floor (Tim: 'no aliens') — the marcus_webb rig
-            // reads creature-like under blacklight. Three Anna outfits x tints.
-            const char* rigs[3] = { "AnnaBodySuit.glb", "AnnaCasual.glb", "AnnaTactical.glb" };
+            // Humans only, and every dancer carries REAL skeletal dance clips:
+            // AnnaCasual + AnnaTactical ship DanceGroove/DanceArms (dance_bake.py).
+            // AnnaBodySuit is node-animated (no armature — clips won't bake onto
+            // it) so she works the BAR and the lounge instead of the floor.
+            const char* rigs[2] = { "AnnaCasual.glb", "AnnaTactical.glb" };
             const float tints[5][4] = {
                 { 1.05f, 0.85f, 1.25f, 1.0f },   // violet wash
                 { 0.85f, 1.05f, 1.30f, 1.0f },   // cyan wash
@@ -1112,9 +1114,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 dn.yaw = spots[d3][2];
                 dn.phase = (float)(clubHash((uint32_t)d3 * 97u + 13u) % 628u) / 100.0f;
                 dn.energy = 0.65f + 0.75f * ((clubHash((uint32_t)d3 * 41u + 7u) % 100u) / 100.0f);
-                addCharacter(scene, device, physics, modelDir, rigs[d3 % 3],
+                addCharacter(scene, device, physics, modelDir, rigs[d3 % 2],
                              x3::phys::Vec3{ dn.bx, dn.baseY, dn.bz }, 1.0f,
                              false, tints[d3 % 5]);
+                // REAL skeletal dance: the calm loop replaces Idle on inert props.
+                // Alternate the two clips so the floor mixes grooves.
+                m_chars.back()->setCalmLoop((d3 & 1) ? "dancearms" : "dancegroove");
                 m_dancers.push_back(dn);
             }
         }
@@ -1230,8 +1235,10 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
             if (dn.charIdx >= m_chars.size()) continue;
             const float tp = t + dn.phase;
             const float lobe = std::sin(tp * beatHz * kPi);
-            const float bounce = std::pow(std::max(0.0f, lobe), 4.0f) * 0.11f * dn.energy;
-            const float sway = std::sin(tp * beatHz * kPi * 0.5f) * 0.45f * dn.energy;
+            // The baked clips carry the bounce/arms now — the procedural layer is
+            // just a gentle weight-shift + facing drift so no two dancers match.
+            const float bounce = std::pow(std::max(0.0f, lobe), 4.0f) * 0.025f * dn.energy;
+            const float sway = std::sin(tp * beatHz * kPi * 0.5f) * 0.22f * dn.energy;
             const float sx = dn.bx + std::sin(tp * 0.31f) * 0.30f;
             const float sz = dn.bz + std::cos(tp * 0.23f) * 0.28f;
             m_chars[dn.charIdx]->setPropPose(
