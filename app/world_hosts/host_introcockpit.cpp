@@ -18,9 +18,7 @@
 // IRenderDevice) + in-tree precedents (leveldoc_world's drawable->Entity bridge,
 // club1127's emissiveTex + glass recipes, host_space's deep-space sky) only.
 #include "world_host_common.h"
-#include "engine/asset/IAssetSource.h"
-#include "engine/asset/IModelLoader.h"
-#include "../scene.h"
+#include "../intro_cockpit_rig.h"
 #include "../asset_root.h"
 #include "../headless_device.h"
 #include <cmath>
@@ -35,30 +33,13 @@ namespace {
 // Relative path of the cockpit GLB under the mounted converted_glb root.
 const char* kCockpitRel = "Cockpit/fighter_cockpit.glb";
 
-// Everything the cockpit scene owns. The loader + Model own the GPU handles, so
-// the rig must outlive every frame that draws the entities (host keeps it on the
-// stack for the loop; the orchestrator will own one for the intro's lifetime).
-struct IntroCockpitRig {
-    std::unique_ptr<x3::asset::IAssetSource> assets;
-    std::unique_ptr<x3::asset::IModelLoader> loader;
-    x3::asset::Model                         model;
-    x3::game::Scene                          scene;
-    x3::rhi::TextureHandle                   mrShared;   // 1x1 MR (forces PBR route)
-    x3::rhi::TextureHandle                   mrGlassy;   // 1x1 polished MR (canopy panes)
-    // Gate diagnostics.
-    uint32_t drawables = 0, entities = 0, glassPanes = 0, screens = 0;
-
-    void shutdown(x3::rhi::IRenderDevice& device) {
-        if (mrShared.valid()) device.destroyTexture(mrShared);
-        if (mrGlassy.valid()) device.destroyTexture(mrGlassy);
-        if (model.ok && loader) loader->unload(model);
-    }
-};
+} // namespace (path constant)
 
 // Build the cockpit Scene from the GLB. Mirrors leveldoc_world.cpp's
 // drawable->Entity bridge, extended with the PBR/emissiveTex/glass routing.
 // Returns false (rig empty) if the GLB is missing — callers keep their graybox.
-bool buildIntroCockpitRig(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device) {
+bool buildIntroCockpitRig(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device,
+                          bool includeBackdrop) {
     rig.assets.reset(x3::asset::createAssetSource());
     if (!rig.assets->mountDir(x3::game::convertedGlbRoot(), 0)) {
         x3::logWarn("[introcockpit] mountDir failed: " + x3::game::convertedGlbRoot());
@@ -84,6 +65,14 @@ bool buildIntroCockpitRig(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device) 
     std::vector<x3::game::Entity> panes;   // added LAST (alpha blend ordering)
     for (const auto& d : drawables) {
         if (!d.meshId) continue;
+        // Far-field backdrop panels (milky-way plane, planet-horizon strip) sit
+        // tens of meters out; the orchestrator excludes them so the world-fixed
+        // analytic sky is the backdrop and the view doesn't pitch with the ship.
+        if (!includeBackdrop) {
+            const float tx = d.nodeTransform[12], ty = d.nodeTransform[13],
+                        tz = d.nodeTransform[14];
+            if (tx * tx + ty * ty + tz * tz > 30.0f * 30.0f) continue;
+        }
         x3::game::Entity se;
         se.mesh = x3::rhi::MeshHandle{ d.meshId };
         se.tex  = x3::rhi::TextureHandle{ d.baseColorTexId };
@@ -119,10 +108,19 @@ bool buildIntroCockpitRig(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device) 
                 ++rig.screens;
             }
         }
-        rig.scene.add(se);
+        rig.entityIds.push_back(rig.scene.add(se));
+        std::array<float, 16> bx{};
+        for (int i = 0; i < 16; ++i) bx[i] = se.transform[i];
+        rig.baseXf.push_back(bx);
         ++rig.entities;
     }
-    for (const auto& pe : panes) { rig.scene.add(pe); ++rig.entities; }
+    for (const auto& pe : panes) {
+        rig.entityIds.push_back(rig.scene.add(pe));
+        std::array<float, 16> bx{};
+        for (int i = 0; i < 16; ++i) bx[i] = pe.transform[i];
+        rig.baseXf.push_back(bx);
+        ++rig.entities;
+    }
     x3::logInfo("[introcockpit] built: " + std::to_string(rig.entities) + " entit(ies) from " +
                 std::to_string(rig.drawables) + " drawable(s) — " +
                 std::to_string(rig.screens) + " emissive screen(s), " +
@@ -165,7 +163,29 @@ void setIntroCockpitLook(x3::rhi::IRenderDevice& device) {
       device.setPointLights(pl, 3); }
 }
 
-} // namespace
+void poseIntroCockpit(IntroCockpitRig& rig,
+                      float cx, float cy, float cz, float yaw, float pitch) {
+    // Ship rotation R = RotY(pi/2 - yaw) * RotX(-pitch): maps the cockpit's local
+    // forward (+Z, the yaw=pi/2 facing it was authored at) onto the camera's
+    // forward (cos p cos y, sin p, sin p ... per CONVENTIONS SS3). Column-major.
+    const float a = 1.5707963f - yaw, b = -pitch;
+    const float ca = std::cos(a), sa = std::sin(a);
+    const float cb = std::cos(b), sb = std::sin(b);
+    float T[16] = {
+        ca,        0.0f,  -sa,       0.0f,     // col0
+        sa * sb,   cb,     ca * sb,  0.0f,     // col1
+        sa * cb,  -sb,     ca * cb,  0.0f,     // col2
+        0.0f,      0.0f,   0.0f,     1.0f };   // col3 (filled below)
+    // The pilot's eye sits at cockpit-local (0, 1.60, -1.38); the camera IS that
+    // eye, so the cockpit origin lands at cam - R * eyeLocal.
+    const float ex = 0.0f, ey = 1.60f, ez = -1.38f;
+    T[12] = cx - (T[0] * ex + T[4] * ey + T[8]  * ez);
+    T[13] = cy - (T[1] * ex + T[5] * ey + T[9]  * ez);
+    T[14] = cz - (T[2] * ex + T[6] * ey + T[10] * ez);
+    for (size_t i = 0; i < rig.entityIds.size(); ++i)
+        x3::asset::mulMat4(T, rig.baseXf[i].data(),
+                           rig.scene.get(rig.entityIds[i]).transform);
+}
 
 int hostIntroCockpit(HostContext& hc) {
     auto* device = hc.device;
@@ -264,6 +284,25 @@ bool runIntroCockpitSelfTest() {
             "C3 canopy panes routed to the glass pass (got " + std::to_string(rig.glassPanes) + ")");
     icCheck(rig.screens >= 5,
             "C4 emissive content screens wired (got " + std::to_string(rig.screens) + ")");
+    // C5: the orchestrator build excludes the far-field backdrop panels.
+    IntroCockpitRig orch;
+    const bool builtOrch = buildIntroCockpitRig(orch, device, /*includeBackdrop*/false);
+    icCheck(builtOrch && orch.entities > 0 && orch.entities < rig.entities,
+            "C5 orchestrator rig excludes backdrop panels (" +
+            std::to_string(orch.entities) + " < " + std::to_string(rig.entities) + ")");
+    // C6: poseIntroCockpit moves entities to a finite, camera-locked transform.
+    if (builtOrch && !orch.entityIds.empty()) {
+        poseIntroCockpit(orch, 100.0f, 50.0f, -25.0f, 0.7f, -0.1f);
+        const float* t = orch.scene.get(orch.entityIds[0]).transform;
+        bool finite = true;
+        for (int i = 0; i < 16; ++i) finite = finite && std::isfinite(t[i]);
+        const bool moved = std::fabs(t[12]) > 1.0f || std::fabs(t[13]) > 1.0f ||
+                           std::fabs(t[14]) > 1.0f;
+        icCheck(finite && moved, "C6 pose math finite + camera-locked");
+    } else {
+        icCheck(false, "C6 pose math (orch rig unavailable)");
+    }
+    orch.shutdown(device);
     rig.shutdown(device);
     x3::logInfo(std::string("introcockpit: ") + std::to_string(g_pass) + "/" +
                 std::to_string(g_pass + g_fail) + " passed");

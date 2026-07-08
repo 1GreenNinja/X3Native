@@ -23,6 +23,7 @@
 #include <GLFW/glfw3.h>
 
 #include "intro_orchestrator.h"
+#include "intro_cockpit_rig.h"
 
 #include "engine/core/x3_log.h"
 #include "engine/rhi/IRenderDevice.h"
@@ -224,7 +225,8 @@ void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
 // to the live combat stack; headless it advances deterministically (fixed-dt sim,
 // synthetic player aim) so the metrics are reproducible without a GPU.
 void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
-                        SkillMetrics& m) {
+                        SkillMetrics& m,
+                        x3::apphost::IntroCockpitRig* cockpit = nullptr) {
     x3::logInfo("[intro] beat '" + beat.id + "' (interactive: " +
                 std::to_string(beat.enemyCount) + " enemies, " +
                 std::to_string(beat.timeoutSec) + " s timeout)");
@@ -346,7 +348,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             float cx, cy, cz, cyaw, cpit;
             pilot.camera(cx, cy, cz, cyaw, cpit);
             hc.device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
+            // THE VISIBLE LAYER (feat/intro-cockpit): the player flies the beat
+            // from inside the two-seat fighter cockpit — the rig is posed to the
+            // pilot camera each frame (classic FP cockpit lock), the analytic-sky
+            // starfield is the world-fixed backdrop.
+            if (cockpit) x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
             auto frame = hc.device->beginFrame();
+            if (frame.valid && cockpit) cockpit->scene.render(*hc.device, frame);
             hc.device->endFrame(frame);
         }
 
@@ -571,6 +579,18 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     SkillMetrics metrics{};
     metrics.finalHullFrac = 1.0f;   // assume intact until the climax measures it
 
+    // The cockpit rig — the interactive windows' visible layer (feat/intro-cockpit).
+    // Live-only (window + device); the headless self-test path stays render-free
+    // and deterministic. A missing GLB degrades gracefully to the empty frame.
+    std::unique_ptr<x3::apphost::IntroCockpitRig> cockpit;
+    if (hc.window && hc.device) {
+        cockpit = std::make_unique<x3::apphost::IntroCockpitRig>();
+        if (x3::apphost::buildIntroCockpitRig(*cockpit, *hc.device, /*includeBackdrop*/ false))
+            x3::apphost::setIntroCockpitLook(*hc.device);
+        else
+            cockpit.reset();
+    }
+
     // Play every beat UP TO the outcome stinger (flight, reveal, dodge, charge,
     // dogfight). The cine.outcome beat is deferred: its span depends on the rolled
     // outcome, which depends on the climax metrics accumulated here — so we roll
@@ -583,8 +603,12 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
         if (beat.kind == BeatKind::CutsceneClip)
             playCinematicBeat(hc, beat, haveCs ? &coldOpen : nullptr);
         else
-            runInteractiveBeat(hc, beat, metrics);
+            runInteractiveBeat(hc, beat, metrics, cockpit.get());
     }
+
+    // The interactive windows are done — release the cockpit's GPU handles before
+    // the outcome stinger + the cell/surface build take over the device.
+    if (cockpit) { cockpit->shutdown(*hc.device); cockpit.reset(); }
 
     // Load the persisted narrative flags (the lane app_run branches on) so the
     // per-save seed is derived from the REAL save state, and the outcome write
