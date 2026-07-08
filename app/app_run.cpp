@@ -2126,6 +2126,15 @@ int runDefaultHost(HostContext& hc) {
                 descMechBC.onUse(fp->pos, &ab);
             x3::logInfo("[descmech-bc] X3_DESCMECH_ALLIES=1 — booted with the Salvari freed");
         }
+        // Shot/test hook: X3_DESCMECH_MEMORY=1 boots with a memory fragment on
+        // the Neural Interface Lab panel (the E-cycle, pre-fired for the shot).
+        if (const char* mf = std::getenv("X3_DESCMECH_MEMORY"); mf && mf[0] == '1') {
+            std::string mb;
+            if (const x3::game::InteractPoint* mp = descMechBC.points().find("memory_station"))
+                descMechBC.onUse(mp->pos, &mb);
+            descMechBC.memoryPanel().update(0.016f);   // bake it now (pre-tick)
+            x3::logInfo("[descmech-bc] X3_DESCMECH_MEMORY=1 — booted with a fragment on the glass");
+        }
     }
 
     // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the

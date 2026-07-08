@@ -291,6 +291,8 @@ bool DescMechanicsBC::build(const CanonFloor& floor, CanonPlay& play, StoryFlags
                        3.14159265f, 1.5f, 0.95f, R.y1() - 0.10f);
         m_memory.setLines(memoryStandbyLines());
         m_memory.setTextColor(0.75f, 0.95f, 0.85f);   // archive green-white ink
+        m_memory.update(0.016f);   // force the on-glass re-bake NOW (the screenshot
+                                   // path renders before any tick reaches update())
         m_memBuilt = true;
         InteractPoint p;
         p.id      = "memory_station";
@@ -343,8 +345,10 @@ void DescMechanicsBC::spawnElder(Scene& scene, x3::phys::IPhysicsWorld& physics)
     t.modelFile  = "SalvariPrincess.glb";
     t.chaseSpeed = 0.0f;                                   // a stationary speaker
     t.tint[0] = 1.05f; t.tint[1] = 0.98f; t.tint[2] = 0.80f;   // elder gold
+    // Clear of the room-center lore-terminal pickup (placed at cx,cz): the elder
+    // stands INSIDE the circle's south arc, beside the floor glow.
     m_elderIdx = (int)m_allies.spawn(scene, *m_device, physics, m_modelDir,
-                                     { R.cx, R.y0(), R.cz - 0.6f }, t);
+                                     { R.cx - 1.1f, R.y0(), R.cz - 1.0f }, t);
     m_elderSpawned = true;
     x3::logInfo("[descmech-bc] Salvari elder placed at the First Contact meeting circle");
 }
