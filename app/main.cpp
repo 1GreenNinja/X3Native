@@ -8170,13 +8170,38 @@ int main(int argc, char** argv) {
                 const float bmm[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, bo.pos[0],bo.pos[1],bo.pos[2],1 };
                 device->drawMeshEmissive(frame, bottleMesh, x3::rhi::TextureHandle{0}, white, bo.emis, bmm);
             }
+            // PASS 1: all opaque drawables (so the scene color the glass pass
+            // samples — refraction/see-through — is complete before any pane draws).
             for (const auto& d : drawables) {
+                if (d.baseColorFactor[3] < 0.5f) continue;
                 float fin[16]; x3::asset::mulMat4(idM, d.nodeTransform, fin);
                 device->drawMeshPBR(frame, x3::rhi::MeshHandle{d.meshId},
                                     x3::rhi::TextureHandle{d.baseColorTexId},
                                     x3::rhi::TextureHandle{d.normalTexId},
                                     x3::rhi::TextureHandle{d.mrTexId},
                                     d.baseColorFactor, reviewEmis, fin);
+            }
+            // PASS 2: translucent panes (glTF alpha < 0.5) LAST, through the
+            // engine's real glass pass: clear, with specular shine.
+            for (const auto& d : drawables) {
+                if (d.baseColorFactor[3] >= 0.5f) continue;
+                float fin[16]; x3::asset::mulMat4(idM, d.nodeTransform, fin);
+                // The engine's proven CLEAR plate-glass preset (glass_lounge.cpp):
+                // see-through comes from glass.opacity over a WHITE base texture.
+                x3::rhi::IRenderDevice::GlassMaterial gm{};
+                gm.opacity = 0.06f;                 // CLEAR
+                gm.refraction = 0.015f;
+                gm.roughness = 0.02f;               // polished, not frosted
+                gm.specular = 0.9f;                 // point-light glints = the shine
+                gm.ior = 1.0f;                      // <=1 hands F0 to `reflectance`
+                gm.reflectance = 0.12f;             // kill the white sky-gradient
+                                                    // fresnel (wrong for dark space)
+                gm.tint[0] = 0.85f; gm.tint[1] = 0.93f; gm.tint[2] = 1.0f;
+                const float gTint[4] = { 0.85f, 0.92f, 1.0f, 1.0f };
+                const float gEmis[4] = { 0, 0, 0, 0 };
+                device->drawMeshGlass(frame, x3::rhi::MeshHandle{d.meshId},
+                                      x3::rhi::TextureHandle{0},
+                                      gTint, gEmis, gm, fin);
             }
         };
         auto destroyBar = [&]() {
