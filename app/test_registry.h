@@ -42,6 +42,7 @@ struct TestFlags {
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
     bool testGoldenPath = false;
     bool testDescMech = false;    // --test-descmech (W9-1: desc-field Tier-A mechanics)
+    bool testDescMechBC = false;  // --test-descmech-bc (W9-2: Tier B/C mechanics)
     bool testInventory = false;    // W9-3 RPG: backpack/item-db (--test-inventory)
     bool testProgression = false;  // W9-3 RPG: XP/levels (--test-progression)
     bool testSkillTree = false;    // W9-3 RPG: skill tree (--test-skilltree)

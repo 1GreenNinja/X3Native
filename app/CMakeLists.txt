@@ -77,6 +77,7 @@ add_executable(X3Engine WIN32
     canon_play.cpp
     interactables.cpp
     desc_mechanics.cpp
+    desc_mechanics_bc.cpp
     canon_45.cpp
     cell_dressing.cpp
     room_dressing.cpp

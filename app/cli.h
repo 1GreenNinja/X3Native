@@ -38,6 +38,7 @@ struct CliOptions {
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
          testDescMech = false,      // --test-descmech: W9-1 desc-field mechanics (Tier A verbs)
+         testDescMechBC = false,    // --test-descmech-bc: W9-2 Tier B/C (allies/nexus/course/chairs/holo)
          testInventory = false,    // --test-inventory: W9-3 RPG backpack (add/stack/consume/cap + keycard door)
          testProgression = false,  // --test-progression: W9-3 XP -> level -> skill points + save round-trip
          testSkillTree = false,    // --test-skilltree: W9-3 prereq/cost/apply + mods reach the player

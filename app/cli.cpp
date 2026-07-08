@@ -92,6 +92,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-canonplay") o.testCanonPlay = true;
         else if (a == "--test-goldenpath") o.testGoldenPath = true;
         else if (a == "--test-descmech") o.testDescMech = true;   // W9-1 desc-field mechanics (Tier A)
+        else if (a == "--test-descmech-bc") o.testDescMechBC = true;   // W9-2 Tier B/C mechanics
         else if (a == "--test-inventory") o.testInventory = true;       // W9-3 RPG backpack
         else if (a == "--test-progression") o.testProgression = true;   // W9-3 XP/levels
         else if (a == "--test-skilltree") o.testSkillTree = true;       // W9-3 skill tree

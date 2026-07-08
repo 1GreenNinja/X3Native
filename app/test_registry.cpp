@@ -56,6 +56,7 @@
 #include "level1_game.h"
 #include "canon_play.h"
 #include "desc_mechanics.h"   // W9-1: runDescMechSelfTest (--test-descmech)
+#include "desc_mechanics_bc.h"   // W9-2: runDescMechBCSelfTest (--test-descmech-bc)
 #include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
 #include "intro_coldopen.h"
 #include "intro_orchestrator.h"   // x3::intro::runIntroOrchestratorSelfTest (--test-introorch)
@@ -297,6 +298,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testDescMech) {
         x3::logInfo("running the DESC-MECHANICS self-test (D1-D12: interact framework + the 5 Tier-A verbs)...");
         return x3::game::runDescMechSelfTest() ? 0 : 1;
+    }
+    if (tf.testDescMechBC) {   // W9-2 Tier B/C
+        x3::logInfo("running the DESC-MECHANICS B/C self-test (B1-B9: allies/nexus/course/chairs/elder/holo)...");
+        return x3::game::runDescMechBCSelfTest() ? 0 : 1;
     }
     if (tf.testInventory) {   // W9-3 RPG
         x3::logInfo("running the INVENTORY/BACKPACK self-test (I1-I7: item DB + stack/cap + keycard-gated door)...");

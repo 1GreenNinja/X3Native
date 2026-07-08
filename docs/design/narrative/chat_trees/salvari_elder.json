@@ -1,0 +1,110 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "salvari_elder",
+  "display": "VAEL-SHAAN",
+  "voice": "SalvariElder",
+  "_bio": "Eldest of the Salvari held on Floor 6 - the ones who refused to serve the Dominion and were caged beside the portal they would not feed. Speaks for all surviving Salvari at once (plural self-reference is literal: they share a low-band harmonic). Formal, unhurried, incapable of contraction. Light moves under the skin when they speak; it dims when they grieve. First Contact Chamber, the meeting circle (W9-2, DESC_MECHANICS_TODO #13).",
+  "trees": {
+    "first_meeting": {
+      "start": "e0",
+      "nodes": [
+        {
+          "id": "e0",
+          "if": [ { "flag": "salvari_elder.met" } ],
+          "else": "e0_first",
+          "line": "*the light under its skin brightens as you approach* The unbound one returns. The circle holds. Ask.",
+          "choices": [
+            { "text": "Why did they come to Earth?", "next": "o1" },
+            { "text": "Tell me about the Chorus.", "next": "c1" },
+            { "text": "The floor that doesn't exist. 4.5.", "next": "m1" },
+            { "text": "Seal their portal. I'll do the rest.", "next": "e_end" }
+          ]
+        },
+        {
+          "id": "e0_first",
+          "line": "*the tall one rises from the meeting circle, palms open - light moves under its skin like slow water* You are the unbound human. The one the tower whispers about. We are Vael-Shaan. We were three hundred when our ships fell; we speak for all of us who remain.",
+          "fx": [ { "set": "f6.first_contact" }, { "set": "salvari_elder.met" } ],
+          "choices": [
+            { "text": "Why did they come to Earth?", "next": "o1" },
+            { "text": "What is the Chorus? I've heard the humming.", "next": "c1" },
+            { "text": "There's a floor missing from this tower. 4.5. It doesn't exist.", "next": "m1" }
+          ]
+        },
+
+        {
+          "id": "o1",
+          "line": "They are the Dominion. Understand this first: they did not come FOR your world. They came THROUGH it. Your star sits upon a seam between spaces, and the portal below us is one stitch of many. We Salvari were asked to sew. We refused. Our world is glass now.",
+          "choices": [
+            { "text": "So Earth is just... a doorway to them.", "next": "o2" },
+            { "text": "What do they want with the people they take?", "next": "o3" }
+          ]
+        },
+        {
+          "id": "o2",
+          "line": "A doorway. A larder. A nursery. In the Dominion tongue these are one word. *the light under its skin dims* We grieve with you, human. We know the shape of this grief. We wore it first.",
+          "next": "e_hub"
+        },
+        {
+          "id": "o3",
+          "line": "Bodies are doors also. What cannot cross the seam whole arrives... poured. Your taken are vessels being made ready - the wards below, the women. We hear what is done there. We are ashamed that we cannot stop it. You stopped some of it. We felt the timers end.",
+          "next": "e_hub"
+        },
+
+        {
+          "id": "c1",
+          "line": "You have heard the humming beneath the fourth floor. Three thousand four hundred and seventy-two minds, braided into a single instrument. The Dominion calls it an archive. We call it a wound that sings.",
+          "choices": [
+            { "text": "Can they be freed?", "next": "c2" },
+            { "text": "Why keep them alive at all?", "next": "c3" }
+          ]
+        },
+        {
+          "id": "c2",
+          "line": "Freed - no. A braid does not unbraid, unbound one. It can only be cut, or carried. A few voices at the braid's edge may yet be lifted whole - four, perhaps, no more. If you go down to them, choose gently. The rest can only be given silence.",
+          "next": "e_hub"
+        },
+        {
+          "id": "c3",
+          "line": "Because a dead mind forgets the way between spaces. A living choir remembers it in harmony. They are the map, human. The portal below steers by their singing. This is why the Dominion feeds the braid and why we would see it starved.",
+          "next": "e_hub"
+        },
+
+        {
+          "id": "m1",
+          "line": "*all three seated ones go still at once* You have said the number. We do not say the number. The floor that does not exist is where the singing is done - the braid-hall between your fourth and fifth floors. The Dominion struck it from every record, every plate, every door.",
+          "choices": [
+            { "text": "I've been down there. The blank expanse between 4 and 5.", "next": "m2" },
+            { "text": "Who are they hiding it from?", "next": "m3" }
+          ]
+        },
+        {
+          "id": "m2",
+          "line": "Then you have walked upon the lid of the wound, and it let you leave. *its light stutters* That has not happened before. In three hundred of us there is no memory of it. Perhaps the choir already knows your name, unbound one. We do not know whether to envy you.",
+          "next": "e_hub"
+        },
+        {
+          "id": "m3",
+          "line": "From you. From your kind. From themselves, in the end - even the garrison above will not ride the shaft past it. A thing that is not named cannot be mourned. That is what passes for mercy in the Dominion.",
+          "next": "e_hub"
+        },
+
+        {
+          "id": "e_hub",
+          "line": "*it settles back into the circle; the others resume their slow breathing* Ask, unbound one. We have nothing left but answers.",
+          "choices": [
+            { "text": "Why did they come here?", "next": "o1" },
+            { "text": "The Chorus.", "next": "c1" },
+            { "text": "The floor that doesn't exist.", "next": "m1" },
+            { "text": "Seal their portal. I'll do the rest.", "next": "e_end" }
+          ]
+        },
+        {
+          "id": "e_end",
+          "line": "Then hear the way of it: cut both regulator feeds in the nexus chamber, and let the core eat itself. When the glass goes dark, nothing else comes through - and our dead can finally stop listening. Go, unbound one. We will hold this circle until it is done.",
+          "fx": [ { "karma": 1 }, { "set": "salvari_elder.blessed" } ],
+          "next": "end"
+        }
+      ]
+    }
+  }
+}
