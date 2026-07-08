@@ -2671,6 +2671,18 @@ int runDefaultHost(HostContext& hc) {
                 combatFx.spawnMuzzleFlash(fxBurst, fxDir);
                 // Sparks spray back toward the camera (normal = -look) so they read.
                 combatFx.spawnImpact(fxBurst, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z });
+                // R-8 proof: the barrel EXPLOSION fireball, offset to the right of
+                // the burst so both read, + a live tracer ribbon across the view.
+                const x3::phys::Vec3 fxRight{ -fxLook.z, 0.0f, fxLook.x };
+                combatFx.spawnExplosion(x3::phys::Vec3{ fxBurst.x + fxRight.x * 1.4f,
+                                                        fxBurst.y + 0.2f,
+                                                        fxBurst.z + fxRight.z * 1.4f }, 1.6f);
+                combatFx.addTracer(x3::phys::Vec3{ fxBurst.x - fxRight.x * 1.2f - fxLook.x * 0.5f,
+                                                   fxBurst.y - 0.3f,
+                                                   fxBurst.z - fxRight.z * 1.2f - fxLook.z * 0.5f },
+                                   x3::phys::Vec3{ fxBurst.x + fxLook.x * 4.0f,
+                                                   fxBurst.y + 0.6f,
+                                                   fxBurst.z + fxLook.z * 4.0f });
             }
             if (fxDemo) combatFx.update(dt);
             // --world canonlevel SCREENSHOT lighting + cull: feed the player's visible
