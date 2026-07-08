@@ -150,13 +150,13 @@ int hostClub(HostContext& hc) {
         }
 
         // ===== Walkable windowed path: full first-person controller + physics. ===
-        // THE MUSIC (max-out): the real club track — Ascension (~133 BPM, the
-        // tempo every beat-locked pulse in club1127.cpp rides) — looping 2D at
+        // THE MUSIC (max-out): the real club track (the
+        // tempo every beat-locked pulse in club1127.cpp rides; Descent, ~85.5 BPM) at
         // house volume. Graceful: no device / missing WAV -> silent club.
         std::unique_ptr<x3::audio::IAudioSystem> caudio(x3::audio::createAudioSystem());
         x3::audio::LoopHandle clubTrack{};
         if (caudio && caudio->init()) {
-            auto h = caudio->load(x3::game::resolveAudio("music/club_ascension.wav"));
+            auto h = caudio->load(x3::game::resolveAudio("music/club_descent.wav"));
             if (h.valid()) clubTrack = caudio->startLoop(h, 0.75f, 1.0f);
         }
         x3::game::Player cplayer;
