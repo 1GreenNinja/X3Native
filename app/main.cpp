@@ -290,6 +290,7 @@ int main(int argc, char** argv) {
         _tf.testElevatorShowcase = o.testElevatorShowcase;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;
+        _tf.testIntroCockpit = o.testIntroCockpit;
         _tf.testIntroBranch = o.testIntroBranch;
         _tf.testSurfaceStart = o.testSurfaceStart;
         _tf.testCutscene = o.testCutscene;

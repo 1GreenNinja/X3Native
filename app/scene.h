@@ -114,6 +114,15 @@ struct Entity {
     // see-through dial (0 = clear, 1 = opaque) and overrides baseColor[3]. emissive
     // is still honored (holo glass keeps its glow). Default false == opaque, so every
     // existing entity renders exactly as before.
+    // ---- Simple ALPHA-BLENDED PBR (intro-cockpit canopy) -------------------
+    // When set (and mrTex is valid -> PBR route), the entity draws with the PBR
+    // pipeline's alphaBlend variant: baseColor[3] is the blend alpha, so a low
+    // alpha reads as simple clear glass WITHOUT the transparent-pass scene-copy
+    // dependency (which renders a cleared target in standalone hosts — found on
+    // feat/intro-cockpit). Draw such entities LAST: the blend samples whatever
+    // is already in the HDR target. Default false == every existing entity
+    // renders exactly as before.
+    bool                   alphaBlend = false;
     bool                   transparent = false;
     x3::rhi::IRenderDevice::GlassMaterial glass{};
     uint32_t               tag = (uint32_t)Tag::None;

@@ -266,6 +266,9 @@ struct CliOptions {
     // interactive windows. No window / Vulkan. Additive — distinct from --test-intro
     // (the LEGACY cold-open phase-machine test).
     bool        testIntroOrch = false;
+    // --test-introcockpit: the intro cockpit's Scene-entity rig (GLB -> PBR +
+    // emissiveTex screens + glass canopy) headless gate. See world_hosts.h.
+    bool        testIntroCockpit = false;
     // --test-introbranch (Phase 4 BRANCH WIRING): the app_run branch-selection
     // contract — intro.outcome flag round-trip, the --intro-force dev override,
     // the per-save seed thread, and the canon default. No window / Vulkan.

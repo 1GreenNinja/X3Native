@@ -34,6 +34,8 @@ int hostSurfaceStart(HostContext& hc);
 int hostStrata   (HostContext& hc);   // --world strata (R-3 fold: THE DESCENT)
 int hostElevator (HostContext& hc);   // --world elevator-showcase (+ --screenshot-elevator)// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
 
+int hostIntroCockpit(HostContext& hc); // --world introcockpit (intro cold-open cockpit)
+
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);
 
@@ -43,5 +45,10 @@ int dispatchWorldHost(HostContext& hc);
 // outside + armed, Sarah staged as a rescue target, the rescuer objective list).
 // No window / Vulkan. Returns true iff all sub-checks pass.
 bool runSurfaceStartSelfTest();
+
+// --test-introcockpit: the intro cockpit GLB -> Scene-entity rig (PBR route +
+// emissiveTex content screens + transparent canopy glass) standing up on the
+// HeadlessRenderDevice. No window / Vulkan. True iff all sub-checks pass.
+bool runIntroCockpitSelfTest();
 
 }} // namespace x3::apphost

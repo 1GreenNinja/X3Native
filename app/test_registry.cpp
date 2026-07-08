@@ -313,6 +313,11 @@ int dispatchTests(const TestFlags& tf) {
                     "write + input-cleared/deterministic headless interactive windows)...");
         return x3::intro::runIntroOrchestratorSelfTest() ? 0 : 1;
     }
+    if (tf.testIntroCockpit) {
+        x3::logInfo("running INTRO COCKPIT self-test (fighter_cockpit.glb -> Scene entities: "
+                    "PBR route + emissiveTex content screens + transparent canopy glass, headless)...");
+        return x3::apphost::runIntroCockpitSelfTest() ? 0 : 1;
+    }
     if (tf.testIntroBranch) {
         x3::logInfo("running Phase 4 INTRO BRANCH-WIRING self-test (intro.outcome flag "
                     "round-trip + --intro-force dev override + per-save seed thread + "

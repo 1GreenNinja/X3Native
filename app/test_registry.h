@@ -45,6 +45,7 @@ struct TestFlags {
     bool testElevatorShowcase = false;  // R-4 fold: THE CENTERPIECE showcase  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
+    bool testIntroCockpit = false;// --test-introcockpit (intro cockpit Scene-entity rig)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;
