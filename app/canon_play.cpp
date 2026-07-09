@@ -565,15 +565,16 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
 
     // ---- W4-1: THE BOSS LADDER — floors 2-7's authored bosses, spawned in their
     // dressed Boss Arena rooms (data names 'F<N> Boss: <name>'). Bodies are the
-    // closest on-hand rigs; HP/damage climb the tower. NOTE the F2 boss's DATA name
-    // is 'Mutated Dr. Chen' — a name BANNED in Tim's writing canon — so every
-    // player-facing string says 'Mutated Overseer' until Tim rules on the data.
+    // closest on-hand rigs; HP/damage climb the tower. TIM'S RULING (2026-07-08):
+    // the F2 boss IS Dr. Chen — that identity is exactly WHY the name is banned
+    // in the WRITING canon (the books must never use it); the GAME shows it
+    // proudly. The 'Mutated Overseer' stopgap is retired.
     {
         struct FB { const char* room; const char* show; const char* model;
                     bool converted; float scale; int hp; int dmg; float speed;
                     bool ranged; float r, g, b; };
         const FB ladder[] = {
-            { "F2 Boss: Mutated Dr. Chen", "Mutated Overseer",  "marcus_webb_anim.glb",
+            { "F2 Boss: Mutated Dr. Chen", "Mutated Dr. Chen",  "marcus_webb_anim.glb",
               false, 1.5f,  380, 16, 3.0f, false, 0.62f, 0.90f, 0.62f },  // sickly green
             { "F3 Boss: Experiment #7",    "Experiment #7",     "alien_crawler_anim.glb",
               false, 1.7f,  440, 18, 3.6f, false, 0.95f, 0.85f, 0.80f },  // pale lab-grown
@@ -726,6 +727,7 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // Rescue: tick the girls' timers / companion follow, and (on expiry) spawn the boss.
     // The rescue clocks run once activated (the host activates on reaching the medical hub).
     m_rescue.tick(dt, scene, physics, eye);
+    m_rescue.escalationTick(dt);            // hybrid-escalation pulse + heartbeat
 
     // W5-3: Sarah — hubReached stays FALSE forever (her timer never runs; she cannot
     // expire). As a Companion she follows the eye like the girls do. The frame she

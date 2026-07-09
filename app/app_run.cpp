@@ -1557,6 +1557,13 @@ int runDefaultHost(HostContext& hc) {
             srs.thunk = audio->load(x3::game::resolveAudio("doors/door_close.wav"));
             game.secret().setSounds(audio.get(), srs);
         }
+        // HYBRID ESCALATION (Tim's ruling): the interrupt-rescue heartbeat — wired
+        // on BOTH rescue systems (legacy + canon); graceful when a WAV is absent.
+        {
+            const auto hb = audio->load(x3::game::resolveAudio("interact/heartbeat.wav"));
+            game.rescue().setEscalationAudio(audio.get(), hb);
+            canonPlay.rescue().setEscalationAudio(audio.get(), hb);
+        }
 
         // Game-feel CUE sink: route enemy footstep / impact cues onto 3D audio.
         // Footsteps reuse the (pitched-down, quiet) step WAV at the enemy's foot;
