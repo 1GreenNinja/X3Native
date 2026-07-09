@@ -52,6 +52,7 @@
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
+#include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "intro_orchestrator.h"              // Phase 3/4: runInteractiveIntro + IntroOutcome (branches the game start)
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
@@ -1096,6 +1097,7 @@ int runDefaultHost(HostContext& hc) {
     std::vector<x3::game::CanonLight> canonLights; // per-room ceiling lights (canonWorld only)
     x3::game::CellDressing canonDressing;      // opening-space set-dressing + motivated lights (canonWorld only)
     x3::game::RoomDressing canonRooms;         // WAVE-3 recipe dressing for the other 52 rooms (canonWorld only)
+    x3::game::FacilityExterior facilityExterior; // SEAM 2: the glass exterior wrapping the REAL tower (canonWorld only)
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
     // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
     // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
@@ -1306,6 +1308,41 @@ int runDefaultHost(HostContext& hc) {
                 hatchCx = jc.cx + 1.4f; hatchCz = jc.cz - 1.1f;
                 copts.hatchRoom = cbt.jakeCell;
                 copts.hatchCx = hatchCx; copts.hatchCz = hatchCz; copts.hatchHalf = 0.9f;
+            }
+            // ---- SEAM 2 (world merge): the tower gets ONE real way in/out. Compute
+            // the above-ground footprint (deep cave/sub-level rooms excluded), pick
+            // the walkable F1 room whose exterior wall sits ON the footprint edge —
+            // the data literally authors an "Entrance" hallway on the +Z edge — and
+            // have the floor builder cut a doorway-style breach in that wall. The
+            // glass facade (built below, wrapped `kExtPad` m outside the footprint,
+            // clear of the R-9 skirt's 0.14 m offset) opens at the same center, so
+            // the player can WALK from inside F1 out onto the apron. ----
+            float extX0 = 1e9f, extX1 = -1e9f, extZ0 = 1e9f, extZ1 = -1e9f, extTop = -1e9f;
+            for (const x3::game::CanonRoom& r : canonFloor.rooms) {
+                if (r.cy <= -50.0f) continue;              // deep zone: not the tower shell
+                extX0 = std::min(extX0, r.x0()); extX1 = std::max(extX1, r.x1());
+                extZ0 = std::min(extZ0, r.z0()); extZ1 = std::max(extZ1, r.z1());
+                extTop = std::max(extTop, r.y1());
+            }
+            constexpr float kExtPad = 3.0f;                // facade outside skirt+walls, no z-fight
+            const uint32_t entrRoom = canonFloor.roomByName("Entrance");
+            int   breachFace = 3; float breachCenter = 0.0f;
+            if (entrRoom != x3::game::kNoRoom && extX1 > extX0) {
+                const x3::game::CanonRoom& er = canonFloor.rooms[entrRoom];
+                // The exterior face = whichever room wall lies nearest the footprint edge.
+                const float dist[4] = { er.x0() - extX0, extX1 - er.x1(),
+                                        er.z0() - extZ0, extZ1 - er.z1() };
+                breachFace = 0;
+                for (int f = 1; f < 4; ++f) if (dist[f] < dist[breachFace]) breachFace = f;
+                const float halfCut = 1.5f;                // 3 m opening in the room wall
+                const bool faceIsX = breachFace < 2;
+                const float lo = (faceIsX ? er.z0() : er.x0()) + halfCut + 0.2f;
+                const float hi = (faceIsX ? er.z1() : er.x1()) - halfCut - 0.2f;
+                breachCenter = std::min(std::max(faceIsX ? er.cz : er.cx, lo), hi);
+                copts.breachRoom = entrRoom;
+                copts.breachFace = breachFace;
+                copts.breachCenter = breachCenter;
+                copts.breachHalf = halfCut;
             }
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
             // W2-A2 (punch-list P0 #5): DOOR SOUNDS — wire the audio system + the
@@ -1570,6 +1607,51 @@ int runDefaultHost(HostContext& hc) {
                             " -> Research " + rc(bt.research) + " -> Medical " + rc(bt.medical) +
                             " -> Armory " + rc(bt.armory) + " -> Boss Arena " + rc(bt.bossArena) +
                             " -> Elevator Lobby " + rc(bt.elevatorLobby));
+            }
+            // ---- SEAM 2 (world merge): THE GLASS EXTERIOR WRAPS THE REAL TOWER.
+            // The surface world's facility skin (app/facility_exterior.*, factored
+            // from host_surface_start) built around the canon footprint at canon
+            // coordinates: near-black backing walls + collision, the batched glass
+            // curtain wall, white-concrete spandrel bands + parapet, the breach
+            // (aligned with the Entrance-room wall cut above) + vestibule + amber
+            // sign/spill, a walkable concrete apron ring + soil skirt, and the
+            // shared golden-hour sky so outdoors reads under sun/IBL. Everything
+            // is tagged kNoRoom (always drawn under the PVS cull, like the R-9
+            // skirt); the interior is untouched — the exterior came to IT. ----
+            if (entrRoom != x3::game::kNoRoom && extX1 > extX0 && extTop > -1e8f) {
+                const x3::game::CanonRoom& er = canonFloor.rooms[entrRoom];
+                x3::game::FacilityExterior::Desc fd;
+                fd.x0 = extX0 - kExtPad; fd.x1 = extX1 + kExtPad;
+                fd.z0 = extZ0 - kExtPad; fd.z1 = extZ1 + kExtPad;
+                fd.baseY = er.y0();                    // walk-out level = the Entrance floor
+                fd.topY  = extTop;
+                fd.breachFace   = (x3::game::FacilityExterior::Face)breachFace;
+                fd.breachCenter = breachCenter;
+                fd.breachHalfW  = 2.4f;                // the surface facility's breach width
+                fd.roofSlab = true;  fd.roofLift = 0.6f;   // clear the F7 ceiling lids
+                fd.floorSlab = false;                  // the tower brings its own floors
+                fd.vestibuleDepth = kExtPad;           // floored walk across the interstice
+                fd.vestibuleHalfW = 1.5f + 0.2f;       // room cut half + wall thickness
+                fd.apron = x3::game::FacilityExterior::Apron::Ring;
+                fd.apronOut = 24.0f; fd.soilOut = 150.0f;
+                fd.mergePanes = true;                  // ~27 storeys: batch the panes
+                fd.breachRoomHint = entrRoom;
+                // Share RoomDressing's surface library: its GPU textures already
+                // hold the recipe concrete sets (no duplicate multi-MB decodes).
+                facilityExterior.build(scene, *device, *physics, fd,
+                                       &canonRooms.surfaceLibrary());
+                x3::game::FacilityExterior::applyGoldenHourSky(*device);
+                // The sky's baked irradiance at full strength shifted the
+                // calibrated interior reads (the FP viewmodel washed pink-white
+                // vs the pre-merge baseline): scale the IBL ambient so interiors
+                // match the baseline (eye-compared) while the facade's shadow
+                // side keeps enough sky fill to read its banding. Sun, sky
+                // background and the glass pass's reflections are unscaled.
+                device->setIblIntensity(0.5f);
+                x3::boot::mark("SEAM 2 exterior (facade wraps the tower)");
+            } else {
+                x3::logWarn("--world canonlevel: SEAM-2 exterior skipped (no Entrance room "
+                            "or empty footprint) — tower stays interior-only");
             }
         } else {
             // JSON absent on this machine -> fall back to the legacy tower build so the
@@ -2771,6 +2853,12 @@ int runDefaultHost(HostContext& hc) {
                     ssEye.x, ssEye.y, ssEye.z, ssYaw, ssPitch, ssFov, 16.0f / 9.0f);
                 canonFloor.floodVisibleRoomsAt(ssEye.x, ssEye.y, ssEye.z, fr, &canonDoors,
                                                6, kCanonRoomBudget, canonVisRooms);
+                // SEAM 2: an OUTDOOR shot camera (on the apron) is in no room — the
+                // flood already seeded from the nearest room so the world never
+                // blanks; also force the breach room in so the interior read
+                // through the open breach is stable from any outdoor vantage.
+                facilityExterior.ensureOutdoorVis(canonFloor, ssEye.x, ssEye.y, ssEye.z,
+                                                  canonVisRooms);
                 scene.setRoomCullEnabled(true);
                 scene.setVisibleRooms(canonVisRooms);
                 std::vector<x3::rhi::PointLight> cl;
@@ -2783,6 +2871,7 @@ int runDefaultHost(HostContext& hc) {
                 }
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    ssEye.x, ssEye.y, ssEye.z, cl, 16);
+                if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
             }
@@ -2802,6 +2891,7 @@ int runDefaultHost(HostContext& hc) {
                     canonRooms.applyZoneAtmosphere(*device,
                         canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z));
                     canonDoors.drawMeshes(*device, frame);
+                    facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
                 }
@@ -3371,6 +3461,8 @@ int runDefaultHost(HostContext& hc) {
                         eye.x, eye.y, eye.z, vmYaw, vmPitch, 60.0f, 16.0f / 9.0f);
                     canonFloor.floodVisibleRoomsAt(eye.x, eye.y, eye.z, fr, &canonDoors,
                                                    depth, kCanonRoomBudget, canonVisRooms);
+                    facilityExterior.ensureOutdoorVis(canonFloor, eye.x, eye.y, eye.z,
+                                                      canonVisRooms);   // SEAM 2 outdoor guard
                     scene.setVisibleRooms(canonVisRooms);
                     g_visPvsMs = std::chrono::duration<float, std::milli>(
                         std::chrono::steady_clock::now() - pvsT0).count();
@@ -3386,6 +3478,7 @@ int runDefaultHost(HostContext& hc) {
                 }
                 uint32_t nLit = x3::game::selectVisibleCanonLights(
                     canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, 16);
+                if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
                 if (i == 0)
@@ -3415,6 +3508,7 @@ int runDefaultHost(HostContext& hc) {
                 if (canonWorld && canonFloor.valid()) {
                     canonDressing.draw(*device, frame); // opening-space props
                     canonRooms.draw(*device, frame, canonVisRooms);
+                    facilityExterior.draw(*device, frame);   // SEAM 2: facade skin
                 }
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
@@ -5293,6 +5387,12 @@ int runDefaultHost(HostContext& hc) {
                 } else {
                     canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
                 }
+                // SEAM 2: standing OUTDOORS (roomAt == kNoRoom, on the apron) the
+                // flood seeds from the nearest room so the world never blanks; the
+                // guard also keeps the breach room in the set so the interior seen
+                // through the open breach never pops. Exterior entities themselves
+                // are kNoRoom-tagged (always drawn).
+                facilityExterior.ensureOutdoorVis(canonFloor, camX, camY, camZ, canonVisRooms);
                 // OPENING-SPACE motivated lights (flickering cell tube / red alarm / cyan
                 // terminal) for the visible dressed rooms — inserted at the FRONT so the cap
                 // never drops these key lights, then the room ceiling lights fill in.
@@ -5304,6 +5404,8 @@ int runDefaultHost(HostContext& hc) {
                 // Cap lights at 16 closest-to-eye over the SAME visible-room set.
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    camX, camY, camZ, fl, 16);
+                // SEAM 2: the amber breach spill (the way-in read from the apron).
+                if (facilityExterior.built()) fl.push_back(facilityExterior.spillLight());
             }
             // FROMDOC LIGHTING: append the LevelDoc's authored point lights (closest
             // 16 to the eye) after the flashlight, mirroring the canonlevel feed.
@@ -6146,6 +6248,7 @@ int runDefaultHost(HostContext& hc) {
             if (canonWorld && canonFloor.valid()) {
                 canonDressing.draw(*device, frame);
                 canonRooms.draw(*device, frame, canonVisRooms);
+                facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
             }
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/

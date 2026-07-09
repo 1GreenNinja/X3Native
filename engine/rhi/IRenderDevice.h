@@ -271,6 +271,15 @@ public:
     // 1.0 = default ON, 0.0 = off. Drives the live r_metalambient cvar.
     virtual void setMetalAmbient(float s) {}
 
+    // IBL ambient intensity (mesh.frag ssao.ibl.y): scales the ENTIRE image-based
+    // ambient term (diffuse irradiance + prefiltered specular) once a sky env is
+    // baked. 1.0 = default (unchanged behavior). SEAM 2 (world merge): a host with
+    // a bright outdoor sky wrapped around a mood-calibrated INTERIOR (canonlevel's
+    // facility tower) dials this down so the sky's irradiance doesn't wash the
+    // interior rooms white — the analytic-sky background, the direct sun and the
+    // glass pass's own env reflections are all untouched.
+    virtual void setIblIntensity(float s) {}
+
     // HDR post-stack settings (tonemap / bloom gate / auto-exposure), synced per
     // frame from the r_* cvars. Defaults preserve the device-side behavior when the
     // app never calls this (headless screenshot/test paths included).

@@ -1479,7 +1479,7 @@ void VulkanRenderDevice::prepareFrameData() {
             // IBL lane: valid only once an environment has been baked into the cubes.
             // .w = metal ambient-specular floor strength (r_metalambient, default 1).
             const float iblValid = (m_iblReady && m_iblBaked) ? 1.0f : 0.0f;
-            sc.ibl = glm::vec4(iblValid, 1.0f, (float)(kIblPrefilterMips - 1), m_metalAmbient);
+            sc.ibl = glm::vec4(iblValid, m_iblIntensity, (float)(kIblPrefilterMips - 1), m_metalAmbient);
             // Reflections lane (mesh.frag set3): x gates the reflTex sample + IBL
             // blend; y is the live intensity. ONLY set when the refl pass actually
             // runs this frame, so mesh.frag never reads a stale/unwritten buffer.

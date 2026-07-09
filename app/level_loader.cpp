@@ -1220,6 +1220,26 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         }
     }
 
+    // ---- SEAM 2 (world merge): the EXTERIOR BREACH — a doorway-style cut
+    // (gap + lintel via the same wall builders as every resolved doorway) in
+    // one room's EXTERIOR wall, so the player can walk out through the glass
+    // facility facade (app/facility_exterior.*). No CanonDoorway is added:
+    // the outside is not a room, so the PVS/lint doorway graph is untouched.
+    if (opts.breachRoom != kNoRoom && opts.breachRoom < nRooms) {
+        const CanonRoom& br = floor.rooms[opts.breachRoom];
+        const Gap g{ opts.breachCenter, br.y0() + kLintel, opts.breachHalf };
+        switch (opts.breachFace) {
+            case 0:  gapXneg[opts.breachRoom].push_back(g); break;
+            case 1:  gapXpos[opts.breachRoom].push_back(g); break;
+            case 2:  gapZneg[opts.breachRoom].push_back(g); break;
+            default: gapZpos[opts.breachRoom].push_back(g); break;
+        }
+        x3::logInfo("buildCanonFloor: SEAM-2 exterior breach cut in '" + br.name +
+                    "' face " + std::to_string(opts.breachFace) + " at " +
+                    std::to_string(opts.breachCenter) + " (half " +
+                    std::to_string(opts.breachHalf) + ")");
+    }
+
     // Helper: build a wall along Z (plane x=const) for room `ri`, with doorway gaps at
     // the given z coordinates (each a 1.2 m opening + lintel).
     auto buildWallZWithGaps = [&](uint32_t ri, float x, float z0, float z1, float floorY, float h,

@@ -48,7 +48,7 @@
 #include "../rescue.h"
 #include "../monster.h"
 #include "../asset_root.h"
-#include "../surface_library.h"      // W3-3: real PBR concrete on the tower + apron (ART_BIBLE §4)
+#include "../facility_exterior.h"    // SEAM 2: the factored tower/apron/glass/breach builder
 #include "../terrain.h"              // W8-3: horizon ring (far-terrain stitch)
 #include "../city.h"                 // W8-3: city massing in the middle distance
 #include "../intro_orchestrator.h"   // IntroOutcome / readOutcomeFlag / kIntroLandedFlag (--test-surfacestart)
@@ -69,9 +69,8 @@ constexpr float kFacilityHalfW= 26.0f;    // facility half-width  (X)
 // glass shoebox; the older-still art was 40-50 m too tall. 36 m is the middle.
 constexpr float kFacilityHalfH= 18.0f;    // facility half-height (Y) — 9 storeys
 constexpr float kFacilityHalfD= 16.0f;    // facility half-depth  (Z)
-constexpr float kStoreyH      = 4.0f;     // one storey
-constexpr float kBandH        = 1.8f;     // concrete spandrel band height per storey
-constexpr int   kStoreys      = 9;
+// (SEAM 2: storey height / band height / storey count now live in
+// app/facility_exterior.cpp — 4 m storeys derived from the tower height.)
 constexpr float kBreachHalfW  = 2.4f;     // entry breach half-width
 constexpr float kEntryReach   = 6.0f;     // distance to the breach that triggers the hand-off
 constexpr float kApproachZ    = -22.0f;   // crossing this advances "approach" objective
@@ -96,21 +95,34 @@ int hostSurfaceStart(HostContext& hc) {
         return 1;
     }
 
-    // ---- Sky + lighting: GOLDEN HOUR (ART_BIBLE §3 surface zone — the sky is the
-    // accent). Low warm sun raking the tower face; warm horizon, cooling zenith.
+    // ---- Sky + lighting: GOLDEN HOUR (ART_BIBLE §3 surface zone — the sky is
+    // the accent). SEAM 2: the exact params now live in the shared exterior
+    // module so the canon tower reads under the SAME light.
+    x3::game::FacilityExterior::applyGoldenHourSky(*device);
+
+    x3::game::Scene scene;
+
+    // ---- SEAM 2: the whole facility EXTERIOR (soil plate, apron panel, the
+    // near-black backing walls + collision, the glass curtain wall with its
+    // per-pane jitter, spandrel bands + parapet + jambs + amber sign, and the
+    // open breach + glowing marker) is now built by the factored module with
+    // this host's original constants — --world surface keeps its exact look.
+    x3::game::FacilityExterior facilityExt;
     {
-        x3::rhi::IRenderDevice::SkyParams sp{};
-        sp.enabled = true;
-        sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.16f; sp.sunDir[2] = -0.35f;   // low, from the player's right
-        // (R4: 1.0/0.62/0.38 @1.5 baked every white surface ORANGE-BROWN — late
-        // golden, not cardboard. Softened toward amber so white concrete reads white-warm.)
-        // W6-2: cooled again (0.78/0.56 -> 0.87/0.72) — golden hour lives in the SKY
-        // (horizon band), not baked into every lit surface; the white tower stays white.
-        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.87f; sp.sunColor[2] = 0.72f;
-        sp.sunIntensity = 1.25f; sp.haze = 0.45f; sp.exposure = 1.0f;
-        sp.zenith[0]  = 0.10f; sp.zenith[1]  = 0.15f; sp.zenith[2]  = 0.26f;  // cooling blue above
-        sp.horizon[0] = 0.55f; sp.horizon[1] = 0.34f; sp.horizon[2] = 0.20f;  // warm gold band
-        device->setSkyParams(sp);
+        x3::game::FacilityExterior::Desc fd;
+        fd.x0 = -kFacilityHalfW;                  fd.x1 = kFacilityHalfW;
+        fd.z0 = kFacilityZ - 2.0f * kFacilityHalfD; fd.z1 = kFacilityZ;
+        fd.baseY = kGroundY;                      fd.topY = kGroundY + 2.0f * kFacilityHalfH;
+        fd.breachFace  = x3::game::FacilityExterior::Face::PlusZ;
+        fd.breachCenter = 0.0f;
+        fd.breachHalfW  = kBreachHalfW;
+        fd.roofSlab = true; fd.floorSlab = true;
+        fd.apron = x3::game::FacilityExterior::Apron::SurfacePanel;
+        fd.apronPanelW = 70.0f; fd.apronPanelD = 66.0f;
+        fd.apronAnchorX = 0.0f; fd.apronAnchorY = 0.02f; fd.apronAnchorZ = kFacilityZ - 4.0f;
+        fd.terrainPlate = true;                   // the 300 m dark soil plain
+        fd.mergePanes = false;                    // original per-pane draws
+        facilityExt.build(scene, *device, *phys, fd);
     }
     {
         // A couple of fill point lights INSIDE the facility so Sarah + the glow
@@ -123,57 +135,11 @@ int hostSurfaceStart(HostContext& hc) {
         pl[1].range = 50.0f;
         pl[1].color[0] = 7.0f; pl[1].color[1] = 6.0f; pl[1].color[2] = 5.0f;    // warm sun bounce on the ship
         device->setPointLights(pl, 2);
-        // W6-2: breach light spill — a warm interior glow leaking out of the entry
-        // (drawn as a third light; registered separately so the two fills above
-        // keep their indices for any code that assumes them).
-        x3::rhi::PointLight all[3] = { pl[0], pl[1], {} };
-        all[2].pos[0] = 0.0f; all[2].pos[1] = 2.2f; all[2].pos[2] = kFacilityZ + 1.5f;
-        all[2].range = 14.0f;
-        all[2].color[0] = 3.2f; all[2].color[1] = 2.2f; all[2].color[2] = 1.2f;  // amber spill at the breach
+        // W6-2: breach light spill — the module's amber glow at the entry
+        // (registered third so the two fills keep their indices).
+        x3::rhi::PointLight all[3] = { pl[0], pl[1], facilityExt.spillLight() };
         device->setPointLights(all, 3);
     }
-
-    x3::game::Scene scene;
-
-    // ---- SURFACE LIBRARY: real PBR concrete for the tower + apron (§4 realism
-    // mandate — no more checker ground / flat glass slab). Sets are curated +
-    // channel-law converted; loaded once here, drawn per-frame below.
-    x3::game::SurfaceLibrary surflib;
-    surflib.mount(x3::game::assetRoot() + "/surface_library");
-    // W6-2: cc_cement_white — a TRUE white concrete curated for the tower spec
-    // (Command Center 'Cement_Clean', albedo lifted to mean ~222 at curation time,
-    // neutral grey source = zero tan cast under the warm sun). Replaces the
-    // mw_wall_plastic stand-in whose sheet-plastic albedo baked tan at golden hour.
-    const x3::game::SurfaceSet& sTower  = surflib.get(*device, "cc_cement_white");
-    const x3::game::SurfaceSet& sApron  = surflib.get(*device, "sr_concrete_01");      // rough dark concrete apron
-    x3::logInfo(std::string("--world surface: surface sets tower=") +
-                (sTower.ok ? "cc_cement_white OK" : "MISSING") + " apron=" +
-                (sApron.ok ? "sr_concrete_01 OK" : "MISSING"));
-
-    // ---- Ground: a DARK natural plain (collision + far read) with a textured
-    // concrete APRON panel between the landing site and the facility entrance.
-    {
-        x3::prims::PrimMesh g = x3::prims::makeBox(300.0f, 0.5f, 300.0f, 0.0f, -0.5f, 0.0f, 8.0f);
-        auto gm = device->createMesh(g.verts.data(), (uint32_t)g.verts.size(),
-                                     g.index.data(), (uint32_t)g.index.size());
-        auto gtD = x3::prims::makeCheckerRGBA(64, 16, 46, 42, 36, 38, 35, 30);   // dark umber soil, low contrast
-        auto gt = device->createTexture(gtD.data(), 64, 64, true);
-        x3::game::Entity e{}; e.mesh = gm; e.tex = gt;
-        e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 1.0f;
-        e.tag = (uint32_t)x3::game::Tag::Static;
-        scene.add(e);
-        // Static collision floor so the Player capsule stands on it.
-        phys->addBox(x3::phys::Vec3{300.0f, 0.5f, 300.0f}, x3::phys::Vec3{0.0f, -0.5f, 0.0f},
-                     0.0f, x3::phys::Layer::Static);
-    }
-    // Apron panel (visual, sits 2 cm over the soil so it wins the depth test):
-    // spans the walk from spawn to the front wall, wider than the facility face.
-    // (floor panels span x in [-w/2,w/2], z in [0,h] from the transform origin —
-    // anchor at z = kFacilityZ-4 so the slab runs from under the wall out past
-    // the landed ship at z=6 / the spawn at z=18.)
-    x3::rhi::MeshHandle apronMesh = surflib.makePanel(*device, /*floor*/1, 70.0f, 66.0f, 3.0f);
-    const float apronXform[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
-                                   0.0f, kGroundY + 0.02f, kFacilityZ - 4.0f, 1 };
 
     // ---- W8-3 HORIZON STITCH: the apron used to end at a hard 300 m plate edge
     // against empty sky. The canonical world field (terrain.cpp worldFeatures)
@@ -201,249 +167,9 @@ int hostSurfaceStart(HostContext& hc) {
                     "city massing in the middle distance");
     }
 
-    // ---- The GLASS FACILITY exterior. A large box walled in translucent glass:
-    //      four glass walls (front split around the entry breach) + an opaque
-    //      roof + an opaque floor slab. Reuses Entity.transparent + GlassMaterial
-    //      (the transparent pass; app/glass_test.h). Static collision boxes back
-    //      the walls so the player can't walk through the glass (except the breach).
-    auto glassWall = [&](float cx, float cy, float cz, float hx, float hy, float hz) {
-        x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 1.0f);
-        auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
-                                     m.index.data(), (uint32_t)m.index.size());
-        // W3-3: BLACK GLASS per the tower spec — dark, reflective, near-opaque
-        // (a corporate curtain wall at golden hour mirrors the sky; it does NOT
-        // read as light-blue aquarium glass). The concrete spandrel bands draw
-        // 5 cm proud of this plane, giving the banded facade.
-        auto td = x3::prims::makeSolidRGBA(8, 14, 16, 20);
-        auto tx = device->createTexture(td.data(), 8, 8, true);
-        x3::game::Entity e{}; e.mesh = mh; e.tex = tx;
-        // W8-2: this box is now the BACKING behind the real glass curtain wall —
-        // opaque near-black, it reads as (a) the dark mullion grid in the gaps
-        // between the glass panels and (b) the near-black transmission BEHIND
-        // each pane (the glass refraction path samples it through the panel).
-        // It still carries the collision. R4's streak diagnosis ("box
-        // triangulation shading") was wrong — the streaks were glass.frag's
-        // world-space sine glint band, killed in the shader (W8-2), which is
-        // what lets translucent glass ship on the tower now.
-        e.transparent = false;
-        e.baseColor[0] = 0.30f; e.baseColor[1] = 0.34f; e.baseColor[2] = 0.42f;
-        e.baseColor[3] = 1.0f;
-        e.tag = (uint32_t)x3::game::Tag::Static;
-        scene.add(e);
-        phys->addBox(x3::phys::Vec3{hx, hy, hz}, x3::phys::Vec3{cx, cy, cz},
-                     0.0f, x3::phys::Layer::Static);
-    };
-    auto opaqueSlab = [&](float cx, float cy, float cz, float hx, float hy, float hz,
-                          uint8_t r, uint8_t g, uint8_t b) {
-        x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 2.0f);
-        auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
-                                     m.index.data(), (uint32_t)m.index.size());
-        auto td = x3::prims::makeSolidRGBA(8, r, g, b);
-        auto tx = device->createTexture(td.data(), 8, 8, true);
-        x3::game::Entity e{}; e.mesh = mh; e.tex = tx;
-        e.tag = (uint32_t)x3::game::Tag::Static;
-        scene.add(e);
-        phys->addBox(x3::phys::Vec3{hx, hy, hz}, x3::phys::Vec3{cx, cy, cz},
-                     0.0f, x3::phys::Layer::Static);
-    };
-
-    const float fcx = 0.0f, fcy = kFacilityHalfH, fcz = kFacilityZ - kFacilityHalfD;
-    const float wallT = 0.4f;                          // wall thickness (half-Z/X)
-    // FRONT wall (player-facing, at z=kFacilityZ), split around the central breach.
-    {
-        const float frontZ = kFacilityZ;
-        const float sideW = (kFacilityHalfW - kBreachHalfW) * 0.5f;
-        // left of breach
-        glassWall(-(kBreachHalfW + sideW), kFacilityHalfH, frontZ, sideW, kFacilityHalfH, wallT);
-        // right of breach
-        glassWall( (kBreachHalfW + sideW), kFacilityHalfH, frontZ, sideW, kFacilityHalfH, wallT);
-        // lintel above the breach (so the breach is a doorway, not a full-height gap)
-        glassWall(0.0f, kFacilityHalfH + 1.6f, frontZ, kBreachHalfW, kFacilityHalfH - 1.6f, wallT);
-    }
-    // BACK wall.
-    glassWall(0.0f, kFacilityHalfH, kFacilityZ - 2.0f * kFacilityHalfD, kFacilityHalfW, kFacilityHalfH, wallT);
-    // SIDE walls.
-    glassWall(-kFacilityHalfW, kFacilityHalfH, fcz, wallT, kFacilityHalfH, kFacilityHalfD);
-    glassWall( kFacilityHalfW, kFacilityHalfH, fcz, wallT, kFacilityHalfH, kFacilityHalfD);
-    // ROOF + interior FLOOR slab (opaque).
-    opaqueSlab(0.0f, 2.0f * kFacilityHalfH, fcz, kFacilityHalfW, wallT, kFacilityHalfD, 40, 44, 52);
-    opaqueSlab(0.0f, 0.05f, fcz, kFacilityHalfW, 0.1f, kFacilityHalfD, 30, 32, 38);
-
-    // ---- BREACH MARKER: a glowing frame around the entry (the hand-off point).
-    {
-        opaqueSlab(0.0f, kBreachHalfW + 1.0f, kFacilityZ, kBreachHalfW + 0.3f, 0.25f, wallT + 0.1f, 90, 200, 255);
-        // The breach itself is the gap (no wall) — left open so the player walks in.
-        x3::logInfo("--world surface: glass facility built (front wall split around the entry breach)");
-    }
-
-    // ---- W3-3: CONCRETE SPANDREL BANDS over the black glass (the tower spec).
-    // One reusable band quad per face size, instanced by transform: a 1.8 m
-    // concrete band at every storey line + a ground base + a rooftop parapet,
-    // drawn 5 cm proud of the glass planes. Front-face ground band splits around
-    // the breach; storey-1's band doubles as the entrance header.
-    const float kTowerH = 2.0f * kFacilityHalfH;                    // 36 m
-    x3::rhi::MeshHandle bandFB = surflib.makePanel(*device, 0, 2.0f * kFacilityHalfW + 0.8f, kBandH, 2.6f); // front/back span
-    x3::rhi::MeshHandle bandLR = surflib.makePanel(*device, 0, 2.0f * kFacilityHalfD + 0.8f, kBandH, 2.6f); // side span
-    x3::rhi::MeshHandle baseSeg = surflib.makePanel(*device, 0, (kFacilityHalfW - kBreachHalfW) - 0.6f, 1.2f, 2.6f); // breach-split base
-    x3::rhi::MeshHandle jambSeg = surflib.makePanel(*device, 0, 1.0f, 4.2f, 2.6f);   // W6-2: entrance jamb piers
-    x3::rhi::MeshHandle signSeg = surflib.makePanel(*device, 0, 2.0f * kBreachHalfW, 0.7f, 2.6f); // W6-2: entrance sign strip
-    struct BandDraw { x3::rhi::MeshHandle mesh; float xform[16]; };
-    std::vector<BandDraw> bands;
-    // yaw matrices: panels face -Z at yaw 0 (axis 0). yaw pi -> +Z (front face,
-    // toward the player); +-pi/2 -> +-X (sides).
-    auto pushBand = [&](x3::rhi::MeshHandle mesh, float yaw, float x, float y, float z) {
-        const float c = std::cos(yaw), s = std::sin(yaw);
-        BandDraw b{}; b.mesh = mesh;
-        float m[16] = { c,0,-s,0, 0,1,0,0, s,0,c,0, x,y,z,1 };
-        for (int i = 0; i < 16; ++i) b.xform[i] = m[i];
-        bands.push_back(b);
-    };
-    {
-        const float zF = kFacilityZ + wallT + 0.05f;                 // front plane, proud toward +Z
-        const float zB = kFacilityZ - 2.0f * kFacilityHalfD - wallT - 0.05f;
-        const float xL = -kFacilityHalfW - wallT - 0.05f;
-        const float xR =  kFacilityHalfW + wallT + 0.05f;
-        const float zC = kFacilityZ - kFacilityHalfD;                // side-face center
-        const float kPi = 3.14159265f;
-        for (int f = 1; f < kStoreys; ++f) {                         // storey lines
-            const float y = f * kStoreyH - kBandH * 0.5f;
-            pushBand(bandFB, kPi,        0.0f, y, zF);
-            pushBand(bandFB, 0.0f,       0.0f, y, zB);
-            pushBand(bandLR,  kPi*0.5f,  xL,   y, zC);   // R3: side yaws were swapped —
-            pushBand(bandLR, -kPi*0.5f,  xR,   y, zC);   // faces pointed INTO the tower
-        }
-        // Parapet crown (one band height, sitting atop the roof line).
-        pushBand(bandFB, kPi,       0.0f, kTowerH - 0.2f, zF);
-        pushBand(bandFB, 0.0f,      0.0f, kTowerH - 0.2f, zB);
-        pushBand(bandLR,  kPi*0.5f, xL,   kTowerH - 0.2f, zC);
-        pushBand(bandLR, -kPi*0.5f, xR,   kTowerH - 0.2f, zC);
-        // W6-2: parapet-DEPTH extension — a second crown row rising past the roof
-        // slab so low near cameras never frame the slab's bare underside floating
-        // above the glass (the W3-3 framing quirk). Reads as a real parapet wall.
-        pushBand(bandFB, kPi,       0.0f, kTowerH - 0.2f + kBandH * 0.9f, zF);
-        pushBand(bandFB, 0.0f,      0.0f, kTowerH - 0.2f + kBandH * 0.9f, zB);
-        pushBand(bandLR,  kPi*0.5f, xL,   kTowerH - 0.2f + kBandH * 0.9f, zC);
-        pushBand(bandLR, -kPi*0.5f, xR,   kTowerH - 0.2f + kBandH * 0.9f, zC);
-        // W6-2: ENTRANCE PRESENCE — vertical jambs flanking the breach (the base
-        // band already splits around it; the jambs give the opening a built frame).
-        pushBand(jambSeg, kPi, -(kBreachHalfW + 0.55f), 2.1f, zF);
-        pushBand(jambSeg, kPi,  (kBreachHalfW + 0.55f), 2.1f, zF);
-        // Ground base: full band on back/sides; split around the breach on front.
-        pushBand(bandFB, 0.0f,      0.0f, 0.0f, zB);
-        pushBand(bandLR,  kPi*0.5f, xL,   0.0f, zC);
-        pushBand(bandLR, -kPi*0.5f, xR,   0.0f, zC);
-        const float segOff = kBreachHalfW + 0.3f + ((kFacilityHalfW - kBreachHalfW) - 0.6f) * 0.5f;
-        pushBand(baseSeg, kPi, -segOff, 0.0f, zF);
-        pushBand(baseSeg, kPi,  segOff, 0.0f, zF);
-        x3::logInfo("--world surface: tower facade = " + std::to_string(bands.size()) +
-                    " concrete spandrel bands over black glass (9 storeys + parapet)");
-    }
-
-    // ---- W8-2: REAL GLASS CURTAIN WALL — per-panel translucent glazing. ------
-    // The glass strips between the spandrel bands are re-glazed as INDIVIDUAL
-    // panes drawn through the glass pass (drawMeshGlass): each panel is a thin
-    // quad 2 cm proud of the near-black backing wall, separated by ~14 cm gaps
-    // where the dark backing shows through as the mullion grid. Every pane gets
-    // a hashed micro-variation — a fraction-of-a-degree TILT (so the low sun's
-    // mirror image walks across panels instead of igniting the whole face at
-    // once — the thing that makes real curtain walls read as glass), plus small
-    // tint / roughness / opacity jitter so the facade doesn't render as one
-    // continuous mirror. Reflections come from the engine's split-sum IBL
-    // (glass.frag M3-R): the golden-hour sky + sun are IN the prefiltered env,
-    // so panes mirror the sky gradient and catch the sun where geometry says so.
-    x3::prims::PrimMesh gpm = x3::prims::makeBox(0.5f, 0.5f, 0.015f, 0, 0, 0, 1.0f);
-    x3::rhi::MeshHandle glassPanelMesh = device->createMesh(
-        gpm.verts.data(), (uint32_t)gpm.verts.size(),
-        gpm.index.data(), (uint32_t)gpm.index.size());
-    auto glassTexD = x3::prims::makeSolidRGBA(8, 255, 255, 255);   // body color rides the factor
-    auto glassPanelTex = device->createTexture(glassTexD.data(), 8, 8, true);
-    struct GlassPanelDraw {
-        float xform[16];
-        float base[4];
-        x3::rhi::IRenderDevice::GlassMaterial mat;
-    };
-    std::vector<GlassPanelDraw> glassPanels;
-    {
-        // Integer-hash micro-variation (deterministic per pane).
-        auto h01 = [](uint32_t s) {
-            s ^= s >> 16; s *= 0x7feb352du; s ^= s >> 15; s *= 0x846ca68bu; s ^= s >> 16;
-            return (float)(s & 0xffffffu) / 16777216.0f;
-        };
-        // One pane: center (px,py,pz), outward-normal yaw (local +Z -> world),
-        // w x h meters, seeded jitter. M = T * RotY(yaw+dh) * RotX(dp) * S(w,h,1).
-        auto pushPane = [&](float yaw, float px, float py, float pz,
-                            float w, float h, uint32_t seed) {
-            const float r0 = h01(seed * 3u + 11u), r1 = h01(seed * 3u + 12u),
-                        r2 = h01(seed * 3u + 13u);
-            const float dh = (r0 - 0.5f) * 0.016f;   // heading tilt, ~±0.46 deg
-            const float dp = (r1 - 0.5f) * 0.016f;   // pitch tilt
-            const float c = std::cos(yaw + dh), s = std::sin(yaw + dh);
-            const float cp = std::cos(dp),      sp = std::sin(dp);
-            GlassPanelDraw p{};
-            const float m[16] = {
-                c * w,       0.0f,     -s * w,      0,
-                sp * s * h,  cp * h,    sp * c * h, 0,
-                cp * s,     -sp,        cp * c,     0,
-                px,          py,        pz,         1 };
-            for (int i = 0; i < 16; ++i) p.xform[i] = m[i];
-            // Dark body — a black-glass pane is mostly its reflection.
-            p.base[0] = 0.055f; p.base[1] = 0.065f; p.base[2] = 0.080f; p.base[3] = 1.0f;
-            p.mat.opacity    = 0.66f + (r1 - 0.5f) * 0.16f;    // 0.58..0.74 (dark transmission)
-            p.mat.refraction = 0.004f;                          // near-flat float glass
-            p.mat.roughness  = 0.035f + r0 * 0.10f;             // polished, pane-varied
-            p.mat.specular   = 1.0f;
-            p.mat.tint[0] = 0.60f + (r2 - 0.5f) * 0.10f;        // steel-blue family
-            p.mat.tint[1] = 0.66f + (r0 - 0.5f) * 0.08f;
-            p.mat.tint[2] = 0.70f + (r1 - 0.5f) * 0.10f;
-            glassPanels.push_back(p);
-        };
-        const float kPi = 3.14159265f;
-        // Glass planes sit 2 cm proud of the backing wall faces (bands are 5 cm
-        // proud -> panes read RECESSED 3 cm behind the concrete, like real infill).
-        const float gzF = kFacilityZ + wallT + 0.02f;                       // front, +Z out
-        const float gzB = kFacilityZ - 2.0f * kFacilityHalfD - wallT - 0.02f; // back, -Z out
-        const float gxL = -kFacilityHalfW - wallT - 0.02f;                  // left, -X out
-        const float gxR =  kFacilityHalfW + wallT + 0.02f;                  // right, +X out
-        const float zC  = kFacilityZ - kFacilityHalfD;                      // side-face center
-        // Glass strip per storey: between the base band / storey bands / parapet.
-        struct Strip { float yBot, yTop; };
-        Strip strips[kStoreys];
-        for (int f = 0; f < kStoreys; ++f) {
-            strips[f].yBot = (f == 0) ? kBandH                               // top of ground base band
-                                      : f * kStoreyH + kBandH * 0.5f;
-            strips[f].yTop = (f + 1 < kStoreys) ? (f + 1) * kStoreyH - kBandH * 0.5f
-                                                : kTowerH - 0.2f;            // parapet base
-        }
-        const float kGap = 0.14f;   // mullion gap (backing shows through as the grid)
-        // Front/back: 20 columns across the 52.8 m band span. Sides: 12 across 32.8 m.
-        const float spanFB = 2.0f * kFacilityHalfW + 0.8f;
-        const float spanLR = 2.0f * kFacilityHalfD + 0.8f;
-        const int   colsFB = 20, colsLR = 12;
-        uint32_t seed = 1u;
-        for (int f = 0; f < kStoreys; ++f) {
-            const float yc = (strips[f].yBot + strips[f].yTop) * 0.5f;
-            const float ph = (strips[f].yTop - strips[f].yBot) - 0.10f;
-            if (ph <= 0.2f) continue;
-            const float pitchFB = spanFB / colsFB, pwFB = pitchFB - kGap;
-            for (int i = 0; i < colsFB; ++i) {
-                const float x = -spanFB * 0.5f + (i + 0.5f) * pitchFB;
-                // Front strip 0: leave the breach + jamb zone unglazed (open entry).
-                const bool inBreachZone = (f == 0) &&
-                    (std::fabs(x) - pwFB * 0.5f) < (kBreachHalfW + 1.3f);
-                if (!inBreachZone) pushPane(0.0f, x, yc, gzF, pwFB, ph, seed++); else seed++;
-                pushPane(kPi, x, yc, gzB, pwFB, ph, seed++);
-            }
-            const float pitchLR = spanLR / colsLR, pwLR = pitchLR - kGap;
-            for (int i = 0; i < colsLR; ++i) {
-                const float z = zC - spanLR * 0.5f + (i + 0.5f) * pitchLR;
-                pushPane(-kPi * 0.5f, gxL, yc, z, pwLR, ph, seed++);
-                pushPane( kPi * 0.5f, gxR, yc, z, pwLR, ph, seed++);
-            }
-        }
-        x3::logInfo("--world surface: curtain wall re-glazed = " +
-                    std::to_string(glassPanels.size()) +
-                    " translucent panes (per-pane tilt/tint jitter; IBL sky reflections)");
-    }
+    // (SEAM 2: the facade / breach / bands / curtain-wall build that lived here
+    // — glassWall/opaqueSlab, the front-wall breach split, the spandrel bands,
+    // the W8-2 per-pane glazing — is facilityExt.build() above, verbatim.)
 
     // ---- Jake's LANDED SHIP (JakeFighterShip.glb; box fallback). Sits on the
     //      surface just behind + beside the spawn, nose toward the facility.
@@ -592,41 +318,10 @@ int hostSurfaceStart(HostContext& hc) {
     auto drawWorld = [&](const x3::rhi::FrameContext& frame, float cx, float cy, float cz,
                          float yaw, float pitch) {
         scene.render(*device, frame);   // ground + facility backing + breach + Sarah's prop entity
-        // W8-2: the glass curtain wall — every pane through the glass pass (drawn
-        // post-opaque; the backing wall behind supplies the dark transmission and
-        // the mullion grid in the gaps).
-        for (const auto& p : glassPanels)
-            device->drawMeshGlass(frame, glassPanelMesh, glassPanelTex,
-                                  p.base, nullptr, p.mat, p.xform);
-        // W3-3: the textured skin — concrete apron underfoot + spandrel bands on the tower.
-        if (sApron.ok) surflib.drawPanel(*device, frame, sApron, apronMesh, apronXform);
-        // Bands draw bespoke (not drawPanel): cc_cement_white is genuinely white at
-        // the texture level now, so the factor stays near-neutral (a hair of lift
-        // only) — whiteness comes from albedo, not from fighting the clamp.
-        if (sTower.ok) {
-            const float bcW[4]   = { 1.06f, 1.05f, 1.04f, 1.0f };
-            const float emis0[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-            for (const auto& b : bands)
-                device->drawMeshPBR(frame, b.mesh, sTower.albedo, sTower.normal, sTower.mr,
-                                    bcW, emis0, b.xform, false, false,
-                                    x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
-                                    1.0f, 0.0f, 0.0f);
-        }
-        // W6-2: ENTRANCE SIGN — an amber-lit strip over the breach (the one emissive
-        // read on the facade; per the bible, emissives are instruments: it marks the
-        // way in). Drawn dark-bodied with a warm glow, not a white blowout.
-        if (sTower.ok && signSeg.valid()) {
-            const float kPi_ = 3.14159265f;
-            const float c = std::cos(kPi_), s = std::sin(kPi_);
-            const float m[16] = { c,0,-s,0, 0,1,0,0, s,0,c,0,
-                                  0.0f, 4.7f, kFacilityZ + wallT + 0.08f, 1 };
-            const float bcDark[4] = { 0.22f, 0.20f, 0.18f, 1.0f };
-            const float emAmber[4] = { 2.0f, 1.25f, 0.35f, 1.4f };
-            device->drawMeshPBR(frame, signSeg, sTower.albedo, sTower.normal, sTower.mr,
-                                bcDark, emAmber, m, false, false,
-                                x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
-                                1.0f, 0.0f, 0.0f);
-        }
+        // SEAM 2: the facade skin — glass curtain wall (glass pass), the
+        // concrete apron panel, the spandrel bands + the amber entrance sign —
+        // all drawn by the factored module (same constants, same draw order).
+        facilityExt.draw(*device, frame);
         // W6-2: APRON PROPS — sparse, curated service clutter (bible: props sell a
         // built place; SPARSE — four pieces, grouped, not scattered).
         for (const auto& pd : propDraws)

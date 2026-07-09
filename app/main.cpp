@@ -461,10 +461,16 @@ int main(int argc, char** argv) {
             x3::asset::prewarmModelDecodesAsync(bootManifest);
             // Canon recipe rooms: pre-decode the surface-library PNG sets too (the
             // W3/W8-1 dressing pass was 2.5 s of serial main-thread stbi decode).
-            if (canonCell)
+            // SEAM 2: + cc_cement_white (the facade's white-concrete spandrels —
+            // NOT a recipe set, and its ~20 MB of PNGs decoded inline blew the
+            // exterior's 150 ms boot budget).
+            if (canonCell) {
+                std::vector<std::string> sets = x3::game::recipeSurfaceSets();
+                if (std::find(sets.begin(), sets.end(), "cc_cement_white") == sets.end())
+                    sets.emplace_back("cc_cement_white");
                 x3::game::prewarmSurfaceSetsAsync(
-                    x3::game::assetRoot() + "/surface_library",
-                    x3::game::recipeSurfaceSets());
+                    x3::game::assetRoot() + "/surface_library", sets);
+            }
             x3::boot::mark("decode prewarm kicked (async)");
         }
     }

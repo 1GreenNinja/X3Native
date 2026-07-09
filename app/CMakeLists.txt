@@ -80,6 +80,9 @@ add_executable(X3Engine WIN32
     canon_45.cpp
     cell_dressing.cpp
     room_dressing.cpp
+    # SEAM 2 (world merge): the glass facility exterior, factored from
+    # host_surface_start and wrapped around the REAL canon tower.
+    facility_exterior.cpp
     surface_library.cpp
     intro_coldopen.cpp
     cutscene.cpp

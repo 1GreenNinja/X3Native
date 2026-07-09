@@ -66,6 +66,14 @@ public:
     // warm light for rooms where hasRecipe() is true (the recipe owns that room's
     // light statement — bible: one key per room, not key + generic wash).
     const std::vector<CanonLight>& lights() const { return m_lights; }
+
+    // SEAM 2: the dressing pass's surface library, shared with the facility
+    // exterior so the facade's concrete sets reuse ALREADY-LOADED GPU textures
+    // (sr_concrete_01 is a recipe set — re-decoding its ~16 MB of PNGs into a
+    // second SurfaceLibrary instance blew the exterior's boot budget). Mounted
+    // by build(); lifetime = this object (the host keeps it all session).
+    SurfaceLibrary& surfaceLibrary() { return m_surf; }
+
     bool hasRecipe(uint32_t room) const {
         return room < m_roomZone.size() && m_roomZone[room] != 0;
     }
