@@ -35,6 +35,7 @@ int hostStrata   (HostContext& hc);   // --world strata (R-3 fold: THE DESCENT)
 int hostElevator (HostContext& hc);   // --world elevator-showcase (+ --screenshot-elevator)// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
 
 int hostIntroCockpit(HostContext& hc); // --world introcockpit (intro cold-open cockpit)
+int hostShipWindows(HostContext& hc);  // --world ship-windows (S5/S6 fold: walkable interior + true-portal space)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);

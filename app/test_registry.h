@@ -50,6 +50,8 @@ struct TestFlags {
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
     bool testIntroCockpit = false;// --test-introcockpit (intro cockpit Scene-entity rig)
+    bool testShipInterior = false;// --test-shipinterior (S5 walkable interior, headless)
+    bool testShipWindows  = false;// --test-shipwindows (S6 true-portal windows, headless)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;

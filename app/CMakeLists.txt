@@ -55,6 +55,10 @@ add_executable(X3Engine WIN32
     glass_test.cpp
     holo_terminal.cpp
     holo_panel.cpp
+    sky_stars.cpp
+    space/ship_interior.cpp
+    space/ship_windows.cpp
+    world_hosts/host_shipwindows.cpp
     secret_room.cpp
     ecs_render.cpp
     editor/editor.cpp

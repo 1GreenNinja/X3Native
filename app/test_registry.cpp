@@ -105,6 +105,8 @@
 #include "alert.h"
 #include "space_pilot.h"          // x3::game::runSpaceSelfTest (--test-space)
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
+#include "space/ship_interior.h"  // x3::space::runShipInteriorSelfTest (--test-shipinterior, S5 fold)
+#include "space/ship_windows.h"   // x3::space::runShipWindowsSelfTest (--test-shipwindows, S6 fold)
 #include "space/targeting.h"      // x3::space::TargetingSystem (--test-targeting)
 #include "space/ship_damage.h"    // x3::space::runShipDamageSelfTest (--test-ship-damage)
 #include "space/eva.h"            // x3::space::runEvaSelfTest (--test-eva)
@@ -337,6 +339,16 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running INTRO COCKPIT self-test (fighter_cockpit.glb -> Scene entities: "
                     "PBR route + emissiveTex content screens + transparent canopy glass, headless)...");
         return x3::apphost::runIntroCockpitSelfTest() ? 0 : 1;
+    }
+    if (tf.testShipInterior) {
+        x3::logInfo("running S5 SHIP-INTERIOR self-test (walkable small-cockpit hull: "
+                    "manifest windows + spawn + collide walls, headless)...");
+        return x3::space::runShipInteriorSelfTest() ? 0 : 1;
+    }
+    if (tf.testShipWindows) {
+        x3::logInfo("running S6 SHIP-WINDOWS self-test (true-portal moving space: star/nebula "
+                    "UV pan + per-window light-bleed against the interior manifest, headless)...");
+        return x3::space::runShipWindowsSelfTest() ? 0 : 1;
     }
     if (tf.testIntroBranch) {
         x3::logInfo("running Phase 4 INTRO BRANCH-WIRING self-test (intro.outcome flag "

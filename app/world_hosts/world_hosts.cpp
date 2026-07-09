@@ -22,6 +22,7 @@ int dispatchWorldHost(HostContext& hc) {
     if (hc.worldMode == "space")                        return hostSpace(hc);
     if (hc.worldMode == "surface")                      return hostSurfaceStart(hc);
     if (hc.worldMode == "introcockpit")               return hostIntroCockpit(hc);
+    if (hc.worldMode == "ship-windows")               return hostShipWindows(hc);
     if (hc.worldMode == "strata")                       return hostStrata(hc);
     if (hc.worldMode == "elevator-showcase")            return hostElevator(hc);
     return -1;
