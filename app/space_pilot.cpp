@@ -180,8 +180,18 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     m_rollAxis = 0.0f;
 
     // Rebuild the quaternion from Euler so the camera basis stays consistent
-    // with the HUD readout (yaw/pitch/roll).
-    quatFromYawPitchRoll(m_yaw, m_pitch, m_roll, m_quat);
+    // with the HUD readout (yaw/pitch/roll). YAW IS NEGATED going in: the
+    // engine camera convention (CONVENTIONS §3, setCamera / the FPS player)
+    // is fwd = (cos p cos y, sin p, cos p SIN y) — a LEFT-handed turn about
+    // +Y — while quatFromYawPitchRoll's qY is the right-handed rotation
+    // (fwd Z term = -sin y). Feeding +m_yaw MIRRORED the motion basis in Z:
+    // the view turned right while thrust/strafe/nose-follow pushed toward
+    // the mirrored heading (owner playtest: "mouse axes are reversed" — at
+    // 90 deg heading the ship flew opposite the look). Negating yaw makes
+    // fwdW/rightW/upW agree with the camera exactly (right = (-sin y, 0,
+    // cos y), the FPS basis), for the 1P view, the 3P chase arm, W thrust,
+    // D strafe, and nose-follow alike.
+    quatFromYawPitchRoll(-m_yaw, m_pitch, m_roll, m_quat);
 
     // ---- Build local axes (used for both motion and camera) ----------------
     const float fwdLocal[3]   = { 1, 0, 0 };
