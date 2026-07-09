@@ -260,6 +260,18 @@ public:
     int  radius() const { return m_radius; }
     void setUploadBudget(uint32_t n) { m_maxUploadsPerFrame = n; }
     void setMaxInFlight(uint32_t n)  { m_maxInFlight = n; }
+    // SEAM 3 (canon host): a world-rect KEEP-OUT — tiles whose footprint lies
+    // FULLY inside it are never generated. The canon facility brings its own
+    // ground there (interior floors at Y=0 + the apron ring + the 150 m soil
+    // skirt, all with collision); the terrain's facility pad is ALSO Y=0, so
+    // streaming tiles under the building would z-fight every F1 floor + the
+    // apron coplanarly. Tiles merely INTERSECTING the rect still generate (the
+    // soil skirt spans the whole skipped area, so the tile-grid hole is always
+    // covered — no void, no missing collision). Call BEFORE init(). Default off.
+    void setKeepOut(float x0, float z0, float x1, float z1) {
+        m_keepOut[0] = x0; m_keepOut[1] = z0; m_keepOut[2] = x1; m_keepOut[3] = z1;
+        m_keepOutOn = true;
+    }
 
     // ---- Queries (host + self-test) --------------------------------------
     const TerrainConfig& config() const { return m_cfg; }
@@ -359,6 +371,9 @@ private:
     std::vector<uint32_t>     m_freeEntities;
 
     uint32_t                  m_inFlight = 0;
+    // SEAM 3: keep-out rect {x0,z0,x1,z1} — see setKeepOut().
+    float                     m_keepOut[4] = { 0, 0, 0, 0 };
+    bool                      m_keepOutOn = false;
     int32_t                   m_lastFocusTX = INT32_MIN, m_lastFocusTZ = INT32_MIN;
     uint32_t                  m_lodIndexCount[(int)TerrainLod::Count] = {0,0,0};
 

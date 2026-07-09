@@ -152,6 +152,12 @@ public:
     bool     built() const { return m_built; }
     uint32_t paneCount() const { return m_paneCount; }
     uint32_t bandCount() const { return (uint32_t)m_bands.size(); }
+    // SEAM 3: the Desc this exterior was built with (footprint/apron/soil reach —
+    // the canon host derives the terrain keep-out + streamer anchor from it) and
+    // the breach room (the PVS gate lets the streamed planet draw from inside it,
+    // so the view out the open breach never pops). Valid after build().
+    const Desc& builtDesc() const { return m_desc; }
+    uint32_t breachRoomHint() const { return m_desc.breachRoomHint; }
 
 private:
     struct BandDraw { x3::rhi::MeshHandle mesh; float xform[16]; };

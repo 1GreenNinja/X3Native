@@ -34,7 +34,13 @@ x3::phys::Vec3 surfaceAt(float x, float z, float yOff) {
 struct RegionDef { const char* name; const char* biome; float cx, cz, radius, peakH; bool mtn;
                    float r, g, b; float er, eg, eb, es; };  // tint + emissive(rgb,strength)
 const RegionDef kRegions[kWorldRegionCount] = {
-    { "Crash Site",        "shuttle wreck — surface start point",        0.0f,     0.0f,  30.0f,   0.0f, false, 0.42f,0.42f,0.46f, 0,0,0,0 },
+    // SEAM 3 (world merge): the Crash Site moved OFF the origin — the canon
+    // tower + its apron/facade own (0,0) now (footprint x0..50, z-40..40 +
+    // skirt). Blueprint spirit kept: the wreck sits in the middle distance on
+    // the +Z (breach/Entrance) face, ~230 m from the tower center with a clear
+    // sightline from the apron, between the Spire-approach road legs (x=22 and
+    // x=170) and clear of both, so nothing straddles the asphalt.
+    { "Crash Site",        "shuttle wreck — surface start point",      140.0f,   205.0f,  30.0f,   0.0f, false, 0.42f,0.42f,0.46f, 0,0,0,0 },
     { "East Outpost",      "military camp + antenna farm",             800.0f,   400.0f,  45.0f,   0.0f, false, 0.55f,0.50f,0.40f, 0,0,0,0 },
     { "West Outpost",      "drill rig + processing plant (industrial)",-880.0f,  -320.0f,  45.0f,   0.0f, false, 0.52f,0.40f,0.30f, 0,0,0,0 },
     { "Northern Range",    "jagged snow-capped peaks",                 300.0f,  8300.0f, 2500.0f, 380.0f, true,  0.90f,0.92f,0.96f, 0,0,0,0 },
@@ -171,9 +177,25 @@ bool runWorldRegionsSelfTest() {
         for (uint32_t i = 0; i < kWorldRegionCount; ++i) {
             const WorldRegionPlan& p = w.plan((WorldRegion)i);
             if (!nonEmpty(p.name) || !nonEmpty(p.biome)) ok = false;
-            if (p.cx == 0.0f && p.cz == 0.0f && i != (uint32_t)WorldRegion::CrashSite) ok = false;
+            // SEAM 3: NO region sits at the origin anymore (the canon tower owns it).
+            if (p.cx == 0.0f && p.cz == 0.0f) ok = false;
         }
-        check(ok, "W1 all 7 regions carry a name + biome + center (Crash Site at origin)");
+        check(ok, "W1 all 7 regions carry a name + biome + center");
+    }
+
+    // ---- SEAM 3: the Crash Site is CLEAR of the canon tower + apron (it was
+    // authored at the origin; the tower footprint x0..50/z-40..40 + facade +
+    // apron own that ground now) yet still in the middle distance (<400 m). ----
+    {
+        const WorldRegionPlan& crash = w.plan(WorldRegion::CrashSite);
+        const float pad = 30.0f;   // footprint + facade/apron padding
+        const bool clearOfTower =
+            (crash.cx - crash.radius > 50.0f + pad) || (crash.cx + crash.radius < 0.0f - pad) ||
+            (crash.cz - crash.radius > 40.0f + pad) || (crash.cz + crash.radius < -40.0f - pad);
+        const float dist = std::sqrt((crash.cx - 25.0f) * (crash.cx - 25.0f) +
+                                     crash.cz * crash.cz);
+        check(clearOfTower && dist > 120.0f && dist < 400.0f,
+              "W6 Crash Site relocated: clear of the canon tower footprint, middle distance");
     }
 
     // ---- 3 flat outposts (peakH==0) + 4 tall mountain ranges (peakH>0). ----

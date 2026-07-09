@@ -393,7 +393,12 @@ const RangeDef kRanges[4] = {
 // Flat pads: blend the field toward padY inside r, fully the field by r*1.7.
 struct PadDef { float cx, cz, r, padY; };
 const PadDef kPads[4] = {
-    {    0.0f,   0.0f, 260.0f,  0.0f },   // facility/crash pad (the Spire grade)
+    // SEAM 3: the Spire grade is the CANON one — the canonical tower's F1 floor
+    // (and so its facade base / apron / soil skirt) sits at Y=-2, not 0. The pad
+    // matches it so the streamed ground meets the facility's own ground flush
+    // (was 0.0 => a 2 m terrain cliff ringing the soil skirt). The --world
+    // surface host's Y=0 plate now blends down via the horizon ring's flatten.
+    {    0.0f,   0.0f, 260.0f, -2.0f },   // facility/crash pad (the CANON Spire grade)
     { -600.0f, 500.0f, 250.0f, 16.0f },   // Scrapyard City
     {  200.0f, 500.0f, 190.0f, 15.0f },   // New District
     { -200.0f, 350.0f, 150.0f, 17.0f },   // Industrial Zone
@@ -833,6 +838,17 @@ void TerrainStreamer::recycleResult(std::unique_ptr<TileGenResult> r) {
 void TerrainStreamer::requestTile(int32_t gx, int32_t gz, bool synchronous) {
     const uint64_t k = key(gx, gz);
     if (m_resident.count(k) || m_pending.count(k)) return;   // already have / coming
+
+    // SEAM 3: tiles FULLY inside the keep-out rect are never generated — the
+    // canon facility's own ground (interior floors / apron ring / soil skirt)
+    // covers that area, and a Y=0 pad tile under it would z-fight coplanarly
+    // (see setKeepOut). Intersecting edge tiles still generate.
+    if (m_keepOutOn) {
+        const float tx0 = (float)gx * m_cfg.tileSize, tx1 = tx0 + m_cfg.tileSize;
+        const float tz0 = (float)gz * m_cfg.tileSize, tz1 = tz0 + m_cfg.tileSize;
+        if (tx0 >= m_keepOut[0] && tx1 <= m_keepOut[2] &&
+            tz0 >= m_keepOut[1] && tz1 <= m_keepOut[3]) return;
+    }
 
     if (synchronous || !m_jobs) {
         // Generate inline now (used for the under-player neighborhood + the no-job

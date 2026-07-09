@@ -88,6 +88,18 @@ struct WorldRegionGraph {
 // canonProjectJsonPath()).
 std::string worldRegionsJsonPath();
 
+// SEAM 3 (world merge): the CANON master-world region graph — the same lanes
+// minus `spire_f1` (canonWorld builds the real tower itself; the streamer must
+// never double-build it). assets/world/regions.canon.json, same fallback chain.
+std::string worldRegionsCanonJsonPath();
+
+// SEAM 3: the roomId tag stamped onto streamed region entities in the canon
+// master world (see WorldStreamer::setRealizedRoomTag). NOT kNoRoom (that means
+// "always drawn"); the canon host appends this id to its visible-room set only
+// when the eye is outdoors / in the breach room, so the streamed planet never
+// draws through the interior PVS and never vanishes on the apron.
+constexpr uint32_t kStreamedExteriorRoom = 0xFFFFFFFEu;
+
 // ---------------------------------------------------------------------------
 // Residency manager.
 // ---------------------------------------------------------------------------
@@ -135,6 +147,19 @@ public:
     // ---- Tuning ------------------------------------------------------------
     void setLookahead(float seconds) { m_lookaheadS = seconds; }
     void setEvictChunk(uint32_t entitiesPerSlice) { m_evictChunk = entitiesPerSlice; }
+    // SEAM 3 (canon host): stamp every entity a region realize creates with this
+    // roomId (default kNoRoom = leave untagged/always-drawn — the --world
+    // streamed host + self-test behavior, unchanged). The canon master world
+    // tags streamed content kStreamedExteriorRoom so its per-room PVS can gate
+    // the planet to outdoor views (risk 2 of the SEAM 3 plan).
+    void setRealizedRoomTag(uint32_t roomId) { m_roomTag = roomId; }
+    // SEAM 3 (canon host): draw builder-region PBR sets from an EXTERNAL,
+    // longer-lived SurfaceLibrary (the canon RoomDressing's — its GPU textures
+    // already hold the shared concrete sets, so the boot realize skips the
+    // multi-MB PNG decodes). The library must outlive this streamer; shutdown()
+    // does NOT destroy it (its owner does). Null (default) = the streamer's own
+    // internal library, exactly as before.
+    void setSharedSurfaceLibrary(SurfaceLibrary* lib) { m_sharedSurf = lib; }
 
     // ---- Queries (host HUD + self-test) -------------------------------------
     uint32_t   regionCount() const { return (uint32_t)m_regions.size(); }
@@ -228,6 +253,8 @@ private:
     // the sets are decoded once per process. captureLedger EXCLUDES these
     // textures from per-region teardown; shutdown() destroys them once.
     SurfaceLibrary m_surflib;
+    SurfaceLibrary* m_sharedSurf = nullptr;  // SEAM 3: optional external library (not owned)
+    uint32_t m_roomTag = kNoRoom;            // SEAM 3: roomId stamped on realized entities
     uint32_t m_proxyEngages = 0;
     uint64_t m_meshesCreated = 0, m_meshesDestroyed = 0;
     uint64_t m_texturesCreated = 0, m_texturesDestroyed = 0;
@@ -245,6 +272,15 @@ private:
 // tour loop (created == destroyed at teardown; Scene::size() stable across the
 // second lap), W6 the teleport soft-fallback engages + resolves. Logs PASS/FAIL
 // W#, returns true iff all pass. No window/Vulkan.
+//
+// SEAM 3: the run additionally exercises the CANON graph (regions.canon.json —
+// spire_f1 dropped): C0 the canon graph parses without spire_f1, C1 a boot at
+// the tower center realizes city + surface_landmarks (the tower center sits
+// INSIDE the city residency footprint — documented) and NOT ocean_base, C2 the
+// realized-entity room tag lands (the canon PVS gate contract), C3 no streamed
+// entity AABB intersects the canon tower interior (the relocated Crash Site +
+// the city lanes stay out of the building), C4 the streamed regions own ZERO
+// physics bodies at boot (nothing to collide with indoors).
 bool runWorldStreamSelfTest();
 
 } // namespace x3::game

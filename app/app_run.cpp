@@ -1146,6 +1146,23 @@ int runDefaultHost(HostContext& hc) {
     // in terrain mode; Level 1 is unaffected.
     x3::game::TerrainStreamer terrainStreamer;
     std::unique_ptr<x3::jobs::IJobSystem> terrainJobs;
+    // ---- SEAM 3 (world merge): the PLANET STREAMS IN around the canon facility.
+    // The WorldStreamer's outdoor lanes (city / ocean base / surface landmarks)
+    // become streamed regions of the canon master world — walk off the apron and
+    // the world is simply there, no loading screens. The canon graph
+    // (regions.canon.json) drops spire_f1 (canonWorld builds the real tower);
+    // terrainStreamer doubles as the canon ground ring (keep-out under the
+    // facility's own apron/soil so nothing z-fights the interior floors).
+    // Booted after the world build ONLY when the SEAM-2 exterior exists (the
+    // breach is the one way outside — without it there is no outdoors to stream).
+    x3::game::WorldRegionGraph canonRegionGraph;
+    x3::game::WorldStreamer    canonWstream;
+    bool  canonStreamOn = false;          // SEAM 3 streaming live this run
+    float canonStreamPrevX = 0.0f, canonStreamPrevZ = 0.0f;   // velocity feed
+    // Risk 3 (XZ-only residency vs the underground): suppress ALL residency work
+    // while the eye is below this Y — the elevator/strata/Club-1127 descent must
+    // never see a region teardown or the streamer's Y=0 proxy floor.
+    constexpr float kStreamSuppressBelowY = -20.0f;
     // ---- Advanced elevator (core): a functional cab in Level 1's tall (~9 m)
     // elevator room — the "Take the elevator to Floor 2" exit transport. Press E
     // within ~4 m to call it; it carries the rider up/down (per-frame carry in the
@@ -2076,6 +2093,96 @@ int runDefaultHost(HostContext& hc) {
     device->endUploadBatch();
     x3::boot::mark("upload batch flush");
 
+    // ==== SEAM 3 (world merge): THE PLANET STREAMS IN AROUND THE FACILITY. ====
+    // Wire the WorldStreamer's outdoor lanes into the canon master world: the
+    // canon region graph (regions.canon.json — spire_f1 dropped, the real tower
+    // is already standing) + the terrain ground ring (keep-out under the
+    // facility's own apron/soil) + the horizon stitch. Walk out the breach and
+    // the city / landmarks / ocean are simply there — no loading screens.
+    // Gated on the SEAM-2 exterior: without the breach there is no outdoors.
+    // Runs AFTER the boot upload-batch flush (realize() manages its own batch).
+    if (canonWorld && canonFloor.valid() && facilityExterior.built()) {
+        std::vector<std::string> rerrs;
+        if (!canonRegionGraph.load(x3::game::worldRegionsCanonJsonPath(), rerrs) ||
+            canonRegionGraph.empty()) {
+            for (const std::string& e : rerrs) x3::logError("SEAM 3: " + e);
+            x3::logWarn("SEAM 3: canon region graph failed to load — the tower stays an island");
+        } else {
+            const auto st0 = std::chrono::steady_clock::now();
+            if (!terrainJobs) {
+                terrainJobs.reset(x3::jobs::createJobSystem());
+                terrainJobs->init(0);
+            }
+            const x3::game::FacilityExterior::Desc& xd = facilityExterior.builtDesc();
+            const float towerCx = (xd.x0 + xd.x1) * 0.5f;
+            const float towerCz = (xd.z0 + xd.z1) * 0.5f;
+            // Ground ring (fixes the SEAM-2 "soil ends ~150 m out" cliff): the
+            // canonical world terrain streams around the player. Tiles fully
+            // under the facility's own ground (apron + soil skirt, reach =
+            // soilOut) are KEPT OUT — the terrain's facility pad is Y=0, exactly
+            // coplanar with the F1 floors + apron, and would z-fight them.
+            terrainStreamer.setKeepOut(xd.x0 - xd.soilOut, xd.z0 - xd.soilOut,
+                                       xd.x1 + xd.soilOut, xd.z1 + xd.soilOut);
+            terrainStreamer.init(scene, *device, *physics, terrainJobs.get(),
+                                 x3::game::worldTerrainConfig(), towerCx, towerCz,
+                                 /*radius=*/8);
+            const double terrainMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - st0).count();
+            // The region streamer. Shared surface library: RoomDressing's GPU
+            // textures already hold the recipe PBR sets, so the city's boot
+            // realize skips the duplicate multi-MB PNG decodes (boot budget).
+            // Exterior room tag: risk 2 — streamed entities draw only when the
+            // canon PVS says the eye can see outdoors (see the vis feed below).
+            canonWstream.init(canonRegionGraph, terrainJobs.get());
+            canonWstream.setLookahead(hc.wsLookaheadS);
+            canonWstream.setRealizedRoomTag(x3::game::kStreamedExteriorRoom);
+            canonWstream.setSharedSurfaceLibrary(&canonRooms.surfaceLibrary());
+            // Boot residency at the tower center. The tower sits INSIDE the city
+            // footprint (anchor (-200,425) r750 => ~481 m out), so this realizes
+            // city + surface_landmarks synchronously ON THE LOADING SCREEN —
+            // deliberately: deferring the city would convert this boot cost into
+            // a first-frame hitch the moment the live umbrella ticks. ocean_base
+            // streams in on approach. Per-region realize times are logged.
+            canonWstream.buildStartRegions(scene, *device, *physics,
+                                           towerCx, 0.0f, towerCz);
+            // Horizon stitch: one static polar ring of the SAME height field out
+            // to 13 km (the 4 mountain ranges read from the apron) + the long
+            // far plane. rInner tucks under the soil skirt / streamed tiles
+            // (recessed by yBias) so the overlap never pokes through.
+            {
+                x3::game::HorizonRingDesc hr{};
+                hr.centerX = towerCx; hr.centerZ = towerCz;
+                hr.rInner = 170.0f; hr.rOuter = 13000.0f;
+                hr.rings = 140; hr.segments = 160; hr.yBias = -3.0f;
+                x3::game::addTerrainHorizonRing(scene, *device,
+                                                terrainStreamer.groundTexture(), hr);
+                device->setCameraFar(15000.0f);
+            }
+            canonStreamOn = true;
+            canonStreamPrevX = towerCx; canonStreamPrevZ = towerCz;
+            const double totalMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - st0).count();
+            char sb[240];
+            std::snprintf(sb, sizeof(sb),
+                "SEAM 3: planet streaming LIVE around the tower — %u regions (%u resident at boot), "
+                "terrain ring %.0f ms, total boot cost %.0f ms (budget %.1f ms/frame, lookahead %.1f s)",
+                canonWstream.regionCount(), canonWstream.residentCount(),
+                terrainMs, totalMs, hc.wsBudgetMs, hc.wsLookaheadS);
+            x3::logInfo(sb);
+            x3::boot::mark("SEAM 3 streamer boot (planet regions + terrain ring)");
+        }
+    }
+    // SEAM 3 teardown — idempotent; called on EVERY exit path that follows the
+    // boot above (screenshot/bench/framepacing/smoketest early returns + the
+    // main-loop exit) so region bodies/meshes are released before physics dies.
+    auto shutdownCanonStream = [&]() {
+        if (!canonStreamOn) return;
+        canonStreamOn = false;
+        canonWstream.shutdown(scene, *device, *physics);
+        terrainStreamer.shutdown(scene, *device, *physics);
+        if (!terrainWorld && terrainJobs) terrainJobs->shutdown();
+    };
+
     // ---- S7: console backend (D6) + screen-space HUD (FPS, console, crosshair).
     std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
     x3::game::Hud hud;
@@ -2555,6 +2662,7 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo(std::string("--capture-spire: ") + (allOk ? "all 8 floors captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -2654,6 +2762,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -2718,6 +2827,16 @@ int runDefaultHost(HostContext& hc) {
         device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
         const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
         const float dt = 1.0f / 60.0f;
+        // SEAM 3: stills want the whole visible terrain ring, not a per-frame
+        // trickle — fill it fast across the settle frames (host_streamed's
+        // screenshot treatment), and let the FULL ring enqueue on the shot
+        // camera's single boundary crossing (a static camera never crosses
+        // again, so the default 24-in-flight cap would strand the outer ring).
+        // No-op unless canon streaming booted.
+        if (canonStreamOn) {
+            terrainStreamer.setUploadBudget(64);
+            terrainStreamer.setMaxInFlight(512);
+        }
         // Open Door A so the corridor reads as an opened doorway (drive the use
         // verb once at the Door A button before the settle loop).
         {
@@ -2849,6 +2968,18 @@ int runDefaultHost(HostContext& hc) {
             if (canonWorld && canonFloor.valid()) {
                 canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
                 canonDressing.tick(dt);
+                // SEAM 3: keep the planet streaming under the shot camera — an
+                // outdoor --shot-cam far from the tower needs its terrain tiles
+                // (the ring re-centers on the camera) and any nearby regions
+                // resident before the capture frame. Generous settle budget.
+                if (canonStreamOn && ssEye.y > kStreamSuppressBelowY) {
+                    const double st0 = glfwGetTime();
+                    terrainStreamer.update(scene, *device, *physics, ssEye.x, ssEye.z);
+                    const double terrainMs = (glfwGetTime() - st0) * 1000.0;
+                    canonWstream.update(scene, *device, *physics,
+                                        ssEye.x, ssEye.y, ssEye.z, 0.0f, 0.0f, 0.0f,
+                                        /*budget*/ 50.0, terrainMs);
+                }
                 x3::game::Frustum fr = x3::game::Frustum::build(
                     ssEye.x, ssEye.y, ssEye.z, ssYaw, ssPitch, ssFov, 16.0f / 9.0f);
                 canonFloor.floodVisibleRoomsAt(ssEye.x, ssEye.y, ssEye.z, fr, &canonDoors,
@@ -2859,6 +2990,15 @@ int runDefaultHost(HostContext& hc) {
                 // through the open breach is stable from any outdoor vantage.
                 facilityExterior.ensureOutdoorVis(canonFloor, ssEye.x, ssEye.y, ssEye.z,
                                                   canonVisRooms);
+                // SEAM 3 (risk 2): same outdoor draw gate as the live loop — the
+                // streamed planet is in-frame only for outdoor/breach vantages.
+                if (canonStreamOn) {
+                    const uint32_t eyeRoom = canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z);
+                    if ((eyeRoom == x3::game::kNoRoom && ssEye.y > -2.0f) ||
+                        (eyeRoom != x3::game::kNoRoom &&
+                         eyeRoom == facilityExterior.breachRoomHint()))
+                        canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
+                }
                 scene.setRoomCullEnabled(true);
                 scene.setVisibleRooms(canonVisRooms);
                 std::vector<x3::rhi::PointLight> cl;
@@ -3037,6 +3177,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -3143,6 +3284,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -3253,6 +3395,7 @@ int runDefaultHost(HostContext& hc) {
         combatFx.shutdown(*device);
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -3595,6 +3738,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
         physics->shutdown();
         device->shutdown();
@@ -5393,6 +5537,20 @@ int runDefaultHost(HostContext& hc) {
                 // through the open breach never pops. Exterior entities themselves
                 // are kNoRoom-tagged (always drawn).
                 facilityExterior.ensureOutdoorVis(canonFloor, camX, camY, camZ, canonVisRooms);
+                // SEAM 3 (risk 2): the streamed planet draws only when the eye can
+                // plausibly see outdoors — standing OUTSIDE every room above ground,
+                // or inside the breach/Entrance room (the view out the open breach
+                // must not pop). Streamed entities carry kStreamedExteriorRoom, so
+                // appending that id to the visible set is the whole draw gate; deep
+                // interior frames never pay the city's draw cost, and the underground
+                // (Y<0 shafts/club) never counts as "outdoors".
+                if (canonStreamOn) {
+                    const uint32_t eyeRoom = canonFloor.roomAt(camX, camY, camZ);
+                    if ((eyeRoom == x3::game::kNoRoom && camY > -2.0f) ||
+                        (eyeRoom != x3::game::kNoRoom &&
+                         eyeRoom == facilityExterior.breachRoomHint()))
+                        canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
+                }
                 // OPENING-SPACE motivated lights (flickering cell tube / red alarm / cyan
                 // terminal) for the visible dressed rooms — inserted at the FRONT so the cap
                 // never drops these key lights, then the room ceiling lights fill in.
@@ -5491,6 +5649,27 @@ int runDefaultHost(HostContext& hc) {
                 device->setWaterParams(wp);
             }
         } else {
+            // ---- SEAM 3: ONE budget umbrella per frame — terrain ground ring
+            // first (measured), then the region streamer gets whatever is left
+            // of --ws-budget. Player velocity feeds the lookahead so sprinting
+            // off the apron pulls regions in earlier. Risk 3 (XZ-only residency
+            // vs the underground): ALL residency work is suppressed while the
+            // eye is below kStreamSuppressBelowY — the elevator/strata/Club-1127
+            // descent holds the surface resident exactly as it was and the
+            // streamer's Y=0 proxy floor can never drop a plane over The Deep.
+            if (canonStreamOn) {
+                if (camY > kStreamSuppressBelowY) {
+                    const double st0 = glfwGetTime();
+                    terrainStreamer.update(scene, *device, *physics, camX, camZ);
+                    const double terrainMs = (glfwGetTime() - st0) * 1000.0;
+                    const float svx = dt > 1e-4f ? (camX - canonStreamPrevX) / dt : 0.0f;
+                    const float svz = dt > 1e-4f ? (camZ - canonStreamPrevZ) / dt : 0.0f;
+                    canonWstream.update(scene, *device, *physics,
+                                        camX, camY, camZ, svx, 0.0f, svz,
+                                        (double)hc.wsBudgetMs, terrainMs);
+                }
+                canonStreamPrevX = camX; canonStreamPrevZ = camZ;
+            }
             { const double _pt0 = glfwGetTime();
               game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
               g_perf.tick += glfwGetTime() - _pt0; }
@@ -7132,6 +7311,9 @@ int runDefaultHost(HostContext& hc) {
     // BOOT hand-off overlay: if the window closed mid-fade, free its texture now
     // (else the VMA shutdown leak check would see a live allocation).
     if (loadingOverlayLive) loading.shutdown(*device);
+    // SEAM 3: the canon planet streamer (regions + terrain ring + its job
+    // system) — idempotent no-op unless canon streaming booted.
+    shutdownCanonStream();
     // B3: tear the streamer down BEFORE physics/device (it removes its bodies +
     // destroys its meshes), then stop the terrain job system. Both are no-ops
     // when not in terrain mode.

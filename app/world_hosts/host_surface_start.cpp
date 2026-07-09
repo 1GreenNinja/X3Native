@@ -159,6 +159,11 @@ int hostSurfaceStart(HostContext& hc) {
         hr.rOuter = 13000.0f;
         hr.rings = 140; hr.segments = 160;
         hr.yBias = -0.35f;             // recessed under the plate lip
+        // SEAM 3: the canonical facility pad now sits at the CANON grade (-2 m,
+        // terrain.cpp kPads[0] — the canon tower's real F1 floor); this host's
+        // plate stays at Y=0, so blend the ring FROM the plate grade down to the
+        // true field — the flatten knob built for flat-pad hosts.
+        hr.flatten = true; hr.flattenY = 0.0f; hr.flattenBlendR = 600.0f;
         x3::game::addTerrainHorizonRing(scene, *device, splat, hr);
         x3::game::City horizonCity;
         horizonCity.build(scene, *device, *phys);   // visual-only massing

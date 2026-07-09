@@ -111,6 +111,21 @@ std::string worldRegionsJsonPath() {
     return kCandidates[0];
 }
 
+std::string worldRegionsCanonJsonPath() {
+    // SEAM 3: the canon master-world graph (spire_f1 dropped — canonWorld builds
+    // the real tower itself). Same repo-relative-first fallback chain.
+    static const char* kCandidates[] = {
+        "assets/world/regions.canon.json",
+        "../assets/world/regions.canon.json",
+        "../../assets/world/regions.canon.json",
+        R"(D:\GameDev\X3Native-frustumcull\assets\world\regions.canon.json)",
+        R"(C:\GameDev\X3Native-engine\assets\world\regions.canon.json)",
+    };
+    for (const char* c : kCandidates)
+        if (std::filesystem::exists(c)) return c;
+    return kCandidates[0];
+}
+
 // ===========================================================================
 // WorldStreamer
 // ===========================================================================
@@ -199,6 +214,9 @@ void WorldStreamer::captureLedger(Region& r, const Scene& scene) {
     // per-region — other resident regions may reference the same set).
     auto captureTex = [&](const x3::rhi::TextureHandle& t) {
         if (!t.valid() || m_surflib.ownsTexture(t.id)) return;
+        // SEAM 3: an external shared library's textures (the canon RoomDressing's
+        // sets) belong to their owner — never in a region ledger, never torn down here.
+        if (m_sharedSurf && m_sharedSurf->ownsTexture(t.id)) return;
         if (texIds.insert(t.id).second) r.textures.push_back(t);
     };
     for (uint32_t id : r.entities) {
@@ -245,9 +263,9 @@ double WorldStreamer::realize(Region& r, Scene& scene, x3::rhi::IRenderDevice& d
         r.parse.reset();
 
     } else if (r.desc.builder == "city") {
-        City c; c.build(scene, device, physics, &m_surflib);
+        City c; c.build(scene, device, physics, m_sharedSurf ? m_sharedSurf : &m_surflib);
     } else if (r.desc.builder == "oceanbase") {
-        OceanBase ob; ob.build(scene, device, physics, &m_surflib);
+        OceanBase ob; ob.build(scene, device, physics, m_sharedSurf ? m_sharedSurf : &m_surflib);
     } else if (r.desc.builder == "worldregions") {
         WorldRegions wr; wr.build(scene, device, physics);
     } else {
@@ -257,6 +275,10 @@ double WorldStreamer::realize(Region& r, Scene& scene, x3::rhi::IRenderDevice& d
     scene.endEntityCapture();
     device.endUploadBatch();
     captureLedger(r, scene);
+    // SEAM 3: stamp the realized entities with the host's room tag (canon PVS
+    // gate — see setRealizedRoomTag). Default kNoRoom = untouched (streamed host).
+    if (m_roomTag != kNoRoom)
+        for (uint32_t id : r.entities) scene.get(id).roomId = m_roomTag;
     r.state = RegionState::Resident;
     r.evicting = false;
     r.evictCursor = 0;
@@ -757,6 +779,97 @@ bool runWorldStreamSelfTest() {
                     std::to_string(ws.bodiesDestroyed()));
         checkW(meshBalance && texBalance && ledgerBalance,
                "W5b no leak: every region-created mesh/texture/body destroyed at teardown");
+    }
+
+    // =======================================================================
+    // SEAM 3 — the CANON master-world graph (regions.canon.json). canonWorld
+    // builds the real tower itself, so the canon graph drops spire_f1 and the
+    // canon host streams the remaining lanes AROUND the building. These checks
+    // pin the canon wiring contract at the streamer level (the host-level
+    // proof is the canon screenshots + smoketest).
+    // =======================================================================
+    {
+        WorldRegionGraph cgraph;
+        std::vector<std::string> cerrs;
+        const bool cloaded = cgraph.load(worldRegionsCanonJsonPath(), cerrs);
+        for (const std::string& e : cerrs) x3::logError("[worldstream-test] " + e);
+        const bool noSpire = cloaded && cgraph.indexOf("spire_f1") < 0;
+        checkW(cloaded && noSpire && cgraph.indexOf("city") >= 0 &&
+               cgraph.indexOf("ocean_base") >= 0 && cgraph.indexOf("surface_landmarks") >= 0,
+               "C0 canon graph parses: city/ocean_base/surface_landmarks, NO spire_f1");
+        if (cloaded) {
+            CountingDevice cdev;
+            Scene cscene;
+            WorldStreamer cws;
+            cws.init(cgraph, jobs.get());
+            cws.setRealizedRoomTag(kStreamedExteriorRoom);   // the canon host contract
+            // Boot at the canon tower center (REAL facade footprint x[-3..47],
+            // z[-34.5..55.5] at base Y=-2 — from the SEAM 2 exterior build log).
+            const float towerCx = 22.0f, towerCz = 10.5f;
+            cws.buildStartRegions(cscene, cdev, *physics, towerCx, 0.0f, towerCz);
+            const int ciCity = cws.indexOf("city");
+            const int ciSurf = cws.indexOf("surface_landmarks");
+            const int ciOcn  = cws.indexOf("ocean_base");
+            // The tower center sits INSIDE the city residency footprint (anchor
+            // (-200,425) r750 => ~481 m out), so the city legitimately boots
+            // resident alongside surface_landmarks — the canon host pays that
+            // cost on the loading screen, never as a first-frame hitch.
+            checkW(ciCity >= 0 && ciSurf >= 0 && ciOcn >= 0 &&
+                   cws.state(ciCity) == RegionState::Resident &&
+                   cws.state(ciSurf) == RegionState::Resident &&
+                   cws.state(ciOcn)  == RegionState::Unloaded,
+                   "C1 canon boot at the tower: city+surface_landmarks resident, ocean NOT");
+            // C2: every realized entity carries the exterior room tag (the PVS gate).
+            {
+                bool tagged = ciCity >= 0 && cws.ownedEntityCount(ciCity) > 0;
+                for (int ri : { ciCity, ciSurf })
+                    if (ri >= 0)
+                        for (uint32_t id : cws.ownedEntities((uint32_t)ri))
+                            if (cscene.get(id).roomId != kStreamedExteriorRoom) tagged = false;
+                checkW(tagged, "C2 realized entities stamped kStreamedExteriorRoom (canon PVS gate)");
+            }
+            // C3: NO streamed entity AABB inside the canon tower interior. The
+            // Crash Site was relocated off the origin for exactly this (risk 1)
+            // and the city's Spire-approach road now ends at the apron edge
+            // (z=80), outside the facade. Interior test box = the REAL facade
+            // footprint x[-3..47] z[-34.5..55.5], shrunk 1 m, from below the
+            // base (-2) up through the tower.
+            {
+                bool clear = true;
+                std::string offender;
+                const float bx0 = -2.0f, bx1 = 46.0f, bz0 = -33.5f, bz1 = 54.5f;
+                const float by0 = -3.5f, by1 = 100.0f;
+                for (int ri : { ciCity, ciSurf }) {
+                    if (ri < 0) continue;
+                    for (uint32_t id : cws.ownedEntities((uint32_t)ri)) {
+                        const Entity& e = cscene.get(id);
+                        float mn[3], mx[3];
+                        if (!e.mesh.valid() || !cdev.meshBounds(e.mesh, mn, mx)) continue;
+                        // Builder props bake world positions into the verts and keep
+                        // an identity transform; apply the translation anyway.
+                        const float tx = e.transform[12], ty = e.transform[13], tz = e.transform[14];
+                        const float ex0 = mn[0] + tx, ex1 = mx[0] + tx;
+                        const float ey0 = mn[1] + ty, ey1 = mx[1] + ty;
+                        const float ez0 = mn[2] + tz, ez1 = mx[2] + tz;
+                        if (ex1 > bx0 && ex0 < bx1 && ez1 > bz0 && ez0 < bz1 &&
+                            ey1 > by0 && ey0 < by1) {
+                            clear = false;
+                            char ob[128];
+                            std::snprintf(ob, sizeof(ob), "region %d entity %u AABB (%.0f..%.0f, %.0f..%.0f, %.0f..%.0f)",
+                                          ri, id, ex0, ex1, ey0, ey1, ez0, ez1);
+                            offender = ob;
+                        }
+                    }
+                }
+                if (!clear) x3::logError("[worldstream-test] interior intrusion: " + offender);
+                checkW(clear, "C3 no streamed entity AABB inside the canon tower interior");
+            }
+            // C4: the boot-resident regions own ZERO physics bodies (the canon
+            // interior's collision/queries can never hit streamed content).
+            checkW(cws.bodiesCreated() == 0,
+                   "C4 streamed regions own zero physics bodies at boot");
+            cws.shutdown(cscene, cdev, *physics);
+        }
     }
 
     physics->shutdown();

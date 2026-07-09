@@ -383,7 +383,11 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
     // The District -> Spire approach (the facility pad at the origin).
     addRoadSegmented( 170.0f, 410.0f,  170.0f, 150.0f, 4.0f);
     addRoadSegmented( 170.0f, 150.0f,   22.0f, 150.0f, 4.0f);
-    addRoadSegmented(  22.0f, 150.0f,   22.0f,  40.0f, 4.0f);
+    // SEAM 3: the last leg ends AT the canon facility's apron edge (facade z1
+    // ~55.5 + 24 m apron ring => ~79.5), not z=40 — the old end point is INSIDE
+    // the canonical tower footprint (z -34.5..55.5), which put asphalt through
+    // the Entrance-edge rooms. The approach road now meets the concrete apron.
+    addRoadSegmented(  22.0f, 150.0f,   22.0f,  80.0f, 4.0f);
 
     // ---- 4 FREEWAY TUNNELS: a bore + a mouth portal heading toward each range. ----
     const float tunCol[4]   = { 0.30f, 0.30f, 0.33f, 1.0f };   // concrete
