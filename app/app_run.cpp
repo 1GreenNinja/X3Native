@@ -1162,6 +1162,15 @@ int runDefaultHost(HostContext& hc) {
     x3::game::StrataWorld    liveStrata;
     x3::game::TriggerSystem  liveStrataTriggers;
     bool                     liveStrataBuilt = false;
+    // Elevator-bar gap C (audit claim 392f6e4d): THE CLUB AT THE BOTTOM. The finished
+    // Club1127World (--world club) was never instantiated in the game path — the 1127
+    // disco descent parked the cab in bare rock at Y=-200. Built LAZILY on the first
+    // accepted 1127 code (the long disco-slow ride masks the build), ticked/drawn once
+    // built; on arrival with the doors open the rider is handed off to club.spawn()
+    // (the shell is centered at the XZ origin, west of the shaft — the documented
+    // "drops the player at spawn()" design in club1127.h).
+    x3::game::Club1127World  club1127;
+    bool                     club1127Handoff = false;
     // ---- Spire mid floors (F3 Labs / F4 Offices / F5 Synth bay) encounter content.
     // Authored onto the same Spire plates buildLevel1() produced; reached via the
     // per-floor elevator stops below. Has its own enemy groups + a gated F5 rescue
@@ -1635,10 +1644,13 @@ int runDefaultHost(HostContext& hc) {
         elevator.buildVisuals(scene, *device);
         // X3_ELEV_DISCO=1 (+ --screenshot): pre-enter the 1127 code so a headless
         // capture proves the core cab's disco cue (ball, strobe, magenta term/LED,
-        // club track) — same hook the showcase host carries.
+        // club track) — same hook the showcase host carries. The club builds too,
+        // exactly as the live keypad path does, so a shot-cam can stand in The Deep.
         if (hc.screenshot && std::getenv("X3_ELEV_DISCO")) {
             elevator.keypadDigit(1); elevator.keypadDigit(1);
             elevator.keypadDigit(2); elevator.keypadDigit(7);
+            if (elevator.disco() && !club1127.built())
+                club1127.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         }
         // R-3 fold: build THE DESCENT around the live elevator column (same XZ), so
         // riding the 1127 descent shows real geology out the glass. Reuses the strata
@@ -4759,6 +4771,12 @@ int runDefaultHost(HostContext& hc) {
                 }
                 if (elevDisco) {
                     codeMode = false; keypad.clear();
+                    // Gap C: the descent now ENDS somewhere — build the club once.
+                    if (elevator.disco() && !club1127.built()) {
+                        club1127.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+                        club1127Handoff = false;
+                        x3::logInfo("CLUB 1127 awakens at The Deep (Y=-200) — ride it down");
+                    }
                 } else if (canonDoors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
@@ -5046,6 +5064,27 @@ int runDefaultHost(HostContext& hc) {
                 // mood lights of the strata shaft the cab rides through (cab-biased).
                 if (liveStrataBuilt)
                     liveStrata.update(x3::net::kSimDt, scene, *device, elevator.cabCenter());
+                // Gap C: the club lives (ORB spin, spotlight orbit, blacklight pulse,
+                // idle DJ/bouncer) + the ARRIVAL HANDOFF — cab parked at the club stop,
+                // doors open, rider aboard -> step out at club.spawn(), once per descent.
+                if (club1127.built()) {
+                    club1127.update(x3::net::kSimDt, scene, *device, *physics);
+                    const float clubCabY =
+                        x3::game::ElevatorSystem::kDefaultClubFloorY + 0.15f;
+                    x3::phys::Vec3 pr = physics->getBodyPosition(player.body());
+                    if (!club1127Handoff && elevator.doorPct() > 0.9f &&
+                        std::fabs(elevator.cabCenter().y - clubCabY) < 1.5f &&
+                        elevator.playerRiding(pr)) {
+                        const x3::phys::Vec3 cs = club1127.spawn();
+                        physics->setBodyPosition(player.body(),
+                                                 x3::phys::Vec3{ cs.x, cs.y + 1.0f, cs.z });
+                        club1127Handoff = true;
+                        x3::logInfo("WELCOME TO CLUB 1127 — The Deep");
+                    }
+                    // Re-arm for the next descent once the cab is back near the surface.
+                    if (club1127Handoff && elevator.cabCenter().y > -50.0f)
+                        club1127Handoff = false;
+                }
 
                 physics->step(x3::net::kSimDt);
                 scene.update(*physics);
@@ -5079,6 +5118,8 @@ int runDefaultHost(HostContext& hc) {
                 if (liveStrataBuilt)
                     liveStrata.update(x3::net::kSimDt, scene, *device,
                                       x3::phys::Vec3{ flyX, flyY, flyZ });
+                if (club1127.built())
+                    club1127.update(x3::net::kSimDt, scene, *device, *physics);
                 physics->step(x3::net::kSimDt);
                 scene.update(*physics);
             }
@@ -5248,6 +5289,13 @@ int runDefaultHost(HostContext& hc) {
                 const auto& sl = liveStrata.pointLights();
                 size_t take = sl.size() < 16 ? sl.size() : (size_t)16;
                 for (size_t i = 0; i < take; ++i) fl.push_back(sl[i]);
+            }
+            // Gap C: at The Deep the club's own rig (neon/UV/orbit spots/bar fills)
+            // takes the whole budget — no surface fixture reaches -200 m anyway.
+            if (club1127.built() && camY < -150.0f) {
+                fl.clear();
+                const auto& cl = club1127.pointLights();
+                for (const auto& L : cl) fl.push_back(L);
             }
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
@@ -6081,6 +6129,7 @@ int runDefaultHost(HostContext& hc) {
                 nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                 subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
                 subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
+                club1127.drawCharacters(*device, frame, scene);  // The Deep's DJ + bouncer (no-op until 1127 builds it)
                 // ---- Monster HEALTH BARS — shiny metallic, world-anchored, with a
                 // sweeping specular sheen (shimmer). LOS-culled so a bar NEVER shows
                 // through a wall. Above every living enemy; flares white on a fresh hit

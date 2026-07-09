@@ -198,6 +198,7 @@ public:
     void keypadClear() { m_codeBuf.clear(); }
     const std::string& keypadBuffer() const { return m_codeBuf; }
     bool  disco() const { return m_disco; }
+    float doorPct() const { return m_doorPct; }   // 1=open, 0=closed (arrival handoff reads this)
 
     // Force the EMERGENCY_STOP / FREEFALL states (horror events; reachable for the
     // test). emergencyStop() halts the cab + shakes; freefall() drops it. Both no-op
