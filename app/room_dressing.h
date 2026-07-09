@@ -125,4 +125,9 @@ private:
     int      m_lastZone     = -1;
 };
 
+// The union of surface-library set names the zone recipes reference (deduped).
+// Feeds prewarmSurfaceSetsAsync at boot so the recipe pass's PNG decodes overlap
+// device init instead of running serially on the main thread (task #4).
+std::vector<std::string> recipeSurfaceSets();
+
 } // namespace x3::game

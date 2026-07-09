@@ -11,6 +11,7 @@
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -296,8 +297,22 @@ uint32_t CanonPlay::tagRoom(Scene& scene, const MonsterSystem& m, uint32_t room)
 
 void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& device,
                       x3::phys::IPhysicsWorld& physics, std::string_view modelDir,
-                      std::string_view girlsDialogPath) {
+                      std::string_view girlsDialogPath, bool deferUpperFloors) {
     m_modelDir = std::string(modelDir);
+
+    // X3_MONSTER_PROF=1: per-section build timing (boot-regression hunt; pairs
+    // with monster.cpp's [monster-prof]). Two clock reads per section when armed.
+    const bool prof = std::getenv("X3_MONSTER_PROF") != nullptr;
+    using profclock = std::chrono::steady_clock;
+    auto profT0 = profclock::now();
+    std::string profSummary;
+    auto profMark = [&](const char* name) {
+        if (!prof) return;
+        const auto t1 = profclock::now();
+        profSummary += std::string(name) + "=" +
+            std::to_string(std::chrono::duration<double, std::milli>(t1 - profT0).count()) + "ms ";
+        profT0 = t1;
+    };
 
     // ---- Resolve the canon rooms by name (the loader's room-lookup). ----
     CanonBeats bt = canonBeats(floor);
@@ -346,6 +361,7 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         x3::logInfo("[canonplay] Main Hall: " + std::to_string(m_mainHall.count()) +
                     " animated enemies spawned (room-tagged)");
     }
+    profMark("mainHall");
 
     // ---- A few SIDE-CELL guards (Security Station + Research Lab spine rooms — the player
     // pushes through these on the way down). Anchored to their own room floors + tagged. ----
@@ -368,6 +384,7 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         x3::logInfo("[canonplay] side cells: " + std::to_string(m_cellGuards.count()) +
                     " guards spawned (room-tagged)");
     }
+    profMark("sideCells");
 
     // ---- MARTINEZ boss in the Boss Arena (boss-tier HP/speed; rigged + animated chief). --
     if (bt.bossArena != kNoRoom) {
@@ -413,6 +430,7 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         if (be != kNoLink && be < scene.size()) scene.get(be).roomId = bt.bossArena;
         x3::logInfo("[canonplay] Boss Arena: Chief Martinez spawned (boss-tier, room-tagged)");
     }
+    profMark("martinez");
 
     // ---- The 3 RESCUE GIRLS (Aria/Keisha/Emily) in the MEDICAL BAY + adjacent wards, each
     // being attacked by 1-2 enemies (the L2 interrupt-rescue): kill the attackers to save her
@@ -543,6 +561,7 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         x3::logInfo("[canonplay] Medical Bay rescue: 3 girls + " +
                     std::to_string(m_attackers.count()) + " attackers (room-tagged)");
     }
+    profMark("rescue");
 
     // ---- W4-1: THE BOSS LADDER — floors 2-7's authored bosses, spawned in their
     // dressed Boss Arena rooms (data names 'F<N> Boss: <name>'). Bodies are the
@@ -608,17 +627,21 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
             x3::logInfo("[canonplay] boss ladder: " + std::to_string(spawned) +
                         " floor bosses live (F2-F7)");
     }
+    profMark("bossLadder");
 
     // ---- R-5 (PB fold): regular squads + item pickups up the tower (floors 2-7). ----
-    buildUpperFloors(floor, scene, device, physics);
+    buildUpperFloors(floor, scene, device, physics, deferUpperFloors);
+    profMark("upperFloors");
 
     // ---- Per-girl dialog (staging JSON; baked fallback on absence). ----
     m_dialog.load(girlsDialogPath);
+    profMark("dialog");
 
     // Fan the cue / death-FX sinks onto every group + the boss (if already wired).
     setCueSink(m_cueSink);
     setDeathFxSink(m_deathFx);
 
+    if (prof) x3::logInfo("[canonplay-prof] " + profSummary);
     m_built = true;
     x3::logInfo("[canonplay] build complete — sidearm + " +
                 std::to_string(m_taggedHostiles) + " room-tagged hostiles + Martinez + 3 girls; "
@@ -945,29 +968,61 @@ uint32_t CanonPlay::spawnUpperEnemies(const CanonFloor& floor, Scene& scene,
                                       int hpBonus, float speedBonus) {
     const uint32_t room = floor.roomByName(roomName);
     if (room == kNoRoom || mixCount == 0) return 0;
+    // Enqueue one job per enemy (task #4: the deferred-boot path drains these via
+    // tickUpperSpawns; the sync path drains them before buildUpperFloors returns).
+    for (uint32_t i = 0; i < mixCount; ++i) {
+        UpperSpawnJob j;
+        j.room = roomName; j.type = mix[i];
+        j.idx = i; j.squadSize = mixCount;
+        j.hpBonus = hpBonus; j.speedBonus = speedBonus;
+        m_upperQueue.push_back(std::move(j));
+    }
+    return mixCount;
+}
+
+void CanonPlay::spawnOneUpper(const CanonFloor& floor, Scene& scene,
+                              x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                              const UpperSpawnJob& job) {
+    const uint32_t room = floor.roomByName(job.room.c_str());
+    if (room == kNoRoom) return;
     const CanonRoom& R = floor.rooms[room];
     const float fy = R.y0() + kEnemyFootUp;
     // Spread the squad inside the room footprint with a wall margin (rooms are ~8-16 m).
     const float halfW = std::max(0.5f, R.w * 0.5f - 1.6f);
     const float halfD = std::max(0.5f, R.d * 0.5f - 1.6f);
-    uint32_t placed = 0;
-    for (uint32_t i = 0; i < mixCount; ++i) {
-        // Deterministic scatter (no RNG): lay enemies along a zig across the room so an
-        // arriving player is never dogpiled at the doorway spine.
-        const float t = (mixCount > 1) ? ((float)i / (float)(mixCount - 1)) : 0.5f;
-        const float dx = (t * 2.0f - 1.0f) * halfW;
-        const float dz = ((i % 2 == 0) ? 0.45f : -0.45f) * halfD;
-        MonsterSystem::Tuning tn = tuningFor(mix[i]);
-        tn.hp += hpBonus;                       // depth scaling: higher floor = tougher
-        tn.chaseSpeed += speedBonus;
-        const uint32_t mi = m_upperEnemies.spawn(scene, device, physics, m_modelDir,
-                                                 x3::phys::Vec3{ R.cx + dx, fy, R.cz + dz },
-                                                 tn);
-        tagRoom(scene, m_upperEnemies.at(mi), room);
-        ++m_taggedHostiles;
-        ++placed;
+    // Deterministic scatter (no RNG): lay enemies along a zig across the room so an
+    // arriving player is never dogpiled at the doorway spine.
+    const float t = (job.squadSize > 1) ? ((float)job.idx / (float)(job.squadSize - 1)) : 0.5f;
+    const float dx = (t * 2.0f - 1.0f) * halfW;
+    const float dz = ((job.idx % 2 == 0) ? 0.45f : -0.45f) * halfD;
+    MonsterSystem::Tuning tn = tuningFor(job.type);
+    tn.hp += job.hpBonus;                       // depth scaling: higher floor = tougher
+    tn.chaseSpeed += job.speedBonus;
+    const uint32_t mi = m_upperEnemies.spawn(scene, device, physics, m_modelDir,
+                                             x3::phys::Vec3{ R.cx + dx, fy, R.cz + dz },
+                                             tn);
+    tagRoom(scene, m_upperEnemies.at(mi), room);
+    // (Cue/death-FX sinks: MonsterManager::spawn wires its stored sinks onto every
+    // late spawn, so the build()-time fan covers these deferred enemies too.)
+    ++m_taggedHostiles;
+}
+
+uint32_t CanonPlay::tickUpperSpawns(const CanonFloor& floor, Scene& scene,
+                                    x3::rhi::IRenderDevice& device,
+                                    x3::phys::IPhysicsWorld& physics,
+                                    uint32_t maxSpawns) {
+    uint32_t n = 0;
+    while (m_upperQueueNext < m_upperQueue.size() && n < maxSpawns) {
+        spawnOneUpper(floor, scene, device, physics, m_upperQueue[m_upperQueueNext]);
+        ++m_upperQueueNext; ++n;
     }
-    return placed;
+    const uint32_t left = (uint32_t)(m_upperQueue.size() - m_upperQueueNext);
+    if (n > 0 && left == 0) {
+        x3::logInfo("[canonplay] deferred upper-floor spawns DRAINED (" +
+                    std::to_string(m_upperQueue.size()) + " squad enemies live on F2-F7)");
+        m_upperQueue.clear(); m_upperQueue.shrink_to_fit(); m_upperQueueNext = 0;
+    }
+    return left;
 }
 
 bool CanonPlay::placeUpperItem(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& device,
@@ -997,7 +1052,8 @@ bool CanonPlay::placeUpperItem(const CanonFloor& floor, Scene& scene, x3::rhi::I
 }
 
 void CanonPlay::buildUpperFloors(const CanonFloor& floor, Scene& scene,
-                                 x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics) {
+                                 x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                                 bool deferred) {
     // Only meaningful when the whole tower is loaded (loadCanonTower). On a single-floor
     // load the F2..F7 room names resolve to kNoRoom and every helper no-ops.
     if (floor.roomByName("F2: Elevator Lobby") == kNoRoom) {
@@ -1108,8 +1164,17 @@ void CanonPlay::buildUpperFloors(const CanonFloor& floor, Scene& scene,
     I("Clone Lab",              CanonItemKind::LoreTerminal); // W8-1 desc gold: Jake clone
                                                               // data (mirror confrontation)
 
-    x3::logInfo("[canonplay] upper floors populated: " + std::to_string(enemies) +
-                " squad enemies + " + std::to_string(items) + " pickups (F2-F7)");
+    if (deferred) {
+        x3::logInfo("[canonplay] upper floors: " + std::to_string(enemies) +
+                    " squad enemies QUEUED (deferred boot, task #4) + " +
+                    std::to_string(items) + " pickups placed (F2-F7)");
+    } else {
+        // Sync path (tests / screenshot captures): drain the queue right here so
+        // the caller sees full content at return — the original R-5 behavior.
+        tickUpperSpawns(floor, scene, device, physics, (uint32_t)m_upperQueue.size());
+        x3::logInfo("[canonplay] upper floors populated: " + std::to_string(enemies) +
+                    " squad enemies + " + std::to_string(items) + " pickups (F2-F7)");
+    }
 }
 
 uint32_t CanonPlay::liveCompanionPositions(x3::phys::Vec3* out, uint32_t cap) const {

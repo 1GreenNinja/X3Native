@@ -11,7 +11,9 @@
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -272,14 +274,30 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     const std::string useDir = tuning.modelDirOverride.empty()
         ? std::string(modelDir) : tuning.modelDirOverride;
 
+    // X3_MONSTER_PROF=1: per-phase spawn timing (boot-regression hunt). Cheap
+    // enough to keep — two clock reads per phase, only logged when armed.
+    const bool prof = std::getenv("X3_MONSTER_PROF") != nullptr;
+    using profclock = std::chrono::steady_clock;
+    auto profT0 = profclock::now();
+    double msMount = 0.0, msLoad = 0.0, msDraw = 0.0, msSkin = 0.0, msPose = 0.0;
+    auto profMs = [&profT0]() {
+        const auto t1 = profclock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - profT0).count();
+        profT0 = t1;
+        return ms;
+    };
+
     m_device = &device;   // cached so update() can re-upload CPU-skinned vertices
     m_assets.reset(x3::asset::createAssetSource());
     bool mounted = m_assets->mountDir(useDir, 0);
+    if (prof) msMount = profMs();
     if (mounted) {
         m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
         m_model = m_loader->load(modelFile);
+        if (prof) msLoad = profMs();
         if (m_model.ok)
             m_drawables = x3::asset::makeDrawables(m_model);
+        if (prof) msDraw = profMs();
     } else {
         x3::logWarn("[monster] mountDir failed: " + useDir);
     }
@@ -292,6 +310,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // (the Skinner's blend collapses gracefully on a single locomotion clip).
     // Models with no skin/anim (the Drone, the legacy crawler, the fallback box)
     // leave the skinner invalid -> static draw. ----
+    if (prof) profT0 = profclock::now();
     if (m_model.ok && m_skinner.bind(m_model)) {
         // GPU SKINNING OF MODELS: register this character's skinned primitives with
         // the device's compute-skinning path. When supported, apply/applyLocomotion
@@ -299,6 +318,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         // re-upload) — the scalability fix for crowds of NPCs. Falls back to CPU
         // skinning transparently on a non-compute / headless device.
         const bool gpuSkin = m_skinner.enableGpuSkinning(device, m_model);
+        if (prof) msSkin = profMs();
         x3::logInfo(std::string("[monster] ") + std::string(modelFile) +
                     (gpuSkin ? "  ->  GPU-SKINNED (compute pre-pass)"
                              : "  ->  CPU-SKINNED FALLBACK (per-frame updateMesh — PERF)"));
@@ -339,14 +359,23 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         // Pose the bind-pose mesh into the idle pose at t=0 once up front so the
         // very first rendered frame already shows the animated pose (not bind pose).
         if (m_animActive && m_device) {
+            if (prof) profT0 = profclock::now();
             if (m_useLocoBlend) {
                 m_skinner.setLocomotionSpeed(0.0f);   // start idle
                 m_skinner.applyLocomotion(m_model, *m_device, 0.0f);
             } else {
                 m_skinner.apply(m_model, *m_device, (uint32_t)m_idleClip, 0.0f);
             }
+            if (prof) msPose = profMs();
         }
     }
+    if (prof)
+        x3::logInfo("[monster-prof] " + modelFile +
+                    "  mount=" + std::to_string(msMount) +
+                    " load="  + std::to_string(msLoad) +
+                    " draw="  + std::to_string(msDraw) +
+                    " skin="  + std::to_string(msSkin) +
+                    " pose="  + std::to_string(msPose) + " (ms)");
 
     // ---- Model-local fixup: the converted character GLBs are Z-up (lying flat),
     // so rotate -90deg about X to stand them upright (local +Z -> world +Y), then

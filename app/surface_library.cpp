@@ -24,13 +24,49 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 namespace x3::game {
 
 namespace {
 
+// ---- Background decode cache (prewarmSurfaceSetsAsync). Keyed by full PNG
+// path; each entry's future produces the raw RGBA pixels so get() only pays
+// the GPU createTexture. Guarded by one mutex (a handful of entries, boot-only).
+struct DecodedPng {
+    std::unique_ptr<stbi_uc, void(*)(void*)> px{ nullptr, stbi_image_free };
+    int w = 0, h = 0;
+};
+std::mutex g_decodeMx;
+std::unordered_map<std::string, std::shared_future<std::shared_ptr<DecodedPng>>> g_decodes;
+
+std::shared_ptr<DecodedPng> decodePng(const std::string& path) {
+    auto d = std::make_shared<DecodedPng>();
+    int comp = 0;
+    d->px.reset(stbi_load(path.c_str(), &d->w, &d->h, &comp, 4));
+    return d->px ? d : nullptr;
+}
+
 x3::rhi::TextureHandle loadPng(x3::rhi::IRenderDevice& device,
                                const std::string& path, bool srgb) {
+    // Prewarmed? Consume the background decode (wait if still in flight — it
+    // started seconds ago, so this is a cache hit in practice) and drop the entry.
+    std::shared_future<std::shared_ptr<DecodedPng>> fut;
+    {
+        std::lock_guard<std::mutex> lk(g_decodeMx);
+        auto it = g_decodes.find(path);
+        if (it != g_decodes.end()) { fut = it->second; g_decodes.erase(it); }
+    }
+    if (fut.valid()) {
+        if (std::shared_ptr<DecodedPng> d = fut.get()) {
+            return device.createTexture(d->px.get(), (uint32_t)d->w, (uint32_t)d->h, srgb);
+        }
+        // decode failed — fall through to the inline path (which will also fail,
+        // but logs via the caller's incomplete-set warning as before)
+    }
     int w = 0, h = 0, comp = 0;
     stbi_uc* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
     if (!px) return {};
@@ -40,6 +76,21 @@ x3::rhi::TextureHandle loadPng(x3::rhi::IRenderDevice& device,
 }
 
 } // namespace
+
+void prewarmSurfaceSetsAsync(const std::string& rootDir,
+                             const std::vector<std::string>& names) {
+    std::lock_guard<std::mutex> lk(g_decodeMx);
+    for (const std::string& n : names) {
+        for (const char* f : { "albedo.png", "normal.png", "mr.png" }) {
+            std::string path = rootDir + "/" + n + "/" + f;
+            if (g_decodes.count(path)) continue;
+            g_decodes.emplace(std::move(path),
+                std::async(std::launch::async, [p = rootDir + "/" + n + "/" + f]() {
+                    return decodePng(p);
+                }).share());
+        }
+    }
+}
 
 const SurfaceSet& SurfaceLibrary::get(x3::rhi::IRenderDevice& device,
                                       const std::string& name) {

@@ -1275,6 +1275,15 @@ int runDefaultHost(HostContext& hc) {
             // fixtures the legacy level registers, so without these the rooms only get
             // ambient + the flashlight (the DARK bug). We feed only the player's VISIBLE
             // rooms' lights each frame (below) so the active count stays under the cap.
+            // X3_MONSTER_PROF=1: time the dressing passes too (boot-regression hunt).
+            const bool bootProf = std::getenv("X3_MONSTER_PROF") != nullptr;
+            auto bootProfT0 = std::chrono::steady_clock::now();
+            auto bootProfMs = [&bootProfT0](const char* what) {
+                const auto t1 = std::chrono::steady_clock::now();
+                x3::logInfo("[dressing-prof] " + std::string(what) + "=" +
+                    std::to_string(std::chrono::duration<double, std::milli>(t1 - bootProfT0).count()) + "ms");
+                bootProfT0 = t1;
+            };
             canonLights = x3::game::buildCanonLights(canonFloor);
             // OPENING-SPACE POLISH: dense set-dressing + motivated lighting over the canon
             // detention cell + Main Hall mouth (the first space the player sees). Purely
@@ -1282,6 +1291,7 @@ int runDefaultHost(HostContext& hc) {
             // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
             // truth; missing GLBs simply aren't drawn (the level never breaks).
             canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
+            if (bootProf) bootProfMs("canonDressing");
             // WAVE-3: recipe-dress every other classifiable room (surface-library
             // panels + zone lights + hero props). Jake's cell stays CellDressing's.
             // Recipe rooms OWN their light statement (bible: one key per room), so the
@@ -1300,6 +1310,7 @@ int runDefaultHost(HostContext& hc) {
                                        canonRooms.lights().begin(), canonRooms.lights().end());
                 }
             }
+            if (bootProf) bootProfMs("canonRooms(recipes)");
             // ---- W5-1: LEVEL 4.5 — the Nexus Chamber. Builds the cavern shell over the
             // open-ceiling Access room, the scaffold climb up the authored tiers, the
             // two-accent horror dressing, and the sparse creatures (apex dormant). Its
@@ -1307,6 +1318,7 @@ int runDefaultHost(HostContext& hc) {
             canon45.build(canonFloor, scene, *device, *physics,
                           x3::game::riggedGlbRoot(),
                           x3::game::assetRoot() + "/surface_library", canonLights);
+            if (bootProf) bootProfMs("canon45");
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the
@@ -1420,8 +1432,13 @@ int runDefaultHost(HostContext& hc) {
             // the flood-fill cull + per-room lights include it (and the model draw is
             // gated to the visible set, see the draw block). Uses the SAME systems the
             // legacy Level1Game uses (MonsterManager / RescueSystem / WeaponSystem). ----
+            // Task #4 (boot regression): the INTERACTIVE boot defers the F2-F7 squad
+            // spawns (drained 1/frame in the live loop below — the player boots in
+            // the F1 cell, floors 2-7 populate invisibly over the first ~1.5 s).
+            // Screenshot captures keep the sync path: full content before settle.
             canonPlay.build(canonFloor, scene, *device, *physics,
-                            x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath());
+                            x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath(),
+                            /*deferUpperFloors=*/!hc.screenshot);
             // Enemy-SFX: wire the shared enemy cue sink so the canon-level enemies have
             // a VOICE (footsteps, attack swings, take-hit grunts, death, idle taunts) +
             // their impacts land audibly. canonPlay had NO cue sink before — its enemies
@@ -5405,6 +5422,9 @@ int runDefaultHost(HostContext& hc) {
                     }
                 }
                 const double _pt0 = glfwGetTime();
+                // Task #4: drain the deferred F2-F7 squad queue, one enemy per frame
+                // (~15-25 ms each — bounded, and the player is floors away in the cell).
+                canonPlay.tickUpperSpawns(canonFloor, scene, *device, *physics, 1);
                 canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
                 // W5-1: the Nexus Chamber — whispers / the name-call / apex wake /
                 // cavern creatures. Creature-bucket vocals stand in for VO (none in
