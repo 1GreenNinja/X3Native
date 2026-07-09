@@ -30,6 +30,7 @@
 #include "engine/physics/IPhysicsWorld.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -118,6 +119,20 @@ public:
     // True if `feet` (player capsule reference point) is on the cab: XZ within the
     // footprint (+margin) and Y near the cab top. Generous window for ride detection.
     bool playerRiding(const x3::phys::Vec3& feet) const;
+    // Landing lookup for "call the cab TO the caller" (real elevator manners):
+    // the stop whose cab-center Y is closest to the given feet height, and a
+    // stop's Y for the is-it-already-here test. Empty stops -> 0 / 0.0f.
+    int nearestStopTo(float feetY) const {
+        int best = 0; float bd = 1e9f;
+        for (int i = 0; i < (int)m_stopsY.size(); ++i) {
+            const float d = std::fabs(m_stopsY[i] - feetY);
+            if (d < bd) { bd = d; best = i; }
+        }
+        return best;
+    }
+    float stopY(int i) const {
+        return (i >= 0 && i < (int)m_stopsY.size()) ? m_stopsY[i] : 0.0f;
+    }
     // JS checkRider parity (rider craft): walking up to an IDLE car whose doors
     // are SEALED opens them — no button press. Host feeds the player feet each
     // frame; no-op unless the FSM is on, the cab is parked, the doors are closed,
