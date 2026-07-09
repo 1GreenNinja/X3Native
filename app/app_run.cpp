@@ -1592,7 +1592,15 @@ int runDefaultHost(HostContext& hc) {
             // (tools/gen_elevator_audio.py) — sound on a fresh clone.
             es.muzak     = audio->load(x3::game::resolveAudio("interact/muzak_loop.wav"));
             es.creak     = audio->load(x3::game::resolveAudio("interact/cable_creak.wav"));
+            // LAYERED DOOR SFX: hydraulic hiss + metal slide per direction, and a
+            // seat THUNK the FSM fires on the exact end-of-travel frame.
+            { auto hOpen  = audio->load(x3::game::resolveAudio("interact/door_hiss_open.wav"));
+              auto hClose = audio->load(x3::game::resolveAudio("interact/door_hiss_close.wav"));
+              if (hOpen.valid())  es.doorOpen  = hOpen;
+              if (hClose.valid()) es.doorClose = hClose; }
+            es.doorThunk = audio->load(x3::game::resolveAudio("interact/door_thunk.wav"));
             elevator.setSounds(es);
+            elevator.armCableSlip();   // the one-shot freefall scare (never in disco)
         }
         elevator.setClubStopY(x3::game::ElevatorSystem::kDefaultClubFloorY + cabHY);
         {

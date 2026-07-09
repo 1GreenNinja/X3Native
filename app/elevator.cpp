@@ -386,6 +386,7 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_doorPct = std::max(0.0f, m_doorPct - dt / m_tune.doorSpeed);
             if (m_doorPct <= 0.0f) {
                 m_doorPct = 0.0f;
+                playOneShot(m_snd.doorThunk, 0.8f, 0.95f);   // panels SEAT (layered close)
                 m_state = ElevState::Accelerating;
                 m_stateTime = 0.0f;
             }
@@ -403,6 +404,32 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_fsmSpeed = m_tune.maxSpeed * (m_discoSlow ? kDiscoSlow : 1.0f);
             m_pos.y += dir * m_fsmSpeed * eDt;
             m_totalDist += m_fsmSpeed * eDt;
+            // THE CABLE SLIPS (armed, once, never in disco): on a LONG descent,
+            // past the shaft's halfway line, the cable lets go. Lights die, the
+            // muzak cuts, the cab drops — the brakes catch it in the Freefall case.
+            if (m_slipArmed && !m_slipDone && !m_disco && dir < 0.0f &&
+                dist > 18.0f && !m_stopsY.empty() &&
+                m_pos.y < (m_stopsY.front() + m_stopsY.back()) * 0.5f) {
+                m_slipDone = true;
+                m_slipAlarmed = false;
+                m_resumeStop = m_target;
+                m_slipStartY = m_pos.y;
+                if (m_muzakLoop.valid()) { m_audio->stopLoop(m_muzakLoop); m_muzakLoop = {}; }
+                if (m_flickerT <= 0.0f && !m_lights.empty()) {   // lights DIE
+                    m_lightSaveR = m_lights[0].color[0];
+                    m_lightSaveG = m_lights[0].color[1];
+                    m_lightSaveB = m_lights[0].color[2];
+                    m_lights[0].color[0] *= 0.06f;
+                    m_lights[0].color[1] *= 0.06f;
+                    m_lights[0].color[2] *= 0.06f;
+                    m_flickerT = 999.0f;                         // held dark until the catch
+                }
+                playOneShot(m_snd.creak, 1.0f, 0.65f);           // the cable LETS GO
+                m_state = ElevState::Freefall;
+                m_stateTime = 0.0f;
+                x3::logInfo("[elevator] ...the CABLE SLIPS.");
+                break;
+            }
             if (dist < m_tune.decelDist) { m_state = ElevState::Decelerating; m_stateTime = 0.0f; }
             break;
 
@@ -466,6 +493,7 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_doorPct = std::min(1.0f, m_doorPct + dt / m_tune.doorSpeed);
             if (m_doorPct >= 1.0f) {
                 m_doorPct = 1.0f;
+                playOneShot(m_snd.doorThunk, 0.7f, 1.05f);   // panels park open (layered open)
                 m_state = ElevState::DoorsOpen;
                 m_stateTime = 0.0f;
             }
@@ -488,16 +516,45 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
                 m_shakeX = 0.0f;
                 m_state = ElevState::Idle;
                 m_stateTime = 0.0f;
+                if (m_pendingResume) {                            // the ride quietly resumes
+                    m_pendingResume = false;
+                    x3::logInfo("[elevator] resuming to the original stop...");
+                    // startTravelTo, NOT callTo: the interrupted ride's target is
+                    // still m_target, so callTo's already-called guard would refuse.
+                    startTravelTo(std::clamp(m_resumeStop, 0, (int)m_stopsY.size() - 1));
+                }
             }
             break;
         }
 
-        case ElevState::Freefall:
+        case ElevState::Freefall: {
             // Dramatic drop (ported from STATE.FREEFALL): accelerate down hard.
             m_fsmSpeed = std::min(m_fsmSpeed + 20.0f * dt, 40.0f);
             m_pos.y -= m_fsmSpeed * dt;
             m_totalDist += m_fsmSpeed * dt;
+            // Mid-fall ALARM (once, after the stomach-drop beat of silence).
+            if (!m_slipAlarmed && m_stateTime > 0.35f) {
+                m_slipAlarmed = true;
+                playOneShot(m_snd.buzz, 1.0f, 0.60f);
+            }
+            // THE BRAKES CATCH: after ~14 m of fall, or before the pit. Restore
+            // the lights, hand off to EmergencyStop (shake + klaxon + 3 s recover),
+            // and queue the resume to the original destination.
+            const float floorY = m_stopsY.empty() ? (m_pos.y - 1.0f) : m_stopsY.front();
+            if ((m_slipStartY - m_pos.y) > 14.0f || m_pos.y < floorY + 4.0f) {
+                if (m_pos.y < floorY) m_pos.y = floorY;          // never through the pit
+                if (m_flickerT > 100.0f && !m_lights.empty()) {  // lights back
+                    m_lights[0].color[0] = m_lightSaveR;
+                    m_lights[0].color[1] = m_lightSaveG;
+                    m_lights[0].color[2] = m_lightSaveB;
+                    m_flickerT = 0.0f;
+                }
+                m_pendingResume = (m_resumeStop >= 0);
+                emergencyStop();
+                x3::logInfo("[elevator] ...the emergency brakes CATCH.");
+            }
             break;
+        }
     }
 
     // Cable CREAKS while the cab travels (JS: every 3-5 s over 2 m/s) — the
@@ -1104,6 +1161,48 @@ bool runElevatorFsmSelfTest() {
     }
 
     physics->shutdown();
+    // ---- F9: THE CABLE SLIPS (armed) — on a long descent past halfway the cab
+    // freefalls, the brakes CATCH (EmergencyStop), and the ride RESUMES to the
+    // original stop; the scare is once-only and never drops through the pit. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> p9(x3::phys::createPhysicsWorld());
+        p9->init();
+        HeadlessRenderDevice d9;
+        Scene s9;
+        ElevatorSystem e9;
+        const float bot = 0.15f, top = 60.15f;
+        e9.build(s9, d9, *p9, 0.0f, 0.0f, 1.4f, 0.15f, 1.4f,
+                 std::vector<float>{ bot, top }, 1);       // start at the TOP
+        e9.enableFsm(true);
+        e9.armCableSlip();
+        e9.callTo(0);                                      // the long descent
+        bool sawFall = false, sawEmergency = false, minYOk = true;
+        float minY = 1e9f;
+        for (int i = 0; i < 60 * 60; ++i) {                // up to 60 sim-seconds
+            e9.update(kDt, s9, *p9);
+            sawFall      |= (e9.state() == ElevState::Freefall);
+            sawEmergency |= (e9.state() == ElevState::EmergencyStop);
+            minY = std::min(minY, e9.cabCenter().y);
+            if (e9.state() == ElevState::DoorsOpen && sawEmergency) break;
+        }
+        minYOk = (minY > bot - 1.0f);
+        const bool arrived = std::fabs(e9.cabCenter().y - bot) < 0.5f;
+        fcheck(sawFall && sawEmergency && arrived && minYOk,
+               "F9 CABLE SLIP: freefall -> brakes catch -> resumes -> arrives (never through the pit)");
+        // Once-only: ride back up, then down again — no second scare.
+        e9.callTo(1);
+        for (int i = 0; i < 60 * 40 && e9.state() != ElevState::DoorsOpen; ++i) e9.update(kDt, s9, *p9);
+        e9.callTo(0);
+        bool secondFall = false;
+        for (int i = 0; i < 60 * 40; ++i) {
+            e9.update(kDt, s9, *p9);
+            secondFall |= (e9.state() == ElevState::Freefall);
+            if (e9.state() == ElevState::DoorsOpen) break;
+        }
+        fcheck(!secondFall, "F9b the slip is once-only (second descent rides clean)");
+        p9->shutdown();
+    }
+
     x3::logInfo("elevatorfsm: " + std::to_string(s_pass) + "/" +
                 std::to_string(s_pass + s_fail) + " passed");
     return s_fail == 0;

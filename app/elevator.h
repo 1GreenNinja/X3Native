@@ -52,8 +52,9 @@ struct ElevatorSounds {
     x3::audio::SoundHandle keyClick;   // keypad digit press
     x3::audio::SoundHandle buzz;       // wrong-code / emergency buzzer
     // Cabin-experience cues (the Babylon x3-elevator.js parity pass):
-    x3::audio::SoundHandle muzak;      // looped 72 BPM pentatonic muzak (rides doors-close -> arrival)
+    x3::audio::SoundHandle muzak;      // looped cabin muzak (rides doors-close -> arrival)
     x3::audio::SoundHandle creak;      // random cable groan while the cab travels
+    x3::audio::SoundHandle doorThunk;  // panels SEAT at end of travel (fires on the exact frame)
 };
 
 // ---------------------------------------------------------------------------
@@ -201,6 +202,8 @@ public:
     // test). emergencyStop() halts the cab + shakes; freefall() drops it. Both no-op
     // unless the FSM is enabled.
     void emergencyStop();
+    // Arm the one-shot CABLE-SLIP freefall scare (see m_slipArmed). Hosts opt in.
+    void armCableSlip() { m_slipArmed = true; }
     void freefall();
 
     // The current facility-relative stratum name for the cab Y (geo-survey OLED).
@@ -289,6 +292,17 @@ private:
     float    m_flickerT    = 0.0f;            // >0: interior light is dipped (horror)
     float    m_lightSaveR  = 0.0f, m_lightSaveG = 0.0f, m_lightSaveB = 0.0f;
     uint32_t m_rng         = 0x1127u;         // tiny deterministic LCG (creak jitter + horror roll)
+    // THE CABLE SLIPS — a once-per-ride-line scripted freefall scare. OPT-IN via
+    // armCableSlip() (hosts arm it; tests/canon stay deterministic): on the first
+    // LONG descent, past the shaft's halfway line, the cable lets go — lights die,
+    // the cab drops (Freefall), the emergency brakes CATCH it (EmergencyStop),
+    // and the ride quietly resumes to the original stop. Never fires in disco.
+    bool  m_slipArmed   = false;
+    bool  m_slipDone    = false;
+    bool  m_slipAlarmed = false;              // the mid-fall alarm fired
+    bool  m_pendingResume = false;            // emergency recovery re-calls m_resumeStop
+    int   m_resumeStop  = -1;
+    float m_slipStartY  = 0.0f;
     bool   m_doorWasOpening = false;          // edge-detect for the door SFX
     bool   m_doorWasClosing = false;
 
