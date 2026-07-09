@@ -238,7 +238,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     if (!phys->init()) { x3::logError("[intro] physics init failed"); return; }
 
     x3::game::SpacePilotController pilot;
-    pilot.spawn(*phys, 0.0f, 0.0f, 0.0f);
+    // FIGHTER tuning (owner playtest: "sleek — the ship should DART around").
+    // The stock cinematic-arcade defaults read sluggish from inside the cockpit;
+    // a fighter wants violent thrust + hard strafe so dodging feels like flying.
+    x3::game::SpacePilotController::Tuning tun{};
+    tun.maxLinearAccel = 70.0f;   // was 25 — throws you back in the seat
+    tun.maxStrafeAccel = 38.0f;   // was 12 — real dodge authority (A/D + Space/Ctrl)
+    tun.boostMul       = 3.0f;    // shift = afterburner
+    tun.maxSpeed       = 260.0f;
+    pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
 
     x3::space::EnemyShipManager enemies;
     enemies.init((uint32_t)std::max(0, beat.enemyCount));
@@ -272,6 +280,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     if (fxOn) { fxPtr = std::make_unique<x3::game::CombatFx>(); fxPtr->init(*hc.device); }
     float beatT = 0.0f;
 
+    // Captured-cursor mouse-look for the live window (host_space pattern). The
+    // cursor is restored to NORMAL on every exit path below (the cinematic beats
+    // + the cutscene player expect a visible cursor).
+    double lastMX = 0.0, lastMY = 0.0;
+    if (live) {
+        glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        glfwGetCursorPos(hc.window, &lastMX, &lastMY);
+    }
+
     for (int step = 0; step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
@@ -281,6 +298,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         float rollAxis = 0.0f;
         bool fire = false;
         if (live) {
+            // Poll EVERY frame — without this GLFW's key/button/cursor state is
+            // frozen at the beat-entry snapshot and the ship ignores the player
+            // entirely (owner playtest: "I tried to shoot", acc 0/0, "clunky").
+            glfwPollEvents();
             if (glfwWindowShouldClose(hc.window)) break;
             if (glfwGetKey(hc.window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
             auto kd = [&](int k){ return glfwGetKey(hc.window, k) == GLFW_PRESS; };
@@ -288,6 +309,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             in.moveStrafe = (kd(GLFW_KEY_D)?1.f:0.f) + (kd(GLFW_KEY_A)?-1.f:0.f);
             in.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
             rollAxis      = (kd(GLFW_KEY_Q)?-1.f:0.f) + (kd(GLFW_KEY_E)?1.f:0.f);
+            double mx, my; glfwGetCursorPos(hc.window, &mx, &my);
+            in.lookDX = (float)(mx - lastMX);   // mouse-look: yaw/pitch the ship
+            in.lookDY = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
             fire = glfwGetMouseButton(hc.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         } else {
             in.moveFwd = 1.0f;                  // close the distance
@@ -409,6 +434,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 const float fwz = fh * std::sin(cyaw);
                 fxPtr->addTracer({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f, cz + fwz * 2.0f },
                              { cx + fwx * 600.0f, cy + fwy * 600.0f, cz + fwz * 600.0f });
+                fxPtr->spawnMuzzleFlash({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f,
+                                          cz + fwz * 2.0f }, { fwx, fwy, fwz });
             }
             if (fxOn) fxPtr->update(dt);
             auto frame = hc.device->beginFrame();
@@ -454,6 +481,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (crippled && enemies.aliveCount() == 0) break;
     }
 
+    if (live) glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     if (fxOn) fxPtr->shutdown(*hc.device);
 
     // Fold this window's metrics into the running totals. The CLIMAX window owns
@@ -703,7 +731,23 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
 
     // The interactive windows are done — release the cockpit's GPU handles before
     // the outcome stinger + the cell/surface build take over the device.
-    if (cockpit) { cockpit->shutdown(*hc.device); cockpit.reset(); }
+    if (cockpit) {
+        cockpit->shutdown(*hc.device);
+        cockpit.reset();
+        // RESTORE the device look the deep-space beats overrode, or it LEAKS into
+        // the cell (owner playtest: Vigil's holo terminal read "heavily regressed"
+        // — the cell was lit by the space sun + near-black space IBL + cool space
+        // ambient). Engine defaults per IRenderDevice.h / VulkanRenderDevice:
+        // sky disabled, ambient (0.42, 0.44, 0.50), probe off. Point lights are
+        // re-issued per floor by the cell; SSAO/SSGI are re-applied by the game
+        // UI's applySettings at cell boot.
+        x3::rhi::IRenderDevice::SkyParams sp{};       // enabled=false (indoor cell)
+        hc.device->setSkyParams(sp);
+        hc.device->setAmbient(0.42f, 0.44f, 0.50f);
+        hc.device->setIblProbe(false);
+        x3::rhi::PointLight noLights{};
+        hc.device->setPointLights(&noLights, 0);
+    }
 
     // Load the persisted narrative flags (the lane app_run branches on) so the
     // per-save seed is derived from the REAL save state, and the outcome write
