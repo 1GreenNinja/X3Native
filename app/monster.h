@@ -709,6 +709,24 @@ public:
     }
     bool calmLoopActive() const { return m_calmLoopClip >= 0; }
 
+    // ---- W9-1: desc-mechanics hooks (docs/DESC_MECHANICS_TODO.md Tier A) ----
+    // STUN (EMP): freeze the AI in place for `secs` — no movement, no attack,
+    // any wind-up cancelled; death/corpse flow and fire() damage are untouched
+    // (a stunned enemy is still damageable/killable). Extends, never shortens.
+    void  stun(float secs) { if (m_alive && secs > m_stunTimer) m_stunTimer = secs; }
+    bool  stunned() const { return m_stunTimer > 0.0f; }
+    // DOCILE (master hack): permanently powered down — never targets, moves or
+    // attacks again; killing it afterwards still counts (fire() path untouched).
+    void  setDocile(bool d) { m_docile = d; }
+    bool  docile() const { return m_docile; }
+    // Damage-taken multiplier (coolant sabotage: The Collective x1.5). Applied
+    // at damage application in fire()/takeMeleeDamage(), stacking with the
+    // memory-flash incomingDamageMul (both are >1 vulnerability windows).
+    void  setDamageTakenMul(float m) { m_damageTakenMul = (m > 0.0f) ? m : 1.0f; }
+    float damageTakenMul() const { return m_damageTakenMul; }
+    // Bestiary species this instance was spawned as (stamped from Tuning).
+    EnemyType species() const { return m_species; }
+
     // ---- Combat-AI state (D-ai) -------------------------------------------
     // Current behaviour state + the heading (yaw, radians) the body is turning to.
     // Read by the HUD / self-test to observe that facing follows state.
@@ -1045,6 +1063,11 @@ private:
     // enemy is alive + engaged (has LOS). Reseeded to a jittered interval each taunt so
     // a squad doesn't vocalize in lockstep. <=0 fires a taunt (see update()).
     float    m_tauntTimer   = 0.0f;
+
+    // ---- W9-1 desc-mechanics state ------------------------------------------
+    float    m_stunTimer      = 0.0f;        // EMP stun: frozen while > 0
+    bool     m_docile         = false;       // master-hack power-down (permanent)
+    float    m_damageTakenMul = 1.0f;        // coolant-sabotage vulnerability
 
     // ---- Guard-life (W4-3): species + patrol state -------------------------
     EnemyType m_species       = EnemyType::DominionTrooper;  // stamped from Tuning

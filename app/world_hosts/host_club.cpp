@@ -6,6 +6,8 @@
 #include "../player.h"
 #include "../asset_root.h"
 #include "../audio_root.h"                 // resolveAudio (the committed club track)
+#include <cstdlib>                          // getenv (X3_CLUB_SEQ clip capture)
+#include <cstdio>                           // snprintf (clip frame paths)
 #include "engine/audio/IAudioSystem.h"
 
 namespace x3 { namespace apphost {
@@ -96,6 +98,11 @@ int hostClub(HostContext& hc) {
             const std::string outPath = crowdShot   ? crowdShotPath
                                       : screenshot  ? screenshotPath
                                                     : std::string("C:/GameDev/X3Native-engine/agent_club.png");
+            // X3_CLUB_SEQ=N: after the settle, capture N CONSECUTIVE frames as
+            // <out>_0000.png.. for a motion clip (dancers, beat thump, orb spin) —
+            // assembled offline into a GIF/MP4. 0/unset = the single still as before.
+            int seqFrames = 0;
+            if (const char* sq = std::getenv("X3_CLUB_SEQ")) seqFrames = std::atoi(sq);
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
@@ -104,7 +111,7 @@ int hostClub(HostContext& hc) {
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
-                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                if (i == kSettle - 1 && seqFrames == 0) device->armCapture(outPath.c_str());
                 auto frame = device->beginFrame();
                 if (frame.valid) {
                     cscene.render(*device, frame);
@@ -112,7 +119,27 @@ int hostClub(HostContext& hc) {
                 }
                 device->endFrame(frame);
             }
-            const bool wrote = device->captureFrame(outPath.c_str());
+            bool wrote = true;
+            for (int f = 0; f < seqFrames; ++f) {
+                char fp[512];
+                std::snprintf(fp, sizeof(fp), "%s_%04d.png",
+                              outPath.substr(0, outPath.find_last_of('.')).c_str(), f);
+                glfwPollEvents();
+                club.update(dt, cscene, *device, *cphys);
+                clubCrowd.update(dt, cscene);
+                cphys->step(dt);
+                cscene.update(*cphys);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                device->armCapture(fp);
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    cscene.render(*device, frame);
+                    club.drawCharacters(*device, frame, cscene);
+                }
+                device->endFrame(frame);
+                wrote = device->captureFrame(fp) && wrote;
+            }
+            if (seqFrames == 0) wrote = device->captureFrame(outPath.c_str());
             if (wrote) x3::logInfo("--world club: wrote screenshot " + outPath);
             else       x3::logError("--world club: capture FAILED");
             cphys->shutdown();
@@ -123,13 +150,13 @@ int hostClub(HostContext& hc) {
         }
 
         // ===== Walkable windowed path: full first-person controller + physics. ===
-        // THE MUSIC (max-out): the real club track — Ascension (~133 BPM, the
-        // tempo every beat-locked pulse in club1127.cpp rides) — looping 2D at
+        // THE MUSIC (max-out): the real club track (the
+        // tempo every beat-locked pulse in club1127.cpp rides; Descent, ~85.5 BPM) at
         // house volume. Graceful: no device / missing WAV -> silent club.
         std::unique_ptr<x3::audio::IAudioSystem> caudio(x3::audio::createAudioSystem());
         x3::audio::LoopHandle clubTrack{};
         if (caudio && caudio->init()) {
-            auto h = caudio->load(x3::game::resolveAudio("music/club_ascension.wav"));
+            auto h = caudio->load(x3::game::resolveAudio("music/club_descent.wav"));
             if (h.valid()) clubTrack = caudio->startLoop(h, 0.75f, 1.0f);
         }
         x3::game::Player cplayer;

@@ -890,6 +890,84 @@ int dispatchScreenshotHosts(HostContext& hc) {
             // 4) F7 Executive Corridor — the exec-guard gauntlet before Sarah.
             ok &= litShot("F7: Executive Corridor", upperShotDir + "/f7_executive_corridor.png");
 
+            // 5) R-9: EXTERIOR tower proof — the whole stacked tower from a 3/4 ground
+            // vantage, so the inter-floor skirt bands (PB 03256bd re-home) are eye-
+            // checkable: the building must read as one continuous shell, not floating
+            // plates. Frames the tower AABB (deep zone excluded) with all rooms visible.
+            {
+                float bx0=1e9f,bx1=-1e9f,by0=1e9f,by1=-1e9f,bz0=1e9f,bz1=-1e9f;
+                for (const x3::game::CanonRoom& r : ufloor.rooms) {
+                    if (r.cy < -50.0f) continue;   // deep cave/sub-level: not the tower
+                    bx0=std::min(bx0,r.x0()); bx1=std::max(bx1,r.x1());
+                    by0=std::min(by0,r.y0()); by1=std::max(by1,r.y1());
+                    bz0=std::min(bz0,r.z0()); bz1=std::max(bz1,r.z1());
+                }
+                const float cx=(bx0+bx1)*0.5f, cy=(by0+by1)*0.5f, cz=(bz0+bz1)*0.5f;
+                const float span = std::max({bx1-bx0, by1-by0, bz1-bz0});
+                device->setCameraFar(600.0f);   // whole tower in frame from ~1.5 spans out
+                device->setAmbient(1.1f,1.1f,1.2f);
+                { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = true;
+                  sp.sunDir[0]=-0.5f; sp.sunDir[1]=0.75f; sp.sunDir[2]=-0.4f;
+                  device->setSkyParams(sp); }
+                std::vector<uint32_t> vis; vis.reserve(ufloor.rooms.size());
+                for (uint32_t i=0;i<(uint32_t)ufloor.rooms.size();++i) vis.push_back(i);
+                uscene.setVisibleRooms(vis.data(), (uint32_t)vis.size());
+                auto extShot = [&](float ex, float ey, float ez,
+                                   float ax, float ay, float az,
+                                   const x3::rhi::PointLight* ls, uint32_t nl,
+                                   const std::string& outPath, const char* what) -> bool {
+                    const float dx=ax-ex, dy=ay-ey, dz=az-ez;
+                    const float yaw = std::atan2(dz,dx);
+                    const float pitch = std::atan2(dy, std::sqrt(dx*dx+dz*dz));
+                    device->setCamera(ex,ey,ez,yaw,pitch,60.0f);
+                    device->setPointLights(ls, nl);
+                    const int kSettle = 6;
+                    for (int i=0;i<kSettle;++i) {
+                        glfwPollEvents();
+                        if (i==kSettle-1) device->armCapture(outPath.c_str());
+                        auto f = device->beginFrame();
+                        if (f.valid) uscene.render(*device, f);
+                        device->endFrame(f);
+                    }
+                    const bool wrote = device->captureFrame(outPath.c_str());
+                    x3::logInfo(std::string(wrote ? "  wrote " : "  FAILED ") + outPath +
+                                std::string(" (") + what + ")");
+                    return wrote;
+                };
+                // 5a) Whole-tower silhouette from a 3/4 ground vantage: any UNSEALED
+                // inter-floor gap reads as a bright sky slit through the stack.
+                {
+                    x3::rhi::PointLight fl{};
+                    fl.range = span*6.0f;
+                    fl.color[0]=900.0f; fl.color[1]=870.0f; fl.color[2]=820.0f;
+                    x3::rhi::PointLight f0=fl, f1=fl;
+                    f0.pos[0]=cx-span*0.9f; f0.pos[1]=by0+(by1-by0)*0.85f; f0.pos[2]=cz-span*0.7f;
+                    f1.pos[0]=cx-span*0.9f; f1.pos[1]=by0+(by1-by0)*0.30f; f1.pos[2]=cz-span*0.7f;
+                    x3::rhi::PointLight fills[2] = { f0, f1 };
+                    ok &= extShot(cx - span*1.15f, by0 + (by1-by0)*0.35f, cz - span*0.95f,
+                                  cx, cy, cz, fills, 2,
+                                  upperShotDir + "/tower_exterior.png",
+                                  "whole-tower exterior — skirt-band silhouette proof");
+                }
+                // 5b) CLOSE-UP of the lower floor-band seams on the -X facade, lit at
+                // the ~10 m distances this forward pipeline provably reads (the interior
+                // shots): the skirt bands between the floor plates must be closed.
+                {
+                    const float ay = by0 + (by1-by0)*0.30f;   // a couple of band seams up
+                    x3::rhi::PointLight fl{};
+                    fl.range = 200.0f;
+                    fl.color[0]=180.0f; fl.color[1]=174.0f; fl.color[2]=164.0f;
+                    x3::rhi::PointLight c0=fl, c1=fl;
+                    c0.pos[0]=bx0-9.0f;  c0.pos[1]=ay+9.0f;  c0.pos[2]=cz-8.0f;
+                    c1.pos[0]=bx0-11.0f; c1.pos[1]=ay-7.0f;  c1.pos[2]=cz+9.0f;
+                    x3::rhi::PointLight closes[2] = { c0, c1 };
+                    ok &= extShot(bx0 - 26.0f, ay + 3.0f, cz - 18.0f,
+                                  bx0, ay, cz, closes, 2,
+                                  upperShotDir + "/tower_exterior_close.png",
+                                  "close-up — inter-floor skirt seam proof");
+                }
+            }
+
             uplay.shutdown();
         }
         uphys->shutdown();

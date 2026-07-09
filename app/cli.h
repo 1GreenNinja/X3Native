@@ -37,6 +37,10 @@ struct CliOptions {
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
+         testDescMech = false,      // --test-descmech: W9-1 desc-field mechanics (Tier A verbs)
+         testInventory = false,    // --test-inventory: W9-3 RPG backpack (add/stack/consume/cap + keycard door)
+         testProgression = false,  // --test-progression: W9-3 XP -> level -> skill points + save round-trip
+         testSkillTree = false,    // --test-skilltree: W9-3 prereq/cost/apply + mods reach the player
          testStrata = false,        // --test-strata (R-3 fold: THE DESCENT chain)
          testElevatorShowcase = false,  // --test-elevator-showcase (R-4 fold)
          testThirdPerson = false, testHatchCode = false,
@@ -564,9 +568,10 @@ struct CliOptions {
     bool        captureSpire    = false;
     std::string captureSpireDir = "captures/spire";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
-    // (walk the hills) instead of the default interior Level 1. Anything else (or
-    // omitted) keeps Level 1 as the default, unchanged.
-    std::string worldMode = "level1";
+    // (walk the hills) instead of the default interior facility. The default is the
+    // CANONICAL data-driven facility (canonlevel — the owner's LevelArchitect Floor 1,
+    // PB fold c3538d3); the legacy hand-coded tower stays reachable via --world level1.
+    std::string worldMode = "canonlevel";
     bool        worldExplicit = false;   // --world was passed (vs the default)
     bool shotWorldMap = false;   // --screenshot-worldmap (headless map shot sequence)
     // Seamless world streaming tunables (--world streamed; see app/world_stream.*):

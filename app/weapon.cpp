@@ -784,9 +784,25 @@ bool Arsenal::reload() {
     if (s.reloadTimer > 0.0f)        return false; // already reloading
     if (s.ammoInMag   >= d.magSize)  return false; // mag already full
     if (s.reserve     <= 0)          return false; // no spare ammo
-    s.reloadTimer = d.reloadTime;
-    x3::logInfo("[arsenal] reloading '" + d.name + "' (" + std::to_string(d.reloadTime) + "s)");
+    // [W9-3 RPG] the skill/mod reload multiplier LAYERS on the def's base time
+    // (the WeaponDef table is never mutated).
+    s.reloadTimer = d.reloadTime * m_reloadMult;
+    x3::logInfo("[arsenal] reloading '" + d.name + "' (" + std::to_string(s.reloadTimer) + "s)");
     return true;
+}
+
+// [W9-3 RPG] add reserve rounds to a weapon, capped at reserveAmmo * ammoCapMult
+// (the multiplier layer — base def untouched). Returns the rounds actually added.
+int Arsenal::addReserve(int index, int rounds) {
+    if (index < 0 || index >= (int)m_defs.size() || rounds <= 0) return 0;
+    const WeaponDef& d = m_defs[(size_t)index];
+    WeaponState&     s = m_state[(size_t)index];
+    const int cap = (int)((float)d.reserveAmmo * m_ammoCapMult + 0.5f);
+    const int room = cap - s.reserve;
+    if (room <= 0) return 0;
+    const int take = rounds < room ? rounds : room;
+    s.reserve += take;
+    return take;
 }
 
 void Arsenal::tick(float dt) {

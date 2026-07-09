@@ -41,6 +41,10 @@ struct TestFlags {
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
     bool testGoldenPath = false;
+    bool testDescMech = false;    // --test-descmech (W9-1: desc-field Tier-A mechanics)
+    bool testInventory = false;    // W9-3 RPG: backpack/item-db (--test-inventory)
+    bool testProgression = false;  // W9-3 RPG: XP/levels (--test-progression)
+    bool testSkillTree = false;    // W9-3 RPG: skill tree (--test-skilltree)
     bool testStrata = false;            // R-3 fold: THE DESCENT (strata module chain)
     bool testElevatorShowcase = false;  // R-4 fold: THE CENTERPIECE showcase  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)

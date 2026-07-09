@@ -594,6 +594,11 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
             // W5-3: remember which ladder slot is the F7 clone — his death is the
             // endgame gate (Sarah's containment field is keyed to his bio-signature).
             if (std::string(fb.show) == "Jake's Clone") m_cloneIdx = (int)i;
+            // W9-1: ladder bookkeeping for the desc-mechanics (coolant sabotage
+            // targets The Collective; findLadderBoss resolves by show name).
+            m_ladderNames.resize(m_floorBosses.count());
+            m_ladderNames[i] = fb.show;
+            if (std::string(fb.show) == "The Collective") m_collectiveIdx = (int)i;
             ++m_taggedHostiles;
             ++spawned;
             x3::logInfo(std::string("[canonplay] floor boss spawned: ") + fb.show +
@@ -672,6 +677,9 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
         if (it.taken || it.entity == kNoLink || it.entity >= scene.size()) continue;
         const float ddx = eye.x - it.pos.x, ddy = eye.y - it.pos.y, ddz = eye.z - it.pos.z;
         if (ddx*ddx + ddy*ddy + ddz*ddz <= kCanonPickupReach * kCanonPickupReach) {
+            // [W9-3 RPG] when an item sink is wired, offer the pickup to the
+            // BACKPACK first: refused (bag full) => it stays in the world.
+            if (m_itemSink && !m_itemSink(it)) continue;
             it.taken = true;
             scene.get(it.entity).visible = false;   // collected: stop drawing it
             x3::logInfo(std::string("[canonplay] pickup collected: ") +
@@ -726,6 +734,67 @@ bool CanonPlay::cloneDefeated() const {
 bool CanonPlay::trySarahRescue(const x3::phys::Vec3& playerPos, float reach) {
     if (!m_sarahBuilt || !cloneDefeated()) return false;
     return m_sarah.tryRescue(playerPos, reach);
+}
+
+// ---- W9-1: DESC-MECHANICS HOOKS (docs/DESC_MECHANICS_TODO.md Tier A) ---------------
+
+bool CanonPlay::applyCoolantSabotage() {
+    if (m_collectiveIdx < 0 || (uint32_t)m_collectiveIdx >= m_floorBosses.count())
+        return false;
+    m_floorBosses.at((uint32_t)m_collectiveIdx).setDamageTakenMul(1.5f);
+    if (!m_coolantSabotaged)
+        x3::logInfo("[descmech] COOLANT SABOTAGED — The Collective damage-taken x1.5");
+    m_coolantSabotaged = true;
+    return true;
+}
+
+uint32_t CanonPlay::empStun(const x3::phys::Vec3& center, float radius, float secs) {
+    if (!m_built) return 0;
+    uint32_t n = 0;
+    const float r2 = radius * radius;
+    MonsterManager* groups[] = { &m_mainHall, &m_cellGuards, &m_attackers,
+                                 &m_upperEnemies };
+    for (MonsterManager* g : groups) {
+        for (uint32_t i = 0; i < g->count(); ++i) {
+            MonsterSystem& m = g->at(i);
+            if (!m.alive() || m.species() != EnemyType::BlueSynth) continue;
+            const x3::phys::Vec3 p = m.pos();
+            const float dx = p.x - center.x, dy = p.y - center.y, dz = p.z - center.z;
+            if (dx * dx + dy * dy + dz * dz > r2) continue;
+            m.stun(secs);
+            ++n;
+        }
+    }
+    x3::logInfo("[descmech] EMP: " + std::to_string(n) + " synthetic(s) stunned for " +
+                std::to_string((int)secs) + "s (r=" + std::to_string((int)radius) + "m)");
+    return n;
+}
+
+uint32_t CanonPlay::setDroneSpeciesDocile(const CanonFloor& floor, int floorNum) {
+    if (!m_built) return 0;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < m_upperEnemies.count(); ++i) {
+        MonsterSystem& m = m_upperEnemies.at(i);
+        if (!m.alive() || m.docile() || m.species() != EnemyType::BlueSynth) continue;
+        const x3::phys::Vec3 p = m.pos();
+        const uint32_t rm = floor.roomAt(p.x, p.y, p.z, 1.5f);
+        if (rm == kNoRoom) continue;
+        const int fn = (rm < floor.roomFloorNum.size()) ? floor.roomFloorNum[rm]
+                                                        : floor.floorNum;
+        if (fn != floorNum) continue;
+        m.setDocile(true);
+        ++n;
+    }
+    x3::logInfo("[descmech] MASTER HACK: " + std::to_string(n) +
+                " F" + std::to_string(floorNum) + " drone(s) powered down (docile)");
+    return n;
+}
+
+MonsterSystem* CanonPlay::findLadderBoss(std::string_view showNameSub) {
+    for (uint32_t i = 0; i < m_floorBosses.count() && i < m_ladderNames.size(); ++i)
+        if (m_ladderNames[i].find(showNameSub) != std::string::npos)
+            return &m_floorBosses.at(i);
+    return nullptr;
 }
 
 FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,

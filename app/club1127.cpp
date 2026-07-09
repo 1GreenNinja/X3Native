@@ -47,9 +47,9 @@ namespace x3::game {
 namespace {
 
 constexpr float kPi = 3.14159265358979f;
-// The house tempo — matched to assets/audio/music/club_ascension.wav (~133 BPM)
-// so every beat-locked pulse (subs, tiles, dancers) rides the actual track.
-constexpr float kClubBpm = 133.0f;
+// The house tempo — matched to assets/audio/music/club_descent.wav (measured
+// ~85.5 BPM base / 171 eighth-grid) so subs, tiles, and dancers ride the track.
+constexpr float kClubBpm = 85.5f;
 
 // ---- Tints (linear-ish; the device tonemaps) ------------------------------
 // Ported from the JS StandardMaterial diffuse colors (hex -> 0..1 RGB).
@@ -755,11 +755,19 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             for (int gz = 0; gz < rows; ++gz) {
                 const float tx = -CW / 2 + tw / 2 + gx * tw;
                 const float tz = -CL / 2 + td / 2 + gz * td;
-                const float* em = ((gx + gz) % 2 == 0) ? kEmitTile1 : kEmitTile2;
+                // BLACK MIRROR TILES (Tim): near-black gloss, silvery chrome MR
+                // (IBL/fresnel sheen — the orbiting spots streak across the floor),
+                // alternates carry a FAINT violet under-glow breathing on the beat;
+                // the blacklights own the color now, not the tiles.
+                const bool lit = ((gx + gz) % 2 == 0);
+                const float emTileA[4] = { 0.32f, 0.05f, 0.60f, 0.55f };
+                const float tileCol[4] = { lit ? 0.055f : 0.035f, lit ? 0.055f : 0.035f,
+                                           lit ? 0.075f : 0.05f, 1.0f };
                 const uint32_t tid = box(tx, 0.12f, tz, (tw - 0.02f) / 2, 0.015f, (td - 0.02f) / 2,
-                                         kFloor, em, false, 1.0f, &sFloor);
-                // MAX-OUT: the BRIGHT tiles breathe on the beat clock (update()).
-                if ((gx + gz) % 2 == 0) m_tilePulseEnts.push_back(tid);
+                                         tileCol, lit ? emTileA : kEmitOff, false, 1.0f, nullptr);
+                Entity& te = scene.get(tid);
+                te.mrTex = mrChrome;              // the silvery reflective finish
+                if (lit) m_tilePulseEnts.push_back(tid);
             }
         m_stats.hasDanceFloor = true;
     }
@@ -795,7 +803,9 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // GROUND BAR + 7 STOOLS (west side).
     // ==================================================================
     {
-        const float bx = -CW / 2 + 1.4f, bz = CL / 4;
+        // Tim: 'the bar needs walk-around capability' — counter pulled off the
+        // wall so the lane behind is player-walkable (~1.2 m) with open ends.
+        const float bx = -CW / 2 + 1.9f, bz = CL / 4;
         box(bx, 0.55f, bz, 0.4f, 0.55f, 2.5f, kBar, kEmitOff, true, 1.0f, &sBar);     // bar body
         // MAX-OUT: GLEAMING GLASSY COUNTERTOP — a near-black glass slab on the
         // mirror-gloss MR route (tight specular hot-spots from the bar pendants =
@@ -825,8 +835,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         }
         for (int i = 0; i < 7; ++i) {
             const float sz = CL / 4 - 2.5f + 0.5f + i * 5.0f / 7.0f;
-            box(-CW / 2 + 2.2f, 0.75f, sz, 0.2f, 0.035f, 0.2f, kLeather, kEmitOff, false);       // seat (dark leather)
-            box(-CW / 2 + 2.2f, 0.36f, sz, 0.03f, 0.36f, 0.03f, kStoolLeg, kEmitOff, false);     // leg
+            box(-CW / 2 + 2.7f, 0.75f, sz, 0.2f, 0.035f, 0.2f, kLeather, kEmitOff, false);       // seat (dark leather)
+            box(-CW / 2 + 2.7f, 0.36f, sz, 0.03f, 0.36f, 0.03f, kStoolLeg, kEmitOff, false);     // leg
             ++m_stats.barStools;
         }
 
@@ -836,8 +846,29 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // "now mixing" display). This is what a camera at the bar SEES.
         {
             const float wallX = -CW / 2 + 0.35f;
-            const float emPanel[4] = { 0.85f, 0.5f, 0.22f, 0.28f };  // soft amber backlight (dim wash)
-            box(wallX, 1.75f, bz, 0.02f, 1.05f, 2.4f, kBar, emPanel, false);
+            // DARK GLASS CRYSTAL panel (Tim) — a real transparent pane, near-black
+            // with a deep violet-blue tint + full fresnel: the rack reads as smoked
+            // crystal and the glowing bottles pop against it.
+            {
+                x3::prims::PrimMesh pg = x3::prims::makeBox(0.015f, 1.05f, 2.4f, wallX, oy + 1.75f, bz, 1.0f);
+                Entity pe;
+                pe.mesh = device.createMesh(pg.verts.data(), (uint32_t)pg.verts.size(),
+                                            pg.index.data(), (uint32_t)pg.index.size());
+                pe.baseColor[0] = 0.04f; pe.baseColor[1] = 0.03f; pe.baseColor[2] = 0.07f; pe.baseColor[3] = 1.0f;
+                pe.emissive[0] = 0.18f; pe.emissive[1] = 0.06f; pe.emissive[2] = 0.35f; pe.emissive[3] = 0.30f;
+                pe.transparent = true;
+                pe.glass.opacity = 0.55f;
+                pe.glass.refraction = 0.0f;
+                pe.glass.roughness = 0.04f;
+                pe.glass.specular = 1.0f;
+                pe.glass.tint[0] = 0.35f; pe.glass.tint[1] = 0.25f; pe.glass.tint[2] = 0.60f;
+                pe.tag = (uint32_t)Tag::Static;
+                scene.add(pe);
+            }
+            // Violet edge-light strips framing the crystal panel.
+            const float emViolet[4] = { 0.55f, 0.10f, 1.0f, 2.2f };
+            box(wallX + 0.01f, 2.82f, bz, 0.008f, 0.010f, 2.42f, kWall, emViolet, false);
+            box(wallX + 0.01f, 0.68f, bz, 0.008f, 0.010f, 2.42f, kWall, emViolet, false);
             const float bottleHue[5][3] = {
                 { 1.0f, 0.55f, 0.10f },   // bourbon amber
                 { 0.15f, 1.0f, 0.45f },   // absinthe emerald
@@ -849,9 +880,18 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 const float shY = 1.15f + shelf * 0.55f;
                 // Polished glass shelf (mirror-gloss slab) + chrome brackets.
                 x3::prims::PrimMesh sh = x3::prims::makeBox(0.16f, 0.014f, 2.3f, wallX + 0.18f, oy + shY, bz, 1.0f);
-                const float shelfCol[4] = { 0.10f, 0.12f, 0.14f, 1.0f };
-                const float shelfEm[4]  = { 0.03f, 0.10f, 0.12f, 0.4f };
-                prim(std::move(sh), shelfCol, shelfEm, x3::rhi::TextureHandle{}, mrGlass, false);
+                Entity she;
+                she.mesh = device.createMesh(sh.verts.data(), (uint32_t)sh.verts.size(),
+                                             sh.index.data(), (uint32_t)sh.index.size());
+                she.baseColor[0] = 0.06f; she.baseColor[1] = 0.07f; she.baseColor[2] = 0.10f; she.baseColor[3] = 1.0f;
+                she.transparent = true;
+                she.glass.opacity = 0.35f;      // crystal shelf — see the bottles through it
+                she.glass.refraction = 0.0f;
+                she.glass.roughness = 0.05f;
+                she.glass.specular = 1.0f;
+                she.glass.tint[0] = 0.55f; she.glass.tint[1] = 0.60f; she.glass.tint[2] = 0.85f;
+                she.tag = (uint32_t)Tag::Static;
+                scene.add(she);
                 for (int br = -1; br <= 1; ++br)
                     box(wallX + 0.18f, shY - 0.05f, bz + br * 1.05f, 0.02f, 0.05f, 0.02f, kChrome, kEmitOff, false);
                 // Six bottles per shelf, varied hue/height, backlit glow.
@@ -999,7 +1039,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // ==================================================================
     addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.30f, 0.20f, 0.40f, 25.0f);       // central overhead fill
     addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.25f, 0.15f, 0.35f, 10.0f); // ground-bar area fill
-    addLight(m_lights, 0, oy + 2.0f, 0, 0.35f, 0.25f, 0.55f, 18.0f);            // dance-floor wash
+    addLight(m_lights, 0, oy + 2.0f, 0, 0.16f, 0.10f, 0.30f, 18.0f);            // dim UV wash (mirror floor)
 
     // ---- ORBITING ORB LIGHTS: 4 spots + 4 ring lights. These trail the static
     // lights and are rewritten each frame by update(). Record where they start. ----
@@ -1046,8 +1086,11 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             // is Z-up and lay flat on the floor with detached boots in the R3
             // shot; the RexBouncer rig reads as a clawed bruiser — right for the
             // door, wrong for the floor). Tint variety carries the crowd read.
-            const char* rigs[4] = { "AnnaBodySuit.glb", "marcus_webb.glb", "AnnaCasual.glb",
-                                    "AnnaTactical.glb" };
+            // Humans only, and every dancer carries REAL skeletal dance clips:
+            // AnnaCasual + AnnaTactical ship DanceGroove/DanceArms (dance_bake.py).
+            // AnnaBodySuit is node-animated (no armature — clips won't bake onto
+            // it) so she works the BAR and the lounge instead of the floor.
+            const char* rigs[2] = { "AnnaCasual.glb", "AnnaTactical.glb" };
             const float tints[5][4] = {
                 { 1.05f, 0.85f, 1.25f, 1.0f },   // violet wash
                 { 0.85f, 1.05f, 1.30f, 1.0f },   // cyan wash
@@ -1071,9 +1114,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 dn.yaw = spots[d3][2];
                 dn.phase = (float)(clubHash((uint32_t)d3 * 97u + 13u) % 628u) / 100.0f;
                 dn.energy = 0.65f + 0.75f * ((clubHash((uint32_t)d3 * 41u + 7u) % 100u) / 100.0f);
-                addCharacter(scene, device, physics, modelDir, rigs[d3 % 4],
+                addCharacter(scene, device, physics, modelDir, rigs[d3 % 2],
                              x3::phys::Vec3{ dn.bx, dn.baseY, dn.bz }, 1.0f,
                              false, tints[d3 % 5]);
+                // REAL skeletal dance: the calm loop replaces Idle on inert props.
+                // Alternate the two clips so the floor mixes grooves.
+                m_chars.back()->setCalmLoop((d3 & 1) ? "dancearms" : "dancegroove");
                 m_dancers.push_back(dn);
             }
         }
@@ -1163,7 +1209,7 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         // Bright dance tiles: a soft breathe (never dark — the floor is the star).
         for (const uint32_t id : m_tilePulseEnts) {
             if (id >= scene.size()) continue;
-            scene.get(id).emissive[3] = kEmitTile1[3] * (0.82f + 0.30f * thump);
+            scene.get(id).emissive[3] = 0.40f + 0.45f * thump;   // faint violet breath
         }
         // OLED shimmer: each screen's brightness wanders on its own phase, so the
         // baked equalizer frames read as LIVE video from across the room.
@@ -1189,8 +1235,10 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
             if (dn.charIdx >= m_chars.size()) continue;
             const float tp = t + dn.phase;
             const float lobe = std::sin(tp * beatHz * kPi);
-            const float bounce = std::pow(std::max(0.0f, lobe), 4.0f) * 0.11f * dn.energy;
-            const float sway = std::sin(tp * beatHz * kPi * 0.5f) * 0.45f * dn.energy;
+            // The baked clips carry the bounce/arms now — the procedural layer is
+            // just a gentle weight-shift + facing drift so no two dancers match.
+            const float bounce = std::pow(std::max(0.0f, lobe), 4.0f) * 0.025f * dn.energy;
+            const float sway = std::sin(tp * beatHz * kPi * 0.5f) * 0.22f * dn.energy;
             const float sx = dn.bx + std::sin(tp * 0.31f) * 0.30f;
             const float sz = dn.bz + std::cos(tp * 0.23f) * 0.28f;
             m_chars[dn.charIdx]->setPropPose(

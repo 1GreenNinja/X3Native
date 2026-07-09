@@ -18,6 +18,12 @@ Format: **room (floor)** — desc verbatim → mechanic → state today → anch
 - **Server Room (F7)** — keycard pickup exists (hack REWARD is live; the hack VERB isn't).
 
 ## Tier A — mechanics with systems mostly in place (cheap, high payoff)
+**STATUS: ALL FIVE BUILT (W9-1, feat/desc-mechanics, --test-descmech D1-D12).**
+Framework: app/interactables.{h,cpp} (InteractPoints + ItemStore + StatusEffects)
++ app/desc_mechanics.{h,cpp} (the verbs + the self-test). Host seams in app_run:
+descMech.build/tick/onUse/onUseItem/onCue + the npcBark prompt + HUD status tag.
+Tier B/C: register new points via Interactables, statuses via StatusEffects —
+do NOT add bespoke E-branches. Decon cure (#8) already landed with Tier A.
 1. **Coolant System (F4)** — "Liquid nitrogen. Sabotage = boss weakness."
    → Interact at the coolant control console → F4 boss (The Collective, 2000HP) takes a
    damage-taken multiplier or loses a phase. Anchor: desc-gold console + cryo drums are
