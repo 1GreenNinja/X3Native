@@ -38,8 +38,8 @@ public:
     // glass). Exposed so the in-app render layer matches the art direction.
     const float* textColor() const { return m_textColor; }
     // W4-2 (HoloPanel platform): host-settable readout INK. While set, the on-glass
-    // bake tints body rows with this color (VIGIL presence = orange); resetTextColor()
-    // returns to the authored cyan ink. Default path is untouched (basin-safe).
+    // bake tints body rows with this color (VIGIL presence = orange) instead of the
+    // per-line status colors; resetTextColor() returns to the status-color console.
     void setTextColor(float r, float g, float b, float a = 1.0f) {
         m_textColor[0] = r; m_textColor[1] = g; m_textColor[2] = b; m_textColor[3] = a;
         m_inkOverride = true; m_texDirty = true;
@@ -146,6 +146,12 @@ private:
     std::vector<uint32_t> m_decor;        // bezel / arm / trace entity ids (visual only)
     static constexpr size_t kMaxInput = 72;   // freeform questions need room (was 32)
 };
+
+// Bake the flagship CONSOLE hologram UI (multi-color status HUD + readout text)
+// into an RGBA8 n×n buffer. Shared with HoloPanel so the terminal SKIN is one call.
+// `input` (optional) is the live "> code_" prompt line, baked in amber.
+std::vector<uint8_t> bakeConsoleHologram(uint32_t n, const std::vector<std::string>& lines,
+                                         const std::string& input = "");
 
 // Headless self-test (--test-holoterm): boot readout is present (not blank), typing
 // builds the input line, backspace edits it, submit calls the sink with the value
