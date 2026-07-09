@@ -241,8 +241,12 @@ void Canon45::build(CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& dev
     addL(t5->x0() + 1.2f, t5->y1() + 1.0f, t5->z0() + 1.2f, 4.0f, 1.2f, 1.0f, 0.7f);
 
     // ---- CREATURES: sparse. Two prowlers (T2 / T4), one dormant APEX STAND-IN.
-    // The apex is explicitly a placeholder body for the true 70-80 ft creature (future
-    // asset): the biggest rig we have, scaled hard, boss-tuned, asleep until approach. ----
+    // TIM'S RULING (2026-07-08): the apex IS **THE CHORUS AMALGAM** — the source
+    // of 4.5's whispers, a fused 70-80 ft mass of the facility's failed
+    // experiments. The Whisper Gallery, the spare-a-voice mechanic, and this
+    // creature are ONE story: every voice the player spares is a voice inside
+    // it. This body is still a placeholder rig (scaled hard, boss-tuned, asleep
+    // until approach); the true amalgam model is the future asset. ----
     {
         MonsterSystem::Tuning prowler = tuningFor(EnemyType::Verthani);
         prowler.patrolRadius = 2.5f;   // slow prowl on the platform

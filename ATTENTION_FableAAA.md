@@ -137,14 +137,31 @@ is that **the ride itself is content** — every second between floors is author
   the LED tracks floors mid-flight with a speed bar, blinking terminal cursor, 4 steel
   cables rising 300 m above the car.
 
-**C++ status vs the bar**: 288ce2a landed doors/ding/motor-loop/keypad/buzz/status-UX ✅, the
-four cue WAVs are committed ✅, `e4c9686` (THE CABIN EXPERIENCE) landed **muzak, cable creaks,
-and horror events** ✅, and the R-3 fold put **real strata out the glass** (the elevator
-descends the 9 layers to Club 1127) ✅. **Still unverified/likely missing** (re-audit against
-`x3-elevator.js` before claiming done): disco mode + code-1127 Club unlock + disco-slow, the
-twin OLED telemetry pair, per-digit click pitch, layered door SFX (hiss+slide+thunk),
-floor-pass dings while cruising, freefall state usage. The target is not parity with the JS,
-it is the JS **plus** real geology out the window.
+**C++ status vs the bar** (full line-by-line audit vs the 1,806-line JS ran 2026-07-08,
+session 392f6e4d): 288ce2a doors/ding/motor-loop/keypad/buzz/status-UX ✅ · e4c9686 muzak +
+cable creaks + horror events ✅ · R-3 real strata out the glass ✅ (exceeds the JS canvas) ·
+disco toggle/slow/descend-to-−200 + per-digit key pitch + floor-pass dings ✅ (WAV-rate
+adaptations; no synth path exists in the audio engine — offline `tools/gen_elevator_audio.py`
+bakes are the pattern) · f49d209 TWIN OLED TELEMETRY ✅ · 29e2ef7 layered door SFX + the
+cable-slip Freefall set-piece ✅.
+
+**AUDIT GAPS — ✅ ALL CLOSED 2026-07-08/09 (392f6e4d, I9DevPC):**
+1. ✅ Disco is LOUD (`131dc05`): baked 128-BPM club track rides the 1127 toggle (muzak
+   yields), 4 Hz strobe in `applyDiscoCue`, magenta terminal/LED flip (+ fixed the
+   stuck-purple ceiling after disco-off).
+2. ✅ THE RIDE ENDS SOMEWHERE (`b58e43f`): Club1127World lazy-builds on the accepted
+   1127 code, ticks/draws in the game world, owns the light budget at The Deep, and the
+   rider steps out at club.spawn() when the doors open at −200. Proof:
+   `shots/r12_club_deep.png` (live in-game capture inside the club).
+3. ✅ 4 steel shaft cables ride the cab roof (`131dc05`).
+4. ✅ Rider craft: `autoOpenFor()` — an idle sealed car opens for near feet (wired in the
+   game loop + the walkable host; FSM test F10 guards it); the walkable host's digit
+   capture is UN-stubbed — digits feed the KEYPAD while riding (1127 works), floor calls
+   only from a landing, numpad = keypad anywhere.
+
+**The elevator bar vs `x3-elevator.js` is CLOSED — and it exceeds the JS**: real strata
+geology out the glass, a real club at the bottom, and a cable-slip set-piece the
+reference never had. Ride it: `--world level1`, code 1127 at the cab terminal.
 
 ## 5. COMMS
 - **This doc** = decisions. Amend it in-commit. (Single line now — no mirroring needed.)

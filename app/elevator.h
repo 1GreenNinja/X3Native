@@ -30,6 +30,7 @@
 #include "engine/physics/IPhysicsWorld.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -52,8 +53,10 @@ struct ElevatorSounds {
     x3::audio::SoundHandle keyClick;   // keypad digit press
     x3::audio::SoundHandle buzz;       // wrong-code / emergency buzzer
     // Cabin-experience cues (the Babylon x3-elevator.js parity pass):
-    x3::audio::SoundHandle muzak;      // looped 72 BPM pentatonic muzak (rides doors-close -> arrival)
+    x3::audio::SoundHandle muzak;      // looped cabin muzak (rides doors-close -> arrival)
     x3::audio::SoundHandle creak;      // random cable groan while the cab travels
+    x3::audio::SoundHandle doorThunk;  // panels SEAT at end of travel (fires on the exact frame)
+    x3::audio::SoundHandle clubTrack;  // looped 128 BPM disco track (rides the 1127 toggle)
 };
 
 // ---------------------------------------------------------------------------
@@ -116,6 +119,25 @@ public:
     // True if `feet` (player capsule reference point) is on the cab: XZ within the
     // footprint (+margin) and Y near the cab top. Generous window for ride detection.
     bool playerRiding(const x3::phys::Vec3& feet) const;
+    // Landing lookup for "call the cab TO the caller" (real elevator manners):
+    // the stop whose cab-center Y is closest to the given feet height, and a
+    // stop's Y for the is-it-already-here test. Empty stops -> 0 / 0.0f.
+    int nearestStopTo(float feetY) const {
+        int best = 0; float bd = 1e9f;
+        for (int i = 0; i < (int)m_stopsY.size(); ++i) {
+            const float d = std::fabs(m_stopsY[i] - feetY);
+            if (d < bd) { bd = d; best = i; }
+        }
+        return best;
+    }
+    float stopY(int i) const {
+        return (i >= 0 && i < (int)m_stopsY.size()) ? m_stopsY[i] : 0.0f;
+    }
+    // JS checkRider parity (rider craft): walking up to an IDLE car whose doors
+    // are SEALED opens them — no button press. Host feeds the player feet each
+    // frame; no-op unless the FSM is on, the cab is parked, the doors are closed,
+    // and the feet stand near the cab at its floor level.
+    void autoOpenFor(const x3::phys::Vec3& feet);
 
     // Advance the cab toward its target; returns the cab's vertical delta this frame
     // (0 when idle). The host adds this to every rider's Y to carry them.
@@ -196,11 +218,14 @@ public:
     void keypadClear() { m_codeBuf.clear(); }
     const std::string& keypadBuffer() const { return m_codeBuf; }
     bool  disco() const { return m_disco; }
+    float doorPct() const { return m_doorPct; }   // 1=open, 0=closed (arrival handoff reads this)
 
     // Force the EMERGENCY_STOP / FREEFALL states (horror events; reachable for the
     // test). emergencyStop() halts the cab + shakes; freefall() drops it. Both no-op
     // unless the FSM is enabled.
     void emergencyStop();
+    // Arm the one-shot CABLE-SLIP freefall scare (see m_slipArmed). Hosts opt in.
+    void armCableSlip() { m_slipArmed = true; }
     void freefall();
 
     // The current facility-relative stratum name for the cab Y (geo-survey OLED).
@@ -264,7 +289,16 @@ private:
     // term; the OLED / terminal / mirror are tinted boxes (graybox) the car carries.
     uint32_t m_eGlass = kNoLink, m_eStrata = kNoLink, m_eMirror = kNoLink;
     uint32_t m_eOledL = kNoLink, m_eOledR = kNoLink, m_eTerm = kNoLink;
+    // OLED TELEMETRY (the Babylon twin-viewscreen parity): the two panels carry
+    // LIVE text textures — LEFT = geological survey (depth/stratum/speed/temp/
+    // odometer), RIGHT = floor directory with cur/target markers — rebaked ~3x/s
+    // by update() via stb_truetype (the HoloTerminal on-glass move). m_device is
+    // captured by buildVisuals() for the rebakes.
+    x3::rhi::IRenderDevice* m_oledDevice = nullptr;
+    x3::rhi::TextureHandle  m_oledTexL{}, m_oledTexR{}, m_oledMr{};
+    float                   m_oledTimer = 999.0f;   // first update bakes immediately
     uint32_t m_eDiscoBall = kNoLink, m_eCeil = kNoLink;
+    uint32_t m_eCable[4] = { kNoLink, kNoLink, kNoLink, kNoLink };  // steel shaft cables above the car
     // Twin sliding door panels (front +X wall) that part along Z with m_doorPct, an
     // indicator strip above the doors that tints by state, and a floor numeral plate.
     uint32_t m_eDoorL = kNoLink, m_eDoorR = kNoLink, m_eIndicator = kNoLink;
@@ -277,10 +311,22 @@ private:
     // jittered timer while travelling; HORROR events roll on arrival (8 %, or
     // always on the SUB stop) — a light-flicker+creak or a brief emergency stop.
     x3::audio::LoopHandle m_muzakLoop{};      // live muzak voice (0 == none)
+    x3::audio::LoopHandle m_clubLoop{};       // live 128 BPM disco voice (0 == none)
     float    m_creakTimer  = 4.0f;            // seconds to the next cable groan
     float    m_flickerT    = 0.0f;            // >0: interior light is dipped (horror)
     float    m_lightSaveR  = 0.0f, m_lightSaveG = 0.0f, m_lightSaveB = 0.0f;
     uint32_t m_rng         = 0x1127u;         // tiny deterministic LCG (creak jitter + horror roll)
+    // THE CABLE SLIPS — a once-per-ride-line scripted freefall scare. OPT-IN via
+    // armCableSlip() (hosts arm it; tests/canon stay deterministic): on the first
+    // LONG descent, past the shaft's halfway line, the cable lets go — lights die,
+    // the cab drops (Freefall), the emergency brakes CATCH it (EmergencyStop),
+    // and the ride quietly resumes to the original stop. Never fires in disco.
+    bool  m_slipArmed   = false;
+    bool  m_slipDone    = false;
+    bool  m_slipAlarmed = false;              // the mid-fall alarm fired
+    bool  m_pendingResume = false;            // emergency recovery re-calls m_resumeStop
+    int   m_resumeStop  = -1;
+    float m_slipStartY  = 0.0f;
     bool   m_doorWasOpening = false;          // edge-detect for the door SFX
     bool   m_doorWasClosing = false;
 

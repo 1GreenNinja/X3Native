@@ -34,6 +34,8 @@
 #include "scene.h"
 #include "mesh_prims.h"
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
+#include "room_dressing.h"                 // recipeSurfaceSets() (boot prewarm, task #4)
+#include "surface_library.h"               // prewarmSurfaceSetsAsync (boot prewarm, task #4)
 #include "asset_manifest_check.h"          // fleet asset-store manifest boot check (Phase A)
 #include "audio_root.h"                    // portable resolveAudio() (D: mirror / G: packs)
 #include "anim.h"                          // Skinner + --list-clips clip check
@@ -415,25 +417,55 @@ int main(int argc, char** argv) {
                 bootManifest.emplace_back(rig, f);
             bootManifest.emplace_back(cvt, "Characters/Drone.glb");
             bootManifest.emplace_back(cvt, "ModularSciFi_Interior/SM_Door_A.glb");
-            // Legacy tower only (Spire floors + env art + warehouse props).
+            // Dressing + kit props: used by BOTH cell builds (CellDressing + the W3
+            // recipe rooms on canon; env_art on legacy). These were legacy-only until
+            // the boot-regression hunt showed canonlevel COLD-loading all of them
+            // serially inside the world build (canonDressing 3.2 s + canonRooms 2.4 s
+            // of the 8.2 s spawn stage) — prewarming them here overlaps the decodes
+            // with device init instead.
+            for (const char* f : { "ModularSciFi_Interior/SM_DoorFrame_A.glb",
+                                   "ModularSciFi_Interior/SM_Wall_A.glb",
+                                   "ModularSciFi_Interior/SM_Wall_B.glb",
+                                   "ModularSciFi_Interior/SM_Wall_C.glb",
+                                   "ModularSciFi_Interior/SM_Floor_A.glb",
+                                   "ModularSciFi_Interior/SM_Ceiling_A.glb",
+                                   "ModularSciFi_Interior/SM_Light_A.glb",
+                                   "ModularSciFi_Interior/SM_Pipes_A.glb",
+                                   "ModularSciFi_Interior/SM_Console.glb",
+                                   "SciFi_Warehouse_Kit/Barrel.glb",
+                                   "SciFi_Warehouse_Kit/Crate Long.glb",
+                                   "SciFi_Warehouse_Kit/Crate Short.glb",
+                                   "SciFi_Warehouse_Kit/Fusebox 01.glb",
+                                   "SciFi_Warehouse_Kit/Pallet.glb",
+                                   "SciFi_Warehouse_Kit/Garbage Bin.glb",
+                                   "SciFi_Warehouse_Kit/Security Cam.glb",
+                                   "SciFi_Warehouse_Kit/Fire Extinguisher.glb",
+                                   "SciFi_Warehouse_Kit/Exit Sign.glb",
+                                   "SciFi_Warehouse_Kit/Wall Light.glb",
+                                   "SciFi_Warehouse_Kit/Hanging Light.glb",
+                                   "SciFi_Warehouse_Kit/Duct Straight.glb",
+                                   "SciFi_Warehouse_Kit/Duct Vent.glb",
+                                   "Detention/SM_Hospital_Bed.glb" })
+                bootManifest.emplace_back(cvt, f);
+            // Canon tower spawns (boss ladder F2-F7 + Martinez's multi-clip rig).
+            if (canonCell) {
+                for (const char* f : { "chief_martinez_anim.glb",
+                                       "DroneOscillating.glb",
+                                       "OverLordEnforcer99.glb" })
+                    bootManifest.emplace_back(rig, f);
+            }
+            // Legacy tower only (Spire floors + env art).
             if (legacyCell) {
                 for (const char* f : { "chief_martinez_anim.glb", "Oracle.glb" })
                     bootManifest.emplace_back(rig, f);
-                for (const char* f : { "ModularSciFi_Interior/SM_DoorFrame_A.glb",
-                                       "ModularSciFi_Interior/SM_Wall_A.glb",
-                                       "ModularSciFi_Interior/SM_Floor_A.glb",
-                                       "ModularSciFi_Interior/SM_Ceiling_A.glb",
-                                       "ModularSciFi_Interior/SM_Light_A.glb",
-                                       "ModularSciFi_Interior/SM_Pipes_A.glb",
-                                       "ModularSciFi_Interior/SM_Console.glb",
-                                       "SciFi_Warehouse_Kit/Barrel.glb",
-                                       "SciFi_Warehouse_Kit/Crate Long.glb",
-                                       "SciFi_Warehouse_Kit/Crate Short.glb",
-                                       "SciFi_Warehouse_Kit/Fusebox 01.glb",
-                                       "SciFi_Warehouse_Kit/Pallet.glb" })
-                    bootManifest.emplace_back(cvt, f);
             }
             x3::asset::prewarmModelDecodesAsync(bootManifest);
+            // Canon recipe rooms: pre-decode the surface-library PNG sets too (the
+            // W3/W8-1 dressing pass was 2.5 s of serial main-thread stbi decode).
+            if (canonCell)
+                x3::game::prewarmSurfaceSetsAsync(
+                    x3::game::assetRoot() + "/surface_library",
+                    x3::game::recipeSurfaceSets());
             x3::boot::mark("decode prewarm kicked (async)");
         }
     }

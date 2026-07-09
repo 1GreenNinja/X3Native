@@ -163,6 +163,23 @@ const Recipe& recipeFor(uint8_t z) {
     return kRecipes[z < ZCount ? z : ZNone];
 }
 
+} // namespace
+
+std::vector<std::string> recipeSurfaceSets() {
+    std::vector<std::string> out;
+    auto add = [&out](const char* n) {
+        if (n && *n && std::find(out.begin(), out.end(), n) == out.end())
+            out.emplace_back(n);
+    };
+    for (uint8_t z = 1; z < ZCount; ++z) {
+        const Recipe& r = recipeFor(z);
+        add(r.wall); add(r.floor); add(r.ceil);
+    }
+    return out;
+}
+
+namespace {
+
 // Classify a canon room into a recipe zone by name/type (case-sensitive canonical data).
 uint8_t classify(const CanonRoom& r, const CanonBeats& bt, uint32_t roomId) {
     if (roomId == bt.jakeCell) return ZNone;          // frozen hand-calibrated reference

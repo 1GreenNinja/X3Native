@@ -33,6 +33,7 @@
 #include "ragdoll.h"   // RagdollSkin (drive the skin from physics parts) — mirrors monster.*
 
 #include "engine/rhi/IRenderDevice.h"
+#include "engine/audio/IAudioSystem.h"   // hybrid-escalation heartbeat (Tim's ruling)
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Ragdoll.h"   // phys::IRagdoll + makeHumanoidRagdollBones (skinned death/collapse ragdoll)
 #include "engine/asset/IModelLoader.h"
@@ -364,6 +365,18 @@ public:
         if (victimIdx < m_victims.size())
             m_victims[victimIdx]->configureAssault(cleanS, woundedS, armR, activeR);
     }
+    // HYBRID ESCALATION (Tim's ruling 2026-07-08): the countdown stays hidden +
+    // diegetic normally; when an active window drops under a third remaining the
+    // pip ring PULSES blood-red and a low HEARTBEAT loop fades in, pitch rising
+    // as the window closes. Wire once after boot audio exists; graceful when
+    // unset (pure-visual pulse still runs off the internal clock).
+    void setEscalationAudio(x3::audio::IAudioSystem* audio, x3::audio::SoundHandle heartbeat) {
+        m_escAudio = audio; m_heartbeat = heartbeat;
+    }
+    // Advance the pulse clock + heartbeat loop. The host calls this every frame
+    // (alongside tick(); separate so headless geometry tests skip audio churn).
+    void escalationTick(float dt);
+
     // The diegetic countdown ring drawn around an active tableau (default ON; the
     // host may gate it behind a `rescue_ring` cvar — see the W5-2 paste-block).
     void setRingEnabled(bool on) { m_ringEnabled = on; }
@@ -431,6 +444,12 @@ private:
     // ---- W5-2 -----------------------------------------------------------------
     uint32_t m_tierResolvedThisFrame = UINT32_MAX;
     bool     m_ringEnabled = true;
+    // Hybrid-escalation state: the pulse clock + the live heartbeat voice.
+    float                    m_ringClock = 0.0f;
+    x3::audio::IAudioSystem* m_escAudio  = nullptr;
+    x3::audio::SoundHandle   m_heartbeat{};
+    x3::audio::LoopHandle    m_heartLoop{};
+
     // Pip quad for the diegetic countdown ring (built lazily on first active window).
     x3::rhi::MeshHandle m_ringPip{};
     // Count living attackers near `pos`: Tag::Enemy entities whose body link is

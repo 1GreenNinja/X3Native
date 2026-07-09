@@ -137,9 +137,23 @@ public:
     // spawned entity is room-tagged. `modelDir` is the rigged-GLB dir (the animated set).
     // The per-girl dialog is loaded from `girlsDialogPath` (staging JSON; baked fallback on
     // absence). Call once after buildCanonFloor().
+    // `deferUpperFloors`: queue the F2-F7 squad enemies instead of spawning them
+    // inside the build (the ~2 s tail of the boot-regression hunt, task #4) — the
+    // host then drains the queue via tickUpperSpawns() over the first frames.
+    // Items/pickups always place synchronously (cheap prim boxes). Tests and
+    // screenshot captures keep the default (false): full content at build return.
     void build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::IPhysicsWorld& physics, std::string_view modelDir,
-               std::string_view girlsDialogPath);
+               std::string_view girlsDialogPath, bool deferUpperFloors = false);
+
+    // Deferred upper-floor spawns: pop up to `maxSpawns` queued squad enemies
+    // (one Monster each). Returns the number of jobs still queued (0 = drained).
+    // The player boots in the F1 cell, so floors 2-7 populate invisibly over the
+    // first ~seconds of play — one spawn per frame keeps frames smooth.
+    uint32_t tickUpperSpawns(const CanonFloor& floor, Scene& scene,
+                             x3::rhi::IRenderDevice& device,
+                             x3::phys::IPhysicsWorld& physics,
+                             uint32_t maxSpawns = 1);
 
     // Advance one frame: enemies attack the player (the damage sink) on cooldown, the boss
     // runs its phase machine, the girls' attackers fight, and the rescue timers/companions
@@ -301,7 +315,20 @@ private:
     bool placeUpperItem(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& device,
                         const char* roomName, CanonItemKind kind, float dx, float dz);
     void buildUpperFloors(const CanonFloor& floor, Scene& scene,
-                          x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
+                          x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                          bool deferred);
+    // One queued F2-F7 squad enemy (deferred boot spawn): room + slot-in-squad
+    // (the deterministic zig scatter needs i-of-n) + depth scaling.
+    struct UpperSpawnJob {
+        std::string room;
+        EnemyType   type;
+        uint32_t    idx = 0, squadSize = 1;
+        int         hpBonus = 0;
+        float       speedBonus = 0.0f;
+    };
+    void spawnOneUpper(const CanonFloor& floor, Scene& scene,
+                       x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                       const UpperSpawnJob& job);
     // Tag a freshly-spawned monster's Scene entity with `room` (so the cull + lights include
     // it). Returns the room id (for bookkeeping). Idempotent / bounds-checked.
     uint32_t tagRoom(Scene& scene, const MonsterSystem& m, uint32_t room);
@@ -317,6 +344,8 @@ private:
     MonsterManager m_floorBosses;  // W4-1: the F2-F7 authored boss ladder (one per arena)
     MonsterManager m_upperEnemies; // R-5 (PB fold): regular squads on floors 2-7
     std::vector<CanonItem> m_upperItems;   // R-5: the upper-floor pickups
+    std::vector<UpperSpawnJob> m_upperQueue;   // task #4: deferred boot spawns
+    size_t m_upperQueueNext = 0;               // drained via tickUpperSpawns()
     MonsterSystem  m_martinez;     // the Boss Arena boss
     RescueSystem   m_rescue;       // the 3 girls (Aria/Keisha/Emily) + their boss transforms
     GirlsDialog    m_dialog;       // per-girl 4-state lines

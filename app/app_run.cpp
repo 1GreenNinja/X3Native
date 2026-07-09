@@ -1162,6 +1162,15 @@ int runDefaultHost(HostContext& hc) {
     x3::game::StrataWorld    liveStrata;
     x3::game::TriggerSystem  liveStrataTriggers;
     bool                     liveStrataBuilt = false;
+    // Elevator-bar gap C (audit claim 392f6e4d): THE CLUB AT THE BOTTOM. The finished
+    // Club1127World (--world club) was never instantiated in the game path — the 1127
+    // disco descent parked the cab in bare rock at Y=-200. Built LAZILY on the first
+    // accepted 1127 code (the long disco-slow ride masks the build), ticked/drawn once
+    // built; on arrival with the doors open the rider is handed off to club.spawn()
+    // (the shell is centered at the XZ origin, west of the shaft — the documented
+    // "drops the player at spawn()" design in club1127.h).
+    x3::game::Club1127World  club1127;
+    bool                     club1127Handoff = false;
     // ---- Spire mid floors (F3 Labs / F4 Offices / F5 Synth bay) encounter content.
     // Authored onto the same Spire plates buildLevel1() produced; reached via the
     // per-floor elevator stops below. Has its own enemy groups + a gated F5 rescue
@@ -1217,6 +1226,61 @@ int runDefaultHost(HostContext& hc) {
         nexus.shutdown();                              // F4.5 Chorus pod ragdolls
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
+    };
+    // THE ONE ELEVATOR (Tim: "connect this with the In-Game Elevator"): the full
+    // x3-elevator.js treatment — 10-state FSM, cabin visuals + twin OLEDs, the
+    // committed audio set (muzak/creaks/doors/club track), the 1127 disco descent,
+    // Club-1127 stop, and THE DESCENT geology around the shaft — wires identically
+    // whichever world built the cab (level1's spire shaft or the canonical tower's
+    // Elevator Lobby spine). Everything downstream (E-call, rider carry, keypad
+    // 1127, club handoff, prompts) already keys off elevator.built().
+    auto soupUpElevator = [&](float shaftX, float shaftZ,
+                              const std::vector<std::string>& floorLabels) {
+        elevator.enableFsm(true);
+        elevator.setAudio(audio.get());
+        // PROPER ELEVATOR AUDIO: door open/close (layered hiss+slide takes when
+        // committed), an arrival/floor-pass chime, a looped motor hum pitched by
+        // cab speed, keypad clicks and a wrong-code buzzer. Every load is graceful:
+        // a missing WAV -> invalid handle -> that one cue is silent (never a crash).
+        {
+            x3::game::ElevatorSounds es;
+            es.doorOpen  = sndDoor;          // already loaded at boot (S_ScifiDoor_A)
+            es.doorClose = sndDoor;
+            es.ding      = audio->load(x3::game::resolveAudio("interact/chime.wav"));
+            if (!es.ding.valid()) es.ding = sndPickup;   // fallback: recharge chime
+            es.motor     = audio->load(x3::game::resolveAudio("interact/servo_loop.wav"));
+            es.keyClick  = audio->load(x3::game::resolveAudio("interact/keypad_click.wav"));
+            es.buzz      = audio->load(x3::game::resolveAudio("interact/buzz.wav"));
+            es.muzak     = audio->load(x3::game::resolveAudio("interact/muzak_loop.wav"));
+            es.creak     = audio->load(x3::game::resolveAudio("interact/cable_creak.wav"));
+            { auto hOpen  = audio->load(x3::game::resolveAudio("interact/door_hiss_open.wav"));
+              auto hClose = audio->load(x3::game::resolveAudio("interact/door_hiss_close.wav"));
+              if (hOpen.valid())  es.doorOpen  = hOpen;
+              if (hClose.valid()) es.doorClose = hClose; }
+            es.doorThunk = audio->load(x3::game::resolveAudio("interact/door_thunk.wav"));
+            es.clubTrack = audio->load(x3::game::resolveAudio("interact/club_track.wav"));
+            elevator.setSounds(es);
+            elevator.armCableSlip();   // the one-shot freefall scare (never in disco)
+        }
+        elevator.setClubStopY(x3::game::ElevatorSystem::kDefaultClubFloorY + 0.15f);
+        elevator.setFloorLabels(floorLabels);
+        elevator.buildVisuals(scene, *device);
+        // X3_ELEV_DISCO=1 (+ --screenshot): pre-enter the 1127 code so a headless
+        // capture proves the cab's disco cue; the club builds too, exactly as the
+        // live keypad path does, so a shot-cam can stand in The Deep.
+        if (hc.screenshot && std::getenv("X3_ELEV_DISCO")) {
+            elevator.keypadDigit(1); elevator.keypadDigit(1);
+            elevator.keypadDigit(2); elevator.keypadDigit(7);
+            if (elevator.disco() && !club1127.built())
+                club1127.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+        }
+        // R-3 fold: THE DESCENT around the live elevator column (same XZ), so the
+        // 1127 descent shows real geology out the glass.
+        liveStrata.build(scene, *device, *physics, liveStrataTriggers,
+                         shaftX, shaftZ, /*radius*/16.0f);
+        liveStrataBuilt = liveStrata.built();
+        x3::boot::mark("elevator + strata descent build");
+        x3::logInfo("STRATA descent built around the elevator shaft — enter 1127 to ride to The Deep");
     };
     // Join the async boot-manifest GLB warmup (no-op when none was kicked): the
     // world build below takes model-cache hits instead of repeating parse/decode.
@@ -1275,6 +1339,15 @@ int runDefaultHost(HostContext& hc) {
             // fixtures the legacy level registers, so without these the rooms only get
             // ambient + the flashlight (the DARK bug). We feed only the player's VISIBLE
             // rooms' lights each frame (below) so the active count stays under the cap.
+            // X3_MONSTER_PROF=1: time the dressing passes too (boot-regression hunt).
+            const bool bootProf = std::getenv("X3_MONSTER_PROF") != nullptr;
+            auto bootProfT0 = std::chrono::steady_clock::now();
+            auto bootProfMs = [&bootProfT0](const char* what) {
+                const auto t1 = std::chrono::steady_clock::now();
+                x3::logInfo("[dressing-prof] " + std::string(what) + "=" +
+                    std::to_string(std::chrono::duration<double, std::milli>(t1 - bootProfT0).count()) + "ms");
+                bootProfT0 = t1;
+            };
             canonLights = x3::game::buildCanonLights(canonFloor);
             // OPENING-SPACE POLISH: dense set-dressing + motivated lighting over the canon
             // detention cell + Main Hall mouth (the first space the player sees). Purely
@@ -1282,6 +1355,7 @@ int runDefaultHost(HostContext& hc) {
             // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
             // truth; missing GLBs simply aren't drawn (the level never breaks).
             canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
+            if (bootProf) bootProfMs("canonDressing");
             // WAVE-3: recipe-dress every other classifiable room (surface-library
             // panels + zone lights + hero props). Jake's cell stays CellDressing's.
             // Recipe rooms OWN their light statement (bible: one key per room), so the
@@ -1300,6 +1374,7 @@ int runDefaultHost(HostContext& hc) {
                                        canonRooms.lights().begin(), canonRooms.lights().end());
                 }
             }
+            if (bootProf) bootProfMs("canonRooms(recipes)");
             // ---- W5-1: LEVEL 4.5 — the Nexus Chamber. Builds the cavern shell over the
             // open-ceiling Access room, the scaffold climb up the authored tiers, the
             // two-accent horror dressing, and the sparse creatures (apex dormant). Its
@@ -1307,6 +1382,7 @@ int runDefaultHost(HostContext& hc) {
             canon45.build(canonFloor, scene, *device, *physics,
                           x3::game::riggedGlbRoot(),
                           x3::game::assetRoot() + "/surface_library", canonLights);
+            if (bootProf) bootProfMs("canon45");
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the
@@ -1420,8 +1496,13 @@ int runDefaultHost(HostContext& hc) {
             // the flood-fill cull + per-room lights include it (and the model draw is
             // gated to the visible set, see the draw block). Uses the SAME systems the
             // legacy Level1Game uses (MonsterManager / RescueSystem / WeaponSystem). ----
+            // Task #4 (boot regression): the INTERACTIVE boot defers the F2-F7 squad
+            // spawns (drained 1/frame in the live loop below — the player boots in
+            // the F1 cell, floors 2-7 populate invisibly over the first ~1.5 s).
+            // Screenshot captures keep the sync path: full content before settle.
             canonPlay.build(canonFloor, scene, *device, *physics,
-                            x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath());
+                            x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath(),
+                            /*deferUpperFloors=*/!hc.screenshot);
             // Enemy-SFX: wire the shared enemy cue sink so the canon-level enemies have
             // a VOICE (footsteps, attack swings, take-hit grunts, death, idle taunts) +
             // their impacts land audibly. canonPlay had NO cue sink before — its enemies
@@ -1441,6 +1522,38 @@ int runDefaultHost(HostContext& hc) {
                 });
             }
             x3::boot::mark("canon gameplay spawns (GLB enemies)");
+            // THE IN-GAME ELEVATOR: the canonical tower rode a TELEPORT+fade until
+            // now. Build the REAL souped-up cab in the Elevator Lobby spine (the
+            // loader already synthesizes the CrossLevel shaft doorways there —
+            // level_loader.cpp:918 "the gameplay traversal is the host's elevator
+            // travel"): one stop per lobby, labeled F1..Fn, then the full
+            // x3-elevator.js treatment (disco 1127, strata glass, Club 1127). The
+            // teleport survives only as the !elevator.built() fallback.
+            {
+                std::vector<uint32_t> lobbyRooms;
+                for (uint32_t i = 0; i < (uint32_t)canonFloor.rooms.size(); ++i)
+                    if (canonFloor.rooms[i].type == "Elevator Lobby") lobbyRooms.push_back(i);
+                std::sort(lobbyRooms.begin(), lobbyRooms.end(), [&](uint32_t a, uint32_t b) {
+                    return canonFloor.rooms[a].cy < canonFloor.rooms[b].cy;
+                });
+                if (!lobbyRooms.empty()) {
+                    const float cabHY = 0.15f;
+                    const x3::game::CanonRoom& L0 = canonFloor.rooms[lobbyRooms.front()];
+                    std::vector<float> stops; stops.reserve(lobbyRooms.size());
+                    std::vector<std::string> labels; labels.reserve(lobbyRooms.size());
+                    for (size_t li = 0; li < lobbyRooms.size(); ++li) {
+                        stops.push_back(canonFloor.rooms[lobbyRooms[li]].y0() + cabHY);
+                        labels.emplace_back("F" + std::to_string(li + 1));
+                    }
+                    elevator.build(scene, *device, *physics, L0.cx, L0.cz,
+                                   1.4f, cabHY, 1.4f, stops, /*startStop*/0);
+                    soupUpElevator(L0.cx, L0.cz, labels);
+                    x3::logInfo("--world canonlevel: THE REAL ELEVATOR live in the lobby spine at (" +
+                                std::to_string(L0.cx) + ", " + std::to_string(L0.cz) + ") — " +
+                                std::to_string(stops.size()) + " stops, F1-F" +
+                                std::to_string(stops.size()) + "; E to summon/ride, 1127 for The Deep");
+                }
+            }
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
             // Jake's Cell, down the wide Main Hall, through Security/Research/Medical/
             // Armory, into the Boss Arena (Martinez), out via the Elevator Lobby.
@@ -1531,6 +1644,13 @@ int runDefaultHost(HostContext& hc) {
             srs.thunk = audio->load(x3::game::resolveAudio("doors/door_close.wav"));
             game.secret().setSounds(audio.get(), srs);
         }
+        // HYBRID ESCALATION (Tim's ruling): the interrupt-rescue heartbeat — wired
+        // on BOTH rescue systems (legacy + canon); graceful when a WAV is absent.
+        {
+            const auto hb = audio->load(x3::game::resolveAudio("interact/heartbeat.wav"));
+            game.rescue().setEscalationAudio(audio.get(), hb);
+            canonPlay.rescue().setEscalationAudio(audio.get(), hb);
+        }
 
         // Game-feel CUE sink: route enemy footstep / impact cues onto 3D audio.
         // Footsteps reuse the (pitched-down, quiet) step WAV at the enemy's foot;
@@ -1558,43 +1678,7 @@ int runDefaultHost(HostContext& hc) {
                        1.4f, cabHY, 1.4f, elevStops, /*startStop*/0);
 
         // ---- Souped-up strata/disco elevator (ported from Tim's x3-elevator.js;
-        // blueprint §2.2). Turn ON the 10-state FSM (ramped accel/cruise/decel +
-        // doors), build the in-car visuals (glass + earth-strata scroll display +
-        // twin OLEDs + back-wall mirror + blue access terminal/keypad + ceiling
-        // light + disco ball), wire the procedural-audio hooks, and set the
-        // Club-1127 descent target at Y=-200 (the Club 1127 lane builds that room).
-        // The 1127 keypad code (handled in the use/keypad block below) toggles
-        // DISCO + drives the cab down to the club. Keeps the floorBaseY[]-driven
-        // stops, so the Phase-0 283 m re-scale auto-applies.
-        elevator.enableFsm(true);
-        elevator.setAudio(audio.get());
-        // PROPER ELEVATOR AUDIO: door open/close (the modular-scifi door WAV, reused
-        // from sndDoor), an arrival/floor-pass chime (the recharge bling), a looped
-        // motor/cable hum pitched by cab speed (Deep Processor Mech Drone), keypad
-        // clicks (a UI button) and a wrong-code/alarm buzzer. Every load is graceful:
-        // a missing WAV -> invalid handle -> that one cue is silent (never a crash).
-        {
-            x3::game::ElevatorSounds es;
-            es.doorOpen  = sndDoor;          // already loaded at boot (S_ScifiDoor_A)
-            es.doorClose = sndDoor;
-            // The four cue WAVs are now COMMITTED under assets/audio/interact/
-            // (same takes the pack shipped: Energy Bling / Deep Processor Mech
-            // Drone / Ceramic Menu Button / Negative Analog Computer Tone 2), so
-            // the elevator sounds on a fresh clone — the old pack-relative paths
-            // resolved only on machines carrying the external Unity pack roots.
-            es.ding      = audio->load(x3::game::resolveAudio("interact/chime.wav"));
-            if (!es.ding.valid()) es.ding = sndPickup;   // fallback: recharge chime
-            es.motor     = audio->load(x3::game::resolveAudio("interact/servo_loop.wav"));
-            es.keyClick  = audio->load(x3::game::resolveAudio("interact/keypad_click.wav"));
-            es.buzz      = audio->load(x3::game::resolveAudio("interact/buzz.wav"));
-            // Cabin experience (Babylon parity): the 72 BPM muzak loop that rides
-            // every trip + the cable groans while travelling. Committed WAVs
-            // (tools/gen_elevator_audio.py) — sound on a fresh clone.
-            es.muzak     = audio->load(x3::game::resolveAudio("interact/muzak_loop.wav"));
-            es.creak     = audio->load(x3::game::resolveAudio("interact/cable_creak.wav"));
-            elevator.setSounds(es);
-        }
-        elevator.setClubStopY(x3::game::ElevatorSystem::kDefaultClubFloorY + cabHY);
+        // blueprint §2.2). Shared wiring — see soupUpElevator above the world chain.
         {
             static const char* kFloorLabels[] =
                 { "B1", "F1", "F2", "F3", "F4", "F5", "F6", "F7" };
@@ -1602,18 +1686,8 @@ int runDefaultHost(HostContext& hc) {
             for (uint32_t fi = 0; fi < x3::game::kSpireFloorCount &&
                                   fi < (uint32_t)(sizeof(kFloorLabels)/sizeof(kFloorLabels[0])); ++fi)
                 labels.emplace_back(kFloorLabels[fi]);
-            elevator.setFloorLabels(labels);
+            soupUpElevator(Lb.elevatorCenter.x, Lb.elevatorCenter.z, labels);
         }
-        elevator.buildVisuals(scene, *device);
-        // R-3 fold: build THE DESCENT around the live elevator column (same XZ), so
-        // riding the 1127 descent shows real geology out the glass. Reuses the strata
-        // module's build path (identical to --world strata; NOT a duplicate).
-        liveStrata.build(scene, *device, *physics, liveStrataTriggers,
-                         Lb.elevatorCenter.x, Lb.elevatorCenter.z, /*radius*/16.0f);
-        liveStrataBuilt = liveStrata.built();
-        x3::boot::mark("strata descent build");
-        x3::logInfo("level1: STRATA descent built around the elevator shaft — enter 1127 to ride to The Deep");
-        x3::boot::mark("elevator build");
 
         // Author the F3/F4/F5 mid-floor encounters onto the Spire plates. The
         // per-floor elevator stops above (one per floor) make them reachable.
@@ -4534,14 +4608,14 @@ int runDefaultHost(HostContext& hc) {
                            npcBarkTimer = 3.0f; return true;
                        }()) {
                 // canon door interaction handled inside the lambda (toggle / unlock / keypad / message)
-            } else if (canonWorld && canonFloor.valid() &&
+            } else if (canonWorld && canonFloor.valid() && !elevator.built() &&
                        [&]() -> bool {
-                           // ---- W3-2 ELEVATOR TRAVEL (the tower's vertical spine). Standing
-                           // in any Elevator Lobby + E -> ride to the NEXT floor's lobby
-                           // (wraps top->bottom). The lobbies stack at the same XZ in the
-                           // data, so arrival preserves the player's bearings; the fast-
-                           // travel blackout covers the teleport (same pattern as the world
-                           // map). Doors/motor read = the door SFX pair around the fade.
+                           // ---- W3-2 ELEVATOR TRAVEL — FALLBACK ONLY: the REAL cab
+                           // (built in the lobby spine above) owns this interaction
+                           // now; this teleport survives for data without lobbies /
+                           // a failed cab build. Standing in any Elevator Lobby +
+                           // E -> ride to the NEXT floor's lobby (wraps); the fast-
+                           // travel blackout covers the teleport.
                            const uint32_t rm = canonFloor.roomAt(eye.x, eye.y, eye.z);
                            if (rm == x3::game::kNoRoom) return false;
                            if (canonFloor.rooms[rm].type != "Elevator Lobby") return false;
@@ -4640,13 +4714,23 @@ int runDefaultHost(HostContext& hc) {
                        }()) {
                 // held-item use handled inside the lambda
             } else if (elevator.built()) {
-                // Within ~4 m of the elevator shaft (XZ): call the cab to its next
-                // stop (cycles ground <-> top). Carries the rider on the way.
+                // Within ~4 m of the elevator shaft (XZ). Real elevator manners:
+                // standing at a landing with the cab elsewhere, E SUMMONS it to the
+                // caller's floor; riding it (or with the cab already here), E sends
+                // it to the next stop. Carries the rider on the way.
                 const x3::phys::Vec3 cc = elevator.cabCenter();
                 const float ecx = eye.x - cc.x, ecz = eye.z - cc.z;
                 if (ecx * ecx + ecz * ecz < 16.0f) {
-                    elevator.callNext();
-                    x3::logInfo("use: elevator called");
+                    const x3::phys::Vec3 pfe = physics->getBodyPosition(player.body());
+                    const int   myStop  = elevator.nearestStopTo(pfe.y);
+                    const bool  cabHere = std::fabs(cc.y - elevator.stopY(myStop)) < 0.5f;
+                    if (!elevator.playerRiding(pfe) && !cabHere) {
+                        elevator.callTo(myStop);
+                        x3::logInfo("use: elevator SUMMONED to the caller's floor");
+                    } else {
+                        elevator.callNext();
+                        x3::logInfo("use: elevator called");
+                    }
                 }
             }
         }
@@ -4724,6 +4808,12 @@ int runDefaultHost(HostContext& hc) {
                 }
                 if (elevDisco) {
                     codeMode = false; keypad.clear();
+                    // Gap C: the descent now ENDS somewhere — build the club once.
+                    if (elevator.disco() && !club1127.built()) {
+                        club1127.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+                        club1127Handoff = false;
+                        x3::logInfo("CLUB 1127 awakens at The Deep (Y=-200) — ride it down");
+                    }
                 } else if (canonDoors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
@@ -5006,11 +5096,34 @@ int runDefaultHost(HostContext& hc) {
                             physics->setBodyPosition(player.body(), pf);
                         }
                     }
+                    // Rider craft: an idle sealed car opens for an approaching player.
+                    elevator.autoOpenFor(physics->getBodyPosition(player.body()));
                 }
                 // R-3 fold: breathe the Crystal/Magma/Alien glow + flicker the magma
                 // mood lights of the strata shaft the cab rides through (cab-biased).
                 if (liveStrataBuilt)
                     liveStrata.update(x3::net::kSimDt, scene, *device, elevator.cabCenter());
+                // Gap C: the club lives (ORB spin, spotlight orbit, blacklight pulse,
+                // idle DJ/bouncer) + the ARRIVAL HANDOFF — cab parked at the club stop,
+                // doors open, rider aboard -> step out at club.spawn(), once per descent.
+                if (club1127.built()) {
+                    club1127.update(x3::net::kSimDt, scene, *device, *physics);
+                    const float clubCabY =
+                        x3::game::ElevatorSystem::kDefaultClubFloorY + 0.15f;
+                    x3::phys::Vec3 pr = physics->getBodyPosition(player.body());
+                    if (!club1127Handoff && elevator.doorPct() > 0.9f &&
+                        std::fabs(elevator.cabCenter().y - clubCabY) < 1.5f &&
+                        elevator.playerRiding(pr)) {
+                        const x3::phys::Vec3 cs = club1127.spawn();
+                        physics->setBodyPosition(player.body(),
+                                                 x3::phys::Vec3{ cs.x, cs.y + 1.0f, cs.z });
+                        club1127Handoff = true;
+                        x3::logInfo("WELCOME TO CLUB 1127 — The Deep");
+                    }
+                    // Re-arm for the next descent once the cab is back near the surface.
+                    if (club1127Handoff && elevator.cabCenter().y > -50.0f)
+                        club1127Handoff = false;
+                }
 
                 physics->step(x3::net::kSimDt);
                 scene.update(*physics);
@@ -5044,6 +5157,8 @@ int runDefaultHost(HostContext& hc) {
                 if (liveStrataBuilt)
                     liveStrata.update(x3::net::kSimDt, scene, *device,
                                       x3::phys::Vec3{ flyX, flyY, flyZ });
+                if (club1127.built())
+                    club1127.update(x3::net::kSimDt, scene, *device, *physics);
                 physics->step(x3::net::kSimDt);
                 scene.update(*physics);
             }
@@ -5213,6 +5328,13 @@ int runDefaultHost(HostContext& hc) {
                 const auto& sl = liveStrata.pointLights();
                 size_t take = sl.size() < 16 ? sl.size() : (size_t)16;
                 for (size_t i = 0; i < take; ++i) fl.push_back(sl[i]);
+            }
+            // Gap C: at The Deep the club's own rig (neon/UV/orbit spots/bar fills)
+            // takes the whole budget — no surface fixture reaches -200 m anyway.
+            if (club1127.built() && camY < -150.0f) {
+                fl.clear();
+                const auto& cl = club1127.pointLights();
+                for (const auto& L : cl) fl.push_back(L);
             }
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
@@ -5397,6 +5519,9 @@ int runDefaultHost(HostContext& hc) {
                     }
                 }
                 const double _pt0 = glfwGetTime();
+                // Task #4: drain the deferred F2-F7 squad queue, one enemy per frame
+                // (~15-25 ms each — bounded, and the player is floors away in the cell).
+                canonPlay.tickUpperSpawns(canonFloor, scene, *device, *physics, 1);
                 canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
                 // W5-1: the Nexus Chamber — whispers / the name-call / apex wake /
                 // cavern creatures. Creature-bucket vocals stand in for VO (none in
@@ -6043,6 +6168,7 @@ int runDefaultHost(HostContext& hc) {
                 nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                 subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
                 subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
+                club1127.drawCharacters(*device, frame, scene);  // The Deep's DJ + bouncer (no-op until 1127 builds it)
                 // ---- Monster HEALTH BARS — shiny metallic, world-anchored, with a
                 // sweeping specular sheen (shimmer). LOS-culled so a bar NEVER shows
                 // through a wall. Above every living enemy; flares white on a fresh hit

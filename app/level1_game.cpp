@@ -686,6 +686,7 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // its own bosses on timer-expiry and follows the player when rescued. The host
     // (main.cpp) pokes onRescue() on an E-edge and draws the timers/victims. ----
     m_rescue.tick(dt, scene, physics, playerPos);
+    m_rescue.escalationTick(dt);
 
     // ---- Code-locked trapdoor -> SECRET ROOM: tick the cell terminal blink + the
     // secret weapon pickup + the room's loot collection. Heals are applied here via

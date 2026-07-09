@@ -57,6 +57,16 @@ private:
     std::unordered_map<std::string, SurfaceSet> m_cache;
 };
 
+// BOOT-TIME: kick parallel background PNG decodes for the given sets (each set =
+// albedo/normal/mr under <rootDir>/<name>/). Pure CPU, safe pre-device — the same
+// overlap idea as prewarmModelDecodesAsync. SurfaceLibrary::get() consumes the
+// decoded pixels (createTexture only) instead of stbi-decoding on the main thread;
+// sets never prewarmed keep the original inline path. Decoded pixels for a name
+// are freed once consumed. (The canonlevel recipe pass was 2.5 s of serial main-
+// thread PNG decode inside the world build — the boot-regression hunt, task #4.)
+void prewarmSurfaceSetsAsync(const std::string& rootDir,
+                             const std::vector<std::string>& names);
+
 // --screenshot-matlib: headless preview host. Builds one wall+floor bay per
 // curated set under a neutral warm-key/cool-fill rig and captures a closeup per
 // set plus two wide overview rows into `outDir` (FLAT folder for review).

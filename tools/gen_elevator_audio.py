@@ -106,3 +106,102 @@ for i in range(n2):
         env = 0.9 * math.exp(-5.5 * (t - 0.05))
     buf2[i] = lp * env * 0.85
 write_wav('assets/audio/interact/cable_creak.wav', buf2)
+
+
+# ---- LAYERED DOOR SFX (playDoorSfx port): hydraulic hiss + metal slide, and a
+# separate seat THUNK the FSM fires exactly when the panels hit end-of-travel
+# (better than the JS fixed 450 ms delay). ----
+def door_layer(path, f_hz0, f_hz1, saw0, saw1):
+    dur = 0.55
+    n = int(dur * SR)
+    buf = [0.0] * n
+    random.seed(48)
+    lp = 0.0
+    phase = 0.0
+    for i in range(n):
+        t = i / SR
+        u = t / dur
+        # Hiss: noise through a moving one-pole toward the sweep frequency.
+        f = f_hz0 + (f_hz1 - f_hz0) * u
+        noise = random.random() * 2 - 1
+        lp += (noise - lp) * min(0.95, 2 * math.pi * f / SR)
+        hiss = (noise - lp) * 0.5                    # crude highpassed band
+        env_h = min(1.0, u * 8) * (1.0 - u) * 0.5
+        # Metal slide: gliding saw.
+        sf = saw0 + (saw1 - saw0) * u
+        phase += sf / SR
+        saw = 2.0 * (phase - math.floor(phase + 0.5))
+        env_s = min(1.0, u * 5) * max(0.0, 1.0 - u * 1.1) * 0.28
+        buf[i] = hiss * env_h + saw * env_s
+    write_wav(path, buf)
+
+door_layer('assets/audio/interact/door_hiss_open.wav', 2000, 800, 150, 200)
+door_layer('assets/audio/interact/door_hiss_close.wav', 1500, 2500, 200, 150)
+
+# Thunk: 55 Hz square with a hard decay + a click transient.
+dur = 0.16
+n = int(dur * SR)
+buf = [0.0] * n
+for i in range(n):
+    t = i / SR
+    sq = 1.0 if math.sin(2 * math.pi * 55.0 * t) >= 0 else -1.0
+    env = math.exp(-22.0 * t) * 0.85
+    click = math.exp(-400.0 * t) * 0.4
+    buf[i] = sq * env + click * (1 if i % 7 else -1)
+write_wav('assets/audio/interact/door_thunk.wav', buf)
+
+
+# ---- DISCO CLUB TRACK (startDiscoMusic port): the 128 BPM four-on-the-floor
+# kick / hat / off-beat hat / Cm7 stab sequencer, baked as a seamless 2-bar
+# (8-beat, 3.75 s) loop. Start/stop rides the 1127 disco toggle exactly like
+# the muzak loop rides the door seal. ----
+CLUB_BPM = 128.0
+CB = 60.0 / CLUB_BPM                                  # one beat, 0.46875 s
+club_dur = 8 * CB                                     # 2 bars
+n3 = int(club_dur * SR)
+buf3 = [0.0] * n3
+random.seed(128)
+
+def add_kick(at):
+    s0 = int(at * SR)
+    for i in range(int(0.24 * SR)):
+        t = i / SR
+        f = 150.0 * math.exp(-9.0 * t) + 48.0        # pitch drop 150 -> ~50 Hz
+        v = math.sin(2 * math.pi * f * t) * math.exp(-7.0 * t)
+        j = s0 + i
+        buf3[j % n3] += v * 0.50                      # wrap: seam-free loop
+
+def add_hat(at, vol):
+    s0 = int(at * SR)
+    hp = 0.0
+    for i in range(int(0.06 * SR)):
+        noise = random.random() * 2 - 1
+        hp += (noise - hp) * 0.55                     # crude ~8 kHz highpass
+        v = (noise - hp) * math.exp(-60.0 * (i / SR))
+        j = s0 + i
+        buf3[j % n3] += v * vol
+
+def add_stab(at):
+    # Cm7: C3 / Eb3 / G3 / Bb3 saws, tight envelope (the JS stab voicing).
+    s0 = int(at * SR)
+    for f in (130.81, 155.56, 196.00, 233.08):
+        phase = 0.0
+        for i in range(int(0.22 * SR)):
+            t = i / SR
+            phase += f / SR
+            saw = 2.0 * (phase - math.floor(phase + 0.5))
+            env = min(1.0, t / 0.01) * math.exp(-11.0 * t)
+            j = s0 + i
+            buf3[j % n3] += saw * env * 0.055
+
+for b in range(8):
+    add_kick(b * CB)                                  # four-on-the-floor
+    add_hat(b * CB, 0.10)                             # on-beat hat (soft)
+    add_hat((b + 0.5) * CB, 0.22)                     # OFF-beat hat (the drive)
+for at in (1.5, 3.5, 5.5, 7.75):                      # stabs on the and-of-2/4 + a pickup
+    add_stab(at * CB)
+
+peak = max(abs(s) for s in buf3)
+if peak > 0.95:
+    buf3 = [s * (0.95 / peak) for s in buf3]
+write_wav('assets/audio/interact/club_track.wav', buf3)

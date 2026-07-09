@@ -10,6 +10,8 @@
 #include "mesh_prims.h"
 
 #include "engine/core/x3_log.h"
+#include "engine/rhi/font_robotomono.h"   // kRobotoMonoTTF — the OLED panel text
+#include <stb_truetype.h>                  // declarations only (impl in the engine TU)
 #include "engine/audio/IAudioSystem.h"
 
 #include <algorithm>
@@ -36,6 +38,94 @@ static const std::array<StrataLayer, 9> kStrata = {{
     {-320.0f, -260.0f, "Magma Zone",      {0.25f, 0.06f, 0.02f}, true,  {0.80f, 0.20f, 0.05f} },
     {-400.0f, -320.0f, "Alien Substrate", {0.08f, 0.04f, 0.12f}, true,  {0.20f, 0.04f, 0.40f} },
 }};
+
+// ---- OLED text raster (the HoloTerminal stb_truetype move, panel-sized) ----
+namespace {
+struct OledFont {
+    stbtt_fontinfo info{};
+    bool ready = false;
+    OledFont() {
+        const unsigned char* ttf = x3::rhi::kRobotoMonoTTF;
+        const int off = stbtt_GetFontOffsetForIndex(ttf, 0);
+        if (off >= 0 && stbtt_InitFont(&info, ttf, off)) ready = true;
+    }
+};
+const OledFont& oledFont() { static OledFont f; return f; }
+
+constexpr int kOledW = 256, kOledH = 168;
+
+void oledText(std::vector<uint8_t>& px, const std::string& s, float penX, float topY,
+              float ph, float r, float g, float b) {
+    const OledFont& f = oledFont();
+    if (!f.ready) return;
+    const float scale = stbtt_ScaleForPixelHeight(&f.info, ph);
+    int asc = 0, desc = 0, gap = 0;
+    stbtt_GetFontVMetrics(&f.info, &asc, &desc, &gap);
+    const float baseline = topY + asc * scale;
+    float pen = penX;
+    for (unsigned char ch : s) {
+        int adv = 0, lsb = 0;
+        stbtt_GetCodepointHMetrics(&f.info, ch, &adv, &lsb);
+        if (ch != ' ') {
+            int gw = 0, gh = 0, gxo = 0, gyo = 0;
+            unsigned char* bmp = stbtt_GetCodepointBitmap(&f.info, scale, scale, ch,
+                                                          &gw, &gh, &gxo, &gyo);
+            if (bmp) {
+                const float gx0 = pen + lsb * scale;
+                for (int yy = 0; yy < gh; ++yy)
+                    for (int xx = 0; xx < gw; ++xx) {
+                        const float cov = bmp[yy * gw + xx] / 255.0f;
+                        if (cov <= 0.003f) continue;
+                        const int X = (int)std::lround(gx0 + gxo + xx);
+                        const int Y = (int)std::lround(baseline + gyo + yy);
+                        if (X < 0 || X >= kOledW || Y < 0 || Y >= kOledH) continue;
+                        uint8_t* p = &px[((size_t)Y * kOledW + X) * 4];
+                        p[0] = (uint8_t)std::min(255.0f, p[0] + r * 255.0f * cov);
+                        p[1] = (uint8_t)std::min(255.0f, p[1] + g * 255.0f * cov);
+                        p[2] = (uint8_t)std::min(255.0f, p[2] + b * 255.0f * cov);
+                    }
+                stbtt_FreeBitmap(bmp, nullptr);
+            }
+        }
+        pen += adv * scale;
+    }
+}
+
+struct OledLine { std::string text; float r, g, b; float px; };
+
+x3::rhi::TextureHandle bakeOled(x3::rhi::IRenderDevice& device,
+                                const std::vector<OledLine>& lines) {
+    std::vector<uint8_t> px((size_t)kOledW * kOledH * 4);
+    for (int y = 0; y < kOledH; ++y)
+        for (int x = 0; x < kOledW; ++x) {
+            uint8_t* p = &px[((size_t)y * kOledW + x) * 4];
+            p[0] = 2; p[1] = 4; p[2] = 8; p[3] = 255;               // near-black glass
+            if ((y % 3) == 0) { p[0] = 1; p[1] = 2; p[2] = 5; }     // scanlines
+            const int edge = std::min(std::min(x, kOledW - 1 - x),
+                                      std::min(y, kOledH - 1 - y));
+            if (edge < 2) { p[0] = 10; p[1] = 30; p[2] = 45; }      // bezel line
+        }
+    float ty = 8.0f;
+    for (const OledLine& L : lines) {
+        oledText(px, L.text, 10.0f, ty, L.px, L.r, L.g, L.b);
+        ty += L.px + 4.0f;
+    }
+    // X3_OLED_DUMP=<dir>: write each bake as a PPM (debug proof of the panel
+    // content without hunting the cab with a camera).
+    if (const char* dump = std::getenv("X3_OLED_DUMP")) {
+        static int s_dumpN = 0;
+        char pth[512];
+        std::snprintf(pth, sizeof(pth), "%s/oled_%03d.ppm", dump, s_dumpN++);
+        if (FILE* f = std::fopen(pth, "wb")) {
+            std::fprintf(f, "P6\n%d %d\n255\n", kOledW, kOledH);
+            for (size_t i = 0; i < (size_t)kOledW * kOledH; ++i)
+                std::fwrite(&px[i * 4], 1, 3, f);
+            std::fclose(f);
+        }
+    }
+    return device.createTexture(px.data(), kOledW, kOledH, true);
+}
+} // namespace
 
 const std::array<StrataLayer, 9>& ElevatorSystem::strata() { return kStrata; }
 
@@ -296,6 +386,7 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_doorPct = std::max(0.0f, m_doorPct - dt / m_tune.doorSpeed);
             if (m_doorPct <= 0.0f) {
                 m_doorPct = 0.0f;
+                playOneShot(m_snd.doorThunk, 0.8f, 0.95f);   // panels SEAT (layered close)
                 m_state = ElevState::Accelerating;
                 m_stateTime = 0.0f;
             }
@@ -313,6 +404,32 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_fsmSpeed = m_tune.maxSpeed * (m_discoSlow ? kDiscoSlow : 1.0f);
             m_pos.y += dir * m_fsmSpeed * eDt;
             m_totalDist += m_fsmSpeed * eDt;
+            // THE CABLE SLIPS (armed, once, never in disco): on a LONG descent,
+            // past the shaft's halfway line, the cable lets go. Lights die, the
+            // muzak cuts, the cab drops — the brakes catch it in the Freefall case.
+            if (m_slipArmed && !m_slipDone && !m_disco && dir < 0.0f &&
+                dist > 18.0f && !m_stopsY.empty() &&
+                m_pos.y < (m_stopsY.front() + m_stopsY.back()) * 0.5f) {
+                m_slipDone = true;
+                m_slipAlarmed = false;
+                m_resumeStop = m_target;
+                m_slipStartY = m_pos.y;
+                if (m_muzakLoop.valid()) { m_audio->stopLoop(m_muzakLoop); m_muzakLoop = {}; }
+                if (m_flickerT <= 0.0f && !m_lights.empty()) {   // lights DIE
+                    m_lightSaveR = m_lights[0].color[0];
+                    m_lightSaveG = m_lights[0].color[1];
+                    m_lightSaveB = m_lights[0].color[2];
+                    m_lights[0].color[0] *= 0.06f;
+                    m_lights[0].color[1] *= 0.06f;
+                    m_lights[0].color[2] *= 0.06f;
+                    m_flickerT = 999.0f;                         // held dark until the catch
+                }
+                playOneShot(m_snd.creak, 1.0f, 0.65f);           // the cable LETS GO
+                m_state = ElevState::Freefall;
+                m_stateTime = 0.0f;
+                x3::logInfo("[elevator] ...the CABLE SLIPS.");
+                break;
+            }
             if (dist < m_tune.decelDist) { m_state = ElevState::Decelerating; m_stateTime = 0.0f; }
             break;
 
@@ -376,6 +493,7 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_doorPct = std::min(1.0f, m_doorPct + dt / m_tune.doorSpeed);
             if (m_doorPct >= 1.0f) {
                 m_doorPct = 1.0f;
+                playOneShot(m_snd.doorThunk, 0.7f, 1.05f);   // panels park open (layered open)
                 m_state = ElevState::DoorsOpen;
                 m_stateTime = 0.0f;
             }
@@ -398,16 +516,45 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
                 m_shakeX = 0.0f;
                 m_state = ElevState::Idle;
                 m_stateTime = 0.0f;
+                if (m_pendingResume) {                            // the ride quietly resumes
+                    m_pendingResume = false;
+                    x3::logInfo("[elevator] resuming to the original stop...");
+                    // startTravelTo, NOT callTo: the interrupted ride's target is
+                    // still m_target, so callTo's already-called guard would refuse.
+                    startTravelTo(std::clamp(m_resumeStop, 0, (int)m_stopsY.size() - 1));
+                }
             }
             break;
         }
 
-        case ElevState::Freefall:
+        case ElevState::Freefall: {
             // Dramatic drop (ported from STATE.FREEFALL): accelerate down hard.
             m_fsmSpeed = std::min(m_fsmSpeed + 20.0f * dt, 40.0f);
             m_pos.y -= m_fsmSpeed * dt;
             m_totalDist += m_fsmSpeed * dt;
+            // Mid-fall ALARM (once, after the stomach-drop beat of silence).
+            if (!m_slipAlarmed && m_stateTime > 0.35f) {
+                m_slipAlarmed = true;
+                playOneShot(m_snd.buzz, 1.0f, 0.60f);
+            }
+            // THE BRAKES CATCH: after ~14 m of fall, or before the pit. Restore
+            // the lights, hand off to EmergencyStop (shake + klaxon + 3 s recover),
+            // and queue the resume to the original destination.
+            const float floorY = m_stopsY.empty() ? (m_pos.y - 1.0f) : m_stopsY.front();
+            if ((m_slipStartY - m_pos.y) > 14.0f || m_pos.y < floorY + 4.0f) {
+                if (m_pos.y < floorY) m_pos.y = floorY;          // never through the pit
+                if (m_flickerT > 100.0f && !m_lights.empty()) {  // lights back
+                    m_lights[0].color[0] = m_lightSaveR;
+                    m_lights[0].color[1] = m_lightSaveG;
+                    m_lights[0].color[2] = m_lightSaveB;
+                    m_flickerT = 0.0f;
+                }
+                m_pendingResume = (m_resumeStop >= 0);
+                emergencyStop();
+                x3::logInfo("[elevator] ...the emergency brakes CATCH.");
+            }
             break;
+        }
     }
 
     // Cable CREAKS while the cab travels (JS: every 3-5 s over 2 m/s) — the
@@ -451,10 +598,71 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
 
     updateMotorAudio(dt);
 
+    // ---- OLED TELEMETRY (Babylon twin-viewscreen parity): rebake both panel
+    // textures ~3x/s — LEFT: the geological survey (live depth, stratum, speed,
+    // ambient temp, lifetime odometer, deep-zone warning); RIGHT: the floor
+    // directory with > current / * target markers. stb_truetype raster into a
+    // fresh texture; the old one is destroyed (the HoloTerminal rebake move). ----
+    m_oledTimer += dt;
+    if (m_oledDevice && m_eOledL != kNoLink && m_eOledR != kNoLink && m_oledTimer >= 0.33f) {
+        m_oledTimer = 0.0f;
+        const float topY = m_stopsY.empty() ? m_pos.y : m_stopsY.back();
+        const float depth = std::max(0.0f, topY - m_pos.y);
+        char buf[64];
+        std::vector<OledLine> L;
+        L.push_back({ "GEOLOGICAL SURVEY", 0.25f, 0.55f, 0.85f, 13.0f });
+        std::snprintf(buf, sizeof(buf), "DEPTH   %7.1f m", depth);
+        L.push_back({ buf, 0.15f, 0.85f, 1.0f, 20.0f });
+        std::snprintf(buf, sizeof(buf), "STRATUM %s", currentStratum());
+        L.push_back({ buf, 0.55f, 0.65f, 0.80f, 14.0f });
+        std::snprintf(buf, sizeof(buf), "SPEED   %5.1f m/s", m_fsmSpeed);
+        L.push_back({ buf, 0.30f, 0.70f, 0.55f, 14.0f });
+        std::snprintf(buf, sizeof(buf), "AMBIENT %5.1f C", 18.0f + depth * 0.03f);
+        L.push_back({ buf, depth > 120.0f ? 0.85f : 0.30f, depth > 120.0f ? 0.35f : 0.55f, 0.30f, 14.0f });
+        std::snprintf(buf, sizeof(buf), "ODO     %6.0f m", m_totalDist);
+        L.push_back({ buf, 0.25f, 0.35f, 0.45f, 12.0f });
+        if (depth > 120.0f)
+            L.push_back({ "! ALIEN SUBSTRATE !", 1.0f, 0.25f, 0.20f, 13.0f });
+        x3::rhi::TextureHandle freshL = bakeOled(*m_oledDevice, L);
+
+        std::vector<OledLine> R;
+        R.push_back({ "FLOOR DIRECTORY", 0.55f, 0.35f, 0.80f, 13.0f });
+        const int n = (int)m_stopsY.size();
+        for (int i = n - 1; i >= 0 && (int)R.size() < 10; --i) {
+            const char mark = (i == m_curStop) ? '>' : (i == m_target && m_state != ElevState::Idle ? '*' : ' ');
+            std::snprintf(buf, sizeof(buf), "%c %s", mark, floorLabel(i).c_str());
+            const bool cur = (i == m_curStop);
+            R.push_back({ buf, cur ? 0.95f : 0.40f, cur ? 0.95f : 0.42f, cur ? 1.0f : 0.55f,
+                          cur ? 15.0f : 13.0f });
+        }
+        if (m_disco)
+            R.push_back({ "** DISCO MODE **", 1.0f, 0.20f, 0.90f, 13.0f });
+        x3::rhi::TextureHandle freshR = bakeOled(*m_oledDevice, R);
+
+        auto assign = [&](uint32_t ent, x3::rhi::TextureHandle& slot, x3::rhi::TextureHandle fresh) {
+            if (ent >= scene.size()) return;
+            Entity& e = scene.get(ent);
+            e.tex = fresh; e.emissiveTex = fresh; e.mrTex = m_oledMr;
+            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 0.9f; e.baseColor[3] = 1.0f;
+            e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.6f;
+            if (slot.valid()) m_oledDevice->destroyTexture(slot);
+            slot = fresh;
+        };
+        assign(m_eOledL, m_oledTexL, freshL);
+        assign(m_eOledR, m_oledTexR, freshR);
+    }
+
     // Disco light/strata/glass cue (animates the registered point lights + the
-    // strata/disco-ball emissive). m_discoTime advances only in disco mode.
+    // strata/disco-ball emissive). m_discoTime advances only in disco mode. When
+    // disco is OFF the ceiling fill is re-asserted every frame (the cue dims it
+    // purple / strobes it white, and nothing else would put it back) — unless a
+    // horror flicker or the cable slip currently owns the light (m_flickerT).
     const float t = m_discoTime;
-    if (m_disco) { m_discoTime += dt; applyDiscoCue(dt, t); }
+    if (m_disco) {
+        m_discoTime += dt; applyDiscoCue(dt, t);
+    } else if (!m_lights.empty() && m_flickerT <= 0.0f) {
+        m_lights[0].color[0] = 0.60f; m_lights[0].color[1] = 0.73f; m_lights[0].color[2] = 0.87f;
+    }
 
     syncBodyAndTransform(scene, physics);
     layoutVisuals(scene);
@@ -490,6 +698,18 @@ void ElevatorSystem::updateMotorAudio(float dt) {
     }
 }
 
+void ElevatorSystem::autoOpenFor(const x3::phys::Vec3& feet) {
+    if (!m_fsm || m_state != ElevState::Idle || m_doorPct > 0.05f) return;
+    const float dx = feet.x - m_pos.x, dz = feet.z - m_pos.z;
+    const float dy = feet.y - (m_pos.y + m_halfY);
+    // ~3.5 m approach ring, at (or a step below/above) the cab's floor level.
+    if (dx * dx + dz * dz < 12.25f && dy > -1.5f && dy < 2.5f) {
+        m_state = ElevState::DoorsOpening;   // the entry edge plays the door cue
+        m_stateTime = 0.0f;
+        x3::logInfo("[elevator] proximity: doors auto-open for the approaching rider");
+    }
+}
+
 // ===========================================================================
 // KEYPAD — terminal code entry. "1127" = DISCO toggle (+ descend to the club).
 // ===========================================================================
@@ -507,6 +727,11 @@ bool ElevatorSystem::keypadDigit(int digit) {
             if (m_disco) {
                 m_discoTime = 0.0f;
                 playOneShot(m_snd.ding, 1.0f, 1.25f);   // bright "access granted" chime
+                // THE PARTY HAS A SOUNDTRACK (JS startDiscoMusic): the baked 128 BPM
+                // kick/hat/stab loop takes over — the muzak yields for the duration.
+                if (m_muzakLoop.valid()) { m_audio->stopLoop(m_muzakLoop); m_muzakLoop = {}; }
+                if (m_audio && m_snd.clubTrack.valid() && !m_clubLoop.valid())
+                    m_clubLoop = m_audio->startLoop(m_snd.clubTrack, 0.85f, 1.0f);
                 x3::logInfo("[elevator] DISCO MODE activated — code 1127 accepted; "
                             "descending to Club 1127 at Y=" + std::to_string(m_clubStopY));
                 // Descend to the Club 1127 stop. Make sure the club stop is among
@@ -527,6 +752,7 @@ bool ElevatorSystem::keypadDigit(int digit) {
             } else {
                 m_disco = false;
                 m_discoSlow = false;
+                if (m_clubLoop.valid()) { m_audio->stopLoop(m_clubLoop); m_clubLoop = {}; }
                 x3::logInfo("[elevator] DISCO MODE off");
             }
             return ok;
@@ -583,8 +809,12 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     { const float c[4] = {0.92f, 0.92f, 0.95f, 1.0f};
       m_eMirror = addKit(scene, device, carW*0.32f, carH*0.30f, 0.02f, c, noEm); }
 
-    // Twin OLED viewscreens: left = geo survey, right = floor directory. Emissive
-    // cyan/violet graybox panels.
+    // Twin OLED viewscreens: left = geo survey, right = floor directory. LIVE
+    // text telemetry baked by update() (the graybox emissive is just the boot
+    // frame). Capture the device + a glossy MR texel for the PBR screen route.
+    m_oledDevice = &device;
+    { const uint8_t mr1[4] = { 255, 45, 30, 255 };   // G=rough(45) B=metal(30): glossy panel
+      m_oledMr = device.createTexture(mr1, 1, 1, false); }
     { const float c[4] = {0.0f, 0.05f, 0.10f, 1.0f};
       const float em[4] = {0.0f, 0.40f, 0.80f, 1.2f};
       m_eOledL = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em); }
@@ -605,6 +835,13 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     { const float c[4] = {0.67f, 0.80f, 0.93f, 1.0f};
       const float em[4] = {0.40f, 0.60f, 0.80f, 1.0f};
       m_eCeil = addKit(scene, device, carW*0.30f, 0.03f, 0.15f, c, em); }
+
+    // FOUR STEEL CABLES rising from the car roof up the shaft (the JS builds 300 m
+    // of them; 120 m reads identically from inside and keeps the graybox cheap).
+    // Thin dark columns at the roof corners; they ride the cab in layoutVisuals().
+    { const float c[4] = {0.16f, 0.17f, 0.19f, 1.0f};
+      for (int i = 0; i < 4; ++i)
+          m_eCable[i] = addKit(scene, device, 0.03f, 60.0f, 0.03f, c, noEm); }
 
     // Twin sliding DOOR panels on the front (+X) wall — two tall brushed-metal
     // slabs that part along Z as m_doorPct rises. Half-width per panel = a quarter
@@ -670,6 +907,12 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
     place(m_eTerm,       carW * 0.5f - 0.18f,   -0.30f,          carD * 0.25f);
     place(m_eDiscoBall,  0.0f,                   carH * 0.5f - 0.5f, 0.0f);
     place(m_eCeil,       0.0f,                   carH * 0.5f - 0.1f, 0.0f);
+    // Shaft cables: from the roof corners, 60 m half-height columns rising up.
+    for (int ci = 0; ci < 4; ++ci) {
+        const float sx = (ci & 1) ? 1.0f : -1.0f;
+        const float sz = (ci & 2) ? 1.0f : -1.0f;
+        place(m_eCable[ci], sx * carW * 0.30f, carH * 0.5f + 60.0f, sz * carD * 0.30f);
+    }
 
     // Sliding doors on the +X wall: closed (doorPct=0) the two panels meet at z=0;
     // open (doorPct=1) they retract to +/- a quarter-depth. Each panel is a quarter
@@ -683,14 +926,23 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
     }
     // Indicator strip above the doors.
     place(m_eIndicator, carW * 0.5f - 0.04f, carH * 0.42f, 0.0f);
-    // Tint the indicator: green when doors fully open, amber while moving/closing.
+    // Tint the indicator: green when doors fully open, amber while moving/closing —
+    // and MAGENTA whenever disco is live (the JS flips indicator + terminal).
     if (m_eIndicator != kNoLink && m_eIndicator < scene.size()) {
         Entity& e = scene.get(m_eIndicator);
         const bool open = (m_state == ElevState::DoorsOpen) || (m_doorPct > 0.95f &&
                           m_state == ElevState::Idle);
-        if (open) { e.emissive[0] = 0.0f; e.emissive[1] = 0.9f; e.emissive[2] = 0.3f; }
-        else      { e.emissive[0] = 1.0f; e.emissive[1] = 0.55f; e.emissive[2] = 0.0f; }
+        if (m_disco)   { e.emissive[0] = 1.0f; e.emissive[1] = 0.10f; e.emissive[2] = 0.85f; }
+        else if (open) { e.emissive[0] = 0.0f; e.emissive[1] = 0.9f;  e.emissive[2] = 0.3f; }
+        else           { e.emissive[0] = 1.0f; e.emissive[1] = 0.55f; e.emissive[2] = 0.0f; }
         e.emissive[3] = 1.4f;
+    }
+    // Terminal glow: cool blue normally, MAGENTA while disco is live (JS parity).
+    if (m_eTerm != kNoLink && m_eTerm < scene.size()) {
+        Entity& e = scene.get(m_eTerm);
+        if (m_disco) { e.emissive[0] = 0.90f; e.emissive[1] = 0.08f; e.emissive[2] = 0.75f; }
+        else         { e.emissive[0] = 0.0f;  e.emissive[1] = 0.30f; e.emissive[2] = 0.90f; }
+        e.emissive[3] = 1.0f;
     }
 
     // Position the point lights at the cab interior (ceiling), spots ringed.
@@ -734,10 +986,17 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
 void ElevatorSystem::applyDiscoCue(float /*dt*/, float t) {
     if (!m_visualsBuilt) return;
     // Disco-ball emissive + the spinning, pulsing colored spots (the disco cue).
-    // The ceiling light dims to a dim purple while the 4 spots cycle hue/intensity.
+    // The ceiling light dims to a dim purple while the 4 spots cycle hue/intensity,
+    // and a 4 Hz STROBE (JS DISCO_STROBE_HZ) snaps the ceiling to hard white on a
+    // short duty cycle — the flash IS the ceiling light, so no extra host wiring.
     // (The disco-ball entity emissive is driven in layoutVisuals() from m_disco.)
     if (!m_lights.empty()) {
-        m_lights[0].color[0] = 0.20f; m_lights[0].color[1] = 0.05f; m_lights[0].color[2] = 0.40f;
+        const bool strobeOn = std::fmod(t * 4.0f, 1.0f) < 0.12f;
+        if (strobeOn) {
+            m_lights[0].color[0] = 2.6f; m_lights[0].color[1] = 2.6f; m_lights[0].color[2] = 2.8f;
+        } else {
+            m_lights[0].color[0] = 0.20f; m_lights[0].color[1] = 0.05f; m_lights[0].color[2] = 0.40f;
+        }
         const float baseSpot[4][3] = {
             {1.0f, 0.2f, 0.4f}, {0.2f, 0.4f, 1.0f}, {0.2f, 1.0f, 0.4f}, {1.0f, 0.8f, 0.2f}
         };
@@ -956,6 +1215,76 @@ bool runElevatorFsmSelfTest() {
     }
 
     physics->shutdown();
+    // ---- F9: THE CABLE SLIPS (armed) — on a long descent past halfway the cab
+    // freefalls, the brakes CATCH (EmergencyStop), and the ride RESUMES to the
+    // original stop; the scare is once-only and never drops through the pit. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> p9(x3::phys::createPhysicsWorld());
+        p9->init();
+        HeadlessRenderDevice d9;
+        Scene s9;
+        ElevatorSystem e9;
+        const float bot = 0.15f, top = 60.15f;
+        e9.build(s9, d9, *p9, 0.0f, 0.0f, 1.4f, 0.15f, 1.4f,
+                 std::vector<float>{ bot, top }, 1);       // start at the TOP
+        e9.enableFsm(true);
+        e9.armCableSlip();
+        e9.callTo(0);                                      // the long descent
+        bool sawFall = false, sawEmergency = false, minYOk = true;
+        float minY = 1e9f;
+        for (int i = 0; i < 60 * 60; ++i) {                // up to 60 sim-seconds
+            e9.update(kDt, s9, *p9);
+            sawFall      |= (e9.state() == ElevState::Freefall);
+            sawEmergency |= (e9.state() == ElevState::EmergencyStop);
+            minY = std::min(minY, e9.cabCenter().y);
+            if (e9.state() == ElevState::DoorsOpen && sawEmergency) break;
+        }
+        minYOk = (minY > bot - 1.0f);
+        const bool arrived = std::fabs(e9.cabCenter().y - bot) < 0.5f;
+        fcheck(sawFall && sawEmergency && arrived && minYOk,
+               "F9 CABLE SLIP: freefall -> brakes catch -> resumes -> arrives (never through the pit)");
+        // Once-only: ride back up, then down again — no second scare.
+        e9.callTo(1);
+        for (int i = 0; i < 60 * 40 && e9.state() != ElevState::DoorsOpen; ++i) e9.update(kDt, s9, *p9);
+        e9.callTo(0);
+        bool secondFall = false;
+        for (int i = 0; i < 60 * 40; ++i) {
+            e9.update(kDt, s9, *p9);
+            secondFall |= (e9.state() == ElevState::Freefall);
+            if (e9.state() == ElevState::DoorsOpen) break;
+        }
+        fcheck(!secondFall, "F9b the slip is once-only (second descent rides clean)");
+        p9->shutdown();
+    }
+
+    // ---- F10: rider craft — an idle SEALED car auto-opens for NEAR feet only.
+    // (Doors are closed at Idle after a manual emergency stop mid-shaft.)
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> p10(x3::phys::createPhysicsWorld());
+        p10->init();
+        Scene s10;
+        ElevatorSystem e10;
+        e10.build(s10, device, *p10, 0.0f, 0.0f, 1.4f, cabHY, 1.4f,
+                  std::vector<float>{ groundY, topY }, 0);
+        e10.enableFsm(true);
+        e10.callTo(1);
+        for (int i = 0; i < 60 * 3 && e10.state() != ElevState::Cruising; ++i) e10.update(kDt, s10, *p10);
+        e10.emergencyStop();                    // halts mid-shaft, doors still sealed
+        for (int i = 0; i < 60 * 5 && e10.state() != ElevState::Idle; ++i) e10.update(kDt, s10, *p10);
+        const bool sealedIdle = (e10.state() == ElevState::Idle) && (e10.doorPct() < 0.05f);
+        const x3::phys::Vec3 feetFar{ e10.cabCenter().x + 30.0f,
+                                      e10.cabCenter().y + cabHY, e10.cabCenter().z };
+        e10.autoOpenFor(feetFar);
+        const bool stayedShut = (e10.state() == ElevState::Idle);
+        const x3::phys::Vec3 feetNear{ e10.cabCenter().x + 2.0f,
+                                       e10.cabCenter().y + cabHY, e10.cabCenter().z };
+        e10.autoOpenFor(feetNear);
+        const bool opening = (e10.state() == ElevState::DoorsOpening);
+        fcheck(sealedIdle && stayedShut && opening,
+               "F10 rider craft: idle sealed car auto-opens only for NEAR feet");
+        p10->shutdown();
+    }
+
     x3::logInfo("elevatorfsm: " + std::to_string(s_pass) + "/" +
                 std::to_string(s_pass + s_fail) + " passed");
     return s_fail == 0;

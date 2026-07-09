@@ -644,6 +644,27 @@ uint32_t RescueSystem::aliveAttackersNear(const Scene& scene, const x3::phys::Ve
     return n;
 }
 
+void RescueSystem::escalationTick(float dt) {
+    m_ringClock += dt;
+    // Most urgent active window (frac 1 -> 0). Escalate under a third remaining.
+    float worst = 1.0f;
+    for (const auto& v : m_victims)
+        if (v->assaultActive()) worst = std::min(worst, v->windowFrac());
+    const bool urgent = (worst < 0.33f);
+    if (m_escAudio && m_heartbeat.valid()) {
+        if (urgent && !m_heartLoop.valid()) {
+            m_heartLoop = m_escAudio->startLoop(m_heartbeat, 0.55f, 1.0f);
+        } else if (urgent && m_heartLoop.valid()) {
+            // Pitch + volume climb as the window closes (frac 0.33 -> 0).
+            const float k = 1.0f - worst / 0.33f;                 // 0 -> 1
+            m_escAudio->setLoopParams(m_heartLoop, 0.55f + 0.35f * k, 1.0f + 0.22f * k);
+        } else if (!urgent && m_heartLoop.valid()) {
+            m_escAudio->stopLoop(m_heartLoop);
+            m_heartLoop = {};
+        }
+    }
+}
+
 void RescueSystem::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                         const x3::phys::Vec3& playerPos) {
     if (!m_built) return;
@@ -729,14 +750,23 @@ void RescueSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
         const int   lit  = (int)(frac * kPips + 0.5f);
         const x3::phys::Vec3 p = v->pos();
         // Amber early, blood-red as the window closes (lerp by remaining fraction).
-        const float cr = 1.0f, cg = 0.15f + 0.55f * frac, cb = 0.08f * frac;
+        float cr = 1.0f, cg = 0.15f + 0.55f * frac, cb = 0.08f * frac;
+        // HYBRID ESCALATION: under a third remaining the ring goes full blood-red
+        // and THROBS — pips swell + flare on a fast pulse (with the heartbeat).
+        float pipScale = 1.0f, emGain = 1.35f;
+        if (frac < 0.33f) {
+            const float pulse = std::max(0.0f, std::sin(m_ringClock * 9.0f));
+            cg = 0.06f; cb = 0.03f;
+            pipScale = 1.0f + 0.45f * pulse;
+            emGain   = 1.35f + 1.3f * pulse;
+        }
         for (int i = 0; i < lit; ++i) {
             const float a = kPi2 * (float)i / (float)kPips;
             const float c = std::cos(a), s = std::sin(a);
-            float t[16] = { c,0,-s,0,  0,1,0,0,  s,0,c,0,
+            float t[16] = { c*pipScale,0,-s*pipScale,0,  0,pipScale,0,0,  s*pipScale,0,c*pipScale,0,
                             p.x + c * kRingR, p.y + 0.18f, p.z + s * kRingR, 1 };
             const float col[4]  = { cr, cg, cb, 1.0f };
-            const float emis[4] = { cr, cg, cb, 1.35f };
+            const float emis[4] = { cr, cg, cb, emGain };
             device.drawMeshEmissive(frame, m_ringPip, white, col, emis, t);
         }
     }
