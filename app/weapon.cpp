@@ -932,20 +932,35 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
     // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
     constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
-    constexpr float kVmBright     = 2.6f;   // lit (the real issue is the GLB TEXTURE being wrong, not size/brightness)
+    // 14900K weapon-textures rework (ba3ce7a, ported): the shared 2.6x boost was
+    // compensating for the shared-atlas skin bug — with the per-weapon PBR
+    // textures restored in the GLBs, 1.4x is the correct modest lift (2.6x blew
+    // the real albedos out to white).
+    constexpr float kVmBright     = 1.4f;   // textures are now the CORRECT per-weapon baked albedo
     composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
         x3::asset::mulMat4(model, dr.nodeTransform, fin);
-        const float litColor[4] = {
-            dr.baseColorFactor[0] * kVmBright,
-            dr.baseColorFactor[1] * kVmBright,
-            dr.baseColorFactor[2] * kVmBright,
-            dr.baseColorFactor[3],
-        };
-        device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
-                        x3::rhi::TextureHandle{ dr.baseColorTexId },
-                        litColor, fin);
+        if (d.vmLitPBR) {
+            // Clean LIT GUNMETAL (14900K, ported): this weapon's baked diffuse
+            // reads as a dazzle blob (bad UV islands sample the atlas's light
+            // sections). Drop the problem diffuse entirely: fixed dark gunmetal
+            // factor over the built-in white 1x1 — reads as an actual gunmetal
+            // weapon instead of a white splotch.
+            const float gunCol[4] = { 0.07f, 0.08f, 0.10f, 1.0f };  // dark cool gunmetal
+            device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                            x3::rhi::TextureHandle{}, gunCol, fin);
+        } else {
+            const float litColor[4] = {
+                dr.baseColorFactor[0] * kVmBright,
+                dr.baseColorFactor[1] * kVmBright,
+                dr.baseColorFactor[2] * kVmBright,
+                dr.baseColorFactor[3],
+            };
+            device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                            x3::rhi::TextureHandle{ dr.baseColorTexId },
+                            litColor, fin);
+        }
     }
 
     // ---- W2-C FIRST-PERSON ARMS --------------------------------------------

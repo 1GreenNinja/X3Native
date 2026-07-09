@@ -236,6 +236,13 @@ struct WeaponDef {
     float       vmRight      = kVmDefRight;
     float       vmDown       = kVmDefDown;
     float       vmScale      = 0.18f;   // model scale for the held viewmodel
+    // Viewmodel render mode (14900K weapon-textures rework, ported). The legacy
+    // path multiplies the diffuse by a big HDR boost to fight dark interiors —
+    // which crushes a detailed gunmetal diffuse into a black/white "dazzle".
+    // When true the viewmodel drops its (broken) diffuse and draws a fixed dark
+    // gunmetal factor instead. Default false = the weapon's real restored
+    // per-weapon texture at the corrected modest lift (kVmBright 1.4).
+    bool        vmLitPBR     = false;
     // FX preset hints (string keys the host maps onto CombatFx muzzle/impact). Kept
     // as data so designers can retune which preset a weapon uses; the host reads them.
     // The host maps these onto a WeaponFxKind (see app/fx.h fxKindFromId) so each gun
