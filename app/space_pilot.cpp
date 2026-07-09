@@ -220,6 +220,24 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // Drag: dv/dt = -drag * v.
     const float dragK = std::min(1.0f, m_tuning.linearDrag * dt);
     for (int k = 0; k < 3; ++k) m_vel[k] -= m_vel[k] * dragK;
+    // Nose-follow (arcade steering, Tuning.noseFollow rad-equivalent per sec;
+    // 0 = off, pure Newtonian — every existing caller unchanged). Swings the
+    // VELOCITY DIRECTION toward the ship's facing while preserving speed, so
+    // the ship goes where the nose points. Without it, turning while the old
+    // velocity persists makes the starfield stream off-nose — which players
+    // read as "the mouse axes are wrong" (owner playtest, intro dogfight).
+    if (m_tuning.noseFollow > 0.0f) {
+        const float spd0 = length3(m_vel);
+        if (spd0 > 1e-3f) {
+            const float k2 = 1.0f - std::exp(-m_tuning.noseFollow * dt);
+            float nv[3];
+            for (int k = 0; k < 3; ++k)
+                nv[k] = m_vel[k] / spd0 + (fwdW[k] - m_vel[k] / spd0) * k2;
+            const float nl = length3(nv);
+            if (nl > 1e-4f)
+                for (int k = 0; k < 3; ++k) m_vel[k] = nv[k] / nl * spd0;
+        }
+    }
 
     // Speed cap (hard clamp on |v|).
     const float spd = length3(m_vel);

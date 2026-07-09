@@ -246,6 +246,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     tun.maxStrafeAccel = 38.0f;   // was 12 — real dodge authority (A/D + Space/Ctrl)
     tun.boostMul       = 3.0f;    // shift = afterburner
     tun.maxSpeed       = 260.0f;
+    tun.noseFollow     = 2.8f;    // arcade steering: the ship GOES where the nose
+                                  // points (Newtonian drift read as "axes wrong")
+    // FIRST person: the beats render from inside the cockpit rig. The default
+    // 3P chase cam swings on a 12 m arm rotated by the ship's FULL quaternion
+    // (roll included) while setCamera() is roll-less Euler — the mismatch reads
+    // as "mouse is off axis" (owner playtest). 1P puts the eye at the ship.
+    tun.defaultThirdPerson = false;
     pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
 
     x3::space::EnemyShipManager enemies;
@@ -288,6 +295,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         glfwGetCursorPos(hc.window, &lastMX, &lastMY);
     }
+    // Re-apply the deep-space look EVERY beat: the one-time set at intro start
+    // was getting undone before the first interactive window (live evidence:
+    // the canopy background was the raw 0.04/0.05/0.08 HDR clear — the sky
+    // pass was OFF, no starfield). Something on the cinematic-beat path resets
+    // sky state; per-beat reapply defeats it and is idempotent (setSkyParams
+    // only flags an IBL rebake when the params actually change).
+    if (live && cockpit) x3::apphost::setIntroCockpitLook(*hc.device);
 
     for (int step = 0; step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
@@ -438,6 +452,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                           cz + fwz * 2.0f }, { fwx, fwy, fwz });
             }
             if (fxOn) fxPtr->update(dt);
+            // DEV evidence capture: X3_INTRO_CAPTURE=<dir> dumps the presented
+            // frame once per interactive beat (step 180 ~= 3 s in) — the tool that
+            // root-caused the milky-canopy bug. Off (empty env) in normal play.
+            static const char* evDir = std::getenv("X3_INTRO_CAPTURE");
+            const bool evShot = evDir && *evDir && (step == 180);
+            if (evShot)
+                hc.device->armCapture((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
             auto frame = hc.device->beginFrame();
             if (frame.valid && cockpit) {
                 cockpit->scene.render(*hc.device, frame);
@@ -472,8 +493,67 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                                 "LOCK", 24.0f, 48.0f, 20.0f, redHud);
                     }
                 }
+                // ---- Target indicators (owner playtest: "can't find the enemy
+                // ship"): a bracket over every on-screen hostile, an edge arrow
+                // toward off-screen ones. Manual perspective projection from the
+                // camera basis (fovY matches the setCamera(65) above). ----
+                {
+                    int winW = 0, winH = 0;
+                    glfwGetWindowSize(hc.window, &winW, &winH);
+                    if (winW > 0 && winH > 0) {
+                        const float tanHalfY = std::tan(65.0f * 0.5f * 3.14159265f / 180.0f);
+                        const float tanHalfX = tanHalfY * (float)winW / (float)winH;
+                        const float fh2 = std::cos(cpit);
+                        const float fw[3] = { fh2 * std::cos(cyaw), std::sin(cpit),
+                                              fh2 * std::sin(cyaw) };
+                        const float rt[3] = { -std::sin(cyaw), 0.0f, std::cos(cyaw) };
+                        const float up[3] = { fw[1]*rt[2] - fw[2]*rt[1],
+                                              fw[2]*rt[0] - fw[0]*rt[2],
+                                              fw[0]*rt[1] - fw[1]*rt[0] };
+                        auto marker = [&](const float p[3], const char* onScr,
+                                          const float col[4], float px) {
+                            const float d[3] = { p[0]-cx, p[1]-cy, p[2]-cz };
+                            const float zf = d[0]*fw[0] + d[1]*fw[1] + d[2]*fw[2];
+                            const float xr = d[0]*rt[0] + d[1]*rt[1] + d[2]*rt[2];
+                            const float yu = d[0]*up[0] + d[1]*up[1] + d[2]*up[2];
+                            if (zf > 1.0f) {
+                                const float nx = (xr / zf) / tanHalfX;    // -1..1
+                                const float ny = (yu / zf) / tanHalfY;
+                                if (nx > -1.f && nx < 1.f && ny > -1.f && ny < 1.f) {
+                                    hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono,
+                                        onScr, (nx*0.5f + 0.5f) * winW - px * 0.9f,
+                                        (0.5f - ny*0.5f) * winH - px * 0.5f, px, col);
+                                    return;
+                                }
+                            }
+                            // Off-screen: clamp the bearing to the screen edge.
+                            float ex = xr, ey = yu;
+                            if (zf > 0.0f) { ex = xr / std::max(zf, 1.0f); ey = yu / std::max(zf, 1.0f); }
+                            const float m = std::max(std::fabs(ex), std::fabs(ey));
+                            if (m < 1e-4f) return;
+                            ex /= m; ey /= m;      // unit square edge
+                            const char* arrow = (std::fabs(ex) > std::fabs(ey))
+                                                ? (ex > 0 ? ">" : "<")
+                                                : (ey > 0 ? "^" : "v");
+                            const float sx2 = (ex * 0.92f * 0.5f + 0.5f) * winW;
+                            const float sy2 = (0.5f - ey * 0.88f * 0.5f) * winH;
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                                    arrow, sx2, sy2, px * 1.2f, col);
+                        };
+                        const float redM[4]   = { 1.0f, 0.30f, 0.22f, 0.95f };
+                        const float amberM[4] = { 1.0f, 0.72f, 0.20f, 0.95f };
+                        for (uint32_t i = 0; i < enemies.count(); ++i) {
+                            const auto& e = enemies.ship(i);
+                            if (e.hull <= 0) continue;
+                            marker(e.pos, "[ ]", redM, 26.0f);
+                        }
+                        marker(capPos, "[CAP]", amberM, 22.0f);
+                    }
+                }
             }
             hc.device->endFrame(frame);
+            if (evShot)
+                hc.device->captureFrame((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
         }
 
         // ---- Exit conditions: all enemies down + ship crippled, or pilot dead. ----
