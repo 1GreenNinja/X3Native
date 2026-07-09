@@ -137,14 +137,24 @@ is that **the ride itself is content** — every second between floors is author
   the LED tracks floors mid-flight with a speed bar, blinking terminal cursor, 4 steel
   cables rising 300 m above the car.
 
-**C++ status vs the bar**: 288ce2a landed doors/ding/motor-loop/keypad/buzz/status-UX ✅, the
-four cue WAVs are committed ✅, `e4c9686` (THE CABIN EXPERIENCE) landed **muzak, cable creaks,
-and horror events** ✅, and the R-3 fold put **real strata out the glass** (the elevator
-descends the 9 layers to Club 1127) ✅. **Still unverified/likely missing** (re-audit against
-`x3-elevator.js` before claiming done): disco mode + code-1127 Club unlock + disco-slow, the
-twin OLED telemetry pair, per-digit click pitch, layered door SFX (hiss+slide+thunk),
-floor-pass dings while cruising, freefall state usage. The target is not parity with the JS,
-it is the JS **plus** real geology out the window.
+**C++ status vs the bar** (full line-by-line audit vs the 1,806-line JS ran 2026-07-08,
+session 392f6e4d): 288ce2a doors/ding/motor-loop/keypad/buzz/status-UX ✅ · e4c9686 muzak +
+cable creaks + horror events ✅ · R-3 real strata out the glass ✅ (exceeds the JS canvas) ·
+disco toggle/slow/descend-to-−200 + per-digit key pitch + floor-pass dings ✅ (WAV-rate
+adaptations; no synth path exists in the audio engine — offline `tools/gen_elevator_audio.py`
+bakes are the pattern) · f49d209 TWIN OLED TELEMETRY ✅ · 29e2ef7 layered door SFX + the
+cable-slip Freefall set-piece ✅.
+
+**REMAINING GAPS (audit-verified) — 🔒 CLAIMED 2026-07-08 by 392f6e4d (I9DevPC):**
+1. **Disco is SILENT + strobe-less**: no 128-BPM club track asset (bake via
+   gen_elevator_audio.py, start/stop on the 1127 toggle like the muzak loop), no strobe
+   flash in `applyDiscoCue`, terminal/LED don't flip magenta.
+2. **The 1127 ride ends NOWHERE**: `Club1127World::build` is never called from the game
+   path — the disco descent lands at the strata-shaft bottom (−200), not inside the built
+   club. Wire the club room at the shaft bottom so the unlock pays off.
+3. **4 steel shaft cables** above the car (decor, elevmesh cylinders).
+4. **Rider craft**: proximity auto-open on approach to an idle car; `host_elevator.cpp:141`
+   digit capture is STUBBED (the on-screen "type 1-1-2-7" hint is a lie there).
 
 ## 5. COMMS
 - **This doc** = decisions. Amend it in-commit. (Single line now — no mirroring needed.)
