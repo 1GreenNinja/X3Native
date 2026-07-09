@@ -5059,6 +5059,8 @@ int runDefaultHost(HostContext& hc) {
                             physics->setBodyPosition(player.body(), pf);
                         }
                     }
+                    // Rider craft: an idle sealed car opens for an approaching player.
+                    elevator.autoOpenFor(physics->getBodyPosition(player.body()));
                 }
                 // R-3 fold: breathe the Crystal/Magma/Alien glow + flicker the magma
                 // mood lights of the strata shaft the cab rides through (cab-biased).

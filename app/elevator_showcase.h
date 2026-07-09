@@ -76,6 +76,8 @@ public:
     void callNext() { m_elev.callNext(); }
     // Push a keypad digit (1-1-2-7 = DISCO + descend to Club 1127).
     bool keypadDigit(int d) { return m_elev.keypadDigit(d); }
+    // Rider craft: proximity auto-open (idle cab + sealed doors + feet nearby).
+    void autoOpenFor(const x3::phys::Vec3& f) { m_elev.autoOpenFor(f); }
     // Drive straight to the Club 1127 stop (the "CLUB 1127" holo button).
     void callClub();
 

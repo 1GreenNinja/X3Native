@@ -698,6 +698,18 @@ void ElevatorSystem::updateMotorAudio(float dt) {
     }
 }
 
+void ElevatorSystem::autoOpenFor(const x3::phys::Vec3& feet) {
+    if (!m_fsm || m_state != ElevState::Idle || m_doorPct > 0.05f) return;
+    const float dx = feet.x - m_pos.x, dz = feet.z - m_pos.z;
+    const float dy = feet.y - (m_pos.y + m_halfY);
+    // ~3.5 m approach ring, at (or a step below/above) the cab's floor level.
+    if (dx * dx + dz * dz < 12.25f && dy > -1.5f && dy < 2.5f) {
+        m_state = ElevState::DoorsOpening;   // the entry edge plays the door cue
+        m_stateTime = 0.0f;
+        x3::logInfo("[elevator] proximity: doors auto-open for the approaching rider");
+    }
+}
+
 // ===========================================================================
 // KEYPAD — terminal code entry. "1127" = DISCO toggle (+ descend to the club).
 // ===========================================================================
@@ -1243,6 +1255,34 @@ bool runElevatorFsmSelfTest() {
         }
         fcheck(!secondFall, "F9b the slip is once-only (second descent rides clean)");
         p9->shutdown();
+    }
+
+    // ---- F10: rider craft — an idle SEALED car auto-opens for NEAR feet only.
+    // (Doors are closed at Idle after a manual emergency stop mid-shaft.)
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> p10(x3::phys::createPhysicsWorld());
+        p10->init();
+        Scene s10;
+        ElevatorSystem e10;
+        e10.build(s10, device, *p10, 0.0f, 0.0f, 1.4f, cabHY, 1.4f,
+                  std::vector<float>{ groundY, topY }, 0);
+        e10.enableFsm(true);
+        e10.callTo(1);
+        for (int i = 0; i < 60 * 3 && e10.state() != ElevState::Cruising; ++i) e10.update(kDt, s10, *p10);
+        e10.emergencyStop();                    // halts mid-shaft, doors still sealed
+        for (int i = 0; i < 60 * 5 && e10.state() != ElevState::Idle; ++i) e10.update(kDt, s10, *p10);
+        const bool sealedIdle = (e10.state() == ElevState::Idle) && (e10.doorPct() < 0.05f);
+        const x3::phys::Vec3 feetFar{ e10.cabCenter().x + 30.0f,
+                                      e10.cabCenter().y + cabHY, e10.cabCenter().z };
+        e10.autoOpenFor(feetFar);
+        const bool stayedShut = (e10.state() == ElevState::Idle);
+        const x3::phys::Vec3 feetNear{ e10.cabCenter().x + 2.0f,
+                                       e10.cabCenter().y + cabHY, e10.cabCenter().z };
+        e10.autoOpenFor(feetNear);
+        const bool opening = (e10.state() == ElevState::DoorsOpening);
+        fcheck(sealedIdle && stayedShut && opening,
+               "F10 rider craft: idle sealed car auto-opens only for NEAR feet");
+        p10->shutdown();
     }
 
     x3::logInfo("elevatorfsm: " + std::to_string(s_pass) + "/" +

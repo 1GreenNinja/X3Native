@@ -122,8 +122,9 @@ int hostElevator(HostContext& hc) {
         bool prevSpaceE = false, prevFE = false;
         bool prevDigit[10] = {false};
         bool prevClubKey = false;
-        x3::logInfo("--world elevator: ride THE CORE LIFT — WASD + mouse, [1..7] select a floor, "
-                    "type 1-1-2-7 for the DISCO descent to CLUB 1127, C = club, Space jump, Esc quit");
+        x3::logInfo("--world elevator: ride THE CORE LIFT — WASD + mouse, [1..7] at a landing = floor "
+                    "select, type 1-1-2-7 WHILE RIDING (or numpad anywhere) for the DISCO descent to "
+                    "CLUB 1127, C = club, Space jump, Esc quit");
         int lastWe = (int)W, lastHe = (int)H;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -136,18 +137,27 @@ int hostElevator(HostContext& hc) {
             lastMX = mx; lastMY = my;
             auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
 
-            // Floor-select number keys 1..7 -> callTo (stop index, clamped).
-            for (int n = 1; n <= 7; ++n) {
-                bool now1 = kd(GLFW_KEY_0 + n);
+            // Rider craft (JS checkRider parity): digit keys are CAPTURED BY THE
+            // KEYPAD while riding (so typing 1-1-2-7 enters the disco code instead
+            // of calling floors 1/1/2/7); standing at a landing they stay floor
+            // calls. Numpad digits always feed the keypad (both contexts).
+            const bool riding = show.playerRiding(eplayer.feet());
+            for (int n = 0; n <= 9; ++n) {
+                bool now1 = kd(GLFW_KEY_0 + n) || kd(GLFW_KEY_KP_0 + n);
                 if (now1 && !prevDigit[n]) {
-                    int stop = std::min(n - 1, show.stopCount() - 1);
-                    show.callTo(stop);
-                    x3::logInfo("[elevator] floor button " + std::to_string(n) + " -> stop " + std::to_string(stop));
+                    if (riding || kd(GLFW_KEY_KP_0 + n)) {
+                        show.keypadDigit(n);   // per-digit pitched click; 1127 = disco
+                    } else if (n >= 1 && n <= 7) {
+                        int stop = std::min(n - 1, show.stopCount() - 1);
+                        show.callTo(stop);
+                        x3::logInfo("[elevator] floor button " + std::to_string(n) +
+                                    " -> stop " + std::to_string(stop));
+                    }
                 }
                 prevDigit[n] = now1;
             }
-            // Keypad digit capture for the 1127 disco code (top-row 1/2/7).
-            { bool d1 = kd(GLFW_KEY_KP_1) || false; (void)d1; }
+            // Walking up to an idle sealed car opens the doors — no button press.
+            show.autoOpenFor(eplayer.feet());
             // 'C' -> straight to the club.
             bool cNow = kd(GLFW_KEY_C);
             if (cNow && !prevClubKey) { show.callClub(); x3::logInfo("[elevator] C -> CLUB 1127"); }

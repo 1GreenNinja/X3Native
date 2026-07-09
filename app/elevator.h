@@ -118,6 +118,11 @@ public:
     // True if `feet` (player capsule reference point) is on the cab: XZ within the
     // footprint (+margin) and Y near the cab top. Generous window for ride detection.
     bool playerRiding(const x3::phys::Vec3& feet) const;
+    // JS checkRider parity (rider craft): walking up to an IDLE car whose doors
+    // are SEALED opens them — no button press. Host feeds the player feet each
+    // frame; no-op unless the FSM is on, the cab is parked, the doors are closed,
+    // and the feet stand near the cab at its floor level.
+    void autoOpenFor(const x3::phys::Vec3& feet);
 
     // Advance the cab toward its target; returns the cab's vertical delta this frame
     // (0 when idle). The host adds this to every rider's Y to carry them.

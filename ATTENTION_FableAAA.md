@@ -145,16 +145,23 @@ adaptations; no synth path exists in the audio engine — offline `tools/gen_ele
 bakes are the pattern) · f49d209 TWIN OLED TELEMETRY ✅ · 29e2ef7 layered door SFX + the
 cable-slip Freefall set-piece ✅.
 
-**REMAINING GAPS (audit-verified) — 🔒 CLAIMED 2026-07-08 by 392f6e4d (I9DevPC):**
-1. **Disco is SILENT + strobe-less**: no 128-BPM club track asset (bake via
-   gen_elevator_audio.py, start/stop on the 1127 toggle like the muzak loop), no strobe
-   flash in `applyDiscoCue`, terminal/LED don't flip magenta.
-2. **The 1127 ride ends NOWHERE**: `Club1127World::build` is never called from the game
-   path — the disco descent lands at the strata-shaft bottom (−200), not inside the built
-   club. Wire the club room at the shaft bottom so the unlock pays off.
-3. **4 steel shaft cables** above the car (decor, elevmesh cylinders).
-4. **Rider craft**: proximity auto-open on approach to an idle car; `host_elevator.cpp:141`
-   digit capture is STUBBED (the on-screen "type 1-1-2-7" hint is a lie there).
+**AUDIT GAPS — ✅ ALL CLOSED 2026-07-08/09 (392f6e4d, I9DevPC):**
+1. ✅ Disco is LOUD (`131dc05`): baked 128-BPM club track rides the 1127 toggle (muzak
+   yields), 4 Hz strobe in `applyDiscoCue`, magenta terminal/LED flip (+ fixed the
+   stuck-purple ceiling after disco-off).
+2. ✅ THE RIDE ENDS SOMEWHERE (`b58e43f`): Club1127World lazy-builds on the accepted
+   1127 code, ticks/draws in the game world, owns the light budget at The Deep, and the
+   rider steps out at club.spawn() when the doors open at −200. Proof:
+   `shots/r12_club_deep.png` (live in-game capture inside the club).
+3. ✅ 4 steel shaft cables ride the cab roof (`131dc05`).
+4. ✅ Rider craft: `autoOpenFor()` — an idle sealed car opens for near feet (wired in the
+   game loop + the walkable host; FSM test F10 guards it); the walkable host's digit
+   capture is UN-stubbed — digits feed the KEYPAD while riding (1127 works), floor calls
+   only from a landing, numpad = keypad anywhere.
+
+**The elevator bar vs `x3-elevator.js` is CLOSED — and it exceeds the JS**: real strata
+geology out the glass, a real club at the bottom, and a cable-slip set-piece the
+reference never had. Ride it: `--world level1`, code 1127 at the cab terminal.
 
 ## 5. COMMS
 - **This doc** = decisions. Amend it in-commit. (Single line now — no mirroring needed.)
