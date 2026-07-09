@@ -55,6 +55,7 @@ struct ElevatorSounds {
     x3::audio::SoundHandle muzak;      // looped cabin muzak (rides doors-close -> arrival)
     x3::audio::SoundHandle creak;      // random cable groan while the cab travels
     x3::audio::SoundHandle doorThunk;  // panels SEAT at end of travel (fires on the exact frame)
+    x3::audio::SoundHandle clubTrack;  // looped 128 BPM disco track (rides the 1127 toggle)
 };
 
 // ---------------------------------------------------------------------------
@@ -276,6 +277,7 @@ private:
     x3::rhi::TextureHandle  m_oledTexL{}, m_oledTexR{}, m_oledMr{};
     float                   m_oledTimer = 999.0f;   // first update bakes immediately
     uint32_t m_eDiscoBall = kNoLink, m_eCeil = kNoLink;
+    uint32_t m_eCable[4] = { kNoLink, kNoLink, kNoLink, kNoLink };  // steel shaft cables above the car
     // Twin sliding door panels (front +X wall) that part along Z with m_doorPct, an
     // indicator strip above the doors that tints by state, and a floor numeral plate.
     uint32_t m_eDoorL = kNoLink, m_eDoorR = kNoLink, m_eIndicator = kNoLink;
@@ -288,6 +290,7 @@ private:
     // jittered timer while travelling; HORROR events roll on arrival (8 %, or
     // always on the SUB stop) — a light-flicker+creak or a brief emergency stop.
     x3::audio::LoopHandle m_muzakLoop{};      // live muzak voice (0 == none)
+    x3::audio::LoopHandle m_clubLoop{};       // live 128 BPM disco voice (0 == none)
     float    m_creakTimer  = 4.0f;            // seconds to the next cable groan
     float    m_flickerT    = 0.0f;            // >0: interior light is dipped (horror)
     float    m_lightSaveR  = 0.0f, m_lightSaveG = 0.0f, m_lightSaveB = 0.0f;

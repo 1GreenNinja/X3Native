@@ -12,6 +12,8 @@
 #include "../elevator_showcase.h"
 #include "../player.h"
 
+#include <cstdlib>   // getenv (X3_ELEV_DISCO shot hook)
+
 namespace x3 { namespace apphost {
 
 int hostElevator(HostContext& hc) {
@@ -71,7 +73,13 @@ int hostElevator(HostContext& hc) {
                 shots = { {0, screenshot ? "" : ""} };   // single --screenshot
             }
             // Drive the lift partway down so the strata shot has rock layers below.
-            show.callClub();
+            // X3_ELEV_DISCO=1: enter the 1127 code instead, so the beauty set proves
+            // the DISCO cue (ball glow, strobe, magenta terminal/LED, club descent).
+            if (std::getenv("X3_ELEV_DISCO")) {
+                show.keypadDigit(1); show.keypadDigit(1); show.keypadDigit(2); show.keypadDigit(7);
+            } else {
+                show.callClub();
+            }
             for (int i = 0; i < 90; ++i) {
                 show.update(dt, escene, *device, *ephys);
                 const auto& l = show.pointLights(); device->setPointLights(l.data(), (uint32_t)l.size());

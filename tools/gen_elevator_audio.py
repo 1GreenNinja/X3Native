@@ -149,3 +149,59 @@ for i in range(n):
     click = math.exp(-400.0 * t) * 0.4
     buf[i] = sq * env + click * (1 if i % 7 else -1)
 write_wav('assets/audio/interact/door_thunk.wav', buf)
+
+
+# ---- DISCO CLUB TRACK (startDiscoMusic port): the 128 BPM four-on-the-floor
+# kick / hat / off-beat hat / Cm7 stab sequencer, baked as a seamless 2-bar
+# (8-beat, 3.75 s) loop. Start/stop rides the 1127 disco toggle exactly like
+# the muzak loop rides the door seal. ----
+CLUB_BPM = 128.0
+CB = 60.0 / CLUB_BPM                                  # one beat, 0.46875 s
+club_dur = 8 * CB                                     # 2 bars
+n3 = int(club_dur * SR)
+buf3 = [0.0] * n3
+random.seed(128)
+
+def add_kick(at):
+    s0 = int(at * SR)
+    for i in range(int(0.24 * SR)):
+        t = i / SR
+        f = 150.0 * math.exp(-9.0 * t) + 48.0        # pitch drop 150 -> ~50 Hz
+        v = math.sin(2 * math.pi * f * t) * math.exp(-7.0 * t)
+        j = s0 + i
+        buf3[j % n3] += v * 0.50                      # wrap: seam-free loop
+
+def add_hat(at, vol):
+    s0 = int(at * SR)
+    hp = 0.0
+    for i in range(int(0.06 * SR)):
+        noise = random.random() * 2 - 1
+        hp += (noise - hp) * 0.55                     # crude ~8 kHz highpass
+        v = (noise - hp) * math.exp(-60.0 * (i / SR))
+        j = s0 + i
+        buf3[j % n3] += v * vol
+
+def add_stab(at):
+    # Cm7: C3 / Eb3 / G3 / Bb3 saws, tight envelope (the JS stab voicing).
+    s0 = int(at * SR)
+    for f in (130.81, 155.56, 196.00, 233.08):
+        phase = 0.0
+        for i in range(int(0.22 * SR)):
+            t = i / SR
+            phase += f / SR
+            saw = 2.0 * (phase - math.floor(phase + 0.5))
+            env = min(1.0, t / 0.01) * math.exp(-11.0 * t)
+            j = s0 + i
+            buf3[j % n3] += saw * env * 0.055
+
+for b in range(8):
+    add_kick(b * CB)                                  # four-on-the-floor
+    add_hat(b * CB, 0.10)                             # on-beat hat (soft)
+    add_hat((b + 0.5) * CB, 0.22)                     # OFF-beat hat (the drive)
+for at in (1.5, 3.5, 5.5, 7.75):                      # stabs on the and-of-2/4 + a pickup
+    add_stab(at * CB)
+
+peak = max(abs(s) for s in buf3)
+if peak > 0.95:
+    buf3 = [s * (0.95 / peak) for s in buf3]
+write_wav('assets/audio/interact/club_track.wav', buf3)

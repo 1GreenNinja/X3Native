@@ -653,9 +653,16 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
     }
 
     // Disco light/strata/glass cue (animates the registered point lights + the
-    // strata/disco-ball emissive). m_discoTime advances only in disco mode.
+    // strata/disco-ball emissive). m_discoTime advances only in disco mode. When
+    // disco is OFF the ceiling fill is re-asserted every frame (the cue dims it
+    // purple / strobes it white, and nothing else would put it back) — unless a
+    // horror flicker or the cable slip currently owns the light (m_flickerT).
     const float t = m_discoTime;
-    if (m_disco) { m_discoTime += dt; applyDiscoCue(dt, t); }
+    if (m_disco) {
+        m_discoTime += dt; applyDiscoCue(dt, t);
+    } else if (!m_lights.empty() && m_flickerT <= 0.0f) {
+        m_lights[0].color[0] = 0.60f; m_lights[0].color[1] = 0.73f; m_lights[0].color[2] = 0.87f;
+    }
 
     syncBodyAndTransform(scene, physics);
     layoutVisuals(scene);
@@ -708,6 +715,11 @@ bool ElevatorSystem::keypadDigit(int digit) {
             if (m_disco) {
                 m_discoTime = 0.0f;
                 playOneShot(m_snd.ding, 1.0f, 1.25f);   // bright "access granted" chime
+                // THE PARTY HAS A SOUNDTRACK (JS startDiscoMusic): the baked 128 BPM
+                // kick/hat/stab loop takes over — the muzak yields for the duration.
+                if (m_muzakLoop.valid()) { m_audio->stopLoop(m_muzakLoop); m_muzakLoop = {}; }
+                if (m_audio && m_snd.clubTrack.valid() && !m_clubLoop.valid())
+                    m_clubLoop = m_audio->startLoop(m_snd.clubTrack, 0.85f, 1.0f);
                 x3::logInfo("[elevator] DISCO MODE activated — code 1127 accepted; "
                             "descending to Club 1127 at Y=" + std::to_string(m_clubStopY));
                 // Descend to the Club 1127 stop. Make sure the club stop is among
@@ -728,6 +740,7 @@ bool ElevatorSystem::keypadDigit(int digit) {
             } else {
                 m_disco = false;
                 m_discoSlow = false;
+                if (m_clubLoop.valid()) { m_audio->stopLoop(m_clubLoop); m_clubLoop = {}; }
                 x3::logInfo("[elevator] DISCO MODE off");
             }
             return ok;
@@ -811,6 +824,13 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
       const float em[4] = {0.40f, 0.60f, 0.80f, 1.0f};
       m_eCeil = addKit(scene, device, carW*0.30f, 0.03f, 0.15f, c, em); }
 
+    // FOUR STEEL CABLES rising from the car roof up the shaft (the JS builds 300 m
+    // of them; 120 m reads identically from inside and keeps the graybox cheap).
+    // Thin dark columns at the roof corners; they ride the cab in layoutVisuals().
+    { const float c[4] = {0.16f, 0.17f, 0.19f, 1.0f};
+      for (int i = 0; i < 4; ++i)
+          m_eCable[i] = addKit(scene, device, 0.03f, 60.0f, 0.03f, c, noEm); }
+
     // Twin sliding DOOR panels on the front (+X) wall — two tall brushed-metal
     // slabs that part along Z as m_doorPct rises. Half-width per panel = a quarter
     // of the car so the pair closes flush at the center. A faint emissive seam reads
@@ -875,6 +895,12 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
     place(m_eTerm,       carW * 0.5f - 0.18f,   -0.30f,          carD * 0.25f);
     place(m_eDiscoBall,  0.0f,                   carH * 0.5f - 0.5f, 0.0f);
     place(m_eCeil,       0.0f,                   carH * 0.5f - 0.1f, 0.0f);
+    // Shaft cables: from the roof corners, 60 m half-height columns rising up.
+    for (int ci = 0; ci < 4; ++ci) {
+        const float sx = (ci & 1) ? 1.0f : -1.0f;
+        const float sz = (ci & 2) ? 1.0f : -1.0f;
+        place(m_eCable[ci], sx * carW * 0.30f, carH * 0.5f + 60.0f, sz * carD * 0.30f);
+    }
 
     // Sliding doors on the +X wall: closed (doorPct=0) the two panels meet at z=0;
     // open (doorPct=1) they retract to +/- a quarter-depth. Each panel is a quarter
@@ -888,14 +914,23 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
     }
     // Indicator strip above the doors.
     place(m_eIndicator, carW * 0.5f - 0.04f, carH * 0.42f, 0.0f);
-    // Tint the indicator: green when doors fully open, amber while moving/closing.
+    // Tint the indicator: green when doors fully open, amber while moving/closing —
+    // and MAGENTA whenever disco is live (the JS flips indicator + terminal).
     if (m_eIndicator != kNoLink && m_eIndicator < scene.size()) {
         Entity& e = scene.get(m_eIndicator);
         const bool open = (m_state == ElevState::DoorsOpen) || (m_doorPct > 0.95f &&
                           m_state == ElevState::Idle);
-        if (open) { e.emissive[0] = 0.0f; e.emissive[1] = 0.9f; e.emissive[2] = 0.3f; }
-        else      { e.emissive[0] = 1.0f; e.emissive[1] = 0.55f; e.emissive[2] = 0.0f; }
+        if (m_disco)   { e.emissive[0] = 1.0f; e.emissive[1] = 0.10f; e.emissive[2] = 0.85f; }
+        else if (open) { e.emissive[0] = 0.0f; e.emissive[1] = 0.9f;  e.emissive[2] = 0.3f; }
+        else           { e.emissive[0] = 1.0f; e.emissive[1] = 0.55f; e.emissive[2] = 0.0f; }
         e.emissive[3] = 1.4f;
+    }
+    // Terminal glow: cool blue normally, MAGENTA while disco is live (JS parity).
+    if (m_eTerm != kNoLink && m_eTerm < scene.size()) {
+        Entity& e = scene.get(m_eTerm);
+        if (m_disco) { e.emissive[0] = 0.90f; e.emissive[1] = 0.08f; e.emissive[2] = 0.75f; }
+        else         { e.emissive[0] = 0.0f;  e.emissive[1] = 0.30f; e.emissive[2] = 0.90f; }
+        e.emissive[3] = 1.0f;
     }
 
     // Position the point lights at the cab interior (ceiling), spots ringed.
@@ -939,10 +974,17 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
 void ElevatorSystem::applyDiscoCue(float /*dt*/, float t) {
     if (!m_visualsBuilt) return;
     // Disco-ball emissive + the spinning, pulsing colored spots (the disco cue).
-    // The ceiling light dims to a dim purple while the 4 spots cycle hue/intensity.
+    // The ceiling light dims to a dim purple while the 4 spots cycle hue/intensity,
+    // and a 4 Hz STROBE (JS DISCO_STROBE_HZ) snaps the ceiling to hard white on a
+    // short duty cycle — the flash IS the ceiling light, so no extra host wiring.
     // (The disco-ball entity emissive is driven in layoutVisuals() from m_disco.)
     if (!m_lights.empty()) {
-        m_lights[0].color[0] = 0.20f; m_lights[0].color[1] = 0.05f; m_lights[0].color[2] = 0.40f;
+        const bool strobeOn = std::fmod(t * 4.0f, 1.0f) < 0.12f;
+        if (strobeOn) {
+            m_lights[0].color[0] = 2.6f; m_lights[0].color[1] = 2.6f; m_lights[0].color[2] = 2.8f;
+        } else {
+            m_lights[0].color[0] = 0.20f; m_lights[0].color[1] = 0.05f; m_lights[0].color[2] = 0.40f;
+        }
         const float baseSpot[4][3] = {
             {1.0f, 0.2f, 0.4f}, {0.2f, 0.4f, 1.0f}, {0.2f, 1.0f, 0.4f}, {1.0f, 0.8f, 0.2f}
         };

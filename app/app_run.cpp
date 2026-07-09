@@ -1616,6 +1616,9 @@ int runDefaultHost(HostContext& hc) {
               if (hOpen.valid())  es.doorOpen  = hOpen;
               if (hClose.valid()) es.doorClose = hClose; }
             es.doorThunk = audio->load(x3::game::resolveAudio("interact/door_thunk.wav"));
+            // DISCO SOUNDTRACK: the baked 128 BPM kick/hat/Cm7-stab loop that rides
+            // the 1127 toggle (gen_elevator_audio.py) — the disco is no longer silent.
+            es.clubTrack = audio->load(x3::game::resolveAudio("interact/club_track.wav"));
             elevator.setSounds(es);
             elevator.armCableSlip();   // the one-shot freefall scare (never in disco)
         }
@@ -1630,6 +1633,13 @@ int runDefaultHost(HostContext& hc) {
             elevator.setFloorLabels(labels);
         }
         elevator.buildVisuals(scene, *device);
+        // X3_ELEV_DISCO=1 (+ --screenshot): pre-enter the 1127 code so a headless
+        // capture proves the core cab's disco cue (ball, strobe, magenta term/LED,
+        // club track) — same hook the showcase host carries.
+        if (hc.screenshot && std::getenv("X3_ELEV_DISCO")) {
+            elevator.keypadDigit(1); elevator.keypadDigit(1);
+            elevator.keypadDigit(2); elevator.keypadDigit(7);
+        }
         // R-3 fold: build THE DESCENT around the live elevator column (same XZ), so
         // riding the 1127 descent shows real geology out the glass. Reuses the strata
         // module's build path (identical to --world strata; NOT a duplicate).
