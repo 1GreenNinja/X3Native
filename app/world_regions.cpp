@@ -11,6 +11,7 @@
 
 #include "engine/core/x3_log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -131,10 +132,86 @@ void WorldRegions::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys:
         p.propCount = (uint32_t)m_props.size() - propsBefore;
     }
 
+    // ==== W9 (TERRAIN DRAMA) — THE RIVER's water surface. ====
+    // One mitred ribbon mesh following the authored river spline exported by
+    // terrain.h (worldRiverNodes — the SAME table the height-field carve uses,
+    // so the water always lies inside its own channel: the terrain layer holds
+    // the bed at waterY-3.2 and the bank crests at >= waterY+2.2). The ribbon
+    // is 68 m wide (kWorldRiverHalfWidth*2) — the banks cross the water level
+    // between ~+/-27 m (full-crest reaches) and ~+/-34 m (the beach reach with
+    // its floodplain shelf), so the ribbon edges land ON or just inside the
+    // banks (no floating edges; the shallow bank slopes cut the plane at a
+    // clean waterline).
+    // Water Y slopes node-to-node (a real downhill gradient, 0.3-3%), ending at
+    // the sea surface (-9.9 vs the ocean plane's -10, 0.1 m proud where they
+    // overlap). Rendered like the ocean plane, as a translucent water-tinted
+    // surface — routed through the existing GLASS pass (transparent=true) so it
+    // picks up real alpha blend + specular shimmer; same water tint as the
+    // ocean slab (ocean_base.cpp). NO collision — the carved bed underneath is
+    // the walkable/wadable surface (v1: wading, no swimming).
+    {
+        uint32_t nNodes = 0;
+        const WorldRiverNode* rn = worldRiverNodes(nNodes);
+        if (nNodes >= 2) {
+            std::vector<x3::rhi::MeshVertex> verts;
+            std::vector<uint32_t> idx;
+            verts.reserve(nNodes * 2);
+            idx.reserve((nNodes - 1) * 6);
+            float arc = 0.0f;
+            for (uint32_t i = 0; i < nNodes; ++i) {
+                // Mitre direction: average of the adjacent segment directions.
+                const uint32_t iPrev = (i == 0) ? 0 : i - 1;
+                const uint32_t iNext = (i + 1 < nNodes) ? i + 1 : i;
+                float dx = rn[iNext].x - rn[iPrev].x;
+                float dz = rn[iNext].z - rn[iPrev].z;
+                const float len = std::sqrt(dx * dx + dz * dz);
+                if (len > 1e-4f) { dx /= len; dz /= len; }
+                const float px = -dz, pz = dx;             // left perpendicular
+                if (i > 0) {
+                    const float sx = rn[i].x - rn[i-1].x, sz = rn[i].z - rn[i-1].z;
+                    arc += std::sqrt(sx * sx + sz * sz);
+                }
+                x3::rhi::MeshVertex vL{}, vR{};
+                vL.pos[0] = rn[i].x + px * kWorldRiverHalfWidth;
+                vL.pos[1] = rn[i].waterY;
+                vL.pos[2] = rn[i].z + pz * kWorldRiverHalfWidth;
+                vR.pos[0] = rn[i].x - px * kWorldRiverHalfWidth;
+                vR.pos[1] = rn[i].waterY;
+                vR.pos[2] = rn[i].z - pz * kWorldRiverHalfWidth;
+                vL.normal[0] = 0; vL.normal[1] = 1; vL.normal[2] = 0;
+                vR.normal[0] = 0; vR.normal[1] = 1; vR.normal[2] = 0;
+                vL.uv[0] = 0.0f; vL.uv[1] = arc / 24.0f;
+                vR.uv[0] = 1.0f; vR.uv[1] = arc / 24.0f;
+                verts.push_back(vL);
+                verts.push_back(vR);
+            }
+            for (uint32_t i = 0; i + 1 < nNodes; ++i) {
+                const uint32_t a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+                idx.insert(idx.end(), { a, c, b,  b, c, d });
+            }
+            Entity e;
+            e.mesh = device.createMesh(verts.data(), (uint32_t)verts.size(),
+                                       idx.data(), (uint32_t)idx.size());
+            // The ocean plane's water tint (ocean_base.cpp), through the glass pass.
+            e.baseColor[0] = 0.10f; e.baseColor[1] = 0.28f;
+            e.baseColor[2] = 0.42f; e.baseColor[3] = 0.55f;
+            e.transparent = true;
+            e.glass.opacity    = 0.62f;
+            e.glass.refraction = 0.02f;
+            e.glass.roughness  = 0.08f;
+            e.glass.specular   = 0.9f;
+            e.glass.tint[0] = 0.16f; e.glass.tint[1] = 0.34f; e.glass.tint[2] = 0.42f;
+            e.tag = (uint32_t)Tag::Prop;
+            m_props.push_back(scene.add(e));
+            m_riverSegments = nNodes - 1;
+        }
+    }
+
     m_built = true;
     x3::logInfo("WorldRegions::build complete — 7 regions (Crash Site + East/West outposts + "
-                "Northern snow / Eastern volcanic / Southern mesa / Western crystal ranges); "
-                + std::to_string((uint32_t)m_props.size()) + " graybox props on the surface");
+                "Northern snow / Eastern volcanic / Southern mesa / Western crystal ranges) + "
+                "THE RIVER water ribbon (" + std::to_string(m_riverSegments) + " segments); "
+                + std::to_string((uint32_t)m_props.size()) + " props on the surface");
 }
 
 uint32_t WorldRegions::mountainCount() const {
@@ -237,6 +314,89 @@ bool runWorldRegionsSelfTest() {
         bool ok = w.plan(WorldRegion::NorthernRange).propCount >= 2 &&
                   w.plan(WorldRegion::EastOutpost).propCount   >= 2;
         check(ok, "W5 mountain massif (>=2 tiers) + outpost cluster (>=2 buildings)");
+    }
+
+    // ==== W9 (terrain drama) — THE RIVER + canyon pass + bluff line. Pure
+    // height-field assertions against the canonical world config (the same
+    // field every host renders/streams/places on). ====
+
+    // ---- W7: the river — ribbon placed; water levels descend monotonically;
+    // the carved bed sits under the water; the banks contain it. ----
+    {
+        uint32_t n = 0;
+        const WorldRiverNode* rn = worldRiverNodes(n);
+        bool ribbon = w.riverSegmentCount() == n - 1 && n >= 8;
+        bool downhill = true, bedUnder = true, contained = true;
+        for (uint32_t i = 0; i + 1 < n; ++i)
+            if (rn[i+1].waterY >= rn[i].waterY) downhill = false;
+        const uint32_t nc = worldRiverCarveCount();
+        for (uint32_t i = 0; i < nc; ++i) {
+            const float bed = terrainHeightAtWorld(rn[i].x, rn[i].z);
+            if (bed > rn[i].waterY - 1.0f) bedUnder = false;   // >=1 m of water
+            // The estuary reach descends into the (deep) basin — skip there.
+            { const float bx = rn[i].x - 1100.0f, bz = rn[i].z + 1350.0f;
+              if (bx * bx + bz * bz < 700.0f * 700.0f) continue; }
+            // Bank flanks to each side must hold the water: by construction
+            // ground there is >= (closest-spine waterY)+0.2. Sample 55 m out
+            // along the CHORD perpendicular — at a sharp bend (N3) the chord
+            // perpendicular is up to ~35 deg off the segment normal, so 55 m
+            // keeps the sample outside the waterline (~34 m) for any node; and
+            // at a bend's inside the closest spine point sits slightly
+            // DOWNSTREAM (water up to ~0.15 m lower), so allow -0.25 vs the
+            // node's own level.
+            const uint32_t j = (i + 1 < nc) ? i + 1 : i - 1;
+            float dx = rn[j].x - rn[i].x, dz = rn[j].z - rn[i].z;
+            const float len = std::sqrt(dx * dx + dz * dz);
+            dx /= len; dz /= len;
+            const float bL = terrainHeightAtWorld(rn[i].x - dz * 55.0f, rn[i].z + dx * 55.0f);
+            const float bR = terrainHeightAtWorld(rn[i].x + dz * 55.0f, rn[i].z - dx * 55.0f);
+            if (bL < rn[i].waterY - 0.25f || bR < rn[i].waterY - 0.25f) {
+                contained = false;
+                x3::logError("[worldregions-test] W7 node " + std::to_string(i) +
+                             " w=" + std::to_string(rn[i].waterY) +
+                             " bL=" + std::to_string(bL) + " bR=" + std::to_string(bR));
+            }
+        }
+        if (!(ribbon && downhill && bedUnder && contained))
+            x3::logError("[worldregions-test] W7 detail: ribbon=" + std::to_string(ribbon) +
+                         " downhill=" + std::to_string(downhill) +
+                         " bedUnder=" + std::to_string(bedUnder) +
+                         " contained=" + std::to_string(contained));
+        check(ribbon && downhill && bedUnder && contained,
+              "W7 THE RIVER: ribbon placed, water descends to the sea, bed under water, banks contain it");
+    }
+
+    // ---- W8: the canyon pass — floor at the authored walkable grade, walls
+    // standing >=10 m over it on both sides at the mid nodes. ----
+    {
+        const float cx[4] = { -140.0f, -230.0f, -160.0f,  -40.0f };   // = terrain.cpp kCanyon*
+        const float cz[4] = { -520.0f, -760.0f, -1040.0f, -1260.0f };
+        const float cf[4] = {    2.0f,    0.0f,    -2.0f,    -4.0f };
+        bool floorOk = true, wallsOk = true;
+        for (int i = 1; i < 3; ++i) {   // mid nodes (mouth/exit fade by design)
+            const float f = terrainHeightAtWorld(cx[i], cz[i]);
+            if (std::fabs(f - cf[i]) > 2.5f) floorOk = false;
+            float dx = cx[i+1] - cx[i-1], dz = cz[i+1] - cz[i-1];
+            const float len = std::sqrt(dx * dx + dz * dz);
+            dx /= len; dz /= len;
+            const float wL = terrainHeightAtWorld(cx[i] - dz * 45.0f, cz[i] + dx * 45.0f);
+            const float wR = terrainHeightAtWorld(cx[i] + dz * 45.0f, cz[i] - dx * 45.0f);
+            if (wL < f + 10.0f || wR < f + 10.0f) wallsOk = false;
+        }
+        check(floorOk && wallsOk, "W8 canyon pass: walkable authored floor + steep walls both sides");
+    }
+
+    // ---- W9: the bluff line — somewhere along the band the west (upper) side
+    // stands well above the east (facility-plain) side. ----
+    {
+        float best = -1e9f;
+        for (int i = 0; i < 5; ++i) {
+            const float z = -380.0f + 100.0f * (float)i;   // along B0..B1
+            const float west = terrainHeightAtWorld(-520.0f, z);
+            const float east = terrainHeightAtWorld(-380.0f, z);
+            best = std::max(best, west - east);
+        }
+        check(best >= 10.0f, "W9 bluff line: terraced step-up reads (west-east >= 10 m somewhere)");
     }
 
     physics->shutdown();

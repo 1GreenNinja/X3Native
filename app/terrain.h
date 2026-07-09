@@ -113,6 +113,24 @@ void terrainNormalAtWorld(float x, float z, float outNormal[3]);
 void placeOnTerrain(float x, float z, float outPos[3]);
 
 // ---------------------------------------------------------------------------
+// W9 (TERRAIN DRAMA) — THE RIVER's authored spline. ONE source of truth shared
+// by the height-field carve (terrain.cpp kRiver*) and the water-surface ribbon
+// (world_regions.cpp), so the water always lies inside its own channel.
+// `waterY` is the water SURFACE at that node (bed = waterY - kWorldRiverBedDrop;
+// bank crests are held at >= waterY + ~2.2 m by an authored levee term where the
+// natural country is low). Node waterY DESCENDS monotonically downstream — the
+// river flows NE hill country -> past the facility's east face -> SE into the
+// ocean basin. Nodes [0..worldRiverCarveCount()) carve the terrain; the tail
+// nodes only extend the WATER ribbon out over the (already deep) basin floor to
+// meet the sea surface.
+// ---------------------------------------------------------------------------
+struct WorldRiverNode { float x, z, waterY; };
+const WorldRiverNode* worldRiverNodes(uint32_t& count);   // full ribbon polyline
+uint32_t worldRiverCarveCount();                          // leading nodes that carve
+constexpr float kWorldRiverHalfWidth = 34.0f;             // water ribbon half-width (m)
+constexpr float kWorldRiverBedDrop   = 3.2f;              // bed depth below waterY (m)
+
+// ---------------------------------------------------------------------------
 // W8-3 — HORIZON RING (the far-terrain stitch). A single static polar-grid mesh
 // sampled from the SAME canonical height field the streamer generates from, so
 // the mountains/city pads on the horizon match what streams in underfoot by
