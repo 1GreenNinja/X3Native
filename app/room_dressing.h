@@ -61,6 +61,12 @@ public:
     // overrides still win. kNoRoom / undressed rooms fall back to the detention tint.
     void applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t eyeRoom);
 
+    // W10 (swimming): forget the cached zone so the NEXT applyZoneAtmosphere
+    // re-applies the recipe fog unconditionally. The host calls this after a
+    // transient fog override (the underwater tint) ends — the room recipes keep
+    // owning their fog; the override is restored without snapshotting FogParams.
+    void resetZoneAtmosphere() { m_lastZone = -1; }
+
     // Room-tagged recipe lights (key/fill/accent per dressed room). The host
     // APPENDS these to the buildCanonLights list after filtering out the generic
     // warm light for rooms where hasRecipe() is true (the recipe owns that room's

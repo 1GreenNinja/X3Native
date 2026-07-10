@@ -2994,7 +2994,11 @@ int runDefaultHost(HostContext& hc) {
                 // streamed planet is in-frame only for outdoor/breach vantages.
                 if (canonStreamOn) {
                     const uint32_t eyeRoom = canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z);
-                    if ((eyeRoom == x3::game::kNoRoom && ssEye.y > -2.0f) ||
+                    // Same open-air test as the live loop (W10): river/sea
+                    // vantages sit below -2 but above (local terrain - 15).
+                    const bool ssOpenAir = ssEye.y > -2.0f ||
+                        ssEye.y > x3::game::terrainHeightAtWorld(ssEye.x, ssEye.z) - 15.0f;
+                    if ((eyeRoom == x3::game::kNoRoom && ssOpenAir) ||
                         (eyeRoom != x3::game::kNoRoom &&
                          eyeRoom == facilityExterior.breachRoomHint()))
                         canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
@@ -3030,6 +3034,16 @@ int runDefaultHost(HostContext& hc) {
                     canonRooms.draw(*device, frame, canonVisRooms);
                     canonRooms.applyZoneAtmosphere(*device,
                         canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z));
+                    // W10 SWIMMING: underwater shot cameras get the same dense
+                    // blue-green fog override the live loop applies (see there).
+                    { const float ssWY = x3::game::worldWaterLevelAt(ssEye.x, ssEye.z);
+                      if (ssWY > -1.0e30f && ssEye.y < ssWY - 0.05f) {
+                          x3::rhi::IRenderDevice::FogParams uf;
+                          uf.enabled  = true;
+                          uf.color[0] = 0.020f; uf.color[1] = 0.095f; uf.color[2] = 0.110f;
+                          uf.density  = 0.055f; uf.start = 0.15f; uf.maxOpacity = 0.94f;
+                          device->setFog(uf);
+                      } }
                     canonDoors.drawMeshes(*device, frame);
                     facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
@@ -3773,6 +3787,13 @@ int runDefaultHost(HostContext& hc) {
                 case x3::game::CueKind::PlayerLand:
                     if (landH.valid()) asys->playSound2D(landH, std::min(0.8f, 0.30f + 0.4f * c.intensity), 1.0f);
                     break;
+                // W10 SWIMMING: water-entry splash. No dedicated splash WAV is
+                // committed yet, so reuse the soft landing thud pitched WAY down
+                // (0.55) — at low volume it reads as a muffled water entry.
+                // Follow-up: a real splash take under assets/audio/player/.
+                case x3::game::CueKind::PlayerSplash:
+                    if (landH.valid()) asys->playSound2D(landH, std::min(0.7f, 0.25f + 0.35f * c.intensity), 0.55f);
+                    break;
                 default: break;
             }
         });
@@ -3783,6 +3804,10 @@ int runDefaultHost(HostContext& hc) {
         if (jake == x3::game::kNoRoom) jake = 0;
         const x3::game::CanonRoom& jc = canonFloor.rooms[jake];
         player.spawn(*physics, jc.cx, jc.y0() + 0.1f, jc.cz);
+        // W10 SWIMMING: the canon world has real water (THE RIVER + the sea at
+        // -10) — wire the pure water-surface query so the controller can swim.
+        // Dev worlds keep no feed (bit-identical, no accidental water).
+        player.setWaterQuery(&x3::game::worldWaterLevelAt);
         x3::logInfo("--world canonlevel: spawned in Jake's Cell; per-room PVS cull active. "
                     "Walk through doorways to see the cull follow you.");
     } else if (docWorld && docLevel.built()) {
@@ -4277,6 +4302,9 @@ int runDefaultHost(HostContext& hc) {
     float stepTimer   = 0.0f;           // accumulates while moving on the ground
     float prevCamX = 0.0f, prevCamZ = 0.0f; // for horizontal-speed footsteps
     bool  prevCamValid = false;
+    // W10 SWIMMING: was the camera under a water surface LAST frame? Drives the
+    // underwater fog override + its clean restore (resetZoneAtmosphere) on surfacing.
+    bool  prevCamUnderwater = false;
 
     // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
     // (playtest fix, PB fold 4b9f067: DEFAULT music vol 0 -> MUTED on boot; SFX
@@ -5295,6 +5323,10 @@ int runDefaultHost(HostContext& hc) {
                 in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
                 // Edge + mouse-look apply only on the first sub-step of the frame.
                 in.jumpPressed = firstSub && spaceNow && !prevSpace;   // rising edge
+                // W10 SWIMMING held channels (only read while in the swim state):
+                // Space held = stroke up, Ctrl/C held = dive.
+                in.jumpHeld = spaceNow;
+                in.diveHeld = keyDown(GLFW_KEY_LEFT_CONTROL) || keyDown(GLFW_KEY_C);
                 in.lookDX = firstSub ? ddx : 0.0f;
                 in.lookDY = firstSub ? ddy : 0.0f;
                 // Left/Right arrows turn the view via the same lookDX path the mouse uses,
@@ -5308,11 +5340,12 @@ int runDefaultHost(HostContext& hc) {
 
                 // Cell terminal / keypad open for typing: swallow movement + jump so the
                 // keys (WASD/Space) type into the terminal instead of walking the player.
-                if (termMode || codeMode) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; }
+                if (termMode || codeMode) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; in.jumpHeld = false; in.diveHeld = false; }
                 // CROUCH (hold C) / CRAWL (hold Left-Ctrl): lower the eye + slow the move.
                 // Ctrl (prone) wins over C (crouch); release both to stand. Suppressed
-                // while a console / terminal is open so typing doesn't duck the player.
-                if (!consoleOpen && !termMode && player.isAlive()) {
+                // while a console / terminal is open so typing doesn't duck the player,
+                // and while SWIMMING (W10) — Ctrl/C mean DIVE there, not duck.
+                if (!consoleOpen && !termMode && player.isAlive() && !player.swimming()) {
                     const bool kCtrl = keyDown(GLFW_KEY_LEFT_CONTROL);
                     const bool kC    = keyDown(GLFW_KEY_C);
                     player.setStance(kCtrl ? x3::game::Player::Stance::Prone
@@ -5546,7 +5579,14 @@ int runDefaultHost(HostContext& hc) {
                 // (Y<0 shafts/club) never counts as "outdoors".
                 if (canonStreamOn) {
                     const uint32_t eyeRoom = canonFloor.roomAt(camX, camY, camZ);
-                    if ((eyeRoom == x3::game::kNoRoom && camY > -2.0f) ||
+                    // Open-air test (W10 swimming): the river valley (water down
+                    // to -9.9, bed -13) and the sea (-10, seafloor -80) are BELOW
+                    // the old -2 cut yet are real outdoors — accept any eye above
+                    // (local terrain - 15 m). The elevator/strata/club descent is
+                    // under the facility pad (terrain ~0) so it still fails.
+                    const bool openAir = camY > -2.0f ||
+                        camY > x3::game::terrainHeightAtWorld(camX, camZ) - 15.0f;
+                    if ((eyeRoom == x3::game::kNoRoom && openAir) ||
                         (eyeRoom != x3::game::kNoRoom &&
                          eyeRoom == facilityExterior.breachRoomHint()))
                         canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
@@ -6022,8 +6062,31 @@ int runDefaultHost(HostContext& hc) {
                 g.vignette = (cvVig >= 0.0f) ? cvVig : 0.10f;
                 device->setGrade(g);
             }
+            // ---- W10 SWIMMING: the UNDERWATER read. When the CAMERA is below a
+            // water surface (river reach or the sea), override the frame's fog
+            // with a dense blue-green extinction — applied AFTER the zone/cvar
+            // fog so it wins while submerged. On surfacing, resetZoneAtmosphere()
+            // makes the room recipes re-apply their own fog next frame (they own
+            // it; nothing is clobbered, no FogParams snapshot needed).
+            {
+                const float wY = x3::game::worldWaterLevelAt(camX, camZ);
+                const bool camUnder = wY > -1.0e30f && camY < wY - 0.05f;
+                if (camUnder) {
+                    x3::rhi::IRenderDevice::FogParams uf;
+                    uf.enabled  = true;
+                    uf.color[0] = 0.020f; uf.color[1] = 0.095f; uf.color[2] = 0.110f;
+                    uf.density  = 0.055f;    // ~18 m visibility — murky river water
+                    uf.start    = 0.15f;     // hands/viewmodel stay readable
+                    uf.maxOpacity = 0.94f;
+                    device->setFog(uf);
+                } else if (prevCamUnderwater) {
+                    canonRooms.resetZoneAtmosphere();   // recipe fog re-applies next frame
+                }
+                prevCamUnderwater = camUnder;
+            }
         }
-        if (prevCamValid && !noclip && player.grounded() && dt > 0.0f) {
+        // (W10: no footsteps while swimming — bed contact is not a floor walk.)
+        if (prevCamValid && !noclip && player.grounded() && !player.swimming() && dt > 0.0f) {
             const float dxc = camX - prevCamX, dzc = camZ - prevCamZ;
             const float speed = std::sqrt(dxc * dxc + dzc * dzc) / dt; // m/s
             if (speed > 0.6f) {

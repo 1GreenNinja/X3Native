@@ -7,6 +7,7 @@
 #include "mesh_prims.h"
 #include "surface_library.h"   // W3-4: real PBR sets on the base hull/seafloor
 #include "asset_root.h"
+#include "terrain.h"           // W10: kWorldSeaLevel (single source for the sea surface)
 
 #include "engine/core/x3_log.h"
 
@@ -29,7 +30,9 @@ constexpr float kBaseCx = 1100.0f, kBaseCz = -1350.0f;
 // base itself (r80, seafloor -80) is untouched; depth ordering surface > deck
 // > seafloor still holds (-10 > -62 > -80) and the patrol subs at -30 stay
 // submerged.
-constexpr float kSurfaceY  = -10.0f;   // ocean surface (was 4.0 pre-river)
+// W10 (swimming): builds from terrain.h's kWorldSeaLevel so the rendered plane
+// and the worldWaterLevelAt() query share ONE constant and can never drift.
+constexpr float kSurfaceY  = kWorldSeaLevel;   // -10 (was 4.0 pre-river)
 constexpr float kSeafloorY = -80.0f;   // seafloor
 constexpr float kBaseRadius = 80.0f;
 constexpr uint32_t kLevels = 3;

@@ -24,8 +24,18 @@ world, no loading screens:
   is the master world). Terrain ring + horizon stitch + 15 km far plane; Crash
   Site at (140,205) off the +Z breach face; streamed entities live in the
   `kStreamedExteriorRoom` PVS zone (drawn only when the eye is outdoors/at the
-  breach); residency is suppressed below Y=-20 so nothing interferes with the
-  club/strata underworld.
+  breach — "outdoors" = above -2 m OR above local terrain - 15 m, so the below-
+  grade river valley and the sea count); residency is suppressed below Y=-20 so
+  nothing interferes with the club/strata underworld.
+- **The water (W10 — SWIMMING)**: THE RIVER (terrain wave 1ebe8e6) and the sea
+  at -10 are REAL water. `worldWaterLevelAt(x,z)` (app/terrain.h, pure — same
+  spline/half-width as the carve + ribbon, same `kWorldSeaLevel` as the ocean
+  plane) feeds the Player via `setWaterQuery`; depth > 1.35 m enters the swim
+  state (gravity off, buoyancy rests the eye just above the surface, move along
+  the full look at ~60% walk speed, Space strokes up, Ctrl/C dives), depth <
+  1.05 m exits onto the bank. Camera under a surface = dense blue-green fog,
+  restored to the room-recipe fog on surfacing. Wading in the shallows is
+  unchanged. (3P swim animation: none yet — FP is the game view; follow-up.)
 
 `intro` is the same world entered through the cold-open.
 

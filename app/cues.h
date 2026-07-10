@@ -41,6 +41,7 @@ enum class CueKind : uint32_t {
     // landing from a jump/fall). Same append-only contract as the enemy kinds.
     PlayerPain  = 7,   // Player::takeDamage() landed a real hit — pos = player eye
     PlayerLand  = 8,   // Player transitioned airborne -> grounded — pos = player eye
+    PlayerSplash= 9,   // Player entered deep water (swim state began) — pos = player eye
 };
 
 // Species tag for enemy-emitted cues (guard-life pass, W4-3): the numeric value

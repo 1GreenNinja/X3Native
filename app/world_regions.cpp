@@ -399,6 +399,55 @@ bool runWorldRegionsSelfTest() {
         check(best >= 10.0f, "W9 bluff line: terraced step-up reads (west-east >= 10 m somewhere)");
     }
 
+    // ---- W10 (SWIMMING): worldWaterLevelAt — the pure water-surface query the
+    // swim controller runs on. Single source with the carve + ribbon: ON the
+    // spine it returns that node's exact waterY; on the BANK (beyond the 34 m
+    // half-width) it is dry; the facility plain is dry; the basin core is the
+    // sea surface (-10 == kWorldSeaLevel, the ocean plane's own constant). ----
+    {
+        uint32_t n = 0;
+        const WorldRiverNode* rn = worldRiverNodes(n);
+        bool onRiver = true, banksDry = true;
+        const uint32_t nc = worldRiverCarveCount();
+        for (uint32_t i = 1; i + 1 < nc; ++i) {   // interior carve nodes
+            // ON the spine: the query must return this node's waterY exactly.
+            const float wq = worldWaterLevelAt(rn[i].x, rn[i].z);
+            if (std::fabs(wq - rn[i].waterY) > 0.01f) {
+                onRiver = false;
+                x3::logError("[worldregions-test] W10 node " + std::to_string(i) +
+                             " spine query " + std::to_string(wq) + " != " +
+                             std::to_string(rn[i].waterY));
+            }
+            // BANK: 60 m out along the chord perpendicular (outside the 34 m
+            // ribbon for any bend angle) must be dry. Skip the estuary reach —
+            // there the flanks descend into the (legitimately wet) sea basin,
+            // same exemption W7 uses.
+            { const float bx = rn[i].x - 1100.0f, bz = rn[i].z + 1350.0f;
+              if (bx * bx + bz * bz < 700.0f * 700.0f) continue; }
+            float dx = rn[i+1].x - rn[i-1].x, dz = rn[i+1].z - rn[i-1].z;
+            const float len = std::sqrt(dx * dx + dz * dz);
+            dx /= len; dz /= len;
+            const float bL = worldWaterLevelAt(rn[i].x - dz * 60.0f, rn[i].z + dx * 60.0f);
+            const float bR = worldWaterLevelAt(rn[i].x + dz * 60.0f, rn[i].z - dx * 60.0f);
+            if (bL > kWorldWaterDry || bR > kWorldWaterDry) {
+                banksDry = false;
+                x3::logError("[worldregions-test] W10 node " + std::to_string(i) +
+                             " bank wet: bL=" + std::to_string(bL) +
+                             " bR=" + std::to_string(bR));
+            }
+        }
+        const bool facilityDry = worldWaterLevelAt(0.0f, 0.0f) <= kWorldWaterDry + 1.0f;
+        const float sea = worldWaterLevelAt(1100.0f, -1350.0f);   // basin core
+        const bool oceanOk = std::fabs(sea - kWorldSeaLevel) < 0.01f;
+        // The mouth: the ribbon's last node rides 0.1 m proud of the sea — the
+        // query must prefer the RIVER answer inside the ribbon (matches visuals).
+        const float mouth = worldWaterLevelAt(rn[n-1].x, rn[n-1].z);
+        const bool mouthOk = std::fabs(mouth - rn[n-1].waterY) < 0.01f;
+        check(onRiver && banksDry && facilityDry && oceanOk && mouthOk,
+              "W10 worldWaterLevelAt: river reaches wet at node waterY, banks + facility dry, "
+              "sea = kWorldSeaLevel, estuary prefers the ribbon");
+    }
+
     physics->shutdown();
     x3::logInfo(std::string("worldregions: ") + std::to_string(g_pass) + "/" +
                 std::to_string(g_pass + g_fail) + " passed");

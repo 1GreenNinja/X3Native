@@ -251,6 +251,7 @@ struct CharData {
     float radius = 0, height = 0;
     JPH::Vec3 desiredHoriz = JPH::Vec3::sZero(); // set by moveCharacter, applied in step
     float vy = 0.0f;                             // integrated vertical velocity
+    bool swim = false;                           // W10: velocity taken verbatim, no gravity
 };
 
 // K-T0: a collision-contact record queued inside the locked OnContact* callback
@@ -611,6 +612,13 @@ public:
     void moveCharacter(BodyId id, Vec3 desiredVelocity, float /*dt*/) override {
         auto it = m_chars.find(id.id);
         if (it == m_chars.end()) return;
+        // SWIM (W10): the caller owns the full velocity — take .y verbatim (any
+        // sign; buoyancy/strokes/dive) instead of the jump-impulse channel.
+        if (it->second.swim) {
+            it->second.desiredHoriz = JPH::Vec3(desiredVelocity.x, 0.0f, desiredVelocity.z);
+            it->second.vy = desiredVelocity.y;
+            return;
+        }
         // Record the desired horizontal velocity; vertical is treated as a jump
         // impulse (set vy directly) and otherwise driven by gravity in step().
         it->second.desiredHoriz = JPH::Vec3(desiredVelocity.x, 0.0f, desiredVelocity.z);
@@ -621,6 +629,16 @@ public:
         auto it = m_chars.find(id.id);
         if (it == m_chars.end()) return false;
         return it->second.ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+    }
+
+    void setCharacterSwim(BodyId id, bool enabled) override {
+        auto it = m_chars.find(id.id);
+        if (it == m_chars.end()) return;
+        if (it->second.swim == enabled) return;
+        it->second.swim = enabled;
+        // Leaving the water: reset the vertical channel so walking resumes at
+        // rest (no stale swim/fall velocity carried into the gravity integrator).
+        if (!enabled) it->second.vy = 0.0f;
     }
 
     bool setCharacterHeight(BodyId id, float height) override {
@@ -985,13 +1003,18 @@ private:
     void updateCharacter(CharData& cd, float dt) {
         if (dt <= 0.0f) return;
         JPH::Vec3 g = m_system->GetGravity();
-        bool grounded =
-            cd.ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
-        if (grounded && cd.vy <= 0.0f) {
-            // Stick to the floor: small downward bias so ExtendedUpdate keeps contact.
-            cd.vy = 0.0f;
-        } else {
-            cd.vy += g.GetY() * dt; // integrate gravity on the vertical axis
+        // SWIM (W10): no gravity integration, no floor-stick — the caller's
+        // velocity (incl. vy from moveCharacter) is applied verbatim; collision
+        // resolution below (ExtendedUpdate) is unchanged.
+        if (!cd.swim) {
+            bool grounded =
+                cd.ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+            if (grounded && cd.vy <= 0.0f) {
+                // Stick to the floor: small downward bias so ExtendedUpdate keeps contact.
+                cd.vy = 0.0f;
+            } else {
+                cd.vy += g.GetY() * dt; // integrate gravity on the vertical axis
+            }
         }
         // Compose horizontal (player-driven) + vertical (gravity/jump) velocity.
         JPH::Vec3 v(cd.desiredHoriz.GetX(), cd.vy, cd.desiredHoriz.GetZ());

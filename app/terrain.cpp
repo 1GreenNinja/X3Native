@@ -797,6 +797,27 @@ const WorldRiverNode* worldRiverNodes(uint32_t& count) {
 uint32_t worldRiverCarveCount() { return (uint32_t)riverChain().carveN; }
 
 // ---------------------------------------------------------------------------
+// W10 (SWIMMING) — worldWaterLevelAt. Pure; see terrain.h. River first (its
+// ribbon rides 0.1 m proud of the sea where they overlap at the estuary, so
+// the river answer wins there, matching the visuals), then the ocean basin.
+// ---------------------------------------------------------------------------
+float worldWaterLevelAt(float x, float z) {
+    // RIVER: closest approach to the SAME working chain the carve + ribbon use
+    // (full chain incl. the estuary tail nodes that only carry water).
+    const RiverChain& rc = riverChain();
+    float d, w;
+    polyClosest(rc.x, rc.z, rc.w, rc.n, x, z, d, w);
+    if (d <= kWorldRiverHalfWidth) return w;
+    // OCEAN: inside the offshore basin's influence ring AND the terrain bowl is
+    // actually below the sea surface there (the -6 shore ring stays dry beach).
+    const float bx = x - kBasinCx, bz = z - kBasinCz;
+    if (bx * bx + bz * bz < 950.0f * 950.0f &&
+        terrainHeightAtWorld(x, z) < kWorldSeaLevel)
+        return kWorldSeaLevel;
+    return kWorldWaterDry;
+}
+
+// ---------------------------------------------------------------------------
 // Placement API — the single canonical world config + the height/normal/place
 // helpers the 14900k anchors buildings (the Spire) + the cliffside pad with.
 // The config is the engine TerrainConfig defaults (matching what `--world

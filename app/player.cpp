@@ -63,6 +63,18 @@ constexpr float kPitchClamp   = 80.0f * 3.14159265358979f / 180.0f; // +/- 80 de
 // step(), so we keep .y = 0 when grounded/not jumping and rely on that. The
 // constant is retained for documentation / future use.
 constexpr float kGroundStick  = -2.0f;
+
+// ---- SWIMMING tuning (W10). All velocities dt-scaled through the physics
+// step; the accel blend below is the standard 1-exp(-k*dt) frame-rate-
+// independent smoothing (delta-time HARD RULE — never per-frame). ----
+constexpr float kSwimEnterDepth = 1.35f;  // m of water over the feet -> start swimming
+constexpr float kSwimExitDepth  = 1.05f;  // m -> stop swimming (hysteresis vs enter)
+constexpr float kSwimSpeedMul   = 0.60f;  // swim speed = walk/sprint * this (~3.0 m/s)
+constexpr float kSwimVertSpeed  = 2.2f;   // m/s stroke-up (Space) / dive (Ctrl/C)
+constexpr float kSwimEyeAbove   = 0.20f;  // rest: eye settles this far ABOVE the surface
+constexpr float kSwimBuoyGain   = 2.5f;   // buoyancy spring: m/s per m of depth error
+constexpr float kSwimBuoyMax    = 1.6f;   // buoyancy speed cap (gentle bob, no pop)
+constexpr float kSwimAccel      = 6.0f;   // 1/s soft-acceleration rate (tau ~0.17 s)
 } // namespace
 
 void Player::spawn(x3::phys::IPhysicsWorld& physics, float x, float y, float z) {
@@ -76,6 +88,9 @@ void Player::spawn(x3::phys::IPhysicsWorld& physics, float x, float y, float z) 
     // after dying while crouched must not leave us logically crouched on a stand capsule).
     m_stance     = Stance::Stand;
     m_eyeHeight  = kEyeHeight;
+    // Fresh capsule is in normal (non-swim) mode — reset the swim state to match.
+    m_swimming   = false;
+    m_swimVelX = m_swimVelY = m_swimVelZ = 0.0f;
     // Seed the cached feet so damageTargetPos()/camera() are valid before the
     // first update() (e.g. a ranged enemy aiming on frame 0 of a test).
     m_feetX = x; m_feetY = y; m_feetZ = z;
@@ -224,6 +239,64 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
         return;
     }
 
+    // ---- SWIMMING (W10): water depth over the feet from the host-wired feed.
+    // Enter deep (>1.35 m), exit shallow (<1.05 m) — hysteresis so the surface
+    // boundary never jitters. No feed wired (dev worlds/tests) => depth is
+    // -inf-ish and this whole block is inert.
+    {
+        const float waterY = m_waterQuery ? m_waterQuery(m_feetX, m_feetZ) : -3.0e38f;
+        const float depth  = waterY - m_feetY;
+        if (!m_swimming) {
+            if (depth > kSwimEnterDepth) enterSwim(physics);
+        } else if (depth < kSwimExitDepth) {
+            exitSwim(physics);   // feet found ground / shallows — clean walking handoff
+        }
+        if (m_swimming) {
+            // Move along the FULL look direction (pitch included) at ~60% speed.
+            const float cp = std::cos(m_pitch), sp = std::sin(m_pitch);
+            const float f3x = std::cos(m_yaw) * cp, f3y = sp, f3z = std::sin(m_yaw) * cp;
+            const float r3x = -std::sin(m_yaw),     r3z = std::cos(m_yaw);
+            float wx = f3x * in.moveFwd + r3x * in.moveStrafe;
+            float wy = f3y * in.moveFwd;
+            float wz = f3z * in.moveFwd + r3z * in.moveStrafe;
+            const float wl = std::sqrt(wx * wx + wy * wy + wz * wz);
+            const float spd = (in.sprint ? kSprintSpeed : kWalkSpeed) * kSwimSpeedMul * m_speedMult;
+            if (wl > 1e-4f) { wx = wx / wl * spd; wy = wy / wl * spd; wz = wz / wl * spd; }
+            else            { wx = wy = wz = 0.0f; }
+            // Stroke up (Space held) / dive (Ctrl/C held) ride on the look-move.
+            wy += ((in.jumpHeld ? 1.0f : 0.0f) - (in.diveHeld ? 1.0f : 0.0f)) * kSwimVertSpeed;
+            // Buoyancy: a gentle spring that settles the EYE just above the
+            // surface (rest feet = waterY - (eyeHeight - kSwimEyeAbove)). It is
+            // the vertical command when the player has no vertical intent, and
+            // the UPWARD CAP whenever the feet are already at/above rest — so a
+            // stroke-up at the surface bobs, it never launches out of the water.
+            const float restDepth = std::max(kSwimEnterDepth + 0.05f, m_eyeHeight - kSwimEyeAbove);
+            const float restFeetY = waterY - restDepth;
+            float spring = (restFeetY - m_feetY) * kSwimBuoyGain;
+            if (spring >  kSwimBuoyMax) spring =  kSwimBuoyMax;
+            if (spring < -kSwimBuoyMax) spring = -kSwimBuoyMax;
+            if (std::fabs(wy) < 0.05f) wy = spring;
+            // Anticipate the smoothing lag (v*tau ~0.35 m) so a fast stroke eases
+            // into the rest height instead of overshooting the waterline.
+            else if (m_feetY >= restFeetY - 0.35f && wy > spring) wy = spring;
+            // Soft acceleration, frame-rate independent (1-exp(-k*dt)).
+            const float blend = 1.0f - std::exp(-kSwimAccel * dt);
+            m_swimVelX += (wx - m_swimVelX) * blend;
+            m_swimVelY += (wy - m_swimVelY) * blend;
+            m_swimVelZ += (wz - m_swimVelZ) * blend;
+            physics.moveCharacter(m_body,
+                x3::phys::Vec3{ m_swimVelX, m_swimVelY, m_swimVelZ }, dt);
+            m_grounded = physics.characterGrounded(m_body);
+            const x3::phys::Vec3 sfeet = physics.getBodyPosition(m_body);
+            m_feetX = sfeet.x; m_feetY = sfeet.y; m_feetZ = sfeet.z;
+            // Keep the walking controller's carried velocity in sync so the
+            // bank exit hands off without a lurch.
+            m_lastHorizX = m_swimVelX;
+            m_lastHorizZ = m_swimVelZ;
+            return;
+        }
+    }
+
     // ---- Horizontal basis from yaw (device forward convention, pitch ignored
     // for movement so looking up/down doesn't slow you on the ground).
     const float fx = std::cos(m_yaw), fz = std::sin(m_yaw);  // forward (XZ)
@@ -290,6 +363,34 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
         const float landIntensity = std::min(1.0f, 0.15f + drop / 3.0f);
         emitCueOrLog(m_cueSink, GameCue{ CueKind::PlayerLand, damageTargetPos(), landIntensity });
     }
+}
+
+// ---------------------------------------------------------------------------
+// SWIMMING transitions (W10).
+// ---------------------------------------------------------------------------
+void Player::enterSwim(x3::phys::IPhysicsWorld& physics) {
+    m_swimming = true;
+    physics.setCharacterSwim(m_body, true);
+    // Swim with the full standing capsule/eye (the rest-depth math assumes it).
+    // If a low overhang refuses the grow we stay ducked — the rest-depth clamp
+    // (>= enter depth) keeps the state stable either way.
+    setStance(Stance::Stand, physics);
+    // Carry the walking momentum into the stroke; vertical starts at rest (the
+    // water absorbs the fall — that IS the splash).
+    m_swimVelX = m_lastHorizX; m_swimVelY = 0.0f; m_swimVelZ = m_lastHorizZ;
+    m_jumpBuffer = 0.0f;   // a buffered jump must not fire underwater / on exit
+    m_coyote     = 0.0f;
+    const float drop = m_grounded ? 0.0f : std::max(0.0f, m_fallStartY - m_feetY);
+    const float splashIntensity = std::min(1.0f, 0.45f + drop / 4.0f);
+    emitCueOrLog(m_cueSink, GameCue{ CueKind::PlayerSplash, damageTargetPos(), splashIntensity });
+}
+
+void Player::exitSwim(x3::phys::IPhysicsWorld& physics) {
+    m_swimming = false;
+    physics.setCharacterSwim(m_body, false);   // resets the vertical channel to 0
+    // Hand the planar momentum to the walking controller (no exit lurch).
+    m_lastHorizX = m_swimVelX;
+    m_lastHorizZ = m_swimVelZ;
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +643,98 @@ bool runPlayerSelfTest() {
 
         check(standBlocked && crouchFits && feetAnchored && ducked && stayedCrouched,
               "T5 crouch shrinks capsule (fits low gap, feet anchored, un-crouch ceiling-guarded)");
+    }
+
+    // ==== SWIMMING (W10): S1 float to rest, S2 swim along look, S3 dive,
+    // S4 stroke back up, S5 bank exit onto ground (no launch-out pop). One
+    // synthetic pool: deep floor at y=-8, a gently-sloped bank ramp rising to
+    // y=-0.5 toward +X, water surface at y=0 injected via setWaterQuery (no
+    // terrain dependency — the same seam the canon host wires). ====
+    {
+        auto makePool = [](x3::phys::IPhysicsWorld& w) {
+            // Deep floor at y=-8 (CCW, +Y solid), generous extent.
+            float fv[] = { -60.0f, -8.0f, -60.0f,   60.0f, -8.0f, -60.0f,
+                            60.0f, -8.0f,  60.0f,  -60.0f, -8.0f,  60.0f };
+            uint32_t fi[] = { 0,2,1, 0,3,2 };
+            w.addStaticMesh(fv, 4, fi, 6);
+            // Bank ramp: rises -8 -> +2 across x=[6,60] (~10.5 deg — a real bank:
+            // deep water, then wadable shallows, then dry ground above the line).
+            float rv[] = {  6.0f, -8.0f, -8.0f,   60.0f,  2.0f, -8.0f,
+                           60.0f,  2.0f,  8.0f,    6.0f, -8.0f,  8.0f };
+            uint32_t ri[] = { 0,2,1, 0,3,2 };
+            w.addStaticMesh(rv, 4, ri, 6);
+        };
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        makePool(*w);
+        Player p;
+        p.spawn(*w, 0.0f, -6.0f, 0.0f);     // dropped DEEP in the pool, faces +X
+        p.setWaterQuery([](float, float) { return 0.0f; });   // surface at y=0
+
+        // ---- S1: buoyancy floats the player until the eye rests just above the
+        // surface (eye ~= +0.20), swimming, and holds there without jitter. ----
+        for (int i = 0; i < 360; ++i) frame(p, *w, PlayerInput{});   // 6 s idle
+        float minY = 1e9f, maxY = -1e9f;
+        for (int i = 0; i < 60; ++i) {                                // +1 s settled
+            frame(p, *w, PlayerInput{});
+            minY = std::min(minY, p.feet().y); maxY = std::max(maxY, p.feet().y);
+        }
+        float cx, cy, cz, cyaw, cpit; p.camera(cx, cy, cz, cyaw, cpit);
+        const bool s1Swim   = p.swimming();
+        const bool s1EyeOk  = std::fabs(cy - 0.20f) < 0.25f;   // eye just above the surface
+        const bool s1Stable = (maxY - minY) < 0.10f;           // no surface jitter
+        check(s1Swim && s1EyeOk && s1Stable,
+              "S1 swim: floats to rest, eye just above surface, no jitter");
+
+        // ---- S2: swims FORWARD along the look direction (~60% walk speed). ----
+        const float s2x0 = p.feet().x;
+        PlayerInput fwd; fwd.moveFwd = 1.0f;
+        for (int i = 0; i < 120; ++i) frame(p, *w, fwd);   // 2 s at ~3 m/s
+        const float s2dx = p.feet().x - s2x0;
+        check(p.swimming() && s2dx > 3.0f && s2dx < 8.0f,
+              "S2 swim: advances along look at swim speed");
+
+        // ---- S3: dive (Ctrl held) descends well below the rest depth. ----
+        PlayerInput dive; dive.diveHeld = true;
+        for (int i = 0; i < 105; ++i) frame(p, *w, dive);  // 1.75 s down
+        const float s3y = p.feet().y;
+        check(p.swimming() && s3y < -2.6f, "S3 swim: dive descends under the surface");
+
+        // ---- S4: stroke up (Space held) returns to the surface rest, and the
+        // surface cap keeps the eye from launching out of the water. ----
+        float s4Peak = -1e9f;
+        PlayerInput up; up.jumpHeld = true;
+        for (int i = 0; i < 240; ++i) { frame(p, *w, up); s4Peak = std::max(s4Peak, p.feet().y); }
+        check(p.swimming() && p.feet().y > -1.9f && s4Peak < -1.0f,
+              "S4 swim: stroke up returns to rest, capped at the surface (no launch-out)");
+
+        // ---- S5: swimming toward the bank exits into WALKING when the feet find
+        // ground in the shallows — no pop above the surface during the handoff. ----
+        bool exited = false, popped = false;
+        for (int i = 0; i < 1800 && !exited; ++i) {         // up to 30 s toward +X
+            frame(p, *w, fwd);
+            if (p.feet().y > 0.1f) popped = true;           // never above the waterline
+            if (!p.swimming() && p.grounded()) exited = true;
+        }
+        // Handoff window: the first half second of walking is still in the
+        // shallows — the exit must not launch the body over the waterline.
+        for (int i = 0; i < 30; ++i) { frame(p, *w, fwd); if (p.feet().y > 0.1f) popped = true; }
+        const float s5ExitY = p.feet().y;
+        // Then keep walking a moment: up the bank (still ON the ramp — its top
+        // is at x=60; don't walk off the far edge).
+        for (int i = 0; i < 60; ++i) frame(p, *w, fwd);
+        if (!(exited && !popped)) {
+            x3::logError("[player-test] S5 detail: exited=" + std::to_string(exited) +
+                         " popped=" + std::to_string(popped) +
+                         " swim=" + std::to_string(p.swimming()) +
+                         " grounded=" + std::to_string(p.grounded()) +
+                         " feet=(" + std::to_string(p.feet().x) + "," +
+                         std::to_string(p.feet().y) + ")");
+        }
+        check(exited && !popped && s5ExitY > -1.2f &&
+              !p.swimming() && p.grounded() && p.feet().y > s5ExitY + 0.2f,
+              "S5 swim: bank exit onto ground (walking resumes, no launch-out pop)");
+        w->shutdown();
     }
 
     x3::logInfo(std::string("[player-test] ") + std::to_string(g_pass) + " passed, " +
