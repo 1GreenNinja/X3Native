@@ -33,7 +33,11 @@
 namespace x3 { namespace apphost {
 
 int hostShipWindows(HostContext& hc) {
-    if (hc.worldMode != "ship-windows") return -1;
+    // Serves TWO worlds: "ship-windows" (S6 GLB-art interior + moving portals) and
+    // "ship-interior" (the PURE procedural glassy-neon reskin — NO GLB art overlay,
+    // so the neon plating/strips/holo consoles are what you see).
+    const bool pureInterior = (hc.worldMode == "ship-interior");
+    if (hc.worldMode != "ship-windows" && !pureInterior) return -1;
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
 
@@ -58,8 +62,10 @@ int hostShipWindows(HostContext& hc) {
     // THE REAL INTERIOR (integration feast): drape the licensed Scifi Kit Vol 3
     // pieces over the graybox (env_art overlay pattern — graybox keeps collision
     // + is the per-piece fallback). Stations become interactable below.
+    // GLB Scifi-Kit art overlay ONLY for the S6 ship-windows world. The pure
+    // ship-interior world shows the procedural glassy-neon reskin with no cladding.
     x3::space::ShipInteriorArt art;
-    if (art.build(*device, sscene, interior.manifest()) > 0)
+    if (!pureInterior && art.build(*device, sscene, interior.manifest()) > 0)
         interior.hideStationMarkers(sscene);   // real consoles replace the graybox cubes
 
     // No sky (inside the hull). SSAO/GI raster fallback off so a no-RT capture
@@ -69,13 +75,23 @@ int hostShipWindows(HostContext& hc) {
     { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
     { x3::rhi::IRenderDevice::SsaoParams ao{}; ao.enabled = false; device->setSsaoParams(ao); }
     { x3::rhi::IRenderDevice::GiParams gi{}; gi.enabled = false; device->setGiParams(gi); }
+    // NEON POINT-LIGHTS (glassy-neon cyberpunk reskin): a cool CYAN key + a MAGENTA
+    // accent in the cockpit (replacing the neutral fill), a cyan helm underglow, and
+    // a cool cyan corridor fill. Kept bright enough to read the space without washing
+    // out the emissive neon strips/screens.
     std::vector<x3::rhi::PointLight> lights;
+    // Cockpit cyan key (from the ceiling).
     { x3::rhi::PointLight pl{}; pl.pos[0]=0.0f; pl.pos[1]=2.7f; pl.pos[2]=0.0f;
-      pl.range=10.0f; pl.color[0]=4.0f; pl.color[1]=4.2f; pl.color[2]=4.6f; lights.push_back(pl); }
-    // Corridor ceiling fill (the aft room had NO light of its own — walkable
-    // check showed bunks/galley in the dark).
+      pl.range=10.0f; pl.color[0]=2.4f; pl.color[1]=4.6f; pl.color[2]=5.4f; lights.push_back(pl); }
+    // Cockpit magenta accent (off to the side, lower).
+    { x3::rhi::PointLight pl{}; pl.pos[0]=1.6f; pl.pos[1]=1.5f; pl.pos[2]=-0.8f;
+      pl.range=6.0f; pl.color[0]=4.6f; pl.color[1]=1.2f; pl.color[2]=3.6f; lights.push_back(pl); }
+    // Cyan helm underglow at the forward console.
+    { x3::rhi::PointLight pl{}; pl.pos[0]=0.0f; pl.pos[1]=0.9f; pl.pos[2]=-2.2f;
+      pl.range=4.0f; pl.color[0]=1.6f; pl.color[1]=3.8f; pl.color[2]=4.8f; lights.push_back(pl); }
+    // Cool-cyan corridor ceiling fill (the aft room had NO light of its own).
     { x3::rhi::PointLight pl{}; pl.pos[0]=0.0f; pl.pos[1]=2.6f; pl.pos[2]=5.5f;
-      pl.range=8.0f; pl.color[0]=3.2f; pl.color[1]=3.4f; pl.color[2]=3.8f; lights.push_back(pl); }
+      pl.range=8.0f; pl.color[0]=2.4f; pl.color[1]=3.2f; pl.color[2]=3.8f; lights.push_back(pl); }
     for (const auto& bl : windows.bleedLights()) lights.push_back(bl);
     device->setPointLights(lights.data(), (uint32_t)lights.size());
 
