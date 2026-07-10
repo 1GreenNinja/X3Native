@@ -63,6 +63,9 @@ bool WingDressing::build(x3::rhi::IRenderDevice& device,
     // No CanonBeats (all kNoRoom) — the wings have no Jake's-cell / boss beats, so
     // classify() routes purely on room name + elevation band.
     CanonBeats beats;
+    // BLACK-PROP FIX: the tower props are dark-metal kit furniture that reads black in
+    // the windowless wing floors — matte-tint them (see RoomDressing::setPropMaterialLift).
+    m_dress.setPropMaterialLift(true);
     m_built = m_dress.build(device, surfaceLibDir, convertedGlbDir, m_floor, beats);
     x3::logInfo("[wing-dress] " + std::to_string(m_dress.roomsDressed()) + "/" +
                 std::to_string(wc) + " F2-F7 wing rooms dressed");

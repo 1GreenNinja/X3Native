@@ -5329,6 +5329,17 @@ int runDefaultHost(HostContext& hc) {
                                   x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
             prevL = lNow;
             std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
+            // BLACK-PROP FIX (light routing). The F2-F7 west-wing dressing authors one
+            // motivated KEY light per room, sitting right over that room's hero props
+            // (beds / vats / crates / boardroom table). Until now those lights were only
+            // uploaded by the --capture-wings dev tool, so in ACTUAL --world level1
+            // gameplay the tower rooms leaned entirely on the flashlight + distant
+            // ceiling fixtures and the metallic kit props read dark. Append the current
+            // floor's wing keys here (floor-Y gated inside collectFloorLights, so only
+            // the plate the player stands on contributes — the active count stays well
+            // under the 64-light cap). Combined with the prop metallic clamp above the
+            // wing rooms now read with their zone key in real play, not just captures.
+            game.wingFloorLights(x3::phys::Vec3{ camX, camY, camZ }, fl);
             // ELEVATOR INTERIOR LIGHTING: the cab's ceiling fill + (in disco mode) the
             // 4 colored spots. Without this the car interior was unlit and disco never
             // rendered. Only added when the player is near/in the cab so they don't eat

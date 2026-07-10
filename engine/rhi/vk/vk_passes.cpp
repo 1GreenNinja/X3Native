@@ -894,7 +894,7 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
                       const float model[16], bool alphaMask, bool alphaBlend,
                       TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                       uint32_t extraFlags, const GlassMaterial* glass,
-                      float clearcoat , float clearcoatRough ) {
+                      float clearcoat , float clearcoatRough , float metallicScale ) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -987,7 +987,11 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             r.glassTint[0]   = glass->tint[0];    r.glassTint[1]   = glass->tint[1];
             r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = 0.0f;
         } else {
-            r.glassParams[0] = r.glassParams[1] = r.glassParams[2] = r.glassParams[3] = 0.0f;
+            r.glassParams[0] = r.glassParams[1] = r.glassParams[2] = 0.0f;
+            // BLACK-PROP FIX: opaque draws have no glass state, so the spare .w lane
+            // carries the per-object metallic CLAMP (mesh.frag multiplies mr.b by it).
+            // 1.0 (the default for every call site) is byte-identical to no clamp.
+            r.glassParams[3] = metallicScale;
             r.glassTint[0]   = r.glassTint[1]   = r.glassTint[2]   = r.glassTint[3]   = 0.0f;
         }
         m_drawRecords.push_back(r);

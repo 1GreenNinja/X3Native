@@ -358,10 +358,12 @@ public:
                      const float baseColorFactor[4], const float emissive[4],
                      const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {},
                      TextureHandle detailTex = {}, float detailUvScale = 1.0f,
-                     float clearcoat = 0.0f, float clearcoatRough = 0.05f) override {
+                     float clearcoat = 0.0f, float clearcoatRough = 0.05f,
+                     float metallicScale = 1.0f) override {
         drawMeshInternal(fc, mesh, baseColor, normal, metalRough, baseColorFactor, emissive,
                          model, alphaMask, alphaBlend, emissiveTex, detailTex, detailUvScale,
-                         /*extraFlags=*/0u, /*glass=*/nullptr, clearcoat, clearcoatRough);
+                         /*extraFlags=*/0u, /*glass=*/nullptr, clearcoat, clearcoatRough,
+                         metallicScale);
     }
 
     // Shared draw record append. The opaque/emissive/PBR/glass paths differ only by
@@ -373,7 +375,8 @@ public:
                           const float model[16], bool alphaMask, bool alphaBlend,
                           TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                           uint32_t extraFlags, const GlassMaterial* glass,
-                          float clearcoat = 0.0f, float clearcoatRough = 0.05f);
+                          float clearcoat = 0.0f, float clearcoatRough = 0.05f,
+                          float metallicScale = 1.0f);
 
     // ---- Procedural planet body (FORGE3D port) -----------------------------
     // Queue a planet draw for THIS frame: resolve each TextureHandle to its

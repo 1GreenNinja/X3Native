@@ -1370,14 +1370,28 @@ void RoomDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                                   d.baseColorFactor[1] * e.tint[1],
                                   d.baseColorFactor[2] * e.tint[2],
                                   d.baseColorFactor[3] * e.tint[3] };
+            // BLACK-PROP FIX (wing floors, m_propMatLift). See RoomDressing::
+            // setPropMaterialLift: the converted kit furniture bakes metallic=1 over a
+            // mid-tone kit albedo texture, so in the windowless tower — no bright IBL env
+            // to reflect — the props read as flat BLACK. When the lift is on, DROP the
+            // dark kit albedo texture (the recipe tint carried in `bc` becomes the matte
+            // base color) and CLAMP the metalness so a diffuse lobe returns; the props
+            // then read with form + tint under the room/pendant/flashlight lighting in
+            // BOTH gameplay and the capture rig. The normal map is kept for surface
+            // relief. OFF (canon dressing) -> the original textured/metallic draw, exact.
+            constexpr float kPropMetallicClamp = 0.35f;   // 1.0 = full metal (no diffuse); 0.35 restores diffuse
+            const x3::rhi::TextureHandle baseTex =
+                m_propMatLift ? x3::rhi::TextureHandle{ 0 } : x3::rhi::TextureHandle{ d.baseColorTexId };
+            const float metalScale = m_propMatLift ? kPropMetallicClamp : 1.0f;
             device.drawMeshPBR(frame, x3::rhi::MeshHandle{ d.meshId },
-                               x3::rhi::TextureHandle{ d.baseColorTexId },
+                               baseTex,
                                x3::rhi::TextureHandle{ d.normalTexId },
                                x3::rhi::TextureHandle{ d.mrTexId },
                                bc, emis, fin, d.alphaMask, d.alphaBlend,
                                x3::rhi::TextureHandle{ d.emissiveTexId },
                                x3::rhi::TextureHandle{ d.detailTexId },
-                               d.detailUvScale, d.clearcoat, d.clearcoatRough);
+                               d.detailUvScale, d.clearcoat, d.clearcoatRough,
+                               metalScale);
         }
     }
     const x3::rhi::TextureHandle white{ 0 };

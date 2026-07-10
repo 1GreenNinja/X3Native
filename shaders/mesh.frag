@@ -141,6 +141,11 @@ layout(location = 8) flat in uint vNormalTexIndex; // 0 = none (PBR normal map)
 layout(location = 9) flat in uint vMrTexIndex;     // 0 = none (metallic-roughness)
 layout(location = 10) flat in uint vEmissiveTexIndex; // 0 = none (emissive map)
 layout(location = 11) flat in uint vDetailPacked;     // HDRP micro-detail: (uvScale*64<<20)|bindlessIdx
+// GLASS material varyings ride locations 12/13 (glass.frag reads both). The opaque
+// mesh.frag only needs vGlassParams.w — repurposed as a per-object METALLIC-CLAMP
+// scale for the room-dressing kit props (0 = no clamp -> treat as 1.0). See the
+// BLACK-PROP FIX in the PBR path below + IRenderDevice::drawMeshPBR(metallicScale).
+layout(location = 12) flat in vec4 vGlassParams;
 
 layout(location = 0) out vec4 outColor;
 
@@ -766,7 +771,18 @@ void main() {
     } else {
         // ---- PBR metallic-roughness (Cook-Torrance GGX). glTF MR: B=metallic, G=roughness. ----
         vec3  mr       = texture(textures[nonuniformEXT(vMrTexIndex)], vUV).rgb;
-        float metallic = mr.b;
+        // BLACK-PROP FIX (room-dressing kit props). Dark-albedo kit furniture (crates,
+        // beds, vats, chairs) authors metallic=1 in its MR map. A full metal has NO
+        // diffuse lobe (diff = albedo*(1-metallic) -> 0) and its only ambient response
+        // is the F0-tinted environment reflection — which, in a windowless facility with
+        // a dark baked env, is ~black. Result: the props render as flat black silhouettes
+        // even under bright ceiling/pendant lights, while the diffuse graybox shell reads
+        // fine. The dressing passes a per-object metallic CLAMP in vGlassParams.w (the
+        // otherwise-unused glass lane on opaque draws) so these props keep a diffuse lobe
+        // that actually catches the room + flashlight lighting in BOTH gameplay and the
+        // capture rig. 0 = untouched (every non-dressing draw -> byte-identical shading).
+        float mrClamp  = vGlassParams.w > 0.0 ? vGlassParams.w : 1.0;
+        float metallic = mr.b * mrClamp;
         float pRough   = clamp(mr.g - detSmoothAdj * 0.4, 0.045, 1.0);  // perceptual roughness (for IBL) + detail-smoothness nudge
         float a        = pRough; a *= a;                         // -> GGX alpha (direct lights)
         vec3  F0       = mix(vec3(0.04), albedo.rgb, metallic);

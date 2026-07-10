@@ -72,6 +72,20 @@ public:
 
     uint32_t roomsDressed() const { return m_roomsDressed; }
 
+    // BLACK-PROP FIX (wing floors). The F2-F7 tower props are converted kit furniture
+    // (crates/beds/vats/chairs) whose GLBs bake metallic=1 over a mid-tone kit albedo
+    // texture. In the windowless tower — no bright IBL env to reflect — a full metal
+    // has no diffuse lobe and its albedo (kit texture × the recipe's sub-1.0 tint) is
+    // far too dark to reflect anything, so the props render as flat BLACK silhouettes
+    // (the two-pass LD review's #1 note). When this lift is enabled the draw path treats
+    // those props as MATTE surfaces of their authored recipe tint (drops the dark kit
+    // albedo texture so the deliberately-chosen tint IS the base color) and clamps the
+    // metalness so a diffuse lobe returns — the props then read with form + tint under
+    // the room/pendant/flashlight lighting in BOTH gameplay and the capture rig. The
+    // normal map is kept so surface relief survives. OFF by default: the canon/detention
+    // dressing (bright cell lights, reads fine today) stays byte-for-byte unchanged.
+    void setPropMaterialLift(bool on) { m_propMatLift = on; }
+
 private:
     struct Panel {                    // one textured surface panel, prebuilt
         uint32_t room = kNoRoom;
@@ -123,6 +137,7 @@ private:
     std::vector<std::pair<uint64_t, x3::rhi::MeshHandle>> m_quadCache;
     uint32_t m_roomsDressed = 0;
     int      m_lastZone     = -1;
+    bool     m_propMatLift  = false;  // BLACK-PROP FIX: matte-tint the kit props (wing floors only)
 };
 
 // The union of surface-library set names the zone recipes reference (deduped).
