@@ -1133,6 +1133,19 @@ int runDefaultHost(HostContext& hc) {
     // idles/wanders in the B1 arena hall, scatters + cowers when shots ring out,
     // and drifts back once it goes quiet. Built only in the legacy Level-1 world.
     x3::game::CrowdSystem facilityCrowd;
+    // LIVING NPCs (Tim: "NPCs who interact with each other and are seen working,
+    // playing, living life") — the canon facility population, room-tagged for
+    // the PVS: [0] Main Hall fringe (converse knots + a sweeper + a console
+    // tender), [1] Bottom Hall work crew (crate carry + sweep + console),
+    // [2] Entrance fringe (a seated hand-game pair). ~12 agents total.
+    x3::game::CrowdSystem canonCrowds[3];
+    // LIVING NPCs — the streamed CITY crowds: [0] New District sidewalk
+    // (wanderers + conversation knots), [1] the warehouse-dock work crew
+    // (crates on the industrial edge), [2] Scrapyard plaza (kickabout knot +
+    // wanderers). Built INSIDE the city region realize via the WorldStreamer
+    // region hooks — the region's ownership ledger owns every entity/mesh, and
+    // the teardown hook abandon()s them before any slot is released.
+    x3::game::CrowdSystem cityCrowds[3];
     // LIVING WORLD: the FACILITY ALERT LEVEL (the wanted system, pillar 3). The
     // host feeds it observations (guard positions, LOS, gunshots, bodies, keypad
     // tampers) and applies its effects (reinforcement spawns, the level-3 door
@@ -1624,6 +1637,85 @@ int runDefaultHost(HostContext& hc) {
                             " -> Research " + rc(bt.research) + " -> Medical " + rc(bt.medical) +
                             " -> Armory " + rc(bt.armory) + " -> Boss Arena " + rc(bt.bossArena) +
                             " -> Elevator Lobby " + rc(bt.elevatorLobby));
+            }
+            // ---- LIVING NPCs (canon facility): detained workers + staff who
+            // WORK, PLAY, TALK and LIVE in the canonical rooms — the B1-arena
+            // crowd the legacy world had, adapted to canon rooms and room-tagged
+            // so the portal PVS culls them exactly like the canonPlay spawns.
+            // Violence feed: the same gunfire cue that scatters the legacy crowd
+            // (see the fire block). Kinematic scene entities — zero physics. ----
+            {
+                const auto npc0 = std::chrono::steady_clock::now();
+                uint32_t npcCount = 0;
+                auto buildRoomCrowd = [&](x3::game::CrowdSystem& cs,
+                                          const char* roomName,
+                                          x3::game::CrowdConfig cc) {
+                    const uint32_t r = canonFloor.roomByName(roomName);
+                    if (r == x3::game::kNoRoom) return;
+                    const x3::game::CanonRoom& rm = canonFloor.rooms[r];
+                    cc.groundY = rm.y0();
+                    cc.roomId  = r;
+                    cs.build(cc, scene, *device);
+                    npcCount += cs.agentCount();
+                };
+                // Main Hall (44x5 hall at z~44.5): 6 staff — 4 civilians who
+                // wander the hall fringe and stop to CHAT, a slow SWEEPER pacing
+                // the length, a CONSOLE TENDER at the north-wall panel.
+                {
+                    x3::game::CrowdConfig cc;
+                    cc.count = 6; cc.converse = true;
+                    cc.centerX = 22.0f; cc.centerZ = 44.5f;
+                    cc.halfX = 19.0f; cc.halfZ = 1.6f; cc.radius = 20.0f;
+                    cc.points = { 8.0f, 44.2f,  15.0f, 45.2f,  24.0f, 43.8f,
+                                  31.0f, 45.0f, 37.0f, 44.3f };
+                    x3::game::CrowdWorkPoint sweep;
+                    sweep.kind = x3::game::CrowdWorkPoint::Kind::Sweep;
+                    sweep.ax = 6.0f; sweep.az = 43.9f; sweep.bx = 38.0f; sweep.bz = 43.9f;
+                    x3::game::CrowdWorkPoint tend;
+                    tend.kind = x3::game::CrowdWorkPoint::Kind::Console;
+                    tend.ax = 27.0f; tend.az = 46.1f; tend.bx = 27.0f; tend.bz = 47.0f;
+                    cc.work = { sweep, tend };
+                    buildRoomCrowd(canonCrowds[0], "Main Hall", cc);
+                }
+                // Bottom Hall (36x4 service hall at z~1): the WORK CREW — a
+                // crate carrier hauling supplies down the hall, a sweeper, a
+                // console tender at the east end, plus one off-shift wanderer.
+                {
+                    x3::game::CrowdConfig cc;
+                    cc.count = 4; cc.converse = true;
+                    cc.centerX = 22.0f; cc.centerZ = 1.0f;
+                    cc.halfX = 15.0f; cc.halfZ = 1.2f; cc.radius = 16.0f;
+                    cc.points = { 10.0f, 1.0f,  20.0f, 1.6f,  30.0f, 0.6f };
+                    x3::game::CrowdWorkPoint carry;
+                    carry.kind = x3::game::CrowdWorkPoint::Kind::Carry;
+                    carry.ax = 9.0f; carry.az = 0.6f; carry.bx = 27.0f; carry.bz = 0.6f;
+                    x3::game::CrowdWorkPoint sweep;
+                    sweep.kind = x3::game::CrowdWorkPoint::Kind::Sweep;
+                    sweep.ax = 14.0f; sweep.az = 1.8f; sweep.bx = 32.0f; sweep.bz = 1.8f;
+                    x3::game::CrowdWorkPoint tend;
+                    tend.kind = x3::game::CrowdWorkPoint::Kind::Console;
+                    tend.ax = 35.5f; tend.az = 1.0f; tend.bx = 37.0f; tend.bz = 1.0f;
+                    cc.work = { carry, sweep, tend };
+                    buildRoomCrowd(canonCrowds[1], "Bottom Hall", cc);
+                }
+                // Entrance fringe: a seated HAND-GAME pair off the golden path
+                // (the breach walk passes them living their lives).
+                {
+                    x3::game::CrowdConfig cc;
+                    cc.count = 2;
+                    cc.centerX = 5.5f; cc.centerZ = 50.0f;
+                    cc.halfX = 3.6f; cc.halfZ = 1.5f; cc.radius = 4.0f;
+                    x3::game::CrowdPlaySpot bench;
+                    bench.cx = 3.0f; bench.cz = 51.0f; bench.players = 2; bench.ball = false;
+                    cc.play = { bench };
+                    buildRoomCrowd(canonCrowds[2], "Entrance", cc);
+                }
+                const double npcMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - npc0).count();
+                x3::logInfo("LIVING NPCs: canon facility crowds built — " +
+                            std::to_string(npcCount) + " agents in 3 rooms (" +
+                            std::to_string(npcMs) + " ms)");
+                x3::boot::mark("canon crowds (living NPCs)");
             }
             // ---- SEAM 2 (world merge): THE GLASS EXTERIOR WRAPS THE REAL TOWER.
             // The surface world's facility skin (app/facility_exterior.*, factored
@@ -2137,6 +2229,88 @@ int runDefaultHost(HostContext& hc) {
             canonWstream.setLookahead(hc.wsLookaheadS);
             canonWstream.setRealizedRoomTag(x3::game::kStreamedExteriorRoom);
             canonWstream.setSharedSurfaceLibrary(&canonRooms.surfaceLibrary());
+            // ---- LIVING NPCs (city): the street crowds live INSIDE the city
+            // region — built in the realize's capture window (the region ledger
+            // owns every entity/mesh; the realize re-stamp tags them
+            // kStreamedExteriorRoom) and abandon()ed by the teardown hook
+            // BEFORE any slot release, so stream-out/in cycles leak nothing and
+            // never write into recycled slots. Sites sit on the district flat
+            // pads (placeOnTerrain anchors the ground). ----
+            canonWstream.setRegionHooks(
+                [&cityCrowds](const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
+                              x3::rhi::IRenderDevice& dev, x3::phys::IPhysicsWorld&) {
+                    if (rd.id != "city") return;
+                    auto padY = [](float x, float z) {
+                        float g[3]; x3::game::placeOnTerrain(x, z, g);
+                        return g[1] + 0.20f;   // stand on the sidewalk/plaza slabs
+                    };
+                    // [0] New District main street (200,500): sidewalk wanderers
+                    // + conversation knots along the shop fronts.
+                    {
+                        x3::game::CrowdConfig cc;
+                        cc.count = 10; cc.converse = true;
+                        cc.centerX = 200.0f; cc.centerZ = 500.0f;
+                        cc.halfX = 105.0f; cc.halfZ = 16.0f; cc.radius = 110.0f;
+                        cc.groundY = padY(200.0f, 500.0f);
+                        cc.roomId = x3::game::kStreamedExteriorRoom;
+                        cc.points = { 118.0f, 486.0f,  141.0f, 514.0f,  187.0f, 486.0f,
+                                      233.0f, 514.0f,  279.0f, 486.0f,  160.0f, 500.0f,
+                                      248.0f, 500.0f,  295.0f, 514.0f };
+                        cityCrowds[0].build(cc, s, dev);
+                    }
+                    // [1] the warehouse-dock WORK CREW on the industrial edge
+                    // (New District Blvd, Z~420): two crate runs between the
+                    // loading docks + a dock console + a sweeper.
+                    {
+                        x3::game::CrowdConfig cc;
+                        cc.count = 5; cc.converse = true;
+                        cc.centerX = 120.0f; cc.centerZ = 424.0f;
+                        cc.radius = 26.0f;
+                        cc.groundY = padY(120.0f, 424.0f);
+                        cc.roomId = x3::game::kStreamedExteriorRoom;
+                        cc.points = { 112.0f, 430.0f,  128.0f, 431.0f };
+                        x3::game::CrowdWorkPoint c1;
+                        c1.kind = x3::game::CrowdWorkPoint::Kind::Carry;
+                        c1.ax = 103.0f; c1.az = 428.0f; c1.bx = 136.0f; c1.bz = 428.0f;
+                        x3::game::CrowdWorkPoint c2;
+                        c2.kind = x3::game::CrowdWorkPoint::Kind::Carry;
+                        c2.ax = 137.0f; c2.az = 424.5f; c2.bx = 112.0f; c2.bz = 421.5f;
+                        x3::game::CrowdWorkPoint tend;
+                        tend.kind = x3::game::CrowdWorkPoint::Kind::Console;
+                        tend.ax = 140.0f; tend.az = 426.0f; tend.bx = 140.0f; tend.bz = 421.0f;
+                        x3::game::CrowdWorkPoint sweep;
+                        sweep.kind = x3::game::CrowdWorkPoint::Kind::Sweep;
+                        sweep.ax = 104.0f; sweep.az = 431.0f; sweep.bx = 134.0f; sweep.bz = 431.0f;
+                        cc.work = { c1, c2, tend, sweep };
+                        cityCrowds[1].build(cc, s, dev);
+                    }
+                    // [2] Scrapyard main street + town-square plaza (-600,~490):
+                    // a 4-player KICKABOUT on the plaza open lot + wanderers who
+                    // stop to chat along the main street.
+                    {
+                        x3::game::CrowdConfig cc;
+                        cc.count = 9; cc.converse = true;
+                        cc.centerX = -600.0f; cc.centerZ = 495.0f;
+                        cc.halfX = 55.0f; cc.halfZ = 26.0f; cc.radius = 60.0f;
+                        cc.groundY = padY(-600.0f, 490.0f);
+                        cc.roomId = x3::game::kStreamedExteriorRoom;
+                        cc.points = { -600.0f, 489.0f,  -582.0f, 517.0f,  -648.0f, 518.0f,
+                                      -560.0f, 505.0f,  -620.0f, 495.0f };
+                        x3::game::CrowdPlaySpot lot;
+                        lot.cx = -594.0f; lot.cz = 481.5f; lot.players = 4; lot.ball = true;
+                        cc.play = { lot };
+                        cityCrowds[2].build(cc, s, dev);
+                    }
+                    x3::logInfo("LIVING NPCs: city street crowds built inside the "
+                                "`city` region realize (24 agents: sidewalk 10, "
+                                "dock crew 5, plaza 9 — ledger-owned)");
+                },
+                [&cityCrowds](const x3::game::WorldRegionDesc& rd) {
+                    if (rd.id != "city") return;
+                    for (auto& cc : cityCrowds) cc.abandon();
+                    x3::logInfo("LIVING NPCs: city crowds abandoned with the region "
+                                "(ledger tears the entities down)");
+                });
             // Boot residency at the tower center. The tower sits INSIDE the city
             // footprint (anchor (-200,425) r750 => ~481 m out), so this realizes
             // city + surface_landmarks synchronously ON THE LOADING SCREEN —
@@ -2968,6 +3142,11 @@ int runDefaultHost(HostContext& hc) {
             if (canonWorld && canonFloor.valid()) {
                 canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
                 canonDressing.tick(dt);
+                // LIVING NPCs: tick the crowds through the settle so the still
+                // captures them mid-life (conversations formed, crates riding,
+                // the ball in play) — no PVS gate here; we want them settled.
+                for (auto& cc : canonCrowds) if (cc.built()) cc.update(dt, scene);
+                for (auto& cc : cityCrowds)  if (cc.built()) cc.update(dt, scene);
                 // SEAM 3: keep the planet streaming under the shot camera — an
                 // outdoor --shot-cam far from the tower needs its terrain tiles
                 // (the ring re-centers on the camera) and any nearby regions
@@ -5733,6 +5912,16 @@ int runDefaultHost(HostContext& hc) {
             // LIVING WORLD: the facility civilians (idle/wander; scatter+cower on
             // gunfire via onViolence in the fire block; return after calm).
             if (facilityCrowd.built()) facilityCrowd.update(dt, scene);
+            // LIVING NPCs: the canon room crowds + the streamed city crowds —
+            // they work, they play, they talk. Updates are gated on the PVS
+            // (roomVisible: a crowd in a culled room / an unseen outdoors costs
+            // nothing); city systems exist only while the region is resident.
+            for (auto& cc : canonCrowds)
+                if (cc.built() && scene.roomVisible(cc.config().roomId))
+                    cc.update(dt, scene);
+            for (auto& cc : cityCrowds)
+                if (cc.built() && scene.roomVisible(cc.config().roomId))
+                    cc.update(dt, scene);
             // LIVING WORLD: the FACILITY ALERT LEVEL — feed observations, apply
             // effects (reinforcements, lockdown doors). Lights/HUD read it below.
             if (facilityAlertOn) {
@@ -6199,6 +6388,11 @@ int runDefaultHost(HostContext& hc) {
             // and any guard in earshot raises the facility alert (resolved against
             // the live observers at the next alert update).
             if (facilityCrowd.built()) facilityCrowd.onViolence(eye);
+            // LIVING NPCs: the canon room crowds + city street crowds hear it
+            // too (onViolence self-gates on scatterRadius — a distant shot
+            // never disturbs a crowd out of earshot).
+            for (auto& cc : canonCrowds) if (cc.built()) cc.onViolence(eye);
+            for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(eye);
             if (facilityAlertOn) facilityAlert.reportGunshot(eye);
             // Recoil -> camera (transient upward kick; recovered in the camera block).
             weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);

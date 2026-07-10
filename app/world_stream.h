@@ -51,6 +51,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -160,6 +161,26 @@ public:
     // does NOT destroy it (its owner does). Null (default) = the streamer's own
     // internal library, exactly as before.
     void setSharedSurfaceLibrary(SurfaceLibrary* lib) { m_sharedSurf = lib; }
+    // LIVING NPCs (region-owned host layers): optional hooks bracketed into the
+    // region lifecycle so a host system (e.g. the city street crowds) can live
+    // INSIDE a streamed region without leaking across teardown:
+    //   * onBuild fires inside realize()'s entity-capture window, AFTER the
+    //     region's content builder — every entity/mesh it creates lands in the
+    //     region's ownership ledger, gets the realized room tag, and is
+    //     destroyed by the region eviction like any other region content.
+    //   * onTeardown fires the moment an eviction STARTS (evictSlice's first
+    //     slice — and therefore also shutdown()'s evictAll), BEFORE any slot is
+    //     released, so the host system can abandon()/forget its entity ids and
+    //     never write into a recycled slot.
+    // Default (unset) = exact old behavior; hook-less self-tests are untouched.
+    using RegionBuildFn    = std::function<void(const WorldRegionDesc&, Scene&,
+                                                x3::rhi::IRenderDevice&,
+                                                x3::phys::IPhysicsWorld&)>;
+    using RegionTeardownFn = std::function<void(const WorldRegionDesc&)>;
+    void setRegionHooks(RegionBuildFn onBuild, RegionTeardownFn onTeardown) {
+        m_onRegionBuild    = std::move(onBuild);
+        m_onRegionTeardown = std::move(onTeardown);
+    }
 
     // ---- Queries (host HUD + self-test) -------------------------------------
     uint32_t   regionCount() const { return (uint32_t)m_regions.size(); }
@@ -255,6 +276,8 @@ private:
     SurfaceLibrary m_surflib;
     SurfaceLibrary* m_sharedSurf = nullptr;  // SEAM 3: optional external library (not owned)
     uint32_t m_roomTag = kNoRoom;            // SEAM 3: roomId stamped on realized entities
+    RegionBuildFn    m_onRegionBuild;        // LIVING NPCs: region-owned host content
+    RegionTeardownFn m_onRegionTeardown;
     uint32_t m_proxyEngages = 0;
     uint64_t m_meshesCreated = 0, m_meshesDestroyed = 0;
     uint64_t m_texturesCreated = 0, m_texturesDestroyed = 0;
