@@ -58,6 +58,7 @@ add_executable(X3Engine WIN32
     sky_stars.cpp
     space/ship_interior.cpp
     space/ship_windows.cpp
+    space/ship_interior_art.cpp
     world_hosts/host_shipwindows.cpp
     secret_room.cpp
     ecs_render.cpp

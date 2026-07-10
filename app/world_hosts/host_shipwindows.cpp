@@ -20,6 +20,7 @@
 #include "../player.h"
 #include "../space/ship_interior.h"
 #include "../space/ship_windows.h"
+#include "../space/ship_interior_art.h"
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/core/x3_log.h"
@@ -54,6 +55,13 @@ int hostShipWindows(HostContext& hc) {
     x3::space::ShipWindows windows;
     windows.init(*device, interior.manifest());
 
+    // THE REAL INTERIOR (integration feast): drape the licensed Scifi Kit Vol 3
+    // pieces over the graybox (env_art overlay pattern — graybox keeps collision
+    // + is the per-piece fallback). Stations become interactable below.
+    x3::space::ShipInteriorArt art;
+    if (art.build(*device, sscene, interior.manifest()) > 0)
+        interior.hideStationMarkers(sscene);   // real consoles replace the graybox cubes
+
     // No sky (inside the hull). SSAO/GI raster fallback off so a no-RT capture
     // is not black (lane brief; note: on the 3090 Ti RT paths are now live but
     // the fold keeps the branch's proven look byte-faithful — RTAO polish is a
@@ -64,6 +72,10 @@ int hostShipWindows(HostContext& hc) {
     std::vector<x3::rhi::PointLight> lights;
     { x3::rhi::PointLight pl{}; pl.pos[0]=0.0f; pl.pos[1]=2.7f; pl.pos[2]=0.0f;
       pl.range=10.0f; pl.color[0]=4.0f; pl.color[1]=4.2f; pl.color[2]=4.6f; lights.push_back(pl); }
+    // Corridor ceiling fill (the aft room had NO light of its own — walkable
+    // check showed bunks/galley in the dark).
+    { x3::rhi::PointLight pl{}; pl.pos[0]=0.0f; pl.pos[1]=2.6f; pl.pos[2]=5.5f;
+      pl.range=8.0f; pl.color[0]=3.2f; pl.color[1]=3.4f; pl.color[2]=3.8f; lights.push_back(pl); }
     for (const auto& bl : windows.bleedLights()) lights.push_back(bl);
     device->setPointLights(lights.data(), (uint32_t)lights.size());
 
@@ -96,6 +108,7 @@ int hostShipWindows(HostContext& hc) {
         const bool wrote = device->captureFrame(outPath.c_str());
         if (wrote) x3::logInfo("--world ship-windows: wrote " + outPath);
         else       x3::logError("--world ship-windows: capture FAILED");
+        art.shutdown();
         windows.shutdown(*device);
         interior.shutdown(*sphys);
         sphys->shutdown();
@@ -118,7 +131,10 @@ int hostShipWindows(HostContext& hc) {
     bool prevSpaceS = false;
     int lastWs = 0, lastHs = 0;
     glfwGetFramebufferSize(window, &lastWs, &lastHs);
-    x3::logInfo("--world ship-windows: WASD walk, mouse look, Space jump, LeftShift sprint, Esc to quit");
+    x3::logInfo("--world ship-windows: WASD walk, mouse look, Space jump, LeftShift sprint, E interact, Esc to quit");
+    bool prevE = false;
+    int  activeStation = -1;         // station in range this frame (-1 none)
+    std::vector<float> stationPulse(art.stations().size(), 0.0f);
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -158,15 +174,54 @@ int hostShipWindows(HostContext& hc) {
 
         const float envYaw = 0.18f * t;   // slow pan: "flying through space"
         device->setCamera(camX, camY, camZ, camYaw, camPitch, 70.0f);
+        // ---- Interact: nearest art station within reach gets the E prompt;
+        //      pressing E pulses its console screen (and logs the action). ----
+        activeStation = -1;
+        {
+            float best = 2.2f * 2.2f;
+            const auto& sts = art.stations();
+            for (size_t i = 0; i < sts.size(); ++i) {
+                const float dx = sts[i].pos[0] - camX, dz = sts[i].pos[2] - camZ;
+                const float d2 = dx*dx + dz*dz;
+                if (d2 < best) { best = d2; activeStation = (int)i; }
+            }
+        }
+        const bool eNow = kd(GLFW_KEY_E);
+        if (eNow && !prevE && activeStation >= 0) {
+            stationPulse[(size_t)activeStation] = 1.0f;
+            x3::logInfo("[shipart] station used: " + art.stations()[(size_t)activeStation].kind);
+        }
+        prevE = eNow;
+        // Decay pulses + drive the console screen emissive (base 1.1 + pulse).
+        {
+            const auto& sts = art.stations();
+            for (size_t i = 0; i < sts.size(); ++i) {
+                stationPulse[i] = std::max(0.0f, stationPulse[i] - dt * 1.4f);
+                const uint32_t id = sts[i].screenEntity;
+                if (id != UINT32_MAX && id < sscene.size())
+                    sscene.get(id).emissive[3] = 1.1f + 2.4f * stationPulse[i];
+            }
+        }
+
         auto frame = device->beginFrame();
         if (frame.valid) {
             interior.render(*device, frame, sscene);
             windows.setCamera(camX, camY, camZ);
             windows.render(*device, frame, /*viewProj16=*/nullptr, t, envYaw, 0.0f);
+            if (activeStation >= 0) {
+                char prompt[64];
+                std::snprintf(prompt, sizeof(prompt), "[E]  %s CONSOLE",
+                              art.stations()[(size_t)activeStation].kind.c_str());
+                const float cy2[4] = { 0.55f, 0.9f, 1.0f, 0.9f };
+                device->drawHudTextF(frame, x3::rhi::FontRole::HudMono, prompt,
+                                     (float)lastWs * 0.5f - 90.0f,
+                                     (float)lastHs * 0.62f, 20.0f, cy2);
+            }
         }
         device->endFrame(frame);
     }
 
+    art.shutdown();
     windows.shutdown(*device);
     interior.shutdown(*sphys);
     sphys->shutdown();

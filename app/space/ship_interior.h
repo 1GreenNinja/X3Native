@@ -88,6 +88,16 @@ public:
     uint32_t stationCount() const { return (uint32_t)m_manifest.stations.size(); }
     uint32_t entityCount()  const { return m_entityCount; }   // scene entities build() added
     bool     built()        const { return m_built; }
+    // Hide the graybox station-marker cubes (zero-scale their transforms) — called
+    // by the host when a REAL art overlay (ship_interior_art) replaces them with
+    // actual console fixtures. The markers remain the fallback when art is missing.
+    void hideStationMarkers(x3::game::Scene& scene) {
+        for (uint32_t id : m_markerIds)
+            if (id < scene.size()) {
+                float* T = scene.get(id).transform;
+                for (int i = 0; i < 12; ++i) T[i] = 0.0f;   // zero basis = invisible
+            }
+    }
 
     // A sensible spawn point INSIDE the first room (feet position) so the host can
     // drop a Player into the cockpit immediately. Center of room 0, on its floor.
@@ -106,6 +116,7 @@ private:
     ShipManifest m_manifest;
     bool         m_built = false;
     uint32_t     m_entityCount = 0;
+    std::vector<uint32_t> m_markerIds;   // graybox station markers (hidable)
     x3::phys::Vec3 m_spawn{};
 
     // Static collision bodies (walls/floor/ceiling) — torn down in shutdown().

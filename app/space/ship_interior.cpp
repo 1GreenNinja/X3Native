@@ -206,7 +206,7 @@ void ShipInterior::build(x3::rhi::IRenderDevice& device, Scene& scene,
         e.emissive[0] = er; e.emissive[1] = eg; e.emissive[2] = eb; e.emissive[3] = 0.28f;
         std::memcpy(e.transform, kIdentity, sizeof(kIdentity));
         e.tag = (uint32_t)x3::game::Tag::Prop;
-        scene.add(e);
+        m_markerIds.push_back(scene.add(e));
         ++m_entityCount;
     }
 
