@@ -214,7 +214,12 @@ uint8_t classify(const CanonRoom& r, const CanonBeats& bt, uint32_t roomId) {
         const float y = r.cy;
         if (y < 18.0f)  return ZMedical;             // F2 wards / theaters / pharmacy
         if (y < 28.0f)  return ZGenetics;            // F3
-        if (y < 33.0f)  return ZCyber;               // F4
+        // F4's wing rooms ride the full 9 m floor ceiling, so their center-y is
+        // 30 + 4.5 = 34.5 — past the old 33 band edge (which assumed the canon
+        // rooms' lower ceilings) and into ZDroneBay. 35 keeps every F4 room cyan;
+        // the F4.5 tiers (33..64) never reach this line (platform/openCeiling ->
+        // ZCave, type "Cave Chamber" -> ZOrganic above).
+        if (y < 35.0f)  return ZCyber;               // F4
         if (y < 76.0f)  return ZDroneBay;            // F5
         if (y < 88.0f)  return ZSalvari;             // F6
         return ZExec;                                // F7 + roof rooms
@@ -561,18 +566,26 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             m_lights.push_back(cl);
         };
         const bool longX = r.w >= r.d;
+        // TALL-ROOM KEY CLAMP (F2-F7 wings): the zone keys were authored for the
+        // canon floors' 3.5-5 m ceilings, where a ceiling-hung key reaches the
+        // floor within its range. The wing floors are 8-12 m tall — a key at
+        // cY-0.5 with range 4-6.5 never touches the props, which read as black
+        // blobs. Hang the key no higher than ~4.6 m above the floor (a dropped
+        // cable pendant); rooms up to 5.1 m tall are byte-identical (min picks
+        // the ceiling), so the calibrated canon-F1 look is untouched.
+        const float keyY = std::min(cY - 0.5f, fY + 4.6f);
         if (z == ZHall || z == ZCorridor) {
             // Rhythm of cool keys along the long axis (the corridor's ONE statement).
             const float len = longX ? r.w : r.d;
             const int nKeys = std::max(1, (int)(len / 8.0f));
             for (int i = 0; i < nKeys; ++i) {
                 const float t = (i + 0.5f) / nKeys - 0.5f;
-                addLight(r.cx + (longX ? t * len : 0), cY - 0.35f,
+                addLight(r.cx + (longX ? t * len : 0), std::min(cY - 0.35f, fY + 4.75f),
                          r.cz + (longX ? 0 : t * len),
                          rec.keyRange, rec.keyR, rec.keyG, rec.keyB);
             }
         } else {
-            addLight(r.cx, cY - 0.5f, r.cz, rec.keyRange, rec.keyR, rec.keyG, rec.keyB);
+            addLight(r.cx, keyY, r.cz, rec.keyRange, rec.keyR, rec.keyG, rec.keyB);
             if (r.w * r.d > 40.0f)   // wide room: a dim fill at <= half the key
                 addLight(r.cx, fY + 0.6f, r.cz, rec.keyRange * 0.8f,
                          rec.keyR * 0.4f, rec.keyG * 0.4f, rec.keyB * 0.4f);
@@ -813,9 +826,13 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             auto hangLamp = [&](float x, float zp, float lr, float lg, float lb,
                                 float em, float range) {
                 const float e[4] = { lr, lg, lb, em };
-                placeProp(ri, aHang, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, x, cY - 0.10f, zp,
+                // Tall-room clamp (same law as keyY): in the 8-12 m wing halls the
+                // pendant drops on its cable to ~4.3 m so its pool reaches the props;
+                // canon rooms (<= 4.4 m) are unchanged.
+                const float lampY = std::min(cY, fY + 4.3f);
+                placeProp(ri, aHang, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, x, lampY - 0.10f, zp,
                           e, tSteel);
-                addLight(x, cY - 1.15f, zp, range, lr, lg, lb);
+                addLight(x, lampY - 1.15f, zp, range, lr, lg, lb);
             };
             auto cot = [&](float x, float zp, float yaw, const float* tint) {
                 placeProp(ri, aCot, yaw, 1.0f, acx(kCotAabb), kCotAabb.miny, acz(kCotAabb),
@@ -1290,10 +1307,15 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 // spine) flanked by two rows of exec chairs, brass pendants over the table,
                 // holographic strategy art on both long walls, a head-of-table presentation
                 // console. Clean dark luxury + brass.
+                // Dark WALNUT veneer, not coal: tDark (0.09 albedo) stays black under
+                // any light (diffuse ~0.03 post-tint) — the zone brief is "brass +
+                // dark wood veneer", so the table + chairs take a veneer brown that
+                // actually responds to the pendant pools.
+                const float tVeneer[4] = { 0.33f, 0.24f, 0.15f, 1.0f };
                 for (int i = -3; i <= 3; ++i) {
-                    crateLg(cx0, cz0 + i * 1.9f, (i & 1) ? 0.02f : 0.0f, tDarkCon, 0.02f);
-                    crateSm(cx0 - 2.2f, cz0 + i * 1.9f, 0.0f, tDark, 0.02f);
-                    crateSm(cx0 + 2.2f, cz0 + i * 1.9f, kPi,  tDark, 0.02f);
+                    crateLg(cx0, cz0 + i * 1.9f, (i & 1) ? 0.02f : 0.0f, tVeneer, 0.02f);
+                    crateSm(cx0 - 2.2f, cz0 + i * 1.9f, 0.0f, tVeneer, 0.02f);
+                    crateSm(cx0 + 2.2f, cz0 + i * 1.9f, kPi,  tVeneer, 0.02f);
                 }
                 hangLamp(cx0, cz0 - 4.2f, 1.60f, 1.15f, 0.45f, 1.0f, 3.6f);
                 hangLamp(cx0, cz0 + 4.2f, 1.60f, 1.15f, 0.45f, 1.0f, 3.6f);
@@ -1302,7 +1324,7 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                           1.00f, 0.78f, 0.40f, 0.45f, 0.55f);
                 glassQuad(2.4f, 1.4f, r.x1() - kInset - 0.04f, fY + 1.9f, cz0 + 4.0f, -kPi * 0.5f,
                           1.00f, 0.78f, 0.40f, 0.45f, 0.55f);
-                addLight(cx0, cY - 0.5f, cz0, 4.0f, 1.55f, 1.15f, 0.55f);
+                addLight(cx0, std::min(cY - 0.5f, fY + 4.6f), cz0, 4.0f, 1.55f, 1.15f, 0.55f);
             }
         }
         ++m_roomsDressed;

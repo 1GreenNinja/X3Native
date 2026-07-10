@@ -2514,19 +2514,32 @@ int runDefaultHost(HostContext& hc) {
             for (int i = -3; i <= 3; ++i) {
                 x3::rhi::PointLight pl;
                 pl.pos[0] = s.hallCx + i * (s.hallHw * 0.55f); pl.pos[1] = lightY;
-                pl.range = range; pl.color[0] = 3.1f; pl.color[1] = 2.7f; pl.color[2] = 2.0f;
+                // Brighter than round 1 (3.1/2.7/2.0): AUTHORED mid-dark surfaces +
+                // zone fog read underexposed even with auto-exposure at aeMax.
+                pl.range = range * 1.4f; pl.color[0] = 5.6f; pl.color[1] = 5.0f; pl.color[2] = 3.9f;
                 pl.pos[2] = twoRows ? -r.zHalf * 0.4f : 0.0f; pls.push_back(pl);
                 if (twoRows) { pl.pos[2] = r.zHalf * 0.4f; pls.push_back(pl); }
             }
             x3::rhi::PointLight fill;
             fill.pos[0] = s.hallCx + s.hallHw - 3.0f; fill.pos[1] = r.y0 + 2.6f; fill.pos[2] = 0.0f;
-            fill.range = 18.0f; fill.color[0] = 3.2f; fill.color[1] = 3.4f; fill.color[2] = 3.9f;
+            fill.range = 26.0f; fill.color[0] = 4.6f; fill.color[1] = 4.9f; fill.color[2] = 5.6f;
             pls.push_back(fill);
             // The dressing's OWN motivated keys (over the consoles/tanks/racks) — without
             // these the metallic kit props read black under the distant ceiling row.
             game.wingFloorLights(eye, pls);
             device->setPointLights(pls.data(), (uint32_t)pls.size());
         };
+        // BLACK-PROP FIX. The kit props (drones/crates/chairs/consoles) carry dark-
+        // albedo METALLIC MR maps; with no baked environment their diffuse is ~0 and
+        // there is nothing to reflect, so they render as black silhouettes while the
+        // diffuse graybox shell + emissive proc-geo light fine. Give the capture path
+        // the same recipe the ship-interior/intro-cockpit hosts use: a healthy interior
+        // ambient fill + setIblProbe(true) so the engine bakes the lit hall into the
+        // environment cube and the metals reflect it (per-shot kSettle frames let the
+        // probe bake resolve). Set once — the state persists across the shot loop.
+        device->setAmbient(0.34f, 0.36f, 0.42f);
+        device->setIblProbe(true);
+        device->setExposure(1.35f);   // capture-only EV bias (auto-exposure compensation)
         bool allOk = true;
         for (const WingShot& s : shots) {
             const float baseY = Lc.floorBaseY[(uint32_t)s.floor];
