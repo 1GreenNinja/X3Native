@@ -353,6 +353,7 @@ int main(int argc, char** argv) {
         _tf.testWeapons = o.testWeapons;
         _tf.testScript = o.testScript;
         _tf.testVehicle = o.testVehicle;
+        _tf.testCanonVehicle = o.testCanonVehicle;
         _tf.testVehParts = o.testVehParts;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
@@ -750,6 +751,7 @@ int main(int argc, char** argv) {
     _hc.dialogShot      = o.dialogShot;
     _hc.vigilShot       = o.vigilShot;
     _hc.alertShot       = o.alertShot;
+    _hc.shotDrive       = o.shotDrive;         // WORLD CARS driver-POV staging
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
     _hc.docWorldPath    = o.docWorldPath;
     _hc.cullPathArg     = o.cullPathArg;

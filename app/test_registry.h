@@ -67,6 +67,7 @@ struct TestFlags {
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;
+    bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;

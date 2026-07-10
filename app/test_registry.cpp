@@ -68,6 +68,7 @@
 #include "ragdoll.h"
 #include "ragdoll_demo.h"   // x3::game::runRagdollBlendCheck (--test-ragdoll)
 #include "vehicle.h"        // x3::game::runDriveEnterExitSelfTest (--test-vehicle)
+#include "world_cars.h"     // x3::game::runCanonVehicleSelfTest (--test-canonvehicle)
 #include "editor/editor.h"
 #include "editor/editor_host.h"
 #include "barrels.h"
@@ -709,6 +710,11 @@ int dispatchTests(const TestFlags& tf) {
                     "(spawn -> E enter -> throttle 4 s -> displacement + wheel contact -> E exit restores control)...");
         const bool driveOk = x3::game::runDriveEnterExitSelfTest();
         return (frameworkOk && driveOk) ? 0 : 1;
+    }
+    if (tf.testCanonVehicle) {
+        x3::logInfo("running WORLD CARS canon-vehicle self-test "
+                    "(park/enter/drive/exit + hold-E hack + unlocked-latch region persistence)...");
+        return x3::game::runCanonVehicleSelfTest() ? 0 : 1;
     }
     if (tf.testVehParts) {
         x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "

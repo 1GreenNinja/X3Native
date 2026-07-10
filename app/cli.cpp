@@ -164,6 +164,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-script") o.testScript = true;
         else if (a == "--test-weapons") o.testWeapons = true;
         else if (a == "--test-vehicle") o.testVehicle = true;
+        else if (a == "--test-canonvehicle") o.testCanonVehicle = true;
+        else if (a == "--shot-drive") o.shotDrive = true;
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;

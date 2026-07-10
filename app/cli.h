@@ -49,7 +49,15 @@ struct CliOptions {
          // REAL Level1Game DoorSystem hatch opens + objective line set; plus the
          // keypad submit link via the real HoloTerminal). See runHatchChainSelfTest.
          testHatch = false,
-         testEcology = false, testCrowd = false, testAlert = false;
+         testEcology = false, testCrowd = false, testAlert = false,
+         // --test-canonvehicle (WORLD CARS: enter/drive/exit + hold-E hack +
+         // unlocked-latch region persistence). See runCanonVehicleSelfTest.
+         testCanonVehicle = false;
+    // --shot-drive (canonlevel screenshot staging): enter the parked car nearest
+    // the shot camera and DRIVE it through the settle frames; the capture camera
+    // follows the live chase framing and the "[E] Exit" HUD hint is drawn — the
+    // honest driver-POV proof shot. Pair with --shot-settle 240.
+    bool        shotDrive = false;
     // --test-loader (EDITOR LevelDoc data-driven loader): author a doc in memory ->
     // save -> LOAD through the real loader -> assert the built world matches; then
     // modify + hot-reload -> assert the delta applied and the create/destroy ledgers

@@ -102,6 +102,7 @@
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
+#include "world_cars.h"                    // WORLD CARS: findable/drivable/hackable cars (canonlevel)
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
@@ -837,6 +838,7 @@ int runDefaultHost(HostContext& hc) {
     const std::string& uiDemoScreen = hc.uiDemoScreen;
     const bool dialogShot = hc.dialogShot;
     const bool alertShot = hc.alertShot;
+    const bool shotDrive = hc.shotDrive;   // WORLD CARS driver-POV staging
     const bool captureSpire = hc.captureSpire;
     const std::string& captureSpireDir = hc.captureSpireDir;
     const std::string& docWorldPath = hc.docWorldPath;
@@ -1146,6 +1148,13 @@ int runDefaultHost(HostContext& hc) {
     // region hooks — the region's ownership ledger owns every entity/mesh, and
     // the teardown hook abandon()s them before any slot is released.
     x3::game::CrowdSystem cityCrowds[3];
+    // WORLD CARS — findable/drivable/hackable vehicles in the one world (see
+    // world_cars.h). Host-owned; the apron/approach cars park at boot, the city
+    // cars park/unpark with the `city` region via the WorldStreamer hooks (the
+    // system owns only its OWN static bodies — nothing enters a region ledger).
+    x3::game::WorldCars worldCars;
+    float carPanicCooldown = 0.0f;   // throttles the drive-by crowd-panic probe
+    float carThrottleHud   = 0.0f;   // last driver throttle (engine-loop pitch)
     // LIVING WORLD: the FACILITY ALERT LEVEL (the wanted system, pillar 3). The
     // host feeds it observations (guard positions, LOS, gunshots, bodies, keypad
     // tampers) and applies its effects (reinforcement spawns, the level-3 door
@@ -2180,6 +2189,59 @@ int runDefaultHost(HostContext& hc) {
     constexpr float kRecoilRecover = 6.0f; // recoil recovery rate (rad/s decay)
 
     x3::boot::mark("per-weapon fire sfx");
+
+    // ==== WORLD CARS: findable, drivable, hackable vehicles in the one world. ====
+    // Host cars (apron + approach road + crash site) park NOW, inside the boot
+    // upload batch (the hero GLB upload amortizes into the world-build submit);
+    // city cars park/unpark with the `city` region via the streamer hooks below.
+    // The ONE live rig (chassis + Jolt VehicleConstraint) spawns lazily on the
+    // FIRST entry — zero vehicle constraints exist until the player drives.
+    if (canonWorld && canonFloor.valid() && facilityExterior.built()) {
+        worldCars.setGroundQuery([](float x, float z) {
+            float g[3]; x3::game::placeOnTerrain(x, z, g); return g[1];
+        });
+        worldCars.setWaterQuery([](float x, float z) {
+            return x3::game::worldWaterLevelAt(x, z);
+        });
+        // A successful hack is a TERMINAL-HACK stimulus (guarded exactly like
+        // the keypad path — the alert system may not be armed in canon) + a car
+        // alarm that scatters any crowd in earshot (onViolence self-gates).
+        worldCars.setHackAlarmHook([&](const x3::phys::Vec3& p) {
+            if (facilityAlertOn) facilityAlert.reportTerminalHack(p);
+            if (facilityCrowd.built()) facilityCrowd.onViolence(p);
+            for (auto& cc : canonCrowds) if (cc.built()) cc.onViolence(p);
+            for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(p);
+        });
+        const x3::game::FacilityExterior::Desc& cxd = facilityExterior.builtDesc();
+        std::vector<x3::game::WorldCarDef> carDefs;
+        // THE FIRST FINDABLE CAR — on the apron ring 10 m east of the breach
+        // walk, nose east along the facade (clear of the golden path +Z line).
+        carDefs.push_back({ "apron_east", cxd.breachCenter + 10.0f, cxd.z1 + 10.0f,
+                            90.0f, false, { 0.82f, 0.08f, 0.08f }, "" });
+        // West apron ring — LOCKED (the hack tutorial within sight of the tower).
+        carDefs.push_back({ "apron_west", cxd.x0 - 12.0f, cxd.z1 - 8.0f,
+                            0.0f, true, { 0.10f, 0.32f, 0.85f }, "" });
+        // The approach road's east shoulder (road x=22 half-w 4 m, z 80..150 —
+        // center x 28.5 keeps the body off the asphalt drive line).
+        carDefs.push_back({ "approach_road", 28.5f, 96.0f, 0.0f, false,
+                            { 0.90f, 0.55f, 0.10f }, "" });
+        // Short of the Crash Site (140,205), off the debris field — LOCKED.
+        carDefs.push_back({ "crash_site", 126.0f, 192.0f, 135.0f, true,
+                            { 0.45f, 0.45f, 0.50f }, "" });
+        // City curbs (region-owned; parked z 494/506 = between the z 486/514
+        // sidewalk walk-lines and clear of the z 500 street center + crowds).
+        carDefs.push_back({ "city_curb_e", 152.0f, 494.0f,  90.0f, false, { 0.93f, 0.90f, 0.86f }, "city" });
+        carDefs.push_back({ "city_curb_w", 262.0f, 506.0f, 270.0f, true,  { 0.16f, 0.62f, 0.30f }, "city" });
+        // West of the warehouse-dock work crew (their crate runs live x 103-140).
+        carDefs.push_back({ "city_dock",    94.0f, 424.0f,   0.0f, false, { 0.78f, 0.72f, 0.18f }, "city" });
+        // Scrapyard lot pair — main street east + west (kickabout at -594,481 is
+        // ~36 m clear of the nearest body).
+        carDefs.push_back({ "scrap_lot_a", -566.0f, 500.0f,  90.0f, true,  { 0.52f, 0.14f, 0.58f }, "city" });
+        carDefs.push_back({ "scrap_lot_b", -630.0f, 486.0f, 300.0f, false, { 0.13f, 0.13f, 0.16f }, "city" });
+        worldCars.build(carDefs, device, *physics, x3::game::convertedGlbRoot());
+        x3::boot::mark("WORLD CARS (host set parked)");
+    }
+
     // World build + every build-time GLB is done — land all batched uploads in one
     // submit. (Per-frame paths from here on use the normal unbatched semantics.)
     device->endUploadBatch();
@@ -2237,8 +2299,12 @@ int runDefaultHost(HostContext& hc) {
             // never write into recycled slots. Sites sit on the district flat
             // pads (placeOnTerrain anchors the ground). ----
             canonWstream.setRegionHooks(
-                [&cityCrowds](const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
-                              x3::rhi::IRenderDevice& dev, x3::phys::IPhysicsWorld&) {
+                [&cityCrowds, &worldCars](const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
+                              x3::rhi::IRenderDevice& dev, x3::phys::IPhysicsWorld& ph) {
+                    // WORLD CARS: park this region's curb cars (the system adds
+                    // only its OWN static bodies + direct-draw visuals — nothing
+                    // lands in the region ledger; teardown below unparks them).
+                    worldCars.onRegionBuild(rd.id, ph);
                     if (rd.id != "city") return;
                     auto padY = [](float x, float z) {
                         float g[3]; x3::game::placeOnTerrain(x, z, g);
@@ -2305,7 +2371,11 @@ int runDefaultHost(HostContext& hc) {
                                 "`city` region realize (24 agents: sidewalk 10, "
                                 "dock crew 5, plaza 9 — ledger-owned)");
                 },
-                [&cityCrowds](const x3::game::WorldRegionDesc& rd) {
+                [&cityCrowds, &worldCars, &physics](const x3::game::WorldRegionDesc& rd) {
+                    // WORLD CARS: unpark this region's curb cars (removes our
+                    // static bodies; a car currently DRIVEN is the host-owned
+                    // live rig and survives the eviction untouched).
+                    worldCars.onRegionTeardown(rd.id, *physics);
                     if (rd.id != "city") return;
                     for (auto& cc : cityCrowds) cc.abandon();
                     x3::logInfo("LIVING NPCs: city crowds abandoned with the region "
@@ -2836,6 +2906,7 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo(std::string("--capture-spire: ") + (allOk ? "all 8 floors captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -2936,6 +3007,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -3088,6 +3160,18 @@ int runDefaultHost(HostContext& hc) {
         }
         const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle
                                                          : (alertShot ? 110 : 16);
+        // WORLD CARS driver-POV staging (--shot-drive): take the wheel of the
+        // car nearest the shot camera and DRIVE it through the settle frames —
+        // the capture camera follows the live chase framing and the "[E] Exit"
+        // hint draws. Honest: the same enter path, physics and HUD the live
+        // loop uses. Pair with --shot-settle 240 so the car covers real road.
+        bool shotDriving = false;
+        if (shotDrive && canonWorld && worldCars.built()) {
+            worldCars.interact(ssEye, true, true, false, dt, nullptr, *physics, nullptr);
+            shotDriving = worldCars.driving();
+            if (!shotDriving)
+                x3::logWarn("--shot-drive: no (unlocked) car within reach of the shot camera");
+        }
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
             // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
@@ -3109,8 +3193,26 @@ int runDefaultHost(HostContext& hc) {
             // never satisfied here), so this tick is a pure no-op — kept for parity.
             for (uint32_t tid : subTriggers.update(ssEye)) subLevels.onTrigger(tid);
             subLevels.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
+            // WORLD CARS staging: drive (gentle throttle + a late lean into the
+            // steer so the still catches a real driving pose), stepped exactly
+            // like the live loop (setInput+preStep -> step -> postStep). Without
+            // --shot-drive, still refresh the HUD hint from the camera position
+            // (a --shot-cam parked next to a LOCKED car proves the hack prompt).
+            if (canonWorld && worldCars.built()) {
+                if (shotDriving) {
+                    x3::phys::VehicleInput vin;
+                    vin.throttle = (i > 20) ? 0.7f : 0.0f;
+                    vin.steer    = (i > kSettleFrames / 2) ? 0.18f : 0.0f;
+                    worldCars.driveInput(vin);
+                    worldCars.preStep(dt);
+                } else {
+                    worldCars.interact(ssEye, false, false, false, dt, nullptr,
+                                       *physics, nullptr);
+                }
+            }
             physics->step(dt);
             scene.update(*physics);
+            if (shotDriving) worldCars.postStep(dt);
             // FX demo: with a SMALL settle (<=30) spawn a fresh muzzle + impact burst
             // on the last few frames so bright sparks/dust are alive at the captured
             // frame (the LIVE-burst shot). With a LARGE settle (>30) skip the sparks
@@ -3198,6 +3300,13 @@ int runDefaultHost(HostContext& hc) {
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
             }
+            // WORLD CARS staging: the capture camera FOLLOWS the driven car
+            // (the drive host's chase framing around the shot-cam look angles).
+            if (shotDriving) {
+                float dcx, dcy, dcz;
+                worldCars.driverCamera(ssYaw, ssPitch, dcx, dcy, dcz);
+                device->setCamera(dcx, dcy, dcz, ssYaw, ssPitch, ssFov);
+            }
             // Fix 1: arm the capture just before the FINAL settle frame so the copy
             // is recorded inside that frame's live command buffer (reads the
             // freshly-rendered, properly-acquired image — validation-clean). The
@@ -3225,6 +3334,11 @@ int runDefaultHost(HostContext& hc) {
                       } }
                     canonDoors.drawMeshes(*device, frame);
                     facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
+                    // WORLD CARS: parked cars + the (staged) live car — the same
+                    // outdoor PVS gate as the live loop.
+                    if (worldCars.built() &&
+                        scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                        worldCars.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
                 }
@@ -3300,6 +3414,27 @@ int runDefaultHost(HostContext& hc) {
                 }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
+                // WORLD CARS hint line for the proof shots — the SAME bottom-
+                // center treatment as the live loop ("[E] Exit" while driving,
+                // "LOCKED - [hold E] hack" from a shot-cam beside a locked car).
+                if (canonWorld && worldCars.built() && !worldCars.prompt().empty()) {
+                    const std::string& vhint = worldCars.prompt();
+                    uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                    const float hsz = 18.0f;
+                    const float adv = device->textAdvance(x3::rhi::FontRole::Menu,
+                                                          vhint.c_str(), hsz);
+                    const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                    const float hy = (hh > 0) ? hh * 0.84f : 500.0f;
+                    const bool hacking = vhint.rfind("HACKING", 0) == 0 ||
+                                         vhint.rfind("LOCKED", 0) == 0;
+                    const float vcol[4]    = { 1.0f, hacking ? 0.55f : 0.82f,
+                                               hacking ? 0.35f : 0.45f, 0.9f };
+                    const float vshadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
+                                         hx + 1.5f, hy + 1.5f, hsz, vshadow);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
+                                         hx, hy, hsz, vcol);
+                }
                 // ---- [W9-3 RPG] X3_SHOT_RPG=backpack|skills|hud: capture the RPG
                 // screens over the live vantage, demo-populated so the still shows
                 // a REAL loadout (eye-gate evidence; env-var pattern like X3_CLUB_SEQ).
@@ -3370,6 +3505,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -3477,6 +3613,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -3588,6 +3725,7 @@ int runDefaultHost(HostContext& hc) {
         combatFx.shutdown(*device);
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -3845,6 +3983,10 @@ int runDefaultHost(HostContext& hc) {
                     canonDressing.draw(*device, frame); // opening-space props
                     canonRooms.draw(*device, frame, canonVisRooms);
                     facilityExterior.draw(*device, frame);   // SEAM 2: facade skin
+                    // WORLD CARS (same outdoor PVS gate as the live loop).
+                    if (worldCars.built() &&
+                        scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                        worldCars.draw(frame);
                 }
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
@@ -3931,6 +4073,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
         physics->shutdown();
@@ -4752,7 +4895,10 @@ int runDefaultHost(HostContext& hc) {
         // (single source of truth — previously F drove a local var and idclip drove
         // player.noclip(), so the console command did nothing for movement).
         bool fNow = keyDown(GLFW_KEY_F);
-        if (fNow && !prevF) player.setNoclip(!player.noclip());
+        // WORLD CARS: while DRIVING, F is the alternate EXIT key (consumed by the
+        // vehicle interact block below), never the noclip toggle.
+        if (fNow && !prevF && !worldCars.driving()) player.setNoclip(!player.noclip());
+        const bool fEdge = fNow && !prevF;   // vehicle exit edge (read below)
         prevF = fNow;
         // Mirror the Player's noclip flag (set by F OR idclip) into the local `noclip`
         // the movement uses; seed the fly camera from the current view on the rising
@@ -4918,7 +5064,23 @@ int runDefaultHost(HostContext& hc) {
         // direction; if it hits a button linked to an UNLOCKED door, it opens.
         // (Door C refuses while locked — until the player is armed, §6.4.) ----
         bool eNow = keyDown(GLFW_KEY_E);
-        if (eNow && !prevE && !terrainWorld) {
+
+        // ---- WORLD CARS interact (runs BEFORE the E-edge use chain; per-frame
+        // because the hold-E hack needs the HELD state, not just the edge).
+        // Driving: E (or F) exits. Near a parked car: E enters an unlocked one;
+        // a LOCKED one takes hold-E for 3 s (progress in the HUD hint line) and
+        // unlocks permanently + fires the guarded alarm hook. A consumed E also
+        // shuts the whole door/talk/terminal chain below for this frame. ----
+        bool vehicleConsumedE = false;
+        if (canonWorld && worldCars.built() && !codeMode && !termMode && !consoleOpen &&
+            (!noclip || worldCars.driving()) &&   // idclip mid-drive must still allow the exit
+            player.isAlive() && !chatTrees.active() && !npcDialog.active()) {
+            vehicleConsumedE = worldCars.interact(
+                player.feet(), eNow, eNow && !prevE, fEdge, dt, &player, *physics,
+                audio.get());
+        }
+
+        if (eNow && !prevE && !terrainWorld && !vehicleConsumedE && !worldCars.driving()) {
             float ex, ey, ez, yaw, pitch;
             player.camera(ex, ey, ez, yaw, pitch);   // in noclip the camera is the fly cam
             if (noclip) { ex = flyX; ey = flyY; ez = flyZ; yaw = flyYaw; pitch = flyPitch; }
@@ -5483,7 +5645,41 @@ int runDefaultHost(HostContext& hc) {
         const uint32_t simSteps = gameUi.shouldFreezeSim() ? 0u : simStepsRaw;
         for (uint32_t s = 0; s < simSteps; ++s) {
             const bool firstSub = (s == 0);
-            if (!noclip) {
+            const bool drivingNow = canonWorld && worldCars.driving();
+            if (!noclip && drivingNow) {
+                // ---- WORLD CARS: at the wheel. The player capsule is stashed
+                // (Player::update is skipped — it neither falls nor collides);
+                // mouse-look integrates into the SAME player look angles so the
+                // chase camera orbits and the view is continuous on exit. WASD
+                // throttle/steer + Space brake = the drive host's mapping. ----
+                if (firstSub) {
+                    const float sens = 0.0025f;
+                    player.setLook(player.yaw() + ddx * sens,
+                                   player.pitch() - ddy * sens);
+                }
+                x3::phys::VehicleInput vin;
+                vin.throttle = (keyDown(GLFW_KEY_W) ? 1.0f : 0.0f)
+                             - (keyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
+                vin.steer    = (keyDown(GLFW_KEY_D) ? 1.0f : 0.0f)
+                             - (keyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
+                if (spaceNow) vin.handBrake = 1.0f;
+                // S against forward motion is the BRAKE (host_drive's rule).
+                if (vin.throttle < 0.0f && worldCars.forwardSpeed() > 0.5f) {
+                    vin.brake = 1.0f; vin.throttle = 0.0f;
+                }
+                carThrottleHud = vin.throttle;
+                worldCars.driveInput(vin);
+                worldCars.preStep(x3::net::kSimDt);
+                // The world keeps simulating while at the wheel (no rider carry —
+                // the capsule is stashed; mirrors the noclip branch's treatment).
+                if (elevator.built()) elevator.update(x3::net::kSimDt, scene, *physics);
+                if (liveStrataBuilt)
+                    liveStrata.update(x3::net::kSimDt, scene, *device, elevator.cabCenter());
+                if (club1127.built()) club1127.update(x3::net::kSimDt, scene, *device, *physics);
+                physics->step(x3::net::kSimDt);
+                scene.update(*physics);
+                worldCars.postStep(x3::net::kSimDt);
+            } else if (!noclip) {
                 // ---- Walking player input (sampled this render frame) ----
                 x3::game::PlayerInput in;
                 if (keyDown(GLFW_KEY_W)) in.moveFwd    += 1.0f;
@@ -5619,6 +5815,11 @@ int runDefaultHost(HostContext& hc) {
         } else {
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }
+        // WORLD CARS: at the wheel the camera is the drive host's chase framing
+        // around the live car (yaw/pitch stay the player's look angles, so the
+        // view orbits with the mouse and is continuous on exit).
+        if (!noclip && canonWorld && worldCars.driving())
+            worldCars.driverCamera(camYaw, camPitch, camX, camY, camZ);
         // WEAPONS: apply + recover the weapon recoil kick. The kick is a transient
         // upward pitch offset added on top of the look pitch; it decays back to 0 so
         // the view recovers (recoil -> camera). Applied uniformly to setCamera, the
@@ -5881,8 +6082,18 @@ int runDefaultHost(HostContext& hc) {
                     const double st0 = glfwGetTime();
                     terrainStreamer.update(scene, *device, *physics, camX, camZ);
                     const double terrainMs = (glfwGetTime() - st0) * 1000.0;
-                    const float svx = dt > 1e-4f ? (camX - canonStreamPrevX) / dt : 0.0f;
-                    const float svz = dt > 1e-4f ? (camZ - canonStreamPrevZ) / dt : 0.0f;
+                    float svx = dt > 1e-4f ? (camX - canonStreamPrevX) / dt : 0.0f;
+                    float svz = dt > 1e-4f ? (camZ - canonStreamPrevZ) / dt : 0.0f;
+                    // WORLD CARS: driving, the lookahead is fed the VEHICLE's
+                    // real velocity (not the chase-cam delta) and the horizon is
+                    // raised so regions land ahead at car speed (~20-30 m/s).
+                    if (worldCars.driving()) {
+                        float vv[3]; worldCars.chassisVelocity(vv);
+                        svx = vv[0]; svz = vv[2];
+                        canonWstream.setLookahead(std::max(hc.wsLookaheadS, 4.0f));
+                    } else {
+                        canonWstream.setLookahead(hc.wsLookaheadS);
+                    }
                     canonWstream.update(scene, *device, *physics,
                                         camX, camY, camZ, svx, 0.0f, svz,
                                         (double)hc.wsBudgetMs, terrainMs);
@@ -5922,6 +6133,39 @@ int runDefaultHost(HostContext& hc) {
             for (auto& cc : cityCrowds)
                 if (cc.built() && scene.roomVisible(cc.config().roomId))
                     cc.update(dt, scene);
+            // WORLD CARS while driving: (1) pedestrians within ~3.5 m of a car
+            // moving at speed SCATTER (a cheap proximity probe, throttled, feeds
+            // onViolence at the car pos); (2) deep river/sea water KILLS the
+            // engine and forces an exit into the swim state; (3) the engine loop
+            // pitches with the real RPM. All no-ops on foot.
+            if (canonWorld && worldCars.built()) {
+                if (worldCars.driving()) {
+                    carPanicCooldown -= dt;
+                    const float carSpd = std::fabs(worldCars.forwardSpeed());
+                    if (carSpd > 4.0f && carPanicCooldown <= 0.0f) {
+                        const x3::phys::Vec3 cp = worldCars.carPosition();
+                        auto panicNear = [&](x3::game::CrowdSystem& cc) {
+                            if (!cc.built()) return;
+                            for (uint32_t ai = 0; ai < cc.agentCount(); ++ai) {
+                                const auto& a = cc.agent(ai);
+                                const float adx = a.pos.x - cp.x, adz = a.pos.z - cp.z;
+                                if (adx * adx + adz * adz < 3.5f * 3.5f) {
+                                    cc.onViolence(cp);
+                                    return;
+                                }
+                            }
+                        };
+                        for (auto& cc : cityCrowds) panicNear(cc);
+                        carPanicCooldown = 0.4f;
+                    }
+                    if (worldCars.inDeepWater()) {
+                        worldCars.forceExit(&player, *physics);
+                        carThrottleHud = 0.0f;
+                    }
+                }
+                worldCars.updateAudio(audio.get(),
+                                      worldCars.driving() ? carThrottleHud : 0.0f);
+            }
             // LIVING WORLD: the FACILITY ALERT LEVEL — feed observations, apply
             // effects (reinforcements, lockdown doors). Lights/HUD read it below.
             if (facilityAlertOn) {
@@ -6355,7 +6599,8 @@ int runDefaultHost(HostContext& hc) {
         // projectiles are spawned into a host-owned list advanced below. Automatic
         // weapons fire while held; others fire on the LMB rising edge. ----
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
-        bool fireHeld = !uiCapture && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool fireHeld = !uiCapture && !simFrozen && !worldCars.driving() &&
+                        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
@@ -6685,6 +6930,12 @@ int runDefaultHost(HostContext& hc) {
                 canonDressing.draw(*device, frame);
                 canonRooms.draw(*device, frame, canonVisRooms);
                 facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
+                // WORLD CARS: parked visuals + the live car — direct draws,
+                // gated on the same outdoor PVS lane as the streamed planet
+                // (deep-interior frames never pay the cars' draw cost).
+                if (worldCars.built() &&
+                    scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                    worldCars.draw(frame);
             }
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
@@ -6794,8 +7045,9 @@ int runDefaultHost(HostContext& hc) {
                 // THIRD-PERSON: hide the FP weapon viewmodel ENTIRELY (the gun is shown
                 // in the avatar's hand instead — drawn after scene.render below).
                 // viewmodelVisible() is true in FP / unbuilt, so FP behaviour is unchanged.
-                if (!thirdPerson.viewmodelVisible()) {
-                    // 3P: no FP viewmodel this frame.
+                if (!thirdPerson.viewmodelVisible() || worldCars.driving()) {
+                    // 3P / AT THE WHEEL: no FP viewmodel this frame (hands are
+                    // on the wheel; the chase camera is not an FP eye).
                 } else if (arsenal.viewmodelsLoaded() && vmArmed) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
                     // convention-correct base offsets). The live vm_* cvars are passed
@@ -6961,6 +7213,29 @@ int runDefaultHost(HostContext& hc) {
                             device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx + 1.5f, hy + 1.5f, hsz, shadow);
                             device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx, hy, hsz, col);
                         }
+                    }
+                    // WORLD CARS hint line (bottom-center, the terminal-hint
+                    // treatment): "[E] Enter" / "LOCKED - [hold E] hack" /
+                    // "HACKING... 47%" / "[E] Exit" — computed by the per-frame
+                    // interact above; empty when no car is in reach.
+                    if (canonWorld && worldCars.built() && !worldCars.prompt().empty()) {
+                        const std::string& vhint = worldCars.prompt();
+                        uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                        const float hsz = 18.0f;
+                        const float adv = device->textAdvance(x3::rhi::FontRole::Menu,
+                                                              vhint.c_str(), hsz);
+                        const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                        const float hy = (hh > 0) ? hh * 0.84f : 500.0f;  // above the terminal line
+                        // Amber for the machine, red-leaning while a hack runs.
+                        const bool hacking = vhint.rfind("HACKING", 0) == 0 ||
+                                             vhint.rfind("LOCKED", 0) == 0;
+                        const float col[4]    = { 1.0f, hacking ? 0.55f : 0.82f,
+                                                  hacking ? 0.35f : 0.45f, 0.9f };
+                        const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
+                                             hx + 1.5f, hy + 1.5f, hsz, shadow);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
+                                             hx, hy, hsz, col);
                     }
                 }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.
@@ -7568,6 +7843,9 @@ int runDefaultHost(HostContext& hc) {
     // BOOT hand-off overlay: if the window closed mid-fade, free its texture now
     // (else the VMA shutdown leak check would see a live allocation).
     if (loadingOverlayLive) loading.shutdown(*device);
+    // WORLD CARS: parked-car bodies + the live vehicle rig (Jolt constraint)
+    // must go BEFORE physics dies. Idempotent no-op when never built.
+    worldCars.shutdown(*physics);
     // SEAM 3: the canon planet streamer (regions + terrain ring + its job
     // system) — idempotent no-op unless canon streaming booted.
     shutdownCanonStream();

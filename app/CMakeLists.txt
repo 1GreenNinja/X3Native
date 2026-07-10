@@ -110,6 +110,7 @@ add_executable(X3Engine WIN32
     cliffs.cpp
     terrain.cpp
     vehicle.cpp
+    world_cars.cpp
     vehparts.cpp
     perfshop.cpp
     ecology.cpp

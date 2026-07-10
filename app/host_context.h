@@ -147,6 +147,7 @@ struct HostContext {
     bool        dialogShot = false;
     bool        vigilShot = false;    // W4-2: --screenshot-vigil (VIGIL chat on the glass)
     bool        alertShot = false;
+    bool        shotDrive = false;    // WORLD CARS: drive the nearest car through the settle
     bool        captureSpire = false;        std::string captureSpireDir;
     std::string docWorldPath;
     int         cullPathArg = 0x80000000;   // INT_MIN sentinel = unset
