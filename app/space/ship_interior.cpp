@@ -1,5 +1,20 @@
 // app/space/ship_interior.cpp — S5 walkable, data-driven ship interior.
 #include "ship_interior.h"
+#include "../asset_root.h"   // assetRoot() for the SD3.5 hull-panel set
+// stb_image: file-local static copy (the cinematic.cpp recipe — the engine's
+// implementation is file-local in ModelLoader.cpp, so each app TU that decodes
+// PNGs instantiates its own STB_IMAGE_STATIC copy; no symbol clash).
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4244 4456 4457)
+#endif
+#include <stb_image.h>
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 
 #include "../mesh_prims.h"        // x3::prims box builders + procedural sci-fi textures
 #include "../headless_device.h"   // HeadlessRenderDevice for the self-test
@@ -74,9 +89,35 @@ void ShipInterior::build(x3::rhi::IRenderDevice& device, Scene& scene,
     TextureHandle ceilTex = device.createTexture(ceilPx.data(), 128, 128, true);
     m_textures = { floorTex, wallTex, ceilTex };
 
+    // ---- SD3.5 HULL-PANEL SET (Tim's forge, integration feast): real painted
+    // panels from assets/textures/hull_panels/*.png, cycled PER WALL PIECE so
+    // adjacent sections vary ("we need way more variety"). Any/all missing ->
+    // the procedural panel above (fallback; headless-safe).
+    std::vector<TextureHandle> hullSet;
+    {
+        static const char* kPanels[] = { "panel_orange.png", "panel_cyan.png",
+                                         "panel_clean.png", "panel_engine.png",
+                                         "panel_caution.png" };
+        for (const char* n : kPanels) {
+            const std::string p = x3::game::assetRoot() + "/textures/hull_panels/" + n;
+            int w = 0, h = 0, comp = 0;
+            stbi_uc* px = stbi_load(p.c_str(), &w, &h, &comp, 4);
+            if (!px) continue;
+            TextureHandle t = device.createTexture(px, (uint32_t)w, (uint32_t)h, true);
+            stbi_image_free(px);
+            if (t.valid()) { hullSet.push_back(t); m_textures.push_back(t); }
+        }
+    }
+    uint32_t wallPick = 0;
+    auto nextWallTex = [&]() -> TextureHandle {
+        return hullSet.empty() ? wallTex : hullSet[(wallPick++) % hullSet.size()];
+    };
+
     const float floorC[4] = { 0.85f, 0.88f, 0.95f, 1.0f };
     const float wallC[4]  = { 0.72f, 0.76f, 0.84f, 1.0f };
+    const float hullC[4]  = { 0.95f, 0.95f, 0.95f, 1.0f };   // near-white: the forge colors carry
     const float ceilC[4]  = { 0.55f, 0.58f, 0.66f, 1.0f };
+    const float* wc = hullSet.empty() ? wallC : hullC;
 
     // Helper: does a doorway gap intersect the wall plate we are about to build on
     // this side of a room? If so we split the wall around the opening so the player
@@ -123,25 +164,25 @@ void ShipInterior::build(x3::rhi::IRenderDevice& device, Scene& scene,
             if (doorOnWall(zPlane, 0, x0, x1, a, b, topH)) {
                 // left segment x0..a, right segment b..x1, lintel above topH.
                 if (a - x0 > 0.05f) {
-                    addShell(device, scene, physics, m_meshes, m_bodies, wallTex, wallC,
+                    addShell(device, scene, physics, m_meshes, m_bodies, nextWallTex(), wc,
                              0.5f * (a - x0), roomH * 0.5f, kWallT,
                              0.5f * (x0 + a), cyWall, zPlane);
                     ++m_entityCount;
                 }
                 if (x1 - b > 0.05f) {
-                    addShell(device, scene, physics, m_meshes, m_bodies, wallTex, wallC,
+                    addShell(device, scene, physics, m_meshes, m_bodies, nextWallTex(), wc,
                              0.5f * (x1 - b), roomH * 0.5f, kWallT,
                              0.5f * (b + x1), cyWall, zPlane);
                     ++m_entityCount;
                 }
                 if (roomH - topH > 0.05f) {   // lintel above the opening
-                    addShell(device, scene, physics, m_meshes, m_bodies, wallTex, wallC,
+                    addShell(device, scene, physics, m_meshes, m_bodies, nextWallTex(), wc,
                              0.5f * (b - a), 0.5f * (roomH - topH), kWallT,
                              0.5f * (a + b), y0 + topH + 0.5f * (roomH - topH), zPlane);
                     ++m_entityCount;
                 }
             } else {
-                addShell(device, scene, physics, m_meshes, m_bodies, wallTex, wallC,
+                addShell(device, scene, physics, m_meshes, m_bodies, nextWallTex(), wc,
                          hx + kWallT, roomH * 0.5f, kWallT, cx, cyWall, zPlane);
                 ++m_entityCount;
             }
@@ -150,25 +191,25 @@ void ShipInterior::build(x3::rhi::IRenderDevice& device, Scene& scene,
             float a, b, topH;
             if (doorOnWall(xPlane, 2, z0, z1, a, b, topH)) {
                 if (a - z0 > 0.05f) {
-                    addShell(device, scene, physics, m_meshes, m_bodies, wallTex, wallC,
+                    addShell(device, scene, physics, m_meshes, m_bodies, nextWallTex(), wc,
                              kWallT, roomH * 0.5f, 0.5f * (a - z0),
                              xPlane, cyWall, 0.5f * (z0 + a));
                     ++m_entityCount;
                 }
                 if (z1 - b > 0.05f) {
-                    addShell(device, scene, physics, m_meshes, m_bodies, wallTex, wallC,
+                    addShell(device, scene, physics, m_meshes, m_bodies, nextWallTex(), wc,
                              kWallT, roomH * 0.5f, 0.5f * (z1 - b),
                              xPlane, cyWall, 0.5f * (b + z1));
                     ++m_entityCount;
                 }
                 if (roomH - topH > 0.05f) {
-                    addShell(device, scene, physics, m_meshes, m_bodies, wallTex, wallC,
+                    addShell(device, scene, physics, m_meshes, m_bodies, nextWallTex(), wc,
                              kWallT, 0.5f * (roomH - topH), 0.5f * (b - a),
                              xPlane, y0 + topH + 0.5f * (roomH - topH), 0.5f * (a + b));
                     ++m_entityCount;
                 }
             } else {
-                addShell(device, scene, physics, m_meshes, m_bodies, wallTex, wallC,
+                addShell(device, scene, physics, m_meshes, m_bodies, nextWallTex(), wc,
                          kWallT, roomH * 0.5f, hz + kWallT, xPlane, cyWall, cz);
                 ++m_entityCount;
             }
