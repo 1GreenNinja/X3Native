@@ -33,11 +33,15 @@
 namespace x3 { namespace apphost {
 
 int hostShipWindows(HostContext& hc) {
-    // Serves TWO worlds: "ship-windows" (S6 GLB-art interior + moving portals) and
-    // "ship-interior" (the PURE procedural glassy-neon reskin — NO GLB art overlay,
-    // so the neon plating/strips/holo consoles are what you see).
-    const bool pureInterior = (hc.worldMode == "ship-interior");
-    if (hc.worldMode != "ship-windows" && !pureInterior) return -1;
+    // Serves TWO worlds — BOTH now render the PURE procedural glassy-neon cockpit
+    // (dark plating + cyan/magenta neon strips + holo consoles). The licensed retro
+    // Scifi-Kit GLB overlay is DROPPED per owner directive (2026-07-09: "do NOT want
+    // 80s in the Space Ship" — the flyable ship-windows must be sleek neon). The
+    // difference is only the entry point; the true-portal moving-space windows are
+    // anchored to the procedural cockpit's window openings (interior.manifest()), so
+    // they render over the neon interior in both.
+    const bool pureInterior = true;   // no GLB art overlay in either world
+    if (hc.worldMode != "ship-windows" && hc.worldMode != "ship-interior") return -1;
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
 
