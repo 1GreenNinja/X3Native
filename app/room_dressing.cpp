@@ -145,7 +145,7 @@ const Recipe& recipeFor(uint8_t z) {
         /*ZSalvari*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_concrete_01", 3.2f,
                         1.10f, 0.92f, 0.62f, 4.5f,   0.25f, 1.10f, 0.45f, 2.8f,
                         fogOf(0.018f, 0.026f, 0.021f, 0.0060f, 1.2f, 0.72f) },
-        /*ZExec*/     { "cc_porous_cement", 3.2f, "sr_concrete_a", 2.6f, "mw_metal_panels_a", 3.2f,
+        /*ZExec*/     { "cc_porous_cement", 3.2f, "cc_exec_floor", 2.6f, "mw_metal_panels_a", 3.2f,
                         2.00f, 1.80f, 1.50f, 5.5f,   1.60f, 1.15f, 0.45f, 2.6f,
                         fogOf(0.040f, 0.036f, 0.030f, 0.0025f, 1.6f, 0.50f) },
         // W5-1: the Nexus Chamber — no surfaces/lights (canon_45 owns the look);
