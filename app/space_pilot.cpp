@@ -9,6 +9,7 @@
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -109,6 +110,98 @@ inline float length3(const float v[3]) {
 } // namespace
 
 // ===========================================================================
+// Flight modes — shared latch, names, and the three feel PRESETS
+// ===========================================================================
+namespace {
+// Process-global requested mode (see space_pilot.h). Single-threaded game code.
+FlightMode g_requestedMode = FlightMode::Arcade;
+} // namespace
+
+FlightMode requestedFlightMode()          { return g_requestedMode; }
+void        setRequestedFlightMode(FlightMode m) { g_requestedMode = m; }
+
+const char* flightModeName(FlightMode m) {
+    switch (m) {
+        case FlightMode::Arcade: return "Arcade";
+        case FlightMode::Assist: return "Assist";
+        case FlightMode::Loose:  return "Loose";
+    }
+    return "Arcade";
+}
+
+bool parseFlightMode(const std::string& name, FlightMode& out) {
+    std::string s; s.reserve(name.size());
+    for (char c : name) s += (char)std::tolower((unsigned char)c);
+    if (s == "arcade" || s == "0") { out = FlightMode::Arcade; return true; }
+    if (s == "assist" || s == "1") { out = FlightMode::Assist; return true; }
+    if (s == "loose"  || s == "2") { out = FlightMode::Loose;  return true; }
+    return false;
+}
+
+// The three presets. Numbers are DELIBERATE first-pass feel guesses — the owner
+// playtests + retunes; documented here so the deltas between modes are legible.
+// Only the FEEL fields are set; combat/health fields keep their struct defaults
+// (setMode preserves the live pools, so mid-flight swaps never reset the ship).
+SpacePilotController::Tuning SpacePilotController::preset(FlightMode m) {
+    Tuning t{};   // struct defaults for hull/shield/energy/chase distances
+    switch (m) {
+        case FlightMode::Arcade:            // Star Fox: snappy, forgiving, crisp
+            t.maxLinearAccel = 34.0f;  t.maxStrafeAccel = 16.0f; t.maxAngularAccel = 4.5f;
+            t.linearDrag     = 1.00f;  t.angularDrag    = 3.0f;  // crisp stop + fast settle
+            t.boostMul       = 2.2f;   t.maxSpeed       = 200.0f;
+            t.noseFollow     = 6.0f;                             // STRONG nose-follow
+            t.lookSmoothing  = 22.0f;  t.autoBank = 0.90f; t.maxBank = 0.70f; t.autoLevel = 4.0f;
+            t.fovBase        = 65.0f;  t.fovMax   = 78.0f;       // moderate FOV punch
+            t.chaseFollow    = 12.0f;  t.lookAhead = 0.05f; t.shakeAmp = 0.05f;  // small shake
+            break;
+        case FlightMode::Assist:            // Elite: weighty inertia + glide/drift
+            t.maxLinearAccel = 22.0f;  t.maxStrafeAccel = 11.0f; t.maxAngularAccel = 3.0f;
+            t.linearDrag     = 0.12f;  t.angularDrag    = 2.0f;  // real momentum, low drag
+            t.boostMul       = 2.5f;   t.maxSpeed       = 240.0f;
+            t.noseFollow     = 2.0f;                             // moderate nose-follow
+            t.lookSmoothing  = 16.0f;  t.autoBank = 0.50f; t.maxBank = 0.50f; t.autoLevel = 1.2f;
+            t.fovBase        = 62.0f;  t.fovMax   = 82.0f;       // bigger FOV punch at speed
+            t.chaseFollow    = 7.0f;   t.lookAhead = 0.09f; t.shakeAmp = 0.09f;  // medium shake
+            break;
+        case FlightMode::Loose:             // drift/adrenaline: fast, loose, wild
+            t.maxLinearAccel = 40.0f;  t.maxStrafeAccel = 20.0f; t.maxAngularAccel = 5.5f;
+            t.linearDrag     = 0.04f;  t.angularDrag    = 1.0f;  // very drifty
+            t.boostMul       = 3.0f;   t.maxSpeed       = 340.0f;// HIGH top speed
+            t.noseFollow     = 1.0f;                             // low = the velocity drifts
+            t.lookSmoothing  = 26.0f;  t.autoBank = 0.70f; t.maxBank = 0.80f; t.autoLevel = 0.30f;
+            t.fovBase        = 60.0f;  t.fovMax   = 92.0f;       // BIG FOV punch
+            t.chaseFollow    = 5.0f;   t.lookAhead = 0.13f; t.shakeAmp = 0.16f;  // BIG shake
+            break;
+    }
+    return t;
+}
+
+void SpacePilotController::setMode(FlightMode m) {
+    m_mode = m;
+    const Tuning p = preset(m);
+    // Copy ONLY the flight-feel fields — leave combat/health + chase distances
+    // (and the live hull/shield/energy pools) untouched so a hot-swap is seamless.
+    m_tuning.maxLinearAccel  = p.maxLinearAccel;
+    m_tuning.maxStrafeAccel  = p.maxStrafeAccel;
+    m_tuning.maxAngularAccel = p.maxAngularAccel;
+    m_tuning.linearDrag      = p.linearDrag;
+    m_tuning.angularDrag     = p.angularDrag;
+    m_tuning.boostMul        = p.boostMul;
+    m_tuning.maxSpeed        = p.maxSpeed;
+    m_tuning.noseFollow      = p.noseFollow;
+    m_tuning.lookSmoothing   = p.lookSmoothing;
+    m_tuning.autoBank        = p.autoBank;
+    m_tuning.maxBank         = p.maxBank;
+    m_tuning.autoLevel       = p.autoLevel;
+    m_tuning.fovBase         = p.fovBase;
+    m_tuning.fovMax          = p.fovMax;
+    m_tuning.chaseFollow     = p.chaseFollow;
+    m_tuning.lookAhead       = p.lookAhead;
+    m_tuning.shakeAmp        = p.shakeAmp;
+    setRequestedFlightMode(m);   // keep every selection surface in agreement
+}
+
+// ===========================================================================
 // Lifecycle / spawn
 // ===========================================================================
 
@@ -121,6 +214,15 @@ void SpacePilotController::spawn(x3::phys::IPhysicsWorld& phys,
     m_angVel[0] = m_angVel[1] = m_angVel[2] = 0.0f;
     m_yaw = m_pitch = m_roll = 0.0f;
     m_rollAxis = 0.0f;
+    // Reset the smooth/juice runtime so a re-spawn starts clean.
+    m_yawTarget = m_pitchTarget = 0.0f;
+    m_yawPrev = 0.0f;
+    m_boostPunch = 0.0f;
+    m_juiceTime = 0.0f;
+    m_camValid = false;
+    m_camPos[0] = m_camPos[1] = m_camPos[2] = 0.0f;
+    m_shakePos[0] = m_shakePos[1] = m_shakePos[2] = 0.0f;
+    m_shakeYaw = m_shakePitch = 0.0f;
     quatFromYawPitchRoll(0, 0, 0, m_quat);
 
     m_thirdPerson = t.defaultThirdPerson;
@@ -157,18 +259,37 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     if (!m_spawned || dt <= 0.0f) return;
 
     // ---- Orientation: integrate yaw/pitch/roll from input ------------------
-    // Mouse delta -> yaw (X) + pitch (Y, inverted-screen). Roll axis Q/E
-    // (passed via setRollInput()) accumulates around the ship's forward.
-    m_yaw   += in.lookDX * kMouseSens * kPxToRad;
-    m_pitch -= in.lookDY * kMouseSens * kPxToRad;
-    m_pitch = clampf(m_pitch, -kPitchClamp, kPitchClamp);
+    // LOOK SMOOTHING (the core "not jerky" fix): the raw mouse delta accumulates
+    // INSTANTLY into the target angles; the APPLIED m_yaw/m_pitch then ease
+    // toward the target at Tuning.lookSmoothing (1/s), frame-rate independent via
+    // 1-exp(-rate*dt). Higher rate = snappier (less lag); lower = weightier.
+    m_yawTarget   += in.lookDX * kMouseSens * kPxToRad;
+    m_pitchTarget -= in.lookDY * kMouseSens * kPxToRad;
+    m_pitchTarget  = clampf(m_pitchTarget, -kPitchClamp, kPitchClamp);
+    const float lookK = 1.0f - std::exp(-std::max(0.0f, m_tuning.lookSmoothing) * dt);
+    m_yaw   += (m_yawTarget   - m_yaw)   * lookK;
+    m_pitch += (m_pitchTarget - m_pitch) * lookK;
+    m_pitch  = clampf(m_pitch, -kPitchClamp, kPitchClamp);
 
-    // Roll accumulates over time at maxAngularAccel*rollAxis (scaled to a
-    // reasonable per-second rotation rate). Decays toward 0 when no Q/E is
-    // held (angularDrag), so the ship self-rights cinematically.
-    m_roll += m_rollAxis * m_tuning.maxAngularAccel * dt;
-    // Apply angular drag (so released Q/E doesn't leave the ship spinning).
-    m_roll -= m_roll * std::min(1.0f, m_tuning.angularDrag * dt);
+    // Yaw rate (rad/s) from the applied yaw change this frame — drives auto-bank.
+    const float yawRate = (m_yaw - m_yawPrev) / dt;
+    m_yawPrev = m_yaw;
+
+    // ROLL: manual Q/E takes priority; otherwise AUTO-BANK into the turn +
+    // AUTO-LEVEL hands-off. The bank target is the roll banked INTO the current
+    // yaw (0 when not turning), so the single ease both banks into turns and
+    // levels back to flat — autoLevel ~0 (LOOSE) means it barely self-levels.
+    if (std::fabs(m_rollAxis) > 1e-4f) {
+        // Manual roll: accumulate at maxAngularAccel*axis, then angular drag so
+        // released Q/E doesn't leave the ship spinning (original behavior).
+        m_roll += m_rollAxis * m_tuning.maxAngularAccel * dt;
+        m_roll -= m_roll * std::min(1.0f, m_tuning.angularDrag * dt);
+    } else {
+        const float bankTarget = clampf(-m_tuning.autoBank * yawRate,
+                                        -m_tuning.maxBank, m_tuning.maxBank);
+        const float levelK = 1.0f - std::exp(-std::max(0.0f, m_tuning.autoLevel) * dt);
+        m_roll += (bankTarget - m_roll) * levelK;
+    }
     // Roll has no hard clamp (full 360 OK), but normalize into [-pi, pi] so
     // the HUD readout stays sensible.
     while (m_roll >  kPi) m_roll -= 2.0f * kPi;
@@ -259,6 +380,52 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // ---- Integrate position ------------------------------------------------
     for (int k = 0; k < 3; ++k) m_pos[k] += m_vel[k] * dt;
 
+    // ---- SMOOTH / JUICE: boost-punch, chase-cam follow, screen-shake -------
+    // Presentation only — NONE of this touches m_pos/m_vel (sim stays byte-
+    // identical, so mode swaps + shake are deterministic). fwdW/upW/accel above
+    // are still in scope and reflect this frame's (post-roll) orientation.
+    m_juiceTime += dt;
+    // Boost-punch weight (eased 0..1) feeding fov().
+    {
+        const float target = in.sprint ? 1.0f : 0.0f;
+        m_boostPunch += (target - m_boostPunch) * (1.0f - std::exp(-8.0f * dt));
+    }
+    // CHASE-CAM FOLLOW-SMOOTHING + look-ahead: ease the 3P camera position toward
+    // the rigid chase target plus a velocity lead. camera() reads m_camPos.
+    {
+        float target[3];
+        for (int k = 0; k < 3; ++k)
+            target[k] = m_pos[k] - fwdW[k] * m_tuning.chaseDistance
+                                 + upW[k]  * m_tuning.chaseHeight
+                                 + m_vel[k] * m_tuning.lookAhead;
+        if (!m_camValid) {
+            for (int k = 0; k < 3; ++k) m_camPos[k] = target[k];
+            m_camValid = true;
+        } else {
+            const float ck = 1.0f - std::exp(-std::max(0.0f, m_tuning.chaseFollow) * dt);
+            for (int k = 0; k < 3; ++k) m_camPos[k] += (target[k] - m_camPos[k]) * ck;
+        }
+    }
+    // SCREEN-SHAKE: deterministic multi-frequency pseudo-noise (NO rand()) scaled
+    // by thrust/boost. Amplitude per mode (Tuning.shakeAmp). Stored here, applied
+    // to the CAMERA in camera() — never to the sim pose.
+    {
+        const float accelMag = length3(accel);
+        const float drive = clampf(
+            (accelMag / (m_tuning.maxLinearAccel * m_tuning.boostMul + 1e-3f))
+            * (in.sprint ? 1.0f : 0.55f), 0.0f, 1.0f);
+        const float amp = m_tuning.shakeAmp * drive;
+        const float t = m_juiceTime;
+        auto noise = [](float x) {
+            return std::sin(x) * 0.6f + std::sin(x * 2.37f + 1.3f) * 0.4f;  // [-1,1]
+        };
+        m_shakePos[0] = amp * noise(t * 37.0f);
+        m_shakePos[1] = amp * noise(t * 41.0f + 5.0f);
+        m_shakePos[2] = amp * noise(t * 43.0f + 11.0f);
+        m_shakeYaw    = amp * 0.03f * noise(t * 29.0f + 2.0f);
+        m_shakePitch  = amp * 0.03f * noise(t * 31.0f + 7.0f);
+    }
+
     // ---- Sync the physics body so queries / contacts see the ship ----------
     if (m_body.valid()) {
         phys.setBodyPosition(m_body, x3::phys::Vec3{ m_pos[0], m_pos[1], m_pos[2] });
@@ -302,29 +469,51 @@ void SpacePilotController::camera(float& outX, float& outY, float& outZ,
     // ship-model rotation; the world doesn't visibly roll with it (a real
     // cockpit POV roll would need a renderer-side "view-up" axis, out of
     // scope for v1 — call out in the task report).
-    outYaw   = m_yaw;
-    outPitch = m_pitch;
+    // Small rotational screen-shake rides the look angles (zero until update()
+    // runs, so the headless self-test reads clean angles).
+    outYaw   = m_yaw   + m_shakeYaw;
+    outPitch = m_pitch + m_shakePitch;
 
     if (m_thirdPerson) {
-        // 3P chase: pull the camera behind (along -forward) + up (along +up)
-        // from the ship origin. So we look back at the ship.
-        const float fwdLocal[3]   = { 1, 0, 0 };
-        const float upLocal[3]    = { 0, 1, 0 };
-        float fwdW[3], upW[3];
-        quatRotate(m_quat, fwdLocal, fwdW);
-        quatRotate(m_quat, upLocal,  upW);
-        outX = m_pos[0] - fwdW[0] * m_tuning.chaseDistance + upW[0] * m_tuning.chaseHeight;
-        outY = m_pos[1] - fwdW[1] * m_tuning.chaseDistance + upW[1] * m_tuning.chaseHeight;
-        outZ = m_pos[2] - fwdW[2] * m_tuning.chaseDistance + upW[2] * m_tuning.chaseHeight;
+        // 3P chase: the SMOOTHED follow-camera position (eased toward the rigid
+        // target + look-ahead in update()) plus positional shake. Before the
+        // first update() (m_camValid false — headless camera() test) fall back to
+        // the RIGID formula so the pose is defined without a sim step.
+        if (m_camValid) {
+            outX = m_camPos[0] + m_shakePos[0];
+            outY = m_camPos[1] + m_shakePos[1];
+            outZ = m_camPos[2] + m_shakePos[2];
+        } else {
+            const float fwdLocal[3] = { 1, 0, 0 };
+            const float upLocal[3]  = { 0, 1, 0 };
+            float fwdW[3], upW[3];
+            quatRotate(m_quat, fwdLocal, fwdW);
+            quatRotate(m_quat, upLocal,  upW);
+            outX = m_pos[0] - fwdW[0] * m_tuning.chaseDistance + upW[0] * m_tuning.chaseHeight;
+            outY = m_pos[1] - fwdW[1] * m_tuning.chaseDistance + upW[1] * m_tuning.chaseHeight;
+            outZ = m_pos[2] - fwdW[2] * m_tuning.chaseDistance + upW[2] * m_tuning.chaseHeight;
+        }
     } else {
         // 1P cockpit: at the ship origin + a small forward offset (so the
         // ship model doesn't clip the near plane when the host renders it).
+        // Eye stays as-is (no roll / view-up per v1); only tiny positional shake.
         const float fwdLocal[3]  = { 1, 0, 0 };
         float fwdW[3]; quatRotate(m_quat, fwdLocal, fwdW);
-        outX = m_pos[0] + fwdW[0] * 0.4f;
-        outY = m_pos[1] + fwdW[1] * 0.4f;
-        outZ = m_pos[2] + fwdW[2] * 0.4f;
+        outX = m_pos[0] + fwdW[0] * 0.4f + m_shakePos[0];
+        outY = m_pos[1] + fwdW[1] * 0.4f + m_shakePos[1];
+        outZ = m_pos[2] + fwdW[2] * 0.4f + m_shakePos[2];
     }
+}
+
+float SpacePilotController::fov() const {
+    // Base FOV widened toward fovMax by the current speed fraction + the eased
+    // boost punch. A smoothstep softens the low-speed response (no FOV twitch at
+    // a crawl). Deterministic + const — the space host feeds it into setCamera.
+    const float maxs = m_tuning.maxSpeed > 1e-3f ? m_tuning.maxSpeed : 1.0f;
+    float sf = clampf(length3(m_vel) / maxs, 0.0f, 1.0f);
+    float f  = clampf(sf + 0.18f * m_boostPunch, 0.0f, 1.0f);
+    f = f * f * (3.0f - 2.0f * f);   // smoothstep
+    return m_tuning.fovBase + (m_tuning.fovMax - m_tuning.fovBase) * f;
 }
 
 void SpacePilotController::toggleCameraMode() {
@@ -588,6 +777,34 @@ bool runSpaceSelfTest() {
         bool toggled = (after != was3p) && (back == was3p);
         bool different = dist > 5.0f;     // 3P chase puts the cam well away
         check(toggled && different, "T8 toggleCameraMode 1P<->3P");
+        w->shutdown();
+    }
+
+    // T9 — setMode swaps the feel tuning (+ presets differ, health preserved). --
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        s.spawn(*w, 0.0f, 0.0f, 0.0f);
+        s.setMode(FlightMode::Arcade);
+        const float arcadeSpeed = s.tuning().maxSpeed;
+        const float arcadeDrag  = s.tuning().linearDrag;
+        const int   hullBefore  = s.hull();
+        s.setMode(FlightMode::Loose);
+        const float looseSpeed  = s.tuning().maxSpeed;
+        // Loose has a much higher top speed + looser drag than Arcade, and the
+        // mode() accessor + shared latch must track. Health must NOT reset.
+        bool speedSwapped = looseSpeed > arcadeSpeed + 50.0f;   // 340 vs 200
+        bool dragSwapped  = s.tuning().linearDrag < arcadeDrag; // 0.04 vs 1.0
+        bool modeTracks   = (s.mode() == FlightMode::Loose) &&
+                            (requestedFlightMode() == FlightMode::Loose);
+        bool healthKept   = s.hull() == hullBefore && s.isAlive();
+        // fov() must sit within the active mode's [base,max] band and be finite.
+        const float f = s.fov();
+        bool fovBand = f >= s.tuning().fovBase - 0.01f && f <= s.tuning().fovMax + 0.01f;
+        check(speedSwapped && dragSwapped && modeTracks && healthKept && fovBand,
+              "T9 setMode swaps feel tuning (health preserved)");
+        // Restore the shared latch so an ordering-sensitive host isn't surprised.
+        setRequestedFlightMode(FlightMode::Arcade);
         w->shutdown();
     }
 

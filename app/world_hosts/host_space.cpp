@@ -12,6 +12,7 @@
 #include "../fx.h"
 #include "../asset_root.h"
 #include "../space_pilot.h"
+#include "../settings_io.h"   // readFlightMode (persisted Settings-menu / console pick)
 #include <filesystem>
 
 namespace x3 { namespace apphost {
@@ -96,8 +97,21 @@ int hostSpace(HostContext& hc) {
           device->setPointLights(pl, 3); }
 
         // ---- Player ship (the SpacePilotController) -----------------------
+        // FLIGHT MODE: seed from the persisted Settings-menu / console pick (the
+        // cfg file is the only bridge into this standalone host — see below), fall
+        // back to the shared latch, then apply the mode's feel preset. Live
+        // switching is bound to the 1/2/3 keys in the windowed loop.
+        {
+            x3::game::FlightMode fm{};
+            if (x3::game::parseFlightMode(std::to_string(x3::apphost::readFlightMode()), fm))
+                x3::game::setRequestedFlightMode(fm);
+        }
         x3::game::SpacePilotController pilot;
         pilot.spawn(*sphys, 0.0f, 0.0f, 0.0f);
+        pilot.setMode(x3::game::requestedFlightMode());
+        x3::logInfo(std::string("--world space: flight mode = ") +
+                    x3::game::flightModeName(pilot.mode()) +
+                    "  (press 1=Arcade 2=Assist 3=Loose to hot-swap)");
 
         // ---- Try to load an actual ship GLB. SpaceShip*.glb don't ship in
         //      assets/rigged_glb yet (per the task brief: "4 SpaceShip*.glb
@@ -304,6 +318,19 @@ int hostSpace(HostContext& hc) {
             float rollAxis = (kd(GLFW_KEY_Q) ? -1.0f : 0.0f) + (kd(GLFW_KEY_E) ? 1.0f : 0.0f);
             pilot.setRollInput(rollAxis);
 
+            // FLIGHT MODE hot-swap while flying: 1=Arcade, 2=Assist, 3=Loose (the
+            // in-space equivalent of the `flightmode` console command, which lives
+            // in the default game host — this standalone host has no console). Also
+            // poll the shared latch so any external change flows to the live ship.
+            if (kd(GLFW_KEY_1)) x3::game::setRequestedFlightMode(x3::game::FlightMode::Arcade);
+            if (kd(GLFW_KEY_2)) x3::game::setRequestedFlightMode(x3::game::FlightMode::Assist);
+            if (kd(GLFW_KEY_3)) x3::game::setRequestedFlightMode(x3::game::FlightMode::Loose);
+            if (x3::game::requestedFlightMode() != pilot.mode()) {
+                pilot.setMode(x3::game::requestedFlightMode());
+                x3::logInfo(std::string("--world space: flight mode -> ") +
+                            x3::game::flightModeName(pilot.mode()));
+            }
+
             pilot.update(in, fdt, *sphys);
 
             // V to toggle 1P / 3P (rising edge).
@@ -335,7 +362,8 @@ int hostSpace(HostContext& hc) {
 
             float cx, cy, cz, cyaw, cpit;
             pilot.camera(cx, cy, cz, cyaw, cpit);
-            device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
+            // FOV-BY-SPEED: the controller widens FOV with speed + boost per mode.
+            device->setCamera(cx, cy, cz, cyaw, cpit, pilot.fov());
 
             auto frame = device->beginFrame();
             if (frame.valid) {

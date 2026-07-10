@@ -445,6 +445,22 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     if (ui.slider("Music Volume", model.musicVol, rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
     if (ui.slider("SFX Volume",   model.sfxVol,   rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
 
+    // Flight Mode row: label left + a CYCLE button right (Arcade -> Assist ->
+    // Loose -> back). The host bridges model.flightMode to the space-pilot's
+    // shared flight-mode latch and persists it (see UiController / app_run).
+    {
+        static const char* kFmNames[3] = { "ARCADE", "ASSIST", "LOOSE" };
+        int fmIdx = model.flightMode; if (fmIdx < 0 || fmIdx > 2) fmIdx = 0;
+        const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
+        ui.label("Flight Mode", rx + 4.0f, ry + (rh - notePx) * 0.5f, notePx, kColText);
+        const float fbw = std::min(190.0f, rw * 0.46f);
+        if (ui.button(kFmNames[fmIdx], rx + rw - fbw, ry, fbw, rh)) {
+            model.flightMode = (fmIdx + 1) % 3;
+            outChanged = true;
+        }
+    }
+    ry += rh + gap;
+
     // Resolution row: LIVE framebuffer size on the left (updates as the window is
     // dragged) + a "SET DEFAULT" button on the RIGHT (where the old --width/--height
     // note used to sit). The button persists the current size as the startup default.
