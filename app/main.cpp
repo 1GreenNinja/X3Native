@@ -299,6 +299,7 @@ int main(int argc, char** argv) {
         _tf.testIntroCockpit = o.testIntroCockpit;
         _tf.testShipInterior = o.testShipInterior;
         _tf.testShipWindows  = o.testShipWindows;
+        _tf.testWingDressing = o.testWingDressing;
         _tf.testIntroBranch = o.testIntroBranch;
         _tf.testSurfaceStart = o.testSurfaceStart;
         _tf.testCutscene = o.testCutscene;
@@ -748,6 +749,7 @@ int main(int argc, char** argv) {
     _hc.vigilShot       = o.vigilShot;
     _hc.alertShot       = o.alertShot;
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
+    _hc.captureWings    = o.captureWings;      _hc.captureWingsDir = o.captureWingsDir;
     _hc.docWorldPath    = o.docWorldPath;
     _hc.cullPathArg     = o.cullPathArg;
     _hc.hzbArg          = o.hzbArg;

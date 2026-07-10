@@ -275,6 +275,7 @@ struct CliOptions {
     bool        testIntroCockpit = false;
     bool        testShipInterior = false;
     bool        testShipWindows  = false;
+    bool        testWingDressing = false;  // --test-wingdressing (F2-F7 wing recipe pass)
     // --test-introbranch (Phase 4 BRANCH WIRING): the app_run branch-selection
     // contract — intro.outcome flag round-trip, the --intro-force dev override,
     // the per-save seed thread, and the canon default. No window / Vulkan.
@@ -569,6 +570,8 @@ struct CliOptions {
     // Prints one line per floor (path + that floor's enemy count). 0 VUID under Debug.
     bool        captureSpire    = false;
     std::string captureSpireDir = "captures/spire";
+    bool        captureWings    = false;   // F2-F7 west-wing dressing proof captures
+    std::string captureWingsDir = "captures";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
     // (walk the hills) instead of the default interior facility. The default is the
     // CANONICAL data-driven facility (canonlevel — the owner's LevelArchitect Floor 1,

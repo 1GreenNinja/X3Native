@@ -433,6 +433,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureSpireDir = argv[++i];
         }
+        else if (a == "--capture-wings") {
+            o.captureWings = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWingsDir = argv[++i];
+        }
         else if (a == "--list-clips") {
             o.listClips = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.listClipsPath = argv[++i];
@@ -446,6 +450,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-introcockpit") o.testIntroCockpit = true;
         else if (a == "--test-shipinterior") o.testShipInterior = true;
         else if (a == "--test-shipwindows") o.testShipWindows = true;
+        else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
         else if (a == "--intro-force") {

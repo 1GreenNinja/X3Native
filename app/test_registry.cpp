@@ -107,6 +107,7 @@
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
 #include "space/ship_interior.h"  // x3::space::runShipInteriorSelfTest (--test-shipinterior, S5 fold)
 #include "space/ship_windows.h"   // x3::space::runShipWindowsSelfTest (--test-shipwindows, S6 fold)
+#include "wing_dressing.h"        // x3::game::runWingDressingSelfTest (--test-wingdressing)
 #include "space/targeting.h"      // x3::space::TargetingSystem (--test-targeting)
 #include "space/ship_damage.h"    // x3::space::runShipDamageSelfTest (--test-ship-damage)
 #include "space/eva.h"            // x3::space::runEvaSelfTest (--test-eva)
@@ -344,6 +345,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running S5 SHIP-INTERIOR self-test (walkable small-cockpit hull: "
                     "manifest windows + spawn + collide walls, headless)...");
         return x3::space::runShipInteriorSelfTest() ? 0 : 1;
+    }
+    if (tf.testWingDressing) {
+        x3::logInfo("running FLOORS 2-7 WING-DRESSING self-test (synthetic wing floor: "
+                    "every west-wing room classifies + dresses, no ZNone holes, headless)...");
+        return x3::game::runWingDressingSelfTest() ? 0 : 1;
     }
     if (tf.testShipWindows) {
         x3::logInfo("running S6 SHIP-WINDOWS self-test (true-portal moving space: star/nebula "

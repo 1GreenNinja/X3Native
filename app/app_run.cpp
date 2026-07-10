@@ -838,6 +838,8 @@ int runDefaultHost(HostContext& hc) {
     const bool alertShot = hc.alertShot;
     const bool captureSpire = hc.captureSpire;
     const std::string& captureSpireDir = hc.captureSpireDir;
+    const bool captureWings = hc.captureWings;
+    const std::string& captureWingsDir = hc.captureWingsDir;
     const std::string& docWorldPath = hc.docWorldPath;
     const int cullPathArg = hc.cullPathArg;
     const int hzbArg = hc.hzbArg;
@@ -2471,6 +2473,91 @@ int runDefaultHost(HostContext& hc) {
         }
 
         x3::logInfo(std::string("--capture-spire: ") + (allOk ? "all 8 floors captured" : "one or more captures FAILED"));
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        physics->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return allOk ? 0 : 1;
+    }
+
+    // ---- --capture-wings: F2-F7 WEST-WING dressing proof. Parks the camera INSIDE each
+    // floor's big signature hall (the west wing) looking across it, lights the plate, ticks
+    // a few settle frames so the wing recipe dressing + per-zone fog resolve, and captures
+    // floors27_<floor>.png. One still per distinct floor theme (medical/genetics/cyber/
+    // drone/salvari/exec). Reuses game.drawWorldExtras (which now draws the wing dressing).
+    if (captureWings) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(captureWingsDir, mkec);
+        x3::logInfo("--capture-wings: rendering F2-F7 west wings to " + captureWingsDir);
+        const x3::game::L1RoomDef*    tbl = x3::game::level1Rooms();
+        const x3::game::Level1Layout& Lc  = game.layout();
+        const float dt = 1.0f / 60.0f;
+        struct WingShot { const char* tag; x3::game::L1Floor floor; float hallCx, hallHw; };
+        const WingShot shots[] = {
+            { "f2", x3::game::L1Floor::F2, -38.0f, 10.0f },
+            { "f3", x3::game::L1Floor::F3, -38.0f, 10.0f },
+            { "f4", x3::game::L1Floor::F4, -40.0f, 11.0f },
+            { "f5", x3::game::L1Floor::F5, -44.0f, 26.0f },
+            { "f6", x3::game::L1Floor::F6, -42.0f, 13.0f },
+            { "f7", x3::game::L1Floor::F7, -40.0f, 11.0f },
+        };
+        // Light the hall: a warm ceiling row (two rows in the big bays) + a cool fill by
+        // the camera so the near dressing reads (dev capture lighting, not gameplay).
+        auto lightHall = [&](const WingShot& s, const x3::phys::Vec3& eye) {
+            const x3::game::L1RoomDef& r = tbl[(uint32_t)s.floor];
+            const float lightY = r.y0 + r.ceil - 0.35f;
+            const float range  = std::max(9.0f, r.ceil + 5.0f);
+            std::vector<x3::rhi::PointLight> pls;
+            const bool twoRows = (r.zHalf >= 12.0f);
+            for (int i = -3; i <= 3; ++i) {
+                x3::rhi::PointLight pl;
+                pl.pos[0] = s.hallCx + i * (s.hallHw * 0.55f); pl.pos[1] = lightY;
+                pl.range = range; pl.color[0] = 3.1f; pl.color[1] = 2.7f; pl.color[2] = 2.0f;
+                pl.pos[2] = twoRows ? -r.zHalf * 0.4f : 0.0f; pls.push_back(pl);
+                if (twoRows) { pl.pos[2] = r.zHalf * 0.4f; pls.push_back(pl); }
+            }
+            x3::rhi::PointLight fill;
+            fill.pos[0] = s.hallCx + s.hallHw - 3.0f; fill.pos[1] = r.y0 + 2.6f; fill.pos[2] = 0.0f;
+            fill.range = 18.0f; fill.color[0] = 3.2f; fill.color[1] = 3.4f; fill.color[2] = 3.9f;
+            pls.push_back(fill);
+            // The dressing's OWN motivated keys (over the consoles/tanks/racks) — without
+            // these the metallic kit props read black under the distant ceiling row.
+            game.wingFloorLights(eye, pls);
+            device->setPointLights(pls.data(), (uint32_t)pls.size());
+        };
+        bool allOk = true;
+        for (const WingShot& s : shots) {
+            const float baseY = Lc.floorBaseY[(uint32_t)s.floor];
+            const float camX = s.hallCx + s.hallHw - 2.5f;   // just inside the hall's east wall
+            const float camY = baseY + 2.0f, camZ = 0.0f;
+            const float camYaw = 3.14159265f, camPit = -0.10f, camFov = 82.0f;
+            const x3::phys::Vec3 camEye{ camX, camY, camZ };
+            const std::string outPath = captureWingsDir + "/floors27_" + std::string(s.tag) + ".png";
+            const int kSettle = 18;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                game.tick(dt, scene, *physics, camEye, camEye);
+                physics->step(dt);
+                scene.update(*physics);
+                device->setCamera(camX, camY, camZ, camYaw, camPit, camFov);
+                lightHall(s, camEye);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    scene.render(*device, frame);
+                    game.drawDoors(*device, frame);
+                    game.drawWorldExtras(*device, frame, scene);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--capture-wings: wrote " + outPath);
+            else { allOk = false; x3::logError("--capture-wings: capture FAILED for " + outPath); }
+        }
+        x3::logInfo(std::string("--capture-wings: ") +
+                    (allOk ? "all F2-F7 wings captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
         physics->shutdown();

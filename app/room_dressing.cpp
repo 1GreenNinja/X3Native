@@ -919,6 +919,26 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 crateLg(cx0 - 0.6f, cz0 + 0.8f, 0.0f, tDarkCon, 0.02f);   // the desk
                 console(cx0 - 0.6f, cz0 + 1.9f, kPi);
                 hangLamp(cx0 - 0.6f, cz0 + 0.3f, 2.20f, 1.70f, 1.05f, 1.0f, 3.2f);
+            } else if (nameHas("Recovery Ward")) {
+                // The big medical hall: two rows of recovery cots down the long (Z) axis
+                // hugging the side (X) walls, an IV drip drum beside each, warm surgical
+                // pendants overhead, a nurse-station console at the head wall, a blood
+                // trail. Dressed to FILL the signature space (door-safe via faceClear).
+                for (int i = -2; i <= 2; ++i) {
+                    const float zp = cz0 + i * 5.2f;
+                    if (faceClear(0, zp, 1.7f)) {
+                        cot(r.x0() + 1.1f, zp, kPi * 0.5f, tClinic);
+                        barrel(r.x0() + 2.7f, zp + 1.5f, 0.3f * (i + 2), tCryo);
+                    }
+                    if (faceClear(1, zp, 1.7f)) {
+                        cot(r.x1() - 1.1f, zp, kPi * 0.5f, tClinic);
+                        barrel(r.x1() - 2.7f, zp + 1.5f, 0.9f * (i + 2), tCryo);
+                    }
+                    hangLamp(cx0, zp, 1.60f, 1.72f, 1.66f, 1.0f, 3.6f);
+                }
+                console(cx0, r.z0() + 0.9f, 0.0f);
+                addLight(cx0, fY + 2.4f, r.z0() + 1.5f, 3.4f, 0.30f, 1.05f, 0.42f);
+                bloodBlob(ri, cx0 - 1.4f, fY, cz0 + 2.0f, 0.5f, 1.6f, 0.45f);
 
             // ---------------- F3 GENETICS LAB ----------------
             } else if (nameHas("Specimen Hall")) {
@@ -987,6 +1007,25 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 // "UV flood chamber. Kills infection."
                 ventHi(0.25f); ventHi(-0.25f);
                 addLight(cx0, cY - 0.6f, cz0, 3.0f, 0.75f, 0.35f, 1.20f);
+            } else if (nameHas("Gene Vat Gallery")) {
+                // The signature genetics hall: two long rows of bubbling growth vats down
+                // the side (X) walls, each underlit green, a central pair of sequencing
+                // consoles, a sickly-green key. Fills the big hall with the rows-of-tanks
+                // read (door-safe on the +X wall).
+                for (int i = -3; i <= 3; ++i) {
+                    const float zp = cz0 + i * 3.7f;
+                    barrel(r.x0() + 1.0f, zp, 0.3f * (i + 3), tSpecimen);
+                    glowQuad(0.9f, 0.9f, r.x0() + 1.0f, fY + kFloorLift + 0.004f, zp, 0,
+                             -kPi * 0.5f, 0.20f, 1.00f, 0.40f, 0.40f);
+                    if (faceClear(1, zp, 1.1f)) {
+                        barrel(r.x1() - 1.0f, zp, 0.5f * (i + 3), tSpecimen);
+                        glowQuad(0.9f, 0.9f, r.x1() - 1.0f, fY + kFloorLift + 0.004f, zp, 0,
+                                 -kPi * 0.5f, 0.20f, 1.00f, 0.40f, 0.40f);
+                    }
+                }
+                console(cx0 - 1.6f, cz0 - 2.0f, 0.0f);
+                console(cx0 + 1.6f, cz0 + 2.0f, kPi);
+                addLight(cx0, fY + 2.6f, cz0, 3.6f, 0.22f, 1.10f, 0.38f);
 
             // ---------------- F4 CYBERNETICS WING ----------------
             } else if (nameHas("Augmentation Corridor")) {
@@ -1097,6 +1136,30 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                          -kPi * 0.5f, 1.00f, 0.62f, 0.10f, 0.45f);
                 glowQuad(1.8f, 1.2f, cx0 + 2.6f, fY + kFloorLift + 0.004f, cz0 - 0.8f, 0,
                          -kPi * 0.5f, 1.00f, 0.62f, 0.10f, 0.45f);
+            } else if (nameHas("Assembly Bay")) {
+                // The huge drone-assembly hangar — the F5 signature. A grid of docked-drone
+                // stations on pallets fills the bay, each over an amber hazard charge pad;
+                // conveyor crate lines run the aisles; overhead gantry pipes span the hall;
+                // a corner watch-cam. Dressed to fill the VOLUME, not a lone prop.
+                for (int gx = -2; gx <= 2; ++gx) {
+                    for (int gz = -1; gz <= 1; ++gz) {
+                        const float x = cx0 + gx * 9.0f, zp = cz0 + gz * 12.0f;
+                        palletAt(x, zp);
+                        droneAt(x, fY + 0.52f, zp, 0.4f * (float)(gx + gz * 3), tAirframe);
+                        glowQuad(1.8f, 1.4f, x, fY + kFloorLift + 0.004f, zp, 0,
+                                 -kPi * 0.5f, 1.00f, 0.62f, 0.10f, 0.40f);
+                        shadowBlob(ri, x, fY, zp, 1.1f, 1.1f, 0.40f);
+                    }
+                }
+                for (int i = -2; i <= 2; ++i) {
+                    crateLg(cx0 + i * 5.0f, cz0 - 6.0f, (i & 1) ? 0.10f : -0.10f, tCrate, 0.02f);
+                    crateLg(cx0 + i * 5.0f, cz0 + 6.0f, (i & 1) ? -0.10f : 0.10f, tCrate, 0.02f);
+                }
+                placeProp(ri, aPipes, kPi * 0.5f, 1.0f, acx(kPipesAabb), kPipesAabb.maxy,
+                          1.5f, cx0, cY - 0.25f, cz0 - 9.0f, nullptr, tSteel);
+                placeProp(ri, aPipes, kPi * 0.5f, 1.0f, acx(kPipesAabb), kPipesAabb.maxy,
+                          1.5f, cx0, cY - 0.25f, cz0 + 9.0f, nullptr, tSteel);
+                cornerCam();
 
             // ---------------- F6 SALVARI LEVEL ----------------
             } else if (nameHas("Artifact Corridor")) {
@@ -1222,6 +1285,24 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             } else if (nameHas("Guard Post")) {
                 // "Rooftop sentry." (A: sniper / B: searchlight)
                 cornerCam();
+            } else if (nameHas("Boardroom")) {
+                // The executive conference hall — F7 signature. A long central table (crate
+                // spine) flanked by two rows of exec chairs, brass pendants over the table,
+                // holographic strategy art on both long walls, a head-of-table presentation
+                // console. Clean dark luxury + brass.
+                for (int i = -3; i <= 3; ++i) {
+                    crateLg(cx0, cz0 + i * 1.9f, (i & 1) ? 0.02f : 0.0f, tDarkCon, 0.02f);
+                    crateSm(cx0 - 2.2f, cz0 + i * 1.9f, 0.0f, tDark, 0.02f);
+                    crateSm(cx0 + 2.2f, cz0 + i * 1.9f, kPi,  tDark, 0.02f);
+                }
+                hangLamp(cx0, cz0 - 4.2f, 1.60f, 1.15f, 0.45f, 1.0f, 3.6f);
+                hangLamp(cx0, cz0 + 4.2f, 1.60f, 1.15f, 0.45f, 1.0f, 3.6f);
+                console(cx0, r.z0() + 0.9f, 0.0f);
+                glassQuad(2.4f, 1.4f, r.x0() + kInset + 0.04f, fY + 1.9f, cz0 - 4.0f, kPi * 0.5f,
+                          1.00f, 0.78f, 0.40f, 0.45f, 0.55f);
+                glassQuad(2.4f, 1.4f, r.x1() - kInset - 0.04f, fY + 1.9f, cz0 + 4.0f, -kPi * 0.5f,
+                          1.00f, 0.78f, 0.40f, 0.45f, 0.55f);
+                addLight(cx0, cY - 0.5f, cz0, 4.0f, 1.55f, 1.15f, 0.55f);
             }
         }
         ++m_roomsDressed;
