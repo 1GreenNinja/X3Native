@@ -13,6 +13,8 @@
 #include "../trigger.h"
 #include "../rifthub.h"
 #include "../player.h"
+#include "../audio_root.h"                  // resolveAudio (committed rifthub SFX)
+#include "engine/audio/IAudioSystem.h"      // synth hum/kawoosh/whoosh, 3D-placed
 
 namespace x3 { namespace apphost {
 
@@ -97,6 +99,31 @@ int hostRifthub(HostContext& hc) {
     x3::game::Player rhplayer;
     rhplayer.spawn(*rhphys, rhspawn.x, rhspawn.y, rhspawn.z);
 
+    // ===== Audio: synth hum bed + kawoosh/whoosh events (step 5) =====
+    // Own an audio system (mirrors host_club/host_drive). The three SFX are
+    // procedurally-synthesized, committed WAVs under assets/audio/rifthub/ —
+    // resolveAudio finds them on a fresh clone; a missing device / WAV loads
+    // graceful-silent (no crash). Each portal gets a subtle 3D idle HUM loop
+    // (the dormant gate); the kawoosh fires on activation, the whoosh on
+    // re-entering an already-activated gate (the relaunch latch).
+    std::unique_ptr<x3::audio::IAudioSystem> rhaudio(x3::audio::createAudioSystem());
+    x3::audio::SoundHandle sndKawoosh, sndWhoosh;
+    std::vector<x3::audio::LoopHandle> humLoops;
+    if (rhaudio && rhaudio->init()) {
+        x3::audio::SoundHandle sndHum = rhaudio->load(x3::game::resolveAudio("rifthub/rifthub_hum.wav"));
+        sndKawoosh = rhaudio->load(x3::game::resolveAudio("rifthub/rifthub_kawoosh.wav"));
+        sndWhoosh  = rhaudio->load(x3::game::resolveAudio("rifthub/rifthub_whoosh.wav"));
+        if (sndHum.valid()) {
+            humLoops.reserve(rifthub.portalCount());
+            for (uint32_t i = 0; i < rifthub.portalCount(); ++i) {
+                const auto& pp = rifthub.portal(i);
+                humLoops.push_back(rhaudio->startLoop3D(sndHum, pp.worldPos.x, /*ring Y*/1.8f,
+                                                        pp.worldPos.z, /*vol*/0.22f, /*pitch*/1.0f));
+            }
+        }
+    }
+    int rhInside = -1;   // portal index the player is currently standing in (-1 = none)
+
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
@@ -170,7 +197,42 @@ int hostRifthub(HostContext& hc) {
         rhscene.update(*rhphys);
 
         // Forward the player position to the rift triggers (latch "rift activated").
-        for (uint32_t id : rhtrig.update({ camX, camY, camZ })) rifthub.onTrigger(id);
+        // A trigger fires ONCE (first entry) -> that is the KAWOOSH (activation).
+        for (uint32_t id : rhtrig.update({ camX, camY, camZ })) {
+            rifthub.onTrigger(id);
+            if (rhaudio && sndKawoosh.valid()) {
+                for (uint32_t i = 0; i < rifthub.portalCount(); ++i) {
+                    const auto& pp = rifthub.portal(i);
+                    if (pp.triggerId == id) {
+                        rhaudio->playSound3D(sndKawoosh, pp.worldPos.x, 1.8f, pp.worldPos.z, /*vol*/0.9f);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Re-entry WHOOSH (the relaunch latch): rising edge of stepping INTO an
+        // ALREADY-activated gate (the trigger won't re-fire, so detect it here).
+        {
+            int nowInside = -1;
+            const float kInsideR2 = 2.5f * 2.5f;   // matches the trigger footprint
+            for (uint32_t i = 0; i < rifthub.portalCount(); ++i) {
+                const auto& pp = rifthub.portal(i);
+                const float dx = camX - pp.worldPos.x, dz = camZ - pp.worldPos.z;
+                if (dx*dx + dz*dz < kInsideR2) { nowInside = (int)i; break; }
+            }
+            if (nowInside != rhInside) {
+                if (nowInside >= 0 && rifthub.portal((uint32_t)nowInside).activated &&
+                    rhaudio && sndWhoosh.valid()) {
+                    const auto& pp = rifthub.portal((uint32_t)nowInside);
+                    rhaudio->playSound3D(sndWhoosh, pp.worldPos.x, 1.8f, pp.worldPos.z, /*vol*/0.8f);
+                }
+                rhInside = nowInside;
+            }
+        }
+
+        // Drive the audio listener from the camera + pump the mixer.
+        if (rhaudio) { rhaudio->setListener(camX, camY, camZ, camYaw, camPitch); rhaudio->update(fdt); }
 
         // HUD line (dependency-free): the nearest-rift prompt as the window title.
         std::string prompt;
@@ -188,6 +250,10 @@ int hostRifthub(HostContext& hc) {
         device->endFrame(frame);
     }
 
+    if (rhaudio) {
+        for (auto h : humLoops) rhaudio->stopLoop(h);
+        rhaudio->shutdown();
+    }
     rifthub.shutdown(*device);
     rhphys->shutdown();
     device->shutdown();
