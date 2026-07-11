@@ -4,6 +4,7 @@
 // systems + the engine interfaces. No RBDOOM / id Tech / Doom / Quake — or any
 // other game-engine — source was consulted. CONTENT/LEVEL-SCRIPT ONLY.
 #include "rifthub.h"
+#include "asset_root.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
 
@@ -39,8 +40,8 @@ constexpr float    kRingY          = 2.2f;   // ring center height above the flo
 constexpr float    kRingR          = 2.05f;  // ring CENTERLINE radius
 constexpr float    kRingHalfRad    = 0.40f;  // radial half-thickness (0.80 m thick band)
 constexpr float    kRingHalfDepth  = 0.45f;  // half-depth through the gate (0.90 m deep)
-constexpr float    kRingStone[3]   = { 0.44f, 0.45f, 0.50f };  // neutral grey stone
-constexpr float    kRingEmissive   = 0.30f;  // faint self-lift, NOT a glow
+constexpr float    kRingStone[3]   = { 0.55f, 0.66f, 0.63f };  // teal-patina multiplier (over the metal set)
+constexpr float    kRingEmissive   = 0.06f;  // near-zero self-lift — the blue core + hall LIGHT the metal
 // TRUE TORUS ring params (step-2 AAA smooth ring; replaces the box segments):
 constexpr float    kRingTubeR      = 0.40f;  // tube radius => 0.80 m band / 0.80 m depth
 constexpr uint32_t kRingMajorSeg   = 64;     // segments around the ring centerline (smooth)
@@ -54,22 +55,73 @@ inline float segHalfTangent(float ringR) {
     return ringR * std::sin(pi / (float)kRingSegments) * 1.06f;  // 6% overlap (chunky butt)
 }
 
-// ---- Amber chevron locking clamps ---------------------------------------------
-// THE signature "powered gate" cue: chunky triangular prisms seated proud of the
-// ring's outer face (hub-facing side), apex pointing INWARD toward the pool,
-// glowing amber. One at 12 o'clock, the rest evenly spaced. tick() flickers each
-// with a slow per-chevron-phased pulse so the gate reads as powered + breathing.
+// ---- Chevron clamp HOUSINGS + amber cores (ring v2, fable-rock pass) -----------
+// v1 chevrons were whole-shape emissive triangles at strength 1.4..5.2 —
+// "flat yellow party triangles" (Tim's verdict). v2: each chevron is a chunky
+// DARK METAL clamp housing seated into the ring (textured box + side flanges,
+// never emissive) with only a small amber-lit triangular CORE inset in its
+// face — and the core's flicker is CAPPED so amber never clips to yellow-white.
 constexpr uint32_t kChevronCount   = 9;      // 9 locking clamps (one prominent at top)
-constexpr float    kChevAmber[3]   = { 1.00f, 0.50f, 0.09f };  // amber-orange lock glow
-constexpr float    kChevBaseHalf   = 0.26f;  // half-width at the outer base (tangent)
-constexpr float    kChevApex       = 0.34f;  // apex reach INWARD (radial, toward center)
-constexpr float    kChevBack       = 0.16f;  // base half-reach OUTWARD from seat (radial)
-constexpr float    kChevHalfDepth  = 0.14f;  // proud half-thickness (along outward axis)
-constexpr float    kChevSeatR      = 2.02f;  // seat radius (chevron center, on the ring's outer half)
-constexpr float    kChevMinEm      = 1.4f;   // amber flicker trough
-constexpr float    kChevMaxEm      = 5.2f;   // amber flicker peak (powered)
+constexpr float    kChevAmber[3]   = { 1.00f, 0.46f, 0.08f };  // amber-orange lock glow
+constexpr float    kChevBaseHalf   = 0.15f;  // amber core: half-width at the base (tangent)
+constexpr float    kChevApex       = 0.20f;  // amber core: apex reach INWARD (radial)
+constexpr float    kChevBack       = 0.09f;  // amber core: base half-reach OUTWARD (radial)
+constexpr float    kChevHalfDepth  = 0.045f; // amber core: proud half-thickness (outward)
+constexpr float    kChevSeatR      = 2.02f;  // seat radius (chevron center, ring's outer half)
+constexpr float    kChevMinEm      = 0.85f;  // amber flicker trough
+constexpr float    kChevMaxEm      = 2.10f;  // amber flicker peak (powered, CAPPED)
+constexpr float    kChevEmCap      = 2.40f;  // hard cap incl. surge lift
 constexpr float    kChevFlickerHz  = 0.85f;  // slow flicker rate (Hz)
 constexpr float    kChevPhaseStep  = 0.7f;   // per-chevron phase offset (rad)
+// Housing (dark metal clamp body behind/around the amber core):
+constexpr float    kHouseHalfTan   = 0.30f;  // housing half-width (tangent)
+constexpr float    kHouseHalfRad   = 0.36f;  // housing half-height (radial)
+constexpr float    kHouseHalfDep   = 0.12f;  // housing proud half-thickness (outward)
+constexpr float    kFlangeHalfTan  = 0.075f; // side flange bars
+constexpr float    kFlangeHalfRad  = 0.26f;
+constexpr float    kFlangeHalfDep  = 0.16f;
+
+// ---- Ring v2 over-plates + rivets (industrialize the smooth torus) -------------
+// Varied-depth riveted armor plates wrapped over the torus rim break the
+// uniform donut: per-portal kPlateArcCount arc plates at jittered angular
+// slots/sizes seated on the OUTER rim, plus small rivet studs on the front
+// face. Textured from the curated surface library, tinted toward the locked
+// TEAL-OXIDE patina.
+constexpr uint32_t kPlateArcCount  = 12;
+constexpr float    kPlateSeatR     = 2.16f;   // plate center radius (over the tube crest)
+constexpr float    kPatinaTint[3]  = { 0.62f, 0.78f, 0.74f };  // teal-oxide multiplier
+constexpr float    kSteelTint[3]   = { 0.52f, 0.55f, 0.58f };  // neutral steel multiplier
+constexpr float    kDarkTint[3]    = { 0.30f, 0.33f, 0.35f };  // dark housing metal
+constexpr uint32_t kRivetCount     = 12;      // front-face rivet studs per portal
+constexpr float    kRivetHalf      = 0.032f;
+
+// ---- Segmented amber RATCHET TRACK (inner-facing edge; PortalAnimated.mp4) -----
+// Small amber segments ringing the gate's inner front edge. Dormant: dim.
+// SURGE: a bright chase sweeps the circumference (activation feedback).
+// OPEN: steady powered glow. All writes capped at kTrackEmCap.
+constexpr uint32_t kTrackSegs      = 36;
+constexpr float    kTrackR         = 1.80f;   // segment center radius
+constexpr float    kTrackHalfTan   = 0.10f;
+constexpr float    kTrackHalfRad   = 0.055f;
+constexpr float    kTrackHalfDep   = 0.018f;
+constexpr float    kTrackEmIdle    = 0.22f;
+constexpr float    kTrackEmOpen    = 0.90f;
+constexpr float    kTrackChase     = 2.00f;   // added peak at the chase crest
+constexpr float    kTrackChaseRadS = 9.0f;    // chase sweep speed (rad/s)
+constexpr float    kTrackEmCap     = 2.30f;
+
+// ---- A-frame support cradle (the gate is INSTALLED, not floating) --------------
+constexpr float    kSkirtHalfTan   = 1.70f;   // base plinth under the ring bottom
+constexpr float    kSkirtHalfY     = 0.25f;
+constexpr float    kSkirtHalfDep   = 0.85f;
+constexpr float    kStrutBaseOut   = 2.85f;   // strut foot lateral offset (along right)
+constexpr float    kStrutTopOut    = 1.95f;   // strut head lateral offset
+constexpr float    kStrutTopY      = 2.55f;   // strut head height (grabs the ring side)
+constexpr float    kStrutHalfW     = 0.17f;
+constexpr float    kStrutHalfT     = 0.12f;
+constexpr float    kAnchorHalfTan  = 0.55f;   // floor anchor plates at the strut feet
+constexpr float    kAnchorHalfY    = 0.05f;
+constexpr float    kAnchorHalfDep  = 0.45f;
 
 // ---- Floor plate (octagonal) --------------------------------------------------
 // 8 small box wedges in a ring on the floor — a low-poly "disk" the player
@@ -268,6 +320,34 @@ AddedEntity addOrientedEmissiveBox(Scene& scene, x3::rhi::IRenderDevice& device,
     return AddedEntity{ e.mesh, id };
 }
 
+// Add an origin-centered box dressed with a curated PBR surface set (albedo +
+// normal + MR on the PBR route). Falls back to the flat-tinted emissive box
+// when the set didn't load (headless / assets not fetched). `tint` multiplies
+// the albedo (the teal-patina wash); `uvScale` sets texture tiling (makeBox
+// emits 1 tile per meter at 1.0).
+AddedEntity addOrientedSurfBox(Scene& scene, x3::rhi::IRenderDevice& device,
+                               float hx, float hy, float hz,
+                               const float xAxis[3], const float yAxis[3], const float zAxis[3],
+                               float wx, float wy, float wz,
+                               const SurfaceSet* sf, const float tint[3],
+                               float emStrength, float uvScale = 1.0f) {
+    x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, 0.0f, 0.0f, 0.0f, uvScale);
+    Entity e;
+    e.mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                               m.index.data(), (uint32_t)m.index.size());
+    if (sf && sf->ok) {
+        e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = sf->mr;
+    }
+    e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1]; e.baseColor[2] = tint[2];
+    e.baseColor[3] = 1.0f;
+    e.emissive[0] = tint[0]; e.emissive[1] = tint[1]; e.emissive[2] = tint[2];
+    e.emissive[3] = emStrength;
+    e.tag = (uint32_t)Tag::Prop;
+    makeXform(e.transform, xAxis, yAxis, zAxis, wx, wy, wz);
+    uint32_t id = scene.add(e);
+    return AddedEntity{ e.mesh, id };
+}
+
 // Build an origin-centered ISOSCELES TRIANGULAR PRISM (a chevron / locking-clamp
 // block) as raw render geometry. In LOCAL space the triangle lies in the XY plane
 // with its APEX at (0, -apex) pointing toward -Y and its base corners at
@@ -349,10 +429,14 @@ AddedEntity addOrientedEmissiveMesh(Scene& scene, x3::rhi::IRenderDevice& device
                                     const x3::prims::PrimMesh& m,
                                     const float xAxis[3], const float yAxis[3], const float zAxis[3],
                                     float wx, float wy, float wz,
-                                    const float tint[3], float emStrength) {
+                                    const float tint[3], float emStrength,
+                                    const SurfaceSet* sf = nullptr) {
     Entity e;
     e.mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
                                m.index.data(), (uint32_t)m.index.size());
+    if (sf && sf->ok) {
+        e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = sf->mr;
+    }
     e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1]; e.baseColor[2] = tint[2];
     e.baseColor[3] = 1.0f;
     e.emissive[0] = tint[0]; e.emissive[1] = tint[1]; e.emissive[2] = tint[2];
@@ -622,6 +706,16 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_mrFlat = device.createTexture(mrPx, 1, 1, false);
     }
 
+    // ===== Curated PBR surface sets (ring v2 / hall). The library owns the
+    // textures (freed in shutdown via destroyAll). LFS-budget note (2026-07-11):
+    // the intro-cockpit rusted/patina sets could NOT be harvested (GitHub LFS
+    // budget exhausted), so ring v2 dresses from the 24 sets already
+    // materialized on this branch, tinted toward the locked teal-oxide patina.
+    m_surf.mount(assetRoot() + "/surface_library");
+    const SurfaceSet& sPlate = m_surf.get(device, "mw_metal_panels_a"); // riveted industrial panels
+    const SurfaceSet& sDark  = m_surf.get(device, "sr_metal_b");        // dark steel (housings/cradle)
+    const SurfaceSet& sTrim  = m_surf.get(device, "mw_metal_trim_b");   // trim (plates variant)
+
     // ===== Portals (clockwise ring around the spawn) =====
     m_portals.clear();
     m_portals.reserve(kPortalCount);
@@ -678,6 +772,10 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         {
             x3::prims::PrimMesh torus =
                 x3::prims::makeTorus(kRingR, kRingTubeR, kRingMajorSeg, kRingMinorSeg);
+            // Tile the metal set around the ring: u wraps the 12.9 m major
+            // circumference ONCE by default (a smeared stretch) — rescale so a
+            // tile lands roughly every 1.3 m major / 1.25 m minor.
+            for (auto& v : torus.verts) { v.uv[0] *= 10.0f; v.uv[1] *= 2.0f; }
             const float locX[3] = { rightX, 0.0f, rightZ };   // ring "right"
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };   // world up
             const float locZ[3] = { outwardX, 0.0f, outwardZ };// outward (hole axis)
@@ -685,11 +783,103 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 scene, device, torus,
                 locX, locY, locZ,
                 cx, kRingY, cz,
-                kRingStone, /*emStrength=*/kRingEmissive);
+                kRingStone, /*emStrength=*/kRingEmissive, &sPlate);
             m_portalMeshes.push_back(ae.mesh);
         }
         p.ringEntFirst = ringEntFirst;
         p.ringEntCount = 1;   // one torus entity (was kRingSegments box segments)
+
+        // ---- Ring v2 OVER-PLATES + rivets (industrial armor over the torus) --
+        // kPlateArcCount varied plates seated over the tube crest at jittered
+        // angular slots + sizes (deterministic per portal+slot hash), skinned
+        // from the curated sets, alternating patina/steel tints. Rivet studs
+        // dot the hub-facing front face between chevrons.
+        {
+            auto h01 = [&](uint32_t s3, uint32_t salt) {
+                return x3::prims::detail::hash01(i * 131u + s3, s3 * 17u + 5u, 4096u, salt);
+            };
+            for (uint32_t s3 = 0; s3 < kPlateArcCount; ++s3) {
+                const float slot = (float)s3 * (twoPi / (float)kPlateArcCount);
+                const float th   = slot + (h01(s3, 0xA1u) - 0.5f) * 0.18f;
+                const float ct = std::cos(th), st = std::sin(th);
+                const float radX = ct * rightX, radY = st, radZ = ct * rightZ;
+                const float tanX = -st * rightX, tanY = ct, tanZ = -st * rightZ;
+                const float locX[3] = { tanX, tanY, tanZ };       // tangent (arc width)
+                const float locY[3] = { radX, radY, radZ };       // radial (plate thickness)
+                const float locZ[3] = { outwardX, 0.0f, outwardZ };// through-gate depth
+                const float halfTan = 0.34f + 0.28f * h01(s3, 0xB2u);
+                const float halfRad = 0.075f + 0.070f * h01(s3, 0xC3u);   // varied depth
+                const float halfDep = 0.30f + 0.16f * h01(s3, 0xD4u);
+                const float seatR   = kPlateSeatR + halfRad * 0.5f;
+                const bool patina   = h01(s3, 0xE5u) > 0.45f;
+                AddedEntity ae = addOrientedSurfBox(
+                    scene, device, halfTan, halfRad, halfDep,
+                    locX, locY, locZ,
+                    cx + seatR * radX, kRingY + seatR * radY, cz + seatR * radZ,
+                    patina ? &sPlate : &sTrim,
+                    patina ? kPatinaTint : kSteelTint,
+                    /*emStrength=*/0.05f, /*uvScale=*/0.9f);
+                m_portalMeshes.push_back(ae.mesh);
+            }
+            // Rivet studs on the front face (small dark boxes, offset between
+            // the chevron seats).
+            for (uint32_t rv = 0; rv < kRivetCount; ++rv) {
+                const float th = ((float)rv + 0.5f) * (twoPi / (float)kRivetCount) + 1.5707963f;
+                const float ct = std::cos(th), st = std::sin(th);
+                const float radX = ct * rightX, radY = st, radZ = ct * rightZ;
+                const float locX[3] = { -st * rightX, ct, -st * rightZ };
+                const float locY[3] = { radX, radY, radZ };
+                const float locZ[3] = { outwardX, 0.0f, outwardZ };
+                const float proud = kRingHalfDepth + kRivetHalf * 0.4f;
+                AddedEntity ae = addOrientedSurfBox(
+                    scene, device, kRivetHalf, kRivetHalf, kRivetHalf,
+                    locX, locY, locZ,
+                    cx + kRingR * radX - outwardX * proud,
+                    kRingY + kRingR * radY,
+                    cz + kRingR * radZ - outwardZ * proud,
+                    &sDark, kDarkTint, /*emStrength=*/0.03f);
+                m_portalMeshes.push_back(ae.mesh);
+            }
+        }
+
+        // ---- A-frame support CRADLE (the gate is INSTALLED, not floating) ----
+        // Base skirt plinth under the ring bottom + two canted A-frame struts
+        // grabbing the ring's sides + floor anchor plates at the strut feet.
+        {
+            const float locX[3] = { rightX, 0.0f, rightZ };
+            const float locY[3] = { 0.0f,   1.0f, 0.0f    };
+            const float locZ[3] = { outwardX, 0.0f, outwardZ };
+            // Skirt plinth (top at 0.50 m — below the 0.55 m ring opening).
+            AddedEntity skirt = addOrientedSurfBox(
+                scene, device, kSkirtHalfTan, kSkirtHalfY, kSkirtHalfDep,
+                locX, locY, locZ,
+                cx, kSkirtHalfY, cz,
+                &sDark, kDarkTint, /*emStrength=*/0.04f, /*uvScale=*/0.6f);
+            m_portalMeshes.push_back(skirt.mesh);
+            for (int side = -1; side <= 1; side += 2) {
+                const float bx = cx + rightX * kStrutBaseOut * (float)side;
+                const float bz = cz + rightZ * kStrutBaseOut * (float)side;
+                const float tx = cx + rightX * kStrutTopOut * (float)side;
+                const float tz = cz + rightZ * kStrutTopOut * (float)side;
+                // Canted strut blade: thickness along the gate's depth axis.
+                x3::prims::PrimMesh strut = x3::prims::makeCantedStrut(
+                    bx, 0.0f, bz, tx, kStrutTopY, tz,
+                    kStrutHalfW, kStrutHalfT, outwardX, outwardZ, /*uvScale=*/0.5f);
+                const float ident[3][3] = { {1,0,0}, {0,1,0}, {0,0,1} };
+                AddedEntity ae = addOrientedEmissiveMesh(
+                    scene, device, strut,
+                    ident[0], ident[1], ident[2], 0.0f, 0.0f, 0.0f,
+                    kSteelTint, /*emStrength=*/0.04f, &sDark);
+                m_portalMeshes.push_back(ae.mesh);
+                // Floor anchor plate at the strut foot.
+                AddedEntity anchor = addOrientedSurfBox(
+                    scene, device, kAnchorHalfTan, kAnchorHalfY, kAnchorHalfDep,
+                    locX, locY, locZ,
+                    bx, kAnchorHalfY, bz,
+                    &sTrim, kSteelTint, /*emStrength=*/0.04f);
+                m_portalMeshes.push_back(anchor.mesh);
+            }
+        }
 
         // ---- Octagonal floor plate (8 wedge boxes) ---------------------------
         // Each wedge is a thin box tangent to a circle of radius kPlateRingR,
@@ -722,51 +912,91 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 plateHalfTangent(), kPlateHalfY, kPlateBoxThick,
                 locX, locY, locZ,
                 wcx, wcy, wcz,
-                sp.tint, /*emStrength=*/1.5f);
+                sp.tint, /*emStrength=*/0.8f);   // identity accent, not a beacon (cap law)
             m_portalMeshes.push_back(ae.mesh);
         }
 
-        // ---- Amber chevron locking clamps ------------------------------------
-        // kChevronCount triangular prisms ringing the gate's OUTER face, apex
-        // pointing INWARD toward the pool, glowing amber (the "powered gate"
-        // cue). Chevron 0 sits at 12 o'clock (ring angle 90°); the rest are
-        // evenly spaced clockwise around the circle. Each is seated on the outer
-        // half of the ring at radius kChevSeatR and nudged proud of the ring's
-        // hub-facing front face (along -outward). Authored contiguously so tick()
-        // can flicker each with its own phase.
-        const uint32_t chevronEntFirst = scene.size();
-        const float chevProud = kRingHalfDepth + kChevHalfDepth;   // sit just in front of the ring
-        for (uint32_t c = 0; c < kChevronCount; ++c) {
-            // Start at 12 o'clock (θ=+π/2) and step clockwise (−) around the ring.
+        // ---- Chevron clamp HOUSINGS + amber cores (ring v2) -------------------
+        // Chevron 0 sits at 12 o'clock; the rest step clockwise. Two passes so
+        // the ANIMATED span stays contiguous: first every DARK housing (body +
+        // two side flanges, textured, never emissive), then the 9 small amber
+        // cores tick() flickers (chevronEntFirst points at the cores).
+        auto chevBasis = [&](uint32_t c, float out[3], float tan[3], float rad[3]) {
             const float th = 1.5707963f - (float)c * (twoPi / (float)kChevronCount);
             const float ct = std::cos(th);
             const float st = std::sin(th);
-            // In-ring-plane radial-out at θ = ct*right + st*up; tangent = -st*right + ct*up.
-            const float radX = ct * rightX;
-            const float radY = st;                   // up is world +Y
-            const float radZ = ct * rightZ;
-            const float tanX = -st * rightX;
-            const float tanY =  ct;
-            const float tanZ = -st * rightZ;
-            // Chevron center: on the ring's outer half, pushed proud toward the hub.
-            const float chcx = cx     + kChevSeatR * radX - outwardX * chevProud;
-            const float chcy = kRingY + kChevSeatR * radY;
-            const float chcz = cz     + kChevSeatR * radZ - outwardZ * chevProud;
-            // Prism local axes: +X = tangent (chevron width), +Y = radial-out
-            // (apex at -Y points INWARD toward center), +Z = outward (proud depth).
-            const float locX[3] = { tanX, tanY, tanZ };
-            const float locY[3] = { radX, radY, radZ };
-            const float locZ[3] = { outwardX, 0.0f, outwardZ };
+            rad[0] = ct * rightX; rad[1] = st; rad[2] = ct * rightZ;
+            tan[0] = -st * rightX; tan[1] = ct; tan[2] = -st * rightZ;
+            out[0] = outwardX; out[1] = 0.0f; out[2] = outwardZ;
+        };
+        for (uint32_t c = 0; c < kChevronCount; ++c) {
+            float outv3[3], tanv3[3], radv3[3];
+            chevBasis(c, outv3, tanv3, radv3);
+            const float houseProud = kRingHalfDepth + kHouseHalfDep * 0.35f;
+            const float hcx = cx     + kChevSeatR * radv3[0] - outwardX * houseProud;
+            const float hcy = kRingY + kChevSeatR * radv3[1];
+            const float hcz = cz     + kChevSeatR * radv3[2] - outwardZ * houseProud;
+            // Clamp body (dark metal, seated into the ring).
+            AddedEntity body = addOrientedSurfBox(
+                scene, device, kHouseHalfTan, kHouseHalfRad, kHouseHalfDep,
+                tanv3, radv3, outv3, hcx, hcy, hcz,
+                &sDark, kDarkTint, /*emStrength=*/0.04f);
+            m_portalMeshes.push_back(body.mesh);
+            // Two side flange bars (the mechanical clamp jaws).
+            for (int fside = -1; fside <= 1; fside += 2) {
+                AddedEntity fl = addOrientedSurfBox(
+                    scene, device, kFlangeHalfTan, kFlangeHalfRad, kFlangeHalfDep,
+                    tanv3, radv3, outv3,
+                    hcx + tanv3[0] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
+                    hcy + tanv3[1] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
+                    hcz + tanv3[2] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
+                    &sDark, kDarkTint, /*emStrength=*/0.04f);
+                m_portalMeshes.push_back(fl.mesh);
+            }
+        }
+        const uint32_t chevronEntFirst = scene.size();
+        for (uint32_t c = 0; c < kChevronCount; ++c) {
+            float outv3[3], tanv3[3], radv3[3];
+            chevBasis(c, outv3, tanv3, radv3);
+            // Amber core: a small tri prism inset in the housing's front face,
+            // apex pointing INWARD (the lock indicator — only THIS glows).
+            const float coreProud = kRingHalfDepth + kHouseHalfDep * 0.35f
+                                  + kHouseHalfDep + kChevHalfDepth * 0.6f;
+            const float ccx = cx     + kChevSeatR * radv3[0] - outwardX * coreProud;
+            const float ccy = kRingY + kChevSeatR * radv3[1];
+            const float ccz = cz     + kChevSeatR * radv3[2] - outwardZ * coreProud;
             AddedEntity ae = addOrientedEmissiveTriPrism(
                 scene, device,
                 kChevBaseHalf, kChevApex, kChevBack, kChevHalfDepth,
-                locX, locY, locZ,
-                chcx, chcy, chcz,
+                tanv3, radv3, outv3,
+                ccx, ccy, ccz,
                 kChevAmber, /*emStrength=*/kChevMinEm);
             m_portalMeshes.push_back(ae.mesh);
         }
         p.chevronEntFirst = chevronEntFirst;
         p.chevronEntCount = kChevronCount;
+
+        // ---- Segmented amber RATCHET TRACK (inner front edge; the video's
+        // activation-feedback detail). Contiguous span for tick()'s chase.
+        p.trackEntFirst = scene.size();
+        for (uint32_t t3 = 0; t3 < kTrackSegs; ++t3) {
+            const float th = (float)t3 * (twoPi / (float)kTrackSegs);
+            const float ct = std::cos(th), st = std::sin(th);
+            const float radX = ct * rightX, radY = st, radZ = ct * rightZ;
+            const float locX[3] = { -st * rightX, ct, -st * rightZ };
+            const float locY[3] = { radX, radY, radZ };
+            const float locZ[3] = { outwardX, 0.0f, outwardZ };
+            const float proud = kRingHalfDepth + kTrackHalfDep * 0.6f;
+            AddedEntity ae = addOrientedEmissiveBox(
+                scene, device, kTrackHalfTan, kTrackHalfRad, kTrackHalfDep,
+                locX, locY, locZ,
+                cx + kTrackR * radX - outwardX * proud,
+                kRingY + kTrackR * radY,
+                cz + kTrackR * radZ - outwardZ * proud,
+                kChevAmber, /*emStrength=*/kTrackEmIdle);
+            m_portalMeshes.push_back(ae.mesh);
+        }
+        p.trackEntCount = kTrackSegs;
 
         // ---- Pool center: soft ROUND electric-blue hot spot ------------------
         // Two small round glow disks (the SHARED membrane disk mesh, uniformly
@@ -917,6 +1147,10 @@ void Rifthub::tick(float dt, Scene& scene) {
             kawooshEm = kKawooshPeakEm * std::exp(-kKawooshDecay * tSince);
             surge01   = kawooshEm / kKawooshPeakEm;
         }
+        // Membrane/gate state (PortalAnimated.mp4 arc), derived from the
+        // existing gameplay latches: IDLE / SURGE (kawoosh) / OPEN (settled).
+        const bool surging = p.kawoosh > 0.0f;
+        const bool open    = p.activated && !surging;
 
         // NOTE: the ring itself is NOT animated (metal doesn't pulse).
 
@@ -931,13 +1165,33 @@ void Rifthub::tick(float dt, Scene& scene) {
             m_lights[i].color[2] = kCoreLightBlue[2] * lI;
         }
 
-        // --- Amber chevrons: slow per-chevron amber flicker (powered gate) ---
+        // --- Amber chevron cores: slow per-chevron flicker (powered gate);
+        //     the surge lifts every core toward the CAP (locks slamming shut).
         for (uint32_t c = 0; c < p.chevronEntCount; ++c) {
             const uint32_t e = p.chevronEntFirst + c;
             if (e >= sceneN) break;
             const float chevPhase = phase + (float)c * kChevPhaseStep;
             const float s01 = 0.5f * (std::sin(m_time * chevOmega + chevPhase) + 1.0f);
-            ents[e].emissive[3] = kChevMinEm + (kChevMaxEm - kChevMinEm) * s01;
+            ents[e].emissive[3] = capped(kChevMinEm + (kChevMaxEm - kChevMinEm) * s01
+                                         + surge01 * 0.6f, kChevEmCap);
+        }
+
+        // --- Amber RATCHET TRACK: dim when dormant; a bright CHASE sweeps the
+        //     circumference during the surge; steady powered glow once OPEN.
+        for (uint32_t t3 = 0; t3 < p.trackEntCount; ++t3) {
+            const uint32_t e = p.trackEntFirst + t3;
+            if (e >= sceneN) break;
+            const float segAng = (float)t3 * (twoPi / (float)kTrackSegs);
+            float em = open ? kTrackEmOpen : kTrackEmIdle;
+            if (open) em += 0.12f * std::sin(m_time * 2.0f + segAng * 3.0f + phase);
+            if (surging) {
+                // Chase crest orbiting the track; sharpened cos^8 lobe.
+                float cph = std::cos(segAng - m_time * kTrackChaseRadS + phase);
+                if (cph < 0.0f) cph = 0.0f;
+                cph = cph * cph; cph = cph * cph; cph = cph * cph;   // ^8
+                em = kTrackEmIdle + surge01 * (0.55f + kTrackChase * cph);
+            }
+            ents[e].emissive[3] = capped(em, kTrackEmCap);
         }
 
         // --- Energy core: faster electric-blue pulse (core + brighter inner),
@@ -952,10 +1206,6 @@ void Rifthub::tick(float dt, Scene& scene) {
             ents[p.coreInnerEnt].emissive[3] = capped(coreEm * 1.10f + 0.25f, kCoreEmCap);
 
         // --- MEMBRANE STATE MACHINE (PortalAnimated.mp4 animation arc) -------
-        // IDLE (!activated) / SURGE (kawoosh > 0) / OPEN (activated, settled).
-        // Derived from the existing gameplay latches — no new flags.
-        const bool surging = p.kawoosh > 0.0f;
-        const bool open    = p.activated && !surging;
         // Texture swap into the THROAT happens the moment the portal activates
         // — the kawoosh flash is at full brightness on that exact frame, so
         // the swap hides inside it.
@@ -1278,6 +1528,7 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_throatTex.valid())  { device.destroyTexture(m_throatTex);  m_throatTex  = {}; }
     if (m_vistaTex.valid())   { device.destroyTexture(m_vistaTex);   m_vistaTex   = {}; }
     if (m_mrFlat.valid())     { device.destroyTexture(m_mrFlat);     m_mrFlat     = {}; }
+    m_surf.destroyAll(device);   // curated PBR sets (ring plates / housings / hall)
     for (int m = 0; m < kMaxMotes; ++m) m_motes[m].life = 0.0f;
     m_portals.clear();
     m_lights.clear();
@@ -1418,10 +1669,11 @@ bool runRifthubSelfTest() {
         for (uint32_t i = 0; i < hub.portalCount(); ++i) {
             const RiftPortal& p = hub.portal(i);
             if (p.ringEntCount == 0 || p.chevronEntCount == 0) ok = false;
-            if (p.membraneEntCount == 0)                       ok = false;
+            if (p.membraneEntCount == 0 || p.trackEntCount == 0) ok = false;
             if (p.ringEntFirst + p.ringEntCount > sceneN)      ok = false;
             if (p.coreEnt >= sceneN || p.coreInnerEnt >= sceneN) ok = false;
             if (p.chevronEntFirst + p.chevronEntCount > sceneN) ok = false;
+            if (p.trackEntFirst + p.trackEntCount > sceneN)     ok = false;
             if (p.membraneEntFirst + p.membraneEntCount > sceneN) ok = false;
         }
         rhCheck(ok, "T1 every portal owns valid ring/chevron/core/membrane entity spans");
@@ -1544,6 +1796,11 @@ bool runRifthubSelfTest() {
             if (rim    > kRimEmCap    + 1e-4f) underCap = false;
             if (core   > kCoreEmCap   + 1e-4f) underCap = false;
             if (inner  > kCoreEmCap   + 1e-4f) underCap = false;
+            // Ring v2: chevron cores + ratchet-track chase obey their caps too.
+            if (ents[p1.chevronEntFirst].emissive[3] > kChevEmCap + 1e-4f) underCap = false;
+            for (uint32_t t3 = 0; t3 < p1.trackEntCount; ++t3)
+                if (ents[p1.trackEntFirst + t3].emissive[3] > kTrackEmCap + 1e-4f)
+                    underCap = false;
             const Entity& pe = ents[p1.membraneEntFirst + 1];
             if (!(pe.emissive[2] > pe.emissive[0] && pe.emissive[2] > pe.emissive[1]))
                 blueDominant = false;

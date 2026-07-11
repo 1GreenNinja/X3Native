@@ -62,6 +62,7 @@
 // the arcs + submit the motes. See rifthub.cpp's tick()/drawFx() constants.
 
 #include "scene.h"
+#include "surface_library.h"
 #include "trigger.h"
 
 #include "engine/rhi/IRenderDevice.h"
@@ -120,6 +121,12 @@ struct RiftPortal {
     // chevron 0 at 12 o'clock; tick() pulses each with a per-chevron phase.
     uint32_t       chevronEntFirst = 0;   // first chevron entity id
     uint32_t       chevronEntCount = 0;   // number of amber chevrons
+    // Segmented amber RATCHET TRACK on the ring's inner-facing front edge
+    // (confirmed by PortalAnimated.mp4): dim amber when dormant, a bright
+    // chase sweeps the circumference during the ACTIVATION SURGE, and the
+    // track holds a steady powered glow once OPEN. Contiguous span.
+    uint32_t       trackEntFirst = 0;
+    uint32_t       trackEntCount = 0;
     // Event-horizon membrane — the visible portal SURFACE (membrane v2, the
     // fable-rock art pass): a contiguous 3-entity span in authoring order
     //   [0] VISTA disk (dim parallax backdrop — the glimpsed other world),
@@ -260,6 +267,11 @@ private:
     x3::rhi::TextureHandle     m_mrFlat;      // 1x1 rough/dielectric MR (PBR route)
     // Per-portal blue core lights (1:1 with m_portals); intensity pulsed in tick().
     std::vector<x3::rhi::PointLight> m_lights;
+    // Curated PBR surface sets (ring plates / housings / cradle / hall). The
+    // library owns the loaded textures; destroyAll() in shutdown(). On a box
+    // with no assets present a set loads !ok and authoring falls back to the
+    // flat-tinted look (the self-test path never breaks).
+    SurfaceLibrary m_surf;
 
     // ---- Spark-mote pool (membrane embers). CPU-integrated fixed ring, no
     // per-frame heap; drawFx() streams the live ones as one additive batch. ----
