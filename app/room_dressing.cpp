@@ -957,8 +957,13 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 // apart, arms at her sides. keepTex keeps her authored PBR skin/clothes
                 // (bypasses the wing black-prop material lift).
                 if (m_loader && cap < m_assetTable.size() && m_assetTable[cap].ok) {
+                    // Keisha's bake exported REVERSED (owner saw her facing the wrong
+                    // way — boots at the pillow end): her skeleton was TRANSPLANTED
+                    // from AnnaCasual onto an unrigged mesh, and the transplant's
+                    // forward came out 180° off the other two bakes. Flip her yaw so
+                    // her head lands at the +Z pillow like Aria/Emily.
                     const float capYaw = nameHas("Aria")   ?  0.04f
-                                       : nameHas("Keisha") ? -0.05f : 0.02f;
+                                       : nameHas("Keisha") ? (kPi - 0.05f) : 0.02f;
                     const float mattressY = fY + 0.55f;   // mattress sleeping surface
                     PropInst pc; pc.room = ri; pc.asset = cap; pc.keepTex = true;
                     // Shift toward the foot/door (-Z) so the whole body lies on the FLAT
