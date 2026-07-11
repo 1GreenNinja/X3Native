@@ -285,14 +285,26 @@ constexpr float    kVistaEmOpen       = 0.08f;           // dissolved (throat st
 constexpr float    kVistaFadePerSec   = 0.35f;           // dissolve rate on OPEN
 constexpr float    kVistaEmCap        = 0.70f;
 constexpr float    kVistaSpinRadS     = -0.06f;          // counter-rotates (parallax cue)
-// Fresnel rim ring: bright blue, the one deliberately hot edge — still capped.
-constexpr float    kRimR              = 1.60f;           // rim centerline radius
-constexpr float    kRimTubeR          = 0.050f;          // thin tube
-constexpr float    kRimBlue[3]        = { 0.30f, 0.62f, 1.00f };
-constexpr float    kRimEmBase         = 1.35f;
-constexpr float    kRimShimmerAmp     = 0.35f;
+// Fresnel rim (ROUND 2): round 1's single fat tube read as a uniform neon
+// sign. Now a FALLOFF STACK — a thin bright CONTACT ring right at the
+// membrane edge (the one deliberately hot line, blue-tinted, dimmer than
+// before), plus two static dimmer/thinner shells stepped hub-side so the
+// glow visibly decays away from the membrane (the fresnel read).
+constexpr float    kRimR              = 1.615f;          // contact ring centerline radius
+constexpr float    kRimTubeR          = 0.030f;          // THIN tube
+constexpr float    kRimBlue[3]        = { 0.32f, 0.60f, 1.00f };
+constexpr float    kRimEmBase         = 1.10f;
+constexpr float    kRimShimmerAmp     = 0.22f;
 constexpr float    kRimShimmerHz      = 0.90f;
-constexpr float    kRimEmCap          = 2.00f;   // v1 lesson: >2.9 reads WHITE after ACES
+constexpr float    kRimEmCap          = 1.70f;   // v1 lesson: >2.9 reads WHITE after ACES
+constexpr float    kRimFallRA         = 1.600f;  // falloff shell A (mid)
+constexpr float    kRimFallTubeA      = 0.021f;
+constexpr float    kRimFallOffA       = 0.055f;  // hub-side offset from the membrane
+constexpr float    kRimFallEmA        = 0.42f;
+constexpr float    kRimFallRB         = 1.585f;  // falloff shell B (outermost, faintest)
+constexpr float    kRimFallTubeB      = 0.015f;
+constexpr float    kRimFallOffB       = 0.115f;
+constexpr float    kRimFallEmB        = 0.16f;
 // ---- Kawoosh one-shot (the ACTIVATION SURGE state) ------------------------------
 // On activation the storm SURGES: strength rides toward the caps, the plasma
 // tint slides toward pale blue-white (bright BLUE-white at the peak, never
@@ -1479,11 +1491,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             makeXform(e.transform, locX, locY, locZ, cx, kRingY, cz);
             scene.add(e);
         }
-        // [2] FRESNEL RIM ring (bright blue inner-edge glow, shimmer in tick()).
+        // [2] FRESNEL CONTACT ring (the one hot line — thin, blue, shimmer in
+        //     tick(), brightest exactly where the membrane meets the ring).
         {
             Entity e;
             e.mesh = m_rimMesh;
-            e.baseColor[0] = 0.10f; e.baseColor[1] = 0.18f; e.baseColor[2] = 0.35f;
+            e.baseColor[0] = 0.08f; e.baseColor[1] = 0.14f; e.baseColor[2] = 0.28f;
             e.baseColor[3] = 1.0f;
             e.emissive[0] = kRimBlue[0]; e.emissive[1] = kRimBlue[1];
             e.emissive[2] = kRimBlue[2]; e.emissive[3] = kRimEmBase;
@@ -1493,6 +1506,32 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
         p.membraneEntFirst = membraneEntFirst;
         p.membraneEntCount = 3;
+        // FALLOFF shells (static, outside the animated span): two dimmer +
+        // thinner rings stepped hub-side of the contact line, so the rim glow
+        // visibly decays away from the membrane instead of reading neon.
+        {
+            const struct { float R, tube, off, em; } fall[2] = {
+                { kRimFallRA, kRimFallTubeA, kRimFallOffA, kRimFallEmA },
+                { kRimFallRB, kRimFallTubeB, kRimFallOffB, kRimFallEmB },
+            };
+            for (int f = 0; f < 2; ++f) {
+                x3::prims::PrimMesh torus =
+                    x3::prims::makeTorus(fall[f].R, fall[f].tube, 48, 8);
+                Entity e;
+                e.mesh = device.createMesh(torus.verts.data(), (uint32_t)torus.verts.size(),
+                                           torus.index.data(), (uint32_t)torus.index.size());
+                m_portalMeshes.push_back(e.mesh);
+                e.baseColor[0] = 0.05f; e.baseColor[1] = 0.09f; e.baseColor[2] = 0.18f;
+                e.baseColor[3] = 1.0f;
+                e.emissive[0] = kRimBlue[0]; e.emissive[1] = kRimBlue[1];
+                e.emissive[2] = kRimBlue[2]; e.emissive[3] = fall[f].em;
+                e.tag = (uint32_t)Tag::Prop;
+                makeXform(e.transform, locX, locY, locZ,
+                          cx - outwardX * fall[f].off, kRingY,
+                          cz - outwardZ * fall[f].off);
+                scene.add(e);
+            }
+        }
         p.vistaEm  = kVistaEmBase;   // IDLE state: vista faintly visible
         p.throatOn = false;
 
