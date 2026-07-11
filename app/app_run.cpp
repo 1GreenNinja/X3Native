@@ -1230,6 +1230,16 @@ int runDefaultHost(HostContext& hc) {
     auto shutdownGameSystems = [&]() {
         game.shutdown();                               // every enemy group + Martinez + barrels
         nexus.shutdown();                              // F4.5 Chorus pod ragdolls
+        // RAGDOLL-TEARDOWN GAP FIX: the Spire floor hosts each own several MonsterManagers
+        // (mid F3/F4/F5 + bosses; top F6/F7 + Overseer/Clone/Sarah; the hidden sub-levels +
+        // Frozen Collective/Chen). A monster killed in the last ~0.7 s on any of those
+        // floors is mid-flop with LIVE Jolt ragdoll bodies; without this its IRagdoll would
+        // be destroyed during stack unwind AFTER physics->shutdown() (use-after-shutdown,
+        // relying only on the W6-1 guard + leaking the JPH::Ragdoll). Tear them down here
+        // with the rest. All idempotent + no-ops when nothing died / the descent stayed shut.
+        midFloors.shutdown();                          // Spire mid-floor enemy + boss ragdolls
+        topFloors.shutdown();                          // Spire top-floor enemy + boss ragdolls
+        subLevels.shutdown();                          // hidden sub-level enemy + mini-boss ragdolls
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
     };
@@ -2535,6 +2545,7 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo(std::string("--capture-spire: ") + (allOk ? "all 8 floors captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
+        shutdownGameSystems();   // RAGDOLL-TEARDOWN GAP FIX: game + Spire bodies/ragdolls out BEFORE the world dies (this exit path previously skipped it)
         physics->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -2633,6 +2644,7 @@ int runDefaultHost(HostContext& hc) {
                     (allOk ? "all F2-F7 wings captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
+        shutdownGameSystems();   // RAGDOLL-TEARDOWN GAP FIX: game + Spire bodies/ragdolls out BEFORE the world dies (this exit path previously skipped it)
         physics->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -3321,8 +3333,10 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo("framepacing: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
         audio->shutdown();
         combatFx.shutdown(*device);
-        if (canonPlay.built()) canonPlay.shutdown();
-        if (canon45.built()) canon45.shutdown();
+        // RAGDOLL-TEARDOWN GAP FIX: the framepacing probe runs the REAL game loop, so a
+        // monster can die + ragdoll during it. Fan the full teardown (game + Spire +
+        // canon) — supersedes the bare canonPlay/canon45 calls this path used to make.
+        shutdownGameSystems();
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);

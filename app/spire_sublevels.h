@@ -227,6 +227,14 @@ public:
         return m_hazardPresent && pointInBox(pos, m_hazardMin, m_hazardMax);
     }
 
+    // Ragdoll-teardown gap fix: release every in-flight death-ragdoll (Jolt bodies)
+    // across ALL of this host's enemy managers (per-sub-level packs + the SL2 Frozen
+    // Collective mini-boss + Dr. Chen's expiry boss) BEFORE the physics world is shut
+    // down. Idempotent; a no-op when nothing is ragdolling (and doubly so while the
+    // descent is still closed — nothing has spawned). The owning host MUST call this
+    // before physics->shutdown() (see app_run's shutdownGameSystems).
+    void shutdown();
+
 private:
     // §2.5(a) Build the Salvari caves (collision graybox + emissive crystal props) at the
     // -178 m horizon off the SL3 plate. Called once from build(); render meshes start
