@@ -163,6 +163,22 @@ constexpr float    kPoolBaseEmCenter  = 5.5f;            // innermost band base 
 constexpr float    kPoolBaseEmRim     = 2.4f;            // outermost band base strength
 constexpr float    kPoolRippleAmp     = 1.8f;            // travelling-crest amplitude
 constexpr float    kPoolMinEm         = 0.35f;           // trough clamp (never fully dark)
+// ---- Fresnel rim (brighter blue at the grazing inner rim of the ring) ---------
+// Emissive approximation of a fresnel edge: the OUTERMOST membrane band (against
+// the stone's inner rim) gets an extra bright-blue lift + a slow shimmer, so the
+// event horizon reads bright at its rim like Stargate water at a grazing angle.
+// (A true view-dependent fresnel is the documented shader upgrade.)
+constexpr float    kFresnelRimEm      = 3.2f;            // extra emissive on the rim band
+constexpr float    kFresnelShimmerHz  = 0.9f;           // rim shimmer rate
+constexpr float    kFresnelShimmerAmp = 1.1f;           // rim shimmer amplitude
+// ---- Kawoosh one-shot (activation "unstable vortex" bulge-out) -----------------
+// On activation the membrane surges: a bright energy burst floods the pool then
+// settles over kKawooshDur seconds. Envelope = fast attack, exponential decay.
+// First pass animates EMISSIVE only (bulge-out splash of light); the geometry
+// bulge + a bespoke event-horizon shader are the documented upgrades.
+constexpr float    kKawooshDur        = 1.30f;           // total surge duration (s)
+constexpr float    kKawooshPeakEm     = 11.0f;           // peak added emissive at the flash
+constexpr float    kKawooshDecay      = 3.4f;            // exponential decay rate (1/s)
 // Membrane band center radius for band j (0 = innermost).
 inline float membraneBandR(uint32_t band) {
     return kMembraneInnerR + (float)band * kMembraneStepR;
@@ -641,8 +657,19 @@ void Rifthub::tick(float dt, Scene& scene) {
     const uint32_t sceneN = (uint32_t)ents.size();
 
     for (uint32_t i = 0; i < m_portals.size(); ++i) {
-        const RiftPortal& p = m_portals[i];
+        RiftPortal& p = m_portals[i];
         const float phase = (float)i * kShimmerPhaseStep;
+
+        // --- Kawoosh one-shot: decay the activation-surge timer + shape the
+        //     bulge-out envelope (fast attack, exponential decay). The burst
+        //     emissive rides on top of the membrane's steady ripple below.
+        float kawooshEm = 0.0f;
+        if (p.kawoosh > 0.0f) {
+            p.kawoosh -= dt;
+            if (p.kawoosh < 0.0f) p.kawoosh = 0.0f;
+            const float tSince = kKawooshDur - p.kawoosh;          // seconds since the flash
+            kawooshEm = kKawooshPeakEm * std::exp(-kKawooshDecay * tSince);
+        }
 
         // NOTE: the grey-stone ring is NOT animated (stone doesn't pulse).
 
@@ -696,6 +723,16 @@ void Rifthub::tick(float dt, Scene& scene) {
             const float ripple = std::sin(m_time * ripOmega - r * kRippleK + phase);
             const float swirl  = std::sin(th - m_time * swirlOmega + r * kSwirlTwist);
             float em = base + kPoolRippleAmp * ripple + kSwirlAmp * swirl;
+            // Fresnel rim: the OUTERMOST band glows bright blue (grazing edge),
+            // with a slow shimmer, so the event horizon rims bright like water.
+            if (band == kMembraneBands - 1) {
+                const float shim = 0.5f * (std::sin(m_time * (twoPi * kFresnelShimmerHz)
+                                                    + th + phase) + 1.0f);
+                em += kFresnelRimEm + kFresnelShimmerAmp * shim;
+            }
+            // Kawoosh surge: flood the whole pool with the decaying burst, a hair
+            // stronger toward the center so it reads as a splash-out from the core.
+            if (kawooshEm > 0.0f) em += kawooshEm * (1.0f - 0.35f * g);
             if (em < kPoolMinEm) em = kPoolMinEm;
             ents[e].emissive[3] = em;
         }
@@ -719,6 +756,7 @@ void Rifthub::onTrigger(uint32_t triggerId) {
         if (p.triggerId == triggerId) {
             if (!p.activated) {
                 p.activated = true;
+                p.kawoosh = kKawooshDur;   // fire the activation KAWOOSH surge
                 std::string name = p.worldName ? p.worldName : "?";
                 x3::logInfo(std::string("[rifthub] entered ") + name +
                             " rift — relaunch with --world " + name +

@@ -108,6 +108,11 @@ struct RiftPortal {
     // sin(time*w - bandRadius*k) so ripples propagate center -> rim.
     uint32_t       membraneEntFirst = 0;  // first membrane-band entity id
     uint32_t       membraneEntCount = 0;  // bands * segments entities
+    // KAWOOSH one-shot: seconds remaining in the activation "unstable vortex"
+    // surge (0 = idle). onTrigger() sets it to the kawoosh duration; tick()
+    // decays it and rides a bright bulge-out emissive envelope on the membrane
+    // (the puddle-splash), then settles back to the steady event-horizon ripple.
+    float          kawoosh = 0.0f;
 };
 
 // The Portal-Hub area. Build once after the device + physics + a TriggerSystem
