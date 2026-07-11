@@ -275,6 +275,7 @@ struct CliOptions {
     bool        testIntroCockpit = false;
     bool        testShipInterior = false;
     bool        testShipWindows  = false;
+    bool        testDescentSlide = false;
     bool        testWingDressing = false;  // --test-wingdressing (F2-F7 wing recipe pass)
     // --test-introbranch (Phase 4 BRANCH WIRING): the app_run branch-selection
     // contract — intro.outcome flag round-trip, the --intro-force dev override,

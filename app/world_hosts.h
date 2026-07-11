@@ -36,6 +36,7 @@ int hostElevator (HostContext& hc);   // --world elevator-showcase (+ --screensh
 
 int hostIntroCockpit(HostContext& hc); // --world introcockpit (intro cold-open cockpit)
 int hostShipWindows(HostContext& hc);  // --world ship-windows (S5/S6 fold: walkable interior + true-portal space)
+int hostDescentSlide(HostContext& hc); // --world descentslide (Wave 2C: the B1 -> -178 m coaster-grade ride)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);

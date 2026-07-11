@@ -52,6 +52,7 @@ struct TestFlags {
     bool testIntroCockpit = false;// --test-introcockpit (intro cockpit Scene-entity rig)
     bool testShipInterior = false;// --test-shipinterior (S5 walkable interior, headless)
     bool testShipWindows  = false;// --test-shipwindows (S6 true-portal windows, headless)
+    bool testDescentSlide = false;// --test-descentslide (Wave 2C track spec + rider sim, headless)
     bool testWingDressing = false;// --test-wingdressing (F2-F7 wing recipe dressing, headless)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;

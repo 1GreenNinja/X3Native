@@ -108,6 +108,7 @@
 #include "space/ship_interior.h"  // x3::space::runShipInteriorSelfTest (--test-shipinterior, S5 fold)
 #include "space/ship_windows.h"   // x3::space::runShipWindowsSelfTest (--test-shipwindows, S6 fold)
 #include "wing_dressing.h"        // x3::game::runWingDressingSelfTest (--test-wingdressing)
+#include "descent_slide.h"        // x3::game::runDescentSlideSelfTest (--test-descentslide, Wave 2C)
 #include "space/targeting.h"      // x3::space::TargetingSystem (--test-targeting)
 #include "space/ship_damage.h"    // x3::space::runShipDamageSelfTest (--test-ship-damage)
 #include "space/eva.h"            // x3::space::runEvaSelfTest (--test-eva)
@@ -350,6 +351,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running FLOORS 2-7 WING-DRESSING self-test (synthetic wing floor: "
                     "every west-wing room classifies + dresses, no ZNone holes, headless)...");
         return x3::game::runWingDressingSelfTest() ? 0 : 1;
+    }
+    if (tf.testDescentSlide) {
+        x3::logInfo("running Wave-2C DESCENT-SLIDE self-test (coaster-grade track spec: drop/"
+                    "monotonic/winding/first-drop/overbank/airtime/choppers/windows + bounded "
+                    "rider sim with unweight + crest tension, headless)...");
+        return x3::game::runDescentSlideSelfTest() ? 0 : 1;
     }
     if (tf.testShipWindows) {
         x3::logInfo("running S6 SHIP-WINDOWS self-test (true-portal moving space: star/nebula "

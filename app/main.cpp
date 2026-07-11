@@ -299,6 +299,7 @@ int main(int argc, char** argv) {
         _tf.testIntroCockpit = o.testIntroCockpit;
         _tf.testShipInterior = o.testShipInterior;
         _tf.testShipWindows  = o.testShipWindows;
+        _tf.testDescentSlide = o.testDescentSlide;
         _tf.testWingDressing = o.testWingDressing;
         _tf.testIntroBranch = o.testIntroBranch;
         _tf.testSurfaceStart = o.testSurfaceStart;
