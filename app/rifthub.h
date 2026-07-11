@@ -67,8 +67,11 @@
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/asset/IAssetSource.h"
+#include "engine/asset/IModelLoader.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -247,6 +250,12 @@ public:
 
     // Queries.
     bool built() const { return m_built; }
+    // ROUND 3: true iff the Blender-authored gate GLB (tools/build_rifthub_gate.py
+    // -> assets/converted_glb/rifthub/gate_ring.glb) loaded and produced drawables,
+    // i.e. the dense authored gate replaced the procedural torus/plate/clamp
+    // assembly. False = the procedural fallback ring was authored (GLB missing /
+    // failed / produced no drawables) — the world NEVER breaks either way.
+    bool gateGlbActive() const { return m_gateGlbActive; }
     uint32_t portalCount() const { return (uint32_t)m_portals.size(); }
     const RiftPortal& portal(uint32_t i) const { return m_portals[i]; }
     const std::vector<RiftPortal>& portals() const { return m_portals; }
@@ -290,6 +299,21 @@ private:
     // with no assets present a set loads !ok and authoring falls back to the
     // flat-tinted look (the self-test path never breaks).
     SurfaceLibrary m_surf;
+    // ROUND 3 gate GLB (the Blender-authored dense industrial gate; one model,
+    // instanced by all 8 portals as Scene entities at portalXform*nodeTransform).
+    // The loader owns the GPU handles — unload() in shutdown(), and these meshes
+    // are deliberately NOT pushed into m_portalMeshes (no double-free). The three
+    // glTF nodes are named gate_patina / gate_steel / gate_dark; authoring maps
+    // each to a curated surface set + tint by that name.
+    std::unique_ptr<x3::asset::IAssetSource>  m_gateAssets;
+    std::unique_ptr<x3::asset::IModelLoader>  m_gateLoader;
+    x3::asset::Model                          m_gateModel;
+    std::vector<x3::asset::ModelDrawable>     m_gateDrawables;
+    std::vector<std::string>                  m_gateNames;
+    bool                                      m_gateGlbActive = false;
+    // Fake-volumetric light shafts (ROUND 3 workstream 2): shared open frustum
+    // cone mesh drawn as low-alpha emissive glass under the ceiling fixtures.
+    x3::rhi::MeshHandle                       m_coneMesh;
 
     // ---- Spark-mote pool (membrane embers). CPU-integrated fixed ring, no
     // per-frame heap; drawFx() streams the live ones as one additive batch. ----

@@ -785,6 +785,33 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_mrWet = device.createTexture(wetPx, 1, 1, false);
     }
 
+    // ===== ROUND 3: Blender-authored GATE GLB (the density round) ==============
+    // tools/build_rifthub_gate.py authors ONE dense industrial gate (segmented
+    // stacked ring plates, 9 chamfered clamp housings + jaws + pivot bosses,
+    // piston rods, rim pipe runs w/ collars, bolt rings, vents, base skirt) and
+    // exports assets/converted_glb/rifthub/gate_ring.glb — three material-group
+    // nodes (gate_patina/gate_steel/gate_dark) this loader maps onto the curated
+    // surface sets. All 8 portals instance the SAME model as Scene entities at
+    // portalXform * nodeTransform. GRACEFUL FALLBACK: missing/failed GLB (or a
+    // headless load that yields no drawables) keeps the full procedural ring —
+    // the world never breaks. The engine-side membrane / ratchet track / chevron
+    // slits / state machine / audio / triggers are untouched either way.
+    m_gateGlbActive = false;
+    m_gateAssets.reset(x3::asset::createAssetSource());
+    if (m_gateAssets && m_gateAssets->mountDir(convertedGlbRoot(), 0)) {
+        m_gateLoader.reset(x3::asset::createModelLoader(&device, m_gateAssets.get()));
+        m_gateModel = m_gateLoader->load("rifthub/gate_ring.glb");
+        if (m_gateModel.ok) {
+            m_gateDrawables = x3::asset::makeDrawablesNamed(m_gateModel, m_gateNames);
+            m_gateGlbActive = !m_gateDrawables.empty();
+        }
+    }
+    x3::logInfo(std::string("[rifthub] gate mesh: ") +
+                (m_gateGlbActive
+                     ? ("Blender-authored GLB (" +
+                        std::to_string(m_gateDrawables.size()) + " material groups)")
+                     : "procedural fallback ring (gate_ring.glb absent/empty)"));
+
     // ===== Ground (static collision + the WET CONCRETE floor) =====
     // 40x40 m flat slab at y=-0.10 so the slab TOP sits at y=0 (the world Y=0
     // plane every other graybox uses). Phase C: the dev checker is gone — dark
@@ -996,7 +1023,40 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // Grey stone, faint self-lift only (kRingEmissive ~0.30, NOT a glow) —
         // the blue core light does the actual lighting of the stone.
         const uint32_t ringEntFirst = scene.size();
-        {
+        if (m_gateGlbActive) {
+            // ---- ROUND 3: instance the Blender-authored gate (one entity per
+            // material-group drawable, at portalXform * nodeTransform). The GLB's
+            // local contract matches the membrane basis: XY gate plane, hole
+            // along +Z(outward), FRONT (clamp caps / track bed) at -Z (hub-side).
+            const float locX[3] = { rightX, 0.0f, rightZ };
+            const float locY[3] = { 0.0f,   1.0f, 0.0f    };
+            const float locZ[3] = { outwardX, 0.0f, outwardZ };
+            float gateXf[16];
+            makeXform(gateXf, locX, locY, locZ, cx, kRingY, cz);
+            for (size_t d = 0; d < m_gateDrawables.size(); ++d) {
+                const x3::asset::ModelDrawable& dr = m_gateDrawables[d];
+                const std::string& nm = (d < m_gateNames.size()) ? m_gateNames[d]
+                                                                 : std::string();
+                // Material-group -> curated surface set + tint (the round-2
+                // grime-dark palette; the SD gate-forge sets supersede later).
+                const SurfaceSet* sf   = &sDark;
+                const float*      tint = kGunTint;
+                if (nm.find("patina") != std::string::npos) { sf = &sPlate; tint = kPatinaTint; }
+                else if (nm.find("steel") != std::string::npos) { sf = &sTrim; tint = kSteelTint; }
+                Entity e;
+                e.mesh = x3::rhi::MeshHandle{ dr.meshId };
+                if (sf->ok) { e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = sf->mr; }
+                e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1];
+                e.baseColor[2] = tint[2]; e.baseColor[3] = 1.0f;
+                e.emissive[0] = tint[0]; e.emissive[1] = tint[1];
+                e.emissive[2] = tint[2]; e.emissive[3] = kRingEmissive;
+                e.tag = (uint32_t)Tag::Prop;
+                x3::asset::mulMat4(gateXf, dr.nodeTransform, e.transform);
+                scene.add(e);   // mesh owned by the LOADER — not m_portalMeshes
+            }
+            p.ringEntFirst = ringEntFirst;
+            p.ringEntCount = (uint32_t)m_gateDrawables.size();
+        } else {
             x3::prims::PrimMesh torus =
                 x3::prims::makeTorus(kRingR, kRingTubeR, kRingMajorSeg, kRingMinorSeg);
             // Tile the metal set around the ring: u wraps the 12.9 m major
@@ -1012,16 +1072,18 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 cx, kRingY, cz,
                 kRingStone, /*emStrength=*/kRingEmissive, &sDark);
             m_portalMeshes.push_back(ae.mesh);
+            p.ringEntFirst = ringEntFirst;
+            p.ringEntCount = 1;   // one torus entity (was kRingSegments box segments)
         }
-        p.ringEntFirst = ringEntFirst;
-        p.ringEntCount = 1;   // one torus entity (was kRingSegments box segments)
 
         // ---- Ring v2 OVER-PLATES + rivets (industrial armor over the torus) --
         // kPlateArcCount varied plates seated over the tube crest at jittered
         // angular slots + sizes (deterministic per portal+slot hash), skinned
         // from the curated sets, alternating patina/steel tints. Rivet studs
         // dot the hub-facing front face between chevrons.
-        {
+        // ROUND 3: the authored GLB bakes far denser plate/bolt work — the
+        // procedural armor only dresses the fallback torus.
+        if (!m_gateGlbActive) {
             auto h01 = [&](uint32_t s3, uint32_t salt) {
                 return x3::prims::detail::hash01(i * 131u + s3, s3 * 17u + 5u, 4096u, salt);
             };
@@ -1072,7 +1134,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // ---- A-frame support CRADLE (the gate is INSTALLED, not floating) ----
         // Base skirt plinth under the ring bottom + two canted A-frame struts
         // grabbing the ring's sides + floor anchor plates at the strut feet.
-        {
+        // ROUND 3: the authored GLB carries its own plinth + angled shoulder
+        // skirt + foot pads, so the box cradle only dresses the fallback ring.
+        if (!m_gateGlbActive) {
             const float locX[3] = { rightX, 0.0f, rightZ };
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };
             const float locZ[3] = { outwardX, 0.0f, outwardZ };
@@ -1381,7 +1445,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         };
         const float houseProud = kRingHalfDepth + kHouseHalfDep * 0.35f;
         const float capProud   = houseProud + kHouseHalfDep + kCapHalfDep;
-        for (uint32_t c = 0; c < kChevronCount; ++c) {
+        // ROUND 3: with the authored GLB the clamp housings are REAL chamfered
+        // geometry baked into the gate mesh (cap faces at local z=-0.75, so the
+        // engine's amber slits below land 0.012 proud of them — seated, lit).
+        // The box housings only dress the fallback ring.
+        for (uint32_t c = 0; m_gateGlbActive == false && c < kChevronCount; ++c) {
             float outv3[3], tanv3[3], radv3[3];
             chevBasis(c, outv3, tanv3, radv3);
             const float hcx = cx     + kChevSeatR * radv3[0] - outwardX * houseProud;
@@ -2093,6 +2161,15 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_holoTexA.valid())   { device.destroyTexture(m_holoTexA);   m_holoTexA   = {}; }
     if (m_holoTexB.valid())   { device.destroyTexture(m_holoTexB);   m_holoTexB   = {}; }
     m_surf.destroyAll(device);   // curated PBR sets (ring plates / housings / hall)
+    if (m_coneMesh.valid())   { device.destroyMesh(m_coneMesh);      m_coneMesh   = {}; }
+    // ROUND 3 gate GLB: the LOADER owns its GPU handles — unload once, then drop
+    // the loader/source (gate entities referenced these meshes, never owned them).
+    if (m_gateLoader && m_gateModel.ok) m_gateLoader->unload(m_gateModel);
+    m_gateDrawables.clear();
+    m_gateNames.clear();
+    m_gateLoader.reset();
+    m_gateAssets.reset();
+    m_gateGlbActive = false;
     for (int m = 0; m < kMaxMotes; ++m) m_motes[m].life = 0.0f;
     m_portals.clear();
     m_lights.clear();
@@ -2404,6 +2481,23 @@ bool runRifthubSelfTest() {
         }
         rhCheck(swapped && dissolved,
                 "T8 state machine: OPEN throat texture swapped in, vista dissolved");
+    }
+
+    // T9 — GATE MESH SOURCE (ROUND 3): the gate NEVER has an empty ring span.
+    //      If the Blender-authored GLB loaded (gateGlbActive), every portal's
+    //      ring span is the same drawable count (all 8 instance ONE model);
+    //      otherwise the procedural fallback authored exactly its 1 torus
+    //      entity per portal — i.e. a missing/failed gate_ring.glb degrades
+    //      gracefully to the round-2 ring instead of breaking the world.
+    {
+        bool ok = true;
+        const uint32_t expect = hub.gateGlbActive() ? hub.portal(0).ringEntCount : 1u;
+        if (expect == 0) ok = false;
+        for (uint32_t i = 0; i < hub.portalCount(); ++i)
+            if (hub.portal(i).ringEntCount != expect) ok = false;
+        rhCheck(ok, hub.gateGlbActive()
+                        ? "T9 gate GLB active: uniform authored-mesh span on all 8 portals"
+                        : "T9 gate GLB absent: procedural fallback ring authored (1 span each)");
     }
 
     hub.shutdown(device);
