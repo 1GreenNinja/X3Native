@@ -2011,6 +2011,20 @@ int runDefaultHost(HostContext& hc) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
+    // RT DEFAULT ON for ray-tracing-capable devices (owner: "Ray Tracing default
+    // should be ON on the 3090 Ti"). Gated on rayTracingSupported() so the fleet's
+    // non-RT boxes (1080 Ti / 980 Ti) keep the raster/SSAO fallback byte-identical.
+    // RT AO = ground-truth contact occlusion; DDGI = real bounce GI — together the
+    // proper fix for "dark rooms / black props / can't see without the flashlight".
+    // r_rtshadows already defaults 2 (auto-0 without RT); r_ssr already 1.
+    if (device && device->rayTracingSupported()) {
+        console->set("r_rtao", "1");
+        console->set("r_ddgi", "1");
+        x3::logInfo("[rt] ray-tracing device detected -> RT AO + DDGI GI default ON");
+    } else {
+        x3::logInfo("[rt] no ray-tracing device -> raster/SSAO fallback (RT default off)");
+    }
+
     // --cullpath <n> / --hzb: seed the D15 GPU-cull cvars from the CLI so every
     // headless path (smoketest / screenshots / bench) can run with the GPU cull on.
     if (cullPathArg != INT_MIN) {
