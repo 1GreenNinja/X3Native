@@ -957,20 +957,23 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 // apart, arms at her sides. keepTex keeps her authored PBR skin/clothes
                 // (bypasses the wing black-prop material lift).
                 if (m_loader && cap < m_assetTable.size() && m_assetTable[cap].ok) {
-                    // All three captive bakes share ONE supine orientation (head toward
-                    // the +Z pillow, face up) — verified by orthographic top/side diagnosis
-                    // renders of the exported GLBs. Keisha's transplanted-skeleton bake is
-                    // NOT reversed relative to Aria/Emily; the earlier 180° yaw stopgap was
-                    // a misdiagnosis and is removed. All three now ride the same small
-                    // per-girl yaw so their heads land on the pillow together.
-                    const float capYaw = nameHas("Aria")   ?  0.04f
-                                       : nameHas("Keisha") ? -0.05f : 0.02f;
+                    // Orientation, settled by direct orthographic diagnosis (session
+                    // lead, Blender top+side renders of the exported GLBs): the models
+                    // are ANATOMICALLY PERFECT — supine, face up, knees up, legs apart —
+                    // but their NATIVE in-engine head points to -Z (feet +Z) while the
+                    // bed's pillow/incline is at +Z. So all three need a 180° yaw to land
+                    // the head on the pillow. The prior "no flip" placement put every head
+                    // at the FOOT of the bed (owner caught it). kPi + per-girl delta.
+                    const float capYaw = nameHas("Aria")   ? (kPi + 0.04f)
+                                       : nameHas("Keisha") ? (kPi - 0.05f)
+                                                           : (kPi + 0.02f);
                     const float mattressY = fY + 0.55f;   // mattress sleeping surface
                     PropInst pc; pc.room = ri; pc.asset = cap; pc.keepTex = true;
-                    // Shift toward the foot/door (-Z) so the whole body lies on the FLAT
-                    // mattress with just the head/shoulders reaching the +Z pillow base —
-                    // otherwise a rigid torso see-saws up on the raised head incline.
-                    makeTR(pc.transform, capYaw, 0.0f, cx0, mattressY, cz0 - 0.25f);
+                    // With the head now correctly at the +Z pillow (post-flip), shift her
+                    // TOWARD the pillow (+Z) so the whole body lies ON the mattress and the
+                    // lower legs don't hang off the foot rail (the prior -Z shift was tuned
+                    // for the wrong orientation and slid her off the foot end).
+                    makeTR(pc.transform, capYaw, 0.0f, cx0, mattressY, cz0 + 0.28f);
                     m_props.push_back(pc);
                     ++m_rescueCaptives;
                     // (3b) Restraint straps re-seated to the supine knees-up pose: a chest
