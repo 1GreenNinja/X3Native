@@ -509,8 +509,10 @@ int main(int argc, char** argv) {
     if (!headless) {
         // NO maximize-by-default (per Tim): open windowed at winW x H (or the saved
         // "SET AS DEFAULT" size). Fullscreen is opt-in via the settings checkbox.
+        const char* winTitle = (o.worldMode == "echotropolis") ? "Echo Harbor"
+                                                               : "X3Engine";
         window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
-                                  "X3Engine", nullptr, nullptr);
+                                  winTitle, nullptr, nullptr);
         if (!window) {
             x3::logError("glfwCreateWindow failed");
             glfwTerminate();

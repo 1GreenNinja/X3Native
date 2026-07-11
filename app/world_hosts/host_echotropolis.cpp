@@ -26,7 +26,8 @@
 #include "../tod.h"
 #include "../env_art.h"
 
-#include <stb_image.h>   // stbi_load_16 (impl compiled in engine/asset/ModelLoader.cpp)
+#include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
+#include <fstream>
 #include <vector>
 
 namespace x3 { namespace apphost {
@@ -65,6 +66,53 @@ inline float groundPerPixel(float radius, float fovDeg, int screenH) {
     const float fovV = fovDeg * 3.14159265f / 180.0f;
     return (2.0f * radius * std::tan(fovV * 0.5f)) / (float)(screenH > 0 ? screenH : 1);
 }
+
+// Host-side sample of the authored island's 16-bit heightmap (the SAME PNG
+// island_to_glb.py meshed the GLB from). Lets the orbit PIVOT ride the terrain
+// height under the focus so rotating/zooming keeps the ground under the crosshair
+// pinned (RTS feel) instead of pivoting around the flat y=0 plane while the mesa
+// sweeps past. Optional: if the PNG is absent heightAt() returns 0 and the pivot
+// falls back to the water plane. The world mapping mirrors island_to_glb.py exactly
+// (extent 4096 m, HEIGHT_SCALE 320, sea level = normalized 0.20 -> world y 0).
+struct Heightfield {
+    int w = 0, h = 0;
+    std::vector<uint16_t> px;                     // 16-bit grayscale, row-major
+    static constexpr float kMeters  = 4096.0f;    // world extent (island frame)
+    static constexpr float kScale   = 320.0f;     // HEIGHT_SCALE
+    static constexpr float kSeaNorm = 0.20f;      // normalized sea level
+
+    bool load(const std::string& path) {
+        // The engine's stb build is STBI_NO_STDIO (memory loaders only), so slurp
+        // the file ourselves and decode from memory.
+        std::ifstream f(path, std::ios::binary);
+        if (!f) { w = h = 0; return false; }
+        std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(f)),
+                                          std::istreambuf_iterator<char>());
+        if (bytes.empty()) { w = h = 0; return false; }
+        int comp = 0;
+        uint16_t* d = stbi_load_16_from_memory(bytes.data(), (int)bytes.size(), &w, &h, &comp, 1);
+        if (!d || w < 2 || h < 2) { if (d) stbi_image_free(d); w = h = 0; return false; }
+        px.assign(d, d + (size_t)w * h);
+        stbi_image_free(d);
+        return true;
+    }
+    bool ok() const { return w >= 2 && h >= 2; }
+
+    // Bilinear world height (metres) at world (x,z). Off-grid clamps to the edge.
+    float heightAt(float x, float z) const {
+        if (!ok()) return 0.0f;
+        float u = clampf((x / kMeters + 0.5f) * (float)(w - 1), 0.0f, (float)(w - 1));
+        float v = clampf((z / kMeters + 0.5f) * (float)(h - 1), 0.0f, (float)(h - 1));
+        const int x0 = (int)u, z0 = (int)v;
+        const int x1 = x0 < w - 1 ? x0 + 1 : x0;
+        const int z1 = z0 < h - 1 ? z0 + 1 : z0;
+        const float fx = u - (float)x0, fz = v - (float)z0;
+        auto S = [&](int cx, int cz) { return (float)px[(size_t)cz * w + cx] / 65535.0f; };
+        const float a = S(x0, z0), b = S(x1, z0), c = S(x0, z1), d2 = S(x1, z1);
+        const float hn = a + (b - a) * fx + (c - a) * fz + (a - b - c + d2) * fx * fz;
+        return (hn - kSeaNorm) * kScale;
+    }
+};
 
 // TU-local scroll accumulator (only one --world host ever runs at a time). GLFW
 // scroll is event-driven, so we sum deltas here and drain them once per frame.
@@ -109,11 +157,14 @@ struct OrbitRig {
                                            // in front, mesa cliffs behind (tiers readable)
     float pitch  = 0.2443f;                // elevation above sea (rad) — 14deg default
     float radius = 2800.0f;                // orbit distance — frames the whole 4km island
+    // Orbit-pivot height: the terrain height under (focusX,focusZ), so the pivot
+    // rides the land (0 over water). Keeps the crosshair point fixed while rotating.
+    float pivotY = 0.0f;
     // Smoothed (what the camera actually uses).
-    float sFocusX = 0.0f, sFocusZ = 0.0f;
+    float sFocusX = 0.0f, sFocusZ = 0.0f, sPivotY = 0.0f;
     float sYaw = 3.93f, sPitch = 0.2443f, sRadius = 2800.0f;
     // Spring velocities.
-    float vFocusX = 0.0f, vFocusZ = 0.0f, vYaw = 0.0f, vPitch = 0.0f, vRadius = 0.0f;
+    float vFocusX = 0.0f, vFocusZ = 0.0f, vPivotY = 0.0f, vYaw = 0.0f, vPitch = 0.0f, vRadius = 0.0f;
 };
 
 constexpr float kPitchMin = 0.0349f;   //  2 degrees
@@ -134,9 +185,9 @@ void applyOrbitCamera(x3::rhi::IRenderDevice* device, const OrbitRig& r,
     const float fwdX = cp * std::cos(useYaw);
     const float fwdY = sp;
     const float fwdZ = cp * std::sin(useYaw);
-    const float camX = r.sFocusX - fwdX * r.sRadius;
-    const float camY =        0.0f - fwdY * r.sRadius;   // focus.y = 0 -> camY = sin(pitch)*radius > 0
-    const float camZ = r.sFocusZ - fwdZ * r.sRadius;
+    const float camX = r.sFocusX  - fwdX * r.sRadius;
+    const float camY = r.sPivotY  - fwdY * r.sRadius;   // pivot on terrain -> camY = pivotY + sin(pitch)*radius
+    const float camZ = r.sFocusZ  - fwdZ * r.sRadius;
     device->setCamera(camX, camY, camZ, useYaw, lookPitch, fovDeg);
 }
 
@@ -248,6 +299,7 @@ int hostEchotropolis(HostContext& hc) {
     // sea-to-horizon at vista distance). Sea level = world y 0; mesa tops ~179m.
     // Dir overridable for other checkouts: ECHO_ISLAND_DIR env var.
     x3::game::EnvArtSystem island;
+    Heightfield hf;   // orbit-pivot terrain sampler (windowed only; headless keeps y=0)
     {
         const char* dirEnv = std::getenv("ECHO_ISLAND_DIR");
         const std::string islandDir = dirEnv ? dirEnv : "D:/GameDev/SimCityLLM2/refs/terrain";
@@ -256,6 +308,10 @@ int hostEchotropolis(HostContext& hc) {
         else
             x3::logError("--world echotropolis: island GLB MISSING (" + islandDir +
                          "/island_20260530.glb) — rendering open sea only");
+        if (hf.load(islandDir + "/island_height_20260530.png"))
+            x3::logInfo("--world echotropolis: heightfield loaded — orbit pivot rides the terrain");
+        else
+            x3::logWarn("--world echotropolis: heightfield PNG absent — orbit pivot uses the y=0 plane");
     }
 
     // ===================== Headless screenshot path =====================
@@ -309,8 +365,8 @@ int hostEchotropolis(HostContext& hc) {
     double runElapsed = 0.0; double runFrames = 0.0; double runSecs = 0.0;
 
     x3::logInfo("--world echotropolis: LMB/MMB-drag or WASD pan (grab-the-ground), "
-                "wheel zoom, RMB-drag orbit-rotate; TOD keys 1=golden 2=dusk 3=night "
-                "4=noon, T pauses the cycle; Esc to quit");
+                "wheel zoom, RMB-drag or Q/E orbit-rotate; TOD keys 1=golden 2=dusk "
+                "3=night 4=noon, T pauses the cycle; Esc to quit");
     bool todPaused = false, prevT = false;
     x3::game::TodPhase prevPhase = tod.phase();
 
@@ -355,6 +411,11 @@ int hostEchotropolis(HostContext& hc) {
             rig.pitch  = clampPitch(rig.pitch - ddy * radPerPx);
         }
 
+        // ---- Q/E keyboard orbit-yaw (RTS convention): Q counter-clockwise, E
+        // clockwise, constant ~90°/s while held; the light yaw damping stops it. ----
+        if (kd(GLFW_KEY_Q)) rig.yaw -= opt.keyYawRate * dt;
+        if (kd(GLFW_KEY_E)) rig.yaw += opt.keyYawRate * dt;
+
         // ---- LMB/MMB-drag PAN: "grab the ground" — the terrain tracks the cursor
         // ~1:1. Horizontal is exact (groundPerPixel); the forward axis is stretched
         // by the view foreshortening (÷sin(pitch), bounded) so shallow-angle vertical
@@ -385,10 +446,14 @@ int hostEchotropolis(HostContext& hc) {
         rig.focusX = clampf(rig.focusX, -opt.focusLimit, opt.focusLimit);
         rig.focusZ = clampf(rig.focusZ, -opt.focusLimit, opt.focusLimit);
         rig.pitch  = clampPitch(rig.pitch);
+        // Pivot rides the terrain height under the focus (0 over water) so the point
+        // under the crosshair stays fixed while rotating/zooming.
+        rig.pivotY = std::max(hf.heightAt(rig.focusX, rig.focusZ), 0.0f);
 
         // ---- Critically-damped smoothing of every channel (no snapping) -------
         rig.sFocusX = smoothDamp(rig.sFocusX, rig.focusX, rig.vFocusX, opt.smoothFocus, dt);
         rig.sFocusZ = smoothDamp(rig.sFocusZ, rig.focusZ, rig.vFocusZ, opt.smoothFocus, dt);
+        rig.sPivotY = smoothDamp(rig.sPivotY, rig.pivotY, rig.vPivotY, opt.smoothFocus, dt);
         rig.sYaw    = smoothDampAngle(rig.sYaw, rig.yaw, rig.vYaw, opt.smoothYaw, dt);
         rig.sPitch  = smoothDamp(rig.sPitch, rig.pitch, rig.vPitch, opt.smoothPitch, dt);
         rig.sRadius = smoothDamp(rig.sRadius, rig.radius, rig.vRadius, opt.smoothRadius, dt);
