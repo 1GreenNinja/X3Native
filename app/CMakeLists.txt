@@ -28,6 +28,10 @@ add_executable(X3Engine WIN32
     world_hosts/host_elevator.cpp
     # Phase 7 — ESCAPED-branch Act-1 surface-landing start (--world surface)
     world_hosts/host_surface_start.cpp
+    # FOLD — AAA Stargate portal hub (--world rifthub): torus gates, fresnel
+    # membrane, kawoosh surge, 3D gate audio (feat/rifthub-aaa graft)
+    world_hosts/host_rifthub.cpp
+    rifthub.cpp
     space_pilot.cpp
     space/ship_ai.cpp
     space/targeting.cpp

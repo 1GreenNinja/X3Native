@@ -283,6 +283,52 @@ inline PrimMesh makeUVSphere(uint32_t stacks = 64, uint32_t slices = 128) {
     return m;
 }
 
+// A TRUE PROCEDURAL TORUS (donut) authored in OBJECT space, centered at the
+// origin, LYING IN THE XY PLANE — the tube sweeps a circle of radius `tubeR`
+// around a centerline circle of radius `centerR` in XY, so the torus HOLE axis
+// is +Z. Smooth per-vertex normals (radial from the tube centerline) so the ring
+// shades as one continuous curved band, NOT faceted box segments. UVs: u = major
+// angle [0,1] around the ring, v = minor angle [0,1] around the tube. Winding is
+// CCW front-face for VK. Render geometry only (cverts/cindex left empty — a
+// walk-through gate needs no swept collision; the host uses an AABB trigger).
+//
+// Used by the rifthub Stargate ring: orient with the model transform's basis
+// (local +X = ring "right", +Y = world up, +Z = outward through the gate) so the
+// hole faces back toward the hub center and the player walks through along +Z.
+inline PrimMesh makeTorus(float centerR, float tubeR,
+                          uint32_t majorSeg = 64, uint32_t minorSeg = 16) {
+    PrimMesh m;
+    majorSeg = std::max(3u, majorSeg);
+    minorSeg = std::max(3u, minorSeg);
+    const float kTwoPi = 6.2831853f;
+    for (uint32_t i = 0; i <= majorSeg; ++i) {
+        const float u  = (float)i / (float)majorSeg;   // [0,1] around the ring
+        const float au = u * kTwoPi;
+        const float cu = std::cos(au), su = std::sin(au);
+        // In-plane radial direction (outward from the ring center, in XY).
+        const float rx = cu, ry = su;
+        for (uint32_t j = 0; j <= minorSeg; ++j) {
+            const float v  = (float)j / (float)minorSeg; // [0,1] around the tube
+            const float av = v * kTwoPi;
+            const float cv = std::cos(av), sv = std::sin(av);
+            // Surface point = centerline + tubeR*(cv*radial + sv*Zaxis).
+            const float nx = cv * rx, ny = cv * ry, nz = sv;   // unit tube normal
+            const float px = (centerR + tubeR * cv) * rx;
+            const float py = (centerR + tubeR * cv) * ry;
+            const float pz = tubeR * sv;
+            m.verts.push_back({ { px, py, pz }, { nx, ny, nz }, { u, v } });
+        }
+    }
+    const uint32_t cols = minorSeg + 1;
+    for (uint32_t i = 0; i < majorSeg; ++i)
+        for (uint32_t j = 0; j < minorSeg; ++j) {
+            const uint32_t a = i * cols + j, b = a + cols;
+            // CCW-from-outside for VK front face with this (major,minor) order.
+            m.index.insert(m.index.end(), { a, a + 1, b, a + 1, b + 1, b });
+        }
+    return m;
+}
+
 // A flat ANNULUS (planetary ring disc) on the XZ plane, authored in OBJECT space
 // centered at the origin with normal +Y. `innerR`/`outerR` are OBJECT-space radii;
 // `segments` controls the angular tessellation (one quad ring of `segments` cells).

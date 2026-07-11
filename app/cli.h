@@ -220,6 +220,13 @@ struct CliOptions {
     // interactable). Asserts the gates, the hazard, the timeline gate, reachability
     // L11->L12->L13->L14->L15, and trigger-id non-collision. Additive flag.
     bool        testAct2Caves = false;
+    // --test-rifthub / --test-portal (RIFTHUB AAA Stargate portal hub): builds the
+    // hub headless (8 torus gates on a 14 m ring), asserts portal count + trigger-id
+    // range (200-207) + per-portal ring/core/chevron/membrane entity spans, that
+    // entering a trigger latches activation + flips the HUD prompt, that tick()
+    // advances the shimmer/membrane ripple, and that all portal worldNames map to
+    // real --world targets. No window / Vulkan. (--test-portal is an alias.)
+    bool        testRifthub = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary

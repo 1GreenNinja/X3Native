@@ -85,6 +85,7 @@
 #include "act2_world.h"
 #include "act2_desert.h"
 #include "act2_caves.h"
+#include "rifthub.h"                          // RIFTHUB AAA Stargate portal hub (--test-rifthub / --test-portal)
 #include "tod.h"
 #include "weather.h"
 #include "world_regions.h"
@@ -593,6 +594,14 @@ int dispatchTests(const TestFlags& tf) {
                     "+ timeline-gated Siren ambush; L15 Tree Cities + trading post) "
                     "self-test...");
         return x3::game::runAct2CavesSelfTest() ? 0 : 1;
+    }
+    if (tf.testRifthub) {
+        x3::logInfo("running RIFTHUB AAA Stargate portal-hub self-test (8 torus gates on "
+                    "a 14 m ring: portal count + trigger ids 200-207 + ring/core/chevron/"
+                    "membrane entity spans; trigger entry latches activation + flips the "
+                    "HUD prompt; tick() advances the shimmer + membrane ripple; portal "
+                    "worldNames map to real --world targets)...");
+        return x3::game::runRifthubSelfTest() ? 0 : 1;
     }
     if (tf.testWorldRegions) {
         x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "

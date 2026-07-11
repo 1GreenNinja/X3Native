@@ -41,6 +41,7 @@ int hostBodyContact(HostContext& hc);     // --world bodycontact (BODY CONTACT f
 int hostWormhole(HostContext& hc);        // --world wormhole (feast fold: Salvari crystal-matrix tunnel VFX)
 int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fold: S3 autopilot jump ride)
 int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
+int hostRifthub  (HostContext& hc);       // --world rifthub   (RIFTHUB AAA Stargate portal hub — torus gates + fresnel membrane + kawoosh + 3D gate audio)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);

@@ -30,6 +30,7 @@ int dispatchWorldHost(HostContext& hc) {
     if (hc.worldMode == "tractor")                    return hostTractor(hc);
     if (hc.worldMode == "strata")                       return hostStrata(hc);
     if (hc.worldMode == "elevator-showcase")            return hostElevator(hc);
+    if (hc.worldMode == "rifthub")                      return hostRifthub(hc);
     return -1;
 }
 
