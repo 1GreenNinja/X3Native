@@ -83,31 +83,37 @@ inline float segHalfTangent(float ringR) {
     return ringR * std::sin(pi / (float)kRingSegments) * 1.06f;  // 6% overlap (chunky butt)
 }
 
-// ---- Chevron clamp HOUSINGS + amber cores (ring v2, fable-rock pass) -----------
-// v1 chevrons were whole-shape emissive triangles at strength 1.4..5.2 —
-// "flat yellow party triangles" (Tim's verdict). v2: each chevron is a chunky
-// DARK METAL clamp housing seated into the ring (textured box + side flanges,
-// never emissive) with only a small amber-lit triangular CORE inset in its
-// face — and the core's flicker is CAPPED so amber never clips to yellow-white.
+// ---- Chevron clamp HOUSINGS + amber slit cores (ROUND 2, "get industrial") -----
+// Round-1 kept a whole-shape emissive amber TRIANGLE as the core — still "flat
+// yellow party triangles" on Tim's live eyeball. Round 2: the triangle DIES.
+// Each chevron is now a machined clamp built from boxes only, every body panel
+// textured from the PBR library, and the ONLY emitter is a thin amber-lit SLIT
+// strip inset in the face plate (dark glass when unlit — near-black baseColor —
+// so nothing ever reads as saturated yellow plastic). Flicker capped at 2.0.
 constexpr uint32_t kChevronCount   = 9;      // 9 locking clamps (one prominent at top)
 constexpr float    kChevAmber[3]   = { 1.00f, 0.46f, 0.08f };  // amber-orange lock glow
-constexpr float    kChevBaseHalf   = 0.15f;  // amber core: half-width at the base (tangent)
-constexpr float    kChevApex       = 0.20f;  // amber core: apex reach INWARD (radial)
-constexpr float    kChevBack       = 0.09f;  // amber core: base half-reach OUTWARD (radial)
-constexpr float    kChevHalfDepth  = 0.045f; // amber core: proud half-thickness (outward)
-constexpr float    kChevSeatR      = 2.02f;  // seat radius (chevron center, ring's outer half)
-constexpr float    kChevMinEm      = 0.85f;  // amber flicker trough
-constexpr float    kChevMaxEm      = 2.10f;  // amber flicker peak (powered, CAPPED)
-constexpr float    kChevEmCap      = 2.40f;  // hard cap incl. surge lift
+constexpr float    kChevSeatR      = 2.02f;  // seat radius (clamp center, over the tube)
+constexpr float    kChevMinEm      = 0.70f;  // amber slit flicker trough
+constexpr float    kChevMaxEm      = 1.55f;  // amber slit flicker peak (powered)
+constexpr float    kChevEmCap      = 2.00f;  // HARD cap incl. surge lift (the brief's ~2.0)
 constexpr float    kChevFlickerHz  = 0.85f;  // slow flicker rate (Hz)
 constexpr float    kChevPhaseStep  = 0.7f;   // per-chevron phase offset (rad)
-// Housing (dark metal clamp body behind/around the amber core):
-constexpr float    kHouseHalfTan   = 0.30f;  // housing half-width (tangent)
-constexpr float    kHouseHalfRad   = 0.36f;  // housing half-height (radial)
-constexpr float    kHouseHalfDep   = 0.12f;  // housing proud half-thickness (outward)
-constexpr float    kFlangeHalfTan  = 0.075f; // side flange bars
-constexpr float    kFlangeHalfRad  = 0.26f;
-constexpr float    kFlangeHalfDep  = 0.16f;
+// Slit core: a thin horizontal lit strip (tangent-long), barely proud of the cap.
+constexpr float    kChevSlitHalfTan = 0.150f;
+constexpr float    kChevSlitHalfRad = 0.028f;
+constexpr float    kChevSlitHalfDep = 0.016f;
+constexpr float    kChevSlitDark[3] = { 0.05f, 0.035f, 0.02f };  // unlit = dark glass
+// Housing (dark gunmetal clamp body seated INTO the ring — spans the tube band):
+constexpr float    kHouseHalfTan   = 0.32f;  // body half-width (tangent)
+constexpr float    kHouseHalfRad   = 0.42f;  // body half-height (radial: grips the tube)
+constexpr float    kHouseHalfDep   = 0.15f;  // body proud half-thickness (outward)
+constexpr float    kFlangeHalfTan  = 0.080f; // side jaw flange bars
+constexpr float    kFlangeHalfRad  = 0.34f;
+constexpr float    kFlangeHalfDep  = 0.19f;  // jaws bite deeper than the body
+// Stepped face-cap plate (the machined bevel read: body -> cap -> slit).
+constexpr float    kCapHalfTan     = 0.22f;
+constexpr float    kCapHalfRad     = 0.28f;
+constexpr float    kCapHalfDep     = 0.050f;
 
 // ---- Ring v2 over-plates + rivets (industrialize the smooth torus) -------------
 // Varied-depth riveted armor plates wrapped over the torus rim break the
@@ -345,17 +351,22 @@ struct AddedEntity {
     x3::rhi::MeshHandle mesh;
     uint32_t            entityId;
 };
+// `baseCol` (optional) decouples the unlit surface color from the emissive
+// tint — the ROUND-2 realism law: an emitter's DARK body must not read as
+// saturated plastic when its glow is dim (pass a near-black baseCol).
 AddedEntity addOrientedEmissiveBox(Scene& scene, x3::rhi::IRenderDevice& device,
                                    float hx, float hy, float hz,
                                    const float xAxis[3], const float yAxis[3], const float zAxis[3],
                                    float wx, float wy, float wz,
-                                   const float tint[3], float emStrength) {
+                                   const float tint[3], float emStrength,
+                                   const float* baseCol = nullptr) {
     // Origin-centered mesh; reorient + translate via Entity::transform.
     x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, 0.0f, 0.0f, 0.0f);
     Entity e;
     e.mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
                                m.index.data(), (uint32_t)m.index.size());
-    e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1]; e.baseColor[2] = tint[2];
+    const float* bc = baseCol ? baseCol : tint;
+    e.baseColor[0] = bc[0]; e.baseColor[1] = bc[1]; e.baseColor[2] = bc[2];
     e.baseColor[3] = 1.0f;
     e.emissive[0] = tint[0]; e.emissive[1] = tint[1]; e.emissive[2] = tint[2];
     e.emissive[3] = emStrength;
@@ -393,79 +404,8 @@ AddedEntity addOrientedSurfBox(Scene& scene, x3::rhi::IRenderDevice& device,
     return AddedEntity{ e.mesh, id };
 }
 
-// Build an origin-centered ISOSCELES TRIANGULAR PRISM (a chevron / locking-clamp
-// block) as raw render geometry. In LOCAL space the triangle lies in the XY plane
-// with its APEX at (0, -apex) pointing toward -Y and its base corners at
-// (±baseHalf, +back); the triangle is extruded along ±Z by halfDepth. Two triangle
-// end-caps + three rectangular sides, per-face normals, CCW front faces (matches
-// makeBox's winding convention). Render-only (no collision) — chevrons are cosmetic.
-inline x3::prims::PrimMesh makeTriPrism(float baseHalf, float apex, float back,
-                                        float halfDepth) {
-    x3::prims::PrimMesh m;
-    const float hd = halfDepth;
-    // Triangle corners in local XY (apex points -Y = inward once oriented).
-    const float A[2] = { 0.0f,      -apex };
-    const float B[2] = { -baseHalf,  back };
-    const float C[2] = {  baseHalf,  back };
-    auto vtx = [&](float x, float y, float z, float nx, float ny, float nz,
-                   float u, float v) {
-        m.verts.push_back({ { x, y, z }, { nx, ny, nz }, { u, v } });
-    };
-    // Front cap (z=+hd, normal +Z): CCW order (A,C,B).
-    {
-        uint32_t base = (uint32_t)m.verts.size();
-        vtx(A[0], A[1], hd, 0, 0, 1, 0.5f, 0.0f);
-        vtx(C[0], C[1], hd, 0, 0, 1, 1.0f, 1.0f);
-        vtx(B[0], B[1], hd, 0, 0, 1, 0.0f, 1.0f);
-        m.index.insert(m.index.end(), { base, base + 1, base + 2 });
-    }
-    // Back cap (z=-hd, normal -Z): order (A,B,C).
-    {
-        uint32_t base = (uint32_t)m.verts.size();
-        vtx(A[0], A[1], -hd, 0, 0, -1, 0.5f, 0.0f);
-        vtx(B[0], B[1], -hd, 0, 0, -1, 0.0f, 1.0f);
-        vtx(C[0], C[1], -hd, 0, 0, -1, 1.0f, 1.0f);
-        m.index.insert(m.index.end(), { base, base + 1, base + 2 });
-    }
-    // Three side quads, edges in top CCW boundary order (A->C, C->B, B->A). For
-    // each edge (P,Q) emit [Pf, Pb, Qb, Qf] with outward normal (Qy-Py, -(Qx-Px), 0).
-    auto side = [&](const float P[2], const float Q[2]) {
-        float nx = (Q[1] - P[1]), ny = -(Q[0] - P[0]), nz = 0.0f;
-        const float len = std::sqrt(nx * nx + ny * ny);
-        if (len > 1e-6f) { nx /= len; ny /= len; }
-        uint32_t base = (uint32_t)m.verts.size();
-        vtx(P[0], P[1],  hd, nx, ny, nz, 0.0f, 0.0f);   // Pf
-        vtx(P[0], P[1], -hd, nx, ny, nz, 0.0f, 1.0f);   // Pb
-        vtx(Q[0], Q[1], -hd, nx, ny, nz, 1.0f, 1.0f);   // Qb
-        vtx(Q[0], Q[1],  hd, nx, ny, nz, 1.0f, 0.0f);   // Qf
-        m.index.insert(m.index.end(), { base, base + 1, base + 2, base, base + 2, base + 3 });
-    };
-    side(A, C);
-    side(C, B);
-    side(B, A);
-    return m;
-}
-
-// Add an origin-centered amber chevron prism, oriented + translated via the Entity
-// transform (same pattern as addOrientedEmissiveBox). Returns mesh + entity id.
-AddedEntity addOrientedEmissiveTriPrism(Scene& scene, x3::rhi::IRenderDevice& device,
-                                        float baseHalf, float apex, float back, float halfDepth,
-                                        const float xAxis[3], const float yAxis[3], const float zAxis[3],
-                                        float wx, float wy, float wz,
-                                        const float tint[3], float emStrength) {
-    x3::prims::PrimMesh m = makeTriPrism(baseHalf, apex, back, halfDepth);
-    Entity e;
-    e.mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
-                               m.index.data(), (uint32_t)m.index.size());
-    e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1]; e.baseColor[2] = tint[2];
-    e.baseColor[3] = 1.0f;
-    e.emissive[0] = tint[0]; e.emissive[1] = tint[1]; e.emissive[2] = tint[2];
-    e.emissive[3] = emStrength;
-    e.tag = (uint32_t)Tag::Prop;
-    makeXform(e.transform, xAxis, yAxis, zAxis, wx, wy, wz);
-    uint32_t id = scene.add(e);
-    return AddedEntity{ e.mesh, id };
-}
+// (ROUND 2: the tri-prism chevron helper is GONE — the yellow triangle died
+// with it. Clamps are boxes + a thin lit slit; see the chevron block below.)
 
 // Add a PRE-BUILT (origin-centered) PrimMesh as an emissive Entity, oriented via
 // the three world-space basis axes + translated to (wx,wy,wz). Used for the
@@ -1261,11 +1201,14 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             m_portalMeshes.push_back(ae.mesh);
         }
 
-        // ---- Chevron clamp HOUSINGS + amber cores (ring v2) -------------------
-        // Chevron 0 sits at 12 o'clock; the rest step clockwise. Two passes so
-        // the ANIMATED span stays contiguous: first every DARK housing (body +
-        // two side flanges, textured, never emissive), then the 9 small amber
-        // cores tick() flickers (chevronEntFirst points at the cores).
+        // ---- Chevron clamp HOUSINGS + amber SLIT cores (round 2) --------------
+        // Chevron 0 sits at 12 o'clock; the rest step clockwise. Each clamp is
+        // machined from boxes only: dark gunmetal BODY seated into the ring's
+        // tube band + two deeper side JAW flanges + a stepped steel face CAP —
+        // all textured from the PBR library, none emissive. Two passes so the
+        // ANIMATED span stays contiguous: housings first, then the 9 thin
+        // amber-lit SLIT strips tick() flickers (chevronEntFirst = the slits;
+        // near-black baseColor so a dim slit reads as dark glass, not yellow).
         auto chevBasis = [&](uint32_t c, float out[3], float tan[3], float rad[3]) {
             const float th = 1.5707963f - (float)c * (twoPi / (float)kChevronCount);
             const float ct = std::cos(th);
@@ -1274,20 +1217,21 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             tan[0] = -st * rightX; tan[1] = ct; tan[2] = -st * rightZ;
             out[0] = outwardX; out[1] = 0.0f; out[2] = outwardZ;
         };
+        const float houseProud = kRingHalfDepth + kHouseHalfDep * 0.35f;
+        const float capProud   = houseProud + kHouseHalfDep + kCapHalfDep;
         for (uint32_t c = 0; c < kChevronCount; ++c) {
             float outv3[3], tanv3[3], radv3[3];
             chevBasis(c, outv3, tanv3, radv3);
-            const float houseProud = kRingHalfDepth + kHouseHalfDep * 0.35f;
             const float hcx = cx     + kChevSeatR * radv3[0] - outwardX * houseProud;
             const float hcy = kRingY + kChevSeatR * radv3[1];
             const float hcz = cz     + kChevSeatR * radv3[2] - outwardZ * houseProud;
-            // Clamp body (dark metal, seated into the ring).
+            // Clamp body (dark gunmetal, spans the tube band — seated INTO the ring).
             AddedEntity body = addOrientedSurfBox(
                 scene, device, kHouseHalfTan, kHouseHalfRad, kHouseHalfDep,
                 tanv3, radv3, outv3, hcx, hcy, hcz,
-                &sDark, kDarkTint, /*emStrength=*/0.04f);
+                &sDark, kDarkTint, /*emStrength=*/0.02f);
             m_portalMeshes.push_back(body.mesh);
-            // Two side flange bars (the mechanical clamp jaws).
+            // Two side jaw flanges — deeper than the body, the mechanical bite.
             for (int fside = -1; fside <= 1; fside += 2) {
                 AddedEntity fl = addOrientedSurfBox(
                     scene, device, kFlangeHalfTan, kFlangeHalfRad, kFlangeHalfDep,
@@ -1295,27 +1239,34 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     hcx + tanv3[0] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
                     hcy + tanv3[1] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
                     hcz + tanv3[2] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
-                    &sDark, kDarkTint, /*emStrength=*/0.04f);
+                    &sDark, kDarkTint, /*emStrength=*/0.02f);
                 m_portalMeshes.push_back(fl.mesh);
             }
+            // Stepped face-cap plate (body -> cap bevel step, brushed trim set).
+            AddedEntity cap = addOrientedSurfBox(
+                scene, device, kCapHalfTan, kCapHalfRad, kCapHalfDep,
+                tanv3, radv3, outv3,
+                cx     + kChevSeatR * radv3[0] - outwardX * capProud,
+                kRingY + kChevSeatR * radv3[1],
+                cz     + kChevSeatR * radv3[2] - outwardZ * capProud,
+                &sTrim, kDarkTint, /*emStrength=*/0.02f);
+            m_portalMeshes.push_back(cap.mesh);
         }
         const uint32_t chevronEntFirst = scene.size();
         for (uint32_t c = 0; c < kChevronCount; ++c) {
             float outv3[3], tanv3[3], radv3[3];
             chevBasis(c, outv3, tanv3, radv3);
-            // Amber core: a small tri prism inset in the housing's front face,
-            // apex pointing INWARD (the lock indicator — only THIS glows).
-            const float coreProud = kRingHalfDepth + kHouseHalfDep * 0.35f
-                                  + kHouseHalfDep + kChevHalfDepth * 0.6f;
-            const float ccx = cx     + kChevSeatR * radv3[0] - outwardX * coreProud;
+            // The ONLY emitter: a thin amber slit strip barely proud of the cap.
+            const float slitProud = capProud + kCapHalfDep + kChevSlitHalfDep * 0.6f;
+            const float ccx = cx     + kChevSeatR * radv3[0] - outwardX * slitProud;
             const float ccy = kRingY + kChevSeatR * radv3[1];
-            const float ccz = cz     + kChevSeatR * radv3[2] - outwardZ * coreProud;
-            AddedEntity ae = addOrientedEmissiveTriPrism(
+            const float ccz = cz     + kChevSeatR * radv3[2] - outwardZ * slitProud;
+            AddedEntity ae = addOrientedEmissiveBox(
                 scene, device,
-                kChevBaseHalf, kChevApex, kChevBack, kChevHalfDepth,
+                kChevSlitHalfTan, kChevSlitHalfRad, kChevSlitHalfDep,
                 tanv3, radv3, outv3,
                 ccx, ccy, ccz,
-                kChevAmber, /*emStrength=*/kChevMinEm);
+                kChevAmber, /*emStrength=*/kChevMinEm, kChevSlitDark);
             m_portalMeshes.push_back(ae.mesh);
         }
         p.chevronEntFirst = chevronEntFirst;
@@ -1527,15 +1478,15 @@ void Rifthub::tick(float dt, Scene& scene) {
             m_lights[i].color[2] = kCoreLightBlue[2] * lI;
         }
 
-        // --- Amber chevron cores: slow per-chevron flicker (powered gate);
-        //     the surge lifts every core toward the CAP (locks slamming shut).
+        // --- Amber chevron SLIT cores: slow per-chevron flicker (powered gate);
+        //     the surge lifts every slit toward the CAP (locks slamming shut).
         for (uint32_t c = 0; c < p.chevronEntCount; ++c) {
             const uint32_t e = p.chevronEntFirst + c;
             if (e >= sceneN) break;
             const float chevPhase = phase + (float)c * kChevPhaseStep;
             const float s01 = 0.5f * (std::sin(m_time * chevOmega + chevPhase) + 1.0f);
             ents[e].emissive[3] = capped(kChevMinEm + (kChevMaxEm - kChevMinEm) * s01
-                                         + surge01 * 0.6f, kChevEmCap);
+                                         + surge01 * 0.45f, kChevEmCap);
         }
 
         // --- Amber RATCHET TRACK: dim when dormant; a bright CHASE sweeps the

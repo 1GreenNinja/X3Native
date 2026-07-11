@@ -21,8 +21,8 @@
 //   * a SUBSTANTIAL, thick RING you walk through (a smooth procedural torus),
 //     industrial weathered metal — the ring itself does NOT glow;
 //   * CHEVRON locking clamps ringing the gate's outer face (one at 12
-//     o'clock, the rest evenly spaced) with amber-lit cores, the "powered
-//     gate" cue;
+//     o'clock, the rest evenly spaced) — machined dark-metal clamp housings
+//     with only a thin amber-lit SLIT strip emitting, the "powered gate" cue;
 //   * a small octagonal emissive floor-plate (carries the per-destination
 //     accent tint, since the ring itself is neutral metal);
 //   * an EVENT-HORIZON MEMBRANE filling the ring opening: the fable-rock
@@ -116,11 +116,13 @@ struct RiftPortal {
     uint32_t       ringEntCount = 0;      // number of stone ring-segment entities
     uint32_t       coreEnt      = 0;      // core hot-spot disk entity id (blue)
     uint32_t       coreInnerEnt = 0;      // brighter inner blue disk (core depth)
-    // Amber CHEVRON locking clamps — chunky triangular prisms proud of the ring's
-    // outer face that flicker amber (the "powered gate" cue). Contiguous span,
+    // CHEVRON locking clamps — machined dark-metal housings (body + jaw
+    // flanges + face cap, all PBR-textured, never emissive) seated into the
+    // ring; the animated span is the thin amber-lit SLIT strip per clamp that
+    // flickers (the "powered gate" cue, capped ~2.0). Contiguous span,
     // chevron 0 at 12 o'clock; tick() pulses each with a per-chevron phase.
-    uint32_t       chevronEntFirst = 0;   // first chevron entity id
-    uint32_t       chevronEntCount = 0;   // number of amber chevrons
+    uint32_t       chevronEntFirst = 0;   // first amber SLIT entity id
+    uint32_t       chevronEntCount = 0;   // number of slit cores (one per clamp)
     // Segmented amber RATCHET TRACK on the ring's inner-facing front edge
     // (confirmed by PortalAnimated.mp4): dim amber when dormant, a bright
     // chase sweeps the circumference during the ACTIVATION SURGE, and the
