@@ -467,6 +467,17 @@ public:
         float roughness  = 0.0f;             // 0 = polished .. 1 = frosted (M4)
         float specular   = 0.6f;             // shimmer / specular strength (M3)
         float tint[3]    = { 1.0f, 1.0f, 1.0f }; // glass color; white = colorless
+        // STREET LIGHT (additive glow mode): 0 (default) = normal glass, byte-
+        // identical for every existing pane. > 0 flags this draw as an ADDITIVE
+        // VOLUMETRIC GLOW surface (fake light cones / ground light pools): the
+        // fragment shader skips refraction/specular and instead adds
+        // emissive * texel * pow(max(dot(N,V),0), additive) over the scene —
+        // the VALUE is the view-angle rim-fade exponent (higher = softer
+        // silhouette edges; ~1.5 for light cones, ~0.05 for flat ground pools
+        // that must survive grazing views). Back faces self-extinguish
+        // (dot(N,V) <= 0), so the double-sided glass pipeline draws one soft
+        // front layer and overlapping glows ACCUMULATE (no replace artifact).
+        float additive   = 0.0f;
     };
 
     // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's

@@ -187,6 +187,27 @@ void main() {
     vec3 tint  = vGlassTint.rgb;
     vec3 body  = texel * vFactor.rgb * tint;
 
+    // ---- STREET LIGHT: ADDITIVE GLOW mode (vGlassParams.w > 0) -------------
+    // Fake volumetric light surfaces (street-lamp cones / ground light pools).
+    // The glow = per-object emissive * the bound gradient texture (the axial /
+    // radial falloff bake) * a view-angle rim fade pow(dot(N,V), w) so the
+    // silhouette edges of a cone melt away instead of reading as a hard-edged
+    // cylinder; w is authored per material (~1.5 cones, ~0.05 flat pools).
+    // Back faces have dot(N,V) <= 0 and contribute nothing. Output uses a tiny
+    // constant alpha with the energy pre-divided out, so under this pass's
+    // SRC_ALPHA/ONE_MINUS_SRC_ALPHA blend the result is glow + 0.965*dst:
+    // effectively additive, and OVERLAPPING glows accumulate (the haveScene
+    // "replace" path would erase the cone behind this one). No refraction, no
+    // specular, no shadow taps — the cheapest fragment in the pass.
+    if (vGlassParams.w > 0.0) {
+        vec3 Vv = normalize(g.camPos.xyz - vWorldPos);
+        float rim = pow(max(dot(N, Vv), 0.0), vGlassParams.w);
+        vec3 glow = vEmissive.rgb * vEmissive.a * texel * tint * rim;
+        const float kAddA = 0.035;
+        outColor = vec4(glow / kAddA, kAddA);
+        return;
+    }
+
     // ---- M2: screen-space REFRACTION + M4: ROUGHNESS / FROST -------------
     // Project the world-space surface normal onto the screen plane (camera right/up)
     // to get the in-screen bend direction, then sample the scene-color copy at the
