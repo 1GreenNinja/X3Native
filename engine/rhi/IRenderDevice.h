@@ -464,9 +464,17 @@ public:
     // alpha (the see-through dial). `emissive` is the same per-object HDR glow term
     // as drawMeshEmissive (holo glass keeps its glow); pass nullptr for none. The
     // device flags the per-object row GLASS so it routes to the transparent pass.
+    // `alphaBlend` (default false = unchanged): when true the glass draw is placed in
+    // the BLEND partition so it is EXCLUDED from the depth pre-pass (which has no
+    // fragment stage and would otherwise write the glass geometry's depth, wrongly
+    // occluding real opaque geometry behind it under the EQUAL color pass). The
+    // dedicated glass pass still renders it identically — this only changes which
+    // CPU partition it lands in. Use for translucent shells that sit IN FRONT of an
+    // opaque body you must still see through them (e.g. a sun's corona over its core).
     virtual void          drawMeshGlass(const FrameContext&, MeshHandle, TextureHandle baseColor,
                                         const float baseColorFactor[4], const float emissive[4],
-                                        const GlassMaterial& glass, const float model[16]) = 0;
+                                        const GlassMaterial& glass, const float model[16],
+                                        bool alphaBlend = false) = 0;
 
     // ---- Analytic sky (open-world track, task A) ---------------------------
     // Parameters for the physically-plausible analytic sky drawn as the far-depth

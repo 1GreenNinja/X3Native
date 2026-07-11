@@ -867,7 +867,7 @@ void VulkanRenderDevice::drawMesh(const FrameContext& fc, MeshHandle mesh, Textu
 
 void VulkanRenderDevice::drawMeshGlass(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                    const float baseColorFactor[4], const float emissive[4],
-                   const GlassMaterial& glass, const float model[16]) {
+                   const GlassMaterial& glass, const float model[16], bool alphaBlend) {
         // baseColorFactor's alpha is overridden by the material opacity so the glass
         // body's see-through amount is the single primary dial (spec §2).
         float factor[4] = {
@@ -875,8 +875,12 @@ void VulkanRenderDevice::drawMeshGlass(const FrameContext& fc, MeshHandle mesh, 
             baseColorFactor ? baseColorFactor[1] : 1.0f,
             baseColorFactor ? baseColorFactor[2] : 1.0f,
             glass.opacity };
+        // `alphaBlend` (default false) puts the draw in the BLEND partition so it is
+        // skipped by the fragment-less depth pre-pass — the glass pass still draws it
+        // via the GLASS flag, so the look is unchanged; it just no longer writes
+        // occluding pre-pass depth over opaque bodies behind it. See IRenderDevice.
         drawMeshInternal(fc, mesh, baseColor, TextureHandle{}, TextureHandle{}, factor, emissive,
-                         model, /*alphaMask=*/false, /*alphaBlend=*/false, TextureHandle{},
+                         model, /*alphaMask=*/false, alphaBlend, TextureHandle{},
                          TextureHandle{}, 1.0f, kFlagGlass, &glass);
     }
 

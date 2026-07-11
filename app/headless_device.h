@@ -87,7 +87,8 @@ public:
                           const float[16]) override {}
     void drawMeshGlass(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
                        x3::rhi::TextureHandle, const float[4], const float[4],
-                       const x3::rhi::IRenderDevice::GlassMaterial&, const float[16]) override {}
+                       const x3::rhi::IRenderDevice::GlassMaterial&, const float[16],
+                       bool = false) override {}
 
     void submitParticles(const x3::rhi::IRenderDevice::ParticleInstance*, uint32_t,
                          x3::rhi::IRenderDevice::ParticleBlend) override {}

@@ -351,6 +351,29 @@ int hostSpace(HostContext& hc) {
         // texture per-texel — see IRenderDevice::drawMeshPBR's emissiveTex arg).
         auto sunTexPx = bakeSunRGBA(384);
         auto sunTex = device->createTexture(sunTexPx.data(), 384, 384, /*srgb=*/true);
+        // ---- INSIDE-THE-SUN plasma dome (deliverable B) --------------------------
+        // Two low-res INVERTED spheres (winding flipped so the INNER surface faces a
+        // camera sitting inside them), camera-anchored during InsideSun. Both sample
+        // the same granulation bake (sunTex) as an emissive map; their UVs PAN every
+        // frame (updateMesh — the ship_windows portal recipe) in OPPOSITE directions
+        // and rates so the plasma churns. Layer A is an opaque warm backdrop; layer B
+        // is a slightly smaller additive glass shell (alphaBlend=true so it skips the
+        // depth pre-pass) counter-rotating over it. Cheap: 2 small meshes + UV re-up.
+        auto makeInvertedSphere = [](uint32_t stacks, uint32_t slices) {
+            x3::prims::PrimMesh m = x3::prims::makeUVSphere(stacks, slices);
+            for (size_t t = 0; t + 2 < m.index.size(); t += 3)
+                std::swap(m.index[t + 1], m.index[t + 2]);   // flip winding -> inward
+            return m;
+        };
+        x3::prims::PrimMesh plasmaA = makeInvertedSphere(20, 40);
+        x3::prims::PrimMesh plasmaB = makeInvertedSphere(20, 40);
+        auto plasmaMeshA = device->createMesh(plasmaA.verts.data(), (uint32_t)plasmaA.verts.size(),
+                                              plasmaA.index.data(), (uint32_t)plasmaA.index.size());
+        auto plasmaMeshB = device->createMesh(plasmaB.verts.data(), (uint32_t)plasmaB.verts.size(),
+                                              plasmaB.index.data(), (uint32_t)plasmaB.index.size());
+        // Scratch vertex buffers reused each frame for the two panned UV re-uploads.
+        std::vector<x3::rhi::MeshVertex> plasmaVA = plasmaA.verts;
+        std::vector<x3::rhi::MeshVertex> plasmaVB = plasmaB.verts;
         // PLASMA FLARES / PROMINENCES: kFlareCount hash-seeded arcs on the limb,
         // each on its OWN rise->arch->collapse->fade lifecycle (period 20-60s,
         // staggered phases so 1-2 are typically live at once). `base0`/`base1` are
@@ -701,13 +724,15 @@ int hostSpace(HostContext& hc) {
         auto drawSun = [&](const x3::rhi::FrameContext& frame) {
             float m[16];
             // Corona shells (outer, faint, warm) — translucent additive glow.
-            // UNCHANGED from the original REAL SUN work: investigation for the
-            // sunspot/flare pass (see the core comment below) found these 3 flat,
-            // untextured shells are — empirically — the ENTIRE visible "sun": the
-            // opaque core's own emissive draw does not visibly contribute at any
-            // camera distance even with corona fully zeroed out for isolation, so
-            // this is left exactly as it shipped rather than "fixed" against a
-            // false assumption.
+            // ROOT-CAUSE FIX (the invisible core): these shells share sunMesh with
+            // the opaque core and were glass draws in the OPAQUE partition, so the
+            // fragment-less depth PRE-PASS (SSAO/SSGI/reflections on by default)
+            // wrote the NEAREST shell's depth across the whole disc — the core then
+            // failed the EQUAL-depth color pass and never drew (zeroing the shells'
+            // COLOR didn't help: the geometry still wrote pre-pass depth). Passing
+            // alphaBlend=true routes each shell to the BLEND partition, which the
+            // pre-pass skips; the dedicated glass pass still draws them identically,
+            // so the corona look is unchanged but it no longer occludes the core.
             const struct { float s, r, g, b, str, op; } shells[3] = {
                 { 2.6f, 1.00f, 0.42f, 0.12f, 0.9f, 0.10f },   // deep orange, big
                 { 1.7f, 1.00f, 0.62f, 0.28f, 1.6f, 0.16f },   // amber
@@ -720,7 +745,8 @@ int hostSpace(HostContext& hc) {
                 x3::rhi::IRenderDevice::GlassMaterial gm{};
                 gm.opacity = sh.op; gm.roughness = 1.0f; gm.specular = 0.0f;
                 gm.tint[0] = sh.r; gm.tint[1] = sh.g; gm.tint[2] = sh.b;
-                device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{}, bc, em, gm, m);
+                device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{}, bc, em, gm, m,
+                                      /*alphaBlend=*/true);   // BLEND partition: skip depth pre-pass
             }
             // CHURN SHELL: a second, faint, slightly-larger copy of the surface
             // texture rotating the OPPOSITE way a touch faster than the core —
@@ -733,21 +759,16 @@ int hostSpace(HostContext& hc) {
                 x3::rhi::IRenderDevice::GlassMaterial gm{};
                 gm.opacity = 0.16f; gm.roughness = 1.0f; gm.specular = 0.0f;
                 gm.tint[0]=1.0f; gm.tint[1]=0.9f; gm.tint[2]=0.7f;
-                device->drawMeshGlass(frame, sunMesh, sunTex, bc, em, gm, m);
+                device->drawMeshGlass(frame, sunMesh, sunTex, bc, em, gm, m,
+                                      /*alphaBlend=*/true);   // BLEND partition: skip depth pre-pass
             }
             // White-gold core: baked granulation/sunspot/faculae texture bound as
-            // BOTH baseColor and emissiveTex (so the detail SHOULD modulate the
-            // bloom), slowly rotating (majestic, not spinning), with a FUSION
-            // SHIMMER — a slow sum-of-sines breathing the emissive intensity
-            // +-~8%. KNOWN ISSUE (found while building this): isolating this draw
-            // (corona + churn shell zeroed out) shows the opaque core does not
-            // visibly emit at ANY camera distance, textured or not, at 6.0, 3.4,
-            // or 0.3 emissive strength — i.e. this appears to be a PRE-EXISTING
-            // gap in the original REAL SUN work (the whole visible "sun" is the
-            // 3 corona shells above), not something introduced by this pass. Left
-            // wired correctly (matches the ship-hull emissiveTex pattern exactly)
-            // so it lights up the moment that underlying bug is found — see the
-            // task report for the isolation steps taken.
+            // BOTH baseColor and emissiveTex (so the detail modulates the bloom),
+            // slowly rotating (majestic, not spinning), with a FUSION SHIMMER — a
+            // slow sum-of-sines breathing the emissive intensity +-~8%. This is the
+            // ONLY opaque sun draw; now that the corona shells are in the BLEND
+            // partition (above) they no longer poison the depth pre-pass, so this
+            // core renders normally and its granulation/sunspot texture is visible.
             const float coreYaw = g_clock * 0.010f;
             sphereMatrixYaw(kSunCenter, kSunRadius, coreYaw, m);
             const float shimmer = 1.0f
@@ -791,6 +812,50 @@ int hostSpace(HostContext& hc) {
                     device->drawMeshEmissive(frame, dustMesh, x3::rhi::TextureHandle{}, bc, em, mm);
                 }
             }
+        };
+
+        // ---- INSIDE-THE-SUN: swirling plasma dome (deliverable B) ----------------
+        // Wraps the camera in churning plasma while the ship is inside the core. Two
+        // counter-panning inverted domes anchored at `camC`; the granulation bake is
+        // the emissive map (near-black albedo so the lit term never washes it flat).
+        // UVs slide every frame (updateMesh) — layer A one way, layer B faster the
+        // other — so the plasma boils. Bright warm white-orange; the molten wash +
+        // shield countdown draw OVER it (HUD/cinematic passes) and stay readable.
+        auto drawInterior = [&](const x3::rhi::FrameContext& frame, const x3::phys::Vec3& camC) {
+            // Pan offsets: u swirls (longitude), v drifts a touch (latitude). Layer B
+            // counter-rotates ~1.7x faster for a churning, non-locked parallax.
+            // TILE the granulation several times around each dome so many small
+            // plasma cells show (a single wrap over a 300 m dome = huge soft blobs).
+            // Different tiling per layer adds cross-scale parallax; pan swirls them.
+            const float tAu = 4.0f, tAv = 3.0f, tBu = 2.5f, tBv = 2.0f;
+            const float uA =  g_clock * 0.035f, vA = std::sin(g_clock * 0.11f) * 0.05f;
+            const float uB = -g_clock * 0.060f, vB = std::sin(g_clock * 0.09f + 2.1f) * 0.06f;
+            for (size_t i = 0; i < plasmaVA.size(); ++i) {
+                plasmaVA[i].uv[0] = plasmaA.verts[i].uv[0] * tAu + uA;
+                plasmaVA[i].uv[1] = plasmaA.verts[i].uv[1] * tAv + vA;
+            }
+            for (size_t i = 0; i < plasmaVB.size(); ++i) {
+                plasmaVB[i].uv[0] = plasmaB.verts[i].uv[0] * tBu + uB;
+                plasmaVB[i].uv[1] = plasmaB.verts[i].uv[1] * tBv + vB;
+            }
+            device->updateMesh(plasmaMeshA, plasmaVA.data(), (uint32_t)plasmaVA.size());
+            device->updateMesh(plasmaMeshB, plasmaVB.data(), (uint32_t)plasmaVB.size());
+            float m[16];
+            // Layer A: opaque warm plasma backdrop, radius 320 m around the camera.
+            sphereMatrix(camC, 320.0f, m);
+            const float aBc[4] = { 0.06f, 0.03f, 0.01f, 1.0f };           // near-black albedo
+            const float aEm[4] = { 1.0f, 0.60f, 0.26f, 2.3f };            // warm white-orange glow
+            device->drawMeshPBR(frame, plasmaMeshA, sunTex, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                aBc, aEm, m, /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
+            // Layer B: smaller additive churn shell (glass, BLEND partition), radius
+            // 250 m, counter-rotating, hotter/whiter — reads as roiling flame fronts.
+            sphereMatrix(camC, 250.0f, m);
+            const float bBc[4] = { 1.0f, 0.82f, 0.5f, 1.0f };
+            const float bEm[4] = { 1.0f, 0.78f, 0.42f, 1.7f };
+            x3::rhi::IRenderDevice::GlassMaterial gm{};
+            gm.opacity = 0.5f; gm.roughness = 1.0f; gm.specular = 0.0f;
+            gm.tint[0] = 1.0f; gm.tint[1] = 0.8f; gm.tint[2] = 0.5f;
+            device->drawMeshGlass(frame, plasmaMeshB, sunTex, bBc, bEm, gm, m, /*alphaBlend=*/true);
         };
 
         // ---- Dynamic point lights: player-key (follows ship) + sun-heat ---------
@@ -1281,6 +1346,16 @@ int hostSpace(HostContext& hc) {
             // cluster sits at x=60..200 with +/-Z flanks within FOV.
             float cam[5] = { -25.0f, 6.0f, 0.0f, 0.0f, -0.05f };
             if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            // X3_SUN_INSIDE=1: teleport the capture camera to the star's core and
+            // render the InsideSun plasma dome so the interior experience (deliverable
+            // B) is capturable headless (the live phase machine never runs here). The
+            // camera sits at the sun centre; the swirling dome surrounds it.
+            const bool insideShot = std::getenv("X3_SUN_INSIDE") != nullptr;
+            if (insideShot && !shotCamOverride) {
+                cam[0] = kSunCenter.x; cam[1] = kSunCenter.y; cam[2] = kSunCenter.z;
+                cam[3] = 0.8018f; cam[4] = 0.0f;
+                g_clock = 8.0f;   // seed the swirl off its origin
+            }
             const std::string outPath = screenshot ? screenshotPath : std::string("G:/X3Native/captures/space.png");
             // Heat telemetry for the HUD (the sequence NEVER runs in headless — the
             // spawn is 48 km off the surface, so heat is ~0 and no death triggers).
@@ -1298,16 +1373,26 @@ int hostSpace(HostContext& hc) {
                 updateDynamicLights(pilot.pos(), pilot.forward(), pilot.up(), pilot.right());
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
                 if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                if (insideShot) g_clock += (float)dt;   // pan the plasma across settle frames
                 auto frame = device->beginFrame();
                 if (frame.valid) {
-                    drawScene(frame);
-                    combatFx.submit(*device, frame);
-                    drawSpeedFx(frame);
-                    drawSun(frame);
-                    drawFlares(frame);
-                    drawShipLights(frame, 0.15f, 1.0f);
-                    uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
-                    drawHud(frame, (float)hw, (float)hh);
+                    if (insideShot) {
+                        // Interior-only capture: the plasma dome wrapping the camera,
+                        // with the molten wash over it (as the live InsideSun does).
+                        drawInterior(frame, x3::phys::Vec3{ cam[0], cam[1], cam[2] });
+                        uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                        const float wash[4] = { 1.0f, 0.45f, 0.12f, 0.42f };
+                        device->drawHudQuad(frame, 0, 0, (float)hw, (float)hh, wash);
+                    } else {
+                        drawScene(frame);
+                        combatFx.submit(*device, frame);
+                        drawSpeedFx(frame);
+                        drawSun(frame);
+                        drawFlares(frame);
+                        drawShipLights(frame, 0.15f, 1.0f);
+                        uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                        drawHud(frame, (float)hw, (float)hh);
+                    }
                 }
                 device->endFrame(frame);
             }
@@ -1316,6 +1401,7 @@ int hostSpace(HostContext& hc) {
             else       x3::logError("--world space: capture FAILED");
             combatFx.shutdown(*device);
             device->destroyMesh(dustMesh); device->destroyMesh(sunMesh);
+            device->destroyMesh(plasmaMeshA); device->destroyMesh(plasmaMeshB);
             device->destroyTexture(sunTex);
             device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
             if (shipModel.ok) mloader->unload(shipModel);
@@ -1571,6 +1657,8 @@ int hostSpace(HostContext& hc) {
                         + (boostActive ? 0.45f : 0.0f));
                     drawShipLights(frame, thrust01, g_clock);
                 } else if (phase == Phase::InsideSun) {
+                    // Swirling plasma wraps the camera; ship + shield draw over it.
+                    drawInterior(frame, x3::phys::Vec3{ cx, cy, cz });
                     drawShield(frame, shieldPct, g_clock);
                     drawShipLights(frame, 0.2f, g_clock);
                 } else if (phase == Phase::Detonation) {
@@ -1594,6 +1682,8 @@ int hostSpace(HostContext& hc) {
         saudio->shutdown();
         combatFx.shutdown(*device);
         device->destroyMesh(dustMesh); device->destroyMesh(sunMesh);
+        device->destroyMesh(plasmaMeshA); device->destroyMesh(plasmaMeshB);
+        device->destroyTexture(sunTex);
         device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
         if (shipModel.ok) mloader->unload(shipModel);
         sphys->shutdown(); device->shutdown();
