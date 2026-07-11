@@ -1,5 +1,8 @@
 # Cedar Point 2000 — Park Replica Master Plan
 
+> **OWNER RULINGS (2026-07-11):** Placement = **(B) LIVE FUNCTIONING PARK** — lights on, rides running, crowds; the max-wow hub. Season = build **2000-default with the 2002 layer toggleable** pending Tim's final call (he asked for the 25-years-since history first — see session log). The live-park ruling raises the tech scope: crowds (the engine's crowd system exists), ride-ops/trains, queue flow, and night lighting move from optional to required — phase them behind the track tech.
+
+
 **Status:** Design + research draft (no engine code this pass)
 **Branch:** `feat/intro-cockpit` (worktree `G:\X3Native-wt-introcockpit`)
 **Owner directive (Tim):** "I think we NEED a replica of Cedar Point in the game! as it was in 2000"
