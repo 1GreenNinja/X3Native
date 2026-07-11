@@ -33,6 +33,7 @@ int hostSpace    (HostContext& hc);   // --world space     (Act-3 6DOF space pil
 int hostSurfaceStart(HostContext& hc);
 int hostStrata   (HostContext& hc);   // --world strata (R-3 fold: THE DESCENT)
 int hostElevator (HostContext& hc);   // --world elevator-showcase (+ --screenshot-elevator)// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
+int hostEchotropolis(HostContext& hc); // --world echotropolis (F1 P1: orbit camera over the open sea)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);

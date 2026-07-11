@@ -27,6 +27,8 @@ add_executable(X3Engine WIN32
     world_hosts/host_elevator.cpp
     # Phase 7 — ESCAPED-branch Act-1 surface-landing start (--world surface)
     world_hosts/host_surface_start.cpp
+    # Echotropolis F1 P1 — orbit camera over the open sea (--world echotropolis)
+    world_hosts/host_echotropolis.cpp
     space_pilot.cpp
     space/ship_ai.cpp
     space/targeting.cpp
