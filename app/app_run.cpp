@@ -108,6 +108,7 @@
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
 #include "crowd_skin.h"                    // SKINNED CITIZENS: the crowds' rigged visual layer
+#include "crowd_chatter.h"                 // CROWD CHATTER: chat bubbles + murmur walla over the crowds
 #include "alert.h"                         // FACILITY ALERT LEVEL: the wanted system (--test-alert)
 #include "host_context.h"                  // #28 deep split: shared live-state struct for the --world hosts
 #include "world_hosts.h"                   // #28 deep split: dispatchWorldHost() + the extracted host TUs
@@ -1159,6 +1160,33 @@ int runDefaultHost(HostContext& hc) {
     // zero reloads on re-realize). A failed rig keeps that agent's blockout.
     x3::game::CrowdSkin canonCrowdSkins[3];
     x3::game::CrowdSkin cityCrowdSkins[3];
+    // CROWD CHATTER — "hear the people talk.. mumble.. see it in chat bubbles
+    // over their heads" (app/crowd_chatter.h): a deterministic voice layer over
+    // each crowd deployment. Converse pairs trade authored 2-6 word lines in
+    // rhythm with the turn-taking gesture bobs (bubble over the speaker +
+    // murmur walla at the pair midpoint); workers grumble; kickabouts shout.
+    // Facility rooms whisper (detainee tables), streets gossip.
+    x3::game::CrowdChatter canonChatter[3];
+    x3::game::CrowdChatter cityChatter[3];
+    for (int ci = 0; ci < 3; ++ci) {
+        canonChatter[ci].init(x3::game::ChatterVenue::Facility, 101u + (uint32_t)ci);
+        cityChatter[ci].init(x3::game::ChatterVenue::Street, 201u + (uint32_t)ci);
+    }
+    // The committed walla takes (tools/gen_crowd_chatter.py -> assets/audio/
+    // crowd/). Three tiny mono WAVs; a miss loads invalid and that cue is
+    // silent (clean-machine grace). Boot cost logged (it is ~a millisecond).
+    x3::game::ChatterSounds chatterSnd;
+    {
+        const auto cs0 = std::chrono::steady_clock::now();
+        chatterSnd.murmurA = audio->load(x3::game::resolveAudio("crowd/murmur_a.wav"));
+        chatterSnd.murmurB = audio->load(x3::game::resolveAudio("crowd/murmur_b.wav"));
+        chatterSnd.grumble = audio->load(x3::game::resolveAudio("crowd/grumble_low.wav"));
+        const double csMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - cs0).count();
+        x3::logInfo("[chatter] walla takes loaded (murmur_a/murmur_b/grumble_low) in " +
+                    std::to_string(csMs) + " ms");
+        x3::boot::mark("crowd chatter (walla WAVs)");
+    }
     // WORLD CARS — findable/drivable/hackable vehicles in the one world (see
     // world_cars.h). Host-owned; the apron/approach cars park at boot, the city
     // cars park/unpark with the `city` region via the WorldStreamer hooks (the
@@ -2414,8 +2442,8 @@ int runDefaultHost(HostContext& hc) {
                         }
                     }
                 },
-                [&cityCrowds, &cityCrowdSkins, &scene, &worldCars, &physics](
-                              const x3::game::WorldRegionDesc& rd) {
+                [&cityCrowds, &cityCrowdSkins, &cityChatter, &scene, &worldCars,
+                 &physics](const x3::game::WorldRegionDesc& rd) {
                     // WORLD CARS: unpark this region's curb cars (removes our
                     // static bodies; a car currently DRIVEN is the host-owned
                     // live rig and survives the eviction untouched).
@@ -2423,7 +2451,10 @@ int runDefaultHost(HostContext& hc) {
                     if (rd.id != "city") return;
                     // SKINNED CITIZENS first (hide the host-owned characters +
                     // detach from the dying agents), THEN abandon the brains.
+                    // The chatter forgets its bubbles/pairs with them (stale
+                    // agent indices must not survive into a re-realize).
                     for (auto& ck : cityCrowdSkins) ck.deactivate(scene);
+                    for (auto& ch : cityChatter) ch.reset();
                     for (auto& cc : cityCrowds) cc.abandon();
                     x3::logInfo("LIVING NPCs: city crowds abandoned with the region "
                                 "(ledger tears the entities down)");
@@ -3219,6 +3250,78 @@ int runDefaultHost(HostContext& hc) {
             if (!shotDriving)
                 x3::logWarn("--shot-drive: no (unlocked) car within reach of the shot camera");
         }
+        // ---- CROWD CHATTER staging (--shot-chatter N): advance the crowd +
+        // chatter sim (deterministic, render-free — the same updates the settle
+        // loop runs) until N chat bubbles are concurrently ALIVE (with >= 1 s
+        // left) within bubble range of the shot camera, so the capture frame
+        // catches THE PEOPLE mid-sentence. Bounded at 4 min of sim; logs what
+        // it staged (and the nearest bubble's world position for re-aiming). ----
+        if (canonWorld && hc.shotChatter > 0) {
+            auto bubblesNearCam = [&]() {
+                uint32_t cnt = 0;
+                auto scan = [&](const x3::game::CrowdChatter& ch,
+                                const x3::game::CrowdSystem& cs) {
+                    if (!cs.built()) return;
+                    for (uint32_t bi = 0; bi < x3::game::CrowdChatter::kMaxBubbles; ++bi) {
+                        const x3::game::ChatterBubble& b = ch.bubbleSlot(bi);
+                        if (b.agent == x3::game::kNoLink ||
+                            b.agent >= cs.agentCount()) continue;
+                        if (b.ttl - b.age < 1.0f) continue;   // must survive the settle
+                        const auto& a = cs.agent(b.agent);
+                        const float dx = a.pos.x - ssEye.x, dz = a.pos.z - ssEye.z;
+                        if (dx * dx + dz * dz <
+                            x3::game::CrowdChatter::kBubbleRange *
+                            x3::game::CrowdChatter::kBubbleRange - 4.0f)
+                            ++cnt;
+                    }
+                };
+                for (int ci = 0; ci < 3; ++ci) {
+                    scan(canonChatter[ci], canonCrowds[ci]);
+                    scan(cityChatter[ci], cityCrowds[ci]);
+                }
+                return cnt;
+            };
+            int staged = 0;
+            const int kStageMax = 60 * 240;
+            while ((int)bubblesNearCam() < hc.shotChatter && staged < kStageMax) {
+                for (auto& cc : canonCrowds) if (cc.built()) cc.update(dt, scene);
+                for (auto& cc : cityCrowds)  if (cc.built()) cc.update(dt, scene);
+                for (int ci = 0; ci < 3; ++ci) {   // silent warp: no audio fires
+                    if (canonCrowds[ci].built())
+                        canonChatter[ci].update(dt, canonCrowds[ci], nullptr,
+                                                chatterSnd, ssEye);
+                    if (cityCrowds[ci].built())
+                        cityChatter[ci].update(dt, cityCrowds[ci], nullptr,
+                                               chatterSnd, ssEye);
+                }
+                ++staged;
+            }
+            // Log the staged count + every staged bubble's world position (so a
+            // shot camera can be re-aimed from the log instead of guessed).
+            std::string spots;
+            auto listSpots = [&](const x3::game::CrowdChatter& ch,
+                                 const x3::game::CrowdSystem& cs) {
+                if (!cs.built()) return;
+                for (uint32_t bi = 0; bi < x3::game::CrowdChatter::kMaxBubbles; ++bi) {
+                    const x3::game::ChatterBubble& b = ch.bubbleSlot(bi);
+                    if (b.agent == x3::game::kNoLink || b.agent >= cs.agentCount())
+                        continue;
+                    const auto& a = cs.agent(b.agent);
+                    char buf[96];
+                    std::snprintf(buf, sizeof(buf), " (%.1f,%.1f,%.1f)\"%s\"",
+                                  a.pos.x, a.pos.y, a.pos.z, b.line ? b.line : "?");
+                    spots += buf;
+                }
+            };
+            for (int ci = 0; ci < 3; ++ci) {
+                listSpots(canonChatter[ci], canonCrowds[ci]);
+                listSpots(cityChatter[ci], cityCrowds[ci]);
+            }
+            x3::logInfo("[chatter] shot staging: " + std::to_string(bubblesNearCam()) +
+                        "/" + std::to_string(hc.shotChatter) + " bubbles near the shot cam after " +
+                        std::to_string(staged) + " warp frames (" +
+                        std::to_string(staged / 60) + " s sim); live bubbles:" + spots);
+        }
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
             // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
@@ -3296,6 +3399,16 @@ int runDefaultHost(HostContext& hc) {
                 // the ball in play) — no PVS gate here; we want them settled.
                 for (auto& cc : canonCrowds) if (cc.built()) cc.update(dt, scene);
                 for (auto& cc : cityCrowds)  if (cc.built()) cc.update(dt, scene);
+                // CROWD CHATTER through the settle (real audio hookup so a
+                // capture run also proves the murmur path in its log).
+                for (int ci = 0; ci < 3; ++ci) {
+                    if (canonCrowds[ci].built())
+                        canonChatter[ci].update(dt, canonCrowds[ci], audio.get(),
+                                                chatterSnd, ssEye);
+                    if (cityCrowds[ci].built())
+                        cityChatter[ci].update(dt, cityCrowds[ci], audio.get(),
+                                               chatterSnd, ssEye);
+                }
                 // SKINNED CITIZENS: pose-follow + DRAIN the spawn pools fully
                 // (bounded) — a short settle must still capture real people,
                 // not a half-swapped blockout crowd. Not the interactive path.
@@ -3502,6 +3615,22 @@ int runDefaultHost(HostContext& hc) {
                                          hx + 1.5f, hy + 1.5f, hsz, vshadow);
                     device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
                                          hx, hy, hsz, vcol);
+                }
+                // CROWD CHATTER bubbles over the vantage — same rules as the
+                // live loop (range/LOS/PVS/cap), so a --shot-chatter capture is
+                // the honest in-game read.
+                if (canonWorld) {
+                    x3::game::ChatterDrawSite chSites[6];
+                    uint32_t nCh = 0;
+                    for (int ci = 0; ci < 3; ++ci) {
+                        if (canonCrowds[ci].built())
+                            chSites[nCh++] = { &canonChatter[ci], &canonCrowds[ci] };
+                        if (cityCrowds[ci].built())
+                            chSites[nCh++] = { &cityChatter[ci], &cityCrowds[ci] };
+                    }
+                    if (nCh > 0)
+                        x3::game::drawChatterBubbles(*device, frame, physics.get(),
+                                                     scene, ssEye, chSites, nCh);
                 }
                 // ---- [W9-3 RPG] X3_SHOT_RPG=backpack|skills|hud: capture the RPG
                 // screens over the live vantage, demo-populated so the still shows
@@ -6206,6 +6335,19 @@ int runDefaultHost(HostContext& hc) {
             for (auto& cc : cityCrowds)
                 if (cc.built() && scene.roomVisible(cc.config().roomId))
                     cc.update(dt, scene);
+            // CROWD CHATTER: the voice layer rides the SAME PVS gate as its
+            // crowd (a culled room's chat costs nothing and its bubbles just
+            // age out). Audio murmurs are range-gated inside (<= ~20 m).
+            for (int ci = 0; ci < 3; ++ci) {
+                if (canonCrowds[ci].built() &&
+                    scene.roomVisible(canonCrowds[ci].config().roomId))
+                    canonChatter[ci].update(dt, canonCrowds[ci], audio.get(),
+                                            chatterSnd, camPos);
+                if (cityCrowds[ci].built() &&
+                    scene.roomVisible(cityCrowds[ci].config().roomId))
+                    cityChatter[ci].update(dt, cityCrowds[ci], audio.get(),
+                                           chatterSnd, camPos);
+            }
             // SKINNED CITIZENS: pose-follow the brains + drain the deferred
             // spawn queues (1 rig/frame; the layer PVS-gates its own pose work,
             // so a culled deployment costs only the queue check).
@@ -7185,6 +7327,26 @@ int runDefaultHost(HostContext& hc) {
             // EFLZ-specific HUD extras that the GENERAL GameHud doesn't own. These
             // draw only while actively playing (not in any menu / console).
             if (playingNow && !consoleOpen) {
+                // CROWD CHATTER bubbles — THE PEOPLE SPEAK. World-anchored over
+                // each speaker's head (<= 14 m, LOS-culled, PVS-gated, <= 4
+                // concurrent, fade in/out — see drawChatterBubbles). Suppressed
+                // whenever a dialog / keypad / terminal UI owns the screen.
+                if (!terrainWorld && !codeMode && !termMode &&
+                    !chatTrees.active() && !npcDialog.active()) {
+                    x3::game::ChatterDrawSite chSites[6];
+                    uint32_t nCh = 0;
+                    for (int ci = 0; ci < 3; ++ci) {
+                        if (canonCrowds[ci].built())
+                            chSites[nCh++] = { &canonChatter[ci], &canonCrowds[ci] };
+                        if (cityCrowds[ci].built())
+                            chSites[nCh++] = { &cityChatter[ci], &cityCrowds[ci] };
+                    }
+                    if (nCh > 0)
+                        x3::game::drawChatterBubbles(*device, frame, physics.get(),
+                                                     scene,
+                                                     x3::phys::Vec3{ camX, camY, camZ },
+                                                     chSites, nCh);
+                }
                 // Door-code keypad prompt: centered, while code entry is active.
                 if (codeMode && !terrainWorld) {
                     uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
