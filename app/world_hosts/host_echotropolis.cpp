@@ -20,7 +20,10 @@
 //   - light critically-damped smoothing (~0.10-0.14s) so nothing snaps or floats;
 //   - CLAMPS: radius 100m..6000m, focus to island bounds +1km, camera height never
 //     below waterline+5m (also stops flying outside the world / seeing the sea slab);
-//   - pitch (elevation above the sea) clamped 2°..32°, default 14°;
+//   - pitch (elevation above the sea) clamped 2°..85° (near-top-down RTS view
+//     available), default UNCHANGED at 14° (0.2443 rad — the postcard vista);
+//   - momentum edge-scroll: cursor in a 12px window-edge band pans the focus that
+//     way, velocity-based (tau=0.11s accel/glide), radius-scaled, off while dragging;
 //   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
 #include "world_host_common.h"
 #include "../tod.h"
@@ -137,7 +140,10 @@ struct CameraOptions {
     float smoothFocus   = 0.12f;
     float smoothYaw     = 0.10f;
     float smoothPitch   = 0.10f;
-    float smoothRadius  = 0.14f;
+    // Zoom smoothing time-constant. EoS uses a dt*10 exponential approach (~0.10s);
+    // we keep our critically-damped smoothDamp model (nicer curve, no overshoot) but
+    // ALIGN its time-constant to EoS: 0.14s -> 0.10s (adopt-now cross-check, item 3).
+    float smoothRadius  = 0.10f;
     // Radius (orbit distance) limits — island stays >= ~1/3 of frame at maxRadius.
     float minRadius     = 100.0f;
     float maxRadius     = 6000.0f;
@@ -147,6 +153,17 @@ struct CameraOptions {
     // Camera never below waterline + this many metres (also blocks flying under the
     // world and seeing the sea-slab underside / fog dome).
     float minCamHeight  = 5.0f;
+    // ---- Momentum edge-scroll (EoS "adopt now") --------------------------------
+    // Cursor inside this many px of a window edge pushes the focus that way.
+    float edgeMarginPx  = 12.0f;
+    // Edge-scroll speed as a FRACTION of the orbit radius per second (radius-scaled
+    // like WASD pan, so it feels identical at any zoom — matches wasdPanFrac feel;
+    // EoS's 15 wu/s * dist/24 works out to ~0.62 frac, we use the host's 0.5 for
+    // consistency with the existing WASD pan).
+    float edgeScrollFrac = 0.50f;
+    // Velocity accel/decay time-constant for edge-scroll momentum (EoS PAN_SMOOTH_TAU;
+    // our focus smoothDamp uses 0.12s critically-damped, comparable — left as-is).
+    float panSmoothTau  = 0.11f;
 };
 
 // Orbit rig state (targets + smoothed values + spring velocities).
@@ -165,10 +182,12 @@ struct OrbitRig {
     float sYaw = 3.93f, sPitch = 0.2443f, sRadius = 2800.0f;
     // Spring velocities.
     float vFocusX = 0.0f, vFocusZ = 0.0f, vPivotY = 0.0f, vYaw = 0.0f, vPitch = 0.0f, vRadius = 0.0f;
+    // Edge-scroll momentum velocity (world m/s on the sea plane), eased with panSmoothTau.
+    float vEdgeX = 0.0f, vEdgeZ = 0.0f;
 };
 
-constexpr float kPitchMin = 0.0349f;   //  2 degrees
-constexpr float kPitchMax = 0.5585f;   // 32 degrees
+constexpr float kPitchMin = 0.0349f;   //   2 degrees (see the sky just above the horizon)
+constexpr float kPitchMax = 1.4835f;   //  85 degrees (near-top-down RTS city view)
 
 inline float clampPitch(float p) { return p < kPitchMin ? kPitchMin : (p > kPitchMax ? kPitchMax : p); }
 
@@ -190,6 +209,19 @@ void applyOrbitCamera(x3::rhi::IRenderDevice* device, const OrbitRig& r,
     const float camZ = r.sFocusZ  - fwdZ * r.sRadius;
     device->setCamera(camX, camY, camZ, useYaw, lookPitch, fovDeg);
 }
+
+// ---- F3 HERO MODE (dive) — HOOK/SPEC ONLY, not implemented (EoS "later" tier). ----
+// Port of epochs-rts hero-mode.ts: F3 dives from the orbit pose into an over-the-
+// shoulder 3rd-person chase on a walked unit; ESC parks the orbit back on the unit.
+// When implemented, add a `bool heroActive` gate around the orbit input/apply below
+// and branch to a HeroRig here. Study constants to lift verbatim:
+//   ENTER_BLEND_S 0.55 (smoothstep eye+aim RTS->shoulder); FOLLOW_DIST 3.4 (boom),
+//   SHOULDER 0.55 (right lateral), ANCHOR_HEIGHT 1.15, AIM_AHEAD 1.6, EYE_CLEARANCE 0.34;
+//   LOOK_SENS 0.0028 rad/px, pitch clamp -1.1..1.25 rad, enter pitch -0.08;
+//   3-point boom terrain collision (t=0.5/0.8/1.0), eye snaps up instantly / eases
+//   down at dt*6; drive movement via sim orders (ORDER_PERIOD 0.22s, LEAD 2.6) to
+//   preserve determinism; waterline sub-cam auto-triggers on depth.
+// NO IMPLEMENTATION HERE — comment hook only.
 
 // ---- P3: the four canonical times (ART_DIRECTION.md lighting doctrine) mapped
 // onto TimeOfDay's normalized clock. Dusk spans [0.55,0.75): golden hour sits
@@ -595,7 +627,44 @@ int hostEchotropolis(HostContext& hc) {
             }
         }
 
-        // Clamp targets to the playable envelope (island bounds + 1km; pitch 2..32°).
+        // ---- Momentum EDGE-SCROLL pan (EoS "adopt now"): cursor inside a 12px band
+        // at any window edge pushes the focus that way. Velocity eases toward the
+        // radius-scaled target with tau=panSmoothTau (accel-in + glide-to-stop);
+        // diagonals normalized. DISABLED while any mouse button is held (velocity
+        // hard-zeroed) so it never fights drag-pan/orbit; gated to cursor-in-window. ----
+        {
+            const bool anyBtn = rmb || mmb;   // mmb already folds in LMB || MMB
+            float exd = 0.0f, ezd = 0.0f;     // screen push: +x=right, +z=forward(top)
+            const bool inWin = (mx >= 0.0 && my >= 0.0 &&
+                                mx <= (double)lastW && my <= (double)lastH);
+            if (!anyBtn && inWin) {
+                const float m = opt.edgeMarginPx;
+                if (mx < m)               exd -= 1.0f;   // left  edge -> pan -right
+                if (mx > (double)lastW-m) exd += 1.0f;   // right edge -> pan +right
+                if (my < m)               ezd += 1.0f;   // top   edge -> pan +forward
+                if (my > (double)lastH-m) ezd -= 1.0f;   // bottom edge-> pan -forward
+            }
+            float tvx = 0.0f, tvz = 0.0f;                // target world velocity (m/s)
+            if (exd != 0.0f || ezd != 0.0f) {
+                const float inv   = 1.0f / std::sqrt(exd*exd + ezd*ezd);
+                const float speed = opt.edgeScrollFrac * rig.sRadius;
+                tvx = (exd * rightX + ezd * fwdSeaX) * inv * speed;
+                tvz = (exd * rightZ + ezd * fwdSeaZ) * inv * speed;
+            }
+            if (anyBtn) {                 // never fight drag-pan: kill momentum outright
+                rig.vEdgeX = 0.0f; rig.vEdgeZ = 0.0f;
+            } else {
+                const float k = 1.0f - std::exp(-dt / std::max(opt.panSmoothTau, 1e-4f));
+                rig.vEdgeX += (tvx - rig.vEdgeX) * k;
+                rig.vEdgeZ += (tvz - rig.vEdgeZ) * k;
+                if (tvx == 0.0f && std::fabs(rig.vEdgeX) < 0.5f) rig.vEdgeX = 0.0f;
+                if (tvz == 0.0f && std::fabs(rig.vEdgeZ) < 0.5f) rig.vEdgeZ = 0.0f;
+                rig.focusX += rig.vEdgeX * dt;
+                rig.focusZ += rig.vEdgeZ * dt;
+            }
+        }
+
+        // Clamp targets to the playable envelope (island bounds + 1km; pitch 2..85°).
         rig.focusX = clampf(rig.focusX, -opt.focusLimit, opt.focusLimit);
         rig.focusZ = clampf(rig.focusZ, -opt.focusLimit, opt.focusLimit);
         rig.pitch  = clampPitch(rig.pitch);
