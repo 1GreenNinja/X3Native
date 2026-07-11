@@ -223,6 +223,7 @@ void SpacePilotController::spawn(x3::phys::IPhysicsWorld& phys,
     m_camPos[0] = m_camPos[1] = m_camPos[2] = 0.0f;
     m_shakePos[0] = m_shakePos[1] = m_shakePos[2] = 0.0f;
     m_shakeYaw = m_shakePitch = 0.0f;
+    m_prevVelForShake[0] = m_prevVelForShake[1] = m_prevVelForShake[2] = 0.0f;
     quatFromYawPitchRoll(0, 0, 0, m_quat);
 
     m_thirdPerson = t.defaultThirdPerson;
@@ -406,24 +407,37 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
             for (int k = 0; k < 3; ++k) m_camPos[k] += (target[k] - m_camPos[k]) * ck;
         }
     }
-    // SCREEN-SHAKE: deterministic multi-frequency pseudo-noise (NO rand()) scaled
-    // by thrust/boost. Amplitude per mode (Tuning.shakeAmp). Stored here, applied
-    // to the CAMERA in camera() — never to the sim pose.
+    // SCREEN-SHAKE: deterministic LOW-FREQUENCY rumble (sum of a few fixed
+    // sines, NO rand()/per-frame hash — smooth, not pixel noise), driven by
+    // the ship's ACTUAL instantaneous acceleration rather than raw thrust
+    // input. FIX (owner playtest: "jittery while flying to the sun" — a long
+    // steady cruise holding W): `accel[]` above is the raw input-derived
+    // thrust force, which stays pinned at full magnitude for as long as W is
+    // held even after the ship hits its speed cap and is no longer actually
+    // accelerating — that read as a small constant wobble for the whole
+    // cruise. Differencing m_vel frame-to-frame gives the REAL net accel
+    // (drag/cap already applied), which settles to ~0 at steady cruise and
+    // only spikes on genuine ramp-up/boost/hard maneuvers, so shake amplitude
+    // is zero when just holding a steady heading.
     {
-        const float accelMag = length3(accel);
-        const float drive = clampf(
-            (accelMag / (m_tuning.maxLinearAccel * m_tuning.boostMul + 1e-3f))
-            * (in.sprint ? 1.0f : 0.55f), 0.0f, 1.0f);
+        float netAccel[3];
+        for (int k = 0; k < 3; ++k)
+            netAccel[k] = (dt > 1e-4f) ? (m_vel[k] - m_prevVelForShake[k]) / dt : 0.0f;
+        for (int k = 0; k < 3; ++k) m_prevVelForShake[k] = m_vel[k];
+        const float accelMag = length3(netAccel);
+        const float refAccel = m_tuning.maxLinearAccel * (in.sprint ? m_tuning.boostMul : 1.0f);
+        const float drive = clampf(accelMag / (refAccel + 1e-3f), 0.0f, 1.0f);
         const float amp = m_tuning.shakeAmp * drive;
         const float t = m_juiceTime;
         auto noise = [](float x) {
-            return std::sin(x) * 0.6f + std::sin(x * 2.37f + 1.3f) * 0.4f;  // [-1,1]
+            return std::sin(x) * 0.5f + std::sin(x * 1.7f + 1.3f) * 0.33f
+                 + std::sin(x * 0.53f + 4.1f) * 0.17f;  // 3-sine low-freq rumble, [-1,1]-ish
         };
-        m_shakePos[0] = amp * noise(t * 37.0f);
-        m_shakePos[1] = amp * noise(t * 41.0f + 5.0f);
-        m_shakePos[2] = amp * noise(t * 43.0f + 11.0f);
-        m_shakeYaw    = amp * 0.03f * noise(t * 29.0f + 2.0f);
-        m_shakePitch  = amp * 0.03f * noise(t * 31.0f + 7.0f);
+        m_shakePos[0] = amp * noise(t * 11.0f);
+        m_shakePos[1] = amp * noise(t * 13.0f + 5.0f);
+        m_shakePos[2] = amp * noise(t * 9.0f + 11.0f);
+        m_shakeYaw    = amp * 0.03f * noise(t * 8.0f + 2.0f);
+        m_shakePitch  = amp * 0.03f * noise(t * 8.7f + 7.0f);
     }
 
     // ---- Sync the physics body so queries / contacts see the ship ----------

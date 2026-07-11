@@ -234,6 +234,13 @@ private:
     float m_shakePos[3] = { 0, 0, 0 };
     float m_shakeYaw    = 0;
     float m_shakePitch  = 0;
+    // Previous frame's velocity, used ONLY to derive the shake drive from the
+    // ACTUAL instantaneous accel the ship is experiencing (see update()) —
+    // NOT the raw thrust-input accel, which stays pinned at full magnitude for
+    // as long as W is held even once the ship is capped at cruise speed (that
+    // was reading as constant low-level jitter on long dives, e.g. the run to
+    // the sun; see host_space.cpp REAL SUN work).
+    float m_prevVelForShake[3] = { 0, 0, 0 };
 
     // Camera mode (1P cockpit vs 3P chase). Default per Tuning.defaultThirdPerson.
     bool  m_thirdPerson = true;

@@ -15,7 +15,10 @@
 #include "../settings_io.h"   // readFlightMode (persisted Settings-menu / console pick)
 #include "../audio_root.h"    // resolveAudio(...) — flight engine hum / boost / mode blip WAVs
 #include "engine/audio/IAudioSystem.h"
+#include <algorithm>
+#include <cstdint>
 #include <filesystem>
+#include <vector>
 
 namespace x3 { namespace apphost {
 
@@ -46,6 +49,92 @@ inline x3::phys::Vec3 vnorm(const x3::phys::Vec3& a) {
 // Cheap integer hash -> [0,1) for deterministic dust-field seeding / twinkle.
 inline uint32_t hashU(uint32_t x) { x^=x>>16; x*=0x7feb352du; x^=x>>15; x*=0x846ca68bu; x^=x>>16; return x; }
 inline float    hashF(uint32_t x) { return (hashU(x) & 0xFFFFFFu) / 16777216.0f; }
+inline float smoothstepLocal(float e0, float e1, float x) {
+    float d = e1 - e0; if (std::fabs(d) < 1e-6f) d = (d < 0.0f) ? -1e-6f : 1e-6f;
+    float t = (x - e0) / d; t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// ---- SUN SURFACE bake helpers (SAME 2D tileable value-noise pattern as
+//      ship_windows.cpp's bakePortalRGBA — copied here rather than shared
+//      across TUs since it's a handful of lines). `cell` texel-cells tile
+//      seamlessly around the sphere's U (longitude) seam. ----------------
+inline float sunHash2(uint32_t x, uint32_t y, uint32_t cell, uint32_t salt) {
+    uint32_t h = (x % cell) * 374761393u + (y % cell) * 668265263u + salt * 2654435761u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return (float)(h & 0xFFFFFFu) / (float)0x1000000u;
+}
+inline float sunValueNoise(float u, float v, uint32_t cell, uint32_t salt) {
+    const float fx = u * (float)cell, fy = v * (float)cell;
+    const uint32_t x0 = (uint32_t)std::floor(fx), y0 = (uint32_t)std::floor(fy);
+    const float tx = fx - (float)x0, ty = fy - (float)y0;
+    auto sm = [](float t){ return t * t * (3.0f - 2.0f * t); };
+    const float sx = sm(tx), sy = sm(ty);
+    const float a = sunHash2(x0,     y0,     cell, salt);
+    const float b = sunHash2(x0 + 1, y0,     cell, salt);
+    const float c = sunHash2(x0,     y0 + 1, cell, salt);
+    const float d = sunHash2(x0 + 1, y0 + 1, cell, salt);
+    const float ab = a + (b - a) * sx;
+    const float cd = c + (d - c) * sx;
+    return ab + (cd - ab) * sy;
+}
+// Bake an n x n RGBA sun-surface texture: 5-octave granulation (warm white-gold
+// -> deep-orange cells), a sparse bright faculae/vein layer, and 3-7 hash-placed
+// dark sunspots (soft penumbra falloff, wrapping the U seam). Used as BOTH the
+// baseColor and the emissiveTex for the core sphere so the "living surface"
+// detail actually modulates the bloom, not just unlit albedo.
+inline std::vector<uint8_t> bakeSunRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    struct Spot { float u, v, r; };
+    const int nSpots = 3 + (int)(sunHash2(1, 1, n, 777u) * 5.0f);   // 3-7
+    Spot spots[7];
+    for (int i = 0; i < nSpots; ++i) {
+        spots[i].u = hashF((uint32_t)(i * 7 + 1000));
+        spots[i].v = 0.18f + 0.64f * hashF((uint32_t)(i * 7 + 2000));   // keep off the poles
+        spots[i].r = 0.028f + 0.05f * hashF((uint32_t)(i * 7 + 3000));
+    }
+    for (uint32_t y = 0; y < n; ++y) {
+        const float v = (y + 0.5f) / (float)n;
+        for (uint32_t x = 0; x < n; ++x) {
+            const float u = (x + 0.5f) / (float)n;
+            // Granulation: 5 octaves of tileable value noise.
+            float gran = 0.0f, amp = 0.5f; uint32_t cell = 6;
+            for (int o = 0; o < 5; ++o) {
+                gran += amp * sunValueNoise(u, v, cell, 5000u + (uint32_t)o * 37u);
+                amp *= 0.55f; cell *= 2u;
+            }
+            // Contrast remap: raw multi-octave value noise averages ~0.5 with a
+            // narrow spread — stretch it so granulation cells (and, more
+            // importantly, the sunspot penumbra below) actually survive the
+            // core's strong bloom instead of washing out to a flat disc.
+            gran = std::clamp((gran - 0.32f) * 1.9f, 0.0f, 1.0f);
+            // Faculae/plasma veins: a higher-frequency layer, bright above a threshold.
+            const float vein = sunValueNoise(u, v, 40, 6600u);
+            const float veinBright = std::max(0.0f, vein - 0.74f) / 0.26f;
+            // Warm palette: white-gold peaks through deep-orange/near-black valleys
+            // (deliberately dark valleys — see the contrast note above).
+            float r = 0.30f + 0.70f * gran;
+            float g = 0.08f + 0.78f * gran;
+            float b = 0.02f + 0.40f * gran * gran;
+            r += veinBright * 0.35f; g += veinBright * 0.22f; b += veinBright * 0.06f;
+            // Sunspots: NEAR-BLACK core + soft penumbra, U wraps at the longitude
+            // seam. Pushed much darker than a "natural" sunspot so the blotch still
+            // reads as a discrete dark feature after the core's bloom bleeds into it.
+            for (int i = 0; i < nSpots; ++i) {
+                float du = u - spots[i].u; du -= std::round(du);
+                const float dv = v - spots[i].v;
+                const float d = std::sqrt(du * du + dv * dv);
+                const float k = 1.0f - smoothstepLocal(spots[i].r * 0.5f, spots[i].r, d);
+                r *= (1.0f - 0.94f * k); g *= (1.0f - 0.96f * k); b *= (1.0f - 0.98f * k);
+            }
+            auto u8 = [](float c){ c = std::clamp(c, 0.0f, 1.0f); return (uint8_t)std::lround(c * 255.0f); };
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            p[0] = u8(r); p[1] = u8(g); p[2] = u8(b); p[3] = 255;
+        }
+    }
+    return px;
+}
 } // namespace
 
 int hostSpace(HostContext& hc) {
@@ -88,7 +177,8 @@ int hostSpace(HostContext& hc) {
           sp.zenith[0]  = 0.003f; sp.zenith[1]  = 0.003f; sp.zenith[2]  = 0.008f;
           sp.horizon[0] = 0.004f; sp.horizon[1] = 0.005f; sp.horizon[2] = 0.011f;
           device->setSkyParams(sp);
-          device->setSkyTime(10.0f);                   // non-zero -> starfield twinkle/rotation phase
+          device->setSkyTime(10.0f);                   // non-zero -> starfield twinkle/rotation phase;
+                                                        // the windowed loop advances this per-frame below
           // R2: enabling the sky at near-zero sun replaced whatever ambient the
           // disabled-sky path implied — the fleet went silhouette-black. Explicit
           // cool ambient so hulls read while space stays dark (nightsky's trick).
@@ -211,6 +301,7 @@ int hostSpace(HostContext& hc) {
                 (hashF((uint32_t)(i*3+3))*2.0f - 1.0f) * kDustR };
         }
         bool boostActive = false;   // Shift-boost this frame (drives HUD + streak punch)
+        float throttle01 = 0.0f;    // max(0, W-thrust) this frame (drives the thruster audio layer)
 
         // ===================================================================
         // REAL SUN — a physical star you can fly to (and die in). ============
@@ -252,6 +343,51 @@ int hostSpace(HostContext& hc) {
         x3::prims::PrimMesh sunm = x3::prims::makeUVSphere(48, 96);
         auto sunMesh = device->createMesh(sunm.verts.data(), (uint32_t)sunm.verts.size(),
                                           sunm.index.data(), (uint32_t)sunm.index.size());
+        // LIVING SUN SURFACE (owner: "sunspots, plasma flares, little variations as
+        // the hydrogen fusion occurs" — was a flat emissive disc). One-time bake:
+        // granulation + faculae + 3-7 sunspots (bakeSunRGBA, above), bound as BOTH
+        // the core's baseColor AND its emissiveTex so the detail modulates the
+        // bloom (mesh.frag multiplies the flat emissive uniform by the emissive
+        // texture per-texel — see IRenderDevice::drawMeshPBR's emissiveTex arg).
+        auto sunTexPx = bakeSunRGBA(384);
+        auto sunTex = device->createTexture(sunTexPx.data(), 384, 384, /*srgb=*/true);
+        // PLASMA FLARES / PROMINENCES: kFlareCount hash-seeded arcs on the limb,
+        // each on its OWN rise->arch->collapse->fade lifecycle (period 20-60s,
+        // staggered phases so 1-2 are typically live at once). `base0`/`base1` are
+        // the two surface feet of the loop; height (and therefore visibility)
+        // rides a single sin(pi*t) envelope per lifecycle — see drawFlares below.
+        struct SunFlare { x3::phys::Vec3 base0, base1; float maxH, period, phase; };
+        const int kFlareCount = 5;
+        SunFlare flares[kFlareCount];
+        for (int i = 0; i < kFlareCount; ++i) {
+            const float ph  = hashF((uint32_t)(i * 41 + 1)) * 6.2831853f;
+            const float th  = (0.22f + 0.56f * hashF((uint32_t)(i * 41 + 2))) * 3.14159265f;  // avoid poles
+            const float ph2 = ph + 0.12f + 0.10f * hashF((uint32_t)(i * 41 + 3));
+            const x3::phys::Vec3 n0{ std::sin(th)*std::cos(ph),  std::cos(th), std::sin(th)*std::sin(ph)  };
+            const x3::phys::Vec3 n1{ std::sin(th)*std::cos(ph2), std::cos(th), std::sin(th)*std::sin(ph2) };
+            flares[i].base0  = { kSunCenter.x + n0.x*kSunRadius, kSunCenter.y + n0.y*kSunRadius, kSunCenter.z + n0.z*kSunRadius };
+            flares[i].base1  = { kSunCenter.x + n1.x*kSunRadius, kSunCenter.y + n1.y*kSunRadius, kSunCenter.z + n1.z*kSunRadius };
+            flares[i].maxH   = kSunRadius * (0.05f + 0.10f * hashF((uint32_t)(i * 41 + 4)));
+            flares[i].period = 20.0f + 40.0f * hashF((uint32_t)(i * 41 + 5));
+            flares[i].phase  = hashF((uint32_t)(i * 41 + 6)) * flares[i].period;
+        }
+        flares[0].phase = flares[0].period * 0.5f;   // one flare guaranteed mid-arch at t=0 (proof screenshot)
+        {
+            // Force flare 0 onto the CAMERA-FACING LIMB (the hash angles are
+            // otherwise free to land anywhere, including dead-centre where an
+            // arc popping toward the camera reads as just more sun-coloured
+            // bloom) so the guaranteed-active flare above actually shows as a
+            // bump on the edge of the disc against black space in a straight-on
+            // proof screenshot.
+            const x3::phys::Vec3 wup = (std::fabs(kSunDir.y) < 0.95f) ? x3::phys::Vec3{0,1,0} : x3::phys::Vec3{1,0,0};
+            const x3::phys::Vec3 latDir = vnorm(vcross(kSunDir, wup));   // perpendicular to view (screen-"horizontal")
+            const x3::phys::Vec3 nF0 = vnorm(x3::phys::Vec3{
+                latDir.x*0.95f - kSunDir.x*0.28f, latDir.y*0.95f - kSunDir.y*0.28f + 0.10f, latDir.z*0.95f - kSunDir.z*0.28f });
+            const x3::phys::Vec3 nF1 = vnorm(x3::phys::Vec3{
+                latDir.x*0.80f - kSunDir.x*0.15f, latDir.y*0.80f - kSunDir.y*0.15f - 0.15f, latDir.z*0.80f - kSunDir.z*0.15f });
+            flares[0].base0 = { kSunCenter.x + nF0.x*kSunRadius, kSunCenter.y + nF0.y*kSunRadius, kSunCenter.z + nF0.z*kSunRadius };
+            flares[0].base1 = { kSunCenter.x + nF1.x*kSunRadius, kSunCenter.y + nF1.y*kSunRadius, kSunCenter.z + nF1.z*kSunRadius };
+        }
 
         // ---- Local math helpers (presentation only) -----------------------
         auto smooth01 = [](float e0, float e1, float x) -> float {
@@ -279,6 +415,16 @@ int hostSpace(HostContext& hc) {
             m[0]=s; m[1]=0; m[2]=0; m[3]=0;  m[4]=0; m[5]=s; m[6]=0; m[7]=0;
             m[8]=0; m[9]=0; m[10]=s; m[11]=0; m[12]=c.x; m[13]=c.y; m[14]=c.z; m[15]=1;
         };
+        // Same as sphereMatrix but also rotates about +Y (the UV sphere's pole
+        // axis) — used to slowly spin the sun's surface texture (granulation
+        // drift) without ever re-uploading the mesh.
+        auto sphereMatrixYaw = [](const x3::phys::Vec3& c, float s, float yaw, float m[16]) {
+            const float cy = std::cos(yaw), sy = std::sin(yaw);
+            m[0]=cy*s; m[1]=0; m[2]=-sy*s; m[3]=0;
+            m[4]=0;    m[5]=s; m[6]=0;     m[7]=0;
+            m[8]=sy*s; m[9]=0; m[10]=cy*s; m[11]=0;
+            m[12]=c.x; m[13]=c.y; m[14]=c.z; m[15]=1;
+        };
 
         // ---- SUN-DEATH cinematic PHASE MACHINE (host-side; controller untouched) --
         // Flying → (cross body) → InsideSun[17s shield drain] → Detonation[antimatter
@@ -293,6 +439,23 @@ int hostSpace(HostContext& hc) {
         float phaseT  = 0.0f;                 // seconds elapsed in the current phase
         float shieldPct = 100.0f;
         bool  respawned = false;              // Respawn phase re-seed latch
+        // AUDIT (owner playtest: "shield engaged at SUN 0.7km, still outside"):
+        // the HUD's "SUN <km>" readout, the InsideSun trigger below (distC <
+        // kSunRadius), and the HULL TEMP bands already shared ONE measure —
+        // g_sunSurf = dist-to-centre - kSunRadius, i.e. distance to the OPAQUE
+        // CORE surface, never a corona-shell radius — so they can't numerically
+        // disagree. The real bug was that the pilot was FROZEN the instant
+        // InsideSun began (no sphys->step, no pilot.update()), so there was no
+        // graze/abort path at all AND no discrete cue at the crossing instant —
+        // the ship was already gliding through the bright corona haze (shells
+        // reach out to kSunRadius*2.6) for ~3 km before the hard core edge, with
+        // nothing marking the actual moment, so it read as arbitrary/early. Fix:
+        // keep the pilot LIVE through InsideSun (below) so a graze can actually
+        // pull back out, and add a one-shot flash + caption at the exact instant
+        // of crossing so it's unmistakable.
+        float shieldFlashT = -1.0f;           // one-shot "SHIELD ENGAGED" cue; <0 = idle
+        const float kShieldFlashSecs    = 1.5f;   // flash + caption hang time
+        const float kShieldRechargeSecs = 5.0f;   // graze-abort: shield restores over this long
         const float kShieldSecs   = 17.0f;    // shield holds this long inside the body
         const float kDetonateSecs = 4.5f;     // blast + coronal ejection duration
         const float kRewindSecs   = 1.0f;     // short backwards-scrub stinger
@@ -453,7 +616,12 @@ int hostSpace(HostContext& hc) {
             const float sf   = std::min(1.0f, spd / maxS);
             // EASED response: length/brightness ride a smoothstep of speed (graceful
             // ramp-in), plus a soft extra kick on boost. Capped so no giant beams.
-            const float resp = smooth01(0.0f, 1.0f, sf) * (boostActive ? 1.30f : 1.0f);
+            // FIX (owner: streaks read as static bars at low speed) — the ramp used
+            // to start at sf==0 (any motion at all began stretching specks into
+            // streaks). Now it stays essentially pointlike below ~35% of max speed
+            // and only reaches full stretch near max speed, so cruise reads as a
+            // twinkling starfield and streaking is reserved for genuinely fast flight.
+            const float resp = smooth01(0.35f, 0.95f, sf) * (boostActive ? 1.30f : 1.0f);
             x3::phys::Vec3 vd{ 1, 0, 0 };
             if (spd > 0.3f) vd = x3::phys::Vec3{ vel.x/spd, vel.y/spd, vel.z/spd };
             const x3::phys::Vec3 ref = (std::fabs(vd.y) < 0.95f)
@@ -469,10 +637,15 @@ int hostSpace(HostContext& hc) {
             const float kMaxHalf   = 1.15f;   // cap: total streak <= ~2.5 m at scale
             for (int i = 0; i < kDust; ++i) {
                 const x3::phys::Vec3& p = dust[(size_t)i];
-                // Per-particle hash variance: size 0.5-1.5, brightness 0.7-1.2, temp.
-                const float hsz  = 0.5f + hashF((uint32_t)(i*7 + 5));
-                const float hbr  = 0.7f + 0.5f * hashF((uint32_t)(i*11 + 3));
-                const float htmp = hashF((uint32_t)(i*13 + 9));
+                // Per-particle hash variance: size 0.5-1.5, temp (below), MAGNITUDE-
+                // distributed brightness (owner: "all the same white... some very
+                // faint points"). pow(hashF, 2.2) skews most particles dim (real star
+                // fields are mostly faint), with a rarer bright tail.
+                const float hsz    = 0.5f + hashF((uint32_t)(i*7 + 5));
+                const float hbrRaw = hashF((uint32_t)(i*11 + 3));
+                const float hmag   = std::pow(hbrRaw, 2.2f);
+                const float hbr    = 0.16f + 1.15f * hmag;             // mostly dim, few bright
+                const float htmp   = hashF((uint32_t)(i*13 + 9));
                 // Boundary-shell fade: nothing pops in/out at the wrap (fades over the
                 // outer ~18% of the box). Chebyshev distance to the wrap boundary.
                 const float dcx = std::fabs(p.x - sp.x), dcy = std::fabs(p.y - sp.y),
@@ -480,14 +653,31 @@ int hostSpace(HostContext& hc) {
                 const float dedge = std::max(dcx, std::max(dcy, dcz)) / kDustR;
                 const float fade = 1.0f - smooth01(0.82f, 1.0f, dedge);
                 if (fade < 0.02f) continue;
-                // Colour temperature: cool blue-white → warm white per particle.
-                const float base[4] = {
-                    0.55f + 0.45f * htmp,
-                    0.80f + 0.15f * htmp,
-                    1.00f - 0.15f * htmp, 1.0f };
+                // COLOUR VARIANCE (owner: push the spread so it's visible): bucketed
+                // palette instead of one narrow blend — cool blue-white -> pure white
+                // (most common), warm yellow-white, and a rare faint amber/orange.
+                float base[4];
+                if (htmp < 0.55f) {
+                    const float k = htmp / 0.55f;
+                    base[0] = 0.72f + 0.28f*k; base[1] = 0.82f + 0.18f*k; base[2] = 1.00f;
+                } else if (htmp < 0.85f) {
+                    const float k = (htmp - 0.55f) / 0.30f;
+                    base[0] = 1.00f; base[1] = 0.92f - 0.10f*k; base[2] = 0.80f - 0.25f*k;
+                } else {
+                    const float k = (htmp - 0.85f) / 0.15f;
+                    base[0] = 1.00f; base[1] = 0.70f - 0.15f*k; base[2] = 0.35f - 0.15f*k;
+                }
+                base[3] = 1.0f;
+                // TWINKLE: slow per-star brightness oscillation, faint stars twinkle
+                // MORE than bright ones; fades out as streaks form (resp) so a fully
+                // stretched comet doesn't shimmer.
+                const float twF     = 0.6f + 2.0f * hashF((uint32_t)(i*17 + 21));
+                const float twPhase = hashF((uint32_t)(i*19 + 33)) * 6.2831853f;
+                const float twDepth = (0.40f - 0.15f * hmag) * (1.0f - resp);
+                const float twinkle = 1.0f + twDepth * std::sin(g_clock * twF * 6.2831853f + twPhase);
                 const float halfLen = std::min(kMaxHalf, 0.06f + kMaxHalf * resp * hsz);
                 const float thick   = (0.012f + 0.020f * sf) * hsz;
-                const float S = (0.22f + 2.6f * resp) * hbr * fade;
+                const float S = (0.22f + 2.6f * resp) * hbr * fade * twinkle;
                 const int segs = moving ? 3 : 1;
                 for (int s = 0; s < segs; ++s) {
                     const float str = S * segStr[s];
@@ -511,6 +701,13 @@ int hostSpace(HostContext& hc) {
         auto drawSun = [&](const x3::rhi::FrameContext& frame) {
             float m[16];
             // Corona shells (outer, faint, warm) — translucent additive glow.
+            // UNCHANGED from the original REAL SUN work: investigation for the
+            // sunspot/flare pass (see the core comment below) found these 3 flat,
+            // untextured shells are — empirically — the ENTIRE visible "sun": the
+            // opaque core's own emissive draw does not visibly contribute at any
+            // camera distance even with corona fully zeroed out for isolation, so
+            // this is left exactly as it shipped rather than "fixed" against a
+            // false assumption.
             const struct { float s, r, g, b, str, op; } shells[3] = {
                 { 2.6f, 1.00f, 0.42f, 0.12f, 0.9f, 0.10f },   // deep orange, big
                 { 1.7f, 1.00f, 0.62f, 0.28f, 1.6f, 0.16f },   // amber
@@ -525,11 +722,75 @@ int hostSpace(HostContext& hc) {
                 gm.tint[0] = sh.r; gm.tint[1] = sh.g; gm.tint[2] = sh.b;
                 device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{}, bc, em, gm, m);
             }
-            // White-gold core (opaque emissive, far past bloom threshold).
-            sphereMatrix(kSunCenter, kSunRadius, m);
+            // CHURN SHELL: a second, faint, slightly-larger copy of the surface
+            // texture rotating the OPPOSITE way a touch faster than the core —
+            // cheap parallax "churn" (no extra mesh upload, just a 2nd draw).
+            const float churnYaw = -g_clock * 0.026f;
+            sphereMatrixYaw(kSunCenter, kSunRadius * 1.04f, churnYaw, m);
+            {
+                const float bc[4] = { 1.0f, 0.85f, 0.55f, 1.0f };
+                const float em[4] = { 1.0f, 0.85f, 0.55f, 0.55f };
+                x3::rhi::IRenderDevice::GlassMaterial gm{};
+                gm.opacity = 0.16f; gm.roughness = 1.0f; gm.specular = 0.0f;
+                gm.tint[0]=1.0f; gm.tint[1]=0.9f; gm.tint[2]=0.7f;
+                device->drawMeshGlass(frame, sunMesh, sunTex, bc, em, gm, m);
+            }
+            // White-gold core: baked granulation/sunspot/faculae texture bound as
+            // BOTH baseColor and emissiveTex (so the detail SHOULD modulate the
+            // bloom), slowly rotating (majestic, not spinning), with a FUSION
+            // SHIMMER — a slow sum-of-sines breathing the emissive intensity
+            // +-~8%. KNOWN ISSUE (found while building this): isolating this draw
+            // (corona + churn shell zeroed out) shows the opaque core does not
+            // visibly emit at ANY camera distance, textured or not, at 6.0, 3.4,
+            // or 0.3 emissive strength — i.e. this appears to be a PRE-EXISTING
+            // gap in the original REAL SUN work (the whole visible "sun" is the
+            // 3 corona shells above), not something introduced by this pass. Left
+            // wired correctly (matches the ship-hull emissiveTex pattern exactly)
+            // so it lights up the moment that underlying bug is found — see the
+            // task report for the isolation steps taken.
+            const float coreYaw = g_clock * 0.010f;
+            sphereMatrixYaw(kSunCenter, kSunRadius, coreYaw, m);
+            const float shimmer = 1.0f
+                + 0.05f * std::sin(g_clock * (6.2831853f / 5.3f))
+                + 0.03f * std::sin(g_clock * (6.2831853f / 7.7f) + 1.7f);
             const float cbc[4] = { 1.0f, 0.93f, 0.78f, 1.0f };
-            const float cem[4] = { 1.0f, 0.93f, 0.78f, 6.0f };
-            device->drawMeshEmissive(frame, sunMesh, x3::rhi::TextureHandle{}, cbc, cem, m);
+            const float cem[4] = { 1.0f, 0.93f, 0.78f, 3.4f * shimmer };
+            device->drawMeshPBR(frame, sunMesh, sunTex, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                cbc, cem, m, /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
+        };
+
+        // ---- PLASMA FLARES / PROMINENCES: kFlareCount limb arcs, each riding its
+        //      own sin(pi*t) rise->arch->collapse->fade envelope (t = phase-shifted
+        //      elapsed time / period). White-gold roots (surface feet) fading to
+        //      deep-orange tips (the arc's apex) — small emissive spheres chained
+        //      along the loop (reuses dustMesh; no new mesh). --------------------
+        auto drawFlares = [&](const x3::rhi::FrameContext& frame) {
+            constexpr int kSegs = 6;
+            for (int i = 0; i < kFlareCount; ++i) {
+                const SunFlare& fl = flares[i];
+                float t = std::fmod(g_clock + fl.phase, fl.period) / fl.period;
+                if (t < 0.0f) t += 1.0f;
+                const float env = std::max(0.0f, std::pow(std::sin(3.14159265f * t), 1.15f));
+                if (env < 0.02f) continue;
+                for (int s = 0; s <= kSegs; ++s) {
+                    const float u = (float)s / (float)kSegs;
+                    const x3::phys::Vec3 baseline{
+                        fl.base0.x + (fl.base1.x - fl.base0.x) * u,
+                        fl.base0.y + (fl.base1.y - fl.base0.y) * u,
+                        fl.base0.z + (fl.base1.z - fl.base0.z) * u };
+                    const x3::phys::Vec3 bn = vnorm(x3::phys::Vec3{
+                        baseline.x - kSunCenter.x, baseline.y - kSunCenter.y, baseline.z - kSunCenter.z });
+                    const float archShape = std::sin(3.14159265f * u);   // 0 at both feet, 1 at the apex
+                    const float h = fl.maxH * env * archShape;
+                    const x3::phys::Vec3 p{ baseline.x + bn.x*h, baseline.y + bn.y*h, baseline.z + bn.z*h };
+                    // White-gold roots -> deep-orange tip as the arc rises off the surface.
+                    const float r0 = 1.0f, g0 = 0.93f - 0.48f*archShape, b0 = 0.75f - 0.63f*archShape;
+                    float mm[16]; sphereMatrix(p, fl.maxH * 0.22f, mm);
+                    const float bc[4] = { r0, g0, b0, 1.0f };
+                    const float em[4] = { r0, g0, b0, 2.2f * env };
+                    device->drawMeshEmissive(frame, dustMesh, x3::rhi::TextureHandle{}, bc, em, mm);
+                }
+            }
         };
 
         // ---- Dynamic point lights: player-key (follows ship) + sun-heat ---------
@@ -739,17 +1000,24 @@ int hostSpace(HostContext& hc) {
             const float frac = std::min(1.0f, spd / std::max(1.0f, pilot.tuning().maxSpeed));
             const float fill[4] = { acc[0], acc[1], acc[2], 0.95f };
             device->drawHudQuad(frame, bx, barY, barW * frac, barH, fill);
-            // SHIELD readout while it is engaged (inside the star).
-            if (phase == Phase::InsideSun) {
-                char sl[48]; std::snprintf(sl, sizeof(sl), "SHIELD %3.0f%%", (double)std::max(0.0f, shieldPct));
+            // SHIELD readout: engaged (draining inside the core) or recharging
+            // after a graze-abort back in free flight.
+            if (phase == Phase::InsideSun || shieldPct < 99.95f) {
+                char sl[48];
+                if (phase == Phase::InsideSun)
+                    std::snprintf(sl, sizeof(sl), "SHIELD %3.0f%%", (double)std::max(0.0f, shieldPct));
+                else
+                    std::snprintf(sl, sizeof(sl), "SHIELD %3.0f%% RECHARGING", (double)std::max(0.0f, shieldPct));
                 const float sc[4] = { 0.4f, 0.8f, 1.0f, 1.0f };
                 device->drawHudTextF(frame, FontRole::HudMono, sl, bx, by - 30.0f, 18.0f, sc);
             }
         };
 
-        // ---- CINEMATIC OVERLAY: molten wash, shield countdown, kill-cam flash,
-        //      rewind tag, "30 SECONDS EARLIER…" title card, fade-to-black. Drawn
-        //      after the HUD when the death sequence is active. -------------------
+        // ---- CINEMATIC OVERLAY: shield-engaged flash, molten wash, shield
+        //      countdown, kill-cam flash, rewind tag, "30 SECONDS EARLIER…" title
+        //      card, fade-to-black. Drawn after the HUD; the shield-engaged flash
+        //      is the only bit that can render outside the death phases (it plays
+        //      out over kShieldFlashSecs even across a very fast graze). ---------
         auto drawCinematic = [&](const x3::rhi::FrameContext& frame, float W, float H) {
             using x3::rhi::FontRole;
             auto full = [&](float r, float g, float b, float a) {
@@ -760,6 +1028,19 @@ int hostSpace(HostContext& hc) {
                 const float w = device->textAdvance(role, s, px);
                 device->drawHudTextF(frame, role, s, W*0.5f - w*0.5f, y, px, col);
             };
+            // ONE-SHOT "SHIELD ENGAGED" cue at the exact instant the core surface
+            // is crossed: a quick bright flash + caption so the crossing is
+            // unmistakable (owner playtest: the corona haze made the actual core
+            // edge hard to read against the ambient glow).
+            if (shieldFlashT >= 0.0f) {
+                const float decay = 1.0f - smooth01(0.0f, kShieldFlashSecs, shieldFlashT);
+                full(0.55f, 0.80f, 1.0f, decay * decay * 0.85f);
+                const float capA = 1.0f - smooth01(kShieldFlashSecs * 0.55f, kShieldFlashSecs, shieldFlashT);
+                if (capA > 0.02f) {
+                    const float col[4] = { 0.55f, 0.85f, 1.0f, capA };
+                    center(FontRole::Title, "SHIELD ENGAGED", 30.0f, H*0.30f, col);
+                }
+            }
             if (phase == Phase::InsideSun) {
                 // Molten warm wash, gently pulsing; keep the HUD readable underneath.
                 const float pulse = 0.42f + 0.10f * std::sin(g_clock * 5.0f);
@@ -864,9 +1145,15 @@ int hostSpace(HostContext& hc) {
         };
 
         // ---- Advance the sun-death PHASE MACHINE (windowed only). Computes heat,
-        //      records the trajectory, drives transitions/timers, respawns. Returns
-        //      TRUE while the pilot sim should be frozen (sequence active). `skip`
-        //      (any key during the cinematic) jumps straight to Respawn. -----------
+        //      records the trajectory, drives transitions/timers, respawns. `skip`
+        //      (any key during InsideSun or the frozen cinematic) jumps straight to
+        //      Respawn. NOTE: the pilot is only FROZEN from Detonation onward — see
+        //      the AUDIT note above the enum. Through Flying AND InsideSun the ship
+        //      keeps flying (sphys->step/pilot.update() still run in the host loop),
+        //      so InsideSun is a real graze-abort window: pull back across the core
+        //      edge before the timer expires and the countdown cancels. Return value
+        //      is a convenience mirror of "phase != Flying" (unused for control flow
+        //      — the host branches on phase directly). ---------------------------
         auto advanceSequence = [&](float fdt, bool skip) -> bool {
             const x3::phys::Vec3 sPos = pilot.pos();
             const float distC = vlen(x3::phys::Vec3{ sPos.x-kSunCenter.x,
@@ -876,8 +1163,16 @@ int hostSpace(HostContext& hc) {
             // kHeatStart to the body; a touch of inverse-square bite near the surface.
             const float prox = smooth01(kHeatStart, kSunRadius, g_sunSurf);
             g_heat = prox * prox;
-            if (phase == Phase::Flying) {
-                // Record the approach at kTrajHz.
+            // One-shot "SHIELD ENGAGED" flash/caption timer — ticks regardless of
+            // phase so it plays out even across a very fast graze.
+            if (shieldFlashT >= 0.0f) {
+                shieldFlashT += fdt;
+                if (shieldFlashT > kShieldFlashSecs) shieldFlashT = -1.0f;
+            }
+            // Trajectory ring buffer: record while the ship is under live player
+            // control (Flying AND the graze-able InsideSun window) so a later real
+            // detonation still replays the WHOLE approach, including any earlier graze.
+            if (phase == Phase::Flying || phase == Phase::InsideSun) {
                 trajTimer += fdt;
                 if (trajTimer >= 1.0f / kTrajHz) {
                     trajTimer = 0.0f;
@@ -885,18 +1180,29 @@ int hostSpace(HostContext& hc) {
                     trajHead = (trajHead + 1) % kTrajLen;
                     if (trajCount < kTrajLen) ++trajCount;
                 }
-                if (distC < kSunRadius) {           // breached the body → shield engages
+            }
+            if (phase == Phase::Flying) {
+                // GRAZE-ABORT recharge: shield restores over kShieldRechargeSecs once
+                // back in free flight (no-op once it's back to full).
+                if (shieldPct < 100.0f)
+                    shieldPct = std::min(100.0f, shieldPct + fdt * (100.0f / kShieldRechargeSecs));
+                if (distC < kSunRadius) {           // breached the CORE → shield engages
                     phase = Phase::InsideSun; phaseT = 0.0f; shieldPct = 100.0f;
+                    shieldFlashT = 0.0f;
                     setupKillCam(sPos);
                 }
                 return false;
             }
-            // --- Sequence active (pilot frozen) ---
+            // --- Sequence active ---
             phaseT += fdt;
             if (skip && phase != Phase::Respawn) { phase = Phase::Respawn; phaseT = 0.0f; respawned = false; }
             switch (phase) {
                 case Phase::InsideSun:
                     shieldPct = 100.0f * std::max(0.0f, 1.0f - phaseT / kShieldSecs);
+                    if (distC >= kSunRadius) {   // GRAZE: pulled back out before the timer expired
+                        phase = Phase::Flying; phaseT = 0.0f;
+                        break;
+                    }
                     if (phaseT >= kShieldSecs) { snapshotTraj(); phase = Phase::Detonation; phaseT = 0.0f; }
                     break;
                 case Phase::Detonation:
@@ -998,6 +1304,7 @@ int hostSpace(HostContext& hc) {
                     combatFx.submit(*device, frame);
                     drawSpeedFx(frame);
                     drawSun(frame);
+                    drawFlares(frame);
                     drawShipLights(frame, 0.15f, 1.0f);
                     uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                     drawHud(frame, (float)hw, (float)hh);
@@ -1009,6 +1316,7 @@ int hostSpace(HostContext& hc) {
             else       x3::logError("--world space: capture FAILED");
             combatFx.shutdown(*device);
             device->destroyMesh(dustMesh); device->destroyMesh(sunMesh);
+            device->destroyTexture(sunTex);
             device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
             if (shipModel.ok) mloader->unload(shipModel);
             sphys->shutdown(); device->shutdown();
@@ -1023,21 +1331,28 @@ int hostSpace(HostContext& hc) {
         double prevTime = glfwGetTime();
         bool prevV = false, prevLmb = false;
 
-        // ---- Flight AUDIO (reuses the drive-host loop-voice pattern) --------
-        // Private audio system for this standalone host (graceful-silent with no
-        // device). Engine HUM = a looping voice whose vol+pitch track speed; BOOST
-        // = a second pitched loop gated on Shift; MODE BLIP = a one-shot chime at a
-        // per-mode pitch. Presentation-only — never touches the sim hash.
+        // ---- Flight AUDIO — SPACESHIP ENGINE (owner: "sounds like a car engine,
+        //      SHIFTING even... needs to sound like a SpaceShip!"). Root cause: this
+        //      reused assets/audio/vehicles/engine_loop.wav (the DRIVE world's
+        //      combustion-car loop) and rode speed as PITCH — a pitch sweep reads as
+        //      gear shifts. Replaced with two synthesized loops (tools/gen_space_
+        //      audio.py: a deep reactor thrum + a broadband thruster whoosh), both
+        //      run CONTINUOUSLY at a FIXED pitch (1.0) and crossfaded by VOLUME
+        //      instead — hum tracks speed, thrust tracks throttle/boost. No pitch
+        //      scaling anywhere, so it can never read as shifting. MODE BLIP is
+        //      unchanged (a one-shot chime at a per-mode pitch).
         std::unique_ptr<x3::audio::IAudioSystem> saudio(x3::audio::createAudioSystem());
         saudio->init();
-        x3::audio::SoundHandle humSnd  = saudio->load(x3::game::resolveAudio("vehicles/engine_loop.wav"));
-        x3::audio::SoundHandle blipSnd = saudio->load(x3::game::resolveAudio("interact/chime.wav"));
+        x3::audio::SoundHandle humSnd    = saudio->load(x3::game::resolveAudio("space/engine_hum.wav"));
+        x3::audio::SoundHandle thrustSnd = saudio->load(x3::game::resolveAudio("space/engine_thrust.wav"));
+        x3::audio::SoundHandle blipSnd   = saudio->load(x3::game::resolveAudio("interact/chime.wav"));
         x3::audio::LoopHandle  humLoop{};
-        x3::audio::LoopHandle  boostLoop{};
+        x3::audio::LoopHandle  thrustLoop{};
         x3::audio::LoopHandle  warnLoop{};   // CRITICAL hull-temp / shield warning beep
-        if (humSnd.valid()) humLoop = saudio->startLoop(humSnd, 0.12f, 0.6f);
+        if (humSnd.valid())    humLoop    = saudio->startLoop(humSnd, 0.25f, 1.0f);      // FIXED pitch
+        if (thrustSnd.valid()) thrustLoop = saudio->startLoop(thrustSnd, 0.0f, 1.0f);    // FIXED pitch
         x3::logInfo(std::string("--world space: engine audio ") +
-                    (humSnd.valid() ? "ON" : "absent (silent)"));
+                    ((humSnd.valid() && thrustSnd.valid()) ? "ON (reactor hum + thruster whoosh)" : "absent (silent)"));
 
         // ---- PAUSE MENU state (ESC opens it; it NO LONGER exits) -----------
         bool paused = false;
@@ -1051,20 +1366,30 @@ int hostSpace(HostContext& hc) {
             double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
             if (fdt > 0.1f) fdt = 0.1f;
             g_clock += fdt;                       // presentation clock (blink/pulse/flash)
+            // CINEMATIC STARS: the sky time used to be set ONCE (static) — the engine
+            // ties it to the starfield's twinkle/rotation phase, so a fixed value
+            // meant a fully frozen background. Advance it slowly (subtle: ~0.02
+            // units/sec) so the backdrop drifts/twinkles too, not just the near-field
+            // dust. Sim-state untouched (visual only).
+            device->setSkyTime(10.0f + g_clock * 0.02f);
             double mx, my; glfwGetCursorPos(window, &mx, &my);
             auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
 
-            // Is the sun-death cinematic running? (pilot input + pause are suppressed.)
+            // Is the sun-death SEQUENCE running at all (any non-Flying phase)? Used
+            // for the skip-key/pause gating below. NOTE: this is broader than the
+            // FROZEN window — InsideSun is part of `seq` but keeps the pilot live
+            // (graze-abort), so it is excluded from `pilotFrozen`.
             const bool seq = (phase != Phase::Flying);
-            // "Any key" skips the cinematic straight to Respawn.
+            const bool pilotFrozen = seq && (phase != Phase::InsideSun);
+            // "Any key" skips straight to Respawn (works during InsideSun too).
             const bool anyKey = seq && (kd(GLFW_KEY_SPACE) || kd(GLFW_KEY_ENTER) ||
                 kd(GLFW_KEY_ESCAPE) || kd(GLFW_KEY_W) || kd(GLFW_KEY_A) || kd(GLFW_KEY_S) ||
                 kd(GLFW_KEY_D) || kd(GLFW_KEY_Q) || kd(GLFW_KEY_E) || kd(GLFW_KEY_LEFT_SHIFT) ||
                 glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
 
             // ESC toggles the pause menu (rising edge) ONLY while flying — during the
-            // death cinematic ESC is a skip, not a pause. Resync the mouse anchor so
-            // resume doesn't jump the view.
+            // death cinematic (incl. InsideSun) ESC is a skip, not a pause. Resync the
+            // mouse anchor so resume doesn't jump the view.
             const bool escNow = kd(GLFW_KEY_ESCAPE);
             if (!seq && escNow && !prevEsc) {
                 paused = !paused;
@@ -1073,11 +1398,12 @@ int hostSpace(HostContext& hc) {
             }
             prevEsc = escNow;
 
-            if (seq) {
-                // Death cinematic: freeze the pilot, advance the phase machine (which
-                // handles the shield drain, blast, rewind, title card, replay, respawn).
-                // Skip is EDGE-triggered so a key still held from flying-in can't insta-skip.
-                boostActive = false; lastMX = mx; lastMY = my;
+            if (pilotFrozen) {
+                // Detonation..Respawn: freeze the pilot, advance the phase machine
+                // (blast, rewind, title card, replay, respawn) + run the external
+                // kill-cam. Skip is EDGE-triggered so a key still held from flying-in
+                // can't insta-skip.
+                boostActive = false; throttle01 = 0.0f; lastMX = mx; lastMY = my;
                 advanceSequence(fdt, anyKey && !prevAnyKey);
             } else if (!paused) {
                 float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
@@ -1093,6 +1419,7 @@ int hostSpace(HostContext& hc) {
                 in.lookDX     = ddx;
                 in.lookDY     = ddy;
                 boostActive   = in.sprint;
+                throttle01    = std::max(0.0f, in.moveFwd);   // ENGINE AUDIO: thrust-layer gate
 
                 // Q/E roll axis: +1 for Q, -1 for E (or the other way; either is fine).
                 float rollAxis = (kd(GLFW_KEY_Q) ? -1.0f : 0.0f) + (kd(GLFW_KEY_E) ? 1.0f : 0.0f);
@@ -1130,10 +1457,12 @@ int hostSpace(HostContext& hc) {
                 sphys->step(fdt);
                 combatFx.update(fdt);
                 updateDust(fdt);
-                // Record the approach + detect crossing INTO the sun body (which flips
-                // the phase machine to InsideSun and engages the shield). Returns false
-                // while flying; computes g_heat / g_sunSurf for the HUD + heat light.
-                advanceSequence(fdt, false);
+                // Flying: records the approach + detects crossing INTO the sun core
+                // (flips to InsideSun, engages the shield, fires the flash). InsideSun:
+                // keeps recording/heat/HUD live and detects either the 17s expiry
+                // (-> Detonation) or a GRAZE-ABORT (pulled back out -> Flying). `skip`
+                // only matters while phase != Flying (anyKey requires seq==true).
+                advanceSequence(fdt, anyKey && !prevAnyKey);
             } else {
                 // Paused: keep the mouse anchor synced (no view drift), no flight
                 // sim / physics step (visuals freeze behind the menu). Menu nav:
@@ -1173,21 +1502,23 @@ int hostSpace(HostContext& hc) {
                 }
             }
 
-            // ---- Flight audio: hum vol+pitch track speed; boost layer gated on Shift.
+            // ---- Flight audio: reactor hum tracks SPEED (volume only); thruster
+            //      whoosh tracks THROTTLE + boost (volume only). Both loops run at a
+            //      FIXED pitch of 1.0 always — no pitch sweep anywhere, so it can
+            //      never read as a car shifting gears.
             {
                 const float spd  = pilot.speed();
                 const float maxS = std::max(1.0f, pilot.tuning().maxSpeed);
                 const float sf   = std::min(1.0f, spd / maxS);
                 if (humLoop.valid()) {
-                    const float hv = paused ? 0.05f : (0.12f + 0.30f * sf);
-                    const float hp = 0.60f + 0.85f * sf;
-                    saudio->setLoopParams(humLoop, hv, hp);
+                    const float hv = paused ? 0.05f : (0.25f + 0.35f * sf);
+                    saudio->setLoopParams(humLoop, hv, 1.0f);   // FIXED pitch
                 }
-                if (boostActive && humSnd.valid()) {
-                    if (!boostLoop.valid()) boostLoop = saudio->startLoop(humSnd, 0.0f, 1.6f);
-                    if (boostLoop.valid())  saudio->setLoopParams(boostLoop, 0.22f + 0.18f * sf, 1.6f + 0.6f * sf);
-                } else if (boostLoop.valid()) {
-                    saudio->stopLoop(boostLoop); boostLoop = {};
+                if (thrustLoop.valid()) {
+                    const float thrustResp = smooth01(0.0f, 1.0f, throttle01);
+                    const float tv = paused ? 0.0f
+                        : std::min(0.85f, thrustResp * 0.55f + (boostActive ? 0.30f : 0.0f));
+                    saudio->setLoopParams(thrustLoop, tv, 1.0f);   // FIXED pitch
                 }
                 // CRITICAL warning beep: a fast high chime loop when hull-temp is
                 // critical on approach, or while the shield drains inside the star.
@@ -1232,6 +1563,7 @@ int hostSpace(HostContext& hc) {
                     drawSpeedFx(frame);
                 }
                 drawSun(frame);                       // the star renders in every phase
+                drawFlares(frame);                     // limb prominences, also every phase
                 // Phase-specific world elements.
                 if (phase == Phase::Flying) {
                     const float thrust01 = std::min(1.0f,
@@ -1252,13 +1584,13 @@ int hostSpace(HostContext& hc) {
                 }
                 drawHud(frame, (float)cw, (float)chh);
                 if (paused) drawPauseMenu(frame, (float)cw, (float)chh, menuSel);
-                drawCinematic(frame, (float)cw, (float)chh);       // no-op while Flying
+                drawCinematic(frame, (float)cw, (float)chh);       // no-op unless a flash/phase overlay is active
             }
             device->endFrame(frame);
         }
         if (warnLoop.valid())  saudio->stopLoop(warnLoop);
-        if (boostLoop.valid()) saudio->stopLoop(boostLoop);
-        if (humLoop.valid())   saudio->stopLoop(humLoop);
+        if (thrustLoop.valid()) saudio->stopLoop(thrustLoop);
+        if (humLoop.valid())    saudio->stopLoop(humLoop);
         saudio->shutdown();
         combatFx.shutdown(*device);
         device->destroyMesh(dustMesh); device->destroyMesh(sunMesh);
