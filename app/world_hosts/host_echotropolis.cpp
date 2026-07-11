@@ -241,9 +241,17 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
         }
     }
     device->setSkyParams(sky);
-    device->setAmbient(s.ambient[0] + s.auroraTint[0],
-                       s.ambient[1] + s.auroraTint[1],
-                       s.ambient[2] + s.auroraTint[2]);
+    // Night ambient FLOOR: the pure-black sky kills the IBL contribution, so at
+    // night the terrain is lit by ambient alone — hold a moonlight minimum so the
+    // island stays readable while the sky dome itself stays black.
+    constexpr float kNightAmbFloor[3] = { 0.11f, 0.12f, 0.17f };
+    float amb[3];
+    for (int i = 0; i < 3; ++i) {
+        amb[i] = s.ambient[i] + s.auroraTint[i];
+        const float floorI = kNightAmbFloor[i] * (1.0f - dayness);
+        if (amb[i] < floorI) amb[i] = floorI;
+    }
+    device->setAmbient(amb[0], amb[1], amb[2]);
 }
 
 // Gerstner ocean at sea level 0, lit by the SAME sun as the sky (doctrine: one
@@ -251,15 +259,36 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
 // night (the baked GLB ocean ring darkens automatically via the PBR sun).
 void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSample& s) {
     x3::rhi::IRenderDevice::WaterParams wp{};
+    const float daynessGate = (s.sunElevation + 0.06f) / 0.30f;
+    // DEEP NIGHT: the Gerstner shader's reflection term renders bright white no
+    // matter what params we pass (engine-side; flagged to the fleet) — so the
+    // patch is DISABLED at night and the island GLB's dark ocean ring owns the
+    // water. No patch = no white sheet, no trough checkering, calm night sea.
+    if (daynessGate < 0.15f) {
+        x3::rhi::IRenderDevice::WaterParams off{};
+        off.enabled = false;
+        device->setWaterParams(off);
+        return;
+    }
     wp.enabled = true; wp.seaLevel = 0.0f; wp.time = t;
     // Amplitude must stay UNDER the island GLB's baked ocean ring (y=-0.4) or the
     // Gerstner troughs punch through it and checker with the ring (seen in P2).
-    wp.amplitude = 0.32f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
+    // NOTE the shader's octave sum overshoots the amplitude param — 0.32 still
+    // punched through at night (bright patch vs black ring = checkerboard). 0.26
+    // leaves real margin.
+    wp.amplitude = 0.26f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
+    const float dayness = std::min(1.0f, std::max(0.0f, (s.sunElevation + 0.06f) / 0.30f));
     const float dayF = 0.12f + 0.88f * std::max(0.0f, s.sunElevation);
     wp.deepColor[0]    = 0.015f * dayF; wp.deepColor[1]    = 0.055f * dayF; wp.deepColor[2]    = 0.11f * dayF;
     wp.shallowColor[0] = 0.06f  * dayF; wp.shallowColor[1] = 0.24f  * dayF; wp.shallowColor[2] = 0.32f * dayF;
-    wp.sunDir[0] = s.sky.sunDir[0]; wp.sunDir[1] = s.sky.sunDir[1]; wp.sunDir[2] = s.sky.sunDir[2];
-    wp.specular = 16.0f; wp.fresnel = 0.02f;
+    // A below-horizon sunDir blows the Gerstner glint out to full white (seen at
+    // night) — swap in a high dim "moon" and wind the specular down with the day.
+    wp.sunDir[0] = s.sky.sunDir[0];
+    wp.sunDir[1] = std::max(0.45f, s.sky.sunDir[1]);
+    wp.sunDir[2] = s.sky.sunDir[2];
+    if (s.sunElevation > 0.10f) wp.sunDir[1] = s.sky.sunDir[1];   // day: the real sun
+    wp.specular = 1.0f + 15.0f * dayness;
+    wp.fresnel = 0.02f;
     device->setWaterParams(wp);
 }
 
