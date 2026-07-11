@@ -59,9 +59,13 @@ add_executable(X3Engine WIN32
     space/ship_interior.cpp
     space/ship_windows.cpp
     space/ship_interior_art.cpp
+    space/wormhole_vfx.cpp
+    space/wormhole_transit.cpp
+    space/tractor_beam.cpp
     descent_slide.cpp
     world_hosts/host_descentslide.cpp
     world_hosts/host_shipwindows.cpp
+    world_hosts/host_wormhole.cpp
     secret_room.cpp
     ecs_render.cpp
     editor/editor.cpp

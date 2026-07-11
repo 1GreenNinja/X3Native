@@ -107,6 +107,9 @@
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
 #include "space/ship_interior.h"  // x3::space::runShipInteriorSelfTest (--test-shipinterior, S5 fold)
 #include "space/ship_windows.h"   // x3::space::runShipWindowsSelfTest (--test-shipwindows, S6 fold)
+#include "space/wormhole_vfx.h"      // x3::space::runWormholeSelfTest (--test-wormhole, feast fold)
+#include "space/wormhole_transit.h"  // x3::space::runWormholeTransitSelfTest (--test-wormhole-transit)
+#include "space/tractor_beam.h"      // x3::space::runTractorSelfTest (--test-tractor, feast fold)
 #include "wing_dressing.h"        // x3::game::runWingDressingSelfTest (--test-wingdressing)
 #include "descent_slide.h"        // x3::game::runDescentSlideSelfTest (--test-descentslide, Wave 2C)
 #include "space/targeting.h"      // x3::space::TargetingSystem (--test-targeting)
@@ -362,6 +365,23 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running S6 SHIP-WINDOWS self-test (true-portal moving space: star/nebula "
                     "UV pan + per-window light-bleed against the interior manifest, headless)...");
         return x3::space::runShipWindowsSelfTest() ? 0 : 1;
+    }
+    if (tf.testWormhole) {
+        x3::logInfo("running Salvari crystal-matrix wormhole (WormholeVfx) self-test "
+                    "(feast fold: init/render/shutdown + Tuning clamp + faceted bake, headless)...");
+        return x3::space::runWormholeSelfTest() ? 0 : 1;
+    }
+    if (tf.testWormholeTransit) {
+        x3::logInfo("running S3 WORMHOLE-TRANSIT self-test (feast fold: SpaceLayer spine "
+                    "requestWormhole -> WormholeTransit -> DeepSpace, monotonic progress ramp, "
+                    "re-arm, headless)...");
+        return x3::space::runWormholeTransitSelfTest() ? 0 : 1;
+    }
+    if (tf.testTractor) {
+        x3::logInfo("running capital-ship TRACTOR-BEAM (TractorBeam) self-test "
+                    "(feast fold: init/render/shutdown + intensity ramp/clamp + degenerate "
+                    "skip + energy bake, headless)...");
+        return x3::space::runTractorSelfTest() ? 0 : 1;
     }
     if (tf.testIntroBranch) {
         x3::logInfo("running Phase 4 INTRO BRANCH-WIRING self-test (intro.outcome flag "

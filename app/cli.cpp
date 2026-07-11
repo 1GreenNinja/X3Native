@@ -454,6 +454,9 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-introcockpit") o.testIntroCockpit = true;
         else if (a == "--test-shipinterior") o.testShipInterior = true;
         else if (a == "--test-shipwindows") o.testShipWindows = true;
+        else if (a == "--test-wormhole") o.testWormhole = true;
+        else if (a == "--test-wormhole-transit") o.testWormholeTransit = true;
+        else if (a == "--test-tractor") o.testTractor = true;
         else if (a == "--test-descentslide") o.testDescentSlide = true;
         else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;

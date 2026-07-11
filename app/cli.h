@@ -275,6 +275,11 @@ struct CliOptions {
     bool        testIntroCockpit = false;
     bool        testShipInterior = false;
     bool        testShipWindows  = false;
+    // Space-combat feast fold (14900K lanes): --test-wormhole (crystal-matrix VFX),
+    // --test-wormhole-transit (S3 autopilot jump ride), --test-tractor (intro beam).
+    bool        testWormhole = false;
+    bool        testWormholeTransit = false;
+    bool        testTractor = false;
     bool        testDescentSlide = false;
     bool        testWingDressing = false;  // --test-wingdressing (F2-F7 wing recipe pass)
     // --test-introbranch (Phase 4 BRANCH WIRING): the app_run branch-selection
