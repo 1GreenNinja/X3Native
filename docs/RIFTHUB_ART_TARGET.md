@@ -58,3 +58,21 @@ Three states, mapping onto existing gameplay states (dormant / kawoosh / travers
    throat); vista dissolves into pure energy. (membrane_state3_open.png)
 Ring detail confirmed by the video: the INNER-FACING edge carries a segmented amber-lit
 ratchet track that brightens with activation.
+
+## ROUND 3 — THE DENSITY ROUND (Tim greenlit 2026-07-11: "We can do this — Fable Style")
+Round 2 verdict: "Much better.. but nothing close to the grok source image." The ceiling of
+box-assembly prims is reached. Round 3 closes the gap with real assets + atmosphere:
+- LANE 2 (now, CPU-only): procedurally AUTHOR the gate in headless Blender (bpy script —
+  stacked ring plates, pistons, pipe runs, chamfered clamp housings, bolt detail), export GLB
+  with UVs, engine loads it replacing the procedural torus/plate/clamp assembly. Membrane +
+  3-state machine + ratchet/audio stay untouched.
+- FAKE VOLUMETRICS (now): additive translucent cones under fixtures + shafts from ceiling
+  lights; a touch more mid-floor illumination.
+- LANE 1 (queued for GPU-free window): SD3.5-forge gate-SPECIFIC texture sets with greebles
+  baked into normal/height (riveted ring plate w/ rust streaks, dark piston steel, patina
+  variants) -> G:\Assets\X3Native\surface_library. One gen at a time on the 5090; runs when
+  Tim is out of the game.
+Blender pipeline gotchas (proven in-repo): Microsoft-Store Blender — blender.exe is
+ACL-denied, use the blender-launcher.exe alias, which DETACHES (no stdout): report via files
++ poll for a .done marker; keep helper .ps1 ASCII-only. See tools/ for existing headless
+patterns (dance_bake.py etc.).
