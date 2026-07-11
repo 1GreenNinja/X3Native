@@ -74,7 +74,10 @@ int hostRifthub(HostContext& hc) {
             device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
             if (i == kFrames - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
-            if (frame.valid) rhscene.render(*device, frame);
+            if (frame.valid) {
+                rhscene.render(*device, frame);
+                rifthub.drawFx(*device, frame);   // membrane lightning arcs + spark motes
+            }
             device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
@@ -246,7 +249,10 @@ int hostRifthub(HostContext& hc) {
 
         device->setCamera(camX, camY, camZ, camYaw, camPitch, 65.0f);
         auto frame = device->beginFrame();
-        if (frame.valid) rhscene.render(*device, frame);
+        if (frame.valid) {
+            rhscene.render(*device, frame);
+            rifthub.drawFx(*device, frame);   // membrane lightning arcs + spark motes
+        }
         device->endFrame(frame);
     }
 

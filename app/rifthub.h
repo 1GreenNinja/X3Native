@@ -18,29 +18,48 @@
 //
 // Authoring style mirrors act2_caves' Scene-prop helpers: every portal is a
 // Stargate-INSPIRED gateway (original procedural design, not a copy) —
-//   * a SUBSTANTIAL, thick grey-stone RING you walk through, built from a
-//     single circle of N deep tangent box segments with a beefy squarish
-//     cross-section (real radial thickness + depth). The ring is stone, it
-//     does NOT glow;
-//   * CHEVRON-like AMBER locking clamps ringing the gate's outer face (one at
-//     12 o'clock, the rest evenly spaced) — chunky triangular prisms that sit
-//     proud of the ring surface and glow amber, the "powered gate" cue;
+//   * a SUBSTANTIAL, thick RING you walk through (a smooth procedural torus),
+//     industrial weathered metal — the ring itself does NOT glow;
+//   * CHEVRON locking clamps ringing the gate's outer face (one at 12
+//     o'clock, the rest evenly spaced) with amber-lit cores, the "powered
+//     gate" cue;
 //   * a small octagonal emissive floor-plate (carries the per-destination
-//     accent tint, since the ring itself is neutral stone);
-//   * an EVENT-HORIZON MEMBRANE filling the ring opening as the portal's
-//     energy surface: a vertical pool of blue-white energy built from
-//     concentric bands of thin tangent box segments, brightest at the center
-//     and fading to deep blue at the rim (the outermost band bleeds a fraction
-//     of the destination tint as a second subtle signposting cue).
+//     accent tint, since the ring itself is neutral metal);
+//   * an EVENT-HORIZON MEMBRANE filling the ring opening: the fable-rock
+//     ART TARGET (docs/RIFTHUB_ART_TARGET.md, palette LOCKED) — a DEEP BLUE
+//     plasma storm, NOT a white-clipped disk. Three layers per portal:
+//       [0] a dim parallax VISTA disk behind (another world glimpsed through),
+//       [1] the PLASMA disk itself (procedural emissive texture on the PBR
+//           route, deep-blue emissive with a HARD INTENSITY CAP so the blue
+//           always reads — never tonemap-clips to white), slowly rotating,
+//       [2] a bright-blue FRESNEL RIM ring hugging the ring's inner edge.
+//     The membrane is a 3-STATE MACHINE (the MEMBRANE ANIMATION ARC from
+//     docs/reference/PortalAnimated.mp4, mapped onto the existing gameplay
+//     states — no new gameplay flags):
+//       IDLE  (!activated)          — calm nebula: wispy filament texture,
+//             sparse cross-disk tendrils, slow drift, vista faintly visible;
+//       SURGE (kawoosh > 0)         — the activation flash: lightning arcs
+//             re-target into a VORTEX RING whipping the rim circumference,
+//             the whole membrane brightens toward its caps (bright BLUE-white,
+//             never flat white), spark burst;
+//       OPEN  (activated, settled)  — the throat: the plasma disk swaps to a
+//             RADIAL-STREAMING texture (looking down the wormhole), runs a
+//             brighter steady base, the vista dissolves into the energy, and
+//             the tendrils become center->rim streamers.
+//     Plus per-frame FX drawn by drawFx(): short-lived white-blue forked
+//     LIGHTNING ARCS on the disk (idle chords / surge rim-orbits / open
+//     radials) and drifting spark MOTES (additive particles).
 // A wider AABB trigger sits underneath. No GLB asset needed.
 //
 // ANIMATION: Rifthub::tick(dt) runs each frame and (a) flickers the amber
-// chevrons with a slow sin(time*freq + phase) per-chevron pulse (a powered
-// gate breathing), (b) pulses the blue core hot-spot, and (c) drives the
-// membrane's LIQUID RIPPLE: each concentric band's emissive is phased by
-// sin(time*w - radius*k) so bright crests travel outward from the center like
-// rings on a pond, plus a slow angular swirl term per segment. The grey-stone
-// ring is static (stone doesn't pulse). See rifthub.cpp's tick() for constants.
+// chevron cores with a slow per-chevron pulse, (b) pulses the blue core
+// hot-spot, (c) breathes + slowly ROTATES the plasma membrane disk (the
+// procedural filament texture sweeping around reads as the storm churning),
+// shimmer on the fresnel rim, all emissive writes CLAMPED to the per-layer
+// caps (the blown-white v1 fix), and (d) advances the lightning-arc spawner
+// + integrates the mote particle pool. The metal ring is static. The host
+// calls drawFx() between beginFrame/endFrame (after Scene::render) to draw
+// the arcs + submit the motes. See rifthub.cpp's tick()/drawFx() constants.
 
 #include "scene.h"
 #include "trigger.h"
@@ -101,13 +120,41 @@ struct RiftPortal {
     // chevron 0 at 12 o'clock; tick() pulses each with a per-chevron phase.
     uint32_t       chevronEntFirst = 0;   // first chevron entity id
     uint32_t       chevronEntCount = 0;   // number of amber chevrons
-    // Event-horizon membrane — the visible portal SURFACE: concentric bands of
-    // thin emissive segments filling the ring opening (a vertical blue-white
-    // energy pool). Contiguous span, authored band 0 (innermost) outward,
-    // kMembraneSegs entities per band; tick() phases each band's emissive with
-    // sin(time*w - bandRadius*k) so ripples propagate center -> rim.
-    uint32_t       membraneEntFirst = 0;  // first membrane-band entity id
-    uint32_t       membraneEntCount = 0;  // bands * segments entities
+    // Event-horizon membrane — the visible portal SURFACE (membrane v2, the
+    // fable-rock art pass): a contiguous 3-entity span in authoring order
+    //   [0] VISTA disk (dim parallax backdrop — the glimpsed other world),
+    //   [1] PLASMA disk (procedural filament emissive texture, deep blue,
+    //       capped intensity, slow rotation driven by tick()),
+    //   [2] FRESNEL RIM ring (bright blue inner-edge ring, shimmer).
+    uint32_t       membraneEntFirst = 0;  // first membrane entity id (vista)
+    uint32_t       membraneEntCount = 0;  // == 3 (vista + plasma + rim)
+    // Portal-local basis (unit, XZ plane): outward = radial from hub center
+    // through the gate (the ring's hole axis), right = outward x up. Cached at
+    // build() so tick()/drawFx() can rebuild the rotating membrane transform +
+    // place lightning arcs without re-deriving from worldPos.
+    float          rightX = 1, rightZ = 0;
+    float          outX   = 0, outZ   = 1;
+    // ---- Membrane lightning arcs (white-blue tendrils crawling the disk) ----
+    // A tiny per-portal pool. Each live arc is a chord across the membrane disk
+    // (polar endpoints in the ring plane) drawn per-frame as a jagged forked
+    // polyline of thin emissive beams (re-jittered every frame -> crackle).
+    struct MembraneArc {
+        float    life    = 0.0f;   // remaining seconds (<= 0 == free slot)
+        float    maxLife = 0.3f;
+        float    a0 = 0, r0 = 0;   // endpoint A (angle rad, radius m) in ring plane
+        float    a1 = 0, r1 = 0;   // endpoint B
+        uint32_t seed = 1;         // per-arc jitter seed (re-mixed per frame)
+        bool     fork = false;     // draw a short branch off an interior vertex
+        uint8_t  mode = 0;         // 0 idle chord / 1 surge rim-orbit / 2 open radial
+    };
+    static constexpr uint32_t kMaxArcs = 3;
+    MembraneArc    arcs[kMaxArcs];
+    float          arcCooldown = 0.0f;    // seconds until the next arc may spawn
+    float          moteAccum   = 0.0f;    // fractional mote-spawn accumulator
+    float          vistaEm     = 0.0f;    // current vista emissive (fades on OPEN)
+    bool           throatOn    = false;   // plasma disk swapped to the throat texture
+    float          spinAngle   = 0.0f;    // plasma disk rotation (integrated — the
+                                          // OPEN state spins faster without snapping)
     // KAWOOSH one-shot: seconds remaining in the activation "unstable vortex"
     // surge (0 = idle). onTrigger() sets it to the kawoosh duration; tick()
     // decays it and rides a bright bulge-out emissive envelope on the membrane
@@ -130,15 +177,21 @@ public:
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers);
 
-    // Per-frame animation. Flickers each portal's amber chevrons with a slow
-    // sin(m_time*freq + per-chevron phase) pulse (a powered gate breathing),
-    // pulses the blue core hot-spot disks, and drives the event-horizon
-    // membrane's liquid ripple: each concentric band's emissive follows
-    // sin(m_time*w - bandRadius*k) (crests travel center -> rim) plus a slow
-    // per-segment swirl. The grey-stone ring is static. All emissive pokes are
-    // in-place on the authored entities — no per-frame heap.
-    // `scene` is the Scene the portals were authored into (build()'s scene).
+    // Per-frame animation. Flickers each portal's amber chevrons, pulses the
+    // blue core hot-spots, breathes + slowly rotates the plasma membrane disk,
+    // shimmers the fresnel rim (EVERY membrane emissive write clamped to its
+    // cap — deep blue must always read, never clip to white), advances the
+    // lightning-arc spawner and integrates the spark-mote pool. The metal ring
+    // is static. All emissive pokes are in-place on the authored entities — no
+    // per-frame heap. `scene` is the Scene the portals were authored into.
     void tick(float dt, Scene& scene);
+
+    // Per-frame membrane FX draw: the live lightning arcs (jagged forked
+    // white-blue tendrils re-jittered each frame so they crackle) + the spark
+    // motes (one additive submitParticles batch). Call between beginFrame /
+    // endFrame, AFTER Scene::render. No-op before build() / when nothing is
+    // live. Not const: the per-frame jitter advances the FX rng.
+    void drawFx(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame);
 
     // Free the Scene meshes/textures owned by the hub (the portal ring meshes,
     // the floor plates, the ground checker). Leaves physics ownership to the
@@ -177,6 +230,10 @@ public:
     const std::vector<RiftPortal>& portals() const { return m_portals; }
     // True iff every portal's trigger fired at least once.
     bool allActivated() const;
+    // FX observability (self-test + diagnostics): live lightning arcs on one
+    // portal / live spark motes across the whole hub.
+    uint32_t liveArcCount(uint32_t portalIdx) const;
+    uint32_t liveMoteCount() const;
 
 private:
     bool                       m_built = false;
@@ -185,15 +242,48 @@ private:
     std::vector<RiftPortal>    m_portals;
 
     // Owned render resources (freed in shutdown()). The portal mesh vector
-    // collects EVERY device-allocated mesh authored by build() — stone ring
-    // segments, amber chevron prisms, floor-plate wedges, core disks, and
-    // membrane bands — so shutdown can free them uniformly. The per-portal
-    // entity-id ranges in RiftPortal index into the Scene, not into this vector.
+    // collects every PER-ENTITY device mesh authored by build() (ring torus,
+    // chevron prisms, floor-plate wedges, core disks) so shutdown can free
+    // them uniformly. SHARED meshes/textures (one handle referenced by many
+    // entities — the membrane disks, the rim ring, the FX beam box, the
+    // plasma/vista/mr textures) are tracked separately and freed ONCE.
     x3::rhi::MeshHandle        m_groundMesh;
     x3::rhi::TextureHandle     m_groundTex;
     std::vector<x3::rhi::MeshHandle> m_portalMeshes;
+    // Shared membrane v2 resources (created once, used by all 8 portals).
+    x3::rhi::MeshHandle        m_diskMesh;    // two-sided membrane disk fan
+    x3::rhi::MeshHandle        m_rimMesh;     // thin fresnel rim torus
+    x3::rhi::MeshHandle        m_fxBeamMesh;  // unit box the arc beams stretch
+    x3::rhi::TextureHandle     m_plasmaTex;   // IDLE nebula/filament emissive map
+    x3::rhi::TextureHandle     m_throatTex;   // OPEN radial-streaming throat map
+    x3::rhi::TextureHandle     m_vistaTex;    // parallax backdrop (other world)
+    x3::rhi::TextureHandle     m_mrFlat;      // 1x1 rough/dielectric MR (PBR route)
     // Per-portal blue core lights (1:1 with m_portals); intensity pulsed in tick().
     std::vector<x3::rhi::PointLight> m_lights;
+
+    // ---- Spark-mote pool (membrane embers). CPU-integrated fixed ring, no
+    // per-frame heap; drawFx() streams the live ones as one additive batch. ----
+    struct Mote {
+        float px = 0, py = 0, pz = 0;
+        float vx = 0, vy = 0, vz = 0;
+        float life = 0.0f;      // remaining seconds (<= 0 == free)
+        float maxLife = 1.0f;
+        float size = 0.02f;     // billboard half-extent (m)
+        float r = 0.6f, g = 0.8f, b = 1.0f;
+    };
+    static constexpr int kMaxMotes = 512;
+    Mote     m_motes[kMaxMotes];
+    int      m_nextMote = 0;    // round-robin recycle cursor
+    uint32_t m_rng = 0x9E3779B9u;   // xorshift state (arc + mote jitter)
+    // Per-frame submit scratch (member so drawFx does no heap alloc).
+    mutable x3::rhi::IRenderDevice::ParticleInstance m_moteScratch[kMaxMotes];
+
+    // Spawn helpers (rifthub.cpp file-local logic uses these members).
+    float frand();     // [0,1)
+    float frandSym();  // [-1,1)
+    void  spawnMote(const Mote& m);
+    // mode: 0 idle chord / 1 surge rim-orbit (the vortex ring) / 2 open radial.
+    void  spawnArc(RiftPortal& p, int mode);
 };
 
 // Headless self-test (--test-rifthub). Builds the hub on a HeadlessDevice + Jolt
@@ -205,10 +295,14 @@ private:
 //     the volume) latches that portal's `activated` flag + the HUD prompt flips
 //     to "Rift activated: <name>" — and only AFTER every portal is entered does
 //     allActivated() become true;
-//   * tick(dt) advances the animation: a chevron + core + membrane emissive
-//     intensity changes across two ticks at different times (the pulse is
-//     live), and two membrane bands at different radii sit at DIFFERENT
-//     emissive levels at the same instant (the ripple really is radial);
+//   * tick(dt) advances the animation: a chevron + core + plasma-membrane
+//     emissive intensity changes across two ticks at different times (the
+//     pulse is live) AND the plasma disk's transform ROTATES (the storm churns);
+//   * the EMISSIVE CAP LAW (the blown-white v1 fix): across a kawoosh surge +
+//     many ticks, every membrane-layer emissive stays <= its cap (deep blue
+//     always reads — the surge peaks bright blue, never flat white);
+//   * the membrane FX are alive: lightning arcs spawn on a ticking portal and
+//     spark motes exist after a kawoosh;
 //   * all 8 portal worldNames map to REAL --world targets the host accepts.
 // Prints "rifthub: X/Y passed"; returns true iff all pass. No window/Vulkan.
 bool runRifthubSelfTest();
