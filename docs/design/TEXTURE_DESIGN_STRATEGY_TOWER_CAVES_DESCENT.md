@@ -69,6 +69,17 @@ The descent is the Act-1 midpoint exhale: tension (found the hidden lift shaft) 
 
 ---
 
+## 3.4 WORLD DEPTH — owner ruling 2026-07-11: the bottom is **−700 m** (was −178 m)
+The −178 m Salvari-cave horizon becomes a mid-depth stratum, not the floor. PROPOSED depth ladder (assignments below −178 are proposals for Tim's ruling, not canon):
+| Depth | Stratum | Note |
+|---|---|---|
+| 0 → −15 | Basement B1 + slide entry | facility concrete |
+| −15 → −170 | The curving slide tunnels | glimpse-windows into SL1/SL2/SL3 |
+| −178 | Lower caves (crystal horizon) | 7 singing crystals; **muffled 128 BPM bass through the floor** |
+| ~−250 to −350 | Club 1127 "THE DEEP" | below the caves per owner geography; the elevator's strata views already sell this journey |
+| −350 → −650 | PROPOSAL: deep strata — old mines / Salvari ruins / thermal vents | the elevator strata system + world blueprint hooks |
+| **−700** | PROPOSAL: the true bottom — the Salvari city / the thing the facility was built on top of | endgame reveal space |
+
 ## 4. Forge queue (SD3.5, local — new sets this report requires)
 `cv_shotcrete_break`, `cv_rock_wet` (+flume variant), `sl_chute_steel` (w/ polish stripe), degraded `sr_metal_waste` / `sr_metal_cryo` / `mw_concrete_scorched`, medical `hh_privacy_glass`, genetics clean-lab variant, 4 cell-story decal overlays. ~11 sets ≈ 7 min GPU on the 3090 Ti + normals/mr derivation. Convert `SM_Hospital_Bed.glb` (asset-path fix, F2 beds currently skip).
 
