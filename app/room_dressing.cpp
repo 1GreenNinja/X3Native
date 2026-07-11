@@ -426,11 +426,13 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
     const uint32_t aVent    = m_loader ? loadAsset(kRelVent)    : 0;
     const uint32_t aDrone   = m_loader ? loadAsset(kRelDrone)   : 0;
     // F2 rescue captives — the Anna cast (rescue.cpp maps the SAME live models):
-    // Aria=AnnaCasual, Keisha=AnnaBodySuit, Emily=AnnaTactical. Loaded static (bind
-    // pose) and laid SUPINE on the beds by the "Rescue Room" recipe branch.
-    const uint32_t aAria    = m_loader ? loadAsset("AnnaCasual.glb")   : 0;
-    const uint32_t aKeisha  = m_loader ? loadAsset("AnnaBodySuit.glb") : 0;
-    const uint32_t aEmily   = m_loader ? loadAsset("AnnaTactical.glb") : 0;
+    // Aria=AnnaCasual, Keisha=AnnaBodySuit, Emily=AnnaTactical. These are PRE-POSED
+    // supine bakes (headless Blender pose-and-bake: spine raised to the bed incline,
+    // knees up, legs apart, arms at sides). The bake is already lying face-up (head +Z,
+    // back at model-Y 0), so the recipe just positions + yaws them onto the beds.
+    const uint32_t aAria    = m_loader ? loadAsset("Detention/Captive_Aria_Posed.glb")   : 0;
+    const uint32_t aKeisha  = m_loader ? loadAsset("Detention/Captive_Keisha_Posed.glb") : 0;
+    const uint32_t aEmily   = m_loader ? loadAsset("Detention/Captive_Emily_Posed.glb")  : 0;
 
     // Kit tints (cell_dressing palette family).
     const float tCrate[4]  = { 0.66f, 0.60f, 0.52f, 1.0f };
@@ -947,29 +949,39 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 cot(cx0, cz0, kPi * 0.5f, tClinic);
                 ++m_rescueBeds;
 
-                // (3) The captive laid SUPINE on the bed (static bind pose): yaw pi + pitch
-                // -pi/2 rolls the standing model onto its back (face UP), head toward the
-                // back (+Z) wall, feet toward the door; keep her authored PBR skin/clothes
-                // (keepTex bypasses the wing black-prop material lift). Static-pose caveat:
-                // it's a bind-pose lay-down (a posed supine re-export is a follow-up).
+                // (3) The captive laid SUPINE on the bed. The GLB is a PRE-POSED supine
+                // bake (face UP, head toward the +Z pillow/incline end, feet toward the
+                // door, back at model-Y 0), so this is just position + a small per-girl
+                // yaw — no 90° roll of a standing model. Her spine is baked to the bed's
+                // head incline (head rests ON the pillow, not buried), knees up, legs
+                // apart, arms at her sides. keepTex keeps her authored PBR skin/clothes
+                // (bypasses the wing black-prop material lift).
                 if (m_loader && cap < m_assetTable.size() && m_assetTable[cap].ok) {
+                    const float capYaw = nameHas("Aria")   ?  0.04f
+                                       : nameHas("Keisha") ? -0.05f : 0.02f;
+                    const float mattressY = fY + 0.55f;   // mattress sleeping surface
                     PropInst pc; pc.room = ri; pc.asset = cap; pc.keepTex = true;
-                    makeTR(pc.transform, kPi, -kPi * 0.5f, cx0, fY + 0.78f, cz0 - 1.05f);
+                    // Shift toward the foot/door (-Z) so the whole body lies on the FLAT
+                    // mattress with just the head/shoulders reaching the +Z pillow base —
+                    // otherwise a rigid torso see-saws up on the raised head incline.
+                    makeTR(pc.transform, capYaw, 0.0f, cx0, mattressY, cz0 - 0.25f);
                     m_props.push_back(pc);
                     ++m_rescueCaptives;
-                    // (3b) Two restraint straps across her (chest + legs): dark bands laid
-                    // flat over the body, low emissive so they read without glowing.
-                    auto strap = [&](float zp) {
+                    // (3b) Restraint straps re-seated to the supine knees-up pose: a chest
+                    // strap over the torso and a leg strap across the raised SHINS below the
+                    // knees. Dark bands laid flat over the body, low emissive so they read
+                    // without glowing.
+                    auto strap = [&](float zp, float yy, float wid) {
                         ProcDraw s; s.room = ri;
-                        s.mesh = quadMesh(device, 1.05f, 0.14f, 1.0f);
-                        makeTR(s.transform, 0.0f, -kPi * 0.5f, cx0, fY + 0.70f, zp);
+                        s.mesh = quadMesh(device, wid, 0.14f, 1.0f);
+                        makeTR(s.transform, 0.0f, -kPi * 0.5f, cx0, yy, zp);
                         s.color[0] = 0.05f; s.color[1] = 0.05f; s.color[2] = 0.06f; s.color[3] = 1.0f;
                         s.emissive[0] = 0.10f; s.emissive[1] = 0.10f; s.emissive[2] = 0.12f;
                         s.emissive[3] = 0.30f;
                         m_proc.push_back(s);
                     };
-                    strap(cz0 + 0.20f);   // chest
-                    strap(cz0 - 0.55f);   // legs
+                    strap(cz0 + 0.02f, mattressY + 0.24f, 1.05f);   // chest (over torso)
+                    strap(cz0 - 0.62f, mattressY + 0.30f, 1.25f);   // legs (across raised shins)
                 }
 
                 // (4) Advanced medical equipment: a bedside vitals console, an IV/cryo
