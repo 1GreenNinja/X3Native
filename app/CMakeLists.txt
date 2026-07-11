@@ -118,6 +118,7 @@ add_executable(X3Engine WIN32
     ecology.cpp
     crowd.cpp
     crowd_skin.cpp
+    crowd_chatter.cpp
     alert.cpp
     fx.cpp
     hud.cpp

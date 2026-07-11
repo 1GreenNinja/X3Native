@@ -2,7 +2,8 @@
 // Game/slice code only — engine/ stays pure.
 
 #include "crowd.h"
-#include "crowd_skin.h"   // the skinned-citizen section of --test-crowd
+#include "crowd_skin.h"      // the skinned-citizen section of --test-crowd
+#include "crowd_chatter.h"   // the chat-bubble/mumble section of --test-crowd
 #include "mesh_prims.h"
 #include "headless_device.h"
 
@@ -1091,7 +1092,12 @@ bool runCrowdSelfTest() {
     // visual layer binds/falls back/streams over the same brains. ----
     const bool skinOk = runCrowdSkinSelfTest();
 
-    return c_fail == 0 && skinOk;
+    // ---- CROWD CHATTER layer (H1..H8, app/crowd_chatter.cpp): chat bubbles +
+    // murmur walla over the same brains (alternating speakers, deterministic
+    // lines, bounded lifetimes, silence with no pair). ----
+    const bool chatterOk = runCrowdChatterSelfTest();
+
+    return c_fail == 0 && skinOk && chatterOk;
 }
 
 } // namespace x3::game

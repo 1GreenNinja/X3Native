@@ -754,6 +754,7 @@ int main(int argc, char** argv) {
     _hc.vigilShot       = o.vigilShot;
     _hc.alertShot       = o.alertShot;
     _hc.shotDrive       = o.shotDrive;         // WORLD CARS driver-POV staging
+    _hc.shotChatter     = o.shotChatter;       // CHATTER bubble staging for stills
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
     _hc.docWorldPath    = o.docWorldPath;
     _hc.cullPathArg     = o.cullPathArg;
