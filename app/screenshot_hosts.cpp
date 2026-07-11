@@ -225,16 +225,16 @@ int dispatchScreenshotHosts(HostContext& hc) {
             { "c", -43.0f, 6.75f },   // Rescue Room C (Emily)
         };
         bool allOk = true;
-        for (const RShot& s : rooms) {
-            // A 3/4 vantage from the door corner, across the bed toward the captive.
-            const float ex = s.cx + 2.3f, ey = fY + 1.95f, ez = 3.9f;
-            const float ax = s.cx - 0.2f, ay = fY + 0.75f, az = s.cz + 0.6f;
+        // One capture from a given eye + look-at, tagged w2f_<room>_<suffix>.png. The
+        // dressing's motivated floor keys + a soft camera fill + a warm surgical key over
+        // the bed so the captive + straps read on this dark clinical plate.
+        auto shoot = [&](const RShot& s, const char* suffix,
+                         float ex, float ey, float ez,
+                         float ax, float ay, float az) -> bool {
             const float dx = ax - ex, dy = ay - ey, dz = az - ez;
             const float yaw = std::atan2(dz, dx);
             const float pitch = std::atan2(dy, std::sqrt(dx * dx + dz * dz));
             const x3::phys::Vec3 eye{ ex, ey, ez };
-            // Lights: the dressing's own motivated keys on this floor + a soft camera fill
-            // + a warm surgical over the bed so the captive + straps read.
             std::vector<x3::rhi::PointLight> pls;
             wd.collectFloorLights(eye, pls);
             x3::rhi::PointLight fill;
@@ -247,7 +247,8 @@ int dispatchScreenshotHosts(HostContext& hc) {
             pls.push_back(key);
             device->setPointLights(pls.data(), (uint32_t)pls.size());
 
-            const std::string outPath = rescueShotDir + "/w2d_rescue_" + std::string(s.tag) + ".png";
+            const std::string outPath =
+                rescueShotDir + "/w2f_" + std::string(s.tag) + "_" + suffix + ".png";
             const int kSettle = 18;
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
@@ -262,7 +263,20 @@ int dispatchScreenshotHosts(HostContext& hc) {
             }
             const bool wrote = device->captureFrame(outPath.c_str());
             if (wrote) x3::logInfo("--screenshot-rescuerooms: wrote " + outPath);
-            else { allOk = false; x3::logError("--screenshot-rescuerooms: FAILED " + outPath); }
+            else x3::logError("--screenshot-rescuerooms: FAILED " + outPath);
+            return wrote;
+        };
+        for (const RShot& s : rooms) {
+            // (1) DOOR: a 3/4 vantage from the door corner, across the bed toward the captive.
+            allOk &= shoot(s, "door", s.cx + 2.3f, fY + 1.95f, 3.9f,
+                                      s.cx - 0.2f, fY + 0.75f, s.cz + 0.6f);
+            // (2) FOOT: bedside, ~1.4 m up at the FOOT/door end (low z), looking straight
+            // along the bed toward the +Z pillow. This makes head/foot orientation
+            // UNAMBIGUOUS: the raised knees read nearest the camera, the torso recedes,
+            // and the head lands on the FAR pillow — a reversed body would show her face
+            // filling the near frame instead.
+            allOk &= shoot(s, "foot", s.cx + 0.9f, fY + 1.40f, s.cz - 2.40f,
+                                      s.cx,        fY + 0.70f, s.cz + 1.00f);
         }
         rphys->shutdown();
         device->shutdown();
