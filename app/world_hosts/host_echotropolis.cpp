@@ -314,6 +314,52 @@ int hostEchotropolis(HostContext& hc) {
             x3::logWarn("--world echotropolis: heightfield PNG absent — orbit pivot uses the y=0 plane");
     }
 
+    // ---- P4 slice (sibling lane): the NIGHT LIGHTS. Two systems, both night-gated:
+    //   * lighthouse_beam.glb — sweeping beam cone (apex at origin, +X), re-posed per
+    //     frame via setInstanceTransform, mounted on the PROPS lighthouse's lantern
+    //     (tower itself lives in echotropolis_props.glb — integrator's; placement from
+    //     refs/models/props_placement.json, lantern center = base + 25.75m);
+    //   * fissure_glow.glb — GrokCity3 ember quads lining the fjord walls, world-baked.
+    // Missing GLBs degrade gracefully to "not drawn".
+    constexpr float kLightX = -493.24f, kLightY = -0.156f, kLightZ = 789.39f;
+    constexpr float kLanternY = 25.75f;     // beam pivot above the props tower base
+    constexpr float kBeamRate = 0.35f;      // rad/s sweep
+    x3::game::EnvArtSystem beam, fissure;
+    {
+        const char* mEnv = std::getenv("ECHO_MODELS_DIR");
+        const std::string mDir = mEnv ? mEnv : "D:/GameDev/SimCityLLM2/refs/models";
+        const float T[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, kLightX,kLightY,kLightZ,1 };
+        if (beam.buildFromGlbAt(*device, mDir, "lighthouse_beam.glb", T))
+            x3::logInfo("--world echotropolis: lighthouse beam armed (night-gated)");
+        if (fissure.buildFromGlb(*device, mDir, "fissure_glow.glb"))
+            x3::logInfo("--world echotropolis: fissure ember-glow loaded (night-gated)");
+    }
+    auto poseBeam = [&](float theta) {
+        const float c = std::cos(theta), s = std::sin(theta);
+        const float M[16] = { c,0,-s,0, 0,1,0,0, s,0,c,0, kLightX, kLightY + kLanternY, kLightZ, 1 };
+        beam.setInstanceTransform(0, M);
+    };
+
+    // ================= P4 COAST DRESSING (props) — added by the P4 session =========
+    // Lighthouse + dock + fishing boats + mesa skyline hint, all baked at their
+    // WORLD positions into one GLB by tools/place_props.py (positions DERIVED from
+    // the heightmap: bay-arm tip / flat shelf / calm basin / mesa-top-near-fjord —
+    // re-derivable as the landform changes; NOT hand-tuned to a fixed coastline).
+    // Loaded at identity exactly like the island GLB (world-space verts). Purely
+    // visual, no physics. Dir overridable via ECHO_PROPS_DIR. Missing file = no-op
+    // (the island still renders). Iterating placement/scale = rebake only, no rebuild.
+    x3::game::EnvArtSystem props;
+    {
+        const char* pdirEnv = std::getenv("ECHO_PROPS_DIR");
+        const std::string propsDir = pdirEnv ? pdirEnv : "D:/GameDev/SimCityLLM2/refs/models";
+        if (props.buildFromGlb(*device, propsDir, "echotropolis_props.glb"))
+            x3::logInfo("--world echotropolis: P4 props GLB loaded from " + propsDir);
+        else
+            x3::logWarn("--world echotropolis: P4 props GLB absent (" + propsDir +
+                        "/echotropolis_props.glb) — coast undressed");
+    }
+    // ================= END P4 COAST DRESSING ======================================
+
     // ===================== Headless screenshot path =====================
     // Pose the default orbit (17deg, radius 70), settle the waves a few frames so
     // the Gerstner surface isn't flat, then arm+grab. Mirrors host_valley's grab.
@@ -339,6 +385,12 @@ int hostEchotropolis(HostContext& hc) {
             if (i == kSettle - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
             island.draw(*device, frame);   // the island (sky + water are device-internal)
+            props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
+            if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
+                poseBeam(-2.13f);
+                beam.draw(*device, frame);
+                fissure.draw(*device, frame);
+            }
             device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
@@ -490,6 +542,12 @@ int hostEchotropolis(HostContext& hc) {
 
         auto frame = device->beginFrame();
         island.draw(*device, frame);
+        props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
+        if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
+            poseBeam(waterTime * kBeamRate);
+            beam.draw(*device, frame);
+            fissure.draw(*device, frame);
+        }
         device->endFrame(frame);
 
         // FPS: log once per second.
