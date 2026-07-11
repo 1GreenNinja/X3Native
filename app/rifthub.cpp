@@ -172,8 +172,8 @@ constexpr float    kCollarHalf       = 0.085f;  // bend collar half-extent
 constexpr float    kCollarHalfDep    = 0.048f;  // bend collar half-length along the pipe
 constexpr float    kCoilOrangeEm     = 0.85f;
 constexpr float    kHoloTeal[3]      = { 0.12f, 0.85f, 0.75f };
-constexpr float    kHoloEm           = 0.35f;   // soft glow floor — the TEXTURE carries the read
-                                                // (flat glass emissive floods the pane otherwise)
+constexpr float    kHoloEm           = 0.25f;   // round 2: teal dimmed ~30% (was 0.35)
+                                                // — the TEXTURE carries the read
 
 // ---- A-frame support cradle (the gate is INSTALLED, not floating) --------------
 constexpr float    kSkirtHalfTan   = 1.70f;   // base plinth under the ring bottom
@@ -1235,17 +1235,35 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 at.x, at.y, at.z, kConduitOrange, kCoilOrangeEm);
             m_portalMeshes.push_back(ae.mesh);
         }
-        // Two TEAL holo data screens flanking the approach (glass panes on
-        // dark posts, facing back toward the hub center).
+        // Two TEAL holo data screens flanking the approach. ROUND 2: MOUNTED —
+        // a dark metal frame behind each pane, the post extended up BEHIND the
+        // frame (visible connection, no floating glass), and a mount clamp
+        // where frame meets post. Teal output dimmed ~30%.
         for (int scr = -1; scr <= 1; scr += 2) {
             const float sideR = 2.45f * (float)scr;
             const x3::phys::Vec3 at = gatePt(sideR, 1.52f, -1.35f);
-            // Post.
+            // Post — set back of the pane, running full height to behind the frame.
+            const float postOff = 0.055f;   // outward (away from the hub viewer)
             AddedEntity post = addOrientedSurfBox(
-                scene, device, 0.030f, 0.62f, 0.030f,
-                dX, dY, dZ, at.x, 0.62f, at.z,
-                &sDark, kDarkTint, 0.03f);
+                scene, device, 0.032f, 0.725f, 0.032f,
+                dX, dY, dZ,
+                at.x + outwardX * postOff, 0.725f, at.z + outwardZ * postOff,
+                &sDark, kDarkTint, 0.0f);
             m_portalMeshes.push_back(post.mesh);
+            // Frame plate — thin dark slab just behind the glass, a hair larger.
+            AddedEntity frame = addOrientedSurfBox(
+                scene, device, 0.40f, 0.29f, 0.012f,
+                dX, dY, dZ,
+                at.x + outwardX * 0.022f, at.y, at.z + outwardZ * 0.022f,
+                &sTrim, kDarkTint, 0.0f);
+            m_portalMeshes.push_back(frame.mesh);
+            // Mount clamp — the visible frame->post connection block.
+            AddedEntity clamp = addOrientedSurfBox(
+                scene, device, 0.052f, 0.052f, 0.030f,
+                dX, dY, dZ,
+                at.x + outwardX * 0.040f, at.y, at.z + outwardZ * 0.040f,
+                &sDark, kDarkTint, 0.0f);
+            m_portalMeshes.push_back(clamp.mesh);
             // Glass pane with the holo readout (the pane IS the screen — the
             // club OLED-glass lesson: a pane OVER a screen depth-occludes it).
             x3::prims::PrimMesh pane = x3::prims::makeBox(0.36f, 0.25f, 0.012f, 0, 0, 0);
@@ -1254,7 +1272,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                        pane.index.data(), (uint32_t)pane.index.size());
             m_portalMeshes.push_back(e.mesh);
             e.tex = (scr > 0) ? m_holoTexA : m_holoTexB;
-            e.baseColor[0] = 2.0f; e.baseColor[1] = 2.3f; e.baseColor[2] = 2.3f;
+            e.baseColor[0] = 1.4f; e.baseColor[1] = 1.6f; e.baseColor[2] = 1.6f;
             e.baseColor[3] = 1.0f;
             e.emissive[0] = kHoloTeal[0]; e.emissive[1] = kHoloTeal[1];
             e.emissive[2] = kHoloTeal[2]; e.emissive[3] = kHoloEm;
