@@ -461,12 +461,17 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     // Break the panels with recessed/mounted industrial detail so the surface reads as
     // a built detention wall (not a tiled kit). Each is anchored flush to a wall plane.
     {
-        // A recessed VENT GRATE high on the -Z wall (the grate depth runs +Z into the
-        // wall; anchor its mouth at the wall plane, facing the room).
-        place(aVent, 0.0f, 1.0f, cx(kVentAabb), cy(kVentAabb), kVentAabb.minz,
-              ccx - 1.4f, fY + 2.7f, z0 + 0.16f, nullptr, tRust);
-        place(aVent, 0.0f, 0.85f, cx(kVentAabb), cy(kVentAabb), kVentAabb.minz,
-              ccx + 1.5f, fY + 2.9f, z0 + 0.16f, nullptr, tRust);
+        // A recessed VENT GRATE high on the -Z wall. WAVE-2B (LD review #4a): these two
+        // grates were the "floating ceiling crates" — the 1 m-deep Duct Vent box is
+        // authored with its depth along LOCAL +Z, and at yaw 0 that +Z points INTO the
+        // room (the -Z wall is at z0, so "into the wall" is -Z, not +Z). Anchored at the
+        // wall plane, the whole rusty-brown box protruded a metre into the upper room and
+        // read as a crate hanging by the pipes. Fix: yaw 180deg so the body recesses INTO
+        // the wall (-Z) with only the grate mouth flush + proud (z0+0.02), facing the room.
+        place(aVent, kPi, 1.0f, cx(kVentAabb), cy(kVentAabb), kVentAabb.minz,
+              ccx - 1.4f, fY + 2.7f, z0 - 0.06f, nullptr, tRust);
+        place(aVent, kPi, 0.85f, cx(kVentAabb), cy(kVentAabb), kVentAabb.minz,
+              ccx + 1.5f, fY + 2.9f, z0 - 0.06f, nullptr, tRust);
         // A horizontal CONDUIT/DUCT run hugging the +Z wall, raised FLUSH under the new
         // ceiling panels (R3 hung it 0.55 m down with no hangers -> a floating black box).
         // Runs in X -> yaw +pi/2.

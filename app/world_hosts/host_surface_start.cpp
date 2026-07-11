@@ -276,6 +276,46 @@ int hostSurfaceStart(HostContext& hc) {
         x3::logInfo("--world surface: glass facility built (front wall split around the entry breach)");
     }
 
+    // ---- WAVE-2B (LD review #4c): the facility read as a BLACK SLAB (--world surface) —
+    // dead, unoccupied. Add a few WARM EMISSIVE WINDOW BANDS glowing from inside the black
+    // glass so the tower reads as an OCCUPIED building at golden hour (lit office floors).
+    // Additive: thin self-lit quads set just proud of the front glass, in the window zone
+    // BETWEEN spandrel lines, split around the entry breach. ACES-safe — warm-dominant hue
+    // at a moderate strength so each band blooms as a lit floor, never a white slab. A
+    // couple sit on a side face too so the occupancy reads from an angle, not just head-on.
+    {
+        auto windowBand = [&](float cx, float cy, float cz, float hx, float hy, float hz,
+                              float er, float eg, float eb, float es) {
+            x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 1.0f);
+            auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                         m.index.data(), (uint32_t)m.index.size());
+            auto td = x3::prims::makeSolidRGBA(8, 10, 10, 12);   // dark albedo (emissive carries it)
+            auto tx = device->createTexture(td.data(), 8, 8, true);
+            x3::game::Entity e{}; e.mesh = mh; e.tex = tx;
+            e.baseColor[0]=0.05f; e.baseColor[1]=0.05f; e.baseColor[2]=0.06f; e.baseColor[3]=1.0f;
+            e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
+            e.tag = (uint32_t)x3::game::Tag::Prop;   // purely visual, no collision
+            scene.add(e);
+        };
+        const float zF   = kFacilityZ + wallT + 0.04f;                    // just proud of front glass
+        const float bandHY = 0.85f;                                        // lit-floor band half-height
+        const float sideW  = (kFacilityHalfW - kBreachHalfW) * 0.5f;
+        const float xLc = -(kBreachHalfW + sideW), xRc = (kBreachHalfW + sideW);   // band centres L/R of breach
+        // Warm occupied floors on the FRONT face (a few storeys, both sides of the breach).
+        const float warmR=0.95f, warmG=0.72f, warmB=0.40f;
+        const float ys[] = { kFacilityHalfH * 0.55f, kFacilityHalfH * 1.05f, kFacilityHalfH * 1.5f };
+        for (float y : ys) {
+            windowBand(xLc, y, zF, sideW - 0.6f, bandHY, 0.12f, warmR, warmG, warmB, 1.15f);
+            windowBand(xRc, y, zF, sideW - 0.6f, bandHY, 0.12f, warmR, warmG, warmB, 1.15f);
+        }
+        // Two cooler-white bands on the +X SIDE face so occupancy reads from an angle.
+        const float xS = kFacilityHalfW + wallT + 0.04f;
+        const float zC = kFacilityZ - kFacilityHalfD;
+        windowBand(xS, kFacilityHalfH * 0.8f,  zC, 0.12f, bandHY, kFacilityHalfD - 1.0f, 0.80f, 0.86f, 1.00f, 1.05f);
+        windowBand(xS, kFacilityHalfH * 1.3f,  zC, 0.12f, bandHY, kFacilityHalfD - 1.0f, 0.80f, 0.86f, 1.00f, 1.05f);
+        x3::logInfo("--world surface: WAVE-2B — 8 emissive window bands (facility reads occupied)");
+    }
+
     // ---- W3-3: CONCRETE SPANDREL BANDS over the black glass (the tower spec).
     // One reusable band quad per face size, instanced by transform: a 1.8 m
     // concrete band at every storey line + a ground base + a rooftop parapet,

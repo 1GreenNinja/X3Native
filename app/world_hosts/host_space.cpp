@@ -165,7 +165,16 @@ int hostSpace(HostContext& hc) {
         // `bright` is a gentle exposure assist for deep space (no bounce light),
         // applied as a modest albedo scale, not a floor.
         auto drawShipAt = [&](const x3::rhi::FrameContext& frame,
-                              const float xform[16], float bright) {
+                              const float xform[16], float bright, bool isHero = false) {
+            // WAVE-2B (LD review #4b): the PLAYER craft read as a black silhouette out here
+            // (the static rig can't chase a moving hull, and the starlight floor is faint).
+            // Give the HERO ship a cool RUNNING-LIGHT emissive term — the same cool-rim read
+            // cliffs uses on this hull (its 0.10/0.30/0.55 engine glow) — so the player's own
+            // ship always reads as lit alien tech, never a hole in space. Additive; decor
+            // ships are untouched (they cluster near the rig and read already).
+            const float heroR = isHero ? 0.06f : 0.0f;
+            const float heroG = isHero ? 0.16f : 0.0f;
+            const float heroB = isHero ? 0.30f : 0.0f;
             if (shipModel.ok) {
                 for (const auto& dr : shipDrawables) {
                     float fin[16];
@@ -185,9 +194,9 @@ int hostSpace(HostContext& hc) {
                     const float amb = 0.020f * (1.0f + bright);   // R3: halved — the
                                                                   // directional key carries
                                                                   // the shading now
-                    const float emis[4] = { dr.emissiveFactor[0] + amb,
-                                            dr.emissiveFactor[1] + amb * 1.05f,
-                                            dr.emissiveFactor[2] + amb * 1.25f, 1.0f };
+                    const float emis[4] = { dr.emissiveFactor[0] + amb + heroR,
+                                            dr.emissiveFactor[1] + amb * 1.05f + heroG,
+                                            dr.emissiveFactor[2] + amb * 1.25f + heroB, 1.0f };
                     device->drawMeshPBR(frame, x3::rhi::MeshHandle{ dr.meshId },
                                         x3::rhi::TextureHandle{ dr.baseColorTexId },
                                         x3::rhi::TextureHandle{ dr.normalTexId },
@@ -218,7 +227,7 @@ int hostSpace(HostContext& hc) {
                     r.x, r.y, r.z, 0,   // col 2 = ship local +Z
                     p.x, p.y, p.z, 1
                 };
-                drawShipAt(frame, m, 1.5f);
+                drawShipAt(frame, m, 1.5f, /*isHero*/true);
             }
             // Decor fleet.
             for (int i = 0; i < kDecorCount; ++i) {

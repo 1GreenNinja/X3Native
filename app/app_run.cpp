@@ -2355,7 +2355,27 @@ int runDefaultHost(HostContext& hc) {
         auto lightFloor = [&](x3::game::L1Floor f) {
             const x3::game::L1RoomDef& r = tbl[(uint32_t)f];
             const float kIntensity = 3.2f;
-            const float colR = 1.00f * kIntensity, colG = 0.86f * kIntensity, colB = 0.62f * kIntensity;
+            // WAVE-2B (LD review #1): the dev capture-rig lit every spire floor with the
+            // SAME warm tungsten, which is why F3..F7 read pixel-identical. Tint the rig
+            // per floor per the zone colour ladder (docs/design/TEXTURE_DESIGN_STRATEGY
+            // §1.2) so --capture-spire shows the escalation the live game now carries via
+            // its accent lights + emissive landmarks. Base hue defaults warm (B1/F1/F2).
+            float baseR = 1.00f, baseG = 0.86f, baseB = 0.62f;   // warm tungsten (default)
+            float fillR = 3.6f,  fillG = 3.8f,  fillB = 4.2f;    // cool key fill (default)
+            switch (f) {
+                case x3::game::L1Floor::F3:                       // Genetics — vat GREEN
+                    baseR=0.42f; baseG=1.00f; baseB=0.52f; fillR=1.9f; fillG=4.2f; fillB=2.4f; break;
+                case x3::game::L1Floor::F4:                       // Cybernetics — cold CYAN
+                    baseR=0.45f; baseG=0.88f; baseB=1.05f; fillR=2.0f; fillG=3.6f; fillB=4.6f; break;
+                case x3::game::L1Floor::F5:                       // Drone — industrial AMBER
+                    baseR=1.08f; baseG=0.74f; baseB=0.38f; fillR=4.6f; fillG=3.2f; fillB=1.8f; break;
+                case x3::game::L1Floor::F6:                       // Alien — BIOLUME teal
+                    baseR=0.34f; baseG=1.00f; baseB=0.90f; fillR=1.7f; fillG=4.2f; fillB=3.9f; break;
+                case x3::game::L1Floor::F7:                       // Executive — BRASS/warm
+                    baseR=1.08f; baseG=0.92f; baseB=0.60f; fillR=4.6f; fillG=4.0f; fillB=2.8f; break;
+                default: break;                                  // B1/F1/F2 stay warm neutral
+            }
+            const float colR = baseR * kIntensity, colG = baseG * kIntensity, colB = baseB * kIntensity;
             const float lightY = r.y0 + r.ceil - 0.30f;            // just below the ceiling
             const float range  = std::max(7.5f, r.ceil + 3.5f);
             const int   n      = (int)std::ceil((r.x1 - r.x0) / 4.0f);
@@ -2380,7 +2400,7 @@ int runDefaultHost(HostContext& hc) {
                 x3::rhi::PointLight fill;
                 fill.pos[0] = r.x1 - 12.0f; fill.pos[1] = r.y0 + 2.4f; fill.pos[2] = 0.0f;
                 fill.range  = 16.0f;
-                fill.color[0] = 3.6f; fill.color[1] = 3.8f; fill.color[2] = 4.2f;
+                fill.color[0] = fillR; fill.color[1] = fillG; fill.color[2] = fillB;
                 pls.push_back(fill);
             }
             device->setPointLights(pls.data(), (uint32_t)pls.size());
@@ -2415,6 +2435,28 @@ int runDefaultHost(HostContext& hc) {
             device->setCamera(camX, camY, camZ, camYaw, camPit, camFov);
             const x3::phys::Vec3 camEye{ camX, camY, camZ };
             lightFloor(s.floor);
+            // WAVE-2B (LD review #1): the arrival vantage sits at the plate's EAST end,
+            // OUTSIDE any wing room, so wing_dressing::applyEyeFog is a no-op and every
+            // floor inherited the SAME default blue depth-fog — the single biggest reason
+            // F3..F7 read pixel-identical. Paint the capture's atmosphere with each floor's
+            // ZONE HUE (the colour ladder) so the escalation reads in one glance; this is
+            // the same per-zone fog the live game applies once the player steps into the
+            // wing, surfaced here at the arrival where the LD judged it. applyEyeFog leaves
+            // it as-is at this vantage, so it survives the settle ticks. Spire floors only;
+            // B1/F1/F2 keep a cool-neutral haze.
+            {
+                x3::rhi::IRenderDevice::FogParams fg;
+                fg.enabled = true; fg.density = 0.018f; fg.start = 2.0f; fg.maxOpacity = 0.82f;
+                switch (s.floor) {
+                    case x3::game::L1Floor::F3: fg.color[0]=0.04f; fg.color[1]=0.15f; fg.color[2]=0.07f; break; // Genetics GREEN
+                    case x3::game::L1Floor::F4: fg.color[0]=0.04f; fg.color[1]=0.11f; fg.color[2]=0.17f; break; // Cybernetics CYAN
+                    case x3::game::L1Floor::F5: fg.color[0]=0.17f; fg.color[1]=0.09f; fg.color[2]=0.03f; break; // Drone AMBER
+                    case x3::game::L1Floor::F6: fg.color[0]=0.03f; fg.color[1]=0.15f; fg.color[2]=0.13f; break; // Alien TEAL
+                    case x3::game::L1Floor::F7: fg.color[0]=0.17f; fg.color[1]=0.13f; fg.color[2]=0.06f; break; // Executive BRASS
+                    default:                    fg.color[0]=0.05f; fg.color[1]=0.06f; fg.color[2]=0.10f; break; // cool neutral
+                }
+                device->setFog(fg);
+            }
 
             const std::string outPath = captureSpireDir + "/spire_" + s.tag + ".png";
             const int kSettle = 24;   // enough frames for shadows + skinning + doors to fully open

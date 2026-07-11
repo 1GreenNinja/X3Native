@@ -373,6 +373,101 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         placeWallPanel(fuse, kFuseAabb, kPi*0.5f, 11.0f, y0 + 1.6f, -zH + 0.15f);
     }
 
+    // ---- WAVE-2B: SPIRE FLOOR IDENTITY (LD review #1). The F3..F7 spire floors were
+    // pixel-identical dark corridors — a player could not tell F3 from F7 and the Act-1
+    // climax had no escalation. Give each floor ONE distinct LIT LANDMARK on the
+    // elevator-arrival sightline (the capture cam stands at x~=x1-6 and looks -X across
+    // the plate; the landmark sits at x~5, centre of frame), each in its zone-accent hue
+    // from the colour ladder (docs/design/TEXTURE_DESIGN_STRATEGY §1.2):
+    //   F3 Genetics  GREEN vat gallery · F4 Cybernetics CYAN server canyon ·
+    //   F5 Drone     AMBER hero pad    · F6 Alien TEAL portal ring ·
+    //   F7 Executive BRASS boardroom band.
+    // The landmark is EMISSIVE geometry (dark albedo + a texture-of-one instance-emissive
+    // accent, ACES-safe: one channel dominates so it blooms its HUE, never white-clips)
+    // so it reads in-game AND in --capture-spire (whose dev light-rig would wash out any
+    // point light we add, but cannot touch per-instance emissive). A matching per-floor
+    // accent POINT LIGHT is also registered for the live game (the capture re-issues its
+    // own rig, so these only shape the runtime floor — exactly the wayfinding the LD asked
+    // for). Distinct silhouette + distinct hue = a one-second "where am I" read. ----
+    {
+        // placeProp's emissive twin: same recentre-onto-world transform, glows the accent.
+        auto placeGlow = [&](uint32_t asset, const Aabb& ab, float yaw,
+                             float wx, float baseY, float wz, float scale, const float em[4]) {
+            if (asset >= m_assetTable.size() || !m_assetTable[asset].ok) return;
+            placeYaw(m, yaw, scale, cx(ab), ab.miny, cz(ab), wx, baseY, wz);
+            addInstanceEmissive(asset, m, em);
+        };
+        // Register a runtime accent point light near a landmark (colour = linear rgb *
+        // intensity, matching env_art's fixture convention). Capture overrides these.
+        auto accentLight = [&](float wx, float wy, float wz, float range,
+                               float r, float g, float b, float intensity) {
+            x3::rhi::PointLight pl;
+            pl.pos[0]=wx; pl.pos[1]=wy; pl.pos[2]=wz; pl.range=range;
+            pl.color[0]=r*intensity; pl.color[1]=g*intensity; pl.color[2]=b*intensity;
+            m_lightFixtures.push_back(pl);
+        };
+        // Accent hues (rgb) per the ladder; emissive strength 2.6 blooms the hue.
+        struct Accent { float r, g, b; };
+        auto emiss = [](const Accent& a, float s, float out[4]) {
+            out[0]=a.r; out[1]=a.g; out[2]=a.b; out[3]=s;
+        };
+        for (uint32_t fi = (uint32_t)L1Floor::F3; fi <= (uint32_t)L1Floor::F7; ++fi) {
+            const Room& r  = rooms[fi];
+            const float y0 = r.y0;
+            const float lz = y0 + 1.6f;   // accent light hangs ~waist-high over the landmark
+            float em[4];
+            switch ((L1Floor)fi) {
+                case L1Floor::F3: {   // GENETICS — green vat gallery: a row of 3 tall drums
+                    const Accent a{ 0.22f, 1.05f, 0.45f };
+                    emiss(a, 2.6f, em);
+                    placeGlow(barrel, kBarrelAabb, 0.0f, 5.0f, y0, -3.2f, 1.8f, em);
+                    placeGlow(barrel, kBarrelAabb, 0.0f, 5.0f, y0,  0.0f, 2.0f, em);
+                    placeGlow(barrel, kBarrelAabb, 0.0f, 5.0f, y0,  3.2f, 1.8f, em);
+                    accentLight(5.0f, lz, 0.0f, 10.0f, a.r, a.g, a.b, 2.6f);
+                    break;
+                }
+                case L1Floor::F4: {   // CYBERNETICS — cyan server canyon: two flanking stacks
+                    const Accent a{ 0.22f, 0.85f, 1.05f };
+                    emiss(a, 2.6f, em);
+                    placeGlow(crateL, kCrateLAabb, kPi*0.5f, 5.0f, y0,        -3.6f, 1.5f, em);
+                    placeGlow(crateL, kCrateLAabb, kPi*0.5f, 5.0f, y0 + 0.90f,-3.6f, 1.5f, em);
+                    placeGlow(crateL, kCrateLAabb, kPi*0.5f, 5.0f, y0,         3.6f, 1.5f, em);
+                    placeGlow(crateL, kCrateLAabb, kPi*0.5f, 5.0f, y0 + 0.90f, 3.6f, 1.5f, em);
+                    accentLight(5.0f, lz, 0.0f, 11.0f, a.r, a.g, a.b, 2.6f);
+                    break;
+                }
+                case L1Floor::F5: {   // DRONE — amber hero pad: a wide pallet + a beacon drum
+                    const Accent a{ 1.05f, 0.60f, 0.16f };
+                    emiss(a, 2.6f, em);
+                    placeGlow(pallet, kPalletAabb, 0.0f, 5.0f, y0,        0.0f, 3.0f, em);
+                    placeGlow(barrel, kBarrelAabb, 0.0f, 5.0f, y0 + 0.55f, 0.0f, 2.0f, em);
+                    accentLight(5.0f, y0 + 2.4f, 0.0f, 12.0f, a.r, a.g, a.b, 2.8f);
+                    break;
+                }
+                case L1Floor::F6: {   // ALIEN — teal portal: a shallow arc of 5 drums
+                    const Accent a{ 0.15f, 1.00f, 0.90f };
+                    emiss(a, 2.6f, em);
+                    for (int k = 0; k < 5; ++k) {
+                        const float zz = -4.0f + (float)k * 2.0f;
+                        const float xx = 4.0f + std::fabs(zz) * 0.35f;   // arc bows toward +X at the ends
+                        placeGlow(barrel, kBarrelAabb, 0.0f, xx, y0, zz, 1.3f, em);
+                    }
+                    accentLight(4.0f, lz, 0.0f, 12.0f, a.r, a.g, a.b, 2.6f);
+                    break;
+                }
+                case L1Floor::F7: {   // EXECUTIVE — brass boardroom band: a low row of 4 crates
+                    const Accent a{ 1.05f, 0.80f, 0.40f };
+                    emiss(a, 2.6f, em);
+                    for (int k = 0; k < 4; ++k)
+                        placeGlow(crateL, kCrateLAabb, kPi*0.5f, 4.0f, y0, -4.5f + (float)k * 3.0f, 1.6f, em);
+                    accentLight(4.0f, lz, 0.0f, 13.0f, a.r, a.g, a.b, 2.4f);
+                    break;
+                }
+                default: break;
+            }
+        }
+    }
+
     // ---- CEILING LIGHTS: fixtures hung from EACH room's (now raised) ceiling. ----
     // Each placed Light_A fixture also registers a forward POINT LIGHT (captured in
     // m_lightFixtures) so the rooms are actually lit, not just decorated with dark
