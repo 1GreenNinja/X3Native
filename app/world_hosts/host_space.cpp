@@ -462,6 +462,18 @@ int hostSpace(HostContext& hc) {
         float phaseT  = 0.0f;                 // seconds elapsed in the current phase
         float shieldPct = 100.0f;
         bool  respawned = false;              // Respawn phase re-seed latch
+        // INVULNERABILITY CHEAT (owner: "shield option that is invulnerable..
+        // toggle with I"). Host-side only, default OFF, never persisted — see
+        // the I-key edge-trigger in the windowed loop below (mirrors the V
+        // camera-toggle pattern) and the ESC menu row. While true, InsideSun's
+        // phaseT is continuously reset each frame (see advanceSequence), so the
+        // 17s countdown never advances, Detonation can never trigger, and
+        // shieldPct reads 100 — the molten-interior/plasma-swirl visuals are
+        // untouched, only survivability changes.
+        bool  g_invulnerable = false;
+        float invulnFlashT = -1.0f;            // one-shot "INVULNERABILITY ON/OFF" caption; <0 = idle
+        bool  invulnFlashOn = false;            // which caption text invulnFlashT is currently showing
+        const float kInvulnFlashSecs = 1.5f;
         // AUDIT (owner playtest: "shield engaged at SUN 0.7km, still outside"):
         // the HUD's "SUN <km>" readout, the InsideSun trigger below (distC <
         // kSunRadius), and the HULL TEMP bands already shared ONE measure —
@@ -486,6 +498,17 @@ int hostSpace(HostContext& hc) {
         const float kReplaySecs   = 6.5f;     // forward re-entry replay (whole buffer)
         const float kFadeSecs     = 1.0f;     // fade-to-black → respawn → fade-in
         const int   kDebrisCount  = 32;       // coronal-ejection emissive fragments
+        // ---- FIERY ENTRY-BURN SHEATH (owner: "fiery fringe around the ship as it
+        // enters"). g_burnFactor is a 0..~1.5 proximity ramp read by drawBurnSheath/
+        // drawBurnEmbers below: 0 outside ~1.5x the core radius (surface distance >=
+        // kBurnStartSurf), 1.0 at/inside the core surface, PLUS a one-shot +50% flare
+        // for kBurnFlareSecs at the exact surface-crossing instant (paired with the
+        // existing SHIELD ENGAGED flash — same trigger point). Render-only/time+hash
+        // driven — no sim-state, so --test-space determinism is unaffected.
+        const float kBurnStartSurf = kSunRadius * 0.5f;   // surface-dist at distC == 1.5x radius
+        const float kBurnFlareSecs = 2.0f;
+        float burnFlareT = -1.0f;             // one-shot crossing flare; <0 = idle
+        float g_burnFactor = 0.0f;            // loop-shared: live-ship burn intensity this frame
         x3::phys::Vec3 entryPos{ 0,0,0 };     // surface impact point (debris origin)
         x3::phys::Vec3 entryNrm{ 0,1,0 };     // outward normal at the impact point
         x3::phys::Vec3 cineCamPos{ 0,0,0 };   // frozen external kill-cam position
@@ -939,6 +962,59 @@ int hostSpace(HostContext& hc) {
             device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{}, bc, em, gm, m);
         };
 
+        // ---- FIERY ENTRY-BURN SHEATH: 3 slightly-scaled-up emissive glass shells
+        //      hugging the hull (reuses sunMesh — no new mesh alloc — same additive-
+        //      glass trick as the sun corona's BLEND-partition fix above), white-gold
+        //      innermost -> orange -> deep red-orange outer, with a deterministic
+        //      sum-of-sines flicker. `burn` is g_burnFactor (0..~1.5). -------------
+        auto drawBurnSheath = [&](const x3::rhi::FrameContext& frame, const x3::phys::Vec3& p, float burn) {
+            if (burn < 0.02f) return;
+            const float flick = 0.85f + 0.10f * std::sin(g_clock * 11.0f) + 0.05f * std::sin(g_clock * 23.0f + 1.3f);
+            const struct { float s, r, g, b, str; } shells[3] = {
+                { 1.15f, 1.00f, 0.92f, 0.55f, 2.2f },   // white-gold innermost
+                { 1.30f, 1.00f, 0.55f, 0.15f, 1.6f },   // orange
+                { 1.50f, 0.85f, 0.20f, 0.05f, 1.0f },   // deep red-orange outer
+            };
+            float m[16];
+            for (const auto& sh : shells) {
+                sphereMatrix(p, 2.2f * sh.s, m);
+                const float bc[4] = { sh.r, sh.g, sh.b, 1.0f };
+                const float em[4] = { sh.r, sh.g, sh.b, sh.str * burn * flick };
+                x3::rhi::IRenderDevice::GlassMaterial gm{};
+                gm.opacity = 0.10f * burn; gm.roughness = 1.0f; gm.specular = 0.0f;
+                gm.tint[0] = sh.r; gm.tint[1] = sh.g; gm.tint[2] = sh.b;
+                device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{}, bc, em, gm, m,
+                                      /*alphaBlend=*/true);   // BLEND partition: skip depth pre-pass
+            }
+        };
+        // ---- Shedding-fire embers trailing AFT of the ship (opposite forward()),
+        //      hash-seeded positions drifting slowly on g_clock, fading toward the
+        //      tail — reuses dustMesh (no new mesh). Cheap deterministic accent to
+        //      the sheath above; skipped entirely below a small burn threshold. ----
+        auto drawBurnEmbers = [&](const x3::rhi::FrameContext& frame, const x3::phys::Vec3& p,
+                                  const x3::phys::Vec3& f, const x3::phys::Vec3& u,
+                                  const x3::phys::Vec3& r, float burn) {
+            if (burn < 0.05f) return;
+            constexpr int kEmbers = 8;
+            for (int i = 0; i < kEmbers; ++i) {
+                const float h1 = hashF((uint32_t)(i * 29 + 1)), h2 = hashF((uint32_t)(i * 29 + 2)),
+                            h3 = hashF((uint32_t)(i * 29 + 3));
+                const float back = 1.6f + 3.2f * h1 + 1.4f * std::sin(g_clock * 2.0f + (float)i * 1.7f);
+                const float side = (h2 * 2.0f - 1.0f) * 0.9f;
+                const float upOff = (h3 * 2.0f - 1.0f) * 0.7f;
+                const x3::phys::Vec3 c{ p.x - f.x*back + r.x*side + u.x*upOff,
+                                        p.y - f.y*back + r.y*side + u.y*upOff,
+                                        p.z - f.z*back + r.z*side + u.z*upOff };
+                const float life = 1.0f - std::min(1.0f, back / 4.8f);   // fades toward the tail
+                const float str = burn * (1.4f + 1.6f * h1) * life;
+                if (str < 0.05f) continue;
+                float m[16]; sphereMatrix(c, 0.10f + 0.10f * h2, m);
+                const float col[4] = { 1.0f, 0.55f + 0.3f * h3, 0.15f, 1.0f };
+                const float em[4]  = { col[0], col[1], col[2], str };
+                device->drawMeshEmissive(frame, dustMesh, x3::rhi::TextureHandle{}, col, em, m);
+            }
+        };
+
         // ---- CORONAL EJECTION: superheated ship debris + shockwave shells -------
         // Deterministic (hash-seeded direction/speed), render-only. `t` = seconds into
         // the Detonation phase; `rev` reverses time for the backwards-scrub stinger.
@@ -1065,9 +1141,14 @@ int hostSpace(HostContext& hc) {
             const float frac = std::min(1.0f, spd / std::max(1.0f, pilot.tuning().maxSpeed));
             const float fill[4] = { acc[0], acc[1], acc[2], 0.95f };
             device->drawHudQuad(frame, bx, barY, barW * frac, barH, fill);
-            // SHIELD readout: engaged (draining inside the core) or recharging
-            // after a graze-abort back in free flight.
-            if (phase == Phase::InsideSun || shieldPct < 99.95f) {
+            // SHIELD readout: engaged (draining inside the core), recharging after
+            // a graze-abort, or — if the I-key invulnerability cheat is on — a
+            // PERSISTENT gold "INVULNERABLE" readout in the same slot so the two
+            // never stack/overlap.
+            if (g_invulnerable) {
+                const float gold[4] = { 1.0f, 0.85f, 0.20f, 1.0f };   // distinct gold, per the ask
+                device->drawHudTextF(frame, FontRole::HudMono, "SHIELD: INVULNERABLE", bx, by - 30.0f, 18.0f, gold);
+            } else if (phase == Phase::InsideSun || shieldPct < 99.95f) {
                 char sl[48];
                 if (phase == Phase::InsideSun)
                     std::snprintf(sl, sizeof(sl), "SHIELD %3.0f%%", (double)std::max(0.0f, shieldPct));
@@ -1104,6 +1185,18 @@ int hostSpace(HostContext& hc) {
                 if (capA > 0.02f) {
                     const float col[4] = { 0.55f, 0.85f, 1.0f, capA };
                     center(FontRole::Title, "SHIELD ENGAGED", 30.0f, H*0.30f, col);
+                }
+            }
+            // INVULNERABILITY TOGGLE confirmation cue — brief, ~kInvulnFlashSecs,
+            // plays regardless of phase (owner: flash "INVULNERABILITY ON/OFF").
+            if (invulnFlashT >= 0.0f) {
+                const float capA = 1.0f - smooth01(kInvulnFlashSecs * 0.55f, kInvulnFlashSecs, invulnFlashT);
+                if (capA > 0.02f) {
+                    float col[4];
+                    if (invulnFlashOn) { col[0]=1.0f; col[1]=0.85f; col[2]=0.20f; col[3]=capA; }   // gold: ON
+                    else               { col[0]=0.65f; col[1]=0.75f; col[2]=0.85f; col[3]=capA; }  // dim slate: OFF
+                    center(FontRole::Title, invulnFlashOn ? "INVULNERABILITY ON" : "INVULNERABILITY OFF",
+                           26.0f, H*0.20f, col);
                 }
             }
             if (phase == Phase::InsideSun) {
@@ -1172,6 +1265,14 @@ int hostSpace(HostContext& hc) {
             const x3::phys::Vec3 r = vnorm(lerp3(A.r, B.r, fr));
             float m[16]; shipMatrix(p, f, u, r, m);
             drawShipAt(frame, m, 1.5f);
+            // Entry-burn: derive the sheath directly from THIS recorded position's
+            // distance to the sun (not the live pilot, which is frozen elsewhere
+            // during the cinematic) — the replayed ship visibly catches fire as it
+            // closes and crosses the surface wreathed in flame.
+            const float surfDist = vlen(x3::phys::Vec3{ p.x-kSunCenter.x, p.y-kSunCenter.y, p.z-kSunCenter.z }) - kSunRadius;
+            const float replayBurn = smooth01(kBurnStartSurf, 0.0f, surfDist);
+            drawBurnSheath(frame, p, replayBurn);
+            drawBurnEmbers(frame, p, f, u, r, replayBurn);
         };
 
         // ---- Snapshot the ring buffer (oldest→newest) into trajPlay. ------------
@@ -1234,6 +1335,20 @@ int hostSpace(HostContext& hc) {
                 shieldFlashT += fdt;
                 if (shieldFlashT > kShieldFlashSecs) shieldFlashT = -1.0f;
             }
+            // Fiery entry-burn: tick the one-shot crossing flare, then derive this
+            // frame's live-ship burn intensity (proximity ramp + flare boost) for
+            // drawBurnSheath/drawBurnEmbers. Ticks regardless of phase, like the
+            // shield flash above, so it decays correctly across a fast graze too.
+            if (burnFlareT >= 0.0f) {
+                burnFlareT += fdt;
+                if (burnFlareT > kBurnFlareSecs) burnFlareT = -1.0f;
+            }
+            {
+                const float burnBase = smooth01(kBurnStartSurf, 0.0f, g_sunSurf);
+                const float flareBoost = (burnFlareT >= 0.0f)
+                    ? 0.5f * (1.0f - smooth01(0.0f, kBurnFlareSecs, burnFlareT)) : 0.0f;
+                g_burnFactor = burnBase * (1.0f + flareBoost);
+            }
             // Trajectory ring buffer: record while the ship is under live player
             // control (Flying AND the graze-able InsideSun window) so a later real
             // detonation still replays the WHOLE approach, including any earlier graze.
@@ -1254,6 +1369,7 @@ int hostSpace(HostContext& hc) {
                 if (distC < kSunRadius) {           // breached the CORE → shield engages
                     phase = Phase::InsideSun; phaseT = 0.0f; shieldPct = 100.0f;
                     shieldFlashT = 0.0f;
+                    burnFlareT = 0.0f;   // pairs the +50% entry-burn flare with the SHIELD ENGAGED cue
                     setupKillCam(sPos);
                 }
                 return false;
@@ -1263,12 +1379,21 @@ int hostSpace(HostContext& hc) {
             if (skip && phase != Phase::Respawn) { phase = Phase::Respawn; phaseT = 0.0f; respawned = false; }
             switch (phase) {
                 case Phase::InsideSun:
-                    shieldPct = 100.0f * std::max(0.0f, 1.0f - phaseT / kShieldSecs);
+                    // INVULNERABLE: continuously reset the countdown clock each frame
+                    // (owner's own suggested alternative to "does not run") — shield
+                    // reads 100%, and since phaseT never accumulates, the kShieldSecs
+                    // expiry below can never fire. Loiter/exit freely; visuals untouched.
+                    if (g_invulnerable) {
+                        phaseT = 0.0f;
+                        shieldPct = 100.0f;
+                    } else {
+                        shieldPct = 100.0f * std::max(0.0f, 1.0f - phaseT / kShieldSecs);
+                    }
                     if (distC >= kSunRadius) {   // GRAZE: pulled back out before the timer expired
                         phase = Phase::Flying; phaseT = 0.0f;
                         break;
                     }
-                    if (phaseT >= kShieldSecs) { snapshotTraj(); phase = Phase::Detonation; phaseT = 0.0f; }
+                    if (!g_invulnerable && phaseT >= kShieldSecs) { snapshotTraj(); phase = Phase::Detonation; phaseT = 0.0f; }
                     break;
                 case Phase::Detonation:
                     if (phaseT >= kDetonateSecs) { phase = Phase::Rewind; phaseT = 0.0f; }
@@ -1303,7 +1428,7 @@ int hostSpace(HostContext& hc) {
             using x3::rhi::FontRole;
             const float ov[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
             device->drawHudQuad(frame, 0, 0, W, H, ov);
-            const float pw = 440.0f, ph = 250.0f;
+            const float pw = 440.0f, ph = 296.0f;   // +46px row for the invulnerability toggle
             const float px = W * 0.5f - pw * 0.5f, py = H * 0.5f - ph * 0.5f;
             const float pbg[4] = { 0.03f, 0.05f, 0.08f, 0.92f };
             device->drawHudQuad(frame, px, py, pw, ph, pbg);
@@ -1314,9 +1439,11 @@ int hostSpace(HostContext& hc) {
             device->drawHudTextF(frame, FontRole::Title, title, px + pw*0.5f - tw*0.5f, py + 18.0f, 30.0f, acc);
             char midItem[64];
             std::snprintf(midItem, sizeof(midItem), "FLIGHT MODE:  %s", x3::game::flightModeName(pilot.mode()));
-            const char* items[3] = { "RESUME", midItem, "QUIT TO DESKTOP" };
+            char invItem[64];
+            std::snprintf(invItem, sizeof(invItem), "SHIELD: INVULNERABLE %s", g_invulnerable ? "ON" : "OFF");
+            const char* items[4] = { "RESUME", midItem, invItem, "QUIT TO DESKTOP" };
             float iy = py + 78.0f;
-            for (int i = 0; i < 3; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 const bool on = (i == sel);
                 if (on) {
                     const float selbg[4] = { acc[0]*0.25f, acc[1]*0.25f, acc[2]*0.30f, 0.55f };
@@ -1415,7 +1542,7 @@ int hostSpace(HostContext& hc) {
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
         double prevTime = glfwGetTime();
-        bool prevV = false, prevLmb = false;
+        bool prevV = false, prevLmb = false, prevI = false;
 
         // ---- Flight AUDIO — SPACESHIP ENGINE (owner: "sounds like a car engine,
         //      SHIFTING even... needs to sound like a SpaceShip!"). Root cause: this
@@ -1446,12 +1573,17 @@ int hostSpace(HostContext& hc) {
         bool prevEsc = false, prevUp = false, prevDown = false, prevEnter = false;
         bool prevAnyKey = false;   // rising-edge latch so a held key can't insta-skip
 
-        x3::logInfo("--world space: WASD thrust, mouse look, Q/E roll, Space/Ctrl up/down, Shift boost, V camera, LMB laser, 1/2/3 mode, Esc=pause menu");
+        x3::logInfo("--world space: WASD thrust, mouse look, Q/E roll, Space/Ctrl up/down, Shift boost, V camera, LMB laser, 1/2/3 mode, I=invulnerable, Esc=pause menu");
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
             if (fdt > 0.1f) fdt = 0.1f;
             g_clock += fdt;                       // presentation clock (blink/pulse/flash)
+            // Toggle-confirmation caption decay (independent of phase, ticks always).
+            if (invulnFlashT >= 0.0f) {
+                invulnFlashT += fdt;
+                if (invulnFlashT > kInvulnFlashSecs) invulnFlashT = -1.0f;
+            }
             // CINEMATIC STARS: the sky time used to be set ONCE (static) — the engine
             // ties it to the starfield's twinkle/rotation phase, so a fixed value
             // meant a fully frozen background. Advance it slowly (subtle: ~0.02
@@ -1525,6 +1657,19 @@ int hostSpace(HostContext& hc) {
                 if (vNow && !prevV) pilot.toggleCameraMode();
                 prevV = vNow;
 
+                // I to toggle the invulnerability cheat (rising edge — mirrors the V
+                // pattern above so a held key can't re-toggle every frame). Confirmation
+                // caption + a pitched mode-blip echo (higher pitch = ON, lower = OFF).
+                bool iNow = kd(GLFW_KEY_I);
+                if (iNow && !prevI) {
+                    g_invulnerable = !g_invulnerable;
+                    invulnFlashOn = g_invulnerable;
+                    invulnFlashT = 0.0f;
+                    x3::logInfo(std::string("--world space: invulnerability -> ") + (g_invulnerable ? "ON" : "OFF"));
+                    if (blipSnd.valid()) saudio->playSound2D(blipSnd, 0.7f, g_invulnerable ? 1.6f : 0.6f);
+                }
+                prevI = iNow;
+
                 // LMB laser (rising edge -> fire one bolt, log on success).
                 bool lmbNow = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
                 if (lmbNow && !prevLmb && pilot.fireLaser(fdt)) {
@@ -1557,8 +1702,8 @@ int hostSpace(HostContext& hc) {
                 const bool upNow = kd(GLFW_KEY_UP) || kd(GLFW_KEY_W);
                 const bool dnNow = kd(GLFW_KEY_DOWN) || kd(GLFW_KEY_S);
                 const bool enNow = kd(GLFW_KEY_ENTER) || kd(GLFW_KEY_SPACE);
-                if (upNow && !prevUp)   menuSel = (menuSel + 2) % 3;
-                if (dnNow && !prevDown) menuSel = (menuSel + 1) % 3;
+                if (upNow && !prevUp)   menuSel = (menuSel + 3) % 4;
+                if (dnNow && !prevDown) menuSel = (menuSel + 1) % 4;
                 if (enNow && !prevEnter) {
                     if (menuSel == 0) {                 // RESUME
                         paused = false;
@@ -1567,6 +1712,11 @@ int hostSpace(HostContext& hc) {
                     } else if (menuSel == 1) {          // FLIGHT MODE: cycle (same setMode path)
                         int nxt = ((int)pilot.mode() + 1) % 3;
                         x3::game::setRequestedFlightMode((x3::game::FlightMode)nxt);
+                    } else if (menuSel == 2) {          // SHIELD: INVULNERABLE ON/OFF (same flag as I)
+                        g_invulnerable = !g_invulnerable;
+                        invulnFlashOn = g_invulnerable;
+                        invulnFlashT = 0.0f;
+                        if (blipSnd.valid()) saudio->playSound2D(blipSnd, 0.7f, g_invulnerable ? 1.6f : 0.6f);
                     } else {                            // QUIT TO DESKTOP
                         glfwSetWindowShouldClose(window, GLFW_TRUE);
                     }
@@ -1656,11 +1806,22 @@ int hostSpace(HostContext& hc) {
                         std::min(1.0f, pilot.speed()/std::max(1.0f, pilot.tuning().maxSpeed))
                         + (boostActive ? 0.45f : 0.0f));
                     drawShipLights(frame, thrust01, g_clock);
+                    // Entry-burn sheath: only meaningful in 3rd person (the ship itself
+                    // is on-screen); skipped in 1P per the ask (cockpit view has no hull
+                    // to wreathe in flame).
+                    if (pilot.isThirdPerson()) {
+                        drawBurnSheath(frame, pilot.pos(), g_burnFactor);
+                        drawBurnEmbers(frame, pilot.pos(), pilot.forward(), pilot.up(), pilot.right(), g_burnFactor);
+                    }
                 } else if (phase == Phase::InsideSun) {
                     // Swirling plasma wraps the camera; ship + shield draw over it.
                     drawInterior(frame, x3::phys::Vec3{ cx, cy, cz });
                     drawShield(frame, shieldPct, g_clock);
                     drawShipLights(frame, 0.2f, g_clock);
+                    if (pilot.isThirdPerson()) {
+                        drawBurnSheath(frame, pilot.pos(), g_burnFactor);
+                        drawBurnEmbers(frame, pilot.pos(), pilot.forward(), pilot.up(), pilot.right(), g_burnFactor);
+                    }
                 } else if (phase == Phase::Detonation) {
                     drawEjecta(frame, phaseT);
                 } else if (phase == Phase::Rewind) {
