@@ -76,8 +76,21 @@ public:
         unload();   // idempotent re-load
         backendAcquire();
 
+        // GPU offload: ai_gpu asks for n_gpu_layers=99 (all layers → CUDA). If
+        // this build has no GPU backend compiled in (CUDA toolkit was absent at
+        // build time, or no CUDA device), fall back to CPU with ONE log line —
+        // the CPU path stays fully functional. CUDA is a separate API from the
+        // engine's Vulkan, so this never touches the renderer.
+        int ngl = opts.gpuLayers;
+        if (ngl != 0 && !llama_supports_gpu_offload()) {
+            x3::logInfo("[llm] ai_gpu requested GPU offload but this build has no GPU backend "
+                        "(CUDA toolkit absent at build time) — falling back to CPU inference");
+            ngl = 0;
+        }
+        m_gpu = (ngl != 0);
+
         llama_model_params mp = llama_model_default_params();
-        mp.n_gpu_layers = 0;                 // v1: CPU only (build has no GPU backend anyway)
+        mp.n_gpu_layers = ngl;               // 99 = all layers on GPU; 0 = CPU
         llama_model* model = llama_model_load_from_file(ggufPath.c_str(), mp);
         if (!model) {
             x3::logWarn("[llm] model load FAILED: " + ggufPath);
@@ -96,7 +109,8 @@ public:
         m_loaded = true;
         x3::logInfo("[llm] loaded " + ggufPath + " (" +
                     std::to_string(m_modelSize / (1024 * 1024)) + " MB weights, ctx " +
-                    std::to_string(m_opts.contextTokens) + ", backend llama.cpp/CPU)");
+                    std::to_string(m_opts.contextTokens) + ", backend " +
+                    backendName() + ", n_gpu_layers " + std::to_string(ngl) + ")");
         return true;
     }
 
@@ -189,7 +203,7 @@ public:
         return total;
     }
 
-    const char* backendName() const override { return "llama.cpp"; }
+    const char* backendName() const override { return m_gpu ? "llama.cpp/CUDA" : "llama.cpp/CPU"; }
 
 private:
     struct Chat {
@@ -392,6 +406,7 @@ private:
     std::thread                 m_worker;
     bool                        m_loaded = false;
     bool                        m_quit   = false;
+    bool                        m_gpu    = false;   // CUDA offload active for the loaded model
     ModelOpts                   m_opts{};
     llama_model*                m_model = nullptr;
     std::size_t                 m_modelSize = 0;
