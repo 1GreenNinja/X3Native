@@ -292,6 +292,76 @@ void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSamp
     device->setWaterParams(wp);
 }
 
+// ============================ ATMOSPHERE (cinematic pass) =====================
+// Owner: cinematic-atmosphere session (2026-07-11). Layers Steam-key-art depth on
+// TOP of the TOD sky/sun/water (applyTodSample / applyOcean), using ONLY engine
+// levers documented in IRenderDevice.h: setFog (aerial perspective), setGrade
+// (filmic + vivid split-tone + vignette), setBloom / setExposure / setPostFX
+// (ACES tonemap + sun-glint bloom), setShadowBounds (frame the 4km island).
+// Deliberately SEPARATE from applyTodSample so the sky/water/TOD session's edits
+// never collide — call this AFTER applyTodSample each frame. Engine has NO
+// world-cloud layer / skybox-texture / god-ray pass, so those are intentionally
+// absent (clouds only exist on procedural planet spheres). Direction: vivid,
+// saturated, storybook-postcard (NMS/Aincrad key-art), not muted photorealism.
+void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s) {
+    auto clamp01 = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
+    auto mix3 = [](float out[3], const float a[3], const float b[3], float t) {
+        for (int i = 0; i < 3; ++i) out[i] = a[i] + (b[i] - a[i]) * t;
+    };
+    // dayness: 0 deep night .. 1 full day (matches applyTodSample's ramp).
+    const float dayness = clamp01((s.sunElevation + 0.06f) / 0.30f);
+    // low: golden-hour weight — sun up but near the horizon (peaks at elev 0).
+    const float low = (s.sunElevation > 0.0f) ? clamp01(1.0f - s.sunElevation / 0.35f) : 0.0f;
+
+    // ---- 1. AERIAL PERSPECTIVE -------------------------------------------------
+    // Beer-Lambert depth fog whose COLOR matches the sky the island melts into:
+    // cool blue-white by day, warm gold at golden hour, deep blue at night. With
+    // the 2.8km orbit the far island (~4km) hazes to ~0.55 and the 7km ocean-ring
+    // horizon to ~0.8, dissolving the hard water/sky line seen in the baseline.
+    constexpr float kFogDay[3]    = { 0.58f, 0.72f, 0.90f };  // cool scattering blue-white
+    constexpr float kFogGold[3]   = { 1.00f, 0.58f, 0.26f };  // RICH golden-hour haze (saturated)
+    constexpr float kFogNight[3]  = { 0.015f, 0.03f, 0.075f };// deep blue dusk/night
+    x3::rhi::IRenderDevice::FogParams fog;
+    fog.enabled = true;
+    mix3(fog.color, kFogNight, kFogDay, dayness);              // night -> day base
+    // Warm HARD toward saturated gold at golden hour. High weight (not a 50/50
+    // blend) so cool-blue + gold never average into gray — the haze reads amber.
+    const float goldW = clamp01(low * 1.35f);
+    mix3(fog.color, fog.color, kFogGold, goldW);
+    fog.start      = 800.0f;                                   // crisp foreground island
+    fog.density    = 0.00016f + 0.00010f * low;               // subtle by day, thicker low-sun
+    fog.maxOpacity = 0.86f + 0.10f * low;                     // sky glows gold at the horizon
+    device->setFog(fog);
+
+    // ---- 2. FILMIC + VIVID GRADE (NMS/storybook: colors you can taste) ---------
+    // Teal shadows / warm highlights split-tone, saturation pushed ABOVE 1 for the
+    // painterly-confident look, warmth + vignette swelling at golden hour.
+    x3::rhi::IRenderDevice::GradeParams gr;
+    gr.strength = 0.90f;
+    gr.shadowTint[0]    = 0.90f; gr.shadowTint[1]    = 1.00f; gr.shadowTint[2]    = 1.08f; // teal shadows
+    gr.highlightTint[0] = 1.06f + 0.06f * low;                                             // warm highlights
+    gr.highlightTint[1] = 1.00f;
+    gr.highlightTint[2] = 0.92f - 0.06f * low;                                             // warmer low-sun
+    gr.saturation = 1.14f + 0.10f * low;                       // vivid; extra pop at golden hour
+    gr.vignette   = 0.08f + 0.04f * low;                      // gentle focus, more at golden hour
+    device->setGrade(gr);
+
+    // ---- 3/4. HDR POST + SUN-GLINT BLOOM --------------------------------------
+    // ACES tonemap, a low bright-pass knee so the sun disc + water glint + lantern
+    // bloom (not a washout), and a touch of positive exposure at golden hour to
+    // make the low sun GLOW. Auto-exposure stays on (bias, not absolute).
+    x3::rhi::IRenderDevice::PostFXParams px;   // defaults: ACES, autoexposure, TAA on
+    px.bloomThreshold = 1.08f;                 // sun-glint blooms; not the whole water sheet
+    px.bloomIntensity = 0.14f + 0.06f * low;   // warm halo at golden hour, no washout
+    px.aeMax          = 2.20f + 0.30f * low;   // let the glowing sky adapt brighter
+    device->setPostFX(px);
+    device->setBloom(0.12f + 0.06f * low);     // composite bloom add (sun/lantern)
+    device->setExposure(1.0f + 0.16f * low);   // golden hour glows
+
+    // ---- 5. SHADOWS: frame the ~4km island so the sun casts across it ----------
+    device->setShadowBounds(0.0f, 0.0f, 0.0f, 2200.0f);
+}
+
 } // namespace
 
 int hostEchotropolis(HostContext& hc) {
@@ -319,6 +389,7 @@ int hostEchotropolis(HostContext& hc) {
         tod.setDayFraction(canonTodFraction(e ? e : "golden"));
     }
     applyTodSample(device, tod.sample());
+    applyAtmosphere(device, tod.sample());   // ATMOSPHERE: aerial haze + grade + bloom
     device->setCameraFar(20000.0f);   // far plane covers the GLB's 14km ocean ring corners
 
     // ---- P2: THE ISLAND. Authored in SimCityLLM2 (gen_heightmap.py seed 20260530),
@@ -405,6 +476,7 @@ int hostEchotropolis(HostContext& hc) {
         for (int i = 0; i < kSettle; ++i) {
             glfwPollEvents();
             applyTodSample(device, shotTod);
+            applyAtmosphere(device, shotTod);   // ATMOSPHERE: aerial haze + grade + bloom
             applyOcean(device, (float)i * dt, shotTod);
             if (shotCamOverride) {
                 device->setCamera(shotCam[0], shotCam[1], shotCam[2], shotCam[3], shotCam[4], opt.fovDeg);
@@ -564,6 +636,7 @@ int hostEchotropolis(HostContext& hc) {
         }
         const x3::game::TodSample todS = tod.sample();
         applyTodSample(device, todS);
+        applyAtmosphere(device, todS);   // ATMOSPHERE: aerial haze + grade + bloom
 
         // Ocean + camera + render.
         waterTime += dt; applyOcean(device, waterTime, todS);
