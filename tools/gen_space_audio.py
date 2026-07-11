@@ -71,7 +71,11 @@ buf = [0.0] * n
 F1, F2, F3, F4 = 45.0, 45.5, 60.0, 90.0   # F1/F2 beat slowly at |F2-F1| = 0.5 Hz
 
 random.seed(3300)
-lp = 0.0
+# V2 (owner: "sounds like static hissing"): the noise whisper now goes through a
+# TWO-pole cascade at ~110 Hz (single pole leaked audible highs = hiss). The hum
+# is now almost entirely sine thrum with only a sub-bass noise floor for life.
+lp_a = lp_b = 0.0
+k_hum = 1.0 - math.exp(-2 * math.pi * 110.0 / SR)
 for i in range(n):
     t = i / SR
     thrum = (math.sin(2 * math.pi * F1 * t) * 0.42
@@ -79,8 +83,9 @@ for i in range(n):
              + math.sin(2 * math.pi * F3 * t) * 0.22
              + math.sin(2 * math.pi * F4 * t) * 0.10)
     noise = random.random() * 2 - 1
-    lp += (noise - lp) * (2 * math.pi * 180.0 / SR)            # ~180 Hz one-pole LP
-    buf[i] = thrum * 0.09 + lp * 0.05
+    lp_a += (noise - lp_a) * k_hum
+    lp_b += (lp_a - lp_b) * k_hum                              # 2-pole: -12 dB/oct, no hiss
+    buf[i] = thrum * 0.10 + lp_b * 0.05
 
 buf = seam_crossfade(buf, 0.05)
 write_wav('assets/audio/space/engine_hum.wav', buf)
@@ -94,17 +99,28 @@ buf2 = [0.0] * n2
 SUB_F = 42.0                                  # SUB_F * DUR = 336, integer -> seamless
 
 random.seed(4200)
-lp2 = 0.0
+# V2 (owner: "sounds like static hissing"): the old mix weighted the HIGH-PASS
+# residual `(noise - lp)` at 0.6 — i.e. 60% raw static above the cutoff. A real
+# thruster is deep TURBULENCE: brown noise (integrated white, -6 dB/oct) pushed
+# through a 3-pole low-pass whose cutoff breathes 120->260 Hz over the loop,
+# plus a 42 Hz sub with its 84 Hz harmonic under slow AM. Zero hiss content.
+acc = 0.0          # brown-noise integrator (leaky so it can't wander off)
+lpa = lpb = lpc = 0.0
 for i in range(n2):
     t = i / SR
-    # Gentle band sweep baked into the loop: cutoff breathes once per loop
-    # (period == DUR, so the sweep itself is phase-continuous at the wrap).
-    cutoff = 900.0 + 500.0 * math.sin(2 * math.pi * (1.0 / DUR) * t)
-    noise = random.random() * 2 - 1
-    lp2 += (noise - lp2) * min(0.95, 2 * math.pi * cutoff / SR)
-    band = (noise - lp2) * 0.6 + lp2 * 0.4       # broadband: mix of the band + its own lowpass
-    sub = math.sin(2 * math.pi * SUB_F * t)
-    buf2[i] = band * 0.16 + sub * 0.11
+    # Cutoff breathes once per loop (phase-continuous at the wrap): 120..260 Hz.
+    cutoff = 190.0 + 70.0 * math.sin(2 * math.pi * (1.0 / DUR) * t)
+    k = 1.0 - math.exp(-2 * math.pi * cutoff / SR)
+    white = random.random() * 2 - 1
+    acc = acc * 0.9995 + white * 0.02             # brown noise: deep turbulence
+    lpa += (acc - lpa) * k
+    lpb += (lpa - lpb) * k
+    lpc += (lpb - lpc) * k                        # 3-pole cascade: -18 dB/oct
+    rumble = lpc * 9.0                            # make up filter/integrator loss
+    am = 0.85 + 0.15 * math.sin(2 * math.pi * (2.0 / DUR) * t + 1.3)  # slow surge
+    sub = (math.sin(2 * math.pi * SUB_F * t) * 0.75
+           + math.sin(2 * math.pi * SUB_F * 2 * t) * 0.25)            # 42 + 84 Hz
+    buf2[i] = (rumble * 0.30 + sub * 0.12) * am
 
 buf2 = seam_crossfade(buf2, 0.05)
 write_wav('assets/audio/space/engine_thrust.wav', buf2)
