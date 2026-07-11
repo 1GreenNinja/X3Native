@@ -55,8 +55,8 @@ constexpr uint32_t kCableSegs    = 9;
 constexpr float kCableSag        = 1.15f;
 // Hall fill lights (appended AFTER the 8 animated gate lights in m_lights).
 constexpr float kHallLightColor[3] = { 0.55f, 0.62f, 0.72f };  // cool industrial
-constexpr float kHallLightI        = 2.40f;
-constexpr float kHallLightRange    = 19.0f;
+constexpr float kHallLightI        = 3.20f;
+constexpr float kHallLightRange    = 20.0f;
 
 // ---- Stone gateway ring geometry ----------------------------------------------
 // A SUBSTANTIAL, thick ring you walk through — a single circle of N deep tangent
@@ -137,6 +137,23 @@ constexpr float    kTrackEmOpen    = 0.90f;
 constexpr float    kTrackChase     = 2.00f;   // added peak at the chase crest
 constexpr float    kTrackChaseRadS = 9.0f;    // chase sweep speed (rad/s)
 constexpr float    kTrackEmCap     = 2.30f;
+
+// ---- ORANGE conduits + coils + TEAL holo screens (phase D dressing) ------------
+// The locked palette's accents: ORANGE emissive conduit pipes running
+// gate -> floor -> skirt (tick() phases the emissive along the run so power
+// visibly flows), coil rings on the riser, and 1-2 TEAL holo data screens
+// per gate on posts (glass panes, procedural readout textures).
+constexpr float    kConduitOrange[3] = { 1.00f, 0.29f, 0.035f };
+constexpr float    kConduitEmBase    = 0.65f;
+constexpr float    kConduitFlowAmp   = 0.42f;
+constexpr float    kConduitEmCap     = 1.30f;   // orange must stay ORANGE (never yellow-clips)
+constexpr float    kConduitFlowHz    = 0.55f;   // flow pulse rate
+constexpr float    kConduitFlowK     = 1.60f;   // phase step per segment (the travel)
+constexpr float    kConduitHalf      = 0.045f;  // pipe half-thickness
+constexpr float    kCoilOrangeEm     = 0.85f;
+constexpr float    kHoloTeal[3]      = { 0.12f, 0.85f, 0.75f };
+constexpr float    kHoloEm           = 0.35f;   // soft glow floor — the TEXTURE carries the read
+                                                // (flat glass emissive floods the pane otherwise)
 
 // ---- A-frame support cradle (the gate is INSTALLED, not floating) --------------
 constexpr float    kSkirtHalfTan   = 1.70f;   // base plinth under the ring bottom
@@ -648,6 +665,61 @@ std::vector<uint8_t> makeVistaRGBA(uint32_t n) {
     return px;
 }
 
+// TEAL HOLO DATA SCREEN texture: dark navy glass field, teal border + header
+// bar, rows of "text" block bars (hash-varied widths), a trace graph line,
+// and horizontal scanlines. Two variants (salt) so neighbouring screens
+// don't read as clones. Deliberately abstract — set dressing, not UI.
+std::vector<uint8_t> makeHoloDataRGBA(uint32_t n, uint32_t salt) {
+    std::vector<uint8_t> px(n * n * 4);
+    auto put = [&](uint32_t x, uint32_t y, float r, float g, float b) {
+        uint8_t* p = &px[(y * n + x) * 4];
+        p[0] = (uint8_t)(r * 255.0f); p[1] = (uint8_t)(g * 255.0f);
+        p[2] = (uint8_t)(b * 255.0f); p[3] = 255;
+    };
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) {
+            // Base: dark blue-black glass + subtle scanlines every 4 px.
+            float r = 0.010f, g = 0.028f, b = 0.030f;
+            if ((y & 3u) == 0u) { g += 0.012f; b += 0.012f; }
+            // Border + header band.
+            const bool border = x < 6 || x >= n - 6 || y < 6 || y >= n - 6;
+            const bool header = y >= 10 && y < 34;
+            if (border) { r = 0.05f; g = 0.55f; b = 0.48f; }
+            else if (header && x > 14 && x < n - 14) { r = 0.04f; g = 0.30f; b = 0.27f; }
+            put(x, y, r, g, b);
+        }
+    }
+    // "Text" rows: teal block bars with hash-varied widths.
+    for (uint32_t row = 0; row < 9; ++row) {
+        const uint32_t y0 = 48 + row * 20;
+        if (y0 + 8 >= n - 80) break;
+        uint32_t x0 = 16;
+        while (x0 + 10 < n - 20) {
+            const float w01 = x3::prims::detail::hash01(x0, row * 7u + 1u, n, salt);
+            const uint32_t w = 8 + (uint32_t)(w01 * 26.0f);
+            const bool lit = x3::prims::detail::hash01(x0, row * 13u + 3u, n, salt ^ 0x99u) > 0.25f;
+            if (lit)
+                for (uint32_t y = y0; y < y0 + 8; ++y)
+                    for (uint32_t x = x0; x < std::min(x0 + w, n - 20); ++x)
+                        put(x, y, 0.06f, 0.62f, 0.55f);
+            x0 += w + 8;
+        }
+    }
+    // Trace graph strip along the bottom: a wandering bright teal line.
+    {
+        const uint32_t gy0 = n - 72, gy1 = n - 16;
+        float v = 0.5f;
+        for (uint32_t x = 12; x < n - 12; ++x) {
+            v += (x3::prims::detail::hash01(x, 5u, n, salt ^ 0x42u) - 0.5f) * 0.16f;
+            if (v < 0.05f) v = 0.05f; if (v > 0.95f) v = 0.95f;
+            const uint32_t y = gy0 + (uint32_t)((float)(gy1 - gy0) * v);
+            for (int dy = -1; dy <= 1; ++dy)
+                put(x, (uint32_t)((int)y + dy), 0.10f, 0.90f, 0.80f);
+        }
+    }
+    return px;
+}
+
 // Compose a beam transform: unit box (half-extent 0.5) stretched a->b with a
 // square cross-section of `thickness` half-extent — the CombatFx drawBeam
 // technique, re-implemented here for the membrane tendrils (clean-room, our
@@ -711,6 +783,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // MR texel: glTF packing G=roughness B=metallic -> fully rough dielectric.
         const uint8_t mrPx[4] = { 0, 255, 0, 255 };
         m_mrFlat = device.createTexture(mrPx, 1, 1, false);
+        // Teal holo data-screen textures (two variants; phase D dressing).
+        auto holoA = makeHoloDataRGBA(256, 0x1AB5u);
+        m_holoTexA = device.createTexture(holoA.data(), 256, 256, true);
+        auto holoB = makeHoloDataRGBA(256, 0x7C3Du);
+        m_holoTexB = device.createTexture(holoB.data(), 256, 256, true);
     }
 
     // ===== Curated PBR surface sets — loaded FIRST (the floor + hall use them).
@@ -1051,6 +1128,104 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             }
         }
 
+        // ---- ORANGE conduits + coil rings + TEAL holo screens (phase D) ------
+        // Portal-local frame for the dressing (the cradle's basis is scoped).
+        const float dX[3] = { rightX, 0.0f, rightZ };
+        const float dY[3] = { 0.0f, 1.0f, 0.0f };
+        const float dZ[3] = { outwardX, 0.0f, outwardZ };
+        // World point in the gate plane, nudged hub-side of the ring face.
+        auto gatePt = [&](float alongRight, float y, float alongOut) {
+            return x3::phys::Vec3{
+                cx + rightX * alongRight + outwardX * alongOut,
+                y,
+                cz + rightZ * alongRight + outwardZ * alongOut };
+        };
+        // Conduit runs: gate -> riser -> floor -> skirt, one per side (the
+        // right side rides higher, the left lower — no clone read). Every
+        // segment is the SHARED unit fx box stretched a->b; contiguous span
+        // so tick() can phase the emissive ALONG the run (power flow).
+        p.conduitEntFirst = scene.size();
+        {
+            const float off = -0.58f;   // hub-side of the gate face
+            const x3::phys::Vec3 runA[5] = {
+                gatePt( 1.62f, 3.25f, off), gatePt( 2.46f, 2.55f, off),
+                gatePt( 2.46f, 0.55f, off), gatePt( 1.95f, 0.16f, off),
+                gatePt( 0.85f, 0.16f, off),
+            };
+            const x3::phys::Vec3 runB[5] = {
+                gatePt(-1.85f, 2.85f, off), gatePt(-2.46f, 2.15f, off),
+                gatePt(-2.46f, 0.50f, off), gatePt(-1.90f, 0.16f, off),
+                gatePt(-0.85f, 0.16f, off),
+            };
+            auto addRun = [&](const x3::phys::Vec3* run) {
+                for (int s3 = 0; s3 < 4; ++s3) {
+                    Entity e;
+                    e.mesh = m_fxBeamMesh;   // SHARED unit box
+                    e.baseColor[0] = 0.35f; e.baseColor[1] = 0.18f; e.baseColor[2] = 0.06f;
+                    e.baseColor[3] = 1.0f;
+                    e.emissive[0] = kConduitOrange[0]; e.emissive[1] = kConduitOrange[1];
+                    e.emissive[2] = kConduitOrange[2]; e.emissive[3] = kConduitEmBase;
+                    e.tag = (uint32_t)Tag::Prop;
+                    beamXform(e.transform, run[s3], run[s3 + 1], kConduitHalf);
+                    scene.add(e);
+                }
+            };
+            addRun(runA);
+            addRun(runB);
+        }
+        p.conduitEntCount = 8;
+        // Coil rings on the right riser (orange, static warm glow).
+        for (int coil = 0; coil < 2; ++coil) {
+            x3::prims::PrimMesh torus = x3::prims::makeTorus(0.14f, 0.032f, 20, 8);
+            // Ring horizontal around the vertical riser: local X = gate right,
+            // local Y = outward, local Z (hole axis) = world up.
+            const float locX3[3] = { rightX, 0.0f, rightZ };
+            const float locY3[3] = { outwardX, 0.0f, outwardZ };
+            const float locZ3[3] = { 0.0f, 1.0f, 0.0f };
+            const x3::phys::Vec3 at = gatePt(2.46f, 1.95f - 0.42f * (float)coil, -0.58f);
+            AddedEntity ae = addOrientedEmissiveMesh(
+                scene, device, torus, locX3, locY3, locZ3,
+                at.x, at.y, at.z, kConduitOrange, kCoilOrangeEm);
+            m_portalMeshes.push_back(ae.mesh);
+        }
+        // Two TEAL holo data screens flanking the approach (glass panes on
+        // dark posts, facing back toward the hub center).
+        for (int scr = -1; scr <= 1; scr += 2) {
+            const float sideR = 2.45f * (float)scr;
+            const x3::phys::Vec3 at = gatePt(sideR, 1.52f, -1.35f);
+            // Post.
+            AddedEntity post = addOrientedSurfBox(
+                scene, device, 0.030f, 0.62f, 0.030f,
+                dX, dY, dZ, at.x, 0.62f, at.z,
+                &sDark, kDarkTint, 0.03f);
+            m_portalMeshes.push_back(post.mesh);
+            // Glass pane with the holo readout (the pane IS the screen — the
+            // club OLED-glass lesson: a pane OVER a screen depth-occludes it).
+            x3::prims::PrimMesh pane = x3::prims::makeBox(0.36f, 0.25f, 0.012f, 0, 0, 0);
+            Entity e;
+            e.mesh = device.createMesh(pane.verts.data(), (uint32_t)pane.verts.size(),
+                                       pane.index.data(), (uint32_t)pane.index.size());
+            m_portalMeshes.push_back(e.mesh);
+            e.tex = (scr > 0) ? m_holoTexA : m_holoTexB;
+            e.baseColor[0] = 2.0f; e.baseColor[1] = 2.3f; e.baseColor[2] = 2.3f;
+            e.baseColor[3] = 1.0f;
+            e.emissive[0] = kHoloTeal[0]; e.emissive[1] = kHoloTeal[1];
+            e.emissive[2] = kHoloTeal[2]; e.emissive[3] = kHoloEm;
+            e.transparent = true;
+            e.glass.opacity = 0.88f;
+            e.glass.refraction = 0.0f;
+            e.glass.roughness = 0.06f;
+            e.glass.specular = 1.0f;
+            e.glass.tint[0] = 0.75f; e.glass.tint[1] = 1.0f; e.glass.tint[2] = 0.95f;
+            e.tag = (uint32_t)Tag::Prop;
+            // Face back toward the hub: pane thin axis (+Z local) = -outward.
+            const float pX[3] = { -rightX, 0.0f, -rightZ };
+            const float pY[3] = { 0.0f, 1.0f, 0.0f };
+            const float pZ[3] = { -outwardX, 0.0f, -outwardZ };
+            makeXform(e.transform, pX, pY, pZ, at.x, at.y, at.z);
+            scene.add(e);
+        }
+
         // ---- Octagonal floor plate (8 wedge boxes) ---------------------------
         // Each wedge is a thin box tangent to a circle of radius kPlateRingR,
         // axis-aligned in Y (flat on the ground). Reuses the same local basis
@@ -1082,7 +1257,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 plateHalfTangent(), kPlateHalfY, kPlateBoxThick,
                 locX, locY, locZ,
                 wcx, wcy, wcz,
-                sp.tint, /*emStrength=*/0.8f);   // identity accent, not a beacon (cap law)
+                sp.tint, /*emStrength=*/0.45f);  // identity accent, not a beacon (cap law)
             m_portalMeshes.push_back(ae.mesh);
         }
 
@@ -1379,6 +1554,19 @@ void Rifthub::tick(float dt, Scene& scene) {
                 em = kTrackEmIdle + surge01 * (0.55f + kTrackChase * cph);
             }
             ents[e].emissive[3] = capped(em, kTrackEmCap);
+        }
+
+        // --- ORANGE conduit flow: the emissive pulse travels ALONG the run
+        //     (segment index = phase step) so power visibly streams toward the
+        //     gate; the surge doubles the throb. Warm accent, capped.
+        for (uint32_t t3 = 0; t3 < p.conduitEntCount; ++t3) {
+            const uint32_t ce = p.conduitEntFirst + t3;
+            if (ce >= sceneN) break;
+            const float flow = std::sin(m_time * twoPi * kConduitFlowHz
+                                        - (float)(t3 % 4u) * kConduitFlowK + phase);
+            float em = kConduitEmBase + kConduitFlowAmp * (0.5f * (flow + 1.0f));
+            em += surge01 * 0.35f;
+            ents[ce].emissive[3] = capped(em, kConduitEmCap);
         }
 
         // --- Energy core: faster electric-blue pulse (core + brighter inner),
@@ -1724,9 +1912,9 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // interior IBL probe so the wet floor / gate metal reflect the hall not
     // an open sky, and a NEGATIVE exposure bias so auto-exposure (which pins
     // its 2.2x ceiling in a dark scene) can't wash the metal pale.
-    device.setAmbient(0.042f, 0.050f, 0.068f);
+    device.setAmbient(0.050f, 0.058f, 0.078f);
     device.setIblProbe(true);
-    device.setExposure(0.90f);
+    device.setExposure(0.95f);
 }
 
 void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
@@ -1744,6 +1932,8 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_vistaTex.valid())   { device.destroyTexture(m_vistaTex);   m_vistaTex   = {}; }
     if (m_mrFlat.valid())     { device.destroyTexture(m_mrFlat);     m_mrFlat     = {}; }
     if (m_mrWet.valid())      { device.destroyTexture(m_mrWet);      m_mrWet      = {}; }
+    if (m_holoTexA.valid())   { device.destroyTexture(m_holoTexA);   m_holoTexA   = {}; }
+    if (m_holoTexB.valid())   { device.destroyTexture(m_holoTexB);   m_holoTexB   = {}; }
     m_surf.destroyAll(device);   // curated PBR sets (ring plates / housings / hall)
     for (int m = 0; m < kMaxMotes; ++m) m_motes[m].life = 0.0f;
     m_portals.clear();
@@ -2016,6 +2206,10 @@ bool runRifthubSelfTest() {
             if (ents[p1.chevronEntFirst].emissive[3] > kChevEmCap + 1e-4f) underCap = false;
             for (uint32_t t3 = 0; t3 < p1.trackEntCount; ++t3)
                 if (ents[p1.trackEntFirst + t3].emissive[3] > kTrackEmCap + 1e-4f)
+                    underCap = false;
+            // Phase D: the orange conduit flow obeys its cap under the surge.
+            for (uint32_t t3 = 0; t3 < p1.conduitEntCount; ++t3)
+                if (ents[p1.conduitEntFirst + t3].emissive[3] > kConduitEmCap + 1e-4f)
                     underCap = false;
             const Entity& pe = ents[p1.membraneEntFirst + 1];
             if (!(pe.emissive[2] > pe.emissive[0] && pe.emissive[2] > pe.emissive[1]))

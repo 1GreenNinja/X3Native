@@ -127,6 +127,11 @@ struct RiftPortal {
     // track holds a steady powered glow once OPEN. Contiguous span.
     uint32_t       trackEntFirst = 0;
     uint32_t       trackEntCount = 0;
+    // ORANGE conduit run (gate -> floor -> skirt; the locked palette's warm
+    // accent): contiguous span of pipe segments whose emissive tick() phases
+    // along the run so the power visibly FLOWS toward the gate.
+    uint32_t       conduitEntFirst = 0;
+    uint32_t       conduitEntCount = 0;
     // Event-horizon membrane — the visible portal SURFACE (membrane v2, the
     // fable-rock art pass): a contiguous 3-entity span in authoring order
     //   [0] VISTA disk (dim parallax backdrop — the glimpsed other world),
@@ -273,6 +278,8 @@ private:
     x3::rhi::TextureHandle     m_vistaTex;    // parallax backdrop (other world)
     x3::rhi::TextureHandle     m_mrFlat;      // 1x1 rough/dielectric MR (PBR route)
     x3::rhi::TextureHandle     m_mrWet;       // 1x1 glossy MR (wet concrete floor)
+    x3::rhi::TextureHandle     m_holoTexA;    // teal holo data-screen texture (variant A)
+    x3::rhi::TextureHandle     m_holoTexB;    // teal holo data-screen texture (variant B)
     // Per-portal blue core lights (1:1 with m_portals); intensity pulsed in tick().
     std::vector<x3::rhi::PointLight> m_lights;
     // Curated PBR surface sets (ring plates / housings / cradle / hall). The
