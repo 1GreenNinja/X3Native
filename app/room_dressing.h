@@ -33,6 +33,7 @@
 #include "engine/asset/IAssetSource.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -42,6 +43,15 @@ namespace x3::game {
 
 class RoomDressing {
 public:
+    // WAVE (barrels-universal): explodable-barrel registrar. When the host wires this
+    // (canon interactive loop -> BarrelSystem::spawn), the recipe REGISTERS its plain
+    // fuel-drum clutter (boss/storage rooms) as real explodable barrels at (x, floorY, z)
+    // INSTEAD of drawing static, unshootable props. Unset (wing-dressing test / non-combat
+    // callers) -> the old static prop is drawn, byte-for-byte. The emissive lab-vat "drums"
+    // (specimen/cryo/growth tanks) are NOT routed here — they stay decorative set-dressing.
+    using ExplodableBarrelSink = std::function<void(float x, float floorY, float z)>;
+    void setExplodableBarrelSink(ExplodableBarrelSink sink) { m_barrelSink = std::move(sink); }
+
     // Build recipes for every classifiable room on the floor (skips jakeCell, the
     // deep Cave/Hidden Sub-Level rooms, and rooms no recipe matches). Returns true
     // if at least one room was dressed. surfaceLibDir = <assets>/surface_library;
@@ -154,6 +164,7 @@ private:
     uint32_t m_rescueCaptives = 0;   // F2 rescue-room captives placed (loaded character GLB)
     int      m_lastZone     = -1;
     bool     m_propMatLift  = false;  // BLACK-PROP FIX: matte-tint the kit props (wing floors only)
+    ExplodableBarrelSink m_barrelSink;   // WAVE (barrels-universal): register clutter drums as explodable
 };
 
 // The union of surface-library set names the zone recipes reference (deduped).
