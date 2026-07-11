@@ -201,9 +201,16 @@ public:
     void drawFx(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame);
 
     // Free the Scene meshes/textures owned by the hub (the portal ring meshes,
-    // the floor plates, the ground checker). Leaves physics ownership to the
-    // caller (the host shuts down its own world).
+    // the floor plates, the hall shell, the surface-library sets). Leaves
+    // physics ownership to the caller (the host shuts down its own world).
     void shutdown(x3::rhi::IRenderDevice& device);
+
+    // Apply the RIFTHUB HALL atmosphere to the device (host opt-in, called
+    // once after build()): industrial fog/haze, teal-shadow grade, cool
+    // ambient, interior IBL probe (wet-floor reflections), and an exposure
+    // bias that keeps auto-exposure from washing the dark hall pale. Values
+    // live with the art (rifthub.cpp) so the light balance is one knob.
+    void applyAtmosphere(x3::rhi::IRenderDevice& device) const;
 
     // Dispatch a fired RifthubTrigger id the host forwards from its
     // TriggerSystem. Latches the matching portal's `activated` flag + logs
@@ -265,6 +272,7 @@ private:
     x3::rhi::TextureHandle     m_throatTex;   // OPEN radial-streaming throat map
     x3::rhi::TextureHandle     m_vistaTex;    // parallax backdrop (other world)
     x3::rhi::TextureHandle     m_mrFlat;      // 1x1 rough/dielectric MR (PBR route)
+    x3::rhi::TextureHandle     m_mrWet;       // 1x1 glossy MR (wet concrete floor)
     // Per-portal blue core lights (1:1 with m_portals); intensity pulsed in tick().
     std::vector<x3::rhi::PointLight> m_lights;
     // Curated PBR surface sets (ring plates / housings / cradle / hall). The

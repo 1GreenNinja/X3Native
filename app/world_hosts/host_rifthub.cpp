@@ -48,19 +48,22 @@ int hostRifthub(HostContext& hc) {
     x3::game::Rifthub rifthub;
     rifthub.build(rhscene, *device, *rhphys, rhtrig);
 
-    // Dark void so the emissive gates + blue cores read brightly. No sky/sun —
-    // the portals light themselves + the grey stone via their per-portal blue
-    // core point lights (set each frame after tick()).
+    // Interior hall — no sky/sun; the gates' blue cores + the hall's cool
+    // overheads light the space (set each frame after tick()). The hub's own
+    // atmosphere (fog / grade / ambient / IBL probe / exposure bias) is a
+    // single knob in rifthub.cpp so the light balance lives with the art.
     { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+    rifthub.applyAtmosphere(*device);
 
     const x3::phys::Vec3 rhspawn = rifthub.spawn();
     const float dt = 1.0f / 60.0f;
 
     // ===== Headless capture / smoketest path: pose a vantage, warm the anim, grab. =
     if (headless) {
-        // A three-quarter vantage looking across the hub center so several gates,
-        // their cores + the ring stone are all in frame.
-        float cam[5] = { 0.0f, 2.4f, -22.0f, 1.5708f, -0.06f };
+        // A vantage INSIDE the hall (phase C sealed the hub in a 40 m shell —
+        // the old z=-22 spot is behind the south wall) looking across the hub
+        // center so several gates + the hall dressing are all in frame.
+        float cam[5] = { -6.7f, 3.2f, -16.2f, 1.18f, -0.07f };   // between the S/SW gates
         if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
         const std::string outPath = screenshot ? screenshotPath
                                                : std::string("w_rifthub.png");

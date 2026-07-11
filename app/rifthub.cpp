@@ -30,6 +30,34 @@ namespace {
 constexpr float kHubHalf       = 20.0f;   // 40 m square floor (footprint half)
 constexpr float kRingRadius    = 14.0f;   // portal placement radius (around spawn)
 
+// ---- The HALL (phase C: the hub becomes a PLACE, not a checkerboard void) ------
+// One industrial hall shell around the gate circle. SEAM LAW: the wall INNER
+// faces sit exactly on the +/-kHubHalf floor edge (flush, zero gap); N/S walls
+// span the full width including the wall thickness, E/W walls BUTT between
+// them (corner boxes never overlap coplanar); the ceiling slab overlaps the
+// wall tops. Walls collide (containment — the player can't leave the shell).
+constexpr float kHallWallH     = 10.0f;   // interior wall height
+constexpr float kHallWallT     = 0.30f;   // wall thickness
+constexpr float kHallCeilT     = 0.20f;   // ceiling slab thickness
+constexpr float kConcreteTint[3] = { 0.42f, 0.44f, 0.46f };  // dark venue concrete
+constexpr float kFloorTint[3]    = { 0.34f, 0.36f, 0.38f };  // wet dark floor
+constexpr uint32_t kHallColumns  = 8;     // perimeter steel columns
+constexpr float kColumnHalf      = 0.32f;
+constexpr uint32_t kHallBeams    = 5;     // ceiling beam count per direction
+constexpr float kBeamHalfW       = 0.22f;
+constexpr float kBeamHalfH       = 0.28f;
+constexpr float kBeamY           = 9.45f; // beam centerline height
+constexpr uint32_t kStripCount   = 8;     // ceiling strip lights
+constexpr float kStripTint[3]    = { 0.72f, 0.82f, 0.95f };  // cool white-blue
+constexpr float kStripEm         = 1.90f; // capped — fixtures, not suns
+constexpr uint32_t kCableCount   = 10;    // hanging catenary cables
+constexpr uint32_t kCableSegs    = 9;
+constexpr float kCableSag        = 1.15f;
+// Hall fill lights (appended AFTER the 8 animated gate lights in m_lights).
+constexpr float kHallLightColor[3] = { 0.55f, 0.62f, 0.72f };  // cool industrial
+constexpr float kHallLightI        = 2.40f;
+constexpr float kHallLightRange    = 19.0f;
+
 // ---- Stone gateway ring geometry ----------------------------------------------
 // A SUBSTANTIAL, thick ring you walk through — a single circle of N deep tangent
 // box segments with a beefy squarish cross-section (real radial thickness + real
@@ -658,33 +686,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ===== Spawn point (center of the ring) =====
     m_spawn = x3::phys::Vec3{ 0.0f, kSpawnFeetY, 0.0f };
 
-    // ===== Ground (static collision + a render quad) =====
-    // 40x40 m flat slab at y=-0.10 so the slab TOP sits at y=0 (the world Y=0
-    // plane every other graybox uses). Mirrors destruct_demo's ground pattern.
-    {
-        x3::prims::PrimMesh g = x3::prims::makeBox(kHubHalf, 0.10f, kHubHalf,
-                                                    0.0f, -0.10f, 0.0f, 0.25f);
-        m_groundMesh = device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
-                                         g.index.data(), (uint32_t)g.index.size());
-        // A muted grey-blue checker so the emissive portals read brightly against it.
-        auto groundPx = x3::prims::makeCheckerRGBA(64, 8, 110, 116, 130, 60, 64, 76);
-        m_groundTex = device.createTexture(groundPx.data(), 64, 64, true);
-        Entity ge;
-        ge.mesh = m_groundMesh;
-        ge.tex  = m_groundTex;
-        ge.baseColor[0] = 1.0f; ge.baseColor[1] = 1.0f; ge.baseColor[2] = 1.0f;
-        ge.baseColor[3] = 1.0f;
-        ge.tag = (uint32_t)Tag::Static;
-        scene.add(ge);
-        physics.addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
-                              g.cindex.data(), (uint32_t)g.cindex.size());
-    }
-
-    // ===== Shared membrane v2 resources (one set for all 8 portals) =====
+    // ===== Shared membrane v2 + FX resources (one set for all 8 portals) =====
     // Disk fan + rim torus meshes are SHARED handles referenced by every
-    // portal's membrane entities; the plasma/vista emissive maps + the 1x1 MR
-    // texel (forces the PBR route so emissiveTex is honoured) likewise. The FX
-    // beam box is the unit box the lightning arcs stretch per-segment.
+    // portal's membrane entities; the plasma/throat/vista emissive maps + the
+    // 1x1 MR texel (forces the PBR route so emissiveTex is honoured) likewise.
+    // The FX beam box is the unit box the lightning arcs (and the hall's
+    // catenary cables) stretch per-instance. Created FIRST — the hall reuses it.
     {
         x3::prims::PrimMesh disk = makeMembraneDisk(kMembraneR, kMembraneDiskSegs);
         m_diskMesh = device.createMesh(disk.verts.data(), (uint32_t)disk.verts.size(),
@@ -706,15 +713,178 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_mrFlat = device.createTexture(mrPx, 1, 1, false);
     }
 
-    // ===== Curated PBR surface sets (ring v2 / hall). The library owns the
-    // textures (freed in shutdown via destroyAll). LFS-budget note (2026-07-11):
-    // the intro-cockpit rusted/patina sets could NOT be harvested (GitHub LFS
-    // budget exhausted), so ring v2 dresses from the 24 sets already
-    // materialized on this branch, tinted toward the locked teal-oxide patina.
+    // ===== Curated PBR surface sets — loaded FIRST (the floor + hall use them).
+    // The library owns the textures (freed in shutdown via destroyAll).
+    // LFS-budget note (2026-07-11): the intro-cockpit rusted/patina sets could
+    // NOT be harvested (GitHub LFS budget exhausted), so everything dresses
+    // from the 24 sets already materialized on this branch, tinted toward the
+    // locked teal-oxide patina.
     m_surf.mount(assetRoot() + "/surface_library");
-    const SurfaceSet& sPlate = m_surf.get(device, "mw_metal_panels_a"); // riveted industrial panels
-    const SurfaceSet& sDark  = m_surf.get(device, "sr_metal_b");        // dark steel (housings/cradle)
-    const SurfaceSet& sTrim  = m_surf.get(device, "mw_metal_trim_b");   // trim (plates variant)
+    const SurfaceSet& sPlate = m_surf.get(device, "mw_metal_panels_a");  // riveted industrial panels
+    const SurfaceSet& sDark  = m_surf.get(device, "sr_metal_b");         // dark steel (housings/cradle)
+    const SurfaceSet& sTrim  = m_surf.get(device, "mw_metal_trim_b");    // trim (plates variant)
+    const SurfaceSet& sFloor = m_surf.get(device, "sr_concrete_01");     // hall floor concrete
+    const SurfaceSet& sWall  = m_surf.get(device, "mw_concrete_panels_b"); // hall walls
+    // Wet-floor MR texel (glTF packing G=rough B=metal): low roughness => the
+    // dark concrete takes tight specular + IBL sheen (the wet reflective read).
+    {
+        const uint8_t wetPx[4] = { 0, 52, 24, 255 };
+        m_mrWet = device.createTexture(wetPx, 1, 1, false);
+    }
+
+    // ===== Ground (static collision + the WET CONCRETE floor) =====
+    // 40x40 m flat slab at y=-0.10 so the slab TOP sits at y=0 (the world Y=0
+    // plane every other graybox uses). Phase C: the dev checker is gone — dark
+    // concrete albedo+normal from the library with the glossy wet MR override.
+    {
+        x3::prims::PrimMesh g = x3::prims::makeBox(kHubHalf, 0.10f, kHubHalf,
+                                                    0.0f, -0.10f, 0.0f, 0.22f);
+        m_groundMesh = device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                         g.index.data(), (uint32_t)g.index.size());
+        Entity ge;
+        ge.mesh = m_groundMesh;
+        if (sFloor.ok) {
+            ge.tex = sFloor.albedo; ge.normalTex = sFloor.normal; ge.mrTex = m_mrWet;
+        }
+        ge.baseColor[0] = kFloorTint[0]; ge.baseColor[1] = kFloorTint[1];
+        ge.baseColor[2] = kFloorTint[2]; ge.baseColor[3] = 1.0f;
+        ge.tag = (uint32_t)Tag::Static;
+        scene.add(ge);
+        physics.addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
+                              g.cindex.data(), (uint32_t)g.cindex.size());
+    }
+
+    // ===== HALL SHELL (walls / ceiling / columns / beams / strips / cables) ====
+    {
+        const float ident[3][3] = { {1,0,0}, {0,1,0}, {0,0,1} };
+        const float wallMidY = kHallWallH * 0.5f;
+        // A collidable, textured, world-baked box (walls/columns): verts baked
+        // in world space (identity transform), collision from the same mesh.
+        auto hallBox = [&](float cx0, float cy0, float cz0, float hx, float hy, float hz,
+                           const SurfaceSet* sf, const float tint[3], float uv,
+                           bool collide, float em = 0.0f) {
+            x3::prims::PrimMesh b = x3::prims::makeBox(hx, hy, hz, cx0, cy0, cz0, uv);
+            Entity e;
+            e.mesh = device.createMesh(b.verts.data(), (uint32_t)b.verts.size(),
+                                       b.index.data(), (uint32_t)b.index.size());
+            m_portalMeshes.push_back(e.mesh);
+            if (sf && sf->ok) { e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = sf->mr; }
+            e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1]; e.baseColor[2] = tint[2];
+            e.baseColor[3] = 1.0f;
+            e.emissive[0] = tint[0]; e.emissive[1] = tint[1]; e.emissive[2] = tint[2];
+            e.emissive[3] = em;
+            e.tag = (uint32_t)Tag::Static;
+            scene.add(e);
+            if (collide)
+                physics.addStaticMesh(b.cverts.data(), (uint32_t)(b.cverts.size() / 3),
+                                      b.cindex.data(), (uint32_t)b.cindex.size());
+        };
+        // Walls (SEAM LAW): inner faces exactly at +/-kHubHalf. N/S walls span
+        // the full width INCLUDING the E/W wall thickness; E/W walls butt
+        // between them — no coplanar overlap at the corners, no gaps.
+        const float wallC = kHubHalf + kHallWallT * 0.5f;   // wall center plane
+        const float nsHalfX = kHubHalf + kHallWallT;         // full span incl. corners
+        const float ewHalfZ = kHubHalf;                      // butts between N/S
+        hallBox(0.0f, wallMidY,  wallC, nsHalfX, wallMidY + 0.10f, kHallWallT * 0.5f,
+                &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+        hallBox(0.0f, wallMidY, -wallC, nsHalfX, wallMidY + 0.10f, kHallWallT * 0.5f,
+                &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+        hallBox( wallC, wallMidY, 0.0f, kHallWallT * 0.5f, wallMidY + 0.10f, ewHalfZ,
+                &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+        hallBox(-wallC, wallMidY, 0.0f, kHallWallT * 0.5f, wallMidY + 0.10f, ewHalfZ,
+                &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+        // Ceiling slab: overlaps the wall tops (flush lid, no sky leak).
+        hallBox(0.0f, kHallWallH + kHallCeilT * 0.5f, 0.0f,
+                nsHalfX, kHallCeilT * 0.5f, nsHalfX,
+                &sWall, kDarkTint, 0.12f, /*collide=*/false);
+        // Perimeter steel columns: corners + wall midpoints, floor -> ceiling.
+        {
+            const float cpos = kHubHalf - kColumnHalf;   // flush against the walls
+            const float colXZ[kHallColumns][2] = {
+                {  cpos,  cpos }, { -cpos,  cpos }, {  cpos, -cpos }, { -cpos, -cpos },
+                {  cpos,  0.0f }, { -cpos,  0.0f }, {  0.0f,  cpos }, {  0.0f, -cpos },
+            };
+            for (uint32_t c = 0; c < kHallColumns; ++c)
+                hallBox(colXZ[c][0], wallMidY, colXZ[c][1],
+                        kColumnHalf, wallMidY, kColumnHalf,
+                        &sPlate, kDarkTint, 0.5f, /*collide=*/true);
+        }
+        // Ceiling I-beam grid: kHallBeams beams along X and along Z at kBeamY.
+        for (uint32_t b = 0; b < kHallBeams; ++b) {
+            const float o = -16.0f + (float)b * 8.0f;
+            hallBox(0.0f, kBeamY, o, kHubHalf, kBeamHalfH, kBeamHalfW,
+                    &sPlate, kDarkTint, 0.5f, /*collide=*/false);
+            hallBox(o, kBeamY - 0.02f, 0.0f, kBeamHalfW, kBeamHalfH - 0.02f, kHubHalf,
+                    &sPlate, kDarkTint, 0.5f, /*collide=*/false);
+        }
+        // Ceiling strip lights: emissive bars under the beams over the gate
+        // circle (capped — the STRIPS read as fixtures; the point lights below
+        // carry the actual illumination).
+        for (uint32_t s3 = 0; s3 < kStripCount; ++s3) {
+            const float ang = ((float)s3 + 0.5f) * (6.2831853f / (float)kStripCount);
+            const float sx = std::cos(ang) * 10.0f;
+            const float sz = std::sin(ang) * 10.0f;
+            x3::prims::PrimMesh b = x3::prims::makeBox(1.6f, 0.045f, 0.16f, sx, kBeamY - 0.38f, sz);
+            Entity e;
+            e.mesh = device.createMesh(b.verts.data(), (uint32_t)b.verts.size(),
+                                       b.index.data(), (uint32_t)b.index.size());
+            m_portalMeshes.push_back(e.mesh);
+            e.baseColor[0] = kStripTint[0]; e.baseColor[1] = kStripTint[1];
+            e.baseColor[2] = kStripTint[2]; e.baseColor[3] = 1.0f;
+            e.emissive[0] = kStripTint[0]; e.emissive[1] = kStripTint[1];
+            e.emissive[2] = kStripTint[2]; e.emissive[3] = kStripEm;
+            e.tag = (uint32_t)Tag::Static;
+            scene.add(e);
+        }
+        // Hanging catenary cables: sagging thin runs between beam crossings —
+        // every segment reuses the SHARED unit fx box via a beam transform
+        // (zero extra meshes). Deterministic drape per cable index.
+        for (uint32_t cb = 0; cb < kCableCount; ++cb) {
+            auto h01 = [&](uint32_t salt) {
+                return x3::prims::detail::hash01(cb * 7u + 3u, cb * 13u + 1u, 4096u, salt);
+            };
+            const float x0 = -16.0f + 32.0f * h01(0x11u);
+            const float z0 = -16.0f + 32.0f * h01(0x22u);
+            const float x1 = x0 + (-10.0f + 20.0f * h01(0x33u));
+            const float z1 = z0 + (-10.0f + 20.0f * h01(0x44u));
+            const float sag = kCableSag * (0.7f + 0.6f * h01(0x55u));
+            x3::phys::Vec3 prev{ x0, kBeamY - kBeamHalfH, z0 };
+            for (uint32_t s3 = 1; s3 <= kCableSegs; ++s3) {
+                const float t = (float)s3 / (float)kCableSegs;
+                // Quadratic drape: max sag at the middle.
+                const float y = kBeamY - kBeamHalfH - sag * 4.0f * t * (1.0f - t);
+                x3::phys::Vec3 pt{ x0 + (x1 - x0) * t, y, z0 + (z1 - z0) * t };
+                Entity e;
+                e.mesh = m_fxBeamMesh;   // SHARED unit box
+                e.baseColor[0] = 0.05f; e.baseColor[1] = 0.05f; e.baseColor[2] = 0.055f;
+                e.baseColor[3] = 1.0f;
+                e.tag = (uint32_t)Tag::Static;
+                beamXform(e.transform, prev, pt, 0.016f);
+                scene.add(e);
+                prev = pt;
+            }
+        }
+        // Distant machinery silhouettes: dark blocky clusters hugging the
+        // walls between columns — they read as shapes in the fog, not detail.
+        for (uint32_t mc = 0; mc < 8; ++mc) {
+            auto h01 = [&](uint32_t salt) {
+                return x3::prims::detail::hash01(mc * 5u + 2u, mc * 11u + 7u, 4096u, salt);
+            };
+            const float ang = (float)mc * (6.2831853f / 8.0f) + 0.39f;
+            const float mx = std::cos(ang) * (kHubHalf - 2.2f);
+            const float mz = std::sin(ang) * (kHubHalf - 2.2f);
+            const float bw = 0.9f + 1.4f * h01(0x66u);
+            const float bh = 1.6f + 2.6f * h01(0x77u);
+            const float bd = 0.7f + 1.1f * h01(0x88u);
+            hallBox(mx, bh * 0.5f, mz, bw, bh * 0.5f, bd,
+                    &sDark, kDarkTint, 0.5f, /*collide=*/true, /*em=*/0.02f);
+            // A smaller unit stacked on top + a vent pipe to break the box read.
+            hallBox(mx + bw * 0.3f, bh + 0.45f, mz, bw * 0.45f, 0.45f, bd * 0.6f,
+                    &sDark, kDarkTint, 0.5f, /*collide=*/false, /*em=*/0.02f);
+            hallBox(mx - bw * 0.5f, bh + 0.9f, mz, 0.09f, 0.9f, 0.09f,
+                    &sDark, kDarkTint, 0.5f, /*collide=*/false, /*em=*/0.02f);
+        }
+    }
 
     // ===== Portals (clockwise ring around the spawn) =====
     m_portals.clear();
@@ -1099,7 +1269,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
     // ===== Per-portal blue CORE lights (cast the event horizon onto the stone) =====
     m_lights.clear();
-    m_lights.reserve(m_portals.size());
+    m_lights.reserve(m_portals.size() + 5);
     for (const auto& p : m_portals) {
         x3::rhi::PointLight L;
         L.pos[0] = p.worldPos.x; L.pos[1] = kRingY; L.pos[2] = p.worldPos.z;
@@ -1108,6 +1278,23 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         L.color[1] = kCoreLightBlue[1] * kCoreLightBase;
         L.color[2] = kCoreLightBlue[2] * kCoreLightBase;
         m_lights.push_back(L);
+    }
+    // HALL fill lights (STATIC — appended after the animated gate lights so
+    // tick()'s per-portal indexing is untouched): four cool overheads under
+    // the strip-light ring + one center. These raise the hall's average
+    // luminance so auto-exposure settles instead of pinning its 2.2x ceiling
+    // (the v1/v2 pale-wash root cause).
+    {
+        const float pos[5][2] = { {10,10}, {-10,10}, {10,-10}, {-10,-10}, {0,0} };
+        for (int l = 0; l < 5; ++l) {
+            x3::rhi::PointLight L;
+            L.pos[0] = pos[l][0]; L.pos[1] = kBeamY - 0.6f; L.pos[2] = pos[l][1];
+            L.range  = kHallLightRange;
+            L.color[0] = kHallLightColor[0] * kHallLightI;
+            L.color[1] = kHallLightColor[1] * kHallLightI;
+            L.color[2] = kHallLightColor[2] * kHallLightI;
+            m_lights.push_back(L);
+        }
     }
 
     physics.optimizeBroadphase();
@@ -1514,6 +1701,34 @@ void Rifthub::drawFx(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
                                   x3::rhi::IRenderDevice::ParticleBlend::Additive);
 }
 
+void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
+    // Industrial hall haze: enough that the far wall's machinery reads as
+    // silhouettes and the gate light shafts get body, never a milky wash.
+    x3::rhi::IRenderDevice::FogParams fog;
+    fog.enabled  = true;
+    fog.color[0] = 0.020f; fog.color[1] = 0.030f; fog.color[2] = 0.050f;   // cold blue haze
+    fog.density  = 0.024f;
+    fog.start    = 2.5f;
+    fog.maxOpacity = 0.80f;
+    device.setFog(fog);
+    // Teal-shadow / warm-highlight grade (the locked palette: blue key,
+    // orange accents) + a light vignette.
+    x3::rhi::IRenderDevice::GradeParams g;
+    g.strength = 0.35f;
+    g.shadowTint[0] = 0.90f; g.shadowTint[1] = 1.02f; g.shadowTint[2] = 1.05f;
+    g.highlightTint[0] = 1.05f; g.highlightTint[1] = 1.00f; g.highlightTint[2] = 0.96f;
+    g.saturation = 1.06f;
+    g.vignette   = 0.08f;
+    device.setGrade(g);
+    // Cool low ambient (the hall is DARK; the gates + strips carry it), an
+    // interior IBL probe so the wet floor / gate metal reflect the hall not
+    // an open sky, and a NEGATIVE exposure bias so auto-exposure (which pins
+    // its 2.2x ceiling in a dark scene) can't wash the metal pale.
+    device.setAmbient(0.042f, 0.050f, 0.068f);
+    device.setIblProbe(true);
+    device.setExposure(0.90f);
+}
+
 void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (!m_built) return;
     if (m_groundMesh.valid()) device.destroyMesh(m_groundMesh);
@@ -1528,6 +1743,7 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_throatTex.valid())  { device.destroyTexture(m_throatTex);  m_throatTex  = {}; }
     if (m_vistaTex.valid())   { device.destroyTexture(m_vistaTex);   m_vistaTex   = {}; }
     if (m_mrFlat.valid())     { device.destroyTexture(m_mrFlat);     m_mrFlat     = {}; }
+    if (m_mrWet.valid())      { device.destroyTexture(m_mrWet);      m_mrWet      = {}; }
     m_surf.destroyAll(device);   // curated PBR sets (ring plates / housings / hall)
     for (int m = 0; m < kMaxMotes; ++m) m_motes[m].life = 0.0f;
     m_portals.clear();
