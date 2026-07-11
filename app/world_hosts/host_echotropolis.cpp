@@ -4,8 +4,8 @@
 // engine: analytic sky (setSkyParams via TimeOfDay), the Gerstner ocean
 // (setWaterParams — a device-internal 240m patch that re-centers under the camera
 // each frame, so it reads as an infinite sea), and the FPS camera primitive
-// (setCamera). NO terrain: the sea + sky horizon is the whole P1 world (golden
-// hour + the island land in later F1 phases). Modeled on host_valley.cpp for the
+// (setCamera). P2: the authored island lands as a baked GLB (EnvArtSystem, see
+// the island block in hostEchotropolis) — golden hour arrives in P3. Modeled on host_valley.cpp for the
 // scene/teardown lifecycle, but there is no physics/streamer here — water and sky
 // are device-internal passes, so the loop just poses the camera and renders.
 //
@@ -20,6 +20,7 @@
 //   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
 #include "world_host_common.h"
 #include "../tod.h"
+#include "../env_art.h"
 
 namespace x3 { namespace apphost {
 
@@ -59,7 +60,9 @@ struct CameraOptions {
     float lookSens      = 0.0045f;  // rad per pixel (free-look / orbit rotate)
     float panSpeed      = 0.9f;     // world m/s of focus travel per unit input
     float wasdPan       = 55.0f;    // WASD focus pan speed (m/s at unit radius scale)
-    float zoomStep      = 9.0f;     // radius impulse per wheel notch
+    float zoomFrac      = 0.55f;    // radius impulse per wheel notch, as a fraction
+                                    // of CURRENT radius (island vistas span 40m..6.5km
+                                    // — a fixed step is unusable across that range)
     // Critically-damped smoothTimes (s) — the inertia per channel.
     float smoothFocus   = 0.22f;
     float smoothYaw     = 0.18f;
@@ -69,27 +72,28 @@ struct CameraOptions {
     float zoomDecay     = 4.5f;     // higher = zoom glide stops sooner
     float panDecay      = 3.2f;     // higher = pan glide stops sooner
     // Radius (orbit distance) limits.
-    float minRadius     = 22.0f;
-    float maxRadius     = 320.0f;
+    float minRadius     = 40.0f;
+    float maxRadius     = 6500.0f;
 };
 
 // Orbit rig state (targets + smoothed values + spring velocities).
 struct OrbitRig {
     // Targets (driven by input).
     float focusX = 0.0f, focusZ = 0.0f;   // focus point on the sea (y=0)
-    float yaw    = 0.9f;                   // orbit azimuth (rad)
-    float pitch  = 0.2967f;                // elevation above sea (rad) — 17deg default
-    float radius = 70.0f;                  // orbit distance
+    float yaw    = 3.93f;                  // orbit azimuth (rad) — from the SE: town shelf
+                                           // in front, mesa cliffs behind (tiers readable)
+    float pitch  = 0.2443f;                // elevation above sea (rad) — 14deg default
+    float radius = 2800.0f;                // orbit distance — frames the whole 4km island
     // Smoothed (what the camera actually uses).
     float sFocusX = 0.0f, sFocusZ = 0.0f;
-    float sYaw = 0.9f, sPitch = 0.2967f, sRadius = 70.0f;
+    float sYaw = 3.93f, sPitch = 0.2443f, sRadius = 2800.0f;
     // Spring velocities.
     float vFocusX = 0.0f, vFocusZ = 0.0f, vYaw = 0.0f, vPitch = 0.0f, vRadius = 0.0f;
     // Momentum accumulators (for glide/inertia after the input stops).
     float panVelX = 0.0f, panVelZ = 0.0f, zoomVel = 0.0f;
     // Free-look (hold-RMB) detach state.
     bool  freeLook = false;
-    float freeYaw = 0.9f, freePitch = 0.2967f;
+    float freeYaw = 3.93f, freePitch = 0.2443f;
 };
 
 constexpr float kPitchMin = 0.0349f;   //  2 degrees
@@ -128,7 +132,9 @@ void applyDaySky(x3::rhi::IRenderDevice* device) {
 void applyOcean(x3::rhi::IRenderDevice* device, float t) {
     x3::rhi::IRenderDevice::WaterParams wp{};
     wp.enabled = true; wp.seaLevel = 0.0f; wp.time = t;
-    wp.amplitude = 0.45f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
+    // Amplitude must stay UNDER the island GLB's baked ocean ring (y=-0.4) or the
+    // Gerstner troughs punch through it and checker with the ring (seen in P2).
+    wp.amplitude = 0.32f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
     wp.deepColor[0]    = 0.015f; wp.deepColor[1]    = 0.055f; wp.deepColor[2]    = 0.11f;
     wp.shallowColor[0] = 0.06f;  wp.shallowColor[1] = 0.24f;  wp.shallowColor[2] = 0.32f;
     wp.sunDir[0] = 0.4f; wp.sunDir[1] = 1.0f; wp.sunDir[2] = 0.3f;
@@ -153,7 +159,24 @@ int hostEchotropolis(HostContext& hc) {
     OrbitRig rig;
 
     applyDaySky(device);
-    device->setCameraFar(15000.0f);   // far plane for a clean sea horizon vista
+    device->setCameraFar(20000.0f);   // far plane covers the GLB's 14km ocean ring corners
+
+    // ---- P2: THE ISLAND. Authored in SimCityLLM2 (gen_heightmap.py seed 20260530),
+    // meshed + splat-baked by tools/island_to_glb.py: land mesh (513^2 grid + skirt)
+    // with a single 4096^2 blended albedo, PLUS a flat ocean ring to the horizon at
+    // y=-0.4 (the engine Gerstner patch only lives near the camera; the ring keeps
+    // sea-to-horizon at vista distance). Sea level = world y 0; mesa tops ~179m.
+    // Dir overridable for other checkouts: ECHO_ISLAND_DIR env var.
+    x3::game::EnvArtSystem island;
+    {
+        const char* dirEnv = std::getenv("ECHO_ISLAND_DIR");
+        const std::string islandDir = dirEnv ? dirEnv : "D:/GameDev/SimCityLLM2/refs/terrain";
+        if (island.buildFromGlb(*device, islandDir, "island_20260530.glb"))
+            x3::logInfo("--world echotropolis: island GLB loaded from " + islandDir);
+        else
+            x3::logError("--world echotropolis: island GLB MISSING (" + islandDir +
+                         "/island_20260530.glb) — rendering open sea only");
+    }
 
     // ===================== Headless screenshot path =====================
     // Pose the default orbit (17deg, radius 70), settle the waves a few frames so
@@ -177,7 +200,7 @@ int hostEchotropolis(HostContext& hc) {
             }
             if (i == kSettle - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
-            // No scene geometry — the sky + water are device-internal passes.
+            island.draw(*device, frame);   // the island (sky + water are device-internal)
             device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
@@ -228,7 +251,7 @@ int hostEchotropolis(HostContext& hc) {
 
         // ---- Wheel zoom with momentum: impulse -> zoomVel -> radius target ----
         if (g_scrollY != 0.0) {
-            rig.zoomVel -= (float)g_scrollY * opt.zoomStep;   // scroll up = zoom in
+            rig.zoomVel -= (float)g_scrollY * opt.zoomFrac * rig.radius;   // scroll up = zoom in
             g_scrollY = 0.0;
         }
         rig.radius += rig.zoomVel * dt;
@@ -304,6 +327,7 @@ int hostEchotropolis(HostContext& hc) {
         else              applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg);
 
         auto frame = device->beginFrame();
+        island.draw(*device, frame);
         device->endFrame(frame);
 
         // FPS: log once per second.
