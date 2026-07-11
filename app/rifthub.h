@@ -311,9 +311,20 @@ private:
     std::vector<x3::asset::ModelDrawable>     m_gateDrawables;
     std::vector<std::string>                  m_gateNames;
     bool                                      m_gateGlbActive = false;
-    // Fake-volumetric light shafts (ROUND 3 workstream 2): shared open frustum
-    // cone mesh drawn as low-alpha emissive glass under the ceiling fixtures.
-    x3::rhi::MeshHandle                       m_coneMesh;
+    // Fake-volumetric light shafts (ROUND 3 workstream 2). The glass-cone
+    // attempt failed (the glass fallback path lifts alpha by fresnel — a big
+    // low-opacity shell goes SOLID at grazing angles), so each shaft is a
+    // static column of soft ADDITIVE billboard particles drawn by drawFx()
+    // (a second submitParticles batch — the device appends batches per frame).
+    struct Shaft {
+        float top[3], bot[3];
+        float width  = 1.0f;    // bottom-radius scale (m)
+        float alpha  = 0.10f;   // per-particle additive alpha
+        // Unit vectors spanning the shaft's cross-section (built once).
+        float ux = 1, uy = 0, uz = 0;
+        float vx = 0, vy = 0, vz = 1;
+    };
+    std::vector<Shaft>                        m_shafts;
 
     // ---- Spark-mote pool (membrane embers). CPU-integrated fixed ring, no
     // per-frame heap; drawFx() streams the live ones as one additive batch. ----

@@ -166,7 +166,8 @@ def build_ring():
     # (r 1.745..1.855, front z -0.479) sit ~0.011 proud of the bed's -0.468 face.
     register(sweep("trackbed", rect_profile(1.70, 1.93, -0.468, -0.44, 0.008),
                    0, TAU, 96), "dark")
-    # FRONT plate ring: 18 weathered arc plates (r 1.94 out), varying depth.
+    # FRONT plate ring: 18 weathered arc plates (r 1.94 out), varying depth,
+    # alternating patina/steel so the face doesn't read as one chalky wash.
     for s in range(18):
         a0 = s * TAU / 18 + D(1.2)
         a1 = (s + 1) * TAU / 18 - D(1.2)
@@ -174,7 +175,7 @@ def build_ring():
         z1 = -0.505 - 0.035 * (s % 2) - 0.012 * R.random()
         register(sweep("fplate%d" % s,
                        rect_profile(1.94, r_out, z1, -0.452, 0.013), a0, a1, 8),
-                 "patina")
+                 "patina" if s % 3 else "steel")
     # BACK plate ring: 18 plates offset half a slot.
     for s in range(18):
         a0 = s * TAU / 18 + D(10) + D(1.2)
@@ -204,6 +205,46 @@ def build_ring():
                        rect_profile(2.50, 2.60 + 0.03 * R.random(), z0, z1, 0.018),
                        mid - half, mid + half, 8),
                  "patina")
+    # FRONT DETAIL ring: a tier of small machined wedge blocks between the
+    # track bed and the plate ring (the reference's dense inner segmentation).
+    # Skips the clamp slots so the housings stay the hero shapes.
+    cths = clamp_angles()
+    def near_clamp(th):
+        for ct in cths:
+            d = (th - ct) % TAU
+            if min(d, TAU - d) <= D(11):
+                return True
+        return False
+    for s in range(24):
+        mid = (s + 0.5) * TAU / 24
+        if near_clamp(mid):
+            continue
+        half = D(5.2)
+        z1 = -0.545 - 0.02 * (s % 2)
+        register(sweep("fwedge%d" % s,
+                       rect_profile(2.00, 2.26, z1, -0.452, 0.012),
+                       mid - half, mid + half, 5),
+                 "dark")
+    # CROWN greebles: stacked service boxes + a stub antenna near 12 o'clock
+    # (the reference's rooftop clutter), clear of clamp 0 at 90 deg.
+    for k, (gth, gw, gh, gd) in enumerate((
+            (D(72), 0.16, 0.12, 0.22), (D(76), 0.10, 0.20, 0.14),
+            (D(105), 0.18, 0.10, 0.26), (D(110), 0.09, 0.16, 0.12),
+            (D(128), 0.13, 0.09, 0.18))):
+        rr = 2.62 + gh
+        register(box("crown%d" % k, gw, gh, gd, radial(gth, rr, -0.06 + 0.08 * (k % 2)),
+                     rotz=gth + math.pi / 2, bev=0.015), "dark" if k % 2 else "steel")
+    register(cyl("antenna", 0.028, 0.55, radial(D(74), 2.95, 0.02),
+                 rot=(math.pi / 2, 0, D(74) + math.pi / 2), verts=8, bev=0.0), "dark")
+    register(cyl("antenna_tip", 0.05, 0.06, radial(D(74), 3.20, 0.02),
+                 rot=(math.pi / 2, 0, D(74) + math.pi / 2), verts=8, bev=0.0), "steel")
+    # Radial bolt studs on the outer rim (read in 3/4 views).
+    for k in range(24):
+        th = k * TAU / 24 + D(7.5)
+        if near_clamp(th):
+            continue
+        register(cyl("boltR%d" % k, 0.026, 0.06, radial(th, 2.53, 0.30),
+                     rot=(math.pi / 2, 0, th + math.pi / 2), verts=6, bev=0.0), "dark")
 
 # ---------------------------------------------------------------------------
 # 2) CLAMP HOUSINGS — 9 chunky chamfered stacks at the chevron angles

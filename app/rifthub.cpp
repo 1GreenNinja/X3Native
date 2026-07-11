@@ -136,6 +136,12 @@ constexpr float    kDarkTint[3]    = { 0.30f, 0.33f, 0.35f };  // dark tint over
 constexpr float    kGunTint[3]     = { 0.72f, 0.76f, 0.80f };  // over the DARK trim_a set (~0.21 effective)
 constexpr uint32_t kRivetCount     = 12;      // front-face rivet studs per portal
 constexpr float    kRivetHalf      = 0.032f;
+// ROUND 3 gate-GLB material tints (over the same curated sets): darker than the
+// round-2 procedural tints — the F_1 shots read chalky-pale under the blue core
+// light because the GLB's big smart-projected plates catch far more of it.
+constexpr float    kGatePlateTint[3] = { 0.22f, 0.27f, 0.26f };  // weathered patina plates
+constexpr float    kGateSteelTint[3] = { 0.24f, 0.26f, 0.29f };  // machined steel
+constexpr float    kGateDarkTint[3]  = { 0.55f, 0.58f, 0.62f };  // hardware (over dark trim_a)
 
 // ---- Segmented amber RATCHET TRACK (inner-facing edge; PortalAnimated.mp4) -----
 // Small amber segments ringing the gate's inner front edge. Dormant: dim.
@@ -202,7 +208,8 @@ constexpr float    kPlateBoxThick  = 0.50f;  // plate wedge half-extent (radial)
 constexpr float    kPlateDeckTint[3] = { 0.34f, 0.36f, 0.38f };  // dark deck metal
 constexpr float    kTrimRingInnerR = 1.58f;  // identity trim ring (thin, outer edge)
 constexpr float    kTrimRingOuterR = 1.68f;
-constexpr float    kTrimRingEm     = 0.85f;  // capped accent — a trim, not a beacon
+constexpr float    kTrimRingEm     = 0.60f;  // capped accent — a trim, not a beacon
+                                             // (round 3: dimmed; the F_2 hoop was loud)
 constexpr float    kTrimDesat      = 0.50f;  // identity colors desaturated ~50%
 // Floor wedges butt at their outer edge — half-tangent = R * sin(pi/8) * 1.04 overlap.
 inline float plateHalfTangent() {
@@ -490,6 +497,15 @@ x3::prims::PrimMesh makeMembraneDisk(float radius, uint32_t segs) {
     }
     return m;
 }
+
+// ---- Fake-volumetric light shafts (ROUND 3 workstream 2) -------------------------
+// Per-shaft particle column constants. A GLASS cone was tried first and failed:
+// the glass fallback path lifts output alpha by fresnel, so a big low-opacity
+// shell reads as a SOLID matte sail at grazing angles (F_3 first capture).
+// Additive billboards have no such term — soft, accumulative, bloom-fed.
+constexpr int   kShaftParticles   = 26;     // billboards per shaft column
+constexpr float kShaftTopR        = 0.22f;  // column radius at the fixture (m)
+constexpr float kShaftDriftRadS   = 0.22f;  // slow swirl of the dust column
 
 // ---- Procedural membrane textures ------------------------------------------------
 // Tiny value-noise fBm toolkit (deterministic, build-time only). hash01 comes
@@ -920,6 +936,45 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             e.tag = (uint32_t)Tag::Static;
             scene.add(e);
         }
+        // ---- FAKE VOLUMETRICS (round 3 WS2): soft light shafts under the
+        // ceiling strip fixtures + two angled shafts over the machinery.
+        // Registered here; RENDERED as additive dust-billboard columns by
+        // drawFx() each frame (glass cones read solid — see the Shaft note).
+        {
+            auto addShaft = [&](const x3::phys::Vec3& top, const x3::phys::Vec3& bot,
+                                float width, float alpha) {
+                Shaft s;
+                s.top[0] = top.x; s.top[1] = top.y; s.top[2] = top.z;
+                s.bot[0] = bot.x; s.bot[1] = bot.y; s.bot[2] = bot.z;
+                s.width = width; s.alpha = alpha;
+                float ax = bot.x - top.x, ay = bot.y - top.y, az = bot.z - top.z;
+                const float len = std::sqrt(ax * ax + ay * ay + az * az);
+                if (len > 1e-6f) { ax /= len; ay /= len; az /= len; }
+                if (std::fabs(ay) < 0.99f) {   // u = normalize(axis x up)
+                    const float ul = std::sqrt(az * az + ax * ax);
+                    s.ux = az / ul; s.uy = 0; s.uz = -ax / ul;
+                } else { s.ux = 1; s.uy = 0; s.uz = 0; }
+                s.vx = s.uy * az - s.uz * ay;
+                s.vy = s.uz * ax - s.ux * az;
+                s.vz = s.ux * ay - s.uy * ax;
+                m_shafts.push_back(s);
+            };
+            for (uint32_t s3 = 0; s3 < kStripCount; ++s3) {
+                const float ang = ((float)s3 + 0.5f) * (6.2831853f / (float)kStripCount);
+                const float sx = std::cos(ang) * 10.0f;
+                const float sz = std::sin(ang) * 10.0f;
+                addShaft({ sx, kBeamY - 0.42f, sz }, { sx, 0.05f, sz }, 0.85f, 0.085f);
+            }
+            // Two angled shafts raking the perimeter machinery silhouettes.
+            for (uint32_t k = 0; k < 2; ++k) {
+                const uint32_t mc = (k == 0) ? 2u : 6u;
+                const float ang = (float)mc * (6.2831853f / 8.0f) + 0.39f;
+                const float px = std::cos(ang) * (kHubHalf - 2.2f);
+                const float pz = std::sin(ang) * (kHubHalf - 2.2f);
+                addShaft({ px * 0.80f, 8.6f, pz * 0.80f }, { px * 1.02f, 0.4f, pz * 1.02f },
+                         1.10f, 0.065f);
+            }
+        }
         // Hanging catenary cables: sagging thin runs between beam crossings —
         // every segment reuses the SHARED unit fx box via a beam transform
         // (zero extra meshes). Deterministic drape per cable index.
@@ -1040,9 +1095,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 // Material-group -> curated surface set + tint (the round-2
                 // grime-dark palette; the SD gate-forge sets supersede later).
                 const SurfaceSet* sf   = &sDark;
-                const float*      tint = kGunTint;
-                if (nm.find("patina") != std::string::npos) { sf = &sPlate; tint = kPatinaTint; }
-                else if (nm.find("steel") != std::string::npos) { sf = &sTrim; tint = kSteelTint; }
+                const float*      tint = kGateDarkTint;
+                if (nm.find("patina") != std::string::npos) { sf = &sPlate; tint = kGatePlateTint; }
+                else if (nm.find("steel") != std::string::npos) { sf = &sTrim; tint = kGateSteelTint; }
                 Entity e;
                 e.mesh = x3::rhi::MeshHandle{ dr.meshId };
                 if (sf->ok) { e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = sf->mr; }
@@ -1190,16 +1245,24 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // geometry, not emissive); the thin amber CORE LINES follow as one
         // contiguous span so tick() can phase the flow pulse ALONG the run.
         {
-            const float off = -0.58f;   // hub-side of the gate face
+            // ROUND 3 reroute: the GLB gate is WIDER (rim to ~2.62, pipes 2.7+)
+            // — the round-2 runs at +/-2.46 floated as a detached orange frame
+            // IN FRONT of the plates (F_1 close shot). The runs now hug the
+            // lower FLANKS outside the rim (the reference's glowing hairpins),
+            // dropping to the deck and feeding the base skirt.
+            // F_2 lesson: runs that climb past the gate's midline read as an
+            // orange SCAFFOLD FRAME around the ring. The reference conduits are
+            // tight lower-flank HAIRPINS — so the runs stay below y~1.5.
+            const float off = -0.35f;   // just hub-side of the gate midplane
             const x3::phys::Vec3 runA[5] = {
-                gatePt( 1.62f, 3.25f, off), gatePt( 2.46f, 2.55f, off),
-                gatePt( 2.46f, 0.55f, off), gatePt( 1.95f, 0.16f, off),
-                gatePt( 0.85f, 0.16f, off),
+                gatePt( 2.60f, 1.55f, off), gatePt( 2.95f, 1.15f, off),
+                gatePt( 2.95f, 0.45f, off), gatePt( 2.30f, 0.16f, off),
+                gatePt( 1.00f, 0.16f, off),
             };
             const x3::phys::Vec3 runB[5] = {
-                gatePt(-1.85f, 2.85f, off), gatePt(-2.46f, 2.15f, off),
-                gatePt(-2.46f, 0.50f, off), gatePt(-1.90f, 0.16f, off),
-                gatePt(-0.85f, 0.16f, off),
+                gatePt(-2.55f, 1.35f, off), gatePt(-2.88f, 1.00f, off),
+                gatePt(-2.88f, 0.40f, off), gatePt(-2.15f, 0.16f, off),
+                gatePt(-0.95f, 0.16f, off),
             };
             // Orthonormal basis for a pipe segment a->b: u/v span the cross-
             // section, d runs along the pipe. Mirrors beamXform's frame math.
@@ -1291,7 +1354,8 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
         p.conduitEntCount = 8;
         // Coil rings on the right riser (warm glow on a DARK body — round 2:
-        // the coil no longer reads as solid orange plastic when dim).
+        // the coil no longer reads as solid orange plastic when dim). ROUND 3:
+        // moved onto the rerouted flank riser.
         for (int coil = 0; coil < 2; ++coil) {
             x3::prims::PrimMesh torus = x3::prims::makeTorus(0.14f, 0.032f, 20, 8);
             // Ring horizontal around the vertical riser: local X = gate right,
@@ -1299,7 +1363,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float locX3[3] = { rightX, 0.0f, rightZ };
             const float locY3[3] = { outwardX, 0.0f, outwardZ };
             const float locZ3[3] = { 0.0f, 1.0f, 0.0f };
-            const x3::phys::Vec3 at = gatePt(2.46f, 1.95f - 0.42f * (float)coil, -0.58f);
+            const x3::phys::Vec3 at = gatePt(2.95f, 0.95f - 0.30f * (float)coil, -0.35f);
             Entity e;
             e.mesh = device.createMesh(torus.verts.data(), (uint32_t)torus.verts.size(),
                                        torus.index.data(), (uint32_t)torus.index.size());
@@ -1691,6 +1755,21 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             L.color[0] = kWashColor[0] * kWashI;
             L.color[1] = kWashColor[1] * kWashI;
             L.color[2] = kWashColor[2] * kWashI;
+            m_lights.push_back(L);
+        }
+        // ROUND 3 WS2 — mid-floor deck fills: four low cool lights BETWEEN the
+        // gate bays so the deck reads between gates (the F_1/F_2 mid-floor was
+        // a black hole). Low intensity, low height: a floor sheen, not a wash.
+        for (uint32_t f = 0; f < 4; ++f) {
+            const float ang = ((float)f + 0.5f) * (6.2831853f / 4.0f);
+            x3::rhi::PointLight L;
+            L.pos[0] = std::cos(ang) * 8.0f;
+            L.pos[1] = 2.2f;
+            L.pos[2] = std::sin(ang) * 8.0f;
+            L.range  = 11.0f;
+            L.color[0] = 0.50f * 2.4f;
+            L.color[1] = 0.58f * 2.4f;
+            L.color[2] = 0.72f * 2.4f;
             m_lights.push_back(L);
         }
     }
@@ -2110,6 +2189,38 @@ void Rifthub::drawFx(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     }
     if (n) device.submitParticles(m_moteScratch, n,
                                   x3::rhi::IRenderDevice::ParticleBlend::Additive);
+
+    // ---- Light-shaft dust columns (WS2 fake volumetrics): a second additive
+    // batch — soft billboards stacked down each registered shaft, radius and
+    // size growing toward the deck, alpha fading, the whole column swirling
+    // almost imperceptibly. Deterministic per (shaft, i); reuses m_moteScratch
+    // (submitParticles copies immediately).
+    uint32_t sn = 0;
+    for (uint32_t si = 0; si < m_shafts.size() && sn < (uint32_t)kMaxMotes; ++si) {
+        const Shaft& s = m_shafts[si];
+        for (int i = 0; i < kShaftParticles && sn < (uint32_t)kMaxMotes; ++i) {
+            const float t = ((float)i + 0.5f) / (float)kShaftParticles;   // 0 top -> 1 bot
+            const float h01 = x3::prims::detail::hash01((uint32_t)i * 7u + si,
+                                                        si * 13u + 3u, 4096u, 0x5AF7u);
+            // COHERENT column (first capture wiggled like smoke snakes): the
+            // offset follows one slow helix down the axis, not per-particle
+            // random scatter — heavy billboard overlap fuses it into a beam.
+            const float swirl = si * 2.1f + (float)i * 0.34f + m_time * kShaftDriftRadS;
+            const float rad = (kShaftTopR + (s.width - kShaftTopR) * t) * 0.45f;
+            const float ox = std::cos(swirl) * rad, oz = std::sin(swirl) * rad;
+            x3::rhi::IRenderDevice::ParticleInstance& inst = m_moteScratch[sn++];
+            inst.pos[0] = s.top[0] + (s.bot[0] - s.top[0]) * t + s.ux * ox + s.vx * oz;
+            inst.pos[1] = s.top[1] + (s.bot[1] - s.top[1]) * t + s.uy * ox + s.vy * oz;
+            inst.pos[2] = s.top[2] + (s.bot[2] - s.top[2]) * t + s.uz * ox + s.vz * oz;
+            inst.size = 0.48f + 0.85f * t;                 // widens toward the deck
+            const float fade = 0.30f + 0.70f * (1.0f - t) * (1.0f - t); // hot at the fixture
+            inst.color[0] = 0.55f; inst.color[1] = 0.66f; inst.color[2] = 0.95f;
+            inst.color[3] = s.alpha * fade;
+            inst.pos[1] += 0.03f * std::sin(m_time * 0.5f + h01 * 9.0f);  // breath
+        }
+    }
+    if (sn) device.submitParticles(m_moteScratch, sn,
+                                   x3::rhi::IRenderDevice::ParticleBlend::Additive);
 }
 
 void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
@@ -2161,7 +2272,7 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_holoTexA.valid())   { device.destroyTexture(m_holoTexA);   m_holoTexA   = {}; }
     if (m_holoTexB.valid())   { device.destroyTexture(m_holoTexB);   m_holoTexB   = {}; }
     m_surf.destroyAll(device);   // curated PBR sets (ring plates / housings / hall)
-    if (m_coneMesh.valid())   { device.destroyMesh(m_coneMesh);      m_coneMesh   = {}; }
+    m_shafts.clear();
     // ROUND 3 gate GLB: the LOADER owns its GPU handles — unload once, then drop
     // the loader/source (gate entities referenced these meshes, never owned them).
     if (m_gateLoader && m_gateModel.ok) m_gateLoader->unload(m_gateModel);
