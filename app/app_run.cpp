@@ -109,6 +109,7 @@
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
 #include "crowd_skin.h"                    // SKINNED CITIZENS: the crowds' rigged visual layer
 #include "crowd_chatter.h"                 // CROWD CHATTER: chat bubbles + murmur walla over the crowds
+#include "street_lights.h"                 // STREET LIGHT: real lamps — cones + pools + pooled lights
 #include "alert.h"                         // FACILITY ALERT LEVEL: the wanted system (--test-alert)
 #include "host_context.h"                  // #28 deep split: shared live-state struct for the --world hosts
 #include "world_hosts.h"                   // #28 deep split: dispatchWorldHost() + the extracted host TUs
@@ -1168,6 +1169,13 @@ int runDefaultHost(HostContext& hc) {
     // Facility rooms whisper (detainee tables), streets gossip.
     x3::game::CrowdChatter canonChatter[3];
     x3::game::CrowdChatter cityChatter[3];
+    // STREET LIGHT (street_lights.h): real street lamps — pooled PointLights +
+    // additive light cones + emissive ground pools, warm sodium / cool LED
+    // color story, ~8% dead / ~5% flickering. City lamps build INSIDE the city
+    // region realize (ledger-owned, the crowds/cars hook); apron + Spire-
+    // approach lamps are host-owned. The light merge below feeds the nearest
+    // K=14 lit lamps AFTER the facility/strata/club obligations.
+    x3::game::StreetLights streetLights;
     for (int ci = 0; ci < 3; ++ci) {
         canonChatter[ci].init(x3::game::ChatterVenue::Facility, 101u + (uint32_t)ci);
         cityChatter[ci].init(x3::game::ChatterVenue::Street, 201u + (uint32_t)ci);
@@ -1812,6 +1820,20 @@ int runDefaultHost(HostContext& hc) {
                 facilityExterior.build(scene, *device, *physics, fd,
                                        &canonRooms.surfaceLibrary());
                 x3::game::FacilityExterior::applyGoldenHourSky(*device);
+                // --dusk (STREET LIGHT staging): late dusk — the sun sits ON
+                // the horizon at a whisper, the zenith goes dark, exposure
+                // drops, and the street lamps carry the streets.
+                if (hc.duskSky) {
+                    x3::rhi::IRenderDevice::SkyParams sp{};
+                    sp.enabled = true;
+                    sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.035f; sp.sunDir[2] = -0.35f;
+                    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.45f; sp.sunColor[2] = 0.22f;
+                    sp.sunIntensity = 0.30f; sp.haze = 0.55f; sp.exposure = 0.72f;
+                    sp.zenith[0]  = 0.020f; sp.zenith[1]  = 0.032f; sp.zenith[2]  = 0.070f;
+                    sp.horizon[0] = 0.26f;  sp.horizon[1] = 0.13f;  sp.horizon[2] = 0.085f;
+                    device->setSkyParams(sp);
+                    x3::logInfo("--dusk: late-dusk sky override active (street lights carry the scene)");
+                }
                 // The sky's baked irradiance at full strength shifted the
                 // calibrated interior reads (the FP viewmodel washed pink-white
                 // vs the pre-merge baseline): scale the IBL ambient so interiors
@@ -1819,6 +1841,16 @@ int runDefaultHost(HostContext& hc) {
                 // side keeps enough sky fill to read its banding. Sun, sky
                 // background and the glass pass's reflections are unscaled.
                 device->setIblIntensity(0.5f);
+                // STREET LIGHT (host-owned): the facility-apron lamps by the
+                // breach + the Spire-approach road rows. kNoRoom entities;
+                // the city grid's lamps build with the region (hook below).
+                {
+                    const bool zFace =
+                        fd.breachFace == x3::game::FacilityExterior::Face::PlusZ;
+                    const float bx = zFace ? fd.breachCenter : (fd.x0 + fd.x1) * 0.5f;
+                    const float bz = zFace ? fd.z1 + 2.0f : fd.z1 + 2.0f;
+                    streetLights.buildHostLamps(scene, *device, fd.baseY + 0.02f, bx, bz);
+                }
                 x3::boot::mark("SEAM 2 exterior (facade wraps the tower)");
             } else {
                 x3::logWarn("--world canonlevel: SEAM-2 exterior skipped (no Entrance room "
@@ -2352,7 +2384,7 @@ int runDefaultHost(HostContext& hc) {
             // never write into recycled slots. Sites sit on the district flat
             // pads (placeOnTerrain anchors the ground). ----
             canonWstream.setRegionHooks(
-                [&cityCrowds, &cityCrowdSkins, &worldCars](
+                [&cityCrowds, &cityCrowdSkins, &worldCars, &streetLights](
                               const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
                               x3::rhi::IRenderDevice& dev, x3::phys::IPhysicsWorld& ph) {
                     // WORLD CARS: park this region's curb cars (the system adds
@@ -2424,6 +2456,11 @@ int runDefaultHost(HostContext& hc) {
                     x3::logInfo("LIVING NPCs: city street crowds built inside the "
                                 "`city` region realize (24 agents: sidewalk 10, "
                                 "dock crew 5, plaza 9 — ledger-owned)");
+                    // STREET LIGHT: the city grid's lamps build INSIDE the same
+                    // capture window — every post/cone/pool entity + the shared
+                    // cone/disc meshes + gradient textures join the region
+                    // ledger (dedup'd handles: eviction destroys each once).
+                    streetLights.buildCityLamps(s, dev);
                     // SKINNED CITIZENS: plan/attach the skinned layer. build()
                     // does NO loads and NO Scene::add, so nothing enters the
                     // region ledger (the parked-cars doctrine); the pools fill
@@ -2443,7 +2480,7 @@ int runDefaultHost(HostContext& hc) {
                     }
                 },
                 [&cityCrowds, &cityCrowdSkins, &cityChatter, &scene, &worldCars,
-                 &physics](const x3::game::WorldRegionDesc& rd) {
+                 &streetLights, &physics](const x3::game::WorldRegionDesc& rd) {
                     // WORLD CARS: unpark this region's curb cars (removes our
                     // static bodies; a car currently DRIVEN is the host-owned
                     // live rig and survives the eviction untouched).
@@ -2456,6 +2493,10 @@ int runDefaultHost(HostContext& hc) {
                     for (auto& ck : cityCrowdSkins) ck.deactivate(scene);
                     for (auto& ch : cityChatter) ch.reset();
                     for (auto& cc : cityCrowds) cc.abandon();
+                    // STREET LIGHT: drop the city lamp records BEFORE any slot
+                    // release (stale SceneHandles must never scribble on
+                    // recycled slots; the ledger owns the entities/meshes).
+                    streetLights.onCityTeardown();
                     x3::logInfo("LIVING NPCs: city crowds abandoned with the region "
                                 "(ledger tears the entities down)");
                 });
@@ -3472,6 +3513,18 @@ int runDefaultHost(HostContext& hc) {
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    ssEye.x, ssEye.y, ssEye.z, cl, 16);
                 if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
+                // STREET LIGHT: same outdoor gate + nearest-K feed as the live
+                // loop, so lamp pools light the shot; flicker ticks through the
+                // settle (a flickering lamp can be captured mid-burst).
+                if (streetLights.lampCount() > 0) {
+                    bool ssExtVis = false;
+                    for (uint32_t v : canonVisRooms)
+                        if (v == x3::game::kStreamedExteriorRoom) { ssExtVis = true; break; }
+                    if (ssExtVis) {
+                        streetLights.update(dt, scene);
+                        streetLights.selectLights(ssEye.x, ssEye.y, ssEye.z, cl, 14);
+                    }
+                }
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
             }
@@ -6210,6 +6263,24 @@ int runDefaultHost(HostContext& hc) {
                 const auto& sl = liveStrata.pointLights();
                 size_t take = sl.size() < 16 ? sl.size() : (size_t)16;
                 for (size_t i = 0; i < take; ++i) fl.push_back(sl[i]);
+            }
+            // STREET LIGHT: the nearest K=14 lit lamps join the pool ONLY when
+            // the streamed exterior is in frame (outdoors/at the breach — the
+            // same kStreamedExteriorRoom gate the draw path uses). BUDGET SPLIT
+            // (64-light device cap): flashlight + elevator cab FIRST, dressing
+            // motivated lights at the front, <=16 canon room lights, the breach
+            // spill, strata <=16 (camY<2 only), THEN street lamps <=14 — the
+            // lamps are appended LAST so they can never starve the facility/
+            // strata obligations, and the club takeover below still clears
+            // everything at The Deep. Flicker ticks here (dt-scaled).
+            if (canonWorld && streetLights.lampCount() > 0) {
+                bool exteriorVis = false;
+                for (uint32_t v : canonVisRooms)
+                    if (v == x3::game::kStreamedExteriorRoom) { exteriorVis = true; break; }
+                if (exteriorVis) {
+                    if (!simFrozen) streetLights.update(dt, scene);
+                    streetLights.selectLights(camX, camY, camZ, fl, 14);
+                }
             }
             // Gap C: at The Deep the club's own rig (neon/UV/orbit spots/bar fills)
             // takes the whole budget — no surface fixture reaches -200 m anyway.

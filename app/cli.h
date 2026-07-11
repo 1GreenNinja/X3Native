@@ -58,6 +58,11 @@ struct CliOptions {
     // follows the live chase framing and the "[E] Exit" HUD hint is drawn — the
     // honest driver-POV proof shot. Pair with --shot-settle 240.
     bool        shotDrive = false;
+    // --dusk (canonlevel staging): push the golden-hour sky to LATE DUSK — sun
+    // on the horizon, dark zenith, dim exposure — so the STREET LIGHTS carry
+    // the scene (lamp cones/pools read against a dark sky). Screenshot/dev
+    // staging only; the default canon sky is untouched without the flag.
+    bool        duskSky = false;
     // --shot-chatter N (canonlevel screenshot staging): before the settle
     // frames, advance the crowd+chatter sim (deterministic, render-free) until
     // N chat bubbles are concurrently alive within bubble range of the shot

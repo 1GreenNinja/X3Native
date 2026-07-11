@@ -571,7 +571,7 @@ private:
         // spec §3.2). Opaque draws leave these zeroed (the opaque path never reads
         // them). glass.frag (M2-M4) consumes: refraction (screen-space bend),
         // roughness (frost mip), specular (shimmer), tint (rgb body color).
-        glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = unused
+        glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = additive glow (rim exponent; 0 = normal glass)
         glm::vec4 glassTint;         // rgb = glass tint color, a = unused
     };
     static_assert(sizeof(ObjectData) == 160, "ObjectData must match std430 layout");
