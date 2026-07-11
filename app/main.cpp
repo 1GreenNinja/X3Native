@@ -2905,6 +2905,11 @@ int main(int argc, char** argv) {
     // GPU particles (glowing via bloom, soft against depth) + a bullet decal on the
     // surface. Off by default — the standard --screenshot gate view is unchanged.
     bool        fxDemo = false;
+    // FX lightning demo (--fx-lightning, with --fx-demo + --screenshot): instead of the
+    // generic ballistic burst, fire the LIGHTNING weapon FX across the view — a jagged
+    // forking white-hot/blue bolt (tracer, Lightning kind) plus a crackling arc-tendril
+    // impact — so the capture proves the real electric-arc look (not white puffs).
+    bool        fxLightning = false;
     // Windowed-mode resolution (--width <px> / --height <px>). Defaults to the
     // historical 1280x720 so the dev box + every headless/offscreen path are
     // UNCHANGED. A high-DPI box can pass e.g. --width 2560 --height 1440. These
@@ -3151,6 +3156,7 @@ int main(int argc, char** argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-') uiDemoScreen = argv[++i];
         }
         else if (a == "--fx-demo") fxDemo = true;
+        else if (a == "--fx-lightning") { fxDemo = true; fxLightning = true; }
         else if (a == "--screenshot-sky") {
             skyShot = true;
             // Optional output path arg (next token, if it isn't another flag).
@@ -11903,7 +11909,38 @@ int main(int argc, char** argv) {
             // frame (the LIVE-burst shot). With a LARGE settle (>30) skip the sparks
             // entirely so only the PERSISTENT scorch decal on the surface remains
             // visible (the decal-on-surface shot). One flag, two honest captures.
-            if (fxDemo && kSettleFrames <= 30 && i >= kSettleFrames - 3) {
+            if (fxLightning) {
+                // LIGHTNING proof shot: fire the beam-weapon FX ACROSS the view so the
+                // jagged fork reads (a bolt fired straight down the look axis is end-on
+                // / invisible). Horizontal "right" = perpendicular to the look dir.
+                const float hl = std::sqrt(fxLook.x * fxLook.x + fxLook.z * fxLook.z);
+                const x3::phys::Vec3 rightH = (hl > 1e-4f)
+                    ? x3::phys::Vec3{ fxLook.z / hl, 0.0f, -fxLook.x / hl }
+                    : x3::phys::Vec3{ 1.0f, 0.0f, 0.0f };
+                // Close vantage (the opening detention cell has little open depth) — keep
+                // the strike ~1.0 m ahead so it sits in open air in FRONT of the near wall,
+                // roughly at the crosshair, and run the bolt mostly VERTICAL (perpendicular
+                // to the near-horizontal look so the jagged fork always reads) into it.
+                // The "impact" capture uses a SHORT bolt so the crackling arc tendrils at
+                // the strike dominate the frame; the "bolt" capture uses a TALL bolt so the
+                // full forking zigzag reads.
+                const bool  impactShot = (screenshotPath.find("impact") != std::string::npos);
+                const float ahead   = 1.0f;
+                const float boltTall = impactShot ? 0.5f : 1.15f;
+                const x3::phys::Vec3 strike{ ssX + fxLook.x * ahead, ssY + fxLook.y * ahead,
+                                             ssZ + fxLook.z * ahead };            // crosshair-ish
+                const x3::phys::Vec3 boltA{ strike.x - rightH.x * 0.30f, strike.y + boltTall, strike.z - rightH.z * 0.30f };
+                const x3::phys::Vec3 boltB = strike;                             // bolt descends INTO the strike
+                // Spawn the bolt ONCE a few frames out (a re-spawn each frame resets its
+                // propagation age); it then ages to full length + a stable jagged shape by
+                // the captured frame. Crackling arc-tendril impact AT the strike point.
+                if (i == kSettleFrames - 3)
+                    combatFx.addTracer(boltA, boltB, x3::game::WeaponFxKind::Lightning);
+                if (i == kSettleFrames - 2)
+                    combatFx.spawnImpact(boltB, x3::phys::Vec3{ -fxLook.x, 0.5f, -fxLook.z },
+                                         x3::game::WeaponFxKind::Lightning);
+            }
+            else if (fxDemo && kSettleFrames <= 30 && i >= kSettleFrames - 3) {
                 combatFx.spawnMuzzleFlash(fxBurst, fxDir);
                 // Sparks spray back toward the camera (normal = -look) so they read.
                 combatFx.spawnImpact(fxBurst, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z });

@@ -67,6 +67,30 @@ constexpr float kTracerTime      = 0.12f;
 constexpr float kTracerThickness = 0.035f;
 // Max concurrent tracers (pool). Excess shots overwrite the oldest slot.
 constexpr int   kMaxTracers      = 8;
+// Lightning bolt ARC PROPAGATION speed (m/s): the jagged bolt visibly extends from
+// the muzzle toward the hit point at this rate rather than snapping full-length the
+// instant the (hitscan) beam fires. Tuned so a ~28 m max-range beam fully connects
+// (28/300 = ~0.093 s) inside the tracer lifetime (kTracerTime = 0.12 s) — the tip is
+// still visibly travelling yet always reaches the hit point.
+constexpr float kLightningBoltSpeed = 300.0f;
+// Lightning ZIGZAG re-roll period (seconds). The kink pattern of the held beam is
+// deterministic within one bucket of this clock and JUMPS to a new pattern each
+// bucket — a living, crackling zigzag that dances ~15x/s instead of strobing a new
+// shape every frame ("sharp zigzag lightning", re-randomize every ~50-80 ms).
+constexpr float kLightningRerollPeriod = 0.065f;
+// Target zigzag segment length (m): straight runs meeting at hard 15-45 deg kinks.
+constexpr float kLightningSegLen = 0.9f;
+// Core / glow thickness (m): a bright white-hot core box inside a wider blue glow
+// box, both emissive (HDR) so bloom builds the halo (a single thin LDR beam reads as
+// a pencil line). The bolt's whole read is these two nested emissive ribbons.
+constexpr float kLightningCoreThick = 0.035f;
+constexpr float kLightningGlowThick = 0.10f;
+
+// ---- Electric-arc tendril ring (lightning impact violence) ----
+// Short-lived mini zigzag arcs crawling off a lightning hit point (crackle impact),
+// NOT round white puffballs. Each is drawn as a tiny re-rolled zigzag bolt.
+constexpr int   kMaxArcs   = 12;
+constexpr float kArcLife   = 0.14f;   // seconds one tendril lives
 
 // ---- Muzzle flash tuning ----
 // How long (seconds) the muzzle flash quad stays visible.
@@ -162,6 +186,7 @@ private:
         x3::phys::Vec3 from{};
         x3::phys::Vec3 to{};
         float          life = 0.0f;  // remaining seconds; <= 0 means free slot
+        float          age  = 0.0f;  // seconds since spawn (Lightning bolt propagation)
         WeaponFxKind   kind = WeaponFxKind::Default;  // Lightning -> jagged bolt
     };
 
@@ -171,12 +196,26 @@ private:
                   const x3::phys::Vec3& a, const x3::phys::Vec3& b,
                   float thickness, const float color[4]) const;
 
-    // Draw a JAGGED lightning bolt a->b: subdivide into segments with random
-    // perpendicular offsets (re-rolled per call so it crackles), each drawn via
-    // drawBeam. The last vertex lands exactly on `b` (the hit point).
+    // Draw a HARD-ANGLE ZIGZAG lightning bolt a->b: straight segments (~kLightning-
+    // SegLen each) meeting at sharp 15-45 deg kinks (alternating-sign perpendicular
+    // offsets), 1-2 short thinner/dimmer BRANCH forks off random kink points, a bright
+    // white-hot core ribbon inside a wider blue glow ribbon (both HDR emissive so bloom
+    // builds the halo). The kink pattern is DETERMINISTIC from `seed` — the caller keys
+    // it to a kLightningRerollPeriod time bucket so the bolt holds a shape ~65 ms then
+    // jumps (a dancing, crackling zigzag, not a per-frame strobe). The last vertex lands
+    // exactly on `b` (the hit point). `eye` orients the camera-facing ribbons.
     void drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                            const x3::phys::Vec3& a, const x3::phys::Vec3& b,
-                           float thickness, const float color[4]) const;
+                           const x3::phys::Vec3& eye,
+                           float coreThick, uint32_t seed, float brightness) const;
+    // Draw one straight zigzag SEGMENT as a camera-facing GLOW ribbon + a thinner
+    // white-hot CORE ribbon, both via drawMeshEmissive (HDR emissive -> bloom halo).
+    // The ribbon width axis is perpendicular to both the segment and the eye->segment
+    // view dir, so the flat side faces the camera (never a square rod).
+    void drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                         const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                         const x3::phys::Vec3& eye,
+                         float coreThick, float brightness) const;
 
     // A centered unit box mesh (half-extent 0.5 each axis) reused for all FX,
     // scaled per draw via the model matrix.
@@ -184,6 +223,24 @@ private:
 
     Tracer m_tracers[kMaxTracers];
     int    m_nextTracer = 0;        // round-robin write cursor into the pool
+
+    // ---- Electric arc-tendril pool (lightning IMPACT violence) -------------
+    // Short-lived mini zigzag arcs that whip off a lightning hit point (impacts must
+    // be sharp electric streaks + arc tendrils, NOT white puffballs). Each is drawn as
+    // a tiny re-rolled zigzag via drawLightningBolt so it crackles.
+    struct Arc {
+        x3::phys::Vec3 base{};   // hit point
+        x3::phys::Vec3 dir{};    // tendril direction (unit)
+        float          len  = 0.6f;
+        float          life = 0.0f;   // remaining seconds (<=0 == free)
+        float          maxLife = kArcLife;
+        uint32_t       seed = 0;
+    };
+    Arc  m_arcs[kMaxArcs];
+    int  m_nextArc = 0;
+    // Spawn a ring of arc tendrils whipping off a lightning hit (called by
+    // spawnImpact for the Lightning kind).
+    void spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
 
     x3::phys::Vec3 m_muzzlePos{};
     float          m_muzzleFlash = 0.0f;  // remaining seconds
