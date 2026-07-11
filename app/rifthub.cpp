@@ -181,13 +181,21 @@ constexpr float    kAnchorHalfTan  = 0.55f;   // floor anchor plates at the stru
 constexpr float    kAnchorHalfY    = 0.05f;
 constexpr float    kAnchorHalfDep  = 0.45f;
 
-// ---- Floor plate (octagonal) --------------------------------------------------
-// 8 small box wedges in a ring on the floor — a low-poly "disk" the player
-// steps onto. Slightly elevated so it reads against the dark ground checker.
+// ---- Floor plate (octagonal industrial deck; ROUND 2) --------------------------
+// 8 box wedges in a ring on the floor. Round 1 tinted the whole deck in the
+// portal's saturated identity color at emissive 0.45 — "solid plastic identity
+// plates" clashing violently. Round 2: the wedges are DARK textured metal deck
+// (grate set, near-zero emissive); the identity lives ONLY on a thin emissive
+// TRIM RING at the deck's outer edge, its color desaturated ~50%.
 constexpr uint32_t kPlateSegments  = 8;
 constexpr float    kPlateRingR     = 1.30f;  // plate ring radius (center of each wedge)
 constexpr float    kPlateHalfY     = 0.05f;  // plate slab half-Y (flat)
 constexpr float    kPlateBoxThick  = 0.50f;  // plate wedge half-extent (radial)
+constexpr float    kPlateDeckTint[3] = { 0.34f, 0.36f, 0.38f };  // dark deck metal
+constexpr float    kTrimRingInnerR = 1.58f;  // identity trim ring (thin, outer edge)
+constexpr float    kTrimRingOuterR = 1.68f;
+constexpr float    kTrimRingEm     = 0.85f;  // capped accent — a trim, not a beacon
+constexpr float    kTrimDesat      = 0.50f;  // identity colors desaturated ~50%
 // Floor wedges butt at their outer edge — half-tangent = R * sin(pi/8) * 1.04 overlap.
 inline float plateHalfTangent() {
     const float pi = 3.14159265358979f;
@@ -749,6 +757,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const SurfaceSet& sTrim  = m_surf.get(device, "mw_metal_trim_b");    // trim (plates variant)
     const SurfaceSet& sFloor = m_surf.get(device, "sr_concrete_01");     // hall floor concrete
     const SurfaceSet& sWall  = m_surf.get(device, "mw_concrete_panels_b"); // hall walls
+    const SurfaceSet& sGrate = m_surf.get(device, "mw_metal_grate");     // deck plates (round 2)
     // Wet-floor MR texel (glTF packing G=rough B=metal): low roughness => the
     // dark concrete takes tight specular + IBL sheen (the wet reflective read).
     {
@@ -1245,12 +1254,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             scene.add(e);
         }
 
-        // ---- Octagonal floor plate (8 wedge boxes) ---------------------------
+        // ---- Octagonal floor plate (8 wedge boxes; ROUND 2 industrial deck) --
         // Each wedge is a thin box tangent to a circle of radius kPlateRingR,
-        // axis-aligned in Y (flat on the ground). Reuses the same local basis
-        // (right axis vs world Z) — for the floor plate the ring lives in the
-        // WORLD XZ plane around the portal center, so the wedge tangent is the
-        // tangent to the floor-ring circle.
+        // axis-aligned in Y (flat on the ground) — DARK textured metal deck
+        // now, not identity-colored plastic. The identity accent is the thin
+        // desaturated trim ring authored right after the wedges.
         for (uint32_t s = 0; s < kPlateSegments; ++s) {
             const float th = (float)s * (twoPi / (float)kPlateSegments);
             const float ct = std::cos(th);
@@ -1271,13 +1279,38 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float locX[3] = { tgX, 0.0f, tgZ };
             const float locY[3] = { 0.0f, 1.0f, 0.0f };
             const float locZ[3] = { rdX, 0.0f, rdZ };
-            AddedEntity ae = addOrientedEmissiveBox(
+            AddedEntity ae = addOrientedSurfBox(
                 scene, device,
                 plateHalfTangent(), kPlateHalfY, kPlateBoxThick,
                 locX, locY, locZ,
                 wcx, wcy, wcz,
-                sp.tint, /*emStrength=*/0.45f);  // identity accent, not a beacon (cap law)
+                &sGrate, kPlateDeckTint, /*emStrength=*/0.02f, /*uvScale=*/0.7f);
             m_portalMeshes.push_back(ae.mesh);
+        }
+        // Identity TRIM RING: a thin flat emissive annulus at the deck's outer
+        // edge — the ONLY identity-colored element, desaturated ~50% so it
+        // reads as a powered marker light, not colored plastic.
+        {
+            float trim[3];
+            const float luma = 0.299f * sp.tint[0] + 0.587f * sp.tint[1]
+                             + 0.114f * sp.tint[2];
+            for (int c3 = 0; c3 < 3; ++c3)
+                trim[c3] = sp.tint[c3] + (luma - sp.tint[c3]) * kTrimDesat;
+            x3::prims::PrimMesh ring =
+                x3::prims::makeRing(kTrimRingInnerR, kTrimRingOuterR, 64);
+            Entity e;
+            e.mesh = device.createMesh(ring.verts.data(), (uint32_t)ring.verts.size(),
+                                       ring.index.data(), (uint32_t)ring.index.size());
+            m_portalMeshes.push_back(e.mesh);
+            e.baseColor[0] = trim[0] * 0.15f; e.baseColor[1] = trim[1] * 0.15f;
+            e.baseColor[2] = trim[2] * 0.15f; e.baseColor[3] = 1.0f;
+            e.emissive[0] = trim[0]; e.emissive[1] = trim[1]; e.emissive[2] = trim[2];
+            e.emissive[3] = kTrimRingEm;
+            e.tag = (uint32_t)Tag::Prop;
+            const float ident3[3][3] = { {1,0,0}, {0,1,0}, {0,0,1} };
+            makeXform(e.transform, ident3[0], ident3[1], ident3[2],
+                      cx, kPlateHalfY * 2.0f + 0.004f, cz);
+            scene.add(e);
         }
 
         // ---- Chevron clamp HOUSINGS + amber SLIT cores (round 2) --------------
