@@ -203,6 +203,25 @@ struct CanonBeats {
 // Resolve the beat rooms from a loaded floor by canonical name.
 CanonBeats canonBeats(const CanonFloor& floor);
 
+// A detention-cell OBSERVATION WINDOW: a sealed, see-through armored viewport punched in
+// Jake's Cell hall-facing (+Z) graybox wall so he can look OUT into the Main Hall (and be
+// seen from it) — the "real transparent glass" that replaces the old opaque grey privacy
+// pane. cellObsWindow() derives it from the SAME resolved geometry both the graybox
+// builder and CellDressing consume, so the wall hole, the glass pane and the frame all
+// land on one span. Placed on the WIDER of the two stubs flanking the +Z Main-Hall
+// opening (never over a doorway), full room height, inset from the corner + door jamb.
+// buildCanonFloor opens the graybox there and re-seals it with an INVISIBLE collision box
+// (the cell stays escape-proof); CellDressing glazes it with clear glass + mullions.
+struct CellWindow {
+    uint32_t room  = kNoRoom;
+    int      wall  = 3;                  // 3 = +Z (Main-Hall-facing)
+    float    lo    = 0.0f, hi = 0.0f;    // X span of the opening (the +Z wall runs in X)
+    float    y0    = 0.0f, y1 = 0.0f;    // vertical span (full floor..ceiling)
+    float    plane = 0.0f;               // Z plane of the wall (cell z1)
+    bool valid() const { return room != kNoRoom && hi > lo + 0.3f; }
+};
+CellWindow cellObsWindow(const CanonFloor& floor);
+
 // Parse + resolve one floor ("1".."7") from the v2 project JSON at `jsonPath`. Returns
 // a CanonFloor; on failure (file missing / parse error / floor absent) returns a floor
 // with valid()==false (rooms empty) so the caller can fall back to the legacy build.
