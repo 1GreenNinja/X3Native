@@ -126,6 +126,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-act2") o.testAct2 = true;
         else if (a == "--test-act2desert") o.testAct2Desert = true;
         else if (a == "--test-act2caves") o.testAct2Caves = true;
+        else if (a == "--test-rifthub") o.testRifthub = true;
         else if (a == "--test-tod") o.testTod = true;
         else if (a == "--test-weather") o.testWeather = true;
         else if (a == "--test-worldregions") o.testWorldRegions = true;

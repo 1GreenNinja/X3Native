@@ -837,6 +837,24 @@ bool runRifthubSelfTest() {
             hub.portalCount() == 8,
             "T0 hub built with 8 portals (one per --world target)");
 
+    // T0b — trigger ids are exactly the fresh 200-207 range (no collision with
+    //       Act-1 10/30/40/50, Act-2 host 80-82, caves 100-108), all 8 distinct.
+    {
+        bool ok = true;
+        uint32_t seen = 0;   // bitmask of (id - kRifthubTrigBase)
+        for (uint32_t i = 0; i < hub.portalCount(); ++i) {
+            const uint32_t id = hub.portal(i).triggerId;
+            if (id < kRifthubTrigBase || id >= kRifthubTrigBase + kRifthubTrigCount) ok = false;
+            else {
+                const uint32_t bit = 1u << (id - kRifthubTrigBase);
+                if (seen & bit) ok = false;   // duplicate id
+                seen |= bit;
+            }
+        }
+        if (seen != ((1u << kRifthubTrigCount) - 1u)) ok = false;  // all 8 present
+        rhCheck(ok, "T0b trigger ids are the distinct fresh 200-207 range");
+    }
+
     // T1 — each portal owns a contiguous span of stone-ring + amber-chevron +
     //      event-horizon membrane entities + 2 core disks, and the spans index
     //      valid scene entities.
