@@ -213,9 +213,42 @@ int dispatchScreenshotHosts(HostContext& hc) {
                                     x3::game::convertedGlbRoot());
         if (!built) x3::logWarn("--screenshot-rescuerooms: wing dressing did not build (bare graybox)");
 
-        device->setAmbient(0.34f, 0.36f, 0.42f);
+        // Owner note #2c: the capture rig was over-lifting the room (exposure 1.35 +
+        // ambient 0.34 + huge 4-5 fill/key point lights) — everything washed out flat.
+        // Pull the exposure + ambient DOWN toward a moody clinical read so the corners
+        // fall into shadow and the softened pendant + cool wall coves shape the space.
+        device->setAmbient(0.19f, 0.20f, 0.24f);
         device->setIblProbe(true);
-        device->setExposure(1.35f);
+        device->setExposure(1.05f);
+        // Owner note #3 (the floor "jagged rounded shadow"): the DEFAULT RT-shadow tier
+        // is 2 (sun + POINT LIGHTS cast). Every fill/cove/pendant point light throws a
+        // ray-traced shadow of the bed FRAME, and in this short headless capture the
+        // jittered penumbra hasn't TAA-converged — that noise reads as pixelated radial
+        // SPOKES on the floor. The soft contact-shadow discs already ground the props, so
+        // drop to tier 1 (sun-only) for a clean clinical still. (Live gameplay keeps tier
+        // 2; its penumbra converges over many frames and reads soft, not jagged.)
+        { x3::rhi::IRenderDevice::RtShadowParams rss; rss.tier = 0; device->setRtShadowParams(rss); }
+        // SSGI is a TEMPORAL screen-space gather (EMA history, 16 noisy taps/frame). This
+        // headless still renders only ~18 frames, so its history never converges and the
+        // raw noise streaks into pixelated radial SPOKES on the floor at grazing angles —
+        // the true source of the "jagged shadow" residual. Disable the GI chain for the
+        // still (SSAO stays on for the corner-contact grounding). Live gameplay keeps SSGI.
+        { x3::rhi::IRenderDevice::GiParams gi; gi.enabled = false; device->setGiParams(gi); }
+        // The REAL "jagged floor shadow" (owner note #3): the capture never repositions
+        // the sun, so the engine's DEFAULT directional sun (normalize(0.4,1,0.3)) both
+        // FLOODS the room and casts a hard, low-res CSM shadow of the bed's SLATTED frame
+        // — parallel slat shadows that perspective-converge into a pixelated radial FAN.
+        // A windowless clinical room has no sun: park it BELOW THE HORIZON (the cell-
+        // capture technique) so N.L<=0 everywhere — no sun flood, no sun shadow. The room
+        // is then lit purely by ambient + IBL + the motivated pendant/cove lamps (moody
+        // clinical read) and the props ground on their soft contact discs alone.
+        {
+            x3::rhi::IRenderDevice::SkyParams sky;
+            sky.enabled = false;                                  // indoor: no sky visual
+            sky.sunDir[0] = 0.0f; sky.sunDir[1] = -1.0f; sky.sunDir[2] = 0.01f;  // below horizon
+            sky.sunIntensity = 0.0f;
+            device->setSkyParams(sky);
+        }
 
         struct RShot { const char* tag; float cx, cz; };
         const float fY = 10.0f;                 // F2 plate floor Y
@@ -237,13 +270,17 @@ int dispatchScreenshotHosts(HostContext& hc) {
             const x3::phys::Vec3 eye{ ex, ey, ez };
             std::vector<x3::rhi::PointLight> pls;
             wd.collectFloorLights(eye, pls);
+            // Soft COOL camera fill (was a 4.4-5.0 flood that blew the room out): a low
+            // cool bounce so the near side of the captive reads without erasing shadow.
             x3::rhi::PointLight fill;
             fill.pos[0] = ex; fill.pos[1] = fY + 2.4f; fill.pos[2] = ez;
-            fill.range = 12.0f; fill.color[0] = 4.4f; fill.color[1] = 4.6f; fill.color[2] = 5.0f;
+            fill.range = 11.0f; fill.color[0] = 1.35f; fill.color[1] = 1.45f; fill.color[2] = 1.65f;
             pls.push_back(fill);
+            // A modest WARM over-bed key (was 5.4 near-white blowout) — the recipe's own
+            // softened pendant now carries the room, this just guarantees the bed reads.
             x3::rhi::PointLight key;
             key.pos[0] = s.cx; key.pos[1] = fY + 2.9f; key.pos[2] = s.cz;
-            key.range = 7.5f; key.color[0] = 5.4f; key.color[1] = 5.3f; key.color[2] = 4.9f;
+            key.range = 7.0f; key.color[0] = 2.45f; key.color[1] = 2.35f; key.color[2] = 2.05f;
             pls.push_back(key);
             device->setPointLights(pls.data(), (uint32_t)pls.size());
 

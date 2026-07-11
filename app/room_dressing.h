@@ -117,6 +117,10 @@ private:
         float color[4]    = { 1, 1, 1, 1 };
         float emissive[4] = { 0, 0, 0, 0 };
         float transform[16] = {};
+        // DARK-GLASS SCREEN: when set, this quad draws via the PBR emissive-map path
+        // (near-black `color` albedo + this baked texture as the emissiveTex), so bright
+        // texels glow and dark texels stay black — the dark-glass rounded monitor read.
+        x3::rhi::TextureHandle tex{};
     };
     struct Asset {                    // one loaded kit GLB (cached)
         x3::asset::Model model;

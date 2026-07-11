@@ -4,6 +4,7 @@
 // ground props, one key light per room, one accent hue per zone (ART_BIBLE §2/§3).
 #include "room_dressing.h"
 #include "asset_root.h"      // riggedGlbRoot() — the F2 rescue-captive character GLBs
+#include "holo_terminal.h"   // bakeMedicalMonitor() — the F2 rescue-room dark-glass screen
 
 #include "engine/core/x3_log.h"
 
@@ -461,14 +462,21 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             mv.normal[1] = 1.0f; mv.uv[0] = 0.5f; verts.push_back(mv);
         };
         push(0, 0);
-        const int seg = 20;
+        // 64 segments (was 20): the coarse ring read as a POLYGONAL "jagged rounded"
+        // silhouette when scaled up to a bed-sized contact shadow (owner note #3).
+        const int seg = 64;
         for (int i = 0; i <= seg; ++i) {
             const float t = (float)i / seg * 2.0f * kPi;
             push(std::cos(t), std::sin(t));
         }
+        // SINGLE winding (owner note #3 root cause): the old mesh emitted BOTH windings
+        // per triangle at identical depth, so the fan self-z-fought — at grazing angles
+        // the 64 radial fan edges showed as hard pixelated "spokes" radiating from the
+        // shadow (the real jagged aberration, on top of the coarse silhouette). The glass
+        // pipeline already rasterizes CULL_MODE_NONE (double-sided), so one winding draws
+        // from every angle with no self-z-fight.
         for (int i = 1; i <= seg; ++i) {
             idx.push_back(0); idx.push_back(i); idx.push_back(i + 1);
-            idx.push_back(0); idx.push_back(i + 1); idx.push_back(i);
         }
         disc = device.createMesh(verts.data(), (uint32_t)verts.size(),
                                  idx.data(), (uint32_t)idx.size());
@@ -486,7 +494,16 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
     };
     auto shadowBlob = [&](uint32_t room, float x, float y, float z, float rx, float rz,
                           float dark) {
-        floorBlob(room, x, y, z, rx, rz, 0.02f, 0.02f, 0.03f, dark);
+        // FEATHERED contact-shadow POOL (owner note #3). The old single hard disc read
+        // as a jagged rounded aberration on the floor. Stack three concentric discs — a
+        // dark core with progressively softer, wider rings — so the edge FEATHERS into a
+        // soft grounding pool instead of a hard cut. Each ring is lifted a hair to avoid
+        // coplanar z-fighting in the glass pass (innermost highest). Combined with the
+        // 64-seg mesh above, the polygonal jaggedness is gone.
+        const float cr = 0.02f, cg = 0.02f, cb = 0.03f;
+        floorBlob(room, x, y + 0.004f, z, rx * 1.32f, rz * 1.32f, cr, cg, cb, dark * 0.25f);
+        floorBlob(room, x, y + 0.006f, z, rx * 1.00f, rz * 1.00f, cr, cg, cb, dark * 0.50f);
+        floorBlob(room, x, y + 0.008f, z, rx * 0.68f, rz * 0.68f, cr, cg, cb, dark * 0.78f);
     };
     // Dried-blood smear: dark desaturated red, stretched along its run.
     auto bloodBlob = [&](uint32_t room, float x, float y, float z, float rx, float rz,
@@ -994,19 +1011,75 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 }
 
                 // (4) Advanced medical equipment: a bedside vitals console, an IV/cryo
-                // drum, and an ACTIVE wall monitor (emissive teal panel) on the head wall.
+                // drum, and the DARK-GLASS ROUNDED VITALS MONITOR on the head wall.
+                // Owner note #1: the flat emissive TEAL quad is replaced with the same
+                // black-glass rounded-screen LANGUAGE as Jake's-cell terminal — a near-
+                // black rounded pane baked with a green ECG heart-rate trace + glowing
+                // vitals rows under the captive's NAME, driven as an emissiveTex over a
+                // near-black albedo (the ACES texture-gated glow law) so it reads as a
+                // LIVE dark-glass monitor, never a bright slab.
                 console(cx0 - 2.4f, cz0 - 1.2f, kPi * 0.5f);        // bedside vitals cart
                 barrel(cx0 + 2.3f, cz0 - 1.0f, 0.3f, tCryo);        // IV drip drum
-                glassQuad(1.4f, 0.9f, cx0, fY + 2.0f, r.z1() - kInset - 0.05f, kPi,
-                          0.16f, 0.90f, 0.72f, 0.55f, 0.55f);       // active vitals monitor
-
-                // (5) The ONE surgical key light + its pendant fixture, under the dropped
-                // ceiling directly over the bed (the room's motivated statement).
                 {
-                    const float ePend[4] = { 1.60f, 1.70f, 1.70f, 1.0f };
+                    const std::string capName = nameHas("Aria")   ? "ARIA"
+                                              : nameHas("Keisha") ? "KEISHA" : "EMILY";
+                    std::vector<uint8_t> mon = bakeMedicalMonitor(1024, capName);
+                    const x3::rhi::TextureHandle monTex =
+                        device.createTexture(mon.data(), 1024, 1024, /*srgb*/true);
+                    // A dedicated screen quad with MIRRORED U — mounted on the +Z (head)
+                    // wall via a kPi yaw (the wall-panel convention), which flips X, so the
+                    // readout text reads upright to the player (same reason HoloTerminal
+                    // pre-flips its back-fan U). 1.5 x 1.0 m dark-glass monitor.
+                    const float hw = 0.75f, hh = 0.50f;
+                    x3::rhi::MeshVertex mv[4] = {};
+                    const float mpx[4] = { -hw,  hw,  hw, -hw };
+                    const float mpy[4] = { -hh, -hh,  hh,  hh };
+                    const float muu[4] = { 1.0f, 0.0f, 0.0f, 1.0f };   // mirrored U
+                    const float mvv[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
+                    for (int i = 0; i < 4; ++i) {
+                        mv[i].pos[0] = mpx[i]; mv[i].pos[1] = mpy[i]; mv[i].pos[2] = 0.0f;
+                        mv[i].normal[2] = 1.0f; mv[i].uv[0] = muu[i]; mv[i].uv[1] = mvv[i];
+                    }
+                    const uint32_t midx[12] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 };
+                    ProcDraw sc; sc.room = ri; sc.tex = monTex;
+                    sc.mesh = device.createMesh(mv, 4, midx, 12);
+                    makeTR(sc.transform, kPi, 0.0f, cx0, fY + 2.05f, r.z1() - kInset - 0.04f);
+                    // Near-black glass albedo + neutral ~1.15 emissive multiplier so the
+                    // baked green/cyan status colors survive (texture-gated glow).
+                    sc.color[0] = 0.030f; sc.color[1] = 0.033f; sc.color[2] = 0.042f;
+                    sc.color[3] = 1.0f;
+                    sc.emissive[0] = 1.0f; sc.emissive[1] = 1.0f; sc.emissive[2] = 1.0f;
+                    sc.emissive[3] = 1.15f;
+                    m_proc.push_back(sc);
+                }
+
+                // (5) SOFTENED surgical EXAM light (owner note #2a): the single hot pendant
+                // was blowing out. Drop the fixture emissive so it isn't a white slab, and
+                // make the key WARM-NEUTRAL, LOWER, and WIDER so it pools on the bed like a
+                // real clinical exam light instead of a blowout hot spot.
+                {
+                    // NOTE: the Hanging Light GLB carries its OWN (bright) emissive
+                    // material, so the draw path takes the material's emissive RGB and
+                    // uses only ePend[3] as the SCALE — the RGB here is inert. The old
+                    // scale 1.0 clipped the fixture to a blown white slab under ACES; drop
+                    // the scale so the shade reads as a soft warm lamp, not a hot slab.
+                    const float ePend[4] = { 0.85f, 0.80f, 0.68f, 0.30f };   // dimmed warm fixture
                     placeProp(ri, aHang, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
                               cx0, dropY - 0.12f, cz0, ePend, tSteel);
-                    addLight(cx0, fY + 2.6f, cz0, 3.6f, 1.75f, 1.78f, 1.72f);
+                    addLight(cx0, fY + 2.55f, cz0, 4.6f, 1.02f, 0.94f, 0.80f);  // soft warm exam pool
+                }
+
+                // (5b) WALL COVE FILLS (owner note #2b): a few COOLER, low-energy fills up
+                // the two side walls so the room has shape — a clinical cove-light feel —
+                // instead of one hot pendant + black corners. Each is well under half the
+                // warm key energy so the pendant stays the ONE motivated statement.
+                {
+                    const float coveY = dropY - 0.45f;
+                    const float cR = 0.34f, cG = 0.44f, cB = 0.58f;   // cool clinical fill
+                    addLight(r.x0() + 0.55f, coveY, cz0 - 1.9f, 3.0f, cR, cG, cB);
+                    addLight(r.x0() + 0.55f, coveY, cz0 + 1.9f, 3.0f, cR, cG, cB);
+                    addLight(r.x1() - 0.55f, coveY, cz0 - 1.9f, 3.0f, cR, cG, cB);
+                    addLight(r.x1() - 0.55f, coveY, cz0 + 1.9f, 3.0f, cR, cG, cB);
                 }
 
                 // (6) Room B magnetic-seal tell: a RED locked door frame + bleed-under-the-
@@ -1541,6 +1614,13 @@ void RoomDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             gm.roughness = 1.0f; gm.specular = 0.0f;
             gm.tint[0] = p.color[0]; gm.tint[1] = p.color[1]; gm.tint[2] = p.color[2];
             device.drawMeshGlass(frame, p.mesh, white, p.color, p.emissive, gm, p.transform);
+        } else if (p.tex.valid()) {
+            // Dark-glass screen: near-black albedo (p.color) + the baked monitor as an
+            // EMISSIVE map so only the glowing readout texels bloom (ACES glow law).
+            device.drawMeshPBR(frame, p.mesh, white,
+                               x3::rhi::TextureHandle{ 0 }, x3::rhi::TextureHandle{ 0 },
+                               p.color, p.emissive, p.transform, /*alphaMask*/false,
+                               /*alphaBlend*/false, /*emissiveTex*/p.tex);
         } else {
             device.drawMeshEmissive(frame, p.mesh, white, p.color, p.emissive, p.transform);
         }
