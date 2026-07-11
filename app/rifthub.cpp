@@ -39,8 +39,8 @@ constexpr float kRingRadius    = 14.0f;   // portal placement radius (around spa
 constexpr float kHallWallH     = 10.0f;   // interior wall height
 constexpr float kHallWallT     = 0.30f;   // wall thickness
 constexpr float kHallCeilT     = 0.20f;   // ceiling slab thickness
-constexpr float kConcreteTint[3] = { 0.42f, 0.44f, 0.46f };  // dark venue concrete
-constexpr float kFloorTint[3]    = { 0.34f, 0.36f, 0.38f };  // wet dark floor
+constexpr float kConcreteTint[3] = { 0.48f, 0.50f, 0.52f };  // dark venue concrete
+constexpr float kFloorTint[3]    = { 0.46f, 0.48f, 0.51f };  // wet dark floor (round 2: must READ)
 constexpr uint32_t kHallColumns  = 8;     // perimeter steel columns
 constexpr float kColumnHalf      = 0.32f;
 constexpr uint32_t kHallBeams    = 5;     // ceiling beam count per direction
@@ -49,14 +49,21 @@ constexpr float kBeamHalfH       = 0.28f;
 constexpr float kBeamY           = 9.45f; // beam centerline height
 constexpr uint32_t kStripCount   = 8;     // ceiling strip lights
 constexpr float kStripTint[3]    = { 0.72f, 0.82f, 0.95f };  // cool white-blue
-constexpr float kStripEm         = 1.90f; // capped — fixtures, not suns
+constexpr float kStripEm         = 2.30f; // capped — fixtures, not suns
 constexpr uint32_t kCableCount   = 10;    // hanging catenary cables
 constexpr uint32_t kCableSegs    = 9;
 constexpr float kCableSag        = 1.15f;
 // Hall fill lights (appended AFTER the 8 animated gate lights in m_lights).
+// ROUND 2 ("it's pitch black behind the gates"): fills nearly doubled + wider
+// so the shell/beams/columns/machinery silhouettes READ — moody, not void.
 constexpr float kHallLightColor[3] = { 0.55f, 0.62f, 0.72f };  // cool industrial
-constexpr float kHallLightI        = 3.20f;
-constexpr float kHallLightRange    = 20.0f;
+constexpr float kHallLightI        = 7.50f;
+constexpr float kHallLightRange    = 28.0f;
+// Wall-wash accents at the perimeter machinery clusters (warm, dim — they
+// pick the silhouettes out of the dark without flattening the mood).
+constexpr float kWashColor[3]      = { 0.70f, 0.58f, 0.42f };
+constexpr float kWashI             = 2.20f;
+constexpr float kWashRange         = 8.0f;
 
 // ---- Stone gateway ring geometry ----------------------------------------------
 // A SUBSTANTIAL, thick ring you walk through — a single circle of N deep tangent
@@ -773,7 +780,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // Wet-floor MR texel (glTF packing G=rough B=metal): low roughness => the
     // dark concrete takes tight specular + IBL sheen (the wet reflective read).
     {
-        const uint8_t wetPx[4] = { 0, 52, 24, 255 };
+        const uint8_t wetPx[4] = { 0, 72, 24, 255 };   // round 2: a touch rougher so diffuse reads
         m_mrWet = device.createTexture(wetPx, 1, 1, false);
     }
 
@@ -1565,11 +1572,26 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const float pos[5][2] = { {10,10}, {-10,10}, {10,-10}, {-10,-10}, {0,0} };
         for (int l = 0; l < 5; ++l) {
             x3::rhi::PointLight L;
-            L.pos[0] = pos[l][0]; L.pos[1] = kBeamY - 0.6f; L.pos[2] = pos[l][1];
+            L.pos[0] = pos[l][0]; L.pos[1] = 6.8f; L.pos[2] = pos[l][1];
             L.range  = kHallLightRange;
             L.color[0] = kHallLightColor[0] * kHallLightI;
             L.color[1] = kHallLightColor[1] * kHallLightI;
             L.color[2] = kHallLightColor[2] * kHallLightI;
+            m_lights.push_back(L);
+        }
+        // Wall-wash accents: one warm dim light over each perimeter machinery
+        // cluster (same deterministic angles as the silhouette pass) so the
+        // shapes READ against the wall instead of vanishing into black.
+        for (uint32_t mc = 0; mc < 8; ++mc) {
+            const float ang = (float)mc * (6.2831853f / 8.0f) + 0.39f;
+            x3::rhi::PointLight L;
+            L.pos[0] = std::cos(ang) * (kHubHalf - 3.4f);
+            L.pos[1] = 4.6f;
+            L.pos[2] = std::sin(ang) * (kHubHalf - 3.4f);
+            L.range  = kWashRange;
+            L.color[0] = kWashColor[0] * kWashI;
+            L.color[1] = kWashColor[1] * kWashI;
+            L.color[2] = kWashColor[2] * kWashI;
             m_lights.push_back(L);
         }
     }
@@ -1997,9 +2019,9 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     x3::rhi::IRenderDevice::FogParams fog;
     fog.enabled  = true;
     fog.color[0] = 0.020f; fog.color[1] = 0.030f; fog.color[2] = 0.050f;   // cold blue haze
-    fog.density  = 0.024f;
+    fog.density  = 0.015f;   // ROUND 2: thin enough that the far shell READS
     fog.start    = 2.5f;
-    fog.maxOpacity = 0.80f;
+    fog.maxOpacity = 0.70f;
     device.setFog(fog);
     // Teal-shadow / warm-highlight grade (the locked palette: blue key,
     // orange accents) + a light vignette.
@@ -2014,9 +2036,12 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // interior IBL probe so the wet floor / gate metal reflect the hall not
     // an open sky, and a NEGATIVE exposure bias so auto-exposure (which pins
     // its 2.2x ceiling in a dark scene) can't wash the metal pale.
-    device.setAmbient(0.050f, 0.058f, 0.078f);
+    // ROUND 2: ambient roughly doubled — the owner's read was "pitch black
+    // behind the gates". The hall must READ (columns/beams/machinery as lit
+    // silhouettes) while staying a moody dark-industrial grade.
+    device.setAmbient(0.130f, 0.145f, 0.180f);
     device.setIblProbe(true);
-    device.setExposure(0.95f);
+    device.setExposure(1.12f);
 }
 
 void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
