@@ -107,6 +107,7 @@
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
+#include "crowd_skin.h"                    // SKINNED CITIZENS: the crowds' rigged visual layer
 #include "alert.h"                         // FACILITY ALERT LEVEL: the wanted system (--test-alert)
 #include "host_context.h"                  // #28 deep split: shared live-state struct for the --world hosts
 #include "world_hosts.h"                   // #28 deep split: dispatchWorldHost() + the extracted host TUs
@@ -1148,6 +1149,16 @@ int runDefaultHost(HostContext& hc) {
     // region hooks — the region's ownership ledger owns every entity/mesh, and
     // the teardown hook abandon()s them before any slot is released.
     x3::game::CrowdSystem cityCrowds[3];
+    // SKINNED CITIZENS — the crowds' skinned visual layer (app/crowd_skin.h):
+    // one inert rigged GLB character per agent, pose-following the CrowdSystem
+    // brains (Walk/Idle clips from the agent's own speed, gestures on top).
+    // HOST-OWNED, PERSISTENT pools (the parked-cars doctrine — a loaded rig
+    // must never land in a region ledger): facility skins spawn DEFERRED
+    // 1/frame after boot; city skins spawn deferred after the region realize
+    // and survive stream-out/in cycles (deactivate on teardown, re-attach with
+    // zero reloads on re-realize). A failed rig keeps that agent's blockout.
+    x3::game::CrowdSkin canonCrowdSkins[3];
+    x3::game::CrowdSkin cityCrowdSkins[3];
     // WORLD CARS — findable/drivable/hackable vehicles in the one world (see
     // world_cars.h). Host-owned; the apron/approach cars park at boot, the city
     // cars park/unpark with the `city` region via the WorldStreamer hooks (the
@@ -1724,6 +1735,20 @@ int runDefaultHost(HostContext& hc) {
                 x3::logInfo("LIVING NPCs: canon facility crowds built — " +
                             std::to_string(npcCount) + " agents in 3 rooms (" +
                             std::to_string(npcMs) + " ms)");
+                // SKINNED CITIZENS: plan the skinned layer over each crowd. NO
+                // loads here (boot stays flat) — the pools fill DEFERRED, one
+                // spawn per frame, from the main-loop tick.
+                {
+                    const char* siteName[3] = { "Main Hall", "Bottom Hall", "Entrance" };
+                    for (int ci = 0; ci < 3; ++ci) {
+                        if (!canonCrowds[ci].built()) continue;
+                        x3::game::CrowdSkinConfig sc;
+                        sc.site = siteName[ci];
+                        sc.modelDir = x3::game::riggedGlbRoot();
+                        sc.seed = (uint32_t)ci;   // offset the rig cycle per room
+                        canonCrowdSkins[ci].build(sc, canonCrowds[ci]);
+                    }
+                }
                 x3::boot::mark("canon crowds (living NPCs)");
             }
             // ---- SEAM 2 (world merge): THE GLASS EXTERIOR WRAPS THE REAL TOWER.
@@ -2299,7 +2324,8 @@ int runDefaultHost(HostContext& hc) {
             // never write into recycled slots. Sites sit on the district flat
             // pads (placeOnTerrain anchors the ground). ----
             canonWstream.setRegionHooks(
-                [&cityCrowds, &worldCars](const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
+                [&cityCrowds, &cityCrowdSkins, &worldCars](
+                              const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
                               x3::rhi::IRenderDevice& dev, x3::phys::IPhysicsWorld& ph) {
                     // WORLD CARS: park this region's curb cars (the system adds
                     // only its OWN static bodies + direct-draw visuals — nothing
@@ -2370,13 +2396,34 @@ int runDefaultHost(HostContext& hc) {
                     x3::logInfo("LIVING NPCs: city street crowds built inside the "
                                 "`city` region realize (24 agents: sidewalk 10, "
                                 "dock crew 5, plaza 9 — ledger-owned)");
+                    // SKINNED CITIZENS: plan/attach the skinned layer. build()
+                    // does NO loads and NO Scene::add, so nothing enters the
+                    // region ledger (the parked-cars doctrine); the pools fill
+                    // deferred (1/frame) from the main loop, and on a region
+                    // RE-realize the already-loaded rigs re-attach for free.
+                    {
+                        const char* siteName[3] = { "New District sidewalk",
+                                                    "Dock crew", "Scrapyard plaza" };
+                        for (int ci = 0; ci < 3; ++ci) {
+                            if (!cityCrowds[ci].built()) continue;
+                            x3::game::CrowdSkinConfig sc;
+                            sc.site = siteName[ci];
+                            sc.modelDir = x3::game::riggedGlbRoot();
+                            sc.seed = (uint32_t)(3 + ci);   // offset vs the facility rooms
+                            cityCrowdSkins[ci].build(sc, cityCrowds[ci]);
+                        }
+                    }
                 },
-                [&cityCrowds, &worldCars, &physics](const x3::game::WorldRegionDesc& rd) {
+                [&cityCrowds, &cityCrowdSkins, &scene, &worldCars, &physics](
+                              const x3::game::WorldRegionDesc& rd) {
                     // WORLD CARS: unpark this region's curb cars (removes our
                     // static bodies; a car currently DRIVEN is the host-owned
                     // live rig and survives the eviction untouched).
                     worldCars.onRegionTeardown(rd.id, *physics);
                     if (rd.id != "city") return;
+                    // SKINNED CITIZENS first (hide the host-owned characters +
+                    // detach from the dying agents), THEN abandon the brains.
+                    for (auto& ck : cityCrowdSkins) ck.deactivate(scene);
                     for (auto& cc : cityCrowds) cc.abandon();
                     x3::logInfo("LIVING NPCs: city crowds abandoned with the region "
                                 "(ledger tears the entities down)");
@@ -3249,6 +3296,21 @@ int runDefaultHost(HostContext& hc) {
                 // the ball in play) — no PVS gate here; we want them settled.
                 for (auto& cc : canonCrowds) if (cc.built()) cc.update(dt, scene);
                 for (auto& cc : cityCrowds)  if (cc.built()) cc.update(dt, scene);
+                // SKINNED CITIZENS: pose-follow + DRAIN the spawn pools fully
+                // (bounded) — a short settle must still capture real people,
+                // not a half-swapped blockout crowd. Not the interactive path.
+                for (int ci = 0; ci < 3; ++ci) {
+                    for (int b = 0; b < 64; ++b) {
+                        if (canonCrowds[ci].built())
+                            canonCrowdSkins[ci].update(dt, canonCrowds[ci], scene,
+                                                       *device, *physics);
+                        if (cityCrowds[ci].built())
+                            cityCrowdSkins[ci].update(dt, cityCrowds[ci], scene,
+                                                      *device, *physics);
+                        if (canonCrowdSkins[ci].pendingCount() == 0 &&
+                            cityCrowdSkins[ci].pendingCount() == 0) break;
+                    }
+                }
                 // SEAM 3: keep the planet streaming under the shot camera — an
                 // outdoor --shot-cam far from the tower needs its terrain tiles
                 // (the ring re-centers on the camera) and any nearby regions
@@ -3341,6 +3403,12 @@ int runDefaultHost(HostContext& hc) {
                         worldCars.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
+                    // SKINNED CITIZENS (room-gated inside draw()) — the crowds
+                    // as real people in the still captures.
+                    for (int ci = 0; ci < 3; ++ci) {
+                        canonCrowdSkins[ci].draw(*device, frame, scene);
+                        cityCrowdSkins[ci].draw(*device, frame, scene);
+                    }
                 }
                 // W2-A2 (W2-C's queued hook): the --screenshot path NEVER drew the FP
                 // viewmodel — the "pistol" in every prior cell shot was the hovering
@@ -3992,6 +4060,11 @@ int runDefaultHost(HostContext& hc) {
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
                 if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
+                // SKINNED CITIZENS (room-gated inside draw()).
+                for (int ci = 0; ci < 3; ++ci) {
+                    canonCrowdSkins[ci].draw(*device, frame, scene);
+                    cityCrowdSkins[ci].draw(*device, frame, scene);
+                }
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -6133,6 +6206,15 @@ int runDefaultHost(HostContext& hc) {
             for (auto& cc : cityCrowds)
                 if (cc.built() && scene.roomVisible(cc.config().roomId))
                     cc.update(dt, scene);
+            // SKINNED CITIZENS: pose-follow the brains + drain the deferred
+            // spawn queues (1 rig/frame; the layer PVS-gates its own pose work,
+            // so a culled deployment costs only the queue check).
+            for (int ci = 0; ci < 3; ++ci) {
+                if (canonCrowds[ci].built())
+                    canonCrowdSkins[ci].update(dt, canonCrowds[ci], scene, *device, *physics);
+                if (cityCrowds[ci].built())
+                    cityCrowdSkins[ci].update(dt, cityCrowds[ci], scene, *device, *physics);
+            }
             // WORLD CARS while driving: (1) pedestrians within ~3.5 m of a car
             // moving at speed SCATTER (a cheap proximity probe, throttled, feeds
             // onViolence at the car pos); (2) deep river/sea water KILLS the
@@ -6942,6 +7024,12 @@ int runDefaultHost(HostContext& hc) {
             // skinned, so the cull's perf payoff is preserved with the characters in).
             if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
+            // SKINNED CITIZENS: the crowds as real people — the same drawMonster
+            // PBR fan as the club's dancers, room-gated inside draw().
+            for (int ci = 0; ci < 3; ++ci) {
+                canonCrowdSkins[ci].draw(*device, frame, scene);
+                cityCrowdSkins[ci].draw(*device, frame, scene);
+            }
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).

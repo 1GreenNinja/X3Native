@@ -2,6 +2,7 @@
 // Game/slice code only — engine/ stays pure.
 
 #include "crowd.h"
+#include "crowd_skin.h"   // the skinned-citizen section of --test-crowd
 #include "mesh_prims.h"
 #include "headless_device.h"
 
@@ -758,6 +759,9 @@ void CrowdSystem::update(float dt, Scene& scene) {
                 }
             }
         }
+        // Mirror the gesture values for the skinned visual layer (crowd_skin.h)
+        // before writing the blockout transform — same numbers, one source.
+        a.visBob = bob; a.visCrouch = crouch; a.visLean = lean;
         writeTransform(a, scene, bob, crouch, lean);
     }
 
@@ -1082,7 +1086,12 @@ bool runCrowdSelfTest() {
 
     x3::logInfo("crowd: " + std::to_string(c_pass) + "/"
                 + std::to_string(c_pass + c_fail) + " passed");
-    return c_fail == 0;
+
+    // ---- SKINNED CITIZENS layer (S1..S5, app/crowd_skin.cpp): the skinned
+    // visual layer binds/falls back/streams over the same brains. ----
+    const bool skinOk = runCrowdSkinSelfTest();
+
+    return c_fail == 0 && skinOk;
 }
 
 } // namespace x3::game

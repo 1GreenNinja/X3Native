@@ -528,6 +528,14 @@ public:
         // boss machine just carries the value. 0 (default) => no escape timer.
         float escapeTimerSeconds   = 0.0f;
 
+        // ---- SKINNED CITIZENS (crowd skin layer). True => skip the Enemy-layer
+        // collision body entirely: the character is a PURE VISUAL (crowd agents
+        // are kinematic by design — no hitbox, no ray interception, nothing for
+        // a stray Enemy-mask raycast to eat). m_body stays invalid; update()'s
+        // body-rotation sync already guards on m_body.valid(). False (default)
+        // keeps every existing monster/prop identical. ----
+        bool  noBody              = false;
+
         // ---- Adaptive Hide (canon-aliens SaurianWarlord). Boss-style "rotate
         // damage type" rhythm: after taking damage of type T, gain `adaptiveHideResist`
         // reduction on ALL further damage of type T for `adaptiveHideDurationSec`
@@ -837,6 +845,25 @@ public:
         m_pos = p; m_yaw = yaw; m_yawTarget = yaw;
     }
 
+    // SKINNED CITIZENS (crowd skin layer): externally drive an inert prop's
+    // LOCOMOTION + GESTURE, alongside setPropPose. The caller owns the brain
+    // (CrowdSystem) and calls this each frame BEFORE update():
+    //   * speed — the prop's own planar speed (m/s). update() measures speed
+    //     from position deltas, but a prop posed via setPropPose has already
+    //     moved by the time update() runs (delta == 0), so the caller feeds the
+    //     real speed and the locomotion blend picks Idle/Walk/Run from it
+    //     (>= the 0.2 m/s walk threshold => Walk). < 0 (the default) restores
+    //     the measured-delta behaviour exactly (every existing monster).
+    //   * lean — a small torso pitch (radians) toward the facing, layered onto
+    //     the render transform (the crowd's converse nod / carry lean / console
+    //     lean-in reads). 0 (default) leaves the transform bake byte-identical.
+    void setPropMotion(float speed, float lean) {
+        m_propSpeed = speed; m_propLean = lean;
+    }
+    // Drop an active calm loop (back to plain idle/locomotion). Used by the
+    // crowd skin layer to toggle the Talk clip on conversation start/end.
+    void clearCalmLoop() { m_calmLoopClip = -1; m_calmLoopT = 0.0f; }
+
     // True if the real GLB loaded; false if the procedural fallback box is in use.
     // Valid after buildMonster().
     bool usingRealModel() const { return m_usingReal; }
@@ -1034,6 +1061,12 @@ private:
 
     // Current yaw (radians) the model faces; baked into the render 3x3 each frame.
     float m_yaw       = 0.0f;
+
+    // ---- SKINNED CITIZENS: externally-fed prop locomotion + lean (see
+    // setPropMotion). speed < 0 == "not driven" (measure deltas, the default);
+    // lean 0 == no pitch (the default) — every existing monster is unchanged.
+    float m_propSpeed = -1.0f;
+    float m_propLean  = 0.0f;
 
     // Wander/strafe state so the chase weaves + orbits instead of beelining.
     float m_wander    = 0.0f;   // weave oscillator phase

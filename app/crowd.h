@@ -151,6 +151,14 @@ struct CrowdAgent {
     // PLAY: index into cfg.play + this agent's slot in the knot ring.
     uint32_t   playIdx = kNoLink;
     uint32_t   slot = 0;
+    // ---- Visual gesture OUTPUTS (skinned-citizen layer). update() computes a
+    // per-frame bob / crouch / lean for the blockout transform; these mirror the
+    // exact values it passed to writeTransform so a skinned visual layer
+    // (app/crowd_skin.h) can apply the SAME gestures on top of a rigged
+    // character without duplicating the behaviour math. Read-only for hosts.
+    float      visBob = 0.0f;      // vertical bob offset (m)
+    float      visCrouch = 1.0f;   // vertical scale (1 = standing, <1 = huddled/seated)
+    float      visLean = 0.0f;     // torso pitch toward facing (radians)
 };
 
 // A shared prop entity the crowd animates kinematically (crate / ball).
