@@ -27,6 +27,44 @@
 
 namespace x3::game {
 
+class HackableRegistry;   // hackables.h — the WD2 hacking layer (optional, populated by the district)
+class CrowdSystem;        // crowd.h — civilian crowd on the main drag (optional)
+class EnvArtSystem;       // env_art.h — persistent GLB-instancing host for real building facades (optional)
+
+// ===========================================================================
+// THE NEON DISTRICT (feat/city-aaa Milestone 1) — the art-directed, walkable/drivable
+// CP2077-vibe city block at the canon Scrapyard City center (-600, 500). A richer build
+// than the legacy graybox City below: a wet reflective street grid + sidewalks, varied
+// building massing with emissive window grids / lit shopfronts / neon signage, street
+// lamps that pool light, parked vehicles, and the LNG tank landmark at (-500, 525). When
+// a HackableRegistry is passed it also SCATTERS the Watch-Dogs-2 hackable objects
+// (cameras, junction boxes, ATMs, vehicles, traffic signals) + their holo MARKER
+// entities; when a CrowdSystem is passed it configures + builds a civilian crowd on the
+// drag. Additive to City (below) — the streamed/city host chooses which to build.
+struct NeonDistrictStats {
+    uint32_t buildings    = 0;
+    uint32_t streetlights = 0;
+    uint32_t vehicles     = 0;
+    uint32_t signs        = 0;
+    uint32_t hackables    = 0;   // objects registered into the HackableRegistry (if any)
+    uint32_t propClutter  = 0;   // scattered street-clutter prop instances
+    float    centerX = -600.0f, centerZ = 500.0f;
+    float    groundY = 0.0f;     // terrain height at the district center (player spawn feet)
+};
+
+// Build the neon district onto `scene` at (cx, cz). Static geometry (no collision this
+// pass beyond the terrain it stands on) + optional hackables/crowd. Deterministic layout.
+// `facades` (optional): a persistent EnvArtSystem, already mounted on the converted-
+// GLB dir, that supplies REAL cyberpunk building facade meshes. When present + loaded,
+// each building's procedural box BODY is replaced by an instanced GLB facade (the neon
+// signage, lit shopfronts, lamps, hackables, crowd + LNG tank are unchanged). When null
+// / unmounted / a GLB fails, the procedural box body is kept (headless tests, no-assets).
+NeonDistrictStats buildNeonDistrict(Scene& scene, x3::rhi::IRenderDevice& device,
+                                    x3::phys::IPhysicsWorld& physics,
+                                    HackableRegistry* hax, CrowdSystem* crowd,
+                                    float cx = -600.0f, float cz = 500.0f,
+                                    EnvArtSystem* facades = nullptr);
+
 // City districts (the metropolis).
 enum class CityZone : uint32_t {
     ScrapyardCity = 0,   // salvage/scrap district (ramshackle)

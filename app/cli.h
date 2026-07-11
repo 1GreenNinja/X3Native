@@ -49,7 +49,8 @@ struct CliOptions {
          // REAL Level1Game DoorSystem hatch opens + objective line set; plus the
          // keypad submit link via the real HoloTerminal). See runHatchChainSelfTest.
          testHatch = false,
-         testEcology = false, testCrowd = false, testAlert = false;
+         testEcology = false, testCrowd = false, testAlert = false, testNpcChar = false,
+         testHacking = false;
     // --test-loader (EDITOR LevelDoc data-driven loader): author a doc in memory ->
     // save -> LOAD through the real loader -> assert the built world matches; then
     // modify + hot-reload -> assert the delta applied and the create/destroy ledgers

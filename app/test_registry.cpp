@@ -103,6 +103,8 @@
 #include "vehparts.h"
 #include "ecology.h"
 #include "crowd.h"
+#include "npc_character.h"
+#include "hackables.h"
 #include "alert.h"
 #include "space_pilot.h"          // x3::game::runSpaceSelfTest (--test-space)
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
@@ -780,6 +782,16 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running CROWDS self-test "
                     "(idle clusters + wander points + scatter/cower on violence + return after calm)...");
         return x3::game::runCrowdSelfTest() ? 0 : 1;
+    }
+    if (tf.testNpcChar) {
+        x3::logInfo("running NPC CHARACTER self-test "
+                    "(citizen body: rig loads + anim states switch + ragdoll settles on floor + crowd no-leak)...");
+        return x3::game::runNpcCharacterSelfTest() ? 0 : 1;
+    }
+    if (tf.testHacking) {
+        x3::logInfo("running WD2 HACKING self-test "
+                    "(hackable registry: scatter + type coverage + scan/aim + effects + karma/heat)...");
+        return x3::game::runHackingSelfTest() ? 0 : 1;
     }
     if (tf.testAlert) {
         x3::logInfo("running FACILITY ALERT LEVEL self-test "

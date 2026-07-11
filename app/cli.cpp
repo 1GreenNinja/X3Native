@@ -167,6 +167,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;
+        else if (a == "--test-npcchar") o.testNpcChar = true;
+        else if (a == "--test-hacking") o.testHacking = true;
         else if (a == "--test-alert") o.testAlert = true;
         else if (a == "--screenshot-ecology") {
             o.ecologyShot = true;

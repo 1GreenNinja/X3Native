@@ -81,6 +81,28 @@ public:
                         std::string_view convertedGlbDir, std::string_view relPath,
                         const float transform[16]);
 
+    // ---- CITY FACADES (feat/city-uplift) --------------------------------------
+    // Persistent GLB-instancing host for the neon district: mount a converted-GLB
+    // dir once, load each unique building GLB once (cached upload), then BAKE any
+    // number of placed instances directly into a Scene as static entities (so they
+    // render through Scene::render at every render site — no per-frame draw() hook).
+    // The EnvArtSystem must outlive the Scene (it owns the GPU mesh/texture handles).
+    // Mount the converted-GLB directory (idempotent). False if the dir is missing.
+    bool mountFacades(x3::rhi::IRenderDevice& device, std::string_view dir);
+    // Load one building GLB under the mounted dir; returns an asset index (cached by
+    // path). Returns UINT32_MAX if the load failed (the caller keeps its box fallback).
+    uint32_t loadFacade(const std::string& relPath);
+    // Bake asset `a` into `scene` at world transform `xf` (column-major 4x4): one
+    // static Scene entity per drawable (mesh + baseColor/normal/MR + emissive), drawn
+    // at xf * nodeTransform. `emisScale` multiplies each drawable's emissive strength
+    // (0 keeps the GLB's own emissive). Returns the number of entities added (0 if the
+    // asset failed to load — caller keeps its procedural box body). Safe with UINT32_MAX.
+    // `baseGlow`: a faint SELF-EMISSIVE floor (baseColor * baseGlow) applied to drawables
+    // that have NO material emissive, so dark-night facade masses read as dim city-glow
+    // bounce (added post-lighting -> survives the dark night-sky IBL). 0 = off.
+    uint32_t bakeInto(Scene& scene, uint32_t a, const float xf[16],
+                      float emisScale = 1.0f, float baseGlow = 0.0f);
+
     // Replace instance `idx`'s transform (column-major). For the turntable
     // capture rig (re-pose the car between stills) — cheap, no reload.
     void setInstanceTransform(uint32_t idx, const float transform[16]);
