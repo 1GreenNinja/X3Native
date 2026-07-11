@@ -75,7 +75,7 @@ constexpr float    kRingY          = 2.2f;   // ring center height above the flo
 constexpr float    kRingR          = 2.05f;  // ring CENTERLINE radius
 constexpr float    kRingHalfRad    = 0.40f;  // radial half-thickness (0.80 m thick band)
 constexpr float    kRingHalfDepth  = 0.45f;  // half-depth through the gate (0.90 m deep)
-constexpr float    kRingStone[3]   = { 0.55f, 0.66f, 0.63f };  // teal-patina multiplier (over the metal set)
+constexpr float    kRingStone[3]   = { 0.62f, 0.70f, 0.68f };  // teal-cast tint over the DARK trim_a set (~0.19 effective)
 constexpr float    kRingEmissive   = 0.06f;  // near-zero self-lift — the blue core + hall LIGHT the metal
 // TRUE TORUS ring params (step-2 AAA smooth ring; replaces the box segments):
 constexpr float    kRingTubeR      = 0.40f;  // tube radius => 0.80 m band / 0.80 m depth
@@ -130,9 +130,10 @@ constexpr float    kCapHalfDep     = 0.050f;
 // TEAL-OXIDE patina.
 constexpr uint32_t kPlateArcCount  = 12;
 constexpr float    kPlateSeatR     = 2.16f;   // plate center radius (over the tube crest)
-constexpr float    kPatinaTint[3]  = { 0.62f, 0.78f, 0.74f };  // teal-oxide multiplier
-constexpr float    kSteelTint[3]   = { 0.52f, 0.55f, 0.58f };  // neutral steel multiplier
-constexpr float    kDarkTint[3]    = { 0.30f, 0.33f, 0.35f };  // dark housing metal
+constexpr float    kPatinaTint[3]  = { 0.30f, 0.38f, 0.36f };  // teal-oxide multiplier (round 2: grime-dark)
+constexpr float    kSteelTint[3]   = { 0.30f, 0.33f, 0.36f };  // neutral steel multiplier (round 2: grime-dark)
+constexpr float    kDarkTint[3]    = { 0.30f, 0.33f, 0.35f };  // dark tint over BRIGHT sets
+constexpr float    kGunTint[3]     = { 0.72f, 0.76f, 0.80f };  // over the DARK trim_a set (~0.21 effective)
 constexpr uint32_t kRivetCount     = 12;      // front-face rivet studs per portal
 constexpr float    kRivetHalf      = 0.032f;
 
@@ -167,7 +168,7 @@ constexpr float    kConduitFlowK     = 1.60f;   // phase step per segment (the t
 constexpr float    kConduitHalf      = 0.014f;  // emissive CORE LINE half-thickness (thin)
 constexpr float    kConduitDark[3]   = { 0.06f, 0.035f, 0.015f };  // core unlit = dark glass
 constexpr float    kPipeHalf         = 0.055f;  // gunmetal pipe body half-thickness
-constexpr float    kPipeTint[3]      = { 0.16f, 0.17f, 0.19f };    // near-black gunmetal
+constexpr float    kPipeTint[3]      = { 0.46f, 0.48f, 0.52f };    // near-black over the dark trim_a set
 constexpr float    kCollarHalf       = 0.085f;  // bend collar half-extent
 constexpr float    kCollarHalfDep    = 0.048f;  // bend collar half-length along the pipe
 constexpr float    kCoilOrangeEm     = 0.85f;
@@ -772,7 +773,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // locked teal-oxide patina.
     m_surf.mount(assetRoot() + "/surface_library");
     const SurfaceSet& sPlate = m_surf.get(device, "mw_metal_panels_a");  // riveted industrial panels
-    const SurfaceSet& sDark  = m_surf.get(device, "sr_metal_b");         // dark steel (housings/cradle)
+    const SurfaceSet& sDark  = m_surf.get(device, "mw_metal_trim_a");    // TRUE dark gunmetal (round 2; sr_metal_b was near-white metal)
     const SurfaceSet& sTrim  = m_surf.get(device, "mw_metal_trim_b");    // trim (plates variant)
     const SurfaceSet& sFloor = m_surf.get(device, "sr_concrete_01");     // hall floor concrete
     const SurfaceSet& sWall  = m_surf.get(device, "mw_concrete_panels_b"); // hall walls
@@ -876,6 +877,10 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float ang = ((float)s3 + 0.5f) * (6.2831853f / (float)kStripCount);
             const float sx = std::cos(ang) * 10.0f;
             const float sz = std::sin(ang) * 10.0f;
+            // Dark housing channel above the lit strip (round 2: a FIXTURE has
+            // a body — the bare glowing bar read as a floating neon stick).
+            hallBox(sx, kBeamY - 0.31f, sz, 1.68f, 0.055f, 0.21f,
+                    &sDark, kGunTint, 0.5f, /*collide=*/false);
             x3::prims::PrimMesh b = x3::prims::makeBox(1.6f, 0.045f, 0.16f, sx, kBeamY - 0.38f, sz);
             Entity e;
             e.mesh = device.createMesh(b.verts.data(), (uint32_t)b.verts.size(),
@@ -929,12 +934,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float bh = 1.6f + 2.6f * h01(0x77u);
             const float bd = 0.7f + 1.1f * h01(0x88u);
             hallBox(mx, bh * 0.5f, mz, bw, bh * 0.5f, bd,
-                    &sDark, kDarkTint, 0.5f, /*collide=*/true, /*em=*/0.02f);
+                    &sDark, kGunTint, 0.5f, /*collide=*/true, /*em=*/0.02f);
             // A smaller unit stacked on top + a vent pipe to break the box read.
             hallBox(mx + bw * 0.3f, bh + 0.45f, mz, bw * 0.45f, 0.45f, bd * 0.6f,
-                    &sDark, kDarkTint, 0.5f, /*collide=*/false, /*em=*/0.02f);
+                    &sDark, kGunTint, 0.5f, /*collide=*/false, /*em=*/0.02f);
             hallBox(mx - bw * 0.5f, bh + 0.9f, mz, 0.09f, 0.9f, 0.09f,
-                    &sDark, kDarkTint, 0.5f, /*collide=*/false, /*em=*/0.02f);
+                    &sDark, kGunTint, 0.5f, /*collide=*/false, /*em=*/0.02f);
         }
     }
 
@@ -1005,7 +1010,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 scene, device, torus,
                 locX, locY, locZ,
                 cx, kRingY, cz,
-                kRingStone, /*emStrength=*/kRingEmissive, &sPlate);
+                kRingStone, /*emStrength=*/kRingEmissive, &sDark);
             m_portalMeshes.push_back(ae.mesh);
         }
         p.ringEntFirst = ringEntFirst;
@@ -1059,7 +1064,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     cx + kRingR * radX - outwardX * proud,
                     kRingY + kRingR * radY,
                     cz + kRingR * radZ - outwardZ * proud,
-                    &sDark, kDarkTint, /*emStrength=*/0.03f);
+                    &sDark, kGunTint, /*emStrength=*/0.03f);
                 m_portalMeshes.push_back(ae.mesh);
             }
         }
@@ -1076,7 +1081,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 scene, device, kSkirtHalfTan, kSkirtHalfY, kSkirtHalfDep,
                 locX, locY, locZ,
                 cx, kSkirtHalfY, cz,
-                &sDark, kDarkTint, /*emStrength=*/0.04f, /*uvScale=*/0.6f);
+                &sDark, kGunTint, /*emStrength=*/0.04f, /*uvScale=*/0.6f);
             m_portalMeshes.push_back(skirt.mesh);
             for (int side = -1; side <= 1; side += 2) {
                 const float bx = cx + rightX * kStrutBaseOut * (float)side;
@@ -1091,7 +1096,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 AddedEntity ae = addOrientedEmissiveMesh(
                     scene, device, strut,
                     ident[0], ident[1], ident[2], 0.0f, 0.0f, 0.0f,
-                    kSteelTint, /*emStrength=*/0.04f, &sDark);
+                    kGunTint, /*emStrength=*/0.04f, &sDark);
                 m_portalMeshes.push_back(ae.mesh);
                 // Floor anchor plate at the strut foot.
                 AddedEntity anchor = addOrientedSurfBox(
@@ -1221,7 +1226,8 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             addCoreRun(runB);
         }
         p.conduitEntCount = 8;
-        // Coil rings on the right riser (orange, static warm glow).
+        // Coil rings on the right riser (warm glow on a DARK body — round 2:
+        // the coil no longer reads as solid orange plastic when dim).
         for (int coil = 0; coil < 2; ++coil) {
             x3::prims::PrimMesh torus = x3::prims::makeTorus(0.14f, 0.032f, 20, 8);
             // Ring horizontal around the vertical riser: local X = gate right,
@@ -1230,10 +1236,17 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float locY3[3] = { outwardX, 0.0f, outwardZ };
             const float locZ3[3] = { 0.0f, 1.0f, 0.0f };
             const x3::phys::Vec3 at = gatePt(2.46f, 1.95f - 0.42f * (float)coil, -0.58f);
-            AddedEntity ae = addOrientedEmissiveMesh(
-                scene, device, torus, locX3, locY3, locZ3,
-                at.x, at.y, at.z, kConduitOrange, kCoilOrangeEm);
-            m_portalMeshes.push_back(ae.mesh);
+            Entity e;
+            e.mesh = device.createMesh(torus.verts.data(), (uint32_t)torus.verts.size(),
+                                       torus.index.data(), (uint32_t)torus.index.size());
+            m_portalMeshes.push_back(e.mesh);
+            e.baseColor[0] = kConduitDark[0]; e.baseColor[1] = kConduitDark[1];
+            e.baseColor[2] = kConduitDark[2]; e.baseColor[3] = 1.0f;
+            e.emissive[0] = kConduitOrange[0]; e.emissive[1] = kConduitOrange[1];
+            e.emissive[2] = kConduitOrange[2]; e.emissive[3] = kCoilOrangeEm;
+            e.tag = (uint32_t)Tag::Prop;
+            makeXform(e.transform, locX3, locY3, locZ3, at.x, at.y, at.z);
+            scene.add(e);
         }
         // Two TEAL holo data screens flanking the approach. ROUND 2: MOUNTED —
         // a dark metal frame behind each pane, the post extended up BEHIND the
@@ -1248,7 +1261,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 scene, device, 0.032f, 0.725f, 0.032f,
                 dX, dY, dZ,
                 at.x + outwardX * postOff, 0.725f, at.z + outwardZ * postOff,
-                &sDark, kDarkTint, 0.0f);
+                &sDark, kGunTint, 0.0f);
             m_portalMeshes.push_back(post.mesh);
             // Frame plate — thin dark slab just behind the glass, a hair larger.
             AddedEntity frame = addOrientedSurfBox(
@@ -1262,7 +1275,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 scene, device, 0.052f, 0.052f, 0.030f,
                 dX, dY, dZ,
                 at.x + outwardX * 0.040f, at.y, at.z + outwardZ * 0.040f,
-                &sDark, kDarkTint, 0.0f);
+                &sDark, kGunTint, 0.0f);
             m_portalMeshes.push_back(clamp.mesh);
             // Glass pane with the holo readout (the pane IS the screen — the
             // club OLED-glass lesson: a pane OVER a screen depth-occludes it).
@@ -1378,7 +1391,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             AddedEntity body = addOrientedSurfBox(
                 scene, device, kHouseHalfTan, kHouseHalfRad, kHouseHalfDep,
                 tanv3, radv3, outv3, hcx, hcy, hcz,
-                &sDark, kDarkTint, /*emStrength=*/0.02f);
+                &sDark, kGunTint, /*emStrength=*/0.02f);
             m_portalMeshes.push_back(body.mesh);
             // Two side jaw flanges — deeper than the body, the mechanical bite.
             for (int fside = -1; fside <= 1; fside += 2) {
@@ -1388,7 +1401,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     hcx + tanv3[0] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
                     hcy + tanv3[1] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
                     hcz + tanv3[2] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
-                    &sDark, kDarkTint, /*emStrength=*/0.02f);
+                    &sDark, kGunTint, /*emStrength=*/0.02f);
                 m_portalMeshes.push_back(fl.mesh);
             }
             // Stepped face-cap plate (body -> cap bevel step, brushed trim set).
@@ -1438,7 +1451,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 cx + kTrackR * radX - outwardX * proud,
                 kRingY + kTrackR * radY,
                 cz + kTrackR * radZ - outwardZ * proud,
-                kChevAmber, /*emStrength=*/kTrackEmIdle);
+                kChevAmber, /*emStrength=*/kTrackEmIdle, kChevSlitDark);
             m_portalMeshes.push_back(ae.mesh);
         }
         p.trackEntCount = kTrackSegs;
