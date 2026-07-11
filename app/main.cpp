@@ -338,6 +338,7 @@ int main(int argc, char** argv) {
         _tf.testWorldRegions = o.testWorldRegions;
         _tf.testCity = o.testCity;
         _tf.testOceanBase = o.testOceanBase;
+        _tf.testUnderseaArt = o.testUnderseaArt;
         _tf.testDoorCode = o.testDoorCode;
         _tf.testHatchCode = o.testHatchCode;
         _tf.testElevator = o.testElevator;

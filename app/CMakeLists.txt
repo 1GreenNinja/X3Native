@@ -67,6 +67,7 @@ add_executable(X3Engine WIN32
     world_hosts/host_shipwindows.cpp
     world_hosts/host_bodycontact.cpp
     world_hosts/host_wormhole.cpp
+    world_hosts/host_undersea.cpp
     secret_room.cpp
     ecs_render.cpp
     editor/editor.cpp
@@ -113,6 +114,7 @@ add_executable(X3Engine WIN32
     world_map.cpp
     city.cpp
     ocean_base.cpp
+    undersea_art.cpp
     save.cpp
     dialog.cpp
     env_art.cpp

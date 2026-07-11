@@ -131,6 +131,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-worldregions") o.testWorldRegions = true;
         else if (a == "--test-city") o.testCity = true;
         else if (a == "--test-oceanbase") o.testOceanBase = true;
+        else if (a == "--test-undersea-art") o.testUnderseaArt = true;
         else if (a == "--test-doorcode") o.testDoorCode = true;
         else if (a == "--test-hatchcode") o.testHatchCode = true;
         else if (a == "--test-hatch") o.testHatch = true;

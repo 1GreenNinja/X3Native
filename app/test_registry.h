@@ -70,6 +70,7 @@ struct TestFlags {
     bool testSpireTop = false, testTimeline = false, testDroneHack = false, testSubLevels = false;
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
+    bool testUnderseaArt = false;    // --test-undersea-art (Act-4 Abyssal Station GLB overlay on OceanBase)
     bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
