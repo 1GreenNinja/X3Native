@@ -72,6 +72,12 @@ public:
 
     uint32_t roomsDressed() const { return m_roomsDressed; }
 
+    // F2 rescue-wing capture proof (--test-wingdressing W5): how many rescue beds +
+    // restrained captives the "Rescue Room" recipe branch actually placed (3 expected —
+    // Aria / Keisha / Emily). captivesPlaced counts a real loaded character GLB on a bed.
+    uint32_t rescueBeds()     const { return m_rescueBeds; }
+    uint32_t captivesPlaced() const { return m_rescueCaptives; }
+
     // BLACK-PROP FIX (wing floors). The F2-F7 tower props are converted kit furniture
     // (crates/beds/vats/chairs) whose GLBs bake metallic=1 over a mid-tone kit albedo
     // texture. In the windowless tower — no bright IBL env to reflect — a full metal
@@ -99,6 +105,10 @@ private:
         float    transform[16] = {};
         float    emissive[4] = { 0, 0, 0, 0 };  // [3] SCALES material emissive (R5 law)
         float    tint[4]     = { 1, 1, 1, 1 };
+        // F2 rescue captives: keep the model's authored PBR textures even when the
+        // wing-floor BLACK-PROP material-lift is on (the kit-furniture lift would strip
+        // a hero character's skin/clothes to a flat matte tint). True = never lift.
+        bool     keepTex = false;
     };
     struct ProcDraw {                 // guide strips + contact-shadow discs
         uint32_t room = kNoRoom;
@@ -136,6 +146,8 @@ private:
     // quad mesh dedupe: key = quantized (w,h,tile)
     std::vector<std::pair<uint64_t, x3::rhi::MeshHandle>> m_quadCache;
     uint32_t m_roomsDressed = 0;
+    uint32_t m_rescueBeds     = 0;   // F2 rescue-room beds placed (Aria/Keisha/Emily)
+    uint32_t m_rescueCaptives = 0;   // F2 rescue-room captives placed (loaded character GLB)
     int      m_lastZone     = -1;
     bool     m_propMatLift  = false;  // BLACK-PROP FIX: matte-tint the kit props (wing floors only)
 };

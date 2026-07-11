@@ -88,12 +88,19 @@ const L1RoomDef kFloors[(uint32_t)L1Floor::Count] = {
 // routes the dressing recipe (matches a room_dressing.cpp desc branch — labs/servers/
 // bays/etc.), chosen so every room on a floor reads as a DISTINCT AAA-dressed space.
 const L1WingRoom kWingRooms[] = {
-    // F2 Medical Bay (clinical green): recovery hall + surgery/pharmacy/quarantine.
-    { L1Floor::F2, -38.0f,  0.0f, 10.0f, 14.0f, 'E', "Recovery Ward" },        // big signature hall
-    { L1Floor::F2, -18.0f,  8.0f,  6.0f,  5.0f, 'S', "Pharmacy" },
-    { L1Floor::F2, -18.0f, -8.0f,  6.0f,  5.0f, 'N', "Operating Theater B" },  // failed experiments
-    { L1Floor::F2,  -7.0f,  8.0f,  4.0f,  5.0f, 'S', "Operating Theater A" },  // active surgery
-    { L1Floor::F2,  -7.0f, -8.0f,  4.0f,  5.0f, 'N', "Quarantine Zone" },
+    // F2 Medical Bay — the SIGNATURE three-captive RESCUE WING (docs/design/EFLZ_NARRATIVE
+    // Floor-2). THREE SIDE-BY-SIDE white clinical rescue rooms in a row along X, each with
+    // its OWN door ('S') onto the F2 west corridor (the z in [-3,3] lane). Each is 6.5w x
+    // 7.5d — enough for a 2.3 m hospital bed CENTERED with >=1.2 m walk-around on all sides
+    // plus advanced-medical-equipment walls. The captives are RESTRAINED on the beds
+    // (Aria / Keisha / Emily); saved -> companions, failed -> bosses (Siren / Breeder Queen
+    // / Oracle). Room B (Keisha) is the MAGNETICALLY SEALED room — the dressing gives its
+    // door a red locked tell; the LOCK MECHANIC is a host hook (see report). The names
+    // route the rescue-room dressing recipe (room_dressing.cpp classify -> ZMedical +
+    // the "Rescue Room" desc-gold branch: bed, captive, straps, monitors, surgical light).
+    { L1Floor::F2, -27.0f, 6.75f, 3.25f, 3.75f, 'S', "Rescue Room A (Aria)" },
+    { L1Floor::F2, -35.0f, 6.75f, 3.25f, 3.75f, 'S', "Rescue Room B (Keisha)" },
+    { L1Floor::F2, -43.0f, 6.75f, 3.25f, 3.75f, 'S', "Rescue Room C (Emily)" },
     // F3 Genetics Lab (vat green): specimen hall + clone/growth/hybrid/DNA labs.
     { L1Floor::F3, -38.0f,  0.0f, 10.0f, 14.0f, 'E', "Gene Vat Gallery" },     // big signature hall
     { L1Floor::F3, -18.0f,  8.0f,  6.0f,  5.0f, 'S', "Clone Storage" },
@@ -666,20 +673,26 @@ Level1Layout buildLevel1(Scene& scene,
         wallXDoor(rz0, door == 'S');
         wallXDoor(rz1, door == 'N');
     };
-    // ---- F2 Medical Bay: 3 ward markers (Aria/Keisha/Emily) in the east hall (rescue
-    //      hub places victims here). The WEST wing rooms come from the shared kWingRooms
-    //      table below (built for every floor in one loop).
+    // ---- F2 Medical Bay: publish the three RESCUE-ROOM bed centers (Aria/Keisha/Emily)
+    //      as the rescue-hub victim markers (the host's RescueSystem reads L.wardA/B/C and
+    //      places the live rescuable captive there). These now land ON the beds in the
+    //      three side-by-side west-wing rescue rooms (built from the shared kWingRooms
+    //      table below) — the bed sits centered in each room and the staged captive lies
+    //      restrained on it (room_dressing.cpp). HOST HOOK: reconcile the live standing
+    //      RescueSystem victim with the staged lying dressing captive (suppress/pose one).
+    //      The two retained arrival-hall partitions split the +X arrival half into medical
+    //      bays for the spire_mid encounter cover (unchanged).
     {
         const L1RoomDef& f2 = kFloors[(uint32_t)L1Floor::F2];
         const float y0 = f2.y0, h = f2.ceil;
-        const float wx1 = 8.0f, wx2 = 15.0f;     // partition X positions (split the +X arrival half)
+        const float wx1 = 8.0f, wx2 = 15.0f;     // arrival-hall partition X positions
         addCrossWall(scene, device, physics, wx1, -6.0f, 6.0f, 0.0f, true, y0, h,
                      wallVariants[2], kWallTint, crossWallVis);
         addCrossWall(scene, device, physics, wx2, -6.0f, 6.0f, 0.0f, true, y0, h,
                      wallVariants[1], kWallTint, crossWallVis);
-        L.wardA = x3::phys::Vec3{  4.0f, y0, -3.0f };  // Ward A (Aria)
-        L.wardB = x3::phys::Vec3{ 11.5f, y0,  3.0f };  // Ward B (Keisha)
-        L.wardC = x3::phys::Vec3{ 18.0f, y0, -3.0f };  // Ward C (Emily)
+        L.wardA = x3::phys::Vec3{ -27.0f, y0, 6.75f };  // Rescue Room A — Aria
+        L.wardB = x3::phys::Vec3{ -35.0f, y0, 6.75f };  // Rescue Room B — Keisha (sealed)
+        L.wardC = x3::phys::Vec3{ -43.0f, y0, 6.75f };  // Rescue Room C — Emily
     }
     // ---- F2-F7 west-wing identity rooms: built from the SHARED kWingRooms table (the
     //      SAME source wing_dressing.cpp reads for the recipe art pass, so collision and

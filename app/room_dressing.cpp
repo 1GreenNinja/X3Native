@@ -3,6 +3,7 @@
 // prop placement, instance emissive[3] SCALES material emissive, contact shadows
 // ground props, one key light per room, one accent hue per zone (ART_BIBLE §2/§3).
 #include "room_dressing.h"
+#include "asset_root.h"      // riggedGlbRoot() — the F2 rescue-captive character GLBs
 
 #include "engine/core/x3_log.h"
 
@@ -385,8 +386,13 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
     if (!floor.valid()) return false;
     m_surf.mount(std::string(surfaceLibDir));
     m_assets.reset(x3::asset::createAssetSource());
-    if (m_assets->mountDir(convertedGlbDir, 0))
+    if (m_assets->mountDir(convertedGlbDir, 0)) {
+        // F2 rescue captives (Aria/Keisha/Emily) live in the rigged-GLB tree, not the
+        // converted kit — mount it too (higher priority; no path collision expected) so
+        // the "Rescue Room" recipe can load the Anna cast onto the beds.
+        m_assets->mountDir(riggedGlbRoot(), 1);
         m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    }
 
     m_roomZone.assign(floor.rooms.size(), ZNone);
     m_zoneFog.assign(ZCount, recipeFor(ZWard).fog);   // default = detention tint
@@ -419,6 +425,12 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
     const uint32_t aDuct    = m_loader ? loadAsset(kRelDuct)    : 0;
     const uint32_t aVent    = m_loader ? loadAsset(kRelVent)    : 0;
     const uint32_t aDrone   = m_loader ? loadAsset(kRelDrone)   : 0;
+    // F2 rescue captives — the Anna cast (rescue.cpp maps the SAME live models):
+    // Aria=AnnaCasual, Keisha=AnnaBodySuit, Emily=AnnaTactical. Loaded static (bind
+    // pose) and laid SUPINE on the beds by the "Rescue Room" recipe branch.
+    const uint32_t aAria    = m_loader ? loadAsset("AnnaCasual.glb")   : 0;
+    const uint32_t aKeisha  = m_loader ? loadAsset("AnnaBodySuit.glb") : 0;
+    const uint32_t aEmily   = m_loader ? loadAsset("AnnaTactical.glb") : 0;
 
     // Kit tints (cell_dressing palette family).
     const float tCrate[4]  = { 0.66f, 0.60f, 0.52f, 1.0f };
@@ -694,17 +706,22 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             switch (z) {
                 case ZMedical:   // W3-2: the F2 wards (Keisha/Emily/Aria) get real cots
                 case ZWard:
-                    if (freeFace >= 0) {
-                        // Cot long axis ALONG the wall: local X (2.3 m) -> face tangent.
-                        const float cotYaw = (freeFace < 2) ? kPi * 0.5f : 0.0f;
-                        placeProp(ri, aCot, cotYaw, 1.0f, acx(kCotAabb), kCotAabb.miny,
-                                  acz(kCotAabb), px + (freeFace >= 2 ? jitter : 0),
-                                  fY, pz + (freeFace < 2 ? jitter : 0), nullptr, nullptr);
-                        shadowBlob(ri, px, fY, pz, 0.8f, 1.4f, 0.5f);
+                    // The F2 SIGNATURE rescue rooms own their bed/captive/equipment via
+                    // the "Rescue Room" desc-gold branch below — skip the generic wall cot
+                    // + bin so the bed isn't doubled.
+                    if (r.name.find("Rescue Room") == std::string::npos) {
+                        if (freeFace >= 0) {
+                            // Cot long axis ALONG the wall: local X (2.3 m) -> face tangent.
+                            const float cotYaw = (freeFace < 2) ? kPi * 0.5f : 0.0f;
+                            placeProp(ri, aCot, cotYaw, 1.0f, acx(kCotAabb), kCotAabb.miny,
+                                      acz(kCotAabb), px + (freeFace >= 2 ? jitter : 0),
+                                      fY, pz + (freeFace < 2 ? jitter : 0), nullptr, nullptr);
+                            shadowBlob(ri, px, fY, pz, 0.8f, 1.4f, 0.5f);
+                        }
+                        placeProp(ri, aBin, 0.0f, 0.9f, acx(kBinAabb), kBinAabb.miny,
+                                  acz(kBinAabb), r.x1() - 0.5f, fY + 0.02f, r.z1() - 0.5f,
+                                  nullptr, tSteel);
                     }
-                    placeProp(ri, aBin, 0.0f, 0.9f, acx(kBinAabb), kBinAabb.miny,
-                              acz(kBinAabb), r.x1() - 0.5f, fY + 0.02f, r.z1() - 0.5f,
-                              nullptr, tSteel);
                     break;
                 case ZSecurity: case ZLobby: case ZLab:
                 case ZGenetics: case ZCyber: case ZExec:   // W3-2: console = the focal instrument
@@ -902,8 +919,92 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             };
             const float cx0 = r.cx, cz0 = r.cz;
 
+            // ---------------- F2 SIGNATURE RESCUE ROOMS ----------------
+            // The owner's spec: a WHITE clinical rescue room — a 2.3 m hospital bed
+            // CENTERED with >=1.2 m walk-around, the captive RESTRAINED SUPINE on it
+            // (straps over the blanket, non-gratuitous clinical dread), ACTIVE monitoring
+            // equipment, a bedside vitals console + IV drum, and ONE surgical key light
+            // overhead under a dropped clinical ceiling. Room B (Keisha) is the
+            // magnetically SEALED room — a RED locked door tell frames its door (the lock
+            // MECHANIC is a host hook). Aria=AnnaCasual, Keisha=AnnaBodySuit,
+            // Emily=AnnaTactical (the same live cast rescue.cpp uses).
+            if (nameHas("Rescue Room")) {
+                const bool sealed = nameHas("Keisha");
+                const uint32_t cap = nameHas("Aria")   ? aAria
+                                   : nameHas("Keisha") ? aKeisha : aEmily;
+
+                // (1) Dropped clinical ceiling at ~3.3 m so the tall wing plate reads as an
+                // intimate clinical room (the surgical pendant hangs just under it).
+                const float dropY = fY + 3.3f;
+                {
+                    Panel p; p.room = ri; p.set = ceilSet;
+                    p.mesh = quadMesh(device, r.w - 0.1f, r.d - 0.1f, rec.ceilTile);
+                    makeTR(p.transform, 0, kPi * 0.5f, r.cx, dropY, r.cz);
+                    m_panels.push_back(p); ++nPanels;
+                }
+
+                // (2) The bed, CENTERED, long axis ALONG Z (head to the back/north wall).
+                cot(cx0, cz0, kPi * 0.5f, tClinic);
+                ++m_rescueBeds;
+
+                // (3) The captive laid SUPINE on the bed (static bind pose): yaw pi + pitch
+                // -pi/2 rolls the standing model onto its back (face UP), head toward the
+                // back (+Z) wall, feet toward the door; keep her authored PBR skin/clothes
+                // (keepTex bypasses the wing black-prop material lift). Static-pose caveat:
+                // it's a bind-pose lay-down (a posed supine re-export is a follow-up).
+                if (m_loader && cap < m_assetTable.size() && m_assetTable[cap].ok) {
+                    PropInst pc; pc.room = ri; pc.asset = cap; pc.keepTex = true;
+                    makeTR(pc.transform, kPi, -kPi * 0.5f, cx0, fY + 0.78f, cz0 - 1.05f);
+                    m_props.push_back(pc);
+                    ++m_rescueCaptives;
+                    // (3b) Two restraint straps across her (chest + legs): dark bands laid
+                    // flat over the body, low emissive so they read without glowing.
+                    auto strap = [&](float zp) {
+                        ProcDraw s; s.room = ri;
+                        s.mesh = quadMesh(device, 1.05f, 0.14f, 1.0f);
+                        makeTR(s.transform, 0.0f, -kPi * 0.5f, cx0, fY + 0.70f, zp);
+                        s.color[0] = 0.05f; s.color[1] = 0.05f; s.color[2] = 0.06f; s.color[3] = 1.0f;
+                        s.emissive[0] = 0.10f; s.emissive[1] = 0.10f; s.emissive[2] = 0.12f;
+                        s.emissive[3] = 0.30f;
+                        m_proc.push_back(s);
+                    };
+                    strap(cz0 + 0.20f);   // chest
+                    strap(cz0 - 0.55f);   // legs
+                }
+
+                // (4) Advanced medical equipment: a bedside vitals console, an IV/cryo
+                // drum, and an ACTIVE wall monitor (emissive teal panel) on the head wall.
+                console(cx0 - 2.4f, cz0 - 1.2f, kPi * 0.5f);        // bedside vitals cart
+                barrel(cx0 + 2.3f, cz0 - 1.0f, 0.3f, tCryo);        // IV drip drum
+                glassQuad(1.4f, 0.9f, cx0, fY + 2.0f, r.z1() - kInset - 0.05f, kPi,
+                          0.16f, 0.90f, 0.72f, 0.55f, 0.55f);       // active vitals monitor
+
+                // (5) The ONE surgical key light + its pendant fixture, under the dropped
+                // ceiling directly over the bed (the room's motivated statement).
+                {
+                    const float ePend[4] = { 1.60f, 1.70f, 1.70f, 1.0f };
+                    placeProp(ri, aHang, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                              cx0, dropY - 0.12f, cz0, ePend, tSteel);
+                    addLight(cx0, fY + 2.6f, cz0, 3.6f, 1.75f, 1.78f, 1.72f);
+                }
+
+                // (6) Room B magnetic-seal tell: a RED locked door frame + bleed-under-the-
+                // door glow (GEOMETRY/light only — the lock MECHANIC is a host hook).
+                if (sealed) {
+                    const float rz = r.z0() + kInset + 0.05f;
+                    glowQuad(0.09f, 2.10f, cx0 - 0.72f, fY + 1.10f, rz, 0.0f, 0.0f,
+                             1.00f, 0.05f, 0.04f, 0.95f);
+                    glowQuad(0.09f, 2.10f, cx0 + 0.72f, fY + 1.10f, rz, 0.0f, 0.0f,
+                             1.00f, 0.05f, 0.04f, 0.95f);
+                    glowQuad(1.62f, 0.12f, cx0, fY + 2.20f, rz, 0.0f, 0.0f,
+                             1.00f, 0.05f, 0.04f, 0.95f);
+                    glowQuad(1.10f, 0.12f, cx0, fY + kFloorLift + 0.006f, r.z0() + 0.20f, 0.0f,
+                             -kPi * 0.5f, 1.00f, 0.06f, 0.05f, 0.85f);
+                    addLight(cx0, fY + 1.4f, r.z0() + 0.5f, 2.0f, 1.10f, 0.06f, 0.05f);
+                }
+
             // ---------------- F2 MEDICAL BAY ----------------
-            if (nameHas("F2: Main Corridor")) {
+            } else if (nameHas("F2: Main Corridor")) {
                 // "Gurneys line walls. Blood trails." (faceClear: never park a gurney
                 // in front of a ward/theater door)
                 if (faceClear(0, cz0 - 3.4f, 1.5f)) cot(r.x0() + 0.95f, cz0 - 3.4f, kPi * 0.5f, tClinic);
@@ -1393,9 +1494,12 @@ void RoomDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             // BOTH gameplay and the capture rig. The normal map is kept for surface
             // relief. OFF (canon dressing) -> the original textured/metallic draw, exact.
             constexpr float kPropMetallicClamp = 0.35f;   // 1.0 = full metal (no diffuse); 0.35 restores diffuse
+            // keepTex props (the rescue captives) NEVER lift — a hero character keeps her
+            // authored PBR skin/clothes even on the wing floors.
+            const bool lift = m_propMatLift && !e.keepTex;
             const x3::rhi::TextureHandle baseTex =
-                m_propMatLift ? x3::rhi::TextureHandle{ 0 } : x3::rhi::TextureHandle{ d.baseColorTexId };
-            const float metalScale = m_propMatLift ? kPropMetallicClamp : 1.0f;
+                lift ? x3::rhi::TextureHandle{ 0 } : x3::rhi::TextureHandle{ d.baseColorTexId };
+            const float metalScale = lift ? kPropMetallicClamp : 1.0f;
             device.drawMeshPBR(frame, x3::rhi::MeshHandle{ d.meshId },
                                baseTex,
                                x3::rhi::TextureHandle{ d.normalTexId },

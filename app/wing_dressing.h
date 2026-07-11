@@ -57,6 +57,9 @@ public:
                                 std::vector<x3::rhi::PointLight>& out) const;
 
     uint32_t roomsDressed() const { return m_dress.roomsDressed(); }
+    // F2 rescue-wing proof: beds + restrained captives the "Rescue Room" recipe placed.
+    uint32_t rescueBeds()     const { return m_dress.rescueBeds(); }
+    uint32_t captivesPlaced() const { return m_dress.captivesPlaced(); }
     bool     built() const { return m_built; }
 
 private:

@@ -297,6 +297,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.upperShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.upperShotDir = argv[++i];
         }
+        else if (a == "--screenshot-rescuerooms") {    // F2 three-captive rescue-room closeups
+            o.rescueShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.rescueShotDir = argv[++i];
+        }
         else if (a == "--screenshot-showroom-fp") {
             // Headless first-person proof of the walkable --world showroom. Forces the
             // showroom world on so the SAME build path runs, then renders one frame from

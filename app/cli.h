@@ -374,6 +374,8 @@ struct CliOptions {
     // spaces. Headless; exits after. (Re-homed from playable-build eab7ff4.)
     bool        upperShot = false;
     std::string upperShotDir = "docs/screenshots/upper_floors";
+    bool        rescueShot = false;                  // F2 three-captive rescue-room closeups
+    std::string rescueShotDir = "captures";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
     // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
     // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and

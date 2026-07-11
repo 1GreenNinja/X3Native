@@ -700,6 +700,7 @@ int main(int argc, char** argv) {
         _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;
         _hc.carShot          = o.carShot;          _hc.carShotDir       = o.carShotDir;
         _hc.upperShot        = o.upperShot;        _hc.upperShotDir     = o.upperShotDir;
+        _hc.rescueShot       = o.rescueShot;        _hc.rescueShotDir   = o.rescueShotDir;
         _hc.showroomFpShot   = o.showroomFpShot;   _hc.showroomFpShotPath = o.showroomFpShotPath;
         _hc.showroomRagdollShot = o.showroomRagdollShot; _hc.showroomRagdollShotPath = o.showroomRagdollShotPath;
         _hc.showroomDeckShot = o.showroomDeckShot; _hc.showroomDeckShotPath = o.showroomDeckShotPath;

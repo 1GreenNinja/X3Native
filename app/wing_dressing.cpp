@@ -143,6 +143,31 @@ bool runWingDressingSelfTest() {
     check(wd.roomsDressed() == wc,
           "W3 every wing room dressed (no ZNone / fog-only holes)");
 
+    // ---- W4/W5: the F2 SIGNATURE three-captive RESCUE WING (the owner's spec). Three
+    // side-by-side rooms, each canonically named + each with its OWN F2 door; each dressed
+    // with a bed + a restrained captive (the Anna cast).
+    {
+        const char* want[3] = { "Rescue Room A (Aria)", "Rescue Room B (Keisha)",
+                                "Rescue Room C (Emily)" };
+        int found = 0; bool allDoored = true;
+        for (const char* w : want) {
+            bool hit = false;
+            for (uint32_t i = 0; i < wc; ++i) {
+                if (std::string(wr[i].name) == w) {
+                    hit = true;
+                    if (wr[i].door == 0 || wr[i].floor != L1Floor::F2) allDoored = false;
+                    break;
+                }
+            }
+            if (hit) ++found; else allDoored = false;
+        }
+        check(found == 3 && allDoored,
+              "W4 three F2 rescue rooms (Aria/Keisha/Emily) each with its own F2 door");
+    }
+    check(wd.rescueBeds() == 3, "W5 a bed is centered in each of the 3 rescue rooms");
+    check(wd.captivesPlaced() == 3,
+          "W6 a captive is restrained on each rescue-room bed (Anna cast loaded)");
+
     std::printf("--test-wingdressing: %d/%d checks passed\n", pass, total);
     return pass == total;
 }

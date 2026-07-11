@@ -30,6 +30,8 @@
 #include "leveldoc_world.h"
 #include "level_loader.h"
 #include "canon_play.h"        // R-5: --screenshot-upperfloors content proof
+#include "level1.h"            // F2 rescue rooms: buildLevel1 / Level1ArtMask (--screenshot-rescuerooms)
+#include "wing_dressing.h"     // F2-F7 wing dressing (--screenshot-rescuerooms)
 #include "editor/editor_host.h"
 #include "asset_root.h"
 
@@ -87,6 +89,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool showroomShot = hc.showroomShot;    const std::string& showroomShotPath = hc.showroomShotPath;
     const bool carShot = hc.carShot;              const std::string& carShotDir = hc.carShotDir;
     const bool upperShot = hc.upperShot;          const std::string& upperShotDir = hc.upperShotDir;
+    const bool rescueShot = hc.rescueShot;        const std::string& rescueShotDir = hc.rescueShotDir;
     const bool planetShot = hc.planetShot;        const std::string& planetShotPath = hc.planetShotPath;
     const bool nightskyShot = hc.nightskyShot;    const std::string& nightskyShotPath = hc.nightskyShotPath;
     const bool cutsceneShot = hc.cutsceneShot;    const std::string& cutsceneShotPath = hc.cutsceneShotPath;
@@ -182,6 +185,91 @@ int dispatchScreenshotHosts(HostContext& hc) {
         x3::logInfo(ok ? "--screenshot-editor: wrote " + editorShotPath
                        : "--screenshot-editor: capture FAILED");
         return ok ? 0 : 1;
+    }
+
+    // ---- F2 RESCUE-ROOM closeups (--screenshot-rescuerooms [dir]) ----------------
+    // The owner's signature Floor-2 medical rescue rooms. Build the Spire (buildLevel1)
+    // with the graybox surfaces suppressed where the GLB art covers, run the F2-F7 wing
+    // dressing, then pose the camera INSIDE each of the three side-by-side rescue rooms
+    // (Aria / Keisha / Emily) and capture w2d_rescue_{a,b,c}.png — the centered bed, the
+    // restrained captive, the monitors, and (Room B) the RED magnetic-seal door. Mirrors
+    // the --capture-wings lighting recipe (interior ambient + IBL probe + the dressing's
+    // own motivated keys) so the white clinical props read. Headless one-shot; NO HUD /
+    // weapon viewmodel (unlike the gameplay --screenshot), and lit for the F2 plate the
+    // camera stands on. Exits after.
+    if (rescueShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(rescueShotDir, mkec);
+        x3::logInfo("--screenshot-rescuerooms: building Spire + F2 wing dressing -> " + rescueShotDir);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> rphys(x3::phys::createPhysicsWorld());
+        rphys->init();
+        x3::game::Scene rscene;
+        x3::game::Level1ArtMask mask; mask.walls = true; mask.floors = true;   // dressing owns surfaces
+        x3::game::Level1Layout L = x3::game::buildLevel1(rscene, *device, *rphys, mask);
+        (void)L;
+        x3::game::WingDressing wd;
+        const bool built = wd.build(*device, x3::game::assetRoot() + "/surface_library",
+                                    x3::game::convertedGlbRoot());
+        if (!built) x3::logWarn("--screenshot-rescuerooms: wing dressing did not build (bare graybox)");
+
+        device->setAmbient(0.34f, 0.36f, 0.42f);
+        device->setIblProbe(true);
+        device->setExposure(1.35f);
+
+        struct RShot { const char* tag; float cx, cz; };
+        const float fY = 10.0f;                 // F2 plate floor Y
+        const RShot rooms[3] = {
+            { "a", -27.0f, 6.75f },   // Rescue Room A (Aria)
+            { "b", -35.0f, 6.75f },   // Rescue Room B (Keisha) — magnetic seal
+            { "c", -43.0f, 6.75f },   // Rescue Room C (Emily)
+        };
+        bool allOk = true;
+        for (const RShot& s : rooms) {
+            // A 3/4 vantage from the door corner, across the bed toward the captive.
+            const float ex = s.cx + 2.3f, ey = fY + 1.95f, ez = 3.9f;
+            const float ax = s.cx - 0.2f, ay = fY + 0.75f, az = s.cz + 0.6f;
+            const float dx = ax - ex, dy = ay - ey, dz = az - ez;
+            const float yaw = std::atan2(dz, dx);
+            const float pitch = std::atan2(dy, std::sqrt(dx * dx + dz * dz));
+            const x3::phys::Vec3 eye{ ex, ey, ez };
+            // Lights: the dressing's own motivated keys on this floor + a soft camera fill
+            // + a warm surgical over the bed so the captive + straps read.
+            std::vector<x3::rhi::PointLight> pls;
+            wd.collectFloorLights(eye, pls);
+            x3::rhi::PointLight fill;
+            fill.pos[0] = ex; fill.pos[1] = fY + 2.4f; fill.pos[2] = ez;
+            fill.range = 12.0f; fill.color[0] = 4.4f; fill.color[1] = 4.6f; fill.color[2] = 5.0f;
+            pls.push_back(fill);
+            x3::rhi::PointLight key;
+            key.pos[0] = s.cx; key.pos[1] = fY + 2.9f; key.pos[2] = s.cz;
+            key.range = 7.5f; key.color[0] = 5.4f; key.color[1] = 5.3f; key.color[2] = 4.9f;
+            pls.push_back(key);
+            device->setPointLights(pls.data(), (uint32_t)pls.size());
+
+            const std::string outPath = rescueShotDir + "/w2d_rescue_" + std::string(s.tag) + ".png";
+            const int kSettle = 18;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                device->setCamera(ex, ey, ez, yaw, pitch, 78.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    rscene.render(*device, frame);
+                    wd.draw(*device, frame, eye);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--screenshot-rescuerooms: wrote " + outPath);
+            else { allOk = false; x3::logError("--screenshot-rescuerooms: FAILED " + outPath); }
+        }
+        rphys->shutdown();
+        device->shutdown();
+        glfwTerminate();
+        x3::logInfo(std::string("--screenshot-rescuerooms: ") +
+                    (allOk ? "all three rescue rooms captured" : "one or more captures FAILED"));
+        return allOk ? 0 : 1;
     }
 
     // ---- Headless LOADER proof (--screenshot-loader [path.png]) ----------------
