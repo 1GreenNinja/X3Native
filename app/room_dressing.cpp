@@ -108,9 +108,15 @@ const Recipe& recipeFor(uint8_t z) {
         /*ZCorridor*/ { "mw_concrete_panels_a", 2.6f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
                         1.30f, 1.42f, 1.58f, 5.0f,   0.14f, 0.75f, 0.85f, 2.4f,
                         fogOf(0.030f, 0.040f, 0.046f, 0.0045f, 1.5f, 0.65f) },
+        // W2-A DETENTION = hazard AMBER (bible/audit). The accent was already amber;
+        // warm the fog tint from near-neutral to a clear amber wash and widen the
+        // accent so every ward cell reads amber, not cold (audit fix: "detention
+        // reads cyan"). Halls stay cyan (ZHall/ZCorridor untouched); Jake's frozen
+        // cell is ZNone and is pinned to the old warm-neutral fog in build() so this
+        // amber never bleeds into the canon hand-calibrated reference.
         /*ZWard*/     { "hh_wall_01a", 3.0f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        2.20f, 1.70f, 1.05f, 3.6f,   1.50f, 0.95f, 0.25f, 2.2f,
-                        fogOf(0.045f, 0.040f, 0.034f, 0.0035f, 1.2f, 0.60f) },
+                        2.20f, 1.66f, 0.98f, 3.6f,   1.72f, 0.96f, 0.22f, 2.9f,
+                        fogOf(0.058f, 0.041f, 0.023f, 0.0042f, 1.2f, 0.62f) },
         /*ZSecurity*/ { "mw_concrete_panels_a", 2.4f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
                         1.90f, 1.90f, 2.00f, 3.2f,   1.40f, 0.07f, 0.05f, 2.2f,
                         fogOf(0.020f, 0.022f, 0.026f, 0.0030f, 1.2f, 0.55f) },
@@ -139,7 +145,10 @@ const Recipe& recipeFor(uint8_t z) {
                         fogOf(0.024f, 0.032f, 0.040f, 0.0038f, 1.4f, 0.60f) },
         // W8-1 floor identity: the drone station stands on HAZARD-STRIPED deck plate
         // (sr_floorstripes — a curated set no zone used yet), not the same grate as F4.
-        /*ZDroneBay*/ { "mw_thermal_padding", 2.8f, "sr_floorstripes", 2.4f, "mw_metal_panels_a", 3.2f,
+        // W2-A F5 floor scale fix (report §1.2): sr_floorstripes at 2.4 m/repeat read as
+        // fine CORDUROY across the big drone deck. 6.0 m/repeat enlarges each hazard band
+        // so the deck reads as HANGAR LANES (a code dial, not a reforge).
+        /*ZDroneBay*/ { "mw_thermal_padding", 2.8f, "sr_floorstripes", 6.0f, "mw_metal_panels_a", 3.2f,
                         1.75f, 1.65f, 1.45f, 6.5f,   1.55f, 0.95f, 0.25f, 2.8f,
                         fogOf(0.035f, 0.035f, 0.032f, 0.0035f, 1.5f, 0.60f) },
         /*ZSalvari*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_concrete_01", 3.2f,
@@ -382,6 +391,10 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
     m_roomZone.assign(floor.rooms.size(), ZNone);
     m_zoneFog.assign(ZCount, recipeFor(ZWard).fog);   // default = detention tint
     for (uint8_t z = 1; z < ZCount; ++z) m_zoneFog[z] = recipeFor(z).fog;
+    // W2-A: Jake's cell classifies ZNone (frozen hand-calibrated reference). Pin its
+    // atmosphere to the ORIGINAL warm-neutral detention fog so the ward-zone amber
+    // recolor above never shifts the canon cell the vigil beat is framed in.
+    m_zoneFog[ZNone] = fogOf(0.045f, 0.040f, 0.034f, 0.0035f, 1.2f, 0.60f);
 
     // Surface sets loaded once up front (name -> stable cache pointer).
     auto setIdx = [&](const char* name) -> uint32_t {
