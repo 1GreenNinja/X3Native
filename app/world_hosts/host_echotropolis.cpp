@@ -11,18 +11,23 @@
 // scene/teardown lifecycle, but there is no physics/streamer here — water and sky
 // are device-internal passes, so the loop just poses the camera and renders.
 //
-// ORBIT CAMERA (SPACECRAFT_INTEGRATION §2 doctrine):
+// ORBIT CAMERA (RTS-grade feel — retuned after live playtest):
 //   - orbit a focus point on the sea plane (y=0), camera pitched DOWN toward it;
-//   - critically-damped springs on focus XZ, yaw, pitch AND radius (no snapping);
-//   - pitch (elevation above the sea) clamped 2°..32°, default 17°;
-//   - wheel zoom with momentum (impulse -> zoom velocity -> radius, eased);
-//   - hold-RMB free-look: detaches from the orbit (snappy look around the focus)
-//     and eases BACK to the orbit angle on release;
-//   - MMB-drag or WASD pans the focus across the sea with inertia (glide on release).
+//   - LMB/MMB-drag PANS with a "grab the ground" 1:1 gain that scales with orbit
+//     radius (groundPerPixel) so the terrain tracks the cursor at any zoom;
+//   - RMB-drag ORBITS (yaw/pitch) directly at ~0.25°/px — no ease-back detach;
+//   - wheel zoom is EXPONENTIAL (~12% radius/notch), no momentum;
+//   - light critically-damped smoothing (~0.10-0.14s) so nothing snaps or floats;
+//   - CLAMPS: radius 100m..6000m, focus to island bounds +1km, camera height never
+//     below waterline+5m (also stops flying outside the world / seeing the sea slab);
+//   - pitch (elevation above the sea) clamped 2°..32°, default 14°;
 //   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
 #include "world_host_common.h"
 #include "../tod.h"
 #include "../env_art.h"
+
+#include <stb_image.h>   // stbi_load_16 (impl compiled in engine/asset/ModelLoader.cpp)
+#include <vector>
 
 namespace x3 { namespace apphost {
 
@@ -50,6 +55,17 @@ inline float smoothDampAngle(float cur, float target, float& vel, float smoothTi
     return smoothDamp(cur, cur + d, vel, smoothTime, dt);
 }
 
+inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// "Grab the ground" pan gain: world metres of GROUND spanned per screen pixel at
+// the focus, from the perspective vertical coverage 2*radius*tan(fovV/2)/screenH.
+// A drag scales its pixel delta by this so the terrain tracks the cursor ~1:1 (RTS
+// map-drag) at any zoom, instead of a fixed rate unusable across the 100m..6km range.
+inline float groundPerPixel(float radius, float fovDeg, int screenH) {
+    const float fovV = fovDeg * 3.14159265f / 180.0f;
+    return (2.0f * radius * std::tan(fovV * 0.5f)) / (float)(screenH > 0 ? screenH : 1);
+}
+
 // TU-local scroll accumulator (only one --world host ever runs at a time). GLFW
 // scroll is event-driven, so we sum deltas here and drain them once per frame.
 double g_scrollY = 0.0;
@@ -59,23 +75,30 @@ void scrollCB(GLFWwindow*, double /*xoff*/, double yoff) { g_scrollY += yoff; }
 // (D1/D3 doctrine). F2 hangs a settings UI + remap table on these fields.
 struct CameraOptions {
     float fovDeg        = 60.0f;    // vertical FOV
-    float lookSens      = 0.0045f;  // rad per pixel (free-look / orbit rotate)
-    float panSpeed      = 0.9f;     // world m/s of focus travel per unit input
-    float wasdPan       = 55.0f;    // WASD focus pan speed (m/s at unit radius scale)
-    float zoomFrac      = 0.55f;    // radius impulse per wheel notch, as a fraction
-                                    // of CURRENT radius (island vistas span 40m..6.5km
-                                    // — a fixed step is unusable across that range)
-    // Critically-damped smoothTimes (s) — the inertia per channel.
-    float smoothFocus   = 0.22f;
-    float smoothYaw     = 0.18f;
-    float smoothPitch   = 0.18f;
-    float smoothRadius  = 0.28f;
-    // Decays for the momentum accumulators (per-frame multipliers scaled by dt).
-    float zoomDecay     = 4.5f;     // higher = zoom glide stops sooner
-    float panDecay      = 3.2f;     // higher = pan glide stops sooner
-    // Radius (orbit distance) limits.
-    float minRadius     = 40.0f;
-    float maxRadius     = 6500.0f;
+    // RMB orbit-rotate: direct degrees-per-pixel (converted to rad in the loop).
+    float orbitDegPerPx = 0.25f;    // ~0.25°/px — RTS look feel, no heavy easing
+    // Q/E keyboard orbit-yaw rate (rad/s) — ~90°/s, Q counter-clockwise, E clockwise.
+    float keyYawRate    = 1.5708f;  // pi/2 rad/s
+    // WASD pan speed as a FRACTION of the orbit radius per second (so keyboard pan
+    // covers the frame at a consistent visual rate whether zoomed in or out): 0.5 ->
+    // cross the 4km island in ~3s at 3km out, street-scale (~100 m/s) at 200m.
+    float wasdPanFrac   = 0.50f;
+    // Wheel zoom: EXPONENTIAL — a constant fraction of the radius per notch.
+    float zoomPerNotch  = 0.12f;    // 12% radius per wheel notch (multiplicative)
+    // Critically-damped smoothTimes (s) — snappy RTS response (no float/overshoot).
+    float smoothFocus   = 0.12f;
+    float smoothYaw     = 0.10f;
+    float smoothPitch   = 0.10f;
+    float smoothRadius  = 0.14f;
+    // Radius (orbit distance) limits — island stays >= ~1/3 of frame at maxRadius.
+    float minRadius     = 100.0f;
+    float maxRadius     = 6000.0f;
+    // Focus clamp: island half-extent (~2048 m) + 1 km margin, so panning can't
+    // drift off into empty sea and lose the island.
+    float focusLimit    = 3048.0f;
+    // Camera never below waterline + this many metres (also blocks flying under the
+    // world and seeing the sea-slab underside / fog dome).
+    float minCamHeight  = 5.0f;
 };
 
 // Orbit rig state (targets + smoothed values + spring velocities).
@@ -91,11 +114,6 @@ struct OrbitRig {
     float sYaw = 3.93f, sPitch = 0.2443f, sRadius = 2800.0f;
     // Spring velocities.
     float vFocusX = 0.0f, vFocusZ = 0.0f, vYaw = 0.0f, vPitch = 0.0f, vRadius = 0.0f;
-    // Momentum accumulators (for glide/inertia after the input stops).
-    float panVelX = 0.0f, panVelZ = 0.0f, zoomVel = 0.0f;
-    // Free-look (hold-RMB) detach state.
-    bool  freeLook = false;
-    float freeYaw = 3.93f, freePitch = 0.2443f;
 };
 
 constexpr float kPitchMin = 0.0349f;   //  2 degrees
@@ -103,11 +121,14 @@ constexpr float kPitchMax = 0.5585f;   // 32 degrees
 
 inline float clampPitch(float p) { return p < kPitchMin ? kPitchMin : (p > kPitchMax ? kPitchMax : p); }
 
-// Pose the engine FPS camera FROM the orbit rig (looking down at the focus).
-// `useYaw/usePitch` let the free-look path drive the actual look angles directly
-// while the underlying orbit targets stay frozen (so it can ease back on release).
+// Pose the engine FPS camera FROM the orbit rig (looking down at the focus). The
+// pitch is raised if needed so the camera height (sin(pitch)*radius, since focus.y
+// = 0) never drops below the waterline + minCamHeight — this both keeps the horizon
+// composed and blocks flying under the world at low pitch / small radius.
 void applyOrbitCamera(x3::rhi::IRenderDevice* device, const OrbitRig& r,
-                      float useYaw, float usePitch, float fovDeg) {
+                      float useYaw, float usePitch, float fovDeg, float minCamHeight) {
+    const float minPitch = std::asin(clampf(minCamHeight / std::max(r.sRadius, 1e-3f), 0.0f, 1.0f));
+    if (usePitch < minPitch) usePitch = minPitch;
     const float lookPitch = -usePitch;             // camera pitches DOWN toward the sea
     const float cp = std::cos(lookPitch), sp = std::sin(lookPitch);
     const float fwdX = cp * std::cos(useYaw);
@@ -152,8 +173,8 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     auto clamp01 = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
     // dayness: 1 in full day, ramping to 0 as the sun sinks past the horizon.
     const float dayness = clamp01((s.sunElevation + 0.06f) / 0.30f);
-    constexpr float kNightZenith[3]  = { 0.004f, 0.007f, 0.018f };  // near-black blue
-    constexpr float kNightHorizon[3] = { 0.012f, 0.018f, 0.040f };  // faint sea-glow
+    constexpr float kNightZenith[3]  = { 0.0f, 0.0f, 0.0f };        // DARK BLACK (Tim's canon)
+    constexpr float kNightHorizon[3] = { 0.0f, 0.0f, 0.0f };        // stars own the night
     for (int i = 0; i < 3; ++i) {
         sky.zenith[i]  = kNightZenith[i]  + (sky.zenith[i]  - kNightZenith[i])  * dayness;
         sky.horizon[i] = kNightHorizon[i] + (sky.horizon[i] - kNightHorizon[i]) * dayness;
@@ -257,7 +278,7 @@ int hostEchotropolis(HostContext& hc) {
             if (shotCamOverride) {
                 device->setCamera(shotCam[0], shotCam[1], shotCam[2], shotCam[3], shotCam[4], opt.fovDeg);
             } else {
-                applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg);
+                applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
             }
             if (i == kSettle - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
@@ -287,9 +308,9 @@ int hostEchotropolis(HostContext& hc) {
     if (const char* e = std::getenv("ECHO_AUTOEXIT_SEC")) autoExitSec = std::atof(e);
     double runElapsed = 0.0; double runFrames = 0.0; double runSecs = 0.0;
 
-    x3::logInfo("--world echotropolis: LMB/drag or WASD pan, wheel zoom, hold-RMB "
-                "free-look; TOD keys 1=golden 2=dusk 3=night 4=noon, T pauses the "
-                "cycle; Esc to quit");
+    x3::logInfo("--world echotropolis: LMB/MMB-drag or WASD pan (grab-the-ground), "
+                "wheel zoom, RMB-drag orbit-rotate; TOD keys 1=golden 2=dusk 3=night "
+                "4=noon, T pauses the cycle; Esc to quit");
     bool todPaused = false, prevT = false;
     x3::game::TodPhase prevPhase = tod.phase();
 
@@ -313,40 +334,40 @@ int hostEchotropolis(HostContext& hc) {
         const bool rmb = mbd(GLFW_MOUSE_BUTTON_RIGHT);
         const bool mmb = mbd(GLFW_MOUSE_BUTTON_LEFT) || mbd(GLFW_MOUSE_BUTTON_MIDDLE);
 
-        // ---- Wheel zoom with momentum: impulse -> zoomVel -> radius target ----
+        // ---- Wheel zoom: EXPONENTIAL (a constant fraction of radius per notch),
+        // no momentum. scroll up (yoff>0) zooms in -> radius shrinks. ----
         if (g_scrollY != 0.0) {
-            rig.zoomVel -= (float)g_scrollY * opt.zoomFrac * rig.radius;   // scroll up = zoom in
+            rig.radius *= std::pow(1.0f - opt.zoomPerNotch, (float)g_scrollY);
             g_scrollY = 0.0;
         }
-        rig.radius += rig.zoomVel * dt;
-        rig.zoomVel -= rig.zoomVel * std::min(1.0f, opt.zoomDecay * dt);   // decay glide
-        if (rig.radius < opt.minRadius) { rig.radius = opt.minRadius; rig.zoomVel = 0.0f; }
-        if (rig.radius > opt.maxRadius) { rig.radius = opt.maxRadius; rig.zoomVel = 0.0f; }
+        rig.radius = clampf(rig.radius, opt.minRadius, opt.maxRadius);
 
-        // ---- Free-look (hold-RMB): detach, drive look angles directly ----------
-        if (rmb && !rig.freeLook) {                // press: snapshot current view
-            rig.freeLook = true;
-            rig.freeYaw = rig.sYaw; rig.freePitch = rig.sPitch;
-        } else if (!rmb && rig.freeLook) {         // release: orbit eases back
-            rig.freeLook = false;
-        }
-        if (rig.freeLook) {
-            rig.freeYaw   += ddx * opt.lookSens;
-            rig.freePitch  = clampPitch(rig.freePitch - ddy * opt.lookSens);
-        }
-
-        // ---- Pan the focus across the sea (MMB/LMB drag or WASD) + inertia -----
-        float panInX = 0.0f, panInZ = 0.0f;   // requested focus velocity (world XZ)
-        // Screen-relative basis from the orbit yaw: forward on the sea + right.
+        // Screen-relative ground basis from the orbit yaw: forward (into screen) +
+        // right, both flattened onto the sea plane.
         const float cy = std::cos(rig.sYaw), sy = std::sin(rig.sYaw);
-        const float fwdSeaX = cy, fwdSeaZ = sy;      // where the camera looks, flattened
+        const float fwdSeaX = cy, fwdSeaZ = sy;
         const float rightX  = -sy, rightZ = cy;
-        if (mmb && !rig.freeLook) {
-            // Drag: mouse motion pushes the sea under the cursor (inverted feel).
-            const float k = opt.panSpeed * rig.sRadius * 0.02f;
-            panInX += (-ddx * rightX + ddy * fwdSeaX) * k / std::max(dt, 1e-4f);
-            panInZ += (-ddx * rightZ + ddy * fwdSeaZ) * k / std::max(dt, 1e-4f);
+
+        // ---- RMB-drag ORBIT-ROTATE: direct ~0.25°/px, no ease-back detach. ----
+        const float radPerPx = opt.orbitDegPerPx * (3.14159265f / 180.0f);
+        if (rmb) {
+            rig.yaw   += ddx * radPerPx;
+            rig.pitch  = clampPitch(rig.pitch - ddy * radPerPx);
         }
+
+        // ---- LMB/MMB-drag PAN: "grab the ground" — the terrain tracks the cursor
+        // ~1:1. Horizontal is exact (groundPerPixel); the forward axis is stretched
+        // by the view foreshortening (÷sin(pitch), bounded) so shallow-angle vertical
+        // drags don't crawl. Direct target move, no inertia. (Suppressed while RMB
+        // is held so orbit-rotate and pan never fight.) ----
+        if (mmb && !rmb) {
+            const float gpp = groundPerPixel(rig.sRadius, opt.fovDeg, lastH);
+            const float fwdGain = gpp / clampf(std::sin(rig.sPitch), 0.35f, 1.0f);
+            rig.focusX -= ddx * rightX * gpp + ddy * fwdSeaX * fwdGain;
+            rig.focusZ -= ddx * rightZ * gpp + ddy * fwdSeaZ * fwdGain;
+        }
+
+        // ---- WASD pan: radius-scaled so it covers the frame at a steady rate. ----
         {
             float wf = 0.0f, ws = 0.0f;
             if (kd(GLFW_KEY_W)) wf += 1.0f;
@@ -354,22 +375,16 @@ int hostEchotropolis(HostContext& hc) {
             if (kd(GLFW_KEY_D)) ws += 1.0f;
             if (kd(GLFW_KEY_A)) ws -= 1.0f;
             if (wf != 0.0f || ws != 0.0f) {
-                const float k = opt.wasdPan * (rig.sRadius / 70.0f);
-                panInX += (wf * fwdSeaX + ws * rightX) * k;
-                panInZ += (wf * fwdSeaZ + ws * rightZ) * k;
+                const float step = opt.wasdPanFrac * rig.sRadius * dt;
+                rig.focusX += (wf * fwdSeaX + ws * rightX) * step;
+                rig.focusZ += (wf * fwdSeaZ + ws * rightZ) * step;
             }
         }
-        const bool panning = (panInX != 0.0f || panInZ != 0.0f);
-        if (panning) { rig.panVelX = panInX; rig.panVelZ = panInZ; }
-        else {         // glide, then drag to a stop (inertia on release)
-            rig.panVelX -= rig.panVelX * std::min(1.0f, opt.panDecay * dt);
-            rig.panVelZ -= rig.panVelZ * std::min(1.0f, opt.panDecay * dt);
-        }
-        rig.focusX += rig.panVelX * dt;
-        rig.focusZ += rig.panVelZ * dt;
 
-        // Keep the orbit-angle targets sane (elevation clamp is doctrine).
-        rig.pitch = clampPitch(rig.pitch);
+        // Clamp targets to the playable envelope (island bounds + 1km; pitch 2..32°).
+        rig.focusX = clampf(rig.focusX, -opt.focusLimit, opt.focusLimit);
+        rig.focusZ = clampf(rig.focusZ, -opt.focusLimit, opt.focusLimit);
+        rig.pitch  = clampPitch(rig.pitch);
 
         // ---- Critically-damped smoothing of every channel (no snapping) -------
         rig.sFocusX = smoothDamp(rig.sFocusX, rig.focusX, rig.vFocusX, opt.smoothFocus, dt);
@@ -406,8 +421,7 @@ int hostEchotropolis(HostContext& hc) {
 
         // Ocean + camera + render.
         waterTime += dt; applyOcean(device, waterTime, todS);
-        if (rig.freeLook) applyOrbitCamera(device, rig, rig.freeYaw, rig.freePitch, opt.fovDeg);
-        else              applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg);
+        applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
 
         auto frame = device->beginFrame();
         island.draw(*device, frame);
