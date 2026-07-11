@@ -76,3 +76,22 @@ Blender pipeline gotchas (proven in-repo): Microsoft-Store Blender — blender.e
 ACL-denied, use the blender-launcher.exe alias, which DETACHES (no stdout): report via files
 + poll for a .done marker; keep helper .ps1 ASCII-only. See tools/ for existing headless
 patterns (dance_bake.py etc.).
+
+### ROUND 3 STATUS (2026-07-11, this session)
+- LANE 2 LANDED: tools/build_rifthub_gate.py (bpy, 2 refinement iterations) authors the
+  25.5k-tri gate -> assets/converted_glb/rifthub/gate_ring.glb (LFS); tools/gate_build.ps1
+  = launch+poll driver. rifthub.cpp instances it 8x as Scene entities (3 material-group
+  nodes gate_patina/steel/dark -> curated sets), procedural ring/clamps/cradle now the
+  graceful fallback (self-test T9). Conduits re-authored as lower-flank hairpins hugging
+  the new rim; identity trim dimmed.
+- FAKE VOLUMETRICS LANDED: additive dust-billboard shaft columns (glass cones FAILED —
+  the glass fallback path lifts alpha by fresnel, solid sails at grazing; documented
+  in-code) under all 8 fixtures + 2 angled rakes, + 4 deck-fill lights between bays.
+- LANE 1 PREPPED (not run): tools/forge_gate_textures.py + docs/FORGE_GATE_TEXTURES.md —
+  owner fires `python tools/forge_gate_textures.py --all` when the 5090 is free, then
+  lands the sets per that doc.
+- Owner shots: docs/screenshots/rifthub/F_3_shafts_{wide,close,quarter}.png (history:
+  F_1 first GLB, F_2 density iter 2).
+- Honest read vs the reference stills: geometric density is finally in the same family
+  (~7/10; round 2 was 6.5) — the remaining gap is BAKED surface detail (the queued forge),
+  membrane richness, and photoreal grade, not silhouette.
