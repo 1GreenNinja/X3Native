@@ -244,22 +244,33 @@ std::vector<uint8_t> makeDetailRGBA(uint32_t n, uint32_t seed,
     };
 
     std::vector<uint8_t> px((size_t)n * n * 4);
-    const uint32_t periodLo = 8, periodHi = 16;   // two octave wrap periods
+    // Multi-octave tileable fBm (feat/terrain-aaa graft): wrap periods all divide a
+    // power-of-two `n` so the tile stays seamless, but coarse blotches + mid grain +
+    // fine grit read as a natural, NON-repetitive surface that holds up close AND
+    // doesn't visibly tile at distance (the old 2-octave 8/16 fill pulsed). A low-freq
+    // HUE jitter shifts patches warm/cool so a big field isn't one flat swatch.
+    const uint32_t periods[4] = { 4, 8, 16, 32 };
+    const float    amps[4]    = { 0.5f, 0.28f, 0.15f, 0.07f };
     for (uint32_t y = 0; y < n; ++y) {
         for (uint32_t x = 0; x < n; ++x) {
             const float fx = (float)x / (float)n;
             const float fy = (float)y / (float)n;
-            // Two tileable octaves (low + high frequency) summed, centred at 0.
-            float nlo = vnoiseTile(fx * periodLo, fy * periodLo, periodLo, seed);
-            float nhi = vnoiseTile(fx * periodHi, fy * periodHi, periodHi, seed + 7u);
-            float nval = (nlo * 0.65f + nhi * 0.35f) - 0.5f;   // [-0.5,0.5]
+            float nval = 0.0f;
+            for (int o = 0; o < 4; ++o) {
+                const uint32_t P = periods[o];
+                nval += amps[o] * vnoiseTile(fx * P, fy * P, P, seed + (uint32_t)o * 13u);
+            }
+            nval -= 0.535f;                                                  // recentre ~[-0.5,0.5]
+            const float hue = vnoiseTile(fx * 4.0f, fy * 4.0f, 4u, seed + 91u) - 0.5f;
             uint8_t* p = &px[((size_t)y * n + x) * 4];
             auto clampB = [](int v) -> uint8_t {
                 return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
             };
-            p[0] = clampB(baseR + (int)(nval * 2.0f * (float)varR));
-            p[1] = clampB(baseG + (int)(nval * 2.0f * (float)varG));
-            p[2] = clampB(baseB + (int)(nval * 2.0f * (float)varB));
+            // Grain around the base + a gentle warm/cool patch shift (R up / B down
+            // when hue>0) so large areas breathe instead of reading as a flat fill.
+            p[0] = clampB(baseR + (int)(nval * 2.0f * (float)varR + hue * 14.0f));
+            p[1] = clampB(baseG + (int)(nval * 2.0f * (float)varG + hue *  4.0f));
+            p[2] = clampB(baseB + (int)(nval * 2.0f * (float)varB - hue * 12.0f));
             p[3] = 255;
         }
     }
