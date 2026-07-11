@@ -762,6 +762,10 @@ void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*m
         case GLFW_KEY_BACKSPACE: hud.onBackspace(); break;
         case GLFW_KEY_UP:        hud.historyPrev(); break;
         case GLFW_KEY_DOWN:      hud.historyNext(); break;
+        case GLFW_KEY_PAGE_UP:   hud.consoleScroll(+5); break;   // scroll back through history
+        case GLFW_KEY_PAGE_DOWN: hud.consoleScroll(-5); break;   // scroll toward the live bottom
+        case GLFW_KEY_HOME:      hud.consoleScroll(+100000); break;  // jump to oldest (clamped)
+        case GLFW_KEY_END:       hud.consoleScroll(-100000); break;  // jump to live bottom
         case GLFW_KEY_TAB:       if (ctx->console) hud.complete(*ctx->console); break;
         case GLFW_KEY_ESCAPE:    hud.closeConsole(); break;
         default: break;
@@ -3907,6 +3911,26 @@ int runDefaultHost(HostContext& hc) {
         t.trimBody(kTermMaxBody);
         vigilStop(t);
     };
+    // W4-2 fix: resolve a numbered VIGIL choice (0-based). Echoes the chosen line,
+    // advances the tree (vigilRender re-prints the next node's menu ONCE), or closes
+    // the link when the choice targets `end`. Shared by the single-digit fast path
+    // (no Enter) and the Enter fallback so both behave identically. Returns true if
+    // `pick` was a valid, in-range choice (caller consumed the key), false otherwise.
+    auto vigilChoose = [&](x3::game::HoloTerminal& t, uint32_t pick) -> bool {
+        if (!vigilChat || !chatTrees.active() || pick >= chatTrees.choices().size())
+            return false;
+        t.clearInput();
+        t.addLine("> " + chatTrees.choices()[pick].text);
+        if (chatTrees.choose(pick)) {
+            vigilRender(t);                 // print the next node + its menu (once)
+        } else {                            // choice targeted "end" — close the link
+            t.addLine("");
+            t.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
+            t.trimBody(kTermMaxBody);
+            vigilStop(t);
+        }
+        return true;
+    };
 
     // ---- RESCUED-NPC TALK (the captive girl). When the player presses E within
     // talk range of a LIVE captive, an exchange opens: she goes terrified ->
@@ -4388,6 +4412,14 @@ int runDefaultHost(HostContext& hc) {
             glfwSetInputMode(window, GLFW_CURSOR,
                              wantCursor ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
             cursorShown = wantCursor;
+        }
+        // MOUSE WHEEL -> console scrollback while the console is open. Consume the
+        // wheel accumulator FIRST (before the weapon-cycle / world-map consumers
+        // below) so a wheel notch scrolls history instead of switching weapons.
+        // Up (positive) = older lines, down = toward the live bottom; ~3 lines/notch.
+        if (consoleOpen && g_weaponScroll != 0.0) {
+            hud.consoleScroll((int)(g_weaponScroll * 3.0));
+            g_weaponScroll = 0.0;
         }
         // Whether a UI menu (main/pause/settings) is currently up. While a menu is
         // up, gameplay input + the sim are frozen and only the menu reads input.
@@ -4983,6 +5015,16 @@ int runDefaultHost(HostContext& hc) {
         // the floor-hatch trapdoor on the correct code 1127). Esc-cancel handled below. --
         if (termMode && !terrainWorld) {
             x3::game::HoloTerminal& term = game.secret().terminal();
+            // W4-2 fix: reconcile a stale VIGIL flag. If the tree ended without the
+            // flag being cleared (a desync path once left vigilChat=true while the
+            // runner was inactive — the source of the phantom "CHOOSE 1-0" prompt),
+            // close the link cleanly ONCE so digit input falls back to the keypad.
+            if (vigilChat && !chatTrees.active()) {
+                term.addLine("");
+                term.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
+                term.trimBody(kTermMaxBody);
+                vigilStop(term);
+            }
             // KEYPAD CLICKS (the elevator's keypad treatment): every accepted
             // keystroke on the glass clicks — digits a touch brighter than letters,
             // backspace lower. Lazy-loaded once; invalid handle = silent, never a
@@ -4998,7 +5040,19 @@ int runDefaultHost(HostContext& hc) {
             };
             for (int dgt = 0; dgt < 10; ++dgt) {
                 bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
-                if (dn && !tmDigitPrev[dgt]) { term.pushChar((char)('0' + dgt)); keyClick(1.08f); }
+                if (dn && !tmDigitPrev[dgt]) {
+                    // W4-2 fix: while a VIGIL choice menu is live, a single digit 1..N
+                    // PICKS that choice immediately (edge-detected, no Enter) and is
+                    // consumed HERE — before it reaches the keypad code buffer. Digits
+                    // outside 1..N (and every digit when no menu is live) still buffer,
+                    // so the multi-digit override code (1278) types normally once the
+                    // conversation has ended (obtaining the code closes the link).
+                    bool picked = false;
+                    if (vigilChat && chatTrees.active() && dgt >= 1)
+                        picked = vigilChoose(term, (uint32_t)(dgt - 1));
+                    if (picked) keyClick(1.08f);
+                    else        { term.pushChar((char)('0' + dgt)); keyClick(1.08f); }
+                }
                 tmDigitPrev[dgt] = dn;
             }
             // Letters + space too, so the cell terminal is a REAL typable field (not
@@ -5031,23 +5085,20 @@ int runDefaultHost(HostContext& hc) {
                     (typed == "VIGIL" || typed == "HELLO" || typed == "HELP" ||
                      typed == "TALK" || typed == "HI");
                 if (vigilChat && allDigits && typed.size() == 1) {
-                    // Numbered choice pick on the glass.
+                    // Enter fallback for a single digit. In-range digits are already
+                    // consumed live by the digit loop above (no Enter needed); this
+                    // path is reached only for an OUT-OF-RANGE digit that buffered —
+                    // reply with the real range ONCE (no per-press stacking).
                     const uint32_t pick = (uint32_t)(typed[0] - '1');
                     term.clearInput();
-                    if (chatTrees.active() && pick < chatTrees.choices().size()) {
-                        term.addLine("> " + chatTrees.choices()[pick].text);
-                        if (chatTrees.choose(pick)) {
-                            vigilRender(term);
-                        } else {           // choice targeted "end" — close the link
-                            term.addLine("");
-                            term.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
+                    if (!vigilChoose(term, pick)) {
+                        const std::string prompt = "CHOOSE 1-" +
+                            std::to_string(chatTrees.active() ? chatTrees.choices().size() : 0);
+                        // Dedup: skip if the glass already ends with this exact prompt.
+                        if (term.lines().empty() || term.lines().back() != prompt) {
+                            termWrapOut(term, prompt);
                             term.trimBody(kTermMaxBody);
-                            vigilStop(term);
                         }
-                    } else {
-                        termWrapOut(term, "CHOOSE 1-" +
-                            std::to_string(chatTrees.active() ? chatTrees.choices().size() : 0));
-                        term.trimBody(kTermMaxBody);
                     }
                 } else if (vigilSummon) {
                     term.clearInput();
@@ -5097,10 +5148,13 @@ int runDefaultHost(HostContext& hc) {
                         if (!d.empty()) termWrapOut(term, "VIGIL: " + d);
                         else term.addLine(kVigilDegraded[(llmCannedIdx++) % kVigilDegradedN]);
                         if (vigilChat && chatTrees.active() &&
-                            !chatTrees.choices().empty())
-                            termWrapOut(term, "CHOOSE 1-" +
+                            !chatTrees.choices().empty()) {
+                            const std::string prompt = "CHOOSE 1-" +
                                 std::to_string(chatTrees.choices().size()) +
-                                " OR ASK FREELY");
+                                " OR ASK FREELY";
+                            if (term.lines().empty() || term.lines().back() != prompt)
+                                termWrapOut(term, prompt);
+                        }
                     }
                     term.trimBody(kTermMaxBody);
                     x3::logInfo("terminal: JAKE -> " + typed);
