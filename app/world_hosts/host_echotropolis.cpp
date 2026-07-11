@@ -5,7 +5,9 @@
 // (setWaterParams — a device-internal 240m patch that re-centers under the camera
 // each frame, so it reads as an infinite sea), and the FPS camera primitive
 // (setCamera). P2: the authored island lands as a baked GLB (EnvArtSystem, see
-// the island block in hostEchotropolis) — golden hour arrives in P3. Modeled on host_valley.cpp for the
+// the island block in hostEchotropolis). P3: a live TimeOfDay cycle drives sky/
+// sun/ambient/water through the art bible's four canonical times (golden/dusk/
+// night/noon — keys 1-4, T pauses, ECHO_TOD pins headless captures). Modeled on host_valley.cpp for the
 // scene/teardown lifecycle, but there is no physics/streamer here — water and sky
 // are device-internal passes, so the loop just poses the camera and renders.
 //
@@ -117,27 +119,74 @@ void applyOrbitCamera(x3::rhi::IRenderDevice* device, const OrbitRig& r,
     device->setCamera(camX, camY, camZ, useYaw, lookPitch, fovDeg);
 }
 
-// Fixed pleasant DAY sky (golden hour arrives in P3). TimeOfDay hands us a ready
-// SkyParams snapshot; 0.35 sits solidly inside the DAY phase (dayStart=0.25).
-void applyDaySky(x3::rhi::IRenderDevice* device) {
-    x3::game::TimeOfDay tod;
-    tod.setDayFraction(0.35f);
-    x3::game::TodSample s = tod.sample();
-    s.sky.enabled = true;
-    device->setSkyParams(s.sky);
+// ---- P3: the four canonical times (ART_DIRECTION.md lighting doctrine) mapped
+// onto TimeOfDay's normalized clock. Dusk spans [0.55,0.75): golden hour sits
+// early in it (low warm sun), blue dusk late (sun at the horizon). Night midpoint
+// gets the aurora swell + starfield; noon is the clear-day baseline.
+constexpr float kTodGolden = 0.715f;  // "The Postcard" — sun elevation ~0.15, warm + low
+constexpr float kTodDusk   = 0.75f;   // "Lamps Coming On" — sun ON the horizon, ember line
+constexpr float kTodNight  = 0.875f;  // "The Answering Light" — moon fill + stars
+constexpr float kTodNoon   = 0.40f;   // "The Clear Day" — bright PNW noon
+float canonTodFraction(const char* name) {
+    std::string n(name);
+    if (n == "golden") return kTodGolden;
+    if (n == "dusk")   return kTodDusk;
+    if (n == "night")  return kTodNight;
+    if (n == "noon")   return kTodNoon;
+    const float f = std::strtof(name, nullptr);   // also accepts a raw fraction
+    return (f >= 0.0f && f < 1.0f) ? f : kTodGolden;
 }
 
-// Gerstner ocean at sea level 0, lit to match the day sun. Re-applied per frame
-// (time advances the waves), exactly like host_valley's applyWater.
-void applyOcean(x3::rhi::IRenderDevice* device, float t) {
+// Push a TOD sample to the device: analytic sky (sun dir/color/haze/exposure —
+// this sun ALSO lights the island's PBR meshes) + the ambient fill, with the
+// midnight aurora tint folded into the ambient so the night isn't pure black.
+//
+// ART_DIRECTION.md doctrine layer: TimeOfDay's keyframes animate the sun but
+// leave SkyParams' zenith/horizon at their bright DAY defaults, so night skies
+// render pale. Grade the dome here by sun elevation — deep blue-black at night,
+// and an amber horizon blush when the sun is low but up (golden hour / dawn).
+void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s) {
+    x3::rhi::IRenderDevice::SkyParams sky = s.sky;
+    sky.enabled = true;
+
+    auto clamp01 = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
+    // dayness: 1 in full day, ramping to 0 as the sun sinks past the horizon.
+    const float dayness = clamp01((s.sunElevation + 0.06f) / 0.30f);
+    constexpr float kNightZenith[3]  = { 0.004f, 0.007f, 0.018f };  // near-black blue
+    constexpr float kNightHorizon[3] = { 0.012f, 0.018f, 0.040f };  // faint sea-glow
+    for (int i = 0; i < 3; ++i) {
+        sky.zenith[i]  = kNightZenith[i]  + (sky.zenith[i]  - kNightZenith[i])  * dayness;
+        sky.horizon[i] = kNightHorizon[i] + (sky.horizon[i] - kNightHorizon[i]) * dayness;
+    }
+    // Golden-hour blush: sun above the horizon but LOW -> horizon warms to amber,
+    // zenith picks up a touch of it. Peaks at elevation 0, gone by ~0.35.
+    if (s.sunElevation > 0.0f) {
+        const float low = clamp01(1.0f - s.sunElevation / 0.35f);
+        constexpr float kAmber[3] = { 0.98f, 0.52f, 0.24f };
+        for (int i = 0; i < 3; ++i) {
+            sky.horizon[i] += (kAmber[i] - sky.horizon[i]) * (0.65f * low);
+            sky.zenith[i]  += (kAmber[i] - sky.zenith[i])  * (0.12f * low);
+        }
+    }
+    device->setSkyParams(sky);
+    device->setAmbient(s.ambient[0] + s.auroraTint[0],
+                       s.ambient[1] + s.auroraTint[1],
+                       s.ambient[2] + s.auroraTint[2]);
+}
+
+// Gerstner ocean at sea level 0, lit by the SAME sun as the sky (doctrine: one
+// light). Water color follows the daylight: full color at noon, ember-dark at
+// night (the baked GLB ocean ring darkens automatically via the PBR sun).
+void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSample& s) {
     x3::rhi::IRenderDevice::WaterParams wp{};
     wp.enabled = true; wp.seaLevel = 0.0f; wp.time = t;
     // Amplitude must stay UNDER the island GLB's baked ocean ring (y=-0.4) or the
     // Gerstner troughs punch through it and checker with the ring (seen in P2).
     wp.amplitude = 0.32f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
-    wp.deepColor[0]    = 0.015f; wp.deepColor[1]    = 0.055f; wp.deepColor[2]    = 0.11f;
-    wp.shallowColor[0] = 0.06f;  wp.shallowColor[1] = 0.24f;  wp.shallowColor[2] = 0.32f;
-    wp.sunDir[0] = 0.4f; wp.sunDir[1] = 1.0f; wp.sunDir[2] = 0.3f;
+    const float dayF = 0.12f + 0.88f * std::max(0.0f, s.sunElevation);
+    wp.deepColor[0]    = 0.015f * dayF; wp.deepColor[1]    = 0.055f * dayF; wp.deepColor[2]    = 0.11f * dayF;
+    wp.shallowColor[0] = 0.06f  * dayF; wp.shallowColor[1] = 0.24f  * dayF; wp.shallowColor[2] = 0.32f * dayF;
+    wp.sunDir[0] = s.sky.sunDir[0]; wp.sunDir[1] = s.sky.sunDir[1]; wp.sunDir[2] = s.sky.sunDir[2];
     wp.specular = 16.0f; wp.fresnel = 0.02f;
     device->setWaterParams(wp);
 }
@@ -158,7 +207,17 @@ int hostEchotropolis(HostContext& hc) {
     CameraOptions opt;
     OrbitRig rig;
 
-    applyDaySky(device);
+    // ---- P3: time-of-day. A full day-night cycle runs in 240s (windowed); the
+    // clock starts at (and headless captures) ECHO_TOD = golden|dusk|night|noon
+    // or a raw [0,1) fraction. Default: golden hour — the postcard light.
+    x3::game::TodConfig todCfg;
+    todCfg.dayLengthSeconds = 240.0f;
+    x3::game::TimeOfDay tod(todCfg);
+    {
+        const char* e = std::getenv("ECHO_TOD");
+        tod.setDayFraction(canonTodFraction(e ? e : "golden"));
+    }
+    applyTodSample(device, tod.sample());
     device->setCameraFar(20000.0f);   // far plane covers the GLB's 14km ocean ring corners
 
     // ---- P2: THE ISLAND. Authored in SimCityLLM2 (gen_heightmap.py seed 20260530),
@@ -190,9 +249,11 @@ int hostEchotropolis(HostContext& hc) {
                                                : std::string("agent_echotropolis.png");
         const int kSettle = 24;
         const float dt = 1.0f / 60.0f;
+        const x3::game::TodSample shotTod = tod.sample();   // frozen at ECHO_TOD
         for (int i = 0; i < kSettle; ++i) {
             glfwPollEvents();
-            applyOcean(device, (float)i * dt);
+            applyTodSample(device, shotTod);
+            applyOcean(device, (float)i * dt, shotTod);
             if (shotCamOverride) {
                 device->setCamera(shotCam[0], shotCam[1], shotCam[2], shotCam[3], shotCam[4], opt.fovDeg);
             } else {
@@ -226,8 +287,11 @@ int hostEchotropolis(HostContext& hc) {
     if (const char* e = std::getenv("ECHO_AUTOEXIT_SEC")) autoExitSec = std::atof(e);
     double runElapsed = 0.0; double runFrames = 0.0; double runSecs = 0.0;
 
-    x3::logInfo("--world echotropolis: LMB/drag or WASD pan the sea, wheel zoom, "
-                "hold-RMB free-look, Esc to quit");
+    x3::logInfo("--world echotropolis: LMB/drag or WASD pan, wheel zoom, hold-RMB "
+                "free-look; TOD keys 1=golden 2=dusk 3=night 4=noon, T pauses the "
+                "cycle; Esc to quit");
+    bool todPaused = false, prevT = false;
+    x3::game::TodPhase prevPhase = tod.phase();
 
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window)) {
@@ -321,8 +385,27 @@ int hostEchotropolis(HostContext& hc) {
             if (cw > 0 && chh > 0) device->onResize((uint32_t)cw, (uint32_t)chh);
         }
 
+        // ---- P3: advance the day (pause with T; 1-4 jump to the canon times) ----
+        {
+            const bool tNow = kd(GLFW_KEY_T);
+            if (tNow && !prevT) todPaused = !todPaused;
+            prevT = tNow;
+            if (kd(GLFW_KEY_1)) tod.setDayFraction(kTodGolden);
+            if (kd(GLFW_KEY_2)) tod.setDayFraction(kTodDusk);
+            if (kd(GLFW_KEY_3)) tod.setDayFraction(kTodNight);
+            if (kd(GLFW_KEY_4)) tod.setDayFraction(kTodNoon);
+            if (!todPaused) tod.advance(dt);
+            if (tod.phase() != prevPhase) {
+                prevPhase = tod.phase();
+                x3::logInfo(std::string("--world echotropolis: ") +
+                            x3::game::todPhaseName(prevPhase));
+            }
+        }
+        const x3::game::TodSample todS = tod.sample();
+        applyTodSample(device, todS);
+
         // Ocean + camera + render.
-        waterTime += dt; applyOcean(device, waterTime);
+        waterTime += dt; applyOcean(device, waterTime, todS);
         if (rig.freeLook) applyOrbitCamera(device, rig, rig.freeYaw, rig.freePitch, opt.fovDeg);
         else              applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg);
 
