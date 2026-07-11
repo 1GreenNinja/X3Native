@@ -262,7 +262,12 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
+            // A leading '-' is accepted when it starts a NUMBER ("-2.0,...") —
+            // negative coordinates are valid cams, only "--flags" are not
+            // (tooling gap found by the bodycontact host's rigid-side cam).
+            if (i + 1 < argc && (argv[i + 1][0] != '-' ||
+                                 (argv[i + 1][1] >= '0' && argv[i + 1][1] <= '9') ||
+                                 argv[i + 1][1] == '.')) {
                 const char* s = argv[++i];
                 int n = 0; char* end = nullptr;
                 while (n < 5 && *s) {
@@ -454,6 +459,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-introcockpit") o.testIntroCockpit = true;
         else if (a == "--test-shipinterior") o.testShipInterior = true;
         else if (a == "--test-shipwindows") o.testShipWindows = true;
+        else if (a == "--test-bodycontact") o.testBodyContact = true;
         else if (a == "--test-wormhole") o.testWormhole = true;
         else if (a == "--test-wormhole-transit") o.testWormholeTransit = true;
         else if (a == "--test-tractor") o.testTractor = true;

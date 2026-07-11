@@ -53,6 +53,7 @@ struct TestFlags {
     bool testShipInterior = false;// --test-shipinterior (S5 walkable interior, headless)
     bool testShipWindows  = false;// --test-shipwindows (S6 true-portal windows, headless)
     // Space-combat feast fold (14900K lanes, headless):
+    bool testBodyContact = false;     // --test-bodycontact (bone-surface contact + soft indent)
     bool testWormhole = false;        // --test-wormhole (Salvari crystal-matrix VFX)
     bool testWormholeTransit = false; // --test-wormhole-transit (S3 autopilot jump ride)
     bool testTractor = false;         // --test-tractor (intro capital-ship capture beam)

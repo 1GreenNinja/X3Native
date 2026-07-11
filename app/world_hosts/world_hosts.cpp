@@ -24,6 +24,7 @@ int dispatchWorldHost(HostContext& hc) {
     if (hc.worldMode == "introcockpit")               return hostIntroCockpit(hc);
     if (hc.worldMode == "ship-windows")               return hostShipWindows(hc);
     if (hc.worldMode == "descentslide")               return hostDescentSlide(hc);
+    if (hc.worldMode == "bodycontact")                return hostBodyContact(hc);
     if (hc.worldMode == "wormhole")                   return hostWormhole(hc);
     if (hc.worldMode == "wormhole-transit")           return hostWormholeTransit(hc);
     if (hc.worldMode == "tractor")                    return hostTractor(hc);

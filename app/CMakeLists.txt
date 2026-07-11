@@ -65,6 +65,7 @@ add_executable(X3Engine WIN32
     descent_slide.cpp
     world_hosts/host_descentslide.cpp
     world_hosts/host_shipwindows.cpp
+    world_hosts/host_bodycontact.cpp
     world_hosts/host_wormhole.cpp
     secret_room.cpp
     ecs_render.cpp

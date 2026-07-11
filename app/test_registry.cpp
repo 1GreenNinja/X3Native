@@ -31,6 +31,7 @@
 #include "skilltree.h"          // W9-3 RPG: runSkillTreeSelfTest
 #include "engine/physics/StructuralCollapse.h"
 #include "engine/physics/Ragdoll.h"
+#include "engine/physics/BodyContact.h"   // x3::phys::runBodyContactSelfTest (--test-bodycontact)
 #include "engine/physics/IVehicle.h"
 #include "engine/audio/IAudioSystem.h"
 #include "engine/audio/RtAcoustics.h"
@@ -365,6 +366,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running S6 SHIP-WINDOWS self-test (true-portal moving space: star/nebula "
                     "UV pan + per-window light-bleed against the interior manifest, headless)...");
         return x3::space::runShipWindowsSelfTest() ? 0 : 1;
+    }
+    if (tf.testBodyContact) {
+        x3::logInfo("running BODY-CONTACT self-test (bone-surface solver: rigid rest + "
+                    "soft settle + mattress indent bake + finite extents + determinism)...");
+        return x3::phys::runBodyContactSelfTest() ? 0 : 1;
     }
     if (tf.testWormhole) {
         x3::logInfo("running Salvari crystal-matrix wormhole (WormholeVfx) self-test "

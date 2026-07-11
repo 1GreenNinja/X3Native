@@ -277,6 +277,7 @@ struct CliOptions {
     bool        testShipWindows  = false;
     // Space-combat feast fold (14900K lanes): --test-wormhole (crystal-matrix VFX),
     // --test-wormhole-transit (S3 autopilot jump ride), --test-tractor (intro beam).
+    bool        testBodyContact = false;
     bool        testWormhole = false;
     bool        testWormholeTransit = false;
     bool        testTractor = false;

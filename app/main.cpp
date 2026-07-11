@@ -299,6 +299,7 @@ int main(int argc, char** argv) {
         _tf.testIntroCockpit = o.testIntroCockpit;
         _tf.testShipInterior = o.testShipInterior;
         _tf.testShipWindows  = o.testShipWindows;
+        _tf.testBodyContact = o.testBodyContact;
         _tf.testWormhole = o.testWormhole;
         _tf.testWormholeTransit = o.testWormholeTransit;
         _tf.testTractor = o.testTractor;

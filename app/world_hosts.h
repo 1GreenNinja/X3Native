@@ -37,6 +37,7 @@ int hostElevator (HostContext& hc);   // --world elevator-showcase (+ --screensh
 int hostIntroCockpit(HostContext& hc); // --world introcockpit (intro cold-open cockpit)
 int hostShipWindows(HostContext& hc);  // --world ship-windows (S5/S6 fold: walkable interior + true-portal space)
 int hostDescentSlide(HostContext& hc); // --world descentslide (Wave 2C: the B1 -> -178 m coaster-grade ride)
+int hostBodyContact(HostContext& hc);     // --world bodycontact (BODY CONTACT feature: rigid rest + soft mattress indent)
 int hostWormhole(HostContext& hc);        // --world wormhole (feast fold: Salvari crystal-matrix tunnel VFX)
 int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fold: S3 autopilot jump ride)
 int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
