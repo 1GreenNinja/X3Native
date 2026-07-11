@@ -1752,11 +1752,18 @@ bool runCanonLevelSelfTest() {
         for (uint32_t i = 0; i < floor.rooms.size(); ++i)
             if (floor.rooms[i].name.find("Jake") != std::string::npos) { jake = (int)i; break; }
         bool found = jake >= 0;
+        // Canon dims (LevelArchitect v10.9 FLOOR1_DEFAULT): Jake's Cell w:7 h:4 d:6.
+        // The v2 project JSON had regressed this to 4x3.5x4 (~⅓ the footprint), which
+        // (a) rendered the hero cell a quarter-size + cramped and (b) overflowed the
+        // trapdoor hatch past the shrunken floor, leaving a see-through gap to the
+        // descent chute below. Restored to canon; cell_dressing already seats all
+        // contents relative to the cell bounds so they re-fit automatically.
         bool dims = found && std::fabs(floor.rooms[jake].cx - 2.0f) < 0.01f &&
                     std::fabs(floor.rooms[jake].cz - 40.0f) < 0.01f &&
-                    std::fabs(floor.rooms[jake].w - 4.0f) < 0.01f &&
-                    std::fabs(floor.rooms[jake].h - 3.5f) < 0.01f;
-        check(found && dims, "C2 Jake's Cell at canonical (2,0,40) 4x3.5x4 (no axis flip)");
+                    std::fabs(floor.rooms[jake].w - 7.0f) < 0.01f &&
+                    std::fabs(floor.rooms[jake].h - 4.0f) < 0.01f &&
+                    std::fabs(floor.rooms[jake].d - 6.0f) < 0.01f;
+        check(found && dims, "C2 Jake's Cell at canonical (2,0,40) 7x4x6 (no axis flip)");
     }
 
     // ---- C3: doorway resolver kind histogram (matches tools/connectivity_audit.py). ----

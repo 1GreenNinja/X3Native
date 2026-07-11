@@ -279,13 +279,37 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
                                       const std::string& inputLine,
                                       const float* inkOverride = nullptr) {
     const float fn = (float)n;
+    auto P = [&](float f){ return f * fn; };                // fraction -> pixels
 
-    // ---- 1) DARK INSET SCREEN PANE (Tim's ask): a near-black, high-contrast field
-    // floating inside the rounded glass, with a CLEAR bezel MARGIN so the cell shows
-    // through the glass at the edges. The blue line-art + readout text bloom over this
-    // dark field so they read perfectly. (Was a uniform mid-blue glass slab, which made
-    // the whole panel read as a solid tinted plate — no dark screen, no see-through.) ----
-    const float paneM = 0.055f;                             // fractional bezel margin
+    // ====================================================================
+    // PROFESSIONAL TERMINAL LAYOUT (medical/military UI discipline). OWNER PASS
+    // (2026-07-11): "the text is hard to read because graphics interfere with it."
+    // The panel bakes into a rounded quad whose corners FADE to black (the wanted
+    // rounded-glass look), so EVERY element lives inside a CORNER-SAFE GRID —
+    // nothing important enters the corner discs (fixes 'STATUS: SECURE' clipping
+    // at the top-right corner). Three non-overlapping columns —
+    //   LEFT   = text-only readout (NO line-art behind text + a darker backing plate),
+    //   CENTER = a self-contained schematic (no stroke exits the cell),
+    //   RIGHT  = warning icons + value bars on a fixed right column —
+    // a HEADER strip (emblem + title + ONE rule) and a dim BOTTOM data strip.
+    // Brightness hierarchy: TEXT > schematic > decoration.
+    // ====================================================================
+    struct Rect { float x0, y0, x1, y1; };
+    const Rect zHeader { 0.160f, 0.050f, 0.840f, 0.190f };   // emblem + title + rule
+    const Rect zLeft   { 0.070f, 0.210f, 0.430f, 0.835f };   // text-only readout
+    const Rect zCenter { 0.455f, 0.225f, 0.665f, 0.720f };   // schematic cell
+    const Rect zRight  { 0.700f, 0.205f, 0.890f, 0.835f };   // bars / warnings
+    const Rect zBottom { 0.160f, 0.850f, 0.840f, 0.905f };   // dim data strip
+    auto inRect = [](const Rect& q, float u, float v){
+        return u >= q.x0 && u <= q.x1 && v >= q.y0 && v <= q.y1;
+    };
+
+    // ---- 1) BASE FIELD: near-black glass with a faint scanline. TEXT zones (header,
+    // left readout, bottom strip) get a DARKER backing plate (no grid) so glowing ink
+    // always reads at high contrast; the schematic/right zones keep a faint grid so
+    // they read as a live display. The bezel margin stays clear so the glass shows the
+    // room at the very edge. ----
+    const float paneM = 0.055f;
     Canvas c(n);
     for (uint32_t y = 0; y < n; ++y) {
         for (uint32_t x = 0; x < n; ++x) {
@@ -293,211 +317,168 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
             const size_t i = (size_t)y * n + x;
             const bool inPane = (u > paneM && u < 1.0f - paneM &&
                                  v > paneM && v < 1.0f - paneM);
-            if (inPane) {
-                // Near-black screen field (barely-blue) + a faint scanline/grid so it
-                // reads as a LIVE display surface, not a dead hole — but kept DARK so the
-                // glowing blue text pops at high contrast.
-                float br = 0.012f, bg = 0.024f, bb = 0.050f;
-                const float scan = 0.85f + 0.15f * ((y % 4u) < 2u ? 1.0f : 0.5f);
-                br *= scan; bg *= scan; bb *= scan;
-                if ((x % 28u) < 1u || (y % 28u) < 1u) { bg += 0.012f; bb += 0.022f; } // faint grid
-                c.r[i] = br; c.g[i] = bg; c.b[i] = bb;
-            } else {
-                // MARGIN / bezel: near-transparent (the glass shows the room behind it).
-                c.r[i] = 0.004f; c.g[i] = 0.009f; c.b[i] = 0.017f;
+            if (!inPane) { c.r[i]=0.004f; c.g[i]=0.009f; c.b[i]=0.017f; continue; } // bezel
+            // Text backing plate: near-black, no grid — the "darker plate behind the
+            // text block" so ink sits on a clean field (owner: text must read at a glance).
+            if (inRect(zLeft,u,v) || inRect(zHeader,u,v) || inRect(zBottom,u,v)) {
+                c.r[i]=0.006f; c.g[i]=0.012f; c.b[i]=0.024f; continue;
             }
+            float br = 0.012f, bg = 0.024f, bb = 0.050f;
+            const float scan = 0.85f + 0.15f * ((y % 4u) < 2u ? 1.0f : 0.5f);
+            br *= scan; bg *= scan; bb *= scan;
+            // faint grid ONLY in the schematic + right zones (never behind text)
+            if ((inRect(zCenter,u,v) || inRect(zRight,u,v)) &&
+                ((x % 28u) < 1u || (y % 28u) < 1u)) { bg += 0.010f; bb += 0.018f; }
+            c.r[i]=br; c.g[i]=bg; c.b[i]=bb;
         }
     }
 
-    // ---- 2) LINE-ART HUD (additive cyan/white). All coordinates in pixels, scaled
-    // off n so it stays crisp at 1024^2. Layout follows the reference photos.
-    // Strokes are pushed HOT (cyan well above the glass base) so the printed HUD
-    // survives the flat additive emissive flood + reads under scene lighting. ----
-    auto P = [&](float f){ return f * fn; };                // fraction -> pixels
-    // GLOWING BLUE palette (Tim: "text color BLUE, not cyan"). Blue = high blue channel,
-    // low-mid green, low red — pushed HDR so the strokes bloom softly over the dark pane.
-    const float CY_R = 0.26f, CY_G = 0.56f, CY_B = 1.60f;   // glowing blue stroke (HDR)
+    // ---- Palette + brightness hierarchy. Decoration is dimmed to ~42% of text so the
+    // eye ranks TEXT > schematic > decoration (owner: "dim decorative strokes"). ----
+    const float CY_R = 0.26f, CY_G = 0.56f, CY_B = 1.60f;   // blue line-art (HDR)
     const float WT_R = 0.60f, WT_G = 0.92f, WT_B = 1.75f;   // bright blue-white
     const float th  = std::max(1.4f, fn / 512.0f);          // base stroke thickness
     const float thh = th * 1.5f;                            // heavier strokes
+    const float kDeco  = 0.42f;    // frames / ticks / dotted strip / dividers (decoration)
+    const float kSchem = 0.62f;    // schematic strokes + nodes (mid tier)
 
-    // Inset PANE BORDER — a thin blue rule at the dark-screen edge so the recessed field
-    // reads as an inset within the rounded glass bezel (drawn under the HUD line-art).
-    rectFrame(c, P(paneM), P(paneM), P(1.0f - paneM), P(1.0f - paneM),
-              CY_R, CY_G, CY_B, 0.55f, th);
+    // ---- 2) OUTER FRAME: corner brackets with the chamfered top-right corner, drawn
+    // DIM. Inset to the corner-safe box so the brackets themselves never clip. ----
+    bracketFrame(c, P(0.052f), P(0.055f), P(0.948f), P(0.945f),
+                 P(0.070f), P(0.050f), CY_R,CY_G,CY_B, kDeco, thh);
 
-    // Whole-UI bracket frame with a chamfered top-right corner.
-    bracketFrame(c, P(0.045f), P(0.05f), P(0.955f), P(0.95f),
-                 P(0.075f), P(0.055f), CY_R,CY_G,CY_B, 0.95f, thh);
+    // ---- HEADER: hexagon emblem + ONE rule under it. Title text baked on-glass below. ----
+    hexagon(c, P(zHeader.x0 + 0.020f), P(0.108f), P(0.026f), WT_R,WT_G,WT_B, kSchem, thh);
+    line(c, P(zHeader.x0), P(0.170f), P(zHeader.x1), P(0.170f), WT_R,WT_G,WT_B, 0.7f, thh);
 
-    // --- TOP HEADER: rule + hexagon emblem at the left end. The TITLE TEXT itself is
-    // rendered on-glass by the host (drawHoloReadout) over this clear strip. ---
-    const float hdrY = P(0.135f);
-    hexagon(c, P(0.085f), P(0.092f), P(0.030f), WT_R,WT_G,WT_B, 1.0f, thh);
-    line(c, P(0.085f)-P(0.012f), P(0.092f), P(0.085f)+P(0.012f), P(0.092f), WT_R,WT_G,WT_B,0.9f, th); // emblem tick
-    line(c, P(0.130f), hdrY, P(0.92f), hdrY, WT_R,WT_G,WT_B, 1.0f, thh);   // header rule
-    line(c, P(0.130f), hdrY+P(0.010f), P(0.55f), hdrY+P(0.010f), CY_R,CY_G,CY_B, 0.5f, th); // sub-rule
+    // ---- LEFT COLUMN is TEXT-ONLY: no line-art here (readout baked below) so nothing
+    // crosses the text rows. One dim vertical divider marks the column edge. ----
+    line(c, P(zLeft.x1 + 0.012f), P(zLeft.y0), P(zLeft.x1 + 0.012f), P(zLeft.y1),
+         CY_R,CY_G,CY_B, 0.22f, th);
 
-    // --- LEFT COLUMN: icon squares + rows of fine "data text" tick blocks. ---
-    const float lx0 = P(0.075f), lx1 = P(0.345f);
-    // three little icon squares
-    for (int i = 0; i < 3; ++i) {
-        const float ix = lx0 + i * P(0.055f);
-        rectFrame(c, ix, P(0.20f), ix + P(0.035f), P(0.235f), CY_R,CY_G,CY_B, 0.9f, th);
-        if (i == 1) line(c, ix, P(0.20f), ix+P(0.035f), P(0.235f), CY_R,CY_G,CY_B,0.7f,th); // diag detail
-    }
-    // paragraphs of short tick-marks (read as fine data text from a distance)
+    // ---- CENTER SCHEMATIC — a node + branches, ALL inside zCenter (no stroke exits the
+    // cell into the text zones). ----
     {
-        float ty = P(0.275f);
-        const float rowH = P(0.026f);
-        for (int row = 0; row < 14; ++row) {
-            // each row is a run of short blocks of varied length (like words)
-            float cxr = lx0;
-            const int words = 3 + (row * 7 + 2) % 4;
-            for (int w = 0; w < words; ++w) {
-                const float wlen = P(0.018f) + P(0.010f) * ((row*5 + w*3) % 4);
-                if (cxr + wlen > lx1) break;
-                const float bright = (row % 5 == 0 && w == 0) ? 0.85f : 0.45f; // first word of some rows brighter
-                line(c, cxr, ty, cxr + wlen, ty, CY_R,CY_G,CY_B, bright, th);
-                cxr += wlen + P(0.012f);
-            }
-            ty += rowH;
-            if (ty > P(0.86f)) break;
+        const float ncx = P(0.560f), ncy = P(0.400f);
+        const float nhw = P(0.055f), nhh = P(0.050f);
+        roundRectFrame(c, ncx-nhw, ncy-nhh, ncx+nhw, ncy+nhh, P(0.018f),
+                       WT_R,WT_G,WT_B, kSchem, thh);
+        line(c, ncx-nhw+P(0.010f), ncy-P(0.016f), ncx+nhw-P(0.010f), ncy-P(0.016f),
+             CY_R,CY_G,CY_B, kSchem*0.8f, th);
+        line(c, ncx-nhw+P(0.010f), ncy+P(0.010f), ncx+nhw-P(0.020f), ncy+P(0.010f),
+             CY_R,CY_G,CY_B, kSchem*0.7f, th);
+        const float bx0 = ncx + nhw, bxEnd = P(zCenter.x1 - 0.012f);
+        for (int i = 0; i < 3; ++i) {
+            const float by = ncy - P(0.030f) + i * P(0.030f);
+            line(c, bx0, ncy, bx0 + P(0.014f), by, CY_R,CY_G,CY_B, kSchem, th);
+            line(c, bx0 + P(0.014f), by, bxEnd - P(0.016f), by, CY_R,CY_G,CY_B, kSchem, th);
+            rectFrame(c, bxEnd - P(0.016f), by-P(0.008f), bxEnd, by+P(0.008f),
+                      CY_R,CY_G,CY_B, kSchem, th);
         }
+        line(c, ncx, ncy+nhh, ncx, ncy+nhh+P(0.026f), CY_R,CY_G,CY_B, kSchem, th);
+        chevronDown(c, ncx, ncy+nhh+P(0.026f), P(0.026f), P(0.024f), WT_R,WT_G,WT_B, kSchem, thh);
     }
-    // a faint vertical divider after the left column
-    line(c, lx1 + P(0.015f), P(0.19f), lx1 + P(0.015f), P(0.87f), CY_R,CY_G,CY_B, 0.25f, th);
 
-    // --- CENTER SCHEMATIC: a rounded-rect node + branching horizontal lines with
-    // tiny end-nodes + labels, and a downward chevron below it. Kept LEFT of the
-    // right column (branches stop before x=0.66) so the two zones don't collide. ---
-    const float ncx = P(0.500f), ncy = P(0.41f);
-    const float nhw = P(0.072f), nhh = P(0.058f);
-    roundRectFrame(c, ncx-nhw, ncy-nhh, ncx+nhw, ncy+nhh, P(0.020f), WT_R,WT_G,WT_B, 0.95f, thh);
-    // a couple of inner detail lines (the node "label rows")
-    line(c, ncx-nhw+P(0.012f), ncy-P(0.018f), ncx+nhw-P(0.012f), ncy-P(0.018f), CY_R,CY_G,CY_B,0.6f,th);
-    line(c, ncx-nhw+P(0.012f), ncy+P(0.010f), ncx+nhw-P(0.025f), ncy+P(0.010f), CY_R,CY_G,CY_B,0.5f,th);
-    // three branching lines off the right side with small node squares + label ticks
-    const float bx0 = ncx + nhw;
-    for (int i = 0; i < 3; ++i) {
-        const float by = ncy - P(0.032f) + i * P(0.032f);
-        const float bxEnd = P(0.625f);
-        line(c, bx0, ncy, bx0 + P(0.016f), by, CY_R,CY_G,CY_B, 0.7f, th);  // angled spur
-        line(c, bx0 + P(0.016f), by, bxEnd, by, CY_R,CY_G,CY_B, 0.7f, th); // horizontal run
-        rectFrame(c, bxEnd, by-P(0.009f), bxEnd+P(0.018f), by+P(0.009f), CY_R,CY_G,CY_B,0.8f,th); // end node
-    }
-    // a branch DOWN to the chevron
-    line(c, ncx, ncy+nhh, ncx, ncy+nhh+P(0.030f), CY_R,CY_G,CY_B, 0.7f, th);
-    chevronDown(c, ncx, ncy+nhh+P(0.030f), P(0.028f), P(0.026f), WT_R,WT_G,WT_B, 0.95f, thh);
-
-    // --- RIGHT COLUMN: three warning triangles, data fields (label + value bar),
-    // and a solid indicator square. ---
-    const float rx0 = P(0.70f), rx1 = P(0.92f);
-    for (int i = 0; i < 3; ++i) {
-        const float tx = rx0 + i * P(0.075f);
-        warnTriangle(c, tx + P(0.030f), P(0.205f), P(0.030f), P(0.052f), WT_R,WT_G,WT_B, 0.95f, th);
-    }
-    // 3 data fields: a label tick + a bright value bar
+    // ---- RIGHT COLUMN — warning triangles + labelled value bars on a fixed column. ----
     {
-        float fy = P(0.33f);
-        const float fieldH = P(0.06f);
+        const float rx0 = P(zRight.x0), rx1 = P(zRight.x1);
+        for (int i = 0; i < 3; ++i) {
+            const float tx = rx0 + i * P(0.066f);
+            warnTriangle(c, tx + P(0.028f), P(0.225f), P(0.028f), P(0.048f),
+                         WT_R,WT_G,WT_B, kSchem, th);
+        }
+        float fy = P(0.345f);
+        const float fieldH = P(0.060f);
         const float barLens[3] = { 0.62f, 0.40f, 0.85f };
         for (int i = 0; i < 3; ++i) {
-            line(c, rx0, fy, rx0 + P(0.06f), fy, CY_R,CY_G,CY_B, 0.6f, th);          // label tick
-            // bar track (dim) + bright fill
+            line(c, rx0, fy, rx0 + P(0.055f), fy, CY_R,CY_G,CY_B, kDeco, th);   // label tick
             const float barY = fy + P(0.014f);
-            rectFrame(c, rx0, barY, rx1, barY + P(0.018f), CY_R,CY_G,CY_B, 0.4f, th);
+            rectFrame(c, rx0, barY, rx1, barY + P(0.018f), CY_R,CY_G,CY_B, kDeco, th);
             const float fillX = rx0 + (rx1 - rx0) * barLens[i];
-            rectFill(c, rx0+th, barY+th, fillX, barY + P(0.018f) - th, WT_R,WT_G,WT_B, 0.85f);
+            rectFill(c, rx0+th, barY+th, fillX, barY + P(0.018f) - th, WT_R,WT_G,WT_B, kSchem);
             fy += fieldH;
         }
-        // solid bright indicator square at the bottom of the right column
-        rectFill(c, rx1 - P(0.030f), fy + P(0.005f), rx1, fy + P(0.035f), WT_R,WT_G,WT_B, 1.0f);
-        line(c, rx0, fy + P(0.020f), rx1 - P(0.045f), fy + P(0.020f), CY_R,CY_G,CY_B, 0.5f, th);
+        rectFill(c, rx1 - P(0.028f), fy + P(0.004f), rx1, fy + P(0.032f), WT_R,WT_G,WT_B, kSchem);
     }
 
-    // --- BOTTOM dotted/coded data strip across the width. ---
+    // ---- BOTTOM data strip — dim dotted/coded run, corner-safe span (ends well inside
+    // the corners so it never clips). ----
     {
-        const float by = P(0.875f);
-        line(c, P(0.075f), by - P(0.014f), P(0.92f), by - P(0.014f), CY_R,CY_G,CY_B, 0.6f, th);
-        float dx = P(0.075f);
+        const float by = P(0.878f);
+        float dx = P(zBottom.x0);
         int k = 0;
-        while (dx < P(0.92f)) {
+        while (dx < P(zBottom.x1)) {
             const float dlen = (k % 3 == 0) ? P(0.020f) : ((k % 3 == 1) ? P(0.008f) : P(0.013f));
-            const float bright = (k % 4 == 0) ? 0.95f : 0.55f;
-            line(c, dx, by, dx + dlen, by, CY_R,CY_G,CY_B, bright, thh);
-            dx += dlen + P(0.009f);
+            line(c, dx, by, dx + dlen, by, CY_R,CY_G,CY_B, kDeco, thh);
+            dx += dlen + P(0.010f);
             ++k;
         }
     }
 
-    // ---- 2b) ON-GLASS READOUT TEXT (rasterized with stb_truetype). This is the
-    // text that used to be a worldToScreen overlay; baking it into the texture makes
-    // it sit ON the glass + tilt with the panel. Positions mirror the old overlay:
-    //   * line 0 = HEADER TITLE, wide + bright across the top header strip,
-    //   * lines 1+ = LEFT-column data rows (clipped to the left ~52% so the center
-    //     schematic + right column line-art stay readable),
-    //   * inputLine = amber "> code_" prompt below the last data row.
+    // ---- 2b) ON-GLASS READOUT TEXT (rasterized with stb_truetype so it sits ON the
+    // glass + tilts with the panel). All text is corner-safe (header fits inside
+    // x[0.16..0.84]; body rows live in the mid-band of the left column). ----
     if (glassFont().ready && !lines.empty()) {
         const float HOT = 1.0f;                       // ink alpha (additive glow ink)
-        // --- HEADER TITLE: fit to the header strip width, bright cyan-white. ---
+        // --- HEADER TITLE: fit inside the header strip, RIGHT of the emblem, so the
+        // whole title (incl. 'STATUS: SECURE') stays clear of the top-right corner. ---
         {
-            const float titleBudget = P(0.86f - 0.13f);   // header rule span ~ x[0.13..0.92]
-            float tpx = P(0.052f);                          // start height (~53 px @1024)
+            const float tX = P(zHeader.x0 + 0.055f);        // start right of the emblem
+            const float tSpan = P(zHeader.x1) - tX;         // available width to the safe edge
+            float tpx = P(0.050f);
             const float tw = textWidthPx(lines[0], tpx);
-            if (tw > P(0.79f) && tw > 1.0f) tpx *= P(0.79f) / tw;   // shrink to span
-            (void)titleBudget;
-            drawTextGlass(c, lines[0], P(0.130f), P(0.060f), tpx, WT_R, WT_G, WT_B, HOT);
+            if (tw > tSpan && tw > 1.0f) tpx *= tSpan / tw; // shrink to span (never clips)
+            drawTextGlass(c, lines[0], tX, P(0.078f), tpx, WT_R, WT_G, WT_B, HOT);
         }
-        // --- BODY rows (1+) down the left column. Shrink to the left zone width. ---
-        const float lx0b = P(0.075f);
-        const float zoneW = P(0.345f) - lx0b;          // left data-column width
-        float bpx = P(0.033f);                          // ~34 px @1024
+        // --- BODY rows (1+) down the left text-only column. Fit to the column width. ---
+        const float lx0b = P(zLeft.x0 + 0.012f);
+        const float zoneW = P(zLeft.x1) - lx0b;
+        float bpx = P(0.033f);
         for (size_t li = 1; li < lines.size(); ++li) {
             const float w = textWidthPx(lines[li], bpx);
             if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
         }
         if (!inputLine.empty()) {
-            // The input renders at bpx*1.18 below — keep IT inside the zone too
-            // (freeform questions are much longer than a 4-digit code).
-            const float w = textWidthPx(inputLine, bpx * 1.18f);
+            const float w = textWidthPx(inputLine, bpx * 1.15f);
             if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
         }
-        if (bpx < P(0.018f)) bpx = P(0.018f);
-        const float rowH = bpx * 1.30f;
-        float ty = P(0.205f);                           // below the header strip
-        // STATUS-COLOR console (Tim's redesign): each readout line glows in a status
-        // color like a real console — GREEN for OK/online/secure, ORANGE for
-        // warnings/alerts/failing, BLUE for everything else. Keyword-driven per line.
+        if (bpx < P(0.017f)) bpx = P(0.017f);
+        const float rowH = bpx * 1.34f;
+        float ty = P(zLeft.y0 + 0.006f);
+        // STATUS-COLOR console: GREEN = ok/secure, ORANGE = warning/alert, BLUE = data.
+        // Ink is pushed a touch brighter than before so every row reads over the darker
+        // backing (owner: "raise ink brightness slightly").
         auto statusColor = [](const std::string& s, float& r, float& g, float& b) {
             std::string U; U.reserve(s.size());
             for (char ch : s) U += (char)std::toupper((unsigned char)ch);
             auto has = [&](const char* kw){ return U.find(kw) != std::string::npos; };
             if (has("FAIL") || has("WARN") || has("ALERT") || has("CRIT") || has("DANGER") ||
                 has("BREACH") || has("AUGMENT") || has("REJECT") || has("UNSTABLE") || has("LOCK")) {
-                r = 1.65f; g = 0.72f; b = 0.14f;            // ORANGE (warning / alert)
+                r = 1.75f; g = 0.78f; b = 0.16f;            // ORANGE (warning / alert)
             } else if (has(" OK") || has("ONLINE") || has("SECURE") || has("READY") ||
                        has("NOMINAL") || has("ACTIVE") || has("GRANT") || has("ACCEPT") ||
                        has("STABLE") || has("CLEAR")) {
-                r = 0.24f; g = 1.55f; b = 0.52f;            // GREEN (ok / status good)
+                r = 0.30f; g = 1.70f; b = 0.58f;            // GREEN (ok / status good)
             } else {
-                r = 0.30f; g = 0.66f; b = 1.70f;            // BLUE (default data)
+                r = 0.40f; g = 0.78f; b = 1.80f;            // BLUE (default data)
             }
         };
         for (size_t li = 1; li < lines.size(); ++li) {
-            const float aRow = (li == 1) ? HOT : 0.94f;
+            if (lines[li].empty()) { ty += rowH * 0.5f; continue; }   // blank = half-row spacer
             float rr, gg, bb; statusColor(lines[li], rr, gg, bb);
-            // W4-2 ink override (VIGIL presence = orange): while set, body rows
-            // take the host's ink instead of the keyword status color.
+            // W4-2 ink override (VIGIL presence = orange): body rows take the host ink.
             if (inkOverride) { rr = inkOverride[0]; gg = inkOverride[1]; bb = inkOverride[2]; }
-            drawTextGlass(c, lines[li], lx0b, ty, bpx, rr, gg, bb, aRow);
+            drawTextGlass(c, lines[li], lx0b, ty, bpx, rr, gg, bb, HOT);
             ty += rowH;
         }
-        // --- LIVE INPUT LINE in amber, just below the last data row. ---
+        // --- LIVE INPUT LINE in amber, in its OWN clear strip (a dim underline rule
+        // sets it apart from the data rows). ---
         if (!inputLine.empty()) {
-            const float ipx = bpx * 1.18f;
-            drawTextGlass(c, inputLine, lx0b, ty + rowH * 0.25f, ipx,
-                          1.30f, 0.78f, 0.22f, HOT);    // hot amber prompt
+            const float ipx = bpx * 1.15f;
+            const float iy  = ty + rowH * 0.35f;
+            line(c, lx0b, iy - P(0.006f), P(zLeft.x1), iy - P(0.006f),
+                 1.20f, 0.72f, 0.20f, kDeco, th);         // dim amber divider above the prompt
+            drawTextGlass(c, inputLine, lx0b, iy, ipx, 1.35f, 0.80f, 0.24f, HOT);
         }
     }
 
@@ -877,13 +858,14 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // strut read as polished steel catching sharp point-light highlights + reflections.
     auto chromeMR = x3::prims::makeSolidRGBA(4, 0, 33, 255);
     x3::rhi::TextureHandle chromeTex = device.createTexture(chromeMR.data(), 4, 4, /*srgb*/false);
-    // GLOSSY BLACK-GLASS metallic-roughness map for the screen PANE: metallic 0
-    // (dielectric, B=0), low roughness (~0.10 -> G=26) so the near-black pane reads as
-    // POLISHED BLACK GLASS — a Cook-Torrance fresnel rim + a crisp specular highlight
-    // off the pool light + subtle reflections — WITHOUT a separate glass slab occluding
-    // the emissive text (which glows on top). This is the "black glass slab" read that
-    // survives any render path (no scene-copy dependency).
-    auto glossMR = x3::prims::makeSolidRGBA(4, 0, 26, 0);
+    // ANTI-GLARE MATTE BLACK-GLASS metallic-roughness map for the screen PANE: metallic 0
+    // (dielectric, B=0), HIGH roughness (~0.60 -> G=153). OWNER PASS (2026-07-11):
+    // "Anti-glare screen too" — the old glossy G=26 (~0.10 rough) threw HOT specular
+    // ORBS from the room point-lights that bloomed over the text. A matte roughness
+    // spreads those into at most a broad faint sheen (never a defined orb), so the
+    // dark-glass character now comes from the near-black albedo + chrome frame + glowing
+    // ink, NOT from reflections. Medical-display finish.
+    auto glossMR = x3::prims::makeSolidRGBA(4, 0, 153, 0);
     x3::rhi::TextureHandle glossTex = device.createTexture(glossMR.data(), 4, 4, /*srgb*/false);
 
     // Add a METALLIC round-pipe part (mrTex -> Cook-Torrance PBR path) at a LOCAL
@@ -1012,9 +994,9 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     se.transparent = true;
     se.glass.opacity    = 0.10f;         // low opacity: the glowing text punches THROUGH; the near-black tint keeps it reading as a black-glass surface
     se.glass.tint[0]    = 0.55f; se.glass.tint[1] = 0.62f; se.glass.tint[2] = 0.75f; // cool smoked tint (TEST: lighter so text survives)
-    se.glass.roughness  = 0.05f;         // clear, barely frosted (clarity over milk)
+    se.glass.roughness  = 0.55f;         // ANTI-GLARE matte (owner): broad soft sheen, no hot orbs
     se.glass.refraction = 0.014f;        // gentle bend of the cell behind (M2)
-    se.glass.specular   = 0.10f;         // fresnel sheen + the animated M3 glint sweep (kept OFF-BLOB so text stays readable)
+    se.glass.specular   = 0.05f;         // near-zero specular so room lights never bloom as orbs on the text
     se.tag = (uint32_t)Tag::Prop;
     // Nudge the glass toward the viewer along the panel normal (+Z world) so it
     // composites OVER the text pane.
@@ -1190,6 +1172,32 @@ bool runHoloTerminalSelfTest() {
     t.update(0.6f);                                    // > 0.5 s -> toggles
     bool blinkToggled = (t.cursorOn() != blink0);
     check(!rej && t.input().empty() && blinkToggled, "H4 reject path + cursor blinks");
+
+    // ---- H5: CORNER-SAFE LAYOUT (owner UI pass) — the baked texture must FADE its
+    // rounded corners to black (so nothing clips there) while keeping bright content in
+    // the safe interior. This proves the corner-inset layout headlessly (no engine). ----
+    {
+        const uint32_t bn = 128;
+        std::vector<std::string> demo = {
+            "SECURITY CELL 07  --  STATUS: SECURE",
+            "SUBJECT: JAKE", "STATUS: AUGMENTED", "RESTRAINT INTEGRITY: FAILING",
+        };
+        std::vector<uint8_t> tex = bakeConsoleHologram(bn, demo, "");
+        auto lum = [&](uint32_t x, uint32_t y) -> int {
+            const uint8_t* p = &tex[((size_t)y * bn + x) * 4];
+            return (int)p[0] + p[1] + p[2];
+        };
+        // The four extreme corners must be black (the corner fade zeroes them).
+        const bool cornersDark = lum(0,0) <= 6 && lum(bn-1,0) <= 6 &&
+                                 lum(0,bn-1) <= 6 && lum(bn-1,bn-1) <= 6;
+        // The safe interior must carry real content (line-art / text ink).
+        int bright = 0;
+        for (uint32_t y = bn/4; y < bn*3/4; ++y)
+            for (uint32_t x = bn/4; x < bn*3/4; ++x)
+                if (lum(x,y) > 60) ++bright;
+        check(cornersDark && bright > 40,
+              "H5 rounded corners fade to black + safe interior carries content");
+    }
 
     x3::logInfo(std::string("[holoterm-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
