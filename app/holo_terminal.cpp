@@ -296,7 +296,7 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
     // ====================================================================
     struct Rect { float x0, y0, x1, y1; };
     const Rect zHeader { 0.160f, 0.050f, 0.840f, 0.190f };   // emblem + title + rule
-    const Rect zLeft   { 0.070f, 0.210f, 0.430f, 0.835f };   // text-only readout
+    const Rect zLeft   { 0.065f, 0.210f, 0.448f, 0.835f };   // text-only readout (widened for bigger, readable text)
     const Rect zCenter { 0.455f, 0.225f, 0.665f, 0.720f };   // schematic cell
     const Rect zRight  { 0.700f, 0.205f, 0.890f, 0.835f };   // bars / warnings
     const Rect zBottom { 0.160f, 0.850f, 0.840f, 0.905f };   // dim data strip
@@ -425,15 +425,15 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
         {
             const float tX = P(zHeader.x0 + 0.055f);        // start right of the emblem
             const float tSpan = P(zHeader.x1) - tX;         // available width to the safe edge
-            float tpx = P(0.050f);
+            float tpx = P(0.058f);                          // OWNER: bigger, readable header
             const float tw = textWidthPx(lines[0], tpx);
             if (tw > tSpan && tw > 1.0f) tpx *= tSpan / tw; // shrink to span (never clips)
-            drawTextGlass(c, lines[0], tX, P(0.078f), tpx, WT_R, WT_G, WT_B, HOT);
+            drawTextGlass(c, lines[0], tX, P(0.076f), tpx, WT_R, WT_G, WT_B, HOT);
         }
         // --- BODY rows (1+) down the left text-only column. Fit to the column width. ---
         const float lx0b = P(zLeft.x0 + 0.012f);
         const float zoneW = P(zLeft.x1) - lx0b;
-        float bpx = P(0.033f);
+        float bpx = P(0.038f);                              // OWNER: bigger body text
         for (size_t li = 1; li < lines.size(); ++li) {
             const float w = textWidthPx(lines[li], bpx);
             if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
@@ -442,7 +442,7 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
             const float w = textWidthPx(inputLine, bpx * 1.15f);
             if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
         }
-        if (bpx < P(0.017f)) bpx = P(0.017f);
+        if (bpx < P(0.026f)) bpx = P(0.026f);               // OWNER: never shrink below readable
         const float rowH = bpx * 1.34f;
         float ty = P(zLeft.y0 + 0.006f);
         // STATUS-COLOR console: GREEN = ok/secure, ORANGE = warning/alert, BLUE = data.
@@ -858,14 +858,15 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // strut read as polished steel catching sharp point-light highlights + reflections.
     auto chromeMR = x3::prims::makeSolidRGBA(4, 0, 33, 255);
     x3::rhi::TextureHandle chromeTex = device.createTexture(chromeMR.data(), 4, 4, /*srgb*/false);
-    // ANTI-GLARE MATTE BLACK-GLASS metallic-roughness map for the screen PANE: metallic 0
-    // (dielectric, B=0), HIGH roughness (~0.60 -> G=153). OWNER PASS (2026-07-11):
-    // "Anti-glare screen too" — the old glossy G=26 (~0.10 rough) threw HOT specular
-    // ORBS from the room point-lights that bloomed over the text. A matte roughness
-    // spreads those into at most a broad faint sheen (never a defined orb), so the
-    // dark-glass character now comes from the near-black albedo + chrome frame + glowing
-    // ink, NOT from reflections. Medical-display finish.
-    auto glossMR = x3::prims::makeSolidRGBA(4, 0, 153, 0);
+    // GLOSSY DARK-GLASS metallic-roughness map for the screen PANE: metallic 0
+    // (dielectric, B=0), roughness ~0.20 (G=51). OWNER PASS (2026-07-11): the target
+    // is "glossy with a shine" — a DARK glass screen with a tasteful specular sheen,
+    // NOT washed-light and NOT hard orbs. History: G=26 (~0.10) was too sharp (hot
+    // specular ORBS bloomed over the text); G=153 (~0.60 matte) killed the shine and
+    // scattered room light into a flat WASH. G=51 (~0.20) is the middle: a soft,
+    // controlled gloss streak reads as polished black glass, the near-black albedo
+    // keeps the pane DARK, and the text glows through via the emissive map.
+    auto glossMR = x3::prims::makeSolidRGBA(4, 0, 51, 0);
     x3::rhi::TextureHandle glossTex = device.createTexture(glossMR.data(), 4, 4, /*srgb*/false);
 
     // Add a METALLIC round-pipe part (mrTex -> Cook-Torrance PBR path) at a LOCAL
