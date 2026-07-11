@@ -506,7 +506,7 @@ int main(int argc, char** argv) {
         // NO maximize-by-default (per Tim): open windowed at winW x H (or the saved
         // "SET AS DEFAULT" size). Fullscreen is opt-in via the settings checkbox.
         window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
-                                  "X3Engine", nullptr, nullptr);
+                                  "SpaceEngine", nullptr, nullptr);
         if (!window) {
             x3::logError("glfwCreateWindow failed");
             glfwTerminate();
