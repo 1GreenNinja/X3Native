@@ -46,3 +46,15 @@ Gate each phase: build + smoketest clean, screenshot for Tim's eyeball, commit+p
 
 ## Audio status: hum/kawoosh/whoosh landed in v1 (step 5) — Tim has not yet confirmed how
 they sound in-game; revisit levels after the visual pass.
+
+## MEMBRANE ANIMATION ARC (from PortalAnimated.mp4, 2026-07-11 — docs/reference/)
+Three states, mapping onto existing gameplay states (dormant / kawoosh / traverse):
+1. IDLE — calm deep-blue nebula: wispy filaments, star motes, the VISTA faintly visible
+   through the surface, slow drift. (membrane_state1_idle.png)
+2. ACTIVATION SURGE — electric arcs form a VORTEX RING around the rim, whipping the inner
+   circumference; membrane brightens; the ring's inner track segments light amber.
+   (membrane_state2_surge.png)
+3. OPEN / THROAT — full radial plasma streaming from center (looking down the wormhole
+   throat); vista dissolves into pure energy. (membrane_state3_open.png)
+Ring detail confirmed by the video: the INNER-FACING edge carries a segmented amber-lit
+ratchet track that brightens with activation.
