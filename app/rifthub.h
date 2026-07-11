@@ -129,9 +129,10 @@ struct RiftPortal {
     // track holds a steady powered glow once OPEN. Contiguous span.
     uint32_t       trackEntFirst = 0;
     uint32_t       trackEntCount = 0;
-    // ORANGE conduit run (gate -> floor -> skirt; the locked palette's warm
-    // accent): contiguous span of pipe segments whose emissive tick() phases
-    // along the run so the power visibly FLOWS toward the gate.
+    // Conduit run (gate -> floor -> skirt; the locked palette's warm accent).
+    // The pipe BODIES are static gunmetal PBR geometry; this span is the thin
+    // amber CORE LINES riding them, whose emissive tick() phases along the
+    // run so the power visibly FLOWS toward the gate.
     uint32_t       conduitEntFirst = 0;
     uint32_t       conduitEntCount = 0;
     // Event-horizon membrane — the visible portal SURFACE (membrane v2, the

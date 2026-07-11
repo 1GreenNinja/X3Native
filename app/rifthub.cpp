@@ -144,18 +144,25 @@ constexpr float    kTrackChase     = 2.00f;   // added peak at the chase crest
 constexpr float    kTrackChaseRadS = 9.0f;    // chase sweep speed (rad/s)
 constexpr float    kTrackEmCap     = 2.30f;
 
-// ---- ORANGE conduits + coils + TEAL holo screens (phase D dressing) ------------
-// The locked palette's accents: ORANGE emissive conduit pipes running
-// gate -> floor -> skirt (tick() phases the emissive along the run so power
-// visibly flows), coil rings on the riser, and 1-2 TEAL holo data screens
-// per gate on posts (glass panes, procedural readout textures).
+// ---- Conduits + coils + TEAL holo screens (dressing; ROUND 2 pipe rebuild) -----
+// Round 1 drew each conduit segment as a flat traffic-cone-orange emissive
+// square tube. Round 2: the conduit is a REAL PIPE — near-black gunmetal
+// PBR-textured body (two boxes, the second rotated 45 deg about the pipe axis
+// -> octagonal profile) with dark steel COLLARS at every bend, and only a
+// thin amber CORE LINE riding the pipe's hub-facing surface emits (the
+// power-flow pulse tick() phases along the run lives on THAT strip).
 constexpr float    kConduitOrange[3] = { 1.00f, 0.29f, 0.035f };
 constexpr float    kConduitEmBase    = 0.65f;
 constexpr float    kConduitFlowAmp   = 0.42f;
 constexpr float    kConduitEmCap     = 1.30f;   // orange must stay ORANGE (never yellow-clips)
 constexpr float    kConduitFlowHz    = 0.55f;   // flow pulse rate
 constexpr float    kConduitFlowK     = 1.60f;   // phase step per segment (the travel)
-constexpr float    kConduitHalf      = 0.045f;  // pipe half-thickness
+constexpr float    kConduitHalf      = 0.014f;  // emissive CORE LINE half-thickness (thin)
+constexpr float    kConduitDark[3]   = { 0.06f, 0.035f, 0.015f };  // core unlit = dark glass
+constexpr float    kPipeHalf         = 0.055f;  // gunmetal pipe body half-thickness
+constexpr float    kPipeTint[3]      = { 0.16f, 0.17f, 0.19f };    // near-black gunmetal
+constexpr float    kCollarHalf       = 0.085f;  // bend collar half-extent
+constexpr float    kCollarHalfDep    = 0.048f;  // bend collar half-length along the pipe
 constexpr float    kCoilOrangeEm     = 0.85f;
 constexpr float    kHoloTeal[3]      = { 0.12f, 0.85f, 0.75f };
 constexpr float    kHoloEm           = 0.35f;   // soft glow floor — the TEXTURE carries the read
@@ -1081,10 +1088,10 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 cz + rightZ * alongRight + outwardZ * alongOut };
         };
         // Conduit runs: gate -> riser -> floor -> skirt, one per side (the
-        // right side rides higher, the left lower — no clone read). Every
-        // segment is the SHARED unit fx box stretched a->b; contiguous span
-        // so tick() can phase the emissive ALONG the run (power flow).
-        p.conduitEntFirst = scene.size();
+        // right side rides higher, the left lower — no clone read). ROUND 2:
+        // pipe BODIES + bend COLLARS are authored first (static gunmetal PBR
+        // geometry, not emissive); the thin amber CORE LINES follow as one
+        // contiguous span so tick() can phase the flow pulse ALONG the run.
         {
             const float off = -0.58f;   // hub-side of the gate face
             const x3::phys::Vec3 runA[5] = {
@@ -1097,21 +1104,93 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 gatePt(-2.46f, 0.50f, off), gatePt(-1.90f, 0.16f, off),
                 gatePt(-0.85f, 0.16f, off),
             };
-            auto addRun = [&](const x3::phys::Vec3* run) {
+            // Orthonormal basis for a pipe segment a->b: u/v span the cross-
+            // section, d runs along the pipe. Mirrors beamXform's frame math.
+            auto segBasis = [](const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                               float u[3], float v[3], float d[3]) -> float {
+                float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+                const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+                const float inv = (len > 1e-6f) ? 1.0f / len : 0.0f;
+                d[0] = dx * inv; d[1] = dy * inv; d[2] = dz * inv;
+                // ref = world up unless the pipe is near-vertical (then +X).
+                float rx = 0.0f, ry = 1.0f, rz = 0.0f;
+                if (std::fabs(d[1]) >= 0.99f) { rx = 1.0f; ry = 0.0f; }
+                // u = normalize(ref x d), v = d x u.
+                u[0] = ry * d[2] - rz * d[1];
+                u[1] = rz * d[0] - rx * d[2];
+                u[2] = rx * d[1] - ry * d[0];
+                const float ul = std::sqrt(u[0]*u[0] + u[1]*u[1] + u[2]*u[2]);
+                const float uinv = (ul > 1e-6f) ? 1.0f / ul : 0.0f;
+                u[0] *= uinv; u[1] *= uinv; u[2] *= uinv;
+                v[0] = d[1] * u[2] - d[2] * u[1];
+                v[1] = d[2] * u[0] - d[0] * u[2];
+                v[2] = d[0] * u[1] - d[1] * u[0];
+                return len;
+            };
+            auto addPipeRun = [&](const x3::phys::Vec3* run) {
+                for (int s3 = 0; s3 < 4; ++s3) {
+                    float u[3], v[3], d[3];
+                    const float len = segBasis(run[s3], run[s3 + 1], u, v, d);
+                    const float mx = (run[s3].x + run[s3 + 1].x) * 0.5f;
+                    const float my = (run[s3].y + run[s3 + 1].y) * 0.5f;
+                    const float mz = (run[s3].z + run[s3 + 1].z) * 0.5f;
+                    // Pipe body + its 45-deg twin (octagonal cross-section read).
+                    AddedEntity b0 = addOrientedSurfBox(
+                        scene, device, kPipeHalf, kPipeHalf,
+                        len * 0.5f + kPipeHalf * 0.4f,
+                        u, v, d, mx, my, mz, &sDark, kPipeTint,
+                        /*emStrength=*/0.0f, /*uvScale=*/0.8f);
+                    m_portalMeshes.push_back(b0.mesh);
+                    const float r2 = 0.7071068f;
+                    const float u45[3] = { (u[0] + v[0]) * r2, (u[1] + v[1]) * r2,
+                                           (u[2] + v[2]) * r2 };
+                    const float v45[3] = { (v[0] - u[0]) * r2, (v[1] - u[1]) * r2,
+                                           (v[2] - u[2]) * r2 };
+                    AddedEntity b1 = addOrientedSurfBox(
+                        scene, device, kPipeHalf * 0.92f, kPipeHalf * 0.92f,
+                        len * 0.5f,
+                        u45, v45, d, mx, my, mz, &sDark, kPipeTint,
+                        /*emStrength=*/0.0f, /*uvScale=*/0.8f);
+                    m_portalMeshes.push_back(b1.mesh);
+                }
+                // Steel collars at every waypoint (run ends + the bends).
+                for (int w = 0; w < 5; ++w) {
+                    const int sref = (w < 4) ? w : 3;
+                    float u[3], v[3], d[3];
+                    segBasis(run[sref], run[sref + 1], u, v, d);
+                    AddedEntity col = addOrientedSurfBox(
+                        scene, device, kCollarHalf, kCollarHalf, kCollarHalfDep,
+                        u, v, d, run[w].x, run[w].y, run[w].z,
+                        &sTrim, kSteelTint, /*emStrength=*/0.0f, /*uvScale=*/1.0f);
+                    m_portalMeshes.push_back(col.mesh);
+                }
+            };
+            addPipeRun(runA);
+            addPipeRun(runB);
+            // Thin amber CORE LINES riding the pipe's hub-facing surface (the
+            // animated span — proud of the body so the glow strip reads).
+            p.conduitEntFirst = scene.size();
+            const float coreOut = kPipeHalf + kConduitHalf * 0.5f;
+            auto corePt = [&](const x3::phys::Vec3& w) {
+                return x3::phys::Vec3{ w.x - outwardX * coreOut, w.y,
+                                       w.z - outwardZ * coreOut };
+            };
+            auto addCoreRun = [&](const x3::phys::Vec3* run) {
                 for (int s3 = 0; s3 < 4; ++s3) {
                     Entity e;
                     e.mesh = m_fxBeamMesh;   // SHARED unit box
-                    e.baseColor[0] = 0.35f; e.baseColor[1] = 0.18f; e.baseColor[2] = 0.06f;
-                    e.baseColor[3] = 1.0f;
+                    e.baseColor[0] = kConduitDark[0]; e.baseColor[1] = kConduitDark[1];
+                    e.baseColor[2] = kConduitDark[2]; e.baseColor[3] = 1.0f;
                     e.emissive[0] = kConduitOrange[0]; e.emissive[1] = kConduitOrange[1];
                     e.emissive[2] = kConduitOrange[2]; e.emissive[3] = kConduitEmBase;
                     e.tag = (uint32_t)Tag::Prop;
-                    beamXform(e.transform, run[s3], run[s3 + 1], kConduitHalf);
+                    beamXform(e.transform, corePt(run[s3]), corePt(run[s3 + 1]),
+                              kConduitHalf);
                     scene.add(e);
                 }
             };
-            addRun(runA);
-            addRun(runB);
+            addCoreRun(runA);
+            addCoreRun(runB);
         }
         p.conduitEntCount = 8;
         // Coil rings on the right riser (orange, static warm glow).
