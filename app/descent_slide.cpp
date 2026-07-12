@@ -5,6 +5,7 @@
 // asserts it, arithmetic never has to).
 #include "descent_slide.h"
 #include "asset_root.h"
+#include "basis.h"          // basisFromOutward — the ONE right-handed basis (KNOWN_BUGS R3)
 #include "mesh_prims.h"
 #include "engine/core/x3_log.h"
 
@@ -192,13 +193,29 @@ TrackSpec DescentSlide::buildTrackSpec() {
         f.tan = vnorm({ raw[b].pos.x - raw[a].pos.x,
                         raw[b].pos.y - raw[a].pos.y,
                         raw[b].pos.z - raw[a].pos.z });
-        // Flat lateral frame, then bank-rotate around the tangent. Near-vertical
-        // tangents fall back to the heading-perpendicular so right never NaNs.
-        x3::phys::Vec3 right = vcross(f.tan, { 0, 1, 0 });
-        if (right.x*right.x + right.y*right.y + right.z*right.z < 1e-4f)
-            right = vcross(f.tan, { 1, 0, 0 });
-        right = vnorm(right);
-        x3::phys::Vec3 up = vnorm(vcross(right, f.tan));
+        // Flat lateral frame, then bank-rotate around the tangent.
+        //
+        // THE MIRROR (KNOWN_BUGS R3). This used to read
+        //     right = normalize(cross(tan, +Y));  up = normalize(cross(right, tan));
+        // and frameToTransform() then hands (right, up, tan) to the model matrix as
+        // columns (X, Y, Z). Take the simplest frame on this track — tan = -Z:
+        //     right = cross((0,0,-1),(0,1,0)) = (1,0,0)      up = (0,1,0)
+        //     det[ (1,0,0), (0,1,0), (0,0,-1) ] = -1
+        // A NEGATIVE determinant is a REFLECTION, not a rotation. It reverses the
+        // triangle winding of EVERY mesh placed on the slide — the channel, the ribs,
+        // the beams, the trestles, the shoulder lights — so back-face culling threw
+        // away their outer shells and drew their inner ones. Inside-out geometry has
+        // normals pointing away from every light: unlightable, by construction.
+        // `cross(tan, up)` is the LEFT-handed lateral; the right-handed one is
+        // `cross(up, tan)`. It is exactly one sign, and basisFromOutward() is the one
+        // place that gets it right — every frame on this track now comes from it.
+        float bX[3], bY[3], bZ[3];
+        const float tanArr[3] = { f.tan.x, f.tan.y, f.tan.z };
+        basisFromOutward(tanArr, bX, bY, bZ);            // local +Z = travel; det == +1
+        x3::phys::Vec3 right{ bX[0], bX[1], bX[2] };
+        x3::phys::Vec3 up   { bY[0], bY[1], bY[2] };
+        // Flipping BOTH columns is a 180 deg roll about the tangent — determinant is
+        // preserved (two sign flips), so the frame stays right-handed.
         if (up.y < 0.0f) { up = { -up.x, -up.y, -up.z }; right = { -right.x, -right.y, -right.z }; }
         const float bankRad = f.bankDeg * kDeg;
         f.right = vrot(right, f.tan, bankRad);
@@ -494,7 +511,14 @@ bool DescentSlide::build(x3::rhi::IRenderDevice& device, Scene& scene,
     // Cavern: floor slab + partial rock walls + 7 singing crystals (canon count),
     // wet low-roughness floor so crystal light streaks. Identity frame (flat).
     TrackFrame flat{};
-    flat.tan = { 1,0,0 }; flat.right = { 0,0,1 }; flat.up = { 0,1,0 };
+    // MIRROR (KNOWN_BUGS R3): right was hand-written as {0,0,1}. With tan={1,0,0} and
+    // up={0,1,0} that basis has determinant -1 — a REFLECTION — so the cavern floor,
+    // ceiling and all four rock walls were built inside-out and could not be lit. The
+    // right-handed lateral is cross(up, tan) = (0,0,-1), which is EXACTLY what the
+    // crystal `lean` frames twelve lines below already compute — and the crystals were
+    // never mirrored. The correct math was in the file the whole time; the literal
+    // beside it was wrong.
+    flat.tan = { 1,0,0 }; flat.right = { 0,0,-1 }; flat.up = { 0,1,0 };
     const x3::phys::Vec3 cc = { fe.pos.x + fe.tan.x*10.0f, kBowlY - 0.12f, fe.pos.z + fe.tan.z*10.0f };
     {
         Set wetRock = rock; wetRock.mr = wetMR;

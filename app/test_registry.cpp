@@ -87,6 +87,7 @@
 #include "act2_desert.h"
 #include "act2_caves.h"
 #include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
+#include "basis.h"                          // --test-basis (KNOWN_BUGS R3: the MIRROR invariant)
 #include "tod.h"
 #include "weather.h"
 #include "world_regions.h"
@@ -596,6 +597,13 @@ int dispatchTests(const TestFlags& tf) {
                     "+ timeline-gated Siren ambush; L15 Tree Cities + trading post) "
                     "self-test...");
         return x3::game::runAct2CavesSelfTest() ? 0 : 1;
+    }
+    if (tf.testBasis) {
+        x3::logInfo("running BASIS/MIRROR self-test (KNOWN_BUGS R3: every model-instancing "
+                    "basis must have a POSITIVE determinant — a negative one is a REFLECTION "
+                    "that draws the model inside-out and unlit; scans every entity of every "
+                    "built world, with negative controls, headless)...");
+        return x3::game::runBasisSelfTest() ? 0 : 1;
     }
     if (tf.testRifthub) {
         x3::logInfo("running RIFTHUB Stargate portal-hub (8 grey-stone torus gates + "

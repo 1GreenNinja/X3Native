@@ -588,7 +588,12 @@ void CombatFx::drawTracerBillboard(x3::rhi::IRenderDevice& device, const x3::rhi
     if (wl < 1e-3f) { drawBeam(device, frame, a, b, width * 0.5f, color); return; }
     w = x3::phys::Vec3{ w.x / wl, w.y / wl, w.z / wl };
     // Thin axis = face normal toward the eye (so the flat quad faces the camera).
-    x3::phys::Vec3 nrm = cross(w, dir);
+    // MIRROR (KNOWN_BUGS R3): this was cross(w, dir), which makes [w, nrm, dir] a
+    // LEFT-handed basis (det -1) — a reflection. Harmless-looking on a symmetric
+    // flat-shaded box, but it is the same bug class that ate the rift gate, and the
+    // --test-basis invariant is total: no negative determinants, anywhere.
+    // cross(dir, w) is the right-handed one: det[w, dir x w, dir] = +1.
+    x3::phys::Vec3 nrm = cross(dir, w);
 
     // Unit box (half-extent 0.5): WIDTH across `w`, a sliver of depth along `nrm`,
     // full `len` along the segment. width is the full ribbon width.
@@ -653,6 +658,10 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
     x3::phys::Vec3 right{ -sy, 0.0f, cy };
     x3::phys::Vec3 up = cross(right, forward);  // used by the muzzle-flash basis
+    // A model matrix's local +Z is BACK, not forward (CONVENTIONS: an unrotated model
+    // faces local -Z). [right, up, forward] has det -1 — a MIRROR (KNOWN_BUGS R3).
+    // [right, up, back] is the rotation, det +1.
+    const x3::phys::Vec3 back{ -forward.x, -forward.y, -forward.z };
 
     // ---- Tracers: thin bright beams, fading thinner as they age. ----
     for (const auto& t : m_tracers) {
@@ -687,7 +696,7 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
         float k = (kMuzzleFlashTime > 0.0f) ? (m_muzzleFlash / kMuzzleFlashTime) : 1.0f;
         float s = kMuzzleFlashSize * (0.6f + 0.4f * k) * 2.0f; // full extent
         float m[16];
-        composeTRS3(m, right, up, forward, s, s, s, m_muzzlePos);
+        composeTRS3(m, right, up, back, s, s, s, m_muzzlePos);   // det +1 (was -1: forward)
         device.drawMesh(frame, m_box, x3::rhi::TextureHandle{}, muzzleColor, m);
     }
 }

@@ -250,6 +250,12 @@ struct CliOptions {
     // per-trigger activation + allActivated ordering, and that tick() advances
     // the chevron/core/membrane emissive while the stone ring stays static.
     bool        testRifthub = false;
+    // --test-basis (KNOWN_BUGS R3, THE MIRROR): asserts that EVERY model-instancing
+    // basis in the game has a POSITIVE determinant. A negative determinant is a
+    // reflection: winding reverses, back-face culling drops the outer shell, and the
+    // model is drawn inside-out and cannot be lit by anything. Builds the worlds
+    // headless and scans every entity, plus negative controls that prove it can fail.
+    bool        testBasis = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
