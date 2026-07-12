@@ -342,7 +342,7 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             const float w = x1 - x0, d = z1 - z0;
             SurfPanel p;
             p.set  = &sDeck;
-            p.tint[0] = 0.46f; p.tint[1] = 0.47f; p.tint[2] = 0.46f;   // worn, wet-dark deck
+            p.tint[0] = 0.40f; p.tint[1] = 0.41f; p.tint[2] = 0.40f;   // worn, wet-dark deck (renormalized with the walls)
             p.mesh = m_surf.makePanel(device, /*axis 1 = floor, faces +Y*/1, w, d, 2.0f);
             // The library's floor quad is centred on X but runs 0..d along +Z, so the Z
             // origin is z0 (not the room centre). Lift 1.2 cm off the graybox floor plane
@@ -406,7 +406,12 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             // Grimed down from clinical white to a dirty institutional grey-green. The
             // relief, the cracks and the tile grout all still read — they read BETTER,
             // because they are no longer sitting at the top of the exposure curve.
-            p.tint[0] = 0.50f; p.tint[1] = 0.51f; p.tint[2] = 0.48f;
+            // VALUE, NOT LUMENS. hh_wall_01a's albedo texture is near-white plaster
+            // (measured mean ~0.496 linear); a 0.50 tint left the wall at ~0.248 linear =
+            // 0.53 sRGB - ABOVE the 0.35-0.50 band a painted institutional wall actually
+            // sits in, so anything that lit it clipped. 0.42 -> ~0.208 linear / 0.49 sRGB:
+            // still plaster, no longer parked at the top of the exposure curve.
+            p.tint[0] = 0.42f; p.tint[1] = 0.43f; p.tint[2] = 0.41f;
             p.mesh = m_surf.makePanel(device, axis, w, wallH, 2.6f);
             const float c = std::cos(yaw), s = std::sin(yaw);
             p.transform[0]=c;  p.transform[1]=0; p.transform[2]=-s; p.transform[3]=0;
@@ -486,15 +491,18 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // carry cutouts at each panel center) and the -X wall also holds the trapdoor
         // ladder; the +X door wall is the one guaranteed-solid surface. yaw 0 keeps the
         // local +X mount-back facing the +X wall; back plane on the graybox face.
-        place(aExt, 0.0f, 1.0f, kExtAabb.maxx, kExtAabb.miny, cz(kExtAabb),
-              x1 - 0.10f, fY + 0.55f, ccz - 1.35f, nullptr, tRed);
+        // DECLUTTER 2026-07-12 (Tim: "why is it so cluttered?") -- CUT: the FIRE
+        // EXTINGUISHER. You do not hang a steel club on the wall of a locked cell with the
+        // prisoner. It was pure dressing; it earned nothing; under honest light it read as
+        // red junk. (void) below keeps the asset load harmless.
+        (void)aExt; (void)tRed;
         // More -X back-wall detail so the HERO diagonal (which faces this corner) reads as
         // a built surface, not a bare panel: a wall-mounted fusebox/panel + a recessed vent.
         // R4: the fusebox is SLIMMED (0.55) and tinted mid-gunmetal — at tDark + 0.85 scale
         // it was a featureless 2.2 m BLACK PLANK sticking 0.5 m off the wall.
-        const float tPanelBox[4] = { 0.30f, 0.32f, 0.36f, 1.0f };
-        place(aFuse, kPi * 0.5f, 0.55f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
-              x0 + 0.10f, fY + 1.45f, ccz + 0.6f, nullptr, tPanelBox);
+        // DECLUTTER: CUT the -X wall FUSEBOX too. One already sits on the -Z wall; two
+        // fuseboxes in a 4 m cell is a plant room, not a cell. The recessed vent below
+        // STAYS -- it is the one thing on that wall a real cell would have.
         place(aVent, -kPi * 0.5f, 1.0f, cx(kVentAabb), cy(kVentAabb), kVentAabb.minz,
               x0 + 0.16f, fY + 2.6f, ccz - 0.6f, nullptr, tRust);
         // R11 — CUT: the "grazing wall-wash" on the -X wall. A wash from the far side of
@@ -604,11 +612,11 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         const float py = ceilY - 0.18f;   // just under the R4 ceiling panels
         place(aPipes, 0.0f, 1.0f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
               x0 + 0.45f, py, ccz, nullptr, tSteel);
-        place(aPipes, 0.0f, 1.0f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              x0 + 1.05f, py, ccz, nullptr, tRust);
+        // DECLUTTER: THREE overhead pipe runs in a 4 m cell was spaghetti. ONE stays --
+        // a single service pipe crossing the ceiling is the industrial note; three is a
+        // boiler room. (The hall keeps its own runs.)
         // A cross pipe run along the back -Z wall near the ceiling (yaw +pi/2 -> runs in X).
-        place(aPipes, kPi * 0.5f, 0.8f, cx(kPipesAabb), kPipesAabb.maxy, cz(kPipesAabb),
-              ccx, py, z0 + 0.5f, nullptr, tDark);
+        (void)tDark;
     }
 
     // FUSEBOX / wall panels (security + monitoring look) mounted on the -Z and +Z walls.
@@ -617,30 +625,31 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         const float tPanelBox2[4] = { 0.30f, 0.32f, 0.36f, 1.0f };
         place(aFuse, kPi, 0.8f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
               x0 + 0.6f, fY + 1.1f, z0 + 0.18f, nullptr, tPanelBox2);
-        place(aFuse, 0.0f, 0.7f, cx(kFuseAabb), 0.0f, kFuseAabb.minz,
-              x1 - 0.6f, fY + 1.1f, z1 - 0.18f, nullptr, tPanelBox2);
+        // DECLUTTER: the +Z fusebox twin is CUT (see above).
     }
 
     // DEBRIS / CLUTTER cluster in the +X-near corner (lived-in, ransacked feel): a barrel,
     // a toppled short crate, and a stacked pair.
     {
-        const float dx = x1 - 1.2f, dz = z1 - 1.4f;
-        place(aBarrel, 0.0f, 1.0f, cx(kBarrelAabb), kBarrelAabb.miny, cz(kBarrelAabb),
-              dx, fY + 0.02f, dz, nullptr, tBarrel);
-        place(aCrateS, 0.9f, 1.0f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
-              dx - 0.9f, fY + 0.02f, dz - 0.2f, nullptr, tCrate);
-        place(aCrateS, 0.3f, 0.9f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
-              dx - 0.9f, fY + 0.56f, dz - 0.2f, nullptr, tCrate);   // stacked on the one below
+        // ============ DECLUTTER 2026-07-12 -- THE EMPTINESS *IS* THE FEELING ==========
+        // Tim, live: "the Cell is TINY, and CLUTTERED. Why is it so cluttered?"
+        // CUT IN FULL: the DEBRIS CLUSTER -- a fuel BARREL, THREE crates (including a
+        // stacked pair) and their shadow blobs, packed into the corner of a 4 m LOCKED
+        // CELL. A detention cell is not a store room. Nobody leaves a prisoner a barrel
+        // and a crate stack to climb on; the corner they filled is the corner the player
+        // has to stand in; and under honest light they read as junk, not as story.
+        // Every prop that SURVIVES this room now earns its place: it is STORY (the bunk he
+        // wakes on, the terminal that opens the door, the basin), it is ARCHITECTURE (the
+        // door, one vent, one pipe run, one fusebox), or it MOTIVATES A LIGHT (the failing
+        // tube, the cam, the exit sign). Nothing here is decoration for its own sake.
+        // The barrels and crates still exist where they BELONG -- the Main Hall mouth,
+        // just outside the door, which is also where they can be climbed on.
+        (void)aBarrel; (void)aCrateS; (void)tBarrel; (void)tCrate;
         // R7: the angled crate moved OFF the trapdoor — at (dx-0.4, dz-1.3) it lay
         // across the hatch rim (hid the rim + status lens, and would FLOAT over the
         // hole when the panels part). Now against the +Z wall beside the stack; the
         // hatch keeps a clear 360 read + clear drop path.
-        place(aCrateL, 1.3f, 1.0f, cx(kCrateLAabb), kCrateLAabb.miny, cz(kCrateLAabb),
-              dx - 2.0f, fY + 0.02f, dz + 0.6f, nullptr, tCrate);   // a third crate, angled
-        // Ground the debris cluster so it sits in the corner instead of floating.
-        addShadowBlob(m_shadowDisc, dx, fY, dz, 0.55f, 0.55f, 0.5f);            // barrel
-        addShadowBlob(m_shadowDisc, dx - 0.9f, fY, dz - 0.2f, 0.75f, 0.75f, 0.5f); // crate stack
-        addShadowBlob(m_shadowDisc, dx - 2.0f, fY, dz + 0.6f, 0.8f, 0.7f, 0.45f);  // angled crate
+        (void)aCrateL;
     }
 
     // EXIT SIGN over the doorway (the warehouse exit sign has a green-emissive face).
@@ -677,9 +686,26 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // The flicker DEPTH goes UP (0.35 -> 0.55): with honest ambient underneath, a
         // dip actually reads as the room going dark, which is the horror beat the audio
         // has been selling on its own for months.
+        // 2026-07-12 - Tim, live: "when Jake turns OFF his FLASHLIGHT the room goes
+        // absolutely BLACK." The honest-light re-tune cut this tube to 1.25 @ reach 4.6
+        // while a STRAY generic room light (3.2 @ range 8, dropped in by the level loader
+        // because Jake's Cell has no room recipe) was quietly doing the room's actual
+        // lighting - and scorching the ceiling it hung 0.25 m under. That stray light is
+        // now erased (app_run.cpp, at the recipe-light swap), so THIS TUBE IS THE ROOM'S
+        // LIGHT and it has to carry the room: 1.25 -> 3.30, reach 4.6 -> 6.2.
+        //   * 3.30 puts a wall 2 m away at radiance ~0.64; against the honest 0.030
+        //     ambient and the renormalized ~0.21-linear wall albedo that lands near the
+        //     0.18 middle grey the auto-exposure meters for - a DIM, READABLE, moody room
+        //     with no AE panic-lift to 2.2x (which is what was bleaching the walls).
+        //   * reach 6.2 (not 4.6) because the cell is about to get BIGGER (the 13700K's
+        //     cell-scale fix lands separately): a reach dialled to the walls of a 4 m box
+        //     would leave a 7 m box black in the corners. 6.2 still falls off well before
+        //     the far corners of either, so the gradient survives the rescale.
+        // Flicker depth stays 0.55 - now that this tube really is the room's light, a dip
+        // actually takes the room down, which is the horror beat.
         const uint32_t li = (uint32_t)m_lights.size();
-        addLight(bt.jakeCell, lx, ceilY - 0.40f, lz, 4.6f, 1.25f, 1.32f, 1.45f);
-        m_flickers.push_back({ li, 1.25f, 1.32f, 1.45f, 0.0f, 9.0f, 0.55f });
+        addLight(bt.jakeCell, lx, ceilY - 0.40f, lz, 6.2f, 3.30f, 3.42f, 3.70f);
+        m_flickers.push_back({ li, 3.30f, 3.42f, 3.70f, 0.0f, 9.0f, 0.55f });
         (void)aLight; (void)aHLight;   // loaded (hall may reuse); no cell placement
     }
 
