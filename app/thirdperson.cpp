@@ -260,6 +260,7 @@ void ThirdPersonView::setThirdPerson(bool on) {
     if (entering) {
         m_crouchAmt = 0.0f;
         m_aimAmt    = 0.0f;
+        m_swimAmt   = 0.0f;   // same staleness rule for the synthesized swim pose
     }
 }
 
@@ -292,6 +293,23 @@ void ThirdPersonView::bakeTransform(Scene& scene) {
         bz = x3::phys::Vec3{ fwd.x * cl + up.x * sl, fwd.y * cl + up.y * sl, fwd.z * cl + up.z * sl };
         by = x3::phys::Vec3{ up.x * cl - fwd.x * sl, up.y * cl - fwd.y * sl, up.z * cl - fwd.z * sl };
     }
+    // ---- SWIM PRONE (W10 3P read, v1): pitch the WHOLE basis toward horizontal
+    // about the local-right axis (the same lean math as crouch, ~84 deg) so the
+    // avatar lies belly-down along the look direction, and float the body up so
+    // it rides the surface line (the swim eye rests just above the water; the
+    // feet reference is a body-length below). Smoothed by m_swimAmt, so the
+    // prone pose eases in on entry and upright restores on exit — a no-op at 0. --
+    if (m_swimAmt > 1e-3f) {
+        posAdj.y += kTpSwimRise * m_swimAmt;
+        // NEGATIVE lean = belly-DOWN (the crouch sign at ~84 deg reads as a
+        // back-float: the knees flex up out of the water — eyeballed on the
+        // swim_3p_prone proof shot; flipped so the stroke kicks into the water).
+        const float lean = -kTpSwimProneDeg * (kPi / 180.0f) * m_swimAmt;
+        const float cl = std::cos(lean), sl = std::sin(lean);
+        const x3::phys::Vec3 fwd = bz, up = by;
+        bz = x3::phys::Vec3{ fwd.x * cl + up.x * sl, fwd.y * cl + up.y * sl, fwd.z * cl + up.z * sl };
+        by = x3::phys::Vec3{ up.x * cl - fwd.x * sl, up.y * cl - fwd.y * sl, up.z * cl - fwd.z * sl };
+    }
     composeTRS(m_drawXform, bx, by, bz, m_modelScale, posAdj);
     if (m_entity != kNoLink && m_entity < scene.size()) {
         Entity& me = scene.get(m_entity);
@@ -301,7 +319,7 @@ void ThirdPersonView::bakeTransform(Scene& scene) {
 
 void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
                              float eyeHeight, float yaw, float pitch, uint32_t roomId,
-                             bool crouched, bool fireHeld) {
+                             bool crouched, bool fireHeld, bool swimming) {
     (void)pitch;
     if (!m_built) return;
 
@@ -353,7 +371,16 @@ void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
     // play the rifle aim/fire clip as a nice touch (cheap one-shot). Crouch uses a
     // lower scale fallback if no crouch clip exists (Jake has none). ----
     if (m_thirdPerson && m_device && m_skinner.valid()) {
-        if (m_useLocoBlend) {
+        if (swimming && m_useLocoBlend) {
+            // ---- SWIM (W10 3P read, v1): the walk cycle at kTpSwimAnimRate is
+            // the stroke stand-in (no swim clip on this rig — follow-up). Pin
+            // the blend into the WALK band regardless of the actual water speed
+            // (buoyant drift would otherwise idle the limbs mid-stroke), cancel
+            // any fire pose, and advance the clip clock slow.
+            m_skinner.triggerClip(-1, 0.15f);
+            m_skinner.setLocomotionSpeed(1.0f);   // solidly in the walk band (0.2..2.0)
+            m_skinner.applyLocomotion(m_model, *m_device, dt * kTpSwimAnimRate);
+        } else if (m_useLocoBlend) {
             // Swap the locomotion walk/run clip set forward<->backward so backing up
             // plays the backpedal clip with the body STILL FACING FORWARD (BUG B). Only
             // re-register on an actual direction change (cheap; avoids per-frame churn).
@@ -394,6 +421,17 @@ void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
         m_crouchAmt += (target - m_crouchAmt) * k;
         if (m_crouchAmt < 1e-4f) m_crouchAmt = 0.0f;
         if (m_crouchAmt > 0.9999f) m_crouchAmt = 1.0f;
+    }
+
+    // ---- SWIM PRONE (W10 3P read, v1): smooth a 0..1 swim amount toward the
+    // `swimming` flag; bakeTransform() pitches the basis prone + floats the body
+    // to the surface line. dt-scaled exponential blend (no pop on enter/exit). --
+    {
+        const float target = swimming ? 1.0f : 0.0f;
+        const float k = 1.0f - std::exp(-kTpSwimBlend * (dt > 0.0f ? dt : 0.0f));
+        m_swimAmt += (target - m_swimAmt) * k;
+        if (m_swimAmt < 1e-4f) m_swimAmt = 0.0f;
+        if (m_swimAmt > 0.9999f) m_swimAmt = 1.0f;
     }
 
     // ---- OVER-THE-SHOULDER AIM (TASK#46.3): smooth a 0..1 aim amount toward
@@ -833,6 +871,32 @@ bool runThirdPersonSelfTest() {
         stillAnimating = finite && dPose > 1e-6f;
         tpcheck(stillAnimating,
                 "TP15 avatar still animates after a long sustained held-fire run (no crossfade freeze)");
+
+        // ---- TP16 (W10 3P swim read, v1): sustained `swimming` pitches the baked
+        // basis PRONE (the up column leaves world +Y and lies toward horizontal)
+        // and floats the body up; releasing the flag restores upright through the
+        // same dt-scaled blend (no stale lean — mirrors TP13's staleness rule). --
+        {
+            x3::phys::Vec3 wf{ rf.x, rf.y, rf.z };
+            for (int i = 0; i < 120; ++i)   // ~2 s: the 5/s blend fully settles
+                tp.update(1.0f / 60.0f, scene, wf, 1.6f, lookYaw, 0.0f, kNoRoom,
+                          false, false, /*swimming*/true);
+            float swx[16]; tp.avatarDrawTransform(swx);
+            const float upLenS = vlen(swx[4], swx[5], swx[6]);
+            // Prone at 84 deg: the up column's world-Y component ~ cos(84) ~ 0.10.
+            const bool prone = upLenS > 1e-4f && (swx[5] / upLenS) < 0.35f;
+            const float proneY = swx[13];
+            for (int i = 0; i < 180; ++i)   // exit: upright restores
+                tp.update(1.0f / 60.0f, scene, wf, 1.6f, lookYaw, 0.0f, kNoRoom,
+                          false, false, /*swimming*/false);
+            float upr[16]; tp.avatarDrawTransform(upr);
+            const float upLenU = vlen(upr[4], upr[5], upr[6]);
+            const bool uprightBack = upLenU > 1e-4f && (upr[5] / upLenU) > 0.995f;
+            // The prone body floats (never sinks) vs the restored standing Y.
+            const bool floated = proneY >= upr[13] - 1e-3f;
+            tpcheck(prone && uprightBack && floated,
+                    "TP16 swim pitches the avatar PRONE (floats to the surface line) + exit restores upright");
+        }
 
         tp.setThirdPerson(false);
     }

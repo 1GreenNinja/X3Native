@@ -35,7 +35,18 @@ world, no loading screens:
   the full look at ~60% walk speed, Space strokes up, Ctrl/C dives), depth <
   1.05 m exits onto the bank. Camera under a surface = dense blue-green fog,
   restored to the room-recipe fog on surfacing. Wading in the shallows is
-  unchanged. (3P swim animation: none yet — FP is the game view; follow-up.)
+  unchanged. Splash audio is real (tools/gen_water_audio.py -> assets/audio/
+  water/, entry + surface-exit takes); while swimming the FP weapon LOWERS out
+  of the water line and firing is refused (a soft click); the 3P avatar reads
+  PRONE at the surface with the walk clip at 0.6x as the stroke stand-in (a
+  retargeted stroke clip is the follow-up).
+- **The wanted system (polish)**: the facility AlertSystem (app/alert.h) is
+  ARMED in canonlevel — canon hostiles are its eyes/ears, gunshots/bodies/keypad
+  tampers feed heat, effects land on the canon world (reinforcements through the
+  nearest door via the 1/frame deferred-spawn queue, the level-3 LOCKDOWN over
+  canonDoors, red-shifted room lights, the HUD alert chip). SCOPE: facility-
+  interior only — observations are gated on the event position resolving to a
+  tower room, so the streamed outdoors / crowd scatter never raises it.
 
 `intro` is the same world entered through the cold-open.
 

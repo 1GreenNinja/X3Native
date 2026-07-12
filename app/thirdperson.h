@@ -117,8 +117,14 @@ public:
     // No-op in FP or when unbuilt. `crouched` lowers/uses a crouch pose. `moveYaw`
     // is the planar movement heading (radians, atan2(dz,dx)); when not moving the
     // avatar faces the look `yaw`. `fireHeld` plays the rifle aim/fire clip if easy.
+    // `swimming` (W10 3P read, v1): orient the avatar PRONE toward horizontal
+    // along the look and play the walk clip at ~0.6 rate as the stroke stand-in
+    // (no swim clip on this 22-clip rig — a retargeted stroke is the follow-up);
+    // upright restores through the same dt-scaled blend on exit. Defaulted so
+    // existing callers/tests are byte-for-byte unchanged.
     void update(float dt, Scene& scene, const x3::phys::Vec3& feet, float eyeHeight,
-                float yaw, float pitch, uint32_t roomId, bool crouched, bool fireHeld);
+                float yaw, float pitch, uint32_t roomId, bool crouched, bool fireHeld,
+                bool swimming = false);
 
     // The follow camera for THIS frame's player state (call after update()). Returns
     // the orbit-camera position + the pass-through look angles. FP callers ignore it.
@@ -270,6 +276,12 @@ private:
     // 0..1 amount driven by the `crouched` flag in update(); bakeTransform() applies
     // it as a hip drop + forward lean so the avatar visibly squats.
     float    m_crouchAmt  = 0.0f;
+    // SWIM (W10 3P read, v1 — synthesized; no swim clip on this rig). Smoothed
+    // 0..1 amount driven by the `swimming` flag; bakeTransform() pitches the
+    // whole basis PRONE (~84 deg toward horizontal) and floats the body up to
+    // the surface line; update() runs the walk clip at kTpSwimAnimRate as the
+    // stroke stand-in. Wins over crouch (mutually exclusive in the controller).
+    float    m_swimAmt    = 0.0f;
     // OVER-THE-SHOULDER AIM. m_aimAmt is a smoothed 0..1 amount driven by `fireHeld`
     // in update(); camera() uses it to bias the follow cam subtly over the right
     // shoulder while aiming so the body doesn't block the crosshair.
@@ -378,6 +390,22 @@ inline constexpr float kTpHeldWeaponScaleMul = 1.0f;
 inline constexpr float kTpCrouchDrop    = 0.45f;  // m the avatar lowers when crouched
 inline constexpr float kTpCrouchLeanDeg = 10.0f;  // forward lean (pitch) while crouched
 inline constexpr float kTpCrouchBlend   = 8.0f;   // 1/s smoothing rate in/out of crouch
+
+// SWIM PRONE (W10 3P read, v1) — Jake's 22-clip rig has no swim/stroke clip, so
+// v1 synthesizes the READ: the whole basis pitches toward horizontal (belly-down
+// along the look) while the walk cycle plays slow as the stroke stand-in, and the
+// body floats up so it lies along the water line instead of standing on the bed.
+// A real retargeted breaststroke clip is the follow-up (then kTpSwimAnimRate and
+// the prone synth reduce to triggerClip(swimClip)).
+inline constexpr float kTpSwimProneDeg = 84.0f;  // pitch toward horizontal when swimming
+inline constexpr float kTpSwimRise     = 1.35f;  // m lift on the prone body so the BACK breaks the
+                                                 // water line (the surface renders opaque from above,
+                                                 // so a body riding just under it disappears). Dialed
+                                                 // against the swim_3p_prone proof shot + the staged
+                                                 // [swimshot] telemetry (belly-down swings the mesh
+                                                 // ~0.5 m below the root pivot on this rig).
+inline constexpr float kTpSwimBlend    = 5.0f;   // 1/s smoothing rate in/out of the prone pose
+inline constexpr float kTpSwimAnimRate = 0.6f;   // walk-clip playback rate as the stroke stand-in
 
 // Over-the-shoulder aim (TASK#46.3, subtle): while aiming/firing the follow camera
 // biases a touch to the right + in, so the avatar's body doesn't block the
