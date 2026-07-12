@@ -30,6 +30,7 @@ add_executable(X3Engine WIN32
     world_hosts/host_surface_start.cpp
     world_hosts/host_rifthub.cpp
     rifthub.cpp
+    rift_depths.cpp
     rift_console.cpp
     space_pilot.cpp
     space/ship_ai.cpp

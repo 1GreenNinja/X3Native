@@ -140,6 +140,20 @@ public:
     // ---- Geometry / connection accessors (host + the elevator descent) --------
     // The shaft center XZ + inner radius (the elevator descends here; its glass
     // observation wall looks OUT at the bands built around this column).
+    // W-RIFT: a KEEP-OUT VOLUME. The rift level's landing + approach corridor are
+    // BORED THROUGH this shaft's rock at Y ~= -78, and rock authored inside them would
+    // poke through the corridor's lining (and, worse, block the walk). Any band slab,
+    // boulder or ledge whose center lands inside this world AABB is simply not built —
+    // which is what "we bored a tunnel through it" means. Call BEFORE build(); unset by
+    // default, so `--world strata` and --test-strata are untouched.
+    void setKeepOut(const x3::phys::Vec3& mn, const x3::phys::Vec3& mx) {
+        m_koMin = mn; m_koMax = mx; m_koOn = true;
+    }
+    bool keptOut(float x, float y, float z) const {
+        return m_koOn && x >= m_koMin.x && x <= m_koMax.x && y >= m_koMin.y &&
+               y <= m_koMax.y && z >= m_koMin.z && z <= m_koMax.z;
+    }
+
     float shaftX() const { return m_shaftX; }
     float shaftZ() const { return m_shaftZ; }
     float radius() const { return m_radius; }
@@ -226,6 +240,8 @@ private:
     bool   m_built = false;
     Stats  m_stats{};
     float  m_shaftX = 0.0f, m_shaftZ = 0.0f, m_radius = 14.0f;
+    bool   m_koOn = false;                 // W-RIFT keep-out (the bored corridor)
+    x3::phys::Vec3 m_koMin{}, m_koMax{};
 
     std::vector<StrataBand>     m_bands;        // modeled depth bands (top->bottom)
     std::vector<StrataOffshoot> m_offshoots;    // Phase-2 offshoot tunnels

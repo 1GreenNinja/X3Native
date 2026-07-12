@@ -110,6 +110,9 @@ void StrataWorld::buildBandRing(Scene& scene, x3::rhi::IRenderDevice& device,
             const float halfT = jit(bandSeed, s + ly * 11u + 3u, 0.9f, 1.8f);     // radial thickness
             const float baseX = m_shaftX + ca * r,   baseZ = m_shaftZ + sa * r;
             const float topX  = m_shaftX + ca * rIn, topZ  = m_shaftZ + sa * rIn;
+            // W-RIFT: the rift corridor is bored straight through this wall — no rock
+            // inside it (either end of the slab counts: a canted slab leans inward).
+            if (keptOut(baseX, baseY, baseZ) || keptOut(topX, topY, topZ)) continue;
             x3::prims::PrimMesh geo =
                 x3::prims::makeCantedStrut(baseX, baseY, baseZ, topX, topY, topZ,
                                            halfW, halfT, /*rox*/ca, /*roz*/sa,
@@ -142,6 +145,7 @@ void StrataWorld::buildBandRing(Scene& scene, x3::rhi::IRenderDevice& device,
         const float by = band.yMin + jit(bandSeed, bI + 300u, 1.0f, bandH - 1.0f);
         const float bx = m_shaftX + std::cos(a) * r, bz = m_shaftZ + std::sin(a) * r;
         const float h = jit(bandSeed, bI + 400u, 1.0f, 2.4f);
+        if (keptOut(bx, by, bz)) continue;              // W-RIFT: bored out
         addRock(scene, device, physics, bx, by, bz, h, h * 0.8f, h,
                 rock, band.glow ? em : nullptr, true, 0.2f);
         ++band.ringEntities; ++m_stats.entities;
@@ -369,7 +373,9 @@ void StrataWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float y = topY + dyTotal * t;
             const float lx = m_shaftX + std::cos(ang) * ledgeR;
             const float lz = m_shaftZ + std::sin(ang) * ledgeR;
-            // A collidable ledge slab.
+            // A collidable ledge slab. (W-RIFT: not inside the bored rift corridor —
+            // a rock shelf through the hall would be a wall you cannot see coming.)
+            if (keptOut(lx, y, lz)) continue;
             addRock(scene, device, physics, lx, y - 0.2f, lz, 3.0f, 0.3f, 3.0f, rock, nullptr, true, 0.3f);
             ++m_stats.entities;
             m_route.push_back({ lx, y, lz });

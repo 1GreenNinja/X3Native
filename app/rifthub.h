@@ -232,13 +232,60 @@ struct RiftPortal {
 // authored ONCE at build().
 class Rifthub {
 public:
-    // Stand up the hub: a 40x40 m flat physics ground centered at origin, a
+    // ===== W-RIFT (ONE WORLD): the hub is a REGION, not only a --world ==========
+    // The hub used to author itself at the world origin with a SEALED shell — fine
+    // for `--world rifthub`, useless as a room in the canon world (it would sit on
+    // top of the facility and have no way in). Two knobs fix that, and nothing else
+    // about the authoring changes:
+    //   * origin  — the hub's CENTER (floor Y). Every piece of hub geometry,
+    //               collision, trigger, light, particle and spawn is authored
+    //               relative to it. Default {0,0,0} == the old behaviour, so the
+    //               dev world is byte-identical.
+    //   * doorway — cut a real DOOR OPENING in the -Z (south) wall so the approach
+    //               corridor (app/rift_depths.*) can seal into it. The wall is
+    //               authored as left/right jamb segments + a lintel over the gap
+    //               (seam law: flush faces, no gaps, still collidable).
+    struct Desc {
+        x3::phys::Vec3 origin{ 0.0f, 0.0f, 0.0f };
+        bool  doorway     = false;   // cut the -Z wall opening
+        float doorCenterX = 7.0f;    // opening center, hub-LOCAL X (between two gates)
+        float doorHalfW   = 1.7f;    // half width of the opening
+        float doorH       = 3.4f;    // opening height above the hub floor
+    };
+
+    // Stand up the hub: a 40x40 m flat physics ground centered at the origin, a
     // ring of 8 portals (one per --world target) at radius 14 m, and one
     // AABB trigger per portal (3 m square footprint, 4 m tall). `triggers`
     // is the host's shared TriggerSystem; the host forwards fired ids to
     // onTrigger(). Call once.
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
-               x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers);
+               x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers) {
+        build(scene, device, physics, triggers, Desc{});
+    }
+    void build(Scene& scene, x3::rhi::IRenderDevice& device,
+               x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers,
+               const Desc& desc);
+
+    // The hub's authored center (floor Y) and the door opening in its -Z wall (world
+    // space) — the approach corridor seals against these, and the self-test asserts
+    // the corridor's mouth and the hub's doorway agree.
+    const Desc&    desc()   const { return m_desc; }
+    x3::phys::Vec3 origin() const { return m_desc.origin; }
+    // World-space center of the -Z wall opening (x, floorY, z of the wall plane).
+    x3::phys::Vec3 doorCenter() const {
+        return x3::phys::Vec3{ m_desc.origin.x + m_desc.doorCenterX,
+                               m_desc.origin.y,
+                               m_desc.origin.z - kHubHalfM };
+    }
+    // The hub's floor half-extent (the shell is 2*this on a side).
+    static constexpr float kHubHalfM = 20.0f;
+
+    // Re-point a rift at a destination the HOST can actually deliver (the one-world
+    // fast-travel wiring: in canonlevel the 8 gates are re-aimed at REAL places in
+    // this world — the club, the caves, the crash site... — instead of the 8 dev
+    // `--world` names they carry by default). Rebakes that rift's holo readout so the
+    // glass can never disagree with where the gate goes.
+    void setDestination(uint32_t portalIdx, const std::string& dest);
 
     // Per-frame animation. Flickers each portal's amber chevrons, pulses the
     // pulses the per-gate blue light, breathes + slowly rotates the membrane disk,
@@ -285,6 +332,16 @@ public:
     // Where the player spawns into the hub: the center of the ring at a
     // player-feet Y so the capsule lands on the ground plane.
     x3::phys::Vec3 spawn() const { return m_spawn; }
+
+    // ===== TRAVERSAL (the payoff): stepping THROUGH an open rift ================
+    // Index of the rift whose OPEN throat the eye is standing in (within `radiusM`
+    // of the gate axis, at ring height), or -1. A rift only traverses when it is
+    // ACTIVATED (its membrane is live) and not DEAD (a collapsed gate takes you
+    // nowhere). The HOST owns the actual move — it is the only thing that knows the
+    // world's anchors — so this is a pure query; see app_run.cpp's rift resolver.
+    int  traversalPortal(const x3::phys::Vec3& eye, float radiusM = 1.7f) const;
+    // Where rift `idx` currently points (the console can re-aim it).
+    const std::string& destination(uint32_t idx) const { return m_portals[idx].destination; }
 
     // Per-portal blue CORE light set — one cool-blue point light at each ring
     // center that CASTS onto the grey stone gate + floor, pulsing with the core
@@ -384,8 +441,12 @@ public:
 private:
     bool                       m_built = false;
     float                      m_time = 0.0f;          // shimmer accumulator (sec)
+    Desc                       m_desc{};               // origin + the -Z wall doorway
     x3::phys::Vec3             m_spawn{};
     std::vector<RiftPortal>    m_portals;
+    // The ring-center height in WORLD space (hub-local kRingY lifted by the region
+    // origin). tick()/drawFx() place membranes, motes and arcs with this.
+    float ringWorldY() const;
 
     // Owned render resources (freed in shutdown()). The portal mesh vector
     // collects every PER-ENTITY device mesh authored by build() (ring torus,

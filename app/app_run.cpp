@@ -87,6 +87,8 @@
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
 #include "strata.h"   // R-3 fold: THE DESCENT — live strata shaft around the elevator column
+#include "rifthub.h"      // W-RIFT: the RIFT HUB, now a REGION of the one world
+#include "rift_depths.h"  // W-RIFT: the landing + the approach corridor to it
 #include "club1127.h"
 #include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -1258,6 +1260,54 @@ int runDefaultHost(HostContext& hc) {
     x3::game::StrataWorld    liveStrata;
     x3::game::TriggerSystem  liveStrataTriggers;
     bool                     liveStrataBuilt = false;
+    // ---- W-RIFT (ONE WORLD): THE RIFT HUB IS A PLACE IN THE WORLD ------------------
+    // It was reachable only via `--world rifthub`. It is now SUB-LEVEL R1: a real
+    // elevator stop under the detention level (locked behind access code 4790), a
+    // bored LANDING at the shaft, a long industrial APPROACH that turns a corner (the
+    // hum and the blue glow arrive before the room does), and the hub itself — the
+    // SAME Rifthub module the dev world builds, authored at a region origin. The dev
+    // shortcut still works; per docs/design/WORLDS.md it is only ever a shortcut.
+    x3::game::Rifthub        rifthub;
+    x3::game::TriggerSystem  riftTriggers;
+    x3::game::RiftDepths     riftDepths;
+    // WHERE THE PLAYER LEARNS 4790: a maintenance log on a HoloTerminal in the
+    // Security room. The code is FOUND, not handed over — the same rule the cell
+    // terminal's 1278 follows (the loading-screen tips spoil that one; this one is
+    // only in the world).
+    x3::game::HoloTerminal   riftLore;
+    bool  riftBuilt    = false;
+    bool  riftZonePrev = false;      // edge: restore the room-recipe atmosphere on exit
+    float riftTeleCool = 0.0f;       // seconds before a rift may take you again
+    x3::phys::Vec3 riftRegMin{}, riftRegMax{};   // hub + depths, one AABB (the "in the zone" test)
+    // Sub-level R1's floor: below B1, inside the Basalt band, and deliberately clear of
+    // the strata offshoots (Granite -55 / Basalt -95) so the corridor bores through
+    // rock and nothing else.
+    constexpr float kRiftFloorY = -78.0f;
+    // The region's light rig is bigger than the device's 64-light cap (the hub alone
+    // ships ~57: gate cores + keys + fills + the hall grid). Appending the corridor's
+    // strips after them TRUNCATED THEM AWAY — the first capture of the approach came
+    // back pitch black. So the pool is selected NEAREST-TO-EYE across both rigs: the
+    // lights that matter are the ones in the room you are standing in.
+    auto riftLights = [&](float x, float y, float z,
+                          std::vector<x3::rhi::PointLight>& out) {
+        out.clear();
+        for (const auto& L : rifthub.pointLights())    out.push_back(L);
+        for (const auto& L : riftDepths.pointLights()) out.push_back(L);
+        auto d2 = [&](const x3::rhi::PointLight& L) {
+            const float dx = L.pos[0] - x, dy = L.pos[1] - y, dz = L.pos[2] - z;
+            return dx * dx + dy * dy + dz * dz;
+        };
+        std::sort(out.begin(), out.end(),
+                  [&](const x3::rhi::PointLight& a, const x3::rhi::PointLight& b) {
+                      return d2(a) < d2(b);
+                  });
+        if (out.size() > 64) out.resize(64);
+    };
+    auto riftInZone = [&](float x, float y, float z) {
+        return riftBuilt && x >= riftRegMin.x && x <= riftRegMax.x &&
+               y >= riftRegMin.y && y <= riftRegMax.y &&
+               z >= riftRegMin.z && z <= riftRegMax.z;
+    };
     // Elevator-bar gap C (audit claim 392f6e4d): THE CLUB AT THE BOTTOM. The finished
     // Club1127World (--world club) was never instantiated in the game path — the 1127
     // disco descent parked the cab in bare rock at Y=-200. Built LAZILY on the first
@@ -1332,6 +1382,12 @@ int runDefaultHost(HostContext& hc) {
         subLevels.shutdown();                          // hidden sub-level enemy + mini-boss ragdolls
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
+        // W-RIFT: sub-level R1's meshes/textures (the hub's gates, membranes, holo
+        // glass; the approach's shell). The smoketest gates on allocationCount == 0,
+        // and this runs on EVERY exit path (headless captures included).
+        if (rifthub.built())    rifthub.shutdown(*device);
+        if (riftDepths.built()) riftDepths.shutdown(*device);
+        if (riftLore.built())   riftLore.shutdown(*device);
     };
     // THE ONE ELEVATOR (Tim: "connect this with the In-Game Elevator"): the full
     // x3-elevator.js treatment — 10-state FSM, cabin visuals + twin OLEDs, the
@@ -1388,6 +1444,112 @@ int runDefaultHost(HostContext& hc) {
         x3::boot::mark("elevator + strata descent build");
         x3::logInfo("STRATA descent built around the elevator shaft — enter 1127 to ride to The Deep");
     };
+    // ---- W-RIFT: THE FAST-TRAVEL RESOLVER ------------------------------------------
+    // The hub is "the room where you can teleport to any location" — so a rift has to
+    // land you somewhere REAL. This maps a gate's destination string onto an anchor in
+    // the ONE WORLD. Runtime world-SWITCHING (into a different --world build) is not a
+    // thing this engine does, and nothing here pretends otherwise: a destination with
+    // no anchor in this world is REFUSED out loud (the gate holds, the HUD says so).
+    std::string riftHudMsg;      // the arrival / refusal banner
+    float       riftHudTimer = 0.0f;
+    auto riftDestination = [&](const std::string& dest, x3::phys::Vec3& out) -> bool {
+        auto has = [&](const char* k) { return dest.find(k) != std::string::npos; };
+        // --- The Deep. The club is lazy-built (same as the 1127 descent) so a rift is
+        //     a real second way in.
+        if (has("club")) {
+            if (!club1127.built()) {
+                club1127.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+                x3::logInfo("[rift] CLUB 1127 built on demand (the rift is a second way in)");
+            }
+            const x3::phys::Vec3 cs = club1127.spawn();
+            out = { cs.x, cs.y + 1.0f, cs.z };
+            return club1127.built();
+        }
+        // --- The caves: the strata's Crystal-Veins offshoot pocket (real, walkable).
+        if (has("caves") || has("crystal")) {
+            if (!liveStrataBuilt) return false;
+            const auto& offs = liveStrata.offshoots();
+            for (const auto& o : offs) {
+                if (std::string(o.bandName ? o.bandName : "").find("Crystal") != std::string::npos) {
+                    out = { o.pocket.x, o.pocket.y + 1.2f, o.pocket.z };
+                    return true;
+                }
+            }
+            if (!offs.empty()) {
+                out = { offs.back().pocket.x, offs.back().pocket.y + 1.2f, offs.back().pocket.z };
+                return true;
+            }
+            return false;
+        }
+        // --- Back home: the facility. F1 = the detention lobby (the rift is a two-way
+        //     door — you are not stranded down there), F7 = the executive floor.
+        if (has("F1") || has("facility F1") || has("lobby")) {
+            if (!canonFloor.valid()) return false;
+            const x3::game::CanonBeats bt = x3::game::canonBeats(canonFloor);
+            const uint32_t r = (bt.elevatorLobby != x3::game::kNoRoom) ? bt.elevatorLobby
+                                                                       : bt.mainHall;
+            if (r == x3::game::kNoRoom) return false;
+            const x3::game::CanonRoom& rm = canonFloor.rooms[r];
+            out = { rm.cx, rm.y0() + 1.0f, rm.cz };
+            return true;
+        }
+        if (has("F7") || has("executive")) {
+            if (!canonFloor.valid()) return false;
+            // The top Elevator Lobby (floors stack; the highest lobby IS F7's landing).
+            float bestY = -1e9f; const x3::game::CanonRoom* best = nullptr;
+            for (const auto& rm : canonFloor.rooms)
+                if (rm.type == "Elevator Lobby" && rm.cy > bestY) { bestY = rm.cy; best = &rm; }
+            if (!best) return false;
+            out = { best->cx, best->y0() + 1.0f, best->cz };
+            return true;
+        }
+        // --- The planet. These land ON the streamed terrain (the streamer realizes the
+        //     region around the new camera position on the next residency pass).
+        auto onTerrain = [&](float x, float z) {
+            float p3[3];
+            x3::game::placeOnTerrain(x, z, p3);
+            out = { p3[0], p3[1] + 1.2f, p3[2] };
+            return true;
+        };
+        if (has("crash"))  return onTerrain(140.0f, 205.0f);    // the Crash Site (SEAM 3)
+        if (has("city"))   return onTerrain(-200.0f, 425.0f);   // the city region anchor
+        if (has("valley") || has("river")) {
+            // Stand on the BANK of the real carved river (worldRiverNodes is the same
+            // spline the carve + the water ribbon use).
+            uint32_t n = 0;
+            const x3::game::WorldRiverNode* nodes = x3::game::worldRiverNodes(n);
+            if (!nodes || n < 2) return false;
+            const auto& a2 = nodes[n / 2];
+            const auto& b2 = nodes[n / 2 + 1 < n ? n / 2 + 1 : n / 2];
+            float tx = b2.x - a2.x, tz = b2.z - a2.z;
+            const float tl = std::sqrt(tx * tx + tz * tz);
+            if (tl > 1e-3f) { tx /= tl; tz /= tl; }
+            const float off = x3::game::kWorldRiverHalfWidth + 14.0f;   // clear of the water
+            return onTerrain(a2.x - tz * off, a2.z + tx * off);
+        }
+        if (has("cliffs") || has("ridge")) {
+            // The highest ground on a ring out from the facility — a real ridge, found
+            // by asking the terrain, not by inventing a coordinate.
+            float bx = 0.0f, bz = 0.0f, bh = -1e9f;
+            for (int i = 0; i < 64; ++i) {
+                const float a3 = (float)i * (6.2831853f / 64.0f);
+                const float x = std::cos(a3) * 620.0f, z = std::sin(a3) * 620.0f;
+                const float h = x3::game::terrainHeightAtWorld(x, z);
+                if (h > bh) { bh = h; bx = x; bz = z; }
+            }
+            if (bh <= -1e8f) return false;
+            return onTerrain(bx, bz);
+        }
+        // --- The hub itself (a console can re-aim a gate at anything the player types).
+        if (has("rift") || has("hub")) {
+            if (!rifthub.built()) return false;
+            const x3::phys::Vec3 hs = rifthub.spawn();
+            out = { hs.x, hs.y + 1.0f, hs.z };
+            return true;
+        }
+        return false;   // act2 / destruct / ragdoll ... : no anchor in THIS world.
+    };
+
     // Join the async boot-manifest GLB warmup (no-op when none was kicked): the
     // world build below takes model-cache hits instead of repeating parse/decode.
     x3::asset::joinModelPreload();
@@ -1711,19 +1873,143 @@ int runDefaultHost(HostContext& hc) {
                 if (!lobbyRooms.empty()) {
                     const float cabHY = 0.15f;
                     const x3::game::CanonRoom& L0 = canonFloor.rooms[lobbyRooms.front()];
-                    std::vector<float> stops; stops.reserve(lobbyRooms.size());
-                    std::vector<std::string> labels; labels.reserve(lobbyRooms.size());
+                    std::vector<float> stops; stops.reserve(lobbyRooms.size() + 1);
+                    std::vector<std::string> labels; labels.reserve(lobbyRooms.size() + 1);
+                    // ---- W-RIFT: THE RIFT STOP IS STOP 0. The cab's stop list is ordered
+                    // low -> high, so sub-level R1 (the buried rift chamber, Y=-78) goes in
+                    // at the BOTTOM and every lobby floor shifts up one. It is a real floor
+                    // on this cab in every way — a stop, a label, a row on the cabin
+                    // directory — except that it is LOCKED OUT until the access code 4790 is
+                    // entered in the cabin (ElevatorSystem::stopLocked / kRiftAccessCode), so
+                    // callTo()/callNext() walk straight past it and the OLED shows a dead row.
+                    stops.push_back(kRiftFloorY + cabHY);
+                    labels.emplace_back("RIFT");
                     for (size_t li = 0; li < lobbyRooms.size(); ++li) {
                         stops.push_back(canonFloor.rooms[lobbyRooms[li]].y0() + cabHY);
                         labels.emplace_back("F" + std::to_string(li + 1));
                     }
                     elevator.build(scene, *device, *physics, L0.cx, L0.cz,
-                                   1.4f, cabHY, 1.4f, stops, /*startStop*/0);
+                                   1.4f, cabHY, 1.4f, stops, /*startStop*/1);   // boot on F1
+                    elevator.setRiftStop(0);
+
+                    // ---- SUB-LEVEL R1: the hub + the way in ------------------------------
+                    // The hub is the SAME module `--world rifthub` builds — one build path,
+                    // authored at a region origin west of the shaft and deep under it, with a
+                    // real doorway cut in its -Z wall. The approach corridor seals into that
+                    // doorway. Nothing here is a copy of the dev world; the dev world is the
+                    // same code with the default origin.
+                    {
+                        const uint32_t riftEnt0 = scene.size();
+                        x3::game::Rifthub::Desc hd;
+                        hd.origin      = { L0.cx - 44.5f, kRiftFloorY, L0.cz + 46.0f };
+                        hd.doorway     = true;
+                        hd.doorCenterX = 7.0f;     // between the S and SE gates — you enter BETWEEN gates
+                        hd.doorHalfW   = 1.7f;
+                        hd.doorH       = 3.4f;
+                        rifthub.build(scene, *device, *physics, riftTriggers, hd);
+
+                        x3::game::RiftDepths::Desc dd;
+                        dd.shaft   = { L0.cx, kRiftFloorY, L0.cz };
+                        dd.hubDoor = rifthub.doorCenter();
+                        dd.doorHalfW = hd.doorHalfW;
+                        dd.doorH     = hd.doorH;
+                        riftDepths.build(scene, *device, *physics, dd);
+                        // PVS: stamp every entity the region authored with kRiftRoom, so
+                        // the facility never submits the hub (and the hub never submits the
+                        // facility). The host adds the tag to the visible set only while
+                        // the eye is down here.
+                        for (uint32_t ei = riftEnt0; ei < scene.size(); ++ei)
+                            scene.get(ei).roomId = x3::game::kRiftRoom;
+
+                        // The strata bore is REAL rock at this depth: bore the landing +
+                        // corridor out of it (StrataWorld::setKeepOut runs before the shaft
+                        // builds, in soupUpElevator below).
+                        x3::phys::Vec3 kmn, kmx;
+                        riftDepths.zoneAabb(kmn, kmx);
+                        liveStrata.setKeepOut(kmn, kmx);
+
+                        // The rift REGION = the depths AABB unioned with the hub's shell.
+                        riftRegMin = { std::min(kmn.x, hd.origin.x - 21.0f), kRiftFloorY - 4.0f,
+                                       std::min(kmn.z, hd.origin.z - 21.0f) };
+                        riftRegMax = { std::max(kmx.x, hd.origin.x + 21.0f), kRiftFloorY + 12.0f,
+                                       std::max(kmx.z, hd.origin.z + 21.0f) };
+                        riftBuilt = rifthub.built() && riftDepths.built();
+
+                        // ---- THE PAYOFF: re-aim the 8 gates at REAL PLACES IN THIS WORLD.
+                        // The gates ship pointed at the 8 dev `--world` names. In the ONE
+                        // WORLD those names are shortcuts, not destinations — so the hub's
+                        // rifts are re-aimed at anchors the host can actually deliver you to
+                        // (see riftDestination() in the loop). Order matches the gate ring:
+                        // gate 1 = +X, then clockwise.
+                        static const char* kCanonDest[8] = {
+                            "club 1127",        // the disco at The Deep (Y=-200)
+                            "crystal caves",    // the strata's Crystal-Veins offshoot
+                            "the crash site",   // the streamed exterior, off the +Z breach face
+                            "the city",         // the streamed city region
+                            "the river valley", // the carved river / swim water
+                            "the cliffs",       // the terrain landmark ridge
+                            "facility F1",      // the detention lobby (the way home)
+                            "facility F7",      // the executive floor
+                        };
+                        for (uint32_t ri = 0; ri < rifthub.portalCount() && ri < 8; ++ri)
+                            rifthub.setDestination(ri, kCanonDest[ri]);
+
+                        // ---- THE LORE: how the player finds out R1 exists, and how to
+                        // reach it. A maintenance log left on the Security room's glass.
+                        {
+                            const x3::game::CanonBeats lb = x3::game::canonBeats(canonFloor);
+                            uint32_t lr = lb.security;
+                            if (lr == x3::game::kNoRoom) lr = lb.research;
+                            if (lr == x3::game::kNoRoom) lr = lb.mainHall;
+                            if (lr != x3::game::kNoRoom) {
+                                const x3::game::CanonRoom& rm = canonFloor.rooms[lr];
+                                const uint32_t loreEnt0 = scene.size();
+                                // The glass hangs at READING height (the HoloTerminal's pos
+                                // IS the panel center — at floor Y it lies on the deck).
+                                riftLore.build(scene, *device,
+                                               x3::phys::Vec3{ rm.cx, rm.y0() + 2.05f, rm.cz + 1.2f },
+                                               /*yaw*/0.0f, /*w*/1.5f, /*h*/0.95f,
+                                               /*ceilingY*/rm.y1() - 0.16f);
+                                riftLore.setLayout(x3::game::HoloTerminal::Layout::Readout);
+                                riftLore.setTextColor(1.0f, 0.72f, 0.30f, 1.0f);   // maintenance amber
+                                riftLore.setLines({
+                                    "FACILITY MAINTENANCE - LOG 41",
+                                    "SUB-LEVEL R1 (\"RIFT CHAMBER\")",
+                                    "",
+                                    "R1 WAS TAKEN OFF THE CAR PANEL AFTER THE",
+                                    "THIRD CONTAINMENT EVENT. THE FLOOR IS STILL",
+                                    "ON THE HOIST - IT JUST DOES NOT SHOW.",
+                                    "",
+                                    "CABIN OVERRIDE: 4790",
+                                    "RIDE DOWN. TAKE THE HALL WEST, THEN LEFT.",
+                                    "DO NOT GO ALONE. - K. VOSS, FACILITIES",
+                                });
+                                for (uint32_t ei = loreEnt0; ei < scene.size(); ++ei)
+                                    scene.get(ei).roomId = lr;
+                                x3::logInfo("--world canonlevel: the RIFT maintenance log (code 4790) "
+                                            "is on the glass in '" + rm.name + "'");
+                            }
+                        }
+
+                        // CAPTURE HOOK (headless only, mirrors the dev world's
+                        // X3_RIFTHUB_OPEN): X3_RIFT_OPEN=1 puts the RIFT row on the cabin
+                        // panel and fires every gate, so a still can show the unlocked
+                        // panel + the open membranes without walking the level by hand.
+                        if (std::getenv("X3_RIFT_OPEN")) {
+                            elevator.unlockRift();
+                            for (uint32_t ri = 0; ri < rifthub.portalCount(); ++ri)
+                                rifthub.onTrigger(rifthub.portal(ri).triggerId);
+                            for (int w = 0; w < 240; ++w) rifthub.tick(1.0f / 60.0f, scene);
+                            x3::logInfo("X3_RIFT_OPEN=1: RIFT stop unlocked + all 8 gates OPEN (capture)");
+                        }
+                    }
+
                     soupUpElevator(L0.cx, L0.cz, labels);
                     x3::logInfo("--world canonlevel: THE REAL ELEVATOR live in the lobby spine at (" +
                                 std::to_string(L0.cx) + ", " + std::to_string(L0.cz) + ") — " +
-                                std::to_string(stops.size()) + " stops, F1-F" +
-                                std::to_string(stops.size()) + "; E to summon/ride, 1127 for The Deep");
+                                std::to_string(stops.size()) + " stops, RIFT + F1-F" +
+                                std::to_string(stops.size() - 1) +
+                                "; E to summon/ride, 1127 for The Deep, 4790 for SUB-LEVEL R1");
                 }
             }
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
@@ -3735,6 +4021,8 @@ int runDefaultHost(HostContext& hc) {
                          eyeRoom == facilityExterior.breachRoomHint()))
                         canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
                 }
+                if (riftInZone(ssEye.x, ssEye.y, ssEye.z))
+                    canonVisRooms.push_back(x3::game::kRiftRoom);   // W-RIFT capture vantage
                 scene.setRoomCullEnabled(true);
                 scene.setVisibleRooms(canonVisRooms);
                 std::vector<x3::rhi::PointLight> cl;
@@ -3760,8 +4048,42 @@ int runDefaultHost(HostContext& hc) {
                         streetLights.selectLights(ssEye.x, ssEye.y, ssEye.z, cl, 14);
                     }
                 }
+                // W-RIFT: a capture vantage inside sub-level R1 gets the hub's own rig
+                // (gate cores + keys + the hall) and the approach's failing strips —
+                // the same takeover the live loop does, or every rift shot is black.
+                if (riftLore.built()) riftLore.update(dt);   // bake the log for the still
+                if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z)) {
+                    rifthub.tick(dt, scene);      // the membranes must be ALIVE in a still
+                    riftDepths.tick(dt);
+                    riftLights(ssEye.x, ssEye.y, ssEye.z, cl);
+                }
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
+            }
+            // R11: the ELEVATOR CAB in a CAPTURE. The live loop feeds the cab's ceiling
+            // practical + disco spots (see the elevator block there), but the screenshot
+            // settle loop never did — so every headless shot of the car interior came
+            // back BLACK, and the cab's own atmosphere (which keys off the rider) never
+            // engaged either. A room you cannot photograph is a room you cannot art-
+            // direct, which is exactly how the cab stayed a graybox for this long.
+            if (elevator.built() && !elevator.pointLights().empty() && !canonWorld) {
+                std::vector<x3::rhi::PointLight> el = game.lightFixtures();
+                // FRONT of the list: level1 ships more than 64 fixtures, so appending
+                // would put the cab's own practical past the cap and truncate it away —
+                // the exact reason the first capture of the new cab came back black.
+                for (const auto& pl : elevator.pointLights())
+                    if (pl.color[0] + pl.color[1] + pl.color[2] > 0.001f)
+                        el.insert(el.begin(), pl);
+                if (el.size() > 64) el.resize(64);
+                device->setPointLights(el.data(), (uint32_t)el.size());
+            }
+            if (elevator.built()) {
+                // Camera-as-rider: the shot camera standing in the cab gets the cab's air.
+                elevator.applyCabAtmosphere(
+                    *device, x3::phys::Vec3{ ssEye.x, ssEye.y - 1.7f, ssEye.z });
+                // ...and the cab must TICK in a capture, or its OLEDs never bake and the
+                // floor directory (which is where the RIFT stop appears) photographs blank.
+                elevator.update(dt, scene, *physics);
             }
             // WORLD CARS staging: the capture camera FOLLOWS the driven car
             // (the drive host's chase framing around the shot-cam look angles).
@@ -3796,6 +4118,11 @@ int runDefaultHost(HostContext& hc) {
                           uf.density  = 0.055f; uf.start = 0.15f; uf.maxOpacity = 0.94f;
                           device->setFog(uf);
                       } }
+                    // W-RIFT: sub-level R1's air wins over the room recipes for a
+                    // vantage down there (applied AFTER applyZoneAtmosphere, like the
+                    // underwater override above).
+                    if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z))
+                        rifthub.applyAtmosphere(*device);
                     canonDoors.drawMeshes(*device, frame);
                     facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
                     // WORLD CARS: parked cars + the (staged) live car — the same
@@ -3811,6 +4138,9 @@ int runDefaultHost(HostContext& hc) {
                         canonCrowdSkins[ci].draw(*device, frame, scene);
                         cityCrowdSkins[ci].draw(*device, frame, scene);
                     }
+                    // W-RIFT: the membrane FX (arcs + motes + light shafts) in the still.
+                    if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z))
+                        rifthub.drawFx(*device, frame);
                 }
                 // W2-A2 (W2-C's queued hook): the --screenshot path NEVER drew the FP
                 // viewmodel — the "pistol" in every prior cell shot was the hovering
@@ -6318,6 +6648,12 @@ int runDefaultHost(HostContext& hc) {
                     }
                     // Rider craft: an idle sealed car opens for an approaching player.
                     elevator.autoOpenFor(physics->getBodyPosition(player.body()));
+                    // R11 (art): while you are INSIDE the sealed cab, the world's ambient
+                    // wash has no business being in there — a lift interior is lit by its
+                    // own fixture and nothing else. Drops ambient/IBL on entry, restores
+                    // the world's values on exit. No-op when not aboard.
+                    elevator.applyCabAtmosphere(*device,
+                                                physics->getBodyPosition(player.body()));
                 }
                 // R-3 fold: breathe the Crystal/Magma/Alien glow + flicker the magma
                 // mood lights of the strata shaft the cab rides through (cab-biased).
@@ -6343,6 +6679,48 @@ int runDefaultHost(HostContext& hc) {
                     // Re-arm for the next descent once the cab is back near the surface.
                     if (club1127Handoff && elevator.cabCenter().y > -50.0f)
                         club1127Handoff = false;
+                }
+
+                // ---- W-RIFT: SUB-LEVEL R1 lives ------------------------------------
+                // The hub animates (membranes / core lights / consoles) and the approach
+                // breathes only while the player is IN the region — the facility above
+                // pays nothing for a room 78 m under it.
+                if (riftBuilt) {
+                    const x3::phys::Vec3 pfr = physics->getBodyPosition(player.body());
+                    const bool inZone = riftInZone(pfr.x, pfr.y + 1.0f, pfr.z);
+                    if (riftTeleCool > 0.0f) riftTeleCool -= x3::net::kSimDt;
+                    if (inZone) {
+                        rifthub.tick(x3::net::kSimDt, scene);
+                        riftDepths.tick(x3::net::kSimDt);
+                        // Walking into a gate ACTIVATES it (the kawoosh) — the hub's own
+                        // trigger volumes, dispatched here exactly as the dev host does.
+                        for (uint32_t tid : riftTriggers.update({ pfr.x, pfr.y + 1.6f, pfr.z }))
+                            rifthub.onTrigger(tid);
+                        // ---- THE PAYOFF: step through an OPEN rift and it TAKES YOU. ----
+                        const int tp = (riftTeleCool <= 0.0f)
+                            ? rifthub.traversalPortal({ pfr.x, pfr.y + 1.2f, pfr.z })
+                            : -1;
+                        if (tp >= 0) {
+                            const std::string dest = rifthub.destination((uint32_t)tp);
+                            x3::phys::Vec3 to{};
+                            if (riftDestination(dest, to)) {
+                                physics->setBodyPosition(player.body(), to);
+                                riftTeleCool = 3.0f;   // don't re-fire on the arrival frame
+                                riftHudMsg = "RIFT TRAVERSED -> " + dest;
+                                riftHudTimer = 4.0f;
+                                x3::logInfo("[rift] TRAVERSED rift " + std::to_string(tp + 1) +
+                                            " -> " + dest + " at (" + std::to_string(to.x) + ", " +
+                                            std::to_string(to.y) + ", " + std::to_string(to.z) + ")");
+                            } else {
+                                riftTeleCool = 2.0f;
+                                riftHudMsg = "NO ANCHOR IN THIS WORLD: " + dest;
+                                riftHudTimer = 4.0f;
+                                x3::logWarn("[rift] rift " + std::to_string(tp + 1) +
+                                            " points at '" + dest +
+                                            "' — no anchor in this world; the gate holds");
+                            }
+                        }
+                    }
                 }
 
                 physics->step(x3::net::kSimDt);
@@ -6556,6 +6934,9 @@ int runDefaultHost(HostContext& hc) {
                          eyeRoom == facilityExterior.breachRoomHint()))
                         canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
                 }
+                // W-RIFT: sub-level R1 is submitted only from inside it.
+                if (riftInZone(camX, camY, camZ))
+                    canonVisRooms.push_back(x3::game::kRiftRoom);
                 // OPENING-SPACE motivated lights (flickering cell tube / red alarm / cyan
                 // terminal) for the visible dressed rooms — inserted at the FRONT so the cap
                 // never drops these key lights, then the room ceiling lights fill in.
@@ -6619,6 +7000,10 @@ int runDefaultHost(HostContext& hc) {
                 const auto& cl = club1127.pointLights();
                 for (const auto& L : cl) fl.push_back(L);
             }
+            // W-RIFT: in SUB-LEVEL R1 the hub's rig (gate cores + keys + the hall) and
+            // the approach's failing strips own the budget — same rule as the club: no
+            // facility fixture reaches 78 m down, and the membranes are the key light.
+            if (riftBuilt && riftInZone(camX, camY, camZ)) riftLights(camX, camY, camZ, fl);
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }
@@ -7097,7 +7482,16 @@ int runDefaultHost(HostContext& hc) {
             // WAVE-3 zone atmosphere: re-tint the depth fog as the player crosses zone
             // boundaries (teal halls / amber detention / green labs). Runs BEFORE the
             // cvar overrides below so an explicit r_fog* setting still wins this frame.
-            if (canonFloor.valid())
+            // R11: the ELEVATOR CAB owns the air while you are riding it (a sealed steel
+            // box is lit by its own fixture, not by whatever floor it happens to be
+            // passing). Yield to it — and force a re-apply on the frame the rider steps
+            // back out, because applyZoneAtmosphere is change-gated and would otherwise
+            // never notice the cab had overwritten ambient/IBL underneath it.
+            static bool s_prevAboard = false;
+            const bool cabAir = elevator.built() && elevator.riderAboard();
+            if (!cabAir && s_prevAboard) canonRooms.resetZoneAtmosphere();
+            s_prevAboard = cabAir;
+            if (canonFloor.valid() && !cabAir)
                 canonRooms.applyZoneAtmosphere(*device, canonFloor.roomAt(camX, camY, camZ));
             const float cvFogD = console->getFloat("r_fogdensity");
             const float cvFogS = console->getFloat("r_fogstart");
@@ -7120,6 +7514,22 @@ int runDefaultHost(HostContext& hc) {
                 g.saturation = 0.96f;
                 g.vignette = (cvVig >= 0.0f) ? cvVig : 0.10f;
                 device->setGrade(g);
+            }
+            // ---- W-RIFT: SUB-LEVEL R1's air. The hub's atmosphere is a single knob
+            // that lives with its art (Rifthub::applyAtmosphere: cold blue haze, teal
+            // grade, low ambient, interior IBL). Applied while the eye is in the region
+            // and RELEASED on the way out — resetZoneAtmosphere() makes the room recipes
+            // re-apply their own fog next frame (the same handoff the swim path uses).
+            {
+                const bool inRift = riftInZone(camX, camY, camZ);
+                if (inRift) {
+                    rifthub.applyAtmosphere(*device);
+                } else if (riftZonePrev) {
+                    canonRooms.resetZoneAtmosphere();
+                    device->setIblIntensity(0.5f);                       // the SEAM-2 interior value
+                    device->setExposure(console->getFloat("r_exposure"));
+                }
+                riftZonePrev = inRift;
             }
             // ---- W10 SWIMMING: the UNDERWATER read. When the CAMERA is below a
             // water surface (river reach or the sea), override the frame's fog
@@ -7465,6 +7875,8 @@ int runDefaultHost(HostContext& hc) {
         // Advance FX timers (tracer lifetimes + muzzle flash) only while the sim
         // runs; frozen during a UI menu so particles/tracers hold still.
         if (!simFrozen) combatFx.update(dt);
+        if (riftHudTimer > 0.0f) riftHudTimer -= dt;   // W-RIFT: the traversal banner ages out
+        if (riftLore.built()) riftLore.update(dt);     // bakes the maintenance log onto the glass
         // M9: tick the audio system (reaps finished one-shot voices). Always ticked
         // so audio voices don't pile up while paused.
         audio->update(dt);
@@ -7543,6 +7955,10 @@ int runDefaultHost(HostContext& hc) {
                 if (roomCull) scene.setVisibleRooms(canonVisRooms);   // same set as the lights
             }
             scene.render(*device, frame);
+            // W-RIFT: the hub's membrane FX (lightning arcs + spark motes + the hall's
+            // light shafts) are drawn AFTER the scene pass, exactly as the dev host does
+            // — and only from inside the region.
+            if (riftBuilt && riftInZone(camX, camY, camZ)) rifthub.drawFx(*device, frame);
             // Unified vis stats: feed the PVS stage's numbers (submission skips +
             // flood-fill ms) so stats() carries the conserving rooms -> frustum ->
             // hzb -> drawn chain. Zeros outside the canon world (no room tags).
@@ -7847,12 +8263,46 @@ int runDefaultHost(HostContext& hc) {
                                 ep = "Elevator -> " + elevator.floorLabel(tgt) +
                                      "  (" + elevator.stateName() + ")";
                             } else {
-                                const int next = (cur + 1) % std::max(1, elevator.stopCount());
+                                // W-RIFT: the panel never offers a locked floor — skip it
+                                // exactly like callNext() does, so the prompt cannot lie.
+                                int next = cur;
+                                for (int g = 0; g < std::max(1, elevator.stopCount()); ++g) {
+                                    next = (next + 1) % std::max(1, elevator.stopCount());
+                                    if (!elevator.stopLocked(next)) break;
+                                }
                                 ep = "Floor " + elevator.floorLabel(cur) +
                                      "   [E] Go to " + elevator.floorLabel(next);
                             }
                             floatPrompt(x3::phys::Vec3{ cc.x, cc.y + 1.6f, cc.z },
                                         ep.c_str(), (float)ep.size() * 4.4f);
+                        }
+                    }
+                    // W-RIFT: the rift prompts. The nearest gate names where it goes; the
+                    // traversal / refusal banner rides the same bottom-center line.
+                    if (riftBuilt && riftInZone(pex, pey, pez)) {
+                        std::string rp;
+                        if (riftHudTimer > 0.0f) {
+                            rp = riftHudMsg;
+                        } else {
+                            const int nearRift = rifthub.consoleInRange({ pex, pey, pez }, 5.0f);
+                            if (nearRift >= 0) {
+                                rp = rifthub.portal((uint32_t)nearRift).activated
+                                        ? ("RIFT OPEN -> " + rifthub.destination((uint32_t)nearRift) +
+                                           "  (walk through)")
+                                        : ("RIFT: " + rifthub.destination((uint32_t)nearRift) +
+                                           "  (step in to open)");
+                            }
+                        }
+                        if (!rp.empty()) {
+                            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                            const float hsz = 18.0f;
+                            const float adv = device->textAdvance(x3::rhi::FontRole::Menu, rp.c_str(), hsz);
+                            const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                            const float hy = (hh > 0) ? hh * 0.84f : 500.0f;
+                            const float col[4]    = { 0.55f, 0.86f, 1.0f, 0.92f };
+                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, rp.c_str(), hx + 1.5f, hy + 1.5f, hsz, shadow);
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, rp.c_str(), hx, hy, hsz, col);
                         }
                     }
                     // Cell HoloTerminal: within ~3 m of its anchor. Playtest fix (PB
