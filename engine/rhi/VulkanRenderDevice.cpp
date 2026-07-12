@@ -586,6 +586,7 @@ void VulkanRenderDevice::setGrade(const GradeParams& g) { m_gradeParams = g; }
 void VulkanRenderDevice::setMetalAmbient(float s) { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
 
 void VulkanRenderDevice::setIblIntensity(float s) { m_iblIntensity = (s >= 0.0f) ? s : 1.0f; }
+void VulkanRenderDevice::setIblSpecular(float s)  { m_iblSpecular  = s; }   // <0 = unset (fall back to the IBL intensity)
 
 void VulkanRenderDevice::setPostFX(const PostFXParams& p) {
         if (p.autoExposure && !m_post.autoExposure) m_aeSnap = true;

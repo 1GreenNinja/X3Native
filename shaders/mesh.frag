@@ -602,6 +602,8 @@ vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRou
     vec2 ab = texture(brdfLUT, vec2(NoV, perceptualRough)).rg;
     vec3 specular = prefiltered * (F0 * ab.x + ab.y);
 
+    // (the env-specular scale is applied at the return, alongside intensity)
+
     // ---- Metal ambient-specular FLOOR (r_metalambient, carried in ssao.ibl.w) ----
     // Metals have no diffuse lobe (kD ~ 0 above), so when the baked environment is
     // DARK (night interiors, windowless rooms) their entire ambient response is this
@@ -626,7 +628,29 @@ vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRou
     // Specular occlusion: a softer AO on the specular lobe so recesses still darken
     // reflections (full AO would kill them). Diffuse takes the full AO.
     float specAo = clamp(ao + 0.4, 0.0, 1.0);
-    return (kD * diffuse * ao + specular * specAo) * intensity;
+
+    // ---- SPLIT SCALES: env DIFFUSE and env SPECULAR are different lobes ---------
+    // `intensity` (ibl.y) used to scale BOTH, which makes "dark moody interior" and
+    // "bright reflective metal" mutually exclusive: raise the environment enough for
+    // steel to reflect it and you flood every dielectric in the room with irradiance;
+    // lower it to protect the mood and metals have nothing left to reflect. But the
+    // two lobes have different owners -- a METAL is kD ~ 0, so the prefiltered env
+    // specular IS its entire ambient response, while CONCRETE is kD ~ 1 and almost
+    // pure diffuse. One scale cannot serve both, and the rifthub proved it: the gate
+    // was a mirror aimed at a black room.
+    // refl.z (r_iblspec) is the ABSOLUTE env-specular scale. <= 0 means "unset" and
+    // falls back to `intensity`, so every world that never calls setIblSpecular() is
+    // byte-for-byte the pre-R10 math.
+    //
+    // GATED ON METALLIC, and that is the whole point. A dielectric (concrete, plaster,
+    // the hall's WET FLOOR at metal 0.09) keeps `intensity` exactly as calibrated --
+    // so turning the environment up for the steel does NOT wash the room, which is the
+    // failure the rifthub has hit in rounds 2, 5 and 9. A metal (the gate at 0.65) has
+    // no diffuse lobe at all, so this reflection IS its light, and it gets the dome.
+    // Same environment, two materials, two honest responses.
+    float specScale = (ssao.refl.z > 0.0) ? ssao.refl.z : intensity;
+    float sScale    = mix(intensity, specScale, metallic);
+    return kD * diffuse * ao * intensity + specular * specAo * sScale;
 }
 // ============================================================================
 // LIGHT-UNIT CONVENTION (engine-wide; the fix for "GLB meshes are unlit").

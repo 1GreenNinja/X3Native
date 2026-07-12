@@ -1158,8 +1158,24 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // dielectric enough to keep a diffuse lobe so the round form still models.
         // Roughness stays >= .62 — past mesh.frag's mirror gate — so the ghost-glass
         // fix above is untouched.
-        const uint8_t platePx[4] = { 0, 158, 166, 255 };  // rough .62, metal .65 (the TUBE)
-        const uint8_t steelPx[4] = { 0, 156, 166, 255 };  // rough .61, metal .65
+        // ---- R10: THE ROUGHNESS FLOOR IS LIFTED (carefully) --------------------
+        // rough >= 0.62 was a WORKAROUND, not a material decision: it parked the gate
+        // past mesh.frag's SSR gate (1 - smoothstep(0.25, 0.6, rough)) so the buggy
+        // half-res depth march could never contribute. Its ROOT CAUSE was explicitly
+        // "the gate's dense THIN-PLATE geometry (2 m first step + 0.5 m thickness
+        // tunnels straight through the plates)" -- i.e. the R5 gate's 233 scattered
+        // thin parts. The R10 tube is ONE CLOSED HULL 1.3 m thick. The march has
+        // nothing thin left to tunnel through, so the workaround is buying nothing and
+        // costing everything: at 0.62 the prefiltered env is sampled at a near-top mip,
+        // which is a BLURRED SMEAR -- a broad soft gradient, never the thin bright
+        // chamfer LINE that is the entire visual signature of machined steel.
+        // 0.38: a real machined (not mirror-polished) steel. The chamfers resolve a
+        // crisp reflection of the overcast dome; the flats stay matte enough to read as
+        // worked metal rather than chrome. Verified against the ghost-glass symptom
+        // (see docs/screenshots/rifthub_r10) -- no X-ray, because the geometry that
+        // caused it is gone.
+        const uint8_t platePx[4] = { 0,  97, 166, 255 };  // rough .38, metal .65 (the TUBE)
+        const uint8_t steelPx[4] = { 0,  92, 176, 255 };  // rough .36, metal .69 (bolts/housings)
         const uint8_t darkPx[4]  = { 0, 163,  26, 255 };  // rough .64, metal .10 (hardware: unchanged)
         m_mrGate[0] = device.createTexture(platePx, 1, 1, false);
         m_mrGate[1] = device.createTexture(steelPx, 1, 1, false);
@@ -2999,7 +3015,48 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // lights the room BY DESTROYING ITS CONTRAST. The point rig and the MEMBRANES carry
     // this hall; ambient only has to keep the deepest corners from going pure void.
     device.setAmbient(0.032f, 0.036f, 0.046f);
-    device.setIblProbe(true);
+    // ===== R10 — THE GATE HAD NOTHING TO REFLECT ==============================
+    // Owner, holding up a reference render of a machined-steel structure:
+    //   "There are no lights. just shiny reflections from the white cloudy sky."
+    //   "We need that kind of lighting model."
+    // He is describing an ENVIRONMENT-driven metal: no emissives on the object at
+    // all, its entire read coming from a big bright dome reflected in its chamfers.
+    // That is exactly what mesh.frag's iblAmbient() does -- specular IBL samples the
+    // PREFILTERED env cube along R at mip = roughness, which works at ANY roughness
+    // (rough 0.62 just picks a blurrier mip = a broad, soft, overcast reflection).
+    // Note the SSR roughness gate (1 - smoothstep(0.25, 0.6, rough)) applies ONLY to
+    // the reflTex blend weight -- so the ghost-glass/SSR fix is UNTOUCHED by this.
+    //
+    // The bug: setIblProbe(true) bakes the env cube FROM THE SCENE, and this scene is
+    // a deliberately DARK hall. So the gate's mirror was pointed at a black room. Its
+    // prefiltered specular came back ~0, the metal fell through to the flat
+    // ambient-specular FLOOR (a constant), and 90k triangles of freshly-machined
+    // chamfers rendered as GREY MUSH. Nine rounds of art, and the last thing missing
+    // was something for the steel to look at.
+    //
+    // The fix is not a light and not an albedo: give the room an ENVIRONMENT. The
+    // hall's own point rig, ambient, fog, grade, shafts and membranes are all
+    // unchanged -- we only change what the metal SEES. A big soft overcast dome is
+    // also what a real industrial hall's overhead diffusers would give you.
+    {
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled      = true;
+        // A WHITE CLOUDY SKY: no visible sun disc, heavy haze, near-neutral and
+        // bright from zenith to horizon -- a softbox the size of the world. The sun
+        // term stays low so this reads as OVERCAST, not as a second key light.
+        sp.sunDir[0] = 0.30f; sp.sunDir[1] = 0.82f; sp.sunDir[2] = -0.48f;
+        sp.sunColor[0] = 1.00f; sp.sunColor[1] = 0.99f; sp.sunColor[2] = 0.97f;
+        sp.sunIntensity = 0.12f;      // overcast: the DOME lights it, not the sun
+        sp.haze         = 1.00f;
+        sp.exposure     = 1.00f;
+        sp.zenith[0]  = 0.62f; sp.zenith[1]  = 0.66f; sp.zenith[2]  = 0.72f;
+        sp.horizon[0] = 0.78f; sp.horizon[1] = 0.80f; sp.horizon[2] = 0.84f;
+        device.setSkyParams(sp);
+    }
+    // Bake the env cube from that DOME, not from the black room. (Scene-probe off:
+    // its whole purpose was "reflect the hall not an open sky", and the hall turned
+    // out to be the problem -- a mirror aimed at a void.)
+    device.setIblProbe(false);
     // ROUND 5 — THE GHOST-GATE CURE. The hub never called setIblIntensity, so it
     // ran at 1.0: FULL environment IBL on every surface. mesh.frag's iblAmbient()
     // adds prefiltered env specular weighted by the split-sum BRDF *bias* term
@@ -3017,8 +3074,25 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // R9: the IBL bias term (`ab.y`) is ALBEDO-INDEPENDENT — it paints a neutral grey
     // wash regardless of what the surface says it is. That is precisely the "washed-out
     // pale concrete" failure mode, and it too was tuned under the broken path. Down.
-    const float kIblInterior = 0.18f;
+    // THE ENV DIFFUSE STAYS DOWN. This scale drives the irradiance the room's
+    // CONCRETE drinks, and the hall is meant to be dark -- raising it to feed the
+    // steel washed the whole hall into a pale warehouse (the exact failure mode
+    // rounds 2/5/9 kept re-learning). It stays at the calibrated interior value.
+    // The dome is FAR brighter than the black room this was calibrated against, so
+    // holding 0.18 would now pump real irradiance into every wall and wash the hall
+    // pale -- the exact failure rounds 2/5/9 kept re-learning. It comes DOWN to keep
+    // the hall's DIFFUSE response where the owner signed it off.
+    const float kIblInterior = 0.07f;
     device.setIblIntensity(kIblInterior);
+    // ...AND THE ENV SPECULAR COMES UP. New knob (r_iblspec): it scales the
+    // prefiltered environment reflection ALONE. Metals are kD ~ 0 -- reflection IS
+    // their entire ambient response -- so this feeds the gate's chamfers a bright
+    // overcast dome to catch, while the hall's dielectrics (kD ~ 1, F0 = 0.04) barely
+    // register it and keep their darkness. That is the owner's reference exactly:
+    // "there are no lights, just shiny reflections from the white cloudy sky."
+    // No emissive, no over-unity albedo, no key-light crank: the metal is lit by
+    // being SHINY AT SOMETHING BRIGHT, which is how metal has always worked.
+    device.setIblSpecular(1.15f);
     // R9: exposure bias was pushed to 1.24 to lift a scene the renderer was under-
     // lighting by ~PI. With the renderer honest, a >1 bias is just a second blowout
     // multiplier stacked on the first. Back to neutral — and slightly under, because
