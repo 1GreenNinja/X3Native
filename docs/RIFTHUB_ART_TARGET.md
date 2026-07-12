@@ -180,6 +180,68 @@ the portal, rebuild the gate as ROUNDED PIPE with SD3.5 textures FROM his image)
 - `tools/forge_gate_textures.py`: `--img2img` / `--from-image` / `--maps-only`. Textures
   now derive FROM the owner's reference frame (1168x768 video frame > the 800x526 stills).
 
+## ROUND 6 (2026-07-11) — EVERY MEMBRANE STATE IS THE OWNER'S REAL FOOTAGE
+> Owner, on the live build: **"The swirling one looks fake.. Why the dot in the middle?"**
+
+Both complaints were the SAME disease as the round-5 "crayon lightning": procedural
+fakery layered on top of — or instead of — the reference video.
+
+### 1. The OPEN state was hand-coded math
+IDLE played the baked reference-video flipbook; OPEN swapped to `makeThroatRGBA()`, a
+polar ridged-noise spiral. Real footage standing next to hand-drawn math — the eye picks
+the fake instantly. **The video already CONTAINS the throat.** Frames extracted and
+eyeballed across the full 10 s arc:
+
+| span | what it actually shows | atlas |
+|------|------------------------|-------|
+| t 0.00–3.20 | lightning webs over a calm nebula | `membrane_flipbook.png` (round 4) |
+| t 6.40–8.30 | the vortex ring collapsing into the throat | `membrane_flipbook_surge.png` **(new)** |
+| t 8.40–9.95 | the settled radial-streaming throat | `membrane_flipbook_open.png` **(new)** |
+
+The surge span ENDS where the open span begins → they hand off frame-continuously. All
+three share the same disc crop (629,420 r214), so the membrane never jumps scale on a
+state swap. `tools/make_membrane_flipbook.py` gained `--loop-blend N`: the SURGE bakes
+with 0 (a ONE-SHOT film — it must keep its true final frame), IDLE/OPEN keep the 8-frame
+tail blend for a seamless modulo loop.
+
+Engine: ONE playback path for all three states (`loadFlipbookAtlas` + `flipFrameIndex`).
+IDLE/OPEN loop at 18 fps with a per-portal phase; SURGE is played once against the
+kawoosh's LINEAR progress (not the exponential brightness envelope, which would stall the
+film on its last frames). `makeThroatRGBA` / `makePlasmaRGBA` survive **only** as the
+missing-atlas fallback (fresh clone with LFS stubs → a lit blue membrane, never a black
+disk).
+
+### 2. The fake center dot
+A v1 leftover: two bright blue-white disks (`coreEnt` / `coreInnerEnt`) drawn at the exact
+ring center, ON TOP of the footage — plus a `exp(-r*r*9)` hot-center burst baked into the
+procedural throat. All deleted (entities, geometry constants, emissive pulse, cap). The
+footage carries its own center. **The blue POINT LIGHT each gate casts into its bay stays**
+— that is lighting in the room, not a sprite on the membrane.
+
+### 3. Footage-calibrated values (found by LOOKING at the shots, not by declaring victory)
+- `kPlasmaEmBaseOpen` 1.90 → **1.58**: 1.90 was tuned for the dim procedural map; on the
+  bright footage it lifted the video's deep-navy channels to mid-blue and washed the throat
+  toward cyan-white — destroying the contrast we went to the video for.
+- `kPlasmaSpinOpenX` 2.6 → **1.15**: the fast spin existed to make the procedural SPOKES
+  stream. The footage streams on its own; spinning it fast on top reads as a rotating
+  texture (i.e. as fake).
+
+### Gates + shots
+`--test-rifthub` **15/15** (T1/T5/T6/T8 updated for the dead core disks; **T12** = OPEN
+plays the open atlas when present and falls back gracefully when absent; **T13** = the
+SURGE film runs once then hands back to the OPEN loop). `--smoketest` and `--smoketest
+--world rifthub`: exit 0, 0 VUID, allocationCount=0. Shots
+`docs/screenshots/rifthub/I_*.png` (idle / open front+close+quarter+behind+wide / mid-surge).
+New headless hook `X3_RIFTHUB_SURGE=1` freezes a shot mid-kawoosh (`X3_RIFTHUB_OPEN=1`
+still lands the settled OPEN state).
+
+### Honest read
+The open gate is now unmistakably the same material as the idle gate — same grain, same
+lightning, same blue — because it IS the same footage. Nothing hand-drawn is composited on
+the membrane in ANY state. Remaining membrane gap vs the video: our disk is a flat emissive
+sheet, so it has no depth/parallax down the throat (a real see-through vista still needs a
+render-to-texture portal view), and the surge's white-hot peak sits close to the cap.
+
 ### NEXT LEAD (engine, unresolved)
 Model-loader (GLB) meshes shade with a suspiciously low N.L versus prim meshes under the
 SAME point lights: a white-albedo PBR probe on the gate reads ~0.03 where the floor reads
