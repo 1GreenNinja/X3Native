@@ -17,6 +17,7 @@
 #include "engine/audio/IAudioSystem.h"
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>   // std::getenv / std::atoi (X3_SUN_DIVE_TEST variant parse)
 #include <filesystem>
 #include <vector>
 
@@ -176,26 +177,35 @@ int hostSpace(HostContext& hc) {
         // looking "down" sees stars, not a ground plane) — so deep space is the
         // sky ENABLED at near-black with zero haze, exactly like the nightsky
         // host but with no horizon band at all.
-        { x3::rhi::IRenderDevice::SkyParams sp{};
-          sp.enabled = true;
-          sp.sunDir[0] = 0.6f; sp.sunDir[1] = 0.5f; sp.sunDir[2] = 0.62f;   // matches the key light corner
-          sp.sunColor[0] = 0.75f; sp.sunColor[1] = 0.82f; sp.sunColor[2] = 1.0f;
-          // W6-2: 0.02 -> 0.55 — a cool DIRECTIONAL starlight key. The sky sun feeds
-          // the PBR path (the surface tower proves it), and it's the only way hulls
-          // get real shading gradients out here: point rigs vanish at capital-ship
-          // scale, and a flat ambient floor reads as clay. Still far below daylight.
-          sp.sunIntensity = 0.55f;
-          sp.haze = 0.0f;                              // haze 0 == DEEP SPACE (stars on the full sphere)
-          sp.exposure = 1.0f;
-          sp.zenith[0]  = 0.003f; sp.zenith[1]  = 0.003f; sp.zenith[2]  = 0.008f;
-          sp.horizon[0] = 0.004f; sp.horizon[1] = 0.005f; sp.horizon[2] = 0.011f;
-          device->setSkyParams(sp);
-          device->setSkyTime(10.0f);                   // non-zero -> starfield twinkle/rotation phase;
-                                                        // the windowed loop advances this per-frame below
-          // R2: enabling the sky at near-zero sun replaced whatever ambient the
-          // disabled-sky path implied — the fleet went silhouette-black. Explicit
-          // cool ambient so hulls read while space stays dark (nightsky's trick).
-          device->setAmbient(0.11f, 0.12f, 0.16f); }
+        // TWIN-SUN FIX (owner: "a bright white glow-orb floating beside the real
+        // sun"): the analytic sky paints its sun DISC along skyP.sunDir at INFINITY,
+        // while the real emissive body sits 20 km away — so from off-axis positions
+        // they visibly SEPARATE (parallax). We keep this SkyParams PERSISTENT and, in
+        // the windowed loop, re-aim skyP.sunDir every frame down the ship→body ray so
+        // the painted disc always sits directly BEHIND the real (larger, opaque,
+        // depth-nearer) body and is fully occluded by it — the body becomes the ONLY
+        // visible sun, while the directional LIGHT (sunIntensity) still shades hulls
+        // from the physically-correct direction. Seeded here to the spawn ray.
+        x3::rhi::IRenderDevice::SkyParams skyP{};
+        skyP.enabled = true;
+        skyP.sunDir[0] = 0.6f; skyP.sunDir[1] = 0.5f; skyP.sunDir[2] = 0.62f;   // matches the key light corner
+        skyP.sunColor[0] = 0.75f; skyP.sunColor[1] = 0.82f; skyP.sunColor[2] = 1.0f;
+        // W6-2: 0.02 -> 0.55 — a cool DIRECTIONAL starlight key. The sky sun feeds
+        // the PBR path (the surface tower proves it), and it's the only way hulls
+        // get real shading gradients out here: point rigs vanish at capital-ship
+        // scale, and a flat ambient floor reads as clay. Still far below daylight.
+        skyP.sunIntensity = 0.55f;
+        skyP.haze = 0.0f;                              // haze 0 == DEEP SPACE (stars on the full sphere)
+        skyP.exposure = 1.0f;
+        skyP.zenith[0]  = 0.003f; skyP.zenith[1]  = 0.003f; skyP.zenith[2]  = 0.008f;
+        skyP.horizon[0] = 0.004f; skyP.horizon[1] = 0.005f; skyP.horizon[2] = 0.011f;
+        device->setSkyParams(skyP);
+        device->setSkyTime(10.0f);                     // non-zero -> starfield twinkle/rotation phase;
+                                                       // the windowed loop advances this per-frame below
+        // R2: enabling the sky at near-zero sun replaced whatever ambient the
+        // disabled-sky path implied — the fleet went silhouette-black. Explicit
+        // cool ambient so hulls read while space stays dark (nightsky's trick).
+        device->setAmbient(0.11f, 0.12f, 0.16f);
         // SSAO + SSGI screen-space passes raster the whole scene to black on a
         // black/empty space background (no nearby geometry to bounce off) -- the
         // 1080 Ti / no-RT fallback path documented in the memory bank. Disable
@@ -356,6 +366,34 @@ int hostSpace(HostContext& hc) {
         x3::prims::PrimMesh sunm = x3::prims::makeUVSphere(48, 96);
         auto sunMesh = device->createMesh(sunm.verts.data(), (uint32_t)sunm.verts.size(),
                                           sunm.index.data(), (uint32_t)sunm.index.size());
+        // CAMERA-FACING GLOW DISC (unit radius, XZ plane, normal +Y) — the building
+        // block for the CENTER HOTSPOT + GLARE HALO (owner: "the sun should be
+        // BLINDING — white-hot centre, big glare"). NB on WHY discs, not the literal
+        // "additive billboard w/ radial texture": glass.frag adds a FLAT per-object
+        // emissive (no emissive-map on the glass path — drawMeshGlass binds none), so
+        // a radial TEXTURE can't shape the bloom (it'd bloom the whole quad). Instead
+        // the radial gradient comes from GEOMETRY: several concentric camera-facing
+        // discs of graduated size whose additive glass contributions STACK (same
+        // no-scene additive accumulation the 30 corona shells already rely on) — most
+        // overlap at the centre => blinding white core, fewest at the rim => soft
+        // falloff. Flat + camera-facing => a clean CIRCLE (no square, no ring), and —
+        // unlike a sphere — it can be SMALLER than the core without being occluded, so
+        // the hotspot sits INSIDE the disc silhouette where the owner wants it.
+        std::vector<x3::rhi::MeshVertex> discV; std::vector<uint32_t> discI;
+        {
+            const int kSeg = 64;
+            discV.push_back({{0,0,0},{0,1,0},{0.5f,0.5f}});
+            for (int i = 0; i <= kSeg; ++i) {
+                const float a = (float)i / (float)kSeg * 6.2831853f;
+                const float cx = std::cos(a), cz = std::sin(a);
+                discV.push_back({{cx,0,cz},{0,1,0},{cx*0.5f+0.5f, cz*0.5f+0.5f}});
+            }
+            for (int i = 1; i <= kSeg; ++i) {   // CCW from +Y (the camera-facing side)
+                discI.push_back(0); discI.push_back((uint32_t)(i+1)); discI.push_back((uint32_t)i);
+            }
+        }
+        auto glowDiscMesh = device->createMesh(discV.data(), (uint32_t)discV.size(),
+                                               discI.data(), (uint32_t)discI.size());
         // LIVING SUN SURFACE (owner: "sunspots, plasma flares, little variations as
         // the hydrogen fusion occurs" — was a flat emissive disc). One-time bake:
         // granulation + faculae + 3-7 sunspots (bakeSunRGBA, above), bound as BOTH
@@ -545,7 +583,14 @@ int hostSpace(HostContext& hc) {
         float trajTimer = 0.0f;
         std::vector<TrajSample> trajPlay;     // linearised oldest→entry at detonation
         // Loop-shared telemetry the HUD/overlay read (updated each frame in the loop).
-        float g_heat = 0.0f;        // 0..1 hull-heat fraction
+        float g_heat = 0.0f;        // 0..1 hull-heat fraction (raw proximity)
+        // DISPLAYED hull heat: eases toward g_heat normally, but toward 0 while
+        // g_invulnerable (owner: "with invuln.. the hull temp should stay 0" — the
+        // shield perfectly insulates). The ease (not a snap) means toggling invuln
+        // OFF near the star ramps the temp up from ambient over ~2 s instead of
+        // jumping to 3200C. tempC + the WARNING/CRITICAL states all derive from
+        // this, so the whole temperature system goes quiet under invuln.
+        float g_heatShown = 0.0f;
         float g_sunSurf = 1e9f;     // distance to the SUN SURFACE (m)
         float g_clock = 0.0f;       // presentation clock (blink/pulse/flash phases)
 
@@ -762,8 +807,19 @@ int hostSpace(HostContext& hc) {
         };
 
         // ---- REAL SUN render: granulated orange core + tight additive corona ----
-        auto drawSun = [&](const x3::rhi::FrameContext& frame) {
+        // `camPos` (v4): the render camera this frame. Two uses — (1) the CENTER
+        // HOTSPOT + GLARE HALO discs face it; (2) INTERIOR-BULLSEYE fix: each
+        // concentric corona/churn SHELL fades out as the camera enters it, so you
+        // never see a shell's inner surface edge-on as a dark-red "porthole" ring
+        // when engulfed (owner bug at SUN 0.8 km) — the molten interior takes over.
+        auto drawSun = [&](const x3::rhi::FrameContext& frame, const x3::phys::Vec3& camPos) {
             float m[16];
+            const float camDistC = vlen(x3::phys::Vec3{ camPos.x-kSunCenter.x,
+                                        camPos.y-kSunCenter.y, camPos.z-kSunCenter.z });
+            // Per-shell camera fade: 1 when the camera is comfortably OUTSIDE a shell
+            // of world radius R, ramping to 0 as it crosses inside ~1.05x R (kills the
+            // edge-on inner-surface ring). Used by the corona + churn shells below.
+            auto shellCamFade = [&](float R) { return smooth01(R * 1.05f, R * 1.28f, camDistC); };
             // ============ SUN VISUAL v3 (owner: "make it LOOK like a sun") =========
             // The old look was a FRIED EGG: three hard-edged corona shells out to
             // 2.6x = 5.2 km (a flat gold disc), a bright WHITE RING at the tight gold
@@ -808,10 +864,14 @@ int hostSpace(HostContext& hc) {
             for (int i = kCoronaShells - 1; i >= 0; --i) {
                 const float f  = (float)i / (float)(kCoronaShells - 1);   // 0=limb .. 1=outer
                 const float s  = 1.012f + f * (1.34f - 1.012f);
+                // INTERIOR-BULLSEYE fix: fade this shell out once the camera is inside
+                // it (no edge-on inner-surface ring when engulfed).
+                const float sfade = shellCamFade(kSunRadius * s);
+                if (sfade < 0.01f) continue;
                 // MONOTONIC exponential falloff. Per-shell op is LOW; the sum at the
                 // core edge stays a faint glow, far dimmer than the core, so no bright
                 // rim can form. Twice as many shells -> ~half the per-shell op.
-                const float op = 0.017f * std::exp(-3.2f * f);
+                const float op = 0.017f * std::exp(-3.2f * f) * sfade;
                 // Deep orange at the limb -> red -> dark red as it fades out. Kept
                 // SATURATED (low green/blue) on purpose: a pale/gold halo reads as a
                 // bright ring hugging the core, a saturated-orange one melts into the
@@ -836,12 +896,13 @@ int hostSpace(HostContext& hc) {
             // the core — cheap parallax "boil". Hugs the core (1.015x) and kept dim so
             // it modulates the surface rather than forming its own mid-tone annulus.
             const float churnYaw = -g_clock * 0.026f;
-            sphereMatrixYaw(kSunCenter, kSunRadius * 1.006f, churnYaw, m);
-            {
+            const float churnFade = shellCamFade(kSunRadius * 1.006f);   // bullseye fix
+            if (churnFade > 0.01f) {
+                sphereMatrixYaw(kSunCenter, kSunRadius * 1.006f, churnYaw, m);
                 const float bc[4] = { 1.0f, 0.55f, 0.22f, 1.0f };
-                const float em[4] = { 1.0f, 0.55f, 0.22f, 0.35f };
+                const float em[4] = { 1.0f, 0.55f, 0.22f, 0.35f * churnFade };
                 x3::rhi::IRenderDevice::GlassMaterial gm{};
-                gm.opacity = 0.09f; gm.roughness = 1.0f; gm.specular = 0.0f;
+                gm.opacity = 0.09f * churnFade; gm.roughness = 1.0f; gm.specular = 0.0f;
                 gm.refraction = 0.0f;   // no lens edge (see corona note above)
                 gm.tint[0]=1.0f; gm.tint[1]=0.55f; gm.tint[2]=0.22f;
                 device->drawMeshGlass(frame, sunMesh, sunTex, bc, em, gm, m,
@@ -861,9 +922,92 @@ int hostSpace(HostContext& hc) {
                 + 0.05f * std::sin(g_clock * (6.2831853f / 5.3f))
                 + 0.03f * std::sin(g_clock * (6.2831853f / 7.7f) + 1.7f);
             const float cbc[4] = { 1.0f, 0.62f, 0.28f, 1.0f };
-            const float cem[4] = { 1.0f, 0.62f, 0.28f, 1.05f * shimmer };
+            // v4: nudge 1.05 -> 1.20. Slightly hotter base so the gold cell cores +
+            // faculae bloom a touch harder, while the deep-orange lanes still hold the
+            // granulation (kept well under the 2.9 "white wafer" regime). The BLINDING
+            // white centre is NOT from the core emissive (that would wafer the whole
+            // disc again) — it comes from the hotspot disc stack below.
+            const float cem[4] = { 1.0f, 0.62f, 0.28f, 1.20f * shimmer };
             device->drawMeshPBR(frame, sunMesh, sunTex, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
                                 cbc, cem, m, /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
+
+            // ================= CENTER HOTSPOT + GLARE HALO (v4) ==================
+            // Real-sun photo look: a BLINDING white-hot centre grading to gold, with a
+            // big soft glare that dominates the sky — while the limb keeps its orange
+            // granulation. Built from camera-facing additive glow discs (see glowDiscMesh
+            // note): the radial gradient is GEOMETRIC (concentric discs of graduated size
+            // whose additive glass contributions STACK — most overlap dead-centre).
+            const x3::phys::Vec3 toCamV{ camPos.x - kSunCenter.x, camPos.y - kSunCenter.y, camPos.z - kSunCenter.z };
+            if (camDistC > kSunRadius * 1.02f) {   // once basically inside, the interior dome takes over
+                const x3::phys::Vec3 toCam = vnorm(toCamV);
+                // Camera-facing basis (the discs are radially symmetric, so any basis
+                // perpendicular to toCam works — roll is irrelevant).
+                const x3::phys::Vec3 wup = (std::fabs(toCam.y) < 0.95f) ? x3::phys::Vec3{0,1,0} : x3::phys::Vec3{1,0,0};
+                const x3::phys::Vec3 bru = vnorm(vcross(wup, toCam));
+                const x3::phys::Vec3 bup = vcross(toCam, bru);
+                // Anchor the disc plane JUST in front of the near pole (tangent plane of
+                // the core) so the opaque core can never occlude it, with a hair of
+                // clearance to avoid z-fighting the pole.
+                const float dB = camDistC - kSunRadius;                 // near-pole distance from camera
+                const x3::phys::Vec3 sprC{ kSunCenter.x + toCam.x*kSunRadius*1.006f,
+                                           kSunCenter.y + toCam.y*kSunRadius*1.006f,
+                                           kSunCenter.z + toCam.z*kSunRadius*1.006f };
+                // Apparent disc angular radius ~ kSunRadius/camDistC. Sizing a disc's
+                // world half-extent as frac*discAng*dB holds its APPARENT size at a
+                // constant fraction of the sun disc across the whole 18 km -> 3 km
+                // approach (frac is that fraction).
+                const float discAng = kSunRadius / std::max(1.0f, camDistC);
+                // FADE: ramp in with proximity (a tiny far disc shouldn't be a blazing
+                // dot), and fade OUT again as the ship enters the body (~1.02x..1.5x)
+                // so the hotspot/halo don't clip weirdly once the molten interior owns
+                // the frame.
+                const float nearFade = smooth01(kSunRadius * 1.02f, kSunRadius * 1.5f, camDistC);
+                auto glowDisc = [&](float frac, float emStr, float cr, float cg, float cb) {
+                    const float half = frac * discAng * dB;
+                    if (half < 1.0f) return;
+                    float mm[16];
+                    composeBasis(mm, bru, toCam, bup, half, 1.0f, half, sprC);
+                    const float bcf[4] = { cr, cg, cb, 1.0f };
+                    const float emf[4] = { cr, cg, cb, emStr * nearFade };
+                    x3::rhi::IRenderDevice::GlassMaterial gm{};
+                    gm.opacity = 0.0f;            // pure additive glow (no see-through body)
+                    gm.roughness = 1.0f; gm.specular = 0.0f; gm.refraction = 0.0f;
+                    gm.tint[0]=cr; gm.tint[1]=cg; gm.tint[2]=cb;
+                    device->drawMeshGlass(frame, glowDiscMesh, x3::rhi::TextureHandle{}, bcf, emf, gm, mm,
+                                          /*alphaBlend=*/true);
+                };
+                // GLARE HALO (big, soft, warm white-gold): a DENSE stack of pure-additive
+                // camera-facing discs (opacity 0 => no lit-diffuse brown, flat => no
+                // grazing-limb ring — the two failure modes sphere shells had). MANY discs
+                // with a smooth exponential emissive falloff so they blend into one soft
+                // radial wash that fades to black within ~2.5x the disc (a glare that
+                // dominates near the sun, not a flat brown fill of the whole frame).
+                {
+                    const int kHalo = 52;
+                    for (int i = 0; i < kHalo; ++i) {
+                        const float t = (float)i / (float)(kHalo - 1);       // 0 outer .. 1 inner
+                        const float frac  = 2.4f - t * (2.4f - 0.55f);       // big -> meets the hotspot
+                        const float emStr = 0.30f * std::exp(-3.0f * (1.0f - t)); // faint outer -> brighter inward
+                        // WARM gold outer -> warm-white inner (low blue so the broad glow
+                        // reads gold, not the desaturated grey a whiter mix bloomed to).
+                        glowDisc(frac, emStr, 1.0f, 0.66f + 0.22f*t, 0.34f + 0.34f*t);
+                    }
+                }
+                // CENTER HOTSPOT (small, blinding): graduated discs from ~0.60x down to
+                // ~0.06x, emissive ramping WELL past the 0.92 bloom threshold at the
+                // centre so the core of the disc blows to white-hot, grading gold — the
+                // limb (outside these) keeps its granulation + orange.
+                {
+                    const int kHot = 10;
+                    for (int i = 0; i < kHot; ++i) {
+                        const float t = (float)i / (float)(kHot - 1);        // 0 outer .. 1 inner
+                        const float frac = 0.60f - t * (0.60f - 0.05f);
+                        const float emStr = 0.9f + 3.1f * t;                 // stacks to ~blinding dead-centre
+                        // gold at the rim -> white at the very centre
+                        glowDisc(frac, emStr, 1.0f, 0.86f + 0.14f*t, 0.60f + 0.40f*t);
+                    }
+                }
+            }
         };
 
         // ---- PLASMA FLARES / PROMINENCES: kFlareCount limb arcs, each riding its
@@ -1030,7 +1174,8 @@ int hostSpace(HostContext& hc) {
         //      glass trick as the sun corona's BLEND-partition fix above), white-gold
         //      innermost -> orange -> deep red-orange outer, with a deterministic
         //      sum-of-sines flicker. `burn` is g_burnFactor (0..~1.5). -------------
-        auto drawBurnSheath = [&](const x3::rhi::FrameContext& frame, const x3::phys::Vec3& p, float burn) {
+        auto drawBurnSheath = [&](const x3::rhi::FrameContext& frame, const x3::phys::Vec3& p,
+                                  const x3::phys::Vec3& camPos, float burn) {
             if (burn < 0.02f) return;
             const float flick = 0.85f + 0.10f * std::sin(g_clock * 11.0f) + 0.05f * std::sin(g_clock * 23.0f + 1.3f);
             const struct { float s, r, g, b, str; } shells[3] = {
@@ -1038,9 +1183,12 @@ int hostSpace(HostContext& hc) {
                 { 1.30f, 1.00f, 0.55f, 0.15f, 1.6f },   // orange
                 { 1.50f, 0.85f, 0.20f, 0.05f, 1.0f },   // deep red-orange outer
             };
+            const float camToShip = vlen(x3::phys::Vec3{ camPos.x-p.x, camPos.y-p.y, camPos.z-p.z });
             float m[16];
             for (const auto& sh : shells) {
-                sphereMatrix(p, 2.2f * sh.s, m);
+                const float shR = 2.2f * sh.s;
+                if (camToShip < shR * 1.05f) continue;   // bullseye fix: skip shells the camera sits inside (3P-close)
+                sphereMatrix(p, shR, m);
                 const float bc[4] = { sh.r, sh.g, sh.b, 1.0f };
                 const float em[4] = { sh.r, sh.g, sh.b, sh.str * burn * flick };
                 x3::rhi::IRenderDevice::GlassMaterial gm{};
@@ -1171,10 +1319,15 @@ int hostSpace(HostContext& hc) {
             // FIX (Integrator): wrap heading to [0,360) so it never reads "+406".
             float hdg = std::fmod(pilot.yaw() * 57.29578f, 360.0f);
             if (hdg < 0.0f) hdg += 360.0f;
-            // Hull temp: ambient baseline far away → climbs with the heat fraction.
-            const float tempC = 22.0f + g_heat * 3180.0f;
-            const bool  warn = (g_sunSurf < kWarnDist);
-            const bool  crit = (g_sunSurf < kCritDist);
+            // Hull temp: ambient baseline far away → climbs with the DISPLAYED heat
+            // fraction (g_heatShown, which is pinned toward 0 under invuln + eases on
+            // toggle). WARNING/CRITICAL derive from an "effective" surface distance
+            // that reads infinite while invulnerable, so the whole temperature system
+            // (orange/red flash, PULL AWAY, and — below — the beep) goes quiet.
+            const float tempC = 22.0f + g_heatShown * 3180.0f;
+            const float effSurf = g_invulnerable ? 1e9f : g_sunSurf;
+            const bool  warn = (effSurf < kWarnDist);
+            const bool  crit = (effSurf < kCritDist);
             char l1[64], l2[64], l3[80], l4[64], l5[64];
             std::snprintf(l1, sizeof(l1), "SPD %6.1f m/s", spd);
             std::snprintf(l2, sizeof(l2), "HDG %03.0f   BOOST %s", (double)hdg, boostActive ? "ON " : "off");
@@ -1334,7 +1487,7 @@ int hostSpace(HostContext& hc) {
             // closes and crosses the surface wreathed in flame.
             const float surfDist = vlen(x3::phys::Vec3{ p.x-kSunCenter.x, p.y-kSunCenter.y, p.z-kSunCenter.z }) - kSunRadius;
             const float replayBurn = smooth01(kBurnStartSurf, 0.0f, surfDist);
-            drawBurnSheath(frame, p, replayBurn);
+            drawBurnSheath(frame, p, cineCamPos, replayBurn);
             drawBurnEmbers(frame, p, f, u, r, replayBurn);
         };
 
@@ -1408,6 +1561,14 @@ int hostSpace(HostContext& hc) {
             // kHeatStart to the body; a touch of inverse-square bite near the surface.
             const float prox = smooth01(kHeatStart, kSunRadius, g_sunSurf);
             g_heat = prox * prox;
+            // Ease the DISPLAYED heat toward 0 while invulnerable, else toward the
+            // real proximity heat (~2 s time-constant so an invuln toggle glides the
+            // hull temp instead of snapping it — see g_heatShown decl).
+            {
+                const float heatTgt = g_invulnerable ? 0.0f : g_heat;
+                const float hk = 1.0f - std::exp(-2.2f * fdt);
+                g_heatShown += (heatTgt - g_heatShown) * hk;
+            }
             // One-shot "SHIELD ENGAGED" flash/caption timer — ticks regardless of
             // phase so it plays out even across a very fast graze.
             if (shieldFlashT >= 0.0f) {
@@ -1464,7 +1625,15 @@ int hostSpace(HostContext& hc) {
             }
             // --- Sequence active ---
             phaseT += fdt;
-            if (skip && phase != Phase::Respawn) { phase = Phase::Respawn; phaseT = 0.0f; respawned = false; }
+            // "Any key" skip jumps to Respawn — but ONLY from the FROZEN cinematic
+            // (Detonation onward). InsideSun is still LIVE flight (the graze-abort
+            // window): a movement key there means "fly", NOT "skip my death", so it
+            // must never short-circuit to Respawn (owner bug: "with Invuln on, Hull
+            // lost to the sun" — pressing W/Space/Shift to fly around inside the star
+            // was consumed as a cinematic skip -> Respawn, bypassing invuln entirely).
+            if (skip && phase != Phase::Respawn && phase != Phase::InsideSun) {
+                phase = Phase::Respawn; phaseT = 0.0f; respawned = false;
+            }
             switch (phase) {
                 case Phase::InsideSun:
                     // INVULNERABLE: continuously reset the countdown clock each frame
@@ -1565,8 +1734,16 @@ int hostSpace(HostContext& hc) {
         // scripted straight-line dive at the star and LOGS every transition so we
         // can read — not assert — where death actually fires. Pair with
         // kSunDebugLog=true. No window / no GPU needed: it only steps the sim.
-        if (std::getenv("X3_SUN_DIVE_TEST") != nullptr) {
-            x3::logInfo("[sun-dive] === INSTRUMENTED SUN-DIVE REPRODUCTION begin ===");
+        if (const char* diveEnv = std::getenv("X3_SUN_DIVE_TEST")) {
+            // Variant: =1 (default) the death-repro dive (must reach Detonation at 17s);
+            // =2 the INVULN regression (owner bug "with Invuln on, Hull lost to the sun")
+            // — force g_invulnerable ON before entry; the ship must sit INSIDE the core
+            // >30 s with NO detonation, shield pinned 100, and HULL TEMP at ambient.
+            const int   diveVariant = std::atoi(diveEnv);
+            const bool  invulnTest  = (diveVariant == 2);
+            g_invulnerable = invulnTest;
+            x3::logInfo(std::string("[sun-dive] === INSTRUMENTED SUN-DIVE REPRODUCTION begin (variant ")
+                        + std::to_string(diveVariant) + (invulnTest ? ", INVULN ON) ===" : ") ==="));
             char lb[192];
             std::snprintf(lb, sizeof(lb),
                 "[sun-dive] kSunCenter=(%.0f,%.0f,%.0f) kSunRadius=%.0f corona visible edge~=%.0f (1.34x) kWarnDist=%.0f kCritDist=%.0f",
@@ -1588,6 +1765,10 @@ int hostSpace(HostContext& hc) {
                                         while (a < -3.14159265f) a += 6.2831853f; return a; };
             Phase prevPhase = phase;
             bool  reachedDeton = false;
+            float insideTime = 0.0f;     // seconds spent with distC < kSunRadius (inside the core)
+            float hbTimer    = 0.0f;     // heartbeat log accumulator
+            float minShield  = 100.0f;   // lowest shield seen while inside (invuln proof)
+            float maxTempC   = 22.0f;    // hottest HULL TEMP seen (invuln proof — must stay ~ambient)
             for (int step = 0; step < 60 * 100; ++step) {   // 100 s sim cap
                 const x3::phys::Vec3 p = pilot.pos();
                 const x3::phys::Vec3 toC{ kSunCenter.x-p.x, kSunCenter.y-p.y, kSunCenter.z-p.z };
@@ -1617,18 +1798,52 @@ int hostSpace(HostContext& hc) {
                 in.sprint  = aimed && distC > kSunRadius;   // boost only diving in
                 pilot.update(in, fdt, *sphys);
                 advanceSequence(fdt, false);
+                // Telemetry: hull temp derives from the DISPLAYED heat (g_heatShown),
+                // which is pinned to ambient under invuln — the =2 proof watches it.
+                const float tempC = 22.0f + g_heatShown * 3180.0f;
+                if (distC < kSunRadius) {
+                    insideTime += fdt;
+                    if (phase == Phase::InsideSun) minShield = std::min(minShield, shieldPct);
+                    maxTempC = std::max(maxTempC, tempC);
+                }
                 if (phase != prevPhase) {
-                    std::snprintf(lb, sizeof(lb), "[sun-dive] t=%.2fs phase %d->%d  distC=%.1f g_sunSurf=%.1f speed=%.1f",
+                    std::snprintf(lb, sizeof(lb), "[sun-dive] t=%.2fs phase %d->%d  distC=%.1f g_sunSurf=%.1f speed=%.1f shield=%.0f tempC=%.0f",
                         (double)(step*fdt), (int)prevPhase, (int)phase,
-                        (double)distC, (double)g_sunSurf, (double)pilot.speed());
+                        (double)distC, (double)g_sunSurf, (double)pilot.speed(),
+                        (double)shieldPct, (double)tempC);
                     x3::logInfo(lb);
                     prevPhase = phase;
                 }
+                // Heartbeat every 2 s while inside/near the core so the =2 run PROVES
+                // the ship loiters with shield 100 + temp ambient and never detonates.
+                hbTimer += fdt;
+                if (phase == Phase::InsideSun && hbTimer >= 2.0f) {
+                    hbTimer = 0.0f;
+                    std::snprintf(lb, sizeof(lb), "[sun-dive] hb t=%.1fs InsideSun inside=%.1fs shield=%.0f%% HULL TEMP=%.0fC%s",
+                        (double)(step*fdt), (double)insideTime, (double)shieldPct, (double)tempC,
+                        invulnTest ? "  (invuln: expect 100%% + ambient)" : "");
+                    x3::logInfo(lb);
+                }
                 if (phase == Phase::Detonation) { reachedDeton = true;
                     x3::logInfo("[sun-dive] reached Detonation — full death reproduced; stopping."); break; }
+                // INVULN variant: no death can come, so run long enough to PROVE a >30 s
+                // loiter inside the core, then exit cleanly.
+                if (invulnTest && insideTime > 35.0f) {
+                    x3::logInfo("[sun-dive] invuln: survived >35 s inside the core — no detonation; stopping."); break;
+                }
             }
-            if (!reachedDeton)
+            if (invulnTest) {
+                const bool survived = !reachedDeton && insideTime > 30.0f &&
+                                      minShield > 99.5f && maxTempC < 40.0f;
+                std::snprintf(lb, sizeof(lb),
+                    "[sun-dive] INVULN RESULT: %s  (detonated=%s inside=%.1fs minShield=%.0f%% maxTempC=%.0fC)",
+                    survived ? "PASS — survived, shield pinned, temp ambient" : "FAIL",
+                    reachedDeton ? "yes" : "no", (double)insideTime, (double)minShield, (double)maxTempC);
+                x3::logInfo(lb);
+            } else if (!reachedDeton) {
                 x3::logInfo("[sun-dive] cap hit without Detonation (grazed/loitered) — see transitions above.");
+            }
+            g_invulnerable = false;   // don't leak the cheat state past the test
             x3::logInfo("[sun-dive] === INSTRUMENTED SUN-DIVE REPRODUCTION end ===");
             sphys->shutdown(); device->shutdown();
             if (window) glfwDestroyWindow(window); glfwTerminate();
@@ -1665,6 +1880,19 @@ int hostSpace(HostContext& hc) {
                 const x3::phys::Vec3 sp = pilot.pos();
                 g_sunSurf = vlen(x3::phys::Vec3{ sp.x-kSunCenter.x, sp.y-kSunCenter.y, sp.z-kSunCenter.z }) - kSunRadius;
                 const float prox = smooth01(kHeatStart, kSunRadius, g_sunSurf); g_heat = prox*prox;
+                g_heatShown = g_heat;   // headless: no invuln, show the real value directly
+            }
+            // TWIN-SUN FIX (headless): aim the painted sky sun down the capture
+            // camera→body ray so the disc hides behind the real body from THIS
+            // vantage too (matters for off-axis verification shots). Camera is
+            // static in headless, so set it once here.
+            if (!insideShot) {
+                const x3::phys::Vec3 toSun{ kSunCenter.x - cam[0], kSunCenter.y - cam[1], kSunCenter.z - cam[2] };
+                const float tl = vlen(toSun);
+                if (tl > 1.0f) {
+                    skyP.sunDir[0] = toSun.x / tl; skyP.sunDir[1] = toSun.y / tl; skyP.sunDir[2] = toSun.z / tl;
+                    device->setSkyParams(skyP);
+                }
             }
             // Settle: a few frames so the lights register + the meshes upload.
             const int kFrames = 16;
@@ -1689,7 +1917,7 @@ int hostSpace(HostContext& hc) {
                         drawScene(frame);
                         combatFx.submit(*device, frame);
                         drawSpeedFx(frame);
-                        drawSun(frame);
+                        drawSun(frame, x3::phys::Vec3{ cam[0], cam[1], cam[2] });
                         drawFlares(frame);
                         drawShipLights(frame, 0.15f, 1.0f);
                         uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
@@ -1702,7 +1930,7 @@ int hostSpace(HostContext& hc) {
             if (wrote) x3::logInfo("--world space: wrote " + outPath);
             else       x3::logError("--world space: capture FAILED");
             combatFx.shutdown(*device);
-            device->destroyMesh(dustMesh); device->destroyMesh(sunMesh);
+            device->destroyMesh(dustMesh); device->destroyMesh(sunMesh); device->destroyMesh(glowDiscMesh);
             device->destroyMesh(plasmaMeshA); device->destroyMesh(plasmaMeshB);
             device->destroyTexture(sunTex);
             device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
@@ -1774,7 +2002,10 @@ int hostSpace(HostContext& hc) {
             // (graze-abort), so it is excluded from `pilotFrozen`.
             const bool seq = (phase != Phase::Flying);
             const bool pilotFrozen = seq && (phase != Phase::InsideSun);
-            // "Any key" skips straight to Respawn (works during InsideSun too).
+            // "Any key" skips straight to Respawn — but ONLY from the FROZEN
+            // cinematic (Detonation onward). During InsideSun the ship is still
+            // live-flying (graze-abort window), so advanceSequence() ignores the
+            // skip there (see its guard) and these keys steer the ship instead.
             const bool anyKey = seq && (kd(GLFW_KEY_SPACE) || kd(GLFW_KEY_ENTER) ||
                 kd(GLFW_KEY_ESCAPE) || kd(GLFW_KEY_W) || kd(GLFW_KEY_A) || kd(GLFW_KEY_S) ||
                 kd(GLFW_KEY_D) || kd(GLFW_KEY_Q) || kd(GLFW_KEY_E) || kd(GLFW_KEY_LEFT_SHIFT) ||
@@ -1933,8 +2164,12 @@ int hostSpace(HostContext& hc) {
                 }
                 // CRITICAL warning beep: a fast high chime loop when hull-temp is
                 // critical on approach, or while the shield drains inside the star.
-                const bool wantWarn = (phase == Phase::Flying && g_sunSurf < kCritDist) ||
-                                       phase == Phase::InsideSun;
+                // Suppressed entirely while invulnerable (owner: the shield insulates
+                // — temp/warnings all go quiet), so no critical beep on approach or
+                // while loitering inside the star.
+                const bool wantWarn = !g_invulnerable &&
+                                      ((phase == Phase::Flying && g_sunSurf < kCritDist) ||
+                                       phase == Phase::InsideSun);
                 if (wantWarn && blipSnd.valid()) {
                     if (!warnLoop.valid()) warnLoop = saudio->startLoop(blipSnd, 0.35f, 1.9f);
                 } else if (warnLoop.valid()) {
@@ -1962,6 +2197,21 @@ int hostSpace(HostContext& hc) {
             saudio->setListener(cx, cy, cz, cyaw, cpit);
             saudio->update(fdt);
 
+            // TWIN-SUN FIX: re-aim the painted sky sun down the CAMERA→body ray so its
+            // infinite disc projects to the real body's screen position and is fully
+            // occluded by that opaque, depth-nearer body (no more parallax orb). The
+            // directional light now shades hulls from the true sun direction too. When
+            // the camera is basically at the body (engulfed) the ray degenerates — keep
+            // the last good dir. Cheap: SkyParams is cached POD, re-applied like lights.
+            {
+                const x3::phys::Vec3 toSun{ kSunCenter.x - cx, kSunCenter.y - cy, kSunCenter.z - cz };
+                const float tl = vlen(toSun);
+                if (tl > 1.0f) {
+                    skyP.sunDir[0] = toSun.x / tl; skyP.sunDir[1] = toSun.y / tl; skyP.sunDir[2] = toSun.z / tl;
+                    device->setSkyParams(skyP);
+                }
+            }
+
             // Player-key + sun-heat follow lights (refreshed each frame).
             updateDynamicLights(pilot.pos(), pilot.forward(), pilot.up(), pilot.right());
 
@@ -1973,7 +2223,7 @@ int hostSpace(HostContext& hc) {
                     combatFx.submit(*device, frame);
                     drawSpeedFx(frame);
                 }
-                drawSun(frame);                       // the star renders in every phase
+                drawSun(frame, x3::phys::Vec3{ cx, cy, cz });   // the star renders in every phase
                 drawFlares(frame);                     // limb prominences, also every phase
                 // Phase-specific world elements.
                 if (phase == Phase::Flying) {
@@ -1985,7 +2235,7 @@ int hostSpace(HostContext& hc) {
                     // is on-screen); skipped in 1P per the ask (cockpit view has no hull
                     // to wreathe in flame).
                     if (pilot.isThirdPerson()) {
-                        drawBurnSheath(frame, pilot.pos(), g_burnFactor);
+                        drawBurnSheath(frame, pilot.pos(), x3::phys::Vec3{ cx, cy, cz }, g_burnFactor);
                         drawBurnEmbers(frame, pilot.pos(), pilot.forward(), pilot.up(), pilot.right(), g_burnFactor);
                     }
                 } else if (phase == Phase::InsideSun) {
@@ -1994,7 +2244,7 @@ int hostSpace(HostContext& hc) {
                     drawShield(frame, shieldPct, g_clock);
                     drawShipLights(frame, 0.2f, g_clock);
                     if (pilot.isThirdPerson()) {
-                        drawBurnSheath(frame, pilot.pos(), g_burnFactor);
+                        drawBurnSheath(frame, pilot.pos(), x3::phys::Vec3{ cx, cy, cz }, g_burnFactor);
                         drawBurnEmbers(frame, pilot.pos(), pilot.forward(), pilot.up(), pilot.right(), g_burnFactor);
                     }
                 } else if (phase == Phase::Detonation) {
