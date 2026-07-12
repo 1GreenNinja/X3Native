@@ -8,6 +8,8 @@
 //
 // Game/slice code only — engine/ stays pure. JSON via the shared jmini reader.
 
+#include "attachments.h"   // AttachSpec — attachments ARE items (one data path)
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -24,7 +26,9 @@ enum class ItemCategory : uint32_t {
     Mod         = 2,   // weapon mod — USE slots it onto the player's weapons
     UpgradePart = 3,   // crafting/upgrade material (EMP bench economy — Tier A #2)
     Quest       = 4,   // story item; held, not usable
-    Count       = 5
+    Attachment  = 5,   // WEAPON ATTACHMENT — carried in the bag, FITTED at the bench
+                       // (never "used" from the backpack; ItemDef::attach is its spec)
+    Count       = 6
 };
 const char* itemCategoryName(ItemCategory c);
 ItemCategory itemCategoryFromName(std::string_view s);   // unknown -> Consumable
@@ -54,6 +58,10 @@ struct ItemDef {
     char         glyph = '?';   // 1-char icon glyph drawn in the slot
     float        color[4] = { 0.8f, 0.8f, 0.8f, 1.0f };   // icon tint
     ItemEffect   fx;
+    // WEAPON ATTACHMENT spec (category "attachment" + an "attach" JSON block).
+    // .valid == false on every non-attachment item. This is why there is no second
+    // attachment database: the item DB IS the attachment DB.
+    AttachSpec   attach;
 };
 
 // The item DB: load-or-bake, id lookup, iteration.

@@ -85,10 +85,14 @@ float AlertSystem::redShift() const {
     return m_level >= 4 ? 1.0f : 0.7f;
 }
 
-void AlertSystem::reportGunshot(const x3::phys::Vec3& pos) {
+void AlertSystem::reportGunshot(const x3::phys::Vec3& pos) { reportGunshot(pos, 1.0f); }
+
+void AlertSystem::reportGunshot(const x3::phys::Vec3& pos, float noiseMult) {
     // Queued; resolved against the observers at the next update() — a shot no
-    // guard could hear raises nothing (the witness-vs-unseen rule).
-    if (m_pendingShots.size() < 16) m_pendingShots.push_back({pos});
+    // guard could hear raises nothing (the witness-vs-unseen rule). `noiseMult`
+    // shrinks/grows THIS shot's hearing radius (suppressor / kinetic sheath).
+    if (noiseMult < 0.0f) noiseMult = 0.0f;
+    if (m_pendingShots.size() < 16) m_pendingShots.push_back({pos, noiseMult});
 }
 
 void AlertSystem::reportTerminalHack(const x3::phys::Vec3& pos) {
@@ -163,8 +167,10 @@ void AlertSystem::update(float dt, const x3::phys::Vec3& playerPos,
                          bool playerSeen) {
     // ---- Resolve queued gunshots: did any guard hear them? ----
     if (!m_pendingShots.empty()) {
-        const float r2 = m_cfg.gunshotRadius * m_cfg.gunshotRadius;
         for (const PendingShot& s : m_pendingShots) {
+            // Per-shot hearing radius: the weapon's noiseMult (suppressor 0.30).
+            const float rad = m_cfg.gunshotRadius * s.noiseMult;
+            const float r2  = rad * rad;
             bool heard = false;
             for (uint32_t i = 0; i < observerCount && !heard; ++i)
                 if (dist2XZ(observers[i], s.pos) <= r2) heard = true;

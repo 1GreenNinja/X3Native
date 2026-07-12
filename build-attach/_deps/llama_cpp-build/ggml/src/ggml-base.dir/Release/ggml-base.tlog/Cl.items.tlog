@@ -1,0 +1,9 @@
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml.c;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\ggml.c.obj
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml.cpp;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\ggml.cpp.obj
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-alloc.c;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\ggml-alloc.obj
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-backend.cpp;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\ggml-backend.obj
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-backend-meta.cpp;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\ggml-backend-meta.obj
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-opt.cpp;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\ggml-opt.obj
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-threading.cpp;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\ggml-threading.obj
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-quants.c;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\ggml-quants.obj
+D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\gguf.cpp;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.dir\Release\gguf.obj

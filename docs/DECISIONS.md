@@ -95,3 +95,60 @@ Everything we **generated** worked immediately; everything hand-carved was rejec
 - **Image → geometry:** Rodin (already how ~65 characters and the weapons were made).
 - **Procedural authoring:** headless Blender (`bpy`) for the gate tube.
 *Stop reverse-engineering a beautiful concept by gluing boxes together.*
+
+## 🔧 CANON: WEAPON ATTACHMENTS + THE WEAPON BENCH (2026-07-12)
+
+**FIVE SLOTS** per weapon — `Optic / Barrel / Magazine / Underbarrel / Coating`. Which slots a
+weapon accepts is DATA on the weapon (`WeaponDef::attachSlots`, a bitmask): a pistol has no
+underbarrel, the BFG-class energy guns are **Coating-only**, the chaingun has no optic mount.
+
+**ATTACHMENTS ARE ITEMS.** `assets/items/items.json`, category `attachment` + an `attach` block.
+The item DB **is** the attachment DB — there is no second data path, and no second economy.
+
+**COATING is the ENERGY slot** (Salvari tech). It is deliberately just a multiplier block + a
+`DamageType` override, so a **charge model** landing separately can compose with it by reading the
+fitted coating / the effective `DamageType`. Nothing here owns charge.
+
+**THE STACKING RULE (two layers, one fold each):**
+1. **Attachments** → `applyAttachments(base, loadout)` → an **effective `WeaponDef`**. Fractions
+   compose **multiplicatively** (`prod(1+f)`); `critChance` is flat and **additive**. This is the
+   ONLY place a WeaponDef is modified; the roster is never mutated (base + an effective cache).
+2. **Skills / mod items** → `PlayerStatMods`, applied at the existing read points. Unchanged.
+The two layers multiply (mults) / add (crit). Damage is quantized ONCE per layer. Asserted in
+`--test-attachments` against an independently-computed expectation.
+
+**EVERY ATTACHMENT GIVES AND TAKES.** A free-lunch attachment is a bug — `--test-attachments`
+fails any attachment with no downside.
+
+**THE OPTIC IS A FEATURE, NOT A NUMBER.** Real ADS: the gun is **aligned behind the glass** by a
+closed-form solve (`Arsenal::solveAdsOffsets`) that puts the optic's LENS CENTRE exactly on the
+camera axis, so **the sight line, the reticle and the fire ray are ONE line**. The camera FOV
+genuinely narrows to the optic's `adsFovDeg` (magnification is a real FOV change, never a zoomed
+sprite). A **full scope hides the weapon model** while you are behind it — with the eyepiece at
+your eye, the tube would otherwise fill its own lens. The scope PICTURE is an honest screen-space
+overlay, **not** a render-to-texture lens (an RTT lens needs a second camera pass into an
+offscreen target; it is a follow-on).
+
+**ONE SIGHT POINT.** `attachSightLocal()` is the single source for the lens centre — the drawn
+glass AND the ADS solve both call it. If they ever diverge, the reticle lies about where the
+bullet goes. `--test-attachments` measures the scoped lens centre against the fire ray (< 1 mm)
+and ships **two negative controls** proving the probe can fail.
+
+**MOUNTS ARE MEASURED, NOT GUESSED.** Barrel mods ride the measured `vmMuzzle` (346f5e7). Optic /
+magazine / underbarrel / coating are **BORE-relative** in Y (everything on a gun is arranged
+around the bore) and **origin-relative** in Z (the weapon GLBs are authored centred, so the origin
+IS the receiver). The measured viewmodel **box** (`WeaponDef::vmBounds`, from real mesh bounds)
+supplies only what a length cannot know: the centre-line and the flank. Anchoring on the box's
+extremes hangs parts off the gun's tallest/lowest point and they **float in mid-air** — that bug
+was built, photographed, and fixed.
+
+**THE BENCH.** Attachments are **FITTED AT A BENCH** (the F1 **Security Station** — a room you
+already have to earn), never hot-swapped from the backpack. Canon: LATE NIGHT SPEED tunes cars;
+this tunes guns. `[E]` opens it; the screen **is a HoloPanel** (`bakeBench` — a new BAKER on the
+ONE holo platform, blue/green/orange, never cyan). Adding a holo variant means adding a baker.
+
+**VERIFY MATERIALS UNDER A NEUTRAL LIGHT.** The parts first "rendered orange-red" and the reflex
+was to blame the renderer. They are light grey. **Jake's cell is washed by a red alarm light** —
+a grey surface under a red light is red, and the same parts read blue-grey at the bench under its
+blue panel glow. The lighting was honest; the *reading* was wrong. (The inverse of THE PATTERN,
+and just as expensive.)

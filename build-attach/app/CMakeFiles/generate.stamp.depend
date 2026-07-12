@@ -1,0 +1,10 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-4.2/Modules/CMakeFindDependencyMacro.cmake
+C:/Program Files/CMake/share/cmake-4.2/Modules/FindPackageHandleStandardArgs.cmake
+C:/Program Files/CMake/share/cmake-4.2/Modules/FindPackageMessage.cmake
+C:/Program Files/CMake/share/cmake-4.2/Modules/SelectLibraryConfigurations.cmake
+D:/GameDev/X3Native-attach/app/CMakeLists.txt
+D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/share/imgui/imgui-config.cmake
+D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/share/imgui/imgui-targets.cmake
+D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/share/stb/FindStb.cmake
+D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/share/stb/vcpkg-cmake-wrapper.cmake

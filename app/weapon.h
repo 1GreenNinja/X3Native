@@ -29,6 +29,8 @@
 //   * Audio (pickup chime / gunshot) is DEFERRED — no audio system until M9.
 
 #include "scene.h"
+#include "attachments.h"   // WEAPON ATTACHMENTS: slots / stats / loadouts (the fold lives here)
+#include "item_db.h"       // ItemDb — restoreAttachments() re-resolves specs from the item DB
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -291,7 +293,44 @@ struct WeaponDef {
     // W2-C: empty-mag trigger click (same resolveAudio + graceful-miss semantics).
     // Played by the host when ResolvedFire.dryFire is set.
     std::string dryfireSfx   = "";
+
+    // ---- WEAPON ATTACHMENTS (feat/weapon-attachments) -----------------------
+    // Which of the five slots THIS weapon accepts (bitmask of slotBit(AttachSlot)).
+    // Not every weapon takes every slot: a pistol has no underbarrel, the BFG-class
+    // energy guns are Coating-only, the chaingun has no place for an optic. This is
+    // DATA on the weapon; Loadouts::canFit() is the one rule that reads it.
+    uint8_t     attachSlots  = kSlotsAll;
+    // THE VIEWMODEL'S MEASURED BOX (GLB scene space, same space as vmMuzzle). Filled
+    // by loadViewmodels() from the real mesh bounds. |vmMuzzle| is a LENGTH — it says
+    // nothing about how WIDE or how TALL a gun is, so mounting an optic or a side-
+    // mounted energy cell off it made parts float in the air beside the weapon (seen,
+    // and fixed, in the first capture). The box is the honest source for "on top of",
+    // "under" and "on the flank of" — measured per gun, like the muzzle. Headless (no
+    // device) leaves vmBounds=false and the mounts fall back to the barrel-run guess.
+    bool           vmBounds = false;
+    x3::phys::Vec3 vmMin{ 0, 0, 0 }, vmMax{ 0, 0, 0 };
+    // Attachment-driven stats. These are IDENTITY on a base def (so an unmodified
+    // weapon behaves EXACTLY as before) and are written ONLY by applyAttachments().
+    float       critBonus    = 0.0f;   // FLAT crit probability added by attachments
+    float       noiseMult    = 1.0f;   // scales AlertSystem::gunshotRadius (suppressor: 0.30)
+    float       flashScale   = 1.0f;   // scales the muzzle-flash burst (suppressor: 0.35)
+    float       handlingMult = 1.0f;   // scales mouse turn speed (heavy barrel / scope: < 1)
 };
+
+// THE FOLD — the ONE place a weapon's attachment-effective stats are computed
+// (see attachments.h "THE STACKING RULE"). Returns a COPY; the roster is never
+// mutated. Implemented in attachments.cpp.
+WeaponDef applyAttachments(const WeaponDef& base, const WeaponLoadout& fitted);
+
+// Mount geometry, derived from the MEASURED per-weapon barrel tip (WeaponDef::
+// vmMuzzle, 346f5e7). |vmMuzzle| is that gun's own length scale, so every mount is
+// a FRACTION of it — no new hardcoded per-weapon offsets, and it is correct for all
+// 8 guns by construction.
+float          attachBarrelRun(const WeaponDef& d);                          // |vmMuzzle|
+x3::phys::Vec3 attachMountLocal(const WeaponDef& d, const AttachSpec& a);    // part origin (GLB scene space)
+// THE SIGHT. The optic's LENS CENTRE — the single point the drawn glass AND the ADS
+// alignment solve both use. If these ever diverged, the reticle would lie.
+x3::phys::Vec3 attachSightLocal(const WeaponDef& d, const AttachSpec& a);
 
 // One travelling projectile spawned by a Projectile-kind weapon. Pure data the
 // host advances (pos += vel*dt) and resolves against physics each frame. The
@@ -382,12 +421,53 @@ public:
     explicit Arsenal(std::vector<WeaponDef> roster = makeDefaultRoster());
 
     // ---- Roster / selection -------------------------------------------------
+    // NOTE (attachments): def()/current() return the EFFECTIVE def — the base def
+    // with the fitted attachments folded in (applyAttachments). Every consumer —
+    // fire(), reload(), the HUD, the FX kind, the audio — therefore sees the modded
+    // weapon with no extra wiring, and there is exactly ONE place the fold happens.
+    // With nothing fitted the effective def is bit-for-bit the base def (asserted:
+    // --test-attachments A8), so all pre-existing behaviour is unchanged. The
+    // unmodded table is still reachable through baseDef() (the bench UI shows the
+    // before/after, and applyAttachments always folds from BASE, never from itself).
     int  count() const { return (int)m_defs.size(); }
     int  selected() const { return m_sel; }
-    const WeaponDef&   def(int i) const { return m_defs[(size_t)i]; }
-    const WeaponDef&   current() const { return m_defs[(size_t)m_sel]; }
+    const WeaponDef&   def(int i) const { return m_eff[(size_t)i]; }
+    const WeaponDef&   current() const { return m_eff[(size_t)m_sel]; }
+    const WeaponDef&   baseDef(int i) const { return m_defs[(size_t)i]; }
     const WeaponState& state(int i) const { return m_state[(size_t)i]; }
     const WeaponState& currentState() const { return m_state[(size_t)m_sel]; }
+
+    // ---- WEAPON ATTACHMENTS -------------------------------------------------
+    const Loadouts& loadouts() const { return m_loadouts; }
+    // Fit `a` on weapon `w`, enforcing THAT WEAPON'S slot mask. Returns false and
+    // changes nothing if the weapon does not accept the slot. `displaced` receives
+    // the item id that was knocked out of the slot (so the bench can bag it).
+    bool fitAttachment(int w, const AttachSpec& a, std::string* displaced = nullptr);
+    // Remove the attachment in slot `s` on weapon `w`; returns its item id ("" = none).
+    std::string unfitAttachment(int w, AttachSlot s);
+    // The CURRENT weapon's fitted optic (nullptr = iron sights). The ADS path reads this.
+    const AttachSpec* currentOptic() const;
+    // Load-time restore from the RPG save text ("attach <w> <slot> <id>" lines). Specs
+    // are RE-RESOLVED through `db` (never stored in the save), and every line is
+    // re-checked against the weapon's slot mask, so a stale/hand-edited save cannot
+    // smuggle in an illegal fit.
+    void restoreAttachments(std::string_view saveText, const ItemDb& db);
+    void clearAttachments();
+
+    // ---- THE ADS SOLVE (the real scope) -------------------------------------
+    // Solve the viewmodel translation DELTAS (on top of the weapon's own vmRight/
+    // vmDown) that place `sightLocal` — the optic's LENS CENTRE in GLB scene space,
+    // from attachSightLocal() — EXACTLY on the camera's forward axis. The gun is
+    // then genuinely aligned behind the sight: the reticle (screen centre), the
+    // sight line and the fire ray are the same line. Closed form, exact; see the
+    // derivation in attachments.cpp. Returns false if there is no current weapon.
+    bool solveAdsOffsets(const x3::phys::Vec3& sightLocal, float yaw, float pitch,
+                         float extraFwd, float& outRight, float& outDown) const;
+    // Where `sightLocal` lands in the WORLD for a given viewmodel pose (the probe
+    // --test-attachments measures against the fire ray).
+    x3::phys::Vec3 sightWorld(const x3::phys::Vec3& sightLocal,
+                              float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+                              float extraFwd, float extraRight, float extraDown) const;
 
     // Select weapon by 0-based index (number keys 1..N map to 0..N-1). Out-of-range
     // is ignored. Switching cancels an in-progress reload on the OLD weapon (its
@@ -525,7 +605,13 @@ public:
     void restore(int sel, const std::vector<std::pair<int,int>>& ammo);
 
 private:
-    std::vector<WeaponDef>   m_defs;
+    // Recompute the effective-def cache from base + loadouts. Called on construction
+    // and on every fit/unfit. Clamps the live mag to any new (smaller) magSize.
+    void refreshEffective();
+
+    std::vector<WeaponDef>   m_defs;   // BASE roster (never mutated)
+    std::vector<WeaponDef>   m_eff;    // base + attachments (the fold) — what def() returns
+    Loadouts                 m_loadouts;
     std::vector<WeaponState> m_state;
     int                      m_sel = 0;
     bool                     m_infiniteAmmo = false;   // IDKFA infinite-ammo flag

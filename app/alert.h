@@ -96,6 +96,11 @@ public:
     // A gunshot rang out at `pos`. It only raises the alert if a guard is close
     // enough to HEAR it (gunshotRadius at the next update — witness-vs-unseen).
     void reportGunshot(const x3::phys::Vec3& pos);
+    // WEAPON ATTACHMENTS: the same shot, but this weapon is SUPPRESSED (or louder).
+    // `noiseMult` scales gunshotRadius for THIS shot only — a suppressor (0.30) is
+    // heard at 12 m instead of 40 m, so guards genuinely notice you later; a kinetic
+    // sheath (1.35) carries further. This is the effective WeaponDef::noiseMult.
+    void reportGunshot(const x3::phys::Vec3& pos, float noiseMult);
     // A keypad/terminal was tampered with at `pos` (always noticed — the system
     // logs the tamper itself).
     void reportTerminalHack(const x3::phys::Vec3& pos);
@@ -143,7 +148,7 @@ private:
     void setLevel(int lv);
 
     struct Corpse { x3::phys::Vec3 pos; bool discovered = false; };
-    struct PendingShot { x3::phys::Vec3 pos; };
+    struct PendingShot { x3::phys::Vec3 pos; float noiseMult = 1.0f; };
 
     AlertConfig m_cfg{};
     int     m_level = 0;

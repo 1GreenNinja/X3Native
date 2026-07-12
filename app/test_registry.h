@@ -45,6 +45,7 @@ struct TestFlags {
     bool testInventory = false;    // W9-3 RPG: backpack/item-db (--test-inventory)
     bool testProgression = false;  // W9-3 RPG: XP/levels (--test-progression)
     bool testSkillTree = false;    // W9-3 RPG: skill tree (--test-skilltree)
+    bool testAttachments = false;  // WEAPON ATTACHMENTS (--test-attachments)
     bool testStrata = false;            // R-3 fold: THE DESCENT (strata module chain)
     bool testElevatorShowcase = false;  // R-4 fold: THE CENTERPIECE showcase  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)

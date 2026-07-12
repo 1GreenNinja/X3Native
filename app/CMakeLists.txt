@@ -136,6 +136,9 @@ add_executable(X3Engine WIN32
     progression.cpp
     skilltree.cpp
     rpg_ui.cpp
+    attachments.cpp
+    attach_view.cpp
+    weapon_bench.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)

@@ -1,0 +1,10 @@
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\112176089DFEA87AE9B1CA8FF85ABE8B\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/GameDev/X3Native-attach/build-attach/X3Native.slnx
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

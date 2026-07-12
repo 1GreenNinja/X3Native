@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <ProjectOutputs>
+    <ProjectOutput>
+      <FullPath>D:\GameDev\X3Native-attach\build-attach\x64\Release\ZERO_CHECK</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>D:\GameDev\X3Native-attach\build-attach\engine\x64\Release\x3velocityshaders</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>D:\GameDev\X3Native-attach\build-attach\app\x64\Release\x3shaders</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>D:\GameDev\X3Native-attach\build-attach\bin\Release\X3Engine.exe</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>D:\GameDev\X3Native-attach\build-attach\x64\Release\ALL_BUILD</FullPath>
+    </ProjectOutput>
+  </ProjectOutputs>
+  <ContentFiles />
+  <SatelliteDlls />
+  <NonRecipeFileRefs />
+</Project>

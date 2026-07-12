@@ -292,6 +292,7 @@ int main(int argc, char** argv) {
         _tf.testInventory = o.testInventory;      // W9-3 RPG
         _tf.testProgression = o.testProgression;  // W9-3 RPG
         _tf.testSkillTree = o.testSkillTree;      // W9-3 RPG
+        _tf.testAttachments = o.testAttachments; // WEAPON ATTACHMENTS
         _tf.testStrata = o.testStrata;
         _tf.testElevatorShowcase = o.testElevatorShowcase;
         _tf.testIntro = o.testIntro;
@@ -674,6 +675,10 @@ int main(int argc, char** argv) {
         _hc.screenshotPath   = o.screenshotPath;
         _hc.screenshotSettle = o.screenshotSettle;
         _hc.shotCamOverride  = o.shotCamOverride;
+        _hc.shotWeapon = o.shotWeapon;   // WEAPON ATTACHMENTS capture staging
+        _hc.shotAttach = o.shotAttach;
+        _hc.shotAds    = o.shotAds;
+        _hc.shotBench  = o.shotBench;
         for (int _k = 0; _k < 5; ++_k) _hc.shotCam[_k] = o.shotCam[_k];
         _hc.stressCount      = o.stressCount;
         _hc.bench            = o.bench;

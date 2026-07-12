@@ -1,0 +1,209 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\audio_rays.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\autoexposure.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\bloom_down.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\bloom_up.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\composite.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\cull.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ddgi_rays.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ddgi_update.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\debris.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\debris.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\debris.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\decal.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\decal.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\depth.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\depth_cutout.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\depth_cutout.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\fog.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\fullscreen.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\glass.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\hud.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\hud.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\hzb_build.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ibl_brdf_lut.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ibl_env.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ibl_irradiance.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ibl_prefilter.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\mesh.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\mesh.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\mesh_probe.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\mesh_rt.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\particle.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\particle.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_atmosphere.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_gas.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_ice.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_lava.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_moon.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_oceanic.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_ring.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_sand.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_sun.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_suncorona.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_terrestrial.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\planet_thunderstorm.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\refl.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\refl_rt.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\rtao.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\rtao_apply.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\shadow.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\skin.comp.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\sky.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\sky.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ssao.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ssao_blur.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ssgi_apply.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ssgi_blur.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ssgi_gather.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\ssgi_temporal.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\taa_resolve.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\tri.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\tri.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\water.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\water.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\c657e563af640bcf8f739e9ec377da8e\x3shaders.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\app\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="D:\GameDev\X3Native-attach\build-attach\app\CMakeFiles\x3shaders" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{F012E4A6-8C21-35FD-A24E-C913CF3B0F3C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

@@ -41,6 +41,7 @@ struct CliOptions {
          testInventory = false,    // --test-inventory: W9-3 RPG backpack (add/stack/consume/cap + keycard door)
          testProgression = false,  // --test-progression: W9-3 XP -> level -> skill points + save round-trip
          testSkillTree = false,    // --test-skilltree: W9-3 prereq/cost/apply + mods reach the player
+         testAttachments = false,  // --test-attachments: slot mask / the fold / skill composition / the ADS scope / save
          testStrata = false,        // --test-strata (R-3 fold: THE DESCENT chain)
          testElevatorShowcase = false,  // --test-elevator-showcase (R-4 fold)
          testThirdPerson = false, testHatchCode = false,
@@ -615,6 +616,15 @@ struct CliOptions {
     // the screenshot uses this vantage instead of the default corridor pose — used
     // to capture the tall arena / elevator shaft (the default corridor pose stays
     // the gate-standard view). Does NOT change any default behavior when omitted.
+    // WEAPON ATTACHMENTS screenshot staging (--screenshot / --smoketest paths):
+    //   --shot-weapon <name>          select this roster weapon before the capture
+    //   --shot-attach <id,id,...>     fit these attachments on it (slot mask enforced)
+    //   --shot-ads                    pose the gun THROUGH the fitted optic (true ADS)
+    //   --shot-bench                  stand at the weapon bench and open its screen
+    std::string shotWeapon;
+    std::string shotAttach;
+    bool        shotAds = false;
+    bool        shotBench = false;
     bool        shotCamOverride = false;
     float       shotCam[5] = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
     // FX demo (--fx-demo): in --screenshot mode, spawn a combat particle/decal burst

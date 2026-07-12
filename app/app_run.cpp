@@ -44,6 +44,8 @@
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "desc_mechanics.h"                 // W9-1: the desc-field Tier-A mechanics (interactables + status effects)
+#include "attach_view.h"                    // WEAPON ATTACHMENTS: the visible parts on the gun
+#include "weapon_bench.h"                   // WEAPON ATTACHMENTS: the bench you FIT them at
 #include "item_db.h"                        // [W9-3 RPG] data-driven item defs (assets/items/items.json)
 #include "inventory.h"                      // [W9-3 RPG] backpack + key-section inventory
 #include "progression.h"                    // [W9-3 RPG] XP -> levels -> skill points
@@ -852,6 +854,84 @@ void applyRtaoCVarsForTest(x3::con::IConsole& console, x3::rhi::IRenderDevice& d
 void resetVisSyncForTest() { g_visSync = VisCvarSync{}; g_visPolicy = x3::rhi::VisPolicy{}; }
 const x3::rhi::VisPolicy& visPolicyForTest() { return g_visPolicy; }
 
+
+// ===========================================================================
+// THE SCOPE PICTURE (WEAPON ATTACHMENTS).
+//
+// HONEST DISCLOSURE: this is a screen-space scope OVERLAY, not a render-to-texture
+// lens. What is REAL: the camera FOV is genuinely narrowed to the optic's adsFovDeg
+// (that IS magnification), and the gun is exactly aligned behind the glass, so the
+// reticle sits on the fire ray. What is FAKED: only the round PICTURE — a true lens
+// would render the scene a second time at the narrow FOV into an offscreen target and
+// sample it onto the lens disc, with the un-magnified world still around it. That
+// needs a second camera pass + a render target; it is a follow-on, not a claim made here.
+//
+// Built from black quad STRIPS around a circle (drawHudQuad is the only primitive at
+// this layer) + a fine reticle with mil ticks. Only FULL-SCOPE optics black out; a
+// reflex sight keeps the view open and just paints its dot.
+// ===========================================================================
+
+// WEAPON ATTACHMENTS: how far in front of the eye the gun sits WHILE SCOPED. Aligning the
+// lens to the camera axis is only half of ADS — the eyepiece must also come back to the
+// eye, or you are looking AT the optic rather than THROUGH it. A full scope's eyepiece is
+// almost on your brow; an open reflex is held further out so you keep the wide view.
+static float adsEyeDistance(const x3::game::AttachSpec& op) {
+    return op.optic.fullScope ? 0.16f : 0.42f;
+}
+static void drawScopeOverlay(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                             const x3::game::AttachSpec& op, float adsT) {
+    if (adsT <= 0.01f) return;
+    uint32_t fw = 0, fh = 0;
+    device.hudSize(fw, fh);
+    if (fw == 0 || fh == 0) return;
+    const float W = (float)fw, H = (float)fh;
+    const float cxp = W * 0.5f, cyp = H * 0.5f;
+    const float t = adsT * adsT * (3.0f - 2.0f * adsT);
+    const float black[4] = { 0.0f, 0.0f, 0.0f, t };
+    if (op.optic.fullScope) {
+        const float R = H * 0.40f;
+        const int   N = 128;
+        const float band = H / (float)N;
+        for (int i = 0; i < N; ++i) {
+            const float y  = (float)i * band;
+            const float dy = (y + band * 0.5f) - cyp;
+            float hw = 0.0f;
+            if (std::fabs(dy) < R) hw = std::sqrt(R * R - dy * dy);
+            device.drawHudQuad(frame, 0.0f, y, cxp - hw, band, black);
+            device.drawHudQuad(frame, cxp + hw, y, W - (cxp + hw), band, black);
+        }
+        const float rim[4] = { 0.02f, 0.025f, 0.03f, t * 0.55f };
+        for (int i = 0; i < N; ++i) {
+            const float y  = (float)i * band;
+            const float dy = (y + band * 0.5f) - cyp;
+            const float Ro = R, Ri = R - H * 0.014f;
+            if (std::fabs(dy) >= Ro) continue;
+            const float ho = std::sqrt(Ro * Ro - dy * dy);
+            const float hi = (std::fabs(dy) < Ri) ? std::sqrt(Ri * Ri - dy * dy) : 0.0f;
+            device.drawHudQuad(frame, cxp - ho, y, ho - hi, band, rim);
+            device.drawHudQuad(frame, cxp + hi, y, ho - hi, band, rim);
+        }
+        const float ink[4] = { 0.02f, 0.02f, 0.02f, t };
+        const float th = std::max(1.0f, H / 620.0f);
+        device.drawHudQuad(frame, cxp - R, cyp - th * 0.5f, R * 2.0f, th, ink);
+        device.drawHudQuad(frame, cxp - th * 0.5f, cyp - R, th, R * 2.0f, ink);
+        for (int k = 1; k <= 4; ++k) {
+            const float d = R * 0.16f * (float)k;
+            const float len = (k % 2 == 0) ? H * 0.020f : H * 0.011f;
+            device.drawHudQuad(frame, cxp - th, cyp + d, th * 2.0f, len, ink);
+            device.drawHudQuad(frame, cxp - th, cyp - d - len, th * 2.0f, len, ink);
+            device.drawHudQuad(frame, cxp + d, cyp - th, len, th * 2.0f, ink);
+            device.drawHudQuad(frame, cxp - d - len, cyp - th, len, th * 2.0f, ink);
+        }
+    } else {
+        const float dot[4] = { 1.0f, 0.16f, 0.12f, t };
+        const float r = std::max(2.0f, H / 300.0f);
+        const float halo[4] = { 1.0f, 0.20f, 0.14f, t * 0.22f };
+        device.drawHudQuad(frame, cxp - r * 2.4f, cyp - r * 2.4f, r * 4.8f, r * 4.8f, halo);
+        device.drawHudQuad(frame, cxp - r, cyp - r, r * 2.0f, r * 2.0f, dot);
+    }
+}
+
 int runDefaultHost(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
@@ -1157,6 +1237,16 @@ int runDefaultHost(HostContext& hc) {
     bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
     x3::game::DescMechanics descMech;          // W9-1: the desc-field Tier-A mechanics (coolant/EMP/hack/cold/antidote); built after chatTrees (flags owner) exists
+    // ---- WEAPON ATTACHMENTS ------------------------------------------------
+    // The fitted loadouts live in the Arsenal (base roster + an effective cache);
+    // these two are the WORLD side: the parts you can SEE on the gun, and the bench
+    // in the Security Station where you fit them.
+    x3::game::AttachView  attachView;
+    x3::game::WeaponBench weaponBench;
+    // ADS state (the real scope). adsT: 0 = hip, 1 = fully behind the glass.
+    float adsT = 0.0f, adsSwayClock = 0.0f;
+    float lookTurnScale = 1.0f;                // handling (heavy barrel / scope) x ADS magnification
+    bool  adsCapable = false;                  // an optic is fitted on the held weapon
     bool coolantGlowDead = false;              // W9-1: the coolant console glow was killed (one-shot on the sabotage edge)
     // ---- [W9-3 RPG] the RPG layer: item DB + backpack + XP/levels + skills. ----
     // Data loads at boot (JSON-or-baked); the live stat block (rpgMods) is
@@ -1871,6 +1961,35 @@ int runDefaultHost(HostContext& hc) {
                     x3::logInfo("--world canonlevel: Security keycard placed in the Research Lab");
                 }
             }
+            // ---- THE WEAPON BENCH. Canon: LATE NIGHT SPEED tunes cars; this tunes guns.
+            // It lives in the SECURITY STATION — a secured room the player already has to
+            // open with the keycard/code, so the bench is EARNED, and it is on the way.
+            // The panel is a HoloPanel (the ONE holo implementation); its glow light joins
+            // the room-light feed so the bench is lit by its own screen, honestly.
+            {
+                uint32_t br = canonFloor.roomByName("Security Station");
+                if (br == x3::game::kNoRoom) br = canonFloor.roomByName("Armory");
+                if (br == x3::game::kNoRoom) br = canonFloor.roomByName("Main Hall");
+                if (br != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& rm = canonFloor.rooms[br];
+                    // Against the -Z wall of the room, facing +Z (into the room).
+                    const x3::phys::Vec3 bp{ rm.cx, rm.y0(), rm.z0() + 0.75f };
+                    weaponBench.build(scene, *device, physics.get(), bp, 0.0f,
+                                      rm.y1() - 0.12f, br);
+                    if (weaponBench.built() && weaponBench.hasGlowLight()) {
+                        x3::game::CanonLight gl;
+                        gl.room = br;
+                        for (int k = 0; k < 3; ++k) {
+                            gl.light.pos[k]   = weaponBench.glowLightPos()[k];
+                            gl.light.color[k] = weaponBench.glowLightColor()[k];
+                        }
+                        gl.light.range = weaponBench.glowLightRange();
+                        canonLights.push_back(gl);
+                    }
+                    x3::logInfo("[bench] weapon bench placed in room '" + rm.name + "'");
+                }
+            }
+
             // ---- GAMEPLAY onto the canon rooms (makes --world canonlevel PLAYABLE): the
             // sidearm pickup in Jake's Cell, the animated enemy squad down the Main Hall +
             // side cells, Martinez in the Boss Arena, and the 3 rescue girls + their
@@ -2709,6 +2828,10 @@ int runDefaultHost(HostContext& hc) {
         worldCars.build(carDefs, device, *physics, x3::game::convertedGlbRoot());
         x3::boot::mark("WORLD CARS (host set parked)");
     }
+
+    // WEAPON ATTACHMENTS: the procedural part meshes + their MR texels (inside the
+    // batch, like every other build-time upload).
+    attachView.init(*device);
 
     // World build + every build-time GLB is done — land all batched uploads in one
     // submit. (Per-frame paths from here on use the normal unbatched semantics.)
@@ -3639,7 +3762,13 @@ int runDefaultHost(HostContext& hc) {
         // glass (orange ink) before the settle frames so the bake lands in-frame.
         // The default hero camera already frames the terminal; a compact inline
         // renderer mirrors the interactive path (its helpers live later in scope).
-        const float ssFov = 70.0f;
+        // --shot-ads narrows the capture FOV to the fitted optic's, exactly as the live
+        // ADS does (magnification is a REAL FOV change, not a zoomed sprite).
+        float ssFov = 70.0f;
+        if (hc.shotAds) {
+            if (const x3::game::AttachSpec* op = arsenal.currentOptic())
+                if (op->optic.isOptic) ssFov = op->optic.adsFovDeg;
+        }
         device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
         const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
         const float dt = 1.0f / 60.0f;
@@ -3734,6 +3863,29 @@ int runDefaultHost(HostContext& hc) {
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }
+        // ---- WEAPON ATTACHMENTS capture staging (--shot-weapon / --shot-attach /
+        // --shot-bench). Uses the SAME fit path the bench uses (slot mask enforced), so
+        // a screenshot cannot show a configuration the game would refuse.
+        if (!hc.shotWeapon.empty()) {
+            if (!arsenal.selectByName(hc.shotWeapon))
+                x3::logWarn("--shot-weapon: no weapon named '" + hc.shotWeapon + "'");
+        }
+        if (!hc.shotAttach.empty()) {
+            std::string cur;
+            std::istringstream as(hc.shotAttach);
+            while (std::getline(as, cur, ',')) {
+                if (cur.empty()) continue;
+                const x3::game::ItemDef* d = itemDb.find(cur);
+                if (!d || !d->attach.valid) { x3::logWarn("--shot-attach: unknown attachment '" + cur + "'"); continue; }
+                if (!arsenal.fitAttachment(arsenal.selected(), d->attach))
+                    x3::logWarn("--shot-attach: '" + cur + "' does not fit this weapon's slots");
+            }
+        }
+        if (hc.shotBench && weaponBench.built()) {
+            weaponBench.openScreen(arsenal, inventory, itemDb);
+            weaponBench.update(0.016f);
+        }
+
         const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle
                                                          : (alertShot ? 110 : 16);
         // WORLD CARS driver-POV staging (--shot-drive): take the wheel of the
@@ -4102,15 +4254,33 @@ int runDefaultHost(HostContext& hc) {
                 // viewmodel — the "pistol" in every prior cell shot was the hovering
                 // pickup prop, which is why the floating-gun/no-arms problem was
                 // invisible in stills. Mirror the smoketest draw at the shot camera.
-                if (arsenal.viewmodelsLoaded()) {
+                const bool ssHideForScope = hc.shotAds && arsenal.currentOptic() &&
+                                            arsenal.currentOptic()->optic.fullScope;
+                if (arsenal.viewmodelsLoaded() && !ssHideForScope) {
                     const VmPose vmPose = readViewmodelPose(*console);
+                    float aYaw   = vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad;
+                    float aPitch = vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad;
+                    float aRoll  = vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad;
+                    float aFwd   = vmPose.fwd   - x3::game::kVmDefFwd;
+                    float aRight = vmPose.right - x3::game::kVmDefRight;
+                    float aDown  = vmPose.down  - x3::game::kVmDefDown;
+                    // --shot-ads: the SAME exact alignment solve the live ADS uses, so the
+                    // still shows the gun genuinely behind the glass, on the fire ray.
+                    if (hc.shotAds && arsenal.selected() >= 0) {
+                        if (const x3::game::AttachSpec* op = arsenal.currentOptic()) {
+                            const x3::game::WeaponDef& bd = arsenal.baseDef(arsenal.selected());
+                            const x3::phys::Vec3 sight = x3::game::attachSightLocal(bd, *op);
+                            float sr = 0.0f, sd = 0.0f;
+                            const float pull = adsEyeDistance(*op) - bd.vmFwd;
+                            if (arsenal.solveAdsOffsets(sight, ssYaw, ssPitch, pull, sr, sd)) {
+                                aRight += sr; aDown += sd; aFwd += pull;
+                            }
+                        }
+                    }
                     arsenal.drawCurrentViewmodel(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch,
-                        vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
-                        vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
-                        vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
-                        vmPose.fwd   - x3::game::kVmDefFwd,
-                        vmPose.right - x3::game::kVmDefRight,
-                        vmPose.down  - x3::game::kVmDefDown);
+                        aYaw, aPitch, aRoll, aFwd, aRight, aDown);
+                    attachView.drawFirstPerson(*device, frame, arsenal, ssX, ssY, ssZ, ssYaw, ssPitch,
+                                               aYaw, aPitch, aRoll, aFwd, aRight, aDown);
                 }
                 game.drawDoors(*device, frame);   // real SM_Door_A slabs (box hidden)
                 game.drawWorldExtras(*device, frame, scene);
@@ -4136,7 +4306,10 @@ int runDefaultHost(HostContext& hc) {
                 shotUi.begin(*device, frame, x3::ui::UiInput{});
                 x3::ui::HudModel shm{};
                 shm.hp = 100; shm.maxHp = x3::game::kPlayerMaxHp; shm.alive = true;
-                shm.showCrosshair = true;
+                shm.showCrosshair = !hc.shotAds;   // the optic's reticle takes over
+                if (hc.shotAds)
+                    if (const x3::game::AttachSpec* op = arsenal.currentOptic())
+                        drawScopeOverlay(*device, frame, *op, 1.0f);
                 shm.objective = game.objectives().currentLabel().c_str();
                 const x3::game::WeaponDef&            shotWd = arsenal.current();
                 const x3::game::Arsenal::WeaponState& shotWs = arsenal.currentState();
@@ -4805,13 +4978,29 @@ int runDefaultHost(HostContext& hc) {
                 // per-weapon GLB draw path is exercised under Debug validation; fall
                 // back to the original pickup viewmodel if the arsenal didn't load.
                 if (arsenal.viewmodelsLoaded()) {
+                    float sYawD   = vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad;
+                    float sPitchD = vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad;
+                    float sRollD  = vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad;
+                    float sFwdD   = vmPose.fwd   - x3::game::kVmDefFwd;
+                    float sRightD = vmPose.right - x3::game::kVmDefRight;
+                    float sDownD  = vmPose.down  - x3::game::kVmDefDown;
+                    // --shot-ads: capture the gun THROUGH the sight (the ADS solve, same
+                    // math the live loop uses) so a screenshot can prove the alignment.
+                    if (hc.shotAds) {
+                        if (const x3::game::AttachSpec* op = arsenal.currentOptic()) {
+                            const x3::game::WeaponDef& bd = arsenal.baseDef(arsenal.selected());
+                            const x3::phys::Vec3 sight = x3::game::attachSightLocal(bd, *op);
+                            float sr = 0.0f, sd = 0.0f;
+                            const float pull = adsEyeDistance(*op) - bd.vmFwd;
+                            if (arsenal.solveAdsOffsets(sight, vmYaw, vmPitch, pull, sr, sd)) {
+                                sRightD += sr; sDownD += sd; sFwdD += pull;
+                            }
+                        }
+                    }
                     arsenal.drawCurrentViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch,
-                        vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
-                        vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
-                        vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
-                        vmPose.fwd   - x3::game::kVmDefFwd,
-                        vmPose.right - x3::game::kVmDefRight,
-                        vmPose.down  - x3::game::kVmDefDown);
+                        sYawD, sPitchD, sRollD, sFwdD, sRightD, sDownD);
+                    attachView.drawFirstPerson(*device, frame, arsenal, vmX, vmY, vmZ, vmYaw, vmPitch,
+                                               sYawD, sPitchD, sRollD, sFwdD, sRightD, sDownD);
                 } else {
                     game.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch,
                                        vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
@@ -5279,6 +5468,10 @@ int runDefaultHost(HostContext& hc) {
         rf << "x3rpg 1\n" << progression.serialize() << skillTree.serializeOwned();
         for (const std::string& mid : rpgAppliedMods) rf << "mod " << mid << '\n';
         rf << inventory.serialize();
+        // WEAPON ATTACHMENTS: "attach <weapon> <slot> <id>" lines. Only the IDS are
+        // stored — the specs are re-resolved from the item DB on load, so a rebalance
+        // lands on old saves and an illegal fit can never be smuggled back in.
+        rf << arsenal.loadouts().serialize();
         return (bool)rf;
     };
     auto loadRpg = [&]() -> bool {
@@ -5297,6 +5490,7 @@ int runDefaultHost(HostContext& hc) {
             else if (rline.rfind("mod ", 0) == 0) rpgAppliedMods.push_back(rline.substr(4));
         }
         progression.setSpentPoints(skillTree.ownedCost());   // spent = owned-node cost
+        arsenal.restoreAttachments(rtext, itemDb);           // WEAPON ATTACHMENTS
         applyRpgStats();
         keycardMask |= inventory.keycardMask(itemDb);        // restore door gating
         return true;
@@ -5693,7 +5887,8 @@ int runDefaultHost(HostContext& hc) {
         // The world map pauses the sim exactly like the menu screens do.
         const bool simFrozen     = gameUi.shouldFreezeSim() || worldMapOpen ||
                                    worldMenu.isOpen() ||   // W-MENU: the directory pauses the sim
-                                   rpgUi.anyOpen();   // [W9-3 RPG] screens pause the sim (world-map pattern)
+                                   rpgUi.anyOpen() ||  // [W9-3 RPG] screens pause the sim (world-map pattern)
+                                   weaponBench.open();  // the WEAPON BENCH screen (same pattern)
 
         // Esc (edge-detected): route to the UI controller (toggle pause / back out
         // of settings / resume) UNLESS the console is open or a door-code keypad is
@@ -5703,7 +5898,8 @@ int runDefaultHost(HostContext& hc) {
         bool uiEscEdge = false;
         bool mapEscEdge = false;        // routed into the world-map screen (confirm prompt)
         if (escNow && !kpEscPrev) {
-            if (codeMode) { codeMode = false; keypad.clear(); }
+            if (weaponBench.open()) { weaponBench.closeScreen(); }
+            else if (codeMode) { codeMode = false; keypad.clear(); }
             else if (termMode) { termMode = false; game.secret().terminal().setActive(false);
                                  if (llmBusy && llm) llm->cancel(llmChat);     // stop streaming
                                  vigilStop(game.secret().terminal()); }        // W4-2: end the tree + restore ink
@@ -5729,6 +5925,49 @@ int runDefaultHost(HostContext& hc) {
 
         double nowT = glfwGetTime();
         float dt = static_cast<float>(nowT - prevTime); prevTime = nowT;
+        // ================= WEAPON ATTACHMENTS: ADS (the real scope) =================
+        // THE BIND: right mouse. RMB is normally AUTORUN in this game, so it only
+        // becomes AIM when the held weapon actually carries an OPTIC — otherwise it
+        // keeps its old job and nothing changes for a player with no scope fitted.
+        //
+        // What ADS does (all of it honest, none of it faked):
+        //   * the gun is ALIGNED behind the glass (Arsenal::solveAdsOffsets, exact) —
+        //     the sight line, the reticle and the fire ray become ONE line;
+        //   * the camera FOV genuinely NARROWS to the optic's adsFovDeg (that is what
+        //     magnification IS — 14 deg on the 4x scope, 46 deg on the reflex);
+        //   * turning slows (magnification + the optic's handling cost);
+        //   * a high-power scope DRIFTS (sway is applied to the CAMERA ANGLES, which
+        //     the fire ray also uses — so a drifting reticle never lies about the shot).
+        float camFovDeg = 60.0f;                 // == the base FOV every setCamera used
+        {
+            const x3::game::AttachSpec* op = arsenal.currentOptic();
+            const bool armedNow = game.armed() || (canonWorld && canonPlay.armed());
+            adsCapable = op && op->optic.isOptic && armedNow && !terrainWorld &&
+                         thirdPerson.viewmodelVisible();
+            const bool wantAds = adsCapable && !simFrozen && !consoleOpen && !termMode &&
+                                 !codeMode && !worldCars.driving() && !noclip &&
+                                 gameUi.playing() && !chatTrees.active() &&
+                                 glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            const float rate = (op && op->optic.adsTime > 0.02f) ? (1.0f / op->optic.adsTime) : 8.0f;
+            adsT += (wantAds ? rate : -rate) * dt;
+            if (adsT < 0.0f) adsT = 0.0f;
+            if (adsT > 1.0f) adsT = 1.0f;
+            if (!adsCapable) adsT = 0.0f;
+            adsSwayClock += dt;
+            if (adsT > 0.0f && op) {
+                const float e = adsT * adsT * (3.0f - 2.0f * adsT);          // smoothstep
+                camFovDeg = 60.0f + (op->optic.adsFovDeg - 60.0f) * e;
+            }
+            // TURN SPEED. The weapon's handling cost always applies (a heavy barrel
+            // drags the gun around); scoping adds the magnification penalty on top.
+            lookTurnScale = arsenal.current().handlingMult;
+            if (adsT > 0.0f && op) {
+                const float magPen = 0.35f + 0.65f * (op->optic.adsFovDeg / 60.0f);
+                lookTurnScale *= (1.0f - adsT) + adsT * magPen;
+            }
+        }
+
+
         if (dt > 0.1f) dt = 0.1f; // clamp huge hitches (e.g. after a stall)
 
         // Mouse delta this frame. Frozen (zeroed) while the console is open OR a UI
@@ -5983,6 +6222,14 @@ int runDefaultHost(HostContext& hc) {
         // a LOCKED one takes hold-E for 3 s (progress in the HUD hint line) and
         // unlocks permanently + fires the guarded alarm hook. A consumed E also
         // shuts the whole door/talk/terminal chain below for this frame. ----
+        // WEAPON ATTACHMENTS: while the bench screen is up, E CLOSES it (and eats the
+        // edge so the use-chain below doesn't also fire).
+        bool benchConsumedE = false;
+        if (eNow && !prevE && weaponBench.open()) {
+            weaponBench.closeScreen();
+            benchConsumedE = true;
+        }
+
         bool vehicleConsumedE = false;
         if (canonWorld && worldCars.built() && !codeMode && !termMode && !consoleOpen &&
             (!noclip || worldCars.driving()) &&   // idclip mid-drive must still allow the exit
@@ -5992,7 +6239,8 @@ int runDefaultHost(HostContext& hc) {
                 audio.get());
         }
 
-        if (eNow && !prevE && !terrainWorld && !vehicleConsumedE && !worldCars.driving()) {
+        if (eNow && !prevE && !terrainWorld && !vehicleConsumedE && !benchConsumedE &&
+            !worldCars.driving()) {
             float ex, ey, ez, yaw, pitch;
             player.camera(ex, ey, ez, yaw, pitch);   // in noclip the camera is the fly cam
             if (noclip) { ex = flyX; ey = flyY; ez = flyZ; yaw = flyYaw; pitch = flyPitch; }
@@ -6166,6 +6414,14 @@ int runDefaultHost(HostContext& hc) {
                            return true;
                        }()) {
                 // elevator travel handled inside the lambda
+            } else if (weaponBench.built() && !weaponBench.open() &&
+                       weaponBench.inRange(player.feet())) {
+                // THE WEAPON BENCH. You can SEE your mods anywhere (I); you can only
+                // FIT them here. The screen freezes the sim, like every other screen.
+                weaponBench.openScreen(arsenal, inventory, itemDb);
+                npcBarkText = "WEAPON BENCH";
+                npcBarkTimer = 1.4f;
+                x3::logInfo("use: weapon bench opened");
             } else if (canonWorld && descMech.built() &&
                        [&]() -> bool {
                            // W9-1 desc-mechanics interact points (coolant console /
@@ -6604,8 +6860,11 @@ int runDefaultHost(HostContext& hc) {
                 const bool arrowsLive = !consoleOpen && !termMode;
                 if (arrowsLive && keyDown(GLFW_KEY_UP))   in.moveFwd += 1.0f;
                 if (arrowsLive && keyDown(GLFW_KEY_DOWN)) in.moveFwd -= 1.0f;
-                // Right mouse button = walk forward (hold to autorun)
-                if (!consoleOpen && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
+                // Right mouse button = walk forward (hold to autorun) — UNLESS the held
+                // weapon carries an OPTIC, in which case RMB is AIM (see the ADS block).
+                // A player with no scope fitted keeps the old autorun exactly.
+                if (!consoleOpen && !simFrozen && !adsCapable &&
+                    glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
                     in.moveFwd += 1.0f;
                 in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
                 // Edge + mouse-look apply only on the first sub-step of the frame.
@@ -6614,8 +6873,10 @@ int runDefaultHost(HostContext& hc) {
                 // Space held = stroke up, Ctrl/C held = dive.
                 in.jumpHeld = spaceNow;
                 in.diveHeld = keyDown(GLFW_KEY_LEFT_CONTROL) || keyDown(GLFW_KEY_C);
-                in.lookDX = firstSub ? ddx : 0.0f;
-                in.lookDY = firstSub ? ddy : 0.0f;
+                // WEAPON ATTACHMENTS: handling. A heavy barrel / a big scope really do
+                // slow your turn (WeaponDef::handlingMult, x the ADS magnification penalty).
+                in.lookDX = firstSub ? ddx * lookTurnScale : 0.0f;
+                in.lookDY = firstSub ? ddy * lookTurnScale : 0.0f;
                 // Left/Right arrows turn the view via the same lookDX path the mouse uses,
                 // frame-rate-independent (~140 deg/s) — so you can play fine when the mouse
                 // is unusable (e.g. raw-relative look over Remote Desktop is way too jumpy).
@@ -6803,7 +7064,20 @@ int runDefaultHost(HostContext& hc) {
             weaponRecoilPitch -= kRecoilRecover * dt;
             if (weaponRecoilPitch < 0.0f) weaponRecoilPitch = 0.0f;
         }
+        weaponBench.update(dt);   // WEAPON ATTACHMENTS: the bench panel's shimmer
         camPitch += weaponRecoilPitch;
+        // WEAPON ATTACHMENTS: SCOPE SWAY. A high-power optic drifts. It is applied to
+        // camYaw/camPitch — the SAME angles the fire ray, the viewmodel and setCamera
+        // all read — so the reticle drifts WITH the shot, never away from it.
+        if (adsT > 0.0f) {
+            if (const x3::game::AttachSpec* op = arsenal.currentOptic()) {
+                if (op->optic.sway > 0.0f) {
+                    const float amp = op->optic.sway * (3.14159265f / 180.0f) * adsT;
+                    camYaw   += std::sin(adsSwayClock * 0.83f) * amp;
+                    camPitch += std::sin(adsSwayClock * 0.57f + 1.3f) * amp * 0.7f;
+                }
+            }
+        }
         if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
 
         // ---- THIRD-PERSON: drive the Jake avatar from the player's feet/look + swap
@@ -6836,7 +7110,7 @@ int runDefaultHost(HostContext& hc) {
                 thirdPerson.camera(pfeet, eyeH, camYaw, camPitch);
             renderCamX = tc.camX; renderCamY = tc.camY; renderCamZ = tc.camZ;
         }
-        device->setCamera(renderCamX, renderCamY, renderCamZ, camYaw, camPitch, 60.0f);
+        device->setCamera(renderCamX, renderCamY, renderCamZ, camYaw, camPitch, camFovDeg);
         // LEVEL ARCHITECT (--editor): in EDIT mode the host's fly-cam OVERRIDES the
         // game camera just set above (it calls device->setCamera with its own pose);
         // in PLAY mode the host returns false and the game camera above stands. All
@@ -7703,9 +7977,21 @@ int runDefaultHost(HostContext& hc) {
             // never disturbs a crowd out of earshot).
             for (auto& cc : canonCrowds) if (cc.built()) cc.onViolence(eye);
             for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(eye);
-            if (facilityAlertOn) facilityAlert.reportGunshot(eye);
+            // WEAPON ATTACHMENTS — THE SUPPRESSOR IS REAL. The effective weapon's
+            // noiseMult scales the alert's gunshot HEARING radius for THIS shot: a
+            // suppressed round is heard at 12 m instead of 40 m, so a guard genuinely
+            // notices you later; a Kinetic Sheath cracks and carries further.
+            if (facilityAlertOn) facilityAlert.reportGunshot(eye, arsenal.current().noiseMult);
             // Recoil -> camera (transient upward kick; recovered in the camera block).
             weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
+
+            // WEAPON ATTACHMENTS — CRIT is the ADDITIVE channel: the skill layer's crit
+            // plus the fitted optic's / coating's crit. The DAMAGE multipliers stay
+            // independent layers (the attachment fold already quantized the ray damage;
+            // the skill mult scales it here). See attachments.h "THE STACKING RULE".
+            x3::game::PlayerStatMods shotMods = rpgMods;
+            shotMods.critChance += arsenal.current().critBonus;
+            if (shotMods.critChance > 0.95f) shotMods.critChance = 0.95f;
 
             // Per-weapon FX kind (plasma blue / chaingun sparky / shotgun wide / ...)
             // + the CURRENT weapon's distinct fire sound (instead of one shared gun).
@@ -7722,7 +8008,7 @@ int runDefaultHost(HostContext& hc) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
                 const auto& pj = shot.projectiles[0];
                 // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
-                const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
+                const int pjDmg = x3::game::rpgScaleDamage(pj.damage, shotMods, rpgCritRng);
                 projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, impactKind, pj.type, currentImpactSfx() });
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
                 if (!usesFireLoop)
@@ -7744,7 +8030,7 @@ int runDefaultHost(HostContext& hc) {
                 for (const auto& ray : shot.rays) {
                     // [W9-3 RPG] skill/mod damage multiplier + crit roll LAYERED on
                     // this pellet/ray's WeaponDef damage (the table is untouched).
-                    const int wdmg = x3::game::rpgScaleDamage(ray.damage, rpgMods, rpgCritRng);
+                    const int wdmg = x3::game::rpgScaleDamage(ray.damage, shotMods, rpgCritRng);
                     // canon-aliens Adaptive Hide: each ray also carries its WeaponDef::type
                     // (Kinetic / Energy / ... stamped by Arsenal::fire). Threaded through
                     // every dispatcher so bosses with adaptiveHideResist > 0 react to the
@@ -8125,18 +8411,51 @@ int runDefaultHost(HostContext& hc) {
                 if (!thirdPerson.viewmodelVisible() || worldCars.driving()) {
                     // 3P / AT THE WHEEL: no FP viewmodel this frame (hands are
                     // on the wheel; the chase camera is not an FP eye).
-                } else if (arsenal.viewmodelsLoaded() && vmArmed) {
+                } else if (arsenal.viewmodelsLoaded() && vmArmed &&
+                           // FULL SCOPE: once you are BEHIND the glass, the weapon is not
+                           // drawn. With the eyepiece at your eye, the tube and rings sit
+                           // in front of the camera and fill the lens with their own dark
+                           // body — you end up looking AT the scope instead of THROUGH it.
+                           // Every FPS solves this the same way: while fully scoped the
+                           // model is hidden and the scope PICTURE is the view. An open
+                           // reflex keeps the gun (you want to see it under the dot).
+                           !(adsT > 0.85f && arsenal.currentOptic() &&
+                             arsenal.currentOptic()->optic.fullScope)) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
                     // convention-correct base offsets). The live vm_* cvars are passed
                     // as DELTAS from the baked default so console tuning still nudges
                     // whatever weapon is held (delta 0 at defaults -> per-weapon pose).
+                    float vmYawD   = vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad;
+                    float vmPitchD = vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad;
+                    float vmRollD  = vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad;
+                    float vmFwdD   = vmPose.fwd   - x3::game::kVmDefFwd;
+                    float vmRightD = vmPose.right - x3::game::kVmDefRight;
+                    float vmDownD  = vmPose.down  - x3::game::kVmDefDown;
+                    // ---- ADS: bring the gun UP AND BEHIND THE GLASS. The solve puts the
+                    // optic's LENS CENTRE exactly on the camera axis, so the sight line IS
+                    // the fire ray (asserted, with negative controls, in --test-attachments).
+                    // Blended by adsT, so the gun rises into the aim instead of snapping.
+                    if (adsT > 0.0f) {
+                        if (const x3::game::AttachSpec* op = arsenal.currentOptic()) {
+                            const x3::game::WeaponDef& bd = arsenal.baseDef(arsenal.selected());
+                            const x3::phys::Vec3 sight = x3::game::attachSightLocal(bd, *op);
+                            float sr = 0.0f, sd = 0.0f;
+                            // Bring the eyepiece to the eye (see adsEyeDistance).
+                            const float pull = adsEyeDistance(*op) - bd.vmFwd;
+                            if (arsenal.solveAdsOffsets(sight, camYaw, camPitch, pull, sr, sd)) {
+                                const float e = adsT * adsT * (3.0f - 2.0f * adsT);
+                                vmRightD += sr * e;
+                                vmDownD  += sd * e;
+                                vmFwdD   += pull * e;
+                            }
+                        }
+                    }
                     arsenal.drawCurrentViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
-                        vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
-                        vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
-                        vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
-                        vmPose.fwd   - x3::game::kVmDefFwd,
-                        vmPose.right - x3::game::kVmDefRight,
-                        vmPose.down  - x3::game::kVmDefDown);
+                        vmYawD, vmPitchD, vmRollD, vmFwdD, vmRightD, vmDownD);
+                    // THE FITTED HARDWARE, on the gun, in the same frame the gun is drawn in.
+                    attachView.drawFirstPerson(*device, frame, arsenal, camX, camY, camZ,
+                                               camYaw, camPitch,
+                                               vmYawD, vmPitchD, vmRollD, vmFwdD, vmRightD, vmDownD);
                 } else if (canonWorld && canonPlay.built()) {
                     // Fallback in canonlevel: the canon sidearm's pickup viewmodel.
                     canonPlay.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
@@ -8582,7 +8901,7 @@ int runDefaultHost(HostContext& hc) {
             hm.hp = player.hp(); hm.maxHp = player.maxHp();
             hm.alive = player.isAlive();
             hm.damageFlash = player.damageFlash();
-            hm.showCrosshair = !consoleOpen;
+            hm.showCrosshair = !consoleOpen && adsT < 0.5f;   // the optic's reticle takes over
             hm.dispW = cw; hm.dispH = ch;   // live framebuffer size -> menu RESOLUTION readout
             if (!terrainWorld) {
                 hm.objective = game.objectives().currentLabel().c_str();
@@ -8920,6 +9239,21 @@ int runDefaultHost(HostContext& hc) {
                     rin.dropKey  = rDrp && !prevRpgDrop;
                     rin.equipKey = rEqp && !prevRpgEquip;
                 }
+                // ---- THE WEAPON BENCH screen (the HoloPanel in the Security Station).
+                // It is DIEGETIC: the UI lives ON the glass, so there is nothing to draw
+                // here — we only feed it input and let it re-bake its own screen.
+                if (weaponBench.open()) {
+                    x3::game::WeaponBench::Input bin;
+                    bin.up       = rUp  && !prevRpgUp;
+                    bin.down     = rDn  && !prevRpgDown;
+                    bin.left     = rLf  && !prevRpgLeft;
+                    bin.right    = rRt  && !prevRpgRight;
+                    bin.activate = rEnt && !prevRpgEnter;
+                    weaponBench.tick(bin, arsenal, inventory, itemDb, [&]() {
+                        applyRpgStats();   // the fold changed -> re-push the live stat layer
+                        saveRpg();         // fitted attachments PERSIST the moment they land
+                    });
+                }
                 prevRpgUp = rUp; prevRpgDown = rDn; prevRpgLeft = rLf; prevRpgRight = rRt;
                 prevRpgEnter = rEnt; prevRpgDrop = rDrp; prevRpgEquip = rEqp;
 
@@ -9000,6 +9334,12 @@ int runDefaultHost(HostContext& hc) {
                 device->drawHudText(frame, gripLine, gx + 1.5f, gy + 1.5f, gpx, gsh);
                 device->drawHudText(frame, gripLine, gx, gy, gpx, gcl);
             }
+
+            // THE SCOPE PICTURE (drawScopeOverlay, above: an honest OVERLAY — the
+            // magnification and the sight alignment are real; the round picture is not RTT).
+            if (adsT > 0.01f)
+                if (const x3::game::AttachSpec* op = arsenal.currentOptic())
+                    drawScopeOverlay(*device, frame, *op, adsT);
 
             // Always-on overlays (independent of game state): FPS meter, the perf
             // stats panel, and the dev console panel (drawn last so it sits on top).
@@ -9087,6 +9427,8 @@ int runDefaultHost(HostContext& hc) {
         if (terrainJobs) terrainJobs->shutdown();
     }
     audio->shutdown();
+    weaponBench.shutdown(*device);   // WEAPON ATTACHMENTS: the bench + its HoloPanel
+    attachView.shutdown(*device);    // WEAPON ATTACHMENTS: the part meshes + MR texels
     combatFx.shutdown(*device);
     // TASK#12: tear down any in-flight SKINNED death ragdolls (Jolt bodies) BEFORE
     // physics shuts down, so a monster killed in the last ~0.7 s (mid-flop) doesn't

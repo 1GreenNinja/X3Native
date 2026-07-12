@@ -1,0 +1,658 @@
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\AUDIO_RAYS.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe --target-env=vulkan1.3 --target-spv=spv1.4 D:/GameDev/X3Native-attach/shaders/audio_rays.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/audio_rays.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\AUTOEXPOSURE.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/autoexposure.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/autoexposure.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\BLOOM_DOWN.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/bloom_down.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/bloom_down.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\BLOOM_UP.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/bloom_up.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/bloom_up.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\COMPOSITE.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/composite.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/composite.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\CULL.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/cull.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/cull.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DDGI_RAYS.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe --target-env=vulkan1.3 --target-spv=spv1.4 D:/GameDev/X3Native-attach/shaders/ddgi_rays.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ddgi_rays.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DDGI_UPDATE.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe --target-env=vulkan1.3 --target-spv=spv1.4 D:/GameDev/X3Native-attach/shaders/ddgi_update.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ddgi_update.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DEBRIS.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/debris.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/debris.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DEBRIS.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/debris.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/debris.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DEBRIS.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/debris.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/debris.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DECAL.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/decal.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/decal.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DECAL.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/decal.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/decal.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DEPTH.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/depth.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/depth.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DEPTH_CUTOUT.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/depth_cutout.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/depth_cutout.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\DEPTH_CUTOUT.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/depth_cutout.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/depth_cutout.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\FOG.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/fog.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/fog.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\FULLSCREEN.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/fullscreen.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/fullscreen.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\GLASS.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/glass.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/glass.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\HUD.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/hud.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/hud.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\HUD.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/hud.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/hud.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\HZB_BUILD.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/hzb_build.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/hzb_build.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\IBL_BRDF_LUT.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ibl_brdf_lut.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ibl_brdf_lut.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\IBL_ENV.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ibl_env.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ibl_env.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\IBL_IRRADIANCE.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ibl_irradiance.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ibl_irradiance.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\IBL_PREFILTER.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ibl_prefilter.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ibl_prefilter.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\MESH.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/mesh.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/mesh.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\MESH.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/mesh.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/mesh.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\MESH_PROBE.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/mesh_probe.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/mesh_probe.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\MESH_RT.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe --target-env=vulkan1.3 --target-spv=spv1.4 -DRT_SHADOWS=1 -fshader-stage=frag D:/GameDev/X3Native-attach/shaders/mesh.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/mesh_rt.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PARTICLE.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/particle.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/particle.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PARTICLE.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/particle.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/particle.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_ATMOSPHERE.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_atmosphere.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_atmosphere.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_GAS.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_gas.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_gas.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_ICE.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_ice.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_ice.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_LAVA.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_lava.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_lava.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_MOON.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_moon.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_moon.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_OCEANIC.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_oceanic.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_oceanic.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_RING.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_ring.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_ring.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_SAND.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_sand.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_sand.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_SUN.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_sun.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_sun.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_SUNCORONA.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_suncorona.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_suncorona.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_TERRESTRIAL.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_terrestrial.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_terrestrial.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\PLANET_THUNDERSTORM.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/planet_thunderstorm.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/planet_thunderstorm.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\REFL.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/refl.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/refl.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\REFL_RT.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe --target-env=vulkan1.3 --target-spv=spv1.4 -DREFL_RT=1 D:/GameDev/X3Native-attach/shaders/refl.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/refl_rt.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\RTAO.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe --target-env=vulkan1.3 --target-spv=spv1.4 D:/GameDev/X3Native-attach/shaders/rtao.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/rtao.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\RTAO_APPLY.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/rtao_apply.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/rtao_apply.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SHADOW.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/shadow.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/shadow.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SKIN.COMP.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/skin.comp -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/skin.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SKY.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/sky.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/sky.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SKY.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/sky.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/sky.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SSAO.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ssao.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ssao.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SSAO_BLUR.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ssao_blur.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ssao_blur.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SSGI_APPLY.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ssgi_apply.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ssgi_apply.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SSGI_BLUR.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ssgi_blur.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ssgi_blur.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SSGI_GATHER.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ssgi_gather.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ssgi_gather.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\SSGI_TEMPORAL.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/ssgi_temporal.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/ssgi_temporal.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\TAA_RESOLVE.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/taa_resolve.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/taa_resolve.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\TRI.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/tri.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/tri.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\TRI.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/tri.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/tri.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\WATER.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/water.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/water.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\WATER.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/water.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/water.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\C657E563AF640BCF8F739E9EC377DA8E\X3SHADERS.RULE
+setlocal
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\APP\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

@@ -1,0 +1,150 @@
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\6125F03CF32F7747B56AFAB8DDEE47A7\LLAMA_CPP-POPULATE-MKDIR.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -Dcfgdir=/Debug -P D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/tmp/llama_cpp-populate-mkdirs.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/src/llama_cpp-populate-stamp/Debug/llama_cpp-populate-mkdir
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\6125F03CF32F7747B56AFAB8DDEE47A7\LLAMA_CPP-POPULATE-DOWNLOAD.RULE
+setlocal
+cd D:\GameDev\X3Native-attach\build-attach\_deps
+if %errorlevel% neq 0 goto :cmEnd
+D:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/tmp/llama_cpp-populate-gitclone.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/src/llama_cpp-populate-stamp/Debug/llama_cpp-populate-download
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\6125F03CF32F7747B56AFAB8DDEE47A7\LLAMA_CPP-POPULATE-UPDATE.RULE
+setlocal
+cd D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src
+if %errorlevel% neq 0 goto :cmEnd
+D:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -Dcan_fetch=YES -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/tmp/llama_cpp-populate-gitupdate.cmake
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\6125F03CF32F7747B56AFAB8DDEE47A7\LLAMA_CPP-POPULATE-PATCH.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/src/llama_cpp-populate-stamp/Debug/llama_cpp-populate-patch
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\6125F03CF32F7747B56AFAB8DDEE47A7\LLAMA_CPP-POPULATE-CONFIGURE.RULE
+setlocal
+cd D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build
+if %errorlevel% neq 0 goto :cmEnd
+D:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/src/llama_cpp-populate-stamp/Debug/llama_cpp-populate-configure
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\6125F03CF32F7747B56AFAB8DDEE47A7\LLAMA_CPP-POPULATE-BUILD.RULE
+setlocal
+cd D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build
+if %errorlevel% neq 0 goto :cmEnd
+D:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/src/llama_cpp-populate-stamp/Debug/llama_cpp-populate-build
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\6125F03CF32F7747B56AFAB8DDEE47A7\LLAMA_CPP-POPULATE-INSTALL.RULE
+setlocal
+cd D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build
+if %errorlevel% neq 0 goto :cmEnd
+D:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/src/llama_cpp-populate-stamp/Debug/llama_cpp-populate-install
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\6125F03CF32F7747B56AFAB8DDEE47A7\LLAMA_CPP-POPULATE-TEST.RULE
+setlocal
+cd D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build
+if %errorlevel% neq 0 goto :cmEnd
+D:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/src/llama_cpp-populate-stamp/Debug/llama_cpp-populate-test
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\067511B5265B57988BE8C845FCB16B2B\LLAMA_CPP-POPULATE-COMPLETE.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/Debug
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/Debug/llama_cpp-populate-complete
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/llama_cpp-populate-prefix/src/llama_cpp-populate-stamp/Debug/llama_cpp-populate-done
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKEFILES\7E04C22E4E58F1676361A28B34C1ACBF\LLAMA_CPP-POPULATE.RULE
+setlocal
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild -BD:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild --check-stamp-file D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

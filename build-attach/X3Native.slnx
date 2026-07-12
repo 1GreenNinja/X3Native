@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+	<Configurations>
+		<BuildType Name="Debug"/>
+		<BuildType Name="Release"/>
+		<BuildType Name="MinSizeRel"/>
+		<BuildType Name="RelWithDebInfo"/>
+		<Platform Name="x64"/>
+	</Configurations>
+	<Project Path="ALL_BUILD.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="3633cfc0-2069-3407-8123-291ff71de999" DefaultStartup="true">
+		<BuildDependency Project="app/X3Engine.vcxproj"/>
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-base.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-cpu.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/src/llama.vcxproj"/>
+		<BuildDependency Project="engine/x3engine.vcxproj"/>
+	</Project>
+	<Project Path="INSTALL.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="de32db16-dc71-3cc0-b403-feb404f3912a">
+		<BuildDependency Project="ALL_BUILD.vcxproj"/>
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="app/X3Engine.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="a1074501-68cd-3bd5-9f7b-ef97ccf421ae">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-base.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-cpu.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/src/llama.vcxproj"/>
+		<BuildDependency Project="engine/x3engine.vcxproj"/>
+		<BuildDependency Project="app/x3shaders.vcxproj"/>
+	</Project>
+	<Project Path="ZERO_CHECK.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="c7600052-245c-3f4e-9433-4e150d2c2830"/>
+	<Project Path="_deps/llama_cpp-build/ggml/src/ggml.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="89f29ed7-0705-3eea-8f73-4fc4bda47a28">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-base.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-cpu.vcxproj"/>
+	</Project>
+	<Project Path="_deps/llama_cpp-build/ggml/src/ggml-base.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="743bf8cd-9137-31f8-aff9-b2130d6da00e">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="_deps/llama_cpp-build/ggml/src/ggml-cpu.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="6dc66732-86a5-3cd2-86e6-f70a77626ffc">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-base.vcxproj"/>
+	</Project>
+	<Project Path="_deps/llama_cpp-build/src/llama.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="ea3bd1ab-32a0-31c9-8223-8f670f732d39">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-base.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-cpu.vcxproj"/>
+	</Project>
+	<Project Path="engine/x3engine.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="b24d06d3-2d30-388f-b4aa-03c1f7d2b2f6">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-base.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/ggml/src/ggml-cpu.vcxproj"/>
+		<BuildDependency Project="_deps/llama_cpp-build/src/llama.vcxproj"/>
+		<BuildDependency Project="engine/x3velocityshaders.vcxproj"/>
+	</Project>
+	<Project Path="app/x3shaders.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="384746e0-9f0b-351a-b876-905c6ae2f641">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="engine/x3velocityshaders.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="3d844736-2aed-35a5-9902-fa4b54a7e814">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+</Solution>

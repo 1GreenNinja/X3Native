@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\7e04c22e4e58f1676361a28b34c1acbf\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{EB2678AC-6336-3DDC-9341-00763C7819FB}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

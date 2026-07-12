@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\velocity.frag.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\de3d0a088f625c05239c243b66b389bc\velocity.vert.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\CMakeFiles\e7d7eef810356fb74b24924817840e94\x3velocityshaders.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\engine\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="D:\GameDev\X3Native-attach\build-attach\engine\CMakeFiles\x3velocityshaders" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{F012E4A6-8C21-35FD-A24E-C913CF3B0F3C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

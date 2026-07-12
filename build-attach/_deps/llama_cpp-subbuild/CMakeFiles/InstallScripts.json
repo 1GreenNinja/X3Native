@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

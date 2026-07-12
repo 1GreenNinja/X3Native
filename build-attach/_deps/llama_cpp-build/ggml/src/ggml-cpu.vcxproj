@@ -1,0 +1,398 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{6DC66732-86A5-3CD2-86E6-F70A77626FFC}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>ggml-cpu</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="do_not_import_user.props" Condition="exists('do_not_import_user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ggml-cpu.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ggml-cpu</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ggml-cpu.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ggml-cpu</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">ggml-cpu.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">ggml-cpu</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">ggml-cpu.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">ggml-cpu</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.lib</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /utf-8 /bigobj</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ConformanceMode>true</ConformanceMode>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DisableSpecificWarnings>4005;4244;4267;4305;4566;4996;4702</DisableSpecificWarnings>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OpenMPSupport>true</OpenMPSupport>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;GGML_USE_OPENMP;GGML_USE_LLAMAFILE;GGML_USE_CPU_REPACK;GGML_AVX2;GGML_FMA;GGML_F16C;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;_CRT_SECURE_NO_WARNINGS;GGML_SCHED_MAX_COPIES=4;_XOPEN_SOURCE=600;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;GGML_USE_OPENMP;GGML_USE_LLAMAFILE;GGML_USE_CPU_REPACK;GGML_AVX2;GGML_FMA;GGML_F16C;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;_CRT_SECURE_NO_WARNINGS;GGML_SCHED_MAX_COPIES=4;_XOPEN_SOURCE=600;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /utf-8 /bigobj</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ConformanceMode>true</ConformanceMode>
+      <DisableSpecificWarnings>4005;4244;4267;4305;4566;4996;4702</DisableSpecificWarnings>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OpenMPSupport>true</OpenMPSupport>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GGML_USE_OPENMP;GGML_USE_LLAMAFILE;GGML_USE_CPU_REPACK;GGML_AVX2;GGML_FMA;GGML_F16C;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;_CRT_SECURE_NO_WARNINGS;GGML_SCHED_MAX_COPIES=4;_XOPEN_SOURCE=600;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GGML_USE_OPENMP;GGML_USE_LLAMAFILE;GGML_USE_CPU_REPACK;GGML_AVX2;GGML_FMA;GGML_F16C;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;_CRT_SECURE_NO_WARNINGS;GGML_SCHED_MAX_COPIES=4;_XOPEN_SOURCE=600;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /utf-8 /bigobj</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ConformanceMode>true</ConformanceMode>
+      <DisableSpecificWarnings>4005;4244;4267;4305;4566;4996;4702</DisableSpecificWarnings>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OpenMPSupport>true</OpenMPSupport>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GGML_USE_OPENMP;GGML_USE_LLAMAFILE;GGML_USE_CPU_REPACK;GGML_AVX2;GGML_FMA;GGML_F16C;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;_CRT_SECURE_NO_WARNINGS;GGML_SCHED_MAX_COPIES=4;_XOPEN_SOURCE=600;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GGML_USE_OPENMP;GGML_USE_LLAMAFILE;GGML_USE_CPU_REPACK;GGML_AVX2;GGML_FMA;GGML_F16C;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;_CRT_SECURE_NO_WARNINGS;GGML_SCHED_MAX_COPIES=4;_XOPEN_SOURCE=600;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /utf-8 /bigobj</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ConformanceMode>true</ConformanceMode>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DisableSpecificWarnings>4005;4244;4267;4305;4566;4996;4702</DisableSpecificWarnings>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OpenMPSupport>true</OpenMPSupport>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GGML_USE_OPENMP;GGML_USE_LLAMAFILE;GGML_USE_CPU_REPACK;GGML_AVX2;GGML_FMA;GGML_F16C;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;_CRT_SECURE_NO_WARNINGS;GGML_SCHED_MAX_COPIES=4;_XOPEN_SOURCE=600;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GGML_USE_OPENMP;GGML_USE_LLAMAFILE;GGML_USE_CPU_REPACK;GGML_AVX2;GGML_FMA;GGML_F16C;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;_CRT_SECURE_NO_WARNINGS;GGML_SCHED_MAX_COPIES=4;_XOPEN_SOURCE=600;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\.;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-src/ggml/src/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-build/ggml/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCheckCompilerFlagCommonPatterns.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeParseImplicitLinkInfo.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCSourceRuns.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXCompilerFlag.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindOpenMP.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckCompilerFlag.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckFlagCommonConfig.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceRuns.cmake;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\cmake\common.cmake;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\cmake\FindSIMD.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-src/ggml/src/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-build/ggml/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCheckCompilerFlagCommonPatterns.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeParseImplicitLinkInfo.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCSourceRuns.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXCompilerFlag.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindOpenMP.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckCompilerFlag.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckFlagCommonConfig.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceRuns.cmake;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\cmake\common.cmake;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\cmake\FindSIMD.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-src/ggml/src/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-build/ggml/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCheckCompilerFlagCommonPatterns.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeParseImplicitLinkInfo.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCSourceRuns.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXCompilerFlag.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindOpenMP.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckCompilerFlag.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckFlagCommonConfig.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceRuns.cmake;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\cmake\common.cmake;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\cmake\FindSIMD.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-src/ggml/src/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-build/ggml/src/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeCheckCompilerFlagCommonPatterns.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeParseImplicitLinkInfo.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCSourceRuns.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXCompilerFlag.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindOpenMP.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckCompilerFlag.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckFlagCommonConfig.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\Internal\CheckSourceRuns.cmake;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\cmake\common.cmake;D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\cmake\FindSIMD.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\ggml-cpu.c">
+      <ObjectFileName>$(IntDir)/ggml-cpu/ggml-cpu.c.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\ggml-cpu.cpp">
+      <ObjectFileName>$(IntDir)/ggml-cpu/ggml-cpu.cpp.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\repack.cpp">
+      <ObjectFileName>$(IntDir)/ggml-cpu/repack.cpp.obj</ObjectFileName>
+    </ClCompile>
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\repack.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\hbm.cpp" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\hbm.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\quants.c">
+      <ObjectFileName>$(IntDir)/ggml-cpu/quants.c.obj</ObjectFileName>
+    </ClCompile>
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\quants.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\traits.cpp" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\traits.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\amx\amx.cpp" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\amx\amx.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\amx\mmq.cpp" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\amx\mmq.h" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\ggml-cpu-impl.h" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\common.h" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\binary-ops.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\binary-ops.cpp" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\unary-ops.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\unary-ops.cpp" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\simd-mappings.h" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\vec.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\vec.cpp" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\ops.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\ops.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\llamafile\sgemm.cpp" />
+    <ClInclude Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\llamafile\sgemm.h" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\arch\x86\quants.c">
+      <ObjectFileName>$(IntDir)/ggml-cpu/arch/x86/quants.c.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-src\ggml\src\ggml-cpu\arch\x86\repack.cpp">
+      <ObjectFileName>$(IntDir)/ggml-cpu/arch/x86/repack.cpp.obj</ObjectFileName>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\ZERO_CHECK.vcxproj">
+      <Project>{C7600052-245C-3F4E-9433-4E150D2C2830}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.vcxproj">
+      <Project>{743BF8CD-9137-31F8-AFF9-B2130D6DA00E}</Project>
+      <Name>ggml-base</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

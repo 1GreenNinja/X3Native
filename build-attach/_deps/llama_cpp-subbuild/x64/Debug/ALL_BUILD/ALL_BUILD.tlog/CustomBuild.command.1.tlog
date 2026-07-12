@@ -1,0 +1,10 @@
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\_DEPS\LLAMA_CPP-SUBBUILD\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild -BD:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild --check-stamp-file D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

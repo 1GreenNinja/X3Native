@@ -71,6 +71,11 @@ struct HostContext {
     int         screenshotSettle = 16;
     bool        shotCamOverride  = false;
     float       shotCam[5]       = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
+    // WEAPON ATTACHMENTS capture staging (see cli.h).
+    std::string shotWeapon;
+    std::string shotAttach;
+    bool        shotAds   = false;
+    bool        shotBench = false;
 
     // ---- Stress / benchmark ----
     uint32_t stressCount = 0;

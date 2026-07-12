@@ -5,6 +5,7 @@
 #include "story_ops.h"   // asciiFold (display text may carry authored UTF-8)
 
 #include "engine/core/x3_log.h"
+#include "engine/core/x3_damage.h"   // baked attachment coatings name DamageType
 
 namespace x3::game {
 
@@ -15,6 +16,7 @@ const char* itemCategoryName(ItemCategory c) {
         case ItemCategory::Mod:         return "mod";
         case ItemCategory::UpgradePart: return "upgrade_part";
         case ItemCategory::Quest:       return "quest";
+        case ItemCategory::Attachment:  return "attachment";
         default:                        return "unknown";
     }
 }
@@ -24,6 +26,7 @@ ItemCategory itemCategoryFromName(std::string_view s) {
     if (s == "mod")          return ItemCategory::Mod;
     if (s == "upgrade_part") return ItemCategory::UpgradePart;
     if (s == "quest")        return ItemCategory::Quest;
+    if (s == "attachment")   return ItemCategory::Attachment;
     return ItemCategory::Consumable;
 }
 
@@ -67,6 +70,50 @@ bool ItemDb::load(std::string_view jsonPath) {
                     d.fx.reloadMult  = e->fnum("reloadMult", 0.0f);
                     d.fx.ammoCapMult = e->fnum("ammoCapMult", 0.0f);
                     d.fx.critChance  = e->fnum("critChance", 0.0f);
+                }
+                // ---- WEAPON ATTACHMENT block ("attach") ------------------------
+                // Same load-or-bake pattern; a malformed/absent block simply leaves
+                // attach.valid == false and the item is not an attachment.
+                if (const jmini::JVal* a = j.get("attach");
+                        a && a->t == jmini::JVal::Obj && d.cat == ItemCategory::Attachment) {
+                    AttachSpec& s = d.attach;
+                    s.id   = d.id;
+                    s.name = d.name;
+                    const std::string sn = a->sval("slot", "");
+                    s.slot = attachSlotFromName(sn);
+                    s.valid = !sn.empty();
+                    if (const jmini::JVal* st = a->get("stats"); st && st->t == jmini::JVal::Obj) {
+                        s.stats.damageMult   = st->fnum("damageMult",   0.0f);
+                        s.stats.spreadMult   = st->fnum("spreadMult",   0.0f);
+                        s.stats.recoilMult   = st->fnum("recoilMult",   0.0f);
+                        s.stats.rangeMult    = st->fnum("rangeMult",    0.0f);
+                        s.stats.magMult      = st->fnum("magMult",      0.0f);
+                        s.stats.reloadMult   = st->fnum("reloadMult",   0.0f);
+                        s.stats.ammoCapMult  = st->fnum("ammoCapMult",  0.0f);
+                        s.stats.noiseMult    = st->fnum("noiseMult",    0.0f);
+                        s.stats.flashScale   = st->fnum("flashScale",   0.0f);
+                        s.stats.handlingMult = st->fnum("handlingMult", 0.0f);
+                        s.stats.critChance   = st->fnum("critChance",   0.0f);
+                        s.stats.damageType   = st->inum("damageType",  -1);
+                    }
+                    if (const jmini::JVal* o = a->get("optic"); o && o->t == jmini::JVal::Obj) {
+                        s.optic.isOptic   = true;
+                        s.optic.sightRise  = o->fnum("sightRise",  s.optic.sightRise);
+                        s.optic.sightAlong = o->fnum("sightAlong", s.optic.sightAlong);
+                        s.optic.adsFovDeg  = o->fnum("adsFovDeg",  s.optic.adsFovDeg);
+                        s.optic.adsTime    = o->fnum("adsTime",    s.optic.adsTime);
+                        s.optic.sway       = o->fnum("sway",       s.optic.sway);
+                        s.optic.fullScope  = o->inum("fullScope", 0) != 0;
+                    }
+                    s.part      = attachPartFromName(a->sval("part", "none"));
+                    s.metallic  = a->fnum("metallic",  s.metallic);
+                    s.roughness = a->fnum("roughness", s.roughness);
+                    if (const jmini::JVal* c = a->get("albedo"); c && c->t == jmini::JVal::Arr)
+                        for (size_t k = 0; k < 3 && k < c->arr.size(); ++k)
+                            if (c->arr[k].t == jmini::JVal::Num) s.albedo[k] = (float)c->arr[k].num;
+                    if (const jmini::JVal* c = a->get("emissive"); c && c->t == jmini::JVal::Arr)
+                        for (size_t k = 0; k < 3 && k < c->arr.size(); ++k)
+                            if (c->arr[k].t == jmini::JVal::Num) s.emissive[k] = (float)c->arr[k].num;
                 }
                 m_items.push_back(std::move(d));
             }
@@ -128,6 +175,85 @@ void ItemDb::bakeFallback() {
     fx = {};
     add("sarah_photo", "Photograph of Sarah", ItemCategory::Quest, 1, 'Q', 0.90f, 0.80f, 0.60f, fx,
         "A creased photograph. She is why you are still moving.");
+
+    // ---- WEAPON ATTACHMENTS (mirrors the "attach" blocks in items.json) ------
+    // Same load-or-bake contract as the rest of the table: a clean checkout with no
+    // assets still boots the bench, the fits, and --test-attachments.
+    auto addAtt = [&](const char* id, const char* name, char glyph, AttachSlot slot,
+                      AttachPart part, AttachStats st, const char* desc,
+                      float ar, float ag, float ab, float metal, float rough,
+                      const OpticSpec* optic = nullptr,
+                      float er = 0.0f, float eg = 0.0f, float eb = 0.0f) {
+        ItemDef d;
+        d.id = id; d.name = name; d.cat = ItemCategory::Attachment; d.stack = 1;
+        d.glyph = glyph; d.desc = desc;
+        d.color[0] = ar > 0.5f ? ar : ar + 0.4f; d.color[1] = ag + 0.35f; d.color[2] = ab + 0.35f;
+        d.color[3] = 1.0f;
+        AttachSpec& s = d.attach;
+        s.valid = true; s.id = id; s.name = name; s.slot = slot; s.stats = st; s.part = part;
+        s.albedo[0] = ar; s.albedo[1] = ag; s.albedo[2] = ab;
+        s.metallic = metal; s.roughness = rough;
+        s.emissive[0] = er; s.emissive[1] = eg; s.emissive[2] = eb;
+        if (optic) s.optic = *optic;
+        m_items.push_back(std::move(d));
+    };
+    AttachStats st;
+    st = {}; st.damageMult = -0.15f; st.noiseMult = -0.70f; st.flashScale = -0.65f;
+    addAtt("att_suppressor", "Suppressor", 'S', AttachSlot::Barrel, AttachPart::Suppressor, st,
+           "BARREL. Heard at a third the distance, almost no flash. -15% damage.",
+           0.33f, 0.335f, 0.34f, 0.35f, 0.50f);
+    st = {}; st.spreadMult = -0.35f; st.recoilMult = -0.40f; st.flashScale = 0.90f; st.noiseMult = 0.25f;
+    addAtt("att_compensator", "Compensator", 'C', AttachSlot::Barrel, AttachPart::Compensator, st,
+           "BARREL. The gun stops climbing - and vents a much bigger, louder flash.",
+           0.40f, 0.385f, 0.35f, 0.35f, 0.40f);
+    st = {}; st.damageMult = 0.20f; st.rangeMult = 0.35f; st.handlingMult = -0.25f; st.reloadMult = 0.10f;
+    addAtt("att_heavy_barrel", "Heavy Barrel", 'H', AttachSlot::Barrel, AttachPart::HeavyBarrel, st,
+           "BARREL. Hits harder, reaches further, drags the whole gun around behind it.",
+           0.37f, 0.38f, 0.39f, 0.35f, 0.38f);
+    st = {}; st.magMult = 0.40f; st.ammoCapMult = 0.25f; st.reloadMult = 0.30f;
+    addAtt("att_ext_mag", "Extended Magazine", 'E', AttachSlot::Magazine, AttachPart::ExtMag, st,
+           "MAGAZINE. +40% rounds, deeper reserve. Reloads take 30% longer.",
+           0.34f, 0.34f, 0.355f, 0.20f, 0.65f);
+    st = {}; st.reloadMult = -0.35f; st.magMult = -0.25f;
+    addAtt("att_fast_mag", "Fast Magazine", 'F', AttachSlot::Magazine, AttachPart::FastMag, st,
+           "MAGAZINE. 35% faster reloads, a quarter fewer rounds.",
+           0.36f, 0.375f, 0.39f, 0.25f, 0.55f);
+    OpticSpec op;
+    st = {}; st.spreadMult = -0.30f; st.critChance = 0.05f; st.handlingMult = -0.05f;
+    op = {}; op.isOptic = true; op.sightRise = 0.105f; op.sightAlong = 0.06f;
+    op.adsFovDeg = 46.0f; op.adsTime = 0.12f; op.sway = 0.0f; op.fullScope = false;
+    addAtt("att_reflex", "Reflex Sight", 'R', AttachSlot::Optic, AttachPart::Reflex, st,
+           "OPTIC. Open red dot. Snaps up fast, barely narrows your view.",
+           0.31f, 0.315f, 0.32f, 0.30f, 0.45f, &op);
+    st = {}; st.spreadMult = -0.45f; st.critChance = 0.08f; st.rangeMult = 0.25f; st.handlingMult = -0.18f;
+    op = {}; op.isOptic = true; op.sightRise = 0.125f; op.sightAlong = 0.08f;
+    op.adsFovDeg = 28.0f; op.adsTime = 0.26f; op.sway = 0.12f; op.fullScope = false;
+    addAtt("att_acog", "Combat Optic", 'A', AttachSlot::Optic, AttachPart::Scope, st,
+           "OPTIC. 2x prism. Real reach; the world outside the glass goes away.",
+           0.32f, 0.33f, 0.32f, 0.30f, 0.38f, &op);
+    st = {}; st.spreadMult = -0.60f; st.critChance = 0.12f; st.rangeMult = 0.50f; st.handlingMult = -0.35f;
+    op = {}; op.isOptic = true; op.sightRise = 0.135f; op.sightAlong = 0.10f;
+    op.adsFovDeg = 14.0f; op.adsTime = 0.42f; op.sway = 0.30f; op.fullScope = true;
+    addAtt("att_scope", "Sniper Scope", 'X', AttachSlot::Optic, AttachPart::Scope, st,
+           "OPTIC. 4x glass, full scope picture, drifting reticle, barge-like turn.",
+           0.30f, 0.305f, 0.315f, 0.30f, 0.33f, &op);
+    st = {}; st.spreadMult = -0.50f; st.magMult = -0.15f;
+    addAtt("att_laser", "Targeting Laser", 'L', AttachSlot::Underbarrel, AttachPart::Laser, st,
+           "UNDERBARREL. Halves hipfire spread. Feeds off the mag, and paints a line back to you.",
+           0.35f, 0.35f, 0.36f, 0.30f, 0.40f, nullptr, 1.6f, 0.10f, 0.10f);
+    st = {}; st.recoilMult = -0.35f; st.handlingMult = 0.08f; st.rangeMult = -0.15f;
+    addAtt("att_grip", "Fore Grip", 'G', AttachSlot::Underbarrel, AttachPart::Grip, st,
+           "UNDERBARREL. -35% recoil, quicker swing, gives up reach.",
+           0.24f, 0.24f, 0.25f, 0.05f, 0.85f);
+    st = {}; st.damageType = (int)x3::DamageType::Energy; st.critChance = 0.06f;
+    st.damageMult = -0.10f; st.reloadMult = 0.15f;
+    addAtt("att_salvari_coating", "Salvari Coating", 'V', AttachSlot::Coating, AttachPart::Cell, st,
+           "COATING. Every shot leaves as ENERGY. The lattice bleeds charge.",
+           0.27f, 0.34f, 0.30f, 0.30f, 0.30f, nullptr, 0.10f, 1.30f, 0.55f);
+    st = {}; st.damageType = (int)x3::DamageType::Kinetic; st.damageMult = 0.12f; st.noiseMult = 0.35f;
+    addAtt("att_kinetic_coating", "Kinetic Sheath", 'K', AttachSlot::Coating, AttachPart::Cell, st,
+           "COATING. Every shot leaves as KINETIC and hits harder. It cracks like a cannon.",
+           0.38f, 0.32f, 0.24f, 0.30f, 0.35f, nullptr, 1.30f, 0.55f, 0.10f);
 }
 
 } // namespace x3::game

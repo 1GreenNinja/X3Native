@@ -1,6 +1,7 @@
 {
   "version": "x3.items/1",
-  "comment": "EFLZ item database (W9-3 RPG layer). Loaded by app/item_db.cpp; the baked fallback in code mirrors the core of this table. categories: consumable | keycard | mod | upgrade_part | quest. stack = max per backpack slot. effect fields: heal, ammo (reserve rounds to held weapon), keycard (door keycard id), xp, damageMult / reloadMult / ammoCapMult / critChance (mod fractions).",
+  "comment": "EFLZ item database (W9-3 RPG layer). Loaded by app/item_db.cpp; the baked fallback in code mirrors the core of this table. categories: consumable | keycard | mod | upgrade_part | quest | attachment. stack = max per backpack slot. effect fields: heal, ammo (reserve rounds to held weapon), keycard (door keycard id), xp, damageMult / reloadMult / ammoCapMult / critChance (mod fractions).",
+  "attachComment": "WEAPON ATTACHMENTS (feat/weapon-attachments). category 'attachment' + an 'attach' block: slot = optic|barrel|magazine|underbarrel|coating; stats = FRACTIONS of base (0.20 = +20%) folded MULTIPLICATIVELY by applyAttachments(), except critChance (flat, additive) and damageType (1=Kinetic 2=Energy 3=Explosive). EVERY attachment gives AND takes. 'optic' makes the Optic slot a real ADS sight (adsFovDeg = the camera FOV while scoped; sightRise/sightAlong place the LENS CENTRE (rise above the BORE, along = fraction of the muzzle distance FROM THE MODEL ORIGIN, so 0 = on the receiver and 1 = at the tip), and are the SAME point the ADS solve aligns to the fire ray). 'part' names the visible mesh mounted on the gun. Attachments are FITTED AT THE WEAPON BENCH (Security Station), never from the backpack.",
   "items": [
     {
       "id": "medkit", "name": "Medkit", "category": "consumable", "stack": 5,
@@ -73,6 +74,149 @@
       "glyph": "Q", "color": [0.90, 0.80, 0.60, 1.0],
       "desc": "A creased photograph. She is why you are still moving.",
       "effect": {}
+    },
+
+    {
+      "id": "att_suppressor", "name": "Suppressor", "category": "attachment", "stack": 1,
+      "glyph": "S", "color": [0.62, 0.64, 0.66, 1.0],
+      "desc": "BARREL. Baffled can. They hear you at a third of the distance and the flash all but vanishes - but the round leaves slower. -15% damage.",
+      "effect": {},
+      "attach": {
+        "slot": "barrel", "part": "suppressor",
+        "albedo": [0.33, 0.335, 0.34], "metallic": 0.35, "roughness": 0.50,
+        "stats": { "damageMult": -0.15, "noiseMult": -0.70, "flashScale": -0.65 }
+      }
+    },
+    {
+      "id": "att_compensator", "name": "Compensator", "category": "attachment", "stack": 1,
+      "glyph": "C", "color": [0.72, 0.70, 0.62, 1.0],
+      "desc": "BARREL. Ported brake. The gun stops climbing - and vents a much bigger, louder flash out the sides. You are easier to find.",
+      "effect": {},
+      "attach": {
+        "slot": "barrel", "part": "compensator",
+        "albedo": [0.40, 0.385, 0.35], "metallic": 0.35, "roughness": 0.40,
+        "stats": { "spreadMult": -0.35, "recoilMult": -0.40, "flashScale": 0.90, "noiseMult": 0.25 }
+      }
+    },
+    {
+      "id": "att_heavy_barrel", "name": "Heavy Barrel", "category": "attachment", "stack": 1,
+      "glyph": "H", "color": [0.55, 0.58, 0.62, 1.0],
+      "desc": "BARREL. Longer, thicker, heavier. It hits harder and reaches further - and it drags the whole gun around behind it. Slower turn, slower reload.",
+      "effect": {},
+      "attach": {
+        "slot": "barrel", "part": "heavy_barrel",
+        "albedo": [0.37, 0.38, 0.39], "metallic": 0.35, "roughness": 0.38,
+        "stats": { "damageMult": 0.20, "rangeMult": 0.35, "handlingMult": -0.25, "reloadMult": 0.10 }
+      }
+    },
+
+    {
+      "id": "att_ext_mag", "name": "Extended Magazine", "category": "attachment", "stack": 1,
+      "glyph": "E", "color": [0.75, 0.72, 0.35, 1.0],
+      "desc": "MAGAZINE. +40% rounds in the mag and a deeper reserve. It is a brick: reloads take 30% longer.",
+      "effect": {},
+      "attach": {
+        "slot": "magazine", "part": "ext_mag",
+        "albedo": [0.34, 0.34, 0.355], "metallic": 0.20, "roughness": 0.65,
+        "stats": { "magMult": 0.40, "ammoCapMult": 0.25, "reloadMult": 0.30 }
+      }
+    },
+    {
+      "id": "att_fast_mag", "name": "Fast Magazine", "category": "attachment", "stack": 1,
+      "glyph": "F", "color": [0.45, 0.80, 0.85, 1.0],
+      "desc": "MAGAZINE. Tapered, tabbed, ejects clean - 35% faster reloads. Holds a quarter fewer rounds.",
+      "effect": {},
+      "attach": {
+        "slot": "magazine", "part": "fast_mag",
+        "albedo": [0.36, 0.375, 0.39], "metallic": 0.25, "roughness": 0.55,
+        "stats": { "reloadMult": -0.35, "magMult": -0.25 }
+      }
+    },
+
+    {
+      "id": "att_reflex", "name": "Reflex Sight", "category": "attachment", "stack": 1,
+      "glyph": "R", "color": [0.85, 0.30, 0.30, 1.0],
+      "desc": "OPTIC. Open red dot. Snaps up fast, barely narrows your view, tightens the shot. Both eyes stay open.",
+      "effect": {},
+      "attach": {
+        "slot": "optic", "part": "reflex",
+        "albedo": [0.31, 0.315, 0.32], "metallic": 0.30, "roughness": 0.45,
+        "stats": { "spreadMult": -0.30, "critChance": 0.05, "handlingMult": -0.05 },
+        "optic": { "sightRise": 0.105, "sightAlong": 0.06, "adsFovDeg": 46.0, "adsTime": 0.12, "sway": 0.0, "fullScope": 0 }
+      }
+    },
+    {
+      "id": "att_acog", "name": "Combat Optic", "category": "attachment", "stack": 1,
+      "glyph": "A", "color": [0.55, 0.70, 0.45, 1.0],
+      "desc": "OPTIC. 2x prism. Real magnification, real reach - and the world outside the glass goes away. Slower to bring up, heavier to swing.",
+      "effect": {},
+      "attach": {
+        "slot": "optic", "part": "scope",
+        "albedo": [0.32, 0.33, 0.32], "metallic": 0.30, "roughness": 0.38,
+        "stats": { "spreadMult": -0.45, "critChance": 0.08, "rangeMult": 0.25, "handlingMult": -0.18 },
+        "optic": { "sightRise": 0.125, "sightAlong": 0.08, "adsFovDeg": 28.0, "adsTime": 0.26, "sway": 0.12, "fullScope": 0 }
+      }
+    },
+    {
+      "id": "att_scope", "name": "Sniper Scope", "category": "attachment", "stack": 1,
+      "glyph": "X", "color": [0.35, 0.55, 0.90, 1.0],
+      "desc": "OPTIC. 4x glass, full scope picture. You can pick a face off across the hall - through a black tube, with a drifting reticle, turning like a barge.",
+      "effect": {},
+      "attach": {
+        "slot": "optic", "part": "scope",
+        "albedo": [0.30, 0.305, 0.315], "metallic": 0.30, "roughness": 0.33,
+        "stats": { "spreadMult": -0.60, "critChance": 0.12, "rangeMult": 0.50, "handlingMult": -0.35 },
+        "optic": { "sightRise": 0.135, "sightAlong": 0.10, "adsFovDeg": 14.0, "adsTime": 0.42, "sway": 0.30, "fullScope": 1 }
+      }
+    },
+
+    {
+      "id": "att_laser", "name": "Targeting Laser", "category": "attachment", "stack": 1,
+      "glyph": "L", "color": [0.95, 0.25, 0.25, 1.0],
+      "desc": "UNDERBARREL. Halves hipfire spread. The emitter feeds off the same cell as the gun (-15% magazine) - and it paints a visible line straight back to your face.",
+      "effect": {},
+      "attach": {
+        "slot": "underbarrel", "part": "laser",
+        "albedo": [0.35, 0.35, 0.36], "metallic": 0.30, "roughness": 0.40,
+        "emissive": [1.6, 0.10, 0.10],
+        "stats": { "spreadMult": -0.50, "magMult": -0.15 }
+      }
+    },
+    {
+      "id": "att_grip", "name": "Fore Grip", "category": "attachment", "stack": 1,
+      "glyph": "G", "color": [0.35, 0.33, 0.30, 1.0],
+      "desc": "UNDERBARREL. Braced and planted: -35% recoil, a touch quicker on the swing. You are holding it like a brawler, not a marksman - it gives up reach.",
+      "effect": {},
+      "attach": {
+        "slot": "underbarrel", "part": "grip",
+        "albedo": [0.24, 0.24, 0.25], "metallic": 0.05, "roughness": 0.85,
+        "stats": { "recoilMult": -0.35, "handlingMult": 0.08, "rangeMult": -0.15 }
+      }
+    },
+
+    {
+      "id": "att_salvari_coating", "name": "Salvari Coating", "category": "attachment", "stack": 1,
+      "glyph": "V", "color": [0.30, 0.95, 0.60, 1.0],
+      "desc": "COATING. Salvari energy lattice. Every shot leaves as ENERGY - it bites things that shrug off metal - but the lattice bleeds charge: -10% damage, slower cycling.",
+      "effect": {},
+      "attach": {
+        "slot": "coating", "part": "cell",
+        "albedo": [0.27, 0.34, 0.30], "metallic": 0.30, "roughness": 0.30,
+        "emissive": [0.10, 1.30, 0.55],
+        "stats": { "damageType": 2, "critChance": 0.06, "damageMult": -0.10, "reloadMult": 0.15 }
+      }
+    },
+    {
+      "id": "att_kinetic_coating", "name": "Kinetic Sheath", "category": "attachment", "stack": 1,
+      "glyph": "K", "color": [1.00, 0.60, 0.20, 1.0],
+      "desc": "COATING. Mass-driver sheath. Every shot leaves as KINETIC and hits 12% harder. It cracks like a cannon - they hear you a third further out.",
+      "effect": {},
+      "attach": {
+        "slot": "coating", "part": "cell",
+        "albedo": [0.38, 0.32, 0.24], "metallic": 0.30, "roughness": 0.35,
+        "emissive": [1.30, 0.55, 0.10],
+        "stats": { "damageType": 1, "damageMult": 0.12, "noiseMult": 0.35 }
+      }
     }
   ]
 }

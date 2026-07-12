@@ -1,0 +1,654 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1074501-68CD-3BD5-9F7B-EF97CCF421AE}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>X3Engine</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="do_not_import_user.props" Condition="exists('do_not_import_user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\GameDev\X3Native-attach\build-attach\bin\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">X3Engine.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">X3Engine</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\GameDev\X3Native-attach\build-attach\bin\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">X3Engine.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">X3Engine</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\GameDev\X3Native-attach\build-attach\bin\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">X3Engine.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">X3Engine</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\GameDev\X3Native-attach\build-attach\bin\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">X3Engine.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">X3Engine</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/include" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ConformanceMode>true</ConformanceMode>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;GLFW_DLL;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;GLFW_DLL;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message>	</Message>
+      <Command>setlocal
+C:\Users\Tim\AppData\Local\Microsoft\WindowsApps\pwsh.exe -noprofile -executionpolicy Bypass -file C:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary D:/GameDev/X3Native-attach/build-attach/bin/Debug/X3Engine.exe -installedDir D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/debug/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/GameDev/X3Native-attach/build-attach/bin/Debug/shaders
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory D:/GameDev/X3Native-attach/build-attach/shaders_spv D:/GameDev/X3Native-attach/build-attach/bin/Debug/shaders
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>..\engine\Debug\x3engine.lib;..\vcpkg_installed\x64-windows\debug\lib\imguid.lib;..\vcpkg_installed\x64-windows\debug\lib\glfw3dll.lib;..\vcpkg_installed\x64-windows\debug\lib\vulkan-1.lib;..\vcpkg_installed\x64-windows\debug\lib\vk-bootstrap.lib;..\vcpkg_installed\x64-windows\debug\lib\miniz.lib;..\vcpkg_installed\x64-windows\debug\lib\glm.lib;..\vcpkg_installed\x64-windows\debug\lib\Jolt.lib;..\vcpkg_installed\x64-windows\debug\lib\lua.lib;..\_deps\llama_cpp-build\src\Debug\llama.lib;..\_deps\llama_cpp-build\ggml\src\Debug\ggml.lib;..\_deps\llama_cpp-build\ggml\src\Debug\ggml-cpu.lib;..\_deps\llama_cpp-build\ggml\src\Debug\ggml-base.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>D:/GameDev/X3Native-attach/build-attach/app/Debug/X3Engine.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>D:/GameDev/X3Native-attach/build-attach/bin/Debug/X3Engine.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/include" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ConformanceMode>true</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;GLFW_DLL;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;GLFW_DLL;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message>	</Message>
+      <Command>setlocal
+C:\Users\Tim\AppData\Local\Microsoft\WindowsApps\pwsh.exe -noprofile -executionpolicy Bypass -file C:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary D:/GameDev/X3Native-attach/build-attach/bin/Release/X3Engine.exe -installedDir D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/GameDev/X3Native-attach/build-attach/bin/Release/shaders
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory D:/GameDev/X3Native-attach/build-attach/shaders_spv D:/GameDev/X3Native-attach/build-attach/bin/Release/shaders
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>..\engine\Release\x3engine.lib;..\vcpkg_installed\x64-windows\lib\imgui.lib;..\vcpkg_installed\x64-windows\lib\glfw3dll.lib;..\vcpkg_installed\x64-windows\debug\lib\vulkan-1.lib;..\vcpkg_installed\x64-windows\lib\vk-bootstrap.lib;..\vcpkg_installed\x64-windows\lib\miniz.lib;..\vcpkg_installed\x64-windows\lib\glm.lib;..\vcpkg_installed\x64-windows\lib\Jolt.lib;..\vcpkg_installed\x64-windows\lib\lua.lib;..\_deps\llama_cpp-build\src\Release\llama.lib;..\_deps\llama_cpp-build\ggml\src\Release\ggml.lib;..\_deps\llama_cpp-build\ggml\src\Release\ggml-cpu.lib;..\_deps\llama_cpp-build\ggml\src\Release\ggml-base.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>D:/GameDev/X3Native-attach/build-attach/app/Release/X3Engine.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>D:/GameDev/X3Native-attach/build-attach/bin/Release/X3Engine.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/include" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ConformanceMode>true</ConformanceMode>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;GLFW_DLL;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;GLFW_DLL;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message>	</Message>
+      <Command>setlocal
+C:\Users\Tim\AppData\Local\Microsoft\WindowsApps\pwsh.exe -noprofile -executionpolicy Bypass -file C:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary D:/GameDev/X3Native-attach/build-attach/bin/MinSizeRel/X3Engine.exe -installedDir D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/GameDev/X3Native-attach/build-attach/bin/MinSizeRel/shaders
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory D:/GameDev/X3Native-attach/build-attach/shaders_spv D:/GameDev/X3Native-attach/build-attach/bin/MinSizeRel/shaders
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>..\engine\MinSizeRel\x3engine.lib;..\vcpkg_installed\x64-windows\lib\imgui.lib;..\vcpkg_installed\x64-windows\lib\glfw3dll.lib;..\vcpkg_installed\x64-windows\debug\lib\vulkan-1.lib;..\vcpkg_installed\x64-windows\lib\vk-bootstrap.lib;..\vcpkg_installed\x64-windows\lib\miniz.lib;..\vcpkg_installed\x64-windows\lib\glm.lib;..\vcpkg_installed\x64-windows\lib\Jolt.lib;..\vcpkg_installed\x64-windows\lib\lua.lib;..\_deps\llama_cpp-build\src\MinSizeRel\llama.lib;..\_deps\llama_cpp-build\ggml\src\MinSizeRel\ggml.lib;..\_deps\llama_cpp-build\ggml\src\MinSizeRel\ggml-cpu.lib;..\_deps\llama_cpp-build\ggml\src\MinSizeRel\ggml-base.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>D:/GameDev/X3Native-attach/build-attach/app/MinSizeRel/X3Engine.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>D:/GameDev/X3Native-attach/build-attach/bin/MinSizeRel/X3Engine.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/include" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ConformanceMode>true</ConformanceMode>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;GLFW_DLL;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;NOMINMAX;WIN32_LEAN_AND_MEAN;VK_USE_PLATFORM_WIN32_KHR;GLFW_DLL;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>D:\GameDev\X3Native-attach;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message>	</Message>
+      <Command>setlocal
+C:\Users\Tim\AppData\Local\Microsoft\WindowsApps\pwsh.exe -noprofile -executionpolicy Bypass -file C:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary D:/GameDev/X3Native-attach/build-attach/bin/RelWithDebInfo/X3Engine.exe -installedDir D:/GameDev/X3Native-attach/build-attach/vcpkg_installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/GameDev/X3Native-attach/build-attach/bin/RelWithDebInfo/shaders
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory D:/GameDev/X3Native-attach/build-attach/shaders_spv D:/GameDev/X3Native-attach/build-attach/bin/RelWithDebInfo/shaders
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>..\engine\RelWithDebInfo\x3engine.lib;..\vcpkg_installed\x64-windows\lib\imgui.lib;..\vcpkg_installed\x64-windows\lib\glfw3dll.lib;..\vcpkg_installed\x64-windows\debug\lib\vulkan-1.lib;..\vcpkg_installed\x64-windows\lib\vk-bootstrap.lib;..\vcpkg_installed\x64-windows\lib\miniz.lib;..\vcpkg_installed\x64-windows\lib\glm.lib;..\vcpkg_installed\x64-windows\lib\Jolt.lib;..\vcpkg_installed\x64-windows\lib\lua.lib;..\_deps\llama_cpp-build\src\RelWithDebInfo\llama.lib;..\_deps\llama_cpp-build\ggml\src\RelWithDebInfo\ggml.lib;..\_deps\llama_cpp-build\ggml\src\RelWithDebInfo\ggml-cpu.lib;..\_deps\llama_cpp-build\ggml\src\RelWithDebInfo\ggml-base.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>D:/GameDev/X3Native-attach/build-attach/app/RelWithDebInfo/X3Engine.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>D:/GameDev/X3Native-attach/build-attach/bin/RelWithDebInfo/X3Engine.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\app\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule D:/GameDev/X3Native-attach/app/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\SelectLibraryConfigurations.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\imgui\imgui-config.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\imgui\imgui-targets.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\stb\FindStb.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\stb\vcpkg-cmake-wrapper.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\GameDev\X3Native-attach\build-attach\app\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule D:/GameDev/X3Native-attach/app/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\SelectLibraryConfigurations.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\imgui\imgui-config.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\imgui\imgui-targets.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\stb\FindStb.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\stb\vcpkg-cmake-wrapper.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\GameDev\X3Native-attach\build-attach\app\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule D:/GameDev/X3Native-attach/app/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\SelectLibraryConfigurations.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\imgui\imgui-config.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\imgui\imgui-targets.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\stb\FindStb.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\stb\vcpkg-cmake-wrapper.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\GameDev\X3Native-attach\build-attach\app\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule D:/GameDev/X3Native-attach/app/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\CMake\share\cmake-4.2\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.2\Modules\SelectLibraryConfigurations.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\imgui\imgui-config.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\imgui\imgui-targets.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\stb\FindStb.cmake;D:\GameDev\X3Native-attach\build-attach\vcpkg_installed\x64-windows\share\stb\vcpkg-cmake-wrapper.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\GameDev\X3Native-attach\build-attach\app\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\main.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\bindings.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\self_tests.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\test_registry.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\cinematic.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\cli.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\app_run.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\screenshot_hosts.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\world_hosts.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_destruct.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_physjoint.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_ragdoll.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_drive.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_club.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_showroom.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_valley.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_cliffs.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_streamed.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_space.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_strata.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_elevator.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_surface_start.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_hosts\host_rifthub.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\rifthub.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\rift_depths.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\rift_console.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\destinations.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_menu.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space_pilot.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\ship_ai.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\targeting.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\ship_damage.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\space_layer.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\descent.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\eva.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\lod.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\decloak_vfx.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\space\space_env.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\intro_orchestrator.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\scene.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\level.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\level1.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\level_lint.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\level_loader.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\leveldoc_world.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\player.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\door.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\keypad.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\physprops.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\ragdoll.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\barrels.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\glass_test.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\holo_panel.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\holo_terminal.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\secret_room.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\ecs_render.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\editor\editor.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\editor\editor_keybinds.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\editor\editor_host.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\elevator.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\elevator_showcase.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\strata.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\weapon.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\monster.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\anim.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\thirdperson.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\melee.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\objective.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\trigger.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\rescue.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\npc_dialog.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\story_ops.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\chat_tree.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\mission.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\level1_game.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\canon_play.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\interactables.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\desc_mechanics.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\canon_45.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\cell_dressing.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\room_dressing.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\facility_exterior.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\surface_library.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\intro_coldopen.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\cutscene.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\spire_mid.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\spire_top.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\spire_nexus.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\spire_sublevels.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\timeline.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\act2_world.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\act2_desert.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\act2_caves.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\tod.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\weather.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_regions.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_stream.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_map.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\city.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\ocean_base.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\save.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\dialog.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\env_art.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\club1127.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\cues.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\valley.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\cliffs.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\terrain.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\vehicle.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\world_cars.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\street_lights.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\vehparts.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\perfshop.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\ecology.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\crowd.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\crowd_skin.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\crowd_chatter.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\alert.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\fx.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\hud.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\loading_screen.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\canon_aliens.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\item_db.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\inventory.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\progression.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\skilltree.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\rpg_ui.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\attachments.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\attach_view.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\weapon_bench.cpp" />
+    <ClCompile Include="D:\GameDev\X3Native-attach\app\ui.cpp" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\ZERO_CHECK.vcxproj">
+      <Project>{C7600052-245C-3F4E-9433-4E150D2C2830}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml.vcxproj">
+      <Project>{89F29ED7-0705-3EEA-8F73-4FC4BDA47A28}</Project>
+      <Name>ggml</Name>
+    </ProjectReference>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-base.vcxproj">
+      <Project>{743BF8CD-9137-31F8-AFF9-B2130D6DA00E}</Project>
+      <Name>ggml-base</Name>
+    </ProjectReference>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\ggml\src\ggml-cpu.vcxproj">
+      <Project>{6DC66732-86A5-3CD2-86E6-F70A77626FFC}</Project>
+      <Name>ggml-cpu</Name>
+    </ProjectReference>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-build\src\llama.vcxproj">
+      <Project>{EA3BD1AB-32A0-31C9-8223-8F670F732D39}</Project>
+      <Name>llama</Name>
+    </ProjectReference>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\engine\x3engine.vcxproj">
+      <Project>{B24D06D3-2D30-388F-B4AA-03C1F7D2B2F6}</Project>
+      <Name>x3engine</Name>
+    </ProjectReference>
+    <ProjectReference Include="D:\GameDev\X3Native-attach\build-attach\app\x3shaders.vcxproj">
+      <Project>{384746E0-9F0B-351A-B876-905C6AE2F641}</Project>
+      <Name>x3shaders</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

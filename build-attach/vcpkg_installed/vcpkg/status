@@ -1,0 +1,174 @@
+Package: cgltf
+Version: 1.15
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 6dbca480c3b3f46a495fefd1cbd74d2c818f81f3bfb23cd963bd516b97b6e88b
+Description: Single-file glTF 2.0 loader and writer written in C99
+Status: install ok installed
+
+Package: vcpkg-cmake-config
+Version: 2024-05-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 60f8176e3a3514049044c67914cdfdf8d22aa1fbafe881c4ecf442389eac11fc
+Status: install ok installed
+
+Package: vcpkg-cmake
+Version: 2024-04-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 5410f074e54e8da9c407a7f8317cfe20882b493bc3bab002f67dd80c4aafbf76
+Status: install ok installed
+
+Package: glfw3
+Version: 3.4
+Port-Version: 1
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 5f5051a65d2eaa1e1228a827a0b8631eed2cbb36444da8c50b410735a5ebd9c6
+Description: GLFW is a free, Open Source, multi-platform library for OpenGL, OpenGL ES and Vulkan application development. It provides a simple, platform-independent API for creating windows, contexts and surfaces, reading input, handling events, etc.
+Status: install ok installed
+
+Package: glm
+Version: 1.0.3
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 48089e332af2f7743281e15f2187ece0c854b80da355ab450d80532ea09f181d
+Description: OpenGL Mathematics (GLM)
+Status: install ok installed
+
+Package: vulkan-headers
+Version: 1.4.350.0
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 106f9f09cea558e01cd12082daa77e95e2a1e0607177c648f2b37cc47c5d42da
+Description: Vulkan header files and API registry
+Status: install ok installed
+
+Package: vulkan-loader
+Version: 1.4.350.0
+Depends: vcpkg-cmake, vcpkg-cmake-config, vulkan-headers
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 6563c10a19483775a7d518aa02cfe71161722470b319b0229d6da554a63b9e36
+Description: Vulkan Development Tools
+Status: install ok installed
+
+Package: vulkan
+Version: 2023-12-17
+Depends: vcpkg-cmake, vulkan-headers, vulkan-loader
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 858670d037622ecd9a308dd5c3053e2a05f9272d416d9c324d23689f6683d579
+Description: A stub package that ensures that Vulkan headers and a loader are available.
+    On Android, the NDK provides a loader at API level 24 or higher.
+Status: install ok installed
+
+Package: imgui
+Version: 1.92.8
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 93c9ea10f455f50898fae164eb38b9d0d6c160e9e2234a412190ce8f00ea28c4
+Description: Bloat-free Immediate Mode Graphical User interface for C++ with minimal dependencies.
+Status: install ok installed
+
+Package: imgui
+Feature: docking-experimental
+Architecture: x64-windows
+Multi-Arch: same
+Description: Build with docking support
+Status: install ok installed
+
+Package: imgui
+Feature: glfw-binding
+Depends: glfw3
+Architecture: x64-windows
+Multi-Arch: same
+Description: Make available GLFW binding
+Status: install ok installed
+
+Package: imgui
+Feature: vulkan-binding
+Depends: vulkan
+Architecture: x64-windows
+Multi-Arch: same
+Description: Make available Vulkan binding
+Status: install ok installed
+
+Package: joltphysics
+Version: 5.5.0
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 08e83047a72016486ea33625b142e526fcf834e324ee9e9389bd731d1d9a39e2
+Description: A multi core friendly rigid body physics and collision detection library suitable for games and VR applications
+Status: install ok installed
+
+Package: lua
+Version: 5.5.0
+Port-Version: 1
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 81da7b3d69528beeb1e3c35f2768be6162f99c2cfe2a97cb308263f630572712
+Description: A powerful, fast, lightweight, embeddable scripting language
+Status: install ok installed
+
+Package: miniaudio
+Version: 0.11.25
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 33d31e0d50507577cff272aff8649741a95bb59bc84a9d4f925051b7cdc703e7
+Description: Audio playback and capture library written in C, in a single source file
+Status: install ok installed
+
+Package: miniz
+Version: 3.1.1
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 5b4020e4c1ffa4d790e494d5a9fae3618c0414f374953195d9b233dacf1d6ba1
+Description: Single C source file zlib-replacement library
+Status: install ok installed
+
+Package: sol2
+Version: 3.5.0
+Port-Version: 1
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 4674232680dca12100986c4d47c8c6068f7c407a532825e19e4b4f8381787d58
+Description: Sol3 (sol2 v3.0) - a C++ <-> Lua API wrapper with advanced features and top notch performance
+Status: install ok installed
+
+Package: stb
+Version: 2024-07-29
+Port-Version: 1
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 3e410227e4e628baaaa1534f8e7dff0afd3e667859baf7f98eeae1f25f504d54
+Description: public domain header-only libraries
+Status: install ok installed
+
+Package: vk-bootstrap
+Version: 1.4.350
+Depends: vcpkg-cmake, vcpkg-cmake-config, vulkan-headers
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 096176085a7940831d930f16dbdcc4eb9970358e94c547c9f6897e203fd71dc2
+Description: Vulkan bootstraping library
+Status: install ok installed
+
+Package: vulkan-memory-allocator
+Version: 3.3.0
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 03d117b4b5e0c78ed00cae1edf36a7980a0bd19f8b9c9d20a3128d89943b6ad4
+Description: Easy to integrate Vulkan memory allocation library from GPUOpen
+Status: install ok installed
+

@@ -29,6 +29,7 @@
 #include "inventory.h"          // W9-3 RPG: runInventorySelfTest
 #include "progression.h"        // W9-3 RPG: runProgressionSelfTest
 #include "skilltree.h"          // W9-3 RPG: runSkillTreeSelfTest
+#include "attachments.h"        // WEAPON ATTACHMENTS: runAttachmentsSelfTest
 #include "engine/physics/StructuralCollapse.h"
 #include "engine/physics/Ragdoll.h"
 #include "engine/physics/IVehicle.h"
@@ -312,6 +313,11 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testSkillTree) {   // W9-3 RPG
         x3::logInfo("running the SKILL TREE self-test (S1-S7: prereq/cost + the stat fold reaching the player)...");
         return x3::game::runSkillTreeSelfTest() ? 0 : 1;
+    }
+    if (tf.testAttachments) {   // WEAPON ATTACHMENTS
+        x3::logInfo("running the WEAPON ATTACHMENTS self-test (A1-A13: slot mask + the fold + "
+                    "skill composition + REAL ADS sight alignment w/ negative controls + save)...");
+        return x3::game::runAttachmentsSelfTest() ? 0 : 1;
     }
     if (tf.testStrata) {
         x3::logInfo("running STRATA descent self-test (R-3 fold: bands + offshoots + on-foot route + club arrival)...");

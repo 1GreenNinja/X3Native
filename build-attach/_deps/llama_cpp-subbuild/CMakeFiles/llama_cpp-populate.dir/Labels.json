@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/llama_cpp-populate"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/7e04c22e4e58f1676361a28b34c1acbf/llama_cpp-populate.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/067511b5265b57988be8c845fcb16b2b/llama_cpp-populate-complete.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/6125f03cf32f7747b56afab8ddee47a7/llama_cpp-populate-build.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/6125f03cf32f7747b56afab8ddee47a7/llama_cpp-populate-configure.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/6125f03cf32f7747b56afab8ddee47a7/llama_cpp-populate-download.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/6125f03cf32f7747b56afab8ddee47a7/llama_cpp-populate-install.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/6125f03cf32f7747b56afab8ddee47a7/llama_cpp-populate-mkdir.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/6125f03cf32f7747b56afab8ddee47a7/llama_cpp-populate-patch.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/6125f03cf32f7747b56afab8ddee47a7/llama_cpp-populate-test.rule"
+		},
+		{
+			"file" : "D:/GameDev/X3Native-attach/build-attach/_deps/llama_cpp-subbuild/CMakeFiles/6125f03cf32f7747b56afab8ddee47a7/llama_cpp-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"llama_cpp-populate"
+		],
+		"name" : "llama_cpp-populate"
+	}
+}

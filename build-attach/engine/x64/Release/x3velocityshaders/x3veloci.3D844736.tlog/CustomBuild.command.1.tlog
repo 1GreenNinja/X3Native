@@ -1,0 +1,38 @@
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\VELOCITY.FRAG.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/velocity.frag -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/velocity.frag.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\DE3D0A088F625C05239C243B66B389BC\VELOCITY.VERT.SPV.RULE
+setlocal
+C:\VulkanSDK\1.4.341.1\Bin\glslc.exe D:/GameDev/X3Native-attach/shaders/velocity.vert -o D:/GameDev/X3Native-attach/build-attach/shaders_spv/velocity.vert.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\BUILD-ATTACH\CMAKEFILES\E7D7EEF810356FB74B24924817840E94\X3VELOCITYSHADERS.RULE
+setlocal
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^D:\GAMEDEV\X3NATIVE-ATTACH\ENGINE\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/GameDev/X3Native-attach -BD:/GameDev/X3Native-attach/build-attach --check-stamp-file D:/GameDev/X3Native-attach/build-attach/engine/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

@@ -293,6 +293,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
     {
         WeaponDef w;
         w.name        = "pistol";
+        w.attachSlots = slotBit(AttachSlot::Optic) | slotBit(AttachSlot::Barrel) | slotBit(AttachSlot::Magazine) | slotBit(AttachSlot::Coating);   // sidearm: no room for an underbarrel
         w.kind        = FireKind::Hitscan;
         w.automatic   = false;
         w.damage      = 16;       // +1: a clean 4-shot kill on 60-HP trash
@@ -322,6 +323,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
     {
         WeaponDef w;
         w.name        = "smg";
+        w.attachSlots = kSlotsAll;   // the full rail: every slot
         w.kind        = FireKind::Hitscan;
         w.automatic   = true;
         w.damage      = 11;       // slightly trimmed per-round (rate carries the DPS)
@@ -355,6 +357,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
     {
         WeaponDef w;
         w.name        = "shotgun";
+        w.attachSlots = kSlotsAll;   // a big frame takes everything
         w.kind        = FireKind::Hitscan;
         w.automatic   = false;
         w.damage      = 14;       // PER pellet x10 = 140 point-blank (close-range deleter, falloff via range)
@@ -383,6 +386,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
     {
         WeaponDef w;
         w.name        = "plasma";
+        w.attachSlots = slotBit(AttachSlot::Coating);   // BFG-class energy: COATING ONLY - nothing bolts to it
         w.kind        = FireKind::Projectile;
         w.automatic   = false;
         w.damage      = 35;
@@ -426,6 +430,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
     {
         WeaponDef w;
         w.name        = "chaingun";
+        w.attachSlots = slotBit(AttachSlot::Barrel) | slotBit(AttachSlot::Magazine) | slotBit(AttachSlot::Underbarrel) | slotBit(AttachSlot::Coating);   // spinning barrels: no optic mount
         w.kind        = FireKind::Hitscan;
         w.automatic   = true;
         w.damage      = 13;
@@ -464,6 +469,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
     {
         WeaponDef w;
         w.name        = "plasma_rifle";
+        w.attachSlots = slotBit(AttachSlot::Optic) | slotBit(AttachSlot::Coating);   // energy rifle: glass + coating
         w.kind        = FireKind::Projectile;
         w.automatic   = true;         // full-auto bolt stream
         w.damage      = 40;           // direct-hit damage
@@ -500,6 +506,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
     {
         WeaponDef w;
         w.name        = "lightning";
+        w.attachSlots = slotBit(AttachSlot::Optic) | slotBit(AttachSlot::Coating);   // the arc emitter: glass + coating (the charge model belongs in Coating)
         w.kind        = FireKind::Hitscan;   // instant-hit beam = hitscan path
         w.automatic   = true;                // held = continuous beam
         // R-1 (ATTENTION_FableAAA fold): TIM'S LIVE PLAYTEST TUNE from the
@@ -543,6 +550,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
     {
         WeaponDef w;
         w.name        = "rocket";
+        w.attachSlots = slotBit(AttachSlot::Optic) | slotBit(AttachSlot::Underbarrel) | slotBit(AttachSlot::Coating);   // a tube: optic, grip, coating
         w.kind        = FireKind::Projectile;
         w.automatic   = false;
         w.damage      = 80;                   // direct-hit damage
@@ -625,10 +633,14 @@ x3::phys::Vec3 applySpread(const x3::phys::Vec3& dir, float spreadDeg, uint32_t&
 // Arsenal.
 // ---------------------------------------------------------------------------
 Arsenal::Arsenal(std::vector<WeaponDef> roster) : m_defs(std::move(roster)) {
+    // ATTACHMENTS: the effective-def cache mirrors the base roster until something is
+    // fitted (empty loadout == identity fold, asserted by --test-attachments A8).
+    m_loadouts.resize((int)m_defs.size());
+    m_eff = m_defs;
     m_state.resize(m_defs.size());
     for (size_t i = 0; i < m_defs.size(); ++i) {
-        m_state[i].ammoInMag = m_defs[i].magSize;   // start with a full mag
-        m_state[i].reserve   = m_defs[i].reserveAmmo;
+        m_state[i].ammoInMag = m_eff[i].magSize;   // start with a full mag
+        m_state[i].reserve   = m_eff[i].reserveAmmo;
         m_state[i].cooldown  = 0.0f;
         m_state[i].reloadTimer = 0.0f;
         m_state[i].spinUp      = 0.0f;               // cold barrel
@@ -644,8 +656,8 @@ void Arsenal::restore(int sel, const std::vector<std::pair<int,int>>& ammo) {
     for (size_t i = 0; i < n; ++i) {
         int mag = ammo[i].first;
         int res = ammo[i].second;
-        if (mag < 0) mag = 0; if (mag > m_defs[i].magSize)     mag = m_defs[i].magSize;
-        if (res < 0) res = 0; if (res > m_defs[i].reserveAmmo) res = m_defs[i].reserveAmmo;
+        if (mag < 0) mag = 0; if (mag > m_eff[i].magSize)     mag = m_eff[i].magSize;
+        if (res < 0) res = 0; if (res > m_eff[i].reserveAmmo) res = m_eff[i].reserveAmmo;
         m_state[i].ammoInMag   = mag;
         m_state[i].reserve     = res;
         m_state[i].cooldown    = 0.0f;
@@ -669,7 +681,7 @@ int Arsenal::select(int index) {
     m_sel = index;
     // Reset the new weapon's cooldown to its full inter-shot time so a switch can't
     // be used to fire faster than the new weapon's rate.
-    const WeaponDef& d = m_defs[(size_t)m_sel];
+    const WeaponDef& d = m_eff[(size_t)m_sel];
     if (d.fireRate > 0.0f) m_state[(size_t)m_sel].cooldown = 1.0f / d.fireRate;
     x3::logInfo("[arsenal] selected '" + d.name + "' (slot " + std::to_string(m_sel + 1) + ")");
     return m_sel;
@@ -709,14 +721,14 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
             if (s.cooldown <= 0.0f && s.reloadTimer <= 0.0f &&
                 s.ammoInMag <= 0 && !m_infiniteAmmo) {
                 out.dryFire = true;
-                const WeaponDef& d = m_defs[(size_t)m_sel];
+                const WeaponDef& d = m_eff[(size_t)m_sel];
                 s.cooldown = (d.fireRate > 0.0f) ? (1.0f / d.fireRate) : 0.25f;
             }
         }
         return out;                           // gated -> nothing consumed
     }
 
-    const WeaponDef&  d = m_defs[(size_t)m_sel];
+    const WeaponDef&  d = m_eff[(size_t)m_sel];   // EFFECTIVE: attachments folded in
     WeaponState&      s = m_state[(size_t)m_sel];
 
     // ChainGun spin-up: the EFFECTIVE fire rate ramps from spinUpStartFrac*fireRate
@@ -787,7 +799,7 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
 
 bool Arsenal::reload() {
     if (m_sel < 0) return false;
-    const WeaponDef& d = m_defs[(size_t)m_sel];
+    const WeaponDef& d = m_eff[(size_t)m_sel];   // EFFECTIVE (ext/fast mag change both)
     WeaponState&     s = m_state[(size_t)m_sel];
     if (s.reloadTimer > 0.0f)        return false; // already reloading
     if (s.ammoInMag   >= d.magSize)  return false; // mag already full
@@ -803,7 +815,7 @@ bool Arsenal::reload() {
 // (the multiplier layer — base def untouched). Returns the rounds actually added.
 int Arsenal::addReserve(int index, int rounds) {
     if (index < 0 || index >= (int)m_defs.size() || rounds <= 0) return 0;
-    const WeaponDef& d = m_defs[(size_t)index];
+    const WeaponDef& d = m_eff[(size_t)index];   // EFFECTIVE (ammoCapMult from the mag slot)
     WeaponState&     s = m_state[(size_t)index];
     const int cap = (int)((float)d.reserveAmmo * m_ammoCapMult + 0.5f);
     const int room = cap - s.reserve;
@@ -825,7 +837,7 @@ void Arsenal::tick(float dt) {
         // tick() runs between shots; a real idle gap (~2 s) drains it fully. While
         // firing, fire() re-arms the cooldown each shot so this branch is skipped
         // for the frames the cooldown is still counting down.
-        const WeaponDef& dd = m_defs[i];
+        const WeaponDef& dd = m_eff[i];
         if (dd.spinUpTime > 0.0f && s.spinUp > 0.0f && s.cooldown <= 0.0f) {
             s.spinUp -= dt / (dd.spinUpTime * 1.5f);
             if (s.spinUp < 0.0f) s.spinUp = 0.0f;
@@ -835,7 +847,7 @@ void Arsenal::tick(float dt) {
             if (s.reloadTimer <= 0.0f) {
                 s.reloadTimer = 0.0f;
                 // Move rounds from reserve into the mag (up to a full magazine).
-                const WeaponDef& d = m_defs[i];
+                const WeaponDef& d = m_eff[i];
                 int need = d.magSize - s.ammoInMag;
                 int take = (need < s.reserve) ? need : s.reserve;
                 s.ammoInMag += take;
@@ -865,6 +877,39 @@ void Arsenal::loadViewmodels(x3::rhi::IRenderDevice& device, std::string_view mo
         }
         if (!v.drawables.empty()) {
             if (firstLoaded < 0) firstLoaded = (int)i;
+            // MEASURE THE GUN. Accumulate every drawable's local AABB through its baked
+            // node transform -> the weapon's box in the SAME scene space as vmMuzzle.
+            // This is what attachment mounts hang off (see WeaponDef::vmBounds).
+            float bmin[3] = {  1e30f,  1e30f,  1e30f };
+            float bmax[3] = { -1e30f, -1e30f, -1e30f };
+            bool any = false;
+            for (const x3::asset::ModelDrawable& dr : v.drawables) {
+                float lo[3], hi[3];
+                if (!device.meshBounds(x3::rhi::MeshHandle{ dr.meshId }, lo, hi)) continue;
+                for (int c = 0; c < 8; ++c) {
+                    const float px = (c & 1) ? hi[0] : lo[0];
+                    const float py = (c & 2) ? hi[1] : lo[1];
+                    const float pz = (c & 4) ? hi[2] : lo[2];
+                    const float* M = dr.nodeTransform;
+                    const float wx = M[0]*px + M[4]*py + M[8]*pz  + M[12];
+                    const float wy = M[1]*px + M[5]*py + M[9]*pz  + M[13];
+                    const float wz = M[2]*px + M[6]*py + M[10]*pz + M[14];
+                    bmin[0] = std::min(bmin[0], wx); bmax[0] = std::max(bmax[0], wx);
+                    bmin[1] = std::min(bmin[1], wy); bmax[1] = std::max(bmax[1], wy);
+                    bmin[2] = std::min(bmin[2], wz); bmax[2] = std::max(bmax[2], wz);
+                    any = true;
+                }
+            }
+            if (any) {
+                WeaponDef& wd = m_defs[i];
+                wd.vmBounds = true;
+                wd.vmMin = x3::phys::Vec3{ bmin[0], bmin[1], bmin[2] };
+                wd.vmMax = x3::phys::Vec3{ bmax[0], bmax[1], bmax[2] };
+                x3::logInfo("[arsenal] viewmodel '" + d.name + "' box x[" +
+                            std::to_string(bmin[0]) + "," + std::to_string(bmax[0]) + "] y[" +
+                            std::to_string(bmin[1]) + "," + std::to_string(bmax[1]) + "] z[" +
+                            std::to_string(bmin[2]) + "," + std::to_string(bmax[2]) + "]");
+            }
             x3::logInfo("[arsenal] viewmodel '" + d.name + "' <- " + d.viewmodelGlb +
                         " (" + std::to_string(v.drawables.size()) + " prims)");
         } else {
@@ -877,6 +922,7 @@ void Arsenal::loadViewmodels(x3::rhi::IRenderDevice& device, std::string_view mo
         if (m_views[i].drawables.empty()) m_views[i].fallbackIndex = firstLoaded;
     if (firstLoaded < 0)
         x3::logWarn("[arsenal] no viewmodel GLB loaded; drawCurrentViewmodel is a no-op");
+    refreshEffective();   // the measured boxes must reach the effective defs too
 
     // W2-C: the shared FIRST-PERSON ARMS (see weapon.h m_arms). Same rigged dir;
     // a miss is graceful — the viewmodel simply draws without arms.
@@ -1594,6 +1640,61 @@ bool runWeaponsSelfTest() {
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +
                 std::to_string(w_fail) + " failed");
     return w_fail == 0;
+}
+
+// ===========================================================================
+// WEAPON ATTACHMENTS — the Arsenal side (fit / unfit / restore / the fold cache).
+// The FOLD itself (applyAttachments) lives in attachments.cpp: one place, one rule.
+// ===========================================================================
+void Arsenal::refreshEffective() {
+    m_loadouts.resize((int)m_defs.size());
+    m_eff.resize(m_defs.size());
+    for (size_t i = 0; i < m_defs.size(); ++i) {
+        m_eff[i] = applyAttachments(m_defs[i], m_loadouts.at((int)i));
+        // A smaller magazine (fast mag) must not leave rounds chambered beyond it.
+        if (i < m_state.size() && m_state[i].ammoInMag > m_eff[i].magSize)
+            m_state[i].ammoInMag = m_eff[i].magSize;
+    }
+}
+
+bool Arsenal::fitAttachment(int w, const AttachSpec& a, std::string* displaced) {
+    if (w < 0 || w >= (int)m_defs.size()) return false;
+    if (!m_loadouts.fit(w, m_defs[(size_t)w].attachSlots, a, displaced)) return false;
+    refreshEffective();
+    x3::logInfo("[attach] fitted '" + a.name + "' (" + attachSlotName(a.slot) + ") on '" +
+                m_defs[(size_t)w].name + "'");
+    return true;
+}
+
+std::string Arsenal::unfitAttachment(int w, AttachSlot s) {
+    const std::string id = m_loadouts.unfit(w, s);
+    if (!id.empty()) refreshEffective();
+    return id;
+}
+
+void Arsenal::clearAttachments() {
+    m_loadouts = Loadouts();
+    refreshEffective();
+}
+
+void Arsenal::restoreAttachments(std::string_view saveText, const ItemDb& db) {
+    // The save stores only ids. Specs are RE-RESOLVED from the live item DB (so a
+    // rebalance lands on old saves) and re-checked against the slot mask (so a stale
+    // or hand-edited save can never smuggle in an illegal fit).
+    struct Ctx { const ItemDb* db; Arsenal* self; } ctx{ &db, this };
+    m_loadouts.resize((int)m_defs.size());
+    m_loadouts.deserialize(saveText,
+        [](void* u, const std::string& id) -> const AttachSpec* {
+            Ctx* c = (Ctx*)u;
+            const ItemDef* d = c->db->find(id);
+            return (d && d->attach.valid) ? &d->attach : nullptr;
+        }, &ctx,
+        [](void* u, int w) -> uint8_t {
+            Ctx* c = (Ctx*)u;
+            if (w < 0 || w >= c->self->count()) return 0;      // 0 accepts nothing
+            return c->self->baseDef(w).attachSlots;
+        });
+    refreshEffective();
 }
 
 } // namespace x3::game

@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\6125f03cf32f7747b56afab8ddee47a7\llama_cpp-populate-mkdir.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\6125f03cf32f7747b56afab8ddee47a7\llama_cpp-populate-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\6125f03cf32f7747b56afab8ddee47a7\llama_cpp-populate-update.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\6125f03cf32f7747b56afab8ddee47a7\llama_cpp-populate-patch.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\6125f03cf32f7747b56afab8ddee47a7\llama_cpp-populate-configure.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\6125f03cf32f7747b56afab8ddee47a7\llama_cpp-populate-build.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\6125f03cf32f7747b56afab8ddee47a7\llama_cpp-populate-install.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\6125f03cf32f7747b56afab8ddee47a7\llama_cpp-populate-test.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\067511b5265b57988be8c845fcb16b2b\llama_cpp-populate-complete.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\7e04c22e4e58f1676361a28b34c1acbf\llama_cpp-populate.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="D:\GameDev\X3Native-attach\build-attach\_deps\llama_cpp-subbuild\CMakeFiles\llama_cpp-populate" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{EB2678AC-6336-3DDC-9341-00763C7819FB}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

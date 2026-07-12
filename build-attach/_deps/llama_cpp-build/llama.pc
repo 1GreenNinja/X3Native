@@ -1,0 +1,10 @@
+prefix=C:/Program Files/X3Native
+exec_prefix=C:/Program Files/X3Native
+libdir=C:/Program Files/X3Native/lib
+includedir=C:/Program Files/X3Native/include
+
+Name: llama
+Description: Port of Facebook's LLaMA model in C/C++
+Version: 0.0.1
+Libs: -L${libdir} -lggml -lggml-base -lllama
+Cflags: -I${includedir}

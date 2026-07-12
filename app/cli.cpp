@@ -95,6 +95,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-inventory") o.testInventory = true;       // W9-3 RPG backpack
         else if (a == "--test-progression") o.testProgression = true;   // W9-3 XP/levels
         else if (a == "--test-skilltree") o.testSkillTree = true;       // W9-3 skill tree
+        else if (a == "--test-attachments") o.testAttachments = true;   // weapon attachments
         else if (a == "--test-strata") o.testStrata = true;                       // R-3 fold
         else if (a == "--test-elevator-showcase") o.testElevatorShowcase = true;  // R-4 fold
         else if (a == "--screenshot-elevator") {                                  // R-4 beauty trio
@@ -270,6 +271,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 o.screenshotSettle = (int)std::strtol(argv[++i], nullptr, 10);
         }
+        else if (a == "--shot-weapon" && i + 1 < argc) { o.shotWeapon = argv[++i]; }
+        else if (a == "--shot-attach" && i + 1 < argc) { o.shotAttach = argv[++i]; }
+        else if (a == "--shot-ads")   { o.shotAds = true; }
+        else if (a == "--shot-bench") { o.shotBench = true; }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
             // BUGFIX: the guard used to be a bare `argv[i+1][0] != '-'`, which rejected
