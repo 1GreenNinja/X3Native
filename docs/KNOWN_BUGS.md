@@ -84,6 +84,40 @@ perfshop, showroom) still runs ambient 0.42.
 | B8 | Cinematic cuts to a blank blue screen | Intro/cold-open, mid-sequence |
 | B9 | Cell kit ceiling reads as a black hole | |
 | B10 | Two VFX bypass the entity path (flat-emissive glass) | `space/decloak_vfx.cpp:310`, `space/descent.cpp:294` |
+| B11 | `addMetal()` in `holo_panel.cpp` made **no metal** | It set `baseColor` and **no `mrTex`**, so every frame/mount entity took `drawMeshEmissive` — a flat DIELECTRIC at albedo 0.66–0.76, i.e. **white plastic**. The lambda's *name* asserted the one thing it didn't do, so ~10 re-fixes never re-checked it. FIXED `art/rifthub-canon` (real 1×1 MR + machined-steel F0). **Audit other "addMetal"-style helpers for a missing MR map.** |
+| B12 | The gate tube's forged SD3.5 sets **do not exist on any machine** | `gate_tube_hull` / `gate_ring_plate` / `gate_patina_plate` / `gate_piston_steel` were never harvested (LFS budget died — see the note at `m_surf.mount`). `surface_library/` is **gitignored**, so the 24 curated sets are the only ones that exist. Every gate group silently falls back — and the tints authored to tame *bright forged* textures instead crushed the *already-correct curated* ones (0.789 × 0.22 = **0.17 albedo**). Anything keyed to a forged set is dead code today. |
+
+---
+
+### R3. THE RIFT GATE WAS INSTANCED THROUGH A **MIRROR** — FIXED `art/rifthub-canon`
+The rifthub gate GLB was placed with the basis `[right, up, outward]` where
+`right = (-outwardZ, 0, outwardX)`. For portal 0 (`out = +X`) that is
+`right=(0,0,1), up=(0,1,0), out=(1,0,0)` — **determinant −1**. A negative determinant is a
+**REFLECTION, not a rotation**: every gate was instanced mirrored. That reverses triangle
+winding, so back-face culling **threw away the tube's OUTER shell and drew its INNER shell** —
+we were looking at the *inside* of the tube, whose normals point away from every light in the
+room. **This is why the gate tube was a BLACK VOID RING for nine rounds.**
+
+It is a vicious bug because *every* symptom points at the art:
+- perfect torus silhouette (a torus seen inside-out looks the same),
+- correct albedo + normal-map relief (texture lookups don't care about winding),
+- coherent specular,
+- and **zero diffuse at ANY albedo under ANY light** — hence "5× the key light barely moved it."
+
+**The tell that cracks it:** a GLB cube carrying the tube's *exact* material renders blown-out
+white in the same room, while a **120-intensity probe light 3 m from the tube leaves it black**.
+No material or lighting bug can do that. Only a mirror can. (`tools/build_rifthub_gate.py` even
+logs `TUBE inside-out N/M` — the mirror was being fought at *export* time instead of at the
+transform.) **Fix = one sign** (`locX = -right` → det +1).
+
+⚠️ **CHECK EVERY OTHER PLACEMENT BASIS IN THE GAME FOR A NEGATIVE DETERMINANT.** This basis
+idiom (`right = (-outZ, 0, outX)`) is copy-pasted around the codebase. Anywhere a GLB is
+instanced through it, that model is inside-out and unlit.
+
+**COROLLARY — light rigs tuned against a mirrored object are GARBAGE.** The gate key was
+70 → 15 → and had to come down to **5.0** once the tube actually took light. Both earlier
+numbers were fitted to a surface that was *physically incapable of responding*. Before you
+tune a light, prove the surface can be lit at all.
 
 ---
 
