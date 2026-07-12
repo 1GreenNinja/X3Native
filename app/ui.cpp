@@ -382,10 +382,18 @@ bool UiContext::knob(const char* label, float& value, float cx, float cy,
     glowColor(danger01, clock, (float)idx * 0.7f, lit);
     glowDim(lit, 0.25f, dim);
 
-    // The dial sweeps 240 deg: 0 at 7 o'clock (150 deg), 1 at 5 o'clock (-30 deg),
-    // measured clockwise on screen (screen Y grows DOWN, hence the sign flips).
-    const float kA0 = 2.6179939f;    // 150 deg
-    const float kSweep = -4.1887902f; // -240 deg (clockwise)
+    // The dial sweeps 240 deg CLOCKWISE ON SCREEN: t=0 at 7 o'clock, t=0.5 straight
+    // up at 12, t=1 at 5 o'clock, with a 120 deg dead zone across the bottom.
+    //
+    // The stamps use uy = -sin(a) (screen Y grows DOWN), which means a DECREASING
+    // math angle travels clockwise on screen. So the sweep starts at 210 deg (7
+    // o'clock: cos = -0.87, -sin = +0.5, i.e. left-and-down) and runs to -30 deg.
+    // Getting this wrong is not cosmetic — a knob whose midpoint isn't at 12 o'clock
+    // lies to the player about the value they are dialling in, and on this console a
+    // mis-read value implodes a gate. (The first cut had 150 deg here, which put t=0
+    // at TEN o'clock and 12 o'clock at t=0.25. --test-ui U29 caught it.)
+    const float kA0    =  3.6651914f;   // 210 deg
+    const float kSweep = -4.1887902f;   // -240 deg (clockwise on screen)
     auto ring = [&](float t, float rr, float len, float thick, const float col[4]) {
         const float a = kA0 + kSweep * t;
         const float ux = std::cos(a), uy = -std::sin(a);
@@ -1350,6 +1358,107 @@ bool runUiSelfTest() {
             }
         }
         delete con;
+    }
+
+    // =======================================================================
+    // ROUND 8 — THE GLOWING CONTROL SURFACE (glowSlider / knob / textField).
+    // These drive the rift console, where a mis-set value implodes a gate — so
+    // they are gated like gameplay, not like chrome.
+    // =======================================================================
+    {
+        StubDevice dev;
+        x3::rhi::FrameContext frame{};   // invalid -> hit-testing runs, drawing is skipped
+        UiContext ui;
+
+        // U28 — GLOW SLIDER drag. Press at 90% along the track and the value must
+        //       follow the cursor (the track starts 150 px in, per the widget).
+        {
+            UiInput in{};
+            in.mouseX = 100.0f + 150.0f + (600.0f - 150.0f - 52.0f - 12.0f) * 0.9f;
+            in.mouseY = 200.0f + 17.0f;
+            in.mouseDown = true;
+            float v = 0.10f;
+            ui.begin(dev, frame, in);
+            const bool moved = ui.glowSlider("POWER", v, 100.0f, 200.0f, 600.0f, 34.0f,
+                                             /*danger*/0.0f, /*clock*/0.0f);
+            ui.end();
+            check(moved && v > 0.85f && v <= 1.0f,
+                  "U28 glowSlider: dragging near the right rail drives the value up");
+        }
+
+        // U29 — KNOB angular drag. The dial sweeps 240 deg from 7 o'clock (t=0) to
+        //       5 o'clock (t=1), so a cursor placed straight UP from the center is
+        //       the MIDPOINT of the sweep -> ~0.5. This is the whole point of a
+        //       rotary: you grab it and turn it, you do not slide it.
+        {
+            const float cx = 400.0f, cy = 300.0f, r = 46.0f;
+            UiInput in{};
+            in.mouseX = cx;              // straight up (screen Y grows DOWN)
+            in.mouseY = cy - 30.0f;
+            in.mouseDown = true;
+            float v = 0.0f;
+            ui.begin(dev, frame, in);
+            const bool turned = ui.knob("FREQUENCY", v, cx, cy, r, 0.0f, 0.0f);
+            ui.end();
+            check(turned && std::fabs(v - 0.5f) < 0.08f,
+                  "U29 knob: an angular drag to 12 o'clock lands mid-sweep (~0.5)");
+        }
+
+        // U30 — TEXT FIELD: typed characters land, backspace edits, ENTER commits —
+        //       and NONE of it happens unless the field owns focus. That focus gate
+        //       is the same discipline the cell terminal enforces: while a field is
+        //       taking input, the input belongs to it and nothing else.
+        {
+            char buf[24] = {};
+            // Focus the field by hovering it, and type "club".
+            UiInput in{};
+            in.mouseX = 300.0f; in.mouseY = 415.0f;    // inside the row
+            in.typed[0] = 'c'; in.typed[1] = 'l'; in.typed[2] = 'u'; in.typed[3] = 'b';
+            in.typedCount = 4;
+            ui.begin(dev, frame, in);
+            ui.textField("TARGET", buf, (int)sizeof(buf), 100.0f, 400.0f, 600.0f, 34.0f,
+                         0.0f, 0.0f);
+            ui.end();
+            const bool typedOk = std::strcmp(buf, "club") == 0;
+
+            // Backspace trims one char.
+            UiInput bs{};
+            bs.mouseX = 300.0f; bs.mouseY = 415.0f;
+            bs.backspace = true;
+            ui.begin(dev, frame, bs);
+            ui.textField("TARGET", buf, (int)sizeof(buf), 100.0f, 400.0f, 600.0f, 34.0f,
+                         0.0f, 0.0f);
+            ui.end();
+            const bool bsOk = std::strcmp(buf, "clu") == 0;
+
+            // ENTER commits.
+            UiInput en{};
+            en.mouseX = 300.0f; en.mouseY = 415.0f;
+            en.enter = true;
+            ui.begin(dev, frame, en);
+            const bool committed =
+                ui.textField("TARGET", buf, (int)sizeof(buf), 100.0f, 400.0f, 600.0f,
+                             34.0f, 0.0f, 0.0f);
+            ui.end();
+
+            // ...and with the cursor PARKED SOMEWHERE ELSE (focus on widget 0, not
+            // the field), the same keystrokes must be ignored entirely.
+            char other[24] = {};
+            UiInput away{};
+            away.mouseX = 300.0f; away.mouseY = 215.0f;   // hovering the slider row
+            away.typed[0] = 'x'; away.typedCount = 1;
+            ui.begin(dev, frame, away);
+            float dummy = 0.5f;
+            ui.glowSlider("POWER", dummy, 100.0f, 200.0f, 600.0f, 34.0f, 0.0f, 0.0f);
+            ui.textField("TARGET", other, (int)sizeof(other), 100.0f, 400.0f, 600.0f,
+                         34.0f, 0.0f, 0.0f);
+            ui.end();
+            const bool ignoredWhenUnfocused = other[0] == 0;
+
+            check(typedOk && bsOk && committed && ignoredWhenUnfocused,
+                  "U30 textField: types, backspaces, commits on ENTER — and eats "
+                  "nothing while unfocused");
+        }
     }
 
     x3::logInfo(std::string("--test-ui: ") + std::to_string(pass) + " passed, " +

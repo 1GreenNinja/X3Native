@@ -97,8 +97,24 @@ int hostRifthub(HostContext& hc) {
                 ? "--world rifthub: X3_RIFTHUB_SURGE=1 -> all 8 gates fired (MID-SURGE capture)"
                 : "--world rifthub: X3_RIFTHUB_OPEN=1 -> all 8 gates activated (OPEN throat capture)");
         }
-        // 240 @ 60 Hz = 4 s > kKawooshDur (settled OPEN); 48 = 0.8 s = mid-surge.
-        const int kFrames = forceSurge ? 48 : (forceOpen ? 240 : 60);
+        // ROUND 8: X3_RIFTHUB_IMPLODE=1 dials rift 0's console into the killing
+        // combination (full power, no containment) and ENGAGES it, then stops the
+        // warm-up mid-collapse — the only way to eyeball the implosion without
+        // standing at the console and doing it by hand.
+        const bool forceImplode = [] {
+            const char* v = std::getenv("X3_RIFTHUB_IMPLODE");
+            return v && v[0] == '1';
+        }();
+        if (forceImplode) {
+            rifthub.onTrigger(rifthub.portal(0).triggerId);   // open it first
+            for (int i = 0; i < 150; ++i) rifthub.tick(dt, rhscene);   // let it settle
+            rifthub.applyOutcome(0, x3::game::RiftOutcome::Implosion);
+            x3::logInfo("--world rifthub: X3_RIFTHUB_IMPLODE=1 -> rift 1 is collapsing");
+        }
+        // 240 @ 60 Hz = 4 s > kKawooshDur (settled OPEN); 48 = 0.8 s = mid-surge;
+        // 105 = 1.75 s into the 2.4 s collapse (the membrane is eating itself).
+        const int kFrames = forceImplode ? 105
+                          : (forceSurge ? 48 : (forceOpen ? 240 : 60));
         for (int i = 0; i < kFrames; ++i) {
             glfwPollEvents();
             rifthub.tick(dt, rhscene);

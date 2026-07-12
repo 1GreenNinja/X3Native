@@ -422,3 +422,81 @@ Rules: consequences are persistent where it makes sense (a collapsed gate stays 
 hall lighting react; the membrane's colour/behaviour reflects instability BEFORE it blows (the
 player should be able to read danger building). Data-driven so new parameter/outcome combos can
 be authored without code.
+
+## ROUND 8 STATUS (2026-07-11) — what SHIPPED, and what did not
+
+### The tube (A)
+`tools/build_rifthub_gate.py` rewritten. ONE swept mesh (bmesh, not a bpy torus):
+the minor radius is a FIELD `rr(u,v)`, so the detail is CUT INTO the single surface —
+12 segment seams, 2 longitudinal recessed bands, the indicator groove, 7 vent grilles
+(4 louvres each), and the bevelled operator bay. **73,728 tris of tube**; 4,220 steel +
+1,528 dark + 2,188 panel = **81,664 total**, 47 objects (R5 shipped 233).
+**Zero chevrons. 0/73,728 inside-out.**
+- Two bugs found and fixed on the way: (1) `EDGE_SPLIT` disconnects deep cut features
+  into their own islands, and `recalc_face_normals` then INVERTS them — 100% of the
+  groove, 4,096 tris. The sweep's winding is outward by construction, so the tube is
+  now exempt from the recalc. (2) A vent slot narrower than one minor step aliases
+  into spikes; NSEG went 96 -> 144 and the slots were widened.
+- A centroid-based inside-out test is MEANINGLESS on a torus (the tube's inner half
+  legitimately faces the object centre). The check now tests each face normal against
+  the tube's own analytic axis.
+
+### The surface (C)
+`gate_tube_hull` + `gate_tube_stencil`, SD3.5 img2img from the owner's reference frame,
+normal strength 21 (~2x the R5 sets). Rivets, plate joins, weld beads, vent slats, rust
+runs and stencils live in the normal/height — a smooth tube reading dense. Landed local
++ `G:\Assets\X3Native\surface_library\`.
+- **CROP LAW (learned the hard way):** the reference frame is a LIT SCENE with a BLUE
+  PLASMA MEMBRANE in the middle of it. The first pass clipped it and baked a glowing
+  blue smear into an ALBEDO — plasma painted onto metal, permanently, in a map that is
+  supposed to be reflectance. Both crops now sit on the ring's left flank.
+- **VALUE:** the tube's albedo had to be renormalized to ~0.60 sRGB. Below that it
+  silhouettes to black against its own membrane (the brightest thing in the hall drives
+  auto-exposure down and takes the metal with it). Adding light does NOT fix this —
+  auto-exposure just eats it; measured, 5x the key barely moved the pixels.
+
+### The panel (B) and the consoles (C/D)
+LCD + a 4x2 cluster of chunky travel buttons + LED readout strips, recessed into the
+tube's bay, shipped IN the GLB as two emissive groups — the only emissive parts of the
+gate. The floating teal signs are deleted; each rift now has a HoloTerminal hanging in
+its approach (black glass, round-pipe frame, support pipe to the ceiling), off the
+centreline so it does not occlude the gate it operates.
+
+### The gameplay (E)
+Six parameters, a DATA outcome table (`kRiftRules`), typed TARGET (world name =
+re-target; override codes SINGULARITY/CHRONOS/MOBIUS force outcomes the sliders cannot
+reach). Glowing sliders/knobs/text-fields (`ui.h`: glowSlider/knob/textField), each
+shifting blue-green -> amber -> red and pulsing harder with ITS OWN danger.
+`instability()` is continuous and the whole machine reads it — controls, the tube's LCD
+and LEDs, the membrane's hue, the gate's key light. The rift snarls under your hand.
+
+| outcome | state |
+|---|---|
+| NOMINAL (open / re-target / wider aperture) | **LIVE** |
+| IMPLOSION (membrane inverts, debris dragged in, shockwave, gate DEAD forever) | **LIVE** |
+| ROOM WARP (hall props ripple + lens breathes; restored exactly) | **LIVE** |
+| TEMPORAL RIFT (slow-mo + real stutter) | **LIVE** |
+| CONTAINMENT BREACH | **STUBBED** — rule/alarm/destabilise wired; nothing walks out yet |
+
+### KNOWN DEFECT (not fixed this round)
+The hanging console's WORLD-SPACE GLASS renders as a featureless dark-blue slab: the
+baked readout text does not show. `HoloTerminal::update()` IS now being called (it was
+not — `setLines` only marks the glass dirty), so the texture regenerates; the suspicion
+is that the engine's translucent-GLASS pass does not sample `Entity::tex`. The 2D
+control surface the player actually operates is unaffected. Next session: check the
+glass pass, or drop `transparent` on the readout quad.
+
+### Honest read vs docs/reference/
+Silhouette: **hit.** It is unmistakably ONE large machined tube, heavy and round, with
+one unbroken specular sweep — not a kit. Surface: **close.** The forged maps put the
+reference's rivet/plate/seam/rust density on it, and it reads at playing distance.
+Value: **the remaining gap.** The reference's ring has BRIGHT weathered white-grey top
+plates over a dark belly; ours is dark blue-black machined metal throughout. The crop
+that fed the hull came from the ring's darker flank. A re-forge from the reference's
+bright upper plate band is the next single highest-value move.
+Dressing: the legacy engine conduits (orange sticks + coil rings) now read as bent coat
+hangers hanging off a tube they were never designed for, and the cradle/cable cluster
+under the gate is a black spiky blob at some angles. Both want a pass.
+
+Shots: `docs/screenshots/rifthub/K_1_tube_front.png`, `K_2_tube_quarter.png`,
+`K_3_panel_close.png`, `K_4_console_hanging.png`, `K_5_implosion.png`.

@@ -87,7 +87,7 @@ constexpr uint32_t kDeckFills      = 8;       // was 4
 // its lower half into shadow, so the machined hardware reads as machined metal
 // instead of flat cardboard.
 constexpr float kGateKeyColor[3]   = { 0.86f, 0.90f, 1.00f };
-constexpr float kGateKeyI          = 26.0f;   // ROUND 6 ENGINE FIX: was 46 — cranked to
+constexpr float kGateKeyI          = 70.0f;   // ROUND 8: was 26 — see the note below
                                               // 3x its honest value because GLB meshes
                                               // shaded at 1/PI (metal: ~1/30) of the prims
                                               // beside them (the mesh.frag shading-path
@@ -95,12 +95,29 @@ constexpr float kGateKeyI          = 26.0f;   // ROUND 6 ENGINE FIX: was 46 — 
                                               // With the engine honest, 46 BLEW THE GATE
                                               // OUT to a white sculpture. 46/PI ~ 15 puts
                                               // the same light back on the metal.
-constexpr float kGateKeyRange      = 10.0f;
-constexpr float kGateKeyUp         = 3.9f;    // rakes the ring face from above-front
+constexpr float kGateKeyRange      = 13.0f;
+constexpr float kGateKeyUp         = 4.6f;    // rakes the tube's crown from above-front
+// ROUND 8 — WHY THE KEY WENT BACK UP. The R8 gate is ONE TUBE with a 1.9 m membrane
+// sitting in its throat, and that membrane is the single brightest thing in the hall.
+// Auto-exposure meters it, stops the frame down, and the tube — a mid-value weathered
+// metal — crushes to a BLACK SILHOUETTE (the first K_1 capture). Every rivet, plate
+// join and rust run in the forged normal map goes down with it. The gate does not need
+// less exposure; it needs more LIGHT ON THE METAL, so it can hold its own value
+// standing next to its own portal.
+//   This is NOT the round-6 blowout coming back. That was a self-EMISSIVE being
+//   double-counted by the fixed shading path. There is no emissive on the tube body at
+//   all now. This is a lamp: it obeys the inverse-square law, it falls off, and it
+//   casts a shadow — which is exactly what carves the machined surface.
+// A second, LOW key rakes the tube's underside so the whole body reads instead of a
+// lit crown sitting on a black belly.
+constexpr float kGateLowI          = 30.0f;
+constexpr float kGateLowUp         = 0.9f;
+constexpr float kGateLowHubOff     = 4.4f;
+constexpr float kGateLowRange      = 11.0f;
 constexpr float kGateKeyHubOff     = 1.9f;    // hub-side standoff from the gate plane
 // Warm UNDER-fill (the reference's conduit/indicator bounce on the lower plates).
 constexpr float kGateFillColor[3]  = { 1.00f, 0.66f, 0.36f };
-constexpr float kGateFillI         = 11.0f;   // ROUND 6: was 20 (same 1/PI compensation).
+constexpr float kGateFillI         = 20.0f;   // ROUND 8: the tube has a LOT more surface
 constexpr float kGateFillRange     = 7.0f;
 constexpr float kGateFillUp        = 0.85f;
 constexpr float kGateFillHubOff    = 2.2f;
@@ -462,11 +479,15 @@ constexpr float kPanelLedCap        = 2.00f;
 // The HANGING HOLOTERMINAL console in front of each rift (the canonical holo look:
 // black glass slab + round-pipe frame + a single support pipe to the ceiling).
 // Replaces the floating flat teal sign rectangles, which are DELETED.
-constexpr float kConsoleStandoff    = 4.35f;  // hub-side of the gate plane
-constexpr float kConsoleSideOff     = 0.0f;   // dead centre of the approach
-constexpr float kConsoleY           = 1.45f;  // glass centre height (readable standing)
-constexpr float kConsoleW           = 1.30f;
-constexpr float kConsoleH           = 0.86f;
+// ROUND 8, second pass: the first cut hung a 1.30 x 0.86 m slab DEAD CENTRE of the
+// approach at 4.35 m — which, from the player's eyeline, is a billboard parked in front
+// of the gate. It occluded the very thing it is a console FOR. It now stands OFF TO THE
+// SIDE, closer, and smaller: you walk up to it and the rift stays in view behind it.
+constexpr float kConsoleStandoff    = 3.60f;  // hub-side of the gate plane
+constexpr float kConsoleSideOff     = 2.05f;  // off the centreline (right of approach)
+constexpr float kConsoleY           = 1.38f;  // glass centre height (readable standing)
+constexpr float kConsoleW           = 0.86f;
+constexpr float kConsoleH           = 0.58f;
 constexpr float kConsoleUseR        = 3.4f;   // [E] range
 
 // ---- CATASTROPHE timings + magnitudes -------------------------------------
@@ -2004,6 +2025,17 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             W.color[1] = kGateFillColor[1] * kGateFillI;
             W.color[2] = kGateFillColor[2] * kGateFillI;
             m_lights.push_back(W);
+            // LOW KEY: rakes the tube's underside so the body reads as a whole machine
+            // instead of a lit crown sitting on a black belly.
+            x3::rhi::PointLight LO;
+            LO.pos[0] = p.worldPos.x - ux * kGateLowHubOff;
+            LO.pos[1] = kGateLowUp;
+            LO.pos[2] = p.worldPos.z - uz * kGateLowHubOff;
+            LO.range  = kGateLowRange;
+            LO.color[0] = kGateKeyColor[0] * kGateLowI;
+            LO.color[1] = kGateKeyColor[1] * kGateLowI;
+            LO.color[2] = kGateKeyColor[2] * kGateLowI;
+            m_lights.push_back(LO);
         }
     }
 
@@ -2459,6 +2491,13 @@ void Rifthub::tick(float dt, Scene& scene) {
         }
         m_warpWasOn = warping;
     }
+
+    // ===== THE HANGING CONSOLES: bake + shimmer ===============================
+    // HoloTerminal::setLines only marks the glass DIRTY — regenTexture() runs inside
+    // update(). Without this the readout never rasterizes and the console renders as a
+    // featureless blue slab. (Exactly what the first R8 capture showed. Look at your
+    // own screenshots.)
+    for (auto& h : m_holos) h.update(dt);
 
     // ===== ALARM: the hall LIGHTING reacts ====================================
     // Any catastrophe strobes the hall's fill rig red; the authored colours are

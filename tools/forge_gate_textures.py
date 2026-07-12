@@ -70,8 +70,8 @@ ALBEDO_MEAN = {
     # ROUND 8 — THE TUBE SETS. The gate is now ONE smooth machined tube (R7/R8),
     # so ALL of the reference's greeble richness has to arrive through these maps.
     # "we can have all the grok imagined stuff on it" — on it, not bolted to it.
-    "gate_tube_hull":    0.34,
-    "gate_tube_stencil": 0.31,
+    "gate_tube_hull":    0.60,
+    "gate_tube_stencil": 0.52,
 }
 
 REF_CROPS = {
