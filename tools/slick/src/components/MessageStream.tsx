@@ -3,8 +3,8 @@
 // collapse under one sender header; day dividers separate calendar days.
 
 import { useEffect, useRef } from "preact/hooks";
-import type { MatrixEvent } from "../client";
-import type { Room } from "../store";
+import type { MatrixEvent, Session } from "../client";
+import { backfillRoom, type Room } from "../store";
 import { ImageEvent } from "./ImageEvent";
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
@@ -103,22 +103,35 @@ function avatarColor(sender: string): string {
   return `hsl(${h}, 45%, 45%)`;
 }
 
-export function MessageStream({ room }: { room: Room }) {
+export function MessageStream({ room, session }: { room: Room; session: Session }) {
   const endRef = useRef<HTMLDivElement>(null);
-  const events = room.timeline.slice(-200);
+  const events = room.timeline; // FULL history — backfilled to the room's creation
   const days = groupEvents(events);
 
-  // Auto-scroll to bottom when the timeline grows
+  // Backfill the whole history the first time a room is opened.
+  useEffect(() => {
+    void backfillRoom(session, room.id);
+  }, [room.id]);
+
+  // Auto-scroll to bottom only when a NEW (latest) message arrives — not while
+  // older history streams in above (which would otherwise yank the view down).
+  const lastId = events.length ? events[events.length - 1].event_id : "";
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [room.timeline.length, room.id]);
+  }, [lastId, room.id]);
 
   if (!events.length) {
-    return <div class="stream-empty">No messages in the sync window yet.</div>;
+    return (
+      <div class="stream-empty">
+        {room.backfilling ? "Loading history…" : "No messages here yet."}
+      </div>
+    );
   }
 
   return (
     <div class="stream">
+      {room.backfilling && <div class="day-divider"><span>loading older history…</span></div>}
+      {room.hitStart && <div class="day-divider"><span>· beginning of {room.isDm ? "conversation" : "channel"} ·</span></div>}
       {days.map((d) => (
         <div key={d.day}>
           <div class="day-divider"><span>{d.day}</span></div>

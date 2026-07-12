@@ -260,7 +260,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
                 👥
               </button>
             </header>
-            <MessageStream room={active} />
+            <MessageStream room={active} session={session} />
             <Composer session={session} roomId={active.id} roomName={active.name} />
           </>
         ) : (

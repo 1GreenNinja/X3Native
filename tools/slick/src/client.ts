@@ -143,6 +143,23 @@ export async function sync(
   return req<SyncResponse>(`/_matrix/client/v3/sync?${params}`, { token, signal });
 }
 
+/** One page of room history, walking BACKWARDS from `from` (a prev_batch/end
+ * token). Returns the events (newest→oldest, as the server sends them) and the
+ * `end` token for the next older page; `end` is absent at the room's creation. */
+export async function roomMessages(
+  token: string,
+  roomId: string,
+  from: string | undefined,
+  limit = 200,
+): Promise<{ chunk: MatrixEvent[]; end?: string }> {
+  const params = new URLSearchParams({ dir: "b", limit: String(limit) });
+  if (from) params.set("from", from);
+  return req<{ chunk: MatrixEvent[]; end?: string }>(
+    `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/messages?${params}`,
+    { token },
+  );
+}
+
 export function loadSince(): string | null {
   return localStorage.getItem(SINCE_KEY);
 }

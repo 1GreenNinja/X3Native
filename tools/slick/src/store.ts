@@ -8,6 +8,7 @@ import {
   sync,
   saveSince,
   joinedMembers,
+  roomMessages,
 } from "./client";
 
 export interface Room {
@@ -18,6 +19,9 @@ export interface Room {
   dmUserId?: string;    // for a DM, the other party's @user:server — matches roster clicks to existing rooms
   timeline: MatrixEvent[];
   unread: number;
+  prevBatch?: string;   // pagination token for the next OLDER page of history
+  hitStart?: boolean;   // true once we've backfilled to the room's creation
+  backfilling?: boolean; // guard so only one backfill loop runs per room
 }
 
 /** The existing DM room with a given user, if one is already open. Lets the
@@ -130,7 +134,11 @@ function applySync(resp: SyncResponse, myUserId: string): void {
         if (dm) { name = dm.name; dmUserId = dm.userId; }
         else { name = "Direct message"; needsName = true; } // resolved via API below
       }
-      store.rooms.set(roomId, { id: roomId, name, isDm, needsName, dmUserId, timeline: newEvents, unread: data.unread_notifications?.notification_count ?? 0 });
+      store.rooms.set(roomId, {
+        id: roomId, name, isDm, needsName, dmUserId, timeline: newEvents,
+        unread: data.unread_notifications?.notification_count ?? 0,
+        prevBatch: data.timeline?.prev_batch,   // where older history continues
+      });
     }
   }
   bump();
@@ -148,6 +156,39 @@ async function resolveDmNames(token: string, myUserId: string): Promise<void> {
     } catch { /* leave as-is */ }
   }
   if (pending.length) bump();
+}
+
+/** Backfill a room's history ALL THE WAY to its creation (Tim's order: "all the
+ * channels history goes WAY BACK to beginning"). Pages backwards from the sync
+ * prev_batch, prepending as it goes so the UI streams older history in. Runs
+ * once per room (guarded); Conduit is on the LAN so full backfill is cheap. */
+export async function backfillRoom(session: Session, roomId: string): Promise<void> {
+  const room = store.rooms.get(roomId);
+  if (!room || room.backfilling || room.hitStart) return;
+  room.backfilling = true;
+  try {
+    while (!room.hitStart) {
+      const resp = await roomMessages(session.token, roomId, room.prevBatch, 200);
+      const older = (resp.chunk ?? [])
+        .filter((e) => e.type === "m.room.message" || e.type === "com.fleet.gen.request")
+        .reverse(); // server sends newest→oldest; timeline is oldest→newest
+      const seen = new Set(room.timeline.map((e) => e.event_id));
+      const fresh = older.filter((e) => !seen.has(e.event_id));
+      if (fresh.length) {
+        room.timeline.unshift(...fresh);
+        bump(); // stream each page into the UI as it lands
+      }
+      if (!resp.end || (resp.chunk ?? []).length === 0) {
+        room.hitStart = true; // reached the room's creation
+      } else {
+        room.prevBatch = resp.end;
+      }
+    }
+  } catch { /* transient — a later room-open retries */ }
+  finally {
+    room.backfilling = false;
+    bump();
+  }
 }
 
 let abort: AbortController | null = null;
