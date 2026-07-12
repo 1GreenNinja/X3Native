@@ -4941,7 +4941,19 @@ int runDefaultHost(HostContext& hc) {
             // Chat-tree conversation: cancel the moment the player wanders out of
             // talk range (a small grace over the start reach so a head-bob doesn't
             // drop the box mid-line). Matches NpcDialog's never-strand rule.
-            if (chatTrees.active()) {
+            //
+            // W4-2 fix (root cause of "VIGIL digit choices REJECTED"): this
+            // proximity-cancel is for PHYSICAL NPC conversations (rescue girls /
+            // Sarah), which chatTalkTarget() enumerates. The VIGIL terminal tree
+            // ALSO rides chatTrees but has NO physical talk target, so chatTalkTarget
+            // returns false and this cancel() used to deactivate the tree one frame
+            // after the menu rendered — leaving vigilChat=true while chatTrees.active()
+            // went false. The single-digit fast path (gated on chatTrees.active())
+            // was then skipped, the digit fell through to the keypad code buffer, and
+            // Enter submitted it as a code -> "> 1 [REJECTED]". VIGIL is bounded by
+            // termMode + Esc + its own "(end session)" choice, not by walk range, so
+            // exclude it here and let those paths close it.
+            if (chatTrees.active() && chatTrees.activeNpc() != "vigil") {
                 float pex, pey, pez, pyaw, ppitch;
                 player.camera(pex, pey, pez, pyaw, ppitch);
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
