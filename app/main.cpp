@@ -335,6 +335,7 @@ int main(int argc, char** argv) {
         _tf.testAct2 = o.testAct2;
         _tf.testAct2Desert = o.testAct2Desert;
         _tf.testAct2Caves = o.testAct2Caves;
+        _tf.testRifthub = o.testRifthub;
         _tf.testWorldRegions = o.testWorldRegions;
         _tf.testCity = o.testCity;
         _tf.testOceanBase = o.testOceanBase;
@@ -362,6 +363,7 @@ int main(int argc, char** argv) {
         _tf.testWeapons = o.testWeapons;
         _tf.testScript = o.testScript;
         _tf.testVehicle = o.testVehicle;
+        _tf.testCanonVehicle = o.testCanonVehicle;
         _tf.testVehParts = o.testVehParts;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
@@ -375,6 +377,7 @@ int main(int argc, char** argv) {
         _tf.testValley = o.testValley;
         _tf.testCliffs = o.testCliffs;
         _tf.testClub = o.testClub;
+        _tf.testPerfshop = o.testPerfshop;
         _tf.testSpace = o.testSpace;
         _tf.testEva = o.testEva;
         _tf.testShipAi = o.testShipAi;
@@ -470,10 +473,16 @@ int main(int argc, char** argv) {
             x3::asset::prewarmModelDecodesAsync(bootManifest);
             // Canon recipe rooms: pre-decode the surface-library PNG sets too (the
             // W3/W8-1 dressing pass was 2.5 s of serial main-thread stbi decode).
-            if (canonCell)
+            // SEAM 2: + cc_cement_white (the facade's white-concrete spandrels —
+            // NOT a recipe set, and its ~20 MB of PNGs decoded inline blew the
+            // exterior's 150 ms boot budget).
+            if (canonCell) {
+                std::vector<std::string> sets = x3::game::recipeSurfaceSets();
+                if (std::find(sets.begin(), sets.end(), "cc_cement_white") == sets.end())
+                    sets.emplace_back("cc_cement_white");
                 x3::game::prewarmSurfaceSetsAsync(
-                    x3::game::assetRoot() + "/surface_library",
-                    x3::game::recipeSurfaceSets());
+                    x3::game::assetRoot() + "/surface_library", sets);
+            }
             x3::boot::mark("decode prewarm kicked (async)");
         }
     }
@@ -754,6 +763,9 @@ int main(int argc, char** argv) {
     _hc.dialogShot      = o.dialogShot;
     _hc.vigilShot       = o.vigilShot;
     _hc.alertShot       = o.alertShot;
+    _hc.shotDrive       = o.shotDrive;         // WORLD CARS driver-POV staging
+    _hc.duskSky         = o.duskSky;           // STREET LIGHT dusk-sky staging
+    _hc.shotChatter     = o.shotChatter;       // CHATTER bubble staging for stills
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
     _hc.captureWings    = o.captureWings;      _hc.captureWingsDir = o.captureWingsDir;
     _hc.docWorldPath    = o.docWorldPath;

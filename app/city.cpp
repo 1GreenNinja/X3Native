@@ -24,6 +24,7 @@
 #include "city.h"
 #include "headless_device.h"
 #include "mesh_prims.h"
+#include "street_lights.h"
 #include "surface_library.h"
 #include "asset_root.h"
 
@@ -153,14 +154,10 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
     };
 
     // ---- Street furniture ----
-    auto streetLight = [&](float cx, float cz) {
-        float g[3]; placeOnTerrain(cx, cz, g);
-        const float pole[4] = { 0.22f, 0.23f, 0.25f, 1.0f };
-        const float warm[4] = { 1.0f, 0.82f, 0.55f, 1.6f };
-        const float head[4] = { 0.12f, 0.11f, 0.09f, 1.0f };
-        addBoxProp(cx, g[1] + 2.4f, cz, 0.10f, 2.4f, 0.10f, pole, nullptr);
-        addBoxProp(cx, g[1] + 4.9f, cz, 0.42f, 0.16f, 0.42f, head, warm);
-    };
+    // STREET LIGHTS moved to app/street_lights.* (real lamps: pooled
+    // PointLights + additive light cones + ground pools + variance). The canon
+    // host builds them inside this region's realize via the region-build hook,
+    // so the old emissive-prop posts here are retired (no double posts).
     auto trafficLight = [&](float cx, float cz) {
         float g[3]; placeOnTerrain(cx, cz, g);
         const float pole[4]  = { 0.18f, 0.19f, 0.21f, 1.0f };
@@ -271,9 +268,6 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
           const float water[4] = { 0.25f, 0.55f, 0.75f, 0.9f };
           addBoxProp(-600.0f, g[1] + 1.5f, 478.0f, 0.55f, 0.8f, 0.55f, conc, water, sCement, 1.0f); }
 
-        // Street lights every ~40 m along the main street.
-        for (float lx = -760.0f; lx <= -440.0f; lx += 40.0f) streetLight(lx, 511.5f);
-
         p.buildingCount = m_buildings - before;
     }
 
@@ -383,7 +377,11 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
     // The District -> Spire approach (the facility pad at the origin).
     addRoadSegmented( 170.0f, 410.0f,  170.0f, 150.0f, 4.0f);
     addRoadSegmented( 170.0f, 150.0f,   22.0f, 150.0f, 4.0f);
-    addRoadSegmented(  22.0f, 150.0f,   22.0f,  40.0f, 4.0f);
+    // SEAM 3: the last leg ends AT the canon facility's apron edge (facade z1
+    // ~55.5 + 24 m apron ring => ~79.5), not z=40 — the old end point is INSIDE
+    // the canonical tower footprint (z -34.5..55.5), which put asphalt through
+    // the Entrance-edge rooms. The approach road now meets the concrete apron.
+    addRoadSegmented(  22.0f, 150.0f,   22.0f,  80.0f, 4.0f);
 
     // ---- 4 FREEWAY TUNNELS: a bore + a mouth portal heading toward each range. ----
     const float tunCol[4]   = { 0.30f, 0.30f, 0.33f, 1.0f };   // concrete
@@ -494,6 +492,73 @@ bool runCitySelfTest() {
     check(c.trafficLightCount() >= 6 && c.neonSignCount() >= 6,
           "C7 street life props (traffic lights " + std::to_string(c.trafficLightCount()) +
           ", neon signs " + std::to_string(c.neonSignCount()) + ")");
+
+    // ==== STREET LIGHT (street_lights.*): real lamps over the same grid. ====
+    {
+        StreetLights sl;
+        sl.buildCityLamps(scene, device);                       // region-hook path
+        sl.buildHostLamps(scene, device, 0.2f, 25.0f, 58.0f);   // apron + approach
+
+        // ---- L1: lamps in every district + the approach/apron rows. ----
+        const uint32_t nScrap = sl.lampCount(StreetLights::Zone::Scrapyard);
+        const uint32_t nNew   = sl.lampCount(StreetLights::Zone::NewDistrict);
+        const uint32_t nInd   = sl.lampCount(StreetLights::Zone::Industrial);
+        const uint32_t nAppr  = sl.lampCount(StreetLights::Zone::Approach);
+        const uint32_t nApron = sl.lampCount(StreetLights::Zone::Apron);
+        check(nScrap > 0 && nNew > 0 && nInd > 0 && nAppr > 0 && nApron > 0,
+              "L1 lamps per district (scrapyard " + std::to_string(nScrap) +
+              ", new " + std::to_string(nNew) + ", industrial " + std::to_string(nInd) +
+              ", approach " + std::to_string(nAppr) + ", apron " + std::to_string(nApron) + ")");
+
+        // ---- L2: nearest-K selection returns <= K, all lit, nearest included. ----
+        {
+            std::vector<x3::rhi::PointLight> out;
+            const uint32_t n = sl.selectLights(200.0f, 2.0f, 500.0f, out, 14);
+            bool nearestIn = false;
+            float bestD = 1e30f; const StreetLights::Lamp* best = nullptr;
+            for (const auto& l : sl.lamps()) {
+                if (l.state == StreetLights::State::Dead) continue;
+                const float dx = l.head[0] - 200.0f, dz = l.head[2] - 500.0f;
+                const float d = dx * dx + dz * dz;
+                if (d < bestD) { bestD = d; best = &l; }
+            }
+            for (const auto& pl : out)
+                if (best && std::fabs(pl.pos[0] - best->head[0]) < 0.01f &&
+                    std::fabs(pl.pos[2] - best->head[2]) < 0.01f) nearestIn = true;
+            check(n <= 14 && n == (uint32_t)out.size() && n > 0 && nearestIn,
+                  "L2 nearest-K lamp selection (returned " + std::to_string(n) +
+                  " <= 14, nearest lit lamp included)");
+        }
+
+        // ---- L3: lived-in variance fractions in range (~8% dead / ~5% flicker). ----
+        {
+            const float total = (float)sl.lampCount();
+            const float fDead  = (float)sl.deadCount() / total;
+            const float fFlick = (float)sl.flickerCount() / total;
+            check(fDead >= 0.02f && fDead <= 0.16f && fFlick >= 0.01f && fFlick <= 0.12f,
+                  "L3 variance fractions (dead " + std::to_string(sl.deadCount()) + "/" +
+                  std::to_string(sl.lampCount()) + ", flicker " +
+                  std::to_string(sl.flickerCount()) + ")");
+        }
+
+        // ---- L4: the dock work light exists (lit, never dead). ----
+        check(sl.hasDockWorkLight(), "L4 dock work light rig at the crate zone");
+
+        // ---- L5: the flicker machine animates (dt-scaled) and stays in [0,1]. ----
+        {
+            bool inRange = true, sawDip = false;
+            for (int i = 0; i < 300; ++i) {   // 5 s at 60 Hz
+                sl.update(1.0f / 60.0f, scene);
+                for (const auto& l : sl.lamps()) {
+                    if (l.level < -0.001f || l.level > 1.001f) inRange = false;
+                    if (l.state == StreetLights::State::Flicker && l.level < 0.5f)
+                        sawDip = true;
+                }
+            }
+            check(inRange && (sl.flickerCount() == 0 || sawDip),
+                  "L5 flicker bursts animate (levels in range, dips observed)");
+        }
+    }
 
     physics->shutdown();
     x3::logInfo(std::string("city: ") + std::to_string(g_pass) + "/" +

@@ -19,8 +19,6 @@
 #include <stb_truetype.h>
 
 #include <algorithm>
-#include <cctype>
-#include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -274,211 +272,238 @@ float drawTextGlass(Canvas& c, const std::string& s, float penX, float topY, flo
 // `lines` = the readout (line 0 is the header title, 1+ are the left-column data
 // rows). `inputLine` (if non-empty) is the live "> code_" prompt, baked in amber
 // below the data rows. Passing them in lets the text be rasterized ON the glass.
+// `wide` = the READOUT layout: drop the center schematic and let the text zone run
+// most of the width, so the type is roughly twice the size (the rift consoles, which
+// exist to be read from a couple of metres). false = the cell terminal's composition.
 std::vector<uint8_t> makeHologramRGBA(uint32_t n,
                                       const std::vector<std::string>& lines,
                                       const std::string& inputLine,
-                                      const float* inkOverride = nullptr) {
+                                      const float* inkOverride = nullptr,
+                                      bool wide = false) {
     const float fn = (float)n;
-    auto P = [&](float f){ return f * fn; };                // fraction -> pixels
+    // Right edge of the text column. Cell: a narrow left column beside the schematic.
+    // Readout: everything up to the right-hand icon/bar column.
+    const float kTextX1 = wide ? 0.655f : 0.345f;
 
-    // ====================================================================
-    // PROFESSIONAL TERMINAL LAYOUT (medical/military UI discipline). OWNER PASS
-    // (2026-07-11): "the text is hard to read because graphics interfere with it."
-    // The panel bakes into a rounded quad whose corners FADE to black (the wanted
-    // rounded-glass look), so EVERY element lives inside a CORNER-SAFE GRID —
-    // nothing important enters the corner discs (fixes 'STATUS: SECURE' clipping
-    // at the top-right corner). Three non-overlapping columns —
-    //   LEFT   = text-only readout (NO line-art behind text + a darker backing plate),
-    //   CENTER = a self-contained schematic (no stroke exits the cell),
-    //   RIGHT  = warning icons + value bars on a fixed right column —
-    // a HEADER strip (emblem + title + ONE rule) and a dim BOTTOM data strip.
-    // Brightness hierarchy: TEXT > schematic > decoration.
-    // ====================================================================
-    struct Rect { float x0, y0, x1, y1; };
-    const Rect zHeader { 0.160f, 0.050f, 0.840f, 0.190f };   // emblem + title + rule
-    const Rect zLeft   { 0.065f, 0.210f, 0.448f, 0.835f };   // text-only readout (widened for bigger, readable text)
-    const Rect zCenter { 0.455f, 0.225f, 0.665f, 0.720f };   // schematic cell
-    const Rect zRight  { 0.700f, 0.205f, 0.890f, 0.835f };   // bars / warnings
-    const Rect zBottom { 0.160f, 0.850f, 0.840f, 0.905f };   // dim data strip
-    auto inRect = [](const Rect& q, float u, float v){
-        return u >= q.x0 && u <= q.x1 && v >= q.y0 && v <= q.y1;
-    };
-
-    // ---- 1) BASE FIELD: near-black glass with a faint scanline. TEXT zones (header,
-    // left readout, bottom strip) get a DARKER backing plate (no grid) so glowing ink
-    // always reads at high contrast; the schematic/right zones keep a faint grid so
-    // they read as a live display. The bezel margin stays clear so the glass shows the
-    // room at the very edge. ----
-    const float paneM = 0.055f;
+    // ---- 1) BLACK GLASS BASE (under the line-art). The owner's spec, three words:
+    // "Black screen on holo terminal. Clear text" + "shiny". The substrate is BLACK
+    // GLASS — a near-black slab, NOT the deep-blue fill this used to paint (that flat
+    // blue IS what a featureless holo screen looks like when nothing else survives to
+    // the pixel). Everything that reads — the line-art, the readout text — is ADDED as
+    // glowing ink ON TOP of the black, which is what gives crisp high-contrast text and
+    // lets GlassMaterial::emissiveMap make exactly those strokes glow while the
+    // substrate stays dark. Keep the fine scanlines / data-grid / vignette, but at
+    // black-glass levels: they texture the black, they do not fill it. ----
     Canvas c(n);
     for (uint32_t y = 0; y < n; ++y) {
         for (uint32_t x = 0; x < n; ++x) {
             const float u = (x + 0.5f) / fn, v = (y + 0.5f) / fn;
-            const size_t i = (size_t)y * n + x;
-            const bool inPane = (u > paneM && u < 1.0f - paneM &&
-                                 v > paneM && v < 1.0f - paneM);
-            if (!inPane) { c.r[i]=0.004f; c.g[i]=0.009f; c.b[i]=0.017f; continue; } // bezel
-            // Text backing plate: near-black, no grid — the "darker plate behind the
-            // text block" so ink sits on a clean field (owner: text must read at a glance).
-            if (inRect(zLeft,u,v) || inRect(zHeader,u,v) || inRect(zBottom,u,v)) {
-                c.r[i]=0.006f; c.g[i]=0.012f; c.b[i]=0.024f; continue;
-            }
-            float br = 0.012f, bg = 0.024f, bb = 0.050f;
-            const float scan = 0.85f + 0.15f * ((y % 4u) < 2u ? 1.0f : 0.5f);
+            // Near-black with the faintest cool cast (black glass, not black paint).
+            float br = 0.004f, bg = 0.010f, bb = 0.020f;
+            const float grad = 1.0f - v * 0.35f;            // a touch brighter toward the top
+            br *= grad; bg *= grad; bb *= grad;
+            const float scan = 0.70f + 0.30f * ((y % 4u) < 2u ? 1.0f : 0.55f);
             br *= scan; bg *= scan; bb *= scan;
-            // faint grid ONLY in the schematic + right zones (never behind text)
-            if ((inRect(zCenter,u,v) || inRect(zRight,u,v)) &&
-                ((x % 28u) < 1u || (y % 28u) < 1u)) { bg += 0.010f; bb += 0.018f; }
-            c.r[i]=br; c.g[i]=bg; c.b[i]=bb;
+            if ((x % 28u) < 1u || (y % 28u) < 1u) { bg += 0.012f; bb += 0.020f; } // data-grid
+            const float cx = (u - 0.5f), cy = (v - 0.5f);
+            const float rad = std::sqrt(cx*cx + cy*cy) * 1.42f;
+            const float vig = 1.0f - 0.45f * rad * rad;
+            br *= vig; bg *= vig; bb *= vig;
+            const size_t i = (size_t)y * n + x;
+            c.r[i] = br; c.g[i] = bg; c.b[i] = bb;
         }
     }
 
-    // ---- Palette + brightness hierarchy. Decoration is dimmed to ~42% of text so the
-    // eye ranks TEXT > schematic > decoration (owner: "dim decorative strokes"). ----
-    const float CY_R = 0.26f, CY_G = 0.56f, CY_B = 1.60f;   // blue line-art (HDR)
-    const float WT_R = 0.60f, WT_G = 0.92f, WT_B = 1.75f;   // bright blue-white
+    // ---- 2) LINE-ART HUD (additive cyan/white). All coordinates in pixels, scaled
+    // off n so it stays crisp at 1024^2. Layout follows the reference photos.
+    // Strokes are pushed HOT (cyan well above the glass base) so the printed HUD
+    // survives the flat additive emissive flood + reads under scene lighting. ----
+    auto P = [&](float f){ return f * fn; };                // fraction -> pixels
+    const float CY_R = 0.55f, CY_G = 1.30f, CY_B = 1.45f;   // hot cyan stroke (HDR-ish)
+    const float WT_R = 1.30f, WT_G = 1.55f, WT_B = 1.65f;   // hot cyan-white
     const float th  = std::max(1.4f, fn / 512.0f);          // base stroke thickness
     const float thh = th * 1.5f;                            // heavier strokes
-    const float kDeco  = 0.42f;    // frames / ticks / dotted strip / dividers (decoration)
-    const float kSchem = 0.62f;    // schematic strokes + nodes (mid tier)
 
-    // ---- 2) OUTER FRAME: corner brackets with the chamfered top-right corner, drawn
-    // DIM. Inset to the corner-safe box so the brackets themselves never clip. ----
-    bracketFrame(c, P(0.052f), P(0.055f), P(0.948f), P(0.945f),
-                 P(0.070f), P(0.050f), CY_R,CY_G,CY_B, kDeco, thh);
+    // Whole-UI bracket frame with a chamfered top-right corner.
+    bracketFrame(c, P(0.045f), P(0.05f), P(0.955f), P(0.95f),
+                 P(0.075f), P(0.055f), CY_R,CY_G,CY_B, 0.95f, thh);
 
-    // ---- HEADER: hexagon emblem + ONE rule under it. Title text baked on-glass below. ----
-    hexagon(c, P(zHeader.x0 + 0.020f), P(0.108f), P(0.026f), WT_R,WT_G,WT_B, kSchem, thh);
-    line(c, P(zHeader.x0), P(0.170f), P(zHeader.x1), P(0.170f), WT_R,WT_G,WT_B, 0.7f, thh);
+    // --- TOP HEADER: rule + hexagon emblem at the left end. The TITLE TEXT itself is
+    // rendered on-glass by the host (drawHoloReadout) over this clear strip. ---
+    const float hdrY = P(0.135f);
+    hexagon(c, P(0.085f), P(0.092f), P(0.030f), WT_R,WT_G,WT_B, 1.0f, thh);
+    line(c, P(0.085f)-P(0.012f), P(0.092f), P(0.085f)+P(0.012f), P(0.092f), WT_R,WT_G,WT_B,0.9f, th); // emblem tick
+    line(c, P(0.130f), hdrY, P(0.92f), hdrY, WT_R,WT_G,WT_B, 1.0f, thh);   // header rule
+    line(c, P(0.130f), hdrY+P(0.010f), P(0.55f), hdrY+P(0.010f), CY_R,CY_G,CY_B, 0.5f, th); // sub-rule
 
-    // ---- LEFT COLUMN is TEXT-ONLY: no line-art here (readout baked below) so nothing
-    // crosses the text rows. One dim vertical divider marks the column edge. ----
-    line(c, P(zLeft.x1 + 0.012f), P(zLeft.y0), P(zLeft.x1 + 0.012f), P(zLeft.y1),
-         CY_R,CY_G,CY_B, 0.22f, th);
-
-    // ---- CENTER SCHEMATIC — a node + branches, ALL inside zCenter (no stroke exits the
-    // cell into the text zones). ----
-    {
-        const float ncx = P(0.560f), ncy = P(0.400f);
-        const float nhw = P(0.055f), nhh = P(0.050f);
-        roundRectFrame(c, ncx-nhw, ncy-nhh, ncx+nhw, ncy+nhh, P(0.018f),
-                       WT_R,WT_G,WT_B, kSchem, thh);
-        line(c, ncx-nhw+P(0.010f), ncy-P(0.016f), ncx+nhw-P(0.010f), ncy-P(0.016f),
-             CY_R,CY_G,CY_B, kSchem*0.8f, th);
-        line(c, ncx-nhw+P(0.010f), ncy+P(0.010f), ncx+nhw-P(0.020f), ncy+P(0.010f),
-             CY_R,CY_G,CY_B, kSchem*0.7f, th);
-        const float bx0 = ncx + nhw, bxEnd = P(zCenter.x1 - 0.012f);
-        for (int i = 0; i < 3; ++i) {
-            const float by = ncy - P(0.030f) + i * P(0.030f);
-            line(c, bx0, ncy, bx0 + P(0.014f), by, CY_R,CY_G,CY_B, kSchem, th);
-            line(c, bx0 + P(0.014f), by, bxEnd - P(0.016f), by, CY_R,CY_G,CY_B, kSchem, th);
-            rectFrame(c, bxEnd - P(0.016f), by-P(0.008f), bxEnd, by+P(0.008f),
-                      CY_R,CY_G,CY_B, kSchem, th);
-        }
-        line(c, ncx, ncy+nhh, ncx, ncy+nhh+P(0.026f), CY_R,CY_G,CY_B, kSchem, th);
-        chevronDown(c, ncx, ncy+nhh+P(0.026f), P(0.026f), P(0.024f), WT_R,WT_G,WT_B, kSchem, thh);
+    // --- LEFT COLUMN: icon squares + rows of fine "data text" tick blocks. ---
+    const float lx0 = P(0.075f), lx1 = P(kTextX1);
+    // three little icon squares
+    for (int i = 0; i < 3; ++i) {
+        const float ix = lx0 + i * P(0.055f);
+        rectFrame(c, ix, P(0.20f), ix + P(0.035f), P(0.235f), CY_R,CY_G,CY_B, 0.9f, th);
+        if (i == 1) line(c, ix, P(0.20f), ix+P(0.035f), P(0.235f), CY_R,CY_G,CY_B,0.7f,th); // diag detail
     }
-
-    // ---- RIGHT COLUMN — warning triangles + labelled value bars on a fixed column. ----
-    {
-        const float rx0 = P(zRight.x0), rx1 = P(zRight.x1);
-        for (int i = 0; i < 3; ++i) {
-            const float tx = rx0 + i * P(0.066f);
-            warnTriangle(c, tx + P(0.028f), P(0.225f), P(0.028f), P(0.048f),
-                         WT_R,WT_G,WT_B, kSchem, th);
+    // Paragraphs of short tick-marks — decorative "fine data text" that fills the
+    // column when there is little real text to show. In the READOUT layout there IS
+    // real text, at twice the size, filling that space: the ticks would print straight
+    // through it. Decoration never sits on top of the readout.
+    if (!wide) {
+        float ty = P(0.275f);
+        const float rowH = P(0.026f);
+        for (int row = 0; row < 14; ++row) {
+            // each row is a run of short blocks of varied length (like words)
+            float cxr = lx0;
+            const int words = 3 + (row * 7 + 2) % 4;
+            for (int w = 0; w < words; ++w) {
+                const float wlen = P(0.018f) + P(0.010f) * ((row*5 + w*3) % 4);
+                if (cxr + wlen > lx1) break;
+                const float bright = (row % 5 == 0 && w == 0) ? 0.85f : 0.45f; // first word of some rows brighter
+                line(c, cxr, ty, cxr + wlen, ty, CY_R,CY_G,CY_B, bright, th);
+                cxr += wlen + P(0.012f);
+            }
+            ty += rowH;
+            if (ty > P(0.86f)) break;
         }
-        float fy = P(0.345f);
-        const float fieldH = P(0.060f);
+    }
+    // a faint vertical divider after the left column
+    line(c, lx1 + P(0.015f), P(0.19f), lx1 + P(0.015f), P(0.87f), CY_R,CY_G,CY_B, 0.25f, th);
+
+    // --- CENTER SCHEMATIC: a rounded-rect node + branching horizontal lines with
+    // tiny end-nodes + labels, and a downward chevron below it. Kept LEFT of the
+    // right column (branches stop before x=0.66) so the two zones don't collide.
+    // DROPPED in the READOUT layout — the text occupies this space there. ---
+    if (!wide) {
+    const float ncx = P(0.500f), ncy = P(0.41f);
+    const float nhw = P(0.072f), nhh = P(0.058f);
+    roundRectFrame(c, ncx-nhw, ncy-nhh, ncx+nhw, ncy+nhh, P(0.020f), WT_R,WT_G,WT_B, 0.95f, thh);
+    // a couple of inner detail lines (the node "label rows")
+    line(c, ncx-nhw+P(0.012f), ncy-P(0.018f), ncx+nhw-P(0.012f), ncy-P(0.018f), CY_R,CY_G,CY_B,0.6f,th);
+    line(c, ncx-nhw+P(0.012f), ncy+P(0.010f), ncx+nhw-P(0.025f), ncy+P(0.010f), CY_R,CY_G,CY_B,0.5f,th);
+    // three branching lines off the right side with small node squares + label ticks
+    const float bx0 = ncx + nhw;
+    for (int i = 0; i < 3; ++i) {
+        const float by = ncy - P(0.032f) + i * P(0.032f);
+        const float bxEnd = P(0.625f);
+        line(c, bx0, ncy, bx0 + P(0.016f), by, CY_R,CY_G,CY_B, 0.7f, th);  // angled spur
+        line(c, bx0 + P(0.016f), by, bxEnd, by, CY_R,CY_G,CY_B, 0.7f, th); // horizontal run
+        rectFrame(c, bxEnd, by-P(0.009f), bxEnd+P(0.018f), by+P(0.009f), CY_R,CY_G,CY_B,0.8f,th); // end node
+    }
+    // a branch DOWN to the chevron
+    line(c, ncx, ncy+nhh, ncx, ncy+nhh+P(0.030f), CY_R,CY_G,CY_B, 0.7f, th);
+    chevronDown(c, ncx, ncy+nhh+P(0.030f), P(0.028f), P(0.026f), WT_R,WT_G,WT_B, 0.95f, thh);
+    }   // if (!wide) — center schematic
+
+    // --- RIGHT COLUMN: three warning triangles, data fields (label + value bar),
+    // and a solid indicator square. ---
+    const float rx0 = P(0.70f), rx1 = P(0.92f);
+    for (int i = 0; i < 3; ++i) {
+        const float tx = rx0 + i * P(0.075f);
+        warnTriangle(c, tx + P(0.030f), P(0.205f), P(0.030f), P(0.052f), WT_R,WT_G,WT_B, 0.95f, th);
+    }
+    // 3 data fields: a label tick + a bright value bar
+    {
+        float fy = P(0.33f);
+        const float fieldH = P(0.06f);
         const float barLens[3] = { 0.62f, 0.40f, 0.85f };
         for (int i = 0; i < 3; ++i) {
-            line(c, rx0, fy, rx0 + P(0.055f), fy, CY_R,CY_G,CY_B, kDeco, th);   // label tick
+            line(c, rx0, fy, rx0 + P(0.06f), fy, CY_R,CY_G,CY_B, 0.6f, th);          // label tick
+            // bar track (dim) + bright fill
             const float barY = fy + P(0.014f);
-            rectFrame(c, rx0, barY, rx1, barY + P(0.018f), CY_R,CY_G,CY_B, kDeco, th);
+            rectFrame(c, rx0, barY, rx1, barY + P(0.018f), CY_R,CY_G,CY_B, 0.4f, th);
             const float fillX = rx0 + (rx1 - rx0) * barLens[i];
-            rectFill(c, rx0+th, barY+th, fillX, barY + P(0.018f) - th, WT_R,WT_G,WT_B, kSchem);
+            rectFill(c, rx0+th, barY+th, fillX, barY + P(0.018f) - th, WT_R,WT_G,WT_B, 0.85f);
             fy += fieldH;
         }
-        rectFill(c, rx1 - P(0.028f), fy + P(0.004f), rx1, fy + P(0.032f), WT_R,WT_G,WT_B, kSchem);
+        // solid bright indicator square at the bottom of the right column
+        rectFill(c, rx1 - P(0.030f), fy + P(0.005f), rx1, fy + P(0.035f), WT_R,WT_G,WT_B, 1.0f);
+        line(c, rx0, fy + P(0.020f), rx1 - P(0.045f), fy + P(0.020f), CY_R,CY_G,CY_B, 0.5f, th);
     }
 
-    // ---- BOTTOM data strip — dim dotted/coded run, corner-safe span (ends well inside
-    // the corners so it never clips). ----
+    // --- BOTTOM dotted/coded data strip across the width. ---
     {
-        const float by = P(0.878f);
-        float dx = P(zBottom.x0);
+        const float by = P(0.875f);
+        line(c, P(0.075f), by - P(0.014f), P(0.92f), by - P(0.014f), CY_R,CY_G,CY_B, 0.6f, th);
+        float dx = P(0.075f);
         int k = 0;
-        while (dx < P(zBottom.x1)) {
+        while (dx < P(0.92f)) {
             const float dlen = (k % 3 == 0) ? P(0.020f) : ((k % 3 == 1) ? P(0.008f) : P(0.013f));
-            line(c, dx, by, dx + dlen, by, CY_R,CY_G,CY_B, kDeco, thh);
-            dx += dlen + P(0.010f);
+            const float bright = (k % 4 == 0) ? 0.95f : 0.55f;
+            line(c, dx, by, dx + dlen, by, CY_R,CY_G,CY_B, bright, thh);
+            dx += dlen + P(0.009f);
             ++k;
         }
     }
 
-    // ---- 2b) ON-GLASS READOUT TEXT (rasterized with stb_truetype so it sits ON the
-    // glass + tilts with the panel). All text is corner-safe (header fits inside
-    // x[0.16..0.84]; body rows live in the mid-band of the left column). ----
+    // ---- 2b) ON-GLASS READOUT TEXT (rasterized with stb_truetype). This is the
+    // text that used to be a worldToScreen overlay; baking it into the texture makes
+    // it sit ON the glass + tilt with the panel. Positions mirror the old overlay:
+    //   * line 0 = HEADER TITLE, wide + bright across the top header strip,
+    //   * lines 1+ = LEFT-column data rows (clipped to the left ~52% so the center
+    //     schematic + right column line-art stay readable),
+    //   * inputLine = amber "> code_" prompt below the last data row.
     if (glassFont().ready && !lines.empty()) {
         const float HOT = 1.0f;                       // ink alpha (additive glow ink)
-        // --- HEADER TITLE: fit inside the header strip, RIGHT of the emblem, so the
-        // whole title (incl. 'STATUS: SECURE') stays clear of the top-right corner. ---
+        // --- HEADER TITLE: fit to the header strip width, bright cyan-white. ---
         {
-            const float tX = P(zHeader.x0 + 0.055f);        // start right of the emblem
-            const float tSpan = P(zHeader.x1) - tX;         // available width to the safe edge
-            float tpx = P(0.058f);                          // OWNER: bigger, readable header
+            const float titleBudget = P(0.86f - 0.13f);   // header rule span ~ x[0.13..0.92]
+            float tpx = P(0.052f);                          // start height (~53 px @1024)
             const float tw = textWidthPx(lines[0], tpx);
-            if (tw > tSpan && tw > 1.0f) tpx *= tSpan / tw; // shrink to span (never clips)
-            drawTextGlass(c, lines[0], tX, P(0.076f), tpx, WT_R, WT_G, WT_B, HOT);
+            if (tw > P(0.79f) && tw > 1.0f) tpx *= P(0.79f) / tw;   // shrink to span
+            (void)titleBudget;
+            drawTextGlass(c, lines[0], P(0.130f), P(0.060f), tpx, WT_R, WT_G, WT_B, HOT);
         }
-        // --- BODY rows (1+) down the left text-only column. Fit to the column width. ---
-        const float lx0b = P(zLeft.x0 + 0.012f);
-        const float zoneW = P(zLeft.x1) - lx0b;
-        float bpx = P(0.038f);                              // OWNER: bigger body text
+        // --- BODY rows (1+) down the left column. Shrink to the left zone width. ---
+        const float lx0b = P(0.075f);
+        const float zoneW = P(kTextX1) - lx0b;         // data-column width (wide in Readout)
+        const float tyTop = P(0.258f);                  // first body row (below the icons)
+        // Base size. READOUT panels are meant to be read at a distance, so they start
+        // much bigger; the cell keeps its authored size exactly.
+        float bpx = wide ? P(0.060f) : P(0.033f);
+        // VERTICAL FIT (new): shrink so every row lands above the bottom data strip.
+        // Without this a long readout simply ran off the glass — and the old code could
+        // only ever SHRINK to fit the WIDTH, so a wide zone never actually grew the type.
+        {
+            const float rows = (float)(lines.size() - 1) + (inputLine.empty() ? 0.0f : 1.0f);
+            const float vBudget = P(0.860f) - tyTop;
+            if (rows > 0.0f) {
+                const float maxBpx = vBudget / (rows * 1.30f);
+                if (bpx > maxBpx) bpx = maxBpx;
+            }
+        }
         for (size_t li = 1; li < lines.size(); ++li) {
             const float w = textWidthPx(lines[li], bpx);
             if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
         }
         if (!inputLine.empty()) {
-            const float w = textWidthPx(inputLine, bpx * 1.15f);
+            // The input renders at bpx*1.18 below — keep IT inside the zone too
+            // (freeform questions are much longer than a 4-digit code).
+            const float w = textWidthPx(inputLine, bpx * 1.18f);
             if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
         }
-        if (bpx < P(0.026f)) bpx = P(0.026f);               // OWNER: never shrink below readable
-        const float rowH = bpx * 1.34f;
-        float ty = P(zLeft.y0 + 0.006f);
-        // STATUS-COLOR console: GREEN = ok/secure, ORANGE = warning/alert, BLUE = data.
-        // Ink is pushed a touch brighter than before so every row reads over the darker
-        // backing (owner: "raise ink brightness slightly").
-        auto statusColor = [](const std::string& s, float& r, float& g, float& b) {
-            std::string U; U.reserve(s.size());
-            for (char ch : s) U += (char)std::toupper((unsigned char)ch);
-            auto has = [&](const char* kw){ return U.find(kw) != std::string::npos; };
-            if (has("FAIL") || has("WARN") || has("ALERT") || has("CRIT") || has("DANGER") ||
-                has("BREACH") || has("AUGMENT") || has("REJECT") || has("UNSTABLE") || has("LOCK")) {
-                r = 1.75f; g = 0.78f; b = 0.16f;            // ORANGE (warning / alert)
-            } else if (has(" OK") || has("ONLINE") || has("SECURE") || has("READY") ||
-                       has("NOMINAL") || has("ACTIVE") || has("GRANT") || has("ACCEPT") ||
-                       has("STABLE") || has("CLEAR")) {
-                r = 0.30f; g = 1.70f; b = 0.58f;            // GREEN (ok / status good)
-            } else {
-                r = 0.40f; g = 0.78f; b = 1.80f;            // BLUE (default data)
-            }
-        };
+        if (bpx < P(0.018f)) bpx = P(0.018f);
+        const float rowH = bpx * 1.30f;
+        // Start BELOW the left column's three icon squares (they occupy y 0.20..0.235).
+        // Rows used to start at 0.205 and the squares were printed straight through the
+        // first data row — on the rifthub consoles that turned "DEST act2caves" into
+        // "[]  []2caves". The readout wins; the decoration moves out of its way.
+        float ty = tyTop;                               // below the header strip + icons
         for (size_t li = 1; li < lines.size(); ++li) {
-            if (lines[li].empty()) { ty += rowH * 0.5f; continue; }   // blank = half-row spacer
-            float rr, gg, bb; statusColor(lines[li], rr, gg, bb);
-            // W4-2 ink override (VIGIL presence = orange): body rows take the host ink.
-            if (inkOverride) { rr = inkOverride[0]; gg = inkOverride[1]; bb = inkOverride[2]; }
-            drawTextGlass(c, lines[li], lx0b, ty, bpx, rr, gg, bb, HOT);
+            // first data row a touch brighter (the "SUBJECT" line), rest steady cyan.
+            // W4-2: when the host set an ink override (VIGIL presence = orange), body
+            // rows bake with m_textColor; the default path is byte-identical to before.
+            const float aRow = (li == 1) ? HOT : 0.92f;
+            const float inkR = inkOverride ? inkOverride[0] * 1.15f : CY_R * 1.15f;
+            const float inkG = inkOverride ? inkOverride[1]          : CY_G;
+            const float inkB = inkOverride ? inkOverride[2]          : CY_B;
+            drawTextGlass(c, lines[li], lx0b, ty, bpx, inkR, inkG, inkB, aRow);
             ty += rowH;
         }
-        // --- LIVE INPUT LINE in amber, in its OWN clear strip (a dim underline rule
-        // sets it apart from the data rows). ---
+        // --- LIVE INPUT LINE in amber, just below the last data row. ---
         if (!inputLine.empty()) {
-            const float ipx = bpx * 1.15f;
-            const float iy  = ty + rowH * 0.35f;
-            line(c, lx0b, iy - P(0.006f), P(zLeft.x1), iy - P(0.006f),
-                 1.20f, 0.72f, 0.20f, kDeco, th);         // dim amber divider above the prompt
-            drawTextGlass(c, inputLine, lx0b, iy, ipx, 1.35f, 0.80f, 0.24f, HOT);
+            const float ipx = bpx * 1.18f;
+            drawTextGlass(c, inputLine, lx0b, ty + rowH * 0.25f, ipx,
+                          1.30f, 0.78f, 0.22f, HOT);    // hot amber prompt
         }
     }
 
@@ -583,61 +608,56 @@ x3::prims::PrimMesh makeRoundedPanel(float hw, float hh, float corner) {
 // (The old FLAT makeRoundedRim ribbon — a quad strip between two coplanar contours,
 // which read as a SQUARE-section frame — was replaced by the ROUND-section pipe
 // x3::prims::makeRoundedRectTube, swept along the same rounded-rect path. See build().)
-
-// A straight ROUND PIPE along the Y axis (the ceiling support strut + collars): a
-// capped cylinder of radius `r`, from y=-halfH to y=+halfH, centered on origin.
-// Smooth side normals; flat end caps. Used for the metallic ceiling-mount pipe.
-x3::prims::PrimMesh makeCylinderY(float r, float halfH, uint32_t seg = 20) {
-    x3::prims::PrimMesh m;
-    seg = std::max(6u, seg);
-    const float kTwoPi = 6.2831853f;
-    const uint32_t ring = seg + 1;
-    // Side wall: two rings (bottom, top) swept around.
-    for (uint32_t j = 0; j <= seg; ++j) {
-        const float a = kTwoPi * ((float)j / (float)seg);
-        const float ca = std::cos(a), sa = std::sin(a);
-        const float u = (float)j / (float)seg;
-        m.verts.push_back({ { ca*r, -halfH, sa*r }, { ca, 0.0f, sa }, { u, 0.0f } });
-        m.verts.push_back({ { ca*r,  halfH, sa*r }, { ca, 0.0f, sa }, { u, 1.0f } });
-    }
-    for (uint32_t j = 0; j < seg; ++j) {
-        const uint32_t b0 = j*2, t0 = j*2+1, b1 = (j+1)*2, t1 = (j+1)*2+1;
-        m.index.insert(m.index.end(), { b0, b1, t0, t0, b1, t1 });
-    }
-    // End caps (top + bottom fans).
-    auto cap = [&](float y, float ny) {
-        const uint32_t c = (uint32_t)m.verts.size();
-        m.verts.push_back({ {0.0f, y, 0.0f}, {0.0f, ny, 0.0f}, {0.5f, 0.5f} });
-        const uint32_t start = (uint32_t)m.verts.size();
-        for (uint32_t j = 0; j <= seg; ++j) {
-            const float a = kTwoPi * ((float)j / (float)seg);
-            m.verts.push_back({ { std::cos(a)*r, y, std::sin(a)*r }, {0.0f, ny, 0.0f}, {0,0} });
-        }
-        for (uint32_t j = 0; j < seg; ++j) {
-            if (ny > 0.0f) m.index.insert(m.index.end(), { c, start+j, start+j+1 });
-            else           m.index.insert(m.index.end(), { c, start+j+1, start+j });
-        }
-    };
-    cap( halfH,  1.0f);
-    cap(-halfH, -1.0f);
-    (void)ring;
-    return m;
-}
 } // namespace
 
-// Shared with HoloPanel (the platform): bake the flagship console hologram — the
-// rich multi-color status HUD + readout text — into an RGBA8 n×n buffer, so the
-// terminal SKIN of a HoloPanel is a single call.
-std::vector<uint8_t> bakeConsoleHologram(uint32_t n, const std::vector<std::string>& lines,
-                                         const std::string& input) {
-    return makeHologramRGBA(n, lines, input);
+// ---- REGRESSION GUARD (see holo_terminal.h) --------------------------------
+// "Does this panel actually SHOW anything?" Everything the featureless-blue-slab
+// bug destroyed is checked here: the panel must be in a Scene, the screen entity
+// must exist, the baked readout texture must be VALID and actually BOUND to that
+// entity, the readout must have lines, and the glyphs must have rasterized.
+bool HoloTerminal::screenHasContent() const {
+    if (!m_scene || m_entity == kNoLink || m_entity >= m_scene->size()) return false;
+    if (!m_holoTex.valid()) return false;
+    const Entity& e = m_scene->get(m_entity);
+    if (!e.tex.valid() || e.tex.id != m_holoTex.id) return false;   // texture actually BOUND
+    if (m_lines.empty()) return false;                              // something to say
+    if (!m_textOnGlass) return false;                               // glyphs really baked
+    return true;
 }
 
-// DARK-GLASS ROUNDED MEDICAL-VITALS MONITOR (F2 rescue-room wall screen). Reuses the
-// black-glass line-art toolkit above (dark pane + additive glowing strokes + on-glass
-// text + rounded-corner fade) so it matches Jake's-cell terminal LANGUAGE — a live
-// dark-glass readout, not a flat teal quad. Content: NAME header + STABLE tag, a green
-// ECG heart-rate trace, and green/cyan vitals rows.
+// Headless ink probe — bake the readout and measure how much of the text zone is lit.
+float holoReadoutInkFraction(const std::vector<std::string>& lines,
+                             const std::string& inputLine, bool wideReadout) {
+    const uint32_t n = 256;   // small bake: fast, and the glyph coverage still registers
+    std::vector<uint8_t> px = makeHologramRGBA(n, lines, inputLine, nullptr, wideReadout);
+    // Sample ONLY the BODY-ROW band: x within the data column, y BELOW the header rule
+    // (0.135) and below the three icon squares (0.20..0.235), above the bottom data
+    // strip (0.875). Nothing decorative is drawn in that window in the Readout layout,
+    // so every lit pixel here is TEXT. That matters: if the probe could see the frame or
+    // the icons it would report healthy ink on a panel with no readout at all — a test
+    // that passes on a blank screen is exactly the hole this bug kept slipping through.
+    const uint32_t x0 = (uint32_t)(0.075f * n), x1 = (uint32_t)(0.340f * n);
+    const uint32_t y0 = (uint32_t)(0.270f * n), y1 = (uint32_t)(0.800f * n);
+    uint64_t lit = 0, total = 0;
+    for (uint32_t y = y0; y < y1; ++y) {
+        for (uint32_t x = x0; x < x1; ++x) {
+            const uint8_t* p = &px[((size_t)y * n + x) * 4];
+            const float lum = (0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2]) / 255.0f;
+            if (lum > 0.35f) ++lit;    // well above the black-glass substrate
+            ++total;
+        }
+    }
+    return total ? (float)lit / (float)total : 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// F2 RESCUE-ROOM VITALS MONITOR (ported from feat/intro-cockpit 162bb69, rebuilt on
+// THIS file's black-glass canvas). A dark-glass rounded medical monitor: near-black
+// pane + faint scanline field, rounded bezel, a green PQRST ECG trace and glowing
+// vitals rows under the captive's name. Drive it as an emissiveTex over a near-black
+// albedo (the ACES glow law) so it reads as a live screen, never a flat bright slab.
+// Consumer: room_dressing.cpp (the F2 wall screen beside each captive).
+// ---------------------------------------------------------------------------
 std::vector<uint8_t> bakeMedicalMonitor(uint32_t n, const std::string& name) {
     const float fn = (float)n;
     auto P = [&](float f){ return f * fn; };
@@ -799,6 +819,20 @@ std::vector<uint8_t> bakeMedicalMonitor(uint32_t n, const std::string& name) {
     return px;
 }
 
+void HoloTerminal::shutdown(x3::rhi::IRenderDevice& device) {
+    // Free everything build() put on the GPU. The RIFTHUB stands EIGHT of these up
+    // and its smoketest gates on allocationCount == 0, so the platform grew a real
+    // teardown path (it previously had none — the cell terminal is a singleton that
+    // lives for the whole run, so the leak never showed).
+    for (auto h : m_meshes) if (h.valid()) device.destroyMesh(h);
+    m_meshes.clear();
+    if (m_holoTex.valid()) { device.destroyTexture(m_holoTex); m_holoTex = {}; }
+    m_decor.clear();
+    m_entity = kNoLink;
+    m_scene = nullptr;
+    m_device = nullptr;
+}
+
 void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
                          x3::phys::Vec3 pos, float yaw, float width, float height,
                          float ceilingY) {
@@ -815,6 +849,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
+        m_meshes.push_back(e.mesh);
         e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=alpha;
         e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
         e.tag = (uint32_t)Tag::Prop;
@@ -836,6 +871,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
+        m_meshes.push_back(e.mesh);
         e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=alpha;
         e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
         if (asGlass) {
@@ -850,39 +886,6 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const float wx = sn*oz, wz = cs*oz;
         e.transform[0]=cs; e.transform[2]=-sn; e.transform[8]=sn; e.transform[10]=cs;
         e.transform[12]=pos.x+wx; e.transform[13]=pos.y; e.transform[14]=pos.z+wz;
-        return scene.add(e);
-    };
-
-    // SHINY CHROME metallic-roughness map (glTF packing: G = roughness, B = metallic).
-    // metallic 1.0 (B=255), low roughness (~0.13 -> G=33) so the pipe frame + ceiling
-    // strut read as polished steel catching sharp point-light highlights + reflections.
-    auto chromeMR = x3::prims::makeSolidRGBA(4, 0, 33, 255);
-    x3::rhi::TextureHandle chromeTex = device.createTexture(chromeMR.data(), 4, 4, /*srgb*/false);
-    // GLOSSY DARK-GLASS metallic-roughness map for the screen PANE: metallic 0
-    // (dielectric, B=0), roughness ~0.20 (G=51). OWNER PASS (2026-07-11): the target
-    // is "glossy with a shine" — a DARK glass screen with a tasteful specular sheen,
-    // NOT washed-light and NOT hard orbs. History: G=26 (~0.10) was too sharp (hot
-    // specular ORBS bloomed over the text); G=153 (~0.60 matte) killed the shine and
-    // scattered room light into a flat WASH. G=51 (~0.20) is the middle: a soft,
-    // controlled gloss streak reads as polished black glass, the near-black albedo
-    // keeps the pane DARK, and the text glows through via the emissive map.
-    auto glossMR = x3::prims::makeSolidRGBA(4, 0, 51, 0);
-    x3::rhi::TextureHandle glossTex = device.createTexture(glossMR.data(), 4, 4, /*srgb*/false);
-
-    // Add a METALLIC round-pipe part (mrTex -> Cook-Torrance PBR path) at a LOCAL
-    // offset (ox,oy,oz) from pos, yaw-rotated into world. baseColor = brushed-steel
-    // albedo; the mrTex makes it metallic + polished. Optional faint emissive rim.
-    auto addMetal = [&](const x3::prims::PrimMesh& geo, float ox, float oy, float oz,
-                        float r = 0.78f, float g = 0.80f, float b = 0.85f) {
-        Entity e;
-        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
-                                   geo.index.data(), (uint32_t)geo.index.size());
-        e.mrTex = chromeTex;                          // -> drawMeshPBR (metallic + reflections)
-        e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=1.0f;
-        e.tag = (uint32_t)Tag::Prop;
-        const float wx = cs*ox + sn*oz, wz = -sn*ox + cs*oz;
-        e.transform[0]=cs; e.transform[2]=-sn; e.transform[8]=sn; e.transform[10]=cs;
-        e.transform[12]=pos.x+wx; e.transform[13]=pos.y+oy; e.transform[14]=pos.z+wz;
         return scene.add(e);
     };
 
@@ -910,69 +913,132 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     {
         m_texN = 1024;
         m_textOnGlass = glassFont().ready;   // text baked in -> host skips its overlay
-        std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, /*inputLine*/"");
+        std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, /*inputLine*/"",
+                                                     m_inkOverride ? m_textColor : nullptr,
+                                                     m_layout == Layout::Readout);
         m_holoTex = device.createTexture(holo.data(), m_texN, m_texN, /*srgb*/true);
         m_lastInputShown = false;
         m_texDirty = false;
     }
 
-    // ---- SHINY METALLIC ROUND-PIPE FRAME (Tim's redesign): a polished chrome/steel
-    // round pipe (torus-section tube) bent into a rounded-rectangle PICTURE FRAME that
-    // wraps the entire outer edge of the black-glass screen. High metallic + low
-    // roughness (chromeTex) so it catches the point-light highlight + reflections and
-    // reads as real steel tube holding the glass. A hair larger than the screen so it
-    // sits proud of the glass edge like a bezel pipe. ----
-    const float frameCorner = std::min(hw, hh) * 0.30f;
+    // ---- SHINY METALLIC ROUND-PIPE FRAME (the owner's canonical holo language:
+    // "a shiny metallic ROUND-PIPE frame around the glass"). A circular cross-section
+    // swept along the panel's rounded-rect contour (makeRoundedRectTube), so the trim
+    // is a real round tube with rounded corners.
+    //
+    // *** THE 10-TIMES BUG LIVED HERE. *** These used to be GLASS (asGlass=true), and
+    // a third GLASS "backer" panel sat at LOCAL +Z — IN FRONT of the screen — sized
+    // BIGGER than it. Normal glass rides the OPAQUE record range and therefore WRITES
+    // DEPTH IN THE DEPTH PRE-PASS (see vk_passes.cpp drawMeshGlass). So any glass pane
+    // between the eye and the screen DEPTH-REJECTS the screen outright: the readout is
+    // never rasterized at all, and what you see is the pane's own flat fill — a
+    // FEATURELESS ROUNDED BLUE RECTANGLE. It only ever "worked" in the detention cell
+    // because that terminal is built at yaw=PI, which turns LOCAL +Z AWAY from the
+    // player, so those panes landed BEHIND the glass and were themselves depth-rejected
+    // (they contributed nothing — they were dead geometry). The rifthub consoles face
+    // the other way, so the same code put them in front and ate the screen. This is
+    // exactly the club OLED-glass lesson: A PANE OVER A SCREEN DEPTH-OCCLUDES IT.
+    //
+    // The cure is structural, not a nudge: NOTHING is allowed in front of the screen
+    // any more. The backer is DELETED (the screen is now black glass — it IS the dark
+    // slab the backer was faking), and the frame is OPAQUE METAL, which is what it
+    // should always have been ("shiny METALLIC round-pipe", not a glass tube). Metal
+    // rims are coplanar-adjacent, never in front, and cannot occlude anything.
     {
-        x3::prims::PrimMesh frame =
-            x3::prims::makeRoundedRectTube(hw + 0.030f, hh + 0.030f, frameCorner + 0.02f,
-                                           /*tubeR*/0.028f, /*pathSeg*/8, /*tubeSeg*/18);
-        m_decor.push_back(addMetal(frame, 0.0f, 0.0f, 0.0f, 0.80f, 0.82f, 0.86f));
+        const float corner = std::min(hw, hh) * 0.30f;     // match the panel's rounding
+        // Inner bead: a slim POLISHED STEEL pipe hugging the screen edge. Opaque, bright
+        // enough to catch the room's speculars (this is the "shiny"), with a faint cool
+        // sheen so the frame still reads as a lit edge in a dark hall.
+        x3::prims::PrimMesh innerRim =
+            x3::prims::makeRoundedRectTube(hw + 0.010f, hh + 0.010f, corner, /*tubeR*/0.016f,
+                                           /*pathSeg*/6, /*tubeSeg*/14);
+        m_decor.push_back(addMesh(innerRim, 0.0f,
+                                  0.66f, 0.70f, 0.76f, 1.0f,    // polished steel
+                                  0.10f, 0.26f, 0.38f, 0.35f)); // faint cool sheen
+        // Outer pipe: a hair larger, fatter round section, darker gunmetal — the
+        // machined collar the bead sits in. Gives the frame real round-pipe depth.
+        x3::prims::PrimMesh outerRim =
+            x3::prims::makeRoundedRectTube(hw + 0.034f, hh + 0.034f, corner + 0.020f, /*tubeR*/0.022f,
+                                           /*pathSeg*/6, /*tubeSeg*/14);
+        m_decor.push_back(addMesh(outerRim, 0.0f,
+                                  0.42f, 0.45f, 0.50f, 1.0f,    // gunmetal collar
+                                  0.05f, 0.13f, 0.20f, 0.30f)); // dim outer glow
     }
 
-    // ---- A SINGLE SUPPORT PIPE to the CEILING (Tim: the terminal HANGS from it, not
-    // floating). One matching metallic round pipe rises from the TOP-CENTER of the
-    // frame straight up to the ceiling, with a COLLAR/JOINT where it meets the frame
-    // and where it meets the ceiling — so it reads as physically holding the weight. ----
+    // ---- Glass ARM from the ceiling down to the top of the screen, carrying
+    // emissive traces (fiber-optic cyan + copper amber) visible inside the glass. ----
     const float ceil = (ceilingY > 0.0f) ? ceilingY : pos.y + 1.7f;
-    const float frameTopY   = pos.y + hh + 0.030f;   // world Y of the frame's top edge
-    const float strutBotY   = frameTopY;
-    const float strutTopY   = ceil;
-    const float strutH      = strutTopY - strutBotY;
-    if (strutH > 0.05f) {
-        const float strutR    = 0.026f;
-        const float strutMidY = (strutTopY + strutBotY) * 0.5f - pos.y;   // local oy
-        // The support pipe (vertical chrome cylinder), top-center, in the panel plane.
-        x3::prims::PrimMesh strut = makeCylinderY(strutR, strutH * 0.5f, 20);
-        m_decor.push_back(addMetal(strut, 0.0f, strutMidY, 0.0f, 0.80f, 0.82f, 0.86f));
-        // COLLAR where the strut meets the FRAME (a short fatter ring/cylinder joint).
-        x3::prims::PrimMesh collarLo = makeCylinderY(strutR + 0.016f, 0.028f, 20);
-        m_decor.push_back(addMetal(collarLo, 0.0f, (frameTopY - pos.y) + 0.028f, 0.0f,
-                                   0.72f, 0.74f, 0.78f));
-        // COLLAR / ceiling mount plate where the strut meets the CEILING.
-        x3::prims::PrimMesh collarHi = makeCylinderY(strutR + 0.026f, 0.022f, 20);
-        m_decor.push_back(addMetal(collarHi, 0.0f, (ceil - pos.y) - 0.022f, 0.0f,
-                                   0.72f, 0.74f, 0.78f));
+    const float armTopY = ceil;
+    const float armBotY = pos.y + hh + 0.05f;
+    const float armH = (armTopY - armBotY) * 0.5f;
+    if (armH > 0.05f) {
+        const float armMidY = (armTopY + armBotY) * 0.5f - pos.y;  // local oy
+        const float armBackZ = +0.06f;                              // offset off the glass plane
+        // The SINGLE SUPPORT PIPE, top-center, running up to the ceiling: it HANGS, it
+        // does not float. Shiny metal (same family as the frame), with the fiber-optic +
+        // copper traces running inside it. Opaque, like the frame — a glass spar here
+        // would be one more depth-writing pane near the screen.
+        // DARK gunmetal, and no self-glow. This pipe runs the full height of the room,
+        // and a tall thin VERTICAL prim catches the point rig side-on (high N.L) — so it
+        // reads far brighter than the floor at the same albedo. At the old 0.70 (plus a
+        // 2.8-strength emissive trace inside it) the rifthub's eight consoles hung eight
+        // WHITE NEON RODS down the hall that out-shouted the gates themselves. A support
+        // pipe is structure: it holds the weight, it does not light the room.
+        m_decor.push_back(addBox(0.035f, armH, 0.035f, 0, armMidY, armBackZ,
+                                 0.13f,0.14f,0.16f, 1.0f,  0.0f,0.0f,0.0f, 0.0f));
+        // Fiber-optic (cyan) + copper (amber) traces running down the OUTSIDE of the
+        // pipe — they used to be buried at +-0.014, which is INSIDE the 0.035 pipe, so
+        // once the pipe went opaque they were invisible anyway. Proud of the surface, at
+        // a glow you notice standing at the console and nowhere else.
+        m_decor.push_back(addBox(0.006f, armH, 0.006f, -0.038f, armMidY, armBackZ,
+                                 0,0,0,1,  0.2f,0.9f,1.0f, 0.40f));  // cyan fiber
+        m_decor.push_back(addBox(0.006f, armH, 0.006f,  0.038f, armMidY, armBackZ,
+                                 0,0,0,1,  1.0f,0.55f,0.2f, 0.32f)); // copper trace
     }
 
-    // ---- (1) THE TEXT-BACKING PANE — an OPAQUE near-black rounded quad whose EMISSIVE
-    // is driven by the baked hologram UI texture (drawMeshPBR emissive-map path). The
-    // pane itself reads BLACK; the console TEXT + line-art glow as pure self-lit ink in
-    // STATUS COLORS (blue headers / green OK / orange alerts — baked per-line into the
-    // texture) so they read crisp + high-contrast. This sits a hair BEHIND the black
-    // glass slab, so you read the glowing text THROUGH the dark glass. ----
-    x3::prims::PrimMesh geo = makeRoundedPanel(hw, hh, frameCorner);
+    // ---- The HOLOGRAM screen: a rounded-corner glass quad, dark base color so the
+    // EMISSIVE hologram texture + glow carry the look (reads as projected translucent
+    // UI, not a solid slab). The texture supplies scanlines/grid/header/vignette +
+    // rounded-corner fade; emissive makes it glow + feed bloom. update() pulses the
+    // emissive strength + scrolls a scanline overlay for the live shimmer. ----
+    x3::prims::PrimMesh geo = makeRoundedPanel(hw, hh, std::min(hw, hh) * 0.30f);
     Entity e;
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
-    e.tex          = m_holoTex;   // near-black albedo
-    e.emissiveTex  = m_holoTex;   // EMISSIVE map: the glowing multi-color text/HUD gate
-    e.mrTex        = glossTex;    // GLOSSY BLACK GLASS: dielectric fresnel + specular highlight
-    e.baseColor[0] = 0.03f; e.baseColor[1] = 0.035f; e.baseColor[2] = 0.05f; e.baseColor[3] = 1.0f;
-    // Neutral-WHITE emissive multiplier so the texel's own STATUS COLORS survive
-    // (green/orange are not tinted away); .a is the glow strength (bloom source), lifted
-    // to punch THROUGH the dark glass slab in front. update() pulses .a for live shimmer.
-    m_emBase[0] = 1.00f; m_emBase[1] = 1.00f; m_emBase[2] = 1.00f; m_emBase[3] = 2.30f;
+    m_meshes.push_back(e.mesh);
+    e.tex = m_holoTex;                                  // procedural hologram UI
+    // REAL translucent GLASS (engine glass pass) — replaces the old "fake by leaving
+    // it opaque + carrying the look in the emissive" hack. The plate is now actually
+    // see-through: the cell behind subtly shows through while the holo UI texture +
+    // emissive glow carry the projected-display read. baseColor stays full-albedo so
+    // the bright cyan line-art survives the lit term; glass.opacity is the see-through
+    // dial (mid so the printed HUD still reads strongly against what's behind).
+    e.baseColor[0] = 1.0f; e.baseColor[1] = 1.0f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+    e.transparent = true;
+    // BLACK GLASS, SHINY, CLEAR TEXT — the owner's three words, and the project's
+    // canonical holo language. Read it as a real black glass display slab:
+    //   * opacity HIGH  -> it is a BLACK SLAB, not a blue window. The substrate comes
+    //     from the texture (which is now near-black), so the lit body renders BLACK.
+    //   * tint NEUTRAL  -> the ink keeps its authored colour (blue/green; amber for
+    //     warnings). A blue tint here would re-blue everything, which is the look we
+    //     are killing.
+    //   * roughness ~0  -> POLISHED. specular HIGH -> it CATCHES the room: the hall
+    //     lights and the blue membrane glow slide across its face. That is the "shiny".
+    //   * refraction 0  -> a black screen must not bend the scene behind it.
+    //   * emissiveMap 1 -> THE KEY. The glow is modulated by the texel, so the panel
+    //     lights up exactly where the readout is (crisp glowing glyphs + line-art) and
+    //     the black substrate stays black. The old FLAT emissive could not see the
+    //     text, so the only way it could "glow" was to flood the whole pane blue —
+    //     which is the featureless-blue-slab look itself.
+    e.glass.opacity    = 0.94f;          // a BLACK slab, not a window
+    e.glass.tint[0]    = 1.0f; e.glass.tint[1] = 1.0f; e.glass.tint[2] = 1.0f; // neutral: ink keeps its colour
+    e.glass.roughness  = 0.03f;          // polished black glass (M4)
+    e.glass.refraction = 0.0f;           // no bend — it is a screen, not a window
+    e.glass.specular   = 1.0f;           // SHINY: fresnel sheen + hall/membrane glints (M3)
+    e.glass.emissiveMap = 1.0f;          // glow WHERE THE TEXTURE IS BRIGHT (crisp text)
+    // White emissive at display strength: multiplied by the texel it becomes "the
+    // readout glows in its own ink". Black substrate -> stays black. Pulsed in update().
+    m_emBase[0] = 1.0f; m_emBase[1] = 1.0f; m_emBase[2] = 1.0f; m_emBase[3] = 2.1f;
     e.emissive[0]=m_emBase[0]; e.emissive[1]=m_emBase[1]; e.emissive[2]=m_emBase[2]; e.emissive[3]=m_emBase[3];
     e.tag = (uint32_t)Tag::Prop;
     e.transform[0]=cs;  e.transform[2]=-sn;
@@ -980,39 +1046,27 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     e.transform[12]=pos.x; e.transform[13]=pos.y; e.transform[14]=pos.z;
     m_entity = scene.add(e);
 
-    // ---- (2) THE BLACK GLASS SLAB (Tim's redesign): a full-size rounded translucent
-    // NEAR-BLACK glass plate mounted a hair IN FRONT of the text pane. It is the screen
-    // SURFACE — dark glass you read the glowing text through, with a fresnel sheen + the
-    // shader's animated M3 GLINT sweep, and the room faintly visible in its reflection.
-    // Near-black tint keeps it reading as BLACK glass; low opacity + high emissive text
-    // behind means the status text still punches through. ----
-    x3::prims::PrimMesh sgeo = makeRoundedPanel(hw, hh, frameCorner);
-    Entity se;
-    se.mesh = device.createMesh(sgeo.verts.data(), (uint32_t)sgeo.verts.size(),
-                                sgeo.index.data(), (uint32_t)sgeo.index.size());
-    se.baseColor[0]=0.03f; se.baseColor[1]=0.035f; se.baseColor[2]=0.05f; se.baseColor[3]=1.0f;
-    se.emissive[0]=0.05f; se.emissive[1]=0.08f; se.emissive[2]=0.13f; se.emissive[3]=0.04f;  // faint sheen, pulsed in update()
-    se.transparent = true;
-    se.glass.opacity    = 0.10f;         // low opacity: the glowing text punches THROUGH; the near-black tint keeps it reading as a black-glass surface
-    se.glass.tint[0]    = 0.55f; se.glass.tint[1] = 0.62f; se.glass.tint[2] = 0.75f; // cool smoked tint (TEST: lighter so text survives)
-    se.glass.roughness  = 0.55f;         // ANTI-GLARE matte (owner): broad soft sheen, no hot orbs
-    se.glass.refraction = 0.014f;        // gentle bend of the cell behind (M2)
-    se.glass.specular   = 0.05f;         // near-zero specular so room lights never bloom as orbs on the text
-    se.tag = (uint32_t)Tag::Prop;
-    // Nudge the glass toward the viewer along the panel normal (+Z world) so it
-    // composites OVER the text pane.
-    const float foZ = 0.014f;
-    se.transform[0]=cs; se.transform[2]=-sn; se.transform[8]=sn; se.transform[10]=cs;
-    se.transform[12]=pos.x; se.transform[13]=pos.y; se.transform[14]=pos.z + foZ;
-    // The GLOSSY PANE itself now carries the black-glass read (dielectric fresnel +
-    // specular via glossTex), so the separate front slab is OFF by default — its
-    // screen-space refraction path blacks out the text where the scene-copy is
-    // unpopulated. Opt-in (HOLO_GLASS_SLAB) for in-engine scenes that DO populate it.
-    if (std::getenv("HOLO_GLASS_SLAB")) m_scanEntity = scene.add(se);
-
+    // ---- NO SECOND PANE. ----------------------------------------------------------
+    // There used to be a "scanline overlay" quad here: a second GLASS panel nudged
+    // 0.014 m along LOCAL +Z, whose emissive strength was swept in update() to fake a
+    // projector refresh band. It is DELETED, and nothing may take its place.
+    //
+    // Glass writes depth in the depth pre-pass, so a pane in front of the screen does
+    // not composite over it — it DEPTH-REJECTS it, and the readout is never drawn at
+    // all. Whether that pane lands in front depends on the terminal's YAW (its comment
+    // claimed +Z was "toward the viewer"; in the detention cell, at yaw=PI, it is the
+    // opposite). So this quad was a coin flip on facing, and the rifthub consoles —
+    // which face the other way — lost it: every one of them rendered as a featureless
+    // blue slab. A shimmer is not worth a screen you cannot read.
+    //
+    // The shimmer survives WITHOUT a second pane: update() pulses THIS entity's
+    // emissive, and because emissiveMap is on, that pulse rides the readout ink itself
+    // (the text breathes) instead of a flat sheet of blue laid over it. If a scanline
+    // sweep is ever wanted back, bake it into the TEXTURE — never as geometry in front
+    // of the glass.
     // (Boot readout seeded above, before the texture bake, so the on-glass text is
     // rasterized into the first hologram frame.)
-    x3::logInfo("[holoterm] built cell-01 terminal (translucent emissive) at (" +
+    x3::logInfo("[holoterm] built black-glass terminal (shiny, on-glass readout) at (" +
                 std::to_string((int)pos.x) + "," + std::to_string((int)pos.y) + "," +
                 std::to_string((int)pos.z) + ")");
 }
@@ -1065,22 +1119,15 @@ void HoloTerminal::regenTexture() {
     m_lastInputShown = m_active;
 
     std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, inputLine,
-                                                 m_inkOverride ? m_textColor : nullptr);
+                                                 m_inkOverride ? m_textColor : nullptr,
+                                                 m_layout == Layout::Readout);
     x3::rhi::TextureHandle fresh = m_device->createTexture(holo.data(), m_texN, m_texN, /*srgb*/true);
     if (!fresh.valid()) { m_texDirty = false; return; }   // keep the old tex on failure
 
     x3::rhi::TextureHandle old = m_holoTex;
     m_holoTex = fresh;
-    if (m_scene) {
-        // The dark screen pane samples the baked UI as BOTH its albedo AND its
-        // emissive map — re-point both at the fresh handle. The outer glass plate
-        // carries no UI texture (it's clear glass), so it's left untouched.
-        if (m_entity != kNoLink && m_entity < m_scene->size()) {
-            Entity& pane = m_scene->get(m_entity);
-            pane.tex         = m_holoTex;
-            pane.emissiveTex = m_holoTex;
-        }
-    }
+    if (m_scene && m_entity != kNoLink && m_entity < m_scene->size())
+        m_scene->get(m_entity).tex = m_holoTex;
     if (old.valid()) m_device->destroyTexture(old);
     m_texDirty = false;
 }
@@ -1105,21 +1152,13 @@ void HoloTerminal::update(float dt) {
     const float pulse   = 0.86f + 0.14f * std::sin(m_clock * 1.7f);
     const float flicker = 0.97f + 0.03f * std::sin(m_clock * 13.0f);
     const float k = pulse * flicker;
+    // Because emissiveMap is on, this pulse rides the READOUT INK (the text breathes)
+    // rather than a flat blue sheet — the shimmer without the second pane.
     Entity& screen = m_scene->get(m_entity);
     screen.emissive[0] = m_emBase[0];
     screen.emissive[1] = m_emBase[1];
     screen.emissive[2] = m_emBase[2];
     screen.emissive[3] = m_emBase[3] * k;
-
-    // Scrolling SCANLINE band: ramp the overlay quad's emissive strength up + down
-    // (a moving brightness sweep). Triangle wave over ~2.2 s, peaking modestly so it
-    // reads as a refresh sweep, not a strobe.
-    if (m_scanEntity != kNoLink && m_scanEntity < m_scene->size()) {
-        const float t = std::fmod(m_clock * 0.45f, 1.0f);      // 0..1 sweep phase
-        const float band = 0.5f - 0.5f * std::cos(t * 6.2831853f); // smooth 0->1->0
-        Entity& scan = m_scene->get(m_scanEntity);
-        scan.emissive[3] = 0.06f + 0.08f * band;               // SUBTLE cool sheen pulse on the clear glass (the M3 fresnel glint carries the sweep)
-    }
 }
 
 // ===========================================================================
@@ -1173,32 +1212,6 @@ bool runHoloTerminalSelfTest() {
     t.update(0.6f);                                    // > 0.5 s -> toggles
     bool blinkToggled = (t.cursorOn() != blink0);
     check(!rej && t.input().empty() && blinkToggled, "H4 reject path + cursor blinks");
-
-    // ---- H5: CORNER-SAFE LAYOUT (owner UI pass) — the baked texture must FADE its
-    // rounded corners to black (so nothing clips there) while keeping bright content in
-    // the safe interior. This proves the corner-inset layout headlessly (no engine). ----
-    {
-        const uint32_t bn = 128;
-        std::vector<std::string> demo = {
-            "SECURITY CELL 07  --  STATUS: SECURE",
-            "SUBJECT: JAKE", "STATUS: AUGMENTED", "RESTRAINT INTEGRITY: FAILING",
-        };
-        std::vector<uint8_t> tex = bakeConsoleHologram(bn, demo, "");
-        auto lum = [&](uint32_t x, uint32_t y) -> int {
-            const uint8_t* p = &tex[((size_t)y * bn + x) * 4];
-            return (int)p[0] + p[1] + p[2];
-        };
-        // The four extreme corners must be black (the corner fade zeroes them).
-        const bool cornersDark = lum(0,0) <= 6 && lum(bn-1,0) <= 6 &&
-                                 lum(0,bn-1) <= 6 && lum(bn-1,bn-1) <= 6;
-        // The safe interior must carry real content (line-art / text ink).
-        int bright = 0;
-        for (uint32_t y = bn/4; y < bn*3/4; ++y)
-            for (uint32_t x = bn/4; x < bn*3/4; ++x)
-                if (lum(x,y) > 60) ++bright;
-        check(cornersDark && bright > 40,
-              "H5 rounded corners fade to black + safe interior carries content");
-    }
 
     x3::logInfo(std::string("[holoterm-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

@@ -28,6 +28,9 @@ add_executable(X3Engine WIN32
     world_hosts/host_elevator.cpp
     # Phase 7 — ESCAPED-branch Act-1 surface-landing start (--world surface)
     world_hosts/host_surface_start.cpp
+    world_hosts/host_rifthub.cpp
+    rifthub.cpp
+    rift_console.cpp
     space_pilot.cpp
     space/ship_ai.cpp
     space/targeting.cpp
@@ -95,6 +98,9 @@ add_executable(X3Engine WIN32
     cell_dressing.cpp
     room_dressing.cpp
     wing_dressing.cpp
+    # SEAM 2 (world merge): the glass facility exterior, factored from
+    # host_surface_start and wrapped around the REAL canon tower.
+    facility_exterior.cpp
     surface_library.cpp
     intro_coldopen.cpp
     cutscene.cpp
@@ -122,10 +128,14 @@ add_executable(X3Engine WIN32
     cliffs.cpp
     terrain.cpp
     vehicle.cpp
+    world_cars.cpp
+    street_lights.cpp
     vehparts.cpp
     perfshop.cpp
     ecology.cpp
     crowd.cpp
+    crowd_skin.cpp
+    crowd_chatter.cpp
     alert.cpp
     fx.cpp
     hud.cpp

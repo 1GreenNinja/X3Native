@@ -70,11 +70,15 @@ public:
     uint32_t propCount() const { return (uint32_t)m_props.size(); }   // total graybox props
     // Count of regions flagged as mountain ranges (must be 4).
     uint32_t mountainCount() const;
+    // W9 (terrain drama): number of water-ribbon segments THE RIVER placed
+    // (one mitred strip mesh; segments = worldRiverNodes()-1). 0 => no river.
+    uint32_t riverSegmentCount() const { return m_riverSegments; }
 
 private:
     bool m_built = false;
     WorldRegionPlan m_plan[kWorldRegionCount];
     std::vector<uint32_t> m_props;   // Scene entity ids of all placed graybox boxes
+    uint32_t m_riverSegments = 0;    // W9: river water ribbon segments
 };
 
 // Headless self-test (--test-worldregions). Builds the regions on a HeadlessDevice +

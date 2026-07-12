@@ -1,0 +1,37 @@
+{
+  "format": "x3.regions/1",
+  "name": "EFLZ canon master world — streamed outdoor lanes (SEAM 3)",
+  "comment": "The canon master world (--world canonlevel / intro) builds the REAL tower itself, so this graph is regions.json MINUS spire_f1 (never double-build the building). Same lanes at the same authored coordinates. NOTE: the tower center (~22,10.5 — real facade footprint x[-3..47] z[-34.5..55.5], base Y=-2) sits INSIDE the city residency footprint (anchor (-200,425) r750 => ~470 m out), so a canon boot legitimately realizes city + surface_landmarks synchronously on the loading screen; ocean_base streams in on approach. anchor/radius are residency math only; loadRadius/unloadRadius = hysteresis from the footprint edge.",
+  "regions": [
+    {
+      "id": "city",
+      "name": "Scrapyard City / New District / Industrial Zone + freeway tunnels",
+      "builder": "city",
+      "anchor": [-200.0, 0.0, 425.0],
+      "radius": 750.0,
+      "loadRadius": 400.0,
+      "unloadRadius": 600.0,
+      "neighbors": ["surface_landmarks"]
+    },
+    {
+      "id": "ocean_base",
+      "name": "Offshore ocean + undersea disc base",
+      "builder": "oceanbase",
+      "anchor": [1100.0, -40.0, -1350.0],
+      "radius": 230.0,
+      "loadRadius": 500.0,
+      "unloadRadius": 700.0,
+      "neighbors": ["surface_landmarks"]
+    },
+    {
+      "id": "surface_landmarks",
+      "name": "Keth'zar surface landmarks (crash site @ (140,205) — relocated off the tower origin, outposts, 4 mountain-range summit accents; the range TERRAIN itself is in the height field)",
+      "builder": "worldregions",
+      "anchor": [0.0, 0.0, 0.0],
+      "radius": 9850.0,
+      "loadRadius": 2000.0,
+      "unloadRadius": 3000.0,
+      "neighbors": ["city", "ocean_base"]
+    }
+  ]
+}

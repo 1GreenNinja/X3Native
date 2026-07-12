@@ -69,6 +69,7 @@
 #include "ragdoll.h"
 #include "ragdoll_demo.h"   // x3::game::runRagdollBlendCheck (--test-ragdoll)
 #include "vehicle.h"        // x3::game::runDriveEnterExitSelfTest (--test-vehicle)
+#include "world_cars.h"     // x3::game::runCanonVehicleSelfTest (--test-canonvehicle)
 #include "editor/editor.h"
 #include "editor/editor_host.h"
 #include "barrels.h"
@@ -85,6 +86,7 @@
 #include "act2_world.h"
 #include "act2_desert.h"
 #include "act2_caves.h"
+#include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
 #include "tod.h"
 #include "weather.h"
 #include "world_regions.h"
@@ -94,6 +96,7 @@
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
+#include "perfshop.h"
 #include "valley.h"
 #include "cliffs.h"
 #include "ui.h"
@@ -594,6 +597,12 @@ int dispatchTests(const TestFlags& tf) {
                     "self-test...");
         return x3::game::runAct2CavesSelfTest() ? 0 : 1;
     }
+    if (tf.testRifthub) {
+        x3::logInfo("running RIFTHUB Stargate portal-hub (8 grey-stone torus gates + "
+                    "amber chevrons + event-horizon membrane + blue core; trigger ids "
+                    "200-207; tick-driven chevron/core/ripple animation) self-test...");
+        return x3::game::runRifthubSelfTest() ? 0 : 1;
+    }
     if (tf.testWorldRegions) {
         x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "
                     "4 mountain ranges) self-test...");
@@ -766,6 +775,11 @@ int dispatchTests(const TestFlags& tf) {
         const bool driveOk = x3::game::runDriveEnterExitSelfTest();
         return (frameworkOk && driveOk) ? 0 : 1;
     }
+    if (tf.testCanonVehicle) {
+        x3::logInfo("running WORLD CARS canon-vehicle self-test "
+                    "(park/enter/drive/exit + hold-E hack + unlocked-latch region persistence)...");
+        return x3::game::runCanonVehicleSelfTest() ? 0 : 1;
+    }
     if (tf.testVehParts) {
         x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
                     "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
@@ -911,6 +925,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
+    }
+    if (tf.testPerfshop) {
+        x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "
+                    "(build headless; assert the terminal glass + neon sign are DISPLAYS: "
+                    "per-texel emissive, ink on a dark substrate, texture-gated tubes)...");
+        return x3::game::runPerfShopSelfTest() ? 0 : 1;
     }
     // ---- Space-combat stack (folded from feat/cockpit-vattalus) -----------
     if (tf.testSpace) {

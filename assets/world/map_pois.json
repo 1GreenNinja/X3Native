@@ -16,7 +16,7 @@
     { "id": "hidden_sublevel", "name": "Hidden Sub-Level",          "type": "secret",   "region": "spire_f1", "pos": [22.0, -174.0, -24.5],  "floor": 1, "discover_radius": 5.0,  "fast_travel": false },
     { "id": "club_1127",       "name": "Club 1127 - THE DEEP",      "type": "club",     "region": "spire_f1", "pos": [22.0, -200.0, 10.0],   "floor": 1, "discover_radius": 12.0, "fast_travel": true  },
     { "id": "spire",           "name": "The Spire",                 "type": "landmark", "region": "spire_f1", "pos": [22.0, 0.0, 10.0],      "floor": 0, "discover_radius": 60.0, "fast_travel": true  },
-    { "id": "crash_site",      "name": "Crash Site",                "type": "landmark", "region": "surface_landmarks", "pos": [0.0, 0.0, 0.0],        "floor": 0, "discover_radius": 40.0,  "fast_travel": true  },
+    { "id": "crash_site",      "name": "Crash Site",                "type": "landmark", "region": "surface_landmarks", "pos": [140.0, 0.0, 205.0],   "floor": 0, "discover_radius": 40.0,  "fast_travel": true  },
     { "id": "east_outpost",    "name": "East Outpost",              "type": "landmark", "region": "surface_landmarks", "pos": [800.0, 0.0, 400.0],    "floor": 0, "discover_radius": 50.0,  "fast_travel": true  },
     { "id": "west_outpost",    "name": "West Outpost",              "type": "landmark", "region": "surface_landmarks", "pos": [-880.0, 0.0, -320.0],  "floor": 0, "discover_radius": 50.0,  "fast_travel": true  },
     { "id": "city",            "name": "Scrapyard City",            "type": "city",     "region": "city",              "pos": [-200.0, 0.0, 425.0],   "floor": 0, "discover_radius": 120.0, "fast_travel": true  },

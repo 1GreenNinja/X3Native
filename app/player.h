@@ -41,6 +41,10 @@ struct PlayerInput {
     float moveStrafe = 0;      // -1..1  (D = +1, A = -1) along right
     bool  sprint     = false;  // hold to move at sprint speed
     bool  jumpPressed = false; // rising edge only (true the frame Space goes down)
+    // W10 SWIMMING held-key channels (only read while swimming; default false so
+    // every existing PlayerInput{} caller is unaffected).
+    bool  jumpHeld   = false;  // Space HELD — stroke up toward the surface
+    bool  diveHeld   = false;  // Ctrl/C HELD — dive down
     float lookDX = 0;          // mouse delta X this frame (pixels)
     float lookDY = 0;          // mouse delta Y this frame (pixels)
 };
@@ -180,6 +184,25 @@ public:
     // The save layer reads this to capture the player transform.
     x3::phys::Vec3 feet() const { return x3::phys::Vec3{ m_feetX, m_feetY, m_feetZ }; }
 
+    // ---- SWIMMING (W10) ----------------------------------------------------
+    // The water-level FEED: a pure query returning the water SURFACE Y over
+    // world (x,z), or a very-negative "dry" sentinel (e.g. terrain.h's
+    // kWorldWaterDry / -FLT_MAX) when there is no water there. Host-wired (the
+    // canon host passes x3::game::worldWaterLevelAt) instead of Player calling
+    // the terrain query directly, so (a) dev worlds/tests that have no world
+    // water are bit-identical with no feed set, and (b) the headless self-test
+    // injects synthetic water without any terrain dependency. Player never
+    // includes terrain.h.
+    using WaterQueryFn = std::function<float(float x, float z)>;
+    void setWaterQuery(WaterQueryFn fn) { m_waterQuery = std::move(fn); }
+    // True while the swim state is active (deep water). While swimming:
+    // gravity is off (physics swim mode), a gentle buoyancy spring settles the
+    // eye just above the surface, movement follows the FULL look direction
+    // (pitch included) at ~60% walk speed with soft dt-scaled acceleration,
+    // Space held strokes up, Ctrl/C held dives. Enter at depth > 1.35 m, exit
+    // at depth < 1.05 m (hysteresis — no jitter at the surface boundary).
+    bool swimming() const { return m_swimming; }
+
     // ---- Audio hook (audio-assets pass, W2-B) ------------------------------
     // Wire a cue sink so the host can give the PLAYER a voice: a PlayerPain cue
     // fires when takeDamage() lands a real hit, a PlayerLand cue fires the frame
@@ -224,14 +247,24 @@ private:
     // [W9-3 RPG] progression stat layer (see setMaxHpBonus/setSpeedMult).
     float m_speedMult = 1.0f;
 
+    // ---- SWIMMING state (W10) ----------------------------------------------
+    void enterSwim(x3::phys::IPhysicsWorld& physics);
+    void exitSwim(x3::phys::IPhysicsWorld& physics);
+    WaterQueryFn m_waterQuery;            // host-wired; empty => never swims
+    bool  m_swimming = false;
+    float m_swimVelX = 0.0f, m_swimVelY = 0.0f, m_swimVelZ = 0.0f; // smoothed swim velocity
+
     // ---- Audio hook state (audio-assets pass, W2-B) -----------------------
     GameCueFn m_cueSink;                // host-wired; empty => throttled log (see cues.h)
     float     m_fallStartY = 0.0f;      // feet-Y captured the instant we left the ground
 };
 
-// Headless self-test (T1 walk, T2 wall-stop, T3 jump, T4 coyote). Builds its own
-// physics world (floor + wall) and drives synthetic input. Logs PASS/FAIL T#.
-// Returns true iff all pass. Mirrors runPhysicsSelfTest() et al.
+// Headless self-test (T1 walk, T2 wall-stop, T3 jump, T4 coyote, T5 crouch +
+// W10 SWIMMING S1-S5: float-to-rest buoyancy / swim-along-look / dive / stroke
+// up / bank exit with no launch-out pop — synthetic water via setWaterQuery).
+// Builds its own physics world (floor + wall / pool + bank ramp) and drives
+// synthetic input. Logs PASS/FAIL T#/S#. Returns true iff all pass. Mirrors
+// runPhysicsSelfTest() et al.
 bool runPlayerSelfTest();
 
 // Headless self-test (--test-phase2a, EFLZ Phase 2a). Asserts: a Guard within

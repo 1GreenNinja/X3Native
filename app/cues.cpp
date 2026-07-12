@@ -21,6 +21,7 @@ const char* cueKindName(CueKind k) {
         case CueKind::EnemyDeath:   return "enemy-death";
         case CueKind::PlayerPain:   return "player-pain";
         case CueKind::PlayerLand:   return "player-land";
+        case CueKind::PlayerSplash: return "player-splash";
     }
     return "?";
 }
@@ -32,8 +33,8 @@ void emitCueOrLog(const GameCueFn& sink, const GameCue& cue) {
     // headless tests / console without a 60 Hz footstep stream flooding output.
     // One static counter per kind; log every Nth fall-through. The throttle is a
     // dev convenience for the no-audio path only (the real path never logs here).
-    static uint32_t s_count[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    const uint32_t i = (uint32_t)cue.kind < 9u ? (uint32_t)cue.kind : 0u;
+    static uint32_t s_count[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const uint32_t i = (uint32_t)cue.kind < 10u ? (uint32_t)cue.kind : 0u;
     constexpr uint32_t kEvery = 8;     // log 1 in 8 fall-through cues per kind
     if ((s_count[i]++ % kEvery) == 0) {
         x3::logInfo(std::string("[cue] ") + cueKindName(cue.kind) +

@@ -85,6 +85,15 @@ public:
     // (e.g. a ceiling above while crouched): the caller stays crouched rather than clip. A
     // no-op returning false for a non-character / invalid id.
     virtual bool   setCharacterHeight(BodyId, float height) = 0;
+    // SWIM mode (W10). While enabled the character's velocity is taken VERBATIM
+    // from moveCharacter's desiredVelocity — all three components, any sign — and
+    // NO gravity is integrated (the caller owns buoyancy/strokes/dive). Collision
+    // resolution (ExtendedUpdate slide) is unchanged, so a swimmer still slides
+    // along banks/walls and finds ground. Disabling restores the normal
+    // grounded/gravity/jump-impulse semantics with the vertical velocity reset to
+    // 0 (the caller re-enters walking at rest — no stale fall speed). Default off;
+    // a no-op for a non-character/invalid id.
+    virtual void   setCharacterSwim(BodyId, bool enabled) = 0;
 
     // Queries
     virtual RayHit rayCast(Vec3 origin, Vec3 dir, float maxDist, Layer mask) = 0;

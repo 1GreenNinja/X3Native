@@ -61,11 +61,25 @@ public:
     // overrides still win. kNoRoom / undressed rooms fall back to the detention tint.
     void applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t eyeRoom);
 
+    // W10 (swimming): forget the cached zone so the NEXT applyZoneAtmosphere
+    // re-applies the recipe fog unconditionally. The host calls this after a
+    // transient fog override (the underwater tint) ends — the room recipes keep
+    // owning their fog; the override is restored without snapshotting FogParams.
+    void resetZoneAtmosphere() { m_lastZone = -1; }
+
     // Room-tagged recipe lights (key/fill/accent per dressed room). The host
     // APPENDS these to the buildCanonLights list after filtering out the generic
     // warm light for rooms where hasRecipe() is true (the recipe owns that room's
     // light statement — bible: one key per room, not key + generic wash).
     const std::vector<CanonLight>& lights() const { return m_lights; }
+
+    // SEAM 2: the dressing pass's surface library, shared with the facility
+    // exterior so the facade's concrete sets reuse ALREADY-LOADED GPU textures
+    // (sr_concrete_01 is a recipe set — re-decoding its ~16 MB of PNGs into a
+    // second SurfaceLibrary instance blew the exterior's boot budget). Mounted
+    // by build(); lifetime = this object (the host keeps it all session).
+    SurfaceLibrary& surfaceLibrary() { return m_surf; }
+
     bool hasRecipe(uint32_t room) const {
         return room < m_roomZone.size() && m_roomZone[room] != 0;
     }

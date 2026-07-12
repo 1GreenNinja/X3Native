@@ -433,7 +433,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // chest/head shots flew clean over it (humanoids were nearly unhittable; only the
     // centre-origin hovering drone was hit). Fix: raise the box for ground enemies so
     // it spans feet..head; keep the drone's box centered on m_pos (origin IS center).
-    {
+    if (!tuning.noBody) {
         const float hs = (m_modelScale > 0.1f) ? m_modelScale : 1.0f;
         if (m_flyer) {
             // Hovering flyer (Drone.glb): model origin is its CENTER -> centered box.
@@ -1486,11 +1486,26 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             drawPos.y -= m_lungeDip;
         }
         Entity& me = scene.get(m_entity);
-        composeTRS(me.transform,
-                   x3::phys::Vec3{ c, 0.0f, -s },
-                   x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
-                   x3::phys::Vec3{ s, 0.0f, c },
-                   scale, drawPos);
+        if (m_propLean != 0.0f) {
+            // SKINNED CITIZENS: fold the caller-fed torso lean (setPropMotion) into
+            // the bake as R = Ry(ry) * Rx(lean-toward-facing). In the render frame
+            // the model's front is local +Z (the +pi visual flip above), so a
+            // positive lean pitches the body toward whatever it faces — the crowd's
+            // carry/console/converse lean read. lean == 0 (every existing monster)
+            // takes the identical branch below.
+            const float sa = std::sin(m_propLean), ca = std::cos(m_propLean);
+            composeTRS(me.transform,
+                       x3::phys::Vec3{ c, 0.0f, -s },
+                       x3::phys::Vec3{ sa * s, ca, sa * c },
+                       x3::phys::Vec3{ ca * s, -sa, ca * c },
+                       scale, drawPos);
+        } else {
+            composeTRS(me.transform,
+                       x3::phys::Vec3{ c, 0.0f, -s },
+                       x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+                       x3::phys::Vec3{ s, 0.0f, c },
+                       scale, drawPos);
+        }
 
         // ---- Also turn the rigid body (D-ai). Our heading is a pure rotation about
         // +Y; the quaternion (x,y,z,w) for yaw `m_yaw` about +Y is
@@ -1529,8 +1544,11 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             m_attackAnimT = -1.0f;         // finished -> fall through to locomotion
         }
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
-        const float planarSpeed = (dt > 1e-5f)
-            ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
+        // SKINNED CITIZENS: a prop posed via setPropPose already moved BEFORE this
+        // update (delta 0), so a caller-fed speed (setPropMotion) overrides the
+        // measured delta and drives the Idle/Walk/Run blend. < 0 = not driven.
+        const float planarSpeed = (m_propSpeed >= 0.0f) ? m_propSpeed
+            : ((dt > 1e-5f) ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f);
         // ---- W5-2: scripted CALM LOOP (the assault tableau — e.g. "Struggle").
         // While unaggroed + effectively stationary, a set calm loop replaces idle so
         // the burst-in reads as an act in progress, not guards loitering. Aggro or

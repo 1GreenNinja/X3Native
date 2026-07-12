@@ -11,6 +11,19 @@ this doc carries the decisions.
 
 ---
 
+> ## 🌍 THE WORLD MERGE — DONE 2026-07-09 (Tim's order 2→3→1→4; session 392f6e4d)
+> **`canonlevel` (the default boot) is now THE ONE WORLD**: the 7-floor facility with
+> the real elevator down through the strata to Club 1127 (seam 1), the glass exterior
+> wrapping the real tower with a walkable breach onto the apron (seam 2, `bae1f59`),
+> and the planet streaming in around it — city, ocean base, crash site, mountain
+> ranges, 15 km horizon (seam 3, `3f72754`). **Policy: `docs/design/WORLDS.md`** —
+> the other 18 `--world` modes are DEV SHORTCUTS; new content lands in the canon
+> world via shared modules (facility_exterior / club1127 / strata / elevator are the
+> pattern). Do not author game content against a dev slice — that is how the
+> two-line split below happened.
+
+---
+
 ## 1. THE SITUATION — we forked the same game twice (again)
 
 Two integration lines are active and **architecturally incompatible**:

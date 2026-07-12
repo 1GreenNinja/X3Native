@@ -113,6 +113,42 @@ void terrainNormalAtWorld(float x, float z, float outNormal[3]);
 void placeOnTerrain(float x, float z, float outPos[3]);
 
 // ---------------------------------------------------------------------------
+// W9 (TERRAIN DRAMA) — THE RIVER's authored spline. ONE source of truth shared
+// by the height-field carve (terrain.cpp kRiver*) and the water-surface ribbon
+// (world_regions.cpp), so the water always lies inside its own channel.
+// `waterY` is the water SURFACE at that node (bed = waterY - kWorldRiverBedDrop;
+// bank crests are held at >= waterY + ~2.2 m by an authored levee term where the
+// natural country is low). Node waterY DESCENDS monotonically downstream — the
+// river flows NE hill country -> past the facility's east face -> SE into the
+// ocean basin. Nodes [0..worldRiverCarveCount()) carve the terrain; the tail
+// nodes only extend the WATER ribbon out over the (already deep) basin floor to
+// meet the sea surface.
+// ---------------------------------------------------------------------------
+struct WorldRiverNode { float x, z, waterY; };
+const WorldRiverNode* worldRiverNodes(uint32_t& count);   // full ribbon polyline
+uint32_t worldRiverCarveCount();                          // leading nodes that carve
+constexpr float kWorldRiverHalfWidth = 34.0f;             // water ribbon half-width (m)
+constexpr float kWorldRiverBedDrop   = 3.2f;              // bed depth below waterY (m)
+
+// ---------------------------------------------------------------------------
+// W10 (SWIMMING) — the world WATER SURFACE query. Pure, like the placement API
+// above: worldWaterLevelAt(x,z) returns the Y of the water surface covering
+// world (x,z), or kWorldWaterDry when the point is dry. Single source of truth:
+//   * RIVER coverage = distance to the SAME working spline (the Chaikin chain
+//     both the height-field carve and the water ribbon are built from) is
+//     <= kWorldRiverHalfWidth -> that reach's interpolated waterY. Query wet
+//     exactly where the ribbon mesh is, at the ribbon's own surface height.
+//   * OCEAN coverage = inside the offshore basin where the terrain bowl has
+//     dropped below the sea surface -> kWorldSeaLevel. The shore ring (-6)
+//     stays a dry beach, exactly like the rendered ocean plane.
+// ocean_base.cpp's kSurfaceY builds from kWorldSeaLevel so the plane and the
+// query can never drift apart.
+// ---------------------------------------------------------------------------
+constexpr float kWorldSeaLevel = -10.0f;    // the ocean surface Y (W9 terrain drama)
+constexpr float kWorldWaterDry = -3.0e38f;  // "no water here" sentinel (< any real Y)
+float worldWaterLevelAt(float x, float z);
+
+// ---------------------------------------------------------------------------
 // W8-3 — HORIZON RING (the far-terrain stitch). A single static polar-grid mesh
 // sampled from the SAME canonical height field the streamer generates from, so
 // the mountains/city pads on the horizon match what streams in underfoot by
@@ -260,6 +296,18 @@ public:
     int  radius() const { return m_radius; }
     void setUploadBudget(uint32_t n) { m_maxUploadsPerFrame = n; }
     void setMaxInFlight(uint32_t n)  { m_maxInFlight = n; }
+    // SEAM 3 (canon host): a world-rect KEEP-OUT — tiles whose footprint lies
+    // FULLY inside it are never generated. The canon facility brings its own
+    // ground there (interior floors at Y=0 + the apron ring + the 150 m soil
+    // skirt, all with collision); the terrain's facility pad is ALSO Y=0, so
+    // streaming tiles under the building would z-fight every F1 floor + the
+    // apron coplanarly. Tiles merely INTERSECTING the rect still generate (the
+    // soil skirt spans the whole skipped area, so the tile-grid hole is always
+    // covered — no void, no missing collision). Call BEFORE init(). Default off.
+    void setKeepOut(float x0, float z0, float x1, float z1) {
+        m_keepOut[0] = x0; m_keepOut[1] = z0; m_keepOut[2] = x1; m_keepOut[3] = z1;
+        m_keepOutOn = true;
+    }
 
     // ---- Queries (host + self-test) --------------------------------------
     const TerrainConfig& config() const { return m_cfg; }
@@ -359,6 +407,9 @@ private:
     std::vector<uint32_t>     m_freeEntities;
 
     uint32_t                  m_inFlight = 0;
+    // SEAM 3: keep-out rect {x0,z0,x1,z1} — see setKeepOut().
+    float                     m_keepOut[4] = { 0, 0, 0, 0 };
+    bool                      m_keepOutOn = false;
     int32_t                   m_lastFocusTX = INT32_MIN, m_lastFocusTZ = INT32_MIN;
     uint32_t                  m_lodIndexCount[(int)TerrainLod::Count] = {0,0,0};
 

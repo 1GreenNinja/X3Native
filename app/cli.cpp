@@ -126,6 +126,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-act2") o.testAct2 = true;
         else if (a == "--test-act2desert") o.testAct2Desert = true;
         else if (a == "--test-act2caves") o.testAct2Caves = true;
+        else if (a == "--test-rifthub") o.testRifthub = true;
         else if (a == "--test-tod") o.testTod = true;
         else if (a == "--test-weather") o.testWeather = true;
         else if (a == "--test-worldregions") o.testWorldRegions = true;
@@ -164,6 +165,14 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-script") o.testScript = true;
         else if (a == "--test-weapons") o.testWeapons = true;
         else if (a == "--test-vehicle") o.testVehicle = true;
+        else if (a == "--test-canonvehicle") o.testCanonVehicle = true;
+        else if (a == "--shot-drive") o.shotDrive = true;
+        else if (a == "--dusk") o.duskSky = true;
+        else if (a == "--shot-chatter") {
+            o.shotChatter = 1;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
+                o.shotChatter = (int)std::strtol(argv[++i], nullptr, 10);
+        }
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;
@@ -204,6 +213,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-valley") o.testValley = true;
         else if (a == "--test-cliffs") o.testCliffs = true;
         else if (a == "--test-club") o.testClub = true;
+        else if (a == "--test-perfshop") o.testPerfshop = true;
         else if (a == "--test-space") o.testSpace = true;
         else if (a == "--test-eva") o.testEva = true;
         else if (a == "--test-ship-ai") o.testShipAi = true;

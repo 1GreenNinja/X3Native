@@ -148,6 +148,9 @@ struct HostContext {
     bool        dialogShot = false;
     bool        vigilShot = false;    // W4-2: --screenshot-vigil (VIGIL chat on the glass)
     bool        alertShot = false;
+    bool        shotDrive = false;    // WORLD CARS: drive the nearest car through the settle
+    bool        duskSky = false;      // STREET LIGHT staging: late-dusk sky (lamps carry the scene)
+    int         shotChatter = 0;      // CHATTER staging: pre-tick until N bubbles near the shot cam
     bool        captureSpire = false;        std::string captureSpireDir;
     bool        captureWings = false;        std::string captureWingsDir;
     std::string docWorldPath;

@@ -224,12 +224,16 @@ void DriveDemo::drawDrawable(const x3::rhi::FrameContext& f,
         d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
     float emis[4] = { d.emissiveFactor[0], d.emissiveFactor[1], d.emissiveFactor[2],
                       matEmis ? 1.0f : 0.0f };
+    // WORLD CARS paint tint: repaint the clearcoat (car-paint) panels only.
+    float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
+                    d.baseColorFactor[2], d.baseColorFactor[3] };
+    if (m_tintOn && d.clearcoat > 0.01f) { bc[0] = m_tint[0]; bc[1] = m_tint[1]; bc[2] = m_tint[2]; }
     m_device->drawMeshPBR(f,
                           x3::rhi::MeshHandle{ d.meshId },
                           x3::rhi::TextureHandle{ d.baseColorTexId },
                           x3::rhi::TextureHandle{ d.normalTexId },
                           x3::rhi::TextureHandle{ d.mrTexId },
-                          d.baseColorFactor, emis, world,
+                          bc, emis, world,
                           d.alphaMask, d.alphaBlend,
                           x3::rhi::TextureHandle{ d.emissiveTexId },
                           x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
@@ -315,7 +319,9 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     }
 
     // ---- Graybox fallback (no GLB): box chassis + cylinder wheels. ----
-    const float bodyCol[4]  = { 1.0f, 0.25f, 0.22f, 1.0f };
+    const float bodyCol[4]  = { m_tintOn ? m_tint[0] : 1.0f,
+                                m_tintOn ? m_tint[1] : 0.25f,
+                                m_tintOn ? m_tint[2] : 0.22f, 1.0f };
     const float wheelCol[4] = { 0.12f, 0.12f, 0.14f, 1.0f };
     float m[16]; composeTRS(pos, q, m_hx*2.0f, m_hy*2.0f, m_hz*2.0f, m);
     m_device->drawMesh(frame, m_chassisMesh, m_chassisTex, bodyCol, m);

@@ -7,6 +7,7 @@
 #include "mesh_prims.h"
 #include "surface_library.h"   // W3-4: real PBR sets on the base hull/seafloor
 #include "asset_root.h"
+#include "terrain.h"           // W10: kWorldSeaLevel (single source for the sea surface)
 
 #include "engine/core/x3_log.h"
 
@@ -20,7 +21,18 @@ namespace x3::game {
 namespace {
 // Offshore undersea zone, absolute deep Y (decoupled from the land terrain).
 constexpr float kBaseCx = 1100.0f, kBaseCz = -1350.0f;
-constexpr float kSurfaceY  =   4.0f;   // ocean surface
+// W9 (terrain drama): the sea surface moved 4.0 -> -10.0. The facility plain is
+// graded at Y=-2 and THE RIVER must flow DOWNHILL from the plain's east face
+// into this sea (its last water level is -9.9); at +4 the ocean sat ABOVE the
+// plain 1.7 km inland. -10 also puts the waterline ON the terrain basin's shore
+// falloff (shore ring -6 stays a dry beach, the water starts where the bowl
+// drops past -10, ~r700), which is what the basin was shaped for. The disc
+// base itself (r80, seafloor -80) is untouched; depth ordering surface > deck
+// > seafloor still holds (-10 > -62 > -80) and the patrol subs at -30 stay
+// submerged.
+// W10 (swimming): builds from terrain.h's kWorldSeaLevel so the rendered plane
+// and the worldWaterLevelAt() query share ONE constant and can never drift.
+constexpr float kSurfaceY  = kWorldSeaLevel;   // -10 (was 4.0 pre-river)
 constexpr float kSeafloorY = -80.0f;   // seafloor
 constexpr float kBaseRadius = 80.0f;
 constexpr uint32_t kLevels = 3;
@@ -61,8 +73,11 @@ void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IP
     // ---- Ocean surface plane (large translucent blue slab at the surface). ----
     // W3-4: widened 220 -> 620 half-extent — from sub depth the old plane's hard
     // box EDGE hung in frame as a floating monolith; the surface must read endless.
+    // W9: widened again 620 -> 760 so the plane covers the whole -10 waterline
+    // ring of the terrain basin (~r700) and the river mouth's final ribbon
+    // segment (ending (900,-1120) at Y=-9.9, 0.1 m proud — no coplanar fight).
     { const float water[4] = { 0.10f, 0.28f, 0.42f, 0.55f };
-      addBoxProp(kBaseCx, kSurfaceY, kBaseCz, 620.0f, 0.2f, 620.0f, water, nullptr); }
+      addBoxProp(kBaseCx, kSurfaceY, kBaseCz, 760.0f, 0.2f, 760.0f, water, nullptr); }
 
     // ---- Seafloor pad — rough dark stone, tiled coarse (8 m repeats read as rock
     // shelf at sub scale, not bathroom tile). Deep-sediment tint over the albedo. ----

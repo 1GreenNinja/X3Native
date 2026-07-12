@@ -52,6 +52,7 @@
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
+#include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "intro_orchestrator.h"              // Phase 3/4: runInteractiveIntro + IntroOutcome (branches the game start)
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
@@ -101,10 +102,14 @@
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
+#include "world_cars.h"                    // WORLD CARS: findable/drivable/hackable cars (canonlevel)
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
+#include "crowd_skin.h"                    // SKINNED CITIZENS: the crowds' rigged visual layer
+#include "crowd_chatter.h"                 // CROWD CHATTER: chat bubbles + murmur walla over the crowds
+#include "street_lights.h"                 // STREET LIGHT: real lamps — cones + pools + pooled lights
 #include "alert.h"                         // FACILITY ALERT LEVEL: the wanted system (--test-alert)
 #include "host_context.h"                  // #28 deep split: shared live-state struct for the --world hosts
 #include "world_hosts.h"                   // #28 deep split: dispatchWorldHost() + the extracted host TUs
@@ -501,6 +506,7 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // baked table is unchanged. Position is meters in the hand-LOCAL frame; rotation
     // is degrees; scale is added to the row's scaleMul. See the BAKE block above
     // kTpGripTable. Synced per-frame in applyRtaoCVars().
+    console.registerCVar("shot_weapon", "", "--screenshot: weapon whose FP viewmodel is held in the capture (e.g. shotgun/plasma/chaingun/lightning). Empty = pistol. QA hook for the per-weapon texture gate.");
     console.registerCVar("grip_x",     "0", "3P held-weapon grip override: +meters toward thumb (right); live, current weapon");
     console.registerCVar("grip_y",     "0", "3P held-weapon grip override: +meters into the palm (down); live, current weapon");
     console.registerCVar("grip_z",     "0", "3P held-weapon grip override: +meters down the barrel (forward); live, current weapon");
@@ -840,6 +846,7 @@ int runDefaultHost(HostContext& hc) {
     const std::string& uiDemoScreen = hc.uiDemoScreen;
     const bool dialogShot = hc.dialogShot;
     const bool alertShot = hc.alertShot;
+    const bool shotDrive = hc.shotDrive;   // WORLD CARS driver-POV staging
     const bool captureSpire = hc.captureSpire;
     const std::string& captureSpireDir = hc.captureSpireDir;
     const bool captureWings = hc.captureWings;
@@ -1102,6 +1109,7 @@ int runDefaultHost(HostContext& hc) {
     std::vector<x3::game::CanonLight> canonLights; // per-room ceiling lights (canonWorld only)
     x3::game::CellDressing canonDressing;      // opening-space set-dressing + motivated lights (canonWorld only)
     x3::game::RoomDressing canonRooms;         // WAVE-3 recipe dressing for the other 52 rooms (canonWorld only)
+    x3::game::FacilityExterior facilityExterior; // SEAM 2: the glass exterior wrapping the REAL tower (canonWorld only)
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
     // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
     // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
@@ -1137,6 +1145,70 @@ int runDefaultHost(HostContext& hc) {
     // idles/wanders in the B1 arena hall, scatters + cowers when shots ring out,
     // and drifts back once it goes quiet. Built only in the legacy Level-1 world.
     x3::game::CrowdSystem facilityCrowd;
+    // LIVING NPCs (Tim: "NPCs who interact with each other and are seen working,
+    // playing, living life") — the canon facility population, room-tagged for
+    // the PVS: [0] Main Hall fringe (converse knots + a sweeper + a console
+    // tender), [1] Bottom Hall work crew (crate carry + sweep + console),
+    // [2] Entrance fringe (a seated hand-game pair). ~12 agents total.
+    x3::game::CrowdSystem canonCrowds[3];
+    // LIVING NPCs — the streamed CITY crowds: [0] New District sidewalk
+    // (wanderers + conversation knots), [1] the warehouse-dock work crew
+    // (crates on the industrial edge), [2] Scrapyard plaza (kickabout knot +
+    // wanderers). Built INSIDE the city region realize via the WorldStreamer
+    // region hooks — the region's ownership ledger owns every entity/mesh, and
+    // the teardown hook abandon()s them before any slot is released.
+    x3::game::CrowdSystem cityCrowds[3];
+    // SKINNED CITIZENS — the crowds' skinned visual layer (app/crowd_skin.h):
+    // one inert rigged GLB character per agent, pose-following the CrowdSystem
+    // brains (Walk/Idle clips from the agent's own speed, gestures on top).
+    // HOST-OWNED, PERSISTENT pools (the parked-cars doctrine — a loaded rig
+    // must never land in a region ledger): facility skins spawn DEFERRED
+    // 1/frame after boot; city skins spawn deferred after the region realize
+    // and survive stream-out/in cycles (deactivate on teardown, re-attach with
+    // zero reloads on re-realize). A failed rig keeps that agent's blockout.
+    x3::game::CrowdSkin canonCrowdSkins[3];
+    x3::game::CrowdSkin cityCrowdSkins[3];
+    // CROWD CHATTER — "hear the people talk.. mumble.. see it in chat bubbles
+    // over their heads" (app/crowd_chatter.h): a deterministic voice layer over
+    // each crowd deployment. Converse pairs trade authored 2-6 word lines in
+    // rhythm with the turn-taking gesture bobs (bubble over the speaker +
+    // murmur walla at the pair midpoint); workers grumble; kickabouts shout.
+    // Facility rooms whisper (detainee tables), streets gossip.
+    x3::game::CrowdChatter canonChatter[3];
+    x3::game::CrowdChatter cityChatter[3];
+    // STREET LIGHT (street_lights.h): real street lamps — pooled PointLights +
+    // additive light cones + emissive ground pools, warm sodium / cool LED
+    // color story, ~8% dead / ~5% flickering. City lamps build INSIDE the city
+    // region realize (ledger-owned, the crowds/cars hook); apron + Spire-
+    // approach lamps are host-owned. The light merge below feeds the nearest
+    // K=14 lit lamps AFTER the facility/strata/club obligations.
+    x3::game::StreetLights streetLights;
+    for (int ci = 0; ci < 3; ++ci) {
+        canonChatter[ci].init(x3::game::ChatterVenue::Facility, 101u + (uint32_t)ci);
+        cityChatter[ci].init(x3::game::ChatterVenue::Street, 201u + (uint32_t)ci);
+    }
+    // The committed walla takes (tools/gen_crowd_chatter.py -> assets/audio/
+    // crowd/). Three tiny mono WAVs; a miss loads invalid and that cue is
+    // silent (clean-machine grace). Boot cost logged (it is ~a millisecond).
+    x3::game::ChatterSounds chatterSnd;
+    {
+        const auto cs0 = std::chrono::steady_clock::now();
+        chatterSnd.murmurA = audio->load(x3::game::resolveAudio("crowd/murmur_a.wav"));
+        chatterSnd.murmurB = audio->load(x3::game::resolveAudio("crowd/murmur_b.wav"));
+        chatterSnd.grumble = audio->load(x3::game::resolveAudio("crowd/grumble_low.wav"));
+        const double csMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - cs0).count();
+        x3::logInfo("[chatter] walla takes loaded (murmur_a/murmur_b/grumble_low) in " +
+                    std::to_string(csMs) + " ms");
+        x3::boot::mark("crowd chatter (walla WAVs)");
+    }
+    // WORLD CARS — findable/drivable/hackable vehicles in the one world (see
+    // world_cars.h). Host-owned; the apron/approach cars park at boot, the city
+    // cars park/unpark with the `city` region via the WorldStreamer hooks (the
+    // system owns only its OWN static bodies — nothing enters a region ledger).
+    x3::game::WorldCars worldCars;
+    float carPanicCooldown = 0.0f;   // throttles the drive-by crowd-panic probe
+    float carThrottleHud   = 0.0f;   // last driver throttle (engine-loop pitch)
     // LIVING WORLD: the FACILITY ALERT LEVEL (the wanted system, pillar 3). The
     // host feeds it observations (guard positions, LOS, gunshots, bodies, keypad
     // tampers) and applies its effects (reinforcement spawns, the level-3 door
@@ -1150,6 +1222,23 @@ int runDefaultHost(HostContext& hc) {
     // in terrain mode; Level 1 is unaffected.
     x3::game::TerrainStreamer terrainStreamer;
     std::unique_ptr<x3::jobs::IJobSystem> terrainJobs;
+    // ---- SEAM 3 (world merge): the PLANET STREAMS IN around the canon facility.
+    // The WorldStreamer's outdoor lanes (city / ocean base / surface landmarks)
+    // become streamed regions of the canon master world — walk off the apron and
+    // the world is simply there, no loading screens. The canon graph
+    // (regions.canon.json) drops spire_f1 (canonWorld builds the real tower);
+    // terrainStreamer doubles as the canon ground ring (keep-out under the
+    // facility's own apron/soil so nothing z-fights the interior floors).
+    // Booted after the world build ONLY when the SEAM-2 exterior exists (the
+    // breach is the one way outside — without it there is no outdoors to stream).
+    x3::game::WorldRegionGraph canonRegionGraph;
+    x3::game::WorldStreamer    canonWstream;
+    bool  canonStreamOn = false;          // SEAM 3 streaming live this run
+    float canonStreamPrevX = 0.0f, canonStreamPrevZ = 0.0f;   // velocity feed
+    // Risk 3 (XZ-only residency vs the underground): suppress ALL residency work
+    // while the eye is below this Y — the elevator/strata/Club-1127 descent must
+    // never see a region teardown or the streamer's Y=0 proxy floor.
+    constexpr float kStreamSuppressBelowY = -20.0f;
     // ---- Advanced elevator (core): a functional cab in Level 1's tall (~9 m)
     // elevator room — the "Take the elevator to Floor 2" exit transport. Press E
     // within ~4 m to call it; it carries the rider up/down (per-frame carry in the
@@ -1312,6 +1401,41 @@ int runDefaultHost(HostContext& hc) {
                 hatchCx = jc.cx + 1.4f; hatchCz = jc.cz - 1.1f;
                 copts.hatchRoom = cbt.jakeCell;
                 copts.hatchCx = hatchCx; copts.hatchCz = hatchCz; copts.hatchHalf = 0.9f;
+            }
+            // ---- SEAM 2 (world merge): the tower gets ONE real way in/out. Compute
+            // the above-ground footprint (deep cave/sub-level rooms excluded), pick
+            // the walkable F1 room whose exterior wall sits ON the footprint edge —
+            // the data literally authors an "Entrance" hallway on the +Z edge — and
+            // have the floor builder cut a doorway-style breach in that wall. The
+            // glass facade (built below, wrapped `kExtPad` m outside the footprint,
+            // clear of the R-9 skirt's 0.14 m offset) opens at the same center, so
+            // the player can WALK from inside F1 out onto the apron. ----
+            float extX0 = 1e9f, extX1 = -1e9f, extZ0 = 1e9f, extZ1 = -1e9f, extTop = -1e9f;
+            for (const x3::game::CanonRoom& r : canonFloor.rooms) {
+                if (r.cy <= -50.0f) continue;              // deep zone: not the tower shell
+                extX0 = std::min(extX0, r.x0()); extX1 = std::max(extX1, r.x1());
+                extZ0 = std::min(extZ0, r.z0()); extZ1 = std::max(extZ1, r.z1());
+                extTop = std::max(extTop, r.y1());
+            }
+            constexpr float kExtPad = 3.0f;                // facade outside skirt+walls, no z-fight
+            const uint32_t entrRoom = canonFloor.roomByName("Entrance");
+            int   breachFace = 3; float breachCenter = 0.0f;
+            if (entrRoom != x3::game::kNoRoom && extX1 > extX0) {
+                const x3::game::CanonRoom& er = canonFloor.rooms[entrRoom];
+                // The exterior face = whichever room wall lies nearest the footprint edge.
+                const float dist[4] = { er.x0() - extX0, extX1 - er.x1(),
+                                        er.z0() - extZ0, extZ1 - er.z1() };
+                breachFace = 0;
+                for (int f = 1; f < 4; ++f) if (dist[f] < dist[breachFace]) breachFace = f;
+                const float halfCut = 1.5f;                // 3 m opening in the room wall
+                const bool faceIsX = breachFace < 2;
+                const float lo = (faceIsX ? er.z0() : er.x0()) + halfCut + 0.2f;
+                const float hi = (faceIsX ? er.z1() : er.x1()) - halfCut - 0.2f;
+                breachCenter = std::min(std::max(faceIsX ? er.cz : er.cx, lo), hi);
+                copts.breachRoom = entrRoom;
+                copts.breachFace = breachFace;
+                copts.breachCenter = breachCenter;
+                copts.breachHalf = halfCut;
             }
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
             // W2-A2 (punch-list P0 #5): DOOR SOUNDS — wire the audio system + the
@@ -1576,6 +1700,168 @@ int runDefaultHost(HostContext& hc) {
                             " -> Research " + rc(bt.research) + " -> Medical " + rc(bt.medical) +
                             " -> Armory " + rc(bt.armory) + " -> Boss Arena " + rc(bt.bossArena) +
                             " -> Elevator Lobby " + rc(bt.elevatorLobby));
+            }
+            // ---- LIVING NPCs (canon facility): detained workers + staff who
+            // WORK, PLAY, TALK and LIVE in the canonical rooms — the B1-arena
+            // crowd the legacy world had, adapted to canon rooms and room-tagged
+            // so the portal PVS culls them exactly like the canonPlay spawns.
+            // Violence feed: the same gunfire cue that scatters the legacy crowd
+            // (see the fire block). Kinematic scene entities — zero physics. ----
+            {
+                const auto npc0 = std::chrono::steady_clock::now();
+                uint32_t npcCount = 0;
+                auto buildRoomCrowd = [&](x3::game::CrowdSystem& cs,
+                                          const char* roomName,
+                                          x3::game::CrowdConfig cc) {
+                    const uint32_t r = canonFloor.roomByName(roomName);
+                    if (r == x3::game::kNoRoom) return;
+                    const x3::game::CanonRoom& rm = canonFloor.rooms[r];
+                    cc.groundY = rm.y0();
+                    cc.roomId  = r;
+                    cs.build(cc, scene, *device);
+                    npcCount += cs.agentCount();
+                };
+                // Main Hall (44x5 hall at z~44.5): 6 staff — 4 civilians who
+                // wander the hall fringe and stop to CHAT, a slow SWEEPER pacing
+                // the length, a CONSOLE TENDER at the north-wall panel.
+                {
+                    x3::game::CrowdConfig cc;
+                    cc.count = 6; cc.converse = true;
+                    cc.centerX = 22.0f; cc.centerZ = 44.5f;
+                    cc.halfX = 19.0f; cc.halfZ = 1.6f; cc.radius = 20.0f;
+                    cc.points = { 8.0f, 44.2f,  15.0f, 45.2f,  24.0f, 43.8f,
+                                  31.0f, 45.0f, 37.0f, 44.3f };
+                    x3::game::CrowdWorkPoint sweep;
+                    sweep.kind = x3::game::CrowdWorkPoint::Kind::Sweep;
+                    sweep.ax = 6.0f; sweep.az = 43.9f; sweep.bx = 38.0f; sweep.bz = 43.9f;
+                    x3::game::CrowdWorkPoint tend;
+                    tend.kind = x3::game::CrowdWorkPoint::Kind::Console;
+                    tend.ax = 27.0f; tend.az = 46.1f; tend.bx = 27.0f; tend.bz = 47.0f;
+                    cc.work = { sweep, tend };
+                    buildRoomCrowd(canonCrowds[0], "Main Hall", cc);
+                }
+                // Bottom Hall (36x4 service hall at z~1): the WORK CREW — a
+                // crate carrier hauling supplies down the hall, a sweeper, a
+                // console tender at the east end, plus one off-shift wanderer.
+                {
+                    x3::game::CrowdConfig cc;
+                    cc.count = 4; cc.converse = true;
+                    cc.centerX = 22.0f; cc.centerZ = 1.0f;
+                    cc.halfX = 15.0f; cc.halfZ = 1.2f; cc.radius = 16.0f;
+                    cc.points = { 10.0f, 1.0f,  20.0f, 1.6f,  30.0f, 0.6f };
+                    x3::game::CrowdWorkPoint carry;
+                    carry.kind = x3::game::CrowdWorkPoint::Kind::Carry;
+                    carry.ax = 9.0f; carry.az = 0.6f; carry.bx = 27.0f; carry.bz = 0.6f;
+                    x3::game::CrowdWorkPoint sweep;
+                    sweep.kind = x3::game::CrowdWorkPoint::Kind::Sweep;
+                    sweep.ax = 14.0f; sweep.az = 1.8f; sweep.bx = 32.0f; sweep.bz = 1.8f;
+                    x3::game::CrowdWorkPoint tend;
+                    tend.kind = x3::game::CrowdWorkPoint::Kind::Console;
+                    tend.ax = 35.5f; tend.az = 1.0f; tend.bx = 37.0f; tend.bz = 1.0f;
+                    cc.work = { carry, sweep, tend };
+                    buildRoomCrowd(canonCrowds[1], "Bottom Hall", cc);
+                }
+                // Entrance fringe: a seated HAND-GAME pair off the golden path
+                // (the breach walk passes them living their lives).
+                {
+                    x3::game::CrowdConfig cc;
+                    cc.count = 2;
+                    cc.centerX = 5.5f; cc.centerZ = 50.0f;
+                    cc.halfX = 3.6f; cc.halfZ = 1.5f; cc.radius = 4.0f;
+                    x3::game::CrowdPlaySpot bench;
+                    bench.cx = 3.0f; bench.cz = 51.0f; bench.players = 2; bench.ball = false;
+                    cc.play = { bench };
+                    buildRoomCrowd(canonCrowds[2], "Entrance", cc);
+                }
+                const double npcMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - npc0).count();
+                x3::logInfo("LIVING NPCs: canon facility crowds built — " +
+                            std::to_string(npcCount) + " agents in 3 rooms (" +
+                            std::to_string(npcMs) + " ms)");
+                // SKINNED CITIZENS: plan the skinned layer over each crowd. NO
+                // loads here (boot stays flat) — the pools fill DEFERRED, one
+                // spawn per frame, from the main-loop tick.
+                {
+                    const char* siteName[3] = { "Main Hall", "Bottom Hall", "Entrance" };
+                    for (int ci = 0; ci < 3; ++ci) {
+                        if (!canonCrowds[ci].built()) continue;
+                        x3::game::CrowdSkinConfig sc;
+                        sc.site = siteName[ci];
+                        sc.modelDir = x3::game::riggedGlbRoot();
+                        sc.seed = (uint32_t)ci;   // offset the rig cycle per room
+                        canonCrowdSkins[ci].build(sc, canonCrowds[ci]);
+                    }
+                }
+                x3::boot::mark("canon crowds (living NPCs)");
+            }
+            // ---- SEAM 2 (world merge): THE GLASS EXTERIOR WRAPS THE REAL TOWER.
+            // The surface world's facility skin (app/facility_exterior.*, factored
+            // from host_surface_start) built around the canon footprint at canon
+            // coordinates: near-black backing walls + collision, the batched glass
+            // curtain wall, white-concrete spandrel bands + parapet, the breach
+            // (aligned with the Entrance-room wall cut above) + vestibule + amber
+            // sign/spill, a walkable concrete apron ring + soil skirt, and the
+            // shared golden-hour sky so outdoors reads under sun/IBL. Everything
+            // is tagged kNoRoom (always drawn under the PVS cull, like the R-9
+            // skirt); the interior is untouched — the exterior came to IT. ----
+            if (entrRoom != x3::game::kNoRoom && extX1 > extX0 && extTop > -1e8f) {
+                const x3::game::CanonRoom& er = canonFloor.rooms[entrRoom];
+                x3::game::FacilityExterior::Desc fd;
+                fd.x0 = extX0 - kExtPad; fd.x1 = extX1 + kExtPad;
+                fd.z0 = extZ0 - kExtPad; fd.z1 = extZ1 + kExtPad;
+                fd.baseY = er.y0();                    // walk-out level = the Entrance floor
+                fd.topY  = extTop;
+                fd.breachFace   = (x3::game::FacilityExterior::Face)breachFace;
+                fd.breachCenter = breachCenter;
+                fd.breachHalfW  = 2.4f;                // the surface facility's breach width
+                fd.roofSlab = true;  fd.roofLift = 0.6f;   // clear the F7 ceiling lids
+                fd.floorSlab = false;                  // the tower brings its own floors
+                fd.vestibuleDepth = kExtPad;           // floored walk across the interstice
+                fd.vestibuleHalfW = 1.5f + 0.2f;       // room cut half + wall thickness
+                fd.apron = x3::game::FacilityExterior::Apron::Ring;
+                fd.apronOut = 24.0f; fd.soilOut = 150.0f;
+                fd.mergePanes = true;                  // ~27 storeys: batch the panes
+                fd.breachRoomHint = entrRoom;
+                // Share RoomDressing's surface library: its GPU textures already
+                // hold the recipe concrete sets (no duplicate multi-MB decodes).
+                facilityExterior.build(scene, *device, *physics, fd,
+                                       &canonRooms.surfaceLibrary());
+                x3::game::FacilityExterior::applyGoldenHourSky(*device);
+                // --dusk (STREET LIGHT staging): late dusk — the sun sits ON
+                // the horizon at a whisper, the zenith goes dark, exposure
+                // drops, and the street lamps carry the streets.
+                if (hc.duskSky) {
+                    x3::rhi::IRenderDevice::SkyParams sp{};
+                    sp.enabled = true;
+                    sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.035f; sp.sunDir[2] = -0.35f;
+                    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.45f; sp.sunColor[2] = 0.22f;
+                    sp.sunIntensity = 0.30f; sp.haze = 0.55f; sp.exposure = 0.72f;
+                    sp.zenith[0]  = 0.020f; sp.zenith[1]  = 0.032f; sp.zenith[2]  = 0.070f;
+                    sp.horizon[0] = 0.26f;  sp.horizon[1] = 0.13f;  sp.horizon[2] = 0.085f;
+                    device->setSkyParams(sp);
+                    x3::logInfo("--dusk: late-dusk sky override active (street lights carry the scene)");
+                }
+                // The sky's baked irradiance at full strength shifted the
+                // calibrated interior reads (the FP viewmodel washed pink-white
+                // vs the pre-merge baseline): scale the IBL ambient so interiors
+                // match the baseline (eye-compared) while the facade's shadow
+                // side keeps enough sky fill to read its banding. Sun, sky
+                // background and the glass pass's reflections are unscaled.
+                device->setIblIntensity(0.5f);
+                // STREET LIGHT (host-owned): the facility-apron lamps by the
+                // breach + the Spire-approach road rows. kNoRoom entities;
+                // the city grid's lamps build with the region (hook below).
+                {
+                    const bool zFace =
+                        fd.breachFace == x3::game::FacilityExterior::Face::PlusZ;
+                    const float bx = zFace ? fd.breachCenter : (fd.x0 + fd.x1) * 0.5f;
+                    const float bz = zFace ? fd.z1 + 2.0f : fd.z1 + 2.0f;
+                    streetLights.buildHostLamps(scene, *device, fd.baseY + 0.02f, bx, bz);
+                }
+                x3::boot::mark("SEAM 2 exterior (facade wraps the tower)");
+            } else {
+                x3::logWarn("--world canonlevel: SEAM-2 exterior skipped (no Entrance room "
+                            "or empty footprint) — tower stays interior-only");
             }
         } else {
             // JSON absent on this machine -> fall back to the legacy tower build so the
@@ -1995,10 +2281,277 @@ int runDefaultHost(HostContext& hc) {
     constexpr float kRecoilRecover = 6.0f; // recoil recovery rate (rad/s decay)
 
     x3::boot::mark("per-weapon fire sfx");
+
+    // ==== WORLD CARS: findable, drivable, hackable vehicles in the one world. ====
+    // Host cars (apron + approach road + crash site) park NOW, inside the boot
+    // upload batch (the hero GLB upload amortizes into the world-build submit);
+    // city cars park/unpark with the `city` region via the streamer hooks below.
+    // The ONE live rig (chassis + Jolt VehicleConstraint) spawns lazily on the
+    // FIRST entry — zero vehicle constraints exist until the player drives.
+    if (canonWorld && canonFloor.valid() && facilityExterior.built()) {
+        worldCars.setGroundQuery([](float x, float z) {
+            float g[3]; x3::game::placeOnTerrain(x, z, g); return g[1];
+        });
+        worldCars.setWaterQuery([](float x, float z) {
+            return x3::game::worldWaterLevelAt(x, z);
+        });
+        // A successful hack is a TERMINAL-HACK stimulus (guarded exactly like
+        // the keypad path — the alert system may not be armed in canon) + a car
+        // alarm that scatters any crowd in earshot (onViolence self-gates).
+        worldCars.setHackAlarmHook([&](const x3::phys::Vec3& p) {
+            if (facilityAlertOn) facilityAlert.reportTerminalHack(p);
+            if (facilityCrowd.built()) facilityCrowd.onViolence(p);
+            for (auto& cc : canonCrowds) if (cc.built()) cc.onViolence(p);
+            for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(p);
+        });
+        const x3::game::FacilityExterior::Desc& cxd = facilityExterior.builtDesc();
+        std::vector<x3::game::WorldCarDef> carDefs;
+        // THE FIRST FINDABLE CAR — on the apron ring 10 m east of the breach
+        // walk, nose east along the facade (clear of the golden path +Z line).
+        carDefs.push_back({ "apron_east", cxd.breachCenter + 10.0f, cxd.z1 + 10.0f,
+                            90.0f, false, { 0.82f, 0.08f, 0.08f }, "" });
+        // West apron ring — LOCKED (the hack tutorial within sight of the tower).
+        carDefs.push_back({ "apron_west", cxd.x0 - 12.0f, cxd.z1 - 8.0f,
+                            0.0f, true, { 0.10f, 0.32f, 0.85f }, "" });
+        // The approach road's east shoulder (road x=22 half-w 4 m, z 80..150 —
+        // center x 28.5 keeps the body off the asphalt drive line).
+        carDefs.push_back({ "approach_road", 28.5f, 96.0f, 0.0f, false,
+                            { 0.90f, 0.55f, 0.10f }, "" });
+        // Short of the Crash Site (140,205), off the debris field — LOCKED.
+        carDefs.push_back({ "crash_site", 126.0f, 192.0f, 135.0f, true,
+                            { 0.45f, 0.45f, 0.50f }, "" });
+        // City curbs (region-owned; parked z 494/506 = between the z 486/514
+        // sidewalk walk-lines and clear of the z 500 street center + crowds).
+        carDefs.push_back({ "city_curb_e", 152.0f, 494.0f,  90.0f, false, { 0.93f, 0.90f, 0.86f }, "city" });
+        carDefs.push_back({ "city_curb_w", 262.0f, 506.0f, 270.0f, true,  { 0.16f, 0.62f, 0.30f }, "city" });
+        // West of the warehouse-dock work crew (their crate runs live x 103-140).
+        carDefs.push_back({ "city_dock",    94.0f, 424.0f,   0.0f, false, { 0.78f, 0.72f, 0.18f }, "city" });
+        // Scrapyard lot pair — main street east + west (kickabout at -594,481 is
+        // ~36 m clear of the nearest body).
+        carDefs.push_back({ "scrap_lot_a", -566.0f, 500.0f,  90.0f, true,  { 0.52f, 0.14f, 0.58f }, "city" });
+        carDefs.push_back({ "scrap_lot_b", -630.0f, 486.0f, 300.0f, false, { 0.13f, 0.13f, 0.16f }, "city" });
+        worldCars.build(carDefs, device, *physics, x3::game::convertedGlbRoot());
+        x3::boot::mark("WORLD CARS (host set parked)");
+    }
+
     // World build + every build-time GLB is done — land all batched uploads in one
     // submit. (Per-frame paths from here on use the normal unbatched semantics.)
     device->endUploadBatch();
     x3::boot::mark("upload batch flush");
+
+    // ==== SEAM 3 (world merge): THE PLANET STREAMS IN AROUND THE FACILITY. ====
+    // Wire the WorldStreamer's outdoor lanes into the canon master world: the
+    // canon region graph (regions.canon.json — spire_f1 dropped, the real tower
+    // is already standing) + the terrain ground ring (keep-out under the
+    // facility's own apron/soil) + the horizon stitch. Walk out the breach and
+    // the city / landmarks / ocean are simply there — no loading screens.
+    // Gated on the SEAM-2 exterior: without the breach there is no outdoors.
+    // Runs AFTER the boot upload-batch flush (realize() manages its own batch).
+    if (canonWorld && canonFloor.valid() && facilityExterior.built()) {
+        std::vector<std::string> rerrs;
+        if (!canonRegionGraph.load(x3::game::worldRegionsCanonJsonPath(), rerrs) ||
+            canonRegionGraph.empty()) {
+            for (const std::string& e : rerrs) x3::logError("SEAM 3: " + e);
+            x3::logWarn("SEAM 3: canon region graph failed to load — the tower stays an island");
+        } else {
+            const auto st0 = std::chrono::steady_clock::now();
+            if (!terrainJobs) {
+                terrainJobs.reset(x3::jobs::createJobSystem());
+                terrainJobs->init(0);
+            }
+            const x3::game::FacilityExterior::Desc& xd = facilityExterior.builtDesc();
+            const float towerCx = (xd.x0 + xd.x1) * 0.5f;
+            const float towerCz = (xd.z0 + xd.z1) * 0.5f;
+            // Ground ring (fixes the SEAM-2 "soil ends ~150 m out" cliff): the
+            // canonical world terrain streams around the player. Tiles fully
+            // under the facility's own ground (apron + soil skirt, reach =
+            // soilOut) are KEPT OUT — the terrain's facility pad is Y=0, exactly
+            // coplanar with the F1 floors + apron, and would z-fight them.
+            terrainStreamer.setKeepOut(xd.x0 - xd.soilOut, xd.z0 - xd.soilOut,
+                                       xd.x1 + xd.soilOut, xd.z1 + xd.soilOut);
+            terrainStreamer.init(scene, *device, *physics, terrainJobs.get(),
+                                 x3::game::worldTerrainConfig(), towerCx, towerCz,
+                                 /*radius=*/8);
+            const double terrainMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - st0).count();
+            // The region streamer. Shared surface library: RoomDressing's GPU
+            // textures already hold the recipe PBR sets, so the city's boot
+            // realize skips the duplicate multi-MB PNG decodes (boot budget).
+            // Exterior room tag: risk 2 — streamed entities draw only when the
+            // canon PVS says the eye can see outdoors (see the vis feed below).
+            canonWstream.init(canonRegionGraph, terrainJobs.get());
+            canonWstream.setLookahead(hc.wsLookaheadS);
+            canonWstream.setRealizedRoomTag(x3::game::kStreamedExteriorRoom);
+            canonWstream.setSharedSurfaceLibrary(&canonRooms.surfaceLibrary());
+            // ---- LIVING NPCs (city): the street crowds live INSIDE the city
+            // region — built in the realize's capture window (the region ledger
+            // owns every entity/mesh; the realize re-stamp tags them
+            // kStreamedExteriorRoom) and abandon()ed by the teardown hook
+            // BEFORE any slot release, so stream-out/in cycles leak nothing and
+            // never write into recycled slots. Sites sit on the district flat
+            // pads (placeOnTerrain anchors the ground). ----
+            canonWstream.setRegionHooks(
+                [&cityCrowds, &cityCrowdSkins, &worldCars, &streetLights](
+                              const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
+                              x3::rhi::IRenderDevice& dev, x3::phys::IPhysicsWorld& ph) {
+                    // WORLD CARS: park this region's curb cars (the system adds
+                    // only its OWN static bodies + direct-draw visuals — nothing
+                    // lands in the region ledger; teardown below unparks them).
+                    worldCars.onRegionBuild(rd.id, ph);
+                    if (rd.id != "city") return;
+                    auto padY = [](float x, float z) {
+                        float g[3]; x3::game::placeOnTerrain(x, z, g);
+                        return g[1] + 0.20f;   // stand on the sidewalk/plaza slabs
+                    };
+                    // [0] New District main street (200,500): sidewalk wanderers
+                    // + conversation knots along the shop fronts.
+                    {
+                        x3::game::CrowdConfig cc;
+                        cc.count = 10; cc.converse = true;
+                        cc.centerX = 200.0f; cc.centerZ = 500.0f;
+                        cc.halfX = 105.0f; cc.halfZ = 16.0f; cc.radius = 110.0f;
+                        cc.groundY = padY(200.0f, 500.0f);
+                        cc.roomId = x3::game::kStreamedExteriorRoom;
+                        cc.points = { 118.0f, 486.0f,  141.0f, 514.0f,  187.0f, 486.0f,
+                                      233.0f, 514.0f,  279.0f, 486.0f,  160.0f, 500.0f,
+                                      248.0f, 500.0f,  295.0f, 514.0f };
+                        cityCrowds[0].build(cc, s, dev);
+                    }
+                    // [1] the warehouse-dock WORK CREW on the industrial edge
+                    // (New District Blvd, Z~420): two crate runs between the
+                    // loading docks + a dock console + a sweeper.
+                    {
+                        x3::game::CrowdConfig cc;
+                        cc.count = 5; cc.converse = true;
+                        cc.centerX = 120.0f; cc.centerZ = 424.0f;
+                        cc.radius = 26.0f;
+                        cc.groundY = padY(120.0f, 424.0f);
+                        cc.roomId = x3::game::kStreamedExteriorRoom;
+                        cc.points = { 112.0f, 430.0f,  128.0f, 431.0f };
+                        x3::game::CrowdWorkPoint c1;
+                        c1.kind = x3::game::CrowdWorkPoint::Kind::Carry;
+                        c1.ax = 103.0f; c1.az = 428.0f; c1.bx = 136.0f; c1.bz = 428.0f;
+                        x3::game::CrowdWorkPoint c2;
+                        c2.kind = x3::game::CrowdWorkPoint::Kind::Carry;
+                        c2.ax = 137.0f; c2.az = 424.5f; c2.bx = 112.0f; c2.bz = 421.5f;
+                        x3::game::CrowdWorkPoint tend;
+                        tend.kind = x3::game::CrowdWorkPoint::Kind::Console;
+                        tend.ax = 140.0f; tend.az = 426.0f; tend.bx = 140.0f; tend.bz = 421.0f;
+                        x3::game::CrowdWorkPoint sweep;
+                        sweep.kind = x3::game::CrowdWorkPoint::Kind::Sweep;
+                        sweep.ax = 104.0f; sweep.az = 431.0f; sweep.bx = 134.0f; sweep.bz = 431.0f;
+                        cc.work = { c1, c2, tend, sweep };
+                        cityCrowds[1].build(cc, s, dev);
+                    }
+                    // [2] Scrapyard main street + town-square plaza (-600,~490):
+                    // a 4-player KICKABOUT on the plaza open lot + wanderers who
+                    // stop to chat along the main street.
+                    {
+                        x3::game::CrowdConfig cc;
+                        cc.count = 9; cc.converse = true;
+                        cc.centerX = -600.0f; cc.centerZ = 495.0f;
+                        cc.halfX = 55.0f; cc.halfZ = 26.0f; cc.radius = 60.0f;
+                        cc.groundY = padY(-600.0f, 490.0f);
+                        cc.roomId = x3::game::kStreamedExteriorRoom;
+                        cc.points = { -600.0f, 489.0f,  -582.0f, 517.0f,  -648.0f, 518.0f,
+                                      -560.0f, 505.0f,  -620.0f, 495.0f };
+                        x3::game::CrowdPlaySpot lot;
+                        lot.cx = -594.0f; lot.cz = 481.5f; lot.players = 4; lot.ball = true;
+                        cc.play = { lot };
+                        cityCrowds[2].build(cc, s, dev);
+                    }
+                    x3::logInfo("LIVING NPCs: city street crowds built inside the "
+                                "`city` region realize (24 agents: sidewalk 10, "
+                                "dock crew 5, plaza 9 — ledger-owned)");
+                    // STREET LIGHT: the city grid's lamps build INSIDE the same
+                    // capture window — every post/cone/pool entity + the shared
+                    // cone/disc meshes + gradient textures join the region
+                    // ledger (dedup'd handles: eviction destroys each once).
+                    streetLights.buildCityLamps(s, dev);
+                    // SKINNED CITIZENS: plan/attach the skinned layer. build()
+                    // does NO loads and NO Scene::add, so nothing enters the
+                    // region ledger (the parked-cars doctrine); the pools fill
+                    // deferred (1/frame) from the main loop, and on a region
+                    // RE-realize the already-loaded rigs re-attach for free.
+                    {
+                        const char* siteName[3] = { "New District sidewalk",
+                                                    "Dock crew", "Scrapyard plaza" };
+                        for (int ci = 0; ci < 3; ++ci) {
+                            if (!cityCrowds[ci].built()) continue;
+                            x3::game::CrowdSkinConfig sc;
+                            sc.site = siteName[ci];
+                            sc.modelDir = x3::game::riggedGlbRoot();
+                            sc.seed = (uint32_t)(3 + ci);   // offset vs the facility rooms
+                            cityCrowdSkins[ci].build(sc, cityCrowds[ci]);
+                        }
+                    }
+                },
+                [&cityCrowds, &cityCrowdSkins, &cityChatter, &scene, &worldCars,
+                 &streetLights, &physics](const x3::game::WorldRegionDesc& rd) {
+                    // WORLD CARS: unpark this region's curb cars (removes our
+                    // static bodies; a car currently DRIVEN is the host-owned
+                    // live rig and survives the eviction untouched).
+                    worldCars.onRegionTeardown(rd.id, *physics);
+                    if (rd.id != "city") return;
+                    // SKINNED CITIZENS first (hide the host-owned characters +
+                    // detach from the dying agents), THEN abandon the brains.
+                    // The chatter forgets its bubbles/pairs with them (stale
+                    // agent indices must not survive into a re-realize).
+                    for (auto& ck : cityCrowdSkins) ck.deactivate(scene);
+                    for (auto& ch : cityChatter) ch.reset();
+                    for (auto& cc : cityCrowds) cc.abandon();
+                    // STREET LIGHT: drop the city lamp records BEFORE any slot
+                    // release (stale SceneHandles must never scribble on
+                    // recycled slots; the ledger owns the entities/meshes).
+                    streetLights.onCityTeardown();
+                    x3::logInfo("LIVING NPCs: city crowds abandoned with the region "
+                                "(ledger tears the entities down)");
+                });
+            // Boot residency at the tower center. The tower sits INSIDE the city
+            // footprint (anchor (-200,425) r750 => ~481 m out), so this realizes
+            // city + surface_landmarks synchronously ON THE LOADING SCREEN —
+            // deliberately: deferring the city would convert this boot cost into
+            // a first-frame hitch the moment the live umbrella ticks. ocean_base
+            // streams in on approach. Per-region realize times are logged.
+            canonWstream.buildStartRegions(scene, *device, *physics,
+                                           towerCx, 0.0f, towerCz);
+            // Horizon stitch: one static polar ring of the SAME height field out
+            // to 13 km (the 4 mountain ranges read from the apron) + the long
+            // far plane. rInner tucks under the soil skirt / streamed tiles
+            // (recessed by yBias) so the overlap never pokes through.
+            {
+                x3::game::HorizonRingDesc hr{};
+                hr.centerX = towerCx; hr.centerZ = towerCz;
+                hr.rInner = 170.0f; hr.rOuter = 13000.0f;
+                hr.rings = 140; hr.segments = 160; hr.yBias = -3.0f;
+                x3::game::addTerrainHorizonRing(scene, *device,
+                                                terrainStreamer.groundTexture(), hr);
+                device->setCameraFar(15000.0f);
+            }
+            canonStreamOn = true;
+            canonStreamPrevX = towerCx; canonStreamPrevZ = towerCz;
+            const double totalMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - st0).count();
+            char sb[240];
+            std::snprintf(sb, sizeof(sb),
+                "SEAM 3: planet streaming LIVE around the tower — %u regions (%u resident at boot), "
+                "terrain ring %.0f ms, total boot cost %.0f ms (budget %.1f ms/frame, lookahead %.1f s)",
+                canonWstream.regionCount(), canonWstream.residentCount(),
+                terrainMs, totalMs, hc.wsBudgetMs, hc.wsLookaheadS);
+            x3::logInfo(sb);
+            x3::boot::mark("SEAM 3 streamer boot (planet regions + terrain ring)");
+        }
+    }
+    // SEAM 3 teardown — idempotent; called on EVERY exit path that follows the
+    // boot above (screenshot/bench/framepacing/smoketest early returns + the
+    // main-loop exit) so region bodies/meshes are released before physics dies.
+    auto shutdownCanonStream = [&]() {
+        if (!canonStreamOn) return;
+        canonStreamOn = false;
+        canonWstream.shutdown(scene, *device, *physics);
+        terrainStreamer.shutdown(scene, *device, *physics);
+        if (!terrainWorld && terrainJobs) terrainJobs->shutdown();
+    };
 
     // ---- S7: console backend (D6) + screen-space HUD (FPS, console, crosshair).
     std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
@@ -2535,6 +3088,8 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo(std::string("--capture-spire: ") + (allOk ? "all 8 floors captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -2574,15 +3129,26 @@ int runDefaultHost(HostContext& hc) {
             for (int i = -3; i <= 3; ++i) {
                 x3::rhi::PointLight pl;
                 pl.pos[0] = s.hallCx + i * (s.hallHw * 0.55f); pl.pos[1] = lightY;
-                // Brighter than round 1 (3.1/2.7/2.0): AUTHORED mid-dark surfaces +
-                // zone fog read underexposed even with auto-exposure at aeMax.
-                pl.range = range * 1.4f; pl.color[0] = 5.6f; pl.color[1] = 5.0f; pl.color[2] = 3.9f;
+                // UN-HACKED (engine fix 5c35d65). ed76165 pushed these to 5.6/5.0/3.9
+                // because "AUTHORED mid-dark surfaces read underexposed even with
+                // auto-exposure at aeMax" — that underexposure WAS the 1/pi bug: every
+                // dressed wall/floor/ceiling panel AND every kit prop draws through
+                // drawMeshPBR (they all carry an mr map), so the whole dressed room shaded
+                // at 1/pi of the graybox beside it. mesh.frag now lights them honestly, so
+                // the direct-light boost double-counts and blows the halls out. Colors go
+                // back to the pre-crutch rig (3.1/2.7/2.0).
+                // The RANGE x1.4 is NOT a brightness hack — it is geometric reach: this row
+                // hangs at the CEILING of an 8-12 m wing hall and must still reach the floor.
+                // It stays.
+                pl.range = range * 1.4f; pl.color[0] = 3.1f; pl.color[1] = 2.7f; pl.color[2] = 2.0f;
                 pl.pos[2] = twoRows ? -r.zHalf * 0.4f : 0.0f; pls.push_back(pl);
                 if (twoRows) { pl.pos[2] = r.zHalf * 0.4f; pls.push_back(pl); }
             }
             x3::rhi::PointLight fill;
             fill.pos[0] = s.hallCx + s.hallHw - 3.0f; fill.pos[1] = r.y0 + 2.6f; fill.pos[2] = 0.0f;
-            fill.range = 26.0f; fill.color[0] = 4.6f; fill.color[1] = 4.9f; fill.color[2] = 5.6f;
+            // UN-HACKED with the ceiling row above: colour back to the pre-crutch 3.2/3.4/3.9;
+            // range 26 (reach across a wide hall) is geometry, not brightness — it stays.
+            fill.range = 26.0f; fill.color[0] = 3.2f; fill.color[1] = 3.4f; fill.color[2] = 3.9f;
             pls.push_back(fill);
             // The dressing's OWN motivated keys (over the consoles/tanks/racks) — without
             // these the metallic kit props read black under the distant ceiling row.
@@ -2597,9 +3163,18 @@ int runDefaultHost(HostContext& hc) {
         // ambient fill + setIblProbe(true) so the engine bakes the lit hall into the
         // environment cube and the metals reflect it (per-shot kSettle frames let the
         // probe bake resolve). Set once — the state persists across the shot loop.
+        // POST-ENGINE-FIX (5c35d65): ambient/IBL was NOT part of the 1/pi bug (the fix
+        // touched only the DIRECT brdf), so this fill and the probe are honest and stay —
+        // the probe in particular is what gives the metals something real to reflect, and
+        // it pairs with the engine's r_metalambient specular floor. 0.34 also sits BELOW
+        // the engine's own default ambient (0.42/0.44/0.50), so it is not an over-unity lift.
         device->setAmbient(0.34f, 0.36f, 0.42f);
         device->setIblProbe(true);
-        device->setExposure(1.35f);   // capture-only EV bias (auto-exposure compensation)
+        // UN-HACKED: the 1.35 EV bias was pure compensation — it existed because the
+        // PBR-shaded room was 1/pi dark and auto-exposure had already run out of headroom
+        // at aeMax. With honest lighting, AE has plenty of range; a fixed bias on top of it
+        // just clips the highlights. Neutral.
+        device->setExposure(1.0f);
         bool allOk = true;
         for (const WingShot& s : shots) {
             const float baseY = Lc.floorBaseY[(uint32_t)s.floor];
@@ -2732,6 +3307,8 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -2796,6 +3373,16 @@ int runDefaultHost(HostContext& hc) {
         device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
         const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
         const float dt = 1.0f / 60.0f;
+        // SEAM 3: stills want the whole visible terrain ring, not a per-frame
+        // trickle — fill it fast across the settle frames (host_streamed's
+        // screenshot treatment), and let the FULL ring enqueue on the shot
+        // camera's single boundary crossing (a static camera never crosses
+        // again, so the default 24-in-flight cap would strand the outer ring).
+        // No-op unless canon streaming booted.
+        if (canonStreamOn) {
+            terrainStreamer.setUploadBudget(64);
+            terrainStreamer.setMaxInFlight(512);
+        }
         // Open Door A so the corridor reads as an opened doorway (drive the use
         // verb once at the Door A button before the settle loop).
         {
@@ -2824,7 +3411,13 @@ int runDefaultHost(HostContext& hc) {
         // Production HUD for the capture (its own pulse clock; persists across the
         // settle frames). Arm the player so a weapon + ammo show in the arsenal.
         x3::ui::GameHud shotHud;
-        arsenal.select(0);   // pistol selected for the capture
+        // Weapon held in the capture. Default = pistol (slot 0); override with
+        // --set shot_weapon <name> to proof ANY gun's viewmodel skin headlessly —
+        // the QA gate for the per-weapon texture rebind (tools/rebind_weapon_textures.py).
+        {
+            const std::string shotWeapon = console->getString("shot_weapon");
+            if (shotWeapon.empty() || !arsenal.selectByName(shotWeapon)) arsenal.select(0);
+        }
         // --screenshot-alert: stage the LEVEL-3 LOCKDOWN for the proof shot —
         // force the alert, lock the zone doors, and shift every facility light
         // hard red (the same effects the live loop applies).
@@ -2873,6 +3466,90 @@ int runDefaultHost(HostContext& hc) {
         }
         const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle
                                                          : (alertShot ? 110 : 16);
+        // WORLD CARS driver-POV staging (--shot-drive): take the wheel of the
+        // car nearest the shot camera and DRIVE it through the settle frames —
+        // the capture camera follows the live chase framing and the "[E] Exit"
+        // hint draws. Honest: the same enter path, physics and HUD the live
+        // loop uses. Pair with --shot-settle 240 so the car covers real road.
+        bool shotDriving = false;
+        if (shotDrive && canonWorld && worldCars.built()) {
+            worldCars.interact(ssEye, true, true, false, dt, nullptr, *physics, nullptr);
+            shotDriving = worldCars.driving();
+            if (!shotDriving)
+                x3::logWarn("--shot-drive: no (unlocked) car within reach of the shot camera");
+        }
+        // ---- CROWD CHATTER staging (--shot-chatter N): advance the crowd +
+        // chatter sim (deterministic, render-free — the same updates the settle
+        // loop runs) until N chat bubbles are concurrently ALIVE (with >= 1 s
+        // left) within bubble range of the shot camera, so the capture frame
+        // catches THE PEOPLE mid-sentence. Bounded at 4 min of sim; logs what
+        // it staged (and the nearest bubble's world position for re-aiming). ----
+        if (canonWorld && hc.shotChatter > 0) {
+            auto bubblesNearCam = [&]() {
+                uint32_t cnt = 0;
+                auto scan = [&](const x3::game::CrowdChatter& ch,
+                                const x3::game::CrowdSystem& cs) {
+                    if (!cs.built()) return;
+                    for (uint32_t bi = 0; bi < x3::game::CrowdChatter::kMaxBubbles; ++bi) {
+                        const x3::game::ChatterBubble& b = ch.bubbleSlot(bi);
+                        if (b.agent == x3::game::kNoLink ||
+                            b.agent >= cs.agentCount()) continue;
+                        if (b.ttl - b.age < 1.0f) continue;   // must survive the settle
+                        const auto& a = cs.agent(b.agent);
+                        const float dx = a.pos.x - ssEye.x, dz = a.pos.z - ssEye.z;
+                        if (dx * dx + dz * dz <
+                            x3::game::CrowdChatter::kBubbleRange *
+                            x3::game::CrowdChatter::kBubbleRange - 4.0f)
+                            ++cnt;
+                    }
+                };
+                for (int ci = 0; ci < 3; ++ci) {
+                    scan(canonChatter[ci], canonCrowds[ci]);
+                    scan(cityChatter[ci], cityCrowds[ci]);
+                }
+                return cnt;
+            };
+            int staged = 0;
+            const int kStageMax = 60 * 240;
+            while ((int)bubblesNearCam() < hc.shotChatter && staged < kStageMax) {
+                for (auto& cc : canonCrowds) if (cc.built()) cc.update(dt, scene);
+                for (auto& cc : cityCrowds)  if (cc.built()) cc.update(dt, scene);
+                for (int ci = 0; ci < 3; ++ci) {   // silent warp: no audio fires
+                    if (canonCrowds[ci].built())
+                        canonChatter[ci].update(dt, canonCrowds[ci], nullptr,
+                                                chatterSnd, ssEye);
+                    if (cityCrowds[ci].built())
+                        cityChatter[ci].update(dt, cityCrowds[ci], nullptr,
+                                               chatterSnd, ssEye);
+                }
+                ++staged;
+            }
+            // Log the staged count + every staged bubble's world position (so a
+            // shot camera can be re-aimed from the log instead of guessed).
+            std::string spots;
+            auto listSpots = [&](const x3::game::CrowdChatter& ch,
+                                 const x3::game::CrowdSystem& cs) {
+                if (!cs.built()) return;
+                for (uint32_t bi = 0; bi < x3::game::CrowdChatter::kMaxBubbles; ++bi) {
+                    const x3::game::ChatterBubble& b = ch.bubbleSlot(bi);
+                    if (b.agent == x3::game::kNoLink || b.agent >= cs.agentCount())
+                        continue;
+                    const auto& a = cs.agent(b.agent);
+                    char buf[96];
+                    std::snprintf(buf, sizeof(buf), " (%.1f,%.1f,%.1f)\"%s\"",
+                                  a.pos.x, a.pos.y, a.pos.z, b.line ? b.line : "?");
+                    spots += buf;
+                }
+            };
+            for (int ci = 0; ci < 3; ++ci) {
+                listSpots(canonChatter[ci], canonCrowds[ci]);
+                listSpots(cityChatter[ci], cityCrowds[ci]);
+            }
+            x3::logInfo("[chatter] shot staging: " + std::to_string(bubblesNearCam()) +
+                        "/" + std::to_string(hc.shotChatter) + " bubbles near the shot cam after " +
+                        std::to_string(staged) + " warp frames (" +
+                        std::to_string(staged / 60) + " s sim); live bubbles:" + spots);
+        }
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
             // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
@@ -2894,8 +3571,26 @@ int runDefaultHost(HostContext& hc) {
             // never satisfied here), so this tick is a pure no-op — kept for parity.
             for (uint32_t tid : subTriggers.update(ssEye)) subLevels.onTrigger(tid);
             subLevels.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
+            // WORLD CARS staging: drive (gentle throttle + a late lean into the
+            // steer so the still catches a real driving pose), stepped exactly
+            // like the live loop (setInput+preStep -> step -> postStep). Without
+            // --shot-drive, still refresh the HUD hint from the camera position
+            // (a --shot-cam parked next to a LOCKED car proves the hack prompt).
+            if (canonWorld && worldCars.built()) {
+                if (shotDriving) {
+                    x3::phys::VehicleInput vin;
+                    vin.throttle = (i > 20) ? 0.7f : 0.0f;
+                    vin.steer    = (i > kSettleFrames / 2) ? 0.18f : 0.0f;
+                    worldCars.driveInput(vin);
+                    worldCars.preStep(dt);
+                } else {
+                    worldCars.interact(ssEye, false, false, false, dt, nullptr,
+                                       *physics, nullptr);
+                }
+            }
             physics->step(dt);
             scene.update(*physics);
+            if (shotDriving) worldCars.postStep(dt);
             // FX demo: with a SMALL settle (<=30) spawn a fresh muzzle + impact burst
             // on the last few frames so bright sparks/dust are alive at the captured
             // frame (the LIVE-burst shot). With a LARGE settle (>30) skip the sparks
@@ -2927,10 +3622,71 @@ int runDefaultHost(HostContext& hc) {
             if (canonWorld && canonFloor.valid()) {
                 canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
                 canonDressing.tick(dt);
+                // LIVING NPCs: tick the crowds through the settle so the still
+                // captures them mid-life (conversations formed, crates riding,
+                // the ball in play) — no PVS gate here; we want them settled.
+                for (auto& cc : canonCrowds) if (cc.built()) cc.update(dt, scene);
+                for (auto& cc : cityCrowds)  if (cc.built()) cc.update(dt, scene);
+                // CROWD CHATTER through the settle (real audio hookup so a
+                // capture run also proves the murmur path in its log).
+                for (int ci = 0; ci < 3; ++ci) {
+                    if (canonCrowds[ci].built())
+                        canonChatter[ci].update(dt, canonCrowds[ci], audio.get(),
+                                                chatterSnd, ssEye);
+                    if (cityCrowds[ci].built())
+                        cityChatter[ci].update(dt, cityCrowds[ci], audio.get(),
+                                               chatterSnd, ssEye);
+                }
+                // SKINNED CITIZENS: pose-follow + DRAIN the spawn pools fully
+                // (bounded) — a short settle must still capture real people,
+                // not a half-swapped blockout crowd. Not the interactive path.
+                for (int ci = 0; ci < 3; ++ci) {
+                    for (int b = 0; b < 64; ++b) {
+                        if (canonCrowds[ci].built())
+                            canonCrowdSkins[ci].update(dt, canonCrowds[ci], scene,
+                                                       *device, *physics);
+                        if (cityCrowds[ci].built())
+                            cityCrowdSkins[ci].update(dt, cityCrowds[ci], scene,
+                                                      *device, *physics);
+                        if (canonCrowdSkins[ci].pendingCount() == 0 &&
+                            cityCrowdSkins[ci].pendingCount() == 0) break;
+                    }
+                }
+                // SEAM 3: keep the planet streaming under the shot camera — an
+                // outdoor --shot-cam far from the tower needs its terrain tiles
+                // (the ring re-centers on the camera) and any nearby regions
+                // resident before the capture frame. Generous settle budget.
+                if (canonStreamOn && ssEye.y > kStreamSuppressBelowY) {
+                    const double st0 = glfwGetTime();
+                    terrainStreamer.update(scene, *device, *physics, ssEye.x, ssEye.z);
+                    const double terrainMs = (glfwGetTime() - st0) * 1000.0;
+                    canonWstream.update(scene, *device, *physics,
+                                        ssEye.x, ssEye.y, ssEye.z, 0.0f, 0.0f, 0.0f,
+                                        /*budget*/ 50.0, terrainMs);
+                }
                 x3::game::Frustum fr = x3::game::Frustum::build(
                     ssEye.x, ssEye.y, ssEye.z, ssYaw, ssPitch, ssFov, 16.0f / 9.0f);
                 canonFloor.floodVisibleRoomsAt(ssEye.x, ssEye.y, ssEye.z, fr, &canonDoors,
                                                6, kCanonRoomBudget, canonVisRooms);
+                // SEAM 2: an OUTDOOR shot camera (on the apron) is in no room — the
+                // flood already seeded from the nearest room so the world never
+                // blanks; also force the breach room in so the interior read
+                // through the open breach is stable from any outdoor vantage.
+                facilityExterior.ensureOutdoorVis(canonFloor, ssEye.x, ssEye.y, ssEye.z,
+                                                  canonVisRooms);
+                // SEAM 3 (risk 2): same outdoor draw gate as the live loop — the
+                // streamed planet is in-frame only for outdoor/breach vantages.
+                if (canonStreamOn) {
+                    const uint32_t eyeRoom = canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z);
+                    // Same open-air test as the live loop (W10): river/sea
+                    // vantages sit below -2 but above (local terrain - 15).
+                    const bool ssOpenAir = ssEye.y > -2.0f ||
+                        ssEye.y > x3::game::terrainHeightAtWorld(ssEye.x, ssEye.z) - 15.0f;
+                    if ((eyeRoom == x3::game::kNoRoom && ssOpenAir) ||
+                        (eyeRoom != x3::game::kNoRoom &&
+                         eyeRoom == facilityExterior.breachRoomHint()))
+                        canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
+                }
                 scene.setRoomCullEnabled(true);
                 scene.setVisibleRooms(canonVisRooms);
                 std::vector<x3::rhi::PointLight> cl;
@@ -2943,8 +3699,28 @@ int runDefaultHost(HostContext& hc) {
                 }
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    ssEye.x, ssEye.y, ssEye.z, cl, 16);
+                if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
+                // STREET LIGHT: same outdoor gate + nearest-K feed as the live
+                // loop, so lamp pools light the shot; flicker ticks through the
+                // settle (a flickering lamp can be captured mid-burst).
+                if (streetLights.lampCount() > 0) {
+                    bool ssExtVis = false;
+                    for (uint32_t v : canonVisRooms)
+                        if (v == x3::game::kStreamedExteriorRoom) { ssExtVis = true; break; }
+                    if (ssExtVis) {
+                        streetLights.update(dt, scene);
+                        streetLights.selectLights(ssEye.x, ssEye.y, ssEye.z, cl, 14);
+                    }
+                }
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
+            }
+            // WORLD CARS staging: the capture camera FOLLOWS the driven car
+            // (the drive host's chase framing around the shot-cam look angles).
+            if (shotDriving) {
+                float dcx, dcy, dcz;
+                worldCars.driverCamera(ssYaw, ssPitch, dcx, dcy, dcz);
+                device->setCamera(dcx, dcy, dcz, ssYaw, ssPitch, ssFov);
             }
             // Fix 1: arm the capture just before the FINAL settle frame so the copy
             // is recorded inside that frame's live command buffer (reads the
@@ -2961,9 +3737,31 @@ int runDefaultHost(HostContext& hc) {
                     canonRooms.draw(*device, frame, canonVisRooms);
                     canonRooms.applyZoneAtmosphere(*device,
                         canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z));
+                    // W10 SWIMMING: underwater shot cameras get the same dense
+                    // blue-green fog override the live loop applies (see there).
+                    { const float ssWY = x3::game::worldWaterLevelAt(ssEye.x, ssEye.z);
+                      if (ssWY > -1.0e30f && ssEye.y < ssWY - 0.05f) {
+                          x3::rhi::IRenderDevice::FogParams uf;
+                          uf.enabled  = true;
+                          uf.color[0] = 0.020f; uf.color[1] = 0.095f; uf.color[2] = 0.110f;
+                          uf.density  = 0.055f; uf.start = 0.15f; uf.maxOpacity = 0.94f;
+                          device->setFog(uf);
+                      } }
                     canonDoors.drawMeshes(*device, frame);
+                    facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
+                    // WORLD CARS: parked cars + the (staged) live car — the same
+                    // outdoor PVS gate as the live loop.
+                    if (worldCars.built() &&
+                        scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                        worldCars.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
+                    // SKINNED CITIZENS (room-gated inside draw()) — the crowds
+                    // as real people in the still captures.
+                    for (int ci = 0; ci < 3; ++ci) {
+                        canonCrowdSkins[ci].draw(*device, frame, scene);
+                        cityCrowdSkins[ci].draw(*device, frame, scene);
+                    }
                 }
                 // W2-A2 (W2-C's queued hook): the --screenshot path NEVER drew the FP
                 // viewmodel — the "pistol" in every prior cell shot was the hovering
@@ -3037,6 +3835,43 @@ int runDefaultHost(HostContext& hc) {
                 }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
+                // WORLD CARS hint line for the proof shots — the SAME bottom-
+                // center treatment as the live loop ("[E] Exit" while driving,
+                // "LOCKED - [hold E] hack" from a shot-cam beside a locked car).
+                if (canonWorld && worldCars.built() && !worldCars.prompt().empty()) {
+                    const std::string& vhint = worldCars.prompt();
+                    uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                    const float hsz = 18.0f;
+                    const float adv = device->textAdvance(x3::rhi::FontRole::Menu,
+                                                          vhint.c_str(), hsz);
+                    const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                    const float hy = (hh > 0) ? hh * 0.84f : 500.0f;
+                    const bool hacking = vhint.rfind("HACKING", 0) == 0 ||
+                                         vhint.rfind("LOCKED", 0) == 0;
+                    const float vcol[4]    = { 1.0f, hacking ? 0.55f : 0.82f,
+                                               hacking ? 0.35f : 0.45f, 0.9f };
+                    const float vshadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
+                                         hx + 1.5f, hy + 1.5f, hsz, vshadow);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
+                                         hx, hy, hsz, vcol);
+                }
+                // CROWD CHATTER bubbles over the vantage — same rules as the
+                // live loop (range/LOS/PVS/cap), so a --shot-chatter capture is
+                // the honest in-game read.
+                if (canonWorld) {
+                    x3::game::ChatterDrawSite chSites[6];
+                    uint32_t nCh = 0;
+                    for (int ci = 0; ci < 3; ++ci) {
+                        if (canonCrowds[ci].built())
+                            chSites[nCh++] = { &canonChatter[ci], &canonCrowds[ci] };
+                        if (cityCrowds[ci].built())
+                            chSites[nCh++] = { &cityChatter[ci], &cityCrowds[ci] };
+                    }
+                    if (nCh > 0)
+                        x3::game::drawChatterBubbles(*device, frame, physics.get(),
+                                                     scene, ssEye, chSites, nCh);
+                }
                 // ---- [W9-3 RPG] X3_SHOT_RPG=backpack|skills|hud: capture the RPG
                 // screens over the live vantage, demo-populated so the still shows
                 // a REAL loadout (eye-gate evidence; env-var pattern like X3_CLUB_SEQ).
@@ -3107,6 +3942,8 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -3213,6 +4050,8 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -3323,6 +4162,8 @@ int runDefaultHost(HostContext& hc) {
         combatFx.shutdown(*device);
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -3531,6 +4372,8 @@ int runDefaultHost(HostContext& hc) {
                         eye.x, eye.y, eye.z, vmYaw, vmPitch, 60.0f, 16.0f / 9.0f);
                     canonFloor.floodVisibleRoomsAt(eye.x, eye.y, eye.z, fr, &canonDoors,
                                                    depth, kCanonRoomBudget, canonVisRooms);
+                    facilityExterior.ensureOutdoorVis(canonFloor, eye.x, eye.y, eye.z,
+                                                      canonVisRooms);   // SEAM 2 outdoor guard
                     scene.setVisibleRooms(canonVisRooms);
                     g_visPvsMs = std::chrono::duration<float, std::milli>(
                         std::chrono::steady_clock::now() - pvsT0).count();
@@ -3546,6 +4389,7 @@ int runDefaultHost(HostContext& hc) {
                 }
                 uint32_t nLit = x3::game::selectVisibleCanonLights(
                     canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, 16);
+                if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
                 if (i == 0)
@@ -3575,11 +4419,21 @@ int runDefaultHost(HostContext& hc) {
                 if (canonWorld && canonFloor.valid()) {
                     canonDressing.draw(*device, frame); // opening-space props
                     canonRooms.draw(*device, frame, canonVisRooms);
+                    facilityExterior.draw(*device, frame);   // SEAM 2: facade skin
+                    // WORLD CARS (same outdoor PVS gate as the live loop).
+                    if (worldCars.built() &&
+                        scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                        worldCars.draw(frame);
                 }
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
                 if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
+                // SKINNED CITIZENS (room-gated inside draw()).
+                for (int ci = 0; ci < 3; ++ci) {
+                    canonCrowdSkins[ci].draw(*device, frame, scene);
+                    cityCrowdSkins[ci].draw(*device, frame, scene);
+                }
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -3661,6 +4515,8 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
         physics->shutdown();
         device->shutdown();
@@ -3695,6 +4551,13 @@ int runDefaultHost(HostContext& hc) {
                 case x3::game::CueKind::PlayerLand:
                     if (landH.valid()) asys->playSound2D(landH, std::min(0.8f, 0.30f + 0.4f * c.intensity), 1.0f);
                     break;
+                // W10 SWIMMING: water-entry splash. No dedicated splash WAV is
+                // committed yet, so reuse the soft landing thud pitched WAY down
+                // (0.55) — at low volume it reads as a muffled water entry.
+                // Follow-up: a real splash take under assets/audio/player/.
+                case x3::game::CueKind::PlayerSplash:
+                    if (landH.valid()) asys->playSound2D(landH, std::min(0.7f, 0.25f + 0.35f * c.intensity), 0.55f);
+                    break;
                 default: break;
             }
         });
@@ -3705,6 +4568,10 @@ int runDefaultHost(HostContext& hc) {
         if (jake == x3::game::kNoRoom) jake = 0;
         const x3::game::CanonRoom& jc = canonFloor.rooms[jake];
         player.spawn(*physics, jc.cx, jc.y0() + 0.1f, jc.cz);
+        // W10 SWIMMING: the canon world has real water (THE RIVER + the sea at
+        // -10) — wire the pure water-surface query so the controller can swim.
+        // Dev worlds keep no feed (bit-identical, no accidental water).
+        player.setWaterQuery(&x3::game::worldWaterLevelAt);
         x3::logInfo("--world canonlevel: spawned in Jake's Cell; per-room PVS cull active. "
                     "Walk through doorways to see the cull follow you.");
     } else if (docWorld && docLevel.built()) {
@@ -4219,6 +5086,9 @@ int runDefaultHost(HostContext& hc) {
     float stepTimer   = 0.0f;           // accumulates while moving on the ground
     float prevCamX = 0.0f, prevCamZ = 0.0f; // for horizontal-speed footsteps
     bool  prevCamValid = false;
+    // W10 SWIMMING: was the camera under a water surface LAST frame? Drives the
+    // underwater fog override + its clean restore (resetZoneAtmosphere) on surfacing.
+    bool  prevCamUnderwater = false;
 
     // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
     // (playtest fix, PB fold 4b9f067: DEFAULT music vol 0 -> MUTED on boot; SFX
@@ -4495,7 +5365,10 @@ int runDefaultHost(HostContext& hc) {
         // (single source of truth — previously F drove a local var and idclip drove
         // player.noclip(), so the console command did nothing for movement).
         bool fNow = keyDown(GLFW_KEY_F);
-        if (fNow && !prevF) player.setNoclip(!player.noclip());
+        // WORLD CARS: while DRIVING, F is the alternate EXIT key (consumed by the
+        // vehicle interact block below), never the noclip toggle.
+        if (fNow && !prevF && !worldCars.driving()) player.setNoclip(!player.noclip());
+        const bool fEdge = fNow && !prevF;   // vehicle exit edge (read below)
         prevF = fNow;
         // Mirror the Player's noclip flag (set by F OR idclip) into the local `noclip`
         // the movement uses; seed the fly camera from the current view on the rising
@@ -4661,7 +5534,23 @@ int runDefaultHost(HostContext& hc) {
         // direction; if it hits a button linked to an UNLOCKED door, it opens.
         // (Door C refuses while locked — until the player is armed, §6.4.) ----
         bool eNow = keyDown(GLFW_KEY_E);
-        if (eNow && !prevE && !terrainWorld) {
+
+        // ---- WORLD CARS interact (runs BEFORE the E-edge use chain; per-frame
+        // because the hold-E hack needs the HELD state, not just the edge).
+        // Driving: E (or F) exits. Near a parked car: E enters an unlocked one;
+        // a LOCKED one takes hold-E for 3 s (progress in the HUD hint line) and
+        // unlocks permanently + fires the guarded alarm hook. A consumed E also
+        // shuts the whole door/talk/terminal chain below for this frame. ----
+        bool vehicleConsumedE = false;
+        if (canonWorld && worldCars.built() && !codeMode && !termMode && !consoleOpen &&
+            (!noclip || worldCars.driving()) &&   // idclip mid-drive must still allow the exit
+            player.isAlive() && !chatTrees.active() && !npcDialog.active()) {
+            vehicleConsumedE = worldCars.interact(
+                player.feet(), eNow, eNow && !prevE, fEdge, dt, &player, *physics,
+                audio.get());
+        }
+
+        if (eNow && !prevE && !terrainWorld && !vehicleConsumedE && !worldCars.driving()) {
             float ex, ey, ez, yaw, pitch;
             player.camera(ex, ey, ez, yaw, pitch);   // in noclip the camera is the fly cam
             if (noclip) { ex = flyX; ey = flyY; ez = flyZ; yaw = flyYaw; pitch = flyPitch; }
@@ -5248,7 +6137,41 @@ int runDefaultHost(HostContext& hc) {
         const uint32_t simSteps = gameUi.shouldFreezeSim() ? 0u : simStepsRaw;
         for (uint32_t s = 0; s < simSteps; ++s) {
             const bool firstSub = (s == 0);
-            if (!noclip) {
+            const bool drivingNow = canonWorld && worldCars.driving();
+            if (!noclip && drivingNow) {
+                // ---- WORLD CARS: at the wheel. The player capsule is stashed
+                // (Player::update is skipped — it neither falls nor collides);
+                // mouse-look integrates into the SAME player look angles so the
+                // chase camera orbits and the view is continuous on exit. WASD
+                // throttle/steer + Space brake = the drive host's mapping. ----
+                if (firstSub) {
+                    const float sens = 0.0025f;
+                    player.setLook(player.yaw() + ddx * sens,
+                                   player.pitch() - ddy * sens);
+                }
+                x3::phys::VehicleInput vin;
+                vin.throttle = (keyDown(GLFW_KEY_W) ? 1.0f : 0.0f)
+                             - (keyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
+                vin.steer    = (keyDown(GLFW_KEY_D) ? 1.0f : 0.0f)
+                             - (keyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
+                if (spaceNow) vin.handBrake = 1.0f;
+                // S against forward motion is the BRAKE (host_drive's rule).
+                if (vin.throttle < 0.0f && worldCars.forwardSpeed() > 0.5f) {
+                    vin.brake = 1.0f; vin.throttle = 0.0f;
+                }
+                carThrottleHud = vin.throttle;
+                worldCars.driveInput(vin);
+                worldCars.preStep(x3::net::kSimDt);
+                // The world keeps simulating while at the wheel (no rider carry —
+                // the capsule is stashed; mirrors the noclip branch's treatment).
+                if (elevator.built()) elevator.update(x3::net::kSimDt, scene, *physics);
+                if (liveStrataBuilt)
+                    liveStrata.update(x3::net::kSimDt, scene, *device, elevator.cabCenter());
+                if (club1127.built()) club1127.update(x3::net::kSimDt, scene, *device, *physics);
+                physics->step(x3::net::kSimDt);
+                scene.update(*physics);
+                worldCars.postStep(x3::net::kSimDt);
+            } else if (!noclip) {
                 // ---- Walking player input (sampled this render frame) ----
                 x3::game::PlayerInput in;
                 if (keyDown(GLFW_KEY_W)) in.moveFwd    += 1.0f;
@@ -5267,6 +6190,10 @@ int runDefaultHost(HostContext& hc) {
                 in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
                 // Edge + mouse-look apply only on the first sub-step of the frame.
                 in.jumpPressed = firstSub && spaceNow && !prevSpace;   // rising edge
+                // W10 SWIMMING held channels (only read while in the swim state):
+                // Space held = stroke up, Ctrl/C held = dive.
+                in.jumpHeld = spaceNow;
+                in.diveHeld = keyDown(GLFW_KEY_LEFT_CONTROL) || keyDown(GLFW_KEY_C);
                 in.lookDX = firstSub ? ddx : 0.0f;
                 in.lookDY = firstSub ? ddy : 0.0f;
                 // Left/Right arrows turn the view via the same lookDX path the mouse uses,
@@ -5280,11 +6207,12 @@ int runDefaultHost(HostContext& hc) {
 
                 // Cell terminal / keypad open for typing: swallow movement + jump so the
                 // keys (WASD/Space) type into the terminal instead of walking the player.
-                if (termMode || codeMode) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; }
+                if (termMode || codeMode) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; in.jumpHeld = false; in.diveHeld = false; }
                 // CROUCH (hold C) / CRAWL (hold Left-Ctrl): lower the eye + slow the move.
                 // Ctrl (prone) wins over C (crouch); release both to stand. Suppressed
-                // while a console / terminal is open so typing doesn't duck the player.
-                if (!consoleOpen && !termMode && player.isAlive()) {
+                // while a console / terminal is open so typing doesn't duck the player,
+                // and while SWIMMING (W10) — Ctrl/C mean DIVE there, not duck.
+                if (!consoleOpen && !termMode && player.isAlive() && !player.swimming()) {
                     const bool kCtrl = keyDown(GLFW_KEY_LEFT_CONTROL);
                     const bool kC    = keyDown(GLFW_KEY_C);
                     player.setStance(kCtrl ? x3::game::Player::Stance::Prone
@@ -5379,6 +6307,11 @@ int runDefaultHost(HostContext& hc) {
         } else {
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }
+        // WORLD CARS: at the wheel the camera is the drive host's chase framing
+        // around the live car (yaw/pitch stay the player's look angles, so the
+        // view orbits with the mouse and is continuous on exit).
+        if (!noclip && canonWorld && worldCars.driving())
+            worldCars.driverCamera(camYaw, camPitch, camX, camY, camZ);
         // WEAPONS: apply + recover the weapon recoil kick. The kick is a transient
         // upward pitch offset added on top of the look pitch; it decays back to 0 so
         // the view recovers (recoil -> camera). Applied uniformly to setCamera, the
@@ -5514,6 +6447,33 @@ int runDefaultHost(HostContext& hc) {
                 } else {
                     canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
                 }
+                // SEAM 2: standing OUTDOORS (roomAt == kNoRoom, on the apron) the
+                // flood seeds from the nearest room so the world never blanks; the
+                // guard also keeps the breach room in the set so the interior seen
+                // through the open breach never pops. Exterior entities themselves
+                // are kNoRoom-tagged (always drawn).
+                facilityExterior.ensureOutdoorVis(canonFloor, camX, camY, camZ, canonVisRooms);
+                // SEAM 3 (risk 2): the streamed planet draws only when the eye can
+                // plausibly see outdoors — standing OUTSIDE every room above ground,
+                // or inside the breach/Entrance room (the view out the open breach
+                // must not pop). Streamed entities carry kStreamedExteriorRoom, so
+                // appending that id to the visible set is the whole draw gate; deep
+                // interior frames never pay the city's draw cost, and the underground
+                // (Y<0 shafts/club) never counts as "outdoors".
+                if (canonStreamOn) {
+                    const uint32_t eyeRoom = canonFloor.roomAt(camX, camY, camZ);
+                    // Open-air test (W10 swimming): the river valley (water down
+                    // to -9.9, bed -13) and the sea (-10, seafloor -80) are BELOW
+                    // the old -2 cut yet are real outdoors — accept any eye above
+                    // (local terrain - 15 m). The elevator/strata/club descent is
+                    // under the facility pad (terrain ~0) so it still fails.
+                    const bool openAir = camY > -2.0f ||
+                        camY > x3::game::terrainHeightAtWorld(camX, camZ) - 15.0f;
+                    if ((eyeRoom == x3::game::kNoRoom && openAir) ||
+                        (eyeRoom != x3::game::kNoRoom &&
+                         eyeRoom == facilityExterior.breachRoomHint()))
+                        canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
+                }
                 // OPENING-SPACE motivated lights (flickering cell tube / red alarm / cyan
                 // terminal) for the visible dressed rooms — inserted at the FRONT so the cap
                 // never drops these key lights, then the room ceiling lights fill in.
@@ -5525,6 +6485,8 @@ int runDefaultHost(HostContext& hc) {
                 // Cap lights at 16 closest-to-eye over the SAME visible-room set.
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    camX, camY, camZ, fl, 16);
+                // SEAM 2: the amber breach spill (the way-in read from the apron).
+                if (facilityExterior.built()) fl.push_back(facilityExterior.spillLight());
             }
             // FROMDOC LIGHTING: append the LevelDoc's authored point lights (closest
             // 16 to the eye) after the flashlight, mirroring the canonlevel feed.
@@ -5549,6 +6511,24 @@ int runDefaultHost(HostContext& hc) {
                 const auto& sl = liveStrata.pointLights();
                 size_t take = sl.size() < 16 ? sl.size() : (size_t)16;
                 for (size_t i = 0; i < take; ++i) fl.push_back(sl[i]);
+            }
+            // STREET LIGHT: the nearest K=14 lit lamps join the pool ONLY when
+            // the streamed exterior is in frame (outdoors/at the breach — the
+            // same kStreamedExteriorRoom gate the draw path uses). BUDGET SPLIT
+            // (64-light device cap): flashlight + elevator cab FIRST, dressing
+            // motivated lights at the front, <=16 canon room lights, the breach
+            // spill, strata <=16 (camY<2 only), THEN street lamps <=14 — the
+            // lamps are appended LAST so they can never starve the facility/
+            // strata obligations, and the club takeover below still clears
+            // everything at The Deep. Flicker ticks here (dt-scaled).
+            if (canonWorld && streetLights.lampCount() > 0) {
+                bool exteriorVis = false;
+                for (uint32_t v : canonVisRooms)
+                    if (v == x3::game::kStreamedExteriorRoom) { exteriorVis = true; break; }
+                if (exteriorVis) {
+                    if (!simFrozen) streetLights.update(dt, scene);
+                    streetLights.selectLights(camX, camY, camZ, fl, 14);
+                }
             }
             // Gap C: at The Deep the club's own rig (neon/UV/orbit spots/bar fills)
             // takes the whole budget — no surface fixture reaches -200 m anyway.
@@ -5610,6 +6590,37 @@ int runDefaultHost(HostContext& hc) {
                 device->setWaterParams(wp);
             }
         } else {
+            // ---- SEAM 3: ONE budget umbrella per frame — terrain ground ring
+            // first (measured), then the region streamer gets whatever is left
+            // of --ws-budget. Player velocity feeds the lookahead so sprinting
+            // off the apron pulls regions in earlier. Risk 3 (XZ-only residency
+            // vs the underground): ALL residency work is suppressed while the
+            // eye is below kStreamSuppressBelowY — the elevator/strata/Club-1127
+            // descent holds the surface resident exactly as it was and the
+            // streamer's Y=0 proxy floor can never drop a plane over The Deep.
+            if (canonStreamOn) {
+                if (camY > kStreamSuppressBelowY) {
+                    const double st0 = glfwGetTime();
+                    terrainStreamer.update(scene, *device, *physics, camX, camZ);
+                    const double terrainMs = (glfwGetTime() - st0) * 1000.0;
+                    float svx = dt > 1e-4f ? (camX - canonStreamPrevX) / dt : 0.0f;
+                    float svz = dt > 1e-4f ? (camZ - canonStreamPrevZ) / dt : 0.0f;
+                    // WORLD CARS: driving, the lookahead is fed the VEHICLE's
+                    // real velocity (not the chase-cam delta) and the horizon is
+                    // raised so regions land ahead at car speed (~20-30 m/s).
+                    if (worldCars.driving()) {
+                        float vv[3]; worldCars.chassisVelocity(vv);
+                        svx = vv[0]; svz = vv[2];
+                        canonWstream.setLookahead(std::max(hc.wsLookaheadS, 4.0f));
+                    } else {
+                        canonWstream.setLookahead(hc.wsLookaheadS);
+                    }
+                    canonWstream.update(scene, *device, *physics,
+                                        camX, camY, camZ, svx, 0.0f, svz,
+                                        (double)hc.wsBudgetMs, terrainMs);
+                }
+                canonStreamPrevX = camX; canonStreamPrevZ = camZ;
+            }
             { const double _pt0 = glfwGetTime();
               game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
               g_perf.tick += glfwGetTime() - _pt0; }
@@ -5633,6 +6644,71 @@ int runDefaultHost(HostContext& hc) {
             // LIVING WORLD: the facility civilians (idle/wander; scatter+cower on
             // gunfire via onViolence in the fire block; return after calm).
             if (facilityCrowd.built()) facilityCrowd.update(dt, scene);
+            // LIVING NPCs: the canon room crowds + the streamed city crowds —
+            // they work, they play, they talk. Updates are gated on the PVS
+            // (roomVisible: a crowd in a culled room / an unseen outdoors costs
+            // nothing); city systems exist only while the region is resident.
+            for (auto& cc : canonCrowds)
+                if (cc.built() && scene.roomVisible(cc.config().roomId))
+                    cc.update(dt, scene);
+            for (auto& cc : cityCrowds)
+                if (cc.built() && scene.roomVisible(cc.config().roomId))
+                    cc.update(dt, scene);
+            // CROWD CHATTER: the voice layer rides the SAME PVS gate as its
+            // crowd (a culled room's chat costs nothing and its bubbles just
+            // age out). Audio murmurs are range-gated inside (<= ~20 m).
+            for (int ci = 0; ci < 3; ++ci) {
+                if (canonCrowds[ci].built() &&
+                    scene.roomVisible(canonCrowds[ci].config().roomId))
+                    canonChatter[ci].update(dt, canonCrowds[ci], audio.get(),
+                                            chatterSnd, camPos);
+                if (cityCrowds[ci].built() &&
+                    scene.roomVisible(cityCrowds[ci].config().roomId))
+                    cityChatter[ci].update(dt, cityCrowds[ci], audio.get(),
+                                           chatterSnd, camPos);
+            }
+            // SKINNED CITIZENS: pose-follow the brains + drain the deferred
+            // spawn queues (1 rig/frame; the layer PVS-gates its own pose work,
+            // so a culled deployment costs only the queue check).
+            for (int ci = 0; ci < 3; ++ci) {
+                if (canonCrowds[ci].built())
+                    canonCrowdSkins[ci].update(dt, canonCrowds[ci], scene, *device, *physics);
+                if (cityCrowds[ci].built())
+                    cityCrowdSkins[ci].update(dt, cityCrowds[ci], scene, *device, *physics);
+            }
+            // WORLD CARS while driving: (1) pedestrians within ~3.5 m of a car
+            // moving at speed SCATTER (a cheap proximity probe, throttled, feeds
+            // onViolence at the car pos); (2) deep river/sea water KILLS the
+            // engine and forces an exit into the swim state; (3) the engine loop
+            // pitches with the real RPM. All no-ops on foot.
+            if (canonWorld && worldCars.built()) {
+                if (worldCars.driving()) {
+                    carPanicCooldown -= dt;
+                    const float carSpd = std::fabs(worldCars.forwardSpeed());
+                    if (carSpd > 4.0f && carPanicCooldown <= 0.0f) {
+                        const x3::phys::Vec3 cp = worldCars.carPosition();
+                        auto panicNear = [&](x3::game::CrowdSystem& cc) {
+                            if (!cc.built()) return;
+                            for (uint32_t ai = 0; ai < cc.agentCount(); ++ai) {
+                                const auto& a = cc.agent(ai);
+                                const float adx = a.pos.x - cp.x, adz = a.pos.z - cp.z;
+                                if (adx * adx + adz * adz < 3.5f * 3.5f) {
+                                    cc.onViolence(cp);
+                                    return;
+                                }
+                            }
+                        };
+                        for (auto& cc : cityCrowds) panicNear(cc);
+                        carPanicCooldown = 0.4f;
+                    }
+                    if (worldCars.inDeepWater()) {
+                        worldCars.forceExit(&player, *physics);
+                        carThrottleHud = 0.0f;
+                    }
+                }
+                worldCars.updateAudio(audio.get(),
+                                      worldCars.driving() ? carThrottleHud : 0.0f);
+            }
             // LIVING WORLD: the FACILITY ALERT LEVEL — feed observations, apply
             // effects (reinforcements, lockdown doors). Lights/HUD read it below.
             if (facilityAlertOn) {
@@ -5962,8 +7038,31 @@ int runDefaultHost(HostContext& hc) {
                 g.vignette = (cvVig >= 0.0f) ? cvVig : 0.10f;
                 device->setGrade(g);
             }
+            // ---- W10 SWIMMING: the UNDERWATER read. When the CAMERA is below a
+            // water surface (river reach or the sea), override the frame's fog
+            // with a dense blue-green extinction — applied AFTER the zone/cvar
+            // fog so it wins while submerged. On surfacing, resetZoneAtmosphere()
+            // makes the room recipes re-apply their own fog next frame (they own
+            // it; nothing is clobbered, no FogParams snapshot needed).
+            {
+                const float wY = x3::game::worldWaterLevelAt(camX, camZ);
+                const bool camUnder = wY > -1.0e30f && camY < wY - 0.05f;
+                if (camUnder) {
+                    x3::rhi::IRenderDevice::FogParams uf;
+                    uf.enabled  = true;
+                    uf.color[0] = 0.020f; uf.color[1] = 0.095f; uf.color[2] = 0.110f;
+                    uf.density  = 0.055f;    // ~18 m visibility — murky river water
+                    uf.start    = 0.15f;     // hands/viewmodel stay readable
+                    uf.maxOpacity = 0.94f;
+                    device->setFog(uf);
+                } else if (prevCamUnderwater) {
+                    canonRooms.resetZoneAtmosphere();   // recipe fog re-applies next frame
+                }
+                prevCamUnderwater = camUnder;
+            }
         }
-        if (prevCamValid && !noclip && player.grounded() && dt > 0.0f) {
+        // (W10: no footsteps while swimming — bed contact is not a floor walk.)
+        if (prevCamValid && !noclip && player.grounded() && !player.swimming() && dt > 0.0f) {
             const float dxc = camX - prevCamX, dzc = camZ - prevCamZ;
             const float speed = std::sqrt(dxc * dxc + dzc * dzc) / dt; // m/s
             if (speed > 0.6f) {
@@ -6043,7 +7142,8 @@ int runDefaultHost(HostContext& hc) {
         // projectiles are spawned into a host-owned list advanced below. Automatic
         // weapons fire while held; others fire on the LMB rising edge. ----
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
-        bool fireHeld = !uiCapture && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool fireHeld = !uiCapture && !simFrozen && !worldCars.driving() &&
+                        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
@@ -6076,6 +7176,11 @@ int runDefaultHost(HostContext& hc) {
             // and any guard in earshot raises the facility alert (resolved against
             // the live observers at the next alert update).
             if (facilityCrowd.built()) facilityCrowd.onViolence(eye);
+            // LIVING NPCs: the canon room crowds + city street crowds hear it
+            // too (onViolence self-gates on scatterRadius — a distant shot
+            // never disturbs a crowd out of earshot).
+            for (auto& cc : canonCrowds) if (cc.built()) cc.onViolence(eye);
+            for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(eye);
             if (facilityAlertOn) facilityAlert.reportGunshot(eye);
             // Recoil -> camera (transient upward kick; recovered in the camera block).
             weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
@@ -6367,12 +7472,25 @@ int runDefaultHost(HostContext& hc) {
             if (canonWorld && canonFloor.valid()) {
                 canonDressing.draw(*device, frame);
                 canonRooms.draw(*device, frame, canonVisRooms);
+                facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
+                // WORLD CARS: parked visuals + the live car — direct draws,
+                // gated on the same outdoor PVS lane as the streamed planet
+                // (deep-interior frames never pay the cars' draw cost).
+                if (worldCars.built() &&
+                    scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                    worldCars.draw(frame);
             }
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
             if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
+            // SKINNED CITIZENS: the crowds as real people — the same drawMonster
+            // PBR fan as the club's dancers, room-gated inside draw().
+            for (int ci = 0; ci < 3; ++ci) {
+                canonCrowdSkins[ci].draw(*device, frame, scene);
+                cityCrowdSkins[ci].draw(*device, frame, scene);
+            }
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).
@@ -6476,8 +7594,9 @@ int runDefaultHost(HostContext& hc) {
                 // THIRD-PERSON: hide the FP weapon viewmodel ENTIRELY (the gun is shown
                 // in the avatar's hand instead — drawn after scene.render below).
                 // viewmodelVisible() is true in FP / unbuilt, so FP behaviour is unchanged.
-                if (!thirdPerson.viewmodelVisible()) {
-                    // 3P: no FP viewmodel this frame.
+                if (!thirdPerson.viewmodelVisible() || worldCars.driving()) {
+                    // 3P / AT THE WHEEL: no FP viewmodel this frame (hands are
+                    // on the wheel; the chase camera is not an FP eye).
                 } else if (arsenal.viewmodelsLoaded() && vmArmed) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
                     // convention-correct base offsets). The live vm_* cvars are passed
@@ -6527,6 +7646,26 @@ int runDefaultHost(HostContext& hc) {
             // EFLZ-specific HUD extras that the GENERAL GameHud doesn't own. These
             // draw only while actively playing (not in any menu / console).
             if (playingNow && !consoleOpen) {
+                // CROWD CHATTER bubbles — THE PEOPLE SPEAK. World-anchored over
+                // each speaker's head (<= 14 m, LOS-culled, PVS-gated, <= 4
+                // concurrent, fade in/out — see drawChatterBubbles). Suppressed
+                // whenever a dialog / keypad / terminal UI owns the screen.
+                if (!terrainWorld && !codeMode && !termMode &&
+                    !chatTrees.active() && !npcDialog.active()) {
+                    x3::game::ChatterDrawSite chSites[6];
+                    uint32_t nCh = 0;
+                    for (int ci = 0; ci < 3; ++ci) {
+                        if (canonCrowds[ci].built())
+                            chSites[nCh++] = { &canonChatter[ci], &canonCrowds[ci] };
+                        if (cityCrowds[ci].built())
+                            chSites[nCh++] = { &cityChatter[ci], &cityCrowds[ci] };
+                    }
+                    if (nCh > 0)
+                        x3::game::drawChatterBubbles(*device, frame, physics.get(),
+                                                     scene,
+                                                     x3::phys::Vec3{ camX, camY, camZ },
+                                                     chSites, nCh);
+                }
                 // Door-code keypad prompt: centered, while code entry is active.
                 if (codeMode && !terrainWorld) {
                     uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
@@ -6643,6 +7782,29 @@ int runDefaultHost(HostContext& hc) {
                             device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx + 1.5f, hy + 1.5f, hsz, shadow);
                             device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx, hy, hsz, col);
                         }
+                    }
+                    // WORLD CARS hint line (bottom-center, the terminal-hint
+                    // treatment): "[E] Enter" / "LOCKED - [hold E] hack" /
+                    // "HACKING... 47%" / "[E] Exit" — computed by the per-frame
+                    // interact above; empty when no car is in reach.
+                    if (canonWorld && worldCars.built() && !worldCars.prompt().empty()) {
+                        const std::string& vhint = worldCars.prompt();
+                        uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                        const float hsz = 18.0f;
+                        const float adv = device->textAdvance(x3::rhi::FontRole::Menu,
+                                                              vhint.c_str(), hsz);
+                        const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                        const float hy = (hh > 0) ? hh * 0.84f : 500.0f;  // above the terminal line
+                        // Amber for the machine, red-leaning while a hack runs.
+                        const bool hacking = vhint.rfind("HACKING", 0) == 0 ||
+                                             vhint.rfind("LOCKED", 0) == 0;
+                        const float col[4]    = { 1.0f, hacking ? 0.55f : 0.82f,
+                                                  hacking ? 0.35f : 0.45f, 0.9f };
+                        const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
+                                             hx + 1.5f, hy + 1.5f, hsz, shadow);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
+                                             hx, hy, hsz, col);
                     }
                 }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.
@@ -7250,6 +8412,12 @@ int runDefaultHost(HostContext& hc) {
     // BOOT hand-off overlay: if the window closed mid-fade, free its texture now
     // (else the VMA shutdown leak check would see a live allocation).
     if (loadingOverlayLive) loading.shutdown(*device);
+    // WORLD CARS: parked-car bodies + the live vehicle rig (Jolt constraint)
+    // must go BEFORE physics dies. Idempotent no-op when never built.
+    worldCars.shutdown(*physics);
+    // SEAM 3: the canon planet streamer (regions + terrain ring + its job
+    // system) — idempotent no-op unless canon streaming booted.
+    shutdownCanonStream();
     // B3: tear the streamer down BEFORE physics/device (it removes its bodies +
     // destroys its meshes), then stop the terrain job system. Both are no-ops
     // when not in terrain mode.

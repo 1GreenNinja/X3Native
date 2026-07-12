@@ -175,6 +175,7 @@ public:
 
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
+    void setIblIntensity(float s) override;
 
     // HDR post-stack settings (r_tonemap / r_bloom* / r_autoexposure / r_ae*),
     // synced per frame by the app. Toggling AE on re-arms the adaptation snap so
@@ -573,8 +574,8 @@ private:
         // spec §3.2). Opaque draws leave these zeroed (the opaque path never reads
         // them). glass.frag (M2-M4) consumes: refraction (screen-space bend),
         // roughness (frost mip), specular (shimmer), tint (rgb body color).
-        glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = unused
-        glm::vec4 glassTint;         // rgb = glass tint color, a = unused
+        glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = additive glow (rim exponent; 0 = normal glass)
+        glm::vec4 glassTint;         // rgb = glass tint color, a = emissiveMap (0 = flat glow, 1 = modulate by texel)
     };
     static_assert(sizeof(ObjectData) == 160, "ObjectData must match std430 layout");
 
@@ -611,7 +612,7 @@ private:
         bool     noCull = false;
         // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
         float    glassParams[4]; // x = refraction, y = roughness, z = specular, w unused
-        float    glassTint[4];   // rgb = tint, a unused
+        float    glassTint[4];   // rgb = tint, a = emissiveMap (GlassMaterial::emissiveMap)
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
@@ -3035,6 +3036,7 @@ private:
     uint32_t                m_cullEquivFrames = 0;
     uint32_t                m_cullEquivMismatches = 0;
     float                   m_metalAmbient = 1.0f; // metal ambient-spec floor strength (mesh.frag ibl.w; r_metalambient)
+    float                   m_iblIntensity = 1.0f; // IBL ambient scale (mesh.frag ibl.y; SEAM 2 interior/exterior balance)
     // ---- vis-unify: host-injected PVS numbers + per-stage timing -----------
     uint32_t                m_visRoomsCulled = 0;   // setVisHostStats (this frame's room/portal skips)
     float                   m_visPvsMs = 0.0f;      // setVisHostStats (flood-fill ms)

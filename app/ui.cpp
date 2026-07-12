@@ -254,6 +254,262 @@ bool UiContext::slider(const char* label, float& value, float x, float y, float 
     return changed;
 }
 
+// ===========================================================================
+// R8 — THE GLOWING CONTROL SURFACE ("the sliders glow").
+//
+// One shared law for all three widgets: a control's colour IS its danger readout.
+// The player never has to read a number to know the rift is about to bite — the
+// thing under their hand goes amber, then red, then starts to flicker.
+//
+// CAP LAW (borrowed from the membrane, and for the same reason): emissive-looking
+// HUD colour is still colour. Push a "glow" past ~1.0 on all three channels and it
+// reads as WHITE — the chroma that carries the meaning dies exactly when the
+// meaning matters most. So the hot colour is built by SHIFTING HUE (green -> amber
+// -> red) and lifting alpha, never by lifting all three channels together.
+// ===========================================================================
+namespace {
+
+// The console palette: black glass, blue + green light, amber/red for warnings.
+constexpr float kGlassBg[4]   = { 0.015f, 0.020f, 0.030f, 0.90f };  // black glass slab
+constexpr float kGlassEdge[4] = { 0.10f,  0.55f,  0.85f,  0.75f };  // blue pipe-frame edge
+constexpr float kGlowCalm[3]  = { 0.10f,  0.95f,  0.70f };          // calm: blue-green
+constexpr float kGlowWarn[3]  = { 1.00f,  0.62f,  0.10f };          // warning: amber
+constexpr float kGlowHot[3]   = { 1.00f,  0.16f,  0.12f };          // catastrophe: red
+constexpr float kGlowMaxA     = 0.98f;   // HARD CAP — a control never clips to white
+
+// danger01 -> the control's live glow colour + its pulse. Calm is steady; the
+// closer to catastrophe, the hotter the hue and the faster/deeper the flicker.
+void glowColor(float danger01, float clock, float phase, float out[4]) {
+    float d = danger01 < 0.0f ? 0.0f : (danger01 > 1.0f ? 1.0f : danger01);
+    // Hue: calm -> amber over the first half, amber -> red over the second.
+    const float* a = (d < 0.5f) ? kGlowCalm : kGlowWarn;
+    const float* b = (d < 0.5f) ? kGlowWarn : kGlowHot;
+    const float t = (d < 0.5f) ? (d * 2.0f) : ((d - 0.5f) * 2.0f);
+    for (int c = 0; c < 3; ++c) out[c] = a[c] + (b[c] - a[c]) * t;
+    // Pulse: nothing while calm, a slow throb as it warms, a hot flicker at the top.
+    const float hz    = 0.8f + 7.0f * d * d;
+    const float depth = 0.30f * d * d;
+    const float s     = 0.5f * (std::sin(clock * 6.2831853f * hz + phase) + 1.0f);
+    float alpha = (0.62f + 0.30f * d) * (1.0f - depth + depth * s);
+    if (alpha > kGlowMaxA) alpha = kGlowMaxA;
+    out[3] = alpha;
+}
+
+// The same colour at a fraction of the intensity (unlit track, dim ticks).
+void glowDim(const float lit[4], float k, float out[4]) {
+    out[0] = lit[0] * k; out[1] = lit[1] * k; out[2] = lit[2] * k;
+    out[3] = lit[3] * (0.30f + 0.30f * k);
+}
+
+} // namespace
+
+bool UiContext::glowSlider(const char* label, float& value, float x, float y,
+                           float w, float h, float danger01, float clock) {
+    const int idx = m_widgetIndex++;
+    const bool hovered = pointIn(x, y, w, h);
+    if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
+    const bool hot = (m_focus == idx);
+
+    float v = value; if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
+
+    float lit[4], dim[4];
+    glowColor(danger01, clock, (float)idx * 0.7f, lit);
+    glowDim(lit, 0.22f, dim);
+
+    // The row sits ON the black glass; only a focused row gets a faint lift.
+    if (hot) {
+        const float lift[4] = { lit[0] * 0.10f, lit[1] * 0.10f, lit[2] * 0.10f, 0.30f };
+        quad(x, y, w, h, lift);
+    }
+
+    const float px = h * 0.40f;
+    const float ty = y + (h - px) * 0.5f;
+    text(label, x + 10.0f, ty, px, hot ? lit : dim, FontRole::HudMono);
+
+    char pct[8];
+    std::snprintf(pct, sizeof(pct), "%d%%", (int)(v * 100.0f + 0.5f));
+    const float pctW = 52.0f;
+    textCentered(pct, x + w - pctW * 0.5f - 6.0f, ty, px, lit, FontRole::HudMono);
+
+    // Track: a LIT CHANNEL. The filled portion is charged (bright); the rest is a
+    // dim groove. The handle is the brightest thing on the row.
+    const float labelW = 150.0f;
+    const float trackX = x + labelW;
+    const float trackR = x + w - pctW - 12.0f;
+    const float trackW = std::max(8.0f, trackR - trackX);
+    const float trackH = std::max(5.0f, h * 0.22f);
+    const float trackY = y + (h - trackH) * 0.5f;
+
+    quad(trackX, trackY - 1.0f, trackW, trackH + 2.0f, kGlassBg);   // recessed channel
+    quad(trackX, trackY, trackW, trackH, dim);                      // unlit remainder
+    quad(trackX, trackY, trackW * v, trackH, lit);                  // CHARGED fill
+    // Handle: brighter core + a glow halo either side (fake bloom, 2 quads).
+    const float knobW = 9.0f, knobH = h * 0.62f;
+    const float knobX = trackX + trackW * v - knobW * 0.5f;
+    const float knobY = y + (h - knobH) * 0.5f;
+    float halo[4] = { lit[0], lit[1], lit[2], lit[3] * 0.35f };
+    quad(knobX - 4.0f, knobY - 3.0f, knobW + 8.0f, knobH + 6.0f, halo);
+    float core[4] = { lit[0], lit[1], lit[2], kGlowMaxA };
+    quad(knobX, knobY, knobW, knobH, core);
+
+    float nv = v;
+    if (hovered && m_in.mouseDown) {
+        float t = (m_in.mouseX - trackX) / trackW;
+        if (t < 0.0f) t = 0.0f; if (t > 1.0f) t = 1.0f;
+        nv = t;
+    }
+    if (hot) {
+        if (m_in.navLeft)  nv -= 0.05f;
+        if (m_in.navRight) nv += 0.05f;
+    }
+    if (nv < 0.0f) nv = 0.0f; if (nv > 1.0f) nv = 1.0f;
+    if (nv != v) { value = nv; return true; }
+    return false;
+}
+
+bool UiContext::knob(const char* label, float& value, float cx, float cy,
+                     float radius, float danger01, float clock) {
+    const int idx = m_widgetIndex++;
+    // Hit box = the knob's bounding square (plus the caption strip below it).
+    const float bx = cx - radius, by = cy - radius;
+    const bool hovered = pointIn(bx, by, radius * 2.0f, radius * 2.0f);
+    if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
+    const bool hot = (m_focus == idx);
+
+    float v = value; if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
+
+    float lit[4], dim[4];
+    glowColor(danger01, clock, (float)idx * 0.7f, lit);
+    glowDim(lit, 0.25f, dim);
+
+    // The dial sweeps 240 deg CLOCKWISE ON SCREEN: t=0 at 7 o'clock, t=0.5 straight
+    // up at 12, t=1 at 5 o'clock, with a 120 deg dead zone across the bottom.
+    //
+    // The stamps use uy = -sin(a) (screen Y grows DOWN), which means a DECREASING
+    // math angle travels clockwise on screen. So the sweep starts at 210 deg (7
+    // o'clock: cos = -0.87, -sin = +0.5, i.e. left-and-down) and runs to -30 deg.
+    // Getting this wrong is not cosmetic — a knob whose midpoint isn't at 12 o'clock
+    // lies to the player about the value they are dialling in, and on this console a
+    // mis-read value implodes a gate. (The first cut had 150 deg here, which put t=0
+    // at TEN o'clock and 12 o'clock at t=0.25. --test-ui U29 caught it.)
+    const float kA0    =  3.6651914f;   // 210 deg
+    const float kSweep = -4.1887902f;   // -240 deg (clockwise on screen)
+    auto ring = [&](float t, float rr, float len, float thick, const float col[4]) {
+        const float a = kA0 + kSweep * t;
+        const float ux = std::cos(a), uy = -std::sin(a);
+        // A tick is a short quad laid along the radius at angle a (approximated by
+        // stamping `len` little squares — the HUD layer only has axis-aligned quads).
+        const int steps = (int)std::max(2.0f, len);
+        for (int s = 0; s < steps; ++s) {
+            const float r = rr + (float)s;
+            quad(cx + ux * r - thick * 0.5f, cy + uy * r - thick * 0.5f,
+                 thick, thick, col);
+        }
+    };
+    // Recessed black-glass well.
+    quad(bx - 2.0f, by - 2.0f, radius * 2.0f + 4.0f, radius * 2.0f + 4.0f, kGlassBg);
+    // The dial RING: 44 stamps around the 240 deg sweep — lit up to the value,
+    // dim past it (the same "charged fill" read as the slider).
+    for (int s = 0; s <= 44; ++s) {
+        const float t = (float)s / 44.0f;
+        ring(t, radius - 5.0f, 4.0f, 3.0f, (t <= v) ? lit : dim);
+    }
+    // Glowing TICK MARKS every 25%.
+    for (int s = 0; s <= 4; ++s)
+        ring((float)s * 0.25f, radius + 1.0f, 4.0f, 3.0f, dim);
+    // The INDICATOR: a bright lit mark from the hub out to the ring at the value.
+    ring(v, radius * 0.30f, radius * 0.62f, hot ? 5.0f : 4.0f, lit);
+    // Hub + caption.
+    float hub[4] = { lit[0], lit[1], lit[2], kGlowMaxA };
+    quad(cx - 4.0f, cy - 4.0f, 8.0f, 8.0f, hub);
+    const float px = 12.0f;
+    textCentered(label, cx, cy + radius + 4.0f, px, hot ? lit : dim, FontRole::HudMono);
+    char pct[8];
+    std::snprintf(pct, sizeof(pct), "%d", (int)(v * 100.0f + 0.5f));
+    textCentered(pct, cx, cy + radius + 4.0f + px + 2.0f, px, lit, FontRole::HudMono);
+
+    // ---- ANGULAR DRAG: the value follows the cursor's angle about the center ----
+    float nv = v;
+    if (hovered && m_in.mouseDown) {
+        const float dx = m_in.mouseX - cx, dy = -(m_in.mouseY - cy);
+        if (dx * dx + dy * dy > 16.0f) {                  // ignore a dead hub grab
+            float a = std::atan2(dy, dx);                 // [-pi, pi]
+            // Solve t from a = kA0 + kSweep*t, wrapped into the live sweep. The dead
+            // zone (the 120 deg gap at the bottom) snaps to the nearer end instead of
+            // letting the dial teleport 0 <-> 1.
+            float t = (a - kA0) / kSweep;
+            while (t < -0.5f) t += 6.2831853f / (-kSweep);
+            while (t >  1.5f) t -= 6.2831853f / (-kSweep);
+            if (t < 0.0f) t = (t < -0.25f) ? 1.0f : 0.0f;
+            if (t > 1.0f) t = (t >  1.25f) ? 0.0f : 1.0f;
+            nv = t;
+        }
+    }
+    if (hot) {
+        if (m_in.navLeft)  nv -= 0.05f;
+        if (m_in.navRight) nv += 0.05f;
+    }
+    if (nv < 0.0f) nv = 0.0f; if (nv > 1.0f) nv = 1.0f;
+    if (nv != v) { value = nv; return true; }
+    return false;
+}
+
+bool UiContext::textField(const char* label, char* buf, int cap, float x, float y,
+                          float w, float h, float danger01, float clock) {
+    const int idx = m_widgetIndex++;
+    const bool hovered = pointIn(x, y, w, h);
+    if (hovered && m_in.mousePressed) { m_focus = idx; m_mouseMovedFocus = true; }
+    else if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
+    const bool hot = (m_focus == idx);
+
+    float lit[4], dim[4];
+    glowColor(danger01, clock, (float)idx * 0.7f, lit);
+    glowDim(lit, 0.25f, dim);
+
+    const float px = h * 0.44f;
+    const float ty = y + (h - px) * 0.5f;
+    text(label, x + 10.0f, ty, px, hot ? lit : dim, FontRole::HudMono);
+
+    // The field: a black-glass well with a LIT BORDER + a glowing underline.
+    const float fx = x + 150.0f;
+    const float fw = std::max(40.0f, (x + w) - fx - 10.0f);
+    quad(fx, y + 2.0f, fw, h - 4.0f, kGlassBg);
+    const float bt = hot ? 2.0f : 1.0f;
+    quad(fx, y + 2.0f, fw, bt, hot ? lit : dim);                 // top
+    quad(fx, y + h - 2.0f - bt, fw, bt, hot ? lit : dim);        // underline (brighter)
+    quad(fx, y + 2.0f, bt, h - 4.0f, hot ? lit : dim);
+    quad(fx + fw - bt, y + 2.0f, bt, h - 4.0f, hot ? lit : dim);
+
+    // Glowing typed text + a blinking caret while focused.
+    if (buf) {
+        text(buf, fx + 8.0f, ty, px, lit, FontRole::HudMono);
+        if (hot) {
+            const bool on = std::fmod(clock, 1.0f) < 0.55f;
+            if (on) {
+                const float cw = textWidth(FontRole::HudMono, buf, px);
+                float caret[4] = { lit[0], lit[1], lit[2], kGlowMaxA };
+                quad(fx + 8.0f + cw + 1.0f, ty, 2.0f, px, caret);
+            }
+        }
+    }
+
+    // ---- INPUT: consumed ONLY while this field owns focus --------------------
+    bool committed = false;
+    if (hot && buf) {
+        int n = (int)std::strlen(buf);
+        for (int i = 0; i < m_in.typedCount && n < cap - 1; ++i) {
+            const char c = m_in.typed[i];
+            if (c >= 32 && c < 127) buf[n++] = c;
+        }
+        buf[n] = 0;
+        if (m_in.backspace && n > 0) buf[n - 1] = 0;
+        if (m_in.enter) committed = true;   // caller PARSES it — no clamp: typing an
+                                            // out-of-range value on purpose is the
+                                            // intended road to the dangerous outcomes.
+    }
+    return committed;
+}
+
 void UiContext::bar(float x, float y, float w, float h, float frac,
                     const float fill[4], const char* caption) const {
     if (frac < 0.0f) frac = 0.0f;
@@ -1102,6 +1358,107 @@ bool runUiSelfTest() {
             }
         }
         delete con;
+    }
+
+    // =======================================================================
+    // ROUND 8 — THE GLOWING CONTROL SURFACE (glowSlider / knob / textField).
+    // These drive the rift console, where a mis-set value implodes a gate — so
+    // they are gated like gameplay, not like chrome.
+    // =======================================================================
+    {
+        StubDevice dev;
+        x3::rhi::FrameContext frame{};   // invalid -> hit-testing runs, drawing is skipped
+        UiContext ui;
+
+        // U28 — GLOW SLIDER drag. Press at 90% along the track and the value must
+        //       follow the cursor (the track starts 150 px in, per the widget).
+        {
+            UiInput in{};
+            in.mouseX = 100.0f + 150.0f + (600.0f - 150.0f - 52.0f - 12.0f) * 0.9f;
+            in.mouseY = 200.0f + 17.0f;
+            in.mouseDown = true;
+            float v = 0.10f;
+            ui.begin(dev, frame, in);
+            const bool moved = ui.glowSlider("POWER", v, 100.0f, 200.0f, 600.0f, 34.0f,
+                                             /*danger*/0.0f, /*clock*/0.0f);
+            ui.end();
+            check(moved && v > 0.85f && v <= 1.0f,
+                  "U28 glowSlider: dragging near the right rail drives the value up");
+        }
+
+        // U29 — KNOB angular drag. The dial sweeps 240 deg from 7 o'clock (t=0) to
+        //       5 o'clock (t=1), so a cursor placed straight UP from the center is
+        //       the MIDPOINT of the sweep -> ~0.5. This is the whole point of a
+        //       rotary: you grab it and turn it, you do not slide it.
+        {
+            const float cx = 400.0f, cy = 300.0f, r = 46.0f;
+            UiInput in{};
+            in.mouseX = cx;              // straight up (screen Y grows DOWN)
+            in.mouseY = cy - 30.0f;
+            in.mouseDown = true;
+            float v = 0.0f;
+            ui.begin(dev, frame, in);
+            const bool turned = ui.knob("FREQUENCY", v, cx, cy, r, 0.0f, 0.0f);
+            ui.end();
+            check(turned && std::fabs(v - 0.5f) < 0.08f,
+                  "U29 knob: an angular drag to 12 o'clock lands mid-sweep (~0.5)");
+        }
+
+        // U30 — TEXT FIELD: typed characters land, backspace edits, ENTER commits —
+        //       and NONE of it happens unless the field owns focus. That focus gate
+        //       is the same discipline the cell terminal enforces: while a field is
+        //       taking input, the input belongs to it and nothing else.
+        {
+            char buf[24] = {};
+            // Focus the field by hovering it, and type "club".
+            UiInput in{};
+            in.mouseX = 300.0f; in.mouseY = 415.0f;    // inside the row
+            in.typed[0] = 'c'; in.typed[1] = 'l'; in.typed[2] = 'u'; in.typed[3] = 'b';
+            in.typedCount = 4;
+            ui.begin(dev, frame, in);
+            ui.textField("TARGET", buf, (int)sizeof(buf), 100.0f, 400.0f, 600.0f, 34.0f,
+                         0.0f, 0.0f);
+            ui.end();
+            const bool typedOk = std::strcmp(buf, "club") == 0;
+
+            // Backspace trims one char.
+            UiInput bs{};
+            bs.mouseX = 300.0f; bs.mouseY = 415.0f;
+            bs.backspace = true;
+            ui.begin(dev, frame, bs);
+            ui.textField("TARGET", buf, (int)sizeof(buf), 100.0f, 400.0f, 600.0f, 34.0f,
+                         0.0f, 0.0f);
+            ui.end();
+            const bool bsOk = std::strcmp(buf, "clu") == 0;
+
+            // ENTER commits.
+            UiInput en{};
+            en.mouseX = 300.0f; en.mouseY = 415.0f;
+            en.enter = true;
+            ui.begin(dev, frame, en);
+            const bool committed =
+                ui.textField("TARGET", buf, (int)sizeof(buf), 100.0f, 400.0f, 600.0f,
+                             34.0f, 0.0f, 0.0f);
+            ui.end();
+
+            // ...and with the cursor PARKED SOMEWHERE ELSE (focus on widget 0, not
+            // the field), the same keystrokes must be ignored entirely.
+            char other[24] = {};
+            UiInput away{};
+            away.mouseX = 300.0f; away.mouseY = 215.0f;   // hovering the slider row
+            away.typed[0] = 'x'; away.typedCount = 1;
+            ui.begin(dev, frame, away);
+            float dummy = 0.5f;
+            ui.glowSlider("POWER", dummy, 100.0f, 200.0f, 600.0f, 34.0f, 0.0f, 0.0f);
+            ui.textField("TARGET", other, (int)sizeof(other), 100.0f, 400.0f, 600.0f,
+                         34.0f, 0.0f, 0.0f);
+            ui.end();
+            const bool ignoredWhenUnfocused = other[0] == 0;
+
+            check(typedOk && bsOk && committed && ignoredWhenUnfocused,
+                  "U30 textField: types, backspaces, commits on ENTER — and eats "
+                  "nothing while unfocused");
+        }
     }
 
     x3::logInfo(std::string("--test-ui: ") + std::to_string(pass) + " passed, " +

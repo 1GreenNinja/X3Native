@@ -98,6 +98,16 @@ public:
     void  setTractionControl(bool on) { m_tcEnabled = on; }
     bool  tractionControl() const { return m_tcEnabled; }
 
+    // ---- Per-instance paint tint (WORLD CARS variants) ----------------------
+    // Replaces the CLEARCOAT drawables' baseColor RGB (the car-paint panels;
+    // glass/tires/trim keep their authored look) so the one live rig matches
+    // whichever parked variant was entered. Also tints the graybox fallback
+    // body. Off by default — the authored GLB paint, byte-identical.
+    void setPaintTint(const float rgb[3]) {
+        m_tint[0] = rgb[0]; m_tint[1] = rgb[1]; m_tint[2] = rgb[2]; m_tintOn = true;
+    }
+    void clearPaintTint() { m_tintOn = false; }
+
 private:
     x3::rhi::IRenderDevice*  m_device  = nullptr;
     x3::phys::IPhysicsWorld* m_physics = nullptr;
@@ -108,6 +118,8 @@ private:
 
     x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD/audio)
     bool m_tcEnabled = true;             // traction control (see setInput)
+    bool  m_tintOn = false;              // paint tint (see setPaintTint)
+    float m_tint[3] = { 1, 1, 1 };
 
     x3::rhi::MeshHandle    m_chassisMesh;
     x3::rhi::MeshHandle    m_wheelMesh;

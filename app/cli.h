@@ -49,7 +49,26 @@ struct CliOptions {
          // REAL Level1Game DoorSystem hatch opens + objective line set; plus the
          // keypad submit link via the real HoloTerminal). See runHatchChainSelfTest.
          testHatch = false,
-         testEcology = false, testCrowd = false, testAlert = false;
+         testEcology = false, testCrowd = false, testAlert = false,
+         // --test-canonvehicle (WORLD CARS: enter/drive/exit + hold-E hack +
+         // unlocked-latch region persistence). See runCanonVehicleSelfTest.
+         testCanonVehicle = false;
+    // --shot-drive (canonlevel screenshot staging): enter the parked car nearest
+    // the shot camera and DRIVE it through the settle frames; the capture camera
+    // follows the live chase framing and the "[E] Exit" HUD hint is drawn — the
+    // honest driver-POV proof shot. Pair with --shot-settle 240.
+    bool        shotDrive = false;
+    // --dusk (canonlevel staging): push the golden-hour sky to LATE DUSK — sun
+    // on the horizon, dark zenith, dim exposure — so the STREET LIGHTS carry
+    // the scene (lamp cones/pools read against a dark sky). Screenshot/dev
+    // staging only; the default canon sky is untouched without the flag.
+    bool        duskSky = false;
+    // --shot-chatter N (canonlevel screenshot staging): before the settle
+    // frames, advance the crowd+chatter sim (deterministic, render-free) until
+    // N chat bubbles are concurrently alive within bubble range of the shot
+    // camera (bounded; logs what it staged) — so a still can catch THE PEOPLE
+    // mid-sentence without gambling on the capture instant. 0 = off.
+    int         shotChatter = 0;
     // --test-loader (EDITOR LevelDoc data-driven loader): author a doc in memory ->
     // save -> LOAD through the real loader -> assert the built world matches; then
     // modify + hot-reload -> assert the delta applied and the create/destroy ledgers
@@ -157,6 +176,11 @@ struct CliOptions {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+
+    // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
+    // are displays — textured glass on the per-texel emissive path, real ink on a dark
+    // substrate, and a texture-gated neon sign (not a flat lit slab).
+    bool        testPerfshop = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
@@ -220,6 +244,12 @@ struct CliOptions {
     // interactable). Asserts the gates, the hazard, the timeline gate, reachability
     // L11->L12->L13->L14->L15, and trigger-id non-collision. Additive flag.
     bool        testAct2Caves = false;
+    // --test-rifthub (RIFTHUB Stargate portal hub): builds the 8-portal hub on a
+    // HeadlessDevice + Jolt world and asserts portal count (8), trigger ids
+    // 200-207, valid ring/chevron/core/membrane spans, real --world targets,
+    // per-trigger activation + allActivated ordering, and that tick() advances
+    // the chevron/core/membrane emissive while the stone ring stays static.
+    bool        testRifthub = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary

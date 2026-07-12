@@ -33,6 +33,7 @@ int hostSpace    (HostContext& hc);   // --world space     (Act-3 6DOF space pil
 int hostSurfaceStart(HostContext& hc);
 int hostStrata   (HostContext& hc);   // --world strata (R-3 fold: THE DESCENT)
 int hostElevator (HostContext& hc);   // --world elevator-showcase (+ --screenshot-elevator)// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
+int hostRifthub  (HostContext& hc);   // --world rifthub   (RIFTHUB Stargate portal hub)
 
 int hostIntroCockpit(HostContext& hc); // --world introcockpit (intro cold-open cockpit)
 int hostShipWindows(HostContext& hc);  // --world ship-windows (S5/S6 fold: walkable interior + true-portal space)

@@ -88,6 +88,13 @@ const float kEmitAbTop[4]   = { 0.353f, 0.353f, 0.416f, 1.2f };// aerial-bar pol
 // Blacklight base emissive (PULSED each frame in update()): deep UV violet.
 const float kBlacklightR = 0.50f, kBlacklightG = 0.0f, kBlacklightB = 1.0f;
 
+// OLED screen emissive strength (the panes set emissiveMap=1, so this is MULTIPLIED
+// by the texel — it is the brightness of a LIT EQ column, not a wash over the pane).
+// The dark substrate (texel ~0.01) lands at ~0.02: black, as an OLED's black must be.
+// A lit column tip / peak cap (texel ~0.6..1.0 linear) lands at ~1.1..1.8 — chromatic
+// and just into bloom, never a white blob (R5). update() breathes AROUND this floor.
+const float kOledEmit = 1.80f;
+
 // Push a point light (premultiplied color) into the set.
 void addLight(std::vector<x3::rhi::PointLight>& v, float x, float y, float z,
               float r, float g, float b, float range) {
@@ -226,6 +233,53 @@ std::vector<uint8_t> makeMr1x1(uint8_t rough, uint8_t metal) {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// OLED screen-contrast probe (see club1127.h for WHY a texture-only probe is a
+// trap). Bakes a real EQ frame, then runs glass.frag's emissive math on its
+// darkest and brightest texel and returns the on-screen ratio.
+// ---------------------------------------------------------------------------
+float clubOledEmissiveContrast(int hue, float emissiveMap, const float emissive[4]) {
+    const uint32_t n = 256;
+    const std::vector<uint8_t> px = makeOledEqRGBA(n, /*seed*/ 7u, hue);
+
+    // The EQ frames are uploaded as sRGB, so the sampler hands the shader LINEAR
+    // texels. Decode the same way or the contrast is measured in the wrong space.
+    auto srgbToLinear = [](float c) {
+        return (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    };
+    auto luma = [](float r, float g, float b) { return 0.2126f * r + 0.7152f * g + 0.0722f * b; };
+
+    // Darkest + brightest texel of the frame (the OLED black substrate, and a lit
+    // column's peak cap). Skip the 3px bezel gap — it is frame, not screen content.
+    float lo[3] = { 1e9f, 1e9f, 1e9f }, hi[3] = { -1.0f, -1.0f, -1.0f };
+    float loL = 1e9f, hiL = -1.0f;
+    for (uint32_t y = 4; y < n - 4; ++y)
+        for (uint32_t x = 4; x < n - 4; ++x) {
+            const uint8_t* p = &px[((size_t)y * n + x) * 4];
+            const float c[3] = { srgbToLinear(p[0] / 255.0f),
+                                 srgbToLinear(p[1] / 255.0f),
+                                 srgbToLinear(p[2] / 255.0f) };
+            const float L = luma(c[0], c[1], c[2]);
+            if (L < loL) { loL = L; for (int i = 0; i < 3; ++i) lo[i] = c[i]; }
+            if (L > hiL) { hiL = L; for (int i = 0; i < 3; ++i) hi[i] = c[i]; }
+        }
+    if (hiL < 0.0f) return 0.0f;   // degenerate bake -> probe reports failure
+
+    // glass.frag: emisMask = mix(vec3(1), texel, emissiveMap);
+    //             additive = vEmissive.rgb * vEmissive.a * emisMask;
+    const float k = std::clamp(emissiveMap, 0.0f, 1.0f);
+    float addLo[3], addHi[3];
+    for (int i = 0; i < 3; ++i) {
+        const float maskLo = 1.0f + (lo[i] - 1.0f) * k;   // mix(1, texel, k)
+        const float maskHi = 1.0f + (hi[i] - 1.0f) * k;
+        addLo[i] = emissive[i] * emissive[3] * maskLo;
+        addHi[i] = emissive[i] * emissive[3] * maskHi;
+    }
+    const float dark = luma(addLo[0], addLo[1], addLo[2]);
+    const float bright = luma(addHi[0], addHi[1], addHi[2]);
+    return bright / std::max(dark, 1e-6f);
+}
+
 uint32_t Club1127World::addBox(Scene& scene, x3::rhi::IRenderDevice& device,
                                x3::phys::IPhysicsWorld& physics,
                                float cx, float cy, float cz, float hx, float hy, float hz,
@@ -347,17 +401,35 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // content readable, and a soft emissive floor lets update()'s shimmer
     // breathe it like live video. (A separate glass pane OVER an opaque screen
     // depth-occludes the content — the pane must BE the screen.)
+    //
+    // PER-TEXEL EMISSIVE (GlassMaterial::emissiveMap, c44da59). An OLED pixel is
+    // its own lamp: the lit EQ columns emit, the black substrate between them emits
+    // NOTHING. The old flat emissive could not say that — it was a uniform add over
+    // the whole pane, so the only way to make the screen glow was to flood it, and
+    // the EQ washed out into a milky slab (see the BEFORE shot: the back-bar band
+    // was a featureless white rectangle). With emissiveMap the glow is MULTIPLIED
+    // by the texel, so the panel glows exactly WHERE THE EQ IS BRIGHT and the dark
+    // glass background stays genuinely dark. That inverts the tuning:
+    //   * emissive rgb is now NEUTRAL WHITE — the texel supplies the colour, so each
+    //     screen keeps its own palette family (cyan / magenta / amber / green).
+    //     A tinted emissive would drag every panel back toward the same blue-white.
+    //   * strength is raised (the mask eats most of the pane), and it is the peak
+    //     caps — not the whole rectangle — that reach bloom. R5 law: chromatic,
+    //     short of blow-out.
+    //   * baseColor drops 2.0 -> 1.0: the 2x was propping up a washed pane. The
+    //     EMISSIVE is the display now; the lit body just needs to be honest.
     auto oledGlass = [&](uint32_t id, x3::rhi::TextureHandle eq) {
         Entity& e = scene.get(id);
         e.tex = eq;
-        e.baseColor[0] = 2.0f; e.baseColor[1] = 2.0f; e.baseColor[2] = 2.1f; e.baseColor[3] = 1.0f;
-        e.emissive[0] = 0.55f; e.emissive[1] = 0.60f; e.emissive[2] = 0.75f; e.emissive[3] = 0.35f;
+        e.baseColor[0] = 1.0f; e.baseColor[1] = 1.0f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+        e.emissive[0] = 1.0f; e.emissive[1] = 1.0f; e.emissive[2] = 1.0f; e.emissive[3] = kOledEmit;
         e.transparent = true;
         e.glass.opacity = 0.94f;      // near-solid: the EQ content carries
         e.glass.refraction = 0.0f;
         e.glass.roughness = 0.05f;    // tight glossy highlight
         e.glass.specular = 1.0f;      // full fresnel shine
         e.glass.tint[0] = 0.80f; e.glass.tint[1] = 0.90f; e.glass.tint[2] = 1.0f;
+        e.glass.emissiveMap = 1.0f;   // GLOW WHERE THE EQ IS BRIGHT; black stays black
     };
 
     // Soft-furnishing palette (couches, stools, pillows) — used from the ground
@@ -1212,11 +1284,16 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
             scene.get(id).emissive[3] = 0.40f + 0.45f * thump;   // faint violet breath
         }
         // OLED shimmer: each screen's brightness wanders on its own phase, so the
-        // baked equalizer frames read as LIVE video from across the room.
+        // baked equalizer frames read as LIVE video from across the room. This rides
+        // the MASKED emissive (emissiveMap=1), so it breathes the LIT COLUMNS — the
+        // black substrate stays black through the whole cycle instead of the entire
+        // pane brightening and dimming like a lamp behind a sheet. The band is centred
+        // on kOledEmit; the old 0.12..0.63 range was a flat-wash floor and would now
+        // leave the screens too dim to read as displays.
         for (size_t i = 0; i < m_oledEnts.size(); ++i) {
             const uint32_t id = m_oledEnts[i];
             if (id >= scene.size()) continue;
-            scene.get(id).emissive[3] = 0.30f + 0.18f * std::sin(t * 2.3f + i * 1.9f) + 0.15f * thump;
+            scene.get(id).emissive[3] = kOledEmit + 0.35f * std::sin(t * 2.3f + i * 1.9f) + 0.45f * thump;
         }
     }
 
@@ -1394,7 +1471,55 @@ bool runClubSelfTest() {
               "rebuild is idempotent (no duplicated geometry / no leak)");
     }
 
-    // (13) Leak-clean: every mesh the device handed out can be destroyed and the
+    // (13) THE OLED SCREENS ARE REAL DISPLAYS, not lit rectangles. Every screen the
+    //      club registers must be TEXTURED GLASS on the PER-TEXEL emissive path. This
+    //      is the assertion that "the panel exists" never made: a pane can be present,
+    //      textured, and still render as a featureless slab if its emissive is a flat
+    //      uniform add (which is exactly what these were — see the BEFORE shots).
+    {
+        const auto& oled = club.oledEntities();
+        bool allOk = !oled.empty();
+        for (const uint32_t id : oled) {
+            if (id >= scene.size()) { allOk = false; break; }
+            const Entity& e = scene.get(id);
+            // Textured (the EQ frame is actually BOUND — a screen with no texture has
+            // nothing to show), glass (it IS the pane; nothing sits in front of it),
+            // and emissiveMap=1 so the glow is masked by that texture.
+            if (!e.tex.valid() || !e.transparent || e.glass.emissiveMap < 0.999f) allOk = false;
+            // The emissive must stay NEUTRAL: the texel carries the palette, so a
+            // tinted emissive would drag every screen back to one colour (and it is
+            // what used to blue-wash the amber/green EQ families).
+            const float mx = std::max({ e.emissive[0], e.emissive[1], e.emissive[2] });
+            const float mn = std::min({ e.emissive[0], e.emissive[1], e.emissive[2] });
+            if (mx - mn > 0.05f) allOk = false;
+            if (e.emissive[3] <= 0.5f) allOk = false;   // and bright enough to READ
+        }
+        check(allOk && oled.size() == 10,
+              "all 10 OLED screens are textured glass on the per-texel emissive path");
+    }
+
+    // (14) THE SCREEN-CONTRAST PROBE + ITS NEGATIVE CONTROL. Run glass.frag's emissive
+    //      math on a real EQ frame and demand the panel have real dynamic range: the
+    //      lit columns must massively out-emit the black substrate. The negative
+    //      control re-runs the SAME probe with emissiveMap=0 (the pre-fix flat path)
+    //      and requires it to come back ~1.0 — a slab. Without that control this test
+    //      could be passing for the wrong reason; with it, a regression to flat
+    //      emissive is caught rather than silently shrugged off.
+    {
+        const float emShipping[4] = { 1.0f, 1.0f, 1.0f, kOledEmit };
+        bool allBright = true;
+        for (int hue = 0; hue < 4; ++hue)          // all 4 palette families
+            if (clubOledEmissiveContrast(hue, /*emissiveMap*/ 1.0f, emShipping) < 20.0f)
+                allBright = false;
+        // NEGATIVE CONTROL: the flat path must probe as a slab (no range at all).
+        const float flat = clubOledEmissiveContrast(/*hue*/ 0, /*emissiveMap*/ 0.0f, emShipping);
+        const bool controlIsSlab = flat < 1.01f;
+        check(allBright && controlIsSlab,
+              "OLED panes glow PER-TEXEL (>20x bright:dark on all 4 palettes; "
+              "flat-emissive control probes as a 1.0x slab)");
+    }
+
+    // (15) Leak-clean: every mesh the device handed out can be destroyed and the
     //      device's create/destroy ledger balances (the live VMA allocationCount=0
     //      proof is the Debug --smoketest; here we prove the count bookkeeping).
     {

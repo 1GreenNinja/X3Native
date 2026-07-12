@@ -271,6 +271,15 @@ public:
     // 1.0 = default ON, 0.0 = off. Drives the live r_metalambient cvar.
     virtual void setMetalAmbient(float s) {}
 
+    // IBL ambient intensity (mesh.frag ssao.ibl.y): scales the ENTIRE image-based
+    // ambient term (diffuse irradiance + prefiltered specular) once a sky env is
+    // baked. 1.0 = default (unchanged behavior). SEAM 2 (world merge): a host with
+    // a bright outdoor sky wrapped around a mood-calibrated INTERIOR (canonlevel's
+    // facility tower) dials this down so the sky's irradiance doesn't wash the
+    // interior rooms white — the analytic-sky background, the direct sun and the
+    // glass pass's own env reflections are all untouched.
+    virtual void setIblIntensity(float s) {}
+
     // HDR post-stack settings (tonemap / bloom gate / auto-exposure), synced per
     // frame from the r_* cvars. Defaults preserve the device-side behavior when the
     // app never calls this (headless screenshot/test paths included).
@@ -463,6 +472,29 @@ public:
         float roughness  = 0.0f;             // 0 = polished .. 1 = frosted (M4)
         float specular   = 0.6f;             // shimmer / specular strength (M3)
         float tint[3]    = { 1.0f, 1.0f, 1.0f }; // glass color; white = colorless
+        // STREET LIGHT (additive glow mode): 0 (default) = normal glass, byte-
+        // identical for every existing pane. > 0 flags this draw as an ADDITIVE
+        // VOLUMETRIC GLOW surface (fake light cones / ground light pools): the
+        // fragment shader skips refraction/specular and instead adds
+        // emissive * texel * pow(max(dot(N,V),0), additive) over the scene —
+        // the VALUE is the view-angle rim-fade exponent (higher = softer
+        // silhouette edges; ~1.5 for light cones, ~0.05 for flat ground pools
+        // that must survive grazing views). Back faces self-extinguish
+        // (dot(N,V) <= 0), so the double-sided glass pipeline draws one soft
+        // front layer and overlapping glows ACCUMULATE (no replace artifact).
+        float additive   = 0.0f;
+        // EMISSIVE MAP (display glass): 0 (default) = the per-object emissive is a
+        // FLAT glow over the whole pane — byte-identical for every existing surface.
+        // 1 = the emissive is MODULATED BY THE BOUND BASE-COLOR TEXEL, so the pane
+        // glows only WHERE ITS TEXTURE IS BRIGHT and black texels stay black. This is
+        // the glass-pass twin of the opaque PBR route's `emissiveTex` (the club OLED
+        // move: "black texels stay dark"), and it is what lets a BLACK GLASS holo
+        // screen carry CRISP GLOWING TEXT instead of a flat blue flood — the flat
+        // term can only wash the panel, because it cannot see the readout.
+        // Intermediate values cross-fade. Uses the SAME texture already bound as
+        // baseColor (a display's image IS its emission mask), so it costs no extra
+        // binding and no extra sample.
+        float emissiveMap = 0.0f;
     };
 
     // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's

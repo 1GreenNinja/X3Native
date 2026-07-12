@@ -393,7 +393,12 @@ const RangeDef kRanges[4] = {
 // Flat pads: blend the field toward padY inside r, fully the field by r*1.7.
 struct PadDef { float cx, cz, r, padY; };
 const PadDef kPads[4] = {
-    {    0.0f,   0.0f, 260.0f,  0.0f },   // facility/crash pad (the Spire grade)
+    // SEAM 3: the Spire grade is the CANON one — the canonical tower's F1 floor
+    // (and so its facade base / apron / soil skirt) sits at Y=-2, not 0. The pad
+    // matches it so the streamed ground meets the facility's own ground flush
+    // (was 0.0 => a 2 m terrain cliff ringing the soil skirt). The --world
+    // surface host's Y=0 plate now blends down via the horizon ring's flatten.
+    {    0.0f,   0.0f, 260.0f, -2.0f },   // facility/crash pad (the CANON Spire grade)
     { -600.0f, 500.0f, 250.0f, 16.0f },   // Scrapyard City
     {  200.0f, 500.0f, 190.0f, 15.0f },   // New District
     { -200.0f, 350.0f, 150.0f, 17.0f },   // Industrial Zone
@@ -401,6 +406,301 @@ const PadDef kPads[4] = {
 
 // Ocean basin (matches app/ocean_base.cpp kBaseCx/kBaseCz).
 constexpr float kBasinCx = 1100.0f, kBasinCz = -1350.0f;
+
+// ===========================================================================
+// W9 — AUTHORED LANDFORM DRAMA (Tim, 2026-07-09: "steeper local features —
+// ravines, bluffs, a canyon pass near the facility.. AND WATER FEATURES..
+// RIver..."). Deterministic, authored polyline features layered on the field
+// AFTER the flat pads (so a channel may cross the pad's outer BLEND ring), each
+// guarded to zero influence near every piece of graded/authored content.
+//
+// THE MAP (all world XZ, meters; facility keep-out rect = facade footprint
+// x[-3..47] z[-34.5..55.5] + kExtPad 3 + soilOut 150 => x[-156..200]
+// z[-187.5..208.5], see app_run.cpp SEAM 2/3):
+//
+//   THE RIVER (carve nodes N0..N7, water ribbon adds N8; waterY descends):
+//     N0 ( 780,  180) w=+3.5 c=2.2   source reach, NE rolling country
+//     N1 ( 560,  120) w=+1.0 c=2.2
+//     N2 ( 410,   40) w=-1.8 c=0.4
+//     N3 ( 320,  -30) w=-2.6 c=0.4   closest approach: ~301 m E of the tower
+//                              center (22,10), 120 m clear of the keep-out rect
+//     N4 ( 360, -300) w=-3.4 c=0.4
+//     N5 ( 480, -560) w=-5.0 c=1.4
+//     N6 ( 620, -830) w=-7.5 c=2.2   enters the ocean-basin shore falloff
+//     N7 ( 760,-1010) w=-9.2 c=2.2   basin proper (terrain far below bed)
+//     N8 ( 900,-1120) w=-9.9 c=2.2   ribbon-only: reaches the sea (Y=-10)
+//     profile: floor half-width 12 m (24 m walkable bed), banks over 26 m,
+//     bed = waterY-3.2, authored levee crest = waterY+c where the country is
+//     low. c is PER-NODE: the facility-adjacent reach (N2..N4) uses c=0.2 — a
+//     shelving BEACH, no berm — and a FLOODPLAIN SHELF (strength (2.2-c)/2)
+//     pulls the flanking country DOWN to waterY+0.2 out to ~130 m. Both exist
+//     for the apron sightline: the natural pad-blend country between the soil
+//     skirt (x=200) and the river rose ~1.5 m ABOVE the plain, hiding sunken
+//     water from ANY eye-height vantage on the apron. The shelf is a pure
+//     LOWERING (min) and carries a deliberately looser guard (0 at 10 m from
+//     the keep-out rect, 1 by 60 m): the corridor it touches (x 210..320,
+//     z -120..40) holds no authored content (roads x=22/170 and the crash site
+//     are INSIDE the rect), and the origin pad flatten still owns x<260, so
+//     the worst seam is a ~40 cm dip easing off the skirt edge. Far reaches
+//     keep the full 2.2 m crest and get only a faint valley (shelf 0..0.4).
+//     Clearances: crash site (140,205) >=300 m; approach-road legs x=22/x=170
+//     >=150 m; New District blend ring >=60 m; East Outpost (800,400) 221 m;
+//     coast-spur road z=500 >=320 m; NO road crossing => NO bridge needed.
+//
+//   CANYON PASS (nodes C0..C3, authored floor Y; walkable 22 m floor):
+//     C0 (-140, -520) f=+2.0   mouth, ~540 m off the plain's south edge
+//     C1 (-230, -760) f= 0.0
+//     C2 (-160,-1040) f=-2.0
+//     C3 ( -40,-1260) f=-4.0
+//     a +16 m ridge (half-width 60 m, fading by 210 m) is raised ALONG the
+//     spine first (faded near C0 so the mouth opens at grade), then the channel
+//     is cut through it: floor half-width 11 m, walls over 15 m => 25-45 m
+//     walls at ~60 deg. West Outpost (-880,-320) >=760 m; south freeway-tunnel
+//     bore (x=-200, z 40..240) >=760 m.
+//
+//   BLUFF LINE (band B0 (-450,-420) -> B1 (-450, 80), face on the +X side):
+//     the country WEST of x=-450 steps up in TWO terraces (12 m over
+//     sd 10..-30, bench, + 8 m over sd -34..-70; ~20 m total), plateau fading
+//     back to the natural field by sd=-620. Along-band envelope fades 80 m past
+//     each end. Visible from the apron's west sightline (~430-470 m); does not
+//     touch the +Z breach walk-out or the approach road (north). Industrial
+//     Zone blend ring >=60 m clear (band north end z=80).
+//
+//   RAVINES (10-15 m cuts; floor half-width 4 m, walls over 11 m):
+//     R1 (feeds the canyon off the bluff's south shoulder):
+//        (-410, -455) bed +12 -> (-300, -560) bed +8 -> (-215, -695) bed +1
+//        (mouth hangs at the canyon's C0..C1 floor grade).
+//     R2 (dry gulch feeding the river's west bank):
+//        ( 660, -330) bed +9 -> ( 445, -450) bed -3.4
+//        (mouth notches the levee crest ~2 m ABOVE the water line — dry).
+//
+//   GUARDS (multiply every feature delta):
+//     * facility rect guard: 0 within 60 m of the keep-out rect, 1 by 120 m.
+//     * city district pads (kPads[1..3]): 0 inside r*1.7, 1 by r*1.7+60.
+//     * outposts (800,400)/(-880,-320): 0 within 120 m, 1 by 170 m.
+//     * ocean basin (river only): 0 within 430 m of the basin center, 1 by
+//       530 m — the carve releases before the undersea disc (r80, >=350 m clear)
+//       and the already-deep floor; a depth guard also skips the levee where
+//       the natural floor is >=5-10 m below the bed (no underwater berms).
+//
+// Cost: each feature is inside an XZ bounding box (4 compares) before any
+// segment math runs; the whole layer adds a handful of segment-distance
+// evaluations per height sample only near the features themselves.
+// ===========================================================================
+
+// Closest approach to a polyline (XZ): min distance over the segments + the
+// per-node value(s) interpolated at the closest point (used for bed/floor/
+// water grades, and optionally a second channel parameter, along a channel).
+// Pure; n >= 2; nv2/outV2 may be null.
+inline void polyClosest(const float* nx, const float* nz, const float* nv, int n,
+                        float x, float z, float& outD, float& outV,
+                        const float* nv2 = nullptr, float* outV2 = nullptr) {
+    float best = 1e30f, bestV = nv[0], bestV2 = nv2 ? nv2[0] : 0.0f;
+    for (int i = 0; i + 1 < n; ++i) {
+        const float ax = nx[i], az = nz[i], bx = nx[i+1], bz = nz[i+1];
+        const float abx = bx - ax, abz = bz - az;
+        const float len2 = abx * abx + abz * abz;
+        float t = (len2 > 1e-6f) ? ((x - ax) * abx + (z - az) * abz) / len2 : 0.0f;
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        const float dx = x - (ax + abx * t), dz = z - (az + abz * t);
+        const float d2 = dx * dx + dz * dz;
+        if (d2 < best) {
+            best = d2;
+            bestV = nv[i] + (nv[i+1] - nv[i]) * t;
+            if (nv2) bestV2 = nv2[i] + (nv2[i+1] - nv2[i]) * t;
+        }
+    }
+    outD = std::sqrt(best);
+    outV = bestV;
+    if (outV2) *outV2 = bestV2;
+}
+
+// THE RIVER (see the map block above). Shared with world_regions.cpp through
+// worldRiverNodes() so the water ribbon and the carve can never drift apart.
+// The AUTHORED nodes below are corner-cut ONCE (Chaikin, endpoints kept) into
+// the working chain both consumers use: the carve's waterline rounds a bend
+// RADIALLY (distance to the polyline) while the fixed-width ribbon has
+// polygonal corners — at the sharp N3 bend (~66 deg) that left a crescent of
+// sub-waterline ground outside the ribbon corner. Halving the bend angles
+// shrinks the residual crescent to <0.15 m of bank height (under the 0.2 m
+// beach freeboard).
+constexpr int kRiverNodeCount  = 9;   // N0..N8 (ribbon)
+constexpr int kRiverCarveCount = 8;   // N0..N7 (terrain carve)
+const float kRiverX[kRiverNodeCount] = {  780.0f, 560.0f, 410.0f, 320.0f, 360.0f, 480.0f, 620.0f, 760.0f, 900.0f };
+const float kRiverZ[kRiverNodeCount] = {  180.0f, 120.0f,  40.0f, -30.0f,-300.0f,-560.0f,-830.0f,-1010.0f,-1120.0f };
+const float kRiverW[kRiverNodeCount] = {    3.5f,   1.0f,  -1.8f,  -2.6f,  -3.4f,  -5.0f,  -7.5f,  -9.2f,  -9.9f };
+// Per-node levee-crest height ABOVE waterY (see the map block: beach 0.4 on the
+// facility-adjacent reach so the apron sightline grazes onto the water).
+const float kRiverC[kRiverNodeCount] = {    2.2f,   2.2f,   0.2f,   0.2f,   0.2f,   1.4f,   2.2f,   2.2f,   2.2f };
+
+// The working river chain: one Chaikin corner-cut pass over the authored nodes
+// (interior node -> the 25% points of its two adjacent segments; endpoints
+// kept). waterY stays strictly decreasing (averages of a strictly decreasing
+// sequence). carveN = the chain prefix that carves terrain (through authored
+// N7's pair); the tail only extends the water ribbon over the deep basin.
+struct RiverChain {
+    static constexpr int kMax = 2 * kRiverNodeCount;
+    float x[kMax] = {}, z[kMax] = {}, w[kMax] = {}, c[kMax] = {};
+    int   n = 0, carveN = 0;
+    RiverChain() {
+        auto push = [&](float px, float pz, float pw, float pc) {
+            x[n] = px; z[n] = pz; w[n] = pw; c[n] = pc; ++n;
+        };
+        auto lerpNode = [&](int i, int j, float t) {
+            push(kRiverX[i] + (kRiverX[j] - kRiverX[i]) * t,
+                 kRiverZ[i] + (kRiverZ[j] - kRiverZ[i]) * t,
+                 kRiverW[i] + (kRiverW[j] - kRiverW[i]) * t,
+                 kRiverC[i] + (kRiverC[j] - kRiverC[i]) * t);
+        };
+        for (int i = 0; i < kRiverNodeCount; ++i) {
+            if (i == 0 || i == kRiverNodeCount - 1) {
+                push(kRiverX[i], kRiverZ[i], kRiverW[i], kRiverC[i]);
+            } else {
+                lerpNode(i, i - 1, 0.25f);
+                lerpNode(i, i + 1, 0.25f);
+            }
+            if (i == kRiverCarveCount - 1) carveN = n;
+        }
+    }
+};
+inline const RiverChain& riverChain() { static const RiverChain kChain; return kChain; }
+
+// CANYON PASS.
+const float kCanyonX[4] = { -140.0f, -230.0f, -160.0f,  -40.0f };
+const float kCanyonZ[4] = { -520.0f, -760.0f, -1040.0f, -1260.0f };
+const float kCanyonF[4] = {    2.0f,    0.0f,    -2.0f,    -4.0f };
+
+// RAVINES.
+const float kRav1X[3] = { -410.0f, -300.0f, -215.0f };
+const float kRav1Z[3] = { -455.0f, -560.0f, -695.0f };
+const float kRav1B[3] = {   12.0f,    8.0f,    1.0f };
+const float kRav2X[2] = {  660.0f,  445.0f };
+const float kRav2Z[2] = { -330.0f, -450.0f };
+const float kRav2B[2] = {    9.0f,   -3.4f };
+
+// Facility graded-ground guard: 0 influence within 60 m of the keep-out rect
+// (facade + apron + 150 m soil skirt — the rect app_run feeds setKeepOut), full
+// influence by 120 m. Protects the pad, the apron walk, the breach walk-out,
+// BOTH approach-road legs (x=22 and x=170, z<=~208 inside the rect) and the
+// crash-site sightline foreground.
+inline float facilityGuard(float x, float z) {
+    const float dx = std::max(std::max(-156.0f - x, x - 200.0f), 0.0f);
+    const float dz = std::max(std::max(-187.5f - z, z - 208.5f), 0.0f);
+    return sstep(60.0f, 120.0f, std::sqrt(dx * dx + dz * dz));
+}
+
+// City-district + outpost guard: zero influence inside each pad's full blend
+// ring (r*1.7) / each outpost's camp, ramping to full 60/50 m further out.
+inline float contentGuard(float x, float z) {
+    float g = 1.0f;
+    for (int i = 1; i < 4; ++i) {   // kPads[1..3] = the city districts
+        const float dx = x - kPads[i].cx, dz = z - kPads[i].cz;
+        const float r  = kPads[i].r * 1.7f;
+        g *= sstep(r, r + 60.0f, std::sqrt(dx * dx + dz * dz));
+    }
+    const float e1x = x - 800.0f, e1z = z - 400.0f;    // East Outpost
+    const float e2x = x + 880.0f, e2z = z + 320.0f;    // West Outpost
+    g *= sstep(120.0f, 170.0f, std::sqrt(e1x * e1x + e1z * e1z));
+    g *= sstep(120.0f, 170.0f, std::sqrt(e2x * e2x + e2z * e2z));
+    return g;
+}
+
+// Apply the authored landform layer (bluff -> canyon ridge+cut -> ravines ->
+// river levee+cut). Pure + deterministic in (x,z); only runs when
+// cfg.worldFeatures (the canonical world), so every legacy self-test config
+// keeps its exact field.
+float authoredLandforms(float h, float x, float z) {
+    // ---- BLUFF LINE (raise; applied first so the ravine can cut its toe) ----
+    if (x > -1080.0f && x < -330.0f && z > -560.0f && z < 220.0f) {
+        const float a   = z - (-420.0f);                    // along the band (+Z)
+        const float env = sstep(-80.0f, 20.0f, a) * (1.0f - sstep(480.0f, 580.0f, a));
+        if (env > 0.0f) {
+            const float sd   = x - (-450.0f);               // + east (face side), - west
+            const float step = 12.0f * sstep(10.0f, -30.0f, sd)
+                             +  8.0f * sstep(-34.0f, -70.0f, sd);
+            const float westFade = sstep(-620.0f, -300.0f, sd);
+            const float g = facilityGuard(x, z) * contentGuard(x, z);
+            h += step * env * westFade * g;
+        }
+    }
+
+    // ---- CANYON PASS (ridge raised along the spine, then the cut through it) ----
+    if (x > -640.0f && x < 170.0f && z > -1470.0f && z < -310.0f) {
+        float d, fY;
+        polyClosest(kCanyonX, kCanyonZ, kCanyonF, 4, x, z, d, fY);
+        if (d < 220.0f) {
+            const float g = facilityGuard(x, z) * contentGuard(x, z);
+            // Ridge: guaranteed walls whatever the natural country does. Faded
+            // near the mouth (C0) so the pass is entered at grade from the plain.
+            const float dmx = x - kCanyonX[0], dmz = z - kCanyonZ[0];
+            const float ridgeEnv = sstep(40.0f, 160.0f, std::sqrt(dmx * dmx + dmz * dmz));
+            h += 16.0f * (1.0f - sstep(60.0f, 210.0f, d)) * ridgeEnv * g;
+            // Cut: 22 m walkable floor, walls over 15 m (~60 deg at full depth).
+            const float target = fY + (h - fY) * sstep(11.0f, 26.0f, d);
+            if (target < h) h += (target - h) * g;
+        }
+    }
+
+    // ---- RAVINES (pure cuts, 10-15 m) ----
+    if (x > -500.0f && x < -140.0f && z > -780.0f && z < -380.0f) {
+        float d, bed;
+        polyClosest(kRav1X, kRav1Z, kRav1B, 3, x, z, d, bed);
+        if (d < 30.0f) {
+            const float g = facilityGuard(x, z) * contentGuard(x, z);
+            const float target = bed + (h - bed) * sstep(4.0f, 15.0f, d);
+            if (target < h) h += (target - h) * g;
+        }
+    }
+    if (x > 380.0f && x < 720.0f && z > -520.0f && z < -270.0f) {
+        float d, bed;
+        polyClosest(kRav2X, kRav2Z, kRav2B, 2, x, z, d, bed);
+        if (d < 30.0f) {
+            const float g = facilityGuard(x, z) * contentGuard(x, z);
+            const float target = bed + (h - bed) * sstep(4.0f, 15.0f, d);
+            if (target < h) h += (target - h) * g;
+        }
+    }
+
+    // ---- THE RIVER (floodplain shelf, levee where the country is low, then
+    // the channel cut) ----
+    if (x > 190.0f && x < 880.0f && z > -1120.0f && z < 260.0f) {
+        float d, w, c;
+        const RiverChain& rc = riverChain();
+        polyClosest(rc.x, rc.z, rc.w, rc.carveN, x, z, d, w, rc.c, &c);
+        if (d < 130.0f) {
+            const float bed = w - 3.2f, crest = w + c;
+            float g = facilityGuard(x, z) * contentGuard(x, z);
+            const float bx = x - kBasinCx, bz = z - kBasinCz;
+            const float gSea = sstep(430.0f, 530.0f, std::sqrt(bx * bx + bz * bz));
+            g *= gSea;                                     // release into the sea
+            // Floodplain SHELF (see the map block): a pure LOWERING that opens
+            // the apron sightline onto the beach-reach water. Looser rect guard
+            // (10->60 m) by design; content guard + sea release still apply.
+            {
+                const float dxr = std::max(std::max(-156.0f - x, x - 200.0f), 0.0f);
+                const float dzr = std::max(std::max(-187.5f - z, z - 208.5f), 0.0f);
+                const float gShelf = sstep(10.0f, 60.0f, std::sqrt(dxr * dxr + dzr * dzr))
+                                   * contentGuard(x, z) * gSea;
+                const float strength = std::min(std::max((2.2f - c) / 2.0f, 0.0f), 1.0f);
+                const float m = (1.0f - sstep(90.0f, 130.0f, d)) * strength * gShelf;
+                const float shelfTarget = h + ((w + 0.2f) - h) * m;
+                if (shelfTarget < h) h = shelfTarget;
+            }
+            if (g > 0.0f && d < 90.0f) {
+                // Levee: hold the bank crest at waterY+c where the natural
+                // country is lower — the water is contained everywhere. Skipped
+                // where the floor is already deep underwater (no berms).
+                const float leveeTarget = crest + (h - crest) * sstep(32.0f, 72.0f, d);
+                const float deepSkip    = sstep(bed - 10.0f, bed - 5.0f, h);
+                if (leveeTarget > h) h += (leveeTarget - h) * g * deepSkip;
+                // Channel: 24 m bed, banks over 26 m (gentler than the canyon).
+                const float target = bed + (h - bed) * sstep(12.0f, 38.0f, d);
+                if (target < h) h += (target - h) * g;
+            }
+        }
+    }
+    return h;
+}
 
 float mountainHeight(float x, float z, uint32_t seed) {
     float h = 0.0f;
@@ -470,7 +770,51 @@ float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ) {
             h = h + (p.padY - h) * t;
         }
     }
+
+    // W9 — AUTHORED LANDFORM DRAMA (canyon pass / bluffs / ravines / THE RIVER).
+    // After the pads so a channel may cross a pad's outer blend ring; every
+    // feature is internally guarded to zero near the graded content itself.
+    h = authoredLandforms(h, worldX, worldZ);
     return h;
+}
+
+// ---------------------------------------------------------------------------
+// W9 — THE RIVER's authored spline, exported for the water-surface ribbon
+// (world_regions.cpp). Same table the carve uses — see kRiver* above.
+// ---------------------------------------------------------------------------
+const WorldRiverNode* worldRiverNodes(uint32_t& count) {
+    static const std::vector<WorldRiverNode> kNodes = [] {
+        const RiverChain& rc = riverChain();
+        std::vector<WorldRiverNode> v;
+        v.reserve((size_t)rc.n);
+        for (int i = 0; i < rc.n; ++i) v.push_back({ rc.x[i], rc.z[i], rc.w[i] });
+        return v;
+    }();
+    count = (uint32_t)kNodes.size();
+    return kNodes.data();
+}
+
+uint32_t worldRiverCarveCount() { return (uint32_t)riverChain().carveN; }
+
+// ---------------------------------------------------------------------------
+// W10 (SWIMMING) — worldWaterLevelAt. Pure; see terrain.h. River first (its
+// ribbon rides 0.1 m proud of the sea where they overlap at the estuary, so
+// the river answer wins there, matching the visuals), then the ocean basin.
+// ---------------------------------------------------------------------------
+float worldWaterLevelAt(float x, float z) {
+    // RIVER: closest approach to the SAME working chain the carve + ribbon use
+    // (full chain incl. the estuary tail nodes that only carry water).
+    const RiverChain& rc = riverChain();
+    float d, w;
+    polyClosest(rc.x, rc.z, rc.w, rc.n, x, z, d, w);
+    if (d <= kWorldRiverHalfWidth) return w;
+    // OCEAN: inside the offshore basin's influence ring AND the terrain bowl is
+    // actually below the sea surface there (the -6 shore ring stays dry beach).
+    const float bx = x - kBasinCx, bz = z - kBasinCz;
+    if (bx * bx + bz * bz < 950.0f * 950.0f &&
+        terrainHeightAtWorld(x, z) < kWorldSeaLevel)
+        return kWorldSeaLevel;
+    return kWorldWaterDry;
 }
 
 // ---------------------------------------------------------------------------
@@ -833,6 +1177,17 @@ void TerrainStreamer::recycleResult(std::unique_ptr<TileGenResult> r) {
 void TerrainStreamer::requestTile(int32_t gx, int32_t gz, bool synchronous) {
     const uint64_t k = key(gx, gz);
     if (m_resident.count(k) || m_pending.count(k)) return;   // already have / coming
+
+    // SEAM 3: tiles FULLY inside the keep-out rect are never generated — the
+    // canon facility's own ground (interior floors / apron ring / soil skirt)
+    // covers that area, and a Y=0 pad tile under it would z-fight coplanarly
+    // (see setKeepOut). Intersecting edge tiles still generate.
+    if (m_keepOutOn) {
+        const float tx0 = (float)gx * m_cfg.tileSize, tx1 = tx0 + m_cfg.tileSize;
+        const float tz0 = (float)gz * m_cfg.tileSize, tz1 = tz0 + m_cfg.tileSize;
+        if (tx0 >= m_keepOut[0] && tx1 <= m_keepOut[2] &&
+            tz0 >= m_keepOut[1] && tz1 <= m_keepOut[3]) return;
+    }
 
     if (synchronous || !m_jobs) {
         // Generate inline now (used for the under-player neighborhood + the no-job

@@ -932,18 +932,17 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
     // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
     constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
-    // 14900K weapon-textures rework (ba3ce7a, ported): the shared 2.6x boost was
-    // compensating for the shared-atlas skin bug — with the per-weapon PBR
-    // textures restored in the GLBs the boost is no longer needed.
-    // OWNER DEFECT (2026-07-11): "the texture looks great ON the weapon, but when
-    // Jake HOLDS it, it transforms to garbage." Root cause: the held viewmodel
-    // multiplied the (now-correct) baked albedo by 1.4x, clipping the highlights to
-    // washed-out white — while the WORLD/pickup model (drawWeaponAt) draws the same
-    // kind of texture at factor*1.0 and looks great. Match the world model: draw the
-    // baked per-weapon texture at its true albedo (no bright boost). The old
-    // `vmLitPBR` gunmetal branch (which DROPPED the texture entirely for a flat dark
-    // factor) was a stale pre-rework workaround, never enabled (vmLitPBR is false for
-    // every weapon), and is removed so the textured path is the single source of truth.
+    // ROUND 6 ENGINE FIX (5c35d65): kVmBright was 2.6 — an OVER-UNITY albedo multiplier
+    // (physically impossible; it clipped the gun's own texture to white) added because GLB
+    // meshes shaded at 1/PI of the prims around them. shaders/mesh.frag now lights the
+    // viewmodel honestly, so the hack is gone: with it still in, the pistol blew out white.
+    // Two lines of work converged on the same answer — the 14900K weapon-textures rework
+    // (ba3ce7a) reached 1.0 from the art side after the owner reported "the texture looks
+    // great ON the weapon, but when Jake HOLDS it, it transforms to garbage" (the viewmodel
+    // was multiplying the correct baked albedo, clipping highlights, while drawWeaponAt drew
+    // the same texture at 1.0 and looked right). DO NOT resurrect 2.6 or 1.4.
+    // The stale `vmLitPBR` gunmetal branch (which DROPPED the texture for a flat dark factor,
+    // never enabled for any weapon) is removed so the textured path is the single source of truth.
     constexpr float kVmBright     = 1.0f;   // true baked albedo (matches the world model)
     composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
     for (const auto& dr : vm.drawables) {
@@ -1020,7 +1019,7 @@ void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
     // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
     // interiors. The caller owns the full world placement (hand-bone * grip * scale),
     // so unlike drawCurrentViewmodel this does NO camera-relative posing.
-    constexpr float kVmBright = 2.6f;
+    constexpr float kVmBright = 1.0f;   // ROUND 6: see drawCurrentViewmodel (over-unity albedo hack removed).
     for (const auto& dr : vm.drawables) {
         // STRIP the node-transform's authored WORLD TRANSLATION (cols 12..14): these
         // weapon GLBs bake an FP-viewmodel placement offset into the root node, which

@@ -284,6 +284,17 @@ struct CanonBuildOpts {
     // other room keeps its single full slab.
     uint32_t hatchRoom = kNoRoom;
     float hatchCx = 0.0f, hatchCz = 0.0f, hatchHalf = 0.9f;
+    // SEAM 2 (world merge): EXTERIOR BREACH — cut ONE doorway-style opening
+    // (gap + lintel, exactly like a resolved doorway's cut) in `breachRoom`'s
+    // EXTERIOR wall on `breachFace` (0=-X 1=+X 2=-Z 3=+Z) at `breachCenter`
+    // (the run coordinate along that wall), half-width `breachHalf`. This is
+    // the interior half of the facility-exterior breach: the player walks from
+    // the room, through this cut, across the vestibule, out the facade
+    // (app/facility_exterior.*). kNoRoom (default) = no breach; the geometry
+    // self-tests build without it so their wall assertions are untouched.
+    uint32_t breachRoom = kNoRoom;
+    int   breachFace = 3;
+    float breachCenter = 0.0f, breachHalf = 1.5f;
 };
 // NOTE: `floor` is taken by NON-const reference because the builder records each cut
 // doorway's DoorSystem slab index back into floor.doorways[].doorIndex (so the portal

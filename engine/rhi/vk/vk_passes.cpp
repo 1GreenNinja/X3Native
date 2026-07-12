@@ -875,8 +875,18 @@ void VulkanRenderDevice::drawMeshGlass(const FrameContext& fc, MeshHandle mesh, 
             baseColorFactor ? baseColorFactor[1] : 1.0f,
             baseColorFactor ? baseColorFactor[2] : 1.0f,
             glass.opacity };
+        // ADDITIVE GLOW glass (GlassMaterial::additive > 0 — street-light cones/
+        // pools) must ride the BLEND record tail, NOT the opaque range: an
+        // opaque-range record replays in the DEPTH PRE-PASS, whose written cone
+        // depth makes every opaque surface behind it fail the color pass's
+        // EQUAL test — the "cone" then shows the raw sky/clear through a depth
+        // hole (the solid-funnel artifact). Normal glass masks that hole by
+        // outputting alpha=1 from the scene copy; the additive branch (tiny
+        // alpha) does not, so it must never enter the pre-pass/shadow ranges.
+        // Normal glass (additive == 0) stays byte-identical opaque-range.
         drawMeshInternal(fc, mesh, baseColor, TextureHandle{}, TextureHandle{}, factor, emissive,
-                         model, /*alphaMask=*/false, /*alphaBlend=*/false, TextureHandle{},
+                         model, /*alphaMask=*/false, /*alphaBlend=*/glass.additive > 0.0f,
+                         TextureHandle{},
                          TextureHandle{}, 1.0f, kFlagGlass, &glass);
     }
 
@@ -983,9 +993,9 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
         // the opaque path so its SSBO rows carry no stray glass state.
         if (glass) {
             r.glassParams[0] = glass->refraction; r.glassParams[1] = glass->roughness;
-            r.glassParams[2] = glass->specular;   r.glassParams[3] = 0.0f;
+            r.glassParams[2] = glass->specular;   r.glassParams[3] = glass->additive;
             r.glassTint[0]   = glass->tint[0];    r.glassTint[1]   = glass->tint[1];
-            r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = 0.0f;
+            r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = glass->emissiveMap;
         } else {
             r.glassParams[0] = r.glassParams[1] = r.glassParams[2] = 0.0f;
             // BLACK-PROP FIX: opaque draws have no glass state, so the spare .w lane
@@ -1483,7 +1493,7 @@ void VulkanRenderDevice::prepareFrameData() {
             // IBL lane: valid only once an environment has been baked into the cubes.
             // .w = metal ambient-specular floor strength (r_metalambient, default 1).
             const float iblValid = (m_iblReady && m_iblBaked) ? 1.0f : 0.0f;
-            sc.ibl = glm::vec4(iblValid, 1.0f, (float)(kIblPrefilterMips - 1), m_metalAmbient);
+            sc.ibl = glm::vec4(iblValid, m_iblIntensity, (float)(kIblPrefilterMips - 1), m_metalAmbient);
             // Reflections lane (mesh.frag set3): x gates the reflTex sample + IBL
             // blend; y is the live intensity. ONLY set when the refl pass actually
             // runs this frame, so mesh.frag never reads a stale/unwritten buffer.

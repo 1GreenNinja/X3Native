@@ -1578,21 +1578,33 @@ void RoomDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                                   d.baseColorFactor[1] * e.tint[1],
                                   d.baseColorFactor[2] * e.tint[2],
                                   d.baseColorFactor[3] * e.tint[3] };
-            // BLACK-PROP FIX (wing floors, m_propMatLift). See RoomDressing::
-            // setPropMaterialLift: the converted kit furniture bakes metallic=1 over a
-            // mid-tone kit albedo texture, so in the windowless tower — no bright IBL env
-            // to reflect — the props read as flat BLACK. When the lift is on, DROP the
-            // dark kit albedo texture (the recipe tint carried in `bc` becomes the matte
-            // base color) and CLAMP the metalness so a diffuse lobe returns; the props
-            // then read with form + tint under the room/pendant/flashlight lighting in
-            // BOTH gameplay and the capture rig. The normal map is kept for surface
-            // relief. OFF (canon dressing) -> the original textured/metallic draw, exact.
+            // BLACK-PROP FIX (wing floors, m_propMatLift) — RE-JUDGED after the engine fix
+            // (5c35d65, the 1/pi shading-path split). The original fix had TWO halves and
+            // they did NOT age the same way:
+            //
+            //  * THE METALNESS CLAMP — STILL NEEDED, KEPT. The converted kit furniture
+            //    (crates/beds/vats/chairs) carries NO mr map, so the loader synthesizes a
+            //    1x1 MR from the glTF default metallicFactor = 1.0. A full metal has NO
+            //    diffuse lobe at all (diff = albedo*(1-metallic) -> 0) — and that is TRUE
+            //    ON EITHER SIDE OF THE 1/PI FIX. It is a separate bug (a bad material
+            //    default on furniture that is not metal), so the clamp survives the engine
+            //    fix untouched: a wooden crate gets its diffuse lobe back.
+            //
+            //  * DROPPING THE ALBEDO TEXTURE — CRUTCH, REMOVED. That half only existed
+            //    because the surviving diffuse was still 1/pi too dark, so the mid-tone kit
+            //    texture (~0.12 linear) had to be thrown away and replaced by the brighter
+            //    flat recipe tint just to be visible. mesh.frag now shades these honestly
+            //    (~3.14x brighter at metallic 0), so the tint-over-texture substitution both
+            //    DOUBLE-COUNTS (blowing the props toward flat white) and needlessly destroys
+            //    all the surface detail the kit texture carries. The texture is restored and
+            //    the recipe tint goes back to being what it says it is: a TINT modulating a
+            //    real material, in `bc`, exactly as the canon/detention dressing has always
+            //    done. Props keep form + tint AND grain.
             constexpr float kPropMetallicClamp = 0.35f;   // 1.0 = full metal (no diffuse); 0.35 restores diffuse
             // keepTex props (the rescue captives) NEVER lift — a hero character keeps her
             // authored PBR skin/clothes even on the wing floors.
             const bool lift = m_propMatLift && !e.keepTex;
-            const x3::rhi::TextureHandle baseTex =
-                lift ? x3::rhi::TextureHandle{ 0 } : x3::rhi::TextureHandle{ d.baseColorTexId };
+            const x3::rhi::TextureHandle baseTex{ d.baseColorTexId };   // always textured now
             const float metalScale = lift ? kPropMetallicClamp : 1.0f;
             device.drawMeshPBR(frame, x3::rhi::MeshHandle{ d.meshId },
                                baseTex,
