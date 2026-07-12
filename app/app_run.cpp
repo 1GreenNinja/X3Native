@@ -3610,6 +3610,16 @@ int runDefaultHost(HostContext& hc) {
                     if (riftDestination(dest, to, &why)) {
                         ssX = to.x; ssY = to.y + 0.6f; ssZ = to.z;
                         ssYaw = 0.6f; ssPitch = -0.05f;
+                        // X3_RIFT_LOOK="<yaw>,<pitch>" — aim the arrival shot (the
+                        // landing puts you somewhere real, but "somewhere real" is a
+                        // point, not a composition).
+                        if (const char* lk = std::getenv("X3_RIFT_LOOK")) {
+                            const std::string L(lk);
+                            const size_t cm = L.find(',');
+                            ssYaw = std::strtof(L.c_str(), nullptr);
+                            if (cm != std::string::npos)
+                                ssPitch = std::strtof(L.c_str() + cm + 1, nullptr);
+                        }
                         const x3::game::Destination* dd = x3::game::findDestination(dest);
                         x3::logInfo("[rift-capture] TRAVERSED gate " + std::to_string(tp + 1) +
                                     " -> " + (dd ? dd->name : dest) + " at (" +

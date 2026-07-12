@@ -80,9 +80,9 @@ int WorldMenu::draw(UiContext& ui, float dt, const ReachFn& reach) {
 
     ui.text("RIFT NETWORK  -  DESTINATION DIRECTORY", px + 22.0f, py + 16.0f, 22.0f,
             kColBlue, UiContext::FontRole::Title);
-    ui.text("every place in the game. green = teleport, amber = full world load, grey = "
-            "cannot be reached from here.",
-            px + 22.0f, py + 46.0f, 13.0f, kColDim, UiContext::FontRole::HudMono);
+    ui.text("every place in the game.   green = teleport   amber = full world load   "
+            "grey = unreachable",
+            px + 22.0f, py + 46.0f, 12.0f, kColDim, UiContext::FontRole::HudMono);
 
     // ---- Rows. Buttons are emitted in a stable order, so a button's FOCUS SLOT is
     //      its position in `focusToDest` — that is how the footer knows which row the
@@ -129,7 +129,9 @@ int WorldMenu::draw(UiContext& ui, float dt, const ReachFn& reach) {
         }
         const float ry = colY[c];
 
-        const float tagW = 82.0f;
+        // The status tag needs a real gutter: "LOADS WORLD" in HudMono at 10 px is
+        // ~104 px, and a tag that overruns bleeds into the next column's rows.
+        const float tagW = 106.0f;
         const float btnW = colW - tagW - 6.0f;
 
         const bool pickable = (s.reach != DestReach::Unavailable) && !s.here;
