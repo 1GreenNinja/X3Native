@@ -342,6 +342,37 @@ struct VmPose { float yawRad, pitchRad, rollRad, fwd, right, down; };
 
 constexpr float kDegToRad = 3.14159265358979f / 180.0f;
 
+// ---- WATER-WEAPON MANNERS (polish item 4): the swim viewmodel LOWER ---------
+// While swimming the FP gun slides DOWN-AND-IN (out of the water line) instead
+// of clipping the surface: an offset curve on the viewmodel pose scaled by a
+// smoothed 0..1 amount (dt-blended at the call sites), NOT a hard toggle. At
+// amt=0 this is a byte-for-byte no-op; at amt=1 the muzzle is dropped below the
+// frame edge and tilted down (the "carried, not aimed" read). Applied to every
+// viewmodel branch (arsenal / canon sidearm / legacy pickup) since all take the
+// same VmPose deltas. Firing is separately blocked while swimming (see the fire
+// gate) — weapons don't fire underwater.
+inline void applySwimViewmodelLower(VmPose& p, float amt) {
+    if (amt <= 1e-3f) return;
+    p.down     += 0.34f * amt;                 // slide the gun down out of the water line
+    p.fwd      -= 0.16f * amt;                 // pull it in toward the body
+    p.right    += 0.10f * amt;                 // ease it toward the frame edge
+    p.pitchRad -= 38.0f * kDegToRad * amt;     // tilt the muzzle down (lowered carry)
+    p.rollRad  += 10.0f * kDegToRad * amt;     // relaxed wrist
+}
+
+// ---- LIVING WORLD: the LOCKDOWN red shift (alert level 3+) ------------------
+// One multiplier, shared by the live loop (level1 whole-feed / canon facility
+// feed) and the --screenshot-alert staging, so the proof shot IS the live look.
+inline void applyAlertRedShift(std::vector<x3::rhi::PointLight>& fl, float rs) {
+    if (rs <= 0.0f) return;
+    for (auto& L : fl) {
+        const float lum = (L.color[0] + L.color[1] + L.color[2]) / 3.0f;
+        L.color[0] = L.color[0] * (1.0f - rs) + lum * 1.7f * rs;
+        L.color[1] *= 1.0f - rs * 0.78f;
+        L.color[2] *= 1.0f - rs * 0.82f;
+    }
+}
+
 // KEYPAD code for the --world showroom HIDDEN HATCH (the concealed floor panel that
 // opens the stair down to the glass elevator). The hatch is gated by entering THIS
 // code on a keypad (reusing x3::game::KeypadEntry, the same state machine driven by
@@ -1264,7 +1295,7 @@ int runDefaultHost(HostContext& hc) {
     // LOCKDOWN via alertDoorLock, red-shifted lights, the HUD indicator).
     x3::game::AlertSystem   facilityAlert;
     x3::game::AlertDoorLock alertDoorLock;
-    bool  facilityAlertOn = false;   // armed only in the legacy Level-1 world
+    bool  facilityAlertOn = false;   // armed in level1 AND canonlevel (see the world-build arm)
     float alertHudClock   = 0.0f;    // drives the lockdown HUD pulse
     // B3: the terrain world is now STREAMED around the player via a residency
     // ring (TerrainStreamer) fed by the engine job system. Both are only created
@@ -2478,6 +2509,20 @@ int runDefaultHost(HostContext& hc) {
         x3::boot::mark("nexus + sub-levels");
 
     }
+    // ---- POLISH: ARM THE WANTED SYSTEM IN THE CANON WORLD. The AlertSystem
+    // ran only in the legacy level1 world until now; the canon world (THE game)
+    // shipped with the machine dark. Same tunables, same machine — the per-frame
+    // feed below routes observations from canonPlay's groups and applies the
+    // effects onto canonDoors/canonLights. SCOPE: facility-interior only — the
+    // gunshot/corpse/keypad observation call sites gate on the event position
+    // resolving to a tower room (canonFloor.roomAt != kNoRoom), so the streamed
+    // outdoors (city/river/crowd scatter) never feeds heat. ----
+    if (canonWorld && canonFloor.valid()) {
+        facilityAlert.configure(x3::game::loadAlertConfig(x3::game::alertJsonPath()));
+        facilityAlertOn = true;
+        x3::logInfo("--world canonlevel: FACILITY ALERT armed (the wanted system, "
+                    "interior-scoped; effects -> canon doors/lights/spawn queue)");
+    }
     const x3::game::Level1Layout& L1 = game.layout();
     x3::boot::mark(canonWorld ? "world build (canon floor + gameplay)"
                               : "world build (level1 + spire floors)");
@@ -2827,7 +2872,12 @@ int runDefaultHost(HostContext& hc) {
         // the keypad path — the alert system may not be armed in canon) + a car
         // alarm that scatters any crowd in earshot (onViolence self-gates).
         worldCars.setHackAlarmHook([&](const x3::phys::Vec3& p) {
-            if (facilityAlertOn) facilityAlert.reportTerminalHack(p);
+            // SCOPE (canon arm): the wanted system is FACILITY-INTERIOR — a car
+            // hacked on the apron/city street is outside the security net's
+            // ears (the crowds still panic; the tower alert stays quiet).
+            if (facilityAlertOn &&
+                canonFloor.roomAt(p.x, p.y, p.z) != x3::game::kNoRoom)
+                facilityAlert.reportTerminalHack(p);
             if (facilityCrowd.built()) facilityCrowd.onViolence(p);
             for (auto& cc : canonCrowds) if (cc.built()) cc.onViolence(p);
             for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(p);
@@ -3871,6 +3921,21 @@ int runDefaultHost(HostContext& hc) {
         // --world canonlevel default vantage: stand INSIDE Jake's Cell looking toward the
         // +X doorway/hall so the dressed opening space (bunk, terminal, pipes, debris, the
         // flickering tube) fills the frame. Overridden by --shot-cam for the other angles.
+        // --screenshot-alert in the CANON world: stand in the Main Hall looking
+        // down its long axis — the wide corridor of red-shifted room lights is
+        // the lockdown read (the legacy alertCam coordinates are level1's).
+        if (canonWorld && canonFloor.valid() && !shotCamOverride && alertShot) {
+            uint32_t mh = canonFloor.roomByName("Main Hall");
+            if (mh == x3::game::kNoRoom) mh = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
+            if (mh == x3::game::kNoRoom) mh = 0;
+            const x3::game::CanonRoom& H = canonFloor.rooms[mh];
+            const bool longX = H.w >= H.d;   // look down the longer axis
+            ssX = longX ? (H.x0() + 1.6f) : H.cx;
+            ssZ = longX ? H.cz : (H.z0() + 1.6f);
+            ssY = H.y0() + 1.65f;
+            ssYaw = longX ? 0.0f : 1.5707963f;   // +X / +Z (CONVENTIONS yaw)
+            ssPitch = -0.04f;
+        }
         if (canonWorld && canonFloor.valid() && !shotCamOverride && !alertShot) {
             uint32_t jc = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
             if (jc == x3::game::kNoRoom) jc = 0;
@@ -3967,6 +4032,59 @@ int runDefaultHost(HostContext& hc) {
         const bool shotWorldMenu = std::getenv("X3_WORLD_MENU") != nullptr;
         if (shotWorldMenu) shotMenu.open();
 
+        // ---- POLISH (W10 proof shots): X3_SHOT_SWIM=fp|3p — stage the swim reads
+        // over THE RIVER (env-var staging, the X3_SHOT_RPG pattern). fp = the eye
+        // at the buoyancy line with the swim viewmodel LOWER at full blend (proof
+        // the pistol no longer clips the surface); 3p = the Jake avatar PRONE at
+        // the surface, framed from beside the channel. The spot is the river
+        // spline's midpoint (the same node table the carve + ribbon build from),
+        // so the shot sits over real deep water. Pair with --shot-settle >= 150
+        // so the terrain/water tiles stream in under the vantage.
+        const char* swimShotEnv = std::getenv("X3_SHOT_SWIM");
+        const std::string swimShotMode = (canonWorld && swimShotEnv) ? swimShotEnv : "";
+        x3::phys::Vec3 swimSpot{}; float swimYaw = 0.0f, swimWaterY = 0.0f;
+        bool swimShotOk = false;
+        if (!swimShotMode.empty()) {
+            uint32_t rn = 0;
+            const x3::game::WorldRiverNode* nodes = x3::game::worldRiverNodes(rn);
+            if (nodes && rn >= 2) {
+                const uint32_t mid = rn / 2;
+                const x3::game::WorldRiverNode& A = nodes[mid - 1];
+                const x3::game::WorldRiverNode& B = nodes[mid];
+                swimSpot = x3::phys::Vec3{ (A.x + B.x) * 0.5f, 0.0f, (A.z + B.z) * 0.5f };
+                const float wY = x3::game::worldWaterLevelAt(swimSpot.x, swimSpot.z);
+                if (wY > -1.0e30f) {
+                    swimWaterY = wY;
+                    swimYaw = std::atan2(B.z - A.z, B.x - A.x);   // look downstream
+                    swimShotOk = true;
+                    if (swimShotMode == "3p" && thirdPerson.built()) {
+                        thirdPerson.setThirdPerson(true);
+                        // Frame the prone swimmer from beside the channel (the
+                        // sun side, so the body isn't a backlit silhouette),
+                        // close + just above the water, looking down at it.
+                        const float side = swimYaw - 1.5707963f;
+                        ssX = swimSpot.x + std::cos(side) * 3.6f;
+                        ssZ = swimSpot.z + std::sin(side) * 3.6f;
+                        ssY = wY + 1.15f;
+                        ssYaw = side + 3.14159265f;
+                        ssPitch = -0.28f;
+                    } else {
+                        // FP: the eye rests just above the surface (the swim
+                        // buoyancy line), pitched a touch UP so the water line
+                        // crosses the lower frame exactly where the DEFAULT
+                        // viewmodel pose breaks the surface (the clip the lower
+                        // fixes — shoot the control at the same --shot-cam).
+                        ssX = swimSpot.x; ssY = wY + 0.18f; ssZ = swimSpot.z;
+                        ssYaw = swimYaw; ssPitch = 0.08f;
+                    }
+                    x3::logInfo("X3_SHOT_SWIM=" + swimShotMode + ": staged at river ("
+                                + std::to_string(swimSpot.x) + ", " + std::to_string(swimSpot.z)
+                                + ") waterY=" + std::to_string(wY));
+                } else {
+                    x3::logWarn("X3_SHOT_SWIM: no water at the staged river spot — unstaged");
+                }
+            }
+        }
         // ---- W4-2: --screenshot-vigil — seed a live VIGIL conversation ON the cell
         // glass (orange ink) before the settle frames so the bake lands in-frame.
         // The default hero camera already frames the terminal; a compact inline
@@ -4023,7 +4141,18 @@ int runDefaultHost(HostContext& hc) {
         // --screenshot-alert: stage the LEVEL-3 LOCKDOWN for the proof shot —
         // force the alert, lock the zone doors, and shift every facility light
         // hard red (the same effects the live loop applies).
-        if (alertShot) {
+        if (alertShot && canonWorld && canonFloor.valid()) {
+            // ---- CANON LOCKDOWN PROOF SHOT (polish): stage the LEVEL-3 state
+            // through the SAME debug-force + door-lock + red-shift path the live
+            // canon loop uses. The settle loop below rebuilds the canon light
+            // feed (cl) every frame — the red shift is applied THERE (see the
+            // alertShot line after selectVisibleCanonLights), so what the still
+            // shows is the live look, not a bespoke capture rig.
+            facilityAlert.configure(x3::game::loadAlertConfig(x3::game::alertJsonPath()));
+            facilityAlert.debugForceLevel(3);
+            alertDoorLock.update(facilityAlert, canonDoors);
+            x3::logInfo("alert shot (canon): LEVEL-3 LOCKDOWN staged over the facility");
+        } else if (alertShot) {
             // Open Door A directly (the legacy use-ray vantage no longer connects)
             // so the corridor reads in the frame, THEN drop the lockdown over the
             // remaining closed doors. Door A = the registered door nearest the
@@ -4044,15 +4173,11 @@ int runDefaultHost(HostContext& hc) {
             facilityAlert.debugForceLevel(3);
             alertDoorLock.update(facilityAlert, game.doors());
             // B4: nearest-to-eye, not first-in-array (see nearestFixtures above).
+            // Red shift through the shared helper (same math this block held —
+            // the live canon loop + this staging path must never drift apart).
             std::vector<x3::rhi::PointLight> fl =
                 nearestFixtures(game.lightFixtures(), ssX, ssY, ssZ, kFixtureBudget);
-            const float rs = facilityAlert.redShift();
-            for (auto& L : fl) {
-                const float lum = (L.color[0] + L.color[1] + L.color[2]) / 3.0f;
-                L.color[0] = L.color[0] * (1.0f - rs) + lum * 1.7f * rs;
-                L.color[1] *= 1.0f - rs * 0.78f;
-                L.color[2] *= 1.0f - rs * 0.82f;
-            }
+            applyAlertRedShift(fl, facilityAlert.redShift());
             // Alarm strobes down the B1 spine so the red WASH reads in the still
             // even where the env-art fixtures are sparse (capture lighting only —
             // the live loop tints the real fixture set instead). Inserted at the
@@ -4308,6 +4433,29 @@ int runDefaultHost(HostContext& hc) {
             if (canonWorld && canonFloor.valid()) {
                 canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
                 canonDressing.tick(dt);
+                // X3_SHOT_SWIM=3p: hold the avatar in the swim state at the staged
+                // spot every settle frame — the prone blend settles + the stroke
+                // stand-in animates into the capture (kNoRoom = never room-culled).
+                if (swimShotOk && swimShotMode == "3p" && thirdPerson.built()) {
+                    const x3::phys::Vec3 swimFeet{ swimSpot.x, swimWaterY - 1.45f,
+                                                   swimSpot.z };
+                    thirdPerson.update(dt, scene, swimFeet, 1.6f, swimYaw, 0.0f,
+                                       x3::game::kNoRoom, false, false,
+                                       /*swimming*/true);
+                    if (i % 30 == 0) {   // staging telemetry for the eye-gate
+                        float dxf[16]; thirdPerson.avatarDrawTransform(dxf);
+                        float hs[16]; const bool gh = thirdPerson.handSocketWorld(hs);
+                        x3::logInfo("[swimshot] frame " + std::to_string(i) +
+                            " rootY=" + std::to_string(dxf[13]) +
+                            " upY=" + std::to_string(dxf[5]) +
+                            " hand=(" + (gh ? std::to_string(hs[12]) + "," +
+                                         std::to_string(hs[13]) + "," +
+                                         std::to_string(hs[14]) : "n/a") +
+                            ") waterY=" + std::to_string(swimWaterY) +
+                            " cam=(" + std::to_string(ssX) + "," + std::to_string(ssY) +
+                            "," + std::to_string(ssZ) + ")");
+                    }
+                }
                 // LIVING NPCs: tick the crowds through the settle so the still
                 // captures them mid-life (conversations formed, crates riding,
                 // the ball in play) — no PVS gate here; we want them settled.
@@ -4389,6 +4537,12 @@ int runDefaultHost(HostContext& hc) {
                                                    ssEye.x, ssEye.y, ssEye.z, cl,
                                                    kCanonLightBudget);
                 if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
+                // --screenshot-alert (canon): the LEVEL-3 LOCKDOWN red shift over
+                // the facility feed — the SAME multiplier + eye-inside-the-tower
+                // scope the live loop applies (see applyAlertRedShift there).
+                if (alertShot && facilityAlert.redShift() > 0.0f &&
+                    canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z) != x3::game::kNoRoom)
+                    applyAlertRedShift(cl, facilityAlert.redShift());
                 // STREET LIGHT: same outdoor gate + nearest-K feed as the live
                 // loop, so lamp pools light the shot; flicker ticks through the
                 // settle (a flickering lamp can be captured mid-burst).
@@ -4492,6 +4646,9 @@ int runDefaultHost(HostContext& hc) {
                         scene.roomVisible(x3::game::kStreamedExteriorRoom))
                         worldCars.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                    // X3_SHOT_SWIM=3p: the prone swimmer into the frame.
+                    if (swimShotOk && swimShotMode == "3p")
+                        thirdPerson.drawAvatar(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
                     // SKINNED CITIZENS (room-gated inside draw()) — the crowds
                     // as real people in the still captures.
@@ -4507,8 +4664,14 @@ int runDefaultHost(HostContext& hc) {
                 // viewmodel — the "pistol" in every prior cell shot was the hovering
                 // pickup prop, which is why the floating-gun/no-arms problem was
                 // invisible in stills. Mirror the smoketest draw at the shot camera.
-                if (arsenal.viewmodelsLoaded()) {
-                    const VmPose vmPose = readViewmodelPose(*console);
+                if (arsenal.viewmodelsLoaded() &&
+                    !(swimShotOk && swimShotMode == "3p")) {   // 3P hides the FP gun
+                    VmPose vmPose = readViewmodelPose(*console);
+                    // X3_SHOT_SWIM=fp: the swim viewmodel LOWER at full blend —
+                    // the SAME offset curve the live loop applies while swimming
+                    // (proof: the pistol rides below the water line, not through it).
+                    if (swimShotOk && swimShotMode == "fp")
+                        applySwimViewmodelLower(vmPose, 1.0f);
                     arsenal.drawCurrentViewmodel(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch,
                         vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
                         vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
@@ -5331,11 +5494,22 @@ int runDefaultHost(HostContext& hc) {
     // the Player cue hook (mirrors the monster sink); this is the one-line host
     // subscription its report asked for. Pain alternates the two takes; both play
     // 2D (they're the player's own body, no spatialization).
+    // POLISH (item 2): REAL WATER AUDIO — the committed splash takes
+    // (tools/gen_water_audio.py -> assets/audio/water/): a broadband entry
+    // splash with a low thump attack + droplet tail, and a softer surface-exit
+    // take played on leaving the swim state (host edge below). The old mapping
+    // (landing thud pitched to 0.55) is RETIRED; it remains only as the
+    // graceful fallback if the WAV is somehow absent.
+    x3::audio::SoundHandle sndSplashEnter =
+        audio->load(x3::game::resolveAudio("water/splash_enter.wav"));
+    x3::audio::SoundHandle sndSplashExit =
+        audio->load(x3::game::resolveAudio("water/splash_exit.wav"));
     {
         auto painA = bootAudio.playerPain[0], painB = bootAudio.playerPain[1];
         auto landH = bootAudio.playerLand;
+        auto splashH = sndSplashEnter;
         auto* asys = audio.get();
-        player.setCueSink([asys, painA, painB, landH](const x3::game::GameCue& c) {
+        player.setCueSink([asys, painA, painB, landH, splashH](const x3::game::GameCue& c) {
             if (!asys) return;
             static bool alt = false;
             switch (c.kind) {
@@ -5347,12 +5521,14 @@ int runDefaultHost(HostContext& hc) {
                 case x3::game::CueKind::PlayerLand:
                     if (landH.valid()) asys->playSound2D(landH, std::min(0.8f, 0.30f + 0.4f * c.intensity), 1.0f);
                     break;
-                // W10 SWIMMING: water-entry splash. No dedicated splash WAV is
-                // committed yet, so reuse the soft landing thud pitched WAY down
-                // (0.55) — at low volume it reads as a muffled water entry.
-                // Follow-up: a real splash take under assets/audio/player/.
+                // W10 SWIMMING: water-entry splash — the REAL committed take
+                // (intensity from the drop height scales the volume). Fallback:
+                // the old pitched-down thud, only if the WAV failed to load.
                 case x3::game::CueKind::PlayerSplash:
-                    if (landH.valid()) asys->playSound2D(landH, std::min(0.7f, 0.25f + 0.35f * c.intensity), 0.55f);
+                    if (splashH.valid())
+                        asys->playSound2D(splashH, std::min(0.9f, 0.40f + 0.4f * c.intensity), 1.0f);
+                    else if (landH.valid())
+                        asys->playSound2D(landH, std::min(0.7f, 0.25f + 0.35f * c.intensity), 0.55f);
                     break;
                 default: break;
             }
@@ -5454,6 +5630,13 @@ int runDefaultHost(HostContext& hc) {
     // cooldown gates the gun's rate; the melee cooldown lives in the MeleeSystem.
     bool prevSpace = false, prevF = false, prevE = false, prevFire = false, prevMelee = false;
     bool prevF3 = false;                 // F3 toggles the perf stats overlay
+    // ---- W10 polish: swim host state. prevSwimming drives the surface-exit
+    // splash edge (item 2); swimVmAmt is the smoothed 0..1 viewmodel-LOWER blend
+    // (item 4 — dt-scaled, no hard toggle); swimFireDenyCooldown cadence-gates
+    // the wet-trigger refusal click so held fire doesn't spam it.
+    bool  prevSwimming = false;
+    float swimVmAmt = 0.0f;
+    float swimFireDenyCooldown = 0.0f;
     float fireCooldown = 0.0f;          // seconds until the gun can fire again
     constexpr float kFireCooldown = 0.25f;
     // Task #21 (FIX B): a single sustained auto-fire LOOP voice. Auto/loopable weapons
@@ -6820,13 +7003,17 @@ int runDefaultHost(HostContext& hc) {
                     x3::logInfo("keypad: ACCEPTED — door opening");
                     // LIVING WORLD: a keypad override is a TERMINAL HACK stimulus —
                     // the security net notices doors being opened by code.
-                    if (facilityAlertOn)
+                    // (Canon scope: interior keypads only — roomAt gates it.)
+                    if (facilityAlertOn &&
+                        (!canonWorld || canonFloor.roomAt(pex, pey, pez) != x3::game::kNoRoom))
                         facilityAlert.reportTerminalHack(x3::phys::Vec3{ pex, pey, pez });
                     codeMode = false; keypad.clear();
                 } else {
                     x3::logInfo("keypad: rejected");
                     // A WRONG code is even more suspicious (a tamper alarm).
-                    if (facilityAlertOn)
+                    // (Canon scope: interior keypads only — roomAt gates it.)
+                    if (facilityAlertOn &&
+                        (!canonWorld || canonFloor.roomAt(pex, pey, pez) != x3::game::kNoRoom))
                         facilityAlert.reportTerminalHack(x3::phys::Vec3{ pex, pey, pez });
                     keypad.clear();
                 }
@@ -7341,9 +7528,22 @@ int runDefaultHost(HostContext& hc) {
                 console->getFloat("grip_yaw"), console->getFloat("grip_roll"),
                 console->getFloat("grip_scale"));
             thirdPerson.update(dt, scene, pfeet, eyeH, camYaw, camPitch, avatarRoom,
-                               crouchedNow, prevFire);   // prevFire = last frame's held-fire
-            const x3::game::ThirdPersonCamera tc =
+                               crouchedNow, prevFire,    // prevFire = last frame's held-fire
+                               player.swimming());       // W10 3P read: prone + slow stroke
+            x3::game::ThirdPersonCamera tc =
                 thirdPerson.camera(pfeet, eyeH, camYaw, camPitch);
+            // W10 3P + swim camera manners: while SWIMMING (not diving) the
+            // orbit camera is clamped ABOVE the water surface — pitching up
+            // would otherwise drag the render camera through the surface plane
+            // into the underwater fog for a surface swim. Diving (eye genuinely
+            // below the surface) keeps the underwater framing.
+            if (player.swimming()) {
+                const float eyeW = x3::game::worldWaterLevelAt(camX, camZ);
+                const bool diving = eyeW > -1.0e30f && camY < eyeW - 0.25f;
+                const float camW = x3::game::worldWaterLevelAt(tc.camX, tc.camZ);
+                if (!diving && camW > -1.0e30f && tc.camY < camW + 0.30f)
+                    tc.camY = camW + 0.30f;
+            }
             renderCamX = tc.camX; renderCamY = tc.camY; renderCamZ = tc.camZ;
         }
         device->setCamera(renderCamX, renderCamY, renderCamZ, camYaw, camPitch, 60.0f);
@@ -7521,15 +7721,16 @@ int runDefaultHost(HostContext& hc) {
                 docLevel.selectLights(camX, camY, camZ, fl, 16);
             // LIVING WORLD: LOCKDOWN red emissive shift — at alert level 3+ every
             // facility light leans hard into alarm red (the level-3 visual tell).
-            if (facilityAlertOn && facilityAlert.redShift() > 0.0f) {
-                const float rs = facilityAlert.redShift();
-                for (auto& L : fl) {
-                    const float lum = (L.color[0] + L.color[1] + L.color[2]) / 3.0f;
-                    L.color[0] = L.color[0] * (1.0f - rs) + lum * 1.7f * rs;
-                    L.color[1] *= 1.0f - rs * 0.78f;
-                    L.color[2] *= 1.0f - rs * 0.82f;
-                }
-            }
+            // CANON SCOPE: the lockdown is a FACILITY effect — the shift applies
+            // only while the eye is inside a tower room (roomAt != kNoRoom), so
+            // street lamps / the strata / the golden-hour outdoors never redden.
+            // (The canon room lights are already in `fl` here — the shift lands
+            // on the whole assembled facility feed before the frame push, the
+            // exact multiplier level1 uses.)
+            if (facilityAlertOn && facilityAlert.redShift() > 0.0f &&
+                (!canonWorld ||
+                 canonFloor.roomAt(camX, camY, camZ) != x3::game::kNoRoom))
+                applyAlertRedShift(fl, facilityAlert.redShift());
             // R-3 fold: while the eye is below the facility base (riding the shaft),
             // append the strata's breathing mood lights so the glowing depths light the
             // descending cab. Y-gated: above-ground lighting untouched; capped under
@@ -7763,26 +7964,44 @@ int runDefaultHost(HostContext& hc) {
             // effects (reinforcements, lockdown doors). Lights/HUD read it below.
             if (facilityAlertOn) {
                 // Observers: every live hostile is the facility's eyes and ears.
-                x3::game::Level1Game::EnemyMark marks[32];
-                const uint32_t nObs = game.liveEnemyMarks(marks, 32);
                 x3::phys::Vec3 obs[32];
-                for (uint32_t i = 0; i < nObs; ++i) obs[i] = marks[i].pos;
-                // Player seen: any live guard holding LOS this frame.
+                uint32_t nObs = 0;
                 bool seen = false;
-                auto scanLos = [&](const x3::game::MonsterManager& mm) {
-                    for (uint32_t i = 0; i < mm.count() && !seen; ++i)
-                        if (mm.at(i).alive() && mm.at(i).hasLineOfSight()) seen = true;
-                };
-                scanLos(game.corridorEnemies());
-                scanLos(game.checkpointEnemies());
-                // Bodies: every downed enemy registers a corpse (deduped inside);
-                // a guard patrolling within corpseRadius of one DISCOVERS it.
-                auto scanCorpses = [&](const x3::game::MonsterManager& mm) {
-                    for (uint32_t i = 0; i < mm.count(); ++i)
-                        if (!mm.at(i).alive()) facilityAlert.registerCorpse(mm.at(i).pos());
-                };
-                scanCorpses(game.corridorEnemies());
-                scanCorpses(game.checkpointEnemies());
+                if (canonWorld && canonPlay.built()) {
+                    // ---- CANON ARM (polish): the canon groups feed the SAME
+                    // machine. Observers = every live canon hostile (all interior
+                    // spawns); seen = any of them holding LOS; corpses = every
+                    // downed canon hostile, SCOPE-GATED to the tower (roomAt !=
+                    // kNoRoom) so a body floated down the river / dropped on the
+                    // apron never feeds interior heat. ----
+                    x3::game::CanonPlay::EnemyMark marks[32];
+                    const uint32_t nm = canonPlay.liveEnemyMarks(marks, 32);
+                    for (uint32_t i = 0; i < nm; ++i) obs[nObs++] = marks[i].pos;
+                    seen = canonPlay.anyHostileLineOfSight();
+                    canonPlay.forEachCorpse([&](const x3::phys::Vec3& cp) {
+                        if (canonFloor.roomAt(cp.x, cp.y, cp.z) != x3::game::kNoRoom)
+                            facilityAlert.registerCorpse(cp);
+                    });
+                } else {
+                    x3::game::Level1Game::EnemyMark marks[32];
+                    const uint32_t nm = game.liveEnemyMarks(marks, 32);
+                    for (uint32_t i = 0; i < nm; ++i) obs[nObs++] = marks[i].pos;
+                    // Player seen: any live guard holding LOS this frame.
+                    auto scanLos = [&](const x3::game::MonsterManager& mm) {
+                        for (uint32_t i = 0; i < mm.count() && !seen; ++i)
+                            if (mm.at(i).alive() && mm.at(i).hasLineOfSight()) seen = true;
+                    };
+                    scanLos(game.corridorEnemies());
+                    scanLos(game.checkpointEnemies());
+                    // Bodies: every downed enemy registers a corpse (deduped inside);
+                    // a guard patrolling within corpseRadius of one DISCOVERS it.
+                    auto scanCorpses = [&](const x3::game::MonsterManager& mm) {
+                        for (uint32_t i = 0; i < mm.count(); ++i)
+                            if (!mm.at(i).alive()) facilityAlert.registerCorpse(mm.at(i).pos());
+                    };
+                    scanCorpses(game.corridorEnemies());
+                    scanCorpses(game.checkpointEnemies());
+                }
                 facilityAlert.update(dt, camPos, obs, nObs, seen);
                 // ---- THE GREAT FOLD stitch: wire the world-map fast-travel gate
                 // to the REAL alert level. Before the fold these lived on separate
@@ -7801,23 +8020,40 @@ int runDefaultHost(HostContext& hc) {
                 (void)facilityAlert.takeInvestigatePos(invPos);
                 // EFFECT: reinforcement spawns (entering SEARCH / KILL SQUAD).
                 if (const int want = facilityAlert.takeSpawnRequests(); want > 0) {
-                    const x3::game::Level1Layout& alay = game.layout();
-                    for (int k = 0; k < want; ++k) {
-                        x3::game::MonsterSystem::Tuning rt = x3::game::tuningFor(
-                            facilityAlert.level() >= 4 ? x3::game::EnemyType::Illuminated
-                                                       : x3::game::EnemyType::DominionTrooper);
-                        const float ox = ((k % 2) ? 1.6f : -1.6f) * (float)(1 + k / 2);
-                        game.checkpointEnemies().spawn(
-                            scene, *device, *physics, x3::game::riggedGlbRoot(),
-                            x3::phys::Vec3{alay.checkpointCenter.x + ox,
-                                           alay.checkpointCenter.y,
-                                           alay.checkpointCenter.z + 1.0f}, rt);
+                    if (canonWorld && canonPlay.built() && canonFloor.valid()) {
+                        // CANON ARM: queue through CanonPlay's deferred-spawn
+                        // queue (drained 1/frame by the tickUpperSpawns budget
+                        // below) — room-tagged, shared tunings, guards arrive
+                        // through the nearest door of the player's room.
+                        canonPlay.queueAlertReinforcements(
+                            canonFloor, camPos, want, facilityAlert.level() >= 4);
+                        x3::logInfo("alert: " +
+                            std::string(x3::game::alertLevelName(facilityAlert.level()))
+                            + " — queued " + std::to_string(want)
+                            + " reinforcement(s) (1/frame deferred)");
+                    } else {
+                        const x3::game::Level1Layout& alay = game.layout();
+                        for (int k = 0; k < want; ++k) {
+                            x3::game::MonsterSystem::Tuning rt = x3::game::tuningFor(
+                                facilityAlert.level() >= 4 ? x3::game::EnemyType::Illuminated
+                                                           : x3::game::EnemyType::DominionTrooper);
+                            const float ox = ((k % 2) ? 1.6f : -1.6f) * (float)(1 + k / 2);
+                            game.checkpointEnemies().spawn(
+                                scene, *device, *physics, x3::game::riggedGlbRoot(),
+                                x3::phys::Vec3{alay.checkpointCenter.x + ox,
+                                               alay.checkpointCenter.y,
+                                               alay.checkpointCenter.z + 1.0f}, rt);
+                        }
+                        x3::logInfo("alert: " + std::string(x3::game::alertLevelName(facilityAlert.level()))
+                                    + " — spawned " + std::to_string(want) + " reinforcement(s)");
                     }
-                    x3::logInfo("alert: " + std::string(x3::game::alertLevelName(facilityAlert.level()))
-                                + " — spawned " + std::to_string(want) + " reinforcement(s)");
                 }
                 // EFFECT: the level-3 zone-door LOCKDOWN (restores its own locks).
-                alertDoorLock.update(facilityAlert, game.doors());
+                // Canon: the SAME AlertDoorLock glue over canonDoors (a DoorSystem);
+                // pre-existing locks (keycard/secured rooms) are never touched.
+                alertDoorLock.update(facilityAlert,
+                                     (canonWorld && canonFloor.valid()) ? canonDoors
+                                                                        : game.doors());
             }
             // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation. Doors are
             // MANUAL — the player opens/closes one by aiming at the slab (or its button)
@@ -8218,6 +8454,23 @@ int runDefaultHost(HostContext& hc) {
         // projectiles are spawned into a host-owned list advanced below. Automatic
         // weapons fire while held; others fire on the LMB rising edge. ----
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
+        // ---- W10 polish: swim host edges. The surface-exit splash take on the
+        // swim->dry falling edge (item 2; the ENTRY splash rides the Player's
+        // own PlayerSplash cue), the smoothed viewmodel-LOWER blend (item 4 —
+        // dt-scaled ease in/out, applied at the viewmodel draw), and the
+        // refusal-click cadence timer. ----
+        {
+            const bool swimmingNow = player.swimming();
+            if (prevSwimming && !swimmingNow && audio && sndSplashExit.valid())
+                audio->playSound2D(sndSplashExit, 0.5f, 1.0f);
+            prevSwimming = swimmingNow;
+            const float target = swimmingNow ? 1.0f : 0.0f;
+            const float kBlend = 1.0f - std::exp(-8.0f * std::max(0.0f, (float)dt));
+            swimVmAmt += (target - swimVmAmt) * kBlend;
+            if (swimVmAmt < 1e-4f) swimVmAmt = 0.0f;
+            if (swimVmAmt > 0.9999f) swimVmAmt = 1.0f;
+            if (swimFireDenyCooldown > 0.0f) swimFireDenyCooldown -= (float)dt;
+        }
         bool fireHeld = !uiCapture && !simFrozen && !worldCars.driving() &&
                         glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
@@ -8225,8 +8478,19 @@ int runDefaultHost(HostContext& hc) {
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
         // CHARGE weapon (Lightning): mark the beam HELD so Arsenal::tick drains its
         // charge pool continuously (~10/s) while fire is held (IDKFA bypasses drain).
-        arsenal.setBeamHeld(fireHeld && playerArmed && player.isAlive());
-        if (wantFire && playerArmed && player.isAlive() && arsenal.canFire()) {
+        // NOT while swimming — the weapon is lowered, so it neither fires nor charges.
+        arsenal.setBeamHeld(fireHeld && playerArmed && player.isAlive() && !player.swimming());
+        // ---- WATER-WEAPON MANNERS (item 4): weapons DON'T FIRE while swimming —
+        // the gun is lowered/holstered (see the viewmodel draw). A trigger pull
+        // gets a soft dry-fire click (cadence-gated so held autos don't spam it).
+        if (wantFire && playerArmed && player.isAlive() && player.swimming()) {
+            if (swimFireDenyCooldown <= 0.0f) {
+                const x3::audio::SoundHandle dh = currentDryfireSfx();
+                if (dh.valid()) audio->playSound2D(dh, 0.35f, 0.8f);
+                swimFireDenyCooldown = 0.45f;
+                x3::logInfo("fire: refused — swimming (weapon lowered)");
+            }
+        } else if (wantFire && playerArmed && player.isAlive() && arsenal.canFire()) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
                                 std::sin(camPitch),
@@ -8267,7 +8531,12 @@ int runDefaultHost(HostContext& hc) {
             // never disturbs a crowd out of earshot).
             for (auto& cc : canonCrowds) if (cc.built()) cc.onViolence(eye);
             for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(eye);
-            if (facilityAlertOn) facilityAlert.reportGunshot(eye);
+            // SCOPE (canon arm): gunshots feed the alert only when fired INSIDE
+            // the tower (roomAt != kNoRoom) — a shot on the apron / in the city /
+            // over the river is outside the facility net (crowds still scatter).
+            if (facilityAlertOn &&
+                (!canonWorld || canonFloor.roomAt(eye.x, eye.y, eye.z) != x3::game::kNoRoom))
+                facilityAlert.reportGunshot(eye);
             // Recoil -> camera (transient upward kick; recovered in the camera block).
             weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
 
@@ -8706,7 +8975,12 @@ int runDefaultHost(HostContext& hc) {
                     barsFor(topFloors.overseerBoss());
                     barsFor(topFloors.boss());
                 }
-                const VmPose vmPose = readViewmodelPose(*console);
+                VmPose vmPose = readViewmodelPose(*console);
+                // WATER-WEAPON MANNERS (item 4): while swimming the gun slides
+                // down-and-in on the smoothed blend (swimVmAmt) so it never
+                // clips the water surface; restores on exit through the same
+                // curve. A no-op at 0 (dry land byte-for-byte unchanged).
+                applySwimViewmodelLower(vmPose, swimVmAmt);
                 const bool vmArmed = game.armed() || (canonWorld && canonPlay.armed());
                 // THIRD-PERSON: hide the FP weapon viewmodel ENTIRELY (the gun is shown
                 // in the avatar's hand instead — drawn after scene.render below).
