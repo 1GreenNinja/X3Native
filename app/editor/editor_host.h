@@ -21,6 +21,7 @@
 
 #include "editor.h"
 #include "editor_ai.h"
+#include "editor_armory.h"
 #include "engine/llm/ILlmSystem.h"
 
 #include "engine/asset/IModelLoader.h"
@@ -169,6 +170,14 @@ private:
     std::unique_ptr<x3::asset::IModelLoader> m_modelLoader;  // bound to the device
     std::unordered_map<std::string, LoadedModel> m_modelCache;
     bool m_modelDirMounted = false;
+
+    // ---- THE ARMORY (editor_armory.h): the whole library, searchable ----------------
+    ArmoryIndex m_armory;                 // parsed once, on the first model-loader use
+    bool        m_armoryMounted = false;  // its root is mounted in m_modelAssets
+    char        m_armorySearch[96] = {};  // the search box
+    int         m_armoryPackSel   = 0;    // 0 = "All packs"; else index into m_armory.packs+1
+    void drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                         x3::phys::IPhysicsWorld& physics);
     // Lazily mount the converted_glb dir + create the loader (first model placement).
     void ensureModelLoader(x3::rhi::IRenderDevice& device);
     // Load + cache a GLB by relpath; returns the cached entry (ok=false on failure).

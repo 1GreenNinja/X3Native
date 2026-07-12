@@ -4,6 +4,7 @@
 // the edit-mode fly-cam, and bridges the headless brushes[] list into the live
 // Scene + Jolt so the greybox is walkable in Play mode.
 #include "editor_host.h"
+#include "editor_armory.h"
 
 #include "../asset_root.h"
 #include "../mesh_prims.h"
@@ -328,6 +329,92 @@ void EditorHost::aiPoll() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// THE ARMORY PANEL — every mesh in the library, searchable, one click to place.
+//
+// 11,000+ rows means two rules:
+//   * NEVER build 11,000 ImGui widgets. ImGuiListClipper draws only the visible rows.
+//   * The filter caps its own result, so a single-letter search does not try to render
+//     the entire library while you are still typing.
+// ---------------------------------------------------------------------------
+void EditorHost::drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                                 x3::phys::IPhysicsWorld& physics) {
+    (void)scene; (void)physics;
+    panelRect(0.190f, 0.145f, 0.300f, 0.495f);   // BELOW Status (0.045..0.135), ABOVE the AI panel (0.655)
+    ImGui::Begin("Armory");
+
+    ensureModelLoader(device);      // also loads + mounts the index (first use)
+
+    if (!m_armory.ok) {
+        ImGui::TextWrapped("No asset library index.");
+        ImGui::TextDisabled("%s", m_armory.error.c_str());
+        ImGui::TextDisabled("Set X3_ARMORY_ROOT, or run the Armory indexer.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("%d meshes  /  %d packs",
+                (int)m_armory.items.size(), (int)m_armory.packs.size());
+    if (!m_armoryMounted)
+        ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "root NOT mounted - cannot place");
+
+    // ---- pack filter ----
+    {
+        std::string preview = (m_armoryPackSel == 0 || m_armoryPackSel > (int)m_armory.packs.size())
+                            ? std::string("All packs")
+                            : m_armory.packs[m_armoryPackSel - 1];
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##armpack", preview.c_str())) {
+            if (ImGui::Selectable("All packs", m_armoryPackSel == 0)) m_armoryPackSel = 0;
+            for (int i = 0; i < (int)m_armory.packs.size(); ++i) {
+                const bool sel = (m_armoryPackSel == i + 1);
+                if (ImGui::Selectable(m_armory.packs[i].c_str(), sel)) m_armoryPackSel = i + 1;
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    // ---- search ----
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##armsearch", "search  (e.g. console, sewer, crate, neon)",
+                             m_armorySearch, sizeof m_armorySearch);
+
+    const std::string pack = (m_armoryPackSel > 0 && m_armoryPackSel <= (int)m_armory.packs.size())
+                           ? m_armory.packs[m_armoryPackSel - 1] : std::string();
+    // The cap is the UI's, not the library's: you cannot read 11,000 rows, and building
+    // them costs a frame. Narrow the search instead — that is what the search is FOR.
+    const std::vector<uint32_t> hits = filterArmory(m_armory, m_armorySearch, pack, 600);
+    ImGui::TextDisabled("%d shown%s", (int)hits.size(),
+                        hits.size() >= 600 ? "  (capped - narrow the search)" : "");
+
+    ImGui::Separator();
+    if (ImGui::BeginChild("##armlist", ImVec2(0, 0), false)) {
+        ImGuiListClipper clip;
+        clip.Begin((int)hits.size());
+        while (clip.Step()) {
+            for (int r = clip.DisplayStart; r < clip.DisplayEnd; ++r) {
+                const ArmoryItem& it = m_armory.items[hits[(size_t)r]];
+                char lbl[192];
+                std::snprintf(lbl, sizeof lbl, "%s##arm%d", it.name.c_str(), r);
+                if (ImGui::Selectable(lbl, false)) {
+                    const int idx = placeModel(it.relPath, device);
+                    if (idx >= 0) m_state.select(idx);
+                    else x3::logWarn("[armory] failed to place: " + it.relPath);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(it.pack.c_str());
+                    ImGui::TextDisabled("%s", it.relPath.c_str());
+                    ImGui::EndTooltip();
+                }
+            }
+        }
+        clip.End();
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
+
 void EditorHost::drawAiPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                              x3::phys::IPhysicsWorld& physics) {
     aiPoll();      // drain tokens once per frame; never blocks
@@ -486,6 +573,19 @@ void EditorHost::ensureModelLoader(x3::rhi::IRenderDevice& device) {
     m_modelDirMounted = m_modelAssets->mountDir(dir, 0);
     if (!m_modelDirMounted)
         x3::logWarn("[editor-host] model browser: mountDir failed: " + dir);
+
+    // ---- THE ARMORY: mount the whole library as a SECOND source -------------------
+    // The curated Models list is NINE props. The library on disk is ELEVEN THOUSAND
+    // converted GLBs (Sci-Fi Kit, Cyberpunk City, Command Center, Abandoned Factory,
+    // Modular Sewers, Space Station interiors...). mountDir() takes a PRIORITY, so the
+    // armory rides alongside the repo's converted_glb rather than replacing it: repo
+    // assets keep priority 0 and always win a name collision.
+    m_armory = loadArmoryIndex();
+    if (m_armory.ok)
+        m_armoryMounted = m_modelAssets->mountDir(m_armory.root, 1);
+    if (m_armory.ok && !m_armoryMounted)
+        x3::logWarn("[editor-host] armory: mountDir failed: " + m_armory.root);
+
     m_modelLoader.reset(x3::asset::createModelLoader(&device, m_modelAssets.get()));
 }
 
@@ -766,6 +866,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 
     // ---- Materials palette (Feature 1: click-a-wall texturing). Click a swatch to
     // re-skin the selected brush; the change is ONE undo step + persists in the JSON. ----
+    drawArmoryPanel(device, scene, physics);
     drawAiPanel(device, scene, physics);
 
     panelRect(0.778f, 0.455f, 0.217f, 0.280f);
