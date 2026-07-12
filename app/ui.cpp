@@ -4,6 +4,7 @@
 // No id Tech / RBDOOM source consulted.
 #include "ui.h"
 #include "headless_device.h"   // shared no-op IRenderDevice (for --test-ui)
+#include "world_menu.h"        // U31: the world/place selection menu's own gate
 
 #include "engine/core/x3_log.h"
 
@@ -595,9 +596,9 @@ GameState PauseMenu::update(UiContext& ui, PauseAction& outAction) {
     const float dim[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
     ui.quad(0, 0, w, h, dim);
 
-    // Panel (taller now: RESUME / SAVE / LOAD / SETTINGS / QUIT = 5 buttons).
+    // Panel (RESUME / TRAVEL / SAVE / LOAD / SETTINGS / QUIT = 6 buttons).
     const float pw = std::min(420.0f, w * 0.6f);
-    const float ph = std::min(480.0f, h * 0.78f);
+    const float ph = std::min(560.0f, h * 0.86f);
     const float px = cx - pw * 0.5f;
     const float py = h * 0.5f - ph * 0.5f;
     ui.panel(px, py, pw, ph, kColPanel);
@@ -613,6 +614,10 @@ GameState PauseMenu::update(UiContext& ui, PauseAction& outAction) {
 
     GameState next = GameState::Paused;
     if (ui.button("RESUME", px + 24.0f, by, bw, bh))        next = GameState::Playing;
+    by += bh + gap;
+    // TRAVEL: the world / place selection menu — every place in the game, and an
+    // honest word about how each one is reached. (Also on F6 in the canon loop.)
+    if (ui.button("TRAVEL / WORLDS", px + 24.0f, by, bw, bh)) outAction = PauseAction::Worlds;
     by += bh + gap;
     if (ui.button("SAVE CHECKPOINT", px + 24.0f, by, bw, bh)) outAction = PauseAction::Save;
     by += bh + gap;
@@ -1460,6 +1465,15 @@ bool runUiSelfTest() {
                   "nothing while unfocused");
         }
     }
+
+    // ---- U31: THE WORLD / PLACE SELECTION MENU ------------------------------
+    // The world menu is a SCREEN built on these widgets (app/world_menu.*), so its
+    // gate lives here with the rest of the UI: every registry destination gets a row,
+    // unreachable ones take no focus slot (they are unpickable, not merely grey), and
+    // activating the focused row returns that destination.
+    check(x3::game::runWorldMenuSelfTest(),
+          "U31 world menu: a row per destination, unavailable rows unpickable, "
+          "activate picks the focused place");
 
     x3::logInfo(std::string("--test-ui: ") + std::to_string(pass) + " passed, " +
                 std::to_string(fail) + " failed");

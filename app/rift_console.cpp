@@ -4,6 +4,7 @@
 // third-party engine or UI source consulted.
 #include "rift_console.h"
 
+#include "destinations.h"   // the ONE destination registry (re-target + the cycle)
 #include "engine/core/x3_log.h"
 
 #include <cmath>
@@ -107,11 +108,13 @@ constexpr RiftCode kCodes[] = {
 };
 constexpr uint32_t kCodeCount = (uint32_t)(sizeof(kCodes) / sizeof(kCodes[0]));
 
-// The --world slices a rift can be RE-TARGETED at (must match the host's dispatch;
-// runRifthubSelfTest asserts the same list).
-const char* const kWorlds[] = { "act2caves", "act2", "valley", "cliffs",
-                                "club", "destruct", "ragdoll", "terrain" };
-constexpr uint32_t kWorldCount = 8;
+// (The old hardcoded kWorlds[8] whitelist lived here. It listed act2caves / act2 /
+//  destruct / ragdoll — two of which have had NO --world host since the Act-2 split —
+//  and it was the ONLY thing a rift could be re-targeted at, so 8 gates could reach 8
+//  names, four of them dead. It is GONE: a rift now re-targets at anything in the
+//  DESTINATION REGISTRY (app/destinations.h), which is the one list the world menu,
+//  the hub's fast-travel resolver and this console all read. That is how the hub
+//  reaches every place in the game.)
 
 bool inWindow(float v, float lo, float hi) { return v >= lo && v <= hi; }
 
@@ -189,9 +192,13 @@ float RiftConsole::instability() const {
 
 const char* RiftConsole::targetWorld() const {
     if (!target[0]) return nullptr;
-    for (uint32_t i = 0; i < kWorldCount; ++i)
-        if (eqLoose(target, kWorlds[i])) return kWorlds[i];
-    return nullptr;
+    // An OVERRIDE CODE is not a destination — it must never be mistaken for one
+    // (the codes are the road to the catastrophes; re-pointing on them would be a lie).
+    if (targetOverride() != RiftOutcome::None) return nullptr;
+    // Anything in the DESTINATION REGISTRY. The returned pointer is the registry's
+    // own static key literal, so the caller may hold it (RiftPortal::worldName does).
+    const Destination* d = findDestination(target);
+    return d ? d->key : nullptr;
 }
 
 RiftOutcome RiftConsole::targetOverride() const {
@@ -322,14 +329,44 @@ bool drawRiftConsole(x3::ui::UiContext& ui, RiftConsole& c, const char* portalNa
     }
 
     // ---- TEXT ENTRY --------------------------------------------------------
-    // TARGET takes a world name (re-point the rift) OR an override code (the road
-    // to the outcomes the sliders physically cannot reach).
+    // TARGET takes a DESTINATION (re-point the rift at any place in the registry)
+    // OR an override code (the road to the outcomes the sliders physically cannot
+    // reach). Typing is the precise way in; the CYCLE below is the fast way.
     rowY += 6.0f;
-    const bool committedTarget =
+    bool committedTarget =
         ui.textField("TARGET", c.target, (int)sizeof(c.target),
                      px + 20.0f, rowY, rowW, rowH, 0.0f, clock);
-    ui.text("world name, or an override code", px + 172.0f, rowY + rowH - 4.0f, 11.0f,
+    ui.text("any destination, or an override code", px + 172.0f, rowY + rowH - 4.0f, 11.0f,
             dim, x3::ui::UiContext::FontRole::HudMono);
+
+    // ---- THE DESTINATION CYCLE (the owner: the hub "SHOULD TAKE US TO ALL THE
+    //      WORLD PLACES"). Eight gates, one registry: PREV/NEXT walks the WHOLE
+    //      destination table, so any gate can be aimed at any place in the game
+    //      without knowing how to spell it. Committing is the SAME re-target path a
+    //      typed TARGET takes (it counts as an ENGAGE), so the hanging glass, the
+    //      HUD prompt and the gate's traversal all update together — the console can
+    //      never disagree with the world.
+    {
+        rowY += rowH + 8.0f;
+        const float cyW = 76.0f, cyH = 26.0f;
+        // Where the cycle currently sits: whatever the TARGET field resolves to, else
+        // the rift's live destination.
+        const Destination* cur = findDestination(c.target[0] ? c.target : destination);
+        const char* curName = cur ? cur->name : (destination ? destination : "?");
+        ui.text("DEST", px + 20.0f, rowY + 6.0f, 13.0f, dim,
+                x3::ui::UiContext::FontRole::HudMono);
+        int step = 0;
+        if (ui.button("< PREV", px + 76.0f, rowY, cyW, cyH))                step = -1;
+        if (ui.button("NEXT >", px + 76.0f + cyW + 6.0f, rowY, cyW, cyH))   step = +1;
+        ui.text(curName, px + 76.0f + 2 * cyW + 20.0f, rowY + 6.0f, 13.0f, green,
+                x3::ui::UiContext::FontRole::HudMono);
+        if (step != 0) {
+            const Destination& nd = cycleDestination(c.target[0] ? c.target : destination,
+                                                     step);
+            std::snprintf(c.target, sizeof(c.target), "%s", nd.key);
+            committedTarget = true;   // cycling COMMITS — same path as typing + Enter
+        }
+    }
 
     // ---- STATUS + ENGAGE ---------------------------------------------------
     const RiftOutcome pending = c.evaluate();

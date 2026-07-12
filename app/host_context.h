@@ -45,6 +45,22 @@ struct HostContext {
     std::string worldMode = "level1";
     bool        headless  = false;
 
+    // ---- W-MENU: RUNTIME WORLD LOAD (the world menu's "LOADS WORLD" rows) --------
+    // A host sets these and RETURNS 0. main() then tears the host down, swaps
+    // worldMode, and re-dispatches — the SAME window and the SAME render device, so
+    // this is a real in-engine world load, not a process relaunch. `switchDestKey`
+    // (optional) is a destination-registry key the newly-built world should place the
+    // player at once it is standing (load-AND-place); "" = that world's own spawn.
+    //
+    // Only the DEFAULT host (app_run.cpp) honours switchDestKey today; every host can
+    // REQUEST a switch. main() clears both before each dispatch.
+    std::string switchWorldTo;
+    std::string switchDestKey;
+    // Set by main()'s world-load loop on the NEW world's dispatch: a destination
+    // key the freshly-built world should stand the player at, instead of its own
+    // spawn. "" = use the world's normal spawn (every existing launch path).
+    std::string spawnAtKey;
+
     // ---- Resolution (headless = fixed 1280x720; else the windowed size) ----
     uint32_t W = 1280;
     uint32_t H = 720;

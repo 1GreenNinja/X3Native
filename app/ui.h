@@ -212,8 +212,12 @@ public:
     void setFocus(int i) { m_focus = i; }
     int  focusCount() const { return m_lastFocusCount; }
 
-private:
+    // Is the cursor inside this rect? Public so a SCREEN (not just a widget) can ask
+    // — the world menu needs it to know which row the mouse is hovering, so its footer
+    // can describe that row. Read-only: it claims no focus and draws nothing.
     bool pointIn(float x, float y, float w, float h) const;
+
+private:
 
     // Device used by the STATIC textWidth() to query true per-role glyph metrics.
     // Set in begin() to the live device so centering/right-align is pixel-exact for
@@ -354,7 +358,10 @@ public:
 // A save/load action the pause menu can request back to the host (it is NOT a
 // GameState — saving/loading keeps you in the Paused screen). The host polls the
 // UiController for these (wantSave()/wantLoad()) and performs the file I/O itself.
-enum class PauseAction : uint8_t { None = 0, Save = 1, Load = 2 };
+// Worlds = the player picked TRAVEL / WORLD SELECT: the host opens the world/place
+// selection menu (app/world_menu.*). The pause screen is where it belongs — it is the
+// game's own menu, not a dev console.
+enum class PauseAction : uint8_t { None = 0, Save = 1, Load = 2, Worlds = 3 };
 
 // The pause overlay (drawn over a frozen, dimmed scene).
 class PauseMenu {
@@ -433,6 +440,15 @@ public:
     bool wantSave() const { return m_pendingAction == PauseAction::Save; }
     bool wantLoad() const { return m_pendingAction == PauseAction::Load; }
     void clearSaveLoadRequest() { m_pendingAction = PauseAction::None; }
+
+    // True the frame the user picked TRAVEL / WORLDS in the pause menu. The host
+    // opens the world/place selection menu (app/world_menu.h), then clears this and
+    // takes the game out of Paused so the menu owns the screen.
+    bool wantWorldMenu() const { return m_pendingAction == PauseAction::Worlds; }
+    void clearWorldMenuRequest() { m_pendingAction = PauseAction::None; }
+    // Force the controller back to Playing (the host does this when the world menu
+    // takes over from the pause screen, and after a world load lands).
+    void resumePlaying() { m_state = GameState::Playing; }
     // True the frame the user clicked "SET AS DEFAULT" on the main menu — the host
     // writes the settings file (window size + r_exposure), then calls clearSaveDefaults().
     bool wantSaveDefaults() const { return m_saveDefaults; }

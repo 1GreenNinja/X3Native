@@ -31,6 +31,9 @@ add_executable(X3Engine WIN32
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp
+    # W-MENU — the ONE destination registry + the world/place selection menu
+    destinations.cpp
+    world_menu.cpp
     space_pilot.cpp
     space/ship_ai.cpp
     space/targeting.cpp

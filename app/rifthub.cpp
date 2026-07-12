@@ -4,6 +4,7 @@
 // systems + the engine interfaces. No RBDOOM / id Tech / Doom / Quake — or any
 // other game-engine — source was consulted. CONTENT/LEVEL-SCRIPT ONLY.
 #include "rifthub.h"
+#include "destinations.h"  // the ONE destination registry (every place the game has)
 #include "rift_depths.h"   // W-RIFT: the approach corridor (T24/T25)
 #include "elevator.h"      // W-RIFT: the RIFT stop + the 4790 lock (T26)
 #include "asset_root.h"
@@ -551,15 +552,25 @@ struct PortalSpec {
 // Tint palette per the task spec:
 //   act2caves: violet | act2: orange-amber | valley: cyan | cliffs: white-gold
 //   club: magenta | destruct: red | ragdoll: green | terrain: sky-blue
+// THE EIGHT GATES' DEFAULT AIM. These are DESTINATION-REGISTRY KEYS now
+// (app/destinations.h), not `--world` names — the hub is fast travel to PLACES.
+// It used to be { act2caves, act2, valley, cliffs, club, destruct, ragdoll,
+// terrain }: four dev benches and two worlds (act2 / act2caves) that have had NO
+// host since the Act-2 split, so a quarter of the hub signposted nothing.
+//
+// Eight gates is no longer eight destinations: each gate's console can be
+// re-aimed at ANY of the registry's places (type it, or walk the PREV/NEXT cycle),
+// so the hub reaches everything. These are just where they POINT ON ARRIVAL —
+// deliberately one per region of the world, so the ring reads as a map.
 constexpr PortalSpec kPortalTable[] = {
-    { "act2caves", (uint32_t)RifthubTrigger::Act2Caves, { 0.75f, 0.30f, 1.00f } }, // violet
-    { "act2",      (uint32_t)RifthubTrigger::Act2,      { 1.00f, 0.55f, 0.15f } }, // orange-amber
-    { "valley",    (uint32_t)RifthubTrigger::Valley,    { 0.20f, 0.85f, 1.00f } }, // cyan
-    { "cliffs",    (uint32_t)RifthubTrigger::Cliffs,    { 1.00f, 0.92f, 0.65f } }, // white-gold
-    { "club",      (uint32_t)RifthubTrigger::Club,      { 1.00f, 0.20f, 0.85f } }, // magenta
-    { "destruct",  (uint32_t)RifthubTrigger::Destruct,  { 1.00f, 0.20f, 0.15f } }, // red
-    { "ragdoll",   (uint32_t)RifthubTrigger::Ragdoll,   { 0.30f, 1.00f, 0.40f } }, // green
-    { "terrain",   (uint32_t)RifthubTrigger::Terrain,   { 0.45f, 0.70f, 1.00f } }, // sky-blue
+    { "club",    (uint32_t)RifthubTrigger::Act2Caves, { 1.00f, 0.20f, 0.85f } }, // magenta
+    { "crystal", (uint32_t)RifthubTrigger::Act2,      { 0.75f, 0.30f, 1.00f } }, // violet
+    { "crash",   (uint32_t)RifthubTrigger::Valley,    { 1.00f, 0.55f, 0.15f } }, // orange-amber
+    { "city",    (uint32_t)RifthubTrigger::Cliffs,    { 1.00f, 0.92f, 0.65f } }, // white-gold
+    { "river",   (uint32_t)RifthubTrigger::Club,      { 0.20f, 0.85f, 1.00f } }, // cyan
+    { "ridge",   (uint32_t)RifthubTrigger::Destruct,  { 0.45f, 0.70f, 1.00f } }, // sky-blue
+    { "f1",      (uint32_t)RifthubTrigger::Ragdoll,   { 0.30f, 1.00f, 0.40f } }, // green
+    { "f7",      (uint32_t)RifthubTrigger::Terrain,   { 1.00f, 0.20f, 0.15f } }, // red
 };
 constexpr uint32_t kPortalCount = (uint32_t)(sizeof(kPortalTable) / sizeof(kPortalTable[0]));
 static_assert(kPortalCount == kRifthubTrigCount, "kRifthubTrigCount must match the portal table");
@@ -2027,13 +2038,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // five live parameter rows), so the cell terminal's center schematic gives way
         // to type at roughly twice the size.
         m_holos[i].setLayout(HoloTerminal::Layout::Readout);
-        // NO INK OVERRIDE. These consoles used to force one flat teal ink
-        // (0.42, 1.0, 0.78) onto every row, which is exactly the "we already fixed it
-        // with different color text" problem — a per-site colour, invented here,
-        // overriding the platform. The rows now take the CANONICAL status palette from
-        // holo::statusInk: DEST/PWR/FREQ read BLUE, "STATUS OPEN" reads GREEN, "STATUS
-        // DESTROYED" and "UNSTABLE" read ORANGE. The console tells you what it means by
-        // its colour, and it means the same thing here as on every other panel in the game.
+        // Blue/green holo ink (the canonical status colours; amber is reserved for
+        // warnings, which the console's own status line supplies).
+        m_holos[i].setTextColor(0.42f, 1.0f, 0.78f, 1.0f);
         m_holos[i].setLines(consoleReadout(i));
     }
 
@@ -2952,6 +2959,14 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     m_built = false;
 }
 
+// The readable name of whatever a rift is currently aimed at. The gates hold
+// registry KEYS ("f7"); the glass and the HUD must say "Facility F7 - Executive".
+// Falls back to the raw string so a hand-set destination never blanks the readout.
+static std::string riftDestName(const std::string& key) {
+    const Destination* d = findDestination(key);
+    return d ? std::string(d->name) : key;
+}
+
 void Rifthub::onTrigger(uint32_t triggerId) {
     for (auto& p : m_portals) {
         if (p.triggerId == triggerId) {
@@ -3004,11 +3019,15 @@ bool Rifthub::hudPromptForEye(const x3::phys::Vec3& eye, std::string& outPrompt,
     }
     if (bestIdx < 0) return false;
     const auto& p = m_portals[(uint32_t)bestIdx];
-    if (p.activated) {
-        outPrompt = std::string("Rift activated: ") + (p.worldName ? p.worldName : "?");
+    // Say where it goes NOW (a re-targeted gate must never advertise its old aim),
+    // in READABLE words, not the registry key.
+    const std::string where = riftDestName(p.destination);
+    if (p.dead) {
+        outPrompt = "Rift " + std::to_string(bestIdx + 1) + ": COLLAPSED — it goes nowhere";
+    } else if (p.activated) {
+        outPrompt = "Rift OPEN -> " + where + " — step through";
     } else {
-        outPrompt = std::string("Rift: ") + (p.worldName ? p.worldName : "?") +
-                    " — walk in to activate";
+        outPrompt = "Rift -> " + where + " — walk in to activate";
     }
     return true;
 }
@@ -3048,7 +3067,13 @@ int Rifthub::traversalPortal(const x3::phys::Vec3& eye, float radiusM) const {
 
 void Rifthub::setDestination(uint32_t portalIdx, const std::string& dest) {
     if (portalIdx >= m_portals.size() || dest.empty()) return;
-    m_portals[portalIdx].destination = dest;
+    // CANONICALISE: store the registry KEY when the string resolves to one, so the
+    // gate, the console's cycle, the holo glass and the host's fast-travel resolver
+    // are all talking about the same row of the same table. (Legacy strings like
+    // "the river valley" resolve; anything unknown is kept verbatim and the resolver
+    // will REFUSE it out loud rather than silently going nowhere.)
+    const Destination* d = findDestination(dest);
+    m_portals[portalIdx].destination = d ? std::string(d->key) : dest;
     if (portalIdx < m_holos.size()) m_holos[portalIdx].setLines(consoleReadout(portalIdx));
     x3::logInfo("[rifthub] rift " + std::to_string(portalIdx + 1) + " (" +
                 (m_portals[portalIdx].worldName ? m_portals[portalIdx].worldName : "?") +
@@ -3198,7 +3223,7 @@ std::vector<std::string> Rifthub::consoleReadout(uint32_t idx) const {
     return {
         std::string("RIFT ") + std::to_string(idx + 1) + " / " +
             std::to_string(m_portals.size()),
-        std::string("DEST   ") + p.destination,
+        std::string("DEST   ") + riftDestName(p.destination),
         std::string("STATUS ") + status,
         row(RP_Power,       "PWR"),
         row(RP_Frequency,   "FREQ"),
@@ -3216,7 +3241,8 @@ bool Rifthub::updateConsole(x3::ui::UiContext& ui, float dt) {
     char title[32];
     std::snprintf(title, sizeof(title), "%u/%u", (unsigned)m_activeConsole + 1u,
                   (unsigned)m_portals.size());
-    const bool engaged = drawRiftConsole(ui, p.console, title, p.destination.c_str(),
+    const std::string where = riftDestName(p.destination);
+    const bool engaged = drawRiftConsole(ui, p.console, title, where.c_str(),
                                          m_uiClock, p.dead);
     if (engaged) {
         applyOutcome((uint32_t)m_activeConsole, p.console.lastOutcome);
@@ -3272,11 +3298,13 @@ void rhCheck(bool cond, const char* name) {
 // The --world targets the current host actually launches into (main.cpp's
 // worldMode dispatch). Every portal worldName must be one of these so a portal
 // always signposts a slice the player can really relaunch into.
+// (This used to be a hand-copied 8-name list that had drifted: it swore act2caves
+//  and act2 were real `--world` targets long after their hosts were gone, so T2
+//  PASSED while two gates signposted worlds that could not be launched. It now asks
+//  the DESTINATION REGISTRY, which self-tests its own world flags against the real
+//  dispatch (runDestinationsSelfTest D2). One list, and it is checked.)
 bool isKnownWorldTarget(const char* w) {
-    if (!w) return false;
-    const std::string s(w);
-    return s == "act2caves" || s == "act2" || s == "valley" || s == "cliffs" ||
-           s == "club" || s == "destruct" || s == "ragdoll" || s == "terrain";
+    return w && findDestination(w) != nullptr;
 }
 
 } // namespace
@@ -3333,13 +3361,18 @@ bool runRifthubSelfTest() {
         rhCheck(ok, "T1 every portal owns valid gate/track/membrane entity spans");
     }
 
-    // T2 — all 8 portal names map to REAL --world targets the host launches.
+    // T2 — every gate's default aim is a REAL place in the destination registry.
     {
         bool ok = true;
         for (uint32_t i = 0; i < hub.portalCount(); ++i)
-            if (!isKnownWorldTarget(hub.portal(i).worldName)) ok = false;
-        rhCheck(ok, "T2 all 8 portal names are real --world targets");
+            if (!isKnownWorldTarget(hub.portal(i).worldName) ||
+                !findDestination(hub.destination(i))) ok = false;
+        rhCheck(ok, "T2 all 8 gates default-aim at real registry destinations");
     }
+
+    // T2b — THE REGISTRY ITSELF (D0..D6): the one table the menu, the consoles and
+    //       the host's fast-travel resolver all read.
+    rhCheck(runDestinationsSelfTest(), "T2b the destination registry self-test passes");
 
     // T3 — at load NOTHING is activated; allActivated() is false; the HUD prompt
     //      reads "walk in to activate" for a portal we stand next to.
@@ -3393,8 +3426,12 @@ bool runRifthubSelfTest() {
             for (uint32_t id : fired) { hub.onTrigger(id); if (id == p.triggerId) sawId = true; }
             std::string prompt;
             hub.hudPromptForEye(inside, prompt);
+            // The activated prompt must say it is OPEN *and* name where it goes — the
+            // old "Rift activated: <world flag>" said neither truthfully once gates
+            // could be re-aimed.
             if (!sawId || !hub.portal(i).activated ||
-                prompt.find("Rift activated:") == std::string::npos)
+                prompt.find("Rift OPEN") == std::string::npos ||
+                prompt.find(riftDestName(hub.destination(i))) == std::string::npos)
                 perPortalOk = false;
             // allActivated() must stay false until the very last portal.
             if (i + 1 < hub.portalCount() && hub.allActivated()) perPortalOk = false;
@@ -3860,7 +3897,9 @@ bool runRifthubSelfTest() {
             const std::vector<std::string>& L = h.lines();
             bool saysDest = false, saysStatus = false, saysParam = false;
             for (const std::string& s : L) {
-                if (s.find(hub.portal(i).destination) != std::string::npos &&
+                // The glass carries the READABLE name of where the gate goes, not the
+                // registry key it stores.
+                if (s.find(riftDestName(hub.portal(i).destination)) != std::string::npos &&
                     s.find("DEST") != std::string::npos) saysDest = true;
                 if (s.find("STATUS") != std::string::npos) saysStatus = true;
                 if (s.find("CONT")   != std::string::npos) saysParam = true;
@@ -4050,13 +4089,60 @@ bool runRifthubSelfTest() {
             for (int i = 0; i < 200; ++i) hub2.tick(1.0f / 60.0f, sc2);   // settle to OPEN
             ok = ok && hub2.traversalPortal(inThroat) == 0;        // open: it takes you
             ok = ok && hub2.traversalPortal({ hd.origin.x, FY + 1.6f, hd.origin.z }) < 0;
-            hub2.setDestination(0, "club 1127");                   // the host re-aims them
-            ok = ok && hub2.destination(0) == "club 1127";
+            // The host re-aims them with legacy prose; the gate CANONICALISES it onto
+            // the registry key, so everything downstream is talking about one row.
+            hub2.setDestination(0, "club 1127");
+            ok = ok && hub2.destination(0) == "club";
             hub2.applyOutcome(0, RiftOutcome::Implosion);          // a COLLAPSED gate
             for (int i = 0; i < 400; ++i) hub2.tick(1.0f / 60.0f, sc2);
             ok = ok && hub2.portal(0).dead && hub2.traversalPortal(inThroat) < 0;
             rhCheck(ok, "T27 TRAVERSAL: an OPEN rift's throat resolves to its destination; "
                         "a dormant one and a COLLAPSED one take you nowhere");
+        }
+
+        // ---- W-MENU: THE HUB REACHES EVERY PLACE ------------------------------------
+        // T28 — not "8 gates, 8 destinations". ONE gate, walked through the registry
+        //       by the console's PREV/NEXT cycle, can be aimed at EVERY place the game
+        //       has — and the hanging glass reads out each one truthfully.
+        {
+            bool ok = true;
+            std::string cur = hub2.destination(1);
+            for (uint32_t n = 0; n < x3::game::destinationCount(); ++n) {
+                const Destination& d = x3::game::cycleDestination(cur, 1);
+                hub2.setDestination(1, d.key);
+                if (hub2.destination(1) != std::string(d.key)) ok = false;
+                const std::vector<std::string> ro = hub2.consoleReadout(1);
+                if (ro.size() < 2 || ro[1].find(d.name) == std::string::npos) ok = false;
+                cur = d.key;
+            }
+            rhCheck(ok, "T28 one gate cycles onto EVERY registry destination and its "
+                        "holoterminal reads out each one truthfully");
+        }
+
+        // T29 — a RE-TARGETED gate's traversal follows its NEW aim. (The payoff would
+        //       be a lie if the gate still took you where it used to point.)
+        {
+            const RiftPortal& p2 = hub2.portal(2);
+            const x3::phys::Vec3 inThroat{ p2.worldPos.x, FY + 2.2f, p2.worldPos.z };
+            hub2.setDestination(2, "The Magma Zone");     // by READABLE NAME this time
+            hub2.onTrigger(p2.triggerId);
+            for (int i = 0; i < 200; ++i) hub2.tick(1.0f / 60.0f, sc2);
+            const int tp = hub2.traversalPortal(inThroat);
+            rhCheck(tp == 2 && hub2.destination(2) == "magma" &&
+                    findDestination(hub2.destination(2)) != nullptr,
+                    "T29 stepping through a RE-TARGETED gate resolves its NEW destination");
+        }
+
+        // T30 — the HUD prompt never lies about where a gate goes: re-aim it and the
+        //       prompt the player reads while standing there changes with it.
+        {
+            hub2.setDestination(3, "city");
+            std::string prompt;
+            const RiftPortal& p3 = hub2.portal(3);
+            const bool got = hub2.hudPromptForEye({ p3.worldPos.x, FY + 1.6f, p3.worldPos.z },
+                                                  prompt, 6.0f);
+            rhCheck(got && prompt.find("The City") != std::string::npos,
+                    "T30 the HUD prompt names the gate's CURRENT destination");
         }
 
         depths.shutdown(dev2);

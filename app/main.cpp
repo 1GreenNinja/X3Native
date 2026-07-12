@@ -720,8 +720,6 @@ int main(int argc, char** argv) {
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;
-        int _hostRc = x3::apphost::dispatchWorldHost(_hc);
-        if (_hostRc >= 0) return _hostRc;
 
     // ======================================================================
     // ---- DEFAULT HOST (#28 deep split, Phase C) ---------------------------
@@ -762,6 +760,47 @@ int main(int argc, char** argv) {
     _hc.hzbArg          = o.hzbArg;
     _hc.visArg          = o.visArg;
     _hc.bootBudgetMs    = o.bootBudgetMs;
-    return x3::apphost::runDefaultHost(_hc);
+
+    // ======================================================================
+    // ---- W-MENU: THE WORLD-LOAD LOOP --------------------------------------
+    // The world/place menu's "LOADS WORLD" rows need the engine to tear one world
+    // down and build another WITHOUT relaunching the process. It CAN: the window and
+    // the render device are created ONCE, above, and every host builds — and shuts
+    // down — its OWN Scene + physics + assets inside its own call. So a world load is
+    // simply: run a host; if it asked for a different world, swap worldMode and
+    // dispatch again.
+    //
+    // A host requests one by setting hc.switchWorldTo (+ optionally switchDestKey, a
+    // destination-registry key naming the place in the NEW world to stand the player
+    // at — load AND place) and returning 0.
+    //
+    // The FIRST pass keeps the CLI's dev-shortcut behaviour byte-for-byte: no host
+    // sets switchWorldTo unless the player picks a "LOADS WORLD" row in the menu, so
+    // `--world <name>` is untouched.
+    // ======================================================================
+    for (;;) {
+        _hc.switchWorldTo.clear();
+        _hc.switchDestKey.clear();
+
+        int _hostRc = x3::apphost::dispatchWorldHost(_hc);
+        const int _rc = (_hostRc >= 0) ? _hostRc : x3::apphost::runDefaultHost(_hc);
+
+        if (_hc.switchWorldTo.empty() || _hc.switchWorldTo == _hc.worldMode) return _rc;
+
+        x3::logInfo("[world-load] tearing down '" + _hc.worldMode + "' and building '" +
+                    _hc.switchWorldTo + "'" +
+                    (_hc.switchDestKey.empty() ? std::string()
+                                               : (", placing the player at '" +
+                                                  _hc.switchDestKey + "'")));
+        _hc.worldMode  = _hc.switchWorldTo;
+        _hc.spawnAtKey = _hc.switchDestKey;   // the new world stands the player here
+        // Dev flags that pinned the OLD world must not follow us in: a screenshot /
+        // smoketest / bench flag would hijack the newly-loaded world and exit.
+        _hc.screenshot   = false;
+        _hc.smoketest    = false;
+        _hc.bench        = false;
+        _hc.shotWorldMap = false;
+        _hc.skipIntro    = true;    // the cold-open is a once-per-launch thing
+    }
     }   // close the host-dispatch block (its _hc reaches the default host)
 }

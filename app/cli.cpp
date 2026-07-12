@@ -272,7 +272,16 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
+            // BUGFIX: the guard used to be a bare `argv[i+1][0] != '-'`, which rejected
+            // every NEGATIVE camera position — you could not frame a shot anywhere at
+            // -X/-Y/-Z (the whole rift chamber, half the tower, most of the planet), and
+            // the flag silently fell back to the hero camera instead of saying so. A
+            // leading '-' followed by a digit or '.' is a NUMBER, not a flag.
+            auto isNumArg = [](const char* s) {
+                return s[0] != '-' ||
+                       (s[1] >= '0' && s[1] <= '9') || s[1] == '.';
+            };
+            if (i + 1 < argc && isNumArg(argv[i + 1])) {
                 const char* s = argv[++i];
                 int n = 0; char* end = nullptr;
                 while (n < 5 && *s) {

@@ -1735,9 +1735,22 @@ int runDefaultHost(HostContext& hc) {
                 canonRooms.build(*device, x3::game::assetRoot() + "/surface_library",
                                  x3::game::convertedGlbRoot(), canonFloor, rdBt);
                 if (canonRooms.roomsDressed() > 0) {
+                    // 2026-07-12 — THE CELL'S STRAY LIGHT (Tim: the cell is BLOWN-OUT WHITE
+                    // with the flashlight on, and PITCH BLACK with it off). Jake's Cell is
+                    // deliberately classified ZNone (CellDressing hand-dresses it), so
+                    // hasRecipe() is FALSE for it — and the generic buildCanonLights entry
+                    // for the cell therefore SURVIVED this erase: one warm tungsten at
+                    // (2.0, 1.50, 40.0), intensity 3.2, range 8.0, hung 0.25 m under the
+                    // ceiling of a 4 m room. It was contributing ~2.7x what the cell's own
+                    // "key" fluorescent did — scorching the ceiling and the upper walls to
+                    // white — while the fixtures the art pass carefully tuned did nothing.
+                    // CellDressing OWNS this room's light statement exactly as a recipe room
+                    // does, so the cell's generic light is dropped here too, and the failing
+                    // tube (cell_dressing.cpp) is raised to actually carry the room.
+                    const uint32_t cellRoom = rdBt.jakeCell;
                     canonLights.erase(std::remove_if(canonLights.begin(), canonLights.end(),
                         [&](const x3::game::CanonLight& cl) {
-                            return canonRooms.hasRecipe(cl.room);
+                            return canonRooms.hasRecipe(cl.room) || cl.room == cellRoom;
                         }), canonLights.end());
                     canonLights.insert(canonLights.end(),
                                        canonRooms.lights().begin(), canonRooms.lights().end());
@@ -3554,6 +3567,64 @@ int runDefaultHost(HostContext& hc) {
             if (!chatTrees.start("lena", "first_meeting"))
                 x3::logWarn("--screenshot-dialog: lena first_meeting failed to start");
         }
+        // ---- W-RIFT / W-MENU: THE CAPTURE HOOKS -------------------------------------
+        // Three env knobs so the rift-network work can be PHOTOGRAPHED through the real
+        // code paths (no bespoke screenshot host, no faked frames):
+        //
+        //   X3_RIFT_TARGET=<gate>=<dest>  re-aim gate <gate> (1-based) at <dest> through
+        //                                 the SAME Rifthub::setDestination the console
+        //                                 calls — so the still shows the holoterminal's
+        //                                 REAL rebaked readout, not a caption.
+        //   X3_RIFT_TRAVERSE=<gate>       stand a virtual eye in gate <gate>'s throat and
+        //                                 run the EXACT traversal the live loop runs
+        //                                 (traversalPortal -> destination -> resolver),
+        //                                 then put the shot camera where it LANDS. A gate
+        //                                 that refuses does not move the camera, and the
+        //                                 log says why: a refusal photographs as a refusal.
+        //   X3_WORLD_MENU=1               draw the world/place directory over the still.
+        x3::game::WorldMenu shotMenu;
+        if (const char* rt = std::getenv("X3_RIFT_TARGET")) {
+            const std::string s(rt);
+            const size_t eq = s.find('=');
+            if (eq != std::string::npos && riftBuilt) {
+                const int g = std::atoi(s.substr(0, eq).c_str()) - 1;
+                if (g >= 0 && g < (int)rifthub.portalCount())
+                    rifthub.setDestination((uint32_t)g, s.substr(eq + 1));
+            }
+        }
+        if (const char* tv = std::getenv("X3_RIFT_TRAVERSE")) {
+            const int g = std::atoi(tv) - 1;
+            if (riftBuilt && g >= 0 && g < (int)rifthub.portalCount()) {
+                rifthub.onTrigger(rifthub.portal((uint32_t)g).triggerId);   // walk in
+                for (int w = 0; w < 240; ++w) rifthub.tick(1.0f / 60.0f, scene);  // settle OPEN
+                const x3::phys::Vec3 gp = rifthub.portal((uint32_t)g).worldPos;
+                const x3::phys::Vec3 throat{ gp.x, kRiftFloorY + 2.2f, gp.z };
+                const int tp = rifthub.traversalPortal(throat, 2.5f);
+                if (tp < 0) {
+                    x3::logWarn("[rift-capture] gate " + std::to_string(g + 1) +
+                                " takes you nowhere (dormant or collapsed)");
+                } else {
+                    const std::string dest = rifthub.destination((uint32_t)tp);
+                    x3::phys::Vec3 to{};
+                    std::string    why;
+                    if (riftDestination(dest, to, &why)) {
+                        ssX = to.x; ssY = to.y + 0.6f; ssZ = to.z;
+                        ssYaw = 0.6f; ssPitch = -0.05f;
+                        const x3::game::Destination* dd = x3::game::findDestination(dest);
+                        x3::logInfo("[rift-capture] TRAVERSED gate " + std::to_string(tp + 1) +
+                                    " -> " + (dd ? dd->name : dest) + " at (" +
+                                    std::to_string(to.x) + ", " + std::to_string(to.y) + ", " +
+                                    std::to_string(to.z) + ")");
+                    } else {
+                        x3::logWarn("[rift-capture] gate " + std::to_string(tp + 1) +
+                                    " -> '" + dest + "': " + why + " — the gate holds");
+                    }
+                }
+            }
+        }
+        const bool shotWorldMenu = std::getenv("X3_WORLD_MENU") != nullptr;
+        if (shotWorldMenu) shotMenu.open();
+
         // ---- W4-2: --screenshot-vigil — seed a live VIGIL conversation ON the cell
         // glass (orange ink) before the settle frames so the bake lands in-frame.
         // The default hero camera already frames the terminal; a compact inline
@@ -4091,6 +4162,25 @@ int runDefaultHost(HostContext& hc) {
                     addShotRoom(slay.arenaCenter, slay.arenaHalf);
                 }
                 shotHud.draw(shotUi, shm, dt);
+                // W-MENU (X3_WORLD_MENU=1): the world/place directory over the still,
+                // fed by the SAME reachability resolver the live menu uses — so what the
+                // photograph says about each place is what the game says.
+                if (shotWorldMenu) {
+                    shotMenu.open();   // it closes itself on a pick; we never pick
+                    shotMenu.draw(shotUi, dt, [&](const x3::game::Destination& d) {
+                        x3::game::DestStatus st;
+                        x3::phys::Vec3 anchor{};
+                        std::string    why;
+                        if (riftDestination(d.key, anchor, &why)) {
+                            st.reach = x3::game::DestReach::Teleport;
+                        } else if (d.worldFlag[0] && d.worldFlag != worldMode) {
+                            st.reach = x3::game::DestReach::WorldLoad; st.reason = why;
+                        } else {
+                            st.reach = x3::game::DestReach::Unavailable; st.reason = why;
+                        }
+                        return st;
+                    });
+                }
                 shotUi.end();
                 // WORLD CARS hint line for the proof shots — the SAME bottom-
                 // center treatment as the live loop ("[E] Exit" while driving,
@@ -6775,20 +6865,31 @@ int runDefaultHost(HostContext& hc) {
                 const float fX = std::cos(camPitch) * std::cos(camYaw);
                 const float fY = std::sin(camPitch);
                 const float fZ = std::cos(camPitch) * std::sin(camYaw);
-                // Main forward pool: the bright soft-edged circle that lights what you
-                // LOOK at. Pulled in to 2 m (was 3) so it no longer skips the near field.
+                // ---- 2026-07-12: THE FLASHLIGHT WAS THE SCENE -----------------------
+                // Tim, live: the cell is blown-out WHITE with the flashlight on, and goes
+                // "absolutely BLACK" the moment he turns it off. At 6.0 HDR over a 38 m
+                // range this thing was a SUN riding 2 m in front of the player's face: it
+                // was 4-5x brighter than any practical in the building, so (a) it bleached
+                // whatever wall you walked up to and (b) killing it removed ~all of the
+                // room's light, and the auto-exposure (aemax 2.2, ~0.7 s adaptation) needed
+                // seconds to claw anything back — hence the black void.
+                // A flashlight ADDS to a scene; it is not the scene. Cut to a real torch:
+                // the forward pool 6.0 -> 3.30 over 20 m (was 38), the near fill 3.2 -> 1.7
+                // over 8 m (was 13). That now sits at PARITY with a room's own key fixture
+                // (the cell tube is 3.30 @ 6.2, level-1 fixtures run 3.6-4.2) — it reads as
+                // a directed beam layered ON the practicals instead of erasing them.
                 x3::rhi::PointLight pl{};
                 pl.pos[0] = camX + fX * 2.0f; pl.pos[1] = camY + fY * 2.0f; pl.pos[2] = camZ + fZ * 2.0f;
-                pl.range  = 38.0f;   // HUGE circle; point-light attenuation gives the SOFT edge
-                pl.color[0] = 6.0f; pl.color[1] = 5.6f; pl.color[2] = 4.9f;  // bright warm-white (HDR)
+                pl.range  = 20.0f;   // big soft circle; point attenuation gives the SOFT edge
+                pl.color[0] = 3.30f; pl.color[1] = 3.10f; pl.color[2] = 2.75f;  // warm-white torch
                 fl.insert(fl.begin(), pl);
                 // Near light AT the eye so things RIGHT in front of you (barrels, enemies,
-                // the held weapon) are ALWAYS lit — a flashlight should never leave the
-                // near field black. Smaller range, same warm-white.
+                // the held weapon) are still lit — a flashlight should never leave the near
+                // field black. Smaller range, same warm-white.
                 x3::rhi::PointLight eyePl{};
                 eyePl.pos[0] = camX + fX * 0.3f; eyePl.pos[1] = camY + fY * 0.3f; eyePl.pos[2] = camZ + fZ * 0.3f;
-                eyePl.range  = 13.0f;
-                eyePl.color[0] = 3.2f; eyePl.color[1] = 3.0f; eyePl.color[2] = 2.6f;
+                eyePl.range  = 8.0f;
+                eyePl.color[0] = 1.70f; eyePl.color[1] = 1.60f; eyePl.color[2] = 1.40f;
                 fl.insert(fl.begin(), eyePl);
             }
             // CANONLEVEL ROOM LIGHTING: the data-driven floor has no env_art Light_A
