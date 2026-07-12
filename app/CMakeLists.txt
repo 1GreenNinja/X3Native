@@ -111,6 +111,7 @@ add_executable(X3Engine WIN32
     terrain.cpp
     vehicle.cpp
     world_cars.cpp
+    street_lights.cpp
     vehparts.cpp
     perfshop.cpp
     ecology.cpp
