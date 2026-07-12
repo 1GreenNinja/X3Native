@@ -95,3 +95,15 @@ Everything we **generated** worked immediately; everything hand-carved was rejec
 - **Image → geometry:** Rodin (already how ~65 characters and the weapons were made).
 - **Procedural authoring:** headless Blender (`bpy`) for the gate tube.
 *Stop reverse-engineering a beautiful concept by gluing boxes together.*
+
+## 📐 COMPUTE THE DETERMINANT BEFORE YOU BLAME THE ART (2026-07-12)
+A model matrix's upper 3×3 must be a **rotation**: **det = +1**. **det < 0 is a mirror** — the mesh
+draws inside-out and **cannot be lit by anything**, at any albedo, under any light. It looks exactly
+like an art problem (perfect silhouette, right albedo, right relief, coherent specular), which is why
+it ate nine art rounds on the rift gate and every prop on the descent slide.
+- **Never hand-roll a basis from a direction vector.** `app/basis.h::basisFromOutward()` — one helper,
+  guaranteed right-handed, and the copy-pasted sites route through it.
+- **When a surface "won't light", prove the surface CAN be lit before you touch a light**: drop a cube
+  carrying its exact material into the same room. Cube blown out + object black = **mirror**, not art.
+- **The invariant is TOTAL, not a list.** `--test-basis` walks every entity of every built world. A
+  list of known sites rots the moment someone pastes the idiom into a new file.
