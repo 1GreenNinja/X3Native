@@ -623,6 +623,12 @@ struct CliOptions {
     // GPU particles (glowing via bloom, soft against depth) + a bullet decal on the
     // surface. Off by default — the standard --screenshot gate view is unchanged.
     bool        fxDemo = false;
+    // FX lightning demo (--fx-lightning, implies --fx-demo; with --screenshot). The
+    // --set shot_fire path fires the held weapon ALONG the look axis, so a lightning
+    // bolt is end-on and collapses to a blob at the crosshair — useless for judging the
+    // fork. This fires a Lightning tracer + Lightning impact ACROSS the view instead, so
+    // the jagged forking zigzag actually reads. Capture-only; no gameplay effect.
+    bool        fxLightning = false;
     // Windowed-mode resolution (--width <px> / --height <px>). Defaults to the
     // historical 1280x720 so the dev box + every headless/offscreen path are
     // UNCHANGED. A high-DPI box can pass e.g. --width 2560 --height 1440. These

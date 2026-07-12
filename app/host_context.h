@@ -159,6 +159,7 @@ struct HostContext {
     int         introForce = -1;
     bool        editorMode = false;
     bool        fxDemo = false;
+    bool        fxLightning = false;   // --fx-lightning: bolt + arc-impact ACROSS the view
     bool        uiDemo = false;              std::string uiDemoPath; std::string uiDemoScreen;
     bool        dialogShot = false;
     bool        vigilShot = false;    // W4-2: --screenshot-vigil (VIGIL chat on the glass)

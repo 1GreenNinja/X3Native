@@ -82,13 +82,25 @@ constexpr float kLightningBoltSpeed = 300.0f;
 // bucket — a living, crackling zigzag that dances ~15x/s instead of strobing a new
 // shape every frame (Tim: "sharp zigzag lightning", re-randomize every ~50-80 ms).
 constexpr float kLightningRerollPeriod = 0.065f;
-// Target zigzag segment length (m): straight runs meeting at hard 15-45 deg kinks.
-constexpr float kLightningSegLen = 0.9f;
-// Core / glow thickness (m): a bright white-hot core box inside a wider blue glow
-// box, both emissive (HDR) so bloom builds the halo. The old single 0.016-0.028 m
-// LDR beam read as a pencil line (playtest).
-constexpr float kLightningCoreThick = 0.035f;
-constexpr float kLightningGlowThick = 0.10f;
+// Target zigzag segment length (m): straight runs meeting at hard kinks.
+// KINK DENSITY IS THE WHOLE READ. At the original 0.9 m a close-range (~2 m) bolt got
+// only 2-3 runs and rendered as a bent TUBE — a coat hanger, not lightning. What makes
+// a bolt legible as lightning is high-frequency jaggedness, so the runs are short and
+// there are many of them. (The impact arc tendrils always looked right precisely
+// because they are short: they got several kinks over a small span.)
+constexpr float kLightningSegLen = 0.30f;
+// Core / glow thickness (m): a THIN white-hot core ribbon inside a wider, DIMMER blue
+// glow ribbon, both emissive (HDR) so BLOOM builds the halo.
+//
+// POLISH PASS (landed under honest lighting, 5c35d65): the original 0.035 / 0.10 m
+// pair was authored against the OLD washed 0.42-ambient look. Under honest lighting
+// the bolt read as a white ASTERISK of fat rectangular planks — you could see the
+// quad edges, the core clipped to flat white, and the fork/arc strands were just as
+// thick as the trunk. Per docs/DECISIONS.md ("VALUE, NOT LUMENS — don't crank
+// emissive until it's a white blob"), the halo now comes from bloom on a SHARP thread
+// rather than from wide bright geometry. ~3x thinner; brightness comes down with it.
+constexpr float kLightningCoreThick = 0.009f;
+constexpr float kLightningGlowThick = 0.026f;
 
 // ---- Electric-arc tendril ring (lightning impact violence) ----
 // Short-lived mini zigzag arcs crawling on the surface at a lightning hit point.

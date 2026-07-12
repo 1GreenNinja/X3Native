@@ -748,6 +748,7 @@ int main(int argc, char** argv) {
     _hc.introForce      = o.introForce;        // DEV --intro-force outcome override
     _hc.editorMode      = o.editorMode;
     _hc.fxDemo          = o.fxDemo;
+    _hc.fxLightning     = o.fxLightning;
     _hc.uiDemo          = o.uiDemo;            _hc.uiDemoPath = o.uiDemoPath; _hc.uiDemoScreen = o.uiDemoScreen;
     _hc.dialogShot      = o.dialogShot;
     _hc.vigilShot       = o.vigilShot;

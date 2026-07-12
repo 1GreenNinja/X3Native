@@ -300,6 +300,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.uiDemoScreen = argv[++i];
         }
         else if (a == "--fx-demo") o.fxDemo = true;
+        else if (a == "--fx-lightning") { o.fxDemo = true; o.fxLightning = true; }
         else if (a == "--screenshot-sky") {
             o.skyShot = true;
             // Optional output path arg (next token, if it isn't another flag).

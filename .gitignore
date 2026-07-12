@@ -126,3 +126,6 @@ assets/rigged_glb/WeaponShotgun2.glb
 assets/rigged_glb/WeaponRocketLauncher.glb
 assets/rigged_glb/WeaponBFG.glb
 assets/rigged_glb/WeaponRailgun.glb
+
+# Per-agent build dirs (docs/KNOWN_BUGS.md L6: one build dir per agent)
+build-*/

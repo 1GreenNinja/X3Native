@@ -267,8 +267,11 @@ void CombatFx::spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& norm
         Particle f;                       // one tight blue-white flash core
         f.pos = pos;
         f.life = f.maxLife = 0.08f;
-        f.size0 = 0.30f; f.size1 = 0.05f;
-        f.r = 2.2f; f.g = 3.0f; f.b = 4.5f; f.a0 = 1.0f;
+        // SMALL + brief. At 0.30 m this additive sprite was a white BLOB sitting on the
+        // strike — the exact "snowball" the arc tendrils exist to replace. It should be
+        // a spark of light at the contact point, not the subject of the frame.
+        f.size0 = 0.13f; f.size1 = 0.02f;
+        f.r = 1.8f; f.g = 2.5f; f.b = 3.8f; f.a0 = 1.0f;
         f.gravity = 0.0f; f.drag = 0.0f; f.additive = true;
         spawnParticle(f);
         spawnArcs(pos, nrm);
@@ -735,19 +738,31 @@ void CombatFx::drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::Fr
     x3::phys::Vec3 nrm = cross(w, dir);   // depth axis (kept thin)
 
     const float blackBase[4] = { 0.0f, 0.0f, 0.0f, 1.0f };  // pure emissive read
-    // GLOW ribbon: wide soft blue halo (HDR emissive so bloom smears it).
+    // GLOW ribbon: a soft BLUE corona around the core. Its width is now PROPORTIONAL to
+    // coreThick — the original pinned it to the kLightningGlowThick constant, so the
+    // thin branch forks (coreThick*0.55) and the thin arc tendrils (coreThick*0.5) were
+    // still wrapped in a FULL-WIDTH glow slab. That is why every strand read equally
+    // fat and the impact ring looked like a shuriken of white planks. Now a thin strand
+    // gets a thin corona.
+    // It is also deliberately DIM (radiance ~ rgb*strength stays near 1): its job is to
+    // tint the bloom blue around the core, NOT to be a second bright bar. Crank this and
+    // the bolt degenerates back into a white slab.
     {
         float model[16];
-        float gw = kLightningGlowThick;
-        composeTRS3(model, w, nrm, dir, gw, gw * 0.35f, len, mid);
-        const float emis[4] = { 0.12f, 0.45f, 1.0f, 2.4f * brightness };  // blue-electric
+        const float gw = kLightningGlowThick * (coreThick / kLightningCoreThick);
+        composeTRS3(model, w, nrm, dir, gw, gw * 0.30f, len, mid);
+        const float emis[4] = { 0.10f, 0.38f, 1.00f, 0.80f * brightness };  // blue corona
         device.drawMeshEmissive(frame, m_box, x3::rhi::TextureHandle{}, blackBase, emis, model);
     }
-    // CORE ribbon: thin white-hot line (blue-white, very bright -> blooms to white).
+    // CORE ribbon: a THIN white-hot thread — the only genuinely hot surface, and ~4x
+    // narrower than the glow. Dropped from 3.4 to 2.5 strength: at 3.4 the whole ribbon
+    // saturated and CLIPPED to flat white (killing the hot-core / cool-falloff read, so
+    // it looked like a painted white bar). Still comfortably HDR (>1), so bloom smears a
+    // bright thread into a halo instead of the geometry BEING the halo.
     {
         float model[16];
         composeTRS3(model, w, nrm, dir, coreThick, coreThick * 0.5f, len, mid);
-        const float emis[4] = { 1.8f, 2.4f, 3.4f, 3.4f * brightness };    // white-blue core
+        const float emis[4] = { 1.3f, 1.9f, 3.0f, 2.5f * brightness };      // white-blue core
         device.drawMeshEmissive(frame, m_box, x3::rhi::TextureHandle{}, blackBase, emis, model);
     }
 }
@@ -802,7 +817,7 @@ void CombatFx::drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::
         // Alternating azimuth (i&1 flips ~180 deg) + jitter + slow drift -> a sharp
         // back-and-forth zigzag that also twists in 3D instead of staying planar.
         float azi = ((i & 1) ? kPi : 0.0f) + (rnd01() * 2.0f - 1.0f) * 0.7f + (float)i * 0.6f;
-        float kinkDeg = 15.0f + rnd01() * 30.0f;           // 15..45 deg hard kink
+        float kinkDeg = 25.0f + rnd01() * 35.0f;           // 25..60 deg HARD kink (sharper)
         float r = segStep * std::tan(kinkDeg * kPi / 180.0f) * 0.5f;
         float ox = std::cos(azi) * r, oy = std::sin(azi) * r;
         pts[i] = x3::phys::Vec3{ base.x + u.x * ox + v.x * oy,

@@ -881,6 +881,7 @@ int runDefaultHost(HostContext& hc) {
     const bool skipIntro = hc.skipIntro;
     const bool editorMode = hc.editorMode;
     const bool fxDemo = hc.fxDemo;
+    const bool fxLightning = hc.fxLightning;   // --fx-lightning: bolt ACROSS the view
     const bool uiDemo = hc.uiDemo;
     const std::string& uiDemoPath = hc.uiDemoPath;
     const std::string& uiDemoScreen = hc.uiDemoScreen;
@@ -3869,7 +3870,38 @@ int runDefaultHost(HostContext& hc) {
             // frame (the LIVE-burst shot). With a LARGE settle (>30) skip the sparks
             // entirely so only the PERSISTENT scorch decal on the surface remains
             // visible (the decal-on-surface shot). One flag, two honest captures.
-            if (fxDemo && kSettleFrames <= 30 && i >= kSettleFrames - 3) {
+            if (fxLightning) {
+                // LIGHTNING proof shot. The --set shot_fire path fires along the LOOK
+                // axis, so the bolt is end-on and collapses into a blob at the crosshair
+                // (it proves the muzzle origin, not the bolt). Here the bolt runs ACROSS
+                // the view — mostly VERTICAL, perpendicular to the near-horizontal look —
+                // so the jagged forking zigzag actually reads. Capture-only.
+                const float hl = std::sqrt(fxLook.x * fxLook.x + fxLook.z * fxLook.z);
+                const x3::phys::Vec3 rightH = (hl > 1e-4f)
+                    ? x3::phys::Vec3{ fxLook.z / hl, 0.0f, -fxLook.x / hl }
+                    : x3::phys::Vec3{ 1.0f, 0.0f, 0.0f };
+                // Strike ~1.6 m ahead so it sits in open air in FRONT of the near wall.
+                // A path containing "impact" frames a SHORT bolt so the crackling arc
+                // tendrils dominate; otherwise a TALL bolt so the full zigzag reads.
+                const bool  impactShot = (screenshotPath.find("impact") != std::string::npos);
+                const float ahead    = 1.6f;
+                const float boltTall = impactShot ? 0.5f : 1.9f;
+                const x3::phys::Vec3 strike{ ssX + fxLook.x * ahead,
+                                             ssY + fxLook.y * ahead - 0.35f,
+                                             ssZ + fxLook.z * ahead };
+                const x3::phys::Vec3 boltA{ strike.x - rightH.x * 0.35f, strike.y + boltTall,
+                                            strike.z - rightH.z * 0.35f };
+                const x3::phys::Vec3 boltB = strike;   // the bolt descends INTO the strike
+                // Spawn the bolt ONCE a few frames out (re-spawning each frame would reset
+                // its propagation age); it ages to full reach + a stable jagged shape by
+                // the captured frame. Arc-tendril impact AT the strike point.
+                if (i == kSettleFrames - 3)
+                    combatFx.addTracer(boltA, boltB, x3::game::WeaponFxKind::Lightning);
+                if (i == kSettleFrames - 2)
+                    combatFx.spawnImpact(boltB, x3::phys::Vec3{ -fxLook.x, 0.5f, -fxLook.z },
+                                         x3::game::WeaponFxKind::Lightning);
+            }
+            else if (fxDemo && kSettleFrames <= 30 && i >= kSettleFrames - 3) {
                 combatFx.spawnMuzzleFlash(fxBurst, fxDir);
                 // Sparks spray back toward the camera (normal = -look) so they read.
                 combatFx.spawnImpact(fxBurst, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z });
@@ -4153,6 +4185,15 @@ int runDefaultHost(HostContext& hc) {
                 const x3::game::Arsenal::WeaponState& shotWs = arsenal.currentState();
                 shm.weapon = shotWd.name.c_str();
                 shm.ammoInMag = shotWs.ammoInMag; shm.ammoReserve = shotWs.reserve;
+                // CHARGE weapon (Lightning): show the CHARGE readout, same as the live
+                // loop. Without this the capture printed the weapon's mag/reserve — which
+                // for a charge weapon are INERT — so every lightning still LIED about the
+                // ammo model ("200 / 600" for a gun that has neither).
+                if (shotWd.usesCharge) {
+                    shm.isCharge  = true;
+                    shm.chargeCur = (int)(shotWs.charge + 0.5f);
+                    shm.chargeCap = (int)(shotWd.chargeCap + 0.5f);
+                }
                 // Feed the minimap RADAR + nameplates from the (capture) camera pose so
                 // the still shows the real radar: room outlines, any live enemy/ally
                 // blips, and head-anchored nameplates over on-screen hostiles.
