@@ -197,10 +197,26 @@ Blobs are at `D:\LFS\blobs\x3native` on the 14900K. **Every file's name IS its s
 That box has confirmed Raptor Lake degradation and an open Intel RMA, so the store is mirrored off it:
 
 - **Task:** `X3Native-LFS-Backup` (Task Scheduler) → `D:\LFS\backup_lfs.ps1`
-- **Runs:** daily 03:30 **and** at every startup
+- **Runs:** daily 03:30 **and** at logon
 - **Destination:** `\\p13700\G\X3NativeLFS\blobs` (+ Gitea's `gitea.db` and `app.ini` under `…\meta`)
 - **Additive only** — deliberately **not** `robocopy /MIR`. LFS objects are immutable; a local deletion must never propagate to the backup.
 - Log: `D:\LFS\log\backup.log`
+- Measured: 1.50 GB in ~20 s = **298 MB/s** (saturates the 2.5 GbE link).
+
+> **Why "at logon" and not "at startup":** a scheduled task with the *S4U* logon type (run whether or not the user is logged on, **without** a stored password) **cannot authenticate to SMB shares** — `\\p13700\G` comes back unreachable and the backup silently no-ops. The task therefore runs as `Tim` with the **Interactive** logon type. If you want it to run headless with the box logged out, re-register the task with a stored password (`-LogonType Password`); that is the only way to get both unattended execution *and* network-share access.
+
+### What we could NOT recover
+
+Recovery pulled **193 of 410** LFS objects (1.49 GB) out of local sources — the two `X3AssetStore` tiers plus the `.git/lfs` caches of the ~60 sibling X3Native clones on the 14900K. **217 objects (0.95 GB) exist nowhere on the fleet.** Their committed pointers reference bytes that are simply gone; they must be **regenerated** (new bytes → new oid → new commit), not restored. Full list: `D:\LFS_work\LOST_OBJECTS.txt`.
+
+**The line we ship is intact.** `integration/playable-build`, `main`, `feat/weapon-textures`, `feat/city-fix`, `feat/living-city`, `feat/npc-characters`, `feat/dialog-live`, `feat/holo-glass-platform`, `feat/weapons-overhaul`, `feat/texture-offensive` and `feat/rifthub-aaa` are **100% fetchable**. Only two branches are blocked:
+
+| Branch | LFS objects | Unfetchable | What's gone |
+|---|---:|---:|---|
+| `feat/intro-cockpit` | 232 | **124** | `assets/surface_library/**` (94 forged PNGs), `assets/converted_glb/{SciFiKit3,Detention,Cockpit}` (~30 GLBs) |
+| `feat/tractor-beam` | 58 | **6** | old `rigged_glb` revisions |
+
+These are **derived** assets — forged by `tools/forge_*.py` or converted by `tools/convert_obj_glb.py` from source kits — so regenerating them is the intended path, not a loss of authored work. Note the audit's *worst* fear did not materialise: **all 7 weapon GLBs and all 13 weapon SFX on `feat/intro-cockpit` were recovered**, including the fixed `WeaponEnergyPistol2.glb` (oid `28a84e3d…`). The camo-pistol fix is unblocked.
 
 If the 14900K dies: the blobs are intact on D: (a crash is minutes of downtime, not data loss — the service auto-restarts), and a full copy is on G:. To rehost, install Gitea anywhere, point `[lfs] PATH` at a copy of the store, and change the one line in `.lfsconfig`.
 
