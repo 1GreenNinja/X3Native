@@ -283,3 +283,11 @@ richness. The detail gets there two ways — neither of which is a forest of sep
    wrapping it, bolt rings following its curve, segment joins, vent slots — features OF the tube.
 Subordinate objects (cradle, a few feed cables) stay minimal. The tube's sweeping specular
 highlight must never be broken up by clutter.
+
+### ROUND 7 addendum 2 (Tim): "No chevrons needed"
+DROP THE CHEVRONS entirely. This is NOT a Stargate-franchise replica — it's OUR industrial
+portal generator. No chevron locking clamps, no amber chevron slits (they were a hangover from
+the earlier Stargate-inspired direction and have been a persistent source of the toy look).
+The tube's surface detail = the img2img-forged plate/rivet/seam/vent/stencil richness + any
+recessed bands/joins that read as machined. Indicator lighting, if any, stays subtle and
+integrated (recessed slits), never a ring of amber triangles.
