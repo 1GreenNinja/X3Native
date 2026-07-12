@@ -84,6 +84,23 @@ perfshop, showroom) still runs ambient 0.42.
 | B8 | Cinematic cuts to a blank blue screen | Intro/cold-open, mid-sequence |
 | B9 | Cell kit ceiling reads as a black hole | |
 | B10 | Two VFX bypass the entity path (flat-emissive glass) | `space/decloak_vfx.cpp:310`, `space/descent.cpp:294` |
+| B11 | RT soft shadows (tier 2, the DEFAULT on ray-query HW) treat alpha-cutout as the FULL QUAD | Documented in `RtShadowParams`, but it means every cutout billboard (trees, people) casts a black rectangle on any world using RT shadows. The raster fix (`setShadowCutout`) is powerless while tier > 0 — the shader takes `min(CSM, RT)`. Showroom pins tier 0. Real fix = an any-hit/opacity-micromap alpha test in the ray query. |
+| B12 | `depth_cutout.vert` skips the `visBuf` indirection | It indexes `objBuf.objects[gl_InstanceIndex]` directly while `depth.vert`/`mesh.vert`/`shadow.vert` all go through `visBuf.idx[]`. Latent: wrong rows under GPU cull compaction. (`shadow_cutout.vert` does it right.) |
+
+### L7. The DEFAULT camera far plane is **200 m** — and it was hiding an entire mountain range
+`m_camFar` defaults to 200 (`VulkanRenderDevice_internal.h`). The showroom's Unity terrain is
+**6.6 km across and 780 m tall** — the snowy peaks the reference is famous for were IN the asset,
+fully imported, and simply clipped. Four art passes chased "flat, empty horizon" as a *content*
+problem. If an outdoor world looks like it ends in fog 200 m out, **call `setCameraFar()` before
+you touch the art.**
+
+### L8. `SkyParams::sunIntensity` is NOT the key light — `sunLight` is
+`sunIntensity` scales only the **sky disk + glow**. The directional radiance `mesh.frag` shades
+with is `SkyParams::sunLight` (default **1.0**). The showroom's "bright winter DAY" preset set
+`sunIntensity = 3.4` and never touched `sunLight` — so its daylight was lit by the same 1.0 sun as
+a windowless cell, and snow (albedo 0.73, through the 1/π PBR lobe) could not resolve above ~0.34
+sRGB. It looked like an underexposed night, and it had been "fixed" by cranking **ambient to 0.48**
+— a wash hiding a key that was never turned on. Set `sunLight` for daylight; leave ambient honest.
 
 ---
 

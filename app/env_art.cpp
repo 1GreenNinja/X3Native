@@ -8,6 +8,7 @@
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <string>
 
@@ -115,7 +116,10 @@ uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
     EnvAsset a;
     a.model = m_loader->load(relPath);
     if (a.model.ok) {
-        a.drawables = x3::asset::makeDrawables(a.model);
+        // makeDrawablesNamed == makeDrawables + the source node NAME per drawable
+        // (same order/length). The names cost nothing and let densifyFoliage() find
+        // the foliage drawables without re-walking the node hierarchy.
+        a.drawables = x3::asset::makeDrawablesNamed(a.model, a.drawableNames);
         a.ok = !a.drawables.empty();
     }
     if (a.ok) {
@@ -172,6 +176,83 @@ bool EnvArtSystem::buildFromGlbAt(x3::rhi::IRenderDevice& device,
     x3::logInfo("[env-art] buildFromGlb: " + std::string(relPath) + " — " +
                 std::to_string(m_assetTable[a].drawables.size()) + " drawables, 1 instance");
     return true;
+}
+
+uint32_t EnvArtSystem::densifyFoliage(const std::vector<std::string>& nameSubs, uint32_t addCount,
+                                      uint32_t seed, float minR, float maxR,
+                                      float scaleMin, float scaleMax, float sink,
+                                      const float* keepOutXZR) {
+    if (addCount == 0 || m_instances.empty()) return 0;
+    const uint32_t assetIdx = m_instances[0].asset;
+    if (assetIdx >= m_assetTable.size() || !m_assetTable[assetIdx].ok) return 0;
+    const EnvAsset& a = m_assetTable[assetIdx];
+    if (a.drawableNames.size() != a.drawables.size()) return 0;
+
+    // Source pool: every drawable whose node name matches (lowercased substring).
+    std::vector<uint32_t> pool;
+    for (uint32_t i = 0; i < a.drawables.size(); ++i) {
+        std::string ln = a.drawableNames[i];
+        for (char& c : ln) c = (char)std::tolower((unsigned char)c);
+        for (const std::string& s : nameSubs) {
+            std::string ls = s;
+            for (char& c : ls) c = (char)std::tolower((unsigned char)c);
+            if (!ls.empty() && ln.find(ls) != std::string::npos) { pool.push_back(i); break; }
+        }
+    }
+    if (pool.empty()) {
+        x3::logWarn("[env-art] densifyFoliage: no drawable matched — forest unchanged");
+        return 0;
+    }
+
+    // Deterministic xorshift (no <random> ordering surprises across builds).
+    uint32_t rng = seed ? seed : 1u;
+    auto nextf = [&rng]() {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        return (float)(rng & 0xFFFFFFu) / (float)0x1000000u;   // [0,1)
+    };
+
+    uint32_t added = 0;
+    for (uint32_t k = 0; k < addCount; ++k) {
+        const uint32_t src = pool[(uint32_t)(nextf() * (float)pool.size()) % (uint32_t)pool.size()];
+        const float* N = a.drawables[src].nodeTransform;   // column-major
+
+        // Source scale = column lengths (the pack's trees are uniformly scaled).
+        const float sx = std::sqrt(N[0]*N[0] + N[1]*N[1] + N[2]*N[2]);
+        const float sy = std::sqrt(N[4]*N[4] + N[5]*N[5] + N[6]*N[6]);
+        const float sz = std::sqrt(N[8]*N[8] + N[9]*N[9] + N[10]*N[10]);
+        if (sx < 1e-5f || sy < 1e-5f || sz < 1e-5f) continue;
+
+        const float ang  = nextf() * 6.2831853f;                 // scatter direction
+        const float rad  = minR + nextf() * std::max(0.0f, maxR - minR);
+        const float yaw  = nextf() * 6.2831853f;                 // fresh facing (breaks the copy read)
+        const float k2   = scaleMin + nextf() * std::max(0.0f, scaleMax - scaleMin);
+        const float c = std::cos(yaw), s = std::sin(yaw);
+
+        const float px = N[12] + std::cos(ang) * rad;
+        const float pz = N[14] + std::sin(ang) * rad;
+        if (keepOutXZR) {   // never grow the forest onto the hero building's apron
+            const float dx = px - keepOutXZR[0], dz = pz - keepOutXZR[1];
+            if (dx * dx + dz * dz < keepOutXZR[2] * keepOutXZR[2]) continue;
+        }
+
+        ScatterDraw sd{};
+        sd.asset = assetIdx; sd.drawable = src;
+        // World = T(sourceOrigin + offset) * Ry(yaw) * S(sourceScale * k2). The source's
+        // own rotation is dropped on purpose: these are radially symmetric conifer
+        // billboards, and a fresh yaw is exactly the variation we want.
+        sd.transform[0]  =  c * sx * k2; sd.transform[1] = 0.0f; sd.transform[2]  = -s * sx * k2; sd.transform[3]  = 0.0f;
+        sd.transform[4]  =  0.0f;        sd.transform[5] = sy * k2; sd.transform[6] = 0.0f;       sd.transform[7]  = 0.0f;
+        sd.transform[8]  =  s * sz * k2; sd.transform[9] = 0.0f; sd.transform[10] =  c * sz * k2; sd.transform[11] = 0.0f;
+        sd.transform[12] = px;
+        sd.transform[13] = N[13] - sink;
+        sd.transform[14] = pz;
+        sd.transform[15] = 1.0f;
+        m_scatter.push_back(sd);
+        ++added;
+    }
+    x3::logInfo("[env-art] densifyFoliage: +" + std::to_string(added) + " clones from " +
+                std::to_string(pool.size()) + " source drawables");
+    return added;
 }
 
 void EnvArtSystem::setInstanceTransform(uint32_t idx, const float transform[16]) {
@@ -633,6 +714,39 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                d.detailUvScale,
                                d.clearcoat, d.clearcoatRough);            // car-paint clearcoat lobe
         }
+    }
+    // FOLIAGE DENSIFY clones (densifyFoliage): one drawable each, at their own world
+    // transform. Same draw path/material as the source tree — they ARE the source tree,
+    // re-posed. Empty unless a host asked for them, so every other world is untouched.
+    for (const ScatterDraw& sd : m_scatter) {
+        const EnvAsset& a = m_assetTable[sd.asset];
+        if (!a.ok || sd.drawable >= a.drawables.size()) continue;
+        const auto& d = a.drawables[sd.drawable];
+        if (cullMin && cullMax &&
+            (sd.transform[12] < cullMin[0] || sd.transform[13] < cullMin[1] || sd.transform[14] < cullMin[2] ||
+             sd.transform[12] > cullMax[0] || sd.transform[13] > cullMax[1] || sd.transform[14] > cullMax[2])) continue;
+        if (drawn >= maxDrawables) return drawn;
+        ++drawn;
+        const bool matEmis = d.emissiveTexId != 0 ||
+            d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
+        const float emis[4] = { matEmis ? d.emissiveFactor[0] : 0.0f,
+                                matEmis ? d.emissiveFactor[1] : 0.0f,
+                                matEmis ? d.emissiveFactor[2] : 0.0f,
+                                matEmis ? 1.0f : 0.0f };
+        device.drawMeshPBR(frame,
+                           x3::rhi::MeshHandle{ d.meshId },
+                           x3::rhi::TextureHandle{ d.baseColorTexId },
+                           x3::rhi::TextureHandle{ d.normalTexId },
+                           x3::rhi::TextureHandle{ d.mrTexId },
+                           d.baseColorFactor,
+                           emis,
+                           sd.transform,
+                           d.alphaMask,
+                           d.alphaBlend,
+                           x3::rhi::TextureHandle{ d.emissiveTexId },
+                           x3::rhi::TextureHandle{ d.detailTexId },
+                           d.detailUvScale,
+                           d.clearcoat, d.clearcoatRough);
     }
     return drawn;
 }

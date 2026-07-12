@@ -195,6 +195,14 @@ public:
     // geometry fall inside the shadow map and actually cast shadows. Non-pure (no-op default).
     virtual void setShadowBounds(float cx, float cy, float cz, float halfExtent) {}
 
+    // ALPHA-CUTOUT SHADOWS. The shadow pass is depth-only (no fragment stage), so an
+    // alphaMode==MASK billboard (a snow fir, a people sprite) casts the shadow of its
+    // FULL QUAD — under a high sun that reads as hard black rectangles on the ground.
+    // Enabling this routes cutout draw groups through a shadow pipeline that runs
+    // mesh.frag's exact alpha discard, so a fir casts a fir-shaped shadow. OFF by
+    // default: every existing world's shadow map stays bit-for-bit identical.
+    virtual void setShadowCutout(bool enable) {}
+
     // Enable/disable the interior reflection probe: bake the IBL environment from the
     // SCENE geometry (around the camera) instead of the analytic sky, so glossy metals
     // reflect the dim interior rather than the bright open sky. Non-pure (no-op default).
