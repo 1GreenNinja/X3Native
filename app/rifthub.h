@@ -27,30 +27,31 @@
 //     accent tint, since the ring itself is neutral metal);
 //   * an EVENT-HORIZON MEMBRANE filling the ring opening: the fable-rock
 //     ART TARGET (docs/RIFTHUB_ART_TARGET.md, palette LOCKED) — a DEEP BLUE
-//     plasma storm, NOT a white-clipped disk. Three layers per portal:
-//       [0] a dim parallax VISTA disk behind (another world glimpsed through),
-//       [1] the PLASMA disk itself (procedural emissive texture on the PBR
-//           route, deep-blue emissive with a HARD INTENSITY CAP so the blue
-//           always reads — never tonemap-clips to white), slowly rotating,
-//       [2] a bright-blue FRESNEL RIM ring hugging the ring's inner edge.
+//     plasma storm, NOT a white-clipped disk. MEMBRANE v3 — TWO layers:
+//       [0] the PLASMA disk (the reference-video FLIPBOOK by default; the
+//           procedural filament map is the no-atlas fallback), deep-blue
+//           emissive with a HARD INTENSITY CAP so the blue always reads —
+//           never tonemap-clips to white — slowly rotating. The disk mesh is
+//           DOUBLE-WOUND: one entity, the portal reads from BOTH sides.
+//       [1] a bright-blue FRESNEL RIM ring hugging the ring's inner edge.
+//     (v2's parallax VISTA disk is DELETED — an opaque disk parked outward of
+//     an opaque plasma disk of equal radius is invisible from the hub side and
+//     BLACKS OUT the portal from the far side. A real see-through vista needs
+//     a render-to-texture portal view.)
 //     The membrane is a 3-STATE MACHINE (the MEMBRANE ANIMATION ARC from
 //     docs/reference/PortalAnimated.mp4, mapped onto the existing gameplay
 //     states — no new gameplay flags):
 //       IDLE  (!activated)          — calm nebula: the baked reference-video
-//             FLIPBOOK when the atlas is present (ROUND 4 J2; procedural
-//             filament texture as the fallback), sparse cross-disk tendrils,
-//             slow drift, vista faintly visible;
-//       SURGE (kawoosh > 0)         — the activation flash: lightning arcs
-//             re-target into a VORTEX RING whipping the rim circumference,
-//             the whole membrane brightens toward its caps (bright BLUE-white,
-//             never flat white), spark burst;
+//             FLIPBOOK (its OWN lightning filaments carry the detail — no
+//             procedural bolts are drawn over it);
+//       SURGE (kawoosh > 0)         — the activation flash: the membrane
+//             brightens toward its caps (bright BLUE-white, never flat white),
+//             the ratchet track chases, spark burst;
 //       OPEN  (activated, settled)  — the throat: the plasma disk swaps to a
-//             RADIAL-STREAMING texture (looking down the wormhole), runs a
-//             brighter steady base, the vista dissolves into the energy, and
-//             the tendrils become center->rim streamers.
-//     Plus per-frame FX drawn by drawFx(): short-lived white-blue forked
-//     LIGHTNING ARCS on the disk (idle chords / surge rim-orbits / open
-//     radials) and drifting spark MOTES (additive particles).
+//             RADIAL-STREAMING texture (looking down the wormhole) and runs a
+//             brighter, faster-spinning steady base.
+//     Plus per-frame FX drawn by drawFx(): drifting spark MOTES (additive
+//     particles) + the hall's light shafts.
 // A wider AABB trigger sits underneath. No GLB asset needed.
 //
 // ANIMATION: Rifthub::tick(dt) runs each frame and (a) flickers the amber
@@ -140,14 +141,18 @@ struct RiftPortal {
     // run so the power visibly FLOWS toward the gate.
     uint32_t       conduitEntFirst = 0;
     uint32_t       conduitEntCount = 0;
-    // Event-horizon membrane — the visible portal SURFACE (membrane v2, the
-    // fable-rock art pass): a contiguous 3-entity span in authoring order
-    //   [0] VISTA disk (dim parallax backdrop — the glimpsed other world),
-    //   [1] PLASMA disk (procedural filament emissive texture, deep blue,
-    //       capped intensity, slow rotation driven by tick()),
-    //   [2] FRESNEL RIM ring (bright blue inner-edge ring, shimmer).
-    uint32_t       membraneEntFirst = 0;  // first membrane entity id (vista)
-    uint32_t       membraneEntCount = 0;  // == 3 (vista + plasma + rim)
+    // Event-horizon membrane — the visible portal SURFACE (membrane v3): a
+    // contiguous 2-entity span in authoring order
+    //   [0] PLASMA disk (the flipbook / throat emissive texture, deep blue,
+    //       capped intensity, slow rotation driven by tick()) — DOUBLE-WOUND,
+    //       so it is the portal from BOTH sides,
+    //   [1] FRESNEL RIM ring (bright blue inner-edge ring, shimmer).
+    // The v2 VISTA disk is GONE (round 5): an opaque disk parked OUTWARD of an
+    // opaque plasma disk of the same radius contributed nothing from the hub
+    // side and BLACKED OUT the portal from the far side (the owner's "activated
+    // portal goes black" — he had walked through the gate). See rifthub.cpp.
+    uint32_t       membraneEntFirst = 0;  // first membrane entity id (plasma)
+    uint32_t       membraneEntCount = 0;  // == 2 (plasma + rim)
     // Portal-local basis (unit, XZ plane): outward = radial from hub center
     // through the gate (the ring's hole axis), right = outward x up. Cached at
     // build() so tick()/drawFx() can rebuild the rotating membrane transform +
@@ -171,7 +176,6 @@ struct RiftPortal {
     MembraneArc    arcs[kMaxArcs];
     float          arcCooldown = 0.0f;    // seconds until the next arc may spawn
     float          moteAccum   = 0.0f;    // fractional mote-spawn accumulator
-    float          vistaEm     = 0.0f;    // current vista emissive (fades on OPEN)
     bool           throatOn    = false;   // plasma disk swapped to the throat texture
     float          spinAngle   = 0.0f;    // plasma disk rotation (integrated — the
                                           // OPEN state spins faster without snapping)
@@ -292,7 +296,6 @@ private:
     x3::rhi::MeshHandle        m_fxBeamMesh;  // unit box the arc beams stretch
     x3::rhi::TextureHandle     m_plasmaTex;   // IDLE nebula/filament emissive map
     x3::rhi::TextureHandle     m_throatTex;   // OPEN radial-streaming throat map
-    x3::rhi::TextureHandle     m_vistaTex;    // parallax backdrop (other world)
     x3::rhi::TextureHandle     m_mrFlat;      // 1x1 rough/dielectric MR (PBR route)
     x3::rhi::TextureHandle     m_mrWet;       // 1x1 glossy MR (wet concrete floor)
     // 1x1 WEATHERED MR per gate-GLB material group (ROUND 4 ghost-glass fix):

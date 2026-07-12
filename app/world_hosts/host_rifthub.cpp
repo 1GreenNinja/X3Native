@@ -16,6 +16,8 @@
 #include "../audio_root.h"                  // resolveAudio (committed rifthub SFX)
 #include "engine/audio/IAudioSystem.h"      // synth hum/kawoosh/whoosh, 3D-placed
 
+#include <cstdlib>                          // getenv (X3_RIFTHUB_OPEN capture hook)
+
 namespace x3 { namespace apphost {
 
 int hostRifthub(HostContext& hc) {
@@ -67,7 +69,22 @@ int hostRifthub(HostContext& hc) {
         if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
         const std::string outPath = screenshot ? screenshotPath
                                                : std::string("w_rifthub.png");
-        const int kFrames = 60;
+        // OPEN-STATE CAPTURE HOOK (round 5 bug hunt): X3_RIFTHUB_OPEN=1 fires every
+        // gate's trigger before the warm-up, so the headless shot lands in the OPEN
+        // (throat) state instead of IDLE — the only way to eyeball the activated
+        // membrane without walking the level. The warm-up then runs long enough for
+        // the 1.6 s kawoosh to fully decay (OPEN, not SURGE). Off by default: the
+        // smoketest path is byte-identical without the env var.
+        const bool forceOpen = [] {
+            const char* v = std::getenv("X3_RIFTHUB_OPEN");
+            return v && v[0] == '1';
+        }();
+        if (forceOpen) {
+            for (uint32_t i = 0; i < rifthub.portalCount(); ++i)
+                rifthub.onTrigger(rifthub.portal(i).triggerId);
+            x3::logInfo("--world rifthub: X3_RIFTHUB_OPEN=1 -> all 8 gates activated (OPEN throat capture)");
+        }
+        const int kFrames = forceOpen ? 240 : 60;   // 240 @ 60 Hz = 4 s > kKawooshDur
         for (int i = 0; i < kFrames; ++i) {
             glfwPollEvents();
             rifthub.tick(dt, rhscene);

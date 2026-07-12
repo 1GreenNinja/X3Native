@@ -290,9 +290,12 @@ constexpr float    kCoreLightRange    = 7.0f;           // reaches the gate + pl
 //       (the grazing-angle read), shimmering, capped.
 // Live tendrils (forked lightning arcs) + spark motes are drawn per-frame by
 // drawFx() — see the FX section below.
-constexpr float    kMembraneR         = 1.58f;           // disk radius (ring inner edge 1.65)
+// ROUND 5 (owner: "make the portal effect BIGGER"): the disk now fills the gate's
+// BORE. The authored GLB's inner throat barrel runs r 1.66..1.73, so 1.655 is the
+// largest disk that clears it (was 1.58 — a 0.08 m dead ring of barrel wall showed
+// between the storm and the ratchet track). +9.7% membrane area, zero clip.
+constexpr float    kMembraneR         = 1.655f;          // disk radius (gate bore inner wall 1.66)
 constexpr uint32_t kMembraneDiskSegs  = 48;              // fan segments (smooth silhouette)
-constexpr float    kVistaDepth        = 0.10f;           // vista sits this far OUTWARD of the plasma
 // Plasma layer: deep blue, saturated. Texture carries the white-blue filament
 // detail; the per-entity emissive tint keeps the whole sheet blue-dominant.
 constexpr float    kPlasmaBlue[3]     = { 0.24f, 0.52f, 1.00f };
@@ -302,14 +305,10 @@ constexpr float    kPlasmaEmWobble    = 0.30f;           // organic breathe ampl
 constexpr float    kPlasmaEmCap      = 2.40f;            // HARD CAP (blue must survive tonemap)
 constexpr float    kPlasmaSpinRadS    = 0.22f;           // slow storm rotation (rad/s)
 constexpr float    kPlasmaSpinOpenX   = 2.6f;            // OPEN spins faster (streaming throat)
-// Vista layer: dim — it reads only where the plasma texture is dark. On OPEN
-// the vista DISSOLVES into the energy (fades toward kVistaEmOpen).
-constexpr float    kVistaTint[3]      = { 0.55f, 0.80f, 0.95f };
-constexpr float    kVistaEmBase       = 0.42f;
-constexpr float    kVistaEmOpen       = 0.08f;           // dissolved (throat state)
-constexpr float    kVistaFadePerSec   = 0.35f;           // dissolve rate on OPEN
-constexpr float    kVistaEmCap        = 0.70f;
-constexpr float    kVistaSpinRadS     = -0.06f;          // counter-rotates (parallax cue)
+// (The VISTA layer is GONE — round 5. An opaque disk parked behind an opaque
+// disk shows nothing from the front and BLACKS OUT the portal from the back;
+// see the membrane authoring block. A real see-through vista = render-to-texture
+// portal view, the future upgrade in docs/RIFTHUB_ART_TARGET.md.)
 // ---- Membrane FLIPBOOK (ROUND 4 J2): the IDLE plasma layer plays the baked
 // reference-video frames (8x6 atlas -> 48 tiles, loop-blended in the bake so a
 // plain modulo loop has no wrap pop). 18 fps lands in the task's 16-24 band;
@@ -328,7 +327,10 @@ constexpr float    kFlipTint[3]       = { 0.70f, 0.83f, 1.00f };
 // membrane edge (the one deliberately hot line, blue-tinted, dimmer than
 // before), plus two static dimmer/thinner shells stepped hub-side so the
 // glow visibly decays away from the membrane (the fresnel read).
-constexpr float    kRimR              = 1.615f;          // contact ring centerline radius
+constexpr float    kRimR              = 1.628f;          // contact ring centerline radius
+                                                         // (tube 0.03 -> outer 1.658 = the
+                                                         //  new membrane edge; still inside
+                                                         //  the 1.66 bore, never buried in it)
 constexpr float    kRimTubeR          = 0.030f;          // THIN tube
 constexpr float    kRimBlue[3]        = { 0.32f, 0.60f, 1.00f };
 constexpr float    kRimEmBase         = 1.10f;
@@ -654,31 +656,6 @@ std::vector<uint8_t> makeThroatRGBA(uint32_t n) {
     return px;
 }
 
-// VISTA backdrop: the "other world" glimpsed through the storm — a dark
-// night-sky gradient with teal-blue nebula banding and a scatter of stars,
-// dark enough that it only reads where the plasma web is thin.
-std::vector<uint8_t> makeVistaRGBA(uint32_t n) {
-    std::vector<uint8_t> px(n * n * 4);
-    auto clamp8 = [](float v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); };
-    for (uint32_t y = 0; y < n; ++y) {
-        for (uint32_t x = 0; x < n; ++x) {
-            const float u = ((float)x + 0.5f) / (float)n;
-            const float v = ((float)y + 0.5f) / (float)n;
-            const float sky = 1.0f - v;                       // brighter "horizon" low
-            const float neb = fbm(u * 5.0f + 11.0f, v * 5.0f + 4.0f, 4, 0xA57Au);
-            float R = 4.0f  + 14.0f * neb + 8.0f  * sky;
-            float G = 10.0f + 34.0f * neb + 18.0f * sky;
-            float B = 18.0f + 52.0f * neb + 30.0f * sky;
-            // Star scatter: rare hash spikes.
-            const float star = x3::prims::detail::hash01(x, y, n, 0x57A2u);
-            if (star > 0.9985f) { R = 190.0f; G = 215.0f; B = 255.0f; }
-            uint8_t* p = &px[(y * n + x) * 4];
-            p[0] = clamp8(R); p[1] = clamp8(G); p[2] = clamp8(B); p[3] = 255;
-        }
-    }
-    return px;
-}
-
 // TEAL HOLO DATA SCREEN texture: dark navy glass field, teal border + header
 // bar, rows of "text" block bars (hash-varied widths), a trace graph line,
 // and horizontal scanlines. Two variants (salt) so neighbouring screens
@@ -792,8 +769,6 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_plasmaTex = device.createTexture(plasmaPx.data(), 512, 512, true);
         auto throatPx = makeThroatRGBA(512);
         m_throatTex = device.createTexture(throatPx.data(), 512, 512, true);
-        auto vistaPx = makeVistaRGBA(256);
-        m_vistaTex = device.createTexture(vistaPx.data(), 256, 256, true);
         // MR texel: glTF packing G=roughness B=metallic -> fully rough dielectric.
         const uint8_t mrPx[4] = { 0, 255, 0, 255 };
         m_mrFlat = device.createTexture(mrPx, 1, 1, false);
@@ -1719,38 +1694,34 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.coreEnt      = addCoreDisk(0.14f, 0.045f, kCoreBlue,      kCoreBlueMinEm);
         p.coreInnerEnt = addCoreDisk(0.07f, 0.060f, kCoreInnerBlue, kCoreBlueMaxEm);
 
-        // ---- Event-horizon membrane v2 (the DEEP-BLUE PLASMA STORM) -----------
-        // Three entities on SHARED meshes/textures, authored contiguously
-        // (vista, plasma, rim — the span tick() animates). The vista disk sits
-        // a step OUTWARD (glimpsed through the storm, parallax as the player
-        // strafes); the plasma disk carries the filament emissive texture on
-        // the PBR route; the rim torus hugs the ring's inner edge.
+        // ---- Event-horizon membrane v3 (the DEEP-BLUE PLASMA STORM) -----------
+        // TWO entities on SHARED meshes/textures, authored contiguously
+        // (plasma, rim — the span tick() animates).
+        //
+        // THE VISTA LAYER IS GONE (round-5 bug 1+2 root cause). It was an OPAQUE
+        // disk of the same radius parked kVistaDepth OUTWARD of the plasma, and
+        // opaque geometry does not "show through" the storm:
+        //   * from the HUB side the plasma disk (opaque, same radius) occluded it
+        //     completely — it never contributed a single pixel of parallax;
+        //   * from the OUTWARD side it was the NEAR surface — a near-black
+        //     starscape (albedo 0.2, emissive 0.42 idle / 0.08 once the gate
+        //     OPENed) that occluded the plasma. That is the owner's "activated
+        //     portal goes BLACK, only the rim ring remains": he walks THROUGH the
+        //     gate (the trigger fires 2.5 m out), ends up on the far side, and is
+        //     looking at the dead vista disk. Same defect = "no swirl from behind".
+        // The membrane disk mesh is already double-wound (makeMembraneDisk emits
+        // both windings) and emissive is view-independent, so with the vista gone
+        // the ONE plasma disk reads identically from BOTH sides. A true
+        // see-through vista needs a render-to-texture portal view, not an opaque
+        // disk behind an opaque disk (noted in the art target as the future
+        // upgrade).
         p.rightX = rightX; p.rightZ = rightZ;
         p.outX   = outwardX; p.outZ = outwardZ;
         const uint32_t membraneEntFirst = scene.size();
         const float locX[3] = { rightX, 0.0f, rightZ };
         const float locY[3] = { 0.0f,   1.0f, 0.0f    };
         const float locZ[3] = { outwardX, 0.0f, outwardZ };
-        // [0] VISTA disk (dim backdrop). PBR route (mrTex) so the emissive is
-        //     TEXTURE-GATED — dark starscape texels stay dark instead of a flat
-        //     pale wash (the emissive-path draw has no emissive map). Low
-        //     albedo so the core point light doesn't wash it out either.
-        {
-            Entity e;
-            e.mesh = m_diskMesh;
-            e.tex  = m_vistaTex;
-            e.mrTex = m_mrFlat;
-            e.emissiveTex = m_vistaTex;
-            e.baseColor[0] = 0.20f; e.baseColor[1] = 0.24f; e.baseColor[2] = 0.30f;
-            e.baseColor[3] = 1.0f;
-            e.emissive[0] = kVistaTint[0]; e.emissive[1] = kVistaTint[1];
-            e.emissive[2] = kVistaTint[2]; e.emissive[3] = kVistaEmBase;
-            e.tag = (uint32_t)Tag::Prop;
-            makeXform(e.transform, locX, locY, locZ,
-                      cx + outwardX * kVistaDepth, kRingY, cz + outwardZ * kVistaDepth);
-            scene.add(e);
-        }
-        // [1] PLASMA disk (filament emissive map; mrTex forces the PBR route so
+        // [0] PLASMA disk (filament emissive map; mrTex forces the PBR route so
         //     the emissive texture is honoured; deep-blue tint, capped strength).
         //     ROUND 4: with the flipbook loaded, the IDLE layer IS the baked
         //     reference-video frame (tick() advances it); the procedural nebula
@@ -1771,7 +1742,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             makeXform(e.transform, locX, locY, locZ, cx, kRingY, cz);
             scene.add(e);
         }
-        // [2] FRESNEL CONTACT ring (the one hot line — thin, blue, shimmer in
+        // [1] FRESNEL CONTACT ring (the one hot line — thin, blue, shimmer in
         //     tick(), brightest exactly where the membrane meets the ring).
         {
             Entity e;
@@ -1785,7 +1756,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             scene.add(e);
         }
         p.membraneEntFirst = membraneEntFirst;
-        p.membraneEntCount = 3;
+        p.membraneEntCount = 2;   // [0] plasma, [1] rim (the vista layer is gone)
         // FALLOFF shells (static, outside the animated span): two dimmer +
         // thinner rings stepped hub-side of the contact line, so the rim glow
         // visibly decays away from the membrane instead of reading neon.
@@ -1812,7 +1783,6 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 scene.add(e);
             }
         }
-        p.vistaEm  = kVistaEmBase;   // IDLE state: vista faintly visible
         p.throatOn = false;
 
         m_portals.push_back(p);
@@ -1894,7 +1864,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 std::to_string(kRingMajorSeg) + "x" + std::to_string(kRingMinorSeg) +
                 " + " + std::to_string(kChevronCount) +
                 " amber chevrons + octagonal plate + PLASMA-STORM membrane v2: "
-                "vista + filament disk + fresnel rim, capped emissive)");
+                "two-sided filament disk + fresnel rim, capped emissive)");
 }
 
 void Rifthub::tick(float dt, Scene& scene) {
@@ -1998,19 +1968,12 @@ void Rifthub::tick(float dt, Scene& scene) {
         // --- MEMBRANE STATE MACHINE (PortalAnimated.mp4 animation arc) -------
         // Texture swap into the THROAT happens the moment the portal activates
         // — the kawoosh flash is at full brightness on that exact frame, so
-        // the swap hides inside it.
-        if (p.activated && !p.throatOn && p.membraneEntFirst + 1 < sceneN) {
-            Entity& e = ents[p.membraneEntFirst + 1];
+        // the swap hides inside it. (Membrane v3: [0] = plasma, [1] = rim.)
+        if (p.activated && !p.throatOn && p.membraneEntFirst + 0 < sceneN) {
+            Entity& e = ents[p.membraneEntFirst + 0];
             e.tex = m_throatTex;
             e.emissiveTex = m_throatTex;
             p.throatOn = true;
-        }
-        // Vista dissolve: IDLE holds base, OPEN fades toward "pure energy".
-        {
-            const float target = p.activated ? kVistaEmOpen : kVistaEmBase;
-            const float step = kVistaFadePerSec * dt;
-            if (p.vistaEm > target) { p.vistaEm -= step; if (p.vistaEm < target) p.vistaEm = target; }
-            else                    { p.vistaEm += step; if (p.vistaEm > target) p.vistaEm = target; }
         }
 
         // --- PLASMA-STORM membrane: breathe + rotate, every write capped -----
@@ -2018,29 +1981,14 @@ void Rifthub::tick(float dt, Scene& scene) {
         const float upv[3]    = { 0.0f, 1.0f, 0.0f };
         const float outv[3]   = { p.outX, 0.0f, p.outZ };
         const float cx = p.worldPos.x, cz = p.worldPos.z;
-        // [0] vista: slow counter-rotation, faint breathe (parallax backdrop),
-        //     dissolving on OPEN.
-        if (p.membraneEntFirst + 0 < sceneN) {
-            Entity& e = ents[p.membraneEntFirst + 0];
-            const float a = m_time * kVistaSpinRadS + phase;
-            const float ca = std::cos(a), sa = std::sin(a);
-            const float rx[3] = {  ca * rightv[0] + sa * upv[0],
-                                   ca * rightv[1] + sa * upv[1],
-                                   ca * rightv[2] + sa * upv[2] };
-            const float ry[3] = { -sa * rightv[0] + ca * upv[0],
-                                  -sa * rightv[1] + ca * upv[1],
-                                  -sa * rightv[2] + ca * upv[2] };
-            makeXform(e.transform, rx, ry, outv,
-                      cx + p.outX * kVistaDepth, kRingY, cz + p.outZ * kVistaDepth);
-            const float breathe = 0.06f * std::sin(m_time * 0.7f + phase);
-            e.emissive[3] = capped(std::max(0.0f, p.vistaEm + breathe), kVistaEmCap);
-        }
-        // [1] plasma: IDLE = slow filament churn; OPEN = the throat streaming
+        // [0] plasma: IDLE = the flipbook churn; OPEN = the throat streaming
         //     (faster spin + hotter base, texture already swapped); SURGE rides
         //     the kawoosh envelope on top. Organic two-sine breathe; the surge
         //     tint slides deep blue -> pale blue (NOT white); always capped.
-        if (p.membraneEntFirst + 1 < sceneN) {
-            Entity& e = ents[p.membraneEntFirst + 1];
+        //     The disk is DOUBLE-WOUND, so this one entity is the portal from
+        //     both sides (the round-5 two-sided law).
+        if (p.membraneEntFirst + 0 < sceneN) {
+            Entity& e = ents[p.membraneEntFirst + 0];
             // FLIPBOOK (ROUND 4 J2): while the gate is not OPEN, the plasma
             // layer plays the baked reference-video frames at kFlipFps (the
             // atlas is loop-blended, so the modulo loop has no wrap pop) with
@@ -2082,10 +2030,10 @@ void Rifthub::tick(float dt, Scene& scene) {
                 e.emissive[c3] = baseTint[c3] +
                                  (kKawooshTint[c3] - baseTint[c3]) * surge01;
         }
-        // [2] fresnel rim: slow shimmer + kawoosh lift + a touch hotter when
+        // [1] fresnel rim: slow shimmer + kawoosh lift + a touch hotter when
         //     OPEN (the throat's grazing edge), capped.
-        if (p.membraneEntFirst + 2 < sceneN) {
-            Entity& e = ents[p.membraneEntFirst + 2];
+        if (p.membraneEntFirst + 1 < sceneN) {
+            Entity& e = ents[p.membraneEntFirst + 1];
             const float shim = 0.5f * (std::sin(m_time * twoPi * kRimShimmerHz + phase) + 1.0f);
             const float lift = open ? 0.25f : 0.0f;
             e.emissive[3] = capped(kRimEmBase + lift + kRimShimmerAmp * shim + kawooshEm * 0.55f,
@@ -2396,7 +2344,6 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_fxBeamMesh.valid()) { device.destroyMesh(m_fxBeamMesh);    m_fxBeamMesh = {}; }
     if (m_plasmaTex.valid())  { device.destroyTexture(m_plasmaTex);  m_plasmaTex  = {}; }
     if (m_throatTex.valid())  { device.destroyTexture(m_throatTex);  m_throatTex  = {}; }
-    if (m_vistaTex.valid())   { device.destroyTexture(m_vistaTex);   m_vistaTex   = {}; }
     if (m_mrFlat.valid())     { device.destroyTexture(m_mrFlat);     m_mrFlat     = {}; }
     if (m_mrWet.valid())      { device.destroyTexture(m_mrWet);      m_mrWet      = {}; }
     for (auto& h : m_mrGate)
@@ -2594,7 +2541,7 @@ bool runRifthubSelfTest() {
     //       the procedural nebula must HOLD (same handle) — the graceful
     //       fallback seam is exercised on whichever side this box is on.
     {
-        const uint32_t plasmaEnt = hub.portal(0).membraneEntFirst + 1;
+        const uint32_t plasmaEnt = hub.portal(0).membraneEntFirst + 0;   // v3: [0] = plasma
         const uint32_t tex0 = scene.entities()[plasmaEnt].emissiveTex.id;
         for (int s = 0; s < 30; ++s) hub.tick(1.0f / 60.0f, scene);
         const uint32_t tex1 = scene.entities()[plasmaEnt].emissiveTex.id;
@@ -2608,7 +2555,7 @@ bool runRifthubSelfTest() {
     // Capture the IDLE-state plasma texture id before any trigger fires (T8
     // asserts the OPEN state swapped it to the throat texture).
     const uint32_t idlePlasmaTexId =
-        scene.entities()[hub.portal(0).membraneEntFirst + 1].emissiveTex.id;
+        scene.entities()[hub.portal(0).membraneEntFirst + 0].emissiveTex.id;
 
     // T4 — entering each portal's trigger volume (a point inside it, via the
     //      shared TriggerSystem) latches THAT portal's `activated` flag + flips
@@ -2650,7 +2597,7 @@ bool runRifthubSelfTest() {
         // this test samples). 3 s > kKawooshDur.
         for (int s = 0; s < 180; ++s) hub.tick(1.0f / 60.0f, scene);
         hub.tick(0.0f, scene);   // sample at a known phase
-        const uint32_t plasmaEnt = p.membraneEntFirst + 1;
+        const uint32_t plasmaEnt = p.membraneEntFirst + 0;
         const float ring0 = scene.entities()[p.ringEntFirst].emissive[3];
         const float chev0 = scene.entities()[p.chevronEntFirst].emissive[3];
         const float core0 = scene.entities()[p.coreEnt].emissive[3];
@@ -2690,12 +2637,10 @@ bool runRifthubSelfTest() {
         for (int s = 0; s < 120; ++s) {
             hub.tick(1.0f / 60.0f, scene);
             const auto& ents = scene.entities();
-            const float vista  = ents[p1.membraneEntFirst + 0].emissive[3];
-            const float plasma = ents[p1.membraneEntFirst + 1].emissive[3];
-            const float rim    = ents[p1.membraneEntFirst + 2].emissive[3];
+            const float plasma = ents[p1.membraneEntFirst + 0].emissive[3];
+            const float rim    = ents[p1.membraneEntFirst + 1].emissive[3];
             const float core   = ents[p1.coreEnt].emissive[3];
             const float inner  = ents[p1.coreInnerEnt].emissive[3];
-            if (vista  > kVistaEmCap  + 1e-4f) underCap = false;
             if (plasma > kPlasmaEmCap + 1e-4f) underCap = false;
             if (rim    > kRimEmCap    + 1e-4f) underCap = false;
             if (core   > kCoreEmCap   + 1e-4f) underCap = false;
@@ -2709,7 +2654,7 @@ bool runRifthubSelfTest() {
             for (uint32_t t3 = 0; t3 < p1.conduitEntCount; ++t3)
                 if (ents[p1.conduitEntFirst + t3].emissive[3] > kConduitEmCap + 1e-4f)
                     underCap = false;
-            const Entity& pe = ents[p1.membraneEntFirst + 1];
+            const Entity& pe = ents[p1.membraneEntFirst + 0];
             if (!(pe.emissive[2] > pe.emissive[0] && pe.emissive[2] > pe.emissive[1]))
                 blueDominant = false;
         }
@@ -2729,21 +2674,51 @@ bool runRifthubSelfTest() {
 
     // T8 — MEMBRANE STATE MACHINE (PortalAnimated.mp4 arc): after activation +
     //      surge decay the portal is OPEN — the plasma disk swapped from the
-    //      idle nebula texture to the THROAT texture, and the vista has
-    //      dissolved (faded well below its idle base) — while a hypothetical
-    //      idle portal would still hold the nebula. (All portals were entered
-    //      in T4, so all 8 must be in the OPEN state by now.)
+    //      idle flipbook/nebula texture to the THROAT texture AND the swapped-in
+    //      texture is a VALID handle that still glows (the round-5 "activated
+    //      portal goes black" regression: a throat swap that lands an invalid or
+    //      unlit disk must FAIL here, not in the owner's face). All portals were
+    //      entered in T4, so all 8 must be in the OPEN state by now.
     {
-        bool swapped = true, dissolved = true;
+        bool swapped = true, lit = true;
         for (uint32_t i = 0; i < hub.portalCount(); ++i) {
             const RiftPortal& p = hub.portal(i);
-            const Entity& plasma = scene.entities()[p.membraneEntFirst + 1];
+            const Entity& plasma = scene.entities()[p.membraneEntFirst + 0];
             if (plasma.emissiveTex.id == idlePlasmaTexId) swapped = false;
             if (!p.throatOn) swapped = false;
-            if (p.vistaEm > 0.15f) dissolved = false;   // faded toward kVistaEmOpen
+            // The OPEN membrane must still be an EMITTER: valid emissive map,
+            // non-trivial strength, blue-dominant tint.
+            if (!plasma.emissiveTex.valid() || !plasma.tex.valid())   lit = false;
+            if (plasma.emissive[3] < kPlasmaEmBase)                   lit = false;
+            if (!(plasma.emissive[2] > plasma.emissive[0]))           lit = false;
         }
-        rhCheck(swapped && dissolved,
-                "T8 state machine: OPEN throat texture swapped in, vista dissolved");
+        rhCheck(swapped && lit,
+                "T8 state machine: OPEN throat swapped in AND still lit (never a black void)");
+    }
+
+    // T11 — TWO-SIDED MEMBRANE LAW (round 5, the owner's "from behind there is
+    //       no portal swirl" + "the activated portal is a BLACK VOID"): ONE root
+    //       cause — an opaque VISTA disk parked outward of the plasma disk. Two
+    //       assertions lock the fix:
+    //       (a) the membrane span is exactly [plasma, rim] — no third opaque
+    //           disk may be re-introduced outward of the storm;
+    //       (b) the shared membrane disk mesh is DOUBLE-WOUND (every front
+    //           triangle has its reverse-wound twin), so the one plasma entity
+    //           renders from both sides.
+    {
+        bool spanOk = true;
+        for (uint32_t i = 0; i < hub.portalCount(); ++i)
+            if (hub.portal(i).membraneEntCount != 2) spanOk = false;
+        // (b) verify the mesh the hub authors, straight from the generator.
+        const x3::prims::PrimMesh disk = makeMembraneDisk(kMembraneR, kMembraneDiskSegs);
+        bool twoSided = (disk.index.size() == (size_t)kMembraneDiskSegs * 6u);
+        for (uint32_t s = 0; s < kMembraneDiskSegs && twoSided; ++s) {
+            const uint32_t* f = &disk.index[(size_t)s * 6u];
+            // front (0,a,b) then back (0,b,a) — the reversed winding.
+            if (!(f[0] == f[3] && f[1] == f[5] && f[2] == f[4])) twoSided = false;
+        }
+        rhCheck(spanOk && twoSided,
+                "T11 two-sided membrane: span is [plasma,rim] only + the disk is double-wound");
     }
 
     // T9 — GATE MESH SOURCE (ROUND 3): the gate NEVER has an empty ring span.
