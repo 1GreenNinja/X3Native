@@ -5,15 +5,23 @@ pixels").
 
     python tools/make_membrane_flipbook.py [--video PATH] [--t0 S] [--t1 S]
                                            [--frames N] [--tile PX] [--out PATH]
+                                           [--loop-blend N]
 
 WHAT IT DOES
   1. Extracts N (default 48) evenly-spaced frames from docs/reference/
      PortalAnimated.mp4 via ffmpeg. The 10 s video plays the full activation
-     arc (IDLE nebula ~0-3 s, SURGE vortex ~3-7 s, OPEN throat ~7-10 s); the
-     engine wires this atlas as the IDLE state's plasma layer (SURGE/OPEN keep
-     their approved engine behaviours compositing on top), so the DEFAULT span
-     samples only the idle segment (t 0.0..3.2 s). Override --t0/--t1 to bake
-     other spans (e.g. a throat flipbook later).
+     arc, and ROUND 6 bakes ALL THREE membrane states from it (every state the
+     player sees is now the owner's real footage — no hand-coded spirals):
+        IDLE  t 0.00..3.20  -> membrane_flipbook.png        (looped, blended)
+        SURGE t 6.40..8.30  -> membrane_flipbook_surge.png  (--loop-blend 0:
+              played ONCE across the 1.6 s kawoosh; the vortex ring collapsing
+              into the spiral throat — it must NOT be blended back to its head)
+        OPEN  t 8.40..9.95  -> membrane_flipbook_open.png   (looped, blended:
+              the settled radial streaming throat; the surge span hands off to
+              it frame-continuously)
+     Override --t0/--t1/--out to bake other spans. The DISC CROP defaults are
+     shared by every state on purpose — same center/radius => the membrane does
+     not jump scale when the state swaps the atlas.
   2. Detects the circular membrane disc (it stays centered in the video):
      threshold the blue-dominant bright pixels over the mid frame, take the
      centroid + the 99th-percentile radius, and center-crops a square around
@@ -27,9 +35,10 @@ WHAT IT DOES
      (2048x1536 at the defaults) -> assets/textures/rifthub/
      membrane_flipbook.png, plus the fleet-convention copy at
      G:/Assets/X3Native/surface_library/membrane_flipbook/.
-  5. LOOP-BLEND: the last kLoopBlend frames are crossfaded toward the first
+  5. LOOP-BLEND: the last --loop-blend frames are crossfaded toward the first
      frames INSIDE the atlas, so the engine can run a plain modulo loop with
-     no wrap pop (no runtime crossfade needed for the seam).
+     no wrap pop (no runtime crossfade needed for the seam). Pass 0 for a
+     ONE-SHOT atlas (the SURGE), which must keep its true final frame.
 
 Deps: ffmpeg on PATH + Pillow + numpy (the SD-forge python env has both).
 Clean-room: our own reference video; no third-party art consulted.
@@ -49,7 +58,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 kCols, kRows = 8, 6
 kLoopBlend = 8          # tail frames crossfaded toward the head (seamless loop)
 kMaskStart = 0.80       # radial mask: fully opaque inside this fraction of half-width
-kFleetDir = r"G:\Assets\X3Native\surface_library\membrane_flipbook"
+kFleetRoot = r"G:\Assets\X3Native\surface_library"
 
 
 def log(*a):
@@ -124,6 +133,9 @@ def main():
     ap.add_argument("--cr", type=float, default=214.0)
     ap.add_argument("--auto", action="store_true",
                     help="auto-detect the disc instead of the calibrated crop")
+    ap.add_argument("--loop-blend", type=int, default=kLoopBlend, dest="loop_blend",
+                    help="tail frames crossfaded toward the head (0 = one-shot atlas, "
+                         "keeps its true final frame — use for the SURGE)")
     args = ap.parse_args()
 
     if args.frames != kCols * kRows:
@@ -166,10 +178,18 @@ def main():
             % (len(tiles), args.tile, args.tile, w, h))
 
         # LOOP-BLEND the tail toward the head so a plain modulo loop is seamless.
+        # A ONE-SHOT atlas (--loop-blend 0, the SURGE) skips this: it is played
+        # once across the kawoosh and must END on its real last frame (which is
+        # what the OPEN atlas picks up from).
         n = len(tiles)
-        for k in range(kLoopBlend):
-            i = n - kLoopBlend + k
-            t = (k + 1.0) / (kLoopBlend + 1.0)     # 0 -> 1 across the tail
+        nb = max(0, min(args.loop_blend, n - 1))
+        if nb:
+            log("loop-blending the last %d frames toward the head" % nb)
+        else:
+            log("ONE-SHOT atlas (no loop blend): the tail is the true final frame")
+        for k in range(nb):
+            i = n - nb + k
+            t = (k + 1.0) / (nb + 1.0)             # 0 -> 1 across the tail
             tiles[i] = tiles[i] * (1.0 - t) + tiles[(k + 1) % n] * t
 
         # Radial mask into RGB (engine samples RGB) + the alpha channel (library).
@@ -186,9 +206,12 @@ def main():
     log("WROTE", args.out, "(%dx%d)" % (out8.shape[1], out8.shape[0]))
 
     # Fleet-convention library copy (best-effort; G: may be absent on a laptop).
+    # One directory per atlas (membrane_flipbook / _surge / _open).
     try:
-        os.makedirs(kFleetDir, exist_ok=True)
-        dst = os.path.join(kFleetDir, os.path.basename(args.out))
+        fleet_dir = os.path.join(kFleetRoot,
+                                 os.path.splitext(os.path.basename(args.out))[0])
+        os.makedirs(fleet_dir, exist_ok=True)
+        dst = os.path.join(fleet_dir, os.path.basename(args.out))
         shutil.copyfile(args.out, dst)
         log("copied ->", dst)
     except OSError as e:
