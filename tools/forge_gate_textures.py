@@ -67,12 +67,27 @@ ALBEDO_MEAN = {
     "gate_ring_plate":   0.33,
     "gate_patina_plate": 0.30,
     "gate_piston_steel": 0.24,
+    # ROUND 8 — THE TUBE SETS. The gate is now ONE smooth machined tube (R7/R8),
+    # so ALL of the reference's greeble richness has to arrive through these maps.
+    # "we can have all the grok imagined stuff on it" — on it, not bolted to it.
+    "gate_tube_hull":    0.34,
+    "gate_tube_stencil": 0.31,
 }
 
 REF_CROPS = {
     "gate_ring_plate":   (300, 140, 480, 320),   # riveted plate band + rust bleed
     "gate_patina_plate": (330,  25, 510, 205),   # teal-oxide weathered plates
     "gate_piston_steel": (386, 588, 566, 766),   # dark machined hardware + bolts
+    # CROP LAW (learned the hard way): the reference frame is a LIT SCENE, and the
+    # thing in the middle of it is a BLUE PLASMA MEMBRANE. A crop that clips the
+    # membrane bakes a glowing blue smear into the ALBEDO — i.e. it paints plasma
+    # onto the metal, permanently, in a map that is supposed to be reflectance. The
+    # first R8 pass did exactly that. Both tube crops now sit entirely on the ring's
+    # LEFT FLANK, well clear of the ellipse (its left edge runs x~445 at y~240).
+    "gate_tube_hull":    (250, 105, 445, 300),   # upper-left ring band: weathered plates,
+                                                 # rivet rows, rust bleed, teal oxide
+    "gate_tube_stencil": (200, 330, 395, 525),   # lower-left ring: dark machined plates,
+                                                 # panel joins, markings, bolt clusters
 }
 
 # name -> (prompt, roughness 0..255, metallic 0..255, normal_strength)
@@ -100,6 +115,30 @@ SETS = {
         "marks, small hex bolts, near-black industrial hardware metal, flat "
         "even lighting, seamless tileable material, 4k pbr albedo",
         165, 200, 10.0), # rough .65 / metal .78 (machined steel, still past the SSR cutoff)
+
+    # ---- ROUND 8: THE TUBE SETS -------------------------------------------------
+    # The R8 gate is ONE smooth machined tube. Its silhouette carries only the big
+    # cut features (seams, bands, vents, the panel bay); EVERY rivet, plate join,
+    # weld, stencil and rust run has to live in these maps. So the relief goes way
+    # up (nstr 20-22 vs the 10-14 of the R5 sets): on a smooth tube a deep normal is
+    # the ONLY thing between "machined mass" and "grey plastic donut".
+    "gate_tube_hull": (
+        "orthographic top-down photo texture of a massive machined steel tube "
+        "hull, dense rows of flush rivets, welded plate joins with raised weld "
+        "beads, recessed panel seams, small louvre vents, hex bolt clusters, "
+        "grimy weathered grey-white paint over dark steel, rust bleeding from "
+        "every rivet, teal-oxide staining in the recesses, chipped edges, flat "
+        "even lighting, seamless tileable material, 4k pbr albedo",
+        172, 105, 21.0),  # rough .67 / metal .41 / VERY deep relief (the greebles)
+    # Warning stencils + hazard markings — the "industrial signage" channel the
+    # reference is full of and a bare tube badly needs.
+    "gate_tube_stencil": (
+        "orthographic top-down photo texture of weathered industrial steel plate "
+        "with stencilled warning markings, faded painted numbers and hazard "
+        "chevron stripes, peeling teal-green oxide paint, rust streaks, riveted "
+        "panel seams, grime buildup, flat even lighting, seamless tileable "
+        "material, 4k pbr albedo",
+        188, 80, 19.0),   # rough .74 / metal .31 (painted, stencilled, worn)
 }
 
 

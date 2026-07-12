@@ -49,6 +49,12 @@ public:
         m_inkOverride = false; m_texDirty = true;
     }
 
+    // Free every GPU resource build() created (the glass/bezel/arm/trace meshes +
+    // the baked hologram texture). Added for the RIFTHUB consoles: the hub authors
+    // EIGHT of these and its smoketest gates on allocationCount == 0, so the
+    // platform needed a teardown path. Safe to call unbuilt / twice.
+    void shutdown(x3::rhi::IRenderDevice& device);
+
     void setSubmitSink(SubmitFn fn) { m_submit = std::move(fn); }
 
     // ---- Readout (the displayed lines above the input field). ----
@@ -144,6 +150,7 @@ private:
     float          m_textColor[4] = { 0.85f, 0.97f, 1.0f, 1.0f };  // bright cyan-white, high contrast
     bool           m_inkOverride = false;   // W4-2: bake body rows with m_textColor (VIGIL orange)
     std::vector<uint32_t> m_decor;        // bezel / arm / trace entity ids (visual only)
+    std::vector<x3::rhi::MeshHandle> m_meshes;  // every mesh build() created (shutdown frees them)
     static constexpr size_t kMaxInput = 72;   // freeform questions need room (was 32)
 };
 

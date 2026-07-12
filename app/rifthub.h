@@ -69,9 +69,12 @@
 // calls drawFx() between beginFrame/endFrame (after Scene::render) to draw
 // the arcs + submit the motes. See rifthub.cpp's tick()/drawFx() constants.
 
+#include "holo_terminal.h"
+#include "rift_console.h"
 #include "scene.h"
 #include "surface_library.h"
 #include "trigger.h"
+#include "ui.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -130,13 +133,10 @@ struct RiftPortal {
     //  dot in the middle?". The footage has whatever center it needs. The blue
     //  POINT LIGHT the gate casts into the bay stays: that is lighting, not a
     //  fake sprite.)
-    // CHEVRON locking clamps — machined dark-metal housings (body + jaw
-    // flanges + face cap, all PBR-textured, never emissive) seated into the
-    // ring; the animated span is the thin amber-lit SLIT strip per clamp that
-    // flickers (the "powered gate" cue, capped ~2.0). Contiguous span,
-    // chevron 0 at 12 o'clock; tick() pulses each with a per-chevron phase.
-    uint32_t       chevronEntFirst = 0;   // first amber SLIT entity id
-    uint32_t       chevronEntCount = 0;   // number of slit cores (one per clamp)
+    // (CHEVRONS ARE GONE — round 7 addendum 2, "No chevrons needed". The nine
+    //  amber clamp slits and their entity span are deleted; the tube carries its
+    //  detail as CUT FEATURES + forged normal maps instead. What survives is the
+    //  recessed indicator TRACK below, which is in the owner's reference footage.)
     // Segmented amber RATCHET TRACK on the ring's inner-facing front edge
     // (confirmed by PortalAnimated.mp4): dim amber when dormant, a bright
     // chase sweeps the circumference during the ACTIVATION SURGE, and the
@@ -193,6 +193,36 @@ struct RiftPortal {
     // decays it and rides a bright bulge-out emissive envelope on the membrane
     // (the puddle-splash), then settles back to the steady event-horizon ripple.
     float          kawoosh = 0.0f;
+
+    // ===== ROUND 8 — THE OPERATOR PANEL + THE CONSOLE =========================
+    // The gate GLB now ships an LCD + button cluster + LED readout strips set INTO
+    // a recessed bay in the tube's face (tools/build_rifthub_gate.py). Those arrive
+    // as two extra material-group entities, and tick() drives their emissive off
+    // the console's live INSTABILITY — so the tube's own panel is part of the
+    // telegraph: it goes green -> amber -> red under the player's hand.
+    uint32_t       panelScreenEnt = 0;    // gate_screen group (the LCD) — 0 = absent
+    uint32_t       panelLedEnt    = 0;    // gate_led group (LEDs + lit button caps)
+    bool           hasPanel       = false;
+
+    // The console's tunable parameters + its last engaged outcome (rift_console.h).
+    RiftConsole    console;
+    // The destination this rift currently points at. Starts as worldName; a NOMINAL
+    // engage with a valid typed TARGET RE-POINTS it (a real, visible consequence:
+    // the holoterminal and the identity trim both change).
+    std::string    destination;
+
+    // ---- Consequences (persistent where it makes sense) ----------------------
+    // IMPLOSION: the membrane inverts and sucks INWARD, then the gate is DEAD.
+    // `implode` counts down the collapse; `dead` is FOREVER — a collapsed gate
+    // stays collapsed (the brief: "that gate goes DARK/dead afterwards").
+    float          implode = 0.0f;
+    bool           dead    = false;
+    // NOMINAL aperture boost: a stable rift dialled wide really is wider/brighter
+    // (the membrane disk is scaled by this).
+    float          aperture = 1.0f;
+    // Live emissive scale for the membrane while a console is being dialled — the
+    // rift snarls CONTINUOUSLY as instability climbs, before anything blows.
+    float          snarl = 0.0f;
 };
 
 // The Portal-Hub area. Build once after the device + physics + a TriggerSystem
@@ -263,6 +293,59 @@ public:
     // this to device.setPointLights each frame. Empty until build().
     const std::vector<x3::rhi::PointLight>& pointLights() const { return m_lights; }
 
+    // =======================================================================
+    // ROUND 8 — THE PORTAL CONSOLES (owner: "let the user interact with each
+    // portal ... they can do wonderful or disasterous things").
+    //
+    // In front of every rift hangs a HOLOTERMINAL in the project's canonical holo
+    // language (black glass slab, blue/green text, a shiny round-pipe frame, a
+    // single support pipe up to the ceiling so it HANGS). It reads out where the
+    // portal goes. Walk up, press [E], and it becomes a live control surface:
+    // glowing sliders + rotary knobs + a typed TARGET field (ui.h's R8 widgets).
+    //
+    // HOST CONTRACT (see world_hosts/host_rifthub.cpp):
+    //   1. each frame:  consoleInRange(eye)      -> the [E] prompt
+    //   2. on [E]:      openConsole(i) / closeConsole()
+    //   3. while open:  ALL input goes to the console (the cell-terminal
+    //                   discipline — typing must never fire the weapon or move
+    //                   the player) and the host calls updateConsole() between
+    //                   beginFrame/endFrame;
+    //   4. every frame: multiply the sim dt by timeScale(), add fovOffset() to the
+    //                   camera FOV, and apply shake()/damageFlash().
+    // =======================================================================
+
+    // Portal index whose console the eye is standing at (within `radiusM`), or -1.
+    int  consoleInRange(const x3::phys::Vec3& eye, float radiusM = 3.4f) const;
+    bool consoleOpen() const { return m_activeConsole >= 0; }
+    int  activeConsole() const { return m_activeConsole; }
+    void openConsole(int portalIdx);
+    void closeConsole();
+
+    // Draw + drive the OPEN console for one frame. Returns true on the frame the
+    // player commits ENGAGE (the outcome has already been APPLIED to the world:
+    // membrane, lights, geometry, alarms). No-op / false when no console is open.
+    bool updateConsole(x3::ui::UiContext& ui, float dt);
+
+    // Apply an outcome to a portal directly (the console path calls this; the
+    // self-test calls it too, which is how the consequences are gated).
+    void applyOutcome(uint32_t portalIdx, RiftOutcome outcome);
+
+    // ---- Global consequences the HOST must apply ---------------------------
+    // TEMPORAL RIFT: a sim-dt multiplier. Slow-motion with a stutter (time stops
+    // agreeing with itself). 1.0 when no rift is torn.
+    float timeScale() const;
+    // ROOM WARP: degrees to ADD to the camera FOV — a lens that breathes while
+    // space bends. 0 when the hub is not warped. (The hub's props/columns/beams
+    // physically bow and drift in tick(); this is the lens half of it.)
+    float fovOffset() const;
+    // IMPLOSION shockwave: camera-shake amplitude (m) and a red damage flash [0,1].
+    float shake() const { return m_shake; }
+    float damageFlash() const { return m_flash; }
+    // The alarm banner ("" = none). The hall lighting reacts on its own in tick().
+    const std::string& alarm() const { return m_alarm; }
+    // True while ANY hub-wide catastrophe is running (host: kill the [E] prompt).
+    bool catastrophe() const { return m_warp > 0.0f || m_temporal > 0.0f; }
+
     // Queries.
     bool built() const { return m_built; }
     // ROUND 3: true iff the Blender-authored gate GLB (tools/build_rifthub_gate.py
@@ -321,8 +404,6 @@ private:
     // the 0.6 reflection cutoff; the gate stays opaque lit PBR.
     // [0] = patina plates, [1] = steel, [2] = dark hardware.
     x3::rhi::TextureHandle     m_mrGate[3];
-    x3::rhi::TextureHandle     m_holoTexA;    // teal holo data-screen texture (variant A)
-    x3::rhi::TextureHandle     m_holoTexB;    // teal holo data-screen texture (variant B)
     // MEMBRANE FLIPBOOKS (ROUND 4 J2 "steal Grok's pixels", completed in ROUND 6):
     // ALL THREE membrane states are now the owner's REAL FOOTAGE. Each is a 48-tile
     // 8x6 atlas baked by tools/make_membrane_flipbook.py from a span of
@@ -391,6 +472,33 @@ private:
     uint32_t m_rng = 0x9E3779B9u;   // xorshift state (arc + mote jitter)
     // Per-frame submit scratch (member so drawFx does no heap alloc).
     mutable x3::rhi::IRenderDevice::ParticleInstance m_moteScratch[kMaxMotes];
+
+    // ---- ROUND 8: the consoles + the catastrophes --------------------------
+    // One hanging HOLOTERMINAL per portal (1:1 with m_portals). Held here rather
+    // than in RiftPortal so the portal struct stays a trivially-copyable POD-ish
+    // value (it is pushed into a vector during build).
+    std::vector<HoloTerminal> m_holos;
+    int   m_activeConsole = -1;    // portal index whose console is OPEN (-1 = none)
+    float m_uiClock = 0.0f;        // drives the control-glow pulse
+
+    // ROOM WARP: the hub visibly BENDS. m_warpEnts is the set of hall props
+    // (columns, beams, strip fixtures, machinery) whose base transforms are cached
+    // in m_warpBase, so tick() can bow/ripple/drift them around the warp source and
+    // put them back EXACTLY when it ends (no drift accumulation).
+    float m_warp = 0.0f;           // seconds remaining
+    float m_warpSrc[3] = {};       // the gate that tore it
+    std::vector<uint32_t> m_warpEnts;
+    std::vector<float>    m_warpBase;   // 3 floats per entity (the AUTHORED center)
+    bool  m_warpWasOn = false;          // edge: restore the props on the frame it ends
+
+    float m_temporal = 0.0f;       // TEMPORAL RIFT: seconds remaining
+    float m_shake    = 0.0f;       // IMPLOSION shockwave
+    float m_flash    = 0.0f;       // damage flash [0,1]
+    float m_alarmT   = 0.0f;       // alarm-light strobe clock
+    std::string m_alarm;           // banner text ("" = quiet)
+    // Snapshot of the hall fill lights' authored colours, so the ALARM can strobe
+    // them red and put them back EXACTLY (no cumulative drift across events).
+    std::vector<float> m_lightBase;   // 3 floats per light in m_lights
 
     // Spawn helpers (rifthub.cpp file-local logic uses these members).
     float frand();     // [0,1)

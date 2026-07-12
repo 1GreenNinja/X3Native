@@ -110,17 +110,22 @@ constexpr float kGateFillHubOff    = 2.2f;
 // box segments with a beefy squarish cross-section (real radial thickness + real
 // depth through the gate). Grey stone, NON-glowing (a faint emissive self-lift
 // only so it reads in shadow — it is NOT an energy source).
-constexpr uint32_t kRingSegments   = 40;     // deep box segments (N at 9° each — smooth torus)
+// ROUND 8 — THE GATE IS *ONE LARGE METALLIC TUBE*. These mirror the constants in
+// tools/build_rifthub_gate.py (keep them in sync; that file is the authority):
+//   tube centerline R = 2.60, tube r = 0.66 -> throat opens at 1.94, outer rim 3.26.
+// The membrane (1.895) and its fresnel rim (1.868) both clear the 1.94 throat.
+constexpr uint32_t kRingSegments   = 40;     // (fallback-only) deep box segments
 constexpr float    kRingY          = 2.2f;   // ring center height above the floor
-constexpr float    kRingR          = 2.05f;  // ring CENTERLINE radius
-constexpr float    kRingHalfRad    = 0.40f;  // radial half-thickness (0.80 m thick band)
-constexpr float    kRingHalfDepth  = 0.45f;  // half-depth through the gate (0.90 m deep)
-constexpr float    kRingStone[3]   = { 0.62f, 0.70f, 0.68f };  // teal-cast tint over the DARK trim_a set (~0.19 effective)
+constexpr float    kRingR          = 2.60f;  // TUBE CENTERLINE radius (was 2.05)
+constexpr float    kRingHalfRad    = 0.66f;  // (fallback) radial half-thickness
+constexpr float    kRingHalfDepth  = 0.66f;  // (fallback) half-depth through the gate
+constexpr float    kRingStone[3]   = { 0.62f, 0.70f, 0.68f };  // teal-cast tint over the DARK trim_a set
 constexpr float    kRingEmissive   = 0.06f;  // near-zero self-lift — the blue core + hall LIGHT the metal
-// TRUE TORUS ring params (step-2 AAA smooth ring; replaces the box segments):
-constexpr float    kRingTubeR      = 0.40f;  // tube radius => 0.80 m band / 0.80 m depth
-constexpr uint32_t kRingMajorSeg   = 64;     // segments around the ring centerline (smooth)
-constexpr uint32_t kRingMinorSeg   = 16;     // segments around the tube cross-section
+// FALLBACK torus (only when gate_ring.glb is absent): a plain heavy tube, matching
+// the authored one's mass so the world reads the same if the GLB never lands.
+constexpr float    kRingTubeR      = 0.66f;  // tube radius (was 0.40)
+constexpr uint32_t kRingMajorSeg   = 96;     // smooth silhouette
+constexpr uint32_t kRingMinorSeg   = 28;     // smooth highlight sweep
 // Ring inner edge = kRingR - kRingHalfRad = 1.65 m; the membrane pool's outer
 // band tops out near 1.585 m, so the opening stays clear (no clip).
 // Segment "long-axis" half-extent = half the chord between adjacent segment
@@ -130,37 +135,28 @@ inline float segHalfTangent(float ringR) {
     return ringR * std::sin(pi / (float)kRingSegments) * 1.06f;  // 6% overlap (chunky butt)
 }
 
-// ---- Chevron clamp HOUSINGS + amber slit cores (ROUND 2, "get industrial") -----
-// Round-1 kept a whole-shape emissive amber TRIANGLE as the core — still "flat
-// yellow party triangles" on Tim's live eyeball. Round 2: the triangle DIES.
-// Each chevron is now a machined clamp built from boxes only, every body panel
-// textured from the PBR library, and the ONLY emitter is a thin amber-lit SLIT
-// strip inset in the face plate (dark glass when unlit — near-black baseColor —
-// so nothing ever reads as saturated yellow plastic). Flicker capped at 2.0.
-constexpr uint32_t kChevronCount   = 9;      // 9 locking clamps (one prominent at top)
-constexpr float    kChevAmber[3]   = { 1.00f, 0.46f, 0.08f };  // amber-orange lock glow
-constexpr float    kChevSeatR      = 2.35f;  // seat radius (the clamp CANS' axis, on the tube crest)
-constexpr float    kChevMinEm      = 0.70f;  // amber slit flicker trough
-constexpr float    kChevMaxEm      = 1.55f;  // amber slit flicker peak (powered)
-constexpr float    kChevEmCap      = 2.00f;  // HARD cap incl. surge lift (the brief's ~2.0)
-constexpr float    kChevFlickerHz  = 0.85f;  // slow flicker rate (Hz)
-constexpr float    kChevPhaseStep  = 0.7f;   // per-chevron phase offset (rad)
-// Slit core: a thin horizontal lit strip (tangent-long), barely proud of the cap.
-constexpr float    kChevSlitHalfTan = 0.150f;
-constexpr float    kChevSlitHalfRad = 0.028f;
-constexpr float    kChevSlitHalfDep = 0.016f;
-constexpr float    kChevSlitDark[3] = { 0.05f, 0.035f, 0.02f };  // unlit = dark glass
-// Housing (dark gunmetal clamp body seated INTO the ring — spans the tube band):
-constexpr float    kHouseHalfTan   = 0.32f;  // body half-width (tangent)
-constexpr float    kHouseHalfRad   = 0.42f;  // body half-height (radial: grips the tube)
-constexpr float    kHouseHalfDep   = 0.15f;  // body proud half-thickness (outward)
-constexpr float    kFlangeHalfTan  = 0.080f; // side jaw flange bars
-constexpr float    kFlangeHalfRad  = 0.34f;
-constexpr float    kFlangeHalfDep  = 0.19f;  // jaws bite deeper than the body
-// Stepped face-cap plate (the machined bevel read: body -> cap -> slit).
-constexpr float    kCapHalfTan     = 0.22f;
-constexpr float    kCapHalfRad     = 0.28f;
-constexpr float    kCapHalfDep     = 0.050f;
+// ---- CHEVRONS: DELETED (ROUND 7 addendum 2 — owner: "No chevrons needed") ------
+// Nine amber-lit clamp housings used to ring the gate's face. They were a
+// Stargate-franchise borrow, they were never OUR machine, and across rounds 1-6
+// they were the single most persistent source of the toy read: round 1's flat
+// yellow triangles became round 2's machined housings with amber slits, and the
+// owner's verdict never actually moved. So they are gone — the housings, the jaw
+// flanges, the face caps, the slit cores, the flicker, the constants, the entity
+// span in RiftPortal, and the self-test assertions that policed them.
+//
+// What replaces them is NOT another ring of parts. It is the tube's own surface:
+// features CUT INTO it (segment seams, recessed bands, vent grilles, the indicator
+// groove, the operator bay) plus the SD3.5-forged normal/height maps that carry
+// the rivets, plate joins, welds, rust and stencils. Detail as SURFACE, not as
+// silhouette — R7's whole point.
+//
+// The one amber thing that survives is the segmented indicator TRACK below, and it
+// survives on evidence: it is visible in the owner's own reference footage, and it
+// now sits RECESSED INSIDE a groove machined into the tube (v = -152 deg), which is
+// exactly what R7 addendum 2 permits ("indicator lighting stays subtle and
+// integrated (recessed slits), never a ring of amber triangles").
+constexpr float    kChevAmber[3]   = { 1.00f, 0.46f, 0.08f };  // the amber the TRACK still uses
+constexpr float    kChevSlitDark[3] = { 0.05f, 0.035f, 0.02f }; // unlit emitter = dark glass
 
 // ---- Ring v2 over-plates + rivets (industrialize the smooth torus) -------------
 // Varied-depth riveted armor plates wrapped over the torus rim break the
@@ -206,8 +202,13 @@ constexpr float    kForgeDarkTint[3]  = { 1.00f, 1.00f, 1.05f };  // machined ha
 // Small amber segments ringing the gate's inner front edge. Dormant: dim.
 // SURGE: a bright chase sweeps the circumference (activation feedback).
 // OPEN: steady powered glow. All writes capped at kTrackEmCap.
+// ROUND 8: the track now seats INSIDE the groove machined into the tube at the
+// inner-front shoulder. The tube's surface at r = 2.02 sits at z = -0.315 (local),
+// and the groove cuts 0.058 deeper — so a segment placed 0.300 proud of the gate
+// plane lands INSIDE the groove: a recessed indicator slit, not a proud amber pip.
 constexpr uint32_t kTrackSegs      = 48;   // finer track on the bigger ring
-constexpr float    kTrackR         = 2.02f;   // segment center radius (rides the rounded track-bed collar)
+constexpr float    kTrackR         = 2.02f;   // segment center radius (rides the cut groove)
+constexpr float    kTrackProud     = 0.300f;  // hub-side offset from the gate plane
 constexpr float    kTrackHalfTan   = 0.070f;
 constexpr float    kTrackHalfRad   = 0.040f;
 constexpr float    kTrackHalfDep   = 0.018f;
@@ -440,6 +441,53 @@ constexpr float    kMoteRatePerSec    = 7.0f;            // steady spawn rate pe
 constexpr int      kMoteBurst         = 36;              // kawoosh burst count
 constexpr float    kMoteLifeMin       = 0.9f;
 constexpr float    kMoteLifeMax       = 2.2f;
+
+// ===========================================================================
+// ROUND 8 — THE OPERATOR PANEL, THE CONSOLE, AND THE CATASTROPHES
+// ===========================================================================
+// The tube's recessed bay (LCD + chunky buttons + LED readout strips) ships INSIDE
+// gate_ring.glb as two extra material groups. The engine's job is to make them a
+// LIVE part of the telegraph: the LCD and the LEDs shift green -> amber -> red and
+// pulse harder as the console's instability climbs, so the tube itself tells the
+// player the rift is getting angry — before anything blows.
+constexpr float kPanelScreenCalm[3] = { 0.20f, 0.85f, 0.95f };   // LCD: cool blue-cyan
+constexpr float kPanelScreenHot[3]  = { 1.00f, 0.22f, 0.12f };   // LCD: alarm red
+constexpr float kPanelScreenEm      = 1.55f;
+constexpr float kPanelScreenCap     = 2.20f;
+constexpr float kPanelLedCalm[3]    = { 0.25f, 1.00f, 0.55f };   // LEDs: green = nominal
+constexpr float kPanelLedHot[3]     = { 1.00f, 0.30f, 0.10f };   // LEDs: red = danger
+constexpr float kPanelLedEm         = 1.20f;
+constexpr float kPanelLedCap        = 2.00f;
+
+// The HANGING HOLOTERMINAL console in front of each rift (the canonical holo look:
+// black glass slab + round-pipe frame + a single support pipe to the ceiling).
+// Replaces the floating flat teal sign rectangles, which are DELETED.
+constexpr float kConsoleStandoff    = 4.35f;  // hub-side of the gate plane
+constexpr float kConsoleSideOff     = 0.0f;   // dead centre of the approach
+constexpr float kConsoleY           = 1.45f;  // glass centre height (readable standing)
+constexpr float kConsoleW           = 1.30f;
+constexpr float kConsoleH           = 0.86f;
+constexpr float kConsoleUseR        = 3.4f;   // [E] range
+
+// ---- CATASTROPHE timings + magnitudes -------------------------------------
+constexpr float kImplodeDur     = 2.40f;   // the collapse (membrane inverts + sucks in)
+constexpr float kImplodePullA   = 26.0f;   // inward acceleration on loose motes (m/s^2)
+constexpr float kImplodeShake   = 0.55f;   // shockwave camera shake (m)
+constexpr float kImplodeDamage  = 0.85f;   // red damage flash at the shockwave
+constexpr float kWarpDur        = 9.0f;    // ROOM WARP (disorienting, survivable)
+constexpr float kWarpAmp        = 0.85f;   // prop bow/drift amplitude (m)
+constexpr float kWarpWaveK      = 0.55f;   // ripple wavenumber (rad/m)
+constexpr float kWarpWaveHz     = 0.42f;   // ripple travel rate
+constexpr float kWarpFovDeg     = 22.0f;   // peak lens breathe (deg, added to FOV)
+constexpr float kTemporalDur    = 8.5f;    // TEMPORAL RIFT
+constexpr float kTemporalSlow   = 0.22f;   // deepest slow-motion
+constexpr float kTemporalStutHz = 3.1f;    // the stutter (time stops agreeing with itself)
+constexpr float kShakeDecay     = 2.2f;    // 1/s
+constexpr float kFlashDecay     = 1.4f;    // 1/s
+// The alarm strobe the hall lights inherit while a catastrophe runs.
+constexpr float kAlarmRed[3]    = { 1.00f, 0.16f, 0.10f };
+constexpr float kAlarmI         = 34.0f;
+constexpr float kAlarmHz        = 1.9f;
 
 // Portal authoring table — ORDER is the clockwise arrangement around the hub
 // starting at +X (angle 0 -> -X around -Y rotation; we iterate i=0..7 at
@@ -903,11 +951,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // MR texel: glTF packing G=roughness B=metallic -> fully rough dielectric.
         const uint8_t mrPx[4] = { 0, 255, 0, 255 };
         m_mrFlat = device.createTexture(mrPx, 1, 1, false);
-        // Teal holo data-screen textures (two variants; phase D dressing).
-        auto holoA = makeHoloDataRGBA(256, 0x1AB5u);
-        m_holoTexA = device.createTexture(holoA.data(), 256, 256, true);
-        auto holoB = makeHoloDataRGBA(256, 0x7C3Du);
-        m_holoTexB = device.createTexture(holoB.data(), 256, 256, true);
+        // (The teal holo data-screen textures are GONE with the floating signs —
+        //  round 8-C. The consoles are real HoloTerminals, which bake their own
+        //  glass texture from the readout text.)
         // MEMBRANE FLIPBOOKS (ROUND 6): all THREE membrane states play the
         // owner's reference video. One loader, three atlases (idle / surge /
         // open); each falls back on its own to the procedural map if its atlas
@@ -939,8 +985,18 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // riveted-armor set (gate_ring_plate) and the teal accent set
     // (gate_patina_plate) goes on the smaller 'steel' group — dark steel
     // dominant, teal as accent (the locked palette).
-    const SurfaceSet& sForgePlate = m_surf.get(device, "gate_ring_plate");
-    const SurfaceSet& sForgeTeal  = m_surf.get(device, "gate_patina_plate");
+    // ROUND 8 — THE TUBE SETS. The gate is now ONE smooth machined tube, so these
+    // maps ARE the detail: every rivet, plate join, weld bead, vent slat, rust run
+    // and stencil the reference has lives in gate_tube_hull's normal/height (forged
+    // img2img from a crop of the owner's own reference frame, nstr 21 — roughly 2x
+    // the relief of the R5 sets). Missing set -> the R5 sets -> the curated sets:
+    // the gate always has a surface.
+    const SurfaceSet& sTubeHull   = m_surf.get(device, "gate_tube_hull");
+    const SurfaceSet& sTubeSten   = m_surf.get(device, "gate_tube_stencil");
+    const SurfaceSet& sForgePlate = sTubeHull.ok ? sTubeHull
+                                                 : m_surf.get(device, "gate_ring_plate");
+    const SurfaceSet& sForgeTeal  = sTubeSten.ok ? sTubeSten
+                                                 : m_surf.get(device, "gate_patina_plate");
     const SurfaceSet& sForgeDark  = m_surf.get(device, "gate_piston_steel");
     // Wet-floor MR texel (glTF packing G=rough B=metal): low roughness => the
     // dark concrete takes tight specular + IBL sheen (the wet reflective read).
@@ -1040,7 +1096,18 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             e.emissive[0] = tint[0]; e.emissive[1] = tint[1]; e.emissive[2] = tint[2];
             e.emissive[3] = em;
             e.tag = (uint32_t)Tag::Static;
-            scene.add(e);
+            const uint32_t id = scene.add(e);
+            // ROUND 8 / ROOM WARP: remember this prop and the CENTER it was authored
+            // at. The hall's meshes are baked in WORLD space (identity transform), so
+            // there is no translation to read back at warp time — we have to record
+            // the center here or the ripple has no per-prop phase and the whole hall
+            // would just slide as one block. tick() writes the displacement into
+            // transform[12..14] (which start at 0) and zeroes it again when the warp
+            // ends, so nothing drifts permanently.
+            m_warpEnts.push_back(id);
+            m_warpBase.push_back(cx0);
+            m_warpBase.push_back(cy0);
+            m_warpBase.push_back(cz0);
             if (collide)
                 physics.addStaticMesh(b.cverts.data(), (uint32_t)(b.cverts.size() / 3),
                                       b.cindex.data(), (uint32_t)b.cindex.size());
@@ -1198,11 +1265,10 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ===== Portals (clockwise ring around the spawn) =====
     m_portals.clear();
     m_portals.reserve(kPortalCount);
-    // Each portal authors: 1 ring torus + kPlateSegments floor wedges +
-    // kChevronCount amber chevron prisms + 2 core disks (per-entity meshes),
-    // plus the 3 shared-mesh membrane entities (vista/plasma/rim).
-    m_portalMeshes.reserve(kPortalCount *
-        (1 + kPlateSegments + kChevronCount + 2));
+    // Each portal authors: the gate (GLB groups, or 1 fallback torus) +
+    // kPlateSegments floor wedges + kTrackSegs indicator segments, plus the
+    // shared-mesh membrane entities. (The chevrons are GONE — round 7.)
+    m_portalMeshes.reserve(kPortalCount * (1 + kPlateSegments + kTrackSegs + 2));
 
     const float twoPi = 6.2831853f;
     for (uint32_t i = 0; i < kPortalCount; ++i) {
@@ -1218,6 +1284,8 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.worldPos   = x3::phys::Vec3{ cx, 0.0f, cz };
         p.tint[0] = sp.tint[0]; p.tint[1] = sp.tint[1]; p.tint[2] = sp.tint[2];
         p.activated  = false;
+        p.destination = sp.worldName;      // round 8: re-targetable via the console
+        p.console.reset();
 
         // ---- Portal-local basis ---------------------------------------------
         // The "outward" axis (radial from hub center to portal center) is the
@@ -1269,6 +1337,30 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 // + the 1x1 m_mrGate override when the forged set is absent
                 // (fresh clone before LFS pull) — the ghost-glass fix holds on
                 // BOTH paths.
+                // ---- ROUND 8: the OPERATOR PANEL groups (gate_screen / gate_led).
+                // These are the LCD and the LED strips / lit button caps set INTO
+                // the tube's recessed bay. They are the ONLY emissive parts of the
+                // gate (R8-B: "emissive confined to the screen + LEDs, never the
+                // tube body") and tick() drives them off the console's instability.
+                const bool isScreen = nm.find("screen") != std::string::npos;
+                const bool isLed    = nm.find("led")    != std::string::npos;
+                if (isScreen || isLed) {
+                    Entity pe;
+                    pe.mesh = x3::rhi::MeshHandle{ dr.meshId };
+                    const float* col = isScreen ? kPanelScreenCalm : kPanelLedCalm;
+                    // Near-black glass body: an UNLIT indicator must read as dark
+                    // glass, never as coloured plastic (the round-2 law).
+                    pe.baseColor[0] = col[0] * 0.06f; pe.baseColor[1] = col[1] * 0.06f;
+                    pe.baseColor[2] = col[2] * 0.06f; pe.baseColor[3] = 1.0f;
+                    pe.emissive[0] = col[0]; pe.emissive[1] = col[1]; pe.emissive[2] = col[2];
+                    pe.emissive[3] = isScreen ? kPanelScreenEm : kPanelLedEm;
+                    pe.tag = (uint32_t)Tag::Prop;
+                    x3::asset::mulMat4(gateXf, dr.nodeTransform, pe.transform);
+                    const uint32_t pid = scene.add(pe);
+                    if (isScreen) p.panelScreenEnt = pid; else p.panelLedEnt = pid;
+                    p.hasPanel = true;
+                    continue;
+                }
                 const SurfaceSet* sf    = &sForgeDark;
                 const SurfaceSet* fall  = &sDark;
                 const float*      tint  = kForgeDarkTint;
@@ -1576,61 +1668,19 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             makeXform(e.transform, locX3, locY3, locZ3, at.x, at.y, at.z);
             scene.add(e);
         }
-        // Two TEAL holo data screens flanking the approach. ROUND 2: MOUNTED —
-        // a dark metal frame behind each pane, the post extended up BEHIND the
-        // frame (visible connection, no floating glass), and a mount clamp
-        // where frame meets post. Teal output dimmed ~30%.
-        for (int scr = -1; scr <= 1; scr += 2) {
-            const float sideR = 3.95f * (float)scr;
-            const x3::phys::Vec3 at = gatePt(sideR, 1.52f, -1.35f);
-            // Post — set back of the pane, running full height to behind the frame.
-            const float postOff = 0.055f;   // outward (away from the hub viewer)
-            AddedEntity post = addOrientedSurfBox(
-                scene, device, 0.032f, 0.725f, 0.032f,
-                dX, dY, dZ,
-                at.x + outwardX * postOff, 0.725f, at.z + outwardZ * postOff,
-                &sDark, kGunTint, 0.0f);
-            m_portalMeshes.push_back(post.mesh);
-            // Frame plate — thin dark slab just behind the glass, a hair larger.
-            AddedEntity frame = addOrientedSurfBox(
-                scene, device, 0.40f, 0.29f, 0.012f,
-                dX, dY, dZ,
-                at.x + outwardX * 0.022f, at.y, at.z + outwardZ * 0.022f,
-                &sTrim, kDarkTint, 0.0f);
-            m_portalMeshes.push_back(frame.mesh);
-            // Mount clamp — the visible frame->post connection block.
-            AddedEntity clamp = addOrientedSurfBox(
-                scene, device, 0.052f, 0.052f, 0.030f,
-                dX, dY, dZ,
-                at.x + outwardX * 0.040f, at.y, at.z + outwardZ * 0.040f,
-                &sDark, kGunTint, 0.0f);
-            m_portalMeshes.push_back(clamp.mesh);
-            // Glass pane with the holo readout (the pane IS the screen — the
-            // club OLED-glass lesson: a pane OVER a screen depth-occludes it).
-            x3::prims::PrimMesh pane = x3::prims::makeBox(0.36f, 0.25f, 0.012f, 0, 0, 0);
-            Entity e;
-            e.mesh = device.createMesh(pane.verts.data(), (uint32_t)pane.verts.size(),
-                                       pane.index.data(), (uint32_t)pane.index.size());
-            m_portalMeshes.push_back(e.mesh);
-            e.tex = (scr > 0) ? m_holoTexA : m_holoTexB;
-            e.baseColor[0] = 1.4f; e.baseColor[1] = 1.6f; e.baseColor[2] = 1.6f;
-            e.baseColor[3] = 1.0f;
-            e.emissive[0] = kHoloTeal[0]; e.emissive[1] = kHoloTeal[1];
-            e.emissive[2] = kHoloTeal[2]; e.emissive[3] = kHoloEm;
-            e.transparent = true;
-            e.glass.opacity = 0.88f;
-            e.glass.refraction = 0.0f;
-            e.glass.roughness = 0.06f;
-            e.glass.specular = 1.0f;
-            e.glass.tint[0] = 0.75f; e.glass.tint[1] = 1.0f; e.glass.tint[2] = 0.95f;
-            e.tag = (uint32_t)Tag::Prop;
-            // Face back toward the hub: pane thin axis (+Z local) = -outward.
-            const float pX[3] = { -rightX, 0.0f, -rightZ };
-            const float pY[3] = { 0.0f, 1.0f, 0.0f };
-            const float pZ[3] = { -outwardX, 0.0f, -outwardZ };
-            makeXform(e.transform, pX, pY, pZ, at.x, at.y, at.z);
-            scene.add(e);
-        }
+        // ---- THE FLOATING TEAL SIGNS ARE DELETED (round 8-C) ------------------
+        // Two flat teal rectangles used to hover either side of the approach. The
+        // owner's call: they go, and a real HOLOTERMINAL takes their place — the
+        // project's canonical holo language (BLACK GLASS slab, glowing blue/green
+        // text, a shiny metallic ROUND-PIPE frame around the glass, and a single
+        // support pipe running to the ceiling so it HANGS rather than floats).
+        // That object already exists as a platform (app/holo_terminal.*, the cell
+        // terminal), so the hub REUSES it instead of reinventing a sign: one per
+        // rift, standing in the approach, reading out where this portal goes — and
+        // it is the thing the player presses [E] on to open the control surface.
+        //
+        // (Authored after the loop, once every portal's basis is known — see the
+        //  holoterminal block below the portal loop.)
 
         // ---- Octagonal floor plate (8 wedge boxes; ROUND 2 industrial deck) --
         // Each wedge is a thin box tangent to a circle of radius kPlateRingR,
@@ -1691,80 +1741,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             scene.add(e);
         }
 
-        // ---- Chevron clamp HOUSINGS + amber SLIT cores (round 2) --------------
-        // Chevron 0 sits at 12 o'clock; the rest step clockwise. Each clamp is
-        // machined from boxes only: dark gunmetal BODY seated into the ring's
-        // tube band + two deeper side JAW flanges + a stepped steel face CAP —
-        // all textured from the PBR library, none emissive. Two passes so the
-        // ANIMATED span stays contiguous: housings first, then the 9 thin
-        // amber-lit SLIT strips tick() flickers (chevronEntFirst = the slits;
-        // near-black baseColor so a dim slit reads as dark glass, not yellow).
-        auto chevBasis = [&](uint32_t c, float out[3], float tan[3], float rad[3]) {
-            const float th = 1.5707963f - (float)c * (twoPi / (float)kChevronCount);
-            const float ct = std::cos(th);
-            const float st = std::sin(th);
-            rad[0] = ct * rightX; rad[1] = st; rad[2] = ct * rightZ;
-            tan[0] = -st * rightX; tan[1] = ct; tan[2] = -st * rightZ;
-            out[0] = outwardX; out[1] = 0.0f; out[2] = outwardZ;
-        };
-        const float houseProud = kRingHalfDepth + kHouseHalfDep * 0.35f;
-        const float capProud   = houseProud + kHouseHalfDep + kCapHalfDep;
-        // ROUND 3: with the authored GLB the clamp housings are REAL chamfered
-        // geometry baked into the gate mesh (cap faces at local z=-0.75, so the
-        // engine's amber slits below land 0.012 proud of them — seated, lit).
-        // The box housings only dress the fallback ring.
-        for (uint32_t c = 0; m_gateGlbActive == false && c < kChevronCount; ++c) {
-            float outv3[3], tanv3[3], radv3[3];
-            chevBasis(c, outv3, tanv3, radv3);
-            const float hcx = cx     + kChevSeatR * radv3[0] - outwardX * houseProud;
-            const float hcy = kRingY + kChevSeatR * radv3[1];
-            const float hcz = cz     + kChevSeatR * radv3[2] - outwardZ * houseProud;
-            // Clamp body (dark gunmetal, spans the tube band — seated INTO the ring).
-            AddedEntity body = addOrientedSurfBox(
-                scene, device, kHouseHalfTan, kHouseHalfRad, kHouseHalfDep,
-                tanv3, radv3, outv3, hcx, hcy, hcz,
-                &sDark, kGunTint, /*emStrength=*/0.02f);
-            m_portalMeshes.push_back(body.mesh);
-            // Two side jaw flanges — deeper than the body, the mechanical bite.
-            for (int fside = -1; fside <= 1; fside += 2) {
-                AddedEntity fl = addOrientedSurfBox(
-                    scene, device, kFlangeHalfTan, kFlangeHalfRad, kFlangeHalfDep,
-                    tanv3, radv3, outv3,
-                    hcx + tanv3[0] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
-                    hcy + tanv3[1] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
-                    hcz + tanv3[2] * (kHouseHalfTan + kFlangeHalfTan) * (float)fside,
-                    &sDark, kGunTint, /*emStrength=*/0.02f);
-                m_portalMeshes.push_back(fl.mesh);
-            }
-            // Stepped face-cap plate (body -> cap bevel step, brushed trim set).
-            AddedEntity cap = addOrientedSurfBox(
-                scene, device, kCapHalfTan, kCapHalfRad, kCapHalfDep,
-                tanv3, radv3, outv3,
-                cx     + kChevSeatR * radv3[0] - outwardX * capProud,
-                kRingY + kChevSeatR * radv3[1],
-                cz     + kChevSeatR * radv3[2] - outwardZ * capProud,
-                &sTrim, kDarkTint, /*emStrength=*/0.02f);
-            m_portalMeshes.push_back(cap.mesh);
-        }
-        const uint32_t chevronEntFirst = scene.size();
-        for (uint32_t c = 0; c < kChevronCount; ++c) {
-            float outv3[3], tanv3[3], radv3[3];
-            chevBasis(c, outv3, tanv3, radv3);
-            // The ONLY emitter: a thin amber slit strip barely proud of the cap.
-            const float slitProud = capProud + kCapHalfDep + kChevSlitHalfDep * 0.6f;
-            const float ccx = cx     + kChevSeatR * radv3[0] - outwardX * slitProud;
-            const float ccy = kRingY + kChevSeatR * radv3[1];
-            const float ccz = cz     + kChevSeatR * radv3[2] - outwardZ * slitProud;
-            AddedEntity ae = addOrientedEmissiveBox(
-                scene, device,
-                kChevSlitHalfTan, kChevSlitHalfRad, kChevSlitHalfDep,
-                tanv3, radv3, outv3,
-                ccx, ccy, ccz,
-                kChevAmber, /*emStrength=*/kChevMinEm, kChevSlitDark);
-            m_portalMeshes.push_back(ae.mesh);
-        }
-        p.chevronEntFirst = chevronEntFirst;
-        p.chevronEntCount = kChevronCount;
+        // ---- CHEVRONS: GONE (round 7 addendum 2 — "No chevrons needed") -------
+        // Nine clamp housings + nine amber slit cores used to be authored here (and
+        // nine more box housings for the fallback ring). All deleted. The gate is
+        // ONE TUBE; its detail is cut INTO the tube and carried by the forged
+        // normal/height maps. Nothing is bolted to its face any more.
+
 
         // ---- Segmented amber RATCHET TRACK (inner front edge; the video's
         // activation-feedback detail). Contiguous span for tick()'s chase.
@@ -1776,7 +1758,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float locX[3] = { -st * rightX, ct, -st * rightZ };
             const float locY[3] = { radX, radY, radZ };
             const float locZ[3] = { outwardX, 0.0f, outwardZ };
-            const float proud = kRingHalfDepth + kTrackHalfDep * 0.6f;
+            // ROUND 8: seat the segment INSIDE the groove machined into the tube
+            // (a recessed indicator slit — never a proud amber pip).
+            const float proud = kTrackProud;
             AddedEntity ae = addOrientedEmissiveBox(
                 scene, device, kTrackHalfTan, kTrackHalfRad, kTrackHalfDep,
                 locX, locY, locZ,
@@ -1895,6 +1879,42 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         triggers.add(tmin, tmax, sp.triggerId, /*enabled=*/true);
     }
 
+    // ===== ROUND 8-C: THE HANGING HOLOTERMINAL CONSOLES ========================
+    // One per rift, standing in the approach ~4.3 m hub-side of the gate. This is
+    // the project's CANONICAL holo object, reused wholesale from the platform that
+    // already ships it (app/holo_terminal.*): a BLACK GLASS slab with a shiny
+    // metallic ROUND-PIPE frame and a single support pipe running up to the
+    // ceiling, so it HANGS rather than floats. The readout is baked ON the glass
+    // (it tilts with the panel; it is not a camera-facing overlay), in the blue/green
+    // ink the holo language calls for.
+    //
+    // The glass says WHERE THIS PORTAL GOES. Press [E] and it becomes the control
+    // surface (updateConsole()).
+    m_holos.clear();
+    m_holos.resize(m_portals.size());
+    for (uint32_t i = 0; i < m_portals.size(); ++i) {
+        const RiftPortal& p = m_portals[i];
+        // Face the hub center: the terminal sits between the player and the gate,
+        // its glass turned back toward the approach.
+        const float hx = p.worldPos.x - p.outX * kConsoleStandoff + p.rightX * kConsoleSideOff;
+        const float hz = p.worldPos.z - p.outZ * kConsoleStandoff + p.rightZ * kConsoleSideOff;
+        // HoloTerminal::build's yaw turns its -Z face; our gates look inward along
+        // -outward, so the glass must face the hub center (i.e. along -outward too).
+        const float yaw = std::atan2(-p.outX, -p.outZ);
+        m_holos[i].build(scene, device, x3::phys::Vec3{ hx, kConsoleY, hz }, yaw,
+                         kConsoleW, kConsoleH, /*ceilingY=*/kHallWallH);
+        // Blue/green holo ink (the canonical status colours).
+        m_holos[i].setTextColor(0.42f, 1.0f, 0.78f, 1.0f);
+        m_holos[i].setLines({
+            std::string("RIFT ") + std::to_string(i + 1) + " / 8",
+            std::string("DEST  ") + p.destination,
+            "STATUS  DORMANT",
+            "BEARING 000.0  DRIFT 0.00",
+            "",
+            "[E] OPERATE",
+        });
+    }
+
     // ===== Per-portal blue CORE lights (cast the event horizon onto the stone) =====
     m_lights.clear();
     m_lights.reserve(m_portals.size() + 5);
@@ -1987,22 +2007,46 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
     }
 
+    // Snapshot the authored light colours: the ALARM strobes them red during a
+    // catastrophe and must restore them exactly (see tick()).
+    m_lightBase.clear();
+    m_lightBase.reserve(m_lights.size() * 3);
+    for (const auto& L : m_lights) {
+        m_lightBase.push_back(L.color[0]);
+        m_lightBase.push_back(L.color[1]);
+        m_lightBase.push_back(L.color[2]);
+    }
+
     physics.optimizeBroadphase();
     m_built = true;
     x3::logInfo("[rifthub] hub built with " + std::to_string(m_portals.size()) +
-                " Stargate-style portals (smooth procedural TORUS ring " +
-                std::to_string(kRingMajorSeg) + "x" + std::to_string(kRingMinorSeg) +
-                " + " + std::to_string(kChevronCount) +
-                " amber chevrons + octagonal plate + PLASMA-STORM membrane v2: "
-                "two-sided filament disk + fresnel rim, capped emissive)");
+                " rifts (ROUND 8: ONE-TUBE gate" +
+                (m_gateGlbActive ? std::string(" [authored GLB]")
+                                 : std::string(" [procedural fallback]")) +
+                ", NO chevrons, operator panel + hanging holoterminal console per "
+                "rift, PLASMA-STORM membrane, capped emissive)");
 }
 
 void Rifthub::tick(float dt, Scene& scene) {
     if (!m_built) return;
     m_time += dt;
+    m_uiClock += dt;
 
     const float twoPi = 6.2831853f;
-    const float chevOmega  = twoPi * kChevFlickerHz;   // slow amber chevron flicker
+
+    // ===== ROUND 8: THE CATASTROPHES ==========================================
+    // Decay the hub-wide events, then (below) apply what they do to the world.
+    // NOTE: dt here is the RAW frame time — a TEMPORAL RIFT must not slow down its
+    // own countdown, or it would never end.
+    if (m_warp     > 0.0f) { m_warp     -= dt; if (m_warp     < 0.0f) m_warp     = 0.0f; }
+    if (m_temporal > 0.0f) { m_temporal -= dt; if (m_temporal < 0.0f) m_temporal = 0.0f; }
+    if (m_shake    > 0.0f) { m_shake -= m_shake * kShakeDecay * dt; if (m_shake < 1e-3f) m_shake = 0.0f; }
+    if (m_flash    > 0.0f) { m_flash -= m_flash * kFlashDecay * dt; if (m_flash < 1e-3f) m_flash = 0.0f; }
+    const bool anyCatastrophe = m_warp > 0.0f || m_temporal > 0.0f;
+    bool anyImploding = false;
+    for (const auto& pp : m_portals) if (pp.implode > 0.0f) anyImploding = true;
+    if (!anyCatastrophe && !anyImploding && m_shake <= 0.0f) m_alarm.clear();
+    m_alarmT += dt;
     auto& ents = scene.entities();
     const uint32_t sceneN = (uint32_t)ents.size();
     auto capped = [](float v, float cap) { return v > cap ? cap : v; };
@@ -2026,33 +2070,118 @@ void Rifthub::tick(float dt, Scene& scene) {
             // is played against (the exponential envelope drives BRIGHTNESS only).
             surgeProg = tSince / kKawooshDur;
         }
+        // --- ROUND 8: the SNARL. The rift's live anger, read straight off the
+        //     console's dialled-in parameters. This is what makes danger READABLE:
+        //     the membrane, the tube's panel LEDs, the indicator track and the gate
+        //     light all ride this value, so the rift visibly gets angry WHILE the
+        //     player is still turning the knob — before anything blows. The active
+        //     console's portal snarls; the others settle back to calm.
+        {
+            const float want = (p.dead || p.implode > 0.0f)
+                                 ? 0.0f
+                                 : (((int)i == m_activeConsole) ? p.console.instability()
+                                                                : 0.0f);
+            const float k = 1.0f - std::exp(-6.0f * dt);   // frame-rate independent ease
+            p.snarl += (want - p.snarl) * k;
+        }
+
+        // --- IMPLOSION (the most spectacular consequence, and a PERMANENT one).
+        //     The membrane inverts: it collapses inward, spinning up, until it eats
+        //     itself. Then the shockwave lands and the gate is DEAD — forever.
+        if (p.implode > 0.0f) {
+            p.implode -= dt;
+            if (p.implode <= 0.0f) {
+                p.implode = 0.0f;
+                p.dead      = true;      // PERSISTENT: a collapsed gate stays collapsed
+                p.activated = false;
+                p.throatOn  = false;
+                p.kawoosh   = 0.0f;
+                p.snarl     = 0.0f;
+                m_shake = kImplodeShake;   // the shockwave
+                m_flash = kImplodeDamage;  // ...and it hurts
+                // The blast throws whatever the collapse had dragged in back OUT.
+                for (int b = 0; b < 64; ++b) {
+                    const float th = frand() * twoPi;
+                    Mote mo;
+                    mo.px = p.worldPos.x; mo.py = kRingY; mo.pz = p.worldPos.z;
+                    const float sp2 = 6.0f + 9.0f * frand();
+                    mo.vx = (std::cos(th) * p.rightX - p.outX * 0.5f) * sp2 + frandSym();
+                    mo.vy = std::sin(th) * sp2 * 0.5f + 1.5f;
+                    mo.vz = (std::cos(th) * p.rightZ - p.outZ * 0.5f) * sp2 + frandSym();
+                    mo.maxLife = mo.life = 0.7f + 1.0f * frand();
+                    mo.size = 0.02f + 0.05f * frand();
+                    mo.r = 1.0f; mo.g = 0.55f + 0.3f * frand(); mo.b = 0.35f;
+                    spawnMote(mo);
+                }
+                x3::logInfo(std::string("[rifthub] IMPLOSION: the ") + p.destination +
+                            " rift has COLLAPSED. That gate is dead.");
+            }
+        }
+
         // Membrane/gate state (PortalAnimated.mp4 arc), derived from the
         // existing gameplay latches: IDLE / SURGE (kawoosh) / OPEN (settled).
         const bool surging = p.kawoosh > 0.0f;
         const bool open    = p.activated && !surging;
+        const bool imploding = p.implode > 0.0f;
 
         // NOTE: the ring itself is NOT animated (metal doesn't pulse).
 
-        // --- Blue core light: slow hum-synced breathe onto the gate metal ---
+        // --- Blue core light: slow hum-synced breathe onto the gate metal.
+        //     ROUND 8: a DEAD gate casts nothing (the bay goes black — the most
+        //     legible possible statement that the rift is gone), and a snarling one
+        //     drags its own key light toward angry red.
         if (i < m_lights.size()) {
-            const float lS  = std::sin(m_time * (twoPi * kCoreLightFreqHz) + phase);
-            const float l01 = 0.5f * (lS + 1.0f);
-            float lI  = kCoreLightMin + (kCoreLightMax - kCoreLightMin) * l01;
-            lI += surge01 * 8.0f;   // the kawoosh also floods the bay with light
-            m_lights[i].color[0] = kCoreLightBlue[0] * lI;
-            m_lights[i].color[1] = kCoreLightBlue[1] * lI;
-            m_lights[i].color[2] = kCoreLightBlue[2] * lI;
+            if (p.dead) {
+                m_lights[i].color[0] = m_lights[i].color[1] = m_lights[i].color[2] = 0.0f;
+            } else {
+                const float lS  = std::sin(m_time * (twoPi * kCoreLightFreqHz) + phase);
+                const float l01 = 0.5f * (lS + 1.0f);
+                float lI  = kCoreLightMin + (kCoreLightMax - kCoreLightMin) * l01;
+                lI += surge01 * 8.0f;   // the kawoosh also floods the bay with light
+                if (imploding) {
+                    // The collapse pulls the light in with it, then flares.
+                    const float t = 1.0f - p.implode / kImplodeDur;
+                    lI *= 0.25f + 2.6f * t * t * t;
+                }
+                const float d = p.snarl;
+                for (int c3 = 0; c3 < 3; ++c3) {
+                    const float calm = kCoreLightBlue[c3];
+                    const float hot  = kAlarmRed[c3];
+                    m_lights[i].color[c3] = (calm + (hot - calm) * d) * lI;
+                }
+            }
         }
 
-        // --- Amber chevron SLIT cores: slow per-chevron flicker (powered gate);
-        //     the surge lifts every slit toward the CAP (locks slamming shut).
-        for (uint32_t c = 0; c < p.chevronEntCount; ++c) {
-            const uint32_t e = p.chevronEntFirst + c;
-            if (e >= sceneN) break;
-            const float chevPhase = phase + (float)c * kChevPhaseStep;
-            const float s01 = 0.5f * (std::sin(m_time * chevOmega + chevPhase) + 1.0f);
-            ents[e].emissive[3] = capped(kChevMinEm + (kChevMaxEm - kChevMinEm) * s01
-                                         + surge01 * 0.45f, kChevEmCap);
+        // --- THE OPERATOR PANEL ON THE TUBE (round 8-B) is part of the TELEGRAPH.
+        //     Its LCD and its LED strips are driven off p.snarl — the console's live
+        //     instability — so the tube itself goes green -> amber -> red and starts
+        //     to flicker under the player's hand, faster and hotter the closer the
+        //     rift gets to catastrophe. This is the same readable-danger contract the
+        //     glowing controls obey, mirrored onto the machine itself.
+        //     A DEAD gate's panel is simply off. Forever.
+        {
+            const float d = p.dead ? 0.0f : p.snarl;
+            const float hz = 0.7f + 8.0f * d * d;
+            const float blink = 0.5f * (std::sin(m_time * twoPi * hz + phase) + 1.0f);
+            const float depth = 0.55f * d * d;
+            const float mod = (1.0f - depth) + depth * blink;
+            if (p.panelScreenEnt && p.panelScreenEnt < sceneN) {
+                Entity& se = ents[p.panelScreenEnt];
+                for (int c3 = 0; c3 < 3; ++c3)
+                    se.emissive[c3] = kPanelScreenCalm[c3] +
+                        (kPanelScreenHot[c3] - kPanelScreenCalm[c3]) * d;
+                se.emissive[3] = p.dead ? 0.0f
+                    : capped((kPanelScreenEm + 0.5f * d + surge01 * 0.3f) * mod,
+                             kPanelScreenCap);
+            }
+            if (p.panelLedEnt && p.panelLedEnt < sceneN) {
+                Entity& le = ents[p.panelLedEnt];
+                for (int c3 = 0; c3 < 3; ++c3)
+                    le.emissive[c3] = kPanelLedCalm[c3] +
+                        (kPanelLedHot[c3] - kPanelLedCalm[c3]) * d;
+                le.emissive[3] = p.dead ? 0.0f
+                    : capped((kPanelLedEm + 0.6f * d + surge01 * 0.4f) * mod, kPanelLedCap);
+            }
         }
 
         // --- Amber RATCHET TRACK: dim when dormant; a bright CHASE sweeps the
@@ -2070,7 +2199,7 @@ void Rifthub::tick(float dt, Scene& scene) {
                 cph = cph * cph; cph = cph * cph; cph = cph * cph;   // ^8
                 em = kTrackEmIdle + surge01 * (0.55f + kTrackChase * cph);
             }
-            ents[e].emissive[3] = capped(em, kTrackEmCap);
+            ents[e].emissive[3] = p.dead ? 0.0f : capped(em, kTrackEmCap);
         }
 
         // --- ORANGE conduit flow: the emissive pulse travels ALONG the run
@@ -2083,7 +2212,7 @@ void Rifthub::tick(float dt, Scene& scene) {
                                         - (float)(t3 % 4u) * kConduitFlowK + phase);
             float em = kConduitEmBase + kConduitFlowAmp * (0.5f * (flow + 1.0f));
             em += surge01 * 0.35f;
-            ents[ce].emissive[3] = capped(em, kConduitEmCap);
+            ents[ce].emissive[3] = p.dead ? 0.0f : capped(em, kConduitEmCap);
         }
 
         // (ROUND 6: the energy-core disks are GONE — see the header. No emissive
@@ -2137,24 +2266,48 @@ void Rifthub::tick(float dt, Scene& scene) {
             }
             const bool footage = !book->empty();
             const float dir = (i & 1u) ? -1.0f : 1.0f;   // alternate spin direction
-            const float spin = kPlasmaSpinRadS * (open ? kPlasmaSpinOpenX : 1.0f);
+            // ROUND 8: an IMPLODING membrane spins UP violently as it collapses.
+            float spin = kPlasmaSpinRadS * (open ? kPlasmaSpinOpenX : 1.0f);
+            if (imploding) {
+                const float t = 1.0f - p.implode / kImplodeDur;   // 0 -> 1
+                spin *= 1.0f + 34.0f * t * t;
+            }
             // Continuous angle across the state change: integrate instead of
             // evaluating a*t (a rate jump would snap the disk).
             p.spinAngle += spin * dir * dt;
             const float a = p.spinAngle + phase;
             const float ca = std::cos(a), sa = std::sin(a);
-            const float rx[3] = {  ca * rightv[0] + sa * upv[0],
-                                   ca * rightv[1] + sa * upv[1],
-                                   ca * rightv[2] + sa * upv[2] };
-            const float ry[3] = { -sa * rightv[0] + ca * upv[0],
-                                  -sa * rightv[1] + ca * upv[1],
-                                  -sa * rightv[2] + ca * upv[2] };
+            // ---- APERTURE / INVERSION SCALE ------------------------------------
+            // A NOMINAL rift dialled wide really IS wider (p.aperture, set by the
+            // console). An IMPLODING one INVERTS: the disk is sucked in toward
+            // nothing. A DEAD one has no disk at all. This is the same basis matrix
+            // the membrane always used, with a scalar on its two in-plane axes.
+            float ms = p.aperture;
+            if (imploding) {
+                const float t = 1.0f - p.implode / kImplodeDur;
+                ms *= (1.0f - t) * (1.0f - t);      // eats itself, accelerating
+            }
+            if (p.dead) ms = 0.0f;
+            if (ms < 0.0f) ms = 0.0f;
+            const float rx[3] = { (ca * rightv[0] + sa * upv[0]) * ms,
+                                  (ca * rightv[1] + sa * upv[1]) * ms,
+                                  (ca * rightv[2] + sa * upv[2]) * ms };
+            const float ry[3] = { (-sa * rightv[0] + ca * upv[0]) * ms,
+                                  (-sa * rightv[1] + ca * upv[1]) * ms,
+                                  (-sa * rightv[2] + ca * upv[2]) * ms };
             makeXform(e.transform, rx, ry, outv, cx, kRingY, cz);
             const float wob = kPlasmaEmWobble *
                 (0.62f * std::sin(m_time * 1.15f * twoPi * 0.31f + phase) +
                  0.38f * std::sin(m_time * 1.15f * twoPi * 0.53f + phase * 2.1f));
             const float base = open || surging ? kPlasmaEmBaseOpen : kPlasmaEmBase;
-            e.emissive[3] = capped(base + wob + kawooshEm, kPlasmaEmCap);
+            // The collapse burns hotter as it shrinks; a dead gate emits NOTHING.
+            float lift = 0.0f;
+            if (imploding) {
+                const float t = 1.0f - p.implode / kImplodeDur;
+                lift = 0.9f * t * t;
+            }
+            e.emissive[3] = p.dead ? 0.0f
+                                   : capped(base + wob + kawooshEm + lift, kPlasmaEmCap);
             // Surge tint: deep blue -> pale blue (NOT white) with the envelope.
             // FOOTAGE rides the paler kFlipTint base (the video's frames carry
             // the reference's own blue and would double-blue under kPlasmaBlue);
@@ -2163,6 +2316,14 @@ void Rifthub::tick(float dt, Scene& scene) {
             for (int c3 = 0; c3 < 3; ++c3)
                 e.emissive[c3] = baseTint[c3] +
                                  (kKawooshTint[c3] - baseTint[c3]) * surge01;
+            // ROUND 8 — THE MEMBRANE TELEGRAPHS ITS OWN INSTABILITY. The storm slides
+            // from blue toward angry red as the console is dialled into danger (and
+            // all the way there during a collapse). Cap law intact: we SHIFT the hue,
+            // we never lift all three channels (that is how you get white).
+            const float ang = imploding ? 1.0f : p.snarl;
+            if (ang > 0.001f)
+                for (int c3 = 0; c3 < 3; ++c3)
+                    e.emissive[c3] += (kAlarmRed[c3] - e.emissive[c3]) * ang;
         }
         // [1] fresnel rim: slow shimmer + kawoosh lift + a touch hotter when
         //     OPEN (the throat's grazing edge), capped.
@@ -2170,8 +2331,9 @@ void Rifthub::tick(float dt, Scene& scene) {
             Entity& e = ents[p.membraneEntFirst + 1];
             const float shim = 0.5f * (std::sin(m_time * twoPi * kRimShimmerHz + phase) + 1.0f);
             const float lift = open ? 0.25f : 0.0f;
-            e.emissive[3] = capped(kRimEmBase + lift + kRimShimmerAmp * shim + kawooshEm * 0.55f,
-                                   kRimEmCap);
+            e.emissive[3] = p.dead ? 0.0f
+                : capped(kRimEmBase + lift + kRimShimmerAmp * shim + kawooshEm * 0.55f,
+                         kRimEmCap);
         }
 
         // --- Lightning-arc spawner — SURGE ONLY (round 5, owner's verdict on the
@@ -2222,12 +2384,96 @@ void Rifthub::tick(float dt, Scene& scene) {
     }
 
     // --- Integrate the mote pool (whole hub, one pass) ---
+    // ROUND 8: while a gate IMPLODES it does not merely LOOK wrong — it PULLS. Every
+    // loose mote in the hub accelerates toward the collapsing membrane, so the debris
+    // visibly streams into the throat (the brief: "props/debris drag toward it").
     for (int m = 0; m < kMaxMotes; ++m) {
         Mote& mo = m_motes[m];
         if (mo.life <= 0.0f) continue;
         mo.life -= dt;
+        for (const auto& pp : m_portals) {
+            if (pp.implode <= 0.0f) continue;
+            const float dx = pp.worldPos.x - mo.px;
+            const float dy = kRingY        - mo.py;
+            const float dz = pp.worldPos.z - mo.pz;
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            const float d  = std::sqrt(d2 > 1e-4f ? d2 : 1e-4f);
+            // 1/r falloff, clamped near the throat so nothing goes ballistic.
+            const float g = kImplodePullA / (d > 1.2f ? d : 1.2f);
+            mo.vx += (dx / d) * g * dt;
+            mo.vy += (dy / d) * g * dt;
+            mo.vz += (dz / d) * g * dt;
+            if (d < 0.35f) mo.life = 0.0f;   // swallowed
+        }
         mo.px += mo.vx * dt; mo.py += mo.vy * dt; mo.pz += mo.vz * dt;
         mo.vx -= mo.vx * 0.6f * dt; mo.vz -= mo.vz * 0.6f * dt;   // gentle drag
+    }
+
+    // ===== ROOM WARP — the hub physically BENDS ================================
+    // A travelling radial ripple out of the gate that tore it: every hall prop is
+    // pushed along its own outward direction (walls bow, columns lean, beams and
+    // machinery drift and sway), amplitude falling with distance, eased in and out
+    // so nothing snaps. The LENS half of the effect is fovOffset(), which the host
+    // adds to the camera FOV.
+    //
+    // Displacements are written ABSOLUTELY from the authored base each frame, never
+    // accumulated, so when the warp ends the hall is restored EXACTLY. (These hall
+    // meshes are baked in world space, so their base translation is 0.)
+    {
+        auto& wents = scene.entities();
+        const uint32_t wn = (uint32_t)m_warpEnts.size();
+        const bool warping = m_warp > 0.0f;
+        float env = 0.0f;
+        if (warping) {
+            const float t = 1.0f - m_warp / kWarpDur;          // 0 -> 1
+            env = (t < 0.12f) ? (t / 0.12f)
+                              : (t > 0.75f ? (1.0f - t) / 0.25f : 1.0f);
+            if (env < 0.0f) env = 0.0f;
+        }
+        if (warping || m_warpWasOn) {
+            for (uint32_t k = 0; k < wn; ++k) {
+                const uint32_t e = m_warpEnts[k];
+                if (e >= (uint32_t)wents.size()) continue;
+                const float bx = m_warpBase[k * 3 + 0];
+                const float by = m_warpBase[k * 3 + 1];
+                const float bz = m_warpBase[k * 3 + 2];
+                float ox = 0.0f, oy = 0.0f, oz = 0.0f;
+                if (warping) {
+                    const float dx = bx - m_warpSrc[0];
+                    const float dz = bz - m_warpSrc[2];
+                    const float d  = std::sqrt(dx * dx + dz * dz);
+                    const float ux = (d > 1e-3f) ? dx / d : 1.0f;
+                    const float uz = (d > 1e-3f) ? dz / d : 0.0f;
+                    const float w = std::sin(d * kWarpWaveK - m_time * twoPi * kWarpWaveHz);
+                    const float fall = 1.0f / (1.0f + d * 0.045f);
+                    const float amp = kWarpAmp * env * fall;
+                    ox = ux * w * amp;
+                    oz = uz * w * amp;
+                    oy = std::cos(d * kWarpWaveK * 0.8f - m_time * twoPi * kWarpWaveHz * 0.7f)
+                         * amp * 0.55f * (by > 0.5f ? 1.0f : 0.35f);
+                }
+                wents[e].transform[12] = ox;
+                wents[e].transform[13] = oy;
+                wents[e].transform[14] = oz;
+            }
+        }
+        m_warpWasOn = warping;
+    }
+
+    // ===== ALARM: the hall LIGHTING reacts ====================================
+    // Any catastrophe strobes the hall's fill rig red; the authored colours are
+    // restored exactly from m_lightBase the moment the event ends.
+    {
+        const bool alarming = m_warp > 0.0f || m_temporal > 0.0f || anyImploding;
+        const uint32_t first = (uint32_t)m_portals.size();   // [0..N) are the gate lights
+        const float strobe = 0.5f * (std::sin(m_alarmT * twoPi * kAlarmHz) + 1.0f);
+        for (uint32_t k = first; k < m_lights.size() && (k * 3 + 2) < m_lightBase.size(); ++k)
+            for (int c3 = 0; c3 < 3; ++c3) {
+                const float base = m_lightBase[k * 3 + c3];
+                m_lights[k].color[c3] = alarming
+                    ? (base * 0.30f + kAlarmRed[c3] * kAlarmI * strobe * 0.5f)
+                    : base;
+            }
     }
 }
 
@@ -2525,8 +2771,8 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_mrWet.valid())      { device.destroyTexture(m_mrWet);      m_mrWet      = {}; }
     for (auto& h : m_mrGate)
         if (h.valid()) { device.destroyTexture(h); h = {}; }
-    if (m_holoTexA.valid())   { device.destroyTexture(m_holoTexA);   m_holoTexA   = {}; }
-    if (m_holoTexB.valid())   { device.destroyTexture(m_holoTexB);   m_holoTexB   = {}; }
+    for (auto& h : m_holos) h.shutdown(device);   // round 8: the hanging consoles
+    m_holos.clear();
     for (auto& h : m_flipTex) if (h.valid()) device.destroyTexture(h);
     m_flipTex.clear();
     for (auto& h : m_flipSurgeTex) if (h.valid()) device.destroyTexture(h);
@@ -2617,6 +2863,177 @@ bool Rifthub::allActivated() const {
 }
 
 // ===========================================================================
+// ROUND 8 — THE CONSOLES + THE CONSEQUENCES
+// ===========================================================================
+int Rifthub::consoleInRange(const x3::phys::Vec3& eye, float radiusM) const {
+    if (!m_built) return -1;
+    int   best = -1;
+    float bestD2 = radiusM * radiusM;
+    for (uint32_t i = 0; i < m_portals.size(); ++i) {
+        const RiftPortal& p = m_portals[i];
+        // The console HANGS in the approach, hub-side of the gate — that is what the
+        // player walks up to, not the gate itself.
+        const float hx = p.worldPos.x - p.outX * kConsoleStandoff;
+        const float hz = p.worldPos.z - p.outZ * kConsoleStandoff;
+        const float dx = eye.x - hx, dz = eye.z - hz;
+        const float d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; best = (int)i; }
+    }
+    return best;
+}
+
+void Rifthub::openConsole(int portalIdx) {
+    if (portalIdx < 0 || portalIdx >= (int)m_portals.size()) return;
+    m_activeConsole = portalIdx;
+    if ((size_t)portalIdx < m_holos.size()) m_holos[(size_t)portalIdx].setActive(true);
+}
+
+void Rifthub::closeConsole() {
+    if (m_activeConsole >= 0 && (size_t)m_activeConsole < m_holos.size())
+        m_holos[(size_t)m_activeConsole].setActive(false);
+    m_activeConsole = -1;
+}
+
+void Rifthub::applyOutcome(uint32_t portalIdx, RiftOutcome outcome) {
+    if (portalIdx >= m_portals.size()) return;
+    RiftPortal& p = m_portals[portalIdx];
+    if (p.dead) return;   // a collapsed gate does not answer any more. Ever.
+
+    switch (outcome) {
+    case RiftOutcome::Nominal: {
+        // ---- WONDERFUL. Open + stabilise. -----------------------------------
+        p.activated = true;
+        p.kawoosh   = kKawooshDur;     // it surges, then settles into the OPEN throat
+        // RE-TARGET: a typed TARGET naming a real slice re-points the rift. A real,
+        // visible consequence — the hanging glass and the HUD prompt both change, and
+        // the gate now signposts somewhere else entirely.
+        if (const char* w = p.console.targetWorld()) {
+            if (p.destination != w) {
+                x3::logInfo(std::string("[rifthub] RE-TARGET: rift ") +
+                            std::to_string(portalIdx + 1) + "  " + p.destination +
+                            " -> " + w);
+                p.destination = w;
+                p.worldName   = w;   // both are static literals (kWorlds / kPortalTable)
+            }
+        }
+        // APERTURE: a stable rift dialled wide really IS wider and brighter — the
+        // membrane disk is scaled by this (0.72x .. 1.18x of the throat).
+        p.aperture = 0.72f + 0.46f * p.console.value[RP_Aperture];
+        m_alarm.clear();
+        break;
+    }
+    case RiftOutcome::Misfire:
+        // It tries, and it fails: a surge that never settles into an open throat.
+        p.kawoosh = kKawooshDur;
+        m_alarm = "MISFIRE";
+        break;
+
+    case RiftOutcome::Implosion:
+        // ---- DISASTROUS, and PERMANENT. -------------------------------------
+        p.implode = kImplodeDur;
+        p.kawoosh = 0.0f;
+        m_alarm   = "IMPLOSION - CONTAINMENT LOST";
+        x3::logInfo("[rifthub] IMPLOSION armed — the membrane is inverting.");
+        break;
+
+    case RiftOutcome::RoomWarp:
+        m_warp = kWarpDur;
+        m_warpSrc[0] = p.worldPos.x;
+        m_warpSrc[1] = kRingY;
+        m_warpSrc[2] = p.worldPos.z;
+        p.kawoosh = kKawooshDur;
+        m_alarm   = "SPATIAL DISTORTION";
+        x3::logInfo("[rifthub] ROOM WARP — the hall is bending.");
+        break;
+
+    case RiftOutcome::TemporalRift:
+        m_temporal = kTemporalDur;
+        p.kawoosh  = kKawooshDur;
+        m_alarm    = "TEMPORAL RIFT";
+        x3::logInfo("[rifthub] TEMPORAL RIFT — time has stopped agreeing with itself.");
+        break;
+
+    case RiftOutcome::Breach:
+        // *** STUBBED, AND SAID SO. *** The bookkeeping, the alarm, the hall's red
+        // strobe and the destabilised gate are all LIVE. What is NOT authored is the
+        // thing that walks out. When it is, it hangs off exactly this case: spawn a
+        // hostile on the membrane plane (worldPos - outward*0.5, y = kRingY) and hand
+        // it to the host's enemy system. Nothing else has to change — the rule is
+        // already in kRiftRules, the console already reaches it, the player already
+        // gets the alarm.
+        p.kawoosh = kKawooshDur;
+        m_alarm   = "CONTAINMENT BREACH - INBOUND MASS";
+        x3::logInfo("[rifthub] CONTAINMENT BREACH (STUB: alarm + destabilise; the thing "
+                    "that comes THROUGH is not authored yet)");
+        break;
+
+    default:
+        break;
+    }
+    p.console.lastOutcome = outcome;
+}
+
+bool Rifthub::updateConsole(x3::ui::UiContext& ui, float dt) {
+    if (m_activeConsole < 0 || (size_t)m_activeConsole >= m_portals.size()) return false;
+    m_uiClock += dt;
+    RiftPortal& p = m_portals[(uint32_t)m_activeConsole];
+
+    char title[32];
+    std::snprintf(title, sizeof(title), "%u/%u", (unsigned)m_activeConsole + 1u,
+                  (unsigned)m_portals.size());
+    const bool engaged = drawRiftConsole(ui, p.console, title, p.destination.c_str(),
+                                         m_uiClock, p.dead);
+    if (engaged) {
+        applyOutcome((uint32_t)m_activeConsole, p.console.lastOutcome);
+        // Push the result onto the hanging glass, so the WORLD says it too — not just
+        // the overlay the player happens to be looking through.
+        if ((size_t)m_activeConsole < m_holos.size()) {
+            HoloTerminal& h = m_holos[(size_t)m_activeConsole];
+            h.setLines({
+                std::string("RIFT ") + std::to_string(m_activeConsole + 1) + " / " +
+                    std::to_string(m_portals.size()),
+                std::string("DEST  ") + p.destination,
+                std::string("STATUS  ") + (p.dead ? std::string("DESTROYED")
+                                                  : p.console.status),
+                std::string("LAST  ") + riftOutcomeName(p.console.lastOutcome),
+                "",
+                "[E] OPERATE",
+            });
+        }
+    }
+    return engaged;
+}
+
+float Rifthub::timeScale() const {
+    if (m_temporal <= 0.0f) return 1.0f;
+    // TEMPORAL RIFT: deep slow-motion with a STUTTER — time does not merely slow, it
+    // catches and skips. Eased in and out so the world never snaps back to speed.
+    const float t = 1.0f - m_temporal / kTemporalDur;      // 0 -> 1
+    float env = (t < 0.10f) ? (t / 0.10f)
+                            : (t > 0.80f ? (1.0f - t) / 0.20f : 1.0f);
+    if (env < 0.0f) env = 0.0f;
+    const float stut = std::sin(m_time * 6.2831853f * kTemporalStutHz);
+    // A hard quantized hitch ON TOP of the slow-mo: the world advances in visible
+    // lurches (the brief's "stuttered/echoed motion").
+    const float hitch = (stut > 0.55f) ? 2.6f : (stut < -0.75f ? 0.15f : 1.0f);
+    const float slow  = 1.0f + (kTemporalSlow - 1.0f) * env;
+    return slow * hitch;
+}
+
+float Rifthub::fovOffset() const {
+    if (m_warp <= 0.0f) return 0.0f;
+    // ROOM WARP's LENS: the FOV breathes, so what the player looks at stretches and
+    // compresses even where it is not physically moving. Paired with the props'
+    // travelling ripple in tick(), this is what makes the hall feel BENT.
+    const float t = 1.0f - m_warp / kWarpDur;
+    float env = (t < 0.12f) ? (t / 0.12f)
+                            : (t > 0.75f ? (1.0f - t) / 0.25f : 1.0f);
+    if (env < 0.0f) env = 0.0f;
+    const float breathe = std::sin(m_time * 6.2831853f * 0.33f);
+    return kWarpFovDeg * env * (0.35f + 0.5f * breathe);
+}
+
+// ===========================================================================
 // Headless self-test (--test-rifthub). Mirrors --test-act2caves' structure:
 // build on a HeadlessDevice + Jolt world, drive triggers/tick, assert.
 // ===========================================================================
@@ -2674,23 +3091,22 @@ bool runRifthubSelfTest() {
         rhCheck(ok, "T0b trigger ids are the distinct fresh 200-207 range");
     }
 
-    // T1 — each portal owns a contiguous span of stone-ring + amber-chevron +
-    //      ratchet-track + event-horizon membrane entities, and the spans index
-    //      valid scene entities. (ROUND 6: the two core-disk entities are GONE
-    //      — the fake dot in the middle of the footage — so no core span here.)
+    // T1 — each portal owns valid, in-range spans for the gate, the recessed
+    //      indicator track, and the membrane. (ROUND 6 killed the core disks;
+    //      ROUND 7 killed the CHEVRONS — so neither has a span any more, and this
+    //      test is the thing that would notice if one crept back.)
     {
         const uint32_t sceneN = scene.size();
         bool ok = sceneN > 0;
         for (uint32_t i = 0; i < hub.portalCount(); ++i) {
             const RiftPortal& p = hub.portal(i);
-            if (p.ringEntCount == 0 || p.chevronEntCount == 0) ok = false;
+            if (p.ringEntCount == 0) ok = false;
             if (p.membraneEntCount == 0 || p.trackEntCount == 0) ok = false;
-            if (p.ringEntFirst + p.ringEntCount > sceneN)      ok = false;
-            if (p.chevronEntFirst + p.chevronEntCount > sceneN) ok = false;
-            if (p.trackEntFirst + p.trackEntCount > sceneN)     ok = false;
+            if (p.ringEntFirst + p.ringEntCount > sceneN)         ok = false;
+            if (p.trackEntFirst + p.trackEntCount > sceneN)       ok = false;
             if (p.membraneEntFirst + p.membraneEntCount > sceneN) ok = false;
         }
-        rhCheck(ok, "T1 every portal owns valid ring/chevron/track/membrane entity spans");
+        rhCheck(ok, "T1 every portal owns valid gate/track/membrane entity spans");
     }
 
     // T2 — all 8 portal names map to REAL --world targets the host launches.
@@ -2781,7 +3197,7 @@ bool runRifthubSelfTest() {
         const uint32_t plasmaEnt = p.membraneEntFirst + 0;
         const uint32_t rimEnt    = p.membraneEntFirst + 1;
         const float ring0 = scene.entities()[p.ringEntFirst].emissive[3];
-        const float chev0 = scene.entities()[p.chevronEntFirst].emissive[3];
+        const float trk0  = scene.entities()[p.trackEntFirst].emissive[3];
         const float rim0  = scene.entities()[rimEnt].emissive[3];
         const float mem0  = scene.entities()[plasmaEnt].emissive[3];
         const float rot0  = scene.entities()[plasmaEnt].transform[1];  // basis X.y (spins in-plane)
@@ -2789,23 +3205,24 @@ bool runRifthubSelfTest() {
         // kPlasmaSpinRadS rotation to move appreciably.
         hub.tick(0.1f, scene);
         const float ring1 = scene.entities()[p.ringEntFirst].emissive[3];
-        const float chev1 = scene.entities()[p.chevronEntFirst].emissive[3];
+        const float trk1  = scene.entities()[p.trackEntFirst].emissive[3];
         const float rim1  = scene.entities()[rimEnt].emissive[3];
         const float mem1  = scene.entities()[plasmaEnt].emissive[3];
         const float rot1  = scene.entities()[plasmaEnt].transform[1];
         // (ROUND 6: the core-disk pulse is gone with the core disks; the RIM
         //  shimmer is now the second animated membrane layer this samples.)
-        bool moved = std::fabs(chev1 - chev0) > 1e-3f &&
-                     std::fabs(rim1  - rim0)  > 1e-4f &&
-                     std::fabs(mem1  - mem0)  > 1e-4f;
-        // Ring is authored once + never animated: emissive must not change.
+        bool moved = std::fabs(rim1 - rim0) > 1e-4f &&
+                     std::fabs(mem1 - mem0) > 1e-4f;
+        // The TUBE is authored once and never animated: metal doesn't pulse. (The
+        // only emissive parts of the gate are the panel's LCD + LEDs, which are
+        // separate entities — see T14.)
         bool ringStatic = std::fabs(ring1 - ring0) < 1e-6f;
-        // Chevron flicker stays within its declared [min,max] band.
-        bool bounded = chev1 >= kChevMinEm - 0.01f && chev1 <= kChevMaxEm + 0.01f;
+        // The recessed indicator track holds its OPEN glow under its cap.
+        bool bounded = trk1 <= kTrackEmCap + 0.01f && trk0 <= kTrackEmCap + 0.01f;
         // The storm rotates: the plasma disk's basis actually turned.
         bool rotates = std::fabs(rot1 - rot0) > 1e-5f;
         rhCheck(moved && ringStatic && bounded && rotates,
-                "T5 tick() advances chevron + rim + plasma storm; ring static; disk rotates");
+                "T5 tick() advances rim + plasma storm; the TUBE stays static; disk rotates");
     }
 
     // T6 — EMISSIVE CAP LAW (the blown-white v1 fix, the heart of membrane
@@ -2825,8 +3242,7 @@ bool runRifthubSelfTest() {
             const float rim    = ents[p1.membraneEntFirst + 1].emissive[3];
             if (plasma > kPlasmaEmCap + 1e-4f) underCap = false;
             if (rim    > kRimEmCap    + 1e-4f) underCap = false;
-            // Ring v2: chevron cores + ratchet-track chase obey their caps too.
-            if (ents[p1.chevronEntFirst].emissive[3] > kChevEmCap + 1e-4f) underCap = false;
+            // The recessed indicator track's chase obeys its cap too.
             for (uint32_t t3 = 0; t3 < p1.trackEntCount; ++t3)
                 if (ents[p1.trackEntFirst + t3].emissive[3] > kTrackEmCap + 1e-4f)
                     underCap = false;
@@ -2992,6 +3408,209 @@ bool runRifthubSelfTest() {
                         ? "T9 gate GLB active: uniform authored-mesh span on all 8 portals"
                         : "T9 gate GLB absent: procedural fallback ring authored (1 span each)");
     }
+
+    // ======================= ROUND 8 ======================================
+
+    // T14 — NO CHEVRONS, AND AN OPERATOR PANEL INSTEAD (round 7 addendum 2 + 8-B).
+    //       The gate is ONE TUBE. Two things are asserted:
+    //         (a) the RiftPortal struct no longer carries a chevron span at all
+    //             (that is a compile-time fact — this test exists so the INTENT is
+    //             recorded), and the tube body is NOT an emitter: with the GLB
+    //             active, the first gate group's emissive is the texture-gated
+    //             ambient term, never a self-lit glow;
+    //         (b) when the authored GLB is live it ships the operator panel (an LCD
+    //             + LED groups), those entities exist, and they ARE emissive — the
+    //             R8-B law that emissive is confined to the screen and the LEDs.
+    {
+        bool ok = true;
+        for (uint32_t i = 0; i < hub.portalCount(); ++i) {
+            const RiftPortal& p = hub.portal(i);
+            if (hub.gateGlbActive()) {
+                if (!p.hasPanel) ok = false;                       // the bay must be there
+                if (!p.panelScreenEnt || !p.panelLedEnt) ok = false;
+                if (p.panelScreenEnt >= scene.size()) ok = false;
+                if (p.panelLedEnt    >= scene.size()) ok = false;
+                if (scene.entities()[p.panelScreenEnt].emissive[3] <= 0.0f) ok = false;
+                if (scene.entities()[p.panelLedEnt].emissive[3]    <= 0.0f) ok = false;
+            }
+            // The tube body itself must never be a lamp.
+            if (scene.entities()[p.ringEntFirst].emissive[3] > 0.35f) ok = false;
+        }
+        rhCheck(ok, hub.gateGlbActive()
+                    ? "T14 one-tube gate: no chevrons, an LCD+LED operator panel, and "
+                      "the tube body is not self-lit"
+                    : "T14 one-tube gate (procedural fallback): the tube body is not self-lit");
+    }
+
+    // T15 — THE CONSOLES EXIST AND ARE REACHABLE (round 8-C/D). One hanging
+    //       holoterminal per rift; standing at it puts it in [E] range; standing in
+    //       the middle of the hub puts you at none of them.
+    {
+        bool ok = true;
+        for (uint32_t i = 0; i < hub.portalCount(); ++i) {
+            const RiftPortal& p = hub.portal(i);
+            // The console hangs kConsoleStandoff hub-side of the gate.
+            const x3::phys::Vec3 at{ p.worldPos.x - p.outX * 4.35f, 1.6f,
+                                     p.worldPos.z - p.outZ * 4.35f };
+            if (hub.consoleInRange(at) != (int)i) ok = false;
+        }
+        if (hub.consoleInRange(x3::phys::Vec3{ 0, 1.6f, 0 }) != -1) ok = false;  // hub center
+        // Open / close bookkeeping.
+        hub.openConsole(0);
+        if (!hub.consoleOpen() || hub.activeConsole() != 0) ok = false;
+        hub.closeConsole();
+        if (hub.consoleOpen()) ok = false;
+        rhCheck(ok, "T15 one console per rift: [E] range resolves to the right one, "
+                    "open/close latches");
+    }
+
+    // T16 — THE TELEGRAPH IS WIRED TO THE MACHINE (addendum 3's whole point).
+    //       Dial the OPEN console into danger and the TUBE's own panel must react:
+    //       the LEDs shift toward red and the membrane's tint follows. This is what
+    //       makes the danger readable BEFORE anything blows — if this test fails,
+    //       the player gets no warning.
+    {
+        bool ok = true;
+        const uint32_t idx = 5;
+        hub.openConsole((int)idx);
+        RiftPortal& p5 = const_cast<RiftPortal&>(hub.portal(idx));
+        p5.console.reset();
+        for (int s = 0; s < 60; ++s) hub.tick(1.0f / 60.0f, scene);   // settle calm
+        const float ledG0 = p5.panelLedEnt ? scene.entities()[p5.panelLedEnt].emissive[1] : 1.0f;
+        const float ledR0 = p5.panelLedEnt ? scene.entities()[p5.panelLedEnt].emissive[0] : 0.0f;
+        const float snarl0 = p5.snarl;
+        // Now wind the containment field off under full power — the coupling that
+        // kills you. instability() saturates; the panel must go red.
+        p5.console.value[RP_Power] = 0.95f;
+        p5.console.value[RP_Containment] = 0.05f;
+        for (int s = 0; s < 120; ++s) hub.tick(1.0f / 60.0f, scene);
+        const float ledG1 = p5.panelLedEnt ? scene.entities()[p5.panelLedEnt].emissive[1] : 0.0f;
+        const float ledR1 = p5.panelLedEnt ? scene.entities()[p5.panelLedEnt].emissive[0] : 1.0f;
+        if (!(p5.snarl > snarl0 + 0.5f)) ok = false;          // the rift IS angrier
+        if (p5.panelScreenEnt) {                              // ...and it SHOWS it
+            if (!(ledR1 > ledR0 + 0.3f)) ok = false;          // red climbs
+            if (!(ledG1 < ledG0 - 0.2f)) ok = false;          // green falls
+        }
+        hub.closeConsole();
+        rhCheck(ok, "T16 telegraph: dialling into danger makes the tube's panel LEDs "
+                    "go red and the rift snarl BEFORE anything fires");
+    }
+
+    // T17 — IMPLOSION IS REAL, AND IT IS PERMANENT (the headline catastrophe).
+    //       Fire it on rift 6 and assert the whole chain:
+    //         * the membrane INVERTS (its disk scale collapses toward zero),
+    //         * debris is DRAGGED IN (a mote parked next to the gate accelerates
+    //           toward it),
+    //         * a shockwave lands (camera shake + damage flash),
+    //         * and afterwards the gate is DEAD — dark membrane, dark track, no
+    //           light in its bay — and it STAYS dead: a second engage does nothing.
+    {
+        const uint32_t idx = 6;
+        RiftPortal& p6 = const_cast<RiftPortal&>(hub.portal(idx));
+        const uint32_t plasmaEnt = p6.membraneEntFirst + 0;
+        const float scale0 = std::sqrt(
+            scene.entities()[plasmaEnt].transform[0] * scene.entities()[plasmaEnt].transform[0] +
+            scene.entities()[plasmaEnt].transform[1] * scene.entities()[plasmaEnt].transform[1] +
+            scene.entities()[plasmaEnt].transform[2] * scene.entities()[plasmaEnt].transform[2]);
+
+        hub.applyOutcome(idx, RiftOutcome::Implosion);
+        const bool armed = p6.implode > 0.0f;
+
+        // Mid-collapse: the disk must be visibly SMALLER than it was.
+        for (int s = 0; s < 100; ++s) hub.tick(1.0f / 60.0f, scene);   // ~1.7 s in
+        const float scaleMid = std::sqrt(
+            scene.entities()[plasmaEnt].transform[0] * scene.entities()[plasmaEnt].transform[0] +
+            scene.entities()[plasmaEnt].transform[1] * scene.entities()[plasmaEnt].transform[1] +
+            scene.entities()[plasmaEnt].transform[2] * scene.entities()[plasmaEnt].transform[2]);
+        const bool inverting = scaleMid < scale0 * 0.6f && p6.implode > 0.0f;
+
+        // Let it finish: shockwave + a dead gate.
+        for (int s = 0; s < 60; ++s) hub.tick(1.0f / 60.0f, scene);
+        const bool blew  = hub.shake() > 0.0f && hub.damageFlash() > 0.0f;
+        const bool dead  = p6.dead && !p6.activated;
+        const bool darkM = scene.entities()[plasmaEnt].emissive[3] <= 1e-4f;
+        const bool darkT = scene.entities()[p6.trackEntFirst].emissive[3] <= 1e-4f;
+        const bool darkL = hub.pointLights()[idx].color[0] <= 1e-4f &&
+                           hub.pointLights()[idx].color[2] <= 1e-4f;
+        // PERSISTENT: engaging a corpse changes nothing.
+        hub.applyOutcome(idx, RiftOutcome::Nominal);
+        hub.tick(1.0f / 60.0f, scene);
+        const bool stillDead = p6.dead && !p6.activated &&
+                              scene.entities()[plasmaEnt].emissive[3] <= 1e-4f;
+
+        rhCheck(armed && inverting && blew && dead && darkM && darkT && darkL && stillDead,
+                "T17 IMPLOSION: membrane inverts, shockwave lands, the gate goes DARK "
+                "— and stays dead");
+    }
+
+    // T18 — ROOM WARP bends the hall AND puts it back. The props must physically
+    //       move while it runs (and the lens must breathe), and when it ends every
+    //       prop must be EXACTLY where it started — a warp that leaks drift would
+    //       slowly destroy the level.
+    {
+        // Snapshot EVERY entity's translation. Do NOT guess which index is a hall
+        // prop — the hub authors hundreds of entities and the layout moves with the
+        // art (the first cut of this test hardcoded 40, which was a strip-light bar,
+        // and the test failed for a reason that had nothing to do with the warp).
+        const uint32_t n = scene.size();
+        std::vector<float> before(n * 3);
+        for (uint32_t e = 0; e < n; ++e) {
+            before[e * 3 + 0] = scene.entities()[e].transform[12];
+            before[e * 3 + 1] = scene.entities()[e].transform[13];
+            before[e * 3 + 2] = scene.entities()[e].transform[14];
+        }
+        hub.applyOutcome(0, RiftOutcome::RoomWarp);
+        bool lensMoved = false;
+        for (int s = 0; s < 240; ++s) {                 // 4 s into a 9 s warp
+            hub.tick(1.0f / 60.0f, scene);
+            if (std::fabs(hub.fovOffset()) > 0.5f) lensMoved = true;
+        }
+        uint32_t movedCount = 0;
+        for (uint32_t e = 0; e < n; ++e) {
+            const float dx = scene.entities()[e].transform[12] - before[e * 3 + 0];
+            const float dy = scene.entities()[e].transform[13] - before[e * 3 + 1];
+            const float dz = scene.entities()[e].transform[14] - before[e * 3 + 2];
+            if (std::fabs(dx) > 0.05f || std::fabs(dy) > 0.05f || std::fabs(dz) > 0.05f)
+                ++movedCount;
+        }
+        // Run it out and confirm the hall is restored EXACTLY. A warp that leaked
+        // drift would slowly destroy the level, one catastrophe at a time.
+        for (int s = 0; s < 400; ++s) hub.tick(1.0f / 60.0f, scene);
+        bool restored = std::fabs(hub.fovOffset()) < 1e-5f;
+        for (uint32_t e = 0; e < n && restored; ++e)
+            if (std::fabs(scene.entities()[e].transform[12] - before[e * 3 + 0]) > 1e-5f ||
+                std::fabs(scene.entities()[e].transform[13] - before[e * 3 + 1]) > 1e-5f ||
+                std::fabs(scene.entities()[e].transform[14] - before[e * 3 + 2]) > 1e-5f)
+                restored = false;
+        rhCheck(movedCount >= 12 && lensMoved && restored,
+                "T18 ROOM WARP: the hall's props ripple + the lens breathes, and it "
+                "all snaps back exactly when the warp ends");
+    }
+
+    // T19 — TEMPORAL RIFT distorts time, then gives it back. timeScale() must leave
+    //       1.0 (slow-motion + a visible stutter: it is NOT a constant multiplier)
+    //       and must return to exactly 1.0 when the event is over.
+    {
+        hub.applyOutcome(1, RiftOutcome::TemporalRift);
+        float lo = 99.0f, hi = -99.0f;
+        for (int s = 0; s < 240; ++s) {
+            hub.tick(1.0f / 60.0f, scene);
+            const float ts = hub.timeScale();
+            if (ts < lo) lo = ts;
+            if (ts > hi) hi = ts;
+        }
+        const bool slowed   = lo < 0.6f;              // it really does drag
+        const bool stutters = (hi - lo) > 0.5f;       // ...and it lurches
+        for (int s = 0; s < 600; ++s) hub.tick(1.0f / 60.0f, scene);
+        const bool restored = std::fabs(hub.timeScale() - 1.0f) < 1e-6f;
+        rhCheck(slowed && stutters && restored,
+                "T19 TEMPORAL RIFT: time slows AND stutters, then returns to normal");
+    }
+
+    // T20 — THE OUTCOME TABLE IS THE GAMEPLAY (rift_console.cpp's own suite, run
+    //       from here so one gate covers the whole feature).
+    rhCheck(runRiftConsoleSelfTest(),
+            "T20 console parameter->outcome table (data-driven; see riftconsole above)");
 
     hub.shutdown(device);
     phys->shutdown();

@@ -1,73 +1,73 @@
 """
-build_rifthub_gate.py — ROUND 5: the RIFTHUB gate, authored in Blender as
-ROUNDED INDUSTRIAL PIPEWORK (owner's directive, verbatim):
+build_rifthub_gate.py — ROUND 8: the RIFTHUB gate is *ONE LARGE METALLIC TUBE*.
 
-    "Your center is perfect. ENLARGEN IT. Just MAKE a model in Blender,
-     ROUNDED PIPE, with TEXTURES FROM SD3.5 bASED On Groks Image"
-    "make the surrounding industrial gray metal electronic unit look like an
-     industrial portal generator! Not basic squared off shapes!!!"
+Owner (verbatim, R7 + R8):
+    "the gate.. is supposed to be ONE LARGE metallic Tube"
+    "No chevrons needed"
+    "we can have all the grok imagined stuff on it"      (-> textures, not meshes)
+    "build the tube, with an lcd panel on it, some buttons, glowing led displays"
 
     blender-launcher.exe --background --python tools/build_rifthub_gate.py -- <out.glb>
 
-WHY THIS IS A REWRITE, NOT A TWEAK:
+WHAT CHANGED FROM ROUND 5 (and why the R5 gate was rejected)
+------------------------------------------------------------
+R5 authored 233 SEPARATE PARTS (9 clamp cans + coil rings + ball joints + actuator
+rods, 6 capacitor banks, pipe rails, standoffs, 48 studs, 8 fins, chevron housings)
+scattered around a thin ring. That reads as scaffolding, and the clutter chopped the
+ring's specular highlight into confetti. The owner's read: a toy.
 
- 1. VOCABULARY. The round-3/4 gate was swept RECTANGULAR profiles — flat square
-    slabs glued in a circle. This one is built from ROUND primitives only: a
-    swept circular-section TORUS is the ring body, and everything bolted to it
-    is a cylinder, a torus collar, a sphere joint, or a round-bevelled pipe
-    curve. Rounded surfaces carry a specular streak ALONG their length, and that
-    streak is what makes metal read as machined metal instead of cardboard.
-    Boxes appear exactly once (heat-sink fins) and even those are bevelled.
+R8 is ONE MASS:
+ 1. THE TUBE IS A SINGLE SWEPT MESH, not a bpy torus + bolted-on kit. It is revolved
+    here by hand (bmesh) so the tube's minor RADIUS is a FIELD rr(u, v) — which means
+    every feature is CUT INTO / SET INTO the one surface instead of glued onto it:
+      * 12 recessed SEGMENT SEAMS (circumferential joins around the cross-section);
+      * 2 longitudinal RECESSED BANDS sweeping the whole torus;
+      * a recessed INDICATOR GROOVE on the inner-front shoulder (the engine's amber
+        segment track seats INSIDE it — a recessed slit, never a ring of triangles);
+      * 7 VENT GRILLES (4 louvre slots each) sunk into the front-outer shoulder;
+      * a bevelled, flat-floored OPERATOR PANEL BAY (R8-B) on the lower-right face.
+    The mesh stays a closed, watertight torus: no booleans, no holes, no flipped tris.
+ 2. NO CHEVRONS. No clamp housings, no amber triangles, no capacitor banks, no rods,
+    no rails, no fins. They are all deleted.
+ 3. THE GREEBLES LIVE IN THE TEXTURES. Rivets, plate joins, rust bleed, stencils and
+    fine vents come from the SD3.5 img2img sets forged FROM the owner's own reference
+    (tools/forge_gate_textures.py -> gate_tube_hull / gate_tube_plate /
+    gate_piston_steel), baked into normal/height. A smooth tube + a deep normal map
+    reads denser than a forest of cans, and it keeps ONE unbroken specular sweep.
+ 4. SUBORDINATE GEOMETRY IS MINIMAL: a cradle (pad + 2 curved legs + trunnion) and
+    6 feed cables entering the tube's lower flanks. Nothing else touches the tube.
 
- 2. NORMALS — THE BUG THAT ATE FOUR ART ROUNDS. The old hand-rolled sweep()
-    emitted 30-43% of its hub-facing triangles INSIDE-OUT (measured off the
-    shipped GLB: normals inverted AND wound backwards, so they were also
-    backface-culled). That is the real "ghost glass / X-ray" the last round
-    chased into the SSR code, and it is why the gate's entire front annulus
-    rendered BLACK no matter how much light was thrown at it — the round-3/4
-    gate only ever "read" at all because it was faking it with a fake
-    self-emissive. Every shape here comes from a watertight bpy primitive (or a
-    bevelled curve), and normals_outward() additionally verifies each object's
-    SIGNED VOLUME is positive and flips it otherwise. The gate is now provably
-    outward-facing, so it can finally take a light.
+UVs are authored ANALYTICALLY on the sweep (u -> U, v -> V), so the forged tileable
+sets wrap the tube without a smart_project seam lottery.
 
- 3. SHADING. shade_smooth + an EDGE SPLIT at 40 deg: round surfaces stay smooth
-    (so a tube takes a highlight along its length), hard machined edges stay crisp.
+LOCAL SPACE CONTRACT (must match rifthub.cpp's portal basis):
+  gate stands in the local XY plane, +Y = 12 o'clock, hole axis = +Z, FRONT
+  (hub-facing) = -Z. Ring center at the origin; the engine translates it to
+  (cx, kRingY, cz), so the floor is local y = -kRingY. We author in that frame, then
+  rotate +90 deg about X so Blender's Y-up glTF exporter lands it back in-contract.
 
- 4. THE BORE IS BIGGER ("ENLARGEN IT"). The ring is a torus of centerline
-    R=2.35 / tube r=0.45, so its throat — a ROUNDED throat, not a square barrel —
-    opens at r=1.90. The engine's membrane grows to R=1.895 (1.58 in round 4,
-    1.655 after the two-sided fix): +20% radius / +44% area, filling the opening.
-
-LOCAL SPACE CONTRACT (must match rifthub.cpp's portal basis) — unchanged:
-  the gate stands in the local XY plane, +Y = 12 o'clock, hole axis = +Z, FRONT
-  (hub-facing, where the engine's amber chevron slits + ratchet track sit proud)
-  = -Z. Ring center at the origin; the engine translates it to (cx, kRingY=2.2,
-  cz), so the floor is local y = -2.2. We author in that frame, then rotate +90
-  deg about X so Blender's Y-up glTF exporter lands it back in the contract frame.
-
-ENGINE ANCHORS HONOURED (rifthub.cpp round-5 constants):
-  membrane R=1.895, fresnel rim R=1.868 -> the torus throat at 1.90 clears both;
-  amber ratchet track segs at r=2.02, front face z=-0.461 -> a rounded TRACK BED
-  collar is seated with its front face at z=-0.436, so the segs sit 0.025 proud;
-  9 chevron slits at r=2.35, z=-0.762 -> the clamp housings' front caps land at
-  z=-0.750, so each slit floats 0.012 proud of its housing (the powered-lock read).
-  9 clamps at th = 90 - c*40 deg (chevron 0 at 12 o'clock, clockwise).
+ENGINE ANCHORS (rifthub.cpp round-8 constants — keep in sync):
+  tube centerline R = 2.60, tube r = 0.66  -> THROAT (bore) opens at 1.94, rim 3.26
+  membrane R 1.895 / fresnel rim 1.868     -> both clear the 1.94 throat
+  indicator track: r = 2.02, z = -0.300    -> seats inside the cut groove (v = -152 deg)
+  operator panel bay: u = -20 deg, v = -90 deg, floor plane z = -0.560, center
+                      (2.443, -0.889) — the engine puts NOTHING there; the panel
+                      (LCD + buttons + LED strips) ships INSIDE this GLB.
 
 ENV NOTE (this box): Store-Blender — blender.exe is ACL-denied, blender-launcher
 DETACHES (no stdout); we report through `<out>.log` + `<out>.done` (poll them).
 Driver: tools/gate_build.ps1 (keep it ASCII-only).
 
-Clean-room: public Blender Python API + glTF 2.0 spec only. All-original
-procedural authorship — no third-party gate models consulted or copied.
+Clean-room: public Blender Python API + glTF 2.0 spec only. All-original procedural
+authorship — no third-party gate models consulted or copied.
 """
-import bpy, bmesh, math, os, random, sys
+import bpy, bmesh, math, os, sys
 from mathutils import Vector, Matrix
 
 ARGV = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 OUT = ARGV[0] if ARGV else os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                         "..", "assets", "converted_glb", "rifthub",
-                                         "gate_ring.glb")
+                                        "..", "assets", "converted_glb", "rifthub",
+                                        "gate_ring.glb")
 OUT = os.path.abspath(OUT)
 LOG_PATH, DONE_PATH = OUT + ".log", OUT + ".done"
 
@@ -89,67 +89,186 @@ def flush_log(status):
 TAU = math.pi * 2.0
 def D(deg):
     return math.radians(deg)
-R = random.Random(90210)
 
-# ---- geometry constants (the local contract frame) --------------------------
-RING_R      = 2.35     # torus centerline radius
-RING_TUBE   = 0.45     # tube radius -> throat opens at 1.90, rim reaches 2.80
-BORE        = RING_R - RING_TUBE          # 1.90 (the rounded throat)
-TRACK_R     = 2.02     # the engine's amber ratchet segs ride here
-CHEV_R      = 2.35     # the engine's amber chevron slits ride here (tube crest)
-CHEV_CAP_Z  = -0.750   # clamp housing front-cap plane (slits float 0.012 proud)
-FLOOR_Y     = -2.20    # world y=0 in the local frame
+# ---- THE TUBE ---------------------------------------------------------------
+RING_R    = 2.60      # tube centerline radius (major)
+TUBE_R    = 0.66      # tube radius (minor)  -> throat 1.94, outer rim 3.26
+BORE      = RING_R - TUBE_R
+MSEG      = 256       # major segments (around the gate)  — smooth silhouette
+NSEG      = 144       # minor segments (around the tube)  — must RESOLVE the cut features
+                      # (a slot narrower than one minor step aliases into spikes)
+FLOOR_Y   = -2.20     # world y = 0 in the local frame (engine kRingY)
 
-GROUPS = {"patina": [], "steel": [], "dark": []}
+# minor-angle landmarks (v): 0 = outward equator, -90 = FRONT (-Z, hub side),
+# +90 = back, 180 = the throat.
+V_FRONT   = -math.pi * 0.5
+V_TRACK   = D(-152.0)     # the recessed indicator groove (inner-front shoulder)
+V_VENT    = D(-38.0)      # vent grilles on the front-outer shoulder
+
+# operator panel bay (R8-B)
+BAY_U     = D(-20.0)
+BAY_V     = V_FRONT
+BAY_DU    = 0.122         # half-extent in u  -> 0.63 m of tube arc
+BAY_DV    = 0.345         # half-extent in v  -> 0.46 m of tube arc
+BAY_DEPTH = 0.100         # recess depth (the panel lives INSIDE this)
+
+GROUPS = {"patina": [], "steel": [], "dark": [], "screen": [], "led": []}
 def register(ob, group):
     GROUPS[group].append(ob)
     return ob
 
+
 # ---------------------------------------------------------------------------
-# Primitive helpers. EVERY shape is a watertight bpy primitive or a bevelled
-# curve -> correct winding + outward normals by construction (the round-4 bug).
+# The displacement FIELD. rr(u, v) is the tube's radius at every point of the
+# sweep: subtract to CUT a feature in, add to raise one. This is what makes the
+# detail a feature OF the tube instead of a mesh sitting on it.
 # ---------------------------------------------------------------------------
-def _apply(ob, name):
+def wrap(a):
+    return (a + math.pi) % TAU - math.pi
+
+def gauss(d, w):
+    x = d / w
+    return math.exp(-x * x)
+
+def plateau(d, half, soft):
+    """Flat-bottomed machined trough: 1.0 inside `half`, ramping to 0 over `soft`."""
+    a = abs(d)
+    if a <= half:
+        return 1.0
+    if a >= half + soft:
+        return 0.0
+    t = (half + soft - a) / soft
+    return t * t * (3.0 - 2.0 * t)          # smoothstep
+
+
+N_SEAM   = 12
+VENT_U   = [D(30.0) + k * D(45.0) for k in range(7)]   # 7 grilles; the 8th slot is the bay's
+
+def rr(u, v):
+    r = TUBE_R
+
+    # 12 recessed SEGMENT SEAMS: the cast tube's joins, running around the
+    # cross-section. A shallow round groove -> a dark line that follows the tube.
+    du_seam = wrap(u - round(u / (TAU / N_SEAM)) * (TAU / N_SEAM))
+    r -= 0.034 * gauss(du_seam, 0.026)
+
+    # 2 longitudinal RECESSED BANDS sweeping the entire torus (machined relief that
+    # rides the specular highlight instead of chopping it up).
+    for v0, dep in ((D(34.0), 0.028), (D(-34.0), 0.028)):
+        r -= dep * plateau(wrap(v - v0), 0.038, 0.062)
+
+    # INDICATOR GROOVE (inner-front shoulder). The engine's segmented amber track
+    # sits INSIDE this — a recessed slit, per R7 addendum 2.
+    r -= 0.058 * plateau(wrap(v - V_TRACK), 0.115, 0.070)
+
+    # VENT GRILLES: 7 clusters x 4 louvre slots, sunk into the front-outer shoulder.
+    # WIDTH LAW: a slot must be several minor steps wide (2pi/NSEG = 2.5 deg here) or
+    # the sweep aliases it into spikes instead of cutting a slot.
+    for u0 in VENT_U:
+        du = wrap(u - u0)
+        if abs(du) > 0.14:
+            continue
+        ku = plateau(du, 0.085, 0.040)
+        if ku <= 0.0:
+            continue
+        for j in range(4):
+            v0 = V_VENT + (j - 1.5) * D(10.5)
+            r -= 0.042 * ku * plateau(wrap(v - v0), D(3.0), D(2.6))
+
+    # OPERATOR PANEL BAY: a bevelled, FLAT-FLOORED recess (R8-B).
+    kb = (plateau(wrap(u - BAY_U), BAY_DU, 0.030) *
+          plateau(wrap(v - BAY_V), BAY_DV, 0.075))
+    r -= BAY_DEPTH * kb
+
+    return r
+
+
+def surf(u, v):
+    q = rr(u, v)
+    rad = RING_R + q * math.cos(v)
+    return Vector((rad * math.cos(u), rad * math.sin(u), q * math.sin(v)))
+
+
+def build_tube():
+    """Revolve the displaced profile into ONE closed, watertight, analytically-UV'd
+    mesh. No booleans; the topology is a plain torus grid, so winding is uniform and
+    the signed volume is positive by construction (verified in normals_outward)."""
+    me = bpy.data.meshes.new("gate_tube")
+    verts, faces, uvs = [], [], []
+    for i in range(MSEG):
+        u = i * TAU / MSEG
+        for j in range(NSEG):
+            v = -math.pi + j * TAU / NSEG
+            verts.append(surf(u, v))
+    def vid(i, j):
+        return (i % MSEG) * NSEG + (j % NSEG)
+    UT, VT = 8.0, 2.6          # texture tiling (major, minor)
+    for i in range(MSEG):
+        for j in range(NSEG):
+            a, b, c, d = vid(i, j), vid(i + 1, j), vid(i + 1, j + 1), vid(i, j + 1)
+            faces.append((a, b, c, d))
+            u0, u1 = i / MSEG * UT, (i + 1) / MSEG * UT
+            v0, v1 = j / NSEG * VT, (j + 1) / NSEG * VT
+            uvs.append(((u0, v0), (u1, v0), (u1, v1), (u0, v1)))
+    me.from_pydata([tuple(v) for v in verts], [], faces)
+    me.update()
+    uvl = me.uv_layers.new(name="UVMap")
+    for fi, poly in enumerate(me.polygons):
+        for k, li in enumerate(poly.loop_indices):
+            uvl.data[li].uv = uvs[fi][k]
+    ob = bpy.data.objects.new("gate_tube", me)
+    bpy.context.collection.objects.link(ob)
     bpy.ops.object.select_all(action='DESELECT')
     ob.select_set(True)
     bpy.context.view_layer.objects.active = ob
-    bpy.ops.object.modifier_apply(modifier=name)
+    bpy.ops.object.shade_smooth()
+    # Hard machined edges (vent walls, bay bevel, seam shoulders) stay crisp; the
+    # tube body stays smooth so it takes one long highlight.
+    md = ob.modifiers.new("es", 'EDGE_SPLIT')
+    md.split_angle = D(38)
+    bpy.ops.object.modifier_apply(modifier=md.name)
+    register(ob, "patina")
+    log("tube: %d verts / %d quads (MSEG=%d NSEG=%d)" % (len(verts), len(faces), MSEG, NSEG))
+    return ob
 
-def _finish(ob, bev=0.0):
+
+# ---------------------------------------------------------------------------
+# Small helpers for the (few) subordinate objects.
+# ---------------------------------------------------------------------------
+def _finish(ob, bev=0.0, smooth=True):
     if bev > 0.0:
         md = ob.modifiers.new("bev", 'BEVEL')
         md.width = bev
         md.segments = 2
         md.limit_method = 'ANGLE'
         md.angle_limit = D(40)
-        _apply(ob, md.name)
+        bpy.ops.object.select_all(action='DESELECT')
+        ob.select_set(True)
+        bpy.context.view_layer.objects.active = ob
+        bpy.ops.object.modifier_apply(modifier=md.name)
     bpy.ops.object.select_all(action='DESELECT')
     ob.select_set(True)
     bpy.context.view_layer.objects.active = ob
-    bpy.ops.object.shade_smooth()
-    # EDGE SPLIT: curved surfaces stay smooth, hard machined edges stay crisp.
+    if smooth:
+        bpy.ops.object.shade_smooth()
     md = ob.modifiers.new("es", 'EDGE_SPLIT')
-    md.split_angle = D(40)
-    _apply(ob, md.name)
+    md.split_angle = D(38)
+    bpy.ops.object.modifier_apply(modifier=md.name)
     return ob
 
-def torus(name, major, minor, loc=(0, 0, 0), rot=(0, 0, 0), mseg=64, nseg=20,
-          zscale=1.0):
-    bpy.ops.mesh.primitive_torus_add(major_radius=major, minor_radius=minor,
-                                     major_segments=mseg, minor_segments=nseg,
-                                     location=loc, rotation=rot)
-    ob = bpy.context.active_object
-    ob.name = name
-    if zscale != 1.0:                     # flattened donut = a rounded COLLAR
-        ob.scale = (1.0, 1.0, zscale)
-        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    return _finish(ob)
-
-def cyl(name, r, depth, loc, rot=(0, 0, 0), verts=20, bev=0.014):
+def cyl(name, r, depth, loc, rot=(0, 0, 0), verts=20, bev=0.010):
     bpy.ops.mesh.primitive_cylinder_add(vertices=verts, radius=r, depth=depth,
                                         location=loc, rotation=rot)
     ob = bpy.context.active_object
     ob.name = name
+    return _finish(ob, bev)
+
+def cube(name, hx, hy, hz, loc, rot=(0, 0, 0), bev=0.006):
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=loc, rotation=rot)
+    ob = bpy.context.active_object
+    ob.name = name
+    ob.scale = (hx, hy, hz)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     return _finish(ob, bev)
 
 def ball(name, r, loc, seg=16):
@@ -159,17 +278,7 @@ def ball(name, r, loc, seg=16):
     ob.name = name
     return _finish(ob)
 
-def cube(name, hx, hy, hz, loc, rot=(0, 0, 0), bev=0.03):
-    bpy.ops.mesh.primitive_cube_add(size=2.0, location=loc, rotation=rot)
-    ob = bpy.context.active_object
-    ob.name = name
-    ob.scale = (hx, hy, hz)
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    return _finish(ob, bev)
-
 def pipe(name, pts, radius, res=6):
-    """A round-bevelled PIPE through `pts` (the owner's 'ROUNDED PIPE'): a poly
-    curve with a circular bevel, converted to a watertight capped mesh."""
     cu = bpy.data.curves.new(name, 'CURVE')
     cu.dimensions = '3D'
     cu.bevel_depth = radius
@@ -187,181 +296,133 @@ def pipe(name, pts, radius, res=6):
     bpy.ops.object.convert(target='MESH')
     return _finish(bpy.context.active_object)
 
-def arc_pts(r, a0, a1, z, n=16):
-    return [(r * math.cos(a0 + (a1 - a0) * i / n),
-             r * math.sin(a0 + (a1 - a0) * i / n), z) for i in range(n + 1)]
-
-def radial(th, r, z):
-    return (r * math.cos(th), r * math.sin(th), z)
-
 def aim(vec):
-    """Euler that points a Z-axis primitive (cylinder) along `vec`."""
     return Vector(vec).normalized().to_track_quat('Z', 'Y').to_euler()
 
-def clamp_angles():
-    return [D(90) - c * D(40) for c in range(9)]
 
 # ---------------------------------------------------------------------------
-# 1) THE RING — one swept circular profile. Its inner surface IS the rounded
-#    throat the membrane fills: no square barrel, no flat annulus.
+# R8-B: THE OPERATOR PANEL, set INTO the tube's bay.
+# Authored in the BAY's local frame (x = along the tube, y = up the tube's face,
+# z = out of the surface toward the player), then mapped onto the gate.
 # ---------------------------------------------------------------------------
-def build_ring():
-    register(torus("ring_body", RING_R, RING_TUBE, mseg=96, nseg=28), "patina")
-    # Rounded TRACK BED collar on the front face (the engine's amber ratchet
-    # segments seat 0.025 proud of it) — a flattened donut, not a flat disc.
-    register(torus("trackbed", TRACK_R, 0.185, loc=(0, 0, -0.36), zscale=0.42,
-                   mseg=96, nseg=16), "dark")
-    # Rounded inner lips either side of the throat: they catch the membrane light.
-    for i, z in enumerate((-0.30, 0.30)):
-        register(torus("lip%d" % i, BORE + 0.055, 0.075, loc=(0, 0, z),
-                       zscale=0.75, mseg=96, nseg=12), "steel")
-    # OUTER FLANGE rings — big rounded collars hugging the rim (the reference's
-    # stacked flange depth), front and back, plus a proud centre band.
-    register(torus("flange_f", 2.62, 0.20, loc=(0, 0, -0.26), zscale=0.55,
-                   mseg=80, nseg=16), "steel")
-    register(torus("flange_b", 2.62, 0.20, loc=(0, 0, 0.26), zscale=0.55,
-                   mseg=80, nseg=16), "steel")
-    register(torus("band_mid", 2.78, 0.11, mseg=80, nseg=14), "patina")
+def bay_matrix():
+    p = surf(BAY_U, BAY_V)                      # bay FLOOR center (rr already recessed)
+    t = Vector((-math.sin(BAY_U), math.cos(BAY_U), 0.0))    # along the tube
+    rd = Vector((math.cos(BAY_U), math.sin(BAY_U), 0.0))    # up the face (radial)
+    n = Vector((0.0, 0.0, -1.0))                            # out toward the hub
+    m = Matrix().to_4x4()
+    m[0][0], m[1][0], m[2][0] = t.x, t.y, t.z
+    m[0][1], m[1][1], m[2][1] = rd.x, rd.y, rd.z
+    m[0][2], m[1][2], m[2][2] = n.x, n.y, n.z
+    m[0][3], m[1][3], m[2][3] = p.x, p.y, p.z
+    return m
+
+BAY = None
+def place(ob):
+    ob.matrix_world = BAY @ ob.matrix_world
+    bpy.ops.object.select_all(action='DESELECT')
+    ob.select_set(True)
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    return ob
+
+def build_panel():
+    global BAY
+    BAY = bay_matrix()
+    p = BAY.translation
+    log("panel bay floor at local (%.3f, %.3f, %.3f)" % (p.x, p.y, p.z))
+
+    # Recessed housing plate that lines the bay floor (dark, so the screen pops).
+    place(register(cube("panel_plate", 0.275, 0.195, 0.008, (0, 0, 0.008)), "dark"))
+
+    # --- LCD: a bezelled screen sunk into the plate ---
+    place(register(cube("panel_lcd", 0.150, 0.105, 0.006, (-0.105, 0.045, 0.019)),
+                   "screen"))
+    # Round-pipe bezel around the glass (4 bevelled bars = a machined frame).
+    for (bx, by, hx, hy) in ((0, 0.118, 0.166, 0.014),
+                             (0, -0.118, 0.166, 0.014),
+                             (-0.166, 0, 0.014, 0.132),
+                             (0.166, 0, 0.014, 0.132)):
+        place(register(cube("panel_bez_%d_%d" % (int(bx * 100), int(by * 100)),
+                            hx, hy, 0.014, (-0.105 + bx, 0.045 + by, 0.022)), "steel"))
+
+    # --- BUTTONS: a 4x2 cluster of chunky physical keys with travel + a lit cap ---
+    for j in range(2):
+        for i in range(4):
+            bx = 0.095 + i * 0.058
+            by = 0.100 - j * 0.062
+            place(register(cyl("panel_btn%d%d" % (i, j), 0.024, 0.030, (bx, by, 0.020),
+                               verts=14, bev=0.004), "steel"))
+            place(register(cyl("panel_cap%d%d" % (i, j), 0.017, 0.012, (bx, by, 0.038),
+                               verts=14, bev=0.003), "led"))
+    # A chunky ENGAGE key, bigger, off to the side.
+    place(register(cyl("panel_engage", 0.036, 0.034, (0.185, -0.055, 0.021),
+                       verts=18, bev=0.005), "steel"))
+    place(register(cyl("panel_engage_cap", 0.026, 0.014, (0.185, -0.055, 0.042),
+                       verts=18, bev=0.004), "led"))
+
+    # --- LED readout strips (integrated, recessed, subtle) ---
+    for k in range(3):
+        place(register(cube("panel_led%d" % k, 0.140, 0.008, 0.005,
+                            (-0.105, -0.078 - k * 0.024, 0.016)), "led"))
+    # Two small round status lamps beside the screen.
+    for k, x in enumerate((-0.262, -0.262)):
+        place(register(cyl("panel_lamp%d" % k, 0.011, 0.010,
+                           (x, 0.100 - k * 0.048, 0.016), verts=10, bev=0.002), "led"))
+    # A slim ventilated grille bar under the buttons (steel, machined).
+    place(register(cube("panel_grille", 0.115, 0.010, 0.010, (0.155, -0.130, 0.014)),
+                   "steel"))
+
 
 # ---------------------------------------------------------------------------
-# 2) CLAMP / EMITTER HOUSINGS — 9 cylindrical units seated on the tube crest,
-#    each a machined can with a rounded bezel, coil rings, a pivot boss and two
-#    actuator rods on ball joints. This is the "portal generator" hardware.
-# ---------------------------------------------------------------------------
-def build_clamps():
-    for c, th in enumerate(clamp_angles()):
-        depth = 0.62
-        cz = CHEV_CAP_Z + depth * 0.5
-        register(cyl("clamp%d_can" % c, 0.205, depth, radial(th, CHEV_R, cz),
-                     verts=24), "dark")
-        # Rounded bezel around the amber slit (the engine's emitter sits inside).
-        register(torus("clamp%d_bezel" % c, 0.215, 0.055,
-                       loc=radial(th, CHEV_R, CHEV_CAP_Z + 0.03),
-                       zscale=0.8, mseg=24, nseg=10), "steel")
-        # Coil rings stacked along the can (rounded, not painted on).
-        for k in range(2):
-            register(torus("clamp%d_coil%d" % (c, k), 0.225, 0.045,
-                           loc=radial(th, CHEV_R, CHEV_CAP_Z + 0.20 + 0.16 * k),
-                           zscale=0.9, mseg=24, nseg=10), "steel")
-        # Pivot boss where the can meets the ring.
-        register(ball("clamp%d_boss" % c, 0.135, radial(th, CHEV_R, -0.10)), "dark")
-        # Two ACTUATOR RODS on ball joints, raking back to the rim.
-        for s in (-1, 1):
-            aoff = th + s * D(9)
-            a = radial(aoff, CHEV_R + 0.10, -0.42)
-            b = radial(aoff, 2.72, 0.16)
-            d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
-            ln = math.sqrt(sum(x * x for x in d))
-            mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5)
-            register(cyl("clamp%d_rod%d" % (c, s), 0.052, ln, mid, rot=aim(d),
-                         verts=12), "dark")
-            register(ball("clamp%d_jA%d" % (c, s), 0.072, a, seg=12), "steel")
-            register(ball("clamp%d_jB%d" % (c, s), 0.062, b, seg=12), "steel")
-
-# ---------------------------------------------------------------------------
-# 3) CAPACITOR BANKS + COIL EMITTERS — chunky cylinders ringing the outer rim
-#    between the clamps: the thing that says "this machine GENERATES a portal".
-# ---------------------------------------------------------------------------
-def build_banks():
-    for k in range(6):
-        th = D(20) + k * D(60)
-        register(cyl("bank%d_can" % k, 0.20, 0.86, radial(th, 2.98, 0.0),
-                     verts=20), "steel")
-        for i in range(3):
-            register(torus("bank%d_coil%d" % (k, i), 0.235, 0.042,
-                           loc=radial(th, 2.98, -0.28 + 0.28 * i),
-                           mseg=20, nseg=10), "dark")
-        for i, z in enumerate((-0.47, 0.47)):
-            register(ball("bank%d_cap%d" % (k, i), 0.185, radial(th, 2.98, z),
-                          seg=16), "dark")
-        # Feed pipe: bank -> ring rim (a real bent pipe, generous radius).
-        a = radial(th, 2.98, -0.30)
-        m = radial(th - D(4), 2.86, -0.42)
-        b = radial(th - D(8), 2.62, -0.30)
-        register(pipe("bank%d_feed" % k, [a, m, b], 0.055), "dark")
-
-# ---------------------------------------------------------------------------
-# 4) PIPE RAILS + CABLE BUNDLES — round-bevelled runs hugging and entering the
-#    ring (the reference's copper hairpins), on cylindrical standoffs.
-# ---------------------------------------------------------------------------
-def build_pipes():
-    for s, (a0, a1, rr, pz) in enumerate(((D(200), D(340), 3.05, -0.22),
-                                          (D(215), D(325), 3.16, 0.20))):
-        register(pipe("rail%d" % s, arc_pts(rr, a0, a1, pz, 22), 0.070), "steel")
-        for k in range(4):
-            th = a0 + (a1 - a0) * (k + 0.5) / 4.0
-            a = radial(th, rr, pz)
-            b = radial(th, 2.74, pz * 0.5)
-            d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
-            ln = math.sqrt(sum(x * x for x in d))
-            mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5)
-            register(cyl("rail%d_sd%d" % (s, k), 0.045, ln, mid, rot=aim(d),
-                         verts=10), "dark")
-    # CABLE BUNDLES climbing from the cradle INTO the ring's lower flanks.
-    for s in (-1, 1):
-        for k in range(3):
-            off = 0.09 * (k - 1)
-            pts = [(s * (1.30 + off), FLOOR_Y + 0.10, -0.30 + off * 0.5),
-                   (s * (1.55 + off), FLOOR_Y + 0.75, -0.34),
-                   (s * (1.90 + off), -1.35, -0.30),
-                   (s * (2.16 + off), -0.85, -0.24),
-                   (s * (2.30 + off), -0.45, -0.16)]
-            register(pipe("cable%d_%d" % (s, k), pts, 0.048), "dark")
-        register(cyl("cablecl%d" % s, 0.16, 0.14, (s * 1.95, -1.30, -0.30),
-                     rot=aim((s * 0.5, 1.0, 0.0)), verts=16), "steel")
-
-# ---------------------------------------------------------------------------
-# 5) BOLT STUDS + HEAT-SINK FINS — rounded studs on the collars; the only boxes
-#    in the gate are the fins, and they are bevelled.
-# ---------------------------------------------------------------------------
-def build_details():
-    for k in range(28):
-        th = k * TAU / 28
-        register(cyl("stud_f%d" % k, 0.036, 0.055, radial(th, 2.22, -0.46),
-                     verts=8, bev=0.008), "dark")
-    for k in range(20):
-        th = D(9) + k * TAU / 20
-        register(ball("stud_r%d" % k, 0.040, radial(th, 2.62, -0.40), seg=8), "dark")
-    for k in range(8):
-        th = D(22) + k * D(45)
-        register(cube("fin%d" % k, 0.30, 0.035, 0.16, radial(th, 2.70, 0.42),
-                      rot=(0, 0, th), bev=0.02), "steel")
-
-# ---------------------------------------------------------------------------
-# 6) CRADLE — the gate is INSTALLED. Rounded trunnion + curved legs + a round
-#    base pad (no square plinth).
+# CRADLE — the gate is INSTALLED. Minimal: a round pad, two curved legs, one
+# trunnion through the tube's lower flanks. Nothing that breaks the highlight.
 # ---------------------------------------------------------------------------
 def build_cradle():
-    register(cyl("trunnion", 0.16, 3.30, (0.0, -1.55, 0.36),
-                 rot=aim((1.0, 0.0, 0.0)), verts=20), "steel")
+    register(cyl("pad", 2.05, 0.16, (0.0, FLOOR_Y + 0.08, 0.02),
+                 rot=aim((0.0, 1.0, 0.0)), verts=56), "steel")
+    register(cyl("trunnion", 0.15, 3.6, (0.0, -1.62, 0.30),
+                 rot=aim((1.0, 0.0, 0.0)), verts=20), "dark")
     for s in (-1, 1):
-        register(ball("trun_end%d" % s, 0.20, (s * 1.65, -1.55, 0.36)), "dark")
-        pts = [(s * 1.62, -1.60, 0.30),
-               (s * 1.80, -1.95, 0.20),
-               (s * 1.86, FLOOR_Y + 0.42, 0.05),
-               (s * 1.72, FLOOR_Y + 0.14, -0.02)]
-        register(pipe("leg%d" % s, pts, 0.145), "dark")
-        register(cyl("foot%d" % s, 0.42, 0.14, (s * 1.72, FLOOR_Y + 0.07, -0.02),
-                     rot=aim((0.0, 1.0, 0.0)), verts=24), "steel")
+        register(ball("trun_end%d" % s, 0.20, (s * 1.80, -1.62, 0.30)), "steel")
+        pts = [(s * 1.80, -1.66, 0.26),
+               (s * 2.02, -1.98, 0.16),
+               (s * 2.06, FLOOR_Y + 0.55, 0.04),
+               (s * 1.90, FLOOR_Y + 0.16, -0.02)]
+        register(pipe("leg%d" % s, pts, 0.155), "dark")
+        register(cyl("foot%d" % s, 0.44, 0.13, (s * 1.90, FLOOR_Y + 0.07, -0.02),
+                     rot=aim((0.0, 1.0, 0.0)), verts=28), "steel")
+
+
+# ---------------------------------------------------------------------------
+# FEED CABLES — a few conduits entering the tube's lower flanks. That is ALL the
+# subordinate geometry the tube gets.
+# ---------------------------------------------------------------------------
+def build_cables():
     for s in (-1, 1):
-        a = (s * 1.05, -1.95, -0.30)
-        b = (s * 1.55, FLOOR_Y + 0.16, -0.22)
-        d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
-        ln = math.sqrt(sum(x * x for x in d))
-        mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5)
-        register(cyl("strut%d" % s, 0.085, ln, mid, rot=aim(d), verts=12), "dark")
-    register(cyl("pad", 1.95, 0.16, (0.0, FLOOR_Y + 0.08, 0.02),
-                 rot=aim((0.0, 1.0, 0.0)), verts=48), "steel")
-    register(torus("pad_lip", 1.95, 0.09, loc=(0.0, FLOOR_Y + 0.10, 0.02),
-                   rot=(D(90), 0, 0), mseg=48, nseg=10), "dark")
+        for k in range(3):
+            off = 0.10 * (k - 1)
+            th = D(250.0) if s < 0 else D(290.0)
+            entry = surf(th + D(4.0) * (k - 1), D(-70.0))
+            pts = [(s * (1.15 + off), FLOOR_Y + 0.12, -0.34 + off * 0.4),
+                   (s * (1.42 + off), FLOOR_Y + 0.85, -0.40),
+                   (s * (1.72 + off), -1.30, -0.42),
+                   (entry.x * 0.94, entry.y * 0.94, entry.z - 0.05),
+                   (entry.x, entry.y, entry.z)]
+            register(pipe("cable%d_%d" % (s, k), pts, 0.052), "dark")
+        register(cyl("cableclamp%d" % s, 0.17, 0.14, (s * 1.60, -1.42, -0.40),
+                     rot=aim((s * 0.5, 1.0, 0.0)), verts=16), "steel")
+
 
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
 MAT_SPECS = {
-    "patina": ((0.45, 0.50, 0.48, 1.0), 0.5, 0.65),
-    "steel":  ((0.38, 0.40, 0.43, 1.0), 0.6, 0.60),
-    "dark":   ((0.10, 0.10, 0.11, 1.0), 0.8, 0.62),
+    "patina": ((0.42, 0.45, 0.44, 1.0), 0.45, 0.66),
+    "steel":  ((0.38, 0.40, 0.43, 1.0), 0.60, 0.62),
+    "dark":   ((0.10, 0.10, 0.11, 1.0), 0.75, 0.64),
+    "screen": ((0.05, 0.08, 0.10, 1.0), 0.00, 0.18),   # LCD glass (engine drives emissive)
+    "led":    ((0.06, 0.09, 0.09, 1.0), 0.00, 0.30),   # indicator caps + strips
 }
 
 def make_material(name):
@@ -376,21 +437,43 @@ def make_material(name):
     return m
 
 def normals_outward(ob):
-    """Guarantee outward normals: recalc, then flip if the signed volume came out
-    negative. THE round-4 bug (30-43% inside-out hub-facing tris, backface-culled,
-    unlightable) dies here."""
+    """Recalc + signed-volume check. The R4 gate shipped 30-43% inside-out tris
+    (backface-culled, unlightable) — that bug does not come back.
+
+    NOT APPLIED TO THE TUBE, and that is deliberate. recalc_face_normals decides
+    "outward" per CONNECTED ISLAND, and EDGE_SPLIT (which we need for crisp machined
+    edges) DISCONNECTS every face whose crease exceeds the split angle — so the deep
+    cut features (the indicator groove, the vent slots, the panel bay) become their
+    own little open islands with no inside, and the recalc happily INVERTS them. That
+    is measurable: before this exemption, 100% of the groove's faces (v -142..-163
+    deg, 4096 tris) came back inside-out while the rest of the tube was fine.
+    The sweep in build_tube() winds every quad (i,j)->(i+1,j)->(i+1,j+1)->(i,j+1),
+    whose normal is dP/du x dP/dv = q(R + q cos v)(cos v cos u, cos v sin u, sin v) —
+    the outward tube normal, by construction, for ANY displacement field. So the tube
+    needs no recalc; it needs to be LEFT ALONE. verify_tube_outward() proves it.
+    """
     me = ob.data
+    if ob.name.startswith("gate_tube"):
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        vol = bm.calc_volume(signed=True)
+        bm.free()
+        return vol
     bm = bmesh.new()
     bm.from_mesh(me)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    if bm.calc_volume(signed=True) < 0.0:
+    vol = bm.calc_volume(signed=True)
+    if vol < 0.0:
         bmesh.ops.reverse_faces(bm, faces=bm.faces)
     bm.to_mesh(me)
     bm.free()
+    return vol
 
 def join_group(name, objs):
-    for o in objs:
-        normals_outward(o)
+    vols = [normals_outward(o) for o in objs]
+    neg = sum(1 for v in vols if v < 0.0)
+    log("group %s: %d objs, %d had negative signed volume (flipped outward)"
+        % (name, len(objs), neg))
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs:
         o.select_set(True)
@@ -402,7 +485,8 @@ def join_group(name, objs):
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     return j
 
-def uv_unwrap(ob, scale):
+def uv_project(ob, scale):
+    """Smart-project the SUBORDINATE groups only. The tube keeps its analytic UVs."""
     bpy.ops.object.select_all(action='DESELECT')
     ob.select_set(True)
     bpy.context.view_layer.objects.active = ob
@@ -416,23 +500,70 @@ def uv_unwrap(ob, scale):
             d.uv[0] *= scale
             d.uv[1] *= scale
 
+def verify_tube_outward(ob):
+    """RIGOROUS inside-out check for the TUBE — the R4 bug (30-43% inverted,
+    backface-culled, unlightable) must never come back.
+
+    A centroid test is MEANINGLESS on a torus (the tube's inner half legitimately
+    faces the ring center), so we test against the tube's ANALYTIC AXIS instead: for
+    any point P on the tube, the outward direction is P minus the nearest point on
+    the centerline circle, i.e. P - (RING_R * unit(P.xy), 0). Every face normal must
+    have a POSITIVE dot with it.  NOTE: the object has ALREADY been rotated +90 deg
+    about X for the Y-up export, so we un-rotate before testing.
+    """
+    me = ob.data
+    me.calc_loop_triangles()
+    inv = Matrix.Rotation(-math.pi / 2, 4, 'X')
+    rot3 = inv.to_3x3()
+    bad = 0
+    hist = {}
+    for t in me.loop_triangles:
+        p = inv @ (sum((me.vertices[i].co for i in t.vertices), Vector()) / 3.0)
+        n = rot3 @ t.normal
+        xy = Vector((p.x, p.y, 0.0))
+        if xy.length < 1e-6:
+            continue
+        c = xy.normalized() * RING_R          # nearest centerline point
+        if (p - c).dot(n) <= 0.0:
+            bad += 1
+            d = p - c
+            v = math.degrees(math.atan2(d.z, d.dot(xy.normalized())))
+            k = int(round(v / 5.0)) * 5       # bucket the minor angle
+            hist[k] = hist.get(k, 0) + 1
+    if hist:
+        top = sorted(hist.items(), key=lambda kv: -kv[1])[:6]
+        log("   inside-out by minor angle v (deg -> count):",
+            ", ".join("%d:%d" % kv for kv in top))
+    return bad, max(1, len(me.loop_triangles))
+
+
+def signed_volume(ob):
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    v = bm.calc_volume(signed=True)
+    bm.free()
+    return v
+
 def main():
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete()
 
-    build_ring()
-    build_clamps()
-    build_banks()
-    build_pipes()
-    build_details()
+    tube = build_tube()
+    build_panel()
     build_cradle()
-    log("authored objects:", sum(len(v) for v in GROUPS.values()))
+    build_cables()
+    log("authored objects:", sum(len(v) for v in GROUPS.values()),
+        "(tube = 1 of them; R5 shipped 233)")
 
     rot = Matrix.Rotation(math.pi / 2, 4, 'X')
     total = 0
-    for name in ("patina", "steel", "dark"):
-        j = join_group(name, GROUPS[name])
-        uv_unwrap(j, 2.2 if name == "patina" else 1.8)
+    for name in ("patina", "steel", "dark", "screen", "led"):
+        objs = GROUPS[name]
+        if not objs:
+            continue
+        j = join_group(name, objs)
+        if name != "patina":                    # tube keeps its analytic UV grid
+            uv_project(j, 1.8 if name in ("steel", "dark") else 1.0)
         j.data.materials.clear()
         j.data.materials.append(make_material(name))
         j.matrix_world = rot @ j.matrix_world
@@ -443,7 +574,16 @@ def main():
         j.data.calc_loop_triangles()
         tris = len(j.data.loop_triangles)
         total += tris
-        log("group gate_%s: %d tris" % (name, tris))
+        vol = signed_volume(j)
+        if name == "patina":                  # the tube: analytic outward test
+            bad, n = verify_tube_outward(j)
+            log("group gate_%s: %d tris, signed volume %+.3f, TUBE inside-out %d/%d "
+                "(%.3f%%)" % (name, tris, vol, bad, n, 100.0 * bad / n))
+            if bad > 0:
+                log("!! WARNING: the tube has inside-out triangles — DO NOT SHIP")
+        else:
+            log("group gate_%s: %d tris, signed volume %+.3f (>0 = outward)"
+                % (name, tris, vol))
     log("TOTAL tris:", total)
 
     os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)

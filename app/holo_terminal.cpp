@@ -571,6 +571,21 @@ x3::prims::PrimMesh makeRoundedPanel(float hw, float hh, float corner) {
 // x3::prims::makeRoundedRectTube, swept along the same rounded-rect path. See build().)
 } // namespace
 
+void HoloTerminal::shutdown(x3::rhi::IRenderDevice& device) {
+    // Free everything build() put on the GPU. The RIFTHUB stands EIGHT of these up
+    // and its smoketest gates on allocationCount == 0, so the platform grew a real
+    // teardown path (it previously had none — the cell terminal is a singleton that
+    // lives for the whole run, so the leak never showed).
+    for (auto h : m_meshes) if (h.valid()) device.destroyMesh(h);
+    m_meshes.clear();
+    if (m_holoTex.valid()) { device.destroyTexture(m_holoTex); m_holoTex = {}; }
+    m_decor.clear();
+    m_entity = kNoLink;
+    m_scanEntity = kNoLink;
+    m_scene = nullptr;
+    m_device = nullptr;
+}
+
 void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
                          x3::phys::Vec3 pos, float yaw, float width, float height,
                          float ceilingY) {
@@ -587,6 +602,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
+        m_meshes.push_back(e.mesh);
         e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=alpha;
         e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
         e.tag = (uint32_t)Tag::Prop;
@@ -608,6 +624,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
+        m_meshes.push_back(e.mesh);
         e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=alpha;
         e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
         if (asGlass) {
@@ -721,6 +738,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     Entity e;
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
+    m_meshes.push_back(e.mesh);
     e.tex = m_holoTex;                                  // procedural hologram UI
     // REAL translucent GLASS (engine glass pass) — replaces the old "fake by leaving
     // it opaque + carrying the look in the emissive" hack. The plate is now actually
@@ -758,6 +776,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     Entity se;
     se.mesh = device.createMesh(sgeo.verts.data(), (uint32_t)sgeo.verts.size(),
                                 sgeo.index.data(), (uint32_t)sgeo.index.size());
+    m_meshes.push_back(se.mesh);
     se.tex = m_holoTex;
     se.baseColor[0]=0.0f; se.baseColor[1]=0.0f; se.baseColor[2]=0.0f; se.baseColor[3]=1.0f;
     se.emissive[0]=0.3f; se.emissive[1]=0.9f; se.emissive[2]=1.0f; se.emissive[3]=0.0f;  // pulsed in update()
