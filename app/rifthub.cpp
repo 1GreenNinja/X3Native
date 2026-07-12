@@ -149,9 +149,9 @@ constexpr float    kGateDarkTint[3]  = { 0.55f, 0.58f, 0.62f };  // hardware (ov
 // group gets a de-tealing grime tint (R held vs G/B suppressed), the accent
 // group keeps its teal but grimed down, hardware near pass-through (the
 // piston albedo is already near-black).
-constexpr float    kForgePlateTint[3] = { 0.58f, 0.50f, 0.48f };  // riveted armor -> dark neutral steel
-constexpr float    kForgeTealTint[3]  = { 0.52f, 0.50f, 0.50f };  // peeling teal accent, grimed
-constexpr float    kForgeDarkTint[3]  = { 0.85f, 0.85f, 0.86f };  // brushed gunmetal hardware
+constexpr float    kForgePlateTint[3] = { 0.40f, 0.41f, 0.44f };  // riveted armor -> DARK cool steel (was 0.58 = sandy)
+constexpr float    kForgeTealTint[3]  = { 0.38f, 0.42f, 0.43f };  // peeling teal accent, grimed DARK
+constexpr float    kForgeDarkTint[3]  = { 0.34f, 0.35f, 0.38f };  // gunmetal hardware — was 0.85, bleached the forged rust to sandy tan
 
 // ---- Segmented amber RATCHET TRACK (inner-facing edge; PortalAnimated.mp4) -----
 // Small amber segments ringing the gate's inner front edge. Dormant: dim.
