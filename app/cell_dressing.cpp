@@ -274,6 +274,15 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     const float z0 = cell.z0(), z1 = cell.z1();   // Z span (≈ 37 .. 43)
     const float ccx = cell.cx, ccz = cell.cz;
 
+    // ---- REAL OBSERVATION WINDOW (feat/cell-real-glass). The +Z wall faces the Main Hall.
+    // buildCanonFloor punches a full-height, collision-SEALED opening in that graybox wall
+    // (cellObsWindow — the SAME span resolved here), so through it the hall is actually
+    // visible instead of flat-blue graybox. Here we (a) skip the opaque SM_Wall panel that
+    // would occlude it, (b) leave the whole-wall privacy glaze OUT of this span, and (c)
+    // glaze it with a genuinely CLEAR armored pane + a reinforced mullion frame below.
+    const CellWindow obsWin = cellObsWindow(floor);
+    const bool haveWin = obsWin.valid() && obsWin.wall == 3;   // +Z (hall-facing) only
+
     // ---- REAL DOORWAY OPENINGS of this cell (WAVE — cell-door fix). The 7x6 cell
     // OVERLAPS its neighbours, so the resolver opens Overlap *junctions* (NO slab) on the
     // +Z (Main Hall — the primary egress) and +X (West Cell Hall) walls, plus an Adjacent
@@ -401,10 +410,15 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             }
         };
         // Wall on a Z plane (z=zPlane): rotate the panel 90° so its face points ±X->±Z.
+        // `skipLo/skipHi` (default an empty span) omits any panel whose [x,x+panelW] run
+        // overlaps it — used on the +Z wall to leave the observation-window opening CLEAR
+        // (an opaque panel there would occlude the see-through glass).
         auto tileWallZ = [&](float zPlane, float yaw, float xStart, float xEnd,
-                             const float tint[4], int seed) {
+                             const float tint[4], int seed,
+                             float skipLo = 1.0f, float skipHi = -1.0f) {
             int i = seed;
             for (float x = xStart; x < xEnd - 0.05f; x += panelW) {
+                if (x < skipHi && x + panelW > skipLo) { ++i; continue; }   // window gap: no panel
                 place(picWall(i++), yaw, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
                       x, fY, zPlane, nullptr, tint);
             }
@@ -414,7 +428,9 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // as built relief, not a flat plain panel.
         tileWallX(x0 + inset, 0.0f, tWall, 0);
         // +Z wall (z=z1): face -Z (into room). Rotate yaw=+pi/2 so the slab face points -Z.
-        tileWallZ(z1 - inset, kPi * 0.5f, x0, x1, tWallWarm, 1);
+        // Skip the panel over the observation-window opening so the glass reads see-through.
+        tileWallZ(z1 - inset, kPi * 0.5f, x0, x1, tWallWarm, 1,
+                  haveWin ? obsWin.lo - 0.05f : 1.0f, haveWin ? obsWin.hi + 0.05f : -1.0f);
         // -Z wall (z=z0): face +Z (into room). yaw=-pi/2. Seed offset so the back wall does
         // not line up its seams/relief with the side walls.
         tileWallZ(z0 + inset, -kPi * 0.5f, x0, x1, tWall, 2);
@@ -474,6 +490,10 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
                 std::vector<std::pair<float,float>> cuts;
                 for (const CellOpening& o : openings)
                     if (o.wall == wall) cuts.push_back({ o.c - o.half - 0.15f, o.c + o.half + 0.15f });
+                // Cut the OBSERVATION WINDOW span out too: that opening gets its own crisp
+                // clear pane below, so the whole-wall privacy glaze must not double up on it.
+                if (haveWin && wall == obsWin.wall)
+                    cuts.push_back({ obsWin.lo - 0.06f, obsWin.hi + 0.06f });
                 std::sort(cuts.begin(), cuts.end());
                 float cur = a0;
                 for (const auto& cpair : cuts) {
@@ -488,6 +508,63 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             addPane(2, 'z', z0 + gInset, x0, x1);   // -Z wall (WL-2 door cut out)
             addPane(3, 'z', z1 - gInset, x0, x1);   // +Z wall (Main-Hall exit cut out — was the grey panel)
             addPane(1, 'x', x1 - gInset, z0, z1);   // +X wall (West-Cell-Hall exit cut out)
+
+            // ============ THE ARMORED OBSERVATION WINDOW (feat/cell-real-glass) ==========
+            // Over the graybox opening buildCanonFloor punched in the +Z (Main-Hall) wall,
+            // lay a genuinely CLEAR armored pane so Jake looks straight OUT into the hall
+            // (Rule 5 glass law: baseColor alpha in (0,0.07) is honored literally as
+            // near-clear glass; the glass pass then reads see-through instead of frosted).
+            // A subtle cool tint + a low-roughness specular sheen sells thick armored glass
+            // (not an invisible plane), and a dark reinforced MULLION frame reads it as a
+            // detention viewport, not a hole. The graybox behind is open + collision-sealed,
+            // so — unlike the privacy panes over solid stubs — there is real hall depth to
+            // see through this one.
+            if (haveWin) {
+                const float wz    = z1 - 0.12f;               // pane plane (roomward of z1, faces the hall)
+                const float wy0   = fY + 0.04f, wy1 = ceilY - 0.04f;   // fill the full-height opening
+                const float wlo   = obsWin.lo,  whi = obsWin.hi;
+                // Emit an axis-'z' (XY-plane) glass quad rect with an explicit material.
+                auto glassRect = [&](float xlo, float xhi, float ylo, float yhi, float zpl,
+                                     float r, float g, float b, float op, float rough, float spec) {
+                    if (xhi - xlo < 0.01f || yhi - ylo < 0.01f) return;
+                    ProcDraw d; d.meshIdx = paneMesh; d.glass = true;
+                    d.color[0]=r; d.color[1]=g; d.color[2]=b; d.color[3]=op;
+                    d.glassRough = rough; d.glassSpec = spec;
+                    const float w = xhi - xlo, h = yhi - ylo;
+                    d.transform[0]=w;  d.transform[1]=0; d.transform[2]=0;  d.transform[3]=0;
+                    d.transform[4]=0;  d.transform[5]=h; d.transform[6]=0;  d.transform[7]=0;
+                    d.transform[8]=0;  d.transform[9]=0; d.transform[10]=1; d.transform[11]=0;
+                    d.transform[12]=(xlo+xhi)*0.5f; d.transform[13]=(ylo+yhi)*0.5f; d.transform[14]=zpl; d.transform[15]=1;
+                    m_proc.push_back(d);
+                };
+                // (1) The CLEAR armored viewport: near-clear (alpha 0.04) so the hall reads
+                // straight through, faint cool tint, polished (low roughness). Specular kept
+                // RESTRAINED (0.18) — a high spec drives the glass pass's environment-
+                // reflection sheen, which milks a big flat pane over; a low spec keeps the
+                // depth crisp with just an edge glint so it still reads as a glass surface.
+                glassRect(wlo, whi, wy0, wy1, wz, 0.76f, 0.85f, 0.92f, 0.04f, 0.04f, 0.18f);
+                // (2) The reinforced MULLION FRAME: thin dark-steel bars (near-opaque glass,
+                // so they stay LIT by the room like real metal) — a full perimeter, one
+                // vertical centre bar, and two horizontal transoms => a gridded armored
+                // viewport. A hair roomward of the glass so it always reads in front.
+                const float fr[3] = { 0.14f, 0.15f, 0.18f };   // dark gunmetal
+                const float fz = wz - 0.02f, t = 0.05f;         // bar half-thickness in world units
+                auto bar = [&](float xlo, float xhi, float ylo, float yhi) {
+                    glassRect(xlo, xhi, ylo, yhi, fz, fr[0], fr[1], fr[2], 0.94f, 0.5f, 0.25f);
+                };
+                bar(wlo - t, whi + t, wy1 - t, wy1 + t);        // head bar
+                bar(wlo - t, whi + t, wy0 - t, wy0 + t);        // sill bar
+                bar(wlo - t, wlo + t, wy0 - t, wy1 + t);        // left jamb
+                bar(whi - t, whi + t, wy0 - t, wy1 + t);        // right jamb
+                const float wmid = (wlo + whi) * 0.5f;
+                bar(wmid - t, wmid + t, wy0, wy1);              // vertical centre mullion
+                const float t1 = fY + (ceilY - fY) * 0.38f, t2 = fY + (ceilY - fY) * 0.70f;
+                bar(wlo, whi, t1 - t, t1 + t);                  // lower transom
+                bar(wlo, whi, t2 - t, t2 + t);                  // upper transom
+                // A soft cool wash on the sill so the viewport glass + frame catch a key
+                // (guard-station light spilling in), and the window doesn't sit in shadow.
+                addLight(bt.jakeCell, wmid, fY + 1.5f, z1 - 0.5f, 3.0f, 0.55f, 0.72f, 0.95f);
+            }
         }
 
         // ROUND 4 — CEILING: tile SM_Ceiling_A flat under the graybox ceiling plane so
