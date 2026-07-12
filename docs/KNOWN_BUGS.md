@@ -43,6 +43,32 @@ Concurrent agents in one working tree cause: MSBuild holding `.obj` files (recom
 skipped → you debug a **stale exe**), `git stash` sweeping another agent's work, and merges
 blocked by locked files. Use isolated worktrees + separate build dirs.
 
+### L8. A Unity pack's EMISSION can be hidden in a channel your converter throws away
+*(Landed as "L7" on `fix/emissive-convert`; renumbered to L8 when it merged alongside the
+lighting line, which had independently claimed L7 for the **observation** of this same defect.
+L7 is what you SEE — magenta paint on the props. L8 is WHY. Read both.)*
+
+`ModularSciFi_Interior` ships `T_<X>_MRAG.png` = **M**etallic(R) **R**oughness(G) **AO**(B)
+**GLOW(A)**. The kit's shader is `emission = Dif.rgb * MRAG.a` — the glow mask is the **alpha
+of the MR map**, and the *diffuse* carries the emitter's COLOUR as a key: pure yellow
+`(255,255,0)` panels, magenta `(255,0,255)` lenses, blue `(0,0,255)` console screens, green
+`(0,255,0)` stair strips. The original convert kept only Dif + Norm and **dropped MRAG
+entirely** — so every light lens shipped as flat PAINT (and every surface as uniform
+metallic-0/roughness-0.5 plastic). The 0.42 ambient hid it for months; the moment lighting
+went honest the facility was slabs of magenta and yellow.
+**Before converting ANY pack: list its texture files and account for every channel.** A map
+you cannot name is a map you are about to throw away. — fixed by `tools/convert_modular_scifi.py`,
+gated by `tools/test_kit_materials.py`.
+Two traps found while fixing it, both worth knowing:
+- **Pillow premultiplies alpha on RGBA `resize()`.** An MRAG map is 4 unrelated DATA channels,
+  not colour+alpha; a plain resize multiplied metal/rough/AO by the glow mask (~0 over 95% of
+  the atlas) and crushed roughness 0.22 → **0.02 — every wall a mirror**. Resize per channel.
+- **This engine's ACES is the per-channel Narkowicz approximation** (`shaders/composite.frag`).
+  A channel that is 0 stays 0 at *any* exposure, so a pure-yellow (zero-blue) emitter can NEVER
+  roll its core off to white — raising emissive strength just clamps it to a flat yellow swatch.
+  If an emitter must read as a *lamp*, the core desaturation has to be baked into the emissive
+  MAP. (Fixing the tonemapper to a hue-preserving/AP1 ACES would remove this constraint.)
+
 ---
 
 ## 🔦 THE TWO ROOT CAUSES (fixed — but read them, they explain most of the game's history)
@@ -183,6 +209,8 @@ surface tell you instantly whether you are looking at an albedo problem or a *li
 An albedo error scales all three channels together; a coloured light does not.
 
 ### L7. A KIT'S EMISSION MASK CAN SHIP AS ALBEDO PAINT — the purple/magenta props
+*(The OBSERVATION. The root cause — the glow mask lives in the alpha of a MRAG map the converter
+discarded — is **L8**, and the re-convert that fixes it is `tools/convert_modular_scifi.py`.)*
 **MEASURED** (2026-07-12), and it explains *every* magenta prop at once, not one at a time:
 
 | asset | pure-magenta texels **in the base-color map** | mean sRGB | its emissive slot |

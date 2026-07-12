@@ -131,3 +131,7 @@ assets/rigged_glb/WeaponRailgun.glb
 # dir silently debug a STALE exe (MSBuild holds .obj files and skips recompiles). Agents
 # build to build-<name>/ inside their own worktree — never commit those.
 build-*/
+
+# Scratch dirs for the kit re-convert (tools/convert_modular_scifi.py).
+tmp_glb/
+tmp_tex/
