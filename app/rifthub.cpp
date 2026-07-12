@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -300,6 +301,19 @@ constexpr float    kVistaEmOpen       = 0.08f;           // dissolved (throat st
 constexpr float    kVistaFadePerSec   = 0.35f;           // dissolve rate on OPEN
 constexpr float    kVistaEmCap        = 0.70f;
 constexpr float    kVistaSpinRadS     = -0.06f;          // counter-rotates (parallax cue)
+// ---- Membrane FLIPBOOK (ROUND 4 J2): the IDLE plasma layer plays the baked
+// reference-video frames (8x6 atlas -> 48 tiles, loop-blended in the bake so a
+// plain modulo loop has no wrap pop). 18 fps lands in the task's 16-24 band;
+// the per-portal phase offset keeps the 8 gates from strobing in unison.
+constexpr uint32_t kFlipCols          = 8;
+constexpr uint32_t kFlipRows          = 6;
+constexpr float    kFlipFps           = 18.0f;
+constexpr float    kFlipPortalPhase   = 0.61f;           // seconds per portal index
+// Flip-mode emissive tint: the baked frames already CARRY the reference's deep
+// blue, so the procedural layer's kPlasmaBlue would double-blue (and dim) them
+// — a paler, still blue-dominant tint lets the video's own color speak. The
+// strength cap (kPlasmaEmCap) + blue-dominance law are unchanged.
+constexpr float    kFlipTint[3]       = { 0.70f, 0.83f, 1.00f };
 // Fresnel rim (ROUND 2): round 1's single fat tube read as a uniform neon
 // sign. Now a FALLOFF STACK — a thin bright CONTACT ring right at the
 // membrane edge (the one deliberately hot line, blue-tinted, dimmer than
@@ -779,6 +793,36 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_holoTexA = device.createTexture(holoA.data(), 256, 256, true);
         auto holoB = makeHoloDataRGBA(256, 0x7C3Du);
         m_holoTexB = device.createTexture(holoB.data(), 256, 256, true);
+        // MEMBRANE FLIPBOOK (ROUND 4 J2): slice the baked atlas into 48
+        // per-frame tiles. Any failure (file absent, LFS pointer stub, odd
+        // dimensions) leaves m_flipTex empty -> the procedural nebula holds.
+        {
+            int aw = 0, ah = 0;
+            const std::string fbPath =
+                assetRoot() + "/textures/rifthub/membrane_flipbook.png";
+            const std::vector<uint8_t> atlas = decodePngRGBA8(fbPath, aw, ah);
+            if (!atlas.empty() && aw > 0 && ah > 0 &&
+                (uint32_t)aw % kFlipCols == 0 && (uint32_t)ah % kFlipRows == 0) {
+                const uint32_t tw = (uint32_t)aw / kFlipCols;
+                const uint32_t th = (uint32_t)ah / kFlipRows;
+                std::vector<uint8_t> tile((size_t)tw * th * 4u);
+                m_flipTex.reserve((size_t)kFlipCols * kFlipRows);
+                for (uint32_t f = 0; f < kFlipCols * kFlipRows; ++f) {
+                    const uint32_t r0 = (f / kFlipCols) * th;
+                    const uint32_t c0 = (f % kFlipCols) * tw;
+                    for (uint32_t y = 0; y < th; ++y)
+                        std::memcpy(&tile[(size_t)y * tw * 4u],
+                                    &atlas[(((size_t)r0 + y) * (size_t)aw + c0) * 4u],
+                                    (size_t)tw * 4u);
+                    m_flipTex.push_back(device.createTexture(tile.data(), tw, th, true));
+                }
+            }
+            x3::logInfo(std::string("[rifthub] membrane flipbook: ") +
+                        (m_flipTex.empty()
+                             ? "atlas absent -> procedural nebula fallback"
+                             : std::to_string(m_flipTex.size()) + " frames @ " +
+                                   std::to_string((int)kFlipFps) + " fps (IDLE plasma layer)"));
+        }
     }
 
     // ===== Curated PBR surface sets — loaded FIRST (the floor + hall use them).
@@ -1672,12 +1716,17 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
         // [1] PLASMA disk (filament emissive map; mrTex forces the PBR route so
         //     the emissive texture is honoured; deep-blue tint, capped strength).
+        //     ROUND 4: with the flipbook loaded, the IDLE layer IS the baked
+        //     reference-video frame (tick() advances it); the procedural nebula
+        //     is the fallback when the atlas is absent.
         {
+            const x3::rhi::TextureHandle idleTex =
+                m_flipTex.empty() ? m_plasmaTex : m_flipTex[0];
             Entity e;
             e.mesh = m_diskMesh;
-            e.tex  = m_plasmaTex;                 // albedo: the same web, dim under no light
+            e.tex  = idleTex;                     // albedo: the same web, dim under no light
             e.mrTex = m_mrFlat;
-            e.emissiveTex = m_plasmaTex;
+            e.emissiveTex = idleTex;
             e.baseColor[0] = 0.10f; e.baseColor[1] = 0.14f; e.baseColor[2] = 0.30f;
             e.baseColor[3] = 1.0f;
             e.emissive[0] = kPlasmaBlue[0]; e.emissive[1] = kPlasmaBlue[1];
@@ -1956,6 +2005,19 @@ void Rifthub::tick(float dt, Scene& scene) {
         //     tint slides deep blue -> pale blue (NOT white); always capped.
         if (p.membraneEntFirst + 1 < sceneN) {
             Entity& e = ents[p.membraneEntFirst + 1];
+            // FLIPBOOK (ROUND 4 J2): while the gate is not OPEN, the plasma
+            // layer plays the baked reference-video frames at kFlipFps (the
+            // atlas is loop-blended, so the modulo loop has no wrap pop) with
+            // a per-portal phase so the 8 gates don't strobe in unison. The
+            // OPEN throat swap above wins (gated on !throatOn); the SURGE
+            // envelope + vortex arcs composite on top of whatever frame shows.
+            if (!m_flipTex.empty() && !p.throatOn) {
+                const uint32_t n = (uint32_t)m_flipTex.size();
+                const uint32_t f = (uint32_t)((m_time + (float)i * kFlipPortalPhase)
+                                              * kFlipFps) % n;
+                e.tex = m_flipTex[f];
+                e.emissiveTex = m_flipTex[f];
+            }
             const float dir = (i & 1u) ? -1.0f : 1.0f;   // alternate spin direction
             const float spin = kPlasmaSpinRadS * (open ? kPlasmaSpinOpenX : 1.0f);
             // Continuous angle across the state change: integrate instead of
@@ -1976,9 +2038,13 @@ void Rifthub::tick(float dt, Scene& scene) {
             const float base = open || surging ? kPlasmaEmBaseOpen : kPlasmaEmBase;
             e.emissive[3] = capped(base + wob + kawooshEm, kPlasmaEmCap);
             // Surge tint: deep blue -> pale blue (NOT white) with the envelope.
+            // Flip mode rides the paler kFlipTint base (the frames carry the
+            // reference's own blue); the procedural nebula keeps kPlasmaBlue.
+            const float* baseTint = (!m_flipTex.empty() && !p.throatOn)
+                                        ? kFlipTint : kPlasmaBlue;
             for (int c3 = 0; c3 < 3; ++c3)
-                e.emissive[c3] = kPlasmaBlue[c3] +
-                                 (kKawooshTint[c3] - kPlasmaBlue[c3]) * surge01;
+                e.emissive[c3] = baseTint[c3] +
+                                 (kKawooshTint[c3] - baseTint[c3]) * surge01;
         }
         // [2] fresnel rim: slow shimmer + kawoosh lift + a touch hotter when
         //     OPEN (the throat's grazing edge), capped.
@@ -2301,6 +2367,8 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
         if (h.valid()) { device.destroyTexture(h); h = {}; }
     if (m_holoTexA.valid())   { device.destroyTexture(m_holoTexA);   m_holoTexA   = {}; }
     if (m_holoTexB.valid())   { device.destroyTexture(m_holoTexB);   m_holoTexB   = {}; }
+    for (auto& h : m_flipTex) if (h.valid()) device.destroyTexture(h);
+    m_flipTex.clear();
     m_surf.destroyAll(device);   // curated PBR sets (ring plates / housings / hall)
     m_shafts.clear();
     // ROUND 3 gate GLB: the LOADER owns its GPU handles — unload once, then drop
@@ -2481,6 +2549,24 @@ bool runRifthubSelfTest() {
                    prompt.find("walk in") != std::string::npos;
         rhCheck(noneActive && !hub.allActivated() && hud,
                 "T3 inert at load: no portal activated, HUD prompts 'walk in'");
+    }
+
+    // T10 — MEMBRANE FLIPBOOK (ROUND 4 J2), tested while every portal is still
+    //       DORMANT: with the atlas present, ticking advances the plasma disk's
+    //       emissive texture through the flip frames (the handle CHANGES across
+    //       0.5 s at kFlipFps); with the atlas absent (fresh clone / LFS stub)
+    //       the procedural nebula must HOLD (same handle) — the graceful
+    //       fallback seam is exercised on whichever side this box is on.
+    {
+        const uint32_t plasmaEnt = hub.portal(0).membraneEntFirst + 1;
+        const uint32_t tex0 = scene.entities()[plasmaEnt].emissiveTex.id;
+        for (int s = 0; s < 30; ++s) hub.tick(1.0f / 60.0f, scene);
+        const uint32_t tex1 = scene.entities()[plasmaEnt].emissiveTex.id;
+        const bool ok = (hub.flipbookFrames() > 0) ? (tex1 != tex0 && tex1 != 0)
+                                                   : (tex1 == tex0 && tex1 != 0);
+        rhCheck(ok, hub.flipbookFrames() > 0
+                        ? "T10 membrane flipbook: IDLE plasma frame advances (atlas active)"
+                        : "T10 membrane flipbook: atlas absent -> procedural nebula holds");
     }
 
     // Capture the IDLE-state plasma texture id before any trigger fires (T8

@@ -36,8 +36,10 @@
 //     The membrane is a 3-STATE MACHINE (the MEMBRANE ANIMATION ARC from
 //     docs/reference/PortalAnimated.mp4, mapped onto the existing gameplay
 //     states — no new gameplay flags):
-//       IDLE  (!activated)          — calm nebula: wispy filament texture,
-//             sparse cross-disk tendrils, slow drift, vista faintly visible;
+//       IDLE  (!activated)          — calm nebula: the baked reference-video
+//             FLIPBOOK when the atlas is present (ROUND 4 J2; procedural
+//             filament texture as the fallback), sparse cross-disk tendrils,
+//             slow drift, vista faintly visible;
 //       SURGE (kawoosh > 0)         — the activation flash: lightning arcs
 //             re-target into a VORTEX RING whipping the rim circumference,
 //             the whole membrane brightens toward its caps (bright BLUE-white,
@@ -256,6 +258,9 @@ public:
     // assembly. False = the procedural fallback ring was authored (GLB missing /
     // failed / produced no drawables) — the world NEVER breaks either way.
     bool gateGlbActive() const { return m_gateGlbActive; }
+    // ROUND 4: number of membrane-flipbook frames loaded (0 = atlas absent /
+    // undecodable -> the procedural nebula fallback is live). Self-test hook.
+    uint32_t flipbookFrames() const { return (uint32_t)m_flipTex.size(); }
     uint32_t portalCount() const { return (uint32_t)m_portals.size(); }
     const RiftPortal& portal(uint32_t i) const { return m_portals[i]; }
     const std::vector<RiftPortal>& portals() const { return m_portals; }
@@ -302,6 +307,16 @@ private:
     x3::rhi::TextureHandle     m_mrGate[3];
     x3::rhi::TextureHandle     m_holoTexA;    // teal holo data-screen texture (variant A)
     x3::rhi::TextureHandle     m_holoTexB;    // teal holo data-screen texture (variant B)
+    // MEMBRANE FLIPBOOK (ROUND 4 J2 — "steal Grok's pixels"): 48 per-frame
+    // tiles sliced at build() from assets/textures/rifthub/
+    // membrane_flipbook.png (tools/make_membrane_flipbook.py bakes the 8x6
+    // atlas from the owner's reference video's IDLE span, radially masked +
+    // loop-blended). tick() plays them as the IDLE state's plasma layer at
+    // kFlipFps with a per-portal phase offset, the slow disk rotation staying
+    // subtle underneath; SURGE arcs composite on top and the OPEN throat swap
+    // wins (the flip write is gated on !throatOn). Missing/undecodable atlas
+    // (fresh clone with LFS stubs) -> empty -> the procedural nebula holds.
+    std::vector<x3::rhi::TextureHandle> m_flipTex;
     // Per-portal blue core lights (1:1 with m_portals); intensity pulsed in tick().
     std::vector<x3::rhi::PointLight> m_lights;
     // Curated PBR surface sets (ring plates / housings / cradle / hall). The

@@ -95,3 +95,29 @@ patterns (dance_bake.py etc.).
 - Honest read vs the reference stills: geometric density is finally in the same family
   (~7/10; round 2 was 6.5) — the remaining gap is BAKED surface detail (the queued forge),
   membrane richness, and photoreal grade, not silhouette.
+
+## ROUND 4 STATUS (2026-07-11, "steal Grok's pixels")
+- J1 GHOST-GLASS FIXED (commit after F_3; shots G_1_gatefix_*): the translucent
+  gate was NOT alpha/blend/depth — the GLB exports opaque. It was the SSR/RT
+  REFLECTION pass: the curated sets' polished MR (rough .25-.45) sat inside
+  mesh.frag's mirror gate, and the half-res reflection march is wrong on the
+  GLB's dense thin plates (2 m steps + 0.5 m thickness tunnel through them), so
+  the gate's specular showed the bright emitters BEHIND it (X-ray). Fix =
+  per-group 1x1 weathered MR overrides (rough just past the 0.6 cutoff, each
+  set's metallic character kept). G_0_repro.png preserves the broken state.
+- J2 MEMBRANE FLIPBOOK LANDED (G_2_flipbook_*): tools/make_membrane_flipbook.py
+  bakes 48 frames of PortalAnimated.mp4's IDLE span (t 0..3.2 s; the video's
+  own arc is idle ~0-3 s / surge ~3-7 s / open ~7-10 s) -> radial-masked,
+  loop-blended 8x6 atlas at assets/textures/rifthub/membrane_flipbook.png
+  (+ G:\Assets\X3Native\surface_library\membrane_flipbook\). Engine slices it
+  into 48 tiles at build and plays the IDLE plasma layer at 18 fps with
+  per-portal phase; slow rotation stays under it; SURGE arcs/env + OPEN throat
+  swap unchanged on top; paler flip tint (video carries its own blue); caps
+  law intact. Missing atlas -> procedural nebula (self-test T10 covers both).
+- J3: deck fills +33% (owner's "tiny bit more light for that fantastic floor").
+- Gates: --test-rifthub 12/12, both smoketests exit 0 / 0 VUID / alloc 0.
+- KNOWN NIT: the crop keeps a faint sliver of the video's own ring track at the
+  disk's right edge (rotates with the disk; reads as membrane texture in
+  motion). Re-bake with --cx/--cy/--cr to tighten if it bothers the eyeball.
+- OWNER EYEBALL NEEDED LIVE: the flipbook in MOTION (loop cadence + seam) —
+  stills can't prove it.
