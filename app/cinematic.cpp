@@ -181,8 +181,14 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
                                 x3::rhi::MeshHandle mesh,
                                 const std::vector<NightSkyPlanet>& planets, float uTime,
                                 float eyeX, float eyeY, float eyeZ,
-                                x3::rhi::MeshHandle ringMesh) {
+                                x3::rhi::MeshHandle ringMesh, float anchorDist) {
     if (!fc.valid) return;
+    // The celestial shell radius. MUST be beyond every mesh in the scene: these
+    // bodies are real depth-tested geometry drawn AFTER the opaque meshes, so a
+    // shell pinned nearer than a hull occludes it (opaque pass, depth-write) and
+    // smears the ring/atmosphere over it (transparent pass, depth-test LEQUAL).
+    // See the kNightSkyDist comment in cinematic.h — this is B10.
+    const float dist = (anchorDist > 1.0f) ? anchorDist : kNightSkyDist;
     // PlanetType transparent indices (see VulkanRenderDevice PlanetType enum).
     constexpr uint32_t kAtmosphere = 9u, kSunCorona = 10u, kRing = 11u;
     constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
@@ -190,11 +196,13 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
         // Sky direction from the body's azimuth/elevation (az 0 = -Z, +90 = +X).
         const float az = b.azimuthDeg * kDegToRad, el = b.elevationDeg * kDegToRad;
         const float ce = std::cos(el);
-        const float px = eyeX + std::sin(az) * ce * kNightSkyDist;
-        const float py = eyeY + std::sin(el)      * kNightSkyDist;
-        const float pz = eyeZ - std::cos(az) * ce * kNightSkyDist;
-        // Apparent angular diameter -> world radius at the anchor distance.
-        const float r = kNightSkyDist * std::tan(b.angularDiameterDeg * 0.5f * kDegToRad);
+        const float px = eyeX + std::sin(az) * ce * dist;
+        const float py = eyeY + std::sin(el)      * dist;
+        const float pz = eyeZ - std::cos(az) * ce * dist;
+        // Apparent angular diameter -> world radius at the anchor distance. Because
+        // the radius scales WITH the anchor, the on-screen size of every body is
+        // invariant to `dist` — moving the shell out changes only its DEPTH.
+        const float r = dist * std::tan(b.angularDiameterDeg * 0.5f * kDegToRad);
         // OPAQUE body: uniform scale by the apparent radius, translated to world pos.
         const float model[16] = {
             r, 0, 0, 0,

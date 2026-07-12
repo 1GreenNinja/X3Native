@@ -38,6 +38,21 @@ Any GLB whose exporter omitted it becomes a **full metal** — and full metal ha
 lobe** — so it renders BLACK in windowless interiors. This is NOT the 1/π bug and is not fixed
 by it. The kit props need a metalness clamp (0.35) or an asset re-convert. **A crate is not metal.**
 
+### L7. THE PLANETS ARE NOT A SKYBOX — they are geometry, 140 m from your eye
+`drawNightSkyPlanets` pins every celestial body to a shell `kNightSkyDist` (140 m) from the
+camera, as **real depth-tested triangles drawn AFTER the opaque meshes**
+(`VulkanRenderDevice::recordPlanetDraws`). The opaque bodies **depth-WRITE**; the ring /
+atmosphere / corona shells depth-test **LEQUAL** and **alpha/additively blend**. So:
+
+> **Any mesh FURTHER from the eye than the sky shell gets punched out by the planet disc and
+> smeared over by the ring and atmosphere.**
+
+That is fine for the hosts it was written for (nightsky / showroom / car — a building a few
+dozen metres out). It is **catastrophic** for any scene that plays out past 140 m. It was the
+whole of **B10**. The far plane and the sky anchor are a **PAIR** — move one, move the other.
+`app/sky_scale.h` states the invariant; `--test-cutscene` asserts it with negative controls.
+**Before you put a sky body in a scene, ask how far away the furthest hull is.**
+
 ### L6. One build dir per agent
 Concurrent agents in one working tree cause: MSBuild holding `.obj` files (recompiles silently
 skipped → you debug a **stale exe**), `git stash` sweeping another agent's work, and merges
@@ -83,7 +98,43 @@ perfshop, showroom) still runs ambient 0.42.
 | B7 | Elevator −X observation window renders as a bright noisy slab | Needs one more pass |
 | B8 | Cinematic cuts to a blank blue screen | Intro/cold-open, mid-sequence |
 | B9 | Cell kit ceiling reads as a black hole | |
-| B10 | Two VFX bypass the entity path (flat-emissive glass) | `space/decloak_vfx.cpp:310`, `space/descent.cpp:294` |
+| ~~B10~~ | ~~Two VFX bypass the entity path (flat-emissive glass)~~ | **FIXED — but the diagnosis above was WRONG on every point. See R3 below.** |
+
+---
+
+### R3. The "see-through Overlord" was **THE SKY IN FRONT OF THE SHIP** — FIXED `fix/decloak-handoff`
+Tim: *"the capital ship renders as SEE-THROUGH GLASS with red/pink/yellow smears — you can see
+the planet straight through its hull."* Everyone (this file included) assumed a **glass draw
+path**. It was nothing of the kind. **Every part of the filed B10 diagnosis was false:**
+- `decloak_vfx.cpp` is **DEAD CODE** — `DecloakVfx` is never instantiated anywhere in the game,
+  and the `--test-decloak` flag it references doesn't exist. It also never draws the ship: its
+  glass call is a **shimmer shell BOX**, not a hull. It cannot have caused anything.
+- `descent.cpp:294` is a **fog dome + cloud streaks**. Volumetric atmosphere *should* be
+  translucent. No entity is being bypassed. Not a bug.
+- The capital ship is **`SpaceShip4.glb`**, not `OverLordEnforcer99.glb` (that one is the F6
+  boss *monster*). Its material is `alphaMode: OPAQUE`. It was **never on a glass path**, and
+  it was already drawn through `drawMeshPBR` on the honest, self-lit entity path.
+- Its albedo is clean: **zero** magenta/emission-key texels (measured) — *not* the ModularSciFi
+  keyed-albedo class of bug.
+
+**The actual cause:** the cold open's camera ran the engine-default **200 m far plane**, while
+its capital ship is a **200 m hull** the camera frames from ~90 m, and the FORGE3D sky bodies
+were pinned **140 m from the eye** (see **L7**) — i.e. *inside the fleet*. The gas giant's
+**opaque disc punched a hole through the hull** (it depth-writes) and its **alpha ring +
+additive atmosphere smeared across it** (they depth-test LEQUAL and blend over anything
+further away). Measured: the "smears" are the gas giant's **red body, RGB (99.5, 15.0, 12.2)**,
+and its tan/yellow ring — sitting where hull should be.
+The same 200 m far plane **clipped the capital ship clean out of frame for the first half of
+its reveal** (t=20..27, at 340–550 m), so the authored "distant speck → looming hull" ramp
+never rendered — the ship just **popped in** at 200 m. Both symptoms, one cause:
+**THE SCENE WAS FIVE TIMES BIGGER THAN ITS FRUSTUM.**
+**Fix:** far plane → 15 km and the sky shell → 10.5 km, moved **as a pair** (`app/sky_scale.h`).
+Apparent sky size is unchanged (radius = dist·tan(diam/2)); only its **depth** moved.
+
+> **The lesson is THE PATTERN again, one level up:** four separate people read "translucent
+> hull" and went hunting for a transparency bug *in the ship*. The ship was fine. **Something
+> in front of it was wrong.** When a surface looks wrong, also ask **what is between it and the
+> camera** — not only what it is made of.
 
 ---
 

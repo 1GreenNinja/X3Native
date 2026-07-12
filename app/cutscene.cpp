@@ -8,6 +8,7 @@
 #include "cutscene.h"
 
 #include "asset_root.h"             // assetRoot() — locate the shipped cold_open json
+#include "sky_scale.h"              // B10: sky-shell / far-plane invariant (RHI-free)
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -1119,6 +1120,96 @@ bool runCutsceneSelfTest() {
         }
         float dmn[3], dmx[3];
         check(!glbPositionExtent("definitely_missing.glb", dmn, dmx), "extent probe fails gracefully");
+    }
+
+    // ---- 12) B10: THE SKY MUST BE BEHIND THE SHIPS, AND THE SHIPS IN FRAME ----
+    //
+    // The bug this guards: the celestial bodies are real depth-tested geometry
+    // pinned a fixed distance from the eye and drawn AFTER the opaque meshes. Pin
+    // them NEARER than a hull and the opaque disc punches the hull out while the
+    // alpha ring + additive atmosphere smear across it — the capital ship read as
+    // SEE-THROUGH GLASS WITH RED/PINK/YELLOW SMEARS. Separately, the old 200 m far
+    // plane clipped that same ship clean out of frame for half its reveal.
+    //
+    // "The ship exists" and "the ship is SOLID" are not the same assertion. So we
+    // do not check that an actor is present — we walk the WHOLE timeline and assert
+    // the two geometric predicates that make it solid and visible, then prove the
+    // probe can go RED by re-running it against the numbers that shipped the bug.
+    {
+        const std::string path = x3::game::assetRoot() + "/cutscenes/cold_open.cutscene.json";
+        Cutscene co; std::vector<std::string> errs;
+        if (loadCutsceneFile(path, co, errs)) {
+            // Sample the film densely enough to catch any beat.
+            constexpr float kStep = 0.10f;
+
+            // Worst case over the timeline, measured against the SHIPPING numbers.
+            float worstSkyMargin  =  1e9f;   // anchorDist - (dist + radius); must stay > 0
+            float worstFrustMargin=  1e9f;   // farPlane   - (dist + radius); must stay > 0
+            float maxHullReach    =  0.0f;   // furthest (dist + radius) any hull reaches
+            float tWorstSky = -1.0f, tWorstFrust = -1.0f;
+            // ...and against the OLD numbers (the negative control).
+            bool  oldSkyEverBlocked   = false;   // did the 140 m shell ever sit inside a hull?
+            bool  oldFrustumEverClipped = false; // did the 200 m far plane ever clip a hull?
+
+            for (float t = 0.0f; t <= co.duration; t += kStep) {
+                const CamPose cam = evalCamera(co, t);
+                for (const Actor& a : co.actors) {
+                    // Ships only: the builtin: prims are FX (bolts, glows), not hulls.
+                    if (a.model.rfind("builtin:", 0) == 0) continue;
+                    const ActorPose p = evalActor(co, a, t);
+                    if (!p.visible) continue;
+                    const float dx = p.pos.x - cam.pos.x;
+                    const float dy = p.pos.y - cam.pos.y;
+                    const float dz = p.pos.z - cam.pos.z;
+                    const float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+                    // `size` casts the hull's LONGEST axis, so it bounds the radius.
+                    const float radius = a.size > 0.0f ? a.size : 1.0f;
+                    const float reach  = dist + radius;
+                    if (reach > maxHullReach) maxHullReach = reach;
+
+                    const float skyMargin = x3::sky::kColdOpenSkyDist - reach;
+                    if (skyMargin < worstSkyMargin) { worstSkyMargin = skyMargin; tWorstSky = t; }
+                    const float frustMargin = x3::sky::kColdOpenFar - reach;
+                    if (frustMargin < worstFrustMargin) { worstFrustMargin = frustMargin; tWorstFrust = t; }
+
+                    // NEGATIVE CONTROL inputs: the numbers that shipped the bug.
+                    if (!x3::sky::skyClearsHull(/*anchorDist*/140.0f, dist, radius))
+                        oldSkyEverBlocked = true;
+                    if (!x3::sky::hullInsideFrustum(/*farPlane*/200.0f, dist, radius))
+                        oldFrustumEverClipped = true;
+                }
+            }
+
+            char buf[220];
+            std::snprintf(buf, sizeof(buf),
+                          "[cutscene-test] cold open: furthest hull reach %.1f m | sky shell %.1f m "
+                          "(margin %.1f m @t=%.1f) | far plane %.1f m (margin %.1f m @t=%.1f)",
+                          maxHullReach, x3::sky::kColdOpenSkyDist, worstSkyMargin, tWorstSky,
+                          x3::sky::kColdOpenFar, worstFrustMargin, tWorstFrust);
+            x3::logInfo(buf);
+
+            // THE ASSERTIONS (these are what B10 needed and never had).
+            check(worstSkyMargin > 0.0f,
+                  "B10: the sky shell is BEHIND every hull, at every beat "
+                  "(no planet can occlude or bleed onto a ship)");
+            check(worstFrustMargin > 0.0f,
+                  "B10: every hull is INSIDE the far plane, at every beat "
+                  "(the capital-ship reveal is not clipped away)");
+            // (The sky's OWN clipping — each body + its atmosphere/ring/corona shell
+            //  against the far plane — is checked per-body in CinematicScene::load,
+            //  where the real sky table lives. cutscene.cpp is renderer-free and has
+            //  no business duplicating that table.)
+
+            // ---- NEGATIVE CONTROLS: prove the probes above CAN fail. ----
+            // If either of these ever goes false, the guard has gone blind and the
+            // two checks above are passing vacuously.
+            check(oldSkyEverBlocked,
+                  "B10 NEGATIVE CONTROL: the OLD 140 m sky shell DOES sit inside a hull "
+                  "(probe can go red — it is not passing vacuously)");
+            check(oldFrustumEverClipped,
+                  "B10 NEGATIVE CONTROL: the OLD 200 m far plane DOES clip a hull "
+                  "(probe can go red — it is not passing vacuously)");
+        }
     }
 
     x3::logInfo("[cutscene-test] " + std::to_string(g_pass) + "/" + std::to_string(g_total) + " passed");

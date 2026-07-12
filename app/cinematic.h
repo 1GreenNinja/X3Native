@@ -16,6 +16,7 @@
 #include "engine/asset/IModelLoader.h"
 #include "engine/audio/IAudioSystem.h"
 #include "cutscene.h"
+#include "sky_scale.h"              // B10: the sky-shell / far-plane invariant
 #include "mesh_prims.h"
 #include "asset_root.h"
 #include "audio_root.h"
@@ -67,7 +68,39 @@ struct NightSkyPlanet {
 // (worst point ~168 m) and well past all world geometry, so depth-test LESS
 // occludes it behind the spire/terrain at the horizon while it still draws OVER
 // the far-depth sky dome.
+//
+// ⚠️ THE ANCHOR IS ONLY "SKY" IF IT IS BEYOND EVERY MESH IN THE SCENE. ⚠️
+// This 140 m default is correct for the WALK-AROUND hosts (nightsky / showroom /
+// car), where the world geometry is a building a few dozen metres away. It is the
+// wrong number for ANY scene whose actors live further out than 140 m: the planet
+// bodies are REAL depth-tested geometry drawn AFTER the opaque meshes (see
+// VulkanRenderDevice::recordPlanetDraws), so a body anchored NEARER than a mesh
+//   * punches the mesh out with the OPAQUE pass (which depth-WRITES), and
+//   * smears the ALPHA ring / ADDITIVE atmosphere shell straight across it
+//     (those layers depth-test LEQUAL, so they blend over anything further away).
+// That is what made the cold-open capital ship look like SEE-THROUGH GLASS with
+// red/pink/yellow smears (B10): a 200 m hull at ~150 m range, with the "sky"
+// hanging 140 m from the eye — i.e. INSIDE the fleet. Scenes that fly further out
+// must raise BOTH the far plane (setCameraFar) and this anchor together; the pair
+// is what keeps the sky in the sky. `drawNightSkyPlanets` takes the anchor as an
+// argument for exactly this reason. Apparent size is unaffected: every body's
+// radius is derived as dist * tan(angularDiameter/2), so moving the anchor out
+// changes nothing on screen except the DEPTH the body occupies.
 inline constexpr float kNightSkyDist = 140.0f;
+
+// ---- COLD-OPEN scale (see app/sky_scale.h for the invariant + the full story) --
+// The cold-open is a DEEP-SPACE scene, not a walk-around: Jake's fighter flies
+// from z=0 to z=-920 and the capital ship is a 200 m hull that the camera frames
+// from ~90 m. With the engine-default 200 m far plane the film was broken in two
+// separate ways at once:
+//   1. The capital ship's REVEAL (t=20..27, at 340-550 m range) was entirely
+//      BEYOND the far plane — the ship was clipped away and simply POPPED into
+//      existence when it crossed 200 m. The authored "distant speck -> looming
+//      hull" ramp never rendered.
+//   2. The sky bodies at 140 m sat IN FRONT of it (see above) -> B10.
+// The far plane and the sky anchor move as a PAIR. `--test-cutscene` asserts it.
+using x3::sky::kColdOpenFar;
+using x3::sky::kColdOpenSkyDist;
 
 // Build the UV-sphere (writes `outMesh`) + load every planet's textures, returning
 // the list of bodies with their default sky layout (azimuth/elevation/angular
@@ -90,11 +123,15 @@ std::vector<NightSkyPlanet> loadNightSkyPlanets(
         x3::rhi::MeshHandle* outRingMesh = nullptr);
 
 // Draw every planet for the current frame (see cinematic.cpp).
+// `anchorDist` is how far from the eye the celestial shell is pinned. It MUST be
+// beyond every mesh in the scene (see the kNightSkyDist note above) — the default
+// is correct for the walk-around hosts; deep-space scenes pass their own.
 void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameContext& fc,
                          x3::rhi::MeshHandle mesh,
                          const std::vector<NightSkyPlanet>& planets, float uTime,
                          float eyeX, float eyeY, float eyeZ,
-                         x3::rhi::MeshHandle ringMesh = {});
+                         x3::rhi::MeshHandle ringMesh = {},
+                         float anchorDist = kNightSkyDist);
 
 // ============================================================================
 // COLD-OPEN CINEMATIC DRIVER (x3.cutscene/1 — app/cutscene.h holds the pure
@@ -216,6 +253,29 @@ public:
         if (nTexFail > 0)
             x3::logInfo("[cutscene] " + std::to_string(nTexFail) +
                         " planet texture(s) missing — bodies may render flat (graceful)");
+
+        // ---- B10 guard: the SKY must fit inside the frustum it is drawn in. ----
+        // Each body is a sphere of radius dist*tan(diam/2) at kColdOpenSkyDist,
+        // plus a companion shell (atmosphere 1.06x, sun corona 2.2x, ring 2.5x).
+        // If any of them punches through the far plane the sky itself gets cut.
+        // Checked HERE, per-body, against the REAL table above — a blanket
+        // worst-case bound is wrong (the widest body carries only a thin
+        // atmosphere; the 2.5x ring belongs to a much smaller one).
+        for (size_t i = 0; i < m_planets.size() && i < m_anchors.size(); ++i) {
+            const float angSin = m_anchors[i].angSin;
+            const float r = kColdOpenSkyDist * std::tan(std::asin(std::min(0.999f, angSin)));
+            float shell = 1.0f;
+            if (m_planets[i].ringTex.valid())        shell = 2.5f;   // ring annulus
+            else if (m_planets[i].coronaTex.valid()) shell = 2.2f;   // sun corona
+            else if (m_planets[i].atmoTex.valid())   shell = 1.06f;  // atmosphere
+            if (!x3::sky::bodyInsideFrustum(kColdOpenFar, kColdOpenSkyDist, r, shell)) {
+                x3::logError(std::string("[cutscene] SKY CLIPS THE FAR PLANE: body '") +
+                             (m_planets[i].name ? m_planets[i].name : "?") +
+                             "' reaches " + std::to_string(kColdOpenSkyDist + r * shell) +
+                             " m but the far plane is " + std::to_string(kColdOpenFar) +
+                             " m — raise kColdOpenFar or pull kColdOpenSkyDist in (see sky_scale.h)");
+            }
+        }
         return true;
     }
 
@@ -223,6 +283,15 @@ public:
     // behind the flight path (the silhouette beats) + a lifted cool fill so the
     // hulls read. SSAO/GI untouched (mostly-empty depth; harmless).
     void applyLook(x3::rhi::IRenderDevice& device) {
+        // ---- DEEP-SPACE FRUSTUM (B10) --------------------------------------
+        // The engine default far plane is 200 m — a WALK-AROUND number. This film
+        // is kilometres deep: the capital ship reveals at 340-550 m (it was being
+        // clipped clean away, so it popped in instead of looming) and the sky was
+        // pinned 140 m from the eye, INSIDE the fleet, where its opaque discs
+        // punched holes in the hull and its ring/atmosphere layers smeared over it.
+        // The far plane and the sky anchor move out TOGETHER — that pairing is the
+        // whole fix. Apparent sky size is unchanged (radius = dist*tan(diam/2)).
+        device.setCameraFar(kColdOpenFar);
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
         sp.sunDir[0] = 0.62f; sp.sunDir[1] = 0.26f; sp.sunDir[2] = 0.74f;   // toward the Sun body (see the anchor)
@@ -266,6 +335,7 @@ public:
     // cell build expects (sky OFF, default ambient/bloom, no point lights).
     static void restoreLook(x3::rhi::IRenderDevice& device) {
         x3::rhi::IRenderDevice::SkyParams sp{};       // enabled = false
+        device.setCameraFar(200.0f);                  // device default (the cell is indoors)
         device.setSkyParams(sp);
         device.setAmbient(0.42f, 0.44f, 0.50f);       // device default
         device.setBloom(0.06f);                       // device default (kBloomIntensity)
@@ -426,8 +496,12 @@ public:
                 m_planets[i].elevationDeg       = std::asin(std::max(-1.0f, std::min(1.0f, a.dir[1]))) * kRadToDeg;
                 m_planets[i].angularDiameterDeg = 2.0f * std::asin(std::max(0.0f, std::min(1.0f, a.angSin))) * kRadToDeg;
             }
+            // Anchor the celestial shell 10.5 km out (0.7 * the cold-open far plane
+            // set in applyLook) — PAST every hull in the film, so the sky can no
+            // longer occlude or bleed onto a ship. This is B10's actual fix.
             drawNightSkyPlanets(&device, fc, m_planetMesh, m_planets, 10.0f + t * 0.02f,
-                                cam.pos.x, cam.pos.y, cam.pos.z, m_ringMesh);
+                                cam.pos.x, cam.pos.y, cam.pos.z, m_ringMesh,
+                                kColdOpenSkyDist);
         }
     }
 

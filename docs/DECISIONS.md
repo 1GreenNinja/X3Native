@@ -44,6 +44,19 @@ Space was lit with **point lights**, whose inverse-square falloff delivers ~**1/
 intensity at fleet distance. That is why Jake's ship was black. Stars are effectively at infinity:
 **parallel rays, no falloff.** Never light space with point lights.
 
+## 🪐 CANON: THE SKY IS BEHIND EVERYTHING — THE FAR PLANE AND THE SKY ANCHOR ARE A PAIR
+The FORGE3D planet bodies are **not a skybox**. They are real depth-tested geometry pinned a
+fixed distance from the eye and drawn **after** the opaque meshes, so a body pinned **nearer
+than a hull occludes it and bleeds its ring/atmosphere across it**. The rule:
+> **A sky body must be further from the camera than the furthest mesh in the scene.**
+Because a body's radius is derived as `dist · tan(diam/2)`, moving the shell out costs
+**nothing** on screen — the apparent size is identical; only its depth changes. So when a scene
+grows, raise `setCameraFar` **and** the sky anchor **together**. A scene may never be bigger
+than its own frustum. (This was **B10**: a 200 m capital ship, a 200 m far plane, and the "sky"
+hanging 140 m from the eye — the planet was *inside the fleet*, which is why the hull read as
+see-through glass with red/yellow smears, and why the ship's reveal was clipped away entirely.)
+Invariant + negative controls: `app/sky_scale.h`, asserted by `--test-cutscene`.
+
 ## 🌌 CANON: STARFIELDS ARE FINE, VARIED POINTS (Tim, 2026-07-12)
 Tiny (sub-pixel to 1–2 px), with **varied** size, brightness, and colour (cool blue-white →
 white → warm amber; a few standouts carry the eye). Deterministic per-star properties — they
