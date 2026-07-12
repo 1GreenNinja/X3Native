@@ -1510,8 +1510,15 @@ void VulkanRenderDevice::prepareFrameData() {
             // (The IBL probe BAKE shares this UBO — like the SSAO lane, the bake's
             // gl_FragCoord-based UV is meaningless there, an accepted, tiny env-
             // bake approximation inherited from the existing SSAO precedent.)
+            // .z = ENV-SPECULAR SCALE (r_iblspec, default 1 = byte-identical to the
+            // pre-R10 math). The IBL intensity lane (ibl.y) scales env DIFFUSE and env
+            // SPECULAR together, which makes a dark-interior mood and a reflective
+            // METAL mutually exclusive: turning the environment up far enough for the
+            // steel to reflect it also floods every dielectric in the room with
+            // irradiance. They are different lobes and they need different knobs --
+            // metals are kD ~ 0 (pure reflection), concrete is kD ~ 1 (pure diffuse).
             sc.refl = glm::vec4(m_reflActiveThisFrame ? 1.0f : 0.0f,
-                                m_refl.intensity, 0.0f, 0.0f);
+                                m_refl.intensity, m_iblSpecular, 0.0f);
             // DDGI lane (r_ddgi): gate + the probe-grid geometry mesh.frag needs
             // to interpolate the atlases. The intensity RAMPS in over the first
             // ~16 updates after activation so cold (black) probes never read as

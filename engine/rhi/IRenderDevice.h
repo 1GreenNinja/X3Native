@@ -287,6 +287,12 @@ public:
     // interior rooms white — the analytic-sky background, the direct sun and the
     // glass pass's own env reflections are all untouched.
     virtual void setIblIntensity(float s) {}
+    // ENV-SPECULAR SCALE (r_iblspec, default 1.0 = unchanged). setIblIntensity()
+    // scales the environment's DIFFUSE and SPECULAR lobes together; this scales the
+    // specular lobe ALONE, so a dark interior can still contain bright, reflective
+    // metal. (Metals have no diffuse lobe -- their whole ambient response IS the
+    // prefiltered env specular -- while concrete/plaster are almost pure diffuse.)
+    virtual void setIblSpecular(float s) {}
 
     // HDR post-stack settings (tonemap / bloom gate / auto-exposure), synced per
     // frame from the r_* cvars. Defaults preserve the device-side behavior when the
