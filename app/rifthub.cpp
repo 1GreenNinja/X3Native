@@ -4,6 +4,8 @@
 // systems + the engine interfaces. No RBDOOM / id Tech / Doom / Quake — or any
 // other game-engine — source was consulted. CONTENT/LEVEL-SCRIPT ONLY.
 #include "rifthub.h"
+#include "rift_depths.h"   // W-RIFT: the approach corridor (T24/T25)
+#include "elevator.h"      // W-RIFT: the RIFT stop + the 4790 lock (T26)
 #include "asset_root.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
@@ -970,12 +972,25 @@ uint32_t flipFrameIndex(uint32_t n, float time, uint32_t portalIdx,
 
 } // namespace
 
+float Rifthub::ringWorldY() const { return m_desc.origin.y + kRingY; }
+
 void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
-                    x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers) {
+                    x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers,
+                    const Desc& desc) {
     if (m_built) return;
+    m_desc = desc;
+
+    // W-RIFT: the REGION ORIGIN. Every world position below is authored hub-LOCAL
+    // and lifted by (OX,OY,OZ) exactly once, at the point where it becomes a world
+    // coordinate (a mesh center, a collision vert, a trigger AABB, a light, the
+    // spawn). Default origin {0,0,0} => the `--world rifthub` authoring is
+    // unchanged, to the float.
+    const float OX = m_desc.origin.x;
+    const float OY = m_desc.origin.y;
+    const float OZ = m_desc.origin.z;
 
     // ===== Spawn point (center of the ring) =====
-    m_spawn = x3::phys::Vec3{ 0.0f, kSpawnFeetY, 0.0f };
+    m_spawn = x3::phys::Vec3{ OX, OY + kSpawnFeetY, OZ };
 
     // ===== Shared membrane v2 + FX resources (one set for all 8 portals) =====
     // Disk fan + rim torus meshes are SHARED handles referenced by every
@@ -1109,7 +1124,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // concrete albedo+normal from the library with the glossy wet MR override.
     {
         x3::prims::PrimMesh g = x3::prims::makeBox(kHubHalf, 0.10f, kHubHalf,
-                                                    0.0f, -0.10f, 0.0f, 0.22f);
+                                                    OX, OY - 0.10f, OZ, 0.22f);
         m_groundMesh = device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
                                          g.index.data(), (uint32_t)g.index.size());
         Entity ge;
@@ -1131,9 +1146,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const float wallMidY = kHallWallH * 0.5f;
         // A collidable, textured, world-baked box (walls/columns): verts baked
         // in world space (identity transform), collision from the same mesh.
-        auto hallBox = [&](float cx0, float cy0, float cz0, float hx, float hy, float hz,
+        // NOTE (W-RIFT): cx0/cy0/cz0 are hub-LOCAL; the region origin is added here,
+        // once, so the mesh verts, the collision verts and the warp base all agree.
+        auto hallBox = [&](float lx, float ly, float lz, float hx, float hy, float hz,
                            const SurfaceSet* sf, const float tint[3], float uv,
                            bool collide, float em = 0.0f) {
+            const float cx0 = lx + OX, cy0 = ly + OY, cz0 = lz + OZ;
             x3::prims::PrimMesh b = x3::prims::makeBox(hx, hy, hz, cx0, cy0, cz0, uv);
             Entity e;
             e.mesh = device.createMesh(b.verts.data(), (uint32_t)b.verts.size(),
@@ -1169,8 +1187,45 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const float ewHalfZ = kHubHalf;                      // butts between N/S
         hallBox(0.0f, wallMidY,  wallC, nsHalfX, wallMidY + 0.10f, kHallWallT * 0.5f,
                 &sWall, kConcreteTint, 0.25f, /*collide=*/true);
-        hallBox(0.0f, wallMidY, -wallC, nsHalfX, wallMidY + 0.10f, kHallWallT * 0.5f,
-                &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+        // ---- The -Z (south) wall. With `doorway` it is authored as TWO JAMB
+        // segments + a LINTEL over the opening — the approach corridor
+        // (rift_depths.*) seals its mouth onto this face. SEAM LAW holds: the
+        // jambs' inner faces stay on the -kHubHalf plane, the segments butt
+        // exactly at the opening edges (no gap, no overlap), and the lintel
+        // spans the full opening width from doorH to the wall top. Everything
+        // still collides — you can only pass through the hole.
+        if (m_desc.doorway) {
+            const float dcx = m_desc.doorCenterX;          // hub-local X
+            const float dhw = m_desc.doorHalfW;
+            const float dh  = m_desc.doorH;
+            const float xL0 = -nsHalfX, xL1 = dcx - dhw;   // left jamb span
+            const float xR0 = dcx + dhw, xR1 = nsHalfX;    // right jamb span
+            if (xL1 > xL0) {
+                const float hx = (xL1 - xL0) * 0.5f;
+                hallBox((xL0 + xL1) * 0.5f, wallMidY, -wallC, hx, wallMidY + 0.10f,
+                        kHallWallT * 0.5f, &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+            }
+            if (xR1 > xR0) {
+                const float hx = (xR1 - xR0) * 0.5f;
+                hallBox((xR0 + xR1) * 0.5f, wallMidY, -wallC, hx, wallMidY + 0.10f,
+                        kHallWallT * 0.5f, &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+            }
+            // Lintel: from the top of the opening to the wall top (the wall box is
+            // authored 0.20 m proud of kHallWallH — keep that lid overlap).
+            const float topY = kHallWallH + 0.20f;
+            if (topY > dh) {
+                const float hy = (topY - dh) * 0.5f;
+                hallBox(dcx, dh + hy, -wallC, dhw, hy, kHallWallT * 0.5f,
+                        &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+            }
+            // Door FRAME: a lit steel surround so the opening reads as a way OUT
+            // (and, from the corridor, as the mouth you are walking toward).
+            hallBox(dcx, dh + 0.06f, -kHubHalf + 0.06f, dhw + 0.16f, 0.06f, 0.06f,
+                    &sTrim, kStripTint, 0.5f, /*collide=*/false, /*em=*/1.30f);
+        } else {
+            hallBox(0.0f, wallMidY, -wallC, nsHalfX, wallMidY + 0.10f, kHallWallT * 0.5f,
+                    &sWall, kConcreteTint, 0.25f, /*collide=*/true);
+        }
         hallBox( wallC, wallMidY, 0.0f, kHallWallT * 0.5f, wallMidY + 0.10f, ewHalfZ,
                 &sWall, kConcreteTint, 0.25f, /*collide=*/true);
         hallBox(-wallC, wallMidY, 0.0f, kHallWallT * 0.5f, wallMidY + 0.10f, ewHalfZ,
@@ -1210,7 +1265,8 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // a body — the bare glowing bar read as a floating neon stick).
             hallBox(sx, kBeamY - 0.31f, sz, 1.68f, 0.055f, 0.21f,
                     &sDark, kGunTint, 0.5f, /*collide=*/false);
-            x3::prims::PrimMesh b = x3::prims::makeBox(1.6f, 0.045f, 0.16f, sx, kBeamY - 0.38f, sz);
+            x3::prims::PrimMesh b = x3::prims::makeBox(1.6f, 0.045f, 0.16f,
+                                                       sx + OX, kBeamY - 0.38f + OY, sz + OZ);
             Entity e;
             e.mesh = device.createMesh(b.verts.data(), (uint32_t)b.verts.size(),
                                        b.index.data(), (uint32_t)b.index.size());
@@ -1229,9 +1285,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         {
             auto addShaft = [&](const x3::phys::Vec3& top, const x3::phys::Vec3& bot,
                                 float width, float alpha) {
-                Shaft s;
-                s.top[0] = top.x; s.top[1] = top.y; s.top[2] = top.z;
-                s.bot[0] = bot.x; s.bot[1] = bot.y; s.bot[2] = bot.z;
+                Shaft s;   // hub-LOCAL in, WORLD out (drawFx submits these raw)
+                s.top[0] = top.x + OX; s.top[1] = top.y + OY; s.top[2] = top.z + OZ;
+                s.bot[0] = bot.x + OX; s.bot[1] = bot.y + OY; s.bot[2] = bot.z + OZ;
                 s.width = width; s.alpha = alpha;
                 float ax = bot.x - top.x, ay = bot.y - top.y, az = bot.z - top.z;
                 const float len = std::sqrt(ax * ax + ay * ay + az * az);
@@ -1273,12 +1329,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float x1 = x0 + (-10.0f + 20.0f * h01(0x33u));
             const float z1 = z0 + (-10.0f + 20.0f * h01(0x44u));
             const float sag = kCableSag * (0.7f + 0.6f * h01(0x55u));
-            x3::phys::Vec3 prev{ x0, kBeamY - kBeamHalfH, z0 };
+            x3::phys::Vec3 prev{ x0 + OX, kBeamY - kBeamHalfH + OY, z0 + OZ };
             for (uint32_t s3 = 1; s3 <= kCableSegs; ++s3) {
                 const float t = (float)s3 / (float)kCableSegs;
                 // Quadratic drape: max sag at the middle.
                 const float y = kBeamY - kBeamHalfH - sag * 4.0f * t * (1.0f - t);
-                x3::phys::Vec3 pt{ x0 + (x1 - x0) * t, y, z0 + (z1 - z0) * t };
+                x3::phys::Vec3 pt{ x0 + (x1 - x0) * t + OX, y + OY, z0 + (z1 - z0) * t + OZ };
                 Entity e;
                 e.mesh = m_fxBeamMesh;   // SHARED unit box
                 e.baseColor[0] = 0.05f; e.baseColor[1] = 0.05f; e.baseColor[2] = 0.055f;
@@ -1298,6 +1354,14 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float ang = (float)mc * (6.2831853f / 8.0f) + 0.39f;
             const float mx = std::cos(ang) * (kHubHalf - 2.2f);
             const float mz = std::sin(ang) * (kHubHalf - 2.2f);
+            // Keep the DOORWAY's threshold clear: the machinery ring seats two
+            // clusters ~3.6 m off the -Z wall, and one of them lands right in front
+            // of the opening. A door you have to squeeze around is not a door.
+            if (m_desc.doorway) {
+                const float ddx = mx - m_desc.doorCenterX;
+                const float ddz = mz - (-kHubHalf);
+                if (ddx * ddx + ddz * ddz < 7.0f * 7.0f) continue;
+            }
             const float bw = 0.9f + 1.4f * h01(0x66u);
             const float bh = 1.6f + 2.6f * h01(0x77u);
             const float bd = 0.7f + 1.1f * h01(0x88u);
@@ -1324,13 +1388,16 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const PortalSpec& sp = kPortalTable[i];
         // Hub angle for portal i — clockwise starting at +X.
         const float hubAng = (float)i * (twoPi / (float)kPortalCount);
-        const float cx = std::cos(hubAng) * kRingRadius;
-        const float cz = std::sin(hubAng) * kRingRadius;
+        const float lx = std::cos(hubAng) * kRingRadius;   // hub-LOCAL ring seat
+        const float lz = std::sin(hubAng) * kRingRadius;
+        const float cx = lx + OX;                          // WORLD gate center
+        const float cz = lz + OZ;
+        const float RY = kRingY + OY;                      // WORLD ring-center height
 
         RiftPortal p;
         p.worldName  = sp.worldName;
         p.triggerId  = sp.triggerId;
-        p.worldPos   = x3::phys::Vec3{ cx, 0.0f, cz };
+        p.worldPos   = x3::phys::Vec3{ cx, OY, cz };
         p.tint[0] = sp.tint[0]; p.tint[1] = sp.tint[1]; p.tint[2] = sp.tint[2];
         p.activated  = false;
         p.destination = sp.worldName;      // round 8: re-targetable via the console
@@ -1342,8 +1409,8 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // portal's doorway face points back toward the hub center. Up is world
         // +Y. "Right" (along the ring's plane, horizontal) is up x outward.
         const float invR = 1.0f / kRingRadius;
-        const float outwardX = cx * invR;
-        const float outwardZ = cz * invR;
+        const float outwardX = lx * invR;   // radial from the HUB CENTER (region-safe)
+        const float outwardZ = lz * invR;
         // Right = (0,1,0) x (outwardX, 0, outwardZ) = (-outwardZ, 0, outwardX). Unit.
         const float rightX = -outwardZ;
         const float rightZ =  outwardX;
@@ -1374,7 +1441,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };
             const float locZ[3] = { outwardX, 0.0f, outwardZ };
             float gateXf[16];
-            makeXform(gateXf, locX, locY, locZ, cx, kRingY, cz);
+            makeXform(gateXf, locX, locY, locZ, cx, RY, cz);
             for (size_t d = 0; d < m_gateDrawables.size(); ++d) {
                 const x3::asset::ModelDrawable& dr = m_gateDrawables[d];
                 const std::string& nm = (d < m_gateNames.size()) ? m_gateNames[d]
@@ -1465,7 +1532,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             AddedEntity ae = addOrientedEmissiveMesh(
                 scene, device, torus,
                 locX, locY, locZ,
-                cx, kRingY, cz,
+                cx, RY, cz,
                 kRingStone, /*emStrength=*/kRingEmissive, &sDark);
             m_portalMeshes.push_back(ae.mesh);
             p.ringEntFirst = ringEntFirst;
@@ -1500,7 +1567,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 AddedEntity ae = addOrientedSurfBox(
                     scene, device, halfTan, halfRad, halfDep,
                     locX, locY, locZ,
-                    cx + seatR * radX, kRingY + seatR * radY, cz + seatR * radZ,
+                    cx + seatR * radX, RY + seatR * radY, cz + seatR * radZ,
                     patina ? &sPlate : &sTrim,
                     patina ? kPatinaTint : kSteelTint,
                     /*emStrength=*/0.05f, /*uvScale=*/0.9f);
@@ -1520,7 +1587,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     scene, device, kRivetHalf, kRivetHalf, kRivetHalf,
                     locX, locY, locZ,
                     cx + kRingR * radX - outwardX * proud,
-                    kRingY + kRingR * radY,
+                    RY + kRingR * radY,
                     cz + kRingR * radZ - outwardZ * proud,
                     &sDark, kGunTint, /*emStrength=*/0.03f);
                 m_portalMeshes.push_back(ae.mesh);
@@ -1540,7 +1607,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             AddedEntity skirt = addOrientedSurfBox(
                 scene, device, kSkirtHalfTan, kSkirtHalfY, kSkirtHalfDep,
                 locX, locY, locZ,
-                cx, kSkirtHalfY, cz,
+                cx, kSkirtHalfY + OY, cz,
                 &sDark, kGunTint, /*emStrength=*/0.04f, /*uvScale=*/0.6f);
             m_portalMeshes.push_back(skirt.mesh);
             for (int side = -1; side <= 1; side += 2) {
@@ -1550,7 +1617,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 const float tz = cz + rightZ * kStrutTopOut * (float)side;
                 // Canted strut blade: thickness along the gate's depth axis.
                 x3::prims::PrimMesh strut = x3::prims::makeCantedStrut(
-                    bx, 0.0f, bz, tx, kStrutTopY, tz,
+                    bx, OY, bz, tx, kStrutTopY + OY, tz,
                     kStrutHalfW, kStrutHalfT, outwardX, outwardZ, /*uvScale=*/0.5f);
                 const float ident[3][3] = { {1,0,0}, {0,1,0}, {0,0,1} };
                 AddedEntity ae = addOrientedEmissiveMesh(
@@ -1562,7 +1629,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 AddedEntity anchor = addOrientedSurfBox(
                     scene, device, kAnchorHalfTan, kAnchorHalfY, kAnchorHalfDep,
                     locX, locY, locZ,
-                    bx, kAnchorHalfY, bz,
+                    bx, kAnchorHalfY + OY, bz,
                     &sTrim, kSteelTint, /*emStrength=*/0.04f);
                 m_portalMeshes.push_back(anchor.mesh);
             }
@@ -1577,7 +1644,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         auto gatePt = [&](float alongRight, float y, float alongOut) {
             return x3::phys::Vec3{
                 cx + rightX * alongRight + outwardX * alongOut,
-                y,
+                y + OY,   // hub-LOCAL height in, WORLD out (W-RIFT region origin)
                 cz + rightZ * alongRight + outwardZ * alongOut };
         };
         // Conduit runs: gate -> riser -> floor -> skirt, one per side (the
@@ -1814,7 +1881,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 scene, device, kTrackHalfTan, kTrackHalfRad, kTrackHalfDep,
                 locX, locY, locZ,
                 cx + kTrackR * radX - outwardX * proud,
-                kRingY + kTrackR * radY,
+                RY + kTrackR * radY,
                 cz + kTrackR * radZ - outwardZ * proud,
                 kChevAmber, /*emStrength=*/kTrackEmIdle, kChevSlitDark);
             m_portalMeshes.push_back(ae.mesh);
@@ -1873,7 +1940,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             e.emissive[0] = kPlasmaBlue[0]; e.emissive[1] = kPlasmaBlue[1];
             e.emissive[2] = kPlasmaBlue[2]; e.emissive[3] = kPlasmaEmBase;
             e.tag = (uint32_t)Tag::Prop;
-            makeXform(e.transform, locX, locY, locZ, cx, kRingY, cz);
+            makeXform(e.transform, locX, locY, locZ, cx, RY, cz);
             scene.add(e);
         }
         // [1] FRESNEL CONTACT ring (the one hot line — thin, blue, shimmer in
@@ -1886,7 +1953,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             e.emissive[0] = kRimBlue[0]; e.emissive[1] = kRimBlue[1];
             e.emissive[2] = kRimBlue[2]; e.emissive[3] = kRimEmBase;
             e.tag = (uint32_t)Tag::Prop;
-            makeXform(e.transform, locX, locY, locZ, cx, kRingY, cz);
+            makeXform(e.transform, locX, locY, locZ, cx, RY, cz);
             scene.add(e);
         }
         p.membraneEntFirst = membraneEntFirst;
@@ -1912,7 +1979,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 e.emissive[2] = kRimBlue[2]; e.emissive[3] = fall[f].em;
                 e.tag = (uint32_t)Tag::Prop;
                 makeXform(e.transform, locX, locY, locZ,
-                          cx - outwardX * fall[f].off, kRingY,
+                          cx - outwardX * fall[f].off, RY,
                           cz - outwardZ * fall[f].off);
                 scene.add(e);
             }
@@ -1923,8 +1990,8 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
         // Trigger volume: wider than the ring so the player only needs to
         // step into the plate area (not thread the ring) to fire the rift.
-        const x3::phys::Vec3 tmin{ cx - kTrigHalfXZ, -kTrigHalfY, cz - kTrigHalfXZ };
-        const x3::phys::Vec3 tmax{ cx + kTrigHalfXZ,  kTrigHalfY, cz + kTrigHalfXZ };
+        const x3::phys::Vec3 tmin{ cx - kTrigHalfXZ, OY - kTrigHalfY, cz - kTrigHalfXZ };
+        const x3::phys::Vec3 tmax{ cx + kTrigHalfXZ, OY + kTrigHalfY, cz + kTrigHalfXZ };
         triggers.add(tmin, tmax, sp.triggerId, /*enabled=*/true);
     }
 
@@ -1954,8 +2021,8 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // +Z which, at THIS facing, landed in front of the glass and depth-occluded
         // the readout. Those panes are gone; see holo_terminal.cpp build().)
         const float yaw = std::atan2(-p.outX, -p.outZ);
-        m_holos[i].build(scene, device, x3::phys::Vec3{ hx, kConsoleY, hz }, yaw,
-                         kConsoleW, kConsoleH, /*ceilingY=*/kHallWallH);
+        m_holos[i].build(scene, device, x3::phys::Vec3{ hx, kConsoleY + OY, hz }, yaw,
+                         kConsoleW, kConsoleH, /*ceilingY=*/kHallWallH + OY);
         // TEXT-FIRST layout: this glass exists to be READ (where the portal goes, and
         // five live parameter rows), so the cell terminal's center schematic gives way
         // to type at roughly twice the size.
@@ -1971,7 +2038,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_lights.reserve(m_portals.size() + 5);
     for (const auto& p : m_portals) {
         x3::rhi::PointLight L;
-        L.pos[0] = p.worldPos.x; L.pos[1] = kRingY; L.pos[2] = p.worldPos.z;
+        L.pos[0] = p.worldPos.x; L.pos[1] = kRingY + OY; L.pos[2] = p.worldPos.z;
         L.range  = kCoreLightRange;
         L.color[0] = kCoreLightBlue[0] * kCoreLightBase;
         L.color[1] = kCoreLightBlue[1] * kCoreLightBase;
@@ -1989,7 +2056,8 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         for (int gz = -1; gz <= 1; ++gz) {
             for (int gx = -1; gx <= 1; ++gx) {
                 x3::rhi::PointLight L;
-                L.pos[0] = (float)gx * 12.0f; L.pos[1] = 6.8f; L.pos[2] = (float)gz * 12.0f;
+                L.pos[0] = (float)gx * 12.0f + OX; L.pos[1] = 6.8f + OY;
+                L.pos[2] = (float)gz * 12.0f + OZ;
                 L.range  = kHallLightRange;
                 L.color[0] = kHallLightColor[0] * kHallLightI;
                 L.color[1] = kHallLightColor[1] * kHallLightI;
@@ -2003,9 +2071,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         for (uint32_t mc = 0; mc < 8; ++mc) {
             const float ang = (float)mc * (6.2831853f / 8.0f) + 0.39f;
             x3::rhi::PointLight L;
-            L.pos[0] = std::cos(ang) * (kHubHalf - 3.4f);
-            L.pos[1] = 4.6f;
-            L.pos[2] = std::sin(ang) * (kHubHalf - 3.4f);
+            L.pos[0] = std::cos(ang) * (kHubHalf - 3.4f) + OX;
+            L.pos[1] = 4.6f + OY;
+            L.pos[2] = std::sin(ang) * (kHubHalf - 3.4f) + OZ;
             L.range  = kWashRange;
             L.color[0] = kWashColor[0] * kWashI;
             L.color[1] = kWashColor[1] * kWashI;
@@ -2019,9 +2087,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         for (uint32_t f = 0; f < kDeckFills; ++f) {
             const float ang = ((float)f + 0.5f) * (6.2831853f / (float)kDeckFills);
             x3::rhi::PointLight L;
-            L.pos[0] = std::cos(ang) * 7.5f;
-            L.pos[1] = 2.6f;
-            L.pos[2] = std::sin(ang) * 7.5f;
+            L.pos[0] = std::cos(ang) * 7.5f + OX;
+            L.pos[1] = 2.6f + OY;
+            L.pos[2] = std::sin(ang) * 7.5f + OZ;
             L.range  = kDeckRange;
             L.color[0] = kDeckColor[0] * kDeckI;
             L.color[1] = kDeckColor[1] * kDeckI;
@@ -2033,11 +2101,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // only its own blue core light (which lights the membrane's own plane,
         // so the plates got nothing). This is the highlight/shadow separation.
         for (const auto& p : m_portals) {
-            const float ux = p.worldPos.x / kRingRadius;   // outward unit (XZ)
-            const float uz = p.worldPos.z / kRingRadius;
+            const float ux = p.outX;   // outward unit (XZ) — region-safe
+            const float uz = p.outZ;
             x3::rhi::PointLight L;
             L.pos[0] = p.worldPos.x - ux * kGateKeyHubOff;
-            L.pos[1] = kGateKeyUp;
+            L.pos[1] = kGateKeyUp + OY;
             L.pos[2] = p.worldPos.z - uz * kGateKeyHubOff;
             L.range  = kGateKeyRange;
             L.color[0] = kGateKeyColor[0] * kGateKeyI;
@@ -2048,7 +2116,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // the gate reads as a whole machine, not a lit crown on a void.
             x3::rhi::PointLight W;
             W.pos[0] = p.worldPos.x - ux * kGateFillHubOff;
-            W.pos[1] = kGateFillUp;
+            W.pos[1] = kGateFillUp + OY;
             W.pos[2] = p.worldPos.z - uz * kGateFillHubOff;
             W.range  = kGateFillRange;
             W.color[0] = kGateFillColor[0] * kGateFillI;
@@ -2059,7 +2127,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // instead of a lit crown sitting on a black belly.
             x3::rhi::PointLight LO;
             LO.pos[0] = p.worldPos.x - ux * kGateLowHubOff;
-            LO.pos[1] = kGateLowUp;
+            LO.pos[1] = kGateLowUp + OY;
             LO.pos[2] = p.worldPos.z - uz * kGateLowHubOff;
             LO.range  = kGateLowRange;
             LO.color[0] = kGateKeyColor[0] * kGateLowI;
@@ -2165,7 +2233,7 @@ void Rifthub::tick(float dt, Scene& scene) {
                 for (int b = 0; b < 64; ++b) {
                     const float th = frand() * twoPi;
                     Mote mo;
-                    mo.px = p.worldPos.x; mo.py = kRingY; mo.pz = p.worldPos.z;
+                    mo.px = p.worldPos.x; mo.py = ringWorldY(); mo.pz = p.worldPos.z;
                     const float sp2 = 6.0f + 9.0f * frand();
                     mo.vx = (std::cos(th) * p.rightX - p.outX * 0.5f) * sp2 + frandSym();
                     mo.vy = std::sin(th) * sp2 * 0.5f + 1.5f;
@@ -2357,7 +2425,7 @@ void Rifthub::tick(float dt, Scene& scene) {
             const float ry[3] = { (-sa * rightv[0] + ca * upv[0]) * ms,
                                   (-sa * rightv[1] + ca * upv[1]) * ms,
                                   (-sa * rightv[2] + ca * upv[2]) * ms };
-            makeXform(e.transform, rx, ry, outv, cx, kRingY, cz);
+            makeXform(e.transform, rx, ry, outv, cx, ringWorldY(), cz);
             const float wob = kPlasmaEmWobble *
                 (0.62f * std::sin(m_time * 1.15f * twoPi * 0.31f + phase) +
                  0.38f * std::sin(m_time * 1.15f * twoPi * 0.53f + phase * 2.1f));
@@ -2432,7 +2500,7 @@ void Rifthub::tick(float dt, Scene& scene) {
             const float rr = (0.25f + 0.70f * frand()) * kMembraneR;
             Mote mo;
             mo.px = cx + rr * std::cos(th) * p.rightX;
-            mo.py = kRingY + rr * std::sin(th);
+            mo.py = ringWorldY() + rr * std::sin(th);
             mo.pz = cz + rr * std::cos(th) * p.rightZ;
             // Drift gently hub-side off the surface + a slow rise.
             mo.vx = -p.outX * (0.12f + 0.22f * frand()) + frandSym() * 0.08f;
@@ -2456,7 +2524,7 @@ void Rifthub::tick(float dt, Scene& scene) {
         for (const auto& pp : m_portals) {
             if (pp.implode <= 0.0f) continue;
             const float dx = pp.worldPos.x - mo.px;
-            const float dy = kRingY        - mo.py;
+            const float dy = ringWorldY()        - mo.py;
             const float dz = pp.worldPos.z - mo.pz;
             const float d2 = dx * dx + dy * dy + dz * dz;
             const float d  = std::sqrt(d2 > 1e-4f ? d2 : 1e-4f);
@@ -2635,7 +2703,7 @@ void Rifthub::drawFx(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
             const float c = std::cos(ang), s = std::sin(ang);
             return x3::phys::Vec3{
                 cx + rad * c * p.rightX - p.outX * kArcLift,
-                kRingY + rad * s,
+                ringWorldY() + rad * s,
                 cz + rad * c * p.rightZ - p.outZ * kArcLift };
         };
         for (uint32_t a = 0; a < RiftPortal::kMaxArcs; ++a) {
@@ -2894,7 +2962,7 @@ void Rifthub::onTrigger(uint32_t triggerId) {
                     const float rr = (0.15f + 0.80f * frand()) * kMembraneR;
                     Mote mo;
                     mo.px = p.worldPos.x + rr * std::cos(th) * p.rightX;
-                    mo.py = kRingY + rr * std::sin(th);
+                    mo.py = ringWorldY() + rr * std::sin(th);
                     mo.pz = p.worldPos.z + rr * std::cos(th) * p.rightZ;
                     mo.vx = -p.outX * (0.6f + 1.2f * frand()) + frandSym() * 0.5f;
                     mo.vy = frandSym() * 0.55f;
@@ -2944,6 +3012,43 @@ bool Rifthub::hudPromptForEye(const x3::phys::Vec3& eye, std::string& outPrompt,
 bool Rifthub::allActivated() const {
     for (const auto& p : m_portals) if (!p.activated) return false;
     return !m_portals.empty();
+}
+
+// ===========================================================================
+// W-RIFT — THE PAYOFF: stepping THROUGH an open rift.
+// ===========================================================================
+// The gate's throat is a disk of radius kMembraneR standing at ringWorldY() in
+// the plane whose normal is the portal's outward axis. A traversal is the eye
+// being INSIDE that opening: close to the gate plane (|along outward| small) and
+// close to the axis in the ring's own plane. A gate only takes you somewhere when
+// it is ACTIVATED (a live membrane) and not DEAD (an imploded gate is a hole full
+// of nothing — the console's consequences have to MEAN something).
+int Rifthub::traversalPortal(const x3::phys::Vec3& eye, float radiusM) const {
+    if (!m_built) return -1;
+    for (uint32_t i = 0; i < m_portals.size(); ++i) {
+        const RiftPortal& p = m_portals[i];
+        if (!p.activated || p.dead || p.implode > 0.0f) continue;
+        const float dx = eye.x - p.worldPos.x;
+        const float dz = eye.z - p.worldPos.z;
+        const float dy = eye.y - ringWorldY();
+        // Split into the gate's own frame: `along` runs through the ring (its hole
+        // axis), `side` runs across the ring in the horizontal.
+        const float along = dx * p.outX   + dz * p.outZ;
+        const float side  = dx * p.rightX + dz * p.rightZ;
+        if (std::fabs(along) > 0.9f) continue;                     // not in the throat
+        if (side * side + dy * dy > radiusM * radiusM) continue;   // not in the opening
+        return (int)i;
+    }
+    return -1;
+}
+
+void Rifthub::setDestination(uint32_t portalIdx, const std::string& dest) {
+    if (portalIdx >= m_portals.size() || dest.empty()) return;
+    m_portals[portalIdx].destination = dest;
+    if (portalIdx < m_holos.size()) m_holos[portalIdx].setLines(consoleReadout(portalIdx));
+    x3::logInfo("[rifthub] rift " + std::to_string(portalIdx + 1) + " (" +
+                (m_portals[portalIdx].worldName ? m_portals[portalIdx].worldName : "?") +
+                ") re-aimed at: " + dest);
 }
 
 // ===========================================================================
@@ -3023,7 +3128,7 @@ void Rifthub::applyOutcome(uint32_t portalIdx, RiftOutcome outcome) {
     case RiftOutcome::RoomWarp:
         m_warp = kWarpDur;
         m_warpSrc[0] = p.worldPos.x;
-        m_warpSrc[1] = kRingY;
+        m_warpSrc[1] = ringWorldY();
         m_warpSrc[2] = p.worldPos.z;
         p.kawoosh = kKawooshDur;
         m_alarm   = "SPATIAL DISTORTION";
@@ -3773,6 +3878,187 @@ bool runRifthubSelfTest() {
 
     hub.shutdown(device);
     phys->shutdown();
+
+    // =======================================================================
+    // W-RIFT — THE HUB IS A PLACE IN THE WORLD: the region build (origin +
+    // doorway), the approach corridor's seams, the elevator's RIFT stop with its
+    // 4790 lock, and the traversal query that makes the gates mean something.
+    // A fresh physics world + scene: this is the CANON configuration, not the dev
+    // world (which the 21 assertions above have already proven).
+    // =======================================================================
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> p2(x3::phys::createPhysicsWorld());
+        p2->init();
+        HeadlessRenderDevice dev2;
+        Scene sc2;
+        TriggerSystem tr2;
+        Rifthub hub2;
+
+        // The canon placement, expressed the way app_run.cpp expresses it: the shaft at
+        // the origin, the rift level at Y = -78, the hub 44.5 m west and 46 m north.
+        const float SX = 0.0f, SZ = 0.0f, FY = -78.0f;
+        Rifthub::Desc hd;
+        hd.origin      = { SX - 44.5f, FY, SZ + 46.0f };
+        hd.doorway     = true;
+        hd.doorCenterX = 7.0f;
+        hd.doorHalfW   = 1.7f;
+        hd.doorH       = 3.4f;
+        hub2.build(sc2, dev2, *p2, tr2, hd);
+
+        // ---- T22: the REGION ORIGIN moved the whole hub, not just its meshes. -----
+        {
+            bool ok = hub2.built() && hub2.portalCount() == kPortalCount;
+            const x3::phys::Vec3 sp = hub2.spawn();
+            ok = ok && std::fabs(sp.x - hd.origin.x) < 0.01f &&
+                       std::fabs(sp.z - hd.origin.z) < 0.01f &&
+                       std::fabs(sp.y - (FY + 0.05f)) < 0.01f;
+            // Every gate sits on the 14 m ring AROUND THE NEW CENTER (not the old one).
+            for (uint32_t i = 0; i < hub2.portalCount(); ++i) {
+                const RiftPortal& p = hub2.portal(i);
+                const float dx = p.worldPos.x - hd.origin.x;
+                const float dz = p.worldPos.z - hd.origin.z;
+                const float r  = std::sqrt(dx * dx + dz * dz);
+                if (std::fabs(r - kRingRadius) > 0.05f) ok = false;
+                if (std::fabs(p.worldPos.y - FY) > 0.01f) ok = false;
+                // The cached outward basis must still be radial from the hub center: the
+                // membrane transform, the key lights and traversal all read it.
+                if (std::fabs(p.outX - dx / kRingRadius) > 0.02f) ok = false;
+                if (std::fabs(p.outZ - dz / kRingRadius) > 0.02f) ok = false;
+            }
+            // The light rig came with it (a rig left at the world origin lights nothing).
+            bool lightsMoved = !hub2.pointLights().empty();
+            for (const auto& L : hub2.pointLights())
+                if (L.pos[1] > FY + 12.0f || L.pos[1] < FY - 2.0f) lightsMoved = false;
+            ok = ok && lightsMoved;
+            rhCheck(ok, "T22 REGION ORIGIN: the hub (gates, basis, spawn, light rig) is "
+                        "authored at the canon origin - one build path, two worlds");
+        }
+
+        // ---- T23: the DOORWAY is a real hole in a still-solid wall. --------------
+        {
+            const x3::phys::Vec3 door = hub2.doorCenter();
+            const x3::phys::RayHit thru = p2->rayCast(
+                { door.x, FY + 1.6f, door.z - 2.0f }, { 0, 0, 1 }, 4.0f, x3::phys::Layer::Static);
+            const x3::phys::RayHit jamb = p2->rayCast(
+                { door.x + 6.0f, FY + 1.6f, door.z - 2.0f }, { 0, 0, 1 }, 4.0f, x3::phys::Layer::Static);
+            const x3::phys::RayHit lintel = p2->rayCast(
+                { door.x, FY + 5.0f, door.z - 2.0f }, { 0, 0, 1 }, 4.0f, x3::phys::Layer::Static);
+            rhCheck(!thru.hit && jamb.hit && lintel.hit,
+                    "T23 the hub's -Z wall carries a DOORWAY: open through the opening, "
+                    "solid at the jamb, solid over the lintel");
+        }
+
+        // ---- T24: THE APPROACH. The landing + corridor seal onto that doorway. ----
+        RiftDepths depths;
+        {
+            RiftDepths::Desc dd;
+            dd.shaft     = { SX, FY, SZ };
+            dd.hubDoor   = hub2.doorCenter();
+            dd.doorHalfW = hd.doorHalfW;
+            dd.doorH     = hd.doorH;
+            depths.build(sc2, dev2, *p2, dd);
+            const std::string seam = depths.selfCheck();
+            rhCheck(depths.built() && seam.empty(),
+                    "T24 THE APPROACH: landing + L-corridor authored, seams CLEAN "
+                    "(floor continuous from the cab well to the hub threshold)");
+        }
+
+        // ---- T25: CONNECTIVITY - you can actually WALK it. -----------------------
+        // Cast DOWN at every step along the route (floor under every footfall) and
+        // FORWARD along each leg (nothing standing in the corridor). This is the
+        // walkable proof the geometric lint gate gives the canon rooms.
+        {
+            bool ok = true;
+            const auto& rt = depths.route();
+            ok = ok && rt.size() >= 5;
+            for (size_t i = 0; i + 1 < rt.size() && ok; ++i) {
+                const x3::phys::Vec3 a = rt[i], b = rt[i + 1];
+                const float len = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.z - a.z) * (b.z - a.z));
+                const int steps = std::max(2, (int)(len / 1.0f));
+                for (int st = 0; st <= steps; ++st) {
+                    const float t = (float)st / (float)steps;
+                    const float x = a.x + (b.x - a.x) * t;
+                    const float z = a.z + (b.z - a.z) * t;
+                    const x3::phys::RayHit down = p2->rayCast(
+                        { x, FY + 1.2f, z }, { 0, -1, 0 }, 3.0f, x3::phys::Layer::Static);
+                    if (!down.hit) { ok = false; break; }   // a hole in the walk
+                }
+                const float dxl = b.x - a.x, dzl = b.z - a.z;
+                const float ln = std::sqrt(dxl * dxl + dzl * dzl);
+                if (ln > 1.0f) {
+                    const x3::phys::RayHit fwd = p2->rayCast(
+                        { a.x, FY + 1.4f, a.z }, { dxl / ln, 0.0f, dzl / ln },
+                        ln - 0.3f, x3::phys::Layer::Static);
+                    if (fwd.hit) ok = false;   // something is standing in the corridor
+                }
+            }
+            rhCheck(ok, "T25 CONNECTIVITY: elevator landing -> corridor -> bend -> hub "
+                        "threshold is walkable (floor under every step, nothing in the way)");
+        }
+
+        // ---- T26: THE ELEVATOR'S RIFT STOP + the 4790 lock. ----------------------
+        {
+            ElevatorSystem lift;
+            std::vector<float> stops = { FY + 0.15f, 0.15f, 5.15f, 10.15f };   // RIFT, F1, F2, F3
+            lift.build(sc2, dev2, *p2, SX, SZ, 1.4f, 0.15f, 1.4f, stops, /*startStop*/1);
+            lift.enableFsm(true);
+            lift.setFloorLabels({ "RIFT", "F1", "F2", "F3" });
+            lift.setRiftStop(0);
+            bool ok = lift.built() && lift.stopLocked(0) && !lift.riftUnlocked();
+            lift.callTo(0);                       // a call to the buried floor goes nowhere
+            ok = ok && lift.targetStop() != 0;
+            for (int i = 0; i < 6; ++i) lift.callNext();   // cycling never lands on it
+            ok = ok && lift.targetStop() != 0;
+            lift.keypadDigit(4); lift.keypadDigit(7); lift.keypadDigit(9);
+            const bool wrong = lift.keypadDigit(1);        // 4791: still locked
+            ok = ok && !wrong && !lift.riftUnlocked();
+            lift.keypadDigit(4); lift.keypadDigit(7); lift.keypadDigit(9);
+            const bool right = lift.keypadDigit(0);        // 4790: the floor appears
+            ok = ok && right && lift.riftUnlocked() && !lift.stopLocked(0) &&
+                 lift.targetStop() == 0;
+            for (int i = 0; i < 6000 && std::fabs(lift.cabCenter().y - stops[0]) > 0.2f; ++i)
+                lift.update(1.0f / 60.0f, sc2, *p2);
+            const float arrY = lift.cabCenter().y;
+            const float lip  = lift.cabTopY() - FY;   // cab deck vs landing deck
+            ok = ok && std::fabs(arrY - stops[0]) < 0.25f;
+            // The cab's floor must meet the landing at a STEP DOWN, never a climb. The
+            // canon stop convention (cab center = floorY + cabHalfY) parks the cab deck
+            // one cab thickness proud (0.30 m), and the FSM's arrival window adds a few
+            // more centimetres — the same lip EVERY floor in this tower has. What matters
+            // is that the rift deck is on the walk-off side of the door, not below it.
+            ok = ok && lip > -0.02f && lip < 0.55f;
+            if (!ok) x3::logWarn("[rifthub-test] T26 diag: target=" +
+                                 std::to_string(lift.targetStop()) + " unlocked=" +
+                                 std::to_string((int)lift.riftUnlocked()) + " arrY=" +
+                                 std::to_string(arrY) + " want=" + std::to_string(stops[0]) +
+                                 " lip=" + std::to_string(lip));
+            rhCheck(ok, "T26 the RIFT STOP is a real floor behind code 4790: locked out of "
+                        "the panel, opened by the code, and the cab rides all the way down to it, "
+                        "level with the landing deck");
+        }
+
+        // ---- T27: TRAVERSAL. An OPEN rift takes you; a dormant/dead one does not. -
+        {
+            const RiftPortal& p0 = hub2.portal(0);
+            const x3::phys::Vec3 inThroat{ p0.worldPos.x, FY + 2.2f, p0.worldPos.z };
+            bool ok = hub2.traversalPortal(inThroat) < 0;          // dormant: no ride
+            hub2.onTrigger(p0.triggerId);                          // walk in -> KAWOOSH
+            for (int i = 0; i < 200; ++i) hub2.tick(1.0f / 60.0f, sc2);   // settle to OPEN
+            ok = ok && hub2.traversalPortal(inThroat) == 0;        // open: it takes you
+            ok = ok && hub2.traversalPortal({ hd.origin.x, FY + 1.6f, hd.origin.z }) < 0;
+            hub2.setDestination(0, "club 1127");                   // the host re-aims them
+            ok = ok && hub2.destination(0) == "club 1127";
+            hub2.applyOutcome(0, RiftOutcome::Implosion);          // a COLLAPSED gate
+            for (int i = 0; i < 400; ++i) hub2.tick(1.0f / 60.0f, sc2);
+            ok = ok && hub2.portal(0).dead && hub2.traversalPortal(inThroat) < 0;
+            rhCheck(ok, "T27 TRAVERSAL: an OPEN rift's throat resolves to its destination; "
+                        "a dormant one and a COLLAPSED one take you nowhere");
+        }
+
+        depths.shutdown(dev2);
+        hub2.shutdown(dev2);
+        p2->shutdown();
+    }
 
     x3::logInfo("rifthub: " + std::to_string(rh_pass) + "/" +
                 std::to_string(rh_pass + rh_fail) + " passed");
