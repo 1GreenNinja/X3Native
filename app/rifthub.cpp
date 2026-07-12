@@ -57,14 +57,39 @@ constexpr float kCableSag        = 1.15f;
 // Hall fill lights (appended AFTER the 8 animated gate lights in m_lights).
 // ROUND 2 ("it's pitch black behind the gates"): fills nearly doubled + wider
 // so the shell/beams/columns/machinery silhouettes READ — moody, not void.
+// ROUND 5 (owner: "we did NOT get any more light in the room" — the round-4
+// +33% deck bump was invisible): the fills were fighting the INVERSE-SQUARE
+// law and losing. A 7.5-intensity light 6.8 m above the deck delivers
+// 7.5/6.8^2 ~= 0.16 to the floor, which a 0.47-albedo wet concrete turns into
+// ~0.07 of diffuse — black. The rig is rebuilt, not nudged: 9 overheads at
+// 2.4x the intensity, 8 deck fills at 2.9x, and a per-gate KEY light that
+// finally carves the ring hardware (highlight top / shadow bottom, the
+// reference's light). The membranes are STILL the key light of their bays —
+// the grade, fog and palette are untouched.
 constexpr float kHallLightColor[3] = { 0.55f, 0.62f, 0.72f };  // cool industrial
-constexpr float kHallLightI        = 7.50f;
-constexpr float kHallLightRange    = 28.0f;
-// Wall-wash accents at the perimeter machinery clusters (warm, dim — they
-// pick the silhouettes out of the dark without flattening the mood).
+constexpr float kHallLightI        = 18.0f;   // was 7.50 — see above
+constexpr float kHallLightRange    = 30.0f;
+// Wall-wash accents at the perimeter machinery clusters (warm — they pick the
+// silhouettes out of the dark without flattening the mood).
 constexpr float kWashColor[3]      = { 0.70f, 0.58f, 0.42f };
-constexpr float kWashI             = 2.20f;
-constexpr float kWashRange         = 8.0f;
+constexpr float kWashI             = 5.00f;   // was 2.20
+constexpr float kWashRange         = 11.0f;
+// Mid-floor DECK fills (between the gate bays — the "fantastic wet floor" the
+// owner wants to actually SEE).
+constexpr float kDeckColor[3]      = { 0.50f, 0.58f, 0.72f };
+constexpr float kDeckI             = 9.20f;   // was 3.20
+constexpr float kDeckRange         = 14.0f;
+constexpr uint32_t kDeckFills      = 8;       // was 4
+// Per-gate KEY light (round 5, bug 4): a hard-ish cool-white key above and
+// hub-side of each gate. This is what the reference stills have and we did not:
+// a directional bite that puts a HIGHLIGHT on the ring's upper plates and drops
+// its lower half into shadow, so the machined hardware reads as machined metal
+// instead of flat cardboard.
+constexpr float kGateKeyColor[3]   = { 0.82f, 0.86f, 0.95f };
+constexpr float kGateKeyI          = 11.0f;
+constexpr float kGateKeyRange      = 10.0f;
+constexpr float kGateKeyUp         = 5.6f;    // height above the deck
+constexpr float kGateKeyHubOff     = 2.2f;    // hub-side offset from the gate plane
 
 // ---- Stone gateway ring geometry ----------------------------------------------
 // A SUBSTANTIAL, thick ring you walk through — a single circle of N deep tangent
@@ -1812,15 +1837,18 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // luminance so auto-exposure settles instead of pinning its 2.2x ceiling
     // (the v1/v2 pale-wash root cause).
     {
-        const float pos[5][2] = { {10,10}, {-10,10}, {10,-10}, {-10,-10}, {0,0} };
-        for (int l = 0; l < 5; ++l) {
-            x3::rhi::PointLight L;
-            L.pos[0] = pos[l][0]; L.pos[1] = 6.8f; L.pos[2] = pos[l][1];
-            L.range  = kHallLightRange;
-            L.color[0] = kHallLightColor[0] * kHallLightI;
-            L.color[1] = kHallLightColor[1] * kHallLightI;
-            L.color[2] = kHallLightColor[2] * kHallLightI;
-            m_lights.push_back(L);
+        // 3x3 overhead grid (was 5 lights): even coverage so the deck, beams and
+        // columns all catch something no matter where the player stands.
+        for (int gz = -1; gz <= 1; ++gz) {
+            for (int gx = -1; gx <= 1; ++gx) {
+                x3::rhi::PointLight L;
+                L.pos[0] = (float)gx * 12.0f; L.pos[1] = 6.8f; L.pos[2] = (float)gz * 12.0f;
+                L.range  = kHallLightRange;
+                L.color[0] = kHallLightColor[0] * kHallLightI;
+                L.color[1] = kHallLightColor[1] * kHallLightI;
+                L.color[2] = kHallLightColor[2] * kHallLightI;
+                m_lights.push_back(L);
+            }
         }
         // Wall-wash accents: one warm dim light over each perimeter machinery
         // cluster (same deterministic angles as the silhouette pass) so the
@@ -1837,22 +1865,37 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             L.color[2] = kWashColor[2] * kWashI;
             m_lights.push_back(L);
         }
-        // ROUND 3 WS2 — mid-floor deck fills: four low cool lights BETWEEN the
-        // gate bays so the deck reads between gates (the F_1/F_2 mid-floor was
-        // a black hole). Low intensity, low height: a floor sheen, not a wash.
-        // ROUND 4 (owner: "a TINY bit more light so that fantastic floor can be
-        // seen"): fills 2.4 -> 3.2 (+33%) — a sheen bump only; the membranes
-        // stay the key light and the moody grade is untouched.
-        for (uint32_t f = 0; f < 4; ++f) {
-            const float ang = ((float)f + 0.5f) * (6.2831853f / 4.0f);
+        // Mid-floor DECK fills: 8 low cool lights ringing the hub floor between
+        // the gate bays (round 3 had 4 at 2.4, round 4 nudged them to 3.2 and
+        // the owner still saw NOTHING). 8 at 9.2 with a 14 m reach: the wet
+        // deck, the reflections and the machinery feet now READ.
+        for (uint32_t f = 0; f < kDeckFills; ++f) {
+            const float ang = ((float)f + 0.5f) * (6.2831853f / (float)kDeckFills);
             x3::rhi::PointLight L;
-            L.pos[0] = std::cos(ang) * 8.0f;
-            L.pos[1] = 2.2f;
-            L.pos[2] = std::sin(ang) * 8.0f;
-            L.range  = 11.0f;
-            L.color[0] = 0.50f * 3.2f;
-            L.color[1] = 0.58f * 3.2f;
-            L.color[2] = 0.72f * 3.2f;
+            L.pos[0] = std::cos(ang) * 7.5f;
+            L.pos[1] = 2.6f;
+            L.pos[2] = std::sin(ang) * 7.5f;
+            L.range  = kDeckRange;
+            L.color[0] = kDeckColor[0] * kDeckI;
+            L.color[1] = kDeckColor[1] * kDeckI;
+            L.color[2] = kDeckColor[2] * kDeckI;
+            m_lights.push_back(L);
+        }
+        // Per-gate KEY lights: above + hub-side of each gate, aimed at the ring
+        // face. The reference's ring is carved by a hard overhead key; ours had
+        // only its own blue core light (which lights the membrane's own plane,
+        // so the plates got nothing). This is the highlight/shadow separation.
+        for (const auto& p : m_portals) {
+            const float ux = p.worldPos.x / kRingRadius;   // outward unit (XZ)
+            const float uz = p.worldPos.z / kRingRadius;
+            x3::rhi::PointLight L;
+            L.pos[0] = p.worldPos.x - ux * kGateKeyHubOff;
+            L.pos[1] = kGateKeyUp;
+            L.pos[2] = p.worldPos.z - uz * kGateKeyHubOff;
+            L.range  = kGateKeyRange;
+            L.color[0] = kGateKeyColor[0] * kGateKeyI;
+            L.color[1] = kGateKeyColor[1] * kGateKeyI;
+            L.color[2] = kGateKeyColor[2] * kGateKeyI;
             m_lights.push_back(L);
         }
     }
@@ -2327,9 +2370,13 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // ROUND 2: ambient roughly doubled — the owner's read was "pitch black
     // behind the gates". The hall must READ (columns/beams/machinery as lit
     // silhouettes) while staying a moody dark-industrial grade.
-    device.setAmbient(0.130f, 0.145f, 0.180f);
+    // ROUND 5 (owner: "we did NOT get any more light in the room" — he wants to
+    // SEE the wet floor): ambient +45% on top of the rebuilt point-light rig,
+    // and the exposure bias comes UP a notch. Still a dark hall — the membranes
+    // remain the brightest thing in it by a wide margin.
+    device.setAmbient(0.190f, 0.210f, 0.260f);
     device.setIblProbe(true);
-    device.setExposure(1.12f);
+    device.setExposure(1.28f);
 }
 
 void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
