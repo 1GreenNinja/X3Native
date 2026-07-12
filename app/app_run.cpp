@@ -510,6 +510,8 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // baked table is unchanged. Position is meters in the hand-LOCAL frame; rotation
     // is degrees; scale is added to the row's scaleMul. See the BAKE block above
     // kTpGripTable. Synced per-frame in applyRtaoCVars().
+    console.registerCVar("r_debugview", "0", "Renderer debug view: 0 = off, 1 = SHADING NORMALS (N*0.5+0.5). The instrument that separates 'the light cannot reach it' from 'its normal points into the wall'.");
+    console.registerCVar("r_flashlight", "1", "Player flashlight (L toggles in game). Set 0 to measure a room's OWN practicals with no torch riding the camera — the lighting-audit workhorse.");
     console.registerCVar("shot_weapon", "", "--screenshot: weapon whose FP viewmodel is held in the capture (e.g. shotgun/plasma/chaingun/lightning). Empty = pistol. QA hook for the per-weapon texture gate.");
     console.registerCVar("shot_fire",   "0", "--screenshot: fire the held weapon FROM ITS BARREL TIP through the settle frames (muzzle flash + tracer). The eyeball gate for 'the fire comes from the barrel', per weapon.");
     console.registerCVar("grip_x",     "0", "3P held-weapon grip override: +meters toward thumb (right); live, current weapon");
@@ -570,6 +572,7 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     p.radius   = console.getFloat("r_rtao_radius");
     p.rays     = console.getInt("r_rtao_rays");
     p.strength = console.getFloat("r_rtao_strength");
+    device.setDebugView(console.getInt("r_debugview"));
     if (p.radius <= 0.0f) p.radius = 1.2f;
     device.setRtaoParams(p);
     // Whole-scene brightness dial (live; default 1.0 = unchanged). Piggybacks the
@@ -2387,6 +2390,12 @@ int runDefaultHost(HostContext& hc) {
         elevator.build(scene, *device, *physics,
                        Lb.elevatorCenter.x, Lb.elevatorCenter.z,
                        1.4f, cabHY, 1.4f, elevStops, /*startStop*/0);
+        // The air OUTSIDE the cab is LEVEL 1's air, not the engine's defaults. Without
+        // this the elevator's first applyCabAtmosphere (m_cabAir starts -1, so it fires
+        // on frame one) restores ambient 0.42 + IBL 1.0 and the tower is back under a
+        // blue sky. See ElevatorSystem::setWorldAtmosphere.
+        elevator.setWorldAtmosphere(x3::game::kLevel1Ambient[0], x3::game::kLevel1Ambient[1],
+                                    x3::game::kLevel1Ambient[2], x3::game::kLevel1Ibl);
 
         // ---- Souped-up strata/disco elevator (ported from Tim's x3-elevator.js;
         // blueprint §2.2). Shared wiring — see soupUpElevator above the world chain.
@@ -7223,6 +7232,9 @@ int runDefaultHost(HostContext& hc) {
             if (lNow && !prevL) { flashlight = !flashlight;
                                   x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
             prevL = lNow;
+            // r_flashlight 0 forces the torch OFF (headless lighting audits: a room must
+            // be judged on its OWN practicals, never on the light riding the camera).
+            if (console->getInt("r_flashlight") == 0) flashlight = false;
             std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
             // BLACK-PROP FIX (light routing). The F2-F7 west-wing dressing authors one
             // motivated KEY light per room, sitting right over that room's hero props

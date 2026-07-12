@@ -182,6 +182,18 @@ public:
     // step out it restores the values the world was using. Safe to call every frame; a
     // no-op until the state actually changes. `feet` = the player body position.
     void applyCabAtmosphere(x3::rhi::IRenderDevice& device, const x3::phys::Vec3& feet);
+
+    // THE ELEVATOR WAS STAMPING THE ENGINE DEFAULTS OVER THE WHOLE BUILDING.
+    // applyCabAtmosphere's "outside" branch used to RESTORE hardcoded {0.42,0.44,0.50}
+    // + IBL 1.0 — the very crutch KNOWN_BUGS R2 is about — and m_cabAir starts at -1, so
+    // it fired on FRAME ONE and overwrote any atmosphere the world had just set. (This
+    // silently ate level1's interior air until 2026-07-12.) The world now TELLS the
+    // elevator what to hand back. Defaults are the old hardcodes, so any host that never
+    // calls this is byte-identical.
+    void setWorldAtmosphere(float ambR, float ambG, float ambB, float iblIntensity) {
+        m_worldAmb[0] = ambR; m_worldAmb[1] = ambG; m_worldAmb[2] = ambB;
+        m_worldIbl = iblIntensity;
+    }
     // True while the cab owns the frame's ambient/IBL (the rider is aboard). Hosts that
     // run their own per-zone atmosphere (the canon facility) must yield to this, or the
     // two writers fight over the same device state every frame.
@@ -373,6 +385,8 @@ private:
     bool                   m_indDisco = false;   // last disco state baked
     bool                   m_indMoving = false;  // last motion state baked
     int                    m_cabAir = -1;        // -1 unset, 0 = world air, 1 = cab air
+    float                  m_worldAmb[3] = { 0.42f, 0.44f, 0.50f };  // the air OUTSIDE the cab (host-owned)
+    float                  m_worldIbl    = 1.0f;
     // Per-frame audio bookkeeping.
     float  m_motorHz = 40.0f;
     int    m_lastDingStop = -1;

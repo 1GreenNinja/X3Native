@@ -38,6 +38,15 @@ Any GLB whose exporter omitted it becomes a **full metal** — and full metal ha
 lobe** — so it renders BLACK in windowless interiors. This is NOT the 1/π bug and is not fixed
 by it. The kit props need a metalness clamp (0.35) or an asset re-convert. **A crate is not metal.**
 
+### L6b. THE ELEVATOR STAMPS THE ENGINE DEFAULTS OVER YOUR WHOLE WORLD — fixed `fix/prim-point-light`
+`ElevatorSystem::applyCabAtmosphere`'s "outside the cab" branch used to **restore hardcoded
+`setAmbient(0.42,0.44,0.50)` + `setIblIntensity(1.0)`** — the exact crutch R2 is about. `m_cabAir`
+starts at **-1**, so "you are not in the cab" is an EDGE on **frame one**: every atmosphere a world
+set during build was silently overwritten before the first pixel. Level 1 could not set its own air
+at all, and nobody could see why. The world now TELLS the elevator what to hand back
+(`setWorldAtmosphere`). **If you add a system that restores atmosphere, restore the WORLD's, never a
+constant.**
+
 ### L6. One build dir per agent
 Concurrent agents in one working tree cause: MSBuild holding `.obj` files (recompiles silently
 skipped → you debug a **stale exe**), `git stash` sweeping another agent's work, and merges
@@ -110,14 +119,59 @@ incapable of responding*; un-mirrored it had to come **DOWN to 5.0**. Its group 
 forged texture set that **never existed** (B12). **Un-mirroring exposes bad art; it does not cause it.
 Retune honestly — never restore the mirror.**
 
+### R4. THERE ARE **TWO AMBIENTS** AND `setAmbient` CONTROLS THE WRONG ONE — FIXED `fix/prim-point-light`
+`iblAmbient()` (mesh.frag) has two paths. On the **baked-environment** path it computes its diffuse
+from `texture(irradianceCube, N)` and its specular from `prefilterCube` — and **never reads the
+`ambient` argument at all.** An environment is baked **by default, for every scene, from the ANALYTIC
+SKY** unless a host calls `setIblProbe`. Therefore:
+
+> **`setAmbient()` — the dial the entire "AMBIENT IS NOT LIGHT, BRING IT DOWN" doctrine turns — has
+> been a NO-OP in most of the game, and the real ambient has been a full-strength BLUE SKY CUBE.**
+
+That is how a **windowless detention basement** ended up lit blue. It is also why R2's "kill the 0.42
+wash" only ever half-worked: you could take the visible ambient to zero and the room stayed blue,
+because the ambient you could see was not the ambient that was lighting it.
+
+**The dials are coherent now:** `setIblIntensity(0)` means *"this room has no environment"* and drops
+to the flat-ambient path, where `setAmbient` does exactly what it says. Every existing host
+(0.22 / 0.5 / 1.0) is byte-identical. **Guarded by `--test-primlight`'s negative control**, which
+asserts that with both dials at zero an unlit surface is **exactly black** — it measured **55/255 of
+blue sky** before this fix.
+
+**A windowless interior has no sky and therefore no sky IBL.** Its environment is THE ROOM
+(`setIblProbe(true)`), its ambient is a near-black **NEUTRAL** floor, and its light is its fixtures.
+
+### R5. "THE GRAYBOX WALLS RECEIVE ZERO POINT LIGHT" WAS **FALSE** — the hue tell lied
+Filed as `LIGHTING_AUDIT_FACILITY.md` **P2** on the strength of one measurement: under a working
+fixture, ceiling luma 53 WARM, floor 43 WARM, **wall 4.9 and BLUE-DOMINANT** — "a surface lit by a
+warm fixture reads warm, therefore this one gets no point light." **Reproduced exactly** (wall
+`(2.2, 4.6, 7.9)`, luma 4.30, blue) — **and the conclusion is wrong.** The walls were never off the
+light path:
+
+* `--test-primlight`: a PRIM and a GLB with identical albedo under an identical lamp agree to **3%**.
+* `r_debugview 2` (the point-light term ALONE): the walls catch a healthy warm term.
+* `r_debugview 5` (real lighting, albedo forced to a flat 0.5): those same walls read **WARM at
+  77-81% of the floor's radiance.** A surface that receives no light cannot do that.
+
+They were **multiplying that light by nothing**: the graybox wall panel was **0.077 linear** (a 7.7%
+reflector — asphalt), knocked down again by baseColor tints of 0.50-0.62 authored to sit inside the
+old blue ambient wash. Final albedo ≈ **0.04**, and **blue-biased enough (B/R = 1.8) to overturn the
+tungsten lamp's warm tilt (R/B = 1.6)**. So the surface read blue *while being lit by a warm lamp* —
+and the hue tell, which is a good tell, told a lie.
+
+**THE LESSON:** DECISIONS.md's order of operations exists for this. **Prove the surface can be lit
+(white albedo + probe) BEFORE you conclude anything from its colour.** A blue-biased albedo and a
+hidden blue ambient will both forge the fingerprint of "this thing is not on the light path."
+
 ## 🐛 OPEN BUGS
 
 | # | Bug | Notes |
 |---|-----|-------|
 | B1 | Velocity image sampled in `UNDEFINED` | `taa_resolve` binds `m_velView` unconditionally; graph imports `rgVel` only when `velOn`, and taa-resolve never declares a read of it |
 | B2 | SSAO blur image sampled in `UNDEFINED`, full of garbage | `mesh.frag` set3 binds it unconditionally; reads guarded by `if (ssaoOn)`. `r_rtao` *replaces* SSAO → **undefined memory multiplied into the ambient term** |
-| B3 | `mesh_probe.vert` missing the location-12 output | `45e1c46` added the input to `mesh.frag`, updated only `mesh.vert` → breaks the reflection-probe PSO's SPIR-V interface |
-| B4 | Ambient 0.42 still active outside the canon room graph | level1, club, spire, perfshop, showroom |
+| B3 | ~~`mesh_probe.vert` missing the location-12/13 outputs~~ | **FIXED** `fix/prim-point-light` — location **13** (`vGlassTint`) was still missing, so the reflection-probe PSO's SPIR-V interface was incomplete and `setIblProbe(true)` could not be trusted. A room that explicitly asked to reflect ITSELF was still reflecting the sky. |
+| B4 | Ambient 0.42 still active outside the canon room graph | **level1 CLOSED** (`fix/prim-point-light`: scene IBL probe + ambient 0.030 neutral). Still open: club, spire, perfshop, showroom. **And read R4 first — `setAmbient` alone would not have fixed it.** |
+| B5 | 337 point lights registered in level1, device cap is **64** | `EnvArtSystem` registers one per `Light_A` across all 8 plates; `setPointLights` keeps the **first 64** and drops 273 **silently**. B1's 42 land inside the cap so the basement is fine — the upper floors' own fixtures are simply **thrown away**. Needs a nearest-to-camera cull, not a truncation. Found, not fixed, in `fix/prim-point-light`. |
 | B5 | `SM_Door_A` ships a near-white albedo | Game-wide (owned by `DoorSystem`); blows out pink under honest light |
 | B6 | Elevator OLED text renders **mirrored** | Pre-existing UV/facing bug on the twin viewscreens |
 | B7 | Elevator −X observation window renders as a bright noisy slab | Needs one more pass |

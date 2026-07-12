@@ -1141,10 +1141,12 @@ void ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
         device.setAmbient(0.030f, 0.032f, 0.037f);
         device.setIblIntensity(0.22f);
     } else {
-        // OUTSIDE. Hand the world back exactly what the engine hands everyone else, so
-        // stepping off the cab is byte-identical to a build without this call.
-        device.setAmbient(0.42f, 0.44f, 0.50f);
-        device.setIblIntensity(1.0f);
+        // OUTSIDE. Hand the world back ITS OWN air — not the engine's defaults. This used
+        // to hardcode {0.42,0.44,0.50} + IBL 1.0, and since m_cabAir starts at -1 it fired
+        // on FRAME ONE: every atmosphere level1 tried to set was overwritten by the
+        // elevator before the first pixel was drawn. See setWorldAtmosphere().
+        device.setAmbient(m_worldAmb[0], m_worldAmb[1], m_worldAmb[2]);
+        device.setIblIntensity(m_worldIbl);
     }
 }
 

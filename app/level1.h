@@ -31,6 +31,18 @@
 
 namespace x3::game {
 
+// ---- THE FACILITY'S OWN AIR (fix/prim-point-light, 2026-07-12) --------------------
+// The tower is a WINDOWLESS DETENTION BASEMENT. It has no sky, so it cannot have a
+// sky's ambient: its environment is THE ROOM (a scene IBL probe), its ambient is a
+// near-black NEUTRAL floor, and its light is the ceiling fixtures. Previously level1
+// declared nothing and ran the engine defaults — ambient {0.42,0.44,0.50} AND a
+// full-strength analytic-BLUE-SKY environment cube — which is why every graybox wall
+// read B > G > R under a tungsten lamp. Shared with app_run so the ELEVATOR hands the
+// same air back when you step out of the cab (it used to hand back the engine default
+// and clobber this on frame one).
+constexpr float kLevel1Ambient[3] = { 0.030f, 0.030f, 0.033f };
+constexpr float kLevel1Ibl        = 0.5f;   // the standing SEAM-2 interior IBL value (now a SCENE probe: the room, not a sky)
+
 // The 8 floors of the Spire, low -> high (B1 at the bottom, F7 the rooftop). Index
 // shared by buildLevel1() (collision/graybox) and env_art.cpp (GLB tiling) so the
 // floor footprints, base heights and ceiling heights are authored in ONE place.

@@ -550,9 +550,21 @@ vec4 sampleDdgi(vec3 P, vec3 N, vec3 V) {
 // `ddgi`: rgb = probe-field irradiance (already intensity-scaled), a = grid
 // confidence — REPLACES the ambient DIFFUSE term by confidence when active
 // (specular stays IBL/reflections); a == 0 leaves the math byte-identical.
+// ---- THE ENGINE HAS TWO AMBIENTS AND ONLY ONE OF THEM IS DOCUMENTED ---------------
+// (2026-07-12, fix/prim-point-light.) Below, on the BAKED-ENVIRONMENT path, the
+// `ambient` argument — i.e. everything `setAmbient()` controls, the dial the whole
+// "AMBIENT IS NOT LIGHT, BRING IT DOWN" doctrine turns — is NEVER READ for the
+// diffuse or the specular. It only survives as the metal floor. An environment is
+// baked by DEFAULT for every scene (from the ANALYTIC SKY unless a host calls
+// setIblProbe), so in practice `setAmbient` has been a NO-OP in most of the game and
+// the true ambient has been a full-strength blue sky cube that nobody could see in
+// the code. That is how a windowless basement ended up lit blue.
+// THE DIALS ARE NOW COHERENT: iblIntensity == 0 means "this room has no environment"
+// and falls through to the flat-ambient path, where setAmbient does exactly what it
+// says. Every existing host (intensity 0.22 / 0.5 / 1.0) is byte-identical.
 vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRough,
                 vec3 F0, float ao, vec3 ambient, float up, vec4 ddgi) {
-    if (ssao.ibl.x < 0.5) {
+    if (ssao.ibl.x < 0.5 || ssao.ibl.y <= 0.0) {
         // FALLBACK (no baked environment): the original engine behaviour exactly —
         // diffuse hemispheric lift + the flat ambient*3.4*Fresnel specular constant.
         // DDGI (when active) replaces the flat DIFFUSE irradiance by confidence.
@@ -775,37 +787,86 @@ void main() {
         ddgiGI.a   *= clamp(ssao.ddgiCtrl.y, 0.0, 1.0);
     }
 
+    // ---- r_debugview 1: SHADING NORMALS. The one-frame answer to "is this surface
+    // dark because the light can't reach it, or because its normal points into the
+    // wall?" (KNOWN_BUGS R3 / the graybox-wall hunt). Off by default; zero cost.
+    if (ssao.rtsh1.w > 0.5 && ssao.rtsh1.w < 1.5) {
+        outColor = vec4(N * 0.5 + 0.5, 1.0);
+        return;
+    }
+    // r_debugview 2: the POINT-LIGHT DIFFUSE TERM ALONE (no albedo, no ambient, no
+    // sun). Whatever is on the light path glows; whatever is not is BLACK. There is
+    // nowhere for a photon to hide in this view.
+    // r_debugview 3: ALBEDO ALONE (base texture x baseColor factor). The other half
+    // of "value, not lumens": a surface can be perfectly on the light path and still
+    // read black, because it is multiplying that light by ~nothing.
+    if (ssao.rtsh1.w > 2.5 && ssao.rtsh1.w < 3.5) {
+        outColor = vec4(albedo.rgb, 1.0);
+        return;
+    }
+    // r_debugview 5: DECISIONS.md's own probe — shade the scene normally but force a
+    // flat 0.5 WHITE albedo on everything. "Is the surface receiving light at all?"
+    if (ssao.rtsh1.w > 4.5) albedo.rgb = vec3(0.5);
+    // r_debugview 4: the AMBIENT / IBL term alone (dielectric params) — everything a
+    // surface gets that did NOT come from a lamp.
+    if (ssao.rtsh1.w > 3.5 && ssao.rtsh1.w < 4.5) {
+        vec3 Vq = normalize(cam.camPos.xyz - vWorldPos);
+        outColor = vec4(iblAmbient(N, Vq, albedo.rgb, 0.0, 0.5, vec3(0.04), ao,
+                                   cam.ambientCount.rgb, N.y * 0.5 + 0.5, vec4(0.0)), 1.0);
+        return;
+    }
+    if (ssao.rtsh1.w > 1.5 && ssao.rtsh1.w < 2.5) {
+        vec3 dbg = vec3(0.0);
+        int  nl  = int(cam.ambientCount.w);
+        for (int i = 0; i < nl && i < kMaxPointLights; ++i) {
+            vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+            float dist = length(toL);
+            vec3  L    = toL / max(dist, 0.0001);
+            dbg += cam.lights[i].colorPad.rgb
+                 * (max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w));
+        }
+        outColor = vec4(dbg, 1.0);
+        return;
+    }
+
     vec3 color;
     if (vMrTexIndex == 0u) {
-        // ---- DIELECTRIC path (no MR map). Direct sun + point lights as before; the
-        // ambient term is now SPLIT-SUM IBL so plain white cladding/floors finally
-        // reflect the environment (dielectric: metallic=0, satin roughness ~0.5).
-        // Falls back to the old flat ambient when no env is baked. ----
-        vec3 lighting = sunRad * (0.75 * ndl * shadow);
+        // ---- DIELECTRIC path (no MR map: every graybox PRIM). ------------------------
+        // ONE LIGHTING PATH (KNOWN_BUGS R1, finished 2026-07-12). R1 unified the DIFFUSE
+        // between the two branches and stopped there, so this branch still had NO DIRECT
+        // SPECULAR AT ALL while every GLB beside it got a full GGX lobe. Measured on the
+        // --test-primlight rig (identical albedo, identical geometry, identical lamp):
+        // a 12.5% radiance split, invisible for a year because the 0.42 ambient wash and
+        // a full-strength sky IBL were filling the gap. It is now literally the SAME
+        // brdf() the PBR branch calls, with the dielectric's own constants (metallic = 0,
+        // F0 = 0.04, satin roughness 0.5) — not a copy of the maths, the maths.
+        vec3  Vd = normalize(cam.camPos.xyz - vWorldPos);
+        const float kDielectricRough = 0.5;   // satin clad/floor default
+        const float aD  = kDielectricRough * kDielectricRough;   // -> GGX alpha
+        vec3  F0d = vec3(0.04);
+        float NoVd = max(dot(N, Vd), 1e-4);
+        vec3  lit  = brdf(N, Vd, NoVd, kSunDir, F0d, albedo.rgb, aD, kSunDiffuseW) * sunRad * shadow;
         for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {
             vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
             float dist = length(toL);
             vec3  L    = toL / max(dist, 0.0001);
+            float atten = pointAtten(dist, cam.lights[i].posRange.w);
 #ifdef RT_SHADOWS
             // POINT RT shadow (tier >= 2): the first K lights with a real
             // contribution here each get one source-jittered shadow ray;
             // negligible / over-budget lights keep the unshadowed behavior.
-            float contrib = max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w);
             float vis = 1.0;
-            if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0
-                && contrib * dot(cam.lights[i].colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
+            if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0 && dot(N, L) > 0.0
+                && atten * dot(cam.lights[i].colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
                 --rtshRaysLeft;
                 vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
             }
-            lighting  += cam.lights[i].colorPad.rgb * (contrib * vis);
-#else
-            lighting  += cam.lights[i].colorPad.rgb * (max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w));
+            atten *= vis;
 #endif
+            lit += brdf(N, Vd, NoVd, L, F0d, albedo.rgb, aD, kPointDiffuseW)
+                 * cam.lights[i].colorPad.rgb * atten;
         }
-        vec3 Vd = normalize(cam.camPos.xyz - vWorldPos);
-        const float kDielectricRough = 0.5;   // satin clad/floor default
-        vec3 F0d = vec3(0.04);
-        color = albedo.rgb * lighting
+        color = lit
               + iblAmbient(N, Vd, albedo.rgb, 0.0, kDielectricRough, F0d, ao, ambient, up, ddgiGI);
     } else {
         // ---- PBR metallic-roughness (Cook-Torrance GGX). glTF MR: B=metallic, G=roughness. ----

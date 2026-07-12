@@ -105,6 +105,23 @@ is too dark" instead of "the object is inside-out."
 material beside it. If the cube blows out white and the suspect stays black, it is **not** the
 material and **not** the lighting.
 
+**THE INSTRUMENTS EXIST NOW — USE THEM BEFORE YOU GUESS (`r_debugview`, 2026-07-12):**
+| | |
+|---|---|
+| `r_debugview 1` | **shading normals** — "is it inside-out?" (R3) |
+| `r_debugview 2` | **the point-light term ALONE** — no albedo, no ambient, no sun. Whatever is on the light path glows; whatever is not is black. There is nowhere for a photon to hide. |
+| `r_debugview 3` | **albedo alone** |
+| `r_debugview 4` | **the ambient/IBL term alone** — everything a surface gets that did NOT come from a lamp |
+| `r_debugview 5` | **step 1 of the recipe above, automated**: real lighting, albedo forced to a flat 0.5 |
+| `r_flashlight 0` | judge a room on its OWN practicals — never on the light riding the camera |
+| `--set r_autoexposure 0 --set r_exposure 1.0` | **pin the exposure or your before/after is fiction.** Auto-exposure re-normalises every capture; two shots of the same wall are not comparable until you nail it down. |
+
+**AND: THE HUE TELL CAN LIE.** "A surface lit by a warm lamp reads warm, so a blue surface gets no
+light" cost a full investigation (KNOWN_BUGS **R5**). It is only true if the albedo is *neutral* and
+the ambient is *honest*. A blue-biased albedo can overturn a warm lamp, and until 2026-07-12 every
+scene carried an invisible **blue-sky ambient that `setAmbient` could not turn off** (KNOWN_BUGS
+**R4**). Both forge the exact fingerprint of "not on the light path". **Measure, don't infer.**
+
 ## 🧪 REGRESSION DISCIPLINE
 "The panel exists" and "the panel *shows something*" are **not** the same assertion. Tests must
 measure the **thing that actually broke** — e.g. `holoReadoutInkFraction()` probes **ink** in the
