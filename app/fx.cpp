@@ -12,6 +12,20 @@ namespace x3::game {
 
 namespace {
 
+// Small deterministic integer hash + a [0,1) mapping. Used by the Lightning draw path
+// for the IRREGULAR re-roll cadence and the per-re-roll brightness flicker. Kept out of
+// CombatFx::m_rng on purpose: draw() is const and must not perturb the spawn RNG that
+// headless captures depend on being repeatable.
+inline uint32_t hash32(uint32_t x) {
+    x ^= x >> 16; x *= 0x7feb352du;
+    x ^= x >> 15; x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+inline float unitFromHash(uint32_t h) {   // [0,1)
+    return (float)(h & 0x00FFFFFFu) / (float)0x01000000u;
+}
+
 // Build a column-major 4x4 from a 3x3 basis (columns bx,by,bz), PER-AXIS scale
 // (sx,sy,sz applied to the corresponding basis column), and translation t.
 void composeTRS3(float m[16],
@@ -768,14 +782,113 @@ void CombatFx::drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::Fr
 }
 
 // ---------------------------------------------------------------------------
-// drawLightningBolt: a HARD-ANGLE ZIGZAG bolt a->b (Tim spec). Split into
-// straight runs (~kLightningSegLen each) whose interior vertices are kicked
-// perpendicular by an alternating-azimuth offset sized to a random 15-45 deg
-// kink, then hang 1-2 short thinner/dimmer BRANCH forks off random kink points.
-// The pattern is DETERMINISTIC from `seed` (the caller buckets t.age by
-// kLightningRerollPeriod), so the bolt holds a shape ~65 ms then JUMPS — a
-// living crackling zigzag, not a per-frame strobe. Endpoints land exactly on
-// a (muzzle) and b (hit point).
+// NATURAL FRACTAL LIGHTNING (Tim: "we need natural lightning").
+//
+// The old builder WALKED muzzle->hit in fixed ~0.30 m runs and kicked every joint by a
+// random 25-60 deg. A uniform step with a uniform kick is a REGULAR ZIGZAG — a stylized
+// bolt icon — and no amount of tuning segLen/angle fixes that; it only makes a finer
+// regular zigzag. The problem was the algorithm, not the constants.
+//
+// Real lightning is SELF-SIMILAR: big lazy bends, with smaller kinks riding on them, and
+// smaller kinks on those. So build it the other way round — start from the single
+// straight a->b segment and RECURSIVELY SUBDIVIDE, displacing each midpoint
+// perpendicular to its OWN parent segment and decaying the displacement each level:
+//
+//     subdivide(A,B,d,n):  M = mid(A,B) + randPerp(d)
+//                          subdivide(A,M, d*DECAY, n-1)
+//                          subdivide(M,B, d*DECAY, n-1)
+//
+// DECAY (kLightningDecay) is the naturalness knob — it IS the fractal dimension. The
+// initial displacement is a FRACTION OF LENGTH, so a 2 m bolt and a 25 m bolt look
+// equally natural (the old fixed-metre step is exactly why short bolts read as coat
+// hangers). Branches are recursive CHILD bolts that fork again, taper, and mostly die
+// partway — a dead-end tendril is one of the strongest naturalness cues.
+// ---------------------------------------------------------------------------
+void CombatFx::boltSubdivide(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                             const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                             const x3::phys::Vec3& eye, BoltRng& rng,
+                             float displace, int depth, int branchDepth,
+                             float coreThick, float brightness, float t0, float t1) const {
+    if (depth <= 0) {
+        // LEAF: emit the actual ribbon pair. TAPER along the strand — thickness and
+        // brightness fall off toward the tip (a strand that ends as thick as it started
+        // reads fake; nature tapers). t is the strand-relative position of this leaf.
+        const float t     = 0.5f * (t0 + t1);
+        const float taper = 1.0f - 0.55f * t;            // 1.0 at the root -> 0.45 at the tip
+        drawBoltSegment(device, frame, a, b, eye, coreThick * taper, brightness * taper);
+        return;
+    }
+
+    x3::phys::Vec3 seg{ b.x - a.x, b.y - a.y, b.z - a.z };
+    const float len = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
+    if (len < 1e-5f) return;
+    const x3::phys::Vec3 dir{ seg.x / len, seg.y / len, seg.z / len };
+
+    // Perpendicular basis of THIS segment (not of the trunk) — that is what makes the
+    // displacement follow the local bend instead of all wobbling in one shared plane.
+    const x3::phys::Vec3 ref = (std::fabs(dir.y) < 0.99f) ? x3::phys::Vec3{ 0, 1, 0 }
+                                                          : x3::phys::Vec3{ 1, 0, 0 };
+    const x3::phys::Vec3 u = normalize(cross(ref, dir));
+    const x3::phys::Vec3 v = cross(dir, u);
+
+    // Midpoint, kicked perpendicular by a random azimuth at ~`displace` magnitude. The
+    // magnitude is itself jittered so successive levels never share one amplitude (that
+    // sameness is what read as a repeating motif).
+    const float azi = rng() * 6.2831853f;
+    const float mag = displace * (0.55f + rng() * 0.9f);
+    const float ox  = std::cos(azi) * mag, oy = std::sin(azi) * mag;
+    const x3::phys::Vec3 m{ (a.x + b.x) * 0.5f + u.x * ox + v.x * oy,
+                            (a.y + b.y) * 0.5f + u.y * ox + v.y * oy,
+                            (a.z + b.z) * 0.5f + u.z * ox + v.z * oy };
+    const float tm = 0.5f * (t0 + t1);
+
+    const float nextDisp = displace * kLightningDecay;
+    boltSubdivide(device, frame, a, m, eye, rng, nextDisp, depth - 1, branchDepth,
+                  coreThick, brightness, t0, tm);
+    boltSubdivide(device, frame, m, b, eye, rng, nextDisp, depth - 1, branchDepth,
+                  coreThick, brightness, tm, t1);
+
+    // ---- BRANCH: a recursive CHILD bolt hung off this midpoint ----------------
+    // It inherits the parent's direction rotated 15-40 deg off-axis, takes a fraction of
+    // the remaining parent length, subdivides with its OWN fractal detail (so branches
+    // branch), and inherits REDUCED brightness + thickness. It ends in open air — only
+    // the trunk is required to terminate on the hit point.
+    if (branchDepth >= kLightningMaxBranchDepth) return;
+    float chance = kLightningBranchChance;
+    for (int i = 0; i < branchDepth; ++i) chance *= kLightningBranchDecay;
+    // Only fork off the upper subdivision levels — forking at the finest scale just adds
+    // fuzz, not structure.
+    if (depth < 2 || rng() >= chance) return;
+
+    // Rotate the parent's direction 15-40 deg off-axis about a random perpendicular.
+    const float ang = (15.0f + rng() * 25.0f) * 3.14159265f / 180.0f;
+    const float ba  = rng() * 6.2831853f;
+    const x3::phys::Vec3 perp{ u.x * std::cos(ba) + v.x * std::sin(ba),
+                               u.y * std::cos(ba) + v.y * std::sin(ba),
+                               u.z * std::cos(ba) + v.z * std::sin(ba) };
+    const float cs = std::cos(ang), sn = std::sin(ang);
+    const x3::phys::Vec3 bdir = normalize(x3::phys::Vec3{ dir.x * cs + perp.x * sn,
+                                                          dir.y * cs + perp.y * sn,
+                                                          dir.z * cs + perp.z * sn });
+    // Length: a fraction of what's LEFT of the parent, jittered. Most branches die well
+    // short of anything (the dead-end tendril).
+    const float remain = len * 0.5f;                    // this midpoint -> b
+    const float blen   = remain * kLightningBranchLenFrac * (0.5f + rng() * 1.0f);
+    if (blen < 0.05f) return;
+    const x3::phys::Vec3 bend{ m.x + bdir.x * blen, m.y + bdir.y * blen, m.z + bdir.z * blen };
+
+    boltSubdivide(device, frame, m, bend, eye, rng,
+                  blen * kLightningDisplaceFrac,        // scale-relative, like the trunk
+                  depth - 1, branchDepth + 1,
+                  coreThick * 0.55f,                    // children are THINNER
+                  brightness * 0.55f,                   // ...and DIMMER
+                  0.35f, 1.0f);                         // start part-tapered, fade to the tip
+}
+
+// ---------------------------------------------------------------------------
+// drawLightningBolt: seed the fractal and emit the trunk. Endpoints are EXACT —
+// `a` is the muzzle (weaponMuzzle(): the measured barrel tip), `b` the hit point /
+// propagation tip. Deterministic from `seed`.
 // ---------------------------------------------------------------------------
 void CombatFx::drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                                  const x3::phys::Vec3& a, const x3::phys::Vec3& b,
@@ -783,77 +896,22 @@ void CombatFx::drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::
                                  float coreThick, uint32_t seed, float brightness) const {
     if (!m_box.valid()) return;
     x3::phys::Vec3 seg{ b.x - a.x, b.y - a.y, b.z - a.z };
-    float len = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
+    const float len = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
     if (len < 1e-4f) { drawBoltSegment(device, frame, a, b, eye, coreThick, brightness); return; }
-    x3::phys::Vec3 dir = normalize(seg);
-    x3::phys::Vec3 ref = (std::fabs(dir.y) < 0.99f) ? x3::phys::Vec3{ 0, 1, 0 }
-                                                    : x3::phys::Vec3{ 1, 0, 0 };
-    x3::phys::Vec3 u = normalize(cross(ref, dir));   // perpendicular kink basis
-    x3::phys::Vec3 v = cross(dir, u);
 
-    // Deterministic per-bucket PRNG (xorshift32) — the crackling "re-roll".
-    uint32_t s = seed * 2654435761u + 0x9E3779B9u; if (s == 0u) s = 1u;
-    auto rnd01 = [&s]() -> float {
-        s ^= s << 13; s ^= s >> 17; s ^= s << 5;
-        return (float)(s & 0x00FFFFFFu) / (float)0x01000000u;
-    };
-    const float kPi = 3.14159265f;
+    BoltRng rng{ seed * 2654435761u + 0x9E3779B9u };
+    if (rng.s == 0u) rng.s = 1u;
 
-    // Number of straight runs: ~1 per kLightningSegLen, clamped so a long beam
-    // stays a legible zigzag (not noise) and a short one still kinks a few times.
-    int n = (int)(len / kLightningSegLen + 0.5f);
-    if (n < 3)  n = 3;
-    if (n > 20) n = 20;
-    const float segStep = len / (float)n;
+    // Short strands (the impact arc tendrils) don't need — and can't afford — the full
+    // trunk depth; scale the subdivision to the strand's length so a 0.4 m tendril isn't
+    // paying for 64 segments.
+    int depth = kLightningFractalDepth;
+    if (len < 1.0f) depth = 4;
+    if (len < 0.4f) depth = 3;
 
-    // Build the zigzag vertices. Endpoints fixed; interior vertices kicked perp.
-    constexpr int kMaxV = 21;   // n<=20 -> n+1 vertices
-    x3::phys::Vec3 pts[kMaxV + 1];
-    pts[0] = a;
-    pts[n] = b;
-    for (int i = 1; i < n; ++i) {
-        float t = (float)i / (float)n;
-        x3::phys::Vec3 base{ a.x + seg.x * t, a.y + seg.y * t, a.z + seg.z * t };
-        // Alternating azimuth (i&1 flips ~180 deg) + jitter + slow drift -> a sharp
-        // back-and-forth zigzag that also twists in 3D instead of staying planar.
-        float azi = ((i & 1) ? kPi : 0.0f) + (rnd01() * 2.0f - 1.0f) * 0.7f + (float)i * 0.6f;
-        float kinkDeg = 25.0f + rnd01() * 35.0f;           // 25..60 deg HARD kink (sharper)
-        float r = segStep * std::tan(kinkDeg * kPi / 180.0f) * 0.5f;
-        float ox = std::cos(azi) * r, oy = std::sin(azi) * r;
-        pts[i] = x3::phys::Vec3{ base.x + u.x * ox + v.x * oy,
-                                 base.y + u.y * ox + v.y * oy,
-                                 base.z + u.z * ox + v.z * oy };
-    }
-    // Draw the main zigzag.
-    for (int i = 1; i <= n; ++i)
-        drawBoltSegment(device, frame, pts[i - 1], pts[i], eye, coreThick, brightness);
-
-    // 1-2 short BRANCH forks off random interior kink points (thinner + dimmer).
-    int nForks = (rnd01() < 0.55f) ? 2 : 1;
-    for (int f = 0; f < nForks && n > 2; ++f) {
-        int ki = 1 + (int)(rnd01() * (float)(n - 1));
-        if (ki >= n) ki = n - 1;
-        x3::phys::Vec3 fp = pts[ki];
-        // Fork heads off mostly perpendicular to the main path (a real branch).
-        float fa = rnd01() * 2.0f * kPi;
-        x3::phys::Vec3 fdir = normalize(x3::phys::Vec3{
-            u.x * std::cos(fa) + v.x * std::sin(fa) + dir.x * 0.25f,
-            u.y * std::cos(fa) + v.y * std::sin(fa) + dir.y * 0.25f,
-            u.z * std::cos(fa) + v.z * std::sin(fa) + dir.z * 0.25f });
-        int fsegs = 2 + (int)(rnd01() * 2.0f);             // 2-3 short segments
-        float fstep = segStep * (0.45f + rnd01() * 0.5f);
-        x3::phys::Vec3 prev = fp;
-        for (int j = 0; j < fsegs; ++j) {
-            float ka = rnd01() * 2.0f * kPi;
-            float kr = fstep * 0.4f;
-            x3::phys::Vec3 nxt{
-                prev.x + fdir.x * fstep + (u.x * std::cos(ka) + v.x * std::sin(ka)) * kr,
-                prev.y + fdir.y * fstep + (u.y * std::cos(ka) + v.y * std::sin(ka)) * kr,
-                prev.z + fdir.z * fstep + (u.z * std::cos(ka) + v.z * std::sin(ka)) * kr };
-            drawBoltSegment(device, frame, prev, nxt, eye, coreThick * 0.55f, brightness * 0.6f);
-            prev = nxt;
-        }
-    }
+    boltSubdivide(device, frame, a, b, eye, rng,
+                  len * kLightningDisplaceFrac,   // initial kick scales with LENGTH
+                  depth, 0, coreThick, brightness, 0.0f, 1.0f);
 }
 
 // ---------------------------------------------------------------------------
@@ -892,15 +950,29 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
             x3::phys::Vec3 tip{ t.from.x + seg.x * frac,
                                 t.from.y + seg.y * frac,
                                 t.from.z + seg.z * frac };
-            // Re-roll the kink pattern every kLightningRerollPeriod (living crackle),
-            // salted per-tracer (from-position hash) so simultaneous bolts differ.
-            uint32_t bucket = (uint32_t)(t.age / kLightningRerollPeriod);
+            // Salt per-tracer (from-position hash) so simultaneous bolts differ.
             uint32_t salt   = (uint32_t)(t.from.x * 73.1f) * 2246822519u
                             ^ (uint32_t)(t.from.y * 91.7f) * 3266489917u
                             ^ (uint32_t)(t.from.z * 53.3f) * 668265263u;
-            float coreThick = kLightningCoreThick * (0.85f + 0.25f * k);
-            float brightness = 0.75f + 0.35f * k;   // stays bright while held (new tracer each tick)
-            drawLightningBolt(device, frame, t.from, tip, eyePos, coreThick, bucket ^ salt, brightness);
+            // IRREGULAR RE-ROLL. A fixed 65 ms bucket is a METRONOME, and a metronome
+            // reads as a machine. Walk the buckets forward accumulating a JITTERED
+            // duration each (~40-90 ms), so the bolt re-rolls at an uneven cadence. This
+            // is deterministic from age+salt (headless captures stay repeatable) and
+            // costs ~2 iterations at kTracerTime = 0.12 s.
+            uint32_t bucket = 0;
+            float    acc    = 0.0f;
+            while (acc < t.age && bucket < 64u) {
+                const uint32_t h = hash32(bucket ^ salt);
+                acc += kLightningRerollPeriod * (0.6f + 0.8f * unitFromHash(h));
+                ++bucket;
+            }
+            const uint32_t boltSeed = bucket ^ salt;
+            // Real arcs pulse in INTENSITY, not just in shape — vary brightness per
+            // re-roll instead of holding one steady value.
+            const float flicker = 0.78f + 0.42f * unitFromHash(hash32(boltSeed ^ 0xA5A5A5A5u));
+            float coreThick  = kLightningCoreThick * (0.85f + 0.25f * k);
+            float brightness = (0.75f + 0.35f * k) * flicker;
+            drawLightningBolt(device, frame, t.from, tip, eyePos, coreThick, boltSeed, brightness);
         } else {
             // Camera-facing ribbon (playtest "square rod" fix): a thin flat streak
             // that always faces the eye instead of drawBeam's world-fixed square

@@ -514,23 +514,30 @@ std::vector<WeaponDef> makeDefaultRoster() {
         // alongside damage 14 / fireRate 8 / DamageType::Energy above.
         w.recoilDeg   = 0.12f;               // almost none (steady beam)
         w.range       = 30.0f;               // SHORT range (slightly extended)
-        // CHARGE model (Tim spec, 5167d04): no magazine, no reload. 100 base charge,
-        // drains ~10/sec while the beam is HELD (~10 s of continuous fire), stacks to
-        // 300 via the crystal battery-cell pickups. magSize/reserveAmmo/reloadTime are
-        // IGNORED under usesCharge.
-        // ⚠ RECONCILE NOTE: Tim's 33530f5 tune set a deep mag/reserve "cell" of
-        // 200/600 (~100 s of fire at 8 rounds/s). The charge model REPLACES that ammo
-        // model outright — the cell numbers below are now INERT. Sustained-fire budget
-        // drops 100 s -> 10 s (30 s fully battery-stacked). The 200/600 values are
-        // preserved verbatim so restoring the mag model is a one-line flag flip
-        // (usesCharge = false) if Tim prefers his tuned cell.
+        // CHARGE model (Tim spec): no magazine, no reload. A full charge is a pool of
+        // SECONDS OF BEAM, not a count of shots — drain is per-SECOND and continuous
+        // while the beam is held (Arsenal::tick), and fire() consumes NO charge. So the
+        // economy is independent of fireRate: sustainedSeconds = chargeMax / drainPerSec.
+        //
+        // TIM'S CALL: "Make the charge last for 3 min of sustained fire."
+        //   full charge (100) / 180 s  =>  drain 0.5556 /s   (was 10/s = a 10 s pool)
+        //   battery-stacked cap (300)  =>  540 s (9 min) — the crystal cells are a real
+        //   stockpile you bank, not a chore you re-run every ten seconds.
+        // Gated by --test-lightning-charge LC7/LC8, which SIMULATE continuous fire and
+        // assert the observed duration is 180 s +/-5 (and 540 s +/-15 at the cap), with
+        // a negative control proving the probe rejects the old 10/s drain.
         w.usesCharge  = true;
-        w.chargeMax   = 100.0f;              // base full charge
-        w.chargeCap   = 300.0f;              // battery-stacking ceiling
-        w.chargeDrainPerSec = 10.0f;         // continuous drain while held
-        w.magSize     = 200;                 // (inert under usesCharge — Tim's cell, kept)
-        w.reserveAmmo = 600;                 // (inert under usesCharge — Tim's cell, kept)
-        w.reloadTime  = 2.4f;                // (inert under usesCharge)
+        w.chargeMax   = 100.0f;                        // base full charge
+        w.chargeCap   = 300.0f;                        // battery-stacking ceiling
+        w.chargeDrainPerSec = 100.0f / 180.0f;         // 3 MINUTES of sustained fire
+        // ⚠ DEAD FOR THIS WEAPON. Under usesCharge the Lightning Gun has no magazine and
+        // no reserve: canFire()/fire()/reload() never read these. They are zeroed rather
+        // than left at Tim's old 200/600 cell precisely because that ambiguity is what
+        // made the HUD print "200 / 600" for a gun that had NEITHER. The mag model is
+        // gone; the charge pool above is the whole economy.
+        w.magSize     = 0;                             // (dead under usesCharge)
+        w.reserveAmmo = 0;                             // (dead under usesCharge)
+        w.reloadTime  = 0.0f;                          // (dead under usesCharge)
         w.beam        = true;                // render as a solid beam (host hint)
         w.chainTargets= 2;                   // primary + 2 chains = 3 targets
         w.falloffStart= 15.0f;               // half-range: damage falls off past 15 m
@@ -1277,13 +1284,20 @@ bool runWeaponsSelfTest() {
             a.def(ir).damage > 0 && a.def(ir).fireRate > 0.0f && a.def(ir).magSize > 0;
         // Lightning Gun: a beam (hitscan) that chains, with short-range falloff,
         // and a SHORT range (shorter than the pistol's 50 m).
+        // AMMO: this used to assert magSize > 0. Under the CHARGE model the Lightning
+        // Gun has no magazine at all (magSize/reserveAmmo are dead), so that assertion
+        // was checking a field the weapon no longer uses. The real invariant is that it
+        // carries a usable CHARGE pool — assert THAT instead.
         int ip = a.indexOf("pistol");
         bool lgOK = present && ip >= 0 &&
             a.def(iz).kind == FireKind::Hitscan && a.def(iz).beam &&
             a.def(iz).chainTargets >= 1 && a.def(iz).falloffStart > 0.0f &&
             a.def(iz).falloffStart < a.def(iz).range &&
             a.def(iz).range < a.def(ip).range &&   // short range vs pistol
-            a.def(iz).damage > 0 && a.def(iz).fireRate > 0.0f && a.def(iz).magSize > 0;
+            a.def(iz).damage > 0 && a.def(iz).fireRate > 0.0f &&
+            a.def(iz).usesCharge && a.def(iz).chargeMax > 0.0f &&
+            a.def(iz).chargeCap >= a.def(iz).chargeMax &&
+            a.def(iz).chargeDrainPerSec > 0.0f;
         // Selectable by name (the host maps number keys 1..N onto these).
         bool selectable = a.selectByName("chaingun") && a.current().name == "chaingun" &&
                           a.selectByName("plasma_rifle") && a.current().name == "plasma_rifle" &&
@@ -1679,26 +1693,29 @@ bool runLightningChargeSelfTest() {
                   a.def(iz).usesCharge &&
                   nearf(a.def(iz).chargeMax, 100.0f) &&
                   nearf(a.def(iz).chargeCap, 300.0f) &&
-                  a.def(iz).chargeDrainPerSec >= 8.0f && a.def(iz).chargeDrainPerSec <= 12.0f &&
+                  // 3-minute pool: 100 / 180 s = 0.5556 /s (was 10/s).
+                  nearf(a.def(iz).chargeDrainPerSec, 100.0f / 180.0f, 0.01f) &&
                   a.chargeWeaponIndex() == iz &&
                   nearf(a.state(iz).charge, 100.0f);   // seeded to base at construction
-        lccheck(ok, "LC0 lightning uses charge: 100 base / 300 cap / ~10/s drain / seeded full");
+        lccheck(ok, "LC0 lightning uses charge: 100 base / 300 cap / 0.556/s drain / seeded full");
     }
 
     // ---- LC1: continuous drain ~chargeDrainPerSec while the beam is HELD ------
     {
         Arsenal a;
         a.selectByName("lightning");
+        const float rate = a.def(a.indexOf("lightning")).chargeDrainPerSec;
         a.setBeamHeld(true);
-        a.tick(1.0f);                         // 1 s held -> ~10 drained
-        bool afterOne = nearf(a.currentState().charge, 90.0f, 0.2f);
-        a.tick(4.0f);                         // +4 s -> ~40 more (50 total)
-        bool afterFive = nearf(a.currentState().charge, 50.0f, 0.5f);
+        a.tick(1.0f);                         // 1 s held
+        bool afterOne = nearf(a.currentState().charge, 100.0f - rate, 0.02f);
+        a.tick(4.0f);                         // +4 s (5 s total)
+        bool afterFive = nearf(a.currentState().charge, 100.0f - rate * 5.0f, 0.05f);
+        const float held = a.currentState().charge;
         a.setBeamHeld(false);
         a.tick(2.0f);                         // released: NO drain while idle
-        bool holdsWhenReleased = nearf(a.currentState().charge, 50.0f, 0.5f);
+        bool holdsWhenReleased = nearf(a.currentState().charge, held, 0.01f);
         lccheck(afterOne && afterFive && holdsWhenReleased,
-                "LC1 charge drains ~10/s while held, holds steady when released");
+                "LC1 charge drains at chargeDrainPerSec while held, holds steady when released");
     }
 
     // ---- LC2: drains to 0 then fire is gated (canFire false, no reload) -------
@@ -1706,7 +1723,7 @@ bool runLightningChargeSelfTest() {
         Arsenal a;
         a.selectByName("lightning");
         a.setBeamHeld(true);
-        a.tick(20.0f);                        // 20 s held drains well past 100 -> 0
+        a.tick(400.0f);                       // well past the 180 s pool -> 0
         bool emptied = nearf(a.currentState().charge, 0.0f);
         bool gated   = !a.canFire();          // empty charge -> cannot fire
         bool noReload = !a.reload();          // charge weapons never reload
@@ -1731,8 +1748,8 @@ bool runLightningChargeSelfTest() {
     {
         Arsenal a;
         a.selectByName("lightning");
-        // Drain to 40 first so there's headroom.
-        a.setBeamHeld(true); a.tick(6.0f); a.setBeamHeld(false);   // ~40 left
+        // Drain to 40 first so there's headroom (60 charge at 0.5556/s = 108 s).
+        a.setBeamHeld(true); a.tick(108.0f); a.setBeamHeld(false);   // ~40 left
         float g1 = a.grantCharge(150.0f);     // 40 -> 190
         bool got1 = nearf(g1, 150.0f, 0.5f) && nearf(a.currentState().charge, 190.0f, 0.5f);
         float g2 = a.grantCharge(200.0f);     // 190 -> cap 300 (adds 110)
@@ -1761,7 +1778,7 @@ bool runLightningChargeSelfTest() {
         a.tick(1.0f);
         int fired = 0;
         bool stoppedWhenEmpty = false;
-        for (int i = 0; i < 400; ++i) {       // ~50 s of held fire at 0.125 s steps
+        for (int i = 0; i < 2000; ++i) {      // 250 s of held fire at 0.125 s steps (> the 180 s pool)
             ResolvedFire f = a.fire(eye, fwd, rng);
             if (f.fired) ++fired;
             a.tick(0.125f);
@@ -1769,6 +1786,61 @@ bool runLightningChargeSelfTest() {
         }
         lccheck(fired > 0 && stoppedWhenEmpty,
                 "LC6 held beam fires, drains to empty, then gates off");
+    }
+
+    // ---- LC7: SUSTAINED-FIRE DURATION == 3 MINUTES (Tim's call) --------------
+    // Do not trust the constant — MEASURE it. Simulate continuous held fire at 60 Hz
+    // and time how long a full charge actually lasts. Ships with a NEGATIVE CONTROL:
+    // the same probe run against a roster mutated back to the old 10/s drain must be
+    // REJECTED by the 180 s window. A gate that cannot fail is worthless.
+    {
+        // Drive a held beam to empty; return the observed seconds of sustained fire.
+        auto measureSustainSec = [&](Arsenal& a) -> float {
+            a.selectByName("lightning");
+            a.setBeamHeld(true);
+            const float dt = 1.0f / 60.0f;
+            float t = 0.0f;
+            for (int i = 0; i < 60 * 900 && a.currentState().charge > 0.0f; ++i) {
+                a.fire(eye, fwd, rng);        // firing must not change the economy
+                a.tick(dt);
+                t += dt;
+            }
+            return t;
+        };
+        auto within180 = [](float s) { return s >= 175.0f && s <= 185.0f; };  // 180 +/-5
+
+        Arsenal live;                                   // the SHIPPING roster
+        const float secs = measureSustainSec(live);
+        const bool  ok   = within180(secs);
+
+        // NEGATIVE CONTROL: same probe, roster mutated back to the old 10 charge/sec.
+        std::vector<WeaponDef> bad = makeDefaultRoster();
+        for (auto& d : bad) if (d.usesCharge) d.chargeDrainPerSec = 10.0f;
+        Arsenal mutated(bad);
+        const float badSecs   = measureSustainSec(mutated);
+        const bool  rejects   = !within180(badSecs);    // the probe MUST reject 10/s
+
+        x3::logInfo("[lightning-charge-test] LC7 sustained fire = " + std::to_string(secs) +
+                    " s (target 180 +/-5); negative control (10/s drain) = " +
+                    std::to_string(badSecs) + " s -> " + (rejects ? "REJECTED" : "ACCEPTED (BUG)"));
+        lccheck(ok && rejects,
+                "LC7 a full charge lasts 3 MINUTES of sustained fire (+ negative control fails)");
+    }
+
+    // ---- LC8: battery-stacked cap (300) == ~9 minutes ------------------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.grantCharge(500.0f);                          // 100 -> clamped to the 300 cap
+        const bool atCap = nearf(a.currentState().charge, 300.0f);
+        a.setBeamHeld(true);
+        const float dt = 1.0f / 60.0f;
+        float t = 0.0f;
+        for (int i = 0; i < 60 * 1200 && a.currentState().charge > 0.0f; ++i) { a.tick(dt); t += dt; }
+        const bool ok = atCap && t >= 525.0f && t <= 555.0f;   // 540 +/-15
+        x3::logInfo("[lightning-charge-test] LC8 battery-stacked (cap 300) sustained fire = " +
+                    std::to_string(t) + " s (target 540 +/-15)");
+        lccheck(ok, "LC8 battery cells stack to the cap -> ~9 min of sustained fire");
     }
 
     x3::logInfo(std::string("[lightning-charge-test] ") + std::to_string(lc_pass) + " passed, " +

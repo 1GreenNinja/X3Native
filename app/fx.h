@@ -77,18 +77,44 @@ constexpr int   kMaxTracers      = 8;
 // (kTracerTime): at 300 m/s a 28 m beam fully connects in ~0.093 s (< 0.12 s life),
 // so the tip is still visibly travelling yet always reaches the hit point.
 constexpr float kLightningBoltSpeed = 300.0f;
-// Lightning ZIGZAG re-roll period (seconds). The kink pattern of the held beam is
-// deterministic within one bucket of this clock and JUMPS to a new pattern each
-// bucket — a living, crackling zigzag that dances ~15x/s instead of strobing a new
-// shape every frame (Tim: "sharp zigzag lightning", re-randomize every ~50-80 ms).
+// Lightning re-roll period (seconds), the MEAN of a jittered interval. The bolt holds
+// a shape for one bucket then JUMPS to a new one. The interval is deliberately NOT
+// constant: a fixed 65 ms bucket is a metronome, and a metronome reads as a machine.
+// Each re-roll lasts ~kLightningRerollPeriod * [0.6, 1.4] (i.e. ~40-90 ms), so the
+// bolt crackles irregularly. Brightness is also re-rolled per bucket (real arcs pulse
+// in INTENSITY, not just in shape).
 constexpr float kLightningRerollPeriod = 0.065f;
-// Target zigzag segment length (m): straight runs meeting at hard kinks.
-// KINK DENSITY IS THE WHOLE READ. At the original 0.9 m a close-range (~2 m) bolt got
-// only 2-3 runs and rendered as a bent TUBE — a coat hanger, not lightning. What makes
-// a bolt legible as lightning is high-frequency jaggedness, so the runs are short and
-// there are many of them. (The impact arc tendrils always looked right precisely
-// because they are short: they got several kinks over a small span.)
-constexpr float kLightningSegLen = 0.30f;
+
+// ---- FRACTAL BOLT (recursive midpoint displacement) ----
+// Real lightning is SELF-SIMILAR: big lazy bends with smaller kinks riding on them,
+// and smaller kinks on those. The old algorithm WALKED muzzle->hit in fixed-length
+// runs and kicked each joint by a random angle — a uniform step with a uniform kick,
+// which is a regular zigzag no matter how you tune it. Tim: "we need natural
+// lightning". So the shape is now built the opposite way: start from the single
+// straight muzzle->hit segment and SUBDIVIDE, displacing each midpoint perpendicular
+// to its own parent segment and halving the displacement at every level.
+//
+// kLightningFractalDepth: subdivision levels (2^depth segments per strand).
+// kLightningDisplaceFrac: initial midpoint displacement as a FRACTION OF BOLT LENGTH —
+//   scale-relative, so a 2 m bolt and a 25 m bolt look equally natural (the old
+//   fixed-metre step is exactly why short bolts read as coat hangers).
+// kLightningDecay: displacement multiplier per level. THIS IS THE NATURALNESS KNOB
+//   (the fractal dimension): 0.5 = each halving of length halves the wobble.
+constexpr int   kLightningFractalDepth = 6;      // 64 segments on the trunk
+constexpr float kLightningDisplaceFrac = 0.16f;  // first midpoint kick ~16% of length
+constexpr float kLightningDecay        = 0.55f;  // per-level displacement falloff
+
+// ---- BRANCHING ----
+// Forks are CHILD BOLTS: they inherit the parent's direction rotated off-axis, take a
+// fraction of the remaining parent length, recurse (so branches branch), and inherit
+// REDUCED brightness + thickness. Probability decays with depth so the tree thins out.
+constexpr int   kLightningMaxBranchDepth = 3;     // a fork can fork, up to this depth
+constexpr float kLightningBranchChance   = 0.28f; // per-midpoint chance at depth 0
+constexpr float kLightningBranchDecay    = 0.55f; // chance/brightness falloff per level
+// Most branches DIE partway instead of reaching anything — a dead-end tendril that
+// fades is one of the strongest naturalness cues. Only the TRUNK terminates exactly
+// on the hit point.
+constexpr float kLightningBranchLenFrac  = 0.5f;  // branch length vs remaining parent
 // Core / glow thickness (m): a THIN white-hot core ribbon inside a wider, DIMMER blue
 // glow ribbon, both emissive (HDR) so BLOOM builds the halo.
 //
@@ -234,18 +260,45 @@ private:
                              const x3::phys::Vec3& eye, float width,
                              const float color[4]) const;
 
-    // Draw a HARD-ANGLE ZIGZAG lightning bolt a->b (Tim spec): straight segments
-    // (~kLightningSegLen each) meeting at sharp 15-45 deg kinks (alternating-sign
-    // perpendicular offsets), 1-2 short thinner/dimmer BRANCH forks off random kink
-    // points, a bright white-hot core box inside a wider blue glow box (both HDR
-    // emissive so bloom builds the halo). The kink pattern is DETERMINISTIC from
-    // `seed` — the caller keys it to a kLightningRerollPeriod time bucket so the
-    // bolt holds a shape ~65 ms then jumps (a dancing, crackling zigzag, not a
-    // per-frame strobe). The last vertex lands exactly on `b` (the hit point).
+    // Deterministic xorshift32 PRNG, threaded by REFERENCE through the whole recursive
+    // bolt build so one `seed` reproduces one exact bolt (const-safe: it never touches
+    // m_rng, which the headless captures depend on being repeatable).
+    struct BoltRng {
+        uint32_t s;
+        float operator()() {                 // [0,1)
+            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+            return (float)(s & 0x00FFFFFFu) / (float)0x01000000u;
+        }
+        float sym() { return (*this)() * 2.0f - 1.0f; }   // [-1,1)
+    };
+
+    // Draw a NATURAL FRACTAL lightning bolt a->b (Tim: "we need natural lightning").
+    // Recursive midpoint displacement: the single straight a->b segment is subdivided
+    // kLightningFractalDepth times, each midpoint kicked perpendicular to its own
+    // parent segment, with the displacement decaying by kLightningDecay per level. The
+    // result is SELF-SIMILAR — big lazy bends carrying smaller kinks carrying smaller
+    // kinks — instead of the old uniform-step/uniform-kick walk, which was a regular
+    // zigzag at every zoom level. Branches are recursive CHILD bolts (they fork too),
+    // inheriting reduced brightness + thickness, and mostly dying partway. `a` and `b`
+    // are EXACT (muzzle and hit point); only branches are allowed to end nowhere.
+    // The whole shape is deterministic from `seed` (bucketed by the caller so the bolt
+    // holds a shape then jumps, rather than strobing a new one every frame).
     void drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                            const x3::phys::Vec3& a, const x3::phys::Vec3& b,
                            const x3::phys::Vec3& eye,
                            float coreThick, uint32_t seed, float brightness) const;
+
+    // One recursive strand: subdivide a->b, emitting camera-facing ribbon pairs at the
+    // leaves and spawning branch children off the midpoints. `displace` is the current
+    // midpoint kick magnitude (metres), `depth` the remaining subdivision levels,
+    // `branchDepth` how many forks deep this strand already is. `t0`/`t1` are the
+    // strand-relative positions of a/b, used to TAPER thickness+brightness toward the
+    // tip (a branch that ends as thick as it started reads fake — nature tapers).
+    void boltSubdivide(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                       const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                       const x3::phys::Vec3& eye, BoltRng& rng,
+                       float displace, int depth, int branchDepth,
+                       float coreThick, float brightness, float t0, float t1) const;
     // Draw one straight zigzag SEGMENT as a camera-facing GLOW ribbon + a thinner
     // white-hot CORE ribbon, both via drawMeshEmissive (HDR emissive -> bloom halo).
     void drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

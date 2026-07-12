@@ -3883,9 +3883,15 @@ int runDefaultHost(HostContext& hc) {
                 // Strike ~1.6 m ahead so it sits in open air in FRONT of the near wall.
                 // A path containing "impact" frames a SHORT bolt so the crackling arc
                 // tendrils dominate; otherwise a TALL bolt so the full zigzag reads.
+                // A path containing "long" runs a ~25 m bolt instead, to prove the fractal
+                // is SCALE-INVARIANT: the midpoint displacement is a FRACTION OF LENGTH
+                // and the depth is fixed, so a 25 m bolt must look as natural as a 2 m one
+                // (the old fixed-metre step is precisely what made short bolts read as
+                // coat hangers). Needs an open world — shoot it somewhere with depth.
                 const bool  impactShot = (screenshotPath.find("impact") != std::string::npos);
-                const float ahead    = 1.6f;
-                const float boltTall = impactShot ? 0.5f : 1.9f;
+                const bool  longShot   = (screenshotPath.find("long")   != std::string::npos);
+                const float ahead    = longShot ? 14.0f : 1.6f;   // far enough that the bolt fits in frame
+                const float boltTall = impactShot ? 0.5f : (longShot ? 12.0f : 1.9f);
                 const x3::phys::Vec3 strike{ ssX + fxLook.x * ahead,
                                              ssY + fxLook.y * ahead - 0.35f,
                                              ssZ + fxLook.z * ahead };
@@ -3895,7 +3901,9 @@ int runDefaultHost(HostContext& hc) {
                 // Spawn the bolt ONCE a few frames out (re-spawning each frame would reset
                 // its propagation age); it ages to full reach + a stable jagged shape by
                 // the captured frame. Arc-tendril impact AT the strike point.
-                if (i == kSettleFrames - 3)
+                // The bolt PROPAGATES at kLightningBoltSpeed (300 m/s), so a long bolt needs
+                // more age to fully connect: spawn it earlier (still inside kTracerTime).
+                if (i == kSettleFrames - (longShot ? 5 : 3))
                     combatFx.addTracer(boltA, boltB, x3::game::WeaponFxKind::Lightning);
                 if (i == kSettleFrames - 2)
                     combatFx.spawnImpact(boltB, x3::phys::Vec3{ -fxLook.x, 0.5f, -fxLook.z },
