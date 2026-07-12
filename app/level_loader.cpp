@@ -995,25 +995,32 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
 }
 
 std::string canonProjectJsonPath() {
-    // Pick the first existing copy from a fallback chain so the loader works
-    // regardless of which machine is running (Tim 2026-05-28: i9 Dell diagnosed
-    // the hardcoded 14900K-OneDrive path as missing on every other rig). Order:
-    //   1) repo-relative (works when cwd == repo root, e.g. our standard
-    //      `--world canonlevel` launch + smoketests),
-    //   2) absolute repo path on the master (any cwd on the 14900K),
-    //   3) Tim's original LevelArchitect OneDrive copy (legacy dev workflow).
-    // If none exist, return the absolute repo path so the existing
-    // "JSON not found at <path>" log line names the right place to look.
-    const char* candidates[] = {
-        "assets/levels/EscapeLab48_AllFloors_v2.project.json",
-        R"(C:\GameDev\X3Native-engine\assets\levels\EscapeLab48_AllFloors_v2.project.json)",
-        R"(C:\GameDev\OneDrive\GameDev\DellGameDev\Escape48BLN\LevelArchitect\EscapeLab48_AllFloors_v2.project.json)",
+    // KNOWN_BUGS L2 — THE STALE-LEVEL LANDMINE. This chain used to end in two
+    // HARDCODED absolute paths:
+    //     C:\GameDev\X3Native-engine\assets\levels\...
+    //     C:\GameDev\OneDrive\GameDev\DellGameDev\Escape48BLN\LevelArchitect\...
+    // On any machine where either file happened to exist, a level edited in THIS repo
+    // was silently ignored in favour of a copy from some other clone — or, worse, from
+    // a years-old OneDrive folder. The failure is invisible: the game boots, the level
+    // loads, everything "works", and your edits are simply not in it. That is the worst
+    // class of bug there is, and it has burned time on this project more than once.
+    //
+    // The fix is to stop guessing at other people's disks. The level ships IN THE REPO,
+    // so resolve it from the repo: assetRoot() already implements the
+    // "first existing of {env override, repo-relative, ...}" search that every other
+    // asset in the engine goes through, and it is cwd-independent. One source of truth.
+    const std::string fromRoot = x3::game::assetRoot() + "/levels/EscapeLab48_AllFloors_v2.project.json";
+    const std::string candidates[] = {
+        "assets/levels/EscapeLab48_AllFloors_v2.project.json",   // cwd == repo root (the standard launch)
+        fromRoot,                                                // cwd-independent, still THIS repo
     };
-    for (const char* c : candidates) {
+    for (const std::string& c : candidates) {
         std::ifstream f(c);
-        if (f.good()) return std::string(c);
+        if (f.good()) return c;
     }
-    return std::string(candidates[1]);   // absolute repo path = best error message
+    // Nothing found: name the repo-resolved path, so the existing
+    // "JSON not found at <path>" line points at where the file SHOULD be.
+    return fromRoot;
 }
 
 // =====================================================================================

@@ -1476,6 +1476,10 @@ int runDefaultHost(HostContext& hc) {
         if (rifthub.built())    rifthub.shutdown(*device);
         if (riftDepths.built()) riftDepths.shutdown(*device);
         if (riftLore.built())   riftLore.shutdown(*device);
+        // KNOWN_BUGS L4: Scene lazily creates ONE 1x1 matte-MR texel (the fallback that
+        // lets an emissive-mapped entity keep its emissive map). It is the only GPU
+        // resource Scene owns, and the smoketest gates on allocationCount == 0.
+        scene.releaseGpu(*device);
     };
     // THE ONE ELEVATOR (Tim: "connect this with the In-Game Elevator"): the full
     // x3-elevator.js treatment — 10-state FSM, cabin visuals + twin OLEDs, the

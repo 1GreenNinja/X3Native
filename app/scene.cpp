@@ -149,11 +149,27 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
         // boxes set a non-zero emissive so they glow + feed the bloom chain.
         if (e.transparent) {
             device.drawMeshGlass(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.glass, e.transform);
-        } else if (e.mrTex.valid()) {
+        } else if (e.mrTex.valid() || e.emissiveTex.valid()) {
             // Entity carries a metallic-roughness map: full PBR path (Cook-Torrance
             // + IBL/SSR reflections). normalTex rides along when set (invalid =>
             // geometry normal, exactly the old behaviour).
-            device.drawMeshPBR(frame, e.mesh, e.tex, e.normalTex, e.mrTex,
+            //
+            // KNOWN_BUGS L4: an entity with an EMISSIVE map but no MR map also comes
+            // here now. It used to fall through to drawMeshEmissive(), which takes no
+            // emissive-map argument — so the map was silently discarded and a screen
+            // authored with per-texel glow rendered as a flat slab. It is not missing a
+            // PBR intent; it is missing an MR texture. Lend it a matte-dielectric one
+            // (identical to what drawMeshEmissive already assumed) and its emissive map
+            // finally reaches the shader.
+            x3::rhi::TextureHandle mr = e.mrTex;
+            if (!mr.valid()) {
+                if (!m_mrMatte.valid()) {
+                    const uint8_t matte[4] = { 0, 230, 0, 255 };   // glTF MR: G=rough .90, B=metal 0
+                    m_mrMatte = device.createTexture(matte, 1, 1, false);
+                }
+                mr = m_mrMatte;
+            }
+            device.drawMeshPBR(frame, e.mesh, e.tex, e.normalTex, mr,
                                e.baseColor, e.emissive, e.transform,
                                /*alphaMask*/ false, /*alphaBlend*/ e.alphaBlend,
                                e.emissiveTex);
@@ -161,6 +177,10 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
         }
     }
+}
+
+void Scene::releaseGpu(x3::rhi::IRenderDevice& device) {
+    if (m_mrMatte.valid()) { device.destroyTexture(m_mrMatte); m_mrMatte = {}; }
 }
 
 } // namespace x3::game

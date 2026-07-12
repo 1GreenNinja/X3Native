@@ -268,6 +268,27 @@ private:
     bool m_roomCullActive  = false;
     // PVS skip count of the last render() (mutable: render() is const). Stats only.
     mutable uint32_t m_lastRoomCulled = 0;
+
+    // KNOWN_BUGS L4 — the MATTE-DIELECTRIC fallback MR texel.
+    // An entity with an emissiveTex but NO mrTex used to fall through to
+    // drawMeshEmissive(), which has no emissive-map parameter at all — so the map was
+    // SILENTLY DROPPED and the surface rendered with a flat emissive instead of the
+    // per-texel glow it was authored with. (POLISH RECIPE #5: "per-texel emissive on
+    // every screen; flat emissive floods the pane into a slab.") Rather than widen the
+    // RHI's emissive path, we give such an entity the ONE thing it was missing: a
+    // metallic-roughness map. This 1x1 texel is a plain matte dielectric (metal 0,
+    // rough ~0.9 — glTF packs G=rough, B=metal), which is exactly what
+    // drawMeshEmissive assumed anyway, so the shading is unchanged and the emissive
+    // map now actually reaches the shader. Created on first use, destroyed in
+    // releaseGpu(). mutable because render() is const (same precedent as the stat above).
+    mutable x3::rhi::TextureHandle m_mrMatte{};
+
+public:
+    // Destroy any GPU resources Scene itself created (currently the L4 fallback MR
+    // texel). Safe to call more than once; safe to call if nothing was created.
+    void releaseGpu(x3::rhi::IRenderDevice& device);
+
+private:
     // World-streaming support: optional add() capture sink + the released-slot
     // free-list add() reuses (see beginEntityCapture / releaseSlot above).
     std::vector<uint32_t>* m_capture = nullptr;
