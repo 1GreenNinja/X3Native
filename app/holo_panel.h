@@ -236,6 +236,13 @@ private:
     x3::phys::Vec3 m_pos{};
     uint32_t m_pane = kNoLink;
     x3::rhi::TextureHandle m_screenTex{};
+    // THE FRAME AND THE MOUNT ARE METAL. They need a metallic-roughness map to SAY so.
+    // Without an mrTex an Entity takes Scene's drawMeshEmissive path — a flat DIELECTRIC
+    // — so the "shiny metallic round-pipe frame" rendered as a matte light-grey solid:
+    // a WHITE PLASTIC TABLET on a white antenna. (See the note in build().) These are
+    // 1x1 glTF-packed MR texels (G=roughness, B=metallic); shutdown() frees them.
+    x3::rhi::TextureHandle m_mrPolish{};   // polished steel: the bead that catches the blue
+    x3::rhi::TextureHandle m_mrGun{};      // machined gunmetal: collar, support pipe, housings
     uint32_t m_texN = 1024;
     float m_emBase[4] = { 1.0f, 1.0f, 1.0f, 2.1f };
     float m_shimmer = 1.0f;

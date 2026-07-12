@@ -571,6 +571,7 @@ private:
     // them red and put them back EXACTLY (no cumulative drift across events).
     std::vector<float> m_lightBase;   // 3 floats per light in m_lights
 
+
     // Spawn helpers (rifthub.cpp file-local logic uses these members).
     float frand();     // [0,1)
     float frandSym();  // [-1,1)

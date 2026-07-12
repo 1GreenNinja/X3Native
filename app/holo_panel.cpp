@@ -644,13 +644,38 @@ void HoloPanel::build(Scene& scene, x3::rhi::IRenderDevice& device, const HoloPa
     const float hw = p.width * 0.5f, hh = p.height * 0.5f;
     const float corner = (p.cornerRadius > 0.0f) ? p.cornerRadius : std::min(hw, hh) * 0.30f;
 
+    // ---- ROUND 9: addMetal DID NOT MAKE METAL. --------------------------------
+    // Tim: the rifthub consoles are "white plastic tablets on antennas". They were.
+    // This lambda set baseColor and NOTHING ELSE — no mrTex — so every frame and
+    // mount entity fell to Scene's drawMeshEmissive path: a flat DIELECTRIC, zero
+    // metalness, no specular lobe worth the name. A dielectric at albedo 0.66-0.76
+    // is not "shiny metallic round pipe"; it is the literal definition of WHITE
+    // PLASTIC. The lambda was NAMED addMetal, so for ~10 re-fixes nobody re-checked
+    // the one thing the name was asserting. (Same class as KNOWN_BUGS B5 / SM_Door_A:
+    // a near-white albedo that the old 0.42 ambient wash was hiding. Honest light
+    // exposed it.) VALUE, NOT LUMENS: fix the material, do not add a light.
+    //
+    // Now: a real glTF MR map + real machined-steel base values. On a ROUND pipe a
+    // high metalness + low-ish roughness puts a tight specular streak down the crest
+    // — that streak is the ONLY thing that makes a cylinder read as a pipe, and it
+    // is exactly what catches the membrane's blue. The diffuse goes dark (metal has
+    // almost none), so the frame stops swallowing the black glass it surrounds.
+    {
+        const uint8_t polishPx[4] = { 0,  66, 235, 255 };   // rough .26, metal .92 — polished steel
+        const uint8_t gunPx[4]    = { 0, 107, 217, 255 };   // rough .42, metal .85 — machined gunmetal
+        m_mrPolish = device.createTexture(polishPx, 1, 1, false);
+        m_mrGun    = device.createTexture(gunPx,    1, 1, false);
+    }
+
     // Opaque METAL helper (frame + mount). HONEST LIGHTING: no emissive on structure.
     auto addMetal = [&](const x3::prims::PrimMesh& g, float ox, float oy, float oz,
-                        float cr, float cg, float cb) {
+                        float cr, float cg, float cb,
+                        x3::rhi::TextureHandle mr) {
         Entity e;
         e.mesh = device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
                                    g.index.data(), (uint32_t)g.index.size());
         m_meshes.push_back(e.mesh);
+        e.mrTex = mr;   // <- the whole fix: this is what routes it to the PBR metal path
         e.baseColor[0] = cr; e.baseColor[1] = cg; e.baseColor[2] = cb; e.baseColor[3] = 1.0f;
         e.tag = (uint32_t)Tag::Prop;
         e.roomId = p.roomId;
@@ -707,16 +732,21 @@ void HoloPanel::build(Scene& scene, x3::rhi::IRenderDevice& device, const HoloPa
     if (p.frame == HoloFrame::Pipe) {
         // The SHINY METALLIC ROUND-PIPE picture frame: an inner polished-steel bead
         // hugging the glass, and a fatter gunmetal collar behind it for real depth.
+        // The base values ARE the metals' F0 reflectance (steel ~0.56, chrome ~0.60) —
+        // for a metal, baseColor is the specular tint, NOT a coat of paint. Paired with
+        // metallic ~0.9 the diffuse is ~nil, so these read as dark, glinting steel that
+        // picks the blue out of the room. That is a pipe. The old 0.66-0.76 DIELECTRIC
+        // was a bright matte solid: the white tablet.
         x3::prims::PrimMesh innerRim =
             x3::prims::makeRoundedRectTube(hw + 0.010f, hh + 0.010f, corner, 0.016f, 6, 14);
-        addMetal(innerRim, 0, 0, 0, 0.66f, 0.70f, 0.76f);
+        addMetal(innerRim, 0, 0, 0, 0.62f, 0.65f, 0.70f, m_mrPolish);   // polished bead
         x3::prims::PrimMesh outerRim =
             x3::prims::makeRoundedRectTube(hw + 0.034f, hh + 0.034f, corner + 0.020f, 0.022f, 6, 14);
-        addMetal(outerRim, 0, 0, 0, 0.42f, 0.45f, 0.50f);
+        addMetal(outerRim, 0, 0, 0, 0.40f, 0.42f, 0.46f, m_mrGun);      // gunmetal collar
     } else if (p.frame == HoloFrame::Bezel) {
         x3::prims::PrimMesh bez =
             x3::prims::makeRoundedRectTube(hw + 0.012f, hh + 0.012f, corner, 0.010f, 6, 10);
-        addMetal(bez, 0, 0, 0, 0.10f, 0.11f, 0.13f);
+        addMetal(bez, 0, 0, 0, 0.10f, 0.11f, 0.13f, m_mrGun);
     }
 
     // ---- (3) MOUNT — it HANGS, it does not float. -----------------------------
@@ -725,22 +755,26 @@ void HoloPanel::build(Scene& scene, x3::rhi::IRenderDevice& device, const HoloPa
         const float top = p.pos.y + hh + 0.030f;
         const float H = ceilY - top;
         if (H > 0.05f) {
-            const float sr = 0.026f;
+            const float sr = 0.034f;   // ROUND 9: 0.026 read as an antenna. A pipe has heft.
             const float mid = (ceilY + top) * 0.5f - p.pos.y;
             // The single support pipe, top-centre, up to the ceiling. DARK gunmetal and
             // NO self-glow: a tall vertical prim catches the point rig side-on, so a
             // bright one reads as a neon rod. Structure holds weight; it does not light.
-            addMetal(cylinderY(sr, H * 0.5f, 20), 0, mid, 0, 0.30f, 0.32f, 0.35f);
+            // ROUND 9: the support pipe is now real GUNMETAL and slightly fatter
+            // (0.026 -> 0.034 m). At 26 mm, matte and pale, it read as a radio ANTENNA
+            // stuck in a tablet. A pipe that carries a hanging fixture is a structural
+            // member: it wants some heft and a specular crest so the eye reads a tube.
+            addMetal(cylinderY(sr, H * 0.5f, 20), 0, mid, 0, 0.38f, 0.40f, 0.44f, m_mrGun);
             addMetal(cylinderY(sr + 0.016f, 0.028f, 20), 0, (top - p.pos.y) + 0.028f, 0,
-                     0.55f, 0.58f, 0.62f);                                   // lower collar
+                     0.58f, 0.61f, 0.66f, m_mrPolish);                       // lower collar
             addMetal(cylinderY(sr + 0.026f, 0.022f, 20), 0, (ceilY - p.pos.y) - 0.022f, 0,
-                     0.55f, 0.58f, 0.62f);                                   // ceiling collar
+                     0.58f, 0.61f, 0.66f, m_mrPolish);                       // ceiling collar
         }
     } else if (p.mount == HoloMount::WallFlush) {
         // The back-box goes BEHIND the pane (local -Z). In front, it would depth-eat
         // the screen — that is law #1, and it is the whole bug.
         x3::prims::PrimMesh box = x3::prims::makeBox(hw * 0.90f, hh * 0.90f, 0.03f, 0, 0, 0, 1.0f);
-        addMetal(box, 0, 0, -0.05f, 0.10f, 0.11f, 0.13f);
+        addMetal(box, 0, 0, -0.05f, 0.10f, 0.11f, 0.13f, m_mrGun);
     } else if (p.mount == HoloMount::FreeStand) {
         const float floorY = (p.floorY > 0.0f) ? p.floorY : p.pos.y - hh - 0.6f;
         const float bottom = p.pos.y - hh - 0.03f;
@@ -748,11 +782,11 @@ void HoloPanel::build(Scene& scene, x3::rhi::IRenderDevice& device, const HoloPa
         if (H > 0.05f) {
             const float sr = 0.030f;
             const float mid = (bottom + floorY) * 0.5f - p.pos.y;
-            addMetal(cylinderY(sr, H * 0.5f, 20), 0, mid, 0, 0.30f, 0.32f, 0.35f);
+            addMetal(cylinderY(sr, H * 0.5f, 20), 0, mid, 0, 0.38f, 0.40f, 0.44f, m_mrGun);
             addMetal(cylinderY(sr + 0.020f, 0.026f, 20), 0, (bottom - p.pos.y) - 0.026f, 0,
-                     0.55f, 0.58f, 0.62f);
+                     0.58f, 0.61f, 0.66f, m_mrPolish);
             addMetal(cylinderY(0.14f, 0.020f, 28), 0, (floorY - p.pos.y) + 0.020f, 0,
-                     0.45f, 0.47f, 0.50f);                                   // base disc
+                     0.44f, 0.46f, 0.50f, m_mrGun);                          // base disc
         }
     }
     // HoloMount::None — the caller's housing already carries it (keypad, elevator cab).
@@ -805,6 +839,10 @@ void HoloPanel::shutdown(x3::rhi::IRenderDevice& device) {
     for (auto h : m_meshes) if (h.valid()) device.destroyMesh(h);
     m_meshes.clear();
     if (m_screenTex.valid()) { device.destroyTexture(m_screenTex); m_screenTex = {}; }
+    // The frame/mount MR texels (round 9). The rifthub stands EIGHT of these and its
+    // smoketest gates on allocationCount == 0 — a leak here fails the gate.
+    if (m_mrPolish.valid()) { device.destroyTexture(m_mrPolish); m_mrPolish = {}; }
+    if (m_mrGun.valid())    { device.destroyTexture(m_mrGun);    m_mrGun    = {}; }
     m_decor.clear();
     m_pane = kNoLink;
     m_scene = nullptr;

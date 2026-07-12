@@ -82,6 +82,29 @@ The membrane is **real footage** from Tim's reference video (idle / surge / open
 7. **Every prop must EARN its place** — story-relevant, interactive, or it motivates a light.
    Otherwise cut it. (The cell had **23 props and 17 lights**; emptiness *is* the feeling.)
 
+## 🌀 CANON: THE GATE IS ONE LARGE MACHINED METALLIC TUBE (Tim, said 4+ times)
+**No dashes. No chevrons. No hazard tape.** The 48-segment amber "ratchet track" ringing the
+gate face WAS a **dashed yellow ring** — each segment covered ~53% of its arc — and it read as
+caution tape wrapped around the portal. It is not in the reference. It is dead. If the ring
+needs an accent it is **subtle machined trim or ONE thin recessed light line** — continuous,
+dim, cool, integrated into a machined groove. Never a repeating warm pattern.
+
+## 🔍 PROVE THE SURFACE CAN BE LIT BEFORE YOU TOUCH A LIGHT (2026-07-12)
+The rifthub tube ate **nine rounds** of art because everyone tuned the *wrong variable*. The
+order of operations that actually cracked it:
+1. **Is the surface receiving light at all?** Put a **flat WHITE albedo** on it and a bright
+   probe light next to it. If it is *still* black, **no albedo and no lamp will ever fix it** —
+   the bug is geometry/topology (see KNOWN_BUGS **R3: the gate was mirrored**, det −1).
+2. Only then, **VALUE** (albedo).
+3. Only then, **LUMENS**.
+Doing this backwards is how a light rig gets tuned to 70 against an object that is physically
+incapable of responding — and how "5× the key light barely moved it" gets misread as "the art
+is too dark" instead of "the object is inside-out."
+
+**A/B probe that settles it in one build:** drop a GLB **cube** carrying the suspect's *exact*
+material beside it. If the cube blows out white and the suspect stays black, it is **not** the
+material and **not** the lighting.
+
 ## 🧪 REGRESSION DISCIPLINE
 "The panel exists" and "the panel *shows something*" are **not** the same assertion. Tests must
 measure the **thing that actually broke** — e.g. `holoReadoutInkFraction()` probes **ink** in the
