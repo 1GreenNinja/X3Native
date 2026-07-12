@@ -944,6 +944,8 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // `vmLitPBR` gunmetal branch (which DROPPED the texture entirely for a flat dark
     // factor) was a stale pre-rework workaround, never enabled (vmLitPBR is false for
     // every weapon), and is removed so the textured path is the single source of truth.
+    // ALSO the target of the GLB lighting fix (5c35d65): with mesh.frag now shading
+    // GLBs physically (1/PI removed), the honest baked albedo at 1.0 is correct.
     constexpr float kVmBright     = 1.0f;   // true baked albedo (matches the world model)
     composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
     for (const auto& dr : vm.drawables) {
@@ -1020,7 +1022,10 @@ void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
     // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
     // interiors. The caller owns the full world placement (hand-bone * grip * scale),
     // so unlike drawCurrentViewmodel this does NO camera-relative posing.
-    constexpr float kVmBright = 2.6f;
+    // GLB lighting fix (5c35d65): mesh.frag now shades GLBs physically (1/PI removed),
+    // so the held gun is ~3x brighter than before — the old 2.6x boost clips the real
+    // albedo to white. Match drawCurrentViewmodel: true baked albedo at 1.0.
+    constexpr float kVmBright = 1.0f;   // was 2.6f; blew out the restored albedo under honest lighting.
     for (const auto& dr : vm.drawables) {
         // STRIP the node-transform's authored WORLD TRANSLATION (cols 12..14): these
         // weapon GLBs bake an FP-viewmodel placement offset into the root node, which
