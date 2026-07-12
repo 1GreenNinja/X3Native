@@ -568,6 +568,13 @@ int hostEchotropolis(HostContext& hc) {
     }
     // ================= END P4 COAST DRESSING ======================================
 
+    // RESIDENTS: character height (5-6 ft). Env-tunable (ECHO_PED_SCALE) so it can be
+    // dialed live without a rebuild; default 1.7 → ~5.9 ft citizens. (The citizens
+    // ARE real textured animated people — the earlier "green blobs" were the grass-
+    // tuft flora props in echotropolis_props.glb, misread as residents.)
+    const float kPedScale = [](){ const char* e = std::getenv("ECHO_PED_SCALE");
+                                  return e ? (float)std::atof(e) : 1.7f; }();
+
     // ===================== Headless screenshot path =====================
     // Pose the default orbit (17deg, radius 70), settle the waves a few frames so
     // the Gerstner surface isn't flat, then arm+grab. Mirrors host_valley's grab.
@@ -595,6 +602,7 @@ int hostEchotropolis(HostContext& hc) {
                 sCrowd.build(cc, sScene, *device);
                 x3::game::CrowdSkinConfig sc; sc.site = "residents-shot";
                 sc.modelDir = x3::game::riggedGlbRoot(); sc.spawnsPerFrame = 4;
+                sc.scale = kPedScale;   // 5-6 ft citizens
                 sSkin.build(sc, sCrowd);
                 sResBuilt = sCrowd.built();
                 x3::logInfo(std::string("--world echotropolis: SHOT residents ") +
@@ -730,6 +738,7 @@ int hostEchotropolis(HostContext& hc) {
         sc.site = "Echo Harbor residents";
         sc.modelDir = x3::game::riggedGlbRoot();
         sc.spawnsPerFrame = 2;
+        sc.scale = kPedScale;   // 5-6 ft citizens
         residentsSkin.build(sc, residents);
         residentsBuilt = residents.built();
         x3::logInfo(std::string("--world echotropolis: residents ") +
