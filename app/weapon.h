@@ -270,6 +270,11 @@ struct WeaponDef {
     // the centroid of the +Z front slice of the geometry, +Z being the down-barrel axis the
     // viewmodel basis maps onto camera-forward via the 193 deg vmYaw flip.)
     x3::phys::Vec3 vmMuzzle{ 0.0f, 0.65f, 0.86f };   // GLB scene-space barrel tip
+    // NOTE: the fold's `vmLitPBR` flag is deliberately NOT carried over. It selected a
+    // flat dark-gunmetal factor INSTEAD of the weapon's baked texture — a workaround for
+    // the over-unity kVmBright, which the 1/PI engine fix (5c35d65) made unnecessary. The
+    // fold's own weapon.cpp had already deleted the branch that read it, leaving a dead
+    // field. The textured path at kVmBright = 1.0 is the single source of truth.
     // FX preset hints (string keys the host maps onto CombatFx muzzle/impact). Kept
     // as data so designers can retune which preset a weapon uses; the host reads them.
     // The host maps these onto a WeaponFxKind (see app/fx.h fxKindFromId) so each gun

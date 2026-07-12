@@ -37,6 +37,13 @@ public:
     // Editing keys while open. Enter submits, Backspace deletes, Up/Down recall
     // history, Tab completes against the backend. Returns true if consumed.
     void onEnter(x3::con::IConsole& console);
+
+    // Scrollback: shift the visible output window UP (positive delta = older
+    // lines) or DOWN (negative = toward the live bottom). Driven by PAGE_UP /
+    // PAGE_DOWN and the mouse wheel while the console is open. The lower bound is
+    // clamped here (>=0); the upper bound depends on the panel size and is
+    // clamped each frame in drawConsole. A no-op while the console is closed.
+    void consoleScroll(int deltaLines);
     void onBackspace();
     void historyPrev();
     void historyNext();
@@ -94,6 +101,12 @@ private:
     std::string m_input;
     std::vector<std::string> m_history;   // submitted command lines
     int         m_historyPos = -1;        // -1 == editing a fresh line
+
+    // Scrollback offset: how many lines the visible output window is shifted UP
+    // from the live bottom (0 = pinned to the newest line). Reset to 0 (live) on
+    // any new input or on open/close. Upper-clamped to the scrollable range in
+    // drawConsole each frame (it needs the panel height to know how many rows fit).
+    int         m_consoleScroll = 0;
 
     // Console open/close slide animation: 0 = fully hidden (above the top edge),
     // 1 = fully on-screen. Advanced by dt in drawConsole toward the logical open

@@ -45,6 +45,9 @@ public:
         float angularDrag     = 1.5f;   // per-second (snappier rotational settle)
         float boostMul        = 2.5f;   // sprint -> accel multiplier (eats energy)
         float maxSpeed        = 220.0f; // m/s hard speed cap
+        float noseFollow      = 0.0f;   // arcade steering: velocity-direction chase
+                                        // rate toward facing (1/s). 0 = pure
+                                        // Newtonian drift (existing behavior).
         int   maxHull         = 1000;
         int   maxShield       = 500;
         float shieldRegenPerSec = 25.0f;

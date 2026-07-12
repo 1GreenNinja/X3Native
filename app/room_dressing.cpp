@@ -3,6 +3,8 @@
 // prop placement, instance emissive[3] SCALES material emissive, contact shadows
 // ground props, one key light per room, one accent hue per zone (ART_BIBLE §2/§3).
 #include "room_dressing.h"
+#include "asset_root.h"      // riggedGlbRoot() — the F2 rescue-captive character GLBs
+#include "holo_terminal.h"   // bakeMedicalMonitor() — the F2 rescue-room dark-glass screen
 
 #include "engine/core/x3_log.h"
 
@@ -146,9 +148,15 @@ const Recipe& recipeFor(uint8_t z) {
         /*ZCorridor*/ { "mw_concrete_panels_a", 2.6f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
                         1.30f, 1.42f, 1.58f, 5.0f,   0.14f, 0.75f, 0.85f, 2.4f,
                         fogOf(0.030f, 0.040f, 0.046f, 0.0045f, 1.5f, 0.65f) },
+        // W2-A DETENTION = hazard AMBER (bible/audit). The accent was already amber;
+        // warm the fog tint from near-neutral to a clear amber wash and widen the
+        // accent so every ward cell reads amber, not cold (audit fix: "detention
+        // reads cyan"). Halls stay cyan (ZHall/ZCorridor untouched); Jake's frozen
+        // cell is ZNone and is pinned to the old warm-neutral fog in build() so this
+        // amber never bleeds into the canon hand-calibrated reference.
         /*ZWard*/     { "hh_wall_01a", 3.0f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        2.20f, 1.70f, 1.05f, 3.6f,   1.50f, 0.95f, 0.25f, 2.2f,
-                        fogOf(0.045f, 0.040f, 0.034f, 0.0035f, 1.2f, 0.60f) },
+                        2.20f, 1.66f, 0.98f, 3.6f,   1.72f, 0.96f, 0.22f, 2.9f,
+                        fogOf(0.058f, 0.041f, 0.023f, 0.0042f, 1.2f, 0.62f) },
         /*ZSecurity*/ { "mw_concrete_panels_a", 2.4f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
                         1.90f, 1.90f, 2.00f, 3.2f,   1.40f, 0.07f, 0.05f, 2.2f,
                         fogOf(0.020f, 0.022f, 0.026f, 0.0030f, 1.2f, 0.55f) },
@@ -177,13 +185,16 @@ const Recipe& recipeFor(uint8_t z) {
                         fogOf(0.024f, 0.032f, 0.040f, 0.0038f, 1.4f, 0.60f) },
         // W8-1 floor identity: the drone station stands on HAZARD-STRIPED deck plate
         // (sr_floorstripes — a curated set no zone used yet), not the same grate as F4.
-        /*ZDroneBay*/ { "mw_thermal_padding", 2.8f, "sr_floorstripes", 2.4f, "mw_metal_panels_a", 3.2f,
+        // W2-A F5 floor scale fix (report §1.2): sr_floorstripes at 2.4 m/repeat read as
+        // fine CORDUROY across the big drone deck. 6.0 m/repeat enlarges each hazard band
+        // so the deck reads as HANGAR LANES (a code dial, not a reforge).
+        /*ZDroneBay*/ { "mw_thermal_padding", 2.8f, "sr_floorstripes", 6.0f, "mw_metal_panels_a", 3.2f,
                         1.75f, 1.65f, 1.45f, 6.5f,   1.55f, 0.95f, 0.25f, 2.8f,
                         fogOf(0.035f, 0.035f, 0.032f, 0.0035f, 1.5f, 0.60f) },
         /*ZSalvari*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_concrete_01", 3.2f,
                         1.10f, 0.92f, 0.62f, 4.5f,   0.25f, 1.10f, 0.45f, 2.8f,
                         fogOf(0.018f, 0.026f, 0.021f, 0.0060f, 1.2f, 0.72f) },
-        /*ZExec*/     { "cc_porous_cement", 3.2f, "sr_concrete_a", 2.6f, "mw_metal_panels_a", 3.2f,
+        /*ZExec*/     { "cc_porous_cement", 3.2f, "cc_exec_floor", 2.6f, "mw_metal_panels_a", 3.2f,
                         2.00f, 1.80f, 1.50f, 5.5f,   1.60f, 1.15f, 0.45f, 2.6f,
                         fogOf(0.040f, 0.036f, 0.030f, 0.0025f, 1.6f, 0.50f) },
         // W5-1: the Nexus Chamber — no surfaces/lights (canon_45 owns the look);
@@ -252,7 +263,12 @@ uint8_t classify(const CanonRoom& r, const CanonBeats& bt, uint32_t roomId) {
         const float y = r.cy;
         if (y < 18.0f)  return ZMedical;             // F2 wards / theaters / pharmacy
         if (y < 28.0f)  return ZGenetics;            // F3
-        if (y < 33.0f)  return ZCyber;               // F4
+        // F4's wing rooms ride the full 9 m floor ceiling, so their center-y is
+        // 30 + 4.5 = 34.5 — past the old 33 band edge (which assumed the canon
+        // rooms' lower ceilings) and into ZDroneBay. 35 keeps every F4 room cyan;
+        // the F4.5 tiers (33..64) never reach this line (platform/openCeiling ->
+        // ZCave, type "Cave Chamber" -> ZOrganic above).
+        if (y < 35.0f)  return ZCyber;               // F4
         if (y < 76.0f)  return ZDroneBay;            // F5
         if (y < 88.0f)  return ZSalvari;             // F6
         return ZExec;                                // F7 + roof rooms
@@ -409,12 +425,21 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
     if (!floor.valid()) return false;
     m_surf.mount(std::string(surfaceLibDir));
     m_assets.reset(x3::asset::createAssetSource());
-    if (m_assets->mountDir(convertedGlbDir, 0))
+    if (m_assets->mountDir(convertedGlbDir, 0)) {
+        // F2 rescue captives (Aria/Keisha/Emily) live in the rigged-GLB tree, not the
+        // converted kit — mount it too (higher priority; no path collision expected) so
+        // the "Rescue Room" recipe can load the Anna cast onto the beds.
+        m_assets->mountDir(riggedGlbRoot(), 1);
         m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    }
 
     m_roomZone.assign(floor.rooms.size(), ZNone);
     m_zoneFog.assign(ZCount, recipeFor(ZWard).fog);   // default = detention tint
     for (uint8_t z = 1; z < ZCount; ++z) m_zoneFog[z] = recipeFor(z).fog;
+    // W2-A: Jake's cell classifies ZNone (frozen hand-calibrated reference). Pin its
+    // atmosphere to the ORIGINAL warm-neutral detention fog so the ward-zone amber
+    // recolor above never shifts the canon cell the vigil beat is framed in.
+    m_zoneFog[ZNone] = fogOf(0.045f, 0.040f, 0.034f, 0.0035f, 1.2f, 0.60f);
 
     // Surface sets loaded once up front (name -> stable cache pointer).
     auto setIdx = [&](const char* name) -> uint32_t {
@@ -439,6 +464,14 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
     const uint32_t aDuct    = m_loader ? loadAsset(kRelDuct)    : 0;
     const uint32_t aVent    = m_loader ? loadAsset(kRelVent)    : 0;
     const uint32_t aDrone   = m_loader ? loadAsset(kRelDrone)   : 0;
+    // F2 rescue captives — the Anna cast (rescue.cpp maps the SAME live models):
+    // Aria=AnnaCasual, Keisha=AnnaBodySuit, Emily=AnnaTactical. These are PRE-POSED
+    // supine bakes (headless Blender pose-and-bake: spine raised to the bed incline,
+    // knees up, legs apart, arms at sides). The bake is already lying face-up (head +Z,
+    // back at model-Y 0), so the recipe just positions + yaws them onto the beds.
+    const uint32_t aAria    = m_loader ? loadAsset("Detention/Captive_Aria_Posed.glb")   : 0;
+    const uint32_t aKeisha  = m_loader ? loadAsset("Detention/Captive_Keisha_Posed.glb") : 0;
+    const uint32_t aEmily   = m_loader ? loadAsset("Detention/Captive_Emily_Posed.glb")  : 0;
 
     // Kit tints (cell_dressing palette family).
     const float tCrate[4]  = { 0.66f, 0.60f, 0.52f, 1.0f };
@@ -467,14 +500,21 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             mv.normal[1] = 1.0f; mv.uv[0] = 0.5f; verts.push_back(mv);
         };
         push(0, 0);
-        const int seg = 20;
+        // 64 segments (was 20): the coarse ring read as a POLYGONAL "jagged rounded"
+        // silhouette when scaled up to a bed-sized contact shadow (owner note #3).
+        const int seg = 64;
         for (int i = 0; i <= seg; ++i) {
             const float t = (float)i / seg * 2.0f * kPi;
             push(std::cos(t), std::sin(t));
         }
+        // SINGLE winding (owner note #3 root cause): the old mesh emitted BOTH windings
+        // per triangle at identical depth, so the fan self-z-fought — at grazing angles
+        // the 64 radial fan edges showed as hard pixelated "spokes" radiating from the
+        // shadow (the real jagged aberration, on top of the coarse silhouette). The glass
+        // pipeline already rasterizes CULL_MODE_NONE (double-sided), so one winding draws
+        // from every angle with no self-z-fight.
         for (int i = 1; i <= seg; ++i) {
             idx.push_back(0); idx.push_back(i); idx.push_back(i + 1);
-            idx.push_back(0); idx.push_back(i + 1); idx.push_back(i);
         }
         disc = device.createMesh(verts.data(), (uint32_t)verts.size(),
                                  idx.data(), (uint32_t)idx.size());
@@ -492,7 +532,16 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
     };
     auto shadowBlob = [&](uint32_t room, float x, float y, float z, float rx, float rz,
                           float dark) {
-        floorBlob(room, x, y, z, rx, rz, 0.02f, 0.02f, 0.03f, dark);
+        // FEATHERED contact-shadow POOL (owner note #3). The old single hard disc read
+        // as a jagged rounded aberration on the floor. Stack three concentric discs — a
+        // dark core with progressively softer, wider rings — so the edge FEATHERS into a
+        // soft grounding pool instead of a hard cut. Each ring is lifted a hair to avoid
+        // coplanar z-fighting in the glass pass (innermost highest). Combined with the
+        // 64-seg mesh above, the polygonal jaggedness is gone.
+        const float cr = 0.02f, cg = 0.02f, cb = 0.03f;
+        floorBlob(room, x, y + 0.004f, z, rx * 1.32f, rz * 1.32f, cr, cg, cb, dark * 0.25f);
+        floorBlob(room, x, y + 0.006f, z, rx * 1.00f, rz * 1.00f, cr, cg, cb, dark * 0.50f);
+        floorBlob(room, x, y + 0.008f, z, rx * 0.68f, rz * 0.68f, cr, cg, cb, dark * 0.78f);
     };
     // Dried-blood smear: dark desaturated red, stretched along its run.
     auto bloodBlob = [&](uint32_t room, float x, float y, float z, float rx, float rz,
@@ -599,18 +648,26 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             m_lights.push_back(cl);
         };
         const bool longX = r.w >= r.d;
+        // TALL-ROOM KEY CLAMP (F2-F7 wings): the zone keys were authored for the
+        // canon floors' 3.5-5 m ceilings, where a ceiling-hung key reaches the
+        // floor within its range. The wing floors are 8-12 m tall — a key at
+        // cY-0.5 with range 4-6.5 never touches the props, which read as black
+        // blobs. Hang the key no higher than ~4.6 m above the floor (a dropped
+        // cable pendant); rooms up to 5.1 m tall are byte-identical (min picks
+        // the ceiling), so the calibrated canon-F1 look is untouched.
+        const float keyY = std::min(cY - 0.5f, fY + 4.6f);
         if (z == ZHall || z == ZCorridor) {
             // Rhythm of cool keys along the long axis (the corridor's ONE statement).
             const float len = longX ? r.w : r.d;
             const int nKeys = std::max(1, (int)(len / 8.0f));
             for (int i = 0; i < nKeys; ++i) {
                 const float t = (i + 0.5f) / nKeys - 0.5f;
-                addLight(r.cx + (longX ? t * len : 0), cY - 0.35f,
+                addLight(r.cx + (longX ? t * len : 0), std::min(cY - 0.35f, fY + 4.75f),
                          r.cz + (longX ? 0 : t * len),
                          rec.keyRange, rec.keyR, rec.keyG, rec.keyB);
             }
         } else {
-            addLight(r.cx, cY - 0.5f, r.cz, rec.keyRange, rec.keyR, rec.keyG, rec.keyB);
+            addLight(r.cx, keyY, r.cz, rec.keyRange, rec.keyR, rec.keyG, rec.keyB);
             if (r.w * r.d > 40.0f)   // wide room: a dim fill at <= half the key
                 addLight(r.cx, fY + 0.6f, r.cz, rec.keyRange * 0.8f,
                          rec.keyR * 0.4f, rec.keyG * 0.4f, rec.keyB * 0.4f);
@@ -706,17 +763,22 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             switch (z) {
                 case ZMedical:   // W3-2: the F2 wards (Keisha/Emily/Aria) get real cots
                 case ZWard:
-                    if (freeFace >= 0) {
-                        // Cot long axis ALONG the wall: local X (2.3 m) -> face tangent.
-                        const float cotYaw = (freeFace < 2) ? kPi * 0.5f : 0.0f;
-                        placeProp(ri, aCot, cotYaw, 1.0f, acx(kCotAabb), kCotAabb.miny,
-                                  acz(kCotAabb), px + (freeFace >= 2 ? jitter : 0),
-                                  fY, pz + (freeFace < 2 ? jitter : 0), nullptr, nullptr);
-                        shadowBlob(ri, px, fY, pz, 0.8f, 1.4f, 0.5f);
+                    // The F2 SIGNATURE rescue rooms own their bed/captive/equipment via
+                    // the "Rescue Room" desc-gold branch below — skip the generic wall cot
+                    // + bin so the bed isn't doubled.
+                    if (r.name.find("Rescue Room") == std::string::npos) {
+                        if (freeFace >= 0) {
+                            // Cot long axis ALONG the wall: local X (2.3 m) -> face tangent.
+                            const float cotYaw = (freeFace < 2) ? kPi * 0.5f : 0.0f;
+                            placeProp(ri, aCot, cotYaw, 1.0f, acx(kCotAabb), kCotAabb.miny,
+                                      acz(kCotAabb), px + (freeFace >= 2 ? jitter : 0),
+                                      fY, pz + (freeFace < 2 ? jitter : 0), nullptr, nullptr);
+                            shadowBlob(ri, px, fY, pz, 0.8f, 1.4f, 0.5f);
+                        }
+                        placeProp(ri, aBin, 0.0f, 0.9f, acx(kBinAabb), kBinAabb.miny,
+                                  acz(kBinAabb), r.x1() - 0.5f, fY + 0.02f, r.z1() - 0.5f,
+                                  nullptr, tSteel);
                     }
-                    placeProp(ri, aBin, 0.0f, 0.9f, acx(kBinAabb), kBinAabb.miny,
-                              acz(kBinAabb), r.x1() - 0.5f, fY + 0.02f, r.z1() - 0.5f,
-                              nullptr, tSteel);
                     break;
                 case ZSecurity: case ZLobby: case ZLab:
                 case ZGenetics: case ZCyber: case ZExec:   // W3-2: console = the focal instrument
@@ -745,12 +807,19 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                                   nullptr, tSteel);
                     break;
                 case ZBoss:
-                    placeProp(ri, aBarrel, 0.0f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
-                              acz(kBarrelAabb), r.cx - r.w * 0.28f, fY + 0.02f,
-                              r.cz - r.d * 0.22f, nullptr, tBarrel);
-                    placeProp(ri, aBarrel, 0.9f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
-                              acz(kBarrelAabb), r.cx + r.w * 0.30f, fY + 0.02f,
-                              r.cz + r.d * 0.18f, nullptr, tBarrel);
+                    // WAVE (barrels-universal): the boss-room fuel drums are explodable
+                    // when the host wires the sink (canon loop -> BarrelSystem); else static.
+                    if (m_barrelSink) {
+                        m_barrelSink(r.cx - r.w * 0.28f, fY, r.cz - r.d * 0.22f);
+                        m_barrelSink(r.cx + r.w * 0.30f, fY, r.cz + r.d * 0.18f);
+                    } else {
+                        placeProp(ri, aBarrel, 0.0f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
+                                  acz(kBarrelAabb), r.cx - r.w * 0.28f, fY + 0.02f,
+                                  r.cz - r.d * 0.22f, nullptr, tBarrel);
+                        placeProp(ri, aBarrel, 0.9f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
+                                  acz(kBarrelAabb), r.cx + r.w * 0.30f, fY + 0.02f,
+                                  r.cz + r.d * 0.18f, nullptr, tBarrel);
+                    }
                     placeProp(ri, aCrateL, 1.1f + jitter, 1.0f, acx(kCrateLAabb),
                               kCrateLAabb.miny, acz(kCrateLAabb),
                               r.cx + r.w * 0.12f, fY + 0.02f, r.cz - r.d * 0.30f,
@@ -768,9 +837,15 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                               nullptr, tCrate);
                     placeProp(ri, aPallet, 0.0f, 1.0f, acx(kPalletAabb), kPalletAabb.miny,
                               acz(kPalletAabb), r.cx, fY + 0.02f, r.cz, nullptr, tPallet);
-                    placeProp(ri, aBarrel, 0.4f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
-                              acz(kBarrelAabb), r.cx - 1.4f, fY + 0.02f, r.cz + 1.1f,
-                              nullptr, tBarrel);
+                    // WAVE (barrels-universal): the storage/hangar fuel drum is explodable
+                    // when the host wires the sink (canon loop -> BarrelSystem); else static.
+                    if (m_barrelSink) {
+                        m_barrelSink(r.cx - 1.4f, fY, r.cz + 1.1f);
+                    } else {
+                        placeProp(ri, aBarrel, 0.4f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
+                                  acz(kBarrelAabb), r.cx - 1.4f, fY + 0.02f, r.cz + 1.1f,
+                                  nullptr, tBarrel);
+                    }
                     shadowBlob(ri, px, fY, pz, 0.8f, 0.8f, 0.5f);
                     break;
                 }
@@ -851,9 +926,13 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             auto hangLamp = [&](float x, float zp, float lr, float lg, float lb,
                                 float em, float range) {
                 const float e[4] = { lr, lg, lb, em };
-                placeProp(ri, aHang, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, x, cY - 0.10f, zp,
+                // Tall-room clamp (same law as keyY): in the 8-12 m wing halls the
+                // pendant drops on its cable to ~4.3 m so its pool reaches the props;
+                // canon rooms (<= 4.4 m) are unchanged.
+                const float lampY = std::min(cY, fY + 4.3f);
+                placeProp(ri, aHang, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, x, lampY - 0.10f, zp,
                           e, tSteel);
-                addLight(x, cY - 1.15f, zp, range, lr, lg, lb);
+                addLight(x, lampY - 1.15f, zp, range, lr, lg, lb);
             };
             auto cot = [&](float x, float zp, float yaw, const float* tint) {
                 placeProp(ri, aCot, yaw, 1.0f, acx(kCotAabb), kCotAabb.miny, acz(kCotAabb),
@@ -910,8 +989,167 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             };
             const float cx0 = r.cx, cz0 = r.cz;
 
+            // ---------------- F2 SIGNATURE RESCUE ROOMS ----------------
+            // The owner's spec: a WHITE clinical rescue room — a 2.3 m hospital bed
+            // CENTERED with >=1.2 m walk-around, the captive RESTRAINED SUPINE on it
+            // (straps over the blanket, non-gratuitous clinical dread), ACTIVE monitoring
+            // equipment, a bedside vitals console + IV drum, and ONE surgical key light
+            // overhead under a dropped clinical ceiling. Room B (Keisha) is the
+            // magnetically SEALED room — a RED locked door tell frames its door (the lock
+            // MECHANIC is a host hook). Aria=AnnaCasual, Keisha=AnnaBodySuit,
+            // Emily=AnnaTactical (the same live cast rescue.cpp uses).
+            if (nameHas("Rescue Room")) {
+                const bool sealed = nameHas("Keisha");
+                const uint32_t cap = nameHas("Aria")   ? aAria
+                                   : nameHas("Keisha") ? aKeisha : aEmily;
+
+                // (1) Dropped clinical ceiling at ~3.3 m so the tall wing plate reads as an
+                // intimate clinical room (the surgical pendant hangs just under it).
+                const float dropY = fY + 3.3f;
+                {
+                    Panel p; p.room = ri; p.set = ceilSet;
+                    p.mesh = quadMesh(device, r.w - 0.1f, r.d - 0.1f, rec.ceilTile);
+                    makeTR(p.transform, 0, kPi * 0.5f, r.cx, dropY, r.cz);
+                    m_panels.push_back(p); ++nPanels;
+                }
+
+                // (2) The bed, CENTERED, long axis ALONG Z (head to the back/north wall).
+                cot(cx0, cz0, kPi * 0.5f, tClinic);
+                ++m_rescueBeds;
+
+                // (3) The captive laid SUPINE on the bed. The GLB is a PRE-POSED supine
+                // bake (face UP, head toward the +Z pillow/incline end, feet toward the
+                // door, back at model-Y 0), so this is just position + a small per-girl
+                // yaw — no 90° roll of a standing model. Her spine is baked to the bed's
+                // head incline (head rests ON the pillow, not buried), knees up, legs
+                // apart, arms at her sides. keepTex keeps her authored PBR skin/clothes
+                // (bypasses the wing black-prop material lift).
+                if (m_loader && cap < m_assetTable.size() && m_assetTable[cap].ok) {
+                    // Orientation, settled by direct orthographic diagnosis (session
+                    // lead, Blender top+side renders of the exported GLBs): the models
+                    // are ANATOMICALLY PERFECT — supine, face up, knees up, legs apart —
+                    // but their NATIVE in-engine head points to -Z (feet +Z) while the
+                    // bed's pillow/incline is at +Z. So all three need a 180° yaw to land
+                    // the head on the pillow. The prior "no flip" placement put every head
+                    // at the FOOT of the bed (owner caught it). kPi + per-girl delta.
+                    const float capYaw = nameHas("Aria")   ? (kPi + 0.04f)
+                                       : nameHas("Keisha") ? (kPi - 0.05f)
+                                                           : (kPi + 0.02f);
+                    const float mattressY = fY + 0.55f;   // mattress sleeping surface
+                    PropInst pc; pc.room = ri; pc.asset = cap; pc.keepTex = true;
+                    // With the head now correctly at the +Z pillow (post-flip), shift her
+                    // TOWARD the pillow (+Z) so the whole body lies ON the mattress and the
+                    // lower legs don't hang off the foot rail (the prior -Z shift was tuned
+                    // for the wrong orientation and slid her off the foot end).
+                    makeTR(pc.transform, capYaw, 0.0f, cx0, mattressY, cz0 + 0.28f);
+                    m_props.push_back(pc);
+                    ++m_rescueCaptives;
+                    // (3b) Restraint straps re-seated to the supine knees-up pose: a chest
+                    // strap over the torso and a leg strap across the raised SHINS below the
+                    // knees. Dark bands laid flat over the body, low emissive so they read
+                    // without glowing.
+                    auto strap = [&](float zp, float yy, float wid) {
+                        ProcDraw s; s.room = ri;
+                        s.mesh = quadMesh(device, wid, 0.14f, 1.0f);
+                        makeTR(s.transform, 0.0f, -kPi * 0.5f, cx0, yy, zp);
+                        s.color[0] = 0.05f; s.color[1] = 0.05f; s.color[2] = 0.06f; s.color[3] = 1.0f;
+                        s.emissive[0] = 0.10f; s.emissive[1] = 0.10f; s.emissive[2] = 0.12f;
+                        s.emissive[3] = 0.30f;
+                        m_proc.push_back(s);
+                    };
+                    strap(cz0 + 0.02f, mattressY + 0.24f, 1.05f);   // chest (over torso)
+                    strap(cz0 - 0.62f, mattressY + 0.30f, 1.25f);   // legs (across raised shins)
+                }
+
+                // (4) Advanced medical equipment: a bedside vitals console, an IV/cryo
+                // drum, and the DARK-GLASS ROUNDED VITALS MONITOR on the head wall.
+                // Owner note #1: the flat emissive TEAL quad is replaced with the same
+                // black-glass rounded-screen LANGUAGE as Jake's-cell terminal — a near-
+                // black rounded pane baked with a green ECG heart-rate trace + glowing
+                // vitals rows under the captive's NAME, driven as an emissiveTex over a
+                // near-black albedo (the ACES texture-gated glow law) so it reads as a
+                // LIVE dark-glass monitor, never a bright slab.
+                console(cx0 - 2.4f, cz0 - 1.2f, kPi * 0.5f);        // bedside vitals cart
+                barrel(cx0 + 2.3f, cz0 - 1.0f, 0.3f, tCryo);        // IV drip drum
+                {
+                    const std::string capName = nameHas("Aria")   ? "ARIA"
+                                              : nameHas("Keisha") ? "KEISHA" : "EMILY";
+                    std::vector<uint8_t> mon = bakeMedicalMonitor(1024, capName);
+                    const x3::rhi::TextureHandle monTex =
+                        device.createTexture(mon.data(), 1024, 1024, /*srgb*/true);
+                    // A dedicated screen quad with MIRRORED U — mounted on the +Z (head)
+                    // wall via a kPi yaw (the wall-panel convention), which flips X, so the
+                    // readout text reads upright to the player (same reason HoloTerminal
+                    // pre-flips its back-fan U). 1.5 x 1.0 m dark-glass monitor.
+                    const float hw = 0.75f, hh = 0.50f;
+                    x3::rhi::MeshVertex mv[4] = {};
+                    const float mpx[4] = { -hw,  hw,  hw, -hw };
+                    const float mpy[4] = { -hh, -hh,  hh,  hh };
+                    const float muu[4] = { 1.0f, 0.0f, 0.0f, 1.0f };   // mirrored U
+                    const float mvv[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
+                    for (int i = 0; i < 4; ++i) {
+                        mv[i].pos[0] = mpx[i]; mv[i].pos[1] = mpy[i]; mv[i].pos[2] = 0.0f;
+                        mv[i].normal[2] = 1.0f; mv[i].uv[0] = muu[i]; mv[i].uv[1] = mvv[i];
+                    }
+                    const uint32_t midx[12] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 };
+                    ProcDraw sc; sc.room = ri; sc.tex = monTex;
+                    sc.mesh = device.createMesh(mv, 4, midx, 12);
+                    makeTR(sc.transform, kPi, 0.0f, cx0, fY + 2.05f, r.z1() - kInset - 0.04f);
+                    // Near-black glass albedo + neutral ~1.15 emissive multiplier so the
+                    // baked green/cyan status colors survive (texture-gated glow).
+                    sc.color[0] = 0.030f; sc.color[1] = 0.033f; sc.color[2] = 0.042f;
+                    sc.color[3] = 1.0f;
+                    sc.emissive[0] = 1.0f; sc.emissive[1] = 1.0f; sc.emissive[2] = 1.0f;
+                    sc.emissive[3] = 1.15f;
+                    m_proc.push_back(sc);
+                }
+
+                // (5) SOFTENED surgical EXAM light (owner note #2a): the single hot pendant
+                // was blowing out. Drop the fixture emissive so it isn't a white slab, and
+                // make the key WARM-NEUTRAL, LOWER, and WIDER so it pools on the bed like a
+                // real clinical exam light instead of a blowout hot spot.
+                {
+                    // NOTE: the Hanging Light GLB carries its OWN (bright) emissive
+                    // material, so the draw path takes the material's emissive RGB and
+                    // uses only ePend[3] as the SCALE — the RGB here is inert. The old
+                    // scale 1.0 clipped the fixture to a blown white slab under ACES; drop
+                    // the scale so the shade reads as a soft warm lamp, not a hot slab.
+                    const float ePend[4] = { 0.85f, 0.80f, 0.68f, 0.30f };   // dimmed warm fixture
+                    placeProp(ri, aHang, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                              cx0, dropY - 0.12f, cz0, ePend, tSteel);
+                    addLight(cx0, fY + 2.55f, cz0, 4.6f, 1.02f, 0.94f, 0.80f);  // soft warm exam pool
+                }
+
+                // (5b) WALL COVE FILLS (owner note #2b): a few COOLER, low-energy fills up
+                // the two side walls so the room has shape — a clinical cove-light feel —
+                // instead of one hot pendant + black corners. Each is well under half the
+                // warm key energy so the pendant stays the ONE motivated statement.
+                {
+                    const float coveY = dropY - 0.45f;
+                    const float cR = 0.34f, cG = 0.44f, cB = 0.58f;   // cool clinical fill
+                    addLight(r.x0() + 0.55f, coveY, cz0 - 1.9f, 3.0f, cR, cG, cB);
+                    addLight(r.x0() + 0.55f, coveY, cz0 + 1.9f, 3.0f, cR, cG, cB);
+                    addLight(r.x1() - 0.55f, coveY, cz0 - 1.9f, 3.0f, cR, cG, cB);
+                    addLight(r.x1() - 0.55f, coveY, cz0 + 1.9f, 3.0f, cR, cG, cB);
+                }
+
+                // (6) Room B magnetic-seal tell: a RED locked door frame + bleed-under-the-
+                // door glow (GEOMETRY/light only — the lock MECHANIC is a host hook).
+                if (sealed) {
+                    const float rz = r.z0() + kInset + 0.05f;
+                    glowQuad(0.09f, 2.10f, cx0 - 0.72f, fY + 1.10f, rz, 0.0f, 0.0f,
+                             1.00f, 0.05f, 0.04f, 0.95f);
+                    glowQuad(0.09f, 2.10f, cx0 + 0.72f, fY + 1.10f, rz, 0.0f, 0.0f,
+                             1.00f, 0.05f, 0.04f, 0.95f);
+                    glowQuad(1.62f, 0.12f, cx0, fY + 2.20f, rz, 0.0f, 0.0f,
+                             1.00f, 0.05f, 0.04f, 0.95f);
+                    glowQuad(1.10f, 0.12f, cx0, fY + kFloorLift + 0.006f, r.z0() + 0.20f, 0.0f,
+                             -kPi * 0.5f, 1.00f, 0.06f, 0.05f, 0.85f);
+                    addLight(cx0, fY + 1.4f, r.z0() + 0.5f, 2.0f, 1.10f, 0.06f, 0.05f);
+                }
+
             // ---------------- F2 MEDICAL BAY ----------------
-            if (nameHas("F2: Main Corridor")) {
+            } else if (nameHas("F2: Main Corridor")) {
                 // "Gurneys line walls. Blood trails." (faceClear: never park a gurney
                 // in front of a ward/theater door)
                 if (faceClear(0, cz0 - 3.4f, 1.5f)) cot(r.x0() + 0.95f, cz0 - 3.4f, kPi * 0.5f, tClinic);
@@ -957,6 +1195,26 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 crateLg(cx0 - 0.6f, cz0 + 0.8f, 0.0f, tDarkCon, 0.02f);   // the desk
                 console(cx0 - 0.6f, cz0 + 1.9f, kPi);
                 hangLamp(cx0 - 0.6f, cz0 + 0.3f, 2.20f, 1.70f, 1.05f, 1.0f, 3.2f);
+            } else if (nameHas("Recovery Ward")) {
+                // The big medical hall: two rows of recovery cots down the long (Z) axis
+                // hugging the side (X) walls, an IV drip drum beside each, warm surgical
+                // pendants overhead, a nurse-station console at the head wall, a blood
+                // trail. Dressed to FILL the signature space (door-safe via faceClear).
+                for (int i = -2; i <= 2; ++i) {
+                    const float zp = cz0 + i * 5.2f;
+                    if (faceClear(0, zp, 1.7f)) {
+                        cot(r.x0() + 1.1f, zp, kPi * 0.5f, tClinic);
+                        barrel(r.x0() + 2.7f, zp + 1.5f, 0.3f * (i + 2), tCryo);
+                    }
+                    if (faceClear(1, zp, 1.7f)) {
+                        cot(r.x1() - 1.1f, zp, kPi * 0.5f, tClinic);
+                        barrel(r.x1() - 2.7f, zp + 1.5f, 0.9f * (i + 2), tCryo);
+                    }
+                    hangLamp(cx0, zp, 1.60f, 1.72f, 1.66f, 1.0f, 3.6f);
+                }
+                console(cx0, r.z0() + 0.9f, 0.0f);
+                addLight(cx0, fY + 2.4f, r.z0() + 1.5f, 3.4f, 0.30f, 1.05f, 0.42f);
+                bloodBlob(ri, cx0 - 1.4f, fY, cz0 + 2.0f, 0.5f, 1.6f, 0.45f);
 
             // ---------------- F3 GENETICS LAB ----------------
             } else if (nameHas("Specimen Hall")) {
@@ -1025,6 +1283,25 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 // "UV flood chamber. Kills infection."
                 ventHi(0.25f); ventHi(-0.25f);
                 addLight(cx0, cY - 0.6f, cz0, 3.0f, 0.75f, 0.35f, 1.20f);
+            } else if (nameHas("Gene Vat Gallery")) {
+                // The signature genetics hall: two long rows of bubbling growth vats down
+                // the side (X) walls, each underlit green, a central pair of sequencing
+                // consoles, a sickly-green key. Fills the big hall with the rows-of-tanks
+                // read (door-safe on the +X wall).
+                for (int i = -3; i <= 3; ++i) {
+                    const float zp = cz0 + i * 3.7f;
+                    barrel(r.x0() + 1.0f, zp, 0.3f * (i + 3), tSpecimen);
+                    glowQuad(0.9f, 0.9f, r.x0() + 1.0f, fY + kFloorLift + 0.004f, zp, 0,
+                             -kPi * 0.5f, 0.20f, 1.00f, 0.40f, 0.40f);
+                    if (faceClear(1, zp, 1.1f)) {
+                        barrel(r.x1() - 1.0f, zp, 0.5f * (i + 3), tSpecimen);
+                        glowQuad(0.9f, 0.9f, r.x1() - 1.0f, fY + kFloorLift + 0.004f, zp, 0,
+                                 -kPi * 0.5f, 0.20f, 1.00f, 0.40f, 0.40f);
+                    }
+                }
+                console(cx0 - 1.6f, cz0 - 2.0f, 0.0f);
+                console(cx0 + 1.6f, cz0 + 2.0f, kPi);
+                addLight(cx0, fY + 2.6f, cz0, 3.6f, 0.22f, 1.10f, 0.38f);
 
             // ---------------- F4 CYBERNETICS WING ----------------
             } else if (nameHas("Augmentation Corridor")) {
@@ -1135,6 +1412,30 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                          -kPi * 0.5f, 1.00f, 0.62f, 0.10f, 0.45f);
                 glowQuad(1.8f, 1.2f, cx0 + 2.6f, fY + kFloorLift + 0.004f, cz0 - 0.8f, 0,
                          -kPi * 0.5f, 1.00f, 0.62f, 0.10f, 0.45f);
+            } else if (nameHas("Assembly Bay")) {
+                // The huge drone-assembly hangar — the F5 signature. A grid of docked-drone
+                // stations on pallets fills the bay, each over an amber hazard charge pad;
+                // conveyor crate lines run the aisles; overhead gantry pipes span the hall;
+                // a corner watch-cam. Dressed to fill the VOLUME, not a lone prop.
+                for (int gx = -2; gx <= 2; ++gx) {
+                    for (int gz = -1; gz <= 1; ++gz) {
+                        const float x = cx0 + gx * 9.0f, zp = cz0 + gz * 12.0f;
+                        palletAt(x, zp);
+                        droneAt(x, fY + 0.52f, zp, 0.4f * (float)(gx + gz * 3), tAirframe);
+                        glowQuad(1.8f, 1.4f, x, fY + kFloorLift + 0.004f, zp, 0,
+                                 -kPi * 0.5f, 1.00f, 0.62f, 0.10f, 0.40f);
+                        shadowBlob(ri, x, fY, zp, 1.1f, 1.1f, 0.40f);
+                    }
+                }
+                for (int i = -2; i <= 2; ++i) {
+                    crateLg(cx0 + i * 5.0f, cz0 - 6.0f, (i & 1) ? 0.10f : -0.10f, tCrate, 0.02f);
+                    crateLg(cx0 + i * 5.0f, cz0 + 6.0f, (i & 1) ? -0.10f : 0.10f, tCrate, 0.02f);
+                }
+                placeProp(ri, aPipes, kPi * 0.5f, 1.0f, acx(kPipesAabb), kPipesAabb.maxy,
+                          1.5f, cx0, cY - 0.25f, cz0 - 9.0f, nullptr, tSteel);
+                placeProp(ri, aPipes, kPi * 0.5f, 1.0f, acx(kPipesAabb), kPipesAabb.maxy,
+                          1.5f, cx0, cY - 0.25f, cz0 + 9.0f, nullptr, tSteel);
+                cornerCam();
 
             // ---------------- F6 SALVARI LEVEL ----------------
             } else if (nameHas("Artifact Corridor")) {
@@ -1260,6 +1561,29 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             } else if (nameHas("Guard Post")) {
                 // "Rooftop sentry." (A: sniper / B: searchlight)
                 cornerCam();
+            } else if (nameHas("Boardroom")) {
+                // The executive conference hall — F7 signature. A long central table (crate
+                // spine) flanked by two rows of exec chairs, brass pendants over the table,
+                // holographic strategy art on both long walls, a head-of-table presentation
+                // console. Clean dark luxury + brass.
+                // Dark WALNUT veneer, not coal: tDark (0.09 albedo) stays black under
+                // any light (diffuse ~0.03 post-tint) — the zone brief is "brass +
+                // dark wood veneer", so the table + chairs take a veneer brown that
+                // actually responds to the pendant pools.
+                const float tVeneer[4] = { 0.33f, 0.24f, 0.15f, 1.0f };
+                for (int i = -3; i <= 3; ++i) {
+                    crateLg(cx0, cz0 + i * 1.9f, (i & 1) ? 0.02f : 0.0f, tVeneer, 0.02f);
+                    crateSm(cx0 - 2.2f, cz0 + i * 1.9f, 0.0f, tVeneer, 0.02f);
+                    crateSm(cx0 + 2.2f, cz0 + i * 1.9f, kPi,  tVeneer, 0.02f);
+                }
+                hangLamp(cx0, cz0 - 4.2f, 1.60f, 1.15f, 0.45f, 1.0f, 3.6f);
+                hangLamp(cx0, cz0 + 4.2f, 1.60f, 1.15f, 0.45f, 1.0f, 3.6f);
+                console(cx0, r.z0() + 0.9f, 0.0f);
+                glassQuad(2.4f, 1.4f, r.x0() + kInset + 0.04f, fY + 1.9f, cz0 - 4.0f, kPi * 0.5f,
+                          1.00f, 0.78f, 0.40f, 0.45f, 0.55f);
+                glassQuad(2.4f, 1.4f, r.x1() - kInset - 0.04f, fY + 1.9f, cz0 + 4.0f, -kPi * 0.5f,
+                          1.00f, 0.78f, 0.40f, 0.45f, 0.55f);
+                addLight(cx0, std::min(cY - 0.5f, fY + 4.6f), cz0, 4.0f, 1.55f, 1.15f, 0.55f);
             }
         }
         ++m_roomsDressed;
@@ -1305,14 +1629,43 @@ void RoomDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                                   d.baseColorFactor[1] * e.tint[1],
                                   d.baseColorFactor[2] * e.tint[2],
                                   d.baseColorFactor[3] * e.tint[3] };
+            // BLACK-PROP FIX (wing floors, m_propMatLift) — RE-JUDGED after the engine fix
+            // (5c35d65, the 1/pi shading-path split). The original fix had TWO halves and
+            // they did NOT age the same way:
+            //
+            //  * THE METALNESS CLAMP — STILL NEEDED, KEPT. The converted kit furniture
+            //    (crates/beds/vats/chairs) carries NO mr map, so the loader synthesizes a
+            //    1x1 MR from the glTF default metallicFactor = 1.0. A full metal has NO
+            //    diffuse lobe at all (diff = albedo*(1-metallic) -> 0) — and that is TRUE
+            //    ON EITHER SIDE OF THE 1/PI FIX. It is a separate bug (a bad material
+            //    default on furniture that is not metal), so the clamp survives the engine
+            //    fix untouched: a wooden crate gets its diffuse lobe back.
+            //
+            //  * DROPPING THE ALBEDO TEXTURE — CRUTCH, REMOVED. That half only existed
+            //    because the surviving diffuse was still 1/pi too dark, so the mid-tone kit
+            //    texture (~0.12 linear) had to be thrown away and replaced by the brighter
+            //    flat recipe tint just to be visible. mesh.frag now shades these honestly
+            //    (~3.14x brighter at metallic 0), so the tint-over-texture substitution both
+            //    DOUBLE-COUNTS (blowing the props toward flat white) and needlessly destroys
+            //    all the surface detail the kit texture carries. The texture is restored and
+            //    the recipe tint goes back to being what it says it is: a TINT modulating a
+            //    real material, in `bc`, exactly as the canon/detention dressing has always
+            //    done. Props keep form + tint AND grain.
+            constexpr float kPropMetallicClamp = 0.35f;   // 1.0 = full metal (no diffuse); 0.35 restores diffuse
+            // keepTex props (the rescue captives) NEVER lift — a hero character keeps her
+            // authored PBR skin/clothes even on the wing floors.
+            const bool lift = m_propMatLift && !e.keepTex;
+            const x3::rhi::TextureHandle baseTex{ d.baseColorTexId };   // always textured now
+            const float metalScale = lift ? kPropMetallicClamp : 1.0f;
             device.drawMeshPBR(frame, x3::rhi::MeshHandle{ d.meshId },
-                               x3::rhi::TextureHandle{ d.baseColorTexId },
+                               baseTex,
                                x3::rhi::TextureHandle{ d.normalTexId },
                                x3::rhi::TextureHandle{ d.mrTexId },
                                bc, emis, fin, d.alphaMask, d.alphaBlend,
                                x3::rhi::TextureHandle{ d.emissiveTexId },
                                x3::rhi::TextureHandle{ d.detailTexId },
-                               d.detailUvScale, d.clearcoat, d.clearcoatRough);
+                               d.detailUvScale, d.clearcoat, d.clearcoatRough,
+                               /*selfLight=*/0.0f, metalScale);
         }
     }
     const x3::rhi::TextureHandle white{ 0 };
@@ -1324,6 +1677,13 @@ void RoomDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             gm.roughness = 1.0f; gm.specular = 0.0f;
             gm.tint[0] = p.color[0]; gm.tint[1] = p.color[1]; gm.tint[2] = p.color[2];
             device.drawMeshGlass(frame, p.mesh, white, p.color, p.emissive, gm, p.transform);
+        } else if (p.tex.valid()) {
+            // Dark-glass screen: near-black albedo (p.color) + the baked monitor as an
+            // EMISSIVE map so only the glowing readout texels bloom (ACES glow law).
+            device.drawMeshPBR(frame, p.mesh, white,
+                               x3::rhi::TextureHandle{ 0 }, x3::rhi::TextureHandle{ 0 },
+                               p.color, p.emissive, p.transform, /*alphaMask*/false,
+                               /*alphaBlend*/false, /*emissiveTex*/p.tex);
         } else {
             device.drawMeshEmissive(frame, p.mesh, white, p.color, p.emissive, p.transform);
         }

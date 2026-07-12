@@ -35,6 +35,14 @@ int hostStrata   (HostContext& hc);   // --world strata (R-3 fold: THE DESCENT)
 int hostElevator (HostContext& hc);   // --world elevator-showcase (+ --screenshot-elevator)// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
 int hostRifthub  (HostContext& hc);   // --world rifthub   (RIFTHUB Stargate portal hub)
 
+int hostIntroCockpit(HostContext& hc); // --world introcockpit (intro cold-open cockpit)
+int hostShipWindows(HostContext& hc);  // --world ship-windows (S5/S6 fold: walkable interior + true-portal space)
+int hostDescentSlide(HostContext& hc); // --world descentslide (Wave 2C: the B1 -> -178 m coaster-grade ride)
+int hostBodyContact(HostContext& hc);     // --world bodycontact (BODY CONTACT feature: rigid rest + soft mattress indent)
+int hostWormhole(HostContext& hc);        // --world wormhole (feast fold: Salvari crystal-matrix tunnel VFX)
+int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fold: S3 autopilot jump ride)
+int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
+
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);
 
@@ -44,5 +52,10 @@ int dispatchWorldHost(HostContext& hc);
 // outside + armed, Sarah staged as a rescue target, the rescuer objective list).
 // No window / Vulkan. Returns true iff all sub-checks pass.
 bool runSurfaceStartSelfTest();
+
+// --test-introcockpit: the intro cockpit GLB -> Scene-entity rig (PBR route +
+// emissiveTex content screens + transparent canopy glass) standing up on the
+// HeadlessRenderDevice. No window / Vulkan. True iff all sub-checks pass.
+bool runIntroCockpitSelfTest();
 
 }} // namespace x3::apphost

@@ -81,6 +81,57 @@ const L1RoomDef kFloors[(uint32_t)L1Floor::Count] = {
     { -54.0f, 25.0f, 23.0f, 12.0f, 91.0f },  // F7 — Executive Laboratory (79 x 46; open finale, sky cap)
 };
 
+// ---- F2-F7 WEST-WING IDENTITY ROOMS (single source of truth; see level1.h L1WingRoom).
+// buildLevel1 builds each room's collision graybox (roomBox) from THIS table, and
+// wing_dressing.cpp reads the SAME table for the art pass, so collision and dressing can
+// never drift. Each room's floor Y + ceiling come from kFloors[room.floor]. The `name`
+// routes the dressing recipe (matches a room_dressing.cpp desc branch — labs/servers/
+// bays/etc.), chosen so every room on a floor reads as a DISTINCT AAA-dressed space.
+const L1WingRoom kWingRooms[] = {
+    // F2 Medical Bay — the SIGNATURE three-captive RESCUE WING (docs/design/EFLZ_NARRATIVE
+    // Floor-2). THREE SIDE-BY-SIDE white clinical rescue rooms in a row along X, each with
+    // its OWN door ('S') onto the F2 west corridor (the z in [-3,3] lane). Each is 6.5w x
+    // 7.5d — enough for a 2.3 m hospital bed CENTERED with >=1.2 m walk-around on all sides
+    // plus advanced-medical-equipment walls. The captives are RESTRAINED on the beds
+    // (Aria / Keisha / Emily); saved -> companions, failed -> bosses (Siren / Breeder Queen
+    // / Oracle). Room B (Keisha) is the MAGNETICALLY SEALED room — the dressing gives its
+    // door a red locked tell; the LOCK MECHANIC is a host hook (see report). The names
+    // route the rescue-room dressing recipe (room_dressing.cpp classify -> ZMedical +
+    // the "Rescue Room" desc-gold branch: bed, captive, straps, monitors, surgical light).
+    { L1Floor::F2, -27.0f, 6.75f, 3.25f, 3.75f, 'S', "Rescue Room A (Aria)" },
+    { L1Floor::F2, -35.0f, 6.75f, 3.25f, 3.75f, 'S', "Rescue Room B (Keisha)" },
+    { L1Floor::F2, -43.0f, 6.75f, 3.25f, 3.75f, 'S', "Rescue Room C (Emily)" },
+    // F3 Genetics Lab (vat green): specimen hall + clone/growth/hybrid/DNA labs.
+    { L1Floor::F3, -38.0f,  0.0f, 10.0f, 14.0f, 'E', "Gene Vat Gallery" },     // big signature hall
+    { L1Floor::F3, -18.0f,  8.0f,  6.0f,  5.0f, 'S', "Clone Storage" },
+    { L1Floor::F3, -18.0f, -8.0f,  6.0f,  5.0f, 'N', "Growth Tank Array" },
+    { L1Floor::F3,  -7.0f,  8.0f,  4.0f,  5.0f, 'S', "Hybridization Chamber" },
+    { L1Floor::F3,  -7.0f, -8.0f,  4.0f,  5.0f, 'N', "DNA Sequencing Lab" },
+    // F4 Cybernetics Workshop (cold cyan): server room + aug bays + workshop + power.
+    { L1Floor::F4, -40.0f,  0.0f, 11.0f, 15.0f, 'E', "Server Room" },          // big signature hall
+    { L1Floor::F4, -18.0f,  9.0f,  6.0f,  6.0f, 'S', "Augmentation Bay" },
+    { L1Floor::F4, -18.0f, -9.0f,  6.0f,  6.0f, 'N', "Neural Interface Lab" },
+    { L1Floor::F4,  -7.0f,  9.0f,  4.0f,  5.0f, 'S', "Workshop" },
+    { L1Floor::F4,  -7.0f, -9.0f,  4.0f,  5.0f, 'N', "Power Junction" },
+    // F5 Drone Manufacturing (amber industrial): the huge assembly hangar + control/power.
+    { L1Floor::F5, -44.0f,  0.0f, 26.0f, 26.0f, 'E', "Assembly Bay" },         // huge hangar
+    { L1Floor::F5,  -8.0f, 12.0f,  5.0f,  6.0f, 'S', "Central Control Hub" },
+    { L1Floor::F5,  -8.0f,-12.0f,  5.0f,  6.0f, 'N', "Recharge Station" },
+    // F6 Alien Technology Lab (dark biolume green): portal hall + artifact/analysis/pods.
+    { L1Floor::F6, -42.0f,  0.0f, 13.0f, 18.0f, 'E', "Portal Chamber" },       // big signature hall
+    { L1Floor::F6, -18.0f, 10.0f,  6.0f,  6.0f, 'S', "Artifact Storage" },
+    { L1Floor::F6, -18.0f,-10.0f,  6.0f,  6.0f, 'N', "Analysis Lab" },
+    { L1Floor::F6,  -7.0f, 10.0f,  4.0f,  5.0f, 'S', "First Contact Chamber" },
+    { L1Floor::F6,  -7.0f,-10.0f,  4.0f,  5.0f, 'N', "Transformation Pods" },
+    // F7 Executive Laboratory (dark luxury + brass): boardroom + offices/comms/security/server.
+    { L1Floor::F7, -40.0f,  0.0f, 11.0f, 15.0f, 'E', "Boardroom" },            // big signature hall
+    { L1Floor::F7, -18.0f,  8.0f,  6.0f,  5.0f, 'S', "Executive Offices" },
+    { L1Floor::F7, -18.0f, -8.0f,  6.0f,  5.0f, 'N', "Comms Center" },
+    { L1Floor::F7,  -7.0f,  8.0f,  4.0f,  5.0f, 'S', "Security Checkpoint" },
+    { L1Floor::F7,  -7.0f, -8.0f,  4.0f,  5.0f, 'N', "Server Room" },
+};
+constexpr uint32_t kWingRoomCount = sizeof(kWingRooms) / sizeof(kWingRooms[0]);
+
 // ---- FLOOR 1 "Detention Level" — the authoritative LevelArchitect transcription
 // (docs/design/SPIRE_LEVELARCHITECT_DIMS.md). 29 rooms, transcribed DIRECTLY (no axis
 // flip): center (x,z) + full extents (w,h,d). floorY = the room's floor relative to the
@@ -622,81 +673,35 @@ Level1Layout buildLevel1(Scene& scene,
         wallXDoor(rz0, door == 'S');
         wallXDoor(rz1, door == 'N');
     };
-    // A floor's WEST wing: a set of identity rooms, each centered at (cx,cz) with
-    // half-extents (hw,hd) + a doorway side, built at the floor's y0 + ceiling height.
-    struct WingRoom { float cx, cz, hw, hd; char door; };
-    auto buildWing = [&](L1Floor fl, const std::vector<WingRoom>& rooms) {
-        const L1RoomDef& f = kFloors[(uint32_t)fl];
-        for (const WingRoom& r : rooms)
-            roomBox(r.cx - r.hw, r.cx + r.hw, r.cz - r.hd, r.cz + r.hd, f.y0, f.ceil, r.door);
-    };
-
-    // ---- F2 Medical Bay: 3 ward markers (Aria/Keisha/Emily) in the east hall (rescue
-    //      hub places victims here) + a west wing: big Recovery Ward + Medbay/Lab/Cure
-    //      Lab/Observation rooms.
+    // ---- F2 Medical Bay: publish the three RESCUE-ROOM bed centers (Aria/Keisha/Emily)
+    //      as the rescue-hub victim markers (the host's RescueSystem reads L.wardA/B/C and
+    //      places the live rescuable captive there). These now land ON the beds in the
+    //      three side-by-side west-wing rescue rooms (built from the shared kWingRooms
+    //      table below) — the bed sits centered in each room and the staged captive lies
+    //      restrained on it (room_dressing.cpp). HOST HOOK: reconcile the live standing
+    //      RescueSystem victim with the staged lying dressing captive (suppress/pose one).
+    //      The two retained arrival-hall partitions split the +X arrival half into medical
+    //      bays for the spire_mid encounter cover (unchanged).
     {
         const L1RoomDef& f2 = kFloors[(uint32_t)L1Floor::F2];
         const float y0 = f2.y0, h = f2.ceil;
-        const float wx1 = 8.0f, wx2 = 15.0f;     // partition X positions (split the +X arrival half)
+        const float wx1 = 8.0f, wx2 = 15.0f;     // arrival-hall partition X positions
         addCrossWall(scene, device, physics, wx1, -6.0f, 6.0f, 0.0f, true, y0, h,
                      wallVariants[2], kWallTint, crossWallVis);
         addCrossWall(scene, device, physics, wx2, -6.0f, 6.0f, 0.0f, true, y0, h,
                      wallVariants[1], kWallTint, crossWallVis);
-        L.wardA = x3::phys::Vec3{  4.0f, y0, -3.0f };  // Ward A (Aria)
-        L.wardB = x3::phys::Vec3{ 11.5f, y0,  3.0f };  // Ward B (Keisha)
-        L.wardC = x3::phys::Vec3{ 18.0f, y0, -3.0f };  // Ward C (Emily)
+        L.wardA = x3::phys::Vec3{ -27.0f, y0, 6.75f };  // Rescue Room A — Aria
+        L.wardB = x3::phys::Vec3{ -35.0f, y0, 6.75f };  // Rescue Room B — Keisha (sealed)
+        L.wardC = x3::phys::Vec3{ -43.0f, y0, 6.75f };  // Rescue Room C — Emily
     }
-    buildWing(L1Floor::F2, {
-        { -38.0f,  0.0f, 10.0f, 14.0f, 'E' },  // Recovery Ward (big signature hall)
-        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Medbay
-        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Surgery / Lab
-        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Cure Lab
-        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Observation
-    });
-    // ---- F3 Genetics Lab: gene-vat hall + clone/cure labs + research office (FE-#7
-    //      arena stays in the east hall).
-    buildWing(L1Floor::F3, {
-        { -38.0f,  0.0f, 10.0f, 14.0f, 'E' },  // Gene-Vat Hall (big)
-        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Clone Lab
-        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Cure Lab
-        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Specimen Storage
-        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Research Office
-    });
-    // ---- F4 Cybernetics Workshop: server room + augmentation bays + a (flavor) Nexus
-    //      connector room (the real F4->4.5 hook is at x=1.5 in the east, set by spire_mid).
-    buildWing(L1Floor::F4, {
-        { -40.0f,  0.0f, 11.0f, 15.0f, 'E' },  // Server Room (big)
-        { -18.0f,  9.0f,  6.0f,  6.0f, 'S' },  // Augmentation Bay
-        { -18.0f, -9.0f,  6.0f,  6.0f, 'N' },  // Augmentation Bay 2
-        {  -7.0f,  9.0f,  4.0f,  5.0f, 'S' },  // Nexus Connector (to Floor 4.5)
-        {  -7.0f, -9.0f,  4.0f,  5.0f, 'N' },  // Control Room
-    });
-    // ---- F5 Drone Manufacturing: one LARGE open assembly bay + a couple of control
-    //      rooms (the Swarm-AI arena stays in the east hall). The bay is the floor's
-    //      signature: a big hangar, not many small rooms.
-    buildWing(L1Floor::F5, {
-        { -44.0f,  0.0f, 26.0f, 26.0f, 'E' },  // Assembly Bay (huge open hangar)
-        {  -8.0f, 12.0f,  5.0f,  6.0f, 'S' },  // Drone Control
-        {  -8.0f,-12.0f,  5.0f,  6.0f, 'N' },  // Power Plant
-    });
-    // ---- F6 Alien Technology Lab: containment hall + archive vault + observation + tech
-    //      lab (the Alien-Overseer arena + the 2 keypad doors stay in the east hall).
-    buildWing(L1Floor::F6, {
-        { -42.0f,  0.0f, 13.0f, 18.0f, 'E' },  // Containment Hall (big)
-        { -18.0f, 10.0f,  6.0f,  6.0f, 'S' },  // Archive Vault
-        { -18.0f,-10.0f,  6.0f,  6.0f, 'N' },  // Observation
-        {  -7.0f, 10.0f,  4.0f,  5.0f, 'S' },  // Tech Lab
-        {  -7.0f,-10.0f,  4.0f,  5.0f, 'N' },  // Specimen Bay
-    });
-    // ---- F7 Executive Laboratory: boardroom + exec offices + archive + server (the
-    //      Clone/Sarah finale stays in the east hall; the open helipad center is recorded).
-    buildWing(L1Floor::F7, {
-        { -40.0f,  0.0f, 11.0f, 15.0f, 'E' },  // Boardroom (big)
-        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Executive Office
-        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Executive Office 2
-        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Archive
-        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Server
-    });
+    // ---- F2-F7 west-wing identity rooms: built from the SHARED kWingRooms table (the
+    //      SAME source wing_dressing.cpp reads for the recipe art pass, so collision and
+    //      dressing never drift). Each room's floor Y + ceiling come from kFloors[floor].
+    for (uint32_t wi = 0; wi < kWingRoomCount; ++wi) {
+        const L1WingRoom& r = kWingRooms[wi];
+        const L1RoomDef&  f = kFloors[(uint32_t)r.floor];
+        roomBox(r.cx - r.hw, r.cx + r.hw, r.cz - r.hd, r.cz + r.hd, f.y0, f.ceil, r.door);
+    }
     // ---- F6 Executive holding office (Sarah's 4th-rescue marker) in a -Z pocket of the
     //      east hall + F7 rooftop finale-arena center (the open eastern plate). ----
     {
@@ -840,6 +845,11 @@ Level1Layout buildLevel1(Scene& scene,
 
 // Single source of truth for the floor table (shared with env_art.cpp).
 const L1RoomDef* level1Rooms() { return kFloors; }
+
+const L1WingRoom* level1WingRooms(uint32_t& outCount) {
+    outCount = kWingRoomCount;
+    return kWingRooms;
+}
 
 // Floor-1 detention table accessors (shared with the self-test).
 const L1DetentionRoom* level1DetentionRooms()       { return kDetention; }

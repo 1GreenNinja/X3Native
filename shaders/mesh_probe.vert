@@ -56,6 +56,16 @@ layout(location = 8) flat out uint vNormalTexIndex;
 layout(location = 9) flat out uint vMrTexIndex;
 layout(location = 10) flat out uint vEmissiveTexIndex;
 layout(location = 11) flat out uint vDetailPacked;     // HDRP micro-detail (_pad4): (uvScale*64<<20)|idx
+// mesh.frag declares a location-12 Input (vGlassParams — its .w is the per-object
+// METALLIC-CLAMP lane used by the room-dressing black-prop fix). This vert is paired
+// with THAT SAME mesh.frag by the reflection-probe PSO, so it must declare the matching
+// Output or the pipeline violates VUID-RuntimeSpirv-OpEntryPoint-08743 (a fragment Input
+// with no Output in the preceding stage). It was added to mesh.frag without updating this
+// shader, so every probe-PSO creation logged a validation error — in the very path that
+// bakes the environment the metals reflect.
+// The probe render has no glass/clamp semantics: write 0, which mesh.frag reads as
+// "no clamp -> 1.0", leaving probe shading byte-identical.
+layout(location = 12) flat out vec4 vGlassParams;
 
 void main() {
     ObjectData o = objBuf.objects[visBuf.idx[gl_InstanceIndex]];
@@ -73,4 +83,5 @@ void main() {
     vMrTexIndex = o.mrTexIndex;
     vEmissiveTexIndex = o.emissiveTexIndex;
     vDetailPacked = o.detailPacked;   // HDRP micro-detail map (packed idx + uvScale)
+    vGlassParams  = vec4(0.0);        // no clamp on the probe pass (mesh.frag: 0 -> 1.0)
 }

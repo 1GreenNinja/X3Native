@@ -86,6 +86,26 @@ constexpr float kCellHatchHalf   =  0.9f;   // 1.8 m square opening
 // (uint32_t)L1Floor::Count.
 const L1RoomDef* level1Rooms();
 
+// ---- F2-F7 WEST-WING IDENTITY ROOM table (the per-floor identity interiors partitioned
+// into the western space of each plate). SINGLE SOURCE OF TRUTH shared by level1.cpp
+// (buildLevel1 builds each room's collision graybox via roomBox) and wing_dressing.cpp
+// (the WAVE-3 recipe art pass that dresses these rooms). Each entry: which floor, the
+// room center (cx,cz) + half-extents (hw,hd) in world XZ, the doorway side
+// ('W'=-X,'E'=+X,'S'=-Z,'N'=+Z; 0=sealed), and a canonical NAME that routes the dressing
+// recipe (the name matches a room-dressing recipe branch — see wing_dressing.cpp). The
+// room's floor Y + ceiling come from the shared kFloors table (level1Rooms()) for that
+// floor. Built at the floor's y0 / ceil like the detention rooms.
+struct L1WingRoom {
+    L1Floor floor;
+    float   cx, cz, hw, hd;
+    char    door;
+    const char* name;   // dressing recipe key (see wing_dressing.cpp classify)
+};
+
+// The F2-F7 wing room table + its count. Iterated by buildLevel1 (collision) and
+// wing_dressing.cpp (art). The two stay in lockstep because both read THIS table.
+const L1WingRoom* level1WingRooms(uint32_t& outCount);
+
 // ---- Floor-1 "Detention Level" room table (the authoritative Babylon LevelArchitect
 // transcription — docs/design/SPIRE_LEVELARCHITECT_DIMS.md). One entry per room: a
 // name + a TYPE flag + an axis-aligned box. Coordinates are transcribed DIRECTLY from

@@ -1047,12 +1047,22 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // (~2x) and brighten its base color (HDR > 1) so it reads as a big, lit gun in the
     // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
     // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
-    constexpr float kVmBright     = 1.0f;   // ROUND 6 ENGINE FIX: was 2.6 — an OVER-UNITY albedo
-                                        // multiplier (physically impossible; it clipped the gun's
-                                        // own texture to white) added because GLB meshes shaded at
-                                        // 1/PI of the prims around them. shaders/mesh.frag now lights
-                                        // the viewmodel honestly, so the hack is removed: with it
-                                        // still in, the pistol blew out to a white blob.
+    // ROUND 6 ENGINE FIX (5c35d65): kVmBright was 2.6 — an OVER-UNITY albedo multiplier
+    // (physically impossible; it clipped the gun's own texture to white) added because GLB
+    // meshes shaded at 1/PI of the prims around them. shaders/mesh.frag now lights the
+    // viewmodel honestly, so the hack is gone: with it still in, the pistol blew out white.
+    // Two lines of work converged on the same answer — the 14900K weapon-textures rework
+    // (ba3ce7a) reached 1.0 from the art side after the owner reported "the texture looks
+    // great ON the weapon, but when Jake HOLDS it, it transforms to garbage" (the viewmodel
+    // was multiplying the correct baked albedo, clipping highlights, while drawWeaponAt drew
+    // the same texture at 1.0 and looked right). DO NOT resurrect 2.6 or 1.4.
+    // The stale `vmLitPBR` gunmetal branch (which DROPPED the texture for a flat dark factor,
+    // never enabled for any weapon) is removed so the textured path is the single source of truth.
+    constexpr float kVmBright     = 1.0f;   // true baked albedo (matches the world model)
+    // SCALE comes from the VmFrame (346f5e7): currentViewmodelFrame() is the SINGLE source of
+    // the viewmodel basis/pose/scale (vf.scale == d.vmScale * kVmScaleBoost, Tim's 2x kept), and
+    // weaponMuzzle() maps WeaponDef::vmMuzzle through THIS SAME matrix. Recomputing the scale
+    // inline here is what let the drawn gun and the FX origin drift apart in the first place.
     composeTRS(model, bx, by, bz, vf.scale, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
