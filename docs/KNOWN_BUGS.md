@@ -33,10 +33,47 @@ It only forwards `Entity::emissiveTex` on the `mrTex.valid()` PBR branch. An ent
 emissive map but **no MR map silently loses it** and falls to `drawMeshEmissive()`. Give it a
 matte MR texel. (This blew the perfshop neon sign to a white blob.)
 
-### L5. glTF default `metallicFactor` is **1.0**
+### L5. glTF default `metallicFactor` is **1.0** — CLAMPED `fix/bugs-round2`
 Any GLB whose exporter omitted it becomes a **full metal** — and full metal has **no diffuse
 lobe** — so it renders BLACK in windowless interiors. This is NOT the 1/π bug and is not fixed
 by it. The kit props need a metalness clamp (0.35) or an asset re-convert. **A crate is not metal.**
+
+**FIXED** — `ModelLoader.cpp:687-716`. The clamp is **scoped to the synthesized-scalar path**
+(the branch that bakes a 1×1 MR map when a material has **no `metallicRoughnessTexture`**), which
+is exactly where the damage lands. A model that ships a **real MR map** is authored data — the
+factor merely multiplies it — and is left **byte-identical**; both of our own converters take that
+route (`tools/rebind_weapon_textures.py`, `tools/convert_modular_scifi.py` bind an MR map with
+factor 1.0) and `tools/test_kit_materials.py` K4 already fails any kit material sitting at 1.0
+with no map. So the clamp can only ever bite a third-party/hand-authored GLB — the L5 victims.
+
+**Who it actually hits in level1** (logged at runtime, device path only — note `mint()` returns
+**untagged** handles when there is no device, so a headless trace makes *every* material look like
+it lacks an MR map; measure on the device path or you will chase ghosts):
+
+| model | metallic | roughness | baseColorFactor | has baseColorTex |
+|---|---|---|---|---|
+| `SciFi_Warehouse_Kit/{Garbage Bin, Wall Light, Hanging Light, Exit Sign}.glb` | 1.0 | 1.0 | 1,1,1 | yes |
+| `ModularSciFi_Interior/SM_Wall_C.glb` | 1.0 | 1.0 | 1,1,1 | yes |
+| `Jake_22_actions.glb`, `marcus_webb_anim.glb` | 1.0 | 1.0 | 1,1,1 | yes |
+| `Detention/SM_Hospital_Bed.glb` (`M_Bedframe`) | 0.70 | 0.42 | 0.60,0.62,0.66 | no |
+
+**metallic 1.0 + roughness 1.0 + baseColorFactor 1,1,1 is the exact glTF DEFAULT TRIPLE** — that is
+not art, that is an exporter that wrote no PBR scalars at all.
+
+**AND IT DOES NOT ONLY MAKE THINGS BLACK — IT ALSO MAKES THEM WHITE.** This entry only ever
+described half the failure. For a **metal, `F0 = albedo`** — so a full metal with a *dark* albedo is
+a dark mirror (**black**, the filed symptom), but a full metal with the **default white** factor is a
+**100% mirror** and renders as a **blown-out featureless white sheet**. Level 1's **floor** was the
+second kind: `hall_OFF_a.png` shows it as a flat white slab with no detail; with the clamp
+(`hall_ON_a.png`) it is deck plating with hazard strips, cable runs and panel seams. Measured over
+the frame: **void (luma ≤ 6) 51.1% → 35.2%, clipping unchanged at 0.01%**. A second corridor camera
+(`hall_{OFF,ON}_b.png`) is **byte-identical** — the clamp is targeted, not a global wash.
+
+⚠️ **SECOND ORDER (R3's rule, again): the clamp EXPOSES bad albedo; it does not cause it.** Handing
+the diffuse lobe back to a prop whose albedo is a **near-white kit texture** (the B5 family —
+`SM_Door_A` measured **0.768 linear**; an institutional surface is ~0.30) makes it read **hot** at
+close range. That is the over-unity-albedo crutch, and it is a **B5 asset problem**, not a reason to
+restore the metal crutch. **Retune the albedo. Never put the metal back.**
 
 ### L6b. THE ELEVATOR STAMPS THE ENGINE DEFAULTS OVER YOUR WHOLE WORLD — fixed `fix/prim-point-light`
 `ElevatorSystem::applyCabAtmosphere`'s "outside the cab" branch used to **restore hardcoded
@@ -199,11 +236,11 @@ hidden blue ambient will both forge the fingerprint of "this thing is not on the
 | B4 | ~~Ambient 0.42 still active outside the canon room graph~~ | **FIXED** — verified at RUNTIME on main, `app_run.cpp:2534-2587` (a block titled "B4/R2 — KILL THE LAST OF THE 0.42 AMBIENT WASH"). It covers exactly the un-owned interiors (level1 + spire + club1127 + perfshop + showroom) — which is why grepping `setAmbient` PER WORLD FILE finds zero and wrongly reads as "open": the fix is CENTRAL. Proof: `--world level1 --smoketest` logs `[light] interior atmosphere (B4/R4): scene IBL probe ON, ibl 0.5, ambient 0.030 NEUTRAL`. **And it found something deeper than this entry ever described: THE ENGINE HAS TWO AMBIENTS.** `iblAmbient()`'s baked-env path takes diffuse from `irradianceCube` and NEVER READS its `ambient` argument, and an env cube is baked BY DEFAULT, FOR EVERY SCENE, FROM THE ANALYTIC BLUE SKY — so `setAmbient()` alone was aimed at a DEAD DIAL (with `setAmbient(0)` the probe still read 55/255 of sky). It takes all three dials together: `setIblProbe(true)` (the cube becomes THE ROOM, not a sky) + `setIblIntensity()` + a NEUTRAL near-black `setAmbient()`. Same root cause as the rifthub gate ("a mirror aimed at a black room") — if a surface will not respond to light, ask what its ENVIRONMENT is before you touch a lamp. |
 | B5 | ~~`SM_Door_A` ships a near-white albedo~~ | **FIXED — but the DIAGNOSIS WAS WRONG. Read below.** |
 | B14 | ~~337 point lights registered in level1, device cap is **64**~~ | **FIXED** — and it is a nice illustration of the one-line rule. `EnvArtSystem` registers one per `Light_A` across all 8 plates; `setPointLights` kept the **first 64** and dropped the rest **silently**, so the upper floors' own fixtures were thrown away. `fix/prim-point-light` **found** it and filed it; `light/audit-facility` had already **built** the fix (`nearestFixtures()`, budget 44 of a 64 cap, fed nearest-to-eye on the live loop, the plain capture path, the alert path and the elevator path). The two branches landed together and the cull is what ships. **Do not restore a raw `= game.lightFixtures()` feed anywhere.** *(Filed as "B5" on prim-point-light; renumbered — B5 is the pink door.)* |
-| B6 | Elevator OLED text renders **mirrored** | Pre-existing UV/facing bug on the twin viewscreens |
-| B7 | Elevator −X observation window renders as a bright noisy slab | Needs one more pass |
+| B6 | ~~Elevator OLED text renders **mirrored**~~ | **FIXED** `fix/bugs-round2`. It was never a mirror — it is a pure **V (vertical) flip**, and the difference matters because "mirrored" sends you hunting UVs and facing on six faces. **PROVED with the shipped `X3_OLED_DUMP` hook**: the baked PPM is upright and correct, while the in-cab panel shows the lines in **reverse order with every glyph flipped top-to-bottom** and the glyph order **left-to-right intact** — so U is right on every face. ROOT CAUSE: an image uploads **TOP-DOWN** (row 0 = the top; V=0 samples row 0) but `makeBox()`'s V axis runs **BOTTOM-UP** (`mesh_prims.h:85-88` — v=0 at −hy on all six faces). Nothing flips it. It survived because on a **TILING** texture a V flip is invisible; it only bites a **baked, non-tiling image — i.e. text**. FIX: `elevator.cpp:824-846` `flipMeshV()` + an opt-in `flipV` arg on `addKit`, set on the two OLEDs (`:1053,1056`) and the floor indicator (`:1140`, same defect, same construction). **Deliberately NOT fixed in `makeBox()`**: that UV convention is shared by every textured prim in the game *and their normal maps* (a V flip flips the derived bitangent and inverts the relief) — a global change there is an engine-wide relight, not a bug fix. |
+| B7 | ~~Elevator −X observation window renders as a bright noisy slab~~ | **FIXED** `fix/bugs-round2` — **and it was not glass at all.** `elevator.cpp:981` added it with `addKit`, alpha 0.35 and **no MR texel**, so `Scene::render` (`scene.cpp:150-177`) sent it to `drawMeshEmissive()` — the **non-PBR path, which never reads `baseColor[3]`**. The alpha was decorative. It rendered as a fully **OPAQUE** slab on the unnormalized-Lambert prim path (~π× brighter than every GLB beside it — R1), blue-washed by the sky IBL (measured `R,G,B = 23.8, 36.0, 56.4`, **B/R = 2.37**), and it **hid the strata plane** the window exists to show. Same class as B11/L4. FIX: a real MR texel (rough 0.12, **metal 0** — glass is a dielectric) + an honest dark smoked albedo → the PBR/IBL path, plus `Entity::alphaBlend` for see-through. Result: `B/R = 1.11` (neutral), p95 95 → 20. **NOT `Entity::transparent`** (the glass pass): normal glass rides the OPAQUE record range and therefore **replays in the depth pre-pass** (`vk_passes.cpp:878-886`) — it would have depth-rejected the strata behind it. That is **L3**, and the strata is the one thing this window must not occlude. `alphaBlend` (`scene.h:117-125`) rides the **BLEND tail** (`vk_passes.cpp:1771-1774`) and writes no depth. **SECOND ORDER — THE PATTERN, again:** the opaque window had been hiding a blown-out slab. The instant it became real glass, the strata rock face behind it rendered as a **flat clipped white sheet** — because it is *also* a bare prim with no MR texel, so it *also* took the unnormalized-Lambert path, at π× the light, 1.4 m from the cab's practical. A previous pass **saw the symptom** and reached for the albedo (0.55 → 0.42, the "brightest thing in the cab" note in `layoutVisuals`); **no albedo below 1.0 can pay off a factor of π.** Fixed at the renderer: a matte dielectric MR texel (`elevator.cpp:998-1013`). |
 | B8 | Cinematic cuts to a blank blue screen | Intro/cold-open, mid-sequence |
 | B9 | Cell kit ceiling reads as a black hole | |
-| B10 | Two VFX bypass the entity path (flat-emissive glass) | `space/decloak_vfx.cpp:310`, `space/descent.cpp:294` |
+| B10 | Two VFX bypass the entity path (flat-emissive glass) | **INVESTIGATED, DELIBERATELY NOT REFACTORED** (`fix/bugs-round2`). The stated benefits are **both zero here**, and it is worth writing down so nobody spends a day on it. **(1) PVS culling buys nothing.** `Scene::setVisibleRooms` is called only from the canon-level / `level_loader` paths (`app_run.cpp:4536,5326,8874`, `level_loader.cpp:1967,1988`) — **never in the space or descent worlds**, so the room cull is inactive there (`scene.cpp:120-122`: an empty set = everything draws). And the descent dome + streaks are **camera-anchored** (`descent.cpp:234-235,:277-281` — translation *is* the camera position), so no frustum or portal cull could ever remove them anyway. **(2) `--test-basis` coverage buys nothing.** Both descent matrices are literal identity-rotation TRS — det = +1 (dome) and scale² > 0 (streaks); there is no basis to get wrong. `decloak_vfx.cpp:310` draws with the **host's ship transform**, and the ship IS a Scene entity, so `--test-basis` already covers it. Against zero benefit, the cost is real: a mutable entity pool + per-frame material mutation (decloak opacity tracks intensity; descent draws a **variable** number of streaks and `continue`s below op 0.01), plus moving explicitly-ordered immediate-mode transparent draws into Scene's insertion-order iteration — **on a shipped cinematic**. `space/decloak_vfx.cpp:310`, `space/descent.cpp:243,294`. |
 | B11 | ~~`addMetal()` in `holo_panel.cpp` made **no metal**~~ | **FIXED** (doc already said so; re-verified). `holo_panel.cpp:671` `addMetal` now takes an MR handle and every call site (`:742,745,749,767,777`) passes `m_mrGun`/`m_mrPolish`. The follow-up action ("audit other addMetal-style helpers") is also DONE: `elevator.cpp:1011,1026` both carry real MR texels. |
 | B12 | The gate tube's forged SD3.5 sets **do not exist on any machine** | `gate_tube_hull` / `gate_ring_plate` / `gate_patina_plate` / `gate_piston_steel` were never harvested (LFS budget died — see the note at `m_surf.mount`). `surface_library/` is **gitignored**, so the 24 curated sets are the only ones that exist. Every gate group silently falls back — and the tints authored to tame *bright forged* textures instead crushed the *already-correct curated* ones (0.789 × 0.22 = **0.17 albedo**). Anything keyed to a forged set is dead code today. |
 | B13 | ~~**`ModularSciFi_Interior` ships its EMISSION MASKS baked into the ALBEDO**~~ | **FIXED** — `fix/emissive-convert`. The whole purple/magenta prop family, in one defect. See **L7** (the observation) and **L8** (the root cause: the glow mask lives in the **alpha of the MRAG map**, which our converter discarded wholesale). *Renumbered from B11 when the lighting and emissive lines landed together — B11/B12 above were already taken.* |

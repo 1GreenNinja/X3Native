@@ -361,6 +361,9 @@ private:
     // captured by buildVisuals() for the rebakes.
     x3::rhi::IRenderDevice* m_oledDevice = nullptr;
     x3::rhi::TextureHandle  m_oledTexL{}, m_oledTexR{}, m_oledMr{};
+    // B7 (second order): the matte MR texel that puts the strata rock face on the PBR
+    // (1/pi-normalized) path instead of the unnormalized-Lambert prim path — see buildVisuals.
+    x3::rhi::TextureHandle  m_strataMr{};
     float                   m_oledTimer = 999.0f;   // first update bakes immediately
     uint32_t m_eDiscoBall = kNoLink, m_eCeil = kNoLink;
     uint32_t m_eCable[4] = { kNoLink, kNoLink, kNoLink, kNoLink };  // steel shaft cables above the car

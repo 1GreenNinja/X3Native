@@ -685,6 +685,38 @@ private:
                 // metallic=B) so the mesh takes the shader's PBR/IBL branch (lit as metal)
                 // instead of dark Lambertian diffuse — otherwise dark-tinted metals read black.
                 if ((m.mrTex & kTagMask) != kTexTag && m.metallic > 0.001f) {
+                    // KNOWN_BUGS L5 — glTF's DEFAULT metallicFactor is 1.0. An exporter that
+                    // simply OMITS the key hands us a FULL METAL, and a full metal has NO
+                    // DIFFUSE LOBE: it can only reflect its environment. In a windowless
+                    // interior there is no environment, so the prop renders BLACK. ("A crate
+                    // is not metal.") This branch is exactly where the damage lands — it BAKES
+                    // that scalar into a 1x1 MR map that the shader then obeys to the letter.
+                    //
+                    // SCOPED TO THE SYNTHESIZED PATH ON PURPOSE. A model that ships a real
+                    // metallicRoughnessTexture is AUTHORED data — someone painted a metal
+                    // mask, the factor merely multiplies it, and clamping there would dull
+                    // every honest metal in the game (the weapons and the kit both take that
+                    // route: tools/rebind_weapon_textures.py, tools/convert_modular_scifi.py
+                    // both bind an MR map with factor 1.0, and both stay byte-identical here).
+                    // The ONLY materials reaching this line are ones that carry a bare scalar
+                    // — which is precisely the class where "1.0" is far more likely to be an
+                    // UNWRITTEN DEFAULT than an artistic decision. Our own converters never
+                    // produce it (convert_unity_pack.py drives the scalar branch from Unity's
+                    // _Metallic, default 0.0), and tools/test_kit_materials.py K4 already
+                    // fails any kit material that sits at 1.0 with no map. So this clamp only
+                    // ever bites a third-party/hand-authored GLB — the L5 victims.
+                    //
+                    // 0.35 is the value KNOWN_BUGS L5 prescribes: still unmistakably metal in
+                    // the specular, but 65% of the diffuse lobe survives, so the prop is
+                    // LIT rather than a silhouette.
+                    constexpr float kMaxSynthMetal = 0.35f;
+                    if (m.metallic > kMaxSynthMetal) {
+                        warnOnce("[gltf] L5: material has NO metallicRoughnessTexture and a "
+                                 "metallicFactor above 0.35 (glTF's default is 1.0 — a full "
+                                 "metal has no diffuse lobe and renders BLACK indoors); "
+                                 "clamping the synthesized MR texel to 0.35");
+                        m.metallic = kMaxSynthMetal;
+                    }
                     const uint8_t mrpx[4] = { 0,
                         (uint8_t)(m.roughness * 255.0f + 0.5f),
                         (uint8_t)(m.metallic  * 255.0f + 0.5f), 255 };
