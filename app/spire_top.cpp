@@ -302,6 +302,15 @@ void SpireTopFloors::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
     m_victimBoss.update(dt, scene, physics, eye, atkTarget, attackFx);
 }
 
+void SpireTopFloors::shutdown() {
+    // Tear down any in-flight death ragdolls (Jolt bodies) across every top-floor
+    // enemy manager BEFORE the physics world dies. Idempotent (see MonsterManager).
+    for (auto& m : m_enemies) m.shutdown();
+    m_overseer.shutdown();
+    m_boss.shutdown();
+    m_victimBoss.shutdown();
+}
+
 void SpireTopFloors::onTrigger(uint32_t triggerId) {
     switch ((SpireTopTrigger)triggerId) {
         case SpireTopTrigger::F6Hub:

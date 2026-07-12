@@ -197,6 +197,13 @@ public:
     // is the TOP stop (== elevatorStopCount-1).
     bool reachableViaElevator(SpireTopFloor f, uint32_t elevatorStopCount) const;
 
+    // Ragdoll-teardown gap fix: release every in-flight death-ragdoll (Jolt bodies)
+    // across ALL of this host's enemy managers (per-floor packs + the F6 Overseer +
+    // the F7 Clone boss + Sarah's victim-boss) BEFORE the physics world is shut down.
+    // Idempotent; a no-op when nothing is ragdolling. The owning host MUST call this
+    // before physics->shutdown() (see app_run's shutdownGameSystems).
+    void shutdown();
+
 private:
     bool m_built = false;
     std::string m_modelDir;
