@@ -585,7 +585,7 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
 // ===========================================================================
 // PauseMenu
 // ===========================================================================
-GameState PauseMenu::update(UiContext& ui, PauseAction& outAction) {
+GameState PauseMenu::update(UiContext& ui, PauseAction& outAction, bool showEditor) {
     outAction = PauseAction::None;
     const float w = (float)ui.screenW();
     const float h = (float)ui.screenH();
@@ -625,6 +625,14 @@ GameState PauseMenu::update(UiContext& ui, PauseAction& outAction) {
     by += bh + gap;
     if (ui.button("SETTINGS", px + 24.0f, by, bw, bh))      next = GameState::Settings;
     by += bh + gap;
+    // LEVEL EDITOR — DEV ONLY (cvar ui_editor). Most players never need to edit a level,
+    // so the row simply does not exist for them; and the editor's ImGui context is not
+    // even created until this is picked (the host lazy-inits it), so a normal run pays
+    // nothing for a tool it never opens.
+    if (showEditor) {
+        if (ui.button("LEVEL EDITOR", px + 24.0f, by, bw, bh)) outAction = PauseAction::Editor;
+        by += bh + gap;
+    }
     if (ui.button("QUIT TO MENU", px + 24.0f, by, bw, bh))  next = GameState::MainMenu;
 
     return next;
@@ -1194,7 +1202,7 @@ void UiController::update(const UiInput& input, x3::rhi::IRenderDevice& device,
             if (input.navBack) { m_state = GameState::Playing; }
             else {
                 PauseAction action = PauseAction::None;
-                const GameState next = m_pause.update(m_ui, action);
+                const GameState next = m_pause.update(m_ui, action, m_showEditorRow);
                 if (action != PauseAction::None) m_pendingAction = action;  // host polls + clears
                 if (next != m_state) m_state = next;
             }

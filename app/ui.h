@@ -378,7 +378,7 @@ public:
 // Worlds = the player picked TRAVEL / WORLD SELECT: the host opens the world/place
 // selection menu (app/world_menu.*). The pause screen is where it belongs — it is the
 // game's own menu, not a dev console.
-enum class PauseAction : uint8_t { None = 0, Save = 1, Load = 2, Worlds = 3 };
+enum class PauseAction : uint8_t { None = 0, Save = 1, Load = 2, Worlds = 3, Editor = 4 };
 
 // The pause overlay (drawn over a frozen, dimmed scene).
 class PauseMenu {
@@ -386,8 +386,14 @@ public:
     // Returns: Paused (stay), Playing (RESUME), Settings (SETTINGS), MainMenu
     // (QUIT TO MENU). `outAction` is set to Save/Load on the frame the SAVE/LOAD
     // button is activated (the returned state stays Paused in that case).
-    GameState update(UiContext& ui, PauseAction& outAction);
+    // `showEditor` draws the LEVEL EDITOR row. It is OFF by default and the host only
+    // turns it on for a dev build (cvar ui_editor): most players never need to edit a
+    // level, and a shipping pause menu should not offer them a level editor.
+    GameState update(UiContext& ui, PauseAction& outAction, bool showEditor = false);
 };
+
+// True the frame the user picked LEVEL EDITOR in the pause menu.
+
 
 // The settings screen. Edits a SettingsModel in place (reflecting + toggling) and
 // reports whether anything changed this frame (so the host can apply live). The
@@ -462,6 +468,12 @@ public:
     // opens the world/place selection menu (app/world_menu.h), then clears this and
     // takes the game out of Paused so the menu owns the screen.
     bool wantWorldMenu() const { return m_pendingAction == PauseAction::Worlds; }
+    // True the frame the user picked LEVEL EDITOR (dev builds only — see showEditor).
+    bool wantEditor() const { return m_pendingAction == PauseAction::Editor; }
+    // Host turns the LEVEL EDITOR row on (cvar ui_editor). Default OFF: a shipping
+    // pause menu should not offer a level editor to someone who just wants to play.
+    void setShowEditorRow(bool on) { m_showEditorRow = on; }
+    void clearEditorRequest() { m_pendingAction = PauseAction::None; }
     void clearWorldMenuRequest() { m_pendingAction = PauseAction::None; }
     // Force the controller back to Playing (the host does this when the world menu
     // takes over from the pause screen, and after a world load lands).
@@ -489,6 +501,7 @@ private:
     UiContext     m_ui;
     MainMenu      m_main;
     PauseMenu     m_pause;
+    bool          m_showEditorRow = false;   // cvar ui_editor (host-driven)
     SettingsMenu  m_settingsScreen;
     GameHud       m_hud;
     SettingsModel m_settings{};

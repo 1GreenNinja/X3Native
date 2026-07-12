@@ -495,6 +495,7 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // by confidence + roughness (mirror-sharp below rough 0.25, faded out by 0.6
     // where the prefiltered env takes over). All live (synced in applyRtaoCVars).
     console.registerCVar("r_ssr",           "1", "screen-space reflections (needs r_taa 1); 0 = off (IBL-only specular, byte-identical)");
+    console.registerCVar("ui_editor",       "1", "show LEVEL EDITOR in the pause menu (dev). 0 = hide it from players");
     console.registerCVar("r_rtreflections", "1", "ray-query reflection fallback where SSR misses (RT hardware only; SSR-only otherwise)");
     console.registerCVar("r_reflquality",   "0", "reflection buffer resolution: 0 = half-res (default), 1 = full-res");
     console.registerCVar("r_reflintensity", "1", "reflection blend weight scale [0..1] on the IBL-specular replace");
@@ -917,7 +918,11 @@ int runDefaultHost(HostContext& hc) {
     const bool noTaa = hc.noTaa;
     const bool noRefl = hc.noRefl;
     const bool skipIntro = hc.skipIntro;
-    const bool editorMode = hc.editorMode;
+    // LEVEL EDITOR: no longer boot-only. It can be entered LIVE from the pause menu
+    // (dev row, cvar ui_editor), so this is no longer const — see the wantEditor()
+    // handler below, which lazy-inits ImGui the first time it is actually opened.
+    bool editorMode = hc.editorMode;
+    bool editorInited = false;
     const bool fxDemo = hc.fxDemo;
     const bool fxLightning = hc.fxLightning;   // --fx-lightning: bolt ACROSS the view
     const bool uiDemo = hc.uiDemo;
@@ -6180,8 +6185,10 @@ int runDefaultHost(HostContext& hc) {
     // GPU here). Constructed always-cheap (no allocation) but only init'd + ticked
     // when editorMode, so the shipping game path is byte-for-byte unchanged.
     x3::editor::EditorHost editorHost;
-    if (editorMode && device->editorUIActive())
+    if (editorMode && device->editorUIActive()) {
         editorHost.init(*device, scene, *physics, window);
+        editorInited = true;
+    }
 
     // ---- EFLZ LOADING SCREEN hand-off (Task #49) — INTERACTIVE path -----------
     // The world is fully built. Mark the bar complete, hold the finished screen for
@@ -6493,6 +6500,7 @@ int runDefaultHost(HostContext& hc) {
                               !chatTrees.active() && !worldMapOpen && !rpgUi.anyOpen() &&
                               !riftConsoleOpen &&
                               rawKey(GLFW_KEY_F6);
+            gameUi.setShowEditorRow(console->getInt("ui_editor") != 0);
             if (wNow && !prevWorldMenuKey) worldMenu.toggle();
             prevWorldMenuKey = wNow;
 
@@ -6502,6 +6510,35 @@ int runDefaultHost(HostContext& hc) {
                 gameUi.clearWorldMenuRequest();
                 gameUi.resumePlaying();     // the menu owns the screen now (it freezes the sim)
                 worldMenu.open();
+            }
+
+            // ---- LEVEL EDITOR, FROM THE PAUSE MENU (dev row; cvar ui_editor) --------
+            // The editor used to be BOOT-ONLY: --editor, or relaunch. That is a bad tool
+            // — the moment you want to fix the room you are standing in, you have to quit
+            // the game, and by the time you are back you are somewhere else.
+            //
+            // ImGui is LAZY-INITIALIZED here, the first time the editor is actually
+            // opened. A player who never touches this row pays NOTHING for it: no ImGui
+            // context, no descriptor pool, the shipping frame path byte-for-byte
+            // unchanged (which is the property the boot-only gate existed to protect —
+            // we keep the property and drop the restriction).
+            if (gameUi.wantEditor()) {
+                gameUi.clearEditorRequest();
+                if (!device->editorUIActive() && window) {
+                    device->initEditorUI(window);
+                    x3::logInfo(device->editorUIActive()
+                        ? "[editor] pause menu: ImGui overlay initialized (lazy)"
+                        : "[editor] pause menu: ImGui overlay FAILED to init");
+                }
+                if (device->editorUIActive()) {
+                    if (!editorInited) {
+                        editorHost.init(*device, scene, *physics, window);
+                        editorInited = true;
+                    }
+                    editorMode = true;
+                    gameUi.resumePlaying();   // hand the screen to the editor
+                    x3::logInfo("[editor] LEVEL EDITOR entered from the pause menu");
+                }
             }
         }
 
