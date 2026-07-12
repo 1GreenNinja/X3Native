@@ -4424,6 +4424,9 @@ int runDefaultHost(HostContext& hc) {
                     shm.isCharge  = true;
                     shm.chargeCur = (int)(shotWs.charge + 0.5f);
                     shm.chargeCap = (int)(shotWd.chargeCap + 0.5f);
+                    shm.chargeRegen     = arsenal.chargeRegenerating();
+                    shm.chargeRegenSlow = arsenal.chargeRegenSlow();
+                    shm.chargeSlowAbove = (int)(shotWd.chargeRegenSlowAbove + 0.5f);
                 }
                 // Feed the minimap RADAR + nameplates from the (capture) camera pose so
                 // the still shows the real radar: room outlines, any live enemy/ally
@@ -9009,11 +9012,17 @@ int runDefaultHost(HostContext& hc) {
                     hm.weapon = wd.name.c_str();
                     hm.ammoInMag = ws.ammoInMag; hm.ammoReserve = ws.reserve;
                     hm.reloading = arsenal.isReloading();
-                    // CHARGE weapon (Lightning): show a CHARGE readout instead of ammo.
+                    // CHARGE weapon (Lightning): show a CHARGE readout instead of ammo,
+                    // plus the live PASSIVE-REGEN state (refilling? in the half-speed
+                    // band? where does the crawl start?) — read straight off the Arsenal
+                    // so the HUD cannot disagree with the tick that owns the pool.
                     if (wd.usesCharge) {
                         hm.isCharge  = true;
                         hm.chargeCur = (int)(ws.charge + 0.5f);
                         hm.chargeCap = (int)(wd.chargeCap + 0.5f);
+                        hm.chargeRegen     = arsenal.chargeRegenerating();
+                        hm.chargeRegenSlow = arsenal.chargeRegenSlow();
+                        hm.chargeSlowAbove = (int)(wd.chargeRegenSlowAbove + 0.5f);
                     }
                 }
 

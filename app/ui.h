@@ -270,6 +270,17 @@ struct HudModel {
     bool  isCharge     = false;
     int   chargeCur    = 0;
     int   chargeCap    = 0;
+    // PASSIVE REGEN readout. The HUD MUST NOT LIE about this (it already printed a
+    // false ammo model once — "200 / 600" for a gun with neither a mag nor a reserve —
+    // and that ambiguity is why nobody could tell what the gun was doing):
+    //   chargeRegen     — the pool is refilling RIGHT NOW (label reads RECHARGING).
+    //   chargeRegenSlow — ...and it is in the HALF-SPEED band (>= chargeSlowAbove), so
+    //                     the label says SLOW rather than implying one uniform speed.
+    //   chargeSlowAbove — the charge at which regen halves; drawn as a NOTCH on the bar
+    //                     so the crawl-point is visible, not folklore. 0 = no notch.
+    bool  chargeRegen     = false;
+    bool  chargeRegenSlow = false;
+    int   chargeSlowAbove = 0;
     const char* objective = "";  // current objective text (may be empty)
     int   enemiesRemaining = -1; // live enemy count under the objective; <0 = hide
     float damageFlash  = 0.0f;   // [0,1] red hit flash strength

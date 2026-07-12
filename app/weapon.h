@@ -241,6 +241,29 @@ struct WeaponDef {
     float       chargeMax         = 100.0f; // base full charge (Tim: "100 base charge")
     float       chargeCap         = 300.0f; // hard ceiling for battery stacking
     float       chargeDrainPerSec = 10.0f;  // continuous drain while the beam is held
+    // ---- PASSIVE REGEN (Tim: "lets let the lightning recharge when not in use",
+    //                         "regen all the way, but half speed over 150") ---------
+    // After chargeRegenDelay seconds of NOT firing, the pool refills passively —
+    // ALL THE WAY TO THE CAP (chargeRegenTo defaults to chargeCap = 300), but on a
+    // TWO-SPEED curve:
+    //   * below chargeRegenSlowAbove (150): the FULL rate  (1.667/s -> base 100
+    //     refills from empty in ~60 s), so you are fighting again quickly.
+    //   * at/above chargeRegenSlowAbove: HALF rate (chargeRegenSlowMult = 0.5), a
+    //     long slow crawl to top off the reserve.
+    // 0 -> 300 therefore costs ~90 s (fast half) + ~180 s (slow half) = ~270 s.
+    //
+    // WHY THE CRYSTAL BATTERY CELLS STILL MATTER: they let you SKIP the slow crawl.
+    // Cells are the FAST way to a stocked gun, not the only way. (A flat regen to
+    // the cap at full speed WOULD have made the cells pointless — hence the halving.)
+    //
+    // Regen HARD-STOPS at chargeRegenTo — it never overshoots, and it never DRAINS a
+    // pool that is already above it. chargeRegenPerSec <= 0 disables regen entirely
+    // (the default), so every non-charge weapon is byte-identical.
+    float       chargeRegenPerSec  = 0.0f;   // charge/second (fast band) once the delay elapses
+    float       chargeRegenDelay   = 0.0f;   // s after firing STOPS before regen begins
+    float       chargeRegenTo      = 0.0f;   // regen ceiling; <= 0 -> chargeCap (the 300 cap)
+    float       chargeRegenSlowAbove = 0.0f; // charge at/above which regen halves (0 = no slow band)
+    float       chargeRegenSlowMult  = 0.5f; // rate multiplier in the slow band
     // Viewmodel: the GLB filename (in the rigged-GLB dir) + the convention-correct
     // viewmodel pose offsets (degrees / meters about the camera basis — same basis
     // the existing pistol viewmodel uses; see WeaponSystem::drawViewmodel + §3 of
@@ -397,6 +420,11 @@ public:
         // refilled (stacking past chargeMax to chargeCap) by battery pickups. Unused
         // (stays 0) for ammo weapons.
         float charge      = 0.0f;
+        // CHARGE weapons only: seconds still to wait before PASSIVE REGEN may begin.
+        // Reset to chargeRegenDelay on every firing frame (held beam or fire()), so a
+        // burst never free-refills mid-fight — you must let it cool. Counts down while
+        // idle; regen runs only once it reaches 0.
+        float regenDelay  = 0.0f;
     };
 
     // Construct with a roster (defaults to makeDefaultRoster()). Each weapon starts
@@ -472,6 +500,19 @@ public:
     // Index of the first usesCharge weapon (-1 if none) — for battery-pickup wiring
     // + the HUD charge readout.
     int   chargeWeaponIndex() const;
+
+    // ---- PASSIVE REGEN readout (HUD; must not lie) ---------------------------
+    // Is the CURRENT weapon's charge pool passively regenerating RIGHT NOW? True iff
+    // it is a charge weapon with regen configured, the post-fire delay has fully
+    // elapsed, and the pool is still below its regen ceiling. False while the beam is
+    // held, during the cool-down delay, and once the ceiling is reached.
+    bool  chargeRegenerating() const;
+    // Seconds still to wait before regen begins (0 once it is running / N/A).
+    float chargeRegenWait() const;
+    // True iff the current charge weapon is in the SLOW (half-rate) regen band —
+    // i.e. its charge is at/above chargeRegenSlowAbove. Lets the HUD show the crawl
+    // honestly instead of implying one uniform refill speed.
+    bool  chargeRegenSlow() const;
 
     // Advance the per-weapon timers by dt: decay the current weapon's fire cooldown
     // and, if reloading, the reload timer (completing the reload — moving rounds

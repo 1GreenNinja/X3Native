@@ -803,17 +803,40 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
             float col[4] = { 0.55f, 0.85f, 1.0f, 1.0f };   // blue-electric
             if (low) { const float pulse = 0.5f + 0.5f * std::sin(m_t * 8.0f);
                        col[0] = 1.0f; col[1] = 0.35f; col[2] = 0.3f; col[3] = 0.6f + 0.4f * pulse; }
+            // PASSIVE REGEN: while the pool is refilling, the number BREATHES (a gentle
+            // alpha pulse) so "it is coming back" reads at a glance without a second
+            // widget. Low-charge red always wins — running dry outranks recovering.
+            if (m.chargeRegen && !low) {
+                const float breathe = 0.5f + 0.5f * std::sin(m_t * (m.chargeRegenSlow ? 1.6f : 3.2f));
+                col[3] = 0.72f + 0.28f * breathe;   // pulse SLOWER in the half-speed band
+            }
             ui.text(chBuf, ax, ay, ammoPx, col, UiContext::FontRole::HudMono);
             // Blue charge bar under the number.
             const float barW = 150.0f, barH = 8.0f;
+            const float barX = w - barW - px, barY = ay + ammoPx + 4.0f;
             float fill[4] = { 0.3f, 0.7f, 1.0f, 0.95f };
             if (low) { fill[0] = 1.0f; fill[1] = 0.4f; fill[2] = 0.3f; }
-            ui.bar(w - barW - px, ay + ammoPx + 4.0f, barW, barH, frac, fill);
-            // "CHARGE" label above the number.
+            ui.bar(barX, barY, barW, barH, frac, fill);
+            // THE SLOW-BAND NOTCH: a hairline at the charge where passive regen halves
+            // (150 of 300). Above it the bar creeps at half speed — the player can SEE
+            // where the crawl starts instead of having to be told.
+            if (m.chargeSlowAbove > 0 && m.chargeSlowAbove < cap) {
+                const float nx = barX + barW * ((float)m.chargeSlowAbove / (float)cap);
+                const float notch[4] = { 0.85f, 0.92f, 1.0f, 0.75f };
+                ui.quad(nx - 1.0f, barY - 2.0f, 2.0f, barH + 4.0f, notch);
+            }
+            // Label above the number: "CHARGE" normally, but the TRUTH while it refills —
+            // and whether it is in the fast band or the half-speed crawl. Never a bare
+            // "CHARGE" that hides the fact the gun is quietly recovering.
             const float labPx = 14.0f;
             const char* lab = "CHARGE";
+            float labCol[4] = { kColTextDim[0], kColTextDim[1], kColTextDim[2], kColTextDim[3] };
+            if (m.chargeRegen) {
+                lab = m.chargeRegenSlow ? "RECHARGING - SLOW" : "RECHARGING";
+                labCol[0] = 0.45f; labCol[1] = 0.85f; labCol[2] = 1.0f; labCol[3] = 0.9f;
+            }
             const float labW = UiContext::textWidth(UiContext::FontRole::Menu, lab, labPx);
-            ui.text(lab, w - labW - px, ay - labPx - 6.0f, labPx, kColTextDim,
+            ui.text(lab, w - labW - px, ay - labPx - 6.0f, labPx, labCol,
                     UiContext::FontRole::Menu);
         } else {
             // Ammo line: "MAG / RESERVE" big, weapon name above it.

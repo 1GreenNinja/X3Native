@@ -530,6 +530,26 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.chargeMax   = 100.0f;                        // base full charge
         w.chargeCap   = 300.0f;                        // battery-stacking ceiling
         w.chargeDrainPerSec = 100.0f / 180.0f;         // 3 MINUTES of sustained fire
+        // PASSIVE REGEN — TIM'S CALL: "lets let the lightning recharge when not in use",
+        // refined to "regen all the way, but half speed over 150".
+        //   * 2 s after firing STOPS, the pool starts refilling (firing RESETS that
+        //     timer, so a burst can't free-refill mid-fight — you must let it cool).
+        //   * FAST band (< 150): chargeMax / 60 = 1.667 /s — the base 100 comes back
+        //     from empty in ~60 s. 180 s of fire therefore costs 60 s of waiting (3x
+        //     the drain rate): generous, not free. You are never stranded with a dead
+        //     gun; the lightning is never dead weight.
+        //   * SLOW band (>= 150): HALF that (0.833 /s) — a long crawl up to the 300 cap.
+        //   * Ceiling is the CAP (300), reached from empty in ~90 s + ~180 s = ~270 s.
+        // The crystal BATTERY CELLS keep their weight because they let you SKIP the slow
+        // crawl — they are the FAST way to a stocked gun, not the only way.
+        // Gated by --test-lightning-charge LC9..LC13, which MEASURE both band rates
+        // separately (an endpoint-only probe would pass on a single wrong-but-averaging
+        // rate) with a negative control proving a uniform (un-halved) rate is REJECTED.
+        w.chargeRegenPerSec   = 100.0f / 60.0f;        // fast band: base refills in 60 s
+        w.chargeRegenDelay    = 2.0f;                  // cool-down beat after firing stops
+        w.chargeRegenTo       = 300.0f;                // regen ceiling = the CAP
+        w.chargeRegenSlowAbove= 150.0f;                // half-speed above this
+        w.chargeRegenSlowMult = 0.5f;
         // ⚠ DEAD FOR THIS WEAPON. Under usesCharge the Lightning Gun has no magazine and
         // no reserve: canFire()/fire()/reload() never read these. They are zeroed rather
         // than left at Tim's old 200/600 cell precisely because that ambiguity is what
@@ -768,6 +788,11 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     // CHARGE weapons (Lightning) do NOT consume a mag round — their charge pool is
     // drained continuously in tick() while the beam is held (see setBeamHeld).
     if (!m_infiniteAmmo && !d.usesCharge) s.ammoInMag -= 1;   // IDKFA: never deplete
+    // PASSIVE REGEN: pulling the trigger INTERRUPTS regen and restarts the cool-down
+    // beat. tick() also does this off m_beamHeld (the host's held-fire flag), but doing
+    // it here too means the rule holds for ANY fire path — a caller that fires without
+    // ever setting beamHeld (tests, scripted/AI fire) cannot regen through its own shots.
+    if (d.usesCharge) s.regenDelay = d.chargeRegenDelay;
     s.cooldown   = (effRate > 0.0f) ? (1.0f / effRate) : 0.0f;
     out.fired    = true;
     out.recoilPitchDeg = d.recoilDeg;
@@ -852,6 +877,31 @@ int Arsenal::chargeWeaponIndex() const {
     return -1;
 }
 
+bool Arsenal::chargeRegenerating() const {
+    if (m_sel < 0 || m_sel >= (int)m_defs.size()) return false;
+    const WeaponDef&   d = m_defs[(size_t)m_sel];
+    const WeaponState& s = m_state[(size_t)m_sel];
+    if (!d.usesCharge || d.chargeRegenPerSec <= 0.0f) return false;
+    if (m_beamHeld) return false;              // firing: regen is interrupted
+    if (s.regenDelay > 0.0f) return false;     // still in the cool-down beat
+    const float ceil = (d.chargeRegenTo > 0.0f) ? d.chargeRegenTo : d.chargeCap;
+    return s.charge < ceil;                    // done once the ceiling is reached
+}
+
+float Arsenal::chargeRegenWait() const {
+    if (m_sel < 0 || m_sel >= (int)m_defs.size()) return 0.0f;
+    const WeaponDef& d = m_defs[(size_t)m_sel];
+    if (!d.usesCharge || d.chargeRegenPerSec <= 0.0f) return 0.0f;
+    return m_state[(size_t)m_sel].regenDelay;
+}
+
+bool Arsenal::chargeRegenSlow() const {
+    if (m_sel < 0 || m_sel >= (int)m_defs.size()) return false;
+    const WeaponDef& d = m_defs[(size_t)m_sel];
+    if (!d.usesCharge || d.chargeRegenSlowAbove <= 0.0f) return false;
+    return m_state[(size_t)m_sel].charge >= d.chargeRegenSlowAbove;
+}
+
 float Arsenal::grantCharge(float amount) {
     if (amount <= 0.0f) return 0.0f;
     const int idx = chargeWeaponIndex();
@@ -866,15 +916,57 @@ float Arsenal::grantCharge(float amount) {
 
 void Arsenal::tick(float dt) {
     if (dt <= 0.0f) return;
-    // CHARGE drain (Lightning): while the beam is HELD on the current charge weapon,
-    // bleed its charge continuously at chargeDrainPerSec — independent of the
-    // fire-rate ticks so the drain reads as a smooth ~N/sec. IDKFA never depletes.
-    if (m_beamHeld && m_sel >= 0) {
+    // ---- CHARGE weapon (Lightning): DRAIN and PASSIVE REGEN --------------------
+    // Both live in THIS ONE BLOCK, deliberately: drain and regen are two directions of
+    // the same pool, and splitting them into separate paths is how they end up
+    // disagreeing about the pool's state. Exactly one of them runs on any given tick.
+    //
+    //   BEAM HELD  -> bleed at chargeDrainPerSec (IDKFA never depletes) and RESET the
+    //                 regen delay, so firing always INTERRUPTS regen and restarts the
+    //                 cool-down beat. (Held-on-empty also counts as firing: you must
+    //                 release the trigger to recharge.)
+    //   RELEASED   -> count the delay down; once it hits 0, refill toward chargeRegenTo
+    //                 on the two-speed curve (full rate below chargeRegenSlowAbove,
+    //                 chargeRegenSlowMult of it at/above). Never overshoots the ceiling,
+    //                 and never DRAINS a pool already above it.
+    if (m_sel >= 0) {
         const WeaponDef& cd = m_defs[(size_t)m_sel];
-        if (cd.usesCharge && !m_infiniteAmmo) {
+        if (cd.usesCharge) {
             WeaponState& cs = m_state[(size_t)m_sel];
-            cs.charge -= cd.chargeDrainPerSec * dt;
-            if (cs.charge < 0.0f) cs.charge = 0.0f;
+            if (m_beamHeld) {
+                if (!m_infiniteAmmo) {
+                    cs.charge -= cd.chargeDrainPerSec * dt;
+                    if (cs.charge < 0.0f) cs.charge = 0.0f;
+                }
+                cs.regenDelay = cd.chargeRegenDelay;   // firing interrupts + restarts regen
+            } else if (cs.regenDelay > 0.0f) {
+                cs.regenDelay -= dt;                   // the "let it cool" beat
+                if (cs.regenDelay < 0.0f) cs.regenDelay = 0.0f;
+            } else if (cd.chargeRegenPerSec > 0.0f) {
+                const float ceil = (cd.chargeRegenTo > 0.0f) ? cd.chargeRegenTo : cd.chargeCap;
+                if (cs.charge < ceil) {
+                    // Integrate the two-speed curve PIECEWISE across this step: if the
+                    // pool crosses chargeRegenSlowAbove mid-tick, the part of dt before
+                    // the crossing runs at the fast rate and the remainder at the slow
+                    // one. (Applying one rate for the whole step would make the measured
+                    // band rates dt-dependent — and the gate measures them.)
+                    const float slowAt = cd.chargeRegenSlowAbove;
+                    const float fast   = cd.chargeRegenPerSec;
+                    const float slow   = fast * cd.chargeRegenSlowMult;
+                    float rem = dt;
+                    if (slowAt > 0.0f && cs.charge < slowAt && fast > 0.0f) {
+                        const float tToSlow = (slowAt - cs.charge) / fast;   // s at the fast rate
+                        const float step    = (tToSlow < rem) ? tToSlow : rem;
+                        cs.charge += fast * step;
+                        rem       -= step;
+                    }
+                    if (rem > 0.0f) {
+                        const float rate = (slowAt > 0.0f && cs.charge >= slowAt) ? slow : fast;
+                        cs.charge += rate * rem;
+                    }
+                    if (cs.charge > ceil) cs.charge = ceil;   // HARD STOP at the ceiling
+                }
+            }
         }
     }
     for (size_t i = 0; i < m_state.size(); ++i) {
@@ -1851,6 +1943,131 @@ bool runLightningChargeSelfTest() {
         x3::logInfo("[lightning-charge-test] LC8 battery-stacked (cap 300) sustained fire = " +
                     std::to_string(t) + " s (target 540 +/-15)");
         lccheck(ok, "LC8 battery cells stack to the cap -> ~9 min of sustained fire");
+    }
+
+    // =======================================================================
+    // PASSIVE REGEN (Tim: "lets let the lightning recharge when not in use",
+    //                     "regen all the way, but half speed over 150")
+    // =======================================================================
+    // Drive an IDLE (not-firing) lightning gun from EMPTY and profile the refill:
+    // seconds spent in the fast band (0 -> 150), seconds in the slow band
+    // (150 -> the ceiling), the final resting charge, and whether it overshoots.
+    // The regen DELAY is subtracted so the returned times are pure regen seconds
+    // (LC9 gates the delay itself). Times are measured, never assumed.
+    auto regenProfile = [&](Arsenal& a, float& tFast, float& tSlow,
+                            float& finalCharge, float& overshoot) {
+        a.selectByName("lightning");
+        const WeaponDef& d = a.def(a.indexOf("lightning"));
+        a.setBeamHeld(true);
+        a.tick(400.0f);                       // hold the beam down: drain the pool to 0
+        a.setBeamHeld(false);                 // release -> the regen clock starts
+        const float dt    = 1.0f / 60.0f;
+        const float delay = d.chargeRegenDelay;
+        const float ceil  = (d.chargeRegenTo > 0.0f) ? d.chargeRegenTo : d.chargeCap;
+        float t = 0.0f, t150 = -1.0f, tCeil = -1.0f;
+        for (int i = 0; i < 60 * 900; ++i) {  // up to 900 s of idle
+            a.tick(dt);
+            t += dt;
+            const float c = a.currentState().charge;
+            if (t150 < 0.0f && c >= d.chargeRegenSlowAbove) t150 = t - delay;
+            if (tCeil < 0.0f && c >= ceil - 0.001f)       { tCeil = t - delay; break; }
+        }
+        tFast = t150;
+        tSlow = (tCeil >= 0.0f && t150 >= 0.0f) ? (tCeil - t150) : -1.0f;
+        // Keep ticking well past the ceiling: regen must HARD STOP, never creep past it.
+        for (int i = 0; i < 60 * 60; ++i) a.tick(dt);    // +60 s of idle at the ceiling
+        finalCharge = a.currentState().charge;
+        overshoot   = finalCharge - ceil;
+    };
+
+    // ---- LC9: the 2 s COOL-DOWN BEAT — regen must not start early, and firing
+    //          RESETS it (a burst can never free-refill mid-fight) ---------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        const float delay = a.def(a.indexOf("lightning")).chargeRegenDelay;
+        a.setBeamHeld(true);
+        a.tick(20.0f);                                   // burn ~11 charge
+        const bool notWhileFiring = !a.chargeRegenerating();   // HUD must not claim regen
+        a.setBeamHeld(false);
+        const float c0 = a.currentState().charge;
+        const float dt = 1.0f / 60.0f;
+
+        // (a) idle for delay - 0.1 s: still NOTHING (charge dead flat).
+        for (int i = 0; i < (int)((delay - 0.1f) / dt); ++i) a.tick(dt);
+        const bool quietInDelay = nearf(a.currentState().charge, c0, 0.001f) &&
+                                  !a.chargeRegenerating() && a.chargeRegenWait() > 0.0f;
+
+        // (b) FIRE ONE SHOT right before the beat expires -> the delay RESTARTS.
+        a.fire(eye, fwd, rng);
+        const bool delayReset = nearf(a.chargeRegenWait(), delay, 0.001f);
+        for (int i = 0; i < (int)((delay - 0.1f) / dt); ++i) a.tick(dt);
+        const bool stillQuiet = nearf(a.currentState().charge, c0, 0.001f);   // reset held
+
+        // (c) let the beat fully elapse -> regen ACTUALLY begins.
+        for (int i = 0; i < (int)(0.5f / dt); ++i) a.tick(dt);
+        const bool started = a.currentState().charge > c0 + 0.1f && a.chargeRegenerating();
+
+        lccheck(notWhileFiring && quietInDelay && delayReset && stillQuiet && started,
+                "LC9 regen waits the 2 s beat, firing RESETS it, then regen begins");
+    }
+
+    // ---- LC10/LC11: MEASURED two-speed refill + the HARD STOP at the cap -------
+    // Measure BOTH BANDS SEPARATELY. An endpoint-only probe (0 -> 300 in ~270 s)
+    // would happily pass on a single uniform wrong-but-averaging rate — which is
+    // exactly the bug the negative control below manufactures.
+    {
+        Arsenal live;
+        float tFast = -1, tSlow = -1, finalC = -1, over = 0;
+        regenProfile(live, tFast, tSlow, finalC, over);
+        const float fastRate = (tFast > 0.0f) ? 150.0f / tFast : 0.0f;   // 0 -> 150
+        const float slowRate = (tSlow > 0.0f) ? 150.0f / tSlow : 0.0f;   // 150 -> 300
+        const float total    = tFast + tSlow;
+
+        x3::logInfo("[lightning-charge-test] LC10 regen 0->150 = " + std::to_string(tFast) +
+                    " s (" + std::to_string(fastRate) + "/s, target 1.667) | 150->300 = " +
+                    std::to_string(tSlow) + " s (" + std::to_string(slowRate) +
+                    "/s, target 0.833) | TOTAL 0->300 = " + std::to_string(total) +
+                    " s (target ~270)");
+
+        const bool fastOk = nearf(fastRate, 100.0f / 60.0f, 0.03f) && tFast >= 87.0f && tFast <= 93.0f;
+        const bool slowOk = nearf(slowRate, 100.0f / 120.0f, 0.03f) && tSlow >= 174.0f && tSlow <= 186.0f;
+        const bool halved = nearf(slowRate, fastRate * 0.5f, 0.03f);   // THE two-segment rule
+        const bool totOk  = total >= 261.0f && total <= 279.0f;        // ~270 +/-9
+        lccheck(fastOk && slowOk && halved && totOk,
+                "LC10 regen is 1.667/s below 150 and HALF (0.833/s) above -> ~270 s to the cap");
+
+        // The ceiling: regen must land EXACTLY on the 300 cap and stop dead there —
+        // 60 further seconds of idle must not move it one charge past.
+        const bool stops = nearf(finalC, 300.0f, 0.001f) && over <= 0.001f;
+        x3::logInfo("[lightning-charge-test] LC11 charge after +60 s idle at the ceiling = " +
+                    std::to_string(finalC) + " (overshoot " + std::to_string(over) + ")");
+        lccheck(stops, "LC11 regen HARD-STOPS at the 300 cap (no overshoot, no creep)");
+    }
+
+    // ---- LC12: NEGATIVE CONTROL — a UNIFORM (un-halved) rate must be REJECTED ---
+    // Mutate the roster so the slow band runs at FULL speed (slowMult 1.0), i.e. the
+    // "half speed over 150" rule is gone. The SAME two-segment probe that passed above
+    // must now FAIL. A gate that cannot fail is worthless (docs/DECISIONS.md
+    // REGRESSION DISCIPLINE) — this proves the LC10 assertion actually probes the rule.
+    {
+        std::vector<WeaponDef> bad = makeDefaultRoster();
+        for (auto& d : bad) if (d.usesCharge) d.chargeRegenSlowMult = 1.0f;   // no halving
+        Arsenal mutated(bad);
+        float tFast = -1, tSlow = -1, finalC = -1, over = 0;
+        regenProfile(mutated, tFast, tSlow, finalC, over);
+        const float fastRate = (tFast > 0.0f) ? 150.0f / tFast : 0.0f;
+        const float slowRate = (tSlow > 0.0f) ? 150.0f / tSlow : 0.0f;
+        // Re-apply the EXACT LC10 predicate to the mutant.
+        const bool slowOk = nearf(slowRate, 100.0f / 120.0f, 0.03f) && tSlow >= 174.0f && tSlow <= 186.0f;
+        const bool halved = nearf(slowRate, fastRate * 0.5f, 0.03f);
+        const bool totOk  = (tFast + tSlow) >= 261.0f && (tFast + tSlow) <= 279.0f;
+        const bool rejects = !(slowOk && halved && totOk);   // the probe MUST reject it
+        x3::logInfo("[lightning-charge-test] LC12 negative control (uniform rate, no halving): "
+                    "0->150 = " + std::to_string(tFast) + " s, 150->300 = " + std::to_string(tSlow) +
+                    " s (" + std::to_string(slowRate) + "/s) -> " +
+                    (rejects ? "REJECTED" : "ACCEPTED (BUG: the gate cannot fail)"));
+        lccheck(rejects, "LC12 negative control: an un-halved slow band FAILS the LC10 probe");
     }
 
     x3::logInfo(std::string("[lightning-charge-test] ") + std::to_string(lc_pass) + " passed, " +
