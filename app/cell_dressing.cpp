@@ -817,8 +817,16 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
               hx0 + 0.8f, hfY + 0.02f, hz + 2.2f, nullptr, tCrate);
         place(aCrateS, 0.6f, 1.0f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
               hx0 + 0.8f, hfY + 0.62f, hz + 2.2f, nullptr, tCrate);
-        place(aBarrel, 0.0f, 1.0f, cx(kBarrelAabb), kBarrelAabb.miny, cz(kBarrelAabb),
-              hx0 + 0.9f, hfY + 0.02f, hz + 3.2f, nullptr, tBarrel);
+        // WAVE (barrels-universal): the hall clutter drum by the -X wall is now a REAL
+        // explodable barrel when the host wires the sink (canon loop -> BarrelSystem). The
+        // BarrelSystem owns the intact Barrel.glb + fracture + blast, so we DON'T also draw
+        // a static barrel over it. No sink (tests) -> the static rusted drum, as before.
+        if (m_barrelSink) {
+            m_barrelSink(hx0 + 0.9f, hfY, hz + 3.2f);
+        } else {
+            place(aBarrel, 0.0f, 1.0f, cx(kBarrelAabb), kBarrelAabb.miny, cz(kBarrelAabb),
+                  hx0 + 0.9f, hfY + 0.02f, hz + 3.2f, nullptr, tBarrel);
+        }
         // A red running light at the hall mouth (guard-corridor mood).
         addLight(bt.mainHall, hx0 + 1.2f, hCeil - 0.4f, hz, 5.0f, 2.4f, 0.12f, 0.06f);
     }

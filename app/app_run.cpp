@@ -1361,6 +1361,17 @@ int runDefaultHost(HostContext& hc) {
             // visual props (ModularSciFi + Warehouse kits) + extra PointLights (a flickering
             // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
             // truth; missing GLBs simply aren't drawn (the level never breaks).
+            // WAVE (barrels-universal): the canon interactive loop is one of only two hosts
+            // with a live fire path (the other is Level1Game), so its BarrelSystem is where
+            // "barrels explode game-wide" actually lands. Init it BEFORE the dressing builds
+            // so the set-dressers REGISTER their plain fuel-drum clutter (hall + boss/storage
+            // rooms) as explodable barrels via this sink, instead of drawing static,
+            // unshootable props over them. (Emissive lab vats stay decorative — not routed.)
+            canonBarrels.init(*device, *physics);
+            auto canonBarrelSink = [&canonBarrels](float x, float floorY, float z) {
+                canonBarrels.spawn(x, floorY, z);
+            };
+            canonDressing.setExplodableBarrelSink(canonBarrelSink);
             canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
             if (bootProf) bootProfMs("canonDressing");
             // WAVE (cell-door): make the cell's floor barrel a REAL explodable barrel — the
@@ -1370,14 +1381,15 @@ int runDefaultHost(HostContext& hc) {
             // radial blast + chain. Sinks (FX + player splash) are wired once `player` exists;
             // onShot / update / render run in the interactive loop below.
             {
-                canonBarrels.init(*device, *physics);
+                // canonBarrels already init'd above (before canonDressing.build). Add the
+                // cell door-side barrel explicitly (the hall + recipe drums come in via the
+                // sink during the dressing builds).
                 const x3::game::CanonBeats bBt = x3::game::canonBeats(canonFloor);
                 if (bBt.jakeCell != x3::game::kNoRoom) {
                     const x3::game::CanonRoom& jc = canonFloor.rooms[bBt.jakeCell];
                     canonBarrels.spawn(jc.x1() - 1.2f, jc.y0(), jc.z1() - 1.4f); // debris corner by the +X/+Z exits
                 }
-                x3::logInfo("--world canonlevel: " + std::to_string(canonBarrels.count()) +
-                            " explodable barrel(s) by the cell door (shoot -> DJBooth fireball + chain)");
+                x3::logInfo("--world canonlevel: cell door barrel spawned (shoot -> DJBooth fireball + chain)");
             }
             // WAVE-3: recipe-dress every other classifiable room (surface-library
             // panels + zone lights + hero props). Jake's cell stays CellDressing's.
@@ -1386,8 +1398,11 @@ int runDefaultHost(HostContext& hc) {
             // recipe lights are appended — selectVisibleCanonLights budgets the rest.
             {
                 const x3::game::CanonBeats rdBt = x3::game::canonBeats(canonFloor);
+                canonRooms.setExplodableBarrelSink(canonBarrelSink);  // WAVE (barrels-universal)
                 canonRooms.build(*device, x3::game::assetRoot() + "/surface_library",
                                  x3::game::convertedGlbRoot(), canonFloor, rdBt);
+                x3::logInfo("--world canonlevel: " + std::to_string(canonBarrels.count()) +
+                            " explodable barrel(s) total (cell + hall + recipe fuel drums)");
                 if (canonRooms.roomsDressed() > 0) {
                     canonLights.erase(std::remove_if(canonLights.begin(), canonLights.end(),
                         [&](const x3::game::CanonLight& cl) {
