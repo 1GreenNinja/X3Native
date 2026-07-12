@@ -56,6 +56,19 @@ NEG = ("blurry, soft focus, photo border, watermark, text, logo, seams, "
 REF_VIDEO  = "docs/reference/PortalAnimated.mp4"
 REF_TIME   = 1.0        # seconds — the gate is fully lit and unoccluded here
 # set -> crop box (x0, y0, x1, y1) in the 1168x768 reference frame
+# Target ALBEDO mean (sRGB 0..1) per set. An albedo is a REFLECTANCE map, not a
+# photo: the reference crop is a LIT render, and de-lighting it to its own dark
+# average produced albedos at sRGB 0.15-0.28 == LINEAR 0.02-0.06, i.e. coal. Lit
+# by a dim interior rig the gate then rendered pure black once its (bogus) self
+# -emissive was removed. Real weathered painted steel reflects ~35-45%; machined
+# gunmetal ~20%. Normalize to these and the light rig finally has something to
+# bounce off.
+ALBEDO_MEAN = {
+    "gate_ring_plate":   0.33,
+    "gate_patina_plate": 0.30,
+    "gate_piston_steel": 0.24,
+}
+
 REF_CROPS = {
     "gate_ring_plate":   (300, 140, 480, 320),   # riveted plate band + rust bleed
     "gate_patina_plate": (330,  25, 510, 205),   # teal-oxide weathered plates
@@ -72,21 +85,21 @@ SETS = {
         "patina streaks, panel seams with recessed bolt lines, small vents and "
         "machined greebles, scratches and edge wear, flat even lighting, "
         "seamless tileable material, 4k pbr albedo",
-        170, 90, 3.2),   # rough .67 / metal .35 (painted armor) / strong relief
+        170, 90, 14.0),  # rough .67 / metal .35 (painted armor) / deep relief
     # Rust-streak patina variant for the over-plates / base shoulders.
     "gate_patina_plate": (
         "orthographic top-down photo texture of weathered steel plate with "
         "heavy rust streaks bleeding down from bolt heads, chipped teal-green "
         "oxide paint, grime buildup in panel recesses, industrial wear, flat "
         "even lighting, seamless tileable material, 4k pbr albedo",
-        195, 70, 3.0),   # rough .76 / metal .27 (chipped oxide paint)
+        195, 70, 13.0),  # rough .76 / metal .27 (chipped oxide paint)
     # Dark piston/hardware steel for clamps, rods, pipes, bolts.
     "gate_piston_steel": (
         "orthographic top-down photo texture of dark gunmetal machined steel, "
         "fine brushed grain, faint oil sheen, subtle scratches and tooling "
         "marks, small hex bolts, near-black industrial hardware metal, flat "
         "even lighting, seamless tileable material, 4k pbr albedo",
-        165, 200, 2.4),  # rough .65 / metal .78 (machined steel, still past the SSR cutoff)
+        165, 200, 10.0), # rough .65 / metal .78 (machined steel, still past the SSR cutoff)
 }
 
 
@@ -109,12 +122,29 @@ def make_tileable(img: Image.Image, blend_px: int = 96) -> Image.Image:
     return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
 
 
-def height_from_albedo(albedo: Image.Image) -> np.ndarray:
-    """Luminance -> blurred height in [0,1] (the proven surface-library recipe)."""
+def normalize_albedo(img: Image.Image, target: float) -> Image.Image:
+    """Scale the albedo so its mean luminance lands on `target` (sRGB 0..1), keeping
+    hue and local contrast. Gamma-correct: the scale is applied in LINEAR space."""
+    a = np.asarray(img).astype(np.float32) / 255.0
+    lin = np.power(a, 2.2)
+    cur = float(np.mean(np.power(np.mean(a, axis=2), 2.2)))
+    tgt_lin = target ** 2.2
+    k = tgt_lin / max(cur, 1e-5)
+    out = np.power(np.clip(lin * k, 0.0, 1.0), 1.0 / 2.2)
+    return Image.fromarray((out * 255.0).astype(np.uint8))
+
+
+def height_from_albedo(albedo: Image.Image, gain: float = 2.6,
+                       blur: int = 10) -> np.ndarray:
+    """Luminance -> height in [0,1]. ROUND 5: the 24 px / 1.6-gain recipe was tuned
+    for busy text-forged noise; on the smoother img2img plates it yielded a normal
+    map with ~1.4% xy deviation — i.e. FLAT, which is exactly why the gate showed
+    no light response no matter how good the albedo was. Tighter blur + more gain =
+    rivets, seams and bolt heads that actually carve the light."""
     g = np.asarray(albedo.convert("L")).astype(np.float32) / 255.0
     lo = np.asarray(albedo.convert("L").filter(
-        ImageFilter.GaussianBlur(24))).astype(np.float32) / 255.0
-    h = np.clip(0.5 + (g - lo) * 1.6, 0, 1)       # local contrast = surface relief
+        ImageFilter.GaussianBlur(blur))).astype(np.float32) / 255.0
+    h = np.clip(0.5 + (g - lo) * gain, 0, 1)      # local contrast = surface relief
     return h
 
 
@@ -203,7 +233,7 @@ def forge_img2img(name: str, steps: int, seed: int, strength: float,
     gc.collect()
     torch.cuda.empty_cache()
 
-    albedo = make_tileable(delight(img))
+    albedo = normalize_albedo(make_tileable(delight(img)), ALBEDO_MEAN[name])
     h = height_from_albedo(albedo)
     normal = normal_from_height(h, nstr)
     mr = pack_mr(h, rough, metal)
@@ -214,6 +244,17 @@ def forge_img2img(name: str, steps: int, seed: int, strength: float,
             src.save(os.path.join(root, name, "_source_crop.png"))
         except OSError:
             pass
+
+
+def remap(name: str):
+    """Re-derive height/normal/mr from the ALREADY-LANDED albedo (no GPU). The map
+    recipe is the tunable half of the forge — this lets us iterate relief/roughness
+    against the engine without burning another diffusion pass."""
+    _, rough, metal, nstr = SETS[name]
+    src = os.path.join(LOCAL_ROOT, name, "albedo.png")
+    albedo = normalize_albedo(Image.open(src).convert("RGB"), ALBEDO_MEAN[name])
+    h = height_from_albedo(albedo)
+    write_set(name, albedo, normal_from_height(h, nstr), pack_mr(h, rough, metal), h)
 
 
 def _roots():
@@ -287,11 +328,16 @@ def main():
                     help="img2img source PNG (overrides the reference crop)")
     ap.add_argument("--strength", type=float, default=0.45,
                     help="img2img denoise strength: low keeps the source's character")
+    ap.add_argument("--maps-only", dest="maps_only", action="store_true",
+                    help="re-derive height/normal/mr from the landed albedo.png (no GPU)")
     args = ap.parse_args()
     names = sorted(SETS) if args.all else ([args.set_name] if args.set_name else [])
     if not names:
         ap.error("pass --all or --set <name>")
     for i, n in enumerate(names):
+        if args.maps_only:
+            remap(n)
+            continue
         if args.img2img or args.from_image:
             forge_img2img(n, args.steps, args.seed + i * 101, args.strength,
                           args.from_image)

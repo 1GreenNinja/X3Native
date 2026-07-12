@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <string>
 
@@ -85,11 +86,22 @@ constexpr uint32_t kDeckFills      = 8;       // was 4
 // a directional bite that puts a HIGHLIGHT on the ring's upper plates and drops
 // its lower half into shadow, so the machined hardware reads as machined metal
 // instead of flat cardboard.
-constexpr float kGateKeyColor[3]   = { 0.82f, 0.86f, 0.95f };
-constexpr float kGateKeyI          = 11.0f;
+constexpr float kGateKeyColor[3]   = { 0.86f, 0.90f, 1.00f };
+constexpr float kGateKeyI          = 46.0f;   // NOT a typo. pointAtten = 1/(d^2+1): a
+                                              // key 5 m from the ring delivers I/27, and
+                                              // the forged albedo is a 0.16-linear dark
+                                              // metal in a near-black hall. The round-4
+                                              // gate only ever "read" because it was
+                                              // faking it with a self-emissive.
 constexpr float kGateKeyRange      = 10.0f;
-constexpr float kGateKeyUp         = 5.6f;    // height above the deck
-constexpr float kGateKeyHubOff     = 2.2f;    // hub-side offset from the gate plane
+constexpr float kGateKeyUp         = 3.9f;    // rakes the ring face from above-front
+constexpr float kGateKeyHubOff     = 1.9f;    // hub-side standoff from the gate plane
+// Warm UNDER-fill (the reference's conduit/indicator bounce on the lower plates).
+constexpr float kGateFillColor[3]  = { 1.00f, 0.66f, 0.36f };
+constexpr float kGateFillI         = 20.0f;
+constexpr float kGateFillRange     = 7.0f;
+constexpr float kGateFillUp        = 0.85f;
+constexpr float kGateFillHubOff    = 2.2f;
 
 // ---- Stone gateway ring geometry ----------------------------------------------
 // A SUBSTANTIAL, thick ring you walk through — a single circle of N deep tangent
@@ -125,7 +137,7 @@ inline float segHalfTangent(float ringR) {
 // so nothing ever reads as saturated yellow plastic). Flicker capped at 2.0.
 constexpr uint32_t kChevronCount   = 9;      // 9 locking clamps (one prominent at top)
 constexpr float    kChevAmber[3]   = { 1.00f, 0.46f, 0.08f };  // amber-orange lock glow
-constexpr float    kChevSeatR      = 2.02f;  // seat radius (clamp center, over the tube)
+constexpr float    kChevSeatR      = 2.35f;  // seat radius (the clamp CANS' axis, on the tube crest)
 constexpr float    kChevMinEm      = 0.70f;  // amber slit flicker trough
 constexpr float    kChevMaxEm      = 1.55f;  // amber slit flicker peak (powered)
 constexpr float    kChevEmCap      = 2.00f;  // HARD cap incl. surge lift (the brief's ~2.0)
@@ -174,18 +186,28 @@ constexpr float    kGateDarkTint[3]  = { 0.55f, 0.58f, 0.62f };  // hardware (ov
 // group gets a de-tealing grime tint (R held vs G/B suppressed), the accent
 // group keeps its teal but grimed down, hardware near pass-through (the
 // piston albedo is already near-black).
-constexpr float    kForgePlateTint[3] = { 0.40f, 0.41f, 0.44f };  // riveted armor -> DARK cool steel (was 0.58 = sandy)
-constexpr float    kForgeTealTint[3]  = { 0.38f, 0.42f, 0.43f };  // peeling teal accent, grimed DARK
-constexpr float    kForgeDarkTint[3]  = { 0.34f, 0.35f, 0.38f };  // gunmetal hardware — was 0.85, bleached the forged rust to sandy tan
+// ROUND 5 — the forged sets are now IMG2IMG'd FROM THE OWNER'S OWN REFERENCE
+// FRAME (tools/forge_gate_textures.py --img2img), so each albedo already carries
+// the reference's exact value, patina and rust bleed (means 39/58/71 etc. — real
+// weathered-metal darkness). The round-4 tints (0.34-0.44) existed to beat down
+// text-prompted albedos that came out sandy/bleached; multiplying THESE by 0.4
+// would crush the gate to near-black. Near pass-through now, with only a slight
+// de-teal on the dominant plate group (the locked palette wants dark steel
+// dominant, teal as accent).
+// Texture-gated ambient strength for the gate (see the authoring block).
+constexpr float    kGateAmbient       = 0.16f;
+constexpr float    kForgePlateTint[3] = { 1.00f, 0.96f, 0.92f };  // riveted armor — pass-through, de-tealed
+constexpr float    kForgeTealTint[3]  = { 0.95f, 1.00f, 1.00f };  // peeling teal accent keeps its oxide
+constexpr float    kForgeDarkTint[3]  = { 1.00f, 1.00f, 1.05f };  // machined hardware (already near-black)
 
 // ---- Segmented amber RATCHET TRACK (inner-facing edge; PortalAnimated.mp4) -----
 // Small amber segments ringing the gate's inner front edge. Dormant: dim.
 // SURGE: a bright chase sweeps the circumference (activation feedback).
 // OPEN: steady powered glow. All writes capped at kTrackEmCap.
-constexpr uint32_t kTrackSegs      = 36;
-constexpr float    kTrackR         = 1.80f;   // segment center radius
-constexpr float    kTrackHalfTan   = 0.10f;
-constexpr float    kTrackHalfRad   = 0.055f;
+constexpr uint32_t kTrackSegs      = 48;   // finer track on the bigger ring
+constexpr float    kTrackR         = 2.02f;   // segment center radius (rides the rounded track-bed collar)
+constexpr float    kTrackHalfTan   = 0.070f;
+constexpr float    kTrackHalfRad   = 0.040f;
 constexpr float    kTrackHalfDep   = 0.018f;
 constexpr float    kTrackEmIdle    = 0.22f;
 constexpr float    kTrackEmOpen    = 0.90f;
@@ -237,12 +259,12 @@ constexpr float    kAnchorHalfDep  = 0.45f;
 // (grate set, near-zero emissive); the identity lives ONLY on a thin emissive
 // TRIM RING at the deck's outer edge, its color desaturated ~50%.
 constexpr uint32_t kPlateSegments  = 8;
-constexpr float    kPlateRingR     = 1.30f;  // plate ring radius (center of each wedge)
+constexpr float    kPlateRingR     = 1.70f;  // plate ring radius (center of each wedge)
 constexpr float    kPlateHalfY     = 0.05f;  // plate slab half-Y (flat)
 constexpr float    kPlateBoxThick  = 0.50f;  // plate wedge half-extent (radial)
 constexpr float    kPlateDeckTint[3] = { 0.34f, 0.36f, 0.38f };  // dark deck metal
-constexpr float    kTrimRingInnerR = 1.58f;  // identity trim ring (thin, outer edge)
-constexpr float    kTrimRingOuterR = 1.68f;
+constexpr float    kTrimRingInnerR = 2.06f;  // identity trim ring (thin, outer edge)
+constexpr float    kTrimRingOuterR = 2.18f;
 constexpr float    kTrimRingEm     = 0.60f;  // capped accent — a trim, not a beacon
                                              // (round 3: dimmed; the F_2 hoop was loud)
 constexpr float    kTrimDesat      = 0.50f;  // identity colors desaturated ~50%
@@ -291,12 +313,21 @@ constexpr float    kCoreFreqHz        = 3.2f;           // core pulses faster th
 // The step-4 resolution of the blue-vs-grey conflict: keep the grey STONE ring,
 // but drive a cool-blue point light from each ring center that lights the stone
 // (+ floor + chevrons) blue, pulsing slowly with the hum so the gate breathes.
-constexpr float    kCoreLightBlue[3]  = { 0.30f, 0.60f, 1.00f };  // cool blue (plan spec)
-constexpr float    kCoreLightBase     = 2.2f;           // base intensity multiplier
-constexpr float    kCoreLightMin      = 1.4f;           // pulse-with-hum floor
-constexpr float    kCoreLightMax      = 3.2f;           // pulse-with-hum peak
+constexpr float    kCoreLightBlue[3]  = { 0.52f, 0.72f, 1.00f };  // cool blue, de-saturated so it
+                                                                //  LIGHTS the steel instead of painting it
+// ROUND 5: the ART TARGET says "each gate's membrane is the KEY LIGHT of its bay"
+// — and it never was. At base 2.2 / range 7 the core light delivered ~0.05
+// irradiance to the tube crest 2.35 m away: nothing. The gate hardware was lit by
+// literally nothing and only "read" because it carried a fake self-emissive.
+// mesh.frag's PBR lobe is energy-conserving (diffuse = albedo/PI) and pointAtten
+// is 1/(d^2+1), so a light 2-3 m off a 0.13-linear metal needs INTENSITY IN THE
+// TENS to land a highlight. It does now: the membrane floods its own ring with
+// blue, exactly like the reference stills.
+constexpr float    kCoreLightBase     = 11.0f;          // base intensity multiplier
+constexpr float    kCoreLightMin      = 9.0f;          // pulse-with-hum floor
+constexpr float    kCoreLightMax      = 15.0f;          // pulse-with-hum peak
 constexpr float    kCoreLightFreqHz   = 1.1f;           // slow hum-synced breathe
-constexpr float    kCoreLightRange    = 7.0f;           // reaches the gate + plate
+constexpr float    kCoreLightRange    = 9.5f;           // reaches the gate + plate
 
 // ---- Event-horizon membrane v2 (the DEEP-BLUE PLASMA STORM) --------------------
 // The fable-rock art pass (docs/RIFTHUB_ART_TARGET.md, palette LOCKED: BLUE
@@ -319,7 +350,7 @@ constexpr float    kCoreLightRange    = 7.0f;           // reaches the gate + pl
 // BORE. The authored GLB's inner throat barrel runs r 1.66..1.73, so 1.655 is the
 // largest disk that clears it (was 1.58 — a 0.08 m dead ring of barrel wall showed
 // between the storm and the ratchet track). +9.7% membrane area, zero clip.
-constexpr float    kMembraneR         = 1.655f;          // disk radius (gate bore inner wall 1.66)
+constexpr float    kMembraneR         = 1.895f;          // disk radius (the ROUNDED throat opens at 1.90)
 constexpr uint32_t kMembraneDiskSegs  = 48;              // fan segments (smooth silhouette)
 // Plasma layer: deep blue, saturated. Texture carries the white-blue filament
 // detail; the per-entity emissive tint keeps the whole sheet blue-dominant.
@@ -352,7 +383,7 @@ constexpr float    kFlipTint[3]       = { 0.70f, 0.83f, 1.00f };
 // membrane edge (the one deliberately hot line, blue-tinted, dimmer than
 // before), plus two static dimmer/thinner shells stepped hub-side so the
 // glow visibly decays away from the membrane (the fresnel read).
-constexpr float    kRimR              = 1.628f;          // contact ring centerline radius
+constexpr float    kRimR              = 1.868f;          // contact ring centerline radius
                                                          // (tube 0.03 -> outer 1.658 = the
                                                          //  new membrane edge; still inside
                                                          //  the 1.66 bore, never buried in it)
@@ -362,11 +393,11 @@ constexpr float    kRimEmBase         = 1.10f;
 constexpr float    kRimShimmerAmp     = 0.22f;
 constexpr float    kRimShimmerHz      = 0.90f;
 constexpr float    kRimEmCap          = 1.70f;   // v1 lesson: >2.9 reads WHITE after ACES
-constexpr float    kRimFallRA         = 1.600f;  // falloff shell A (mid)
+constexpr float    kRimFallRA         = 1.845f;  // falloff shell A (mid)
 constexpr float    kRimFallTubeA      = 0.021f;
 constexpr float    kRimFallOffA       = 0.055f;  // hub-side offset from the membrane
 constexpr float    kRimFallEmA        = 0.42f;
-constexpr float    kRimFallRB         = 1.585f;  // falloff shell B (outermost, faintest)
+constexpr float    kRimFallRB         = 1.825f;  // falloff shell B (outermost, faintest)
 constexpr float    kRimFallTubeB      = 0.015f;
 constexpr float    kRimFallOffB       = 0.115f;
 constexpr float    kRimFallEmB        = 0.16f;
@@ -382,7 +413,7 @@ constexpr float    kKawooshDecay      = 3.4f;            // exponential decay ra
 constexpr float    kKawooshTint[3]    = { 0.62f, 0.80f, 1.00f };  // surge color (pale blue)
 // ---- Membrane lightning arcs (the lightning-gun forked-bolt idea, re-done
 // as membrane tendrils: short-lived jagged chords crawling the disk) ------------
-constexpr float    kArcThickness      = 0.020f;          // beam half-thickness (m)
+constexpr float    kArcThickness      = 0.013f;          // beam half-thickness (m) — round 5: thinner; the taper does the rest
 constexpr uint32_t kArcSegs           = 7;               // polyline segments per arc
 constexpr float    kArcLifeMin        = 0.22f;           // seconds
 constexpr float    kArcLifeMax        = 0.55f;
@@ -1208,8 +1239,23 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 }
                 e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1];
                 e.baseColor[2] = tint[2]; e.baseColor[3] = 1.0f;
+                // AMBIENT TERM — TEXTURE-GATED, not a flat glow. The round-3/4 gate
+                // carried a FLAT emissive (kRingEmissive on a solid tint, no emissive
+                // MAP): in a hall this dark that flat self-lift was ~90% of the ring's
+                // final pixel value (measured — forcing the baseColor to pure RED moved
+                // the gate by <8/255), so the ring rendered as a shadowless grey cutout
+                // and every texture round was painted over by the gate's own glow.
+                // Here the emissive is GATED BY THE ALBEDO MAP itself: emis = tint *
+                // albedoTex * kGateAmbient. It stands in for the bounce light this dark
+                // interior does not simulate, but it carries the FORGED DETAIL — the
+                // rivets, seams, rust bleed and teal oxide from the owner's own
+                // reference frame read as light and shade instead of being erased —
+                // and the point-light rig still lays true specular highlights along the
+                // rounded pipework on top of it.
+                e.emissiveTex = sf->ok ? sf->albedo : x3::rhi::TextureHandle{};
                 e.emissive[0] = tint[0]; e.emissive[1] = tint[1];
-                e.emissive[2] = tint[2]; e.emissive[3] = kRingEmissive;
+                e.emissive[2] = tint[2];
+                e.emissive[3] = sf->ok ? kGateAmbient : 0.0f;
                 e.tag = (uint32_t)Tag::Prop;
                 x3::asset::mulMat4(gateXf, dr.nodeTransform, e.transform);
                 scene.add(e);   // mesh owned by the LOADER — not m_portalMeshes
@@ -1360,14 +1406,14 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // tight lower-flank HAIRPINS — so the runs stay below y~1.5.
             const float off = -0.35f;   // just hub-side of the gate midplane
             const x3::phys::Vec3 runA[5] = {
-                gatePt( 2.60f, 1.55f, off), gatePt( 2.95f, 1.15f, off),
-                gatePt( 2.95f, 0.45f, off), gatePt( 2.30f, 0.16f, off),
-                gatePt( 1.00f, 0.16f, off),
+                gatePt( 3.30f, 1.55f, off), gatePt( 3.62f, 1.15f, off),
+                gatePt( 3.62f, 0.45f, off), gatePt( 2.95f, 0.16f, off),
+                gatePt( 1.40f, 0.16f, off),
             };
             const x3::phys::Vec3 runB[5] = {
-                gatePt(-2.55f, 1.35f, off), gatePt(-2.88f, 1.00f, off),
-                gatePt(-2.88f, 0.40f, off), gatePt(-2.15f, 0.16f, off),
-                gatePt(-0.95f, 0.16f, off),
+                gatePt(-3.25f, 1.35f, off), gatePt(-3.55f, 1.00f, off),
+                gatePt(-3.55f, 0.40f, off), gatePt(-2.80f, 0.16f, off),
+                gatePt(-1.35f, 0.16f, off),
             };
             // Orthonormal basis for a pipe segment a->b: u/v span the cross-
             // section, d runs along the pipe. Mirrors beamXform's frame math.
@@ -1468,7 +1514,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float locX3[3] = { rightX, 0.0f, rightZ };
             const float locY3[3] = { outwardX, 0.0f, outwardZ };
             const float locZ3[3] = { 0.0f, 1.0f, 0.0f };
-            const x3::phys::Vec3 at = gatePt(2.95f, 0.95f - 0.30f * (float)coil, -0.35f);
+            const x3::phys::Vec3 at = gatePt(3.62f, 0.95f - 0.30f * (float)coil, -0.35f);
             Entity e;
             e.mesh = device.createMesh(torus.verts.data(), (uint32_t)torus.verts.size(),
                                        torus.index.data(), (uint32_t)torus.index.size());
@@ -1486,7 +1532,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // frame (visible connection, no floating glass), and a mount clamp
         // where frame meets post. Teal output dimmed ~30%.
         for (int scr = -1; scr <= 1; scr += 2) {
-            const float sideR = 2.45f * (float)scr;
+            const float sideR = 3.95f * (float)scr;
             const x3::phys::Vec3 at = gatePt(sideR, 1.52f, -1.35f);
             // Post — set back of the pane, running full height to behind the frame.
             const float postOff = 0.055f;   // outward (away from the hub viewer)
@@ -1897,6 +1943,17 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             L.color[1] = kGateKeyColor[1] * kGateKeyI;
             L.color[2] = kGateKeyColor[2] * kGateKeyI;
             m_lights.push_back(L);
+            // Warm under-fill: lifts the lower plates + the cradle out of black so
+            // the gate reads as a whole machine, not a lit crown on a void.
+            x3::rhi::PointLight W;
+            W.pos[0] = p.worldPos.x - ux * kGateFillHubOff;
+            W.pos[1] = kGateFillUp;
+            W.pos[2] = p.worldPos.z - uz * kGateFillHubOff;
+            W.range  = kGateFillRange;
+            W.color[0] = kGateFillColor[0] * kGateFillI;
+            W.color[1] = kGateFillColor[1] * kGateFillI;
+            W.color[2] = kGateFillColor[2] * kGateFillI;
+            m_lights.push_back(W);
         }
     }
 
@@ -1949,7 +2006,7 @@ void Rifthub::tick(float dt, Scene& scene) {
             const float lS  = std::sin(m_time * (twoPi * kCoreLightFreqHz) + phase);
             const float l01 = 0.5f * (lS + 1.0f);
             float lI  = kCoreLightMin + (kCoreLightMax - kCoreLightMin) * l01;
-            lI += surge01 * 1.6f;   // the kawoosh also floods the bay with light
+            lI += surge01 * 8.0f;   // the kawoosh also floods the bay with light
             m_lights[i].color[0] = kCoreLightBlue[0] * lI;
             m_lights[i].color[1] = kCoreLightBlue[1] * lI;
             m_lights[i].color[2] = kCoreLightBlue[2] * lI;
@@ -2083,22 +2140,29 @@ void Rifthub::tick(float dt, Scene& scene) {
                                    kRimEmCap);
         }
 
-        // --- Lightning-arc spawner. IDLE: sparse cross-disk chords. SURGE:
-        //     pool forced FULL of rim-orbit whips (the VORTEX RING). OPEN:
-        //     center->rim radial streamers at a moderate rate.
+        // --- Lightning-arc spawner — SURGE ONLY (round 5, owner's verdict on the
+        //     idle bolts: "2nd grade crayon"). He is right, and the reason is
+        //     structural: the FLIPBOOK IS THE OWNER'S REFERENCE VIDEO, and its
+        //     pixels already contain real, beautifully-simulated lightning
+        //     filaments. Drawing uniform-width, hard-cornered procedural
+        //     polylines ON TOP of that footage can only VANDALIZE it — the
+        //     membrane's own lightning is strictly better than anything we stamp
+        //     over it. So IDLE draws NO arcs (the flipbook speaks) and OPEN draws
+        //     NO arcs (the throat's radial streaming is baked into its texture).
+        //     Arcs survive ONLY for the 1.6 s activation SURGE, where they are a
+        //     rim-orbit VORTEX RING the flipbook does not contain — an EVENT, not
+        //     a decoration — and drawFx() now tapers them (width falls off toward
+        //     the tips, per-segment brightness jitter) so they read as electricity
+        //     instead of crayon.
         p.arcCooldown -= dt;
         for (uint32_t a = 0; a < RiftPortal::kMaxArcs; ++a)
             if (p.arcs[a].life > 0.0f) p.arcs[a].life -= dt;
         uint32_t live = 0;
         for (uint32_t a = 0; a < RiftPortal::kMaxArcs; ++a)
             if (p.arcs[a].life > 0.0f) ++live;
-        const int arcMode = surging ? 1 : (open ? 2 : 0);
-        if (live < RiftPortal::kMaxArcs &&
-            (surging || p.arcCooldown <= 0.0f)) {
-            spawnArc(p, arcMode);
-            const float cdScale = open ? 0.55f : 1.0f;   // throat streams more often
-            p.arcCooldown = surging ? 0.02f
-                          : (kArcCooldownMin + (kArcCooldownMax - kArcCooldownMin) * frand()) * cdScale;
+        if (surging && live < RiftPortal::kMaxArcs) {
+            spawnArc(p, /*mode=*/1);   // the vortex ring
+            p.arcCooldown = 0.02f;
         }
 
         // --- Spark motes: steady bleed off the membrane (kawoosh bursts are
@@ -2246,10 +2310,13 @@ void Rifthub::drawFx(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
             // Rim-orbit whips (SURGE vortex ring) sweep a long angle: more
             // segments + tighter jitter so the orbit reads as a circling ring;
             // idle chords / open radials keep the coarse crackling look.
-            const uint32_t segs = (arc.mode == 1) ? 12u : kArcSegs;
-            const float jamp = (arc.mode == 1) ? 0.07f : 0.16f;
-            const float thick = kArcThickness * (0.7f + 0.3f * env)
-                              * ((arc.mode == 1) ? 1.35f : 1.0f);
+            // ROUND 5 arc rebuild (the owner's "crayon" note): a real bolt is not
+            // a uniform-width tube. Width TAPERS to nothing at both tips, each
+            // segment carries its own brightness, and the jitter runs finer — so
+            // the surge vortex reads as electricity whipping the rim, not as a
+            // stroke drawn with a marker.
+            const uint32_t segs = 18u;                  // finer polyline (was 12)
+            const float jamp = 0.045f;                  // finer jitter
             for (uint32_t s3 = 1; s3 <= segs; ++s3) {
                 const float t = (float)s3 / (float)segs;
                 // Interpolate in POLAR space so the tendril hugs the disk.
@@ -2264,10 +2331,19 @@ void Rifthub::drawFx(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
                     pt.z += p.rightZ * j1;
                     if (s3 == segs / 2 && arc.fork) { forkFrom = pt; haveFork = true; }
                 }
+                // TAPER: sin-shaped width envelope over the arc's length (fat in
+                // the belly, vanishing at both tips) x the life envelope.
+                const float tm = (float)s3 / (float)segs;
+                const float taper = std::sin(3.14159265f * tm);
+                const float thick = kArcThickness * (0.35f + 0.65f * env)
+                                  * (0.15f + 0.85f * taper * taper);
+                // Per-segment brightness: the belly burns, the tips fade out.
+                float segEm[4] = { em[0], em[1], em[2],
+                                   em[3] * (0.30f + 0.70f * taper) * (0.75f + 0.25f * jr()) };
                 float model[16];
                 beamXform(model, prev, pt, thick);
                 device.drawMeshEmissive(frame, m_fxBeamMesh, x3::rhi::TextureHandle{},
-                                        kArcColor, em, model);
+                                        kArcColor, segEm, model);
                 prev = pt;
             }
             // Short fork branch off the midpoint (the forked-bolt read).
@@ -2287,7 +2363,7 @@ void Rifthub::drawFx(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
                         pt.x += p.rightX * j1; pt.y += j2; pt.z += p.rightZ * j1;
                     }
                     float model[16];
-                    beamXform(model, fp, pt, kArcThickness * 0.55f);
+                    beamXform(model, fp, pt, kArcThickness * 0.45f * (1.0f - 0.6f * (float)fs / 3.0f));
                     device.drawMeshEmissive(frame, m_fxBeamMesh, x3::rhi::TextureHandle{},
                                             kArcColor, em, model);
                     fp = pt;
@@ -2371,12 +2447,32 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // behind the gates". The hall must READ (columns/beams/machinery as lit
     // silhouettes) while staying a moody dark-industrial grade.
     // ROUND 5 (owner: "we did NOT get any more light in the room" — he wants to
-    // SEE the wet floor): ambient +45% on top of the rebuilt point-light rig,
-    // and the exposure bias comes UP a notch. Still a dark hall — the membranes
-    // remain the brightest thing in it by a wide margin.
-    device.setAmbient(0.190f, 0.210f, 0.260f);
+    // SEE the wet floor): the extra light comes from the rebuilt POINT-LIGHT rig,
+    // NOT from ambient. Ambient is omnidirectional: raising it lifts every surface
+    // uniformly, which lights the room by DESTROYING its contrast — it washed the
+    // gate's forged plates into flat grey cardboard (measured: a 45% ambient lift
+    // turned the ring's albedo variation into a neutral 0.31 wash). So ambient goes
+    // DOWN from the round-2 value, the directional fills carry the room, and the
+    // gate hardware gets its highlight/shadow separation back.
+    device.setAmbient(0.100f, 0.112f, 0.140f);
     device.setIblProbe(true);
-    device.setExposure(1.28f);
+    // ROUND 5 — THE GHOST-GATE CURE. The hub never called setIblIntensity, so it
+    // ran at 1.0: FULL environment IBL on every surface. mesh.frag's iblAmbient()
+    // adds prefiltered env specular weighted by the split-sum BRDF *bias* term
+    // (`ab.y`), which is ALBEDO-INDEPENDENT — so a bright env cube paints a
+    // neutral grey wash over a surface no matter what its albedo says. On the
+    // gate's dense, curved, grazing-angle plates that wash WON: the ring rendered
+    // as a pale translucent grey shell and four rounds of texture work (curated
+    // sets, SD3.5 text-forge, now img2img-from-reference) were invisible under it.
+    // Proof: forcing the gate's baseColor to pure RED did not change a pixel; the
+    // albedo term simply wasn't in the fight.
+    // This is exactly the SEAM-2 knob the interface documents for a mood-calibrated
+    // interior. At 0.30 the gate's own forged albedo + the point-light rig carry the
+    // metal, and the wet floor keeps its reflections (they come from the probe, not
+    // from this scale).
+    const float kIblInterior = 0.30f;
+    device.setIblIntensity(kIblInterior);
+    device.setExposure(1.24f);
 }
 
 void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
@@ -2709,14 +2805,26 @@ bool runRifthubSelfTest() {
                 "T6 emissive cap law: kawoosh surge stays <= caps, blue dominant");
     }
 
-    // T7 — membrane FX are ALIVE: after the T6 ticking, the ticking portals
-    //      have live lightning arcs (the spawner keeps tendrils crawling) and
-    //      the hub has live spark motes (steady bleed + kawoosh bursts).
+    // T7 — membrane FX law (ROUND 5, the owner's "2nd grade crayon" verdict on the
+    //      procedural bolts): the baked FLIPBOOK already carries the reference
+    //      video's own lightning, so NO procedural arcs may be drawn over a settled
+    //      membrane. Arcs are a SURGE-ONLY event (the rim vortex the flipbook does
+    //      not contain). Assert both halves:
+    //        (a) after the T6 surges have decayed, every portal has ZERO live arcs
+    //            (idle + open membranes are left alone), while spark motes still
+    //            bleed off the storm;
+    //        (b) firing a fresh kawoosh spawns arcs again within a tick.
     {
-        uint32_t arcs = 0;
-        for (uint32_t i = 0; i < hub.portalCount(); ++i) arcs += hub.liveArcCount(i);
-        rhCheck(arcs > 0 && hub.liveMoteCount() > 0,
-                "T7 membrane FX alive: lightning arcs + spark motes exist");
+        uint32_t settledArcs = 0;
+        for (uint32_t i = 0; i < hub.portalCount(); ++i) settledArcs += hub.liveArcCount(i);
+        const bool motesAlive = hub.liveMoteCount() > 0;
+        RiftPortal& p2 = const_cast<RiftPortal&>(hub.portal(2));
+        p2.kawoosh = kKawooshDur;
+        hub.tick(1.0f / 60.0f, scene);
+        const bool surgeArcs = hub.liveArcCount(2) > 0;
+        rhCheck(settledArcs == 0 && motesAlive && surgeArcs,
+                "T7 FX law: no arcs over a settled membrane (the flipbook's own "
+                "lightning reads); the SURGE vortex still fires; motes alive");
     }
 
     // T8 — MEMBRANE STATE MACHINE (PortalAnimated.mp4 arc): after activation +

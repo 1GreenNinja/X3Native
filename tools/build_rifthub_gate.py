@@ -1,45 +1,68 @@
 """
-build_rifthub_gate.py — headless Blender AUTHOR of the RIFTHUB industrial gate
-(ROUND 3 "density round", docs/RIFTHUB_ART_TARGET.md).
+build_rifthub_gate.py — ROUND 5: the RIFTHUB gate, authored in Blender as
+ROUNDED INDUSTRIAL PIPEWORK (owner's directive, verbatim):
+
+    "Your center is perfect. ENLARGEN IT. Just MAKE a model in Blender,
+     ROUNDED PIPE, with TEXTURES FROM SD3.5 bASED On Groks Image"
+    "make the surrounding industrial gray metal electronic unit look like an
+     industrial portal generator! Not basic squared off shapes!!!"
 
     blender-launcher.exe --background --python tools/build_rifthub_gate.py -- <out.glb>
 
-Procedurally builds ONE dense Stargate-style industrial gate mesh — segmented
-stacked ring plates, 9 chunky chamfered clamp housings with jaw flanges +
-pivot bosses, piston/actuator rods bridging ring segments, accumulator
-cylinders, pipe runs hugging the outer rim with collars, bolt rings, vent
-slits, and a base plinth + angled shoulder skirt that mates with the engine's
-gate cradle — then joins everything into THREE material-group meshes
-(gate_patina / gate_steel / gate_dark), smart-UV-unwraps each, and exports a
-single GLB the engine instances 8x (app/rifthub.cpp gate-GLB path).
+WHY THIS IS A REWRITE, NOT A TWEAK:
 
-LOCAL SPACE CONTRACT (must match rifthub.cpp's portal basis):
-  glTF space after export_yup=True: gate stands in the local XY plane,
-  +Y = 12 o'clock, hole axis = +Z, FRONT (hub-facing, where the engine's
-  amber chevron slits + ratchet track sit proud) = -Z. Ring center at the
-  origin; the engine translates it to (cx, kRingY=2.2, cz). The floor is
-  therefore local y = -2.2.
-  We AUTHOR in that same XY/-Z frame in Blender, then rotate the finished
-  meshes +90 deg about X (authoring (x,y,z) -> Blender (x,-z,y)) so Blender's
-  Y-up GLB exporter lands them back exactly in the contract frame.
+ 1. VOCABULARY. The round-3/4 gate was swept RECTANGULAR profiles — flat square
+    slabs glued in a circle. This one is built from ROUND primitives only: a
+    swept circular-section TORUS is the ring body, and everything bolted to it
+    is a cylinder, a torus collar, a sphere joint, or a round-bevelled pipe
+    curve. Rounded surfaces carry a specular streak ALONG their length, and that
+    streak is what makes metal read as machined metal instead of cardboard.
+    Boxes appear exactly once (heat-sink fins) and even those are bevelled.
 
-KEY ENGINE DIMENSIONS HONOURED (rifthub.cpp):
-  ring centerline R=2.05, tube r=0.40 (band 1.65..2.45), membrane R=1.58,
-  fresnel rim R=1.615 — the inner throat stays >= 1.66 so nothing clips;
-  amber ratchet track segs at r=1.80, z=-0.443..-0.479 -> a recessed track
-  BED ring is authored at r 1.70..1.92 with its face at z=-0.468 so the
-  engine's segs sit ~0.011 proud (seated, not floating);
-  chevron slits at r=2.02, z=-0.762 -> clamp cap faces at z=-0.75 so each
-  slit floats 0.012 proud of its housing (the powered-lock read).
+ 2. NORMALS — THE BUG THAT ATE FOUR ART ROUNDS. The old hand-rolled sweep()
+    emitted 30-43% of its hub-facing triangles INSIDE-OUT (measured off the
+    shipped GLB: normals inverted AND wound backwards, so they were also
+    backface-culled). That is the real "ghost glass / X-ray" the last round
+    chased into the SSR code, and it is why the gate's entire front annulus
+    rendered BLACK no matter how much light was thrown at it — the round-3/4
+    gate only ever "read" at all because it was faking it with a fake
+    self-emissive. Every shape here comes from a watertight bpy primitive (or a
+    bevelled curve), and normals_outward() additionally verifies each object's
+    SIGNED VOLUME is positive and flips it otherwise. The gate is now provably
+    outward-facing, so it can finally take a light.
+
+ 3. SHADING. shade_smooth + an EDGE SPLIT at 40 deg: round surfaces stay smooth
+    (so a tube takes a highlight along its length), hard machined edges stay crisp.
+
+ 4. THE BORE IS BIGGER ("ENLARGEN IT"). The ring is a torus of centerline
+    R=2.35 / tube r=0.45, so its throat — a ROUNDED throat, not a square barrel —
+    opens at r=1.90. The engine's membrane grows to R=1.895 (1.58 in round 4,
+    1.655 after the two-sided fix): +20% radius / +44% area, filling the opening.
+
+LOCAL SPACE CONTRACT (must match rifthub.cpp's portal basis) — unchanged:
+  the gate stands in the local XY plane, +Y = 12 o'clock, hole axis = +Z, FRONT
+  (hub-facing, where the engine's amber chevron slits + ratchet track sit proud)
+  = -Z. Ring center at the origin; the engine translates it to (cx, kRingY=2.2,
+  cz), so the floor is local y = -2.2. We author in that frame, then rotate +90
+  deg about X so Blender's Y-up glTF exporter lands it back in the contract frame.
+
+ENGINE ANCHORS HONOURED (rifthub.cpp round-5 constants):
+  membrane R=1.895, fresnel rim R=1.868 -> the torus throat at 1.90 clears both;
+  amber ratchet track segs at r=2.02, front face z=-0.461 -> a rounded TRACK BED
+  collar is seated with its front face at z=-0.436, so the segs sit 0.025 proud;
+  9 chevron slits at r=2.35, z=-0.762 -> the clamp housings' front caps land at
+  z=-0.750, so each slit floats 0.012 proud of its housing (the powered-lock read).
   9 clamps at th = 90 - c*40 deg (chevron 0 at 12 o'clock, clockwise).
 
-ENV NOTE (this box): Store-Blender — blender.exe ACL-denied, blender-launcher
-DETACHES; we report through `<out>.log` + `<out>.done` (poll them).
+ENV NOTE (this box): Store-Blender — blender.exe is ACL-denied, blender-launcher
+DETACHES (no stdout); we report through `<out>.log` + `<out>.done` (poll them).
+Driver: tools/gate_build.ps1 (keep it ASCII-only).
 
 Clean-room: public Blender Python API + glTF 2.0 spec only. All-original
 procedural authorship — no third-party gate models consulted or copied.
 """
 import bpy, bmesh, math, os, random, sys
+from mathutils import Vector, Matrix
 
 ARGV = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 OUT = ARGV[0] if ARGV else os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -51,356 +74,294 @@ LOG_PATH, DONE_PATH = OUT + ".log", OUT + ".done"
 _log = []
 def log(*a):
     s = "[gatebuild] " + " ".join(str(x) for x in a)
-    _log.append(s); print(s)
+    _log.append(s)
+    print(s)
 
 def flush_log(status):
     try:
-        with open(LOG_PATH, "w", encoding="utf-8") as f: f.write("\n".join(_log))
-        with open(DONE_PATH, "w", encoding="utf-8") as f: f.write(status)
-    except Exception as e:
-        print("[gatebuild] could not write log/marker:", e)
+        with open(LOG_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(_log))
+        with open(DONE_PATH, "w", encoding="utf-8") as f:
+            f.write(status)
+    except Exception:
+        pass
 
-TAU = math.tau
-D = math.radians
-R = random.Random(0xF4B7E)   # deterministic jitter
+TAU = math.pi * 2.0
+def D(deg):
+    return math.radians(deg)
+R = random.Random(90210)
 
-# Material groups: every builder appends its object to one of these.
+# ---- geometry constants (the local contract frame) --------------------------
+RING_R      = 2.35     # torus centerline radius
+RING_TUBE   = 0.45     # tube radius -> throat opens at 1.90, rim reaches 2.80
+BORE        = RING_R - RING_TUBE          # 1.90 (the rounded throat)
+TRACK_R     = 2.02     # the engine's amber ratchet segs ride here
+CHEV_R      = 2.35     # the engine's amber chevron slits ride here (tube crest)
+CHEV_CAP_Z  = -0.750   # clamp housing front-cap plane (slits float 0.012 proud)
+FLOOR_Y     = -2.20    # world y=0 in the local frame
+
 GROUPS = {"patina": [], "steel": [], "dark": []}
-
-def register(obj, group):
-    GROUPS[group].append(obj)
-    return obj
-
-# ---------------------------------------------------------------------------
-# Geometry helpers
-# ---------------------------------------------------------------------------
-def new_object(name, bm):
-    me = bpy.data.meshes.new(name)
-    bm.normal_update()
-    bm.to_mesh(me)
-    bm.free()
-    ob = bpy.data.objects.new(name, me)
-    bpy.context.collection.objects.link(ob)
+def register(ob, group):
+    GROUPS[group].append(ob)
     return ob
 
-def sweep(name, profile, a0, a1, steps):
-    """Sweep a closed (r,z) polygon around the gate axis: (r,z) at angle a ->
-    (r*cos a, r*sin a, z). Partial arcs get end-cap n-gons; full circles wrap.
-    Normals recalculated outward (closed solid)."""
-    bm = bmesh.new()
-    n = len(profile)
-    full = abs((a1 - a0) - TAU) < 1e-5
-    ring_count = steps if full else steps + 1
-    rings = []
-    for s in range(ring_count):
-        a = a0 + (a1 - a0) * s / steps
-        ca, sa = math.cos(a), math.sin(a)
-        rings.append([bm.verts.new((r * ca, r * sa, z)) for (r, z) in profile])
-    for s in range(steps):
-        r0 = rings[s]
-        r1 = rings[(s + 1) % ring_count]
-        for i in range(n):
-            j = (i + 1) % n
-            bm.faces.new((r0[i], r0[j], r1[j], r1[i]))
-    if not full:
-        bm.faces.new(rings[0])
-        bm.faces.new(list(reversed(rings[-1])))
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    return new_object(name, bm)
-
-def rect_profile(r0, r1, z0, z1, c=0.0):
-    """Chamfered rectangle in the (r,z) plane (r0<r1, z0<z1). c = corner cut."""
-    if c <= 1e-6:
-        return [(r0, z0), (r1, z0), (r1, z1), (r0, z1)]
-    return [(r0 + c, z0), (r1 - c, z0), (r1, z0 + c), (r1, z1 - c),
-            (r1 - c, z1), (r0 + c, z1), (r0, z1 - c), (r0, z0 + c)]
-
-def circle_profile(rc, zc, pr, n=10):
-    return [(rc + pr * math.cos(TAU * k / n), zc + pr * math.sin(TAU * k / n))
-            for k in range(n)]
-
-def apply_bevel(ob, width, segments=1, angle=40.0):
-    md = ob.modifiers.new("bev", 'BEVEL')
-    md.width = width
-    md.segments = segments
-    md.limit_method = 'ANGLE'
-    md.angle_limit = D(angle)
+# ---------------------------------------------------------------------------
+# Primitive helpers. EVERY shape is a watertight bpy primitive or a bevelled
+# curve -> correct winding + outward normals by construction (the round-4 bug).
+# ---------------------------------------------------------------------------
+def _apply(ob, name):
     bpy.ops.object.select_all(action='DESELECT')
     ob.select_set(True)
     bpy.context.view_layer.objects.active = ob
-    bpy.ops.object.modifier_apply(modifier=md.name)
+    bpy.ops.object.modifier_apply(modifier=name)
 
-def box(name, hx, hy, hz, loc, rotz=0.0, rot=None, bev=0.02, seg=1):
-    """Chamfered box. hx/hy/hz half-extents; rotz = Z euler; rot overrides."""
-    bpy.ops.mesh.primitive_cube_add(size=2.0, location=loc)
-    ob = bpy.context.active_object
-    ob.name = name
-    ob.scale = (hx, hy, hz)
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    if bev > 0:
-        apply_bevel(ob, bev, seg)
-    ob.rotation_euler = rot if rot else (0.0, 0.0, rotz)
+def _finish(ob, bev=0.0):
+    if bev > 0.0:
+        md = ob.modifiers.new("bev", 'BEVEL')
+        md.width = bev
+        md.segments = 2
+        md.limit_method = 'ANGLE'
+        md.angle_limit = D(40)
+        _apply(ob, md.name)
+    bpy.ops.object.select_all(action='DESELECT')
+    ob.select_set(True)
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.shade_smooth()
+    # EDGE SPLIT: curved surfaces stay smooth, hard machined edges stay crisp.
+    md = ob.modifiers.new("es", 'EDGE_SPLIT')
+    md.split_angle = D(40)
+    _apply(ob, md.name)
     return ob
 
-def cyl(name, r, depth, loc, rot=(0.0, 0.0, 0.0), verts=12, bev=0.012):
+def torus(name, major, minor, loc=(0, 0, 0), rot=(0, 0, 0), mseg=64, nseg=20,
+          zscale=1.0):
+    bpy.ops.mesh.primitive_torus_add(major_radius=major, minor_radius=minor,
+                                     major_segments=mseg, minor_segments=nseg,
+                                     location=loc, rotation=rot)
+    ob = bpy.context.active_object
+    ob.name = name
+    if zscale != 1.0:                     # flattened donut = a rounded COLLAR
+        ob.scale = (1.0, 1.0, zscale)
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    return _finish(ob)
+
+def cyl(name, r, depth, loc, rot=(0, 0, 0), verts=20, bev=0.014):
     bpy.ops.mesh.primitive_cylinder_add(vertices=verts, radius=r, depth=depth,
                                         location=loc, rotation=rot)
     ob = bpy.context.active_object
     ob.name = name
-    if bev > 0:
-        # Bevel BEFORE the rotation matters is fine: modifier works in local space.
-        apply_bevel(ob, bev, 1, angle=35.0)
-    return ob
+    return _finish(ob, bev)
+
+def ball(name, r, loc, seg=16):
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=seg, ring_count=max(6, seg // 2),
+                                         radius=r, location=loc)
+    ob = bpy.context.active_object
+    ob.name = name
+    return _finish(ob)
+
+def cube(name, hx, hy, hz, loc, rot=(0, 0, 0), bev=0.03):
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=loc, rotation=rot)
+    ob = bpy.context.active_object
+    ob.name = name
+    ob.scale = (hx, hy, hz)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    return _finish(ob, bev)
+
+def pipe(name, pts, radius, res=6):
+    """A round-bevelled PIPE through `pts` (the owner's 'ROUNDED PIPE'): a poly
+    curve with a circular bevel, converted to a watertight capped mesh."""
+    cu = bpy.data.curves.new(name, 'CURVE')
+    cu.dimensions = '3D'
+    cu.bevel_depth = radius
+    cu.bevel_resolution = res
+    cu.use_fill_caps = True
+    sp = cu.splines.new('POLY')
+    sp.points.add(len(pts) - 1)
+    for i, p in enumerate(pts):
+        sp.points[i].co = (p[0], p[1], p[2], 1.0)
+    ob = bpy.data.objects.new(name, cu)
+    bpy.context.collection.objects.link(ob)
+    bpy.ops.object.select_all(action='DESELECT')
+    ob.select_set(True)
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.convert(target='MESH')
+    return _finish(bpy.context.active_object)
+
+def arc_pts(r, a0, a1, z, n=16):
+    return [(r * math.cos(a0 + (a1 - a0) * i / n),
+             r * math.sin(a0 + (a1 - a0) * i / n), z) for i in range(n + 1)]
 
 def radial(th, r, z):
     return (r * math.cos(th), r * math.sin(th), z)
 
+def aim(vec):
+    """Euler that points a Z-axis primitive (cylinder) along `vec`."""
+    return Vector(vec).normalized().to_track_quat('Z', 'Y').to_euler()
+
+def clamp_angles():
+    return [D(90) - c * D(40) for c in range(9)]
+
 # ---------------------------------------------------------------------------
-# 1) RING CORE — inner throat barrel + track bed + segmented face/rim plates
+# 1) THE RING — one swept circular profile. Its inner surface IS the rounded
+#    throat the membrane fills: no square barrel, no flat annulus.
 # ---------------------------------------------------------------------------
 def build_ring():
-    # Inner throat barrel (the wall you see through the ring's opening).
-    register(sweep("barrel", rect_profile(1.66, 1.73, -0.46, 0.46, 0.015),
-                   0, TAU, 96), "dark")
-    # Recessed track bed on the FRONT face — the engine's amber ratchet segs
-    # (r 1.745..1.855, front z -0.479) sit ~0.011 proud of the bed's -0.468 face.
-    register(sweep("trackbed", rect_profile(1.70, 1.93, -0.468, -0.44, 0.008),
-                   0, TAU, 96), "dark")
-    # FRONT plate ring: 18 weathered arc plates (r 1.94 out), varying depth,
-    # alternating patina/steel so the face doesn't read as one chalky wash.
-    for s in range(18):
-        a0 = s * TAU / 18 + D(1.2)
-        a1 = (s + 1) * TAU / 18 - D(1.2)
-        r_out = 2.30 + 0.07 * R.random()
-        z1 = -0.505 - 0.035 * (s % 2) - 0.012 * R.random()
-        register(sweep("fplate%d" % s,
-                       rect_profile(1.94, r_out, z1, -0.452, 0.013), a0, a1, 8),
-                 "patina" if s % 3 else "steel")
-    # BACK plate ring: 18 plates offset half a slot.
-    for s in range(18):
-        a0 = s * TAU / 18 + D(10) + D(1.2)
-        a1 = s * TAU / 18 + D(10) + TAU / 18 - D(1.2)
-        r_out = 2.32 + 0.05 * R.random()
-        z1 = 0.505 + 0.030 * ((s + 1) % 2) + 0.010 * R.random()
-        register(sweep("bplate%d" % s,
-                       rect_profile(1.74, r_out, 0.452, z1, 0.013), a0, a1, 8),
-                 "patina")
-    # OUTER rim layer A: 12 heavy arc plates spanning the depth.
-    for s in range(12):
-        a0 = s * TAU / 12 + D(1.6)
-        a1 = (s + 1) * TAU / 12 - D(1.6)
-        register(sweep("rimA%d" % s,
-                       rect_profile(2.34, 2.50 + 0.03 * R.random(),
-                                    -0.42, 0.42, 0.02), a0, a1, 10),
-                 "patina")
-    # OUTER rim layer B: nested over-plates on 8 of the 12 slots, jittered spans
-    # (the stacked/varying-radial-depth read from the reference stills).
-    slots = [0, 1, 3, 4, 6, 7, 9, 10]
-    for s in slots:
-        mid = (s + 0.5) * TAU / 12
-        half = D(8.0 + 2.5 * R.random())
-        z0 = -0.34 + 0.10 * R.random()
-        z1 = 0.20 + 0.16 * R.random()
-        register(sweep("rimB%d" % s,
-                       rect_profile(2.50, 2.60 + 0.03 * R.random(), z0, z1, 0.018),
-                       mid - half, mid + half, 8),
-                 "patina")
-    # FRONT DETAIL ring: a tier of small machined wedge blocks between the
-    # track bed and the plate ring (the reference's dense inner segmentation).
-    # Skips the clamp slots so the housings stay the hero shapes.
-    cths = clamp_angles()
-    def near_clamp(th):
-        for ct in cths:
-            d = (th - ct) % TAU
-            if min(d, TAU - d) <= D(11):
-                return True
-        return False
-    for s in range(24):
-        mid = (s + 0.5) * TAU / 24
-        if near_clamp(mid):
-            continue
-        half = D(5.2)
-        z1 = -0.545 - 0.02 * (s % 2)
-        register(sweep("fwedge%d" % s,
-                       rect_profile(2.00, 2.26, z1, -0.452, 0.012),
-                       mid - half, mid + half, 5),
-                 "dark")
-    # CROWN greebles: stacked service boxes + a stub antenna near 12 o'clock
-    # (the reference's rooftop clutter), clear of clamp 0 at 90 deg.
-    for k, (gth, gw, gh, gd) in enumerate((
-            (D(72), 0.16, 0.12, 0.22), (D(76), 0.10, 0.20, 0.14),
-            (D(105), 0.18, 0.10, 0.26), (D(110), 0.09, 0.16, 0.12),
-            (D(128), 0.13, 0.09, 0.18))):
-        rr = 2.62 + gh
-        register(box("crown%d" % k, gw, gh, gd, radial(gth, rr, -0.06 + 0.08 * (k % 2)),
-                     rotz=gth + math.pi / 2, bev=0.015), "dark" if k % 2 else "steel")
-    register(cyl("antenna", 0.028, 0.55, radial(D(74), 2.95, 0.02),
-                 rot=(math.pi / 2, 0, D(74) + math.pi / 2), verts=8, bev=0.0), "dark")
-    register(cyl("antenna_tip", 0.05, 0.06, radial(D(74), 3.20, 0.02),
-                 rot=(math.pi / 2, 0, D(74) + math.pi / 2), verts=8, bev=0.0), "steel")
-    # Radial bolt studs on the outer rim (read in 3/4 views).
-    for k in range(24):
-        th = k * TAU / 24 + D(7.5)
-        if near_clamp(th):
-            continue
-        register(cyl("boltR%d" % k, 0.026, 0.06, radial(th, 2.53, 0.30),
-                     rot=(math.pi / 2, 0, th + math.pi / 2), verts=6, bev=0.0), "dark")
+    register(torus("ring_body", RING_R, RING_TUBE, mseg=96, nseg=28), "patina")
+    # Rounded TRACK BED collar on the front face (the engine's amber ratchet
+    # segments seat 0.025 proud of it) — a flattened donut, not a flat disc.
+    register(torus("trackbed", TRACK_R, 0.185, loc=(0, 0, -0.36), zscale=0.42,
+                   mseg=96, nseg=16), "dark")
+    # Rounded inner lips either side of the throat: they catch the membrane light.
+    for i, z in enumerate((-0.30, 0.30)):
+        register(torus("lip%d" % i, BORE + 0.055, 0.075, loc=(0, 0, z),
+                       zscale=0.75, mseg=96, nseg=12), "steel")
+    # OUTER FLANGE rings — big rounded collars hugging the rim (the reference's
+    # stacked flange depth), front and back, plus a proud centre band.
+    register(torus("flange_f", 2.62, 0.20, loc=(0, 0, -0.26), zscale=0.55,
+                   mseg=80, nseg=16), "steel")
+    register(torus("flange_b", 2.62, 0.20, loc=(0, 0, 0.26), zscale=0.55,
+                   mseg=80, nseg=16), "steel")
+    register(torus("band_mid", 2.78, 0.11, mseg=80, nseg=14), "patina")
 
 # ---------------------------------------------------------------------------
-# 2) CLAMP HOUSINGS — 9 chunky chamfered stacks at the chevron angles
+# 2) CLAMP / EMITTER HOUSINGS — 9 cylindrical units seated on the tube crest,
+#    each a machined can with a rounded bezel, coil rings, a pivot boss and two
+#    actuator rods on ball joints. This is the "portal generator" hardware.
 # ---------------------------------------------------------------------------
-def clamp_angles():
-    return [D(90) - c * TAU / 9 for c in range(9)]
-
 def build_clamps():
     for c, th in enumerate(clamp_angles()):
-        rz = th + math.pi / 2      # box local X -> ring tangent
-        # Main body: grips the tube band, wraps front + into the depth.
-        register(box("clamp%d_body" % c, 0.30, 0.46, 0.36,
-                     radial(th, 2.02, -0.26), rotz=rz, bev=0.03, seg=2), "dark")
-        # Stepped face cap — front face at z=-0.75 (engine slit floats 0.012 proud).
-        register(box("clamp%d_cap" % c, 0.21, 0.27, 0.075,
-                     radial(th, 2.02, -0.675), rotz=rz, bev=0.02, seg=2), "dark")
-        # Jaw flanges either side (the mechanical bite).
-        tx, ty = -math.sin(th), math.cos(th)
-        for side in (-1, 1):
-            loc = (2.02 * math.cos(th) + tx * 0.37 * side,
-                   2.02 * math.sin(th) + ty * 0.37 * side, -0.40)
-            register(box("clamp%d_jaw%d" % (c, side), 0.07, 0.35, 0.15,
-                         loc, rotz=rz, bev=0.015), "dark")
-        # Pivot boss: a fat cylinder through the clamp's outer end (axis tangent).
-        register(cyl("clamp%d_boss" % c, 0.105, 0.78,
-                     radial(th, 2.44, -0.10), rot=(math.pi / 2, 0, th), verts=14),
-                 "dark")
-        for side in (-1, 1):
-            loc = (2.44 * math.cos(th) + tx * 0.44 * side,
-                   2.44 * math.sin(th) + ty * 0.44 * side, -0.10)
-            register(cyl("clamp%d_nut%d" % (c, side), 0.055, 0.10, loc,
-                         rot=(math.pi / 2, 0, th), verts=8, bev=0.008), "steel")
-        # Vent slits on the cap face (flank the engine's amber slit).
-        for k in (-1, 1):
-            loc = radial(th, 2.02 + 0.15 * k, -0.755)
-            register(box("clamp%d_vent%d" % (c, k), 0.13, 0.018, 0.012,
-                         loc, rotz=rz, bev=0.0), "dark")
+        depth = 0.62
+        cz = CHEV_CAP_Z + depth * 0.5
+        register(cyl("clamp%d_can" % c, 0.205, depth, radial(th, CHEV_R, cz),
+                     verts=24), "dark")
+        # Rounded bezel around the amber slit (the engine's emitter sits inside).
+        register(torus("clamp%d_bezel" % c, 0.215, 0.055,
+                       loc=radial(th, CHEV_R, CHEV_CAP_Z + 0.03),
+                       zscale=0.8, mseg=24, nseg=10), "steel")
+        # Coil rings stacked along the can (rounded, not painted on).
+        for k in range(2):
+            register(torus("clamp%d_coil%d" % (c, k), 0.225, 0.045,
+                           loc=radial(th, CHEV_R, CHEV_CAP_Z + 0.20 + 0.16 * k),
+                           zscale=0.9, mseg=24, nseg=10), "steel")
+        # Pivot boss where the can meets the ring.
+        register(ball("clamp%d_boss" % c, 0.135, radial(th, CHEV_R, -0.10)), "dark")
+        # Two ACTUATOR RODS on ball joints, raking back to the rim.
+        for s in (-1, 1):
+            aoff = th + s * D(9)
+            a = radial(aoff, CHEV_R + 0.10, -0.42)
+            b = radial(aoff, 2.72, 0.16)
+            d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+            ln = math.sqrt(sum(x * x for x in d))
+            mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5)
+            register(cyl("clamp%d_rod%d" % (c, s), 0.052, ln, mid, rot=aim(d),
+                         verts=12), "dark")
+            register(ball("clamp%d_jA%d" % (c, s), 0.072, a, seg=12), "steel")
+            register(ball("clamp%d_jB%d" % (c, s), 0.062, b, seg=12), "steel")
 
 # ---------------------------------------------------------------------------
-# 3) PISTON / ACTUATOR rods bridging ring segments + accumulator cylinders
+# 3) CAPACITOR BANKS + COIL EMITTERS — chunky cylinders ringing the outer rim
+#    between the clamps: the thing that says "this machine GENERATES a portal".
 # ---------------------------------------------------------------------------
-def build_actuators():
-    for c in (0, 1, 3, 4, 6, 7):
-        th = D(90) - (c + 0.5) * TAU / 9
-        rot = (math.pi / 2, 0, th)
-        tx, ty = -math.sin(th), math.cos(th)
-        register(cyl("rod%d" % c, 0.045, 1.00, radial(th, 2.50, -0.05),
-                     rot=rot, verts=10, bev=0.0), "dark")
-        register(cyl("sleeve%d" % c, 0.085, 0.46,
-                     (2.50 * math.cos(th) + tx * 0.18, 2.50 * math.sin(th) + ty * 0.18,
-                      -0.05), rot=rot, verts=12), "steel")
-        for side in (-1, 1):
-            loc = (2.44 * math.cos(th) + tx * 0.42 * side,
-                   2.44 * math.sin(th) + ty * 0.42 * side, -0.05)
-            register(box("rodmnt%d_%d" % (c, side), 0.09, 0.14, 0.09, loc,
-                         rotz=th + math.pi / 2, bev=0.015), "dark")
-    # Two heavy accumulator cylinders on the lower flanks (reference: the
-    # stacked side tanks). Kept clear of the floor (y > -2.2) and the pipes.
-    for k, th in enumerate((D(195), D(345))):
-        rot = (math.pi / 2, 0, th)
-        tx, ty = -math.sin(th), math.cos(th)
-        register(cyl("accum%d" % k, 0.15, 1.05, radial(th, 2.60, 0.05),
-                     rot=rot, verts=16), "steel")
-        for j, o in enumerate((-0.30, 0.0, 0.30)):
-            loc = (2.60 * math.cos(th) + tx * o, 2.60 * math.sin(th) + ty * o, 0.05)
-            register(cyl("accol%d_%d" % (k, j), 0.18, 0.055, loc, rot=rot,
-                         verts=16, bev=0.008), "dark")
-        for side in (-1, 1):
-            loc = (2.48 * math.cos(th) + tx * 0.40 * side,
-                   2.48 * math.sin(th) + ty * 0.40 * side, 0.05)
-            register(box("acmnt%d_%d" % (k, side), 0.10, 0.16, 0.20, loc,
-                         rotz=th + math.pi / 2, bev=0.02), "dark")
+def build_banks():
+    for k in range(6):
+        th = D(20) + k * D(60)
+        register(cyl("bank%d_can" % k, 0.20, 0.86, radial(th, 2.98, 0.0),
+                     verts=20), "steel")
+        for i in range(3):
+            register(torus("bank%d_coil%d" % (k, i), 0.235, 0.042,
+                           loc=radial(th, 2.98, -0.28 + 0.28 * i),
+                           mseg=20, nseg=10), "dark")
+        for i, z in enumerate((-0.47, 0.47)):
+            register(ball("bank%d_cap%d" % (k, i), 0.185, radial(th, 2.98, z),
+                          seg=16), "dark")
+        # Feed pipe: bank -> ring rim (a real bent pipe, generous radius).
+        a = radial(th, 2.98, -0.30)
+        m = radial(th - D(4), 2.86, -0.42)
+        b = radial(th - D(8), 2.62, -0.30)
+        register(pipe("bank%d_feed" % k, [a, m, b], 0.055), "dark")
 
 # ---------------------------------------------------------------------------
-# 4) PIPE RUNS hugging the outer rim, with collars + end flanges
+# 4) PIPE RAILS + CABLE BUNDLES — round-bevelled runs hugging and entering the
+#    ring (the reference's copper hairpins), on cylindrical standoffs.
 # ---------------------------------------------------------------------------
 def build_pipes():
-    runs = [
-        ("pipeA", 2.70, -0.12, D(25), D(150), 44),
-        ("pipeB0", 2.74, 0.16, D(195), D(230), 14),
-        ("pipeB1", 2.74, 0.16, D(310), D(345), 14),
-    ]
-    for name, rr, zz, a0, a1, steps in runs:
-        register(sweep(name, circle_profile(rr, zz, 0.045, 10), a0, a1, steps),
-                 "dark")
-        # Collars every ~21 deg + end flanges tying into the rim.
-        n_col = max(2, int((a1 - a0) / D(21)))
-        for k in range(n_col + 1):
-            th = a0 + (a1 - a0) * k / n_col
-            register(cyl(name + "_col%d" % k, 0.068, 0.07, radial(th, rr, zz),
-                         rot=(math.pi / 2, 0, th), verts=12, bev=0.006), "steel")
-        for th in (a0, a1):
-            register(box(name + "_end%.0f" % math.degrees(th), 0.07, 0.10, 0.10,
-                         radial(th, rr - 0.08, zz), rotz=th + math.pi / 2,
-                         bev=0.012), "dark")
+    for s, (a0, a1, rr, pz) in enumerate(((D(200), D(340), 3.05, -0.22),
+                                          (D(215), D(325), 3.16, 0.20))):
+        register(pipe("rail%d" % s, arc_pts(rr, a0, a1, pz, 22), 0.070), "steel")
+        for k in range(4):
+            th = a0 + (a1 - a0) * (k + 0.5) / 4.0
+            a = radial(th, rr, pz)
+            b = radial(th, 2.74, pz * 0.5)
+            d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+            ln = math.sqrt(sum(x * x for x in d))
+            mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5)
+            register(cyl("rail%d_sd%d" % (s, k), 0.045, ln, mid, rot=aim(d),
+                         verts=10), "dark")
+    # CABLE BUNDLES climbing from the cradle INTO the ring's lower flanks.
+    for s in (-1, 1):
+        for k in range(3):
+            off = 0.09 * (k - 1)
+            pts = [(s * (1.30 + off), FLOOR_Y + 0.10, -0.30 + off * 0.5),
+                   (s * (1.55 + off), FLOOR_Y + 0.75, -0.34),
+                   (s * (1.90 + off), -1.35, -0.30),
+                   (s * (2.16 + off), -0.85, -0.24),
+                   (s * (2.30 + off), -0.45, -0.16)]
+            register(pipe("cable%d_%d" % (s, k), pts, 0.048), "dark")
+        register(cyl("cablecl%d" % s, 0.16, 0.14, (s * 1.95, -1.30, -0.30),
+                     rot=aim((s * 0.5, 1.0, 0.0)), verts=16), "steel")
 
 # ---------------------------------------------------------------------------
-# 5) BOLT RINGS — instanced low-poly studs on the face plates
+# 5) BOLT STUDS + HEAT-SINK FINS — rounded studs on the collars; the only boxes
+#    in the gate are the fins, and they are bevelled.
 # ---------------------------------------------------------------------------
-def build_bolts():
-    cths = clamp_angles()
-    def clear_of_clamps(th):
-        for ct in cths:
-            d = (th - ct) % TAU
-            if min(d, TAU - d) <= D(9):
-                return False
-        return True
-    n = 0
-    for k in range(36):
-        th = k * TAU / 36 + D(5)
-        if not clear_of_clamps(th):
-            continue
-        for rr in (1.99, 2.29):
-            register(cyl("boltF%d_%d" % (k, int(rr * 100)), 0.028, 0.05,
-                         radial(th, rr, -0.535), verts=6, bev=0.0), "dark")
-            n += 1
-    for k in range(24):
-        th = k * TAU / 24 + D(7.5)
-        if not clear_of_clamps(th):
-            continue
-        register(cyl("boltB%d" % k, 0.028, 0.05, radial(th, 2.28, 0.525),
-                     verts=6, bev=0.0), "dark")
-        n += 1
-    log("bolts:", n)
+def build_details():
+    for k in range(28):
+        th = k * TAU / 28
+        register(cyl("stud_f%d" % k, 0.036, 0.055, radial(th, 2.22, -0.46),
+                     verts=8, bev=0.008), "dark")
+    for k in range(20):
+        th = D(9) + k * TAU / 20
+        register(ball("stud_r%d" % k, 0.040, radial(th, 2.62, -0.40), seg=8), "dark")
+    for k in range(8):
+        th = D(22) + k * D(45)
+        register(cube("fin%d" % k, 0.30, 0.035, 0.16, radial(th, 2.70, 0.42),
+                      rot=(0, 0, th), bev=0.02), "steel")
 
 # ---------------------------------------------------------------------------
-# 6) BASE — plinth + angled shoulder skirt + foot pads (mates with the cradle)
+# 6) CRADLE — the gate is INSTALLED. Rounded trunnion + curved legs + a round
+#    base pad (no square plinth).
 # ---------------------------------------------------------------------------
-def build_base():
-    floor = -2.2
-    # Plinth (top at -1.68, matching the engine skirt's visual height band).
-    register(box("plinth", 1.90, 0.26, 0.85, (0, -1.94, 0), bev=0.04, seg=2),
-             "steel")
-    # Angled shoulder blocks OUTSIDE the ring band, top leaning INTO the gate
-    # (the A-frame cradle read) — the walk-through opening (r < 1.65) stays clear.
-    for side in (-1, 1):
-        register(box("shoulder%d" % side, 0.42, 0.58, 0.68,
-                     (1.85 * side, -1.62, 0),
-                     rot=(0, 0, D(20) * side), bev=0.05, seg=2), "steel")
-        register(box("foot%d" % side, 0.62, 0.075, 0.55,
-                     (1.95 * side, floor + 0.075, 0), bev=0.015), "dark")
-        for j in (-1, 0, 1):
-            register(box("shvent%d_%d" % (side, j), 0.02, 0.02, 0.30,
-                         (2.13 * side, -1.52 + 0.14 * j, 0),
-                         rot=(0, 0, D(20) * side), bev=0.0), "dark")
-    # Neck collar: a heavy arc shroud tying the ring bottom into the plinth.
-    register(sweep("neck", rect_profile(2.34, 2.62, -0.30, 0.30, 0.02),
-                   D(242), D(298), 12), "steel")
+def build_cradle():
+    register(cyl("trunnion", 0.16, 3.30, (0.0, -1.55, 0.36),
+                 rot=aim((1.0, 0.0, 0.0)), verts=20), "steel")
+    for s in (-1, 1):
+        register(ball("trun_end%d" % s, 0.20, (s * 1.65, -1.55, 0.36)), "dark")
+        pts = [(s * 1.62, -1.60, 0.30),
+               (s * 1.80, -1.95, 0.20),
+               (s * 1.86, FLOOR_Y + 0.42, 0.05),
+               (s * 1.72, FLOOR_Y + 0.14, -0.02)]
+        register(pipe("leg%d" % s, pts, 0.145), "dark")
+        register(cyl("foot%d" % s, 0.42, 0.14, (s * 1.72, FLOOR_Y + 0.07, -0.02),
+                     rot=aim((0.0, 1.0, 0.0)), verts=24), "steel")
+    for s in (-1, 1):
+        a = (s * 1.05, -1.95, -0.30)
+        b = (s * 1.55, FLOOR_Y + 0.16, -0.22)
+        d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        ln = math.sqrt(sum(x * x for x in d))
+        mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5)
+        register(cyl("strut%d" % s, 0.085, ln, mid, rot=aim(d), verts=12), "dark")
+    register(cyl("pad", 1.95, 0.16, (0.0, FLOOR_Y + 0.08, 0.02),
+                 rot=aim((0.0, 1.0, 0.0)), verts=48), "steel")
+    register(torus("pad_lip", 1.95, 0.09, loc=(0.0, FLOOR_Y + 0.10, 0.02),
+                   rot=(D(90), 0, 0), mseg=48, nseg=10), "dark")
 
 # ---------------------------------------------------------------------------
-# Materials / join / UV / export
+# Assembly
 # ---------------------------------------------------------------------------
 MAT_SPECS = {
-    "patina": ((0.45, 0.50, 0.48, 1.0), 0.9, 0.55),
-    "steel":  ((0.38, 0.40, 0.43, 1.0), 0.9, 0.45),
-    "dark":   ((0.10, 0.10, 0.11, 1.0), 0.85, 0.50),
+    "patina": ((0.45, 0.50, 0.48, 1.0), 0.5, 0.65),
+    "steel":  ((0.38, 0.40, 0.43, 1.0), 0.6, 0.60),
+    "dark":   ((0.10, 0.10, 0.11, 1.0), 0.8, 0.62),
 }
 
 def make_material(name):
@@ -414,7 +375,22 @@ def make_material(name):
         bsdf.inputs["Roughness"].default_value = rough
     return m
 
+def normals_outward(ob):
+    """Guarantee outward normals: recalc, then flip if the signed volume came out
+    negative. THE round-4 bug (30-43% inside-out hub-facing tris, backface-culled,
+    unlightable) dies here."""
+    me = ob.data
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    if bm.calc_volume(signed=True) < 0.0:
+        bmesh.ops.reverse_faces(bm, faces=bm.faces)
+    bm.to_mesh(me)
+    bm.free()
+
 def join_group(name, objs):
+    for o in objs:
+        normals_outward(o)
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs:
         o.select_set(True)
@@ -435,33 +411,30 @@ def uv_unwrap(ob, scale):
     bpy.ops.uv.smart_project(angle_limit=D(66), island_margin=0.02)
     bpy.ops.object.mode_set(mode='OBJECT')
     layer = ob.data.uv_layers.active
-    for d in layer.data:
-        d.uv[0] *= scale
-        d.uv[1] *= scale
+    if layer:
+        for d in layer.data:
+            d.uv[0] *= scale
+            d.uv[1] *= scale
 
 def main():
-    # Wipe the default scene.
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete()
 
     build_ring()
     build_clamps()
-    build_actuators()
+    build_banks()
     build_pipes()
-    build_bolts()
-    build_base()
+    build_details()
+    build_cradle()
     log("authored objects:", sum(len(v) for v in GROUPS.values()))
 
-    from mathutils import Matrix
     rot = Matrix.Rotation(math.pi / 2, 4, 'X')
-    total_tris = 0
+    total = 0
     for name in ("patina", "steel", "dark"):
         j = join_group(name, GROUPS[name])
-        # UV scale: finer tiling on the big plates, coarser on hardware.
-        uv_unwrap(j, 2.6 if name == "patina" else 2.0)
+        uv_unwrap(j, 2.2 if name == "patina" else 1.8)
         j.data.materials.clear()
         j.data.materials.append(make_material(name))
-        # Authoring frame -> Blender frame so export_yup lands the contract space.
         j.matrix_world = rot @ j.matrix_world
         bpy.ops.object.select_all(action='DESELECT')
         j.select_set(True)
@@ -469,9 +442,9 @@ def main():
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
         j.data.calc_loop_triangles()
         tris = len(j.data.loop_triangles)
-        total_tris += tris
+        total += tris
         log("group gate_%s: %d tris" % (name, tris))
-    log("TOTAL tris:", total_tris)
+    log("TOTAL tris:", total)
 
     os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
     bpy.ops.export_scene.gltf(
