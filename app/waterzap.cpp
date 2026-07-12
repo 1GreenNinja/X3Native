@@ -206,24 +206,24 @@ bool runWaterZapSelfTest() {
             if (d <= kWaterZapRadius && !f.dead) allInDead = false;
             if (d > kWaterZapRadius && f.dead)   allOutAlive = false;
         }
-        check(total == 18 && device.meshCreates == 1 && inR >= 8 && outR >= 8 &&
+        check(total == 18 && device.meshCreates == 3 && inR >= 8 && outR >= 8 &&
               killed == inR && allInDead && allOutAlive &&
               fish.aliveCount() == outR,
-              "Z4 fish INSIDE the radius die, fish OUTSIDE survive (one shared mesh)");
+              "Z4 fish INSIDE the radius die, fish OUTSIDE survive (3 shared lofted meshes)");
 
         // ---- Z8a: the dead float BELLY-UP to the surface, then despawn -------
         for (int i = 0; i < 240; ++i) fish.update(dt, scene, far);   // 4 s
         bool risen = true;
         for (uint32_t i = 0; i < total; ++i) {
             const Fish& f = fish.fish(i);
-            if (f.dead && f.y < kTestSurface - 0.30f) risen = false;   // still deep
+            if (f.dead && f.y < kTestSurface - 0.05f) risen = false;   // still deep
         }
         const uint32_t floatingNow = fish.deadCount();
         // Run past deadLinger: every corpse despawns (hidden), none linger.
         for (int i = 0; i < (int)((fc.deadLinger + 1.0f) * 60.0f); ++i)
             fish.update(dt, scene, far);
         check(risen && floatingNow == killed && fish.deadCount() == 0 &&
-              device.meshCreates == 1,
+              device.meshCreates == 3,
               "Z8a dead fish float belly-up to the surface, then despawn (no leak)");
     }
 

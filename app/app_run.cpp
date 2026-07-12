@@ -1304,10 +1304,14 @@ int runDefaultHost(HostContext& hc) {
     // a HELD lightning trigger from re-zapping the river every frame.
     x3::game::WaterZapper waterZapper;
     // The zap's transient surface FX: while > 0 the water surface at zapFxCenter
-    // spiders re-randomized lightning arcs out to kWaterZapRadius.
+    // spiders re-randomized lightning arcs out to kWaterZapRadius AND the water
+    // itself FLASHES — a radial-gradient disc laid on the surface (the street-
+    // lamp ground-pool material: additive glass + a radial gradient, so it reads
+    // as the POOL lighting up, and rides the blend tail => no depth write).
     float zapFxTimer = 0.0f;
     x3::phys::Vec3 zapFxCenter{};
     uint32_t zapFxRng = 0x5EEDu;
+    uint32_t zapFlashEnt = x3::game::kNoLink;   // the water-flash disc
     float carPanicCooldown = 0.0f;   // throttles the drive-by crowd-panic probe
     float carThrottleHud   = 0.0f;   // last driver throttle (engine-loop pitch)
     // LIVING WORLD: the FACILITY ALERT LEVEL (the wanted system, pillar 3). The
@@ -3164,10 +3168,12 @@ int runDefaultHost(HostContext& hc) {
                         const float d2 = dx * dx + dz * dz;
                         if (d2 < best) { best = d2; nearest = i; }
                     }
-                    // Silver / olive / copper schools (per-fish tint jitter on top).
-                    const float tints[3][3] = { { 0.74f, 0.78f, 0.82f },
-                                                { 0.46f, 0.52f, 0.34f },
-                                                { 0.74f, 0.48f, 0.28f } };
+                    // Silver / olive / bronze schools. These MULTIPLY the fish's
+                    // countershading gradient (dark back -> pale belly), so they are
+                    // gentle hues, not base colors — a school reads as a species.
+                    const float tints[3][3] = { { 0.92f, 0.97f, 1.00f },   // silver
+                                                { 0.86f, 1.00f, 0.78f },   // olive
+                                                { 1.00f, 0.86f, 0.68f } }; // bronze
                     const int offs[4] = { -2, 0, 3, 6 };   // four schools along the reach
                     for (int k = 0; k < 4; ++k) {
                         int idx = (int)nearest + offs[k];
@@ -3202,7 +3208,7 @@ int runDefaultHost(HostContext& hc) {
                             sd.count   = 8u + (uint32_t)k * 3u;    // 8, 11
                             sd.spread  = 5.5f;
                             sd.speed   = 0.45f;
-                            sd.tint[0] = 0.66f; sd.tint[1] = 0.72f; sd.tint[2] = 0.80f;
+                            sd.tint[0] = 0.88f; sd.tint[1] = 0.96f; sd.tint[2] = 1.00f;
                             fc.schools.push_back(sd);
                             break;
                         }
@@ -3219,6 +3225,65 @@ int runDefaultHost(HostContext& hc) {
                             std::to_string(worldFish.schoolCount()) + " schools (river reach + estuary) — " +
                             std::to_string(fishMs) + " ms");
                 x3::boot::mark("FISH (river + estuary schools)");
+
+                // ---- THE WATER FLASH (the zap's biggest read): a radial-gradient
+                // disc lying ON the water that lights the whole pool cyan-white at
+                // the discharge, then decays to an afterglow. Same material as the
+                // street lamps' ground pools (additive glass) — it rides the BLEND
+                // tail, so it never writes depth and never punches a hole in the
+                // river. Its radius IS kWaterZapRadius: the flash shows you exactly
+                // what just got cooked.
+                {
+                    const int kSegs = 40;
+                    std::vector<x3::rhi::MeshVertex> dv;
+                    std::vector<uint32_t> di;
+                    x3::rhi::MeshVertex c{};
+                    c.normal[1] = 1.0f; c.uv[0] = 0.5f; c.uv[1] = 0.5f;
+                    dv.push_back(c);
+                    for (int si = 0; si <= kSegs; ++si) {
+                        const float a = (float)si / (float)kSegs * 6.2831853f;
+                        x3::rhi::MeshVertex v{};
+                        v.pos[0] = std::cos(a); v.pos[1] = 0.0f; v.pos[2] = std::sin(a);
+                        v.normal[1] = 1.0f;
+                        v.uv[0] = 0.5f + 0.5f * std::cos(a);
+                        v.uv[1] = 0.5f + 0.5f * std::sin(a);
+                        dv.push_back(v);
+                    }
+                    for (int si = 0; si < kSegs; ++si)
+                        di.insert(di.end(), { 0u, (uint32_t)(si + 2), (uint32_t)(si + 1) });
+                    const x3::rhi::MeshHandle discMesh =
+                        device->createMesh(dv.data(), (uint32_t)dv.size(),
+                                           di.data(), (uint32_t)di.size());
+                    const int N = 64;
+                    std::vector<uint8_t> gp((size_t)N * N * 4);
+                    for (int y = 0; y < N; ++y)
+                        for (int x = 0; x < N; ++x) {
+                            const float dx = ((float)x + 0.5f) / N - 0.5f;
+                            const float dy = ((float)y + 0.5f) / N - 0.5f;
+                            const float rr = std::sqrt(dx * dx + dy * dy) * 2.0f;
+                            const float f = 0.55f * std::pow(std::max(0.0f, 1.0f - rr), 3.0f)
+                                          + 0.45f * std::pow(std::max(0.0f, 1.0f - rr), 9.0f);
+                            const float fc = std::min(1.0f, f);
+                            uint8_t* p = &gp[((size_t)y * N + x) * 4];
+                            p[0] = p[1] = p[2] = (uint8_t)std::lround(255.0f * fc);
+                            p[3] = 255;
+                        }
+                    const x3::rhi::TextureHandle discTex =
+                        device->createTexture(gp.data(), N, N, false);
+                    x3::game::Entity fe;
+                    fe.mesh = discMesh;
+                    fe.tex  = discTex;
+                    fe.baseColor[3] = 1.0f;
+                    fe.emissive[0] = 0.55f; fe.emissive[1] = 0.90f; fe.emissive[2] = 1.00f;
+                    fe.emissive[3] = 0.0f;          // lit only during a discharge
+                    fe.transparent = true;
+                    fe.glass.opacity = 0.0f; fe.glass.refraction = 0.0f;
+                    fe.glass.roughness = 0.0f; fe.glass.specular = 0.0f;
+                    fe.glass.additive = 0.05f;      // BLEND tail: no depth write
+                    fe.roomId  = x3::game::kStreamedExteriorRoom;
+                    fe.visible = false;
+                    zapFlashEnt = scene.add(fe);
+                }
             }
         }
     }
@@ -3257,39 +3322,54 @@ int runDefaultHost(HostContext& hc) {
         [](float x, float z) { return x3::game::worldWaterLevelAt(x, z); };
     // The live discharge: re-rolled radial arcs ACROSS the water plane. Called
     // every frame while zapFxTimer > 0 (live loop AND the screenshot settle).
-    auto emitZapArcs = [&](int n) {
-        for (int i = 0; i < n; ++i) {
+    auto emitZapArcs = [&](int strands) {
+        for (int i = 0; i < strands; ++i) {
             zapFxRng = zapFxRng * 1664525u + 1013904223u;
-            const float a = (float)(zapFxRng % 6283u) * 0.001f;
+            const float a = (float)(zapFxRng % 6283u) * 0.001f;      // any direction
             zapFxRng = zapFxRng * 1664525u + 1013904223u;
             const float r = x3::game::kWaterZapRadius *
-                            (0.55f + 0.45f * (float)(zapFxRng % 1000u) * 0.001f);
+                            (0.50f + 0.50f * (float)(zapFxRng % 1000u) * 0.001f);
             zapFxRng = zapFxRng * 1664525u + 1013904223u;
-            // Every third arc LEAPS off the water (an arc that jumps clear of the
-            // surface is what sells "the pool is live"); the rest crawl across it.
+            // Every third arc LEAPS clear of the water (an arc that jumps off the
+            // surface is what sells "the pool is live"); the rest crawl ACROSS it,
+            // out to the damage radius — so the radius itself is legible.
             const bool leap = (zapFxRng % 3u) == 0u;
-            const float endY = zapFxCenter.y + (leap ? 0.90f : 0.06f);
+            const float endY = zapFxCenter.y + (leap ? 1.30f : 0.22f);
+            zapFxRng = zapFxRng * 1664525u + 1013904223u;
+            const float jx = ((float)(zapFxRng % 400u) * 0.001f - 0.2f);
+            zapFxRng = zapFxRng * 1664525u + 1013904223u;
+            const float jz = ((float)(zapFxRng % 400u) * 0.001f - 0.2f);
+            const x3::phys::Vec3 from{ zapFxCenter.x + jx, zapFxCenter.y + 0.30f,
+                                       zapFxCenter.z + jz };
             const x3::phys::Vec3 to{ zapFxCenter.x + std::cos(a) * r, endY,
                                      zapFxCenter.z + std::sin(a) * r };
-            // The gun's bolt is a 9 mm core — at pool scale that is a hairline. Lay
-            // 3 jittered strands per arc so an arc READS from the bank (this is the
-            // same drawLightningBolt path, just braided).
-            for (int k = 0; k < 3; ++k) {
-                zapFxRng = zapFxRng * 1664525u + 1013904223u;
-                const float jx = ((float)(zapFxRng % 200u) * 0.001f - 0.1f);
-                zapFxRng = zapFxRng * 1664525u + 1013904223u;
-                const float jz = ((float)(zapFxRng % 200u) * 0.001f - 0.1f);
-                const x3::phys::Vec3 from{ zapFxCenter.x + jx, zapFxCenter.y + 0.14f,
-                                           zapFxCenter.z + jz };
-                combatFx.addTracer(from, to, x3::game::WeaponFxKind::Lightning);
-            }
+            combatFx.addTracer(from, to, x3::game::WeaponFxKind::Lightning);
         }
     };
+    // THE WATER FLASH: drive the disc's emissive from the discharge clock — a hot
+    // over-1.0 pulse (bloom turns it into a LIT POOL), decaying to an afterglow.
+    auto writeZapFlash = [&](float amt) {
+        if (zapFlashEnt == x3::game::kNoLink) return;
+        x3::game::Entity& fe = scene.get(zapFlashEnt);
+        if (amt <= 0.0f) { fe.visible = false; fe.emissive[3] = 0.0f; return; }
+        const float rr = x3::game::kWaterZapRadius * 0.92f;
+        float* t = fe.transform;
+        t[0] = rr; t[1] = 0; t[2]  = 0;  t[3]  = 0;
+        t[4] = 0;  t[5] = 1; t[6]  = 0;  t[7]  = 0;
+        t[8] = 0;  t[9] = 0; t[10] = rr; t[11] = 0;
+        t[12] = zapFxCenter.x; t[13] = zapFxCenter.y + 0.30f; t[14] = zapFxCenter.z;
+        t[15] = 1;
+        fe.emissive[3] = 1.7f * amt;    // a LIT POOL the arcs still read against
+        fe.visible = true;
+    };
     auto tickZapFx = [&](float dt) {
-        if (zapFxTimer <= 0.0f) return;
-        emitZapArcs(12);                   // the whole pool lights up
+        if (zapFxTimer <= 0.0f) { writeZapFlash(0.0f); return; }
+        emitZapArcs(9);                    // keeps ~56 arcs alive at mixed ages
         zapFxTimer -= dt;
         if (zapFxTimer <= 0.0f) zapFxTimer = 0.0f;
+        const float k = zapFxTimer / 0.70f;                  // 1 -> 0 over the window
+        const float amt = (k > 0.83f) ? 1.0f : (k / 0.83f) * (k / 0.83f);
+        writeZapFlash(amt);                                  // spike, then afterglow
     };
     // Fire ONE zap at `we`. `pl`/`plFeet` (optional) is the player who might be
     // standing in it. The caller owns the LATCH check (waterZapper.canZap()).
@@ -3315,7 +3395,8 @@ int runDefaultHost(HostContext& hc) {
         for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(c);
         zapFxCenter = c;
         zapFxTimer  = 0.70f;
-        emitZapArcs(x3::game::kWaterZapArcs);   // the first frame goes wide
+        emitZapArcs(30);                   // frame 1 goes WIDE — the pool is live
+        writeZapFlash(1.0f);               // and the WATER ITSELF flashes
         combatFx.spawnMuzzleFlash(x3::phys::Vec3{ c.x, c.y + 0.18f, c.z },
                                   x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
                                   x3::game::WeaponFxKind::Lightning);
@@ -4862,9 +4943,9 @@ int runDefaultHost(HostContext& hc) {
                             "[zapshot] frame %d school0=(%.1f,%.1f) active=%d fish0=(%.2f,%.2f,%.2f) "
                             "vis=%d roomVis=%d room=%u active=%u alive=%u dead=%u cam=(%.1f,%.1f,%.1f)",
                             i, s0.cx, s0.cz, (int)s0.active, f0.x, f0.y, f0.z,
-                            (int)scene.get(f0.entity).visible,
-                            (int)scene.roomVisible(scene.get(f0.entity).roomId),
-                            scene.get(f0.entity).roomId, worldFish.activeCount(),
+                            (int)scene.get(f0.entHead).visible,
+                            (int)scene.roomVisible(scene.get(f0.entHead).roomId),
+                            scene.get(f0.entHead).roomId, worldFish.activeCount(),
                             worldFish.aliveCount(), worldFish.deadCount(), ssX, ssY, ssZ);
                         x3::logInfo(fb);
                     }
