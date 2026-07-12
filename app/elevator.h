@@ -25,6 +25,7 @@
 // IAudioSystem interfaces, mirroring DoorSystem's moved-static-body technique.
 
 #include "scene.h"
+#include "surface_library.h"   // real PBR cab surfaces (albedo/normal/mr)
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -174,6 +175,18 @@ public:
     // light. Safe to call after build(); a second call is a no-op.
     void buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device);
 
+    // R11 (art): the cab's own atmosphere. A SEALED LIFT is not lit by the building's
+    // ambient — it is lit by the fixture in its ceiling. While the rider is aboard this
+    // pulls ambient + IBL down to an interior floor (the rifthub lesson: ambient is
+    // omnidirectional, so raising it lights a room by DESTROYING its contrast); when they
+    // step out it restores the values the world was using. Safe to call every frame; a
+    // no-op until the state actually changes. `feet` = the player body position.
+    void applyCabAtmosphere(x3::rhi::IRenderDevice& device, const x3::phys::Vec3& feet);
+    // True while the cab owns the frame's ambient/IBL (the rider is aboard). Hosts that
+    // run their own per-zone atmosphere (the canon facility) must yield to this, or the
+    // two writers fight over the same device state every frame.
+    bool riderAboard() const { return m_cabAir == 1; }
+
     // The car interior + disco point lights the host should push via
     // IRenderDevice::setPointLights (re-applied each frame by the host; the disco
     // cue animates their intensity/color in update()). Empty until buildVisuals().
@@ -209,7 +222,31 @@ public:
     void setClubStopY(float centerY);
     float clubStopY() const { return m_clubStopY; }
 
-    // ----- Keypad (terminal code entry; 1127 = DISCO + descend to the club) ---
+    // ===== THE RIFT STOP (W-RIFT) =============================================
+    // The facility BURIED a rift-tech chamber under the detention level, and it took
+    // the stop off the panel. It is a REAL floor on this cab — one more entry in the
+    // stop list, labelled "RIFT" — but it is DARK on the directory and the cab will
+    // not travel there until the access code (kRiftCode, 4790) is entered on the
+    // cabin keypad. Exactly the 1127 pattern, which is the point: the elevator
+    // already knows how to hide a floor behind a code.
+    //
+    // The host tells the cab which stop index is the rift level (setRiftStop) after
+    // it builds the stops; callTo()/callNext() then SKIP that stop while it is
+    // locked, so the panel simply never goes there. unlockRift() is the story hook
+    // (a beat could open it without the code); riftUnlocked() is the query.
+    static constexpr const char* kRiftAccessCode = "4790";
+    void setRiftStop(int stopIndex) { m_riftStop = stopIndex; }
+    int  riftStop() const { return m_riftStop; }
+    void unlockRift();
+    bool riftUnlocked() const { return m_riftUnlocked; }
+    // True iff `stopIndex` is the rift stop AND it is still locked (the OLED
+    // directory shows it as a dead row; the HUD refuses to offer it).
+    bool stopLocked(int stopIndex) const {
+        return m_riftStop >= 0 && stopIndex == m_riftStop && !m_riftUnlocked;
+    }
+
+    // ----- Keypad (terminal code entry; 1127 = DISCO + descend to the club,
+    //       4790 = the RIFT stop unlocks + the cab descends to it) -------------
     // Push one digit (0-9) into the 4-slot code buffer. On the 4th digit the buffer
     // is checked: "1127" toggles disco mode + (when turning ON) issues a descent to
     // the club stop; any other 4-digit code clears with a buzz. Returns true iff
@@ -273,6 +310,10 @@ private:
     bool     m_descendToClub = false;         // a club descent is queued/active
     float    m_clubStopY = kUninit;           // cab-center Y of the Club 1127 stop
 
+    // ---- The rift stop (W-RIFT) ----
+    int         m_riftStop     = -1;      // stop index of the RIFT level (-1 = none on this cab)
+    bool        m_riftUnlocked = false;   // code 4790 accepted (or a story beat opened it)
+
     // ---- Disco / keypad ----
     bool        m_disco = false;
     float       m_discoTime = 0.0f;
@@ -302,6 +343,36 @@ private:
     // Twin sliding door panels (front +X wall) that part along Z with m_doorPct, an
     // indicator strip above the doors that tints by state, and a floor numeral plate.
     uint32_t m_eDoorL = kNoLink, m_eDoorR = kNoLink, m_eIndicator = kNoLink;
+    // ---- R11 "RIFT HUB GLOW-UP" cab (see the block comment in buildVisuals) --------
+    // The cab had NO WALLS: it was a physics platform plus a handful of flat-tinted
+    // floating boxes. You could stand in it and see the shaft's graybox around you.
+    // These are the real cab shell + its practical fixture, all textured from the
+    // SurfaceLibrary (albedo + normal + mr) rather than tinted flat colours.
+    SurfaceLibrary m_surf;                       // brushed panels / worn deck / trim
+    uint32_t m_eWallBack = kNoLink;              // -Z wall (behind the mirror)
+    uint32_t m_eWallSide = kNoLink;              // +Z wall (carries the left OLED)
+    uint32_t m_eWallFrontL = kNoLink, m_eWallFrontR = kNoLink;  // +X door jambs
+    uint32_t m_eHeader   = kNoLink;              // +X header above the doors
+    uint32_t m_eCabCeil  = kNoLink;              // the real ceiling slab
+    uint32_t m_eFixture  = kNoLink;              // practical: dark housing...
+    uint32_t m_eLensCore = kNoLink;              // ...with a small hot lit core inside it
+    uint32_t m_eKick     = kNoLink;              // deck kick-plate / skirt
+    // The -X OBSERVATION WINDOW's frame. The glass must be an APERTURE IN A WALL, not a
+    // slab hanging in a hole: the cab's -X face had no wall at all, so the new practical
+    // sprayed straight out of it, lit the shaft's graybox, and that lit graybox then
+    // metered as the brightest thing in the car (auto-exposure duly stopped the cab down).
+    uint32_t m_eWinTop = kNoLink, m_eWinBot = kNoLink;
+    uint32_t m_eWinL   = kNoLink, m_eWinR   = kNoLink;
+    // The floor INDICATOR is now a per-texel emissive display (a real floor readout,
+    // baked with stb_truetype like the OLEDs) instead of a flat glowing bar. FOOTGUN:
+    // Scene::submit only forwards emissiveTex on the mrTex.valid() PBR branch, so it
+    // MUST carry an MR texel or the map is silently dropped (learned the hard way in
+    // the club; see f2d86bc).
+    x3::rhi::TextureHandle m_indTex{};
+    int                    m_indStop = -999;     // last stop baked into m_indTex
+    bool                   m_indDisco = false;   // last disco state baked
+    bool                   m_indMoving = false;  // last motion state baked
+    int                    m_cabAir = -1;        // -1 unset, 0 = world air, 1 = cab air
     // Per-frame audio bookkeeping.
     float  m_motorHz = 40.0f;
     int    m_lastDingStop = -1;

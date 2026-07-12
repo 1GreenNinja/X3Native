@@ -304,8 +304,20 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         const bool velOn = taaOn && prePassOn && m_post.velocity
                         && (m_velPipe != VK_NULL_HANDLE) && (m_velImg != VK_NULL_HANDLE);
         m_velActiveThisFrame = velOn;
+        // IMPORT WHENEVER TAA WILL SAMPLE IT, not just when the velocity pass writes it.
+        // taa_resolve's descriptor set binds m_velView UNCONDITIONALLY (vk_targets.cpp:
+        // `m_velView ? m_velView : m_hdrView`, declared SHADER_READ_ONLY_OPTIMAL), so the
+        // image is statically sampled by the resolve on EVERY TAA frame. But rgVel used to
+        // be imported (and thus tracked/transitioned) ONLY when velOn — and the taa-resolve
+        // pass never declared a READ of it at all — so on any frame with TAA on and the
+        // velocity pass off, the resolve sampled an image the graph had never transitioned:
+        // VK_IMAGE_LAYOUT_UNDEFINED under a SHADER_READ_ONLY descriptor
+        // (VUID-vkCmdDraw-None-09600, 10x/frame in Debug). Latent while the velocity pass
+        // effectively always ran; r_rtao/r_ddgi default-ON (03b77ff) shifts the pre-pass
+        // predicates and lands on frames where velOn is false, which is what exposed it.
+        const bool velSampled = taaOn && (m_velImg != VK_NULL_HANDLE);
         RgResource rgVel = {};
-        if (velOn) rgVel = m_graph.importImage("scene.velocity", m_velImg,
+        if (velSampled) rgVel = m_graph.importImage("scene.velocity", m_velImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
@@ -663,6 +675,74 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
           } // if (ssaoOn) — SSAO + blur passes
         } // if (prePassOn) — depth pre-pass (+ optional SSAO)
 
+        // ---- VELOCITY NEUTRAL CLEAR (TAA samples it, but the vel pass is skipped) ----
+        // Zero motion vectors = "this pixel did not move", which is exactly the identity
+        // the resolve's camera-only fallback assumes (it already ignores the sampler via
+        // the params1.z velocityValid gate). Clearing keeps the contents deterministic
+        // instead of undefined memory, and — the load-bearing part — gives the graph a
+        // WRITE to hang the UNDEFINED -> TRANSFER_DST -> SHADER_READ_ONLY transition on.
+        if (velSampled && !velOn) {
+            RenderPassDesc vz{};
+            vz.name = "velocity-neutral-clear";
+            vz.queue = RgQueue::Graphics;
+            vz.usesDynamicRendering = false;
+            vz.addUse(ResourceUse{
+                rgVel, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            vz.recordCtx = this;
+            vz.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkClearColorValue zero{};   // (0,0) = no motion
+                VkImageSubresourceRange r{};
+                r.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                r.baseMipLevel = 0; r.levelCount = 1;
+                r.baseArrayLayer = 0; r.layerCount = 1;
+                vkCmdClearColorImage(c, self->m_velImg,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &r);
+            };
+            m_graph.addPass(std::move(vz));
+        }
+
+        // ---- SSAO NEUTRAL CLEAR (only when the SSAO passes did NOT run) ------
+        // mesh.frag's set3 binds m_ssaoBlurView unconditionally — it is the AO slot and
+        // also the FALLBACK view for the refl/DDGI slots (writeGiDescriptors) — so every
+        // mesh draw statically samples this image even with SSAO off. Two consequences,
+        // both of which used to be silently wrong the moment SSAO was disabled:
+        //   1) LAYOUT: it must be SHADER_READ_ONLY_OPTIMAL at draw time. The three reads
+        //      below are now declared unconditionally, which makes the graph transition it.
+        //   2) CONTENTS: with no SSAO pass writing it, the memory is undefined garbage,
+        //      which mesh.frag would multiply into the ambient term. Clear it to WHITE
+        //      (1.0 = fully unoccluded = the "no AO" identity) so disabling SSAO removes
+        //      occlusion instead of applying random occlusion.
+        // Latent for as long as SSAO was always on. r_rtao (RT AO REPLACES SSAO) turns it
+        // off — and 03b77ff makes that the DEFAULT on ray-tracing devices — so this path
+        // is now the common one. Cost: one half-res R8 clear on frames without SSAO.
+        if (!ssaoOn && m_ssaoBlurImg) {
+            RenderPassDesc np{};
+            np.name = "ssao-neutral-clear";
+            np.queue = RgQueue::Graphics;
+            np.usesDynamicRendering = false;
+            np.addUse(ResourceUse{
+                rgSsaoBlur, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            np.recordCtx = this;
+            np.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkClearColorValue white{};
+                white.float32[0] = 1.0f; white.float32[1] = 1.0f;
+                white.float32[2] = 1.0f; white.float32[3] = 1.0f;
+                VkImageSubresourceRange r{};
+                r.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                r.baseMipLevel = 0; r.levelCount = 1;
+                r.baseArrayLayer = 0; r.layerCount = 1;
+                vkCmdClearColorImage(c, self->m_ssaoBlurImg,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &r);
+            };
+            m_graph.addPass(std::move(np));
+        }
+
         // ---- RT-AO compute pass (hardware ray query) ------------------------
         // After the depth pre-pass populated the camera depth buffer, trace the
         // TLAS with rayQueryEXT from each pixel's depth-reconstructed world position
@@ -825,13 +905,18 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
             // When SSAO is on, mesh.frag samples the blurred AO texture — declare it
             // so the graph transitions it COLOR_ATTACHMENT -> SHADER_READ_ONLY.
-            if (ssaoOn) {
-                colorPass.addUse(ResourceUse{
-                    rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            }
+            // set3 ALWAYS binds m_ssaoBlurView (writeGiDescriptors uses it as the AO slot AND as the
+            // fallback view for the refl/DDGI slots), so the descriptor is statically accessed on EVERY
+            // mesh draw whether or not SSAO ran. The read must be declared UNCONDITIONALLY or the image
+            // sits in UNDEFINED while bound as SHADER_READ_ONLY (VUID-vkCmdDraw-None-09600). The old
+            // `if (ssaoOn)` guard was harmless only while SSAO was always on; r_rtao (RT AO REPLACES
+            // SSAO) turns it off and exposed it. ssao-neutral-clear guarantees white (unoccluded)
+            // contents on the frames the SSAO passes did not write.
+            colorPass.addUse(ResourceUse{
+                rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             // When reflections ran, mesh.frag samples the reflection buffer —
             // declare it so the graph transitions it GENERAL -> SHADER_READ_ONLY.
             if (reflOn) {
@@ -1005,13 +1090,18 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
-            if (ssaoOn) {
-                glassPass.addUse(ResourceUse{
-                    rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            }
+            // set3 ALWAYS binds m_ssaoBlurView (writeGiDescriptors uses it as the AO slot AND as the
+            // fallback view for the refl/DDGI slots), so the descriptor is statically accessed on EVERY
+            // mesh draw whether or not SSAO ran. The read must be declared UNCONDITIONALLY or the image
+            // sits in UNDEFINED while bound as SHADER_READ_ONLY (VUID-vkCmdDraw-None-09600). The old
+            // `if (ssaoOn)` guard was harmless only while SSAO was always on; r_rtao (RT AO REPLACES
+            // SSAO) turns it off and exposed it. ssao-neutral-clear guarantees white (unoccluded)
+            // contents on the frames the SSAO passes did not write.
+            glassPass.addUse(ResourceUse{
+                rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             // Scene-color copy (set 4, binding 0): glass.frag samples the scene
             // behind it (refraction M2 / frost M4). Declare it READ so the graph
             // transitions the copy chain TRANSFER_DST/COLOR_ATTACHMENT ->
@@ -1222,12 +1312,17 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 // (already in SHADER_READ_ONLY from the main pass); when SSAO is off the
                 // apply set binds the GI denoise image instead (already declared above)
                 // and forces aoAmount=0, so no extra/incorrect resource use is needed.
-                if (ssaoOn) {
-                    ap.addUse(ResourceUse{
-                        rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                        VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-                }
+                // set3 ALWAYS binds m_ssaoBlurView (writeGiDescriptors uses it as the AO slot AND as the
+                // fallback view for the refl/DDGI slots), so the descriptor is statically accessed on EVERY
+                // mesh draw whether or not SSAO ran. The read must be declared UNCONDITIONALLY or the image
+                // sits in UNDEFINED while bound as SHADER_READ_ONLY (VUID-vkCmdDraw-None-09600). The old
+                // `if (ssaoOn)` guard was harmless only while SSAO was always on; r_rtao (RT AO REPLACES
+                // SSAO) turns it off and exposed it. ssao-neutral-clear guarantees white (unoccluded)
+                // contents on the frames the SSAO passes did not write.
+                ap.addUse(ResourceUse{
+                    rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
                 ap.usesDynamicRendering = true;
                 m_giApplyRenderInfo = VkRenderingInfo{};
                 m_giApplyRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -1517,6 +1612,18 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // THE VELOCITY READ — this declaration was MISSING entirely. taa_resolve's
+            // descriptor binds m_velView (SHADER_READ_ONLY) on every TAA frame, so the
+            // graph has to transition it: COLOR_ATTACHMENT -> SHADER_READ_ONLY after the
+            // velocity pre-pass, or TRANSFER_DST -> SHADER_READ_ONLY after the neutral
+            // clear on frames the velocity pass is skipped. Without it the image was never
+            // transitioned at all and the resolve sampled it in UNDEFINED.
+            if (velSampled) {
+                tp.addUse(ResourceUse{
+                    rgVel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
             tp.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,

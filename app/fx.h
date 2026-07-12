@@ -41,6 +41,7 @@ enum class WeaponFxKind : uint8_t {
     Chaingun,
     Plasma,
     Lightning,
+    Rocket,      // heavy explosive: big orange launch flash, fireball impact
 };
 
 // Map a WeaponDef FX-id string (e.g. "muzzle_plasma", "impact_bullet") onto a
@@ -54,6 +55,7 @@ inline WeaponFxKind fxKindFromId(std::string_view id) {
     if (has("shotgun"))   return WeaponFxKind::Shotgun;
     if (has("smg"))       return WeaponFxKind::Smg;
     if (has("pistol"))    return WeaponFxKind::Pistol;
+    if (has("rocket") || has("explosion")) return WeaponFxKind::Rocket;
     return WeaponFxKind::Default;
 }
 
@@ -75,6 +77,61 @@ constexpr int   kMaxTracers      = 8;
 // (kTracerTime): at 300 m/s a 28 m beam fully connects in ~0.093 s (< 0.12 s life),
 // so the tip is still visibly travelling yet always reaches the hit point.
 constexpr float kLightningBoltSpeed = 300.0f;
+// Lightning re-roll period (seconds), the MEAN of a jittered interval. The bolt holds
+// a shape for one bucket then JUMPS to a new one. The interval is deliberately NOT
+// constant: a fixed 65 ms bucket is a metronome, and a metronome reads as a machine.
+// Each re-roll lasts ~kLightningRerollPeriod * [0.6, 1.4] (i.e. ~40-90 ms), so the
+// bolt crackles irregularly. Brightness is also re-rolled per bucket (real arcs pulse
+// in INTENSITY, not just in shape).
+constexpr float kLightningRerollPeriod = 0.065f;
+
+// ---- FRACTAL BOLT (recursive midpoint displacement) ----
+// Real lightning is SELF-SIMILAR: big lazy bends with smaller kinks riding on them,
+// and smaller kinks on those. The old algorithm WALKED muzzle->hit in fixed-length
+// runs and kicked each joint by a random angle — a uniform step with a uniform kick,
+// which is a regular zigzag no matter how you tune it. Tim: "we need natural
+// lightning". So the shape is now built the opposite way: start from the single
+// straight muzzle->hit segment and SUBDIVIDE, displacing each midpoint perpendicular
+// to its own parent segment and halving the displacement at every level.
+//
+// kLightningFractalDepth: subdivision levels (2^depth segments per strand).
+// kLightningDisplaceFrac: initial midpoint displacement as a FRACTION OF BOLT LENGTH —
+//   scale-relative, so a 2 m bolt and a 25 m bolt look equally natural (the old
+//   fixed-metre step is exactly why short bolts read as coat hangers).
+// kLightningDecay: displacement multiplier per level. THIS IS THE NATURALNESS KNOB
+//   (the fractal dimension): 0.5 = each halving of length halves the wobble.
+constexpr int   kLightningFractalDepth = 6;      // 64 segments on the trunk
+constexpr float kLightningDisplaceFrac = 0.16f;  // first midpoint kick ~16% of length
+constexpr float kLightningDecay        = 0.55f;  // per-level displacement falloff
+
+// ---- BRANCHING ----
+// Forks are CHILD BOLTS: they inherit the parent's direction rotated off-axis, take a
+// fraction of the remaining parent length, recurse (so branches branch), and inherit
+// REDUCED brightness + thickness. Probability decays with depth so the tree thins out.
+constexpr int   kLightningMaxBranchDepth = 3;     // a fork can fork, up to this depth
+constexpr float kLightningBranchChance   = 0.28f; // per-midpoint chance at depth 0
+constexpr float kLightningBranchDecay    = 0.55f; // chance/brightness falloff per level
+// Most branches DIE partway instead of reaching anything — a dead-end tendril that
+// fades is one of the strongest naturalness cues. Only the TRUNK terminates exactly
+// on the hit point.
+constexpr float kLightningBranchLenFrac  = 0.5f;  // branch length vs remaining parent
+// Core / glow thickness (m): a THIN white-hot core ribbon inside a wider, DIMMER blue
+// glow ribbon, both emissive (HDR) so BLOOM builds the halo.
+//
+// POLISH PASS (landed under honest lighting, 5c35d65): the original 0.035 / 0.10 m
+// pair was authored against the OLD washed 0.42-ambient look. Under honest lighting
+// the bolt read as a white ASTERISK of fat rectangular planks — you could see the
+// quad edges, the core clipped to flat white, and the fork/arc strands were just as
+// thick as the trunk. Per docs/DECISIONS.md ("VALUE, NOT LUMENS — don't crank
+// emissive until it's a white blob"), the halo now comes from bloom on a SHARP thread
+// rather than from wide bright geometry. ~3x thinner; brightness comes down with it.
+constexpr float kLightningCoreThick = 0.009f;
+constexpr float kLightningGlowThick = 0.026f;
+
+// ---- Electric-arc tendril ring (lightning impact violence) ----
+// Short-lived mini zigzag arcs crawling on the surface at a lightning hit point.
+constexpr int   kMaxArcs   = 12;
+constexpr float kArcLife   = 0.14f;   // seconds one tendril lives
 
 // ---- Muzzle flash tuning ----
 // How long (seconds) the muzzle flash quad stays visible.
@@ -133,6 +190,12 @@ public:
     // lightning = white-cyan, etc.); the default keeps the original metal-spark look.
     void spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
     void spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal, WeaponFxKind kind);
+    // PROJECTILE BOLT visual (playtest: plasma read hitscan-looking — bolts were
+    // INVISIBLE in flight). Call once per frame per live projectile: drops a hot
+    // additive core billboard at the bolt position + a dimmer trail speck behind it
+    // (60 fps of overlapping cores reads as a continuous glowing bolt with a fading
+    // tail). Rocket additionally puffs alpha smoke so the exhaust trail lingers.
+    void boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind);
     // Hit on an enemy: a short spray of dark-red alpha blood along the shot `dir`.
     void spawnBlood(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
     // Enemy death: a burst of debris chunks (alpha, gravity) + a lingering smoke
@@ -197,12 +260,51 @@ private:
                              const x3::phys::Vec3& eye, float width,
                              const float color[4]) const;
 
-    // Draw a JAGGED lightning bolt a->b: subdivide into segments with random
-    // perpendicular offsets (re-rolled per call so it crackles), each drawn via
-    // drawBeam. The last vertex lands exactly on `b` (the hit point).
+    // Deterministic xorshift32 PRNG, threaded by REFERENCE through the whole recursive
+    // bolt build so one `seed` reproduces one exact bolt (const-safe: it never touches
+    // m_rng, which the headless captures depend on being repeatable).
+    struct BoltRng {
+        uint32_t s;
+        float operator()() {                 // [0,1)
+            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+            return (float)(s & 0x00FFFFFFu) / (float)0x01000000u;
+        }
+        float sym() { return (*this)() * 2.0f - 1.0f; }   // [-1,1)
+    };
+
+    // Draw a NATURAL FRACTAL lightning bolt a->b (Tim: "we need natural lightning").
+    // Recursive midpoint displacement: the single straight a->b segment is subdivided
+    // kLightningFractalDepth times, each midpoint kicked perpendicular to its own
+    // parent segment, with the displacement decaying by kLightningDecay per level. The
+    // result is SELF-SIMILAR — big lazy bends carrying smaller kinks carrying smaller
+    // kinks — instead of the old uniform-step/uniform-kick walk, which was a regular
+    // zigzag at every zoom level. Branches are recursive CHILD bolts (they fork too),
+    // inheriting reduced brightness + thickness, and mostly dying partway. `a` and `b`
+    // are EXACT (muzzle and hit point); only branches are allowed to end nowhere.
+    // The whole shape is deterministic from `seed` (bucketed by the caller so the bolt
+    // holds a shape then jumps, rather than strobing a new one every frame).
     void drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                            const x3::phys::Vec3& a, const x3::phys::Vec3& b,
-                           float thickness, const float color[4]) const;
+                           const x3::phys::Vec3& eye,
+                           float coreThick, uint32_t seed, float brightness) const;
+
+    // One recursive strand: subdivide a->b, emitting camera-facing ribbon pairs at the
+    // leaves and spawning branch children off the midpoints. `displace` is the current
+    // midpoint kick magnitude (metres), `depth` the remaining subdivision levels,
+    // `branchDepth` how many forks deep this strand already is. `t0`/`t1` are the
+    // strand-relative positions of a/b, used to TAPER thickness+brightness toward the
+    // tip (a branch that ends as thick as it started reads fake — nature tapers).
+    void boltSubdivide(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                       const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                       const x3::phys::Vec3& eye, BoltRng& rng,
+                       float displace, int depth, int branchDepth,
+                       float coreThick, float brightness, float t0, float t1) const;
+    // Draw one straight zigzag SEGMENT as a camera-facing GLOW ribbon + a thinner
+    // white-hot CORE ribbon, both via drawMeshEmissive (HDR emissive -> bloom halo).
+    void drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                         const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                         const x3::phys::Vec3& eye,
+                         float coreThick, float brightness) const;
 
     // A centered unit box mesh (half-extent 0.5 each axis) reused for all FX,
     // scaled per draw via the model matrix.
@@ -210,6 +312,24 @@ private:
 
     Tracer m_tracers[kMaxTracers];
     int    m_nextTracer = 0;        // round-robin write cursor into the pool
+
+    // ---- Electric arc-tendril pool (lightning IMPACT violence) -------------
+    // Short-lived mini zigzag arcs that crawl/whip off a lightning hit point (Tim:
+    // impacts must be sharp electric streaks + arc tendrils, NOT white puffballs).
+    // Each is drawn as a tiny re-rolled zigzag via drawLightningBolt so it crackles.
+    struct Arc {
+        x3::phys::Vec3 base{};   // hit point
+        x3::phys::Vec3 dir{};    // tendril direction (unit) * length baked into tip
+        float          len  = 0.6f;
+        float          life = 0.0f;   // remaining seconds (<=0 == free)
+        float          maxLife = kArcLife;
+        uint32_t       seed = 0;
+    };
+    Arc  m_arcs[kMaxArcs];
+    int  m_nextArc = 0;
+    // Spawn a ring of arc tendrils whipping off a lightning hit (called by
+    // spawnImpact for the Lightning kind).
+    void spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
 
     x3::phys::Vec3 m_muzzlePos{};
     float          m_muzzleFlash = 0.0f;  // remaining seconds

@@ -199,8 +199,14 @@ public:
             const std::string n = b.name ? b.name : "";
             if (n == "Terrestrial")        // the HOME PLANET rising below the action (~30 deg wide)
                 anchor(b, 0.0f, -0.55f, -0.84f, 0.26f);
-            else if (n == "Sun")           // BEHIND the flight path — the ambush comes out of the sun
-                anchor(b, 0.10f, 0.18f, 0.97f, 0.05f);
+            else if (n == "Sun")           // BEHIND-RIGHT of the flight path — the ambush still
+                                           // comes out of the sun, but OFF-AXIS: dead-behind put
+                                           // every shoot-down camera (which looks back up the
+                                           // flight path, into the star) on a fully backlit hull
+                                           // with N.L == 0 — a black cutout. Swung to +X it keys
+                                           // the ships' starboard flanks in EVERY beat while
+                                           // keeping the star in frame for the kill shots.
+                anchor(b, 0.62f, 0.26f, 0.74f, 0.05f);
             else if (n == "Gas")           // ringed giant, ahead-right
                 anchor(b, 0.40f, 0.11f, -0.91f, 0.085f);
             else if (n == "Moon")          // accent, ahead-left
@@ -219,16 +225,41 @@ public:
     void applyLook(x3::rhi::IRenderDevice& device) {
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
-        sp.sunDir[0] = 0.10f; sp.sunDir[1] = 0.18f; sp.sunDir[2] = 0.97f;   // toward the Sun body (+Z behind)
+        sp.sunDir[0] = 0.62f; sp.sunDir[1] = 0.26f; sp.sunDir[2] = 0.74f;   // toward the Sun body (see the anchor)
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.88f;
-        sp.sunIntensity = 0.06f;                       // DEEP SPACE: any higher and the analytic
+        sp.sunIntensity = 0.06f;                       // SKY DISK only: any higher and the analytic
                                                        // haze floor washes the lower dome grey
+        // THE STAR, as mesh light. The hull paint is near-black (median albedo
+        // ~0.004 linear), so an honest key has to be HOT to shade it at all. This
+        // is exposure, not a crutch: it scales the real N.L / GGX response, so the
+        // shadow side of every hull stays dark and the form survives.
+        sp.sunLight = 3.2f;
         sp.haze = 0.0f; sp.exposure = 1.0f;
         sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.010f;
         sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.020f;
         device.setSkyParams(sp);
-        device.setAmbient(0.17f, 0.18f, 0.25f);        // cool starlight fill — carries the hulls
+        // ---- THE WASH-OUT WAS HERE ----------------------------------------
+        // ambient (0.17, 0.18, 0.25) looked like a harmless "starlight fill", but
+        // mesh.frag's no-IBL fallback adds `(ambient * 3.4) * Fresnel` as a flat,
+        // ALBEDO-INDEPENDENT term: 0.17 * 3.4 = 0.58, i.e. a pale lavender ~0.6-0.85
+        // painted straight over every hull fragment. That is why the capital ship
+        // rendered as a featureless white silhouette — the same value as the sun
+        // disk beside it — with its (very dark) diffuse map barely visible under the
+        // fog. Dropped to a real space fill: starlight + planetshine, no more.
+        device.setAmbient(0.032f, 0.036f, 0.052f);
         device.setBloom(0.30f);                        // hero glow: engines / bolts / the sun
+        device.setPointLights(nullptr, 0);             // a star is not a light bulb
+        // 1x1 MR (glTF: G = roughness, B = metallic) for hulls that ship with
+        // metallicFactor = 0 and no MR map (SpaceShip*.glb). Without it they land on
+        // mesh.frag's DIELECTRIC branch — Lambert + ambient, NO direct specular — and
+        // a near-black Lambert hull can only be black or washed. With it the star gets
+        // a GGX lobe to work with: hard-surface sheen + Fresnel rim. Metallic stays
+        // LOW: this is painted plate (a dielectric coat); a metallic black albedo
+        // would give a black F0 and land right back on black.
+        if (!m_hullMr.valid()) {
+            const uint8_t px[4] = { 0, (uint8_t)(0.58f * 255.0f), (uint8_t)(0.15f * 255.0f), 255 };
+            m_hullMr = device.createTexture(px, 1, 1, /*srgb=*/false);   // DATA, linear
+        }
     }
 
     // Restore the device state the cutscene touched to the engine defaults the
@@ -321,22 +352,47 @@ public:
                     x3::asset::mulMat4(obj, d.nodeTransform, fin);
                     const float* emis = nullptr;
                     float emBuf[4];
-                    // Time-evaluated emissive (the blob->detailed reveal ramp); when an
-                    // actor has no ramp this equals the static a.emissive (legacy).
+                    x3::rhi::TextureHandle emisTex{ d.emissiveTexId };
+                    // An actor-authored emissive (a scripted ramp) still wins.
                     if (pose.emissive[3] > 0.0f) { std::copy(pose.emissive, pose.emissive + 4, emBuf); emis = emBuf; }
                     else {
-                        emBuf[0] = d.emissiveFactor[0]; emBuf[1] = d.emissiveFactor[1];
-                        emBuf[2] = d.emissiveFactor[2]; emBuf[3] = 1.0f;
+                        // ---- CANON: SHIPS ARE SELF-LIT (Star Trek convention) ----
+                        // PER-TEXEL running lights: a hull drawable with NO authored
+                        // emissive gets its OWN BASE COLOR map bound as the emissive
+                        // gate (mesh.frag: emis = factor * emissiveTex), so the MAP
+                        // decides WHERE it glows — the window rows / light strips /
+                        // nav markings painted into the diffuse light up, while the
+                        // near-black hull paint stays dark. A per-texel gate, NOT the
+                        // flat pane flood the capital ship used to carry.
+                        const bool hasEmis = (d.emissiveFactor[0] + d.emissiveFactor[1] +
+                                              d.emissiveFactor[2]) > 0.001f || d.emissiveTexId != 0;
+                        if (hasEmis) {
+                            emBuf[0] = d.emissiveFactor[0]; emBuf[1] = d.emissiveFactor[1];
+                            emBuf[2] = d.emissiveFactor[2]; emBuf[3] = 1.0f;
+                        } else {
+                            emBuf[0] = 0.45f; emBuf[1] = 0.52f; emBuf[2] = 0.62f; emBuf[3] = 1.0f;
+                            emisTex = x3::rhi::TextureHandle{ d.baseColorTexId };
+                        }
                         emis = emBuf;
                     }
+                    // No MR of its own -> the synthesized hull MR (see applyLook), so
+                    // the star has a specular lobe to shape the hull with.
+                    const x3::rhi::TextureHandle mr =
+                        d.mrTexId ? x3::rhi::TextureHandle{ d.mrTexId } : m_hullMr;
                     device.drawMeshPBR(fc, x3::rhi::MeshHandle{ d.meshId },
                                        x3::rhi::TextureHandle{ d.baseColorTexId },
                                        x3::rhi::TextureHandle{ d.normalTexId },
-                                       x3::rhi::TextureHandle{ d.mrTexId },
+                                       mr,
                                        d.baseColorFactor, emis, fin,
                                        d.alphaMask, d.alphaBlend,
-                                       x3::rhi::TextureHandle{ d.emissiveTexId },
-                                       x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale);
+                                       emisTex,
+                                       x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
+                                       // Canon self-light: a shaped rim + form term applied
+                                       // ONLY where the star isn't. The hull still shades
+                                       // honestly from the sun; it just never dies to a black
+                                       // cutout when the camera cuts to its dark side.
+                                       /*clearcoat=*/0.0f, /*clearcoatRough=*/0.05f,
+                                       /*selfLight=*/0.35f);
                 }
             }
         }
@@ -420,6 +476,7 @@ public:
         m_actors.clear();
         auto kill = [&](x3::rhi::MeshHandle& h) { if (h.valid()) { device.destroyMesh(h); h = {}; } };
         kill(m_box); kill(m_sphere); kill(m_planetMesh); kill(m_ringMesh);
+        if (m_hullMr.valid()) { device.destroyTexture(m_hullMr); m_hullMr = {}; }
         // NightSkyPlanet textures are device-owned createTexture handles; the device
         // frees them at shutdown — same lifetime stance as the nightsky/showroom paths.
         m_planets.clear();
@@ -444,6 +501,9 @@ private:
     std::vector<CinActorState> m_actors;
     x3::rhi::MeshHandle m_box{}, m_sphere{};
     x3::rhi::MeshHandle m_planetMesh{}, m_ringMesh{};
+    // 1x1 metallic-roughness for hulls whose GLB carries no MR map (SpaceShip*.glb);
+    // created in applyLook(), freed in destroy(). Puts them on the PBR branch.
+    x3::rhi::TextureHandle m_hullMr{};
     struct CelAnchor { float dir[3] = {0, 0, -1}; float angSin = 0.05f; };
     std::vector<NightSkyPlanet> m_planets;
     std::vector<CelAnchor> m_anchors;     // parallel to m_planets (direction + apparent size)

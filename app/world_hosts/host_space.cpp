@@ -42,25 +42,40 @@ int hostSpace(HostContext& hc) {
         // looking "down" sees stars, not a ground plane) — so deep space is the
         // sky ENABLED at near-black with zero haze, exactly like the nightsky
         // host but with no horizon band at all.
+        // ---- THE STAR IS A DIRECTIONAL LIGHT ------------------------------
+        // A star at stellar distance casts PARALLEL rays with no meaningful
+        // inverse-square falloff across a fleet. The old rig lit space with POINT
+        // lights parked 120 m off the formation: pointAtten() is w/(d^2+1), so at
+        // the far escorts (~150 m) each light delivered ~1/22500 of its intensity
+        // and the hulls went black — which is exactly what the crutches (an
+        // over-unity albedo scale + a fake emissive floor) were papering over.
+        // Both are gone. One honest directional star does the whole job.
         { x3::rhi::IRenderDevice::SkyParams sp{};
           sp.enabled = true;
-          sp.sunDir[0] = 0.6f; sp.sunDir[1] = 0.5f; sp.sunDir[2] = 0.62f;   // matches the key light corner
-          sp.sunColor[0] = 0.75f; sp.sunColor[1] = 0.82f; sp.sunColor[2] = 1.0f;
-          // W6-2: 0.02 -> 0.55 — a cool DIRECTIONAL starlight key. The sky sun feeds
-          // the PBR path (the surface tower proves it), and it's the only way hulls
-          // get real shading gradients out here: point rigs vanish at capital-ship
-          // scale, and a flat ambient floor reads as clay. Still far below daylight.
-          sp.sunIntensity = 0.55f;
+          // Toward the star: BEHIND-LEFT-ABOVE the showcase camera (which sits at
+          // -X looking toward +X), so the fleet's camera-facing flanks are the LIT
+          // ones and the far flanks fall into shadow. The sky's sun disk is derived
+          // from this same vector, so the light and the star agree by construction.
+          sp.sunDir[0] = -0.58f; sp.sunDir[1] = 0.50f; sp.sunDir[2] = 0.64f;
+          sp.sunColor[0] = 0.85f; sp.sunColor[1] = 0.90f; sp.sunColor[2] = 1.0f;
+          sp.sunIntensity = 0.55f;                     // SKY DISK brightness only
+          // The hulls are near-black paint (the diffuse map's median luminance is
+          // ~0.004 linear). An honest star has to be HOT to shade them — this is
+          // exposure, not a crutch: it scales the real N.L / GGX response, so the
+          // dark side stays dark and the form survives.
+          sp.sunLight = 3.2f;                          // MESH sun radiance (was implicitly 1.0)
           sp.haze = 0.0f;                              // haze 0 == DEEP SPACE (stars on the full sphere)
           sp.exposure = 1.0f;
           sp.zenith[0]  = 0.003f; sp.zenith[1]  = 0.003f; sp.zenith[2]  = 0.008f;
           sp.horizon[0] = 0.004f; sp.horizon[1] = 0.005f; sp.horizon[2] = 0.011f;
           device->setSkyParams(sp);
           device->setSkyTime(10.0f);                   // non-zero -> starfield twinkle/rotation phase
-          // R2: enabling the sky at near-zero sun replaced whatever ambient the
-          // disabled-sky path implied — the fleet went silhouette-black. Explicit
-          // cool ambient so hulls read while space stays dark (nightsky's trick).
-          device->setAmbient(0.11f, 0.12f, 0.16f); }
+          // Fill = starlight + planetshine only. SMALL on purpose: mesh.frag's
+          // no-IBL fallback multiplies this by 3.4 in a grazing-Fresnel term, so a
+          // "readability" ambient of 0.11+ paints an additive pale wash straight
+          // over the hull texture — that is precisely how the capital ship went
+          // white. Kept low, it reads as the faint cool rim space actually has.
+          device->setAmbient(0.032f, 0.036f, 0.052f); }
         // SSAO + SSGI screen-space passes raster the whole scene to black on a
         // black/empty space background (no nearby geometry to bounce off) -- the
         // 1080 Ti / no-RT fallback path documented in the memory bank. Disable
@@ -70,30 +85,8 @@ int hostSpace(HostContext& hc) {
           device->setSsaoParams(ap); }
         { x3::rhi::IRenderDevice::GiParams gp{}; gp.enabled = false;
           device->setGiParams(gp); }
-        // Sun = the directional sun baked into mesh.frag at +Y-ish; layer on a
-        // few BRIGHT point lights NEAR the fleet so the ships read (the analytic
-        // sky is OFF -> no atmospheric tint; light only comes from these point
-        // lights + the hardcoded sun, attenuated by 1/r^2). The point-light
-        // ranges + intensities are intentionally cranked: deep space has zero
-        // bounced light, so anything subtle would render the ships as silhouettes.
-        // R3: with the REAL black sky in (starfield), the old light rig left the
-        // hulls as silhouettes — the navy "readability" of the old shot was just
-        // the clear color. Roughly doubled key/fill/rim so the fleet reads as lit
-        // metal against the stars.
-        { x3::rhi::PointLight pl[3];
-          // Key light: a "sun" anchored near the fleet so attenuation is gentle.
-          pl[0].pos[0] =  120.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f;
-          pl[0].range  =  600.0f;
-          pl[0].color[0] = 130.0f; pl[0].color[1] = 121.0f; pl[0].color[2] = 104.0f;
-          // Fill light from -X/+Y to bring out the camera-facing side.
-          pl[1].pos[0] = -80.0f; pl[1].pos[1] =  60.0f; pl[1].pos[2] =  20.0f;
-          pl[1].range  = 400.0f;
-          pl[1].color[0] = 40.0f; pl[1].color[1] = 46.0f; pl[1].color[2] = 60.0f;
-          // Rim/back light from +X/-Y to give the ships shape.
-          pl[2].pos[0] =  200.0f; pl[2].pos[1] = -30.0f; pl[2].pos[2] = -50.0f;
-          pl[2].range  = 500.0f;
-          pl[2].color[0] = 24.0f; pl[2].color[1] = 19.0f; pl[2].color[2] = 13.0f;
-          device->setPointLights(pl, 3); }
+        // No point lights in space. A star is not a light bulb.
+        device->setPointLights(nullptr, 0);
 
         // ---- Player ship (the SpacePilotController) -----------------------
         x3::game::SpacePilotController pilot;
@@ -131,6 +124,20 @@ int hostSpace(HostContext& hc) {
         auto sbTexD = x3::prims::makeCheckerRGBA(64, 8, 180, 190, 210, 60, 70, 90);
         auto shipBoxTex = device->createTexture(sbTexD.data(), 64, 64, true);
 
+        // ---- HULL MR: put the ships on the PBR path -----------------------
+        // SpaceShip*.glb ship with metallicFactor = 0 and NO metallic-roughness
+        // texture, so ModelLoader's MR synthesis (gated on metallic > 0) skips them
+        // and they land on mesh.frag's DIELECTRIC branch — which is pure Lambert +
+        // ambient with NO direct specular at all. A Lambert-only near-black hull can
+        // only ever be black (or washed white by ambient). A 1x1 MR map (glTF:
+        // G = roughness, B = metallic) routes them to the Cook-Torrance branch, where
+        // the star's GGX lobe gives the hard-surface sheen and Fresnel rim that is
+        // how a dark ship actually reads in space. Metallic stays LOW on purpose:
+        // this is PAINTED plate (a dielectric coat), and a metallic black albedo
+        // would give a black F0 and land right back on black.
+        const uint8_t hullMrPx[4] = { 0, (uint8_t)(0.58f * 255.0f), (uint8_t)(0.15f * 255.0f), 255 };
+        auto hullMrTex = device->createTexture(hullMrPx, 1, 1, /*srgb=*/false);   // DATA, linear
+
         // ---- Static decor fleet: a wing formation a few dozen meters out
         //      Each is a static placement transform (rotation around +Y for variety).
         //      Coordinates chosen so the headless screenshot camera (at -X behind
@@ -157,49 +164,61 @@ int hostSpace(HostContext& hc) {
 
         const float dt = 1.0f / 60.0f;
 
-        // Draw a ship at a placement matrix (yaw-only for decor; full quat for
-        // the player ship). W6-2: ships ride the FULL PBR path now (normal/MR/
-        // authored emissive — the same conversion monsters got in Wave 1), so
-        // hulls catch the light rig as lit metal instead of the old basic-path
-        // "×4 + 0.45 floor" albedo hack that flattened them to silhouettes.
-        // `bright` is a gentle exposure assist for deep space (no bounce light),
-        // applied as a modest albedo scale, not a floor.
-        auto drawShipAt = [&](const x3::rhi::FrameContext& frame,
-                              const float xform[16], float bright) {
+        // Canon self-light strength (see IRenderDevice::drawMeshPBR / mesh.frag):
+        // a shaped rim + form term applied ONLY where the star isn't — the hull
+        // still shades honestly from the sun, it just never dies to a black cutout.
+        constexpr float kShipSelfLight = 0.35f;
+        // Draw a ship at a placement matrix. HONEST SHADING ONLY: the hull's own
+        // albedo, its own lights, and the star. The two crutches that used to live
+        // here are GONE:
+        //   * a `1 + 1.2*bright` albedo scale (over-unity albedo — a surface cannot
+        //     reflect more light than falls on it), and
+        //   * a fake ambient/emissive floor added to every hull fragment, which is
+        //     just albedo dumped to screen with no shading: the flat-white-silhouette
+        //     look. Emissive belongs to engines, running lights and windows.
+        auto drawShipAt = [&](const x3::rhi::FrameContext& frame, const float xform[16]) {
             if (shipModel.ok) {
                 for (const auto& dr : shipDrawables) {
                     float fin[16];
                     x3::asset::mulMat4(xform, dr.nodeTransform, fin);
-                    const float b = 1.0f + 1.2f * bright;   // exposure assist (no floor)
-                    const float tint[4] = {
-                        dr.baseColorFactor[0] * b,
-                        dr.baseColorFactor[1] * b,
-                        dr.baseColorFactor[2] * b,
-                        dr.baseColorFactor[3]
-                    };
-                    // Authored emissive (canopies/engine glow) at full strength, PLUS a
-                    // faint cool STARLIGHT AMBIENT floor: deep space has no bounce term,
-                    // so pure PBR renders near-black hulls invisible. The floor keeps the
-                    // silhouette readable as dim metal while normals/MR still shade from
-                    // the real light rig. Kept far below bloom threshold (bible: no blobs).
-                    const float amb = 0.020f * (1.0f + bright);   // R3: halved — the
-                                                                  // directional key carries
-                                                                  // the shading now
-                    const float emis[4] = { dr.emissiveFactor[0] + amb,
-                                            dr.emissiveFactor[1] + amb * 1.05f,
-                                            dr.emissiveFactor[2] + amb * 1.25f, 1.0f };
+                    // ---- CANON: SHIPS ARE SELF-LIT (Star Trek convention) ----
+                    // PER-TEXEL running lights: a hull drawable with NO authored
+                    // emissive gets its OWN BASE COLOR map bound as the emissive gate
+                    // (mesh.frag: emis = factor * emissiveTex), so the MAP decides
+                    // WHERE it glows — the window rows, light strips and nav markings
+                    // painted into the diffuse light up, while the near-black hull
+                    // paint (median ~0.004 linear) stays dark. A per-texel gate, NOT
+                    // a flat pane flood. The shaped hull self-light rides selfLight.
+                    const bool hasEmis = (dr.emissiveFactor[0] + dr.emissiveFactor[1] +
+                                          dr.emissiveFactor[2]) > 0.001f || dr.emissiveTexId != 0;
+                    float emis[4];
+                    x3::rhi::TextureHandle emisTex{};
+                    if (hasEmis) {
+                        emis[0] = dr.emissiveFactor[0]; emis[1] = dr.emissiveFactor[1];
+                        emis[2] = dr.emissiveFactor[2]; emis[3] = 1.0f;
+                        emisTex = x3::rhi::TextureHandle{ dr.emissiveTexId };
+                    } else {
+                        emis[0] = 0.45f; emis[1] = 0.52f; emis[2] = 0.62f; emis[3] = 1.0f;
+                        emisTex = x3::rhi::TextureHandle{ dr.baseColorTexId };
+                    }
+                    // No MR of its own -> the synthesized hull MR (see above), so the
+                    // star has a specular lobe to shape the hull with.
+                    const x3::rhi::TextureHandle mr =
+                        dr.mrTexId ? x3::rhi::TextureHandle{ dr.mrTexId } : hullMrTex;
                     device->drawMeshPBR(frame, x3::rhi::MeshHandle{ dr.meshId },
                                         x3::rhi::TextureHandle{ dr.baseColorTexId },
                                         x3::rhi::TextureHandle{ dr.normalTexId },
-                                        x3::rhi::TextureHandle{ dr.mrTexId },
-                                        tint, emis, fin,
+                                        mr,
+                                        dr.baseColorFactor, emis, fin,
                                         dr.alphaMask, dr.alphaBlend,
-                                        x3::rhi::TextureHandle{ dr.emissiveTexId },
+                                        emisTex,
                                         x3::rhi::TextureHandle{ dr.detailTexId },
-                                        dr.detailUvScale);
+                                        dr.detailUvScale,
+                                        /*clearcoat=*/0.0f, /*clearcoatRough=*/0.05f,
+                                        /*selfLight=*/kShipSelfLight);
                 }
             } else {
-                const float white[4] = { bright, bright, bright, 1.0f };
+                const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 device->drawMesh(frame, shipBoxMesh, shipBoxTex, white, xform);
             }
         };
@@ -218,7 +237,7 @@ int hostSpace(HostContext& hc) {
                     r.x, r.y, r.z, 0,   // col 2 = ship local +Z
                     p.x, p.y, p.z, 1
                 };
-                drawShipAt(frame, m, 1.5f);
+                drawShipAt(frame, m);
             }
             // Decor fleet.
             for (int i = 0; i < kDecorCount; ++i) {
@@ -230,7 +249,7 @@ int hostSpace(HostContext& hc) {
                     s*S, 0,  c*S, 0,
                     decor[i].x, decor[i].y, decor[i].z, 1
                 };
-                drawShipAt(frame, m, 1.0f);
+                drawShipAt(frame, m);
             }
         };
 
@@ -268,6 +287,7 @@ int hostSpace(HostContext& hc) {
             else       x3::logError("--world space: capture FAILED");
             combatFx.shutdown(*device);
             device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+            device->destroyTexture(hullMrTex);
             if (shipModel.ok) mloader->unload(shipModel);
             sphys->shutdown(); device->shutdown();
             if (window) glfwDestroyWindow(window); glfwTerminate();
@@ -346,6 +366,7 @@ int hostSpace(HostContext& hc) {
         }
         combatFx.shutdown(*device);
         device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+            device->destroyTexture(hullMrTex);
         if (shipModel.ok) mloader->unload(shipModel);
         sphys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();

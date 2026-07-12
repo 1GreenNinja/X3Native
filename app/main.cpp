@@ -296,6 +296,15 @@ int main(int argc, char** argv) {
         _tf.testElevatorShowcase = o.testElevatorShowcase;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;
+        _tf.testIntroCockpit = o.testIntroCockpit;
+        _tf.testShipInterior = o.testShipInterior;
+        _tf.testShipWindows  = o.testShipWindows;
+        _tf.testBodyContact = o.testBodyContact;
+        _tf.testWormhole = o.testWormhole;
+        _tf.testWormholeTransit = o.testWormholeTransit;
+        _tf.testTractor = o.testTractor;
+        _tf.testDescentSlide = o.testDescentSlide;
+        _tf.testWingDressing = o.testWingDressing;
         _tf.testIntroBranch = o.testIntroBranch;
         _tf.testSurfaceStart = o.testSurfaceStart;
         _tf.testCutscene = o.testCutscene;
@@ -326,6 +335,7 @@ int main(int argc, char** argv) {
         _tf.testAct2 = o.testAct2;
         _tf.testAct2Desert = o.testAct2Desert;
         _tf.testAct2Caves = o.testAct2Caves;
+        _tf.testRifthub = o.testRifthub;
         _tf.testWorldRegions = o.testWorldRegions;
         _tf.testCity = o.testCity;
         _tf.testOceanBase = o.testOceanBase;
@@ -351,6 +361,7 @@ int main(int argc, char** argv) {
         _tf.testCollapse = o.testCollapse;
         _tf.testNav = o.testNav;
         _tf.testWeapons = o.testWeapons;
+        _tf.testLightningCharge = o.testLightningCharge;
         _tf.testScript = o.testScript;
         _tf.testVehicle = o.testVehicle;
         _tf.testCanonVehicle = o.testCanonVehicle;
@@ -367,6 +378,7 @@ int main(int argc, char** argv) {
         _tf.testValley = o.testValley;
         _tf.testCliffs = o.testCliffs;
         _tf.testClub = o.testClub;
+        _tf.testPerfshop = o.testPerfshop;
         _tf.testSpace = o.testSpace;
         _tf.testEva = o.testEva;
         _tf.testShipAi = o.testShipAi;
@@ -704,6 +716,7 @@ int main(int argc, char** argv) {
         _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;
         _hc.carShot          = o.carShot;          _hc.carShotDir       = o.carShotDir;
         _hc.upperShot        = o.upperShot;        _hc.upperShotDir     = o.upperShotDir;
+        _hc.rescueShot       = o.rescueShot;        _hc.rescueShotDir   = o.rescueShotDir;
         _hc.showroomFpShot   = o.showroomFpShot;   _hc.showroomFpShotPath = o.showroomFpShotPath;
         _hc.showroomRagdollShot = o.showroomRagdollShot; _hc.showroomRagdollShotPath = o.showroomRagdollShotPath;
         _hc.showroomDeckShot = o.showroomDeckShot; _hc.showroomDeckShotPath = o.showroomDeckShotPath;
@@ -720,8 +733,6 @@ int main(int argc, char** argv) {
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;
-        int _hostRc = x3::apphost::dispatchWorldHost(_hc);
-        if (_hostRc >= 0) return _hostRc;
 
     // ======================================================================
     // ---- DEFAULT HOST (#28 deep split, Phase C) ---------------------------
@@ -749,6 +760,7 @@ int main(int argc, char** argv) {
     _hc.introForce      = o.introForce;        // DEV --intro-force outcome override
     _hc.editorMode      = o.editorMode;
     _hc.fxDemo          = o.fxDemo;
+    _hc.fxLightning     = o.fxLightning;
     _hc.uiDemo          = o.uiDemo;            _hc.uiDemoPath = o.uiDemoPath; _hc.uiDemoScreen = o.uiDemoScreen;
     _hc.dialogShot      = o.dialogShot;
     _hc.vigilShot       = o.vigilShot;
@@ -757,11 +769,53 @@ int main(int argc, char** argv) {
     _hc.duskSky         = o.duskSky;           // STREET LIGHT dusk-sky staging
     _hc.shotChatter     = o.shotChatter;       // CHATTER bubble staging for stills
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
+    _hc.captureWings    = o.captureWings;      _hc.captureWingsDir = o.captureWingsDir;
     _hc.docWorldPath    = o.docWorldPath;
     _hc.cullPathArg     = o.cullPathArg;
     _hc.hzbArg          = o.hzbArg;
     _hc.visArg          = o.visArg;
     _hc.bootBudgetMs    = o.bootBudgetMs;
-    return x3::apphost::runDefaultHost(_hc);
+
+    // ======================================================================
+    // ---- W-MENU: THE WORLD-LOAD LOOP --------------------------------------
+    // The world/place menu's "LOADS WORLD" rows need the engine to tear one world
+    // down and build another WITHOUT relaunching the process. It CAN: the window and
+    // the render device are created ONCE, above, and every host builds — and shuts
+    // down — its OWN Scene + physics + assets inside its own call. So a world load is
+    // simply: run a host; if it asked for a different world, swap worldMode and
+    // dispatch again.
+    //
+    // A host requests one by setting hc.switchWorldTo (+ optionally switchDestKey, a
+    // destination-registry key naming the place in the NEW world to stand the player
+    // at — load AND place) and returning 0.
+    //
+    // The FIRST pass keeps the CLI's dev-shortcut behaviour byte-for-byte: no host
+    // sets switchWorldTo unless the player picks a "LOADS WORLD" row in the menu, so
+    // `--world <name>` is untouched.
+    // ======================================================================
+    for (;;) {
+        _hc.switchWorldTo.clear();
+        _hc.switchDestKey.clear();
+
+        int _hostRc = x3::apphost::dispatchWorldHost(_hc);
+        const int _rc = (_hostRc >= 0) ? _hostRc : x3::apphost::runDefaultHost(_hc);
+
+        if (_hc.switchWorldTo.empty() || _hc.switchWorldTo == _hc.worldMode) return _rc;
+
+        x3::logInfo("[world-load] tearing down '" + _hc.worldMode + "' and building '" +
+                    _hc.switchWorldTo + "'" +
+                    (_hc.switchDestKey.empty() ? std::string()
+                                               : (", placing the player at '" +
+                                                  _hc.switchDestKey + "'")));
+        _hc.worldMode  = _hc.switchWorldTo;
+        _hc.spawnAtKey = _hc.switchDestKey;   // the new world stands the player here
+        // Dev flags that pinned the OLD world must not follow us in: a screenshot /
+        // smoketest / bench flag would hijack the newly-loaded world and exit.
+        _hc.screenshot   = false;
+        _hc.smoketest    = false;
+        _hc.bench        = false;
+        _hc.shotWorldMap = false;
+        _hc.skipIntro    = true;    // the cold-open is a once-per-launch thing
+    }
     }   // close the host-dispatch block (its _hc reaches the default host)
 }

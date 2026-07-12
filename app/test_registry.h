@@ -49,6 +49,16 @@ struct TestFlags {
     bool testElevatorShowcase = false;  // R-4 fold: THE CENTERPIECE showcase  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
+    bool testIntroCockpit = false;// --test-introcockpit (intro cockpit Scene-entity rig)
+    bool testShipInterior = false;// --test-shipinterior (S5 walkable interior, headless)
+    bool testShipWindows  = false;// --test-shipwindows (S6 true-portal windows, headless)
+    // Space-combat feast fold (14900K lanes, headless):
+    bool testBodyContact = false;     // --test-bodycontact (bone-surface contact + soft indent)
+    bool testWormhole = false;        // --test-wormhole (Salvari crystal-matrix VFX)
+    bool testWormholeTransit = false; // --test-wormhole-transit (S3 autopilot jump ride)
+    bool testTractor = false;         // --test-tractor (intro capital-ship capture beam)
+    bool testDescentSlide = false;// --test-descentslide (Wave 2C track spec + rider sim, headless)
+    bool testWingDressing = false;// --test-wingdressing (F2-F7 wing recipe dressing, headless)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;
@@ -60,6 +70,7 @@ struct TestFlags {
     bool testSpireTop = false, testTimeline = false, testDroneHack = false, testSubLevels = false;
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
+    bool testRifthub = false;   // --test-rifthub (Stargate portal hub self-test)
     bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
@@ -68,9 +79,11 @@ struct TestFlags {
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
+    bool testLightningCharge = false;  // --test-lightning-charge (Lightning Gun CHARGE model)
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
+    bool testPerfshop = false;
     // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF
     // space pilot (--test-space) + enemy ship-AI (--test-ship-ai) + targeting/
     // radar/lock (--test-targeting) + ship-damage model (--test-ship-damage) +

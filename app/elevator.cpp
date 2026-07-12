@@ -8,6 +8,8 @@
 // IAudioSystem interfaces, mirroring DoorSystem's moved-static-body technique.
 #include "elevator.h"
 #include "mesh_prims.h"
+#include "asset_root.h"                    // assetRoot() — the surface_library mount
+#include <cstring>                         // strlen (the indicator caption)
 
 #include "engine/core/x3_log.h"
 #include "engine/rhi/font_robotomono.h"   // kRobotoMonoTTF — the OLED panel text
@@ -219,6 +221,13 @@ bool ElevatorSystem::build(Scene& scene, x3::rhi::IRenderDevice& device,
 // ===========================================================================
 void ElevatorSystem::callTo(int stopIndex) {
     if (!m_built) return;
+    // W-RIFT: the buried floor. A locked rift stop is not on the panel — a call to it
+    // buzzes and goes nowhere until the access code (4790) is entered in the cabin.
+    if (stopLocked(stopIndex)) {
+        playOneShot(m_snd.buzz, 0.5f, 0.85f);
+        x3::logInfo("[elevator] stop is LOCKED OUT (no floor button) — an access code is required");
+        return;
+    }
     if (m_fsm) {
         // FSM: ignore a fresh call while already busy travelling, but DO accept a
         // call while idle or with the doors open (closes the doors first).
@@ -239,13 +248,24 @@ void ElevatorSystem::callTo(int stopIndex) {
 
 void ElevatorSystem::callNext() {
     if (!m_built || m_stopsY.size() < 2) return;
+    // W-RIFT: cycling the stops walks PAST a locked rift level (the cab behaves as if
+    // the floor were not there at all — which, as far as the panel is concerned, it
+    // is not). Bounded by the stop count so a fully-locked cab can never spin here.
+    auto nextOpen = [&](int from) {
+        int t = from;
+        for (int guard = 0; guard < (int)m_stopsY.size(); ++guard) {
+            t = (t + 1) % (int)m_stopsY.size();
+            if (!stopLocked(t)) return t;
+        }
+        return from;
+    };
     if (m_fsm) {
         if (m_state != ElevState::Idle && m_state != ElevState::DoorsOpen) return;
-        startTravelTo((m_target + 1) % (int)m_stopsY.size());
+        startTravelTo(nextOpen(m_target));
         return;
     }
     if (m_state != ElevState::Idle) return;
-    m_target = (m_target + 1) % (int)m_stopsY.size();
+    m_target = nextOpen(m_target);
     m_state = ElevState::Accelerating;   // legacy "Moving"
     x3::logInfo("[elevator] called to stop " + std::to_string(m_target));
 }
@@ -316,6 +336,12 @@ void ElevatorSystem::enableFsm(bool on) {
 }
 
 void ElevatorSystem::setClubStopY(float centerY) { m_clubStopY = centerY; }
+
+void ElevatorSystem::unlockRift() {
+    if (m_riftUnlocked || m_riftStop < 0) return;
+    m_riftUnlocked = true;
+    x3::logInfo("[elevator] sub-level R1 (RIFT) is now a selectable floor on this cab");
+}
 
 std::string ElevatorSystem::floorLabel(int stopIndex) const {
     if (stopIndex >= 0 && stopIndex < (int)m_floorLabels.size() &&
@@ -579,13 +605,15 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
 
     // Floor-passing dings while moving (procedural-audio hook).
     if (m_fsmSpeed > 1.0f) {
-        int near = -1; float nd = 1.0e30f;
+        // (`nearest`, not `near`: asset_root.h reaches windows.h, whose ancient
+        //  `near`/`far` segment-model macros would eat the identifier.)
+        int nearest = -1; float nd = 1.0e30f;
         for (int i = 0; i < (int)m_stopsY.size(); ++i) {
             float d = std::fabs(m_pos.y - m_stopsY[i]);
-            if (d < nd) { nd = d; near = i; }
+            if (d < nd) { nd = d; nearest = i; }
         }
-        if (near != m_lastDingStop && nd < 1.5f) {
-            m_lastDingStop = near;
+        if (nearest != m_lastDingStop && nd < 1.5f) {
+            m_lastDingStop = nearest;
             // Quieter, higher-pitched blip as a floor slides past (vs the arrival ding).
             playOneShot(m_snd.ding, 0.25f, 1.5f);
         }
@@ -630,10 +658,15 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
         const int n = (int)m_stopsY.size();
         for (int i = n - 1; i >= 0 && (int)R.size() < 10; --i) {
             const char mark = (i == m_curStop) ? '>' : (i == m_target && m_state != ElevState::Idle ? '*' : ' ');
-            std::snprintf(buf, sizeof(buf), "%c %s", mark, floorLabel(i).c_str());
+            // W-RIFT: the buried floor reads as a DEAD ROW on the directory until the
+            // access code opens it — the panel admits the level exists and nothing more.
+            const bool lockedRow = stopLocked(i);
+            if (lockedRow) std::snprintf(buf, sizeof(buf), "%c ---- [LOCKED]", mark);
+            else           std::snprintf(buf, sizeof(buf), "%c %s", mark, floorLabel(i).c_str());
             const bool cur = (i == m_curStop);
-            R.push_back({ buf, cur ? 0.95f : 0.40f, cur ? 0.95f : 0.42f, cur ? 1.0f : 0.55f,
-                          cur ? 15.0f : 13.0f });
+            if (lockedRow) R.push_back({ buf, 0.32f, 0.30f, 0.34f, 13.0f });
+            else R.push_back({ buf, cur ? 0.95f : 0.40f, cur ? 0.95f : 0.42f, cur ? 1.0f : 0.55f,
+                               cur ? 15.0f : 13.0f });
         }
         if (m_disco)
             R.push_back({ "** DISCO MODE **", 1.0f, 0.20f, 0.90f, 13.0f });
@@ -661,7 +694,9 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
     if (m_disco) {
         m_discoTime += dt; applyDiscoCue(dt, t);
     } else if (!m_lights.empty() && m_flickerT <= 0.0f) {
-        m_lights[0].color[0] = 0.60f; m_lights[0].color[1] = 0.73f; m_lights[0].color[2] = 0.87f;
+        // (must match the buildVisuals value — this re-asserts the practical every frame
+        //  that disco/flicker does not own it.)
+        m_lights[0].color[0] = 3.10f; m_lights[0].color[1] = 3.35f; m_lights[0].color[2] = 3.80f;
     }
 
     syncBodyAndTransform(scene, physics);
@@ -720,7 +755,24 @@ bool ElevatorSystem::keypadDigit(int digit) {
     playOneShot(m_snd.keyClick, 0.5f, 1.0f + 0.04f * (float)digit);   // key-click blip
 
     if (m_codeBuf.size() >= 4) {
-        const bool ok = (m_codeBuf.substr(m_codeBuf.size() - 4) == kDiscoCode);
+        const std::string tail = m_codeBuf.substr(m_codeBuf.size() - 4);
+        // ---- W-RIFT: 4790 — THE RIFT STOP. The same machinery as 1127: a code on the
+        // cabin keypad that reveals a floor the panel does not show, and rides you to
+        // it. Unlike disco, it is a one-way UNLOCK — once the cab knows the floor
+        // exists, the stop stays on the panel for the rest of the run.
+        if (tail == kRiftAccessCode && m_riftStop >= 0) {
+            m_codeBuf.clear();
+            const bool first = !m_riftUnlocked;
+            unlockRift();
+            playOneShot(m_snd.ding, 1.0f, 1.25f);   // access granted
+            x3::logInfo(std::string("[elevator] RIFT ACCESS — code 4790 accepted") +
+                        (first ? "; sub-level R1 is on the panel now" : "") +
+                        ". Descending to the RIFT stop at Y=" +
+                        std::to_string(stopY(m_riftStop)));
+            startTravelTo(m_riftStop);
+            return true;
+        }
+        const bool ok = (tail == kDiscoCode);
         m_codeBuf.clear();
         if (ok) {
             m_disco = !m_disco;
@@ -784,30 +836,188 @@ uint32_t addKit(Scene& scene, x3::rhi::IRenderDevice& device,
     e.body.id = 0;                  // purely visual — no physics body
     return scene.add(e);
 }
+
+// R11: the same box, but MADE OF SOMETHING. A SurfaceSet (albedo + normal + mr) on a
+// box whose UVs tile every `uvPerM` metres. This is the difference between a grey box
+// and brushed steel: the normal map is what catches the practical's light and turns a
+// flat wall into a wall with SEAMS, RIVETS and WEAR on it (RIFTHUB_ART_TARGET #4).
+uint32_t addKitTex(Scene& scene, x3::rhi::IRenderDevice& device,
+                   float hx, float hy, float hz, const SurfaceSet& sf,
+                   const float tint[3], float uvPerM = 0.5f) {
+    x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, 0, 0, 0, uvPerM);
+    Entity e;
+    e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                               geo.index.data(), (uint32_t)geo.index.size());
+    if (sf.ok) { e.tex = sf.albedo; e.normalTex = sf.normal; e.mrTex = sf.mr; }
+    e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1]; e.baseColor[2] = tint[2];
+    e.baseColor[3] = 1.0f;
+    e.tag = (uint32_t)Tag::Prop;
+    e.body.id = 0;
+    return scene.add(e);
+}
+
+// The FLOOR-INDICATOR display: the floor label + the state, baked as TEXT into a
+// texture, so the plate glows exactly WHERE THE GLYPHS ARE (per-texel emissive) rather
+// than being a flat glowing bar. Same stb_truetype route as the OLEDs.
+std::vector<uint8_t> renderIndicatorPixels(const std::string& label, const char* state,
+                                           float r, float g, float b) {
+    std::vector<uint8_t> px((size_t)kOledW * kOledH * 4);
+    for (int y = 0; y < kOledH; ++y)
+        for (int x = 0; x < kOledW; ++x) {
+            uint8_t* p = &px[((size_t)y * kOledW + x) * 4];
+            p[0] = 3; p[1] = 3; p[2] = 4; p[3] = 255;              // black glass substrate
+            if ((y % 4) == 0) { p[0] = 1; p[1] = 1; p[2] = 2; }    // scanlines
+        }
+    // Big floor numeral, centred; a small state caption beneath it.
+    const float glyphPx = 92.0f;
+    const float w = 0.60f * glyphPx * (float)label.size();          // rough mono advance
+    oledText(px, label, std::max(6.0f, (kOledW - w) * 0.5f), 12.0f, glyphPx, r, g, b);
+    const float cw = 0.60f * 22.0f * (float)std::strlen(state);
+    oledText(px, state, std::max(4.0f, (kOledW - cw) * 0.5f), 116.0f, 22.0f,
+             r * 0.55f, g * 0.55f, b * 0.55f);
+    return px;
+}
+
+x3::rhi::TextureHandle bakeIndicator(x3::rhi::IRenderDevice& device,
+                                     const std::string& label, const char* state,
+                                     float r, float g, float b) {
+    std::vector<uint8_t> px = renderIndicatorPixels(label, state, r, g, b);
+    return device.createTexture(px.data(), kOledW, kOledH, true);
+}
 } // namespace
+
+// THE ANTI-REGRESSION PROBE (the rifthub's holoReadoutInkFraction, for the lift).
+// "The plate exists" and "the plate SAYS SOMETHING" are not the same assertion — the
+// rifthub consoles were declared fixed NINE times on the strength of the first one. So
+// measure INK: the fraction of texels in the baked indicator that are actually lit. A
+// blank/failed bake probes at ~0 and fails, and the test carries its own negative
+// control (empty label + empty caption) proving the probe CAN fail.
+float elevatorIndicatorInkFraction(const std::string& label, const char* state) {
+    const std::vector<uint8_t> px = renderIndicatorPixels(label, state, 1.0f, 0.72f, 0.22f);
+    size_t lit = 0;
+    for (size_t i = 0; i < (size_t)kOledW * kOledH; ++i) {
+        const uint8_t* p = &px[i * 4];
+        // "Ink" = clearly above the black-glass substrate (3,3,4) + its scanlines.
+        if ((int)p[0] + (int)p[1] + (int)p[2] > 60) ++lit;
+    }
+    return (float)lit / (float)(kOledW * kOledH);
+}
 
 void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) {
     if (!m_built || m_visualsBuilt) return;
 
-    // Car interior dims approximated from the JS CFG (3.8 x 5.2 x 3.8 m car). The
-    // physics platform half-extents are smaller; the visuals are decorative.
-    const float carW = 3.8f, carH = 5.2f, carD = 3.8f, T = 0.12f;
+    // ===================================================================================
+    // R11 — THE RIFT-HUB GLOW-UP, APPLIED TO THE LIFT (2026-07-12)
+    // ===================================================================================
+    // WHAT WAS HERE: the car was a GRAYBOX KIT and, worse, a car with NO WALLS. The lift
+    // was a physics platform (a thin box) plus nine floating flat-tinted boxes — a glass
+    // slab, a "mirror" that was a 0.92 near-WHITE box, a strata plane with a fake 0.5
+    // self-emissive on solid rock, doors with an emissive "seam", a terminal that was a
+    // glowing blue box, a ceiling "light" that was a glowing box with no fixture, and an
+    // indicator that was a flat glowing bar. Stand in the cab and you saw the SHAFT's
+    // graybox through the gaps. Every one of those is one of the recipe's named crutches:
+    // fake self-emissive on geometry (#1), flat colours instead of materials (#4), and
+    // whole objects glowing instead of small lit cores (#7).
+    //
+    // WHAT IT IS NOW: a real industrial lift. A CAB SHELL (floor / four walls / ceiling)
+    // made of actual PBR sets — brushed panels with rivets and wear in the NORMAL map,
+    // a worn deck plate, dark trim — so the surfaces catch the light and read as metal.
+    // ONE practical: a recessed ceiling fixture with a dark housing and a small hot core
+    // inside it (never the whole object). Emissive is confined to that core, the floor
+    // indicator's GLYPHS (per-texel, not a lit slab), and the OLEDs' text.
+    // ===================================================================================
+    // R11 — THE CAR IS THE SIZE OF THE CAR. The old visuals hard-coded "3.8 x 5.2 x 3.8 m"
+    // from the Babylon CFG, but the actual cab platform this class builds is 2*m_halfX
+    // (2.8 m) and the level1 SHAFT it rides in is ~3 m across. So a 3.8 m shell would be
+    // built OUTSIDE the shaft — its walls hidden behind the shaft's own, which is exactly
+    // what happened the first time this shell was built and screenshotted (you stood in
+    // the cab and saw the shaft's graybox). And 5.2 m of headroom is not a lift, it is a
+    // silo. The shell is now derived from the platform: it fits, and it is room-height.
+    const float carW = m_halfX * 2.0f, carD = m_halfZ * 2.0f;
+    const float carH = 2.60f;
+    const float T = 0.10f;
     const float noEm[4] = {0,0,0,0};
 
-    // Glass observation wall (left, -X): translucent blue-grey graybox slab.
+    // The material sets. mw_metal_panels_a = riveted industrial panel (the rifthub's
+    // ring plates use it), mw_metal_trim_a = true dark gunmetal, mw_metal_grate = deck.
+    m_surf.mount(assetRoot() + "/surface_library");
+    const SurfaceSet& sPanel = m_surf.get(device, "mw_metal_panels_a");   // cab walls
+    const SurfaceSet& sTrim  = m_surf.get(device, "mw_metal_trim_a");     // dark structure
+    const SurfaceSet& sDeck  = m_surf.get(device, "mw_metal_grate");      // the floor plate
+
+    // ---- THE SHELL. Thin textured slabs, one per face. The +X face is the doorway, so
+    // it gets two jambs and a header instead of a wall (level-authoring law: nothing is
+    // ever drawn across an opening).
+    // The doors part to +/- kDoorHalf, so the jambs must start OUTSIDE that span or they
+    // would be drawn across the opening (and the doors would slide into them).
+    const float kDoorHalf = carD * 0.24f + carD * 0.25f * 0.5f;   // 1.39 m: door reach
+    const float jambHZ    = (carD * 0.5f - kDoorHalf) * 0.5f;     // fills 1.39 .. 1.90
+    const float jambCZ    = kDoorHalf + jambHZ;
+    { const float tWall[3] = { 0.44f, 0.46f, 0.49f };   // brushed steel, honest albedo
+      m_eWallBack = addKitTex(scene, device, carW*0.5f, carH*0.5f, T*0.5f, sPanel, tWall, 0.55f);
+      m_eWallSide = addKitTex(scene, device, carW*0.5f, carH*0.5f, T*0.5f, sPanel, tWall, 0.55f);
+      const float tJamb[3] = { 0.30f, 0.31f, 0.34f };   // darker at the doors
+      m_eWallFrontL = addKitTex(scene, device, T*0.5f, carH*0.5f, jambHZ, sPanel, tJamb, 0.55f);
+      m_eWallFrontR = addKitTex(scene, device, T*0.5f, carH*0.5f, jambHZ, sPanel, tJamb, 0.55f);
+      // Header: from the top of the door slabs to the ceiling (never over the opening).
+      m_eHeader     = addKitTex(scene, device, T*0.5f, 0.21f, carD*0.5f, sTrim, tJamb, 0.6f); }
+    // Ceiling slab + a deck kick-plate skirt (the detail that says "this is a box someone
+    // WELDED", not a room that happens to end).
+    { const float tCeil[3] = { 0.24f, 0.25f, 0.27f };
+      m_eCabCeil = addKitTex(scene, device, carW*0.5f, T*0.5f, carD*0.5f, sTrim, tCeil, 0.7f);
+      const float tKick[3] = { 0.20f, 0.21f, 0.23f };
+      m_eKick = addKitTex(scene, device, carW*0.5f, 0.12f, carD*0.5f, sTrim, tKick, 0.8f); }
+    // THE DECK: the cab platform entity itself (it already exists as the physics body's
+    // render mesh) gets a real worn floor plate instead of baseColor 0.40 flat grey.
+    if (m_entity != kNoLink && m_entity < scene.size() && sDeck.ok) {
+        Entity& deck = scene.get(m_entity);
+        deck.tex = sDeck.albedo; deck.normalTex = sDeck.normal; deck.mrTex = sDeck.mr;
+        deck.baseColor[0] = 0.42f; deck.baseColor[1] = 0.43f; deck.baseColor[2] = 0.45f;
+    }
+
+    // Glass observation wall (left, -X): translucent smoked slab, set INTO a framed
+    // aperture. The window glass is carH*0.40 tall x carD*0.42 deep (half-extents), so
+    // the frame is four panel strips filling the rest of the -X face around it.
     { const float c[4] = {0.15f, 0.20f, 0.28f, 0.35f};
       m_eGlass = addKit(scene, device, T*0.5f, carH*0.40f, carD*0.42f, c, noEm); }
+    { const float tWin[3] = { 0.40f, 0.42f, 0.45f };
+      const float gh = carH * 0.40f, gd = carD * 0.42f;      // glass half-extents
+      const float topH = (carH * 0.5f - gh) * 0.5f;          // strip above the glass
+      const float sideD = (carD * 0.5f - gd) * 0.5f;         // strips beside it
+      m_eWinTop = addKitTex(scene, device, T*0.5f, topH,  carD*0.5f, sPanel, tWin, 0.55f);
+      m_eWinBot = addKitTex(scene, device, T*0.5f, topH,  carD*0.5f, sPanel, tWin, 0.55f);
+      m_eWinL   = addKitTex(scene, device, T*0.5f, gh,    sideD,     sPanel, tWin, 0.55f);
+      m_eWinR   = addKitTex(scene, device, T*0.5f, gh,    sideD,     sPanel, tWin, 0.55f); }
 
-    // Earth-strata scroll plane behind the glass (further -X): emissive so it
-    // reads as a lit display. Tint + glow are re-driven per frame from the
-    // current stratum in layoutVisuals().
+    // Earth-strata scroll plane behind the glass (further -X). R11: the FAKE SELF-EMISSIVE
+    // is gone for the non-glowing strata. Solid rock does not emit light; it was carrying
+    // a 0.5-strength glow of its own base colour purely to be visible, which is crutch #1
+    // in the recipe (and reads as glow-in-the-dark granite). The three GLOWING strata
+    // (Crystal Veins / Magma / Alien Substrate) keep theirs — those are supposed to glow;
+    // that is the whole point of the descent. Driven per frame in layoutVisuals().
     { const float c[4] = {0.30f, 0.28f, 0.32f, 1.0f};
-      const float em[4] = {0.30f, 0.28f, 0.32f, 0.6f};
-      m_eStrata = addKit(scene, device, 0.02f, carH*0.45f, carD*0.40f, c, em); }
+      m_eStrata = addKit(scene, device, 0.02f, carH*0.45f, carD*0.40f, c, noEm); }
 
-    // Back-wall mirror (-Z): bright, near-white metallic graybox plane.
-    { const float c[4] = {0.92f, 0.92f, 0.95f, 1.0f};
-      m_eMirror = addKit(scene, device, carW*0.32f, carH*0.30f, 0.02f, c, noEm); }
+    // Back-wall mirror (-Z). R11: was baseColor 0.92/0.92/0.95 — a NEAR-WHITE box. There
+    // is no such thing as a white mirror: a mirror is DARK glass with a very low roughness
+    // that borrows its brightness from what it reflects. Give it the PBR route with a
+    // polished MR texel so the SSR/IBL path actually reflects the cab, and drop the albedo
+    // to what polished steel really is.
+    // Roughness 60 (not 18): a POLISHED PANEL, not a laboratory mirror. At near-zero
+    // roughness the SSR/IBL path painted it as a huge, noisy, blown-out white sheet that
+    // owned the whole car — the exact "brightest thing in frame drags everything else
+    // down" trap the recipe warns about (auto-exposure meters it). A little roughness
+    // scatters the reflection into a sheen and hands the frame back to the room.
+    { const uint8_t mrMirror[4] = { 255, 60, 225, 255 };   // G=rough(60) B=metal(225)
+      x3::rhi::TextureHandle mmr = device.createTexture(mrMirror, 1, 1, false);
+      x3::prims::PrimMesh geo = x3::prims::makeBox(carW*0.30f, carH*0.26f, 0.02f, 0,0,0, 1.0f);
+      Entity e;
+      e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                 geo.index.data(), (uint32_t)geo.index.size());
+      e.mrTex = mmr;
+      e.baseColor[0] = 0.34f; e.baseColor[1] = 0.35f; e.baseColor[2] = 0.37f; e.baseColor[3] = 1.0f;
+      e.tag = (uint32_t)Tag::Prop; e.body.id = 0;
+      m_eMirror = scene.add(e); }
 
     // Twin OLED viewscreens: left = geo survey, right = floor directory. LIVE
     // text telemetry baked by update() (the graybox emissive is just the boot
@@ -822,19 +1032,31 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
       const float em[4] = {0.30f, 0.10f, 0.60f, 1.0f};
       m_eOledR = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em); }
 
-    // Blue access terminal + keypad (right wall, +X): emissive blue graybox.
-    { const float c[4] = {0.04f, 0.08f, 0.15f, 1.0f};
-      const float em[4] = {0.0f, 0.30f, 0.90f, 1.0f};
-      m_eTerm = addKit(scene, device, 0.05f, 0.30f, 0.18f, c, em); }
+    // Access terminal + keypad (right wall, +X). R11: was a GLOWING BLUE BOX (emissive
+    // 0.0/0.30/0.90 over its whole body). A terminal is a dark metal housing with a lit
+    // FACE; the glow belongs to the face, not the casing (recipe #7). The housing is now
+    // gunmetal, and a small keypad lens inside it carries the light.
+    { const float tHousing[3] = { 0.16f, 0.17f, 0.20f };
+      m_eTerm = addKitTex(scene, device, 0.05f, 0.30f, 0.18f, sTrim, tHousing, 1.2f); }
 
-    // Ceiling disco ball (hidden until disco — emissive 0 until then).
-    { const float c[4] = {0.90f, 0.90f, 0.90f, 1.0f};
-      m_eDiscoBall = addKit(scene, device, 0.30f, 0.30f, 0.30f, c, noEm); }
+    // Ceiling disco ball (hidden until disco — emissive 0 until then). R11: SHRUNK from a
+    // 0.6 m box to a 0.36 m one, and hung clear of the practical (see the light-position
+    // note in layoutVisuals: the ball used to swallow the cab's only light source whole).
+    // ...and DARK when it is off (0.90 albedo read as a white box floating in the car).
+    { const float c[4] = {0.16f, 0.16f, 0.18f, 1.0f};
+      m_eDiscoBall = addKit(scene, device, 0.18f, 0.18f, 0.18f, c, noEm); }
 
-    // Ceiling light fixture: emissive cool-white strip.
-    { const float c[4] = {0.67f, 0.80f, 0.93f, 1.0f};
-      const float em[4] = {0.40f, 0.60f, 0.80f, 1.0f};
-      m_eCeil = addKit(scene, device, carW*0.30f, 0.03f, 0.15f, c, em); }
+    // ---- THE PRACTICAL. R11: the old "ceiling light" was a self-emissive box with no
+    // fixture — the object WAS the glow. A real lift has a recessed pan fixture: a dark
+    // metal HOUSING with a small hot lit CORE inside it. The housing catches the light it
+    // is emitting (it is textured metal), the core is the only emissive surface, and the
+    // point light that actually lights the cab is anchored inside the housing.
+    { const float tHouse[3] = { 0.18f, 0.19f, 0.21f };
+      m_eFixture = addKitTex(scene, device, carW*0.32f, 0.09f, 0.22f, sTrim, tHouse, 1.0f);
+      const float cCore[4] = { 0.85f, 0.92f, 1.00f, 1.0f };
+      const float emCore[4] = { 0.90f, 0.95f, 1.00f, 2.2f };   // small + hot, not big + dim
+      m_eLensCore = addKit(scene, device, carW*0.28f, 0.015f, 0.16f, cCore, emCore);
+      m_eCeil = m_eLensCore; }   // legacy alias: layout/disco drive the lit core
 
     // FOUR STEEL CABLES rising from the car roof up the shaft (the JS builds 300 m
     // of them; 120 m reads identically from inside and keeps the graybox cheap).
@@ -843,29 +1065,46 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
       for (int i = 0; i < 4; ++i)
           m_eCable[i] = addKit(scene, device, 0.03f, 60.0f, 0.03f, c, noEm); }
 
-    // Twin sliding DOOR panels on the front (+X) wall — two tall brushed-metal
-    // slabs that part along Z as m_doorPct rises. Half-width per panel = a quarter
-    // of the car so the pair closes flush at the center. A faint emissive seam reads
-    // in the dark. Animated in layoutVisuals() from m_doorPct.
-    { const float c[4] = {0.34f, 0.36f, 0.40f, 1.0f};
-      const float em[4] = {0.05f, 0.08f, 0.10f, 0.4f};
-      m_eDoorL = addKit(scene, device, 0.06f, carH*0.42f, carD*0.24f, c, em);
-      m_eDoorR = addKit(scene, device, 0.06f, carH*0.42f, carD*0.24f, c, em); }
+    // Twin sliding DOOR panels on the front (+X) wall — two tall slabs that part along Z
+    // as m_doorPct rises. R11: they were flat 0.34-grey boxes with a FAKE EMISSIVE SEAM
+    // ("so it reads in the dark") — geometry lit from inside itself, crutch #1. They are
+    // brushed panel now: the seam reads because the normal map and the practical's
+    // grazing light give it a real highlight, which is what a seam actually is.
+    { const float tDoor[3] = { 0.38f, 0.40f, 0.43f };
+      m_eDoorL = addKitTex(scene, device, 0.06f, carH*0.42f, carD*0.24f, sPanel, tDoor, 0.5f);
+      m_eDoorR = addKitTex(scene, device, 0.06f, carH*0.42f, carD*0.24f, sPanel, tDoor, 0.5f); }
 
-    // Floor INDICATOR strip above the doors: an emissive bar that the host/layout
-    // tints green when the doors are open (safe to step out) and amber while
-    // travelling. Gives the rider an at-a-glance status cue.
-    { const float c[4] = {0.05f, 0.06f, 0.06f, 1.0f};
-      const float em[4] = {0.0f, 0.9f, 0.3f, 1.4f};
-      m_eIndicator = addKit(scene, device, 0.04f, 0.10f, carD*0.30f, c, em); }
+    // ---- THE FLOOR INDICATOR. R11: was a flat glowing BAR (a box with emissive 1.4)
+    // that changed colour. It told you nothing and it read as a neon strip. It is now a
+    // real DISPLAY: the floor label is rastered into a texture with stb_truetype and the
+    // plate glows PER TEXEL through the map, so the glyphs are light and the substrate
+    // stays black glass (the club-OLED / rifthub-console move, f2d86bc).
+    // FOOTGUN (cost us the club EQ once already): Scene::submit only forwards
+    // Entity::emissiveTex on the mrTex.valid() PBR branch, so the plate MUST carry an MR
+    // texel or the emissive map is silently dropped and you get a flat slab again.
+    { const float c[4] = {0.9f, 0.9f, 0.9f, 1.0f};
+      const float em[4] = {1.0f, 1.0f, 1.0f, 1.6f};
+      m_eIndicator = addKit(scene, device, 0.02f, 0.16f, carD*0.30f, c, em);
+      if (m_eIndicator != kNoLink && m_eIndicator < scene.size()) {
+          Entity& e = scene.get(m_eIndicator);
+          e.mrTex = m_oledMr;                       // the glossy panel texel (see above)
+          m_indTex = bakeIndicator(device, floorLabel(m_curStop), "IDLE", 1.0f, 0.72f, 0.22f);
+          e.tex = m_indTex; e.emissiveTex = m_indTex;
+      } }
 
     // Point lights: [0] = ceiling interior fill, [1..4] = disco spots (off until
     // disco mode). The host pushes these via setPointLights; the disco cue animates
     // them in update().
+    // R11 — THE KEY, honestly. The cab's ceiling fill was 0.60/0.73/0.87 while level1's
+    // own fixtures run 3.6-4.2 and the rifthub's overheads 5.8: FIVE TIMES too dim. It
+    // never mattered, because the 0.42 engine ambient was lighting the car for it — which
+    // is the whole crutch in one line. With the ambient honest, the fixture has to
+    // actually be a light: cool-white, bright, and short-ranged so it dies in the shaft
+    // when the doors open (the cab is a lit box in a dark hole — that is the look).
     m_lights.clear();
     x3::rhi::PointLight ceil;
-    ceil.color[0] = 0.60f; ceil.color[1] = 0.73f; ceil.color[2] = 0.87f;
-    ceil.range = 12.0f;
+    ceil.color[0] = 3.10f; ceil.color[1] = 3.35f; ceil.color[2] = 3.80f;
+    ceil.range = 7.5f;
     m_lights.push_back(ceil);
     const float spot[4][3] = {
         {1.0f, 0.2f, 0.4f}, {0.2f, 0.4f, 1.0f}, {0.2f, 1.0f, 0.4f}, {1.0f, 0.8f, 0.2f}
@@ -884,9 +1123,37 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
                 "blue terminal/keypad + ceiling light + disco ball");
 }
 
+void ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
+                                        const x3::phys::Vec3& feet) {
+    if (!m_visualsBuilt) return;
+    // Aboard = standing on the cab OR in the doorway of it (the car is 3.8 m across;
+    // playerRiding's window is exactly the "your weight is on this platform" test).
+    const int want = playerRiding(feet) ? 1 : 0;
+    if (want == m_cabAir) return;               // only on the edge — no per-frame spam
+    m_cabAir = want;
+    if (want) {
+        // INSIDE. The engine default ambient is {0.42,0.44,0.50} and nothing in level1 or
+        // the canon facility ever changed it, so the cab interior — a sealed steel box —
+        // was being flooded with omnidirectional light from a building it cannot see. The
+        // fixture in the ceiling is the light in here. (Same floor the rifthub hall
+        // settled on, 0.032; the cab is smaller and its practical is close, so it can
+        // afford to be just as dark.)
+        device.setAmbient(0.030f, 0.032f, 0.037f);
+        device.setIblIntensity(0.22f);
+    } else {
+        // OUTSIDE. Hand the world back exactly what the engine hands everyone else, so
+        // stepping off the cab is byte-identical to a build without this call.
+        device.setAmbient(0.42f, 0.44f, 0.50f);
+        device.setIblIntensity(1.0f);
+    }
+}
+
 void ElevatorSystem::layoutVisuals(Scene& scene) {
     if (!m_visualsBuilt) return;
-    const float carW = 3.8f, carH = 5.2f, carD = 3.8f, T = 0.12f;
+    // MUST match buildVisuals (the car is the size of the car — see the note there).
+    const float carW = m_halfX * 2.0f, carD = m_halfZ * 2.0f;
+    const float carH = 2.60f;
+    const float T = 0.10f;
     const float cx = m_pos.x + m_shakeX, cz = m_pos.z;
     // The cab top is the car floor; the car interior rises +carH/2 above center.
     const float floorY = m_pos.y + m_halfY;
@@ -899,13 +1166,38 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
         e.transform[13] = midY + oy;
         e.transform[14] = cz + oz;
     };
+    // ---- THE SHELL (R11). Walls hug the car's faces; the +X face is the doorway, so it
+    // gets two jambs flanking the opening + a header above it, never a slab across it.
+    place(m_eWallBack,   0.0f,                   0.0f,          -carD * 0.5f);   // mirror wall
+    place(m_eWallSide,   0.0f,                   0.0f,           carD * 0.5f);   // +Z wall
+    place(m_eCabCeil,    0.0f,                   carH * 0.5f,    0.0f);
+    place(m_eKick,       0.0f,                  -carH * 0.5f + 0.12f, 0.0f);
+    {   // The +X doorway: two jambs OUTSIDE the doors' reach, a header above them.
+        const float kDoorHalf = carD * 0.24f + carD * 0.25f * 0.5f;
+        const float jambCZ    = kDoorHalf + (carD * 0.5f - kDoorHalf) * 0.5f;
+        place(m_eWallFrontL, carW * 0.5f, 0.0f, -jambCZ);
+        place(m_eWallFrontR, carW * 0.5f, 0.0f,  jambCZ);
+        place(m_eHeader,     carW * 0.5f, 1.095f, 0.0f);  // door tops -> the ceiling slab
+    }
     place(m_eGlass,     -carW * 0.5f + T,        0.0f,           0.0f);
+    {   // The window frame: strips above / below / either side of the glass aperture.
+        const float gh = carH * 0.40f, gd = carD * 0.42f;
+        const float topH = (carH * 0.5f - gh) * 0.5f;
+        const float sideD = (carD * 0.5f - gd) * 0.5f;
+        const float wx = -carW * 0.5f;
+        place(m_eWinTop, wx,  gh + topH,  0.0f);
+        place(m_eWinBot, wx, -gh - topH,  0.0f);
+        place(m_eWinL,   wx,  0.0f,      -gd - sideD);
+        place(m_eWinR,   wx,  0.0f,       gd + sideD);
+    }
     place(m_eStrata,    -carW * 0.5f - 0.30f,    0.0f,           0.0f);
     place(m_eMirror,     0.0f,                   0.15f,         -carD * 0.5f + T);
+    place(m_eFixture,    0.0f,                   carH * 0.5f - 0.16f, 0.0f);
+    place(m_eLensCore,   0.0f,                   carH * 0.5f - 0.22f, 0.0f);
     place(m_eOledL,     -0.9f,                   carH * 0.5f - 1.2f, carD * 0.5f - 0.18f);
     place(m_eOledR,      carW * 0.5f - 0.18f,    0.0f,          -carD * 0.25f);
     place(m_eTerm,       carW * 0.5f - 0.18f,   -0.30f,          carD * 0.25f);
-    place(m_eDiscoBall,  0.0f,                   carH * 0.5f - 0.5f, 0.0f);
+    place(m_eDiscoBall,  0.0f,                   carH * 0.5f - 0.75f, 0.0f);  // BELOW the key
     place(m_eCeil,       0.0f,                   carH * 0.5f - 0.1f, 0.0f);
     // Shaft cables: from the roof corners, 60 m half-height columns rising up.
     for (int ci = 0; ci < 4; ++ci) {
@@ -920,34 +1212,62 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
     {
         const float slide = m_doorPct * carD * 0.25f;
         const float doorX = carW * 0.5f - 0.06f;
-        const float doorY = -0.4f;     // doors sit slightly below car mid (head clearance)
+        const float doorY = -0.2f;     // door slab spans the deck up to the header
         place(m_eDoorL, doorX, doorY, -carD * 0.25f * 0.5f - slide);
         place(m_eDoorR, doorX, doorY,  carD * 0.25f * 0.5f + slide);
     }
-    // Indicator strip above the doors.
-    place(m_eIndicator, carW * 0.5f - 0.04f, carH * 0.42f, 0.0f);
-    // Tint the indicator: green when doors fully open, amber while moving/closing —
-    // and MAGENTA whenever disco is live (the JS flips indicator + terminal).
-    if (m_eIndicator != kNoLink && m_eIndicator < scene.size()) {
-        Entity& e = scene.get(m_eIndicator);
+    // FLOOR INDICATOR — the display plate, inboard of the header so it faces the rider.
+    place(m_eIndicator, carW * 0.5f - 0.05f, carH * 0.42f, 0.0f);
+    // R11: the state still drives the COLOUR (green = safe to step out, amber = under
+    // way, magenta = disco) — but it now colours the INK, not the slab. The plate carries
+    // a baked text texture on emissiveMap duty, so only the GLYPHS are light and the
+    // substrate behind them stays black glass. Change-gated on (stop, state, disco), so
+    // it is a texture upload on transitions, not a per-frame bake.
+    if (m_eIndicator != kNoLink && m_eIndicator < scene.size() && m_oledDevice) {
         const bool open = (m_state == ElevState::DoorsOpen) || (m_doorPct > 0.95f &&
                           m_state == ElevState::Idle);
-        if (m_disco)   { e.emissive[0] = 1.0f; e.emissive[1] = 0.10f; e.emissive[2] = 0.85f; }
-        else if (open) { e.emissive[0] = 0.0f; e.emissive[1] = 0.9f;  e.emissive[2] = 0.3f; }
-        else           { e.emissive[0] = 1.0f; e.emissive[1] = 0.55f; e.emissive[2] = 0.0f; }
-        e.emissive[3] = 1.4f;
+        const bool moving = !open;
+        if (m_curStop != m_indStop || m_disco != m_indDisco || moving != m_indMoving) {
+            m_indStop = m_curStop; m_indDisco = m_disco; m_indMoving = moving;
+            float r, g, b; const char* cap;
+            if (m_disco)   { r = 1.00f; g = 0.14f; b = 0.85f; cap = "DISCO"; }
+            else if (open) { r = 0.28f; g = 1.00f; b = 0.42f; cap = "DOORS OPEN"; }
+            else           { r = 1.00f; g = 0.62f; b = 0.10f; cap = stateName(m_state); }
+            x3::rhi::TextureHandle fresh =
+                bakeIndicator(*m_oledDevice, floorLabel(m_curStop), cap, r, g, b);
+            Entity& e = scene.get(m_eIndicator);
+            e.tex = fresh; e.emissiveTex = fresh; e.mrTex = m_oledMr;
+            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 0.9f;
+            e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f;
+            e.emissive[3] = 1.7f;
+            if (m_indTex.valid()) m_oledDevice->destroyTexture(m_indTex);
+            m_indTex = fresh;
+        }
     }
     // Terminal glow: cool blue normally, MAGENTA while disco is live (JS parity).
+    // R11: the housing is TEXTURED METAL now, and the glow strength is a fraction of what
+    // it was (1.0 -> 0.28). It reads as a keypad with a lit face, not a lightbox. The
+    // glow can never again eat the whole casing, because the casing is a material.
     if (m_eTerm != kNoLink && m_eTerm < scene.size()) {
         Entity& e = scene.get(m_eTerm);
         if (m_disco) { e.emissive[0] = 0.90f; e.emissive[1] = 0.08f; e.emissive[2] = 0.75f; }
-        else         { e.emissive[0] = 0.0f;  e.emissive[1] = 0.30f; e.emissive[2] = 0.90f; }
-        e.emissive[3] = 1.0f;
+        else         { e.emissive[0] = 0.10f; e.emissive[1] = 0.45f; e.emissive[2] = 0.90f; }
+        e.emissive[3] = 0.28f;
     }
 
     // Position the point lights at the cab interior (ceiling), spots ringed.
     if (!m_lights.empty()) {
-        m_lights[0].pos[0] = cx; m_lights[0].pos[1] = midY + carH * 0.5f - 0.5f; m_lights[0].pos[2] = cz;
+        // ===== THE BUG THAT KEPT THIS CAB IN THE DARK FOR ITS ENTIRE LIFE =====
+        // The ceiling light was placed at `midY + carH*0.5 - 0.5`... and so was the DISCO
+        // BALL, a SOLID 0.6 m box. The cab's only light source has been sitting INSIDE the
+        // disco ball this whole time. With RT shadows on, the ball encloses the light and
+        // the cab renders PITCH BLACK — which nobody ever saw, because the 0.42 engine
+        // ambient was lighting the car instead. Kill the ambient crutch and the real bug
+        // walks out into the open: the room went black, not dark.
+        // (Proof: identical frame with `r_rtshadows 0` came back correctly lit.)
+        // The key now hangs BELOW the fixture's lit core and ABOVE the (shrunken) ball,
+        // with clear air both ways. A practical has to be able to SEE the room it lights.
+        m_lights[0].pos[0] = cx; m_lights[0].pos[1] = midY + carH * 0.5f - 0.40f; m_lights[0].pos[2] = cz;
         for (int i = 1; i < (int)m_lights.size(); ++i) {
             const float a = (float)(i - 1) / 4.0f * 6.2831853f;
             m_lights[i].pos[0] = cx + std::cos(a) * 1.2f;
@@ -969,13 +1289,27 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
         Entity& e = scene.get(m_eStrata);
         for (const StrataLayer& s : kStrata) {
             if (m_pos.y >= s.yMin && m_pos.y <= s.yMax) {
-                for (int c = 0; c < 3; ++c) e.baseColor[c] = s.rgb[c];
+                // VALUE, not lumens (recipe #3): the strata plane sits 1.4 m from the cab's
+                // practical, so at its authored albedo (limestone = 0.55) it metered as the
+                // BRIGHTEST THING IN THE CAB — a blown-out lightbox where a rock face
+                // should be, dragging the whole car's exposure down with it. It is rock, in
+                // a shaft, behind smoked glass. Renormalize.
+                const float kRockValue = 0.42f;
+                for (int c = 0; c < 3; ++c) e.baseColor[c] = s.rgb[c] * kRockValue;
                 if (s.glow) {
+                    // Crystal Veins / Magma / Alien Substrate: these ARE light sources.
                     for (int c = 0; c < 3; ++c) e.emissive[c] = s.glowRgb[c];
                     e.emissive[3] = 1.4f;
                 } else {
-                    for (int c = 0; c < 3; ++c) e.emissive[c] = s.rgb[c];
-                    e.emissive[3] = 0.5f;
+                    // R11 — CRUTCH REMOVED: limestone, granite and basalt were self-lit
+                    // at 0.5 strength in their OWN base colour, purely so they'd be
+                    // visible through the glass. That is the recipe's crutch #1 (fake
+                    // self-emissive on geometry) and it read as glow-in-the-dark rock.
+                    // The strata wall is lit by the cab's practical spilling through the
+                    // glass now — so the upper (dead) strata are DARK, which is exactly
+                    // what makes the first glowing vein land when you descend into it.
+                    e.emissive[0] = e.emissive[1] = e.emissive[2] = 0.0f;
+                    e.emissive[3] = 0.0f;
                 }
                 break;
             }
@@ -1283,6 +1617,44 @@ bool runElevatorFsmSelfTest() {
         fcheck(sealedIdle && stayedShut && opening,
                "F10 rider craft: idle sealed car auto-opens only for NEAR feet");
         p10->shutdown();
+    }
+
+    // ---- F11 (R11 art gate): THE FLOOR INDICATOR IS A DISPLAY, NOT A GLOWING BAR.
+    // Two things must hold, and they are different assertions:
+    //   (a) the plate SAYS SOMETHING — the baked readout carries real ink, and the probe
+    //       is capable of failing (the negative control: a blank bake reads ~0), and
+    //   (b) the plate is WIRED for per-texel emissive — Entity::emissiveTex is bound AND
+    //       so is an MR texel, because Scene::submit only forwards emissiveTex on the
+    //       mrTex.valid() PBR branch. Drop the MR map and the emissive map is SILENTLY
+    //       ignored and you are back to a flat lit slab (this is exactly how the club's
+    //       back-bar EQ shipped as a milky white rectangle).
+    {
+        const float inkIdle  = elevatorIndicatorInkFraction("B1", "IDLE");
+        const float inkOpen  = elevatorIndicatorInkFraction("F7", "DOORS OPEN");
+        const float inkBlank = elevatorIndicatorInkFraction("", "");     // negative control
+        fcheck(inkIdle > 0.01f && inkOpen > 0.01f && inkBlank < 0.002f,
+               "F11 floor indicator BAKES REAL INK (with a negative control)");
+
+        Scene s11; std::unique_ptr<x3::phys::IPhysicsWorld> p11(x3::phys::createPhysicsWorld());
+        p11->init();
+        HeadlessRenderDevice d11;
+        ElevatorSystem e11;
+        e11.build(s11, d11, *p11, 0.0f, 0.0f, 1.4f, cabHY, 1.4f,
+                  std::vector<float>{ groundY, topY }, 0);
+        e11.enableFsm(true);
+        e11.setFloorLabels(std::vector<std::string>{ "B1", "F7" });
+        e11.buildVisuals(s11, d11);
+        e11.update(kDt, s11, *p11);          // one tick: the layout bakes the plate
+        bool wired = false, coreLit = false, strataHonest = true;
+        for (const Entity& en : s11.entities()) {
+            if (en.emissiveTex.valid() && en.mrTex.valid() && en.emissive[3] > 0.5f)
+                wired = true;                // the indicator/OLED per-texel route is live
+            if (en.emissive[3] > 1.5f) coreLit = true;   // the practical's lit core
+        }
+        fcheck(wired, "F11b indicator/OLED carry emissiveTex AND an MR texel (submit footgun)");
+        fcheck(coreLit && strataHonest,
+               "F11c the cab has a hot lit core (the practical is a fixture, not a wall)");
+        p11->shutdown();
     }
 
     x3::logInfo("elevatorfsm: " + std::to_string(s_pass) + "/" +

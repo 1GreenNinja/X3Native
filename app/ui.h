@@ -52,6 +52,18 @@ struct UiInput {
     bool  navLeft     = false;  // adjust focused item left (A / Left)
     bool  navRight    = false;  // adjust focused item right (D / Right)
     bool  navBack     = false;  // back / cancel (Esc) — consumed by the menu screens
+
+    // ---- TEXT ENTRY (R8: the rift console takes typed values, not only drags) ----
+    // The host pushes the printable characters typed THIS FRAME (GLFW char callback
+    // or a polled key edge) plus the edit keys. Widgets that own keyboard focus
+    // consume them; everything else ignores them, so the existing menus are
+    // untouched. The host must ALSO gate gameplay input while a field has focus
+    // (the cell-terminal discipline: typing never fires the weapon).
+    static constexpr int kMaxTyped = 16;
+    char  typed[kMaxTyped] = {};   // printable chars typed this frame
+    int   typedCount = 0;
+    bool  backspace  = false;      // rising edge
+    bool  enter      = false;      // rising edge (commit the field)
 };
 
 // ---------------------------------------------------------------------------
@@ -135,6 +147,48 @@ public:
     // one focus slot (in call order). Generic — usable for any normalized scalar.
     bool slider(const char* label, float& value, float x, float y, float w, float h);
 
+    // =======================================================================
+    // R8 — THE GLOWING CONTROL SURFACE (Tim: "the sliders glow").
+    //
+    // These three are the rift console's physical controls. They are the SAME
+    // immediate-mode contract as slider()/toggle()/button() (call order = focus
+    // slot; mouse drag + keyboard nav both work) but they render as EMISSIVE
+    // HOLOGRAPHIC light on black glass rather than painted grey widgets, and
+    // every one of them takes a `danger01` in [0,1] that drives its glow:
+    //
+    //     danger 0.0  -> calm BLUE/GREEN, steady
+    //     danger 0.5  -> AMBER, a slow pulse
+    //     danger 1.0  -> RED, fast hot flicker
+    //
+    // That is the readability channel: the player must SEE the control get angry
+    // under their hand before the rift warps the room / tears time / implodes.
+    // The glow obeys the project's cap law — it never clips to white, so blue and
+    // green stay chromatic (same discipline as the membrane's emissive caps).
+    //
+    // `clock` is a seconds accumulator the caller advances (drives the pulse).
+    // =======================================================================
+
+    // Glowing slider: lit CHANNEL, the filled portion charged up to a brighter
+    // HANDLE, the empty portion dim. Drag along the track, or navLeft/navRight.
+    bool glowSlider(const char* label, float& value, float x, float y, float w, float h,
+                    float danger01, float clock);
+
+    // Glowing ROTARY KNOB (the right metaphor for anything cyclic: FREQUENCY,
+    // PHASE). A lit dial ring with glowing tick marks and a bright indicator mark
+    // at the current angle; the value sweeps 240 degrees (7 o'clock -> 5 o'clock).
+    // ANGULAR DRAG: while held, the value follows the cursor's angle about the
+    // knob center (shortest-path, so it never jumps across the dead zone).
+    bool knob(const char* label, float& value, float cx, float cy, float radius,
+              float danger01, float clock);
+
+    // Glowing TEXT FIELD: lit border + underline, glowing typed text, blinking
+    // caret while focused. Consumes UiInput::typed / backspace while it owns
+    // focus. Returns true on the frame ENTER commits it (the caller parses the
+    // buffer — typing an out-of-range value on purpose is how a player reaches
+    // the truly dangerous outcomes, so the widget does NOT clamp).
+    bool textField(const char* label, char* buf, int cap, float x, float y,
+                   float w, float h, float danger01, float clock);
+
     // A filled progress/stat bar (e.g. HP). Non-interactive, no focus. `frac` in
     // [0,1]; draws a dark track + a `fill`-colored bar + an optional `caption`
     // overlaid (nullptr = none).
@@ -158,8 +212,12 @@ public:
     void setFocus(int i) { m_focus = i; }
     int  focusCount() const { return m_lastFocusCount; }
 
-private:
+    // Is the cursor inside this rect? Public so a SCREEN (not just a widget) can ask
+    // — the world menu needs it to know which row the mouse is hovering, so its footer
+    // can describe that row. Read-only: it claims no focus and draws nothing.
     bool pointIn(float x, float y, float w, float h) const;
+
+private:
 
     // Device used by the STATIC textWidth() to query true per-role glyph metrics.
     // Set in begin() to the live device so centering/right-align is pixel-exact for
@@ -206,6 +264,23 @@ struct HudModel {
     int   ammoInMag    = 0;
     int   ammoReserve  = 0;
     bool  reloading    = false;
+    // CHARGE weapon (Lightning Gun): when isCharge is true the weapon block shows a
+    // "CHARGE" readout + blue bar instead of "MAG / RESERVE". chargeCur is the live
+    // charge, chargeCap the stacking ceiling (bar = chargeCur/chargeCap).
+    bool  isCharge     = false;
+    int   chargeCur    = 0;
+    int   chargeCap    = 0;
+    // PASSIVE REGEN readout. The HUD MUST NOT LIE about this (it already printed a
+    // false ammo model once — "200 / 600" for a gun with neither a mag nor a reserve —
+    // and that ambiguity is why nobody could tell what the gun was doing):
+    //   chargeRegen     — the pool is refilling RIGHT NOW (label reads RECHARGING).
+    //   chargeRegenSlow — ...and it is in the HALF-SPEED band (>= chargeSlowAbove), so
+    //                     the label says SLOW rather than implying one uniform speed.
+    //   chargeSlowAbove — the charge at which regen halves; drawn as a NOTCH on the bar
+    //                     so the crawl-point is visible, not folklore. 0 = no notch.
+    bool  chargeRegen     = false;
+    bool  chargeRegenSlow = false;
+    int   chargeSlowAbove = 0;
     const char* objective = "";  // current objective text (may be empty)
     int   enemiesRemaining = -1; // live enemy count under the objective; <0 = hide
     float damageFlash  = 0.0f;   // [0,1] red hit flash strength
@@ -300,7 +375,10 @@ public:
 // A save/load action the pause menu can request back to the host (it is NOT a
 // GameState — saving/loading keeps you in the Paused screen). The host polls the
 // UiController for these (wantSave()/wantLoad()) and performs the file I/O itself.
-enum class PauseAction : uint8_t { None = 0, Save = 1, Load = 2 };
+// Worlds = the player picked TRAVEL / WORLD SELECT: the host opens the world/place
+// selection menu (app/world_menu.*). The pause screen is where it belongs — it is the
+// game's own menu, not a dev console.
+enum class PauseAction : uint8_t { None = 0, Save = 1, Load = 2, Worlds = 3 };
 
 // The pause overlay (drawn over a frozen, dimmed scene).
 class PauseMenu {
@@ -379,6 +457,15 @@ public:
     bool wantSave() const { return m_pendingAction == PauseAction::Save; }
     bool wantLoad() const { return m_pendingAction == PauseAction::Load; }
     void clearSaveLoadRequest() { m_pendingAction = PauseAction::None; }
+
+    // True the frame the user picked TRAVEL / WORLDS in the pause menu. The host
+    // opens the world/place selection menu (app/world_menu.h), then clears this and
+    // takes the game out of Paused so the menu owns the screen.
+    bool wantWorldMenu() const { return m_pendingAction == PauseAction::Worlds; }
+    void clearWorldMenuRequest() { m_pendingAction = PauseAction::None; }
+    // Force the controller back to Playing (the host does this when the world menu
+    // takes over from the pause screen, and after a world load lands).
+    void resumePlaying() { m_state = GameState::Playing; }
     // True the frame the user clicked "SET AS DEFAULT" on the main menu — the host
     // writes the settings file (window size + r_exposure), then calls clearSaveDefaults().
     bool wantSaveDefaults() const { return m_saveDefaults; }

@@ -307,6 +307,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 1.3f;     // quick sidearm reload
         w.viewmodelGlb = "WeaponEnergyPistol2.glb";  // real energy_pistol.obj (PBR-textured)
         w.vmScale     = 0.18f;                        // proven pistol read (~0.33 m held)
+        w.vmMuzzle    = { -0.003f, 0.652f, 0.855f };  // WeaponEnergyPistol2.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
         w.muzzleFx    = "muzzle_pistol";
         w.impactFx    = "impact_bullet";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav";   // punchy single shot
@@ -335,6 +336,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 1.9f;
         w.viewmodelGlb = "WeaponRailgun.glb";  // railgun reads as a rifle for the auto SMG
         w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
+        w.vmMuzzle    = {  0.000f, 0.494f, 0.909f };  // WeaponRailgun.glb barrel tip (measured)
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
         w.impactSfx   = "weapons/impact/Bullet_Impact_14.wav";   // ballistic impact tick
@@ -367,6 +369,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 2.3f;
         w.viewmodelGlb = "WeaponShotgun2.glb";  // real shotgun.obj (PBR-textured; long barrel -> small scale)
         w.vmScale     = 0.11f;                   // longest source model (4.4 m) -> ~0.48 m held
+        w.vmMuzzle    = { -0.017f, 0.680f, 2.111f };  // WeaponShotgun2.glb barrel tip (measured; a 4.4 m source model — THE worst offender under the old shared guess)
         w.muzzleFx    = "muzzle_shotgun";
         w.impactFx    = "impact_bullet";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";   // heavy single boom
@@ -395,6 +398,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.projSpeed   = 55.0f;    // m/s bolt — a hair faster so it leads less at range
         w.viewmodelGlb = "WeaponBFG.glb";  // bfg.obj energy-cannon look for the plasma bolt
         w.vmScale     = 0.24f;             // bulky energy weapon (~0.42 m held)
+        w.vmMuzzle    = { -0.003f, 0.528f, 0.864f };  // WeaponBFG.glb emitter tip (measured)
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
         // Sci-fi energy single (a distinct, higher-tech single shot).
@@ -438,6 +442,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.spinUpStartFrac= 0.35f;     // starts at 35% of fireRate (cold barrel)
         w.viewmodelGlb = "WeaponRocketLauncher.glb";  // heaviest model -> the chaingun read
         w.vmScale     = 0.26f;                        // heavy weapon (~0.49 m held)
+        w.vmMuzzle    = {  0.001f, 0.368f, 0.916f };  // WeaponRocketLauncher.glb barrel tip (measured)
         w.muzzleFx    = "muzzle_chaingun";
         w.impactFx    = "impact_bullet";
         w.impactSfx   = "weapons/impact/Bullet_Impact_14.wav";   // ballistic impact tick
@@ -476,6 +481,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.splashDamage= 15;           // splash damage at the center
         w.viewmodelGlb = "WeaponBFG.glb";  // bfg.obj energy-cannon look (shared with plasma)
         w.vmScale     = 0.24f;             // bulky energy weapon (~0.42 m held)
+        w.vmMuzzle    = { -0.003f, 0.528f, 0.864f };  // WeaponBFG.glb emitter tip (measured)
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
         // Bigger energy single than the plasma pistol (largest single = fuller bolt).
@@ -504,16 +510,60 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.fireRate    = 8.0f;                // Tim's tune: weightier, less buzzsaw
         w.pellets     = 1;                   // 1 primary; chains add rays
         w.spreadDeg   = 0.0f;                // a beam is dead-accurate
+        // TIM'S LIVE TUNE (33530f5) KEPT: recoil 0.12, range 30 (the R-1 fold values),
+        // alongside damage 14 / fireRate 8 / DamageType::Energy above.
         w.recoilDeg   = 0.12f;               // almost none (steady beam)
         w.range       = 30.0f;               // SHORT range (slightly extended)
-        w.magSize     = 200;                 // a "cell" of charge (Tim's tune)
-        w.reserveAmmo = 600;
-        w.reloadTime  = 2.4f;
+        // CHARGE model (Tim spec): no magazine, no reload. A full charge is a pool of
+        // SECONDS OF BEAM, not a count of shots — drain is per-SECOND and continuous
+        // while the beam is held (Arsenal::tick), and fire() consumes NO charge. So the
+        // economy is independent of fireRate: sustainedSeconds = chargeMax / drainPerSec.
+        //
+        // TIM'S CALL: "Make the charge last for 3 min of sustained fire."
+        //   full charge (100) / 180 s  =>  drain 0.5556 /s   (was 10/s = a 10 s pool)
+        //   battery-stacked cap (300)  =>  540 s (9 min) — the crystal cells are a real
+        //   stockpile you bank, not a chore you re-run every ten seconds.
+        // Gated by --test-lightning-charge LC7/LC8, which SIMULATE continuous fire and
+        // assert the observed duration is 180 s +/-5 (and 540 s +/-15 at the cap), with
+        // a negative control proving the probe rejects the old 10/s drain.
+        w.usesCharge  = true;
+        w.chargeMax   = 100.0f;                        // base full charge
+        w.chargeCap   = 300.0f;                        // battery-stacking ceiling
+        w.chargeDrainPerSec = 100.0f / 180.0f;         // 3 MINUTES of sustained fire
+        // PASSIVE REGEN — TIM'S CALL: "lets let the lightning recharge when not in use",
+        // refined to "regen all the way, but half speed over 150".
+        //   * 2 s after firing STOPS, the pool starts refilling (firing RESETS that
+        //     timer, so a burst can't free-refill mid-fight — you must let it cool).
+        //   * FAST band (< 150): chargeMax / 60 = 1.667 /s — the base 100 comes back
+        //     from empty in ~60 s. 180 s of fire therefore costs 60 s of waiting (3x
+        //     the drain rate): generous, not free. You are never stranded with a dead
+        //     gun; the lightning is never dead weight.
+        //   * SLOW band (>= 150): HALF that (0.833 /s) — a long crawl up to the 300 cap.
+        //   * Ceiling is the CAP (300), reached from empty in ~90 s + ~180 s = ~270 s.
+        // The crystal BATTERY CELLS keep their weight because they let you SKIP the slow
+        // crawl — they are the FAST way to a stocked gun, not the only way.
+        // Gated by --test-lightning-charge LC9..LC13, which MEASURE both band rates
+        // separately (an endpoint-only probe would pass on a single wrong-but-averaging
+        // rate) with a negative control proving a uniform (un-halved) rate is REJECTED.
+        w.chargeRegenPerSec   = 100.0f / 60.0f;        // fast band: base refills in 60 s
+        w.chargeRegenDelay    = 2.0f;                  // cool-down beat after firing stops
+        w.chargeRegenTo       = 300.0f;                // regen ceiling = the CAP
+        w.chargeRegenSlowAbove= 150.0f;                // half-speed above this
+        w.chargeRegenSlowMult = 0.5f;
+        // ⚠ DEAD FOR THIS WEAPON. Under usesCharge the Lightning Gun has no magazine and
+        // no reserve: canFire()/fire()/reload() never read these. They are zeroed rather
+        // than left at Tim's old 200/600 cell precisely because that ambiguity is what
+        // made the HUD print "200 / 600" for a gun that had NEITHER. The mag model is
+        // gone; the charge pool above is the whole economy.
+        w.magSize     = 0;                             // (dead under usesCharge)
+        w.reserveAmmo = 0;                             // (dead under usesCharge)
+        w.reloadTime  = 0.0f;                          // (dead under usesCharge)
         w.beam        = true;                // render as a solid beam (host hint)
         w.chainTargets= 2;                   // primary + 2 chains = 3 targets
         w.falloffStart= 15.0f;               // half-range: damage falls off past 15 m
         w.viewmodelGlb = "WeaponRailgun.glb"; // railgun rifle for the precision beam
         w.vmScale     = 0.24f;                // longarm (~0.46 m held)
+        w.vmMuzzle    = {  0.000f, 0.494f, 0.909f };  // WeaponRailgun.glb barrel tip (measured)
         w.muzzleFx    = "muzzle_lightning";
         w.impactFx    = "impact_lightning";
         w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";   // electric splat on impact
@@ -553,6 +603,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.splashDamage= 60;                   // significant splash
         w.viewmodelGlb = "WeaponRocketLauncher.glb"; // dedicated launcher mesh
         w.vmScale     = 0.26f;                // heavy weapon
+        w.vmMuzzle    = {  0.001f, 0.368f, 0.916f };  // WeaponRocketLauncher.glb barrel tip (measured)
         w.muzzleFx    = "muzzle_rocket";
         w.impactFx    = "impact_explosion";
         // Heavy boom on launch (one-shot).
@@ -624,6 +675,7 @@ Arsenal::Arsenal(std::vector<WeaponDef> roster) : m_defs(std::move(roster)) {
         m_state[i].cooldown  = 0.0f;
         m_state[i].reloadTimer = 0.0f;
         m_state[i].spinUp      = 0.0f;               // cold barrel
+        m_state[i].charge      = m_defs[i].usesCharge ? m_defs[i].chargeMax : 0.0f;
     }
     if (m_defs.empty()) m_sel = -1; else m_sel = 0;
 }
@@ -683,8 +735,14 @@ bool Arsenal::selectByName(const std::string& name) {
 bool Arsenal::canFire() const {
     if (m_sel < 0) return false;
     const WeaponState& s = m_state[(size_t)m_sel];
-    if (s.reloadTimer > 0.0f) return false;   // mid-reload: can't fire
+    const WeaponDef&   d = m_defs[(size_t)m_sel];
     if (s.cooldown    > 0.0f) return false;   // fire-rate gate
+    if (d.usesCharge) {
+        // CHARGE weapon (Lightning): no mag / no reload — fire while charge remains
+        // (IDKFA bypasses). The continuous drain happens in tick() while beam held.
+        return m_infiniteAmmo || s.charge > 0.0f;
+    }
+    if (s.reloadTimer > 0.0f) return false;   // mid-reload: can't fire
     if (s.ammoInMag  <= 0 && !m_infiniteAmmo) return false;   // empty mag (IDKFA bypasses)
     return true;
 }
@@ -727,7 +785,14 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     }
 
     // Consume a round, arm the fire-rate cooldown (from the effective rate), recoil.
-    if (!m_infiniteAmmo) s.ammoInMag -= 1;   // IDKFA: never deplete
+    // CHARGE weapons (Lightning) do NOT consume a mag round — their charge pool is
+    // drained continuously in tick() while the beam is held (see setBeamHeld).
+    if (!m_infiniteAmmo && !d.usesCharge) s.ammoInMag -= 1;   // IDKFA: never deplete
+    // PASSIVE REGEN: pulling the trigger INTERRUPTS regen and restarts the cool-down
+    // beat. tick() also does this off m_beamHeld (the host's held-fire flag), but doing
+    // it here too means the rule holds for ANY fire path — a caller that fires without
+    // ever setting beamHeld (tests, scripted/AI fire) cannot regen through its own shots.
+    if (d.usesCharge) s.regenDelay = d.chargeRegenDelay;
     s.cooldown   = (effRate > 0.0f) ? (1.0f / effRate) : 0.0f;
     out.fired    = true;
     out.recoilPitchDeg = d.recoilDeg;
@@ -781,6 +846,7 @@ bool Arsenal::reload() {
     if (m_sel < 0) return false;
     const WeaponDef& d = m_defs[(size_t)m_sel];
     WeaponState&     s = m_state[(size_t)m_sel];
+    if (d.usesCharge)                return false; // CHARGE weapons never reload
     if (s.reloadTimer > 0.0f)        return false; // already reloading
     if (s.ammoInMag   >= d.magSize)  return false; // mag already full
     if (s.reserve     <= 0)          return false; // no spare ammo
@@ -805,8 +871,104 @@ int Arsenal::addReserve(int index, int rounds) {
     return take;
 }
 
+int Arsenal::chargeWeaponIndex() const {
+    for (size_t i = 0; i < m_defs.size(); ++i)
+        if (m_defs[i].usesCharge) return (int)i;
+    return -1;
+}
+
+bool Arsenal::chargeRegenerating() const {
+    if (m_sel < 0 || m_sel >= (int)m_defs.size()) return false;
+    const WeaponDef&   d = m_defs[(size_t)m_sel];
+    const WeaponState& s = m_state[(size_t)m_sel];
+    if (!d.usesCharge || d.chargeRegenPerSec <= 0.0f) return false;
+    if (m_beamHeld) return false;              // firing: regen is interrupted
+    if (s.regenDelay > 0.0f) return false;     // still in the cool-down beat
+    const float ceil = (d.chargeRegenTo > 0.0f) ? d.chargeRegenTo : d.chargeCap;
+    return s.charge < ceil;                    // done once the ceiling is reached
+}
+
+float Arsenal::chargeRegenWait() const {
+    if (m_sel < 0 || m_sel >= (int)m_defs.size()) return 0.0f;
+    const WeaponDef& d = m_defs[(size_t)m_sel];
+    if (!d.usesCharge || d.chargeRegenPerSec <= 0.0f) return 0.0f;
+    return m_state[(size_t)m_sel].regenDelay;
+}
+
+bool Arsenal::chargeRegenSlow() const {
+    if (m_sel < 0 || m_sel >= (int)m_defs.size()) return false;
+    const WeaponDef& d = m_defs[(size_t)m_sel];
+    if (!d.usesCharge || d.chargeRegenSlowAbove <= 0.0f) return false;
+    return m_state[(size_t)m_sel].charge >= d.chargeRegenSlowAbove;
+}
+
+float Arsenal::grantCharge(float amount) {
+    if (amount <= 0.0f) return 0.0f;
+    const int idx = chargeWeaponIndex();
+    if (idx < 0) return 0.0f;
+    WeaponState&     s = m_state[(size_t)idx];
+    const WeaponDef& d = m_defs[(size_t)idx];
+    const float before = s.charge;
+    s.charge += amount;
+    if (s.charge > d.chargeCap) s.charge = d.chargeCap;   // stack to the cap
+    return s.charge - before;
+}
+
 void Arsenal::tick(float dt) {
     if (dt <= 0.0f) return;
+    // ---- CHARGE weapon (Lightning): DRAIN and PASSIVE REGEN --------------------
+    // Both live in THIS ONE BLOCK, deliberately: drain and regen are two directions of
+    // the same pool, and splitting them into separate paths is how they end up
+    // disagreeing about the pool's state. Exactly one of them runs on any given tick.
+    //
+    //   BEAM HELD  -> bleed at chargeDrainPerSec (IDKFA never depletes) and RESET the
+    //                 regen delay, so firing always INTERRUPTS regen and restarts the
+    //                 cool-down beat. (Held-on-empty also counts as firing: you must
+    //                 release the trigger to recharge.)
+    //   RELEASED   -> count the delay down; once it hits 0, refill toward chargeRegenTo
+    //                 on the two-speed curve (full rate below chargeRegenSlowAbove,
+    //                 chargeRegenSlowMult of it at/above). Never overshoots the ceiling,
+    //                 and never DRAINS a pool already above it.
+    if (m_sel >= 0) {
+        const WeaponDef& cd = m_defs[(size_t)m_sel];
+        if (cd.usesCharge) {
+            WeaponState& cs = m_state[(size_t)m_sel];
+            if (m_beamHeld) {
+                if (!m_infiniteAmmo) {
+                    cs.charge -= cd.chargeDrainPerSec * dt;
+                    if (cs.charge < 0.0f) cs.charge = 0.0f;
+                }
+                cs.regenDelay = cd.chargeRegenDelay;   // firing interrupts + restarts regen
+            } else if (cs.regenDelay > 0.0f) {
+                cs.regenDelay -= dt;                   // the "let it cool" beat
+                if (cs.regenDelay < 0.0f) cs.regenDelay = 0.0f;
+            } else if (cd.chargeRegenPerSec > 0.0f) {
+                const float ceil = (cd.chargeRegenTo > 0.0f) ? cd.chargeRegenTo : cd.chargeCap;
+                if (cs.charge < ceil) {
+                    // Integrate the two-speed curve PIECEWISE across this step: if the
+                    // pool crosses chargeRegenSlowAbove mid-tick, the part of dt before
+                    // the crossing runs at the fast rate and the remainder at the slow
+                    // one. (Applying one rate for the whole step would make the measured
+                    // band rates dt-dependent — and the gate measures them.)
+                    const float slowAt = cd.chargeRegenSlowAbove;
+                    const float fast   = cd.chargeRegenPerSec;
+                    const float slow   = fast * cd.chargeRegenSlowMult;
+                    float rem = dt;
+                    if (slowAt > 0.0f && cs.charge < slowAt && fast > 0.0f) {
+                        const float tToSlow = (slowAt - cs.charge) / fast;   // s at the fast rate
+                        const float step    = (tToSlow < rem) ? tToSlow : rem;
+                        cs.charge += fast * step;
+                        rem       -= step;
+                    }
+                    if (rem > 0.0f) {
+                        const float rate = (slowAt > 0.0f && cs.charge >= slowAt) ? slow : fast;
+                        cs.charge += rate * rem;
+                    }
+                    if (cs.charge > ceil) cs.charge = ceil;   // HARD STOP at the ceiling
+                }
+            }
+        }
+    }
     for (size_t i = 0; i < m_state.size(); ++i) {
         WeaponState& s = m_state[i];
         if (s.cooldown > 0.0f) { s.cooldown -= dt; if (s.cooldown < 0.0f) s.cooldown = 0.0f; }
@@ -885,6 +1047,67 @@ void Arsenal::loadViewmodels(x3::rhi::IRenderDevice& device, std::string_view mo
         x3::logWarn("[arsenal] FPArms_Jake.glb missing — viewmodel draws without arms");
 }
 
+// The ONE place the FP viewmodel's world frame is solved. drawCurrentViewmodel DRAWS the
+// gun with it; currentMuzzle() puts the BARREL TIP in the world with it. Sharing this is
+// the whole point — a muzzle solved in any OTHER frame is exactly the bug Tim saw (fire
+// spawning in mid-air beside the gun).
+Arsenal::VmFrame Arsenal::currentViewmodelFrame(
+        float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+        float extraYawOff, float extraPitchOff, float extraRollOff,
+        float extraFwd, float extraRight, float extraDown) const {
+    VmFrame f;
+    if (m_sel < 0 || m_sel >= (int)m_defs.size()) {
+        f.pos = x3::phys::Vec3{ eyeX, eyeY, eyeZ };
+        return f;
+    }
+    const WeaponDef& d = m_defs[(size_t)m_sel];
+    const float yawOff   = d.vmYawDeg   * (kPi / 180.0f) + extraYawOff;
+    const float pitchOff = d.vmPitchDeg * (kPi / 180.0f) + extraPitchOff;
+    const float rollOff  = d.vmRollDeg  * (kPi / 180.0f) + extraRollOff;
+    const float fwd   = d.vmFwd   + extraFwd;
+    const float rgt   = d.vmRight + extraRight;
+    const float down  = d.vmDown  + extraDown;
+
+    // Same camera-basis math as WeaponSystem::drawViewmodel (see 3 CONVENTIONS).
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
+    const x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
+    const x3::phys::Vec3 right{ -sy, 0.0f, cy };
+    const x3::phys::Vec3 up{ right.y * forward.z - right.z * forward.y,
+                             right.z * forward.x - right.x * forward.z,
+                             right.x * forward.y - right.y * forward.x };
+    f.pos = x3::phys::Vec3{ eyeX + forward.x * fwd + right.x * rgt - up.x * down,
+                            eyeY + forward.y * fwd + right.y * rgt - up.y * down,
+                            eyeZ + forward.z * fwd + right.z * rgt - up.z * down };
+    const x3::phys::Vec3 negFwd{ -forward.x, -forward.y, -forward.z };
+    auto applyOffsets = [&](x3::phys::Vec3 v) {
+        v = rotateAboutAxis(v, up,      yawOff);
+        v = rotateAboutAxis(v, right,   pitchOff);
+        v = rotateAboutAxis(v, forward, rollOff);
+        return v;
+    };
+    f.bx = applyOffsets(right);
+    f.by = applyOffsets(up);
+    f.bz = applyOffsets(negFwd);
+    f.scale = d.vmScale * kVmScaleBoost;
+    return f;
+}
+
+x3::phys::Vec3 Arsenal::currentMuzzle(
+        float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+        float extraYawOff, float extraPitchOff, float extraRollOff,
+        float extraFwd, float extraRight, float extraDown) const {
+    const VmFrame f = currentViewmodelFrame(eyeX, eyeY, eyeZ, yaw, pitch,
+                                            extraYawOff, extraPitchOff, extraRollOff,
+                                            extraFwd, extraRight, extraDown);
+    const x3::phys::Vec3 m = currentMuzzleLocal();
+    // The SAME transform the gun's own vertices take: model * (mx,my,mz).
+    return x3::phys::Vec3{
+        f.pos.x + (f.bx.x * m.x + f.by.x * m.y + f.bz.x * m.z) * f.scale,
+        f.pos.y + (f.bx.y * m.x + f.by.y * m.y + f.bz.y * m.z) * f.scale,
+        f.pos.z + (f.bx.z * m.x + f.by.z * m.y + f.bz.z * m.z) * f.scale };
+}
+
 void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
                                    const x3::rhi::FrameContext& frame,
                                    float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
@@ -896,44 +1119,43 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
                          : (sel.fallbackIndex >= 0 ? m_views[(size_t)sel.fallbackIndex] : sel);
     if (vm.drawables.empty()) return;
 
-    const WeaponDef& d = m_defs[(size_t)m_sel];
-    const float yawOff   = d.vmYawDeg   * (kPi / 180.0f) + extraYawOff;
-    const float pitchOff = d.vmPitchDeg * (kPi / 180.0f) + extraPitchOff;
-    const float rollOff  = d.vmRollDeg  * (kPi / 180.0f) + extraRollOff;
-    const float fwd   = d.vmFwd   + extraFwd;
-    const float rgt   = d.vmRight + extraRight;
-    const float down  = d.vmDown  + extraDown;
-
-    // Same camera-basis math as WeaponSystem::drawViewmodel (see §3 CONVENTIONS).
+    // ONE frame solve, SHARED with currentMuzzle() (see above).
+    const VmFrame vf = currentViewmodelFrame(eyeX, eyeY, eyeZ, yaw, pitch,
+                                             extraYawOff, extraPitchOff, extraRollOff,
+                                             extraFwd, extraRight, extraDown);
+    const x3::phys::Vec3 bx = vf.bx, by = vf.by, bz = vf.bz, pos = vf.pos;
+    // The RAW camera basis is still needed below for the FP ARMS (which anchor to the
+    // EYE, not the gun).
     const float cp = std::cos(pitch), sp = std::sin(pitch);
     const float cy = std::cos(yaw),   sy = std::sin(yaw);
-    x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
-    x3::phys::Vec3 right{ -sy, 0.0f, cy };
-    x3::phys::Vec3 up{ right.y * forward.z - right.z * forward.y,
-                       right.z * forward.x - right.x * forward.z,
-                       right.x * forward.y - right.y * forward.x };
-    x3::phys::Vec3 pos{ eyeX + forward.x * fwd + right.x * rgt - up.x * down,
-                        eyeY + forward.y * fwd + right.y * rgt - up.y * down,
-                        eyeZ + forward.z * fwd + right.z * rgt - up.z * down };
-    x3::phys::Vec3 negFwd{ -forward.x, -forward.y, -forward.z };
-    auto applyOffsets = [&](x3::phys::Vec3 v) {
-        v = rotateAboutAxis(v, up,      yawOff);
-        v = rotateAboutAxis(v, right,   pitchOff);
-        v = rotateAboutAxis(v, forward, rollOff);
-        return v;
-    };
-    x3::phys::Vec3 bx = applyOffsets(right);
-    x3::phys::Vec3 by = applyOffsets(up);
-    x3::phys::Vec3 bz = applyOffsets(negFwd);
+    const x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
+    const x3::phys::Vec3 right{ -sy, 0.0f, cy };
+    const x3::phys::Vec3 up{ right.y * forward.z - right.z * forward.y,
+                             right.z * forward.x - right.x * forward.z,
+                             right.x * forward.y - right.y * forward.x };
 
     float model[16];
     // Tim playtest 2026-05-25: the held weapons read tiny + dark. Enlarge the viewmodel
     // (~2x) and brighten its base color (HDR > 1) so it reads as a big, lit gun in the
     // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
     // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
-    constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
-    constexpr float kVmBright     = 2.6f;   // lit (the real issue is the GLB TEXTURE being wrong, not size/brightness)
-    composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
+    // ROUND 6 ENGINE FIX (5c35d65): kVmBright was 2.6 — an OVER-UNITY albedo multiplier
+    // (physically impossible; it clipped the gun's own texture to white) added because GLB
+    // meshes shaded at 1/PI of the prims around them. shaders/mesh.frag now lights the
+    // viewmodel honestly, so the hack is gone: with it still in, the pistol blew out white.
+    // Two lines of work converged on the same answer — the 14900K weapon-textures rework
+    // (ba3ce7a) reached 1.0 from the art side after the owner reported "the texture looks
+    // great ON the weapon, but when Jake HOLDS it, it transforms to garbage" (the viewmodel
+    // was multiplying the correct baked albedo, clipping highlights, while drawWeaponAt drew
+    // the same texture at 1.0 and looked right). DO NOT resurrect 2.6 or 1.4.
+    // The stale `vmLitPBR` gunmetal branch (which DROPPED the texture for a flat dark factor,
+    // never enabled for any weapon) is removed so the textured path is the single source of truth.
+    constexpr float kVmBright     = 1.0f;   // true baked albedo (matches the world model)
+    // SCALE comes from the VmFrame (346f5e7): currentViewmodelFrame() is the SINGLE source of
+    // the viewmodel basis/pose/scale (vf.scale == d.vmScale * kVmScaleBoost, Tim's 2x kept), and
+    // weaponMuzzle() maps WeaponDef::vmMuzzle through THIS SAME matrix. Recomputing the scale
+    // inline here is what let the drawn gun and the FX origin drift apart in the first place.
+    composeTRS(model, bx, by, bz, vf.scale, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
         x3::asset::mulMat4(model, dr.nodeTransform, fin);
@@ -1008,7 +1230,7 @@ void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
     // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
     // interiors. The caller owns the full world placement (hand-bone * grip * scale),
     // so unlike drawCurrentViewmodel this does NO camera-relative posing.
-    constexpr float kVmBright = 2.6f;
+    constexpr float kVmBright = 1.0f;   // ROUND 6: see drawCurrentViewmodel (over-unity albedo hack removed).
     for (const auto& dr : vm.drawables) {
         // STRIP the node-transform's authored WORLD TRANSLATION (cols 12..14): these
         // weapon GLBs bake an FP-viewmodel placement offset into the root node, which
@@ -1164,13 +1386,20 @@ bool runWeaponsSelfTest() {
             a.def(ir).damage > 0 && a.def(ir).fireRate > 0.0f && a.def(ir).magSize > 0;
         // Lightning Gun: a beam (hitscan) that chains, with short-range falloff,
         // and a SHORT range (shorter than the pistol's 50 m).
+        // AMMO: this used to assert magSize > 0. Under the CHARGE model the Lightning
+        // Gun has no magazine at all (magSize/reserveAmmo are dead), so that assertion
+        // was checking a field the weapon no longer uses. The real invariant is that it
+        // carries a usable CHARGE pool — assert THAT instead.
         int ip = a.indexOf("pistol");
         bool lgOK = present && ip >= 0 &&
             a.def(iz).kind == FireKind::Hitscan && a.def(iz).beam &&
             a.def(iz).chainTargets >= 1 && a.def(iz).falloffStart > 0.0f &&
             a.def(iz).falloffStart < a.def(iz).range &&
             a.def(iz).range < a.def(ip).range &&   // short range vs pistol
-            a.def(iz).damage > 0 && a.def(iz).fireRate > 0.0f && a.def(iz).magSize > 0;
+            a.def(iz).damage > 0 && a.def(iz).fireRate > 0.0f &&
+            a.def(iz).usesCharge && a.def(iz).chargeMax > 0.0f &&
+            a.def(iz).chargeCap >= a.def(iz).chargeMax &&
+            a.def(iz).chargeDrainPerSec > 0.0f;
         // Selectable by name (the host maps number keys 1..N onto these).
         bool selectable = a.selectByName("chaingun") && a.current().name == "chaingun" &&
                           a.selectByName("plasma_rifle") && a.current().name == "plasma_rifle" &&
@@ -1458,9 +1687,392 @@ bool runWeaponsSelfTest() {
                "W12b Arsenal::fire() stamps WeaponDef::type onto every HitscanRay + ProjectileSpawn");
     }
 
+    // ---- W13: THE MUZZLE — "the fire doesn't come from the barrel" (Tim 2026-07-11)
+    // REGRESSION GUARD. The FX origin must be the BARREL TIP of the weapon we DRAW —
+    // i.e. WeaponDef::vmMuzzle carried through the SAME world matrix drawCurrentViewmodel
+    // composes — NOT a camera-relative guess. This test re-derives the expected barrel tip
+    // with its OWN independent math and asserts Arsenal::currentMuzzle lands on it, for
+    // EVERY weapon, at several yaw/pitch poses. If anyone ever re-routes the muzzle back
+    // through a fixed camera offset, W13 goes red.
+    {
+        Arsenal a;
+        const float kDeg = kPi / 180.0f;
+        struct Pose { float yaw, pitch; };
+        const Pose poses[] = { {0.0f, 0.0f}, {1.7f, 0.55f}, {-2.4f, -0.62f}, {3.0f, 0.2f} };
+
+        bool onBarrel = true;     // muzzle == the gun's own barrel-tip transform
+        bool perWeapon = true;    // the guns are DIFFERENT lengths -> different muzzles
+        bool inFront = true;      // and it always leads the eye, at any pitch
+        float minReach = 1e9f, maxReach = -1e9f;
+
+        for (int wi = 0; wi < a.count(); ++wi) {
+            a.select(wi);
+            const WeaponDef& d = a.def(wi);
+            // Every gun must actually carry a measured barrel tip down its +Z barrel axis.
+            if (!(d.vmMuzzle.z > 0.3f)) perWeapon = false;
+
+            for (const Pose& p : poses) {
+                const float ex = 3.0f, ey = 1.7f, ez = -2.0f;
+                // --- independent expected-muzzle math (mirrors the DRAW, not the solve) ---
+                const float cp = std::cos(p.pitch), sp = std::sin(p.pitch);
+                const float cy = std::cos(p.yaw),   sy = std::sin(p.yaw);
+                const x3::phys::Vec3 fw{ cp * cy, sp, cp * sy };
+                const x3::phys::Vec3 rt{ -sy, 0.0f, cy };
+                const x3::phys::Vec3 up{ rt.y * fw.z - rt.z * fw.y,
+                                         rt.z * fw.x - rt.x * fw.z,
+                                         rt.x * fw.y - rt.y * fw.x };
+                const x3::phys::Vec3 origin{
+                    ex + fw.x * d.vmFwd + rt.x * d.vmRight - up.x * d.vmDown,
+                    ey + fw.y * d.vmFwd + rt.y * d.vmRight - up.y * d.vmDown,
+                    ez + fw.z * d.vmFwd + rt.z * d.vmRight - up.z * d.vmDown };
+                auto off = [&](x3::phys::Vec3 v) {
+                    v = rotateAboutAxis(v, up, d.vmYawDeg   * kDeg);
+                    v = rotateAboutAxis(v, rt, d.vmPitchDeg * kDeg);
+                    v = rotateAboutAxis(v, fw, d.vmRollDeg  * kDeg);
+                    return v;
+                };
+                const x3::phys::Vec3 bx = off(rt), by = off(up),
+                                     bz = off(x3::phys::Vec3{ -fw.x, -fw.y, -fw.z });
+                const float s = d.vmScale * kVmScaleBoost;
+                const x3::phys::Vec3 mL = d.vmMuzzle;
+                const x3::phys::Vec3 want{
+                    origin.x + (bx.x * mL.x + by.x * mL.y + bz.x * mL.z) * s,
+                    origin.y + (bx.y * mL.x + by.y * mL.y + bz.y * mL.z) * s,
+                    origin.z + (bx.z * mL.x + by.z * mL.y + bz.z * mL.z) * s };
+
+                const x3::phys::Vec3 got = a.currentMuzzle(ex, ey, ez, p.yaw, p.pitch);
+                const float dx = got.x - want.x, dy = got.y - want.y, dz = got.z - want.z;
+                if (std::sqrt(dx*dx + dy*dy + dz*dz) > 1e-3f) onBarrel = false;
+
+                // It must LEAD the eye down the look direction (never behind the player).
+                const float ahead = (got.x - ex) * fw.x + (got.y - ey) * fw.y + (got.z - ez) * fw.z;
+                if (ahead < 0.2f) inFront = false;
+                if (p.yaw == 0.0f && p.pitch == 0.0f) {
+                    if (ahead < minReach) minReach = ahead;
+                    if (ahead > maxReach) maxReach = ahead;
+                }
+            }
+        }
+        wcheck(onBarrel,
+               "W13a muzzle == the held weapon's OWN barrel tip (vmMuzzle through the viewmodel matrix)");
+        wcheck(inFront, "W13b muzzle leads the eye down the look dir at every yaw/pitch");
+        // The whole bug: a SHARED offset cannot be right for guns of different lengths. The
+        // shotgun (a 4.4 m source model) must reach visibly further than the pistol.
+        wcheck(perWeapon && (maxReach - minReach) > 0.10f,
+               "W13c the muzzle is PER-WEAPON (barrel reach differs across the roster)");
+    }
+
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +
                 std::to_string(w_fail) + " failed");
     return w_fail == 0;
+}
+
+// ===========================================================================
+// Headless self-test (--test-lightning-charge). Exercises the Lightning Gun
+// CHARGE model (Tim spec): base charge, continuous drain while beam held, IDKFA
+// never depletes, battery grant stacks to chargeCap, no mag/reload. NO Vulkan.
+// ===========================================================================
+namespace {
+int lc_pass = 0, lc_fail = 0;
+void lccheck(bool cond, const char* name) {
+    if (cond) { ++lc_pass; x3::logInfo(std::string("[lightning-charge-test] PASS ") + name); }
+    else      { ++lc_fail; x3::logError(std::string("[lightning-charge-test] FAIL ") + name); }
+}
+inline bool nearf(float a, float b, float eps = 0.01f) { return std::fabs(a - b) <= eps; }
+} // namespace
+
+bool runLightningChargeSelfTest() {
+    lc_pass = lc_fail = 0;
+    const x3::phys::Vec3 eye{ 0, 1.7f, 0 };
+    const x3::phys::Vec3 fwd{ 1, 0, 0 };
+    uint32_t rng = 0xBEEF01u;
+
+    // ---- LC0: lightning is a charge weapon with the spec'd numbers ------------
+    {
+        Arsenal a;
+        int iz = a.indexOf("lightning");
+        bool ok = iz >= 0 &&
+                  a.def(iz).usesCharge &&
+                  nearf(a.def(iz).chargeMax, 100.0f) &&
+                  nearf(a.def(iz).chargeCap, 300.0f) &&
+                  // 3-minute pool: 100 / 180 s = 0.5556 /s (was 10/s).
+                  nearf(a.def(iz).chargeDrainPerSec, 100.0f / 180.0f, 0.01f) &&
+                  a.chargeWeaponIndex() == iz &&
+                  nearf(a.state(iz).charge, 100.0f);   // seeded to base at construction
+        lccheck(ok, "LC0 lightning uses charge: 100 base / 300 cap / 0.556/s drain / seeded full");
+    }
+
+    // ---- LC1: continuous drain ~chargeDrainPerSec while the beam is HELD ------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        const float rate = a.def(a.indexOf("lightning")).chargeDrainPerSec;
+        a.setBeamHeld(true);
+        a.tick(1.0f);                         // 1 s held
+        bool afterOne = nearf(a.currentState().charge, 100.0f - rate, 0.02f);
+        a.tick(4.0f);                         // +4 s (5 s total)
+        bool afterFive = nearf(a.currentState().charge, 100.0f - rate * 5.0f, 0.05f);
+        const float held = a.currentState().charge;
+        a.setBeamHeld(false);
+        a.tick(2.0f);                         // released: NO drain while idle
+        bool holdsWhenReleased = nearf(a.currentState().charge, held, 0.01f);
+        lccheck(afterOne && afterFive && holdsWhenReleased,
+                "LC1 charge drains at chargeDrainPerSec while held, holds steady when released");
+    }
+
+    // ---- LC2: drains to 0 then fire is gated (canFire false, no reload) -------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.setBeamHeld(true);
+        a.tick(400.0f);                       // well past the 180 s pool -> 0
+        bool emptied = nearf(a.currentState().charge, 0.0f);
+        bool gated   = !a.canFire();          // empty charge -> cannot fire
+        bool noReload = !a.reload();          // charge weapons never reload
+        lccheck(emptied && gated && noReload,
+                "LC2 empty charge gates fire; charge weapon never reloads");
+    }
+
+    // ---- LC3: IDKFA never depletes charge + always canFire -------------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.setInfiniteAmmo(true);
+        a.setBeamHeld(true);
+        a.tick(30.0f);                        // 30 s held under IDKFA
+        bool undrained = nearf(a.currentState().charge, 100.0f);
+        a.tick(1.0f);                         // clear any residual cooldown
+        bool canStill = a.canFire();
+        lccheck(undrained && canStill, "LC3 IDKFA: charge never depletes, always canFire");
+    }
+
+    // ---- LC4: battery grant STACKS past base up to the cap -------------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        // Drain to 40 first so there's headroom (60 charge at 0.5556/s = 108 s).
+        a.setBeamHeld(true); a.tick(108.0f); a.setBeamHeld(false);   // ~40 left
+        float g1 = a.grantCharge(150.0f);     // 40 -> 190
+        bool got1 = nearf(g1, 150.0f, 0.5f) && nearf(a.currentState().charge, 190.0f, 0.5f);
+        float g2 = a.grantCharge(200.0f);     // 190 -> cap 300 (adds 110)
+        bool capped = nearf(a.currentState().charge, 300.0f) && nearf(g2, 110.0f, 0.5f);
+        float g3 = a.grantCharge(50.0f);      // already at cap -> 0 added
+        bool atCap = nearf(g3, 0.0f) && nearf(a.currentState().charge, 300.0f);
+        lccheck(got1 && capped && atCap, "LC4 battery grant stacks past 100 to the 300 cap");
+    }
+
+    // ---- LC5: firing consumes NO mag round (charge is the resource) ----------
+    {
+        Arsenal a;
+        int iz = a.selectByName("lightning") ? a.indexOf("lightning") : -1;
+        a.tick(1.0f);                         // clear the select cooldown
+        int magBefore = a.currentState().ammoInMag;
+        ResolvedFire f = a.fire(eye, fwd, rng);
+        bool firedNoMagUse = f.fired && a.currentState().ammoInMag == magBefore && iz >= 0;
+        lccheck(firedNoMagUse, "LC5 lightning fire does not consume a magazine round");
+    }
+
+    // ---- LC6: held beam eventually drains to empty and stops firing ----------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.setBeamHeld(true);
+        a.tick(1.0f);
+        int fired = 0;
+        bool stoppedWhenEmpty = false;
+        for (int i = 0; i < 2000; ++i) {      // 250 s of held fire at 0.125 s steps (> the 180 s pool)
+            ResolvedFire f = a.fire(eye, fwd, rng);
+            if (f.fired) ++fired;
+            a.tick(0.125f);
+            if (a.currentState().charge <= 0.0f) { stoppedWhenEmpty = !a.canFire(); break; }
+        }
+        lccheck(fired > 0 && stoppedWhenEmpty,
+                "LC6 held beam fires, drains to empty, then gates off");
+    }
+
+    // ---- LC7: SUSTAINED-FIRE DURATION == 3 MINUTES (Tim's call) --------------
+    // Do not trust the constant — MEASURE it. Simulate continuous held fire at 60 Hz
+    // and time how long a full charge actually lasts. Ships with a NEGATIVE CONTROL:
+    // the same probe run against a roster mutated back to the old 10/s drain must be
+    // REJECTED by the 180 s window. A gate that cannot fail is worthless.
+    {
+        // Drive a held beam to empty; return the observed seconds of sustained fire.
+        auto measureSustainSec = [&](Arsenal& a) -> float {
+            a.selectByName("lightning");
+            a.setBeamHeld(true);
+            const float dt = 1.0f / 60.0f;
+            float t = 0.0f;
+            for (int i = 0; i < 60 * 900 && a.currentState().charge > 0.0f; ++i) {
+                a.fire(eye, fwd, rng);        // firing must not change the economy
+                a.tick(dt);
+                t += dt;
+            }
+            return t;
+        };
+        auto within180 = [](float s) { return s >= 175.0f && s <= 185.0f; };  // 180 +/-5
+
+        Arsenal live;                                   // the SHIPPING roster
+        const float secs = measureSustainSec(live);
+        const bool  ok   = within180(secs);
+
+        // NEGATIVE CONTROL: same probe, roster mutated back to the old 10 charge/sec.
+        std::vector<WeaponDef> bad = makeDefaultRoster();
+        for (auto& d : bad) if (d.usesCharge) d.chargeDrainPerSec = 10.0f;
+        Arsenal mutated(bad);
+        const float badSecs   = measureSustainSec(mutated);
+        const bool  rejects   = !within180(badSecs);    // the probe MUST reject 10/s
+
+        x3::logInfo("[lightning-charge-test] LC7 sustained fire = " + std::to_string(secs) +
+                    " s (target 180 +/-5); negative control (10/s drain) = " +
+                    std::to_string(badSecs) + " s -> " + (rejects ? "REJECTED" : "ACCEPTED (BUG)"));
+        lccheck(ok && rejects,
+                "LC7 a full charge lasts 3 MINUTES of sustained fire (+ negative control fails)");
+    }
+
+    // ---- LC8: battery-stacked cap (300) == ~9 minutes ------------------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.grantCharge(500.0f);                          // 100 -> clamped to the 300 cap
+        const bool atCap = nearf(a.currentState().charge, 300.0f);
+        a.setBeamHeld(true);
+        const float dt = 1.0f / 60.0f;
+        float t = 0.0f;
+        for (int i = 0; i < 60 * 1200 && a.currentState().charge > 0.0f; ++i) { a.tick(dt); t += dt; }
+        const bool ok = atCap && t >= 525.0f && t <= 555.0f;   // 540 +/-15
+        x3::logInfo("[lightning-charge-test] LC8 battery-stacked (cap 300) sustained fire = " +
+                    std::to_string(t) + " s (target 540 +/-15)");
+        lccheck(ok, "LC8 battery cells stack to the cap -> ~9 min of sustained fire");
+    }
+
+    // =======================================================================
+    // PASSIVE REGEN (Tim: "lets let the lightning recharge when not in use",
+    //                     "regen all the way, but half speed over 150")
+    // =======================================================================
+    // Drive an IDLE (not-firing) lightning gun from EMPTY and profile the refill:
+    // seconds spent in the fast band (0 -> 150), seconds in the slow band
+    // (150 -> the ceiling), the final resting charge, and whether it overshoots.
+    // The regen DELAY is subtracted so the returned times are pure regen seconds
+    // (LC9 gates the delay itself). Times are measured, never assumed.
+    auto regenProfile = [&](Arsenal& a, float& tFast, float& tSlow,
+                            float& finalCharge, float& overshoot) {
+        a.selectByName("lightning");
+        const WeaponDef& d = a.def(a.indexOf("lightning"));
+        a.setBeamHeld(true);
+        a.tick(400.0f);                       // hold the beam down: drain the pool to 0
+        a.setBeamHeld(false);                 // release -> the regen clock starts
+        const float dt    = 1.0f / 60.0f;
+        const float delay = d.chargeRegenDelay;
+        const float ceil  = (d.chargeRegenTo > 0.0f) ? d.chargeRegenTo : d.chargeCap;
+        float t = 0.0f, t150 = -1.0f, tCeil = -1.0f;
+        for (int i = 0; i < 60 * 900; ++i) {  // up to 900 s of idle
+            a.tick(dt);
+            t += dt;
+            const float c = a.currentState().charge;
+            if (t150 < 0.0f && c >= d.chargeRegenSlowAbove) t150 = t - delay;
+            if (tCeil < 0.0f && c >= ceil - 0.001f)       { tCeil = t - delay; break; }
+        }
+        tFast = t150;
+        tSlow = (tCeil >= 0.0f && t150 >= 0.0f) ? (tCeil - t150) : -1.0f;
+        // Keep ticking well past the ceiling: regen must HARD STOP, never creep past it.
+        for (int i = 0; i < 60 * 60; ++i) a.tick(dt);    // +60 s of idle at the ceiling
+        finalCharge = a.currentState().charge;
+        overshoot   = finalCharge - ceil;
+    };
+
+    // ---- LC9: the 2 s COOL-DOWN BEAT — regen must not start early, and firing
+    //          RESETS it (a burst can never free-refill mid-fight) ---------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        const float delay = a.def(a.indexOf("lightning")).chargeRegenDelay;
+        a.setBeamHeld(true);
+        a.tick(20.0f);                                   // burn ~11 charge
+        const bool notWhileFiring = !a.chargeRegenerating();   // HUD must not claim regen
+        a.setBeamHeld(false);
+        const float c0 = a.currentState().charge;
+        const float dt = 1.0f / 60.0f;
+
+        // (a) idle for delay - 0.1 s: still NOTHING (charge dead flat).
+        for (int i = 0; i < (int)((delay - 0.1f) / dt); ++i) a.tick(dt);
+        const bool quietInDelay = nearf(a.currentState().charge, c0, 0.001f) &&
+                                  !a.chargeRegenerating() && a.chargeRegenWait() > 0.0f;
+
+        // (b) FIRE ONE SHOT right before the beat expires -> the delay RESTARTS.
+        a.fire(eye, fwd, rng);
+        const bool delayReset = nearf(a.chargeRegenWait(), delay, 0.001f);
+        for (int i = 0; i < (int)((delay - 0.1f) / dt); ++i) a.tick(dt);
+        const bool stillQuiet = nearf(a.currentState().charge, c0, 0.001f);   // reset held
+
+        // (c) let the beat fully elapse -> regen ACTUALLY begins.
+        for (int i = 0; i < (int)(0.5f / dt); ++i) a.tick(dt);
+        const bool started = a.currentState().charge > c0 + 0.1f && a.chargeRegenerating();
+
+        lccheck(notWhileFiring && quietInDelay && delayReset && stillQuiet && started,
+                "LC9 regen waits the 2 s beat, firing RESETS it, then regen begins");
+    }
+
+    // ---- LC10/LC11: MEASURED two-speed refill + the HARD STOP at the cap -------
+    // Measure BOTH BANDS SEPARATELY. An endpoint-only probe (0 -> 300 in ~270 s)
+    // would happily pass on a single uniform wrong-but-averaging rate — which is
+    // exactly the bug the negative control below manufactures.
+    {
+        Arsenal live;
+        float tFast = -1, tSlow = -1, finalC = -1, over = 0;
+        regenProfile(live, tFast, tSlow, finalC, over);
+        const float fastRate = (tFast > 0.0f) ? 150.0f / tFast : 0.0f;   // 0 -> 150
+        const float slowRate = (tSlow > 0.0f) ? 150.0f / tSlow : 0.0f;   // 150 -> 300
+        const float total    = tFast + tSlow;
+
+        x3::logInfo("[lightning-charge-test] LC10 regen 0->150 = " + std::to_string(tFast) +
+                    " s (" + std::to_string(fastRate) + "/s, target 1.667) | 150->300 = " +
+                    std::to_string(tSlow) + " s (" + std::to_string(slowRate) +
+                    "/s, target 0.833) | TOTAL 0->300 = " + std::to_string(total) +
+                    " s (target ~270)");
+
+        const bool fastOk = nearf(fastRate, 100.0f / 60.0f, 0.03f) && tFast >= 87.0f && tFast <= 93.0f;
+        const bool slowOk = nearf(slowRate, 100.0f / 120.0f, 0.03f) && tSlow >= 174.0f && tSlow <= 186.0f;
+        const bool halved = nearf(slowRate, fastRate * 0.5f, 0.03f);   // THE two-segment rule
+        const bool totOk  = total >= 261.0f && total <= 279.0f;        // ~270 +/-9
+        lccheck(fastOk && slowOk && halved && totOk,
+                "LC10 regen is 1.667/s below 150 and HALF (0.833/s) above -> ~270 s to the cap");
+
+        // The ceiling: regen must land EXACTLY on the 300 cap and stop dead there —
+        // 60 further seconds of idle must not move it one charge past.
+        const bool stops = nearf(finalC, 300.0f, 0.001f) && over <= 0.001f;
+        x3::logInfo("[lightning-charge-test] LC11 charge after +60 s idle at the ceiling = " +
+                    std::to_string(finalC) + " (overshoot " + std::to_string(over) + ")");
+        lccheck(stops, "LC11 regen HARD-STOPS at the 300 cap (no overshoot, no creep)");
+    }
+
+    // ---- LC12: NEGATIVE CONTROL — a UNIFORM (un-halved) rate must be REJECTED ---
+    // Mutate the roster so the slow band runs at FULL speed (slowMult 1.0), i.e. the
+    // "half speed over 150" rule is gone. The SAME two-segment probe that passed above
+    // must now FAIL. A gate that cannot fail is worthless (docs/DECISIONS.md
+    // REGRESSION DISCIPLINE) — this proves the LC10 assertion actually probes the rule.
+    {
+        std::vector<WeaponDef> bad = makeDefaultRoster();
+        for (auto& d : bad) if (d.usesCharge) d.chargeRegenSlowMult = 1.0f;   // no halving
+        Arsenal mutated(bad);
+        float tFast = -1, tSlow = -1, finalC = -1, over = 0;
+        regenProfile(mutated, tFast, tSlow, finalC, over);
+        const float fastRate = (tFast > 0.0f) ? 150.0f / tFast : 0.0f;
+        const float slowRate = (tSlow > 0.0f) ? 150.0f / tSlow : 0.0f;
+        // Re-apply the EXACT LC10 predicate to the mutant.
+        const bool slowOk = nearf(slowRate, 100.0f / 120.0f, 0.03f) && tSlow >= 174.0f && tSlow <= 186.0f;
+        const bool halved = nearf(slowRate, fastRate * 0.5f, 0.03f);
+        const bool totOk  = (tFast + tSlow) >= 261.0f && (tFast + tSlow) <= 279.0f;
+        const bool rejects = !(slowOk && halved && totOk);   // the probe MUST reject it
+        x3::logInfo("[lightning-charge-test] LC12 negative control (uniform rate, no halving): "
+                    "0->150 = " + std::to_string(tFast) + " s, 150->300 = " + std::to_string(tSlow) +
+                    " s (" + std::to_string(slowRate) + "/s) -> " +
+                    (rejects ? "REJECTED" : "ACCEPTED (BUG: the gate cannot fail)"));
+        lccheck(rejects, "LC12 negative control: an un-halved slow band FAILS the LC10 probe");
+    }
+
+    x3::logInfo(std::string("[lightning-charge-test] ") + std::to_string(lc_pass) + " passed, " +
+                std::to_string(lc_fail) + " failed");
+    return lc_fail == 0;
 }
 
 } // namespace x3::game

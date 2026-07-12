@@ -189,6 +189,9 @@ public:
     // ---- Cue / death-FX fan-out (footsteps, impacts, gib bursts). Wire after build. ----
     void setCueSink(const GameCueFn& sink);
     void setDeathFxSink(const DeathFxFn& sink);
+    // Lightning battery-cell pickups grant charge through this sink (wire to
+    // Arsenal::grantCharge). Called with the charge amount when a cell is collected.
+    void setChargeSink(std::function<void(int)> sink) { m_chargeSink = std::move(sink); }
 
     // ---- [W9-3 RPG] item sink: pickups deposit into the BACKPACK ------------
     // When wired, a walked-over upper-floor pickup is offered to the sink INSTEAD
@@ -295,6 +298,8 @@ public:
     uint32_t cellGuardCount() const { return m_cellGuards.count(); }
     // Per-girl attacker count (Medical Bay interrupt-rescue enemies).
     uint32_t attackerCount() const { return m_attackers.count(); }
+    // Placed lightning battery-cell count (the self-test asserts >0 + room-tagging).
+    uint32_t batteryCount() const { return (uint32_t)m_batteries.size(); }
 
     // R-5 (PB fold): upper-floor population + pickups (regular enemies on floors
     // 2-7 by themed room name; item props with proximity grab).
@@ -369,6 +374,23 @@ private:
     DeathFxFn  m_deathFx;
     CanonItemSinkFn m_itemSink;   // [W9-3 RPG] backpack deposit (empty = legacy)
     std::string m_modelDir;
+
+    // ---- Lightning battery-cell pickups (floating, spinning, translucent faceted
+    // crystals — the Lab2 crystal language; grant charge to the Lightning Gun). ----
+    struct Battery {
+        x3::phys::Vec3 pos{};
+        uint32_t       entity    = kNoLink;
+        bool           collected = false;
+        float          phase     = 0.0f;   // spin/bob phase offset so they don't sync
+    };
+    std::vector<Battery>     m_batteries;
+    x3::rhi::MeshHandle      m_crystalMesh;      // shared faceted-crystal mesh
+    float                    m_batteryAnimT = 0.0f;
+    std::function<void(int)> m_chargeSink;       // -> Arsenal::grantCharge
+    static constexpr int     kBatteryCharge = 60;  // charge granted per cell
+    // Build one crystal battery pickup at `pos`, room-tagged, into the scene.
+    void addBattery(Scene& scene, x3::rhi::IRenderDevice& device,
+                    const x3::phys::Vec3& pos, uint32_t room);
 
     uint32_t m_pickupRoom    = kNoRoom;
     uint32_t m_bossRoom      = kNoRoom;

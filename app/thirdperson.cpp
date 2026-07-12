@@ -538,6 +538,31 @@ void ThirdPersonView::drawHeldWeapon(x3::rhi::IRenderDevice& device,
     arsenal.drawCurrentAt(device, frame, scaled);
 }
 
+bool ThirdPersonView::heldMuzzleWorld(const Scene& scene, const Arsenal& arsenal,
+                                      x3::phys::Vec3& out) const {
+    // Mirror drawHeldWeapon()'s gates EXACTLY: if the gun is not in Jake's hand this frame,
+    // the 3P muzzle does not exist and the caller must use the FP barrel tip.
+    if (!avatarVisible() || m_handNode < 0) return false;
+    if (!arsenal.viewmodelsLoaded() || !arsenal.currentHasDrawables()) return false;
+    if (m_entity == kNoLink || m_entity >= scene.size()) return false;
+    if (!scene.get(m_entity).visible) return false;
+
+    const std::string& wname = arsenal.current().name;
+    float handWorld[16];
+    if (!handSocketWorld(handWorld, wname)) return false;
+    // Same scale fold as drawHeldWeapon — the barrel tip must ride the SAME matrix the
+    // gun's vertices do, or the fire leaves from beside the model again.
+    const float scaleMul = std::max(0.01f, tpGripFor(wname).scaleMul + m_gripOvScale);
+    const float s = arsenal.currentViewmodelScale() * kTpHeldWeaponScaleMul * scaleMul;
+    const x3::phys::Vec3 m = arsenal.currentMuzzleLocal();
+    const float lx = m.x * s, ly = m.y * s, lz = m.z * s;
+    out = x3::phys::Vec3{
+        handWorld[0] * lx + handWorld[4] * ly + handWorld[8]  * lz + handWorld[12],
+        handWorld[1] * lx + handWorld[5] * ly + handWorld[9]  * lz + handWorld[13],
+        handWorld[2] * lx + handWorld[6] * ly + handWorld[10] * lz + handWorld[14] };
+    return true;
+}
+
 // ===========================================================================
 // Headless self-test (--test-thirdperson). Mechanics only; no window / Vulkan.
 // ===========================================================================

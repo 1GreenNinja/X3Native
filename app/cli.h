@@ -28,7 +28,7 @@ struct CliOptions {
          testStreaming = false, testWorldStream = false, testWorldMap = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false, testWeapons = false, testVehicle = false, testVehParts = false,
+         testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false,
          testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
@@ -176,6 +176,11 @@ struct CliOptions {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+
+    // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
+    // are displays — textured glass on the per-texel emissive path, real ink on a dark
+    // substrate, and a texture-gated neon sign (not a flat lit slab).
+    bool        testPerfshop = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
@@ -239,6 +244,12 @@ struct CliOptions {
     // interactable). Asserts the gates, the hazard, the timeline gate, reachability
     // L11->L12->L13->L14->L15, and trigger-id non-collision. Additive flag.
     bool        testAct2Caves = false;
+    // --test-rifthub (RIFTHUB Stargate portal hub): builds the 8-portal hub on a
+    // HeadlessDevice + Jolt world and asserts portal count (8), trigger ids
+    // 200-207, valid ring/chevron/core/membrane spans, real --world targets,
+    // per-trigger activation + allActivated ordering, and that tick() advances
+    // the chevron/core/membrane emissive while the stone ring stays static.
+    bool        testRifthub = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
@@ -289,6 +300,19 @@ struct CliOptions {
     // interactive windows. No window / Vulkan. Additive — distinct from --test-intro
     // (the LEGACY cold-open phase-machine test).
     bool        testIntroOrch = false;
+    // --test-introcockpit: the intro cockpit's Scene-entity rig (GLB -> PBR +
+    // emissiveTex screens + glass canopy) headless gate. See world_hosts.h.
+    bool        testIntroCockpit = false;
+    bool        testShipInterior = false;
+    bool        testShipWindows  = false;
+    // Space-combat feast fold (14900K lanes): --test-wormhole (crystal-matrix VFX),
+    // --test-wormhole-transit (S3 autopilot jump ride), --test-tractor (intro beam).
+    bool        testBodyContact = false;
+    bool        testWormhole = false;
+    bool        testWormholeTransit = false;
+    bool        testTractor = false;
+    bool        testDescentSlide = false;
+    bool        testWingDressing = false;  // --test-wingdressing (F2-F7 wing recipe pass)
     // --test-introbranch (Phase 4 BRANCH WIRING): the app_run branch-selection
     // contract — intro.outcome flag round-trip, the --intro-force dev override,
     // the per-save seed thread, and the canon default. No window / Vulkan.
@@ -386,6 +410,8 @@ struct CliOptions {
     // spaces. Headless; exits after. (Re-homed from playable-build eab7ff4.)
     bool        upperShot = false;
     std::string upperShotDir = "docs/screenshots/upper_floors";
+    bool        rescueShot = false;                  // F2 three-captive rescue-room closeups
+    std::string rescueShotDir = "captures";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
     // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
     // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and
@@ -583,6 +609,8 @@ struct CliOptions {
     // Prints one line per floor (path + that floor's enemy count). 0 VUID under Debug.
     bool        captureSpire    = false;
     std::string captureSpireDir = "captures/spire";
+    bool        captureWings    = false;   // F2-F7 west-wing dressing proof captures
+    std::string captureWingsDir = "captures";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
     // (walk the hills) instead of the default interior facility. The default is the
     // CANONICAL data-driven facility (canonlevel — the owner's LevelArchitect Floor 1,
@@ -612,6 +640,12 @@ struct CliOptions {
     // GPU particles (glowing via bloom, soft against depth) + a bullet decal on the
     // surface. Off by default — the standard --screenshot gate view is unchanged.
     bool        fxDemo = false;
+    // FX lightning demo (--fx-lightning, implies --fx-demo; with --screenshot). The
+    // --set shot_fire path fires the held weapon ALONG the look axis, so a lightning
+    // bolt is end-on and collapses to a blob at the crosshair — useless for judging the
+    // fork. This fires a Lightning tracer + Lightning impact ACROSS the view instead, so
+    // the jagged forking zigzag actually reads. Capture-only; no gameplay effect.
+    bool        fxLightning = false;
     // Windowed-mode resolution (--width <px> / --height <px>). Defaults to the
     // historical 1280x720 so the dev box + every headless/offscreen path are
     // UNCHANGED. A high-DPI box can pass e.g. --width 2560 --height 1440. These

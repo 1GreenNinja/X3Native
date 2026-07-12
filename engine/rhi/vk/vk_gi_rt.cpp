@@ -457,7 +457,11 @@ void VulkanRenderDevice::recordVelocityPassBody(VkCommandBuffer cmd) {
 bool VulkanRenderDevice::createSsaoTargets() {
         destroySsaoTargets();
         m_ssaoExtent = { std::max(1u, m_extent.width / 2), std::max(1u, m_extent.height / 2) };
-        const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        // TRANSFER_DST: the graph's `ssao-neutral-clear` pass fills the BLUR image with white
+        // (= unoccluded) on frames where the SSAO passes don't run — mesh.frag's set3 binds
+        // m_ssaoBlurView unconditionally, so it must always be readable and sane.
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                                      | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if (!createColorTarget(kSsaoFormat, m_ssaoExtent.width, m_ssaoExtent.height, usage,
                                m_ssaoRawImg, m_ssaoRawAlloc, m_ssaoRawView)) {
             logError("[rhi] ssao raw target create failed"); return false;

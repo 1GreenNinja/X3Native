@@ -33,6 +33,7 @@
 #include "engine/asset/IAssetSource.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -42,6 +43,15 @@ namespace x3::game {
 
 class RoomDressing {
 public:
+    // WAVE (barrels-universal): explodable-barrel registrar. When the host wires this
+    // (canon interactive loop -> BarrelSystem::spawn), the recipe REGISTERS its plain
+    // fuel-drum clutter (boss/storage rooms) as real explodable barrels at (x, floorY, z)
+    // INSTEAD of drawing static, unshootable props. Unset (wing-dressing test / non-combat
+    // callers) -> the old static prop is drawn, byte-for-byte. The emissive lab-vat "drums"
+    // (specimen/cryo/growth tanks) are NOT routed here — they stay decorative set-dressing.
+    using ExplodableBarrelSink = std::function<void(float x, float floorY, float z)>;
+    void setExplodableBarrelSink(ExplodableBarrelSink sink) { m_barrelSink = std::move(sink); }
+
     // Build recipes for every classifiable room on the floor (skips jakeCell, the
     // deep Cave/Hidden Sub-Level rooms, and rooms no recipe matches). Returns true
     // if at least one room was dressed. surfaceLibDir = <assets>/surface_library;
@@ -86,6 +96,26 @@ public:
 
     uint32_t roomsDressed() const { return m_roomsDressed; }
 
+    // F2 rescue-wing capture proof (--test-wingdressing W5): how many rescue beds +
+    // restrained captives the "Rescue Room" recipe branch actually placed (3 expected —
+    // Aria / Keisha / Emily). captivesPlaced counts a real loaded character GLB on a bed.
+    uint32_t rescueBeds()     const { return m_rescueBeds; }
+    uint32_t captivesPlaced() const { return m_rescueCaptives; }
+
+    // BLACK-PROP FIX (wing floors). The F2-F7 tower props are converted kit furniture
+    // (crates/beds/vats/chairs) whose GLBs bake metallic=1 over a mid-tone kit albedo
+    // texture. In the windowless tower — no bright IBL env to reflect — a full metal
+    // has no diffuse lobe and its albedo (kit texture × the recipe's sub-1.0 tint) is
+    // far too dark to reflect anything, so the props render as flat BLACK silhouettes
+    // (the two-pass LD review's #1 note). When this lift is enabled the draw path treats
+    // those props as MATTE surfaces of their authored recipe tint (drops the dark kit
+    // albedo texture so the deliberately-chosen tint IS the base color) and clamps the
+    // metalness so a diffuse lobe returns — the props then read with form + tint under
+    // the room/pendant/flashlight lighting in BOTH gameplay and the capture rig. The
+    // normal map is kept so surface relief survives. OFF by default: the canon/detention
+    // dressing (bright cell lights, reads fine today) stays byte-for-byte unchanged.
+    void setPropMaterialLift(bool on) { m_propMatLift = on; }
+
 private:
     struct Panel {                    // one textured surface panel, prebuilt
         uint32_t room = kNoRoom;
@@ -99,6 +129,10 @@ private:
         float    transform[16] = {};
         float    emissive[4] = { 0, 0, 0, 0 };  // [3] SCALES material emissive (R5 law)
         float    tint[4]     = { 1, 1, 1, 1 };
+        // F2 rescue captives: keep the model's authored PBR textures even when the
+        // wing-floor BLACK-PROP material-lift is on (the kit-furniture lift would strip
+        // a hero character's skin/clothes to a flat matte tint). True = never lift.
+        bool     keepTex = false;
     };
     struct ProcDraw {                 // guide strips + contact-shadow discs
         uint32_t room = kNoRoom;
@@ -107,6 +141,10 @@ private:
         float color[4]    = { 1, 1, 1, 1 };
         float emissive[4] = { 0, 0, 0, 0 };
         float transform[16] = {};
+        // DARK-GLASS SCREEN: when set, this quad draws via the PBR emissive-map path
+        // (near-black `color` albedo + this baked texture as the emissiveTex), so bright
+        // texels glow and dark texels stay black — the dark-glass rounded monitor read.
+        x3::rhi::TextureHandle tex{};
     };
     struct Asset {                    // one loaded kit GLB (cached)
         x3::asset::Model model;
@@ -136,7 +174,11 @@ private:
     // quad mesh dedupe: key = quantized (w,h,tile)
     std::vector<std::pair<uint64_t, x3::rhi::MeshHandle>> m_quadCache;
     uint32_t m_roomsDressed = 0;
+    uint32_t m_rescueBeds     = 0;   // F2 rescue-room beds placed (Aria/Keisha/Emily)
+    uint32_t m_rescueCaptives = 0;   // F2 rescue-room captives placed (loaded character GLB)
     int      m_lastZone     = -1;
+    bool     m_propMatLift  = false;  // BLACK-PROP FIX: matte-tint the kit props (wing floors only)
+    ExplodableBarrelSink m_barrelSink;   // WAVE (barrels-universal): register clutter drums as explodable
 };
 
 // The union of surface-library set names the zone recipes reference (deduped).

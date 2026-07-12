@@ -94,7 +94,7 @@ layout(location = 9)  flat in uint vMrTexIndex;       // (unused by glass)
 layout(location = 10) flat in uint vEmissiveTexIndex; // (unused by glass)
 layout(location = 11) flat in uint vDetailPacked;     // (unused by glass)
 layout(location = 12) flat in vec4 vGlassParams;  // x = refraction, y = roughness, z = specular
-layout(location = 13) flat in vec4 vGlassTint;    // rgb = tint
+layout(location = 13) flat in vec4 vGlassTint;    // rgb = tint, a = emissiveMap (0 flat .. 1 texel-modulated)
 
 layout(location = 0) out vec4 outColor;
 
@@ -310,7 +310,15 @@ void main() {
     // glow / a glint isn't hidden by a low opacity), which keeps the holo-terminal's
     // emissive sweep + glints bright while still letting the glass read as see-through.
     vec3 litDiffuse = body * lighting;
-    vec3 additive   = vEmissive.rgb * vEmissive.a + specOut;   // glow + shimmer (feeds bloom)
+    // EMISSIVE MAP (GlassMaterial::emissiveMap -> vGlassTint.a). At 0 (every legacy
+    // pane) the glow is FLAT across the surface — byte-identical to before. At 1 it is
+    // modulated by the bound base-color TEXEL, so a DISPLAY glass (the holo terminal)
+    // glows exactly where its readout is bright and its BLACK substrate stays BLACK.
+    // Without this the only way to make a glass screen glow is to flood the whole pane
+    // with a flat colour — which is precisely how the holo screens became featureless
+    // blue slabs. (Glass-pass twin of the opaque PBR route's emissiveTex.)
+    vec3 emisMask   = mix(vec3(1.0), texel, clamp(vGlassTint.a, 0.0, 1.0));
+    vec3 additive   = vEmissive.rgb * vEmissive.a * emisMask + specOut;   // glow + shimmer (feeds bloom)
 
     float opacity = clamp(vFactor.a, 0.0, 1.0);
 

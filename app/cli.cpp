@@ -126,6 +126,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-act2") o.testAct2 = true;
         else if (a == "--test-act2desert") o.testAct2Desert = true;
         else if (a == "--test-act2caves") o.testAct2Caves = true;
+        else if (a == "--test-rifthub") o.testRifthub = true;
         else if (a == "--test-tod") o.testTod = true;
         else if (a == "--test-weather") o.testWeather = true;
         else if (a == "--test-worldregions") o.testWorldRegions = true;
@@ -163,6 +164,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-nav") o.testNav = true;
         else if (a == "--test-script") o.testScript = true;
         else if (a == "--test-weapons") o.testWeapons = true;
+        else if (a == "--test-lightning-charge") o.testLightningCharge = true;
         else if (a == "--test-vehicle") o.testVehicle = true;
         else if (a == "--test-canonvehicle") o.testCanonVehicle = true;
         else if (a == "--shot-drive") o.shotDrive = true;
@@ -212,6 +214,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-valley") o.testValley = true;
         else if (a == "--test-cliffs") o.testCliffs = true;
         else if (a == "--test-club") o.testClub = true;
+        else if (a == "--test-perfshop") o.testPerfshop = true;
         else if (a == "--test-space") o.testSpace = true;
         else if (a == "--test-eva") o.testEva = true;
         else if (a == "--test-ship-ai") o.testShipAi = true;
@@ -270,7 +273,18 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
+            // BUGFIX: the guard used to be a bare `argv[i+1][0] != '-'`, which rejected
+            // every NEGATIVE camera position — you could not frame a shot anywhere at
+            // -X/-Y/-Z (the whole rift chamber, half the tower, most of the planet), and
+            // the flag silently fell back to the hero camera instead of saying so. A
+            // leading '-' followed by a digit or '.' is a NUMBER, not a flag.
+            // (Both integration lines hit this independently — the fold found it via the
+            // bodycontact host's rigid-side cam. Same fix, kept as the shared lambda.)
+            auto isNumArg = [](const char* s) {
+                return s[0] != '-' ||
+                       (s[1] >= '0' && s[1] <= '9') || s[1] == '.';
+            };
+            if (i + 1 < argc && isNumArg(argv[i + 1])) {
                 const char* s = argv[++i];
                 int n = 0; char* end = nullptr;
                 while (n < 5 && *s) {
@@ -288,6 +302,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.uiDemoScreen = argv[++i];
         }
         else if (a == "--fx-demo") o.fxDemo = true;
+        else if (a == "--fx-lightning") { o.fxDemo = true; o.fxLightning = true; }
         else if (a == "--screenshot-sky") {
             o.skyShot = true;
             // Optional output path arg (next token, if it isn't another flag).
@@ -304,6 +319,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--screenshot-upperfloors") {   // R-5: floors 2-7 content proof
             o.upperShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.upperShotDir = argv[++i];
+        }
+        else if (a == "--screenshot-rescuerooms") {    // F2 three-captive rescue-room closeups
+            o.rescueShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.rescueShotDir = argv[++i];
         }
         else if (a == "--screenshot-showroom-fp") {
             // Headless first-person proof of the walkable --world showroom. Forces the
@@ -441,6 +460,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureSpireDir = argv[++i];
         }
+        else if (a == "--capture-wings") {
+            o.captureWings = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWingsDir = argv[++i];
+        }
         else if (a == "--list-clips") {
             o.listClips = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.listClipsPath = argv[++i];
@@ -451,6 +474,15 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--test-intro") o.testIntro = true;
         else if (a == "--test-introorch") o.testIntroOrch = true;
+        else if (a == "--test-introcockpit") o.testIntroCockpit = true;
+        else if (a == "--test-shipinterior") o.testShipInterior = true;
+        else if (a == "--test-shipwindows") o.testShipWindows = true;
+        else if (a == "--test-bodycontact") o.testBodyContact = true;
+        else if (a == "--test-wormhole") o.testWormhole = true;
+        else if (a == "--test-wormhole-transit") o.testWormholeTransit = true;
+        else if (a == "--test-tractor") o.testTractor = true;
+        else if (a == "--test-descentslide") o.testDescentSlide = true;
+        else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
         else if (a == "--intro-force") {

@@ -95,9 +95,16 @@ int hostClub(HostContext& hc) {
             // into readable knots before the capture.
             const int kSettle = ddgiForce ? 120 : (crowdShot ? 150 : 24);
             const float dt = 1.0f / 60.0f;
+            // Fallback (headless with no --screenshot, i.e. `--smoketest --world club`):
+            // a loose scratch grab in the REPO ROOT, which .gitignore already covers.
+            // It used to be an absolute "C:/GameDev/X3Native-engine/..." — a path from
+            // before the move to D:, so the write always failed, the host reported
+            // "capture FAILED", and `--smoketest --world club` exited 1 on a perfectly
+            // healthy club. The smoketest gate could not pass. (Pre-existing; found
+            // while running the gates for the OLED pass.)
             const std::string outPath = crowdShot   ? crowdShotPath
                                       : screenshot  ? screenshotPath
-                                                    : std::string("C:/GameDev/X3Native-engine/agent_club.png");
+                                                    : std::string("agent_club.png");
             // X3_CLUB_SEQ=N: after the settle, capture N CONSECUTIVE frames as
             // <out>_0000.png.. for a motion clip (dancers, beat thump, orb spin) —
             // assembled offline into a GIF/MP4. 0/unset = the single still as before.

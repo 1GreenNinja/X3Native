@@ -61,6 +61,11 @@ constexpr float kVmDefFwd      = 1.0f;   // forward along look dir (meters) (Tim
 constexpr float kVmDefRight    = 0.25f;  // to the right (meters) (Tim-tuned; more-right pass)
 constexpr float kVmDefDown     = 0.35f;  // below the eye line (meters) (Tim-tuned)
 
+// Global "hold it up bigger" multiplier folded onto every weapon's vmScale when the
+// FP viewmodel is composed (Tim: 2x is CORRECT, keep it). Public because the MUZZLE
+// solve must use the SAME scale the gun is DRAWN at — see WeaponDef::vmMuzzle.
+constexpr float kVmScaleBoost  = 2.0f;
+
 // Pure arming rule, factored out so it is testable headlessly (see
 // runPickupSelfTest). Given the player position, the pickup position and the
 // current armed flag, returns true iff the player should become armed THIS call
@@ -224,6 +229,41 @@ struct WeaponDef {
     bool        beam           = false; // true: continuous instant beam (lightning)
     int         chainTargets   = 0;     // extra chain rays beyond the primary (0=single)
     float       falloffStart   = 0.0f;  // m at which damage begins falling off (0=none)
+    // ---- CHARGE weapon (Lightning Gun redesign — Tim spec) ------------------
+    // A charge weapon has NO magazine and NO reload. Holding fire drains a
+    // continuous CHARGE pool at chargeDrainPerSec (units/second) while the beam is
+    // held; it can fire as long as charge > 0 (IDKFA bypasses the drain entirely).
+    // Battery pickups add charge, STACKING past chargeMax up to chargeCap. When
+    // usesCharge is true the magSize/reserveAmmo/reloadTime fields are ignored for
+    // this weapon (canFire/fire/reload/tick special-case it). Default off, so every
+    // existing ammo weapon is byte-identical.
+    bool        usesCharge        = false; // true: charge pool instead of mag/reload
+    float       chargeMax         = 100.0f; // base full charge (Tim: "100 base charge")
+    float       chargeCap         = 300.0f; // hard ceiling for battery stacking
+    float       chargeDrainPerSec = 10.0f;  // continuous drain while the beam is held
+    // ---- PASSIVE REGEN (Tim: "lets let the lightning recharge when not in use",
+    //                         "regen all the way, but half speed over 150") ---------
+    // After chargeRegenDelay seconds of NOT firing, the pool refills passively —
+    // ALL THE WAY TO THE CAP (chargeRegenTo defaults to chargeCap = 300), but on a
+    // TWO-SPEED curve:
+    //   * below chargeRegenSlowAbove (150): the FULL rate  (1.667/s -> base 100
+    //     refills from empty in ~60 s), so you are fighting again quickly.
+    //   * at/above chargeRegenSlowAbove: HALF rate (chargeRegenSlowMult = 0.5), a
+    //     long slow crawl to top off the reserve.
+    // 0 -> 300 therefore costs ~90 s (fast half) + ~180 s (slow half) = ~270 s.
+    //
+    // WHY THE CRYSTAL BATTERY CELLS STILL MATTER: they let you SKIP the slow crawl.
+    // Cells are the FAST way to a stocked gun, not the only way. (A flat regen to
+    // the cap at full speed WOULD have made the cells pointless — hence the halving.)
+    //
+    // Regen HARD-STOPS at chargeRegenTo — it never overshoots, and it never DRAINS a
+    // pool that is already above it. chargeRegenPerSec <= 0 disables regen entirely
+    // (the default), so every non-charge weapon is byte-identical.
+    float       chargeRegenPerSec  = 0.0f;   // charge/second (fast band) once the delay elapses
+    float       chargeRegenDelay   = 0.0f;   // s after firing STOPS before regen begins
+    float       chargeRegenTo      = 0.0f;   // regen ceiling; <= 0 -> chargeCap (the 300 cap)
+    float       chargeRegenSlowAbove = 0.0f; // charge at/above which regen halves (0 = no slow band)
+    float       chargeRegenSlowMult  = 0.5f; // rate multiplier in the slow band
     // Viewmodel: the GLB filename (in the rigged-GLB dir) + the convention-correct
     // viewmodel pose offsets (degrees / meters about the camera basis — same basis
     // the existing pistol viewmodel uses; see WeaponSystem::drawViewmodel + §3 of
@@ -236,6 +276,28 @@ struct WeaponDef {
     float       vmRight      = kVmDefRight;
     float       vmDown       = kVmDefDown;
     float       vmScale      = 0.18f;   // model scale for the held viewmodel
+    // ---- THE MUZZLE (barrel tip) — Tim 2026-07-11: "the fire doesn't come from the barrel"
+    // The FX origin USED TO be a camera-relative guess (muzzleFromCamera: eye + fwd 1.3 /
+    // right 0.26 / down 0.30), which has NO IDEA where this weapon's barrel actually is —
+    // so flashes/tracers/bolts spawned in MID-AIR beside the gun, and every weapon (they are
+    // all different lengths!) was wrong by a different amount.
+    //
+    // vmMuzzle is the barrel tip expressed in the viewmodel GLB's SCENE space (i.e. AFTER the
+    // glTF node transform, BEFORE vmScale) — the exact space the FP viewmodel world matrix
+    // maps from (drawCurrentViewmodel: model = composeTRS(bx,by,bz, vmScale * kVmScaleBoost,
+    // pos), each drawable drawn as model * nodeTransform). So:
+    //     muzzleWorld = pos + (bx*mx + by*my + bz*mz) * (vmScale * kVmScaleBoost)
+    // which tracks the gun EXACTLY — its pose, its per-weapon vm* offsets and its scale.
+    // (No weapon GLB ships a muzzle/barrel socket node — they are single "model" /
+    // "model_LOD*" nodes — so these are MEASURED per GLB by tools/weapon_muzzle_probe.py:
+    // the centroid of the +Z front slice of the geometry, +Z being the down-barrel axis the
+    // viewmodel basis maps onto camera-forward via the 193 deg vmYaw flip.)
+    x3::phys::Vec3 vmMuzzle{ 0.0f, 0.65f, 0.86f };   // GLB scene-space barrel tip
+    // NOTE: the fold's `vmLitPBR` flag is deliberately NOT carried over. It selected a
+    // flat dark-gunmetal factor INSTEAD of the weapon's baked texture — a workaround for
+    // the over-unity kVmBright, which the 1/PI engine fix (5c35d65) made unnecessary. The
+    // fold's own weapon.cpp had already deleted the branch that read it, leaving a dead
+    // field. The textured path at kVmBright = 1.0 is the single source of truth.
     // FX preset hints (string keys the host maps onto CombatFx muzzle/impact). Kept
     // as data so designers can retune which preset a weapon uses; the host reads them.
     // The host maps these onto a WeaponFxKind (see app/fx.h fxKindFromId) so each gun
@@ -353,6 +415,16 @@ public:
         // fireRate), 1 = fully spun up (full fireRate). Climbs while firing, decays
         // when idle. Stays 0/unused for weapons with spinUpTime <= 0.
         float spinUp      = 0.0f;
+        // CHARGE weapons only (usesCharge): current charge in [0, chargeCap]. Seeded
+        // to chargeMax at construction, drained continuously while the beam is held,
+        // refilled (stacking past chargeMax to chargeCap) by battery pickups. Unused
+        // (stays 0) for ammo weapons.
+        float charge      = 0.0f;
+        // CHARGE weapons only: seconds still to wait before PASSIVE REGEN may begin.
+        // Reset to chargeRegenDelay on every firing frame (held beam or fire()), so a
+        // burst never free-refills mid-fight — you must let it cool. Counts down while
+        // idle; regen runs only once it reaches 0.
+        float regenDelay  = 0.0f;
     };
 
     // Construct with a roster (defaults to makeDefaultRoster()). Each weapon starts
@@ -416,6 +488,32 @@ public:
     int addReserve(int index, int rounds);
     int addReserveCurrent(int rounds) { return addReserve(m_sel, rounds); }
 
+    // ---- CHARGE weapon (Lightning Gun) --------------------------------------
+    // Host sets this each frame: true while the fire button is HELD for the current
+    // (charge) weapon. tick() bleeds the current charge weapon's charge at its
+    // chargeDrainPerSec while held (IDKFA bypasses). No-op for ammo weapons.
+    void setBeamHeld(bool b) { m_beamHeld = b; }
+    // Battery pickup grant: add `amount` charge to the (first) charge weapon,
+    // stacking past chargeMax up to chargeCap. Returns the amount actually added
+    // (0 if there is no charge weapon or it's already capped).
+    float grantCharge(float amount);
+    // Index of the first usesCharge weapon (-1 if none) — for battery-pickup wiring
+    // + the HUD charge readout.
+    int   chargeWeaponIndex() const;
+
+    // ---- PASSIVE REGEN readout (HUD; must not lie) ---------------------------
+    // Is the CURRENT weapon's charge pool passively regenerating RIGHT NOW? True iff
+    // it is a charge weapon with regen configured, the post-fire delay has fully
+    // elapsed, and the pool is still below its regen ceiling. False while the beam is
+    // held, during the cool-down delay, and once the ceiling is reached.
+    bool  chargeRegenerating() const;
+    // Seconds still to wait before regen begins (0 once it is running / N/A).
+    float chargeRegenWait() const;
+    // True iff the current charge weapon is in the SLOW (half-rate) regen band —
+    // i.e. its charge is at/above chargeRegenSlowAbove. Lets the HUD show the crawl
+    // honestly instead of implying one uniform refill speed.
+    bool  chargeRegenSlow() const;
+
     // Advance the per-weapon timers by dt: decay the current weapon's fire cooldown
     // and, if reloading, the reload timer (completing the reload — moving rounds
     // from reserve into the mag — when it hits 0). Other weapons' cooldowns are also
@@ -440,6 +538,38 @@ public:
                               float extraRight = 0.0f, float extraDown = 0.0f) const;
 
     bool viewmodelsLoaded() const { return !m_views.empty(); }
+
+    // ---- THE MUZZLE -----------------------------------------------------------
+    // The composed FP viewmodel frame: the world basis (bx,by,bz), the origin `pos` and
+    // the total scale the gun is DRAWN at. Identical math to (and shared with)
+    // drawCurrentViewmodel, so anything solved in this frame lands ON the gun.
+    struct VmFrame {
+        x3::phys::Vec3 bx{1,0,0}, by{0,1,0}, bz{0,0,1};
+        x3::phys::Vec3 pos{};
+        float          scale = 1.0f;   // vmScale * kVmScaleBoost
+    };
+    VmFrame currentViewmodelFrame(float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+                                  float extraYawOff = 0.0f, float extraPitchOff = 0.0f,
+                                  float extraRollOff = 0.0f, float extraFwd = 0.0f,
+                                  float extraRight = 0.0f, float extraDown = 0.0f) const;
+
+    // The CURRENT weapon's barrel tip IN THE WORLD — the ONE true origin for the muzzle
+    // flash, the tracer, the projectile spawn and the 3D fire audio. Same args as
+    // drawCurrentViewmodel (pass the host's live vm_* cvar DELTAS so the muzzle follows a
+    // console-nudged gun too).
+    x3::phys::Vec3 currentMuzzle(float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+                                 float extraYawOff = 0.0f, float extraPitchOff = 0.0f,
+                                 float extraRollOff = 0.0f, float extraFwd = 0.0f,
+                                 float extraRight = 0.0f, float extraDown = 0.0f) const;
+
+    // The current weapon's barrel tip in the viewmodel GLB's SCENE space (pre-scale). The
+    // THIRD-PERSON path needs this: it already builds its own hand-socket world matrix
+    // (ThirdPersonView::drawHeldWeapon) and just has to transform this point by it, so the
+    // fire leaves the barrel in 3P too.
+    x3::phys::Vec3 currentMuzzleLocal() const {
+        return (m_sel >= 0 && m_sel < (int)m_defs.size()) ? m_defs[(size_t)m_sel].vmMuzzle
+                                                          : x3::phys::Vec3{ 0.0f, 0.65f, 0.86f };
+    }
 
     // ---- Third-person HELD-weapon render (socket to the avatar's hand bone) --
     // Draw the CURRENT weapon's loaded viewmodel meshes at an arbitrary world
@@ -475,6 +605,7 @@ private:
     std::vector<WeaponState> m_state;
     int                      m_sel = 0;
     bool                     m_infiniteAmmo = false;   // IDKFA infinite-ammo flag
+    bool                     m_beamHeld     = false;   // CHARGE weapon: fire held this frame
 
     // One loaded viewmodel per roster slot (drawables + scale). `fallbackIndex` is
     // the slot it actually draws (its own load, or the pistol fallback).
@@ -510,5 +641,12 @@ private:
 // splash bolt, Lightning Gun chaining beam, and the ladder power ordering.
 // Logs PASS/FAIL W#, returns true iff all pass.
 bool runWeaponsSelfTest();
+
+// Headless self-test (--test-lightning-charge). Exercises the Lightning Gun CHARGE
+// model with NO window/Vulkan: base charge seeded to chargeMax, continuous drain
+// math (~chargeDrainPerSec while beam held), IDKFA never depletes, battery grant
+// stacks past chargeMax to chargeCap, and canFire gates on charge (no mag/reload).
+// Logs PASS/FAIL LC#, returns true iff all pass.
+bool runLightningChargeSelfTest();
 
 } // namespace x3::game

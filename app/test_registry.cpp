@@ -31,6 +31,7 @@
 #include "skilltree.h"          // W9-3 RPG: runSkillTreeSelfTest
 #include "engine/physics/StructuralCollapse.h"
 #include "engine/physics/Ragdoll.h"
+#include "engine/physics/BodyContact.h"   // x3::phys::runBodyContactSelfTest (--test-bodycontact)
 #include "engine/physics/IVehicle.h"
 #include "engine/audio/IAudioSystem.h"
 #include "engine/audio/RtAcoustics.h"
@@ -85,6 +86,7 @@
 #include "act2_world.h"
 #include "act2_desert.h"
 #include "act2_caves.h"
+#include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
 #include "tod.h"
 #include "weather.h"
 #include "world_regions.h"
@@ -94,6 +96,7 @@
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
+#include "perfshop.h"
 #include "valley.h"
 #include "cliffs.h"
 #include "ui.h"
@@ -106,6 +109,13 @@
 #include "alert.h"
 #include "space_pilot.h"          // x3::game::runSpaceSelfTest (--test-space)
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
+#include "space/ship_interior.h"  // x3::space::runShipInteriorSelfTest (--test-shipinterior, S5 fold)
+#include "space/ship_windows.h"   // x3::space::runShipWindowsSelfTest (--test-shipwindows, S6 fold)
+#include "space/wormhole_vfx.h"      // x3::space::runWormholeSelfTest (--test-wormhole, feast fold)
+#include "space/wormhole_transit.h"  // x3::space::runWormholeTransitSelfTest (--test-wormhole-transit)
+#include "space/tractor_beam.h"      // x3::space::runTractorSelfTest (--test-tractor, feast fold)
+#include "wing_dressing.h"        // x3::game::runWingDressingSelfTest (--test-wingdressing)
+#include "descent_slide.h"        // x3::game::runDescentSlideSelfTest (--test-descentslide, Wave 2C)
 #include "space/targeting.h"      // x3::space::TargetingSystem (--test-targeting)
 #include "space/ship_damage.h"    // x3::space::runShipDamageSelfTest (--test-ship-damage)
 #include "space/eva.h"            // x3::space::runEvaSelfTest (--test-eva)
@@ -334,6 +344,54 @@ int dispatchTests(const TestFlags& tf) {
                     "write + input-cleared/deterministic headless interactive windows)...");
         return x3::intro::runIntroOrchestratorSelfTest() ? 0 : 1;
     }
+    if (tf.testIntroCockpit) {
+        x3::logInfo("running INTRO COCKPIT self-test (fighter_cockpit.glb -> Scene entities: "
+                    "PBR route + emissiveTex content screens + transparent canopy glass, headless)...");
+        return x3::apphost::runIntroCockpitSelfTest() ? 0 : 1;
+    }
+    if (tf.testShipInterior) {
+        x3::logInfo("running S5 SHIP-INTERIOR self-test (walkable small-cockpit hull: "
+                    "manifest windows + spawn + collide walls, headless)...");
+        return x3::space::runShipInteriorSelfTest() ? 0 : 1;
+    }
+    if (tf.testWingDressing) {
+        x3::logInfo("running FLOORS 2-7 WING-DRESSING self-test (synthetic wing floor: "
+                    "every west-wing room classifies + dresses, no ZNone holes, headless)...");
+        return x3::game::runWingDressingSelfTest() ? 0 : 1;
+    }
+    if (tf.testDescentSlide) {
+        x3::logInfo("running Wave-2C DESCENT-SLIDE self-test (coaster-grade track spec: drop/"
+                    "monotonic/winding/first-drop/overbank/airtime/choppers/windows + bounded "
+                    "rider sim with unweight + crest tension, headless)...");
+        return x3::game::runDescentSlideSelfTest() ? 0 : 1;
+    }
+    if (tf.testShipWindows) {
+        x3::logInfo("running S6 SHIP-WINDOWS self-test (true-portal moving space: star/nebula "
+                    "UV pan + per-window light-bleed against the interior manifest, headless)...");
+        return x3::space::runShipWindowsSelfTest() ? 0 : 1;
+    }
+    if (tf.testBodyContact) {
+        x3::logInfo("running BODY-CONTACT self-test (bone-surface solver: rigid rest + "
+                    "soft settle + mattress indent bake + finite extents + determinism)...");
+        return x3::phys::runBodyContactSelfTest() ? 0 : 1;
+    }
+    if (tf.testWormhole) {
+        x3::logInfo("running Salvari crystal-matrix wormhole (WormholeVfx) self-test "
+                    "(feast fold: init/render/shutdown + Tuning clamp + faceted bake, headless)...");
+        return x3::space::runWormholeSelfTest() ? 0 : 1;
+    }
+    if (tf.testWormholeTransit) {
+        x3::logInfo("running S3 WORMHOLE-TRANSIT self-test (feast fold: SpaceLayer spine "
+                    "requestWormhole -> WormholeTransit -> DeepSpace, monotonic progress ramp, "
+                    "re-arm, headless)...");
+        return x3::space::runWormholeTransitSelfTest() ? 0 : 1;
+    }
+    if (tf.testTractor) {
+        x3::logInfo("running capital-ship TRACTOR-BEAM (TractorBeam) self-test "
+                    "(feast fold: init/render/shutdown + intensity ramp/clamp + degenerate "
+                    "skip + energy bake, headless)...");
+        return x3::space::runTractorSelfTest() ? 0 : 1;
+    }
     if (tf.testIntroBranch) {
         x3::logInfo("running Phase 4 INTRO BRANCH-WIRING self-test (intro.outcome flag "
                     "round-trip + --intro-force dev override + per-save seed thread + "
@@ -539,6 +597,12 @@ int dispatchTests(const TestFlags& tf) {
                     "self-test...");
         return x3::game::runAct2CavesSelfTest() ? 0 : 1;
     }
+    if (tf.testRifthub) {
+        x3::logInfo("running RIFTHUB Stargate portal-hub (8 grey-stone torus gates + "
+                    "amber chevrons + event-horizon membrane + blue core; trigger ids "
+                    "200-207; tick-driven chevron/core/ripple animation) self-test...");
+        return x3::game::runRifthubSelfTest() ? 0 : 1;
+    }
     if (tf.testWorldRegions) {
         x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "
                     "4 mountain ranges) self-test...");
@@ -695,6 +759,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testWeapons) {
         x3::logInfo("running data-driven weapon arsenal (switch/fire/reload/spread) self-test...");
         return x3::game::runWeaponsSelfTest() ? 0 : 1;
+    }
+    if (tf.testLightningCharge) {
+        x3::logInfo("running lightning-gun CHARGE model self-test...");
+        return x3::game::runLightningChargeSelfTest() ? 0 : 1;
     }
     if (tf.testScript) {
         x3::logInfo("running D14 Lua script-system self-test "
@@ -861,6 +929,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
+    }
+    if (tf.testPerfshop) {
+        x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "
+                    "(build headless; assert the terminal glass + neon sign are DISPLAYS: "
+                    "per-texel emissive, ink on a dark substrate, texture-gated tubes)...");
+        return x3::game::runPerfShopSelfTest() ? 0 : 1;
     }
     // ---- Space-combat stack (folded from feat/cockpit-vattalus) -----------
     if (tf.testSpace) {

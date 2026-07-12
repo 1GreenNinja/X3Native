@@ -23,11 +23,19 @@ add_executable(X3Engine WIN32
     world_hosts/host_streamed.cpp
     # Phase 2 — space-combat stack folded from feat/cockpit-vattalus
     world_hosts/host_space.cpp
+    world_hosts/host_introcockpit.cpp
     world_hosts/host_strata.cpp
     world_hosts/host_elevator.cpp
     # Phase 7 — ESCAPED-branch Act-1 surface-landing start (--world surface)
     world_hosts/host_surface_start.cpp
-    # Echotropolis F1 P1 — orbit camera over the open sea (--world echotropolis)
+    world_hosts/host_rifthub.cpp
+    rifthub.cpp
+    rift_depths.cpp
+    rift_console.cpp
+    # W-MENU — the ONE destination registry + the world/place selection menu
+    destinations.cpp
+    world_menu.cpp
+    # Echotropolis / Echo Harbor — island + city + day-night (--world echotropolis)
     world_hosts/host_echotropolis.cpp
     space_pilot.cpp
     space/ship_ai.cpp
@@ -54,7 +62,21 @@ add_executable(X3Engine WIN32
     ragdoll.cpp
     barrels.cpp
     glass_test.cpp
+    holo_panel.cpp
     holo_terminal.cpp
+    holo_panel.cpp
+    sky_stars.cpp
+    space/ship_interior.cpp
+    space/ship_windows.cpp
+    space/ship_interior_art.cpp
+    space/wormhole_vfx.cpp
+    space/wormhole_transit.cpp
+    space/tractor_beam.cpp
+    descent_slide.cpp
+    world_hosts/host_descentslide.cpp
+    world_hosts/host_shipwindows.cpp
+    world_hosts/host_bodycontact.cpp
+    world_hosts/host_wormhole.cpp
     secret_room.cpp
     ecs_render.cpp
     editor/editor.cpp
@@ -82,6 +104,7 @@ add_executable(X3Engine WIN32
     canon_45.cpp
     cell_dressing.cpp
     room_dressing.cpp
+    wing_dressing.cpp
     # SEAM 2 (world merge): the glass facility exterior, factored from
     # host_surface_start and wrapped around the REAL canon tower.
     facility_exterior.cpp

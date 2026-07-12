@@ -23,6 +23,8 @@
 #include <GLFW/glfw3.h>
 
 #include "intro_orchestrator.h"
+#include "intro_cockpit_rig.h"
+#include "fx.h"
 
 #include "engine/core/x3_log.h"
 #include "engine/rhi/IRenderDevice.h"
@@ -224,7 +226,8 @@ void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
 // to the live combat stack; headless it advances deterministically (fixed-dt sim,
 // synthetic player aim) so the metrics are reproducible without a GPU.
 void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
-                        SkillMetrics& m) {
+                        SkillMetrics& m,
+                        x3::apphost::IntroCockpitRig* cockpit = nullptr) {
     x3::logInfo("[intro] beat '" + beat.id + "' (interactive: " +
                 std::to_string(beat.enemyCount) + " enemies, " +
                 std::to_string(beat.timeoutSec) + " s timeout)");
@@ -235,7 +238,22 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     if (!phys->init()) { x3::logError("[intro] physics init failed"); return; }
 
     x3::game::SpacePilotController pilot;
-    pilot.spawn(*phys, 0.0f, 0.0f, 0.0f);
+    // FIGHTER tuning (owner playtest: "sleek — the ship should DART around").
+    // The stock cinematic-arcade defaults read sluggish from inside the cockpit;
+    // a fighter wants violent thrust + hard strafe so dodging feels like flying.
+    x3::game::SpacePilotController::Tuning tun{};
+    tun.maxLinearAccel = 70.0f;   // was 25 — throws you back in the seat
+    tun.maxStrafeAccel = 38.0f;   // was 12 — real dodge authority (A/D + Space/Ctrl)
+    tun.boostMul       = 3.0f;    // shift = afterburner
+    tun.maxSpeed       = 260.0f;
+    tun.noseFollow     = 2.8f;    // arcade steering: the ship GOES where the nose
+                                  // points (Newtonian drift read as "axes wrong")
+    // FIRST person: the beats render from inside the cockpit rig. The default
+    // 3P chase cam swings on a 12 m arm rotated by the ship's FULL quaternion
+    // (roll included) while setCamera() is roll-less Euler — the mismatch reads
+    // as "mouse is off axis" (owner playtest). 1P puts the eye at the ship.
+    tun.defaultThirdPerson = false;
+    pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
 
     x3::space::EnemyShipManager enemies;
     enemies.init((uint32_t)std::max(0, beat.enemyCount));
@@ -262,6 +280,29 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     const bool live = (hc.window != nullptr && hc.device != nullptr);
 
+    // Combat FX (tracers, muzzle flashes, crosshair) — live only. Heap-allocated:
+    // CombatFx carries ~256 KB of scratch (the host_space convention).
+    std::unique_ptr<x3::game::CombatFx> fxPtr;
+    const bool fxOn = live && cockpit != nullptr;
+    if (fxOn) { fxPtr = std::make_unique<x3::game::CombatFx>(); fxPtr->init(*hc.device); }
+    float beatT = 0.0f;
+
+    // Captured-cursor mouse-look for the live window (host_space pattern). The
+    // cursor is restored to NORMAL on every exit path below (the cinematic beats
+    // + the cutscene player expect a visible cursor).
+    double lastMX = 0.0, lastMY = 0.0;
+    if (live) {
+        glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        glfwGetCursorPos(hc.window, &lastMX, &lastMY);
+    }
+    // Re-apply the deep-space look EVERY beat: the one-time set at intro start
+    // was getting undone before the first interactive window (live evidence:
+    // the canopy background was the raw 0.04/0.05/0.08 HDR clear — the sky
+    // pass was OFF, no starfield). Something on the cinematic-beat path resets
+    // sky state; per-beat reapply defeats it and is idempotent (setSkyParams
+    // only flags an IBL rebake when the params actually change).
+    if (live && cockpit) x3::apphost::setIntroCockpitLook(*hc.device);
+
     for (int step = 0; step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
@@ -271,6 +312,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         float rollAxis = 0.0f;
         bool fire = false;
         if (live) {
+            // Poll EVERY frame — without this GLFW's key/button/cursor state is
+            // frozen at the beat-entry snapshot and the ship ignores the player
+            // entirely (owner playtest: "I tried to shoot", acc 0/0, "clunky").
+            glfwPollEvents();
             if (glfwWindowShouldClose(hc.window)) break;
             if (glfwGetKey(hc.window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
             auto kd = [&](int k){ return glfwGetKey(hc.window, k) == GLFW_PRESS; };
@@ -278,6 +323,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             in.moveStrafe = (kd(GLFW_KEY_D)?1.f:0.f) + (kd(GLFW_KEY_A)?-1.f:0.f);
             in.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
             rollAxis      = (kd(GLFW_KEY_Q)?-1.f:0.f) + (kd(GLFW_KEY_E)?1.f:0.f);
+            double mx, my; glfwGetCursorPos(hc.window, &mx, &my);
+            in.lookDX = (float)(mx - lastMX);   // mouse-look: yaw/pitch the ship
+            in.lookDY = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
             fire = glfwGetMouseButton(hc.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         } else {
             in.moveFwd = 1.0f;                  // close the distance
@@ -291,8 +340,27 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         const x3::phys::Vec3 pv = pilot.velocity();
         const float ppos[3] = { pp.x, pp.y, pp.z };
         const float pvel[3] = { pv.x, pv.y, pv.z };
+        std::vector<int> prevHull(enemies.count());
+        for (uint32_t i = 0; i < enemies.count(); ++i) prevHull[i] = enemies.ship(i).hull;
         enemies.update(dt, ppos, pvel);
+        if (fxOn) {
+            for (uint32_t i = 0; i < enemies.count() && i < prevHull.size(); ++i) {
+                const auto& e = enemies.ship(i);
+                if (prevHull[i] > 0 && e.hull <= 0) {   // died this tick
+                    fxPtr->spawnDeath({ e.pos[0], e.pos[1], e.pos[2] });
+                    fxPtr->spawnSmoke({ e.pos[0], e.pos[1], e.pos[2] });
+                }
+            }
+        }
+        bool playerFiredThisStep = false;
         for (const auto& fe : enemies.fireEvents()) {
+            if (fxOn) {
+                fxPtr->addTracer({ fe.from[0], fe.from[1], fe.from[2] },
+                             { fe.to[0],   fe.to[1],   fe.to[2] });
+                fxPtr->spawnMuzzleFlash({ fe.from[0], fe.from[1], fe.from[2] },
+                                    { fe.to[0] - fe.from[0], fe.to[1] - fe.from[1],
+                                      fe.to[2] - fe.from[2] });
+            }
             ++localSalvosFaced;
             // A salvo "lands" only if the player is near the fire line endpoint;
             // otherwise it is dodged. Cheap proximity test against the tracer end.
@@ -302,6 +370,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float d2 = dx*dx + dy*dy + dz*dz;
             if (d2 < 30.0f * 30.0f) {
                 pilot.takeDamage(x3::space::shipai::kLaserDamage);
+                if (fxOn) fxPtr->spawnImpact({ fe.to[0], fe.to[1], fe.to[2] },
+                                             { -dx, -dy, -dz });
             } else {
                 ++localSalvosDodged;
             }
@@ -317,9 +387,17 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                        { e.vel[0], e.vel[1], e.vel[2] }, true };
         }
         targeting.setContacts(contacts, nc);
+        // Cosmetic lock acquisition for the HUD (does not alter the metrics).
+        if (live) {
+            const float pfw[3] = { std::cos(pilot.pitch()) * std::cos(pilot.yaw()),
+                                   std::sin(pilot.pitch()),
+                                   std::cos(pilot.pitch()) * std::sin(pilot.yaw()) };
+            targeting.lockNearest(ppos, pfw);
+        }
 
         // ---- Player fire -> resolve onto the capital's subsystems. ----
         if (fire && pilot.fireLaser(dt)) {
+            playerFiredThisStep = true;
             ++localShotsFired;
             // Deterministic "competent" hit model: when crippling is still
             // possible, route a hit to a subsystem (shields down first), counting
@@ -328,6 +406,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const int subIdx = std::min(localSubsDestroyed, kMaxSubsystems - 1);
             x3::space::ShipDamage::applyDamage(capital, 60,
                 (x3::space::Subsystem)subIdx);
+            if (fxOn) {
+                float dxc = ppos[0] - 280.0f, dyc = ppos[1], dzc = ppos[2];
+                const float dl = std::sqrt(dxc*dxc + dyc*dyc + dzc*dzc);
+                if (dl > 1.0f) { dxc /= dl; dyc /= dl; dzc /= dl; }
+                fxPtr->spawnImpact({ 280.0f + dxc * 24.0f, dyc * 24.0f, dzc * 24.0f },
+                                   { dxc, dyc, dzc });
+            }
             ++localShotsHit;
             if (x3::space::ShipDamage::subsystemDown(capital,
                     (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
@@ -343,17 +428,141 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // ---- Live render (3P chase of the pilot; minimal, reuses host_space art
         //      conventions). Headless skips drawing entirely. ----
         if (live) {
+            beatT += dt;
             float cx, cy, cz, cyaw, cpit;
             pilot.camera(cx, cy, cz, cyaw, cpit);
             hc.device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
+            // THE VISIBLE LAYER (feat/intro-cockpit): the player flies the beat
+            // from inside the two-seat fighter cockpit — posed to the pilot camera
+            // each frame — with the enemy wing + the capital ship drawn out the
+            // canopy, laser tracers + muzzle flashes via CombatFx, and pulsing
+            // MFD screens. The analytic-sky starfield is the world-fixed backdrop.
+            if (cockpit) {
+                x3::apphost::pulseIntroScreens(*cockpit, beatT);
+                x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
+            }
+            if (fxOn && playerFiredThisStep) {
+                const float fh = std::cos(cpit);
+                const float fwx = fh * std::cos(cyaw);
+                const float fwy = std::sin(cpit);
+                const float fwz = fh * std::sin(cyaw);
+                fxPtr->addTracer({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f, cz + fwz * 2.0f },
+                             { cx + fwx * 600.0f, cy + fwy * 600.0f, cz + fwz * 600.0f });
+                fxPtr->spawnMuzzleFlash({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f,
+                                          cz + fwz * 2.0f }, { fwx, fwy, fwz });
+            }
+            if (fxOn) fxPtr->update(dt);
+            // DEV evidence capture: X3_INTRO_CAPTURE=<dir> dumps the presented
+            // frame once per interactive beat (step 180 ~= 3 s in) — the tool that
+            // root-caused the milky-canopy bug. Off (empty env) in normal play.
+            static const char* evDir = std::getenv("X3_INTRO_CAPTURE");
+            const bool evShot = evDir && *evDir && (step == 180);
+            if (evShot)
+                hc.device->armCapture((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
             auto frame = hc.device->beginFrame();
+            if (frame.valid && cockpit) {
+                cockpit->scene.render(*hc.device, frame);
+                for (uint32_t i = 0; i < enemies.count(); ++i) {
+                    const auto& e = enemies.ship(i);
+                    if (e.hull <= 0) continue;
+                    x3::apphost::drawIntroShip(*hc.device, frame, cockpit->enemyDraw,
+                                  e.pos, e.fwd, 2.5f);
+                }
+                const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+                const float capFwd[3] = { -1.0f, 0.0f, 0.0f };
+                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 22.0f);
+                if (fxOn) {
+                    fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
+                    fxPtr->submit(*hc.device, frame);
+                }
+                // ---- HUD readout: hull/shield, contacts, lock state ----
+                {
+                    char hud[96];
+                    const int hullPct = (int)(100.0f * (float)pilot.hull() /
+                                              (float)std::max(1, pilot.maxHull()));
+                    const int shPct   = (int)(100.0f * (float)pilot.shield() /
+                                              (float)std::max(1, pilot.maxShield()));
+                    std::snprintf(hud, sizeof(hud), "HULL %3d%%  SHD %3d%%  CONTACTS %u",
+                                  hullPct, shPct, enemies.aliveCount() + 1u);
+                    const float cyanHud[4] = { 0.45f, 0.85f, 1.0f, 0.85f };
+                    hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono, hud,
+                                            24.0f, 24.0f, 18.0f, cyanHud);
+                    if (targeting.hasLock()) {
+                        const float redHud[4] = { 1.0f, 0.35f, 0.25f, 0.95f };
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                                "LOCK", 24.0f, 48.0f, 20.0f, redHud);
+                    }
+                }
+                // ---- Target indicators (owner playtest: "can't find the enemy
+                // ship"): a bracket over every on-screen hostile, an edge arrow
+                // toward off-screen ones. Manual perspective projection from the
+                // camera basis (fovY matches the setCamera(65) above). ----
+                {
+                    int winW = 0, winH = 0;
+                    glfwGetWindowSize(hc.window, &winW, &winH);
+                    if (winW > 0 && winH > 0) {
+                        const float tanHalfY = std::tan(65.0f * 0.5f * 3.14159265f / 180.0f);
+                        const float tanHalfX = tanHalfY * (float)winW / (float)winH;
+                        const float fh2 = std::cos(cpit);
+                        const float fw[3] = { fh2 * std::cos(cyaw), std::sin(cpit),
+                                              fh2 * std::sin(cyaw) };
+                        const float rt[3] = { -std::sin(cyaw), 0.0f, std::cos(cyaw) };
+                        const float up[3] = { fw[1]*rt[2] - fw[2]*rt[1],
+                                              fw[2]*rt[0] - fw[0]*rt[2],
+                                              fw[0]*rt[1] - fw[1]*rt[0] };
+                        auto marker = [&](const float p[3], const char* onScr,
+                                          const float col[4], float px) {
+                            const float d[3] = { p[0]-cx, p[1]-cy, p[2]-cz };
+                            const float zf = d[0]*fw[0] + d[1]*fw[1] + d[2]*fw[2];
+                            const float xr = d[0]*rt[0] + d[1]*rt[1] + d[2]*rt[2];
+                            const float yu = d[0]*up[0] + d[1]*up[1] + d[2]*up[2];
+                            if (zf > 1.0f) {
+                                const float nx = (xr / zf) / tanHalfX;    // -1..1
+                                const float ny = (yu / zf) / tanHalfY;
+                                if (nx > -1.f && nx < 1.f && ny > -1.f && ny < 1.f) {
+                                    hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono,
+                                        onScr, (nx*0.5f + 0.5f) * winW - px * 0.9f,
+                                        (0.5f - ny*0.5f) * winH - px * 0.5f, px, col);
+                                    return;
+                                }
+                            }
+                            // Off-screen: clamp the bearing to the screen edge.
+                            float ex = xr, ey = yu;
+                            if (zf > 0.0f) { ex = xr / std::max(zf, 1.0f); ey = yu / std::max(zf, 1.0f); }
+                            const float m = std::max(std::fabs(ex), std::fabs(ey));
+                            if (m < 1e-4f) return;
+                            ex /= m; ey /= m;      // unit square edge
+                            const char* arrow = (std::fabs(ex) > std::fabs(ey))
+                                                ? (ex > 0 ? ">" : "<")
+                                                : (ey > 0 ? "^" : "v");
+                            const float sx2 = (ex * 0.92f * 0.5f + 0.5f) * winW;
+                            const float sy2 = (0.5f - ey * 0.88f * 0.5f) * winH;
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                                    arrow, sx2, sy2, px * 1.2f, col);
+                        };
+                        const float redM[4]   = { 1.0f, 0.30f, 0.22f, 0.95f };
+                        const float amberM[4] = { 1.0f, 0.72f, 0.20f, 0.95f };
+                        for (uint32_t i = 0; i < enemies.count(); ++i) {
+                            const auto& e = enemies.ship(i);
+                            if (e.hull <= 0) continue;
+                            marker(e.pos, "[ ]", redM, 26.0f);
+                        }
+                        marker(capPos, "[CAP]", amberM, 22.0f);
+                    }
+                }
+            }
             hc.device->endFrame(frame);
+            if (evShot)
+                hc.device->captureFrame((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
         }
 
         // ---- Exit conditions: all enemies down + ship crippled, or pilot dead. ----
         if (!pilot.isAlive()) break;
         if (crippled && enemies.aliveCount() == 0) break;
     }
+
+    if (live) glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    if (fxOn) fxPtr->shutdown(*hc.device);
 
     // Fold this window's metrics into the running totals. The CLIMAX window owns
     // the hull/time-to-cripple snapshot (the roll inputs); both windows contribute
@@ -571,6 +780,20 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     SkillMetrics metrics{};
     metrics.finalHullFrac = 1.0f;   // assume intact until the climax measures it
 
+    // The cockpit rig — the interactive windows' visible layer (feat/intro-cockpit).
+    // Live-only (window + device); the headless self-test path stays render-free
+    // and deterministic. A missing GLB degrades gracefully to the empty frame.
+    std::unique_ptr<x3::apphost::IntroCockpitRig> cockpit;
+    if (hc.window && hc.device) {
+        cockpit = std::make_unique<x3::apphost::IntroCockpitRig>();
+        if (x3::apphost::buildIntroCockpitRig(*cockpit, *hc.device, /*includeBackdrop*/ false)) {
+            x3::apphost::setIntroCockpitLook(*hc.device);
+            x3::apphost::buildIntroCombatArt(*cockpit, *hc.device);   // best-effort
+        } else {
+            cockpit.reset();
+        }
+    }
+
     // Play every beat UP TO the outcome stinger (flight, reveal, dodge, charge,
     // dogfight). The cine.outcome beat is deferred: its span depends on the rolled
     // outcome, which depends on the climax metrics accumulated here — so we roll
@@ -583,7 +806,27 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
         if (beat.kind == BeatKind::CutsceneClip)
             playCinematicBeat(hc, beat, haveCs ? &coldOpen : nullptr);
         else
-            runInteractiveBeat(hc, beat, metrics);
+            runInteractiveBeat(hc, beat, metrics, cockpit.get());
+    }
+
+    // The interactive windows are done — release the cockpit's GPU handles before
+    // the outcome stinger + the cell/surface build take over the device.
+    if (cockpit) {
+        cockpit->shutdown(*hc.device);
+        cockpit.reset();
+        // RESTORE the device look the deep-space beats overrode, or it LEAKS into
+        // the cell (owner playtest: Vigil's holo terminal read "heavily regressed"
+        // — the cell was lit by the space sun + near-black space IBL + cool space
+        // ambient). Engine defaults per IRenderDevice.h / VulkanRenderDevice:
+        // sky disabled, ambient (0.42, 0.44, 0.50), probe off. Point lights are
+        // re-issued per floor by the cell; SSAO/SSGI are re-applied by the game
+        // UI's applySettings at cell boot.
+        x3::rhi::IRenderDevice::SkyParams sp{};       // enabled=false (indoor cell)
+        hc.device->setSkyParams(sp);
+        hc.device->setAmbient(0.42f, 0.44f, 0.50f);
+        hc.device->setIblProbe(false);
+        x3::rhi::PointLight noLights{};
+        hc.device->setPointLights(&noLights, 0);
     }
 
     // Load the persisted narrative flags (the lane app_run branches on) so the

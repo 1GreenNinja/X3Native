@@ -16,13 +16,15 @@
 // ModelDrawables; issue drawMeshPBR each frame at authored transforms), but driven by the
 // CanonRoom geometry instead of the legacy Level1Layout, with a flexible per-prop placer.
 
-#include "level_loader.h"   // CanonFloor / CanonRoom / CanonBeats
+#include "level_loader.h"      // CanonFloor / CanonRoom / CanonBeats
+#include "surface_library.h"   // real PBR floor/wall sets (albedo+normal+mr)
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -32,6 +34,14 @@ namespace x3::game {
 
 class CellDressing {
 public:
+    // WAVE (barrels-universal): explodable-barrel registrar. When the host wires this
+    // (canon interactive loop -> BarrelSystem::spawn), CellDressing REGISTERS its plain
+    // fuel-drum clutter as a real explodable barrel at (x, floorY, z) INSTEAD of drawing
+    // a static, unshootable prop over it. Unset (tests / non-combat callers) -> the old
+    // static prop is drawn, byte-for-byte. Signature matches BarrelSystem::spawn.
+    using ExplodableBarrelSink = std::function<void(float x, float floorY, float z)>;
+    void setExplodableBarrelSink(ExplodableBarrelSink sink) { m_barrelSink = std::move(sink); }
+
     // Build the opening-space dressing for a parsed canon floor: dense props in Jake's
     // Cell + the Main Hall mouth, plus motivated lights. `convertedGlbDir` is the loose
     // converted_glb root (x3::game::convertedGlbRoot()). Safe to call once at level build;
@@ -105,6 +115,23 @@ private:
         float    size;                        // mote scale
     };
 
+    // A real PBR architectural surface (SurfaceLibrary set on a tiled quad): the cell's
+    // FLOOR. The graybox floor was the last flat-tinted box in the hero space — a wet,
+    // worn, normal-mapped deck is what catches the practical's light and sells "you are
+    // trapped on a real floor" (ART_BIBLE §4 realism mandate; RIFTHUB_ART_TARGET recipe
+    // ingredient 4: value + texture, never a flat color).
+    struct SurfPanel {
+        const SurfaceSet*   set = nullptr;
+        x3::rhi::MeshHandle mesh{};
+        float               transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        // VALUE, not lumens (RIFTHUB_ART_TARGET ingredient 3). The ward sets are authored
+        // for a clinical hospital — near-white plaster. A detention cell is the same
+        // BUILDING, twenty years of grime later. This is an albedo renormalization (the
+        // move that fixed the rifthub tube), NOT a brightness hack: the texture, its
+        // normals and its wear all survive; only the surface's reflectance comes down.
+        float               tint[4] = { 1, 1, 1, 1 };
+    };
+
     // Load (cached) a converted GLB by relative path; returns the asset index (always
     // valid — a failed load yields ok=false that draws nothing).
     uint32_t load(const std::string& relPath);
@@ -145,12 +172,15 @@ private:
     std::vector<ProcDraw>                    m_proc;        // shafts + motes
     std::vector<Mote>                        m_motes;       // animated motes (index into m_proc)
     std::vector<DressLight>                  m_lights;
+    SurfaceLibrary                           m_surf;        // real PBR sets (the cell deck)
+    std::vector<SurfPanel>                   m_surfPanels;  // tiled architectural surfaces
     // Indices into m_lights of the lights whose intensity is flicker-driven, with their
     // base color (so tick() can modulate them) + a per-light phase/rate.
     struct Flicker { uint32_t idx; float baseR, baseG, baseB; float phase, rate, depth; };
     std::vector<Flicker>                     m_flickers;
     uint32_t m_shadowDisc = 0;   // ROUND 3 contact-shadow disc mesh (index into m_procMeshes)
     bool m_built = false;
+    ExplodableBarrelSink m_barrelSink;   // WAVE (barrels-universal): register clutter drums as explodable
 };
 
 } // namespace x3::game

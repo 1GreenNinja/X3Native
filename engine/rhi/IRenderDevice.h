@@ -412,13 +412,30 @@ public:
     // lobe over the base layer (mesh.frag), carried per-object in a spare SSBO
     // lane (the terrain-pack field — mutually exclusive with TERRAIN). 0 = none;
     // every existing call site keeps the default and shades byte-identically.
+    //
+    // `selfLight` (0..1) — CANON: SHIPS ARE SELF-LIT (Star Trek convention). A hull
+    // must never die to a black silhouette just because the star is on the far side.
+    // This is a SHAPED self-illumination, NOT an ambient/emissive floor: mesh.frag
+    // builds it from a Fresnel rim + an N.V form term and MULTIPLIES it by
+    // (1 - N.L*shadow), so it exists only on the side the star is NOT lighting and
+    // fades to zero on the lit side. The hull still shades honestly from the sun;
+    // this only keeps the dark side off the floor. 0 = none (every existing call
+    // site keeps the default and shades byte-identically).
     virtual void          drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                                       TextureHandle /*normal*/, TextureHandle /*metalRough*/,
                                       const float baseColorFactor[4], const float emissive[4],
                                       const float model[16], bool /*alphaMask*/ = false,
                                       bool /*alphaBlend*/ = false, TextureHandle /*emissiveTex*/ = {},
                                       TextureHandle /*detailTex*/ = {}, float /*detailUvScale*/ = 1.0f,
-                                      float /*clearcoat*/ = 0.0f, float /*clearcoatRough*/ = 0.05f) {
+                                      float /*clearcoat*/ = 0.0f, float /*clearcoatRough*/ = 0.05f,
+                                      float /*selfLight*/ = 0.0f,
+                                      // BLACK-PROP FIX: per-object metallic CLAMP for dark-albedo kit
+                                      // props whose MR map bakes metallic=1 (which zeroes the diffuse
+                                      // lobe and renders them black in low-IBL interiors). 1.0 = no
+                                      // clamp (every existing call site shades byte-identically).
+                                      // Rides the spare glass .w lane; selfLight rides terrainPack2 —
+                                      // orthogonal, so a ship hull can carry both.
+                                      float /*metallicScale*/ = 1.0f) {
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
     }
 
@@ -478,6 +495,18 @@ public:
         // (dot(N,V) <= 0), so the double-sided glass pipeline draws one soft
         // front layer and overlapping glows ACCUMULATE (no replace artifact).
         float additive   = 0.0f;
+        // EMISSIVE MAP (display glass): 0 (default) = the per-object emissive is a
+        // FLAT glow over the whole pane — byte-identical for every existing surface.
+        // 1 = the emissive is MODULATED BY THE BOUND BASE-COLOR TEXEL, so the pane
+        // glows only WHERE ITS TEXTURE IS BRIGHT and black texels stay black. This is
+        // the glass-pass twin of the opaque PBR route's `emissiveTex` (the club OLED
+        // move: "black texels stay dark"), and it is what lets a BLACK GLASS holo
+        // screen carry CRISP GLOWING TEXT instead of a flat blue flood — the flat
+        // term can only wash the panel, because it cannot see the readout.
+        // Intermediate values cross-fade. Uses the SAME texture already bound as
+        // baseColor (a display's image IS its emission mask), so it costs no extra
+        // binding and no extra sample.
+        float emissiveMap = 0.0f;
     };
 
     // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's
@@ -510,6 +539,13 @@ public:
         float exposure      = 1.0f;
         float zenith[3]     = { 0.10f, 0.28f, 0.66f }; // overhead sky color (linear); per-scene (default = old global)
         float horizon[3]    = { 0.62f, 0.74f, 0.92f }; // horizon glow color (linear); per-scene (default = old global)
+        // SCENE SUN RADIANCE for mesh.frag's directional key (separate from
+        // `sunIntensity`, which only scales the SKY DISK + glow). Multiplies the
+        // shader's kSunColor. 1.0 == the historical hardcoded sun, so every world
+        // that never touches this field is byte-identical. Space scenes raise it:
+        // a STAR is the only light out there, and the ship hulls are near-black
+        // paint, so an honest star has to be hot to shade them without crutches.
+        float sunLight      = 1.0f;
     };
     // Set the active sky parameters for subsequent frames (cached + re-applied
     // each frame, like setPointLights). Calling with enabled=false disables it.

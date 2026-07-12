@@ -7,6 +7,7 @@
 // drawHudText (the door-prompt / keypad pattern) and routes typed chars in.
 //
 // Game/slice code only; engine/ stays pure.
+#include "holo_panel.h"
 #include "scene.h"
 
 #include "engine/rhi/IRenderDevice.h"
@@ -45,11 +46,31 @@ public:
         m_inkOverride = true; m_texDirty = true;
     }
     void resetTextColor() {
-        m_textColor[0] = 0.85f; m_textColor[1] = 0.97f; m_textColor[2] = 1.0f; m_textColor[3] = 1.0f;
+        m_textColor[0] = 0.55f; m_textColor[1] = 0.80f; m_textColor[2] = 1.0f; m_textColor[3] = 1.0f;
         m_inkOverride = false; m_texDirty = true;
     }
 
+    // Free every GPU resource build() created (the glass/bezel/arm/trace meshes +
+    // the baked hologram texture). Added for the RIFTHUB consoles: the hub authors
+    // EIGHT of these and its smoketest gates on allocationCount == 0, so the
+    // platform needed a teardown path. Safe to call unbuilt / twice.
+    void shutdown(x3::rhi::IRenderDevice& device);
+
     void setSubmitSink(SubmitFn fn) { m_submit = std::move(fn); }
+
+    // ---- LAYOUT (HoloPanel platform) --------------------------------------------
+    // Cell (default): the detention terminal's owner-approved composition — a narrow
+    //   left data column, a center schematic node, a right column of warning icons and
+    //   value bars. The text lives in the left ~27% of the glass.
+    // Readout: TEXT FIRST. The center schematic is dropped and the text zone widens to
+    //   most of the glass, so the type is roughly twice the size. For panels whose whole
+    //   job is to be READ from a couple of metres away — the rifthub rift consoles,
+    //   which must say where the portal goes plus five live parameter rows. The frame,
+    //   header, warning icons and data strip are unchanged, so it is the same object.
+    // Call before/after build(); it re-bakes on the next update().
+    enum class Layout { Cell, Readout };
+    void setLayout(Layout l) { if (m_layout != l) { m_layout = l; m_texDirty = true; } }
+    Layout layout() const { return m_layout; }
 
     // ---- Readout (the displayed lines above the input field). ----
     // setLines/addLine mark the on-glass texture DIRTY so the next update() re-bakes
@@ -99,8 +120,10 @@ public:
 
     // World anchor (panel center) for the host's worldToScreen text placement.
     x3::phys::Vec3 anchor() const { return m_pos; }
-    uint32_t entity() const { return m_entity; }
-    bool built() const { return m_entity != kNoLink; }
+    uint32_t entity() const;          // the platform's screen pane
+    bool built() const;
+    // The platform fixture (glow-light suggestion, pane entity, teardown).
+    const HoloPanel& panel() const { return m_panel; }
 
     // True when the readout text is baked ON THE GLASS (stb_truetype rasterized it
     // into the hologram texture). The host uses this to SKIP its legacy 2D overlay so
@@ -108,27 +131,30 @@ public:
     // which case the host falls back to the worldToScreen overlay.
     bool textOnGlass() const { return m_textOnGlass; }
 
+    // ---- REGRESSION GUARD: "the screen is a featureless blue slab" ----------------
+    // This bug has been re-fixed ~10 times. It is now TESTABLE. True only when the
+    // terminal is standing in a Scene AND its screen entity actually has the baked
+    // readout texture BOUND, AND the readout has lines, AND the glyphs rasterized.
+    // A blank screen — no texture, no text, no lines — returns false, so a caller
+    // (--test-rifthub) can fail the build instead of shipping a blue rectangle.
+    bool screenHasContent() const;
+    // The live handle bound to the screen (for tests that want to compare identity).
+    x3::rhi::TextureHandle screenTexture() const;
+
 private:
     // Re-bake the readout (static lines + live input line) INTO the hologram texture
     // and re-upload it, then point both the base + scanline quads at the new handle.
     // Called from update() when m_texDirty (input/readout changed) — NOT every frame.
     void regenTexture();
 
-    uint32_t       m_entity = kNoLink;
+    // THE FIXTURE. Black glass + chrome round-pipe frame + ceiling support pipe, plus
+    // the shimmer and the teardown path — all of it lives in the platform. This class
+    // owns CONTENT and INPUT; it owns no meshes, no textures and no entities.
+    HoloPanel      m_panel;
+
     x3::phys::Vec3 m_pos{};
     float          m_width = 1.4f, m_height = 0.9f;
-    // Scene + screen-entity bookkeeping for the time-driven shimmer (set in build()).
-    // update() modulates this entity's emissive each frame; null Scene => no shimmer
-    // (the headless self-test path, which never calls build()).
-    Scene*         m_scene = nullptr;
-    uint32_t       m_scanEntity = kNoLink;   // the scrolling scanline overlay quad
-    float          m_clock = 0.0f;           // shimmer animation clock (seconds)
-    float          m_emBase[4] = { 0.18f, 0.70f, 1.0f, 1.9f };  // base screen emissive
-    x3::rhi::TextureHandle m_holoTex{};       // the procedural hologram UI texture
-    // ON-GLASS TEXT bake state. The readout is rasterized into m_holoTex via
-    // stb_truetype so it sits ON the glass (tilts with the panel) like a Babylon
-    // DynamicTexture — NOT as a camera-facing 2D overlay. We keep the device + texture
-    // resolution so regenTexture() can re-create + re-upload on change.
+    float          m_clock = 0.0f;            // readout animation clock (seconds)
     x3::rhi::IRenderDevice* m_device = nullptr;
     uint32_t       m_texN = 1024;             // hologram texture resolution (square)
     bool           m_texDirty = false;        // set when lines/input change; cleared on regen
@@ -141,15 +167,39 @@ private:
     float          m_blink = 0.0f;        // cursor blink timer
     bool           m_cursorOn = true;
     SubmitFn       m_submit;
-    float          m_textColor[4] = { 0.85f, 0.97f, 1.0f, 1.0f };  // bright cyan-white, high contrast
+    float          m_textColor[4] = { 0.55f, 0.80f, 1.0f, 1.0f };  // blue-white (NOT cyan)
     bool           m_inkOverride = false;   // W4-2: bake body rows with m_textColor (VIGIL orange)
-    std::vector<uint32_t> m_decor;        // bezel / arm / trace entity ids (visual only)
+    Layout         m_layout = Layout::Cell; // Cell = the approved detention composition
     static constexpr size_t kMaxInput = 72;   // freeform questions need room (was 32)
 };
+
+// HEADLESS INK PROBE (no device, no Scene). Bakes the hologram texture for `lines` +
+// `inputLine` exactly as the real panel does, and returns the fraction of pixels that
+// carry INK (luminance above a legibility threshold) inside the readout's text zone.
+// A featureless slab returns ~0; a panel with a real readout returns a healthy few
+// percent. This is what lets a test assert "the screen HAS CONTENT" without a GPU.
+float holoReadoutInkFraction(const std::vector<std::string>& lines,
+                             const std::string& inputLine = "", bool wideReadout = false);
+
+// HEADLESS PALETTE PROBE. Bakes the readout and reports the fraction of the text zone
+// that reads dominantly BLUE / GREEN / ORANGE — so a test can assert the OWNER'S
+// PALETTE, not merely that the screen is lit. Cyan fails the blue test by construction
+// (the blue predicate demands b > g by a real margin; cyan has g ~= b).
+void holoReadoutPalette(const std::vector<std::string>& lines, bool wideReadout,
+                        float& blueF, float& greenF, float& orangeF,
+                        const float* inkOverride = nullptr);
 
 // Headless self-test (--test-holoterm): boot readout is present (not blank), typing
 // builds the input line, backspace edits it, submit calls the sink with the value
 // and clears (accept) / keeps a reject line, and the cursor blinks. Asserts H0-H4.
+// Bake a DARK-GLASS ROUNDED MEDICAL-VITALS MONITOR into an RGBA8 n x n buffer (the
+// F2 rescue-room wall screen). Same black-glass line-art recipe as the flagship
+// terminal: a near-black rounded pane with a faint scanline field + rounded bezel, a
+// green ECG heart-rate trace, and glowing green/cyan vitals rows (HR / BP / SpO2 /
+// TEMP / RESP) under the captive's NAME header. The bright texels bloom over the dark
+// pane (drive it as an emissiveTex over a near-black albedo -- the ACES glow law).
+std::vector<uint8_t> bakeMedicalMonitor(uint32_t n, const std::string& name);
+
 bool runHoloTerminalSelfTest();
 
 } // namespace x3::game

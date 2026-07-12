@@ -64,6 +64,13 @@ void Hud::init(x3::con::IConsole& console, bool* quitFlag) {
 void Hud::toggleConsole() {
     m_consoleOpen = !m_consoleOpen;
     if (m_consoleOpen) { m_historyPos = -1; }
+    m_consoleScroll = 0;   // always reopen/close pinned to the live bottom
+}
+
+void Hud::consoleScroll(int deltaLines) {
+    if (!m_consoleOpen) return;
+    m_consoleScroll += deltaLines;
+    if (m_consoleScroll < 0) m_consoleScroll = 0;   // upper bound clamped in drawConsole
 }
 
 void Hud::onChar(unsigned int codepoint) {
@@ -74,6 +81,7 @@ void Hud::onChar(unsigned int codepoint) {
     if (codepoint >= 0x20 && codepoint < 0x7F) {
         m_input.push_back(static_cast<char>(codepoint));
         m_historyPos = -1;
+        m_consoleScroll = 0;   // typing snaps back to the live bottom
     }
 }
 
@@ -85,6 +93,7 @@ void Hud::onEnter(x3::con::IConsole& console) {
     m_history.push_back(m_input);
     m_input.clear();
     m_historyPos = -1;
+    m_consoleScroll = 0;   // a submitted command snaps back to the live bottom
 }
 
 void Hud::onBackspace() {
@@ -432,10 +441,26 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
 
     // Scrollback above the input line, newest at the bottom (clipped to the
     // panel's slid top edge so text doesn't spill above the panel while sliding).
+    // m_consoleScroll shifts the visible window UP through history: the bottom row
+    // is line (size-1 - scroll). Clamp the offset to the scrollable range here,
+    // where the panel height (hence how many rows fit) is known.
     const auto& lines = console.outputLines();
     const float outText[4] = { 0.8f, 0.85f, 0.8f, 1.0f };
+    const int total    = (int)lines.size();
+    const int visRows  = std::max(1, (int)((inputY - (top + pad)) / lineH));
+    const int maxScroll = std::max(0, total - visRows);
+    if (m_consoleScroll > maxScroll) m_consoleScroll = maxScroll;
+    if (m_consoleScroll < 0)         m_consoleScroll = 0;
+
+    // A subtle "▲ more" marker at the top-right while scrolled off the bottom, so
+    // the player knows there's live text below the current view.
+    if (m_consoleScroll > 0) {
+        const float mk[4] = { 0.5f, 0.75f, 1.0f, 0.9f };
+        device.drawHudText(frame, "^ scrollback", (float)w - 130.0f, top + pad, kGlyphPx, mk);
+    }
+
     float y = inputY - lineH;
-    for (int i = (int)lines.size() - 1; i >= 0 && y > top + pad - lineH; --i) {
+    for (int i = (total - 1) - m_consoleScroll; i >= 0 && y > top + pad - lineH; --i) {
         device.drawHudText(frame, lines[(size_t)i].c_str(), pad, y, kGlyphPx, outText);
         y -= lineH;
     }

@@ -87,6 +87,10 @@
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
 #include "strata.h"   // R-3 fold: THE DESCENT — live strata shaft around the elevator column
+#include "rifthub.h"      // W-RIFT: the RIFT HUB, now a REGION of the one world
+#include "rift_depths.h"  // W-RIFT: the landing + the approach corridor to it
+#include "destinations.h" // W-MENU: the ONE registry of every place the game has
+#include "world_menu.h"   // W-MENU: the world / place selection screen (F6 + pause)
 #include "club1127.h"
 #include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -506,6 +510,8 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // baked table is unchanged. Position is meters in the hand-LOCAL frame; rotation
     // is degrees; scale is added to the row's scaleMul. See the BAKE block above
     // kTpGripTable. Synced per-frame in applyRtaoCVars().
+    console.registerCVar("shot_weapon", "", "--screenshot: weapon whose FP viewmodel is held in the capture (e.g. shotgun/plasma/chaingun/lightning). Empty = pistol. QA hook for the per-weapon texture gate.");
+    console.registerCVar("shot_fire",   "0", "--screenshot: fire the held weapon FROM ITS BARREL TIP through the settle frames (muzzle flash + tracer). The eyeball gate for 'the fire comes from the barrel', per weapon.");
     console.registerCVar("grip_x",     "0", "3P held-weapon grip override: +meters toward thumb (right); live, current weapon");
     console.registerCVar("grip_y",     "0", "3P held-weapon grip override: +meters into the palm (down); live, current weapon");
     console.registerCVar("grip_z",     "0", "3P held-weapon grip override: +meters down the barrel (forward); live, current weapon");
@@ -738,10 +744,49 @@ VmPose readViewmodelPose(const x3::con::IConsole& console) {
     };
 }
 
+// ===========================================================================
+// THE MUZZLE — Tim 2026-07-11: "the fire doesn't come from the barrel" (ALL guns)
+// ===========================================================================
+// This is the ONE origin every fire consumer must use: the muzzle flash, the tracer, the
+// projectile spawn, the 3D fire audio. It asks the ARSENAL for the barrel tip of the
+// weapon it is actually DRAWING — same world frame, same per-weapon vm* pose, same scale
+// (Arsenal::currentMuzzle) — so the fire leaves the gun whichever weapon is held, at any
+// pitch/yaw.
+//
+// The old muzzleFromCamera() (kept below ONLY as the no-viewmodel fallback) derived a
+// point from the CAMERA plus a fixed fwd/right/down guess. It had no idea where any
+// weapon's barrel was, and the guns are wildly different lengths (the shotgun GLB is a
+// 4.4 m model!) — so every gun's FX spawned in mid-air, each wrong by its own amount.
+// The live vm_* console cvars are passed through as DELTAS from the baked defaults,
+// exactly as the draw call does, so a console-nudged gun keeps its muzzle.
+x3::phys::Vec3 weaponMuzzle(const x3::game::Arsenal& arsenal, const x3::con::IConsole& console,
+                            float ex, float ey, float ez, float yaw, float pitch) {
+    if (!arsenal.viewmodelsLoaded())
+        return muzzleFromCamera(ex, ey, ez, yaw, pitch);   // fallback: no GLB loaded
+    const VmPose p = readViewmodelPose(console);
+    return arsenal.currentMuzzle(ex, ey, ez, yaw, pitch,
+        p.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
+        p.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
+        p.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
+        p.fwd   - x3::game::kVmDefFwd,
+        p.right - x3::game::kVmDefRight,
+        p.down  - x3::game::kVmDefDown);
+}
+
+// W-RIFT: printable codepoints for the RIFT CONSOLE's typed TARGET field, in the
+// canon game loop. The dev host (--world rifthub) keeps its own ring; the canon loop
+// needs one too, because ui::textField only sees characters through UiInput::typed.
+// Filled by charCallback, DRAINED once per frame by the console (and by nobody else,
+// so it can never accumulate).
+unsigned int g_riftTyped[x3::ui::UiInput::kMaxTyped] = {};
+int          g_riftTypedN = 0;
+
 // GLFW character callback: feed printable codepoints to the console input line.
 void charCallback(GLFWwindow* win, unsigned int codepoint) {
     auto* ctx = static_cast<InputContext*>(glfwGetWindowUserPointer(win));
     if (ctx && ctx->hud) ctx->hud->onChar(codepoint);
+    if (codepoint >= 32 && codepoint < 127 && g_riftTypedN < x3::ui::UiInput::kMaxTyped)
+        g_riftTyped[g_riftTypedN++] = codepoint;
 }
 
 // Mouse-wheel accumulator (weapon cycling) — moved to input_globals.h (#28
@@ -767,6 +812,10 @@ void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*m
         case GLFW_KEY_BACKSPACE: hud.onBackspace(); break;
         case GLFW_KEY_UP:        hud.historyPrev(); break;
         case GLFW_KEY_DOWN:      hud.historyNext(); break;
+        case GLFW_KEY_PAGE_UP:   hud.consoleScroll(+5); break;   // scroll back through history
+        case GLFW_KEY_PAGE_DOWN: hud.consoleScroll(-5); break;   // scroll toward the live bottom
+        case GLFW_KEY_HOME:      hud.consoleScroll(+100000); break;  // jump to oldest (clamped)
+        case GLFW_KEY_END:       hud.consoleScroll(-100000); break;  // jump to live bottom
         case GLFW_KEY_TAB:       if (ctx->console) hud.complete(*ctx->console); break;
         case GLFW_KEY_ESCAPE:    hud.closeConsole(); break;
         default: break;
@@ -836,6 +885,7 @@ int runDefaultHost(HostContext& hc) {
     const bool skipIntro = hc.skipIntro;
     const bool editorMode = hc.editorMode;
     const bool fxDemo = hc.fxDemo;
+    const bool fxLightning = hc.fxLightning;   // --fx-lightning: bolt ACROSS the view
     const bool uiDemo = hc.uiDemo;
     const std::string& uiDemoPath = hc.uiDemoPath;
     const std::string& uiDemoScreen = hc.uiDemoScreen;
@@ -844,6 +894,8 @@ int runDefaultHost(HostContext& hc) {
     const bool shotDrive = hc.shotDrive;   // WORLD CARS driver-POV staging
     const bool captureSpire = hc.captureSpire;
     const std::string& captureSpireDir = hc.captureSpireDir;
+    const bool captureWings = hc.captureWings;
+    const std::string& captureWingsDir = hc.captureWingsDir;
     const std::string& docWorldPath = hc.docWorldPath;
     const int cullPathArg = hc.cullPathArg;
     const int hzbArg = hc.hzbArg;
@@ -1111,6 +1163,7 @@ int runDefaultHost(HostContext& hc) {
     float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
     bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
+    x3::game::BarrelSystem canonBarrels;       // WAVE (cell-door): explodable barrels in the canon cell/hall (DJBooth fireball on shot)
     x3::game::DescMechanics descMech;          // W9-1: the desc-field Tier-A mechanics (coolant/EMP/hack/cold/antidote); built after chatTrees (flags owner) exists
     bool coolantGlowDead = false;              // W9-1: the coolant console glow was killed (one-shot on the sabotage edge)
     // ---- [W9-3 RPG] the RPG layer: item DB + backpack + XP/levels + skills. ----
@@ -1250,6 +1303,54 @@ int runDefaultHost(HostContext& hc) {
     x3::game::StrataWorld    liveStrata;
     x3::game::TriggerSystem  liveStrataTriggers;
     bool                     liveStrataBuilt = false;
+    // ---- W-RIFT (ONE WORLD): THE RIFT HUB IS A PLACE IN THE WORLD ------------------
+    // It was reachable only via `--world rifthub`. It is now SUB-LEVEL R1: a real
+    // elevator stop under the detention level (locked behind access code 4790), a
+    // bored LANDING at the shaft, a long industrial APPROACH that turns a corner (the
+    // hum and the blue glow arrive before the room does), and the hub itself — the
+    // SAME Rifthub module the dev world builds, authored at a region origin. The dev
+    // shortcut still works; per docs/design/WORLDS.md it is only ever a shortcut.
+    x3::game::Rifthub        rifthub;
+    x3::game::TriggerSystem  riftTriggers;
+    x3::game::RiftDepths     riftDepths;
+    // WHERE THE PLAYER LEARNS 4790: a maintenance log on a HoloTerminal in the
+    // Security room. The code is FOUND, not handed over — the same rule the cell
+    // terminal's 1278 follows (the loading-screen tips spoil that one; this one is
+    // only in the world).
+    x3::game::HoloTerminal   riftLore;
+    bool  riftBuilt    = false;
+    bool  riftZonePrev = false;      // edge: restore the room-recipe atmosphere on exit
+    float riftTeleCool = 0.0f;       // seconds before a rift may take you again
+    x3::phys::Vec3 riftRegMin{}, riftRegMax{};   // hub + depths, one AABB (the "in the zone" test)
+    // Sub-level R1's floor: below B1, inside the Basalt band, and deliberately clear of
+    // the strata offshoots (Granite -55 / Basalt -95) so the corridor bores through
+    // rock and nothing else.
+    constexpr float kRiftFloorY = -78.0f;
+    // The region's light rig is bigger than the device's 64-light cap (the hub alone
+    // ships ~57: gate cores + keys + fills + the hall grid). Appending the corridor's
+    // strips after them TRUNCATED THEM AWAY — the first capture of the approach came
+    // back pitch black. So the pool is selected NEAREST-TO-EYE across both rigs: the
+    // lights that matter are the ones in the room you are standing in.
+    auto riftLights = [&](float x, float y, float z,
+                          std::vector<x3::rhi::PointLight>& out) {
+        out.clear();
+        for (const auto& L : rifthub.pointLights())    out.push_back(L);
+        for (const auto& L : riftDepths.pointLights()) out.push_back(L);
+        auto d2 = [&](const x3::rhi::PointLight& L) {
+            const float dx = L.pos[0] - x, dy = L.pos[1] - y, dz = L.pos[2] - z;
+            return dx * dx + dy * dy + dz * dz;
+        };
+        std::sort(out.begin(), out.end(),
+                  [&](const x3::rhi::PointLight& a, const x3::rhi::PointLight& b) {
+                      return d2(a) < d2(b);
+                  });
+        if (out.size() > 64) out.resize(64);
+    };
+    auto riftInZone = [&](float x, float y, float z) {
+        return riftBuilt && x >= riftRegMin.x && x <= riftRegMax.x &&
+               y >= riftRegMin.y && y <= riftRegMax.y &&
+               z >= riftRegMin.z && z <= riftRegMax.z;
+    };
     // Elevator-bar gap C (audit claim 392f6e4d): THE CLUB AT THE BOTTOM. The finished
     // Club1127World (--world club) was never instantiated in the game path — the 1127
     // disco descent parked the cab in bare rock at Y=-200. Built LAZILY on the first
@@ -1312,8 +1413,24 @@ int runDefaultHost(HostContext& hc) {
     auto shutdownGameSystems = [&]() {
         game.shutdown();                               // every enemy group + Martinez + barrels
         nexus.shutdown();                              // F4.5 Chorus pod ragdolls
+        // RAGDOLL-TEARDOWN GAP FIX: the Spire floor hosts each own several MonsterManagers
+        // (mid F3/F4/F5 + bosses; top F6/F7 + Overseer/Clone/Sarah; the hidden sub-levels +
+        // Frozen Collective/Chen). A monster killed in the last ~0.7 s on any of those
+        // floors is mid-flop with LIVE Jolt ragdoll bodies; without this its IRagdoll would
+        // be destroyed during stack unwind AFTER physics->shutdown() (use-after-shutdown,
+        // relying only on the W6-1 guard + leaking the JPH::Ragdoll). Tear them down here
+        // with the rest. All idempotent + no-ops when nothing died / the descent stayed shut.
+        midFloors.shutdown();                          // Spire mid-floor enemy + boss ragdolls
+        topFloors.shutdown();                          // Spire top-floor enemy + boss ragdolls
+        subLevels.shutdown();                          // hidden sub-level enemy + mini-boss ragdolls
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
+        // W-RIFT: sub-level R1's meshes/textures (the hub's gates, membranes, holo
+        // glass; the approach's shell). The smoketest gates on allocationCount == 0,
+        // and this runs on EVERY exit path (headless captures included).
+        if (rifthub.built())    rifthub.shutdown(*device);
+        if (riftDepths.built()) riftDepths.shutdown(*device);
+        if (riftLore.built())   riftLore.shutdown(*device);
     };
     // THE ONE ELEVATOR (Tim: "connect this with the In-Game Elevator"): the full
     // x3-elevator.js treatment — 10-state FSM, cabin visuals + twin OLEDs, the
@@ -1370,6 +1487,153 @@ int runDefaultHost(HostContext& hc) {
         x3::boot::mark("elevator + strata descent build");
         x3::logInfo("STRATA descent built around the elevator shaft — enter 1127 to ride to The Deep");
     };
+    // ---- W-RIFT / W-MENU: THE FAST-TRAVEL RESOLVER ---------------------------------
+    // The hub is "the room where you can teleport to any location", and the world menu
+    // asks the SAME question from the pause screen — so this is ONE resolver, keyed by
+    // the DESTINATION REGISTRY (app/destinations.h), used by both.
+    //
+    // It maps a registry key onto a real anchor in the ONE WORLD. It NEVER invents an
+    // anchor: a place this world cannot deliver comes back FALSE with a plain-English
+    // reason, and the caller (the gate, or the menu) says so out loud. Whatever this
+    // refuses, the menu offers as a WORLD LOAD instead if the place has a `--world`.
+    std::string riftHudMsg;      // the arrival / refusal banner
+    float       riftHudTimer = 0.0f;
+
+    // The canon tower's Elevator Lobbies, low -> high == F1 -> F7. The floors stack at
+    // their authored elevations, so ranking the lobbies by height IS the floor index —
+    // no floor number is stored in the data.
+    auto floorLobby = [&](int floorIdx1Based, x3::phys::Vec3& out) -> bool {
+        if (!canonFloor.valid()) return false;
+        std::vector<const x3::game::CanonRoom*> lobbies;
+        for (const auto& rm : canonFloor.rooms)
+            if (rm.type == "Elevator Lobby") lobbies.push_back(&rm);
+        if (lobbies.empty()) {
+            // No lobbies in the data at all: F1 still has a home (the main hall).
+            const x3::game::CanonBeats bt = x3::game::canonBeats(canonFloor);
+            if (floorIdx1Based != 1 || bt.mainHall == x3::game::kNoRoom) return false;
+            const x3::game::CanonRoom& rm = canonFloor.rooms[bt.mainHall];
+            out = { rm.cx, rm.y0() + 1.0f, rm.cz };
+            return true;
+        }
+        std::sort(lobbies.begin(), lobbies.end(),
+                  [](const x3::game::CanonRoom* a, const x3::game::CanonRoom* b) {
+                      return a->cy < b->cy;
+                  });
+        const int i = floorIdx1Based - 1;
+        if (i < 0 || i >= (int)lobbies.size()) return false;
+        out = { lobbies[(size_t)i]->cx, lobbies[(size_t)i]->y0() + 1.0f, lobbies[(size_t)i]->cz };
+        return true;
+    };
+
+    // A strata OFFSHOOT pocket by band name ("Crystal Veins", "Magma Zone", ...).
+    auto strataPocket = [&](const char* band, x3::phys::Vec3& out) -> bool {
+        if (!liveStrataBuilt) return false;
+        for (const auto& o : liveStrata.offshoots()) {
+            if (std::string(o.bandName ? o.bandName : "").find(band) != std::string::npos) {
+                out = { o.pocket.x, o.pocket.y + 1.2f, o.pocket.z };
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // `why` (optional) receives the refusal reason — the menu prints it in the footer
+    // and the HUD prints it when a gate holds.
+    auto riftDestination = [&](const std::string& dest, x3::phys::Vec3& out,
+                               std::string* why = nullptr) -> bool {
+        auto no = [&](const char* reason) { if (why) *why = reason; return false; };
+        const x3::game::Destination* d = x3::game::findDestination(dest);
+        if (!d) return no("not a place this game knows about");
+        const std::string k = d->key;
+
+        // --- The planet. These land ON the streamed terrain (the streamer realizes the
+        //     region around the new camera position on the next residency pass).
+        auto onTerrain = [&](float x, float z) {
+            float p3[3];
+            x3::game::placeOnTerrain(x, z, p3);
+            out = { p3[0], p3[1] + 1.2f, p3[2] };
+            return true;
+        };
+
+        // --- The hub itself (sub-level R1).
+        if (k == "hub") {
+            if (!rifthub.built()) return no("the rift chamber is not built in this world");
+            const x3::phys::Vec3 hs = rifthub.spawn();
+            out = { hs.x, hs.y + 1.0f, hs.z };
+            return true;
+        }
+        // --- Back home: the facility, ANY floor. F1 = the detention lobby (the rift is
+        //     a two-way door — you are not stranded down there), F7 = the executive floor.
+        if (d->group == x3::game::DestGroup::Facility) {
+            if (!canonFloor.valid()) return no("the canonical tower is not built in this world");
+            const int fl = (k.size() == 2 && k[0] == 'f') ? (k[1] - '0') : 0;
+            if (fl < 1) return no("unknown floor");
+            if (!floorLobby(fl, out))
+                return no("that floor has no landing in the loaded tower data");
+            return true;
+        }
+        // --- The Deep. The club is lazy-built (same as the 1127 descent) so a rift is
+        //     a real second way in.
+        if (k == "club") {
+            if (!club1127.built()) {
+                club1127.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+                x3::logInfo("[rift] CLUB 1127 built on demand (the rift is a second way in)");
+            }
+            if (!club1127.built()) return no("Club 1127 failed to build");
+            const x3::phys::Vec3 cs = club1127.spawn();
+            out = { cs.x, cs.y + 1.0f, cs.z };
+            return true;
+        }
+        // --- THE DESCENT: every offshoot pocket, not just the Crystal Veins.
+        if (d->group == x3::game::DestGroup::Underworld) {
+            const char* band = (k == "granite")  ? "Granite"
+                             : (k == "basalt")   ? "Basalt"
+                             : (k == "obsidian") ? "Obsidian"
+                             : (k == "crystal")  ? "Crystal"
+                             : (k == "magma")    ? "Magma" : nullptr;
+            if (!band) return no("unknown strata band");
+            if (!liveStrataBuilt)
+                return no("the strata are not built yet - ride the elevator below F1 first");
+            if (!strataPocket(band, out))
+                return no("that band has no offshoot pocket in this build");
+            return true;
+        }
+        // --- The planet.
+        if (k == "crash") return onTerrain(140.0f, 205.0f);    // the Crash Site (SEAM 3)
+        if (k == "city")  return onTerrain(-200.0f, 425.0f);   // the city region anchor
+        if (k == "river") {
+            // Stand on the BANK of the real carved river (worldRiverNodes is the same
+            // spline the carve + the water ribbon use).
+            uint32_t n = 0;
+            const x3::game::WorldRiverNode* nodes = x3::game::worldRiverNodes(n);
+            if (!nodes || n < 2) return no("this world has no carved river");
+            const auto& a2 = nodes[n / 2];
+            const auto& b2 = nodes[n / 2 + 1 < n ? n / 2 + 1 : n / 2];
+            float tx = b2.x - a2.x, tz = b2.z - a2.z;
+            const float tl = std::sqrt(tx * tx + tz * tz);
+            if (tl > 1e-3f) { tx /= tl; tz /= tl; }
+            const float off = x3::game::kWorldRiverHalfWidth + 14.0f;   // clear of the water
+            return onTerrain(a2.x - tz * off, a2.z + tx * off);
+        }
+        if (k == "ridge") {
+            // The highest ground on a ring out from the facility — a real ridge, found
+            // by asking the terrain, not by inventing a coordinate.
+            float bx = 0.0f, bz = 0.0f, bh = -1e9f;
+            for (int i = 0; i < 64; ++i) {
+                const float a3 = (float)i * (6.2831853f / 64.0f);
+                const float x = std::cos(a3) * 620.0f, z = std::sin(a3) * 620.0f;
+                const float h = x3::game::terrainHeightAtWorld(x, z);
+                if (h > bh) { bh = h; bx = x; bz = z; }
+            }
+            if (bh <= -1e8f) return no("this world has no terrain");
+            return onTerrain(bx, bz);
+        }
+        // --- A DEV WORLD. It is a separate build; there is nothing in THIS world to
+        //     teleport to. The world menu offers it as a world LOAD; a rift gate holds
+        //     and says so. Neither one lies about it.
+        return no("a separate world - it must be LOADED, not walked to");
+    };
+
     // Join the async boot-manifest GLB warmup (no-op when none was kicked): the
     // world build below takes model-cache hits instead of repeating parse/decode.
     x3::asset::joinModelPreload();
@@ -1477,8 +1741,30 @@ int runDefaultHost(HostContext& hc) {
             // visual props (ModularSciFi + Warehouse kits) + extra PointLights (a flickering
             // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
             // truth; missing GLBs simply aren't drawn (the level never breaks).
+            // WAVE (barrels-universal): the canon interactive loop is one of only two hosts
+            // with a live fire path (the other is Level1Game), so its BarrelSystem is where
+            // "barrels explode game-wide" actually lands. Init it BEFORE the dressing builds
+            // so the set-dressers REGISTER their plain fuel-drum clutter (hall + boss/storage
+            // rooms) as explodable barrels via this sink, instead of drawing static,
+            // unshootable props over them. (Emissive lab vats stay decorative — not routed.)
+            canonBarrels.init(*device, *physics);
+            auto canonBarrelSink = [&canonBarrels](float x, float floorY, float z) {
+                canonBarrels.spawn(x, floorY, z);
+            };
+            canonDressing.setExplodableBarrelSink(canonBarrelSink);
             canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
             if (bootProf) bootProfMs("canonDressing");
+            // WAVE (cell-door): the owner wants the red tank by the cell door to violently
+            // explode when shot (DJBooth's barrel fireball + chain). That still happens — but
+            // the drum is at the MAIN HALL MOUTH, just outside the cell door, NOT inside the
+            // 4 m cell. MERGE 2026-07-12: the fold spawned it explicitly in the cell's debris
+            // corner; playable-build's declutter (3f7e6d0) had already CUT that corner — "the
+            // Cell is TINY, and CLUTTERED" (owner, live). Re-spawning it here would have put
+            // the barrel straight back into the room we just cleaned. It is not lost: the hall
+            // clutter drum registers through canonBarrelSink during canonDressing.build (see
+            // cell_dressing.cpp, main-hall section), as do the recipe/boss/storage drums — so
+            // "barrels explode game-wide" is fully intact, and the shootable drum is the first
+            // thing Jake sees when he steps out of the cell.
             // WAVE-3: recipe-dress every other classifiable room (surface-library
             // panels + zone lights + hero props). Jake's cell stays CellDressing's.
             // Recipe rooms OWN their light statement (bible: one key per room), so the
@@ -1486,12 +1772,28 @@ int runDefaultHost(HostContext& hc) {
             // recipe lights are appended — selectVisibleCanonLights budgets the rest.
             {
                 const x3::game::CanonBeats rdBt = x3::game::canonBeats(canonFloor);
+                canonRooms.setExplodableBarrelSink(canonBarrelSink);  // WAVE (barrels-universal)
                 canonRooms.build(*device, x3::game::assetRoot() + "/surface_library",
                                  x3::game::convertedGlbRoot(), canonFloor, rdBt);
+                x3::logInfo("--world canonlevel: " + std::to_string(canonBarrels.count()) +
+                            " explodable barrel(s) total (cell + hall + recipe fuel drums)");
                 if (canonRooms.roomsDressed() > 0) {
+                    // 2026-07-12 — THE CELL'S STRAY LIGHT (Tim: the cell is BLOWN-OUT WHITE
+                    // with the flashlight on, and PITCH BLACK with it off). Jake's Cell is
+                    // deliberately classified ZNone (CellDressing hand-dresses it), so
+                    // hasRecipe() is FALSE for it — and the generic buildCanonLights entry
+                    // for the cell therefore SURVIVED this erase: one warm tungsten at
+                    // (2.0, 1.50, 40.0), intensity 3.2, range 8.0, hung 0.25 m under the
+                    // ceiling of a 4 m room. It was contributing ~2.7x what the cell's own
+                    // "key" fluorescent did — scorching the ceiling and the upper walls to
+                    // white — while the fixtures the art pass carefully tuned did nothing.
+                    // CellDressing OWNS this room's light statement exactly as a recipe room
+                    // does, so the cell's generic light is dropped here too, and the failing
+                    // tube (cell_dressing.cpp) is raised to actually carry the room.
+                    const uint32_t cellRoom = rdBt.jakeCell;
                     canonLights.erase(std::remove_if(canonLights.begin(), canonLights.end(),
                         [&](const x3::game::CanonLight& cl) {
-                            return canonRooms.hasRecipe(cl.room);
+                            return canonRooms.hasRecipe(cl.room) || cl.room == cellRoom;
                         }), canonLights.end());
                     canonLights.insert(canonLights.end(),
                                        canonRooms.lights().begin(), canonRooms.lights().end());
@@ -1662,19 +1964,143 @@ int runDefaultHost(HostContext& hc) {
                 if (!lobbyRooms.empty()) {
                     const float cabHY = 0.15f;
                     const x3::game::CanonRoom& L0 = canonFloor.rooms[lobbyRooms.front()];
-                    std::vector<float> stops; stops.reserve(lobbyRooms.size());
-                    std::vector<std::string> labels; labels.reserve(lobbyRooms.size());
+                    std::vector<float> stops; stops.reserve(lobbyRooms.size() + 1);
+                    std::vector<std::string> labels; labels.reserve(lobbyRooms.size() + 1);
+                    // ---- W-RIFT: THE RIFT STOP IS STOP 0. The cab's stop list is ordered
+                    // low -> high, so sub-level R1 (the buried rift chamber, Y=-78) goes in
+                    // at the BOTTOM and every lobby floor shifts up one. It is a real floor
+                    // on this cab in every way — a stop, a label, a row on the cabin
+                    // directory — except that it is LOCKED OUT until the access code 4790 is
+                    // entered in the cabin (ElevatorSystem::stopLocked / kRiftAccessCode), so
+                    // callTo()/callNext() walk straight past it and the OLED shows a dead row.
+                    stops.push_back(kRiftFloorY + cabHY);
+                    labels.emplace_back("RIFT");
                     for (size_t li = 0; li < lobbyRooms.size(); ++li) {
                         stops.push_back(canonFloor.rooms[lobbyRooms[li]].y0() + cabHY);
                         labels.emplace_back("F" + std::to_string(li + 1));
                     }
                     elevator.build(scene, *device, *physics, L0.cx, L0.cz,
-                                   1.4f, cabHY, 1.4f, stops, /*startStop*/0);
+                                   1.4f, cabHY, 1.4f, stops, /*startStop*/1);   // boot on F1
+                    elevator.setRiftStop(0);
+
+                    // ---- SUB-LEVEL R1: the hub + the way in ------------------------------
+                    // The hub is the SAME module `--world rifthub` builds — one build path,
+                    // authored at a region origin west of the shaft and deep under it, with a
+                    // real doorway cut in its -Z wall. The approach corridor seals into that
+                    // doorway. Nothing here is a copy of the dev world; the dev world is the
+                    // same code with the default origin.
+                    {
+                        const uint32_t riftEnt0 = scene.size();
+                        x3::game::Rifthub::Desc hd;
+                        hd.origin      = { L0.cx - 44.5f, kRiftFloorY, L0.cz + 46.0f };
+                        hd.doorway     = true;
+                        hd.doorCenterX = 7.0f;     // between the S and SE gates — you enter BETWEEN gates
+                        hd.doorHalfW   = 1.7f;
+                        hd.doorH       = 3.4f;
+                        rifthub.build(scene, *device, *physics, riftTriggers, hd);
+
+                        x3::game::RiftDepths::Desc dd;
+                        dd.shaft   = { L0.cx, kRiftFloorY, L0.cz };
+                        dd.hubDoor = rifthub.doorCenter();
+                        dd.doorHalfW = hd.doorHalfW;
+                        dd.doorH     = hd.doorH;
+                        riftDepths.build(scene, *device, *physics, dd);
+                        // PVS: stamp every entity the region authored with kRiftRoom, so
+                        // the facility never submits the hub (and the hub never submits the
+                        // facility). The host adds the tag to the visible set only while
+                        // the eye is down here.
+                        for (uint32_t ei = riftEnt0; ei < scene.size(); ++ei)
+                            scene.get(ei).roomId = x3::game::kRiftRoom;
+
+                        // The strata bore is REAL rock at this depth: bore the landing +
+                        // corridor out of it (StrataWorld::setKeepOut runs before the shaft
+                        // builds, in soupUpElevator below).
+                        x3::phys::Vec3 kmn, kmx;
+                        riftDepths.zoneAabb(kmn, kmx);
+                        liveStrata.setKeepOut(kmn, kmx);
+
+                        // The rift REGION = the depths AABB unioned with the hub's shell.
+                        riftRegMin = { std::min(kmn.x, hd.origin.x - 21.0f), kRiftFloorY - 4.0f,
+                                       std::min(kmn.z, hd.origin.z - 21.0f) };
+                        riftRegMax = { std::max(kmx.x, hd.origin.x + 21.0f), kRiftFloorY + 12.0f,
+                                       std::max(kmx.z, hd.origin.z + 21.0f) };
+                        riftBuilt = rifthub.built() && riftDepths.built();
+
+                        // ---- THE PAYOFF: re-aim the 8 gates at REAL PLACES IN THIS WORLD.
+                        // The gates ship pointed at the 8 dev `--world` names. In the ONE
+                        // WORLD those names are shortcuts, not destinations — so the hub's
+                        // rifts are re-aimed at anchors the host can actually deliver you to
+                        // (see riftDestination() in the loop). Order matches the gate ring:
+                        // gate 1 = +X, then clockwise.
+                        static const char* kCanonDest[8] = {
+                            "club 1127",        // the disco at The Deep (Y=-200)
+                            "crystal caves",    // the strata's Crystal-Veins offshoot
+                            "the crash site",   // the streamed exterior, off the +Z breach face
+                            "the city",         // the streamed city region
+                            "the river valley", // the carved river / swim water
+                            "the cliffs",       // the terrain landmark ridge
+                            "facility F1",      // the detention lobby (the way home)
+                            "facility F7",      // the executive floor
+                        };
+                        for (uint32_t ri = 0; ri < rifthub.portalCount() && ri < 8; ++ri)
+                            rifthub.setDestination(ri, kCanonDest[ri]);
+
+                        // ---- THE LORE: how the player finds out R1 exists, and how to
+                        // reach it. A maintenance log left on the Security room's glass.
+                        {
+                            const x3::game::CanonBeats lb = x3::game::canonBeats(canonFloor);
+                            uint32_t lr = lb.security;
+                            if (lr == x3::game::kNoRoom) lr = lb.research;
+                            if (lr == x3::game::kNoRoom) lr = lb.mainHall;
+                            if (lr != x3::game::kNoRoom) {
+                                const x3::game::CanonRoom& rm = canonFloor.rooms[lr];
+                                const uint32_t loreEnt0 = scene.size();
+                                // The glass hangs at READING height (the HoloTerminal's pos
+                                // IS the panel center — at floor Y it lies on the deck).
+                                riftLore.build(scene, *device,
+                                               x3::phys::Vec3{ rm.cx, rm.y0() + 2.05f, rm.cz + 1.2f },
+                                               /*yaw*/0.0f, /*w*/1.5f, /*h*/0.95f,
+                                               /*ceilingY*/rm.y1() - 0.16f);
+                                riftLore.setLayout(x3::game::HoloTerminal::Layout::Readout);
+                                riftLore.setTextColor(1.0f, 0.72f, 0.30f, 1.0f);   // maintenance amber
+                                riftLore.setLines({
+                                    "FACILITY MAINTENANCE - LOG 41",
+                                    "SUB-LEVEL R1 (\"RIFT CHAMBER\")",
+                                    "",
+                                    "R1 WAS TAKEN OFF THE CAR PANEL AFTER THE",
+                                    "THIRD CONTAINMENT EVENT. THE FLOOR IS STILL",
+                                    "ON THE HOIST - IT JUST DOES NOT SHOW.",
+                                    "",
+                                    "CABIN OVERRIDE: 4790",
+                                    "RIDE DOWN. TAKE THE HALL WEST, THEN LEFT.",
+                                    "DO NOT GO ALONE. - K. VOSS, FACILITIES",
+                                });
+                                for (uint32_t ei = loreEnt0; ei < scene.size(); ++ei)
+                                    scene.get(ei).roomId = lr;
+                                x3::logInfo("--world canonlevel: the RIFT maintenance log (code 4790) "
+                                            "is on the glass in '" + rm.name + "'");
+                            }
+                        }
+
+                        // CAPTURE HOOK (headless only, mirrors the dev world's
+                        // X3_RIFTHUB_OPEN): X3_RIFT_OPEN=1 puts the RIFT row on the cabin
+                        // panel and fires every gate, so a still can show the unlocked
+                        // panel + the open membranes without walking the level by hand.
+                        if (std::getenv("X3_RIFT_OPEN")) {
+                            elevator.unlockRift();
+                            for (uint32_t ri = 0; ri < rifthub.portalCount(); ++ri)
+                                rifthub.onTrigger(rifthub.portal(ri).triggerId);
+                            for (int w = 0; w < 240; ++w) rifthub.tick(1.0f / 60.0f, scene);
+                            x3::logInfo("X3_RIFT_OPEN=1: RIFT stop unlocked + all 8 gates OPEN (capture)");
+                        }
+                    }
+
                     soupUpElevator(L0.cx, L0.cz, labels);
                     x3::logInfo("--world canonlevel: THE REAL ELEVATOR live in the lobby spine at (" +
                                 std::to_string(L0.cx) + ", " + std::to_string(L0.cz) + ") — " +
-                                std::to_string(stops.size()) + " stops, F1-F" +
-                                std::to_string(stops.size()) + "; E to summon/ride, 1127 for The Deep");
+                                std::to_string(stops.size()) + " stops, RIFT + F1-F" +
+                                std::to_string(stops.size() - 1) +
+                                "; E to summon/ride, 1127 for The Deep, 4790 for SUB-LEVEL R1");
                 }
             }
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
@@ -2158,6 +2584,9 @@ int runDefaultHost(HostContext& hc) {
     // (missing GLBs fall back to the energy pistol). ====================
     x3::game::Arsenal arsenal;
     arsenal.loadViewmodels(*device, x3::game::riggedGlbRoot());
+    // Battery cells (canonlevel) grant Lightning-Gun charge (stacks to the 300 cap).
+    if (canonWorld && canonPlay.built())
+        canonPlay.setChargeSink([&arsenal](int amt) { arsenal.grantCharge((float)amt); });
     x3::boot::mark("weapon viewmodels (GLBs)");
 
     // ==================== THIRD-PERSON VIEW (FIRST MILESTONE) ====================
@@ -2557,6 +2986,20 @@ int runDefaultHost(HostContext& hc) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
+    // RT DEFAULT ON for ray-tracing-capable devices (owner: "Ray Tracing default
+    // should be ON on the 3090 Ti"). Gated on rayTracingSupported() so the fleet's
+    // non-RT boxes (1080 Ti / 980 Ti) keep the raster/SSAO fallback byte-identical.
+    // RT AO = ground-truth contact occlusion; DDGI = real bounce GI — together the
+    // proper fix for "dark rooms / black props / can't see without the flashlight".
+    // r_rtshadows already defaults 2 (auto-0 without RT); r_ssr already 1.
+    if (device && device->rayTracingSupported()) {
+        console->set("r_rtao", "1");
+        console->set("r_ddgi", "1");
+        x3::logInfo("[rt] ray-tracing device detected -> RT AO + DDGI GI default ON");
+    } else {
+        x3::logInfo("[rt] no ray-tracing device -> raster/SSAO fallback (RT default off)");
+    }
+
     // --cullpath <n> / --hzb: seed the D15 GPU-cull cvars from the CLI so every
     // headless path (smoketest / screenshots / bench) can run with the GPU cull on.
     if (cullPathArg != INT_MIN) {
@@ -2905,7 +3348,27 @@ int runDefaultHost(HostContext& hc) {
         auto lightFloor = [&](x3::game::L1Floor f) {
             const x3::game::L1RoomDef& r = tbl[(uint32_t)f];
             const float kIntensity = 3.2f;
-            const float colR = 1.00f * kIntensity, colG = 0.86f * kIntensity, colB = 0.62f * kIntensity;
+            // WAVE-2B (LD review #1): the dev capture-rig lit every spire floor with the
+            // SAME warm tungsten, which is why F3..F7 read pixel-identical. Tint the rig
+            // per floor per the zone colour ladder (docs/design/TEXTURE_DESIGN_STRATEGY
+            // §1.2) so --capture-spire shows the escalation the live game now carries via
+            // its accent lights + emissive landmarks. Base hue defaults warm (B1/F1/F2).
+            float baseR = 1.00f, baseG = 0.86f, baseB = 0.62f;   // warm tungsten (default)
+            float fillR = 3.6f,  fillG = 3.8f,  fillB = 4.2f;    // cool key fill (default)
+            switch (f) {
+                case x3::game::L1Floor::F3:                       // Genetics — vat GREEN
+                    baseR=0.42f; baseG=1.00f; baseB=0.52f; fillR=1.9f; fillG=4.2f; fillB=2.4f; break;
+                case x3::game::L1Floor::F4:                       // Cybernetics — cold CYAN
+                    baseR=0.45f; baseG=0.88f; baseB=1.05f; fillR=2.0f; fillG=3.6f; fillB=4.6f; break;
+                case x3::game::L1Floor::F5:                       // Drone — industrial AMBER
+                    baseR=1.08f; baseG=0.74f; baseB=0.38f; fillR=4.6f; fillG=3.2f; fillB=1.8f; break;
+                case x3::game::L1Floor::F6:                       // Alien — BIOLUME teal
+                    baseR=0.34f; baseG=1.00f; baseB=0.90f; fillR=1.7f; fillG=4.2f; fillB=3.9f; break;
+                case x3::game::L1Floor::F7:                       // Executive — BRASS/warm
+                    baseR=1.08f; baseG=0.92f; baseB=0.60f; fillR=4.6f; fillG=4.0f; fillB=2.8f; break;
+                default: break;                                  // B1/F1/F2 stay warm neutral
+            }
+            const float colR = baseR * kIntensity, colG = baseG * kIntensity, colB = baseB * kIntensity;
             const float lightY = r.y0 + r.ceil - 0.30f;            // just below the ceiling
             const float range  = std::max(7.5f, r.ceil + 3.5f);
             const int   n      = (int)std::ceil((r.x1 - r.x0) / 4.0f);
@@ -2930,7 +3393,7 @@ int runDefaultHost(HostContext& hc) {
                 x3::rhi::PointLight fill;
                 fill.pos[0] = r.x1 - 12.0f; fill.pos[1] = r.y0 + 2.4f; fill.pos[2] = 0.0f;
                 fill.range  = 16.0f;
-                fill.color[0] = 3.6f; fill.color[1] = 3.8f; fill.color[2] = 4.2f;
+                fill.color[0] = fillR; fill.color[1] = fillG; fill.color[2] = fillB;
                 pls.push_back(fill);
             }
             device->setPointLights(pls.data(), (uint32_t)pls.size());
@@ -2965,6 +3428,28 @@ int runDefaultHost(HostContext& hc) {
             device->setCamera(camX, camY, camZ, camYaw, camPit, camFov);
             const x3::phys::Vec3 camEye{ camX, camY, camZ };
             lightFloor(s.floor);
+            // WAVE-2B (LD review #1): the arrival vantage sits at the plate's EAST end,
+            // OUTSIDE any wing room, so wing_dressing::applyEyeFog is a no-op and every
+            // floor inherited the SAME default blue depth-fog — the single biggest reason
+            // F3..F7 read pixel-identical. Paint the capture's atmosphere with each floor's
+            // ZONE HUE (the colour ladder) so the escalation reads in one glance; this is
+            // the same per-zone fog the live game applies once the player steps into the
+            // wing, surfaced here at the arrival where the LD judged it. applyEyeFog leaves
+            // it as-is at this vantage, so it survives the settle ticks. Spire floors only;
+            // B1/F1/F2 keep a cool-neutral haze.
+            {
+                x3::rhi::IRenderDevice::FogParams fg;
+                fg.enabled = true; fg.density = 0.018f; fg.start = 2.0f; fg.maxOpacity = 0.82f;
+                switch (s.floor) {
+                    case x3::game::L1Floor::F3: fg.color[0]=0.04f; fg.color[1]=0.15f; fg.color[2]=0.07f; break; // Genetics GREEN
+                    case x3::game::L1Floor::F4: fg.color[0]=0.04f; fg.color[1]=0.11f; fg.color[2]=0.17f; break; // Cybernetics CYAN
+                    case x3::game::L1Floor::F5: fg.color[0]=0.17f; fg.color[1]=0.09f; fg.color[2]=0.03f; break; // Drone AMBER
+                    case x3::game::L1Floor::F6: fg.color[0]=0.03f; fg.color[1]=0.15f; fg.color[2]=0.13f; break; // Alien TEAL
+                    case x3::game::L1Floor::F7: fg.color[0]=0.17f; fg.color[1]=0.13f; fg.color[2]=0.06f; break; // Executive BRASS
+                    default:                    fg.color[0]=0.05f; fg.color[1]=0.06f; fg.color[2]=0.10f; break; // cool neutral
+                }
+                device->setFog(fg);
+            }
 
             const std::string outPath = captureSpireDir + "/spire_" + s.tag + ".png";
             const int kSettle = 24;   // enough frames for shadows + skinning + doors to fully open
@@ -3025,8 +3510,132 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo(std::string("--capture-spire: ") + (allOk ? "all 8 floors captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
+        // UNION of both lines: playline-fold's RAGDOLL-TEARDOWN GAP FIX (game + Spire +
+        // canonPlay/canon45 ragdolls out BEFORE the world dies -- this exit path skipped it
+        // entirely) PLUS playable-build's own teardowns, which shutdownGameSystems() does
+        // not cover. Order matters: bodies/ragdolls first, then the streamed world.
+        shutdownGameSystems();
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
-        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
+        shutdownCanonStream();          // SEAM 3: region/terrain bodies out before physics dies
+        physics->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return allOk ? 0 : 1;
+    }
+
+    // ---- --capture-wings: F2-F7 WEST-WING dressing proof. Parks the camera INSIDE each
+    // floor's big signature hall (the west wing) looking across it, lights the plate, ticks
+    // a few settle frames so the wing recipe dressing + per-zone fog resolve, and captures
+    // floors27_<floor>.png. One still per distinct floor theme (medical/genetics/cyber/
+    // drone/salvari/exec). Reuses game.drawWorldExtras (which now draws the wing dressing).
+    if (captureWings) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(captureWingsDir, mkec);
+        x3::logInfo("--capture-wings: rendering F2-F7 west wings to " + captureWingsDir);
+        const x3::game::L1RoomDef*    tbl = x3::game::level1Rooms();
+        const x3::game::Level1Layout& Lc  = game.layout();
+        const float dt = 1.0f / 60.0f;
+        struct WingShot { const char* tag; x3::game::L1Floor floor; float hallCx, hallHw; };
+        const WingShot shots[] = {
+            { "f2", x3::game::L1Floor::F2, -38.0f, 10.0f },
+            { "f3", x3::game::L1Floor::F3, -38.0f, 10.0f },
+            { "f4", x3::game::L1Floor::F4, -40.0f, 11.0f },
+            { "f5", x3::game::L1Floor::F5, -44.0f, 26.0f },
+            { "f6", x3::game::L1Floor::F6, -42.0f, 13.0f },
+            { "f7", x3::game::L1Floor::F7, -40.0f, 11.0f },
+        };
+        // Light the hall: a warm ceiling row (two rows in the big bays) + a cool fill by
+        // the camera so the near dressing reads (dev capture lighting, not gameplay).
+        auto lightHall = [&](const WingShot& s, const x3::phys::Vec3& eye) {
+            const x3::game::L1RoomDef& r = tbl[(uint32_t)s.floor];
+            const float lightY = r.y0 + r.ceil - 0.35f;
+            const float range  = std::max(9.0f, r.ceil + 5.0f);
+            std::vector<x3::rhi::PointLight> pls;
+            const bool twoRows = (r.zHalf >= 12.0f);
+            for (int i = -3; i <= 3; ++i) {
+                x3::rhi::PointLight pl;
+                pl.pos[0] = s.hallCx + i * (s.hallHw * 0.55f); pl.pos[1] = lightY;
+                // UN-HACKED (engine fix 5c35d65). ed76165 pushed these to 5.6/5.0/3.9
+                // because "AUTHORED mid-dark surfaces read underexposed even with
+                // auto-exposure at aeMax" — that underexposure WAS the 1/pi bug: every
+                // dressed wall/floor/ceiling panel AND every kit prop draws through
+                // drawMeshPBR (they all carry an mr map), so the whole dressed room shaded
+                // at 1/pi of the graybox beside it. mesh.frag now lights them honestly, so
+                // the direct-light boost double-counts and blows the halls out. Colors go
+                // back to the pre-crutch rig (3.1/2.7/2.0).
+                // The RANGE x1.4 is NOT a brightness hack — it is geometric reach: this row
+                // hangs at the CEILING of an 8-12 m wing hall and must still reach the floor.
+                // It stays.
+                pl.range = range * 1.4f; pl.color[0] = 3.1f; pl.color[1] = 2.7f; pl.color[2] = 2.0f;
+                pl.pos[2] = twoRows ? -r.zHalf * 0.4f : 0.0f; pls.push_back(pl);
+                if (twoRows) { pl.pos[2] = r.zHalf * 0.4f; pls.push_back(pl); }
+            }
+            x3::rhi::PointLight fill;
+            fill.pos[0] = s.hallCx + s.hallHw - 3.0f; fill.pos[1] = r.y0 + 2.6f; fill.pos[2] = 0.0f;
+            // UN-HACKED with the ceiling row above: colour back to the pre-crutch 3.2/3.4/3.9;
+            // range 26 (reach across a wide hall) is geometry, not brightness — it stays.
+            fill.range = 26.0f; fill.color[0] = 3.2f; fill.color[1] = 3.4f; fill.color[2] = 3.9f;
+            pls.push_back(fill);
+            // The dressing's OWN motivated keys (over the consoles/tanks/racks) — without
+            // these the metallic kit props read black under the distant ceiling row.
+            game.wingFloorLights(eye, pls);
+            device->setPointLights(pls.data(), (uint32_t)pls.size());
+        };
+        // BLACK-PROP FIX. The kit props (drones/crates/chairs/consoles) carry dark-
+        // albedo METALLIC MR maps; with no baked environment their diffuse is ~0 and
+        // there is nothing to reflect, so they render as black silhouettes while the
+        // diffuse graybox shell + emissive proc-geo light fine. Give the capture path
+        // the same recipe the ship-interior/intro-cockpit hosts use: a healthy interior
+        // ambient fill + setIblProbe(true) so the engine bakes the lit hall into the
+        // environment cube and the metals reflect it (per-shot kSettle frames let the
+        // probe bake resolve). Set once — the state persists across the shot loop.
+        // POST-ENGINE-FIX (5c35d65): ambient/IBL was NOT part of the 1/pi bug (the fix
+        // touched only the DIRECT brdf), so this fill and the probe are honest and stay —
+        // the probe in particular is what gives the metals something real to reflect, and
+        // it pairs with the engine's r_metalambient specular floor. 0.34 also sits BELOW
+        // the engine's own default ambient (0.42/0.44/0.50), so it is not an over-unity lift.
+        device->setAmbient(0.34f, 0.36f, 0.42f);
+        device->setIblProbe(true);
+        // UN-HACKED: the 1.35 EV bias was pure compensation — it existed because the
+        // PBR-shaded room was 1/pi dark and auto-exposure had already run out of headroom
+        // at aeMax. With honest lighting, AE has plenty of range; a fixed bias on top of it
+        // just clips the highlights. Neutral.
+        device->setExposure(1.0f);
+        bool allOk = true;
+        for (const WingShot& s : shots) {
+            const float baseY = Lc.floorBaseY[(uint32_t)s.floor];
+            const float camX = s.hallCx + s.hallHw - 2.5f;   // just inside the hall's east wall
+            const float camY = baseY + 2.0f, camZ = 0.0f;
+            const float camYaw = 3.14159265f, camPit = -0.10f, camFov = 82.0f;
+            const x3::phys::Vec3 camEye{ camX, camY, camZ };
+            const std::string outPath = captureWingsDir + "/floors27_" + std::string(s.tag) + ".png";
+            const int kSettle = 18;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                game.tick(dt, scene, *physics, camEye, camEye);
+                physics->step(dt);
+                scene.update(*physics);
+                device->setCamera(camX, camY, camZ, camYaw, camPit, camFov);
+                lightHall(s, camEye);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    scene.render(*device, frame);
+                    game.drawDoors(*device, frame);
+                    game.drawWorldExtras(*device, frame, scene);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--capture-wings: wrote " + outPath);
+            else { allOk = false; x3::logError("--capture-wings: capture FAILED for " + outPath); }
+        }
+        x3::logInfo(std::string("--capture-wings: ") +
+                    (allOk ? "all F2-F7 wings captured" : "one or more captures FAILED"));
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        shutdownGameSystems();   // RAGDOLL-TEARDOWN GAP FIX: game + Spire bodies/ragdolls out BEFORE the world dies (this exit path previously skipped it)
         physics->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -3184,6 +3793,74 @@ int runDefaultHost(HostContext& hc) {
             if (!chatTrees.start("lena", "first_meeting"))
                 x3::logWarn("--screenshot-dialog: lena first_meeting failed to start");
         }
+        // ---- W-RIFT / W-MENU: THE CAPTURE HOOKS -------------------------------------
+        // Three env knobs so the rift-network work can be PHOTOGRAPHED through the real
+        // code paths (no bespoke screenshot host, no faked frames):
+        //
+        //   X3_RIFT_TARGET=<gate>=<dest>  re-aim gate <gate> (1-based) at <dest> through
+        //                                 the SAME Rifthub::setDestination the console
+        //                                 calls — so the still shows the holoterminal's
+        //                                 REAL rebaked readout, not a caption.
+        //   X3_RIFT_TRAVERSE=<gate>       stand a virtual eye in gate <gate>'s throat and
+        //                                 run the EXACT traversal the live loop runs
+        //                                 (traversalPortal -> destination -> resolver),
+        //                                 then put the shot camera where it LANDS. A gate
+        //                                 that refuses does not move the camera, and the
+        //                                 log says why: a refusal photographs as a refusal.
+        //   X3_WORLD_MENU=1               draw the world/place directory over the still.
+        x3::game::WorldMenu shotMenu;
+        if (const char* rt = std::getenv("X3_RIFT_TARGET")) {
+            const std::string s(rt);
+            const size_t eq = s.find('=');
+            if (eq != std::string::npos && riftBuilt) {
+                const int g = std::atoi(s.substr(0, eq).c_str()) - 1;
+                if (g >= 0 && g < (int)rifthub.portalCount())
+                    rifthub.setDestination((uint32_t)g, s.substr(eq + 1));
+            }
+        }
+        if (const char* tv = std::getenv("X3_RIFT_TRAVERSE")) {
+            const int g = std::atoi(tv) - 1;
+            if (riftBuilt && g >= 0 && g < (int)rifthub.portalCount()) {
+                rifthub.onTrigger(rifthub.portal((uint32_t)g).triggerId);   // walk in
+                for (int w = 0; w < 240; ++w) rifthub.tick(1.0f / 60.0f, scene);  // settle OPEN
+                const x3::phys::Vec3 gp = rifthub.portal((uint32_t)g).worldPos;
+                const x3::phys::Vec3 throat{ gp.x, kRiftFloorY + 2.2f, gp.z };
+                const int tp = rifthub.traversalPortal(throat, 2.5f);
+                if (tp < 0) {
+                    x3::logWarn("[rift-capture] gate " + std::to_string(g + 1) +
+                                " takes you nowhere (dormant or collapsed)");
+                } else {
+                    const std::string dest = rifthub.destination((uint32_t)tp);
+                    x3::phys::Vec3 to{};
+                    std::string    why;
+                    if (riftDestination(dest, to, &why)) {
+                        ssX = to.x; ssY = to.y + 0.6f; ssZ = to.z;
+                        ssYaw = 0.6f; ssPitch = -0.05f;
+                        // X3_RIFT_LOOK="<yaw>,<pitch>" — aim the arrival shot (the
+                        // landing puts you somewhere real, but "somewhere real" is a
+                        // point, not a composition).
+                        if (const char* lk = std::getenv("X3_RIFT_LOOK")) {
+                            const std::string L(lk);
+                            const size_t cm = L.find(',');
+                            ssYaw = std::strtof(L.c_str(), nullptr);
+                            if (cm != std::string::npos)
+                                ssPitch = std::strtof(L.c_str() + cm + 1, nullptr);
+                        }
+                        const x3::game::Destination* dd = x3::game::findDestination(dest);
+                        x3::logInfo("[rift-capture] TRAVERSED gate " + std::to_string(tp + 1) +
+                                    " -> " + (dd ? dd->name : dest) + " at (" +
+                                    std::to_string(to.x) + ", " + std::to_string(to.y) + ", " +
+                                    std::to_string(to.z) + ")");
+                    } else {
+                        x3::logWarn("[rift-capture] gate " + std::to_string(tp + 1) +
+                                    " -> '" + dest + "': " + why + " — the gate holds");
+                    }
+                }
+            }
+        }
+        const bool shotWorldMenu = std::getenv("X3_WORLD_MENU") != nullptr;
+        if (shotWorldMenu) shotMenu.open();
+
         // ---- W4-2: --screenshot-vigil — seed a live VIGIL conversation ON the cell
         // glass (orange ink) before the settle frames so the bake lands in-frame.
         // The default hero camera already frames the terminal; a compact inline
@@ -3230,7 +3907,13 @@ int runDefaultHost(HostContext& hc) {
         // Production HUD for the capture (its own pulse clock; persists across the
         // settle frames). Arm the player so a weapon + ammo show in the arsenal.
         x3::ui::GameHud shotHud;
-        arsenal.select(0);   // pistol selected for the capture
+        // Weapon held in the capture. Default = pistol (slot 0); override with
+        // --set shot_weapon <name> to proof ANY gun's viewmodel skin headlessly —
+        // the QA gate for the per-weapon texture rebind (tools/rebind_weapon_textures.py).
+        {
+            const std::string shotWeapon = console->getString("shot_weapon");
+            if (shotWeapon.empty() || !arsenal.selectByName(shotWeapon)) arsenal.select(0);
+        }
         // --screenshot-alert: stage the LEVEL-3 LOCKDOWN for the proof shot —
         // force the alert, lock the zone doors, and shift every facility light
         // hard red (the same effects the live loop applies).
@@ -3409,7 +4092,46 @@ int runDefaultHost(HostContext& hc) {
             // frame (the LIVE-burst shot). With a LARGE settle (>30) skip the sparks
             // entirely so only the PERSISTENT scorch decal on the surface remains
             // visible (the decal-on-surface shot). One flag, two honest captures.
-            if (fxDemo && kSettleFrames <= 30 && i >= kSettleFrames - 3) {
+            if (fxLightning) {
+                // LIGHTNING proof shot. The --set shot_fire path fires along the LOOK
+                // axis, so the bolt is end-on and collapses into a blob at the crosshair
+                // (it proves the muzzle origin, not the bolt). Here the bolt runs ACROSS
+                // the view — mostly VERTICAL, perpendicular to the near-horizontal look —
+                // so the jagged forking zigzag actually reads. Capture-only.
+                const float hl = std::sqrt(fxLook.x * fxLook.x + fxLook.z * fxLook.z);
+                const x3::phys::Vec3 rightH = (hl > 1e-4f)
+                    ? x3::phys::Vec3{ fxLook.z / hl, 0.0f, -fxLook.x / hl }
+                    : x3::phys::Vec3{ 1.0f, 0.0f, 0.0f };
+                // Strike ~1.6 m ahead so it sits in open air in FRONT of the near wall.
+                // A path containing "impact" frames a SHORT bolt so the crackling arc
+                // tendrils dominate; otherwise a TALL bolt so the full zigzag reads.
+                // A path containing "long" runs a ~25 m bolt instead, to prove the fractal
+                // is SCALE-INVARIANT: the midpoint displacement is a FRACTION OF LENGTH
+                // and the depth is fixed, so a 25 m bolt must look as natural as a 2 m one
+                // (the old fixed-metre step is precisely what made short bolts read as
+                // coat hangers). Needs an open world — shoot it somewhere with depth.
+                const bool  impactShot = (screenshotPath.find("impact") != std::string::npos);
+                const bool  longShot   = (screenshotPath.find("long")   != std::string::npos);
+                const float ahead    = longShot ? 14.0f : 1.6f;   // far enough that the bolt fits in frame
+                const float boltTall = impactShot ? 0.5f : (longShot ? 12.0f : 1.9f);
+                const x3::phys::Vec3 strike{ ssX + fxLook.x * ahead,
+                                             ssY + fxLook.y * ahead - 0.35f,
+                                             ssZ + fxLook.z * ahead };
+                const x3::phys::Vec3 boltA{ strike.x - rightH.x * 0.35f, strike.y + boltTall,
+                                            strike.z - rightH.z * 0.35f };
+                const x3::phys::Vec3 boltB = strike;   // the bolt descends INTO the strike
+                // Spawn the bolt ONCE a few frames out (re-spawning each frame would reset
+                // its propagation age); it ages to full reach + a stable jagged shape by
+                // the captured frame. Arc-tendril impact AT the strike point.
+                // The bolt PROPAGATES at kLightningBoltSpeed (300 m/s), so a long bolt needs
+                // more age to fully connect: spawn it earlier (still inside kTracerTime).
+                if (i == kSettleFrames - (longShot ? 5 : 3))
+                    combatFx.addTracer(boltA, boltB, x3::game::WeaponFxKind::Lightning);
+                if (i == kSettleFrames - 2)
+                    combatFx.spawnImpact(boltB, x3::phys::Vec3{ -fxLook.x, 0.5f, -fxLook.z },
+                                         x3::game::WeaponFxKind::Lightning);
+            }
+            else if (fxDemo && kSettleFrames <= 30 && i >= kSettleFrames - 3) {
                 combatFx.spawnMuzzleFlash(fxBurst, fxDir);
                 // Sparks spray back toward the camera (normal = -look) so they read.
                 combatFx.spawnImpact(fxBurst, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z });
@@ -3425,6 +4147,35 @@ int runDefaultHost(HostContext& hc) {
                                    x3::phys::Vec3{ fxBurst.x + fxLook.x * 4.0f,
                                                    fxBurst.y + 0.6f,
                                                    fxBurst.z + fxLook.z * 4.0f });
+            }
+            // ---- MUZZLE PROOF (--set shot_fire 1): fire the HELD weapon from its own
+            // barrel tip every settle frame, so the still SHOWS the muzzle flash + the
+            // tracer LEAVING THE GUN. Pair with `--set shot_weapon <name>` to photograph
+            // each gun in turn — the eyeball gate for Tim's "the fire doesn't come from the
+            // barrel". The origin is weaponMuzzle() — the SAME origin the live fire block
+            // uses — so a passing still is a passing GAME, not a posed picture.
+            if (console->getInt("shot_fire") != 0) {
+                const x3::phys::Vec3 mz =
+                    weaponMuzzle(arsenal, *console, ssX, ssY, ssZ, ssYaw, ssPitch);
+                const x3::game::WeaponFxKind mk =
+                    x3::game::fxKindFromId(arsenal.current().muzzleFx);
+                const x3::phys::RayHit mh =
+                    physics->rayCast(ssEye, fxLook, 30.0f, x3::phys::Layer::Static);
+                const x3::phys::Vec3 hitP = mh.hit
+                    ? mh.point
+                    : x3::phys::Vec3{ ssX + fxLook.x * 12.0f, ssY + fxLook.y * 12.0f,
+                                      ssZ + fxLook.z * 12.0f };
+                combatFx.spawnMuzzleFlash(mz, fxLook, mk);
+                combatFx.addTracer(mz, hitP, mk);
+                // IMPACT at the hit point, keyed to the weapon's OWN impact preset — for
+                // Lightning this is the crackling arc-tendril ring (8e9f7d5). NOTE: that
+                // commit spawned the bolt from muzzleFromCamera(1.6, 0.20, 0.06) — the
+                // hardcoded lightning muzzle CRUTCH that 346f5e7 deleted on purpose. The
+                // origin here stays weaponMuzzle() (the measured per-weapon barrel tip);
+                // only the impact call is taken from 8e9f7d5.
+                combatFx.spawnImpact(hitP, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z },
+                                     x3::game::fxKindFromId(arsenal.current().impactFx));
+                combatFx.update(dt);
             }
             if (fxDemo) combatFx.update(dt);
             // --world canonlevel SCREENSHOT lighting + cull: feed the player's visible
@@ -3500,6 +4251,8 @@ int runDefaultHost(HostContext& hc) {
                          eyeRoom == facilityExterior.breachRoomHint()))
                         canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
                 }
+                if (riftInZone(ssEye.x, ssEye.y, ssEye.z))
+                    canonVisRooms.push_back(x3::game::kRiftRoom);   // W-RIFT capture vantage
                 scene.setRoomCullEnabled(true);
                 scene.setVisibleRooms(canonVisRooms);
                 std::vector<x3::rhi::PointLight> cl;
@@ -3525,8 +4278,42 @@ int runDefaultHost(HostContext& hc) {
                         streetLights.selectLights(ssEye.x, ssEye.y, ssEye.z, cl, 14);
                     }
                 }
+                // W-RIFT: a capture vantage inside sub-level R1 gets the hub's own rig
+                // (gate cores + keys + the hall) and the approach's failing strips —
+                // the same takeover the live loop does, or every rift shot is black.
+                if (riftLore.built()) riftLore.update(dt);   // bake the log for the still
+                if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z)) {
+                    rifthub.tick(dt, scene);      // the membranes must be ALIVE in a still
+                    riftDepths.tick(dt);
+                    riftLights(ssEye.x, ssEye.y, ssEye.z, cl);
+                }
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
+            }
+            // R11: the ELEVATOR CAB in a CAPTURE. The live loop feeds the cab's ceiling
+            // practical + disco spots (see the elevator block there), but the screenshot
+            // settle loop never did — so every headless shot of the car interior came
+            // back BLACK, and the cab's own atmosphere (which keys off the rider) never
+            // engaged either. A room you cannot photograph is a room you cannot art-
+            // direct, which is exactly how the cab stayed a graybox for this long.
+            if (elevator.built() && !elevator.pointLights().empty() && !canonWorld) {
+                std::vector<x3::rhi::PointLight> el = game.lightFixtures();
+                // FRONT of the list: level1 ships more than 64 fixtures, so appending
+                // would put the cab's own practical past the cap and truncate it away —
+                // the exact reason the first capture of the new cab came back black.
+                for (const auto& pl : elevator.pointLights())
+                    if (pl.color[0] + pl.color[1] + pl.color[2] > 0.001f)
+                        el.insert(el.begin(), pl);
+                if (el.size() > 64) el.resize(64);
+                device->setPointLights(el.data(), (uint32_t)el.size());
+            }
+            if (elevator.built()) {
+                // Camera-as-rider: the shot camera standing in the cab gets the cab's air.
+                elevator.applyCabAtmosphere(
+                    *device, x3::phys::Vec3{ ssEye.x, ssEye.y - 1.7f, ssEye.z });
+                // ...and the cab must TICK in a capture, or its OLEDs never bake and the
+                // floor directory (which is where the RIFT stop appears) photographs blank.
+                elevator.update(dt, scene, *physics);
             }
             // WORLD CARS staging: the capture camera FOLLOWS the driven car
             // (the drive host's chase framing around the shot-cam look angles).
@@ -3547,6 +4334,7 @@ int runDefaultHost(HostContext& hc) {
                 // characters (room-gated by the visible set above).
                 if (canonWorld && canonFloor.valid()) {
                     canonDressing.draw(*device, frame);
+                    canonBarrels.render(frame);   // WAVE (cell-door): explodable barrels + debris
                     canonRooms.draw(*device, frame, canonVisRooms);
                     canonRooms.applyZoneAtmosphere(*device,
                         canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z));
@@ -3560,6 +4348,11 @@ int runDefaultHost(HostContext& hc) {
                           uf.density  = 0.055f; uf.start = 0.15f; uf.maxOpacity = 0.94f;
                           device->setFog(uf);
                       } }
+                    // W-RIFT: sub-level R1's air wins over the room recipes for a
+                    // vantage down there (applied AFTER applyZoneAtmosphere, like the
+                    // underwater override above).
+                    if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z))
+                        rifthub.applyAtmosphere(*device);
                     canonDoors.drawMeshes(*device, frame);
                     facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
                     // WORLD CARS: parked cars + the (staged) live car — the same
@@ -3575,6 +4368,9 @@ int runDefaultHost(HostContext& hc) {
                         canonCrowdSkins[ci].draw(*device, frame, scene);
                         cityCrowdSkins[ci].draw(*device, frame, scene);
                     }
+                    // W-RIFT: the membrane FX (arcs + motes + light shafts) in the still.
+                    if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z))
+                        rifthub.drawFx(*device, frame);
                 }
                 // W2-A2 (W2-C's queued hook): the --screenshot path NEVER drew the FP
                 // viewmodel — the "pistol" in every prior cell shot was the hovering
@@ -3599,7 +4395,10 @@ int runDefaultHost(HostContext& hc) {
                 nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                 subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
                 subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
-                if (fxDemo) {
+                // --fx-demo OR the muzzle proof (--set shot_fire 1) needs the combat FX
+                // actually DRAWN into the still — otherwise the "flash at the barrel" gate
+                // photographs nothing at all.
+                if (fxDemo || console->getInt("shot_fire") != 0) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
                 }
@@ -3617,6 +4416,18 @@ int runDefaultHost(HostContext& hc) {
                 const x3::game::Arsenal::WeaponState& shotWs = arsenal.currentState();
                 shm.weapon = shotWd.name.c_str();
                 shm.ammoInMag = shotWs.ammoInMag; shm.ammoReserve = shotWs.reserve;
+                // CHARGE weapon (Lightning): show the CHARGE readout, same as the live
+                // loop. Without this the capture printed the weapon's mag/reserve — which
+                // for a charge weapon are INERT — so every lightning still LIED about the
+                // ammo model ("200 / 600" for a gun that has neither).
+                if (shotWd.usesCharge) {
+                    shm.isCharge  = true;
+                    shm.chargeCur = (int)(shotWs.charge + 0.5f);
+                    shm.chargeCap = (int)(shotWd.chargeCap + 0.5f);
+                    shm.chargeRegen     = arsenal.chargeRegenerating();
+                    shm.chargeRegenSlow = arsenal.chargeRegenSlow();
+                    shm.chargeSlowAbove = (int)(shotWd.chargeRegenSlowAbove + 0.5f);
+                }
                 // Feed the minimap RADAR + nameplates from the (capture) camera pose so
                 // the still shows the real radar: room outlines, any live enemy/ally
                 // blips, and head-anchored nameplates over on-screen hostiles.
@@ -3647,6 +4458,25 @@ int runDefaultHost(HostContext& hc) {
                     addShotRoom(slay.arenaCenter, slay.arenaHalf);
                 }
                 shotHud.draw(shotUi, shm, dt);
+                // W-MENU (X3_WORLD_MENU=1): the world/place directory over the still,
+                // fed by the SAME reachability resolver the live menu uses — so what the
+                // photograph says about each place is what the game says.
+                if (shotWorldMenu) {
+                    shotMenu.open();   // it closes itself on a pick; we never pick
+                    shotMenu.draw(shotUi, dt, [&](const x3::game::Destination& d) {
+                        x3::game::DestStatus st;
+                        x3::phys::Vec3 anchor{};
+                        std::string    why;
+                        if (riftDestination(d.key, anchor, &why)) {
+                            st.reach = x3::game::DestReach::Teleport;
+                        } else if (d.worldFlag[0] && d.worldFlag != worldMode) {
+                            st.reach = x3::game::DestReach::WorldLoad; st.reason = why;
+                        } else {
+                            st.reach = x3::game::DestReach::Unavailable; st.reason = why;
+                        }
+                        return st;
+                    });
+                }
                 shotUi.end();
                 // WORLD CARS hint line for the proof shots — the SAME bottom-
                 // center treatment as the live loop ("[E] Exit" while driving,
@@ -3973,10 +4803,13 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo("framepacing: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
         audio->shutdown();
         combatFx.shutdown(*device);
-        if (canonPlay.built()) canonPlay.shutdown();
-        if (canon45.built()) canon45.shutdown();
+        // RAGDOLL-TEARDOWN GAP FIX: the framepacing probe runs the REAL game loop, so a
+        // monster can die + ragdoll during it. Fan the full teardown (game + Spire + canon)
+        // -- supersedes the bare canonPlay/canon45 calls this path used to make. The two
+        // playable-build teardowns below are NOT part of shutdownGameSystems(), so they stay.
+        shutdownGameSystems();
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
-        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
+        shutdownCanonStream();          // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -4126,7 +4959,7 @@ int runDefaultHost(HostContext& hc) {
                                     std::sin(vmPitch),
                                     std::cos(vmPitch) * std::sin(vmYaw) };
                 x3::game::FireResult r = game.onFire(eye, dir, scene, *physics);
-                const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
+                const x3::phys::Vec3 m = weaponMuzzle(arsenal, *console, vmX, vmY, vmZ, vmYaw, vmPitch);
                 combatFx.addTracer(m, r.endPoint);
                 // Exercise the PER-WEAPON fire sound + FX-kind path under validation.
                 audio->playSound3D(currentFireSfx(), m.x, m.y, m.z, 0.85f, 1.0f);
@@ -4150,7 +4983,7 @@ int runDefaultHost(HostContext& hc) {
                                     std::sin(vmPitch),
                                     std::cos(vmPitch) * std::sin(vmYaw) };
                 x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
-                const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
+                const x3::phys::Vec3 m = weaponMuzzle(arsenal, *console, vmX, vmY, vmZ, vmYaw, vmPitch);
                 for (const auto& ray : shot.rays) {
                     // Pass the firing weapon's DamageType through so canon-aliens Adaptive Hide
                     // (currently on the SaurianWarlord row) reacts to the player's loadout.
@@ -4344,6 +5177,24 @@ int runDefaultHost(HostContext& hc) {
     // in the detention cell), facing +X down the level spine — or, in the terrain
     // world, on the hills near the world center.
     x3::game::Player player;
+    // WAVE (cell-door): wire the canon explodable barrels now that combatFx + player exist.
+    // FX sink -> DJBooth's fireball; damage sink -> splash the player if they detonate a
+    // barrel at point-blank (quadratic falloff to the blast edge). The radial impulse
+    // (inside BarrelSystem) already scatters chunks + chains to any neighbouring barrel.
+    if (canonWorld) {
+        canonBarrels.setFxSink([&combatFx](const float c[3], float radius) {
+            combatFx.spawnExplosion(x3::phys::Vec3{ c[0], c[1], c[2] }, radius);
+        });
+        canonBarrels.setDamageSink([&player](const float c[3], float radius, int damage) {
+            const x3::phys::Vec3 p = player.damageTargetPos();
+            const float dx = p.x - c[0], dy = p.y - c[1], dz = p.z - c[2];
+            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist >= radius || radius <= 0.0f) return;
+            const float fall = 1.0f - dist / radius;                 // 1 at center -> 0 at the edge
+            const int dmg = (int)((float)damage * fall * fall);      // quadratic falloff
+            if (dmg > 0) player.takeDamage(dmg);
+        });
+    }
     // W2-A2 (punch-list P1 #11): the player's OWN pain + landing sounds. W2-B added
     // the Player cue hook (mirrors the monster sink); this is the one-line host
     // subscription its report asked for. Pain alternates the two takes; both play
@@ -4604,6 +5455,26 @@ int runDefaultHost(HostContext& hc) {
         t.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
         t.trimBody(kTermMaxBody);
         vigilStop(t);
+    };
+    // W4-2 fix: resolve a numbered VIGIL choice (0-based). Echoes the chosen line,
+    // advances the tree (vigilRender re-prints the next node's menu ONCE), or closes
+    // the link when the choice targets `end`. Shared by the single-digit fast path
+    // (no Enter) and the Enter fallback so both behave identically. Returns true if
+    // `pick` was a valid, in-range choice (caller consumed the key), false otherwise.
+    auto vigilChoose = [&](x3::game::HoloTerminal& t, uint32_t pick) -> bool {
+        if (!vigilChat || !chatTrees.active() || pick >= chatTrees.choices().size())
+            return false;
+        t.clearInput();
+        t.addLine("> " + chatTrees.choices()[pick].text);
+        if (chatTrees.choose(pick)) {
+            vigilRender(t);                 // print the next node + its menu (once)
+        } else {                            // choice targeted "end" — close the link
+            t.addLine("");
+            t.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
+            t.trimBody(kTermMaxBody);
+            vigilStop(t);
+        }
+        return true;
     };
 
     // ---- RESCUED-NPC TALK (the captive girl). When the player presses E within
@@ -4967,6 +5838,10 @@ int runDefaultHost(HostContext& hc) {
         gameUi.init(*device, console.get(), sm);
         gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
+        // W-MENU: we got here THROUGH the world menu (main() re-dispatched with a
+        // spawn key). The player already chose — do not make them sit through the
+        // main menu again; drop them straight into the world they asked for.
+        if (!hc.spawnAtKey.empty()) gameUi.resumePlaying();
     }
     // Cursor is shown in any menu OR while the console is open; hidden only while
     // actively playing with the console closed. Tracked so we only call GLFW on a
@@ -5025,6 +5900,32 @@ int runDefaultHost(HostContext& hc) {
     bool prevRpgUp = false, prevRpgDown = false, prevRpgLeft = false, prevRpgRight = false;
     bool prevRpgEnter = false, prevRpgDrop = false, prevRpgEquip = false;
 
+    // ---- W-MENU: THE WORLD / PLACE SELECTION MENU (F6, or TRAVEL in the pause menu) --
+    // Every place the game has, in one screen, with an honest word about how each one
+    // is reached. It shares the fast-travel resolver above with the rift gates — one
+    // answer to "can I get there from here", used by both.
+    x3::game::WorldMenu worldMenu;
+    x3::ui::UiContext   menuUi;         // its own IMGUI-lite context (the map's pattern)
+    bool  prevWorldMenuKey = false;
+    bool  worldLoadRequested = false;   // a "LOADS WORLD" pick -> main()'s world-load loop
+
+    // ---- W-RIFT: THE RIFT CONSOLE, IN THE CANON GAME LOOP ---------------------------
+    // The consoles used to run ONLY under `--world rifthub`, because the canon loop had
+    // no UiContext to draw a control surface into. It has several now (the map screen,
+    // the RPG screens), so the rift consoles get theirs: walk to a gate's hanging glass,
+    // press [E], and the sliders/knobs/TARGET field are live IN THE GAME.
+    x3::ui::UiContext riftUi;
+    bool  prevRiftUseKey = false;
+    bool  prevRiftBs     = false;   // BACKSPACE edge for the typed TARGET field
+    bool  prevRiftEnter  = false;   // ENTER edge (commits the field)
+    float riftUiClock    = 0.0f;
+
+    // ---- W-MENU: LOAD AND PLACE -----------------------------------------------------
+    // main()'s world-load loop sets hc.spawnAtKey when the player picked a place that
+    // lives in ANOTHER world: build that world, then stand them where they asked for.
+    // Applied once, on the first frame the world is up (below, in the loop).
+    std::string pendingSpawnKey = hc.spawnAtKey;
+
     // ---- Main loop ----
     bool bootReported = false;   // [boot] one-shot: report on the FIRST presented frame
     int  bootTestExit = 0;       // --test-boottime verdict (0 pass / 1 over budget)
@@ -5032,6 +5933,27 @@ int runDefaultHost(HostContext& hc) {
     float oceanTime = 0.0f;   // --world ocean wave-animation clock (seconds)
     double frameCapPrev = glfwGetTime();   // r_maxfps limiter cursor
     while (!glfwWindowShouldClose(window)) {
+        // ---- W-MENU: LOAD AND PLACE. This world was built BECAUSE the player picked a
+        // place in it from the world menu (or stepped through a rift aimed at it). The
+        // world is standing now — put them where they asked to be, once, then forget it.
+        // A place this world turns out NOT to have is REFUSED out loud; the player just
+        // starts at this world's own spawn. Nothing is faked. ----
+        if (!pendingSpawnKey.empty()) {
+            const std::string want = pendingSpawnKey;
+            pendingSpawnKey.clear();
+            x3::phys::Vec3 to{};
+            std::string    why;
+            if (riftDestination(want, to, &why)) {
+                player.setFeetPosition(*physics, x3::phys::Vec3{ to.x, to.y - 1.6f + 0.3f, to.z });
+                const x3::game::Destination* d = x3::game::findDestination(want);
+                riftHudMsg   = std::string("ARRIVED -> ") + (d ? d->name : want.c_str());
+                riftHudTimer = 4.0f;
+                x3::logInfo("[world-load] placed the player at '" + want + "'");
+            } else {
+                x3::logWarn("[world-load] '" + want + "' has no anchor in this world (" +
+                            why + ") — starting at the world's own spawn");
+            }
+        }
         // ---- Frame cap (r_maxfps): sleep out the remainder of the frame budget so
         // vsync-off doesn't churn the GPU on invisible frames. No-op when vsync is on
         // (FIFO already blocks) since we'll already be slower than the cap, and when
@@ -5083,18 +6005,29 @@ int runDefaultHost(HostContext& hc) {
         // frame and only touch GLFW on a transition.
         const bool consoleOpen = hud.consoleOpen();
         consoleWasOpen = consoleOpen;   // (retained for parity; cursor logic below)
+        const bool riftConsoleOpen = rifthub.consoleOpen();   // W-RIFT: in the canon loop now
         const bool wantCursor = consoleOpen || gameUi.showCursor() || worldMapOpen ||
+                                worldMenu.isOpen() || riftConsoleOpen ||
                                 rpgUi.anyOpen();   // [W9-3 RPG] backpack/skill screens show the cursor
         if (wantCursor != cursorShown) {
             glfwSetInputMode(window, GLFW_CURSOR,
                              wantCursor ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
             cursorShown = wantCursor;
         }
+        // MOUSE WHEEL -> console scrollback while the console is open. Consume the
+        // wheel accumulator FIRST (before the weapon-cycle / world-map consumers
+        // below) so a wheel notch scrolls history instead of switching weapons.
+        // Up (positive) = older lines, down = toward the live bottom; ~3 lines/notch.
+        if (consoleOpen && g_weaponScroll != 0.0) {
+            hud.consoleScroll((int)(g_weaponScroll * 3.0));
+            g_weaponScroll = 0.0;
+        }
         // Whether a UI menu (main/pause/settings) is currently up. While a menu is
         // up, gameplay input + the sim are frozen and only the menu reads input.
         const bool uiMenuActive = !gameUi.playing();
         // The world map pauses the sim exactly like the menu screens do.
         const bool simFrozen     = gameUi.shouldFreezeSim() || worldMapOpen ||
+                                   worldMenu.isOpen() ||   // W-MENU: the directory pauses the sim
                                    rpgUi.anyOpen();   // [W9-3 RPG] screens pause the sim (world-map pattern)
 
         // Esc (edge-detected): route to the UI controller (toggle pause / back out
@@ -5113,6 +6046,8 @@ int runDefaultHost(HostContext& hc) {
                 if (worldMap.confirmOpen()) mapEscEdge = true;   // back out of the prompt
                 else { worldMapOpen = false; worldMap.close(); } // close the map
             }
+            else if (riftConsoleOpen) { rifthub.closeConsole(); }  // W-RIFT: step back
+            else if (worldMenu.isOpen()) { worldMenu.close(); }    // W-MENU: close the directory
             else if (rpgUi.anyOpen()) { rpgUi.closeAll(); }   // [W9-3 RPG] Esc closes the RPG screens
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
@@ -5120,6 +6055,12 @@ int runDefaultHost(HostContext& hc) {
         (void)prevUiEsc;
         // The `quit` console command (and the menu QUIT) request shutdown.
         if (quitRequested || gameUi.wantQuit()) glfwSetWindowShouldClose(window, 1);
+
+        // ---- W-MENU: a WORLD LOAD was picked. Leave the loop cleanly (the shutdown
+        // below frees every mesh/texture this world owns, and allocationCount goes
+        // back to zero) and let main()'s world-load loop build the new world into the
+        // SAME window + device. This is a real world load, not a process relaunch. ----
+        if (worldLoadRequested) break;
 
         double nowT = glfwGetTime();
         float dt = static_cast<float>(nowT - prevTime); prevTime = nowT;
@@ -5131,6 +6072,7 @@ int runDefaultHost(HostContext& hc) {
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
         if (consoleOpen || uiMenuActive || termMode || codeMode || worldMapOpen ||
+            worldMenu.isOpen() || riftConsoleOpen ||
             rpgUi.anyOpen() /* [W9-3 RPG] */) { ddx = 0.0f; ddy = 0.0f; }
 
         // Gameplay key reads are gated off while the console, a UI menu, the cell
@@ -5139,6 +6081,7 @@ int runDefaultHost(HostContext& hc) {
         // nothing drives movement/use/jump/fire/noclip/weapon-switch while typing.
         auto keyDown = [&](int k) {
             return !consoleOpen && !uiMenuActive && !termMode && !codeMode && !worldMapOpen &&
+                   !worldMenu.isOpen() && !riftConsoleOpen /* W-MENU / W-RIFT capture */ &&
                    !rpgUi.anyOpen() /* [W9-3 RPG] */ &&
                    glfwGetKey(window, k) == GLFW_PRESS;
         };
@@ -5222,6 +6165,55 @@ int runDefaultHost(HostContext& hc) {
             }
             prevMapKey = mNow;
         }
+
+        // ---- W-MENU: F6 = the WORLD / PLACE DIRECTORY (also on the pause menu's
+        // TRAVEL / WORLDS button). Full-screen, pauses the sim, Esc/F6 closes. Same
+        // gating discipline as the world map. ----
+        {
+            const bool wNow = !consoleOpen && !termMode && !codeMode &&
+                              !chatTrees.active() && !worldMapOpen && !rpgUi.anyOpen() &&
+                              !riftConsoleOpen &&
+                              rawKey(GLFW_KEY_F6);
+            if (wNow && !prevWorldMenuKey) worldMenu.toggle();
+            prevWorldMenuKey = wNow;
+
+            // The pause menu's TRAVEL button routes here too: open the directory and
+            // hand it the screen (the pause overlay steps aside).
+            if (gameUi.wantWorldMenu()) {
+                gameUi.clearWorldMenuRequest();
+                gameUi.resumePlaying();     // the menu owns the screen now (it freezes the sim)
+                worldMenu.open();
+            }
+        }
+
+        // ---- W-RIFT: [E] OPERATES A RIFT CONSOLE, IN THE CANON GAME LOOP. ----
+        // The whole point of the consoles is that the player can re-aim and fire the
+        // rifts in the REAL game, not only under `--world rifthub`. Walk to a gate's
+        // hanging glass, press E. While it is open ALL input belongs to it (the cell-
+        // terminal discipline: typing must never fire the weapon or move the player) —
+        // the keyDown() gate above already enforces that.
+        if (riftBuilt) {
+            float rex, rey, rez, reyaw, repitch;
+            player.camera(rex, rey, rez, reyaw, repitch);
+            if (noclip) { rex = flyX; rey = flyY; rez = flyZ; }
+            const bool eNow = !consoleOpen && !termMode && !codeMode && !worldMapOpen &&
+                              !worldMenu.isOpen() && !chatTrees.active() &&
+                              !rpgUi.anyOpen() && gameUi.playing() &&
+                              rawKey(GLFW_KEY_E);
+            if (eNow && !prevRiftUseKey) {
+                if (rifthub.consoleOpen()) {
+                    rifthub.closeConsole();
+                } else if (!rifthub.catastrophe()) {
+                    const int ci = rifthub.consoleInRange({ rex, rey, rez });
+                    if (ci >= 0) {
+                        rifthub.openConsole(ci);
+                        x3::logInfo("[rift] console " + std::to_string(ci + 1) + " OPEN");
+                    }
+                }
+            }
+            prevRiftUseKey = eNow;
+        }
+
         // The map consumes the mouse wheel for ZOOM while it is open (weapon
         // cycling below sees a zeroed delta).
         float mapWheel = 0.0f;
@@ -5615,7 +6607,19 @@ int runDefaultHost(HostContext& hc) {
             // Chat-tree conversation: cancel the moment the player wanders out of
             // talk range (a small grace over the start reach so a head-bob doesn't
             // drop the box mid-line). Matches NpcDialog's never-strand rule.
-            if (chatTrees.active()) {
+            //
+            // W4-2 fix (root cause of "VIGIL digit choices REJECTED"): this
+            // proximity-cancel is for PHYSICAL NPC conversations (rescue girls /
+            // Sarah), which chatTalkTarget() enumerates. The VIGIL terminal tree
+            // ALSO rides chatTrees but has NO physical talk target, so chatTalkTarget
+            // returns false and this cancel() used to deactivate the tree one frame
+            // after the menu rendered — leaving vigilChat=true while chatTrees.active()
+            // went false. The single-digit fast path (gated on chatTrees.active())
+            // was then skipped, the digit fell through to the keypad code buffer, and
+            // Enter submitted it as a code -> "> 1 [REJECTED]". VIGIL is bounded by
+            // termMode + Esc + its own "(end session)" choice, not by walk range, so
+            // exclude it here and let those paths close it.
+            if (chatTrees.active() && chatTrees.activeNpc() != "vigil") {
                 float pex, pey, pez, pyaw, ppitch;
                 player.camera(pex, pey, pez, pyaw, ppitch);
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
@@ -5703,6 +6707,16 @@ int runDefaultHost(HostContext& hc) {
         // the floor-hatch trapdoor on the correct code 1127). Esc-cancel handled below. --
         if (termMode && !terrainWorld) {
             x3::game::HoloTerminal& term = game.secret().terminal();
+            // W4-2 fix: reconcile a stale VIGIL flag. If the tree ended without the
+            // flag being cleared (a desync path once left vigilChat=true while the
+            // runner was inactive — the source of the phantom "CHOOSE 1-0" prompt),
+            // close the link cleanly ONCE so digit input falls back to the keypad.
+            if (vigilChat && !chatTrees.active()) {
+                term.addLine("");
+                term.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
+                term.trimBody(kTermMaxBody);
+                vigilStop(term);
+            }
             // KEYPAD CLICKS (the elevator's keypad treatment): every accepted
             // keystroke on the glass clicks — digits a touch brighter than letters,
             // backspace lower. Lazy-loaded once; invalid handle = silent, never a
@@ -5718,7 +6732,19 @@ int runDefaultHost(HostContext& hc) {
             };
             for (int dgt = 0; dgt < 10; ++dgt) {
                 bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
-                if (dn && !tmDigitPrev[dgt]) { term.pushChar((char)('0' + dgt)); keyClick(1.08f); }
+                if (dn && !tmDigitPrev[dgt]) {
+                    // W4-2 fix: while a VIGIL choice menu is live, a single digit 1..N
+                    // PICKS that choice immediately (edge-detected, no Enter) and is
+                    // consumed HERE — before it reaches the keypad code buffer. Digits
+                    // outside 1..N (and every digit when no menu is live) still buffer,
+                    // so the multi-digit override code (1278) types normally once the
+                    // conversation has ended (obtaining the code closes the link).
+                    bool picked = false;
+                    if (vigilChat && chatTrees.active() && dgt >= 1)
+                        picked = vigilChoose(term, (uint32_t)(dgt - 1));
+                    if (picked) keyClick(1.08f);
+                    else        { term.pushChar((char)('0' + dgt)); keyClick(1.08f); }
+                }
                 tmDigitPrev[dgt] = dn;
             }
             // Letters + space too, so the cell terminal is a REAL typable field (not
@@ -5751,23 +6777,20 @@ int runDefaultHost(HostContext& hc) {
                     (typed == "VIGIL" || typed == "HELLO" || typed == "HELP" ||
                      typed == "TALK" || typed == "HI");
                 if (vigilChat && allDigits && typed.size() == 1) {
-                    // Numbered choice pick on the glass.
+                    // Enter fallback for a single digit. In-range digits are already
+                    // consumed live by the digit loop above (no Enter needed); this
+                    // path is reached only for an OUT-OF-RANGE digit that buffered —
+                    // reply with the real range ONCE (no per-press stacking).
                     const uint32_t pick = (uint32_t)(typed[0] - '1');
                     term.clearInput();
-                    if (chatTrees.active() && pick < chatTrees.choices().size()) {
-                        term.addLine("> " + chatTrees.choices()[pick].text);
-                        if (chatTrees.choose(pick)) {
-                            vigilRender(term);
-                        } else {           // choice targeted "end" — close the link
-                            term.addLine("");
-                            term.addLine("VIGIL LINK CLOSED - TYPE VIGIL TO RECONNECT");
+                    if (!vigilChoose(term, pick)) {
+                        const std::string prompt = "CHOOSE 1-" +
+                            std::to_string(chatTrees.active() ? chatTrees.choices().size() : 0);
+                        // Dedup: skip if the glass already ends with this exact prompt.
+                        if (term.lines().empty() || term.lines().back() != prompt) {
+                            termWrapOut(term, prompt);
                             term.trimBody(kTermMaxBody);
-                            vigilStop(term);
                         }
-                    } else {
-                        termWrapOut(term, "CHOOSE 1-" +
-                            std::to_string(chatTrees.active() ? chatTrees.choices().size() : 0));
-                        term.trimBody(kTermMaxBody);
                     }
                 } else if (vigilSummon) {
                     term.clearInput();
@@ -5817,10 +6840,13 @@ int runDefaultHost(HostContext& hc) {
                         if (!d.empty()) termWrapOut(term, "VIGIL: " + d);
                         else term.addLine(kVigilDegraded[(llmCannedIdx++) % kVigilDegradedN]);
                         if (vigilChat && chatTrees.active() &&
-                            !chatTrees.choices().empty())
-                            termWrapOut(term, "CHOOSE 1-" +
+                            !chatTrees.choices().empty()) {
+                            const std::string prompt = "CHOOSE 1-" +
                                 std::to_string(chatTrees.choices().size()) +
-                                " OR ASK FREELY");
+                                " OR ASK FREELY";
+                            if (term.lines().empty() || term.lines().back() != prompt)
+                                termWrapOut(term, prompt);
+                        }
                     }
                     term.trimBody(kTermMaxBody);
                     x3::logInfo("terminal: JAKE -> " + typed);
@@ -5999,6 +7025,12 @@ int runDefaultHost(HostContext& hc) {
                     }
                     // Rider craft: an idle sealed car opens for an approaching player.
                     elevator.autoOpenFor(physics->getBodyPosition(player.body()));
+                    // R11 (art): while you are INSIDE the sealed cab, the world's ambient
+                    // wash has no business being in there — a lift interior is lit by its
+                    // own fixture and nothing else. Drops ambient/IBL on entry, restores
+                    // the world's values on exit. No-op when not aboard.
+                    elevator.applyCabAtmosphere(*device,
+                                                physics->getBodyPosition(player.body()));
                 }
                 // R-3 fold: breathe the Crystal/Magma/Alien glow + flicker the magma
                 // mood lights of the strata shaft the cab rides through (cab-biased).
@@ -6024,6 +7056,63 @@ int runDefaultHost(HostContext& hc) {
                     // Re-arm for the next descent once the cab is back near the surface.
                     if (club1127Handoff && elevator.cabCenter().y > -50.0f)
                         club1127Handoff = false;
+                }
+
+                // ---- W-RIFT: SUB-LEVEL R1 lives ------------------------------------
+                // The hub animates (membranes / core lights / consoles) and the approach
+                // breathes only while the player is IN the region — the facility above
+                // pays nothing for a room 78 m under it.
+                if (riftBuilt) {
+                    const x3::phys::Vec3 pfr = physics->getBodyPosition(player.body());
+                    const bool inZone = riftInZone(pfr.x, pfr.y + 1.0f, pfr.z);
+                    if (riftTeleCool > 0.0f) riftTeleCool -= x3::net::kSimDt;
+                    if (inZone) {
+                        rifthub.tick(x3::net::kSimDt, scene);
+                        riftDepths.tick(x3::net::kSimDt);
+                        // Walking into a gate ACTIVATES it (the kawoosh) — the hub's own
+                        // trigger volumes, dispatched here exactly as the dev host does.
+                        for (uint32_t tid : riftTriggers.update({ pfr.x, pfr.y + 1.6f, pfr.z }))
+                            rifthub.onTrigger(tid);
+                        // ---- THE PAYOFF: step through an OPEN rift and it TAKES YOU. ----
+                        const int tp = (riftTeleCool <= 0.0f)
+                            ? rifthub.traversalPortal({ pfr.x, pfr.y + 1.2f, pfr.z })
+                            : -1;
+                        if (tp >= 0) {
+                            const std::string dest = rifthub.destination((uint32_t)tp);
+                            const x3::game::Destination* dd = x3::game::findDestination(dest);
+                            const std::string pretty = dd ? dd->name : dest;
+                            x3::phys::Vec3 to{};
+                            std::string why;
+                            if (riftDestination(dest, to, &why)) {
+                                physics->setBodyPosition(player.body(), to);
+                                riftTeleCool = 3.0f;   // don't re-fire on the arrival frame
+                                riftHudMsg = "RIFT TRAVERSED -> " + pretty;
+                                riftHudTimer = 4.0f;
+                                x3::logInfo("[rift] TRAVERSED rift " + std::to_string(tp + 1) +
+                                            " -> " + pretty + " at (" + std::to_string(to.x) + ", " +
+                                            std::to_string(to.y) + ", " + std::to_string(to.z) + ")");
+                            } else if (dd && dd->worldFlag[0]) {
+                                // NOT a lie and NOT a dead end: the place is real, it is just a
+                                // WHOLE OTHER WORLD. Step through and the engine loads it — the
+                                // same load-and-place the world menu's amber rows do.
+                                hc.switchWorldTo = dd->worldFlag;
+                                hc.switchDestKey = dd->key;
+                                worldLoadRequested = true;
+                                riftHudMsg = "RIFT -> LOADING " + pretty;
+                                riftHudTimer = 4.0f;
+                                x3::logInfo("[rift] rift " + std::to_string(tp + 1) +
+                                            " -> " + pretty + ": no anchor here (" + why +
+                                            ") — LOADING --world " + dd->worldFlag);
+                            } else {
+                                riftTeleCool = 2.0f;
+                                riftHudMsg = "GATE HOLDS - " + pretty + ": " + why;
+                                riftHudTimer = 4.0f;
+                                x3::logWarn("[rift] rift " + std::to_string(tp + 1) +
+                                            " points at '" + pretty + "' — " + why +
+                                            "; the gate holds");
+                            }
+                        }
+                    }
                 }
 
                 physics->step(x3::net::kSimDt);
@@ -6135,6 +7224,17 @@ int runDefaultHost(HostContext& hc) {
                                   x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
             prevL = lNow;
             std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
+            // BLACK-PROP FIX (light routing). The F2-F7 west-wing dressing authors one
+            // motivated KEY light per room, sitting right over that room's hero props
+            // (beds / vats / crates / boardroom table). Until now those lights were only
+            // uploaded by the --capture-wings dev tool, so in ACTUAL --world level1
+            // gameplay the tower rooms leaned entirely on the flashlight + distant
+            // ceiling fixtures and the metallic kit props read dark. Append the current
+            // floor's wing keys here (floor-Y gated inside collectFloorLights, so only
+            // the plate the player stands on contributes — the active count stays well
+            // under the 64-light cap). Combined with the prop metallic clamp above the
+            // wing rooms now read with their zone key in real play, not just captures.
+            game.wingFloorLights(x3::phys::Vec3{ camX, camY, camZ }, fl);
             // ELEVATOR INTERIOR LIGHTING: the cab's ceiling fill + (in disco mode) the
             // 4 colored spots. Without this the car interior was unlit and disco never
             // rendered. Only added when the player is near/in the cab so they don't eat
@@ -6155,20 +7255,31 @@ int runDefaultHost(HostContext& hc) {
                 const float fX = std::cos(camPitch) * std::cos(camYaw);
                 const float fY = std::sin(camPitch);
                 const float fZ = std::cos(camPitch) * std::sin(camYaw);
-                // Main forward pool: the bright soft-edged circle that lights what you
-                // LOOK at. Pulled in to 2 m (was 3) so it no longer skips the near field.
+                // ---- 2026-07-12: THE FLASHLIGHT WAS THE SCENE -----------------------
+                // Tim, live: the cell is blown-out WHITE with the flashlight on, and goes
+                // "absolutely BLACK" the moment he turns it off. At 6.0 HDR over a 38 m
+                // range this thing was a SUN riding 2 m in front of the player's face: it
+                // was 4-5x brighter than any practical in the building, so (a) it bleached
+                // whatever wall you walked up to and (b) killing it removed ~all of the
+                // room's light, and the auto-exposure (aemax 2.2, ~0.7 s adaptation) needed
+                // seconds to claw anything back — hence the black void.
+                // A flashlight ADDS to a scene; it is not the scene. Cut to a real torch:
+                // the forward pool 6.0 -> 3.30 over 20 m (was 38), the near fill 3.2 -> 1.7
+                // over 8 m (was 13). That now sits at PARITY with a room's own key fixture
+                // (the cell tube is 3.30 @ 6.2, level-1 fixtures run 3.6-4.2) — it reads as
+                // a directed beam layered ON the practicals instead of erasing them.
                 x3::rhi::PointLight pl{};
                 pl.pos[0] = camX + fX * 2.0f; pl.pos[1] = camY + fY * 2.0f; pl.pos[2] = camZ + fZ * 2.0f;
-                pl.range  = 38.0f;   // HUGE circle; point-light attenuation gives the SOFT edge
-                pl.color[0] = 6.0f; pl.color[1] = 5.6f; pl.color[2] = 4.9f;  // bright warm-white (HDR)
+                pl.range  = 20.0f;   // big soft circle; point attenuation gives the SOFT edge
+                pl.color[0] = 3.30f; pl.color[1] = 3.10f; pl.color[2] = 2.75f;  // warm-white torch
                 fl.insert(fl.begin(), pl);
                 // Near light AT the eye so things RIGHT in front of you (barrels, enemies,
-                // the held weapon) are ALWAYS lit — a flashlight should never leave the
-                // near field black. Smaller range, same warm-white.
+                // the held weapon) are still lit — a flashlight should never leave the near
+                // field black. Smaller range, same warm-white.
                 x3::rhi::PointLight eyePl{};
                 eyePl.pos[0] = camX + fX * 0.3f; eyePl.pos[1] = camY + fY * 0.3f; eyePl.pos[2] = camZ + fZ * 0.3f;
-                eyePl.range  = 13.0f;
-                eyePl.color[0] = 3.2f; eyePl.color[1] = 3.0f; eyePl.color[2] = 2.6f;
+                eyePl.range  = 8.0f;
+                eyePl.color[0] = 1.70f; eyePl.color[1] = 1.60f; eyePl.color[2] = 1.40f;
                 fl.insert(fl.begin(), eyePl);
             }
             // CANONLEVEL ROOM LIGHTING: the data-driven floor has no env_art Light_A
@@ -6226,6 +7337,9 @@ int runDefaultHost(HostContext& hc) {
                          eyeRoom == facilityExterior.breachRoomHint()))
                         canonVisRooms.push_back(x3::game::kStreamedExteriorRoom);
                 }
+                // W-RIFT: sub-level R1 is submitted only from inside it.
+                if (riftInZone(camX, camY, camZ))
+                    canonVisRooms.push_back(x3::game::kRiftRoom);
                 // OPENING-SPACE motivated lights (flickering cell tube / red alarm / cyan
                 // terminal) for the visible dressed rooms — inserted at the FRONT so the cap
                 // never drops these key lights, then the room ceiling lights fill in.
@@ -6289,6 +7403,10 @@ int runDefaultHost(HostContext& hc) {
                 const auto& cl = club1127.pointLights();
                 for (const auto& L : cl) fl.push_back(L);
             }
+            // W-RIFT: in SUB-LEVEL R1 the hub's rig (gate cores + keys + the hall) and
+            // the approach's failing strips own the budget — same rule as the club: no
+            // facility fixture reaches 78 m down, and the membranes are the key light.
+            if (riftBuilt && riftInZone(camX, camY, camZ)) riftLights(camX, camY, camZ, fl);
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }
@@ -6578,6 +7696,7 @@ int runDefaultHost(HostContext& hc) {
                 canon45.update(dt, scene, *physics, camPos, &player, enemyAttackFx,
                                audio.get(), bootAudio.spTaunt[1], bootAudio.spDeath[1]);
                 canonDressing.tick(dt);   // advance the flickering cell-tube phase
+                canonBarrels.update(dt);  // WAVE (cell-door): step destructibles + detonate any barrel shot this frame
                 // ---- W9-1: desc-mechanics per frame — cold-room dwell/chill,
                 // decontamination cure, pickup->flag polling, DoT ticks (damage
                 // lands through player.takeDamage so the pain cue fires free).
@@ -6766,7 +7885,16 @@ int runDefaultHost(HostContext& hc) {
             // WAVE-3 zone atmosphere: re-tint the depth fog as the player crosses zone
             // boundaries (teal halls / amber detention / green labs). Runs BEFORE the
             // cvar overrides below so an explicit r_fog* setting still wins this frame.
-            if (canonFloor.valid())
+            // R11: the ELEVATOR CAB owns the air while you are riding it (a sealed steel
+            // box is lit by its own fixture, not by whatever floor it happens to be
+            // passing). Yield to it — and force a re-apply on the frame the rider steps
+            // back out, because applyZoneAtmosphere is change-gated and would otherwise
+            // never notice the cab had overwritten ambient/IBL underneath it.
+            static bool s_prevAboard = false;
+            const bool cabAir = elevator.built() && elevator.riderAboard();
+            if (!cabAir && s_prevAboard) canonRooms.resetZoneAtmosphere();
+            s_prevAboard = cabAir;
+            if (canonFloor.valid() && !cabAir)
                 canonRooms.applyZoneAtmosphere(*device, canonFloor.roomAt(camX, camY, camZ));
             const float cvFogD = console->getFloat("r_fogdensity");
             const float cvFogS = console->getFloat("r_fogstart");
@@ -6789,6 +7917,22 @@ int runDefaultHost(HostContext& hc) {
                 g.saturation = 0.96f;
                 g.vignette = (cvVig >= 0.0f) ? cvVig : 0.10f;
                 device->setGrade(g);
+            }
+            // ---- W-RIFT: SUB-LEVEL R1's air. The hub's atmosphere is a single knob
+            // that lives with its art (Rifthub::applyAtmosphere: cold blue haze, teal
+            // grade, low ambient, interior IBL). Applied while the eye is in the region
+            // and RELEASED on the way out — resetZoneAtmosphere() makes the room recipes
+            // re-apply their own fog next frame (the same handoff the swim path uses).
+            {
+                const bool inRift = riftInZone(camX, camY, camZ);
+                if (inRift) {
+                    rifthub.applyAtmosphere(*device);
+                } else if (riftZonePrev) {
+                    canonRooms.resetZoneAtmosphere();
+                    device->setIblIntensity(0.5f);                       // the SEAM-2 interior value
+                    device->setExposure(console->getFloat("r_exposure"));
+                }
+                riftZonePrev = inRift;
             }
             // ---- W10 SWIMMING: the UNDERWATER read. When the CAMERA is below a
             // water surface (river reach or the sea), override the frame's fog
@@ -6869,7 +8013,7 @@ int runDefaultHost(HostContext& hc) {
             if (!mr.onCooldown) {
                 // Melee swing FX: a short tracer from the muzzle out to the punch's
                 // far point so the strength swing reads (reuses the CombatFx beam).
-                const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
+                const x3::phys::Vec3 muzzle = weaponMuzzle(arsenal, *console, camX, camY, camZ, camYaw, camPitch);
                 combatFx.addTracer(muzzle, mr.swingTo);
                 // A heavy "thump" cue (reuse the gunshot WAV at low pitch).
                 audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.7f, 0.6f);
@@ -6899,6 +8043,9 @@ int runDefaultHost(HostContext& hc) {
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
+        // CHARGE weapon (Lightning): mark the beam HELD so Arsenal::tick drains its
+        // charge pool continuously (~10/s) while fire is held (IDKFA bypasses drain).
+        arsenal.setBeamHeld(fireHeld && playerArmed && player.isAlive());
         if (wantFire && playerArmed && player.isAlive() && arsenal.canFire()) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
@@ -6918,12 +8065,19 @@ int runDefaultHost(HostContext& hc) {
             // it: the railgun beam reads wrong starting under the barrel. Use a
             // tip-accurate origin for the beam — pushed further forward to the emitter
             // and raised onto the barrel line (almost no downward drop).
-            const bool isLightningWeapon =
-                (x3::game::fxKindFromId(arsenal.current().muzzleFx) == x3::game::WeaponFxKind::Lightning);
-            const x3::phys::Vec3 muzzle = isLightningWeapon
-                ? muzzleFromCamera(camX, camY, camZ, camYaw, camPitch,
-                                   /*fwd*/1.6f, /*right*/0.20f, /*down*/0.06f)   // gun TIP
-                : muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
+            // THE MUZZLE (Tim 2026-07-11) — the BARREL TIP of the weapon we are actually
+            // DRAWING, not a camera-relative guess. The old code needed a bespoke "gun TIP"
+            // override for the lightning beam precisely BECAUSE the shared guess sat in
+            // mid-air below the barrel; with a real per-weapon barrel tip every gun (beam
+            // included) emits from its own emitter, so the special case is gone. In THIRD
+            // PERSON the gun is in Jake's hand, so the muzzle comes from the hand-socket
+            // held-weapon matrix instead.
+            x3::phys::Vec3 muzzle = weaponMuzzle(arsenal, *console, camX, camY, camZ, camYaw, camPitch);
+            {
+                x3::phys::Vec3 tpMuzzle{};
+                if (thirdPerson.heldMuzzleWorld(scene, arsenal, tpMuzzle))
+                    muzzle = tpMuzzle;
+            }
             // LIVING WORLD: gunfire is VIOLENCE — any civilians in earshot scatter,
             // and any guard in earshot raises the facility alert (resolved against
             // the live observers at the next alert update).
@@ -6986,6 +8140,14 @@ int runDefaultHost(HostContext& hc) {
                         x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rc.hitMonster || (!r.hit && rc.hit)) r = rc;
                     }
+                    // WAVE (cell-door): route the shot through the canon explodable barrels —
+                    // a ray into the cell/hall barrel breaks it; it detonates on the next
+                    // canonBarrels.update() (DJBooth fireball + splash + chain).
+                    if (canonWorld) {
+                        const float e3[3] = { eye.x, eye.y, eye.z };
+                        const float d3[3] = { ray.dir.x, ray.dir.y, ray.dir.z };
+                        canonBarrels.onShot(e3, d3);
+                    }
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
                     // shot is already arm-gated by the arsenal/Level1Game::onFire).
                     if (!r.hitMonster && game.armed()) {
@@ -7045,7 +8207,11 @@ int runDefaultHost(HostContext& hc) {
         // start a second voice because we hold a single fireLoop handle. ----
         {
             const x3::game::WeaponDef& cw = arsenal.current();
-            const bool hasAmmo = arsenal.infiniteAmmo() || arsenal.currentState().ammoInMag > 0;
+            // CHARGE weapons (Lightning) have no mag — the beam whine should cut when
+            // charge runs out, not when a (never-consumed) magazine hits 0.
+            const bool hasAmmo = arsenal.infiniteAmmo() ||
+                (cw.usesCharge ? arsenal.currentState().charge > 0.0f
+                               : arsenal.currentState().ammoInMag > 0);
             const bool wantLoop = cw.fireSfxLoop && fireHeld && playerArmed &&
                                   player.isAlive() && !arsenal.isReloading() && hasAmmo;
             const x3::audio::SoundHandle desired = wantLoop ? currentFireSfx() : x3::audio::SoundHandle{};
@@ -7102,13 +8268,22 @@ int runDefaultHost(HostContext& hc) {
                         if (rs.hitMonster) r = rs;
                     }
                     combatFx.addTracer(b.pos, eh.point);
+                    // Rocket detonates in a fireball; other bolts splash at the hit.
+                    if (b.impactKind == x3::game::WeaponFxKind::Rocket)
+                        combatFx.spawnExplosion(eh.point, 1.4f);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
                         audio->playSound3D(sndDeath, eh.point.x, eh.point.y, eh.point.z, 1.0f, 1.0f); }
                     else combatFx.spawnBlood(eh.point, ndir);
                     consumed = true;
                 } else {
                     x3::phys::RayHit sh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Static);
-                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal, b.impactKind); combatFx.addTracer(b.pos, sh.point);
+                    if (sh.hit) {
+                        // Rocket -> violent fireball; energy/ballistic bolts -> per-kind splash.
+                        if (b.impactKind == x3::game::WeaponFxKind::Rocket)
+                            combatFx.spawnExplosion(sh.point, 1.4f);
+                        else
+                            combatFx.spawnImpact(sh.point, sh.normal, b.impactKind);
+                        combatFx.addTracer(b.pos, sh.point);
                         if (b.impactSnd.valid())
                             audio->playSound3D(b.impactSnd, sh.point.x, sh.point.y, sh.point.z, 0.6f, 1.0f);
                         consumed = true; }
@@ -7116,6 +8291,9 @@ int runDefaultHost(HostContext& hc) {
                 if (!consumed) {
                     b.pos = x3::phys::Vec3{ b.pos.x + b.vel.x*dt, b.pos.y + b.vel.y*dt, b.pos.z + b.vel.z*dt };
                     b.traveled += stepLen;
+                    // Make the travelling bolt VISIBLE in flight (glowing core + trail;
+                    // rocket also puffs exhaust smoke) — bolts were invisible before.
+                    combatFx.boltFx(b.pos, b.vel, b.impactKind);
                     if (b.traveled >= b.range) consumed = true;   // out of range -> despawn
                 }
                 if (consumed) { projectiles[pi] = projectiles.back(); projectiles.pop_back(); }
@@ -7126,6 +8304,8 @@ int runDefaultHost(HostContext& hc) {
         // Advance FX timers (tracer lifetimes + muzzle flash) only while the sim
         // runs; frozen during a UI menu so particles/tracers hold still.
         if (!simFrozen) combatFx.update(dt);
+        if (riftHudTimer > 0.0f) riftHudTimer -= dt;   // W-RIFT: the traversal banner ages out
+        if (riftLore.built()) riftLore.update(dt);     // bakes the maintenance log onto the glass
         // M9: tick the audio system (reaps finished one-shot voices). Always ticked
         // so audio voices don't pile up while paused.
         audio->update(dt);
@@ -7204,6 +8384,10 @@ int runDefaultHost(HostContext& hc) {
                 if (roomCull) scene.setVisibleRooms(canonVisRooms);   // same set as the lights
             }
             scene.render(*device, frame);
+            // W-RIFT: the hub's membrane FX (lightning arcs + spark motes + the hall's
+            // light shafts) are drawn AFTER the scene pass, exactly as the dev host does
+            // — and only from inside the region.
+            if (riftBuilt && riftInZone(camX, camY, camZ)) rifthub.drawFx(*device, frame);
             // Unified vis stats: feed the PVS stage's numbers (submission skips +
             // flood-fill ms) so stats() carries the conserving rooms -> frustum ->
             // hzb -> drawn chain. Zeros outside the canon world (no room tags).
@@ -7223,6 +8407,7 @@ int runDefaultHost(HostContext& hc) {
             // the scene). Drawn before the characters so they sit in the dressed space.
             if (canonWorld && canonFloor.valid()) {
                 canonDressing.draw(*device, frame);
+                canonBarrels.render(frame);   // WAVE (cell-door): explodable barrels + debris
                 canonRooms.draw(*device, frame, canonVisRooms);
                 facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
                 // WORLD CARS: parked visuals + the live car — direct draws,
@@ -7507,12 +8692,46 @@ int runDefaultHost(HostContext& hc) {
                                 ep = "Elevator -> " + elevator.floorLabel(tgt) +
                                      "  (" + elevator.stateName() + ")";
                             } else {
-                                const int next = (cur + 1) % std::max(1, elevator.stopCount());
+                                // W-RIFT: the panel never offers a locked floor — skip it
+                                // exactly like callNext() does, so the prompt cannot lie.
+                                int next = cur;
+                                for (int g = 0; g < std::max(1, elevator.stopCount()); ++g) {
+                                    next = (next + 1) % std::max(1, elevator.stopCount());
+                                    if (!elevator.stopLocked(next)) break;
+                                }
                                 ep = "Floor " + elevator.floorLabel(cur) +
                                      "   [E] Go to " + elevator.floorLabel(next);
                             }
                             floatPrompt(x3::phys::Vec3{ cc.x, cc.y + 1.6f, cc.z },
                                         ep.c_str(), (float)ep.size() * 4.4f);
+                        }
+                    }
+                    // W-RIFT: the rift prompts. The nearest gate names where it goes; the
+                    // traversal / refusal banner rides the same bottom-center line.
+                    if (riftBuilt && riftInZone(pex, pey, pez)) {
+                        std::string rp;
+                        if (riftHudTimer > 0.0f) {
+                            rp = riftHudMsg;
+                        } else {
+                            const int nearRift = rifthub.consoleInRange({ pex, pey, pez }, 5.0f);
+                            if (nearRift >= 0) {
+                                rp = rifthub.portal((uint32_t)nearRift).activated
+                                        ? ("RIFT OPEN -> " + rifthub.destination((uint32_t)nearRift) +
+                                           "  (walk through)")
+                                        : ("RIFT: " + rifthub.destination((uint32_t)nearRift) +
+                                           "  (step in to open)");
+                            }
+                        }
+                        if (!rp.empty()) {
+                            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                            const float hsz = 18.0f;
+                            const float adv = device->textAdvance(x3::rhi::FontRole::Menu, rp.c_str(), hsz);
+                            const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                            const float hy = (hh > 0) ? hh * 0.84f : 500.0f;
+                            const float col[4]    = { 0.55f, 0.86f, 1.0f, 0.92f };
+                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, rp.c_str(), hx + 1.5f, hy + 1.5f, hsz, shadow);
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, rp.c_str(), hx, hy, hsz, col);
                         }
                     }
                     // Cell HoloTerminal: within ~3 m of its anchor. Playtest fix (PB
@@ -7793,6 +9012,18 @@ int runDefaultHost(HostContext& hc) {
                     hm.weapon = wd.name.c_str();
                     hm.ammoInMag = ws.ammoInMag; hm.ammoReserve = ws.reserve;
                     hm.reloading = arsenal.isReloading();
+                    // CHARGE weapon (Lightning): show a CHARGE readout instead of ammo,
+                    // plus the live PASSIVE-REGEN state (refilling? in the half-speed
+                    // band? where does the crawl start?) — read straight off the Arsenal
+                    // so the HUD cannot disagree with the tick that owns the pool.
+                    if (wd.usesCharge) {
+                        hm.isCharge  = true;
+                        hm.chargeCur = (int)(ws.charge + 0.5f);
+                        hm.chargeCap = (int)(wd.chargeCap + 0.5f);
+                        hm.chargeRegen     = arsenal.chargeRegenerating();
+                        hm.chargeRegenSlow = arsenal.chargeRegenSlow();
+                        hm.chargeSlowAbove = (int)(wd.chargeRegenSlowAbove + 0.5f);
+                    }
                 }
 
                 // ---- Minimap RADAR + enemy NAMEPLATE feed ----------------------
@@ -7922,7 +9153,10 @@ int runDefaultHost(HostContext& hc) {
                 const bool nR   = rawDown(GLFW_KEY_RIGHT) || rawDown(GLFW_KEY_D);
                 // Only deliver nav edges while a menu is active (so they don't fight
                 // gameplay WASD). Edge-detect against the previous frame.
-                if (uiMenuActive) {
+                // W-MENU / W-RIFT: the world directory and the rift console are menus
+                // too — they capture input (keyDown() is gated on them), so they get
+                // the nav edges as well or they would be mouse-only.
+                if (uiMenuActive || worldMenu.isOpen() || riftConsoleOpen) {
                     uin.navUp       = nUp  && !prevNavUp;
                     uin.navDown     = nDn  && !prevNavDown;
                     uin.navActivate = nAct && !prevNavAct;
@@ -7986,6 +9220,102 @@ int runDefaultHost(HostContext& hc) {
                 }
             } else {
                 prevMapEnter = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
+            }
+
+            // ================================================================
+            // W-MENU — THE WORLD / PLACE DIRECTORY (F6, or pause -> TRAVEL).
+            // Every place the game has, with the truth about how each is reached.
+            // The reachability answer comes from the SAME resolver the rift gates
+            // use, so the menu and the hub can never disagree.
+            // ================================================================
+            if (worldMenu.isOpen()) {
+                menuUi.begin(*device, frame, uin);
+                const int pick = worldMenu.draw(menuUi, dt,
+                    [&](const x3::game::Destination& d) {
+                        x3::game::DestStatus st;
+                        // Standing in it already? (the hub knows where it is; the rest
+                        // is answered by the resolver's own anchor.)
+                        x3::phys::Vec3 anchor{};
+                        std::string    why;
+                        if (riftDestination(d.key, anchor, &why)) {
+                            st.reach = x3::game::DestReach::Teleport;
+                            const x3::phys::Vec3 pp = physics->getBodyPosition(player.body());
+                            const float dx = pp.x - anchor.x, dy = pp.y - anchor.y,
+                                        dz = pp.z - anchor.z;
+                            st.here = (dx*dx + dy*dy + dz*dz) < (4.0f * 4.0f);
+                        } else if (d.worldFlag[0] && d.worldFlag != worldMode) {
+                            st.reach  = x3::game::DestReach::WorldLoad;
+                            st.reason = why;
+                        } else {
+                            st.reach  = x3::game::DestReach::Unavailable;
+                            st.reason = why;
+                        }
+                        return st;
+                    });
+                menuUi.end();
+
+                if (pick >= 0) {
+                    const x3::game::Destination& d = x3::game::destination((uint32_t)pick);
+                    x3::phys::Vec3 to{};
+                    std::string    why;
+                    if (riftDestination(d.key, to, &why)) {
+                        // In THIS world: move the player. No load, blackout cover on.
+                        player.setFeetPosition(*physics,
+                            x3::phys::Vec3{ to.x, to.y - 1.6f + 0.3f, to.z });
+                        travelFadeT = 0.9f;
+                        riftHudMsg   = std::string("TRAVELLED -> ") + d.name;
+                        riftHudTimer = 4.0f;
+                        x3::logInfo(std::string("[worldmenu] TELEPORT -> ") + d.name);
+                    } else if (d.worldFlag[0]) {
+                        // A WHOLE OTHER WORLD: ask main()'s world-load loop to tear this
+                        // one down and build that one, standing us at `d.key` when it is
+                        // up (load AND place). No lie, no fake teleport.
+                        hc.switchWorldTo = d.worldFlag;
+                        hc.switchDestKey = d.key;
+                        worldLoadRequested = true;
+                        x3::logInfo(std::string("[worldmenu] WORLD LOAD -> --world ") +
+                                    d.worldFlag + " @ " + d.key);
+                    } else {
+                        riftHudMsg   = std::string("CANNOT REACH ") + d.name + ": " + why;
+                        riftHudTimer = 4.0f;
+                        x3::logWarn(std::string("[worldmenu] refused ") + d.key + ": " + why);
+                    }
+                }
+            }
+
+            // ================================================================
+            // W-RIFT — THE RIFT CONSOLE, LIVE IN THE CANON LOOP. Sliders, knobs,
+            // the typed TARGET field and the PREV/NEXT destination cycle. The
+            // outcome is applied to the world by updateConsole() itself (membrane,
+            // lights, alarms, re-target), exactly as in the dev host.
+            // ================================================================
+            if (riftBuilt && rifthub.consoleOpen()) {
+                riftUiClock += dt;
+                x3::ui::UiInput rin = uin;
+                // Drain the typed ring into the field (backspace/enter are edges).
+                rin.typedCount = 0;
+                for (int t = 0; t < g_riftTypedN && t < x3::ui::UiInput::kMaxTyped; ++t)
+                    rin.typed[rin.typedCount++] = g_riftTyped[t];
+                g_riftTypedN = 0;
+                const bool bsNow  = rawKey(GLFW_KEY_BACKSPACE);
+                const bool entNow2 = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
+                rin.backspace = bsNow  && !prevRiftBs;
+                rin.enter     = entNow2 && !prevRiftEnter;
+                prevRiftBs = bsNow; prevRiftEnter = entNow2;
+
+                riftUi.begin(*device, frame, rin);
+                if (rifthub.updateConsole(riftUi, dt)) {
+                    const uint32_t ci = (uint32_t)rifthub.activeConsole();
+                    const x3::game::Destination* nd =
+                        x3::game::findDestination(rifthub.destination(ci));
+                    riftHudMsg = "RIFT " + std::to_string(ci + 1) + ": " +
+                                 rifthub.portal(ci).console.status + "  ->  " +
+                                 (nd ? nd->name : rifthub.destination(ci).c_str());
+                    riftHudTimer = 4.0f;
+                }
+                riftUi.end();
+            } else {
+                g_riftTypedN = 0;   // never let keystrokes pool while nothing is typing
             }
 
             // ---- [W9-3 RPG] the BACKPACK (I) / SKILL TREE (K) screens + the

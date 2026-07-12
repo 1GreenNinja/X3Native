@@ -359,10 +359,12 @@ public:
                      const float baseColorFactor[4], const float emissive[4],
                      const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {},
                      TextureHandle detailTex = {}, float detailUvScale = 1.0f,
-                     float clearcoat = 0.0f, float clearcoatRough = 0.05f) override {
+                     float clearcoat = 0.0f, float clearcoatRough = 0.05f,
+                     float selfLight = 0.0f, float metallicScale = 1.0f) override {
         drawMeshInternal(fc, mesh, baseColor, normal, metalRough, baseColorFactor, emissive,
                          model, alphaMask, alphaBlend, emissiveTex, detailTex, detailUvScale,
-                         /*extraFlags=*/0u, /*glass=*/nullptr, clearcoat, clearcoatRough);
+                         /*extraFlags=*/0u, /*glass=*/nullptr, clearcoat, clearcoatRough,
+                         selfLight, metallicScale);
     }
 
     // Shared draw record append. The opaque/emissive/PBR/glass paths differ only by
@@ -374,7 +376,8 @@ public:
                           const float model[16], bool alphaMask, bool alphaBlend,
                           TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                           uint32_t extraFlags, const GlassMaterial* glass,
-                          float clearcoat = 0.0f, float clearcoatRough = 0.05f);
+                          float clearcoat = 0.0f, float clearcoatRough = 0.05f,
+                          float selfLight = 0.0f, float metallicScale = 1.0f);
 
     // ---- Procedural planet body (FORGE3D port) -----------------------------
     // Queue a planet draw for THIS frame: resolve each TextureHandle to its
@@ -572,7 +575,7 @@ private:
         // them). glass.frag (M2-M4) consumes: refraction (screen-space bend),
         // roughness (frost mip), specular (shimmer), tint (rgb body color).
         glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = additive glow (rim exponent; 0 = normal glass)
-        glm::vec4 glassTint;         // rgb = glass tint color, a = unused
+        glm::vec4 glassTint;         // rgb = glass tint color, a = emissiveMap (0 = flat glow, 1 = modulate by texel)
     };
     static_assert(sizeof(ObjectData) == 160, "ObjectData must match std430 layout");
 
@@ -587,6 +590,11 @@ private:
     // packed {roughness<<8 | intensity} byte pair rides the SPARE terrain-pack1
     // lane (mutually exclusive with TERRAIN, which owns that lane when set).
     static constexpr uint32_t kFlagClearcoat = 1u << 2;
+    // SHIP SELF-LIGHT (canon: ships are self-lit). mesh.frag adds a shaped
+    // rim + form term on the side the star is NOT lighting. The intensity byte
+    // rides the SPARE terrain-pack2 lane (a ship is never TERRAIN, which owns
+    // that lane when set; clearcoat owns pack1, so the two never collide).
+    static constexpr uint32_t kFlagShipSelfLit = 1u << 3;
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {
@@ -609,7 +617,7 @@ private:
         bool     noCull = false;
         // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
         float    glassParams[4]; // x = refraction, y = roughness, z = specular, w unused
-        float    glassTint[4];   // rgb = tint, a unused
+        float    glassTint[4];   // rgb = tint, a = emissiveMap (GlassMaterial::emissiveMap)
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
