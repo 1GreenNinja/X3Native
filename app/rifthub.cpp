@@ -800,6 +800,28 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const uint8_t wetPx[4] = { 0, 72, 24, 255 };   // round 2: a touch rougher so diffuse reads
         m_mrWet = device.createTexture(wetPx, 1, 1, false);
     }
+    // Gate-GLB MR overrides (ROUND 4 "ghost-glass" fix — see m_mrGate in the
+    // header). ROOT CAUSE, diagnosed with reflection A/Bs (G_0_* shots): NOT
+    // alpha/blending — the GLB exports OPAQUE and the entities are opaque. The
+    // curated sets' MR maps are polished metal (panels_a rough .45/metal .85,
+    // trim_b .32/.98, trim_a .25), all inside mesh.frag's mirror-reflection
+    // gate (1 - smoothstep(.25,.6,rough)); the SSR/RT pass's half-res depth
+    // march is wrong on the gate's dense thin-plate geometry (2 m first step +
+    // 0.5 m thickness tunnel straight through the plates), so every polished
+    // gate texel SPECULARLY showed the bright emitters behind it (ratchet
+    // dashes / membrane / trim hoop) — an X-ray read on opaque geometry.
+    // Each override keeps the set's metallic CHARACTER (plates/steel stay
+    // metal, hardware stays the painted near-dielectric trim_a is) but lifts
+    // roughness just past the 0.6 cutoff, so the wrong radiance never lands
+    // and the gate keeps its weathered-metal light response.
+    {
+        const uint8_t platePx[4] = { 0, 158, 204, 255 };  // rough .62, metal .80
+        const uint8_t steelPx[4] = { 0, 156, 217, 255 };  // rough .61, metal .85
+        const uint8_t darkPx[4]  = { 0, 163,  26, 255 };  // rough .64, metal .10
+        m_mrGate[0] = device.createTexture(platePx, 1, 1, false);
+        m_mrGate[1] = device.createTexture(steelPx, 1, 1, false);
+        m_mrGate[2] = device.createTexture(darkPx,  1, 1, false);
+    }
 
     // ===== ROUND 3: Blender-authored GATE GLB (the density round) ==============
     // tools/build_rifthub_gate.py authors ONE dense industrial gate (segmented
@@ -1096,11 +1118,14 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 // grime-dark palette; the SD gate-forge sets supersede later).
                 const SurfaceSet* sf   = &sDark;
                 const float*      tint = kGateDarkTint;
-                if (nm.find("patina") != std::string::npos) { sf = &sPlate; tint = kGatePlateTint; }
-                else if (nm.find("steel") != std::string::npos) { sf = &sTrim; tint = kGateSteelTint; }
+                uint32_t          mrIdx = 2;   // dark hardware override
+                if (nm.find("patina") != std::string::npos) { sf = &sPlate; tint = kGatePlateTint; mrIdx = 0; }
+                else if (nm.find("steel") != std::string::npos) { sf = &sTrim; tint = kGateSteelTint; mrIdx = 1; }
                 Entity e;
                 e.mesh = x3::rhi::MeshHandle{ dr.meshId };
-                if (sf->ok) { e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = sf->mr; }
+                // NOTE: mrTex is the WEATHERED per-group override, not the set's
+                // polished MR — the round-4 ghost-glass fix (m_mrGate's comment).
+                if (sf->ok) { e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = m_mrGate[mrIdx]; }
                 e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1];
                 e.baseColor[2] = tint[2]; e.baseColor[3] = 1.0f;
                 e.emissive[0] = tint[0]; e.emissive[1] = tint[1];
@@ -1760,6 +1785,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // ROUND 3 WS2 — mid-floor deck fills: four low cool lights BETWEEN the
         // gate bays so the deck reads between gates (the F_1/F_2 mid-floor was
         // a black hole). Low intensity, low height: a floor sheen, not a wash.
+        // ROUND 4 (owner: "a TINY bit more light so that fantastic floor can be
+        // seen"): fills 2.4 -> 3.2 (+33%) — a sheen bump only; the membranes
+        // stay the key light and the moody grade is untouched.
         for (uint32_t f = 0; f < 4; ++f) {
             const float ang = ((float)f + 0.5f) * (6.2831853f / 4.0f);
             x3::rhi::PointLight L;
@@ -1767,9 +1795,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             L.pos[1] = 2.2f;
             L.pos[2] = std::sin(ang) * 8.0f;
             L.range  = 11.0f;
-            L.color[0] = 0.50f * 2.4f;
-            L.color[1] = 0.58f * 2.4f;
-            L.color[2] = 0.72f * 2.4f;
+            L.color[0] = 0.50f * 3.2f;
+            L.color[1] = 0.58f * 3.2f;
+            L.color[2] = 0.72f * 3.2f;
             m_lights.push_back(L);
         }
     }
@@ -2269,6 +2297,8 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_vistaTex.valid())   { device.destroyTexture(m_vistaTex);   m_vistaTex   = {}; }
     if (m_mrFlat.valid())     { device.destroyTexture(m_mrFlat);     m_mrFlat     = {}; }
     if (m_mrWet.valid())      { device.destroyTexture(m_mrWet);      m_mrWet      = {}; }
+    for (auto& h : m_mrGate)
+        if (h.valid()) { device.destroyTexture(h); h = {}; }
     if (m_holoTexA.valid())   { device.destroyTexture(m_holoTexA);   m_holoTexA   = {}; }
     if (m_holoTexB.valid())   { device.destroyTexture(m_holoTexB);   m_holoTexB   = {}; }
     m_surf.destroyAll(device);   // curated PBR sets (ring plates / housings / hall)

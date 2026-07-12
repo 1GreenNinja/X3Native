@@ -290,6 +290,16 @@ private:
     x3::rhi::TextureHandle     m_vistaTex;    // parallax backdrop (other world)
     x3::rhi::TextureHandle     m_mrFlat;      // 1x1 rough/dielectric MR (PBR route)
     x3::rhi::TextureHandle     m_mrWet;       // 1x1 glossy MR (wet concrete floor)
+    // 1x1 WEATHERED MR per gate-GLB material group (ROUND 4 ghost-glass fix):
+    // the curated metal sets' MR maps are POLISHED (rough 0.25-0.45, metal up
+    // to 0.98) — inside mesh.frag's mirror gate — so the SSR/RT reflection
+    // radiance (wrong on the GLB's dense thin-plate geometry; the half-res
+    // march tunnels behind it) replaced the gate's specular with the bright
+    // content BEHIND it and the whole gate read as translucent glass.
+    // Each texel keeps its set's METALLIC character but lifts roughness past
+    // the 0.6 reflection cutoff; the gate stays opaque lit PBR.
+    // [0] = patina plates, [1] = steel, [2] = dark hardware.
+    x3::rhi::TextureHandle     m_mrGate[3];
     x3::rhi::TextureHandle     m_holoTexA;    // teal holo data-screen texture (variant A)
     x3::rhi::TextureHandle     m_holoTexB;    // teal holo data-screen texture (variant B)
     // Per-portal blue core lights (1:1 with m_portals); intensity pulsed in tick().
