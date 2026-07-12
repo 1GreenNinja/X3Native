@@ -92,7 +92,9 @@ inline std::vector<uint8_t> bakeSunRGBA(uint32_t n) {
     for (int i = 0; i < nSpots; ++i) {
         spots[i].u = hashF((uint32_t)(i * 7 + 1000));
         spots[i].v = 0.18f + 0.64f * hashF((uint32_t)(i * 7 + 2000));   // keep off the poles
-        spots[i].r = 0.028f + 0.05f * hashF((uint32_t)(i * 7 + 3000));
+        // BIGGER, higher-contrast sunspots (owner: "visible sunspots, bigger") — ~1.7x
+        // the old radius so they survive the bloom as discrete dark blotches.
+        spots[i].r = 0.050f + 0.075f * hashF((uint32_t)(i * 7 + 3000));
     }
     for (uint32_t y = 0; y < n; ++y) {
         const float v = (y + 0.5f) / (float)n;
@@ -105,19 +107,30 @@ inline std::vector<uint8_t> bakeSunRGBA(uint32_t n) {
                 amp *= 0.55f; cell *= 2u;
             }
             // Contrast remap: raw multi-octave value noise averages ~0.5 with a
-            // narrow spread — stretch it so granulation cells (and, more
-            // importantly, the sunspot penumbra below) actually survive the
-            // core's strong bloom instead of washing out to a flat disc.
-            gran = std::clamp((gran - 0.32f) * 1.9f, 0.0f, 1.0f);
+            // narrow spread — stretch it (STRONGER amplitude now, owner: "real
+            // contrast, deep orange cells + brighter cell centres") so the
+            // granulation reads as boiling plasma cells through the bloom, not a
+            // flat wash.
+            // v3: HIGHER contrast + a gamma bias so the dark inter-granular lanes
+            // occupy MORE of the surface (real granulation is a network of bright
+            // cells separated by thin dark lanes, not a 50/50 wash). Squaring after
+            // the stretch deepens the valleys without dimming the cell centres.
+            gran = std::clamp((gran - 0.40f) * 2.9f, 0.0f, 1.0f);
+            gran = gran * gran * (0.55f + 0.45f * gran);   // stronger gamma: wide dark lanes, sparse bright peaks
             // Faculae/plasma veins: a higher-frequency layer, bright above a threshold.
             const float vein = sunValueNoise(u, v, 40, 6600u);
             const float veinBright = std::max(0.0f, vein - 0.74f) / 0.26f;
-            // Warm palette: white-gold peaks through deep-orange/near-black valleys
-            // (deliberately dark valleys — see the contrast note above).
-            float r = 0.30f + 0.70f * gran;
-            float g = 0.08f + 0.78f * gran;
-            float b = 0.02f + 0.40f * gran * gran;
-            r += veinBright * 0.35f; g += veinBright * 0.22f; b += veinBright * 0.06f;
+            // v3 palette: DEEP orange-red inter-granular lanes as the DOMINANT tone ->
+            // WHITE-GOLD only at the sparse bright cell cores (owner: "deep orange
+            // cells / white-gold centres"). The disc must read as a rich ORANGE star,
+            // so the base (gran=0) is a saturated deep orange, not a pale yellow; blue
+            // stays near-zero until the very brightest cores so hot spots go white-gold
+            // while everything else holds orange. Contrast now comes from the wide dark
+            // lane network, not from a bright wash.
+            float r = 0.52f + 0.48f * gran;
+            float g = 0.13f + 0.62f * gran;
+            float b = 0.02f + 0.26f * gran * gran * gran;   // GOLD (not white) peaks: bloom stays warm, blends into the corona
+            r += veinBright * 0.26f; g += veinBright * 0.22f; b += veinBright * 0.10f;
             // Sunspots: NEAR-BLACK core + soft penumbra, U wraps at the longitude
             // seam. Pushed much darker than a "natural" sunspot so the blotch still
             // reads as a discrete dark feature after the core's bloom bleeds into it.
@@ -491,6 +504,14 @@ int hostSpace(HostContext& hc) {
         float shieldFlashT = -1.0f;           // one-shot "SHIELD ENGAGED" cue; <0 = idle
         const float kShieldFlashSecs    = 1.5f;   // flash + caption hang time
         const float kShieldRechargeSecs = 5.0f;   // graze-abort: shield restores over this long
+        // SUN-DEATH DIAGNOSTIC (owner: "hull STILL lost to the sun BEFORE entering",
+        // 3rd report). Flip true only while instrumenting: logs the exact distC /
+        // g_sunSurf / phase at every Flying->InsideSun and InsideSun->Detonation
+        // transition, plus a 2 s heartbeat inside kWarnDist, so a scripted dive
+        // (X3_SUN_DIVE_TEST=1, below) can PROVE where death actually fires. Ships
+        // false — pure logging, zero effect on sim/render state.
+        const bool  kSunDebugLog = false;
+        float dbgLogTimer = 0.0f;             // heartbeat accumulator for kSunDebugLog
         const float kShieldSecs   = 17.0f;    // shield holds this long inside the body
         const float kDetonateSecs = 4.5f;     // blast + coronal ejection duration
         const float kRewindSecs   = 1.0f;     // short backwards-scrub stinger
@@ -740,65 +761,107 @@ int hostSpace(HostContext& hc) {
             }
         };
 
-        // ---- REAL SUN render: white-gold core + additive corona shells ----------
-        // Core emissive strength is driven well past the bloom threshold (0.92) so it
-        // blooms; corona shells are translucent (drawMeshGlass) so the core shows
-        // through, drawn largest→smallest (rough back-to-front) with a warm gradient.
+        // ---- REAL SUN render: granulated orange core + tight additive corona ----
         auto drawSun = [&](const x3::rhi::FrameContext& frame) {
             float m[16];
-            // Corona shells (outer, faint, warm) — translucent additive glow.
-            // ROOT-CAUSE FIX (the invisible core): these shells share sunMesh with
-            // the opaque core and were glass draws in the OPAQUE partition, so the
-            // fragment-less depth PRE-PASS (SSAO/SSGI/reflections on by default)
-            // wrote the NEAREST shell's depth across the whole disc — the core then
-            // failed the EQUAL-depth color pass and never drew (zeroing the shells'
-            // COLOR didn't help: the geometry still wrote pre-pass depth). Passing
-            // alphaBlend=true routes each shell to the BLEND partition, which the
-            // pre-pass skips; the dedicated glass pass still draws them identically,
-            // so the corona look is unchanged but it no longer occludes the core.
-            const struct { float s, r, g, b, str, op; } shells[3] = {
-                { 2.6f, 1.00f, 0.42f, 0.12f, 0.9f, 0.10f },   // deep orange, big
-                { 1.7f, 1.00f, 0.62f, 0.28f, 1.6f, 0.16f },   // amber
-                { 1.28f,1.00f, 0.86f, 0.55f, 3.0f, 0.28f },   // gold, tight
-            };
-            for (const auto& sh : shells) {
-                sphereMatrix(kSunCenter, kSunRadius * sh.s, m);
-                const float bc[4]  = { sh.r, sh.g, sh.b, 1.0f };
-                const float em[4]  = { sh.r, sh.g, sh.b, sh.str };
+            // ============ SUN VISUAL v3 (owner: "make it LOOK like a sun") =========
+            // The old look was a FRIED EGG: three hard-edged corona shells out to
+            // 2.6x = 5.2 km (a flat gold disc), a bright WHITE RING at the tight gold
+            // shell, and a pale washed core. Two coupled problems: it read as
+            // concentric rings (not a star), and the visible edge (5.2 km) sat far
+            // outside the 2.0 km shield trigger, so the sun "started" nowhere near
+            // where it killed you (the "died before entering" perception bug — the
+            // phase machine itself is correct; a scripted X3_SUN_DIVE_TEST proved
+            // death only fires 17 s AFTER distC<kSunRadius, deep in the core).
+            //
+            // v3 = a granulated ORANGE core (the dominant body) + a TIGHT additive
+            // corona hugging it (visible edge ~1.34x = 2.7 km ≈ the trigger, so the
+            // bright surface and the kill radius now agree). Fixes that got here:
+            //
+            //  * All glass draws pass alphaBlend=true -> the BLEND partition, which the
+            //    depth PRE-PASS skips (SSAO/SSGI/reflections on by default): the shells
+            //    share sunMesh with the opaque core, and in the OPAQUE partition the
+            //    fragment-less pre-pass would write the nearest shell's depth across the
+            //    disc and occlude the core. BLEND keeps the core visible.
+            //  * GlassMaterial.refraction MUST be 0 on every shell. The default 0.03
+            //    refracts the backdrop at each shell's limb into a glassy "bubble" rim
+            //    — a pale ring hugging the core. Zeroed = pure additive glow, no lens.
+            //  * The opaque core occludes the shells at screen-radius <1.0, so just
+            //    OUTSIDE the core silhouette the full SUM of every shell appears at once
+            //    — a bright step-up = a RING — while the core's own textured limb sat
+            //    DARKER than that sum (the dark band). Two fixes: (a) keep the halo DIM
+            //    enough that its brightest point (the sum at the core edge) stays BELOW
+            //    the core surface brightness, so the step at the silhouette is a gentle
+            //    DOWNWARD fade (a glow), never a bright ring; (b) redden the halo
+            //    outward so the base reads as a chromosphere rim (cheap limb-darkening
+            //    cue) melting into the corona.
+            //  * Also: bloom rim. Core emissive was 2.9 (WHOLE disc over the 0.92 bloom
+            //    threshold -> pale wafer + a pale bloom ring). Dropped to ~1.05 and the
+            //    bright cell cores toned to GOLD not white, so only sparse faculae bloom
+            //    and the surface holds its orange granulation.
+            // MANY thin shells (was 14 — individually visible as concentric BANDS in
+            // captures). 30 halves the radius step between neighbours so the sum reads
+            // as a smooth gradient, not stacked rings. Start at 1.012x (NOT 1.0x — a
+            // shell coincident with the opaque core z-fights it and punched the thin
+            // DARK BAND seen at the limb in v3-close).
+            const int kCoronaShells = 30;
+            for (int i = kCoronaShells - 1; i >= 0; --i) {
+                const float f  = (float)i / (float)(kCoronaShells - 1);   // 0=limb .. 1=outer
+                const float s  = 1.012f + f * (1.34f - 1.012f);
+                // MONOTONIC exponential falloff. Per-shell op is LOW; the sum at the
+                // core edge stays a faint glow, far dimmer than the core, so no bright
+                // rim can form. Twice as many shells -> ~half the per-shell op.
+                const float op = 0.017f * std::exp(-3.2f * f);
+                // Deep orange at the limb -> red -> dark red as it fades out. Kept
+                // SATURATED (low green/blue) on purpose: a pale/gold halo reads as a
+                // bright ring hugging the core, a saturated-orange one melts into the
+                // corona (learned the hard way — the gold version popped a ring).
+                const float r = 1.0f;
+                const float g = 0.40f - 0.30f * f;
+                const float b = 0.11f - 0.09f * f;
+                sphereMatrix(kSunCenter, kSunRadius * s, m);
+                const float bc[4] = { r, std::max(0.0f,g), std::max(0.0f,b), 1.0f };
+                const float em[4] = { r, std::max(0.0f,g), std::max(0.0f,b), 0.7f };
                 x3::rhi::IRenderDevice::GlassMaterial gm{};
-                gm.opacity = sh.op; gm.roughness = 1.0f; gm.specular = 0.0f;
-                gm.tint[0] = sh.r; gm.tint[1] = sh.g; gm.tint[2] = sh.b;
+                gm.opacity = op; gm.roughness = 1.0f; gm.specular = 0.0f;
+                gm.refraction = 0.0f;   // NO screen-space distortion — the default 0.03 refracts
+                                        // the backdrop at each shell limb = a glassy "bubble" rim
+                                        // (the pale ring hugging the core). Zeroing it leaves a
+                                        // pure additive glow, no lens edge.
+                gm.tint[0] = bc[0]; gm.tint[1] = bc[1]; gm.tint[2] = bc[2];
                 device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{}, bc, em, gm, m,
                                       /*alphaBlend=*/true);   // BLEND partition: skip depth pre-pass
             }
-            // CHURN SHELL: a second, faint, slightly-larger copy of the surface
-            // texture rotating the OPPOSITE way a touch faster than the core —
-            // cheap parallax "churn" (no extra mesh upload, just a 2nd draw).
+            // CHURN SHELL: a faint textured copy counter-rotating a touch faster than
+            // the core — cheap parallax "boil". Hugs the core (1.015x) and kept dim so
+            // it modulates the surface rather than forming its own mid-tone annulus.
             const float churnYaw = -g_clock * 0.026f;
-            sphereMatrixYaw(kSunCenter, kSunRadius * 1.04f, churnYaw, m);
+            sphereMatrixYaw(kSunCenter, kSunRadius * 1.006f, churnYaw, m);
             {
-                const float bc[4] = { 1.0f, 0.85f, 0.55f, 1.0f };
-                const float em[4] = { 1.0f, 0.85f, 0.55f, 0.55f };
+                const float bc[4] = { 1.0f, 0.55f, 0.22f, 1.0f };
+                const float em[4] = { 1.0f, 0.55f, 0.22f, 0.35f };
                 x3::rhi::IRenderDevice::GlassMaterial gm{};
-                gm.opacity = 0.16f; gm.roughness = 1.0f; gm.specular = 0.0f;
-                gm.tint[0]=1.0f; gm.tint[1]=0.9f; gm.tint[2]=0.7f;
+                gm.opacity = 0.09f; gm.roughness = 1.0f; gm.specular = 0.0f;
+                gm.refraction = 0.0f;   // no lens edge (see corona note above)
+                gm.tint[0]=1.0f; gm.tint[1]=0.55f; gm.tint[2]=0.22f;
                 device->drawMeshGlass(frame, sunMesh, sunTex, bc, em, gm, m,
                                       /*alphaBlend=*/true);   // BLEND partition: skip depth pre-pass
             }
-            // White-gold core: baked granulation/sunspot/faculae texture bound as
-            // BOTH baseColor and emissiveTex (so the detail modulates the bloom),
-            // slowly rotating (majestic, not spinning), with a FUSION SHIMMER — a
-            // slow sum-of-sines breathing the emissive intensity +-~8%. This is the
-            // ONLY opaque sun draw; now that the corona shells are in the BLEND
-            // partition (above) they no longer poison the depth pre-pass, so this
-            // core renders normally and its granulation/sunspot texture is visible.
+            // GRANULATED CORE — the dominant body. Baked granulation/sunspot/faculae
+            // texture bound as BOTH baseColor and emissiveTex (detail modulates the
+            // bloom), slowly rotating, with a FUSION SHIMMER (slow sum-of-sines,
+            // +-~8%). The ONLY opaque sun draw. v3 drops emissive 2.9 -> 1.7: at 2.9
+            // the WHOLE disc cleared the ~0.92 bloom threshold and blew to a flat pale
+            // wafer; at 1.7 only the white-gold cell centres + faculae bloom, so the
+            // deep-orange lanes and sunspots survive and the disc reads as textured
+            // boiling plasma (SDO look) instead of a washed circle.
             const float coreYaw = g_clock * 0.010f;
             sphereMatrixYaw(kSunCenter, kSunRadius, coreYaw, m);
             const float shimmer = 1.0f
                 + 0.05f * std::sin(g_clock * (6.2831853f / 5.3f))
                 + 0.03f * std::sin(g_clock * (6.2831853f / 7.7f) + 1.7f);
-            const float cbc[4] = { 1.0f, 0.93f, 0.78f, 1.0f };
-            const float cem[4] = { 1.0f, 0.93f, 0.78f, 3.4f * shimmer };
+            const float cbc[4] = { 1.0f, 0.62f, 0.28f, 1.0f };
+            const float cem[4] = { 1.0f, 0.62f, 0.28f, 1.05f * shimmer };
             device->drawMeshPBR(frame, sunMesh, sunTex, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
                                 cbc, cem, m, /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
         };
@@ -1325,6 +1388,22 @@ int hostSpace(HostContext& hc) {
             const float distC = vlen(x3::phys::Vec3{ sPos.x-kSunCenter.x,
                                      sPos.y-kSunCenter.y, sPos.z-kSunCenter.z });
             g_sunSurf = distC - kSunRadius;
+            // DIAGNOSTIC heartbeat: while within the warning band, log the raw
+            // numbers every 2 s so a scripted dive reveals exactly what the trigger
+            // sees vs. the HUD "SUN km" readout (both derive from g_sunSurf here).
+            if (kSunDebugLog) {
+                dbgLogTimer += fdt;
+                if (g_sunSurf < kWarnDist && dbgLogTimer >= 2.0f) {
+                    dbgLogTimer = 0.0f;
+                    char lb[192];
+                    std::snprintf(lb, sizeof(lb),
+                        "[sun-dbg] hb phase=%d distC=%.1f g_sunSurf=%.1f (HUD SUN %.2fkm) shield=%.1f pos=(%.0f,%.0f,%.0f)",
+                        (int)phase, (double)distC, (double)g_sunSurf,
+                        (double)(std::max(0.0f, g_sunSurf) / 1000.0f), (double)shieldPct,
+                        (double)sPos.x, (double)sPos.y, (double)sPos.z);
+                    x3::logInfo(lb);
+                }
+            }
             // Heat curve: 0 far, smoothstep up as the surface distance falls from
             // kHeatStart to the body; a touch of inverse-square bite near the surface.
             const float prox = smooth01(kHeatStart, kSunRadius, g_sunSurf);
@@ -1367,6 +1446,15 @@ int hostSpace(HostContext& hc) {
                 if (shieldPct < 100.0f)
                     shieldPct = std::min(100.0f, shieldPct + fdt * (100.0f / kShieldRechargeSecs));
                 if (distC < kSunRadius) {           // breached the CORE → shield engages
+                    if (kSunDebugLog) {
+                        char lb[192];
+                        std::snprintf(lb, sizeof(lb),
+                            "[sun-dbg] >>> Flying->InsideSun  distC=%.2f (kSunRadius=%.0f) g_sunSurf=%.2f pos=(%.1f,%.1f,%.1f) center=(%.1f,%.1f,%.1f)",
+                            (double)distC, (double)kSunRadius, (double)g_sunSurf,
+                            (double)sPos.x, (double)sPos.y, (double)sPos.z,
+                            (double)kSunCenter.x, (double)kSunCenter.y, (double)kSunCenter.z);
+                        x3::logInfo(lb);
+                    }
                     phase = Phase::InsideSun; phaseT = 0.0f; shieldPct = 100.0f;
                     shieldFlashT = 0.0f;
                     burnFlareT = 0.0f;   // pairs the +50% entry-burn flare with the SHIELD ENGAGED cue
@@ -1393,7 +1481,17 @@ int hostSpace(HostContext& hc) {
                         phase = Phase::Flying; phaseT = 0.0f;
                         break;
                     }
-                    if (!g_invulnerable && phaseT >= kShieldSecs) { snapshotTraj(); phase = Phase::Detonation; phaseT = 0.0f; }
+                    if (!g_invulnerable && phaseT >= kShieldSecs) {
+                        if (kSunDebugLog) {
+                            char lb[192];
+                            std::snprintf(lb, sizeof(lb),
+                                "[sun-dbg] >>> InsideSun->Detonation  held=%.2fs distC=%.2f g_sunSurf=%.2f pos=(%.1f,%.1f,%.1f)",
+                                (double)phaseT, (double)distC, (double)g_sunSurf,
+                                (double)sPos.x, (double)sPos.y, (double)sPos.z);
+                            x3::logInfo(lb);
+                        }
+                        snapshotTraj(); phase = Phase::Detonation; phaseT = 0.0f;
+                    }
                     break;
                 case Phase::Detonation:
                     if (phaseT >= kDetonateSecs) { phase = Phase::Rewind; phaseT = 0.0f; }
@@ -1459,6 +1557,83 @@ int hostSpace(HostContext& hc) {
             device->drawHudTextF(frame, FontRole::HudMono, "UP/DOWN + ENTER   ESC=RESUME",
                                  px + 34.0f, py + ph - 26.0f, 12.0f, hint);
         };
+
+        // ===== INSTRUMENTED SUN-DIVE REPRODUCTION (X3_SUN_DIVE_TEST=1) =======
+        // Owner bug, 3rd report: "hull STILL lost to the sun BEFORE entering the
+        // sun." Two prior code audits declared the trigger correct; this drives the
+        // REAL controller (pilot.update) + REAL phase machine (advanceSequence) on a
+        // scripted straight-line dive at the star and LOGS every transition so we
+        // can read — not assert — where death actually fires. Pair with
+        // kSunDebugLog=true. No window / no GPU needed: it only steps the sim.
+        if (std::getenv("X3_SUN_DIVE_TEST") != nullptr) {
+            x3::logInfo("[sun-dive] === INSTRUMENTED SUN-DIVE REPRODUCTION begin ===");
+            char lb[192];
+            std::snprintf(lb, sizeof(lb),
+                "[sun-dive] kSunCenter=(%.0f,%.0f,%.0f) kSunRadius=%.0f corona visible edge~=%.0f (1.34x) kWarnDist=%.0f kCritDist=%.0f",
+                (double)kSunCenter.x, (double)kSunCenter.y, (double)kSunCenter.z,
+                (double)kSunRadius, (double)(kSunRadius * 1.34f), (double)kWarnDist, (double)kCritDist);
+            x3::logInfo(lb);
+            // Loose preset (high accel/top speed, 340 m/s) so the dive actually
+            // reaches the core within the sim cap. Start 6 km off the core surface,
+            // on the sun ray, and fly straight in.
+            pilot.setMode(x3::game::FlightMode::Loose);
+            const float startDistC = kSunRadius + 6000.0f;
+            const x3::phys::Vec3 startPos{ kSunCenter.x - kSunDir.x*startDistC,
+                                           kSunCenter.y - kSunDir.y*startDistC,
+                                           kSunCenter.z - kSunDir.z*startDistC };
+            pilot.spawn(*sphys, startPos.x, startPos.y, startPos.z, pilot.tuning());
+            const float fdt = 1.0f / 60.0f;
+            const float kSteerToLook = 1.0f / (1.9f * 0.00132f);   // rad -> lookDX units (kMouseSens*kPxToRad)
+            auto angWrap = [](float a){ while (a >  3.14159265f) a -= 6.2831853f;
+                                        while (a < -3.14159265f) a += 6.2831853f; return a; };
+            Phase prevPhase = phase;
+            bool  reachedDeton = false;
+            for (int step = 0; step < 60 * 100; ++step) {   // 100 s sim cap
+                const x3::phys::Vec3 p = pilot.pos();
+                const x3::phys::Vec3 toC{ kSunCenter.x-p.x, kSunCenter.y-p.y, kSunCenter.z-p.z };
+                const float distC = vlen(toC);
+                const x3::phys::Vec3 dir = vnorm(toC);
+                // Nose onto the star (controller convention: fwd=(cospcosy,sinp,cospsiny)).
+                const float tgtYaw = std::atan2(dir.z, dir.x);
+                const float tgtPit = std::asin(std::max(-1.0f, std::min(1.0f, dir.y)));
+                x3::game::PlayerInput in{};
+                // GENTLE damped steer (0.15 of the residual/frame) so the nose eases
+                // onto the star without a huge one-frame delta spiking auto-bank into
+                // a tumble (which misdirects thrust and stalls the dive).
+                const float yawErr = angWrap(tgtYaw - pilot.yaw());
+                const float pitErr = tgtPit - pilot.pitch();
+                in.lookDX =  yawErr * kSteerToLook * 0.15f;
+                in.lookDY = -pitErr * kSteerToLook * 0.15f;
+                const bool  aimed = (std::fabs(yawErr) < 0.05f && std::fabs(pitErr) < 0.05f);
+                // Throttle: once roughly aimed, dive hard until ~800 m inside the core,
+                // then reverse-thrust to brake and hover so the 17 s shield timer
+                // expires (reproduces the death) rather than grazing straight through.
+                const x3::phys::Vec3 v = pilot.velocity();
+                const float radialIn = v.x*dir.x + v.y*dir.y + v.z*dir.z;   // + = closing
+                if (!aimed)                 in.moveFwd = 0.0f;              // finish turning first
+                else if (distC > 1200.0f)   in.moveFwd = 1.0f;             // full dive
+                else                        in.moveFwd = std::max(-1.0f, std::min(1.0f,
+                                                0.004f*(distC - 800.0f) - 0.25f*radialIn));
+                in.sprint  = aimed && distC > kSunRadius;   // boost only diving in
+                pilot.update(in, fdt, *sphys);
+                advanceSequence(fdt, false);
+                if (phase != prevPhase) {
+                    std::snprintf(lb, sizeof(lb), "[sun-dive] t=%.2fs phase %d->%d  distC=%.1f g_sunSurf=%.1f speed=%.1f",
+                        (double)(step*fdt), (int)prevPhase, (int)phase,
+                        (double)distC, (double)g_sunSurf, (double)pilot.speed());
+                    x3::logInfo(lb);
+                    prevPhase = phase;
+                }
+                if (phase == Phase::Detonation) { reachedDeton = true;
+                    x3::logInfo("[sun-dive] reached Detonation — full death reproduced; stopping."); break; }
+            }
+            if (!reachedDeton)
+                x3::logInfo("[sun-dive] cap hit without Detonation (grazed/loitered) — see transitions above.");
+            x3::logInfo("[sun-dive] === INSTRUMENTED SUN-DIVE REPRODUCTION end ===");
+            sphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return 0;
+        }
 
         // ===== Headless capture (--world space --screenshot <path>) ========
         if (headless) {
