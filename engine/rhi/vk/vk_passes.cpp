@@ -904,7 +904,7 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
                       const float model[16], bool alphaMask, bool alphaBlend,
                       TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                       uint32_t extraFlags, const GlassMaterial* glass,
-                      float clearcoat , float clearcoatRough ) {
+                      float clearcoat , float clearcoatRough , float selfLight ) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -963,6 +963,15 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             r.flags |= kFlagClearcoat;
             r.terrainPack1 = ((uint32_t)(ccR * 255.0f + 0.5f) << 8)
                            |  (uint32_t)(ccI * 255.0f + 0.5f);
+        }
+        // SHIP SELF-LIGHT (canon: ships are self-lit) — same trick, the SPARE
+        // pack2 lane (a self-lit ship is never the terrain marker, and clearcoat
+        // owns pack1, so nothing collides). Low byte = intensity*255; flags bit3
+        // gates the fragment term. Every non-ship draw is byte-identical.
+        if (selfLight > 0.001f && (r.flags & kFlagTerrain) == 0u) {
+            const float sl = selfLight < 0.0f ? 0.0f : (selfLight > 1.0f ? 1.0f : selfLight);
+            r.flags |= kFlagShipSelfLit;
+            r.terrainPack2 = (uint32_t)(sl * 255.0f + 0.5f);
         }
         uint32_t emisIdx = 0;
         if (emissiveTex.valid()) {
@@ -1596,7 +1605,10 @@ void VulkanRenderDevice::prepareFrameData() {
         }
         ubo.camPos = glm::vec4(m_camPos, 0.0f);   // PBR view vector (mesh.frag)
         // Per-scene sun direction for lighting + shadows (same source as the sky disk).
-        ubo.sunDir = glm::vec4(glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])), 0.0f);
+        // .w = the scene's SUN RADIANCE scale for mesh.frag's directional key
+        // (SkyParams::sunLight; 1.0 by default == the old hardcoded kSunColor).
+        ubo.sunDir = glm::vec4(glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])),
+                               std::max(m_sky.sunLight, 0.0f));
         std::memcpy(fr.camMapped, &ubo, sizeof(FrameUBO));
 
         // Analytic sky UBO (open-world track, task A): the camera's INVERSE viewProj

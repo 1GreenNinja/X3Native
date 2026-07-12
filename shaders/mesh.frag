@@ -153,6 +153,10 @@ const uint FLAG_GLASS   = 2u;
 // layer. Params ride the SPARE terrain-pack1 lane (vTerrainPack.x — mutually
 // exclusive with TERRAIN): low byte = intensity*255, next byte = roughness*255.
 const uint FLAG_CLEARCOAT = 4u;
+// CANON: SHIPS ARE SELF-LIT (Star Trek convention). A hull must never render as a
+// black silhouette just because the star is on its far side. The intensity byte
+// rides vTerrainPack.y (the spare lane; clearcoat owns .x, terrain owns both).
+const uint FLAG_SHIP_SELFLIT = 8u;
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white sun
 
 // ===========================================================================
@@ -722,6 +726,10 @@ void main() {
 
     // ---- Shared terms: sun shadow, hemispheric ambient, SSAO (both paths use these). ----
     vec3  kSunDir = normalize(cam.sunDir.xyz);   // per-scene sun direction (Camera UBO)
+    // Per-scene SUN RADIANCE (SkyParams::sunLight, packed in cam.sunDir.w). 1.0 for
+    // every world that never sets it -> byte-identical to the old hardcoded sun.
+    // Deep space raises it: a star is the only light out there.
+    vec3  sunRad  = kSunColor * max(cam.sunDir.w, 0.0);
     float ndl    = max(dot(N, kSunDir), 0.0);
     float shadow = sampleShadow(vWorldPos, ndl);
 #ifdef RT_SHADOWS
@@ -768,7 +776,7 @@ void main() {
         // ambient term is now SPLIT-SUM IBL so plain white cladding/floors finally
         // reflect the environment (dielectric: metallic=0, satin roughness ~0.5).
         // Falls back to the old flat ambient when no env is baked. ----
-        vec3 lighting = kSunColor * (0.75 * ndl * shadow);
+        vec3 lighting = sunRad * (0.75 * ndl * shadow);
         for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {
             vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
             float dist = length(toL);
@@ -804,7 +812,7 @@ void main() {
         vec3  diff     = albedo.rgb * (1.0 - metallic);
         vec3  V        = normalize(cam.camPos.xyz - vWorldPos);
         float NoV      = max(dot(N, V), 1e-4);
-        vec3  Lo = brdf(N, V, NoV, kSunDir, F0, diff, a, kSunDiffuseW) * kSunColor * shadow;  // sun (shadowed)
+        vec3  Lo = brdf(N, V, NoV, kSunDir, F0, diff, a, kSunDiffuseW) * sunRad * shadow;  // sun (shadowed)
         for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {                    // point lights
             vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
             float dist = length(toL);
@@ -861,7 +869,7 @@ void main() {
                 vec3 H = normalize(Vc + kSunDir);
                 float NoH = max(dot(Nc, H), 0.0), VoH = max(dot(Vc, H), 0.0);
                 float Fd  = 0.04 + 0.96 * pow(1.0 - VoH, 5.0);
-                ccLo += kSunColor * shadow
+                ccLo += sunRad * shadow
                       * (D_GGX(NoH, aCc) * V_SmithGGX(NoVc, NoL, aCc) * Fd * NoL);
             }
             for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {
@@ -912,6 +920,36 @@ void main() {
     }
 
     // ---- Emissive: per-object HDR radiance on top (glows even in shadow; feeds bloom). ----
+    // ======================================================================
+    // SHIP SELF-LIGHT (FLAG_SHIP_SELFLIT) — the canon "ships are self-lit" term.
+    // NOT an ambient/emissive floor (a floor is what washed the capital ship to a
+    // flat white slab): this is SHAPED, and it is GATED OFF WHERE THE STAR HITS.
+    //   * (1 - N.L * shadow) -> the term exists ONLY on the side the sun is not
+    //     lighting and fades to zero as a surface turns into the light, so the lit
+    //     side keeps its honest N.L / GGX response, untouched.
+    //   * a Fresnel rim (grazing edges) keeps the SILHOUETTE alive at any angle —
+    //     the "looks great on the first pass, goes black on the second" case.
+    //   * an N.V form term lifts the facing planes just off the floor, still
+    //     varying with the normal, so the hull reads as a shaped volume, not a
+    //     flat cutout.
+    // Cool hull-lighting tint, capped well under 1.0 so it can never clip or bloom.
+    // ======================================================================
+    if ((vFlags & FLAG_SHIP_SELFLIT) != 0u) {
+        const vec3 kShipSelfLight = vec3(0.34, 0.40, 0.52);   // cool steel interior light
+        float sl    = float(vTerrainPack.y & 0xFFu) / 255.0;
+        vec3  Vs    = normalize(cam.camPos.xyz - vWorldPos);
+        float NoVs  = clamp(dot(N, Vs), 0.0, 1.0);
+        float rim   = pow(1.0 - NoVs, 3.0);                   // silhouette edges
+        float form  = 0.30 + 0.70 * NoVs;                     // facing planes (normal-shaped)
+        // SQUARED darkness gate: the term dies FAST as soon as any starlight lands
+        // on a surface, so it can only ever fill the genuinely unlit side. (Linear
+        // fell off too slowly and washed the half-lit fins pale — the very failure
+        // mode we removed from the old ambient floor.)
+        float dark  = 1.0 - clamp(ndl * shadow, 0.0, 1.0);
+        dark *= dark;
+        color += kShipSelfLight * (sl * dark * (form * 0.50 + rim * 0.50));
+    }
+
     vec3 emis = vEmissive.rgb;
     if (vEmissiveTexIndex > 0u) emis *= texture(textures[nonuniformEXT(vEmissiveTexIndex)], vUV).rgb;  // emissive map gates WHERE it glows (edge strips)
     color += emis * vEmissive.a;
