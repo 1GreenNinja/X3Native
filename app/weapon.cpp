@@ -932,7 +932,14 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
     // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
     constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
-    constexpr float kVmBright     = 2.6f;   // lit (the real issue is the GLB TEXTURE being wrong, not size/brightness)
+    // 2026-07-11: was 2.6f. The GLB textures are now the CORRECT per-weapon baked albedo
+    // (shared-atlas bug fixed) with a NEUTRAL baseColorFactor of 1.0, so this multiplier is
+    // no longer hiding a wrong skin -- at 2.6x it just clips the real albedo to white.
+    // NOTE: 1.4f is tuned for the CURRENT (non-physical) mesh.frag lighting path that this
+    // line still carries. The renderer lighting fix (0e837f5 on feat/rifthub-aaa) makes every
+    // GLB shade physically and sets this to 1.0 -- when that lands, TAKE 1.0 (a merge will
+    // conflict here on purpose; resolve to 1.0, do NOT keep 1.4 on top of the fixed lighting).
+    constexpr float kVmBright     = 1.4f;
     composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
@@ -1008,7 +1015,7 @@ void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
     // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
     // interiors. The caller owns the full world placement (hand-bone * grip * scale),
     // so unlike drawCurrentViewmodel this does NO camera-relative posing.
-    constexpr float kVmBright = 2.6f;
+    constexpr float kVmBright = 1.4f;   // see drawCurrentViewmodel (was 2.6f; blew out the restored albedo).
     for (const auto& dr : vm.drawables) {
         // STRIP the node-transform's authored WORLD TRANSLATION (cols 12..14): these
         // weapon GLBs bake an FP-viewmodel placement offset into the root node, which

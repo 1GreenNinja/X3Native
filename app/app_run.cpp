@@ -506,6 +506,7 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // baked table is unchanged. Position is meters in the hand-LOCAL frame; rotation
     // is degrees; scale is added to the row's scaleMul. See the BAKE block above
     // kTpGripTable. Synced per-frame in applyRtaoCVars().
+    console.registerCVar("shot_weapon", "", "--screenshot: weapon whose FP viewmodel is held in the capture (e.g. shotgun/plasma/chaingun/lightning). Empty = pistol. QA hook for the per-weapon texture gate.");
     console.registerCVar("grip_x",     "0", "3P held-weapon grip override: +meters toward thumb (right); live, current weapon");
     console.registerCVar("grip_y",     "0", "3P held-weapon grip override: +meters into the palm (down); live, current weapon");
     console.registerCVar("grip_z",     "0", "3P held-weapon grip override: +meters down the barrel (forward); live, current weapon");
@@ -3230,7 +3231,13 @@ int runDefaultHost(HostContext& hc) {
         // Production HUD for the capture (its own pulse clock; persists across the
         // settle frames). Arm the player so a weapon + ammo show in the arsenal.
         x3::ui::GameHud shotHud;
-        arsenal.select(0);   // pistol selected for the capture
+        // Weapon held in the capture. Default = pistol (slot 0); override with
+        // --set shot_weapon <name> to proof ANY gun's viewmodel skin headlessly —
+        // the QA gate for the per-weapon texture rebind (tools/rebind_weapon_textures.py).
+        {
+            const std::string shotWeapon = console->getString("shot_weapon");
+            if (shotWeapon.empty() || !arsenal.selectByName(shotWeapon)) arsenal.select(0);
+        }
         // --screenshot-alert: stage the LEVEL-3 LOCKDOWN for the proof shot —
         // force the alert, lock the zone doors, and shift every facility light
         // hard red (the same effects the live loop applies).
