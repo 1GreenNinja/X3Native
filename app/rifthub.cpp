@@ -276,14 +276,16 @@ inline float plateHalfTangent() {
     return kPlateRingR * std::sin(pi / (float)kPlateSegments) * 1.04f;
 }
 
-// ---- Pool center (energy-core hot spot) -----------------------------------------
-// Two small thin vertical slabs at the exact ring center — the brightest
-// blue-white point of the event-horizon pool (the membrane bands fill the rest
-// of the opening around them). Small so the round membrane silhouette wins.
-constexpr float    kCoreHalfW      = 0.30f;  // 0.6m wide hot-center slab
-constexpr float    kCoreHalfH      = 0.30f;  // 0.6m tall
-constexpr float    kCoreHalfT      = 0.025f; // 0.05m thick (thin disk)
-
+// ---- (ROUND 6) THE FAKE CENTER DOT IS DELETED ----------------------------------
+// v1 drew an "energy core hot spot" at the exact ring center — two small bright
+// blue-white disks composited ON TOP of the membrane. Once the membrane became
+// the owner's REAL FOOTAGE, that sprite was simply a hand-drawn dot painted over
+// video: "The swirling one looks fake.. Why the dot in the middle?" The footage
+// carries its own center (the OPEN throat converges to a natural bright core, the
+// SURGE has a dark eye). The core disks, their geometry constants, their emissive
+// pulse and their cap are GONE. What survives — and must — is the blue POINT LIGHT
+// each gate casts into its bay (kCoreLight* below): that is LIGHTING, not a sprite.
+//
 // ---- Trigger volume -----------------------------------------------------------
 constexpr float kTrigHalfXZ    = 2.5f;    // trigger volume half-extent (wider than ring)
 constexpr float kTrigHalfY     = 2.5f;    // trigger volume vertical half-extent
@@ -301,15 +303,8 @@ constexpr float kSpawnFeetY    = 0.05f;
 // verdict). v2 law: SATURATED blue colors, strengths hard-capped ~2.x so the
 // blue channel dominance survives the tonemapper.
 constexpr float    kShimmerPhaseStep  = 0.5f;            // per-portal phase offset (rad)
-constexpr float    kCoreBlue[3]       = { 0.20f, 0.50f, 1.00f };  // electric blue
-constexpr float    kCoreInnerBlue[3]  = { 0.55f, 0.78f, 1.00f };  // hot center (pale BLUE, not white)
-constexpr float    kCoreInnerHalfW    = 0.17f;          // inner hot-spot half-width
-constexpr float    kCoreInnerHalfH    = 0.17f;          // inner hot-spot half-height
-constexpr float    kCoreInnerHalfT    = 0.020f;         // inner disk half-thickness
-constexpr float    kCoreBlueMinEm     = 1.10f;          // core blue pulse min
-constexpr float    kCoreBlueMaxEm     = 1.90f;          // core blue pulse max
-constexpr float    kCoreEmCap         = 2.60f;          // HARD cap incl. kawoosh surge
-constexpr float    kCoreFreqHz        = 3.2f;           // core pulses faster than the ripple
+// (kCoreBlue / kCoreInner* / kCoreBlueMinEm / kCoreBlueMaxEm / kCoreEmCap /
+//  kCoreFreqHz are DELETED with the fake center dot — round 6.)
 
 // ---- Blue CORE point light (casts the event horizon onto the grey stone) ------
 // The step-4 resolution of the blue-vs-grey conflict: keep the grey STONE ring,
@@ -358,11 +353,19 @@ constexpr uint32_t kMembraneDiskSegs  = 48;              // fan segments (smooth
 // detail; the per-entity emissive tint keeps the whole sheet blue-dominant.
 constexpr float    kPlasmaBlue[3]     = { 0.24f, 0.52f, 1.00f };
 constexpr float    kPlasmaEmBase      = 1.45f;           // IDLE steady-state strength
-constexpr float    kPlasmaEmBaseOpen  = 1.90f;           // OPEN throat runs hotter (still capped)
+// ROUND 6: 1.90 was tuned for the PROCEDURAL throat map (a dim math texture that
+// needed pushing). The OPEN state now plays the reference FOOTAGE, whose frames are
+// already bright — at 1.90 the video's deep-navy channels lifted to mid-blue and the
+// throat washed toward cyan-white, i.e. we were destroying the very contrast we went
+// to the video for. Back it off so the footage's own value range reads.
+constexpr float    kPlasmaEmBaseOpen  = 1.58f;           // OPEN throat (footage-calibrated)
 constexpr float    kPlasmaEmWobble    = 0.30f;           // organic breathe amplitude
 constexpr float    kPlasmaEmCap      = 2.40f;            // HARD CAP (blue must survive tonemap)
 constexpr float    kPlasmaSpinRadS    = 0.22f;           // slow storm rotation (rad/s)
-constexpr float    kPlasmaSpinOpenX   = 2.6f;            // OPEN spins faster (streaming throat)
+// ROUND 6: the OPEN disk used to spin 2.6x to make the PROCEDURAL spokes "stream".
+// The footage streams on its own; spinning it fast on top just reads as a rotating
+// texture (fake). A slow drift under the film is enough.
+constexpr float    kPlasmaSpinOpenX   = 1.15f;           // OPEN: barely faster than idle
 // (The VISTA layer is GONE — round 5. An opaque disk parked behind an opaque
 // disk shows nothing from the front and BLACKS OUT the portal from the back;
 // see the membrane authoring block. A real see-through vista = render-to-texture
@@ -371,6 +374,13 @@ constexpr float    kPlasmaSpinOpenX   = 2.6f;            // OPEN spins faster (s
 // reference-video frames (8x6 atlas -> 48 tiles, loop-blended in the bake so a
 // plain modulo loop has no wrap pop). 18 fps lands in the task's 16-24 band;
 // the per-portal phase offset keeps the 8 gates from strobing in unison.
+// ROUND 6: the SAME machinery now plays the SURGE and OPEN atlases too — the
+// membrane never shows a hand-coded texture again while the atlases are present.
+// The OPEN atlas loops at kFlipFps like the idle one; the SURGE atlas is a
+// ONE-SHOT played across the kawoosh (progress-mapped: frame = surge progress *
+// N, clamped to the last frame), so the vortex ring collapses into the throat in
+// exactly the time the flash lasts and hands off to the OPEN loop on the frame it
+// was baked to hand off on (surge span ends t 8.30, open span starts t 8.40).
 constexpr uint32_t kFlipCols          = 8;
 constexpr uint32_t kFlipRows          = 6;
 constexpr float    kFlipFps           = 18.0f;
@@ -672,11 +682,17 @@ std::vector<uint8_t> makePlasmaRGBA(uint32_t n) {
     return px;
 }
 
-// OPEN-THROAT emissive map (PortalAnimated.mp4 state 3): radial plasma
-// STREAMING from a hot center — ridged noise sampled in POLAR space with a
-// high angular frequency and a low radial frequency, so the creases become
-// spokes rushing outward; a slight spiral twist keeps it organic. The disk's
-// faster OPEN rotation makes the spokes visibly stream.
+// OPEN-THROAT emissive map — THE MISSING-ATLAS FALLBACK ONLY (round 6).
+//
+// This function used to BE the OPEN state, and that is exactly what the owner
+// saw and rejected: "The swirling one looks fake." It is hand-coded math — a
+// polar ridged-noise spiral — sitting next to seven other gates playing real
+// footage. The OPEN state now plays membrane_flipbook_open.png (the reference
+// video's own throat, t 8.4-9.95 s). This map survives ONLY so a fresh clone
+// with LFS-stub textures still shows a lit, blue, streaming membrane instead of
+// a black disk. Its hot-center BURST TERM (exp(-r*r*9) painted white into the
+// middle) is deleted too — that was the other half of "why the dot in the
+// middle?" — so even the fallback has no fake core.
 std::vector<uint8_t> makeThroatRGBA(uint32_t n) {
     std::vector<uint8_t> px(n * n * 4);
     auto clamp8 = [](float v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); };
@@ -693,10 +709,10 @@ std::vector<uint8_t> makeThroatRGBA(uint32_t n) {
             const float sx = std::cos(ang) * 2.9f, sy = std::sin(ang) * 2.9f;
             const float spokes = ridged(sx + r * 1.3f + 5.1f, sy + r * 1.3f + 8.7f, 4, 0x09E4u);
             const float body   = fbm(u * 2.0f + 1.3f, v * 2.0f + 6.6f, 3, 0x7EAAu);
-            // Radial envelope: HOT center streaming out, alive to near the rim.
+            // Radial envelope: alive to near the rim. NO hot-center burst term
+            // (round 6: the fake dot is gone — from the fallback too).
             float env = 1.0f - r;
             if (env < 0.0f) env = 0.0f;
-            const float core = std::exp(-r * r * 9.0f);    // hot center burst
             float t = spokes - 0.42f;
             if (t < 0.0f) t = 0.0f;
             t *= 2.2f; if (t > 1.0f) t = 1.0f;
@@ -704,9 +720,9 @@ std::vector<uint8_t> makeThroatRGBA(uint32_t n) {
             const float baseR = 10.0f + 30.0f * body, baseG = 30.0f + 66.0f * body,
                         baseB = 110.0f + 110.0f * body;
             const float filR = 205.0f, filG = 230.0f, filB = 255.0f;
-            float R = (baseR + (filR - baseR) * t) * e2 + core * 150.0f;
-            float G = (baseG + (filG - baseG) * t) * e2 + core * 190.0f;
-            float B = (baseB + (filB - baseB) * t) * e2 + core * 255.0f;
+            float R = (baseR + (filR - baseR) * t) * e2;
+            float G = (baseG + (filG - baseG) * t) * e2;
+            float B = (baseB + (filB - baseB) * t) * e2;
             uint8_t* p = &px[(y * n + x) * 4];
             p[0] = clamp8(R); p[1] = clamp8(G); p[2] = clamp8(B); p[3] = 255;
         }
@@ -798,6 +814,63 @@ void beamXform(float m[16], const x3::phys::Vec3& a, const x3::phys::Vec3& b,
     m[12] = (a.x + b.x) * 0.5f; m[13] = (a.y + b.y) * 0.5f; m[14] = (a.z + b.z) * 0.5f; m[15] = 1;
 }
 
+// ---- MEMBRANE FLIPBOOK loader (ROUND 6: ONE path, THREE states) ---------------
+// Slice an 8x6 flipbook atlas (tools/make_membrane_flipbook.py, baked from a span
+// of the owner's reference video) into kFlipCols*kFlipRows per-frame textures.
+// Any failure — file absent, Git-LFS pointer stub instead of pixels, dimensions
+// not divisible by the grid — returns EMPTY, and that membrane state falls back
+// to its procedural map. The world never breaks on a fresh clone.
+std::vector<x3::rhi::TextureHandle> loadFlipbookAtlas(x3::rhi::IRenderDevice& device,
+                                                     const std::string& path,
+                                                     const char* label) {
+    std::vector<x3::rhi::TextureHandle> out;
+    int aw = 0, ah = 0;
+    const std::vector<uint8_t> atlas = decodePngRGBA8(path, aw, ah);
+    if (!atlas.empty() && aw > 0 && ah > 0 &&
+        (uint32_t)aw % kFlipCols == 0 && (uint32_t)ah % kFlipRows == 0) {
+        const uint32_t tw = (uint32_t)aw / kFlipCols;
+        const uint32_t th = (uint32_t)ah / kFlipRows;
+        std::vector<uint8_t> tile((size_t)tw * th * 4u);
+        out.reserve((size_t)kFlipCols * kFlipRows);
+        for (uint32_t f = 0; f < kFlipCols * kFlipRows; ++f) {
+            const uint32_t r0 = (f / kFlipCols) * th;
+            const uint32_t c0 = (f % kFlipCols) * tw;
+            for (uint32_t y = 0; y < th; ++y)
+                std::memcpy(&tile[(size_t)y * tw * 4u],
+                            &atlas[(((size_t)r0 + y) * (size_t)aw + c0) * 4u],
+                            (size_t)tw * 4u);
+            out.push_back(device.createTexture(tile.data(), tw, th, true));
+        }
+    }
+    x3::logInfo(std::string("[rifthub] membrane flipbook (") + label + "): " +
+                (out.empty() ? "atlas absent -> procedural fallback"
+                             : std::to_string(out.size()) + " frames of the "
+                               "reference video"));
+    return out;
+}
+
+// Which flipbook frame does this membrane state show right now?
+//   IDLE  / OPEN : a LOOP at kFlipFps (per-portal phase so the 8 gates don't
+//                  strobe in unison; both atlases are loop-blended in the bake,
+//                  so a plain modulo has no wrap pop).
+//   SURGE        : ONE-SHOT — the 48 frames are mapped across the kawoosh's
+//                  LINEAR progress (0 at the flash, 1 at the hand-off), clamped
+//                  to the last frame, so the vortex ring finishes collapsing
+//                  exactly as the gate opens (NOT the exponential brightness
+//                  envelope: that would stall the film on its last frames).
+uint32_t flipFrameIndex(uint32_t n, float time, uint32_t portalIdx,
+                        bool surge, float surgeProg) {
+    if (n == 0) return 0;
+    if (surge) {
+        float prog = surgeProg;
+        if (prog < 0.0f) prog = 0.0f;
+        if (prog > 1.0f) prog = 1.0f;
+        const uint32_t f = (uint32_t)(prog * (float)n);
+        return f >= n ? n - 1 : f;
+    }
+    return (uint32_t)((time + (float)portalIdx * kFlipPortalPhase) * kFlipFps) % n;
+}
+
 } // namespace
 
 void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -835,36 +908,14 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_holoTexA = device.createTexture(holoA.data(), 256, 256, true);
         auto holoB = makeHoloDataRGBA(256, 0x7C3Du);
         m_holoTexB = device.createTexture(holoB.data(), 256, 256, true);
-        // MEMBRANE FLIPBOOK (ROUND 4 J2): slice the baked atlas into 48
-        // per-frame tiles. Any failure (file absent, LFS pointer stub, odd
-        // dimensions) leaves m_flipTex empty -> the procedural nebula holds.
-        {
-            int aw = 0, ah = 0;
-            const std::string fbPath =
-                assetRoot() + "/textures/rifthub/membrane_flipbook.png";
-            const std::vector<uint8_t> atlas = decodePngRGBA8(fbPath, aw, ah);
-            if (!atlas.empty() && aw > 0 && ah > 0 &&
-                (uint32_t)aw % kFlipCols == 0 && (uint32_t)ah % kFlipRows == 0) {
-                const uint32_t tw = (uint32_t)aw / kFlipCols;
-                const uint32_t th = (uint32_t)ah / kFlipRows;
-                std::vector<uint8_t> tile((size_t)tw * th * 4u);
-                m_flipTex.reserve((size_t)kFlipCols * kFlipRows);
-                for (uint32_t f = 0; f < kFlipCols * kFlipRows; ++f) {
-                    const uint32_t r0 = (f / kFlipCols) * th;
-                    const uint32_t c0 = (f % kFlipCols) * tw;
-                    for (uint32_t y = 0; y < th; ++y)
-                        std::memcpy(&tile[(size_t)y * tw * 4u],
-                                    &atlas[(((size_t)r0 + y) * (size_t)aw + c0) * 4u],
-                                    (size_t)tw * 4u);
-                    m_flipTex.push_back(device.createTexture(tile.data(), tw, th, true));
-                }
-            }
-            x3::logInfo(std::string("[rifthub] membrane flipbook: ") +
-                        (m_flipTex.empty()
-                             ? "atlas absent -> procedural nebula fallback"
-                             : std::to_string(m_flipTex.size()) + " frames @ " +
-                                   std::to_string((int)kFlipFps) + " fps (IDLE plasma layer)"));
-        }
+        // MEMBRANE FLIPBOOKS (ROUND 6): all THREE membrane states play the
+        // owner's reference video. One loader, three atlases (idle / surge /
+        // open); each falls back on its own to the procedural map if its atlas
+        // is missing (fresh clone with LFS stubs).
+        const std::string fbDir = assetRoot() + "/textures/rifthub/";
+        m_flipTex      = loadFlipbookAtlas(device, fbDir + "membrane_flipbook.png",      "IDLE");
+        m_flipSurgeTex = loadFlipbookAtlas(device, fbDir + "membrane_flipbook_surge.png","SURGE");
+        m_flipOpenTex  = loadFlipbookAtlas(device, fbDir + "membrane_flipbook_open.png", "OPEN");
     }
 
     // ===== Curated PBR surface sets — loaded FIRST (the floor + hall use them).
@@ -1737,31 +1788,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
         p.trackEntCount = kTrackSegs;
 
-        // ---- Pool center: soft ROUND electric-blue hot spot ------------------
-        // Two small round glow disks (the SHARED membrane disk mesh, uniformly
-        // basis-scaled down) floating just hub-side of the plasma sheet. Round
-        // + capped: the v1 white SQUARE hot-spot read as a literal square on
-        // screen (Tim's screenshot) — a disk melts into the storm instead.
-        auto addCoreDisk = [&](float scale, float depth, const float tint[3],
-                               float em) -> uint32_t {
-            Entity e;
-            e.mesh = m_diskMesh;
-            e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1]; e.baseColor[2] = tint[2];
-            e.baseColor[3] = 1.0f;
-            e.emissive[0] = tint[0]; e.emissive[1] = tint[1]; e.emissive[2] = tint[2];
-            e.emissive[3] = em;
-            e.tag = (uint32_t)Tag::Prop;
-            const float sx[3] = { rightX * scale, 0.0f, rightZ * scale };
-            const float sy[3] = { 0.0f, scale, 0.0f };
-            const float sz[3] = { outwardX * scale, 0.0f, outwardZ * scale };
-            makeXform(e.transform, sx, sy, sz,
-                      cx - outwardX * depth, kRingY, cz - outwardZ * depth);
-            return scene.add(e);
-        };
-        (void)kCoreHalfW; (void)kCoreHalfH; (void)kCoreHalfT;
-        (void)kCoreInnerHalfW; (void)kCoreInnerHalfH; (void)kCoreInnerHalfT;
-        p.coreEnt      = addCoreDisk(0.14f, 0.045f, kCoreBlue,      kCoreBlueMinEm);
-        p.coreInnerEnt = addCoreDisk(0.07f, 0.060f, kCoreInnerBlue, kCoreBlueMaxEm);
+        // ---- (ROUND 6) NO CORE DISKS. The two bright blue-white disks that used
+        //      to float at the exact ring center are DELETED — they were a v1
+        //      procedural leftover painted on top of the reference footage, and
+        //      they are what the owner saw: "Why the dot in the middle?" The
+        //      membrane's own frames carry its center. The gate's blue POINT
+        //      LIGHT (below) is untouched: light in the room, not a sprite.
 
         // ---- Event-horizon membrane v3 (the DEEP-BLUE PLASMA STORM) -----------
         // TWO entities on SHARED meshes/textures, authored contiguously
@@ -1970,7 +2002,6 @@ void Rifthub::tick(float dt, Scene& scene) {
     m_time += dt;
 
     const float twoPi = 6.2831853f;
-    const float coreOmega  = twoPi * kCoreFreqHz;      // fast blue energy pulse
     const float chevOmega  = twoPi * kChevFlickerHz;   // slow amber chevron flicker
     auto& ents = scene.entities();
     const uint32_t sceneN = (uint32_t)ents.size();
@@ -1984,13 +2015,16 @@ void Rifthub::tick(float dt, Scene& scene) {
         //     surge envelope (fast attack, exponential decay). surge01 in [0,1]
         //     drives BOTH the added strength and the tint slide toward pale
         //     blue — bright BLUE-white at the peak, never flat white.
-        float kawooshEm = 0.0f, surge01 = 0.0f;
+        float kawooshEm = 0.0f, surge01 = 0.0f, surgeProg = 0.0f;
         if (p.kawoosh > 0.0f) {
             p.kawoosh -= dt;
             if (p.kawoosh < 0.0f) p.kawoosh = 0.0f;
             const float tSince = kKawooshDur - p.kawoosh;          // seconds since the flash
             kawooshEm = kKawooshPeakEm * std::exp(-kKawooshDecay * tSince);
             surge01   = kawooshEm / kKawooshPeakEm;
+            // LINEAR progress through the surge — this is what the SURGE flipbook
+            // is played against (the exponential envelope drives BRIGHTNESS only).
+            surgeProg = tSince / kKawooshDur;
         }
         // Membrane/gate state (PortalAnimated.mp4 arc), derived from the
         // existing gameplay latches: IDLE / SURGE (kawoosh) / OPEN (settled).
@@ -2052,27 +2086,14 @@ void Rifthub::tick(float dt, Scene& scene) {
             ents[ce].emissive[3] = capped(em, kConduitEmCap);
         }
 
-        // --- Energy core: faster electric-blue pulse (core + brighter inner),
-        //     both CLAMPED to kCoreEmCap so the hot center stays blue.
-        const float coreS   = std::sin(m_time * coreOmega + phase);
-        const float coreT01 = 0.5f * (coreS + 1.0f);
-        const float coreEm  = kCoreBlueMinEm + (kCoreBlueMaxEm - kCoreBlueMinEm) * coreT01
-                            + kawooshEm * 0.45f;
-        if (p.coreEnt < sceneN)
-            ents[p.coreEnt].emissive[3] = capped(coreEm, kCoreEmCap);
-        if (p.coreInnerEnt < sceneN)
-            ents[p.coreInnerEnt].emissive[3] = capped(coreEm * 1.10f + 0.25f, kCoreEmCap);
+        // (ROUND 6: the energy-core disks are GONE — see the header. No emissive
+        //  pokes here, no dot on the membrane. The gate's blue point light above
+        //  still breathes with the hum: that is the only "core" the player sees.)
 
         // --- MEMBRANE STATE MACHINE (PortalAnimated.mp4 animation arc) -------
-        // Texture swap into the THROAT happens the moment the portal activates
-        // — the kawoosh flash is at full brightness on that exact frame, so
-        // the swap hides inside it. (Membrane v3: [0] = plasma, [1] = rim.)
-        if (p.activated && !p.throatOn && p.membraneEntFirst + 0 < sceneN) {
-            Entity& e = ents[p.membraneEntFirst + 0];
-            e.tex = m_throatTex;
-            e.emissiveTex = m_throatTex;
-            p.throatOn = true;
-        }
+        // p.throatOn latches the OPEN state (the portal has settled after its
+        // surge). The TEXTURE for every state is chosen below in one place.
+        if (p.activated && !surging) p.throatOn = true;
 
         // --- PLASMA-STORM membrane: breathe + rotate, every write capped -----
         const float rightv[3] = { p.rightX, 0.0f, p.rightZ };
@@ -2087,19 +2108,34 @@ void Rifthub::tick(float dt, Scene& scene) {
         //     both sides (the round-5 two-sided law).
         if (p.membraneEntFirst + 0 < sceneN) {
             Entity& e = ents[p.membraneEntFirst + 0];
-            // FLIPBOOK (ROUND 4 J2): while the gate is not OPEN, the plasma
-            // layer plays the baked reference-video frames at kFlipFps (the
-            // atlas is loop-blended, so the modulo loop has no wrap pop) with
-            // a per-portal phase so the 8 gates don't strobe in unison. The
-            // OPEN throat swap above wins (gated on !throatOn); the SURGE
-            // envelope + vortex arcs composite on top of whatever frame shows.
-            if (!m_flipTex.empty() && !p.throatOn) {
-                const uint32_t n = (uint32_t)m_flipTex.size();
-                const uint32_t f = (uint32_t)((m_time + (float)i * kFlipPortalPhase)
-                                              * kFlipFps) % n;
-                e.tex = m_flipTex[f];
-                e.emissiveTex = m_flipTex[f];
+            // ---- FLIPBOOK PLAYBACK — ONE PATH, ALL THREE STATES (round 6) ----
+            // Pick this state's atlas; if it is present the membrane is REAL
+            // FOOTAGE (loop for IDLE/OPEN, one-shot across the kawoosh for
+            // SURGE). Only when an atlas is MISSING (fresh clone / LFS stub)
+            // does that state fall back to a procedural map:
+            //   IDLE  -> m_flipTex      | fallback m_plasmaTex (nebula)
+            //   SURGE -> m_flipSurgeTex | fallback: the OPEN book / throat map
+            //   OPEN  -> m_flipOpenTex  | fallback m_throatTex (procedural spiral)
+            const std::vector<x3::rhi::TextureHandle>* book = &m_flipTex;   // IDLE
+            bool oneShot = false;
+            if (surging) {
+                if (!m_flipSurgeTex.empty()) { book = &m_flipSurgeTex; oneShot = true; }
+                else                         { book = &m_flipOpenTex; }
+            } else if (p.throatOn) {
+                book = &m_flipOpenTex;
             }
+            if (!book->empty()) {
+                const uint32_t f = flipFrameIndex((uint32_t)book->size(), m_time, i,
+                                                  oneShot, surgeProg);
+                e.tex = (*book)[f];
+                e.emissiveTex = (*book)[f];
+            } else {
+                const x3::rhi::TextureHandle fb =
+                    (p.throatOn || surging) ? m_throatTex : m_plasmaTex;
+                e.tex = fb;
+                e.emissiveTex = fb;
+            }
+            const bool footage = !book->empty();
             const float dir = (i & 1u) ? -1.0f : 1.0f;   // alternate spin direction
             const float spin = kPlasmaSpinRadS * (open ? kPlasmaSpinOpenX : 1.0f);
             // Continuous angle across the state change: integrate instead of
@@ -2120,10 +2156,10 @@ void Rifthub::tick(float dt, Scene& scene) {
             const float base = open || surging ? kPlasmaEmBaseOpen : kPlasmaEmBase;
             e.emissive[3] = capped(base + wob + kawooshEm, kPlasmaEmCap);
             // Surge tint: deep blue -> pale blue (NOT white) with the envelope.
-            // Flip mode rides the paler kFlipTint base (the frames carry the
-            // reference's own blue); the procedural nebula keeps kPlasmaBlue.
-            const float* baseTint = (!m_flipTex.empty() && !p.throatOn)
-                                        ? kFlipTint : kPlasmaBlue;
+            // FOOTAGE rides the paler kFlipTint base (the video's frames carry
+            // the reference's own blue and would double-blue under kPlasmaBlue);
+            // a procedural fallback map keeps kPlasmaBlue.
+            const float* baseTint = footage ? kFlipTint : kPlasmaBlue;
             for (int c3 = 0; c3 < 3; ++c3)
                 e.emissive[c3] = baseTint[c3] +
                                  (kKawooshTint[c3] - baseTint[c3]) * surge01;
@@ -2493,6 +2529,10 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_holoTexB.valid())   { device.destroyTexture(m_holoTexB);   m_holoTexB   = {}; }
     for (auto& h : m_flipTex) if (h.valid()) device.destroyTexture(h);
     m_flipTex.clear();
+    for (auto& h : m_flipSurgeTex) if (h.valid()) device.destroyTexture(h);
+    m_flipSurgeTex.clear();
+    for (auto& h : m_flipOpenTex) if (h.valid()) device.destroyTexture(h);
+    m_flipOpenTex.clear();
     m_surf.destroyAll(device);   // curated PBR sets (ring plates / housings / hall)
     m_shafts.clear();
     // ROUND 3 gate GLB: the LOADER owns its GPU handles — unload once, then drop
@@ -2635,8 +2675,9 @@ bool runRifthubSelfTest() {
     }
 
     // T1 — each portal owns a contiguous span of stone-ring + amber-chevron +
-    //      event-horizon membrane entities + 2 core disks, and the spans index
-    //      valid scene entities.
+    //      ratchet-track + event-horizon membrane entities, and the spans index
+    //      valid scene entities. (ROUND 6: the two core-disk entities are GONE
+    //      — the fake dot in the middle of the footage — so no core span here.)
     {
         const uint32_t sceneN = scene.size();
         bool ok = sceneN > 0;
@@ -2645,12 +2686,11 @@ bool runRifthubSelfTest() {
             if (p.ringEntCount == 0 || p.chevronEntCount == 0) ok = false;
             if (p.membraneEntCount == 0 || p.trackEntCount == 0) ok = false;
             if (p.ringEntFirst + p.ringEntCount > sceneN)      ok = false;
-            if (p.coreEnt >= sceneN || p.coreInnerEnt >= sceneN) ok = false;
             if (p.chevronEntFirst + p.chevronEntCount > sceneN) ok = false;
             if (p.trackEntFirst + p.trackEntCount > sceneN)     ok = false;
             if (p.membraneEntFirst + p.membraneEntCount > sceneN) ok = false;
         }
-        rhCheck(ok, "T1 every portal owns valid ring/chevron/core/membrane entity spans");
+        rhCheck(ok, "T1 every portal owns valid ring/chevron/track/membrane entity spans");
     }
 
     // T2 — all 8 portal names map to REAL --world targets the host launches.
@@ -2739,9 +2779,10 @@ bool runRifthubSelfTest() {
         for (int s = 0; s < 180; ++s) hub.tick(1.0f / 60.0f, scene);
         hub.tick(0.0f, scene);   // sample at a known phase
         const uint32_t plasmaEnt = p.membraneEntFirst + 0;
+        const uint32_t rimEnt    = p.membraneEntFirst + 1;
         const float ring0 = scene.entities()[p.ringEntFirst].emissive[3];
         const float chev0 = scene.entities()[p.chevronEntFirst].emissive[3];
-        const float core0 = scene.entities()[p.coreEnt].emissive[3];
+        const float rim0  = scene.entities()[rimEnt].emissive[3];
         const float mem0  = scene.entities()[plasmaEnt].emissive[3];
         const float rot0  = scene.entities()[plasmaEnt].transform[1];  // basis X.y (spins in-plane)
         // Advance ~a tenth of a second — enough for the pulse sines + the
@@ -2749,11 +2790,13 @@ bool runRifthubSelfTest() {
         hub.tick(0.1f, scene);
         const float ring1 = scene.entities()[p.ringEntFirst].emissive[3];
         const float chev1 = scene.entities()[p.chevronEntFirst].emissive[3];
-        const float core1 = scene.entities()[p.coreEnt].emissive[3];
+        const float rim1  = scene.entities()[rimEnt].emissive[3];
         const float mem1  = scene.entities()[plasmaEnt].emissive[3];
         const float rot1  = scene.entities()[plasmaEnt].transform[1];
+        // (ROUND 6: the core-disk pulse is gone with the core disks; the RIM
+        //  shimmer is now the second animated membrane layer this samples.)
         bool moved = std::fabs(chev1 - chev0) > 1e-3f &&
-                     std::fabs(core1 - core0) > 1e-3f &&
+                     std::fabs(rim1  - rim0)  > 1e-4f &&
                      std::fabs(mem1  - mem0)  > 1e-4f;
         // Ring is authored once + never animated: emissive must not change.
         bool ringStatic = std::fabs(ring1 - ring0) < 1e-6f;
@@ -2762,7 +2805,7 @@ bool runRifthubSelfTest() {
         // The storm rotates: the plasma disk's basis actually turned.
         bool rotates = std::fabs(rot1 - rot0) > 1e-5f;
         rhCheck(moved && ringStatic && bounded && rotates,
-                "T5 tick() advances chevron + core + plasma storm; ring static; disk rotates");
+                "T5 tick() advances chevron + rim + plasma storm; ring static; disk rotates");
     }
 
     // T6 — EMISSIVE CAP LAW (the blown-white v1 fix, the heart of membrane
@@ -2780,12 +2823,8 @@ bool runRifthubSelfTest() {
             const auto& ents = scene.entities();
             const float plasma = ents[p1.membraneEntFirst + 0].emissive[3];
             const float rim    = ents[p1.membraneEntFirst + 1].emissive[3];
-            const float core   = ents[p1.coreEnt].emissive[3];
-            const float inner  = ents[p1.coreInnerEnt].emissive[3];
             if (plasma > kPlasmaEmCap + 1e-4f) underCap = false;
             if (rim    > kRimEmCap    + 1e-4f) underCap = false;
-            if (core   > kCoreEmCap   + 1e-4f) underCap = false;
-            if (inner  > kCoreEmCap   + 1e-4f) underCap = false;
             // Ring v2: chevron cores + ratchet-track chase obey their caps too.
             if (ents[p1.chevronEntFirst].emissive[3] > kChevEmCap + 1e-4f) underCap = false;
             for (uint32_t t3 = 0; t3 < p1.trackEntCount; ++t3)
@@ -2827,7 +2866,8 @@ bool runRifthubSelfTest() {
 
     // T8 — MEMBRANE STATE MACHINE (PortalAnimated.mp4 arc): after activation +
     //      surge decay the portal is OPEN — the plasma disk swapped from the
-    //      idle flipbook/nebula texture to the THROAT texture AND the swapped-in
+    //      idle book onto the THROAT (round 6: the OPEN flipbook, or the
+    //      procedural throat map if that atlas is absent) AND the swapped-in
     //      texture is a VALID handle that still glows (the round-5 "activated
     //      portal goes black" regression: a throat swap that lands an invalid or
     //      unlit disk must FAIL here, not in the owner's face). All portals were
@@ -2842,11 +2882,73 @@ bool runRifthubSelfTest() {
             // The OPEN membrane must still be an EMITTER: valid emissive map,
             // non-trivial strength, blue-dominant tint.
             if (!plasma.emissiveTex.valid() || !plasma.tex.valid())   lit = false;
-            if (plasma.emissive[3] < kPlasmaEmBase)                   lit = false;
+            // Floor = the OPEN base at the BOTTOM of its breathe wobble (round 6
+            // re-tuned the base DOWN to 1.58 so the footage's own contrast reads;
+            // the old kPlasmaEmBase floor sat above the wobble trough).
+            if (plasma.emissive[3] < kPlasmaEmBaseOpen - kPlasmaEmWobble - 1e-3f)
+                lit = false;
             if (!(plasma.emissive[2] > plasma.emissive[0]))           lit = false;
         }
         rhCheck(swapped && lit,
                 "T8 state machine: OPEN throat swapped in AND still lit (never a black void)");
+    }
+
+    // T12 — THE OPEN STATE IS REAL FOOTAGE (round 6; the owner's "the swirling one
+    //       looks fake"). OPEN used to BE makeThroatRGBA() — a hand-coded polar
+    //       spiral — playing next to seven gates running his reference video. It
+    //       now plays membrane_flipbook_open.png (the video's own throat span,
+    //       t 8.4-9.95 s) through the SAME playback path as IDLE. Both sides of
+    //       the LFS seam are asserted:
+    //         atlas PRESENT -> the OPEN membrane's texture ADVANCES between ticks
+    //                          (it is a film, not a still) and stays a valid,
+    //                          blue-dominant emitter;
+    //         atlas ABSENT  -> it HOLDS one valid handle (the procedural throat
+    //                          fallback): degraded, never broken or black.
+    //       Portal 0 has been OPEN since T4 (its surge decayed inside T5).
+    {
+        const uint32_t plasmaEnt = hub.portal(0).membraneEntFirst + 0;
+        const uint32_t t0 = scene.entities()[plasmaEnt].emissiveTex.id;
+        for (int s = 0; s < 12; ++s) hub.tick(1.0f / 60.0f, scene);  // 0.2 s: >=3 flip frames
+        const Entity& e = scene.entities()[plasmaEnt];
+        const uint32_t t1 = e.emissiveTex.id;
+        const bool openState = hub.portal(0).throatOn;
+        const bool livesOn   = e.emissiveTex.valid() && e.tex.valid() &&
+                               e.emissive[2] > e.emissive[0];
+        const bool ok = openState && livesOn &&
+                        ((hub.openFlipbookFrames() > 0) ? (t1 != t0) : (t1 == t0));
+        rhCheck(ok, hub.openFlipbookFrames() > 0
+                        ? "T12 OPEN plays the reference-video OPEN flipbook (frame "
+                          "advances; no hand-coded spiral)"
+                        : "T12 OPEN atlas absent -> procedural throat fallback holds "
+                          "(degraded, never black)");
+    }
+
+    // T13 — THE SURGE IS REAL FOOTAGE TOO, and it is a ONE-SHOT: with the surge
+    //       atlas present, re-firing a kawoosh must put the membrane on a frame of
+    //       the SURGE book that is NOT where it settles, and the film must run
+    //       FORWARD (a later sample differs from an earlier one) before handing
+    //       back to the OPEN loop when the surge ends. With the atlas absent the
+    //       surge simply shows the OPEN/throat texture — never a black disk.
+    {
+        RiftPortal& p3 = const_cast<RiftPortal&>(hub.portal(3));
+        p3.kawoosh = kKawooshDur;
+        const uint32_t plasmaEnt = p3.membraneEntFirst + 0;
+        hub.tick(1.0f / 60.0f, scene);
+        const uint32_t s0 = scene.entities()[plasmaEnt].emissiveTex.id;
+        for (int s = 0; s < 30; ++s) hub.tick(1.0f / 60.0f, scene);   // mid-surge
+        const uint32_t s1 = scene.entities()[plasmaEnt].emissiveTex.id;
+        const bool valid = scene.entities()[plasmaEnt].emissiveTex.valid();
+        // Let the surge finish and confirm the gate returns to the OPEN state.
+        for (int s = 0; s < 150; ++s) hub.tick(1.0f / 60.0f, scene);
+        const bool backOpen = hub.portal(3).throatOn && p3.kawoosh <= 0.0f &&
+                              scene.entities()[plasmaEnt].emissiveTex.valid();
+        const bool ok = valid && backOpen &&
+                        ((hub.surgeFlipbookFrames() > 0) ? (s1 != s0) : true);
+        rhCheck(ok, hub.surgeFlipbookFrames() > 0
+                        ? "T13 SURGE plays the reference-video SURGE flipbook once, "
+                          "then hands back to the OPEN loop"
+                        : "T13 SURGE atlas absent -> falls back to the OPEN/throat map "
+                          "(never black), then settles OPEN");
     }
 
     // T11 — TWO-SIDED MEMBRANE LAW (round 5, the owner's "from behind there is

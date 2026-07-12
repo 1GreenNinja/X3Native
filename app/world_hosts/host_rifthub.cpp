@@ -79,12 +79,23 @@ int hostRifthub(HostContext& hc) {
             const char* v = std::getenv("X3_RIFTHUB_OPEN");
             return v && v[0] == '1';
         }();
-        if (forceOpen) {
+        // ROUND 6: X3_RIFTHUB_SURGE=1 fires the same triggers but stops the warm-up
+        // MID-KAWOOSH, so the shot lands in the SURGE state (the reference video's
+        // vortex-ring flipbook, played once across the 1.6 s flash). The only way to
+        // eyeball the escalation without walking into a gate at the right moment.
+        const bool forceSurge = [] {
+            const char* v = std::getenv("X3_RIFTHUB_SURGE");
+            return v && v[0] == '1';
+        }();
+        if (forceOpen || forceSurge) {
             for (uint32_t i = 0; i < rifthub.portalCount(); ++i)
                 rifthub.onTrigger(rifthub.portal(i).triggerId);
-            x3::logInfo("--world rifthub: X3_RIFTHUB_OPEN=1 -> all 8 gates activated (OPEN throat capture)");
+            x3::logInfo(forceSurge
+                ? "--world rifthub: X3_RIFTHUB_SURGE=1 -> all 8 gates fired (MID-SURGE capture)"
+                : "--world rifthub: X3_RIFTHUB_OPEN=1 -> all 8 gates activated (OPEN throat capture)");
         }
-        const int kFrames = forceOpen ? 240 : 60;   // 240 @ 60 Hz = 4 s > kKawooshDur
+        // 240 @ 60 Hz = 4 s > kKawooshDur (settled OPEN); 48 = 0.8 s = mid-surge.
+        const int kFrames = forceSurge ? 48 : (forceOpen ? 240 : 60);
         for (int i = 0; i < kFrames; ++i) {
             glfwPollEvents();
             rifthub.tick(dt, rhscene);

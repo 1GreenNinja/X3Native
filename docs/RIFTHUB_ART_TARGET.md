@@ -180,6 +180,68 @@ the portal, rebuild the gate as ROUNDED PIPE with SD3.5 textures FROM his image)
 - `tools/forge_gate_textures.py`: `--img2img` / `--from-image` / `--maps-only`. Textures
   now derive FROM the owner's reference frame (1168x768 video frame > the 800x526 stills).
 
+## ROUND 6 (2026-07-11) — EVERY MEMBRANE STATE IS THE OWNER'S REAL FOOTAGE
+> Owner, on the live build: **"The swirling one looks fake.. Why the dot in the middle?"**
+
+Both complaints were the SAME disease as the round-5 "crayon lightning": procedural
+fakery layered on top of — or instead of — the reference video.
+
+### 1. The OPEN state was hand-coded math
+IDLE played the baked reference-video flipbook; OPEN swapped to `makeThroatRGBA()`, a
+polar ridged-noise spiral. Real footage standing next to hand-drawn math — the eye picks
+the fake instantly. **The video already CONTAINS the throat.** Frames extracted and
+eyeballed across the full 10 s arc:
+
+| span | what it actually shows | atlas |
+|------|------------------------|-------|
+| t 0.00–3.20 | lightning webs over a calm nebula | `membrane_flipbook.png` (round 4) |
+| t 6.40–8.30 | the vortex ring collapsing into the throat | `membrane_flipbook_surge.png` **(new)** |
+| t 8.40–9.95 | the settled radial-streaming throat | `membrane_flipbook_open.png` **(new)** |
+
+The surge span ENDS where the open span begins → they hand off frame-continuously. All
+three share the same disc crop (629,420 r214), so the membrane never jumps scale on a
+state swap. `tools/make_membrane_flipbook.py` gained `--loop-blend N`: the SURGE bakes
+with 0 (a ONE-SHOT film — it must keep its true final frame), IDLE/OPEN keep the 8-frame
+tail blend for a seamless modulo loop.
+
+Engine: ONE playback path for all three states (`loadFlipbookAtlas` + `flipFrameIndex`).
+IDLE/OPEN loop at 18 fps with a per-portal phase; SURGE is played once against the
+kawoosh's LINEAR progress (not the exponential brightness envelope, which would stall the
+film on its last frames). `makeThroatRGBA` / `makePlasmaRGBA` survive **only** as the
+missing-atlas fallback (fresh clone with LFS stubs → a lit blue membrane, never a black
+disk).
+
+### 2. The fake center dot
+A v1 leftover: two bright blue-white disks (`coreEnt` / `coreInnerEnt`) drawn at the exact
+ring center, ON TOP of the footage — plus a `exp(-r*r*9)` hot-center burst baked into the
+procedural throat. All deleted (entities, geometry constants, emissive pulse, cap). The
+footage carries its own center. **The blue POINT LIGHT each gate casts into its bay stays**
+— that is lighting in the room, not a sprite on the membrane.
+
+### 3. Footage-calibrated values (found by LOOKING at the shots, not by declaring victory)
+- `kPlasmaEmBaseOpen` 1.90 → **1.58**: 1.90 was tuned for the dim procedural map; on the
+  bright footage it lifted the video's deep-navy channels to mid-blue and washed the throat
+  toward cyan-white — destroying the contrast we went to the video for.
+- `kPlasmaSpinOpenX` 2.6 → **1.15**: the fast spin existed to make the procedural SPOKES
+  stream. The footage streams on its own; spinning it fast on top reads as a rotating
+  texture (i.e. as fake).
+
+### Gates + shots
+`--test-rifthub` **15/15** (T1/T5/T6/T8 updated for the dead core disks; **T12** = OPEN
+plays the open atlas when present and falls back gracefully when absent; **T13** = the
+SURGE film runs once then hands back to the OPEN loop). `--smoketest` and `--smoketest
+--world rifthub`: exit 0, 0 VUID, allocationCount=0. Shots
+`docs/screenshots/rifthub/I_*.png` (idle / open front+close+quarter+behind+wide / mid-surge).
+New headless hook `X3_RIFTHUB_SURGE=1` freezes a shot mid-kawoosh (`X3_RIFTHUB_OPEN=1`
+still lands the settled OPEN state).
+
+### Honest read
+The open gate is now unmistakably the same material as the idle gate — same grain, same
+lightning, same blue — because it IS the same footage. Nothing hand-drawn is composited on
+the membrane in ANY state. Remaining membrane gap vs the video: our disk is a flat emissive
+sheet, so it has no depth/parallax down the throat (a real see-through vista still needs a
+render-to-texture portal view), and the surge's white-hot peak sits close to the cap.
+
 ### NEXT LEAD (engine, unresolved)
 Model-loader (GLB) meshes shade with a suspiciously low N.L versus prim meshes under the
 SAME point lights: a white-albedo PBR probe on the gate reads ~0.03 where the floor reads
@@ -255,3 +317,108 @@ Once the engine is honest, every band-aid DOUBLE-COUNTS and blows out:
   (spec says multiply). Separate defect.
 * Sun/star glow composites over the ships in --world space (owner: "visibility order") —
   a transparent/additive depth-sort bug, unrelated to lighting. Its own task.
+
+## ROUND 7 — THE GATE IS *ONE LARGE METALLIC TUBE* (Tim, 2026-07-11)
+> "the gate.. is supposed to be ONE LARGE metallic Tube"
+
+THE CORRECTION that supersedes the round-5/6 gate: the gate is NOT an assembly of 233 bolted-on
+parts (coil cans, capacitor banks, actuator rods, pipe rails scattered around a ring). That reads
+as cluttered scaffolding. It is **ONE MONOLITHIC RING** — a single, large, heavy METALLIC TUBE
+(a thick round-cross-section torus) that dominates by mass and simplicity.
+
+RULES for the rebuild:
+- ONE primary form: a big, thick, round metallic tube/torus. Generous radius, heavy wall — it
+  should read as a single cast/machined object, not a kit.
+- Detail is INTEGRATED INTO the tube, not bolted onto it: chevrons/clamps RECESSED into the tube's
+  surface, panel seams and glyph bands wrapping the tube, bolt rings following its curve, subtle
+  segment joins. Think one object with features cut into it.
+- Anything that is not the tube is MINIMAL and subordinate: a base/cradle it sits in, and a few
+  cables/conduits feeding in. No forest of floating cans and rods.
+- The tube's ROUNDNESS is the whole visual payoff: a long specular highlight sweeping around the
+  torus is what makes it read as massive machined metal (this is why round beats square).
+- Material: heavy weathered metal (the SD/img2img-forged sets), lit HONESTLY (see the engine
+  N.L / GLB-lighting fix) — bright top surface, dark underside, highlight along the tube.
+Reference: docs/reference/ portal stills — note the ring is a single massive body; the greebles
+sit ON it and never outnumber it.
+
+### ROUND 7 addendum (Tim): "we can have all the grok imagined stuff on it"
+ONE TUBE does NOT mean bare/plain. It means one PRIMARY MASS wearing ALL the Grok reference's
+richness. The detail gets there two ways — neither of which is a forest of separate meshes:
+1. IN THE TEXTURES (the main channel): the img2img sets forged FROM Grok's own image carry
+   rivets, panel seams, plate joins, vents, rust streaks, warning stencils — baked into the
+   NORMAL/HEIGHT maps. Huge apparent detail on a smooth tube, zero extra polygons. Most of the
+   reference's richness is SURFACE, not silhouette. This is why the img2img forge matters.
+2. CUT INTO THE TUBE (geometry): chevrons/clamps RECESSED into its face, glyph/indicator bands
+   wrapping it, bolt rings following its curve, segment joins, vent slots — features OF the tube.
+Subordinate objects (cradle, a few feed cables) stay minimal. The tube's sweeping specular
+highlight must never be broken up by clutter.
+
+### ROUND 7 addendum 2 (Tim): "No chevrons needed"
+DROP THE CHEVRONS entirely. This is NOT a Stargate-franchise replica — it's OUR industrial
+portal generator. No chevron locking clamps, no amber chevron slits (they were a hangover from
+the earlier Stargate-inspired direction and have been a persistent source of the toy look).
+The tube's surface detail = the img2img-forged plate/rivet/seam/vent/stencil richness + any
+recessed bands/joins that read as machined. Indicator lighting, if any, stays subtle and
+integrated (recessed slits), never a ring of amber triangles.
+
+## ROUND 8 — THE TUBE + THE CONSOLE (Tim, 2026-07-11) — BUILD THIS
+> "build the tube, with an lcd panel on it, some buttons, glowing led displays.. and also have
+> the signs in front of each portal relocated to a glass holoterminal, black glass with the blue
+> and green text, showing where each portal goes. let the user interact with each portal...
+> they can do wonderful or disasterous things with the console to it"
+
+### A. THE GATE = ONE LARGE METALLIC TUBE (see R7 + addenda)
+One massive machined round tube. NO chevrons. Grok richness lives in the img2img-forged
+normal/height maps (rivets/plates/seams/vents/rust/stencils), plus recessed features cut INTO
+the tube. Minimal subordinate geometry (cradle + a few feed cables). One long specular highlight
+sweeping the body = the payoff.
+
+### B. ON THE TUBE: an operator panel
+- An LCD/display panel set INTO the tube's face (recessed, with a bezel).
+- Physical BUTTONS (a small cluster — chunky, with travel/bevel).
+- Glowing LED indicator displays / readout strips (small, integrated, recessed; NOT a ring of
+  amber triangles). Subtle emissive.
+
+### C. THE PORTAL CONSOLE (replaces the floating teal sign rectangles)
+The current per-portal "sign" (a floating flat teal rectangle) is DELETED. In its place, in front
+of each portal, a proper HOLOTERMINAL matching the project's established holo design language:
+- BLACK GLASS slab, glowing BLUE/GREEN text (per Tim's canonical holo-terminal spec: black glass
+  slab, blue/green/orange status text, shiny metallic ROUND-PIPE frame around the glass, single
+  support pipe up to the ceiling so it HANGS rather than floats — reuse the HoloPanel/holo-terminal
+  platform already in the engine).
+- Content: WHERE THIS PORTAL GOES (destination name/world, status, coordinates/readout flavor).
+
+### D. GAMEPLAY: the player can INTERACT with each portal console
+Reuse HoloTerminalSystem (app/holo_terminal_system.*) — already proven: placeable kiosks, code
+entry, real world effects (cell_lock/armory_door/lights_central/alarm_armory/lore_intel/
+crate_dispense). Point it at the RIFTS. The player walks up, [E] to use, and can do
+"wonderful OR DISASTROUS things":
+- WONDERFUL: open/stabilize the rift, re-target it to another destination, boost power (bigger,
+  brighter portal), unlock a hidden destination, run a diagnostic that reveals lore.
+- DISASTROUS: overload/destabilize it (violent surge, alarms, hall lights fail), mis-target it
+  (sends you somewhere hostile), collapse it (that rift goes dark/unusable), trigger a
+  containment breach (something comes THROUGH).
+Design the command set as DATA (like the existing terminal effects) so more can be added. Make
+consequences REAL and visible in the hub (lights, audio, the membrane's state/colour, alarms).
+
+### ROUND 8 addendum (Tim): THE CONSOLE HAS *VALUES*, AND THEY HAVE CONSEQUENCES
+> "changing certain values will warp the room, and others will cause a temporal rift .. others
+> an implosion"
+
+The console is not a menu of commands — it is a set of TUNABLE PARAMETERS the player dials in,
+mad-scientist style. Safe ranges do useful things; wrong combinations do spectacular things.
+Suggested parameter set (data-driven, extensible):
+  POWER / FREQUENCY / PHASE / APERTURE / CONTAINMENT / TARGET
+Outcome classes (each must be REAL and visible — geometry, lights, audio, membrane state):
+- NOMINAL: portal opens/stabilises; re-target to another destination; brighter/bigger aperture.
+- ROOM WARP: the hub geometry visibly WARPS — space bends around the player (FOV/lens distortion,
+  the hall's walls/floor bow and ripple, props drift). Disorienting, survivable.
+- TEMPORAL RIFT: time distorts — slow-motion, stuttered/echoed motion, ghost-echoes of the player
+  and props, audio pitch-bend/reverse. Possibly duplicate/after-image entities.
+- IMPLOSION: violent collapse — the membrane inverts and sucks inward, debris and props are
+  dragged toward it, a shockwave, damage to the player, that gate goes DARK/dead afterwards.
+- (Keep room for more: containment breach = something comes THROUGH.)
+Rules: consequences are persistent where it makes sense (a collapsed gate stays dead); alarms +
+hall lighting react; the membrane's colour/behaviour reflects instability BEFORE it blows (the
+player should be able to read danger building). Data-driven so new parameter/outcome combos can
+be authored without code.
