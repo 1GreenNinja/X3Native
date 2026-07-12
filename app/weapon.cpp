@@ -939,7 +939,7 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // line still carries. The renderer lighting fix (0e837f5 on feat/rifthub-aaa) makes every
     // GLB shade physically and sets this to 1.0 -- when that lands, TAKE 1.0 (a merge will
     // conflict here on purpose; resolve to 1.0, do NOT keep 1.4 on top of the fixed lighting).
-    constexpr float kVmBright     = 1.4f;
+    constexpr float kVmBright     = 1.0f;
     composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
@@ -1015,7 +1015,7 @@ void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
     // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
     // interiors. The caller owns the full world placement (hand-bone * grip * scale),
     // so unlike drawCurrentViewmodel this does NO camera-relative posing.
-    constexpr float kVmBright = 1.4f;   // see drawCurrentViewmodel (was 2.6f; blew out the restored albedo).
+    constexpr float kVmBright = 1.0f;   // see drawCurrentViewmodel (was 2.6f; blew out the restored albedo).
     for (const auto& dr : vm.drawables) {
         // STRIP the node-transform's authored WORLD TRANSLATION (cols 12..14): these
         // weapon GLBs bake an FP-viewmodel placement offset into the root node, which
