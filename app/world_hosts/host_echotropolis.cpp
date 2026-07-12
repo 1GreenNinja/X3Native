@@ -635,27 +635,46 @@ int hostEchotropolis(HostContext& hc) {
 
     // ===================== WALK MODE (Phase A) ==========================
     // Press G to drop from the orbit vista INTO a first-person character who WALKS
-    // the city (WASD move, mouse look, Shift sprint, Space jump). A physics world
-    // with a flat collision apron under the crown catches the player; the island +
-    // props still render around them. G again returns to the orbit postcard view.
-    // (Phase A start: FP + flat apron. Skinned 3rd-person avatar + crowd + real
-    // terrain collision follow — this proves you can be IN the city first.)
+    // the REAL island (WASD, mouse look, Shift sprint, Space jump) — down the
+    // cliffs to the harbor and INTO the sea to swim. G returns to the orbit view.
     std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
     const bool physOk = phys && phys->init();
-    // Spawn on the mesa crown — the highest walkable plateau on landform v3.1
-    // (measured ~(-20,760) at +195 m, where the tower cluster stands). Sampled at
-    // runtime so it tracks the terrain if the landform is rebaked.
-    const float kWalkX = -20.0f, kWalkZ = 760.0f;
+    const float kWalkX = -20.0f, kWalkZ = 760.0f;             // crown spawn (+195 m)
     const float kWalkGroundY = hf.ok() ? hf.heightAt(kWalkX, kWalkZ) : 190.0f;
     x3::game::Player player;
-    if (physOk) {
-        // Flat static apron (1600x1600 m, 2 m thick) with its TOP at the crown
-        // terrain height — the walkable plaza/streets floor for Phase A.
-        phys->addBox(x3::phys::Vec3{800.0f, 1.0f, 800.0f},
-                     x3::phys::Vec3{kWalkX, kWalkGroundY - 1.0f, kWalkZ},
-                     0.0f, x3::phys::Layer::Static);
-        player.spawn(*phys, kWalkX, kWalkGroundY + 0.2f, kWalkZ);
-        player.setLook(2.2f, -0.05f);   // face roughly toward the city cluster
+    if (physOk && hf.ok()) {
+        // REAL TERRAIN COLLISION: a Jolt static mesh sampled from the SAME height-
+        // field the island GLB was meshed from, so the player collides with the
+        // actual landform — cliffs, shelves, the harbor bowl. Covers the central
+        // 2600 m (the land); the ocean skirt beyond is water. 512 grid = ~5 m cells.
+        const int N = 512; const float EXT = 2600.0f;
+        std::vector<float> verts; verts.reserve((size_t)(N + 1) * (N + 1) * 3);
+        std::vector<uint32_t> idx; idx.reserve((size_t)N * N * 6);
+        for (int r = 0; r <= N; ++r)
+            for (int c = 0; c <= N; ++c) {
+                const float x = -EXT * 0.5f + EXT * (float)c / N;
+                const float z = -EXT * 0.5f + EXT * (float)r / N;
+                verts.push_back(x); verts.push_back(hf.heightAt(x, z)); verts.push_back(z);
+            }
+        auto vid = [&](int r, int c) { return (uint32_t)(r * (N + 1) + c); };
+        for (int r = 0; r < N; ++r)
+            for (int c = 0; c < N; ++c) {
+                idx.push_back(vid(r, c)); idx.push_back(vid(r + 1, c)); idx.push_back(vid(r + 1, c + 1));
+                idx.push_back(vid(r, c)); idx.push_back(vid(r + 1, c + 1)); idx.push_back(vid(r, c + 1));
+            }
+        phys->addStaticMesh(verts.data(), (uint32_t)(verts.size() / 3),
+                            idx.data(), (uint32_t)idx.size());
+        x3::logInfo("--world echotropolis: terrain collision mesh built (" +
+                    std::to_string(idx.size() / 3) + " tris)");
+
+        // SWIM: sea + basin surface sits at y=0; anywhere the terrain is below the
+        // waterline the player can wade in and swim (Player runs its swim state off
+        // this feed). Deeply-negative elsewhere = dry land (never swims on land).
+        player.setWaterQuery([&hf](float x, float z) -> float {
+            return (hf.ok() && hf.heightAt(x, z) < -0.30f) ? 0.0f : -1.0e30f;
+        });
+        player.spawn(*phys, kWalkX, kWalkGroundY + 1.0f, kWalkZ);
+        player.setLook(2.2f, -0.05f);   // face toward the city cluster
     }
     bool walkMode = false, prevG = false;
 
@@ -688,6 +707,8 @@ int hostEchotropolis(HostContext& hc) {
             in.moveStrafe = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
             in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
             in.jumpPressed = kd(GLFW_KEY_SPACE);
+            in.jumpHeld    = kd(GLFW_KEY_SPACE);              // swim: stroke up
+            in.diveHeld    = kd(GLFW_KEY_LEFT_CONTROL) || kd(GLFW_KEY_C);  // swim: dive
             in.lookDX = ddx; in.lookDY = ddy;
             player.update(in, dt, *phys);
             phys->step(dt);
