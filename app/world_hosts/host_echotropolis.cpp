@@ -360,9 +360,13 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // blend) so cool-blue + gold never average into gray — the haze reads amber.
     const float goldW = clamp01(low * 1.35f);
     mix3(fog.color, fog.color, kFogGold, goldW);
-    fog.start      = 800.0f;                                   // crisp foreground island
-    fog.density    = 0.00016f + 0.00010f * low;               // subtle by day, thicker low-sun
-    fog.maxOpacity = 0.86f + 0.10f * low;                     // sky glows gold at the horizon
+    // Tuned after Tim's sea-approach screenshot (2026-07-11): the whole 4km island
+    // was drowning in amber soup at golden hour. The haze must live at the HORIZON
+    // (10km+) while the island — a 3-6km subject — stays readable. Halve the
+    // low-sun density ramp and pull the opacity ceiling down.
+    fog.start      = 900.0f;                                   // crisp foreground island
+    fog.density    = 0.00010f + 0.00004f * low;               // subtle by day, gentle low-sun
+    fog.maxOpacity = 0.78f + 0.08f * low;                     // sky still glows gold out far
     device->setFog(fog);
 
     // ---- 2. FILMIC + VIVID GRADE (NMS/storybook: colors you can taste) ---------
@@ -394,6 +398,70 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     device->setShadowBounds(0.0f, 0.0f, 0.0f, 2200.0f);
 }
 
+// ============================ RAY TRACING (hardware RT pass) ==================
+// Owner: RT-enable session (2026-07-11). Opts Echotropolis into the engine's
+// EXISTING hardware ray-query features (IRenderDevice.h ~L505-650). SEPARATE from
+// applyAtmosphere/applyTodSample/applyOcean so it never collides with the sky/
+// water/TOD lane. The device CACHES + re-applies each param every frame, so a
+// single call at host start persists across both the headless and windowed loops.
+//
+// ALL of this is gated on rayTracingSupported(): on a non-RT GPU (Pascal / the
+// 1080Ti boxes / headless-no-RT) this is a pure no-op and the raster/CSM/SSAO
+// path is byte-for-byte identical to before — exactly today's fallback.
+//
+// What we turn on (value order), and what we deliberately don't:
+//   1. RT SOFT SUN SHADOWS (tier 1) — the postcard win: cliff faces, the 446
+//      city buildings, and the lighthouse get soft distance-scaled penumbra under
+//      the golden-hour sun (min()-combined with CSM; skinned chars keep raster).
+//      This host has NO point lights (§3 below), so tier 1 (sun-only) is exactly
+//      the useful work — tier 2 would loop for point occluders that don't exist.
+//   2. RT AO — ground-truth contact occlusion multiplies the HDR scene so the
+//      cottages/props read as SITTING ON the terrain (amphitheater contact), not
+//      floating. Radius widened past the 0.5 m contact default because the city
+//      is viewed from a ~2.8 km orbit — sub-metre AO would be sub-pixel there.
+//   3. RT POINT-LIGHT SHADOWS — SKIPPED ON PURPOSE. The city windows, lighthouse
+//      lantern, and fissure embers are PURELY emissive-material + bloom (this host
+//      calls setPointLights zero times) — there are no real point lights to cast,
+//      so tier-2 point shadows have nothing to shadow. If a future pass promotes
+//      the lantern to a real light, bump tier to 2 and it casts for free.
+//   4. DDGI — DEFERRED (not half-done). Its probe grid would have to span the ~4 km
+//      island; a 24x8x24 auto-fit = ~170 m spacing, far too coarse for window-glow-
+//      onto-streets bounce, and a useful grid needs an AUTHORED tight volume over
+//      the night-city district (like screenshot_hosts' explicit 20x6x20). Deferred
+//      pending that authored AABB rather than shipped coarse.
+//   5. RT REFLECTIONS — NOT touched here (water is the sky/water lane's). The API
+//      is setReflectionParams(ssr/rtFallback/fullRes/intensity); available for that
+//      session to enable on the Gerstner ocean when they choose.
+void applyRayTracing(x3::rhi::IRenderDevice* device) {
+    if (!device->rayTracingSupported()) {
+        x3::logInfo("--world echotropolis: RT unsupported on this device — raster/CSM/SSAO fallback (byte-identical)");
+        return;
+    }
+    // Dev A/B opt-out: ECHO_RT=0 forces the raster/CSM/SSAO path even on RT hardware
+    // (same-content baseline capture + Pascal-parity check). Default: RT ON.
+    if (const char* e = std::getenv("ECHO_RT"); e && e[0] == '0') {
+        x3::logInfo("--world echotropolis: ECHO_RT=0 — RT force-disabled (raster/CSM/SSAO baseline)");
+        return;
+    }
+    // 1. RT soft SUN shadows (sun-only; no point lights in this host).
+    x3::rhi::IRenderDevice::RtShadowParams rs{};
+    rs.tier       = 1;      // sun RT (cone-jittered penumbra, min()-combined w/ CSM)
+    rs.sunSizeDeg = 0.6f;   // golden-hour: a touch softer than the 0.5 deg default
+    device->setRtShadowParams(rs);
+    // 2. RT ambient occlusion (contact grounding; radius widened for orbit vista).
+    x3::rhi::IRenderDevice::RtaoParams ao{};
+    ao.enabled  = true;
+    ao.radius   = 2.0f;     // broader than 0.5 m contact — visible from the orbit
+    ao.rays     = 8;        // half-res + depth-aware upsample keeps this cheap
+    ao.strength = 0.90f;
+    ao.power    = 1.5f;
+    device->setRtaoParams(ao);
+    x3::logInfo("--world echotropolis: RT ENABLED — soft sun shadows (tier1, 0.6deg) + RT AO (r2.0, 8 rays); "
+                "point shadows skipped (emissive city, no point lights), DDGI deferred (4km island), "
+                "reflections left to water lane");
+}
+// ============================ END RAY TRACING ================================
+
 } // namespace
 
 int hostEchotropolis(HostContext& hc) {
@@ -422,6 +490,7 @@ int hostEchotropolis(HostContext& hc) {
     }
     applyTodSample(device, tod.sample());
     applyAtmosphere(device, tod.sample());   // ATMOSPHERE: aerial haze + grade + bloom
+    applyRayTracing(device);                 // RAY TRACING: soft sun shadows + RT AO (gated; no-op on non-RT)
     device->setCameraFar(20000.0f);   // far plane covers the GLB's 14km ocean ring corners
 
     // ---- P2: THE ISLAND. Authored in SimCityLLM2 (gen_heightmap.py seed 20260530),
@@ -705,7 +774,7 @@ int hostEchotropolis(HostContext& hc) {
             if (kd(GLFW_KEY_5)) bookmark(-450.0f,  900.0f, -1.02f, 0.31f, 1400.0f); // THE POSTCARD
             if (kd(GLFW_KEY_6)) bookmark( 412.0f, -106.0f,  3.93f, 0.60f,  950.0f); // crown promenade
             if (kd(GLFW_KEY_7)) bookmark( 331.0f,  459.0f,  2.40f, 0.35f,  750.0f); // fissure rim
-            if (kd(GLFW_KEY_8)) bookmark(   0.0f,    0.0f,  5.50f, 0.10f, 5600.0f); // sea approach
+            if (kd(GLFW_KEY_8)) bookmark(   0.0f,    0.0f,  5.50f, 0.10f, 4400.0f); // sea approach
             if (!todPaused) tod.advance(dt);
             if (tod.phase() != prevPhase) {
                 prevPhase = tod.phase();
