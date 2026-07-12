@@ -115,7 +115,9 @@ def forge(name: str, steps: int, seed: int):
     prompt, rough, metal, nstr = SETS[name]
     print(f"[forge] {name}: loading SD3.5 from {MODEL_PATH}")
     pipe = StableDiffusion3Pipeline.from_pretrained(MODEL_PATH,
+                                                    text_encoder_3=None, tokenizer_3=None,  # drop T5-XXL: ~9GB VRAM, not needed for texture prompts
                                                     torch_dtype=torch.float16)
+    pipe.enable_model_cpu_offload()  # stage modules: never near the 32GB ceiling (prevents sysmem-fallback thrash)
     pipe.to("cuda")
     gen = torch.Generator("cuda").manual_seed(seed)
     print(f"[forge] {name}: generating {SIZE}x{SIZE} ({steps} steps)")
