@@ -267,6 +267,7 @@ int main(int argc, char** argv) {
         _tf.testPhysprops = o.testPhysprops;
         _tf.testRagdollSkin = o.testRagdollSkin;
         _tf.testEditor = o.testEditor;
+        _tf.testEditorAi = o.testEditorAi;
         _tf.testBlockout = o.testBlockout;
         _tf.testLoader = o.testLoader;
         _tf.testBarrels = o.testBarrels;

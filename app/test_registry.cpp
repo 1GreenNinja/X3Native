@@ -71,6 +71,7 @@
 #include "vehicle.h"        // x3::game::runDriveEnterExitSelfTest (--test-vehicle)
 #include "world_cars.h"     // x3::game::runCanonVehicleSelfTest (--test-canonvehicle)
 #include "editor/editor.h"
+#include "editor/editor_ai.h"
 #include "editor/editor_host.h"
 #include "barrels.h"
 #include "glass_test.h"
@@ -212,6 +213,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testEditor) {
         x3::logInfo("running Level Editor E1 (JSON/pick/gizmo) self-test...");
         return x3::editor::runEditorSelfTest() ? 0 : 1;
+    }
+    if (tf.testEditorAi) {
+        x3::logInfo("running AI Architect (plan parse/validate/transact) self-test...");
+        return x3::editor::runEditorAiSelfTest() ? 0 : 1;
     }
     if (tf.testBlockout) {
         x3::logInfo("running Level Architect BLOCKOUT (brushes[] JSON / snap / mesh) self-test...");

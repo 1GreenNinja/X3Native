@@ -81,6 +81,8 @@ add_executable(X3Engine WIN32
     ecs_render.cpp
     editor/editor.cpp
     editor/editor_keybinds.cpp
+    editor/editor_ai.cpp
+    editor/editor_ai_test.cpp
     editor/editor_host.cpp
     elevator.cpp
     elevator_showcase.cpp

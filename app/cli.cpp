@@ -77,6 +77,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-frustumcull") o.testFrustumCull = true;
         else if (a == "--test-holoterm") o.testHoloterm = true;
         else if (a == "--test-llm") o.testLlm = true;
+        else if (a == "--test-editor-ai") o.testEditorAi = true;
         else if (a == "--test-secretroom") o.testSecretRoom = true;
         else if (a == "--test-ecs") o.testEcs = true;
         else if (a == "--test-ecsrender") o.testEcsRender = true;
