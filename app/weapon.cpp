@@ -932,7 +932,12 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
     // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
     constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
-    constexpr float kVmBright     = 2.6f;   // lit (the real issue is the GLB TEXTURE being wrong, not size/brightness)
+    constexpr float kVmBright     = 1.0f;   // ROUND 6 ENGINE FIX: was 2.6 — an OVER-UNITY albedo
+                                        // multiplier (physically impossible; it clipped the gun's
+                                        // own texture to white) added because GLB meshes shaded at
+                                        // 1/PI of the prims around them. shaders/mesh.frag now lights
+                                        // the viewmodel honestly, so the hack is removed: with it
+                                        // still in, the pistol blew out to a white blob.
     composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
@@ -1008,7 +1013,7 @@ void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
     // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
     // interiors. The caller owns the full world placement (hand-bone * grip * scale),
     // so unlike drawCurrentViewmodel this does NO camera-relative posing.
-    constexpr float kVmBright = 2.6f;
+    constexpr float kVmBright = 1.0f;   // ROUND 6: see drawCurrentViewmodel (over-unity albedo hack removed).
     for (const auto& dr : vm.drawables) {
         // STRIP the node-transform's authored WORLD TRANSLATION (cols 12..14): these
         // weapon GLBs bake an FP-viewmodel placement offset into the root node, which

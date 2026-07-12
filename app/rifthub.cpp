@@ -87,18 +87,20 @@ constexpr uint32_t kDeckFills      = 8;       // was 4
 // its lower half into shadow, so the machined hardware reads as machined metal
 // instead of flat cardboard.
 constexpr float kGateKeyColor[3]   = { 0.86f, 0.90f, 1.00f };
-constexpr float kGateKeyI          = 46.0f;   // NOT a typo. pointAtten = 1/(d^2+1): a
-                                              // key 5 m from the ring delivers I/27, and
-                                              // the forged albedo is a 0.16-linear dark
-                                              // metal in a near-black hall. The round-4
-                                              // gate only ever "read" because it was
-                                              // faking it with a self-emissive.
+constexpr float kGateKeyI          = 26.0f;   // ROUND 6 ENGINE FIX: was 46 — cranked to
+                                              // 3x its honest value because GLB meshes
+                                              // shaded at 1/PI (metal: ~1/30) of the prims
+                                              // beside them (the mesh.frag shading-path
+                                              // energy bug, fixed in shaders/mesh.frag).
+                                              // With the engine honest, 46 BLEW THE GATE
+                                              // OUT to a white sculpture. 46/PI ~ 15 puts
+                                              // the same light back on the metal.
 constexpr float kGateKeyRange      = 10.0f;
 constexpr float kGateKeyUp         = 3.9f;    // rakes the ring face from above-front
 constexpr float kGateKeyHubOff     = 1.9f;    // hub-side standoff from the gate plane
 // Warm UNDER-fill (the reference's conduit/indicator bounce on the lower plates).
 constexpr float kGateFillColor[3]  = { 1.00f, 0.66f, 0.36f };
-constexpr float kGateFillI         = 20.0f;
+constexpr float kGateFillI         = 11.0f;   // ROUND 6: was 20 (same 1/PI compensation).
 constexpr float kGateFillRange     = 7.0f;
 constexpr float kGateFillUp        = 0.85f;
 constexpr float kGateFillHubOff    = 2.2f;
@@ -1239,23 +1241,19 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 }
                 e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1];
                 e.baseColor[2] = tint[2]; e.baseColor[3] = 1.0f;
-                // AMBIENT TERM — TEXTURE-GATED, not a flat glow. The round-3/4 gate
-                // carried a FLAT emissive (kRingEmissive on a solid tint, no emissive
-                // MAP): in a hall this dark that flat self-lift was ~90% of the ring's
-                // final pixel value (measured — forcing the baseColor to pure RED moved
-                // the gate by <8/255), so the ring rendered as a shadowless grey cutout
-                // and every texture round was painted over by the gate's own glow.
-                // Here the emissive is GATED BY THE ALBEDO MAP itself: emis = tint *
-                // albedoTex * kGateAmbient. It stands in for the bounce light this dark
-                // interior does not simulate, but it carries the FORGED DETAIL — the
-                // rivets, seams, rust bleed and teal oxide from the owner's own
-                // reference frame read as light and shade instead of being erased —
-                // and the point-light rig still lays true specular highlights along the
-                // rounded pipework on top of it.
-                e.emissiveTex = sf->ok ? sf->albedo : x3::rhi::TextureHandle{};
-                e.emissive[0] = tint[0]; e.emissive[1] = tint[1];
-                e.emissive[2] = tint[2];
-                e.emissive[3] = sf->ok ? kGateAmbient : 0.0f;
+                // NO EMISSIVE. The gate is a hunk of weathered METAL: it is lit by
+                // the hall rig + its own blue portal key, full stop.
+                //
+                // Rounds 3-5 propped it up with a self-emissive (first flat, then
+                // albedo-texture-gated at kGateAmbient) because GLB meshes shaded
+                // ~1/PI (metal: ~1/30) of the prims beside them — the mesh.frag
+                // shading-path energy bug, fixed in this same commit. With the
+                // engine honest that crutch DOUBLE-COUNTS: the gate blew out to a
+                // flat white sculpture the moment real light landed on it (see
+                // docs/screenshots/rifthub/J_1_gate_before_crutch_blowout.png).
+                // Zero emissive on the gate BODY — glow belongs only to the
+                // chevron slits / ratchet track, which are separate entities.
+                e.emissive[0] = e.emissive[1] = e.emissive[2] = e.emissive[3] = 0.0f;
                 e.tag = (uint32_t)Tag::Prop;
                 x3::asset::mulMat4(gateXf, dr.nodeTransform, e.transform);
                 scene.add(e);   // mesh owned by the LOADER — not m_portalMeshes

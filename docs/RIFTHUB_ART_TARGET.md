@@ -186,3 +186,72 @@ SAME point lights: a white-albedo PBR probe on the gate reads ~0.03 where the fl
 as predicted. That anomaly is why the gate still needs a texture-gated ambient term to
 read at all. Find it and the gate can be lit honestly (and the reference's bright
 weathered top plates / dark underside value range becomes reachable).
+
+## ROUND 6 (2026-07-11) — THE ENGINE BUG, FOUND AND FIXED. It was never the normals.
+
+### The measurement (not a theory)
+A white-albedo, zero-emissive probe cube was placed at ONE world position in the hub,
+lit by the SAME rig, rendered five times with only the SHADING PATH changed
+(docs/screenshots/rifthub/J_0_probe_*):
+
+| probe | mesh        | material                 | shader path | mean sRGB lum |
+|-------|-------------|--------------------------|-------------|---------------|
+| 1     | PRIM box    | no MR map                | dielectric  | 0.5478        |
+| 2     | PRIM box    | MR metal 0, rough .5     | PBR         | 0.3771        |
+| 3     | PRIM box    | MR metal .80, rough .62  | PBR         | 0.3556        |
+| 4     | **GLB** cube| no MR map                | dielectric  | **0.5478**    |
+| 5     | **GLB** cube| MR metal .80, rough .62  | PBR         | **0.3556**    |
+
+Probe 1 and probe 4 are **BYTE-IDENTICAL** (same md5). So are 3 and 5. The model loader,
+the glTF normals, the node transforms and the vertex format are **provably correct** —
+a GLB and a prim of the same geometry shade to the same pixels. The five suspects in the
+original bug report (normals not read, wrong attribute slot, missing normal matrix,
+non-uniform scale, missing tangents/TBN) are all **disproven**.
+
+### The root cause: TWO shading paths that disagree on the diffuse energy convention
+`mesh.frag` picks a path per object by "does it carry an MR map" (`Scene::render` →
+`drawMeshPBR` vs `drawMeshEmissive`):
+* **DIELECTRIC path** (no MR) — every procedural PRIM (floors, walls, level geometry):
+  `albedo * N.L * lightColor`. An UNNORMALIZED Lambert: **no 1/PI**.
+* **PBR path** (any MR map) — every GLB, because `ModelLoader` synthesizes a 1x1 MR from
+  the glTF factors whenever `metallic > 0`: `albedo * (1-metallic) / PI * N.L + GGX`.
+
+Every light rig in the game was authored against the PRIM path. So under the SAME light a
+GLB shaded **1/PI = 0.318x** of the prim beside it at metallic 0, and **~0.03x** once
+metallic reached 0.8 — which is EXACTLY the "white probe reads 0.03 on the gate" number
+measured in round 5. The gate was not badly normalled. It was correctly normalled and then
+divided by PI and by (1-metallic).
+
+### The fix (shaders/mesh.frag)
+The PBR path now adopts the SAME convention as the dielectric path: the Lambert `1/PI` is
+gone and `brdf()` takes the dielectric path's own diffuse weight (sun 0.75, point 1.0).
+Energy still conserves — `(1-F)` hands the Fresnel share to the specular lobe. AFTER:
+probe 1 = 0.5447, probe 2 = 0.5418 (**0.5% apart**, was 45% apart), probe 4 = probe 1
+exactly. GLB and prim now light identically under identical lights.
+
+### The crutches this exposes (all were compensating for the SAME bug)
+Once the engine is honest, every band-aid DOUBLE-COUNTS and blows out:
+1. **rifthub gate self-emissive** (`kGateAmbient`, texture-gated) — REMOVED. It blew the
+   gate to a white sculpture the moment real light landed (J_2b_gate_crutch_BLOWOUT.png).
+2. **rifthub gate key/fill lights** — `kGateKeyI` 46 -> 26, `kGateFillI` 20 -> 11. The 46
+   was documented in-code as "NOT a typo" precisely because the gate wouldn't light.
+3. **weapon viewmodel `kVmBright = 2.6`** (app/weapon.cpp) — an OVER-UNITY albedo
+   multiplier that clipped the gun's own texture to white. REMOVED (now 1.0). The pistol
+   went black blob -> white blob -> a correctly lit gun (J_4_level1_BEFORE/AFTER).
+
+### Still-open (flagged, NOT fixed here)
+* `app/world_hosts/host_space.cpp` — the ships are `metallicFactor=0` with no MR texture,
+  so they were ALWAYS on the dielectric path and this fix does not change them. They are
+  dark because the point-light rig delivers ~1/22500 of its intensity at the fleet's
+  distance (inverse-square at space scale) and carries its own crutches (a `1 + 1.2*bright`
+  albedo scale + a fake ambient EMISSIVE floor). The right tool there is the DIRECTIONAL
+  sun, not point lights 150 m away.
+* Black-silhouette metallic kit props: glTF's default `metallicFactor` is **1.0**, so any
+  converted GLB whose exporter omitted it becomes a full metal — no diffuse lobe at all —
+  and goes black in windowless interiors regardless of this fix. `feat/intro-cockpit`
+  commit 45e1c46 band-aided this with a per-object metalness scale; that fix (or an asset
+  re-convert) still belongs on the mainline.
+* The engine ignores glTF's `metallicFactor`/`roughnessFactor` when an MR TEXTURE exists
+  (spec says multiply). Separate defect.
+* Sun/star glow composites over the ships in --world space (owner: "visibility order") —
+  a transparent/additive depth-sort bug, unrelated to lighting. Its own task.
