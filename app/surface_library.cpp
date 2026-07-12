@@ -92,6 +92,17 @@ void prewarmSurfaceSetsAsync(const std::string& rootDir,
     }
 }
 
+std::vector<uint8_t> decodePngRGBA8(const std::string& path, int& outW, int& outH) {
+    outW = outH = 0;
+    int comp = 0, w = 0, h = 0;
+    stbi_uc* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
+    if (!px) return {};
+    std::vector<uint8_t> out(px, px + (size_t)w * (size_t)h * 4u);
+    stbi_image_free(px);
+    outW = w; outH = h;
+    return out;
+}
+
 const SurfaceSet& SurfaceLibrary::get(x3::rhi::IRenderDevice& device,
                                       const std::string& name) {
     auto it = m_cache.find(name);

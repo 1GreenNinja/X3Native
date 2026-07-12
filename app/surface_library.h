@@ -67,6 +67,13 @@ private:
 void prewarmSurfaceSetsAsync(const std::string& rootDir,
                              const std::vector<std::string>& names);
 
+// One-off PNG -> RGBA8 pixel decode (empty vector on any failure — missing
+// file, LFS pointer stub, corrupt data). Exposed for texture consumers that
+// need the PIXELS rather than a device handle (the rifthub membrane-flipbook
+// atlas slices itself into per-frame tiles before upload). Same file-local
+// stb_image instance as the set loader.
+std::vector<uint8_t> decodePngRGBA8(const std::string& path, int& outW, int& outH);
+
 // --screenshot-matlib: headless preview host. Builds one wall+floor bay per
 // curated set under a neutral warm-key/cool-fill rig and captures a closeup per
 // set plus two wide overview rows into `outDir` (FLAT folder for review).
