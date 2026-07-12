@@ -1539,6 +1539,8 @@ void VulkanRenderDevice::prepareFrameData() {
                 sc.rtsh1 = glm::vec4(taaWant ? (float)(m_rtshFrameSeed++ & 16383u) : 0.0f,
                                      0.0f, 0.0f, 0.0f);
             }
+            // r_debugview rides the reserved rtsh1.w lane (0 = off -> byte-identical).
+            sc.rtsh1.w = (float)m_debugView;
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }

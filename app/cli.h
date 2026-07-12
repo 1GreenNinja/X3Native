@@ -559,6 +559,11 @@ struct CliOptions {
     // realism mandate; sets curated by tools/tex_curate.py). FLAT output folder.
     bool        matlibShot = false;
     std::string matlibShotDir = "D:/GameDev/matlib_review";
+    // --test-primlight [out.png]: ONE LIGHTING PATH. Renders a prim panel and a GLB
+    // panel with identical albedo under identical lights on the REAL device and
+    // asserts equal radiance (+ a negative control). See app/prim_light_test.cpp.
+    bool        testPrimLight = false;
+    std::string primLightShotPath = "shots/primlight_probe.png";
     // Ocean vantage mode (--screenshot-ocean [path.png]): build the procedural
     // terrain world + an animated ocean at sea level under the sky/sun, pose a
     // camera on the shore looking out across the water toward the sun so the lit

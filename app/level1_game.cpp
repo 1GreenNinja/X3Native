@@ -182,6 +182,25 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
             device.setPointLights(fixtures.data(), (uint32_t)fixtures.size());
     }
 
+    // ---- THE FACILITY WAS LIT BY A BLUE SKY (2026-07-12, fix/prim-point-light) ------
+    // KNOWN_BUGS B4/R2, closed here for level1. The tower never declared an atmosphere,
+    // so it ran BOTH engine defaults: ambient {0.42,0.44,0.50} AND — the one nobody
+    // knew about — a full-strength (iblIntensity 1.0) IMAGE-BASED ENVIRONMENT baked
+    // from the ANALYTIC BLUE SKY. In a windowless detention basement. That baked sky is
+    // omnidirectional, it is BLUE, and it is what made the graybox walls read
+    // B > G > R under a tungsten lamp — the "hue tell" that got read as "these walls
+    // receive no point light". They receive plenty (--test-primlight; r_debugview 2/5).
+    // THE HONEST INTERIOR: the environment a room in this building actually has is THE
+    // ROOM — so bake the SCENE into the probe (setIblProbe, the same recipe rifthub and
+    // the ship interior already use) instead of the sky, at the standing 0.5 interior
+    // IBL, and drop the flat ambient to a near-black NEUTRAL floor. No light was added,
+    // no light was cranked, no albedo went over unity: a crutch was removed.
+    device.setIblProbe(true);
+    device.setIblIntensity(kLevel1Ibl);
+    device.setAmbient(kLevel1Ambient[0], kLevel1Ambient[1], kLevel1Ambient[2]);
+    x3::logInfo("[level1] interior atmosphere: scene IBL probe ON, ibl 0.5, ambient 0.030/0.030/0.033 "
+                "(was: the engine DEFAULT blue-sky env @ 1.0 + ambient 0.42/0.44/0.50 — a sky, indoors)");
+
     // ---- Geometry (graybox collision; surface renders suppressed where real art
     // covers them — see m_artMask). ----
     m_layout = buildLevel1(scene, device, physics, m_artMask);

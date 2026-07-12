@@ -510,6 +510,8 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // baked table is unchanged. Position is meters in the hand-LOCAL frame; rotation
     // is degrees; scale is added to the row's scaleMul. See the BAKE block above
     // kTpGripTable. Synced per-frame in applyRtaoCVars().
+    console.registerCVar("r_debugview", "0", "Renderer debug view: 0 = off, 1 = SHADING NORMALS (N*0.5+0.5). The instrument that separates 'the light cannot reach it' from 'its normal points into the wall'.");
+    console.registerCVar("r_flashlight", "1", "Player flashlight (L toggles in game). Set 0 to measure a room's OWN practicals with no torch riding the camera — the lighting-audit workhorse.");
     console.registerCVar("shot_weapon", "", "--screenshot: weapon whose FP viewmodel is held in the capture (e.g. shotgun/plasma/chaingun/lightning). Empty = pistol. QA hook for the per-weapon texture gate.");
     console.registerCVar("shot_fire",   "0", "--screenshot: fire the held weapon FROM ITS BARREL TIP through the settle frames (muzzle flash + tracer). The eyeball gate for 'the fire comes from the barrel', per weapon.");
     console.registerCVar("grip_x",     "0", "3P held-weapon grip override: +meters toward thumb (right); live, current weapon");
@@ -570,6 +572,7 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     p.radius   = console.getFloat("r_rtao_radius");
     p.rays     = console.getInt("r_rtao_rays");
     p.strength = console.getFloat("r_rtao_strength");
+    device.setDebugView(console.getInt("r_debugview"));
     if (p.radius <= 0.0f) p.radius = 1.2f;
     device.setRtaoParams(p);
     // Whole-scene brightness dial (live; default 1.0 = unchanged). Piggybacks the
@@ -2429,6 +2432,12 @@ int runDefaultHost(HostContext& hc) {
         elevator.build(scene, *device, *physics,
                        Lb.elevatorCenter.x, Lb.elevatorCenter.z,
                        1.4f, cabHY, 1.4f, elevStops, /*startStop*/0);
+        // The air OUTSIDE the cab is LEVEL 1's air, not the engine's defaults. Without
+        // this the elevator's first applyCabAtmosphere (m_cabAir starts -1, so it fires
+        // on frame one) restores ambient 0.42 + IBL 1.0 and the tower is back under a
+        // blue sky. See ElevatorSystem::setWorldAtmosphere.
+        elevator.setWorldAtmosphere(x3::game::kLevel1Ambient[0], x3::game::kLevel1Ambient[1],
+                                    x3::game::kLevel1Ambient[2], x3::game::kLevel1Ibl);
 
         // ---- Souped-up strata/disco elevator (ported from Tim's x3-elevator.js;
         // blueprint §2.2). Shared wiring — see soupUpElevator above the world chain.
@@ -2492,16 +2501,40 @@ int runDefaultHost(HostContext& hc) {
     // worlds are OUTDOOR (a sky IS their ambient) and the screenshot hosts set their own.
     // Only the un-owned INTERIOR worlds are corrected here, so nothing else changes.
     if (!canonWorld && !terrainWorld && !docWorld) {
-        // Cool, near-black interior base — a lift off pure black for shadowed back-faces,
-        // NOT a light source. Slightly blue so the facility's warm practicals read warm.
-        device->setAmbient(0.034f, 0.036f, 0.042f);
+        // ---- LAND-LIGHTING, and READ R4 BEFORE YOU TOUCH THESE NUMBERS. -----------------
+        // This block came from `fix/honest-lighting-rooms`, which set a cool TINTED ambient
+        // (0.034/0.036/0.042) and never touched the IBL at all. `fix/prim-point-light` then
+        // proved (R4) that THE ENGINE HAS TWO AMBIENTS: iblAmbient()'s baked-env path takes
+        // diffuse from irradianceCube and NEVER READS its `ambient` argument — and an env
+        // cube is baked BY DEFAULT, FOR EVERY SCENE, FROM THE ANALYTIC BLUE SKY. So this
+        // setAmbient() was aimed at a DEAD DIAL: these interiors went on being lit by a
+        // full-strength blue sky (IBL 1.0) no matter what value was written here. Measured:
+        // with setAmbient(0) the probe still read 55/255 of sky.
+        //
+        // The tint was therefore fitting a curve to a number nobody was reading. Correct is
+        // prim-point-light's MODEL, and it takes all three dials together:
+        //   1. setIblProbe(true)  — the env cube becomes THE ROOM, not a sky.
+        //   2. setIblIntensity()  — the dial that actually governs the baked-env path.
+        //   3. setAmbient()       — a NEUTRAL near-black floor (no tint: a tint here was
+        //                           only ever compensating for the sky it could not turn off).
+        // These are level1's landed values (kLevel1Ambient 0.030/0.030/0.033, kLevel1Ibl 0.5).
+        // Level1Game::build() declares the same air for its own world; using the SAME
+        // constants here makes the two owners IDEMPOTENT instead of racing — the old code
+        // ran AFTER Level1Game and silently overwrote it with the 0.42-era tint.
+        // The other un-owned interiors (club, spire, perfshop, showroom — B4's list) are the
+        // same class of bug and get the same model.
+        device->setIblProbe(true);
+        device->setIblIntensity(x3::game::kLevel1Ibl);
+        device->setAmbient(x3::game::kLevel1Ambient[0], x3::game::kLevel1Ambient[1],
+                           x3::game::kLevel1Ambient[2]);
         // AND TELL THE ELEVATOR. It restores the "world air" whenever the player is not
         // aboard, and it used to hand back the hard-coded engine default — which fired on
-        // the FIRST FRAME (m_cabAir starts -1) and clobbered the line above. Setting the
-        // ambient without this is a no-op; that is exactly the bug this pair fixes.
-        elevator.setWorldAir(0.034f, 0.036f, 0.042f, 0.30f);
-        x3::logInfo("[light] interior ambient 0.42 wash -> 0.034 (B4): the level's own "
-                    "fixtures light it now");
+        // the FIRST FRAME (m_cabAir starts -1) and clobbered the lines above. Setting the
+        // ambient without this is a no-op; that is exactly the bug this pair fixes (L6b).
+        elevator.setWorldAtmosphere(x3::game::kLevel1Ambient[0], x3::game::kLevel1Ambient[1],
+                                    x3::game::kLevel1Ambient[2], x3::game::kLevel1Ibl);
+        x3::logInfo("[light] interior atmosphere (B4/R4): scene IBL probe ON, ibl 0.5, "
+                    "ambient 0.030 NEUTRAL — was a blue-sky env cube @ 1.0 + a dead setAmbient");
     }
 
     // World geometry + canon room spawns are built — push the heavy build steps onto
@@ -7331,8 +7364,18 @@ int runDefaultHost(HostContext& hc) {
             if (lNow && !prevL) { flashlight = !flashlight;
                                   x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
             prevL = lNow;
+            // r_flashlight 0 forces the torch OFF (headless lighting audits: a room must
+            // be judged on its OWN practicals, never on the light riding the camera).
+            if (console->getInt("r_flashlight") == 0) flashlight = false;
             // B4: nearest-to-eye, not first-in-array (see nearestFixtures above). This is
-            // what actually turns the legacy tower's 332 ceiling fixtures back on.
+            // what actually turns the legacy tower's ceiling fixtures back on.
+            //
+            // LAND-LIGHTING — THIS IS THE CULL `fix/prim-point-light` FILED FOR. That branch
+            // reported "level1 registers 337 point lights into a 64-light device cap — 273
+            // dropped silently, first-come; needs a nearest-to-camera cull" and left it open,
+            // still feeding the raw `= game.lightFixtures()`. `light/audit-facility` had
+            // already BUILT that cull. So the two do not fight: prim-point-light diagnosed it,
+            // the audit fixed it, and the fix is what ships. Do NOT restore the raw feed.
             std::vector<x3::rhi::PointLight> fl =
                 nearestFixtures(game.lightFixtures(), camX, camY, camZ, kFixtureBudget);
             // BLACK-PROP FIX (light routing). The F2-F7 west-wing dressing authors one

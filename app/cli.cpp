@@ -439,6 +439,12 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.matlibShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.matlibShotDir = argv[++i];
         }
+        else if (a == "--test-primlight") {
+            // ONE LIGHTING PATH: prim (dielectric) vs GLB (Cook-Torrance) radiance
+            // parity on the real device, with a negative control. Optional out-PNG.
+            o.testPrimLight = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.primLightShotPath = argv[++i];
+        }
         else if (a == "--screenshot-destruct") {
             o.destructShot = true;
             // Optional output path arg (next token, if it isn't another flag).

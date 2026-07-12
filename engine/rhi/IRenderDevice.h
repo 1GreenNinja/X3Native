@@ -211,6 +211,14 @@ public:
     // adapted value; with it OFF it is the absolute exposure, exactly as before.
     virtual void setExposure(float e) {}
 
+    // ---- RENDERER DEBUG VIEW (r_debugview) -------------------------------------
+    // 0 = off (shipping; byte-identical). 1 = SHADING NORMAL as colour (N*0.5+0.5).
+    // A surface whose normal points AWAY from the room cannot receive a single
+    // photon from any light in it — it collects only ambient/IBL and reads BLUE,
+    // and every symptom points at the art (KNOWN_BUGS R3). This is the instrument
+    // that tells you in one frame whether the normal, or the light, is the liar.
+    virtual void setDebugView(int mode) { (void)mode; }
+
     // ---- PAINTERLY LEVERS (ART_BIBLE.md §5) — per-zone atmosphere + grade. ----
     // Host opt-in ONLY: both default fully OFF, and the setters are deliberately
     // SEPARATE from PostFXParams/setPostFX (which app_run re-applies live from

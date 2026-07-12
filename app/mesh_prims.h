@@ -611,17 +611,30 @@ inline std::vector<uint8_t> makeSciFiPanelRGBA(uint32_t n, uint32_t panels,
             // reads as gentle large-scale mottling, not per-pixel quilt speckle).
             const float nlo = (hash01(x / 24, y / 24, std::max(1u, n / 24), 7u) - 0.5f);
             const int grime = (int)(nlo * 9.0f);
-            int r = 78, g = 84, b = 94;        // clean gunmetal panel face
+            // ---- VALUE, NOT LUMENS (DECISIONS.md §3; fix/prim-point-light 2026-07-12) ----
+            // This palette was (78,84,94) sRGB = 0.077 LINEAR: a 7.7% reflector. That is
+            // charcoal/asphalt — it is not a wall. Every interior partition in the tower
+            // wears it, which is why the graybox walls read BLACK under a working ceiling
+            // fixture while the GLB floor beside them (0.21 linear) read fine: at an
+            // IDENTICAL 0.5 albedo the same walls measure 77-81% of that floor's radiance
+            // (r_debugview 5) — they were never off the light path, they were multiplying
+            // the light by nothing. It was also BLUE-BIASED (B/R = 1.45 linear), enough to
+            // overturn a tungsten lamp's warm tilt and make a lit wall read cold — the
+            // false "hue tell" that got this diagnosed as a renderer bug.
+            // Now a neutral machined steel at 0.198 linear (sRGB 124) — the same band as
+            // the floor it faces. The relief (seam / bevel / bolt / duct / vent) keeps its
+            // exact contrast ratios; only the VALUE and the cast moved.
+            int r = 124, g = 126, b = 130;     // clean gunmetal panel face
             if (edge < seam) {                 // recessed seam groove (darker, crisp)
-                r = 40; g = 44; b = 52;
+                r = 64; g = 66; b = 72;
             } else if (edge < seam * 2) {      // bevel highlight just inside the groove
-                r = 100; g = 108; b = 120;
+                r = 150; g = 152; b = 158;
             }
             // Corner bolts: a small bright dot near each panel corner (discreet).
             const int ddx = (int)dx - (int)boltInset;
             const int ddy = (int)dy - (int)boltInset;
             if ((uint32_t)(ddx*ddx + ddy*ddy) <= bolt * bolt) {
-                r = 150; g = 156; b = 168;     // rivet head (bright metal)
+                r = 190; g = 192; b = 198;     // rivet head (bright metal)
                 if (ddx*ddx + ddy*ddy >= (int)((bolt-1)*(bolt-1))) { r-=55; g-=55; b-=55; }
             }
 
@@ -631,10 +644,10 @@ inline std::vector<uint8_t> makeSciFiPanelRGBA(uint32_t n, uint32_t panels,
                 const uint32_t ad = (uint32_t)std::abs(dd);
                 if (ad <= ductHalf) {
                     // Recessed duct channel: darker trough, lighter raised rails at the lips.
-                    if (ad > ductHalf - 3) { r = 110; g = 116; b = 128; }   // lip rail (raised)
-                    else                   { r = 46;  g = 50;  b = 58;  }   // duct trough
+                    if (ad > ductHalf - 3) { r = 158; g = 160; b = 166; }   // lip rail (raised)
+                    else                   { r = 72;  g = 74;  b = 80;  }   // duct trough
                     // Evenly spaced clamp bands across the duct (tileable: keyed on y % clampPitch).
-                    if ((y % clampPitch) < std::max(2u, clampPitch / 6)) { r = 120; g = 126; b = 138; }
+                    if ((y % clampPitch) < std::max(2u, clampPitch / 6)) { r = 168; g = 170; b = 176; }
                 }
             } else if (variant == WallVariant::Vent && colX == ventCol) {
                 const int vx = (int)lx - (int)(pitch / 2);
@@ -643,12 +656,12 @@ inline std::vector<uint8_t> makeSciFiPanelRGBA(uint32_t n, uint32_t panels,
                 const uint32_t avy = (uint32_t)std::abs(vy);
                 if (avx <= ventHalfX && avy <= ventHalfY) {
                     if (avx > ventHalfX - 3 || avy > ventHalfY - 3) {
-                        r = 116; g = 122; b = 134;                          // vent bezel (raised frame)
+                        r = 162; g = 164; b = 170;                          // vent bezel (raised frame)
                     } else {
                         // Horizontal louver slats: dark slot then a thin highlight ridge.
                         const bool slot = ((ly / louver) & 1u);
-                        if (slot) { r = 30; g = 33; b = 39; }               // shadowed slot
-                        else      { r = 66; g = 71; b = 80; }               // slat face
+                        if (slot) { r = 48; g = 50; b = 54; }               // shadowed slot
+                        else      { r = 106; g = 108; b = 114; }            // slat face
                     }
                 }
             }

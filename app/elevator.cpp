@@ -1142,13 +1142,13 @@ bool ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
         device.setIblIntensity(0.22f);
     } else {
         // OUTSIDE. Hand the world back WHAT THE WORLD ACTUALLY RUNS AT — not the engine
-        // default. B4/THE PATTERN: this used to hard-code {0.42, 0.44, 0.50}, which meant
-        // the elevator RE-IMPOSED THE 0.42 WASH ON THE ENTIRE GAME. And because m_cabAir
-        // starts at -1, `want == 0` on the very first frame is a CHANGE, so it fired
+        // defaults. B4/L6b/THE PATTERN: this used to hard-code {0.42, 0.44, 0.50} + IBL 1.0,
+        // which meant the elevator RE-IMPOSED THE 0.42 WASH ON THE ENTIRE GAME. And because
+        // m_cabAir starts at -1, `want == 0` on the very first frame is a CHANGE, so it fired
         // BEFORE THE PLAYER HAD EVER SEEN THE CAB — silently overwriting the host's honest
-        // ambient in level1, the spire, the club, the perf shop and the show room. It is
-        // the single reason those rooms still ran the wash after dfcb65d. The host owns
-        // the world's air (setWorldAir); the elevator only owns the cab's.
+        // ambient in level1, the spire, the club, the perf shop and the show room. It is the
+        // single reason those rooms still ran the wash after dfcb65d. The host owns the
+        // world's air (setWorldAtmosphere); the elevator only owns the cab's.
         device.setAmbient(m_worldAmb[0], m_worldAmb[1], m_worldAmb[2]);
         device.setIblIntensity(m_worldIbl);
     }

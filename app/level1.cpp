@@ -206,9 +206,26 @@ const float kFloorTints[(uint32_t)L1Floor::Count][4] = {
     { 0.60f, 0.66f, 0.80f, 1.0f }, // F7 — sky/rooftop
 };
 
-const float kWallTint[4]  = { 0.62f, 0.66f, 0.78f, 1.0f };
-const float kShaftTint[4] = { 0.40f, 0.42f, 0.50f, 1.0f };
-const float kStairTint[4] = { 0.48f, 0.50f, 0.56f, 1.0f };
+// ---- THE WALLS WERE A 4% BLUE MIRROR OF AN AMBIENT THAT NO LONGER EXISTS -------
+// (2026-07-12, fix/prim-point-light. Measured, flashlight OFF, under a working B1
+// ceiling fixture: ceiling luma 62.8 WARM, floor 32.3 WARM, WALL 4.3 and BLUE.)
+// The wall was NOT off the point-light path — `r_debugview 2` (the point-light
+// diffuse term alone) shows these walls catching HALF the floor's irradiance. They
+// were multiplying that warm light by a near-black, BLUE-DOMINANT albedo:
+//     panel texture (78,84,94) sRGB = (0.078, 0.089, 0.111) linear
+//   x kWallTint      (0.62, 0.66, 0.78)      = (0.048, 0.059, 0.087) linear
+//   x the fixture    (1.00, 0.86, 0.62)      -> (0.048, 0.051, 0.054) -> B > G > R.
+// A 4-9% reflector is ASPHALT, not a wall; and the albedo's blue tilt (B/R = 1.8)
+// OVERTURNS the tungsten key's warm tilt (R/B = 1.6), so the surface reads BLUE
+// under a warm lamp. That is why the hue "proved" the wall got no point light: the
+// tell lied, because the albedo was the liar.
+// These tints were authored against the 0.42/0.44/0.50 BLUE AMBIENT WASH (KNOWN_BUGS
+// R2) — a blue wall in a blue flood looks neutral. Kill the wash and the crutch walks
+// out. NEUTRALISED: the wall's value + hue now come from its texture and the lamp on
+// it, which is the only honest source for either. No light was touched.
+const float kWallTint[4]  = { 1.00f, 1.00f, 1.00f, 1.0f };
+const float kShaftTint[4] = { 0.85f, 0.85f, 0.85f, 1.0f };   // shaft reads a shade darker; NOT bluer
+const float kStairTint[4] = { 0.90f, 0.90f, 0.90f, 1.0f };
 
 // Add one world-baked graybox box (render mesh + optional static collision) to the
 // scene. `visible`: when false the render mesh is omitted (collision-only) so real
@@ -735,7 +752,10 @@ Level1Layout buildLevel1(Scene& scene,
     const float b1ceil = kFloors[(uint32_t)L1Floor::B1].ceil;
     const float plateTop = b1y + b1ceil;     // detention ceilings clamp under this
     {
-        const float detTint[4] = { 0.50f, 0.55f, 0.68f, 1.0f };   // detention concrete
+        // Detention concrete. Was { 0.50, 0.55, 0.68 } — the same blue-ambient crutch as
+        // kWallTint above (and the darkest of the lot: it took the panel down to a 4%
+        // reflector). Neutral: value comes from the texture, hue comes from the lamp.
+        const float detTint[4] = { 1.00f, 1.00f, 1.00f, 1.0f };
         // The legacy Awakening-spine corridor carve (x in [0,19.5], z in [-4,4]) so the
         // playable z=0 lane punches through any detention room in its way.
         const SpineCarve carve{ 0.0f, 19.5f, 4.0f };
