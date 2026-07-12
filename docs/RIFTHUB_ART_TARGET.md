@@ -144,3 +144,45 @@ the Grok-video membrane flipbook. Geometry was the last hand-made link in the ch
 
 TODO next session: (1) generate the gate in Rodin from the reference, (2) convert + land,
 (3) re-tune tiling/tints on the real mesh, (4) then judge vs docs/reference.
+
+## ROUND 5 (2026-07-11) — THE GATE WAS NEVER LIT. Four rounds of art were invisible.
+Owner reported 4 bugs (black activated portal / no swirl from behind / room too dark /
+"no good looking portal surrounds") + 3 directives (kill the crayon lightning, ENLARGEN
+the portal, rebuild the gate as ROUNDED PIPE with SD3.5 textures FROM his image).
+
+### Root causes (all measured, not guessed)
+1. **BLACK ACTIVATED PORTAL == NO SWIRL FROM BEHIND == ONE BUG: the VISTA disk.** An
+   OPAQUE disk of the same radius parked 0.10 m outward of the OPAQUE plasma disk. From
+   the hub side the plasma occluded it completely (the "parallax vista" never rendered a
+   single pixel); from the far side it WAS the near surface — a near-black starscape that
+   occluded the storm. The owner walks THROUGH a gate (the trigger fires 2.5 m out) and
+   ends up looking at the dead vista disk. Deleted. The disk mesh was already double-wound,
+   so one plasma entity now reads from BOTH sides. Locked by self-test T11.
+2. **THE ROOM WAS DARK because the fills lost to the inverse-square law.** A 7.5-intensity
+   light 6.8 m up delivers 7.5/6.8^2 = 0.16 to the deck. Nudging 2.4 -> 3.2 moved a number
+   that already rounded to nothing. Rig rebuilt (9 overheads @ 18, 8 deck fills @ 9.2,
+   per-gate key + warm under-fill). Ambient went DOWN, not up: ambient is omnidirectional,
+   so it lights a room by destroying its contrast.
+3. **THE GATE HAD 30-43% INSIDE-OUT TRIANGLES** (normals inverted + wound backwards ->
+   backface-culled), measured off the shipped GLB. THAT is the real "ghost glass / X-ray",
+   not SSR. And a **flat fake self-emissive** (no emissive map) was ~90% of the ring's pixel
+   value — forcing baseColor to pure RED moved the gate by <8/255. So the ring was a flat,
+   self-lit, shadowless cutout and every texture round was painted over by its own glow.
+4. **THE PROCEDURAL LIGHTNING VANDALIZED THE FLIPBOOK.** The flipbook IS the owner's
+   reference video; its pixels already contain real lightning. Arcs are now SURGE-ONLY.
+
+### Landed
+- `tools/build_rifthub_gate.py` REWRITTEN: rounded-pipe vocabulary (torus ring whose inner
+  surface is the throat; cylinder clamp cans, torus collars, sphere joints, bevelled pipe
+  curves, cable bundles, capacitor banks, trunnion cradle). Watertight primitives only +
+  a signed-volume normal check => provably outward-facing.
+- Membrane 1.58 -> **1.895** (+44% area). Flipbook pixels untouched (approved).
+- `tools/forge_gate_textures.py`: `--img2img` / `--from-image` / `--maps-only`. Textures
+  now derive FROM the owner's reference frame (1168x768 video frame > the 800x526 stills).
+
+### NEXT LEAD (engine, unresolved)
+Model-loader (GLB) meshes shade with a suspiciously low N.L versus prim meshes under the
+SAME point lights: a white-albedo PBR probe on the gate reads ~0.03 where the floor reads
+as predicted. That anomaly is why the gate still needs a texture-gated ambient term to
+read at all. Find it and the gate can be lit honestly (and the reference's bright
+weathered top plates / dark underside value range becomes reachable).
