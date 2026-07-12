@@ -271,3 +271,15 @@ RULES for the rebuild:
   N.L / GLB-lighting fix) — bright top surface, dark underside, highlight along the tube.
 Reference: docs/reference/ portal stills — note the ring is a single massive body; the greebles
 sit ON it and never outnumber it.
+
+### ROUND 7 addendum (Tim): "we can have all the grok imagined stuff on it"
+ONE TUBE does NOT mean bare/plain. It means one PRIMARY MASS wearing ALL the Grok reference's
+richness. The detail gets there two ways — neither of which is a forest of separate meshes:
+1. IN THE TEXTURES (the main channel): the img2img sets forged FROM Grok's own image carry
+   rivets, panel seams, plate joins, vents, rust streaks, warning stencils — baked into the
+   NORMAL/HEIGHT maps. Huge apparent detail on a smooth tube, zero extra polygons. Most of the
+   reference's richness is SURFACE, not silhouette. This is why the img2img forge matters.
+2. CUT INTO THE TUBE (geometry): chevrons/clamps RECESSED into its face, glyph/indicator bands
+   wrapping it, bolt rings following its curve, segment joins, vent slots — features OF the tube.
+Subordinate objects (cradle, a few feed cables) stay minimal. The tube's sweeping specular
+highlight must never be broken up by clutter.
