@@ -108,6 +108,7 @@
 #include "vehparts.h"
 #include "ecology.h"
 #include "crowd.h"
+#include "waterzap.h"   // --test-waterzap (FISH + the lightning WATER ZAP)
 #include "alert.h"
 #include "space_pilot.h"          // x3::game::runSpaceSelfTest (--test-space)
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
@@ -811,6 +812,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running CROWDS self-test "
                     "(idle clusters + wander points + scatter/cower on violence + return after calm)...");
         return x3::game::runCrowdSelfTest() ? 0 : 1;
+    }
+    if (tf.testWaterZap) {
+        x3::logInfo("running WATER ZAP self-test "
+                    "(fish schools + the lightning gun electrifying the water: "
+                    "entry detection, one-zap latch, half-health, fish in/out of the radius)...");
+        return x3::game::runWaterZapSelfTest() ? 0 : 1;
     }
     if (tf.testAlert) {
         x3::logInfo("running FACILITY ALERT LEVEL self-test "

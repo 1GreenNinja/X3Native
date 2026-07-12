@@ -1024,6 +1024,11 @@ void CanonPlay::forEachCorpse(const std::function<void(const x3::phys::Vec3&)>& 
     if (m_martinezSpawned && !m_martinez.alive()) fn(m_martinez.pos());
 }
 
+void CanonPlay::forEachHostileManager(const std::function<void(MonsterManager&)>& fn) {
+    fn(m_mainHall); fn(m_cellGuards); fn(m_attackers);
+    fn(m_floorBosses); fn(m_upperEnemies); fn(m_rescue.bosses());
+}
+
 uint32_t CanonPlay::queueAlertReinforcements(const CanonFloor& floor,
                                              const x3::phys::Vec3& nearPos,
                                              int count, bool killSquad) {

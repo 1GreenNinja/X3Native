@@ -50,6 +50,7 @@ struct CliOptions {
          // keypad submit link via the real HoloTerminal). See runHatchChainSelfTest.
          testHatch = false,
          testEcology = false, testCrowd = false, testAlert = false,
+         testWaterZap = false,   // --test-waterzap (FISH + the lightning water ZAP)
          // --test-canonvehicle (WORLD CARS: enter/drive/exit + hold-E hack +
          // unlocked-latch region persistence). See runCanonVehicleSelfTest.
          testCanonVehicle = false;

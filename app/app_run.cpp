@@ -110,6 +110,8 @@
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
+#include "fish.h"                          // FISH: ambient schools in THE RIVER + the sea shallows
+#include "waterzap.h"                      // THE WATER ZAP: the lightning gun electrifies the water
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
 #include "crowd_skin.h"                    // SKINNED CITIZENS: the crowds' rigged visual layer
 #include "crowd_chatter.h"                 // CROWD CHATTER: chat bubbles + murmur walla over the crowds
@@ -1292,6 +1294,20 @@ int runDefaultHost(HostContext& hc) {
     // cars park/unpark with the `city` region via the WorldStreamer hooks (the
     // system owns only its OWN static bodies — nothing enters a region ledger).
     x3::game::WorldCars worldCars;
+    // FISH (app/fish.h) — ambient schools in THE RIVER's reach past the facility
+    // and in the sea shallows at the estuary. Host-owned (NOT region-ledger
+    // owned: it is built once at canon boot like the parked cars), entities
+    // tagged kStreamedExteriorRoom so the outdoor PVS gates the draw, schools
+    // range-gated on the player. Kinematic — no physics bodies.
+    x3::game::FishSystem worldFish;
+    // THE WATER ZAP (app/waterzap.h) — "one Zap": the latch + cooldown that keeps
+    // a HELD lightning trigger from re-zapping the river every frame.
+    x3::game::WaterZapper waterZapper;
+    // The zap's transient surface FX: while > 0 the water surface at zapFxCenter
+    // spiders re-randomized lightning arcs out to kWaterZapRadius.
+    float zapFxTimer = 0.0f;
+    x3::phys::Vec3 zapFxCenter{};
+    uint32_t zapFxRng = 0x5EEDu;
     float carPanicCooldown = 0.0f;   // throttles the drive-by crowd-panic probe
     float carThrottleHud   = 0.0f;   // last driver throttle (engine-loop pitch)
     // LIVING WORLD: the FACILITY ALERT LEVEL (the wanted system, pillar 3). The
@@ -3127,6 +3143,83 @@ int runDefaultHost(HostContext& hc) {
                 terrainMs, totalMs, hc.wsBudgetMs, hc.wsLookaheadS);
             x3::logInfo(sb);
             x3::boot::mark("SEAM 3 streamer boot (planet regions + terrain ring)");
+
+            // ---- FISH (W10 water): THE RIVER LIVES ---------------------------
+            // Ambient schools in the river reach nearest the facility (the same
+            // worldRiverNodes spline the carve + the water ribbon are built from)
+            // plus two in the sea shallows at the estuary. Host-owned (like the
+            // parked cars — a loaded system must never enter a region ledger),
+            // kStreamedExteriorRoom-tagged so the outdoor PVS gates the draw, and
+            // range-gated per school on the player. Kinematic: no physics bodies.
+            {
+                const auto fs0 = std::chrono::steady_clock::now();
+                x3::game::FishConfig fc;
+                fc.roomId = x3::game::kStreamedExteriorRoom;
+                uint32_t rn = 0;
+                const x3::game::WorldRiverNode* rnodes = x3::game::worldRiverNodes(rn);
+                if (rnodes && rn >= 4) {
+                    uint32_t nearest = 0; float best = 1e30f;
+                    for (uint32_t i = 0; i < rn; ++i) {
+                        const float dx = rnodes[i].x - towerCx, dz = rnodes[i].z - towerCz;
+                        const float d2 = dx * dx + dz * dz;
+                        if (d2 < best) { best = d2; nearest = i; }
+                    }
+                    // Silver / olive / copper schools (per-fish tint jitter on top).
+                    const float tints[3][3] = { { 0.74f, 0.78f, 0.82f },
+                                                { 0.46f, 0.52f, 0.34f },
+                                                { 0.74f, 0.48f, 0.28f } };
+                    const int offs[4] = { -2, 0, 3, 6 };   // four schools along the reach
+                    for (int k = 0; k < 4; ++k) {
+                        int idx = (int)nearest + offs[k];
+                        if (idx < 0) idx = 0;
+                        if (idx > (int)rn - 2) idx = (int)rn - 2;
+                        const x3::game::WorldRiverNode& A = rnodes[idx];
+                        const x3::game::WorldRiverNode& B = rnodes[idx + 1];
+                        x3::game::FishSchoolDesc sd;
+                        sd.centerX = A.x; sd.centerZ = A.z;
+                        sd.heading  = std::atan2(B.z - A.z, B.x - A.x);   // downstream
+                        sd.count    = 9u + (uint32_t)(k % 3) * 2u;        // 9..13
+                        sd.spread   = 4.5f + 0.6f * (float)k;
+                        sd.speed    = 0.55f + 0.15f * (float)(k % 2);
+                        for (int c = 0; c < 3; ++c) sd.tint[c] = tints[k % 3][c];
+                        fc.schools.push_back(sd);
+                    }
+                    // THE ESTUARY: two schools in the sea shallows off the mouth.
+                    const x3::game::WorldRiverNode& E = rnodes[rn - 1];
+                    const x3::game::WorldRiverNode& P = rnodes[rn - 2];
+                    const float eh = std::atan2(E.z - P.z, E.x - P.x);
+                    for (int k = 0; k < 2; ++k) {
+                        const float side = eh + (k == 0 ? 1.5707963f : -1.5707963f);
+                        const float probes[4] = { 14.0f, 22.0f, 32.0f, 46.0f };
+                        for (float d : probes) {
+                            const float px = E.x + std::cos(side) * d + std::cos(eh) * 14.0f;
+                            const float pz = E.z + std::sin(side) * d + std::sin(eh) * 14.0f;
+                            if (x3::game::worldWaterLevelAt(px, pz) <= x3::game::kFishDryTest)
+                                continue;
+                            x3::game::FishSchoolDesc sd;
+                            sd.centerX = px; sd.centerZ = pz;
+                            sd.heading = side + 3.14159265f;
+                            sd.count   = 8u + (uint32_t)k * 3u;    // 8, 11
+                            sd.spread  = 5.5f;
+                            sd.speed   = 0.45f;
+                            sd.tint[0] = 0.66f; sd.tint[1] = 0.72f; sd.tint[2] = 0.80f;
+                            fc.schools.push_back(sd);
+                            break;
+                        }
+                    }
+                }
+                worldFish.setWaterQuery([](float x, float z) {
+                    return x3::game::worldWaterLevelAt(x, z); });
+                worldFish.setBedQuery([](float x, float z) {
+                    return x3::game::terrainHeightAtWorld(x, z); });
+                worldFish.build(fc, scene, *device);
+                const double fishMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - fs0).count();
+                x3::logInfo("FISH: " + std::to_string(worldFish.fishCount()) + " fish in " +
+                            std::to_string(worldFish.schoolCount()) + " schools (river reach + estuary) — " +
+                            std::to_string(fishMs) + " ms");
+                x3::boot::mark("FISH (river + estuary schools)");
+            }
         }
     }
     // SEAM 3 teardown — idempotent; called on EVERY exit path that follows the
@@ -3138,6 +3231,110 @@ int runDefaultHost(HostContext& hc) {
         canonWstream.shutdown(scene, *device, *physics);
         terrainStreamer.shutdown(scene, *device, *physics);
         if (!terrainWorld && terrainJobs) terrainJobs->shutdown();
+    };
+
+    // =======================================================================
+    // THE WATER ZAP — Tim: "Lightning gun will electrify the water.. one Zap,
+    // and the player takes half health damage, and all the fish around die."
+    //
+    // TRIGGER: a LIGHTNING shot whose ray MEETS WATER (findWaterEntry marches it
+    // against worldWaterLevelAt), or one fired by a shooter who is IN the water.
+    // LATCH: WaterZapper — one zap per trigger pull, kWaterZapCooldown (1.75 s)
+    // between zaps, so a held beam does NOT re-zap the river every frame.
+    // DAMAGE: player in the water inside kWaterZapRadius (12 m, measured on the
+    // water plane) loses HALF OF MAX HEALTH (50 of 100), once; every LIVE fish
+    // in the radius DIES (belly-up, floats, drifts, despawns); anything WADING
+    // in it takes kWaterZapEnemyDamage as DamageType::Energy; crowds scatter.
+    // FX: the surface spiders re-randomized lightning arcs out to the radius for
+    // zapFxTimer seconds (the CombatFx bolt path — the same jagged bolts the gun
+    // fires), plus a flash + sparks at the entry point and the ZAP take.
+    // =======================================================================
+    const x3::audio::SoundHandle sndWaterZap =
+        audio->load(x3::game::resolveAudio("weapons/loops/Vefects_Zap_Medium_01.wav"));
+    const x3::audio::SoundHandle sndZapCrackle =
+        audio->load(x3::game::resolveAudio("weapons/impact/Laser_Impact_Light_6.wav"));
+    const x3::game::WaterZapQueryFn waterQueryFn =
+        [](float x, float z) { return x3::game::worldWaterLevelAt(x, z); };
+    // The live discharge: re-rolled radial arcs ACROSS the water plane. Called
+    // every frame while zapFxTimer > 0 (live loop AND the screenshot settle).
+    auto emitZapArcs = [&](int n) {
+        for (int i = 0; i < n; ++i) {
+            zapFxRng = zapFxRng * 1664525u + 1013904223u;
+            const float a = (float)(zapFxRng % 6283u) * 0.001f;
+            zapFxRng = zapFxRng * 1664525u + 1013904223u;
+            const float r = x3::game::kWaterZapRadius *
+                            (0.55f + 0.45f * (float)(zapFxRng % 1000u) * 0.001f);
+            zapFxRng = zapFxRng * 1664525u + 1013904223u;
+            // Every third arc LEAPS off the water (an arc that jumps clear of the
+            // surface is what sells "the pool is live"); the rest crawl across it.
+            const bool leap = (zapFxRng % 3u) == 0u;
+            const float endY = zapFxCenter.y + (leap ? 0.90f : 0.06f);
+            const x3::phys::Vec3 to{ zapFxCenter.x + std::cos(a) * r, endY,
+                                     zapFxCenter.z + std::sin(a) * r };
+            // The gun's bolt is a 9 mm core — at pool scale that is a hairline. Lay
+            // 3 jittered strands per arc so an arc READS from the bank (this is the
+            // same drawLightningBolt path, just braided).
+            for (int k = 0; k < 3; ++k) {
+                zapFxRng = zapFxRng * 1664525u + 1013904223u;
+                const float jx = ((float)(zapFxRng % 200u) * 0.001f - 0.1f);
+                zapFxRng = zapFxRng * 1664525u + 1013904223u;
+                const float jz = ((float)(zapFxRng % 200u) * 0.001f - 0.1f);
+                const x3::phys::Vec3 from{ zapFxCenter.x + jx, zapFxCenter.y + 0.14f,
+                                           zapFxCenter.z + jz };
+                combatFx.addTracer(from, to, x3::game::WeaponFxKind::Lightning);
+            }
+        }
+    };
+    auto tickZapFx = [&](float dt) {
+        if (zapFxTimer <= 0.0f) return;
+        emitZapArcs(12);                   // the whole pool lights up
+        zapFxTimer -= dt;
+        if (zapFxTimer <= 0.0f) zapFxTimer = 0.0f;
+    };
+    // Fire ONE zap at `we`. `pl`/`plFeet` (optional) is the player who might be
+    // standing in it. The caller owns the LATCH check (waterZapper.canZap()).
+    auto fireWaterZap = [&](const x3::game::WaterZapEntry& we,
+                            x3::game::Player* pl, const x3::phys::Vec3* plFeet) {
+        const x3::phys::Vec3 c{ we.x, we.surfaceY, we.z };
+        const uint32_t killed = worldFish.killWithin(we.x, we.z, x3::game::kWaterZapRadius);
+        int selfDmg = 0;
+        if (pl && plFeet)
+            selfDmg = x3::game::zapPlayer(*pl, *plFeet, we.x, we.z, waterQueryFn);
+        uint32_t fried = 0;
+        fried += x3::game::zapMonsters(game.corridorEnemies(), scene, *physics,
+                                       we.x, we.z, waterQueryFn);
+        fried += x3::game::zapMonsters(game.checkpointEnemies(), scene, *physics,
+                                       we.x, we.z, waterQueryFn);
+        if (canonPlay.built())
+            canonPlay.forEachHostileManager([&](x3::game::MonsterManager& mm) {
+                fried += x3::game::zapMonsters(mm, scene, *physics,
+                                               we.x, we.z, waterQueryFn);
+            });
+        if (facilityCrowd.built()) facilityCrowd.onViolence(c);
+        for (auto& cc : canonCrowds) if (cc.built()) cc.onViolence(c);
+        for (auto& cc : cityCrowds)  if (cc.built()) cc.onViolence(c);
+        zapFxCenter = c;
+        zapFxTimer  = 0.70f;
+        emitZapArcs(x3::game::kWaterZapArcs);   // the first frame goes wide
+        combatFx.spawnMuzzleFlash(x3::phys::Vec3{ c.x, c.y + 0.18f, c.z },
+                                  x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+                                  x3::game::WeaponFxKind::Lightning);
+        combatFx.spawnImpact(x3::phys::Vec3{ c.x, c.y + 0.05f, c.z },
+                             x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+                             x3::game::WeaponFxKind::Lightning);
+        if (audio) {
+            if (sndWaterZap.valid())
+                audio->playSound3D(sndWaterZap, c.x, c.y, c.z, 1.0f, 0.85f);
+            if (sndZapCrackle.valid())
+                audio->playSound3D(sndZapCrackle, c.x, c.y, c.z, 0.9f, 1.25f);
+        }
+        waterZapper.noteZap();
+        char zb[220];
+        std::snprintf(zb, sizeof(zb),
+            "waterzap: THE WATER GOES LIVE at (%.1f, %.1f, %.1f) r=%.1f m — "
+            "fish killed %u, enemies fried %u, self damage %d",
+            c.x, c.y, c.z, x3::game::kWaterZapRadius, killed, fried, selfDmg);
+        x3::logInfo(zb);
     };
 
     // ---- S7: console backend (D6) + screen-space HUD (FPS, console, crosshair).
@@ -4144,6 +4341,91 @@ int runDefaultHost(HostContext& hc) {
                 }
             }
         }
+        // ---- THE WATER ZAP proof shots: X3_SHOT_ZAP=school|zap|after|punish ----
+        // Staged on the FIRST fish school (the river reach nearest the facility —
+        // the same worldRiverNodes spline the fish were seeded on). The camera is
+        // placed so the GOLDEN-HOUR SUN (sunDir 0.55,0.16,-0.35 — azimuth -0.57 rad)
+        // is BEHIND it: the subject is lit, never a backlit silhouette.
+        //   school = the shoal under the surface, from the bank (fish must read)
+        //   zap    = the discharge mid-flight (arcs spidering across the water)
+        //   after  = the aftermath (dead fish belly-up on the surface)
+        //   punish = the player's own punishment (swim + zap => HUD health halved)
+        // The zap is fired through the REAL fireWaterZap() path with the REAL
+        // findWaterEntry() entry and the REAL zapPlayer() damage — the still is a
+        // photograph of the game, not a painting of it.
+        const char* zapShotEnv = std::getenv("X3_SHOT_ZAP");
+        const std::string zapShotMode =
+            (canonWorld && zapShotEnv && worldFish.built() && worldFish.schoolCount() > 0)
+                ? zapShotEnv : "";
+        x3::game::Player zapShotPlayer;      // the staged swimmer (real Player, real damage)
+        int  zapShotHp = x3::game::kPlayerMaxHp;
+        bool zapShotFired = false;
+        int  zapShotLead = -1;               // frames BEFORE the capture that the zap goes off
+        x3::phys::Vec3 zapShotCenter{}, zapShotFeet{};
+        if (!zapShotMode.empty()) {
+            const x3::game::FishSchool& sc = worldFish.school(0);
+            const float wY = x3::game::worldWaterLevelAt(sc.cx, sc.cz);
+            if (wY > x3::game::kFishDryTest) {
+                zapShotCenter = x3::phys::Vec3{ sc.cx, wY, sc.cz };
+                // Sun-behind-camera framing: look along -sunDirXZ (yaw ~2.575 rad).
+                const float lookYaw = std::atan2(0.35f, -0.55f);
+                const float backX = -std::cos(lookYaw), backZ = -std::sin(lookYaw);
+                arsenal.selectByName("lightning");
+                if (zapShotMode == "punish") {
+                    // FP, IN the water at the school: the eye at the buoyancy line.
+                    ssX = sc.cx + backX * 2.6f; ssY = wY + 0.30f; ssZ = sc.cz + backZ * 2.6f;
+                    ssYaw = lookYaw; ssPitch = -0.16f;
+                    zapShotFeet = x3::phys::Vec3{ ssX, wY - 1.45f, ssZ };   // swimming
+                    zapShotLead = 8;    // arcs still alive at capture
+                } else if (zapShotMode == "zap") {
+                    // From the bank, ABOVE the water looking DOWN on it, so the 12 m
+                    // radius of arcs reads as a spider web across the surface (a low
+                    // grazing camera compresses the whole discharge into a line).
+                    ssX = sc.cx + backX * 9.0f; ssY = wY + 3.6f; ssZ = sc.cz + backZ * 9.0f;
+                    ssYaw = lookYaw; ssPitch = -0.34f;
+                    zapShotFeet = x3::phys::Vec3{ ssX, wY + 3.2f, ssZ };    // on the bank: no self-damage
+                    zapShotLead = 4;    // mid-discharge
+                } else if (zapShotMode == "after") {
+                    // The aftermath: the corpses have risen and are floating.
+                    ssX = sc.cx + backX * 3.4f; ssY = wY + 1.35f; ssZ = sc.cz + backZ * 3.4f;
+                    ssYaw = lookYaw - 0.05f; ssPitch = -0.42f;
+                    zapShotFeet = x3::phys::Vec3{ ssX, wY + 1.2f, ssZ };
+                    zapShotLead = 300;  // 5 s before the capture (the corpses have surfaced)
+                } else if (zapShotMode == "under") {
+                    // UNDERWATER, in the channel beside the shoal (outside fleeRadius
+                    // so they hold): the read a SWIMMER gets — fish at eye level.
+                    ssX = sc.cx + backX * 4.6f; ssY = wY - 0.80f; ssZ = sc.cz + backZ * 4.6f;
+                    ssYaw = lookYaw; ssPitch = -0.05f;
+                } else {   // "school": from the BANK, looking down into the channel
+                    ssX = sc.cx + backX * 5.0f; ssY = wY + 1.2f; ssZ = sc.cz + backZ * 5.0f;
+                    ssYaw = lookYaw + 0.05f; ssPitch = -0.34f;
+                }
+                // STAGING LIGHT (the legibility gate — the swim proof failed once by
+                // being a backlit silhouette): the canon sky is a LOW golden-hour sun
+                // that leaves the river a near-black mirror. For the zap stills only,
+                // lift the sun to ~35 deg on the SAME warm azimuth, BEHIND the camera,
+                // and brighten it: the shoal is lit, not silhouetted. Shot staging
+                // only — the live world keeps applyGoldenHourSky().
+                {
+                    x3::rhi::IRenderDevice::SkyParams sp{};
+                    sp.enabled = true;
+                    sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.70f; sp.sunDir[2] = -0.35f;
+                    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.94f; sp.sunColor[2] = 0.86f;
+                    sp.sunIntensity = 2.1f; sp.haze = 0.30f; sp.exposure = 1.25f;
+                    sp.zenith[0]  = 0.16f; sp.zenith[1]  = 0.26f; sp.zenith[2]  = 0.44f;
+                    sp.horizon[0] = 0.62f; sp.horizon[1] = 0.58f; sp.horizon[2] = 0.48f;
+                    device->setSkyParams(sp);
+                }
+                x3::logInfo("X3_SHOT_ZAP=" + zapShotMode + ": staged on fish school 0 at ("
+                            + std::to_string(sc.cx) + ", " + std::to_string(sc.cz)
+                            + ") waterY=" + std::to_string(wY) + " cam=("
+                            + std::to_string(ssX) + "," + std::to_string(ssY) + ","
+                            + std::to_string(ssZ) + ")");
+            } else {
+                x3::logWarn("X3_SHOT_ZAP: fish school 0 is dry?! — unstaged");
+            }
+        }
+
         // ---- W4-2: --screenshot-vigil — seed a live VIGIL conversation ON the cell
         // glass (orange ink) before the settle frames so the bake lands in-frame.
         // The default hero camera already frames the terminal; a compact inline
@@ -4196,6 +4478,9 @@ int runDefaultHost(HostContext& hc) {
         {
             const std::string shotWeapon = console->getString("shot_weapon");
             if (shotWeapon.empty() || !arsenal.selectByName(shotWeapon)) arsenal.select(0);
+            // X3_SHOT_ZAP: the LIGHTNING gun is the subject of these stills — it must
+            // be the weapon in hand (this block would otherwise reset to the pistol).
+            if (!zapShotMode.empty() && shotWeapon.empty()) arsenal.selectByName("lightning");
         }
         // --screenshot-alert: stage the LEVEL-3 LOCKDOWN for the proof shot —
         // force the alert, lock the zone doors, and shift every facility light
@@ -4561,6 +4846,51 @@ int runDefaultHost(HostContext& hc) {
                 // the ball in play) — no PVS gate here; we want them settled.
                 for (auto& cc : canonCrowds) if (cc.built()) cc.update(dt, scene);
                 for (auto& cc : cityCrowds)  if (cc.built()) cc.update(dt, scene);
+                // FISH + THE WATER ZAP through the settle (X3_SHOT_ZAP). The
+                // schools swim; at its lead frame the staged zap fires through the
+                // REAL path — findWaterEntry() from the REAL shot camera + look,
+                // fireWaterZap() applying the REAL fish kill and the REAL
+                // zapPlayer() half-max-health damage to a real Player (whose HP the
+                // HUD then reads). Nothing here is painted on.
+                if (worldFish.built()) {
+                    worldFish.update(dt, scene, ssEye);
+                    if (!zapShotMode.empty() && i % 40 == 0 && worldFish.fishCount() > 0) {
+                        const x3::game::Fish& f0 = worldFish.fish(0);
+                        const x3::game::FishSchool& s0 = worldFish.school(0);
+                        char fb[240];
+                        std::snprintf(fb, sizeof(fb),
+                            "[zapshot] frame %d school0=(%.1f,%.1f) active=%d fish0=(%.2f,%.2f,%.2f) "
+                            "vis=%d roomVis=%d room=%u active=%u alive=%u dead=%u cam=(%.1f,%.1f,%.1f)",
+                            i, s0.cx, s0.cz, (int)s0.active, f0.x, f0.y, f0.z,
+                            (int)scene.get(f0.entity).visible,
+                            (int)scene.roomVisible(scene.get(f0.entity).roomId),
+                            scene.get(f0.entity).roomId, worldFish.activeCount(),
+                            worldFish.aliveCount(), worldFish.deadCount(), ssX, ssY, ssZ);
+                        x3::logInfo(fb);
+                    }
+                }
+                if (!zapShotMode.empty() && zapShotLead >= 0 && !zapShotFired &&
+                    i >= kSettleFrames - zapShotLead) {
+                    const x3::phys::Vec3 zdir{ std::cos(ssPitch) * std::cos(ssYaw),
+                                               std::sin(ssPitch),
+                                               std::cos(ssPitch) * std::sin(ssYaw) };
+                    x3::game::WaterZapEntry we = x3::game::findWaterEntry(
+                        ssEye, zdir, 40.0f, waterQueryFn);
+                    if (!we.hit) {   // aimed off the water: zap the school anyway
+                        we.hit = true;
+                        we.x = zapShotCenter.x; we.z = zapShotCenter.z;
+                        we.surfaceY = zapShotCenter.y; we.y = zapShotCenter.y;
+                    }
+                    fireWaterZap(we, &zapShotPlayer, &zapShotFeet);
+                    zapShotHp = zapShotPlayer.hp();
+                    zapShotFired = true;
+                }
+                if (!zapShotMode.empty()) {
+                    waterZapper.tick(dt);
+                    tickZapFx(dt);
+                    if (!fxDemo && console->getInt("shot_fire") == 0)
+                        combatFx.update(dt);   // (the fx-demo paths already tick it)
+                }
                 // CROWD CHATTER through the settle (real audio hookup so a
                 // capture run also proves the murmur path in its log).
                 for (int ci = 0; ci < 3; ++ci) {
@@ -4829,7 +5159,9 @@ int runDefaultHost(HostContext& hc) {
                 // --fx-demo OR the muzzle proof (--set shot_fire 1) needs the combat FX
                 // actually DRAWN into the still — otherwise the "flash at the barrel" gate
                 // photographs nothing at all.
-                if (fxDemo || console->getInt("shot_fire") != 0) {
+                // (X3_SHOT_ZAP needs the same: the money shot IS the FX — the arcs
+                // spidering across the water.)
+                if (fxDemo || console->getInt("shot_fire") != 0 || !zapShotMode.empty()) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
                 }
@@ -4840,7 +5172,9 @@ int runDefaultHost(HostContext& hc) {
                 x3::ui::UiContext shotUi;
                 shotUi.begin(*device, frame, x3::ui::UiInput{});
                 x3::ui::HudModel shm{};
-                shm.hp = 100; shm.maxHp = x3::game::kPlayerMaxHp; shm.alive = true;
+                // HP: 100 normally; the X3_SHOT_ZAP=punish staging feeds the REAL
+                // post-zap HP of the staged swimmer (half of max — the honest read).
+                shm.hp = zapShotHp; shm.maxHp = x3::game::kPlayerMaxHp; shm.alive = zapShotHp > 0;
                 shm.showCrosshair = true;
                 shm.objective = game.objectives().currentLabel().c_str();
                 const x3::game::WeaponDef&            shotWd = arsenal.current();
@@ -8064,6 +8398,13 @@ int runDefaultHost(HostContext& hc) {
             // LIVING WORLD: the facility civilians (idle/wander; scatter+cower on
             // gunfire via onViolence in the fire block; return after calm).
             if (facilityCrowd.built()) facilityCrowd.update(dt, scene);
+            // FISH (W10 water): the schools swim, flee the player and float their
+            // dead. Per-school range gate inside; the entities are PVS-gated on the
+            // outdoor room, so an indoor player pays a handful of distance checks.
+            if (worldFish.built() && !simFrozen) worldFish.update(dt, scene, camPos);
+            // THE WATER ZAP: the one-zap latch cooldown + the live surface discharge
+            // (re-rolled arcs across the water for zapFxTimer seconds).
+            if (!simFrozen) { waterZapper.tick(dt); tickZapFx(dt); }
             // LIVING NPCs: the canon room crowds + the streamed city crowds —
             // they work, they play, they talk. Updates are gated on the PVS
             // (roomVisible: a crowd in a culled room / an unseen outdoors costs
@@ -8633,7 +8974,10 @@ int runDefaultHost(HostContext& hc) {
             if (prevSwimming && !swimmingNow && audio && sndSplashExit.valid())
                 audio->playSound2D(sndSplashExit, 0.5f, 1.0f);
             prevSwimming = swimmingNow;
-            const float target = swimmingNow ? 1.0f : 0.0f;
+            // The LIGHTNING gun does NOT lower in the water — it is the one weapon
+            // that fires there (THE WATER ZAP), so it must stay in the frame.
+            const float target = (swimmingNow && arsenal.current().name != "lightning")
+                                     ? 1.0f : 0.0f;
             const float kBlend = 1.0f - std::exp(-8.0f * std::max(0.0f, (float)dt));
             swimVmAmt += (target - swimVmAmt) * kBlend;
             if (swimVmAmt < 1e-4f) swimVmAmt = 0.0f;
@@ -8648,11 +8992,16 @@ int runDefaultHost(HostContext& hc) {
         // CHARGE weapon (Lightning): mark the beam HELD so Arsenal::tick drains its
         // charge pool continuously (~10/s) while fire is held (IDKFA bypasses drain).
         // NOT while swimming — the weapon is lowered, so it neither fires nor charges.
-        arsenal.setBeamHeld(fireHeld && playerArmed && player.isAlive() && !player.swimming());
+        // THE WATER ZAP EXCEPTION: the LIGHTNING gun is the one weapon that still
+        // works in the water (it is the whole joke — and it hurts). Every other
+        // weapon keeps the lowered/refused manners.
+        const bool lightningHeld = (arsenal.current().name == "lightning");
+        arsenal.setBeamHeld(fireHeld && playerArmed && player.isAlive() &&
+                            (!player.swimming() || lightningHeld));
         // ---- WATER-WEAPON MANNERS (item 4): weapons DON'T FIRE while swimming —
         // the gun is lowered/holstered (see the viewmodel draw). A trigger pull
         // gets a soft dry-fire click (cadence-gated so held autos don't spam it).
-        if (wantFire && playerArmed && player.isAlive() && player.swimming()) {
+        if (wantFire && playerArmed && player.isAlive() && player.swimming() && !lightningHeld) {
             if (swimFireDenyCooldown <= 0.0f) {
                 const x3::audio::SoundHandle dh = currentDryfireSfx();
                 if (dh.valid()) audio->playSound2D(dh, 0.35f, 0.8f);
@@ -8671,6 +9020,25 @@ int runDefaultHost(HostContext& hc) {
             if (shot.dryFire) {
                 const x3::audio::SoundHandle dh = currentDryfireSfx();
                 if (dh.valid()) audio->playSound2D(dh, 0.5f, 1.0f);
+            }
+            // ---- THE WATER ZAP (Tim): a LIGHTNING shot that MEETS WATER — or one
+            // fired by a shooter who is IN the water — electrifies the surface.
+            // ONE zap per trigger pull (the WaterZapper latch + 1.75 s cooldown);
+            // a held beam does NOT re-zap every frame.
+            if (canonWorld && lightningHeld && !shot.dryFire && waterZapper.canZap()) {
+                x3::game::WaterZapEntry we = x3::game::findWaterEntry(
+                    eye, dir, arsenal.current().range, waterQueryFn);
+                const x3::phys::Vec3 pFeet = player.feet();
+                if (!we.hit) {
+                    // He is IN the water but aimed at the sky: the pool he floats
+                    // in still goes live (Tim: "fired by a player who is IN the water").
+                    const float w = waterQueryFn(pFeet.x, pFeet.z);
+                    if (w > x3::game::kFishDryTest && pFeet.y < w) {
+                        we.hit = true; we.fromInWater = true;
+                        we.x = pFeet.x; we.z = pFeet.z; we.surfaceY = w; we.y = w;
+                    }
+                }
+                if (we.hit) fireWaterZap(we, &player, &pFeet);
             }
             // Muzzle origin = the held viewmodel's barrel tip. The default origin sits
             // BELOW the eye line (down 0.30) so ballistic tracers visibly leave the gun.
@@ -8814,6 +9182,9 @@ int runDefaultHost(HostContext& hc) {
             }
         }
         prevFire = fireHeld;
+        // THE WATER ZAP latch: the trigger coming UP re-arms the next zap. Held =
+        // no re-zap (the cooldown alone would still allow one every 1.75 s).
+        if (!fireHeld) waterZapper.triggerReleased();
 
         // ---- Task #21 FIX B: reconcile the sustained auto-fire LOOP voice EVERY frame.
         // A loopable weapon's whine should play while the player is actively holding
