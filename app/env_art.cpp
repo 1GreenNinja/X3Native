@@ -400,14 +400,25 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         for (const Room& r : rooms) {
             const float lightY  = r.y0 + r.ceil - 0.05f;          // just below THIS plate's ceiling
             // Range covers the 4 m spacing AND reaches the floor in tall rooms.
-            const float range   = std::max(7.5f, r.ceil + 3.5f);
+            const float range   = std::max(9.0f, r.ceil + 4.5f);
             const int   n       = (int)std::ceil((r.x1 - r.x0) / 4.0f);
-            // Wide floors get two z-rows so the floor is evenly lit.
-            const bool  twoRows = (r.zHalf >= 6.0f);
-            const int   zr      = twoRows ? 2 : 1;
-            const float zoff    = twoRows ? r.zHalf * 0.5f : 0.0f;
+            // B4 — THE ROWS WERE PLACED WHERE NOBODY STANDS. This used to be two rows at
+            // z = +/- zHalf * 0.5. B1's plate is 76 m deep (zHalf 38), so the rows sat at
+            // z = +/-19 m — while the ENTIRE play corridor (spawn, doors A-E, the elevator
+            // shaft) runs down z ~ 0. With a 7.5 m range, the nearest fixture to the player
+            // was ~19 m away and contributed EXACTLY ZERO. Level 1's 332 ceiling lights were
+            // decorating a ceiling nobody could see by, and the 0.42 ambient wash was the
+            // only thing lighting the level. (THE PATTERN: kill the crutch, the real bug
+            // walks out.)
+            //
+            // Anchor a row ON the corridor (z = 0) and pull the flanking rows in to within
+            // a light-range of it, so the pools actually OVERLAP instead of straddling a
+            // dark 23 m gutter. Narrow rooms keep their single centre row exactly as before.
+            const bool  wide    = (r.zHalf >= 6.0f);
+            const int   zr      = wide ? 3 : 1;
+            const float zoff    = wide ? std::min(r.zHalf * 0.5f, 7.0f) : 0.0f;
             for (int j=0;j<zr;++j) {
-                const float wz = twoRows ? ((j==0) ? -zoff : zoff) : 0.0f;
+                const float wz = wide ? ((j==0) ? -zoff : (j==1) ? 0.0f : zoff) : 0.0f;
                 for (int i=0;i<n;++i) {
                     const float wx = r.x0 + (i + 0.5f) * 4.0f;
                     placeYaw(m, 0.0f, 1.0f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),

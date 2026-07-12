@@ -181,7 +181,21 @@ public:
     // omnidirectional, so raising it lights a room by DESTROYING its contrast); when they
     // step out it restores the values the world was using. Safe to call every frame; a
     // no-op until the state actually changes. `feet` = the player body position.
-    void applyCabAtmosphere(x3::rhi::IRenderDevice& device, const x3::phys::Vec3& feet);
+    // Returns TRUE iff the cab-air state CHANGED on this call. A host that runs its OWN
+    // per-zone atmosphere (the canon facility) must re-assert it when this returns true
+    // and the rider has just stepped OFF — see RoomDressing::resetZoneAtmosphere().
+    bool applyCabAtmosphere(x3::rhi::IRenderDevice& device, const x3::phys::Vec3& feet);
+
+    // THE AMBIENT/IBL THE **WORLD** RUNS AT — what stepping OFF the cab must restore.
+    // B4: this used to be hard-coded to the engine default {0.42, 0.44, 0.50}, so the
+    // elevator HANDED THE WHOLE WORLD BACK THE 0.42 WASH — and because m_cabAir starts
+    // at -1, it fired on the FIRST FRAME, before the player ever saw the cab. Every
+    // honest ambient the host set was clobbered by an elevator the player was not in.
+    // The elevator must not INVENT a world ambient; the host owns it. Defaults to the
+    // old engine values, so a host that never calls this behaves byte-identically.
+    void setWorldAir(float r, float g, float b, float ibl) {
+        m_worldAmb[0] = r; m_worldAmb[1] = g; m_worldAmb[2] = b; m_worldIbl = ibl;
+    }
     // True while the cab owns the frame's ambient/IBL (the rider is aboard). Hosts that
     // run their own per-zone atmosphere (the canon facility) must yield to this, or the
     // two writers fight over the same device state every frame.
@@ -373,6 +387,8 @@ private:
     bool                   m_indDisco = false;   // last disco state baked
     bool                   m_indMoving = false;  // last motion state baked
     int                    m_cabAir = -1;        // -1 unset, 0 = world air, 1 = cab air
+    float                  m_worldAmb[3] = { 0.42f, 0.44f, 0.50f };  // host-owned; see setWorldAir
+    float                  m_worldIbl = 1.0f;
     // Per-frame audio bookkeeping.
     float  m_motorHz = 40.0f;
     int    m_lastDingStop = -1;

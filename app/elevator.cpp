@@ -1123,13 +1123,13 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
                 "blue terminal/keypad + ceiling light + disco ball");
 }
 
-void ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
+bool ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
                                         const x3::phys::Vec3& feet) {
-    if (!m_visualsBuilt) return;
+    if (!m_visualsBuilt) return false;
     // Aboard = standing on the cab OR in the doorway of it (the car is 3.8 m across;
     // playerRiding's window is exactly the "your weight is on this platform" test).
     const int want = playerRiding(feet) ? 1 : 0;
-    if (want == m_cabAir) return;               // only on the edge — no per-frame spam
+    if (want == m_cabAir) return false;         // only on the edge — no per-frame spam
     m_cabAir = want;
     if (want) {
         // INSIDE. The engine default ambient is {0.42,0.44,0.50} and nothing in level1 or
@@ -1141,11 +1141,18 @@ void ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
         device.setAmbient(0.030f, 0.032f, 0.037f);
         device.setIblIntensity(0.22f);
     } else {
-        // OUTSIDE. Hand the world back exactly what the engine hands everyone else, so
-        // stepping off the cab is byte-identical to a build without this call.
-        device.setAmbient(0.42f, 0.44f, 0.50f);
-        device.setIblIntensity(1.0f);
+        // OUTSIDE. Hand the world back WHAT THE WORLD ACTUALLY RUNS AT — not the engine
+        // default. B4/THE PATTERN: this used to hard-code {0.42, 0.44, 0.50}, which meant
+        // the elevator RE-IMPOSED THE 0.42 WASH ON THE ENTIRE GAME. And because m_cabAir
+        // starts at -1, `want == 0` on the very first frame is a CHANGE, so it fired
+        // BEFORE THE PLAYER HAD EVER SEEN THE CAB — silently overwriting the host's honest
+        // ambient in level1, the spire, the club, the perf shop and the show room. It is
+        // the single reason those rooms still ran the wash after dfcb65d. The host owns
+        // the world's air (setWorldAir); the elevator only owns the cab's.
+        device.setAmbient(m_worldAmb[0], m_worldAmb[1], m_worldAmb[2]);
+        device.setIblIntensity(m_worldIbl);
     }
+    return true;
 }
 
 void ElevatorSystem::layoutVisuals(Scene& scene) {

@@ -534,7 +534,20 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // THE THRESHOLD: one low, saturated red at the door — the locked-in tell. R11: it
         // was 1.5 AND there was a SECOND red "alarm wash" 3.5 m wide sitting on top of it
         // (both tuned when GLBs shaded at 1/PI). One red, at honest strength.
-        addLight(bt.jakeCell, x1 - 0.5f, fY + 1.35f, ccz, 3.0f, 0.62f, 0.035f, 0.02f);
+        //
+        // B5 / THE PATTERN — THIS is why the door rendered PINK, and it was NOT the albedo.
+        // MEASURED: with the red at (x1-0.5, fY+1.35) it hung 0.5 m off the slab, HEAD-ON
+        // (N.L ~ 1) at slab-centre height, range 3.0 -> it delivered ~0.43 red to the door
+        // face while the room's white key — a CEILING tube, grazing the vertical slab —
+        // delivered only ~0.35. The red WON: the door was a red-lit surface, so a neutral
+        // grey slab read salmon and its magenta trim glowed. Renormalizing the albedo only
+        // scaled the value (R-G held at +57); the HUE never moved, which is the proof.
+        // A door-status lamp does not floodlight a door — it hugs the frame. Mount it OVER
+        // the lintel (a real "LOCKED" indicator) and tighten the range to a local pool:
+        // grazing incidence on the slab -> a red gradient at the head of the door + a pool
+        // on the jamb and threshold floor, while the key defines the door as institutional
+        // grey. The tell survives; the wash does not.
+        addLight(bt.jakeCell, x1 - 0.25f, fY + 2.18f, ccz, 1.5f, 0.55f, 0.030f, 0.02f);
     }
 
     // ================= JAKE'S CELL — the hero opening space =================
