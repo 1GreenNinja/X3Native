@@ -33,6 +33,11 @@ constexpr float kBodyRadius  = 1.2f;
 constexpr float kLaserCdSec   = 0.18f;
 constexpr float kLaserEnergy  = 8.0f;
 constexpr float kLaserRange   = 400.0f;
+// Antimatter-boost overspeed bleed-off rate (1/s) once Shift releases. The
+// speed cap eases from the boosted ceiling back toward maxSpeed as
+// 1-exp(-rate*dt); ~0.85 settles the overspeed in ~3.5 s (a glide-down, not a
+// wall). Frame-rate independent.
+constexpr float kBoostCapDecay = 0.85f;
 
 // Quaternion (x,y,z,w) helpers ------------------------------------------------
 
@@ -149,6 +154,7 @@ SpacePilotController::Tuning SpacePilotController::preset(FlightMode m) {
             t.maxLinearAccel = 34.0f;  t.maxStrafeAccel = 16.0f; t.maxAngularAccel = 4.5f;
             t.linearDrag     = 1.00f;  t.angularDrag    = 3.0f;  // crisp stop + fast settle
             t.boostMul       = 2.2f;   t.maxSpeed       = 200.0f;
+            t.boostAccelMul  = 2.5f;   t.boostSpeedCapMul = 2.0f; // antimatter: ~400 m/s boosted
             t.noseFollow     = 6.0f;                             // STRONG nose-follow
             t.lookSmoothing  = 22.0f;  t.autoBank = 0.90f; t.maxBank = 0.70f; t.autoLevel = 4.0f;
             t.fovBase        = 65.0f;  t.fovMax   = 78.0f;       // moderate FOV punch
@@ -158,6 +164,7 @@ SpacePilotController::Tuning SpacePilotController::preset(FlightMode m) {
             t.maxLinearAccel = 22.0f;  t.maxStrafeAccel = 11.0f; t.maxAngularAccel = 3.0f;
             t.linearDrag     = 0.12f;  t.angularDrag    = 2.0f;  // real momentum, low drag
             t.boostMul       = 2.5f;   t.maxSpeed       = 240.0f;
+            t.boostAccelMul  = 3.0f;   t.boostSpeedCapMul = 2.5f; // antimatter: ~600 m/s boosted
             t.noseFollow     = 2.0f;                             // moderate nose-follow
             t.lookSmoothing  = 16.0f;  t.autoBank = 0.50f; t.maxBank = 0.50f; t.autoLevel = 1.2f;
             t.fovBase        = 62.0f;  t.fovMax   = 82.0f;       // bigger FOV punch at speed
@@ -167,6 +174,7 @@ SpacePilotController::Tuning SpacePilotController::preset(FlightMode m) {
             t.maxLinearAccel = 40.0f;  t.maxStrafeAccel = 20.0f; t.maxAngularAccel = 5.5f;
             t.linearDrag     = 0.04f;  t.angularDrag    = 1.0f;  // very drifty
             t.boostMul       = 3.0f;   t.maxSpeed       = 340.0f;// HIGH top speed
+            t.boostAccelMul  = 3.5f;   t.boostSpeedCapMul = 3.0f; // antimatter: ~1020 m/s boosted
             t.noseFollow     = 1.0f;                             // low = the velocity drifts
             t.lookSmoothing  = 26.0f;  t.autoBank = 0.70f; t.maxBank = 0.80f; t.autoLevel = 0.30f;
             t.fovBase        = 60.0f;  t.fovMax   = 92.0f;       // BIG FOV punch
@@ -188,6 +196,8 @@ void SpacePilotController::setMode(FlightMode m) {
     m_tuning.angularDrag     = p.angularDrag;
     m_tuning.boostMul        = p.boostMul;
     m_tuning.maxSpeed        = p.maxSpeed;
+    m_tuning.boostAccelMul   = p.boostAccelMul;
+    m_tuning.boostSpeedCapMul= p.boostSpeedCapMul;
     m_tuning.noseFollow      = p.noseFollow;
     m_tuning.lookSmoothing   = p.lookSmoothing;
     m_tuning.autoBank        = p.autoBank;
@@ -211,6 +221,7 @@ void SpacePilotController::spawn(x3::phys::IPhysicsWorld& phys,
     m_tuning = t;
     m_pos[0] = x; m_pos[1] = y; m_pos[2] = z;
     m_vel[0] = m_vel[1] = m_vel[2] = 0.0f;
+    m_speedCap = t.maxSpeed;   // boost overspeed starts fully bled-off (at cruise cap)
     m_angVel[0] = m_angVel[1] = m_angVel[2] = 0.0f;
     m_yaw = m_pitch = m_roll = 0.0f;
     m_rollAxis = 0.0f;
@@ -331,7 +342,9 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // as "up impulse" since space has no real jump). For the showcase loop
     // the host fills lookDX/lookDY + moveFwd + moveStrafe + jumpPressed for
     // up + sprint for boost; for tests we drive synthetic input the same way.
-    const float boost = in.sprint ? m_tuning.boostMul : 1.0f;
+    // ANTIMATTER BOOST: forward thrust gets boostMul * boostAccelMul while Shift
+    // is held — a hard kick that makes the ship LEAP (strafe/up stay un-boosted).
+    const float boost = in.sprint ? (m_tuning.boostMul * m_tuning.boostAccelMul) : 1.0f;
 
     float accel[3] = { 0, 0, 0 };
     // Forward / back (W/S).
@@ -371,10 +384,23 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
         }
     }
 
-    // Speed cap (hard clamp on |v|).
+    // ---- Dynamic speed cap: ANTIMATTER BOOST overspeed + smooth release decay ---
+    // While boosting the cap jumps INSTANTLY to maxSpeed*boostSpeedCapMul (the
+    // antimatter kick tops out far above cruise). On release it does NOT snap back
+    // — the overspeed bleeds off exponentially toward maxSpeed over ~3-4 s so it
+    // reads as a glide-down, never as hitting a wall. With the default 1.0 muls
+    // (every existing default-Tuning caller + the --test-space cap check) this is
+    // exactly the old hard clamp at maxSpeed.
+    if (in.sprint) {
+        m_speedCap = m_tuning.maxSpeed * m_tuning.boostSpeedCapMul;   // instant ceiling raise
+    } else {
+        const float decayK = 1.0f - std::exp(-kBoostCapDecay * dt);
+        m_speedCap += (m_tuning.maxSpeed - m_speedCap) * decayK;
+        if (m_speedCap < m_tuning.maxSpeed) m_speedCap = m_tuning.maxSpeed;  // never below base
+    }
     const float spd = length3(m_vel);
-    if (spd > m_tuning.maxSpeed) {
-        const float s = m_tuning.maxSpeed / spd;
+    if (spd > m_speedCap) {
+        const float s = m_speedCap / spd;
         m_vel[0] *= s; m_vel[1] *= s; m_vel[2] *= s;
     }
 
@@ -425,7 +451,8 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
             netAccel[k] = (dt > 1e-4f) ? (m_vel[k] - m_prevVelForShake[k]) / dt : 0.0f;
         for (int k = 0; k < 3; ++k) m_prevVelForShake[k] = m_vel[k];
         const float accelMag = length3(netAccel);
-        const float refAccel = m_tuning.maxLinearAccel * (in.sprint ? m_tuning.boostMul : 1.0f);
+        const float refAccel = m_tuning.maxLinearAccel *
+                               (in.sprint ? m_tuning.boostMul * m_tuning.boostAccelMul : 1.0f);
         const float drive = clampf(accelMag / (refAccel + 1e-3f), 0.0f, 1.0f);
         const float amp = m_tuning.shakeAmp * drive;
         const float t = m_juiceTime;
@@ -809,13 +836,17 @@ bool runSpaceSelfTest() {
         // mode() accessor + shared latch must track. Health must NOT reset.
         bool speedSwapped = looseSpeed > arcadeSpeed + 50.0f;   // 340 vs 200
         bool dragSwapped  = s.tuning().linearDrag < arcadeDrag; // 0.04 vs 1.0
+        // Antimatter-boost feel fields must ride the mode swap too (Loose kicks
+        // harder + tops out higher than Arcade): proves setMode copies them.
+        bool boostSwapped = s.tuning().boostAccelMul > 3.0f &&        // Loose 3.5
+                            s.boostedMaxSpeed() > 900.0f;             // 340 * 3.0 ~ 1020
         bool modeTracks   = (s.mode() == FlightMode::Loose) &&
                             (requestedFlightMode() == FlightMode::Loose);
         bool healthKept   = s.hull() == hullBefore && s.isAlive();
         // fov() must sit within the active mode's [base,max] band and be finite.
         const float f = s.fov();
         bool fovBand = f >= s.tuning().fovBase - 0.01f && f <= s.tuning().fovMax + 0.01f;
-        check(speedSwapped && dragSwapped && modeTracks && healthKept && fovBand,
+        check(speedSwapped && dragSwapped && boostSwapped && modeTracks && healthKept && fovBand,
               "T9 setMode swaps feel tuning (health preserved)");
         // Restore the shared latch so an ordering-sensitive host isn't surprised.
         setRequestedFlightMode(FlightMode::Arcade);

@@ -69,6 +69,16 @@ public:
         float angularDrag     = 1.5f;   // per-second (snappier rotational settle)
         float boostMul        = 2.5f;   // sprint -> accel multiplier (eats energy)
         float maxSpeed        = 220.0f; // m/s hard speed cap
+        // ---- ANTIMATTER BOOST (Shift): a HARD kick well past cruise ----------
+        // boostAccelMul stacks ON TOP of boostMul while Shift is held (total
+        // forward accel = maxLinearAccel * boostMul * boostAccelMul) so the ship
+        // LEAPS the instant boost lands. boostSpeedCapMul raises the speed cap to
+        // maxSpeed * boostSpeedCapMul while boosting; on release the overspeed
+        // bleeds off smoothly toward maxSpeed (see update()) instead of snapping.
+        // Defaults 1.0/1.0 = NO boost overspeed (every existing default-Tuning
+        // caller + the --test-space cap check behave exactly as before).
+        float boostAccelMul    = 1.0f;  // extra accel mult while boosting (x boostMul)
+        float boostSpeedCapMul = 1.0f;  // speed-cap mult while boosting (x maxSpeed)
         float noseFollow      = 0.0f;   // arcade steering: velocity-direction chase
                                         // rate toward facing (1/s). 0 = pure
                                         // Newtonian drift (existing behavior).
@@ -136,6 +146,12 @@ public:
     FlightMode mode() const { return m_mode; }
     const Tuning& tuning() const { return m_tuning; }
 
+    // The TRUE ceiling while the antimatter boost is held (maxSpeed *
+    // boostSpeedCapMul). Speed/maxSpeed HUD + FX fractions can exceed 1.0 during
+    // an overspeed boost; consumers that want a fraction that stays in [0,1]
+    // should divide by this instead of tuning().maxSpeed. Const + cheap.
+    float boostedMaxSpeed() const { return m_tuning.maxSpeed * m_tuning.boostSpeedCapMul; }
+
     // ---- Camera ------------------------------------------------------------
     // Eye-space camera state for IRenderDevice::setCamera. In 1P (cockpit) the
     // eye sits at the ship origin with a small forward offset; in 3P (chase)
@@ -202,6 +218,10 @@ private:
     // against the physics world). pos in world meters.
     float m_pos[3] = { 0, 0, 0 };
     float m_vel[3] = { 0, 0, 0 };
+    // Dynamic speed cap: raised instantly to boostedMaxSpeed() while boosting,
+    // then eased back toward Tuning.maxSpeed on release (antimatter overspeed
+    // bleed-off — see update()). Seeded to maxSpeed at spawn.
+    float m_speedCap = 0.0f;
 
     // Orientation: stored as a quaternion (x,y,z,w) per CONVENTIONS.md so we
     // accumulate roll cleanly without gimbal-locking. We also keep Euler
