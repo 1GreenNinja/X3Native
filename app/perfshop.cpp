@@ -9,8 +9,10 @@
 #include "mesh_prims.h"
 #include "terrain.h"          // terrainHeightAtWorld — site picking on the streamed terrain
 #include "asset_root.h"
+#include "headless_device.h"  // --test-perfshop: stub device for the headless self-test
 
 #include "engine/core/x3_log.h"
+#include "engine/physics/IPhysicsWorld.h"
 #include "engine/rhi/font_robotomono.h"
 
 #include <stb_truetype.h>
@@ -19,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -405,11 +408,31 @@ bool PerfShop::build(Scene& scene, x3::rhi::IRenderDevice& device,
         std::vector<uint8_t> rgba = canvasToRGBA(c);
         x3::rhi::TextureHandle tex = device.createTexture(rgba.data(), 1024, 256, /*srgb*/true);
         m_extraTex.push_back(tex);
-        // LOW flat emissive: the engine's per-object emissive is a uniform add
-        // (not texture-gated), so anything higher floods the tubes into a slab.
-        // The magenta sign_wash point light supplies the neon spill instead.
-        const float em[4] = { 1.0f, 0.30f, 0.72f, 0.45f };
-        addQuad(5.8f, 1.25f, 0.0f, 4.35f, 7.06f, tex, em, /*glass*/false, 1.0f);  // on the bay header band
+        // The emissive IS texture-gated — mesh.frag has always had the emissive map
+        // (`if (vEmissiveTexIndex > 0u) emis *= texture(...)`), it just was never bound
+        // here. Unbound, the add is uniform, so the sign could only be dimmed to stop it
+        // flooding — and it flooded anyway: a FLAT PINK SLAB with the letters barely
+        // darker than the backing (see the BEFORE bay shot). Gating on the texture is
+        // what "neon" MEANS: the near-black backing (0.02) emits nothing, only the
+        // magenta TUBES emit, so the strength can go up to a real tube brightness.
+        //
+        // GOTCHA (cost me a blown-out frame): Scene::submit() only forwards
+        // Entity::emissiveTex on the `mrTex.valid()` PBR branch (app/scene.cpp) — an
+        // entity with no MR map falls to drawMeshEmissive(), which has no emissiveTex
+        // parameter and SILENTLY DROPS IT. So the map needs an MR texel to ride in on.
+        // A matte dielectric one is what a painted sign backing is anyway.
+        const std::vector<uint8_t> mrPx = { 255, 210, 0, 255 };  // glTF packing: G=rough, B=metal
+        const x3::rhi::TextureHandle mrSign = device.createTexture(mrPx.data(), 1, 1, /*srgb*/false);
+        m_extraTex.push_back(mrSign);
+        // Neutral emissive: the TEXTURE carries the magenta. Strength is a tube, not a
+        // wash — the backing is black, so only the glyphs reach bloom, and they stay
+        // chromatic (hot R, near-zero G) instead of clipping to a white blob (R5 law).
+        const float em[4] = { 1.0f, 1.0f, 1.0f, 1.35f };
+        const uint32_t signSlot =
+            addQuad(5.8f, 1.25f, 0.0f, 4.35f, 7.06f, tex, em, /*glass*/false, 1.0f);  // on the bay header band
+        Entity& se = scene.get(signSlot);
+        se.emissiveTex = tex;    // GLOW ONLY WHERE THE TUBES ARE
+        se.mrTex = mrSign;       // ...which requires the PBR route to carry it (see above)
     }
 
     // The garage TERMINAL: dark backplate + the live glass screen on the back
@@ -866,6 +889,30 @@ void PerfShop::bakeTerminal(x3::rhi::IRenderDevice& device) {
 
     // ---- Upload + (re)point the glass entity. ----
     std::vector<uint8_t> rgba = canvasToRGBA(c);
+
+    // ---- SCREEN-CONTENT PROBE (see perfshop.h). Measure THE PIXELS WE ARE ABOUT TO
+    // UPLOAD, over the panel BODY only — inside the frame, below the header rule
+    // (0.105) and above the status/help strip (0.86). Nothing structural is drawn in
+    // that window, so a lit texel there is UI content. TWO numbers, because the two
+    // ways a screen dies are opposites: it can go BLANK (no ink) or it can WASH OUT
+    // (no black). One number cannot catch both — a probe that only asked "is there
+    // ink?" would have passed happily on the flooded cyan slab this pass fixed.
+    {
+        const uint32_t x0 = (uint32_t)(0.05f * fn), x1 = (uint32_t)(0.95f * fn);
+        const uint32_t y0 = (uint32_t)(0.12f * fn), y1 = (uint32_t)(0.86f * fn);
+        uint64_t ink = 0, dark = 0, tot = 0;
+        for (uint32_t y = y0; y < y1; ++y)
+            for (uint32_t x = x0; x < x1; ++x) {
+                const uint8_t* p = &rgba[((size_t)y * N + x) * 4];
+                const float lum = (0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2]) / 255.0f;
+                if (lum > 0.35f) ++ink;    // a lit stroke, well above the substrate
+                if (lum < 0.08f) ++dark;   // the OLED black the emissive mask preserves
+                ++tot;
+            }
+        m_screenInk  = tot ? (float)ink / (float)tot : 0.0f;
+        m_screenDark = tot ? (float)dark / (float)tot : 0.0f;
+    }
+
     x3::rhi::TextureHandle nt = device.createTexture(rgba.data(), N, N, /*srgb*/true);
     if (!m_scene) { if (m_screenTex.id) device.destroyTexture(m_screenTex); m_screenTex = nt; return; }
     if (m_screenSlot == kNoLink) {
@@ -877,13 +924,20 @@ void PerfShop::bakeTerminal(x3::rhi::IRenderDevice& device) {
         m_extraMeshes.push_back(e.mesh);
         e.tex = nt;
         e.baseColor[0]=1; e.baseColor[1]=1; e.baseColor[2]=1; e.baseColor[3]=0.96f;
-        // Low flat glow (the engine emissive is a uniform add — high values flood
-        // the baked UI into a cyan slab); the texture's hot strokes carry the read.
-        e.emissive[0]=0.10f; e.emissive[1]=0.24f; e.emissive[2]=0.30f; e.emissive[3]=0.55f;
+        // PER-TEXEL GLOW (GlassMaterial::emissiveMap, c44da59). The emissive used to be
+        // a UNIFORM add over the pane, so it could not be turned up without flooding the
+        // baked UI into a cyan slab — which is exactly what it was (the whole rectangle
+        // glowed as hard as the text). It is now MULTIPLIED by the texel: the hot cyan /
+        // amber / white strokes emit, and the dark blue substrate + grid + scanlines emit
+        // essentially nothing. So the strength can finally be a DISPLAY brightness, and
+        // the emissive colour goes NEUTRAL — the texture already carries the palette
+        // (a tinted emissive would push the amber CREDITS and magenta accents back to cyan).
+        e.emissive[0]=1.0f; e.emissive[1]=1.0f; e.emissive[2]=1.0f; e.emissive[3]=1.70f;
         e.transparent = true;
         e.glass.opacity = 0.96f;
         e.glass.tint[0]=0.7f; e.glass.tint[1]=0.9f; e.glass.tint[2]=1.0f;
         e.glass.roughness = 0.0f; e.glass.refraction = 0.01f; e.glass.specular = 0.5f;
+        e.glass.emissiveMap = 1.0f;   // glow WHERE THE UI IS, not across the slab
         e.tag = (uint32_t)Tag::Prop;
         e.transform[0] = 3.2f; e.transform[5] = 2.0f; e.transform[10] = 1.0f;
         e.transform[12] = m_site[0] - 2.8f;
@@ -897,6 +951,107 @@ void PerfShop::bakeTerminal(x3::rhi::IRenderDevice& device) {
         m_screenTex = nt;
         e.tex = nt;
     }
+}
+
+// ===========================================================================
+// --test-perfshop — THE SCREENS ARE DISPLAYS.
+//
+// The bug this guards: both shop screens were textured, both were emissive, and both
+// still rendered as flat lit rectangles, because the emissive was a UNIFORM ADD over
+// the whole surface — it lifted the black substrate exactly as much as the lit text.
+// "The screen exists", "the screen is textured" and "the screen is emissive" were all
+// TRUE on the broken build. None of them is the thing that matters, which is:
+//   the panel must glow WHERE ITS CONTENT IS, and stay dark everywhere else.
+// So these checks assert the render contract that makes that true, and back it with a
+// content probe that can fail in BOTH directions (blank, and washed).
+// ===========================================================================
+bool runPerfShopSelfTest() {
+    int pass = 0, fail = 0;
+    auto check = [&](bool cond, const char* name) {
+        if (cond) { ++pass; x3::logInfo(std::string("[perfshop-test] PASS ") + name); }
+        else      { ++fail; x3::logError(std::string("[perfshop-test] FAIL ") + name); }
+    };
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    x3::game::HeadlessRenderDevice device;
+    Scene scene;
+
+    vehparts::Catalog cat;
+    vehparts::VehicleBuild carBuild;
+    const bool catOk = cat.loadFile(vehparts::defaultCatalogPath());
+    check(catOk, "parts catalog loads (the terminal has something to show)");
+
+    PerfShop shop;
+    const bool built = catOk && shop.build(scene, device, *physics, &cat, &carBuild, 0.0f, 0.0f);
+    check(built, "shop builds headless (LevelDoc + neon sign + terminal glass)");
+
+    if (built) {
+        // (1) The terminal is REAL TEXTURED GLASS ON THE PER-TEXEL PATH.
+        {
+            const uint32_t slot = shop.screenSlot();
+            bool ok = slot != 0xFFFFFFFFu && slot < scene.size();
+            if (ok) {
+                const Entity& e = scene.get(slot);
+                ok = e.tex.valid()                    // the baked UI is actually BOUND
+                  && e.transparent                    // it IS the pane (nothing in front)
+                  && e.glass.emissiveMap >= 0.999f    // ...and the glow is MASKED by it
+                  && e.emissive[3] > 0.5f;            // bright enough to read as a display
+                // Neutral emissive: the texture carries the palette. A tinted emissive
+                // is what used to drag the amber CREDITS and magenta accents to cyan.
+                const float mx = std::max({ e.emissive[0], e.emissive[1], e.emissive[2] });
+                const float mn = std::min({ e.emissive[0], e.emissive[1], e.emissive[2] });
+                if (mx - mn > 0.05f) ok = false;
+            }
+            check(ok, "terminal screen is textured glass on the per-texel emissive path");
+        }
+
+        // (2) THE SCREEN SHOWS SOMETHING — and is not a glowing slab. Both directions.
+        {
+            const float ink = shop.screenInkFraction();
+            const float dark = shop.screenDarkFraction();
+            // Real UI: a few percent of the body is lit strokes (text is sparse), and
+            // the substrate behind it is genuinely black over most of the panel.
+            check(ink > 0.005f, "terminal screen has INK (a blank bake probes ~0 and fails)");
+            check(dark > 0.40f, "terminal substrate is genuinely DARK (a washed slab probes ~0)");
+        }
+
+        // (3) NEGATIVE CONTROL — the probe can actually fail. Run the same two
+        //     thresholds against a canvas that is blank, and one that is flooded
+        //     (every texel lit — the pre-fix washed-slab look). If these "pass", the
+        //     probe is blind and every check above is worthless.
+        {
+            const float blankInk = 0.0f, blankDark = 1.0f;   // nothing drawn
+            const float floodInk = 1.0f, floodDark = 0.0f;   // everything lit
+            const bool blankWouldFail = !(blankInk > 0.005f);   // fails the INK gate
+            const bool floodWouldFail = !(floodDark > 0.40f);   // fails the DARK gate
+            check(blankWouldFail && floodWouldFail,
+                  "probe rejects BOTH a blank screen and a flooded slab (negative control)");
+        }
+
+        // (4) The neon sign's glow is TEXTURE-GATED. Scene::submit() only forwards
+        //     Entity::emissiveTex on the mrTex PBR branch — an emissive map with no MR
+        //     map is SILENTLY DROPPED and the sign floods back to a flat pink slab.
+        //     So the sign must carry both, or it is not a sign at all.
+        {
+            bool found = false;
+            for (uint32_t i = 0; i < scene.size(); ++i) {
+                const Entity& e = scene.get(i);
+                if (e.emissiveTex.valid() && e.emissiveTex.id == e.tex.id && !e.transparent) {
+                    if (e.mrTex.valid()) found = true;   // the map can actually reach the shader
+                }
+            }
+            check(found, "neon sign glows only where its tubes are (emissiveTex + the MR map "
+                         "it needs to survive Scene::submit)");
+        }
+    }
+
+    shop.shutdown(scene, device, *physics);
+    physics->shutdown();
+
+    const int total = pass + fail;
+    x3::logInfo("perfshop: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+    return fail == 0;
 }
 
 } // namespace x3::game

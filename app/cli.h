@@ -176,6 +176,11 @@ struct CliOptions {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+
+    // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
+    // are displays — textured glass on the per-texel emissive path, real ink on a dark
+    // substrate, and a texture-gated neon sign (not a flat lit slab).
+    bool        testPerfshop = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.

@@ -154,6 +154,33 @@ private:
 
     bool  m_needSave = false;
     bool  m_carDirty = false;            // tuning changed; apply on next update()
+
+    // ---- Screen-content probe (the rifthub holoReadoutInkFraction technique) -----
+    // Measured by bakeTerminal() over the REAL pixels it is about to upload, so the
+    // test inspects what the player actually sees rather than a re-derived guess:
+    //   m_screenInk  = fraction of the panel body that is LIT INK (the UI strokes).
+    //                  A blank / failed bake probes ~0.
+    //   m_screenDark = fraction that is genuinely DARK (the OLED substrate).
+    //                  A WASHED, flooded screen probes ~0 — that is the exact failure
+    //                  this pass fixed, so the test must be able to see it.
+    // A display needs BOTH: something lit, on something black.
+    float m_screenInk  = 0.0f;
+    float m_screenDark = 0.0f;
+
+public:
+    // The terminal glass entity (kNoLink until build()). Exposed for the self-test:
+    // asserting a screen EXISTS and asserting it SHOWS SOMETHING are different checks.
+    uint32_t screenSlot() const { return m_screenSlot; }
+    float screenInkFraction() const  { return m_screenInk; }
+    float screenDarkFraction() const { return m_screenDark; }
 };
+
+// Headless self-test for `--test-perfshop`: build the shop with a stub render/physics
+// device, then assert THE SCREENS ARE DISPLAYS — the terminal glass is textured, rides
+// the per-texel emissive path, and its baked UI has real ink on a genuinely dark
+// substrate; the neon sign's glow is gated by its texture (and therefore carries an MR
+// map, without which Scene::submit() SILENTLY DROPS the emissive map). Carries a
+// negative control proving the ink probe can fail. Logs "perfshop: X/Y passed".
+bool runPerfShopSelfTest();
 
 } // namespace x3::game

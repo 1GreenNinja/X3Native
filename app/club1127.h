@@ -151,6 +151,12 @@ public:
     // The fixture census (valid after build()).
     const Stats& stats() const { return m_stats; }
 
+    // The OLED screen entities (2 DJ + 6 TV multiplex + 1 back-bar band + 1 lounge).
+    // Exposed so the self-test can assert they are real textured glass carrying the
+    // per-texel emissive path — "the panel exists" and "the panel SHOWS SOMETHING"
+    // are not the same check (the rifthub blank-screen lesson, c44da59).
+    const std::vector<uint32_t>& oledEntities() const { return m_oledEnts; }
+
     // Recommended cull distance (m): hide the club beyond this from the player.
     float cullDistance() const { return kCullDist; }
 
@@ -219,6 +225,25 @@ private:
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).
     std::vector<std::unique_ptr<MonsterSystem>>   m_chars;
 };
+
+// OLED SCREEN-CONTRAST PROBE (the regression guard for the washed-out-slab bug).
+//
+// A texture probe is NOT enough here, and that is the whole trap: the EQ frames
+// ALWAYS had content baked into them. What made the club's screens read as flat
+// milky slabs was the flat EMISSIVE — a uniform add over the pane that lifted the
+// black substrate to the same brightness as the lit columns. A test that only
+// checked "the texture has pixels" would have passed happily on the broken build.
+//
+// So this probe measures what actually broke: it runs GLASS.FRAG'S OWN EMISSIVE MATH
+//   emisMask = mix(vec3(1), texel, emissiveMap);  additive = emissive.rgb * a * emisMask
+// on the DARKEST and the BRIGHTEST texel of a real baked EQ frame, and returns the
+// ratio brightest:darkest — the on-screen dynamic range of the panel.
+//   * emissiveMap = 0 (the old flat path) -> the mask is 1 everywhere, both texels
+//     emit identically, and this returns ~1.0: A SLAB. That is the bug, quantified.
+//   * emissiveMap = 1 -> the ratio is the texture's own range (>>1): A DISPLAY.
+// The self-test asserts a high ratio for the shipping settings AND asserts the ~1.0
+// for emissiveMap=0 as a NEGATIVE CONTROL, which proves the probe can actually fail.
+float clubOledEmissiveContrast(int hue, float emissiveMap, const float emissive[4]);
 
 // Headless self-test for `--test-club`: build the club at Y=-200 with a stub
 // render/physics device (no window / no Vulkan), assert the key fixtures exist
