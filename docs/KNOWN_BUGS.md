@@ -207,6 +207,49 @@ hidden blue ambient will both forge the fingerprint of "this thing is not on the
 | B11 | `addMetal()` in `holo_panel.cpp` made **no metal** | It set `baseColor` and **no `mrTex`**, so every frame/mount entity took `drawMeshEmissive` — a flat DIELECTRIC at albedo 0.66–0.76, i.e. **white plastic**. The lambda's *name* asserted the one thing it didn't do, so ~10 re-fixes never re-checked it. FIXED `art/rifthub-canon` (real 1×1 MR + machined-steel F0). **Audit other "addMetal"-style helpers for a missing MR map.** |
 | B12 | The gate tube's forged SD3.5 sets **do not exist on any machine** | `gate_tube_hull` / `gate_ring_plate` / `gate_patina_plate` / `gate_piston_steel` were never harvested (LFS budget died — see the note at `m_surf.mount`). `surface_library/` is **gitignored**, so the 24 curated sets are the only ones that exist. Every gate group silently falls back — and the tints authored to tame *bright forged* textures instead crushed the *already-correct curated* ones (0.789 × 0.22 = **0.17 albedo**). Anything keyed to a forged set is dead code today. |
 | B13 | ~~**`ModularSciFi_Interior` ships its EMISSION MASKS baked into the ALBEDO**~~ | **FIXED** — `fix/emissive-convert`. The whole purple/magenta prop family, in one defect. See **L7** (the observation) and **L8** (the root cause: the glow mask lives in the **alpha of the MRAG map**, which our converter discarded wholesale). *Renumbered from B11 when the lighting and emissive lines landed together — B11/B12 above were already taken.* |
+| B14 | ~~**JAKE'S CELL WAS A VOID — the room the player WAKES UP IN**~~ | **FIXED** `fix/cell-relight`. Mean luma **6.7–10.1** with **65–80% of every frame at or below luma 6**, flashlight OFF. See **L9** — the cause is not what anyone (including the two agents who looked at it) assumed. |
+
+---
+
+### L9. "HAND-CALIBRATED — DO NOT TOUCH" BECOMES A TRAP THE MOMENT THE ROOM CHANGES SIZE
+Jake's cell was the one room in the facility that was *correct*, so the facility lighting audit
+**deliberately excluded it** ("hand-calibrated, do not touch"). Then the level JSON grew the cell
+from **4×3.5×4 → 7×4×6 — three times the volume** — and the exclusion meant the one room nobody
+was allowed to re-tune became the only room still lit for a closet. **An exclusion is scoped to a
+room's DIMENSIONS, not its name. When geometry changes, every "do not touch" on it expires.**
+
+It got worse: an agent then *verified* the rig against the new cell and left a comment saying it
+was fine and to leave it **byte-identical**. That comment was wrong, and it was wrong in the most
+expensive way — it **pre-refuted the correct diagnosis**, so the next agent had to disprove a
+teammate before fixing anything. **Do not write "verified, do not change" into the source unless
+you measured it. A confident wrong comment costs more than no comment.**
+
+**The diagnosis everyone reached for was also wrong, twice:**
+- *"The key dies in mid-air / the lamp cannot reach."* **No.** `r_debugview 2` (point-light term
+  alone) measured mean **57.7**, 2.6% void. **The lamp arrives.**
+- *"The surfaces are asphalt"* (the 0.077-reflector class `fix/prim-point-light` had just fixed).
+  **No.** `hh_floor_01a` = 0.462 linear × tint 0.40 = **0.185**; `hh_wall_01a` = 0.505 × 0.34 =
+  **0.172**. Both already sit in the honest 0.18–0.20 band. **`r_debugview 5` (albedo forced flat
+  0.5) still read mean 15.6** — *a room built entirely of 50% reflectors was still dark.* **When a
+  WHITE room is dark, the surfaces are not the fault. Stop looking at albedo.**
+
+**The real cause was FLUX and HANG HEIGHT — the two things the rescale actually changed:**
+1. **42 m² of floor, still exactly ONE fixture.** The rest of this building lights a corridor with
+   a practical every few metres (level1 registers **337** of them, each 3.2–3.3). The cell was
+   asked to do 3× the volume with one lamp still tuned for the closet.
+2. **The lamp hung 0.40 m under the ceiling.** With `pointAtten = w²/(d²+1)`, the **ceiling 0.40 m
+   away caught 0.86** of it while the **floor 3.6 m below caught 0.056** — a **15:1 waste ratio.**
+   The fixture was lighting the slab above itself. *That* is why the tube reads p95 233 while the
+   deck beneath it reads p95 11.9.
+
+**Neither dial fixes this alone** — and this is the part worth internalising: **raising RANGE could
+never have worked.** The window term was already **0.79** at the floor, so 6.2 → ∞ buys **1.26×**.
+And raising INTENSITY alone scorches the ceiling before the floor lights. The fix is to **hang it
+lower** (0.40 → 1.10 m: floor atten 0.056 → 0.104, ceiling's share 0.86 → 0.45), **lengthen the
+reach** (6.2 → 9.0), and **then** feed it (×2.73). Cool-white ratio preserved exactly.
+**RESULT (4 data-derived eye cameras, flashlight OFF):** mean **6.7–10.1 → 21.7–24.2**, void
+**65–80% → 24–34%**, p95 **19–27 → 65–75**, **0.00% clipped**. In line with the facility (level1
+24.5% void). No ambient raised, no albedo over unity.
 
 ---
 

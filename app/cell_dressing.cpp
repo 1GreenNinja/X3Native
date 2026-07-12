@@ -883,9 +883,51 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // 4 m cell lands INSIDE A WALL in the new one and renders a near-black frame that
         // looks exactly like a lighting regression and is not one. Derive cameras from room
         // data (docs/ENGINE_GOTCHAS.md 4.1).
+        // 2026-07-12 — THE CELL WAS BLACK. Re-tuned FOR THE ROOM IT ACTUALLY LIVES IN.
+        // The note above ("left byte-identical at 3.30 / 6.2 — verified against the landed
+        // cell-scale fix") WAS WRONG, and it is worth saying why, because the reasoning is
+        // seductive: the reach WAS set generous on purpose, and the window term really does
+        // survive the rescale. But reach is not what was killing this room.
+        // MEASURED on main @ f295caf, flashlight OFF, 4 data-derived eye cameras in the
+        // 7x4x6 cell: mean luma 6.7-10.1, and 65-80% OF EVERY FRAME AT OR BELOW LUMA 6.
+        // That is not "dim and moody". That is the void the player wakes up in.
+        //
+        // THE TWO INSTRUMENTS SETTLED IT (r_debugview, from fix/prim-point-light):
+        //   view 2 (point-light term ALONE): mean 57.7, 2.6% void — THE LAMP REACHES.
+        //     "The key dies in mid-air" was the wrong diagnosis. It arrives.
+        //   view 5 (real lighting, albedo forced FLAT 0.5): mean 15.6 — a room made of
+        //     50% reflectors STILL READS DARK under this rig.
+        // A surface cannot be the fault when a WHITE room is dark. And the value check
+        // (do it FIRST, always) exonerates the surfaces outright: hh_floor_01a is 0.462
+        // linear x tint 0.40 = 0.185, hh_wall_01a is 0.505 x 0.34 = 0.172 — both sit in
+        // the honest 0.18-0.20 band prim-point-light renormalized the graybox INTO. There
+        // is no asphalt in this room. DO NOT "fix" this cell by lifting its albedos; they
+        // are already right, and raising them just makes a grey room out of a dark one.
+        //
+        // So it is FLUX, and it is GEOMETRY — the two things the rescale actually changed:
+        //   * The room went 4x3.5x4 -> 7x4x6. THREE TIMES THE VOLUME, 42 m^2 of floor, and
+        //     still exactly ONE fixture. The rest of this building lights a corridor with a
+        //     practical every few metres; the cell was asked to do it with one lamp tuned
+        //     for a closet. Level1's fixtures run 3.2-3.3 EACH — and there are 337 of them.
+        //   * The lamp hung 0.40 m under the ceiling. With pointAtten = w^2/(d^2+1), the
+        //     CEILING 0.40 m away caught 0.86 of it and the FLOOR 3.6 m below caught 0.056.
+        //     A 15:1 waste ratio — the fixture was lighting the slab above it. THAT is why
+        //     the tube reads p95 233 while the deck under it reads p95 11.9: not a lamp that
+        //     cannot reach, a lamp pointed at the wrong half of the room.
+        // Raising intensity ALONE would have scorched the ceiling before the floor lit.
+        // Raising RANGE alone could never have worked: the window term was already 0.79 at
+        // the floor, so 6.2 -> infinity buys 1.26x. Neither dial fixes this on its own.
+        //
+        // HANG IT LOWER (0.40 -> 1.10 m below the ceiling: floor atten 0.056 -> 0.104, and
+        // the ceiling's share drops 0.86 -> 0.45), LENGTHEN THE REACH to a 7 m room's far
+        // corner (6.2 -> 9.0), and THEN give the one lamp the flux to carry 42 m^2 (x2.73).
+        // The cool-white ratio (3.30:3.42:3.70) is preserved EXACTLY — this is the same
+        // lamp, hung right and fed properly, not a new one. No ambient was raised. No
+        // albedo went over unity. The flicker beat is untouched (depth 0.55) and now has a
+        // real room to take down with it.
         const uint32_t li = (uint32_t)m_lights.size();
-        addLight(bt.jakeCell, lx, ceilY - 0.40f, lz, 6.2f, 3.30f, 3.42f, 3.70f);
-        m_flickers.push_back({ li, 3.30f, 3.42f, 3.70f, 0.0f, 9.0f, 0.55f });
+        addLight(bt.jakeCell, lx, ceilY - 1.10f, lz, 9.0f, 9.01f, 9.34f, 10.10f);
+        m_flickers.push_back({ li, 9.01f, 9.34f, 10.10f, 0.0f, 9.0f, 0.55f });
         (void)aLight; (void)aHLight;   // loaded (hall may reuse); no cell placement
     }
 
