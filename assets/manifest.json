@@ -181,9 +181,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/Jake_22_actions.glb",
-      "sha256": "936124f3708d3009d43b86942ddb5bad8e15e1874d2ce02ef67155c6c082e7a6",
-      "size": 26458936,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "92a322f111de1706635b4dcafe0efd4f81acaf23a8b9dca6c4f47ecf009d0a83",
+      "size": 26624592,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12; RE-BAKED 2026-07-12 with Swim + SwimIdle (tools/swim_bake.py) -> 24 clips"
     },
     {
       "repo_path": "assets/rigged_glb/Oracle.glb",

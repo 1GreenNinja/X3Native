@@ -143,6 +143,8 @@ add_executable(X3Engine WIN32
     vehparts.cpp
     perfshop.cpp
     ecology.cpp
+    fish.cpp
+    waterzap.cpp
     crowd.cpp
     crowd_skin.cpp
     crowd_chatter.cpp
