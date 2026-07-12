@@ -140,6 +140,90 @@ Committed work is recoverable for ~90 days via reflog; nothing is truly gone unl
 
 ---
 
+## Git LFS — self-hosted, on the 14900K (2026-07-11)
+
+**GitHub's LFS budget is exhausted** (`batch response: This repository exceeded its LFS budget`). Asset fetches hard-failed fleet-wide, which blocked finished work from landing. GitHub's metered pricing ($0.0875/GB egress, $0.25/GB/mo storage) is a bad deal when we have a 2.5 Gbps LAN.
+
+**We now host the LFS blobs ourselves. GitHub is still the git host** — `origin`, PRs, branches, and the whole fleet workflow are *unchanged*. **Only the blob transfer moved.** The switch is one committed file, `.lfsconfig`:
+
+```ini
+[lfs]
+	url = http://192.168.7.23:3000/fleet/X3Native.git/info/lfs
+```
+
+### The endpoint
+
+| | |
+|---|---|
+| **Server** | Gitea 1.24.3, `D:\LFS\bin\gitea.exe` |
+| **Host** | `I9DevPC` (i9-14900K) — `192.168.7.23:3000` |
+| **LFS endpoint** | `http://192.168.7.23:3000/fleet/X3Native.git/info/lfs` |
+| **Web UI** | `http://192.168.7.23:3000/` |
+| **Auth** | Gitea user `fleet` + access token (HTTP Basic). Not open to anonymous. |
+| **Blob store** | `D:\LFS\blobs\x3native` — plain, unencrypted, sharded `<2hex>/<2hex>/<sha256>` |
+| **Windows service** | `gitea` — **auto-start**, auto-restart on crash (5s / 15s / 60s) |
+| **Firewall** | inbound TCP 3000, **LocalSubnet only** (Private + Domain profiles) |
+| **Config** | `D:\LFS\custom\conf\app.ini` |
+
+**Why Gitea and not `rudolfs` / `lfs-test-server` / `giftless`:** rudolfs is the leanest (Rust, local-disk) but ships **no authentication at all** — it expects a reverse proxy, which is a second moving part to own. `lfs-test-server` is self-described as not-for-production. `giftless` is Python and this box runs 3.14, where the dependency wheels are a coin-flip. Gitea is a **single Windows binary** with a real LFS server, real auth, native Windows-service support, a **plain-bytes local store** (so the backup below is directly usable without the server), and — the tiebreaker — it also keeps a **full git mirror** of the repo. Given the whole crisis is "our assets are stranded on a host we can't read from", a local copy of *both* the git history and the blobs is exactly the insurance we want.
+
+**It also mirrors git.** All 240 refs are pushed to `http://192.168.7.23:3000/fleet/X3Native.git`. That is a read-only safety net, *not* a second place to push work — **keep pushing code to GitHub `origin`.**
+
+### Per-machine one-time setup
+
+Every fleet box (i4400 / DJBOOTH / Dell i9 / p13700 / Snake13700k) does this **once**. Nothing else changes — `git pull`, `git push`, `git lfs fetch` all behave normally afterward.
+
+```bash
+# 1. Cache the LFS credential for the endpoint (one line, once per machine).
+git config --global credential.'http://192.168.7.23:3000'.helper manager
+printf 'protocol=http\nhost=192.168.7.23:3000\nusername=fleet\npassword=<TOKEN>\n' | git credential approve
+
+# 2. Verify.
+cd <your X3Native clone>
+git lfs env | grep Endpoint      # -> http://192.168.7.23:3000/fleet/X3Native.git/info/lfs
+git lfs fetch --all && git lfs checkout
+```
+
+`<TOKEN>` is the Gitea access token for user `fleet` — it is **not** in the repo. Get it from Tim, or mint a fresh one per machine at `http://192.168.7.23:3000/user/settings/applications` (scope: `write:repository`). Per-machine tokens are preferred: they can be revoked individually.
+
+`.lfsconfig` is committed, so the endpoint applies automatically to **every clone on every branch that contains it** — no per-repo config needed beyond the credential.
+
+**Adding a new machine:** mint it a token in the Gitea UI, run the two commands above. That's the whole onboarding.
+
+### Where the blobs live, and the backup
+
+Blobs are at `D:\LFS\blobs\x3native` on the 14900K. **Every file's name IS its sha256, which IS its Git LFS oid** — so the store is self-describing and can be rebuilt or raided by hand with nothing but a hash.
+
+That box has confirmed Raptor Lake degradation and an open Intel RMA, so the store is mirrored off it:
+
+- **Task:** `X3Native-LFS-Backup` (Task Scheduler) → `D:\LFS\backup_lfs.ps1`
+- **Runs:** daily 03:30 **and** at every startup
+- **Destination:** `\\p13700\G\X3NativeLFS\blobs` (+ Gitea's `gitea.db` and `app.ini` under `…\meta`)
+- **Additive only** — deliberately **not** `robocopy /MIR`. LFS objects are immutable; a local deletion must never propagate to the backup.
+- Log: `D:\LFS\log\backup.log`
+
+If the 14900K dies: the blobs are intact on D: (a crash is minutes of downtime, not data loss — the service auto-restarts), and a full copy is on G:. To rehost, install Gitea anywhere, point `[lfs] PATH` at a copy of the store, and change the one line in `.lfsconfig`.
+
+### Rollback
+
+Delete `.lfsconfig` (or `git config lfs.url https://github.com/1GreenNinja/X3Native.git/info/lfs`) and LFS points back at GitHub. Nothing else in the repo depends on this. **No history was rewritten and no LFS object was deleted** to set this up.
+
+### Optional upgrade — offsite durability via Cloudflare R2
+
+Gitea's LFS backend speaks S3, so this can gain offsite durability **without changing the fleet workflow at all** (the endpoint stays the same; only the server's storage config changes):
+
+```ini
+[lfs]
+STORAGE_TYPE = minio
+MINIO_ENDPOINT   = <account>.r2.cloudflarestorage.com
+MINIO_BUCKET     = x3native-lfs
+MINIO_USE_SSL    = true
+```
+
+R2 charges **$0.015/GB/mo and zero egress** → ~274 GB ≈ **$4/mo, no bandwidth bill ever**. Compare GitHub's metered rate on the same data. Migration is `rclone copy` of the blob store into the bucket, then a service restart.
+
+---
+
 ## When this doc moves
 
 Edits are welcome from any fleet machine. **Workers**: push as a branch (`docs/fleet-<topic>`) and ping in Slack for a primary to merge. **Primaries**: edit + push directly. Keep this doc tight — it's the canon, not a journal.
