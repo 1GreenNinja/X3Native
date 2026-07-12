@@ -1046,21 +1046,46 @@ std::vector<CanonLight> buildCanonLights(const CanonFloor& floor) {
         const float lightY = r.y1() - 0.25f;
         // Range covers the room height + a margin so the floor of a tall room is lit.
         const float range  = std::max(8.0f, r.h + 4.0f);
-        // Wide / deep rooms (boss arena, main hall) get a small grid so the whole floor
-        // reads evenly lit; small cells get a single center light. Cap the grid so we
-        // never mint a huge number of lights for one room (cheap + cap-friendly).
-        const int nx = std::min(3, std::max(1, (int)std::ceil(r.w / 8.0f)));
-        const int nz = std::min(3, std::max(1, (int)std::ceil(r.d / 8.0f)));
+        // Wide / deep rooms (boss arena, main hall) get a grid so the whole floor reads
+        // evenly lit; small cells get a single center light.
+        //
+        // ---- 2026-07-12, FACILITY LIGHTING AUDIT — THE `min(3, ...)` CAP WAS DARKNESS.
+        // This grid used to be clamped to 3x3 "so we never mint a huge number of lights
+        // for one room (cheap + cap-friendly)". That economy is FALSE — the host already
+        // feeds only the NEAREST lights of the VISIBLE rooms each frame (selectVisible-
+        // CanonLights), so an unfed light costs exactly nothing. What the clamp actually
+        // bought was a set of CORRIDORS THAT DO NOT REACH THEIR OWN ENDS:
+        //     West/East Cell Hall  3 x 40 m : 3 lights over 32 m -> 16 m apart, range 9
+        //                                      => ~7 m of BLACK between every pool.
+        //     W/E Service Corridor 3 x 31 m : 3 lights, 12.4 m apart, range 8.5 => gaps.
+        //     Main Hall           44 x  5 m : 3 lights, 11.7 m apart, range 9   => gaps.
+        // MEASURED, flashlight OFF (docs/screenshots/lighting_audit/facility):
+        //     East Cell Hall     mean  7.9, p05 0.9 / p95 20.7 (spread 20 — FLAT), 67% void
+        //     W Service Corridor mean  7.3,                     (spread 20 — FLAT), 70% void
+        //     Main Hall          mean 13.2,                                         68% void
+        // A flat histogram with a dark mean is the signature of a room lit by AMBIENT and
+        // nothing else — the pools simply never reach the player. Same bug as level 1's
+        // ceiling rows, one system over: THE LIGHTS WERE NOT WHERE THE PLAYER WALKS.
+        //
+        // So: tile the grid at an 8 m pitch (< the >=8 m minimum range, so adjacent pools
+        // always OVERLAP), with no arbitrary clamp — the room's own size decides. The
+        // largest room on the floor asks for 6 lights on its long axis; the whole floor
+        // goes from ~70 to ~150 lights, all of which are still fed nearest-first.
+        constexpr float kPitch = 8.0f;
+        const int nx = std::max(1, (int)std::ceil(r.w / kPitch));
+        const int nz = std::max(1, (int)std::ceil(r.d / kPitch));
         for (int iz = 0; iz < nz; ++iz) {
             for (int ix = 0; ix < nx; ++ix) {
-                // Evenly space the grid across the room interior (centered).
+                // Evenly space the grid across the room interior (centered). The 0.9 inset
+                // below keeps the end lights off the wall while still reaching the ends —
+                // the old 0.8 inset left the last 4.4 m of the Main Hall past every light.
                 const float fx = (nx == 1) ? 0.0f : ((ix + 0.5f) / nx - 0.5f);
                 const float fz = (nz == 1) ? 0.0f : ((iz + 0.5f) / nz - 0.5f);
                 CanonLight cl;
                 cl.room = ri;
-                cl.light.pos[0] = r.cx + fx * r.w * 0.8f;
+                cl.light.pos[0] = r.cx + fx * r.w * 0.9f;
                 cl.light.pos[1] = lightY;
-                cl.light.pos[2] = r.cz + fz * r.d * 0.8f;
+                cl.light.pos[2] = r.cz + fz * r.d * 0.9f;
                 cl.light.range  = range;
                 cl.light.color[0] = colR; cl.light.color[1] = colG; cl.light.color[2] = colB;
                 lights.push_back(cl);

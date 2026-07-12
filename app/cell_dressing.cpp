@@ -655,11 +655,19 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         const float frScale = 0.58f;   // taller jamb: header ~2.55 m so the opening clears standing
         auto placeDoorFrame = [&](int wall, float runC) {
             float yaw = 0.0f, wx = 0.0f, wz = 0.0f;
+            // lx/lz = the THRESHOLD LAMP seat: the same opening, pushed 0.25 m in from the
+            // wall plane along that wall's INWARD normal, so the lamp hugs the lintel it is
+            // bolted to instead of hanging out in the room in front of the slab. (See B5.)
+            float lx = 0.0f, lz = 0.0f;
             switch (wall) {
-                case 0: yaw =  kPi * 0.5f; wx = x0 + 0.06f; wz = runC;       break; // -X wall, faces +X
-                case 1: yaw = -kPi * 0.5f; wx = x1 - 0.06f; wz = runC;       break; // +X wall, faces -X
-                case 2: yaw =  0.0f;       wx = runC;       wz = z0 + 0.06f; break; // -Z wall, faces +Z
-                case 3: yaw =  kPi;        wx = runC;       wz = z1 - 0.06f; break; // +Z wall, faces -Z
+                case 0: yaw =  kPi * 0.5f; wx = x0 + 0.06f; wz = runC;       // -X wall, faces +X
+                        lx = x0 + 0.25f;   lz = runC;       break;
+                case 1: yaw = -kPi * 0.5f; wx = x1 - 0.06f; wz = runC;       // +X wall, faces -X
+                        lx = x1 - 0.25f;   lz = runC;       break;
+                case 2: yaw =  0.0f;       wx = runC;       wz = z0 + 0.06f; // -Z wall, faces +Z
+                        lx = runC;         lz = z0 + 0.25f; break;
+                case 3: yaw =  kPi;        wx = runC;       wz = z1 - 0.06f; // +Z wall, faces -Z
+                        lx = runC;         lz = z1 - 0.25f; break;
             }
             // Seat the frame's VISIBLE jamb on the floor. SM_DoorFrame_A's bright jamb sits
             // ~0.4 m above its probed AABB base (the base is a thin sill), so anchoring miny
@@ -674,7 +682,20 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             // The per-opening PLACEMENT is kept (e70b8c9): the cell has three thresholds and
             // the old code hardcoded ONE frame on +X from a wrong "+X = exit" guess, so frames
             // floated in solid walls while the real doorways stayed bare graybox.
-            addLight(bt.jakeCell, wx, fY + 1.0f, wz, 3.0f, 0.62f, 0.035f, 0.02f);
+            //
+            // B5 / THE PATTERN — THIS is why the door rendered PINK, and it was NOT the albedo.
+            // MEASURED: hanging ~0.5 m off the slab, HEAD-ON (N.L ~ 1) at slab-centre height
+            // with range 3.0, this lamp delivered ~0.43 red to the door face while the room's
+            // white key — a CEILING tube, GRAZING the vertical slab — delivered only ~0.35.
+            // The red WON: the door was a red-LIT surface, so a neutral grey slab read salmon
+            // and its trim glowed magenta. Renormalizing the albedo only scaled the value
+            // (R-G held at +57); the HUE never moved, which is the proof.
+            // A door-status lamp does not floodlight a door — it HUGS the frame. Mount it over
+            // the lintel (a real "LOCKED" indicator, fY+2.18) and tighten the range to a local
+            // pool (3.0 -> 1.5): grazing incidence on the slab gives a red gradient at the head
+            // of the door + a pool on the jamb and threshold floor, while the white key defines
+            // the door as institutional grey. The tell survives; the wash does not.
+            addLight(bt.jakeCell, lx, fY + 2.18f, lz, 1.5f, 0.55f, 0.030f, 0.02f);
         };
         for (const CellOpening& o : openings) placeDoorFrame(o.wall, o.c);
     }

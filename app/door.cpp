@@ -211,6 +211,26 @@ void DoorSystem::loadDoorMesh(x3::rhi::IRenderDevice& device, std::string_view c
     if (m_doorModel.ok) {
         m_doorDrawables = x3::asset::makeDrawables(m_doorModel);
         m_meshOk = !m_doorDrawables.empty();
+        // B5 — SM_Door_A SHIPS A NEAR-WHITE ALBEDO, and DoorSystem owns this mesh, so the
+        // defect is GAME-WIDE. MEASURED off T_Door_A_Dif (not guessed): the door BODY is
+        // 42% of the texels at mean sRGB 227 -> a LINEAR ALBEDO of 0.768. Fresh snow is
+        // ~0.85. A painted institutional door is ~0.30. A 0.77-albedo door reflects 77% of
+        // every photon that reaches it, so it scorches hot against any honest rig while the
+        // ~0.25-albedo walls beside it sit correctly dark — the same over-unity crutch as
+        // the 1.08 cot and the black rifthub tube (docs/KNOWN_BUGS.md, "VALUE, NOT LUMENS").
+        //
+        // Renormalize with glTF's OWN albedo multiplier (baseColor = factor x texture, in
+        // LINEAR space) rather than rewriting the GLB: the .glb is Git-LFS tracked and the
+        // asset itself is not corrupt — our USE of it was never normalized. 0.768 x 0.42 =
+        // 0.32 linear (~0.60 sRGB), the exact value that fixed the rifthub tube.
+        //
+        // NOTE this is a VALUE fix, not a hue fix. It is NOT what made the door read pink —
+        // that was a misplaced red light (see cell_dressing.cpp). Proof: scaling the albedo
+        // moved the door's brightness but its R-G held at +57. Fix the light for hue, the
+        // albedo for value; do not confuse the two.
+        constexpr float kDoorAlbedoScale = 0.42f;
+        for (auto& dr : m_doorDrawables)
+            for (int k = 0; k < 3; ++k) dr.baseColorFactor[k] *= kDoorAlbedoScale;
     }
     if (m_meshOk)
         x3::logInfo("[door] loaded " + std::string(kDoorGlbRel) + " — " +
@@ -270,11 +290,27 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
         for (const auto& dr : m_doorDrawables) {
             float fin[16];
             x3::asset::mulMat4(m, dr.nodeTransform, fin);
-            device.drawMesh(frame,
-                            x3::rhi::MeshHandle{ dr.meshId },
-                            x3::rhi::TextureHandle{ dr.baseColorTexId },
-                            dr.baseColorFactor,
-                            fin);
+            // B5 / THE PATTERN: the door used to draw through the 5-arg drawMesh() — the
+            // NON-PBR path. makeDrawables() had already resolved its NORMAL and MR maps and
+            // this call THREW THEM AWAY. Two consequences, both visible in CELL_4up.png:
+            //   * no normal map -> the slab's panel/rivet detail shaded dead flat, and
+            //   * the non-PBR branch takes the UNNORMALIZED Lambert (albedo x N.L), so the
+            //     door shaded ~PI x BRIGHTER than every GLB standing next to it (R1, 5c35d65).
+            // Against the honest cell rig that overshoot is exactly what scorched a near-white
+            // slab into salmon. Draw it like every other GLB: same PBR path, same maps.
+            // ModelDrawable::emissiveFactor is float[3]; drawMeshPBR takes float[4].
+            const float emis[4] = { dr.emissiveFactor[0], dr.emissiveFactor[1],
+                                    dr.emissiveFactor[2], 1.0f };
+            device.drawMeshPBR(frame,
+                               x3::rhi::MeshHandle{ dr.meshId },
+                               x3::rhi::TextureHandle{ dr.baseColorTexId },
+                               x3::rhi::TextureHandle{ dr.normalTexId },
+                               x3::rhi::TextureHandle{ dr.mrTexId },
+                               dr.baseColorFactor,
+                               emis,
+                               fin,
+                               dr.alphaMask, dr.alphaBlend,
+                               x3::rhi::TextureHandle{ dr.emissiveTexId });
         }
     }
 }

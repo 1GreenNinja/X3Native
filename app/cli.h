@@ -640,6 +640,12 @@ struct CliOptions {
     // the gate-standard view). Does NOT change any default behavior when omitted.
     bool        shotCamOverride = false;
     float       shotCam[5] = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
+    // --flashlight-off: start with the player's flashlight OFF. A room must be readable
+    // and moody from its OWN practicals; the flashlight (a 38 m, 6.0-HDR crutch until
+    // b66e037) hid every unlit room in the game. This is the honest-lighting review
+    // gate: capture every room with it off, or you are grading the flashlight, not the
+    // room. Default false -> zero change to normal play.
+    bool        flashlightOff = false;
     // FX demo (--fx-demo): in --screenshot mode, spawn a combat particle/decal burst
     // (muzzle flash + impact sparks + dust + a scorch decal) a couple meters in front
     // of the screenshot camera each settle frame so the capture clearly shows the new

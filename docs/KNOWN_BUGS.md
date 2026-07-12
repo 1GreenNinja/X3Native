@@ -118,7 +118,7 @@ Retune honestly — never restore the mirror.**
 | B2 | SSAO blur image sampled in `UNDEFINED`, full of garbage | `mesh.frag` set3 binds it unconditionally; reads guarded by `if (ssaoOn)`. `r_rtao` *replaces* SSAO → **undefined memory multiplied into the ambient term** |
 | B3 | `mesh_probe.vert` missing the location-12 output | `45e1c46` added the input to `mesh.frag`, updated only `mesh.vert` → breaks the reflection-probe PSO's SPIR-V interface |
 | B4 | Ambient 0.42 still active outside the canon room graph | level1, club, spire, perfshop, showroom |
-| B5 | `SM_Door_A` ships a near-white albedo | Game-wide (owned by `DoorSystem`); blows out pink under honest light |
+| B5 | ~~`SM_Door_A` ships a near-white albedo~~ | **FIXED — but the DIAGNOSIS WAS WRONG. Read below.** |
 | B6 | Elevator OLED text renders **mirrored** | Pre-existing UV/facing bug on the twin viewscreens |
 | B7 | Elevator −X observation window renders as a bright noisy slab | Needs one more pass |
 | B8 | Cinematic cuts to a blank blue screen | Intro/cold-open, mid-sequence |
@@ -126,6 +126,7 @@ Retune honestly — never restore the mirror.**
 | B10 | Two VFX bypass the entity path (flat-emissive glass) | `space/decloak_vfx.cpp:310`, `space/descent.cpp:294` |
 | B11 | `addMetal()` in `holo_panel.cpp` made **no metal** | It set `baseColor` and **no `mrTex`**, so every frame/mount entity took `drawMeshEmissive` — a flat DIELECTRIC at albedo 0.66–0.76, i.e. **white plastic**. The lambda's *name* asserted the one thing it didn't do, so ~10 re-fixes never re-checked it. FIXED `art/rifthub-canon` (real 1×1 MR + machined-steel F0). **Audit other "addMetal"-style helpers for a missing MR map.** |
 | B12 | The gate tube's forged SD3.5 sets **do not exist on any machine** | `gate_tube_hull` / `gate_ring_plate` / `gate_patina_plate` / `gate_piston_steel` were never harvested (LFS budget died — see the note at `m_surf.mount`). `surface_library/` is **gitignored**, so the 24 curated sets are the only ones that exist. Every gate group silently falls back — and the tints authored to tame *bright forged* textures instead crushed the *already-correct curated* ones (0.789 × 0.22 = **0.17 albedo**). Anything keyed to a forged set is dead code today. |
+| B13 | ~~**`ModularSciFi_Interior` ships its EMISSION MASKS baked into the ALBEDO**~~ | **FIXED** — `fix/emissive-convert`. The whole purple/magenta prop family, in one defect. See **L7** (the observation) and **L8** (the root cause: the glow mask lives in the **alpha of the MRAG map**, which our converter discarded wholesale). *Renumbered from B11 when the lighting and emissive lines landed together — B11/B12 above were already taken.* |
 
 ---
 
@@ -158,6 +159,51 @@ instanced through it, that model is inside-out and unlit.
 70 → 15 → and had to come down to **5.0** once the tube actually took light. Both earlier
 numbers were fitted to a surface that was *physically incapable of responding*. Before you
 tune a light, prove the surface can be lit at all.
+
+---
+
+### B5 — THE PINK DOOR. Three defects, and the headline one was NOT the albedo. — FIXED
+B5 said "near-white albedo -> blows out pink". The albedo *was* wrong. **It was not what made
+it pink.** Chasing the stated diagnosis would have dimmed the door and left it pink.
+
+**The falsifying measurement.** Renormalized the door's albedo 0.768 -> 0.32 linear and re-shot:
+the slab's brightness dropped, and its hue **did not move** — `R-G` held at **+57 -> +58**.
+A value change cannot fix a hue. Therefore the door was a *neutral surface being lit red*.
+
+| # | defect | evidence | fix |
+|---|---|---|---|
+| 1 | **A misplaced red light — THE PINK.** The cell's red "threshold tell" hung **0.5 m off the door face, HEAD-ON (N·L≈1), at slab-centre height**, range 3.0. It delivered **~0.43 red** to the slab while the room's white key — a *ceiling* tube grazing a *vertical* slab — delivered only ~0.35. **The red light WON: the door was a red-lit surface.** | slab `(154, 97, 101)`, `R-G=+57` | `cell_dressing.cpp` — mount it **over the lintel** (a real "LOCKED" indicator), range 3.0 -> 1.5. Grazing incidence -> a red gradient at the head of the door + a pool on the jamb. **The tell survives; the wash does not.** Slab is now `(28, 32, 37)`, `R-G=-4.3` — neutral steel. |
+| 2 | **The door bypassed the PBR path.** `DoorSystem::drawMeshes` called the 5-arg `drawMesh()` — the NON-PBR path — and **threw away the normal + MR maps that `makeDrawables()` had already resolved**. So the slab shaded dead flat AND took the **unnormalized Lambert (~π× brighter** than every GLB beside it — R1/`5c35d65`). A **third** entity-path bypass, alongside B10's two. | — | `door.cpp` -> `drawMeshPBR` with its real maps. |
+| 3 | **Albedo 0.768 linear** (body = 42% of texels at sRGB 227). Snow is 0.85; an institutional door is ~0.30. Same over-unity crutch as the 1.08 cot. | — | `door.cpp`: renormalize via glTF's own `baseColorFactor` (×0.42 -> **0.32 linear / 0.60 sRGB**, the value that fixed the rifthub tube). **Not** by rewriting the `.glb` — it is Git-LFS tracked and the asset is not corrupt; our *use* of it was never normalized. |
+
+**The lesson, and it is THE PATTERN again:** a crutch (the ambient wash) hid a light that was
+**pointing at the wrong thing**. Two of these three are invisible to a screenshot and only fall
+out of a *measurement*. **MEASURE THE HUE, NOT JUST THE BRIGHTNESS** — `R-G` and `B-G` on a
+surface tell you instantly whether you are looking at an albedo problem or a *light* problem.
+An albedo error scales all three channels together; a coloured light does not.
+
+### L7. A KIT'S EMISSION MASK CAN SHIP AS ALBEDO PAINT — the purple/magenta props
+**MEASURED** (2026-07-12), and it explains *every* magenta prop at once, not one at a time:
+
+| asset | pure-magenta texels **in the base-color map** | mean sRGB | its emissive slot |
+|---|---|---|---|
+| `SM_Door_A` / `T_Door_A_Dif` | 0.08 % | **(242, 0.7, 242)** | *empty* |
+| `SM_Ceiling_A` / `T_Ceiling_A_Dif` | 0.64 % | **(160, 1.8, 161)** | *empty* (`emissiveFactor: None`) |
+
+R ≈ B with **G ≈ 0** is not paint — it is the classic Unity **emission-mask key colour**. In the
+source pack those regions are LIGHT STRIPS and indicator panels that GLOW. Our GLB conversion
+dropped the emissive slot, so the mask stayed behind **in the albedo** and the props now ship
+magenta *paint* where they should carry emissive *light*. That is why the door's trim and the
+cell's ceiling insets read purple/magenta, and it is a whole-pack defect, not a per-prop one.
+
+**Do NOT "fix" this by tinting individual props.** The fix is to key an emissive map off the
+magenta mask at convert time (mask -> emissiveTexture; neutralize those texels in the albedo) —
+then the strips glow, which is what the art intended, and the purple goes away by construction.
+Beware **L4** when you do: an emissive map with no MR map is silently dropped by `Scene::submit()`.
+
+**Corollary — this is NOT what made the door pink.** See B5.
+**Root cause + fix: L8.** The mask was not "left behind" by accident — the pack keys its glow off
+the **alpha of a MRAG map** our converter dropped on the floor. Read L8 before you touch a kit.
 
 ---
 

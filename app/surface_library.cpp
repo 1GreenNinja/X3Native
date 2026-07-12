@@ -16,6 +16,8 @@
 #  pragma warning(disable : 4244 4456 4457)
 #endif
 #include <stb_image.h>
+#include <cmath>
+#include <string>
 #if defined(_MSC_VER)
 #  pragma warning(pop)
 #endif
@@ -50,8 +52,28 @@ std::shared_ptr<DecodedPng> decodePng(const std::string& path) {
     return d->px ? d : nullptr;
 }
 
+// Mean LINEAR luminance of an sRGB RGBA8 buffer. Subsampled on an 8x8 grid — a 4096^2
+// albedo is 16.7M texels and we only need a stable mean, not an exact one (262k samples).
+float meanLinearLuma(const unsigned char* px, int w, int h) {
+    if (!px || w <= 0 || h <= 0) return 0.0f;
+    auto s2l = [](float c) {
+        return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    };
+    double acc = 0.0; long n = 0;
+    for (int y = 0; y < h; y += 8) {
+        for (int x = 0; x < w; x += 8) {
+            const unsigned char* t = px + ((size_t)y * w + x) * 4;
+            const float r = s2l(t[0] / 255.0f), g = s2l(t[1] / 255.0f), bl = s2l(t[2] / 255.0f);
+            acc += 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+            ++n;
+        }
+    }
+    return n ? (float)(acc / n) : 0.0f;
+}
+
 x3::rhi::TextureHandle loadPng(x3::rhi::IRenderDevice& device,
-                               const std::string& path, bool srgb) {
+                               const std::string& path, bool srgb,
+                               float* outMeanLin = nullptr) {
     // Prewarmed? Consume the background decode (wait if still in flight — it
     // started seconds ago, so this is a cache hit in practice) and drop the entry.
     std::shared_future<std::shared_ptr<DecodedPng>> fut;
@@ -62,6 +84,7 @@ x3::rhi::TextureHandle loadPng(x3::rhi::IRenderDevice& device,
     }
     if (fut.valid()) {
         if (std::shared_ptr<DecodedPng> d = fut.get()) {
+            if (outMeanLin) *outMeanLin = meanLinearLuma(d->px.get(), d->w, d->h);
             return device.createTexture(d->px.get(), (uint32_t)d->w, (uint32_t)d->h, srgb);
         }
         // decode failed — fall through to the inline path (which will also fail,
@@ -70,6 +93,7 @@ x3::rhi::TextureHandle loadPng(x3::rhi::IRenderDevice& device,
     int w = 0, h = 0, comp = 0;
     stbi_uc* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
     if (!px) return {};
+    if (outMeanLin) *outMeanLin = meanLinearLuma(px, w, h);
     x3::rhi::TextureHandle t = device.createTexture(px, (uint32_t)w, (uint32_t)h, srgb);
     stbi_image_free(px);
     return t;
@@ -109,12 +133,19 @@ const SurfaceSet& SurfaceLibrary::get(x3::rhi::IRenderDevice& device,
     if (it != m_cache.end()) return it->second;
     SurfaceSet s;
     const std::string d = m_root + "/" + name + "/";
-    s.albedo = loadPng(device, d + "albedo.png", true);
+    s.albedo = loadPng(device, d + "albedo.png", true, &s.albedoLin);
     s.normal = loadPng(device, d + "normal.png", false);
     s.mr     = loadPng(device, d + "mr.png",     false);
     s.ok = s.albedo.valid() && s.normal.valid() && s.mr.valid();
     if (!s.ok)
         x3::logWarn("[surface-lib] set '" + name + "' incomplete under " + m_root);
+    else {
+        const float t = s.valueTint();
+        if (t < 0.999f || t > 1.001f)
+            x3::logInfo("[surface-lib] '" + name + "' albedo " +
+                        std::to_string(s.albedoLin) + " linear is OUT OF BAND -> value tint x" +
+                        std::to_string(t) + " (VALUE, NOT LUMENS)");
+    }
     return m_cache.emplace(name, s).first->second;
 }
 
@@ -169,7 +200,10 @@ void SurfaceLibrary::drawPanel(x3::rhi::IRenderDevice& device,
                                const x3::rhi::FrameContext& frame,
                                const SurfaceSet& set, x3::rhi::MeshHandle mesh,
                                const float transform[16]) const {
-    const float bc[4]   = { 1.0f, 1.0f, 1.0f, 1.0f };
+    // Hue-preserving VALUE normalization (see SurfaceSet::valueTint). An in-band surface
+    // returns 1.0 here and draws exactly as it always did.
+    const float vt      = set.valueTint();
+    const float bc[4]   = { vt, vt, vt, 1.0f };
     const float emis[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     device.drawMeshPBR(frame, mesh, set.albedo, set.normal, set.mr, bc, emis,
                        transform, /*alphaMask=*/false, /*alphaBlend=*/false,

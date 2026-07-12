@@ -20,6 +20,41 @@ struct SurfaceSet {
     x3::rhi::TextureHandle normal{};
     x3::rhi::TextureHandle mr{};
     bool ok = false;
+    // ---- 2026-07-12, FACILITY LIGHTING AUDIT: THE VALUE OF THE SURFACE ITSELF.
+    // The mean LINEAR reflectance of albedo.png, measured at load. drawPanel() uses it to
+    // pull absurd surfaces back into a believable band (see valueTint()). It exists because
+    // the library shipped albedos spanning **0.041 to 0.618 — a 15x spread** — and
+    // drawPanel drew every one of them at a hard-coded baseColor of {1,1,1,1}:
+    //     sr_rubberfloor     0.041  <- the ZHall / ZCorridor FLOOR. 4% reflectance: darker
+    //                                  than asphalt. A light lands on it and NOTHING returns.
+    //     mw_metal_grate     0.067  <- the ZSecurity floor. Same.
+    //     mw_metal_panels_a  0.618  <- the corridor CEILING. Nearly snow.
+    // That is a black floor under a white ceiling, and it is exactly what the corridors
+    // rendered: the key light was arriving, but only the CEILING ever reported back. The
+    // measured tell was a corridor whose brightest 5% of pixels sat at sRGB 22/255 while
+    // its ceiling pools bloomed. Cranking the key would have blown the ceiling to white and
+    // left the floor black — VALUE, NOT LUMENS.
+    float albedoLin = 0.0f;   // 0 = unmeasured (valueTint() then returns 1.0 — no change)
+    // Neutral (hue-preserving) multiplier that lands this surface inside the reflectance
+    // band real interior materials actually occupy. A surface ALREADY in band returns
+    // exactly 1.0, so every correctly-authored surface is bit-identical.
+    // THE CEILING END IS ONLY CORRECT TOGETHER WITH THE KEY RAISE — learned the hard way.
+    // Clamping the bright ceilings DOWN *on its own* made every corridor measurably WORSE
+    // (E Cell Hall mean 9.1 -> 8.4, W Service 7.9 -> 6.8, Security 9.3 -> 7.7, all with MORE
+    // void), because in a room whose key could not reach the floor, THE BRIGHT CEILING WAS
+    // THE ONLY SURFACE REPORTING ANY LIGHT BACK TO THE PLAYER. Dimming it removed the one
+    // thing carrying the frame while the lifted floor still had almost nothing to reflect.
+    // Both halves therefore land TOGETHER: the hall/corridor/security keys are raised to the
+    // building's real fixture level (3.2, room_dressing.cpp) and the ceilings are pulled into
+    // band here — so the key can finally bite the floor without blowing the ceiling to white.
+    float valueTint() const {
+        if (albedoLin <= 0.0001f) return 1.0f;             // unmeasured / black: leave alone
+        constexpr float kLo = 0.08f;   // darkest sensible interior floor (dark rubber/asphalt)
+        constexpr float kHi = 0.40f;   // brightest sensible interior surface (white paint)
+        const float want = albedoLin < kLo ? kLo : (albedoLin > kHi ? kHi : albedoLin);
+        const float s = want / albedoLin;
+        return s < 0.5f ? 0.5f : (s > 2.2f ? 2.2f : s);    // never do anything wild
+    }
 };
 
 class SurfaceLibrary {
