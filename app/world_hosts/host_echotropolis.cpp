@@ -696,6 +696,16 @@ int hostEchotropolis(HostContext& hc) {
             if (kd(GLFW_KEY_2)) tod.setDayFraction(kTodDusk);
             if (kd(GLFW_KEY_3)) tod.setDayFraction(kTodNight);
             if (kd(GLFW_KEY_4)) tod.setDayFraction(kTodNoon);
+            // ---- P5 camera bookmarks: the four signature shots (keys 5-8). Set
+            // the orbit TARGETS; the critically-damped springs fly there smoothly.
+            auto bookmark = [&](float fx, float fz, float yw, float pt, float rd) {
+                rig.focusX = fx; rig.focusZ = fz;
+                rig.yaw = yw; rig.pitch = clampPitch(pt); rig.radius = rd;
+            };
+            if (kd(GLFW_KEY_5)) bookmark(-450.0f,  900.0f, -1.02f, 0.31f, 1400.0f); // THE POSTCARD
+            if (kd(GLFW_KEY_6)) bookmark( 412.0f, -106.0f,  3.93f, 0.60f,  950.0f); // crown promenade
+            if (kd(GLFW_KEY_7)) bookmark( 331.0f,  459.0f,  2.40f, 0.35f,  750.0f); // fissure rim
+            if (kd(GLFW_KEY_8)) bookmark(   0.0f,    0.0f,  5.50f, 0.10f, 5600.0f); // sea approach
             if (!todPaused) tod.advance(dt);
             if (tod.phase() != prevPhase) {
                 prevPhase = tod.phase();
