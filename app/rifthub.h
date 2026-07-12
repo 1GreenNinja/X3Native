@@ -41,22 +41,27 @@
 //     The membrane is a 3-STATE MACHINE (the MEMBRANE ANIMATION ARC from
 //     docs/reference/PortalAnimated.mp4, mapped onto the existing gameplay
 //     states — no new gameplay flags):
-//       IDLE  (!activated)          — calm nebula: the baked reference-video
-//             FLIPBOOK (its OWN lightning filaments carry the detail — no
-//             procedural bolts are drawn over it);
-//       SURGE (kawoosh > 0)         — the activation flash: the membrane
-//             brightens toward its caps (bright BLUE-white, never flat white),
-//             the ratchet track chases, spark burst;
-//       OPEN  (activated, settled)  — the throat: the plasma disk swaps to a
-//             RADIAL-STREAMING texture (looking down the wormhole) and runs a
-//             brighter, faster-spinning steady base.
+//     ROUND 6 — EVERY STATE IS THE OWNER'S REAL FOOTAGE. The states no longer
+//     mix baked video with hand-coded math textures (the owner: "the swirling
+//     one looks fake"); each plays its OWN flipbook baked from its own span of
+//     PortalAnimated.mp4, through ONE shared playback path:
+//       IDLE  (!activated)          — video t 0.0-3.2: calm nebula, looped (its
+//             OWN lightning filaments carry the detail — no procedural bolts);
+//       SURGE (kawoosh > 0)         — video t 6.4-8.3: the vortex ring collapsing
+//             into the throat, played ONCE across the 1.6 s kawoosh (a real
+//             escalation), the membrane riding its capped brightness envelope,
+//             the ratchet track chasing, spark burst;
+//       OPEN  (activated, settled)  — video t 8.4-9.95: the settled throat,
+//             radial plasma streaming down the wormhole, looped; picks up exactly
+//             where the surge span ended. Runs a brighter, faster-spinning base.
+//     The procedural nebula/throat maps survive ONLY as the missing-atlas fallback.
 //     Plus per-frame FX drawn by drawFx(): drifting spark MOTES (additive
 //     particles) + the hall's light shafts.
 // A wider AABB trigger sits underneath. No GLB asset needed.
 //
 // ANIMATION: Rifthub::tick(dt) runs each frame and (a) flickers the amber
-// chevron cores with a slow per-chevron pulse, (b) pulses the blue core
-// hot-spot, (c) breathes + slowly ROTATES the plasma membrane disk (the
+// chevron cores with a slow per-chevron pulse, (b) drives the per-gate blue
+// point light, (c) breathes + slowly ROTATES the plasma membrane disk (the
 // procedural filament texture sweeping around reads as the storm churning),
 // shimmer on the fresnel rim, all emissive writes CLAMPED to the per-layer
 // caps (the blown-white v1 fix), and (d) advances the lightning-arc spawner
@@ -99,15 +104,15 @@ constexpr uint32_t kRifthubTrigCount = 8;
 
 // One placed portal in the hub. The portal is a thick grey-stone Stargate-style
 // RING (a single circle of N deep tangent box segments) + amber CHEVRON locking
-// clamps on its outer face + an octagonal emissive floor-plate + a blue energy
-// core hot-spot + the event-horizon membrane pool, anchored at `worldPos`.
+// clamps on its outer face + an octagonal emissive floor-plate + the
+// event-horizon membrane, anchored at `worldPos`.
 // `triggerId` is the matching RifthubTrigger; `worldName` is the --world flag
 // the host should relaunch with to traverse this rift (NO runtime switch in
 // this draft).
 //
 // The host calls Rifthub::tick(dt) each frame to drive the animation — the
 // per-portal entity-id ranges below let tick() poke emissive[3] on the amber
-// chevrons, the blue core, and the membrane bands in-place without re-issuing
+// chevrons and the membrane layers in-place without re-issuing
 // render calls. The stone ring is static (authored once, never animated).
 struct RiftPortal {
     const char*    worldName  = "";       // --world flag (e.g. "act2caves")
@@ -116,12 +121,15 @@ struct RiftPortal {
     float          tint[3]    = {1,1,1};  // per-destination accent color
     bool           activated  = false;    // latched when the trigger fires
     // Entity-id ranges. The stone ring is a contiguous span (static, but tracked
-    // so shutdown/self-test can reason about it); the amber chevrons, blue core
-    // disks, and membrane bands are the animated spans tick() pokes.
+    // so shutdown/self-test can reason about it); the amber chevrons and the
+    // membrane layers are the animated spans tick() pokes.
     uint32_t       ringEntFirst = 0;      // first scene entity id in the ring span
     uint32_t       ringEntCount = 0;      // number of stone ring-segment entities
-    uint32_t       coreEnt      = 0;      // core hot-spot disk entity id (blue)
-    uint32_t       coreInnerEnt = 0;      // brighter inner blue disk (core depth)
+    // (ROUND 6: the procedural CORE DISKS are DELETED. Two bright blue-white
+    //  disks were drawn ON TOP of the membrane's center — the owner's "why the
+    //  dot in the middle?". The footage has whatever center it needs. The blue
+    //  POINT LIGHT the gate casts into the bay stays: that is lighting, not a
+    //  fake sprite.)
     // CHEVRON locking clamps — machined dark-metal housings (body + jaw
     // flanges + face cap, all PBR-textured, never emissive) seated into the
     // ring; the animated span is the thin amber-lit SLIT strip per clamp that
@@ -176,7 +184,8 @@ struct RiftPortal {
     MembraneArc    arcs[kMaxArcs];
     float          arcCooldown = 0.0f;    // seconds until the next arc may spawn
     float          moteAccum   = 0.0f;    // fractional mote-spawn accumulator
-    bool           throatOn    = false;   // plasma disk swapped to the throat texture
+    bool           throatOn    = false;   // OPEN state live: the plasma disk plays the
+                                          // OPEN flipbook (procedural throat = fallback)
     float          spinAngle   = 0.0f;    // plasma disk rotation (integrated — the
                                           // OPEN state spins faster without snapping)
     // KAWOOSH one-shot: seconds remaining in the activation "unstable vortex"
@@ -202,7 +211,7 @@ public:
                x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers);
 
     // Per-frame animation. Flickers each portal's amber chevrons, pulses the
-    // blue core hot-spots, breathes + slowly rotates the plasma membrane disk,
+    // pulses the per-gate blue light, breathes + slowly rotates the membrane disk,
     // shimmers the fresnel rim (EVERY membrane emissive write clamped to its
     // cap — deep blue must always read, never clip to white), advances the
     // lightning-arc spawner and integrates the spark-mote pool. The metal ring
@@ -265,6 +274,10 @@ public:
     // ROUND 4: number of membrane-flipbook frames loaded (0 = atlas absent /
     // undecodable -> the procedural nebula fallback is live). Self-test hook.
     uint32_t flipbookFrames() const { return (uint32_t)m_flipTex.size(); }
+    // ROUND 6: frames loaded for the SURGE / OPEN state atlases (0 = that atlas is
+    // absent -> that state falls back to its procedural map). Self-test hooks.
+    uint32_t surgeFlipbookFrames() const { return (uint32_t)m_flipSurgeTex.size(); }
+    uint32_t openFlipbookFrames() const { return (uint32_t)m_flipOpenTex.size(); }
     uint32_t portalCount() const { return (uint32_t)m_portals.size(); }
     const RiftPortal& portal(uint32_t i) const { return m_portals[i]; }
     const std::vector<RiftPortal>& portals() const { return m_portals; }
@@ -283,7 +296,7 @@ private:
 
     // Owned render resources (freed in shutdown()). The portal mesh vector
     // collects every PER-ENTITY device mesh authored by build() (ring torus,
-    // chevron prisms, floor-plate wedges, core disks) so shutdown can free
+    // chevron prisms, floor-plate wedges) so shutdown can free
     // them uniformly. SHARED meshes/textures (one handle referenced by many
     // entities — the membrane disks, the rim ring, the FX beam box, the
     // plasma/vista/mr textures) are tracked separately and freed ONCE.
@@ -310,16 +323,24 @@ private:
     x3::rhi::TextureHandle     m_mrGate[3];
     x3::rhi::TextureHandle     m_holoTexA;    // teal holo data-screen texture (variant A)
     x3::rhi::TextureHandle     m_holoTexB;    // teal holo data-screen texture (variant B)
-    // MEMBRANE FLIPBOOK (ROUND 4 J2 — "steal Grok's pixels"): 48 per-frame
-    // tiles sliced at build() from assets/textures/rifthub/
-    // membrane_flipbook.png (tools/make_membrane_flipbook.py bakes the 8x6
-    // atlas from the owner's reference video's IDLE span, radially masked +
-    // loop-blended). tick() plays them as the IDLE state's plasma layer at
-    // kFlipFps with a per-portal phase offset, the slow disk rotation staying
-    // subtle underneath; SURGE arcs composite on top and the OPEN throat swap
-    // wins (the flip write is gated on !throatOn). Missing/undecodable atlas
-    // (fresh clone with LFS stubs) -> empty -> the procedural nebula holds.
+    // MEMBRANE FLIPBOOKS (ROUND 4 J2 "steal Grok's pixels", completed in ROUND 6):
+    // ALL THREE membrane states are now the owner's REAL FOOTAGE. Each is a 48-tile
+    // 8x6 atlas baked by tools/make_membrane_flipbook.py from a span of
+    // docs/reference/PortalAnimated.mp4 (radially masked; same disc crop for every
+    // state so the membrane never jumps scale on a swap), sliced into per-frame
+    // textures at build():
+    //   m_flipTex      IDLE  (video t 0.00-3.20) — looped at kFlipFps, per-portal phase
+    //   m_flipSurgeTex SURGE (video t 6.40-8.30) — played ONCE across the kawoosh
+    //                  (progress-mapped, one-shot bake: no loop blend), the vortex
+    //                  ring collapsing into the throat = a real escalation
+    //   m_flipOpenTex  OPEN  (video t 8.40-9.95) — looped: the settled radial
+    //                  streaming throat, frame-continuous with the surge's last frame
+    // Any missing/undecodable atlas (fresh clone with LFS stubs) leaves its vector
+    // empty and that state degrades to its procedural map (nebula / throat) — the
+    // world never breaks. NOTHING hand-drawn is composited over the footage.
     std::vector<x3::rhi::TextureHandle> m_flipTex;
+    std::vector<x3::rhi::TextureHandle> m_flipSurgeTex;
+    std::vector<x3::rhi::TextureHandle> m_flipOpenTex;
     // Per-portal blue core lights (1:1 with m_portals); intensity pulsed in tick().
     std::vector<x3::rhi::PointLight> m_lights;
     // Curated PBR surface sets (ring plates / housings / cradle / hall). The
