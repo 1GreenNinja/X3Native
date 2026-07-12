@@ -98,6 +98,44 @@ x3::rhi::IRenderDevice::FogParams fogOf(float r, float g, float b, float d,
     return f;
 }
 
+// ---- HONEST INTERIOR AMBIENT (the rifthub lesson, applied game-wide-ish) -------------
+// THE CRUTCH: the render device's DEFAULT ambient is {0.42, 0.44, 0.50} (a "small
+// constant lift" that is anything but small) and NOTHING in the canon world ever called
+// setAmbient — so every interior in the facility was lit by a huge omnidirectional wash.
+// Ambient is not light: it is a flat term added to every surface regardless of direction,
+// so raising it lights a room BY DESTROYING ITS CONTRAST. The detention cell was the
+// proof — a white cardboard box with 17 point lights inside it and no shadow anywhere.
+// (Same lesson the rifthub hall learned at 0.100 -> 0.032; see rifthub.cpp applyAtmosphere.)
+//
+// So the zone atmosphere now owns AMBIENT + IBL as well as fog:
+//   * ZWard (detention — Jake's cell) goes to the rifthub's honest floor. The cell is
+//     lit by ONE practical now; ambient only keeps the deepest corner off pure black.
+//   * Every other interior zone gets a MODERATE cut (0.42 -> ~0.16). Their recipe key
+//     lights (1.3-2.3 @ range 5-6) carry them; this buys back highlight-to-shadow
+//     gradient without a 52-room re-light this pass. (Backlog: hand-tune per zone.)
+//   * ZCave / ZOrganic stay near-black (they were authored as fog-and-silhouette spaces).
+//   * OUTSIDE any room (kNoRoom = the SEAM-2 exterior / streamed planet) the ENGINE
+//     DEFAULT is restored, so daylight on the tower facade is byte-identical to before.
+// IBL comes down with it for the same reason (the split-sum bias term is albedo-
+// INDEPENDENT: a bright probe paints a neutral grey wash over any surface — the
+// "ghost-gate" failure the rifthub root-caused).
+struct ZoneAir { float amb[3]; float ibl; };
+const ZoneAir& airFor(uint8_t z) {
+    static const ZoneAir kDark   { { 0.030f, 0.032f, 0.038f }, 0.20f };  // detention
+    static const ZoneAir kMid    { { 0.150f, 0.158f, 0.175f }, 0.35f };  // built interiors
+    static const ZoneAir kOrganic{ { 0.020f, 0.026f, 0.022f }, 0.18f };  // cave / monster space
+    switch (z) {
+        case ZWard:    return kDark;
+        case ZCave:
+        case ZOrganic: return kOrganic;
+        default:       return kMid;
+    }
+}
+// The engine defaults (VulkanRenderDevice m_ambient / m_iblIntensity), re-asserted the
+// moment the eye leaves the room graph so the exterior/sky path is untouched.
+constexpr float kExteriorAmbient[3] = { 0.42f, 0.44f, 0.50f };
+constexpr float kExteriorIbl        = 0.50f;   // app_run sets this for the SEAM-2 facade
+
 // Indexed by Zone. Texture sets are AD-3's curated survivors (matlib-verified).
 const Recipe& recipeFor(uint8_t z) {
     static const Recipe kRecipes[ZCount] = {
@@ -1296,9 +1334,25 @@ void RoomDressing::applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t 
     int zone = ZWard;   // detention default (matches the cell_dressing base opt-in)
     if (eyeRoom < m_roomZone.size() && m_roomZone[eyeRoom] != ZNone)
         zone = m_roomZone[eyeRoom];
-    if (zone == m_lastZone) return;
-    m_lastZone = zone;
+    // Is the eye INSIDE the room graph at all? kNoRoom (or a room id past the table)
+    // means the exterior — the facade, the apron, the streamed planet — which is lit by
+    // the sky/IBL rig and must keep the engine defaults.
+    const bool interior = (eyeRoom < m_roomZone.size());
+    const int key = interior ? zone : -2;    // -2 = "exterior" (distinct from -1 = unset)
+    if (key == m_lastZone) return;
+    m_lastZone = key;
     device.setFog(m_zoneFog[(size_t)zone]);
+    if (interior) {
+        const ZoneAir& air = airFor((uint8_t)zone);
+        device.setAmbient(air.amb[0], air.amb[1], air.amb[2]);
+        device.setIblIntensity(air.ibl);
+        x3::logInfo("[zone-air] room " + std::to_string(eyeRoom) + " zone " +
+                    std::to_string(zone) + " -> ambient " + std::to_string(air.amb[0]) +
+                    " ibl " + std::to_string(air.ibl));
+    } else {
+        device.setAmbient(kExteriorAmbient[0], kExteriorAmbient[1], kExteriorAmbient[2]);
+        device.setIblIntensity(kExteriorIbl);
+    }
 }
 
 } // namespace x3::game
