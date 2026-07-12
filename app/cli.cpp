@@ -277,6 +277,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // -X/-Y/-Z (the whole rift chamber, half the tower, most of the planet), and
             // the flag silently fell back to the hero camera instead of saying so. A
             // leading '-' followed by a digit or '.' is a NUMBER, not a flag.
+            // (Both integration lines hit this independently — the fold found it via the
+            // bodycontact host's rigid-side cam. Same fix, kept as the shared lambda.)
             auto isNumArg = [](const char* s) {
                 return s[0] != '-' ||
                        (s[1] >= '0' && s[1] <= '9') || s[1] == '.';
@@ -315,6 +317,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--screenshot-upperfloors") {   // R-5: floors 2-7 content proof
             o.upperShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.upperShotDir = argv[++i];
+        }
+        else if (a == "--screenshot-rescuerooms") {    // F2 three-captive rescue-room closeups
+            o.rescueShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.rescueShotDir = argv[++i];
         }
         else if (a == "--screenshot-showroom-fp") {
             // Headless first-person proof of the walkable --world showroom. Forces the
@@ -452,6 +458,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureSpireDir = argv[++i];
         }
+        else if (a == "--capture-wings") {
+            o.captureWings = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWingsDir = argv[++i];
+        }
         else if (a == "--list-clips") {
             o.listClips = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.listClipsPath = argv[++i];
@@ -462,6 +472,15 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--test-intro") o.testIntro = true;
         else if (a == "--test-introorch") o.testIntroOrch = true;
+        else if (a == "--test-introcockpit") o.testIntroCockpit = true;
+        else if (a == "--test-shipinterior") o.testShipInterior = true;
+        else if (a == "--test-shipwindows") o.testShipWindows = true;
+        else if (a == "--test-bodycontact") o.testBodyContact = true;
+        else if (a == "--test-wormhole") o.testWormhole = true;
+        else if (a == "--test-wormhole-transit") o.testWormholeTransit = true;
+        else if (a == "--test-tractor") o.testTractor = true;
+        else if (a == "--test-descentslide") o.testDescentSlide = true;
+        else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
         else if (a == "--intro-force") {

@@ -164,6 +164,15 @@ bool ElevatorShowcase::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // the smoked walls read rich (not black) + the accent strips/holo pop against it.
     { x3::rhi::PointLight ceil; ceil.color[0]=3.4f; ceil.color[1]=3.0f; ceil.color[2]=2.4f; ceil.range=8.0f; m_lights.push_back(ceil); } // warm key
     { x3::rhi::PointLight holo; holo.color[0]=0.6f; holo.color[1]=2.2f; holo.color[2]=3.2f; holo.range=5.0f;  m_lights.push_back(holo); }  // holo cyan glow
+    // WAVE-2B (LD review #3): the cab read as a BLACK BOX between two beautiful vistas —
+    // the exterior crown glow existed but the interior ceiling had no fill, so the coffer
+    // + upper walls fell to black (captures/elevtrio/elevator_interior.png). Add ONE SOFT
+    // ceiling fill high at cab centre — additive only (this is the 14900K showcase; the
+    // warm key + holo mood are untouched). A gentle cool-neutral wash so the coffered
+    // ceiling + rails read without flattening the smoked-glass richness. Placed at [2] so
+    // the disco spots stay the TRAILING lights (layoutCab poses this + skips it in the
+    // disco sweep). Low intensity: lift the black, don't wash the room.
+    { x3::rhi::PointLight fill; fill.color[0]=2.4f; fill.color[1]=2.6f; fill.color[2]=3.0f; fill.range=6.5f; m_lights.push_back(fill); } // soft ceiling fill
     // 4 disco spots (off until 1127); placed in layoutCab().
     for (int i = 0; i < 4; ++i) { x3::rhi::PointLight l; l.color[0]=l.color[1]=l.color[2]=0.0f; l.range=7.0f; m_lights.push_back(l); }
 
@@ -321,8 +330,12 @@ void ElevatorShowcase::buildCabInterior(Scene& scene, x3::rhi::IRenderDevice& de
       m_eStrata = addDecor(scene, device, p, c, em, (uint32_t)Tag::Prop); }
 
     // --- Coffered ceiling (THICK) with a recessed warm luminaire ---
+    // WAVE-2B (LD review #3): the cab ceiling read pure black between the two vistas.
+    // Brighten the recessed luminaire so the coffer is SELF-LIT (a soft ceiling fill),
+    // paired with the new fill point light — additive, no restyle of the warm/holo mood.
+    const float kCeilFill[4] = { 1.00f, 0.86f, 0.55f, 2.8f };   // brighter warm luminaire
     decorBox(W, 0.10f, D, 0, H - 0.05f, 0, kDarkSteel, kNoEm);
-    m_eCeil = decorBox(W - 0.35f, 0.04f, D - 0.35f, 0, H - 0.14f, 0, kCabFloor, kWarmEm);
+    m_eCeil = decorBox(W - 0.35f, 0.04f, D - 0.35f, 0, H - 0.14f, 0, kCabFloor, kCeilFill);
 
     // --- Octagonal brushed HANDRAIL around 3 walls at waist height ---
     const float railY = -0.15f, railR = 0.035f;
@@ -472,8 +485,10 @@ void ElevatorShowcase::layoutCab(Scene& scene) {
     if (m_lights.size() >= 2) {
         m_lights[0].pos[0]=ix;            m_lights[0].pos[1]=iy + 1.9f; m_lights[0].pos[2]=iz;
         m_lights[1].pos[0]=ix + W - 0.3f; m_lights[1].pos[1]=iy + 0.6f; m_lights[1].pos[2]=iz - 0.4f;
-        for (int i = 2; i < (int)m_lights.size(); ++i) {
-            float a = (float)(i-2)/4.0f * kPi2 + m_time * (m_elev.disco() ? 2.5f : 0.0f);
+        // [2] = WAVE-2B soft ceiling fill: high at cab centre, just under the coffer.
+        if (m_lights.size() >= 3) { m_lights[2].pos[0]=ix; m_lights[2].pos[1]=iy + 2.15f; m_lights[2].pos[2]=iz; }
+        for (int i = 3; i < (int)m_lights.size(); ++i) {
+            float a = (float)(i-3)/4.0f * kPi2 + m_time * (m_elev.disco() ? 2.5f : 0.0f);
             m_lights[i].pos[0]=ix + std::cos(a)*1.0f;
             m_lights[i].pos[1]=iy + 1.4f;
             m_lights[i].pos[2]=iz + std::sin(a)*1.0f;

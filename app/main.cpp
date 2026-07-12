@@ -296,6 +296,15 @@ int main(int argc, char** argv) {
         _tf.testElevatorShowcase = o.testElevatorShowcase;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;
+        _tf.testIntroCockpit = o.testIntroCockpit;
+        _tf.testShipInterior = o.testShipInterior;
+        _tf.testShipWindows  = o.testShipWindows;
+        _tf.testBodyContact = o.testBodyContact;
+        _tf.testWormhole = o.testWormhole;
+        _tf.testWormholeTransit = o.testWormholeTransit;
+        _tf.testTractor = o.testTractor;
+        _tf.testDescentSlide = o.testDescentSlide;
+        _tf.testWingDressing = o.testWingDressing;
         _tf.testIntroBranch = o.testIntroBranch;
         _tf.testSurfaceStart = o.testSurfaceStart;
         _tf.testCutscene = o.testCutscene;
@@ -704,6 +713,7 @@ int main(int argc, char** argv) {
         _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;
         _hc.carShot          = o.carShot;          _hc.carShotDir       = o.carShotDir;
         _hc.upperShot        = o.upperShot;        _hc.upperShotDir     = o.upperShotDir;
+        _hc.rescueShot       = o.rescueShot;        _hc.rescueShotDir   = o.rescueShotDir;
         _hc.showroomFpShot   = o.showroomFpShot;   _hc.showroomFpShotPath = o.showroomFpShotPath;
         _hc.showroomRagdollShot = o.showroomRagdollShot; _hc.showroomRagdollShotPath = o.showroomRagdollShotPath;
         _hc.showroomDeckShot = o.showroomDeckShot; _hc.showroomDeckShotPath = o.showroomDeckShotPath;
@@ -755,6 +765,7 @@ int main(int argc, char** argv) {
     _hc.duskSky         = o.duskSky;           // STREET LIGHT dusk-sky staging
     _hc.shotChatter     = o.shotChatter;       // CHATTER bubble staging for stills
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
+    _hc.captureWings    = o.captureWings;      _hc.captureWingsDir = o.captureWingsDir;
     _hc.docWorldPath    = o.docWorldPath;
     _hc.cullPathArg     = o.cullPathArg;
     _hc.hzbArg          = o.hzbArg;

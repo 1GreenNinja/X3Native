@@ -428,7 +428,14 @@ public:
                                       bool /*alphaBlend*/ = false, TextureHandle /*emissiveTex*/ = {},
                                       TextureHandle /*detailTex*/ = {}, float /*detailUvScale*/ = 1.0f,
                                       float /*clearcoat*/ = 0.0f, float /*clearcoatRough*/ = 0.05f,
-                                      float /*selfLight*/ = 0.0f) {
+                                      float /*selfLight*/ = 0.0f,
+                                      // BLACK-PROP FIX: per-object metallic CLAMP for dark-albedo kit
+                                      // props whose MR map bakes metallic=1 (which zeroes the diffuse
+                                      // lobe and renders them black in low-IBL interiors). 1.0 = no
+                                      // clamp (every existing call site shades byte-identically).
+                                      // Rides the spare glass .w lane; selfLight rides terrainPack2 —
+                                      // orthogonal, so a ship hull can carry both.
+                                      float /*metallicScale*/ = 1.0f) {
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
     }
 

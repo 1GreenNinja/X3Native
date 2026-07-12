@@ -480,6 +480,15 @@ void SpireSubLevels::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
     m_chenBoss.update(dt, scene, physics, eye, atkTarget, attackFx);
 }
 
+void SpireSubLevels::shutdown() {
+    // Tear down any in-flight death ragdolls (Jolt bodies) across every sub-level
+    // enemy manager BEFORE the physics world dies. Idempotent (see MonsterManager);
+    // while the descent never opened nothing has spawned, so this is a pure no-op.
+    for (auto& m : m_enemies) m.shutdown();
+    m_miniBoss.shutdown();
+    m_chenBoss.shutdown();
+}
+
 void SpireSubLevels::onTrigger(uint32_t triggerId) {
     // Defensive: ignore ALL sub-level triggers while the descent is hidden (the descent
     // trigger isn't even registered yet, and the hub triggers are unreachable).

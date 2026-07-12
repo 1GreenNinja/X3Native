@@ -1106,6 +1106,45 @@ uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
     return (uint32_t)cands.size();
 }
 
+// Derive the cell OBSERVATION WINDOW span from the resolved floor geometry (see the
+// header). Both buildCanonFloor (which opens the graybox) and CellDressing (which glazes
+// + frames it) call this, so the hole and the glass agree exactly. Returns an invalid
+// window (valid()==false) whenever there is no cell, no +Z Main-Hall opening, or no stub
+// wide enough — callers then simply skip the feature and the wall stays solid.
+CellWindow cellObsWindow(const CanonFloor& floor) {
+    CellWindow w;
+    if (!floor.valid()) return w;
+    const CanonBeats bt = canonBeats(floor);
+    if (bt.jakeCell == kNoRoom || bt.jakeCell >= floor.rooms.size()) return w;
+    const CanonRoom& c = floor.rooms[bt.jakeCell];
+    // Locate the cell's +Z (Main-Hall) opening: the traversed doorway on the wall plane
+    // nearest z1 (skip the corridor/tube kinds — they own a separate throat, not a face).
+    float doorC = 0.0f, doorH = 0.0f; bool found = false;
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.a != bt.jakeCell && dw.b != bt.jakeCell) continue;
+        if (dw.kind == DoorwayKind::GapBridge || dw.kind == DoorwayKind::CrossLevel ||
+            dw.kind == DoorwayKind::None) continue;
+        if (dw.axis != 1) continue;                                  // Z-plane wall only
+        if (std::fabs(dw.cz - c.z1()) < std::fabs(dw.cz - c.z0())) { // nearer +Z
+            doorC = dw.cx; doorH = (dw.cutHalf > 0.05f) ? dw.cutHalf : 0.8f; found = true;
+        }
+    }
+    if (!found) return w;
+    // Two stubs flank the door on the +Z run: [x0, doorC-doorH] and [doorC+doorH, x1].
+    // Inset each by a jamb margin from the corner + the door reveal, then glaze the wider.
+    const float m = 0.35f;
+    const float lLo = c.x0() + m, lHi = (doorC - doorH) - m;
+    const float rLo = (doorC + doorH) + m, rHi = c.x1() - m;
+    const float lW = lHi - lLo, rW = rHi - rLo;
+    if (lW < 0.5f && rW < 0.5f) return w;                            // no stub worth glazing
+    if (lW >= rW) { w.lo = lLo; w.hi = lHi; } else { w.lo = rLo; w.hi = rHi; }
+    // Cap the width so it reads as a reinforced viewport, not a missing wall (<= 2.2 m).
+    if (w.hi - w.lo > 2.2f) { const float mid = (w.lo + w.hi) * 0.5f; w.lo = mid - 1.1f; w.hi = mid + 1.1f; }
+    w.room  = bt.jakeCell; w.wall = 3;
+    w.y0    = c.y0(); w.y1 = c.y1(); w.plane = c.z1();
+    return w;
+}
+
 // =====================================================================================
 // BUILDER. Each room is built as a shell: floor slab, ceiling lid (collision-only),
 // and 4 walls. A wall face gets a 1.2 m doorway gap (+ lintel) wherever the resolver
@@ -1165,7 +1204,7 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // Each Gap carries its run coordinate `c` AND a `clearTop` — the Y the opening must
     // stay clear up to (raised at a step doorway to clear a player standing on the HIGHER
     // floor, so the lower room's lintel doesn't guillotine someone coming up the ramp).
-    struct Gap { float c; float clearTop; float half; };   // half = per-doorway cut half-width (W2-E)
+    struct Gap { float c; float clearTop; float half; bool blocked = false; };   // half = per-doorway cut half-width (W2-E); blocked = a sealed (collision-only) opening, e.g. the cell observation window
     std::vector<std::vector<Gap>> gapXneg(nRooms), gapXpos(nRooms), gapZneg(nRooms), gapZpos(nRooms);
 
     // Clear-passage top for a doorway between two rooms: high enough that a standing player
@@ -1240,6 +1279,29 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                     std::to_string(opts.breachHalf) + ")");
     }
 
+    // CELL OBSERVATION WINDOW (feat/cell-real-glass): punch a see-through armored viewport
+    // in the detention cell's +Z (Main-Hall-facing) graybox so Jake can look OUT into the
+    // hall. Full room height (clearTop = ceiling -> lintelX no-ops, no header slab); the
+    // wall builder re-seals the gap with an INVISIBLE collision box (blocked=true) so the
+    // cell stays escape-proof while the opening lets CellDressing's clear glass read
+    // straight through. Same span CellDressing glazes (cellObsWindow) -> hole + pane align.
+    {
+        const CellWindow obsWin = cellObsWindow(floor);
+        if (obsWin.valid() && obsWin.room < nRooms) {
+            const CanonRoom& wr = floor.rooms[obsWin.room];
+            Gap wg;
+            wg.c        = (obsWin.lo + obsWin.hi) * 0.5f;
+            wg.half     = (obsWin.hi - obsWin.lo) * 0.5f;
+            wg.clearTop = wr.y1();     // full height: no header (lintelX returns early)
+            wg.blocked  = true;        // invisible collision seals the see-through opening
+            gapZpos[obsWin.room].push_back(wg);   // +Z wall uses gapZpos
+            x3::logInfo("[cell-window] observation window: room " + std::to_string(obsWin.room) +
+                        " +Z x[" + std::to_string(obsWin.lo) + "," + std::to_string(obsWin.hi) +
+                        "] plane z=" + std::to_string(obsWin.plane) +
+                        " y[" + std::to_string(obsWin.y0) + "," + std::to_string(obsWin.y1) + "]");
+        }
+    }
+
     // Helper: build a wall along Z (plane x=const) for room `ri`, with doorway gaps at
     // the given z coordinates (each a 1.2 m opening + lintel).
     auto buildWallZWithGaps = [&](uint32_t ri, float x, float z0, float z1, float floorY, float h,
@@ -1272,6 +1334,15 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (hi > x1) hi = x1;
             if (lo > cursor) wallX(scene, device, physics, cursor, lo, z, floorY, h, tex, tint, ri, wallVis);
             lintelX(scene, device, physics, gap.c, z, floorY, h, gap.clearTop, tex, tint, ri, wallVis, gh);
+            // A BLOCKED gap (the sealed observation window) keeps its opening see-through
+            // but re-adds an INVISIBLE static collision box across it, so the cell stays
+            // escape-proof (the graybox is the collision truth) while the glass reads clear.
+            if (gap.blocked) {
+                const float cwx = (lo + hi) * 0.5f, chw = (hi - lo) * 0.5f;
+                if (chw > 0.05f)
+                    addBox(scene, device, physics, chw, h * 0.5f, kWallT * 0.5f,
+                           cwx, floorY + h * 0.5f, z, tex, tint, ri, /*collide*/true, /*visible*/false);
+            }
             cursor = std::max(cursor, hi);
         }
         if (cursor < x1) wallX(scene, device, physics, cursor, x1, z, floorY, h, tex, tint, ri, wallVis);
@@ -1772,11 +1843,18 @@ bool runCanonLevelSelfTest() {
         for (uint32_t i = 0; i < floor.rooms.size(); ++i)
             if (floor.rooms[i].name.find("Jake") != std::string::npos) { jake = (int)i; break; }
         bool found = jake >= 0;
+        // Canon dims (LevelArchitect v10.9 FLOOR1_DEFAULT): Jake's Cell w:7 h:4 d:6.
+        // The v2 project JSON had regressed this to 4x3.5x4 (~⅓ the footprint), which
+        // (a) rendered the hero cell a quarter-size + cramped and (b) overflowed the
+        // trapdoor hatch past the shrunken floor, leaving a see-through gap to the
+        // descent chute below. Restored to canon; cell_dressing already seats all
+        // contents relative to the cell bounds so they re-fit automatically.
         bool dims = found && std::fabs(floor.rooms[jake].cx - 2.0f) < 0.01f &&
                     std::fabs(floor.rooms[jake].cz - 40.0f) < 0.01f &&
-                    std::fabs(floor.rooms[jake].w - 4.0f) < 0.01f &&
-                    std::fabs(floor.rooms[jake].h - 3.5f) < 0.01f;
-        check(found && dims, "C2 Jake's Cell at canonical (2,0,40) 4x3.5x4 (no axis flip)");
+                    std::fabs(floor.rooms[jake].w - 7.0f) < 0.01f &&
+                    std::fabs(floor.rooms[jake].h - 4.0f) < 0.01f &&
+                    std::fabs(floor.rooms[jake].d - 6.0f) < 0.01f;
+        check(found && dims, "C2 Jake's Cell at canonical (2,0,40) 7x4x6 (no axis flip)");
     }
 
     // ---- C3: doorway resolver kind histogram (matches tools/connectivity_audit.py). ----

@@ -236,6 +236,15 @@ public:
     // assertion that the floors we authored line up with the progression.
     bool reachableViaElevator(SpireMidFloor f, uint32_t elevatorStopCount) const;
 
+    // Ragdoll-teardown gap fix: release every in-flight death-ragdoll (Jolt bodies)
+    // across ALL of this host's enemy managers (per-floor packs + the F3/F5 bosses +
+    // the F5 victim-boss) BEFORE the physics world is shut down. Idempotent; a no-op
+    // when nothing is ragdolling. The owning host MUST call this before
+    // physics->shutdown() (see app_run's shutdownGameSystems). Mirrors the game/nexus
+    // teardown so a monster killed in the last ~0.7 s (mid-flop) on a mid floor never
+    // touches a dead Jolt system when its IRagdoll is later destroyed.
+    void shutdown();
+
 private:
     bool m_built = false;
     std::string m_modelDir;

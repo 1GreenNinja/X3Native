@@ -192,6 +192,14 @@ void holoReadoutPalette(const std::vector<std::string>& lines, bool wideReadout,
 // Headless self-test (--test-holoterm): boot readout is present (not blank), typing
 // builds the input line, backspace edits it, submit calls the sink with the value
 // and clears (accept) / keeps a reject line, and the cursor blinks. Asserts H0-H4.
+// Bake a DARK-GLASS ROUNDED MEDICAL-VITALS MONITOR into an RGBA8 n x n buffer (the
+// F2 rescue-room wall screen). Same black-glass line-art recipe as the flagship
+// terminal: a near-black rounded pane with a faint scanline field + rounded bezel, a
+// green ECG heart-rate trace, and glowing green/cyan vitals rows (HR / BP / SpO2 /
+// TEMP / RESP) under the captive's NAME header. The bright texels bloom over the dark
+// pane (drive it as an emissiveTex over a near-black albedo -- the ACES glow law).
+std::vector<uint8_t> bakeMedicalMonitor(uint32_t n, const std::string& name);
+
 bool runHoloTerminalSelfTest();
 
 } // namespace x3::game

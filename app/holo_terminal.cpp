@@ -311,6 +311,178 @@ void holoReadoutPalette(const std::vector<std::string>& lines, bool wideReadout,
     orangeF = orangeFraction(c, x0, y0, x1, y1);
 }
 
+// ---------------------------------------------------------------------------
+// F2 RESCUE-ROOM VITALS MONITOR (ported from feat/intro-cockpit 162bb69, rebuilt on
+// THIS file's black-glass canvas). A dark-glass rounded medical monitor: near-black
+// pane + faint scanline field, rounded bezel, a green PQRST ECG trace and glowing
+// vitals rows under the captive's name. Drive it as an emissiveTex over a near-black
+// albedo (the ACES glow law) so it reads as a live screen, never a flat bright slab.
+// Consumer: room_dressing.cpp (the F2 wall screen beside each captive).
+// ---------------------------------------------------------------------------
+std::vector<uint8_t> bakeMedicalMonitor(uint32_t n, const std::string& name) {
+    const float fn = (float)n;
+    auto P = [&](float f){ return f * fn; };
+
+    // ---- 1) Near-black glass pane (barely-blue) + faint scanline/grid, dark bezel
+    // margin — identical read to the flagship terminal's dark screen field. ----
+    const float paneM = 0.055f;
+    Canvas c(n);
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) {
+            const float u = (x + 0.5f) / fn, v = (y + 0.5f) / fn;
+            const size_t i = (size_t)y * n + x;
+            const bool inPane = (u > paneM && u < 1.0f - paneM &&
+                                 v > paneM && v < 1.0f - paneM);
+            if (inPane) {
+                float br = 0.010f, bg = 0.020f, bb = 0.040f;
+                const float scan = 0.85f + 0.15f * ((y % 4u) < 2u ? 1.0f : 0.5f);
+                br *= scan; bg *= scan; bb *= scan;
+                if ((x % 30u) < 1u || (y % 30u) < 1u) { bg += 0.010f; bb += 0.018f; }
+                c.r[i] = br; c.g[i] = bg; c.b[i] = bb;
+            } else {
+                c.r[i] = 0.004f; c.g[i] = 0.008f; c.b[i] = 0.015f;
+            }
+        }
+    }
+
+    // GLOWING palette (HDR so the strokes bloom over the dark pane). MERGE 2026-07-12:
+    // the fold authored this monitor against its own port of the holo drawing API, with
+    // hand-rolled colour constants (one of which it called "BLUE/cyan"). It is now drawn on
+    // THE ONE HoloPanel platform, in the CANON INK — its constants were already within
+    // rounding of kGreen/kBlue/kBlueHi, so this is the same screen, on the shared palette,
+    // and it can never drift toward cyan. (DECISIONS: blue, NOT cyan; ONE implementation.)
+    const Ink GN = kGreen;    // vitals GREEN (ECG / HR)
+    const Ink BL = kBlue;     // data BLUE (labels, grid, bezel)
+    const Ink WT = kBlueHi;   // bright blue-white (the captive's name)
+    const float th  = std::max(1.4f, fn / 512.0f);
+    const float thh = th * 1.6f;
+
+    // ---- 2) Rounded bezel: a rounded-rect frame just inside the pane edge, so the
+    // silhouette reads as a rounded monitor (paired with the corner fade in the pack). ----
+    roundRectFrame(c, P(paneM + 0.015f), P(paneM + 0.015f),
+                   P(1.0f - paneM - 0.015f), P(1.0f - paneM - 0.015f),
+                   P(0.06f), BL, 0.55f, thh);
+    roundRectFrame(c, P(paneM + 0.028f), P(paneM + 0.028f),
+                   P(1.0f - paneM - 0.028f), P(1.0f - paneM - 0.028f),
+                   P(0.05f), BL, 0.22f, th);
+
+    // ---- 3) HEADER: subject NAME + STABLE status + rule. ----
+    {
+        std::string hdr = name;
+        for (auto& ch : hdr) ch = (char)std::toupper((unsigned char)ch);
+        const float npx = P(0.070f);
+        drawText(c, hdr, P(0.10f), P(0.095f), npx, WT, 1.0f);
+        // "SUBJECT" subtitle
+        drawText(c, "VITALS MONITOR", P(0.10f), P(0.185f), P(0.030f),
+                      BL, 0.75f);
+        // STABLE tag (green) at the right, with a filled status dot.
+        const std::string tag = "STABLE";
+        const float tpx = P(0.040f);
+        const float tw = textWidth(tag, tpx);
+        const float tx = P(1.0f - paneM - 0.05f) - tw;
+        rectFill(c, tx - P(0.045f), P(0.11f), tx - P(0.045f) + P(0.020f), P(0.13f),
+                 GN, 0.95f);
+        drawText(c, tag, tx, P(0.098f), tpx, GN, 1.0f);
+        line(c, P(0.10f), P(0.235f), P(1.0f - paneM - 0.05f), P(0.235f),
+             WT, 0.9f, thh);
+    }
+
+    // ---- 4) ECG heart-rate trace (green). A repeating PQRST beat swept across a
+    // band; drawn as a connected additive polyline so it blooms like a real monitor. ----
+    {
+        const float bx0 = P(0.10f), bx1 = P(1.0f - paneM - 0.05f);
+        const float vy  = P(0.375f);            // band centerline
+        const float bh  = P(0.11f);             // beat amplitude scale
+        // PQRST as a function of beat phase p in [0,1) -> vertical offset (fraction of bh).
+        auto ecg = [](float p) -> float {
+            auto bump = [](float x, float c0, float w, float h) {
+                const float d = (x - c0) / w;
+                return (std::fabs(d) < 1.0f) ? h * (0.5f + 0.5f * std::cos(d * 3.14159265f)) : 0.0f;
+            };
+            float y = 0.0f;
+            y += bump(p, 0.13f, 0.05f,  0.16f);   // P wave
+            y -= bump(p, 0.32f, 0.018f, 0.14f);   // Q
+            y += bump(p, 0.36f, 0.016f, 1.00f);   // R spike
+            y -= bump(p, 0.40f, 0.020f, 0.30f);   // S
+            y += bump(p, 0.60f, 0.07f,  0.26f);   // T wave
+            return y;
+        };
+        const int steps = (int)(bx1 - bx0);
+        const float beats = 3.4f;               // beats across the band width
+        float pxprev = bx0, pyprev = vy;
+        for (int s = 0; s <= steps; ++s) {
+            const float x = bx0 + (float)s;
+            const float t = (float)s / (float)steps;
+            const float p = std::fmod(t * beats, 1.0f);
+            const float yv = vy - ecg(p) * bh;
+            if (s > 0) line(c, pxprev, pyprev, x, yv, GN, 0.98f, thh);
+            pxprev = x; pyprev = yv;
+        }
+        // faint baseline
+        line(c, bx0, vy + P(0.005f), bx1, vy + P(0.005f), GN, 0.16f, th);
+        // "72 BPM" big readout at the right end of the trace band.
+        drawText(c, "72", bx1 - P(0.20f), P(0.30f), P(0.070f), GN, 1.0f);
+        drawText(c, "BPM", bx1 - P(0.20f), P(0.375f), P(0.028f), GN, 0.85f);
+    }
+
+    // ---- 5) VITALS ROWS (label + value). Green = pulse/HR, blue = the rest. ----
+    {
+        struct Row { const char* label; const char* value; bool green; };
+        const Row rows[] = {
+            { "HR",   "72 bpm",      true  },
+            { "BP",   "118 / 76",    false },
+            { "SpO2", "98 %",        false },
+            { "TEMP", "36.4 C",      false },
+            { "RESP", "16 /min",     false },
+        };
+        const float lx = P(0.11f);
+        const float vx = P(0.42f);
+        float ty = P(0.50f);
+        const float rowH = P(0.083f);
+        const float lpx = P(0.036f);
+        const float vpx = P(0.050f);
+        for (const Row& rw : rows) {
+            const Ink lk = rw.green ? GN : BL;
+            drawText(c, rw.label, lx, ty + P(0.012f), lpx, BL, 0.85f);
+            drawText(c, rw.value, vx, ty, vpx, lk, 1.0f);
+            line(c, lx, ty + rowH - P(0.020f), P(1.0f - paneM - 0.05f), ty + rowH - P(0.020f),
+                 BL, 0.12f, th);
+            ty += rowH;
+        }
+    }
+
+    // ---- 6) Rounded-corner + edge fade (same silhouette treatment as the terminal). ----
+    const float r2corner = 0.28f;
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    auto to8 = [](float c0) -> uint8_t {
+        int v = (int)(c0 * 255.0f + 0.5f);
+        return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+    };
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) {
+            const float u = (x + 0.5f) / fn, v = (y + 0.5f) / fn;
+            const float cx = (u - 0.5f), cy = (v - 0.5f);
+            const float ax = std::fabs(cx) * 2.0f, ay = std::fabs(cy) * 2.0f;
+            float fade = 1.0f;
+            const float inx = 1.0f - r2corner, iny = 1.0f - r2corner;
+            if (ax > inx && ay > iny) {
+                const float dx = (ax - inx) / r2corner, dy = (ay - iny) / r2corner;
+                const float cd = std::sqrt(dx*dx + dy*dy);
+                fade = 1.0f - cd; if (fade < 0.0f) fade = 0.0f;
+            }
+            const float edge = 1.0f - 0.6f * std::max(0.0f, std::max(ax, ay) - 0.92f) / 0.08f;
+            fade *= (edge < 0.0f ? 0.0f : edge);
+            const size_t i = (size_t)y * n + x;
+            uint8_t* p = &px[i * 4];
+            p[0] = to8(c.r[i] * fade);
+            p[1] = to8(c.g[i] * fade);
+            p[2] = to8(c.b[i] * fade);
+            p[3] = 255;
+        }
+    }
+    return px;
+}
+
 void HoloTerminal::shutdown(x3::rhi::IRenderDevice& device) {
     m_panel.shutdown(device);
     m_device = nullptr;

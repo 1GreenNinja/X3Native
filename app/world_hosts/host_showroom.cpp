@@ -1182,6 +1182,36 @@ int hostShowroom(HostContext& hc) {
                         addLight(cx + ix * gStep, gY, cz + iz * gStep, 16.0f, kPL_I);
                 // Extra light at the foot of the climb stair so the ascent reads.
                 addLight(climbCX, floorY + 5.0f, stairLowZ + 3.0f, 14.0f, kPL_I);
+
+                // WAVE-2B (LD review #2): the player's FIRST walkable frame at the ground
+                // spawn read ~85% black (captures/ldreview2_showroom.png). The cool grid
+                // above hangs high + neutral, so the entry floor stayed dark. Add ONE WARM
+                // KEY low over the spawn, pushed a few metres toward Aria / the climb stair
+                // (the gallery objective, +Z) so it both LIFTS the entry passage and PULLS
+                // the eye forward into the space — a warm-vs-cool contrast that reads as a
+                // welcoming threshold light, not another ceiling fill. Bright + close so the
+                // near floor + Aria catch it; range covers spawn-to-stair.
+                {
+                    // Dead ahead of the FP spawn eye (which looks +Z, level), low + strong so
+                    // the near entry FLOOR + Aria catch a warm pool that reads against the cold
+                    // night interior and pulls the eye forward toward the gallery.
+                    x3::rhi::PointLight key{};
+                    key.pos[0] = cx + 0.5f; key.pos[1] = floorY + 2.6f; key.pos[2] = cz + 3.0f;
+                    key.range  = 34.0f;
+                    const float kWarm = 10.0f;                // dominates the cold grid at the entry
+                    key.color[0] = 1.10f * kWarm;             // warm amber-white threshold key
+                    key.color[1] = 0.82f * kWarm;
+                    key.color[2] = 0.55f * kWarm;
+                    plights.push_back(key);
+                    // A second, softer warm bounce a few metres deeper (+Z) so the pool doesn't
+                    // fall off a cliff — carries the warmth down the entry toward the stair.
+                    x3::rhi::PointLight key2 = key;
+                    key2.pos[0] = cx + 1.0f; key2.pos[1] = floorY + 3.4f; key2.pos[2] = cz + 12.0f;
+                    key2.range  = 26.0f;
+                    const float kWarm2 = 6.0f;
+                    key2.color[0] = 1.10f * kWarm2; key2.color[1] = 0.82f * kWarm2; key2.color[2] = 0.55f * kWarm2;
+                    plights.push_back(key2);
+                }
             }
 
             // (2) 2ND-FLOOR Room_01 — x[29,115], z[-122.8,-99.2], floor y=3, vaulted

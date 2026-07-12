@@ -357,6 +357,10 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // Place the terminal on the +Z cell wall in front of the spawn, ~1.3 m high.
     const x3::phys::Vec3 termPos{ cellCenter.x, cellCenter.y + 1.3f, cellCenter.z - 2.6f };
     m_terminal.build(scene, device, termPos, /*yaw*/kPI, 1.4f, 0.9f, termCeilY);
+    // The glass plate is SOLID (owner playtest: "you can't walk through glass") —
+    // a thin static box matching the panel footprint (yaw==pi keeps it X-aligned).
+    physics.addBox(x3::phys::Vec3{ 0.75f, 0.50f, 0.05f }, termPos,
+                   /*mass*/0.0f, x3::phys::Layer::Static);
     DoorSystem* dptr = &doors;
     uint32_t hatchIdx = m_hatchIdx;
     m_terminal.setSubmitSink([this, dptr, hatchIdx](const std::string& v) -> bool {

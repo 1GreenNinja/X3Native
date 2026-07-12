@@ -80,6 +80,7 @@ struct HostContext {
     // ---- Per-host screenshot proof flags + paths (showroom family etc.) ----
     bool        carShot = false;            std::string carShotDir;
     bool        upperShot = false;          std::string upperShotDir;   // R-5: floors 2-7 proof
+    bool        rescueShot = false;         std::string rescueShotDir;  // F2 rescue-room closeups
     bool        showroomFpShot = false;     std::string showroomFpShotPath;
     bool        showroomRagdollShot = false;std::string showroomRagdollShotPath;
     bool        showroomDeckShot = false;   std::string showroomDeckShotPath;
@@ -167,6 +168,7 @@ struct HostContext {
     bool        duskSky = false;      // STREET LIGHT staging: late-dusk sky (lamps carry the scene)
     int         shotChatter = 0;      // CHATTER staging: pre-tick until N bubbles near the shot cam
     bool        captureSpire = false;        std::string captureSpireDir;
+    bool        captureWings = false;        std::string captureWingsDir;
     std::string docWorldPath;
     int         cullPathArg = 0x80000000;   // INT_MIN sentinel = unset
     int         hzbArg = 0;

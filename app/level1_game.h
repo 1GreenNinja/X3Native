@@ -34,6 +34,7 @@
 #include "rescue.h"
 #include "level1.h"
 #include "env_art.h"
+#include "wing_dressing.h" // F2-F7 west-wing themed recipe art pass (over the graybox)
 #include "secret_room.h"   // code-locked trapdoor -> secret room (cell HoloTerminal)
 
 #include "save.h"      // engine-general checkpoint schema (the bridge maps onto it)
@@ -254,6 +255,13 @@ public:
     // Static ceiling-fixture point lights (env-art Light_A). The host re-issues these
     // + a player FLASHLIGHT each frame so the light follows the player through dark halls.
     const std::vector<x3::rhi::PointLight>& lightFixtures() const { return m_envArt.lightFixtures(); }
+    // Append the F2-F7 wing dressing's motivated recipe lights for the rooms on the eye's
+    // current floor (see WingDressing::collectFloorLights). The host adds these to the
+    // per-frame point-light set so the wing rooms read with their zone key light.
+    uint32_t wingFloorLights(const x3::phys::Vec3& eye,
+                             std::vector<x3::rhi::PointLight>& out) const {
+        return m_wingDress.collectFloorLights(eye, out);
+    }
     MonsterManager&       corridorEnemies()         { return m_corridor; }
     const MonsterManager& corridorEnemies()   const { return m_corridor; }
     MonsterManager&       checkpointEnemies()       { return m_checkpoint; }
@@ -392,6 +400,8 @@ private:
 
     Level1Layout   m_layout;
     EnvArtSystem   m_envArt;       // converted sci-fi GLB visuals over the graybox
+    WingDressing   m_wingDress;    // F2-F7 west-wing themed recipe dressing (over graybox)
+    x3::phys::Vec3 m_lastEye{};    // eye cached by tick() for the const wing draw + fog
     Level1ArtMask  m_artMask;      // which graybox surfaces real art covers
     DoorSystem     m_doors;
     WeaponSystem   m_weapon;

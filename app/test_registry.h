@@ -49,6 +49,16 @@ struct TestFlags {
     bool testElevatorShowcase = false;  // R-4 fold: THE CENTERPIECE showcase  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
+    bool testIntroCockpit = false;// --test-introcockpit (intro cockpit Scene-entity rig)
+    bool testShipInterior = false;// --test-shipinterior (S5 walkable interior, headless)
+    bool testShipWindows  = false;// --test-shipwindows (S6 true-portal windows, headless)
+    // Space-combat feast fold (14900K lanes, headless):
+    bool testBodyContact = false;     // --test-bodycontact (bone-surface contact + soft indent)
+    bool testWormhole = false;        // --test-wormhole (Salvari crystal-matrix VFX)
+    bool testWormholeTransit = false; // --test-wormhole-transit (S3 autopilot jump ride)
+    bool testTractor = false;         // --test-tractor (intro capital-ship capture beam)
+    bool testDescentSlide = false;// --test-descentslide (Wave 2C track spec + rider sim, headless)
+    bool testWingDressing = false;// --test-wingdressing (F2-F7 wing recipe dressing, headless)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;

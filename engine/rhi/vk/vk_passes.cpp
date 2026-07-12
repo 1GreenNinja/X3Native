@@ -904,7 +904,8 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
                       const float model[16], bool alphaMask, bool alphaBlend,
                       TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                       uint32_t extraFlags, const GlassMaterial* glass,
-                      float clearcoat , float clearcoatRough , float selfLight ) {
+                      float clearcoat , float clearcoatRough , float selfLight ,
+                      float metallicScale ) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1006,7 +1007,11 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             r.glassTint[0]   = glass->tint[0];    r.glassTint[1]   = glass->tint[1];
             r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = glass->emissiveMap;
         } else {
-            r.glassParams[0] = r.glassParams[1] = r.glassParams[2] = r.glassParams[3] = 0.0f;
+            r.glassParams[0] = r.glassParams[1] = r.glassParams[2] = 0.0f;
+            // BLACK-PROP FIX: opaque draws have no glass state, so the spare .w lane
+            // carries the per-object metallic CLAMP (mesh.frag multiplies mr.b by it).
+            // 1.0 (the default for every call site) is byte-identical to no clamp.
+            r.glassParams[3] = metallicScale;
             r.glassTint[0]   = r.glassTint[1]   = r.glassTint[2]   = r.glassTint[3]   = 0.0f;
         }
         m_drawRecords.push_back(r);
@@ -1997,7 +2002,18 @@ void VulkanRenderDevice::recordMeshDraws(VkCommandBuffer cmd) {
         // m_reflActiveThisFrame matches the graph's reflOn exactly (it is cleared in
         // buildAndExecuteGraph when TAA is off), so this never diverges from the
         // graph's depth-prepass / LOAD-vs-CLEAR decision.
-        const bool prePassOn = m_ssao.enabled || m_gi.enabled || m_reflActiveThisFrame;
+        // RT-AO (m_rtaoActiveThisFrame) is a FIRST-CLASS depth-prepass consumer: the
+        // rtao-compute pass reconstructs each pixel's world position from the camera
+        // DEPTH buffer before tracing the TLAS. It was missing from this predicate while
+        // being present in prepareFrameData's prePassWant (see ~line 1349), so the two
+        // DID diverge — exactly what the comment above promises they never do. With RT AO
+        // the only consumer (r_rtao 1, SSAO/GI/refl off — the default this build ships on
+        // ray-tracing devices), the depth pre-pass was skipped while the graph still added
+        // rtao-compute + rtao-apply, and the half-res AO image was sampled by rtao-apply in
+        // VK_IMAGE_LAYOUT_UNDEFINED (VUID-vkCmdDraw-None-09600, 10x/frame in Debug).
+        // Latent until 03b77ff turned RT AO on by default and finally exercised the path.
+        const bool prePassOn = m_ssao.enabled || m_gi.enabled || m_reflActiveThisFrame
+                            || m_rtaoActiveThisFrame;
         // RT soft shadows (r_rtshadows): swap in the mesh_rt.frag variants —
         // identical fixed-function state, identical layout — only on frames
         // where endFrame confirmed the TLAS + its set3 descriptor are live.

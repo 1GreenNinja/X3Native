@@ -300,6 +300,19 @@ struct CliOptions {
     // interactive windows. No window / Vulkan. Additive — distinct from --test-intro
     // (the LEGACY cold-open phase-machine test).
     bool        testIntroOrch = false;
+    // --test-introcockpit: the intro cockpit's Scene-entity rig (GLB -> PBR +
+    // emissiveTex screens + glass canopy) headless gate. See world_hosts.h.
+    bool        testIntroCockpit = false;
+    bool        testShipInterior = false;
+    bool        testShipWindows  = false;
+    // Space-combat feast fold (14900K lanes): --test-wormhole (crystal-matrix VFX),
+    // --test-wormhole-transit (S3 autopilot jump ride), --test-tractor (intro beam).
+    bool        testBodyContact = false;
+    bool        testWormhole = false;
+    bool        testWormholeTransit = false;
+    bool        testTractor = false;
+    bool        testDescentSlide = false;
+    bool        testWingDressing = false;  // --test-wingdressing (F2-F7 wing recipe pass)
     // --test-introbranch (Phase 4 BRANCH WIRING): the app_run branch-selection
     // contract — intro.outcome flag round-trip, the --intro-force dev override,
     // the per-save seed thread, and the canon default. No window / Vulkan.
@@ -397,6 +410,8 @@ struct CliOptions {
     // spaces. Headless; exits after. (Re-homed from playable-build eab7ff4.)
     bool        upperShot = false;
     std::string upperShotDir = "docs/screenshots/upper_floors";
+    bool        rescueShot = false;                  // F2 three-captive rescue-room closeups
+    std::string rescueShotDir = "captures";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
     // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
     // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and
@@ -594,6 +609,8 @@ struct CliOptions {
     // Prints one line per floor (path + that floor's enemy count). 0 VUID under Debug.
     bool        captureSpire    = false;
     std::string captureSpireDir = "captures/spire";
+    bool        captureWings    = false;   // F2-F7 west-wing dressing proof captures
+    std::string captureWingsDir = "captures";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
     // (walk the hills) instead of the default interior facility. The default is the
     // CANONICAL data-driven facility (canonlevel — the owner's LevelArchitect Floor 1,

@@ -317,6 +317,17 @@ void SpireMidFloors::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
     m_victimBoss.update(dt, scene, physics, eye, atkTarget, attackFx);
 }
 
+void SpireMidFloors::shutdown() {
+    // Tear down any in-flight death ragdolls (Jolt bodies) across every mid-floor
+    // enemy manager BEFORE the physics world dies. MonsterManager::shutdown() is
+    // itself idempotent (fans shutdownRagdoll() -> clearDeathRagdoll() over its
+    // monsters), so a double call or a call with nothing dead is a harmless no-op.
+    for (auto& m : m_enemies) m.shutdown();
+    m_f3Boss.shutdown();
+    m_swarmBoss.shutdown();
+    m_victimBoss.shutdown();
+}
+
 void SpireMidFloors::onTrigger(uint32_t triggerId) {
     switch ((SpireMidTrigger)triggerId) {
         case SpireMidTrigger::F3Hub:

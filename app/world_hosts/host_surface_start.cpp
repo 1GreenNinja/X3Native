@@ -176,13 +176,67 @@ int hostSurfaceStart(HostContext& hc) {
     // — glassWall/opaqueSlab, the front-wall breach split, the spandrel bands,
     // the W8-2 per-pane glazing — is facilityExt.build() above, verbatim.)
 
+    // ---- WAVE-2B (LD review #4c), PRESERVED ACROSS SEAM 2: the facility read as a BLACK
+    // SLAB (--world surface) - dead, unoccupied. A few WARM EMISSIVE WINDOW BANDS glow from
+    // inside the black glass so the tower reads as an OCCUPIED building at golden hour (lit
+    // office floors). These are PRIMS, not GLBs: they never went down the 1/PI shading path,
+    // so the 5c35d65 engine fix does NOT change their exposure and their strengths stand.
+    // Additive: thin self-lit quads just proud of the front glass, in the window zone between
+    // spandrel lines, split around the entry breach; two on a side face so occupancy reads
+    // from an angle. ACES-safe - warm-dominant hue at a moderate strength: a lit floor, never
+    // a white slab.
+    {
+        const float wallT = 0.4f;   // == FacilityExterior's backing-wall thickness
+        auto windowBand = [&](float cx, float cy, float cz, float hx, float hy, float hz,
+                              float er, float eg, float eb, float es) {
+            x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 1.0f);
+            auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                         m.index.data(), (uint32_t)m.index.size());
+            auto td = x3::prims::makeSolidRGBA(8, 10, 10, 12);   // dark albedo (emissive carries it)
+            auto tx = device->createTexture(td.data(), 8, 8, true);
+            x3::game::Entity e{}; e.mesh = mh; e.tex = tx;
+            e.baseColor[0]=0.05f; e.baseColor[1]=0.05f; e.baseColor[2]=0.06f; e.baseColor[3]=1.0f;
+            e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
+            e.tag = (uint32_t)x3::game::Tag::Prop;   // purely visual, no collision
+            e.roomId = x3::game::kNoRoom;            // outdoors: always drawn
+            scene.add(e);
+        };
+        const float zF   = kFacilityZ + wallT + 0.04f;                    // just proud of front glass
+        const float bandHY = 0.85f;                                        // lit-floor band half-height
+        const float sideW  = (kFacilityHalfW - kBreachHalfW) * 0.5f;
+        const float xLc = -(kBreachHalfW + sideW), xRc = (kBreachHalfW + sideW);
+        const float warmR=0.95f, warmG=0.72f, warmB=0.40f;
+        const float ys[] = { kFacilityHalfH * 0.55f, kFacilityHalfH * 1.05f, kFacilityHalfH * 1.5f };
+        for (float y : ys) {
+            windowBand(xLc, y, zF, sideW - 0.6f, bandHY, 0.12f, warmR, warmG, warmB, 1.15f);
+            windowBand(xRc, y, zF, sideW - 0.6f, bandHY, 0.12f, warmR, warmG, warmB, 1.15f);
+        }
+        const float xS = kFacilityHalfW + wallT + 0.04f;
+        const float zC = kFacilityZ - kFacilityHalfD;
+        windowBand(xS, kFacilityHalfH * 0.8f,  zC, 0.12f, bandHY, kFacilityHalfD - 1.0f, 0.80f, 0.86f, 1.00f, 1.05f);
+        windowBand(xS, kFacilityHalfH * 1.3f,  zC, 0.12f, bandHY, kFacilityHalfD - 1.0f, 0.80f, 0.86f, 1.00f, 1.05f);
+        x3::logInfo("--world surface: WAVE-2B - 8 emissive window bands (facility reads occupied)");
+    }
+
     // ---- Jake's LANDED SHIP (JakeFighterShip.glb; box fallback). Sits on the
     //      surface just behind + beside the spawn, nose toward the facility.
     const std::string rigDir = x3::game::riggedGlbRoot();
     std::unique_ptr<x3::asset::IAssetSource> asrc(x3::asset::createAssetSource());
     asrc->mountDir(rigDir, 0);
     std::unique_ptr<x3::asset::IModelLoader> mloader(x3::asset::createModelLoader(device, asrc.get()));
-    const char* kShipCandidates[] = { "JakeFighterShip.glb", "SpaceShip4.glb", "SpaceShip.glb" };
+    // MINERVA TEXTURED PASS (cb9f760) FIRST. The owner's long-standing "Jake's ship is an
+    // ugly black blob" had TWO causes and both are fixed now, in different places:
+    //   * the ENGINE half -- GLBs shaded at 1/pi (5c35d65). Fixed for every GLB in the game.
+    //   * the ASSET half -- and this is NOT a crutch for the engine bug, which is why it
+    //     still earns its place: the Rodin bake was a shattered UV atlas of silver/pink mush
+    //     with NO EMISSIVE CHANNEL AT ALL, so honest lighting had nothing to catch. The
+    //     Minerva pass is a real re-texture (dark gunmetal plating, panel lines, grime, edge
+    //     wear + a genuine teal emissive) baked into the EXISTING UV atlas -- same mesh, no
+    //     re-unwrap, so it is a drop-in swap.
+    // Untextured JakeFighterShip.glb stays as the fallback (and the cutscene extent probe
+    // still measures it), so a machine without the new LFS object degrades, never breaks.
+    const char* kShipCandidates[] = { "JakeFighterShip_textured.glb", "JakeFighterShip.glb",
+                                      "SpaceShip4.glb", "SpaceShip.glb" };
     x3::asset::Model shipModel{}; std::string shipFile;
     for (const char* c : kShipCandidates) { shipModel = mloader->load(c); if (shipModel.ok) { shipFile = c; break; } }
     std::vector<x3::asset::ModelDrawable> shipDrawables;

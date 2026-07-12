@@ -186,6 +186,12 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // covers them — see m_artMask). ----
     m_layout = buildLevel1(scene, device, physics, m_artMask);
 
+    // ---- F2-F7 WEST-WING ART PASS: themed recipe dressing (SurfaceLibrary PBR panels +
+    // motivated lights + hero props + per-zone fog) over the wing graybox buildLevel1
+    // just built. Reads the SAME kWingRooms table so dressing aligns with collision.
+    // Purely visual; missing assets -> the graybox wings simply stay bare. ----
+    m_wingDress.build(device, x3::game::assetRoot() + "/surface_library", convertedDir());
+
     // ---- Doors A-E (generalized builder). Doorways sit in cross-walls whose
     // plane is x=const (the wall runs along Z), so DoorAxis::AlongZ. ----
     {
@@ -574,6 +580,12 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     if (m_secretOnly) { m_secretRoom.tick(dt, scene, playerPos); return; }
     if (!m_built) return;
 
+    // ---- F2-F7 wing dressing: cache the eye for the const per-frame draw, and re-tint
+    // the depth fog to the wing zone the eye is inside (medical green / genetics / cyber
+    // cyan / drone amber / salvari / exec). No-op outside the wings (fog left as-is). ----
+    m_lastEye = eye;
+    m_wingDress.applyEyeFog(*m_devicePtr, eye);
+
     // ---- Melee cooldown advances (Phase 2b super-strength punch). ----
     m_melee.update(dt);
 
@@ -847,6 +859,7 @@ void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
                                  const Scene& scene) const {
     m_envArt.draw(device, frame);   // converted sci-fi environment art over graybox
+    m_wingDress.draw(device, frame, m_lastEye);  // F2-F7 west-wing themed recipe dressing
     m_barrels.render(frame);        // intact barrels + their tumbling debris
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);
