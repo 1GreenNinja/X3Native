@@ -268,8 +268,12 @@ bool VulkanRenderDevice::createBloomTargets() {
         // sampled by the TAA resolve (SAMPLED). (Re)created with the extent. Failure
         // is NON-FATAL: the velocity pass simply won't be built and TAA falls back
         // to camera-only reprojection (byte-identical to the pre-velocity path).
+        // TRANSFER_DST: the graph's `velocity-neutral-clear` pass zeroes this image on TAA
+        // frames where the velocity pre-pass is skipped (taa_resolve samples m_velView
+        // unconditionally, so it must be in a defined layout with defined contents).
         if (!createColorTarget(kVelocityFormat, W, H,
-                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                               | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                m_velImg, m_velAlloc, m_velView)) {
             logError("[rhi] velocity target create failed — TAA stays camera-only");
             m_velImg = VK_NULL_HANDLE; m_velAlloc = nullptr; m_velView = VK_NULL_HANDLE;
