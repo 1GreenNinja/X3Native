@@ -248,3 +248,26 @@ SAME point lights: a white-albedo PBR probe on the gate reads ~0.03 where the fl
 as predicted. That anomaly is why the gate still needs a texture-gated ambient term to
 read at all. Find it and the gate can be lit honestly (and the reference's bright
 weathered top plates / dark underside value range becomes reachable).
+
+## ROUND 7 — THE GATE IS *ONE LARGE METALLIC TUBE* (Tim, 2026-07-11)
+> "the gate.. is supposed to be ONE LARGE metallic Tube"
+
+THE CORRECTION that supersedes the round-5/6 gate: the gate is NOT an assembly of 233 bolted-on
+parts (coil cans, capacitor banks, actuator rods, pipe rails scattered around a ring). That reads
+as cluttered scaffolding. It is **ONE MONOLITHIC RING** — a single, large, heavy METALLIC TUBE
+(a thick round-cross-section torus) that dominates by mass and simplicity.
+
+RULES for the rebuild:
+- ONE primary form: a big, thick, round metallic tube/torus. Generous radius, heavy wall — it
+  should read as a single cast/machined object, not a kit.
+- Detail is INTEGRATED INTO the tube, not bolted onto it: chevrons/clamps RECESSED into the tube's
+  surface, panel seams and glyph bands wrapping the tube, bolt rings following its curve, subtle
+  segment joins. Think one object with features cut into it.
+- Anything that is not the tube is MINIMAL and subordinate: a base/cradle it sits in, and a few
+  cables/conduits feeding in. No forest of floating cans and rods.
+- The tube's ROUNDNESS is the whole visual payoff: a long specular highlight sweeping around the
+  torus is what makes it read as massive machined metal (this is why round beats square).
+- Material: heavy weathered metal (the SD/img2img-forged sets), lit HONESTLY (see the engine
+  N.L / GLB-lighting fix) — bright top surface, dark underside, highlight along the tube.
+Reference: docs/reference/ portal stills — note the ring is a single massive body; the greebles
+sit ON it and never outnumber it.
