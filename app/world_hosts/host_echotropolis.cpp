@@ -733,6 +733,21 @@ int hostEchotropolis(HostContext& hc) {
         cc.walkSpeed = 1.3f;
         cc.converse  = true;             // they pair up and chat
         cc.scale     = 1.0f;
+        // AUTONOMOUS LIFE: jobs + play so residents have PURPOSE, not just wander.
+        // Per-workpoint a Worker loops its task (Carry/Console/Sweep); each play spot
+        // gets its Gamers; the rest are Civilians who wander + converse. A basic
+        // daily-life read on top of the crown until the full NpcLife schedule system
+        // (feat/living-city) is rebased onto main and merged.
+        cc.work = {
+            { x3::game::CrowdWorkPoint::Kind::Carry,   -120.0f, 700.0f, -60.0f, 700.0f },
+            { x3::game::CrowdWorkPoint::Kind::Console,    40.0f, 820.0f,  40.0f, 820.0f },
+            { x3::game::CrowdWorkPoint::Kind::Sweep,      80.0f, 700.0f, 140.0f, 760.0f },
+            { x3::game::CrowdWorkPoint::Kind::Carry,    -140.0f, 800.0f, -80.0f, 800.0f },
+        };
+        cc.play = {
+            { -60.0f, 840.0f, 4, true },
+            {  90.0f, 690.0f, 3, true },
+        };
         residents.build(cc, walkScene, *device);
         x3::game::CrowdSkinConfig sc;
         sc.site = "Echo Harbor residents";
