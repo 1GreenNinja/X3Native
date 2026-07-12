@@ -56,6 +56,7 @@ add_executable(X3Engine WIN32
     ragdoll.cpp
     barrels.cpp
     glass_test.cpp
+    holo_panel.cpp
     holo_terminal.cpp
     secret_room.cpp
     ecs_render.cpp

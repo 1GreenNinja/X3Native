@@ -2027,9 +2027,13 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // five live parameter rows), so the cell terminal's center schematic gives way
         // to type at roughly twice the size.
         m_holos[i].setLayout(HoloTerminal::Layout::Readout);
-        // Blue/green holo ink (the canonical status colours; amber is reserved for
-        // warnings, which the console's own status line supplies).
-        m_holos[i].setTextColor(0.42f, 1.0f, 0.78f, 1.0f);
+        // NO INK OVERRIDE. These consoles used to force one flat teal ink
+        // (0.42, 1.0, 0.78) onto every row, which is exactly the "we already fixed it
+        // with different color text" problem — a per-site colour, invented here,
+        // overriding the platform. The rows now take the CANONICAL status palette from
+        // holo::statusInk: DEST/PWR/FREQ read BLUE, "STATUS OPEN" reads GREEN, "STATUS
+        // DESTROYED" and "UNSTABLE" read ORANGE. The console tells you what it means by
+        // its colour, and it means the same thing here as on every other panel in the game.
         m_holos[i].setLines(consoleReadout(i));
     }
 

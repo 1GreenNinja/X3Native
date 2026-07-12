@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -55,9 +56,18 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
     const float fn = (float)n;
     auto P = [&](float f) { return f * fn; };
 
-    // Right edge of the text column. Cell: a narrow left column beside the schematic.
-    // Readout: the text runs most of the width (rift consoles exist to be READ at range).
-    const float kTextX1 = wide ? 0.655f : 0.345f;
+    // Right edge of the text column — it runs up to the right-hand icon/bar column in
+    // BOTH layouts.
+    //
+    // It used to stop at 0.345 in the Cell layout: a 27%-wide gutter, because a
+    // decorative CENTER SCHEMATIC owned the middle of the glass. That column could not
+    // hold a line like "MUSCULOSKELETAL OUTPUT: +400%", and since the fit pass shrinks
+    // the type until the LONGEST row fits, one long line dragged every other row down to
+    // the minimum size. The result was a crisp header over a block of unreadable
+    // 18-pixel mush — decoration winning an argument it should never have been in.
+    // The schematic is gone (see below) and the text gets the space. Readability beats
+    // decoration: the panel exists to be READ, at [E] range.
+    const float kTextX1 = wide ? 0.655f : 0.620f;
 
     Canvas c(n);
     blackGlassBase(c);
@@ -92,24 +102,13 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
     // Faint divider closing the text column.
     line(c, lx1 + P(0.015f), P(0.19f), lx1 + P(0.015f), P(0.87f), kBlue, 0.25f, th);
 
-    // Center schematic — Cell layout only (in Readout the text occupies this space).
-    if (!wide) {
-        const float ncx = P(0.500f), ncy = P(0.41f);
-        const float nhw = P(0.072f), nhh = P(0.058f);
-        roundRectFrame(c, ncx-nhw, ncy-nhh, ncx+nhw, ncy+nhh, P(0.020f), kBlueHi, 0.95f, thh);
-        line(c, ncx-nhw+P(0.012f), ncy-P(0.018f), ncx+nhw-P(0.012f), ncy-P(0.018f), kBlue, 0.6f, th);
-        line(c, ncx-nhw+P(0.012f), ncy+P(0.010f), ncx+nhw-P(0.025f), ncy+P(0.010f), kBlue, 0.5f, th);
-        const float bx0 = ncx + nhw;
-        for (int i = 0; i < 3; ++i) {
-            const float by = ncy - P(0.032f) + i * P(0.032f);
-            const float bxEnd = P(0.625f);
-            line(c, bx0, ncy, bx0 + P(0.016f), by, kBlue, 0.7f, th);
-            line(c, bx0 + P(0.016f), by, bxEnd, by, kBlue, 0.7f, th);
-            rectFrame(c, bxEnd, by-P(0.009f), bxEnd+P(0.018f), by+P(0.009f), kBlue, 0.8f, th);
-        }
-        line(c, ncx, ncy+nhh, ncx, ncy+nhh+P(0.030f), kBlue, 0.7f, th);
-        chevronDown(c, ncx, ncy+nhh+P(0.030f), P(0.028f), P(0.026f), kBlueHi, 0.95f, thh);
-    }
+    // (The CENTER SCHEMATIC — a rounded node with branching spurs and a chevron, drawn
+    //  at x[0.43..0.63] — is DELETED. It was pure decoration sitting exactly where the
+    //  readout needed to be, and it is the reason the cell's text column was squeezed to
+    //  27% of the glass. The panel is not poorer for it: the bracket frame, the hexagon
+    //  emblem, the header rules, the warning triangles, the value bars and the bottom
+    //  data strip all still read as a dense sci-fi console — and they live in the
+    //  MARGINS, where decoration belongs.)
 
     // Right column: warning triangles (ORANGE — they are warnings) + value bars.
     const float rx0 = P(0.70f), rx1 = P(0.92f);
@@ -157,31 +156,60 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
         const float zoneW  = P(kTextX1) - lx0b;
         const float tyTop  = P(0.258f);            // below the header strip + icon squares
 
-        // Base size. A panel exists to be read at [E] range, not in a close-up: the cell
-        // terminal's type was ~34px on a 1024 bake, which is a squint from two metres.
-        float bpx = wide ? P(0.060f) : P(0.042f);
-        {   // VERTICAL FIT: every row must land above the bottom data strip.
-            const float rows = (float)(lines.size() - 1) + (inputLine.empty() ? 0.0f : 1.0f);
-            const float vBudget = P(0.860f) - tyTop;
-            if (rows > 0.0f) {
-                const float maxBpx = vBudget / (rows * 1.30f);
-                if (bpx > maxBpx) bpx = maxBpx;
+        // -- FIT BY WRAPPING, NOT BY SHRINKING. ---------------------------------
+        // The old pass only ever SHRANK: it walked the rows and scaled the type down
+        // until the LONGEST one fitted the column. So a single long row (the canon
+        // readout has "MUSCULOSKELETAL OUTPUT: +400%") dragged EVERY row down with it,
+        // and the whole readout bottomed out at the minimum size. A terminal wraps its
+        // text — it does not set it in 6-point. So: pick a size the player can read from
+        // [E] range, WRAP to the column, and only shrink if the wrapped block is too
+        // TALL for the glass. Type size is now driven by the panel, not by the worst line.
+        const float vBudget = P(0.860f) - tyTop;
+        auto wrapTo = [&](float px, std::vector<std::pair<std::string, Ink>>& out) {
+            out.clear();
+            for (size_t li = 1; li < lines.size(); ++li) {
+                const Ink k = inkOverride
+                    ? Ink{ inkOverride[0] * 1.15f, inkOverride[1], inkOverride[2] }
+                    : statusInk(lines[li]);
+                const std::string& s = lines[li];
+                if (s.empty()) { out.push_back({ "", k }); continue; }
+                // Greedy word wrap. The status colour is chosen from the WHOLE line, so a
+                // wrapped continuation keeps its parent's colour (a row does not change
+                // meaning halfway through).
+                std::string cur;
+                size_t i = 0;
+                while (i < s.size()) {
+                    size_t j = s.find(' ', i);
+                    if (j == std::string::npos) j = s.size();
+                    const std::string w = s.substr(i, j - i);
+                    const std::string trial = cur.empty() ? w : cur + " " + w;
+                    if (!cur.empty() && textWidth(trial, px) > zoneW) {
+                        out.push_back({ cur, k });
+                        cur = w;
+                    } else {
+                        cur = trial;
+                    }
+                    i = j + 1;
+                }
+                if (!cur.empty()) out.push_back({ cur, k });
             }
-        }
-        for (size_t li = 1; li < lines.size(); ++li) {   // HORIZONTAL FIT
-            const float w = textWidth(lines[li], bpx);
-            if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
-        }
-        if (!inputLine.empty()) {
-            const float w = textWidth(inputLine, bpx * 1.18f);
-            if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
-        }
-        if (bpx < P(0.018f)) bpx = P(0.018f);
-        const float rowH = bpx * 1.30f;
+        };
 
-        const size_t bodyRows = lines.size() > 1 ? lines.size() - 1 : 0;
-        const float bodyH = bodyRows * rowH
+        float bpx = wide ? P(0.060f) : P(0.048f);
+        std::vector<std::pair<std::string, Ink>> rows;
+        for (int attempt = 0; attempt < 6; ++attempt) {
+            wrapTo(bpx, rows);
+            const float rowH0 = bpx * 1.30f;
+            const float need = rows.size() * rowH0
+                             + (inputLine.empty() ? 0.0f : rowH0 * 1.18f + rowH0 * 0.25f);
+            if (need <= vBudget || bpx <= P(0.020f)) break;
+            bpx *= std::max(0.72f, vBudget / need);      // shrink, then RE-WRAP
+        }
+        if (bpx < P(0.020f)) bpx = P(0.020f);
+        const float rowH = bpx * 1.30f;
+        const float bodyH = rows.size() * rowH
                           + (inputLine.empty() ? 0.0f : rowH * 1.18f + rowH * 0.25f);
+        const size_t bodyRows = rows.size();
 
         // -- THE QUIET BANDS. Knock the line-art down where the type is going. --
         // Header strip: the rule + emblem must not run through the title.
@@ -206,10 +234,8 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
         // FAILING/AUGMENTED/LOCKED, BLUE for everything else. An explicit host ink
         // override (VIGIL speaking) wins over the keyword read. --
         float ty = tyTop;
-        for (size_t li = 1; li < lines.size(); ++li) {
-            Ink k = inkOverride ? Ink{ inkOverride[0] * 1.15f, inkOverride[1], inkOverride[2] }
-                                : statusInk(lines[li]);
-            drawText(c, lines[li], lx0b, ty, bpx, k, (li == 1) ? HOT : 0.94f);
+        for (size_t ri = 0; ri < rows.size(); ++ri) {
+            drawText(c, rows[ri].first, lx0b, ty, bpx, rows[ri].second, (ri == 0) ? HOT : 0.94f);
             ty += rowH;
         }
 

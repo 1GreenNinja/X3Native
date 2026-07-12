@@ -47,16 +47,27 @@ Ink statusInk(const std::string& s) {
     std::string U; U.reserve(s.size());
     for (char ch : s) U += (char)std::toupper((unsigned char)ch);
     auto has = [&](const char* kw) { return U.find(kw) != std::string::npos; };
+
+    // POSITIVE OVERRIDES FIRST — and this ordering is load-bearing, not style.
+    // These are the good-news words that CONTAIN a bad-news word as a substring:
+    // "UNLOCK" contains "LOCK", "UNLOCKED" contains "LOCKED", "STABLE" contains a
+    // fragment of "UNSTABLE" in the other direction. Run the negative list first and
+    // "ENTER OVERRIDE CODE TO UNLOCK CELL" reads as an ALERT, which is precisely
+    // backwards. Longest/most-specific meaning wins.
+    if (has("UNLOCK") || has("GRANTED") || has("NO FAULT") || has("NO ERROR"))
+        return kGreen;
+
     // ORANGE — warning / alert / failure / anything the player must not ignore.
     if (has("FAIL") || has("WARN") || has("ALERT") || has("CRIT") || has("DANGER") ||
         has("BREACH") || has("AUGMENT") || has("REJECT") || has("UNSTABLE") ||
         has("LOCK") || has("DENIED") || has("ERROR") || has("DESTROY"))
         return kOrange;
+
     // GREEN — good news: it is up, it is safe, it worked.
     if (has("OK") || has("ONLINE") || has("SECURE") || has("ACTIVE") || has("STABLE") ||
-        has("OPEN") || has("READY") || has("NOMINAL") || has("GRANTED") || has("UNLOCK") ||
-        has("PASS") || has("CLEAR"))
+        has("OPEN") || has("READY") || has("NOMINAL") || has("PASS") || has("CLEAR"))
         return kGreen;
+
     return kBlue;   // everything else: headers, data, structure.
 }
 
