@@ -29,11 +29,16 @@
 #include "../tod.h"
 #include "../env_art.h"
 #include "../player.h"                // WALK MODE (Phase A): first-person character on the streets
+#include "../scene.h"                 // RESIDENTS: crowd entities live in a Scene
+#include "../crowd.h"                 // RESIDENTS: wandering citizen agents
+#include "../crowd_skin.h"            // RESIDENTS: real rigged-GLB characters over the agents
+#include "../asset_root.h"            // riggedGlbRoot()
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
 #include <fstream>
 #include <vector>
 #include <memory>
+#include <string>
 
 namespace x3 { namespace apphost {
 
@@ -573,7 +578,30 @@ int hostEchotropolis(HostContext& hc) {
 
         const std::string outPath = screenshot ? screenshotPath
                                                : std::string("agent_echotropolis.png");
-        const int kSettle = 24;
+        // ECHO_RESIDENTS=1 → build the citizen crowd + rigged skins for the capture
+        // (verify/showcase the living city in a still). Extra settle frames let the
+        // deferred skin spawns drain. Local instances (headless never runs the loop).
+        const bool shotResidents = [](){ const char* e = std::getenv("ECHO_RESIDENTS"); return e && e[0]=='1'; }();
+        std::unique_ptr<x3::phys::IPhysicsWorld> sphys;
+        x3::game::Scene sScene; x3::game::CrowdSystem sCrowd; x3::game::CrowdSkin sSkin;
+        bool sResBuilt = false;
+        if (shotResidents && hf.ok()) {
+            sphys.reset(x3::phys::createPhysicsWorld());
+            if (sphys && sphys->init()) {
+                x3::game::CrowdConfig cc; cc.count = 40;
+                cc.centerX = -20.0f; cc.centerZ = 760.0f;
+                cc.groundY = hf.heightAt(-20.0f, 760.0f); cc.radius = 340.0f;
+                cc.walkSpeed = 1.3f; cc.converse = true;
+                sCrowd.build(cc, sScene, *device);
+                x3::game::CrowdSkinConfig sc; sc.site = "residents-shot";
+                sc.modelDir = x3::game::riggedGlbRoot(); sc.spawnsPerFrame = 4;
+                sSkin.build(sc, sCrowd);
+                sResBuilt = sCrowd.built();
+                x3::logInfo(std::string("--world echotropolis: SHOT residents ") +
+                            (sResBuilt ? "built" : "FAILED"));
+            }
+        }
+        const int kSettle = shotResidents ? 90 : 24;   // drain skin spawns
         const float dt = 1.0f / 60.0f;
         const x3::game::TodSample shotTod = tod.sample();   // frozen at ECHO_TOD
         for (int i = 0; i < kSettle; ++i) {
@@ -581,6 +609,7 @@ int hostEchotropolis(HostContext& hc) {
             applyTodSample(device, shotTod);
             applyAtmosphere(device, shotTod);   // ATMOSPHERE: aerial haze + grade + bloom
             applyOcean(device, (float)i * dt, shotTod);
+            if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
             if (shotCamOverride) {
                 device->setCamera(shotCam[0], shotCam[1], shotCam[2], shotCam[3], shotCam[4], opt.fovDeg);
             } else {
@@ -590,6 +619,7 @@ int hostEchotropolis(HostContext& hc) {
             auto frame = device->beginFrame();
             island.draw(*device, frame);   // the island (sky + water are device-internal)
             props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
+            if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
                 poseBeam(-2.13f);
                 beam.draw(*device, frame);
@@ -675,6 +705,35 @@ int hostEchotropolis(HostContext& hc) {
         });
         player.spawn(*phys, kWalkX, kWalkGroundY + 1.0f, kWalkZ);
         player.setLook(2.2f, -0.05f);   // face toward the city cluster
+    }
+
+    // ===================== RESIDENTS (the living city) ==================
+    // A crowd of citizens wandering the crown, rendered as the REAL rigged-GLB
+    // characters (66 in riggedGlbRoot()) via CrowdSkin over the blockout agents.
+    // Visible from the orbit vista (watch them move) AND up close in walk mode.
+    // These are the lives you will step into (possess) in a later phase.
+    x3::game::Scene walkScene;
+    x3::game::CrowdSystem residents;
+    x3::game::CrowdSkin residentsSkin;
+    bool residentsBuilt = false;
+    if (physOk) {
+        x3::game::CrowdConfig cc;
+        cc.count   = 40;
+        cc.centerX = kWalkX; cc.centerZ = kWalkZ;
+        cc.groundY = kWalkGroundY;
+        cc.radius  = 340.0f;             // spread across the crown plateau
+        cc.walkSpeed = 1.3f;
+        cc.converse  = true;             // they pair up and chat
+        cc.scale     = 1.0f;
+        residents.build(cc, walkScene, *device);
+        x3::game::CrowdSkinConfig sc;
+        sc.site = "Echo Harbor residents";
+        sc.modelDir = x3::game::riggedGlbRoot();
+        sc.spawnsPerFrame = 2;
+        residentsSkin.build(sc, residents);
+        residentsBuilt = residents.built();
+        x3::logInfo(std::string("--world echotropolis: residents ") +
+                    (residentsBuilt ? "built (40 citizens, rigged skins loading)" : "FAILED"));
     }
     bool walkMode = false, prevG = false;
 
@@ -900,6 +959,13 @@ int hostEchotropolis(HostContext& hc) {
         applyTodSample(device, todS);
         applyAtmosphere(device, todS);   // ATMOSPHERE: aerial haze + grade + bloom
 
+        // RESIDENTS: the crowd lives every frame (orbit or walk); the skinned layer
+        // drains its deferred spawn queue and pose-follows the agents.
+        if (residentsBuilt) {
+            residents.update(dt, walkScene);
+            residentsSkin.update(dt, residents, walkScene, *device, *phys);
+        }
+
         // Ocean + camera + render. WALK MODE poses the first-person eye camera from
         // the physics character; ORBIT MODE keeps the strategic vista camera.
         waterTime += dt; applyOcean(device, waterTime, todS);
@@ -914,6 +980,10 @@ int hostEchotropolis(HostContext& hc) {
         auto frame = device->beginFrame();
         island.draw(*device, frame);
         props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
+        if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
+            walkScene.render(*device, frame);
+            residentsSkin.draw(*device, frame, walkScene);
+        }
         if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
             poseBeam(waterTime * kBeamRate);
             beam.draw(*device, frame);
