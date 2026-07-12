@@ -28,10 +28,12 @@
 #include "world_host_common.h"
 #include "../tod.h"
 #include "../env_art.h"
+#include "../player.h"                // WALK MODE (Phase A): first-person character on the streets
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
 #include <fstream>
 #include <vector>
+#include <memory>
 
 namespace x3 { namespace apphost {
 
@@ -631,6 +633,32 @@ int hostEchotropolis(HostContext& hc) {
     bool menuOpen = false, prevEsc = false, prevQ = false, prevEnter = false, prevLmb = false;
     bool wantQuit = false;
 
+    // ===================== WALK MODE (Phase A) ==========================
+    // Press G to drop from the orbit vista INTO a first-person character who WALKS
+    // the city (WASD move, mouse look, Shift sprint, Space jump). A physics world
+    // with a flat collision apron under the crown catches the player; the island +
+    // props still render around them. G again returns to the orbit postcard view.
+    // (Phase A start: FP + flat apron. Skinned 3rd-person avatar + crowd + real
+    // terrain collision follow — this proves you can be IN the city first.)
+    std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
+    const bool physOk = phys && phys->init();
+    // Spawn on the mesa crown — the highest walkable plateau on landform v3.1
+    // (measured ~(-20,760) at +195 m, where the tower cluster stands). Sampled at
+    // runtime so it tracks the terrain if the landform is rebaked.
+    const float kWalkX = -20.0f, kWalkZ = 760.0f;
+    const float kWalkGroundY = hf.ok() ? hf.heightAt(kWalkX, kWalkZ) : 190.0f;
+    x3::game::Player player;
+    if (physOk) {
+        // Flat static apron (1600x1600 m, 2 m thick) with its TOP at the crown
+        // terrain height — the walkable plaza/streets floor for Phase A.
+        phys->addBox(x3::phys::Vec3{800.0f, 1.0f, 800.0f},
+                     x3::phys::Vec3{kWalkX, kWalkGroundY - 1.0f, kWalkZ},
+                     0.0f, x3::phys::Layer::Static);
+        player.spawn(*phys, kWalkX, kWalkGroundY + 0.2f, kWalkZ);
+        player.setLook(2.2f, -0.05f);   // face roughly toward the city cluster
+    }
+    bool walkMode = false, prevG = false;
+
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
         glfwPollEvents();
@@ -651,6 +679,19 @@ int hostEchotropolis(HostContext& hc) {
 
         auto kd  = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
         auto mbd = [&](int b) { return glfwGetMouseButton(window, b) == GLFW_PRESS; };
+
+        // ---- WALK MODE toggle (G) + first-person character step -------------
+        { const bool g = kd(GLFW_KEY_G); if (g && !prevG && physOk) walkMode = !walkMode; prevG = g; }
+        if (walkMode && physOk) {
+            x3::game::PlayerInput in{};
+            in.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
+            in.moveStrafe = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
+            in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+            in.jumpPressed = kd(GLFW_KEY_SPACE);
+            in.lookDX = ddx; in.lookDY = ddy;
+            player.update(in, dt, *phys);
+            phys->step(dt);
+        }
 
         // ===== PAUSE MENU: world + camera frozen, menu drawn, only QUIT exits =====
         if (menuOpen) {
@@ -838,9 +879,16 @@ int hostEchotropolis(HostContext& hc) {
         applyTodSample(device, todS);
         applyAtmosphere(device, todS);   // ATMOSPHERE: aerial haze + grade + bloom
 
-        // Ocean + camera + render.
+        // Ocean + camera + render. WALK MODE poses the first-person eye camera from
+        // the physics character; ORBIT MODE keeps the strategic vista camera.
         waterTime += dt; applyOcean(device, waterTime, todS);
-        applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
+        if (walkMode && physOk) {
+            float px, py, pz, pyaw, ppit;
+            player.camera(px, py, pz, pyaw, ppit);
+            device->setCamera(px, py, pz, pyaw, ppit, opt.fovDeg);
+        } else {
+            applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
+        }
 
         auto frame = device->beginFrame();
         island.draw(*device, frame);
