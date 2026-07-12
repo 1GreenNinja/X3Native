@@ -1,77 +1,76 @@
 """
-build_rifthub_gate.py — ROUND 10: the RIFTHUB gate is *ONE LARGE MACHINED STEEL TUBE*.
+build_rifthub_gate.py — ROUND 11: the RIFTHUB gate is *ONE LARGE MACHINED STEEL TUBE*.
 
 Owner (verbatim, R7 + R8 + R10):
     "the gate.. is supposed to be ONE LARGE metallic Tube"
     "No chevrons needed"
     "build the tube, with an lcd panel on it, some buttons, glowing led displays"
-    R10: it reads as a PILLOWY INFLATED CUSHION -- a marshmallow -- not machined steel.
+    R10 (reference render of machined steel under an overcast sky):
+    "There are no lights. just shiny reflections from the white cloudy sky."
 
     blender-launcher.exe --background --python tools/build_rifthub_gate.py -- <out.glb>
 
-WHY R9 WAS A MARSHMALLOW (and what R10 changes)
-------------------------------------------------------------------------------
-R8/R9 built the tube as a smooth torus plus a DISPLACEMENT FIELD rr(u, v) whose
-every feature was authored with `gauss()` and a smoothstep-walled `plateau()`.
-Both are C1-continuous bumps. A C1 bump has NO CREASE, so:
+THE ROUND-BY-ROUND FAILURE LADDER (each one only became visible once the last was fixed)
+----------------------------------------------------------------------------------------
+R9  = BLACK.       The gate was instanced through a MIRROR (basis det -1), so back-face
+                   culling drew the tube's inner shell. Fixed on art/rifthub-canon.
+R10 = MARSHMALLOW. Every feature was authored with gauss() / smoothstep -- both C1, so
+                   nothing creased, EDGE_SPLIT never fired, and with no crease there is
+                   no specular EDGE LINE. A smooth dent on a round tube is not a groove;
+                   it is QUILTING, which is how a cushion is made. Fixed by making the
+                   section a TURNED LATHE PROFILE: flat plate chords, LINEAR chamfers,
+                   flat groove floors -- C0 joints that crease and catch light.
+R11 = TYRE.        <-- THIS ROUND. The machining was right, but the FORM was a wheel.
 
-  * EDGE_SPLIT (38 deg) never fired on a single one of them -- the whole tube
-    shaded as one smooth blob;
-  * with no crease there is no specular EDGE LINE, and an edge line is the entire
-    visual signature of machined metal. A machined plate reads hard because its
-    chamfer catches a thin, bright, straight highlight. Remove the chamfer and the
-    same plate reads as an inflated pad;
-  * the two soft longitudinal "recessed bands" at v = +/-34 deg were wide, smooth,
-    ~0.028-deep dents. On a round tube a smooth dent does not read as a groove --
-    it reads as QUILTING. That is literally how a cushion is made.
+WHY R10 READ AS A TYRE, AND WHAT R11 DOES ABOUT IT
+----------------------------------------------------------------------------------------
+Two causes, both structural, neither fixable by surface detail:
 
-No material, tint or light can fix that: it is C1 geometry. R10 re-authors the
-PROCEDURE (docs/DECISIONS.md, "GENERATE, DON'T HAND-CARVE").
+ 1. THE SEAMS SWEPT UNBROKEN RINGS. R10's 16 plate seams sat at the same v in EVERY
+    circumferential band, so each one ran continuously all the way around the ring.
+    Continuous circumferential grooves at a regular pitch is not "a hint of tread" --
+    it is the literal, exact geometry of tyre tread.
+    => R11-1: BRICK BOND. Alternate bands offset the plate grid by HALF A PLATE, so
+    every seam DIES at the next circumferential join and picks up half a plate over.
+    The plates INTERLOCK, like every real plated hull ever built. No groove survives a
+    band boundary, so no tread line can form. The phase flips at a join CENTRE, which
+    is the floor of a groove on every join type -- exactly where a real staggered butt
+    joint hides its step. The bolt rows across a flange come out staggered for free.
 
-R10: THE TUBE IS A TURNED LATHE PROFILE, NOT A FIELD
-------------------------------------------------------------------------------
- 1. THE CROSS-SECTION IS AN EXPLICIT MACHINED POLYLINE (`build_profile`), not a
-    smooth function. Walking around the tube's minor circle you hit, in order and
-    forever:
-        FLAT PLATE CHORD -> LINEAR CHAMFER -> FLAT GROOVE FLOOR -> LINEAR CHAMFER ->
-        FLAT PLATE CHORD -> ...
-    16 plates, each a true straight CHORD (q = TUBE_R / cos(dv) is exactly a
-    polygon side in the cross-section's polar frame), each bounded by a ~68-deg
-    chamfer dropping into a 24 mm-wide, 22 mm-deep flat-floored seam. Those are
-    C0 joints: real creases, at 68 deg -- so EDGE_SPLIT fires, the normals step,
-    and every chamfer takes a hard specular line. THAT is the machined read.
- 2. ADAPTIVE SAMPLING. The vertex rings are placed ON the feature boundaries
-    (`u_samples` / `build_profile` emit a vert at every breakpoint) instead of on a
-    uniform grid that has to be dense enough to accidentally hit them. Crisper
-    features at LOWER cost than R9's brute 256x144.
- 3. THE TUBE IS BOLTED TOGETHER. 12 circumferential joins; 6 of them are raised,
-    chamfered FLANGE RIBS with a deep joint groove down the middle and a real BOLT
-    ROW on each side (hex heads, actual geometry, sitting on the rib -- "bolted ON",
-    not sculpted in). The other 6 are plain machined seams.
- 4. GREEBLES ARE BOLTED-ON HOUSINGS, not field dents. R9 sank its vent louvres into
-    the tube with smoothstep walls (soft -> invisible). R10 bolts 4 machined vent
-    housings onto the front-outer shoulder, and puts a bolted bezel frame around the
-    operator bay. Every added part is a chamfered plate with visible fasteners.
- 5. UV DENSITY x3.4. R9 tiled at UT=8 / VT=2.6 -> ~2.0 m of tube per texture tile,
-    which washes the panel/rivet detail into mush at player distance, AND VT=2.6 is
-    non-integer so the minor wrap had a hard texture seam. R10: UT=27 / VT=7, both
-    INTEGER (seamless wrap), ~0.60 m per tile in BOTH directions (isotropic texels).
-    V is laid out by ARC LENGTH along the profile polyline, so the chamfers and
-    groove floors get proportional texture instead of being squeezed.
- 6. NO CHEVRONS. NO DASHES. NO HAZARD RING. Unchanged from R8: the form is ONE big
-    tube; the only accent is the single continuous recessed INDICATOR GROOVE, which
-    is now simply the k=0 seam of the plate system, widened and deepened, so the
-    engine's indicator line seats in a real machined channel.
+ 2. THE SECTION WAS A PERFECT CIRCLE. A circular tube of this girth IS the silhouette
+    of a wheel, and no surface detail argues with a silhouette.
+    => R11-3: the section is a SUPERELLIPSE (squircle, n=3) -- a machined CASING with a
+    flat outer face, a flat FRONT face (the one the player stands in front of), a flat
+    back, a flat throat and cut corners between. Same mass, same bore, same outer rim
+    ("ONE LARGE metallic Tube" is intact) -- but it reads as industrial HOUSING.
 
-UNCHANGED CONTRACT: RING_R 2.60 / TUBE_R 0.66 (throat 1.94, rim 3.26), FLOOR_Y,
-the material-group names (patina/steel/dark/screen/led -- rifthub.cpp keys off
-them), the operator panel's bay pose, the cradle and the feed cables. The gate does
-not move and the hall is not touched.
+ 3. R11-2: FEWER, CHUNKIER, IRREGULAR JOINS. R10's 12 evenly-spaced joins repeated at
+    tread frequency. Now 8 joins at UNEVEN angles, only 3 of them heavy bolted
+    structural FLANGES (the ring is cast in 3 big segments). Repetition at tread
+    frequency is the enemy; an irregular structural rhythm is the friend.
 
-CLEARANCES (checked in main(), the membrane must never clip the tube):
-  bore floor  = RING_R - max_q  where max_q includes the flange ribs (+0.018)
-                -> 1.922 vs membrane R 1.895.
-  bolt heads are suppressed inside |v| > 140 deg so nothing protrudes into the bore.
+ 4. R11-4: BREAK THE SYMMETRY. A rotationally-uniform ring of identical plates is a
+    wheel; a machine has a heavy base, service gear a technician can reach, and cables
+    entering at ONE point. Added: a HEAVY LOWER BASE CASTING (the R10 cradle was a thin
+    pad on two spindly legs -- an axle stand holding a wheel), a junction box on one
+    flank only, a bolted access hatch elsewhere, and vents clustered on the UPPER flanks
+    at irregular angles. Nothing is mirrored; nothing sits on a rotational rhythm.
+
+KEPT FROM R10 (do not regress): the C0 chamfer creases and their specular edge lines;
+adaptive sampling (verts land ON feature boundaries); bolts/flanges as REAL geometry
+bolted ON, never sculpted in; UV density (UT=27 / VT=7, both INTEGER so the wrap is
+seamless, ~0.60 m per tile isotropic, V laid out by ARC LENGTH); no chevrons, no dashes,
+no hazard ring; the ONE continuous recessed INDICATOR GROOVE (cut independently of the
+plate grid so the brick offset can never move it).
+
+UNCHANGED CONTRACT: RING_R 2.60 / TUBE_R 0.66 (throat 1.94, rim 3.26), FLOOR_Y, the
+material-group names (patina/steel/dark/screen/led -- rifthub.cpp keys off them), the
+operator panel's bay pose, the feed cables. The gate does not move; the hall is not
+touched; collision is procedural (the GLB is visual only).
+
+CLEARANCES (checked in main(); the membrane must never clip the tube): the flange rib
+RAISE tapers to zero across the throat (THROAT_A/THROAT_B) and bolt heads are suppressed
+inside |v| > 138 deg, so nothing can protrude into the bore.
 
 LOCAL SPACE CONTRACT (must match rifthub.cpp's portal basis):
   gate stands in the local XY plane, +Y = 12 o'clock, hole axis = +Z, FRONT
@@ -117,7 +116,7 @@ def D(deg):
 
 # ---- THE TUBE ---------------------------------------------------------------
 RING_R    = 2.60      # tube centerline radius (major)
-TUBE_R    = 0.66      # tube radius (minor)  -> throat 1.94, outer rim 3.26
+TUBE_R    = 0.66      # tube "radius" (minor)  -> throat 1.94, outer rim 3.26
 FLOOR_Y   = -2.20     # world y = 0 in the local frame (engine kRingY)
 
 # minor-angle landmarks (v): 0 = outward equator, -90 = FRONT (-Z, hub side),
@@ -125,48 +124,99 @@ FLOOR_Y   = -2.20     # world y = 0 in the local frame (engine kRingY)
 V_FRONT   = -math.pi * 0.5
 V_TRACK   = D(-152.0)     # the recessed indicator groove (inner-front shoulder)
 
+# ---------------------------------------------------------------------------
+# R11-3: THE CROSS-SECTION IS A MACHINED CASING, NOT A TORUS.
+#
+# Half the "tyre" read was the section itself: a perfectly circular tube of this girth
+# IS the silhouette of a wheel, and no amount of surface detail argues with a
+# silhouette. A SUPERELLIPSE (squircle, exponent n) keeps the mass the owner asked for
+# -- "ONE LARGE metallic Tube", and the bore and outer rim are UNCHANGED -- but gives
+# the section FLAT FACES with chamfered shoulders: a flat outer face at v=0, a flat
+# FRONT face at v=-90 (the one the player stands in front of), a flat back, a flat
+# throat, and cut corners between. That is an industrial HOUSING, not a wheel.
+SQUIRCLE_N = 3.0
+# A squircle is FATTER than its circle between the axes (n=3 peaks ~1.14x at 45 deg),
+# and the plate chords circumscribe it on top of that (+2.5% at a plate edge). Both
+# eat the THROAT: unscaled, the innermost point landed at 1.8965 m against a membrane
+# at 1.895 -- a 2 mm clearance, i.e. a z-fight waiting to happen. Scale the section so
+# the bore keeps a real margin. Costs 18 mm off the outer rim (3.260 -> 3.242), which
+# is invisible; buys ~20 mm of bore, which is not.
+SECTION_S  = 0.972
+def R_base(v):
+    c = abs(math.cos(v)); sn = abs(math.sin(v))
+    return (TUBE_R * SECTION_S) * (c ** SQUIRCLE_N + sn ** SQUIRCLE_N) ** (-1.0 / SQUIRCLE_N)
+
 # --- the plate system (the cross-section) ---
-NV        = 16                     # 16 plates around the tube
-V_STEP    = TAU / NV               # 22.5 deg
-SEAM_GH   = D(1.05)                # seam groove: half-width of its FLAT FLOOR
-SEAM_CH   = D(1.05)                # seam: angular width of the CHAMFER wall
-SEAM_D    = 0.022                  # seam groove depth below nominal TUBE_R
-# the k=0 seam is the INDICATOR GROOVE: wider + deeper, the engine's indicator
-# line seats inside it (a recessed slit, never a ring of triangles).
+NV        = 12                     # 12 plates around the section (was 16: chunkier)
+V_STEP    = TAU / NV               # 30 deg -> ~0.35 m of plate
+SEAM_GH   = D(1.15)                # seam groove: half-width of its FLAT FLOOR
+SEAM_CH   = D(1.15)                # seam: angular width of the CHAMFER wall
+SEAM_D    = 0.024                  # seam groove depth below the casing surface
+
+# R11-1: BRICK BOND. THE point of this round. In R10 the 16 plate seams sat at the same
+# v in EVERY circumferential band, so each one swept an UNBROKEN GROOVE ALL THE WAY
+# AROUND THE RING -- which is precisely and exactly the geometry of tyre tread. Real
+# plated hulls stagger their joints (brick bond / shifted butt joints) so no seam runs
+# continuously: the plates INTERLOCK. Alternate bands are offset by HALF A PLATE, so
+# every seam DIES at the next circumferential join and picks up half a plate over. The
+# tread lines cannot form, because no line survives a band boundary.
+BRICK     = V_STEP * 0.5
+
+# The ONE continuous circumferential line left is the INDICATOR GROOVE, and that is
+# canon (the recessed slit the engine's indicator line seats in). One is a machined
+# detail; sixteen is a tyre. It is cut INDEPENDENTLY of the plate grid, so the brick
+# offset can never move it.
 TRACK_GH  = D(5.0)
 TRACK_CH  = D(1.6)
 TRACK_D   = 0.058
 
-# --- the circumferential joins (along u) ---
-NU        = 12                     # 12 joins; every OTHER one is a bolted flange
-U_STEP    = TAU / NU
-JOIN_GU   = 0.0096                 # plain seam: half-width of the flat groove floor
-JOIN_CU   = 0.0046                 # plain seam: chamfer wall
-JOIN_D    = 0.022                  # plain seam depth
-RIB_JG    = 0.0060                 # flange: half-width of the JOINT groove floor
-RIB_JC    = 0.0040                 # flange: joint groove chamfer
-RIB_JD    = 0.026                  # flange: joint groove depth (below nominal)
-RIB_W     = 0.0550                 # flange: half-width of the raised rib top
-RIB_C     = 0.0070                 # flange: rib shoulder chamfer
-RIB_H     = 0.018                  # flange: rib height ABOVE nominal
-BOLT_U    = 0.030                  # bolt row offset from the joint line (on the rib)
-BOLT_R    = 0.020
-BOLT_VMAX = D(140.0)               # no bolts in the throat (they'd enter the bore)
+# --- R11-2: FEWER, CHUNKIER, IRREGULAR CIRCUMFERENTIAL JOINS ----------------
+# R10 had 12 evenly-spaced joins -- a repeat at exactly tread frequency. Repetition at
+# tread frequency is the enemy; an irregular STRUCTURAL rhythm is the friend. 8 joins
+# at uneven angles, of which only 3 are heavy bolted structural FLANGES (the ring is
+# built from 3 big cast segments); the rest are plain machined butt seams.
+JOIN_DEG  = [0.0, 48.0, 96.0, 140.0, 186.0, 232.0, 280.0, 330.0]
+JOIN_U    = [D(a) for a in JOIN_DEG]
+NBAND     = len(JOIN_U)                     # must be EVEN so the brick phase wraps
+FLANGE    = set([0, 2, 5])                  # heavy flanges at 0, 96, 232 deg
 
-U_BASE    = 160                    # base silhouette sampling (feature rings are added)
+JOIN_GU   = 0.0100                 # plain seam: half-width of the flat groove floor
+JOIN_CU   = 0.0048                 # plain seam: chamfer wall
+JOIN_D    = 0.024                  # plain seam depth
+RIB_JG    = 0.0065                 # flange: half-width of the JOINT groove floor
+RIB_JC    = 0.0042                 # flange: joint groove chamfer
+RIB_JD    = 0.030                  # flange: joint groove depth (below the casing)
+RIB_W     = 0.0760                 # flange: half-width of the raised rib top (CHUNKY)
+RIB_C     = 0.0085                 # flange: rib shoulder chamfer
+RIB_H     = 0.030                  # flange: rib height ABOVE the casing (HEAVY)
+BOLT_U    = 0.040                  # bolt row offset from the joint line (on the rib)
+BOLT_R    = 0.022
+BOLT_VMAX = D(138.0)               # no bolts in the throat (they would enter the bore)
+THROAT_A  = D(140.0)               # the flange RIB tapers out across the throat so it
+THROAT_B  = D(166.0)               # can never eat the membrane's bore clearance
+
+U_BASE    = 140                    # base silhouette sampling (feature rings are added)
 
 # operator panel bay (unchanged pose)
 BAY_U     = D(-20.0)
 BAY_V     = V_FRONT
-BAY_DU    = 0.122         # half-extent in u  -> 0.63 m of tube arc
-BAY_DV    = 0.345         # half-extent in v  -> 0.46 m of tube arc
-BAY_WU    = 0.020         # crisp milled wall (u)
-BAY_WV    = 0.050         # crisp milled wall (v)
-BAY_DEPTH = 0.100         # recess depth (the panel lives INSIDE this)
+BAY_DU    = 0.122
+BAY_DV    = 0.345
+BAY_WU    = 0.020
+BAY_WV    = 0.050
+BAY_DEPTH = 0.100
 
-# bolted-on vent housings (front-outer shoulder)
-VENT_U    = [D(50.0), D(140.0), D(230.0), D(320.0)]
+# --- R11-4: BREAK THE SYMMETRY ----------------------------------------------
+# A perfectly rotationally-uniform ring of identical plates IS a wheel. A machine is
+# not uniform: it has a heavy base where it carries its load, service gear where a
+# technician can reach it, and cable runs entering at ONE point. Greeble density
+# differs top vs bottom, and NOTHING here is mirrored.
+VENT_U    = [D(62.0), D(118.0), D(155.0)]   # 3 vents, UPPER flanks only, irregular
 V_VENT    = D(-38.0)
+JBOX_U    = D(205.0)                        # junction box: one side only
+JBOX_V    = D(-58.0)
+HATCH_U   = D(78.0)                         # bolted access hatch: upper-left, alone
+HATCH_V   = D(-44.0)
 
 # texture tiling: INTEGER in both axes (seamless wrap), ~0.60 m per tile both ways.
 UT, VT    = 27.0, 7.0
@@ -176,105 +226,77 @@ def register(ob, group):
     GROUPS[group].append(ob)
     return ob
 
-
-# ---------------------------------------------------------------------------
-# THE MACHINED CROSS-SECTION.
-#
-# A machined tube's section is a TURNED PROFILE: straight runs joined by straight
-# chamfers, with CORNERS between them. We author it as an explicit polyline of
-# (v, q) control points -- q = distance from the tube's centerline circle -- and the
-# sweep interpolates LINEARLY between them. Linear interpolation between control
-# points is what produces the C0 creases that R9's gauss()/smoothstep() could not.
-#
-# Per seam k (at v = V_TRACK + k*V_STEP) we emit, and per plate between two seams:
-#     [seam center: FLOOR] [floor edge] [chamfer top] [plate center] [chamfer top]
-#     [floor edge] [next seam center: FLOOR] ...
-# The plate face between two chamfer tops is a true straight CHORD: in the polar
-# frame of the cross-section a straight line at distance A from the centre is
-# q = A / cos(dv), and taking A = TUBE_R makes the chord tangent to the nominal
-# tube at the plate's midpoint -- i.e. the plates are the facets of a 16-gon
-# circumscribing the tube, and the chamfers cut their corners off. Sampling that
-# chord at its two ends + its midpoint is EXACT (all three lie on the line), so a
-# plate face is dead flat with a constant normal, and adjacent plates step by
-# 22.5 deg across a 68-deg chamfer. That step is the machining.
-# ---------------------------------------------------------------------------
 def wrap(a):
     return (a + math.pi) % TAU - math.pi
 
-def seam_params(k):
-    """(groove-floor half width, chamfer width, floor radius) for seam k."""
-    if k % NV == 0:
-        return TRACK_GH, TRACK_CH, TUBE_R - TRACK_D    # the indicator groove
-    return SEAM_GH, SEAM_CH, TUBE_R - SEAM_D
 
-def build_profile():
-    """The tube's minor cross-section, as an ordered list of (v, q) samples over a
-    full 2*pi (first sample repeats at +2*pi; we drop the duplicate)."""
-    pts = []
-    for k in range(NV):
-        vs   = V_TRACK + k * V_STEP                  # this seam's centre
-        vsn  = V_TRACK + (k + 1) * V_STEP            # the next seam's centre
-        gh,  ch,  fl  = seam_params(k)
-        ghn, chn, fln = seam_params(k + 1)
+# ---------------------------------------------------------------------------
+# THE BRICK-BONDED PLATE PROFILE.
+#
+# Same machined law as R10 -- FLAT PLATE CHORD -> LINEAR CHAMFER -> FLAT GROOVE FLOOR,
+# all C0, so every joint creases and EDGE_SPLIT gives it a specular edge line -- but
+# the seam PHASE now depends on which circumferential band we are in, so the seams
+# INTERLOCK instead of sweeping rings.
+#
+# Each plate is a true straight CHORD tangent to the casing at its midpoint:
+# q = A / cos(dv) is exactly a straight line in the section's polar frame, with
+# A = R_base(plate centre). Sampling it at its ends + midpoint is EXACT.
+# ---------------------------------------------------------------------------
+def band_of(u):
+    """Index of the circumferential band u falls in (bands are separated by joins)."""
+    x = u % TAU
+    b = 0
+    for i in range(NBAND):
+        if x >= JOIN_U[i]:
+            b = i
+    return b
 
-        # --- this seam's groove: flat floor, then the chamfer up to the plate ---
-        pts.append((vs - gh, fl))                    # floor, entering edge
-        pts.append((vs,      fl))                    # floor, centre (the dark line)
-        pts.append((vs + gh, fl))                    # floor, leaving edge
+def phase_of(band):
+    """BRICK BOND: alternate bands step the plate grid by half a plate."""
+    return BRICK if (band % 2) else 0.0
 
-        # --- the plate face: a straight chord between the two chamfer tops ---
-        e0 = vs  + gh  + ch                          # chamfer top (start of plate)
-        e1 = vsn - ghn - chn                         # chamfer top (end of plate)
-        vc = 0.5 * (e0 + e1)                         # plate midpoint
-        A  = TUBE_R                                  # apothem: chord tangent at vc
-        for vv in (e0, vc, e1):
-            pts.append((vv, A / math.cos(vv - vc)))
-    # de-dup / sort into a clean monotone list over one turn
-    pts.sort(key=lambda p: p[0])
-    out = []
-    for v, q in pts:
-        if out and abs(v - out[-1][0]) < 1e-9:
-            continue
-        out.append((v, q))
-    return out
+def q_plates(v, phase):
+    """The plate / chamfer / seam profile at minor angle v for a given brick phase."""
+    half = V_STEP * 0.5
+    k    = round((v - phase) / V_STEP)
+    sk   = phase + k * V_STEP                 # nearest seam centre
+    ds   = wrap(v - sk)
+    floor = R_base(v) - SEAM_D                # the seam's flat machined floor
+    if abs(ds) <= SEAM_GH:
+        return floor
+    vc = sk + (half if ds > 0.0 else -half)   # this plate's centre
+    A  = R_base(vc)                           # chord tangent to the casing at vc
+    E0 = half - SEAM_GH - SEAM_CH             # plate face half-width
+    dv = wrap(v - vc)
+    d  = abs(dv)
+    if d <= E0:
+        return A / math.cos(dv)
+    qe = A / math.cos(E0)                     # the plate's edge, before the chamfer
+    t  = (d - E0) / max(1e-9, SEAM_CH)        # LINEAR ramp -> a crease at both ends
+    t  = min(max(t, 0.0), 1.0)
+    return qe + (floor - qe) * t
 
-PROFILE = build_profile()
-V_SAMP  = [p[0] for p in PROFILE]
-Q_SAMP  = [p[1] for p in PROFILE]
-V0      = V_SAMP[0]
-
-def q_profile(v):
-    """Linear interpolation along the machined polyline (periodic in v)."""
-    x = V0 + (v - V0) % TAU
-    n = len(V_SAMP)
-    # binary search
-    lo, hi = 0, n
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if V_SAMP[mid] <= x:
-            lo = mid + 1
-        else:
-            hi = mid
-    i = lo - 1
-    if i >= n - 1:
-        v0, q0 = V_SAMP[n - 1], Q_SAMP[n - 1]
-        v1, q1 = V_SAMP[0] + TAU, Q_SAMP[0]
-    else:
-        v0, q0 = V_SAMP[i], Q_SAMP[i]
-        v1, q1 = V_SAMP[i + 1], Q_SAMP[i + 1]
-    t = 0.0 if v1 - v0 < 1e-12 else (x - v0) / (v1 - v0)
-    return q0 + t * (q1 - q0)
+def q_profile(v, phase):
+    q = q_plates(v, phase)
+    # THE INDICATOR GROOVE: cut independently of the plate grid (the brick offset must
+    # never move it), with the same linear-walled, flat-floored machining.
+    d  = abs(wrap(v - V_TRACK))
+    tf = R_base(v) - TRACK_D
+    if d <= TRACK_GH:
+        return tf
+    if d <= TRACK_GH + TRACK_CH:
+        t = (d - TRACK_GH) / TRACK_CH
+        return tf + (q - tf) * t
+    return q
 
 
 # ---------------------------------------------------------------------------
-# THE CIRCUMFERENTIAL JOINS (a radial offset field along u).
-#
-# Same law as the cross-section: PIECEWISE LINEAR, so every wall creases. Even
-# stations are bolted FLANGE RIBS (raised, chamfered, with a deep joint groove down
-# the centre); odd stations are plain machined seams.
+# THE CIRCUMFERENTIAL JOINS (a radial offset along u). Piecewise LINEAR, so every wall
+# creases. 3 heavy bolted flange ribs + 5 plain machined seams, irregularly spaced. The
+# rib RAISE tapers out across the throat so it can never intrude on the membrane's
+# bore; the grooves stay cut everywhere.
 # ---------------------------------------------------------------------------
 def _piecewise(a, knots):
-    """knots = ascending [(|du|, offset)]; flat-extrapolate the last to 0 beyond."""
     if a >= knots[-1][0]:
         return 0.0
     for i in range(len(knots) - 1):
@@ -291,28 +313,33 @@ PLAIN_KNOTS = [(0.0, -JOIN_D), (JOIN_GU, -JOIN_D), (JOIN_GU + JOIN_CU, 0.0)]
 RIB_KNOTS   = [(0.0, -RIB_JD), (RIB_JG, -RIB_JD), (RIB_JG + RIB_JC, RIB_H),
                (RIB_W, RIB_H), (RIB_W + RIB_C, 0.0)]
 
-def is_flange(k):
-    return (k % 2) == 0
+def throat_fade(v):
+    a = abs(wrap(v))
+    if a <= THROAT_A: return 1.0
+    if a >= THROAT_B: return 0.0
+    t = (THROAT_B - a) / (THROAT_B - THROAT_A)
+    return t * t * (3.0 - 2.0 * t)
 
-def join_offset(u):
-    """Radial offset of the nearest circumferential join (+ = raised rib)."""
-    k  = int(round(u / U_STEP))
-    du = abs(wrap(u - k * U_STEP))
-    return _piecewise(du, RIB_KNOTS if is_flange(k) else PLAIN_KNOTS)
+def nearest_join(u):
+    bd = 1e9; ji = 0
+    for i, u0 in enumerate(JOIN_U):
+        d = abs(wrap(u - u0))
+        if d < bd:
+            bd = d; ji = i
+    return ji, bd
+
+def join_offset(u, v):
+    ji, bd = nearest_join(u)
+    off = _piecewise(bd, RIB_KNOTS if ji in FLANGE else PLAIN_KNOTS)
+    if off > 0.0:                      # only the RAISED rib fades; grooves stay cut
+        off *= throat_fade(v)
+    return off
 
 
-# ---------------------------------------------------------------------------
-# THE OPERATOR BAY: a crisply-walled MILLED POCKET. Its flat floor OVERRIDES the
-# plate/seam/rib structure (a pocket milled after assembly erases what it cuts
-# through), so we blend to a plain circular floor rather than subtracting a depth
-# from the machined profile and leaving ghost ripples in the pocket.
-# ---------------------------------------------------------------------------
 def _trap(d, half, wall):
     a = abs(d)
-    if a <= half:
-        return 1.0
-    if a >= half + wall:
-        return 0.0
+    if a <= half:  return 1.0
+    if a >= half + wall: return 0.0
     return (half + wall - a) / wall          # LINEAR wall -> a crease, not a blend
 
 def bay_mask(u, v):
@@ -320,10 +347,10 @@ def bay_mask(u, v):
             _trap(wrap(v - BAY_V), BAY_DV, BAY_WV))
 
 def rr(u, v):
-    q  = q_profile(v) + join_offset(u)
+    q  = q_profile(v, phase_of(band_of(u))) + join_offset(u, v)
     kb = bay_mask(u, v)
     if kb > 0.0:
-        q = (1.0 - kb) * q + kb * (TUBE_R - BAY_DEPTH)
+        q = (1.0 - kb) * q + kb * (R_base(v) - BAY_DEPTH)
     return q
 
 def surf(u, v):
@@ -332,53 +359,63 @@ def surf(u, v):
     return Vector((rad * math.cos(u), rad * math.sin(u), q * math.sin(v)))
 
 def nrm(u, v):
-    """Outward normal of the nominal tube (good enough to seat bolted-on parts)."""
     return Vector((math.cos(v) * math.cos(u), math.cos(v) * math.sin(u), math.sin(v)))
 
 
 def u_samples():
-    """Base silhouette rings PLUS a ring exactly on every feature boundary. This is
-    what buys crisp joins cheaply: R9 spent 256 uniform rings and still smeared the
-    walls; we spend ~240 and land verts ON them."""
+    """Base rings PLUS a ring exactly on every join breakpoint. The brick phase FLIPS
+    at a join CENTRE -- which is the floor of a groove on every join type, plain or
+    flange -- so the half-plate step between bands is hidden down inside the joint,
+    exactly where a real staggered butt joint hides it."""
     s = set()
     for i in range(U_BASE):
         s.add(round(i * TAU / U_BASE, 9))
-    for k in range(NU):
-        u0 = k * U_STEP
-        knots = RIB_KNOTS if is_flange(k) else PLAIN_KNOTS
+    for i, u0 in enumerate(JOIN_U):
+        knots = RIB_KNOTS if i in FLANGE else PLAIN_KNOTS
         for x, _ in knots:
             s.add(round((u0 + x) % TAU, 9))
             s.add(round((u0 - x) % TAU, 9))
+        s.add(round(u0 % TAU, 9))
     for x in (BAY_DU, BAY_DU + BAY_WU):
         s.add(round((BAY_U + x) % TAU, 9))
         s.add(round((BAY_U - x) % TAU, 9))
     return sorted(s)
 
 def v_samples():
-    """The profile's own control points, plus the bay's milled v-walls."""
-    s = set(round(v, 9) for v in V_SAMP)
+    """The union of BOTH brick phases' control points. One v-grid serves every band: a
+    control point from the other phase lands on THIS phase's flat chord, where it is
+    exactly collinear -- so it costs a vertex and distorts nothing."""
+    s = set()
+    half = V_STEP * 0.5
+    for phase in (0.0, BRICK):
+        for k in range(NV):
+            sk = phase + k * V_STEP
+            for x in (-SEAM_GH - SEAM_CH, -SEAM_GH, 0.0, SEAM_GH, SEAM_GH + SEAM_CH):
+                s.add(round(wrap(sk + x), 9))
+            s.add(round(wrap(sk + half), 9))          # plate centre
+    for x in (-TRACK_GH - TRACK_CH, -TRACK_GH, 0.0, TRACK_GH, TRACK_GH + TRACK_CH):
+        s.add(round(wrap(V_TRACK + x), 9))
     for x in (BAY_DV, BAY_DV + BAY_WV):
         s.add(round(wrap(BAY_V + x), 9))
         s.add(round(wrap(BAY_V - x), 9))
-    # keep the list ordered starting from V0 and covering exactly one turn
-    return sorted(V0 + (v - V0) % TAU for v in s)
+    v0 = min(s)
+    return sorted(v0 + (v - v0) % TAU for v in s)
 
 
 def build_tube():
-    """Revolve the machined profile into ONE closed, watertight, arc-length-UV'd mesh.
-    No booleans; the topology is a plain torus grid, so winding is uniform and the
-    outward normal is guaranteed by construction (see normals_outward)."""
+    """Revolve the brick-bonded machined casing into ONE closed, watertight,
+    arc-length-UV'd mesh. Topology stays a plain torus grid, so winding is uniform and
+    the outward normal is guaranteed by construction (see normals_outward)."""
     us = u_samples()
     vs = v_samples()
     NUS, NVS = len(us), len(vs)
 
-    # V by ARC LENGTH along the cross-section polyline (so chamfers and groove
-    # floors get their fair share of texels instead of being squeezed to nothing).
-    pts2 = [(q_profile(v) * math.cos(v), q_profile(v) * math.sin(v)) for v in vs]
+    # V by ARC LENGTH along the section (phase 0 as the reference), so chamfers and
+    # groove floors get their fair share of texels instead of being squeezed to nothing.
+    pts2 = [(q_profile(v, 0.0) * math.cos(v), q_profile(v, 0.0) * math.sin(v)) for v in vs]
     cum = [0.0]
     for j in range(1, NVS + 1):
-        a = pts2[j - 1]
-        b = pts2[j % NVS]
+        a = pts2[j - 1]; b = pts2[j % NVS]
         cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
     total = cum[-1]
 
@@ -410,21 +447,17 @@ def build_tube():
     ob.select_set(True)
     bpy.context.view_layer.objects.active = ob
     bpy.ops.object.shade_smooth()
-    # 30 deg: BELOW every machined crease we author (plate->chamfer 68 deg,
-    # chamfer->floor 68 deg, rib shoulder 45 deg, pocket wall 60+ deg) and ABOVE the
-    # tube's own curvature step (2.25 deg), so the plates stay smooth along the sweep
-    # and EVERY chamfer becomes a hard edge with its own specular line.
     md = ob.modifiers.new("es", 'EDGE_SPLIT')
     md.split_angle = D(30)
     bpy.ops.object.modifier_apply(modifier=md.name)
     register(ob, "patina")
-    log("tube: %d verts / %d quads (u rings=%d, v samples=%d; R9 was a uniform 256x144)"
+    log("tube: %d verts / %d quads (u rings=%d, v samples=%d)"
         % (len(verts), len(faces), NUS, NVS))
-    log("      profile: %d plates, seam %.0fmm wide x %.0fmm deep, chamfer slope ~%.0f deg"
-        % (NV, math.degrees(SEAM_GH) * 2 * TUBE_R * TAU / 360.0 * 1000.0 / 1.0,
-           SEAM_D * 1000.0,
-           math.degrees(math.atan2(SEAM_D + (TUBE_R / math.cos(SEAM_CH) - TUBE_R),
-                                   SEAM_CH * TUBE_R))))
+    log("      section: SQUIRCLE n=%.1f -- a machined casing, NOT a torus" % SQUIRCLE_N)
+    log("      plates : %d/band, BRICK-BONDED (phase alternates by %.1f deg) -> "
+        "no seam survives a band boundary" % (NV, math.degrees(BRICK)))
+    log("      joins  : %d irregular [%s], of which %d are heavy bolted flanges"
+        % (NBAND, ",".join("%.0f" % a for a in JOIN_DEG), len(FLANGE)))
     return ob
 
 
@@ -538,30 +571,33 @@ def bolt(name, u, v, lift, r=BOLT_R, h=0.026):
 
 
 def build_flange_bolts():
-    """A real bolt row either side of every flange joint, one per plate, suppressed
-    inside the throat so nothing intrudes on the membrane's bore."""
+    """A real bolt row either side of each of the 3 HEAVY flange joints. The bolts land
+    on the PLATE CENTRES of the band on that side -- and because the bands are
+    brick-bonded, the two rows across one flange are STAGGERED relative to each other.
+    That is what a real staggered joint looks like, and it is one more thing a tyre
+    cannot do. Suppressed inside the throat so nothing intrudes on the bore."""
     n = 0
-    for k in range(NU):
-        if not is_flange(k):
-            continue
-        u0 = k * U_STEP
-        for pk in range(NV):
-            vs   = V_TRACK + pk * V_STEP
-            vsn  = V_TRACK + (pk + 1) * V_STEP
-            gh, ch, _   = seam_params(pk)
-            ghn, chn, _ = seam_params(pk + 1)
-            vc = 0.5 * ((vs + gh + ch) + (vsn - ghn - chn))     # plate centre
-            if abs(wrap(vc)) > BOLT_VMAX:
-                continue                                        # throat: no bolts
-            for s in (-1, 1):
-                bolt("bolt_%d_%d_%d" % (k, pk, s), u0 + s * BOLT_U, vc, RIB_H)
+    half = V_STEP * 0.5
+    for ji in sorted(FLANGE):
+        u0 = JOIN_U[ji]
+        for s in (-1, 1):
+            # the band on THIS side of the joint (and therefore ITS brick phase)
+            ub    = u0 + s * BOLT_U
+            phase = phase_of(band_of(ub % TAU))
+            for pk in range(NV):
+                vc = phase + pk * V_STEP + half          # a plate centre in that band
+                if abs(wrap(vc)) > BOLT_VMAX:
+                    continue                             # throat: no bolts
+                bolt("bolt_%d_%d_%d" % (ji, pk, s), ub, wrap(vc), RIB_H)
                 n += 1
-    log("flange bolts:", n, "(6 bolted joins x 2 rows; throat suppressed)")
+    log("flange bolts:", n, "(3 heavy joins x 2 rows, rows STAGGERED by the brick bond)")
 
 
 def build_vents():
-    """Machined VENT HOUSINGS, bolted to the front-outer shoulder. R9 sank louvres
-    into the hull with smoothstep walls, which is to say it sank nothing at all."""
+    """Machined VENT HOUSINGS, bolted on. R9 sank louvres into the hull with smoothstep
+    walls, which is to say it sank nothing at all. R11: they cluster on the UPPER
+    flanks only -- greeble density differs top vs bottom, because a machine is not
+    rotationally uniform and a wheel is."""
     for idx, u0 in enumerate(VENT_U):
         set_stamp(frame(u0, V_VENT))
         # chamfered base plate (the housing flange)
@@ -640,10 +676,83 @@ def build_panel():
 
 
 # ---------------------------------------------------------------------------
-# CRADLE — the gate is INSTALLED. Minimal: a round pad, two curved legs, one
-# trunnion through the tube's lower flanks, and BOLTED trunnion saddles.
+# R11-4: THE ASYMMETRIC HARDWARE. A junction box on ONE side, a bolted access hatch
+# somewhere else entirely. Nothing mirrored, nothing on a rotational rhythm — the eye
+# reads "a machine somebody maintains", which a wheel never is.
+# ---------------------------------------------------------------------------
+def build_service_gear():
+    # --- JUNCTION BOX (one flank only): a chunky bolted casting with a conduit gland
+    set_stamp(frame(JBOX_U, JBOX_V))
+    stamp(register(cube("jbox_base", 0.205, 0.150, 0.014, (0, 0, 0.012), bev=0.008),
+                   "steel"))
+    stamp(register(cube("jbox_body", 0.170, 0.118, 0.055, (0, 0, 0.070), bev=0.012),
+                   "dark"))
+    stamp(register(cube("jbox_lid", 0.140, 0.092, 0.010, (0, 0, 0.132), bev=0.006),
+                   "steel"))
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            stamp(register(cyl("jbox_b%d%d" % (sx, sy), 0.013, 0.016,
+                               (sx * 0.182, sy * 0.128, 0.020), verts=6, bev=0.002),
+                           "steel"))
+            stamp(register(cyl("jbox_l%d%d" % (sx, sy), 0.010, 0.012,
+                               (sx * 0.120, sy * 0.074, 0.140), verts=6, bev=0.002),
+                           "steel"))
+    stamp(register(cyl("jbox_gland", 0.038, 0.070, (0.0, -0.150, 0.060),
+                       rot=(D(90), 0, 0), verts=12, bev=0.005), "steel"))
+
+    # --- BOLTED ACCESS HATCH (alone, upper-left): a recessed plate + 6 fasteners
+    set_stamp(frame(HATCH_U, HATCH_V))
+    stamp(register(cube("hatch_plate", 0.230, 0.165, 0.013, (0, 0, 0.011), bev=0.009),
+                   "steel"))
+    stamp(register(cube("hatch_face", 0.196, 0.132, 0.008, (0, 0, 0.024), bev=0.005),
+                   "dark"))
+    for i in range(3):
+        for sy in (-1, 1):
+            stamp(register(cyl("hatch_b%d%d" % (i, sy), 0.012, 0.015,
+                               ((i - 1) * 0.150, sy * 0.142, 0.019), verts=6,
+                               bev=0.002), "steel"))
+    stamp(register(cube("hatch_handle", 0.052, 0.016, 0.016, (0.120, 0.0, 0.036),
+                        bev=0.005), "steel"))
+    log("service gear: junction box @%.0f deg + access hatch @%.0f deg (asymmetric)"
+        % (math.degrees(JBOX_U), math.degrees(HATCH_U)))
+
+
+# ---------------------------------------------------------------------------
+# CRADLE — the gate is INSTALLED, and R11 makes it look like it. The R10 cradle was a
+# thin pad + two spindly legs, which under a fat round ring reads as an AXLE STAND
+# holding a wheel. Now there is a HEAVY LOWER BASE CASTING: a chunky chamfered plinth
+# with a stepped machined top the tube sits down INTO, bolted to the deck. Mass at the
+# bottom is what tells the eye this thing is INSTALLED, not rolling.
 # ---------------------------------------------------------------------------
 def build_cradle():
+    # THE BORE IS A NO-GO VOLUME. The membrane is a disk of R 1.895 lying in the ring's
+    # OWN plane (z ~ 0), so ANY hardware within 1.895 m of the ring centre and near z=0
+    # punches straight through the portal -- which is exactly what the first cut of this
+    # casting did (a slab at local y = -1.36 sits 1.36 m from centre: inside the disk).
+    # The floor is at y = -2.20 and the bore's lowest point is y = -1.895, so a plinth
+    # standing on the deck has only ~0.30 m of legal height at x = 0. It gets its MASS
+    # from depth and width instead of height, and the buttresses that do climb are kept
+    # out at |x| >= 1.55 (r > 1.9) and off the membrane plane at |z| = 0.62.
+    register(cube("base_slab", 1.62, 0.10, 0.98, (0.0, FLOOR_Y + 0.10, 0.02),
+                  bev=0.030), "dark")                       # top at y = -2.00: legal
+    register(cube("base_step", 1.30, 0.05, 0.80, (0.0, FLOOR_Y + 0.24, 0.02),
+                  bev=0.020), "steel")                      # top at y = -1.91: legal
+    # heavy chamfered BUTTRESS GUSSETS: the mass that says "installed", kept clear of
+    # both the bore (|x| 1.55 -> r >= 1.95) and the membrane plane (|z| 0.62).
+    for sx in (-1, 1):
+        for sz in (-1, 1):
+            register(cube("gusset%d%d" % (sx, sz), 0.11, 0.44, 0.30,
+                          (sx * 1.58, FLOOR_Y + 0.52, sz * 0.62), bev=0.022), "dark")
+            register(cyl("gussetbolt%d%d" % (sx, sz), 0.026, 0.030,
+                         (sx * 1.58, FLOOR_Y + 0.14, sz * 0.62),
+                         rot=aim((0.0, 1.0, 0.0)), verts=6, bev=0.004), "steel")
+    # deck fasteners around the casting's flange
+    for i in range(6):
+        x = -1.55 + i * 0.62
+        for sz in (-1, 1):
+            register(cyl("basebolt%d_%d" % (i, sz), 0.030, 0.034,
+                         (x, FLOOR_Y + 0.14, sz * 0.78),
+                         rot=aim((0.0, 1.0, 0.0)), verts=6, bev=0.005), "steel")
     register(cyl("pad", 2.05, 0.16, (0.0, FLOOR_Y + 0.08, 0.02),
                  rot=aim((0.0, 1.0, 0.0)), verts=56), "steel")
     register(cyl("trunnion", 0.15, 3.6, (0.0, -1.62, 0.30),
@@ -819,6 +928,30 @@ def signed_volume(ob):
     return v
 
 
+MEMB_R = 1.895      # the membrane disk's radius (rifthub.cpp)
+MEMB_Z = 0.12       # half-thickness of the plate it occupies, with margin
+
+def check_membrane_clearance():
+    """NO-GO VOLUME: the membrane is a disk of R 1.895 lying in the ring's OWN plane.
+    Any bolted-on part that strays within that radius AND near z=0 punches through the
+    portal -- which is precisely what the first R11 base casting did (it appeared as a
+    black slab floating in the bottom of the rift). Geometry is easy to author blind
+    here because the offending part looks fine in isolation; only the render shows it.
+    So we assert it, per object, every build."""
+    bad = []
+    for grp, objs in GROUPS.items():
+        if grp == "patina":
+            continue                       # the tube IS the bore wall; check_bore() owns it
+        for ob in objs:
+            m = ob.matrix_world
+            for vt in ob.data.vertices:
+                p = m @ vt.co
+                if math.hypot(p.x, p.y) < MEMB_R and abs(p.z) < MEMB_Z:
+                    bad.append(ob.name)
+                    break
+    return bad
+
+
 def check_bore():
     """The membrane (R 1.895) must never clip the tube. Sample the throat."""
     worst = 1e9
@@ -843,10 +976,20 @@ def main():
     build_tube()
     build_flange_bolts()
     build_vents()
+    build_service_gear()
     build_panel()
     build_cradle()
     build_cables()
     log("authored objects:", sum(len(v) for v in GROUPS.values()))
+
+    intruders = check_membrane_clearance()
+    if intruders:
+        log("!! MEMBRANE INTRUSION (%d parts inside R %.3f / |z| %.2f): %s"
+            % (len(intruders), MEMB_R, MEMB_Z, ", ".join(sorted(set(intruders))[:8])))
+        raise RuntimeError("bolted-on geometry punches through the membrane: "
+                           + ", ".join(sorted(set(intruders))[:8]))
+    log("membrane clearance: OK (no bolted-on part inside R %.3f / |z| < %.2f)"
+        % (MEMB_R, MEMB_Z))
 
     rot = Matrix.Rotation(math.pi / 2, 4, 'X')
     total = 0
