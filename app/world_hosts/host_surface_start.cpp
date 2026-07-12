@@ -224,7 +224,19 @@ int hostSurfaceStart(HostContext& hc) {
     std::unique_ptr<x3::asset::IAssetSource> asrc(x3::asset::createAssetSource());
     asrc->mountDir(rigDir, 0);
     std::unique_ptr<x3::asset::IModelLoader> mloader(x3::asset::createModelLoader(device, asrc.get()));
-    const char* kShipCandidates[] = { "JakeFighterShip.glb", "SpaceShip4.glb", "SpaceShip.glb" };
+    // MINERVA TEXTURED PASS (cb9f760) FIRST. The owner's long-standing "Jake's ship is an
+    // ugly black blob" had TWO causes and both are fixed now, in different places:
+    //   * the ENGINE half -- GLBs shaded at 1/pi (5c35d65). Fixed for every GLB in the game.
+    //   * the ASSET half -- and this is NOT a crutch for the engine bug, which is why it
+    //     still earns its place: the Rodin bake was a shattered UV atlas of silver/pink mush
+    //     with NO EMISSIVE CHANNEL AT ALL, so honest lighting had nothing to catch. The
+    //     Minerva pass is a real re-texture (dark gunmetal plating, panel lines, grime, edge
+    //     wear + a genuine teal emissive) baked into the EXISTING UV atlas -- same mesh, no
+    //     re-unwrap, so it is a drop-in swap.
+    // Untextured JakeFighterShip.glb stays as the fallback (and the cutscene extent probe
+    // still measures it), so a machine without the new LFS object degrades, never breaks.
+    const char* kShipCandidates[] = { "JakeFighterShip_textured.glb", "JakeFighterShip.glb",
+                                      "SpaceShip4.glb", "SpaceShip.glb" };
     x3::asset::Model shipModel{}; std::string shipFile;
     for (const char* c : kShipCandidates) { shipModel = mloader->load(c); if (shipModel.ok) { shipFile = c; break; } }
     std::vector<x3::asset::ModelDrawable> shipDrawables;
