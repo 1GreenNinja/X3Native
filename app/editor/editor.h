@@ -416,6 +416,12 @@ public:
     void  endGroup();               // a group that pushed nothing is dropped entirely
     bool  grouping() const { return m_group != 0; }
 
+    // Per-command effects from the LAST grouped undo/redo. A group can DELETE brushes,
+    // and each of those carries live links (a Scene entity + a Jolt body) that only the
+    // host can destroy. The single RespawnAll hint cannot carry them, so they are
+    // collected here — without this, every AI room you undo leaks a mesh and a body.
+    const std::vector<HistoryEffect>& groupEffects() const { return m_groupEffects; }
+
     bool  canUndo() const { return m_undoPos > 0; }
     bool  canRedo() const { return m_undoPos < (int)m_history.size(); }
     // Apply one undo / redo to brushes[]. Returns the host re-sync hint (see
@@ -440,6 +446,7 @@ private:
 
     // Undo transactions (see beginGroup): m_group is the id being stamped onto
     // pushes right now (0 = not grouping); m_nextGroup hands out fresh ids.
+    std::vector<HistoryEffect> m_groupEffects;   // see groupEffects()
     uint32_t m_group     = 0;
     uint32_t m_nextGroup = 1;
     size_t   m_groupStart = 0;   // history size at beginGroup (to drop an empty group)

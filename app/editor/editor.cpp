@@ -643,20 +643,26 @@ HistoryEffect EditorState::redoOne() {
 // own, so the loop naturally applies a group in reverse order — which is the only
 // correct order for a batch of index-shifting inserts/erases.
 HistoryEffect EditorState::undo() {
+    m_groupEffects.clear();
     if (!canUndo()) return HistoryEffect{};
     const uint32_t g = m_history[m_undoPos - 1].group;
     if (g == 0) return undoOne();                       // plain single-command undo
-    while (canUndo() && m_history[m_undoPos - 1].group == g) undoOne();
+    // Collect EVERY per-command effect: the ones with `removed` carry the dead brush's
+    // live links, and the host must destroy them or the undo leaks a mesh + a body.
+    while (canUndo() && m_history[m_undoPos - 1].group == g)
+        m_groupEffects.push_back(undoOne());
     HistoryEffect eff; eff.op = HistoryEffect::Op::RespawnAll;
     m_selKind = SelKind::None; m_selIndex = -1;
     return eff;
 }
 
 HistoryEffect EditorState::redo() {
+    m_groupEffects.clear();
     if (!canRedo()) return HistoryEffect{};
     const uint32_t g = m_history[m_undoPos].group;
     if (g == 0) return redoOne();
-    while (canRedo() && m_history[m_undoPos].group == g) redoOne();
+    while (canRedo() && m_history[m_undoPos].group == g)
+        m_groupEffects.push_back(redoOne());
     HistoryEffect eff; eff.op = HistoryEffect::Op::RespawnAll;
     m_selKind = SelKind::None; m_selIndex = -1;
     return eff;
