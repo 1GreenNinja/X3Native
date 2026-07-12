@@ -363,6 +363,32 @@ bool runAlertSelfTest() {
         acheck(events == expect, "A7 x3.fire(\"alert_changed\") fired per transition, in order");
     }
 
+    // ---- A8: debugForceLevel — the canon lockdown STAGING path (the
+    // --screenshot-alert proof shot + console cheats drive the machine through
+    // this instead of simulated stimuli). Force 3 on a fresh system + door set:
+    // lockdown/alarm/red-shift engage and an AlertDoorLock locks the closed
+    // door; force 0 releases exactly that lock. Fired events ride the sink. ----
+    {
+        AlertSystem staged;
+        staged.configure(defaultAlertConfig());
+        int stagedEvents = 0;
+        staged.setEventSink([&](int, int) { ++stagedEvents; });
+        DoorSystem sdoors;
+        Door sd; sd.state = DoorState::Closed; sd.locked = false; sdoors.add(sd);
+        AlertDoorLock slock;
+        staged.debugForceLevel(3);
+        slock.update(staged, sdoors);
+        const bool engaged = staged.level() == 3 && staged.lockdownActive() &&
+                             staged.alarmOn() && staged.redShift() > 0.0f &&
+                             sdoors.at(0).locked && slock.lockedCount() == 1;
+        staged.debugForceLevel(0);
+        slock.update(staged, sdoors);
+        const bool releasedOk = staged.level() == 0 && !staged.lockdownActive() &&
+                                staged.redShift() == 0.0f && !sdoors.at(0).locked;
+        acheck(engaged && releasedOk && stagedEvents >= 2,
+               "A8 debugForceLevel stages LOCKDOWN (doors lock, red shift) + releases clean");
+    }
+
     x3::logInfo("alert: " + std::to_string(a_pass) + "/"
                 + std::to_string(a_pass + a_fail) + " passed");
     return a_fail == 0;
