@@ -326,6 +326,16 @@ public:
     // membrane, lights, geometry, alarms). No-op / false when no console is open.
     bool updateConsole(x3::ui::UiContext& ui, float dt);
 
+    // The readout baked onto rift `idx`'s hanging glass: destination, status, and the
+    // live parameter values in real units. ONE builder, called at build() and after
+    // every ENGAGE, so the world's glass and the control surface can never disagree.
+    std::vector<std::string> consoleReadout(uint32_t idx) const;
+
+    // The hanging holoterminal for rift `idx` (the self-test asserts its screen has
+    // real content bound — see HoloTerminal::screenHasContent()).
+    const HoloTerminal& holo(uint32_t idx) const { return m_holos[idx]; }
+    uint32_t holoCount() const { return (uint32_t)m_holos.size(); }
+
     // Apply an outcome to a portal directly (the console path calls this; the
     // self-test calls it too, which is how the consequences are gated).
     void applyOutcome(uint32_t portalIdx, RiftOutcome outcome);

@@ -272,24 +272,39 @@ float drawTextGlass(Canvas& c, const std::string& s, float penX, float topY, flo
 // `lines` = the readout (line 0 is the header title, 1+ are the left-column data
 // rows). `inputLine` (if non-empty) is the live "> code_" prompt, baked in amber
 // below the data rows. Passing them in lets the text be rasterized ON the glass.
+// `wide` = the READOUT layout: drop the center schematic and let the text zone run
+// most of the width, so the type is roughly twice the size (the rift consoles, which
+// exist to be read from a couple of metres). false = the cell terminal's composition.
 std::vector<uint8_t> makeHologramRGBA(uint32_t n,
                                       const std::vector<std::string>& lines,
                                       const std::string& inputLine,
-                                      const float* inkOverride = nullptr) {
+                                      const float* inkOverride = nullptr,
+                                      bool wide = false) {
     const float fn = (float)n;
+    // Right edge of the text column. Cell: a narrow left column beside the schematic.
+    // Readout: everything up to the right-hand icon/bar column.
+    const float kTextX1 = wide ? 0.655f : 0.345f;
 
-    // ---- 1) GLASS BASE (under the line-art): deep-blue gradient + scanlines +
-    // grid + vignette, EXACTLY as before so it still reads as a hologram. ----
+    // ---- 1) BLACK GLASS BASE (under the line-art). The owner's spec, three words:
+    // "Black screen on holo terminal. Clear text" + "shiny". The substrate is BLACK
+    // GLASS — a near-black slab, NOT the deep-blue fill this used to paint (that flat
+    // blue IS what a featureless holo screen looks like when nothing else survives to
+    // the pixel). Everything that reads — the line-art, the readout text — is ADDED as
+    // glowing ink ON TOP of the black, which is what gives crisp high-contrast text and
+    // lets GlassMaterial::emissiveMap make exactly those strokes glow while the
+    // substrate stays dark. Keep the fine scanlines / data-grid / vignette, but at
+    // black-glass levels: they texture the black, they do not fill it. ----
     Canvas c(n);
     for (uint32_t y = 0; y < n; ++y) {
         for (uint32_t x = 0; x < n; ++x) {
             const float u = (x + 0.5f) / fn, v = (y + 0.5f) / fn;
-            float br = 0.05f, bg = 0.16f, bb = 0.34f;
-            const float grad = 1.0f - v * 0.55f;            // brighter toward the top
+            // Near-black with the faintest cool cast (black glass, not black paint).
+            float br = 0.004f, bg = 0.010f, bb = 0.020f;
+            const float grad = 1.0f - v * 0.35f;            // a touch brighter toward the top
             br *= grad; bg *= grad; bb *= grad;
-            const float scan = 0.78f + 0.22f * ((y % 4u) < 2u ? 1.0f : 0.55f);
+            const float scan = 0.70f + 0.30f * ((y % 4u) < 2u ? 1.0f : 0.55f);
             br *= scan; bg *= scan; bb *= scan;
-            if ((x % 28u) < 1u || (y % 28u) < 1u) { bg += 0.10f; bb += 0.16f; } // data-grid
+            if ((x % 28u) < 1u || (y % 28u) < 1u) { bg += 0.012f; bb += 0.020f; } // data-grid
             const float cx = (u - 0.5f), cy = (v - 0.5f);
             const float rad = std::sqrt(cx*cx + cy*cy) * 1.42f;
             const float vig = 1.0f - 0.45f * rad * rad;
@@ -322,15 +337,18 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
     line(c, P(0.130f), hdrY+P(0.010f), P(0.55f), hdrY+P(0.010f), CY_R,CY_G,CY_B, 0.5f, th); // sub-rule
 
     // --- LEFT COLUMN: icon squares + rows of fine "data text" tick blocks. ---
-    const float lx0 = P(0.075f), lx1 = P(0.345f);
+    const float lx0 = P(0.075f), lx1 = P(kTextX1);
     // three little icon squares
     for (int i = 0; i < 3; ++i) {
         const float ix = lx0 + i * P(0.055f);
         rectFrame(c, ix, P(0.20f), ix + P(0.035f), P(0.235f), CY_R,CY_G,CY_B, 0.9f, th);
         if (i == 1) line(c, ix, P(0.20f), ix+P(0.035f), P(0.235f), CY_R,CY_G,CY_B,0.7f,th); // diag detail
     }
-    // paragraphs of short tick-marks (read as fine data text from a distance)
-    {
+    // Paragraphs of short tick-marks — decorative "fine data text" that fills the
+    // column when there is little real text to show. In the READOUT layout there IS
+    // real text, at twice the size, filling that space: the ticks would print straight
+    // through it. Decoration never sits on top of the readout.
+    if (!wide) {
         float ty = P(0.275f);
         const float rowH = P(0.026f);
         for (int row = 0; row < 14; ++row) {
@@ -353,7 +371,9 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
 
     // --- CENTER SCHEMATIC: a rounded-rect node + branching horizontal lines with
     // tiny end-nodes + labels, and a downward chevron below it. Kept LEFT of the
-    // right column (branches stop before x=0.66) so the two zones don't collide. ---
+    // right column (branches stop before x=0.66) so the two zones don't collide.
+    // DROPPED in the READOUT layout — the text occupies this space there. ---
+    if (!wide) {
     const float ncx = P(0.500f), ncy = P(0.41f);
     const float nhw = P(0.072f), nhh = P(0.058f);
     roundRectFrame(c, ncx-nhw, ncy-nhh, ncx+nhw, ncy+nhh, P(0.020f), WT_R,WT_G,WT_B, 0.95f, thh);
@@ -372,6 +392,7 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
     // a branch DOWN to the chevron
     line(c, ncx, ncy+nhh, ncx, ncy+nhh+P(0.030f), CY_R,CY_G,CY_B, 0.7f, th);
     chevronDown(c, ncx, ncy+nhh+P(0.030f), P(0.028f), P(0.026f), WT_R,WT_G,WT_B, 0.95f, thh);
+    }   // if (!wide) — center schematic
 
     // --- RIGHT COLUMN: three warning triangles, data fields (label + value bar),
     // and a solid indicator square. ---
@@ -434,8 +455,22 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
         }
         // --- BODY rows (1+) down the left column. Shrink to the left zone width. ---
         const float lx0b = P(0.075f);
-        const float zoneW = P(0.345f) - lx0b;          // left data-column width
-        float bpx = P(0.033f);                          // ~34 px @1024
+        const float zoneW = P(kTextX1) - lx0b;         // data-column width (wide in Readout)
+        const float tyTop = P(0.258f);                  // first body row (below the icons)
+        // Base size. READOUT panels are meant to be read at a distance, so they start
+        // much bigger; the cell keeps its authored size exactly.
+        float bpx = wide ? P(0.060f) : P(0.033f);
+        // VERTICAL FIT (new): shrink so every row lands above the bottom data strip.
+        // Without this a long readout simply ran off the glass — and the old code could
+        // only ever SHRINK to fit the WIDTH, so a wide zone never actually grew the type.
+        {
+            const float rows = (float)(lines.size() - 1) + (inputLine.empty() ? 0.0f : 1.0f);
+            const float vBudget = P(0.860f) - tyTop;
+            if (rows > 0.0f) {
+                const float maxBpx = vBudget / (rows * 1.30f);
+                if (bpx > maxBpx) bpx = maxBpx;
+            }
+        }
         for (size_t li = 1; li < lines.size(); ++li) {
             const float w = textWidthPx(lines[li], bpx);
             if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
@@ -448,7 +483,11 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
         }
         if (bpx < P(0.018f)) bpx = P(0.018f);
         const float rowH = bpx * 1.30f;
-        float ty = P(0.205f);                           // below the header strip
+        // Start BELOW the left column's three icon squares (they occupy y 0.20..0.235).
+        // Rows used to start at 0.205 and the squares were printed straight through the
+        // first data row — on the rifthub consoles that turned "DEST act2caves" into
+        // "[]  []2caves". The readout wins; the decoration moves out of its way.
+        float ty = tyTop;                               // below the header strip + icons
         for (size_t li = 1; li < lines.size(); ++li) {
             // first data row a touch brighter (the "SUBJECT" line), rest steady cyan.
             // W4-2: when the host set an ink override (VIGIL presence = orange), body
@@ -571,6 +610,46 @@ x3::prims::PrimMesh makeRoundedPanel(float hw, float hh, float corner) {
 // x3::prims::makeRoundedRectTube, swept along the same rounded-rect path. See build().)
 } // namespace
 
+// ---- REGRESSION GUARD (see holo_terminal.h) --------------------------------
+// "Does this panel actually SHOW anything?" Everything the featureless-blue-slab
+// bug destroyed is checked here: the panel must be in a Scene, the screen entity
+// must exist, the baked readout texture must be VALID and actually BOUND to that
+// entity, the readout must have lines, and the glyphs must have rasterized.
+bool HoloTerminal::screenHasContent() const {
+    if (!m_scene || m_entity == kNoLink || m_entity >= m_scene->size()) return false;
+    if (!m_holoTex.valid()) return false;
+    const Entity& e = m_scene->get(m_entity);
+    if (!e.tex.valid() || e.tex.id != m_holoTex.id) return false;   // texture actually BOUND
+    if (m_lines.empty()) return false;                              // something to say
+    if (!m_textOnGlass) return false;                               // glyphs really baked
+    return true;
+}
+
+// Headless ink probe — bake the readout and measure how much of the text zone is lit.
+float holoReadoutInkFraction(const std::vector<std::string>& lines,
+                             const std::string& inputLine, bool wideReadout) {
+    const uint32_t n = 256;   // small bake: fast, and the glyph coverage still registers
+    std::vector<uint8_t> px = makeHologramRGBA(n, lines, inputLine, nullptr, wideReadout);
+    // Sample ONLY the BODY-ROW band: x within the data column, y BELOW the header rule
+    // (0.135) and below the three icon squares (0.20..0.235), above the bottom data
+    // strip (0.875). Nothing decorative is drawn in that window in the Readout layout,
+    // so every lit pixel here is TEXT. That matters: if the probe could see the frame or
+    // the icons it would report healthy ink on a panel with no readout at all — a test
+    // that passes on a blank screen is exactly the hole this bug kept slipping through.
+    const uint32_t x0 = (uint32_t)(0.075f * n), x1 = (uint32_t)(0.340f * n);
+    const uint32_t y0 = (uint32_t)(0.270f * n), y1 = (uint32_t)(0.800f * n);
+    uint64_t lit = 0, total = 0;
+    for (uint32_t y = y0; y < y1; ++y) {
+        for (uint32_t x = x0; x < x1; ++x) {
+            const uint8_t* p = &px[((size_t)y * n + x) * 4];
+            const float lum = (0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2]) / 255.0f;
+            if (lum > 0.35f) ++lit;    // well above the black-glass substrate
+            ++total;
+        }
+    }
+    return total ? (float)lit / (float)total : 0.0f;
+}
+
 void HoloTerminal::shutdown(x3::rhi::IRenderDevice& device) {
     // Free everything build() put on the GPU. The RIFTHUB stands EIGHT of these up
     // and its smoketest gates on allocationCount == 0, so the platform grew a real
@@ -581,7 +660,6 @@ void HoloTerminal::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_holoTex.valid()) { device.destroyTexture(m_holoTex); m_holoTex = {}; }
     m_decor.clear();
     m_entity = kNoLink;
-    m_scanEntity = kNoLink;
     m_scene = nullptr;
     m_device = nullptr;
 }
@@ -666,48 +744,56 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     {
         m_texN = 1024;
         m_textOnGlass = glassFont().ready;   // text baked in -> host skips its overlay
-        std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, /*inputLine*/"");
+        std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, /*inputLine*/"",
+                                                     m_inkOverride ? m_textColor : nullptr,
+                                                     m_layout == Layout::Readout);
         m_holoTex = device.createTexture(holo.data(), m_texN, m_texN, /*srgb*/true);
         m_lastInputShown = false;
         m_texDirty = false;
     }
 
-    // ---- ROUND-SECTION GLASS TRIM (replaces the old FLAT rim ribbon — which read as
-    // a SQUARE-section frame — with a real ROUNDED/CYLINDRICAL pipe). A circular
-    // cross-section is swept along the panel's rounded-rect contour (makeRoundedRectTube)
-    // so the trim is an actual round tube of glass with rounded corners. Two concentric
-    // pipes give the polished-edge read: an inner clear-glass bead hugging the screen,
-    // and a slightly larger, dimmer outer pipe glowing faintly into the dark. The whole
-    // trim runs through the engine's REAL see-through glass pass (asGlass). ----
+    // ---- SHINY METALLIC ROUND-PIPE FRAME (the owner's canonical holo language:
+    // "a shiny metallic ROUND-PIPE frame around the glass"). A circular cross-section
+    // swept along the panel's rounded-rect contour (makeRoundedRectTube), so the trim
+    // is a real round tube with rounded corners.
+    //
+    // *** THE 10-TIMES BUG LIVED HERE. *** These used to be GLASS (asGlass=true), and
+    // a third GLASS "backer" panel sat at LOCAL +Z — IN FRONT of the screen — sized
+    // BIGGER than it. Normal glass rides the OPAQUE record range and therefore WRITES
+    // DEPTH IN THE DEPTH PRE-PASS (see vk_passes.cpp drawMeshGlass). So any glass pane
+    // between the eye and the screen DEPTH-REJECTS the screen outright: the readout is
+    // never rasterized at all, and what you see is the pane's own flat fill — a
+    // FEATURELESS ROUNDED BLUE RECTANGLE. It only ever "worked" in the detention cell
+    // because that terminal is built at yaw=PI, which turns LOCAL +Z AWAY from the
+    // player, so those panes landed BEHIND the glass and were themselves depth-rejected
+    // (they contributed nothing — they were dead geometry). The rifthub consoles face
+    // the other way, so the same code put them in front and ate the screen. This is
+    // exactly the club OLED-glass lesson: A PANE OVER A SCREEN DEPTH-OCCLUDES IT.
+    //
+    // The cure is structural, not a nudge: NOTHING is allowed in front of the screen
+    // any more. The backer is DELETED (the screen is now black glass — it IS the dark
+    // slab the backer was faking), and the frame is OPAQUE METAL, which is what it
+    // should always have been ("shiny METALLIC round-pipe", not a glass tube). Metal
+    // rims are coplanar-adjacent, never in front, and cannot occlude anything.
     {
         const float corner = std::min(hw, hh) * 0.30f;     // match the panel's rounding
-        // Inner glass bead: a slim round pipe hugging the screen edge, faint cyan glass
-        // tint + soft sheen so it reads as a polished lit round edge (not a flat line).
+        // Inner bead: a slim POLISHED STEEL pipe hugging the screen edge. Opaque, bright
+        // enough to catch the room's speculars (this is the "shiny"), with a faint cool
+        // sheen so the frame still reads as a lit edge in a dark hall.
         x3::prims::PrimMesh innerRim =
             x3::prims::makeRoundedRectTube(hw + 0.010f, hh + 0.010f, corner, /*tubeR*/0.016f,
                                            /*pathSeg*/6, /*tubeSeg*/14);
         m_decor.push_back(addMesh(innerRim, 0.0f,
-                                  0.55f, 0.85f, 1.0f, 0.34f,    // translucent cyan-white glass
-                                  0.18f, 0.55f, 0.85f, 0.9f,    // GENTLE sheen (not a neon outline)
-                                  /*asGlass=*/true));           // REAL see-through glass pipe
-        // Outer pipe: a hair larger + dimmer, fatter round section, so the trim fades
-        // softly into the surround like a glass tube catching ambient light.
+                                  0.66f, 0.70f, 0.76f, 1.0f,    // polished steel
+                                  0.10f, 0.26f, 0.38f, 0.35f)); // faint cool sheen
+        // Outer pipe: a hair larger, fatter round section, darker gunmetal — the
+        // machined collar the bead sits in. Gives the frame real round-pipe depth.
         x3::prims::PrimMesh outerRim =
             x3::prims::makeRoundedRectTube(hw + 0.034f, hh + 0.034f, corner + 0.020f, /*tubeR*/0.022f,
                                            /*pathSeg*/6, /*tubeSeg*/14);
         m_decor.push_back(addMesh(outerRim, 0.0f,
-                                  0.10f, 0.28f, 0.45f, 0.20f,   // very translucent dark-cyan glass
-                                  0.06f, 0.22f, 0.38f, 0.55f,   // dim outer glow
-                                  /*asGlass=*/true));           // REAL see-through glass pipe
-        // Faint backer BEHIND the glass so the rim + line-art have a touch of contrast
-        // WITHOUT reading as an opaque slab (that was bug #1: an OPAQUE dark backplate
-        // filled the silhouette, so the see-through glass screen looked solid). Make it
-        // REAL low-opacity glass too, so the cell behind still shows through the screen.
-        x3::prims::PrimMesh backPanel = makeRoundedPanel(hw + 0.03f, hh + 0.03f, corner + 0.02f);
-        m_decor.push_back(addMesh(backPanel, +0.024f,
-                                  0.02f, 0.05f, 0.10f, 0.18f,   // barely-there dark-blue tint
-                                  0.03f, 0.12f, 0.22f, 0.30f,
-                                  /*asGlass=*/true));           // see-through, NOT an opaque slab
+                                  0.42f, 0.45f, 0.50f, 1.0f,    // gunmetal collar
+                                  0.05f, 0.13f, 0.20f, 0.30f)); // dim outer glow
     }
 
     // ---- Glass ARM from the ceiling down to the top of the screen, carrying
@@ -718,15 +804,27 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const float armH = (armTopY - armBotY) * 0.5f;
     if (armH > 0.05f) {
         const float armMidY = (armTopY + armBotY) * 0.5f - pos.y;  // local oy
-        const float armBackZ = +0.06f;                              // BEHIND the glass (into the wall, away from player)
-        // Slim glass spar (faint blue, slight emissive sheen) — not a fat gray bar.
+        const float armBackZ = +0.06f;                              // offset off the glass plane
+        // The SINGLE SUPPORT PIPE, top-center, running up to the ceiling: it HANGS, it
+        // does not float. Shiny metal (same family as the frame), with the fiber-optic +
+        // copper traces running inside it. Opaque, like the frame — a glass spar here
+        // would be one more depth-writing pane near the screen.
+        // DARK gunmetal, and no self-glow. This pipe runs the full height of the room,
+        // and a tall thin VERTICAL prim catches the point rig side-on (high N.L) — so it
+        // reads far brighter than the floor at the same albedo. At the old 0.70 (plus a
+        // 2.8-strength emissive trace inside it) the rifthub's eight consoles hung eight
+        // WHITE NEON RODS down the hall that out-shouted the gates themselves. A support
+        // pipe is structure: it holds the weight, it does not light the room.
         m_decor.push_back(addBox(0.035f, armH, 0.035f, 0, armMidY, armBackZ,
-                                 0.10f,0.20f,0.30f, 1.0f,  0.12f,0.35f,0.55f, 0.6f));
-        // Fiber-optic trace (cyan) + copper trace (amber) threaded inside the glass.
-        m_decor.push_back(addBox(0.007f, armH, 0.007f, -0.014f, armMidY, armBackZ - 0.002f,
-                                 0,0,0,1,  0.2f,0.9f,1.0f, 2.8f));   // cyan fiber
-        m_decor.push_back(addBox(0.007f, armH, 0.007f,  0.014f, armMidY, armBackZ - 0.002f,
-                                 0,0,0,1,  1.0f,0.55f,0.2f, 2.2f));  // copper trace
+                                 0.13f,0.14f,0.16f, 1.0f,  0.0f,0.0f,0.0f, 0.0f));
+        // Fiber-optic (cyan) + copper (amber) traces running down the OUTSIDE of the
+        // pipe — they used to be buried at +-0.014, which is INSIDE the 0.035 pipe, so
+        // once the pipe went opaque they were invisible anyway. Proud of the surface, at
+        // a glow you notice standing at the console and nowhere else.
+        m_decor.push_back(addBox(0.006f, armH, 0.006f, -0.038f, armMidY, armBackZ,
+                                 0,0,0,1,  0.2f,0.9f,1.0f, 0.40f));  // cyan fiber
+        m_decor.push_back(addBox(0.006f, armH, 0.006f,  0.038f, armMidY, armBackZ,
+                                 0,0,0,1,  1.0f,0.55f,0.2f, 0.32f)); // copper trace
     }
 
     // ---- The HOLOGRAM screen: a rounded-corner glass quad, dark base color so the
@@ -748,19 +846,30 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // dial (mid so the printed HUD still reads strongly against what's behind).
     e.baseColor[0] = 1.0f; e.baseColor[1] = 1.0f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
     e.transparent = true;
-    // Tasteful tinted, lightly-frosted, emissive display glass (spec §2 preset). With
-    // M2-M4 live: the cell behind bends a touch through it (refraction), the surface
-    // catches a cool-blue fresnel sheen + glints (M3) and reads slightly milky (M4
-    // frost). Mid opacity keeps the printed holo UI dominant while the glass character
-    // shows. Tuned against the M2-M4 shader, not the M1 fake-translucency hack.
-    e.glass.opacity    = 0.55f;          // mid — UI reads, glass still see-through
-    e.glass.tint[0]    = 0.78f; e.glass.tint[1] = 0.90f; e.glass.tint[2] = 1.0f; // cool-blue tint
-    e.glass.roughness  = 0.14f;          // lightly frosted display glass (M4)
-    e.glass.refraction = 0.025f;         // gentle bend of the cell behind (M2)
-    e.glass.specular   = 0.55f;          // fresnel sheen + glints (M3)
-    // Moderate emissive: gives the glass a hologram glow / bloom WITHOUT flooding out
-    // the textured line-art (which rides the full-albedo lit term). Pulsed in update().
-    m_emBase[0] = 0.10f; m_emBase[1] = 0.34f; m_emBase[2] = 0.52f; m_emBase[3] = 0.45f;
+    // BLACK GLASS, SHINY, CLEAR TEXT — the owner's three words, and the project's
+    // canonical holo language. Read it as a real black glass display slab:
+    //   * opacity HIGH  -> it is a BLACK SLAB, not a blue window. The substrate comes
+    //     from the texture (which is now near-black), so the lit body renders BLACK.
+    //   * tint NEUTRAL  -> the ink keeps its authored colour (blue/green; amber for
+    //     warnings). A blue tint here would re-blue everything, which is the look we
+    //     are killing.
+    //   * roughness ~0  -> POLISHED. specular HIGH -> it CATCHES the room: the hall
+    //     lights and the blue membrane glow slide across its face. That is the "shiny".
+    //   * refraction 0  -> a black screen must not bend the scene behind it.
+    //   * emissiveMap 1 -> THE KEY. The glow is modulated by the texel, so the panel
+    //     lights up exactly where the readout is (crisp glowing glyphs + line-art) and
+    //     the black substrate stays black. The old FLAT emissive could not see the
+    //     text, so the only way it could "glow" was to flood the whole pane blue —
+    //     which is the featureless-blue-slab look itself.
+    e.glass.opacity    = 0.94f;          // a BLACK slab, not a window
+    e.glass.tint[0]    = 1.0f; e.glass.tint[1] = 1.0f; e.glass.tint[2] = 1.0f; // neutral: ink keeps its colour
+    e.glass.roughness  = 0.03f;          // polished black glass (M4)
+    e.glass.refraction = 0.0f;           // no bend — it is a screen, not a window
+    e.glass.specular   = 1.0f;           // SHINY: fresnel sheen + hall/membrane glints (M3)
+    e.glass.emissiveMap = 1.0f;          // glow WHERE THE TEXTURE IS BRIGHT (crisp text)
+    // White emissive at display strength: multiplied by the texel it becomes "the
+    // readout glows in its own ink". Black substrate -> stays black. Pulsed in update().
+    m_emBase[0] = 1.0f; m_emBase[1] = 1.0f; m_emBase[2] = 1.0f; m_emBase[3] = 2.1f;
     e.emissive[0]=m_emBase[0]; e.emissive[1]=m_emBase[1]; e.emissive[2]=m_emBase[2]; e.emissive[3]=m_emBase[3];
     e.tag = (uint32_t)Tag::Prop;
     e.transform[0]=cs;  e.transform[2]=-sn;
@@ -768,38 +877,27 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     e.transform[12]=pos.x; e.transform[13]=pos.y; e.transform[14]=pos.z;
     m_entity = scene.add(e);
 
-    // ---- A second, slightly-in-front SCANLINE overlay quad: a thin bright cyan
-    // emissive sheet whose emissive STRENGTH is animated in update() to scroll a
-    // shimmer band down the glass (the moving "projector refresh" line). Same rounded
-    // shape, nudged toward the viewer so it composites over the base. ----
-    x3::prims::PrimMesh sgeo = makeRoundedPanel(hw*0.98f, hh*0.98f, std::min(hw, hh) * 0.28f);
-    Entity se;
-    se.mesh = device.createMesh(sgeo.verts.data(), (uint32_t)sgeo.verts.size(),
-                                sgeo.index.data(), (uint32_t)sgeo.index.size());
-    m_meshes.push_back(se.mesh);
-    se.tex = m_holoTex;
-    se.baseColor[0]=0.0f; se.baseColor[1]=0.0f; se.baseColor[2]=0.0f; se.baseColor[3]=1.0f;
-    se.emissive[0]=0.3f; se.emissive[1]=0.9f; se.emissive[2]=1.0f; se.emissive[3]=0.0f;  // pulsed in update()
-    // Glass too: drawn in the SAME transparent pass as the base plate (both
-    // depth-write OFF) so the in-front sweep quad composites OVER the glass panel
-    // instead of occluding it. Low opacity -> a faint additive-looking shimmer band;
-    // its near-black albedo means it contributes essentially only its emissive sweep.
-    se.transparent = true;
-    se.glass.opacity    = 0.22f;
-    se.glass.tint[0]    = 0.30f; se.glass.tint[1] = 0.90f; se.glass.tint[2] = 1.0f;
-    se.glass.roughness  = 0.15f;
-    se.glass.refraction = 0.0f;
-    se.glass.specular   = 0.4f;
-    se.tag = (uint32_t)Tag::Prop;
-    const float foZ = 0.014f;                            // toward the viewer (front face +Z local)
-    const float fwx = cs*0.0f + sn*foZ, fwz = -sn*0.0f + cs*foZ;
-    se.transform[0]=cs; se.transform[2]=-sn; se.transform[8]=sn; se.transform[10]=cs;
-    se.transform[12]=pos.x+fwx; se.transform[13]=pos.y; se.transform[14]=pos.z+fwz;
-    m_scanEntity = scene.add(se);
-
+    // ---- NO SECOND PANE. ----------------------------------------------------------
+    // There used to be a "scanline overlay" quad here: a second GLASS panel nudged
+    // 0.014 m along LOCAL +Z, whose emissive strength was swept in update() to fake a
+    // projector refresh band. It is DELETED, and nothing may take its place.
+    //
+    // Glass writes depth in the depth pre-pass, so a pane in front of the screen does
+    // not composite over it — it DEPTH-REJECTS it, and the readout is never drawn at
+    // all. Whether that pane lands in front depends on the terminal's YAW (its comment
+    // claimed +Z was "toward the viewer"; in the detention cell, at yaw=PI, it is the
+    // opposite). So this quad was a coin flip on facing, and the rifthub consoles —
+    // which face the other way — lost it: every one of them rendered as a featureless
+    // blue slab. A shimmer is not worth a screen you cannot read.
+    //
+    // The shimmer survives WITHOUT a second pane: update() pulses THIS entity's
+    // emissive, and because emissiveMap is on, that pulse rides the readout ink itself
+    // (the text breathes) instead of a flat sheet of blue laid over it. If a scanline
+    // sweep is ever wanted back, bake it into the TEXTURE — never as geometry in front
+    // of the glass.
     // (Boot readout seeded above, before the texture bake, so the on-glass text is
     // rasterized into the first hologram frame.)
-    x3::logInfo("[holoterm] built cell-01 terminal (translucent emissive) at (" +
+    x3::logInfo("[holoterm] built black-glass terminal (shiny, on-glass readout) at (" +
                 std::to_string((int)pos.x) + "," + std::to_string((int)pos.y) + "," +
                 std::to_string((int)pos.z) + ")");
 }
@@ -852,16 +950,15 @@ void HoloTerminal::regenTexture() {
     m_lastInputShown = m_active;
 
     std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, inputLine,
-                                                 m_inkOverride ? m_textColor : nullptr);
+                                                 m_inkOverride ? m_textColor : nullptr,
+                                                 m_layout == Layout::Readout);
     x3::rhi::TextureHandle fresh = m_device->createTexture(holo.data(), m_texN, m_texN, /*srgb*/true);
     if (!fresh.valid()) { m_texDirty = false; return; }   // keep the old tex on failure
 
     x3::rhi::TextureHandle old = m_holoTex;
     m_holoTex = fresh;
-    if (m_scene) {
-        if (m_entity     != kNoLink && m_entity     < m_scene->size()) m_scene->get(m_entity).tex     = m_holoTex;
-        if (m_scanEntity != kNoLink && m_scanEntity < m_scene->size()) m_scene->get(m_scanEntity).tex = m_holoTex;
-    }
+    if (m_scene && m_entity != kNoLink && m_entity < m_scene->size())
+        m_scene->get(m_entity).tex = m_holoTex;
     if (old.valid()) m_device->destroyTexture(old);
     m_texDirty = false;
 }
@@ -886,21 +983,13 @@ void HoloTerminal::update(float dt) {
     const float pulse   = 0.86f + 0.14f * std::sin(m_clock * 1.7f);
     const float flicker = 0.97f + 0.03f * std::sin(m_clock * 13.0f);
     const float k = pulse * flicker;
+    // Because emissiveMap is on, this pulse rides the READOUT INK (the text breathes)
+    // rather than a flat blue sheet — the shimmer without the second pane.
     Entity& screen = m_scene->get(m_entity);
     screen.emissive[0] = m_emBase[0];
     screen.emissive[1] = m_emBase[1];
     screen.emissive[2] = m_emBase[2];
     screen.emissive[3] = m_emBase[3] * k;
-
-    // Scrolling SCANLINE band: ramp the overlay quad's emissive strength up + down
-    // (a moving brightness sweep). Triangle wave over ~2.2 s, peaking modestly so it
-    // reads as a refresh sweep, not a strobe.
-    if (m_scanEntity != kNoLink && m_scanEntity < m_scene->size()) {
-        const float t = std::fmod(m_clock * 0.45f, 1.0f);      // 0..1 sweep phase
-        const float band = 0.5f - 0.5f * std::cos(t * 6.2831853f); // smooth 0->1->0
-        Entity& scan = m_scene->get(m_scanEntity);
-        scan.emissive[3] = 0.20f + 0.55f * band;               // gentle additive sweep
-    }
 }
 
 // ===========================================================================

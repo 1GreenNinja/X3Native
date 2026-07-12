@@ -995,7 +995,7 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             r.glassParams[0] = glass->refraction; r.glassParams[1] = glass->roughness;
             r.glassParams[2] = glass->specular;   r.glassParams[3] = glass->additive;
             r.glassTint[0]   = glass->tint[0];    r.glassTint[1]   = glass->tint[1];
-            r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = 0.0f;
+            r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = glass->emissiveMap;
         } else {
             r.glassParams[0] = r.glassParams[1] = r.glassParams[2] = r.glassParams[3] = 0.0f;
             r.glassTint[0]   = r.glassTint[1]   = r.glassTint[2]   = r.glassTint[3]   = 0.0f;

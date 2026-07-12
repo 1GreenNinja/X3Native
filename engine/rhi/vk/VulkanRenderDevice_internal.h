@@ -572,7 +572,7 @@ private:
         // them). glass.frag (M2-M4) consumes: refraction (screen-space bend),
         // roughness (frost mip), specular (shimmer), tint (rgb body color).
         glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = additive glow (rim exponent; 0 = normal glass)
-        glm::vec4 glassTint;         // rgb = glass tint color, a = unused
+        glm::vec4 glassTint;         // rgb = glass tint color, a = emissiveMap (0 = flat glow, 1 = modulate by texel)
     };
     static_assert(sizeof(ObjectData) == 160, "ObjectData must match std430 layout");
 
@@ -609,7 +609,7 @@ private:
         bool     noCull = false;
         // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
         float    glassParams[4]; // x = refraction, y = roughness, z = specular, w unused
-        float    glassTint[4];   // rgb = tint, a unused
+        float    glassTint[4];   // rgb = tint, a = emissiveMap (GlassMaterial::emissiveMap)
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one

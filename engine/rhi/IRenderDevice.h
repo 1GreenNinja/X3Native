@@ -478,6 +478,18 @@ public:
         // (dot(N,V) <= 0), so the double-sided glass pipeline draws one soft
         // front layer and overlapping glows ACCUMULATE (no replace artifact).
         float additive   = 0.0f;
+        // EMISSIVE MAP (display glass): 0 (default) = the per-object emissive is a
+        // FLAT glow over the whole pane — byte-identical for every existing surface.
+        // 1 = the emissive is MODULATED BY THE BOUND BASE-COLOR TEXEL, so the pane
+        // glows only WHERE ITS TEXTURE IS BRIGHT and black texels stay black. This is
+        // the glass-pass twin of the opaque PBR route's `emissiveTex` (the club OLED
+        // move: "black texels stay dark"), and it is what lets a BLACK GLASS holo
+        // screen carry CRISP GLOWING TEXT instead of a flat blue flood — the flat
+        // term can only wash the panel, because it cannot see the readout.
+        // Intermediate values cross-fade. Uses the SAME texture already bound as
+        // baseColor (a display's image IS its emission mask), so it costs no extra
+        // binding and no extra sample.
+        float emissiveMap = 0.0f;
     };
 
     // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's

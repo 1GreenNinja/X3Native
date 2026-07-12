@@ -67,18 +67,45 @@ constexpr float kCableSag        = 1.15f;
 // finally carves the ring hardware (highlight top / shadow bottom, the
 // reference's light). The membranes are STILL the key light of their bays —
 // the grade, fog and palette are untouched.
+//
+// ===== ROUND 9 — THE HONEST-LIGHTING RE-TUNE (owner: "now it's TOO bright in the
+// portal room"). READ THIS BEFORE TOUCHING A NUMBER BELOW. =====================
+// Every intensity in this block was tuned UNDER A BROKEN RENDERER. mesh.frag carried
+// two lighting paths, and the PBR route (any surface with an MR / normal map — which
+// here means the GLB gates AND the wet-concrete deck, via m_mrWet) shaded at 1/PI of
+// the plain-prim route beside it. Surfaces that should have matched came out ~3.1x too
+// dark (worse still on metal), so rounds 2-8 kept pouring on lumens to compensate:
+// overheads 7.5 -> 18, deck fills 3.2 -> 9.2, washes 2.2 -> 5.0, the gate key 26 -> 70,
+// ambient roughly doubled, exposure bias pushed to 1.24.
+//
+// That shading bug is FIXED (shaders/mesh.frag; the PBR path now matches the dielectric
+// convention). All of that compensation is now stacking on top of HONEST lighting, and
+// the hall blew out: the concrete deck and walls render as pale washed-out grey — a
+// well-lit warehouse, which is the exact opposite of this room.
+//
+// So the rig comes DOWN by the factor it was inflated by (~PI), and it comes down
+// EVERYWHERE — the compensation was global, so the cure has to be. The target is the
+// one in docs/RIFTHUB_ART_TARGET.md: a MOODY DARK INDUSTRIAL HALL. You can read the
+// room — beams, columns, machinery silhouettes, the wet deck's reflections — but it is
+// deliberately DARK, and THE MEMBRANES ARE THE KEY LIGHT OF THEIR BAYS. Blue membrane
+// glow + orange conduit accents dominate; the concrete reads as DARK WET CONCRETE.
+//
+// AMBIENT gets cut hardest of all, on the lesson this file already learned the hard way
+// (see applyAtmosphere): ambient is omnidirectional, so raising it lights a room BY
+// FLATTENING IT. Contrast comes from the point rig and the membranes, never from here.
 constexpr float kHallLightColor[3] = { 0.55f, 0.62f, 0.72f };  // cool industrial
-constexpr float kHallLightI        = 18.0f;   // was 7.50 — see above
+constexpr float kHallLightI        = 5.80f;   // R9: was 18.0 (= 7.5-era value / the PI inflation)
 constexpr float kHallLightRange    = 30.0f;
 // Wall-wash accents at the perimeter machinery clusters (warm — they pick the
 // silhouettes out of the dark without flattening the mood).
 constexpr float kWashColor[3]      = { 0.70f, 0.58f, 0.42f };
-constexpr float kWashI             = 5.00f;   // was 2.20
+constexpr float kWashI             = 1.60f;   // R9: was 5.00
 constexpr float kWashRange         = 11.0f;
 // Mid-floor DECK fills (between the gate bays — the "fantastic wet floor" the
-// owner wants to actually SEE).
+// owner wants to actually SEE). These land straight on the PBR wet concrete, so they
+// were the single biggest contributor to the white-floor blowout.
 constexpr float kDeckColor[3]      = { 0.50f, 0.58f, 0.72f };
-constexpr float kDeckI             = 9.20f;   // was 3.20
+constexpr float kDeckI             = 2.80f;   // R9: was 9.20
 constexpr float kDeckRange         = 14.0f;
 constexpr uint32_t kDeckFills      = 8;       // was 4
 // Per-gate KEY light (round 5, bug 4): a hard-ish cool-white key above and
@@ -87,14 +114,12 @@ constexpr uint32_t kDeckFills      = 8;       // was 4
 // its lower half into shadow, so the machined hardware reads as machined metal
 // instead of flat cardboard.
 constexpr float kGateKeyColor[3]   = { 0.86f, 0.90f, 1.00f };
-constexpr float kGateKeyI          = 70.0f;   // ROUND 8: was 26 — see the note below
-                                              // 3x its honest value because GLB meshes
-                                              // shaded at 1/PI (metal: ~1/30) of the prims
-                                              // beside them (the mesh.frag shading-path
-                                              // energy bug, fixed in shaders/mesh.frag).
-                                              // With the engine honest, 46 BLEW THE GATE
-                                              // OUT to a white sculpture. 46/PI ~ 15 puts
-                                              // the same light back on the metal.
+constexpr float kGateKeyI          = 15.0f;   // R9: was 70. That 70 was, by its own R8
+                                              // comment, "3x its honest value because GLB
+                                              // meshes shaded at 1/PI of the prims beside
+                                              // them". The shading bug is FIXED, so the
+                                              // 3x compensation is now pure blowout: the
+                                              // gate is lit honestly again at ~70/PI.
 constexpr float kGateKeyRange      = 13.0f;
 constexpr float kGateKeyUp         = 4.6f;    // rakes the tube's crown from above-front
 // ROUND 8 — WHY THE KEY WENT BACK UP. The R8 gate is ONE TUBE with a 1.9 m membrane
@@ -110,14 +135,14 @@ constexpr float kGateKeyUp         = 4.6f;    // rakes the tube's crown from abo
 //   casts a shadow — which is exactly what carves the machined surface.
 // A second, LOW key rakes the tube's underside so the whole body reads instead of a
 // lit crown sitting on a black belly.
-constexpr float kGateLowI          = 30.0f;
+constexpr float kGateLowI          = 7.00f;   // R9: was 30.0 (same PI inflation)
 constexpr float kGateLowUp         = 0.9f;
 constexpr float kGateLowHubOff     = 4.4f;
 constexpr float kGateLowRange      = 11.0f;
 constexpr float kGateKeyHubOff     = 1.9f;    // hub-side standoff from the gate plane
 // Warm UNDER-fill (the reference's conduit/indicator bounce on the lower plates).
 constexpr float kGateFillColor[3]  = { 1.00f, 0.66f, 0.36f };
-constexpr float kGateFillI         = 20.0f;   // ROUND 8: the tube has a LOT more surface
+constexpr float kGateFillI         = 6.40f;   // R9: was 20.0 (same PI inflation)
 constexpr float kGateFillRange     = 7.0f;
 constexpr float kGateFillUp        = 0.85f;
 constexpr float kGateFillHubOff    = 2.2f;
@@ -485,9 +510,12 @@ constexpr float kPanelLedCap        = 2.00f;
 // SIDE, closer, and smaller: you walk up to it and the rift stays in view behind it.
 constexpr float kConsoleStandoff    = 3.60f;  // hub-side of the gate plane
 constexpr float kConsoleSideOff     = 2.05f;  // off the centreline (right of approach)
-constexpr float kConsoleY           = 1.38f;  // glass centre height (readable standing)
-constexpr float kConsoleW           = 0.86f;
-constexpr float kConsoleH           = 0.58f;
+constexpr float kConsoleY           = 1.45f;  // glass centre height (readable standing)
+// R9: the glass grew (was 0.86 x 0.58). A rift console has a LOT more to say than the
+// cell terminal — destination, status and five parameter rows — and at the old size the
+// readout was legible only with your nose against it. Sized so it reads from [E] range.
+constexpr float kConsoleW           = 1.16f;
+constexpr float kConsoleH           = 0.78f;
 constexpr float kConsoleUseR        = 3.4f;   // [E] range
 
 // ---- CATASTROPHE timings + magnitudes -------------------------------------
@@ -1919,21 +1947,23 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // its glass turned back toward the approach.
         const float hx = p.worldPos.x - p.outX * kConsoleStandoff + p.rightX * kConsoleSideOff;
         const float hz = p.worldPos.z - p.outZ * kConsoleStandoff + p.rightZ * kConsoleSideOff;
-        // HoloTerminal::build's yaw turns its -Z face; our gates look inward along
-        // -outward, so the glass must face the hub center (i.e. along -outward too).
+        // Yaw so the panel's front face looks back along -outward, i.e. at the player
+        // walking up from the hub center. (NOTE: this is the OPPOSITE facing to the
+        // detention-cell terminal, which is built at yaw=PI. That difference is what
+        // used to blank these screens — the platform had two panes offset along LOCAL
+        // +Z which, at THIS facing, landed in front of the glass and depth-occluded
+        // the readout. Those panes are gone; see holo_terminal.cpp build().)
         const float yaw = std::atan2(-p.outX, -p.outZ);
         m_holos[i].build(scene, device, x3::phys::Vec3{ hx, kConsoleY, hz }, yaw,
                          kConsoleW, kConsoleH, /*ceilingY=*/kHallWallH);
-        // Blue/green holo ink (the canonical status colours).
+        // TEXT-FIRST layout: this glass exists to be READ (where the portal goes, and
+        // five live parameter rows), so the cell terminal's center schematic gives way
+        // to type at roughly twice the size.
+        m_holos[i].setLayout(HoloTerminal::Layout::Readout);
+        // Blue/green holo ink (the canonical status colours; amber is reserved for
+        // warnings, which the console's own status line supplies).
         m_holos[i].setTextColor(0.42f, 1.0f, 0.78f, 1.0f);
-        m_holos[i].setLines({
-            std::string("RIFT ") + std::to_string(i + 1) + " / 8",
-            std::string("DEST  ") + p.destination,
-            "STATUS  DORMANT",
-            "BEARING 000.0  DRIFT 0.00",
-            "",
-            "[E] OPERATE",
-        });
+        m_holos[i].setLines(consoleReadout(i));
     }
 
     // ===== Per-portal blue CORE lights (cast the event horizon onto the stone) =====
@@ -2773,7 +2803,14 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // turned the ring's albedo variation into a neutral 0.31 wash). So ambient goes
     // DOWN from the round-2 value, the directional fills carry the room, and the
     // gate hardware gets its highlight/shadow separation back.
-    device.setAmbient(0.100f, 0.112f, 0.140f);
+    // ROUND 9 (owner: "now it's TOO bright in the portal room"). The GLB/PBR shading
+    // bug that every earlier round was compensating for is FIXED, so this ambient —
+    // itself roughly doubled in round 2 to fight it — is now stacked on top of honest
+    // lighting and is flattening the hall into a pale warehouse. It comes DOWN HARDEST,
+    // for the reason spelled out directly above: ambient is omnidirectional, so it
+    // lights the room BY DESTROYING ITS CONTRAST. The point rig and the MEMBRANES carry
+    // this hall; ambient only has to keep the deepest corners from going pure void.
+    device.setAmbient(0.032f, 0.036f, 0.046f);
     device.setIblProbe(true);
     // ROUND 5 — THE GHOST-GATE CURE. The hub never called setIblIntensity, so it
     // ran at 1.0: FULL environment IBL on every surface. mesh.frag's iblAmbient()
@@ -2789,9 +2826,17 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // interior. At 0.30 the gate's own forged albedo + the point-light rig carry the
     // metal, and the wet floor keeps its reflections (they come from the probe, not
     // from this scale).
-    const float kIblInterior = 0.30f;
+    // R9: the IBL bias term (`ab.y`) is ALBEDO-INDEPENDENT — it paints a neutral grey
+    // wash regardless of what the surface says it is. That is precisely the "washed-out
+    // pale concrete" failure mode, and it too was tuned under the broken path. Down.
+    const float kIblInterior = 0.18f;
     device.setIblIntensity(kIblInterior);
-    device.setExposure(1.24f);
+    // R9: exposure bias was pushed to 1.24 to lift a scene the renderer was under-
+    // lighting by ~PI. With the renderer honest, a >1 bias is just a second blowout
+    // multiplier stacked on the first. Back to neutral — and slightly under, because
+    // auto-exposure already meters the (very bright) membranes, and the lesson this
+    // room keeps re-learning is that fixing VALUE beats adding lumens.
+    device.setExposure(0.98f);
 }
 
 void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
@@ -3012,6 +3057,48 @@ void Rifthub::applyOutcome(uint32_t portalIdx, RiftOutcome outcome) {
     p.console.lastOutcome = outcome;
 }
 
+// THE HANGING GLASS SAYS WHERE THIS PORTAL GOES. One builder, used BOTH at build time
+// and after every ENGAGE, so the two can never drift apart (they used to: the build
+// path wrote a hardcoded "STATUS DORMANT / BEARING 000.0" placeholder, the engage path
+// wrote something else entirely, and neither carried the dialled-in parameters).
+//
+// Line 0 is the header title; lines 1+ are the left-column data rows. Content, per the
+// brief: the DESTINATION, the STATUS, and the live PARAMETER READOUTS in real units.
+std::vector<std::string> Rifthub::consoleReadout(uint32_t idx) const {
+    if (idx >= m_portals.size()) return { "RIFT" };
+    const RiftPortal& p = m_portals[idx];
+    const RiftConsole& c = p.console;
+
+    auto row = [&](uint32_t id, const char* label) {
+        const RiftParamSpec& s = riftParamSpec(id);
+        const float real = s.unitMin + (s.unitMax - s.unitMin) * c.value[id];
+        char b[64];
+        std::snprintf(b, sizeof(b), "%-6s %7.1f %s", label, real, s.unit);
+        return std::string(b);
+    };
+
+    const std::string status =
+        p.dead      ? std::string("DESTROYED")
+      : p.activated ? std::string("OPEN")
+      : (c.lastOutcome != RiftOutcome::None ? std::string(c.status)
+                                            : std::string("DORMANT"));
+
+    // Kept to EIGHT rows on purpose. Every row costs type size (the bake fits the rows
+    // to the glass), and this panel's whole job is to be READ from where the player is
+    // standing. Destination and status first — that is the question the console answers.
+    return {
+        std::string("RIFT ") + std::to_string(idx + 1) + " / " +
+            std::to_string(m_portals.size()),
+        std::string("DEST   ") + p.destination,
+        std::string("STATUS ") + status,
+        row(RP_Power,       "PWR"),
+        row(RP_Frequency,   "FREQ"),
+        row(RP_Aperture,    "APER"),
+        row(RP_Containment, "CONT"),
+        "[E] OPERATE",
+    };
+}
+
 bool Rifthub::updateConsole(x3::ui::UiContext& ui, float dt) {
     if (m_activeConsole < 0 || (size_t)m_activeConsole >= m_portals.size()) return false;
     m_uiClock += dt;
@@ -3025,20 +3112,9 @@ bool Rifthub::updateConsole(x3::ui::UiContext& ui, float dt) {
     if (engaged) {
         applyOutcome((uint32_t)m_activeConsole, p.console.lastOutcome);
         // Push the result onto the hanging glass, so the WORLD says it too — not just
-        // the overlay the player happens to be looking through.
-        if ((size_t)m_activeConsole < m_holos.size()) {
-            HoloTerminal& h = m_holos[(size_t)m_activeConsole];
-            h.setLines({
-                std::string("RIFT ") + std::to_string(m_activeConsole + 1) + " / " +
-                    std::to_string(m_portals.size()),
-                std::string("DEST  ") + p.destination,
-                std::string("STATUS  ") + (p.dead ? std::string("DESTROYED")
-                                                  : p.console.status),
-                std::string("LAST  ") + riftOutcomeName(p.console.lastOutcome),
-                "",
-                "[E] OPERATE",
-            });
-        }
+        // the overlay the player happens to be looking through. Same builder as build().
+        if ((size_t)m_activeConsole < m_holos.size())
+            m_holos[(size_t)m_activeConsole].setLines(consoleReadout((uint32_t)m_activeConsole));
     }
     return engaged;
 }
@@ -3650,6 +3726,50 @@ bool runRifthubSelfTest() {
     //       from here so one gate covers the whole feature).
     rhCheck(runRiftConsoleSelfTest(),
             "T20 console parameter->outcome table (data-driven; see riftconsole above)");
+
+    // ======================= ROUND 9 ======================================
+    // T21 — THE CONSOLE SCREENS ARE NOT BLANK. ***THE GUARD THAT SHOULD HAVE
+    //       EXISTED NINE FIXES AGO.*** These consoles have rendered as featureless
+    //       blue slabs over and over, and nothing ever failed, because "the panel
+    //       exists" and "the panel SHOWS SOMETHING" were never the same assertion.
+    //       They are now. Three things, on every one of the eight:
+    //         (a) the screen entity carries the BAKED READOUT TEXTURE, actually bound
+    //             (HoloTerminal::screenHasContent() — no texture, no lines, no
+    //             rasterized glyphs => false);
+    //         (b) the readout SAYS WHERE THE PORTAL GOES: the destination string is
+    //             really on the glass, alongside a status and the parameter rows;
+    //         (c) the baked pixels carry INK — the text zone of the hologram is
+    //             measurably lit. A blank/flat panel probes at ~0 and FAILS here.
+    {
+        bool ok = true;
+        if (hub.holoCount() != hub.portalCount()) ok = false;
+        for (uint32_t i = 0; i < hub.holoCount() && ok; ++i) {
+            const HoloTerminal& h = hub.holo(i);
+            // (a) a real, bound, baked screen.
+            if (!h.built() || !h.screenHasContent()) ok = false;
+            // (b) it says WHERE THIS PORTAL GOES.
+            const std::vector<std::string>& L = h.lines();
+            bool saysDest = false, saysStatus = false, saysParam = false;
+            for (const std::string& s : L) {
+                if (s.find(hub.portal(i).destination) != std::string::npos &&
+                    s.find("DEST") != std::string::npos) saysDest = true;
+                if (s.find("STATUS") != std::string::npos) saysStatus = true;
+                if (s.find("CONT")   != std::string::npos) saysParam = true;
+            }
+            if (!saysDest || !saysStatus || !saysParam) ok = false;
+            // (d) it is the TEXT-FIRST layout (the readout must be legible from [E]
+            //     range, not a stamp in the corner of a schematic).
+            if (h.layout() != HoloTerminal::Layout::Readout) ok = false;
+            // (c) the BAKE actually puts ink on the glass (this is the anti-blank
+            //     assertion: it fails on a panel that renders as a flat slab).
+            if (holoReadoutInkFraction(L, "", /*wide*/true) < 0.01f) ok = false;
+        }
+        // ...and the probe must be able to FAIL — an empty readout has no ink. Without
+        // this, (c) could be a test that passes on anything.
+        if (holoReadoutInkFraction({ "", "" }, "", /*wide*/true) > 0.002f) ok = false;
+        rhCheck(ok, "T21 the 8 console screens are NOT BLANK: baked readout texture "
+                    "bound, destination/status/params on the glass, ink in the pixels");
+    }
 
     hub.shutdown(device);
     phys->shutdown();

@@ -57,6 +57,20 @@ public:
 
     void setSubmitSink(SubmitFn fn) { m_submit = std::move(fn); }
 
+    // ---- LAYOUT (HoloPanel platform) --------------------------------------------
+    // Cell (default): the detention terminal's owner-approved composition — a narrow
+    //   left data column, a center schematic node, a right column of warning icons and
+    //   value bars. The text lives in the left ~27% of the glass.
+    // Readout: TEXT FIRST. The center schematic is dropped and the text zone widens to
+    //   most of the glass, so the type is roughly twice the size. For panels whose whole
+    //   job is to be READ from a couple of metres away — the rifthub rift consoles,
+    //   which must say where the portal goes plus five live parameter rows. The frame,
+    //   header, warning icons and data strip are unchanged, so it is the same object.
+    // Call before/after build(); it re-bakes on the next update().
+    enum class Layout { Cell, Readout };
+    void setLayout(Layout l) { if (m_layout != l) { m_layout = l; m_texDirty = true; } }
+    Layout layout() const { return m_layout; }
+
     // ---- Readout (the displayed lines above the input field). ----
     // setLines/addLine mark the on-glass texture DIRTY so the next update() re-bakes
     // the readout into the hologram pixels (see regenTexture()). The text lives ON the
@@ -114,6 +128,16 @@ public:
     // which case the host falls back to the worldToScreen overlay.
     bool textOnGlass() const { return m_textOnGlass; }
 
+    // ---- REGRESSION GUARD: "the screen is a featureless blue slab" ----------------
+    // This bug has been re-fixed ~10 times. It is now TESTABLE. True only when the
+    // terminal is standing in a Scene AND its screen entity actually has the baked
+    // readout texture BOUND, AND the readout has lines, AND the glyphs rasterized.
+    // A blank screen — no texture, no text, no lines — returns false, so a caller
+    // (--test-rifthub) can fail the build instead of shipping a blue rectangle.
+    bool screenHasContent() const;
+    // The live handle bound to the screen (for tests that want to compare identity).
+    x3::rhi::TextureHandle screenTexture() const { return m_holoTex; }
+
 private:
     // Re-bake the readout (static lines + live input line) INTO the hologram texture
     // and re-upload it, then point both the base + scanline quads at the new handle.
@@ -127,9 +151,12 @@ private:
     // update() modulates this entity's emissive each frame; null Scene => no shimmer
     // (the headless self-test path, which never calls build()).
     Scene*         m_scene = nullptr;
-    uint32_t       m_scanEntity = kNoLink;   // the scrolling scanline overlay quad
+    // (The scrolling "scanline overlay quad" is GONE. It was a second GLASS pane in
+    //  front of the screen, and glass writes depth in the depth pre-pass, so it
+    //  DEPTH-REJECTED the readout instead of compositing over it — the featureless
+    //  blue slab. See build(). Never put geometry in front of the screen.)
     float          m_clock = 0.0f;           // shimmer animation clock (seconds)
-    float          m_emBase[4] = { 0.18f, 0.70f, 1.0f, 1.9f };  // base screen emissive
+    float          m_emBase[4] = { 1.0f, 1.0f, 1.0f, 2.1f };    // base screen emissive (x texel)
     x3::rhi::TextureHandle m_holoTex{};       // the procedural hologram UI texture
     // ON-GLASS TEXT bake state. The readout is rasterized into m_holoTex via
     // stb_truetype so it sits ON the glass (tilts with the panel) like a Babylon
@@ -149,10 +176,19 @@ private:
     SubmitFn       m_submit;
     float          m_textColor[4] = { 0.85f, 0.97f, 1.0f, 1.0f };  // bright cyan-white, high contrast
     bool           m_inkOverride = false;   // W4-2: bake body rows with m_textColor (VIGIL orange)
+    Layout         m_layout = Layout::Cell; // Cell = the approved detention composition
     std::vector<uint32_t> m_decor;        // bezel / arm / trace entity ids (visual only)
     std::vector<x3::rhi::MeshHandle> m_meshes;  // every mesh build() created (shutdown frees them)
     static constexpr size_t kMaxInput = 72;   // freeform questions need room (was 32)
 };
+
+// HEADLESS INK PROBE (no device, no Scene). Bakes the hologram texture for `lines` +
+// `inputLine` exactly as the real panel does, and returns the fraction of pixels that
+// carry INK (luminance above a legibility threshold) inside the readout's text zone.
+// A featureless slab returns ~0; a panel with a real readout returns a healthy few
+// percent. This is what lets a test assert "the screen HAS CONTENT" without a GPU.
+float holoReadoutInkFraction(const std::vector<std::string>& lines,
+                             const std::string& inputLine = "", bool wideReadout = false);
 
 // Headless self-test (--test-holoterm): boot readout is present (not blank), typing
 // builds the input line, backspace edits it, submit calls the sink with the value
