@@ -121,3 +121,26 @@ patterns (dance_bake.py etc.).
   motion). Re-bake with --cx/--cy/--cr to tighten if it bothers the eyeball.
 - OWNER EYEBALL NEEDED LIVE: the flipbook in MOTION (loop cadence + seam) —
   stills can't prove it.
+
+## ROUND 5 — STOP HAND-CARVING IT. GENERATE IT. (Tim, 2026-07-11)
+> "how hard can it be to generate something when we KNOW what it should look like."
+
+He's right, and rounds 2-4 took the wrong road: the gate was hand-assembled from procedural
+prims (torus + boxes + bpy plates) and then chased with tints and greebles. But this project
+ALREADY has an image->3D pipeline: **Rodin AI** (G:\GameModels\rodin_glb\ — ~65 characters,
+enemies, and the Lightning/Chain gun weapons were all Rodin-generated from images; owner-owned,
+per docs/ASSET_INVENTORY.md).
+
+THE PLAY: feed the OWNER'S OWN REFERENCE (docs/reference/ portal stills — the industrial
+Stargate, and/or a clean front-on render of the SG-style ring) into **Rodin** -> download the
+mesh -> OBJ/GLB convert (Blender; see the existing rodin_glb conversion note in
+ASSET_INVENTORY.md) -> land as assets/converted_glb/rifthub/gate_ring.glb, REPLACING the
+bpy-authored gate. The engine already instances that GLB across all 8 portals with a graceful
+fallback, and maps 3 material groups -> forged PBR sets. So the swap is a drop-in: same
+loader, same membrane/state-machine/audio/triggers, just a REAL gate.
+
+Pairs with the proven texture side: SD3.5 forge (gate_ring_plate/patina/piston sets on G:) +
+the Grok-video membrane flipbook. Geometry was the last hand-made link in the chain.
+
+TODO next session: (1) generate the gate in Rodin from the reference, (2) convert + land,
+(3) re-tune tiling/tints on the real mesh, (4) then judge vs docs/reference.
