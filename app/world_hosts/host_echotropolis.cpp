@@ -621,13 +621,24 @@ int hostEchotropolis(HostContext& hc) {
     x3::logInfo("--world echotropolis: LMB/MMB-drag or WASD pan (grab-the-ground), "
                 "wheel zoom, RMB-drag or Q/E orbit-rotate; TOD keys 1=golden 2=dusk "
                 "3=night 4=noon, T pauses the cycle; Esc to quit");
-    bool todPaused = false, prevT = false;
+    // Start with the day-night cycle PAUSED so the launch HOLDS its ECHO_TOD light
+    // (golden by default) instead of sprinting into night in ~20s — press T to run time.
+    bool todPaused = true, prevT = false;
     x3::game::TodPhase prevPhase = tod.phase();
 
+    // ESC opens a PAUSE MENU (it never quits the app — Tim's rule 2026-07-11). Only the
+    // menu's QUIT item (click, or press Q) exits. Edge-detected so a held key toggles once.
+    bool menuOpen = false, prevEsc = false, prevQ = false, prevEnter = false, prevLmb = false;
+    bool wantQuit = false;
+
     int lastW = (int)hc.W, lastH = (int)hc.H;
-    while (!glfwWindowShouldClose(window)) {
+    while (!glfwWindowShouldClose(window) && !wantQuit) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        {
+            const bool esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            if (esc && !prevEsc) menuOpen = !menuOpen;   // toggle, never break
+            prevEsc = esc;
+        }
 
         double now = glfwGetTime();
         float dt = (float)(now - prevTime); prevTime = now;
@@ -640,6 +651,47 @@ int hostEchotropolis(HostContext& hc) {
 
         auto kd  = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
         auto mbd = [&](int b) { return glfwGetMouseButton(window, b) == GLFW_PRESS; };
+
+        // ===== PAUSE MENU: world + camera frozen, menu drawn, only QUIT exits =====
+        if (menuOpen) {
+            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+            const float cx = hw * 0.5f, cy = hh * 0.5f;
+            // Quit button rect (centered). Q key or a click inside it quits.
+            const float bw = 260.0f, bh = 56.0f;
+            const float bx = cx - bw * 0.5f, by = cy + 40.0f;
+            const bool overQuit = (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh);
+            const bool lmb = mbd(GLFW_MOUSE_BUTTON_LEFT);
+            const bool qkey = kd(GLFW_KEY_Q);
+            if ((lmb && !prevLmb && overQuit) || (qkey && !prevQ)) wantQuit = true;
+            const bool ent = kd(GLFW_KEY_ENTER);
+            if (ent && !prevEnter) menuOpen = false;   // Enter also resumes
+            prevLmb = lmb; prevQ = qkey; prevEnter = ent;
+
+            auto frame = device->beginFrame();
+            island.draw(*device, frame);
+            props.draw(*device, frame);
+            if (tod.sample().cityLightsOn) { beam.draw(*device, frame); fissure.draw(*device, frame); }
+            const float dim[4]   = { 0.02f, 0.03f, 0.05f, 0.66f };
+            device->drawHudQuad(frame, 0, 0, (float)hw, (float)hh, dim);
+            const float gold[4]  = { 1.0f, 0.82f, 0.45f, 1.0f };
+            const float white[4] = { 0.90f, 0.93f, 1.0f, 1.0f };
+            const float dimtxt[4]= { 0.62f, 0.66f, 0.76f, 1.0f };
+            device->drawHudText(frame, "ECHO  HARBOR", cx - 11 * 19.0f, cy - 150.0f, 38.0f, gold);
+            device->drawHudText(frame, "PAUSED", cx - 6 * 11.0f, cy - 96.0f, 22.0f, dimtxt);
+            const float qcol[4] = { overQuit ? 0.35f : 0.18f, overQuit ? 0.10f : 0.06f,
+                                    overQuit ? 0.12f : 0.07f, 1.0f };
+            device->drawHudQuad(frame, bx, by, bw, bh, qcol);
+            device->drawHudText(frame, "QUIT  TO  DESKTOP", bx + 22.0f, by + 18.0f, 17.0f, white);
+            device->drawHudText(frame,
+                "ESC / ENTER  resume        1-4 time of day    5-8 camera views\n"
+                "WASD / drag  pan           wheel  zoom         Q  quit         T  run clock",
+                cx - 34 * 8.5f, cy + 120.0f, 15.0f, dimtxt);
+            device->endFrame(frame);
+
+            fpsAccum += dt; ++fpsFrames;
+            if (fpsAccum >= 1.0) { fpsAccum = 0.0; fpsFrames = 0; }
+            continue;   // skip all world sim while paused in the menu
+        }
 
         const bool rmb = mbd(GLFW_MOUSE_BUTTON_RIGHT);
         const bool mmb = mbd(GLFW_MOUSE_BUTTON_LEFT) || mbd(GLFW_MOUSE_BUTTON_MIDDLE);
