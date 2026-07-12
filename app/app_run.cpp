@@ -4051,6 +4051,17 @@ int runDefaultHost(HostContext& hc) {
         // so the terrain/water tiles stream in under the vantage.
         const char* swimShotEnv = std::getenv("X3_SHOT_SWIM");
         const std::string swimShotMode = (canonWorld && swimShotEnv) ? swimShotEnv : "";
+        // X3_SHOT_SWIM_SPEED (m/s): >0 makes the staged swimmer actually SWIM
+        // FORWARD, so the stroke latch trips and the "Swim" (breaststroke) clip
+        // plays instead of "SwimIdle" (treading). 0 = the tread-water read.
+        // X3_SHOT_SWIM_PHASE (0..1): WHERE IN THE STROKE the still lands — 0.30
+        // is the catch/pull (arms sweeping wide), 0.66 the kick/recovery. The
+        // clip clock is just the frame count, so we PRE-ROLL the avatar the extra
+        // frames needed to land the requested phase on the capture frame.
+        const char* swimSpeedEnv = std::getenv("X3_SHOT_SWIM_SPEED");
+        const char* swimPhaseEnv = std::getenv("X3_SHOT_SWIM_PHASE");
+        const float swimShotSpeed = swimSpeedEnv ? (float)std::atof(swimSpeedEnv) : 0.0f;
+        const float swimShotPhase = swimPhaseEnv ? (float)std::atof(swimPhaseEnv) : 0.0f;
         x3::phys::Vec3 swimSpot{}; float swimYaw = 0.0f, swimWaterY = 0.0f;
         bool swimShotOk = false;
         if (!swimShotMode.empty()) {
@@ -4068,15 +4079,54 @@ int runDefaultHost(HostContext& hc) {
                     swimShotOk = true;
                     if (swimShotMode == "3p" && thirdPerson.built()) {
                         thirdPerson.setThirdPerson(true);
-                        // Frame the prone swimmer from beside the channel (the
-                        // sun side, so the body isn't a backlit silhouette),
-                        // close + just above the water, looking down at it.
-                        const float side = swimYaw - 1.5707963f;
-                        ssX = swimSpot.x + std::cos(side) * 3.6f;
-                        ssZ = swimSpot.z + std::sin(side) * 3.6f;
-                        ssY = wY + 1.15f;
-                        ssYaw = side + 3.14159265f;
-                        ssPitch = -0.28f;
+                        // ---- FRAME THE STROKE, THEN PUT THE SUN BEHIND THE CAMERA.
+                        // Two lessons from the v1 proof (an unreadable backlit blob):
+                        //  * a beam-on view at water level foreshortens both arms into
+                        //    the torso, and Jake's kit is near-black cloth (measured: at
+                        //    sunLight 12 / ambient 0.95 he is STILL a dark shape — that
+                        //    is his albedo, not the lighting). From BEHIND AND ABOVE the
+                        //    stroke projects wide: the arms sweep out to the sides on the
+                        //    catch, the frog kick opens behind him. That silhouette reads.
+                        //  * the canon golden-hour sun sits 9 deg above the horizon, so
+                        //    half the compass is a backlight. We are the screenshot host,
+                        //    so we simply MOVE THE SUN: azimuth = straight behind this
+                        //    camera, elevation ~40 deg. Front-lit, every time, whatever
+                        //    the river's local heading is.
+                        const float camDist = 2.9f;   // behind him, along the swim axis
+                        const float camSide = 1.15f;  // a touch off-axis (three-quarter)
+                        const float side = swimYaw + 1.5707963f;
+                        ssX = swimSpot.x - std::cos(swimYaw) * camDist +
+                              std::cos(side) * camSide;
+                        ssZ = swimSpot.z - std::sin(swimYaw) * camDist +
+                              std::sin(side) * camSide;
+                        ssY = wY + 1.55f;                           // up over the water
+                        // Aim at the body just under the surface line.
+                        const float tX = swimSpot.x, tZ = swimSpot.z, tY = wY + 0.10f;
+                        ssYaw = std::atan2(tZ - ssZ, tX - ssX);
+                        const float horiz = std::sqrt((tX - ssX) * (tX - ssX) +
+                                                      (tZ - ssZ) * (tZ - ssZ));
+                        ssPitch = std::atan2(tY - ssY, horiz > 0.01f ? horiz : 0.01f);
+                        // THE SUN, STAGED FOR THE CAPTURE ONLY (the live game's
+                        // time-of-day is untouched — this runs in the screenshot host,
+                        // behind X3_SHOT_SWIM): toward the sun = back along the camera's
+                        // own view ray, lifted to ~40 deg, whitened, with the scene sun
+                        // radiance + sky ambient raised so the body has surface, not just
+                        // outline.
+                        x3::rhi::IRenderDevice::SkyParams swimSky{};
+                        swimSky.enabled = true;
+                        swimSky.sunDir[0] = -std::cos(ssYaw) * 0.77f;   // behind the camera
+                        swimSky.sunDir[1] = 0.64f;                      // ~40 deg elevation
+                        swimSky.sunDir[2] = -std::sin(ssYaw) * 0.77f;
+                        swimSky.sunColor[0] = 1.0f; swimSky.sunColor[1] = 0.98f;
+                        swimSky.sunColor[2] = 0.94f;
+                        swimSky.sunIntensity = 1.30f;
+                        swimSky.sunLight     = 3.60f;              // the mesh key
+                        swimSky.haze = 0.42f; swimSky.exposure = 1.25f;
+                        swimSky.zenith[0]  = 0.26f; swimSky.zenith[1]  = 0.46f;
+                        swimSky.zenith[2]  = 0.82f;
+                        swimSky.horizon[0] = 0.86f; swimSky.horizon[1] = 0.90f;
+                        swimSky.horizon[2] = 0.98f;
+                        device->setSkyParams(swimSky);
                     } else {
                         // FP: the eye rests just above the surface (the swim
                         // buoyancy line), pitched a touch UP so the water line
@@ -4218,6 +4268,34 @@ int runDefaultHost(HostContext& hc) {
         }
         const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle
                                                          : (alertShot ? 110 : 16);
+        // ---- X3_SHOT_SWIM_PHASE pre-roll: land the capture ON a chosen point of
+        // the stroke. The swim clip's clock is just the accumulated dt since the
+        // crossfade triggered, so the phase at the capture frame is fixed by the
+        // total number of swim updates. Run the extra (render-free) updates HERE,
+        // ahead of the settle loop, so that settle + preroll == the frame count
+        // that puts the requested phase (0.30 = the catch/pull, 0.66 = the kick)
+        // on the shot. The feet march at the staged speed through the pre-roll too
+        // (a still speed would drop him out of the stroke on the hysteresis latch).
+        if (swimShotOk && swimShotMode == "3p" && thirdPerson.built() &&
+            swimShotSpeed > 0.0f) {
+            const float clipLen = 2.3333333f;                  // "Swim" @ 24fps x 56f
+            const int cycle = (int)std::lround(clipLen / dt);  // frames per stroke
+            const int want  = (int)std::lround(
+                std::fmod(std::fmax(swimShotPhase, 0.0f), 1.0f) * (float)cycle);
+            int pre = ((want - kSettleFrames) % cycle + cycle) % cycle;
+            if (pre < 20) pre += cycle;      // >= 20 frames so the crossfade completes
+            for (int i = 0; i < pre; ++i) {
+                const float lead = swimShotSpeed * (float)(pre - 1 - i + kSettleFrames) * dt;
+                const x3::phys::Vec3 f{ swimSpot.x - std::cos(swimYaw) * lead,
+                                        swimWaterY - 1.45f,
+                                        swimSpot.z - std::sin(swimYaw) * lead };
+                thirdPerson.update(dt, scene, f, 1.6f, swimYaw, 0.0f,
+                                   x3::game::kNoRoom, false, false, /*swimming*/true);
+            }
+            x3::logInfo("[swimshot] phase pre-roll: " + std::to_string(pre) +
+                        " frames (target phase " + std::to_string(swimShotPhase) +
+                        ", settle " + std::to_string(kSettleFrames) + ")");
+        }
         // WORLD CARS driver-POV staging (--shot-drive): take the wheel of the
         // car nearest the shot camera and DRIVE it through the settle frames —
         // the capture camera follows the live chase framing and the "[E] Exit"
@@ -4442,19 +4520,32 @@ int runDefaultHost(HostContext& hc) {
             if (canonWorld && canonFloor.valid()) {
                 canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
                 canonDressing.tick(dt);
-                // X3_SHOT_SWIM=3p: hold the avatar in the swim state at the staged
-                // spot every settle frame — the prone blend settles + the stroke
-                // stand-in animates into the capture (kNoRoom = never room-culled).
+                // X3_SHOT_SWIM=3p: hold the avatar in the swim state through every
+                // settle frame, so the water pose settles and the REAL swim clip is
+                // mid-cycle at the capture (kNoRoom = never room-culled).
+                //
+                // At X3_SHOT_SWIM_SPEED > 0 he actually SWIMS: the feet walk UPSTREAM
+                // of the staged spot and arrive exactly ON it at the last settle frame
+                // (so the camera framing computed for `swimSpot` is exact), while the
+                // per-frame delta gives ThirdPersonView a real planar water speed —
+                // which is what trips the stroke latch and plays "Swim" instead of
+                // "SwimIdle". The X3_SHOT_SWIM_PHASE pre-roll (below, before the loop)
+                // has already advanced the clip clock so the requested stroke phase
+                // lands on THIS capture.
                 if (swimShotOk && swimShotMode == "3p" && thirdPerson.built()) {
-                    const x3::phys::Vec3 swimFeet{ swimSpot.x, swimWaterY - 1.45f,
-                                                   swimSpot.z };
+                    const int back = kSettleFrames - 1 - i;      // frames still to go
+                    const float lead = swimShotSpeed * (float)back * dt;
+                    const x3::phys::Vec3 swimFeet{
+                        swimSpot.x - std::cos(swimYaw) * lead, swimWaterY - 1.45f,
+                        swimSpot.z - std::sin(swimYaw) * lead };
                     thirdPerson.update(dt, scene, swimFeet, 1.6f, swimYaw, 0.0f,
                                        x3::game::kNoRoom, false, false,
                                        /*swimming*/true);
-                    if (i % 30 == 0) {   // staging telemetry for the eye-gate
+                    if (i % 30 == 0 || i == kSettleFrames - 1) {   // staging telemetry
                         float dxf[16]; thirdPerson.avatarDrawTransform(dxf);
                         float hs[16]; const bool gh = thirdPerson.handSocketWorld(hs);
                         x3::logInfo("[swimshot] frame " + std::to_string(i) +
+                            " clip=" + (thirdPerson.swimStroking() ? "Swim" : "SwimIdle") +
                             " rootY=" + std::to_string(dxf[13]) +
                             " upY=" + std::to_string(dxf[5]) +
                             " hand=(" + (gh ? std::to_string(hs[12]) + "," +
@@ -4573,6 +4664,32 @@ int runDefaultHost(HostContext& hc) {
                     riftDepths.tick(dt);
                     riftLights(ssEye.x, ssEye.y, ssEye.z, cl);
                 }
+                // X3_SHOT_SWIM=3p: LIGHT THE STAGE, NOT JUST THE MAN. Jake's kit is
+                // near-black cloth — measured: even at sunLight 12 / ambient 0.95 he
+                // still photographs as a dark shape, because that IS his albedo. So
+                // the capture rig lights the WATER he lies on: a submerged practical
+                // right under him turns the surface into a bright plate, and the
+                // stroke reads as a crisp swimmer's silhouette on it (arms wide on the
+                // catch, the frog kick opening behind) instead of black-on-black. A
+                // warm key from the CAMERA side still models his back + shoulders.
+                // FRONT of the list so the 64-light cap can never truncate them.
+                // Capture path only (behind X3_SHOT_SWIM) — the live game is untouched.
+                if (swimShotOk && swimShotMode == "3p") {
+                    x3::rhi::PointLight plate{};      // the bright water under him
+                    plate.pos[0] = swimSpot.x;
+                    plate.pos[1] = swimWaterY - 0.45f;
+                    plate.pos[2] = swimSpot.z;
+                    plate.range  = 22.0f;
+                    plate.color[0] = 5.0f; plate.color[1] = 6.2f; plate.color[2] = 7.0f;
+                    x3::rhi::PointLight key{};        // models the body from the camera side
+                    key.pos[0] = (ssX + swimSpot.x) * 0.5f;
+                    key.pos[1] = swimWaterY + 2.6f;
+                    key.pos[2] = (ssZ + swimSpot.z) * 0.5f;
+                    key.range  = 16.0f;
+                    key.color[0] = 4.2f; key.color[1] = 4.0f; key.color[2] = 3.6f;
+                    cl.insert(cl.begin(), key);
+                    cl.insert(cl.begin(), plate);
+                }
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
             }
@@ -4642,6 +4759,17 @@ int runDefaultHost(HostContext& hc) {
                           uf.density  = 0.055f; uf.start = 0.15f; uf.maxOpacity = 0.94f;
                           device->setFog(uf);
                       } }
+                    // X3_SHOT_SWIM=3p: LIFT THE AIR for the capture (applied after
+                    // applyZoneAtmosphere, same as the underwater override). Jake's
+                    // kit is near-black cloth and the zone recipe's ambient is an
+                    // interior-grade floor, so the swimmer photographs as a shape
+                    // with no surface — the exact "unreadable silhouette" the v1
+                    // proof shipped. Raising the ambient + IBL puts skylight back
+                    // on his back and arms. Capture path only.
+                    if (swimShotOk && swimShotMode == "3p") {
+                        device->setAmbient(0.40f, 0.43f, 0.48f);
+                        device->setIblIntensity(1.5f);
+                    }
                     // W-RIFT: sub-level R1's air wins over the room recipes for a
                     // vantage down there (applied AFTER applyZoneAtmosphere, like the
                     // underwater override above).
