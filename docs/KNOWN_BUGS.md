@@ -70,6 +70,46 @@ perfshop, showroom) still runs ambient 0.42.
 
 ---
 
+### R3. THE MIRROR — a NEGATIVE-DETERMINANT basis draws the model INSIDE-OUT and unlit — SWEPT `fix/mirror-basis-sweep`
+The idiom, copy-pasted around the codebase:
+```
+right = (-outward.z, 0, outward.x);   columns [right, up, outward]   // determinant = -1
+```
+**A negative determinant is a REFLECTION, not a rotation.** It reverses triangle winding, so
+`VK_FRONT_FACE_COUNTER_CLOCKWISE` + back-face culling throws away the model's **OUTER shell** and
+rasterizes its **INNER shell**. You are looking at the *inside* of the object, whose normals point
+away from every light in the room. **Zero diffuse at any albedo under any light.**
+
+**Why it hides:** the silhouette is perfect (a mirrored mesh has the same outline), albedo and
+normal-map relief look right (texture lookups don't care about winding), the specular is coherent.
+Every symptom points at the **art**. The rift-hub gate survived **nine rounds of art passes** on
+this — our own notes recorded *"5× the key light barely moved it."*
+
+**The smoking-gun test:** a GLB **cube carrying the object's exact material** renders blown-out
+white in the same room while a **120-intensity probe light 3 m away leaves the object black**.
+No material bug and no lighting bug can produce that pair. **Only a mirror can.**
+
+**Where it was:** the gate GLB (`rifthub.cpp`, fixed `a9983ed`); the rift hub's fallback torus,
+cradle skirt + anchor plates and the whole membrane stack (plasma disk / contact rim / falloff
+shells); **the descent slide's entire track frame** (`frameToTransform` fed `[right, up, tan]` with
+`right = cross(tan, +Y)` — the LEFT-handed lateral — so all 689 props on the ride were inside-out);
+the descent slide's **cavern** (`flat.right` hand-written `{0,0,1}`, det -1 — floor, ceiling and all
+four rock walls); and `fx.cpp`'s tracer billboard + muzzle flash.
+
+**The law now:** `app/basis.h` → `basisFromOutward()` is the ONLY sanctioned way to orient a model
+off an outward/forward/normal/tangent vector; it returns a guaranteed right-handed orthonormal basis.
+**`--test-basis` is TOTAL**: it builds the worlds headless and asserts `det(upper 3x3) > 0` on
+**every entity Scene ever received** — a list of known sites would rot the moment the idiom is pasted
+into a new file. It ships with **negative controls** (the legacy idiom + a planted mirrored entity)
+that prove it can go red.
+
+**SECOND-ORDER (read this before you "fix" any art):** anything tuned against a mirrored object was
+tuned against a lie. The gate's key rig had been cranked **70 → 15** fighting a surface *physically
+incapable of responding*; un-mirrored it had to come **DOWN to 5.0**. Its group tints
+(`0.789 × 0.22 = 0.17` albedo, then metallic `0.80` ate 80% of the remainder) were authored to tame a
+forged texture set that **never existed** (B12). **Un-mirroring exposes bad art; it does not cause it.
+Retune honestly — never restore the mirror.**
+
 ## 🐛 OPEN BUGS
 
 | # | Bug | Notes |

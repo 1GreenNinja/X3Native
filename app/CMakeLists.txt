@@ -71,6 +71,7 @@ add_executable(X3Engine WIN32
     space/wormhole_transit.cpp
     space/tractor_beam.cpp
     descent_slide.cpp
+    basis_test.cpp
     world_hosts/host_descentslide.cpp
     world_hosts/host_shipwindows.cpp
     world_hosts/host_bodycontact.cpp

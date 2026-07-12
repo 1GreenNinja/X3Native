@@ -1448,7 +1448,18 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // material-group drawable, at portalXform * nodeTransform). The GLB's
             // local contract matches the membrane basis: XY gate plane, hole
             // along +Z(outward), FRONT (clamp caps / track bed) at -Z (hub-side).
-            const float locX[3] = { rightX, 0.0f, rightZ };
+            // ---- THE MIRROR (KNOWN_BUGS R3) -------------------------------------
+            // [right, up, outward] with right = (-outZ, 0, outX) is det -1: a
+            // REFLECTION. Every gate GLB was instanced through a mirror, so its
+            // winding reversed, back-face culling dropped the tube's OUTER shell, and
+            // we lit the INSIDE — normals pointing away from every light in the hall.
+            // Nine rounds of art died on it. The fix is one sign: -right, det +1.
+            //
+            // *** MERGE NOTE: art/rifthub-canon @ a9983ed makes the IDENTICAL change
+            // *** (locX = -right). Both branches negate the COLUMN, neither touches the
+            // *** definition of rightX/rightZ — so taking either side is correct and
+            // *** there is NO double-negation. Do NOT "combine" them.
+            const float locX[3] = { -rightX, 0.0f, -rightZ };
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };
             const float locZ[3] = { outwardX, 0.0f, outwardZ };
             float gateXf[16];
@@ -1537,7 +1548,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // circumference ONCE by default (a smeared stretch) — rescale so a
             // tile lands roughly every 1.3 m major / 1.25 m minor.
             for (auto& v : torus.verts) { v.uv[0] *= 10.0f; v.uv[1] *= 2.0f; }
-            const float locX[3] = { rightX, 0.0f, rightZ };   // ring "right"
+            // MIRROR (KNOWN_BUGS R3): [right, up, outward] with right=(-outZ,0,outX)
+            // is det -1 — a REFLECTION. The fallback torus was instanced inside-out
+            // and could not be lit. -right is the right-handed lateral (det +1); it
+            // is what basisFromOutward() returns for this outward vector.
+            const float locX[3] = { -rightX, 0.0f, -rightZ };  // ring "right" (det +1)
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };   // world up
             const float locZ[3] = { outwardX, 0.0f, outwardZ };// outward (hole axis)
             AddedEntity ae = addOrientedEmissiveMesh(
@@ -1611,7 +1626,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // ROUND 3: the authored GLB carries its own plinth + angled shoulder
         // skirt + foot pads, so the box cradle only dresses the fallback ring.
         if (!m_gateGlbActive) {
-            const float locX[3] = { rightX, 0.0f, rightZ };
+            // MIRROR (KNOWN_BUGS R3): -right, not right. det +1. The skirt plinth and
+            // the floor anchor plates were instanced through a reflection.
+            const float locX[3] = { -rightX, 0.0f, -rightZ };
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };
             const float locZ[3] = { outwardX, 0.0f, outwardZ };
             // Skirt plinth (top at 0.50 m — below the 0.55 m ring opening).
@@ -1647,10 +1664,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
 
         // ---- ORANGE conduits + coil rings + TEAL holo screens (phase D) ------
-        // Portal-local frame for the dressing (the cradle's basis is scoped).
-        const float dX[3] = { rightX, 0.0f, rightZ };
-        const float dY[3] = { 0.0f, 1.0f, 0.0f };
-        const float dZ[3] = { outwardX, 0.0f, outwardZ };
+        // (The dressing's portal-local dX/dY/dZ trio is DELETED: it was dead code —
+        // nothing had referenced it since the chevrons were cut — and it was one more
+        // copy of the det -1 [right, up, outward] MIRROR idiom (KNOWN_BUGS R3) sitting
+        // in the file waiting to be copy-pasted. Anything that needs a basis off an
+        // outward vector calls basisFromOutward() in app/basis.h.)
         // World point in the gate plane, nudged hub-side of the ring face.
         auto gatePt = [&](float alongRight, float y, float alongOut) {
             return x3::phys::Vec3{
@@ -1930,7 +1948,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.rightX = rightX; p.rightZ = rightZ;
         p.outX   = outwardX; p.outZ = outwardZ;
         const uint32_t membraneEntFirst = scene.size();
-        const float locX[3] = { rightX, 0.0f, rightZ };
+        // MIRROR (KNOWN_BUGS R3): -right, not right — det +1. The plasma disk, the
+        // Fresnel contact rim and the two falloff shells were all instanced through a
+        // reflection. (They are emissive, so the mirror did not black them out the way
+        // it blacked out the gate's metal — but a reflected disk presents its BACK face
+        // to the hub, and the rim/shell tori were being drawn inside-out.)
+        const float locX[3] = { -rightX, 0.0f, -rightZ };
         const float locY[3] = { 0.0f,   1.0f, 0.0f    };
         const float locZ[3] = { outwardX, 0.0f, outwardZ };
         // [0] PLASMA disk (filament emissive map; mrTex forces the PBR route so
