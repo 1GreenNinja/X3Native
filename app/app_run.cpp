@@ -1433,6 +1433,16 @@ int runDefaultHost(HostContext& hc) {
         return out;
     };
     constexpr size_t kFixtureBudget = 44;
+    // CANONLEVEL per-frame room-light budget. Was a hard-coded 16 at all three feed
+    // sites — which a 40 m cell hall (now 5 ceiling lights of its own, plus whatever the
+    // PVS pulls in through open doors) exhausts instantly, so the far half of the
+    // corridor stayed dark even after the lights existed. 36 is sized against the 64-light
+    // device cap with EVERY other claimant paid first:
+    //   flashlight 2 + cell-dressing motivated ~8 + canon 36 + breach spill 1 = 47,
+    //   + street lamps 14 (outdoors only) = 61, or + strata 16 (camY < 2 only) = 63.
+    // Both worst cases still clear 64, and the tail the cap would trim is the FARTHEST
+    // light either way (every feed is nearest-first).
+    constexpr uint32_t kCanonLightBudget = 36;
 
     auto shutdownGameSystems = [&]() {
         game.shutdown();                               // every enemy group + Martinez + barrels
@@ -4070,7 +4080,8 @@ int runDefaultHost(HostContext& hc) {
                     if (vis) cl.push_back(dl.light);
                 }
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
-                                                   ssEye.x, ssEye.y, ssEye.z, cl, 16);
+                                                   ssEye.x, ssEye.y, ssEye.z, cl,
+                                                   kCanonLightBudget);
                 if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
                 // STREET LIGHT: same outdoor gate + nearest-K feed as the live
                 // loop, so lamp pools light the shot; flicker ticks through the
@@ -4103,7 +4114,15 @@ int runDefaultHost(HostContext& hc) {
             // engaged either. A room you cannot photograph is a room you cannot art-
             // direct, which is exactly how the cab stayed a graybox for this long.
             if (elevator.built() && !elevator.pointLights().empty() && !canonWorld) {
-                std::vector<x3::rhi::PointLight> el = game.lightFixtures();
+                // B4, ONE MORE TIME — this feed was still FIRST-IN-BUILD-ORDER. e06ee05 fed
+                // the live loop and the plain capture path nearest-to-eye, but MISSED this
+                // one: `= game.lightFixtures()` copies all ~1.1k tower fixtures in ROOM
+                // ORDER, and the resize(64) below keeps whichever rooms happened to be
+                // authored first. So every elevator capture photographed the cab correctly
+                // (its own lights are pushed to the FRONT) against a SHAFT AND LOBBY lit by
+                // fixtures from unrelated floors — i.e. by nothing. Same disease, same fix.
+                std::vector<x3::rhi::PointLight> el =
+                    nearestFixtures(game.lightFixtures(), ssX, ssY, ssZ, kFixtureBudget);
                 // FRONT of the list: level1 ships more than 64 fixtures, so appending
                 // would put the cab's own practical past the cap and truncate it away —
                 // the exact reason the first capture of the new cab came back black.
@@ -4814,7 +4833,7 @@ int runDefaultHost(HostContext& hc) {
                     g_visPvsMs = std::chrono::duration<float, std::milli>(
                         std::chrono::steady_clock::now() - pvsT0).count();
                 }
-                // Feed ONLY the visible rooms' ceiling lights (capped at 16) so the floor
+                // Feed ONLY the visible rooms' ceiling lights (capped) so the floor
                 // is LIT under the smoketest while staying under the 64-light device cap.
                 std::vector<x3::rhi::PointLight> cl;
                 canonDressing.tick(dt);
@@ -4824,13 +4843,14 @@ int runDefaultHost(HostContext& hc) {
                     if (vis) cl.push_back(dl.light);
                 }
                 uint32_t nLit = x3::game::selectVisibleCanonLights(
-                    canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, 16);
+                    canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, kCanonLightBudget);
                 if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
                 if (i == 0)
                     x3::logInfo("smoketest --world canonlevel: " + std::to_string(nLit) +
-                                " room point-lights fed for the visible set (cap 16)");
+                                " room point-lights fed for the visible set (cap " +
+                                std::to_string(kCanonLightBudget) + ")");
             }
             // --world fromdoc under validation: feed the doc lights, walk the player
             // point through the doc triggers, and HOT-RELOAD the doc mid-run (i==18)
@@ -6946,6 +6966,10 @@ int runDefaultHost(HostContext& hc) {
             // what actually turns the legacy tower's 332 ceiling fixtures back on.
             std::vector<x3::rhi::PointLight> fl =
                 nearestFixtures(game.lightFixtures(), camX, camY, camZ, kFixtureBudget);
+            // The player's OWN light, kept aside: the rift (and the club) TAKE OVER the
+            // whole pool with a clear(), which used to erase the flashlight along with the
+            // facility fixtures. Whatever a room does to the budget, the torch comes back.
+            std::vector<x3::rhi::PointLight> torch;
             // ELEVATOR INTERIOR LIGHTING: the cab's ceiling fill + (in disco mode) the
             // 4 colored spots. Without this the car interior was unlit and disco never
             // rendered. Only added when the player is near/in the cab so they don't eat
@@ -6992,6 +7016,7 @@ int runDefaultHost(HostContext& hc) {
                 eyePl.range  = 8.0f;
                 eyePl.color[0] = 1.70f; eyePl.color[1] = 1.60f; eyePl.color[2] = 1.40f;
                 fl.insert(fl.begin(), eyePl);
+                torch.push_back(eyePl); torch.push_back(pl);   // survives the rift/club takeover
             }
             // CANONLEVEL ROOM LIGHTING: the data-driven floor has no env_art Light_A
             // fixtures, so game.lightFixtures() is empty and the rooms would only get
@@ -7061,7 +7086,8 @@ int runDefaultHost(HostContext& hc) {
                 }
                 // Cap lights at 16 closest-to-eye over the SAME visible-room set.
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
-                                                   camX, camY, camZ, fl, 16);
+                                                   camX, camY, camZ, fl,
+                                                   kCanonLightBudget);
                 // SEAM 2: the amber breach spill (the way-in read from the apron).
                 if (facilityExterior.built()) fl.push_back(facilityExterior.spillLight());
             }
@@ -7117,7 +7143,26 @@ int runDefaultHost(HostContext& hc) {
             // W-RIFT: in SUB-LEVEL R1 the hub's rig (gate cores + keys + the hall) and
             // the approach's failing strips own the budget — same rule as the club: no
             // facility fixture reaches 78 m down, and the membranes are the key light.
-            if (riftBuilt && riftInZone(camX, camY, camZ)) riftLights(camX, camY, camZ, fl);
+            //
+            // ---- 2026-07-12, FACILITY LIGHTING AUDIT: THE FLASHLIGHT DID NOT WORK IN THE
+            // RIFT HUB. riftLights() begins with `out.clear()` — the hub's rig "owns the
+            // budget". But `fl` at this point ALREADY HOLDS THE FLASHLIGHT (inserted at the
+            // front, above). So walking into sub-level R1 SILENTLY DELETED THE PLAYER'S
+            // TORCH, every frame, and pressing L did nothing at all: the one room in the
+            // game you reach down a 33 m unlit approach corridor is the one room where your
+            // flashlight is not connected to anything. The takeover is right; erasing the
+            // player's own light with it is not. Re-insert the torch at the FRONT after the
+            // takeover — and because riftLights() hands back a NEAREST-FIRST list, the 2
+            // entries the 64-cap now trims off the tail are the two FARTHEST hub lights,
+            // which is exactly what we would have chosen to drop.
+            // (NOTE for the Descent/Club owner: `club1127` does the identical `fl.clear()`
+            //  at camY < -150 and eats the flashlight the same way. Not touched here — that
+            //  is another agent's region. Filed in the audit doc.)
+            if (riftBuilt && riftInZone(camX, camY, camZ)) {
+                riftLights(camX, camY, camZ, fl);
+                for (auto it = torch.rbegin(); it != torch.rend(); ++it)
+                    fl.insert(fl.begin(), *it);
+            }
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }

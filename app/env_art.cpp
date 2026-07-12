@@ -414,11 +414,38 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
             // Anchor a row ON the corridor (z = 0) and pull the flanking rows in to within
             // a light-range of it, so the pools actually OVERLAP instead of straddling a
             // dark 23 m gutter. Narrow rooms keep their single centre row exactly as before.
+            //
+            // ---- 2026-07-12, FACILITY LIGHTING AUDIT — THE FIX ABOVE ONLY LIT THE CORRIDOR.
+            // The previous pass anchored a row at z=0 and clamped the two flanking rows to
+            // z = +/-min(zHalf*0.5, 7). That rescued the z~0 play corridor — and left the
+            // REST OF THE PLATE in the dark, because the clamp does not scale with depth:
+            //     B1 / F1 : zHalf 38, rows at z = -7/0/+7, range 9.0  -> lit to z = +/-16.
+            //               A **22 m VOID on EACH SIDE** — 58% of the plate depth. The
+            //               detention cells run down -Z to z = -22 (Cell 4 "Skeleton"), so
+            //               whole authored ROOMS sat outside every light in the building.
+            //     F5      : zHalf 32, range 15.5 -> lit to +/-22. A 10 m void each side of
+            //               the drone high-bay.
+            //     F6      : 4 m void each side.
+            // MEASURED, flashlight OFF (docs/screenshots/lighting_audit/facility):
+            //     corridor z=0  : mean 20.5, 43% of pixels <= 6/255
+            //     z = -22 (Cell4): mean  5.9, **83% of pixels <= 6/255** — a VOID, not a room.
+            //     z = -25        : mean  6.8, **82% void**
+            // This is the SAME bug as before, one step out: the lights were still placed
+            // where the player is not. The rows must TILE THE PLATE, not hug its spine.
+            //
+            // So: tile the z rows across the FULL depth at a fixed 8 m pitch, phase-locked to
+            // z = 0 so the corridor row (the whole point of the last fix) is still exactly on
+            // the spine. 8 m pitch under a >=9 m range means adjacent pools always overlap —
+            // no gutters at any depth, on any plate. Narrow rooms (zHalf < 6) keep their
+            // single centre row exactly as before. Fixture count 498 -> ~1.4k: these are
+            // INSTANCED ceiling panels (draw cost is nil) and the point lights are selected
+            // NEAREST-TO-EYE (K=44) every frame, so the GPU-side cost is unchanged.
+            constexpr float kZPitch = 8.0f;                       // < the 9.0 m minimum range => pools overlap
             const bool  wide    = (r.zHalf >= 6.0f);
-            const int   zr      = wide ? 3 : 1;
-            const float zoff    = wide ? std::min(r.zHalf * 0.5f, 7.0f) : 0.0f;
+            const int   zk      = wide ? (int)std::floor(r.zHalf / kZPitch) : 0;
+            const int   zr      = 2 * zk + 1;                     // rows at z = -zk*8 .. 0 .. +zk*8
             for (int j=0;j<zr;++j) {
-                const float wz = wide ? ((j==0) ? -zoff : (j==1) ? 0.0f : zoff) : 0.0f;
+                const float wz = wide ? ((float)(j - zk) * kZPitch) : 0.0f;
                 for (int i=0;i<n;++i) {
                     const float wx = r.x0 + (i + 0.5f) * 4.0f;
                     placeYaw(m, 0.0f, 1.0f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),
