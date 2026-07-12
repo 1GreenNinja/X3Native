@@ -23,7 +23,7 @@ import argparse, gc, os, sys
 import numpy as np
 from PIL import Image, ImageFilter
 
-MODEL_PATH = r"C:\GameDev\SD_Models\sd35"
+MODEL_PATH = r"D:\GameDev\SD_Models\sd35"
 OUT_ROOT   = r"G:\Assets\X3Native\surface_library"
 SIZE       = 1024
 
