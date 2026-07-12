@@ -38,6 +38,28 @@ Any GLB whose exporter omitted it becomes a **full metal** — and full metal ha
 lobe** — so it renders BLACK in windowless interiors. This is NOT the 1/π bug and is not fixed
 by it. The kit props need a metalness clamp (0.35) or an asset re-convert. **A crate is not metal.**
 
+### L7. A Unity pack's EMISSION can be hidden in a channel your converter throws away
+`ModularSciFi_Interior` ships `T_<X>_MRAG.png` = **M**etallic(R) **R**oughness(G) **AO**(B)
+**GLOW(A)**. The kit's shader is `emission = Dif.rgb * MRAG.a` — the glow mask is the **alpha
+of the MR map**, and the *diffuse* carries the emitter's COLOUR as a key: pure yellow
+`(255,255,0)` panels, magenta `(255,0,255)` lenses, blue `(0,0,255)` console screens, green
+`(0,255,0)` stair strips. The original convert kept only Dif + Norm and **dropped MRAG
+entirely** — so every light lens shipped as flat PAINT (and every surface as uniform
+metallic-0/roughness-0.5 plastic). The 0.42 ambient hid it for months; the moment lighting
+went honest the facility was slabs of magenta and yellow.
+**Before converting ANY pack: list its texture files and account for every channel.** A map
+you cannot name is a map you are about to throw away. — fixed by `tools/convert_modular_scifi.py`,
+gated by `tools/test_kit_materials.py`.
+Two traps found while fixing it, both worth knowing:
+- **Pillow premultiplies alpha on RGBA `resize()`.** An MRAG map is 4 unrelated DATA channels,
+  not colour+alpha; a plain resize multiplied metal/rough/AO by the glow mask (~0 over 95% of
+  the atlas) and crushed roughness 0.22 → **0.02 — every wall a mirror**. Resize per channel.
+- **This engine's ACES is the per-channel Narkowicz approximation** (`shaders/composite.frag`).
+  A channel that is 0 stays 0 at *any* exposure, so a pure-yellow (zero-blue) emitter can NEVER
+  roll its core off to white — raising emissive strength just clamps it to a flat yellow swatch.
+  If an emitter must read as a *lamp*, the core desaturation has to be baked into the emissive
+  MAP. (Fixing the tonemapper to a hue-preserving/AP1 ACES would remove this constraint.)
+
 ### L6. One build dir per agent
 Concurrent agents in one working tree cause: MSBuild holding `.obj` files (recompiles silently
 skipped → you debug a **stale exe**), `git stash` sweeping another agent's work, and merges

@@ -1013,10 +1013,29 @@ void CellDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             // placed with emissive=nullptr (alpha 0) shows NO authored glow; a prop that
             // opts in (alpha > 0) shows the authored glow at that strength. Props with no
             // material emissive keep the per-instance glow exactly as before.
-            const bool matEmis = d.emissiveTexId != 0 ||
+            //
+            // ...AND THAT GATE WAS A CRUTCH OVER A BROKEN CONVERT (THE PATTERN, again).
+            // The reason kit emissive "bloomed as glowing blobs" is that the kit HAD NO
+            // EMISSIVE MAP: the ModularSciFi conversion threw the pack's glow channel
+            // (MRAG.a) away, so a piece could only ever carry a FLAT emissiveFactor —
+            // and a flat factor with no map floods the WHOLE SURFACE. Gating that off
+            // was right. But the gate keys on the wrong thing: it also zeroes the
+            // emissive of a piece whose glow is a real PER-TEXEL MAP, which is
+            // self-limiting by construction (it glows only where the artist painted a
+            // lens, and is black everywhere else). With the kit's maps restored, this
+            // gate was silently deleting every ceiling panel, door lens and wall strip
+            // in the cell. PROVEN, not guessed: at emissive strength 12 the door was
+            // still DARK.
+            //
+            // So gate on what actually separates the two cases:
+            //   * a MAP localizes the glow  -> honour it at full strength.
+            //   * a bare FACTOR floods it   -> still opt-in via inst.emissive[3].
+            const bool matMap  = d.emissiveTexId != 0;
+            const bool matEmis = matMap ||
                 d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
             float emis[4];
-            if (matEmis) { emis[0]=d.emissiveFactor[0]; emis[1]=d.emissiveFactor[1]; emis[2]=d.emissiveFactor[2]; emis[3]=inst.emissive[3]; }
+            if (matEmis) { emis[0]=d.emissiveFactor[0]; emis[1]=d.emissiveFactor[1]; emis[2]=d.emissiveFactor[2];
+                           emis[3]= matMap ? 1.0f : inst.emissive[3]; }
             else         { emis[0]=inst.emissive[0]; emis[1]=inst.emissive[1]; emis[2]=inst.emissive[2]; emis[3]=inst.emissive[3]; }
             // Per-instance baseColor tint (darken plain/white kit pieces to believable
             // dark metal/painted surfaces so they don't blow out under accent lights).
