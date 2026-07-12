@@ -480,8 +480,30 @@ void EditorState::pushCmd(const BrushCmd& c) {
     // append + advance — the classic linear-history behaviour.
     if (m_undoPos < (int)m_history.size())
         m_history.erase(m_history.begin() + m_undoPos, m_history.end());
-    m_history.push_back(c);
+    BrushCmd cc = c;
+    cc.group = m_group;              // 0 unless we are inside a transaction
+    m_history.push_back(cc);
     m_undoPos = (int)m_history.size();
+}
+
+// ---- Undo TRANSACTIONS (see editor.h) --------------------------------------
+void EditorState::beginGroup() {
+    if (m_group != 0) return;        // groups do not nest; a stray begin is ignored
+    // Opening a transaction TRUNCATES the redo tail up-front. Without this, an empty
+    // group (one that pushes nothing) would leave the tail alive while the user
+    // believes an edit happened, and the next redo would replay a stale future.
+    if (m_undoPos < (int)m_history.size())
+        m_history.erase(m_history.begin() + m_undoPos, m_history.end());
+    m_group      = m_nextGroup++;
+    m_groupStart = m_history.size();
+}
+
+void EditorState::endGroup() {
+    if (m_group == 0) return;
+    m_group = 0;
+    // A group that pushed NOTHING (e.g. an AI plan whose every op was rejected)
+    // leaves no trace: no phantom undo step that appears to do nothing.
+    if (m_history.size() == m_groupStart) m_undoPos = (int)m_history.size();
 }
 
 int EditorState::addBrushCmd(uint32_t type, const float pos[3]) {
@@ -529,7 +551,7 @@ void EditorState::commitBrushEdit() {
     pushCmd(c);
 }
 
-HistoryEffect EditorState::undo() {
+HistoryEffect EditorState::undoOne() {
     HistoryEffect eff;
     if (!canUndo()) return eff;
     const BrushCmd& c = m_history[--m_undoPos];
@@ -574,7 +596,7 @@ HistoryEffect EditorState::undo() {
     return eff;
 }
 
-HistoryEffect EditorState::redo() {
+HistoryEffect EditorState::redoOne() {
     HistoryEffect eff;
     if (!canRedo()) return eff;
     const BrushCmd& c = m_history[m_undoPos++];
@@ -613,6 +635,30 @@ HistoryEffect EditorState::redo() {
         }
         default: break;
     }
+    return eff;
+}
+
+// Public undo/redo: unwind a whole TRANSACTION as ONE step when the command at the
+// stack cursor belongs to a group (see beginGroup). undoOne() walks backwards on its
+// own, so the loop naturally applies a group in reverse order — which is the only
+// correct order for a batch of index-shifting inserts/erases.
+HistoryEffect EditorState::undo() {
+    if (!canUndo()) return HistoryEffect{};
+    const uint32_t g = m_history[m_undoPos - 1].group;
+    if (g == 0) return undoOne();                       // plain single-command undo
+    while (canUndo() && m_history[m_undoPos - 1].group == g) undoOne();
+    HistoryEffect eff; eff.op = HistoryEffect::Op::RespawnAll;
+    m_selKind = SelKind::None; m_selIndex = -1;
+    return eff;
+}
+
+HistoryEffect EditorState::redo() {
+    if (!canRedo()) return HistoryEffect{};
+    const uint32_t g = m_history[m_undoPos].group;
+    if (g == 0) return redoOne();
+    while (canRedo() && m_history[m_undoPos].group == g) redoOne();
+    HistoryEffect eff; eff.op = HistoryEffect::Op::RespawnAll;
+    m_selKind = SelKind::None; m_selIndex = -1;
     return eff;
 }
 

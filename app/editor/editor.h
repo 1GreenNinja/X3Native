@@ -122,8 +122,11 @@ enum class CmdKind : uint8_t { None = 0, Add, Delete, Transform };
 //                mesh + body. For an undo-of-add / redo-of-delete the brush is GONE;
 //                `removed` is true and the host tears down the prior live links.
 //   SyncXform  — only the transform (pos/yaw) changed: cheap transform/body update.
+//   RespawnAll — a GROUPED transaction was undone/redone (see beginGroup): many
+//                brushes changed at once, so the host rebuilds the whole blockout
+//                rather than trying to thread per-brush hints through the batch.
 struct HistoryEffect {
-    enum class Op : uint8_t { None = 0, Respawn, SyncXform } op = Op::None;
+    enum class Op : uint8_t { None = 0, Respawn, SyncXform, RespawnAll } op = Op::None;
     int  index   = -1;       // brush index the host must act on (post-apply doc index)
     bool removed = false;    // the brush at `index` no longer exists (tear down links)
     // For a teardown the host needs the dead brush's live links; carried here so the
@@ -395,6 +398,24 @@ public:
     // Respawn (mesh rebuild). op==None when there's no brush selection or no net change.
     HistoryEffect nudgeBrush(NudgeAction action, Axis faceAxis, float step);
 
+    // ---- Undo TRANSACTIONS (grouping) ---------------------------------------
+    // Every command pushed between beginGroup() and endGroup() carries the same
+    // group id, and undo()/redo() unwind the WHOLE group as ONE step.
+    //
+    // WHY: the history is one-command-per-step, which is right for hand edits (each
+    // click is its own Ctrl+Z) but wrong for anything that emits a burst of edits --
+    // above all the AI Architect, which can add a 12-brush room from one sentence.
+    // Twelve Ctrl+Z's to take back one instruction is not undo, it is punishment.
+    // A grouped undo reports Op::RespawnAll, because a batch can touch many brushes
+    // and per-brush hints do not survive a batch.
+    //
+    // Groups do not nest: a begin while already grouping is ignored (and asserted in
+    // the self-test), so a stray begin can never swallow the rest of the session's
+    // history into one undo step.
+    void  beginGroup();
+    void  endGroup();               // a group that pushed nothing is dropped entirely
+    bool  grouping() const { return m_group != 0; }
+
     bool  canUndo() const { return m_undoPos > 0; }
     bool  canRedo() const { return m_undoPos < (int)m_history.size(); }
     // Apply one undo / redo to brushes[]. Returns the host re-sync hint (see
@@ -411,8 +432,17 @@ private:
         int     index = -1;          // brush index the op targets
         BlockoutBrush before;        // pre-state (Delete / Transform)
         BlockoutBrush after;         // post-state (Add / Transform)
+        uint32_t group = 0;          // 0 = standalone; >0 = member of one transaction
     };
-    void pushCmd(const BrushCmd& c);  // truncates redo tail, appends, advances pos
+    void pushCmd(const BrushCmd& c);  // truncates redo tail, stamps m_group, appends
+    HistoryEffect undoOne();          // one command (the grouping loop calls this)
+    HistoryEffect redoOne();
+
+    // Undo transactions (see beginGroup): m_group is the id being stamped onto
+    // pushes right now (0 = not grouping); m_nextGroup hands out fresh ids.
+    uint32_t m_group     = 0;
+    uint32_t m_nextGroup = 1;
+    size_t   m_groupStart = 0;   // history size at beginGroup (to drop an empty group)
 
     LevelDoc& m_doc;
     int   m_selected = -1;
