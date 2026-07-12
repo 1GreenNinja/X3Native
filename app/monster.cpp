@@ -2342,8 +2342,15 @@ bool runDeathRagdollSelfTest() {
     // path below). buildMonsterTuned loads modelFile from modelDirOverride.
     {
         MonsterSystem::Tuning t;
+        // Prefer the multi-clip retargeted "*_anim.glb" rigs when present, but FALL
+        // BACK to the Idle-only BASE humanoid rigs (chief_martinez.glb / marcus_webb.glb)
+        // which ARE checked in and DO carry a skin + joints + idle clip -> they bind
+        // skinnable and exercise the real skinned ragdoll. (The absent _anim artifacts
+        // used to leave this defaulting to the insectoid alien_crawler.glb, which does
+        // not fit the humanoid rig and fell to the unrigged topple.)
         const char* rigCandidates[] = {
-            "chief_martinez_anim.glb", "marcus_webb_anim.glb", "alien_crawler_anim.glb"
+            "chief_martinez_anim.glb", "marcus_webb_anim.glb", "alien_crawler_anim.glb",
+            "chief_martinez.glb", "marcus_webb.glb"
         };
         for (const char* cand : rigCandidates) {
             std::error_code ec;

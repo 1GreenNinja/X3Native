@@ -23,6 +23,7 @@
 #include "engine/asset/IAssetSource.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -32,6 +33,14 @@ namespace x3::game {
 
 class CellDressing {
 public:
+    // WAVE (barrels-universal): explodable-barrel registrar. When the host wires this
+    // (canon interactive loop -> BarrelSystem::spawn), CellDressing REGISTERS its plain
+    // fuel-drum clutter as a real explodable barrel at (x, floorY, z) INSTEAD of drawing
+    // a static, unshootable prop over it. Unset (tests / non-combat callers) -> the old
+    // static prop is drawn, byte-for-byte. Signature matches BarrelSystem::spawn.
+    using ExplodableBarrelSink = std::function<void(float x, float floorY, float z)>;
+    void setExplodableBarrelSink(ExplodableBarrelSink sink) { m_barrelSink = std::move(sink); }
+
     // Build the opening-space dressing for a parsed canon floor: dense props in Jake's
     // Cell + the Main Hall mouth, plus motivated lights. `convertedGlbDir` is the loose
     // converted_glb root (x3::game::convertedGlbRoot()). Safe to call once at level build;
@@ -151,6 +160,7 @@ private:
     std::vector<Flicker>                     m_flickers;
     uint32_t m_shadowDisc = 0;   // ROUND 3 contact-shadow disc mesh (index into m_procMeshes)
     bool m_built = false;
+    ExplodableBarrelSink m_barrelSink;   // WAVE (barrels-universal): register clutter drums as explodable
 };
 
 } // namespace x3::game

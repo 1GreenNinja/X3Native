@@ -273,8 +273,54 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     const float x0 = cell.x0(), x1 = cell.x1();   // X span (≈ -1.5 .. 5.5)
     const float z0 = cell.z0(), z1 = cell.z1();   // Z span (≈ 37 .. 43)
     const float ccx = cell.cx, ccz = cell.cz;
-    // The cell opens toward the Main Hall on its +X wall (cell (2,40) -> hall (22,44)),
-    // so we keep the +X-center wall clear for the doorway and dress the -X / back walls.
+
+    // ---- REAL OBSERVATION WINDOW (feat/cell-real-glass). The +Z wall faces the Main Hall.
+    // buildCanonFloor punches a full-height, collision-SEALED opening in that graybox wall
+    // (cellObsWindow — the SAME span resolved here), so through it the hall is actually
+    // visible instead of flat-blue graybox. Here we (a) skip the opaque SM_Wall panel that
+    // would occlude it, (b) leave the whole-wall privacy glaze OUT of this span, and (c)
+    // glaze it with a genuinely CLEAR armored pane + a reinforced mullion frame below.
+    const CellWindow obsWin = cellObsWindow(floor);
+    const bool haveWin = obsWin.valid() && obsWin.wall == 3;   // +Z (hall-facing) only
+
+    // ---- REAL DOORWAY OPENINGS of this cell (WAVE — cell-door fix). The 7x6 cell
+    // OVERLAPS its neighbours, so the resolver opens Overlap *junctions* (NO slab) on the
+    // +Z (Main Hall — the primary egress) and +X (West Cell Hall) walls, plus an Adjacent
+    // door on the -Z wall (WL-2). Previously this module HARDCODED a single decorative
+    // frame on the +X wall at ccz — which (a) missed the real openings (they sit off-centre
+    // at the resolved cut coords) so the frame floated in a solid wall while the traversed
+    // gap stayed bare graybox, and (b) let the armoured-glass panes below seal the actual
+    // openings behind a flat grey sheet ("the oddly-coloured panel the player walks
+    // through"). Fix: drive BOTH the frames and the pane-clipping off floor.doorways so the
+    // decor lands ON the real openings and never glazes a threshold. wall: 0=-X 1=+X 2=-Z
+    // 3=+Z; c = opening centre along that wall's run (Z for X-walls, X for Z-walls); half =
+    // the resolved cut half-width. (GapBridge/CrossLevel doorways own a separate
+    // corridor/tube and are NOT openings on this cell's own walls, so they are skipped.)
+    struct CellOpening { int wall; float c; float half; };
+    std::vector<CellOpening> openings;
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.a != bt.jakeCell && dw.b != bt.jakeCell) continue;
+        if (dw.kind == DoorwayKind::GapBridge || dw.kind == DoorwayKind::CrossLevel ||
+            dw.kind == DoorwayKind::None) continue;
+        const float oh = (dw.cutHalf > 0.05f) ? dw.cutHalf : 0.8f;
+        if (dw.axis == 0) {   // wall plane X=const -> -X or +X wall; run along Z
+            const int wall = (std::fabs(dw.cx - x0) < std::fabs(dw.cx - x1)) ? 0 : 1;
+            openings.push_back({ wall, dw.cz, oh });
+        } else {              // wall plane Z=const -> -Z or +Z wall; run along X
+            const int wall = (std::fabs(dw.cz - z0) < std::fabs(dw.cz - z1)) ? 2 : 3;
+            openings.push_back({ wall, dw.cx, oh });
+        }
+    }
+    // True if [a0,a1] on `wall` overlaps a doorway opening (with a small jamb margin) — used
+    // to keep the armoured-glass panes OUT of the thresholds so the openings read clear.
+    auto spansOpening = [&](int wall, float a0, float a1) {
+        for (const CellOpening& o : openings) {
+            if (o.wall != wall) continue;
+            const float m = 0.15f;   // jamb margin
+            if (a1 > o.c - o.half - m && a0 < o.c + o.half + m) return true;
+        }
+        return false;
+    };
 
     // ---- Load all kit pieces up front (cached). ----
     const uint32_t aConsole = load(kRelConsole);
@@ -364,10 +410,15 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             }
         };
         // Wall on a Z plane (z=zPlane): rotate the panel 90° so its face points ±X->±Z.
+        // `skipLo/skipHi` (default an empty span) omits any panel whose [x,x+panelW] run
+        // overlaps it — used on the +Z wall to leave the observation-window opening CLEAR
+        // (an opaque panel there would occlude the see-through glass).
         auto tileWallZ = [&](float zPlane, float yaw, float xStart, float xEnd,
-                             const float tint[4], int seed) {
+                             const float tint[4], int seed,
+                             float skipLo = 1.0f, float skipHi = -1.0f) {
             int i = seed;
             for (float x = xStart; x < xEnd - 0.05f; x += panelW) {
+                if (x < skipHi && x + panelW > skipLo) { ++i; continue; }   // window gap: no panel
                 place(picWall(i++), yaw, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
                       x, fY, zPlane, nullptr, tint);
             }
@@ -377,7 +428,9 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // as built relief, not a flat plain panel.
         tileWallX(x0 + inset, 0.0f, tWall, 0);
         // +Z wall (z=z1): face -Z (into room). Rotate yaw=+pi/2 so the slab face points -Z.
-        tileWallZ(z1 - inset, kPi * 0.5f, x0, x1, tWallWarm, 1);
+        // Skip the panel over the observation-window opening so the glass reads see-through.
+        tileWallZ(z1 - inset, kPi * 0.5f, x0, x1, tWallWarm, 1,
+                  haveWin ? obsWin.lo - 0.05f : 1.0f, haveWin ? obsWin.hi + 0.05f : -1.0f);
         // -Z wall (z=z0): face +Z (into room). yaw=-pi/2. Seed offset so the back wall does
         // not line up its seams/relief with the side walls.
         tileWallZ(z0 + inset, -kPi * 0.5f, x0, x1, tWall, 2);
@@ -399,7 +452,9 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             const uint32_t paneMesh = addProcMesh(device, makeMoteQuad());
             const float gInset = 0.115f;                  // between graybox face and panel face
             const float gy0 = fY + 0.45f, gy1 = ceilY - 0.9f;   // cutouts live in this band
-            auto addPane = [&](char axis, float plane, float a0, float a1) {
+            // One glass quad segment [a0,a1] on a wall (the original single-pane logic).
+            auto paneSeg = [&](char axis, float plane, float a0, float a1) {
+                if (a1 - a0 < 0.06f) return;   // skip slivers (a clipped-out threshold)
                 ProcDraw d; d.meshIdx = paneMesh; d.glass = true;
                 // Cool armored-glass tint, faint opacity, smooth + specular so the panes
                 // catch the room lights as a sheen (NOT the matte shaft defaults).
@@ -428,12 +483,88 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
                 }
                 m_proc.push_back(d);
             };
-            addPane('x', x0 + gInset, z0, z1);            // -X wall (big B window + C cutouts)
-            addPane('z', z0 + gInset, x0, x1);            // -Z wall (arch slits into the south room)
-            addPane('z', z1 - gInset, x0, x1);            // +Z wall (window w/ the neighbor trapdoor view)
-            addPane('x', x1 - gInset, z0, z0 + 2.2f);     // +X door-wall stub — ends BEFORE the
-                                                          // door jamb (~z0+2.3) so no glass sliver
-                                                          // crosses the doorway
+            // Glaze a wall but CUT the doorway thresholds out of the glass, so an opening
+            // never reads as a sealed grey sheet ("the oddly-coloured panel"). `wall`
+            // selects which resolved openings to subtract from the run [a0,a1].
+            auto addPane = [&](int wall, char axis, float plane, float a0, float a1) {
+                std::vector<std::pair<float,float>> cuts;
+                for (const CellOpening& o : openings)
+                    if (o.wall == wall) cuts.push_back({ o.c - o.half - 0.15f, o.c + o.half + 0.15f });
+                // Cut the OBSERVATION WINDOW span out too: that opening gets its own crisp
+                // clear pane below, so the whole-wall privacy glaze must not double up on it.
+                if (haveWin && wall == obsWin.wall)
+                    cuts.push_back({ obsWin.lo - 0.06f, obsWin.hi + 0.06f });
+                std::sort(cuts.begin(), cuts.end());
+                float cur = a0;
+                for (const auto& cpair : cuts) {
+                    const float lo = std::max(a0, cpair.first), hi = std::min(a1, cpair.second);
+                    if (hi <= cur) continue;
+                    if (lo > cur) paneSeg(axis, plane, cur, lo);
+                    cur = std::max(cur, hi);
+                }
+                if (cur < a1) paneSeg(axis, plane, cur, a1);
+            };
+            addPane(0, 'x', x0 + gInset, z0, z1);   // -X wall (big B window + C cutouts)
+            addPane(2, 'z', z0 + gInset, x0, x1);   // -Z wall (WL-2 door cut out)
+            addPane(3, 'z', z1 - gInset, x0, x1);   // +Z wall (Main-Hall exit cut out — was the grey panel)
+            addPane(1, 'x', x1 - gInset, z0, z1);   // +X wall (West-Cell-Hall exit cut out)
+
+            // ============ THE ARMORED OBSERVATION WINDOW (feat/cell-real-glass) ==========
+            // Over the graybox opening buildCanonFloor punched in the +Z (Main-Hall) wall,
+            // lay a genuinely CLEAR armored pane so Jake looks straight OUT into the hall
+            // (Rule 5 glass law: baseColor alpha in (0,0.07) is honored literally as
+            // near-clear glass; the glass pass then reads see-through instead of frosted).
+            // A subtle cool tint + a low-roughness specular sheen sells thick armored glass
+            // (not an invisible plane), and a dark reinforced MULLION frame reads it as a
+            // detention viewport, not a hole. The graybox behind is open + collision-sealed,
+            // so — unlike the privacy panes over solid stubs — there is real hall depth to
+            // see through this one.
+            if (haveWin) {
+                const float wz    = z1 - 0.12f;               // pane plane (roomward of z1, faces the hall)
+                const float wy0   = fY + 0.04f, wy1 = ceilY - 0.04f;   // fill the full-height opening
+                const float wlo   = obsWin.lo,  whi = obsWin.hi;
+                // Emit an axis-'z' (XY-plane) glass quad rect with an explicit material.
+                auto glassRect = [&](float xlo, float xhi, float ylo, float yhi, float zpl,
+                                     float r, float g, float b, float op, float rough, float spec) {
+                    if (xhi - xlo < 0.01f || yhi - ylo < 0.01f) return;
+                    ProcDraw d; d.meshIdx = paneMesh; d.glass = true;
+                    d.color[0]=r; d.color[1]=g; d.color[2]=b; d.color[3]=op;
+                    d.glassRough = rough; d.glassSpec = spec;
+                    const float w = xhi - xlo, h = yhi - ylo;
+                    d.transform[0]=w;  d.transform[1]=0; d.transform[2]=0;  d.transform[3]=0;
+                    d.transform[4]=0;  d.transform[5]=h; d.transform[6]=0;  d.transform[7]=0;
+                    d.transform[8]=0;  d.transform[9]=0; d.transform[10]=1; d.transform[11]=0;
+                    d.transform[12]=(xlo+xhi)*0.5f; d.transform[13]=(ylo+yhi)*0.5f; d.transform[14]=zpl; d.transform[15]=1;
+                    m_proc.push_back(d);
+                };
+                // (1) The CLEAR armored viewport: near-clear (alpha 0.04) so the hall reads
+                // straight through, faint cool tint, polished (low roughness). Specular kept
+                // RESTRAINED (0.18) — a high spec drives the glass pass's environment-
+                // reflection sheen, which milks a big flat pane over; a low spec keeps the
+                // depth crisp with just an edge glint so it still reads as a glass surface.
+                glassRect(wlo, whi, wy0, wy1, wz, 0.76f, 0.85f, 0.92f, 0.04f, 0.04f, 0.18f);
+                // (2) The reinforced MULLION FRAME: thin dark-steel bars (near-opaque glass,
+                // so they stay LIT by the room like real metal) — a full perimeter, one
+                // vertical centre bar, and two horizontal transoms => a gridded armored
+                // viewport. A hair roomward of the glass so it always reads in front.
+                const float fr[3] = { 0.14f, 0.15f, 0.18f };   // dark gunmetal
+                const float fz = wz - 0.02f, t = 0.05f;         // bar half-thickness in world units
+                auto bar = [&](float xlo, float xhi, float ylo, float yhi) {
+                    glassRect(xlo, xhi, ylo, yhi, fz, fr[0], fr[1], fr[2], 0.94f, 0.5f, 0.25f);
+                };
+                bar(wlo - t, whi + t, wy1 - t, wy1 + t);        // head bar
+                bar(wlo - t, whi + t, wy0 - t, wy0 + t);        // sill bar
+                bar(wlo - t, wlo + t, wy0 - t, wy1 + t);        // left jamb
+                bar(whi - t, whi + t, wy0 - t, wy1 + t);        // right jamb
+                const float wmid = (wlo + whi) * 0.5f;
+                bar(wmid - t, wmid + t, wy0, wy1);              // vertical centre mullion
+                const float t1 = fY + (ceilY - fY) * 0.38f, t2 = fY + (ceilY - fY) * 0.70f;
+                bar(wlo, whi, t1 - t, t1 + t);                  // lower transom
+                bar(wlo, whi, t2 - t, t2 + t);                  // upper transom
+                // A soft cool wash on the sill so the viewport glass + frame catch a key
+                // (guard-station light spilling in), and the window doesn't sit in shadow.
+                addLight(bt.jakeCell, wmid, fY + 1.5f, z1 - 0.5f, 3.0f, 0.55f, 0.72f, 0.95f);
+            }
         }
 
         // ROUND 4 — CEILING: tile SM_Ceiling_A flat under the graybox ceiling plane so
@@ -521,19 +652,38 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         addLight(bt.jakeCell, x0 + 1.6f, fY + 2.2f, z0 + 0.4f, 2.4f, 0.85f, 0.70f, 0.46f);
     }
 
-    // ================= CELL DOOR — a real reinforced slab in the +X opening =========
-    // The doorway is on the +X wall at z≈ccz (toward the Main Hall). canonDoors already
-    // places a sliding SM_Door_A there; we add a DOOR FRAME so the threshold reads as a
-    // built, reinforced cell door (recessed jamb + header), plus a red threshold wash.
+    // ================= CELL DOORWAYS — a reinforced frame at EACH real opening =======
+    // WAVE (cell-door fix). The old code dropped ONE SM_DoorFrame_A on the +X wall at ccz
+    // from a hardcoded "+X = exit" guess — but the resolver actually cuts this cell's
+    // traversed openings elsewhere (Main Hall on +Z, West Cell Hall on +X, WL-2 on -Z; see
+    // `openings`). So the frame floated in a solid wall while the real gaps stayed bare
+    // graybox. Fix: frame EACH resolved opening, seated on the cell floor (Rule 4 — the
+    // frame base is the contact surface) and centred on the resolved cut (Rule 6 — contents
+    // relative to bounds). SM_DoorFrame_A is a 6.25 m showroom frame; frScale reduces it to
+    // a single-door jamb (~2.6 m wide × ~1.85 m) that straddles the ~1.6 m opening. The
+    // frame's probed base (kDoorFrAabb.miny) is anchored at fY so the jamb rests ON the deck
+    // (the old ring read as floating — its bright octagon head sat mid-wall over a bare
+    // sill); a taller frScale lifts the header to a full standing threshold.
     {
-        // SM_DoorFrame_A is a wide showroom frame (6.25 m). Scale it down hard to a
-        // single-door jamb (~1.4 m opening) and seat it at the +X wall, facing the room.
-        const float frScale = 0.42f;
-        place(aDoorFr, -kPi * 0.5f, frScale, cx(kDoorFrAabb), kDoorFrAabb.miny, cz(kDoorFrAabb),
-              x1 - 0.06f, fY, ccz, nullptr, tSteel);
-        // A static reinforced slab just inside the jamb (the cell door, slightly ajar look
-        // is handled by canonDoors' animated slab; this is the heavy frame around it).
-        addLight(bt.jakeCell, x1 - 0.5f, fY + 1.0f, ccz, 3.0f, 1.5f, 0.08f, 0.04f); // red threshold wash
+        const float frScale = 0.58f;   // taller jamb: header ~2.55 m so the opening clears standing
+        auto placeDoorFrame = [&](int wall, float runC) {
+            float yaw = 0.0f, wx = 0.0f, wz = 0.0f;
+            switch (wall) {
+                case 0: yaw =  kPi * 0.5f; wx = x0 + 0.06f; wz = runC;       break; // -X wall, faces +X
+                case 1: yaw = -kPi * 0.5f; wx = x1 - 0.06f; wz = runC;       break; // +X wall, faces -X
+                case 2: yaw =  0.0f;       wx = runC;       wz = z0 + 0.06f; break; // -Z wall, faces +Z
+                case 3: yaw =  kPi;        wx = runC;       wz = z1 - 0.06f; break; // +Z wall, faces -Z
+            }
+            // Seat the frame's VISIBLE jamb on the floor. SM_DoorFrame_A's bright jamb sits
+            // ~0.4 m above its probed AABB base (the base is a thin sill), so anchoring miny
+            // at fY left the ring reading as "floating". Drop the anchor by kFrameSeat so the
+            // visible jamb rests on the deck (the buried sill below the floor is unseen).
+            constexpr float kFrameSeat = 0.40f;
+            place(aDoorFr, yaw, frScale, cx(kDoorFrAabb), kDoorFrAabb.miny, cz(kDoorFrAabb),
+                  wx, fY - kFrameSeat, wz, nullptr, tSteel);
+            addLight(bt.jakeCell, wx, fY + 1.0f, wz, 3.0f, 1.5f, 0.08f, 0.04f); // red threshold wash
+        };
+        for (const CellOpening& o : openings) placeDoorFrame(o.wall, o.c);
     }
 
     // ================= JAKE'S CELL — the hero opening space =================
@@ -554,8 +704,14 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // Lighting kept to the R5 trio (pool + corner key + dim floor fill), pool
         // recentred low over the mattress so the fabric + plastic cover catch a warm
         // grazing key and the frame rails rim-light.
-        addLight(bt.jakeCell, bedX + 0.75f, fY + 1.15f, bedZ + 0.1f, 3.0f, 2.6f, 2.05f, 1.3f);  // warm cot pool
-        addLight(bt.jakeCell, bedX + 1.6f, fY + 1.3f, bedZ + 1.6f, 4.5f, 1.7f, 1.45f, 1.15f);   // corner key (tamed)
+        // GLARE FIX (cell-door wave): the warm cot pool sat at bedX+0.75 (world x≈0.0) with
+        // range 3.0 — 1.6 m off the glossy holo-terminal (hung at ~x1.4,z38.3), so at grazing
+        // angles it flared a hot specular ORB over the readout (the terminal is owner-locked
+        // "glossy with a shine", so we tame the LIGHT, not the pane). Pull the pool back OVER
+        // the mattress (−X, away from the terminal), and trim reach/intensity so it no longer
+        // grazes the pane; the readout is emissive (angle-independent) and needs no room key.
+        addLight(bt.jakeCell, bedX + 0.30f, fY + 1.10f, bedZ - 0.10f, 2.5f, 2.05f, 1.6f, 1.0f); // warm cot pool (pulled onto the bed)
+        addLight(bt.jakeCell, bedX + 1.4f, fY + 1.3f, bedZ + 1.6f, 3.6f, 1.4f, 1.2f, 0.95f);    // corner key (reach trimmed off the terminal)
         addLight(bt.jakeCell, ccx + 0.5f, fY + 0.5f, ccz + 0.5f, 4.5f, 0.5f, 0.48f, 0.44f);     // dim floor fill
         // R7 — HATCH SPOT: a cool security downlight over the floor hatch (the same
         // spot app_run picks: cell center +1.4x / -1.1z) so the code-locked trapdoor +
@@ -632,8 +788,11 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     // a toppled short crate, and a stacked pair.
     {
         const float dx = x1 - 1.2f, dz = z1 - 1.4f;
-        place(aBarrel, 0.0f, 1.0f, cx(kBarrelAabb), kBarrelAabb.miny, cz(kBarrelAabb),
-              dx, fY + 0.02f, dz, nullptr, tBarrel);
+        // WAVE (cell-door): the barrel here is now a REAL explodable BarrelSystem barrel
+        // (spawned in app_run's canon build at this same (dx,fY,dz)) so shooting it triggers
+        // DJBooth's fireball + chain. We no longer draw a static barrel prop over it (that
+        // would double the mesh + can't explode). The crates below stay decorative clutter.
+        (void)aBarrel; (void)tBarrel;
         place(aCrateS, 0.9f, 1.0f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
               dx - 0.9f, fY + 0.02f, dz - 0.2f, nullptr, tCrate);
         place(aCrateS, 0.3f, 0.9f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
@@ -735,8 +894,16 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
               hx0 + 0.8f, hfY + 0.02f, hz + 2.2f, nullptr, tCrate);
         place(aCrateS, 0.6f, 1.0f, cx(kCrateSAabb), kCrateSAabb.miny, cz(kCrateSAabb),
               hx0 + 0.8f, hfY + 0.62f, hz + 2.2f, nullptr, tCrate);
-        place(aBarrel, 0.0f, 1.0f, cx(kBarrelAabb), kBarrelAabb.miny, cz(kBarrelAabb),
-              hx0 + 0.9f, hfY + 0.02f, hz + 3.2f, nullptr, tBarrel);
+        // WAVE (barrels-universal): the hall clutter drum by the -X wall is now a REAL
+        // explodable barrel when the host wires the sink (canon loop -> BarrelSystem). The
+        // BarrelSystem owns the intact Barrel.glb + fracture + blast, so we DON'T also draw
+        // a static barrel over it. No sink (tests) -> the static rusted drum, as before.
+        if (m_barrelSink) {
+            m_barrelSink(hx0 + 0.9f, hfY, hz + 3.2f);
+        } else {
+            place(aBarrel, 0.0f, 1.0f, cx(kBarrelAabb), kBarrelAabb.miny, cz(kBarrelAabb),
+                  hx0 + 0.9f, hfY + 0.02f, hz + 3.2f, nullptr, tBarrel);
+        }
         // A red running light at the hall mouth (guard-corridor mood).
         addLight(bt.mainHall, hx0 + 1.2f, hCeil - 0.4f, hz, 5.0f, 2.4f, 0.12f, 0.06f);
     }

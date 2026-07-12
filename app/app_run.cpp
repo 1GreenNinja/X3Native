@@ -1118,6 +1118,7 @@ int runDefaultHost(HostContext& hc) {
     float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
     bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
+    x3::game::BarrelSystem canonBarrels;       // WAVE (cell-door): explodable barrels in the canon cell/hall (DJBooth fireball on shot)
     x3::game::DescMechanics descMech;          // W9-1: the desc-field Tier-A mechanics (coolant/EMP/hack/cold/antidote); built after chatTrees (flags owner) exists
     bool coolantGlowDead = false;              // W9-1: the coolant console glow was killed (one-shot on the sabotage edge)
     // ---- [W9-3 RPG] the RPG layer: item DB + backpack + XP/levels + skills. ----
@@ -1319,6 +1320,16 @@ int runDefaultHost(HostContext& hc) {
     auto shutdownGameSystems = [&]() {
         game.shutdown();                               // every enemy group + Martinez + barrels
         nexus.shutdown();                              // F4.5 Chorus pod ragdolls
+        // RAGDOLL-TEARDOWN GAP FIX: the Spire floor hosts each own several MonsterManagers
+        // (mid F3/F4/F5 + bosses; top F6/F7 + Overseer/Clone/Sarah; the hidden sub-levels +
+        // Frozen Collective/Chen). A monster killed in the last ~0.7 s on any of those
+        // floors is mid-flop with LIVE Jolt ragdoll bodies; without this its IRagdoll would
+        // be destroyed during stack unwind AFTER physics->shutdown() (use-after-shutdown,
+        // relying only on the W6-1 guard + leaking the JPH::Ragdoll). Tear them down here
+        // with the rest. All idempotent + no-ops when nothing died / the descent stayed shut.
+        midFloors.shutdown();                          // Spire mid-floor enemy + boss ragdolls
+        topFloors.shutdown();                          // Spire top-floor enemy + boss ragdolls
+        subLevels.shutdown();                          // hidden sub-level enemy + mini-boss ragdolls
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
     };
@@ -1484,8 +1495,36 @@ int runDefaultHost(HostContext& hc) {
             // visual props (ModularSciFi + Warehouse kits) + extra PointLights (a flickering
             // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
             // truth; missing GLBs simply aren't drawn (the level never breaks).
+            // WAVE (barrels-universal): the canon interactive loop is one of only two hosts
+            // with a live fire path (the other is Level1Game), so its BarrelSystem is where
+            // "barrels explode game-wide" actually lands. Init it BEFORE the dressing builds
+            // so the set-dressers REGISTER their plain fuel-drum clutter (hall + boss/storage
+            // rooms) as explodable barrels via this sink, instead of drawing static,
+            // unshootable props over them. (Emissive lab vats stay decorative — not routed.)
+            canonBarrels.init(*device, *physics);
+            auto canonBarrelSink = [&canonBarrels](float x, float floorY, float z) {
+                canonBarrels.spawn(x, floorY, z);
+            };
+            canonDressing.setExplodableBarrelSink(canonBarrelSink);
             canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
             if (bootProf) bootProfMs("canonDressing");
+            // WAVE (cell-door): make the cell's floor barrel a REAL explodable barrel — the
+            // owner wants the red tank by the cell door to violently explode when shot, using
+            // DJBooth's barrel fireball. CellDressing no longer draws a static barrel there
+            // (see cell_dressing.cpp); BarrelSystem owns the intact visual + fracture + the
+            // radial blast + chain. Sinks (FX + player splash) are wired once `player` exists;
+            // onShot / update / render run in the interactive loop below.
+            {
+                // canonBarrels already init'd above (before canonDressing.build). Add the
+                // cell door-side barrel explicitly (the hall + recipe drums come in via the
+                // sink during the dressing builds).
+                const x3::game::CanonBeats bBt = x3::game::canonBeats(canonFloor);
+                if (bBt.jakeCell != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& jc = canonFloor.rooms[bBt.jakeCell];
+                    canonBarrels.spawn(jc.x1() - 1.2f, jc.y0(), jc.z1() - 1.4f); // debris corner by the +X/+Z exits
+                }
+                x3::logInfo("--world canonlevel: cell door barrel spawned (shoot -> DJBooth fireball + chain)");
+            }
             // WAVE-3: recipe-dress every other classifiable room (surface-library
             // panels + zone lights + hero props). Jake's cell stays CellDressing's.
             // Recipe rooms OWN their light statement (bible: one key per room), so the
@@ -1493,8 +1532,11 @@ int runDefaultHost(HostContext& hc) {
             // recipe lights are appended — selectVisibleCanonLights budgets the rest.
             {
                 const x3::game::CanonBeats rdBt = x3::game::canonBeats(canonFloor);
+                canonRooms.setExplodableBarrelSink(canonBarrelSink);  // WAVE (barrels-universal)
                 canonRooms.build(*device, x3::game::assetRoot() + "/surface_library",
                                  x3::game::convertedGlbRoot(), canonFloor, rdBt);
+                x3::logInfo("--world canonlevel: " + std::to_string(canonBarrels.count()) +
+                            " explodable barrel(s) total (cell + hall + recipe fuel drums)");
                 if (canonRooms.roomsDressed() > 0) {
                     canonLights.erase(std::remove_if(canonLights.begin(), canonLights.end(),
                         [&](const x3::game::CanonLight& cl) {
@@ -3088,8 +3130,13 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo(std::string("--capture-spire: ") + (allOk ? "all 8 floors captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
+        // UNION of both lines: playline-fold's RAGDOLL-TEARDOWN GAP FIX (game + Spire +
+        // canonPlay/canon45 ragdolls out BEFORE the world dies -- this exit path skipped it
+        // entirely) PLUS playable-build's own teardowns, which shutdownGameSystems() does
+        // not cover. Order matters: bodies/ragdolls first, then the streamed world.
+        shutdownGameSystems();
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
-        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
+        shutdownCanonStream();          // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -3208,6 +3255,7 @@ int runDefaultHost(HostContext& hc) {
                     (allOk ? "all F2-F7 wings captured" : "one or more captures FAILED"));
         audio->shutdown();
         combatFx.shutdown(*device);
+        shutdownGameSystems();   // RAGDOLL-TEARDOWN GAP FIX: game + Spire bodies/ragdolls out BEFORE the world dies (this exit path previously skipped it)
         physics->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -3734,6 +3782,7 @@ int runDefaultHost(HostContext& hc) {
                 // characters (room-gated by the visible set above).
                 if (canonWorld && canonFloor.valid()) {
                     canonDressing.draw(*device, frame);
+                    canonBarrels.render(frame);   // WAVE (cell-door): explodable barrels + debris
                     canonRooms.draw(*device, frame, canonVisRooms);
                     canonRooms.applyZoneAtmosphere(*device,
                         canonFloor.roomAt(ssEye.x, ssEye.y, ssEye.z));
@@ -4160,10 +4209,13 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo("framepacing: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
         audio->shutdown();
         combatFx.shutdown(*device);
-        if (canonPlay.built()) canonPlay.shutdown();
-        if (canon45.built()) canon45.shutdown();
+        // RAGDOLL-TEARDOWN GAP FIX: the framepacing probe runs the REAL game loop, so a
+        // monster can die + ragdoll during it. Fan the full teardown (game + Spire + canon)
+        // -- supersedes the bare canonPlay/canon45 calls this path used to make. The two
+        // playable-build teardowns below are NOT part of shutdownGameSystems(), so they stay.
+        shutdownGameSystems();
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
-        shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
+        shutdownCanonStream();          // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -4531,6 +4583,24 @@ int runDefaultHost(HostContext& hc) {
     // in the detention cell), facing +X down the level spine — or, in the terrain
     // world, on the hills near the world center.
     x3::game::Player player;
+    // WAVE (cell-door): wire the canon explodable barrels now that combatFx + player exist.
+    // FX sink -> DJBooth's fireball; damage sink -> splash the player if they detonate a
+    // barrel at point-blank (quadratic falloff to the blast edge). The radial impulse
+    // (inside BarrelSystem) already scatters chunks + chains to any neighbouring barrel.
+    if (canonWorld) {
+        canonBarrels.setFxSink([&combatFx](const float c[3], float radius) {
+            combatFx.spawnExplosion(x3::phys::Vec3{ c[0], c[1], c[2] }, radius);
+        });
+        canonBarrels.setDamageSink([&player](const float c[3], float radius, int damage) {
+            const x3::phys::Vec3 p = player.damageTargetPos();
+            const float dx = p.x - c[0], dy = p.y - c[1], dz = p.z - c[2];
+            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist >= radius || radius <= 0.0f) return;
+            const float fall = 1.0f - dist / radius;                 // 1 at center -> 0 at the edge
+            const int dmg = (int)((float)damage * fall * fall);      // quadratic falloff
+            if (dmg > 0) player.takeDamage(dmg);
+        });
+    }
     // W2-A2 (punch-list P1 #11): the player's OWN pain + landing sounds. W2-B added
     // the Player cue hook (mirrors the monster sink); this is the one-line host
     // subscription its report asked for. Pain alternates the two takes; both play
@@ -5830,7 +5900,19 @@ int runDefaultHost(HostContext& hc) {
             // Chat-tree conversation: cancel the moment the player wanders out of
             // talk range (a small grace over the start reach so a head-bob doesn't
             // drop the box mid-line). Matches NpcDialog's never-strand rule.
-            if (chatTrees.active()) {
+            //
+            // W4-2 fix (root cause of "VIGIL digit choices REJECTED"): this
+            // proximity-cancel is for PHYSICAL NPC conversations (rescue girls /
+            // Sarah), which chatTalkTarget() enumerates. The VIGIL terminal tree
+            // ALSO rides chatTrees but has NO physical talk target, so chatTalkTarget
+            // returns false and this cancel() used to deactivate the tree one frame
+            // after the menu rendered — leaving vigilChat=true while chatTrees.active()
+            // went false. The single-digit fast path (gated on chatTrees.active())
+            // was then skipped, the digit fell through to the keypad code buffer, and
+            // Enter submitted it as a code -> "> 1 [REJECTED]". VIGIL is bounded by
+            // termMode + Esc + its own "(end session)" choice, not by walk range, so
+            // exclude it here and let those paths close it.
+            if (chatTrees.active() && chatTrees.activeNpc() != "vigil") {
                 float pex, pey, pez, pyaw, ppitch;
                 player.camera(pex, pey, pez, pyaw, ppitch);
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
@@ -6826,6 +6908,7 @@ int runDefaultHost(HostContext& hc) {
                 canon45.update(dt, scene, *physics, camPos, &player, enemyAttackFx,
                                audio.get(), bootAudio.spTaunt[1], bootAudio.spDeath[1]);
                 canonDressing.tick(dt);   // advance the flickering cell-tube phase
+                canonBarrels.update(dt);  // WAVE (cell-door): step destructibles + detonate any barrel shot this frame
                 // ---- W9-1: desc-mechanics per frame — cold-room dwell/chill,
                 // decontamination cure, pickup->flag polling, DoT ticks (damage
                 // lands through player.takeDamage so the pain cue fires free).
@@ -7234,6 +7317,14 @@ int runDefaultHost(HostContext& hc) {
                         x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rc.hitMonster || (!r.hit && rc.hit)) r = rc;
                     }
+                    // WAVE (cell-door): route the shot through the canon explodable barrels —
+                    // a ray into the cell/hall barrel breaks it; it detonates on the next
+                    // canonBarrels.update() (DJBooth fireball + splash + chain).
+                    if (canonWorld) {
+                        const float e3[3] = { eye.x, eye.y, eye.z };
+                        const float d3[3] = { ray.dir.x, ray.dir.y, ray.dir.z };
+                        canonBarrels.onShot(e3, d3);
+                    }
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
                     // shot is already arm-gated by the arsenal/Level1Game::onFire).
                     if (!r.hitMonster && game.armed()) {
@@ -7471,6 +7562,7 @@ int runDefaultHost(HostContext& hc) {
             // the scene). Drawn before the characters so they sit in the dressed space.
             if (canonWorld && canonFloor.valid()) {
                 canonDressing.draw(*device, frame);
+                canonBarrels.render(frame);   // WAVE (cell-door): explodable barrels + debris
                 canonRooms.draw(*device, frame, canonVisRooms);
                 facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
                 // WORLD CARS: parked visuals + the live car — direct draws,

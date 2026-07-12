@@ -769,12 +769,19 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                                   nullptr, tSteel);
                     break;
                 case ZBoss:
-                    placeProp(ri, aBarrel, 0.0f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
-                              acz(kBarrelAabb), r.cx - r.w * 0.28f, fY + 0.02f,
-                              r.cz - r.d * 0.22f, nullptr, tBarrel);
-                    placeProp(ri, aBarrel, 0.9f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
-                              acz(kBarrelAabb), r.cx + r.w * 0.30f, fY + 0.02f,
-                              r.cz + r.d * 0.18f, nullptr, tBarrel);
+                    // WAVE (barrels-universal): the boss-room fuel drums are explodable
+                    // when the host wires the sink (canon loop -> BarrelSystem); else static.
+                    if (m_barrelSink) {
+                        m_barrelSink(r.cx - r.w * 0.28f, fY, r.cz - r.d * 0.22f);
+                        m_barrelSink(r.cx + r.w * 0.30f, fY, r.cz + r.d * 0.18f);
+                    } else {
+                        placeProp(ri, aBarrel, 0.0f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
+                                  acz(kBarrelAabb), r.cx - r.w * 0.28f, fY + 0.02f,
+                                  r.cz - r.d * 0.22f, nullptr, tBarrel);
+                        placeProp(ri, aBarrel, 0.9f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
+                                  acz(kBarrelAabb), r.cx + r.w * 0.30f, fY + 0.02f,
+                                  r.cz + r.d * 0.18f, nullptr, tBarrel);
+                    }
                     placeProp(ri, aCrateL, 1.1f + jitter, 1.0f, acx(kCrateLAabb),
                               kCrateLAabb.miny, acz(kCrateLAabb),
                               r.cx + r.w * 0.12f, fY + 0.02f, r.cz - r.d * 0.30f,
@@ -792,9 +799,15 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                               nullptr, tCrate);
                     placeProp(ri, aPallet, 0.0f, 1.0f, acx(kPalletAabb), kPalletAabb.miny,
                               acz(kPalletAabb), r.cx, fY + 0.02f, r.cz, nullptr, tPallet);
-                    placeProp(ri, aBarrel, 0.4f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
-                              acz(kBarrelAabb), r.cx - 1.4f, fY + 0.02f, r.cz + 1.1f,
-                              nullptr, tBarrel);
+                    // WAVE (barrels-universal): the storage/hangar fuel drum is explodable
+                    // when the host wires the sink (canon loop -> BarrelSystem); else static.
+                    if (m_barrelSink) {
+                        m_barrelSink(r.cx - 1.4f, fY, r.cz + 1.1f);
+                    } else {
+                        placeProp(ri, aBarrel, 0.4f, 1.0f, acx(kBarrelAabb), kBarrelAabb.miny,
+                                  acz(kBarrelAabb), r.cx - 1.4f, fY + 0.02f, r.cz + 1.1f,
+                                  nullptr, tBarrel);
+                    }
                     shadowBlob(ri, px, fY, pz, 0.8f, 0.8f, 0.5f);
                     break;
                 }
