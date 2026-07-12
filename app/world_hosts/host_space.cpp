@@ -128,9 +128,14 @@ inline std::vector<uint8_t> bakeSunRGBA(uint32_t n) {
             // stays near-zero until the very brightest cores so hot spots go white-gold
             // while everything else holds orange. Contrast now comes from the wide dark
             // lane network, not from a bright wash.
-            float r = 0.52f + 0.48f * gran;
-            float g = 0.13f + 0.62f * gran;
-            float b = 0.02f + 0.26f * gran * gran * gran;   // GOLD (not white) peaks: bloom stays warm, blends into the corona
+            // v5 (owner: "sun still doesnt look so sunny" — a DARK granulated band
+            // ringed the white core). Raise the FLOOR so the whole disc reads bright
+            // YELLOW-GOLD; granulation now modulates brightness as a subtle texture
+            // rather than dropping the inter-granular lanes into a dark orange ring.
+            // Real sun photos have no dark band between the saturated centre and limb.
+            float r = 0.96f + 0.04f * gran;
+            float g = 0.62f + 0.26f * gran;
+            float b = 0.22f + 0.26f * gran * gran;   // luminous gold everywhere -> white-gold at the cell cores
             r += veinBright * 0.26f; g += veinBright * 0.22f; b += veinBright * 0.10f;
             // Sunspots: NEAR-BLACK core + soft penumbra, U wraps at the longitude
             // seam. Pushed much darker than a "natural" sunspot so the blotch still
@@ -863,15 +868,20 @@ int hostSpace(HostContext& hc) {
             const int kCoronaShells = 30;
             for (int i = kCoronaShells - 1; i >= 0; --i) {
                 const float f  = (float)i / (float)(kCoronaShells - 1);   // 0=limb .. 1=outer
-                const float s  = 1.012f + f * (1.34f - 1.012f);
+                // v5b: pull the corona in from 1.34x -> 1.16x so it HUGS the core. Each
+                // glass shell limb-brightens into a ring at its own projected radius; at
+                // 1.34x (now exposed by the tightened halo) the outermost shell floated a
+                // hard orange ring out in a dark gap (owner "dark ring"). Hugging the core
+                // + tapering the outer op to 0 (see below) removes that free-floating ring.
+                const float s  = 1.012f + f * (1.16f - 1.012f);
                 // INTERIOR-BULLSEYE fix: fade this shell out once the camera is inside
                 // it (no edge-on inner-surface ring when engulfed).
                 const float sfade = shellCamFade(kSunRadius * s);
                 if (sfade < 0.01f) continue;
-                // MONOTONIC exponential falloff. Per-shell op is LOW; the sum at the
-                // core edge stays a faint glow, far dimmer than the core, so no bright
-                // rim can form. Twice as many shells -> ~half the per-shell op.
-                const float op = 0.017f * std::exp(-3.2f * f) * sfade;
+                // MONOTONIC exponential falloff, TAPERED to exactly 0 at the outer edge
+                // ((1-f^2)) so the outermost shell has no grazing limb ring — the corona
+                // just melts into space. Per-shell op is LOW so the sum stays a faint glow.
+                const float op = 0.024f * std::exp(-2.6f * f) * (1.0f - f * f) * sfade;
                 // Deep orange at the limb -> red -> dark red as it fades out. Kept
                 // SATURATED (low green/blue) on purpose: a pale/gold halo reads as a
                 // bright ring hugging the core, a saturated-orange one melts into the
@@ -927,7 +937,11 @@ int hostSpace(HostContext& hc) {
             // granulation (kept well under the 2.9 "white wafer" regime). The BLINDING
             // white centre is NOT from the core emissive (that would wafer the whole
             // disc again) — it comes from the hotspot disc stack below.
-            const float cem[4] = { 1.0f, 0.62f, 0.28f, 1.20f * shimmer };
+            // v5: the granulation floor is now much brighter (yellow-gold everywhere),
+            // so drop the emissive 1.20 -> 0.95 to hold the limb JUST below the bloom
+            // knee — the disc reads bright saturated gold (no dark ring), while the
+            // white-gold cell cores + faculae + the hotspot stack own the blinding core.
+            const float cem[4] = { 1.0f, 0.62f, 0.28f, 0.95f * shimmer };
             device->drawMeshPBR(frame, sunMesh, sunTex, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
                                 cbc, cem, m, /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
 
@@ -983,14 +997,24 @@ int hostSpace(HostContext& hc) {
                 // radial wash that fades to black within ~2.5x the disc (a glare that
                 // dominates near the sun, not a flat brown fill of the whole frame).
                 {
-                    const int kHalo = 52;
+                    const int kHalo = 44;
                     for (int i = 0; i < kHalo; ++i) {
                         const float t = (float)i / (float)(kHalo - 1);       // 0 outer .. 1 inner
-                        const float frac  = 2.4f - t * (2.4f - 0.55f);       // big -> meets the hotspot
-                        const float emStr = 0.30f * std::exp(-3.0f * (1.0f - t)); // faint outer -> brighter inward
-                        // WARM gold outer -> warm-white inner (low blue so the broad glow
-                        // reads gold, not the desaturated grey a whiter mix bloomed to).
-                        glowDisc(frac, emStr, 1.0f, 0.66f + 0.22f*t, 0.34f + 0.34f*t);
+                        // v5b (owner: "the glare halo reads BROWN/MUDDY — it darkens the
+                        // sky"). A BIG soft halo over black space is fatal: every disc in
+                        // its dim mid-region adds a low warm value that reads as brown mud,
+                        // never as light. Fix = a TIGHT, BRIGHT corona hugging the disc:
+                        // pull the outer reach in from 2.3x -> 1.5x and use a STEEP cubic
+                        // ramp so the outer discs are ~0 (true transparent, no smudge) and
+                        // the brightness is concentrated near the limb where it reads as
+                        // luminous gold AIR, not a dim brown wash spread across the frame.
+                        const float frac  = 1.5f - t * (1.5f - 0.55f);       // 1.5x outer -> meets the hotspot
+                        const float ramp  = t * t * t;                       // steep: outer ~0, bright near-disc
+                        const float emStr = 1.7f * ramp;
+                        // warm gold outer -> warm-white inner; blue LIFTED so the glow
+                        // reads as bright gold, never the muddy orange-brown a low-blue
+                        // dim mix produced.
+                        glowDisc(frac, emStr, 1.0f, 0.80f + 0.16f*t, 0.54f + 0.28f*t);
                     }
                 }
                 // CENTER HOTSPOT (small, blinding): graduated discs from ~0.60x down to
@@ -998,11 +1022,17 @@ int hostSpace(HostContext& hc) {
                 // centre so the core of the disc blows to white-hot, grading gold — the
                 // limb (outside these) keeps its granulation + orange.
                 {
-                    const int kHot = 10;
+                    const int kHot = 16;
                     for (int i = 0; i < kHot; ++i) {
                         const float t = (float)i / (float)(kHot - 1);        // 0 outer .. 1 inner
-                        const float frac = 0.60f - t * (0.60f - 0.05f);
-                        const float emStr = 0.9f + 3.1f * t;                 // stacks to ~blinding dead-centre
+                        // v5b: SPREAD the hotspot glow across nearly the WHOLE disc (outer
+                        // disc ~0.95x) with a gentle cubic ramp, so a gold wash feathers
+                        // all the way to the limb and there is NO dark annulus between the
+                        // blinding white centre and the granulated limb (owner: "dark
+                        // granulated band" ringing the core). The centre still blows to
+                        // white; the wash only lifts the mid/limb into continuous gold.
+                        const float frac = 1.02f - t * (1.02f - 0.05f);      // reach the limb so no dark edge band
+                        const float emStr = 0.46f + 3.8f * t * t * t;        // wide soft gold wash -> blinding centre
                         // gold at the rim -> white at the very centre
                         glowDisc(frac, emStr, 1.0f, 0.86f + 0.14f*t, 0.60f + 0.40f*t);
                     }
@@ -1467,27 +1497,64 @@ int hostSpace(HostContext& hc) {
         auto lerp3 = [](const x3::phys::Vec3& a, const x3::phys::Vec3& b, float t) {
             return x3::phys::Vec3{ a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, a.z+(b.z-a.z)*t };
         };
-        auto drawReplayShip = [&](const x3::rhi::FrameContext& frame, float g) {
-            if (trajPlay.size() < 2) return;
+        // Sample the recorded trajectory at g∈[0,1] (oldest→entry), interpolating
+        // position + basis. Shared by the replay ship draw AND the tracking kill-cam.
+        struct ReplayPose { x3::phys::Vec3 p, f, u, r; bool ok; };
+        auto replayPoseAt = [&](float g) -> ReplayPose {
+            ReplayPose rp{}; rp.ok = false;
+            if (trajPlay.size() < 2) return rp;
             g = g < 0.0f ? 0.0f : (g > 1.0f ? 1.0f : g);
             const float fi = g * (float)(trajPlay.size() - 1);
             int i0 = (int)fi; if (i0 < 0) i0 = 0;
             int i1 = std::min(i0 + 1, (int)trajPlay.size() - 1);
             const float fr = fi - (float)i0;
             const auto& A = trajPlay[(size_t)i0]; const auto& B = trajPlay[(size_t)i1];
-            const x3::phys::Vec3 p = lerp3(A.p, B.p, fr);
-            const x3::phys::Vec3 f = vnorm(lerp3(A.f, B.f, fr));
-            const x3::phys::Vec3 u = vnorm(lerp3(A.u, B.u, fr));
-            const x3::phys::Vec3 r = vnorm(lerp3(A.r, B.r, fr));
+            rp.p = lerp3(A.p, B.p, fr);
+            rp.f = vnorm(lerp3(A.f, B.f, fr));
+            rp.u = vnorm(lerp3(A.u, B.u, fr));
+            rp.r = vnorm(lerp3(A.r, B.r, fr));
+            rp.ok = true;
+            return rp;
+        };
+        // TRACKING KILL-CAM (owner: the 30 s replay "doesnt show the ship flying into
+        // the sun" — from the old frozen 5.2 km vantage the ~5 m ship was sub-pixel).
+        // Ride ~85 m behind / above / beside the replayed ship, looking along the
+        // ship→sun ray so the 2 km star looms ahead and fills the frame as the ship
+        // closes and burns into the surface. Returns the camera pose for parameter g.
+        auto replayTrackCam = [&](float g, float& ox, float& oy, float& oz,
+                                  float& oyaw, float& opit) -> bool {
+            const ReplayPose rp = replayPoseAt(g);
+            if (!rp.ok) return false;
+            const x3::phys::Vec3 toSun = vnorm(x3::phys::Vec3{
+                kSunCenter.x - rp.p.x, kSunCenter.y - rp.p.y, kSunCenter.z - rp.p.z });
+            const x3::phys::Vec3 camP{
+                rp.p.x - toSun.x*68.0f + rp.u.x*20.0f + rp.r.x*24.0f,
+                rp.p.y - toSun.y*68.0f + rp.u.y*20.0f + rp.r.y*24.0f,
+                rp.p.z - toSun.z*68.0f + rp.u.z*20.0f + rp.r.z*24.0f };
+            const x3::phys::Vec3 look{
+                rp.p.x + toSun.x*14.0f, rp.p.y + toSun.y*14.0f, rp.p.z + toSun.z*14.0f };
+            const x3::phys::Vec3 d = vnorm(x3::phys::Vec3{
+                look.x - camP.x, look.y - camP.y, look.z - camP.z });
+            ox = camP.x; oy = camP.y; oz = camP.z;
+            opit = std::asin(std::max(-1.0f, std::min(1.0f, d.y)));
+            oyaw = std::atan2(d.z, d.x);
+            return true;
+        };
+        auto drawReplayShip = [&](const x3::rhi::FrameContext& frame, float g,
+                                  const x3::phys::Vec3& viewPos) {
+            const ReplayPose rp = replayPoseAt(g);
+            if (!rp.ok) return;
+            const x3::phys::Vec3 p = rp.p, f = rp.f, u = rp.u, r = rp.r;
             float m[16]; shipMatrix(p, f, u, r, m);
             drawShipAt(frame, m, 1.5f);
             // Entry-burn: derive the sheath directly from THIS recorded position's
             // distance to the sun (not the live pilot, which is frozen elsewhere
             // during the cinematic) — the replayed ship visibly catches fire as it
-            // closes and crosses the surface wreathed in flame.
+            // closes and crosses the surface wreathed in flame. `viewPos` is the
+            // ACTUAL render camera so the sheath billboards face the tracking cam.
             const float surfDist = vlen(x3::phys::Vec3{ p.x-kSunCenter.x, p.y-kSunCenter.y, p.z-kSunCenter.z }) - kSunRadius;
             const float replayBurn = smooth01(kBurnStartSurf, 0.0f, surfDist);
-            drawBurnSheath(frame, p, cineCamPos, replayBurn);
+            drawBurnSheath(frame, p, viewPos, replayBurn);
             drawBurnEmbers(frame, p, f, u, r, replayBurn);
         };
 
@@ -1873,6 +1940,34 @@ int hostSpace(HostContext& hc) {
                 cam[3] = 0.8018f; cam[4] = 0.0f;
                 g_clock = 8.0f;   // seed the swirl off its origin
             }
+            // X3_KILLCAM=1: synthesize a straight dive into the star, then frame it with
+            // the LIVE tracking kill-cam (replayTrackCam) so the '30 SECONDS EARLIER'
+            // replay framing is verifiable headless — the ship must read LARGE, burning,
+            // flying into the looming sun (the live windowed replay uses the same math).
+            const bool killcamShot = std::getenv("X3_KILLCAM") != nullptr;
+            if (killcamShot && !shotCamOverride) {
+                trajPlay.clear();
+                const int kN = 24;
+                for (int s = 0; s < kN; ++s) {
+                    const float fr = (float)s / (float)(kN - 1);        // 0 far .. 1 at surface
+                    const float distC = kSunRadius + 5000.0f * (1.0f - fr);
+                    TrajSample ts{};
+                    ts.p = x3::phys::Vec3{ kSunCenter.x - kSunDir.x*distC,
+                                           kSunCenter.y - kSunDir.y*distC,
+                                           kSunCenter.z - kSunDir.z*distC };
+                    ts.f = kSunDir;                                     // nosing into the star
+                    ts.r = vnorm(vcross(ts.f, x3::phys::Vec3{ 0,1,0 }));
+                    ts.u = vnorm(vcross(ts.r, ts.f));
+                    trajPlay.push_back(ts);
+                }
+                // Sample mid-approach: the ship reads LARGE against a big (but framed)
+                // sun disc with space around it — a representative replay frame.
+                float kx, ky, kz, kyaw, kpit;
+                if (replayTrackCam(0.7f, kx, ky, kz, kyaw, kpit)) {
+                    cam[0] = kx; cam[1] = ky; cam[2] = kz; cam[3] = kyaw; cam[4] = kpit;
+                }
+                g_clock = 3.0f;   // seed the burn flicker off its origin
+            }
             const std::string outPath = screenshot ? screenshotPath : std::string("G:/X3Native/captures/space.png");
             // Heat telemetry for the HUD (the sequence NEVER runs in headless — the
             // spawn is 48 km off the surface, so heat is ~0 and no death triggers).
@@ -1913,6 +2008,12 @@ int hostSpace(HostContext& hc) {
                         uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                         const float wash[4] = { 1.0f, 0.45f, 0.12f, 0.42f };
                         device->drawHudQuad(frame, 0, 0, (float)hw, (float)hh, wash);
+                    } else if (killcamShot) {
+                        // Tracking kill-cam framing: the star + the burning replay ship
+                        // sailing into it (mirrors the live Replay draw at g=0.6).
+                        drawSun(frame, x3::phys::Vec3{ cam[0], cam[1], cam[2] });
+                        drawFlares(frame);
+                        drawReplayShip(frame, 0.7f, x3::phys::Vec3{ cam[0], cam[1], cam[2] });
                     } else {
                         drawScene(frame);
                         combatFx.submit(*device, frame);
@@ -2188,8 +2289,15 @@ int hostSpace(HostContext& hc) {
             // the pilot camera (FOV widens with speed + boost per mode).
             float cx, cy, cz, cyaw, cpit;
             if (cineNow) {
-                cx = cineCamPos.x; cy = cineCamPos.y; cz = cineCamPos.z; cyaw = cineYaw; cpit = cinePit;
-                device->setCamera(cx, cy, cz, cyaw, cpit, 60.0f);
+                // Only the '30 SECONDS EARLIER' Replay becomes a tracking shot; the
+                // Detonation/Rewind/TitleCard phases keep the frozen wide half-screen
+                // vantage (the blast is big enough to read from 5 km).
+                bool tracked = false;
+                if (phase == Phase::Replay) {
+                    tracked = replayTrackCam(phaseT / kReplaySecs, cx, cy, cz, cyaw, cpit);
+                }
+                if (!tracked) { cx = cineCamPos.x; cy = cineCamPos.y; cz = cineCamPos.z; cyaw = cineYaw; cpit = cinePit; }
+                device->setCamera(cx, cy, cz, cyaw, cpit, tracked ? 55.0f : 60.0f);
             } else {
                 pilot.camera(cx, cy, cz, cyaw, cpit);
                 device->setCamera(cx, cy, cz, cyaw, cpit, pilot.fov());
@@ -2252,9 +2360,9 @@ int hostSpace(HostContext& hc) {
                 } else if (phase == Phase::Rewind) {
                     // Blast retracts (reverse) while the ship sits at the entry point.
                     drawEjecta(frame, kDetonateSecs * (1.0f - phaseT / kRewindSecs));
-                    drawReplayShip(frame, 1.0f);
+                    drawReplayShip(frame, 1.0f, cineCamPos);
                 } else if (phase == Phase::Replay) {
-                    drawReplayShip(frame, phaseT / kReplaySecs);   // fly the approach in
+                    drawReplayShip(frame, phaseT / kReplaySecs, x3::phys::Vec3{ cx, cy, cz });   // fly the approach in
                 }
                 drawHud(frame, (float)cw, (float)chh);
                 if (paused) drawPauseMenu(frame, (float)cw, (float)chh, menuSel);
