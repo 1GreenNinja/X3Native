@@ -351,11 +351,19 @@ constexpr uint32_t kMembraneDiskSegs  = 48;              // fan segments (smooth
 // detail; the per-entity emissive tint keeps the whole sheet blue-dominant.
 constexpr float    kPlasmaBlue[3]     = { 0.24f, 0.52f, 1.00f };
 constexpr float    kPlasmaEmBase      = 1.45f;           // IDLE steady-state strength
-constexpr float    kPlasmaEmBaseOpen  = 1.90f;           // OPEN throat runs hotter (still capped)
+// ROUND 6: 1.90 was tuned for the PROCEDURAL throat map (a dim math texture that
+// needed pushing). The OPEN state now plays the reference FOOTAGE, whose frames are
+// already bright — at 1.90 the video's deep-navy channels lifted to mid-blue and the
+// throat washed toward cyan-white, i.e. we were destroying the very contrast we went
+// to the video for. Back it off so the footage's own value range reads.
+constexpr float    kPlasmaEmBaseOpen  = 1.58f;           // OPEN throat (footage-calibrated)
 constexpr float    kPlasmaEmWobble    = 0.30f;           // organic breathe amplitude
 constexpr float    kPlasmaEmCap      = 2.40f;            // HARD CAP (blue must survive tonemap)
 constexpr float    kPlasmaSpinRadS    = 0.22f;           // slow storm rotation (rad/s)
-constexpr float    kPlasmaSpinOpenX   = 2.6f;            // OPEN spins faster (streaming throat)
+// ROUND 6: the OPEN disk used to spin 2.6x to make the PROCEDURAL spokes "stream".
+// The footage streams on its own; spinning it fast on top just reads as a rotating
+// texture (fake). A slow drift under the film is enough.
+constexpr float    kPlasmaSpinOpenX   = 1.15f;           // OPEN: barely faster than idle
 // (The VISTA layer is GONE — round 5. An opaque disk parked behind an opaque
 // disk shows nothing from the front and BLACKS OUT the portal from the back;
 // see the membrane authoring block. A real see-through vista = render-to-texture
@@ -2876,7 +2884,11 @@ bool runRifthubSelfTest() {
             // The OPEN membrane must still be an EMITTER: valid emissive map,
             // non-trivial strength, blue-dominant tint.
             if (!plasma.emissiveTex.valid() || !plasma.tex.valid())   lit = false;
-            if (plasma.emissive[3] < kPlasmaEmBase)                   lit = false;
+            // Floor = the OPEN base at the BOTTOM of its breathe wobble (round 6
+            // re-tuned the base DOWN to 1.58 so the footage's own contrast reads;
+            // the old kPlasmaEmBase floor sat above the wobble trough).
+            if (plasma.emissive[3] < kPlasmaEmBaseOpen - kPlasmaEmWobble - 1e-3f)
+                lit = false;
             if (!(plasma.emissive[2] > plasma.emissive[0]))           lit = false;
         }
         rhCheck(swapped && lit,
