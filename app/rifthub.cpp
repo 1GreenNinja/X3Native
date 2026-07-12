@@ -143,6 +143,15 @@ constexpr float    kRivetHalf      = 0.032f;
 constexpr float    kGatePlateTint[3] = { 0.22f, 0.27f, 0.26f };  // weathered patina plates
 constexpr float    kGateSteelTint[3] = { 0.24f, 0.26f, 0.29f };  // machined steel
 constexpr float    kGateDarkTint[3]  = { 0.55f, 0.58f, 0.62f };  // hardware (over dark trim_a)
+// ROUND 4 lane-1 tints — over the SD-FORGED gate sets (which carry their own
+// value + patina). The forged albedos run SATURATED teal, and the locked
+// palette wants DARK STEEL DOMINANT with teal as accent: the dominant plate
+// group gets a de-tealing grime tint (R held vs G/B suppressed), the accent
+// group keeps its teal but grimed down, hardware near pass-through (the
+// piston albedo is already near-black).
+constexpr float    kForgePlateTint[3] = { 0.58f, 0.50f, 0.48f };  // riveted armor -> dark neutral steel
+constexpr float    kForgeTealTint[3]  = { 0.52f, 0.50f, 0.50f };  // peeling teal accent, grimed
+constexpr float    kForgeDarkTint[3]  = { 0.85f, 0.85f, 0.86f };  // brushed gunmetal hardware
 
 // ---- Segmented amber RATCHET TRACK (inner-facing edge; PortalAnimated.mp4) -----
 // Small amber segments ringing the gate's inner front edge. Dormant: dim.
@@ -838,6 +847,17 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const SurfaceSet& sFloor = m_surf.get(device, "sr_concrete_01");     // hall floor concrete
     const SurfaceSet& sWall  = m_surf.get(device, "mw_concrete_panels_b"); // hall walls
     const SurfaceSet& sGrate = m_surf.get(device, "mw_metal_grate");     // deck plates (round 2)
+    // ROUND 4 lane 1 — the SD-FORGED gate sets (tools/forge_gate_textures.py;
+    // landed per docs/FORGE_GATE_TEXTURES.md with the ghost-glass roughness
+    // floor rough >= 0.62 BAKED into mr.png at copy time, so the forged
+    // per-texel MR is safe on the reflection path). GROUP-MAPPING NOTE: the
+    // bpy 'patina' group is the gate's DOMINANT plate surface, so it wears the
+    // riveted-armor set (gate_ring_plate) and the teal accent set
+    // (gate_patina_plate) goes on the smaller 'steel' group — dark steel
+    // dominant, teal as accent (the locked palette).
+    const SurfaceSet& sForgePlate = m_surf.get(device, "gate_ring_plate");
+    const SurfaceSet& sForgeTeal  = m_surf.get(device, "gate_patina_plate");
+    const SurfaceSet& sForgeDark  = m_surf.get(device, "gate_piston_steel");
     // Wet-floor MR texel (glTF packing G=rough B=metal): low roughness => the
     // dark concrete takes tight specular + IBL sheen (the wet reflective read).
     {
@@ -1158,18 +1178,34 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 const x3::asset::ModelDrawable& dr = m_gateDrawables[d];
                 const std::string& nm = (d < m_gateNames.size()) ? m_gateNames[d]
                                                                  : std::string();
-                // Material-group -> curated surface set + tint (the round-2
-                // grime-dark palette; the SD gate-forge sets supersede later).
-                const SurfaceSet* sf   = &sDark;
-                const float*      tint = kGateDarkTint;
+                // Material-group -> surface set + tint. ROUND 4 lane 1: prefer
+                // the SD-FORGED gate set (its mr.png carries the baked
+                // rough >= 0.62 floor, so the forged PER-TEXEL MR rides the
+                // reflection path safely); fall back to the round-2 curated set
+                // + the 1x1 m_mrGate override when the forged set is absent
+                // (fresh clone before LFS pull) — the ghost-glass fix holds on
+                // BOTH paths.
+                const SurfaceSet* sf    = &sForgeDark;
+                const SurfaceSet* fall  = &sDark;
+                const float*      tint  = kForgeDarkTint;
+                const float*      fallT = kGateDarkTint;
                 uint32_t          mrIdx = 2;   // dark hardware override
-                if (nm.find("patina") != std::string::npos) { sf = &sPlate; tint = kGatePlateTint; mrIdx = 0; }
-                else if (nm.find("steel") != std::string::npos) { sf = &sTrim; tint = kGateSteelTint; mrIdx = 1; }
+                if (nm.find("patina") != std::string::npos) {
+                    sf = &sForgePlate; fall = &sPlate;
+                    tint = kForgePlateTint; fallT = kGatePlateTint; mrIdx = 0;
+                } else if (nm.find("steel") != std::string::npos) {
+                    sf = &sForgeTeal; fall = &sTrim;
+                    tint = kForgeTealTint; fallT = kGateSteelTint; mrIdx = 1;
+                }
                 Entity e;
                 e.mesh = x3::rhi::MeshHandle{ dr.meshId };
-                // NOTE: mrTex is the WEATHERED per-group override, not the set's
-                // polished MR — the round-4 ghost-glass fix (m_mrGate's comment).
-                if (sf->ok) { e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = m_mrGate[mrIdx]; }
+                if (sf->ok) {
+                    e.tex = sf->albedo; e.normalTex = sf->normal; e.mrTex = sf->mr;
+                } else if (fall->ok) {
+                    tint = fallT;
+                    e.tex = fall->albedo; e.normalTex = fall->normal;
+                    e.mrTex = m_mrGate[mrIdx];   // weathered override (ghost-glass fix)
+                }
                 e.baseColor[0] = tint[0]; e.baseColor[1] = tint[1];
                 e.baseColor[2] = tint[2]; e.baseColor[3] = 1.0f;
                 e.emissive[0] = tint[0]; e.emissive[1] = tint[1];

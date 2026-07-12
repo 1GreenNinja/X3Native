@@ -119,9 +119,9 @@ def main():
     # by overlay eyeball (docs/reference; the gate is static and slightly 3/4 —
     # the auto-detector kept grabbing the blue-graded hall, so measured wins;
     # pass --auto to re-detect for a different video).
-    ap.add_argument("--cx", type=float, default=632.0)
+    ap.add_argument("--cx", type=float, default=629.0)
     ap.add_argument("--cy", type=float, default=420.0)
-    ap.add_argument("--cr", type=float, default=225.0)
+    ap.add_argument("--cr", type=float, default=214.0)
     ap.add_argument("--auto", action="store_true",
                     help="auto-detect the disc instead of the calibrated crop")
     args = ap.parse_args()
