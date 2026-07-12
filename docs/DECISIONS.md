@@ -128,6 +128,29 @@ measure the **thing that actually broke** — e.g. `holoReadoutInkFraction()` pr
 baked text band, and ships with a **negative control** proving the probe *can* fail. A blank or
 washed-out screen must **FAIL the test**, not silently pass. Mutation-test your own guard.
 
+## 🔦 ASK WHAT THE SURFACE *SEES* BEFORE YOU TOUCH A LAMP (2026-07-12)
+**If a surface won't respond to light, its ENVIRONMENT is the suspect — not the lamp, not the albedo.**
+The same root cause bit us from both ends in one day:
+- **The rift-hub gate** was *"a mirror aimed at a black room"* — `setIblProbe(true)` bakes the env cube
+  **from the scene**, and the scene is a deliberately dark hall. Its specular came back ~0 and fell
+  through to a flat constant. It rendered as grey mush **no matter how good the mesh was**, and no
+  key light could fix it. **Metal is lit by being SHINY AT SOMETHING BRIGHT. There was nothing bright.**
+- **Every windowless interior** was the mirror image: an env cube baked **by default, from the analytic
+  BLUE SKY**. So the cells and corridors were lit by a full-strength sky, in a basement.
+
+**And `setAmbient()` alone is a DEAD DIAL.** The engine has TWO ambients: `iblAmbient()`'s baked-env path
+takes diffuse from `irradianceCube` + specular from `prefilterCube` and **never reads its `ambient`
+argument**. With `setAmbient(0)` the probe still measured **55/255 of blue sky**. Every "I brought the
+ambient down" tune in a baked-env room did **nothing**.
+Someone had even tinted the ambient **blue** to fight a blue sky they couldn't see and couldn't switch
+off — so when the sky died, **the tint became the bug**.
+
+**THE RULE:** a room must DECLARE its air — `setWorldAtmosphere` (scene IBL probe + IBL intensity +
+a NEUTRAL low ambient). Never `setAmbient` and hope. And the diagnostic order is:
+**(1) can this surface be lit at all?** (white-albedo + probe-light, or `r_debugview 5` = albedo forced
+flat — *if a room of 50% reflectors is still dark, the surfaces are innocent*) →
+**(2) what is its environment?** → **(3) VALUE** → **(4) lumens, last.**
+
 ## 🏗️ GENERATE, DON'T HAND-CARVE (2026-07-11)
 Everything we **generated** worked immediately; everything hand-carved was rejected 3×.
 - **Image → texture:** SD3.5 forge (incl. `--img2img` from a concept image) → `G:` surface library.
