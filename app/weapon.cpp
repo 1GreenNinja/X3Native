@@ -307,6 +307,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 1.3f;     // quick sidearm reload
         w.viewmodelGlb = "WeaponEnergyPistol2.glb";  // real energy_pistol.obj (PBR-textured)
         w.vmScale     = 0.18f;                        // proven pistol read (~0.33 m held)
+        w.vmMuzzle    = { -0.003f, 0.652f, 0.855f };  // WeaponEnergyPistol2.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
         w.muzzleFx    = "muzzle_pistol";
         w.impactFx    = "impact_bullet";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav";   // punchy single shot
@@ -335,6 +336,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 1.9f;
         w.viewmodelGlb = "WeaponRailgun.glb";  // railgun reads as a rifle for the auto SMG
         w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
+        w.vmMuzzle    = {  0.000f, 0.494f, 0.909f };  // WeaponRailgun.glb barrel tip (measured)
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
         w.impactSfx   = "weapons/impact/Bullet_Impact_14.wav";   // ballistic impact tick
@@ -367,6 +369,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 2.3f;
         w.viewmodelGlb = "WeaponShotgun2.glb";  // real shotgun.obj (PBR-textured; long barrel -> small scale)
         w.vmScale     = 0.11f;                   // longest source model (4.4 m) -> ~0.48 m held
+        w.vmMuzzle    = { -0.017f, 0.680f, 2.111f };  // WeaponShotgun2.glb barrel tip (measured; a 4.4 m source model — THE worst offender under the old shared guess)
         w.muzzleFx    = "muzzle_shotgun";
         w.impactFx    = "impact_bullet";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";   // heavy single boom
@@ -395,6 +398,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.projSpeed   = 55.0f;    // m/s bolt — a hair faster so it leads less at range
         w.viewmodelGlb = "WeaponBFG.glb";  // bfg.obj energy-cannon look for the plasma bolt
         w.vmScale     = 0.24f;             // bulky energy weapon (~0.42 m held)
+        w.vmMuzzle    = { -0.003f, 0.528f, 0.864f };  // WeaponBFG.glb emitter tip (measured)
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
         // Sci-fi energy single (a distinct, higher-tech single shot).
@@ -438,6 +442,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.spinUpStartFrac= 0.35f;     // starts at 35% of fireRate (cold barrel)
         w.viewmodelGlb = "WeaponRocketLauncher.glb";  // heaviest model -> the chaingun read
         w.vmScale     = 0.26f;                        // heavy weapon (~0.49 m held)
+        w.vmMuzzle    = {  0.001f, 0.368f, 0.916f };  // WeaponRocketLauncher.glb barrel tip (measured)
         w.muzzleFx    = "muzzle_chaingun";
         w.impactFx    = "impact_bullet";
         w.impactSfx   = "weapons/impact/Bullet_Impact_14.wav";   // ballistic impact tick
@@ -476,6 +481,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.splashDamage= 15;           // splash damage at the center
         w.viewmodelGlb = "WeaponBFG.glb";  // bfg.obj energy-cannon look (shared with plasma)
         w.vmScale     = 0.24f;             // bulky energy weapon (~0.42 m held)
+        w.vmMuzzle    = { -0.003f, 0.528f, 0.864f };  // WeaponBFG.glb emitter tip (measured)
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
         // Bigger energy single than the plasma pistol (largest single = fuller bolt).
@@ -514,6 +520,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.falloffStart= 15.0f;               // half-range: damage falls off past 15 m
         w.viewmodelGlb = "WeaponRailgun.glb"; // railgun rifle for the precision beam
         w.vmScale     = 0.24f;                // longarm (~0.46 m held)
+        w.vmMuzzle    = {  0.000f, 0.494f, 0.909f };  // WeaponRailgun.glb barrel tip (measured)
         w.muzzleFx    = "muzzle_lightning";
         w.impactFx    = "impact_lightning";
         w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";   // electric splat on impact
@@ -553,6 +560,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.splashDamage= 60;                   // significant splash
         w.viewmodelGlb = "WeaponRocketLauncher.glb"; // dedicated launcher mesh
         w.vmScale     = 0.26f;                // heavy weapon
+        w.vmMuzzle    = {  0.001f, 0.368f, 0.916f };  // WeaponRocketLauncher.glb barrel tip (measured)
         w.muzzleFx    = "muzzle_rocket";
         w.impactFx    = "impact_explosion";
         // Heavy boom on launch (one-shot).
@@ -885,6 +893,67 @@ void Arsenal::loadViewmodels(x3::rhi::IRenderDevice& device, std::string_view mo
         x3::logWarn("[arsenal] FPArms_Jake.glb missing — viewmodel draws without arms");
 }
 
+// The ONE place the FP viewmodel's world frame is solved. drawCurrentViewmodel DRAWS the
+// gun with it; currentMuzzle() puts the BARREL TIP in the world with it. Sharing this is
+// the whole point — a muzzle solved in any OTHER frame is exactly the bug Tim saw (fire
+// spawning in mid-air beside the gun).
+Arsenal::VmFrame Arsenal::currentViewmodelFrame(
+        float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+        float extraYawOff, float extraPitchOff, float extraRollOff,
+        float extraFwd, float extraRight, float extraDown) const {
+    VmFrame f;
+    if (m_sel < 0 || m_sel >= (int)m_defs.size()) {
+        f.pos = x3::phys::Vec3{ eyeX, eyeY, eyeZ };
+        return f;
+    }
+    const WeaponDef& d = m_defs[(size_t)m_sel];
+    const float yawOff   = d.vmYawDeg   * (kPi / 180.0f) + extraYawOff;
+    const float pitchOff = d.vmPitchDeg * (kPi / 180.0f) + extraPitchOff;
+    const float rollOff  = d.vmRollDeg  * (kPi / 180.0f) + extraRollOff;
+    const float fwd   = d.vmFwd   + extraFwd;
+    const float rgt   = d.vmRight + extraRight;
+    const float down  = d.vmDown  + extraDown;
+
+    // Same camera-basis math as WeaponSystem::drawViewmodel (see 3 CONVENTIONS).
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
+    const x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
+    const x3::phys::Vec3 right{ -sy, 0.0f, cy };
+    const x3::phys::Vec3 up{ right.y * forward.z - right.z * forward.y,
+                             right.z * forward.x - right.x * forward.z,
+                             right.x * forward.y - right.y * forward.x };
+    f.pos = x3::phys::Vec3{ eyeX + forward.x * fwd + right.x * rgt - up.x * down,
+                            eyeY + forward.y * fwd + right.y * rgt - up.y * down,
+                            eyeZ + forward.z * fwd + right.z * rgt - up.z * down };
+    const x3::phys::Vec3 negFwd{ -forward.x, -forward.y, -forward.z };
+    auto applyOffsets = [&](x3::phys::Vec3 v) {
+        v = rotateAboutAxis(v, up,      yawOff);
+        v = rotateAboutAxis(v, right,   pitchOff);
+        v = rotateAboutAxis(v, forward, rollOff);
+        return v;
+    };
+    f.bx = applyOffsets(right);
+    f.by = applyOffsets(up);
+    f.bz = applyOffsets(negFwd);
+    f.scale = d.vmScale * kVmScaleBoost;
+    return f;
+}
+
+x3::phys::Vec3 Arsenal::currentMuzzle(
+        float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+        float extraYawOff, float extraPitchOff, float extraRollOff,
+        float extraFwd, float extraRight, float extraDown) const {
+    const VmFrame f = currentViewmodelFrame(eyeX, eyeY, eyeZ, yaw, pitch,
+                                            extraYawOff, extraPitchOff, extraRollOff,
+                                            extraFwd, extraRight, extraDown);
+    const x3::phys::Vec3 m = currentMuzzleLocal();
+    // The SAME transform the gun's own vertices take: model * (mx,my,mz).
+    return x3::phys::Vec3{
+        f.pos.x + (f.bx.x * m.x + f.by.x * m.y + f.bz.x * m.z) * f.scale,
+        f.pos.y + (f.bx.y * m.x + f.by.y * m.y + f.bz.y * m.z) * f.scale,
+        f.pos.z + (f.bx.z * m.x + f.by.z * m.y + f.bz.z * m.z) * f.scale };
+}
+
 void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
                                    const x3::rhi::FrameContext& frame,
                                    float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
@@ -896,49 +965,33 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
                          : (sel.fallbackIndex >= 0 ? m_views[(size_t)sel.fallbackIndex] : sel);
     if (vm.drawables.empty()) return;
 
-    const WeaponDef& d = m_defs[(size_t)m_sel];
-    const float yawOff   = d.vmYawDeg   * (kPi / 180.0f) + extraYawOff;
-    const float pitchOff = d.vmPitchDeg * (kPi / 180.0f) + extraPitchOff;
-    const float rollOff  = d.vmRollDeg  * (kPi / 180.0f) + extraRollOff;
-    const float fwd   = d.vmFwd   + extraFwd;
-    const float rgt   = d.vmRight + extraRight;
-    const float down  = d.vmDown  + extraDown;
-
-    // Same camera-basis math as WeaponSystem::drawViewmodel (see §3 CONVENTIONS).
+    // ONE frame solve, SHARED with currentMuzzle() (see above).
+    const VmFrame vf = currentViewmodelFrame(eyeX, eyeY, eyeZ, yaw, pitch,
+                                             extraYawOff, extraPitchOff, extraRollOff,
+                                             extraFwd, extraRight, extraDown);
+    const x3::phys::Vec3 bx = vf.bx, by = vf.by, bz = vf.bz, pos = vf.pos;
+    // The RAW camera basis is still needed below for the FP ARMS (which anchor to the
+    // EYE, not the gun).
     const float cp = std::cos(pitch), sp = std::sin(pitch);
     const float cy = std::cos(yaw),   sy = std::sin(yaw);
-    x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
-    x3::phys::Vec3 right{ -sy, 0.0f, cy };
-    x3::phys::Vec3 up{ right.y * forward.z - right.z * forward.y,
-                       right.z * forward.x - right.x * forward.z,
-                       right.x * forward.y - right.y * forward.x };
-    x3::phys::Vec3 pos{ eyeX + forward.x * fwd + right.x * rgt - up.x * down,
-                        eyeY + forward.y * fwd + right.y * rgt - up.y * down,
-                        eyeZ + forward.z * fwd + right.z * rgt - up.z * down };
-    x3::phys::Vec3 negFwd{ -forward.x, -forward.y, -forward.z };
-    auto applyOffsets = [&](x3::phys::Vec3 v) {
-        v = rotateAboutAxis(v, up,      yawOff);
-        v = rotateAboutAxis(v, right,   pitchOff);
-        v = rotateAboutAxis(v, forward, rollOff);
-        return v;
-    };
-    x3::phys::Vec3 bx = applyOffsets(right);
-    x3::phys::Vec3 by = applyOffsets(up);
-    x3::phys::Vec3 bz = applyOffsets(negFwd);
+    const x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
+    const x3::phys::Vec3 right{ -sy, 0.0f, cy };
+    const x3::phys::Vec3 up{ right.y * forward.z - right.z * forward.y,
+                             right.z * forward.x - right.x * forward.z,
+                             right.x * forward.y - right.y * forward.x };
 
     float model[16];
     // Tim playtest 2026-05-25: the held weapons read tiny + dark. Enlarge the viewmodel
     // (~2x) and brighten its base color (HDR > 1) so it reads as a big, lit gun in the
     // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
     // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
-    constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
     constexpr float kVmBright     = 1.0f;   // ROUND 6 ENGINE FIX: was 2.6 — an OVER-UNITY albedo
                                         // multiplier (physically impossible; it clipped the gun's
                                         // own texture to white) added because GLB meshes shaded at
                                         // 1/PI of the prims around them. shaders/mesh.frag now lights
                                         // the viewmodel honestly, so the hack is removed: with it
                                         // still in, the pistol blew out to a white blob.
-    composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
+    composeTRS(model, bx, by, bz, vf.scale, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
         x3::asset::mulMat4(model, dr.nodeTransform, fin);
@@ -1461,6 +1514,81 @@ bool runWeaponsSelfTest() {
         }
         wcheck(allResolveOk,
                "W12b Arsenal::fire() stamps WeaponDef::type onto every HitscanRay + ProjectileSpawn");
+    }
+
+    // ---- W13: THE MUZZLE — "the fire doesn't come from the barrel" (Tim 2026-07-11)
+    // REGRESSION GUARD. The FX origin must be the BARREL TIP of the weapon we DRAW —
+    // i.e. WeaponDef::vmMuzzle carried through the SAME world matrix drawCurrentViewmodel
+    // composes — NOT a camera-relative guess. This test re-derives the expected barrel tip
+    // with its OWN independent math and asserts Arsenal::currentMuzzle lands on it, for
+    // EVERY weapon, at several yaw/pitch poses. If anyone ever re-routes the muzzle back
+    // through a fixed camera offset, W13 goes red.
+    {
+        Arsenal a;
+        const float kDeg = kPi / 180.0f;
+        struct Pose { float yaw, pitch; };
+        const Pose poses[] = { {0.0f, 0.0f}, {1.7f, 0.55f}, {-2.4f, -0.62f}, {3.0f, 0.2f} };
+
+        bool onBarrel = true;     // muzzle == the gun's own barrel-tip transform
+        bool perWeapon = true;    // the guns are DIFFERENT lengths -> different muzzles
+        bool inFront = true;      // and it always leads the eye, at any pitch
+        float minReach = 1e9f, maxReach = -1e9f;
+
+        for (int wi = 0; wi < a.count(); ++wi) {
+            a.select(wi);
+            const WeaponDef& d = a.def(wi);
+            // Every gun must actually carry a measured barrel tip down its +Z barrel axis.
+            if (!(d.vmMuzzle.z > 0.3f)) perWeapon = false;
+
+            for (const Pose& p : poses) {
+                const float ex = 3.0f, ey = 1.7f, ez = -2.0f;
+                // --- independent expected-muzzle math (mirrors the DRAW, not the solve) ---
+                const float cp = std::cos(p.pitch), sp = std::sin(p.pitch);
+                const float cy = std::cos(p.yaw),   sy = std::sin(p.yaw);
+                const x3::phys::Vec3 fw{ cp * cy, sp, cp * sy };
+                const x3::phys::Vec3 rt{ -sy, 0.0f, cy };
+                const x3::phys::Vec3 up{ rt.y * fw.z - rt.z * fw.y,
+                                         rt.z * fw.x - rt.x * fw.z,
+                                         rt.x * fw.y - rt.y * fw.x };
+                const x3::phys::Vec3 origin{
+                    ex + fw.x * d.vmFwd + rt.x * d.vmRight - up.x * d.vmDown,
+                    ey + fw.y * d.vmFwd + rt.y * d.vmRight - up.y * d.vmDown,
+                    ez + fw.z * d.vmFwd + rt.z * d.vmRight - up.z * d.vmDown };
+                auto off = [&](x3::phys::Vec3 v) {
+                    v = rotateAboutAxis(v, up, d.vmYawDeg   * kDeg);
+                    v = rotateAboutAxis(v, rt, d.vmPitchDeg * kDeg);
+                    v = rotateAboutAxis(v, fw, d.vmRollDeg  * kDeg);
+                    return v;
+                };
+                const x3::phys::Vec3 bx = off(rt), by = off(up),
+                                     bz = off(x3::phys::Vec3{ -fw.x, -fw.y, -fw.z });
+                const float s = d.vmScale * kVmScaleBoost;
+                const x3::phys::Vec3 mL = d.vmMuzzle;
+                const x3::phys::Vec3 want{
+                    origin.x + (bx.x * mL.x + by.x * mL.y + bz.x * mL.z) * s,
+                    origin.y + (bx.y * mL.x + by.y * mL.y + bz.y * mL.z) * s,
+                    origin.z + (bx.z * mL.x + by.z * mL.y + bz.z * mL.z) * s };
+
+                const x3::phys::Vec3 got = a.currentMuzzle(ex, ey, ez, p.yaw, p.pitch);
+                const float dx = got.x - want.x, dy = got.y - want.y, dz = got.z - want.z;
+                if (std::sqrt(dx*dx + dy*dy + dz*dz) > 1e-3f) onBarrel = false;
+
+                // It must LEAD the eye down the look direction (never behind the player).
+                const float ahead = (got.x - ex) * fw.x + (got.y - ey) * fw.y + (got.z - ez) * fw.z;
+                if (ahead < 0.2f) inFront = false;
+                if (p.yaw == 0.0f && p.pitch == 0.0f) {
+                    if (ahead < minReach) minReach = ahead;
+                    if (ahead > maxReach) maxReach = ahead;
+                }
+            }
+        }
+        wcheck(onBarrel,
+               "W13a muzzle == the held weapon's OWN barrel tip (vmMuzzle through the viewmodel matrix)");
+        wcheck(inFront, "W13b muzzle leads the eye down the look dir at every yaw/pitch");
+        // The whole bug: a SHARED offset cannot be right for guns of different lengths. The
+        // shotgun (a 4.4 m source model) must reach visibly further than the pistol.
+        wcheck(perWeapon && (maxReach - minReach) > 0.10f,
+               "W13c the muzzle is PER-WEAPON (barrel reach differs across the roster)");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +

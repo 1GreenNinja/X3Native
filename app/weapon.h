@@ -61,6 +61,11 @@ constexpr float kVmDefFwd      = 1.0f;   // forward along look dir (meters) (Tim
 constexpr float kVmDefRight    = 0.25f;  // to the right (meters) (Tim-tuned; more-right pass)
 constexpr float kVmDefDown     = 0.35f;  // below the eye line (meters) (Tim-tuned)
 
+// Global "hold it up bigger" multiplier folded onto every weapon's vmScale when the
+// FP viewmodel is composed (Tim: 2x is CORRECT, keep it). Public because the MUZZLE
+// solve must use the SAME scale the gun is DRAWN at — see WeaponDef::vmMuzzle.
+constexpr float kVmScaleBoost  = 2.0f;
+
 // Pure arming rule, factored out so it is testable headlessly (see
 // runPickupSelfTest). Given the player position, the pickup position and the
 // current armed flag, returns true iff the player should become armed THIS call
@@ -236,6 +241,23 @@ struct WeaponDef {
     float       vmRight      = kVmDefRight;
     float       vmDown       = kVmDefDown;
     float       vmScale      = 0.18f;   // model scale for the held viewmodel
+    // ---- THE MUZZLE (barrel tip) — Tim 2026-07-11: "the fire doesn't come from the barrel"
+    // The FX origin USED TO be a camera-relative guess (muzzleFromCamera: eye + fwd 1.3 /
+    // right 0.26 / down 0.30), which has NO IDEA where this weapon's barrel actually is —
+    // so flashes/tracers/bolts spawned in MID-AIR beside the gun, and every weapon (they are
+    // all different lengths!) was wrong by a different amount.
+    //
+    // vmMuzzle is the barrel tip expressed in the viewmodel GLB's SCENE space (i.e. AFTER the
+    // glTF node transform, BEFORE vmScale) — the exact space the FP viewmodel world matrix
+    // maps from (drawCurrentViewmodel: model = composeTRS(bx,by,bz, vmScale * kVmScaleBoost,
+    // pos), each drawable drawn as model * nodeTransform). So:
+    //     muzzleWorld = pos + (bx*mx + by*my + bz*mz) * (vmScale * kVmScaleBoost)
+    // which tracks the gun EXACTLY — its pose, its per-weapon vm* offsets and its scale.
+    // (No weapon GLB ships a muzzle/barrel socket node — they are single "model" /
+    // "model_LOD*" nodes — so these are MEASURED per GLB by tools/weapon_muzzle_probe.py:
+    // the centroid of the +Z front slice of the geometry, +Z being the down-barrel axis the
+    // viewmodel basis maps onto camera-forward via the 193 deg vmYaw flip.)
+    x3::phys::Vec3 vmMuzzle{ 0.0f, 0.65f, 0.86f };   // GLB scene-space barrel tip
     // FX preset hints (string keys the host maps onto CombatFx muzzle/impact). Kept
     // as data so designers can retune which preset a weapon uses; the host reads them.
     // The host maps these onto a WeaponFxKind (see app/fx.h fxKindFromId) so each gun
@@ -440,6 +462,38 @@ public:
                               float extraRight = 0.0f, float extraDown = 0.0f) const;
 
     bool viewmodelsLoaded() const { return !m_views.empty(); }
+
+    // ---- THE MUZZLE -----------------------------------------------------------
+    // The composed FP viewmodel frame: the world basis (bx,by,bz), the origin `pos` and
+    // the total scale the gun is DRAWN at. Identical math to (and shared with)
+    // drawCurrentViewmodel, so anything solved in this frame lands ON the gun.
+    struct VmFrame {
+        x3::phys::Vec3 bx{1,0,0}, by{0,1,0}, bz{0,0,1};
+        x3::phys::Vec3 pos{};
+        float          scale = 1.0f;   // vmScale * kVmScaleBoost
+    };
+    VmFrame currentViewmodelFrame(float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+                                  float extraYawOff = 0.0f, float extraPitchOff = 0.0f,
+                                  float extraRollOff = 0.0f, float extraFwd = 0.0f,
+                                  float extraRight = 0.0f, float extraDown = 0.0f) const;
+
+    // The CURRENT weapon's barrel tip IN THE WORLD — the ONE true origin for the muzzle
+    // flash, the tracer, the projectile spawn and the 3D fire audio. Same args as
+    // drawCurrentViewmodel (pass the host's live vm_* cvar DELTAS so the muzzle follows a
+    // console-nudged gun too).
+    x3::phys::Vec3 currentMuzzle(float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+                                 float extraYawOff = 0.0f, float extraPitchOff = 0.0f,
+                                 float extraRollOff = 0.0f, float extraFwd = 0.0f,
+                                 float extraRight = 0.0f, float extraDown = 0.0f) const;
+
+    // The current weapon's barrel tip in the viewmodel GLB's SCENE space (pre-scale). The
+    // THIRD-PERSON path needs this: it already builds its own hand-socket world matrix
+    // (ThirdPersonView::drawHeldWeapon) and just has to transform this point by it, so the
+    // fire leaves the barrel in 3P too.
+    x3::phys::Vec3 currentMuzzleLocal() const {
+        return (m_sel >= 0 && m_sel < (int)m_defs.size()) ? m_defs[(size_t)m_sel].vmMuzzle
+                                                          : x3::phys::Vec3{ 0.0f, 0.65f, 0.86f };
+    }
 
     // ---- Third-person HELD-weapon render (socket to the avatar's hand bone) --
     // Draw the CURRENT weapon's loaded viewmodel meshes at an arbitrary world

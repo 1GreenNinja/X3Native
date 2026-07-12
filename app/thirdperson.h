@@ -150,6 +150,15 @@ public:
     // selects the per-weapon grip row (kTpGripTable); empty/unknown -> the default row.
     bool handSocketWorld(float out[16], std::string_view weaponName = {}) const;
 
+    // THE MUZZLE, THIRD-PERSON (Tim 2026-07-11: "the fire doesn't come from the barrel").
+    // The world-space barrel tip of the gun ACTUALLY IN JAKE'S HAND: the same hand-socket
+    // matrix drawHeldWeapon() draws with, applied to the current weapon's MEASURED barrel
+    // tip (Arsenal::currentMuzzleLocal / WeaponDef::vmMuzzle). Returns false (leaving `out`
+    // untouched) whenever the 3P held weapon is NOT being drawn — avatar hidden, hand bone
+    // unresolved, no viewmodel — so the caller falls back to the first-person barrel tip.
+    bool heldMuzzleWorld(const Scene& scene, const Arsenal& arsenal,
+                         x3::phys::Vec3& out) const;
+
     // The avatar's current world position (feet) + facing yaw — for tests / HUD.
     x3::phys::Vec3 avatarPos() const { return m_pos; }
     float avatarYaw() const { return m_yaw; }

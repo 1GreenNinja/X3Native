@@ -7,6 +7,7 @@
 // drawHudText (the door-prompt / keypad pattern) and routes typed chars in.
 //
 // Game/slice code only; engine/ stays pure.
+#include "holo_panel.h"
 #include "scene.h"
 
 #include "engine/rhi/IRenderDevice.h"
@@ -45,7 +46,7 @@ public:
         m_inkOverride = true; m_texDirty = true;
     }
     void resetTextColor() {
-        m_textColor[0] = 0.85f; m_textColor[1] = 0.97f; m_textColor[2] = 1.0f; m_textColor[3] = 1.0f;
+        m_textColor[0] = 0.55f; m_textColor[1] = 0.80f; m_textColor[2] = 1.0f; m_textColor[3] = 1.0f;
         m_inkOverride = false; m_texDirty = true;
     }
 
@@ -119,8 +120,10 @@ public:
 
     // World anchor (panel center) for the host's worldToScreen text placement.
     x3::phys::Vec3 anchor() const { return m_pos; }
-    uint32_t entity() const { return m_entity; }
-    bool built() const { return m_entity != kNoLink; }
+    uint32_t entity() const;          // the platform's screen pane
+    bool built() const;
+    // The platform fixture (glow-light suggestion, pane entity, teardown).
+    const HoloPanel& panel() const { return m_panel; }
 
     // True when the readout text is baked ON THE GLASS (stb_truetype rasterized it
     // into the hologram texture). The host uses this to SKIP its legacy 2D overlay so
@@ -136,7 +139,7 @@ public:
     // (--test-rifthub) can fail the build instead of shipping a blue rectangle.
     bool screenHasContent() const;
     // The live handle bound to the screen (for tests that want to compare identity).
-    x3::rhi::TextureHandle screenTexture() const { return m_holoTex; }
+    x3::rhi::TextureHandle screenTexture() const;
 
 private:
     // Re-bake the readout (static lines + live input line) INTO the hologram texture
@@ -144,24 +147,14 @@ private:
     // Called from update() when m_texDirty (input/readout changed) — NOT every frame.
     void regenTexture();
 
-    uint32_t       m_entity = kNoLink;
+    // THE FIXTURE. Black glass + chrome round-pipe frame + ceiling support pipe, plus
+    // the shimmer and the teardown path — all of it lives in the platform. This class
+    // owns CONTENT and INPUT; it owns no meshes, no textures and no entities.
+    HoloPanel      m_panel;
+
     x3::phys::Vec3 m_pos{};
     float          m_width = 1.4f, m_height = 0.9f;
-    // Scene + screen-entity bookkeeping for the time-driven shimmer (set in build()).
-    // update() modulates this entity's emissive each frame; null Scene => no shimmer
-    // (the headless self-test path, which never calls build()).
-    Scene*         m_scene = nullptr;
-    // (The scrolling "scanline overlay quad" is GONE. It was a second GLASS pane in
-    //  front of the screen, and glass writes depth in the depth pre-pass, so it
-    //  DEPTH-REJECTED the readout instead of compositing over it — the featureless
-    //  blue slab. See build(). Never put geometry in front of the screen.)
-    float          m_clock = 0.0f;           // shimmer animation clock (seconds)
-    float          m_emBase[4] = { 1.0f, 1.0f, 1.0f, 2.1f };    // base screen emissive (x texel)
-    x3::rhi::TextureHandle m_holoTex{};       // the procedural hologram UI texture
-    // ON-GLASS TEXT bake state. The readout is rasterized into m_holoTex via
-    // stb_truetype so it sits ON the glass (tilts with the panel) like a Babylon
-    // DynamicTexture — NOT as a camera-facing 2D overlay. We keep the device + texture
-    // resolution so regenTexture() can re-create + re-upload on change.
+    float          m_clock = 0.0f;            // readout animation clock (seconds)
     x3::rhi::IRenderDevice* m_device = nullptr;
     uint32_t       m_texN = 1024;             // hologram texture resolution (square)
     bool           m_texDirty = false;        // set when lines/input change; cleared on regen
@@ -174,11 +167,9 @@ private:
     float          m_blink = 0.0f;        // cursor blink timer
     bool           m_cursorOn = true;
     SubmitFn       m_submit;
-    float          m_textColor[4] = { 0.85f, 0.97f, 1.0f, 1.0f };  // bright cyan-white, high contrast
+    float          m_textColor[4] = { 0.55f, 0.80f, 1.0f, 1.0f };  // blue-white (NOT cyan)
     bool           m_inkOverride = false;   // W4-2: bake body rows with m_textColor (VIGIL orange)
     Layout         m_layout = Layout::Cell; // Cell = the approved detention composition
-    std::vector<uint32_t> m_decor;        // bezel / arm / trace entity ids (visual only)
-    std::vector<x3::rhi::MeshHandle> m_meshes;  // every mesh build() created (shutdown frees them)
     static constexpr size_t kMaxInput = 72;   // freeform questions need room (was 32)
 };
 
@@ -189,6 +180,14 @@ private:
 // percent. This is what lets a test assert "the screen HAS CONTENT" without a GPU.
 float holoReadoutInkFraction(const std::vector<std::string>& lines,
                              const std::string& inputLine = "", bool wideReadout = false);
+
+// HEADLESS PALETTE PROBE. Bakes the readout and reports the fraction of the text zone
+// that reads dominantly BLUE / GREEN / ORANGE — so a test can assert the OWNER'S
+// PALETTE, not merely that the screen is lit. Cyan fails the blue test by construction
+// (the blue predicate demands b > g by a real margin; cyan has g ~= b).
+void holoReadoutPalette(const std::vector<std::string>& lines, bool wideReadout,
+                        float& blueF, float& greenF, float& orangeF,
+                        const float* inkOverride = nullptr);
 
 // Headless self-test (--test-holoterm): boot readout is present (not blank), typing
 // builds the input line, backspace edits it, submit calls the sink with the value
