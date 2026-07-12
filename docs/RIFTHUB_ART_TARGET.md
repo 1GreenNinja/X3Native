@@ -291,3 +291,43 @@ the earlier Stargate-inspired direction and have been a persistent source of the
 The tube's surface detail = the img2img-forged plate/rivet/seam/vent/stencil richness + any
 recessed bands/joins that read as machined. Indicator lighting, if any, stays subtle and
 integrated (recessed slits), never a ring of amber triangles.
+
+## ROUND 8 — THE TUBE + THE CONSOLE (Tim, 2026-07-11) — BUILD THIS
+> "build the tube, with an lcd panel on it, some buttons, glowing led displays.. and also have
+> the signs in front of each portal relocated to a glass holoterminal, black glass with the blue
+> and green text, showing where each portal goes. let the user interact with each portal...
+> they can do wonderful or disasterous things with the console to it"
+
+### A. THE GATE = ONE LARGE METALLIC TUBE (see R7 + addenda)
+One massive machined round tube. NO chevrons. Grok richness lives in the img2img-forged
+normal/height maps (rivets/plates/seams/vents/rust/stencils), plus recessed features cut INTO
+the tube. Minimal subordinate geometry (cradle + a few feed cables). One long specular highlight
+sweeping the body = the payoff.
+
+### B. ON THE TUBE: an operator panel
+- An LCD/display panel set INTO the tube's face (recessed, with a bezel).
+- Physical BUTTONS (a small cluster — chunky, with travel/bevel).
+- Glowing LED indicator displays / readout strips (small, integrated, recessed; NOT a ring of
+  amber triangles). Subtle emissive.
+
+### C. THE PORTAL CONSOLE (replaces the floating teal sign rectangles)
+The current per-portal "sign" (a floating flat teal rectangle) is DELETED. In its place, in front
+of each portal, a proper HOLOTERMINAL matching the project's established holo design language:
+- BLACK GLASS slab, glowing BLUE/GREEN text (per Tim's canonical holo-terminal spec: black glass
+  slab, blue/green/orange status text, shiny metallic ROUND-PIPE frame around the glass, single
+  support pipe up to the ceiling so it HANGS rather than floats — reuse the HoloPanel/holo-terminal
+  platform already in the engine).
+- Content: WHERE THIS PORTAL GOES (destination name/world, status, coordinates/readout flavor).
+
+### D. GAMEPLAY: the player can INTERACT with each portal console
+Reuse HoloTerminalSystem (app/holo_terminal_system.*) — already proven: placeable kiosks, code
+entry, real world effects (cell_lock/armory_door/lights_central/alarm_armory/lore_intel/
+crate_dispense). Point it at the RIFTS. The player walks up, [E] to use, and can do
+"wonderful OR DISASTROUS things":
+- WONDERFUL: open/stabilize the rift, re-target it to another destination, boost power (bigger,
+  brighter portal), unlock a hidden destination, run a diagnostic that reveals lore.
+- DISASTROUS: overload/destabilize it (violent surge, alarms, hall lights fail), mis-target it
+  (sends you somewhere hostile), collapse it (that rift goes dark/unusable), trigger a
+  containment breach (something comes THROUGH).
+Design the command set as DATA (like the existing terminal effects) so more can be added. Make
+consequences REAL and visible in the hub (lights, audio, the membrane's state/colour, alarms).
