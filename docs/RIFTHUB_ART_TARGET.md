@@ -331,3 +331,25 @@ crate_dispense). Point it at the RIFTS. The player walks up, [E] to use, and can
   containment breach (something comes THROUGH).
 Design the command set as DATA (like the existing terminal effects) so more can be added. Make
 consequences REAL and visible in the hub (lights, audio, the membrane's state/colour, alarms).
+
+### ROUND 8 addendum (Tim): THE CONSOLE HAS *VALUES*, AND THEY HAVE CONSEQUENCES
+> "changing certain values will warp the room, and others will cause a temporal rift .. others
+> an implosion"
+
+The console is not a menu of commands — it is a set of TUNABLE PARAMETERS the player dials in,
+mad-scientist style. Safe ranges do useful things; wrong combinations do spectacular things.
+Suggested parameter set (data-driven, extensible):
+  POWER / FREQUENCY / PHASE / APERTURE / CONTAINMENT / TARGET
+Outcome classes (each must be REAL and visible — geometry, lights, audio, membrane state):
+- NOMINAL: portal opens/stabilises; re-target to another destination; brighter/bigger aperture.
+- ROOM WARP: the hub geometry visibly WARPS — space bends around the player (FOV/lens distortion,
+  the hall's walls/floor bow and ripple, props drift). Disorienting, survivable.
+- TEMPORAL RIFT: time distorts — slow-motion, stuttered/echoed motion, ghost-echoes of the player
+  and props, audio pitch-bend/reverse. Possibly duplicate/after-image entities.
+- IMPLOSION: violent collapse — the membrane inverts and sucks inward, debris and props are
+  dragged toward it, a shockwave, damage to the player, that gate goes DARK/dead afterwards.
+- (Keep room for more: containment breach = something comes THROUGH.)
+Rules: consequences are persistent where it makes sense (a collapsed gate stays dead); alarms +
+hall lighting react; the membrane's colour/behaviour reflects instability BEFORE it blows (the
+player should be able to read danger building). Data-driven so new parameter/outcome combos can
+be authored without code.
