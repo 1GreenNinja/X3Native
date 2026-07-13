@@ -169,6 +169,7 @@ struct HostContext {
     bool        alertShot = false;
     bool        shotDrive = false;    // WORLD CARS: drive the nearest car through the settle
     bool        duskSky = false;      // STREET LIGHT staging: late-dusk sky (lamps carry the scene)
+    bool        daySky  = false;      // UNDERWATER staging: bright-midday sky (submerged world reads lit)
     int         shotChatter = 0;      // CHATTER staging: pre-tick until N bubbles near the shot cam
     bool        captureSpire = false;        std::string captureSpireDir;
     bool        captureWings = false;        std::string captureWingsDir;
