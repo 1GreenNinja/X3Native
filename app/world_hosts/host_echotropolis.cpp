@@ -723,11 +723,15 @@ int hostEchotropolis(HostContext& hc) {
     const float kPlaneScale = [](){ const char* e=std::getenv("ECHO_PLANE_SCALE"); return e?(float)std::atof(e):0.8f;  }();
     const float kHeliYaw    = [](){ const char* e=std::getenv("ECHO_HELI_YAW");    return e?(float)std::atof(e):0.0f;  }();
     const float kPlaneYaw   = [](){ const char* e=std::getenv("ECHO_PLANE_YAW");   return e?(float)std::atof(e):0.0f;  }();
+    const float kRotorRpm   = [](){ const char* e=std::getenv("ECHO_ROTOR_RPM");   return e?(float)std::atof(e):9.0f;  }();
+    constexpr float kRotorHubY = 8.32f;   // GLB-space up offset of the rotor hub (from the split)
 
-    // Helicopter = the WHOLE converted GLB (heli_1.glb) as ONE posed instance, the
-    // same proven single-system pipeline the planes/UFO use (the earlier body+rotor
-    // split rendered nothing). Rotor stays baked/static — imperceptible at RTS zoom.
-    struct Heli  { std::unique_ptr<x3::game::EnvArtSystem> body;
+    // Helicopter = heli_body.glb + hub-centred heli_rotor.glb as TWO posed instances
+    // (the UFO two-system trick). The MAIN ROTOR SPINS: heading + spin are both Y
+    // rotations so they compose to one Y rotation; the rotor rides kRotorHubY*s above
+    // the body. This is the reliable, cheap animation (no skinning) — scales to any
+    // heli count. (The rigged OH-1's bone-driven rotor is a separate hero pass.)
+    struct Heli  { std::unique_ptr<x3::game::EnvArtSystem> body, rotor;
                    float cx, cz, r, y, w, phase; };
     struct Plane { std::unique_ptr<x3::game::EnvArtSystem> body;
                    float x0, z0, dx, dz, len, y, speed, phase; };
@@ -735,12 +739,14 @@ int hostEchotropolis(HostContext& hc) {
     std::vector<Plane> planes;
 
     auto addHeli = [&](float cx, float cz, float r, float y, float w, float phase) {
-        Heli h; h.body = std::make_unique<x3::game::EnvArtSystem>();
+        Heli h;
+        h.body  = std::make_unique<x3::game::EnvArtSystem>();
+        h.rotor = std::make_unique<x3::game::EnvArtSystem>();
         const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, cx, y, cz, 1 };
-        if (h.body->buildFromGlbAt(*device, adir, "heli_1.glb", I)) {
-            h.cx=cx; h.cz=cz; h.r=r; h.y=y; h.w=w; h.phase=phase;
-            helis.push_back(std::move(h));
-        }
+        const bool okB = h.body->buildFromGlbAt(*device, adir, "heli_body.glb", I);
+        const bool okR = h.rotor->buildFromGlbAt(*device, adir, "heli_rotor.glb", I);
+        if (okB && okR) { h.cx=cx; h.cz=cz; h.r=r; h.y=y; h.w=w; h.phase=phase;
+                          helis.push_back(std::move(h)); }
     };
     addHeli(-20.0f,  760.0f, 250.0f, 275.0f,  0.10f, 0.0f);
     addHeli( 120.0f, 620.0f, 185.0f, 250.0f, -0.13f, 2.1f);
@@ -763,7 +769,7 @@ int hostEchotropolis(HostContext& hc) {
     x3::logInfo("--world echotropolis: AIRCRAFT — " +
         std::to_string(helis.size()) + " helis + " + std::to_string(planes.size()) + " planes");
 
-    // Helis orbit + bob, nose tangent to the circle.
+    // Helis orbit + bob, nose tangent to the circle; MAIN ROTOR SPINS.
     auto poseHeli = [&](Heli& h, float t) {
         const float a = h.phase + t * h.w;
         const float x = h.cx + std::cos(a) * h.r;
@@ -774,6 +780,13 @@ int hostEchotropolis(HostContext& hc) {
         const float ch = std::cos(heading), sh = std::sin(heading);
         const float MB[16] = { ch*s,0,-sh*s,0,  0,s,0,0,  sh*s,0,ch*s,0,  x, y, z, 1 };
         h.body->setInstanceTransform(0, MB);
+        // rotor: heading + fast spin are both about Y → compose to one Y rotation;
+        // rides kRotorHubY*s above the body (offset on Y, unchanged by the heading yaw).
+        const float hs = heading + t * kRotorRpm;
+        const float chs = std::cos(hs), shs = std::sin(hs);
+        const float hub = kRotorHubY * s;
+        const float MR[16] = { chs*s,0,-shs*s,0, 0,s,0,0, shs*s,0,chs*s,0, x, y+hub, z, 1 };
+        h.rotor->setInstanceTransform(0, MR);
     };
     auto posePlane = [&](Plane& p, float t) {
         const float d = std::fmod(p.phase + t * p.speed, p.len);
@@ -882,7 +895,8 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
                             if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
-            for (auto& h : helis) { poseHeli(h, (float)i * dt); h.body->draw(*device, frame); }
+            for (auto& h : helis) { poseHeli(h, (float)i * dt);
+                                    h.body->draw(*device, frame); h.rotor->draw(*device, frame); }
             for (auto& p : planes) { posePlane(p, (float)i * dt); p.body->draw(*device, frame); }
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
@@ -1312,7 +1326,8 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
         if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame);
                         if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
-        for (auto& h : helis) { poseHeli(h, waterTime); h.body->draw(*device, frame); }
+        for (auto& h : helis) { poseHeli(h, waterTime);
+                                h.body->draw(*device, frame); h.rotor->draw(*device, frame); }
         for (auto& p : planes) { posePlane(p, waterTime); p.body->draw(*device, frame); }
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);
