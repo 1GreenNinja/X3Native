@@ -8416,8 +8416,8 @@ int runDefaultHost(HostContext& hc) {
                 if (firstSub) {
                     const float sens = 0.0025f;
                     flyYaw += ddx * sens; flyPitch -= ddy * sens;
-                    if (flyPitch >  1.55f) flyPitch =  1.55f;
-                    if (flyPitch < -1.55f) flyPitch = -1.55f;
+                    if (flyPitch >  1.5690f) flyPitch =  1.5690f;
+                    if (flyPitch < -1.5690f) flyPitch = -1.5690f;
                 }
                 float fx = std::cos(flyPitch) * std::cos(flyYaw);
                 float fy = std::sin(flyPitch);
@@ -8465,7 +8465,7 @@ int runDefaultHost(HostContext& hc) {
             if (weaponRecoilPitch < 0.0f) weaponRecoilPitch = 0.0f;
         }
         camPitch += weaponRecoilPitch;
-        if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
+        if (camPitch >  1.5690f) camPitch =  1.5690f;   // keep within the look clamp (89.9 deg)
 
         // ---- THIRD-PERSON: drive the Jake avatar from the player's feet/look + swap
         // the RENDER camera to the follow/orbit cam (behind + above the player). The

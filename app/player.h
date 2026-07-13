@@ -91,6 +91,12 @@ public:
     float yaw() const { return m_yaw; }
     float pitch() const { return m_pitch; }
 
+    // FREE LOOK: unclamp pitch (full up/over). Used by the space dogfight, where the
+    // enemy can be anywhere on the sphere and the ±90° head clamp walls it off-view.
+    // Off for on-foot play (the ±89.9° head clamp stays). Yaw is always unlimited.
+    void setFreeLook(bool f) { m_freeLook = f; }
+    bool freeLook() const { return m_freeLook; }
+
     // ---- Stance (crouch / crawl) ------------------------------------------
     // Stand (full eye height + full move speed), Crouch (C, ducked eye + half
     // speed), Prone (Left-Ctrl, crawling eye + a slow crawl). Lowers the camera
@@ -217,7 +223,8 @@ public:
 private:
     x3::phys::BodyId m_body;
     float m_yaw   = 0.0f;   // around +Y; 0 looks toward +X
-    float m_pitch = 0.0f;   // up/down; clamped to +/- kPitchClamp
+    float m_pitch = 0.0f;   // up/down; clamped to +/- kPitchClamp unless m_freeLook
+    bool  m_freeLook = false; // true = no pitch clamp (space dogfight)
 
     // Stance state (crouch/crawl). m_eyeHeight tracks the stance (== kEyeHeight when
     // standing); the planar move speed is scaled by a per-stance multiplier in update().

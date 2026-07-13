@@ -57,7 +57,7 @@ constexpr float kMouseSens    = 1.9f;    // look multiplier
 // pixel delta needs a px->rad factor; 1.9 * this gives a comfortable feel that
 // matches the prior fly-cam (which used 0.0025 rad/px directly).
 constexpr float kPxToRad      = 0.00132f; // so kMouseSens*kPxToRad ~= 0.0025 rad/px
-constexpr float kPitchClamp   = 80.0f * 3.14159265358979f / 180.0f; // +/- 80 deg
+constexpr float kPitchClamp   = 89.9f * 3.14159265358979f / 180.0f; // +/- 89.9 deg (full up/down; 0.1 off the pole to avoid yaw gimbal spin)
 // Ground-stick: doc value is -2.0 m/s. The world ignores a negative .y in
 // moveCharacter and already sticks the character to the floor internally during
 // step(), so we keep .y = 0 when grounded/not jumping and rely on that. The
@@ -219,8 +219,10 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
     // ---- Mouse look: yaw from X delta, pitch from Y delta (inverted screen-Y).
     m_yaw   += in.lookDX * kMouseSens * kPxToRad;
     m_pitch -= in.lookDY * kMouseSens * kPxToRad;
-    if (m_pitch >  kPitchClamp) m_pitch =  kPitchClamp;
-    if (m_pitch < -kPitchClamp) m_pitch = -kPitchClamp;
+    if (!m_freeLook) {                       // free look (dogfight) = no pitch wall
+        if (m_pitch >  kPitchClamp) m_pitch =  kPitchClamp;
+        if (m_pitch < -kPitchClamp) m_pitch = -kPitchClamp;
+    }
 
     // ---- IDCLIP: free-fly. Move along the FULL look direction (pitch included, so
     // looking up + forward ascends), no gravity, no collision — teleport the body
