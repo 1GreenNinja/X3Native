@@ -161,11 +161,12 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // (passed via setRollInput()) accumulates around the ship's forward.
     m_yaw   += in.lookDX * kMouseSens * kPxToRad;
     m_pitch -= in.lookDY * kMouseSens * kPxToRad;
-    // FREE PITCH — no artificial wall. A fighter must LOOP up and over to chase a
-    // contact above/behind it (owner: "SLAMMING INTO AN ARTIFICIAL WALL"). Wrap
-    // into [-pi,pi] exactly like roll, so pitch runs full 360 and the HUD stays sane.
-    while (m_pitch >  kPi) m_pitch -= 2.0f * kPi;
-    while (m_pitch < -kPi) m_pitch += 2.0f * kPi;
+    // Pitch is CLAMPED, not free. The camera is roll-less Euler (setCamera takes
+    // yaw+pitch only), so past vertical the horizontal look INVERTS and the view
+    // pinwheels (owner: "THE VIEW PINWHEELS LEFT TO RIGHT"). Yaw is unlimited, so
+    // ±88° pitch + full yaw already reaches everything on the sphere but the poles —
+    // no need to loop. (True over-the-top looping needs a roll-capable camera; TODO.)
+    m_pitch = clampf(m_pitch, -kPitchClamp, kPitchClamp);
 
     // Roll accumulates over time at maxAngularAccel*rollAxis (scaled to a
     // reasonable per-second rotation rate). Decays toward 0 when no Q/E is
@@ -331,16 +332,16 @@ void SpacePilotController::camera(float& outX, float& outY, float& outZ,
     outPitch = m_pitch;
 
     if (m_thirdPerson) {
-        // 3P chase: pull the camera behind (along -forward) + up (along +up)
-        // from the ship origin. So we look back at the ship.
-        const float fwdLocal[3]   = { 1, 0, 0 };
-        const float upLocal[3]    = { 0, 1, 0 };
-        float fwdW[3], upW[3];
-        quatRotate(m_quat, fwdLocal, fwdW);
-        quatRotate(m_quat, upLocal,  upW);
-        outX = m_pos[0] - fwdW[0] * m_tuning.chaseDistance + upW[0] * m_tuning.chaseHeight;
-        outY = m_pos[1] - fwdW[1] * m_tuning.chaseDistance + upW[1] * m_tuning.chaseHeight;
-        outZ = m_pos[2] - fwdW[2] * m_tuning.chaseDistance + upW[2] * m_tuning.chaseHeight;
+        // 3P chase — ROLL-LESS, to match the roll-less Euler view. Building the
+        // offset from the ship's FULL quaternion (roll included) made the camera
+        // orbit while the view stayed upright: the fight appeared to swim/pinwheel.
+        // Derive fwd from yaw/pitch (exactly the look dir) and lift on WORLD up, so
+        // the camera sits directly behind + above the nose, always level.
+        const float cp = std::cos(m_pitch), sp = std::sin(m_pitch);
+        const float fwd[3] = { cp * std::cos(m_yaw), sp, cp * std::sin(m_yaw) };
+        outX = m_pos[0] - fwd[0] * m_tuning.chaseDistance;
+        outY = m_pos[1] - fwd[1] * m_tuning.chaseDistance + m_tuning.chaseHeight;
+        outZ = m_pos[2] - fwd[2] * m_tuning.chaseDistance;
     } else {
         // 1P cockpit: at the ship origin + a small forward offset (so the
         // ship model doesn't clip the near plane when the host renders it).
