@@ -99,6 +99,23 @@ void EnemyShipManager::update(float dt, const float playerPos[3], const float pl
     if (dt <= 0.0f) return;
     for (uint32_t i = 0; i < (uint32_t)ships_.size(); ++i)
         tickShip(i, dt, playerPos, playerVel);
+
+    // ---- SHIELD STANDOFF (owner: "make my shield push it away to viewable
+    //      distance ... 500 meters"). The AI kept closing to the player's EXACT
+    //      coordinates and flying ON TOP OF the camera. The player's shield bubble
+    //      repels any enemy that penetrates it back out to kShieldStandoff, so a
+    //      contact is always at a readable range instead of clipping through you.
+    constexpr float kShieldStandoff = 500.0f;
+    for (auto& s : ships_) {
+        float to[3] = { s.pos[0] - playerPos[0], s.pos[1] - playerPos[1], s.pos[2] - playerPos[2] };
+        const float d = len3(to);
+        if (d > 1e-3f && d < kShieldStandoff) {
+            const float k = kShieldStandoff / d;   // push out along the contact line
+            s.pos[0] = playerPos[0] + to[0] * k;
+            s.pos[1] = playerPos[1] + to[1] * k;
+            s.pos[2] = playerPos[2] + to[2] * k;
+        }
+    }
 }
 
 void EnemyShipManager::tickShip(uint32_t i, float dt,

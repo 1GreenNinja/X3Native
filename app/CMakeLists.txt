@@ -187,6 +187,18 @@ endif()
 set_target_properties(X3Engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# ---- Version stamp: regenerate version_gen.h on EVERY build (git hash + time) ----
+# so the window title tells you EXACTLY which build you are running.
+add_custom_target(x3version ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC=${CMAKE_SOURCE_DIR}
+        -DOUT=${CMAKE_BINARY_DIR}/version_gen.h
+        -P ${CMAKE_SOURCE_DIR}/cmake/gen_version.cmake
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/version_gen.h
+    COMMENT "Stamping build version (git hash + timestamp)")
+add_dependencies(X3Engine x3version)
+target_include_directories(X3Engine PRIVATE ${CMAKE_BINARY_DIR})
+
 # ---- Compile GLSL shaders to SPIR-V (glslc from the Vulkan SDK) ----
 set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/tri.vert
