@@ -5194,6 +5194,98 @@ int runDefaultHost(HostContext& hc) {
                         scene.roomVisible(x3::game::kStreamedExteriorRoom))
                         worldCars.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                    // ---- HEALTHBAR CAPTURE PROOF (gate: screenshot filename contains
+                    // "healthbar"). Renders the SAME room-gated + LOS-culled enemy bar
+                    // as the live loop's barsFor (app_run.cpp interactive path) so a
+                    // still deterministically shows: near/same-room monster -> bar drawn;
+                    // adjacent-room monster (through a doorway) -> bar SUPPRESSED. Also
+                    // logs each enemy's room + decision so the proof is textual too.
+                    // Capture-only: zero effect on gameplay or any normal screenshot.
+                    if (canonPlay.built() &&
+                        screenshotPath.find("healthbar") != std::string::npos) {
+                        const x3::phys::Vec3 hbEye = ssEye;
+                        const uint32_t hbPlayerRoom =
+                            canonFloor.valid() ? canonFloor.roomAt(hbEye.x, hbEye.y, hbEye.z)
+                                               : x3::game::kNoRoom;
+                        const bool hbRoomGate =
+                            canonFloor.valid() && hbPlayerRoom != x3::game::kNoRoom;
+                        // Two capture modes (by filename token):
+                        //   "...ROOM..." -> ISOLATE the new room gate: draw bars for
+                        //     same-room, on-screen enemies REGARDLESS of LOS (so same-room
+                        //     props/bars don't hide the demonstrative bar). LOS is still
+                        //     computed + logged. This proves adjacent-room enemies get NO
+                        //     bar while same-room enemies do.
+                        //   otherwise -> REAL combined behaviour (room + LOS + on-screen),
+                        //     identical to the live loop's barsFor.
+                        const bool losIsolate =
+                            screenshotPath.find("ROOM") != std::string::npos;
+                        x3::logInfo(std::string("[healthbar-proof] player room=") +
+                            (hbPlayerRoom == x3::game::kNoRoom ? std::string("NONE")
+                                                              : std::to_string(hbPlayerRoom)) +
+                            " roomGate=" + (hbRoomGate ? "ON" : "off"));
+                        auto proofBars = [&](x3::game::MonsterManager& mm) {
+                            for (uint32_t mi = 0; mi < mm.count(); ++mi) {
+                                x3::game::MonsterSystem& m = mm.at(mi);
+                                if (!m.alive()) continue;
+                                x3::phys::Vec3 c = m.pos();
+                                const uint32_t mRoom = canonFloor.valid()
+                                    ? canonFloor.roomAt(c.x, c.y + 1.0f, c.z) : x3::game::kNoRoom;
+                                const char* verdict = "DRAWN";
+                                // Room gate (mirrors barsFor).
+                                if (hbRoomGate && mRoom != x3::game::kNoRoom &&
+                                    mRoom != hbPlayerRoom) verdict = "culled:ROOM";
+                                // LOS gate (mirrors barsFor).
+                                const x3::phys::Vec3 chest{ c.x, c.y + 1.0f, c.z };
+                                const x3::phys::Vec3 d{ chest.x - hbEye.x, chest.y - hbEye.y, chest.z - hbEye.z };
+                                const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+                                if (verdict[0] == 'D' && dist > 0.001f) {
+                                    const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
+                                    const x3::phys::RayHit los = physics->rayCast(
+                                        hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
+                                    if (los.hit) verdict = "culled:LOS";
+                                }
+                                x3::phys::Vec3 head{ c.x, c.y + 2.2f, c.z };
+                                float sx = 0.0f, sy = 0.0f;
+                                const bool onScreen =
+                                    device->worldToScreen(head.x, head.y, head.z, sx, sy);
+                                if (verdict[0] == 'D' && !onScreen) verdict = "culled:OFFSCREEN";
+                                // Capture draw decision: in ROOM-isolate mode, ignore LOS
+                                // culling (draw same-room + on-screen); else use the real
+                                // combined verdict.
+                                const bool captureDraw = losIsolate
+                                    ? (!(hbRoomGate && mRoom != x3::game::kNoRoom &&
+                                         mRoom != hbPlayerRoom) && onScreen)
+                                    : (std::string(verdict) == "DRAWN");
+                                x3::logInfo(std::string("[healthbar-proof]   enemy room=") +
+                                    (mRoom == x3::game::kNoRoom ? std::string("NONE")
+                                                               : std::to_string(mRoom)) +
+                                    " pos=(" + std::to_string(c.x) + "," + std::to_string(c.y) +
+                                    "," + std::to_string(c.z) + ")" +
+                                    " screen=(" + std::to_string(sx) + "," + std::to_string(sy) + ")" +
+                                    (onScreen ? "" : "[off]") +
+                                    " dist=" + std::to_string(dist) + "m -> " + verdict);
+                                if (!captureDraw) continue;
+                                // Draw the thin bar (same geometry as the live bar).
+                                const int hpv = m.hp(), mx = m.maxHp();
+                                if (mx <= 0 || hpv <= 0) continue;
+                                const float frac = (hpv >= mx) ? 1.0f : (float)hpv / (float)mx;
+                                uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                                const float bw = 40.0f, bh = 3.0f, x0 = sx - bw * 0.5f;
+                                float y0 = sy; if (y0 < 14.0f) y0 = 14.0f;
+                                if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
+                                const float lowH = 1.0f - frac;
+                                const float outl[4]   = { 0.0f, 0.0f, 0.0f, 0.65f };
+                                const float frameC[4] = { 0.78f, 0.86f, 1.00f, 0.95f };
+                                const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };
+                                const float baseC[4]  = { 0.52f + 0.30f*lowH, 0.55f - 0.20f*lowH, 0.62f - 0.30f*lowH, 1.0f };
+                                device->drawHudQuad(frame, x0 - 2.0f, y0 - 2.0f, bw + 4.0f, bh + 4.0f, outl);
+                                device->drawHudQuad(frame, x0 - 1.5f, y0 - 1.5f, bw + 3.0f, bh + 3.0f, frameC);
+                                device->drawHudQuad(frame, x0, y0, bw, bh, backC);
+                                device->drawHudQuad(frame, x0, y0, bw * frac, bh, baseC);
+                            }
+                        };
+                        canonPlay.forEachHostileManager(proofBars);
+                    }
                     // X3_SHOT_SWIM=3p: the prone swimmer into the frame.
                     if (swimShotOk && swimShotMode == "3p")
                         thirdPerson.drawAvatar(*device, frame, scene);
@@ -6167,6 +6259,26 @@ int runDefaultHost(HostContext& hc) {
         console->print("intro_play - rolling the cold open (any key skips)...");
     }, "replay the intro cold-open cinematic");
 
+    // ---- restart: spawn a fresh X3Engine.exe + close this window so the main
+    // loop unwinds cleanly through the normal shutdown path (texture/mesh release,
+    // VMA leak check, etc.). We resolve the running exe's ABSOLUTE path via Win32
+    // GetModuleFileName (argv[0] is not threaded into the host context): cmd's
+    // `start` resolves bare names against CWD, which is the project root, not the
+    // build/bin/<Config> dir where the exe actually lives. Playtest aid — not a
+    // true in-place level reset, just the fastest way back to a clean slate.
+    std::string restartExe = "X3Engine.exe";
+#ifdef _WIN32
+    { char rbuf[1024]; DWORD rn = GetModuleFileNameA(nullptr, rbuf, (DWORD)sizeof(rbuf));
+      if (rn > 0 && rn < sizeof(rbuf)) restartExe.assign(rbuf, rn); }
+#endif
+    console->registerCommand("restart", [&console, window, restartExe](const std::vector<std::string>&) {
+        const std::string cmd = std::string("start \"\" \"") + restartExe + "\"";
+        console->print(std::string("restart: spawning ") + restartExe);
+        const int rc = std::system(cmd.c_str());
+        console->print(std::string("restart: spawn rc=") + std::to_string(rc) + " — closing this window...");
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    }, "restart - spawn a fresh X3Engine + exit this one");
+
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
     // '`' toggle + Enter/Backspace/Up/Down/Tab/Esc while the console is open.
@@ -6694,10 +6806,16 @@ int runDefaultHost(HostContext& hc) {
     x3::ui::UiController gameUi;
     {
         x3::ui::SettingsModel sm{};
-        // Seed from current engine defaults: SSAO + SSGI are ON by default in the
-        // device; bloom is always-on in the HDR pipeline; shadows on; vsync from
-        // the device desc; resolution = the actual window size.
-        sm.bloom = true; sm.ssao = true; sm.ssgi = true; sm.shadows = true;
+        // Seed from current engine defaults: bloom is always-on in the HDR pipeline;
+        // shadows on; vsync from the device desc; resolution = the actual window size.
+        // SSAO + SSGI default ON only when the device has hardware ray-tracing. Their
+        // raster fallback renders the scene BLACK on non-RT GPUs (e.g. GTX 1080 Ti —
+        // see [rhi] "RT: not available on this device — SSAO/CSM raster fallback").
+        // The fleet's RTX boxes still get them on; older cards default OFF so the
+        // level is visible on launch. init() applies this seed to the device, so
+        // SSAO/SSGI are OFF from the very first frame on non-RT GPUs.
+        const bool hasRT = device && device->rayTracingSupported();
+        sm.bloom = true; sm.ssao = hasRT; sm.ssgi = hasRT; sm.shadows = true;
         sm.vsync = desc.vsync; sm.width = W; sm.height = H;
         sm.rtao = (console->getInt("r_rtao") != 0);   // RT AO: reflect the cvar (default OFF)
         // Audio: seed from the persisted values applied to the audio system above.
@@ -9522,6 +9640,20 @@ int runDefaultHost(HostContext& hc) {
                 {
                     const double barT = glfwGetTime();
                     const x3::phys::Vec3 hbEye{ camX, camY, camZ };
+                    // ROOM GATE (owner spec: "show on monsters, but NOT outside the room
+                    // you are in"). Resolve the player's current PVS room ONCE from the
+                    // same per-room cull data (CanonFloor::roomAt) that drives r_roomcull/
+                    // r_vis. A bar then draws only for an enemy in the SAME room. This sits
+                    // ON TOP of the LOS raycast below: LOS blocks bars through solid walls,
+                    // the room gate blocks bars leaking through an OPEN doorway into the
+                    // next room. kNoRoom (non-canon world, or player straddling a doorway
+                    // seam / standing outdoors) disables the gate so those paths keep the
+                    // prior LOS+range behaviour and never hide a legitimate same-space bar.
+                    const uint32_t hbPlayerRoom =
+                        canonFloor.valid() ? canonFloor.roomAt(camX, camY, camZ)
+                                           : x3::game::kNoRoom;
+                    const bool hbRoomGate =
+                        canonFloor.valid() && hbPlayerRoom != x3::game::kNoRoom;
                     auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
                         if (mx <= 0 || hpv <= 0) return;   // living enemies only
                         // Only show a bar for NEARBY enemies — fades out by ~18 m, gone by 22 m
@@ -9568,6 +9700,15 @@ int runDefaultHost(HostContext& hc) {
                             x3::game::MonsterSystem& m = mm.at(i);
                             if (!m.alive()) continue;
                             x3::phys::Vec3 c = m.pos();
+                            // ROOM cull: skip the bar if this enemy is not in the player's
+                            // current room. An enemy that resolves to kNoRoom (off the room
+                            // grid — e.g. an outdoor/seam spawn) falls through to the LOS
+                            // gate so it is not silently hidden. This is what stops a bar in
+                            // the NEXT room (visible through an open doorway) from drawing.
+                            if (hbRoomGate) {
+                                const uint32_t mRoom = canonFloor.roomAt(c.x, c.y + 1.0f, c.z);
+                                if (mRoom != x3::game::kNoRoom && mRoom != hbPlayerRoom) continue;
+                            }
                             // LOS cull: skip the bar if a static wall sits between the
                             // camera and the enemy's chest (no more bars through walls).
                             const x3::phys::Vec3 chest{ c.x, c.y + 1.0f, c.z };
@@ -9586,6 +9727,14 @@ int runDefaultHost(HostContext& hc) {
                     const double _pbar0 = glfwGetTime();
                     barsFor(game.corridorEnemies());
                     barsFor(game.checkpointEnemies());
+                    // CANON LEVEL enemies (the playable build's monsters: Main Hall
+                    // squad, cell guards, Medical-Bay attackers, floor bosses, upper
+                    // squads) live in canonPlay, not `game`. Feed them through the same
+                    // room-gated + LOS + billboarded bar so the owner's "show on
+                    // monsters" holds on --world canonlevel too. Same idiom as the
+                    // zapMonsters visitor above.
+                    if (canonWorld && canonPlay.built())
+                        canonPlay.forEachHostileManager(barsFor);
                     g_perf.healthbars += glfwGetTime() - _pbar0;
                     for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
                         barsFor(midFloors.enemies((x3::game::SpireMidFloor)f));
