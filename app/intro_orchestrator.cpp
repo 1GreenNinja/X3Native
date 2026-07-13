@@ -38,6 +38,8 @@
 #include "cutscene.h"         // x3::cut::CutscenePlayer + the cold-open asset
 #include "cinematic.h"        // runCutsceneWindowed (public cinematic driver)
 #include "asset_root.h"
+#include "engine/asset/IAssetSource.h"   // player fighter model for the 3P view
+#include "engine/asset/IModelLoader.h"
 #include "space_pilot.h"
 #include "space/ship_ai.h"
 #include "space/targeting.h"
@@ -323,6 +325,27 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     std::unique_ptr<x3::game::CombatFx> fxPtr;
     const bool fxOn = live && cockpit != nullptr;
     if (fxOn) { fxPtr = std::make_unique<x3::game::CombatFx>(); fxPtr->init(*hc.device); }
+
+    // ---- Player fighter model: drawn in 3P so you SEE your own ship, AHEAD of the
+    //      chase camera (owner: "Draw my ship in 3rd person ... in FRONT of the
+    //      camera"). Reuses the same drawIntroShip helper the enemy wing uses.
+    std::unique_ptr<x3::asset::IAssetSource> playerSrc;
+    std::unique_ptr<x3::asset::IModelLoader> playerLoader;
+    x3::asset::Model playerModel{};
+    std::vector<x3::asset::ModelDrawable> playerDraw;
+    if (live) {
+        playerSrc.reset(x3::asset::createAssetSource());
+        playerSrc->mountDir(x3::game::riggedGlbRoot(), 0);
+        playerLoader.reset(x3::asset::createModelLoader(hc.device, playerSrc.get()));
+        for (const char* c : { "JakeFighterShip_textured.glb", "JakeFighterShip.glb",
+                               "SpaceShip.glb", "SpaceShip2.glb" }) {
+            playerModel = playerLoader->load(c);
+            if (playerModel.ok) break;
+        }
+        if (playerModel.ok) playerDraw = x3::asset::makeDrawables(playerModel);
+        x3::logInfo(std::string("[intro] player ship 3P model=") +
+                    (playerModel.ok ? "loaded" : "<none>"));
+    }
     float beatT = 0.0f;
 
     // Captured-cursor mouse-look for the live window (host_space pattern). The
@@ -528,6 +551,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (!planets.empty())
                     x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh, planets,
                                                      beatT, cx, cy, cz, ringMesh);
+                // YOUR fighter, in 3P — at the ship's own position + facing, so it sits
+                // AHEAD of the chase camera. Skipped in 1P (you're inside it).
+                if (pilot.isThirdPerson() && !playerDraw.empty()) {
+                    const x3::phys::Vec3 pp3 = pilot.pos();
+                    const x3::phys::Vec3 pf3 = pilot.forward();
+                    const float sp[3] = { pp3.x, pp3.y, pp3.z };
+                    const float sf[3] = { pf3.x, pf3.y, pf3.z };
+                    x3::apphost::drawIntroShip(*hc.device, frame, playerDraw, sp, sf, 4.0f);
+                }
                 for (uint32_t i = 0; i < enemies.count(); ++i) {
                     const auto& e = enemies.ship(i);
                     if (e.hull <= 0) continue;
