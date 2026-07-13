@@ -596,6 +596,30 @@ int hostEchotropolis(HostContext& hc) {
                     std::to_string(houses.size()) + " textured HouseForge houses (decoded)");
     }
 
+    // ===================== THE UFO (StarForge saucer) ===================
+    // A mothership hovering high over the crown. Authored ~1.9 units (Hunyuan
+    // normalized) → scaled to a ~230 m saucer. Slowly turns + gently bobs. Re-posed
+    // per frame via setInstanceTransform (built once at identity-ish, then driven).
+    x3::game::EnvArtSystem ufo;
+    bool ufoBuilt = false;
+    constexpr float kUfoScale = 120.0f;        // ~228 m across
+    constexpr float kUfoX = -20.0f, kUfoZ = 760.0f, kUfoY = 470.0f;   // high over the crown
+    {
+        const std::string mdir = "D:/GameDev/SimCityLLM2/refs/models";
+        const float T[16] = { kUfoScale,0,0,0, 0,kUfoScale,0,0, 0,0,kUfoScale,0, kUfoX,kUfoY,kUfoZ,1 };
+        if (ufo.buildFromGlbAt(*device, mdir, "ufo.glb", T)) {
+            ufoBuilt = true;
+            x3::logInfo("--world echotropolis: THE UFO hovers over the crown");
+        }
+    }
+    auto poseUfo = [&](float t) {
+        const float s = kUfoScale, c = std::cos(t * 0.10f), sn = std::sin(t * 0.10f);
+        const float bob = std::sin(t * 0.30f) * 6.0f;   // gentle hover
+        const float M[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
+                              sn*s, 0.0f,  c*s, 0.0f,   kUfoX, kUfoY + bob, kUfoZ, 1.0f };
+        ufo.setInstanceTransform(0, M);
+    };
+
     // RESIDENTS: character height (5-6 ft). Env-tunable (ECHO_PED_SCALE) so it can be
     // dialed live without a rebuild; default 1.7 → ~5.9 ft citizens. (The citizens
     // ARE real textured animated people — the earlier "green blobs" were the grass-
@@ -678,6 +702,7 @@ int hostEchotropolis(HostContext& hc) {
             island.draw(*device, frame);   // the island (sky + water are device-internal)
             props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
             for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
+            if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame); }   // the mothership
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
                 poseBeam(-2.13f);
@@ -1089,6 +1114,7 @@ int hostEchotropolis(HostContext& hc) {
         island.draw(*device, frame);
         props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
         for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
+        if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame); }   // the mothership hovers
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);
             residentsSkin.draw(*device, frame, walkScene);
