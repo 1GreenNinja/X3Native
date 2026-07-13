@@ -68,6 +68,13 @@ set_target_properties(llama PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 find_path(CGLTF_INCLUDE_DIRS "cgltf.h")
 find_package(Stb REQUIRED)
 
+# KHR_draco_mesh_compression DECODE (glTF geometry decompression). Draco lives
+# ONLY inside ModelLoader.cpp (Pimpl) and is linked PRIVATE below, so draco types
+# never leak past the loader — same quarantine discipline as cgltf/Vulkan/Lua.
+# vcpkg's draco port exports the draco::draco target (decoder + encoder in one lib;
+# we only call the decoder).
+find_package(draco CONFIG REQUIRED)
+
 # Header-only audio dep (M9): miniaudio (single header, Unlicense/MIT-0). The
 # vcpkg port installs only miniaudio.h (no CMake config), so locate the header.
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
@@ -116,6 +123,9 @@ target_link_libraries(x3engine
         # llama.cpp core (static, FetchContent-pinned). PRIVATE: llama/ggml types
         # never leak past engine/llm/LlamaLlmSystem.cpp.
         llama
+        # Draco geometry decoder (KHR_draco_mesh_compression). PRIVATE: draco types
+        # stay inside asset/ModelLoader.cpp, same Pimpl discipline as cgltf/Vulkan.
+        draco::draco
 )
 
 target_compile_features(x3engine PUBLIC cxx_std_20)
