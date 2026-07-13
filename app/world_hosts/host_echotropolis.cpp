@@ -634,6 +634,47 @@ int hostEchotropolis(HostContext& hc) {
                     std::to_string(neigh) + " draped into neighbourhoods)");
     }
 
+    // ===================== DOWNTOWN SKYLINE (Urban Night City) =============
+    // The 37 "Urban Night City - Open World" building GLBs each bake their ORIGINAL
+    // scene position in their node translation (base at world Y=0) — so drawing every
+    // building through ONE shared transform reconstructs the artist-designed downtown
+    // as a single unit. We scale that whole layout and drop it centred on the crown
+    // so Echo Harbor gets a real textured skyline behind the procedural towers.
+    // Scene footprint ~1941×1204 (centre 120,175); heights 44–792 m at the baked
+    // 0.01 node scale. ECHO_TOWER_* env-tunable (scale/lift/centre) → recompose live.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> towers;
+    {
+        const std::string cdir =
+            "D:/Assets/_glb/tech/Urban Night City - Open World/Assets/GeeZyyGames/buildings/FBX";
+        const float ts = [](){ const char* e=std::getenv("ECHO_TOWER_SCALE"); return e?(float)std::atof(e):0.34f; }();
+        const float tlift = [](){ const char* e=std::getenv("ECHO_TOWER_LIFT"); return e?(float)std::atof(e):0.0f; }();
+        const float tcx = [](){ const char* e=std::getenv("ECHO_TOWER_X"); return e?(float)std::atof(e):-20.0f; }();
+        const float tcz = [](){ const char* e=std::getenv("ECHO_TOWER_Z"); return e?(float)std::atof(e):760.0f; }();
+        const float sceneCX = 120.5f, sceneCZ = 174.9f;      // baked layout centre
+        const float gy = hf.ok() ? hf.heightAt(tcx, tcz) : 190.0f;
+        // Uniform scale + translate so the layout centre lands on (tcx,tcz) at ground.
+        const float Tx = tcx - ts * sceneCX;
+        const float Tz = tcz - ts * sceneCZ;
+        const float M[16] = { ts,0,0,0,  0,ts,0,0,  0,0,ts,0,  Tx, gy + tlift, Tz, 1 };
+        static const char* kBld[] = {
+            "Building 01","Building 02","Building 03","Building 04","Building 05",
+            "Building 06","Building 07","Building 08","Building 09","Building 10",
+            "Building 11","Building 12","Building 14","Building 15","Building 16",
+            "Building 17","Building 19","Building 20","Building 21","Building 22",
+            "Building 23","Building 24","Building 25","Building 26","Building 27",
+            "Building 28","Building 29","Building 33","Building 34","Building 35",
+            "Building 36","Building 38","Building 39","Building 40","Building 41",
+            "Building 43",
+        };
+        for (const char* b : kBld) {
+            auto t = std::make_unique<x3::game::EnvArtSystem>();
+            if (t->buildFromGlbAt(*device, cdir, std::string(b) + ".glb", M))
+                towers.push_back(std::move(t));
+        }
+        x3::logInfo("--world echotropolis: DOWNTOWN SKYLINE — " +
+                    std::to_string(towers.size()) + " Urban Night City towers on the crown");
+    }
+
     // ===================== THE UFO (Tim's Grok→Rodin saucer) ============
     // A mothership DRIFTING on a slow circular patrol high over the crown, spinning
     // + bobbing, with an emissive underbelly GLOW and a downward ABDUCTION BEAM
@@ -838,6 +879,7 @@ int hostEchotropolis(HostContext& hc) {
             island.draw(*device, frame);   // the island (sky + water are device-internal)
             props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
             for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
+            for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
                             if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
             for (auto& h : helis) { poseHeli(h, (float)i * dt); h.body->draw(*device, frame); }
@@ -1267,6 +1309,7 @@ int hostEchotropolis(HostContext& hc) {
         island.draw(*device, frame);
         props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
         for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
+        for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
         if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame);
                         if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
         for (auto& h : helis) { poseHeli(h, waterTime); h.body->draw(*device, frame); }
