@@ -1202,6 +1202,46 @@ int hostEchotropolis(HostContext& hc) {
         device->drawHudText(fc, "TAB  close", px + pw - pad - 10.0f*11.0f, py + ph - 24.0f, 11.0f, lab);
     };
 
+    // RESIDENT INSPECTOR — the web "click a resident" card. In walk mode the citizen
+    // nearest the crosshair gets a bottom-left life card: name, role, what they're doing
+    // right now, one telling detail, and a voice line. Fed from the live NpcAgent.
+    auto drawResidentCard = [&](const x3::rhi::FrameContext& fc, uint32_t /*hw*/, uint32_t hh,
+                                const char* name, const char* role, const char* activity,
+                                const char* detail, const char* voice, float dist){
+        const float cw = 470.0f, pad = 18.0f;
+        const float cx = 24.0f, cy = (float)hh - 176.0f, ch = 152.0f;
+        const float bg[4]  = { 0.03f, 0.05f, 0.09f, 0.90f };
+        const float hstr[4]= { 0.10f, 0.14f, 0.20f, 0.96f };
+        const float hdr[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
+        const float lab[4] = { 0.60f, 0.70f, 0.82f, 1.0f };
+        const float val[4] = { 0.92f, 0.96f, 1.0f, 1.0f };
+        const float vig[4] = { 1.0f, 0.62f, 0.18f, 1.0f };
+        // Clip a line to the card inner width at the given glyph size.
+        auto clip = [&](char* s, float glyph, float indent){
+            const int mx = (int)((cw - 2.0f*pad - indent) / (glyph * 0.92f));
+            if ((int)std::strlen(s) > mx && mx > 2) { s[mx-2]='.'; s[mx-1]='.'; s[mx]='\0'; }
+        };
+        device->drawHudQuad(fc, cx, cy, cw, ch, bg);
+        device->drawHudQuad(fc, cx, cy, cw, 34.0f, hstr);
+        char nm[96]; std::snprintf(nm, sizeof nm, "%s", name ? name : "RESIDENT");
+        clip(nm, 15.0f, 0.0f);
+        device->drawHudText(fc, nm, cx + pad, cy + 9.0f, 15.0f, hdr);
+        char rl[64]; std::snprintf(rl, sizeof rl, "%s", role ? role : "");
+        device->drawHudText(fc, rl, cx + cw - pad - (float)std::strlen(rl)*11.0f, cy + 11.0f, 11.0f, lab);
+        float ty = cy + 44.0f;
+        char act[96]; std::snprintf(act, sizeof act, "NOW: %s   %0.0fm", activity ? activity : "", dist);
+        clip(act, 13.0f, 0.0f);
+        device->drawHudText(fc, act, cx + pad, ty, 13.0f, val); ty += 26.0f;
+        if (detail && detail[0]) {
+            char dl[140]; std::snprintf(dl, sizeof dl, "- %s", detail); clip(dl, 12.0f, 0.0f);
+            device->drawHudText(fc, dl, cx + pad, ty, 12.0f, lab); ty += 24.0f;
+        }
+        if (voice && voice[0]) {
+            char vl[140]; std::snprintf(vl, sizeof vl, "\"%s\"", voice); clip(vl, 13.0f, 0.0f);
+            device->drawHudText(fc, vl, cx + pad, ty, 13.0f, vig);
+        }
+    };
+
     // ===================== Headless screenshot path =====================
     // Pose the default orbit (17deg, radius 70), settle the waves a few frames so
     // the Gerstner surface isn't flat, then arm+grab. Mirrors host_valley's grab.
@@ -1353,6 +1393,14 @@ int hostEchotropolis(HostContext& hc) {
                 if (const char* pe = std::getenv("ECHO_PANEL"); pe && pe[0] == '1')  // CITY PANEL in captures
                     drawCityPanel(frame, hw, hh, 2038, "MON", 23, 7, 12,
                                   sCrowd.agentCount(), 18, 9, 11748.0, 128.0, 8, 83.6);
+                if (const char* ie = std::getenv("ECHO_INSPECT"); ie && ie[0] == '1') {  // RESIDENT CARD
+                    const auto& pr = x3::game::persona(x3::game::Archetype::Baker);
+                    drawResidentCard(frame, hw, hh, "MARGO OKONKWO",
+                                     x3::game::archetypeName(x3::game::Archetype::Baker),
+                                     x3::game::npcActivityName(x3::game::NpcActivity::AtWork),
+                                     pr.detailCount ? pr.detail[0] : "",
+                                     pr.voiceCount ? pr.voice[0] : "", 8.0f);
+                }
             }
             device->endFrame(frame);
         }
@@ -1919,6 +1967,37 @@ int hostEchotropolis(HostContext& hc) {
                 const double net = (double)atWork * 3.2 - (double)pop * 0.35 + (double)miners * 5.0;
                 drawCityPanel(frame, hw, hh, simYear, kDow[(simDay - 1) % 7], simDay, hour, minute,
                               pop, atWork, leisure, treasury, goldOz, miners, net);
+            }
+
+            // RESIDENT INSPECTOR (walk mode): the citizen nearest the crosshair gets a
+            // life card — the web "click a resident" hook, fed from the live NpcAgent.
+            if (walkMode && physOk && npcLifeBuilt) {
+                float ex, ey, ez, eyaw, epit; player.camera(ex, ey, ez, eyaw, epit);
+                const float fX = std::cos(eyaw), fZ = std::sin(eyaw);
+                int best = -1; float bestDot = 0.94f, bestDist = 0.0f;   // ~20deg cone, 45m reach
+                const uint32_t n = npcLife.agentCount();
+                for (uint32_t i = 0; i < n; ++i) {
+                    const auto& a = npcLife.agent(i);
+                    const float dx = a.pos.x - ex, dz = a.pos.z - ez;
+                    const float d2 = dx*dx + dz*dz;
+                    if (d2 < 1.0f || d2 > 45.0f*45.0f) continue;
+                    const float inv = 1.0f / std::sqrt(d2);
+                    const float dot = (dx*fX + dz*fZ) * inv;
+                    if (dot > bestDot) { bestDot = dot; best = (int)i; bestDist = std::sqrt(d2); }
+                }
+                const float rc[4] = { 1.0f, 0.82f, 0.42f, best >= 0 ? 0.95f : 0.45f };
+                device->drawHudQuad(frame, hw*0.5f - 7.0f, hh*0.5f - 1.0f, 14.0f, 2.0f, rc);
+                device->drawHudQuad(frame, hw*0.5f - 1.0f, hh*0.5f - 7.0f, 2.0f, 14.0f, rc);
+                if (best >= 0) {
+                    const auto& a = npcLife.agent((uint32_t)best);
+                    const auto& pr = x3::game::persona(a.arch);
+                    const char* det = (a.detailIdx >= 0 && (uint32_t)a.detailIdx < pr.detailCount)
+                                    ? pr.detail[a.detailIdx] : (pr.detailCount ? pr.detail[0] : "");
+                    const char* voc = pr.voiceCount ? pr.voice[a.seed % pr.voiceCount] : "";
+                    drawResidentCard(frame, hw, hh, a.name.c_str(),
+                                     x3::game::archetypeName(a.arch),
+                                     x3::game::npcActivityName(a.activity), det, voc, bestDist);
+                }
             }
         }
         device->endFrame(frame);
