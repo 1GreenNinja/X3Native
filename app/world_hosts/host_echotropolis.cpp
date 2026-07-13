@@ -906,14 +906,14 @@ int hostEchotropolis(HostContext& hc) {
             }
             if (sResBuilt) {   // LIVING CITY HUD in populated captures (matches the live top bar)
                 uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
-                char bar[192];
+                char bar[224];
                 std::snprintf(bar, sizeof(bar),
-                    "MON  DAY 23     07:12      %u RESIDENTS     9 AT WORK     $11748",
+                    "2038  MON DAY 23    07:12    POP %u    MINERS 8    GOLD 128 oz    $11748",
                     sCrowd.agentCount());
                 const float bg[4] = { 0.04f, 0.06f, 0.10f, 0.82f };
                 const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
-                device->drawHudQuad(frame, 12.0f, 12.0f, std::min((float)hw - 24.0f, 1010.0f), 34.0f, bg);
-                device->drawHudText(frame, bar, 26.0f, 21.5f, 15.0f, gold);
+                device->drawHudQuad(frame, 12.0f, 12.0f, std::min((float)hw - 24.0f, 1120.0f), 34.0f, bg);
+                device->drawHudText(frame, bar, 26.0f, 21.5f, 14.0f, gold);
             }
             device->endFrame(frame);
         }
@@ -951,6 +951,9 @@ int hostEchotropolis(HostContext& hc) {
     int    simDay   = 23;            // pick up near where the web save sits
     float  simClock = 0.30f;         // day fraction [0,1); 0.30 ≈ 07:12
     double treasury = 11748.0;       // seed to match the familiar figure
+    const  int simYear = 2038;       // near-future setting (Tim's gold-rush era)
+    double goldOz   = 0.0;           // cumulative gold mined by the miner crew
+    const  int kMiners = 8;          // resident gold-mining crew (work the seam)
     static const char* kDow[7] = { "MON","TUE","WED","THU","FRI","SAT","SUN" };
 
     x3::logInfo("--world echotropolis: LMB/MMB-drag or WASD pan (grab-the-ground), "
@@ -1378,18 +1381,22 @@ int hostEchotropolis(HostContext& hc) {
             } else if (residentsBuilt) {
                 pop = residents.agentCount();
             }
-            // Treasury: each working resident earns ~$3.2/sim-day; small upkeep drag.
-            treasury += (atWork * 3.2 - pop * 0.35) * (double)(dt / kSimDayLen);
+            // Gold rush: up to kMiners of the on-shift crew work the seam — each mines
+            // ~6 oz/day, sold into the treasury alongside ordinary wages (minus upkeep).
+            const double dayStep = (double)(dt / kSimDayLen);
+            const uint32_t miners = std::min<uint32_t>((uint32_t)kMiners, atWork);
+            goldOz   += miners * 6.0 * dayStep;
+            treasury += (atWork * 3.2 - pop * 0.35 + miners * 5.0) * dayStep;
 
             uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
             const int hour = (int)(simClock * 24.0f) % 24;
             const int minute = (int)(simClock * 24.0f * 60.0f) % 60;
-            char bar[192];
+            char bar[224];
             std::snprintf(bar, sizeof(bar),
-                "%s  DAY %d     %02d:%02d      %u RESIDENTS     %u AT WORK     $%0.0f",
-                kDow[(simDay - 1) % 7], simDay, hour, minute, pop, atWork, treasury);
-            const float pad = 14.0f, glyph = 15.0f, barH = 34.0f;
-            const float barW = std::min((float)hw - 24.0f, 1010.0f);
+                "%d  %s DAY %d    %02d:%02d    POP %u    MINERS %u    GOLD %0.0f oz    $%0.0f",
+                simYear, kDow[(simDay - 1) % 7], simDay, hour, minute, pop, miners, goldOz, treasury);
+            const float pad = 14.0f, glyph = 14.0f, barH = 34.0f;
+            const float barW = std::min((float)hw - 24.0f, 1120.0f);
             const float bg[4]   = { 0.04f, 0.06f, 0.10f, 0.82f };
             const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
             device->drawHudQuad(frame, 12.0f, 12.0f, barW, barH, bg);
