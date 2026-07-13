@@ -184,6 +184,12 @@ endif()
 
 set_target_properties(X3Engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# NOTE (fold merge/flight-modes-to-main): feat/flight-modes-neon carried an
+# `OUTPUT_NAME "SpaceEngine"` here to keep that branch's exe/window/process
+# namespace off Snake's X3Engine.exe dev builds. That rename is intentionally
+# NOT promoted to trunk: main's exe is the canonical X3Engine.exe that the
+# fleet-wide `Get-Process X3Engine` convention and dozens of docs/scripts
+# reference. The SpaceEngine identity stays branch-local.
 
 # ---- Compile GLSL shaders to SPIR-V (glslc from the Vulkan SDK) ----
 set(SHADER_SRCS
