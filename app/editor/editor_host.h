@@ -20,6 +20,9 @@
 // wrap the NewFrame/Render so the host only issues Begin/End/widget calls.
 
 #include "editor.h"
+#include "editor_ai.h"
+#include "editor_armory.h"
+#include "engine/llm/ILlmSystem.h"
 
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
@@ -167,6 +170,14 @@ private:
     std::unique_ptr<x3::asset::IModelLoader> m_modelLoader;  // bound to the device
     std::unordered_map<std::string, LoadedModel> m_modelCache;
     bool m_modelDirMounted = false;
+
+    // ---- THE ARMORY (editor_armory.h): the whole library, searchable ----------------
+    ArmoryIndex m_armory;                 // parsed once, on the first model-loader use
+    bool        m_armoryMounted = false;  // its root is mounted in m_modelAssets
+    char        m_armorySearch[96] = {};  // the search box
+    int         m_armoryPackSel   = 0;    // 0 = "All packs"; else index into m_armory.packs+1
+    void drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                         x3::phys::IPhysicsWorld& physics);
     // Lazily mount the converted_glb dir + create the loader (first model placement).
     void ensureModelLoader(x3::rhi::IRenderDevice& device);
     // Load + cache a GLB by relpath; returns the cached entry (ok=false on failure).
@@ -178,6 +189,28 @@ private:
     bool  m_rmbPrev = false;             // RMB held last frame (mouse-look gate)
     double m_lastMouseX = 0.0, m_lastMouseY = 0.0;
     bool  m_f8Prev = false;              // F8 rising-edge
+
+    // ---- AI ARCHITECT (editor_ai.h) ----------------------------------------
+    // The panel is a THIN shell: type a sentence, the model returns a plan, we show
+    // the plan, and only an explicit Apply mutates the level (as one undo txn).
+    // The generation is ASYNC (ILlmSystem::submit/poll) — the editor must never
+    // stall a frame waiting on a token.
+    std::unique_ptr<x3::llm::ILlmSystem> m_llm;   // null until the panel first asks
+    x3::llm::ChatId m_aiChat   = x3::llm::kInvalidChat;
+    bool            m_aiTried  = false;   // we attempted a model load (don't retry/frame)
+    bool            m_aiBusy   = false;   // a generation is in flight
+    std::string     m_aiPrompt;           // the designer's sentence (ImGui buffer below)
+    char            m_aiInput[512] = {};
+    std::string     m_aiRaw;              // accumulated model text this generation
+    std::string     m_aiStatus;           // one-line status for the panel
+    std::string     m_aiErr;              // validator rejections, shown verbatim
+    AiPlan          m_aiPlan;             // the parsed, VALIDATED, not-yet-applied plan
+    bool            m_aiHavePlan = false;
+    void aiEnsureModel();                 // lazy load (safe to call every frame)
+    void aiSubmit();                      // build context + prompt, fire the generation
+    void aiPoll();                        // drain tokens; parse when the reply completes
+    void drawAiPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                     x3::phys::IPhysicsWorld& physics);
 
     // Grid snap presets (1 / 0.5 / 0.25 m). The Blockout panel picks one.
     int   m_gridSel = 1;                 // index into kGridSteps

@@ -19,63 +19,63 @@
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Ceiling_A.glb",
-      "sha256": "97ec6ed484b0236ffbd7c1db4c0cc64cc7d0ddea92b289033eb477fb48eadacc",
-      "size": 20498916,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "a4f5d80cb143aff31d1aa11be6b8c9218b305ad64289d518c11398b7796e10bd",
+      "size": 7188348,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Console.glb",
-      "sha256": "e70439de2cf90c783a5af2e27f290539f6af0f47748d2adf8509f8b11307f5ec",
-      "size": 21631572,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "fa132acde0e6b81db1ad7fb8e90ce863ec63d2c93d7ceba996117033488b39a8",
+      "size": 8445468,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_DoorFrame_A.glb",
-      "sha256": "e68967b7f9e5f7597dc78a229f9ce195787a56df5d7f26c68bf121e7a8dc3fb9",
-      "size": 3659368,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "761ec0429d68103bb5d24e1b64dd27c3f5577fba71e1cb872a4f6bee170612e1",
+      "size": 4445480,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Door_A.glb",
-      "sha256": "c3908d7c41b5eaed58f334cec26d41dde1530dd40d7ac2127d90b612c7b1f654",
-      "size": 3391620,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "1f21eed1d9001b2c60dae133df1810771f0802074a55dab3a6fce5c9c7136149",
+      "size": 4177728,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Floor_A.glb",
-      "sha256": "6d44e315b8c16cea572da963a5a69de35eea9b5c2cdb11126b2f99426bd7a3ef",
-      "size": 20878376,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "71401c7979b5f5b8cf93a87ef95305a56af079335ec2feef341b5fbae329bff4",
+      "size": 8134420,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Light_A.glb",
-      "sha256": "e063e9fd5dbc09dc5fcd1cdb6b32b9f881f56daf849b93d321a2b84c882fd3cb",
-      "size": 20613736,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "8fe9ce2db636dbeb00b0e0034d8c20606f4edf18af191dc00125055d548caa7a",
+      "size": 7869812,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Pipes_A.glb",
-      "sha256": "3cb08cd97d50ceb85abf6e425e0f6f29398df254a11ce69cab2c4823ce3bc85e",
-      "size": 20742032,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "904254fe4589144228ec1ae39ded24e22be73be67d685df03ccbb75eaba9ffcd",
+      "size": 7998104,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Wall_A.glb",
-      "sha256": "2af36179401262f2948453f7e7cbc5c80f871cb92e820d07c18c0d318c241dc6",
-      "size": 23566020,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "bd7d8110cf2ce25a480b985ee368755add0971b4e6f42020ded3aa8e16e70503",
+      "size": 9411368,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Wall_B.glb",
-      "sha256": "a61334183f75518e85ef22e35d5e990661a1e564bd39c15c3d68b4aba4ee06f5",
-      "size": 16904376,
-      "source_note": "ROUND 3 cell wall variety (SM_Wall_B/C paneled relief); from G:/GameModels ModularSciFi_Interior"
+      "sha256": "4f55a6154a869d08c8c052615f063d52704b5def8d40b6d61e04482f93d44886",
+      "size": 7936680,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Wall_C.glb",
-      "sha256": "26df59d5fd5d3768a7572226244ec968bb9d3be29052c0392167b0118b326268",
-      "size": 16877424,
-      "source_note": "ROUND 3 cell wall variety (SM_Wall_B/C paneled relief); from G:/GameModels ModularSciFi_Interior"
+      "sha256": "5e8b7205a0bc038f12a912ccad22e0b144066fe159aa0278b52ef8f27e7ffb90",
+      "size": 7236552,
+      "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
       "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Barrel.glb",
@@ -181,9 +181,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/Jake_22_actions.glb",
-      "sha256": "936124f3708d3009d43b86942ddb5bad8e15e1874d2ce02ef67155c6c082e7a6",
-      "size": 26458936,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "92a322f111de1706635b4dcafe0efd4f81acaf23a8b9dca6c4f47ecf009d0a83",
+      "size": 26624592,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12; RE-BAKED 2026-07-12 with Swim + SwimIdle (tools/swim_bake.py) -> 24 clips"
     },
     {
       "repo_path": "assets/rigged_glb/Oracle.glb",

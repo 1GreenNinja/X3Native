@@ -117,8 +117,16 @@ public:
     // No-op in FP or when unbuilt. `crouched` lowers/uses a crouch pose. `moveYaw`
     // is the planar movement heading (radians, atan2(dz,dx)); when not moving the
     // avatar faces the look `yaw`. `fireHeld` plays the rifle aim/fire clip if easy.
+    // `swimming` (v2): play the REAL baked swim clip — "Swim" (breaststroke) while
+    // moving, "SwimIdle" (treading water) at rest, chosen by the planar water speed
+    // with hysteresis — and lay the avatar in the water: the basis pitches prone
+    // (flat while stroking, upright while treading) and the body floats to the
+    // surface line; upright restores through the same dt-scaled blend on exit. An
+    // old GLB without the clips degrades to the walk-at-kTpSwimAnimRate stand-in.
+    // Defaulted so existing callers/tests are byte-for-byte unchanged.
     void update(float dt, Scene& scene, const x3::phys::Vec3& feet, float eyeHeight,
-                float yaw, float pitch, uint32_t roomId, bool crouched, bool fireHeld);
+                float yaw, float pitch, uint32_t roomId, bool crouched, bool fireHeld,
+                bool swimming = false);
 
     // The follow camera for THIS frame's player state (call after update()). Returns
     // the orbit-camera position + the pass-through look angles. FP callers ignore it.
@@ -211,6 +219,11 @@ public:
     // Resolved backward-walk clip index (or -1) — lets the test skip when the rig has
     // no backpedal clip.
     int  walkBackClip() const { return m_walkBackClip; }
+    // Resolved SWIM clip indices (or -1 on an old GLB, which takes the degrade path)
+    // + the live stroke/tread latch — for --test-thirdperson and the HUD.
+    int  swimClip() const { return m_swimClip; }
+    int  swimIdleClip() const { return m_swimIdleClip; }
+    bool swimStroking() const { return m_swimStroking; }
 
 private:
     // Build the facing-flipped draw transform (matches rescue.cpp/monster.cpp:
@@ -231,6 +244,11 @@ private:
     // Locomotion clip indices (resolved by name in build()).
     int  m_idleClip = -1, m_walkClip = -1, m_runClip = -1;
     int  m_runBackClip = -1, m_walkBackClip = -1, m_rifleIdleClip = -1, m_fireClip = -1;
+    // THE SWIM CLIPS (tools/swim_bake.py baked them into Jake_22_actions.glb):
+    // "Swim" = the breaststroke loop, "SwimIdle" = treading water. -1 on an OLD
+    // GLB (a box that hasn't fetched the re-baked rig) — then update() degrades to
+    // the historical walk-at-kTpSwimAnimRate stand-in instead of crashing/T-posing.
+    int  m_swimClip = -1, m_swimIdleClip = -1;
     bool m_useLocoBlend = false;
     // Which clip set the locomotion blend currently has registered: true = the
     // BACKWARDS walk/run clips (player backpedalling), false = the forward set. Lets
@@ -270,6 +288,17 @@ private:
     // 0..1 amount driven by the `crouched` flag in update(); bakeTransform() applies
     // it as a hip drop + forward lean so the avatar visibly squats.
     float    m_crouchAmt  = 0.0f;
+    // SWIM (v2 — a REAL baked breaststroke). m_swimAmt is the smoothed 0..1
+    // "am I in the water" amount driven by the `swimming` flag; bakeTransform()
+    // uses it to pitch the whole basis PRONE and float the body to the surface
+    // line. m_swimStrokeAmt is the smoothed 0..1 "am I stroking" amount driven by
+    // the planar water speed: it crossfades Swim<->SwimIdle AND eases the prone
+    // angle/rise between the two reads (a treading swimmer is far more upright
+    // than a stroking one). Wins over crouch (mutually exclusive in the
+    // controller). m_swimStroking is the hysteresis latch behind the amount.
+    float    m_swimAmt       = 0.0f;
+    float    m_swimStrokeAmt = 0.0f;
+    bool     m_swimStroking  = false;
     // OVER-THE-SHOULDER AIM. m_aimAmt is a smoothed 0..1 amount driven by `fireHeld`
     // in update(); camera() uses it to bias the follow cam subtly over the right
     // shoulder while aiming so the body doesn't block the crosshair.
@@ -378,6 +407,40 @@ inline constexpr float kTpHeldWeaponScaleMul = 1.0f;
 inline constexpr float kTpCrouchDrop    = 0.45f;  // m the avatar lowers when crouched
 inline constexpr float kTpCrouchLeanDeg = 10.0f;  // forward lean (pitch) while crouched
 inline constexpr float kTpCrouchBlend   = 8.0f;   // 1/s smoothing rate in/out of crouch
+
+// SWIM (v2 — JAKE ACTUALLY SWIMS). tools/swim_bake.py baked two real loops into
+// Jake_22_actions.glb: "Swim" (a breaststroke — catch, pull, squeeze, shoot, with
+// the frog kick firing through the arm recovery) and "SwimIdle" (treading water).
+// The CLIP does the limb work now; the engine only has to LAY HIM IN THE WATER:
+// the basis pitches toward horizontal (belly-down along the look) and the body
+// floats up so the back/shoulders break the surface instead of standing on the
+// bed. The stroke clip is authored in the upright rig frame precisely so this
+// prone pitch turns "arms overhead" into "arms extended through the water" —
+// see the header of tools/swim_bake.py.
+//
+// Two reads, eased by the smoothed stroke amount (planar water speed):
+//   STROKING — nearly flat (kTpSwimProneDeg), riding high, "Swim" playing.
+//   TREADING — much more upright (kTpSwimTreadDeg), lower lift, "SwimIdle".
+// DEGRADE PATH: an OLD Jake GLB (no Swim clip — a box that hasn't fetched the
+// re-baked rig) falls back to the historical stand-in, the walk cycle at
+// kTpSwimAnimRate. Never a crash, never a T-pose.
+inline constexpr float kTpSwimProneDeg = 84.0f;  // pitch toward horizontal, STROKING
+inline constexpr float kTpSwimTreadDeg = 38.0f;  // pitch while TREADING (head/chest up)
+inline constexpr float kTpSwimRise     = 1.18f;  // m lift on the prone body so the BACK breaks the
+                                                 // water line (the surface renders opaque from above,
+                                                 // so a body riding just under it disappears). Dialed
+                                                 // against the swim_3p proof shots + the staged
+                                                 // [swimshot] telemetry (belly-down swings the mesh
+                                                 // ~0.5 m below the root pivot on this rig).
+inline constexpr float kTpSwimTreadRise = 0.32f; // m lift while treading (upright: only the head +
+                                                 // shoulders clear the surface)
+inline constexpr float kTpSwimBlend    = 5.0f;   // 1/s smoothing rate in/out of the water pose
+inline constexpr float kTpSwimStrokeBlend = 3.0f;// 1/s smoothing rate Swim <-> SwimIdle
+inline constexpr float kTpSwimStrokeOn  = 0.55f; // m/s planar water speed that starts the stroke
+inline constexpr float kTpSwimStrokeOff = 0.25f; // m/s it drops back to treading (hysteresis)
+inline constexpr float kTpSwimClipRate = 1.0f;   // playback rate of the REAL swim clips
+inline constexpr float kTpSwimAnimRate = 0.6f;   // DEGRADE ONLY: walk-clip rate as the stroke
+                                                 // stand-in when the GLB has no Swim clip
 
 // Over-the-shoulder aim (TASK#46.3, subtle): while aiming/firing the follow camera
 // biases a touch to the right + in, so the avatar's body doesn't block the

@@ -142,11 +142,28 @@ constexpr float kExteriorIbl        = 0.50f;   // app_run sets this for the SEAM
 const Recipe& recipeFor(uint8_t z) {
     static const Recipe kRecipes[ZCount] = {
         /*ZNone*/     {},
+        // ===== KEY LEVELS — THE WHOLE TABLE WAS HALF-LIT (2026-07-12 facility audit) =====
+        // Every zone key in this table was authored at a mean of 0.7-2.4 while EVERY practical
+        // that actually WORKS in this building runs 3.2-3.3: the cell's fluorescent tube is
+        // 3.30 (art/cell, 3f7e6d0) and env_art's ceiling fixtures are 3.2. The recipe rooms
+        // were not "moody" — they were keyed at HALF the building's own fixture standard, and
+        // the 0.42 ambient wash hid it until the wash died.
+        //   MEASURED, flashlight OFF: E Cell Hall mean 7.9 (67% of pixels <= 6/255),
+        //   W Service 7.3 (70% void), Security 8.3 (68% void), Main Hall 13.2 (68% void).
+        // Every key below is now scaled so its MEAN lands on 3.2, with the HUE RATIO PRESERVED
+        // EXACTLY — a corridor key is still the same cool blue-white, a ward key still the same
+        // warm amber; only the LEVEL moves. The boost is capped at 2.2x, which deliberately
+        // leaves ZStorage (2.46), ZSalvari (1.94) and ZOrganic (1.59) BELOW the standard: those
+        // rooms are meant to be darker than a corridor, and this preserves that intent.
+        // This is not a crutch — it is matching each room to the fixture standard the rest of
+        // the facility already proved. It pairs with the ceiling VALUE clamp in
+        // surface_library.h (albedo band [0.08, 0.40]); the two MUST ship together — the clamp
+        // alone measurably darkened every corridor (see the note there).
         /*ZHall*/     { "mw_metal_trim_b", 2.8f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        1.55f, 1.70f, 1.90f, 6.0f,   0.14f, 0.75f, 0.85f, 2.6f,
+                        2.87f, 3.15f, 3.52f, 6.0f,   0.14f, 0.75f, 0.85f, 2.6f,
                         fogOf(0.030f, 0.040f, 0.046f, 0.0045f, 1.5f, 0.65f) },
         /*ZCorridor*/ { "mw_concrete_panels_a", 2.6f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        1.30f, 1.42f, 1.58f, 5.0f,   0.14f, 0.75f, 0.85f, 2.4f,
+                        2.80f, 3.05f, 3.40f, 5.0f,   0.14f, 0.75f, 0.85f, 2.4f,
                         fogOf(0.030f, 0.040f, 0.046f, 0.0045f, 1.5f, 0.65f) },
         // W2-A DETENTION = hazard AMBER (bible/audit). The accent was already amber;
         // warm the fog tint from near-neutral to a clear amber wash and widen the
@@ -155,47 +172,55 @@ const Recipe& recipeFor(uint8_t z) {
         // cell is ZNone and is pinned to the old warm-neutral fog in build() so this
         // amber never bleeds into the canon hand-calibrated reference.
         /*ZWard*/     { "hh_wall_01a", 3.0f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        2.20f, 1.66f, 0.98f, 3.6f,   1.72f, 0.96f, 0.22f, 2.9f,
+        // LAND-LIGHTING: the KEY takes the audit's honest value (2.20 -> 4.27); the amber
+        // ACCENT + amber FOG above are the deliberate detention identity and are kept. The
+        // old key was tuned while applyCabAtmosphere washed 0.42 ambient over the whole game
+        // (B1) — with the wash gone it under-lights by ~2x. Hue is unchanged (both keys are
+        // 1 : 0.77 : 0.47 warm); only the level moves.
+                        4.27f, 3.30f, 2.04f, 3.6f,   1.72f, 0.96f, 0.22f, 2.9f,
                         fogOf(0.058f, 0.041f, 0.023f, 0.0042f, 1.2f, 0.62f) },
         /*ZSecurity*/ { "mw_concrete_panels_a", 2.4f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
-                        1.90f, 1.90f, 2.00f, 3.2f,   1.40f, 0.07f, 0.05f, 2.2f,
+                        3.14f, 3.14f, 3.30f, 3.2f,   1.40f, 0.07f, 0.05f, 2.2f,
                         fogOf(0.020f, 0.022f, 0.026f, 0.0030f, 1.2f, 0.55f) },
         /*ZLab*/      { "mw_plaster_painted", 2.6f, "sr_rubberfloor", 2.2f, "hh_ceiling_01a", 2.8f,
-                        2.30f, 2.50f, 2.30f, 6.5f,   0.25f, 1.10f, 0.35f, 2.6f,
+                        3.11f, 3.38f, 3.11f, 6.5f,   0.25f, 1.10f, 0.35f, 2.6f,
                         fogOf(0.038f, 0.046f, 0.040f, 0.0030f, 1.5f, 0.55f) },
         /*ZBoss*/     { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "mw_metal_panels_a", 3.2f,
-                        2.30f, 1.80f, 1.10f, 6.0f,   1.50f, 0.95f, 0.25f, 2.6f,
+                        4.25f, 3.32f, 2.03f, 6.0f,   1.50f, 0.95f, 0.25f, 2.6f,
                         fogOf(0.045f, 0.040f, 0.034f, 0.0040f, 1.4f, 0.62f) },
         /*ZLobby*/    { "mw_metal_trim_a", 2.8f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        1.50f, 1.62f, 1.78f, 4.6f,   0.14f, 0.75f, 0.85f, 2.4f,
+                        2.94f, 3.17f, 3.49f, 4.6f,   0.14f, 0.75f, 0.85f, 2.4f,
                         fogOf(0.030f, 0.040f, 0.046f, 0.0040f, 1.5f, 0.60f) },
         /*ZStorage*/  { "mw_concrete_panels_b", 2.6f, "sr_concrete_a", 2.4f, "mw_metal_panels_a", 3.0f,
-                        1.35f, 1.15f, 0.85f, 4.2f,   1.50f, 0.95f, 0.25f, 2.2f,
+                        2.97f, 2.53f, 1.87f, 4.2f,   1.50f, 0.95f, 0.25f, 2.2f,
                         fogOf(0.045f, 0.040f, 0.034f, 0.0035f, 1.2f, 0.60f) },
         // ---- W3-2 tower floors. Sets include AD-3's four previously-unused curated
         // survivors (cc_porous_cement, mw_thermal_padding, sr_metal_b, mw_metal_grate). ----
         /*ZMedical*/  { "hh_wall_01a", 3.0f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        2.10f, 2.30f, 2.10f, 5.5f,   0.30f, 1.05f, 0.35f, 2.6f,
+                        3.10f, 3.40f, 3.10f, 5.5f,   0.30f, 1.05f, 0.35f, 2.6f,
                         fogOf(0.040f, 0.048f, 0.040f, 0.0032f, 1.4f, 0.55f) },
         /*ZGenetics*/ { "mw_plaster_painted", 2.6f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        1.90f, 2.30f, 1.95f, 5.5f,   0.20f, 1.20f, 0.30f, 2.8f,
+                        2.97f, 3.59f, 3.04f, 5.5f,   0.20f, 1.20f, 0.30f, 2.8f,
                         fogOf(0.034f, 0.052f, 0.036f, 0.0042f, 1.4f, 0.60f) },
         /*ZCyber*/    { "sr_metal_b", 2.6f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
-                        1.45f, 1.60f, 1.85f, 5.0f,   0.16f, 0.85f, 1.05f, 2.6f,
+                        2.84f, 3.13f, 3.62f, 5.0f,   0.16f, 0.85f, 1.05f, 2.6f,
                         fogOf(0.024f, 0.032f, 0.040f, 0.0038f, 1.4f, 0.60f) },
         // W8-1 floor identity: the drone station stands on HAZARD-STRIPED deck plate
         // (sr_floorstripes — a curated set no zone used yet), not the same grate as F4.
         // W2-A F5 floor scale fix (report §1.2): sr_floorstripes at 2.4 m/repeat read as
         // fine CORDUROY across the big drone deck. 6.0 m/repeat enlarges each hazard band
         // so the deck reads as HANGAR LANES (a code dial, not a reforge).
+        // LAND-LIGHTING: 6.0 m floor scale KEPT; key takes the audit's honest value (1.75 -> 3.46).
         /*ZDroneBay*/ { "mw_thermal_padding", 2.8f, "sr_floorstripes", 6.0f, "mw_metal_panels_a", 3.2f,
-                        1.75f, 1.65f, 1.45f, 6.5f,   1.55f, 0.95f, 0.25f, 2.8f,
+                        3.46f, 3.27f, 2.87f, 6.5f,   1.55f, 0.95f, 0.25f, 2.8f,
                         fogOf(0.035f, 0.035f, 0.032f, 0.0035f, 1.5f, 0.60f) },
         /*ZSalvari*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_concrete_01", 3.2f,
-                        1.10f, 0.92f, 0.62f, 4.5f,   0.25f, 1.10f, 0.45f, 2.8f,
+                        2.42f, 2.02f, 1.36f, 4.5f,   0.25f, 1.10f, 0.45f, 2.8f,
                         fogOf(0.018f, 0.026f, 0.021f, 0.0060f, 1.2f, 0.72f) },
+        // LAND-LIGHTING: cc_exec_floor (the curated exec carpet) KEPT from main; the key takes
+        // the audit's honest value (2.00 -> 3.62).
         /*ZExec*/     { "cc_porous_cement", 3.2f, "cc_exec_floor", 2.6f, "mw_metal_panels_a", 3.2f,
-                        2.00f, 1.80f, 1.50f, 5.5f,   1.60f, 1.15f, 0.45f, 2.6f,
+                        3.62f, 3.26f, 2.72f, 5.5f,   1.60f, 1.15f, 0.45f, 2.6f,
                         fogOf(0.040f, 0.036f, 0.030f, 0.0025f, 1.6f, 0.50f) },
         // W5-1: the Nexus Chamber — no surfaces/lights (canon_45 owns the look);
         // the fog IS the recipe: near-black, heavy, silhouettes-over-detail.
@@ -206,7 +231,7 @@ const Recipe& recipeFor(uint8_t z) {
         // warm practical, BIOLUME GREEN accent, heavy green-black fog (§3 monster spaces;
         // the blood-red half of the two-accent exception is painted per-room, not here).
         /*ZOrganic*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_metal_lattice", 3.0f,
-                        0.95f, 0.72f, 0.50f, 4.2f,   0.28f, 1.15f, 0.45f, 3.0f,
+                        2.09f, 1.58f, 1.10f, 4.2f,   0.28f, 1.15f, 0.45f, 3.0f,
                         fogOf(0.012f, 0.022f, 0.015f, 0.0085f, 1.0f, 0.78f) },
     };
     return kRecipes[z < ZCount ? z : ZNone];
@@ -648,26 +673,55 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
             m_lights.push_back(cl);
         };
         const bool longX = r.w >= r.d;
-        // TALL-ROOM KEY CLAMP (F2-F7 wings): the zone keys were authored for the
-        // canon floors' 3.5-5 m ceilings, where a ceiling-hung key reaches the
-        // floor within its range. The wing floors are 8-12 m tall — a key at
-        // cY-0.5 with range 4-6.5 never touches the props, which read as black
-        // blobs. Hang the key no higher than ~4.6 m above the floor (a dropped
-        // cable pendant); rooms up to 5.1 m tall are byte-identical (min picks
-        // the ceiling), so the calibrated canon-F1 look is untouched.
-        const float keyY = std::min(cY - 0.5f, fY + 4.6f);
+        // ---- 2026-07-12, FACILITY LIGHTING AUDIT — THE KEY LIGHTS COULD NOT REACH THEIR
+        // OWN FLOOR. The Recipe's keyRange is a FIXED CONSTANT that knows nothing about how
+        // tall the room is — but the key is hung on the CEILING. Point attenuation here goes
+        // as (1 - d/range)^2, so a key whose range is barely more than the ceiling height
+        // has already fallen to ~zero by the time it gets down to the floor:
+        //     ZCorridor  keyRange 5.0, ceiling 4.5 -> key at y=4.15, floor 4.15 m below
+        //                => atten (1 - 4.15/5.0)^2 = 0.029.   THE FLOOR GETS ~3% OF THE KEY.
+        //     ZHall      keyRange 6.0, ceiling 5.0 -> key at y=4.65
+        //                => atten (1 - 4.65/6.0)^2 = 0.051.   ~5%.
+        //     ZSecurity  keyRange 3.2, ceiling 4.5 -> the key DIES 0.9 m ABOVE THE FLOOR.
+        // The rooms were not under-lit; they were lit by lamps that stopped in mid-air.
+        // MEASURED, flashlight OFF (docs/screenshots/lighting_audit/facility):
+        //     East Cell Hall     mean 7.9  p05 0.9 / p95 20.7 (spread 20 — FLAT), 67% void
+        //     W Service Corridor mean 7.3                     (spread 20 — FLAT), 70% void
+        //     Security Station   mean 8.3                     (spread 26 — FLAT), 68% void
+        //     Main Hall          mean 13.2                                        68% void
+        // env_art already had this right (`range = max(9, ceil + 4.5)`) — it sizes the reach
+        // to the room. RoomDressing never did. So: keep the recipe's authored range as a
+        // FLOOR, and raise it when the room is tall enough that the key would not otherwise
+        // land — reach = drop-to-floor + 4 m of spread. This is REACH, not LUMENS: the key
+        // colours are untouched. We are not making the halls brighter; we are letting the
+        // light that was already there actually arrive.
+        //
+        // TALL-ROOM KEY CLAMP (F2-F7 wings) — the OTHER half of the same bug, and it lands
+        // TOGETHER with the reach fix. The zone keys were authored for the canon floors'
+        // 3.5-5 m ceilings. The wing floors are 8-12 m tall, so a ceiling-hung key never
+        // touches the props and they read as black blobs. Hang the key no higher than ~4.6 m
+        // above the floor (a dropped cable pendant); rooms up to 5.1 m tall are byte-identical
+        // (min picks the ceiling), so the calibrated canon-F1 look is untouched.
+        // The reach is then sized off the key's ACTUAL hung height, not the ceiling — clamp
+        // first, THEN measure the drop, or a 12 m wing room would buy 12 m of range for a
+        // lamp that is only 4.6 m up.
+        const float keyY     = std::min(cY - 0.5f,  fY + 4.6f);   // pendant (rooms/labs)
+        const float rowY     = std::min(cY - 0.35f, fY + 4.75f);  // corridor/hall light rows
+        const float keyReach = std::max(rec.keyRange, (keyY - fY) + 4.0f);
+        const float rowReach = std::max(rec.keyRange, (rowY - fY) + 4.0f);
         if (z == ZHall || z == ZCorridor) {
             // Rhythm of cool keys along the long axis (the corridor's ONE statement).
             const float len = longX ? r.w : r.d;
             const int nKeys = std::max(1, (int)(len / 8.0f));
             for (int i = 0; i < nKeys; ++i) {
                 const float t = (i + 0.5f) / nKeys - 0.5f;
-                addLight(r.cx + (longX ? t * len : 0), std::min(cY - 0.35f, fY + 4.75f),
+                addLight(r.cx + (longX ? t * len : 0), rowY,
                          r.cz + (longX ? 0 : t * len),
-                         rec.keyRange, rec.keyR, rec.keyG, rec.keyB);
+                         rowReach, rec.keyR, rec.keyG, rec.keyB);
             }
         } else {
-            addLight(r.cx, keyY, r.cz, rec.keyRange, rec.keyR, rec.keyG, rec.keyB);
+            // Clamped pendant height (main) + reach sized to its real drop (audit).
+            addLight(r.cx, keyY, r.cz, keyReach, rec.keyR, rec.keyG, rec.keyB);
             if (r.w * r.d > 40.0f)   // wide room: a dim fill at <= half the key
                 addLight(r.cx, fY + 0.6f, r.cz, rec.keyRange * 0.8f,
                          rec.keyR * 0.4f, rec.keyG * 0.4f, rec.keyB * 0.4f);

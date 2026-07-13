@@ -999,6 +999,77 @@ uint32_t CanonPlay::liveEnemyMarks(EnemyMark* out, uint32_t cap) const {
 }
 
 // ===========================================================================
+// ALERT / WANTED-SYSTEM FEED (the canon arming of app/alert.h). Read-only
+// observation scans + the reinforcement queue — mirrors the Level1Game feed.
+// ===========================================================================
+bool CanonPlay::anyHostileLineOfSight() const {
+    auto scan = [](const MonsterManager& mm) {
+        for (uint32_t i = 0; i < mm.count(); ++i)
+            if (mm.at(i).alive() && mm.at(i).hasLineOfSight()) return true;
+        return false;
+    };
+    if (scan(m_mainHall) || scan(m_cellGuards) || scan(m_attackers) ||
+        scan(m_floorBosses) || scan(m_upperEnemies) || scan(m_rescue.bosses()))
+        return true;
+    return m_martinezSpawned && m_martinez.alive() && m_martinez.hasLineOfSight();
+}
+
+void CanonPlay::forEachCorpse(const std::function<void(const x3::phys::Vec3&)>& fn) const {
+    auto scan = [&](const MonsterManager& mm) {
+        for (uint32_t i = 0; i < mm.count(); ++i)
+            if (!mm.at(i).alive()) fn(mm.at(i).pos());
+    };
+    scan(m_mainHall); scan(m_cellGuards); scan(m_attackers);
+    scan(m_floorBosses); scan(m_upperEnemies); scan(m_rescue.bosses());
+    if (m_martinezSpawned && !m_martinez.alive()) fn(m_martinez.pos());
+}
+
+void CanonPlay::forEachHostileManager(const std::function<void(MonsterManager&)>& fn) {
+    fn(m_mainHall); fn(m_cellGuards); fn(m_attackers);
+    fn(m_floorBosses); fn(m_upperEnemies); fn(m_rescue.bosses());
+}
+
+uint32_t CanonPlay::queueAlertReinforcements(const CanonFloor& floor,
+                                             const x3::phys::Vec3& nearPos,
+                                             int count, bool killSquad) {
+    if (!m_built || count <= 0 || !floor.valid()) return 0;
+    // Spawn room: the doored neighbour of the player's room whose doorway is
+    // nearest the player (the guards arrive through the door, not on top of
+    // the player), else the player's room, else the Main Hall.
+    const uint32_t here = floor.roomAt(nearPos.x, nearPos.y, nearPos.z);
+    uint32_t spawnRoom = kNoRoom;
+    if (here != kNoRoom) {
+        float best = 1e30f;
+        for (const CanonDoorway& dw : floor.doorways) {
+            if (dw.a != here && dw.b != here) continue;
+            const uint32_t other = (dw.a == here) ? dw.b : dw.a;
+            if (other >= floor.rooms.size()) continue;
+            const float dx = dw.cx - nearPos.x, dz = dw.cz - nearPos.z;
+            const float dd = dx * dx + dz * dz;
+            if (dd < best) { best = dd; spawnRoom = other; }
+        }
+        if (spawnRoom == kNoRoom) spawnRoom = here;
+    }
+    if (spawnRoom == kNoRoom) spawnRoom = floor.roomByName("Main Hall");
+    if (spawnRoom == kNoRoom) return 0;
+    for (int k = 0; k < count; ++k) {
+        UpperSpawnJob j;
+        j.roomIdx   = spawnRoom;
+        j.room      = floor.rooms[spawnRoom].name;
+        j.type      = killSquad ? EnemyType::Illuminated : EnemyType::DominionTrooper;
+        j.idx       = (uint32_t)k;
+        j.squadSize = (uint32_t)count;
+        j.hpBonus   = 0;
+        j.speedBonus = killSquad ? 0.4f : 0.0f;   // a kill squad HUNTS
+        m_upperQueue.push_back(std::move(j));
+    }
+    x3::logInfo("[canonplay] alert reinforcements queued: " + std::to_string(count) +
+                (killSquad ? " (KILL SQUAD)" : " (search)") + " -> room '" +
+                floor.rooms[spawnRoom].name + "' (deferred, 1/frame)");
+    return (uint32_t)count;
+}
+
+// ===========================================================================
 // R-5 (PB fold, from playable-build eb334e3): UPPER-FLOOR POPULATION + PICKUPS.
 // Regular squads for floors 2-7 resolved by the data's unique room names, plus
 // lightweight tinted-box pickup props grabbed on proximity. Re-homed with three
@@ -1054,7 +1125,11 @@ uint32_t CanonPlay::spawnUpperEnemies(const CanonFloor& floor, Scene& scene,
 void CanonPlay::spawnOneUpper(const CanonFloor& floor, Scene& scene,
                               x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                               const UpperSpawnJob& job) {
-    const uint32_t room = floor.roomByName(job.room.c_str());
+    // Alert reinforcements carry a resolved room INDEX (names collide across
+    // floors); the boot squads keep the by-name path.
+    const uint32_t room = (job.roomIdx != kNoRoom && job.roomIdx < floor.rooms.size())
+                              ? job.roomIdx
+                              : floor.roomByName(job.room.c_str());
     if (room == kNoRoom) return;
     const CanonRoom& R = floor.rooms[room];
     const float fy = R.y0() + kEnemyFootUp;

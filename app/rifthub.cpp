@@ -16,7 +16,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <cstdlib>
 #include <memory>
 #include <string>
 
@@ -117,7 +116,12 @@ constexpr uint32_t kDeckFills      = 8;       // was 4
 // its lower half into shadow, so the machined hardware reads as machined metal
 // instead of flat cardboard.
 constexpr float kGateKeyColor[3]   = { 0.86f, 0.90f, 1.00f };
-constexpr float kGateKeyI          = 15.0f;   // R9: was 70. That 70 was, by its own R8
+// R9 (mirror fix): 70 -> 15 -> 5.0. BOTH earlier numbers were tuned against a tube
+// that was MIRRORED, i.e. physically incapable of taking light — so they were fitting
+// a light rig to a surface that could never respond, and the number was meaningless.
+// With the shell un-mirrored the gate finally shades, and 15 blew it to a white
+// marshmallow. 5.0 is what an honestly-lit machined tube actually wants.
+constexpr float kGateKeyI          = 5.0f;    // R9: was 70. That 70 was, by its own R8
                                               // comment, "3x its honest value because GLB
                                               // meshes shaded at 1/PI of the prims beside
                                               // them". The shading bug is FIXED, so the
@@ -138,14 +142,14 @@ constexpr float kGateKeyUp         = 4.6f;    // rakes the tube's crown from abo
 //   casts a shadow — which is exactly what carves the machined surface.
 // A second, LOW key rakes the tube's underside so the whole body reads instead of a
 // lit crown sitting on a black belly.
-constexpr float kGateLowI          = 7.00f;   // R9: was 30.0 (same PI inflation)
+constexpr float kGateLowI          = 2.60f;   // R9: was 30.0 (same PI inflation)
 constexpr float kGateLowUp         = 0.9f;
 constexpr float kGateLowHubOff     = 4.4f;
 constexpr float kGateLowRange      = 11.0f;
 constexpr float kGateKeyHubOff     = 1.9f;    // hub-side standoff from the gate plane
 // Warm UNDER-fill (the reference's conduit/indicator bounce on the lower plates).
 constexpr float kGateFillColor[3]  = { 1.00f, 0.66f, 0.36f };
-constexpr float kGateFillI         = 6.40f;   // R9: was 20.0 (same PI inflation)
+constexpr float kGateFillI         = 2.40f;   // R9: was 20.0 (same PI inflation)
 constexpr float kGateFillRange     = 7.0f;
 constexpr float kGateFillUp        = 0.85f;
 constexpr float kGateFillHubOff    = 2.2f;
@@ -220,9 +224,33 @@ constexpr float    kRivetHalf      = 0.032f;
 // ROUND 3 gate-GLB material tints (over the same curated sets): darker than the
 // round-2 procedural tints — the F_1 shots read chalky-pale under the blue core
 // light because the GLB's big smart-projected plates catch far more of it.
-constexpr float    kGatePlateTint[3] = { 0.22f, 0.27f, 0.26f };  // weathered patina plates
-constexpr float    kGateSteelTint[3] = { 0.24f, 0.26f, 0.29f };  // machined steel
-constexpr float    kGateDarkTint[3]  = { 0.55f, 0.58f, 0.62f };  // hardware (over dark trim_a)
+// ---- ROUND 9: THE TUBE WAS BLACK. THIS IS WHY, AND THIS IS THE FIX. -----------
+// Tim, four rounds running: "the gate is supposed to be ONE LARGE metallic Tube."
+// It kept rendering as a black void ring. It was never a lighting problem.
+//
+// The tints below MULTIPLY the fallback surface-set albedo. They were authored to
+// beat down the SD-FORGED gate sets (gate_tube_hull / gate_ring_plate / ...), which
+// came out sandy and bleached. But THOSE SETS WERE NEVER HARVESTED — the LFS budget
+// ran out (see the note at m_surf.mount below), so they do not exist on any machine.
+// Every gate group therefore silently falls back to the CURATED sets, and a tint of
+// 0.22 meant to tame a bleached texture instead crushed an already-correct one:
+//
+//   patina/hull : mw_metal_panels_a albedo 0.789 x 0.22 = 0.174, then metallic 0.80
+//                 removes 80% of the diffuse lobe  ->  effective albedo 0.035  = BLACK
+//   steel       : mw_metal_trim_b   albedo 0.591 x 0.24 = 0.142, metallic 0.85  = BLACK
+//
+// mesh.frag's PBR diffuse is `albedo * (1 - metallic)`. A 0.03-albedo surface CANNOT
+// be lit; 5x the key light moves it by nothing. This is KNOWN_BUGS "VALUE, NOT LUMENS"
+// and L5 (metallic clamp) in the same object. Renormalized to real machined-metal
+// values (~0.55-0.63 sRGB effective) so the membrane's blue key actually CASTS on the
+// tube and SHAPES it, which is the whole point of a big round machined thing.
+// With the mirror fixed the tube FINALLY takes light — and at a 0.58 albedo it came
+// back blown-out white: a marshmallow. That is the same lesson from the other side.
+// These are now real DARK MACHINED STEEL values: the blue key glints off the crest
+// and the body holds a mid-dark value instead of glowing like plastic.
+constexpr float    kGatePlateTint[3] = { 0.31f, 0.33f, 0.36f };  // x0.789 => ~0.24/0.26/0.28 dark machined gunmetal (the TUBE)
+constexpr float    kGateSteelTint[3] = { 0.44f, 0.47f, 0.51f };  // x0.591 => ~0.26/0.28/0.30 machined steel
+constexpr float    kGateDarkTint[3]  = { 0.85f, 0.88f, 0.94f };  // x0.276 => ~0.23/0.24/0.26 darker hardware
 // ROUND 4 lane-1 tints — over the SD-FORGED gate sets (which carry their own
 // value + patina). The forged albedos run SATURATED teal, and the locked
 // palette wants DARK STEEL DOMINANT with teal as accent: the dominant plate
@@ -251,17 +279,32 @@ constexpr float    kForgeDarkTint[3]  = { 1.00f, 1.00f, 1.05f };  // machined ha
 // inner-front shoulder. The tube's surface at r = 2.02 sits at z = -0.315 (local),
 // and the groove cuts 0.058 deeper — so a segment placed 0.300 proud of the gate
 // plane lands INSIDE the groove: a recessed indicator slit, not a proud amber pip.
+// ---- ROUND 9: THE YELLOW DASHED RING IS DEAD. --------------------------------
+// Tim rejected the "cartoony" gate FOUR times, and this was the loudest offender:
+// 48 amber segments, each covering ~53% of its arc, ringing the gate face. That is
+// a DASHED YELLOW RING. It reads as hazard/caution tape wrapped around the portal.
+// It is not in the reference footage, and no amount of "recessing" it in a groove
+// was ever going to fix a repeating yellow pattern.
+//
+// What survives is what the brief actually permits: "a thin recessed light line."
+// The segments now BUTT (half-extent 0.140 > the 0.132 half-pitch => ~6% overlap =>
+// ONE CONTINUOUS ring, no gaps, no dashes), they are much THINNER in section, they
+// are DIM, and they are COOL BLUE-WHITE instead of amber — so the accent belongs to
+// the gate's own blue key light instead of fighting it with a second, warmer hue.
+// The entity span and the tick() animation are unchanged, so the state machine and
+// the self-tests still have a track to drive.
 constexpr uint32_t kTrackSegs      = 48;   // finer track on the bigger ring
 constexpr float    kTrackR         = 2.02f;   // segment center radius (rides the cut groove)
 constexpr float    kTrackProud     = 0.300f;  // hub-side offset from the gate plane
-constexpr float    kTrackHalfTan   = 0.070f;
-constexpr float    kTrackHalfRad   = 0.040f;
-constexpr float    kTrackHalfDep   = 0.018f;
-constexpr float    kTrackEmIdle    = 0.22f;
-constexpr float    kTrackEmOpen    = 0.90f;
-constexpr float    kTrackChase     = 2.00f;   // added peak at the chase crest
+constexpr float    kTrackHalfTan   = 0.140f;  // > half-pitch (0.132) => CONTINUOUS. NO DASHES.
+constexpr float    kTrackHalfRad   = 0.022f;  // a thin LINE, not a fat pip
+constexpr float    kTrackHalfDep   = 0.012f;
+constexpr float    kTrimCool[3]    = { 0.46f, 0.66f, 1.00f };  // cool blue-white trim light (was traffic amber)
+constexpr float    kTrackEmIdle    = 0.10f;   // subtle: it is trim lighting, not a light show
+constexpr float    kTrackEmOpen    = 0.34f;
+constexpr float    kTrackChase     = 0.55f;   // added peak at the chase crest (was 2.00 = a strobing halo)
 constexpr float    kTrackChaseRadS = 9.0f;    // chase sweep speed (rad/s)
-constexpr float    kTrackEmCap     = 2.30f;
+constexpr float    kTrackEmCap     = 0.80f;
 
 // ---- Conduits + coils + TEAL holo screens (dressing; ROUND 2 pipe rebuild) -----
 // Round 1 drew each conduit segment as a flat traffic-cone-orange emissive
@@ -371,6 +414,11 @@ constexpr float    kCoreLightMin      = 9.0f;          // pulse-with-hum floor
 constexpr float    kCoreLightMax      = 15.0f;          // pulse-with-hum peak
 constexpr float    kCoreLightFreqHz   = 1.1f;           // slow hum-synced breathe
 constexpr float    kCoreLightRange    = 9.5f;           // reaches the gate + plate
+// How far HUB-SIDE of the gate plane the membrane's key light sits. A glowing disc
+// radiates forward; its point stand-in must sit in front of the plane or the tube's
+// entire front face shades at N.L ~= 0 (see the light-build block). 1.35 m puts the
+// blue at a raking angle across the tube face — it MODELS the round form instead of
+// skimming past it — while staying inside the ring's own aperture.
 
 // ---- Event-horizon membrane v2 (the DEEP-BLUE PLASMA STORM) --------------------
 // The fable-rock art pass (docs/RIFTHUB_ART_TARGET.md, palette LOCKED: BLUE
@@ -1094,9 +1142,41 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // roughness just past the 0.6 cutoff, so the wrong radiance never lands
     // and the gate keeps its weathered-metal light response.
     {
-        const uint8_t platePx[4] = { 0, 158, 204, 255 };  // rough .62, metal .80
-        const uint8_t steelPx[4] = { 0, 156, 217, 255 };  // rough .61, metal .85
-        const uint8_t darkPx[4]  = { 0, 163,  26, 255 };  // rough .64, metal .10
+        // ROUND 9 — METALLIC CLAMP (KNOWN_BUGS L5, and the other half of the black
+        // tube). metal .80/.85 deletes 80-85% of the diffuse lobe, and a near-FULL
+        // metal has to get its light from somewhere else: reflections. But roughness
+        // is held at >= 0.62 here ON PURPOSE (the ghost-glass/SSR fix above), which
+        // is PAST mesh.frag's mirror gate `1 - smoothstep(.25,.6,rough)` — so the
+        // reflection lobe is switched OFF too. Full metal + no reflections + no
+        // diffuse = a black object, by construction. It could never have worked.
+        //
+        // Clamped to .35: the tube keeps a real specular sheen (F0 = mix(.04, albedo,
+        // .35) ~= .24 — it still glints along the crest) while regaining a genuine
+        // diffuse lobe, so the blue membrane light lands on it and MODELS the round
+        // form. Roughness stays >= .62, so the ghost-glass fix is untouched.
+        // Metal enough to READ as metal (a real specular crest under the blue key),
+        // dielectric enough to keep a diffuse lobe so the round form still models.
+        // Roughness stays >= .62 — past mesh.frag's mirror gate — so the ghost-glass
+        // fix above is untouched.
+        // ---- R10: THE ROUGHNESS FLOOR IS LIFTED (carefully) --------------------
+        // rough >= 0.62 was a WORKAROUND, not a material decision: it parked the gate
+        // past mesh.frag's SSR gate (1 - smoothstep(0.25, 0.6, rough)) so the buggy
+        // half-res depth march could never contribute. Its ROOT CAUSE was explicitly
+        // "the gate's dense THIN-PLATE geometry (2 m first step + 0.5 m thickness
+        // tunnels straight through the plates)" -- i.e. the R5 gate's 233 scattered
+        // thin parts. The R10 tube is ONE CLOSED HULL 1.3 m thick. The march has
+        // nothing thin left to tunnel through, so the workaround is buying nothing and
+        // costing everything: at 0.62 the prefiltered env is sampled at a near-top mip,
+        // which is a BLURRED SMEAR -- a broad soft gradient, never the thin bright
+        // chamfer LINE that is the entire visual signature of machined steel.
+        // 0.38: a real machined (not mirror-polished) steel. The chamfers resolve a
+        // crisp reflection of the overcast dome; the flats stay matte enough to read as
+        // worked metal rather than chrome. Verified against the ghost-glass symptom
+        // (see docs/screenshots/rifthub_r10) -- no X-ray, because the geometry that
+        // caused it is gone.
+        const uint8_t platePx[4] = { 0,  97, 166, 255 };  // rough .38, metal .65 (the TUBE)
+        const uint8_t steelPx[4] = { 0,  92, 176, 255 };  // rough .36, metal .69 (bolts/housings)
+        const uint8_t darkPx[4]  = { 0, 163,  26, 255 };  // rough .64, metal .10 (hardware: unchanged)
         m_mrGate[0] = device.createTexture(platePx, 1, 1, false);
         m_mrGate[1] = device.createTexture(steelPx, 1, 1, false);
         m_mrGate[2] = device.createTexture(darkPx,  1, 1, false);
@@ -1448,7 +1528,35 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // material-group drawable, at portalXform * nodeTransform). The GLB's
             // local contract matches the membrane basis: XY gate plane, hole
             // along +Z(outward), FRONT (clamp caps / track bed) at -Z (hub-side).
-            const float locX[3] = { rightX, 0.0f, rightZ };
+            //
+            // ================= ROUND 9: THE GATE WAS MIRRORED. =================
+            // THIS is why the tube was black — not the albedo, and not the lights.
+            //
+            // right = (-outwardZ, 0, outwardX), up = (0,1,0), out = (outwardX, 0, outwardZ).
+            // For portal 0 (out = +X) that basis is right=(0,0,1), up=(0,1,0), out=(1,0,0):
+            //     | 0 0 1 |
+            //     | 0 1 0 |  =  det -1
+            //     | 1 0 0 |
+            // A NEGATIVE determinant is a REFLECTION, not a rotation. Every gate GLB was
+            // instanced through a MIRROR. That reverses triangle winding, so back-face
+            // culling threw away the tube's OUTER shell and drew its INNER shell instead:
+            // we were looking at the INSIDE of the tube, whose normals point AWAY from
+            // every light in the room. Hence a perfect torus silhouette, correct albedo
+            // and normal-map relief (texture lookups don't care about winding), coherent
+            // specular — and NO diffuse, at ANY albedo, under ANY light. That is exactly
+            // the black void ring Tim kept rejecting, and exactly why "5x the key light
+            // barely moved it".
+            //
+            // PROOF (shots/r9): a GLB cube carrying the tube's EXACT material renders
+            // blown-out white in this same room, and a 120-intensity probe light 3 m from
+            // the tube blows out the floor while leaving the tube black. Only the mirror
+            // explains both. (tools/build_rifthub_gate.py even logs "TUBE inside-out N/M"
+            // — the mirror was being fought at export time instead of at the transform.)
+            //
+            // The fix is ONE SIGN. Negating local X makes the basis RIGHT-handed (det +1),
+            // so the gate instances as a true rotation, winding is preserved, and the
+            // OUTER shell — the machined metal — is what the player actually sees.
+            const float locX[3] = { -rightX, 0.0f, -rightZ };
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };
             const float locZ[3] = { outwardX, 0.0f, outwardZ };
             float gateXf[16];
@@ -1537,7 +1645,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // circumference ONCE by default (a smeared stretch) — rescale so a
             // tile lands roughly every 1.3 m major / 1.25 m minor.
             for (auto& v : torus.verts) { v.uv[0] *= 10.0f; v.uv[1] *= 2.0f; }
-            const float locX[3] = { rightX, 0.0f, rightZ };   // ring "right"
+            // MIRROR (KNOWN_BUGS R3): [right, up, outward] with right=(-outZ,0,outX)
+            // is det -1 — a REFLECTION. The fallback torus was instanced inside-out
+            // and could not be lit. -right is the right-handed lateral (det +1); it
+            // is what basisFromOutward() returns for this outward vector.
+            const float locX[3] = { -rightX, 0.0f, -rightZ };  // ring "right" (det +1)
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };   // world up
             const float locZ[3] = { outwardX, 0.0f, outwardZ };// outward (hole axis)
             AddedEntity ae = addOrientedEmissiveMesh(
@@ -1611,7 +1723,9 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // ROUND 3: the authored GLB carries its own plinth + angled shoulder
         // skirt + foot pads, so the box cradle only dresses the fallback ring.
         if (!m_gateGlbActive) {
-            const float locX[3] = { rightX, 0.0f, rightZ };
+            // MIRROR (KNOWN_BUGS R3): -right, not right. det +1. The skirt plinth and
+            // the floor anchor plates were instanced through a reflection.
+            const float locX[3] = { -rightX, 0.0f, -rightZ };
             const float locY[3] = { 0.0f,   1.0f, 0.0f    };
             const float locZ[3] = { outwardX, 0.0f, outwardZ };
             // Skirt plinth (top at 0.50 m — below the 0.55 m ring opening).
@@ -1647,10 +1761,11 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
 
         // ---- ORANGE conduits + coil rings + TEAL holo screens (phase D) ------
-        // Portal-local frame for the dressing (the cradle's basis is scoped).
-        const float dX[3] = { rightX, 0.0f, rightZ };
-        const float dY[3] = { 0.0f, 1.0f, 0.0f };
-        const float dZ[3] = { outwardX, 0.0f, outwardZ };
+        // (The dressing's portal-local dX/dY/dZ trio is DELETED: it was dead code —
+        // nothing had referenced it since the chevrons were cut — and it was one more
+        // copy of the det -1 [right, up, outward] MIRROR idiom (KNOWN_BUGS R3) sitting
+        // in the file waiting to be copy-pasted. Anything that needs a basis off an
+        // outward vector calls basisFromOutward() in app/basis.h.)
         // World point in the gate plane, nudged hub-side of the ring face.
         auto gatePt = [&](float alongRight, float y, float alongOut) {
             return x3::phys::Vec3{
@@ -1875,8 +1990,10 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // normal/height maps. Nothing is bolted to its face any more.
 
 
-        // ---- Segmented amber RATCHET TRACK (inner front edge; the video's
-        // activation-feedback detail). Contiguous span for tick()'s chase.
+        // ---- The recessed INDICATOR LINE (inner front edge; the video's
+        // activation-feedback detail). ROUND 9: this used to be 48 amber DASHES —
+        // a caution-tape ring. It is now one CONTINUOUS, thin, dim, cool trim line
+        // seated in the machined groove. Contiguous span for tick()'s chase.
         p.trackEntFirst = scene.size();
         for (uint32_t t3 = 0; t3 < kTrackSegs; ++t3) {
             const float th = (float)t3 * (twoPi / (float)kTrackSegs);
@@ -1894,7 +2011,7 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 cx + kTrackR * radX - outwardX * proud,
                 RY + kTrackR * radY,
                 cz + kTrackR * radZ - outwardZ * proud,
-                kChevAmber, /*emStrength=*/kTrackEmIdle, kChevSlitDark);
+                kTrimCool, /*emStrength=*/kTrackEmIdle, kChevSlitDark);
             m_portalMeshes.push_back(ae.mesh);
         }
         p.trackEntCount = kTrackSegs;
@@ -1930,7 +2047,12 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.rightX = rightX; p.rightZ = rightZ;
         p.outX   = outwardX; p.outZ = outwardZ;
         const uint32_t membraneEntFirst = scene.size();
-        const float locX[3] = { rightX, 0.0f, rightZ };
+        // MIRROR (KNOWN_BUGS R3): -right, not right — det +1. The plasma disk, the
+        // Fresnel contact rim and the two falloff shells were all instanced through a
+        // reflection. (They are emissive, so the mirror did not black them out the way
+        // it blacked out the gate's metal — but a reflected disk presents its BACK face
+        // to the hub, and the rim/shell tori were being drawn inside-out.)
+        const float locX[3] = { -rightX, 0.0f, -rightZ };
         const float locY[3] = { 0.0f,   1.0f, 0.0f    };
         const float locZ[3] = { outwardX, 0.0f, outwardZ };
         // [0] PLASMA disk (filament emissive map; mrTex forces the PBR route so
@@ -2038,9 +2160,15 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // five live parameter rows), so the cell terminal's center schematic gives way
         // to type at roughly twice the size.
         m_holos[i].setLayout(HoloTerminal::Layout::Readout);
-        // Blue/green holo ink (the canonical status colours; amber is reserved for
-        // warnings, which the console's own status line supplies).
-        m_holos[i].setTextColor(0.42f, 1.0f, 0.78f, 1.0f);
+        // ROUND 9 — THE CYAN IS GONE. This used to call
+        //     setTextColor(0.42f, 1.0f, 0.78f)
+        // which is a MINT/CYAN (g > b), the one ink the canon explicitly bans
+        // ("BLUE, NOT CYAN" — DECISIONS.md, Tim's own words). Worse, setTextColor
+        // sets m_inkOverride, which FLATTENS every body row to that single colour and
+        // switches OFF the keyword-driven statusInk() palette entirely — so the
+        // console lost its blue/green/orange status language as well as its canon hue.
+        // Saying nothing is correct: the default path bakes blue-white structure with
+        // GREEN for OPEN/STABLE and ORANGE for FAIL/LOCKED, which IS the canon palette.
         m_holos[i].setLines(consoleReadout(i));
     }
 
@@ -2049,7 +2177,15 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_lights.reserve(m_portals.size() + 5);
     for (const auto& p : m_portals) {
         x3::rhi::PointLight L;
-        L.pos[0] = p.worldPos.x; L.pos[1] = kRingY + OY; L.pos[2] = p.worldPos.z;
+        // The CORE light stays exactly where it has always been: at the gate centre,
+        // in the gate plane. It owns the bore, the floor pool and the membrane read —
+        // all of which already look right, and none of which the tube fix may disturb.
+        // (Tried and reverted: pushing this light hub-side to rake the tube. It dims
+        // the bore, which is one of the good things, and it does NOT fix the tube —
+        // see the kGateLowI note, which is where the tube's light actually comes from.)
+        L.pos[0] = p.worldPos.x;
+        L.pos[1] = kRingY + OY;
+        L.pos[2] = p.worldPos.z;
         L.range  = kCoreLightRange;
         L.color[0] = kCoreLightBlue[0] * kCoreLightBase;
         L.color[1] = kCoreLightBlue[1] * kCoreLightBase;
@@ -2325,8 +2461,9 @@ void Rifthub::tick(float dt, Scene& scene) {
             }
         }
 
-        // --- Amber RATCHET TRACK: dim when dormant; a bright CHASE sweeps the
+        // --- The recessed INDICATOR LINE: dim when dormant; a CHASE sweeps the
         //     circumference during the surge; steady powered glow once OPEN.
+        //     (ROUND 9: cool blue-white and continuous — no longer an amber dash ring.)
         for (uint32_t t3 = 0; t3 < p.trackEntCount; ++t3) {
             const uint32_t e = p.trackEntFirst + t3;
             if (e >= sceneN) break;
@@ -2338,7 +2475,7 @@ void Rifthub::tick(float dt, Scene& scene) {
                 float cph = std::cos(segAng - m_time * kTrackChaseRadS + phase);
                 if (cph < 0.0f) cph = 0.0f;
                 cph = cph * cph; cph = cph * cph; cph = cph * cph;   // ^8
-                em = kTrackEmIdle + surge01 * (0.55f + kTrackChase * cph);
+                em = kTrackEmIdle + surge01 * (0.30f + kTrackChase * cph);
             }
             ents[e].emissive[3] = p.dead ? 0.0f : capped(em, kTrackEmCap);
         }
@@ -2890,7 +3027,48 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // lights the room BY DESTROYING ITS CONTRAST. The point rig and the MEMBRANES carry
     // this hall; ambient only has to keep the deepest corners from going pure void.
     device.setAmbient(0.032f, 0.036f, 0.046f);
-    device.setIblProbe(true);
+    // ===== R10 — THE GATE HAD NOTHING TO REFLECT ==============================
+    // Owner, holding up a reference render of a machined-steel structure:
+    //   "There are no lights. just shiny reflections from the white cloudy sky."
+    //   "We need that kind of lighting model."
+    // He is describing an ENVIRONMENT-driven metal: no emissives on the object at
+    // all, its entire read coming from a big bright dome reflected in its chamfers.
+    // That is exactly what mesh.frag's iblAmbient() does -- specular IBL samples the
+    // PREFILTERED env cube along R at mip = roughness, which works at ANY roughness
+    // (rough 0.62 just picks a blurrier mip = a broad, soft, overcast reflection).
+    // Note the SSR roughness gate (1 - smoothstep(0.25, 0.6, rough)) applies ONLY to
+    // the reflTex blend weight -- so the ghost-glass/SSR fix is UNTOUCHED by this.
+    //
+    // The bug: setIblProbe(true) bakes the env cube FROM THE SCENE, and this scene is
+    // a deliberately DARK hall. So the gate's mirror was pointed at a black room. Its
+    // prefiltered specular came back ~0, the metal fell through to the flat
+    // ambient-specular FLOOR (a constant), and 90k triangles of freshly-machined
+    // chamfers rendered as GREY MUSH. Nine rounds of art, and the last thing missing
+    // was something for the steel to look at.
+    //
+    // The fix is not a light and not an albedo: give the room an ENVIRONMENT. The
+    // hall's own point rig, ambient, fog, grade, shafts and membranes are all
+    // unchanged -- we only change what the metal SEES. A big soft overcast dome is
+    // also what a real industrial hall's overhead diffusers would give you.
+    {
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled      = true;
+        // A WHITE CLOUDY SKY: no visible sun disc, heavy haze, near-neutral and
+        // bright from zenith to horizon -- a softbox the size of the world. The sun
+        // term stays low so this reads as OVERCAST, not as a second key light.
+        sp.sunDir[0] = 0.30f; sp.sunDir[1] = 0.82f; sp.sunDir[2] = -0.48f;
+        sp.sunColor[0] = 1.00f; sp.sunColor[1] = 0.99f; sp.sunColor[2] = 0.97f;
+        sp.sunIntensity = 0.12f;      // overcast: the DOME lights it, not the sun
+        sp.haze         = 1.00f;
+        sp.exposure     = 1.00f;
+        sp.zenith[0]  = 0.62f; sp.zenith[1]  = 0.66f; sp.zenith[2]  = 0.72f;
+        sp.horizon[0] = 0.78f; sp.horizon[1] = 0.80f; sp.horizon[2] = 0.84f;
+        device.setSkyParams(sp);
+    }
+    // Bake the env cube from that DOME, not from the black room. (Scene-probe off:
+    // its whole purpose was "reflect the hall not an open sky", and the hall turned
+    // out to be the problem -- a mirror aimed at a void.)
+    device.setIblProbe(false);
     // ROUND 5 — THE GHOST-GATE CURE. The hub never called setIblIntensity, so it
     // ran at 1.0: FULL environment IBL on every surface. mesh.frag's iblAmbient()
     // adds prefiltered env specular weighted by the split-sum BRDF *bias* term
@@ -2908,8 +3086,25 @@ void Rifthub::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     // R9: the IBL bias term (`ab.y`) is ALBEDO-INDEPENDENT — it paints a neutral grey
     // wash regardless of what the surface says it is. That is precisely the "washed-out
     // pale concrete" failure mode, and it too was tuned under the broken path. Down.
-    const float kIblInterior = 0.18f;
+    // THE ENV DIFFUSE STAYS DOWN. This scale drives the irradiance the room's
+    // CONCRETE drinks, and the hall is meant to be dark -- raising it to feed the
+    // steel washed the whole hall into a pale warehouse (the exact failure mode
+    // rounds 2/5/9 kept re-learning). It stays at the calibrated interior value.
+    // The dome is FAR brighter than the black room this was calibrated against, so
+    // holding 0.18 would now pump real irradiance into every wall and wash the hall
+    // pale -- the exact failure rounds 2/5/9 kept re-learning. It comes DOWN to keep
+    // the hall's DIFFUSE response where the owner signed it off.
+    const float kIblInterior = 0.07f;
     device.setIblIntensity(kIblInterior);
+    // ...AND THE ENV SPECULAR COMES UP. New knob (r_iblspec): it scales the
+    // prefiltered environment reflection ALONE. Metals are kD ~ 0 -- reflection IS
+    // their entire ambient response -- so this feeds the gate's chamfers a bright
+    // overcast dome to catch, while the hall's dielectrics (kD ~ 1, F0 = 0.04) barely
+    // register it and keep their darkness. That is the owner's reference exactly:
+    // "there are no lights, just shiny reflections from the white cloudy sky."
+    // No emissive, no over-unity albedo, no key-light crank: the metal is lit by
+    // being SHINY AT SOMETHING BRIGHT, which is how metal has always worked.
+    device.setIblSpecular(1.15f);
     // R9: exposure bias was pushed to 1.24 to lift a scene the renderer was under-
     // lighting by ~PI. With the renderer honest, a >1 bias is just a second blowout
     // multiplier stacked on the first. Back to neutral — and slightly under, because

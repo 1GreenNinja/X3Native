@@ -21,7 +21,7 @@ struct CliOptions {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBlockout = false,
-         testBarrels = false, testGlass = false, testHoloterm = false, testLlm = false, testEcs = false, testEcsRender = false,
+         testBarrels = false, testGlass = false, testHoloterm = false, testLlm = false, testEditorAi = false, testEcs = false, testEcsRender = false,
          testFrustumCull = false,
          testCombat = false, testAudio = false, testAcoustics = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
@@ -50,6 +50,7 @@ struct CliOptions {
          // keypad submit link via the real HoloTerminal). See runHatchChainSelfTest.
          testHatch = false,
          testEcology = false, testCrowd = false, testAlert = false,
+         testWaterZap = false,   // --test-waterzap (FISH + the lightning water ZAP)
          // --test-canonvehicle (WORLD CARS: enter/drive/exit + hold-E hack +
          // unlocked-latch region persistence). See runCanonVehicleSelfTest.
          testCanonVehicle = false;
@@ -250,6 +251,12 @@ struct CliOptions {
     // per-trigger activation + allActivated ordering, and that tick() advances
     // the chevron/core/membrane emissive while the stone ring stays static.
     bool        testRifthub = false;
+    // --test-basis (KNOWN_BUGS R3, THE MIRROR): asserts that EVERY model-instancing
+    // basis in the game has a POSITIVE determinant. A negative determinant is a
+    // reflection: winding reverses, back-face culling drops the outer shell, and the
+    // model is drawn inside-out and cannot be lit by anything. Builds the worlds
+    // headless and scans every entity, plus negative controls that prove it can fail.
+    bool        testBasis = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
@@ -553,6 +560,11 @@ struct CliOptions {
     // realism mandate; sets curated by tools/tex_curate.py). FLAT output folder.
     bool        matlibShot = false;
     std::string matlibShotDir = "D:/GameDev/matlib_review";
+    // --test-primlight [out.png]: ONE LIGHTING PATH. Renders a prim panel and a GLB
+    // panel with identical albedo under identical lights on the REAL device and
+    // asserts equal radiance (+ a negative control). See app/prim_light_test.cpp.
+    bool        testPrimLight = false;
+    std::string primLightShotPath = "shots/primlight_probe.png";
     // Ocean vantage mode (--screenshot-ocean [path.png]): build the procedural
     // terrain world + an animated ocean at sea level under the sky/sun, pose a
     // camera on the shore looking out across the water toward the sun so the lit
@@ -634,6 +646,12 @@ struct CliOptions {
     // the gate-standard view). Does NOT change any default behavior when omitted.
     bool        shotCamOverride = false;
     float       shotCam[5] = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
+    // --flashlight-off: start with the player's flashlight OFF. A room must be readable
+    // and moody from its OWN practicals; the flashlight (a 38 m, 6.0-HDR crutch until
+    // b66e037) hid every unlit room in the game. This is the honest-lighting review
+    // gate: capture every room with it off, or you are grading the flashlight, not the
+    // room. Default false -> zero change to normal play.
+    bool        flashlightOff = false;
     // FX demo (--fx-demo): in --screenshot mode, spawn a combat particle/decal burst
     // (muzzle flash + impact sparks + dust + a scorch decal) a couple meters in front
     // of the screenshot camera each settle frame so the capture clearly shows the new

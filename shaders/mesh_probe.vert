@@ -66,6 +66,12 @@ layout(location = 11) flat out uint vDetailPacked;     // HDRP micro-detail (_pa
 // The probe render has no glass/clamp semantics: write 0, which mesh.frag reads as
 // "no clamp -> 1.0", leaving probe shading byte-identical.
 layout(location = 12) flat out vec4 vGlassParams;
+// KNOWN_BUGS B3: mesh.frag declares location 13 (vGlassTint) and this vertex stage
+// never wrote it, so the reflection-probe PSO's SPIR-V interface was INCOMPLETE and
+// the probe pipeline could not be trusted. setIblProbe(true) then silently fell back
+// to baking the ANALYTIC SKY — which is how a windowless interior that explicitly
+// asked for a ROOM probe still got lit by a blue sky. (fix/prim-point-light)
+layout(location = 13) flat out vec4 vGlassTint;
 
 void main() {
     ObjectData o = objBuf.objects[visBuf.idx[gl_InstanceIndex]];
@@ -84,4 +90,5 @@ void main() {
     vEmissiveTexIndex = o.emissiveTexIndex;
     vDetailPacked = o.detailPacked;   // HDRP micro-detail map (packed idx + uvScale)
     vGlassParams  = vec4(0.0);        // no clamp on the probe pass (mesh.frag: 0 -> 1.0)
+    vGlassTint    = vec4(1.0);        // opaque probe pass: no glass tint
 }

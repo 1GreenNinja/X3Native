@@ -181,7 +181,31 @@ public:
     // omnidirectional, so raising it lights a room by DESTROYING its contrast); when they
     // step out it restores the values the world was using. Safe to call every frame; a
     // no-op until the state actually changes. `feet` = the player body position.
-    void applyCabAtmosphere(x3::rhi::IRenderDevice& device, const x3::phys::Vec3& feet);
+    // Returns TRUE iff the cab-air state CHANGED on this call. A host that runs its OWN
+    // per-zone atmosphere (the canon facility) must re-assert it when this returns true
+    // and the rider has just stepped OFF — see RoomDressing::resetZoneAtmosphere().
+    bool applyCabAtmosphere(x3::rhi::IRenderDevice& device, const x3::phys::Vec3& feet);
+
+    // THE ELEVATOR WAS STAMPING THE ENGINE DEFAULTS OVER THE WHOLE BUILDING.
+    // applyCabAtmosphere's "outside" branch used to RESTORE hardcoded {0.42,0.44,0.50}
+    // + IBL 1.0 — the very crutch KNOWN_BUGS R2 is about — and m_cabAir starts at -1, so
+    // it fired on FRAME ONE and overwrote any atmosphere the world had just set, before
+    // the player had ever seen the cab. (This silently ate level1's interior air until
+    // 2026-07-12.) The elevator must not INVENT a world ambient; the WORLD tells it what
+    // to hand back. Defaults are the old hardcodes, so a host that never calls this is
+    // byte-identical.
+    //
+    // LAND-LIGHTING — ONE OWNER. `fix/honest-lighting-rooms` and `fix/prim-point-light`
+    // BOTH fixed this, independently, with identical semantics and identical members,
+    // under two names (`setWorldAir` / `setWorldAtmosphere`). They are now ONE method
+    // under prim-point-light's name, because that branch owns the ambient MODEL (R4:
+    // there are two ambients, and `setAmbient` alone was a no-op wherever an env cube
+    // was baked). A world declares its air HERE and via setIblProbe/setIblIntensity —
+    // never by hoping setAmbient does something on its own.
+    void setWorldAtmosphere(float ambR, float ambG, float ambB, float iblIntensity) {
+        m_worldAmb[0] = ambR; m_worldAmb[1] = ambG; m_worldAmb[2] = ambB;
+        m_worldIbl = iblIntensity;
+    }
     // True while the cab owns the frame's ambient/IBL (the rider is aboard). Hosts that
     // run their own per-zone atmosphere (the canon facility) must yield to this, or the
     // two writers fight over the same device state every frame.
@@ -337,6 +361,9 @@ private:
     // captured by buildVisuals() for the rebakes.
     x3::rhi::IRenderDevice* m_oledDevice = nullptr;
     x3::rhi::TextureHandle  m_oledTexL{}, m_oledTexR{}, m_oledMr{};
+    // B7 (second order): the matte MR texel that puts the strata rock face on the PBR
+    // (1/pi-normalized) path instead of the unnormalized-Lambert prim path — see buildVisuals.
+    x3::rhi::TextureHandle  m_strataMr{};
     float                   m_oledTimer = 999.0f;   // first update bakes immediately
     uint32_t m_eDiscoBall = kNoLink, m_eCeil = kNoLink;
     uint32_t m_eCable[4] = { kNoLink, kNoLink, kNoLink, kNoLink };  // steel shaft cables above the car
@@ -373,6 +400,8 @@ private:
     bool                   m_indDisco = false;   // last disco state baked
     bool                   m_indMoving = false;  // last motion state baked
     int                    m_cabAir = -1;        // -1 unset, 0 = world air, 1 = cab air
+    float                  m_worldAmb[3] = { 0.42f, 0.44f, 0.50f };  // air OUTSIDE the cab; see setWorldAtmosphere
+    float                  m_worldIbl    = 1.0f;
     // Per-frame audio bookkeeping.
     float  m_motorHz = 40.0f;
     int    m_lastDingStop = -1;

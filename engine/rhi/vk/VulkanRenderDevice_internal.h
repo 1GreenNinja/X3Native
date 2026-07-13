@@ -166,6 +166,7 @@ public:
     // Whole-scene brightness: pre-tonemap exposure multiplier in the composite pass.
     // With auto-exposure ON this is the compensation BIAS on the adapted value.
     void setExposure(float e) override;
+    void setDebugView(int mode) override { m_debugView = mode; }
 
     // Painterly levers (ART_BIBLE §5): per-zone depth fog + filmic grade. Host
     // opt-in state, deliberately outside PostFXParams (setPostFX re-applies from
@@ -176,6 +177,7 @@ public:
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
     void setIblIntensity(float s) override;
+    void setIblSpecular(float s) override;
 
     // HDR post-stack settings (r_tonemap / r_bloom* / r_autoexposure / r_ae*),
     // synced per frame by the app. Toggling AE on re-arms the adaptation snap so
@@ -2973,6 +2975,7 @@ private:
     // 2nd lift (still "couldn't see"): 0.26 -> 0.42. Sunless B1 needs a real ambient
     // floor; point lights only pool under fixtures, leaving floor/walls black between.
     glm::vec3               m_ambient{ 0.42f, 0.44f, 0.50f };
+    int                     m_debugView = 0;   // r_debugview: 0 = off, 1 = shading normals
     // Final additive bloom strength; defaults to the global subtle value, per-scene
     // override via setBloom() (the showroom raises it for the glowing-spire hero look).
     float                   m_bloomIntensity = kBloomIntensity;
@@ -3042,6 +3045,7 @@ private:
     uint32_t                m_cullEquivMismatches = 0;
     float                   m_metalAmbient = 1.0f; // metal ambient-spec floor strength (mesh.frag ibl.w; r_metalambient)
     float                   m_iblIntensity = 1.0f; // IBL ambient scale (mesh.frag ibl.y; SEAM 2 interior/exterior balance)
+    float                   m_iblSpecular  = -1.0f; // ABSOLUTE env-specular scale (mesh.frag refl.z); <0 = unset -> shader falls back to m_iblIntensity (pre-R10 math exactly)
     // ---- vis-unify: host-injected PVS numbers + per-stage timing -----------
     uint32_t                m_visRoomsCulled = 0;   // setVisHostStats (this frame's room/portal skips)
     float                   m_visPvsMs = 0.0f;      // setVisHostStats (flood-fill ms)

@@ -4,6 +4,7 @@
 // the edit-mode fly-cam, and bridges the headless brushes[] list into the live
 // Scene + Jolt so the greybox is walkable in Play mode.
 #include "editor_host.h"
+#include "editor_armory.h"
 
 #include "../asset_root.h"
 #include "../mesh_prims.h"
@@ -233,6 +234,287 @@ void EditorHost::teardownLinks(uint32_t sceneEntity, uint32_t body,
     if (body) physics.removeBody(x3::phys::BodyId{ body });
 }
 
+// ---------------------------------------------------------------------------
+// DEFAULT PANEL LAYOUT.
+//
+// Every ImGui window defaults to the same top-left corner, so the editor opened with
+// SEVEN panels stacked on top of one another and Keybinds burying the rest — you had
+// to drag five windows apart before you could see the level. A tool that needs to be
+// tidied up before it can be used is a tool people stop using.
+//
+// ImGuiCond_FirstUseEver means this is a STARTING layout, not a cage: it seeds the
+// first run, and after that imgui.ini remembers wherever the user dragged things.
+// Positions are derived from the live viewport, so it lays out correctly at any
+// resolution instead of hard-coding 1280x720.
+// ---------------------------------------------------------------------------
+namespace {
+// The BOTTOM-RIGHT quadrant is deliberately left free: the Visual-Mode nudge
+// cheat-sheet (##nudgecheat) is an overlay that lives there and cannot be dragged, so
+// any dockable panel seeded into it is permanently half-buried.
+void panelRect(float nx, float ny, float nw, float nh) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec2 o = vp->WorkPos;
+    const ImVec2 s = vp->WorkSize;
+    ImGui::SetNextWindowPos (ImVec2(o.x + s.x * nx, o.y + s.y * ny), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(s.x * nw,       s.y * nh),       ImGuiCond_FirstUseEver);
+}
+} // namespace
+
+// ---------------------------------------------------------------------------
+// THE AI ARCHITECT — panel + async generation.
+//
+// The editor must stay at frame rate while a 3B model thinks, so generation is
+// ILlmSystem::submit() (async) + poll() (non-blocking, drained once per frame). The
+// panel NEVER mutates the level directly: it shows the validated plan and waits for an
+// explicit Apply. And it must degrade gracefully with no .gguf on disk — an editor
+// that becomes unusable because a model file is missing is a broken editor.
+// ---------------------------------------------------------------------------
+void EditorHost::aiEnsureModel() {
+    if (m_aiTried) return;               // one attempt per session, not per frame
+    m_aiTried = true;
+    m_llm = x3::llm::createLlmSystem();
+    if (!m_llm) { m_aiStatus = "no LLM backend compiled in"; return; }
+    const std::string gguf = x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+    x3::llm::ModelOpts opts;
+    opts.contextTokens   = 4096;   // the level description + the schema is not small
+    opts.maxOutputTokens = 768;    // a room is ~6 ops; give it room to finish the JSON
+    opts.temperature     = 0.2f;   // this is a STRUCTURED-OUTPUT task, not a poem
+    opts.seed            = 1;      // reproducible plans for the same sentence
+    if (!m_llm->loadModel(gguf, opts)) {
+        m_llm.reset();
+        m_aiStatus = "model not found: assets/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+        return;
+    }
+    m_aiChat = m_llm->startChat(aiSystemPrompt());
+    m_aiStatus = (m_aiChat != x3::llm::kInvalidChat) ? "ready" : "could not open a chat";
+}
+
+void EditorHost::aiSubmit() {
+    aiEnsureModel();
+    if (!m_llm || m_aiChat == x3::llm::kInvalidChat) return;
+    if (m_aiBusy) return;
+    // Hand the model the CURRENT level, because every index it cites is an index into
+    // this description. Context and contract are the same object.
+    const std::string user =
+        describeLevel(m_doc, m_state.hasBrushSelection() ? m_state.selIndex() : -1) +
+        "\nREQUEST: " + m_aiPrompt + "\nReply with the JSON plan only.";
+    m_aiRaw.clear();
+    m_aiErr.clear();
+    m_aiHavePlan = false;
+    m_aiPlan = AiPlan{};
+    if (m_llm->submit(m_aiChat, user)) {
+        m_aiBusy = true;
+        m_aiStatus = "thinking...";
+    } else {
+        m_aiStatus = "the model is busy";
+    }
+}
+
+void EditorHost::aiPoll() {
+    if (!m_aiBusy || !m_llm) return;
+    const x3::llm::PollResult r = m_llm->poll(m_aiChat);
+    m_aiRaw += r.newTokens;
+    if (!r.done) return;
+    m_aiBusy = false;
+    if (r.failed) { m_aiStatus = "generation failed"; return; }
+    // The reply is complete: parse + VALIDATE. Nothing touches the level yet.
+    m_aiHavePlan = parseAiPlan(m_aiRaw, m_aiPlan, m_aiErr);
+    if (m_aiHavePlan) {
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "plan ready: %d op(s)%s", (int)m_aiPlan.ops.size(),
+                      m_aiErr.empty() ? "" : "  (some ops rejected)");
+        m_aiStatus = buf;
+    } else {
+        m_aiStatus = "the model did not produce a usable plan";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// THE ARMORY PANEL — every mesh in the library, searchable, one click to place.
+//
+// 11,000+ rows means two rules:
+//   * NEVER build 11,000 ImGui widgets. ImGuiListClipper draws only the visible rows.
+//   * The filter caps its own result, so a single-letter search does not try to render
+//     the entire library while you are still typing.
+// ---------------------------------------------------------------------------
+void EditorHost::drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                                 x3::phys::IPhysicsWorld& physics) {
+    (void)scene; (void)physics;
+    panelRect(0.190f, 0.145f, 0.300f, 0.495f);   // BELOW Status (0.045..0.135), ABOVE the AI panel (0.655)
+    ImGui::Begin("Armory");
+
+    ensureModelLoader(device);      // also loads + mounts the index (first use)
+
+    if (!m_armory.ok) {
+        ImGui::TextWrapped("No asset library index.");
+        ImGui::TextDisabled("%s", m_armory.error.c_str());
+        ImGui::TextDisabled("Set X3_ARMORY_ROOT, or run the Armory indexer.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("%d meshes  /  %d packs",
+                (int)m_armory.items.size(), (int)m_armory.packs.size());
+    if (!m_armoryMounted)
+        ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "root NOT mounted - cannot place");
+
+    // ---- pack filter ----
+    {
+        std::string preview = (m_armoryPackSel == 0 || m_armoryPackSel > (int)m_armory.packs.size())
+                            ? std::string("All packs")
+                            : m_armory.packs[m_armoryPackSel - 1];
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##armpack", preview.c_str())) {
+            if (ImGui::Selectable("All packs", m_armoryPackSel == 0)) m_armoryPackSel = 0;
+            for (int i = 0; i < (int)m_armory.packs.size(); ++i) {
+                const bool sel = (m_armoryPackSel == i + 1);
+                if (ImGui::Selectable(m_armory.packs[i].c_str(), sel)) m_armoryPackSel = i + 1;
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    // ---- search ----
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##armsearch", "search  (e.g. console, sewer, crate, neon)",
+                             m_armorySearch, sizeof m_armorySearch);
+
+    const std::string pack = (m_armoryPackSel > 0 && m_armoryPackSel <= (int)m_armory.packs.size())
+                           ? m_armory.packs[m_armoryPackSel - 1] : std::string();
+    // The cap is the UI's, not the library's: you cannot read 11,000 rows, and building
+    // them costs a frame. Narrow the search instead — that is what the search is FOR.
+    const std::vector<uint32_t> hits = filterArmory(m_armory, m_armorySearch, pack, 600);
+    ImGui::TextDisabled("%d shown%s", (int)hits.size(),
+                        hits.size() >= 600 ? "  (capped - narrow the search)" : "");
+
+    ImGui::Separator();
+    if (ImGui::BeginChild("##armlist", ImVec2(0, 0), false)) {
+        ImGuiListClipper clip;
+        clip.Begin((int)hits.size());
+        while (clip.Step()) {
+            for (int r = clip.DisplayStart; r < clip.DisplayEnd; ++r) {
+                const ArmoryItem& it = m_armory.items[hits[(size_t)r]];
+                char lbl[192];
+                std::snprintf(lbl, sizeof lbl, "%s##arm%d", it.name.c_str(), r);
+                if (ImGui::Selectable(lbl, false)) {
+                    const int idx = placeModel(it.relPath, device);
+                    if (idx >= 0) m_state.select(idx);
+                    else x3::logWarn("[armory] failed to place: " + it.relPath);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(it.pack.c_str());
+                    ImGui::TextDisabled("%s", it.relPath.c_str());
+                    ImGui::EndTooltip();
+                }
+            }
+        }
+        clip.End();
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
+
+void EditorHost::drawAiPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                             x3::phys::IPhysicsWorld& physics) {
+    aiPoll();      // drain tokens once per frame; never blocks
+
+    panelRect(0.190f, 0.655f, 0.420f, 0.335f);
+    ImGui::Begin("AI Architect");
+    ImGui::TextWrapped("Describe a change. The model proposes a PLAN; nothing is applied "
+                       "until you press Apply, and Apply is ONE undo step.");
+    ImGui::Separator();
+
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool entered = ImGui::InputTextWithHint(
+        "##aiprompt", "e.g. add a 8x6 room north of the selection, 3m ceiling",
+        m_aiInput, sizeof m_aiInput, ImGuiInputTextFlags_EnterReturnsTrue);
+
+    ImGui::BeginDisabled(m_aiBusy);
+    const bool go = ImGui::Button("Generate") || entered;
+    ImGui::EndDisabled();
+    if (go && m_aiInput[0] != '\0') {
+        m_aiPrompt = m_aiInput;
+        aiSubmit();
+    }
+    ImGui::SameLine();
+    if (m_aiBusy && ImGui::Button("Cancel")) {
+        if (m_llm) m_llm->cancel(m_aiChat);
+        m_aiStatus = "cancelled";
+    }
+
+    if (!m_aiStatus.empty()) {
+        ImGui::TextDisabled("%s", m_aiStatus.c_str());
+    }
+
+    // ---- the PROPOSED plan (read-only until Apply) ----
+    if (m_aiHavePlan && !m_aiPlan.ops.empty()) {
+        ImGui::Separator();
+        if (!m_aiPlan.summary.empty())
+            ImGui::TextWrapped("%s", m_aiPlan.summary.c_str());
+        if (ImGui::BeginChild("##plan", ImVec2(0, 120), true)) {
+            for (size_t i = 0; i < m_aiPlan.ops.size(); ++i) {
+                const AiOp& o = m_aiPlan.ops[i];
+                switch (o.kind) {
+                    case AiOpKind::AddBrush:
+                        ImGui::Text("%2d  add %s %-10s  pos[%.1f %.1f %.1f]  size[%.1f %.1f %.1f]",
+                                    (int)i, o.brushType == 1 ? "ramp" : "box ",
+                                    o.name.empty() ? "-" : o.name.c_str(),
+                                    o.pos[0], o.pos[1], o.pos[2],
+                                    o.size[0], o.size[1], o.size[2]);
+                        break;
+                    case AiOpKind::MoveBrush:
+                        ImGui::Text("%2d  move  [%d] -> [%.1f %.1f %.1f]", (int)i, o.index,
+                                    o.pos[0], o.pos[1], o.pos[2]);
+                        break;
+                    case AiOpKind::SetMaterial:
+                        ImGui::Text("%2d  skin  [%d] -> %s", (int)i, o.index, o.material.c_str());
+                        break;
+                    case AiOpKind::DeleteBrush:
+                        ImGui::Text("%2d  DELETE [%d]", (int)i, o.index);
+                        break;
+                    case AiOpKind::SetPlayerStart:
+                        ImGui::Text("%2d  player start -> [%.1f %.1f %.1f]", (int)i,
+                                    o.pos[0], o.pos[1], o.pos[2]);
+                        break;
+                    default: break;
+                }
+            }
+        }
+        ImGui::EndChild();
+
+        if (ImGui::Button("Apply (one undo step)")) {
+            const int n = applyAiPlan(m_state, m_aiPlan);
+            // The plan touched brushes[] only; the live Scene + Jolt must catch up.
+            // Same path a grouped UNDO takes, so there is exactly one rebuild rule.
+            HistoryEffect eff;
+            eff.op = HistoryEffect::Op::RespawnAll;
+            for (int i = 0; i < (int)m_doc.brushes.size(); ++i)
+                respawnBrush(i, device, scene, physics);
+            (void)eff;
+            char buf[96];
+            std::snprintf(buf, sizeof buf, "applied %d op(s) — Ctrl+Z undoes ALL of it", n);
+            m_aiStatus = buf;
+            m_aiHavePlan = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Discard")) {
+            m_aiHavePlan = false;
+            m_aiPlan = AiPlan{};
+            m_aiStatus = "discarded";
+        }
+    }
+
+    // ---- what the model got WRONG, verbatim. Never hide this: a silently dropped op
+    // is indistinguishable from a model that ignored the request. ----
+    if (!m_aiErr.empty()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("rejected by the validator:");
+        ImGui::TextWrapped("%s", m_aiErr.c_str());
+    }
+    ImGui::End();
+}
+
 void EditorHost::applyEffect(const HistoryEffect& eff, x3::rhi::IRenderDevice& device,
                              x3::game::Scene& scene, x3::phys::IPhysicsWorld& physics) {
     using Op = HistoryEffect::Op;
@@ -240,6 +522,25 @@ void EditorHost::applyEffect(const HistoryEffect& eff, x3::rhi::IRenderDevice& d
     if (eff.removed) {
         // The brush record is gone (undo-of-add / redo-of-delete): tear down its links.
         teardownLinks(eff.deadSceneEntity, eff.deadBody, device, scene, physics);
+        return;
+    }
+    if (eff.op == Op::RespawnAll) {
+        // A grouped TRANSACTION was undone/redone (an AI plan, typically): many brushes
+        // changed at once and per-brush hints don't survive a batch.
+        //
+        // ORDER MATTERS. First destroy the links of every brush the group REMOVED —
+        // those records are already gone from the doc, so nothing else will ever free
+        // them, and skipping this leaks a mesh + a Jolt body per brush, every single
+        // time the user undoes an AI room. EditorState collected them for exactly this.
+        for (const HistoryEffect& e : m_state.groupEffects())
+            if (e.removed)
+                teardownLinks(e.deadSceneEntity, e.deadBody, device, scene, physics);
+        // Then rebuild every brush that still exists. respawnBrush() destroys any live
+        // mesh/body first, so survivors (whose links are still valid) are simply
+        // rebuilt rather than double-spawned. A blockout is small; correctness beats
+        // cleverness here.
+        for (int i = 0; i < (int)m_doc.brushes.size(); ++i)
+            respawnBrush(i, device, scene, physics);
         return;
     }
     if (eff.op == Op::Respawn) {
@@ -272,6 +573,19 @@ void EditorHost::ensureModelLoader(x3::rhi::IRenderDevice& device) {
     m_modelDirMounted = m_modelAssets->mountDir(dir, 0);
     if (!m_modelDirMounted)
         x3::logWarn("[editor-host] model browser: mountDir failed: " + dir);
+
+    // ---- THE ARMORY: mount the whole library as a SECOND source -------------------
+    // The curated Models list is NINE props. The library on disk is ELEVEN THOUSAND
+    // converted GLBs (Sci-Fi Kit, Cyberpunk City, Command Center, Abandoned Factory,
+    // Modular Sewers, Space Station interiors...). mountDir() takes a PRIORITY, so the
+    // armory rides alongside the repo's converted_glb rather than replacing it: repo
+    // assets keep priority 0 and always win a name collision.
+    m_armory = loadArmoryIndex();
+    if (m_armory.ok)
+        m_armoryMounted = m_modelAssets->mountDir(m_armory.root, 1);
+    if (m_armory.ok && !m_armoryMounted)
+        x3::logWarn("[editor-host] armory: mountDir failed: " + m_armory.root);
+
     m_modelLoader.reset(x3::asset::createModelLoader(&device, m_modelAssets.get()));
 }
 
@@ -416,6 +730,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     }
 
     // ---- Outliner (scene entities + blockout brushes; click to select). ----
+    panelRect(0.005f, 0.045f, 0.175f, 0.340f);
     ImGui::Begin("Outliner");
     ImGui::TextDisabled("Brushes (%d)", (int)m_doc.brushes.size());
     for (int i = 0; i < (int)m_doc.brushes.size(); ++i) {
@@ -440,6 +755,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     ImGui::End();
 
     // ---- Blockout panel (tools + selected-brush numeric edit). ----
+    panelRect(0.005f, 0.395f, 0.175f, 0.220f);
     ImGui::Begin("Blockout");
 
     // Grid snap dropdown.
@@ -481,6 +797,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     // ---- Details panel (P3): two-way-synced pos/yaw/size for the selection, each
     // edit grouped into ONE undo step via begin/commitBrushEdit. Shares its selection
     // and transform with the viewport gizmo. ----
+    panelRect(0.778f, 0.045f, 0.217f, 0.400f);
     ImGui::Begin("Details");
     if (m_state.hasBrushSelection()) {
         int si = m_state.selIndex();
@@ -494,10 +811,17 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                             m_tool == Tool::Move ? "MOVE" : m_tool == Tool::Rotate ? "ROTATE"
                             : m_tool == Tool::Scale ? "SCALE" : "SELECT");
 
+        // Reserve room for the LABEL. ImGui draws a DragFloat's label to the RIGHT of
+        // the widget, so at any sane panel width the default item width pushed
+        // "Position (m)" / "Scale / Size (m)" straight off the edge of the panel and the
+        // user could not read what they were dragging. A negative item width means
+        // "fill, minus this much" — that much being the label column.
+        ImGui::PushItemWidth(-ImGui::GetFontSize() * 6.0f);
+
         // Position — DragFloat3, snapped. IsItemActivated/Deactivated bracket the drag
         // into one undo command (works for a click-drag on the slider too).
         float pos[3] = { b.pos[0], b.pos[1], b.pos[2] };
-        if (ImGui::DragFloat3("Position (m)", pos, step)) {
+        if (ImGui::DragFloat3("Pos", pos, step)) {
             for (int a = 0; a < 3; ++a) b.pos[a] = m_state.snapValue(pos[a]);
             moved = true;
         }
@@ -506,7 +830,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 
         // Rotation (yaw degrees in UI, radians in doc).
         float yawDeg = b.yaw * 57.29578f;
-        if (ImGui::DragFloat("Rotation Y (deg)", &yawDeg, 1.0f)) {
+        if (ImGui::DragFloat("Yaw", &yawDeg, 1.0f)) {
             b.yaw = yawDeg * 0.0174533f; moved = true;
         }
         if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
@@ -514,13 +838,15 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 
         // Scale = full extents (m), snapped + clamped. A change rebuilds the mesh.
         float size[3] = { b.size[0], b.size[1], b.size[2] };
-        if (ImGui::DragFloat3("Scale / Size (m)", size, step, 0.25f, 200.0f)) {
+        if (ImGui::DragFloat3("Size", size, step, 0.25f, 200.0f)) {
             for (int a = 0; a < 3; ++a) b.size[a] = std::max(0.25f, m_state.snapValue(size[a]));
             resized = true;
         }
         if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
         if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
 
+        ImGui::PopItemWidth();   // MUST balance the PushItemWidth above: an unbalanced
+                                 // push leaks into every panel drawn after this one.
         if (ImGui::Checkbox("Collide", &b.collide)) resized = true;  // toggling re-adds the body
 
         if (ImGui::Button("Delete brush")) {
@@ -540,6 +866,10 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 
     // ---- Materials palette (Feature 1: click-a-wall texturing). Click a swatch to
     // re-skin the selected brush; the change is ONE undo step + persists in the JSON. ----
+    drawArmoryPanel(device, scene, physics);
+    drawAiPanel(device, scene, physics);
+
+    panelRect(0.778f, 0.455f, 0.217f, 0.280f);
     ImGui::Begin("Materials");
     if (m_state.hasBrushSelection()) {
         int si = m_state.selIndex();
@@ -582,6 +912,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     ImGui::End();
 
     // ---- Model Browser (Feature 3): click a prop to place it at the fly-cam focus. ----
+    panelRect(0.005f, 0.625f, 0.175f, 0.360f);
     ImGui::Begin("Models");
     ImGui::TextDisabled("Place a GLB prop at the camera focus:");
     const x3::editor::ModelCatalogItem* cat = x3::editor::editorModelCatalog();
@@ -611,6 +942,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     ImGui::End();
 
     // ---- Status / viewport readout. ----
+    panelRect(0.190f, 0.045f, 0.260f, 0.090f);
     ImGui::Begin("Status");
     ImGui::Text("Mode: %s", m_mode == HostMode::Edit ? "EDIT" : "PLAY");
     ImGui::Text("Cam: %.1f, %.1f, %.1f", m_camX, m_camY, m_camZ);
@@ -991,6 +1323,7 @@ void EditorHost::drawKeybindOverlay() {
 // poll both read — single source of truth. A Reset restores the classic defaults.
 // ---------------------------------------------------------------------------
 void EditorHost::drawRebindPanel() {
+    panelRect(0.545f, 0.045f, 0.220f, 0.400f);
     ImGui::Begin("Keybinds");
     ImGui::TextDisabled("Doom-Builder Visual Mode nudge binds.");
     ImGui::TextDisabled("Click an action, then press a key (or scroll) to rebind.");

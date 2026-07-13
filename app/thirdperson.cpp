@@ -133,6 +133,11 @@ void ThirdPersonView::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_walkBackClip  = m_skinner.findClip({ "walkingbackwards", "walkbackwards" });
         m_rifleIdleClip = m_skinner.findClip({ "rifleaimingidle", "idle" });
         m_fireClip      = m_skinner.findClip({ "firingrifle", "fire" });
+        // THE SWIM CLIPS (tools/swim_bake.py). Exact names win in findClip, so
+        // "swimidle" resolves before the fuzzy "swim" substring can steal it.
+        m_swimIdleClip  = m_skinner.findClip({ "swimidle", "tread" });
+        m_swimClip      = m_skinner.findClip({ "swim", "stroke", "breaststroke" });
+        if (m_swimClip == m_swimIdleClip) m_swimClip = -1;   // only SwimIdle exists
         if (m_idleClip < 0) m_idleClip = 0;
         m_useLocoBlend = (m_walkClip >= 0 || m_runClip >= 0);
         if (m_useLocoBlend)
@@ -154,8 +159,14 @@ void ThirdPersonView::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     (m_handNode >= 0 ? ("(node " + std::to_string(m_handNode) + ")") : "(UNRESOLVED)") +
                     " idle=" + std::to_string(m_idleClip) +
                     " walk=" + std::to_string(m_walkClip) +
-                    " run=" + std::to_string(m_runClip));
+                    " run=" + std::to_string(m_runClip) +
+                    " swim=" + std::to_string(m_swimClip) +
+                    " swimIdle=" + std::to_string(m_swimIdleClip));
         x3::logInfo("[3p] Jake clips: " + clipList);
+        if (m_swimClip < 0)
+            x3::logWarn("[3p] no SWIM clip on this Jake GLB — the swim read degrades to the "
+                        "walk-at-" + std::to_string(kTpSwimAnimRate) + " stand-in "
+                        "(re-bake: tools/swim_bake.py, then asset_store.py publish)");
 
         // Pose the bind mesh into idle at t=0 so the first 3P frame already animates.
         if (m_device) {
@@ -260,6 +271,9 @@ void ThirdPersonView::setThirdPerson(bool on) {
     if (entering) {
         m_crouchAmt = 0.0f;
         m_aimAmt    = 0.0f;
+        m_swimAmt       = 0.0f;   // same staleness rule for the swim pose
+        m_swimStrokeAmt = 0.0f;
+        m_swimStroking  = false;
     }
 }
 
@@ -292,6 +306,28 @@ void ThirdPersonView::bakeTransform(Scene& scene) {
         bz = x3::phys::Vec3{ fwd.x * cl + up.x * sl, fwd.y * cl + up.y * sl, fwd.z * cl + up.z * sl };
         by = x3::phys::Vec3{ up.x * cl - fwd.x * sl, up.y * cl - fwd.y * sl, up.z * cl - fwd.z * sl };
     }
+    // ---- SWIM (v2): the baked clip does the LIMBS; the basis LAYS HIM IN THE
+    // WATER. Pitch the whole basis toward horizontal about the local-right axis
+    // (the same lean math as crouch) so the avatar lies belly-down along the look
+    // direction, and float the body up so it rides the surface line. The angle +
+    // lift ease between the TREADING read (upright, only the head/shoulders out)
+    // and the STROKING read (nearly flat, back at the surface) by the smoothed
+    // stroke amount. Smoothed by m_swimAmt so the pose eases in on entry and
+    // upright restores on exit — a no-op at 0. ----
+    if (m_swimAmt > 1e-3f) {
+        const float sA = m_swimStrokeAmt;   // 0 = treading, 1 = stroking
+        const float proneDeg = kTpSwimTreadDeg + (kTpSwimProneDeg - kTpSwimTreadDeg) * sA;
+        const float rise     = kTpSwimTreadRise + (kTpSwimRise - kTpSwimTreadRise) * sA;
+        posAdj.y += rise * m_swimAmt;
+        // NEGATIVE lean = belly-DOWN (the crouch sign at ~84 deg reads as a
+        // back-float: the knees flex up out of the water — eyeballed on the
+        // swim_3p_prone proof shot; flipped so the stroke kicks into the water).
+        const float lean = -proneDeg * (kPi / 180.0f) * m_swimAmt;
+        const float cl = std::cos(lean), sl = std::sin(lean);
+        const x3::phys::Vec3 fwd = bz, up = by;
+        bz = x3::phys::Vec3{ fwd.x * cl + up.x * sl, fwd.y * cl + up.y * sl, fwd.z * cl + up.z * sl };
+        by = x3::phys::Vec3{ up.x * cl - fwd.x * sl, up.y * cl - fwd.y * sl, up.z * cl - fwd.z * sl };
+    }
     composeTRS(m_drawXform, bx, by, bz, m_modelScale, posAdj);
     if (m_entity != kNoLink && m_entity < scene.size()) {
         Entity& me = scene.get(m_entity);
@@ -301,7 +337,7 @@ void ThirdPersonView::bakeTransform(Scene& scene) {
 
 void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
                              float eyeHeight, float yaw, float pitch, uint32_t roomId,
-                             bool crouched, bool fireHeld) {
+                             bool crouched, bool fireHeld, bool swimming) {
     (void)pitch;
     if (!m_built) return;
 
@@ -348,12 +384,54 @@ void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
         me.visible = avatarVisible();
     }
 
+    // ---- SWIM STATE (v2), latched BEFORE the animation drive reads it. Stroking
+    // vs treading is the planar water speed with hysteresis (kTpSwimStrokeOn/Off),
+    // so a swimmer drifting to a stop doesn't flicker between the two clips; the
+    // smoothed amount then crossfades the PRONE angle + float in bakeTransform()
+    // (a treading swimmer is far more upright than a stroking one). ----
+    if (!swimming) {
+        m_swimStroking = false;
+    } else if (m_swimStroking) {
+        if (planarSpeed < kTpSwimStrokeOff) m_swimStroking = false;
+    } else {
+        if (planarSpeed > kTpSwimStrokeOn)  m_swimStroking = true;
+    }
+    {
+        const float target = (swimming && m_swimStroking) ? 1.0f : 0.0f;
+        const float k = 1.0f - std::exp(-kTpSwimStrokeBlend * (dt > 0.0f ? dt : 0.0f));
+        m_swimStrokeAmt += (target - m_swimStrokeAmt) * k;
+        if (m_swimStrokeAmt < 1e-4f)   m_swimStrokeAmt = 0.0f;
+        if (m_swimStrokeAmt > 0.9999f) m_swimStrokeAmt = 1.0f;
+    }
+
     // ---- Drive the animation. In 3P drive the locomotion blend from the planar
     // speed (rifle-holding clips keep the hands on the gun); when firing + standing,
     // play the rifle aim/fire clip as a nice touch (cheap one-shot). Crouch uses a
     // lower scale fallback if no crouch clip exists (Jake has none). ----
     if (m_thirdPerson && m_device && m_skinner.valid()) {
-        if (m_useLocoBlend) {
+        if (swimming && m_useLocoBlend && m_swimClip >= 0) {
+            // ---- SWIM v2: play the REAL baked clip. triggerClip() crossfades the
+            // locomotion blend out and holds the target clip LOOPING (idempotent —
+            // re-requesting the same clip each frame is a true no-op), so the
+            // stroke owns the whole pose. Stroking vs treading is chosen by the
+            // planar water speed with hysteresis (m_swimStroking, latched below),
+            // and the underlying locomotion blend is parked at idle so the
+            // crossfade has something neutral to sit on.
+            const int clip = (m_swimStroking || m_swimIdleClip < 0) ? m_swimClip
+                                                                    : m_swimIdleClip;
+            m_skinner.setLocomotionSpeed(0.0f);
+            m_skinner.triggerClip(clip, 0.25f, /*loop*/true);
+            m_skinner.applyLocomotion(m_model, *m_device, dt * kTpSwimClipRate);
+        } else if (swimming && m_useLocoBlend) {
+            // ---- SWIM, DEGRADED (an old GLB with no Swim clip): the historical
+            // stand-in — the walk cycle at kTpSwimAnimRate. Pin the blend into the
+            // WALK band regardless of the actual water speed (buoyant drift would
+            // otherwise idle the limbs mid-stroke), cancel any fire pose, and
+            // advance the clip clock slow.
+            m_skinner.triggerClip(-1, 0.15f);
+            m_skinner.setLocomotionSpeed(1.0f);   // solidly in the walk band (0.2..2.0)
+            m_skinner.applyLocomotion(m_model, *m_device, dt * kTpSwimAnimRate);
+        } else if (m_useLocoBlend) {
             // Swap the locomotion walk/run clip set forward<->backward so backing up
             // plays the backpedal clip with the body STILL FACING FORWARD (BUG B). Only
             // re-register on an actual direction change (cheap; avoids per-frame churn).
@@ -394,6 +472,17 @@ void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
         m_crouchAmt += (target - m_crouchAmt) * k;
         if (m_crouchAmt < 1e-4f) m_crouchAmt = 0.0f;
         if (m_crouchAmt > 0.9999f) m_crouchAmt = 1.0f;
+    }
+
+    // ---- SWIM (v2): smooth a 0..1 in-the-water amount toward the `swimming`
+    // flag; bakeTransform() pitches the basis prone + floats the body to the
+    // surface line. dt-scaled exponential blend (no pop on enter/exit). ----
+    {
+        const float target = swimming ? 1.0f : 0.0f;
+        const float k = 1.0f - std::exp(-kTpSwimBlend * (dt > 0.0f ? dt : 0.0f));
+        m_swimAmt += (target - m_swimAmt) * k;
+        if (m_swimAmt < 1e-4f) m_swimAmt = 0.0f;
+        if (m_swimAmt > 0.9999f) m_swimAmt = 1.0f;
     }
 
     // ---- OVER-THE-SHOULDER AIM (TASK#46.3): smooth a 0..1 aim amount toward
@@ -833,6 +922,72 @@ bool runThirdPersonSelfTest() {
         stillAnimating = finite && dPose > 1e-6f;
         tpcheck(stillAnimating,
                 "TP15 avatar still animates after a long sustained held-fire run (no crossfade freeze)");
+
+        // ---- TP16 (swim v2): sustained `swimming` AT REST is the TREAD read —
+        // the basis leans off vertical (but stays far more upright than the stroke)
+        // and the body floats; releasing the flag restores upright through the same
+        // dt-scaled blend (no stale lean — mirrors TP13's staleness rule). ----
+        {
+            x3::phys::Vec3 wf{ rf.x, rf.y, rf.z };
+            for (int i = 0; i < 120; ++i)   // ~2 s: the 5/s blend fully settles
+                tp.update(1.0f / 60.0f, scene, wf, 1.6f, lookYaw, 0.0f, kNoRoom,
+                          false, false, /*swimming*/true);
+            float swx[16]; tp.avatarDrawTransform(swx);
+            const float upLenS = vlen(swx[4], swx[5], swx[6]);
+            // Treading at 38 deg: the up column's world-Y component ~ cos(38) ~ 0.79.
+            const float upY = upLenS > 1e-4f ? (swx[5] / upLenS) : 1.0f;
+            const bool leaned = upY < 0.90f && upY > 0.35f;   // in the water, but upright-ish
+            const float proneY = swx[13];
+            const bool treading = !tp.swimStroking();
+            for (int i = 0; i < 180; ++i)   // exit: upright restores
+                tp.update(1.0f / 60.0f, scene, wf, 1.6f, lookYaw, 0.0f, kNoRoom,
+                          false, false, /*swimming*/false);
+            float upr[16]; tp.avatarDrawTransform(upr);
+            const float upLenU = vlen(upr[4], upr[5], upr[6]);
+            const bool uprightBack = upLenU > 1e-4f && (upr[5] / upLenU) > 0.995f;
+            // The floating body never sinks below the restored standing Y.
+            const bool floated = proneY >= upr[13] - 1e-3f;
+            tpcheck(leaned && treading && uprightBack && floated,
+                    "TP16 swimming at rest TREADS water (leaned + floating) + exit restores upright");
+        }
+
+        // ---- TP17 (swim v2): the rig carries a REAL swim clip and MOVING through
+        // the water strokes it — the stroke latch trips on the planar water speed,
+        // the basis goes nearly FLAT (much more prone than treading), and the pose
+        // actually ADVANCES frame to frame (the clip is playing, not a frozen pose).
+        // On an old GLB (no Swim clip) the clip assertions are skipped: the degrade
+        // path is legal, it just must not crash or freeze.
+        {
+            const bool hasSwim = tp.swimClip() >= 0;
+            tpcheck(hasSwim && tp.swimIdleClip() >= 0,
+                    "TP17a Jake's rig carries the baked Swim + SwimIdle clips");
+            // Swim FORWARD at ~1.2 m/s along the look for 2 s.
+            x3::phys::Vec3 wf{ rf.x, rf.y, rf.z };
+            const float sp = 1.2f, sdt = 1.0f / 60.0f;
+            for (int i = 0; i < 120; ++i) {
+                wf.x += std::cos(lookYaw) * sp * sdt;
+                wf.z += std::sin(lookYaw) * sp * sdt;
+                tp.update(sdt, scene, wf, 1.6f, lookYaw, 0.0f, kNoRoom,
+                          false, false, /*swimming*/true);
+            }
+            const bool stroking = tp.swimStroking();
+            float sx[16]; tp.avatarDrawTransform(sx);
+            const float upLen = vlen(sx[4], sx[5], sx[6]);
+            const float upY = upLen > 1e-4f ? (sx[5] / upLen) : 1.0f;
+            const bool flat = upY < 0.35f;    // stroking ~84 deg => cos(84) ~ 0.10
+            // The pose advances: two more frames at a FIXED position (only the clip
+            // can move the hand socket).
+            tp.update(sdt, scene, wf, 1.6f, lookYaw, 0.0f, kNoRoom, false, false, true);
+            float pa[16]; tp.handSocketWorld(pa);
+            tp.update(sdt, scene, wf, 1.6f, lookYaw, 0.0f, kNoRoom, false, false, true);
+            float pb[16]; tp.handSocketWorld(pb);
+            const float dPose2 = vlen(pb[12] - pa[12], pb[13] - pa[13], pb[14] - pa[14]);
+            const bool animating = std::isfinite(dPose2) && dPose2 > 1e-6f;
+            tpcheck(stroking && flat && animating,
+                    "TP17 swimming FORWARD strokes: flat at the surface + the clip animates");
+            for (int i = 0; i < 180; ++i)   // leave the water clean for later tests
+                tp.update(sdt, scene, wf, 1.6f, lookYaw, 0.0f, kNoRoom, false, false, false);
+        }
 
         tp.setThirdPerson(false);
     }

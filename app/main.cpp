@@ -35,6 +35,7 @@
 #include "mesh_prims.h"
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
 #include "room_dressing.h"                 // recipeSurfaceSets() (boot prewarm, task #4)
+#include "prim_light_test.h"               // --test-primlight: ONE LIGHTING PATH (prim vs GLB radiance parity)
 #include "surface_library.h"               // prewarmSurfaceSetsAsync (boot prewarm, task #4)
 #include "asset_manifest_check.h"          // fleet asset-store manifest boot check (Phase A)
 #include "audio_root.h"                    // portable resolveAudio() (D: mirror / G: packs)
@@ -266,6 +267,7 @@ int main(int argc, char** argv) {
         _tf.testPhysprops = o.testPhysprops;
         _tf.testRagdollSkin = o.testRagdollSkin;
         _tf.testEditor = o.testEditor;
+        _tf.testEditorAi = o.testEditorAi;
         _tf.testBlockout = o.testBlockout;
         _tf.testLoader = o.testLoader;
         _tf.testBarrels = o.testBarrels;
@@ -336,6 +338,7 @@ int main(int argc, char** argv) {
         _tf.testAct2Desert = o.testAct2Desert;
         _tf.testAct2Caves = o.testAct2Caves;
         _tf.testRifthub = o.testRifthub;
+        _tf.testBasis = o.testBasis;
         _tf.testWorldRegions = o.testWorldRegions;
         _tf.testCity = o.testCity;
         _tf.testOceanBase = o.testOceanBase;
@@ -368,6 +371,7 @@ int main(int argc, char** argv) {
         _tf.testVehParts = o.testVehParts;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
+        _tf.testWaterZap = o.testWaterZap;
         _tf.testAlert = o.testAlert;
         _tf.testFootIk = o.testFootIk;
         _tf.testUi = o.testUi;
@@ -497,7 +501,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -641,6 +645,14 @@ int main(int argc, char** argv) {
     // ---- --screenshot-matlib: surface-library preview (ART_BIBLE §4). Fully
     // self-contained (its own meshes/textures/lights, no world build) — render
     // the contact sheet and exit before any host machinery spins up. ----
+    if (o.testPrimLight) {
+        const int rc = x3::game::runPrimLightTest(*device, o.primLightShotPath);
+        device.reset();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return rc;
+    }
+
     if (o.matlibShot) {
         const int rc = x3::game::runMatlibShot(*device, o.matlibShotDir);
         device.reset();
@@ -686,6 +698,7 @@ int main(int argc, char** argv) {
         _hc.screenshotPath   = o.screenshotPath;
         _hc.screenshotSettle = o.screenshotSettle;
         _hc.shotCamOverride  = o.shotCamOverride;
+        _hc.flashlightOff    = o.flashlightOff;
         for (int _k = 0; _k < 5; ++_k) _hc.shotCam[_k] = o.shotCam[_k];
         _hc.stressCount      = o.stressCount;
         _hc.bench            = o.bench;

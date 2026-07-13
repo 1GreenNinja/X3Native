@@ -68,7 +68,14 @@ constexpr float kTracerTime      = 0.12f;
 // is invisible; fatten it so the shot clearly comes out of the weapon.
 constexpr float kTracerThickness = 0.035f;
 // Max concurrent tracers (pool). Excess shots overwrite the oldest slot.
-constexpr int   kMaxTracers      = 8;
+// Concurrent tracer slots. Was 8 — exactly one shotgun volley, and far too few
+// for an AREA discharge: THE WATER ZAP (app/waterzap.h) lays down a whole web of
+// arcs across the surface at once, and an 8-slot ring recycled them at age 0 so
+// every bolt rendered as a 5 m stub (a bolt EXTENDS at kLightningBoltSpeed over
+// its life). 64 slots lets a web of arcs coexist and finish propagating; normal
+// weapons (1-10 tracers a volley) are unaffected except that rapid fire now keeps
+// its older tracers instead of stomping them.
+constexpr int   kMaxTracers      = 64;
 // Lightning bolt ARC PROPAGATION speed (m/s): the jagged bolt visibly extends from
 // the muzzle toward the hit point at this rate rather than snapping full-length the
 // instant the (hitscan) beam fires. Director note: the old instant/over-fast read

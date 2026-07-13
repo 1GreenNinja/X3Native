@@ -995,25 +995,32 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
 }
 
 std::string canonProjectJsonPath() {
-    // Pick the first existing copy from a fallback chain so the loader works
-    // regardless of which machine is running (Tim 2026-05-28: i9 Dell diagnosed
-    // the hardcoded 14900K-OneDrive path as missing on every other rig). Order:
-    //   1) repo-relative (works when cwd == repo root, e.g. our standard
-    //      `--world canonlevel` launch + smoketests),
-    //   2) absolute repo path on the master (any cwd on the 14900K),
-    //   3) Tim's original LevelArchitect OneDrive copy (legacy dev workflow).
-    // If none exist, return the absolute repo path so the existing
-    // "JSON not found at <path>" log line names the right place to look.
-    const char* candidates[] = {
-        "assets/levels/EscapeLab48_AllFloors_v2.project.json",
-        R"(C:\GameDev\X3Native-engine\assets\levels\EscapeLab48_AllFloors_v2.project.json)",
-        R"(C:\GameDev\OneDrive\GameDev\DellGameDev\Escape48BLN\LevelArchitect\EscapeLab48_AllFloors_v2.project.json)",
+    // KNOWN_BUGS L2 — THE STALE-LEVEL LANDMINE. This chain used to end in two
+    // HARDCODED absolute paths:
+    //     C:\GameDev\X3Native-engine\assets\levels\...
+    //     C:\GameDev\OneDrive\GameDev\DellGameDev\Escape48BLN\LevelArchitect\...
+    // On any machine where either file happened to exist, a level edited in THIS repo
+    // was silently ignored in favour of a copy from some other clone — or, worse, from
+    // a years-old OneDrive folder. The failure is invisible: the game boots, the level
+    // loads, everything "works", and your edits are simply not in it. That is the worst
+    // class of bug there is, and it has burned time on this project more than once.
+    //
+    // The fix is to stop guessing at other people's disks. The level ships IN THE REPO,
+    // so resolve it from the repo: assetRoot() already implements the
+    // "first existing of {env override, repo-relative, ...}" search that every other
+    // asset in the engine goes through, and it is cwd-independent. One source of truth.
+    const std::string fromRoot = x3::game::assetRoot() + "/levels/EscapeLab48_AllFloors_v2.project.json";
+    const std::string candidates[] = {
+        "assets/levels/EscapeLab48_AllFloors_v2.project.json",   // cwd == repo root (the standard launch)
+        fromRoot,                                                // cwd-independent, still THIS repo
     };
-    for (const char* c : candidates) {
+    for (const std::string& c : candidates) {
         std::ifstream f(c);
-        if (f.good()) return std::string(c);
+        if (f.good()) return c;
     }
-    return std::string(candidates[1]);   // absolute repo path = best error message
+    // Nothing found: name the repo-resolved path, so the existing
+    // "JSON not found at <path>" line points at where the file SHOULD be.
+    return fromRoot;
 }
 
 // =====================================================================================
@@ -1046,21 +1053,46 @@ std::vector<CanonLight> buildCanonLights(const CanonFloor& floor) {
         const float lightY = r.y1() - 0.25f;
         // Range covers the room height + a margin so the floor of a tall room is lit.
         const float range  = std::max(8.0f, r.h + 4.0f);
-        // Wide / deep rooms (boss arena, main hall) get a small grid so the whole floor
-        // reads evenly lit; small cells get a single center light. Cap the grid so we
-        // never mint a huge number of lights for one room (cheap + cap-friendly).
-        const int nx = std::min(3, std::max(1, (int)std::ceil(r.w / 8.0f)));
-        const int nz = std::min(3, std::max(1, (int)std::ceil(r.d / 8.0f)));
+        // Wide / deep rooms (boss arena, main hall) get a grid so the whole floor reads
+        // evenly lit; small cells get a single center light.
+        //
+        // ---- 2026-07-12, FACILITY LIGHTING AUDIT — THE `min(3, ...)` CAP WAS DARKNESS.
+        // This grid used to be clamped to 3x3 "so we never mint a huge number of lights
+        // for one room (cheap + cap-friendly)". That economy is FALSE — the host already
+        // feeds only the NEAREST lights of the VISIBLE rooms each frame (selectVisible-
+        // CanonLights), so an unfed light costs exactly nothing. What the clamp actually
+        // bought was a set of CORRIDORS THAT DO NOT REACH THEIR OWN ENDS:
+        //     West/East Cell Hall  3 x 40 m : 3 lights over 32 m -> 16 m apart, range 9
+        //                                      => ~7 m of BLACK between every pool.
+        //     W/E Service Corridor 3 x 31 m : 3 lights, 12.4 m apart, range 8.5 => gaps.
+        //     Main Hall           44 x  5 m : 3 lights, 11.7 m apart, range 9   => gaps.
+        // MEASURED, flashlight OFF (docs/screenshots/lighting_audit/facility):
+        //     East Cell Hall     mean  7.9, p05 0.9 / p95 20.7 (spread 20 — FLAT), 67% void
+        //     W Service Corridor mean  7.3,                     (spread 20 — FLAT), 70% void
+        //     Main Hall          mean 13.2,                                         68% void
+        // A flat histogram with a dark mean is the signature of a room lit by AMBIENT and
+        // nothing else — the pools simply never reach the player. Same bug as level 1's
+        // ceiling rows, one system over: THE LIGHTS WERE NOT WHERE THE PLAYER WALKS.
+        //
+        // So: tile the grid at an 8 m pitch (< the >=8 m minimum range, so adjacent pools
+        // always OVERLAP), with no arbitrary clamp — the room's own size decides. The
+        // largest room on the floor asks for 6 lights on its long axis; the whole floor
+        // goes from ~70 to ~150 lights, all of which are still fed nearest-first.
+        constexpr float kPitch = 8.0f;
+        const int nx = std::max(1, (int)std::ceil(r.w / kPitch));
+        const int nz = std::max(1, (int)std::ceil(r.d / kPitch));
         for (int iz = 0; iz < nz; ++iz) {
             for (int ix = 0; ix < nx; ++ix) {
-                // Evenly space the grid across the room interior (centered).
+                // Evenly space the grid across the room interior (centered). The 0.9 inset
+                // below keeps the end lights off the wall while still reaching the ends —
+                // the old 0.8 inset left the last 4.4 m of the Main Hall past every light.
                 const float fx = (nx == 1) ? 0.0f : ((ix + 0.5f) / nx - 0.5f);
                 const float fz = (nz == 1) ? 0.0f : ((iz + 0.5f) / nz - 0.5f);
                 CanonLight cl;
                 cl.room = ri;
-                cl.light.pos[0] = r.cx + fx * r.w * 0.8f;
+                cl.light.pos[0] = r.cx + fx * r.w * 0.9f;
                 cl.light.pos[1] = lightY;
-                cl.light.pos[2] = r.cz + fz * r.d * 0.8f;
+                cl.light.pos[2] = r.cz + fz * r.d * 0.9f;
                 cl.light.range  = range;
                 cl.light.color[0] = colR; cl.light.color[1] = colG; cl.light.color[2] = colB;
                 lights.push_back(cl);

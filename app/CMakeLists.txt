@@ -73,6 +73,8 @@ add_executable(X3Engine WIN32
     space/wormhole_transit.cpp
     space/tractor_beam.cpp
     descent_slide.cpp
+    basis_test.cpp
+    prim_light_test.cpp
     world_hosts/host_descentslide.cpp
     world_hosts/host_shipwindows.cpp
     world_hosts/host_bodycontact.cpp
@@ -81,6 +83,9 @@ add_executable(X3Engine WIN32
     ecs_render.cpp
     editor/editor.cpp
     editor/editor_keybinds.cpp
+    editor/editor_armory.cpp
+    editor/editor_ai.cpp
+    editor/editor_ai_test.cpp
     editor/editor_host.cpp
     elevator.cpp
     elevator_showcase.cpp
@@ -140,6 +145,8 @@ add_executable(X3Engine WIN32
     vehparts.cpp
     perfshop.cpp
     ecology.cpp
+    fish.cpp
+    waterzap.cpp
     crowd.cpp
     crowd_skin.cpp
     crowd_chatter.cpp

@@ -286,6 +286,33 @@ public:
     uint32_t liveEnemyMarks(EnemyMark* out, uint32_t cap) const;
     uint32_t liveCompanionPositions(x3::phys::Vec3* out, uint32_t cap) const;
 
+    // ---- ALERT / WANTED-SYSTEM FEED (the canon arming of app/alert.h) -------
+    // True iff ANY live hostile across every group currently holds LOS to the
+    // player (the AlertSystem's `playerSeen` observation — mirrors Level1Game's
+    // corridor/checkpoint scan).
+    bool anyHostileLineOfSight() const;
+    // Visit every DEAD hostile's position (the corpse census the host feeds to
+    // AlertSystem::registerCorpse each frame — the system dedupes internally).
+    void forEachCorpse(const std::function<void(const x3::phys::Vec3&)>& fn) const;
+
+    // ---- AREA-OF-EFFECT HOOK (the WATER ZAP, app/waterzap.h) ---------------
+    // Visit every hostile MonsterManager (Main Hall / cell guards / girl
+    // attackers / floor bosses / upper squads / the rescue bosses) so a host
+    // AoE (the lightning gun electrifying the water) can damage whatever is
+    // standing in its radius. Read/write access: the visitor applies damage.
+    void forEachHostileManager(const std::function<void(MonsterManager&)>& fn);
+    // Alert REINFORCEMENTS (SEARCH / KILL SQUAD effects): queue `count` extra
+    // guards into the SAME deferred-spawn queue the F2-F7 boot squads use, so
+    // the host's tickUpperSpawns(.., 1) budget (one spawn per frame) holds.
+    // Spawn room = the doored NEIGHBOUR of the player's room nearest the player
+    // (guards arrive "through the door"), falling back to the player's own room,
+    // then the Main Hall. Enemies are room-tagged like every other canon spawn
+    // and use the shared tunings (DominionTrooper; Illuminated for a kill squad).
+    // Returns the number queued (0 when no spawn room resolves).
+    uint32_t queueAlertReinforcements(const CanonFloor& floor,
+                                      const x3::phys::Vec3& nearPos,
+                                      int count, bool killSquad);
+
     // ---- Spawn bookkeeping (the self-test asserts these) ------------------
     // The room the sidearm pickup was placed in (Jake's Cell). kNoRoom if unbuilt.
     uint32_t pickupRoom() const { return m_pickupRoom; }
@@ -330,6 +357,9 @@ private:
         uint32_t    idx = 0, squadSize = 1;
         int         hpBonus = 0;
         float       speedBonus = 0.0f;
+        // Alert reinforcements resolve their room by INDEX (room names are not
+        // unique across floors); kNoRoom = resolve `room` by name (boot squads).
+        uint32_t    roomIdx = kNoRoom;
     };
     void spawnOneUpper(const CanonFloor& floor, Scene& scene,
                        x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,

@@ -35,7 +35,42 @@ world, no loading screens:
   the full look at ~60% walk speed, Space strokes up, Ctrl/C dives), depth <
   1.05 m exits onto the bank. Camera under a surface = dense blue-green fog,
   restored to the room-recipe fog on surfacing. Wading in the shallows is
-  unchanged. (3P swim animation: none yet — FP is the game view; follow-up.)
+  unchanged. Splash audio is real (tools/gen_water_audio.py -> assets/audio/
+  water/, entry + surface-exit takes); while swimming the FP weapon LOWERS out
+  of the water line and firing is refused (a soft click); the 3P avatar reads
+  PRONE at the surface with the walk clip at 0.6x as the stroke stand-in (a
+  retargeted stroke clip is the follow-up). EXCEPTION (the water zap, below): the
+  LIGHTNING gun is NOT lowered and IS allowed to fire while swimming.
+- **The fish (app/fish.h)**: THE RIVER LIVES — 61 fish in 6 ambient SCHOOLS (4
+  along the river reach nearest the facility, seeded on the `worldRiverNodes`
+  spline; 2 in the sea shallows at the estuary). One shared procedural mesh,
+  per-fish tint (silver/olive/copper) + size variance, boids-lite schooling
+  (drifting water-probed school center + slot cohesion / separation / alignment),
+  depth-bound between bed and surface, tail wiggle, FLEE from the player within
+  2.5 m (swim through a shoal and it PARTS). Kinematic (no bodies), deterministic
+  (one LCG), per-school range gate + `kStreamedExteriorRoom` PVS, ~60 ms of boot.
+- **The water zap (app/waterzap.h)**: "Lightning gun will electrify the water..
+  one Zap, and the player takes half health damage, and all the fish around die"
+  (Tim). A LIGHTNING shot whose ray MEETS the water (`findWaterEntry` marches it
+  against `worldWaterLevelAt`) — or one fired by a shooter who is IN the water —
+  makes the surface go LIVE: jagged arcs (the CombatFx bolt path) spider out to
+  **12 m** (`kWaterZapRadius`) with a flash + the Vefects zap take. ONE zap per
+  trigger pull (`WaterZapper` latch + a **1.75 s** cooldown — a held beam does
+  NOT re-zap). DAMAGE: the player, if he is IN the water (feet below the surface)
+  inside the radius, loses **HALF OF MAX HEALTH (50 of 100), once**; every live
+  fish in the radius DIES (belly-up, floats proud of the surface, drifts,
+  despawns after 26 s); anything wading in it takes 150 Energy; crowds scatter.
+  Gate: `--test-waterzap` (Z1-Z8). NOTE (engine): normal glass replays in the
+  depth pre-pass (engine/rhi/vk/vk_passes.cpp), so LIVE fish under the surface
+  are hidden when seen from the bank — they read underwater/while swimming, and
+  the DEAD ones float proud of the plane so the aftermath reads from the bank.
+- **The wanted system (polish)**: the facility AlertSystem (app/alert.h) is
+  ARMED in canonlevel — canon hostiles are its eyes/ears, gunshots/bodies/keypad
+  tampers feed heat, effects land on the canon world (reinforcements through the
+  nearest door via the 1/frame deferred-spawn queue, the level-3 LOCKDOWN over
+  canonDoors, red-shifted room lights, the HUD alert chip). SCOPE: facility-
+  interior only — observations are gated on the event position resolving to a
+  tower room, so the streamed outdoors / crowd scatter never raises it.
 
 `intro` is the same world entered through the cold-open.
 

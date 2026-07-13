@@ -821,12 +821,37 @@ bool ElevatorSystem::keypadDigit(int digit) {
 // ceiling light / disco ball) as child Scene entities offset around the cab.
 // ===========================================================================
 namespace {
+// B6 — THE OLED/INDICATOR TEXT RENDERED UPSIDE-DOWN, AND IT IS A **V** FLIP, NOT A MIRROR.
+// ROOT CAUSE: an image is uploaded TOP-DOWN (row 0 = the top of the raster, and V=0 samples
+// row 0), but makeBox()'s V axis runs BOTTOM-UP — mesh_prims.h:85-88 put v=0 at -hy and
+// v=vmax at +hy, on every one of the six faces. Nothing anywhere flips it. So the top row of
+// the bake lands at the BOTTOM of the panel and the plate reads standing on its head.
+// PROVED, not guessed (X3_OLED_DUMP): the baked PPM is upright and correct, while the panel
+// in-cab shows the lines in reverse order with each glyph flipped vertically — and the glyph
+// order LEFT-TO-RIGHT is intact, so U is fine on every face and this is a pure V flip.
+// WHY IT SURVIVED: on a TILING wall texture (every addKitTex surface, every level prim) a V
+// flip is invisible. It only bites a BAKED, NON-TILING image — i.e. text.
+// WHY NOT FIX makeBox(): that UV convention is shared by every textured prim in the game,
+// including their NORMAL maps (a V flip flips the derived bitangent, inverting the relief).
+// Flipping it there is an engine-wide relight, not a bug fix. Flip V on the panels that
+// actually carry a baked image, and nowhere else.
+void flipMeshV(x3::prims::PrimMesh& m) {
+    // makeBox emits one quad (4 verts) per face, ordered (0,0) (u,0) (u,v) (0,v).
+    for (size_t i = 0; i + 3 < m.verts.size(); i += 4) {
+        std::swap(m.verts[i + 0].uv[1], m.verts[i + 3].uv[1]);
+        std::swap(m.verts[i + 1].uv[1], m.verts[i + 2].uv[1]);
+    }
+}
+
 // Add a tinted (optionally emissive) box entity centered at the cab origin; the
 // per-frame layout offsets it. Returns the entity id (kNoLink on a bad mesh).
+// `flipV` (B6): set for panels that display a BAKED image (the OLEDs, the floor
+// indicator) so the raster's top row lands at the top of the panel.
 uint32_t addKit(Scene& scene, x3::rhi::IRenderDevice& device,
                 float hx, float hy, float hz,
-                const float color[4], const float emissive[4]) {
+                const float color[4], const float emissive[4], bool flipV = false) {
     x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, 0, 0, 0, 1.0f);
+    if (flipV) flipMeshV(geo);
     Entity e;
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
@@ -978,8 +1003,46 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     // Glass observation wall (left, -X): translucent smoked slab, set INTO a framed
     // aperture. The window glass is carH*0.40 tall x carD*0.42 deep (half-extents), so
     // the frame is four panel strips filling the rest of the -X face around it.
-    { const float c[4] = {0.15f, 0.20f, 0.28f, 0.35f};
-      m_eGlass = addKit(scene, device, T*0.5f, carH*0.40f, carD*0.42f, c, noEm); }
+    //
+    // B7 — IT WAS NOT GLASS. IT WAS A BRIGHT, NOISY, OPAQUE FILL.
+    // It was added via addKit with baseColor alpha 0.35 and NO MR texel — so Scene::render
+    // (scene.cpp:150-177) sent it down drawMeshEmissive(), the NON-PBR path, which does not
+    // read baseColor[3] AT ALL. The alpha was decorative. The result: a fully OPAQUE slab
+    // shaded by the unnormalized-Lambert prim path (~pi x brighter than every GLB beside it
+    // — R1), which also HID THE STRATA PLANE 0.4 m behind it. The window's entire purpose is
+    // to show that plane. Same bug class as B11 / L4 (a surface that needs the PBR route and
+    // silently doesn't get one because it has no MR map).
+    //
+    // THE MEDICINE, same as the -Z mirror below: a real MR texel (-> the PBR/IBL branch) and
+    // an honest albedo. Smoked glass is DARK — it borrows its brightness from what it
+    // reflects and what shows through it, exactly like the mirror.
+    //
+    // WHY NOT Entity::transparent (the dedicated glass pass): normal glass (additive == 0)
+    // rides the OPAQUE record range and therefore REPLAYS IN THE DEPTH PRE-PASS
+    // (vk_passes.cpp:878-886) — its depth would then reject the strata plane behind it, and
+    // we would be back to a flat fill with a fancier name. That is L3, and the strata is the
+    // one thing this window must not occlude. Entity::alphaBlend (scene.h:117-125) is the
+    // route that does NOT write depth: it rides the BLEND tail (vk_passes.cpp:1771-1774),
+    // recorded after opaque, blending over the already-lit scene. baseColor[3] is its blend
+    // alpha. That is real, see-through, PBR-lit glass with no depth trap.
+    { const uint8_t mrGlass[4] = { 0, 30, 0, 255 };   // glTF MR: G=rough(0.12) B=metal(0)
+      // metal 0 = a DIELECTRIC. Glass is not metal: it keeps a (tiny, dark) diffuse lobe and
+      // takes its shine from a fresnel specular, which is what makes a window read as a
+      // window and not as chrome. Roughness 0.12, not 0: a polished pane, but a mirror-flat
+      // one hands the frame to the SSR/IBL sheet (the -Z mirror's note below is the record of
+      // that exact trap).
+      x3::rhi::TextureHandle gmr = device.createTexture(mrGlass, 1, 1, false);
+      x3::prims::PrimMesh geo = x3::prims::makeBox(T*0.5f, carH*0.40f, carD*0.42f, 0,0,0, 1.0f);
+      Entity e;
+      e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                 geo.index.data(), (uint32_t)geo.index.size());
+      e.mrTex = gmr;
+      // Smoked, near-black glass. alpha = the BLEND alpha (the see-through dial).
+      e.baseColor[0] = 0.05f; e.baseColor[1] = 0.06f; e.baseColor[2] = 0.08f;
+      e.baseColor[3] = 0.42f;
+      e.alphaBlend = true;
+      e.tag = (uint32_t)Tag::Prop; e.body.id = 0;
+      m_eGlass = scene.add(e); }
     { const float tWin[3] = { 0.40f, 0.42f, 0.45f };
       const float gh = carH * 0.40f, gd = carD * 0.42f;      // glass half-extents
       const float topH = (carH * 0.5f - gh) * 0.5f;          // strip above the glass
@@ -995,8 +1058,26 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     // in the recipe (and reads as glow-in-the-dark granite). The three GLOWING strata
     // (Crystal Veins / Magma / Alien Substrate) keep theirs — those are supposed to glow;
     // that is the whole point of the descent. Driven per frame in layoutVisuals().
-    { const float c[4] = {0.30f, 0.28f, 0.32f, 1.0f};
-      m_eStrata = addKit(scene, device, 0.02f, carH*0.45f, carD*0.40f, c, noEm); }
+    //
+    // B7, SECOND ORDER — THE CRUTCH WAS HIDING A BLOWN-OUT SLAB. Nobody could see this plane
+    // for its entire life: the -X window in front of it was accidentally OPAQUE (see B7
+    // above). The moment the window became real glass, the rock face behind it rendered as a
+    // FLAT CLIPPED WHITE SHEET (measured — the screenshot is the proof).
+    // The cause is R1, not the albedo. This plane is a bare prim with NO MR texel, so
+    // Scene::render sends it to drawMeshEmissive() — the UNNORMALIZED Lambert path, which is
+    // ~pi x brighter than the PBR path every GLB in the cab uses. It sits 1.4 m from the
+    // practical, so it took that pi x on the strongest light in the car and clipped.
+    // The previous pass DID see the symptom (the "brightest thing in the cab" note in
+    // layoutVisuals) and reached for the albedo — 0.55 -> 0.42. That is the VALUE-not-lumens
+    // reflex, and here it was aimed at the wrong dial: no albedo below 1.0 can pay off a
+    // factor of pi. Give it a real (matte, dielectric) MR texel and it takes the same
+    // physically-normalized path as everything else. Rock is rough and it is NOT metal.
+    { const uint8_t mrRock[4] = { 0, 235, 0, 255 };   // glTF MR: G=rough(0.92) B=metal(0)
+      m_strataMr = device.createTexture(mrRock, 1, 1, false);
+      const float c[4] = {0.30f, 0.28f, 0.32f, 1.0f};
+      m_eStrata = addKit(scene, device, 0.02f, carH*0.45f, carD*0.40f, c, noEm);
+      if (m_eStrata != kNoLink && m_eStrata < scene.size())
+          scene.get(m_eStrata).mrTex = m_strataMr; }
 
     // Back-wall mirror (-Z). R11: was baseColor 0.92/0.92/0.95 — a NEAR-WHITE box. There
     // is no such thing as a white mirror: a mirror is DARK glass with a very low roughness
@@ -1025,12 +1106,14 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     m_oledDevice = &device;
     { const uint8_t mr1[4] = { 255, 45, 30, 255 };   // G=rough(45) B=metal(30): glossy panel
       m_oledMr = device.createTexture(mr1, 1, 1, false); }
+    // B6: flipV — these panels carry a BAKED TEXT raster, so they need the box's
+    // bottom-up V flipped to the image's top-down rows. See flipMeshV().
     { const float c[4] = {0.0f, 0.05f, 0.10f, 1.0f};
       const float em[4] = {0.0f, 0.40f, 0.80f, 1.2f};
-      m_eOledL = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em); }
+      m_eOledL = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em, /*flipV*/true); }
     { const float c[4] = {0.05f, 0.0f, 0.08f, 1.0f};
       const float em[4] = {0.30f, 0.10f, 0.60f, 1.0f};
-      m_eOledR = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em); }
+      m_eOledR = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em, /*flipV*/true); }
 
     // Access terminal + keypad (right wall, +X). R11: was a GLOWING BLUE BOX (emissive
     // 0.0/0.30/0.90 over its whole body). A terminal is a dark metal housing with a lit
@@ -1082,9 +1165,11 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     // FOOTGUN (cost us the club EQ once already): Scene::submit only forwards
     // Entity::emissiveTex on the mrTex.valid() PBR branch, so the plate MUST carry an MR
     // texel or the emissive map is silently dropped and you get a flat slab again.
+    // B6: the indicator is the SAME baked-raster-on-a-box as the OLEDs, so it carries the
+    // same bottom-up-V defect — flipV for the same reason (see flipMeshV()).
     { const float c[4] = {0.9f, 0.9f, 0.9f, 1.0f};
       const float em[4] = {1.0f, 1.0f, 1.0f, 1.6f};
-      m_eIndicator = addKit(scene, device, 0.02f, 0.16f, carD*0.30f, c, em);
+      m_eIndicator = addKit(scene, device, 0.02f, 0.16f, carD*0.30f, c, em, /*flipV*/true);
       if (m_eIndicator != kNoLink && m_eIndicator < scene.size()) {
           Entity& e = scene.get(m_eIndicator);
           e.mrTex = m_oledMr;                       // the glossy panel texel (see above)
@@ -1123,13 +1208,13 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
                 "blue terminal/keypad + ceiling light + disco ball");
 }
 
-void ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
+bool ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
                                         const x3::phys::Vec3& feet) {
-    if (!m_visualsBuilt) return;
+    if (!m_visualsBuilt) return false;
     // Aboard = standing on the cab OR in the doorway of it (the car is 3.8 m across;
     // playerRiding's window is exactly the "your weight is on this platform" test).
     const int want = playerRiding(feet) ? 1 : 0;
-    if (want == m_cabAir) return;               // only on the edge — no per-frame spam
+    if (want == m_cabAir) return false;         // only on the edge — no per-frame spam
     m_cabAir = want;
     if (want) {
         // INSIDE. The engine default ambient is {0.42,0.44,0.50} and nothing in level1 or
@@ -1141,11 +1226,18 @@ void ElevatorSystem::applyCabAtmosphere(x3::rhi::IRenderDevice& device,
         device.setAmbient(0.030f, 0.032f, 0.037f);
         device.setIblIntensity(0.22f);
     } else {
-        // OUTSIDE. Hand the world back exactly what the engine hands everyone else, so
-        // stepping off the cab is byte-identical to a build without this call.
-        device.setAmbient(0.42f, 0.44f, 0.50f);
-        device.setIblIntensity(1.0f);
+        // OUTSIDE. Hand the world back WHAT THE WORLD ACTUALLY RUNS AT — not the engine
+        // defaults. B4/L6b/THE PATTERN: this used to hard-code {0.42, 0.44, 0.50} + IBL 1.0,
+        // which meant the elevator RE-IMPOSED THE 0.42 WASH ON THE ENTIRE GAME. And because
+        // m_cabAir starts at -1, `want == 0` on the very first frame is a CHANGE, so it fired
+        // BEFORE THE PLAYER HAD EVER SEEN THE CAB — silently overwriting the host's honest
+        // ambient in level1, the spire, the club, the perf shop and the show room. It is the
+        // single reason those rooms still ran the wash after dfcb65d. The host owns the
+        // world's air (setWorldAtmosphere); the elevator only owns the cab's.
+        device.setAmbient(m_worldAmb[0], m_worldAmb[1], m_worldAmb[2]);
+        device.setIblIntensity(m_worldIbl);
     }
+    return true;
 }
 
 void ElevatorSystem::layoutVisuals(Scene& scene) {

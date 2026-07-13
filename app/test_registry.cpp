@@ -71,6 +71,8 @@
 #include "vehicle.h"        // x3::game::runDriveEnterExitSelfTest (--test-vehicle)
 #include "world_cars.h"     // x3::game::runCanonVehicleSelfTest (--test-canonvehicle)
 #include "editor/editor.h"
+#include "editor/editor_ai.h"
+#include "editor/editor_armory.h"
 #include "editor/editor_host.h"
 #include "barrels.h"
 #include "glass_test.h"
@@ -87,6 +89,7 @@
 #include "act2_desert.h"
 #include "act2_caves.h"
 #include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
+#include "basis.h"                          // --test-basis (KNOWN_BUGS R3: the MIRROR invariant)
 #include "tod.h"
 #include "weather.h"
 #include "world_regions.h"
@@ -106,6 +109,7 @@
 #include "vehparts.h"
 #include "ecology.h"
 #include "crowd.h"
+#include "waterzap.h"   // --test-waterzap (FISH + the lightning WATER ZAP)
 #include "alert.h"
 #include "space_pilot.h"          // x3::game::runSpaceSelfTest (--test-space)
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
@@ -210,7 +214,15 @@ int dispatchTests(const TestFlags& tf) {
     }
     if (tf.testEditor) {
         x3::logInfo("running Level Editor E1 (JSON/pick/gizmo) self-test...");
-        return x3::editor::runEditorSelfTest() ? 0 : 1;
+        const bool a = x3::editor::runEditorSelfTest();
+        // The ARMORY browser's parse/decode/filter rides the same gate: its failure mode
+        // is a path that silently does not exist, which is invisible until you click.
+        const bool b = x3::editor::runArmorySelfTest();
+        return (a && b) ? 0 : 1;
+    }
+    if (tf.testEditorAi) {
+        x3::logInfo("running AI Architect (plan parse/validate/transact) self-test...");
+        return x3::editor::runEditorAiSelfTest() ? 0 : 1;
     }
     if (tf.testBlockout) {
         x3::logInfo("running Level Architect BLOCKOUT (brushes[] JSON / snap / mesh) self-test...");
@@ -597,6 +609,13 @@ int dispatchTests(const TestFlags& tf) {
                     "self-test...");
         return x3::game::runAct2CavesSelfTest() ? 0 : 1;
     }
+    if (tf.testBasis) {
+        x3::logInfo("running BASIS/MIRROR self-test (KNOWN_BUGS R3: every model-instancing "
+                    "basis must have a POSITIVE determinant — a negative one is a REFLECTION "
+                    "that draws the model inside-out and unlit; scans every entity of every "
+                    "built world, with negative controls, headless)...");
+        return x3::game::runBasisSelfTest() ? 0 : 1;
+    }
     if (tf.testRifthub) {
         x3::logInfo("running RIFTHUB Stargate portal-hub (8 grey-stone torus gates + "
                     "amber chevrons + event-horizon membrane + blue core; trigger ids "
@@ -798,6 +817,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running CROWDS self-test "
                     "(idle clusters + wander points + scatter/cower on violence + return after calm)...");
         return x3::game::runCrowdSelfTest() ? 0 : 1;
+    }
+    if (tf.testWaterZap) {
+        x3::logInfo("running WATER ZAP self-test "
+                    "(fish schools + the lightning gun electrifying the water: "
+                    "entry detection, one-zap latch, half-health, fish in/out of the radius)...");
+        return x3::game::runWaterZapSelfTest() ? 0 : 1;
     }
     if (tf.testAlert) {
         x3::logInfo("running FACILITY ALERT LEVEL self-test "

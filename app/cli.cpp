@@ -77,6 +77,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-frustumcull") o.testFrustumCull = true;
         else if (a == "--test-holoterm") o.testHoloterm = true;
         else if (a == "--test-llm") o.testLlm = true;
+        else if (a == "--test-editor-ai") o.testEditorAi = true;
         else if (a == "--test-secretroom") o.testSecretRoom = true;
         else if (a == "--test-ecs") o.testEcs = true;
         else if (a == "--test-ecsrender") o.testEcsRender = true;
@@ -127,6 +128,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-act2desert") o.testAct2Desert = true;
         else if (a == "--test-act2caves") o.testAct2Caves = true;
         else if (a == "--test-rifthub") o.testRifthub = true;
+        else if (a == "--test-basis") o.testBasis = true;
         else if (a == "--test-tod") o.testTod = true;
         else if (a == "--test-weather") o.testWeather = true;
         else if (a == "--test-worldregions") o.testWorldRegions = true;
@@ -168,6 +170,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-vehicle") o.testVehicle = true;
         else if (a == "--test-canonvehicle") o.testCanonVehicle = true;
         else if (a == "--shot-drive") o.shotDrive = true;
+        else if (a == "--flashlight-off") o.flashlightOff = true;
         else if (a == "--dusk") o.duskSky = true;
         else if (a == "--shot-chatter") {
             o.shotChatter = 1;
@@ -177,6 +180,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;
+        else if (a == "--test-waterzap") o.testWaterZap = true;
         else if (a == "--test-alert") o.testAlert = true;
         else if (a == "--screenshot-ecology") {
             o.ecologyShot = true;
@@ -436,6 +440,12 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // per set + overview rows into a FLAT output dir.
             o.matlibShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.matlibShotDir = argv[++i];
+        }
+        else if (a == "--test-primlight") {
+            // ONE LIGHTING PATH: prim (dielectric) vs GLB (Cook-Torrance) radiance
+            // parity on the real device, with a negative control. Optional out-PNG.
+            o.testPrimLight = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.primLightShotPath = argv[++i];
         }
         else if (a == "--screenshot-destruct") {
             o.destructShot = true;

@@ -655,11 +655,19 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         const float frScale = 0.58f;   // taller jamb: header ~2.55 m so the opening clears standing
         auto placeDoorFrame = [&](int wall, float runC) {
             float yaw = 0.0f, wx = 0.0f, wz = 0.0f;
+            // lx/lz = the THRESHOLD LAMP seat: the same opening, pushed 0.25 m in from the
+            // wall plane along that wall's INWARD normal, so the lamp hugs the lintel it is
+            // bolted to instead of hanging out in the room in front of the slab. (See B5.)
+            float lx = 0.0f, lz = 0.0f;
             switch (wall) {
-                case 0: yaw =  kPi * 0.5f; wx = x0 + 0.06f; wz = runC;       break; // -X wall, faces +X
-                case 1: yaw = -kPi * 0.5f; wx = x1 - 0.06f; wz = runC;       break; // +X wall, faces -X
-                case 2: yaw =  0.0f;       wx = runC;       wz = z0 + 0.06f; break; // -Z wall, faces +Z
-                case 3: yaw =  kPi;        wx = runC;       wz = z1 - 0.06f; break; // +Z wall, faces -Z
+                case 0: yaw =  kPi * 0.5f; wx = x0 + 0.06f; wz = runC;       // -X wall, faces +X
+                        lx = x0 + 0.25f;   lz = runC;       break;
+                case 1: yaw = -kPi * 0.5f; wx = x1 - 0.06f; wz = runC;       // +X wall, faces -X
+                        lx = x1 - 0.25f;   lz = runC;       break;
+                case 2: yaw =  0.0f;       wx = runC;       wz = z0 + 0.06f; // -Z wall, faces +Z
+                        lx = runC;         lz = z0 + 0.25f; break;
+                case 3: yaw =  kPi;        wx = runC;       wz = z1 - 0.06f; // +Z wall, faces -Z
+                        lx = runC;         lz = z1 - 0.25f; break;
             }
             // Seat the frame's VISIBLE jamb on the floor. SM_DoorFrame_A's bright jamb sits
             // ~0.4 m above its probed AABB base (the base is a thin sill), so anchoring miny
@@ -674,7 +682,20 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             // The per-opening PLACEMENT is kept (e70b8c9): the cell has three thresholds and
             // the old code hardcoded ONE frame on +X from a wrong "+X = exit" guess, so frames
             // floated in solid walls while the real doorways stayed bare graybox.
-            addLight(bt.jakeCell, wx, fY + 1.0f, wz, 3.0f, 0.62f, 0.035f, 0.02f);
+            //
+            // B5 / THE PATTERN — THIS is why the door rendered PINK, and it was NOT the albedo.
+            // MEASURED: hanging ~0.5 m off the slab, HEAD-ON (N.L ~ 1) at slab-centre height
+            // with range 3.0, this lamp delivered ~0.43 red to the door face while the room's
+            // white key — a CEILING tube, GRAZING the vertical slab — delivered only ~0.35.
+            // The red WON: the door was a red-LIT surface, so a neutral grey slab read salmon
+            // and its trim glowed magenta. Renormalizing the albedo only scaled the value
+            // (R-G held at +57); the HUE never moved, which is the proof.
+            // A door-status lamp does not floodlight a door — it HUGS the frame. Mount it over
+            // the lintel (a real "LOCKED" indicator, fY+2.18) and tighten the range to a local
+            // pool (3.0 -> 1.5): grazing incidence on the slab gives a red gradient at the head
+            // of the door + a pool on the jamb and threshold floor, while the white key defines
+            // the door as institutional grey. The tell survives; the wash does not.
+            addLight(bt.jakeCell, lx, fY + 2.18f, lz, 1.5f, 0.55f, 0.030f, 0.02f);
         };
         for (const CellOpening& o : openings) placeDoorFrame(o.wall, o.c);
     }
@@ -862,9 +883,51 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // 4 m cell lands INSIDE A WALL in the new one and renders a near-black frame that
         // looks exactly like a lighting regression and is not one. Derive cameras from room
         // data (docs/ENGINE_GOTCHAS.md 4.1).
+        // 2026-07-12 — THE CELL WAS BLACK. Re-tuned FOR THE ROOM IT ACTUALLY LIVES IN.
+        // The note above ("left byte-identical at 3.30 / 6.2 — verified against the landed
+        // cell-scale fix") WAS WRONG, and it is worth saying why, because the reasoning is
+        // seductive: the reach WAS set generous on purpose, and the window term really does
+        // survive the rescale. But reach is not what was killing this room.
+        // MEASURED on main @ f295caf, flashlight OFF, 4 data-derived eye cameras in the
+        // 7x4x6 cell: mean luma 6.7-10.1, and 65-80% OF EVERY FRAME AT OR BELOW LUMA 6.
+        // That is not "dim and moody". That is the void the player wakes up in.
+        //
+        // THE TWO INSTRUMENTS SETTLED IT (r_debugview, from fix/prim-point-light):
+        //   view 2 (point-light term ALONE): mean 57.7, 2.6% void — THE LAMP REACHES.
+        //     "The key dies in mid-air" was the wrong diagnosis. It arrives.
+        //   view 5 (real lighting, albedo forced FLAT 0.5): mean 15.6 — a room made of
+        //     50% reflectors STILL READS DARK under this rig.
+        // A surface cannot be the fault when a WHITE room is dark. And the value check
+        // (do it FIRST, always) exonerates the surfaces outright: hh_floor_01a is 0.462
+        // linear x tint 0.40 = 0.185, hh_wall_01a is 0.505 x 0.34 = 0.172 — both sit in
+        // the honest 0.18-0.20 band prim-point-light renormalized the graybox INTO. There
+        // is no asphalt in this room. DO NOT "fix" this cell by lifting its albedos; they
+        // are already right, and raising them just makes a grey room out of a dark one.
+        //
+        // So it is FLUX, and it is GEOMETRY — the two things the rescale actually changed:
+        //   * The room went 4x3.5x4 -> 7x4x6. THREE TIMES THE VOLUME, 42 m^2 of floor, and
+        //     still exactly ONE fixture. The rest of this building lights a corridor with a
+        //     practical every few metres; the cell was asked to do it with one lamp tuned
+        //     for a closet. Level1's fixtures run 3.2-3.3 EACH — and there are 337 of them.
+        //   * The lamp hung 0.40 m under the ceiling. With pointAtten = w^2/(d^2+1), the
+        //     CEILING 0.40 m away caught 0.86 of it and the FLOOR 3.6 m below caught 0.056.
+        //     A 15:1 waste ratio — the fixture was lighting the slab above it. THAT is why
+        //     the tube reads p95 233 while the deck under it reads p95 11.9: not a lamp that
+        //     cannot reach, a lamp pointed at the wrong half of the room.
+        // Raising intensity ALONE would have scorched the ceiling before the floor lit.
+        // Raising RANGE alone could never have worked: the window term was already 0.79 at
+        // the floor, so 6.2 -> infinity buys 1.26x. Neither dial fixes this on its own.
+        //
+        // HANG IT LOWER (0.40 -> 1.10 m below the ceiling: floor atten 0.056 -> 0.104, and
+        // the ceiling's share drops 0.86 -> 0.45), LENGTHEN THE REACH to a 7 m room's far
+        // corner (6.2 -> 9.0), and THEN give the one lamp the flux to carry 42 m^2 (x2.73).
+        // The cool-white ratio (3.30:3.42:3.70) is preserved EXACTLY — this is the same
+        // lamp, hung right and fed properly, not a new one. No ambient was raised. No
+        // albedo went over unity. The flicker beat is untouched (depth 0.55) and now has a
+        // real room to take down with it.
         const uint32_t li = (uint32_t)m_lights.size();
-        addLight(bt.jakeCell, lx, ceilY - 0.40f, lz, 6.2f, 3.30f, 3.42f, 3.70f);
-        m_flickers.push_back({ li, 3.30f, 3.42f, 3.70f, 0.0f, 9.0f, 0.55f });
+        addLight(bt.jakeCell, lx, ceilY - 1.10f, lz, 9.0f, 9.01f, 9.34f, 10.10f);
+        m_flickers.push_back({ li, 9.01f, 9.34f, 10.10f, 0.0f, 9.0f, 0.55f });
         (void)aLight; (void)aHLight;   // loaded (hall may reuse); no cell placement
     }
 
@@ -1013,10 +1076,29 @@ void CellDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             // placed with emissive=nullptr (alpha 0) shows NO authored glow; a prop that
             // opts in (alpha > 0) shows the authored glow at that strength. Props with no
             // material emissive keep the per-instance glow exactly as before.
-            const bool matEmis = d.emissiveTexId != 0 ||
+            //
+            // ...AND THAT GATE WAS A CRUTCH OVER A BROKEN CONVERT (THE PATTERN, again).
+            // The reason kit emissive "bloomed as glowing blobs" is that the kit HAD NO
+            // EMISSIVE MAP: the ModularSciFi conversion threw the pack's glow channel
+            // (MRAG.a) away, so a piece could only ever carry a FLAT emissiveFactor —
+            // and a flat factor with no map floods the WHOLE SURFACE. Gating that off
+            // was right. But the gate keys on the wrong thing: it also zeroes the
+            // emissive of a piece whose glow is a real PER-TEXEL MAP, which is
+            // self-limiting by construction (it glows only where the artist painted a
+            // lens, and is black everywhere else). With the kit's maps restored, this
+            // gate was silently deleting every ceiling panel, door lens and wall strip
+            // in the cell. PROVEN, not guessed: at emissive strength 12 the door was
+            // still DARK.
+            //
+            // So gate on what actually separates the two cases:
+            //   * a MAP localizes the glow  -> honour it at full strength.
+            //   * a bare FACTOR floods it   -> still opt-in via inst.emissive[3].
+            const bool matMap  = d.emissiveTexId != 0;
+            const bool matEmis = matMap ||
                 d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
             float emis[4];
-            if (matEmis) { emis[0]=d.emissiveFactor[0]; emis[1]=d.emissiveFactor[1]; emis[2]=d.emissiveFactor[2]; emis[3]=inst.emissive[3]; }
+            if (matEmis) { emis[0]=d.emissiveFactor[0]; emis[1]=d.emissiveFactor[1]; emis[2]=d.emissiveFactor[2];
+                           emis[3]= matMap ? 1.0f : inst.emissive[3]; }
             else         { emis[0]=inst.emissive[0]; emis[1]=inst.emissive[1]; emis[2]=inst.emissive[2]; emis[3]=inst.emissive[3]; }
             // Per-instance baseColor tint (darken plain/white kit pieces to believable
             // dark metal/painted surfaces so they don't blow out under accent lights).

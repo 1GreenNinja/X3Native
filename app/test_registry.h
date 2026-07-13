@@ -33,6 +33,7 @@ struct TestFlags {
     bool testPhysJoint = false, testRagdoll = false, testGltf = false, testPlayer = false;
     bool testInteract = false, testPhysprops = false, testRagdollSkin = false;
     bool testEditor = false, testBlockout = false, testLoader = false, testBarrels = false;
+    bool testEditorAi = false;   // --test-editor-ai (AI Architect plan validator)
     bool testGlass = false, testFrustumCull = false, testHoloterm = false;
     bool testSecretRoom = false, testHatch = false, testLlm = false, testEcs = false;
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;
@@ -71,6 +72,7 @@ struct TestFlags {
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
     bool testRifthub = false;   // --test-rifthub (Stargate portal hub self-test)
+    bool testBasis = false;     // --test-basis (KNOWN_BUGS R3: the MIRROR determinant invariant)
     bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
@@ -81,6 +83,7 @@ struct TestFlags {
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
     bool testLightningCharge = false;  // --test-lightning-charge (Lightning Gun CHARGE model)
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;
+    bool testWaterZap = false;   // --test-waterzap (FISH schools + the lightning WATER ZAP)
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
     bool testPerfshop = false;
