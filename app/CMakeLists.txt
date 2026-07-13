@@ -82,6 +82,7 @@ add_executable(X3Engine WIN32
     editor/editor.cpp
     editor/editor_keybinds.cpp
     editor/editor_armory.cpp
+    editor/canon_import.cpp
     editor/editor_ai.cpp
     editor/editor_ai_test.cpp
     editor/editor_host.cpp

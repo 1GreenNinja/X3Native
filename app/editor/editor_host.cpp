@@ -5,6 +5,7 @@
 // Scene + Jolt so the greybox is walkable in Play mode.
 #include "editor_host.h"
 #include "editor_armory.h"
+#include "canon_import.h"
 
 #include "../asset_root.h"
 #include "../mesh_prims.h"
@@ -304,6 +305,47 @@ bool EditorHost::tick(float dt, bool wantMouse, bool wantKbd,
 }
 
 // ---------------------------------------------------------------------------
+// Rebuild the ENTIRE live scene from m_doc.brushes[] — tear down every existing brush's
+// mesh + body first, then respawn all. Used when the document is REPLACED wholesale
+// (opening a game floor), where per-brush hints do not apply and a stale body left
+// behind would both leak and collide with nothing. mutable-safe: respawnBrush already
+// destroys a brush's own prior links, but an IMPORT drops the old brushes entirely, so
+// their links must be freed here before m_doc is overwritten by the caller.
+void EditorHost::rebuildAllBrushes(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                                   x3::phys::IPhysicsWorld& physics) {
+    for (int i = 0; i < (int)m_doc.brushes.size(); ++i)
+        respawnBrush(i, device, scene, physics);
+}
+
+// Free every live brush's GPU mesh + Jolt body WITHOUT touching m_doc — call BEFORE
+// replacing m_doc, so the records that own the links still exist to be torn down.
+void EditorHost::teardownAllBrushes(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                                    x3::phys::IPhysicsWorld& physics) {
+    for (auto& b : m_doc.brushes) {
+        teardownLinks(b.sceneEntity, b.body, device, scene, physics);
+        b.sceneEntity = 0xFFFFFFFFu; b.body = 0;
+    }
+}
+
+// OPEN A GAME FLOOR. Parse the canon project, import ONE floor into m_doc (rooms ->
+// boxes), and rebuild the live scene. Returns a status string for the panel.
+std::string EditorHost::openCanonFloor(const std::string& floorKey,
+                                       x3::rhi::IRenderDevice& device,
+                                       x3::game::Scene& scene,
+                                       x3::phys::IPhysicsWorld& physics) {
+    if (!m_canon.ok) m_canon = openCanonProject(canonLevelPath());
+    if (!m_canon.ok) return m_canon.error;
+    LevelDoc imported;
+    if (!importCanonFloor(m_canon, floorKey, imported))
+        return "floor '" + floorKey + "' not found";
+    teardownAllBrushes(device, scene, physics);   // free the OLD floor's links first
+    m_doc = std::move(imported);                   // REPLACE the document
+    m_state.clearSelection();
+    m_state.clearHistory();                        // the old undo stack indexes a dead doc
+    rebuildAllBrushes(device, scene, physics);
+    return std::to_string(m_doc.brushes.size()) + " rooms — " + m_doc.name;
+}
+
 void EditorHost::spawnBrush(int idx, x3::rhi::IRenderDevice& device,
                             x3::game::Scene& scene, x3::phys::IPhysicsWorld& physics) {
     if (idx < 0 || idx >= (int)m_doc.brushes.size()) return;
@@ -497,6 +539,63 @@ void EditorHost::aiPoll() {
 //   * The filter caps its own result, so a single-letter search does not try to render
 //     the entire library while you are still typing.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GAME LEVEL — open the REAL facility, one floor at a time.
+// ---------------------------------------------------------------------------
+void EditorHost::drawGameLevelPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                                    x3::phys::IPhysicsWorld& physics) {
+    // X3_OPEN_FLOOR=<key> — stage a real open through the REAL path, for a headless
+    // proof (a screenshot cannot click a floor button). Runs once.
+    static bool s_openedOnce = false;
+    if (!s_openedOnce) {
+        s_openedOnce = true;
+        if (const char* fk = std::getenv("X3_OPEN_FLOOR"))
+            m_canonStatus = openCanonFloor(fk, device, scene, physics);
+    }
+
+    panelRect(0.190f, 0.045f, 0.300f, 0.100f);   // TOP strip
+    ImGui::Begin("Game Level");
+
+    if (!m_canon.ok) {
+        // Lazy-load the project SUMMARY on first draw (cheap: floor list, no geometry).
+        if (m_canon.error.empty()) m_canon = openCanonProject(canonLevelPath());
+        if (!m_canon.ok) {
+            ImGui::TextWrapped("Canon level not found.");
+            ImGui::TextDisabled("%s", m_canon.error.c_str());
+            ImGui::End();
+            return;
+        }
+    }
+
+    ImGui::TextDisabled("%s", m_canon.name.c_str());
+    if (!m_canon.floors.empty()) {
+        if (m_canonFloorSel < 0 || m_canonFloorSel >= (int)m_canon.floors.size())
+            m_canonFloorSel = 0;
+        const CanonFloorInfo& fi = m_canon.floors[m_canonFloorSel];
+        char preview[96];
+        std::snprintf(preview, sizeof preview, "F%s  %s  (%d rooms)",
+                      fi.key.c_str(), fi.name.c_str(), fi.rooms);
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::BeginCombo("##floor", preview)) {
+            for (int i = 0; i < (int)m_canon.floors.size(); ++i) {
+                const CanonFloorInfo& f = m_canon.floors[i];
+                char lbl[96];
+                std::snprintf(lbl, sizeof lbl, "F%s  %s  (%d rooms)",
+                              f.key.c_str(), f.name.c_str(), f.rooms);
+                if (ImGui::Selectable(lbl, i == m_canonFloorSel)) m_canonFloorSel = i;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Open")) {
+            m_canonStatus = openCanonFloor(m_canon.floors[m_canonFloorSel].key,
+                                           device, scene, physics);
+        }
+    }
+    if (!m_canonStatus.empty()) ImGui::TextDisabled("%s", m_canonStatus.c_str());
+    ImGui::End();
+}
+
 void EditorHost::drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                                  x3::phys::IPhysicsWorld& physics) {
     (void)scene; (void)physics;
@@ -1088,6 +1187,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 
     // ---- Materials palette (Feature 1: click-a-wall texturing). Click a swatch to
     // re-skin the selected brush; the change is ONE undo step + persists in the JSON. ----
+    drawGameLevelPanel(device, scene, physics);
     drawArmoryPanel(device, scene, physics);
     drawAiPanel(device, scene, physics);
 

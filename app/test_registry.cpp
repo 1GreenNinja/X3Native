@@ -73,6 +73,7 @@
 #include "editor/editor.h"
 #include "editor/editor_ai.h"
 #include "editor/editor_armory.h"
+#include "editor/canon_import.h"
 #include "editor/editor_host.h"
 #include "barrels.h"
 #include "glass_test.h"
@@ -218,7 +219,8 @@ int dispatchTests(const TestFlags& tf) {
         // The ARMORY browser's parse/decode/filter rides the same gate: its failure mode
         // is a path that silently does not exist, which is invisible until you click.
         const bool b = x3::editor::runArmorySelfTest();
-        return (a && b) ? 0 : 1;
+        const bool c = x3::editor::runCanonImportSelfTest();
+        return (a && b && c) ? 0 : 1;
     }
     if (tf.testEditorAi) {
         x3::logInfo("running AI Architect (plan parse/validate/transact) self-test...");

@@ -22,6 +22,7 @@
 #include "editor.h"
 #include "editor_ai.h"
 #include "editor_armory.h"
+#include "canon_import.h"
 #include "engine/llm/ILlmSystem.h"
 
 #include "engine/asset/IModelLoader.h"
@@ -197,6 +198,19 @@ private:
     int         m_armoryPackSel   = 0;    // 0 = "All packs"; else index into m_armory.packs+1
     void drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                          x3::phys::IPhysicsWorld& physics);
+
+    // ---- OPEN THE REAL GAME LEVEL (canon_import.h) ----------------------------------
+    CanonProject m_canon;                 // the parsed facility project (floor summaries)
+    int          m_canonFloorSel = 0;     // index into m_canon.floors
+    std::string  m_canonStatus;           // one-line panel status
+    void drawGameLevelPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                            x3::phys::IPhysicsWorld& physics);
+    std::string openCanonFloor(const std::string& floorKey, x3::rhi::IRenderDevice& device,
+                               x3::game::Scene& scene, x3::phys::IPhysicsWorld& physics);
+    void rebuildAllBrushes(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                           x3::phys::IPhysicsWorld& physics);
+    void teardownAllBrushes(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                            x3::phys::IPhysicsWorld& physics);
     // Lazily mount the converted_glb dir + create the loader (first model placement).
     void ensureModelLoader(x3::rhi::IRenderDevice& device);
     // Load + cache a GLB by relpath; returns the cached entry (ok=false on failure).

@@ -425,6 +425,12 @@ public:
     // collected here — without this, every AI room you undo leaks a mesh and a body.
     const std::vector<HistoryEffect>& groupEffects() const { return m_groupEffects; }
 
+    // Wipe the undo history AND selection. Used when the document is REPLACED wholesale
+    // (opening a game floor): every BrushCmd indexes brushes that no longer exist, so a
+    // stray Ctrl+Z into the old stack would mutate the wrong brush or run off the end.
+    void  clearHistory() { m_history.clear(); m_undoPos = 0; m_group = 0; m_groupEffects.clear(); }
+    void  clearSelection() { m_selKind = SelKind::None; m_selIndex = -1; m_selected = -1; }
+
     bool  canUndo() const { return m_undoPos > 0; }
     bool  canRedo() const { return m_undoPos < (int)m_history.size(); }
     // Apply one undo / redo to brushes[]. Returns the host re-sync hint (see
