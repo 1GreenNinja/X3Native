@@ -32,6 +32,7 @@
 #include "../player.h"                // WALK MODE (Phase A): first-person character on the streets
 #include "../scene.h"                 // RESIDENTS: crowd entities live in a Scene
 #include "../crowd.h"                 // RESIDENTS: wandering citizen agents
+#include "../monster.h"              // OH1 HERO HELI: rigged skinned draw via MonsterSystem prop
 #include "../crowd_skin.h"            // RESIDENTS: real rigged-GLB characters over the agents
 #include "../npc_life.h"              // LIVING CITY: 12-archetype NPCs with daily schedules
 #include "../asset_root.h"            // riggedGlbRoot()
@@ -1003,6 +1004,39 @@ int hostEchotropolis(HostContext& hc) {
         c.body->setInstanceTransform(0, M);
     };
 
+    // ===================== OH1 HERO HELICOPTER (rigged, bone-driven rotor) ==
+    // The hero bird: the rigged OH1.glb flown as an INERT MonsterSystem prop — the
+    // proven skinned-draw path (MonsterSystem owns the model load + Skinner + the
+    // direct drawMonster fan). We drive its world pose each frame along a patrol
+    // circle and loop its "Rotor" clip via the calm-loop hook, so the MAIN ROTOR
+    // spins from its ACTUAL bones (not a rigid re-pose). Built in BOTH the windowed
+    // loop and the headless capture (each owns its own MonsterSystem + scene/physics).
+    const float kOh1Scale = [](){ const char* e=std::getenv("ECHO_OH1_SCALE"); return e?(float)std::atof(e):0.03f; }();
+    const float kOh1Yaw   = [](){ const char* e=std::getenv("ECHO_OH1_YAW");   return e?(float)std::atof(e):0.0f;  }();
+    constexpr float kOh1CenX=-20.0f, kOh1CenZ=760.0f, kOh1R=215.0f, kOh1Alt=235.0f, kOh1W=0.09f;
+    auto buildOh1 = [&](x3::game::MonsterSystem& m, x3::game::Scene& sc, x3::phys::IPhysicsWorld& ph){
+        x3::game::MonsterSystem::Tuning t;
+        t.type = x3::game::MonsterType::Guard;
+        t.chaseSpeed = 0.0f; t.damage = 0; t.noBody = true;   // inert visual prop
+        t.modelFile = "OH1.glb"; t.modelDirOverride = x3::game::riggedGlbRoot();
+        t.standUpZtoY = false; t.modelScale = kOh1Scale;
+        const x3::phys::Vec3 p0{ kOh1CenX + kOh1R, kOh1Alt, kOh1CenZ };
+        m.buildMonsterTuned(sc, *device, ph, x3::game::riggedGlbRoot(), p0, t);
+        m.setCalmLoop("Rotor");                               // spin the MAIN rotor clip
+        x3::logInfo(std::string("--world echotropolis: OH1 buildOh1 real=") +
+                    (m.usingRealModel()?"1":"0") + " skinnable=" + (m.skinnable()?"1":"0") +
+                    " rotorClip=" + (m.calmLoopActive()?"FOUND":"MISSING"));
+        return m.usingRealModel();
+    };
+    auto flyOh1 = [&](x3::game::MonsterSystem& m, float t){
+        const float a = t * kOh1W;
+        const x3::phys::Vec3 p{ kOh1CenX + kOh1R*std::cos(a),
+                                kOh1Alt + std::sin(t*0.5f)*4.0f,
+                                kOh1CenZ + kOh1R*std::sin(a) };
+        m.setPropPose(p, a + 1.5708f + kOh1Yaw);              // nose tangent to the circle
+        m.setPropMotion(0.0f, 0.10f);                         // speed 0 => rotor calm-loop plays
+    };
+
     // RESIDENTS: character height (5-6 ft). Env-tunable (ECHO_PED_SCALE) so it can be
     // dialed live without a rebuild; default 1.7 → ~5.9 ft citizens. (The citizens
     // ARE real textured animated people — the earlier "green blobs" were the grass-
@@ -1027,6 +1061,7 @@ int hostEchotropolis(HostContext& hc) {
         std::unique_ptr<x3::phys::IPhysicsWorld> sphys;
         x3::game::Scene sScene; x3::game::CrowdSystem sCrowd; x3::game::CrowdSkin sSkin;
         x3::game::CrowdSystem sMiners; x3::game::CrowdSkin sMinersSkin; bool sMinersBuilt = false;
+        x3::game::MonsterSystem sOh1; bool sOh1Built = false;   // OH1 hero heli (capture)
         x3::game::HoloTerminal sOps; bool sOpsBuilt = false;
         x3::game::NpcLife sNpc; bool sNpcBuilt = false;   // living-city NPCs (schedules/archetypes)
         bool sResBuilt = false;
@@ -1060,6 +1095,7 @@ int hostEchotropolis(HostContext& hc) {
                     sMinersSkin.build(msc, sMiners);
                     sMinersBuilt = sMiners.built();
                 }
+                sOh1Built = buildOh1(sOh1, sScene, *sphys);   // OH1 hero heli (capture)
                 // CONTROL ROOM ops dashboard (verify in captures)
                 sOps.build(sScene, *device,
                            x3::phys::Vec3{ -14.0f, hf.heightAt(-20.0f, 760.0f) + 2.2f, 752.0f },
@@ -1095,6 +1131,7 @@ int hostEchotropolis(HostContext& hc) {
             applyOcean(device, (float)i * dt, shotTod);
             if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
             if (sMinersBuilt) { sMiners.update(dt, sScene); sMinersSkin.update(dt, sMiners, sScene, *device, *sphys); }
+            if (sOh1Built) { flyOh1(sOh1, (float)i * dt); sOh1.update(dt, sScene, *sphys, sOh1.pos()); }
             if (sNpcBuilt) sNpc.update(dt, sScene);   // living-city schedules advance
             if (sOpsBuilt) {
                 sOps.setLines({
@@ -1137,6 +1174,7 @@ int hostEchotropolis(HostContext& hc) {
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             else if (sMinersBuilt) sScene.render(*device, frame);
             if (sMinersBuilt) sMinersSkin.draw(*device, frame, sScene);
+            if (sOh1Built) sOh1.drawMonster(*device, frame, sScene);   // OH1 hero heli (capture)
             if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
                 poseBeam(-2.13f);
                 beam.draw(*device, frame);
@@ -1263,6 +1301,7 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::CrowdSystem miners;          // dedicated GOLD-MINE crew (western shoulder)
     x3::game::CrowdSkin minersSkin;
     bool minersBuilt = false;
+    x3::game::MonsterSystem oh1; bool oh1Built = false;   // OH1 hero heli (rigged prop)
     x3::game::HoloTerminal opsScreen;   // CONTROL ROOM: live city-ops dashboard on the crown
     x3::game::NpcLife npcLife; bool npcLifeBuilt = false;   // LIVING CITY: scheduled NPCs
     bool opsBuilt = false;
@@ -1348,6 +1387,14 @@ int hostEchotropolis(HostContext& hc) {
             x3::logInfo(std::string("--world echotropolis: GOLD-MINE crew ") +
                         (minersBuilt ? "built (9 miners hauling ore)" : "FAILED"));
         }
+
+        // OH1 HERO HELI: the rigged bird, flown as an inert MonsterSystem prop.
+        oh1Built = buildOh1(oh1, walkScene, *phys);
+        x3::logInfo(std::string("--world echotropolis: OH1 hero heli ") +
+                    (oh1Built ? (oh1.skinnable()
+                        ? (oh1.calmLoopActive() ? "built (rigged, rotor spinning)"
+                                                : "built (rigged, NO rotor clip — check name)")
+                        : "built (static, unrigged)") : "FAILED to load"));
 
         // CONTROL ROOM: a live ops-dashboard screen on the crown plaza (HoloTerminal
         // Readout, Vigil-orange ink). Renders through walkScene like the residents.
@@ -1611,6 +1658,7 @@ int hostEchotropolis(HostContext& hc) {
             miners.update(dt, walkScene);
             minersSkin.update(dt, miners, walkScene, *device, *phys);
         }
+        if (oh1Built) { flyOh1(oh1, waterTime); oh1.update(dt, walkScene, *phys, oh1.pos()); }
         if (opsBuilt) {                 // CONTROL ROOM: refresh the live dashboard
             opsScreen.setLines(opsLines(todS));
             opsScreen.update(dt);
@@ -1645,6 +1693,7 @@ int hostEchotropolis(HostContext& hc) {
                                 if (todS.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
                                     if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
         for (auto& c : cars) { poseCar(c, waterTime); c.body->draw(*device, frame); }  // street traffic
+        if (oh1Built) oh1.drawMonster(*device, frame, walkScene);   // OH1 hero heli
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);
             residentsSkin.draw(*device, frame, walkScene);
