@@ -183,7 +183,17 @@ void main() {
     // Body color: the bound texture (holo UI / white) tinted by the glass color.
     // vFactor.rgb carries the per-object baseColor; vGlassTint.rgb is the glass
     // tint. Treat white tint (default) as colorless.
-    vec3 texel = texture(textures[nonuniformEXT(vTexIndex)], vUV).rgb;
+    //
+    // MASK THE ALPHA-MODE BITS FIRST. texIndex packs the alpha mode in its high
+    // bits (vk_passes.cpp:970 — bit31 = MASK/cutout, bit30 = BLEND) and mesh.vert
+    // forwards the word RAW; mesh.frag strips them at mesh.frag:741 before it
+    // samples. This shader did not, so any glass record on the BLEND tail sampled
+    // textures[0x40000000 | idx] — a wildly out-of-bounds bindless descriptor.
+    // It was latent while only the additive street-light glow rode the tail; now
+    // that ALL glass does (the water/shadow fix in drawMeshGlass), every pane
+    // would have sampled garbage. Strip the flags exactly as mesh.frag does.
+    const uint baseIdx = vTexIndex & 0x3FFFFFFFu;
+    vec3 texel = texture(textures[nonuniformEXT(baseIdx)], vUV).rgb;
     vec3 tint  = vGlassTint.rgb;
     vec3 body  = texel * vFactor.rgb * tint;
 
