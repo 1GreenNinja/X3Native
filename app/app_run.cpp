@@ -3168,15 +3168,33 @@ int runDefaultHost(HostContext& hc) {
                         const float d2 = dx * dx + dz * dz;
                         if (d2 < best) { best = d2; nearest = i; }
                     }
-                    // Silver / olive / bronze schools. These MULTIPLY the fish's
-                    // countershading gradient (dark back -> pale belly), so they are
-                    // gentle hues, not base colors — a school reads as a species.
-                    const float tints[3][3] = { { 0.92f, 0.97f, 1.00f },   // silver
-                                                { 0.86f, 1.00f, 0.78f },   // olive
-                                                { 1.00f, 0.86f, 0.68f } }; // bronze
-                    const int offs[4] = { -2, 0, 3, 6 };   // four schools along the reach
-                    for (int k = 0; k < 4; ++k) {
-                        int idx = (int)nearest + offs[k];
+                    // THE SPECIES MIX along the reach. Rudd and bream SHOAL (many,
+                    // tight); perch run in small loose GANGS; the PIKE is ALONE —
+                    // one big slow predator holding station in the reach, and it is
+                    // the fish you actually notice. The tints only bite on the
+                    // procedural fallback (they multiply its countershading
+                    // gradient); a real GLB fish keeps its scanned colour.
+                    struct SchoolPlan {
+                        int offs;                     // river-node offset from `nearest`
+                        x3::game::FishSpecies sp;
+                        uint32_t count;
+                        float spread;
+                        float tint[3];
+                    };
+                    const SchoolPlan plan[] = {
+                        // A tight silver rudd shoal upstream of the tower.
+                        { -2, x3::game::FishSpecies::Rudd,  13u, 4.2f, { 0.92f, 0.97f, 1.00f } },
+                        // The bream slab, deeper and slower, right off the facility.
+                        {  0, x3::game::FishSpecies::Bream, 11u, 5.0f, { 0.88f, 0.94f, 1.00f } },
+                        // A PERCH GANG — few, loose, restless.
+                        {  3, x3::game::FishSpecies::Perch,  5u, 2.4f, { 1.00f, 0.86f, 0.55f } },
+                        // THE PIKE. One. Alone. Downstream, in the quiet water.
+                        {  5, x3::game::FishSpecies::Pike,   1u, 2.0f, { 0.86f, 1.00f, 0.78f } },
+                        // A second rudd shoal further down the reach.
+                        {  7, x3::game::FishSpecies::Rudd,  11u, 4.6f, { 0.92f, 0.97f, 1.00f } },
+                    };
+                    for (const SchoolPlan& p : plan) {
+                        int idx = (int)nearest + p.offs;
                         if (idx < 0) idx = 0;
                         if (idx > (int)rn - 2) idx = (int)rn - 2;
                         const x3::game::WorldRiverNode& A = rnodes[idx];
@@ -3184,10 +3202,13 @@ int runDefaultHost(HostContext& hc) {
                         x3::game::FishSchoolDesc sd;
                         sd.centerX = A.x; sd.centerZ = A.z;
                         sd.heading  = std::atan2(B.z - A.z, B.x - A.x);   // downstream
-                        sd.count    = 9u + (uint32_t)(k % 3) * 2u;        // 9..13
-                        sd.spread   = 4.5f + 0.6f * (float)k;
-                        sd.speed    = 0.55f + 0.15f * (float)(k % 2);
-                        for (int c = 0; c < 3; ++c) sd.tint[c] = tints[k % 3][c];
+                        sd.species  = p.sp;
+                        sd.count    = p.count;
+                        sd.spread   = p.spread;
+                        // The species table owns the speed — a pike does not cruise
+                        // at rudd pace.
+                        sd.speed    = x3::game::fishSpecies(p.sp).speed;
+                        for (int c = 0; c < 3; ++c) sd.tint[c] = p.tint[c];
                         fc.schools.push_back(sd);
                     }
                     // THE ESTUARY: two schools in the sea shallows off the mouth.
@@ -3202,12 +3223,16 @@ int runDefaultHost(HostContext& hc) {
                             const float pz = E.z + std::sin(side) * d + std::sin(eh) * 14.0f;
                             if (x3::game::worldWaterLevelAt(px, pz) <= x3::game::kFishDryTest)
                                 continue;
+                            // The estuary shoals: rudd in the shallows, bream out
+                            // in the deeper mill.
                             x3::game::FishSchoolDesc sd;
                             sd.centerX = px; sd.centerZ = pz;
                             sd.heading = side + 3.14159265f;
+                            sd.species = (k == 0) ? x3::game::FishSpecies::Rudd
+                                                  : x3::game::FishSpecies::Bream;
                             sd.count   = 8u + (uint32_t)k * 3u;    // 8, 11
                             sd.spread  = 5.5f;
-                            sd.speed   = 0.45f;
+                            sd.speed   = x3::game::fishSpecies(sd.species).speed;
                             sd.tint[0] = 0.88f; sd.tint[1] = 0.96f; sd.tint[2] = 1.00f;
                             fc.schools.push_back(sd);
                             break;
@@ -3218,12 +3243,30 @@ int runDefaultHost(HostContext& hc) {
                     return x3::game::worldWaterLevelAt(x, z); });
                 worldFish.setBedQuery([](float x, float z) {
                     return x3::game::terrainHeightAtWorld(x, z); });
+                // The REAL fish art (pose-baked Rodin species). A missing GLB
+                // degrades that species to the procedural loft — never a crash,
+                // never a statue.
+                worldFish.setModelDir(x3::game::riggedGlbRoot());
                 worldFish.build(fc, scene, *device);
                 const double fishMs = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - fs0).count();
                 x3::logInfo("FISH: " + std::to_string(worldFish.fishCount()) + " fish in " +
                             std::to_string(worldFish.schoolCount()) + " schools (river reach + estuary) — " +
                             std::to_string(fishMs) + " ms");
+                // The PERF line the fish budget is judged on: dozens of fish must
+                // cost a few tenths of a ms, so we log exactly what they draw.
+                x3::logInfo("FISH ART: " + std::to_string(worldFish.glbFishCount()) +
+                            "/" + std::to_string(worldFish.fishCount()) +
+                            " on REAL pose-baked models — " +
+                            std::to_string(worldFish.triCount()) + " tris across " +
+                            std::to_string(worldFish.drawCount()) + " draws (pike=" +
+                            (worldFish.speciesLoaded(x3::game::FishSpecies::Pike) ? "GLB" : "loft") +
+                            " rudd=" +
+                            (worldFish.speciesLoaded(x3::game::FishSpecies::Rudd) ? "GLB" : "loft") +
+                            " bream=" +
+                            (worldFish.speciesLoaded(x3::game::FishSpecies::Bream) ? "GLB" : "loft") +
+                            " perch=" +
+                            (worldFish.speciesLoaded(x3::game::FishSpecies::Perch) ? "GLB" : "loft") + ")");
                 x3::boot::mark("FISH (river + estuary schools)");
 
                 // ---- THE WATER FLASH (the zap's biggest read): a radial-gradient
@@ -4443,8 +4486,38 @@ int runDefaultHost(HostContext& hc) {
         bool zapShotFired = false;
         int  zapShotLead = -1;               // frames BEFORE the capture that the zap goes off
         x3::phys::Vec3 zapShotCenter{}, zapShotFeet{};
+        // SUBJECT-TRACKING stills (the REAL-FISH proofs: pike / perch). A fish is
+        // not a prop — over 150 settle frames the pike swims clean out of a static
+        // frame. So these modes lock the camera onto ONE fish and re-aim it every
+        // settle frame, holding it in PROFILE with the staged sun on the near flank.
+        // The fish is still swimming its own sim; only the camera is a steadicam.
+        int   zapShotTrack = -1;             // fish index to hold in frame (-1 = static cam)
+        float zapShotTrackDist = 3.0f;       // stand-off (m) — must clear fleeRadius (2.5)
+        float zapShotTrackFov  = 40.0f;      // tight lens: fill the frame from outside the bolt radius
         if (!zapShotMode.empty()) {
-            const x3::game::FishSchool& sc = worldFish.school(0);
+            // Pick the school this still is ABOUT: the pike shot wants the pike's
+            // school, not school 0 (the rudd shoal).
+            uint32_t shotSchool = 0;
+            x3::game::FishSpecies want = x3::game::FishSpecies::Rudd;
+            bool bySpecies = false;
+            if (zapShotMode == "pike")  { want = x3::game::FishSpecies::Pike;  bySpecies = true; }
+            if (zapShotMode == "perch") { want = x3::game::FishSpecies::Perch; bySpecies = true; }
+            if (zapShotMode == "shoal") { want = x3::game::FishSpecies::Rudd;  bySpecies = true; }
+            if (bySpecies) {
+                for (uint32_t i = 0; i < worldFish.schoolCount(); ++i) {
+                    if (worldFish.school(i).species == want) { shotSchool = i; break; }
+                }
+                for (uint32_t i = 0; i < worldFish.fishCount(); ++i) {
+                    if (worldFish.fish(i).species == want) { zapShotTrack = (int)i; break; }
+                }
+                // A rudd is 26 cm and a perch 24 cm: from OUTSIDE the 2.5 m bolt
+                // radius (we will not spook them just to photograph them) the only
+                // way they read as FISH and not as flecks is a LONG LENS. The pike
+                // is a metre long and needs none of that.
+                if (zapShotMode == "perch") { zapShotTrackDist = 3.3f; zapShotTrackFov = 29.0f; }
+                if (zapShotMode == "shoal") { zapShotTrackDist = 2.7f; zapShotTrackFov = 28.0f; }
+            }
+            const x3::game::FishSchool& sc = worldFish.school(shotSchool);
             const float wY = x3::game::worldWaterLevelAt(sc.cx, sc.cz);
             if (wY > x3::game::kFishDryTest) {
                 zapShotCenter = x3::phys::Vec3{ sc.cx, wY, sc.cz };
@@ -4477,6 +4550,14 @@ int runDefaultHost(HostContext& hc) {
                     // so they hold): the read a SWIMMER gets — fish at eye level.
                     ssX = sc.cx + backX * 4.6f; ssY = wY - 0.80f; ssZ = sc.cz + backZ * 4.6f;
                     ssYaw = lookYaw; ssPitch = -0.05f;
+                } else if (zapShotTrack >= 0) {
+                    // pike / perch: seed the camera on the subject's PROFILE. The
+                    // settle loop then re-aims it every frame (see zapShotTrack).
+                    const x3::game::Fish& f = worldFish.fish((uint32_t)zapShotTrack);
+                    ssX = f.x + backX * zapShotTrackDist;
+                    ssY = f.y + 0.10f;
+                    ssZ = f.z + backZ * zapShotTrackDist;
+                    ssYaw = lookYaw; ssPitch = -0.04f;
                 } else {   // "school": from the BANK, looking down into the channel
                     ssX = sc.cx + backX * 5.0f; ssY = wY + 1.2f; ssZ = sc.cz + backZ * 5.0f;
                     ssYaw = lookYaw + 0.05f; ssPitch = -0.34f;
@@ -4935,6 +5016,52 @@ int runDefaultHost(HostContext& hc) {
                 // HUD then reads). Nothing here is painted on.
                 if (worldFish.built()) {
                     worldFish.update(dt, scene, ssEye);
+                    // STEADICAM on the subject (X3_SHOT_ZAP=pike|perch): hold the
+                    // fish in PROFILE with the staged sun on its near flank. We
+                    // stand on whichever beam of the fish faces the sun (the dot
+                    // test below), at zapShotTrackDist — outside fleeRadius, so it
+                    // cruises instead of bolting — and re-aim every frame, because
+                    // the subject is a live fish, not a prop on a turntable.
+                    if (zapShotTrack >= 0 &&
+                        zapShotTrack < (int)worldFish.fishCount()) {
+                        const x3::game::Fish& f = worldFish.fish((uint32_t)zapShotTrack);
+                        // The fish's beam (perpendicular to its heading), in XZ.
+                        const float px = -std::sin(f.yaw), pz = std::cos(f.yaw);
+                        // Stand on the LIT side: the staged sun comes from +sunDirXZ
+                        // (0.55, -0.35), so the flank facing that way is the lit one.
+                        const float s = (px * 0.55f + pz * -0.35f) >= 0.0f ? 1.0f : -1.0f;
+                        const float cx = f.x + s * px * zapShotTrackDist;
+                        const float cz = f.z + s * pz * zapShotTrackDist;
+                        const float cy = f.y + 0.10f;
+                        // FRAME IT CLEAR OF THE GUN. Aiming dead-on put the pike
+                        // under the crosshair — and the lightning gun's viewmodel
+                        // owns the lower-right of the frame, so it ate the snout,
+                        // which is the one feature that says PIKE. Bias the aim so
+                        // the subject sits upper-LEFT of centre, in clean water.
+                        // The bias is a FRACTION OF THE LENS, not a fixed angle: at
+                        // a fixed 0.22 rad the long-lens perch shot threw its subject
+                        // into the top-right corner behind the minimap.
+                        const float fovRad = zapShotTrackFov * 0.01745329f;
+                        const float yaw = std::atan2(f.z - cz, f.x - cx) + 0.30f * fovRad;
+                        const float pitch = std::atan2(f.y - cy,
+                            std::sqrt((f.x - cx) * (f.x - cx) + (f.z - cz) * (f.z - cz)))
+                            - 0.12f * fovRad;
+                        // Write it back into the SHOT camera: the capture path
+                        // re-issues setCamera(ssX..) after this loop, so a purely
+                        // local aim here would be clobbered and the still would
+                        // frame the water where the pike USED to be.
+                        ssX = cx; ssY = cy; ssZ = cz; ssYaw = yaw; ssPitch = pitch;
+                        device->setCamera(cx, cy, cz, yaw, pitch, zapShotTrackFov);
+                        if (i % 40 == 0) {
+                            char tb[200];
+                            std::snprintf(tb, sizeof(tb),
+                                "[fishshot] frame %d track=%d species=%u fish=(%.2f,%.2f,%.2f) "
+                                "yaw=%.2f cam=(%.2f,%.2f,%.2f) fov=%.0f",
+                                i, zapShotTrack, (uint32_t)f.species, f.x, f.y, f.z,
+                                f.yaw, cx, cy, cz, zapShotTrackFov);
+                            x3::logInfo(tb);
+                        }
+                    }
                     if (!zapShotMode.empty() && i % 40 == 0 && worldFish.fishCount() > 0) {
                         const x3::game::Fish& f0 = worldFish.fish(0);
                         const x3::game::FishSchool& s0 = worldFish.school(0);

@@ -41,14 +41,46 @@ world, no loading screens:
   PRONE at the surface with the walk clip at 0.6x as the stroke stand-in (a
   retargeted stroke clip is the follow-up). EXCEPTION (the water zap, below): the
   LIGHTNING gun is NOT lowered and IS allowed to fire while swimming.
-- **The fish (app/fish.h)**: THE RIVER LIVES — 61 fish in 6 ambient SCHOOLS (4
+- **The fish (app/fish.h)**: THE RIVER LIVES — 60 fish in 7 ambient SCHOOLS (5
   along the river reach nearest the facility, seeded on the `worldRiverNodes`
-  spline; 2 in the sea shallows at the estuary). One shared procedural mesh,
-  per-fish tint (silver/olive/copper) + size variance, boids-lite schooling
-  (drifting water-probed school center + slot cohesion / separation / alignment),
-  depth-bound between bed and surface, tail wiggle, FLEE from the player within
-  2.5 m (swim through a shoal and it PARTS). Kinematic (no bodies), deterministic
-  (one LCG), per-school range gate + `kStreamedExteriorRoom` PVS, ~60 ms of boot.
+  spline; 2 in the sea shallows at the estuary). Boids-lite schooling (drifting
+  water-probed school center + slot cohesion / separation / alignment),
+  depth-bound between bed and surface, FLEE from the player within 2.5 m (swim
+  through a shoal and it PARTS). Kinematic (no bodies), deterministic (one LCG),
+  per-school range gate + `kStreamedExteriorRoom` PVS.
+  - **REAL SPECIES (Rodin scans).** `assets/rigged_glb/Fish_{Rudd,Bream,Perch,
+    Pike}.glb`, built by `tools/fish_bake.py` from 90k-500k-tri Rodin models:
+    decimated to 1.3-4k tris with the FINS PROTECTED (a thickness raycast puts
+    thin geometry in a vertex group the decimator is told to spare — otherwise
+    the collapser eats the dorsal and the caudal fork FIRST, and the fork IS the
+    silhouette), maps down to 512² (1024² for the pike), then RIGGED with a
+    4-bone spine and POSE-BAKED.
+  - **The species table** (`fishSpecies()`): rudd (26 cm) + bream (30 cm) SHOAL;
+    perch (24 cm) run in small loose GANGS of 5; the **PIKE (92 cm) IS A LONER** —
+    one fish, `solitary`, half the yaw rate and a third the speed of the shoal.
+    Predators do not shoal, and it is the fish you notice.
+  - **The swim is a MESH SWAP, not runtime skinning.** The engine has no instanced
+    skinned draw (the RHI keys the joint palette by MeshHandle — one palette per
+    mesh — and the only skinned path is one MonsterSystem per instance at ~15-25 ms
+    of spawn, whose `setPropPose(pos, yaw)` has no ROLL and so cannot express a fish
+    banking, let alone floating belly-up). So `fish_bake.py` evaluates the rig
+    offline at 29 phases (16 cruise + 12 flee-burst + 1 slack-dead) and freezes the
+    DEFORMED mesh at each; the runtime just picks the pose for a fish's
+    `time * beatHz + phase`. Real skinned deformation (fins bend WITH the body,
+    nothing shears the way a rigid hinge-chain would scissor a dorsal that spans a
+    joint) for ZERO per-frame vertex work, and ONE draw per fish instead of three.
+  - **Full PBR**: `Entity{tex, normalTex, mrTex}` routes the fish through
+    `drawMeshPBR` — the scales/stripes live in the NORMAL MAP, not the 1.4k-tri
+    geometry (`MeshVertex` has no tangents; `mesh.frag` rebuilds the TBN from
+    screen-space derivatives). The submerged river is nearly unlit, so the albedo
+    is *also* bound as `emissiveTex` at 0.35 — an ambient fill in the fish's OWN
+    colours, so the pike's olive back and red caudal lift out of the gloom instead
+    of going black, and a black texel stays black.
+  - **FALLBACK, never a statue**: a missing/failed species GLB degrades that species
+    to the original procedural lofted body (countershaded, 3 hinged pieces, the
+    travelling-sine S-flex) — asserted by `--test-waterzap` Z9.
+  - Cost: 60 fish = **85,408 tris across 60 draws**; ~140 ms of one-time boot for
+    the four GLB loads.
 - **The water zap (app/waterzap.h)**: "Lightning gun will electrify the water..
   one Zap, and the player takes half health damage, and all the fish around die"
   (Tim). A LIGHTNING shot whose ray MEETS the water (`findWaterEntry` marches it
