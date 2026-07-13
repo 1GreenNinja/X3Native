@@ -86,8 +86,65 @@ uint32_t EditorHost::resolveMaterial(const std::string& id, x3::rhi::IRenderDevi
 }
 
 // ---------------------------------------------------------------------------
+// CAMERA MODES (View menu). One command entry point so the menu, the 1/2/3 hotkeys
+// and a headless proof all take the same path.
+// ---------------------------------------------------------------------------
+void EditorHost::orbitApply() {
+    // The eye sits on a sphere of radius m_orbDist about the pivot, LOOKING AT it — so
+    // it is derived from the SAME yaw/pitch the other modes use (negated: the eye is
+    // behind the look direction), and switching modes never snaps the view.
+    const float fx = std::cos(m_camPitch) * std::cos(m_camYaw);
+    const float fy = std::sin(m_camPitch);
+    const float fz = std::cos(m_camPitch) * std::sin(m_camYaw);
+    m_camX = m_orbPivot[0] - fx * m_orbDist;
+    m_camY = m_orbPivot[1] - fy * m_orbDist;
+    m_camZ = m_orbPivot[2] - fz * m_orbDist;
+}
+
+void EditorHost::frameSelection() {
+    // F frames the selection: pivot on it, and back off far enough to see all of it.
+    float r = 2.0f;
+    if (m_state.hasBrushSelection()) {
+        const BlockoutBrush& b = m_doc.brushes[m_state.selIndex()];
+        for (int a = 0; a < 3; ++a) m_orbPivot[a] = b.pos[a];
+        r = 0.5f * std::max(b.size[0], std::max(b.size[1], b.size[2]));
+    } else if (m_state.hasSelection()) {
+        const EditorEntity& e = m_doc.entities[m_state.selected()];
+        for (int a = 0; a < 3; ++a) m_orbPivot[a] = e.pos[a];
+        r = std::max(0.5f, e.scale);
+    } else {
+        m_orbPivot[0] = m_orbPivot[1] = m_orbPivot[2] = 0.0f;   // nothing picked: the world origin
+    }
+    m_orbDist = std::max(3.0f, r * 3.5f);
+    if (m_camMode == CamMode::Orbit) orbitApply();
+}
+
+void EditorHost::dispatchCmd(Cmd c) {
+    switch (c) {
+        case Cmd::CamFly:
+            m_camMode = CamMode::Fly;      // the eye is already where it is: nothing to do
+            x3::logInfo("[editor-host] camera: FLY");
+            break;
+        case Cmd::CamOrbit:
+            m_camMode = CamMode::Orbit;
+            frameSelection();              // orbit is meaningless without a pivot
+            x3::logInfo("[editor-host] camera: ORBIT");
+            break;
+        case Cmd::CamFpsWalk:
+            m_camMode = CamMode::FpsWalk;
+            m_walkGroundY = m_camY - m_walkEye;   // start standing where we already are
+            x3::logInfo("[editor-host] camera: FPS WALK");
+            break;
+        case Cmd::Focus:
+            frameSelection();
+            break;
+        default: break;                    // File/Edit rows keep their own handlers
+    }
+}
+
+// ---------------------------------------------------------------------------
 bool EditorHost::tick(float dt, bool wantMouse, bool wantKbd,
-                      x3::rhi::IRenderDevice& device) {
+                      x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld* physics) {
     if (!m_window) return false;
 
     // F8 toggles Edit<->Play (polled even when a panel has keyboard focus so it's
@@ -106,42 +163,142 @@ bool EditorHost::tick(float dt, bool wantMouse, bool wantKbd,
     // In Play mode the game owns the camera + input; the host does nothing.
     if (m_mode == HostMode::Play) { m_rmbPrev = false; return false; }
 
-    // ---- EDIT-mode fly-cam: WASD move + mouse-look while RMB held. ALL camera
-    // input is gated on the device's editorWantsInput so hovering/clicking a panel
-    // never moves the camera. ----
+    auto down = [&](int k){ return glfwGetKey(m_window, k) == GLFW_PRESS; };
+
+    // ---- Camera-mode hotkeys (View menu shortcuts 1/2/3) + F to frame the selection.
+    // Gated on !wantKbd so typing "1" into a panel field never flips the camera. ----
+    if (!wantKbd) {
+        const int keys[3] = { GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3 };
+        const Cmd cmds[3] = { Cmd::CamOrbit, Cmd::CamFly, Cmd::CamFpsWalk };
+        for (int i = 0; i < 3; ++i) {
+            const bool k = down(keys[i]);
+            if (k && !m_camModePrev[i]) dispatchCmd(cmds[i]);
+            m_camModePrev[i] = k;
+        }
+        const bool f = down(GLFW_KEY_F);
+        if (f && !m_focusPrev) dispatchCmd(Cmd::Focus);
+        m_focusPrev = f;
+    }
+
+    // ---- Mouse deltas + buttons, shared by all three modes. ALL camera input is gated
+    // on the device's editorWantsInput so hovering/clicking a panel never moves the
+    // camera. ----
     double mx = 0, my = 0;
     glfwGetCursorPos(m_window, &mx, &my);
     const bool rmb = !wantMouse &&
                      glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-    if (rmb && m_rmbPrev) {
-        const float sens = 0.0030f;
-        m_camYaw   += (float)(mx - m_lastMouseX) * sens;
-        m_camPitch -= (float)(my - m_lastMouseY) * sens;
+    const bool mmb = !wantMouse &&
+                     glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+    const bool shift = down(GLFW_KEY_LEFT_SHIFT) || down(GLFW_KEY_RIGHT_SHIFT);
+    const float dmx = (rmb && m_rmbPrev) || (mmb && m_mmbPrev)
+                    ? (float)(mx - m_lastMouseX) : 0.0f;
+    const float dmy = (rmb && m_rmbPrev) || (mmb && m_mmbPrev)
+                    ? (float)(my - m_lastMouseY) : 0.0f;
+    m_lastMouseX = mx; m_lastMouseY = my;
+
+    // Orbit's pan/dolly needs the MMB + the wheel; the other modes ignore them. The wheel
+    // value is one frame old here (ImGui only latches it in NewFrame, which runs after
+    // tick) — a frame of latency on a dolly is invisible, and it is applied exactly once.
+    const float wheel = ImGui::GetIO().MouseWheel;
+
+    const float sens = 0.0030f;
+    const bool  panning = m_camMode == CamMode::Orbit && (mmb || (rmb && shift));
+    if ((rmb || mmb) && !panning) {
+        m_camYaw   += dmx * sens;
+        m_camPitch -= dmy * sens;
         if (m_camPitch >  1.55f) m_camPitch =  1.55f;
         if (m_camPitch < -1.55f) m_camPitch = -1.55f;
     }
-    m_lastMouseX = mx; m_lastMouseY = my;
     m_rmbPrev = rmb;
+    m_mmbPrev = mmb;
 
-    // WASD/QE move along the look basis (only when not typing in a panel).
+    // The look basis (shared): forward + the horizontal right vector.
     const float fx = std::cos(m_camPitch) * std::cos(m_camYaw);
     const float fy = std::sin(m_camPitch);
     const float fz = std::cos(m_camPitch) * std::sin(m_camYaw);
     float rl = std::sqrt(fx*fx + fz*fz); if (rl < 1e-4f) rl = 1e-4f;
     const float rx = -fz / rl, rz = fx / rl;
-    if (!wantKbd) {
-        float spd = 7.0f * dt;
-        if (glfwGetKey(m_window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) spd *= 3.0f;
-        auto down = [&](int k){ return glfwGetKey(m_window, k) == GLFW_PRESS; };
-        if (down(GLFW_KEY_W)) { m_camX += fx*spd; m_camY += fy*spd; m_camZ += fz*spd; }
-        if (down(GLFW_KEY_S)) { m_camX -= fx*spd; m_camY -= fy*spd; m_camZ -= fz*spd; }
-        if (down(GLFW_KEY_D)) { m_camX += rx*spd; m_camZ += rz*spd; }
-        if (down(GLFW_KEY_A)) { m_camX -= rx*spd; m_camZ -= rz*spd; }
-        // Vertical fly: SPACE up / LEFT_CTRL down. (Q/E are reserved for the Q/W/E/R
-        // tool hotkeys in draw(), so they no longer double as camera vertical.)
-        if (down(GLFW_KEY_SPACE)) m_camY += spd;
-        if (down(GLFW_KEY_LEFT_CONTROL)) m_camY -= spd;
+
+    switch (m_camMode) {
+    case CamMode::Fly: {
+        // FLY (the default, unchanged): WASD along the look basis, SPACE/CTRL up-down.
+        if (!wantKbd) {
+            float spd = 7.0f * dt;
+            if (shift) spd *= 3.0f;
+            if (down(GLFW_KEY_W)) { m_camX += fx*spd; m_camY += fy*spd; m_camZ += fz*spd; }
+            if (down(GLFW_KEY_S)) { m_camX -= fx*spd; m_camY -= fy*spd; m_camZ -= fz*spd; }
+            if (down(GLFW_KEY_D)) { m_camX += rx*spd; m_camZ += rz*spd; }
+            if (down(GLFW_KEY_A)) { m_camX -= rx*spd; m_camZ -= rz*spd; }
+            // Vertical fly: SPACE up / LEFT_CTRL down. (Q/E are reserved for the Q/W/E/R
+            // tool hotkeys in draw(), so they no longer double as camera vertical.)
+            if (down(GLFW_KEY_SPACE)) m_camY += spd;
+            if (down(GLFW_KEY_LEFT_CONTROL)) m_camY -= spd;
+        }
+        break;
     }
+    case CamMode::Orbit: {
+        // ORBIT: RMB drag swings the eye around the pivot (the yaw/pitch above already
+        // moved), MMB (or Shift+RMB) pans the PIVOT in the view plane, the wheel dollies.
+        // Plain LMB is deliberately NOT an orbit drag: it belongs to the gizmo + the
+        // click-to-pick, and stealing it would make the selected brush undraggable.
+        if (panning) {
+            // Pan the pivot in the VIEW plane: screen-right = the horizontal right vector,
+            // screen-up = right x forward. Scaled by distance so the pivot keeps pace with
+            // the cursor at any zoom (a far-out orbit pans further per pixel).
+            const float k  = m_orbDist * 0.0022f;
+            const float ux = -rz * fy, uy = rl, uz = rx * fy;   // up = right x forward
+            m_orbPivot[0] -= (rx * dmx - ux * dmy) * k;
+            m_orbPivot[1] -= (          - uy * dmy) * k;
+            m_orbPivot[2] -= (rz * dmx - uz * dmy) * k;
+        }
+        if (std::fabs(wheel) > 0.01f) {
+            m_orbDist *= std::pow(0.88f, wheel);                // exponential dolly (feels linear)
+            m_orbDist = std::max(0.5f, std::min(500.0f, m_orbDist));
+        }
+        if (!wantKbd) {
+            // WASD still pans the pivot, for people who never take a hand off the keys.
+            const float spd = (shift ? 3.0f : 1.0f) * 7.0f * dt;
+            if (down(GLFW_KEY_W)) { m_orbPivot[0] += fx*spd; m_orbPivot[2] += fz*spd; }
+            if (down(GLFW_KEY_S)) { m_orbPivot[0] -= fx*spd; m_orbPivot[2] -= fz*spd; }
+            if (down(GLFW_KEY_D)) { m_orbPivot[0] += rx*spd; m_orbPivot[2] += rz*spd; }
+            if (down(GLFW_KEY_A)) { m_orbPivot[0] -= rx*spd; m_orbPivot[2] -= rz*spd; }
+        }
+        orbitApply();
+        break;
+    }
+    case CamMode::FpsWalk: {
+        // FPS WALK: a GROUNDED camera. WASD walks on the horizontal plane (the forward
+        // vector is flattened, so looking at the floor no longer sinks you into it), and
+        // the eye is placed a fixed 1.7 m above whatever is underfoot.
+        //
+        // Grounding = a downward physics rayCast against the STATIC layer, i.e. the very
+        // Jolt bodies the blockout brushes already own. That is honest ground contact over
+        // ramps, stairs and cylinders — NOT a flat clamp — and it costs one ray per frame.
+        // It deliberately does NOT use the game's player character body (out of scope, and
+        // dropping a Jolt character controller into the editor is a whole risk class).
+        // No physics world (headless proof) => hold the last ground height.
+        if (!wantKbd) {
+            const float spd = (shift ? 2.2f : 1.0f) * 4.2f * dt;   // ~4.2 m/s walk, Shift = jog
+            const float wx = fx / rl, wz = fz / rl;                 // flattened forward
+            if (down(GLFW_KEY_W)) { m_camX += wx*spd; m_camZ += wz*spd; }
+            if (down(GLFW_KEY_S)) { m_camX -= wx*spd; m_camZ -= wz*spd; }
+            if (down(GLFW_KEY_D)) { m_camX += rx*spd; m_camZ += rz*spd; }
+            if (down(GLFW_KEY_A)) { m_camX -= rx*spd; m_camZ -= rz*spd; }
+        }
+        if (physics) {
+            // Cast from well above the head so we find the floor even after walking onto a
+            // step that is taller than the eye is high.
+            const float top = m_camY + 2.0f;
+            x3::phys::RayHit h = physics->rayCast(x3::phys::Vec3{ m_camX, top, m_camZ },
+                                                  x3::phys::Vec3{ 0.0f, -1.0f, 0.0f },
+                                                  /*maxDist*/ 200.0f, x3::phys::Layer::Static);
+            if (h.hit) m_walkGroundY = h.point.y;
+        }
+        m_camY = m_walkGroundY + m_walkEye;
+        break;
+    }
+    }
+
     device.setCamera(m_camX, m_camY, m_camZ, m_camYaw, m_camPitch, 65.0f);
     return true;   // the host drove the camera this frame
 }
@@ -151,7 +308,7 @@ void EditorHost::spawnBrush(int idx, x3::rhi::IRenderDevice& device,
                             x3::game::Scene& scene, x3::phys::IPhysicsWorld& physics) {
     if (idx < 0 || idx >= (int)m_doc.brushes.size()) return;
     BlockoutBrush& b = m_doc.brushes[idx];
-    const auto type = (b.type == 1u) ? x3::prims::BrushType::Ramp : x3::prims::BrushType::Box;
+    const auto type = x3::prims::brushTypeOf(b.type);
     x3::prims::PrimMesh pm = x3::prims::buildBrushMesh(type, b.size);
 
     x3::rhi::MeshHandle mesh = device.createMesh(
@@ -172,8 +329,11 @@ void EditorHost::spawnBrush(int idx, x3::rhi::IRenderDevice& device,
     brushMatrix(b, e.transform);
     b.sceneEntity = scene.add(e);
 
-    // Collision: a Box uses an AABB box body (cheap). A Ramp uses a static MESH (an
-    // AABB would make the slope un-walkable — you'd only reach the bbox top).
+    // Collision: a Box uses an AABB box body (cheap). EVERY other primitive uses a static
+    // MESH of its own triangles — an AABB would make a ramp un-walkable (you'd only reach
+    // the bbox top), would let you stand on thin air at the corners of a cylinder, and
+    // would turn a staircase into an invisible ledge. Cylinder + Stairs need no new code
+    // here: they are simply "not a Box", so they take the mesh path Ramp already took.
     b.body = 0;
     if (b.collide) {
         x3::phys::Vec3 pos{ b.pos[0], b.pos[1], b.pos[2] };
@@ -182,9 +342,9 @@ void EditorHost::spawnBrush(int idx, x3::rhi::IRenderDevice& device,
             x3::phys::BodyId bid = physics.addBox(he, pos, 0.0f, x3::phys::Layer::Static);
             b.body = bid.id;
         } else {
-            // The Ramp collision verts are origin-centered (local); offset them to the
-            // brush world position so the static mesh sits under the rendered wedge.
-            // (Yaw on a ramp is a P3 refinement; axis-aligned ramps are the P2 core.)
+            // The collision verts are origin-centered (local); offset them to the brush
+            // world position so the static mesh sits under the rendered solid.
+            // (Yaw on a mesh brush is a P3 refinement; axis-aligned is the P2 core.)
             std::vector<float> cv = pm.cverts;
             for (size_t i = 0; i + 2 < cv.size(); i += 3) {
                 cv[i+0] += b.pos[0]; cv[i+1] += b.pos[1]; cv[i+2] += b.pos[2];
@@ -369,7 +529,7 @@ void EditorHost::drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene
             }
         }
     }
-    panelRect(0.190f, 0.145f, 0.300f, 0.495f);   // BELOW Status (0.045..0.135), ABOVE the AI panel (0.655)
+    panelRect(0.190f, 0.220f, 0.300f, 0.420f);   // BELOW Status (0.045..0.210), ABOVE the AI panel (0.655)
     ImGui::Begin("Armory");
 
     ensureModelLoader(device);      // also loads + mounts the index (first use)
@@ -736,7 +896,24 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
             if (ImGui::MenuItem("Play", "F8", m_mode == HostMode::Play)) m_mode = HostMode::Play;
             ImGui::EndMenu();
         }
-        ImGui::TextDisabled("   Level Architect  |  RMB+WASD fly (SPACE/CTRL up-down)  |  F8 Edit/Play  |  Q/W/E/R tool  |  LMB drag gizmo");
+        // ---- View (CAMERA) menu, rendered straight from the editorMenuBar() DATA so the
+        // labels/shortcuts/ids can never drift from the table the rest of the editor reads.
+        // These rows used to be data with no camera behind them; they now dispatch. ----
+        if (ImGui::BeginMenu("View")) {
+            const Menu& view = editorMenuBar()[3];
+            for (uint32_t i = 0; i < view.count; ++i) {
+                const MenuItem& mi = view.items[i];
+                const bool on = (mi.id == Cmd::CamOrbit   && m_camMode == CamMode::Orbit)
+                             || (mi.id == Cmd::CamFly     && m_camMode == CamMode::Fly)
+                             || (mi.id == Cmd::CamFpsWalk && m_camMode == CamMode::FpsWalk);
+                if (ImGui::MenuItem(mi.label, mi.shortcut, on)) dispatchCmd(mi.id);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", mi.tooltip);
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Focus selection", "F")) dispatchCmd(Cmd::Focus);
+            ImGui::EndMenu();
+        }
+        ImGui::TextDisabled("   Level Architect  |  1 Orbit / 2 Fly / 3 Walk  |  F focus  |  F8 Edit/Play  |  Q/W/E/R tool  |  LMB drag gizmo");
         ImGui::EndMainMenuBar();
     }
 
@@ -768,7 +945,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         char label[96];
         std::snprintf(label, sizeof(label), "%s  [%s]##b%d",
                       b.name.empty() ? "(brush)" : b.name.c_str(),
-                      b.type == 1u ? "Ramp" : "Box", i);
+                      EditorState::brushTypeName(b.type), i);
         if (ImGui::Selectable(label, sel)) m_state.selectBrush(i);
     }
     ImGui::Separator();
@@ -804,19 +981,35 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         m_state.snapValue(m_camY + std::sin(m_camPitch) * 6.0f),
         m_state.snapValue(m_camZ + std::cos(m_camPitch)*std::sin(m_camYaw) * 6.0f),
     };
-    if (ImGui::Button("Add Box")) {
-        int idx = m_state.addBrushCmd(0u, focus);     // undoable
-        if (idx >= 0) spawnBrush(idx, device, scene, physics);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Add Ramp")) {
-        int idx = m_state.addBrushCmd(1u, focus);     // undoable
+    // The four BUILD_PLAN primitives. Every one goes through addBrushCmd (the SAME undo
+    // command as Box — no special-casing) + spawnBrush (mesh + static body). The default
+    // extents differ only because a 2 m cube is a silly default for a column or a flight
+    // of stairs.
+    struct AddBtn { const char* label; uint32_t type; float size[3]; };
+    static const AddBtn kAdd[] = {
+        { "Add Box",      0u, { 2.0f, 2.0f, 2.0f } },
+        { "Add Ramp",     1u, { 3.0f, 2.0f, 4.0f } },
+        { "Add Cylinder", 2u, { 1.5f, 3.0f, 1.5f } },
+        { "Add Stairs",   3u, { 2.0f, 2.0f, 4.0f } },
+    };
+    //
+    // The add + the resize are wrapped in ONE undo TRANSACTION: addBrushCmd snapshots the
+    // brush at its DEFAULT 2 m size, so a bare resize afterwards would leave the redo
+    // snapshot stale (redo an added ramp, get a cube back) and would cost two Ctrl+Z. The
+    // group makes "Add Stairs" exactly one undo step, whatever the default extents are.
+    for (int i = 0; i < 4; ++i) {
+        if (i & 1) ImGui::SameLine();
+        if (!ImGui::Button(kAdd[i].label)) continue;
+        m_state.beginGroup();
+        int idx = m_state.addBrushCmd(kAdd[i].type, focus);     // undoable
         if (idx >= 0) {
-            m_doc.brushes[idx].size[0] = std::max(0.25f, m_state.snapValue(3.0f));
-            m_doc.brushes[idx].size[1] = std::max(0.25f, m_state.snapValue(2.0f));
-            m_doc.brushes[idx].size[2] = std::max(0.25f, m_state.snapValue(4.0f));
-            spawnBrush(idx, device, scene, physics);
+            m_state.beginBrushEdit(idx);
+            for (int a = 0; a < 3; ++a)
+                m_doc.brushes[idx].size[a] = std::max(0.25f, m_state.snapValue(kAdd[i].size[a]));
+            m_state.commitBrushEdit();
         }
+        m_state.endGroup();
+        if (idx >= 0) spawnBrush(idx, device, scene, physics);
     }
 
     ImGui::Separator();
@@ -831,7 +1024,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     if (m_state.hasBrushSelection()) {
         int si = m_state.selIndex();
         BlockoutBrush& b = m_doc.brushes[si];
-        ImGui::Text("Selected: %s  [%s]", b.name.c_str(), b.type == 1u ? "Ramp" : "Box");
+        ImGui::Text("Selected: %s  [%s]", b.name.c_str(), EditorState::brushTypeName(b.type));
         const float step = kGridSteps[m_gridSel];
         bool moved = false, resized = false;
 
@@ -971,9 +1164,24 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     ImGui::End();
 
     // ---- Status / viewport readout. ----
-    panelRect(0.190f, 0.045f, 0.260f, 0.090f);
+    panelRect(0.190f, 0.045f, 0.260f, 0.165f);   // taller: it now carries the camera-mode readout
     ImGui::Begin("Status");
     ImGui::Text("Mode: %s", m_mode == HostMode::Edit ? "EDIT" : "PLAY");
+    // The ACTIVE camera mode + how to drive it. The View menu can set it; this is where
+    // you find out which one you are in without opening a menu.
+    {
+        const char* cam = m_camMode == CamMode::Orbit   ? "ORBIT"
+                        : m_camMode == CamMode::FpsWalk ? "FPS WALK" : "FLY";
+        const char* how = m_camMode == CamMode::Orbit
+                            ? "RMB orbit / wheel dolly / MMB pan / F focus"
+                        : m_camMode == CamMode::FpsWalk
+                            ? "RMB look / WASD walk / eye 1.7 m"
+                            : "RMB look / WASD / SPACE-CTRL";
+        ImGui::TextColored(ImVec4(0.27f, 0.67f, 1.0f, 1.0f), "Camera: %s", cam);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(1/2/3)");
+        ImGui::TextDisabled("%s", how);
+    }
     ImGui::Text("Cam: %.1f, %.1f, %.1f", m_camX, m_camY, m_camZ);
     ImGui::Text("Brushes: %d   Entities: %d",
                 (int)m_doc.brushes.size(), (int)m_doc.entities.size());
@@ -1246,7 +1454,10 @@ NudgeAction EditorHost::visualNudge(x3::rhi::IRenderDevice& device, x3::game::Sc
 
     // Translate this frame's mouse-wheel into a synthetic wheel key (Doom's classic
     // raise/lower-with-wheel). One notch = one nudge.
-    const float wheel = ImGui::GetIO().MouseWheel;
+    //
+    // ORBIT mode OWNS the wheel (it is the dolly), so the nudge binds must not also fire —
+    // otherwise every zoom would silently raise the ceiling of whatever you were looking at.
+    const float wheel = (m_camMode == CamMode::Orbit) ? 0.0f : ImGui::GetIO().MouseWheel;
     const int wheelKey = wheel > 0.5f ? kKeyMouseWheelUp
                        : wheel < -0.5f ? kKeyMouseWheelDown : 0;
 

@@ -8265,7 +8265,8 @@ int runDefaultHost(HostContext& hc) {
         if (editorMode && device->editorUIActive()) {
             bool emouse = false, ekbd = false;
             device->editorWantsInput(emouse, ekbd);
-            editorHost.tick(dt, emouse, ekbd, *device);
+            // physics: the FPS-walk camera raycasts DOWN onto the blockout's static bodies.
+            editorHost.tick(dt, emouse, ekbd, *device, physics.get());
         }
         // FLASHLIGHT (L toggles, default ON): re-issue the level's static ceiling
         // fixtures + a bright player-following light at the eye, so the dark halls

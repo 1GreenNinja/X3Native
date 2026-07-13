@@ -146,17 +146,29 @@ int dispatchScreenshotHosts(HostContext& hc) {
         x3::editor::EditorHost proofHost;
         proofHost.init(*device, proofScene, *proofPhys, proofWin);
         {
-            float p0[3] = { 0.0f, 0.0f, 0.0f }, s0[3] = { 8.0f, 0.5f, 8.0f };   // floor plate
-            float p1[3] = { -2.0f, 1.0f, 1.0f }, s1[3] = { 2.0f, 2.0f, 2.0f };  // a box
-            float p2[3] = { 3.0f, 1.0f, 1.0f }, s2[3] = { 3.0f, 2.0f, 4.0f };   // a ramp
+            float p0[3] = { 0.0f, 0.0f, 0.0f }, s0[3] = { 10.0f, 0.5f, 10.0f }; // floor plate
+            float p1[3] = { -3.5f, 1.0f, 1.0f }, s1[3] = { 2.0f, 2.0f, 2.0f };  // a box
+            float p2[3] = { 3.5f, 1.0f, 1.5f }, s2[3] = { 3.0f, 2.0f, 4.0f };   // a ramp
+            float p3[3] = { -3.5f, 1.5f, -3.5f }, s3[3] = { 2.0f, 3.0f, 2.0f }; // a CYLINDER
+            float p4[3] = { 0.5f, 1.0f, -3.0f }, s4[3] = { 3.0f, 2.0f, 4.0f };  // STAIRS
             proofHost.placeBrush(0u, p0, s0, *device, proofScene, *proofPhys);
             proofHost.placeBrush(0u, p1, s1, *device, proofScene, *proofPhys);
             proofHost.placeBrush(1u, p2, s2, *device, proofScene, *proofPhys);
+            proofHost.placeBrush(2u, p3, s3, *device, proofScene, *proofPhys);
+            proofHost.placeBrush(3u, p4, s4, *device, proofScene, *proofPhys);
             // Feature 3 proof: place a GLB prop (renders via renderModels each frame).
             proofHost.placeModel("SciFi_Warehouse_Kit/Barrel.glb", *device);
         }
+        // X3_EDITOR_CAM=orbit|walk|fly — a headless proof cannot click a menu, so this is
+        // how the Status panel's camera-mode readout gets exercised for the visual gate.
+        if (const char* cm = std::getenv("X3_EDITOR_CAM")) {
+            const std::string c = cm;
+            if (c == "orbit") proofHost.dispatchCmd(x3::editor::Cmd::CamOrbit);
+            else if (c == "walk") proofHost.dispatchCmd(x3::editor::Cmd::CamFpsWalk);
+            else proofHost.dispatchCmd(x3::editor::Cmd::CamFly);
+        }
         // A pleasant 3/4 vantage on the brushes; a touch of ambient so the grey reads.
-        device->setCamera(8.0f, 6.5f, 11.0f, -2.35f, -0.45f, 60.0f);
+        device->setCamera(9.0f, 7.5f, 12.0f, -2.30f, -0.42f, 60.0f);
         device->setAmbient(0.55f, 0.56f, 0.58f);
         // Render a few settle frames (font upload + draw-data), capturing the last one.
         bool ok = false;
