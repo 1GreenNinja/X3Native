@@ -294,6 +294,13 @@ public:
     // Visit every DEAD hostile's position (the corpse census the host feeds to
     // AlertSystem::registerCorpse each frame — the system dedupes internally).
     void forEachCorpse(const std::function<void(const x3::phys::Vec3&)>& fn) const;
+
+    // ---- AREA-OF-EFFECT HOOK (the WATER ZAP, app/waterzap.h) ---------------
+    // Visit every hostile MonsterManager (Main Hall / cell guards / girl
+    // attackers / floor bosses / upper squads / the rescue bosses) so a host
+    // AoE (the lightning gun electrifying the water) can damage whatever is
+    // standing in its radius. Read/write access: the visitor applies damage.
+    void forEachHostileManager(const std::function<void(MonsterManager&)>& fn);
     // Alert REINFORCEMENTS (SEARCH / KILL SQUAD effects): queue `count` extra
     // guards into the SAME deferred-spawn queue the F2-F7 boot squads use, so
     // the host's tickUpperSpawns(.., 1) budget (one spawn per frame) holds.

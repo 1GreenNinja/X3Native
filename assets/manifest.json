@@ -174,6 +174,30 @@
       "source_note": "W6-3: re-bake FPArms_Jake.glb with a sleeve hem (per-boundary-edge dark flap along the shoulder crop) hiding the raw stump edge; see tools/bake_fp_arms.py W6-3 notes for the 3 rejected geometry approaches"
     },
     {
+      "repo_path": "assets/rigged_glb/Fish_Bream.glb",
+      "sha256": "fe63a0f1c7e984e498ee3169e07d7921122f02998e25ceab1e7988382c21cace",
+      "size": 1824212,
+      "source_note": "Rodin river fish: decimated + retextured + 4-bone spine rig, pose-baked swim (16 cruise + 12 fast + 1 dead); tools/fish_bake.py"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Fish_Perch.glb",
+      "sha256": "66c55db8d731e86f1281755fe9090d231c4fbeef737203bdd895560804d5a615",
+      "size": 1646856,
+      "source_note": "Rodin river fish: decimated + retextured + 4-bone spine rig, pose-baked swim (16 cruise + 12 fast + 1 dead); tools/fish_bake.py"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Fish_Pike.glb",
+      "sha256": "3b48bb01bdf66693f05022a74d95d27cb24a66c78dd00c3ffbcb0a08b5e7a342",
+      "size": 5981068,
+      "source_note": "Rodin river fish: decimated + retextured + 4-bone spine rig, pose-baked swim (16 cruise + 12 fast + 1 dead); tools/fish_bake.py"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Fish_Rudd.glb",
+      "sha256": "68497d00f4b99e656025fa7dbf6fd6e284e343df3f187fbf4a6ade782d38cff1",
+      "size": 2052208,
+      "source_note": "Rodin river fish: decimated + retextured + 4-bone spine rig, pose-baked swim (16 cruise + 12 fast + 1 dead); tools/fish_bake.py"
+    },
+    {
       "repo_path": "assets/rigged_glb/GreatWhiteSharkGameReady.glb",
       "sha256": "a61fd79e16217937b55458cc28284c114142acbf72409703e2231ea24804369e",
       "size": 5323600,
@@ -181,9 +205,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/Jake_22_actions.glb",
-      "sha256": "936124f3708d3009d43b86942ddb5bad8e15e1874d2ce02ef67155c6c082e7a6",
-      "size": 26458936,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "92a322f111de1706635b4dcafe0efd4f81acaf23a8b9dca6c4f47ecf009d0a83",
+      "size": 26624592,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12; RE-BAKED 2026-07-12 with Swim + SwimIdle (tools/swim_bake.py) -> 24 clips"
     },
     {
       "repo_path": "assets/rigged_glb/Oracle.glb",

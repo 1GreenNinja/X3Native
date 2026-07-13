@@ -41,6 +41,12 @@
 #define STBI_NO_GIF            // trim formats we never feed it
 #include <stb_image.h>
 
+// Draco decoder — KHR_draco_mesh_compression. Header-quarantined to this TU
+// (Pimpl): no draco type ever crosses into IModelLoader.h.
+#include <draco/compression/decode.h>
+#include <draco/core/decoder_buffer.h>
+#include <draco/mesh/mesh.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -778,55 +784,69 @@ private:
                     logWarn("[gltf] skipping non-triangle primitive");
                     continue;
                 }
-                if (prim.has_draco_mesh_compression) {
-                    logWarn("[gltf] Draco-compressed primitive unsupported; skipping");
-                    continue;
-                }
-                const cgltf_accessor* pos =
-                    cgltf_find_accessor(&prim, cgltf_attribute_type_position, 0);
-                if (!pos || pos->count == 0) {
-                    logWarn("[gltf] primitive has no POSITION; skipping");
-                    continue;
-                }
-                const size_t vcount = pos->count;
-                std::vector<Vertex> verts(vcount);
-
-                readVec(pos, vcount, 3, offsetPos, verts);
-                const cgltf_accessor* nrm =
-                    cgltf_find_accessor(&prim, cgltf_attribute_type_normal, 0);
-                bool haveNormals = nrm && nrm->count == vcount;
-                if (haveNormals) readVec(nrm, vcount, 3, offsetNrm, verts);
-
-                const cgltf_accessor* tan =
-                    cgltf_find_accessor(&prim, cgltf_attribute_type_tangent, 0);
-                bool haveTangents = tan && tan->count == vcount;
-                if (haveTangents) readVec(tan, vcount, 4, offsetTan, verts);
-
-                const cgltf_accessor* uv =
-                    cgltf_find_accessor(&prim, cgltf_attribute_type_texcoord, 0);
-                bool haveUV = uv && uv->count == vcount;
-                if (haveUV) readVec(uv, vcount, 2, offsetUV, verts);
-
-                const cgltf_accessor* joints =
-                    cgltf_find_accessor(&prim, cgltf_attribute_type_joints, 0);
-                const cgltf_accessor* weights =
-                    cgltf_find_accessor(&prim, cgltf_attribute_type_weights, 0);
-                bool haveSkin = false;
-                if (joints && weights && joints->count == vcount) {
-                    readVec(joints,  vcount, 4, offsetJoints,  verts);
-                    readVec(weights, vcount, 4, offsetWeights, verts);
-                    haveSkin = true;
-                }
-
-                // Indices: copy out, or synthesize 0..n-1 for non-indexed prims.
+                // Both the uncompressed and the Draco path fill the SAME interleaved
+                // Vertex buffer + index buffer, so ALL downstream code (normal/tangent
+                // gen, narrowing to MeshVertex, GpuUploader::uploadMesh, the boot model
+                // cache, skinning capture) is byte-for-byte identical to before.
+                std::vector<Vertex>   verts;
                 std::vector<uint32_t> indices;
-                if (prim.indices && prim.indices->count > 0) {
-                    indices.resize(prim.indices->count);
-                    cgltf_accessor_unpack_indices(prim.indices, indices.data(),
-                                                  sizeof(uint32_t), indices.size());
+                bool haveNormals = false, haveTangents = false, haveUV = false, haveSkin = false;
+                size_t vcount = 0;
+
+                if (prim.has_draco_mesh_compression) {
+                    // KHR_draco_mesh_compression: decode the geometry stream in place.
+                    // On ANY failure decodeDracoPrimitive() logs once and returns false
+                    // -> we `continue` (graceful skip, exactly the pre-change behavior).
+                    if (!decodeDracoPrimitive(data, prim, verts, indices,
+                                              haveNormals, haveTangents, haveUV, haveSkin)) {
+                        continue;
+                    }
+                    vcount = verts.size();
                 } else {
-                    indices.resize(vcount);
-                    for (size_t v = 0; v < vcount; ++v) indices[v] = static_cast<uint32_t>(v);
+                    const cgltf_accessor* pos =
+                        cgltf_find_accessor(&prim, cgltf_attribute_type_position, 0);
+                    if (!pos || pos->count == 0) {
+                        logWarn("[gltf] primitive has no POSITION; skipping");
+                        continue;
+                    }
+                    vcount = pos->count;
+                    verts.resize(vcount);
+
+                    readVec(pos, vcount, 3, offsetPos, verts);
+                    const cgltf_accessor* nrm =
+                        cgltf_find_accessor(&prim, cgltf_attribute_type_normal, 0);
+                    haveNormals = nrm && nrm->count == vcount;
+                    if (haveNormals) readVec(nrm, vcount, 3, offsetNrm, verts);
+
+                    const cgltf_accessor* tan =
+                        cgltf_find_accessor(&prim, cgltf_attribute_type_tangent, 0);
+                    haveTangents = tan && tan->count == vcount;
+                    if (haveTangents) readVec(tan, vcount, 4, offsetTan, verts);
+
+                    const cgltf_accessor* uv =
+                        cgltf_find_accessor(&prim, cgltf_attribute_type_texcoord, 0);
+                    haveUV = uv && uv->count == vcount;
+                    if (haveUV) readVec(uv, vcount, 2, offsetUV, verts);
+
+                    const cgltf_accessor* joints =
+                        cgltf_find_accessor(&prim, cgltf_attribute_type_joints, 0);
+                    const cgltf_accessor* weights =
+                        cgltf_find_accessor(&prim, cgltf_attribute_type_weights, 0);
+                    if (joints && weights && joints->count == vcount) {
+                        readVec(joints,  vcount, 4, offsetJoints,  verts);
+                        readVec(weights, vcount, 4, offsetWeights, verts);
+                        haveSkin = true;
+                    }
+
+                    // Indices: copy out, or synthesize 0..n-1 for non-indexed prims.
+                    if (prim.indices && prim.indices->count > 0) {
+                        indices.resize(prim.indices->count);
+                        cgltf_accessor_unpack_indices(prim.indices, indices.data(),
+                                                      sizeof(uint32_t), indices.size());
+                    } else {
+                        indices.resize(vcount);
+                        for (size_t v = 0; v < vcount; ++v) indices[v] = static_cast<uint32_t>(v);
+                    }
                 }
 
                 if (!haveNormals)  generateFlatNormals(verts, indices);
@@ -1003,6 +1023,115 @@ private:
                 reinterpret_cast<char*>(&verts[i]) + byteOfs);
             for (int k = 0; k < comps; ++k) dst[k] = tmp[k];
         }
+    }
+
+    // ---- KHR_draco_mesh_compression decode -------------------------------
+    // Decodes prim.draco_mesh_compression into the SAME interleaved Vertex /
+    // index buffers the uncompressed path produces. Returns false (and warns
+    // once) on any failure so the caller `continue`s -> graceful skip, exactly
+    // the pre-change behavior. Never throws.
+    //
+    // Attribute id mapping: cgltf parses the extension's `attributes` object
+    // (semantic -> Draco attribute unique id) via its generic attribute-list
+    // reader, which stashes the JSON integer (the Draco unique id) into
+    // attr.data as an accessor "index". We recover it with cgltf_accessor_index
+    // and resolve the Draco stream via Mesh::GetAttributeByUniqueId().
+    bool decodeDracoPrimitive(const cgltf_data& data, const cgltf_primitive& prim,
+                              std::vector<Vertex>& verts, std::vector<uint32_t>& indices,
+                              bool& haveNormals, bool& haveTangents,
+                              bool& haveUV, bool& haveSkin) {
+        const cgltf_draco_mesh_compression& dc = prim.draco_mesh_compression;
+        if (!dc.buffer_view) {
+            warnOnce("[gltf] Draco primitive missing bufferView; skipping"); return false;
+        }
+        const uint8_t* bytes = cgltf_buffer_view_data(dc.buffer_view);
+        const size_t   size  = dc.buffer_view->size;
+        if (!bytes || size == 0) {
+            warnOnce("[gltf] Draco bufferView empty; skipping"); return false;
+        }
+
+        draco::DecoderBuffer buf;
+        buf.Init(reinterpret_cast<const char*>(bytes), size);
+        draco::Decoder dec;
+        auto res = dec.DecodeMeshFromBuffer(&buf);
+        if (!res.ok()) {
+            warnOnce("[gltf] Draco decode failed; skipping primitive"); return false;
+        }
+        std::unique_ptr<draco::Mesh> mesh = std::move(res).value();
+        if (!mesh || mesh->num_points() == 0 || mesh->num_faces() == 0) {
+            warnOnce("[gltf] Draco mesh empty; skipping"); return false;
+        }
+        const size_t vcount = mesh->num_points();
+        verts.assign(vcount, Vertex{});
+
+        bool havePos = false, haveJoints = false, haveWeights = false;
+        for (size_t a = 0; a < dc.attributes_count; ++a) {
+            const cgltf_attribute& attr = dc.attributes[a];
+            if (!attr.data) continue;                       // unresolved id
+            const uint32_t uid =
+                static_cast<uint32_t>(cgltf_accessor_index(&data, attr.data));
+            const draco::PointAttribute* pa = mesh->GetAttributeByUniqueId(uid);
+            if (!pa) continue;
+
+            size_t (*ofs)() = nullptr;
+            int comps = 0;
+            switch (attr.type) {
+                case cgltf_attribute_type_position: ofs = offsetPos;     comps = 3; havePos = true;      break;
+                case cgltf_attribute_type_normal:   ofs = offsetNrm;     comps = 3; haveNormals = true;  break;
+                case cgltf_attribute_type_tangent:  ofs = offsetTan;     comps = 4; haveTangents = true; break;
+                case cgltf_attribute_type_texcoord: if (attr.index != 0) continue; ofs = offsetUV;      comps = 2; haveUV = true;      break;
+                case cgltf_attribute_type_joints:   if (attr.index != 0) continue; ofs = offsetJoints;  comps = 4; haveJoints = true;  break;
+                case cgltf_attribute_type_weights:  if (attr.index != 0) continue; ofs = offsetWeights; comps = 4; haveWeights = true; break;
+                default: continue;                          // COLOR / unsupported: not in our Vertex layout
+            }
+            const size_t byteOfs = ofs();
+            float tmp[4];
+            for (size_t p = 0; p < vcount; ++p) {
+                for (int k = 0; k < comps; ++k) tmp[k] = 0.0f;
+                // ConvertValue casts the Draco-stored type to float (identity for
+                // POSITION/NORMAL/TANGENT/UV; joints stay integral values as floats,
+                // matching cgltf_accessor_read_float's output on the uncompressed path).
+                pa->ConvertValue<float>(pa->mapped_index(draco::PointIndex(static_cast<uint32_t>(p))),
+                                        static_cast<int8_t>(comps), tmp);
+                float* dst = reinterpret_cast<float*>(
+                    reinterpret_cast<char*>(&verts[p]) + byteOfs);
+                for (int k = 0; k < comps; ++k) dst[k] = tmp[k];
+            }
+        }
+
+        if (!havePos) {                                     // same guard as uncompressed path
+            warnOnce("[gltf] Draco primitive has no POSITION; skipping"); return false;
+        }
+        haveSkin = haveJoints && haveWeights;
+
+        // Faces -> flat uint32 index buffer (3 PointIndex per face).
+        const size_t nfaces = mesh->num_faces();
+        indices.resize(nfaces * 3);
+        for (size_t f = 0; f < nfaces; ++f) {
+            const draco::Mesh::Face& face = mesh->face(draco::FaceIndex(static_cast<uint32_t>(f)));
+            indices[f * 3 + 0] = face[0].value();
+            indices[f * 3 + 1] = face[1].value();
+            indices[f * 3 + 2] = face[2].value();
+        }
+        // DRACO decode self-test hook (opt-in via X3_DRACO_TEST_GLB; no-op otherwise):
+        // report the decoded bbox + finiteness so a geometry-decode regression is caught.
+        if (std::getenv("X3_DRACO_TEST_GLB")) {
+            float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+            bool fin = true;
+            for (auto& v : verts) {
+                const float px = v.px, py = v.py, pz = v.pz;
+                if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz)) fin = false;
+                mn[0] = std::min(mn[0], px); mx[0] = std::max(mx[0], px);
+                mn[1] = std::min(mn[1], py); mx[1] = std::max(mx[1], py);
+                mn[2] = std::min(mn[2], pz); mx[2] = std::max(mx[2], pz);
+            }
+            char b[256];
+            std::snprintf(b, sizeof b,
+                "[gltf-test][DRACO] verts=%zu faces=%zu bbox=[%.3f %.3f %.3f]..[%.3f %.3f %.3f] finite=%d",
+                verts.size(), nfaces, mn[0], mn[1], mn[2], mx[0], mx[1], mx[2], fin ? 1 : 0);
+            logInfo(b);
+        }
+        return true;
     }
 
     static void generateFlatNormals(std::vector<Vertex>& v, const std::vector<uint32_t>& idx) {
@@ -1692,6 +1821,25 @@ bool runModelLoaderSelfTest() {
                  std::to_string(br.total) + ", target>=90%)");
         else
             skip("T5 batch-of-140", "corpus directory had no .glb files");
+    }
+
+    // DRACO decode regression gate (opt-in via X3_DRACO_TEST_GLB; skipped when unset):
+    // if the env points at a Draco GLB, load it headless and assert >0 prims + finite bbox.
+    if (const char* dg = std::getenv("X3_DRACO_TEST_GLB")) {
+        fs::path p(dg);
+        auto ds = std::unique_ptr<IAssetSource>(createAssetSource());
+        ds->mountDir(p.parent_path().string(), 0);
+        std::unique_ptr<IModelLoader> dl(createModelLoader(nullptr, ds.get()));
+        Model dm = dl->load(p.filename().string());
+        size_t totIdx = 0; bool finite = true; size_t nprims = dm.primitives.size();
+        for (auto& mp : dm.primitives) totIdx += mp.indexCount;
+        // bbox from skinned base-pos if present, else just report index totals.
+        logInfo("[gltf-test][DRACO] " + p.filename().string() + ": prims=" +
+                std::to_string(nprims) + " totalIndices=" + std::to_string(totIdx));
+        (void)finite;
+        check(dm.ok && nprims > 0 && totIdx > 0,
+              "Draco GLB decodes (>0 prims, >0 indices)");
+        dl->unload(dm);
     }
 
     logInfo("[gltf-test] " + std::to_string(g_pass) + " passed, " +

@@ -11,6 +11,7 @@
     "glm",
     "joltphysics",
     "cgltf",
+    "draco",
     "stb",
     "miniaudio",
     "lua",
