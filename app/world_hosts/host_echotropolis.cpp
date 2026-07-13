@@ -32,6 +32,7 @@
 #include "../scene.h"                 // RESIDENTS: crowd entities live in a Scene
 #include "../crowd.h"                 // RESIDENTS: wandering citizen agents
 #include "../crowd_skin.h"            // RESIDENTS: real rigged-GLB characters over the agents
+#include "../npc_life.h"              // LIVING CITY: 12-archetype NPCs with daily schedules
 #include "../asset_root.h"            // riggedGlbRoot()
 #include "../holo_terminal.h"         // CONTROL ROOM: in-world ops dashboard screen
 #include <string>
@@ -654,6 +655,7 @@ int hostEchotropolis(HostContext& hc) {
         std::unique_ptr<x3::phys::IPhysicsWorld> sphys;
         x3::game::Scene sScene; x3::game::CrowdSystem sCrowd; x3::game::CrowdSkin sSkin;
         x3::game::HoloTerminal sOps; bool sOpsBuilt = false;
+        x3::game::NpcLife sNpc; bool sNpcBuilt = false;   // living-city NPCs (schedules/archetypes)
         bool sResBuilt = false;
         if (shotResidents && hf.ok()) {
             sphys.reset(x3::phys::createPhysicsWorld());
@@ -675,6 +677,15 @@ int hostEchotropolis(HostContext& hc) {
                 sc.scale = kPedScale;   // 5-6 ft citizens
                 sSkin.build(sc, sCrowd);
                 sResBuilt = sCrowd.built();
+                // LIVING CITY: the 12-archetype NPCs with real daily schedules on the crown.
+                x3::game::NpcLifeConfig lc;
+                lc.centerX = -20.0f; lc.centerZ = 760.0f;
+                lc.groundY = hf.heightAt(-20.0f, 760.0f);
+                lc.freewayMovers = 0;            // no freeway in the crown
+                sNpc.build(lc, sScene, *device);
+                sNpcBuilt = sNpc.built();
+                x3::logInfo(std::string("--world echotropolis: SHOT NpcLife ") +
+                            (sNpcBuilt ? "built (living-city archetypes)" : "FAILED"));
                 x3::logInfo(std::string("--world echotropolis: SHOT residents ") +
                             (sResBuilt ? "built" : "FAILED"));
             }
@@ -688,6 +699,7 @@ int hostEchotropolis(HostContext& hc) {
             applyAtmosphere(device, shotTod);   // ATMOSPHERE: aerial haze + grade + bloom
             applyOcean(device, (float)i * dt, shotTod);
             if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
+            if (sNpcBuilt) sNpc.update(dt, sScene);   // living-city schedules advance
             if (sOpsBuilt) {
                 sOps.setLines({
                     "ECHO HARBOR   //   CITY OPS", "",
@@ -812,6 +824,7 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::CrowdSkin residentsSkin;
     bool residentsBuilt = false;
     x3::game::HoloTerminal opsScreen;   // CONTROL ROOM: live city-ops dashboard on the crown
+    x3::game::NpcLife npcLife; bool npcLifeBuilt = false;   // LIVING CITY: scheduled NPCs
     bool opsBuilt = false;
     if (physOk) {
         x3::game::CrowdConfig cc;
@@ -838,6 +851,18 @@ int hostEchotropolis(HostContext& hc) {
             {  90.0f, 690.0f, 3, true },
         };
         residents.build(cc, walkScene, *device);
+        // LIVING CITY: the 12-archetype NPCs with real daily schedules (home/work/leisure)
+        // + hackable scan-cards — the "real lives" layer over the crowd.
+        {
+            x3::game::NpcLifeConfig lc;
+            lc.centerX = kWalkX; lc.centerZ = kWalkZ;
+            lc.groundY = kWalkGroundY;
+            lc.freewayMovers = 0;
+            npcLife.build(lc, walkScene, *device);
+            npcLifeBuilt = npcLife.built();
+            x3::logInfo(std::string("--world echotropolis: living-city NpcLife ") +
+                        (npcLifeBuilt ? "built" : "off"));
+        }
         x3::game::CrowdSkinConfig sc;
         sc.site = "Echo Harbor residents";
         sc.modelDir = x3::game::riggedGlbRoot();
@@ -1103,6 +1128,7 @@ int hostEchotropolis(HostContext& hc) {
         // drains its deferred spawn queue and pose-follows the agents.
         if (residentsBuilt) {
             residents.update(dt, walkScene);
+            if (npcLifeBuilt) npcLife.update(dt, walkScene);   // living-city schedules advance
             residentsSkin.update(dt, residents, walkScene, *device, *phys);
         }
         if (opsBuilt) {                 // CONTROL ROOM: refresh the live dashboard
