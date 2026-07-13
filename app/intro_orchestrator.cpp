@@ -258,7 +258,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // 3P chase cam swings on a 12 m arm rotated by the ship's FULL quaternion
     // (roll included) while setCamera() is roll-less Euler — the mismatch reads
     // as "mouse is off axis" (owner playtest). 1P puts the eye at the ship.
-    tun.defaultThirdPerson = false;
+    tun.defaultThirdPerson = true;   // 3P by default: the cockpit rig is a giant
+                                     // dark box with a letterbox slot for a window
+                                     // (owner: "MICROSCOPIC window", "can't see the
+                                     // ship"). Open chase view sees the whole fight.
+                                     // F2 toggles back to the cockpit.
     pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
 
     x3::space::EnemyShipManager enemies;
@@ -357,6 +361,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             glfwPollEvents();
             if (glfwWindowShouldClose(hc.window)) break;
             if (glfwGetKey(hc.window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            // F2: toggle 1P cockpit <-> 3P chase (owner request). Edge-detected so
+            // one press flips once, not every frame it's held.
+            {
+                static bool f2Prev = false;
+                const bool f2 = glfwGetKey(hc.window, GLFW_KEY_F2) == GLFW_PRESS;
+                if (f2 && !f2Prev) pilot.toggleCameraMode();
+                f2Prev = f2;
+            }
             auto kd = [&](int k){ return glfwGetKey(hc.window, k) == GLFW_PRESS; };
             in.moveFwd    = (kd(GLFW_KEY_W)?1.f:0.f) + (kd(GLFW_KEY_S)?-1.f:0.f);
             in.moveStrafe = (kd(GLFW_KEY_D)?1.f:0.f) + (kd(GLFW_KEY_A)?-1.f:0.f);
@@ -476,7 +488,9 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // each frame — with the enemy wing + the capital ship drawn out the
             // canopy, laser tracers + muzzle flashes via CombatFx, and pulsing
             // MFD screens. The analytic-sky starfield is the world-fixed backdrop.
-            if (cockpit) {
+            // The cockpit rig is the 1P view ONLY. In 3P chase it would hang in
+            // front of the pulled-back camera and block the whole screen.
+            if (cockpit && !pilot.isThirdPerson()) {
                 x3::apphost::pulseIntroScreens(*cockpit, beatT);
                 x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
             }

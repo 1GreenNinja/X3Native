@@ -161,7 +161,11 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // (passed via setRollInput()) accumulates around the ship's forward.
     m_yaw   += in.lookDX * kMouseSens * kPxToRad;
     m_pitch -= in.lookDY * kMouseSens * kPxToRad;
-    m_pitch = clampf(m_pitch, -kPitchClamp, kPitchClamp);
+    // FREE PITCH — no artificial wall. A fighter must LOOP up and over to chase a
+    // contact above/behind it (owner: "SLAMMING INTO AN ARTIFICIAL WALL"). Wrap
+    // into [-pi,pi] exactly like roll, so pitch runs full 360 and the HUD stays sane.
+    while (m_pitch >  kPi) m_pitch -= 2.0f * kPi;
+    while (m_pitch < -kPi) m_pitch += 2.0f * kPi;
 
     // Roll accumulates over time at maxAngularAccel*rollAxis (scaled to a
     // reasonable per-second rotation rate). Decays toward 0 when no Q/E is
@@ -236,7 +240,12 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // the ship goes where the nose points. Without it, turning while the old
     // velocity persists makes the starfield stream off-nose — which players
     // read as "the mouse axes are wrong" (owner playtest, intro dogfight).
-    if (m_tuning.noseFollow > 0.0f) {
+    // STRAFE EXEMPTION: nose-follow renormalizes ALL velocity onto the nose every
+    // frame, which eats a pure sideways dodge — press A, you curve instead of slide
+    // (owner: "STRAFE DOES NOT WORK"). While A/D is held, nose-follow stands down so
+    // the strafe thrust becomes a REAL lateral slide (drag-only decay). Released, it
+    // resumes and the ship self-aligns to its heading.
+    if (m_tuning.noseFollow > 0.0f && std::fabs(in.moveStrafe) < 0.01f) {
         const float spd0 = length3(m_vel);
         if (spd0 > 1e-3f) {
             // Steer toward the direction the pilot is COMMANDING, not the bare nose.
@@ -493,8 +502,11 @@ bool runSpaceSelfTest() {
         }
         const float p1 = s.pitch();
         bool rotated = std::fabs(p1 - p0) > 0.1f;        // ~5.7 deg minimum
-        bool clamped = std::fabs(p1) < kPi * 0.5f + 0.01f; // never past ±90 deg
-        check(rotated && clamped, "T3 mouse-Y rotates pitch (clamped)");
+        // FREE PITCH: pitch must always stay a sane wrapped angle in [-pi,pi] (no
+        // wall, no runaway). A fighter loops; the only invariant is it never NaNs
+        // or escapes the normalized range.
+        bool sane = std::fabs(p1) <= kPi + 0.001f && p1 == p1;
+        check(rotated && sane, "T3 mouse-Y rotates pitch (free, wrapped)");
         w->shutdown();
     }
 
