@@ -51,6 +51,7 @@ struct CliOptions {
          testHatch = false,
          testEcology = false, testCrowd = false, testAlert = false,
          testWaterZap = false,   // --test-waterzap (FISH + the lightning water ZAP)
+         testSealife = false,    // --test-sealife (the great white hunt + the ocean)
          // --test-canonvehicle (WORLD CARS: enter/drive/exit + hold-E hack +
          // unlocked-latch region persistence). See runCanonVehicleSelfTest.
          testCanonVehicle = false;
