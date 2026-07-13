@@ -1004,6 +1004,88 @@ int hostEchotropolis(HostContext& hc) {
         c.body->setInstanceTransform(0, M);
     };
 
+    // ===================== HARBOR BOATS ==================================
+    // Low-poly boats (Boats Pack, Draco GLBs) cruising straight lanes on the open
+    // SEA at water level (y~0), wrapping their lane with a gentle bob. Only visible
+    // over real water (a boat over land is buried underground) — lanes sit off the
+    // island's coast. +Z-forward hull; heading = atan2(dx,dz).
+    const std::string boatdir = "D:/Assets/_glb/tech/Boats Pack/Assets/Boats/Models";
+    const float kBoatScale = [](){ const char* e=std::getenv("ECHO_BOAT_SCALE"); return e?(float)std::atof(e):6.5f; }();
+    const float kBoatYaw   = [](){ const char* e=std::getenv("ECHO_BOAT_YAW");   return e?(float)std::atof(e):0.0f; }();
+    const float kBoatY     = [](){ const char* e=std::getenv("ECHO_BOAT_Y");     return e?(float)std::atof(e):0.6f; }();
+    struct Boat { std::unique_ptr<x3::game::EnvArtSystem> body; float sx,sz,dx,dz,len,speed,off; };
+    std::vector<Boat> boats;
+    auto addBoat = [&](const char* glb, float sx, float sz, float dx, float dz,
+                       float len, float speed, float off){
+        const float L = std::sqrt(dx*dx + dz*dz); dx/=L; dz/=L;
+        Boat b; b.body = std::make_unique<x3::game::EnvArtSystem>();
+        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, sx, kBoatY, sz, 1 };
+        if (b.body->buildFromGlbAt(*device, boatdir, glb, I)) {
+            b.sx=sx; b.sz=sz; b.dx=dx; b.dz=dz; b.len=len; b.speed=speed; b.off=off;
+            boats.push_back(std::move(b));
+        }
+    };
+    {
+        static const char* kB[] = { "Boat_1.glb","Boat_2.glb","Boat_3.glb","Boat_4.glb" };
+        struct BL { float sx,sz,dx,dz,len,speed; int n; };
+        const BL bl[] = {
+            { -400.0f,  330.0f,  1.0f,  0.0f, 760.0f, 15.0f, 4 },   // south bay, eastbound
+            {  340.0f,  240.0f, -1.0f,  0.0f, 760.0f, 13.0f, 4 },   // south bay, westbound
+            { -560.0f,  260.0f,  0.0f,  1.0f, 420.0f, 12.0f, 3 },   // SW inlet, northbound
+        };
+        int vi = 0;
+        for (const BL& l : bl)
+            for (int k = 0; k < l.n; ++k) {
+                addBoat(kB[vi % 4], l.sx, l.sz, l.dx, l.dz, l.len, l.speed, l.len * (float)k / (float)l.n);
+                ++vi;
+            }
+        x3::logInfo("--world echotropolis: HARBOR BOATS — " + std::to_string(boats.size()) + " boats");
+    }
+    auto poseBoat = [&](Boat& b, float t){
+        const float d = std::fmod(b.off + t * b.speed, b.len);
+        const float x = b.sx + b.dx * d, z = b.sz + b.dz * d;
+        const float y = kBoatY + std::sin(t * 0.7f + b.off) * 0.35f;   // gentle bob
+        const float heading = std::atan2(b.dx, b.dz) + kBoatYaw;
+        const float s = kBoatScale, ch = std::cos(heading), sh = std::sin(heading);
+        const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, y, z, 1 };
+        b.body->setInstanceTransform(0, M);
+    };
+
+    // ===================== SKY DRONES (cyberpunk patrol/delivery) =========
+    // Small sci-fi drones (Draco GLBs) weaving slow patrol circles over the crown at
+    // varied mid-altitudes — vertical life between the towers. Bob + face tangent.
+    const std::string dronedirA = "D:/Assets/_glb/tech/Sci-Fi-Drone/Assets/scifi-drone/mesh";
+    const std::string dronedirB = "D:/Assets/_glb/tech/Sci fi Drones/Assets/Sci_fi_Drones/Models";
+    const float kDroneScale = [](){ const char* e=std::getenv("ECHO_DRONE_SCALE"); return e?(float)std::atof(e):7.0f; }();
+    struct Drone { std::unique_ptr<x3::game::EnvArtSystem> body; float cx,cz,r,y,w,phase; };
+    std::vector<Drone> drones;
+    auto addDrone = [&](const std::string& dir, const char* glb, float cx, float cz,
+                        float r, float y, float w, float phase){
+        Drone d; d.body = std::make_unique<x3::game::EnvArtSystem>();
+        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, cx, y, cz, 1 };
+        if (d.body->buildFromGlbAt(*device, dir, glb, I)) {
+            d.cx=cx; d.cz=cz; d.r=r; d.y=y; d.w=w; d.phase=phase;
+            drones.push_back(std::move(d));
+        }
+    };
+    addDrone(dronedirA, "drone.glb",                    -20.0f,  760.0f, 150.0f, 210.0f,  0.26f, 0.0f);
+    addDrone(dronedirA, "drone.glb",                    110.0f,  660.0f, 120.0f, 250.0f, -0.32f, 1.7f);
+    addDrone(dronedirB, "Robot_Scout_HyperX_Unity.glb", -160.0f, 840.0f, 180.0f, 190.0f,  0.22f, 3.1f);
+    addDrone(dronedirA, "drone.glb",                    -60.0f,  900.0f, 130.0f, 285.0f,  0.30f, 4.4f);
+    addDrone(dronedirB, "Robot_Scout_HyperX_Unity.glb",  60.0f,  800.0f, 200.0f, 165.0f, -0.24f, 5.5f);
+    addDrone(dronedirA, "drone.glb",                    -220.0f, 700.0f, 110.0f, 300.0f, -0.28f, 2.3f);
+    x3::logInfo("--world echotropolis: SKY DRONES — " + std::to_string(drones.size()) + " drones");
+    auto poseDrone = [&](Drone& d, float t){
+        const float a = d.phase + t * d.w;
+        const float x = d.cx + std::cos(a) * d.r;
+        const float z = d.cz + std::sin(a) * d.r;
+        const float y = d.y + std::sin(t * 1.3f + d.phase) * 6.0f;   // hover bob
+        const float heading = a + (d.w > 0.0f ? 1.5708f : -1.5708f);
+        const float s = kDroneScale, ch = std::cos(heading), sh = std::sin(heading);
+        const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, y, z, 1 };
+        d.body->setInstanceTransform(0, M);
+    };
+
     // ===================== OH1 HERO HELICOPTER (rigged, bone-driven rotor) ==
     // The hero bird: the rigged OH1.glb flown as an INERT MonsterSystem prop — the
     // proven skinned-draw path (MonsterSystem owns the model load + Skinner + the
@@ -1171,6 +1253,8 @@ int hostEchotropolis(HostContext& hc) {
                                     if (shotTod.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
                                         if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
             for (auto& c : cars) { poseCar(c, (float)i * dt); c.body->draw(*device, frame); }  // street traffic
+            for (auto& b : boats) { poseBoat(b, (float)i * dt); b.body->draw(*device, frame); }  // harbor boats
+            for (auto& d : drones) { poseDrone(d, (float)i * dt); d.body->draw(*device, frame); }  // sky drones
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             else if (sMinersBuilt) sScene.render(*device, frame);
             if (sMinersBuilt) sMinersSkin.draw(*device, frame, sScene);
@@ -1693,6 +1777,8 @@ int hostEchotropolis(HostContext& hc) {
                                 if (todS.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
                                     if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
         for (auto& c : cars) { poseCar(c, waterTime); c.body->draw(*device, frame); }  // street traffic
+        for (auto& b : boats) { poseBoat(b, waterTime); b.body->draw(*device, frame); }  // harbor boats
+        for (auto& d : drones) { poseDrone(d, waterTime); d.body->draw(*device, frame); }  // sky drones
         if (oh1Built) oh1.drawMonster(*device, frame, walkScene);   // OH1 hero heli
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);
