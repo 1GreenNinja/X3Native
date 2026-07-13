@@ -833,6 +833,7 @@ int hostEchotropolis(HostContext& hc) {
     const float kHeliYaw    = [](){ const char* e=std::getenv("ECHO_HELI_YAW");    return e?(float)std::atof(e):0.0f;  }();
     const float kPlaneYaw   = [](){ const char* e=std::getenv("ECHO_PLANE_YAW");   return e?(float)std::atof(e):0.0f;  }();
     const float kRotorRpm   = [](){ const char* e=std::getenv("ECHO_ROTOR_RPM");   return e?(float)std::atof(e):9.0f;  }();
+    const float kNavScale   = [](){ const char* e=std::getenv("ECHO_NAV_SCALE");   return e?(float)std::atof(e):1.6f;  }();
     constexpr float kRotorHubY = 8.32f;   // GLB-space up offset of the rotor hub (from the split)
 
     // Helicopter = heli_body.glb + hub-centred heli_rotor.glb as TWO posed instances
@@ -840,13 +841,22 @@ int hostEchotropolis(HostContext& hc) {
     // rotations so they compose to one Y rotation; the rotor rides kRotorHubY*s above
     // the body. This is the reliable, cheap animation (no skinning) — scales to any
     // heli count. (The rigged OH-1's bone-driven rotor is a separate hero pass.)
-    struct Heli  { std::unique_ptr<x3::game::EnvArtSystem> body, rotor;
+    // NIGHT NAV-LIGHTS: red (port) + green (starboard) steady + a white anti-collision
+    // strobe, each a tiny emissive dot GLB (assets/aircraft/navlight_*.glb) posed at a
+    // body-local offset every frame and drawn ONLY at night (todS.cityLightsOn).
+    struct Heli  { std::unique_ptr<x3::game::EnvArtSystem> body, rotor, navR, navG, navW;
                    float cx, cz, r, y, w, phase; };
-    struct Plane { std::unique_ptr<x3::game::EnvArtSystem> body;
+    struct Plane { std::unique_ptr<x3::game::EnvArtSystem> body, navR, navG, navW;
                    float x0, z0, dx, dz, len, y, speed, phase; };
     std::vector<Heli> helis;
     std::vector<Plane> planes;
 
+    auto loadNav = [&](const char* glb) {
+        auto e = std::make_unique<x3::game::EnvArtSystem>();
+        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        if (!e->buildFromGlbAt(*device, adir, glb, I)) e.reset();
+        return e;
+    };
     auto addHeli = [&](float cx, float cz, float r, float y, float w, float phase) {
         Heli h;
         h.body  = std::make_unique<x3::game::EnvArtSystem>();
@@ -855,6 +865,9 @@ int hostEchotropolis(HostContext& hc) {
         const bool okB = h.body->buildFromGlbAt(*device, adir, "heli_body.glb", I);
         const bool okR = h.rotor->buildFromGlbAt(*device, adir, "heli_rotor.glb", I);
         if (okB && okR) { h.cx=cx; h.cz=cz; h.r=r; h.y=y; h.w=w; h.phase=phase;
+                          h.navR = loadNav("navlight_red.glb");
+                          h.navG = loadNav("navlight_green.glb");
+                          h.navW = loadNav("navlight_white.glb");
                           helis.push_back(std::move(h)); }
     };
     addHeli(-20.0f,  760.0f, 250.0f, 275.0f,  0.10f, 0.0f);
@@ -869,6 +882,9 @@ int hostEchotropolis(HostContext& hc) {
             const float L = std::sqrt(dx*dx + dz*dz);
             p.x0=x0; p.z0=z0; p.dx=dx/L; p.dz=dz/L; p.len=len;
             p.y=y; p.speed=speed; p.phase=phase;
+            p.navR = loadNav("navlight_red.glb");
+            p.navG = loadNav("navlight_green.glb");
+            p.navW = loadNav("navlight_white.glb");
             planes.push_back(std::move(p));
         }
     };
@@ -896,6 +912,20 @@ int hostEchotropolis(HostContext& hc) {
         const float hub = kRotorHubY * s;
         const float MR[16] = { chs*s,0,-shs*s,0, 0,s,0,0, shs*s,0,chs*s,0, x, y+hub, z, 1 };
         h.rotor->setInstanceTransform(0, MR);
+        // NAV-LIGHTS: pose each dot at a body-local offset (ox right, oy up, oz fwd),
+        // world = pos + R(heading)*bodyScale*offset, drawn as a translated emissive dot.
+        auto poseLight = [&](x3::game::EnvArtSystem* e, float ox, float oy, float oz, float ns){
+            if (!e) return;
+            const float wx = x + s*(ch*ox + sh*oz);
+            const float wy = y + s*oy;
+            const float wz = z + s*(-sh*ox + ch*oz);
+            const float M[16] = { ns,0,0,0, 0,ns,0,0, 0,0,ns,0, wx, wy, wz, 1 };
+            e->setInstanceTransform(0, M);
+        };
+        poseLight(h.navR.get(), -2.7f, 0.2f,  0.4f, kNavScale);   // port  (red)
+        poseLight(h.navG.get(),  2.7f, 0.2f,  0.4f, kNavScale);   // starboard (green)
+        const bool strobeOn = std::fmod(t + h.phase, 1.25f) < 0.11f;   // anti-collision strobe
+        poseLight(h.navW.get(), 0.0f, 1.3f, -3.9f, strobeOn ? kNavScale*1.35f : 0.0f);
     };
     auto posePlane = [&](Plane& p, float t) {
         const float d = std::fmod(p.phase + t * p.speed, p.len);
@@ -906,6 +936,71 @@ int hostEchotropolis(HostContext& hc) {
         const float ch = std::cos(heading), sh = std::sin(heading);
         const float M[16] = { ch*s,0,-sh*s,0,  0,s,0,0,  sh*s,0,ch*s,0,  x, p.y, z, 1 };
         p.body->setInstanceTransform(0, M);
+        auto poseLight = [&](x3::game::EnvArtSystem* e, float ox, float oy, float oz, float ns){
+            if (!e) return;
+            const float wx = x + s*(ch*ox + sh*oz);
+            const float wy = p.y + s*oy;
+            const float wz = z + s*(-sh*ox + ch*oz);
+            const float MM[16] = { ns,0,0,0, 0,ns,0,0, 0,0,ns,0, wx, wy, wz, 1 };
+            e->setInstanceTransform(0, MM);
+        };
+        poseLight(p.navR.get(), -11.0f, 0.0f,  0.0f, kNavScale*1.4f);  // port  wingtip (red)
+        poseLight(p.navG.get(),  11.0f, 0.0f,  0.0f, kNavScale*1.4f);  // starboard wingtip (green)
+        const bool strobeOn = std::fmod(t + p.phase, 1.6f) < 0.10f;    // tail strobe
+        poseLight(p.navW.get(), 0.0f, 1.0f, -9.0f, strobeOn ? kNavScale*1.6f : 0.0f);
+    };
+
+    // ===================== STREET TRAFFIC (Modular Cyber Racing Cars) =====
+    // Low-poly cyberpunk cars (Draco GLBs from D:/Assets — the engine decodes Draco)
+    // cruising straight avenue loops across the downtown crown at ground height. Each
+    // car cycles a Car_01..15 variant, faces its travel direction (+Z-forward models),
+    // and wraps its lane. Purely visual, drawn every frame day + night.
+    const std::string cardir =
+        "D:/Assets/_glb/tech/Modular Cyber Racing Cars - Low Poly 3D Models/Assets/ithappy/Modular_Cyber_Racing_Cars/Meshes";
+    const float kCarScale = [](){ const char* e=std::getenv("ECHO_CAR_SCALE"); return e?(float)std::atof(e):1.4f; }();
+    const float kCarYaw   = [](){ const char* e=std::getenv("ECHO_CAR_YAW");   return e?(float)std::atof(e):0.0f; }();
+    const float kCarY = hf.ok() ? hf.heightAt(-20.0f, 760.0f) : 190.0f;   // crown ground (= tower bases)
+    struct Car { std::unique_ptr<x3::game::EnvArtSystem> body;
+                 float sx, sz, dx, dz, len, speed, off; };
+    std::vector<Car> cars;
+    auto addCar = [&](int variant, float sx, float sz, float dx, float dz, float len,
+                      float speed, float off){
+        const float L = std::sqrt(dx*dx + dz*dz); dx/=L; dz/=L;
+        const std::string vs = (variant < 10 ? "0" : "") + std::to_string(variant);
+        const std::string name = "Car_" + vs + "/Car_" + vs + ".glb";
+        Car c; c.body = std::make_unique<x3::game::EnvArtSystem>();
+        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, sx, kCarY, sz, 1 };
+        if (c.body->buildFromGlbAt(*device, cardir, name, I)) {
+            c.sx=sx; c.sz=sz; c.dx=dx; c.dz=dz; c.len=len; c.speed=speed; c.off=off;
+            cars.push_back(std::move(c));
+        }
+    };
+    {
+        struct Lane { float sx, sz, dx, dz, len, speed; int n; };
+        const Lane lanes[] = {
+            { -330.0f, 702.0f,  1.0f,  0.0f, 620.0f, 34.0f, 5 },   // E-W south, eastbound
+            {  290.0f, 742.0f, -1.0f,  0.0f, 620.0f, 30.0f, 5 },   // E-W, westbound
+            { -330.0f, 818.0f,  1.0f,  0.0f, 620.0f, 32.0f, 4 },   // E-W north, eastbound
+            {    2.0f, 560.0f,  0.0f,  1.0f, 400.0f, 28.0f, 4 },   // N-S, northbound
+            { -150.0f, 960.0f,  0.0f, -1.0f, 400.0f, 26.0f, 4 },   // N-S, southbound
+        };
+        int variant = 1;
+        for (const Lane& ln : lanes)
+            for (int k = 0; k < ln.n; ++k) {
+                addCar(variant, ln.sx, ln.sz, ln.dx, ln.dz, ln.len, ln.speed,
+                       ln.len * (float)k / (float)ln.n);
+                variant = (variant % 15) + 1;
+            }
+        x3::logInfo("--world echotropolis: STREET TRAFFIC — " + std::to_string(cars.size()) + " cars");
+    }
+    auto poseCar = [&](Car& c, float t){
+        const float d = std::fmod(c.off + t * c.speed, c.len);
+        const float x = c.sx + c.dx * d;
+        const float z = c.sz + c.dz * d;
+        const float heading = std::atan2(c.dx, c.dz) + kCarYaw;   // +Z-forward faces travel dir
+        const float s = kCarScale, ch = std::cos(heading), sh = std::sin(heading);
+        const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, kCarY, z, 1 };
+        c.body->setInstanceTransform(0, M);
     };
 
     // RESIDENTS: character height (5-6 ft). Env-tunable (ECHO_PED_SCALE) so it can be
@@ -1032,8 +1127,13 @@ int hostEchotropolis(HostContext& hc) {
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
                             if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
             for (auto& h : helis) { poseHeli(h, (float)i * dt);
-                                    h.body->draw(*device, frame); h.rotor->draw(*device, frame); }
-            for (auto& p : planes) { posePlane(p, (float)i * dt); p.body->draw(*device, frame); }
+                                    h.body->draw(*device, frame); h.rotor->draw(*device, frame);
+                                    if (shotTod.cityLightsOn) { if(h.navR)h.navR->draw(*device,frame);
+                                        if(h.navG)h.navG->draw(*device,frame); if(h.navW)h.navW->draw(*device,frame); } }
+            for (auto& p : planes) { posePlane(p, (float)i * dt); p.body->draw(*device, frame);
+                                    if (shotTod.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
+                                        if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
+            for (auto& c : cars) { poseCar(c, (float)i * dt); c.body->draw(*device, frame); }  // street traffic
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             else if (sMinersBuilt) sScene.render(*device, frame);
             if (sMinersBuilt) sMinersSkin.draw(*device, frame, sScene);
@@ -1538,8 +1638,13 @@ int hostEchotropolis(HostContext& hc) {
         if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame);
                         if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
         for (auto& h : helis) { poseHeli(h, waterTime);
-                                h.body->draw(*device, frame); h.rotor->draw(*device, frame); }
-        for (auto& p : planes) { posePlane(p, waterTime); p.body->draw(*device, frame); }
+                                h.body->draw(*device, frame); h.rotor->draw(*device, frame);
+                                if (todS.cityLightsOn) { if(h.navR)h.navR->draw(*device,frame);
+                                    if(h.navG)h.navG->draw(*device,frame); if(h.navW)h.navW->draw(*device,frame); } }
+        for (auto& p : planes) { posePlane(p, waterTime); p.body->draw(*device, frame);
+                                if (todS.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
+                                    if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
+        for (auto& c : cars) { poseCar(c, waterTime); c.body->draw(*device, frame); }  // street traffic
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);
             residentsSkin.draw(*device, frame, walkScene);
