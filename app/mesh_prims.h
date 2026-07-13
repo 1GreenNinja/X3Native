@@ -913,8 +913,129 @@ inline std::vector<uint8_t> makeBlockoutGridRGBA(uint32_t n = 1000, uint32_t met
     return px;
 }
 
-// Blockout brush primitive types (P2 CORE = Box + Ramp; Cylinder/Stairs DEFERRED).
-enum class BrushType : uint32_t { Box = 0, Ramp = 1 };
+// An ORIGIN-CENTERED CYLINDER (blockout column / pipe / silo). `rx`/`rz` are the
+// radii on X and Z (an ellipse when they differ, which is what lets one uniform
+// size[3] drive it: the brush's bounding box stays EXACTLY size, so the OBB pick,
+// the gizmo and the AABB math all keep working unchanged). `hy` is the half-height,
+// `seg` the radial segment count.
+//
+// UVs follow makeBox's convention: u wraps around the circumference, v runs
+// BOTTOM-UP (v=0 at the bottom rim) so the blockout grid reads upright on the side
+// wall — the same trap KNOWN_BUGS B6 documents. Caps are planar XZ projections.
+// Emits render + collision geometry like every other brush builder.
+inline PrimMesh makeCylinder(float rx, float rz, float hy, uint32_t seg = 24,
+                             float uvScale = 1.0f) {
+    PrimMesh m;
+    seg = std::max(3u, seg);
+    const float kTwoPi = 6.28318531f;
+    // Average radius only for the U tiling (so a squashed cylinder doesn't smear).
+    const float circ = kTwoPi * 0.5f * (rx + rz);
+
+    // ---- side wall: one quad per segment, smooth (radial) normals ----
+    for (uint32_t i = 0; i < seg; ++i) {
+        const float a0 = kTwoPi * (float)i / (float)seg;
+        const float a1 = kTwoPi * (float)(i + 1) / (float)seg;
+        const float c0 = std::cos(a0), s0 = std::sin(a0);
+        const float c1 = std::cos(a1), s1 = std::sin(a1);
+        // Normal of an ELLIPSE is not the position direction: it is (cos/rx, sin/rz),
+        // renormalized. With rx==rz this collapses to the circle case.
+        auto nrm = [&](float c, float s, float& nx, float& nz) {
+            nx = c / std::max(1e-4f, rx); nz = s / std::max(1e-4f, rz);
+            const float l = std::sqrt(nx*nx + nz*nz);
+            nx /= (l < 1e-6f ? 1.0f : l); nz /= (l < 1e-6f ? 1.0f : l);
+        };
+        float n0x, n0z, n1x, n1z;
+        nrm(c0, s0, n0x, n0z);
+        nrm(c1, s1, n1x, n1z);
+        const float u0 = circ * uvScale * (float)i / (float)seg;
+        const float u1 = circ * uvScale * (float)(i + 1) / (float)seg;
+        const float v1 = hy * 2.0f * uvScale;
+        const uint32_t base = (uint32_t)m.verts.size();
+        m.verts.push_back({{c0*rx, -hy, s0*rz}, {n0x, 0, n0z}, {u0, 0 }});
+        m.verts.push_back({{c1*rx, -hy, s1*rz}, {n1x, 0, n1z}, {u1, 0 }});
+        m.verts.push_back({{c1*rx,  hy, s1*rz}, {n1x, 0, n1z}, {u1, v1}});
+        m.verts.push_back({{c0*rx,  hy, s0*rz}, {n0x, 0, n0z}, {u0, v1}});
+        // CCW seen from OUTSIDE (bottom0 -> top0 -> top1 -> bottom1): the naive
+        // bottom0->bottom1->top1 order winds the wall INWARD and it culls away.
+        m.index.insert(m.index.end(), {base, base+3, base+2, base, base+2, base+1});
+    }
+    // ---- caps: a triangle fan per cap (CCW seen from outside) ----
+    for (int cap = 0; cap < 2; ++cap) {
+        const float y  = (cap == 0) ? hy : -hy;
+        const float ny = (cap == 0) ? 1.0f : -1.0f;
+        const uint32_t center = (uint32_t)m.verts.size();
+        m.verts.push_back({{0, y, 0}, {0, ny, 0}, {0.5f, 0.5f}});
+        for (uint32_t i = 0; i <= seg; ++i) {
+            const float a = kTwoPi * (float)i / (float)seg;
+            const float c = std::cos(a), s = std::sin(a);
+            m.verts.push_back({{c*rx, y, s*rz}, {0, ny, 0},
+                               {0.5f + 0.5f*c, 0.5f + 0.5f*s}});
+        }
+        for (uint32_t i = 0; i < seg; ++i) {
+            const uint32_t a = center + 1 + i, b = center + 2 + i;
+            if (cap == 0) m.index.insert(m.index.end(), {center, b, a});   // +Y: CCW from above
+            else          m.index.insert(m.index.end(), {center, a, b});   // -Y: CCW from below
+        }
+    }
+    m.cverts.reserve(m.verts.size() * 3);
+    for (const auto& vtx : m.verts) {
+        m.cverts.push_back(vtx.pos[0]); m.cverts.push_back(vtx.pos[1]); m.cverts.push_back(vtx.pos[2]);
+    }
+    m.cindex = m.index;
+    return m;
+}
+
+// An ORIGIN-CENTERED STAIRCASE: `steps` solid treads climbing toward +Z, spanning
+// x in [-halfW,halfW], z in [-depth/2, depth/2], y in [-height/2, height/2].
+//
+// Each step is a FULL-HEIGHT box from the bottom of the brush up to that tread's top,
+// so the staircase is a closed solid (walkable as a static mesh, and it reads as real
+// steps from every angle instead of a wedge with a striped texture). Built by stacking
+// makeBox — which means the treads inherit the box UV/normal convention for free,
+// including the bottom-up V axis.
+inline PrimMesh makeStairs(float halfW, float height, float depth, uint32_t steps,
+                           float uvScale = 1.0f) {
+    PrimMesh m;
+    steps  = std::max(1u, steps);
+    height = std::max(0.05f, height);
+    depth  = std::max(0.05f, depth);
+    const float run  = depth / (float)steps;       // tread depth (per step)
+    const float rise = height / (float)steps;      // riser height (per step)
+    const float y0   = -height * 0.5f;             // brush bottom
+    const float z0   = -depth * 0.5f;              // brush back (the LOW end)
+    for (uint32_t i = 0; i < steps; ++i) {
+        const float top = y0 + rise * (float)(i + 1);       // this tread's walking surface
+        const float hy  = (top - y0) * 0.5f;                // solid down to the brush bottom
+        const float cy  = y0 + hy;
+        const float cz  = z0 + run * ((float)i + 0.5f);
+        PrimMesh s = makeBox(halfW, hy, run * 0.5f, 0.0f, cy, cz, uvScale);
+        const uint32_t base = (uint32_t)m.verts.size();
+        m.verts.insert(m.verts.end(), s.verts.begin(), s.verts.end());
+        for (uint32_t idx : s.index) m.index.push_back(base + idx);
+    }
+    m.cverts.reserve(m.verts.size() * 3);
+    for (const auto& vtx : m.verts) {
+        m.cverts.push_back(vtx.pos[0]); m.cverts.push_back(vtx.pos[1]); m.cverts.push_back(vtx.pos[2]);
+    }
+    m.cindex = m.index;
+    return m;
+}
+
+// Blockout brush primitive types (the four the BUILD_PLAN specified).
+enum class BrushType : uint32_t { Box = 0, Ramp = 1, Cylinder = 2, Stairs = 3 };
+
+// The serialized brush `type` (BlockoutBrush::type) -> BrushType. Out-of-range falls
+// back to Box, so an unknown/newer type in a level JSON degrades to a solid rather
+// than crashing. ONE place decides this, so the editor host and the runtime level
+// loader can never disagree about what a type id means.
+inline BrushType brushTypeOf(uint32_t t) {
+    switch (t) {
+        case 1u: return BrushType::Ramp;
+        case 2u: return BrushType::Cylinder;
+        case 3u: return BrushType::Stairs;
+        default: return BrushType::Box;
+    }
+}
 
 // Build an ORIGIN-CENTERED brush mesh of `type` with full extents `size` (x,y,z
 // in metres). Origin-centered (NOT world-baked like makeBox's cx/cy/cz) so the
@@ -926,10 +1047,27 @@ enum class BrushType : uint32_t { Box = 0, Ramp = 1 };
 //          rises by size.y over that run, RE-CENTERED to the origin (makeRamp builds
 //          from a low corner, so we shift it back by half the run / half the rise so
 //          the brush pivot is its centroid-ish origin, matching Box).
+//   Cylinder : radii size.x/2 and size.z/2, height size.y, 24 segments.
+//   Stairs   : width size.x, total rise size.y, total run size.z, climbing toward +Z.
+//
+// Cylinder SEGMENTS and Stairs STEP COUNT are DERIVED from the extents rather than
+// stored on the brush: BlockoutBrush has exactly {type,pos,size,yaw,tint,material,
+// collide}, and adding per-type fields would fork the JSON schema for two primitives.
+// Deriving the step count from the rise (~0.25 m risers, human-scale) also means a
+// taller staircase automatically grows steps instead of stretching them.
 inline PrimMesh buildBrushMesh(BrushType type, const float size[3]) {
     const float hx = std::max(0.05f, size[0]) * 0.5f;
     const float hy = std::max(0.05f, size[1]) * 0.5f;
     const float hz = std::max(0.05f, size[2]) * 0.5f;
+    if (type == BrushType::Cylinder) {
+        return makeCylinder(hx, hz, hy, /*seg*/24u, /*uvScale*/1.0f);
+    }
+    if (type == BrushType::Stairs) {
+        const float rise  = std::max(0.05f, size[1]);
+        const float run   = std::max(0.05f, size[2]);
+        const int   steps = std::max(1, std::min(48, (int)std::lround(rise / 0.25f)));
+        return makeStairs(hx, rise, run, (uint32_t)steps, /*uvScale*/1.0f);
+    }
     if (type == BrushType::Ramp) {
         // makeRamp builds a wedge from a LOW corner (floor at cy, low edge at cz,
         // climbing toward +Z). Recenter so the wedge's bounding box is centered on
