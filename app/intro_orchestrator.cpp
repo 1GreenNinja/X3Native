@@ -21,6 +21,8 @@
 // ============================================================================
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#include <chrono>
+#include <thread>
 
 #include "intro_orchestrator.h"
 #include "intro_cockpit_rig.h"
@@ -272,6 +274,17 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     const float dt = 1.0f / 60.0f;
     const int   maxSteps = (int)(beat.timeoutSec / dt);
+    // ---- REAL-TIME PACING (owner playtest: "I can fly for 0.8 seconds ... but not
+    // control my ship"). The beat advances the SIM by a FIXED dt = 1/60 per step, which
+    // is correct for determinism — but the loop presented frames with NO vsync and NO
+    // wall-clock pacing, so on a fast GPU it spun through all maxSteps in a fraction of a
+    // second: a 30 s beat (1800 steps) rendered at ~2000 fps = ~0.9 s of REAL control,
+    // and then it was over. The fix is the house rule (memory: "delta time, never frame
+    // time") applied to the LOOP: gate each fixed step on real elapsed time so 1800 steps
+    // of 1/60 take 30 s of WALL CLOCK. Headless (deterministic tests) is unpaced. If a
+    // frame is genuinely slow (elapsed already past target) we never sleep — we just do
+    // not run FASTER than real time; slower is the renderer's problem, not this gate's.
+    const auto   tStart = std::chrono::steady_clock::now();
     int   localSalvosFaced = 0, localSalvosDodged = 0;
     int   localShotsFired = 0, localShotsHit = 0;
     int   localSubsDestroyed = 0;
@@ -554,6 +567,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             hc.device->endFrame(frame);
             if (evShot)
                 hc.device->captureFrame((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
+
+            // Hold this step until real time catches up to where the sim thinks it is
+            // (see tStart). target = when step (step+1) SHOULD begin, in wall seconds.
+            // Only ever waits; a slow frame that is already behind falls straight through.
+            const double target  = (double)(step + 1) * (double)dt;
+            const double elapsed = std::chrono::duration<double>(
+                                       std::chrono::steady_clock::now() - tStart).count();
+            if (elapsed < target)
+                std::this_thread::sleep_for(std::chrono::duration<double>(target - elapsed));
         }
 
         // ---- Exit conditions: all enemies down + ship crippled, or pilot dead. ----
@@ -675,6 +697,10 @@ bool runIonDescentBeat(x3::apphost::HostContext& hc) {
 
     float t = 0.0f;
     const float dt = 1.0f / 60.0f;
+    // Same real-time pacing as the dogfight beats: this loop advances the descent spine
+    // by a fixed dt and presents with no vsync, so without a wall-clock gate the whole
+    // re-entry rushes past in a fraction of a second on a fast GPU. Pace it to real time.
+    const auto tStart = std::chrono::steady_clock::now();
     while (descent.active() || descent.progress() < 1.0f) {
         if (glfwWindowShouldClose(hc.window)) break;
         glfwPollEvents();
@@ -725,6 +751,13 @@ bool runIonDescentBeat(x3::apphost::HostContext& hc) {
         }
 
         hc.device->endFrame(fr);
+
+        // Hold to real time (t is the sim clock; only ever waits, never speeds up).
+        const double elapsed = std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now() - tStart).count();
+        if (elapsed < (double)t)
+            std::this_thread::sleep_for(std::chrono::duration<double>((double)t - elapsed));
+
         if (descent.progress() >= 1.0f) break;
     }
 
