@@ -186,11 +186,12 @@ endif()
 
 set_target_properties(X3Engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    # Tim's call (2026-07-11): this branch's build is "SpaceEngine" so the exe /
-    # window / process namespace never collides with Snake's X3Engine.exe dev
-    # builds on the same box (file locks, title confusion, and process-kill
-    # crossfire between lanes). CMake target name stays X3Engine internally.
-    OUTPUT_NAME "SpaceEngine")
+    # Tim's call: the Echo Harbor lane's build is "EchoHarbor" so the exe / window /
+    # process namespace never collides with Snake's X3Engine.exe dev builds on the
+    # same box (file locks, title confusion, process-kill crossfire between lanes).
+    # CMake target name stays X3Engine internally. (Was "SpaceEngine" on the folded
+    # flight branch — renamed to EchoHarbor for this city-sim lane.)
+    OUTPUT_NAME "EchoHarbor")
 
 # ---- Compile GLSL shaders to SPIR-V (glslc from the Vulkan SDK) ----
 set(SHADER_SRCS
