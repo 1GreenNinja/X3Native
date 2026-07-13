@@ -1636,6 +1636,7 @@ int hostEchotropolis(HostContext& hc) {
     };
     bool walkMode = false, prevG = false;
     bool cityPanelOpen = false, prevTab = false;   // CITY PANEL (TAB toggles)
+    int  followIdx = -1, lastPickedIdx = -1; bool prevF = false;   // RIDE-ALONG (F)
 
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
@@ -1661,7 +1662,14 @@ int hostEchotropolis(HostContext& hc) {
         // ---- WALK MODE toggle (G) + first-person character step -------------
         { const bool g = kd(GLFW_KEY_G); if (g && !prevG && physOk) walkMode = !walkMode; prevG = g; }
         { const bool tb = kd(GLFW_KEY_TAB); if (tb && !prevTab) cityPanelOpen = !cityPanelOpen; prevTab = tb; }
-        if (walkMode && physOk) {
+        // RIDE-ALONG (F): possess the camera onto the citizen you're inspecting; F again releases.
+        { const bool f = kd(GLFW_KEY_F);
+          if (f && !prevF) {
+              if (followIdx >= 0) followIdx = -1;
+              else if (walkMode && npcLifeBuilt && lastPickedIdx >= 0) followIdx = lastPickedIdx;
+          }
+          prevF = f; }
+        if (walkMode && physOk && followIdx < 0) {   // frozen while riding along
             x3::game::PlayerInput in{};
             in.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
             in.moveStrafe = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
@@ -1880,7 +1888,19 @@ int hostEchotropolis(HostContext& hc) {
         // Ocean + camera + render. WALK MODE poses the first-person eye camera from
         // the physics character; ORBIT MODE keeps the strategic vista camera.
         waterTime += dt; applyOcean(device, waterTime, todS);
-        if (walkMode && physOk) {
+        if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
+            // RIDE-ALONG: trail the citizen third-person, looking at their head as they
+            // walk their scheduled day. Camera sits back+up along their facing.
+            const auto& a = npcLife.agent((uint32_t)followIdx);
+            const float back = 4.6f, up = 2.7f, headY = 1.5f;
+            const float camx = a.pos.x - std::cos(a.yaw) * back;
+            const float camz = a.pos.z - std::sin(a.yaw) * back;
+            const float camy = a.pos.y + up;
+            const float dx = a.pos.x - camx, dyy = (a.pos.y + headY) - camy, dz = a.pos.z - camz;
+            const float yaw = std::atan2(dz, dx);
+            const float pitch = std::atan2(dyy, std::sqrt(dx*dx + dz*dz));
+            device->setCamera(camx, camy, camz, yaw, pitch, opt.fovDeg);
+        } else if (walkMode && physOk) {
             float px, py, pz, pyaw, ppit;
             player.camera(px, py, pz, pyaw, ppit);
             device->setCamera(px, py, pz, pyaw, ppit, opt.fovDeg);
@@ -1969,9 +1989,28 @@ int hostEchotropolis(HostContext& hc) {
                               pop, atWork, leisure, treasury, goldOz, miners, net);
             }
 
-            // RESIDENT INSPECTOR (walk mode): the citizen nearest the crosshair gets a
-            // life card — the web "click a resident" hook, fed from the live NpcAgent.
-            if (walkMode && physOk && npcLifeBuilt) {
+            // RESIDENT INSPECTOR / RIDE-ALONG card, fed from the live NpcAgent.
+            auto cardFor = [&](uint32_t i, float dist){
+                const auto& a = npcLife.agent(i);
+                const auto& pr = x3::game::persona(a.arch);
+                const char* det = (a.detailIdx >= 0 && (uint32_t)a.detailIdx < pr.detailCount)
+                                ? pr.detail[a.detailIdx] : (pr.detailCount ? pr.detail[0] : "");
+                const char* voc = pr.voiceCount ? pr.voice[a.seed % pr.voiceCount] : "";
+                drawResidentCard(frame, hw, hh, a.name.c_str(),
+                                 x3::game::archetypeName(a.arch),
+                                 x3::game::npcActivityName(a.activity), det, voc, dist);
+            };
+            if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
+                // Riding along: show whom you're following + a release banner.
+                const float ban[4] = { 0.10f, 0.14f, 0.20f, 0.92f };
+                const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
+                device->drawHudQuad(frame, hw*0.5f - 150.0f, 54.0f, 300.0f, 30.0f, ban);
+                device->drawHudText(frame, "RIDE-ALONG   //   F to release",
+                                    hw*0.5f - 150.0f + 20.0f, 61.0f, 13.0f, gold);
+                cardFor((uint32_t)followIdx, 0.0f);
+            } else if (walkMode && physOk && npcLifeBuilt) {
+                // The citizen nearest the crosshair gets the life card — the web
+                // "click a resident" hook.
                 float ex, ey, ez, eyaw, epit; player.camera(ex, ey, ez, eyaw, epit);
                 const float fX = std::cos(eyaw), fZ = std::sin(eyaw);
                 int best = -1; float bestDot = 0.94f, bestDist = 0.0f;   // ~20deg cone, 45m reach
@@ -1985,19 +2024,17 @@ int hostEchotropolis(HostContext& hc) {
                     const float dot = (dx*fX + dz*fZ) * inv;
                     if (dot > bestDot) { bestDot = dot; best = (int)i; bestDist = std::sqrt(d2); }
                 }
+                lastPickedIdx = best;
                 const float rc[4] = { 1.0f, 0.82f, 0.42f, best >= 0 ? 0.95f : 0.45f };
                 device->drawHudQuad(frame, hw*0.5f - 7.0f, hh*0.5f - 1.0f, 14.0f, 2.0f, rc);
                 device->drawHudQuad(frame, hw*0.5f - 1.0f, hh*0.5f - 7.0f, 2.0f, 14.0f, rc);
                 if (best >= 0) {
-                    const auto& a = npcLife.agent((uint32_t)best);
-                    const auto& pr = x3::game::persona(a.arch);
-                    const char* det = (a.detailIdx >= 0 && (uint32_t)a.detailIdx < pr.detailCount)
-                                    ? pr.detail[a.detailIdx] : (pr.detailCount ? pr.detail[0] : "");
-                    const char* voc = pr.voiceCount ? pr.voice[a.seed % pr.voiceCount] : "";
-                    drawResidentCard(frame, hw, hh, a.name.c_str(),
-                                     x3::game::archetypeName(a.arch),
-                                     x3::game::npcActivityName(a.activity), det, voc, bestDist);
+                    cardFor((uint32_t)best, bestDist);
+                    device->drawHudText(frame, "F  ride along",
+                                        24.0f + 18.0f, (float)hh - 176.0f - 22.0f, 12.0f, rc);
                 }
+            } else {
+                lastPickedIdx = -1;
             }
         }
         device->endFrame(frame);
