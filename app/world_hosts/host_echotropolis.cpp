@@ -588,13 +588,50 @@ int hostEchotropolis(HostContext& hc) {
             auto h = std::make_unique<x3::game::EnvArtSystem>();
             if (h->buildFromGlbAt(*device, hdir, glb, T)) houses.push_back(std::move(h));
         };
+        // Five hero houses (hand-placed on the crown foothills).
         addHouse("PF_MetalHouse01.glb",      60.0f, 700.0f, 0.4f, 11.73f);
         addHouse("PF_MetalHouse02.glb",     125.0f, 745.0f, 2.1f,  2.13f);
         addHouse("PF_PrimitiveHouse01.glb",  10.0f, 675.0f, 3.6f,  3.17f);
         addHouse("PF_PrimitiveHouse02.glb", 150.0f, 690.0f, 5.0f,  1.00f);
         addHouse("PF_PrimitiveHouse03.glb",  85.0f, 640.0f, 1.2f,  8.59f);
+
+        // NEIGHBOURHOOD DRAPE: multiply the proven, correctly-scaled HouseForge
+        // GLBs into concentric rings around the crown so the island reads as a
+        // lived-in town from the RTS vista. Each GLB carries its own base lift.
+        // Deterministic hash jitter (no rand → identical every launch/capture).
+        // Houses whose ground sample is at/near the shoreline are skipped so none
+        // land in the water.
+        struct HouseDef { const char* glb; float lift; };
+        static const HouseDef kCat[5] = {
+            {"PF_MetalHouse01.glb", 11.73f}, {"PF_MetalHouse02.glb", 2.13f},
+            {"PF_PrimitiveHouse01.glb", 3.17f}, {"PF_PrimitiveHouse02.glb", 1.00f},
+            {"PF_PrimitiveHouse03.glb", 8.59f},
+        };
+        auto h01 = [](uint32_t n) {
+            n = (n ^ 61u) ^ (n >> 16); n *= 9u; n ^= n >> 4; n *= 0x27d4eb2du;
+            n ^= n >> 15; return (float)(n & 0xffffffu) / (float)0x1000000;
+        };
+        const float ringR[4] = { 135.0f, 215.0f, 300.0f, 395.0f };
+        int neigh = 0;
+        for (int r = 0; r < 4; ++r) {
+            const int cnt = 7 + r * 3;                     // fuller outer rings
+            for (int k = 0; k < cnt; ++k) {
+                const uint32_t seed = (uint32_t)(r * 101 + k);
+                const float ang = ((float)k + h01(seed) * 0.7f) * (6.2831853f / cnt);
+                const float rr  = ringR[r] + (h01(seed * 7u + 3u) - 0.5f) * 46.0f;
+                const float x = -20.0f + std::cos(ang) * rr;
+                const float z = 760.0f + std::sin(ang) * rr;
+                const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
+                if (gy < 34.0f) continue;                  // shoreline / water → skip
+                const HouseDef& hd = kCat[(uint32_t)(r + k * 2) % 5u];
+                const float yaw = ang + 1.5708f + (h01(seed * 13u + 5u) - 0.5f) * 1.2f;
+                addHouse(hd.glb, x, z, yaw, hd.lift);
+                ++neigh;
+            }
+        }
         x3::logInfo("--world echotropolis: REAL BUILDINGS — " +
-                    std::to_string(houses.size()) + " textured HouseForge houses (decoded)");
+                    std::to_string(houses.size()) + " textured HouseForge houses (" +
+                    std::to_string(neigh) + " draped into neighbourhoods)");
     }
 
     // ===================== THE UFO (Tim's Grok→Rodin saucer) ============
@@ -629,6 +666,83 @@ int hostEchotropolis(HostContext& hc) {
         // FX authored in world metres: translate under the hull (no spin/scale).
         const float MF[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, ux, uy, uz, 1.0f };
         if (ufoFxBuilt) ufoFx.setInstanceTransform(0, MF);
+    };
+
+    // ===================== AIRCRAFT: helicopters + planes ================
+    // Real converted GLBs (Low Poly Helicopters + Civil Transport plane, FBX→GLB
+    // via tools/convert_fbx_glb.py). Helis fly slow patrol circles low over the
+    // city with a SEPARATELY spun main rotor (heli_body.glb + hub-centred
+    // heli_rotor.glb — both re-posed per frame, the two-system trick the UFO uses);
+    // planes make high straight passes and wrap. Scale/yaw are ECHO_*-tunable so
+    // they can be dialled without a rebuild; worldBounds is logged so the true size
+    // is visible in the launch log. kRotorHubY is the rotor hub's up-offset (GLB
+    // metres) measured when the mesh was split.
+    const std::string adir = "D:/GameDev/EchoHarbor/assets/aircraft";
+    const float kHeliScale  = [](){ const char* e=std::getenv("ECHO_HELI_SCALE");  return e?(float)std::atof(e):2.2f;  }();
+    const float kPlaneScale = [](){ const char* e=std::getenv("ECHO_PLANE_SCALE"); return e?(float)std::atof(e):0.8f;  }();
+    const float kHeliYaw    = [](){ const char* e=std::getenv("ECHO_HELI_YAW");    return e?(float)std::atof(e):0.0f;  }();
+    const float kPlaneYaw   = [](){ const char* e=std::getenv("ECHO_PLANE_YAW");   return e?(float)std::atof(e):0.0f;  }();
+
+    // Helicopter = the WHOLE converted GLB (heli_1.glb) as ONE posed instance, the
+    // same proven single-system pipeline the planes/UFO use (the earlier body+rotor
+    // split rendered nothing). Rotor stays baked/static — imperceptible at RTS zoom.
+    struct Heli  { std::unique_ptr<x3::game::EnvArtSystem> body;
+                   float cx, cz, r, y, w, phase; };
+    struct Plane { std::unique_ptr<x3::game::EnvArtSystem> body;
+                   float x0, z0, dx, dz, len, y, speed, phase; };
+    std::vector<Heli> helis;
+    std::vector<Plane> planes;
+
+    auto addHeli = [&](float cx, float cz, float r, float y, float w, float phase) {
+        Heli h; h.body = std::make_unique<x3::game::EnvArtSystem>();
+        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, cx, y, cz, 1 };
+        if (h.body->buildFromGlbAt(*device, adir, "heli_1.glb", I)) {
+            h.cx=cx; h.cz=cz; h.r=r; h.y=y; h.w=w; h.phase=phase;
+            helis.push_back(std::move(h));
+        }
+    };
+    addHeli(-20.0f,  760.0f, 250.0f, 275.0f,  0.10f, 0.0f);
+    addHeli( 120.0f, 620.0f, 185.0f, 250.0f, -0.13f, 2.1f);
+    addHeli(-170.0f, 850.0f, 300.0f, 300.0f,  0.08f, 4.2f);
+
+    auto addPlane = [&](float x0, float z0, float dx, float dz, float len,
+                        float y, float speed, float phase) {
+        Plane p; p.body = std::make_unique<x3::game::EnvArtSystem>();
+        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, x0, y, z0, 1 };
+        if (p.body->buildFromGlbAt(*device, adir, "plane_1.glb", I)) {
+            const float L = std::sqrt(dx*dx + dz*dz);
+            p.x0=x0; p.z0=z0; p.dx=dx/L; p.dz=dz/L; p.len=len;
+            p.y=y; p.speed=speed; p.phase=phase;
+            planes.push_back(std::move(p));
+        }
+    };
+    addPlane(-620.0f, 500.0f,  1.0f,  0.28f, 1500.0f, 420.0f, 60.0f,   0.0f);
+    addPlane( 720.0f, 1050.0f,-1.0f, -0.42f, 1500.0f, 470.0f, 46.0f, 720.0f);
+
+    x3::logInfo("--world echotropolis: AIRCRAFT — " +
+        std::to_string(helis.size()) + " helis + " + std::to_string(planes.size()) + " planes");
+
+    // Helis orbit + bob, nose tangent to the circle.
+    auto poseHeli = [&](Heli& h, float t) {
+        const float a = h.phase + t * h.w;
+        const float x = h.cx + std::cos(a) * h.r;
+        const float z = h.cz + std::sin(a) * h.r;
+        const float y = h.y + std::sin(t * 0.5f + h.phase) * 3.0f;
+        const float heading = a + (h.w > 0.0f ? 1.5708f : -1.5708f) + kHeliYaw;
+        const float s = kHeliScale;
+        const float ch = std::cos(heading), sh = std::sin(heading);
+        const float MB[16] = { ch*s,0,-sh*s,0,  0,s,0,0,  sh*s,0,ch*s,0,  x, y, z, 1 };
+        h.body->setInstanceTransform(0, MB);
+    };
+    auto posePlane = [&](Plane& p, float t) {
+        const float d = std::fmod(p.phase + t * p.speed, p.len);
+        const float x = p.x0 + p.dx * d;
+        const float z = p.z0 + p.dz * d;
+        const float heading = std::atan2(p.dx, p.dz) + kPlaneYaw;
+        const float s = kPlaneScale;
+        const float ch = std::cos(heading), sh = std::sin(heading);
+        const float M[16] = { ch*s,0,-sh*s,0,  0,s,0,0,  sh*s,0,ch*s,0,  x, p.y, z, 1 };
+        p.body->setInstanceTransform(0, M);
     };
 
     // RESIDENTS: character height (5-6 ft). Env-tunable (ECHO_PED_SCALE) so it can be
@@ -726,6 +840,8 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
                             if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
+            for (auto& h : helis) { poseHeli(h, (float)i * dt); h.body->draw(*device, frame); }
+            for (auto& p : planes) { posePlane(p, (float)i * dt); p.body->draw(*device, frame); }
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
                 poseBeam(-2.13f);
@@ -1153,6 +1269,8 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
         if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame);
                         if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
+        for (auto& h : helis) { poseHeli(h, waterTime); h.body->draw(*device, frame); }
+        for (auto& p : planes) { posePlane(p, waterTime); p.body->draw(*device, frame); }
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);
             residentsSkin.draw(*device, frame, walkScene);
