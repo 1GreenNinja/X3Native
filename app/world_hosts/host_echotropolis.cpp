@@ -570,6 +570,32 @@ int hostEchotropolis(HostContext& hc) {
     }
     // ================= END P4 COAST DRESSING ======================================
 
+    // ===================== REAL BUILDINGS (Phase B) =====================
+    // The first REAL textured GLB buildings in Echo Harbor. The Unity packs shipped
+    // Draco-compressed (KHR_draco_mesh_compression), which X3Native's M2 loader can't
+    // decode → prims=0. Fleet fix (Snake/i5000/Commander): decode to plain uncompressed
+    // GLB (`gltf-transform copy`) → D:/Assets/_glb_norm/. Unity cm → scale 0.01; each
+    // house lifted by its own base offset so it sits on the terrain.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> houses;
+    {
+        const std::string hdir = "D:/Assets/_glb_norm/HouseForge";
+        auto addHouse = [&](const char* glb, float x, float z, float yaw, float lift) {
+            const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
+            const float s = 0.01f, c = std::cos(yaw), sn = std::sin(yaw);
+            const float T[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
+                                  sn*s, 0.0f,  c*s, 0.0f,   x, gy + lift, z, 1.0f };
+            auto h = std::make_unique<x3::game::EnvArtSystem>();
+            if (h->buildFromGlbAt(*device, hdir, glb, T)) houses.push_back(std::move(h));
+        };
+        addHouse("PF_MetalHouse01.glb",      60.0f, 700.0f, 0.4f, 11.73f);
+        addHouse("PF_MetalHouse02.glb",     125.0f, 745.0f, 2.1f,  2.13f);
+        addHouse("PF_PrimitiveHouse01.glb",  10.0f, 675.0f, 3.6f,  3.17f);
+        addHouse("PF_PrimitiveHouse02.glb", 150.0f, 690.0f, 5.0f,  1.00f);
+        addHouse("PF_PrimitiveHouse03.glb",  85.0f, 640.0f, 1.2f,  8.59f);
+        x3::logInfo("--world echotropolis: REAL BUILDINGS — " +
+                    std::to_string(houses.size()) + " textured HouseForge houses (decoded)");
+    }
+
     // RESIDENTS: character height (5-6 ft). Env-tunable (ECHO_PED_SCALE) so it can be
     // dialed live without a rebuild; default 1.7 → ~5.9 ft citizens. (The citizens
     // ARE real textured animated people — the earlier "green blobs" were the grass-
@@ -651,6 +677,7 @@ int hostEchotropolis(HostContext& hc) {
             auto frame = device->beginFrame();
             island.draw(*device, frame);   // the island (sky + water are device-internal)
             props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
+            for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
                 poseBeam(-2.13f);
@@ -1061,6 +1088,7 @@ int hostEchotropolis(HostContext& hc) {
         auto frame = device->beginFrame();
         island.draw(*device, frame);
         props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
+        for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);
             residentsSkin.draw(*device, frame, walkScene);
