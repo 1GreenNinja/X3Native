@@ -33,6 +33,8 @@
 #include "../crowd.h"                 // RESIDENTS: wandering citizen agents
 #include "../crowd_skin.h"            // RESIDENTS: real rigged-GLB characters over the agents
 #include "../asset_root.h"            // riggedGlbRoot()
+#include "../holo_terminal.h"         // CONTROL ROOM: in-world ops dashboard screen
+#include <string>
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
 #include <fstream>
@@ -591,6 +593,7 @@ int hostEchotropolis(HostContext& hc) {
         const bool shotResidents = [](){ const char* e = std::getenv("ECHO_RESIDENTS"); return e && e[0]=='1'; }();
         std::unique_ptr<x3::phys::IPhysicsWorld> sphys;
         x3::game::Scene sScene; x3::game::CrowdSystem sCrowd; x3::game::CrowdSkin sSkin;
+        x3::game::HoloTerminal sOps; bool sOpsBuilt = false;
         bool sResBuilt = false;
         if (shotResidents && hf.ok()) {
             sphys.reset(x3::phys::createPhysicsWorld());
@@ -600,6 +603,13 @@ int hostEchotropolis(HostContext& hc) {
                 cc.groundY = hf.heightAt(-20.0f, 760.0f); cc.radius = 340.0f;
                 cc.walkSpeed = 1.3f; cc.converse = true;
                 sCrowd.build(cc, sScene, *device);
+                // CONTROL ROOM ops dashboard (verify in captures)
+                sOps.build(sScene, *device,
+                           x3::phys::Vec3{ -14.0f, hf.heightAt(-20.0f, 760.0f) + 2.2f, 752.0f },
+                           0.0f, 6.4f, 3.6f);
+                sOps.setLayout(x3::game::HoloTerminal::Layout::Readout);
+                sOps.setTextColor(1.0f, 0.62f, 0.18f, 1.0f);
+                sOpsBuilt = sOps.built();
                 x3::game::CrowdSkinConfig sc; sc.site = "residents-shot";
                 sc.modelDir = x3::game::riggedGlbRoot(); sc.spawnsPerFrame = 4;
                 sc.scale = kPedScale;   // 5-6 ft citizens
@@ -618,6 +628,20 @@ int hostEchotropolis(HostContext& hc) {
             applyAtmosphere(device, shotTod);   // ATMOSPHERE: aerial haze + grade + bloom
             applyOcean(device, (float)i * dt, shotTod);
             if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
+            if (sOpsBuilt) {
+                sOps.setLines({
+                    "ECHO HARBOR   //   CITY OPS", "",
+                    "POPULATION        40",
+                    "   WORKING          4",
+                    "   AT LEISURE       7",
+                    "   ABOUT TOWN      29", "",
+                    std::string("TIME OF DAY     ") + x3::game::todPhaseName(shotTod.phase),
+                    "POWER GRID      ONLINE",
+                    "HARBOR WATCH    NOMINAL",
+                    "VIGIL           MONITORING",
+                });
+                sOps.update(dt);
+            }
             if (shotCamOverride) {
                 device->setCamera(shotCam[0], shotCam[1], shotCam[2], shotCam[3], shotCam[4], opt.fovDeg);
             } else {
@@ -724,6 +748,8 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::CrowdSystem residents;
     x3::game::CrowdSkin residentsSkin;
     bool residentsBuilt = false;
+    x3::game::HoloTerminal opsScreen;   // CONTROL ROOM: live city-ops dashboard on the crown
+    bool opsBuilt = false;
     if (physOk) {
         x3::game::CrowdConfig cc;
         cc.count   = 40;
@@ -758,7 +784,34 @@ int hostEchotropolis(HostContext& hc) {
         residentsBuilt = residents.built();
         x3::logInfo(std::string("--world echotropolis: residents ") +
                     (residentsBuilt ? "built (40 citizens, rigged skins loading)" : "FAILED"));
+
+        // CONTROL ROOM: a live ops-dashboard screen on the crown plaza (HoloTerminal
+        // Readout, Vigil-orange ink). Renders through walkScene like the residents.
+        opsScreen.build(walkScene, *device,
+                        x3::phys::Vec3{ kWalkX + 6.0f, kWalkGroundY + 2.2f, kWalkZ - 8.0f },
+                        0.0f, 6.4f, 3.6f);
+        opsScreen.setLayout(x3::game::HoloTerminal::Layout::Readout);
+        opsScreen.setTextColor(1.0f, 0.62f, 0.18f, 1.0f);   // VIGIL orange
+        opsBuilt = opsScreen.built();
     }
+    // Live ops-dashboard lines from the current city state (per-role crowd split +
+    // time of day). The deep economy KPIs arrive when echo_core is wired in.
+    auto opsLines = [&](const x3::game::TodSample& s) {
+        const int pop = 40, workers = 4, gamers = 7;
+        return std::vector<std::string>{
+            "ECHO HARBOR   //   CITY OPS",
+            "",
+            "POPULATION        " + std::to_string(pop),
+            "   WORKING         " + std::to_string(workers),
+            "   AT LEISURE      " + std::to_string(gamers),
+            "   ABOUT TOWN      " + std::to_string(pop - workers - gamers),
+            "",
+            std::string("TIME OF DAY     ") + x3::game::todPhaseName(s.phase),
+            "POWER GRID      ONLINE",
+            "HARBOR WATCH    NOMINAL",
+            "VIGIL           MONITORING",
+        };
+    };
     bool walkMode = false, prevG = false;
 
     int lastW = (int)hc.W, lastH = (int)hc.H;
@@ -988,6 +1041,10 @@ int hostEchotropolis(HostContext& hc) {
         if (residentsBuilt) {
             residents.update(dt, walkScene);
             residentsSkin.update(dt, residents, walkScene, *device, *phys);
+        }
+        if (opsBuilt) {                 // CONTROL ROOM: refresh the live dashboard
+            opsScreen.setLines(opsLines(todS));
+            opsScreen.update(dt);
         }
 
         // Ocean + camera + render. WALK MODE poses the first-person eye camera from
