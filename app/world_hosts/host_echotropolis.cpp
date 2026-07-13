@@ -28,6 +28,7 @@
 #include "world_host_common.h"
 #include "../tod.h"
 #include "../env_art.h"
+#include "../mine_fx.h"               // GOLD MINE: authentic EoS arch mouth-glow (ported render FX)
 #include "../player.h"                // WALK MODE (Phase A): first-person character on the streets
 #include "../scene.h"                 // RESIDENTS: crowd entities live in a Scene
 #include "../crowd.h"                 // RESIDENTS: wandering citizen agents
@@ -686,12 +687,12 @@ int hostEchotropolis(HostContext& hc) {
     const float kMineX = -480.0f, kMineZ = 850.0f;   // mine mouth (Carry point B) — open west shoulder, clear of towers
     const float kLotX  = -556.0f, kLotZ  = 814.0f;   // truck lot   (Carry point A) — short trek SW
     const float kMineGy = hf.ok() ? hf.heightAt(kMineX, kMineZ) : 190.0f;  // real terrain; miners share this plane
+    const float kMineScale  = [](){ const char* e=std::getenv("ECHO_MINE_SCALE");  return e?(float)std::atof(e):3.2f; }();
+    const float kMineYaw    = [](){ const char* e=std::getenv("ECHO_MINE_YAW");    return e?(float)std::atof(e):2.35f; }();
     std::vector<std::unique_ptr<x3::game::EnvArtSystem>> mineProps;
     {
-        const float kMineScale  = [](){ const char* e=std::getenv("ECHO_MINE_SCALE");  return e?(float)std::atof(e):3.2f; }();
         const float kTruckScale = [](){ const char* e=std::getenv("ECHO_TRUCK_SCALE"); return e?(float)std::atof(e):1.0f;  }();
         const float kMineLift   = [](){ const char* e=std::getenv("ECHO_MINE_LIFT");   return e?(float)std::atof(e):0.0f;  }();
-        const float kMineYaw    = [](){ const char* e=std::getenv("ECHO_MINE_YAW");    return e?(float)std::atof(e):2.35f; }();
         auto place = [&](const std::string& dir, const char* glb, float x, float z,
                          float yaw, float s, float lift) {
             const float gy = kMineGy;
@@ -758,6 +759,29 @@ int hostEchotropolis(HostContext& hc) {
         emit(44, 0.0f,   3.15159f, 78.0f, 150.0f);   // outer belt, full circle
         x3::logInfo("--world echotropolis: MINE FOREST — " +
                     std::to_string(mineForest.size()) + " pines ringing the pit");
+    }
+
+    // ===================== MINE MOUTH GLOW (authentic EoS arch) ============
+    // Graft Empires of Shadow's real arch-SDF mouth glow (ported render FX in
+    // mine_fx.cpp — "light licking the tunnel walls around a dark throat", gold
+    // [1.0,0.80,0.16]) onto mine_site.glb's adit. A gold emissiveTex quad seated
+    // at the mine mouth via the mine's OWN place() transform (so it tracks the
+    // ECHO_MINE_* pose); all seat offsets are ECHO_GLOW_* tunable.
+    x3::game::Scene mineGlowScene;
+    x3::game::GoldMineWorld mineGlow;
+    {
+        auto envf = [](const char* k, float d){ const char* e=std::getenv(k); return e?(float)std::atof(e):d; };
+        const float lY  = envf("ECHO_GLOW_LY", 1.70f);    // mouth-centre height (GLB units)
+        const float lZ  = envf("ECHO_GLOW_LZ", 0.90f);    // mouth depth (front of the adit = +Z local)
+        const float lHW = envf("ECHO_GLOW_HW", 1.30f);    // half width  (GLB units)
+        const float lHH = envf("ECHO_GLOW_HH", 1.55f);    // half height (GLB units)
+        const float c = std::cos(kMineYaw), sn = std::sin(kMineYaw), s = kMineScale;
+        const float gx = kMineX + s * (sn * lZ);          // same rotation as the mine place() transform
+        const float gy = kMineGy + s * lY;
+        const float gz = kMineZ + s * (c * lZ);
+        const float gYaw = envf("ECHO_GLOW_YAW", kMineYaw);   // face outward along the mouth (+Z local)
+        mineGlow.buildMouthGlow(mineGlowScene, *device, gx, gy, gz, s * lHW, s * lHH, gYaw);
+        x3::logInfo("--world echotropolis: MINE MOUTH GLOW (EoS arch) seated at mouth");
     }
 
     // ===================== THE UFO (Tim's Grok→Rodin saucer) ============
@@ -1004,6 +1028,7 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
             for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
+            mineGlowScene.render(*device, frame);            // authentic EoS arch mouth-glow
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
                             if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
             for (auto& h : helis) { poseHeli(h, (float)i * dt);
@@ -1509,6 +1534,7 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
         for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
+        mineGlowScene.render(*device, frame);                // authentic EoS arch mouth-glow
         if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame);
                         if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
         for (auto& h : helis) { poseHeli(h, waterTime);
