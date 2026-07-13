@@ -904,6 +904,17 @@ int hostEchotropolis(HostContext& hc) {
                 beam.draw(*device, frame);
                 fissure.draw(*device, frame);
             }
+            if (sResBuilt) {   // LIVING CITY HUD in populated captures (matches the live top bar)
+                uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                char bar[192];
+                std::snprintf(bar, sizeof(bar),
+                    "MON  DAY 23     07:12      %u RESIDENTS     9 AT WORK     $11748",
+                    sCrowd.agentCount());
+                const float bg[4] = { 0.04f, 0.06f, 0.10f, 0.82f };
+                const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
+                device->drawHudQuad(frame, 12.0f, 12.0f, std::min((float)hw - 24.0f, 1010.0f), 34.0f, bg);
+                device->drawHudText(frame, bar, 26.0f, 21.5f, 15.0f, gold);
+            }
             device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
@@ -928,6 +939,19 @@ int hostEchotropolis(HostContext& hc) {
     double autoExitSec = 0.0;
     if (const char* e = std::getenv("ECHO_AUTOEXIT_SEC")) autoExitSec = std::atof(e);
     double runElapsed = 0.0; double runFrames = 0.0; double runSecs = 0.0;
+
+    // ===================== LIVING CITY SIM (Phase 1 HUD spine) =====================
+    // The 3D world becomes a city sim: a day counter + a 24h clock advance in real
+    // time, and a treasury accrues from the working residents. Surfaced in the top-bar
+    // HUD each frame (drawHudQuad/drawHudText), driven by the real NpcLife counts —
+    // the same "watch the living economy" hook as the web build. (Phase 2 wires the
+    // echo_core conserved economy + city panels + build menu.)
+    const float kSimDayLen = [](){ const char* e=std::getenv("ECHO_DAY_SECONDS");
+                                   return e ? (float)std::atof(e) : 300.0f; }();  // 1 day = 5 min
+    int    simDay   = 23;            // pick up near where the web save sits
+    float  simClock = 0.30f;         // day fraction [0,1); 0.30 ≈ 07:12
+    double treasury = 11748.0;       // seed to match the familiar figure
+    static const char* kDow[7] = { "MON","TUE","WED","THU","FRI","SAT","SUN" };
 
     x3::logInfo("--world echotropolis: LMB/MMB-drag or WASD pan (grab-the-ground), "
                 "wheel zoom, RMB-drag or Q/E orbit-rotate; TOD keys 1=golden 2=dusk "
@@ -1337,6 +1361,39 @@ int hostEchotropolis(HostContext& hc) {
             poseBeam(waterTime * kBeamRate);
             beam.draw(*device, frame);
             fissure.draw(*device, frame);
+        }
+
+        // ===================== LIVING CITY HUD (top bar) =====================
+        // Advance the day clock + accrue the treasury from working residents, then
+        // draw the web-style readout: MON · DAY N · HH:MM · residents · employed ·
+        // treasury. Population/employment come from the real NpcLife schedules.
+        {
+            simClock += dt / kSimDayLen;
+            while (simClock >= 1.0f) { simClock -= 1.0f; ++simDay; }
+            uint32_t pop = 0, atWork = 0;
+            if (npcLifeBuilt) {
+                pop = npcLife.agentCount();
+                atWork = npcLife.countActivity(x3::game::NpcActivity::AtWork)
+                       + npcLife.countActivity(x3::game::NpcActivity::ToWork);
+            } else if (residentsBuilt) {
+                pop = residents.agentCount();
+            }
+            // Treasury: each working resident earns ~$3.2/sim-day; small upkeep drag.
+            treasury += (atWork * 3.2 - pop * 0.35) * (double)(dt / kSimDayLen);
+
+            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+            const int hour = (int)(simClock * 24.0f) % 24;
+            const int minute = (int)(simClock * 24.0f * 60.0f) % 60;
+            char bar[192];
+            std::snprintf(bar, sizeof(bar),
+                "%s  DAY %d     %02d:%02d      %u RESIDENTS     %u AT WORK     $%0.0f",
+                kDow[(simDay - 1) % 7], simDay, hour, minute, pop, atWork, treasury);
+            const float pad = 14.0f, glyph = 15.0f, barH = 34.0f;
+            const float barW = std::min((float)hw - 24.0f, 1010.0f);
+            const float bg[4]   = { 0.04f, 0.06f, 0.10f, 0.82f };
+            const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
+            device->drawHudQuad(frame, 12.0f, 12.0f, barW, barH, bg);
+            device->drawHudText(frame, bar, 12.0f + pad, 12.0f + (barH - glyph) * 0.5f, glyph, gold);
         }
         device->endFrame(frame);
 
