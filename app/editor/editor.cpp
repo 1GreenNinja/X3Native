@@ -5,11 +5,15 @@
 #include "editor.h"
 
 #include "../mesh_prims.h"               // buildBrushMesh (B4 geometry assertion)
+#include "../asset_root.h"               // convertedGlbRoot (data-driven model catalog)
 #include "engine/core/x3_log.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -73,24 +77,109 @@ int editorMaterialFind(const std::string& id) {
 }
 
 // ---------------------------------------------------------------------------
-// Feature 3 — curated MODEL browser catalog (converted_glb props that ship in the
-// repo's assets dir). relPath is resolved under the editor's mounted converted_glb
-// dir; a GLB that fails to load just places nothing (graybox-safe).
+// Feature 3 — DATA-DRIVEN MODEL browser catalog. Instead of a hardcoded list, the
+// editor SCANS the mounted converted_glb dir once at startup and surfaces every
+// *.glb it finds, so any converted GLB pack staged there (e.g. the Sci-Fi Space
+// Stations Creator's modules) auto-appears in the drag-and-drop palette. relPath is
+// the forward-slash path relative to convertedGlbRoot; a GLB that fails to load just
+// places nothing (graybox-safe). Missing/empty dir -> empty catalog (no crash).
 // ---------------------------------------------------------------------------
-const ModelCatalogItem* editorModelCatalog() {
-    static const ModelCatalogItem k[] = {
-        { "SciFi_Warehouse_Kit/Barrel.glb",      "Barrel" },
-        { "SciFi_Warehouse_Kit/Crate Short.glb", "Crate (short)" },
-        { "SciFi_Warehouse_Kit/Crate Long.glb",  "Crate (long)" },
-        { "SciFi_Warehouse_Kit/Pallet.glb",      "Pallet" },
-        { "SciFi_Warehouse_Kit/Fusebox 01.glb",  "Fusebox" },
-        { "ModularSciFi_Interior/SM_Console.glb", "Console" },
-        { "ModularSciFi_Interior/SM_Light_A.glb", "Light fixture" },
-        { "ModularSciFi_Interior/SM_Pipes_A.glb", "Pipes" },
-    };
-    return k;
+namespace {
+
+// Split a token into words at case/digit boundaries and _/-/space separators so
+// "AlienSpaceStation1" reads as "Alien Space Station 1" in the palette.
+std::string humanizeToken(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (c == '_' || c == '-' || c == ' ') {
+            if (!out.empty() && out.back() != ' ') out.push_back(' ');
+            continue;
+        }
+        if (i > 0) {
+            char p = s[i - 1];
+            bool pLower = (p >= 'a' && p <= 'z');
+            bool pUpper = (p >= 'A' && p <= 'Z');
+            bool pDigit = (p >= '0' && p <= '9');
+            bool cUpper = (c >= 'A' && c <= 'Z');
+            bool cDigit = (c >= '0' && c <= '9');
+            // Boundary: lower/UPPER, letter->digit, digit->letter. Keep digit runs
+            // and acronym runs together (no split UPPER->UPPER, digit->digit).
+            bool boundary = ((pLower || pDigit) && cUpper) ||
+                            ((pLower || pUpper) && cDigit) ||
+                            (pDigit && cUpper);
+            if (boundary && !out.empty() && out.back() != ' ') out.push_back(' ');
+        }
+        out.push_back(c);
+    }
+    return out;
 }
-uint32_t editorModelCatalogCount() { return 8; }
+
+// Backing store for the runtime-scanned catalog. ModelCatalogItem exposes const
+// char* (stable ABI for existing callers), so the underlying std::strings must
+// outlive every item — they live here for the process lifetime. Constructed IN
+// PLACE inside modelCatalogStore()'s function-local static, so the c_str() pointers
+// into relPaths/labels never move (the store is never copied/moved after build).
+struct ModelCatalogStore {
+    std::vector<std::string>      relPaths;  // forward-slash paths under convertedGlbRoot
+    std::vector<std::string>      labels;    // human display names ("Pack / Module")
+    std::vector<ModelCatalogItem> items;     // {relPath.c_str(), label.c_str()}
+
+    ModelCatalogStore() {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path root = x3::game::convertedGlbRoot();
+        if (!fs::is_directory(root, ec)) return;   // missing/empty -> empty catalog
+
+        // 1) Recursively enumerate every *.glb (case-insensitive), rel to root.
+        for (fs::recursive_directory_iterator it(
+                 root, fs::directory_options::skip_permission_denied, ec), end;
+             it != end; it.increment(ec)) {
+            if (ec) { ec.clear(); continue; }
+            std::error_code fec;
+            if (!it->is_regular_file(fec)) continue;
+            const fs::path& p = it->path();
+            std::string ext = p.extension().string();
+            for (char& ch : ext) ch = (char)std::tolower((unsigned char)ch);
+            if (ext != ".glb") continue;
+            std::string rel = fs::relative(p, root, fec).generic_string();
+            if (fec || rel.empty()) continue;
+            relPaths.push_back(std::move(rel));
+        }
+        // 2) Deterministic order (the palette lists alphabetically).
+        std::sort(relPaths.begin(), relPaths.end());
+
+        // 3) Build a human label per entry: "<Pack> / <Humanized stem>" (pack = the
+        //    top-level folder under convertedGlbRoot, if the path has one).
+        labels.reserve(relPaths.size());
+        for (const std::string& rel : relPaths) {
+            size_t firstSlash = rel.find('/');
+            size_t lastSlash  = rel.find_last_of('/');
+            size_t begin      = (lastSlash == std::string::npos) ? 0 : lastSlash + 1;
+            size_t dot        = rel.find_last_of('.');
+            if (dot == std::string::npos || dot < begin) dot = rel.size();
+            std::string label = humanizeToken(rel.substr(begin, dot - begin));
+            if (firstSlash != std::string::npos)
+                label = humanizeToken(rel.substr(0, firstSlash)) + " / " + label;
+            labels.push_back(std::move(label));
+        }
+        // 4) Point the C-ABI items at the now-stable backing strings.
+        items.reserve(relPaths.size());
+        for (size_t i = 0; i < relPaths.size(); ++i)
+            items.push_back(ModelCatalogItem{ relPaths[i].c_str(), labels[i].c_str() });
+    }
+};
+
+const ModelCatalogStore& modelCatalogStore() {
+    static const ModelCatalogStore store;   // scanned once; thread-safe static init
+    return store;
+}
+
+} // namespace
+
+const ModelCatalogItem* editorModelCatalog() { return modelCatalogStore().items.data(); }
+uint32_t editorModelCatalogCount() { return (uint32_t)modelCatalogStore().items.size(); }
 
 // ---------------------------------------------------------------------------
 // Top menu bar (File / Edit / Tools / View) — data the HUD renders + dispatches.
@@ -1004,9 +1093,15 @@ bool runEditorSelfTest() {
 
     // ---- E15 (Feature 3): a placed MODEL entity round-trips through the JSON. ----
     {
-        bool catOk = editorModelCatalogCount() == 8 &&
-                     editorModelCatalog()[0].relPath != nullptr &&
-                     std::string(editorModelCatalog()[0].relPath).find(".glb") != std::string::npos;
+        // The catalog is now DATA-DRIVEN (a runtime scan of convertedGlbRoot), so
+        // its count depends on what GLBs are staged on this machine. Assert the
+        // shape, not a fixed count: an empty catalog is valid (dir absent in a
+        // headless test), and any entry present must be a well-formed .glb relpath.
+        const uint32_t nCat = editorModelCatalogCount();
+        bool catOk = (nCat == 0) ||
+                     (editorModelCatalog() != nullptr &&
+                      editorModelCatalog()[0].relPath != nullptr &&
+                      std::string(editorModelCatalog()[0].relPath).find(".glb") != std::string::npos);
 
         LevelDoc d; EditorState ed(d);
         float p[3] = { 2, 0, -3 };
