@@ -571,14 +571,14 @@ int hostEchotropolis(HostContext& hc) {
     // ================= END P4 COAST DRESSING ======================================
 
     // ===================== REAL BUILDINGS (Phase B) =====================
-    // The first REAL textured GLB buildings in Echo Harbor. The Unity packs shipped
-    // Draco-compressed (KHR_draco_mesh_compression), which X3Native's M2 loader can't
-    // decode → prims=0. Fleet fix (Snake/i5000/Commander): decode to plain uncompressed
-    // GLB (`gltf-transform copy`) → D:/Assets/_glb_norm/. Unity cm → scale 0.01; each
-    // house lifted by its own base offset so it sits on the terrain.
+    // The first REAL textured GLB buildings in Echo Harbor. The Unity packs ship
+    // Draco-compressed (KHR_draco_mesh_compression) — the engine loader now DECODES
+    // Draco natively (fleet's feature/draco-decode, 2db0ebb, merged into main), so we
+    // load the RAW packs directly. Unity cm → scale 0.01; each house lifted by its own
+    // base offset so it sits on the terrain.
     std::vector<std::unique_ptr<x3::game::EnvArtSystem>> houses;
     {
-        const std::string hdir = "D:/Assets/_glb_norm/HouseForge";
+        const std::string hdir = "D:/Assets/_glb/prefab_buildings/HouseForge";
         auto addHouse = [&](const char* glb, float x, float z, float yaw, float lift) {
             const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
             const float s = 0.01f, c = std::cos(yaw), sn = std::sin(yaw);
