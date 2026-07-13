@@ -97,6 +97,7 @@
 #include "world_map.h"
 #include "city.h"
 #include "ocean_base.h"
+#include "undersea_art.h"
 #include "elevator.h"
 #include "club1127.h"
 #include "perfshop.h"
@@ -635,6 +636,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testOceanBase) {
         x3::logInfo("running EFLZ open-world ocean + undersea base + submarine combat self-test...");
         return x3::game::runOceanBaseSelfTest() ? 0 : 1;
+    }
+    if (tf.testUnderseaArt) {
+        x3::logInfo("running EFLZ Act-4 undersea-base art overlay (Abyssal Station GLB) self-test...");
+        return x3::game::runUnderseaArtSelfTest() ? 0 : 1;
     }
     if (tf.testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");

@@ -28,6 +28,7 @@ int dispatchWorldHost(HostContext& hc) {
     if (hc.worldMode == "wormhole")                   return hostWormhole(hc);
     if (hc.worldMode == "wormhole-transit")           return hostWormholeTransit(hc);
     if (hc.worldMode == "tractor")                    return hostTractor(hc);
+    if (hc.worldMode == "undersea")                   return hostUndersea(hc);
     if (hc.worldMode == "strata")                       return hostStrata(hc);
     if (hc.worldMode == "elevator-showcase")            return hostElevator(hc);
     if (hc.worldMode == "rifthub")                      return hostRifthub(hc);

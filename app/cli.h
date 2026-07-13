@@ -270,6 +270,7 @@ struct CliOptions {
     bool        testWorldRegions = false;   // --test-worldregions (open-world surface regions + mountains)
     bool        testCity = false;           // --test-city (open-world metropolis: districts + roads + tunnels)
     bool        testOceanBase = false;      // --test-oceanbase (ocean + undersea base + submarine combat)
+    bool        testUnderseaArt = false;    // --test-undersea-art (Abyssal Station GLB overlay on OceanBase)
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the

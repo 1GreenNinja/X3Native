@@ -42,6 +42,7 @@ int hostBodyContact(HostContext& hc);     // --world bodycontact (BODY CONTACT f
 int hostWormhole(HostContext& hc);        // --world wormhole (feast fold: Salvari crystal-matrix tunnel VFX)
 int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fold: S3 autopilot jump ride)
 int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
+int hostUndersea(HostContext& hc);        // --world undersea (Act-4 Abyssal Station art overlay + marine snow)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);

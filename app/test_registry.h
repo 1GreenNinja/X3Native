@@ -71,6 +71,7 @@ struct TestFlags {
     bool testSpireTop = false, testTimeline = false, testDroneHack = false, testSubLevels = false;
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
+    bool testUnderseaArt = false;   // --test-undersea-art (Abyssal Station GLB overlay on OceanBase)
     bool testRifthub = false;   // --test-rifthub (Stargate portal hub self-test)
     bool testBasis = false;     // --test-basis (KNOWN_BUGS R3: the MIRROR determinant invariant)
     bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
