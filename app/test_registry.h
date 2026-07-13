@@ -83,6 +83,8 @@ struct TestFlags {
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
     bool testLightningCharge = false;  // --test-lightning-charge (Lightning Gun CHARGE model)
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;
+    bool testNpcLife = false;    // --test-npclife (LIVING CITY daily-life system)
+    bool testHacking = false;    // --test-hacking (WD2 scan/hack registry)
     bool testWaterZap = false;   // --test-waterzap (FISH schools + the lightning WATER ZAP)
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
