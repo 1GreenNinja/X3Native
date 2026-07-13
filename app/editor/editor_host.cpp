@@ -340,6 +340,35 @@ void EditorHost::aiPoll() {
 void EditorHost::drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                                  x3::phys::IPhysicsWorld& physics) {
     (void)scene; (void)physics;
+
+    // ---- X3_ARMORY_PLACE=<name substring> — PROVE THE CLICK WORKS ------------------
+    // A headless screenshot cannot click, so the placement path (index -> decoded
+    // relPath -> mounted asset source -> GLB load -> entity) was shipped UNVERIFIED.
+    // These paths carry SPACES and PARENS ("HDRP(Default)"), which is exactly the kind
+    // of thing an asset loader trips on, and a failure here is SILENT: the click just
+    // does nothing. So: stage a real placement through the REAL code path, once, and
+    // let a screenshot show whether the mesh is actually there.
+    static bool s_stagedOnce = false;
+    if (!s_stagedOnce) {
+        s_stagedOnce = true;
+        if (const char* want = std::getenv("X3_ARMORY_PLACE")) {
+            ensureModelLoader(device);
+            const std::vector<uint32_t> hit = filterArmory(m_armory, want, "", 1);
+            if (hit.empty()) {
+                x3::logWarn(std::string("[armory] X3_ARMORY_PLACE: no mesh matches '") + want + "'");
+            } else {
+                const ArmoryItem& it = m_armory.items[hit[0]];
+                const int idx = placeModel(it.relPath, device);
+                if (idx >= 0) {
+                    m_state.select(idx);
+                    x3::logInfo("[armory] PLACED '" + it.name + "' from pack '" + it.pack +
+                                "' -> " + it.relPath);
+                } else {
+                    x3::logWarn("[armory] FAILED to place '" + it.name + "' -> " + it.relPath);
+                }
+            }
+        }
+    }
     panelRect(0.190f, 0.145f, 0.300f, 0.495f);   // BELOW Status (0.045..0.135), ABOVE the AI panel (0.655)
     ImGui::Begin("Armory");
 
