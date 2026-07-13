@@ -164,6 +164,11 @@ public:
     // with velocity (the "speed rush"). Cheap + const; safe to call per frame.
     float fov() const;
 
+    // ROLL-CAPABLE camera: full orientation basis from the ship's quaternion, so
+    // the view banks + loops with the fighter (feed IRenderDevice::setCameraBasis).
+    // 1P sits at the nose; 3P chases behind + above, both rolling with the hull.
+    void cameraBasis(float outPos[3], float outFwd[3], float outUp[3]) const;
+
     // 1P / 3P toggle (showcase binds it to V).
     void toggleCameraMode();
     bool isThirdPerson() const { return m_thirdPerson; }

@@ -51,6 +51,7 @@ struct CliOptions {
          testHatch = false,
          testEcology = false, testCrowd = false, testAlert = false,
          testWaterZap = false,   // --test-waterzap (FISH + the lightning water ZAP)
+         testSealife = false,    // --test-sealife (the great white hunt + the ocean)
          // --test-canonvehicle (WORLD CARS: enter/drive/exit + hold-E hack +
          // unlocked-latch region persistence). See runCanonVehicleSelfTest.
          testCanonVehicle = false;
@@ -64,6 +65,11 @@ struct CliOptions {
     // the scene (lamp cones/pools read against a dark sky). Screenshot/dev
     // staging only; the default canon sky is untouched without the flag.
     bool        duskSky = false;
+    // --day (canonlevel staging): push the golden-hour sky to BRIGHT MIDDAY — a
+    // high near-white sun at full strength, pale sky — so the underwater world
+    // (fish, sea life, the swimmer, the river bed) reads clearly LIT. The mirror
+    // of --dusk. Screenshot/dev staging only; the default canon sky is untouched.
+    bool        daySky = false;
     // --shot-chatter N (canonlevel screenshot staging): before the settle
     // frames, advance the crowd+chatter sim (deterministic, render-free) until
     // N chat bubbles are concurrently alive within bubble range of the shot

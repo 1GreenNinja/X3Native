@@ -308,6 +308,81 @@ bool runWaterZapSelfTest() {
               "Z8b the fish school sim is DETERMINISTIC (and the player parts the school)");
     }
 
+    // ---- Z9: THE SPECIES TABLE — shoals shoal, and the PIKE IS ALONE --------
+    // Also the GRACEFUL-FALLBACK contract: this test never calls setModelDir(), so
+    // no GLB is reachable and EVERY fish must degrade to the procedural loft (3
+    // shared meshes, 3 entities each) rather than crash or render nothing.
+    {
+        CountingDevice device;
+        Scene scene;
+        FishSystem fish;
+        fish.setWaterQuery(water);
+        fish.setBedQuery([](float x, float z) { return testBed(x, z); });
+
+        FishConfig fc;
+        fc.activeRadius = 400.0f;
+        FishSchoolDesc shoal;                       // a proper rudd shoal
+        shoal.centerX = 0.0f; shoal.centerZ = 0.0f;
+        shoal.species = FishSpecies::Rudd;
+        shoal.count = 12; shoal.spread = 3.0f;
+        shoal.speed = fishSpecies(FishSpecies::Rudd).speed;
+        FishSchoolDesc gang = shoal;                // a small loose perch gang
+        gang.centerX = 30.0f;
+        gang.species = FishSpecies::Perch;
+        gang.count = 5; gang.spread = 6.0f;
+        gang.speed = fishSpecies(FishSpecies::Perch).speed;
+        FishSchoolDesc loner = shoal;               // THE PIKE. One.
+        loner.centerX = 60.0f;
+        loner.species = FishSpecies::Pike;
+        loner.count = 1; loner.spread = 2.0f;
+        loner.speed = fishSpecies(FishSpecies::Pike).speed;
+        fc.schools = { shoal, gang, loner };
+        fish.build(fc, scene, device);
+
+        // The species landed on the right fish.
+        uint32_t nRudd = 0, nPerch = 0, nPike = 0;
+        for (uint32_t i = 0; i < fish.fishCount(); ++i) {
+            switch (fish.fish(i).species) {
+                case FishSpecies::Rudd:  ++nRudd;  break;
+                case FishSpecies::Perch: ++nPerch; break;
+                case FishSpecies::Pike:  ++nPike;  break;
+                default: break;
+            }
+        }
+        // A PREDATOR DOES NOT SHOAL: exactly one pike, its school flagged solitary.
+        bool pikeAlone = (nPike == 1);
+        for (uint32_t i = 0; i < fish.schoolCount(); ++i) {
+            const FishSchool& sc = fish.school(i);
+            if ((sc.species == FishSpecies::Pike) != sc.solitary) pikeAlone = false;
+        }
+        // ...and it is the BIG one: the pike's authored length dwarfs the shoal's.
+        const bool pikeBigger =
+            fishSpecies(FishSpecies::Pike).size >
+            3.0f * fishSpecies(FishSpecies::Rudd).size * 0.5f &&
+            fishSpecies(FishSpecies::Pike).speed <
+            fishSpecies(FishSpecies::Rudd).speed;
+
+        // THE FALLBACK CONTRACT: no model dir => every fish is the loft, and the
+        // loft is still exactly 3 shared meshes + 1 skin for the whole world.
+        const bool fellBack = (fish.glbFishCount() == 0) &&
+                              !fish.speciesLoaded(FishSpecies::Pike) &&
+                              (device.meshCreates == 3) &&
+                              (fish.drawCount() == 3 * fish.fishCount());
+
+        // And it still SWIMS and DIES: tick it, zap the shoal, tick it again.
+        const x3::phys::Vec3 away{ 500.0f, 0.0f, 500.0f };   // nobody spooks them
+        for (int i = 0; i < 120; ++i) fish.update(dt, scene, away);
+        const uint32_t killed = fish.killWithin(0.0f, 0.0f, kWaterZapRadius);
+        for (int i = 0; i < 120; ++i) fish.update(dt, scene, away);
+        const bool zapWorks = (killed == nRudd) && (fish.deadCount() == killed) &&
+                              (nPike == 1 && !fish.fish(fish.fishCount() - 1).dead);
+
+        check(nRudd == 12 && nPerch == 5 && pikeAlone && pikeBigger && fellBack &&
+              zapWorks,
+              "Z9 species table: rudd/bream SHOAL, perch GANG, the PIKE IS ALONE "
+              "(and a missing GLB degrades to the procedural loft, never a statue)");
+    }
+
     x3::logInfo("waterzap: " + std::to_string(t_pass) + "/" +
                 std::to_string(t_pass + t_fail) + " passed");
     return t_fail == 0;

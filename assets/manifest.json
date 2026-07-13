@@ -174,6 +174,30 @@
       "source_note": "W6-3: re-bake FPArms_Jake.glb with a sleeve hem (per-boundary-edge dark flap along the shoulder crop) hiding the raw stump edge; see tools/bake_fp_arms.py W6-3 notes for the 3 rejected geometry approaches"
     },
     {
+      "repo_path": "assets/rigged_glb/Fish_Bream.glb",
+      "sha256": "fe63a0f1c7e984e498ee3169e07d7921122f02998e25ceab1e7988382c21cace",
+      "size": 1824212,
+      "source_note": "Rodin river fish: decimated + retextured + 4-bone spine rig, pose-baked swim (16 cruise + 12 fast + 1 dead); tools/fish_bake.py"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Fish_Perch.glb",
+      "sha256": "66c55db8d731e86f1281755fe9090d231c4fbeef737203bdd895560804d5a615",
+      "size": 1646856,
+      "source_note": "Rodin river fish: decimated + retextured + 4-bone spine rig, pose-baked swim (16 cruise + 12 fast + 1 dead); tools/fish_bake.py"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Fish_Pike.glb",
+      "sha256": "3b48bb01bdf66693f05022a74d95d27cb24a66c78dd00c3ffbcb0a08b5e7a342",
+      "size": 5981068,
+      "source_note": "Rodin river fish: decimated + retextured + 4-bone spine rig, pose-baked swim (16 cruise + 12 fast + 1 dead); tools/fish_bake.py"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Fish_Rudd.glb",
+      "sha256": "68497d00f4b99e656025fa7dbf6fd6e284e343df3f187fbf4a6ade782d38cff1",
+      "size": 2052208,
+      "source_note": "Rodin river fish: decimated + retextured + 4-bone spine rig, pose-baked swim (16 cruise + 12 fast + 1 dead); tools/fish_bake.py"
+    },
+    {
       "repo_path": "assets/rigged_glb/GreatWhiteSharkGameReady.glb",
       "sha256": "a61fd79e16217937b55458cc28284c114142acbf72409703e2231ea24804369e",
       "size": 5323600,
@@ -270,6 +294,12 @@
       "source_note": "W5-2 Struggle loop baked (tools/struggle_bake.py)"
     },
     {
+      "repo_path": "assets/rigged_glb/blueshark.glb",
+      "sha256": "1ef378115ff6a9c46c5b5133273b0ea2b251b277e4deb9031e5ac2d642ddb513",
+      "size": 5674476,
+      "source_note": ""
+    },
+    {
       "repo_path": "assets/rigged_glb/chief_martinez.glb",
       "sha256": "b04828c7d977dacf3e809149db4afecaaad3e9a3124350bcf8853506cc32877e",
       "size": 56139872,
@@ -304,6 +334,18 @@
       "sha256": "b95225123a2f007691aabeaaa70cf9e96f3cb60211e8cbd028944b3946612814",
       "size": 7059860,
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/shark.glb",
+      "sha256": "303aad139bb2c6d5f9fbe57688fd9eb52a25e6f8e4ab810744cf487e0ddcad06",
+      "size": 8941600,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/rigged_glb/squid.glb",
+      "sha256": "09f76e7b7339d8a025ae553963bd6501ae9a040eaff7f8fc56615b7712c7383f",
+      "size": 5755904,
+      "source_note": ""
     },
     {
       "repo_path": "assets/surface_library/cc_cement_white/albedo.png",

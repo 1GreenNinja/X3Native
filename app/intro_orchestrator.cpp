@@ -21,6 +21,8 @@
 // ============================================================================
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#include <chrono>
+#include <thread>
 
 #include "intro_orchestrator.h"
 #include "intro_cockpit_rig.h"
@@ -36,6 +38,8 @@
 #include "cutscene.h"         // x3::cut::CutscenePlayer + the cold-open asset
 #include "cinematic.h"        // runCutsceneWindowed (public cinematic driver)
 #include "asset_root.h"
+#include "engine/asset/IAssetSource.h"   // player fighter model for the 3P view
+#include "engine/asset/IModelLoader.h"
 #include "space_pilot.h"
 #include "space/ship_ai.h"
 #include "space/targeting.h"
@@ -243,26 +247,51 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // a fighter wants violent thrust + hard strafe so dodging feels like flying.
     x3::game::SpacePilotController::Tuning tun{};
     tun.maxLinearAccel = 70.0f;   // was 25 — throws you back in the seat
-    tun.maxStrafeAccel = 38.0f;   // was 12 — real dodge authority (A/D + Space/Ctrl)
-    tun.boostMul       = 3.0f;    // shift = afterburner
-    tun.maxSpeed       = 260.0f;
+    tun.maxStrafeAccel = 44.0f;   // A/D strafe: hard left/right dodge authority
+    tun.boostMul       = 5.0f;    // SHIFT = ANTIMATTER BOOST (owner ask) — dramatic,
+                                  // you feel it slam the ship forward, not a nudge.
+    tun.maxSpeed       = 360.0f;  // raised so the boost has real top-end to reach for
+    tun.maxShield      = 5000;    // owner ask: fat shield pool — survive the salvos and
+    tun.maxHull        = 2000;    // fly around freely instead of dying in the first pass
+    tun.shieldRegenPerSec = 120.0f;   // and it recharges fast, so a hit is not the end
     tun.noseFollow     = 2.8f;    // arcade steering: the ship GOES where the nose
                                   // points (Newtonian drift read as "axes wrong")
     // FIRST person: the beats render from inside the cockpit rig. The default
     // 3P chase cam swings on a 12 m arm rotated by the ship's FULL quaternion
     // (roll included) while setCamera() is roll-less Euler — the mismatch reads
     // as "mouse is off axis" (owner playtest). 1P puts the eye at the ship.
-    tun.defaultThirdPerson = false;
+    tun.defaultThirdPerson = true;   // 3P by default: the cockpit rig is a giant
+                                     // dark box with a letterbox slot for a window
+                                     // (owner: "MICROSCOPIC window", "can't see the
+                                     // ship"). Open chase view sees the whole fight.
+                                     // F2 toggles back to the cockpit.
     pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
 
     x3::space::EnemyShipManager enemies;
     enemies.init((uint32_t)std::max(0, beat.enemyCount));
     for (int i = 0; i < beat.enemyCount; ++i) {
         const float ang = (float)i * 1.3f;
-        const float pos[3] = { 250.0f + 30.0f * (float)i,
-                               20.0f * std::sin(ang),
-                               40.0f * std::cos(ang) };
+        // OWNER: "I can NEVER SEE THE ENEMY SHIP." They spawned at 250 m — a 2.5 m ship
+        // at 250 m is ~11 px, a speck dead ahead. Bring the wing IN CLOSE and spread it
+        // across the view so it fills the canopy the moment the beat starts: you see
+        // who you are fighting, and you can actually turn to face them.
+        const float pos[3] = { 70.0f + 22.0f * (float)i,     // 70 m out (was 250)
+                               14.0f * std::sin(ang),
+                               26.0f * std::cos(ang) };
         enemies.spawn(pos);
+    }
+    // A PLANET BACKDROP so space reads as SPACE, not a black void (owner: "I can NEVER
+    // SEE THE PLANETS"). Eye-anchored bodies hung in the sky by loadNightSkyPlanets;
+    // the same helper the showroom + cutscenes use, so no new asset path.
+    x3::rhi::MeshHandle planetMesh{}, ringMesh{};
+    std::vector<x3::apphost::NightSkyPlanet> planets;
+    if (hc.window != nullptr && hc.device != nullptr) {   // live (declared below as `live`)
+        int planetTexFail = 0;
+        planets = x3::apphost::loadNightSkyPlanets(hc.device, planetMesh, planetTexFail,
+                                                   "[intro]", &ringMesh);
+        if (planetTexFail > 0)
+            x3::logWarn("[intro] " + std::to_string(planetTexFail) +
+                        " planet texture(s) missing — some bodies flat");
     }
 
     x3::space::TargetingSystem targeting;
@@ -272,6 +301,17 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     const float dt = 1.0f / 60.0f;
     const int   maxSteps = (int)(beat.timeoutSec / dt);
+    // ---- REAL-TIME PACING (owner playtest: "I can fly for 0.8 seconds ... but not
+    // control my ship"). The beat advances the SIM by a FIXED dt = 1/60 per step, which
+    // is correct for determinism — but the loop presented frames with NO vsync and NO
+    // wall-clock pacing, so on a fast GPU it spun through all maxSteps in a fraction of a
+    // second: a 30 s beat (1800 steps) rendered at ~2000 fps = ~0.9 s of REAL control,
+    // and then it was over. The fix is the house rule (memory: "delta time, never frame
+    // time") applied to the LOOP: gate each fixed step on real elapsed time so 1800 steps
+    // of 1/60 take 30 s of WALL CLOCK. Headless (deterministic tests) is unpaced. If a
+    // frame is genuinely slow (elapsed already past target) we never sleep — we just do
+    // not run FASTER than real time; slower is the renderer's problem, not this gate's.
+    const auto   tStart = std::chrono::steady_clock::now();
     int   localSalvosFaced = 0, localSalvosDodged = 0;
     int   localShotsFired = 0, localShotsHit = 0;
     int   localSubsDestroyed = 0;
@@ -285,6 +325,27 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     std::unique_ptr<x3::game::CombatFx> fxPtr;
     const bool fxOn = live && cockpit != nullptr;
     if (fxOn) { fxPtr = std::make_unique<x3::game::CombatFx>(); fxPtr->init(*hc.device); }
+
+    // ---- Player fighter model: drawn in 3P so you SEE your own ship, AHEAD of the
+    //      chase camera (owner: "Draw my ship in 3rd person ... in FRONT of the
+    //      camera"). Reuses the same drawIntroShip helper the enemy wing uses.
+    std::unique_ptr<x3::asset::IAssetSource> playerSrc;
+    std::unique_ptr<x3::asset::IModelLoader> playerLoader;
+    x3::asset::Model playerModel{};
+    std::vector<x3::asset::ModelDrawable> playerDraw;
+    if (live) {
+        playerSrc.reset(x3::asset::createAssetSource());
+        playerSrc->mountDir(x3::game::riggedGlbRoot(), 0);
+        playerLoader.reset(x3::asset::createModelLoader(hc.device, playerSrc.get()));
+        for (const char* c : { "JakeFighterShip_textured.glb", "JakeFighterShip.glb",
+                               "SpaceShip.glb", "SpaceShip2.glb" }) {
+            playerModel = playerLoader->load(c);
+            if (playerModel.ok) break;
+        }
+        if (playerModel.ok) playerDraw = x3::asset::makeDrawables(playerModel);
+        x3::logInfo(std::string("[intro] player ship 3P model=") +
+                    (playerModel.ok ? "loaded" : "<none>"));
+    }
     float beatT = 0.0f;
 
     // Captured-cursor mouse-look for the live window (host_space pattern). The
@@ -303,7 +364,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // only flags an IBL rebake when the params actually change).
     if (live && cockpit) x3::apphost::setIntroCockpitLook(*hc.device);
 
-    for (int step = 0; step < maxSteps; ++step) {
+    // NO TIME LIMIT in live play (owner: "get rid of the time limit ... let me fly
+    // around to point at the enemy"). The beat now ends ONLY when you cripple the
+    // capital + clear the wing, when you die, or when you press Esc — never on a clock.
+    // Headless (deterministic tests / boot-time / captures) STILL stops at maxSteps, or
+    // it would loop forever with no player to end it.
+    for (int step = 0; live || step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
         // ---- Input: live reads GLFW; headless uses a deterministic synthetic
@@ -318,6 +384,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             glfwPollEvents();
             if (glfwWindowShouldClose(hc.window)) break;
             if (glfwGetKey(hc.window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            // F2: toggle 1P cockpit <-> 3P chase (owner request). Edge-detected so
+            // one press flips once, not every frame it's held.
+            {
+                static bool f2Prev = false;
+                const bool f2 = glfwGetKey(hc.window, GLFW_KEY_F2) == GLFW_PRESS;
+                if (f2 && !f2Prev) pilot.toggleCameraMode();
+                f2Prev = f2;
+            }
             auto kd = [&](int k){ return glfwGetKey(hc.window, k) == GLFW_PRESS; };
             in.moveFwd    = (kd(GLFW_KEY_W)?1.f:0.f) + (kd(GLFW_KEY_S)?-1.f:0.f);
             in.moveStrafe = (kd(GLFW_KEY_D)?1.f:0.f) + (kd(GLFW_KEY_A)?-1.f:0.f);
@@ -430,14 +504,24 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (live) {
             beatT += dt;
             float cx, cy, cz, cyaw, cpit;
-            pilot.camera(cx, cy, cz, cyaw, cpit);
-            hc.device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
+            pilot.camera(cx, cy, cz, cyaw, cpit);      // yaw/pitch for the cockpit pose + fire dir
+            // ROLL-CAPABLE view: feed the ship's full orientation basis so the
+            // horizon banks and the fighter can loop (owner: "add a roll capable
+            // camera"). Replaces the roll-less setCamera that pinwheeled past vertical.
+            {
+                float cpos[3], cfwd[3], cup[3];
+                pilot.cameraBasis(cpos, cfwd, cup);
+                hc.device->setCameraBasis(cpos[0], cpos[1], cpos[2], cfwd, cup, 65.0f);
+                cx = cpos[0]; cy = cpos[1]; cz = cpos[2];
+            }
             // THE VISIBLE LAYER (feat/intro-cockpit): the player flies the beat
             // from inside the two-seat fighter cockpit — posed to the pilot camera
             // each frame — with the enemy wing + the capital ship drawn out the
             // canopy, laser tracers + muzzle flashes via CombatFx, and pulsing
             // MFD screens. The analytic-sky starfield is the world-fixed backdrop.
-            if (cockpit) {
+            // The cockpit rig is the 1P view ONLY. In 3P chase it would hang in
+            // front of the pulled-back camera and block the whole screen.
+            if (cockpit && !pilot.isThirdPerson()) {
                 x3::apphost::pulseIntroScreens(*cockpit, beatT);
                 x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
             }
@@ -462,15 +546,31 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             auto frame = hc.device->beginFrame();
             if (frame.valid && cockpit) {
                 cockpit->scene.render(*hc.device, frame);
+                // The planet backdrop first (eye-anchored; depth-occluded by everything
+                // drawn after). Space now has a WORLD behind the fight.
+                if (!planets.empty())
+                    x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh, planets,
+                                                     beatT, cx, cy, cz, ringMesh);
+                // YOUR fighter, in 3P — at the ship's own position + facing, so it sits
+                // AHEAD of the chase camera. Skipped in 1P (you're inside it).
+                if (pilot.isThirdPerson() && !playerDraw.empty()) {
+                    const x3::phys::Vec3 pp3 = pilot.pos();
+                    const x3::phys::Vec3 pf3 = pilot.forward();
+                    const float sp[3] = { pp3.x, pp3.y, pp3.z };
+                    const float sf[3] = { pf3.x, pf3.y, pf3.z };
+                    x3::apphost::drawIntroShip(*hc.device, frame, playerDraw, sp, sf, 4.0f);
+                }
                 for (uint32_t i = 0; i < enemies.count(); ++i) {
                     const auto& e = enemies.ship(i);
                     if (e.hull <= 0) continue;
+                    // Drawn at 6 m (was 2.5): a fighter you can actually SEE and read the
+                    // facing of at dogfight range, not a dot.
                     x3::apphost::drawIntroShip(*hc.device, frame, cockpit->enemyDraw,
-                                  e.pos, e.fwd, 2.5f);
+                                  e.pos, e.fwd, 6.0f);
                 }
-                const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+                const float capPos[3] = { 200.0f, 0.0f, 0.0f };   // was 280 — loom bigger
                 const float capFwd[3] = { -1.0f, 0.0f, 0.0f };
-                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 22.0f);
+                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 34.0f);
                 if (fxOn) {
                     fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
                     fxPtr->submit(*hc.device, frame);
@@ -487,6 +587,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     const float cyanHud[4] = { 0.45f, 0.85f, 1.0f, 0.85f };
                     hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono, hud,
                                             24.0f, 24.0f, 18.0f, cyanHud);
+                    // SHIFT = ANTIMATTER BOOST — flash a readout so the boost is VISIBLE,
+                    // not just felt. Amber, pulsing, under the hull line while held.
+                    if (in.sprint) {
+                        const float amber[4] = { 1.0f, 0.72f, 0.18f,
+                                                 0.75f + 0.25f * std::sin(beatT * 22.0f) };
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                                ">> ANTIMATTER BOOST <<", 24.0f, 68.0f, 20.0f, amber);
+                    }
                     if (targeting.hasLock()) {
                         const float redHud[4] = { 1.0f, 0.35f, 0.25f, 0.95f };
                         hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
@@ -554,6 +662,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             hc.device->endFrame(frame);
             if (evShot)
                 hc.device->captureFrame((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
+
+            // Hold this step until real time catches up to where the sim thinks it is
+            // (see tStart). target = when step (step+1) SHOULD begin, in wall seconds.
+            // Only ever waits; a slow frame that is already behind falls straight through.
+            const double target  = (double)(step + 1) * (double)dt;
+            const double elapsed = std::chrono::duration<double>(
+                                       std::chrono::steady_clock::now() - tStart).count();
+            if (elapsed < target)
+                std::this_thread::sleep_for(std::chrono::duration<double>(target - elapsed));
         }
 
         // ---- Exit conditions: all enemies down + ship crippled, or pilot dead. ----
@@ -675,6 +792,10 @@ bool runIonDescentBeat(x3::apphost::HostContext& hc) {
 
     float t = 0.0f;
     const float dt = 1.0f / 60.0f;
+    // Same real-time pacing as the dogfight beats: this loop advances the descent spine
+    // by a fixed dt and presents with no vsync, so without a wall-clock gate the whole
+    // re-entry rushes past in a fraction of a second on a fast GPU. Pace it to real time.
+    const auto tStart = std::chrono::steady_clock::now();
     while (descent.active() || descent.progress() < 1.0f) {
         if (glfwWindowShouldClose(hc.window)) break;
         glfwPollEvents();
@@ -725,6 +846,13 @@ bool runIonDescentBeat(x3::apphost::HostContext& hc) {
         }
 
         hc.device->endFrame(fr);
+
+        // Hold to real time (t is the sim clock; only ever waits, never speeds up).
+        const double elapsed = std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now() - tStart).count();
+        if (elapsed < (double)t)
+            std::this_thread::sleep_for(std::chrono::duration<double>((double)t - elapsed));
+
         if (descent.progress() >= 1.0f) break;
     }
 

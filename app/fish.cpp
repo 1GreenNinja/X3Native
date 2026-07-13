@@ -1,14 +1,38 @@
-// FISH — see app/fish.h. Lofted, countershaded, S-flexing kinematic schools.
+// FISH — see app/fish.h. REAL Rodin species (pose-baked swim, PBR) with the
+// lofted countershaded procedural fish kept as the never-fail fallback.
 #include "fish.h"
 
 #include "mesh_prims.h"
+#include "engine/asset/IAssetSource.h"
+#include "engine/asset/IModelLoader.h"
 #include "engine/core/x3_log.h"
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace x3::game {
+
+// ---------------------------------------------------------------------------
+// THE SPECIES TABLE. Sizes are real: a rudd/bream/perch is a hand-sized river
+// fish; a pike is a metre-long ambush predator, and it is ALONE.
+// ---------------------------------------------------------------------------
+static const FishSpeciesDesc kSpecies[(uint32_t)FishSpecies::Count] = {
+    // name      glb                    size  jit   beatHz speed solitary
+    { "rudd",   "Fish_Rudd.glb",        0.26f, 0.22f, 2.8f, 1.05f, false },
+    { "bream",  "Fish_Bream.glb",       0.30f, 0.20f, 2.4f, 0.95f, false },
+    { "perch",  "Fish_Perch.glb",       0.24f, 0.20f, 3.0f, 1.15f, false },
+    // THE PIKE: big, slow, solitary. It holds station in the reach and barely
+    // moves — which is exactly why you notice it.
+    { "pike",   "Fish_Pike.glb",        0.92f, 0.12f, 1.3f, 0.34f, true  },
+};
+
+const FishSpeciesDesc& fishSpecies(FishSpecies s) {
+    const uint32_t i = (uint32_t)s;
+    return kSpecies[i < (uint32_t)FishSpecies::Count ? i : 0];
+}
 
 namespace {
 
@@ -243,10 +267,56 @@ float FishSystem::bedAt(float x, float z, float surface) const {
     return m_bed ? m_bed(x, z) : (surface - 30.0f);
 }
 
+// THE POSE for this fish right now. A GLB fish's swim is a MESH SWAP: the baker
+// froze one full tail beat into kFishCruise meshes (and a bigger-sweep flee beat
+// into kFishFast), so all the runtime does is index them by the fish's own beat
+// phase. Deterministic; no vertex work; no skinning.
+uint32_t FishSystem::poseIndex(const Fish& f) const {
+    if (f.dead) return kFishDeadPose;                 // the slack, limp body
+    const FishSpeciesDesc& sp = fishSpecies(f.species);
+    const bool bolting = f.fleeT > 0.0f;
+    const uint32_t n    = bolting ? kFishFast : kFishCruise;
+    const uint32_t base = bolting ? kFishCruise : 0u;
+    // The flee burst beats faster as well as harder (the old 1.9x, kept).
+    const float beat = sp.beatHz * (bolting ? 1.9f : 1.0f);
+    const float turns = m_time * beat + f.phase * (1.0f / (2.0f * kPi));
+    float frac = turns - std::floor(turns);           // 0..1 through the beat
+    if (!(frac >= 0.0f && frac < 1.0f)) frac = 0.0f;  // NaN guard
+    uint32_t k = (uint32_t)(frac * (float)n);
+    if (k >= n) k = n - 1;
+    return base + k;
+}
+
 // Chain the three pieces: HEAD carries the fish transform; MID hinges at joint 1
 // by midW; TAIL hinges at joint 2 IN THE MID'S FRAME by tailW (so the sweeps
 // compound down the spine — that is the travelling wave).
+//
+// A GLB fish is the EASY case: one entity, one basis, and the flex is already in
+// the mesh — we just swap in the pose. Only the procedural fallback needs the
+// hinge chain.
 void FishSystem::writeTransform(Fish& f, Scene& scene) {
+    if (f.glb) {
+        if (f.entHead == kNoLink) return;
+        const FishSpeciesDesc& sp = fishSpecies(f.species);
+        const float s  = sp.size * f.size;            // the mesh is UNIT-LENGTH
+        const float cy = std::cos(f.yaw), sy = std::sin(f.yaw);
+        const float cr = std::cos(f.roll), sr = std::sin(f.roll);
+        Entity& e = scene.get(f.entHead);
+        float* t = e.transform;
+        const float c0[3] = {  cy,       0.0f,  -sy      };   // forward (+X = snout)
+        const float c1[3] = {  sy * sr,  cr,     cy * sr };   // up (+Y)
+        const float c2[3] = {  sy * cr, -sr,     cy * cr };   // right (+Z)
+        t[0] = c0[0] * s; t[1] = c0[1] * s; t[2]  = c0[2] * s; t[3]  = 0.0f;
+        t[4] = c1[0] * s; t[5] = c1[1] * s; t[6]  = c1[2] * s; t[7]  = 0.0f;
+        t[8] = c2[0] * s; t[9] = c2[1] * s; t[10] = c2[2] * s; t[11] = 0.0f;
+        t[12] = f.x; t[13] = f.y; t[14] = f.z; t[15] = 1.0f;
+        // THE SWIM.
+        const SpeciesArt& art = m_art[(uint32_t)f.species];
+        const uint32_t p = poseIndex(f);
+        if (p < art.poses.size()) e.mesh = art.poses[p];
+        return;
+    }
+
     const float s  = m_cfg.size * f.size;
     const float cy = std::cos(f.yaw), sy = std::sin(f.yaw);
     const float cr = std::cos(f.roll), sr = std::sin(f.roll);
@@ -297,28 +367,136 @@ void FishSystem::setVisible(Fish& f, Scene& scene, bool vis) {
     for (uint32_t e : ents) if (e != kNoLink) scene.get(e).visible = vis;
 }
 
+// ---------------------------------------------------------------------------
+// SPECIES ART: load one pose-baked GLB (tools/fish_bake.py).
+//
+// The GLB carries kFishPoses mesh nodes — the SAME fish frozen at each phase of
+// the swim. ModelDrawable has no name, so the baker encodes the pose index in the
+// node's TRANSLATION X; we round it back to an int and then ignore nodeTransform
+// (each pose mesh is authored in the fish's own local space, unit-length, +X =
+// snout). Anything unexpected (wrong pose count, a gap in the indices, a missing
+// mesh) => the species is NOT ok and every fish of it falls back to the loft.
+// ---------------------------------------------------------------------------
+void FishSystem::loadSpecies(FishSpecies s, x3::rhi::IRenderDevice& device) {
+    SpeciesArt& art = m_art[(uint32_t)s];
+    const FishSpeciesDesc& sp = fishSpecies(s);
+    if (m_modelDir.empty() || !sp.glb || !*sp.glb) return;   // procedural by request
+
+    if (!m_loader) {
+        m_assets.reset(x3::asset::createAssetSource());
+        if (!m_assets || !m_assets->mountDir(m_modelDir, 0)) {
+            x3::logWarn(std::string("fish: cannot mount ") + m_modelDir
+                        + " — the fish fall back to the procedural loft");
+            m_assets.reset();
+            return;
+        }
+        m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    }
+    if (!m_loader) return;
+
+    x3::asset::Model model = m_loader->load(sp.glb);
+    if (!model.ok) {
+        x3::logWarn(std::string("fish: ") + sp.glb
+                    + " did not load — " + sp.name
+                    + " falls back to the procedural loft");
+        return;
+    }
+    const std::vector<x3::asset::ModelDrawable> dr = x3::asset::makeDrawables(model);
+    if (dr.size() != kFishPoses) {
+        x3::logWarn(std::string("fish: ") + sp.glb + " has "
+                    + std::to_string(dr.size()) + " mesh nodes, expected "
+                    + std::to_string(kFishPoses)
+                    + " (re-run tools/fish_bake.py) — falling back to the loft");
+        m_loader->unload(model);
+        return;
+    }
+
+    art.poses.assign(kFishPoses, x3::rhi::MeshHandle{});
+    uint32_t bound = 0;
+    for (const x3::asset::ModelDrawable& d : dr) {
+        const int idx = (int)std::lround(d.nodeTransform[12]);   // the pose index
+        if (idx < 0 || idx >= (int)kFishPoses || !d.meshId) continue;
+        if (art.poses[(size_t)idx].valid()) continue;            // duplicate index
+        art.poses[(size_t)idx] = x3::rhi::MeshHandle{ d.meshId };
+        ++bound;
+        if (!art.albedo.valid()) {
+            art.albedo = x3::rhi::TextureHandle{ d.baseColorTexId };
+            art.normal = x3::rhi::TextureHandle{ d.normalTexId };
+            art.mr     = x3::rhi::TextureHandle{ d.mrTexId };
+        }
+    }
+    if (bound != kFishPoses) {
+        x3::logWarn(std::string("fish: ") + sp.glb + " bound only "
+                    + std::to_string(bound) + "/" + std::to_string(kFishPoses)
+                    + " poses — falling back to the procedural loft");
+        art.poses.clear();
+        m_loader->unload(model);
+        return;
+    }
+
+    uint32_t idx = 0;
+    for (const x3::asset::MeshPrimitive& p : model.primitives) idx += p.indexCount;
+    art.tris = idx / 3u / kFishPoses;
+
+    // The Model OWNS the mesh/texture handles, so it must outlive every Entity
+    // that points at them: it is held by THIS system (m_models) for the system's
+    // whole life — host-owned and persistent, the parked-cars doctrine (a shared
+    // mesh must never land in a region ledger). It is deliberately NOT a
+    // function-local static: --test-waterzap Z8b builds two FishSystems to compare
+    // them, and shared art between instances would break that.
+    m_models.push_back(std::move(model));
+
+    art.ok = true;
+    x3::logInfo(std::string("fish: ") + sp.name + " <- " + sp.glb + "  "
+                + std::to_string(kFishPoses) + " swim poses, "
+                + std::to_string(art.tris) + " tris/pose, PBR "
+                + (art.normal.valid() ? "albedo+normal" : "albedo")
+                + (art.mr.valid() ? "+MR" : "")
+                + ", length " + std::to_string(sp.size) + " m");
+}
+
+// The PROCEDURAL FALLBACK art (art pass 2): 3 lofted meshes + 1 countershading
+// gradient. Built ONCE, and only when some species actually needs it.
+void FishSystem::buildProceduralArt(x3::rhi::IRenderDevice& device) {
+    if (m_procBuilt) return;
+    auto up = [&](const x3::prims::PrimMesh& m) {
+        return device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                 m.index.data(), (uint32_t)m.index.size());
+    };
+    const x3::prims::PrimMesh mh = makeHeadMesh();
+    const x3::prims::PrimMesh mm = makeMidMesh();
+    const x3::prims::PrimMesh mt = makeTailMesh();
+    m_procTris[0] = (uint32_t)mh.index.size() / 3u;
+    m_procTris[1] = (uint32_t)mm.index.size() / 3u;
+    m_procTris[2] = (uint32_t)mt.index.size() / 3u;
+    m_meshHead = up(mh);
+    m_meshMid  = up(mm);
+    m_meshTail = up(mt);
+    const int W = 8, H = 64;
+    const std::vector<uint8_t> px = makeFishSkin(W, H);
+    m_skin = device.createTexture(px.data(), W, H, false);
+    m_procBuilt = true;
+}
+
 void FishSystem::build(const FishConfig& cfg, Scene& scene,
                        x3::rhi::IRenderDevice& device) {
     if (m_built) return;
     m_cfg = cfg;
     m_rngState = cfg.seed ? cfg.seed : 0xF15Fu;
 
-    // THREE shared lofted meshes + ONE shared countershading skin for the whole
-    // shoal (61 fish -> 3 meshes, 1 texture, 183 kinematic entities).
-    auto up = [&](const x3::prims::PrimMesh& m) {
-        return device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
-                                 m.index.data(), (uint32_t)m.index.size());
-    };
-    m_meshHead = up(makeHeadMesh());
-    m_meshMid  = up(makeMidMesh());
-    m_meshTail = up(makeTailMesh());
-    {
-        const int W = 8, H = 64;
-        const std::vector<uint8_t> px = makeFishSkin(W, H);
-        m_skin = device.createTexture(px.data(), W, H, false);
-    }
+    // Load the real art for every species this deployment actually uses.
+    bool used[(uint32_t)FishSpecies::Count] = {};
+    for (const FishSchoolDesc& sd : m_cfg.schools) used[(uint32_t)sd.species] = true;
+    for (uint32_t i = 0; i < (uint32_t)FishSpecies::Count; ++i)
+        if (used[i]) loadSpecies((FishSpecies)i, device);
 
-    uint32_t skipped = 0;
+    // Any species that did NOT get real art needs the loft.
+    bool needProc = false;
+    for (uint32_t i = 0; i < (uint32_t)FishSpecies::Count; ++i)
+        if (used[i] && !m_art[i].ok) needProc = true;
+    if (needProc) buildProceduralArt(device);
+
+    uint32_t skipped = 0, glbFish = 0, procFish = 0;
     for (const FishSchoolDesc& sd : m_cfg.schools) {
         const float surf = waterAt(sd.centerX, sd.centerZ);
         if (surf < kFishDryTest) {   // a school never spawns on land
@@ -327,22 +505,36 @@ void FishSystem::build(const FishConfig& cfg, Scene& scene,
                         + std::to_string(sd.centerZ) + ") is DRY — skipped");
             continue;
         }
+        const FishSpeciesDesc& sp = fishSpecies(sd.species);
+        const SpeciesArt& art = m_art[(uint32_t)sd.species];
         FishSchool sc;
         sc.cx = sd.centerX; sc.cz = sd.centerZ; sc.heading = sd.heading;
         sc.speed = sd.speed;
+        sc.species  = sd.species;
+        sc.solitary = sp.solitary;
         const uint32_t si = (uint32_t)m_schools.size();
         m_schools.push_back(sc);
+        // Where the fish actually ARE — a shot camera (or a bug report) needs the
+        // reach coordinates, and deriving them by hand from the Chaikin-smoothed
+        // river chain is exactly the kind of guesswork that wastes a capture pass.
+        x3::logInfo("fish: school " + std::to_string(si) + " " + sp.name
+                    + " x" + std::to_string(sd.count)
+                    + " at (" + std::to_string(sd.centerX) + ", "
+                    + std::to_string(sd.centerZ) + ") surfaceY="
+                    + std::to_string(surf));
 
         for (uint32_t k = 0; k < sd.count; ++k) {
             Fish f;
-            f.school = si;
+            f.school  = si;
+            f.species = sd.species;
+            f.glb     = art.ok;
             const float ang = (float)k / (float)(sd.count ? sd.count : 1) * 2.0f * kPi
                             + frand() * 0.6f;
             const float rad = sd.spread * (0.35f + 0.65f * frand());
             f.slotX = std::cos(ang) * rad;
             f.slotZ = std::sin(ang) * rad;
             f.slotD = frand() * 1.4f;               // 0..1.4 m of extra depth
-            f.size  = 0.82f + frand() * 0.42f;      // size variance
+            f.size  = 1.0f + (frand() * 2.0f - 1.0f) * sp.sizeJitter;
             f.phase = frand() * 6.2831853f;
             f.speed = sd.speed * (0.9f + frand() * 0.3f);
             const float ch = std::cos(sc.heading), sh = std::sin(sc.heading);
@@ -355,30 +547,59 @@ void FishSystem::build(const FishConfig& cfg, Scene& scene,
             if (f.y < bed + m_cfg.depthMin) f.y = bed + m_cfg.depthMin;
             f.yaw = sc.heading;
 
-            // The skin carries the countershading; the school tint (olive / steel /
-            // bronze) and a per-fish jitter MULTIPLY it. Emissive is a whisper — a
-            // fish is a silhouette that catches light, not a lamp.
-            const float j = 0.88f + frand() * 0.24f;
             Entity e;
-            e.tex = m_skin;
-            e.baseColor[0] = sd.tint[0] * j;
-            e.baseColor[1] = sd.tint[1] * j;
-            e.baseColor[2] = sd.tint[2] * j;
-            e.baseColor[3] = 1.0f;
-            // A WHISPER of emissive only (the first pass glowed like a brick and
-            // buried the countershading): enough that a pale flank catches the eye
-            // in the dim channel, not enough to flatten the dark back.
-            e.emissive[0] = 0.40f; e.emissive[1] = 0.48f; e.emissive[2] = 0.52f;
-            e.emissive[3] = 0.18f;
             e.roomId  = m_cfg.roomId;
             e.visible = false;
-
-            Entity eh = e; eh.mesh = m_meshHead;
-            Entity em = e; em.mesh = m_meshMid;
-            Entity et = e; et.mesh = m_meshTail;
-            f.entHead = scene.add(eh);
-            f.entMid  = scene.add(em);
-            f.entTail = scene.add(et);
+            const float j = 0.94f + frand() * 0.12f;   // a whisper of variation
+            if (art.ok) {
+                // REAL FISH: the scanned albedo/normal/MR carry the whole look, so
+                // the tint stays ~white (a school tint would STAIN a real fish).
+                // mrTex valid => Scene::render routes it through drawMeshPBR, and
+                // the normal map gets its scales.
+                e.tex       = art.albedo;
+                e.normalTex = art.normal;
+                e.mrTex     = art.mr;
+                e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = j;
+                e.baseColor[3] = 1.0f;
+                e.mesh = art.poses[0];
+                // NO EMISSIVE. A fish is not a lamp.
+                //
+                // This entity used to carry `emissiveTex = art.albedo` at strength
+                // 0.35 — the fish's own albedo re-injected as self-illumination — to
+                // drag it out of a submerged volume that rendered nearly black. That
+                // was a poultice on a renderer bug, and the comment that lived here
+                // said so out loud: "it is the water, not the fish."
+                //
+                // It WAS the water. The water surface is glass, and glass used to
+                // record into the OPAQUE draw range, which is replayed into the
+                // shadow map by a depth-only shader that cannot honour the glass
+                // discard — so the river cast a SOLID shadow over everything beneath
+                // it and the whole submerged volume sat at shadow=0. Glass now rides
+                // the BLEND tail (vk_passes.cpp, drawMeshGlass), the water casts no
+                // shadow, and the sun reaches the riverbed.
+                // The pike is lit by the sun now, in its own colours, with its normal
+                // map intact. See mesh.frag's underwater extinction for the depth
+                // falloff that makes it read as WATER rather than air.
+                f.entHead = scene.add(e);
+                ++glbFish;
+            } else {
+                // THE LOFT (fallback): the skin carries the countershading; the
+                // school tint and a per-fish jitter MULTIPLY it.
+                e.tex = m_skin;
+                e.baseColor[0] = sd.tint[0] * j;
+                e.baseColor[1] = sd.tint[1] * j;
+                e.baseColor[2] = sd.tint[2] * j;
+                e.baseColor[3] = 1.0f;
+                e.emissive[0] = 0.40f; e.emissive[1] = 0.48f; e.emissive[2] = 0.52f;
+                e.emissive[3] = 0.18f;
+                Entity eh = e; eh.mesh = m_meshHead;
+                Entity em = e; em.mesh = m_meshMid;
+                Entity et = e; et.mesh = m_meshTail;
+                f.entHead = scene.add(eh);
+                f.entMid  = scene.add(em);
+                f.entTail = scene.add(et);
+                ++procFish;
+            }
 
             writeTransform(f, scene);
             m_fish.push_back(f);
@@ -386,9 +607,12 @@ void FishSystem::build(const FishConfig& cfg, Scene& scene,
     }
     m_built = true;
     x3::logInfo("fish: built " + std::to_string(m_fish.size()) + " fish in "
-                + std::to_string(m_schools.size())
-                + " schools (3 shared lofted meshes + 1 countershading skin, "
-                + std::to_string(skipped) + " dry schools skipped)");
+                + std::to_string(m_schools.size()) + " schools — "
+                + std::to_string(glbFish) + " REAL (pose-baked GLB), "
+                + std::to_string(procFish) + " procedural loft, "
+                + std::to_string(skipped) + " dry schools skipped; "
+                + std::to_string(triCount()) + " tris across "
+                + std::to_string(drawCount()) + " draws");
 }
 
 void FishSystem::update(float dt, Scene& scene, const x3::phys::Vec3& playerPos) {
@@ -485,7 +709,9 @@ void FishSystem::update(float dt, Scene& scene, const x3::phys::Vec3& playerPos)
             dirX = ax * w + ch * (1.0f - w);
             dirZ = az * w + sh * (1.0f - w);
         }
-        for (uint32_t j = 0; j < n; ++j) {   // SEPARATION (same school only)
+        // SEPARATION (same school only). A LONER has no schoolmates to avoid —
+        // predators do not shoal, and this loop is what a shoal IS.
+        for (uint32_t j = 0; j < n && !sc.solitary; ++j) {
             if (j == i) continue;
             const Fish& o = m_fish[j];
             if (o.school != f.school || o.dead || o.gone) continue;
@@ -525,7 +751,11 @@ void FishSystem::update(float dt, Scene& scene, const x3::phys::Vec3& playerPos)
         // The body also BANKS into its turns (roll from the measured yaw rate).
         const float want = std::atan2(dirZ, dirX);
         const float prevYaw = f.yaw;
-        f.yaw = slew(f.yaw, want, m_cfg.turnRate * dt);
+        // A PREDATOR TURNS SLOWLY. The pike is deliberate — half the shoal's yaw
+        // rate — which, with its low speed, is what makes it read as a big fish
+        // holding station rather than a big minnow.
+        const float turn = m_cfg.turnRate * (sc.solitary ? 0.5f : 1.0f);
+        f.yaw = slew(f.yaw, want, turn * dt);
         float yawRate = f.yaw - prevYaw;
         while (yawRate >  kPi) yawRate -= 2.0f * kPi;
         while (yawRate < -kPi) yawRate += 2.0f * kPi;
@@ -535,8 +765,12 @@ void FishSystem::update(float dt, Scene& scene, const x3::phys::Vec3& playerPos)
         if (bank < -m_cfg.bankMax) bank = -m_cfg.bankMax;
         f.roll += (bank - f.roll) * std::min(1.0f, 6.0f * dt);
 
+        // The PROCEDURAL flex (a GLB fish's flex is already baked into its pose
+        // mesh — writeTransform just picks it). The beat is the SPECIES' beat, so
+        // a fallback pike still cruises with slow, heavy tail beats and a rudd
+        // still flickers.
         const bool  bolting = f.fleeT > 0.0f;
-        const float beat = m_cfg.beatHz * (bolting ? 1.9f : 1.0f);
+        const float beat = fishSpecies(f.species).beatHz * (bolting ? 1.9f : 1.0f);
         const float gain = bolting ? 1.5f : 1.0f;
         const float ph   = m_time * beat * 6.2831853f + f.phase;
         f.midW  = std::sin(ph) * m_cfg.midAmp * gain;
@@ -572,6 +806,35 @@ uint32_t FishSystem::deadCount() const {
 uint32_t FishSystem::activeCount() const {
     uint32_t n = 0;
     for (const Fish& f : m_fish) if (m_schools[f.school].active && !f.gone) ++n;
+    return n;
+}
+
+bool FishSystem::speciesLoaded(FishSpecies s) const {
+    const uint32_t i = (uint32_t)s;
+    return i < (uint32_t)FishSpecies::Count && m_art[i].ok;
+}
+uint32_t FishSystem::glbFishCount() const {
+    uint32_t n = 0;
+    for (const Fish& f : m_fish) if (f.glb && !f.gone) ++n;
+    return n;
+}
+// What the fish actually cost the renderer. A GLB fish is ONE draw of ONE
+// pose-baked mesh; a fallback fish is three lofted pieces.
+uint32_t FishSystem::triCount() const {
+    uint32_t n = 0;
+    for (const Fish& f : m_fish) {
+        if (f.gone) continue;
+        if (f.glb) n += m_art[(uint32_t)f.species].tris;
+        else       n += m_procTris[0] + m_procTris[1] + m_procTris[2];
+    }
+    return n;
+}
+uint32_t FishSystem::drawCount() const {
+    uint32_t n = 0;
+    for (const Fish& f : m_fish) {
+        if (f.gone) continue;
+        n += f.glb ? 1u : 3u;
+    }
     return n;
 }
 

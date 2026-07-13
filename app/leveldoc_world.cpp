@@ -121,7 +121,9 @@ uint32_t LevelDocWorld::claimSlot(Scene& scene, const Entity& e) {
 void LevelDocWorld::spawnBrush(const x3::editor::BlockoutBrush& b, Scene& scene,
                                x3::rhi::IRenderDevice& device,
                                x3::phys::IPhysicsWorld& physics) {
-    const auto type = (b.type == 1u) ? x3::prims::BrushType::Ramp : x3::prims::BrushType::Box;
+    // Box / Ramp / Cylinder / Stairs — one shared type table (prims::brushTypeOf), so an
+    // authored level always spawns in-game as exactly what the editor drew.
+    const auto type = x3::prims::brushTypeOf(b.type);
     x3::prims::PrimMesh pm = x3::prims::buildBrushMesh(type, b.size);
 
     Entity e;
@@ -144,7 +146,9 @@ void LevelDocWorld::spawnBrush(const x3::editor::BlockoutBrush& b, Scene& scene,
             x3::phys::Vec3 he{ b.size[0]*0.5f, b.size[1]*0.5f, b.size[2]*0.5f };
             bid = physics.addBox(he, pos, 0.0f, x3::phys::Layer::Static);
         } else {
-            std::vector<float> cv = pm.cverts;   // local -> world (axis-aligned ramp)
+            // Ramp / Cylinder / Stairs: a static MESH of the brush's own triangles (an AABB
+            // would make the slope, the round wall and the treads all read as one block).
+            std::vector<float> cv = pm.cverts;   // local -> world (axis-aligned)
             for (size_t i = 0; i + 2 < cv.size(); i += 3) {
                 cv[i+0] += b.pos[0]; cv[i+1] += b.pos[1]; cv[i+2] += b.pos[2];
             }

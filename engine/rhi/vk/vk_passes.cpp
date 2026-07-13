@@ -875,23 +875,41 @@ void VulkanRenderDevice::drawMeshGlass(const FrameContext& fc, MeshHandle mesh, 
             baseColorFactor ? baseColorFactor[1] : 1.0f,
             baseColorFactor ? baseColorFactor[2] : 1.0f,
             glass.opacity };
-        // Route to the BLEND partition when EITHER reason holds:
-        //  - caller-facing `alphaBlend` (default false): flight-modes corona shells
-        //    ask to skip the fragment-less depth pre-pass — the glass pass still
-        //    draws it via the GLASS flag, so the look is unchanged; it just no
-        //    longer writes occluding pre-pass depth over opaque bodies behind it.
-        //  - ADDITIVE GLOW glass (GlassMaterial::additive > 0 — street-light cones/
-        //    pools) must ride the BLEND record tail, NOT the opaque range: an
-        //    opaque-range record replays in the DEPTH PRE-PASS, whose written cone
-        //    depth makes every opaque surface behind it fail the color pass's
-        //    EQUAL test — the "cone" then shows the raw sky/clear through a depth
-        //    hole (the solid-funnel artifact). Normal glass masks that hole by
-        //    outputting alpha=1 from the scene copy; the additive branch (tiny
-        //    alpha) does not, so it must never enter the pre-pass/shadow ranges.
-        // Normal glass (additive == 0, alphaBlend == false) stays byte-identical
-        // opaque-range.
+        // ALL glass rides the BLEND record tail — never the opaque range.
+        // (This SUBSUMES the caller-facing `alphaBlend` param — flight-modes corona
+        // shells — and the GlassMaterial::additive street-light routing: every
+        // glass draw now lands in the BLEND partition unconditionally. The param
+        // stays in the signature for source compatibility with those callers.)
+        //
+        // The opaque range is replayed by three passes that have NO fragment stage
+        // and therefore CANNOT honour the glass discard that mesh.frag does at
+        // mesh.frag:730:
+        //   - the DEPTH PRE-PASS (depth.vert — depth-only, no .frag at all),
+        //   - the SHADOW map    (shadow.vert — likewise depth-only),
+        //   - the RT/TLAS range (vk_gi_rt.cpp:445).
+        // So an opaque-range glass record writes SOLID depth and casts a SOLID
+        // shadow, even though the colour pass never shades it as opaque. That is
+        // one bug with two faces, and the water surface wears both:
+        //   1. PRE-PASS: the water writes pre-pass depth, so every submerged
+        //      surface fails the colour pass's EQUAL test and is never shaded —
+        //      it is therefore absent from the scene copy that glass.frag samples
+        //      for its see-through, so the river showed SKY where the fish were.
+        //      (Standing on the bank, the water read empty and dead.)
+        //   2. SHADOW: the water is a solid caster, so the whole submerged volume
+        //      sat at shadow=0 — the entire direct sun term (mesh.frag:872/916)
+        //      was zeroed and everything underwater was a black silhouette.
+        // f967213 found face 1 for ADDITIVE glass (the street-light cone's
+        // "solid funnel") and moved only that branch to the tail. The same cure
+        // applies to every glass surface, and the water is the surface that
+        // needed it most.
+        //
+        // This costs glass NOTHING: recordGlassPassBody (vk_passes.cpp:40) replays
+        // the FULL [0, m_frameCmdCount) range through the glass pipeline, so glass
+        // draws — and draws in the same relative order — regardless of which range
+        // it records into. The opaque/blend split governs the depth/shadow/TLAS
+        // replays and nothing else.
         drawMeshInternal(fc, mesh, baseColor, TextureHandle{}, TextureHandle{}, factor, emissive,
-                         model, /*alphaMask=*/false, /*alphaBlend=*/alphaBlend || glass.additive > 0.0f,
+                         model, /*alphaMask=*/false, /*alphaBlend=*/true,
                          TextureHandle{},
                          TextureHandle{}, 1.0f, kFlagGlass, &glass);
     }
@@ -1290,10 +1308,12 @@ void VulkanRenderDevice::prepareFrameData() {
         // Camera viewProj (right-handed, reverse-Y for Vulkan clip) + the sun's
         // ortho lightViewProj, written together into the per-frame camera UBO.
         const float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
-        const glm::vec3 fwd(std::cos(m_camPitch) * std::cos(m_camYaw),
-                            std::sin(m_camPitch),
-                            std::cos(m_camPitch) * std::sin(m_camYaw));
-        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
+        const glm::vec3 fwd = m_camHasBasis ? m_camFwd
+                            : glm::vec3(std::cos(m_camPitch) * std::cos(m_camYaw),
+                                        std::sin(m_camPitch),
+                                        std::cos(m_camPitch) * std::sin(m_camYaw));
+        const glm::vec3 camUp = m_camHasBasis ? m_camUp : glm::vec3(0, 1, 0);
+        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, camUp);
         glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, m_camFar);
         proj[1][1] *= -1.0f;
 

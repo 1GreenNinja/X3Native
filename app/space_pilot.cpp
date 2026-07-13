@@ -277,11 +277,17 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // 1-exp(-rate*dt). Higher rate = snappier (less lag); lower = weightier.
     m_yawTarget   += in.lookDX * kMouseSens * kPxToRad;
     m_pitchTarget -= in.lookDY * kMouseSens * kPxToRad;
-    m_pitchTarget  = clampf(m_pitchTarget, -kPitchClamp, kPitchClamp);
     const float lookK = 1.0f - std::exp(-std::max(0.0f, m_tuning.lookSmoothing) * dt);
     m_yaw   += (m_yawTarget   - m_yaw)   * lookK;
     m_pitch += (m_pitchTarget - m_pitch) * lookK;
-    m_pitch  = clampf(m_pitch, -kPitchClamp, kPitchClamp);
+    // FREE PITCH (merge with trunk 36bff8f): the camera is ROLL-CAPABLE
+    // (cameraBasis feeds the ship quaternion's fwd+up), so pitching past vertical
+    // banks the horizon instead of inverting/pinwheeling — a fighter can LOOP up
+    // and over. No clamp; keep the angle normalized by wrapping the APPLIED and
+    // TARGET pitch by the SAME 2*pi so the smoothing delta (target - applied)
+    // is preserved across the wrap.
+    while (m_pitch >  kPi) { m_pitch -= 2.0f * kPi; m_pitchTarget -= 2.0f * kPi; }
+    while (m_pitch < -kPi) { m_pitch += 2.0f * kPi; m_pitchTarget += 2.0f * kPi; }
 
     // Yaw rate (rad/s) from the applied yaw change this frame — drives auto-bank.
     const float yawRate = (m_yaw - m_yawPrev) / dt;
@@ -371,13 +377,34 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // the ship goes where the nose points. Without it, turning while the old
     // velocity persists makes the starfield stream off-nose — which players
     // read as "the mouse axes are wrong" (owner playtest, intro dogfight).
-    if (m_tuning.noseFollow > 0.0f) {
+    // STRAFE EXEMPTION: nose-follow renormalizes ALL velocity onto the nose every
+    // frame, which eats a pure sideways dodge — press A, you curve instead of slide
+    // (owner: "STRAFE DOES NOT WORK"). While A/D is held, nose-follow stands down so
+    // the strafe thrust becomes a REAL lateral slide (drag-only decay). Released, it
+    // resumes and the ship self-aligns to its heading.
+    if (m_tuning.noseFollow > 0.0f && std::fabs(in.moveStrafe) < 0.01f) {
         const float spd0 = length3(m_vel);
         if (spd0 > 1e-3f) {
+            // Steer toward the direction the pilot is COMMANDING, not the bare nose.
+            // BUG (owner: "strafe does NOT work"): steering toward fwdW alone rotated
+            // every bit of A/D strafe velocity back to straight-ahead within a fraction
+            // of a second, so strafe added speed and then nose-follow immediately ate it.
+            // The command direction = nose(forward) + right(strafe) + up; with no
+            // translation input it reduces to fwdW, so the anti-drift feel (coast toward
+            // the nose after a turn) is unchanged, while strafe now PERSISTS.
+            float steer[3];
+            for (int k = 0; k < 3; ++k)
+                steer[k] = fwdW[k] * std::max(in.moveFwd, 0.0f)
+                         + rightW[k] * in.moveStrafe
+                         + upW[k] * (in.jumpPressed ? 1.0f : 0.0f);
+            float sl = length3(steer);
+            if (sl < 1e-3f) { steer[0] = fwdW[0]; steer[1] = fwdW[1]; steer[2] = fwdW[2]; sl = 1.0f; }
+            else            { steer[0] /= sl; steer[1] /= sl; steer[2] /= sl; }
+
             const float k2 = 1.0f - std::exp(-m_tuning.noseFollow * dt);
             float nv[3];
             for (int k = 0; k < 3; ++k)
-                nv[k] = m_vel[k] / spd0 + (fwdW[k] - m_vel[k] / spd0) * k2;
+                nv[k] = m_vel[k] / spd0 + (steer[k] - m_vel[k] / spd0) * k2;
             const float nl = length3(nv);
             if (nl > 1e-4f)
                 for (int k = 0; k < 3; ++k) m_vel[k] = nv[k] / nl * spd0;
@@ -520,6 +547,9 @@ void SpacePilotController::camera(float& outX, float& outY, float& outZ,
         // target + look-ahead in update()) plus positional shake. Before the
         // first update() (m_camValid false — headless camera() test) fall back to
         // the RIGID formula so the pose is defined without a sim step.
+        // (Trunk's interim roll-less Euler chase here was superseded on its own
+        // lane by cameraBasis() below — the flight paths that need a roll-capable
+        // view use that; camera() keeps the flight-modes smoothed chase.)
         if (m_camValid) {
             outX = m_camPos[0] + m_shakePos[0];
             outY = m_camPos[1] + m_shakePos[1];
@@ -555,6 +585,28 @@ float SpacePilotController::fov() const {
     float f  = clampf(sf + 0.18f * m_boostPunch, 0.0f, 1.0f);
     f = f * f * (3.0f - 2.0f * f);   // smoothstep
     return m_tuning.fovBase + (m_tuning.fovMax - m_tuning.fovBase) * f;
+}
+
+void SpacePilotController::cameraBasis(float outPos[3], float outFwd[3], float outUp[3]) const {
+    // Full basis from the ship quaternion — fwd/up BOTH bank + loop with the hull,
+    // so the horizon rolls correctly and there is no gimbal wall or pinwheel.
+    const float fwdLocal[3] = { 1, 0, 0 };
+    const float upLocal[3]  = { 0, 1, 0 };
+    float fwdW[3], upW[3];
+    quatRotate(m_quat, fwdLocal, fwdW);
+    quatRotate(m_quat, upLocal,  upW);
+    outFwd[0] = fwdW[0]; outFwd[1] = fwdW[1]; outFwd[2] = fwdW[2];
+    outUp[0]  = upW[0];  outUp[1]  = upW[1];  outUp[2]  = upW[2];
+    if (m_thirdPerson) {
+        // Chase behind (-fwd) + above (+up), rolling with the ship.
+        outPos[0] = m_pos[0] - fwdW[0] * m_tuning.chaseDistance + upW[0] * m_tuning.chaseHeight;
+        outPos[1] = m_pos[1] - fwdW[1] * m_tuning.chaseDistance + upW[1] * m_tuning.chaseHeight;
+        outPos[2] = m_pos[2] - fwdW[2] * m_tuning.chaseDistance + upW[2] * m_tuning.chaseHeight;
+    } else {
+        outPos[0] = m_pos[0] + fwdW[0] * 0.4f;
+        outPos[1] = m_pos[1] + fwdW[1] * 0.4f;
+        outPos[2] = m_pos[2] + fwdW[2] * 0.4f;
+    }
 }
 
 void SpacePilotController::toggleCameraMode() {
@@ -707,8 +759,11 @@ bool runSpaceSelfTest() {
         }
         const float p1 = s.pitch();
         bool rotated = std::fabs(p1 - p0) > 0.1f;        // ~5.7 deg minimum
-        bool clamped = std::fabs(p1) < kPi * 0.5f + 0.01f; // never past ±90 deg
-        check(rotated && clamped, "T3 mouse-Y rotates pitch (clamped)");
+        // FREE PITCH: pitch must always stay a sane wrapped angle in [-pi,pi] (no
+        // wall, no runaway). A fighter loops; the only invariant is it never NaNs
+        // or escapes the normalized range.
+        bool sane = std::fabs(p1) <= kPi + 0.001f && p1 == p1;
+        check(rotated && sane, "T3 mouse-Y rotates pitch (free, wrapped)");
         w->shutdown();
     }
 

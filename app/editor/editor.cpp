@@ -116,17 +116,20 @@ const Menu* editorMenuBar() {
         { "World/Local", "Toggle gizmo space",                   "Tab",    Cmd::ToggleSpace },
         { "Focus",       "Frame the selection",                  "F",      Cmd::Focus },
     };
+    // The VIEW menu is the CAMERA menu: these three rows are live (EditorHost::dispatch
+    // drives m_camMode off them). "Wireframe" used to sit here and did nothing — there is
+    // no wireframe path in IRenderDevice — so it is GONE rather than shipped dead. The Cmd
+    // enum keeps the id for when a wireframe pass exists.
     static const MenuItem view[] = {
-        { "Orbit",       "Orbit camera (drag)",                  "1",      Cmd::CamOrbit },
-        { "Fly",         "Free-fly camera",                      "2",      Cmd::CamFly },
-        { "FPS Walk",    "Walk the level",                       "3",      Cmd::CamFpsWalk },
-        { "Wireframe",   "Toggle solid / wireframe",             "Z",      Cmd::ToggleWireframe },
+        { "Orbit",       "Orbit the selection (RMB drag, wheel dolly, MMB pan)", "1", Cmd::CamOrbit },
+        { "Fly",         "Free-fly camera (RMB + WASD)",         "2",      Cmd::CamFly },
+        { "FPS Walk",    "Walk the level at eye height",         "3",      Cmd::CamFpsWalk },
     };
     static const Menu bar[] = {
         { "File",  file,  3 },
         { "Edit",  edit,  4 },
         { "Tools", tools, 7 },
-        { "View",  view,  4 },
+        { "View",  view,  3 },
     };
     return bar;
 }
@@ -423,10 +426,21 @@ int EditorState::pickBrushRay(const float origin[3], const float dir[3], float p
     return best;
 }
 
+const char* EditorState::brushTypeName(uint32_t type) {
+    switch (type) {
+        case 1u: return "Ramp";
+        case 2u: return "Cylinder";
+        case 3u: return "Stairs";
+        default: return "Box";
+    }
+}
+
 int EditorState::addBrush(uint32_t type, const float pos[3]) {
     BlockoutBrush b;
-    b.type = (type <= 1u) ? type : 0u;   // P2 core = Box(0) / Ramp(1)
-    b.name = std::string(b.type == 1u ? "ramp_" : "box_") + std::to_string(m_doc.brushes.size());
+    b.type = (type <= 3u) ? type : 0u;   // Box(0) / Ramp(1) / Cylinder(2) / Stairs(3)
+    const char* stem = (b.type == 1u) ? "ramp_" : (b.type == 2u) ? "cyl_"
+                     : (b.type == 3u) ? "stairs_" : "box_";
+    b.name = stem + std::to_string(m_doc.brushes.size());
     if (pos) for (int a = 0; a < 3; ++a) b.pos[a] = snapValue(pos[a]);
     // Default 2 m cube, snapped (so a freshly placed brush already sits on the grid).
     for (int a = 0; a < 3; ++a) b.size[a] = std::max(0.25f, snapValue(b.size[a]));
@@ -1180,6 +1194,42 @@ bool runBlockoutSelfTest() {
         bool rampOk = ramp.verts.size() >= 6 && ramp.index.size() % 3 == 0 &&
                       ramp.cverts.size() == ramp.verts.size() * 3 && ramp.cindex.size() == ramp.index.size();
         check(boxOk && rampOk, "B4 Box + Ramp meshes: valid render + matching collision geometry");
+    }
+
+    // ---- B5: Cylinder + Stairs build valid, BOUNDING-BOX-EXACT, origin-centered geo.
+    // The bbox must equal `size` exactly: the OBB pick, the gizmo and the AABB collision
+    // body all assume size[] IS the brush's extent, so a primitive that under/overfills
+    // its box would be un-clickable or would collide with air. ----
+    {
+        float size[3] = { 3.0f, 2.0f, 5.0f };
+        auto bboxOk = [&](const x3::prims::PrimMesh& m) {
+            if (m.verts.empty() || m.index.size() % 3 != 0) return false;
+            if (m.cverts.size() != m.verts.size() * 3 || m.cindex.size() != m.index.size()) return false;
+            float mn[3] = { 1e9f,1e9f,1e9f }, mx[3] = { -1e9f,-1e9f,-1e9f };
+            for (const auto& v : m.verts)
+                for (int a = 0; a < 3; ++a) { mn[a]=std::min(mn[a],v.pos[a]); mx[a]=std::max(mx[a],v.pos[a]); }
+            for (int a = 0; a < 3; ++a)
+                if (!near(mn[a], -size[a]*0.5f, 1e-3f) || !near(mx[a], size[a]*0.5f, 1e-3f)) return false;
+            return true;
+        };
+        x3::prims::PrimMesh cyl = x3::prims::buildBrushMesh(x3::prims::BrushType::Cylinder, size);
+        x3::prims::PrimMesh st  = x3::prims::buildBrushMesh(x3::prims::BrushType::Stairs,   size);
+        // Stairs must be actual STEPS: 2 m rise / 0.25 m risers = 8 treads = 8 boxes.
+        const bool steps = st.verts.size() == 8u * 24u;
+        check(bboxOk(cyl) && bboxOk(st) && steps,
+              "B5 Cylinder + Stairs: origin-centered, bbox == size, stairs are stepped solids");
+    }
+
+    // ---- B6: a Cylinder + a Stairs brush round-trip their `type` through the JSON. ----
+    {
+        LevelDoc doc;
+        { BlockoutBrush b; b.name="col"; b.type=2; b.size[0]=1; b.size[1]=4; b.size[2]=1; doc.brushes.push_back(b); }
+        { BlockoutBrush b; b.name="flight"; b.type=3; b.size[0]=2; b.size[1]=3; b.size[2]=6; doc.brushes.push_back(b); }
+        LevelDoc rt; bool ok = rt.fromJson(doc.toJson());
+        check(ok && rt.brushes.size() == 2 &&
+              rt.brushes[0].type == 2u && rt.brushes[1].type == 3u &&
+              near(rt.brushes[1].size[2], 6.0f),
+              "B6 Cylinder(2) + Stairs(3) round-trip through the brushes[] JSON");
     }
 
     x3::logInfo(std::string("[blockout-test] ") + std::to_string(g_pass) + " passed, " +

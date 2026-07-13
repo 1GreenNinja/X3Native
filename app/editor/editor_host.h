@@ -22,6 +22,7 @@
 #include "editor.h"
 #include "editor_ai.h"
 #include "editor_armory.h"
+#include "canon_import.h"
 #include "engine/llm/ILlmSystem.h"
 
 #include "engine/asset/IModelLoader.h"
@@ -46,6 +47,15 @@ namespace x3::editor {
 // input/camera path runs, the editor panels are hidden (a thin PLAYING hint stays).
 enum class HostMode : uint8_t { Edit = 0, Play = 1 };
 
+// EDIT-mode CAMERA modes — the View menu's Orbit / Fly / FPS Walk (Cmd::Cam*), which
+// shipped as menu entries with no camera behind them. All three share m_camYaw/m_camPitch
+// and drive the same device->setCamera; only the way the EYE is derived differs:
+//   Fly     — the eye IS the camera (free 6-DoF). The default.
+//   Orbit   — the eye is derived from a PIVOT + distance (the pivot is the selection).
+//   FpsWalk — the eye is grounded: a downward raycast onto the blockout's static bodies
+//             puts it at a constant eye height above whatever you're standing on.
+enum class CamMode : uint8_t { Fly = 0, Orbit = 1, FpsWalk = 2 };
+
 class EditorHost {
 public:
     EditorHost() : m_state(m_doc) {}
@@ -62,7 +72,16 @@ public:
     // moves the camera. Returns true if the host drove the camera this frame (so the
     // caller skips the game camera in Edit mode). No-op-ish in Play mode (returns
     // false; the game owns the camera).
-    bool tick(float dt, bool wantMouse, bool wantKbd, x3::rhi::IRenderDevice& device);
+    // `physics` (optional) is used ONLY by the FPS-walk camera, to raycast down onto the
+    // blockout's static bodies so the walk cam stands ON the geometry. Passing null just
+    // means the walk cam holds its current ground height (it never crashes, never stalls).
+    bool tick(float dt, bool wantMouse, bool wantKbd, x3::rhi::IRenderDevice& device,
+              x3::phys::IPhysicsWorld* physics = nullptr);
+
+    // Run one editor COMMAND (the data-driven menu bar's Cmd ids). Today this is the View
+    // menu's camera modes + Focus; the File/Edit rows still have their own handlers in
+    // draw(). Public so a headless proof can drive a mode without synthesizing a click.
+    void dispatchCmd(Cmd c);
 
     // Submit the editor panels (call between device->beginEditorUI() and
     // device->endEditorUI()). The dockspace root is already open (device side); this
@@ -91,6 +110,7 @@ public:
     void renderModels(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame);
 
     HostMode mode() const { return m_mode; }
+    CamMode  camMode() const { return m_camMode; }
     LevelDoc&       doc()       { return m_doc; }
     EditorState&    state()     { return m_state; }
 
@@ -178,17 +198,50 @@ private:
     int         m_armoryPackSel   = 0;    // 0 = "All packs"; else index into m_armory.packs+1
     void drawArmoryPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                          x3::phys::IPhysicsWorld& physics);
+
+    // ---- OPEN THE REAL GAME LEVEL (canon_import.h) ----------------------------------
+    CanonProject m_canon;                 // the parsed facility project (floor summaries)
+    int          m_canonFloorSel = 0;     // index into m_canon.floors
+    std::string  m_canonStatus;           // one-line panel status
+    void drawGameLevelPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                            x3::phys::IPhysicsWorld& physics);
+    std::string openCanonFloor(const std::string& floorKey, x3::rhi::IRenderDevice& device,
+                               x3::game::Scene& scene, x3::phys::IPhysicsWorld& physics);
+    void rebuildAllBrushes(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                           x3::phys::IPhysicsWorld& physics);
+    void teardownAllBrushes(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                            x3::phys::IPhysicsWorld& physics);
     // Lazily mount the converted_glb dir + create the loader (first model placement).
     void ensureModelLoader(x3::rhi::IRenderDevice& device);
     // Load + cache a GLB by relpath; returns the cached entry (ok=false on failure).
     const LoadedModel* loadModelCached(const std::string& relPath, x3::rhi::IRenderDevice& device);
 
     // Fly-cam state (Edit mode). pitch clamped +-1.55. Seeded near the world origin.
+    // The EYE (m_camX/Y/Z) is what every other system reads (gizmo projection, crosshair
+    // raycast, brush spawn focus), so every camera mode ultimately writes THESE.
     float m_camX = 6.0f, m_camY = 4.0f, m_camZ = 10.0f;
     float m_camYaw = -2.2f, m_camPitch = -0.25f;
     bool  m_rmbPrev = false;             // RMB held last frame (mouse-look gate)
+    bool  m_mmbPrev = false;             // MMB held last frame (orbit pan gate)
     double m_lastMouseX = 0.0, m_lastMouseY = 0.0;
     bool  m_f8Prev = false;              // F8 rising-edge
+
+    // ---- Camera MODE (View menu: Orbit / Fly / FPS Walk) --------------------
+    CamMode m_camMode = CamMode::Fly;
+    // ORBIT: the pivot the eye swings around + its distance. Focus (F) snaps the pivot
+    // to the selection; with no selection it is the world origin.
+    float m_orbPivot[3] = { 0.0f, 0.0f, 0.0f };
+    float m_orbDist     = 12.0f;
+    // FPS WALK: eye height above the surface underfoot, and the last ground Y we found
+    // (held when the down-ray misses, so stepping off the blockout doesn't teleport you).
+    float m_walkEye     = 1.7f;
+    float m_walkGroundY = 0.0f;
+    bool  m_camModePrev[3] = {};         // 1/2/3 mode-hotkey rising edges
+    bool  m_focusPrev = false;           // F (frame selection) rising edge
+    // Recompute the eye from the orbit pivot/distance/yaw/pitch (Orbit mode only).
+    void  orbitApply();
+    // Point the orbit pivot at the current selection (or the origin) + fit the distance.
+    void  frameSelection();
 
     // ---- AI ARCHITECT (editor_ai.h) ----------------------------------------
     // The panel is a THIN shell: type a sentence, the model returns a plan, we show

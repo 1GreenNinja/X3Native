@@ -172,6 +172,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--shot-drive") o.shotDrive = true;
         else if (a == "--flashlight-off") o.flashlightOff = true;
         else if (a == "--dusk") o.duskSky = true;
+        else if (a == "--day") o.daySky = true;
         else if (a == "--shot-chatter") {
             o.shotChatter = 1;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
@@ -181,6 +182,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;
         else if (a == "--test-waterzap") o.testWaterZap = true;
+        else if (a == "--test-sealife") o.testSealife = true;
         else if (a == "--test-alert") o.testAlert = true;
         else if (a == "--screenshot-ecology") {
             o.ecologyShot = true;

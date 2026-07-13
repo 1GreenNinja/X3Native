@@ -6,6 +6,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
+#include "version_gen.h"           // X3_VERSION_STR — git hash + build time in the window title
 #include "engine/core/x3_log.h"
 #include "engine/core/x3_boot.h"   // [boot] timeline (boot-to-interactive instrumentation + --test-boottime)
 #include "engine/core/IConsole.h"
@@ -372,6 +373,7 @@ int main(int argc, char** argv) {
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testWaterZap = o.testWaterZap;
+        _tf.testSealife = o.testSealife;
         _tf.testAlert = o.testAlert;
         _tf.testFootIk = o.testFootIk;
         _tf.testUi = o.testUi;
@@ -526,7 +528,7 @@ int main(int argc, char** argv) {
         // NO maximize-by-default (per Tim): open windowed at winW x H (or the saved
         // "SET AS DEFAULT" size). Fullscreen is opt-in via the settings checkbox.
         window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
-                                  "SpaceEngine", nullptr, nullptr);
+                                  X3_VERSION_STR, nullptr, nullptr);
         if (!window) {
             x3::logError("glfwCreateWindow failed");
             glfwTerminate();
@@ -778,6 +780,7 @@ int main(int argc, char** argv) {
     _hc.alertShot       = o.alertShot;
     _hc.shotDrive       = o.shotDrive;         // WORLD CARS driver-POV staging
     _hc.duskSky         = o.duskSky;           // STREET LIGHT dusk-sky staging
+    _hc.daySky          = o.daySky;            // UNDERWATER bright-day staging
     _hc.shotChatter     = o.shotChatter;       // CHATTER bubble staging for stills
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
     _hc.captureWings    = o.captureWings;      _hc.captureWingsDir = o.captureWingsDir;

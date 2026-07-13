@@ -62,7 +62,7 @@ struct EditorEntity {
 // regen for move. `type` matches x3::prims::BrushType (0=Box, 1=Ramp).
 struct BlockoutBrush {
     std::string name;
-    uint32_t type   = 0;                 // 0 = Box, 1 = Ramp (== prims::BrushType)
+    uint32_t type   = 0;                 // 0=Box 1=Ramp 2=Cylinder 3=Stairs (== prims::BrushType)
     float pos[3]    = { 0, 0, 0 };       // world center
     float size[3]   = { 2, 2, 2 };       // full extents (m)
     float yaw       = 0.0f;              // radians about +Y
@@ -353,9 +353,12 @@ public:
     int pickBrushRay(const float origin[3], const float dir[3], float pad = 0.0f) const;
 
     // ---- Blockout brush ops (Level Architect P2; headless-testable) ----------
-    // Add a brush of `type` (0=Box, 1=Ramp) at `pos` (snapped to the grid), default
-    // 2 m cube extents (snapped), selects it. Returns the new brush index.
+    // Add a brush of `type` (0=Box, 1=Ramp, 2=Cylinder, 3=Stairs) at `pos` (snapped to
+    // the grid), default 2 m cube extents (snapped), selects it. Returns the new index.
     int   addBrush(uint32_t type, const float pos[3]);
+    // Display name of a brush type id ("Box"/"Ramp"/"Cylinder"/"Stairs"). One table, so
+    // the Outliner, the Details header and the AI plan readout can never disagree.
+    static const char* brushTypeName(uint32_t type);
     // Resize the selected brush along `axis` by `delta` metres (face grow; the
     // resulting extent is snapped to the grid + clamped to a 0.25 m minimum). No-op
     // without a brush selection. Returns true if it changed.
@@ -421,6 +424,12 @@ public:
     // host can destroy. The single RespawnAll hint cannot carry them, so they are
     // collected here — without this, every AI room you undo leaks a mesh and a body.
     const std::vector<HistoryEffect>& groupEffects() const { return m_groupEffects; }
+
+    // Wipe the undo history AND selection. Used when the document is REPLACED wholesale
+    // (opening a game floor): every BrushCmd indexes brushes that no longer exist, so a
+    // stray Ctrl+Z into the old stack would mutate the wrong brush or run off the end.
+    void  clearHistory() { m_history.clear(); m_undoPos = 0; m_group = 0; m_groupEffects.clear(); }
+    void  clearSelection() { m_selKind = SelKind::None; m_selIndex = -1; m_selected = -1; }
 
     bool  canUndo() const { return m_undoPos > 0; }
     bool  canRedo() const { return m_undoPos < (int)m_history.size(); }

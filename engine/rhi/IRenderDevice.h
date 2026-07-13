@@ -4,6 +4,7 @@
 // IMPORTANT: this header must NOT include <vulkan.h>. All Vulkan types stay
 // hidden in the .cpp so game/Lua code never sees the graphics API.
 #include <cstdint>
+#include <cmath>
 
 namespace x3::rhi {
 
@@ -174,6 +175,21 @@ public:
     // Camera (FPS-style). Angles in radians. The device builds view+proj.
     // forward = (cos(pitch)*cos(yaw), sin(pitch), cos(pitch)*sin(yaw)).
     virtual void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) = 0;
+
+    // ROLL-CAPABLE camera: pass a full orientation basis (forward + up) instead of
+    // yaw+pitch. This is what lets a space fighter LOOP and BANK — the plain
+    // setCamera hardcodes up = (0,1,0), so the view can never roll and inverts past
+    // vertical (owner: "the controls never felt RIGHT ... the view PINWHEELS").
+    // fwd/up need not be exactly orthonormal; the device re-orthonormalizes.
+    // Default impl derives yaw/pitch from fwd and calls setCamera (roll dropped) so
+    // non-Vulkan / headless devices still work.
+    virtual void setCameraBasis(float x, float y, float z,
+                                const float fwd[3], const float up[3], float fovDeg) {
+        const float yaw   = std::atan2(fwd[2], fwd[0]);
+        const float pitch = std::asin(fwd[1] < -1.f ? -1.f : (fwd[1] > 1.f ? 1.f : fwd[1]));
+        (void)up;
+        setCamera(x, y, z, yaw, pitch, fovDeg);
+    }
 
     // W8-3: camera FAR-PLANE override (meters). Default 200 m (the historic
     // hardcode — every existing host is pixel-identical without calling this).
