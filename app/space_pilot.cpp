@@ -239,10 +239,26 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     if (m_tuning.noseFollow > 0.0f) {
         const float spd0 = length3(m_vel);
         if (spd0 > 1e-3f) {
+            // Steer toward the direction the pilot is COMMANDING, not the bare nose.
+            // BUG (owner: "strafe does NOT work"): steering toward fwdW alone rotated
+            // every bit of A/D strafe velocity back to straight-ahead within a fraction
+            // of a second, so strafe added speed and then nose-follow immediately ate it.
+            // The command direction = nose(forward) + right(strafe) + up; with no
+            // translation input it reduces to fwdW, so the anti-drift feel (coast toward
+            // the nose after a turn) is unchanged, while strafe now PERSISTS.
+            float steer[3];
+            for (int k = 0; k < 3; ++k)
+                steer[k] = fwdW[k] * std::max(in.moveFwd, 0.0f)
+                         + rightW[k] * in.moveStrafe
+                         + upW[k] * (in.jumpPressed ? 1.0f : 0.0f);
+            float sl = length3(steer);
+            if (sl < 1e-3f) { steer[0] = fwdW[0]; steer[1] = fwdW[1]; steer[2] = fwdW[2]; sl = 1.0f; }
+            else            { steer[0] /= sl; steer[1] /= sl; steer[2] /= sl; }
+
             const float k2 = 1.0f - std::exp(-m_tuning.noseFollow * dt);
             float nv[3];
             for (int k = 0; k < 3; ++k)
-                nv[k] = m_vel[k] / spd0 + (fwdW[k] - m_vel[k] / spd0) * k2;
+                nv[k] = m_vel[k] / spd0 + (steer[k] - m_vel[k] / spd0) * k2;
             const float nl = length3(nv);
             if (nl > 1e-4f)
                 for (int k = 0; k < 3; ++k) m_vel[k] = nv[k] / nl * spd0;

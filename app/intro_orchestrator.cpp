@@ -245,9 +245,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // a fighter wants violent thrust + hard strafe so dodging feels like flying.
     x3::game::SpacePilotController::Tuning tun{};
     tun.maxLinearAccel = 70.0f;   // was 25 — throws you back in the seat
-    tun.maxStrafeAccel = 38.0f;   // was 12 — real dodge authority (A/D + Space/Ctrl)
-    tun.boostMul       = 3.0f;    // shift = afterburner
-    tun.maxSpeed       = 260.0f;
+    tun.maxStrafeAccel = 44.0f;   // A/D strafe: hard left/right dodge authority
+    tun.boostMul       = 5.0f;    // SHIFT = ANTIMATTER BOOST (owner ask) — dramatic,
+                                  // you feel it slam the ship forward, not a nudge.
+    tun.maxSpeed       = 360.0f;  // raised so the boost has real top-end to reach for
+    tun.maxShield      = 5000;    // owner ask: fat shield pool — survive the salvos and
+    tun.maxHull        = 2000;    // fly around freely instead of dying in the first pass
+    tun.shieldRegenPerSec = 120.0f;   // and it recharges fast, so a hit is not the end
     tun.noseFollow     = 2.8f;    // arcade steering: the ship GOES where the nose
                                   // points (Newtonian drift read as "axes wrong")
     // FIRST person: the beats render from inside the cockpit rig. The default
@@ -261,10 +265,27 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     enemies.init((uint32_t)std::max(0, beat.enemyCount));
     for (int i = 0; i < beat.enemyCount; ++i) {
         const float ang = (float)i * 1.3f;
-        const float pos[3] = { 250.0f + 30.0f * (float)i,
-                               20.0f * std::sin(ang),
-                               40.0f * std::cos(ang) };
+        // OWNER: "I can NEVER SEE THE ENEMY SHIP." They spawned at 250 m — a 2.5 m ship
+        // at 250 m is ~11 px, a speck dead ahead. Bring the wing IN CLOSE and spread it
+        // across the view so it fills the canopy the moment the beat starts: you see
+        // who you are fighting, and you can actually turn to face them.
+        const float pos[3] = { 70.0f + 22.0f * (float)i,     // 70 m out (was 250)
+                               14.0f * std::sin(ang),
+                               26.0f * std::cos(ang) };
         enemies.spawn(pos);
+    }
+    // A PLANET BACKDROP so space reads as SPACE, not a black void (owner: "I can NEVER
+    // SEE THE PLANETS"). Eye-anchored bodies hung in the sky by loadNightSkyPlanets;
+    // the same helper the showroom + cutscenes use, so no new asset path.
+    x3::rhi::MeshHandle planetMesh{}, ringMesh{};
+    std::vector<x3::apphost::NightSkyPlanet> planets;
+    if (hc.window != nullptr && hc.device != nullptr) {   // live (declared below as `live`)
+        int planetTexFail = 0;
+        planets = x3::apphost::loadNightSkyPlanets(hc.device, planetMesh, planetTexFail,
+                                                   "[intro]", &ringMesh);
+        if (planetTexFail > 0)
+            x3::logWarn("[intro] " + std::to_string(planetTexFail) +
+                        " planet texture(s) missing — some bodies flat");
     }
 
     x3::space::TargetingSystem targeting;
@@ -316,7 +337,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // only flags an IBL rebake when the params actually change).
     if (live && cockpit) x3::apphost::setIntroCockpitLook(*hc.device);
 
-    for (int step = 0; step < maxSteps; ++step) {
+    // NO TIME LIMIT in live play (owner: "get rid of the time limit ... let me fly
+    // around to point at the enemy"). The beat now ends ONLY when you cripple the
+    // capital + clear the wing, when you die, or when you press Esc — never on a clock.
+    // Headless (deterministic tests / boot-time / captures) STILL stops at maxSteps, or
+    // it would loop forever with no player to end it.
+    for (int step = 0; live || step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
         // ---- Input: live reads GLFW; headless uses a deterministic synthetic
@@ -475,15 +501,22 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             auto frame = hc.device->beginFrame();
             if (frame.valid && cockpit) {
                 cockpit->scene.render(*hc.device, frame);
+                // The planet backdrop first (eye-anchored; depth-occluded by everything
+                // drawn after). Space now has a WORLD behind the fight.
+                if (!planets.empty())
+                    x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh, planets,
+                                                     beatT, cx, cy, cz, ringMesh);
                 for (uint32_t i = 0; i < enemies.count(); ++i) {
                     const auto& e = enemies.ship(i);
                     if (e.hull <= 0) continue;
+                    // Drawn at 6 m (was 2.5): a fighter you can actually SEE and read the
+                    // facing of at dogfight range, not a dot.
                     x3::apphost::drawIntroShip(*hc.device, frame, cockpit->enemyDraw,
-                                  e.pos, e.fwd, 2.5f);
+                                  e.pos, e.fwd, 6.0f);
                 }
-                const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+                const float capPos[3] = { 200.0f, 0.0f, 0.0f };   // was 280 — loom bigger
                 const float capFwd[3] = { -1.0f, 0.0f, 0.0f };
-                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 22.0f);
+                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 34.0f);
                 if (fxOn) {
                     fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
                     fxPtr->submit(*hc.device, frame);
@@ -500,6 +533,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     const float cyanHud[4] = { 0.45f, 0.85f, 1.0f, 0.85f };
                     hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono, hud,
                                             24.0f, 24.0f, 18.0f, cyanHud);
+                    // SHIFT = ANTIMATTER BOOST — flash a readout so the boost is VISIBLE,
+                    // not just felt. Amber, pulsing, under the hull line while held.
+                    if (in.sprint) {
+                        const float amber[4] = { 1.0f, 0.72f, 0.18f,
+                                                 0.75f + 0.25f * std::sin(beatT * 22.0f) };
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                                ">> ANTIMATTER BOOST <<", 24.0f, 68.0f, 20.0f, amber);
+                    }
                     if (targeting.hasLock()) {
                         const float redHud[4] = { 1.0f, 0.35f, 0.25f, 0.95f };
                         hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
