@@ -675,6 +675,91 @@ int hostEchotropolis(HostContext& hc) {
                     std::to_string(towers.size()) + " Urban Night City towers on the crown");
     }
 
+    // ===================== GOLD MINE + TRUCK LOT (the 2038 gold rush) =====
+    // The physical gold mine SITE — purpose-built in Blender (assets/mine/mine_site.glb):
+    // a timbered adit with a glowing gold seam, an A-frame headframe + pulley, an ore
+    // cart on rails, tailings + ore chunks. It sits out on the WESTERN OPEN SHOULDER,
+    // clear of the downtown towers, with a parked truck lot a short trek SW. The miners
+    // are their OWN dedicated crew (built with the residents below) so they stand on the
+    // mine's real terrain plane and walk truck-lot <-> seam. Scales are ECHO_*-tunable.
+    // Base is at Y=0, ~15x17 m at scale 1 → ECHO_MINE_SCALE defaults ~1.6 (NOT 11).
+    const float kMineX = -480.0f, kMineZ = 850.0f;   // mine mouth (Carry point B) — open west shoulder, clear of towers
+    const float kLotX  = -556.0f, kLotZ  = 814.0f;   // truck lot   (Carry point A) — short trek SW
+    const float kMineGy = hf.ok() ? hf.heightAt(kMineX, kMineZ) : 190.0f;  // real terrain; miners share this plane
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> mineProps;
+    {
+        const float kMineScale  = [](){ const char* e=std::getenv("ECHO_MINE_SCALE");  return e?(float)std::atof(e):3.2f; }();
+        const float kTruckScale = [](){ const char* e=std::getenv("ECHO_TRUCK_SCALE"); return e?(float)std::atof(e):1.0f;  }();
+        const float kMineLift   = [](){ const char* e=std::getenv("ECHO_MINE_LIFT");   return e?(float)std::atof(e):0.0f;  }();
+        const float kMineYaw    = [](){ const char* e=std::getenv("ECHO_MINE_YAW");    return e?(float)std::atof(e):2.35f; }();
+        auto place = [&](const std::string& dir, const char* glb, float x, float z,
+                         float yaw, float s, float lift) {
+            const float gy = kMineGy;
+            const float c = std::cos(yaw), sn = std::sin(yaw);
+            const float T[16] = { c*s, 0, -sn*s, 0,  0, s, 0, 0,  sn*s, 0, c*s, 0,
+                                  x, gy + lift, z, 1 };
+            auto e = std::make_unique<x3::game::EnvArtSystem>();
+            if (e->buildFromGlbAt(*device, dir, glb, T)) mineProps.push_back(std::move(e));
+        };
+        place("D:/GameDev/EchoHarbor/assets/mine", "mine_site.glb",
+              kMineX, kMineZ, kMineYaw, kMineScale, kMineLift);
+        place("D:/Assets/_glb/tech/Industrial Small Truck Free/Assets/IndustrialSmallTruck/Art/fbx",
+              "SmallTruck_1.glb", kLotX, kLotZ, 1.2f, kTruckScale, 0.0f);
+        place("D:/Assets/_glb/tech/Mini Cargo Truck/Assets/MiniCargoTruck/FBX",
+              "Truck1.glb", kLotX - 9.0f, kLotZ + 7.0f, 2.4f, kTruckScale, 0.0f);
+        x3::logInfo("--world echotropolis: GOLD MINE site + truck lot — " +
+                    std::to_string(mineProps.size()) + " props");
+    }
+
+    // ===================== MINE FOREST (thick woods around the pit) =========
+    // Tim wants the gold mine nestled DEEP in the trees. Scatter Quaternius pines
+    // (assets/veg, CC0 — woodBarkDark/leafsDark, base at Y=0) into a dense stand
+    // ringing the mine — THICKEST behind it (away from the city) — pinned to real
+    // terrain, jittered in place/scale/species. A clear inner pad keeps the headframe
+    // + glowing seam readable; the approach wedge toward the city stays thinner so the
+    // glow still reads from the vista. Each pine is one cached EnvArtSystem instance.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> mineForest;
+    {
+        static const char* kPines[] = {
+            "tree_pineTallA.glb", "tree_pineTallB.glb", "tree_pineTallC.glb",
+            "tree_pineDefaultA.glb", "tree_pineDefaultB.glb", "tree_pineRoundB.glb",
+        };
+        auto hh = [](uint32_t n){ n=(n^61u)^(n>>16); n*=9u; n^=n>>4; n*=0x27d4eb2du; n^=n>>15;
+                                  return (n & 0xffffffu) / (float)0x1000000; };
+        const std::string vdir = "D:/GameDev/EchoHarbor/assets/veg";
+        const float cx = kMineX, cz = kMineZ;
+        const float behind = std::atan2(cz - 760.0f, cx - (-20.0f));   // WNW, away from city
+        const float toCity = std::atan2(760.0f - cz, -20.0f - cx);     // approach wedge centre
+        auto plant = [&](float x, float z, float sc, float yaw, int variant){
+            const float gy = hf.ok() ? hf.heightAt(x, z) : kMineGy;        // match mine plane when no heightfield
+            if (hf.ok() && gy < 4.0f) return;                              // skip the sea only with real terrain
+            const float dxm=x-cx, dzm=z-cz; if (dxm*dxm+dzm*dzm < 13.0f*13.0f) return;   // clear pad
+            const float dxl=x-kLotX, dzl=z-kLotZ; if (dxl*dxl+dzl*dzl < 11.0f*11.0f) return; // clear lot
+            const float c=std::cos(yaw), s=std::sin(yaw);
+            const float T[16] = { c*sc,0,-s*sc,0, 0,sc,0,0, s*sc,0,c*sc,0, x, gy, z, 1 };
+            auto e = std::make_unique<x3::game::EnvArtSystem>();
+            if (e->buildFromGlbAt(*device, vdir, kPines[variant % 6], T)) mineForest.push_back(std::move(e));
+        };
+        uint32_t seed = 0;
+        auto emit = [&](int count, float aCenter, float aSpread, float rMin, float rMax){
+            for (int i=0;i<count;++i,++seed){
+                float a = aCenter + (hh(seed*3u+1u)*2.0f-1.0f)*aSpread;
+                float r = rMin + hh(seed*3u+2u)*(rMax-rMin);
+                float x = cx + r*std::cos(a), z = cz + r*std::sin(a);
+                float da = std::fabs(std::atan2(std::sin(a-toCity), std::cos(a-toCity)));
+                if (da < 0.55f && r < 55.0f && hh(seed*3u+7u) < 0.7f) continue;  // thin the city-side approach
+                float sc  = 13.0f + hh(seed*7u+5u)*7.0f;                         // 20-30 m pines
+                float yaw = hh(seed*7u+3u)*6.2831853f;
+                plant(x, z, sc, yaw, (int)(hh(seed*7u+9u)*6.0f));
+            }
+        };
+        emit(74, 0.0f,   3.15159f, 15.0f,  80.0f);   // all-around inner ring (full circle)
+        emit(64, behind, 1.9f,     20.0f, 125.0f);   // THICK behind (away from the city)
+        emit(44, 0.0f,   3.15159f, 78.0f, 150.0f);   // outer belt, full circle
+        x3::logInfo("--world echotropolis: MINE FOREST — " +
+                    std::to_string(mineForest.size()) + " pines ringing the pit");
+    }
+
     // ===================== THE UFO (Tim's Grok→Rodin saucer) ============
     // A mothership DRIFTING on a slow circular patrol high over the crown, spinning
     // + bobbing, with an emissive underbelly GLOW and a downward ABDUCTION BEAM
@@ -822,6 +907,7 @@ int hostEchotropolis(HostContext& hc) {
         const bool shotResidents = [](){ const char* e = std::getenv("ECHO_RESIDENTS"); return e && e[0]=='1'; }();
         std::unique_ptr<x3::phys::IPhysicsWorld> sphys;
         x3::game::Scene sScene; x3::game::CrowdSystem sCrowd; x3::game::CrowdSkin sSkin;
+        x3::game::CrowdSystem sMiners; x3::game::CrowdSkin sMinersSkin; bool sMinersBuilt = false;
         x3::game::HoloTerminal sOps; bool sOpsBuilt = false;
         x3::game::NpcLife sNpc; bool sNpcBuilt = false;   // living-city NPCs (schedules/archetypes)
         bool sResBuilt = false;
@@ -833,6 +919,28 @@ int hostEchotropolis(HostContext& hc) {
                 cc.groundY = hf.heightAt(-20.0f, 760.0f); cc.radius = 340.0f;
                 cc.walkSpeed = 1.3f; cc.converse = true;
                 sCrowd.build(cc, sScene, *device);
+                // GOLD-MINE CREW (capture): dedicated crowd at the western mine so stills
+                // verify the miners hauling the truck-lot -> seam route on the mine plane.
+                {
+                    x3::game::CrowdConfig mc; mc.count = 9;
+                    mc.centerX = kMineX; mc.centerZ = kMineZ;
+                    mc.groundY = kMineGy; mc.radius = 26.0f;
+                    mc.walkSpeed = 1.15f; mc.converse = false;
+                    using MKs = x3::game::CrowdWorkPoint;
+                    mc.work = {
+                        { MKs::Kind::Carry, kLotX,        kLotZ,        kMineX,        kMineZ        },
+                        { MKs::Kind::Carry, kLotX - 6.0f, kLotZ + 4.0f, kMineX + 6.0f, kMineZ - 4.0f },
+                        { MKs::Kind::Carry, kLotX + 5.0f, kLotZ - 5.0f, kMineX - 5.0f, kMineZ + 5.0f },
+                        { MKs::Kind::Carry, kLotX - 3.0f, kLotZ - 3.0f, kMineX + 3.0f, kMineZ + 6.0f },
+                        { MKs::Kind::Carry, kLotX + 8.0f, kLotZ + 6.0f, kMineX - 7.0f, kMineZ - 2.0f },
+                    };
+                    sMiners.build(mc, sScene, *device);
+                    x3::game::CrowdSkinConfig msc; msc.site = "miners-shot";
+                    msc.modelDir = x3::game::riggedGlbRoot(); msc.spawnsPerFrame = 4;
+                    msc.scale = kPedScale;
+                    sMinersSkin.build(msc, sMiners);
+                    sMinersBuilt = sMiners.built();
+                }
                 // CONTROL ROOM ops dashboard (verify in captures)
                 sOps.build(sScene, *device,
                            x3::phys::Vec3{ -14.0f, hf.heightAt(-20.0f, 760.0f) + 2.2f, 752.0f },
@@ -867,6 +975,7 @@ int hostEchotropolis(HostContext& hc) {
             applyAtmosphere(device, shotTod);   // ATMOSPHERE: aerial haze + grade + bloom
             applyOcean(device, (float)i * dt, shotTod);
             if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
+            if (sMinersBuilt) { sMiners.update(dt, sScene); sMinersSkin.update(dt, sMiners, sScene, *device, *sphys); }
             if (sNpcBuilt) sNpc.update(dt, sScene);   // living-city schedules advance
             if (sOpsBuilt) {
                 sOps.setLines({
@@ -893,12 +1002,16 @@ int hostEchotropolis(HostContext& hc) {
             props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
             for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
             for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
+            for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
+        for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
                             if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
             for (auto& h : helis) { poseHeli(h, (float)i * dt);
                                     h.body->draw(*device, frame); h.rotor->draw(*device, frame); }
             for (auto& p : planes) { posePlane(p, (float)i * dt); p.body->draw(*device, frame); }
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
+            else if (sMinersBuilt) sScene.render(*device, frame);
+            if (sMinersBuilt) sMinersSkin.draw(*device, frame, sScene);
             if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
                 poseBeam(-2.13f);
                 beam.draw(*device, frame);
@@ -1022,6 +1135,9 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::CrowdSystem residents;
     x3::game::CrowdSkin residentsSkin;
     bool residentsBuilt = false;
+    x3::game::CrowdSystem miners;          // dedicated GOLD-MINE crew (western shoulder)
+    x3::game::CrowdSkin minersSkin;
+    bool minersBuilt = false;
     x3::game::HoloTerminal opsScreen;   // CONTROL ROOM: live city-ops dashboard on the crown
     x3::game::NpcLife npcLife; bool npcLifeBuilt = false;   // LIVING CITY: scheduled NPCs
     bool opsBuilt = false;
@@ -1045,6 +1161,9 @@ int hostEchotropolis(HostContext& hc) {
             { x3::game::CrowdWorkPoint::Kind::Sweep,      80.0f, 700.0f, 140.0f, 760.0f },
             { x3::game::CrowdWorkPoint::Kind::Carry,    -140.0f, 800.0f, -80.0f, 800.0f },
         };
+        // GOLD MINERS live in their OWN dedicated crew crowd out at the western mine
+        // (built just after the residents below) — NOT here — so they stand on the mine's
+        // real terrain plane (kMineGy) and cluster at the seam instead of wandering town.
         cc.play = {
             { -60.0f, 840.0f, 4, true },
             {  90.0f, 690.0f, 3, true },
@@ -1071,6 +1190,39 @@ int hostEchotropolis(HostContext& hc) {
         residentsBuilt = residents.built();
         x3::logInfo(std::string("--world echotropolis: residents ") +
                     (residentsBuilt ? "built (40 citizens, rigged skins loading)" : "FAILED"));
+
+        // GOLD-MINE CREW: a dedicated crowd out at the western mine. Miners trek the
+        // truck-lot -> seam Carry route on the mine's OWN terrain plane (kMineGy) and
+        // cluster in a tight radius so they read as a work gang, not city wanderers.
+        {
+            x3::game::CrowdConfig mc;
+            mc.count   = 9;
+            mc.centerX = kMineX; mc.centerZ = kMineZ;
+            mc.groundY = kMineGy;
+            mc.radius  = 26.0f;              // clustered at the pit
+            mc.walkSpeed = 1.15f;
+            mc.converse  = false;           // heads-down hauling, not chatting
+            mc.scale     = 1.0f;
+            using MK = x3::game::CrowdWorkPoint;
+            mc.work = {
+                { MK::Kind::Carry, kLotX,        kLotZ,        kMineX,        kMineZ        },
+                { MK::Kind::Carry, kLotX - 6.0f, kLotZ + 4.0f, kMineX + 6.0f, kMineZ - 4.0f },
+                { MK::Kind::Carry, kLotX + 5.0f, kLotZ - 5.0f, kMineX - 5.0f, kMineZ + 5.0f },
+                { MK::Kind::Carry, kLotX - 3.0f, kLotZ - 3.0f, kMineX + 3.0f, kMineZ + 6.0f },
+                { MK::Kind::Carry, kLotX + 8.0f, kLotZ + 6.0f, kMineX - 7.0f, kMineZ - 2.0f },
+                { MK::Kind::Carry, kLotX + 2.0f, kLotZ + 9.0f, kMineX - 2.0f, kMineZ - 6.0f },
+            };
+            miners.build(mc, walkScene, *device);
+            x3::game::CrowdSkinConfig msc;
+            msc.site = "Echo Harbor miners";
+            msc.modelDir = x3::game::riggedGlbRoot();
+            msc.spawnsPerFrame = 2;
+            msc.scale = kPedScale;          // 5-6 ft miners
+            minersSkin.build(msc, miners);
+            minersBuilt = miners.built();
+            x3::logInfo(std::string("--world echotropolis: GOLD-MINE crew ") +
+                        (minersBuilt ? "built (9 miners hauling ore)" : "FAILED"));
+        }
 
         // CONTROL ROOM: a live ops-dashboard screen on the crown plaza (HoloTerminal
         // Readout, Vigil-orange ink). Renders through walkScene like the residents.
@@ -1330,6 +1482,10 @@ int hostEchotropolis(HostContext& hc) {
             if (npcLifeBuilt) npcLife.update(dt, walkScene);   // living-city schedules advance
             residentsSkin.update(dt, residents, walkScene, *device, *phys);
         }
+        if (minersBuilt) {                 // GOLD-MINE crew lives + hauls every frame
+            miners.update(dt, walkScene);
+            minersSkin.update(dt, miners, walkScene, *device, *phys);
+        }
         if (opsBuilt) {                 // CONTROL ROOM: refresh the live dashboard
             opsScreen.setLines(opsLines(todS));
             opsScreen.update(dt);
@@ -1351,6 +1507,8 @@ int hostEchotropolis(HostContext& hc) {
         props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
         for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
         for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
+        for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
+        for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
         if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame);
                         if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
         for (auto& h : helis) { poseHeli(h, waterTime);
@@ -1359,7 +1517,10 @@ int hostEchotropolis(HostContext& hc) {
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);
             residentsSkin.draw(*device, frame, walkScene);
+        } else if (minersBuilt) {      // miners share walkScene; render it if residents didn't
+            walkScene.render(*device, frame);
         }
+        if (minersBuilt) minersSkin.draw(*device, frame, walkScene);   // GOLD-MINE crew skins
         if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
             poseBeam(waterTime * kBeamRate);
             beam.draw(*device, frame);
