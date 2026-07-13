@@ -5460,6 +5460,33 @@ int runDefaultHost(HostContext& hc) {
                     cl.insert(cl.begin(), key);
                     cl.insert(cl.begin(), plate);
                 }
+                // UNDERWATER DIVER'S LIGHT in the capture — mirrors the live-loop
+                // diver's lamp (see the fl merge) so an underwater --shot-cam shows
+                // exactly what the player sees while submerged. Gated on the shot
+                // eye being below a water surface.
+                {
+                    const float sWY = x3::game::worldWaterLevelAt(ssEye.x, ssEye.z);
+                    if (sWY > -1.0e30f && ssEye.y < sWY - 0.05f) {
+                        const float cp = std::cos(ssPitch);
+                        const float fx = cp * std::cos(ssYaw);
+                        const float fy = std::sin(ssPitch);
+                        const float fz = cp * std::sin(ssYaw);
+                        x3::rhi::PointLight fill{};
+                        fill.pos[0] = ssEye.x + fx * 2.0f;
+                        fill.pos[1] = ssEye.y + fy * 2.0f;
+                        fill.pos[2] = ssEye.z + fz * 2.0f;
+                        fill.range = 18.0f;
+                        fill.color[0] = 1.20f; fill.color[1] = 1.70f; fill.color[2] = 2.05f;
+                        x3::rhi::PointLight beam{};
+                        beam.pos[0] = ssEye.x + fx * 8.0f;
+                        beam.pos[1] = ssEye.y + fy * 8.0f;
+                        beam.pos[2] = ssEye.z + fz * 8.0f;
+                        beam.range = 24.0f;
+                        beam.color[0] = 1.60f; beam.color[1] = 2.25f; beam.color[2] = 2.80f;
+                        cl.insert(cl.begin(), fill);
+                        cl.insert(cl.begin(), beam);
+                    }
+                }
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
             }
@@ -8781,6 +8808,42 @@ int runDefaultHost(HostContext& hc) {
                 riftLights(camX, camY, camZ, fl);
                 for (auto it = torch.rbegin(); it != torch.rend(); ++it)
                     fl.insert(fl.begin(), *it);
+            }
+            // ---- UNDERWATER DIVER'S LIGHT (Tim: "add lights to illuminate
+            // underwater"). The depth/shadow fix (24371e2) restored the sun that
+            // filters down, but water absorbs it fast and the depths stay murky —
+            // the giant squid sits at -56 m in near-black, and a shark circling
+            // you at night is a shadow. So the water carries a diver's lamp: two
+            // cool practicals biased AHEAD of the eye that light the fish, the bed,
+            // and whatever is hunting you. Only while the eye is genuinely below a
+            // water surface (nil cost on dry land); inserted at the FRONT so the
+            // 64-light cap never trims them, and placed AFTER the club/rift
+            // takeovers (which fl.clear()) so a deep dive is never left dark.
+            {
+                const float wY = x3::game::worldWaterLevelAt(camX, camZ);
+                if (wY > -1.0e30f && camY < wY - 0.05f) {
+                    const float cp = std::cos(camPitch);
+                    const float fx = cp * std::cos(camYaw);
+                    const float fy = std::sin(camPitch);
+                    const float fz = cp * std::sin(camYaw);
+                    // Near fill: a soft cool wash just ahead of the eye so the
+                    // immediate surroundings (viewmodel, near fish) read.
+                    x3::rhi::PointLight fill{};
+                    fill.pos[0] = camX + fx * 2.0f;
+                    fill.pos[1] = camY + fy * 2.0f;
+                    fill.pos[2] = camZ + fz * 2.0f;
+                    fill.range = 18.0f;
+                    fill.color[0] = 1.20f; fill.color[1] = 1.70f; fill.color[2] = 2.05f;
+                    // Throw: brighter, further along the look — see what you swim toward.
+                    x3::rhi::PointLight beam{};
+                    beam.pos[0] = camX + fx * 8.0f;
+                    beam.pos[1] = camY + fy * 8.0f;
+                    beam.pos[2] = camZ + fz * 8.0f;
+                    beam.range = 24.0f;
+                    beam.color[0] = 1.60f; beam.color[1] = 2.25f; beam.color[2] = 2.80f;
+                    fl.insert(fl.begin(), fill);
+                    fl.insert(fl.begin(), beam);
+                }
             }
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
