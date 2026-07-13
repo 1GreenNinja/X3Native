@@ -96,6 +96,47 @@ world, no loading screens:
   depth pre-pass (engine/rhi/vk/vk_passes.cpp), so LIVE fish under the surface
   are hidden when seen from the bank — they read underwater/while swimming, and
   the DEAD ones float proud of the plane so the aftermath reads from the bank.
+- **The sea life (app/sealife.h)**: THE OCEAN LIVES — 3 big RIGGED animals out in
+  the sea + the estuary mouth (never the river proper), kept out of fish.cpp
+  because a shoal and a predator want nothing from each other.
+  * **GREAT WHITE** (5 m, 220 hp) at the estuary mouth (960,-1180), r=55. The
+    hunter: PATROL -> STALK (circles, closing, ~3.5 s — the dread) -> CHARGE
+    (9.5 m/s) -> **BITE for 40** (2-3 bites kill) -> VEER OFF -> come around.
+    The bite lands **ONCE PER PASS** (a latch, not a per-frame drain). A player
+    OUT of the water is NEVER hunted (his FEET decide it, not his eye).
+    **THE TELL: his dorsal cuts the surface** — he patrols a 0.5-6 m band on a
+    slow rise/sink sine, so the fin breaks, vanishes and breaks again.
+  * **BLUE SHARK** (3.2 m, 140 hp) deeper, at (1060,-1290): same kit, stalks
+    ~2x longer, hits for 22. Shipped under an honest name — the Rodin model
+    called `sea_hammerhead` has NO cephalofoil (8% of its length wide; a hammer
+    spans ~25%). It is a lean shark, so it ships as one.
+  * **GIANT SQUID** (10 m, 400 hp) over the undersea base (1140,-1380) at 38-66 m.
+    The abyss: slow, huge, arms trailing, a bioluminescent read in black water.
+  * **THE ZAP** (app/waterzap.h) kills them: `kSeaZapDamage` 500 Energy inside
+    `kWaterZapRadius` — a shark DIES outright and floats belly-up — but only
+    within `kSeaZapDepth` (10 m) of the surface. Electrification is a SURFACE
+    phenomenon, so **the squid at -56 m is out of reach BY DESIGN: you cannot
+    cheese the abyss with the zap.** The shark hunts you, you fry the water, it
+    costs you half your max health. That loop is the feature.
+  * Cost: ~0.44-0.69 s to spawn 3 skinned GLBs at boot; kinematic, no physics
+    bodies, range-gated (300 m), zero per-frame allocation.
+  * Assets: `tools/sealife_bake.py` (+`.ps1`) decimates each Rodin sculpt with its
+    **fins/tentacles protected** (a naive decimator eats thin surfaces first — i.e.
+    the whole silhouette) and bakes seamless sin-driven `Cruise`/`Charge` loops
+    onto a 6-bone spine. shark 5,199 tris (2048² PBR, recovered from its `.usdz`);
+    blueshark 4,200; squid 7,499 (1024²).
+  * **BLOCKED ON ART**: the **manta** and the **humpback** are NOT shipped. The
+    Rodin `sea_manta_ray` is not a ray (shark-ish body, tall dorsal, scythe fins —
+    a "manta" with a dorsal fin reads as a THREAT, killing the one thing it was
+    for), and `sea_humpback_whale` is a **BUST** (head + one flipper, no body, no
+    fluke — it cannot swim). Nothing better exists on this machine. Their slots +
+    behaviours are specified in sealife.h; they drop in the day a real model does.
+  * NO WAKE: a foam trail behind the fin was built and CUT — the sea surface is
+    glass and replays in the depth pre-pass, so a surface-hugging quad is swallowed;
+    lifted clear it draws, but renders as a BLACK SLICK on the night sea (neither the
+    alphaBlend nor the additive/glass path got emissive foam out of it). Worse than
+    nothing, so it is not shipped. Foam wants a real FX/particle path.
+  * Gate: `--test-sealife` (S1-S10, 23 asserts). Shots: `X3_SHOT_SEALIFE=fin|shark|squid|zap`.
 - **The wanted system (polish)**: the facility AlertSystem (app/alert.h) is
   ARMED in canonlevel — canon hostiles are its eyes/ears, gunshots/bodies/keypad
   tampers feed heat, effects land on the canon world (reinforcements through the

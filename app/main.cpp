@@ -372,6 +372,7 @@ int main(int argc, char** argv) {
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testWaterZap = o.testWaterZap;
+        _tf.testSealife = o.testSealife;
         _tf.testAlert = o.testAlert;
         _tf.testFootIk = o.testFootIk;
         _tf.testUi = o.testUi;

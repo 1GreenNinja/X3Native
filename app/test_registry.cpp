@@ -110,6 +110,7 @@
 #include "ecology.h"
 #include "crowd.h"
 #include "waterzap.h"   // --test-waterzap (FISH + the lightning WATER ZAP)
+#include "sealife.h"    // --test-sealife (THE OCEAN LIVES)
 #include "alert.h"
 #include "space_pilot.h"          // x3::game::runSpaceSelfTest (--test-space)
 #include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
@@ -823,6 +824,13 @@ int dispatchTests(const TestFlags& tf) {
                     "(fish schools + the lightning gun electrifying the water: "
                     "entry detection, one-zap latch, half-health, fish in/out of the radius)...");
         return x3::game::runWaterZapSelfTest() ? 0 : 1;
+    }
+    if (tf.testSealife) {
+        x3::logInfo("running SEALIFE self-test "
+                    "(the great white's patrol->stalk->charge->bite, the bite landing ONCE "
+                    "per pass, a dry player never hunted, the zap killing the shallows and "
+                    "NOT reaching the abyss)...");
+        return x3::game::runSealifeSelfTest() ? 0 : 1;
     }
     if (tf.testAlert) {
         x3::logInfo("running FACILITY ALERT LEVEL self-test "
