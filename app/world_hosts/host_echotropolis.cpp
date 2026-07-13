@@ -1126,6 +1126,82 @@ int hostEchotropolis(HostContext& hc) {
     const float kPedScale = [](){ const char* e = std::getenv("ECHO_PED_SCALE");
                                   return e ? (float)std::atof(e) : 1.7f; }();
 
+    // ===================== CITY PANEL (web-parity dashboard) =============
+    // The toggleable right-side City panel (TAB) — the native counterpart to the web
+    // Echo Harbor's city view: a population breakdown, the treasury/gold economy, and
+    // a Harbor Herald news feed generated from the LIVE city numbers. Pure HUD
+    // (drawHudQuad/drawHudText); rendered in the windowed loop when open and in
+    // captures when ECHO_PANEL=1. All data is passed in so both paths share one draw.
+    auto drawCityPanel = [&](const x3::rhi::FrameContext& fc, uint32_t hw, uint32_t hh,
+                             int year, const char* dow, int day, int hour, int minute,
+                             uint32_t pop, uint32_t working, uint32_t leisure,
+                             double treasury, double goldOz, uint32_t miners, double dailyNet){
+        const float pw = 452.0f, pad = 20.0f;
+        const float ph = std::min((float)hh - 96.0f, 548.0f);
+        const float px = (float)hw - pw - 24.0f, py = 56.0f;
+        const float bg[4]   = { 0.03f, 0.05f, 0.09f, 0.90f };
+        const float hstr[4] = { 0.10f, 0.14f, 0.20f, 0.96f };
+        const float hdr[4]  = { 1.0f, 0.82f, 0.42f, 1.0f };     // gold
+        const float lab[4]  = { 0.60f, 0.70f, 0.82f, 1.0f };    // cool grey-blue
+        const float val[4]  = { 0.92f, 0.96f, 1.0f, 1.0f };     // near-white
+        const float sep[4]  = { 0.30f, 0.42f, 0.55f, 0.55f };
+        const float vig[4]  = { 1.0f, 0.62f, 0.18f, 1.0f };     // vigil orange (news bullets)
+        device->drawHudQuad(fc, px, py, pw, ph, bg);
+        device->drawHudQuad(fc, px, py, pw, 40.0f, hstr);
+        device->drawHudText(fc, "ECHO HARBOR  //  CITY", px + pad, py + 12.0f, 16.0f, hdr);
+        float ty = py + 52.0f;
+        char ln[160];
+        auto row = [&](const char* label, const char* value){
+            device->drawHudText(fc, label, px + pad, ty, 14.0f, lab);
+            const float vx = px + pw - pad - (float)std::strlen(value) * 14.0f;
+            device->drawHudText(fc, value, vx, ty, 14.0f, val);
+            ty += 26.0f;
+        };
+        auto head = [&](const char* label){
+            ty += 6.0f;
+            device->drawHudQuad(fc, px + pad, ty + 9.0f, pw - 2.0f*pad, 1.5f, sep);
+            ty += 16.0f;
+            device->drawHudText(fc, label, px + pad, ty, 13.0f, hdr);
+            ty += 24.0f;
+        };
+        std::snprintf(ln, sizeof ln, "%d   %s   DAY %d    %02d:%02d", year, dow, day, hour, minute);
+        device->drawHudText(fc, ln, px + pad, ty, 13.0f, lab); ty += 30.0f;
+        const uint32_t about = (pop > working + leisure) ? pop - working - leisure : 0u;
+        head("POPULATION");
+        std::snprintf(ln, sizeof ln, "%u", pop);     row("RESIDENTS",     ln);
+        std::snprintf(ln, sizeof ln, "%u", working); row("  ON SHIFT",    ln);
+        std::snprintf(ln, sizeof ln, "%u", leisure); row("  AT LEISURE",  ln);
+        std::snprintf(ln, sizeof ln, "%u", about);   row("  ABOUT TOWN",  ln);
+        head("TREASURY");
+        std::snprintf(ln, sizeof ln, "$%0.0f", treasury);       row("BALANCE",    ln);
+        std::snprintf(ln, sizeof ln, "%+0.0f/day", dailyNet);   row("NET FLOW",   ln);
+        std::snprintf(ln, sizeof ln, "%0.0f oz", goldOz);       row("GOLD MINED", ln);
+        std::snprintf(ln, sizeof ln, "%u", miners);             row("MINE CREW",  ln);
+        head("HARBOR HERALD");
+        static const char* kFlavor[] = {
+            "Night market draws record crowds on the crown.",
+            "New arrivals swell the harbour districts.",
+            "Skyline drones reroute around tower 34.",
+            "Fishing fleet returns heavy from the south bay.",
+            "Vigil reports a quiet watch over Echo Harbor.",
+        };
+        char nz[3][140];
+        std::snprintf(nz[0], 140, "Gold rush swells the vaults: %0.0f oz banked.", goldOz);
+        std::snprintf(nz[1], 140, "%u on shift, %u out about the crown today.", working, about);
+        std::snprintf(nz[2], 140, "%s", kFlavor[(day + hour) % 5]);
+        // Clip each line to the panel's inner width so it never runs off the edge.
+        const int maxNews = (int)((pw - 2.0f*pad - 16.0f) / 12.0f);   // glyph advance ~12px
+        for (int i = 0; i < 3; ++i) {
+            if ((int)std::strlen(nz[i]) > maxNews && maxNews > 2) {
+                nz[i][maxNews - 2] = '.'; nz[i][maxNews - 1] = '.'; nz[i][maxNews] = '\0';
+            }
+            device->drawHudText(fc, "-",   px + pad,        ty, 13.0f, vig);
+            device->drawHudText(fc, nz[i], px + pad + 16.0f, ty, 12.0f, val);
+            ty += 22.0f;
+        }
+        device->drawHudText(fc, "TAB  close", px + pw - pad - 10.0f*11.0f, py + ph - 24.0f, 11.0f, lab);
+    };
+
     // ===================== Headless screenshot path =====================
     // Pose the default orbit (17deg, radius 70), settle the waves a few frames so
     // the Gerstner surface isn't flat, then arm+grab. Mirrors host_valley's grab.
@@ -1274,6 +1350,9 @@ int hostEchotropolis(HostContext& hc) {
                 const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
                 device->drawHudQuad(frame, 12.0f, 12.0f, std::min((float)hw - 24.0f, 1120.0f), 34.0f, bg);
                 device->drawHudText(frame, bar, 26.0f, 21.5f, 14.0f, gold);
+                if (const char* pe = std::getenv("ECHO_PANEL"); pe && pe[0] == '1')  // CITY PANEL in captures
+                    drawCityPanel(frame, hw, hh, 2038, "MON", 23, 7, 12,
+                                  sCrowd.agentCount(), 18, 9, 11748.0, 128.0, 8, 83.6);
             }
             device->endFrame(frame);
         }
@@ -1508,6 +1587,7 @@ int hostEchotropolis(HostContext& hc) {
         };
     };
     bool walkMode = false, prevG = false;
+    bool cityPanelOpen = false, prevTab = false;   // CITY PANEL (TAB toggles)
 
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
@@ -1532,6 +1612,7 @@ int hostEchotropolis(HostContext& hc) {
 
         // ---- WALK MODE toggle (G) + first-person character step -------------
         { const bool g = kd(GLFW_KEY_G); if (g && !prevG && physOk) walkMode = !walkMode; prevG = g; }
+        { const bool tb = kd(GLFW_KEY_TAB); if (tb && !prevTab) cityPanelOpen = !cityPanelOpen; prevTab = tb; }
         if (walkMode && physOk) {
             x3::game::PlayerInput in{};
             in.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
@@ -1828,6 +1909,17 @@ int hostEchotropolis(HostContext& hc) {
             const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
             device->drawHudQuad(frame, 12.0f, 12.0f, barW, barH, bg);
             device->drawHudText(frame, bar, 12.0f + pad, 12.0f + (barH - glyph) * 0.5f, glyph, gold);
+
+            // CITY PANEL (TAB): the web-parity dashboard, fed by the live counts.
+            if (cityPanelOpen) {
+                uint32_t leisure = 0;
+                if (npcLifeBuilt)
+                    leisure = npcLife.countActivity(x3::game::NpcActivity::AtLeisure)
+                            + npcLife.countActivity(x3::game::NpcActivity::ToLeisure);
+                const double net = (double)atWork * 3.2 - (double)pop * 0.35 + (double)miners * 5.0;
+                drawCityPanel(frame, hw, hh, simYear, kDow[(simDay - 1) % 7], simDay, hour, minute,
+                              pop, atWork, leisure, treasury, goldOz, miners, net);
+            }
         }
         device->endFrame(frame);
 
