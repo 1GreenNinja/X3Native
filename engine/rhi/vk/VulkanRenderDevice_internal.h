@@ -347,7 +347,8 @@ public:
     // tint/refraction/roughness/specular carried for later milestones. POD only.
     void drawMeshGlass(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                        const float baseColorFactor[4], const float emissive[4],
-                       const GlassMaterial& glass, const float model[16]) override;
+                       const GlassMaterial& glass, const float model[16],
+                       bool alphaBlend = false) override;
 
     void drawMeshEmissive(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                           const float baseColorFactor[4], const float emissive[4],

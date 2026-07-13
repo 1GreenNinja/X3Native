@@ -867,7 +867,7 @@ void VulkanRenderDevice::drawMesh(const FrameContext& fc, MeshHandle mesh, Textu
 
 void VulkanRenderDevice::drawMeshGlass(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                    const float baseColorFactor[4], const float emissive[4],
-                   const GlassMaterial& glass, const float model[16]) {
+                   const GlassMaterial& glass, const float model[16], bool alphaBlend) {
         // baseColorFactor's alpha is overridden by the material opacity so the glass
         // body's see-through amount is the single primary dial (spec §2).
         float factor[4] = {
@@ -875,17 +875,22 @@ void VulkanRenderDevice::drawMeshGlass(const FrameContext& fc, MeshHandle mesh, 
             baseColorFactor ? baseColorFactor[1] : 1.0f,
             baseColorFactor ? baseColorFactor[2] : 1.0f,
             glass.opacity };
-        // ADDITIVE GLOW glass (GlassMaterial::additive > 0 — street-light cones/
-        // pools) must ride the BLEND record tail, NOT the opaque range: an
-        // opaque-range record replays in the DEPTH PRE-PASS, whose written cone
-        // depth makes every opaque surface behind it fail the color pass's
-        // EQUAL test — the "cone" then shows the raw sky/clear through a depth
-        // hole (the solid-funnel artifact). Normal glass masks that hole by
-        // outputting alpha=1 from the scene copy; the additive branch (tiny
-        // alpha) does not, so it must never enter the pre-pass/shadow ranges.
-        // Normal glass (additive == 0) stays byte-identical opaque-range.
+        // BLEND-partition routing for glass. Two independent reasons a glass draw
+        // must ride the BLEND record tail instead of the opaque range:
+        //   (1) caller opt-in via `alphaBlend` (default false) — a translucent shell
+        //       IN FRONT of an opaque body you must still see through (e.g. a sun's
+        //       corona over its core). See IRenderDevice::drawMeshGlass.
+        //   (2) ADDITIVE GLOW glass (GlassMaterial::additive > 0 — street-light cones/
+        //       pools): an opaque-range record replays in the DEPTH PRE-PASS, whose
+        //       written cone depth makes every opaque surface behind it fail the color
+        //       pass's EQUAL test — the "cone" then shows the raw sky/clear through a
+        //       depth hole (the solid-funnel artifact). Normal glass masks that hole by
+        //       outputting alpha=1 from the scene copy; the additive branch (tiny alpha)
+        //       does not, so it must never enter the pre-pass/shadow ranges.
+        // Normal glass (additive == 0, alphaBlend == false) stays byte-identical
+        // opaque-range.
         drawMeshInternal(fc, mesh, baseColor, TextureHandle{}, TextureHandle{}, factor, emissive,
-                         model, /*alphaMask=*/false, /*alphaBlend=*/glass.additive > 0.0f,
+                         model, /*alphaMask=*/false, /*alphaBlend=*/alphaBlend || glass.additive > 0.0f,
                          TextureHandle{},
                          TextureHandle{}, 1.0f, kFlagGlass, &glass);
     }

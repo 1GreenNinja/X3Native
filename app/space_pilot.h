@@ -29,7 +29,31 @@
 #include "engine/physics/IPhysicsWorld.h"
 #include "player.h"   // PlayerInput
 
+#include <string>
+
 namespace x3::game {
+
+// ---- Flight modes ----------------------------------------------------------
+// Three named feel presets (see SpacePilotController::preset). ARCADE is the
+// default (Star Fox: snappy, forgiving, strong auto-bank/level). ASSIST is the
+// Elite-style weighty-inertia glide. LOOSE is the drifty/adrenaline high-top-
+// speed profile. Each maps to a fully-populated Tuning + per-mode juice
+// strengths; setMode() swaps the FEEL fields live without touching health.
+enum class FlightMode { Arcade = 0, Assist = 1, Loose = 2 };
+
+// Parse a mode name ("arcade"/"assist"/"loose", case-insensitive). Returns true
+// and writes *out on a match; false (leaves *out untouched) otherwise.
+bool parseFlightMode(const std::string& name, FlightMode& out);
+const char* flightModeName(FlightMode m);   // "Arcade" / "Assist" / "Loose"
+
+// PROCESS-GLOBAL "requested" flight mode. The console command + Settings menu
+// live in the DEFAULT game host (app_run.cpp); the actual --world space flight
+// runs in a SEPARATE standalone host (host_space.cpp) that never builds that
+// console/menu. This shared latch is the bridge: any selection surface writes
+// it, and host_space reads it at spawn + polls it each frame so a change flows
+// to the live ship. Single-threaded game code — a plain static suffices.
+FlightMode requestedFlightMode();
+void        setRequestedFlightMode(FlightMode m);
 
 class SpacePilotController {
 public:
@@ -45,6 +69,16 @@ public:
         float angularDrag     = 1.5f;   // per-second (snappier rotational settle)
         float boostMul        = 2.5f;   // sprint -> accel multiplier (eats energy)
         float maxSpeed        = 220.0f; // m/s hard speed cap
+        // ---- ANTIMATTER BOOST (Shift): a HARD kick well past cruise ----------
+        // boostAccelMul stacks ON TOP of boostMul while Shift is held (total
+        // forward accel = maxLinearAccel * boostMul * boostAccelMul) so the ship
+        // LEAPS the instant boost lands. boostSpeedCapMul raises the speed cap to
+        // maxSpeed * boostSpeedCapMul while boosting; on release the overspeed
+        // bleeds off smoothly toward maxSpeed (see update()) instead of snapping.
+        // Defaults 1.0/1.0 = NO boost overspeed (every existing default-Tuning
+        // caller + the --test-space cap check behave exactly as before).
+        float boostAccelMul    = 1.0f;  // extra accel mult while boosting (x boostMul)
+        float boostSpeedCapMul = 1.0f;  // speed-cap mult while boosting (x maxSpeed)
         float noseFollow      = 0.0f;   // arcade steering: velocity-direction chase
                                         // rate toward facing (1/s). 0 = pure
                                         // Newtonian drift (existing behavior).
@@ -57,6 +91,28 @@ public:
         bool  defaultThirdPerson = true;
         float chaseDistance    = 12.0f; // 3P chase camera distance behind ship
         float chaseHeight      = 4.0f;  // 3P chase camera height above ship
+
+        // ---- Shared SMOOTH / JUICE layer (tuned per FlightMode) -------------
+        // These drive presentation + assist, NOT the core sim integration, so
+        // swapping them mid-flight is deterministic and never desyncs velocity.
+        float lookSmoothing  = 20.0f;   // yaw/pitch ease rate toward the raw-input
+                                        // target (1/s). Higher = snappier / less
+                                        // lag; lower = weightier. Frame-rate
+                                        // independent (1-exp(-rate*dt)).
+        float autoBank       = 0.0f;    // roll banked INTO a yaw turn: target roll
+                                        // (rad) per (rad/s) of yaw rate. 0 = none.
+        float maxBank        = 0.6f;    // clamp on the auto-bank target (rad).
+        float autoLevel      = 2.0f;    // hands-off ease rate of roll toward the
+                                        // bank target / level (1/s). ~0 = never
+                                        // self-levels (LOOSE); high = snaps flat.
+        float fovBase        = 65.0f;   // FOV (deg) at rest.
+        float fovMax         = 80.0f;   // FOV (deg) at full speed + boost punch.
+        float chaseFollow    = 10.0f;   // 3P camera position ease rate (1/s).
+                                        // Higher = tighter/rigid; lower = laggy.
+        float lookAhead      = 0.06f;   // 3P look-ahead: meters of camera lead per
+                                        // (m/s) of speed along the velocity dir.
+        float shakeAmp       = 0.05f;   // screen-shake amplitude (meters / ~rad)
+                                        // at full boost+accel. Deterministic noise.
     };
 
     // ---- Lifecycle ---------------------------------------------------------
@@ -76,11 +132,37 @@ public:
     // update(). Cleared automatically on the frame consumed.
     void setRollInput(float axis) { m_rollAxis = axis; }
 
+    // ---- Flight mode -------------------------------------------------------
+    // Build the fully-populated feel Tuning for a mode (static — no instance
+    // state; the presets are defined in space_pilot.cpp).
+    static Tuning preset(FlightMode m);
+
+    // Swap the LIVE flight mode. Copies the mode's FEEL fields (accel/drag/
+    // speed/nose-follow + the whole smooth/juice layer) into m_tuning, leaving
+    // the combat/health fields (maxHull/shield/energy + current pools) intact so
+    // hot-swapping mid-flight never resets the ship. Also updates the shared
+    // requestedFlightMode() latch so all selection surfaces agree.
+    void setMode(FlightMode m);
+    FlightMode mode() const { return m_mode; }
+    const Tuning& tuning() const { return m_tuning; }
+
+    // The TRUE ceiling while the antimatter boost is held (maxSpeed *
+    // boostSpeedCapMul). Speed/maxSpeed HUD + FX fractions can exceed 1.0 during
+    // an overspeed boost; consumers that want a fraction that stays in [0,1]
+    // should divide by this instead of tuning().maxSpeed. Const + cheap.
+    float boostedMaxSpeed() const { return m_tuning.maxSpeed * m_tuning.boostSpeedCapMul; }
+
     // ---- Camera ------------------------------------------------------------
     // Eye-space camera state for IRenderDevice::setCamera. In 1P (cockpit) the
     // eye sits at the ship origin with a small forward offset; in 3P (chase)
     // the eye is offset BEHIND + ABOVE along the ship's local axes.
     void camera(float& outX, float& outY, float& outZ, float& outYaw, float& outPitch) const;
+
+    // FOV (degrees) widened by speed fraction (speed()/maxSpeed) + a boost
+    // punch, between Tuning.fovBase and Tuning.fovMax. The space host feeds this
+    // straight into IRenderDevice::setCamera(...) so the field-of-view swells
+    // with velocity (the "speed rush"). Cheap + const; safe to call per frame.
+    float fov() const;
 
     // 1P / 3P toggle (showcase binds it to V).
     void toggleCameraMode();
@@ -136,16 +218,49 @@ private:
     // against the physics world). pos in world meters.
     float m_pos[3] = { 0, 0, 0 };
     float m_vel[3] = { 0, 0, 0 };
+    // Dynamic speed cap: raised instantly to boostedMaxSpeed() while boosting,
+    // then eased back toward Tuning.maxSpeed on release (antimatter overspeed
+    // bleed-off — see update()). Seeded to maxSpeed at spawn.
+    float m_speedCap = 0.0f;
 
     // Orientation: stored as a quaternion (x,y,z,w) per CONVENTIONS.md so we
     // accumulate roll cleanly without gimbal-locking. We also keep Euler
     // (yaw/pitch/roll) updated from input for HUD readback + camera basis.
     float m_quat[4] = { 0, 0, 0, 1 };  // identity
     float m_angVel[3] = { 0, 0, 0 };   // body-local angular velocity (rad/s)
-    float m_yaw   = 0;                 // around world +Y
+    float m_yaw   = 0;                 // around world +Y (smoothed / applied)
     float m_pitch = 0;                 // around ship local +Z (after yaw)
     float m_roll  = 0;                 // around ship local +X (forward)
     float m_rollAxis = 0;              // buffered Q/E this frame
+
+    // Active flight mode (default Arcade; changed via setMode).
+    FlightMode m_mode = FlightMode::Arcade;
+
+    // ---- Smooth / juice runtime state --------------------------------------
+    // Look-smoothing: raw mouse input accumulates INSTANTLY into the target;
+    // m_yaw/m_pitch ease toward it at Tuning.lookSmoothing (the "not jerky" fix).
+    float m_yawTarget   = 0;
+    float m_pitchTarget = 0;
+    float m_yawPrev     = 0;           // last frame's applied yaw (auto-bank rate)
+    float m_boostPunch  = 0;           // eased 0..1 boost weight for the FOV punch
+    float m_juiceTime   = 0;           // accumulated dt for deterministic shake
+    // Smoothed 3P chase-camera position (eased toward the rigid target + look-
+    // ahead). m_camValid gates it: false until the first update() (so the
+    // headless camera() self-test reads the rigid pose, not an unfilled zero).
+    float m_camPos[3]   = { 0, 0, 0 };
+    bool  m_camValid    = false;
+    // Screen-shake offsets computed in update(), applied in camera() (kept out of
+    // the sim so pos/vel stay byte-identical — determinism gate).
+    float m_shakePos[3] = { 0, 0, 0 };
+    float m_shakeYaw    = 0;
+    float m_shakePitch  = 0;
+    // Previous frame's velocity, used ONLY to derive the shake drive from the
+    // ACTUAL instantaneous accel the ship is experiencing (see update()) —
+    // NOT the raw thrust-input accel, which stays pinned at full magnitude for
+    // as long as W is held even once the ship is capped at cruise speed (that
+    // was reading as constant low-level jitter on long dives, e.g. the run to
+    // the sun; see host_space.cpp REAL SUN work).
+    float m_prevVelForShake[3] = { 0, 0, 0 };
 
     // Camera mode (1P cockpit vs 3P chase). Default per Tuning.defaultThirdPerson.
     bool  m_thirdPerson = true;
@@ -163,7 +278,8 @@ private:
 // asserts (1) spawn, (2) W/S accelerates along forward, (3) mouse-Y rotates
 // pitch, (4) Q/E rolls, (5) speed cap holds, (6) takeDamage shield→hull order,
 // (7) energy drain on fireLaser + refuse at 0 energy, (8) toggleCameraMode
-// 1P↔3P. Logs PASS/FAIL T#, returns true iff all pass.
+// 1P↔3P, (9) setMode swaps the feel tuning (health preserved). Logs PASS/FAIL
+// T#, returns true iff all pass.
 bool runSpaceSelfTest();
 
 } // namespace x3::game

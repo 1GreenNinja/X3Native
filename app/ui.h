@@ -358,6 +358,12 @@ struct SettingsModel {
     bool  musicOn  = true;         // "Music ON/OFF" -> setMusicEnabled
     float musicVol = 0.0f;         // "Music Volume" [0,1] -> setMusicVolume (playtest: MUTED by default; raise via slider)
     float sfxVol   = 1.0f;         // "SFX Volume"   [0,1] -> setMasterSfxVolume
+
+    // ---- Flight mode (Act-3 space pilot): 0=Arcade, 1=Assist, 2=Loose. The
+    // "Flight Mode" row CYCLES this; the host bridges it to the game's shared
+    // flight-mode latch + persists it. Kept a plain int so this UI layer stays
+    // engine/game-agnostic (no space_pilot.h dependency).
+    int   flightMode = 0;
 };
 
 // The main menu screen. Pure UI: returns an action via the state it requests.

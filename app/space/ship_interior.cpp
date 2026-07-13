@@ -40,6 +40,33 @@ const float kIdentity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 // INTERIOR floor AABB; we wrap it in plates of this thickness.
 constexpr float kWallT = 0.18f;   // wall/floor/ceiling plate HALF-thickness
 
+// Glassy-neon reskin (2026-07-09): a static holographic "screen" texture — dark
+// glass base with horizontal cyan scanlines + a couple of brighter sweep bands.
+// STATIC (the ShipInterior::render() path has no per-frame time hook — the S6
+// windows host owns per-frame updates, but the graybox interior draws through the
+// stateless scene.render()), so the animated sweep is baked as a fixed scanline
+// pattern rather than faked with rand().
+inline std::vector<uint8_t> makeHoloScreenRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    for (uint32_t y = 0; y < n; ++y) {
+        // Base cyan intensity + repeating scanlines (every 3rd row dim) + two
+        // brighter horizontal sweep bands to read as a holographic console.
+        const uint32_t band = y % 3;
+        float g = (band == 0) ? 0.85f : 0.45f;      // green channel carries the cyan
+        float b = (band == 0) ? 0.95f : 0.55f;
+        // Two static "sweep" highlight rows.
+        if (y == n / 4 || y == (3 * n) / 5) { g = 1.0f; b = 1.0f; }
+        for (uint32_t x = 0; x < n; ++x) {
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            p[0] = (uint8_t)(0.10f * 255.0f);       // low red -> cyan
+            p[1] = (uint8_t)(g * 255.0f);
+            p[2] = (uint8_t)(b * 255.0f);
+            p[3] = 255;
+        }
+    }
+    return px;
+}
+
 } // namespace
 
 // Append one box shell: render mesh + entity (Tag::Static) + static collision body.
@@ -69,6 +96,29 @@ static uint32_t addShell(x3::rhi::IRenderDevice& device, Scene& scene,
     e.baseColor[2] = color[2]; e.baseColor[3] = color[3];
     std::memcpy(e.transform, kIdentity, sizeof(kIdentity));
     e.tag = (uint32_t)x3::game::Tag::Static;
+    return scene.add(e);
+}
+
+// Glassy-neon reskin: append one THIN emissive box that reads as a neon light-strip
+// along a seam. Render-only (Prop tag, no collision — you don't bump a light-strip).
+// `er/eg/eb` = neon color, `ei` = emissive intensity (blooms in the HDR pipeline).
+static uint32_t addNeon(x3::rhi::IRenderDevice& device, Scene& scene,
+                        std::vector<MeshHandle>& meshes, TextureHandle tex,
+                        float er, float eg, float eb, float ei,
+                        float hx, float hy, float hz,
+                        float cx, float cy, float cz) {
+    x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 1.0f);
+    MeshHandle mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                        m.index.data(), (uint32_t)m.index.size());
+    meshes.push_back(mesh);
+    Entity e;
+    e.mesh = mesh;
+    e.tex  = tex;
+    // Dark glassy body so the unlit faces stay near-black; the emissive term is the glow.
+    e.baseColor[0] = 0.04f; e.baseColor[1] = 0.05f; e.baseColor[2] = 0.07f; e.baseColor[3] = 1.0f;
+    e.emissive[0] = er; e.emissive[1] = eg; e.emissive[2] = eb; e.emissive[3] = ei;
+    std::memcpy(e.transform, kIdentity, sizeof(kIdentity));
+    e.tag = (uint32_t)x3::game::Tag::Prop;
     return scene.add(e);
 }
 
@@ -113,10 +163,15 @@ void ShipInterior::build(x3::rhi::IRenderDevice& device, Scene& scene,
         return hullSet.empty() ? wallTex : hullSet[(wallPick++) % hullSet.size()];
     };
 
-    const float floorC[4] = { 0.85f, 0.88f, 0.95f, 1.0f };
-    const float wallC[4]  = { 0.72f, 0.76f, 0.84f, 1.0f };
-    const float hullC[4]  = { 0.95f, 0.95f, 0.95f, 1.0f };   // near-white: the forge colors carry
-    const float ceilC[4]  = { 0.55f, 0.58f, 0.66f, 1.0f };
+    // GLASSY-NEON CYBERPUNK RESKIN (2026-07-09): dark near-black cool plating so the
+    // emissive cyan/magenta neon strips + console screens pop. The procedural sci-fi
+    // panel textures still read as glassy plating once multiplied this far down; if the
+    // SD3.5 hull panels load, this dark cool tint darkens them into the same glassy look
+    // (no more warm painted panels fighting the neon).
+    const float floorC[4] = { 0.10f, 0.11f, 0.14f, 1.0f };
+    const float wallC[4]  = { 0.07f, 0.08f, 0.11f, 1.0f };
+    const float hullC[4]  = { 0.08f, 0.09f, 0.12f, 1.0f };   // dark glassy: reskin overrides the forge whites
+    const float ceilC[4]  = { 0.05f, 0.06f, 0.09f, 1.0f };
     const float* wc = hullSet.empty() ? wallC : hullC;
 
     // Helper: does a doorway gap intersect the wall plate we are about to build on
@@ -221,33 +276,107 @@ void ShipInterior::build(x3::rhi::IRenderDevice& device, Scene& scene,
         if (ri == 0) m_spawn = x3::phys::Vec3{ cx, y0 + 0.05f, cz };
     }
 
-    // ---- Station marker props (helm/nav/repair/weapons consoles) ------------
-    // A small emissive console box so each station reads as an interactive fixture.
-    // Color-coded by kind. Purely visual (no collision needed to walk up to it).
-    auto stationTexPx = x3::prims::makeSolidRGBA(8, 40, 48, 60);
-    TextureHandle stTex = device.createTexture(stationTexPx.data(), 8, 8, true);
-    m_textures.push_back(stTex);
-    for (const auto& s : m_manifest.stations) {
-        float er = 0.2f, eg = 0.8f, eb = 1.0f;   // default helm cyan
-        if (s.kind == "nav")     { er = 0.3f; eg = 1.0f; eb = 0.4f; }
-        else if (s.kind == "repair")  { er = 1.0f; eg = 0.7f; eb = 0.2f; }
-        else if (s.kind == "weapons") { er = 1.0f; eg = 0.3f; eb = 0.3f; }
+    // ---- NEON LIGHT-STRIPS (glassy-neon cyberpunk reskin) -------------------
+    // Thin emissive box prims along the floor-wall and wall-ceiling seams of every
+    // room: cyan key {0.15,0.9,1.0} on the floor line, magenta accent {1.0,0.2,0.8}
+    // on the ceiling line. Inset from the inner wall faces so they never clip the
+    // plating. Render-only (no collision). Auto-scales to Large/Huge manifests.
+    {
+        auto neonPx = x3::prims::makeSolidRGBA(8, 12, 14, 20);   // dark glassy body
+        TextureHandle neonTex = device.createTexture(neonPx.data(), 8, 8, true);
+        m_textures.push_back(neonTex);
+        const float inset = kWallT + 0.03f;     // clear the intruding wall plate
+        const float t = 0.03f;                  // strip cross-section half-size
+        const float cyanR = 0.15f, cyanG = 0.90f, cyanB = 1.00f, cyanI = 1.6f;
+        const float magR  = 1.00f, magG  = 0.20f, magB  = 0.80f, magI  = 1.4f;
+        for (const Room& r : m_manifest.rooms) {
+            const float x0 = r.boundsMin[0], x1 = r.boundsMax[0];
+            const float y0 = r.boundsMin[1], y1 = r.boundsMax[1];
+            const float z0 = r.boundsMin[2], z1 = r.boundsMax[2];
+            const float cx = 0.5f * (x0 + x1), cz = 0.5f * (z0 + z1);
+            const float halfX = std::fmax(0.05f, 0.5f * (x1 - x0) - inset);
+            const float halfZ = std::fmax(0.05f, 0.5f * (z1 - z0) - inset);
+            const float yFloor = y0 + 0.06f, yCeil = y1 - 0.06f;
+            // Floor seam = cyan key (4 walls).
+            addNeon(device, scene, m_meshes, neonTex, cyanR, cyanG, cyanB, cyanI,
+                    t, t, halfZ, x0 + inset, yFloor, cz);   // left  wall
+            addNeon(device, scene, m_meshes, neonTex, cyanR, cyanG, cyanB, cyanI,
+                    t, t, halfZ, x1 - inset, yFloor, cz);   // right wall
+            addNeon(device, scene, m_meshes, neonTex, cyanR, cyanG, cyanB, cyanI,
+                    halfX, t, t, cx, yFloor, z0 + inset);   // fore  wall
+            addNeon(device, scene, m_meshes, neonTex, cyanR, cyanG, cyanB, cyanI,
+                    halfX, t, t, cx, yFloor, z1 - inset);   // aft   wall
+            // Ceiling seam = magenta accent (4 walls).
+            addNeon(device, scene, m_meshes, neonTex, magR, magG, magB, magI,
+                    t, t, halfZ, x0 + inset, yCeil, cz);
+            addNeon(device, scene, m_meshes, neonTex, magR, magG, magB, magI,
+                    t, t, halfZ, x1 - inset, yCeil, cz);
+            addNeon(device, scene, m_meshes, neonTex, magR, magG, magB, magI,
+                    halfX, t, t, cx, yCeil, z0 + inset);
+            addNeon(device, scene, m_meshes, neonTex, magR, magG, magB, magI,
+                    halfX, t, t, cx, yCeil, z1 - inset);
+            m_entityCount += 8;
+        }
+    }
 
-        x3::prims::PrimMesh m = x3::prims::makeBox(0.45f, 0.55f, 0.35f,
-                                                   s.pos[0], s.pos[1] + 0.55f, s.pos[2], 1.0f);
-        MeshHandle mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
-                                            m.index.data(), (uint32_t)m.index.size());
-        m_meshes.push_back(mesh);
-        Entity e;
-        e.mesh = mesh;
-        e.tex  = stTex;
-        e.baseColor[0] = 0.3f; e.baseColor[1] = 0.34f; e.baseColor[2] = 0.4f; e.baseColor[3] = 1.0f;
-        // Retuned for the LINEAR-HDR + ACES + auto-exposure pipeline (pre-HDR 2.0
-        // blew the consoles to flat white/green slabs — integration-feast fold).
-        e.emissive[0] = er; e.emissive[1] = eg; e.emissive[2] = eb; e.emissive[3] = 0.28f;
-        std::memcpy(e.transform, kIdentity, sizeof(kIdentity));
-        e.tag = (uint32_t)x3::game::Tag::Prop;
-        m_markerIds.push_back(scene.add(e));
+    // ---- Holographic console stations (glassy-neon reskin) ------------------
+    // Each station is a DARK GLASS pedestal + a bright cyan holographic SCREEN face.
+    // The screen uses the scanline holo texture as an emissive MAP (PBR route forced
+    // by a shared MR texture, the intro-cockpit recipe) so the scanlines actually
+    // glow — a STATIC holographic sweep pattern (the render() path is stateless, no
+    // per-frame time hook, so the sweep is baked not animated). Both pieces are
+    // registered as hidable markers so the GLB art overlay can replace them.
+    auto baseTexPx = x3::prims::makeSolidRGBA(8, 12, 14, 20);   // dark glass body
+    TextureHandle baseTex = device.createTexture(baseTexPx.data(), 8, 8, true);
+    m_textures.push_back(baseTex);
+    auto holoPx = makeHoloScreenRGBA(64);
+    TextureHandle holoTex = device.createTexture(holoPx.data(), 64, 64, true);
+    m_textures.push_back(holoTex);
+    // Shared satin metal-rough (G=rough, B=metal) to force the PBR/emissive-map route.
+    const uint8_t mrPx[4] = { 255, 140, 30, 255 };
+    TextureHandle holoMR = device.createTexture(mrPx, 1, 1, /*srgb*/false);
+    m_textures.push_back(holoMR);
+    for (const auto& s : m_manifest.stations) {
+        // Kind-coded edge tint (helm cyan / nav green / repair amber / weapons red).
+        float er = 0.15f, eg = 0.55f, eb = 0.70f;   // default helm cyan
+        if (s.kind == "nav")     { er = 0.20f; eg = 0.70f; eb = 0.35f; }
+        else if (s.kind == "repair")  { er = 0.70f; eg = 0.45f; eb = 0.15f; }
+        else if (s.kind == "weapons") { er = 0.70f; eg = 0.20f; eb = 0.20f; }
+
+        // Dark glass pedestal.
+        x3::prims::PrimMesh mb = x3::prims::makeBox(0.42f, 0.50f, 0.32f,
+                                                    s.pos[0], s.pos[1] + 0.50f, s.pos[2], 1.0f);
+        MeshHandle baseMesh = device.createMesh(mb.verts.data(), (uint32_t)mb.verts.size(),
+                                                mb.index.data(), (uint32_t)mb.index.size());
+        m_meshes.push_back(baseMesh);
+        Entity eb0;
+        eb0.mesh = baseMesh;
+        eb0.tex  = baseTex;
+        eb0.baseColor[0] = 0.05f; eb0.baseColor[1] = 0.06f; eb0.baseColor[2] = 0.09f; eb0.baseColor[3] = 1.0f;
+        eb0.emissive[0] = er; eb0.emissive[1] = eg; eb0.emissive[2] = eb; eb0.emissive[3] = 0.30f;
+        std::memcpy(eb0.transform, kIdentity, sizeof(kIdentity));
+        eb0.tag = (uint32_t)x3::game::Tag::Prop;
+        m_markerIds.push_back(scene.add(eb0));
+        ++m_entityCount;
+
+        // Holographic screen face, tilted-flat panel above the pedestal, facing the
+        // cabin (+Z, toward the aft-standing player). Thin box; the holo scanline
+        // texture is its baseColor AND emissive map so the sweep bands glow.
+        x3::prims::PrimMesh ms = x3::prims::makeBox(0.36f, 0.30f, 0.02f,
+                                                    s.pos[0], s.pos[1] + 1.05f, s.pos[2] + 0.34f, 1.0f);
+        MeshHandle scrMesh = device.createMesh(ms.verts.data(), (uint32_t)ms.verts.size(),
+                                               ms.index.data(), (uint32_t)ms.index.size());
+        m_meshes.push_back(scrMesh);
+        Entity es;
+        es.mesh = scrMesh;
+        es.tex  = holoTex;
+        es.mrTex = holoMR;              // force PBR route so the emissive map is honored
+        es.emissiveTex = holoTex;       // scanline sweep glows through the emissive term
+        es.baseColor[0] = 0.6f; es.baseColor[1] = 0.9f; es.baseColor[2] = 1.0f; es.baseColor[3] = 1.0f;
+        es.emissive[0] = 0.4f; es.emissive[1] = 0.95f; es.emissive[2] = 1.0f; es.emissive[3] = 1.2f;
+        std::memcpy(es.transform, kIdentity, sizeof(kIdentity));
+        es.tag = (uint32_t)x3::game::Tag::Prop;
+        m_markerIds.push_back(scene.add(es));
         ++m_entityCount;
     }
 

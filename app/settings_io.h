@@ -49,12 +49,33 @@ inline void readAudioSettings(bool& musicOn, float& musicVol, float& sfxVol) {
     auto clamp01 = [](float& v) { if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f; };
     clamp01(musicVol); clamp01(sfxVol);
 }
-// Write ALL persisted settings (window size + audio) in one shot.
-inline void writeSettings(uint32_t w, uint32_t h, bool musicOn, float musicVol, float sfxVol) {
+// Flight mode (0=Arcade,1=Assist,2=Loose) persists in the same cfg. Optional;
+// default 0 (Arcade) when the key is missing/garbled. Read by the standalone
+// --world space host so a Settings-menu / console selection carries across
+// launches (that host predates the game console + settings UI, so the cfg file
+// is the only bridge to it).
+inline int readFlightMode() {
+    std::ifstream f(x3SettingsPath());
+    if (!f) return 0;
+    int mode = 0; std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (line.substr(0, eq) == "flightMode") {
+            const long v = std::strtol(line.c_str() + eq + 1, nullptr, 10);
+            if (v >= 0 && v <= 2) mode = (int)v;
+        }
+    }
+    return mode;
+}
+// Write ALL persisted settings (window size + audio + flight mode) in one shot.
+inline void writeSettings(uint32_t w, uint32_t h, bool musicOn, float musicVol, float sfxVol,
+                          int flightMode = 0) {
     std::ofstream f(x3SettingsPath());
     if (f) f << "width=" << w << "\nheight=" << h << "\n"
              << "musicOn=" << (musicOn ? 1 : 0) << "\n"
-             << "musicVol=" << musicVol << "\nsfxVol=" << sfxVol << "\n";
+             << "musicVol=" << musicVol << "\nsfxVol=" << sfxVol << "\n"
+             << "flightMode=" << flightMode << "\n";
 }
 
 }} // namespace x3::apphost

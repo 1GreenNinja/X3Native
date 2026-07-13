@@ -522,6 +522,7 @@ int main(int argc, char** argv) {
         // NO maximize-by-default (per Tim): open windowed at winW x H (or the saved
         // "SET AS DEFAULT" size). Fullscreen is opt-in via the settings checkbox.
         const char* winTitle = (o.worldMode == "echotropolis") ? "Echo Harbor"
+                             : (o.worldMode == "space")        ? "SpaceEngine"
                                                                : "X3Engine";
         window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
                                   winTitle, nullptr, nullptr);
