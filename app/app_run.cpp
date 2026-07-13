@@ -112,6 +112,7 @@
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
 #include "fish.h"                          // FISH: ambient schools in THE RIVER + the sea shallows
 #include "waterzap.h"                      // THE WATER ZAP: the lightning gun electrifies the water
+#include "sealife.h"                       // SEALIFE: the great white, the blue shark, the abyss
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
 #include "crowd_skin.h"                    // SKINNED CITIZENS: the crowds' rigged visual layer
 #include "crowd_chatter.h"                 // CROWD CHATTER: chat bubbles + murmur walla over the crowds
@@ -1300,6 +1301,7 @@ int runDefaultHost(HostContext& hc) {
     // tagged kStreamedExteriorRoom so the outdoor PVS gates the draw, schools
     // range-gated on the player. Kinematic — no physics bodies.
     x3::game::FishSystem worldFish;
+    x3::game::SeaLifeSystem worldSea;      // THE OCEAN LIVES: big animals (sharks + the squid)
     // THE WATER ZAP (app/waterzap.h) — "one Zap": the latch + cooldown that keeps
     // a HELD lightning trigger from re-zapping the river every frame.
     x3::game::WaterZapper waterZapper;
@@ -3269,6 +3271,36 @@ int runDefaultHost(HostContext& hc) {
                             (worldFish.speciesLoaded(x3::game::FishSpecies::Perch) ? "GLB" : "loft") + ")");
                 x3::boot::mark("FISH (river + estuary schools)");
 
+                // ---- THE OCEAN LIVES. A handful of BIG animals, far apart, out in
+                // the sea + the estuary mouth (never the river proper). The great
+                // white haunts the shallows the player actually swims out into; the
+                // blue shark works the deeper water; the giant squid waits down in
+                // the dark by the undersea base at (1100,-1350).
+                {
+                    const auto sl0 = std::chrono::steady_clock::now();
+                    x3::game::SeaConfig sc;
+                    sc.roomId = x3::game::kStreamedExteriorRoom;
+                    auto addSea = [&](x3::game::SeaSpecies sp, float x, float z, float roam) {
+                        x3::game::SeaCreatureDesc d;
+                        d.species = sp; d.homeX = x; d.homeZ = z; d.roam = roam;
+                        sc.creatures.push_back(d);
+                    };
+                    addSea(x3::game::SeaSpecies::GreatWhite, 960.0f,  -1180.0f, 55.0f);
+                    addSea(x3::game::SeaSpecies::BlueShark,  1060.0f, -1290.0f, 70.0f);
+                    addSea(x3::game::SeaSpecies::GiantSquid, 1140.0f, -1380.0f, 45.0f);
+                    worldSea.setWaterQuery([](float x, float z) {
+                        return x3::game::worldWaterLevelAt(x, z); });
+                    worldSea.setBedQuery([](float x, float z) {
+                        return x3::game::terrainHeightAtWorld(x, z); });
+                    worldSea.setFishSystem(&worldFish);
+                    worldSea.build(sc, scene, *device, *physics);
+                    const double seaMs = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - sl0).count();
+                    x3::logInfo("SEALIFE: " + std::to_string(worldSea.count())
+                                + " big animals - " + std::to_string(seaMs) + " ms");
+                    x3::boot::mark("SEALIFE (sharks + the abyss)");
+                }
+
                 // ---- THE WATER FLASH (the zap's biggest read): a radial-gradient
                 // disc lying ON the water that lights the whole pool cyan-white at
                 // the discharge, then decays to an afterglow. Same material as the
@@ -3420,6 +3452,11 @@ int runDefaultHost(HostContext& hc) {
                             x3::game::Player* pl, const x3::phys::Vec3* plFeet) {
         const x3::phys::Vec3 c{ we.x, we.surfaceY, we.z };
         const uint32_t killed = worldFish.killWithin(we.x, we.z, x3::game::kWaterZapRadius);
+        // THE BIG ANIMALS DIE TOO - a shark caught in a live pool is a dead shark.
+        // (Anything deeper than kSeaZapDepth is out of reach: the abyss is safe.)
+        const uint32_t seaKilled = worldSea.built()
+            ? worldSea.killWithin(we.x, we.z, x3::game::kWaterZapRadius) : 0u;
+        (void)seaKilled;
         int selfDmg = 0;
         if (pl && plFeet)
             selfDmg = x3::game::zapPlayer(*pl, *plFeet, we.x, we.z, waterQueryFn);
@@ -4588,6 +4625,142 @@ int runDefaultHost(HostContext& hc) {
             }
         }
 
+        // ---- THE OCEAN LIVES proof shots: X3_SHOT_SEALIFE=fin|shark|squid|zap ----
+        // Staged on a real creature from worldSea, framed with the SUN BEHIND THE
+        // CAMERA (a previous proof shipped as a backlit silhouette — light the
+        // subject). The creature is re-seated once, then left to SWIM through the
+        // settle frames, so the fin drags a real wake and the body is caught mid-
+        // flex by its own baked clip. Nothing here is a painting: the zap goes off
+        // through the REAL fireWaterZap() path.
+        //   fin   = the dorsal cutting the surface + wake (the money shot)
+        //   shark = close, in profile, underwater, mid-cruise
+        //   squid = the abyss: the giant squid down in the dark
+        //   zap   = the payoff: the water goes live and the shark dies
+        const char* seaShotEnv = std::getenv("X3_SHOT_SEALIFE");
+        const std::string seaShotMode =
+            (canonWorld && seaShotEnv && worldSea.built() && worldSea.count() > 0)
+                ? seaShotEnv : "";
+        int  seaShotIdx = -1;
+        int  seaShotZapLead = -1;
+        bool seaShotZapFired = false;
+        x3::phys::Vec3 seaShotCenter{};
+        // CAPTURE lights (a tool, not gameplay — same trick the facility floor
+        // captures use). Four metres under the sea the sun contributes almost
+        // nothing, so the animal renders as a black cut-out and every bit of the
+        // normal-mapped skin we paid for is invisible. Light the subject.
+        std::vector<x3::rhi::PointLight> seaShotLights;
+        x3::rhi::IRenderDevice::SkyParams seaShotSky{};
+        // A TRACKING camera. The creature keeps SWIMMING through the settle frames
+        // (2.3 m/s x 3.3 s = ~8 m), so a camera framed once at stage time is aimed at
+        // where he WAS — the first fin shot photographed an empty patch of sea. Freezing
+        // him would kill the wake (a wake is made by moving), so instead the camera
+        // rides alongside: offsets in HIS frame, re-solved every frame.
+        float seaShotSide = 6.0f, seaShotBack = 3.0f, seaShotUp = 0.8f;
+        bool  seaShotAtSurface = false;   // aim at the fin (surface) vs the body
+        if (!seaShotMode.empty()) {
+            const bool wantSquid = (seaShotMode == "squid");
+            seaShotIdx = worldSea.findSpecies(wantSquid ? x3::game::SeaSpecies::GiantSquid
+                                                        : x3::game::SeaSpecies::GreatWhite);
+            if (seaShotIdx >= 0) {
+                x3::game::SeaCreature& c = worldSea.creatureMut((uint32_t)seaShotIdx);
+                const float wY = x3::game::worldWaterLevelAt(c.homeX, c.homeZ);
+                if (wY > x3::game::kFishDryTest) {
+                    // Seat him on his home, swimming along +X across the view.
+                    c.x = c.homeX; c.z = c.homeZ;
+                    c.yaw = 1.5708f;              // heading -X..+X across frame
+                    c.state = x3::game::SeaState::Patrol;
+                    c.holdDepth = true;   // the patrol sine must not sink the subject
+                    const float side = 13.0f;     // camera stand-off to his flank
+
+                    if (seaShotMode == "fin" || seaShotMode == "zap") {
+                        // THE DORSAL, and ONLY the dorsal. The model is 5 m long and
+                        // 0.425 of that tall, so its fin TIP rides ~1.06 m above the
+                        // origin: a 0.55 m centre depth breaches the whole BACK (a
+                        // beached shark, not a cutting fin). 0.78 m leaves ~0.28 m of
+                        // fin through the surface and hides the body.
+                        c.wantDepth = 0.62f;      // ~0.44 m of FIN through the surface
+                        c.y = wY - 0.62f;
+                        seaShotSide = 3.0f; seaShotBack = 1.6f; seaShotUp = 0.38f;
+                        seaShotAtSurface = true;
+                    } else if (seaShotMode == "shark") {
+                        // UNDERWATER, close, in profile: he should FILL the frame.
+                        c.wantDepth = 4.0f;
+                        c.y = wY - 4.0f;
+                        seaShotSide = 5.8f; seaShotBack = 1.2f; seaShotUp = 0.35f;
+                    } else {   // squid: the abyss
+                        const float bedY = x3::game::terrainHeightAtWorld(c.homeX, c.homeZ);
+                        const float depth = std::min(46.0f, std::max(20.0f, wY - bedY - 14.0f));
+                        c.wantDepth = depth;
+                        c.y = wY - depth;
+                        seaShotSide = 11.0f; seaShotBack = 5.0f; seaShotUp = 2.0f;
+                    }
+                    {
+                        const float fx = -std::sin(c.yaw), fz = -std::cos(c.yaw);
+                        const float rx = -fz, rz = fx;
+                        ssX = c.x - fx * seaShotBack + rx * seaShotSide;
+                        ssZ = c.z - fz * seaShotBack + rz * seaShotSide;
+                        ssY = (seaShotAtSurface ? wY : c.y) + seaShotUp;
+                        const float ty = seaShotAtSurface ? (wY + 0.15f) : c.y;
+                        const float hx = c.x - ssX, hz = c.z - ssZ;
+                        ssYaw = std::atan2(hz, hx);
+                        ssPitch = std::atan2(ty - ssY, std::sqrt(hx * hx + hz * hz));
+                    }
+                    seaShotCenter = x3::phys::Vec3{ c.x, wY, c.z };
+                    if (seaShotMode == "zap") {
+                        arsenal.selectByName("lightning");
+                        seaShotZapLead = 26;      // fire before capture: he is DEAD in frame
+                    }
+
+                    // LIGHT THE SUBJECT. Sun high and behind the camera; underwater
+                    // shots also need the exposure lifted or the animal is a smudge.
+                    x3::rhi::IRenderDevice::SkyParams& sp = seaShotSky;
+                    const float sunAz = ssYaw;    // sun shares the camera's bearing
+                    sp.sunDir[0] = std::cos(sunAz) * 0.55f;
+                    sp.sunDir[1] = 0.72f;
+                    sp.sunDir[2] = std::sin(sunAz) * 0.55f;
+                    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.90f;
+                    const bool deep = (seaShotMode == "squid");
+                    sp.sunIntensity = deep ? 3.4f : 2.2f;
+                    sp.exposure     = deep ? 1.85f : 1.30f;
+                    sp.haze = 0.28f;
+                    sp.zenith[0]  = 0.16f; sp.zenith[1]  = 0.26f; sp.zenith[2]  = 0.44f;
+                    sp.horizon[0] = 0.62f; sp.horizon[1] = 0.58f; sp.horizon[2] = 0.48f;
+                    device->setSkyParams(sp);
+
+                    {
+                        const bool deepShot = (seaShotMode == "squid");
+                        // KEY: at the eye, so it lights the flank we are looking at.
+                        x3::rhi::PointLight key;
+                        key.pos[0] = ssX; key.pos[1] = ssY + 1.2f; key.pos[2] = ssZ;
+                        key.range  = deepShot ? 70.0f : 42.0f;
+                        const float ki = deepShot ? 14.0f : 11.0f;
+                        key.color[0] = ki; key.color[1] = ki * 0.98f; key.color[2] = ki * 0.92f;
+                        seaShotLights.push_back(key);
+                        // RIM: above and beyond him, to peel the back off the water.
+                        x3::rhi::PointLight rim;
+                        rim.pos[0] = c.x + 6.0f; rim.pos[1] = c.y + 9.0f; rim.pos[2] = c.z + 5.0f;
+                        rim.range  = deepShot ? 60.0f : 38.0f;
+                        const float ri = deepShot ? 8.0f : 5.5f;
+                        // the abyss gets a cold bioluminescent rim; the shallows stay daylight
+                        rim.color[0] = deepShot ? ri * 0.35f : ri;
+                        rim.color[1] = deepShot ? ri * 0.85f : ri;
+                        rim.color[2] = deepShot ? ri * 1.00f : ri * 0.95f;
+                        seaShotLights.push_back(rim);
+                    }
+                    x3::logInfo("X3_SHOT_SEALIFE=" + seaShotMode + ": staged "
+                                + x3::game::seaSpeciesDef(c.species).key + " at ("
+                                + std::to_string(c.x) + "," + std::to_string(c.y) + ","
+                                + std::to_string(c.z) + ") surf=" + std::to_string(wY)
+                                + " cam=(" + std::to_string(ssX) + "," + std::to_string(ssY)
+                                + "," + std::to_string(ssZ) + ")");
+                } else {
+                    x3::logWarn("X3_SHOT_SEALIFE: the creature's home is DRY?! — unstaged");
+                }
+            } else {
+                x3::logWarn("X3_SHOT_SEALIFE: no such creature in the world — unstaged");
+            }
+        }
+
         // ---- W4-2: --screenshot-vigil — seed a live VIGIL conversation ON the cell
         // glass (orange ink) before the settle frames so the bake lands in-frame.
         // The default hero camera already frames the terminal; a compact inline
@@ -5062,6 +5235,50 @@ int runDefaultHost(HostContext& hc) {
                             x3::logInfo(tb);
                         }
                     }
+                    if (worldSea.built())
+                        worldSea.update(dt, scene, *device, *physics, ssEye, nullptr);
+                    // RIDE ALONGSIDE him: re-solve the camera (and the key light that
+                    // hangs off it) from where he actually IS this frame.
+                    if (seaShotIdx >= 0 && worldSea.built()) {
+                        x3::game::SeaCreature& sc2 =
+                            worldSea.creatureMut((uint32_t)seaShotIdx);
+                        if (seaShotAtSurface) sc2.wantDepth = 0.62f;   // hold the fin up
+                        const float swY = x3::game::worldWaterLevelAt(sc2.x, sc2.z);
+                        const float sfy = (swY > x3::game::kFishDryTest) ? swY : 0.0f;
+                        const float fx = -std::sin(sc2.yaw), fz = -std::cos(sc2.yaw);
+                        const float rx = -fz, rz = fx;
+                        ssX = sc2.x - fx * seaShotBack + rx * seaShotSide;
+                        ssZ = sc2.z - fz * seaShotBack + rz * seaShotSide;
+                        ssY = (seaShotAtSurface ? sfy : sc2.y) + seaShotUp;
+                        const float ty = seaShotAtSurface ? (sfy + 0.15f) : sc2.y;
+                        const float hx = sc2.x - ssX, hz = sc2.z - ssZ;
+                        ssYaw = std::atan2(hz, hx);
+                        ssPitch = std::atan2(ty - ssY, std::sqrt(hx * hx + hz * hz));
+                        device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
+                        if (seaShotLights.size() >= 2) {
+                            seaShotLights[0].pos[0] = ssX;
+                            seaShotLights[0].pos[1] = ssY + 1.2f;
+                            seaShotLights[0].pos[2] = ssZ;
+                            seaShotLights[1].pos[0] = sc2.x + 6.0f;
+                            seaShotLights[1].pos[1] = sc2.y + 9.0f;
+                            seaShotLights[1].pos[2] = sc2.z + 5.0f;
+                        }
+                        seaShotCenter = x3::phys::Vec3{ sc2.x, sfy, sc2.z };
+                    }
+                    if (!seaShotLights.empty())
+                        device->setPointLights(seaShotLights.data(),
+                                               (uint32_t)seaShotLights.size());
+                    // X3_SHOT_SEALIFE=zap: the water goes live through the REAL path,
+                    // early enough that the shark is belly-up by the capture frame.
+                    if (seaShotZapLead >= 0 && !seaShotZapFired &&
+                        i >= kSettleFrames - seaShotZapLead) {
+                        x3::game::WaterZapEntry we{};
+                        we.hit = true;
+                        we.x = seaShotCenter.x; we.z = seaShotCenter.z;
+                        we.surfaceY = seaShotCenter.y; we.y = seaShotCenter.y;
+                        fireWaterZap(we, nullptr, nullptr);
+                        seaShotZapFired = true;
+                    }
                     if (!zapShotMode.empty() && i % 40 == 0 && worldFish.fishCount() > 0) {
                         const x3::game::Fish& f0 = worldFish.fish(0);
                         const x3::game::FishSchool& s0 = worldFish.school(0);
@@ -5256,6 +5473,13 @@ int runDefaultHost(HostContext& hc) {
                 if (el.size() > 64) el.resize(64);
                 device->setPointLights(el.data(), (uint32_t)el.size());
             }
+            // X3_SHOT_SEALIFE: the capture lights must be issued HERE — this is the
+            // render path, and the room/elevator set above would otherwise clobber
+            // anything staged earlier (which is exactly why the first lit attempt
+            // came back as the same black cut-out).
+            if (!seaShotLights.empty())
+                device->setPointLights(seaShotLights.data(),
+                                       (uint32_t)seaShotLights.size());
             if (elevator.built()) {
                 // Camera-as-rider: the shot camera standing in the cab gets the cab's air.
                 elevator.applyCabAtmosphere(
@@ -5331,6 +5555,17 @@ int runDefaultHost(HostContext& hc) {
                         canonCrowdSkins[ci].draw(*device, frame, scene);
                         cityCrowdSkins[ci].draw(*device, frame, scene);
                     }
+                    // THE OCEAN LIVES (PVS-gated inside draw()) - ONCE per frame, not per crowd.
+                    // X3_SHOT_SEALIFE: stamp the capture lighting RIGHT HERE, immediately
+                    // before the animal is drawn. Anything staged earlier gets clobbered by
+                    // the world's own per-frame sky/light re-issue (which is why the first two
+                    // lit attempts came back as the identical black cut-out).
+                    if (!seaShotLights.empty()) {
+                        device->setSkyParams(seaShotSky);
+                        device->setPointLights(seaShotLights.data(),
+                                               (uint32_t)seaShotLights.size());
+                    }
+                    worldSea.draw(*device, frame, scene);
                     // W-RIFT: the membrane FX (arcs + motes + light shafts) in the still.
                     if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z))
                         rifthub.drawFx(*device, frame);
@@ -5339,7 +5574,9 @@ int runDefaultHost(HostContext& hc) {
                 // viewmodel — the "pistol" in every prior cell shot was the hovering
                 // pickup prop, which is why the floating-gun/no-arms problem was
                 // invisible in stills. Mirror the smoketest draw at the shot camera.
-                if (arsenal.viewmodelsLoaded() &&
+                // X3_SHOT_SEALIFE: no viewmodel. The subject is the ANIMAL; a pistol
+                // hovering over half the frame photographs nothing.
+                if (seaShotMode.empty() && arsenal.viewmodelsLoaded() &&
                     !(swimShotOk && swimShotMode == "3p")) {   // 3P hides the FP gun
                     VmPose vmPose = readViewmodelPose(*console);
                     // X3_SHOT_SWIM=fp: the swim viewmodel LOWER at full blend —
@@ -6054,6 +6291,8 @@ int runDefaultHost(HostContext& hc) {
                     canonCrowdSkins[ci].draw(*device, frame, scene);
                     cityCrowdSkins[ci].draw(*device, frame, scene);
                 }
+                // THE OCEAN LIVES (PVS-gated inside draw()) - ONCE per frame, not per crowd.
+                worldSea.draw(*device, frame, scene);
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -8610,6 +8849,10 @@ int runDefaultHost(HostContext& hc) {
             // dead. Per-school range gate inside; the entities are PVS-gated on the
             // outdoor room, so an indoor player pays a handful of distance checks.
             if (worldFish.built() && !simFrozen) worldFish.update(dt, scene, camPos);
+            // FEET, not the eye: "in the water" is about where he is standing /
+            // floating — a wading player's eye is above the surface.
+            if (worldSea.built() && !simFrozen)
+                worldSea.update(dt, scene, *device, *physics, player.feet(), &player);
             // THE WATER ZAP: the one-zap latch cooldown + the live surface discharge
             // (re-rolled arcs across the water for zapFxTimer seconds).
             if (!simFrozen) { waterZapper.tick(dt); tickZapFx(dt); }
@@ -9625,6 +9868,8 @@ int runDefaultHost(HostContext& hc) {
                 canonCrowdSkins[ci].draw(*device, frame, scene);
                 cityCrowdSkins[ci].draw(*device, frame, scene);
             }
+            // THE OCEAN LIVES (PVS-gated inside draw()) - ONCE per frame, not per crowd.
+            worldSea.draw(*device, frame, scene);
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).

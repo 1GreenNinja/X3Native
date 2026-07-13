@@ -181,6 +181,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;
         else if (a == "--test-waterzap") o.testWaterZap = true;
+        else if (a == "--test-sealife") o.testSealife = true;
         else if (a == "--test-alert") o.testAlert = true;
         else if (a == "--screenshot-ecology") {
             o.ecologyShot = true;
