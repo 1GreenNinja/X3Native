@@ -359,6 +359,7 @@ int main(int argc, char** argv) {
         _tf.testDebris = o.testDebris;
         _tf.testGpuSkin = o.testGpuSkin;
         _tf.testMeshlet = o.testMeshlet;
+        _tf.testMinefx = o.testMinefx;
         _tf.testGpuCull = o.testGpuCull;
         _tf.testVisUnify = o.testVisUnify;
         _tf.testCollapse = o.testCollapse;

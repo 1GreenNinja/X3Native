@@ -24,6 +24,7 @@
 #include "engine/asset/IModelLoader.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"
+#include "mine_fx.h"             // gold-mine render port: x3::game::runMineFxSelfTest
 #include "strata.h"              // R-3 fold: runStrataSelfTest
 #include "elevator_showcase.h"  // R-4 fold: runElevatorShowcaseSelfTest
 #include "inventory.h"          // W9-3 RPG: runInventorySelfTest
@@ -753,6 +754,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(grid mesh -> buildMeshlets -> assert budgets/locality/sphere/"
                     "cone/triangle-conservation/degenerate-input)...");
         return x3::rhi::runMeshletSelfTest() ? 0 : 1;
+    }
+    if (tf.testMinefx) {
+        x3::logInfo("running gold-mine render port self-test (arch-glow gradient "
+                    "shape + fixture census + emissiveTex/mrTex glow-route wiring, "
+                    "headless, no window/Vulkan)...");
+        return x3::game::runMineFxSelfTest() ? 0 : 1;
     }
     if (tf.testGpuCull) {
         x3::logInfo("running D15 Tier-0 GPU cull equivalence self-test "

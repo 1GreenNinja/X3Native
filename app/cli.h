@@ -199,6 +199,10 @@ struct CliOptions {
     // containment/cone tightness/triangle conservation/degenerate input. Pure CPU,
     // no device needed. Additive.
     bool        testMeshlet = false;
+    // --test-minefx (gold-mine render port, first session): headless proof of
+    // the ported mine-entrance geometry + baked golden mouth-glow gradient
+    // (mine_fx.h/.cpp). Pure CPU + HeadlessRenderDevice, no window/Vulkan.
+    bool        testMinefx = false;
     // --test-gpucull (D15 Tier-0 GPU cull): the EQUIVALENCE acceptance test — the
     // real device headless (validation on), GPU cull active, the CPU evaluating the
     // identical predicate per frame; asserts statDrawn == expected over a pose

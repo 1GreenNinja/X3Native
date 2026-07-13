@@ -17,6 +17,7 @@ add_executable(X3Engine WIN32
     world_hosts/host_ragdoll.cpp
     world_hosts/host_drive.cpp
     world_hosts/host_club.cpp
+    world_hosts/host_goldmine.cpp
     world_hosts/host_showroom.cpp
     world_hosts/host_valley.cpp
     world_hosts/host_cliffs.cpp
@@ -133,6 +134,7 @@ add_executable(X3Engine WIN32
     dialog.cpp
     env_art.cpp
     club1127.cpp
+    mine_fx.cpp
     cues.cpp
     valley.cpp
     cliffs.cpp

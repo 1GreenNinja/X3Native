@@ -25,6 +25,7 @@ int hostPhysJoint(HostContext& hc);   // --world physjoint
 int hostRagdoll  (HostContext& hc);   // --world ragdoll
 int hostDrive    (HostContext& hc);   // --world drive | boat | fly (+ perfshop)
 int hostClub     (HostContext& hc);   // --world club      (+ crowd proof)
+int hostGoldMine (HostContext& hc);   // --world goldmine  (gold-mine render port sandbox)
 int hostShowroom (HostContext& hc);   // --world showroom  (+ showroom-* proofs)
 int hostValley   (HostContext& hc);   // --world valley    (+ ecology proof)
 int hostCliffs   (HostContext& hc);   // --world cliffs

@@ -78,6 +78,7 @@ struct TestFlags {
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
     bool testMission = false, testDestruction = false, testDebris = false, testGpuSkin = false;
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
+    bool testMinefx = false;   // --test-minefx (gold-mine render port headless proof)
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
