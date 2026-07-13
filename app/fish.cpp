@@ -514,6 +514,14 @@ void FishSystem::build(const FishConfig& cfg, Scene& scene,
         sc.solitary = sp.solitary;
         const uint32_t si = (uint32_t)m_schools.size();
         m_schools.push_back(sc);
+        // Where the fish actually ARE — a shot camera (or a bug report) needs the
+        // reach coordinates, and deriving them by hand from the Chaikin-smoothed
+        // river chain is exactly the kind of guesswork that wastes a capture pass.
+        x3::logInfo("fish: school " + std::to_string(si) + " " + sp.name
+                    + " x" + std::to_string(sd.count)
+                    + " at (" + std::to_string(sd.centerX) + ", "
+                    + std::to_string(sd.centerZ) + ") surfaceY="
+                    + std::to_string(surf));
 
         for (uint32_t k = 0; k < sd.count; ++k) {
             Fish f;
@@ -554,23 +562,24 @@ void FishSystem::build(const FishConfig& cfg, Scene& scene,
                 e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = j;
                 e.baseColor[3] = 1.0f;
                 e.mesh = art.poses[0];
-                // THE UNDERWATER FILL — and it is the fish's OWN colour.
-                // The submerged volume of the river is nearly unlit: the first
-                // proof shot came back with a perfectly-framed pike rendered as a
-                // BLACK SILHOUETTE (the viewmodel was black too — it is the water,
-                // not the fish). The old procedural fish only survived that gloom
-                // because it carried a flat grey-blue emissive whisper — but a flat
-                // emissive on a REAL fish washes the scanned art into a glowing
-                // lozenge and buries the normal map.
-                // So the fill is the ALBEDO ITSELF, routed through emissiveTex:
-                // the PBR path MULTIPLIES the emissive term by that map, so the
-                // pike's olive back, its pale spot-rows and its red caudal all lift
-                // out of the dark in their own hues, and a black texel stays black.
-                // A fish is not a lamp — this is the scattered light a real fish
-                // returns in green water, floored so it is never a hole in the frame.
-                e.emissiveTex  = art.albedo;
-                e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f;
-                e.emissive[3] = 0.35f;
+                // NO EMISSIVE. A fish is not a lamp.
+                //
+                // This entity used to carry `emissiveTex = art.albedo` at strength
+                // 0.35 — the fish's own albedo re-injected as self-illumination — to
+                // drag it out of a submerged volume that rendered nearly black. That
+                // was a poultice on a renderer bug, and the comment that lived here
+                // said so out loud: "it is the water, not the fish."
+                //
+                // It WAS the water. The water surface is glass, and glass used to
+                // record into the OPAQUE draw range, which is replayed into the
+                // shadow map by a depth-only shader that cannot honour the glass
+                // discard — so the river cast a SOLID shadow over everything beneath
+                // it and the whole submerged volume sat at shadow=0. Glass now rides
+                // the BLEND tail (vk_passes.cpp, drawMeshGlass), the water casts no
+                // shadow, and the sun reaches the riverbed.
+                // The pike is lit by the sun now, in its own colours, with its normal
+                // map intact. See mesh.frag's underwater extinction for the depth
+                // falloff that makes it read as WATER rather than air.
                 f.entHead = scene.add(e);
                 ++glbFish;
             } else {

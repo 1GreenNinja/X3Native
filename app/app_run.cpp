@@ -2367,6 +2367,20 @@ int runDefaultHost(HostContext& hc) {
                     device->setSkyParams(sp);
                     x3::logInfo("--dusk: late-dusk sky override active (street lights carry the scene)");
                 }
+                // --day (underwater staging): bright midday — a high near-white
+                // sun at full strength so the submerged world reads clearly LIT.
+                // The mirror of --dusk; captures the underwater-polish look.
+                if (hc.daySky) {
+                    x3::rhi::IRenderDevice::SkyParams sp{};
+                    sp.enabled = true;
+                    sp.sunDir[0] = 0.20f; sp.sunDir[1] = 0.94f; sp.sunDir[2] = -0.28f; // high overhead
+                    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.98f; sp.sunColor[2] = 0.94f;
+                    sp.sunIntensity = 1.25f; sp.haze = 0.18f; sp.exposure = 1.0f;
+                    sp.zenith[0]  = 0.16f; sp.zenith[1]  = 0.33f; sp.zenith[2]  = 0.62f;
+                    sp.horizon[0] = 0.62f; sp.horizon[1] = 0.72f; sp.horizon[2] = 0.82f;
+                    device->setSkyParams(sp);
+                    x3::logInfo("--day: bright-midday sky override active (underwater staging)");
+                }
                 // The sky's baked irradiance at full strength shifted the
                 // calibrated interior reads (the FP viewmodel washed pink-white
                 // vs the pre-merge baseline): scale the IBL ambient so interiors

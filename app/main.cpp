@@ -779,6 +779,7 @@ int main(int argc, char** argv) {
     _hc.alertShot       = o.alertShot;
     _hc.shotDrive       = o.shotDrive;         // WORLD CARS driver-POV staging
     _hc.duskSky         = o.duskSky;           // STREET LIGHT dusk-sky staging
+    _hc.daySky          = o.daySky;            // UNDERWATER bright-day staging
     _hc.shotChatter     = o.shotChatter;       // CHATTER bubble staging for stills
     _hc.captureSpire    = o.captureSpire;      _hc.captureSpireDir = o.captureSpireDir;
     _hc.captureWings    = o.captureWings;      _hc.captureWingsDir = o.captureWingsDir;
