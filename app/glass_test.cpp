@@ -53,7 +53,8 @@ public:
     }
     void drawMeshGlass(const x3::rhi::FrameContext&, x3::rhi::MeshHandle mesh,
                        x3::rhi::TextureHandle, const float factor[4], const float[4],
-                       const x3::rhi::IRenderDevice::GlassMaterial& g, const float[16]) override {
+                       const x3::rhi::IRenderDevice::GlassMaterial& g, const float[16],
+                       bool = false) override {
         GlassDraw d{ mesh.id, {1,1,1,1}, g };
         if (factor) for (int i = 0; i < 4; ++i) d.factor[i] = factor[i];
         glass.push_back(d);

@@ -122,6 +122,7 @@
 #include "screenshot_hosts.h"              // #28 deep split: dispatchScreenshotHosts() (headless capture handlers)
 #include "app_run.h"                       // #28 deep split: runDefaultHost() (the interactive render loop)
 #include "settings_io.h"                   // #28 deep split: window/audio settings persistence (shared)
+#include "space_pilot.h"                   // FlightMode + shared requestedFlightMode latch (flightmode console cmd)
 #include "input_globals.h"                 // #28 deep split: g_weaponScroll + scrollCallback (shared w/ streamed host)
 #include <memory>
 #include <string_view>
@@ -6167,6 +6168,26 @@ int runDefaultHost(HostContext& hc) {
         console->print("intro_play - rolling the cold open (any key skips)...");
     }, "replay the intro cold-open cinematic");
 
+    // ---- flightmode: select the Act-3 SPACE-PILOT feel preset (Arcade/Assist/
+    // Loose). Writes the shared x3::game latch that the --world space host reads
+    // at spawn + polls each frame, so it hot-swaps a live space session AND seeds
+    // the next launch. No arg prints the current mode + the choices.
+    console->registerCommand("flightmode", [&console](const std::vector<std::string>& a) {
+        if (a.empty()) {
+            console->print(std::string("flightmode = ") +
+                           x3::game::flightModeName(x3::game::requestedFlightMode()) +
+                           "   (arcade | assist | loose)");
+            return;
+        }
+        x3::game::FlightMode fm{};
+        if (!x3::game::parseFlightMode(a[0], fm)) {
+            console->print("flightmode: unknown mode '" + a[0] + "' (arcade | assist | loose)");
+            return;
+        }
+        x3::game::setRequestedFlightMode(fm);
+        console->print(std::string("flightmode = ") + x3::game::flightModeName(fm));
+    }, "flightmode [arcade|assist|loose] - select the space-pilot feel preset");
+
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
     // '`' toggle + Enter/Backspace/Up/Down/Tab/Esc while the console is open.
@@ -6702,6 +6723,11 @@ int runDefaultHost(HostContext& hc) {
         sm.rtao = (console->getInt("r_rtao") != 0);   // RT AO: reflect the cvar (default OFF)
         // Audio: seed from the persisted values applied to the audio system above.
         sm.musicOn = s_musicOn; sm.musicVol = s_musicVol; sm.sfxVol = s_sfxVol;
+        // Flight mode: seed from the persisted cfg + prime the shared latch so the
+        // Settings "Flight Mode" row reflects it and the space host agrees.
+        sm.flightMode = x3::apphost::readFlightMode();
+        x3::game::setRequestedFlightMode(
+            (x3::game::FlightMode)((sm.flightMode < 0 || sm.flightMode > 2) ? 0 : sm.flightMode));
         gameUi.init(*device, console.get(), sm);
         gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
@@ -6710,6 +6736,9 @@ int runDefaultHost(HostContext& hc) {
         // main menu again; drop them straight into the world they asked for.
         if (!hc.spawnAtKey.empty()) gameUi.resumePlaying();
     }
+    // Track the Settings "Flight Mode" row so we bridge + persist only on an
+    // actual user change (never fighting the `flightmode` console command).
+    int prevMenuFlightMode = gameUi.settings().flightMode;
     // Cursor is shown in any menu OR while the console is open; hidden only while
     // actively playing with the console closed. Tracked so we only call GLFW on a
     // transition. Start in the menu => cursor visible.
@@ -10449,6 +10478,17 @@ int runDefaultHost(HostContext& hc) {
                 audio->setMasterSfxVolume(asm_.sfxVol);
                 audio->setMusicVolume(asm_.musicVol);
                 audio->setMusicEnabled(asm_.musicOn);
+                // Flight Mode row -> shared latch + persist, ONLY on a real change
+                // (so the `flightmode` console command isn't overwritten each frame).
+                if (asm_.flightMode != prevMenuFlightMode) {
+                    prevMenuFlightMode = asm_.flightMode;
+                    const int fmi = (asm_.flightMode < 0 || asm_.flightMode > 2) ? 0 : asm_.flightMode;
+                    x3::game::setRequestedFlightMode((x3::game::FlightMode)fmi);
+                    writeSettings((uint32_t)cw, (uint32_t)ch, asm_.musicOn, asm_.musicVol,
+                                  asm_.sfxVol, fmi);
+                    x3::logInfo(std::string("[settings] flight mode -> ") +
+                                x3::game::flightModeName((x3::game::FlightMode)fmi) + " (persisted)");
+                }
             }
 
             // Main-menu "SET AS DEFAULT" -> persist the current framebuffer size +
@@ -10456,7 +10496,8 @@ int runDefaultHost(HostContext& hc) {
             if (gameUi.wantSaveDefaults()) {
                 gameUi.clearSaveDefaults();
                 const x3::ui::SettingsModel& s = gameUi.settings();
-                writeSettings((uint32_t)cw, (uint32_t)ch, s.musicOn, s.musicVol, s.sfxVol);
+                writeSettings((uint32_t)cw, (uint32_t)ch, s.musicOn, s.musicVol, s.sfxVol,
+                              (s.flightMode < 0 || s.flightMode > 2) ? 0 : s.flightMode);
                 x3::logInfo("[settings] saved defaults: resolution " +
                             std::to_string(cw) + "x" + std::to_string(ch) +
                             ", musicOn=" + (s.musicOn ? "1" : "0"));
