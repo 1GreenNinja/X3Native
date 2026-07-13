@@ -147,6 +147,8 @@ public:
     void setVsync(bool enabled) override;
 
     void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) override;
+    void setCameraBasis(float x, float y, float z,
+                        const float fwd[3], const float up[3], float fovDeg) override;
 
     void setCameraFar(float farMeters) override;   // W8-3: far-plane override
 
@@ -2961,6 +2963,12 @@ private:
     float m_camPitch = -0.30f;   // slightly down
     float m_camFov = 60.0f;
     float m_camFar = 200.0f;     // W8-3: far plane (the historic hardcode as default)
+    // Roll-capable camera basis (set by setCameraBasis). When m_camHasBasis, the
+    // view uses these directly (up != world-up => the view rolls). setCamera (yaw/
+    // pitch) clears it, so every existing host is pixel-identical.
+    glm::vec3 m_camFwd{ 0.0f, 0.0f, -1.0f };
+    glm::vec3 m_camUp{ 0.0f, 1.0f, 0.0f };
+    bool      m_camHasBasis = false;
 
     // ---- Forward point lights (interior fill) -----------------------------
     // CPU-side cache set by setPointLights(); re-uploaded into each frame's UBO.

@@ -161,12 +161,11 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // (passed via setRollInput()) accumulates around the ship's forward.
     m_yaw   += in.lookDX * kMouseSens * kPxToRad;
     m_pitch -= in.lookDY * kMouseSens * kPxToRad;
-    // Pitch is CLAMPED, not free. The camera is roll-less Euler (setCamera takes
-    // yaw+pitch only), so past vertical the horizontal look INVERTS and the view
-    // pinwheels (owner: "THE VIEW PINWHEELS LEFT TO RIGHT"). Yaw is unlimited, so
-    // ±88° pitch + full yaw already reaches everything on the sphere but the poles —
-    // no need to loop. (True over-the-top looping needs a roll-capable camera; TODO.)
-    m_pitch = clampf(m_pitch, -kPitchClamp, kPitchClamp);
+    // FREE PITCH — the camera is now ROLL-CAPABLE (setCameraBasis feeds it the ship
+    // quaternion's fwd+up), so pitching past vertical banks the horizon instead of
+    // inverting/pinwheeling. A fighter can finally LOOP up and over. Wrap like roll.
+    while (m_pitch >  kPi) m_pitch -= 2.0f * kPi;
+    while (m_pitch < -kPi) m_pitch += 2.0f * kPi;
 
     // Roll accumulates over time at maxAngularAccel*rollAxis (scaled to a
     // reasonable per-second rotation rate). Decays toward 0 when no Q/E is
@@ -350,6 +349,28 @@ void SpacePilotController::camera(float& outX, float& outY, float& outZ,
         outX = m_pos[0] + fwdW[0] * 0.4f;
         outY = m_pos[1] + fwdW[1] * 0.4f;
         outZ = m_pos[2] + fwdW[2] * 0.4f;
+    }
+}
+
+void SpacePilotController::cameraBasis(float outPos[3], float outFwd[3], float outUp[3]) const {
+    // Full basis from the ship quaternion — fwd/up BOTH bank + loop with the hull,
+    // so the horizon rolls correctly and there is no gimbal wall or pinwheel.
+    const float fwdLocal[3] = { 1, 0, 0 };
+    const float upLocal[3]  = { 0, 1, 0 };
+    float fwdW[3], upW[3];
+    quatRotate(m_quat, fwdLocal, fwdW);
+    quatRotate(m_quat, upLocal,  upW);
+    outFwd[0] = fwdW[0]; outFwd[1] = fwdW[1]; outFwd[2] = fwdW[2];
+    outUp[0]  = upW[0];  outUp[1]  = upW[1];  outUp[2]  = upW[2];
+    if (m_thirdPerson) {
+        // Chase behind (-fwd) + above (+up), rolling with the ship.
+        outPos[0] = m_pos[0] - fwdW[0] * m_tuning.chaseDistance + upW[0] * m_tuning.chaseHeight;
+        outPos[1] = m_pos[1] - fwdW[1] * m_tuning.chaseDistance + upW[1] * m_tuning.chaseHeight;
+        outPos[2] = m_pos[2] - fwdW[2] * m_tuning.chaseDistance + upW[2] * m_tuning.chaseHeight;
+    } else {
+        outPos[0] = m_pos[0] + fwdW[0] * 0.4f;
+        outPos[1] = m_pos[1] + fwdW[1] * 0.4f;
+        outPos[2] = m_pos[2] + fwdW[2] * 0.4f;
     }
 }
 

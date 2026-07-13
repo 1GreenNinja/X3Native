@@ -554,6 +554,25 @@ void VulkanRenderDevice::setVsync(bool enabled) {
 void VulkanRenderDevice::setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) {
         m_camPos = glm::vec3(x, y, z);
         m_camYaw = yaw; m_camPitch = pitch; m_camFov = fovDeg;
+        m_camHasBasis = false;   // Euler path: view uses world-up
+    }
+
+void VulkanRenderDevice::setCameraBasis(float x, float y, float z,
+                                        const float fwd[3], const float up[3], float fovDeg) {
+        m_camPos = glm::vec3(x, y, z);
+        m_camFov = fovDeg;
+        glm::vec3 f(fwd[0], fwd[1], fwd[2]);
+        glm::vec3 u(up[0], up[1], up[2]);
+        const float fl = glm::length(f);
+        f = (fl > 1e-6f) ? f / fl : glm::vec3(0, 0, -1);
+        // Re-orthonormalize up against fwd (Gram-Schmidt) so lookAt is stable.
+        u = u - f * glm::dot(u, f);
+        const float ul = glm::length(u);
+        u = (ul > 1e-6f) ? u / ul : glm::vec3(0, 1, 0);
+        m_camFwd = f; m_camUp = u; m_camHasBasis = true;
+        // Keep yaw/pitch fed for TAA reprojection + any Euler consumer.
+        m_camYaw = std::atan2(f.z, f.x);
+        m_camPitch = std::asin(f.y < -1.f ? -1.f : (f.y > 1.f ? 1.f : f.y));
     }
 
 void VulkanRenderDevice::setCameraFar(float farMeters) {

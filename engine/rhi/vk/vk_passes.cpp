@@ -1304,10 +1304,12 @@ void VulkanRenderDevice::prepareFrameData() {
         // Camera viewProj (right-handed, reverse-Y for Vulkan clip) + the sun's
         // ortho lightViewProj, written together into the per-frame camera UBO.
         const float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
-        const glm::vec3 fwd(std::cos(m_camPitch) * std::cos(m_camYaw),
-                            std::sin(m_camPitch),
-                            std::cos(m_camPitch) * std::sin(m_camYaw));
-        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
+        const glm::vec3 fwd = m_camHasBasis ? m_camFwd
+                            : glm::vec3(std::cos(m_camPitch) * std::cos(m_camYaw),
+                                        std::sin(m_camPitch),
+                                        std::cos(m_camPitch) * std::sin(m_camYaw));
+        const glm::vec3 camUp = m_camHasBasis ? m_camUp : glm::vec3(0, 1, 0);
+        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, camUp);
         glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, m_camFar);
         proj[1][1] *= -1.0f;
 

@@ -481,8 +481,16 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (live) {
             beatT += dt;
             float cx, cy, cz, cyaw, cpit;
-            pilot.camera(cx, cy, cz, cyaw, cpit);
-            hc.device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
+            pilot.camera(cx, cy, cz, cyaw, cpit);      // yaw/pitch for the cockpit pose + fire dir
+            // ROLL-CAPABLE view: feed the ship's full orientation basis so the
+            // horizon banks and the fighter can loop (owner: "add a roll capable
+            // camera"). Replaces the roll-less setCamera that pinwheeled past vertical.
+            {
+                float cpos[3], cfwd[3], cup[3];
+                pilot.cameraBasis(cpos, cfwd, cup);
+                hc.device->setCameraBasis(cpos[0], cpos[1], cpos[2], cfwd, cup, 65.0f);
+                cx = cpos[0]; cy = cpos[1]; cz = cpos[2];
+            }
             // THE VISIBLE LAYER (feat/intro-cockpit): the player flies the beat
             // from inside the two-seat fighter cockpit — posed to the pilot camera
             // each frame — with the enemy wing + the capital ship drawn out the
