@@ -110,6 +110,8 @@
 #include "vehparts.h"
 #include "ecology.h"
 #include "crowd.h"
+#include "npc_life.h"   // --test-npclife (LIVING CITY daily-life system)
+#include "hackables.h"  // --test-hacking (WD2 scan/hack registry)
 #include "waterzap.h"   // --test-waterzap (FISH + the lightning WATER ZAP)
 #include "sealife.h"    // --test-sealife (THE OCEAN LIVES)
 #include "alert.h"
@@ -820,6 +822,18 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running CROWDS self-test "
                     "(idle clusters + wander points + scatter/cower on violence + return after calm)...");
         return x3::game::runCrowdSelfTest() ? 0 : 1;
+    }
+    if (tf.testNpcLife) {
+        x3::logInfo("running LIVING CITY (npc_life) self-test "
+                    "(12-archetype daily schedules + street routing + bank-robbery set-piece "
+                    "+ cop convergence/spoof + scan-card karma + freeway traffic + leak canary)...");
+        return x3::game::runNpcLifeSelfTest() ? 0 : 1;
+    }
+    if (tf.testHacking) {
+        x3::logInfo("running ENVIRONMENTAL HACKING (hackables) self-test "
+                    "(mixed registry + NetHack highlight + nearby/lookTarget + per-type effect "
+                    "dispatch through REAL AlertSystem heat + TimelineState karma + one-shot latch)...");
+        return x3::game::runHackingSelfTest() ? 0 : 1;
     }
     if (tf.testWaterZap) {
         x3::logInfo("running WATER ZAP self-test "

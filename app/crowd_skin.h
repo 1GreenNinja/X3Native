@@ -85,6 +85,17 @@ public:
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
               const Scene& scene) const;
 
+    // A CITIZEN WAS SHOT — flop agent `i` with a skinned death ragdoll (the harvested
+    // hit-react/death-flop from feat/npc-characters, wired onto crowd-skin's per-agent
+    // MonsterSystem). `shove` is the shot direction (world). No-op unless the agent is
+    // skinned + attached + not already ragdolling. Once ragdolled, pose-follow stops
+    // for that agent (the ragdoll drives its skin) and the corpse settles/despawns on
+    // the MonsterSystem's usual death timers. Returns true iff the flop spawned.
+    bool triggerRagdoll(uint32_t i, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                        const x3::phys::Vec3& shove);
+    // True iff agent `i` is currently ragdolling (host HUD / self-test).
+    bool agentRagdolled(uint32_t i) const;
+
     // Region eviction (call from the teardown hook BEFORE the crowd abandons):
     // hide every skinned character and detach from the agents. The pool (loaded
     // rigs + bookkeeping entities) survives for the next build().
@@ -107,6 +118,7 @@ private:
         bool  failed   = false;   // load failed once — blockout keeps this agent
         bool  attached = false;   // swapped in over the CURRENT crowd's blockout
         bool  talking  = false;   // Talk calm-loop currently engaged
+        bool  ragdolled = false;  // shot dead — the death ragdoll drives the skin now
         float lastSpeed = 0.0f;
         x3::phys::Vec3 lastPos{};
         bool  hasLastPos = false;
