@@ -80,7 +80,8 @@ from pathlib import Path
 
 HOMESERVER = "https://fleetcommand.slopclaude.com"
 FLEET_OPS_ROOM = "!0H8gfl2jP8rWT5mV_i54dPhxC0zg1v7zc7gHwQzJy5k"
-DEFAULT_ROOMS = [FLEET_OPS_ROOM]
+SOCIAL_ROOM = "!QBZo-MY_0UrtH6HMnlV1mesAf8Rta8m4MLS8x3GcZZw"   # #social — off-topic, personas riffing
+DEFAULT_ROOMS = [FLEET_OPS_ROOM, SOCIAL_ROOM]
 TOKEN_PATH = Path(os.path.expanduser("~/.claude/.matrix_token"))
 STATE_PATH = Path(os.path.expanduser("~/.claude/.watercooler_state.json"))
 LOG_PATH = Path(os.path.expanduser("~/.claude/.watercooler.log"))
