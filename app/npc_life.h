@@ -186,6 +186,15 @@ public:
     // Force the robbery to strike now (a trigger volume / the auto-timer / the self-test).
     void triggerRobbery();
 
+    // ---- PLAY-AS: hand one agent's body to the player ----
+    // While an agent is "controlled" its daily schedule is paused in update() and the
+    // host drives its body directly via driveControlled(). Pass -1 to release (the
+    // agent resumes its schedule from wherever it was left).
+    void setControlled(int idx) { m_controlled = idx; }
+    int  controlled() const { return m_controlled; }
+    // Place the controlled agent's body (world feet position + facing). No-op if none.
+    void driveControlled(float x, float y, float z, float yaw);
+
     // ---- The day clock ----
     void  setDayFraction(float t);
     float dayFraction() const { return m_t; }
@@ -233,6 +242,7 @@ private:
     x3::phys::Vec3 m_freewayExit{};
     HackableRegistry* m_hax = nullptr;
     x3::llm::ILlmSystem* m_llm = nullptr;
+    int          m_controlled = -1;         // PLAY-AS: agent the host is driving (-1 == none)
 };
 
 // Headless self-test (--test-npclife). Asserts: (N1) the archetype mix spawns with one

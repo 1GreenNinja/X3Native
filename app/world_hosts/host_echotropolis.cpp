@@ -1660,6 +1660,7 @@ int hostEchotropolis(HostContext& hc) {
     bool walkMode = false, prevG = false;
     bool cityPanelOpen = false, prevTab = false;   // CITY PANEL (TAB toggles)
     int  followIdx = -1, lastPickedIdx = -1; bool prevF = false;   // RIDE-ALONG (F)
+    bool playAs = false, prevE = false; float driveYaw = 0.0f;     // PLAY-AS vs SPECTATE (E)
 
     // ===================== BUILD MENU (B) =====================
     // Place real textured buildings on the island at the orbit cursor (screen-centre
@@ -1716,13 +1717,39 @@ int hostEchotropolis(HostContext& hc) {
         // BUILD MODE (B): orbit-only; entering walk mode drops it.
         { const bool b = kd(GLFW_KEY_B); if (b && !prevB && !walkMode) buildMode = !buildMode; prevB = b; }
         if (walkMode) buildMode = false;
-        // RIDE-ALONG (F): possess the camera onto the citizen you're inspecting; F again releases.
+        // RIDE-ALONG (F): attach the camera to the citizen you're inspecting; F again releases.
         { const bool f = kd(GLFW_KEY_F);
           if (f && !prevF) {
-              if (followIdx >= 0) followIdx = -1;
-              else if (walkMode && npcLifeBuilt && lastPickedIdx >= 0) followIdx = lastPickedIdx;
+              if (followIdx >= 0) {                       // release
+                  followIdx = -1; playAs = false;
+                  if (npcLifeBuilt) npcLife.setControlled(-1);
+              } else if (walkMode && npcLifeBuilt && lastPickedIdx >= 0) {  // enter (spectate)
+                  followIdx = lastPickedIdx; playAs = false; npcLife.setControlled(-1);
+                  driveYaw = npcLife.agent((uint32_t)followIdx).yaw;
+              }
           }
           prevF = f; }
+        // PLAY-AS toggle (E): while riding, take the controls or hand them back (spectate).
+        { const bool e = kd(GLFW_KEY_E);
+          if (e && !prevE && followIdx >= 0 && npcLifeBuilt) {
+              playAs = !playAs;
+              if (playAs) { npcLife.setControlled(followIdx);
+                            driveYaw = npcLife.agent((uint32_t)followIdx).yaw; }
+              else npcLife.setControlled(-1);
+          }
+          prevE = e; }
+        // PLAY-AS drive: tank-style third-person steering (A/D turn, W/S move, Shift run).
+        if (followIdx >= 0 && playAs && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
+            const auto& a = npcLife.agent((uint32_t)followIdx);
+            const float turn = (kd(GLFW_KEY_A) ? 1.0f : 0.0f) - (kd(GLFW_KEY_D) ? 1.0f : 0.0f);
+            driveYaw += turn * 2.2f * dt;
+            const float mv  = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 0.6f : 0.0f);
+            const float spd = kd(GLFW_KEY_LEFT_SHIFT) ? 7.0f : 3.6f;
+            const float nx = a.pos.x + std::cos(driveYaw) * mv * spd * dt;
+            const float nz = a.pos.z + std::sin(driveYaw) * mv * spd * dt;
+            const float ny = hf.ok() ? hf.heightAt(nx, nz) : a.pos.y;
+            npcLife.driveControlled(nx, ny, nz, driveYaw);
+        }
         if (walkMode && physOk && followIdx < 0) {   // frozen while riding along
             x3::game::PlayerInput in{};
             in.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
@@ -2102,12 +2129,14 @@ int hostEchotropolis(HostContext& hc) {
                                  x3::game::npcActivityName(a.activity), det, voc, dist);
             };
             if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
-                // Riding along: show whom you're following + a release banner.
+                // Riding along: show whom you're following + the mode/controls banner.
                 const float ban[4] = { 0.10f, 0.14f, 0.20f, 0.92f };
                 const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
-                device->drawHudQuad(frame, hw*0.5f - 150.0f, 54.0f, 300.0f, 30.0f, ban);
-                device->drawHudText(frame, "RIDE-ALONG   //   F to release",
-                                    hw*0.5f - 150.0f + 20.0f, 61.0f, 13.0f, gold);
+                const char* bl = playAs ? "PLAY AS   //   WASD move   E spectate   F release"
+                                        : "SPECTATING   //   E play as   F release";
+                const float bw = 470.0f;
+                device->drawHudQuad(frame, hw*0.5f - bw*0.5f, 54.0f, bw, 30.0f, ban);
+                device->drawHudText(frame, bl, hw*0.5f - bw*0.5f + 18.0f, 61.0f, 13.0f, gold);
                 cardFor((uint32_t)followIdx, 0.0f);
             } else if (walkMode && physOk && npcLifeBuilt) {
                 // The citizen nearest the crosshair gets the life card — the web
@@ -2131,7 +2160,7 @@ int hostEchotropolis(HostContext& hc) {
                 device->drawHudQuad(frame, hw*0.5f - 1.0f, hh*0.5f - 7.0f, 2.0f, 14.0f, rc);
                 if (best >= 0) {
                     cardFor((uint32_t)best, bestDist);
-                    device->drawHudText(frame, "F  ride along",
+                    device->drawHudText(frame, "F  ride along  /  play as",
                                         24.0f + 18.0f, (float)hh - 176.0f - 22.0f, 12.0f, rc);
                 }
             } else {

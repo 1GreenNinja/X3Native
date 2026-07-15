@@ -662,6 +662,13 @@ void NpcLife::triggerRobbery() {
     r.speed = 2.2f;
 }
 
+void NpcLife::driveControlled(float x, float y, float z, float yaw) {
+    if (m_controlled < 0 || m_controlled >= (int)m_agents.size()) return;
+    NpcAgent& a = m_agents[(uint32_t)m_controlled];
+    a.pos.x = x; a.pos.y = y; a.pos.z = z; a.yaw = yaw;
+    a.target = a.pos;   // so it doesn't lurch when the schedule resumes on release
+}
+
 void NpcLife::updateRobbery(float dt) {
     if (m_robber < 0) return;
     NpcAgent& r = m_agents[m_robber];
@@ -737,9 +744,12 @@ void NpcLife::update(float dt, Scene& scene) {
 
     updateRobbery(dt);
 
-    for (NpcAgent& a : m_agents) {
-        if (a.onFreeway) updateFreeway(a, dt);
-        else             updateWalker(a, dt);
+    for (uint32_t i = 0; i < m_agents.size(); ++i) {
+        NpcAgent& a = m_agents[i];
+        if ((int)i != m_controlled) {           // the played-as agent is host-driven
+            if (a.onFreeway) updateFreeway(a, dt);
+            else             updateWalker(a, dt);
+        }
         writeTransform(a, scene);
     }
 
