@@ -1401,6 +1401,29 @@ int hostEchotropolis(HostContext& hc) {
                                      pr.detailCount ? pr.detail[0] : "",
                                      pr.voiceCount ? pr.voice[0] : "", 8.0f);
                 }
+                if (const char* be = std::getenv("ECHO_BUILD"); be && be[0] == '1') {  // BUILD PALETTE
+                    struct BD { const char* label; int cost; };
+                    static const BD pal[] = { {"STEEL LOFT",600},{"STEEL FLAT",550},
+                        {"COTTAGE A",400},{"COTTAGE B",400},{"COTTAGE C",450} };
+                    const int nP = 5, sel = 2; const double treas = 11748.0;
+                    const float pw=300.0f, pad=16.0f, rowH=26.0f, px=24.0f, py=54.0f;
+                    const float ph=96.0f+nP*rowH;
+                    const float bg[4]={0.03f,0.05f,0.09f,0.92f}, hstr[4]={0.10f,0.14f,0.20f,0.96f};
+                    const float hcol[4]={1.0f,0.82f,0.42f,1.0f}, lab[4]={0.60f,0.70f,0.82f,1.0f};
+                    const float val[4]={0.92f,0.96f,1.0f,1.0f}, selc[4]={0.14f,0.24f,0.18f,0.95f};
+                    device->drawHudQuad(frame,px,py,pw,ph,bg);
+                    device->drawHudQuad(frame,px,py,pw,34.0f,hstr);
+                    device->drawHudText(frame,"BUILD   //   place a lot",px+pad,py+9.0f,14.0f,hcol);
+                    float ty=py+46.0f;
+                    for(int i=0;i<nP;++i){ if(i==sel) device->drawHudQuad(frame,px+8.0f,ty-3.0f,pw-16.0f,rowH-2.0f,selc);
+                        device->drawHudText(frame,pal[i].label,px+pad,ty,13.0f,i==sel?val:lab);
+                        char cz[24]; std::snprintf(cz,sizeof cz,"$%d",pal[i].cost);
+                        device->drawHudText(frame,cz,px+pw-pad-(float)std::strlen(cz)*12.0f,ty,12.0f,lab); ty+=rowH; }
+                    ty+=8.0f;
+                    device->drawHudText(frame,"[ ] cycle   R rotate   ENTER place   BKSP undo",px+pad,ty,11.0f,lab); ty+=20.0f;
+                    char tz[64]; std::snprintf(tz,sizeof tz,"TREASURY  $%0.0f     BUILT %d",treas,3);
+                    device->drawHudText(frame,tz,px+pad,ty,12.0f,hcol);
+                }
             }
             device->endFrame(frame);
         }
@@ -1638,6 +1661,34 @@ int hostEchotropolis(HostContext& hc) {
     bool cityPanelOpen = false, prevTab = false;   // CITY PANEL (TAB toggles)
     int  followIdx = -1, lastPickedIdx = -1; bool prevF = false;   // RIDE-ALONG (F)
 
+    // ===================== BUILD MENU (B) =====================
+    // Place real textured buildings on the island at the orbit cursor (screen-centre
+    // ground point). Each placed lot = its own cached EnvArtSystem, drawn like houses.
+    // Cost is drawn from the live treasury; Backspace refunds the last placement.
+    struct BuildDef { const char* label; const char* dir; const char* glb;
+                      float scale; float lift; int cost; };
+    static const BuildDef kBuild[] = {
+        { "STEEL LOFT", "D:/Assets/_glb/prefab_buildings/HouseForge", "PF_MetalHouse01.glb",     0.01f, 11.73f, 600 },
+        { "STEEL FLAT", "D:/Assets/_glb/prefab_buildings/HouseForge", "PF_MetalHouse02.glb",     0.01f,  2.13f, 550 },
+        { "COTTAGE A",  "D:/Assets/_glb/prefab_buildings/HouseForge", "PF_PrimitiveHouse01.glb", 0.01f,  3.17f, 400 },
+        { "COTTAGE B",  "D:/Assets/_glb/prefab_buildings/HouseForge", "PF_PrimitiveHouse02.glb", 0.01f,  1.00f, 400 },
+        { "COTTAGE C",  "D:/Assets/_glb/prefab_buildings/HouseForge", "PF_PrimitiveHouse03.glb", 0.01f,  8.59f, 450 },
+    };
+    const int kBuildCount = (int)(sizeof(kBuild) / sizeof(kBuild[0]));
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> placed;   // player-built lots
+    std::vector<int> placedCost;                                   // for Backspace refund
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> buildPreview(kBuildCount);  // ghosts, lazy
+    bool buildMode = false, prevB = false, prevLB = false, prevRB = false,
+         prevRk = false, prevBk = false, prevPlace = false;
+    int  buildSel = 0; float buildYaw = 0.0f;
+    // HouseForge/mine transform (col-major): yaw about Y, uniform scale, terrain-lift.
+    auto buildXf = [&](float x, float z, float yaw, float s, float lift, float T[16]){
+        const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
+        const float c = std::cos(yaw), sn = std::sin(yaw);
+        T[0]=c*s; T[1]=0; T[2]=-sn*s; T[3]=0;  T[4]=0; T[5]=s; T[6]=0; T[7]=0;
+        T[8]=sn*s; T[9]=0; T[10]=c*s; T[11]=0; T[12]=x; T[13]=gy+lift; T[14]=z; T[15]=1;
+    };
+
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
         glfwPollEvents();
@@ -1662,6 +1713,9 @@ int hostEchotropolis(HostContext& hc) {
         // ---- WALK MODE toggle (G) + first-person character step -------------
         { const bool g = kd(GLFW_KEY_G); if (g && !prevG && physOk) walkMode = !walkMode; prevG = g; }
         { const bool tb = kd(GLFW_KEY_TAB); if (tb && !prevTab) cityPanelOpen = !cityPanelOpen; prevTab = tb; }
+        // BUILD MODE (B): orbit-only; entering walk mode drops it.
+        { const bool b = kd(GLFW_KEY_B); if (b && !prevB && !walkMode) buildMode = !buildMode; prevB = b; }
+        if (walkMode) buildMode = false;
         // RIDE-ALONG (F): possess the camera onto the citizen you're inspecting; F again releases.
         { const bool f = kd(GLFW_KEY_F);
           if (f && !prevF) {
@@ -1823,6 +1877,37 @@ int hostEchotropolis(HostContext& hc) {
         // under the crosshair stays fixed while rotating/zooming.
         rig.pivotY = std::max(hf.heightAt(rig.focusX, rig.focusZ), 0.0f);
 
+        // ---- BUILD MENU interaction: cursor = orbit focus on the ground ----
+        if (buildMode) {
+            { const bool lb = kd(GLFW_KEY_LEFT_BRACKET);
+              if (lb && !prevLB) buildSel = (buildSel + kBuildCount - 1) % kBuildCount; prevLB = lb; }
+            { const bool rb = kd(GLFW_KEY_RIGHT_BRACKET);
+              if (rb && !prevRB) buildSel = (buildSel + 1) % kBuildCount; prevRB = rb; }
+            { const bool r = kd(GLFW_KEY_R);
+              if (r && !prevRk) buildYaw += 0.7853982f; prevRk = r; }   // +45 deg
+            // PLACE (Enter): drop a permanent lot at the cursor if affordable.
+            { const bool pl = kd(GLFW_KEY_ENTER);
+              if (pl && !prevPlace) {
+                  const BuildDef& d = kBuild[buildSel];
+                  if (treasury >= (double)d.cost) {
+                      float T[16]; buildXf(rig.focusX, rig.focusZ, buildYaw, d.scale, d.lift, T);
+                      auto e = std::make_unique<x3::game::EnvArtSystem>();
+                      if (e->buildFromGlbAt(*device, d.dir, d.glb, T)) {
+                          placed.push_back(std::move(e)); placedCost.push_back(d.cost);
+                          treasury -= (double)d.cost;
+                      }
+                  }
+              }
+              prevPlace = pl; }
+            // UNDO (Backspace): remove + refund the last placed lot.
+            { const bool bk = kd(GLFW_KEY_BACKSPACE);
+              if (bk && !prevBk && !placed.empty()) {
+                  treasury += (double)placedCost.back();
+                  placed.pop_back(); placedCost.pop_back();
+              }
+              prevBk = bk; }
+        }
+
         // ---- Critically-damped smoothing of every channel (no snapping) -------
         rig.sFocusX = smoothDamp(rig.sFocusX, rig.focusX, rig.vFocusX, opt.smoothFocus, dt);
         rig.sFocusZ = smoothDamp(rig.sFocusZ, rig.focusZ, rig.vFocusZ, opt.smoothFocus, dt);
@@ -1915,7 +2000,23 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
         for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
+        for (auto& p : placed) p->draw(*device, frame);      // BUILD MENU: player-placed lots
         mineGlowScene.render(*device, frame);                // authentic EoS arch mouth-glow
+        // BUILD GHOST: the selected building previewed at the cursor (lazily loaded).
+        if (buildMode) {
+            if (!buildPreview[buildSel]) {
+                const BuildDef& d = kBuild[buildSel];
+                float T[16]; buildXf(rig.focusX, rig.focusZ, buildYaw, d.scale, d.lift, T);
+                auto e = std::make_unique<x3::game::EnvArtSystem>();
+                if (e->buildFromGlbAt(*device, d.dir, d.glb, T)) buildPreview[buildSel] = std::move(e);
+            }
+            if (buildPreview[buildSel]) {
+                const BuildDef& d = kBuild[buildSel];
+                float T[16]; buildXf(rig.focusX, rig.focusZ, buildYaw, d.scale, d.lift, T);
+                buildPreview[buildSel]->setInstanceTransform(0, T);
+                buildPreview[buildSel]->draw(*device, frame);
+            }
+        }
         if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame);
                         if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
         for (auto& h : helis) { poseHeli(h, waterTime);
@@ -2035,6 +2136,38 @@ int hostEchotropolis(HostContext& hc) {
                 }
             } else {
                 lastPickedIdx = -1;
+            }
+
+            // BUILD MENU palette (left panel) — the web "place a building" tool.
+            if (buildMode) {
+                const float pw = 300.0f, pad = 16.0f, rowH = 26.0f, px = 24.0f, py = 54.0f;
+                const float ph = 96.0f + kBuildCount * rowH;
+                const float bg[4]  = { 0.03f, 0.05f, 0.09f, 0.92f };
+                const float hstr[4]= { 0.10f, 0.14f, 0.20f, 0.96f };
+                const float hdr[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
+                const float lab[4] = { 0.60f, 0.70f, 0.82f, 1.0f };
+                const float val[4] = { 0.92f, 0.96f, 1.0f, 1.0f };
+                const float selc[4]= { 0.14f, 0.24f, 0.18f, 0.95f };
+                const float red[4] = { 0.95f, 0.45f, 0.35f, 1.0f };
+                device->drawHudQuad(frame, px, py, pw, ph, bg);
+                device->drawHudQuad(frame, px, py, pw, 34.0f, hstr);
+                device->drawHudText(frame, "BUILD   //   place a lot", px + pad, py + 9.0f, 14.0f, hdr);
+                float ty = py + 46.0f;
+                for (int i = 0; i < kBuildCount; ++i) {
+                    const BuildDef& d = kBuild[i];
+                    if (i == buildSel) device->drawHudQuad(frame, px + 8.0f, ty - 3.0f, pw - 16.0f, rowH - 2.0f, selc);
+                    device->drawHudText(frame, d.label, px + pad, ty, 13.0f, i == buildSel ? val : lab);
+                    char cz[24]; std::snprintf(cz, sizeof cz, "$%d", d.cost);
+                    device->drawHudText(frame, cz, px + pw - pad - (float)std::strlen(cz) * 12.0f, ty, 12.0f,
+                                        treasury >= (double)d.cost ? lab : red);
+                    ty += rowH;
+                }
+                ty += 8.0f;
+                device->drawHudText(frame, "[ ] cycle   R rotate   ENTER place   BKSP undo",
+                                    px + pad, ty, 11.0f, lab); ty += 20.0f;
+                char tz[64];
+                std::snprintf(tz, sizeof tz, "TREASURY  $%0.0f     BUILT %d", treasury, (int)placed.size());
+                device->drawHudText(frame, tz, px + pad, ty, 12.0f, hdr);
             }
         }
         device->endFrame(frame);
