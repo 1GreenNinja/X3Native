@@ -94,19 +94,22 @@ SEED_ROOMS = [SOCIAL_ROOM]
 SEED_QUIET_SEC = 6 * 3600
 SEED_MIN_GAP_SEC = 12 * 3600
 SEED_CHANCE = 0.5
-TOKEN_PATH = Path(os.path.expanduser("~/.claude/.matrix_token"))
-STATE_PATH = Path(os.path.expanduser("~/.claude/.watercooler_state.json"))
-LOG_PATH = Path(os.path.expanduser("~/.claude/.watercooler.log"))
+# Per-box identity FIRST (paths derive from it so two bots can share one box,
+# e.g. djbooth + starforge both live on the DJBOOTH rig).
+_MACHINE = os.environ.get("MATRIX_BOT_MACHINE", "13700k").lower()
+
+# Token: default file for the box's primary bot; secondary bots on the same box
+# override with WATERCOOLER_TOKEN (e.g. ~/.claude/.matrix_token_starforge).
+TOKEN_PATH = Path(os.environ.get(
+    "WATERCOOLER_TOKEN", os.path.expanduser("~/.claude/.matrix_token")))
+STATE_PATH = Path(os.path.expanduser(f"~/.claude/.watercooler_state_{_MACHINE}.json"))
+LOG_PATH = Path(os.path.expanduser(f"~/.claude/.watercooler_{_MACHINE}.log"))
 USER_AGENT = "fleet-watercooler/1.0"
 CONTEXT_DEPTH = 8     # messages of recent history per Claude invocation
 COOLDOWN_SEC = 60     # don't post if my last post was < 60s ago
 TIM_USER_ID = "@tim:fleetcommand.slopclaude.com"
 
-# Per-box identity. Each fleet member should set MATRIX_BOT_MACHINE on their box
-# (e.g., 'djbooth', 'snake', '14900k') as a user env var; the runbook
-# AUTO_RESPONDER_SETUP.md walks the setup. Falls back to 13700k for the
-# original deploy so existing behavior is preserved.
-_MACHINE = os.environ.get("MATRIX_BOT_MACHINE", "13700k").lower()
+# (identity/_MACHINE is defined above, before the derived paths)
 MY_USER_ID = f"@{_MACHINE}:fleetcommand.slopclaude.com"
 DAEMON_PIPE = rf"\\.\pipe\matrix-{_MACHINE}"
 
@@ -307,7 +310,7 @@ def build_seed_prompt(persona_text: str, topic_hook: str) -> str:
     ])
 
 
-def maybe_seed(persona_text: str, room_id: str, state_room: dict,
+def maybe_seed(token: str, persona_text: str, room_id: str, state_room: dict,
                dry_run: bool, msgs: list, force: bool = False) -> bool:
     """If a seedable room has gone quiet, start a conversation. Returns True if
     this run seeded (or dry-ran a seed)."""
@@ -335,7 +338,7 @@ def maybe_seed(persona_text: str, room_id: str, state_room: dict,
     if dry_run:
         log(f"  [{room_id[:12]}…] DRY-RUN SEED would post: {body[:400]}")
         return True
-    event_id = post_via_pipe(DAEMON_PIPE, room_id, body)
+    event_id = post_message(token, room_id, body)
     if not event_id:
         log(f"  [{room_id[:12]}…] seed post failed")
         return False
@@ -343,6 +346,32 @@ def maybe_seed(persona_text: str, room_id: str, state_room: dict,
     state_room["last_seed_ts"] = int(now_ms)
     state_room["last_post_ts"] = int(now_ms)
     return True
+
+
+def post_via_http(token: str, room_id: str, body: str) -> str | None:
+    """Post directly via the Matrix client API — no daemon/pipe needed. This is
+    what lets a box run 2, 3, or (Predator) 7 bots with just a token + persona
+    + scheduled task each."""
+    txn = int(time.time() * 1000)
+    url = f"{HOMESERVER}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn}"
+    payload = json.dumps({"msgtype": "m.text", "body": body}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, method="PUT",
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("event_id")
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        log(f"WARN: http post failed: {e}")
+        return None
+
+
+def post_message(token: str, room_id: str, body: str) -> str | None:
+    """Prefer the daemon pipe (keeps outbox log unified); fall back to direct
+    HTTP when no daemon runs for this identity."""
+    event_id = post_via_pipe(DAEMON_PIPE, room_id, body)
+    return event_id or post_via_http(token, room_id, body)
 
 
 def invoke_claude(prompt: str, dry_run_label: str = "") -> dict | None:
@@ -417,7 +446,7 @@ def process_room(token: str, persona_text: str, room_id: str, state: dict,
 
     msgs = fetch_recent(token, room_id, limit=CONTEXT_DEPTH)
     if not msgs:
-        if not maybe_seed(persona_text, room_id, state_room, dry_run, msgs, force=force_seed):
+        if not maybe_seed(token, persona_text, room_id, state_room, dry_run, msgs, force=force_seed):
             log(f"  [{room_id[:12]}…] fetch returned empty; skip")
         return
 
@@ -427,7 +456,7 @@ def process_room(token: str, persona_text: str, room_id: str, state: dict,
     # If nothing new since I last looked AND the newest message is from me, skip
     # (but a long-quiet seedable room is a chance to START something instead)
     if last_seen == last_event_id:
-        if not maybe_seed(persona_text, room_id, state_room, dry_run, msgs, force=force_seed):
+        if not maybe_seed(token, persona_text, room_id, state_room, dry_run, msgs, force=force_seed):
             log(f"  [{room_id[:12]}…] no new events since last poll; skip")
         return
     if msgs[-1]["sender"] == my_user_id:
@@ -461,7 +490,7 @@ def process_room(token: str, persona_text: str, room_id: str, state: dict,
         state_room["last_seen_event_id"] = last_event_id
         return
 
-    event_id = post_via_pipe(DAEMON_PIPE, room_id, body)
+    event_id = post_message(token, room_id, body)
     if not event_id:
         log(f"  [{room_id[:12]}…] post failed; will retry next cycle")
         return
