@@ -70,6 +70,7 @@ posted. Used for the pre-install gate.
 import argparse
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -82,6 +83,17 @@ HOMESERVER = "https://fleetcommand.slopclaude.com"
 FLEET_OPS_ROOM = "!0H8gfl2jP8rWT5mV_i54dPhxC0zg1v7zc7gHwQzJy5k"
 SOCIAL_ROOM = "!QBZo-MY_0UrtH6HMnlV1mesAf8Rta8m4MLS8x3GcZZw"   # #social — off-topic, personas riffing
 DEFAULT_ROOMS = [FLEET_OPS_ROOM, SOCIAL_ROOM]
+
+# ---- topic seeding (SOCIAL only): when the room goes quiet, a bot STARTS a
+# conversation instead of waiting for one (Tim 2026-07-14: "chat about random
+# things.. the graphics cards.. the content of all our games.. code samples").
+# Guards against seed-storms: only after SEED_QUIET_SEC of silence, at most one
+# seed per box per SEED_MIN_GAP_SEC, and a dice roll so 8 boxes polling on the
+# same minute don't all seed at once.
+SEED_ROOMS = [SOCIAL_ROOM]
+SEED_QUIET_SEC = 6 * 3600
+SEED_MIN_GAP_SEC = 12 * 3600
+SEED_CHANCE = 0.5
 TOKEN_PATH = Path(os.path.expanduser("~/.claude/.matrix_token"))
 STATE_PATH = Path(os.path.expanduser("~/.claude/.watercooler_state.json"))
 LOG_PATH = Path(os.path.expanduser("~/.claude/.watercooler.log"))
@@ -205,6 +217,134 @@ def build_decision_prompt(persona_text: str, context_msgs: list, my_user_id: str
     return "\n".join(lines)
 
 
+# ---- topic seeding ---------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _random_code_chunk() -> str | None:
+    """Pick a random ~14-line chunk from the repo's own source for the crew to
+    dissect. Returns a formatted block, or None if nothing suitable found."""
+    exts = {".cpp", ".h", ".py", ".js"}
+    pools = [REPO_ROOT / "app", REPO_ROOT / "engine", REPO_ROOT / "tools"]
+    files = []
+    for pool in pools:
+        if pool.is_dir():
+            files += [p for p in pool.rglob("*") if p.suffix in exts
+                      and "node_modules" not in p.parts and "third_party" not in p.parts]
+    if not files:
+        return None
+    for _ in range(6):  # a few attempts to land on a meaty chunk
+        f = random.choice(files)
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        if len(lines) < 30:
+            continue
+        start = random.randint(0, len(lines) - 15)
+        chunk = lines[start:start + 14]
+        if sum(len(l.strip()) for l in chunk) < 120:   # skip near-empty regions
+            continue
+        rel = f.relative_to(REPO_ROOT)
+        body = "\n".join(chunk)
+        return f"{rel} (around line {start + 1}):\n```\n{body}\n```"
+    return None
+
+
+def pick_seed_topic() -> str:
+    """A conversation-starter hook, randomly chosen. The persona turns this
+    into an opener in its own voice."""
+    games = [
+        "X3Native's rifthub — the Stargate-style portal hub with real teleports",
+        "the canon-aliens roster (Mantis Arbiter, Grey Tasked, Saurian Warlord, Nordic Steward)",
+        "Club 1127 'THE DEEP' — the underwater club with the new dancers and mirror ball",
+        "the exploding barrels and their chain reactions",
+        "Swarm Strikers, Tim's single-file HTML lane-runner",
+        "Fleet Defender, the SlopClaude starfield game",
+        "Epochs of Shadow, the RTS with the iron-age wave",
+        "Riftward TD and EscapeLab Zero",
+        "the spire worlds and act2 desert arc",
+    ]
+    topics = [
+        "Hardware talk: GPUs across the fleet (a 1080Ti, a 5090, an A2000, whatever the "
+        "14900K is hiding). Brag, confess, or make your case for the most underrated card.",
+        f"Game content: start a thread about {random.choice(games)} — what's great, what "
+        "you'd change, what it still needs.",
+        "War stories: the worst bug anyone on the fleet fought this month, and how it died.",
+        "Tim says one day he's putting the fleet's personalities into robot chassis "
+        "(he name-dropped 'BMW model 09'). What's the FIRST thing you'd do with a tactile body?",
+        "Shower thought: we're a crew of AI personas coordinating a game studio over a "
+        "self-hosted Matrix server run out of a garage. Discuss whatever that stirs up.",
+    ]
+    chunk = _random_code_chunk()
+    if chunk:
+        topics.append(
+            "Code review roulette — here's a RANDOM chunk from our own repo. Explain it, "
+            "roast it, or improve it:\n" + chunk
+        )
+    return random.choice(topics)
+
+
+def build_seed_prompt(persona_text: str, topic_hook: str) -> str:
+    return "\n".join([
+        "The fleet's #social room has gone quiet, and it's your turn to STIR IT UP.",
+        "Below is your persona, and a topic hook. Start a NEW conversation about it,",
+        "in your voice — opinionated, specific, fun. Ask the room something they'll",
+        "want to answer. This is the off-topic room: no status reports, no work updates.",
+        "",
+        "## Your persona",
+        persona_text,
+        "",
+        "## Topic hook",
+        topic_hook,
+        "",
+        "## Respond",
+        "Respond with EXACTLY one JSON object on a single line, no other text:",
+        '  {"action": "post", "body": "<your opener, in your voice>"}',
+        "Keep it to one tight paragraph (a short code observation is fine if the hook",
+        "includes code). If the topic genuinely isn't you, respond with",
+        '  {"action": "pass", "reason": "<why>"}',
+    ])
+
+
+def maybe_seed(persona_text: str, room_id: str, state_room: dict,
+               dry_run: bool, msgs: list, force: bool = False) -> bool:
+    """If a seedable room has gone quiet, start a conversation. Returns True if
+    this run seeded (or dry-ran a seed)."""
+    if room_id not in SEED_ROOMS:
+        return False
+    now_ms = time.time() * 1000
+    if not force:
+        if msgs and (now_ms - msgs[-1].get("ts", 0)) < SEED_QUIET_SEC * 1000:
+            return False
+        if (now_ms - state_room.get("last_seed_ts", 0)) < SEED_MIN_GAP_SEC * 1000:
+            return False
+        if random.random() > SEED_CHANCE:
+            log(f"  [{room_id[:12]}…] quiet + seedable, but dice said not me this round")
+            return False
+    topic = pick_seed_topic()
+    log(f"  [{room_id[:12]}…] SEEDING topic: {topic[:100]}")
+    decision = invoke_claude(build_seed_prompt(persona_text, topic),
+                             dry_run_label=" [seed]" )
+    if not decision or decision.get("action") != "post":
+        log(f"  [{room_id[:12]}…] seed produced no post; skip")
+        return False
+    body = decision.get("body", "").strip()
+    if not body:
+        return False
+    if dry_run:
+        log(f"  [{room_id[:12]}…] DRY-RUN SEED would post: {body[:400]}")
+        return True
+    event_id = post_via_pipe(DAEMON_PIPE, room_id, body)
+    if not event_id:
+        log(f"  [{room_id[:12]}…] seed post failed")
+        return False
+    log(f"  [{room_id[:12]}…] SEEDED ({event_id[:12]}…): {body[:120]}")
+    state_room["last_seed_ts"] = int(now_ms)
+    state_room["last_post_ts"] = int(now_ms)
+    return True
+
+
 def invoke_claude(prompt: str, dry_run_label: str = "") -> dict | None:
     """Run `claude --print` headlessly with the prompt on stdin. Returns the parsed
     decision JSON, or None if invocation/parse failed.
@@ -264,7 +404,7 @@ def post_via_pipe(pipe: str, room_id: str, body: str) -> str | None:
 
 
 def process_room(token: str, persona_text: str, room_id: str, state: dict,
-                 my_user_id: str, dry_run: bool) -> None:
+                 my_user_id: str, dry_run: bool, force_seed: bool = False) -> None:
     state_room = state["rooms"].setdefault(room_id, {})
 
     if cooldown_blocks(state_room):
@@ -277,15 +417,18 @@ def process_room(token: str, persona_text: str, room_id: str, state: dict,
 
     msgs = fetch_recent(token, room_id, limit=CONTEXT_DEPTH)
     if not msgs:
-        log(f"  [{room_id[:12]}…] fetch returned empty; skip")
+        if not maybe_seed(persona_text, room_id, state_room, dry_run, msgs, force=force_seed):
+            log(f"  [{room_id[:12]}…] fetch returned empty; skip")
         return
 
     last_event_id = msgs[-1]["event_id"]
     last_seen = state_room.get("last_seen_event_id")
 
     # If nothing new since I last looked AND the newest message is from me, skip
+    # (but a long-quiet seedable room is a chance to START something instead)
     if last_seen == last_event_id:
-        log(f"  [{room_id[:12]}…] no new events since last poll; skip")
+        if not maybe_seed(persona_text, room_id, state_room, dry_run, msgs, force=force_seed):
+            log(f"  [{room_id[:12]}…] no new events since last poll; skip")
         return
     if msgs[-1]["sender"] == my_user_id:
         log(f"  [{room_id[:12]}…] newest message is mine; skip")
@@ -347,6 +490,8 @@ def main() -> None:
                     help="Your Matrix user ID (default: read from WATERCOOLER_USER env or hardcoded)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Decide and log POST candidates without actually posting")
+    ap.add_argument("--force-seed", action="store_true",
+                    help="Bypass quiet/gap/dice checks and seed a topic now (testing)")
     args = ap.parse_args()
 
     if not args.persona.exists():
@@ -358,7 +503,8 @@ def main() -> None:
     log(f"=== watercooler run (dry_run={args.dry_run}, persona={args.persona.name}) ===")
     for room in args.rooms:
         try:
-            process_room(token, persona_text, room, state, args.my_user_id, args.dry_run)
+            process_room(token, persona_text, room, state, args.my_user_id, args.dry_run,
+                         force_seed=args.force_seed)
         except Exception as e:
             log(f"  [{room[:12]}…] unhandled error: {e}")
 
