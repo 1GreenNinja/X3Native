@@ -838,7 +838,7 @@ void check(bool cond, const char* name) {
     if (cond) { ++g_pass; x3::logInfo(std::string("[editor-test] PASS ") + name); }
     else      { ++g_fail; x3::logError(std::string("[editor-test] FAIL ") + name); }
 }
-bool near(float a, float b, float e = 1e-3f) { return std::fabs(a-b) < e; }
+bool feq(float a, float b, float e = 1e-3f) { return std::fabs(a-b) < e; }
 }
 
 bool runEditorSelfTest() {
@@ -858,12 +858,12 @@ bool runEditorSelfTest() {
         LevelDoc rt; bool parsed = rt.fromJson(js);
         bool same = parsed && rt.name == doc.name && rt.biome == doc.biome &&
                     rt.entities.size() == 3 &&
-                    near(rt.playerStart[0], 1.5f) && near(rt.playerStart[2], -2.0f) &&
+                    feq(rt.playerStart[0], 1.5f) && feq(rt.playerStart[2], -2.0f) &&
                     rt.entities[0].name == "crate" && rt.entities[0].type == "prop" &&
-                    near(rt.entities[0].pos[0], 3.0f) && near(rt.entities[0].yaw, 0.5f) &&
-                    near(rt.entities[0].scale, 1.2f) &&
-                    rt.entities[1].type == "enemy" && near(rt.entities[1].pos[0], 8.0f) &&
-                    rt.entities[2].type == "light" && near(rt.entities[2].pos[1], 3.0f);
+                    feq(rt.entities[0].pos[0], 3.0f) && feq(rt.entities[0].yaw, 0.5f) &&
+                    feq(rt.entities[0].scale, 1.2f) &&
+                    rt.entities[1].type == "enemy" && feq(rt.entities[1].pos[0], 8.0f) &&
+                    rt.entities[2].type == "light" && feq(rt.entities[2].pos[1], 3.0f);
         check(same, "E0 JSON save->load round-trip preserves the level");
     }
 
@@ -894,9 +894,9 @@ bool runEditorSelfTest() {
         ed.setSnap(true, 0.5f);
         ed.select(1);                         // grunt at (8,0,4)
         ed.moveSelected(Axis::X, 0.4f);       // 8.4 -> snap to 8.5
-        bool moved = near(doc.entities[1].pos[0], 8.5f);
+        bool moved = feq(doc.entities[1].pos[0], 8.5f);
         ed.moveSelected(Axis::Z, -1.2f);      // 4 - 1.2 = 2.8 -> snap 3.0... actually 2.8 -> 3.0? round(2.8/0.5)=round(5.6)=6 ->3.0
-        bool movedZ = near(doc.entities[1].pos[2], 3.0f);
+        bool movedZ = feq(doc.entities[1].pos[2], 3.0f);
         check(moved && movedZ, "E3 move gizmo + grid snap updates the selection");
     }
 
@@ -908,7 +908,7 @@ bool runEditorSelfTest() {
         float p[3] = { 5, 0, 5 };
         int idx = ed.addEntity("npc", p);
         bool added = d2.entities.size() == before + 1 && idx == (int)before &&
-                     d2.entities[idx].type == "npc" && near(d2.entities[idx].pos[0], 5.0f);
+                     d2.entities[idx].type == "npc" && feq(d2.entities[idx].pos[0], 5.0f);
         bool del = ed.deleteSelected();
         check(added && del && d2.entities.size() == before,
               "E4 add + delete entity mutate the doc");
@@ -941,10 +941,10 @@ bool runEditorSelfTest() {
         LevelDoc rt; bool parsed = rt.fromJson(bd.toJson());
         bool same = parsed && rt.brushes.size() == 2 &&
                     rt.brushes[0].name == "floor" && rt.brushes[0].type == 0u &&
-                    near(rt.brushes[0].size[0], 8.0f) && near(rt.brushes[0].pos[2], -3.0f) &&
+                    feq(rt.brushes[0].size[0], 8.0f) && feq(rt.brushes[0].pos[2], -3.0f) &&
                     rt.brushes[0].collide == true &&
-                    rt.brushes[1].type == 1u && near(rt.brushes[1].yaw, 1.5708f) &&
-                    near(rt.brushes[1].size[1], 2.0f) && rt.brushes[1].collide == false;
+                    rt.brushes[1].type == 1u && feq(rt.brushes[1].yaw, 1.5708f) &&
+                    feq(rt.brushes[1].size[1], 2.0f) && rt.brushes[1].collide == false;
         check(same, "E7 blockout brushes[] JSON round-trip preserves type/pos/size/yaw/collide");
     }
 
@@ -960,7 +960,7 @@ bool runEditorSelfTest() {
                       !ed.canUndo() && ed.canRedo();
         HistoryEffect r = ed.redo();
         bool redone = d.brushes.size() == 1 && r.op == HistoryEffect::Op::Respawn &&
-                      near(d.brushes[0].pos[2], 2.0f) && ed.canUndo() && !ed.canRedo();
+                      feq(d.brushes[0].pos[2], 2.0f) && ed.canUndo() && !ed.canRedo();
         check(added && undone && redone, "E8 undo/redo of brush ADD round-trips the doc");
     }
 
@@ -973,7 +973,7 @@ bool runEditorSelfTest() {
         bool del = ed.deleteSelectedBrushCmd() && d.brushes.empty();
         HistoryEffect u = ed.undo();                 // undo the delete -> restore
         bool restored = d.brushes.size() == 1 && d.brushes[0].type == 1u &&
-                        near(d.brushes[0].pos[0], 4.0f) && u.op == HistoryEffect::Op::Respawn &&
+                        feq(d.brushes[0].pos[0], 4.0f) && u.op == HistoryEffect::Op::Respawn &&
                         u.index == 0;
         HistoryEffect r = ed.redo();                 // redo the delete -> gone again
         bool gone = d.brushes.empty() && r.removed;
@@ -992,9 +992,9 @@ bool runEditorSelfTest() {
         ed.commitBrushEdit();                         // ONE Transform command
         bool oneStep = ed.canUndo();
         HistoryEffect u = ed.undo();                  // back to x=0
-        bool back = near(d.brushes[0].pos[0], 0.0f) && u.op == HistoryEffect::Op::SyncXform;
+        bool back = feq(d.brushes[0].pos[0], 0.0f) && u.op == HistoryEffect::Op::SyncXform;
         HistoryEffect r = ed.redo();                  // forward to x=7
-        bool fwd = near(d.brushes[0].pos[0], 7.0f) && r.op == HistoryEffect::Op::SyncXform;
+        bool fwd = feq(d.brushes[0].pos[0], 7.0f) && r.op == HistoryEffect::Op::SyncXform;
         // A commit with no net change must NOT push a command.
         ed.beginBrushEdit(0); ed.commitBrushEdit();
         bool noEmpty = !ed.canRedo();                 // still nothing to redo
@@ -1011,7 +1011,7 @@ bool runEditorSelfTest() {
         d.brushes[0].size[0] = 6.0f;                  // grow X face
         ed.commitBrushEdit();
         HistoryEffect u = ed.undo();
-        check(u.op == HistoryEffect::Op::Respawn && near(d.brushes[0].size[0], 2.0f),
+        check(u.op == HistoryEffect::Op::Respawn && feq(d.brushes[0].size[0], 2.0f),
               "E11 size edit undo asks the host to RESPAWN (rebuild mesh)");
     }
 
@@ -1078,15 +1078,15 @@ bool runEditorSelfTest() {
         d.brushes[0].yaw = 0.7854f;                     // 45 deg
         ed.commitBrushEdit();
         HistoryEffect ru = ed.undo();                   // back to yaw 0 (cheap SyncXform)
-        bool rotOk = near(d.brushes[0].yaw, 0.0f) && ru.op == HistoryEffect::Op::SyncXform;
+        bool rotOk = feq(d.brushes[0].yaw, 0.0f) && ru.op == HistoryEffect::Op::SyncXform;
         ed.redo();                                      // forward to 45 deg
-        bool rotFwd = near(d.brushes[0].yaw, 0.7854f);
+        bool rotFwd = feq(d.brushes[0].yaw, 0.7854f);
         // SCALE: a size drag = 1 undo step, and undo asks the host to RESPAWN (mesh rebuild).
         ed.beginBrushEdit(0);
         d.brushes[0].size[0] = 5.0f;                    // grow X
         ed.commitBrushEdit();
         HistoryEffect su = ed.undo();
-        bool scaleOk = near(d.brushes[0].size[0], 2.0f) && su.op == HistoryEffect::Op::Respawn;
+        bool scaleOk = feq(d.brushes[0].size[0], 2.0f) && su.op == HistoryEffect::Op::Respawn;
         check(rotOk && rotFwd && scaleOk,
               "E14 rotate(yaw)=SyncXform + scale(size)=Respawn, each one undo step");
     }
@@ -1113,8 +1113,8 @@ bool runEditorSelfTest() {
         bool roundtrip = parsed && rt.entities.size() == 1 &&
                          rt.entities[0].type == "model" &&
                          rt.entities[0].model == "SciFi_Warehouse_Kit/Barrel.glb" &&
-                         near(rt.entities[0].pos[0], 2.0f) && near(rt.entities[0].pos[2], -3.0f) &&
-                         near(rt.entities[0].yaw, 0.5f) && near(rt.entities[0].scale, 1.5f);
+                         feq(rt.entities[0].pos[0], 2.0f) && feq(rt.entities[0].pos[2], -3.0f) &&
+                         feq(rt.entities[0].yaw, 0.5f) && feq(rt.entities[0].scale, 1.5f);
         check(catOk && roundtrip,
               "E15 model browser: placed GLB entity round-trips through the LevelDoc JSON");
     }
@@ -1129,14 +1129,14 @@ bool runEditorSelfTest() {
         int undoBefore = 0; (void)undoBefore;
         // Move OUT along Z by a 0.5 step -> z = 0.5, reported as a cheap SyncXform.
         HistoryEffect e1 = ed.nudgeBrush(NudgeAction::MoveOut, Axis::Z, 0.5f);
-        bool moved = near(d.brushes[0].pos[2], 0.5f) && e1.op == HistoryEffect::Op::SyncXform;
+        bool moved = feq(d.brushes[0].pos[2], 0.5f) && e1.op == HistoryEffect::Op::SyncXform;
         // The nudge is ONE undo step: undo restores z=0.
         HistoryEffect u = ed.undo();
-        bool oneStep = near(d.brushes[0].pos[2], 0.0f) && u.op == HistoryEffect::Op::SyncXform;
+        bool oneStep = feq(d.brushes[0].pos[2], 0.0f) && u.op == HistoryEffect::Op::SyncXform;
         // Move IN along X -> x = -0.5.
         ed.redo();                                      // back to z=0.5
         HistoryEffect e2 = ed.nudgeBrush(NudgeAction::MoveIn, Axis::X, 0.5f);
-        bool movedIn = near(d.brushes[0].pos[0], -0.5f) && e2.op == HistoryEffect::Op::SyncXform;
+        bool movedIn = feq(d.brushes[0].pos[0], -0.5f) && e2.op == HistoryEffect::Op::SyncXform;
         check(moved && oneStep && movedIn,
               "E16 keyboard MOVE nudge: snapped pos, one undo step, SyncXform sync");
     }
@@ -1150,20 +1150,20 @@ bool runEditorSelfTest() {
         ed.selectBrush(0);
         // STRETCH grow on X by 1 step -> size.x 2 -> 2.5, host must RESPAWN (mesh rebuild).
         HistoryEffect s = ed.nudgeBrush(NudgeAction::StretchGrow, Axis::X, 0.5f);
-        bool grew = near(d.brushes[0].size[0], 2.5f) && s.op == HistoryEffect::Op::Respawn;
+        bool grew = feq(d.brushes[0].size[0], 2.5f) && s.op == HistoryEffect::Op::Respawn;
         // RAISE CEILING: top was y=2 (center 1 + half 1). Raise by 1 -> size.y 2->3,
         // center shifts up by 0.5 (to 1.5) so the BOTTOM stays at y=0, top -> 3.
         HistoryEffect h = ed.nudgeBrush(NudgeAction::RaiseHeight, Axis::Y, 1.0f);
         const float top = d.brushes[0].pos[1] + d.brushes[0].size[1]*0.5f;
         const float bot = d.brushes[0].pos[1] - d.brushes[0].size[1]*0.5f;
-        bool raised = near(d.brushes[0].size[1], 3.0f) && near(top, 3.0f) && near(bot, 0.0f) &&
+        bool raised = feq(d.brushes[0].size[1], 3.0f) && feq(top, 3.0f) && feq(bot, 0.0f) &&
                       h.op == HistoryEffect::Op::Respawn;
         // RAISE FLOOR: bottom was 0. Raise floor by 1 -> size.y 3->2, center up by 0.5
         // (to 2.0) so the TOP stays at 3, bottom -> 1.
         HistoryEffect f = ed.nudgeBrush(NudgeAction::RaiseFloor, Axis::Y, 1.0f);
         const float top2 = d.brushes[0].pos[1] + d.brushes[0].size[1]*0.5f;
         const float bot2 = d.brushes[0].pos[1] - d.brushes[0].size[1]*0.5f;
-        bool floor = near(d.brushes[0].size[1], 2.0f) && near(top2, 3.0f) && near(bot2, 1.0f) &&
+        bool floor = feq(d.brushes[0].size[1], 2.0f) && feq(top2, 3.0f) && feq(bot2, 1.0f) &&
                      f.op == HistoryEffect::Op::Respawn;
         check(grew && raised && floor,
               "E17 keyboard STRETCH=Respawn + RAISE ceiling/floor move the right face");
@@ -1219,10 +1219,10 @@ bool runBlockoutSelfTest() {
         LevelDoc rt; bool ok = rt.fromJson(doc.toJson());
         bool same = ok && rt.brushes.size() == 1 &&
                     rt.brushes[0].name == "ramp_test" && rt.brushes[0].type == 1u &&
-                    near(rt.brushes[0].pos[0], 3.5f) && near(rt.brushes[0].pos[1], 1.25f) &&
-                    near(rt.brushes[0].pos[2], -7.0f) &&
-                    near(rt.brushes[0].size[0], 4.0f) && near(rt.brushes[0].size[1], 2.5f) &&
-                    near(rt.brushes[0].size[2], 6.0f) && near(rt.brushes[0].yaw, 0.7854f) &&
+                    feq(rt.brushes[0].pos[0], 3.5f) && feq(rt.brushes[0].pos[1], 1.25f) &&
+                    feq(rt.brushes[0].pos[2], -7.0f) &&
+                    feq(rt.brushes[0].size[0], 4.0f) && feq(rt.brushes[0].size[1], 2.5f) &&
+                    feq(rt.brushes[0].size[2], 6.0f) && feq(rt.brushes[0].yaw, 0.7854f) &&
                     rt.brushes[0].collide == true;
         check(same, "B0 brush round-trips (type/pos/size/yaw/collide preserved)");
     }
@@ -1235,8 +1235,8 @@ bool runBlockoutSelfTest() {
         int idx = ed.addBrush(/*Box*/0u, p);
         bool ok = idx == 0 && doc.brushes.size() == 1 &&
                   ed.selKind() == SelKind::Brush && ed.selIndex() == 0 &&
-                  near(doc.brushes[0].pos[0], 2.5f) &&   // 2.3 -> snap 2.5
-                  near(doc.brushes[0].pos[2], -4.5f);    // -4.7 -> snap -4.5
+                  feq(doc.brushes[0].pos[0], 2.5f) &&   // 2.3 -> snap 2.5
+                  feq(doc.brushes[0].pos[2], -4.5f);    // -4.7 -> snap -4.5
         check(ok, "B1 addBrush snaps pos to grid + selects the brush");
     }
 
@@ -1247,7 +1247,7 @@ bool runBlockoutSelfTest() {
         float p[3] = { 0, 0, 0 };
         ed.addBrush(0u, p);                       // 2 m cube
         ed.resizeSelectedBrush(Axis::X, 1.3f);    // 2 + 1.3 = 3.3 -> snap 3.5
-        bool grew = near(doc.brushes[0].size[0], 3.5f);
+        bool grew = feq(doc.brushes[0].size[0], 3.5f);
         ed.resizeSelectedBrush(Axis::Y, -5.0f);   // 2 - 5 -> clamp 0.25
         bool clamped = doc.brushes[0].size[1] >= 0.25f - 1e-3f && doc.brushes[0].size[1] < 0.5f;
         check(grew && clamped, "B2 resizeSelectedBrush face-grows with snap + min clamp");
@@ -1259,9 +1259,9 @@ bool runBlockoutSelfTest() {
         x3::prims::PrimMesh m = x3::prims::buildBrushMesh(x3::prims::BrushType::Box, size);
         float mn[3] = { 1e9f,1e9f,1e9f }, mx[3] = { -1e9f,-1e9f,-1e9f };
         for (const auto& v : m.verts) for (int a=0;a<3;++a){ mn[a]=std::min(mn[a],v.pos[a]); mx[a]=std::max(mx[a],v.pos[a]); }
-        bool centered = near(mn[0],-2.0f) && near(mx[0],2.0f) &&
-                        near(mn[1],-1.0f) && near(mx[1],1.0f) &&
-                        near(mn[2],-3.0f) && near(mx[2],3.0f);
+        bool centered = feq(mn[0],-2.0f) && feq(mx[0],2.0f) &&
+                        feq(mn[1],-1.0f) && feq(mx[1],1.0f) &&
+                        feq(mn[2],-3.0f) && feq(mx[2],3.0f);
         check(centered && !m.verts.empty(), "B3 Box brush mesh is origin-centered (transform carries pos)");
     }
 
