@@ -376,9 +376,13 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // was drowning in amber soup at golden hour. The haze must live at the HORIZON
     // (10km+) while the island — a 3-6km subject — stays readable. Halve the
     // low-sun density ramp and pull the opacity ceiling down.
-    fog.start      = 900.0f;                                   // crisp foreground island
-    fog.density    = 0.00010f + 0.00004f * low;               // subtle by day, gentle low-sun
-    fog.maxOpacity = 0.78f + 0.08f * low;                     // sky still glows gold out far
+    // Film-review pass (2026-07-15): the near CITY vista had ZERO aerial perspective —
+    // near + far towers shared one value, reading as a flat card. Pull the fog START in
+    // (900->380) and lift density so mid/far towers desaturate toward the sky with depth,
+    // while maxOpacity stays capped so the 4km sea-approach island doesn't drown in soup.
+    fog.start      = 380.0f;                                   // depth begins just past the near towers
+    fog.density    = 0.00019f + 0.00004f * low;               // clear aerial perspective across the city
+    fog.maxOpacity = 0.70f + 0.06f * low;                     // far island hazes but never fully dissolves
     device->setFog(fog);
 
     // ---- 2. FILMIC + VIVID GRADE (NMS/storybook: colors you can taste) ---------
@@ -406,8 +410,13 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     device->setBloom(0.12f + 0.06f * low);     // composite bloom add (sun/lantern)
     device->setExposure(1.0f + 0.16f * low);   // golden hour glows
 
-    // ---- 5. SHADOWS: frame the ~4km island so the sun casts across it ----------
-    device->setShadowBounds(0.0f, 0.0f, 0.0f, 2200.0f);
+    // ---- 5. SHADOWS: focus the single shadow map on the CROWN so it RESOLVES -----
+    // Was a 4.4km box centred at origin — one shadow map over 4.4km ~= 2m/texel, so
+    // golden-hour shadows never resolved on the buildings (the #1 "no cast shadows"
+    // finding). Recentre on the downtown crown (-20,760) and shrink to a 1.64km box
+    // (~0.4-0.8m/texel) so the low sun throws crisp long shadows across the city +
+    // grounds the mine forest (which sits within the box) with real contact shadow.
+    device->setShadowBounds(-20.0f, 0.0f, 760.0f, 820.0f);
 }
 
 // ============================ RAY TRACING (hardware RT pass) ==================
@@ -750,7 +759,7 @@ int hostEchotropolis(HostContext& hc) {
                 float x = cx + r*std::cos(a), z = cz + r*std::sin(a);
                 float da = std::fabs(std::atan2(std::sin(a-toCity), std::cos(a-toCity)));
                 if (da < 0.55f && r < 55.0f && hh(seed*3u+7u) < 0.7f) continue;  // thin the city-side approach
-                float sc  = 13.0f + hh(seed*7u+5u)*7.0f;                         // 20-30 m pines
+                float sc  = 10.0f + hh(seed*7u+5u)*16.0f;                        // 10-26 m: wider spread breaks the picket-fence silhouette
                 float yaw = hh(seed*7u+3u)*6.2831853f;
                 plant(x, z, sc, yaw, (int)(hh(seed*7u+9u)*6.0f));
             }
