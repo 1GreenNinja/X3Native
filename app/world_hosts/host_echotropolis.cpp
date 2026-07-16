@@ -1016,6 +1016,92 @@ int hostEchotropolis(HostContext& hc) {
         c.body->setInstanceTransform(0, M);
     };
 
+    // ===================== CITY INFRASTRUCTURE (roads / freeway / metro) =====
+    // The cars/couriers used to drive on bare terrain. Lay real surfaces: asphalt +
+    // neon-curb streets down the exact car lanes; an ELEVATED concrete freeway on the
+    // courier arc; and an ELEVATED metro line with a sliding train — all on pillars so
+    // the layers read as real infrastructure from the vista. Flat plane GLBs (assets/
+    // infra) scaled per segment; the pillar is a unit cube stretched to the ground.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> infra;
+    std::unique_ptr<x3::game::EnvArtSystem> subwayTrain;
+    bool subwayBuilt = false;
+    struct SubwayLine { float x, y, z0, z1, scale; } subwayLine{};
+    const std::string infradir = "D:/GameDev/EchoHarbor/assets/infra";
+    // Place a flat plane GLB (local 1x1 in X/Z, +Y up) as a road/deck: centre (cx,cz),
+    // height y, oriented yaw=atan2(dir.x,dir.z), scaled width(X) x length(Z).
+    auto placeDeck = [&](const char* glb, float cx, float cz, float y, float yaw,
+                         float width, float len){
+        const float c=std::cos(yaw), s=std::sin(yaw);
+        const float T[16] = { c*width,0,-s*width,0,  0,1,0,0,  s*len,0,c*len,0,  cx, y, cz, 1 };
+        auto e = std::make_unique<x3::game::EnvArtSystem>();
+        if (e->buildFromGlbAt(*device, infradir, glb, T)) infra.push_back(std::move(e));
+    };
+    // A concrete support column from ground up to just under deck height topY.
+    auto placePillar = [&](float x, float z, float topY, float w){
+        const float gy = hf.ok()?hf.heightAt(x,z):kCarY;
+        const float h  = std::max(2.0f, topY - gy);
+        const float T[16] = { w,0,0,0, 0,h,0,0, 0,0,w,0, x, gy + h*0.5f, z, 1 };
+        auto e = std::make_unique<x3::game::EnvArtSystem>();
+        if (e->buildFromGlbAt(*device, infradir, "pillar.glb", T)) infra.push_back(std::move(e));
+    };
+    {
+        // STREETS: asphalt + neon curbs down each of the 5 car lanes.
+        const struct { float sx,sz,dx,dz,len; } rlanes[] = {
+            {-330,702,1,0,620},{290,742,-1,0,620},{-330,818,1,0,620},{2,560,0,1,400},{-150,960,0,-1,400},
+        };
+        for (auto& L : rlanes) {
+            const float yaw = std::atan2(L.dx, L.dz);
+            const float mx = L.sx + L.dx*L.len*0.5f, mz = L.sz + L.dz*L.len*0.5f;
+            const float ry = kCarY + 0.06f;
+            placeDeck("road_asphalt.glb", mx, mz, ry,        yaw, 15.0f, L.len);
+            placeDeck("road_curbs.glb",   mx, mz, ry + 0.02f, yaw, 15.0f, L.len);
+        }
+        // FREEWAY: elevated concrete deck on the courier arc (x -160..120, z 720), +7m.
+        {
+            const float fx0=-160.0f, fx1=120.0f, fz=720.0f, flen=fx1-fx0, fmx=(fx0+fx1)*0.5f;
+            const float fgy = hf.ok()?hf.heightAt(fmx,fz):kCarY;
+            const float fy  = fgy + 7.0f;
+            placeDeck("freeway_deck.glb", fmx, fz, fy, std::atan2(1.0f,0.0f), 18.0f, flen);
+            for (float x=fx0+16.0f; x<fx1; x+=36.0f) {
+                placePillar(x, fz-5.5f, fy-0.3f, 2.6f);
+                placePillar(x, fz+5.5f, fy-0.3f, 2.6f);
+            }
+        }
+        // METRO: elevated N-S rail line crossing the crown at +11m (over the freeway).
+        const float mgx=-60.0f, mz0=540.0f, mz1=980.0f, mlen=mz1-mz0, mmz=(mz0+mz1)*0.5f;
+        const float mgy = hf.ok()?hf.heightAt(mgx,mmz):kCarY;
+        const float my  = mgy + 11.0f;
+        placeDeck("rail_deck.glb", mgx, mmz, my, 0.0f, 6.0f, mlen);
+        for (float z=mz0+16.0f; z<mz1; z+=40.0f) placePillar(mgx, z, my-0.3f, 2.2f);
+        // A short elevated platform beside the line (station deck).
+        placeDeck("freeway_deck.glb", mgx+7.0f, 760.0f, my+0.05f, 0.0f, 8.0f, 60.0f);
+        x3::logInfo("--world echotropolis: INFRASTRUCTURE — " + std::to_string(infra.size()) +
+                    " road/deck/pillar pieces");
+
+        // SUBWAY TRAIN: the metro car sliding the elevated line (poseTrain each frame).
+        const float kSubScale = [](){ const char* e=std::getenv("ECHO_SUBWAY_SCALE"); return e?(float)std::atof(e):1.0f; }();
+        subwayTrain = std::make_unique<x3::game::EnvArtSystem>();
+        const float sI[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, mgx, my+0.4f, mmz, 1 };
+        if (subwayTrain->buildFromGlbAt(*device,
+                "D:/Assets/_glb/tech/Subway Train/Assets/SubwayTrain", "SubwayTrain.glb", sI)) {
+            subwayBuilt = true;
+            subwayLine = { mgx, my + 0.4f, mz0, mz1, kSubScale };
+        } else { subwayTrain.reset(); }
+    }
+    auto poseTrain = [&](float t){
+        if (!subwayBuilt) return;
+        const float len = subwayLine.z1 - subwayLine.z0;
+        // Ping-pong along the line so it shuttles like a metro.
+        float u = std::fmod(t * 22.0f, 2.0f * len);
+        float d = (u < len) ? u : (2.0f*len - u);
+        const float dir = (u < len) ? 1.0f : -1.0f;
+        const float yaw = std::atan2(0.0f, dir);       // faces travel dir along +Z
+        const float s = subwayLine.scale, c=std::cos(yaw), sn=std::sin(yaw);
+        const float z = subwayLine.z0 + d;
+        const float M[16] = { c*s,0,-sn*s,0, 0,s,0,0, sn*s,0,c*s,0, subwayLine.x, subwayLine.y, z, 1 };
+        subwayTrain->setInstanceTransform(0, M);
+    };
+
     // ===================== HARBOR BOATS ==================================
     // Low-poly boats (Boats Pack, Draco GLBs) cruising straight lanes on the open
     // SEA at water level (y~0), wrapping their lane with a gentle bob. Only visible
@@ -1369,6 +1455,7 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
             for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
             for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
+            for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
             mineGlowScene.render(*device, frame);            // authentic EoS arch mouth-glow
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
@@ -1381,6 +1468,7 @@ int hostEchotropolis(HostContext& hc) {
                                     if (shotTod.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
                                         if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
             for (auto& c : cars) { poseCar(c, (float)i * dt); c.body->draw(*device, frame); }  // street traffic
+            if (subwayBuilt) { poseTrain((float)i * dt); subwayTrain->draw(*device, frame); }  // metro
             for (auto& b : boats) { poseBoat(b, (float)i * dt); b.body->draw(*device, frame); }  // harbor boats
             for (auto& d : drones) { poseDrone(d, (float)i * dt); d.body->draw(*device, frame); }  // sky drones
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
@@ -2038,6 +2126,7 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
         for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
         for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
+        for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
         for (auto& p : placed) p->draw(*device, frame);      // BUILD MENU: player-placed lots
         mineGlowScene.render(*device, frame);                // authentic EoS arch mouth-glow
@@ -2066,6 +2155,7 @@ int hostEchotropolis(HostContext& hc) {
                                 if (todS.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
                                     if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
         for (auto& c : cars) { poseCar(c, waterTime); c.body->draw(*device, frame); }  // street traffic
+        if (subwayBuilt) { poseTrain(waterTime); subwayTrain->draw(*device, frame); }  // metro train
         for (auto& b : boats) { poseBoat(b, waterTime); b.body->draw(*device, frame); }  // harbor boats
         for (auto& d : drones) { poseDrone(d, waterTime); d.body->draw(*device, frame); }  // sky drones
         if (oh1Built) oh1.drawMonster(*device, frame, walkScene);   // OH1 hero heli
