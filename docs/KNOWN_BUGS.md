@@ -385,3 +385,18 @@ renderer or a crutch around it. **Not one of them was the art.**
 **And: VALUE, NOT LUMENS.** If a surface reads wrong, fix its **albedo** first. The rifthub tube was
 black; 5× the key light barely moved it. Renormalizing albedo to ~0.60 sRGB fixed it instantly.
 Ambient is not light — it's omnidirectional, so raising it lights a room **by destroying its contrast**.
+
+---
+
+## Landed from art/showroom-match (merged 2026-07-15) — showroom lighting lessons
+
+| # | defect | evidence / fix |
+|---|---|---|
+| B16 | RT soft shadows (tier 2, DEFAULT on ray-query HW) treat alpha-cutout as the FULL QUAD | Every cutout billboard (trees, people) casts a black rectangle on any world using RT shadows. The raster fix (`setShadowCutout`) is powerless while tier > 0 — the shader takes `min(CSM, RT)`. Showroom pins tier 0. Real fix = an any-hit / opacity-micromap alpha test in the ray query. |
+| B17 | `depth_cutout.vert` skips the `visBuf` indirection | Indexes `objBuf.objects[gl_InstanceIndex]` directly while `depth.vert`/`mesh.vert`/`shadow.vert` go through `visBuf.idx[]`. Latent: wrong rows under GPU cull compaction. (`shadow_cutout.vert` does it right.) |
+
+### L10. The DEFAULT camera far plane is **200 m** — and it was hiding an entire mountain range
+`m_camFar` defaults to 200 (`VulkanRenderDevice_internal.h`). The showroom's Unity terrain is 6.6 km across and 780 m tall — the snowy peaks the reference is famous for were IN the asset, fully imported, and simply clipped. Four art passes chased "flat, empty horizon" as a *content* problem. If an outdoor world looks like it ends in fog 200 m out, **call `setCameraFar()` before you touch the art.**
+
+### L11. `SkyParams::sunIntensity` is NOT the key light — `sunLight` is
+`sunIntensity` scales only the **sky disk + glow**. The directional radiance `mesh.frag` shades with is `SkyParams::sunLight` (default 1.0). The showroom's "bright winter DAY" preset set `sunIntensity = 3.4` and never touched `sunLight` — so its daylight was lit by the same 1.0 sun as a windowless cell; snow (albedo 0.73 through the 1/pi PBR lobe) could not resolve above ~0.34 sRGB. Set `sunLight` for daylight; leave ambient honest.

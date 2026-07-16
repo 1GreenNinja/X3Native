@@ -837,11 +837,29 @@ int dispatchScreenshotHosts(HostContext& hc) {
                                               "ShowRoom_Vol30/Example_01.glb");
         if (!ok) x3::logError("--screenshot-showroom: scene GLB failed to load");
 
+
         // DAY<->NIGHT state (default NIGHT; X3_SHOWROOM_DAY=1 -> DAY). The helper sets
         // sky/sun/ambient/bloom for the chosen state (no interior point lights on the
         // exterior shot). DAY = Unity-match bright cool sky; NIGHT = the original recipe.
         const bool gShowroomDay = showroomDayDefault();
-        applyShowroomTimeOfDay(device, gShowroomDay, /*interiorLights*/nullptr);
+        // EXTERIOR hero shot: SKY reflection probe (interiorProbe = false) — the tower's
+        // metal panels reflect the sky, which is where the reference's sheen comes from.
+        // NIGHT keeps its original interior probe (a black sky has nothing to give a
+        // metal); DAY takes the SKY probe.
+        applyShowroomTimeOfDay(device, gShowroomDay, /*interiorLights*/nullptr,
+                               /*interiorProbe*/!gShowroomDay);
+        // Alpha-cutout SHADOWS: the firs are MASK billboards; the depth-only shadow pass
+        // was casting their full QUADS as black rectangles all over the snow.
+        device->setShadowCutout(true);
+        // ...and the RT soft-shadow path (tier 2 by default on ray-query hardware) is
+        // OPAQUE-ONLY by design — "alpha-cutout occludes as the full quad" (see
+        // IRenderDevice::RtShadowParams). On a 5090 it is what actually shades the
+        // scene, so it re-draws the same black crosses no matter what the raster
+        // shadow map does. The showroom's forest is ALL cutout billboards, so this
+        // world takes the CSM path (tier 0), where the cutout pipeline above applies.
+        { x3::rhi::IRenderDevice::RtShadowParams rt{}; rt.tier = 0;
+          if (const char* rte = std::getenv("X3_SHOWROOM_RT")) rt.tier = std::atoi(rte);
+          device->setRtShadowParams(rt); }
         x3::logInfo(std::string("--screenshot-showroom: time-of-day = ") + (gShowroomDay ? "DAY" : "NIGHT"));
         // Disable the SSAO/GI depth PRE-PASS for the showroom: it makes the color pass use an
         // EQUAL depth test vs full-quad pre-pass depth, which would punch sky holes through
@@ -883,6 +901,21 @@ int dispatchScreenshotHosts(HostContext& hc) {
 
         // Center + extent -> stand back along +Z, kept within the 200 m far plane.
         const float cx = (bmn[0] + bmx[0]) * 0.5f, cy = (bmn[1] + bmx[1]) * 0.5f, cz = (bmn[2] + bmx[2]) * 0.5f;
+
+        // FOREST DENSITY: the pack ships ~166 conifer billboards; the Unity reference
+        // reads as a DENSE snow forest. Clone them around themselves — each clone
+        // inherits a source tree's real on-ground position, then takes a fresh yaw, a
+        // 0.7-1.35x scale and a 3-14 m offset. Clusters, not a lattice. The keep-out
+        // disc holds them off the hero building's apron.
+        {
+            uint32_t treeAdd = 260;
+            if (const char* te = std::getenv("X3_SHOWROOM_TREES")) treeAdd = (uint32_t)std::strtoul(te, nullptr, 10);
+            const float keepOut[3] = { cx, cz, 46.0f };
+            if (treeAdd)
+                showroom.densifyFoliage({ "sapin" }, treeAdd, /*seed*/20260712u,
+                                        /*minR*/3.0f, /*maxR*/14.0f,
+                                        /*scaleMin*/0.70f, /*scaleMax*/1.35f, /*sink*/0.5f, keepOut);
+        }
         const float ex = bmx[0] - bmn[0], ey = bmx[1] - bmn[1];
         float span = ex > ey ? ex : ey;
         float dist = span * 0.75f + 12.0f;
@@ -909,7 +942,16 @@ int dispatchScreenshotHosts(HostContext& hc) {
         device->setCamera(camx, camy, camz, yaw, pitch, 72.0f);
         // Frame the sun's shadow box on the building (+ surrounding firs) so they cast shadows
         // (the default ~45 m camera-following box sits 100+ m short of the building).
-        device->setShadowBounds(cx, cy, cz, 150.0f);
+        float showroomShadowBox = 150.0f;
+        if (const char* sb = std::getenv("X3_SHOWROOM_SHADOWBOX")) showroomShadowBox = (float)std::atof(sb);
+        device->setShadowBounds(cx, cy, cz, showroomShadowBox);
+        // MOUNTAINS: the Unity pack's OWN terrain mesh spans ~6.6 km and reaches
+        // +453 m — real snowy peaks. They were never missing: the engine's DEFAULT
+        // 200 m far plane was clipping every one of them. Push the far plane out to
+        // the GLB's world AABB (X3_SHOWROOM_FAR overrides for tuning).
+        float showroomFar = 8000.0f;
+        if (const char* fe = std::getenv("X3_SHOWROOM_FAR")) showroomFar = (float)std::atof(fe);
+        device->setCameraFar(showroomFar);
 
         // (Planet placement is CELESTIAL — fixed world-space sky directions anchored
         // on the camera eye inside drawNightSkyPlanets — so there is NO per-scene
@@ -942,6 +984,12 @@ int dispatchScreenshotHosts(HostContext& hc) {
                                         camx, camy, camz, ringMesh);
             }
             device->endFrame(frame);
+        }
+        {   // Perf of the hero frame (NOTE: this path renders at 4x SSAA = 5120x2880).
+            const x3::rhi::RenderStats st = device->stats();
+            x3::logInfo("--screenshot-showroom: PERF gpuFrameMs=" + std::to_string(st.gpuFrameMs) +
+                        " (" + std::to_string(st.gpuFrameMs > 0.0f ? 1000.0f / st.gpuFrameMs : 0.0f) +
+                        " fps @ 4x SSAA 5120x2880) drawCalls=" + std::to_string(st.drawCalls));
         }
         const bool wrote = device->captureFrame(showroomShotPath.c_str());
         if (wrote) x3::logInfo("--screenshot-showroom: wrote " + showroomShotPath);
