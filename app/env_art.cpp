@@ -669,7 +669,9 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                x3::rhi::TextureHandle{ d.emissiveTexId },
                                x3::rhi::TextureHandle{ d.detailTexId },   // HDRP micro-detail
                                d.detailUvScale,
-                               d.clearcoat, d.clearcoatRough);            // car-paint clearcoat lobe
+                               d.clearcoat, d.clearcoatRough,             // car-paint clearcoat lobe
+                               /*selfLight=*/0.0f, /*metallicScale=*/1.0f,
+                               m_foliage);                                // vegetation wrap/translucency
         }
     }
     return drawn;

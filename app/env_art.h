@@ -108,6 +108,11 @@ public:
                   uint32_t maxDrawables = 0xFFFFFFFFu,
                   const float* cullMin = nullptr, const float* cullMax = nullptr) const;
 
+    // FOLIAGE: mark this system's meshes as vegetation so the PBR shader wraps the
+    // diffuse + adds warm back-translucency (sun glowing through a canopy). Applies
+    // to every instance/primitive this system draws. 0 = off (default; unchanged).
+    void setFoliage(float f) { m_foliage = f; }
+
     // Diagnostics for logging / the host: how many assets loaded ok / instances.
     uint32_t assetsLoaded() const;
     uint32_t instanceCount() const { return (uint32_t)m_instances.size(); }
@@ -140,6 +145,7 @@ private:
     std::vector<std::string>                 m_assetPaths; // parallel to m_assetTable
     std::vector<EnvInstance>                 m_instances;
     std::vector<x3::rhi::PointLight>         m_lightFixtures; // omni per Light_A fixture
+    float                                    m_foliage = 0.0f; // >0 = vegetation shading
 };
 
 } // namespace x3::game

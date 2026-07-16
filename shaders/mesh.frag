@@ -162,6 +162,9 @@ const uint FLAG_CLEARCOAT = 4u;
 // black silhouette just because the star is on its far side. The intensity byte
 // rides vTerrainPack.y (the spare lane; clearcoat owns .x, terrain owns both).
 const uint FLAG_SHIP_SELFLIT = 8u;
+// FOLIAGE (trees/vegetation): wrap the diffuse so the canopy's away-side isn't flat
+// black, + a warm back-translucency lobe so the low sun glows THROUGH the leaves.
+const uint FLAG_FOLIAGE = 16u;
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white sun
 
 // ===========================================================================
@@ -939,6 +942,21 @@ void main() {
         // ambient diffuse + ambient*3.4*Fresnel constant (kept as the no-env fallback).
         Lo += iblAmbient(N, V, albedo.rgb, metallic, pRough, F0, ao, ambient, up, ddgiGI);
         color = Lo;
+    }
+
+    // ======================================================================
+    // FOLIAGE (FLAG_FOLIAGE): trees were flat black on the away-side. Two cheap
+    // canopy terms: (1) WRAP — lift the diffuse so light bends around the rounded
+    // crown instead of a hard terminator; (2) BACK-TRANSLUCENCY — when the camera
+    // looks toward the sun THROUGH the leaves, add a warm forward-scatter glow
+    // (albedo-tinted), gated by the sun shadow so a shadowed tree doesn't glow.
+    // ======================================================================
+    if ((vFlags & FLAG_FOLIAGE) != 0u) {
+        float wrap  = clamp((dot(N, kSunDir) + 0.6) / 1.6, 0.0, 1.0);
+        vec3  Vf    = normalize(cam.camPos.xyz - vWorldPos);
+        float back  = pow(max(dot(Vf, -kSunDir), 0.0), 3.0);
+        color += albedo.rgb * sunRad * (wrap * 0.35) * mix(0.55, 1.0, shadow)   // wrap fill
+               + albedo.rgb * sunRad * (back * 0.85) * shadow;                  // sun through canopy
     }
 
     // ======================================================================

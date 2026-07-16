@@ -363,11 +363,12 @@ public:
                      const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {},
                      TextureHandle detailTex = {}, float detailUvScale = 1.0f,
                      float clearcoat = 0.0f, float clearcoatRough = 0.05f,
-                     float selfLight = 0.0f, float metallicScale = 1.0f) override {
+                     float selfLight = 0.0f, float metallicScale = 1.0f,
+                     float foliage = 0.0f) override {
         drawMeshInternal(fc, mesh, baseColor, normal, metalRough, baseColorFactor, emissive,
                          model, alphaMask, alphaBlend, emissiveTex, detailTex, detailUvScale,
                          /*extraFlags=*/0u, /*glass=*/nullptr, clearcoat, clearcoatRough,
-                         selfLight, metallicScale);
+                         selfLight, metallicScale, foliage);
     }
 
     // Shared draw record append. The opaque/emissive/PBR/glass paths differ only by
@@ -380,7 +381,8 @@ public:
                           TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                           uint32_t extraFlags, const GlassMaterial* glass,
                           float clearcoat = 0.0f, float clearcoatRough = 0.05f,
-                          float selfLight = 0.0f, float metallicScale = 1.0f);
+                          float selfLight = 0.0f, float metallicScale = 1.0f,
+                          float foliage = 0.0f);
 
     // ---- Procedural planet body (FORGE3D port) -----------------------------
     // Queue a planet draw for THIS frame: resolve each TextureHandle to its
@@ -598,6 +600,11 @@ private:
     // rides the SPARE terrain-pack2 lane (a ship is never TERRAIN, which owns
     // that lane when set; clearcoat owns pack1, so the two never collide).
     static constexpr uint32_t kFlagShipSelfLit = 1u << 3;
+    // FOLIAGE (trees/vegetation): mesh.frag softens the diffuse (wrap lighting) and
+    // adds a warm back-translucency term so the low sun glows THROUGH the canopy
+    // instead of leaving the away-side flat black. No packed lane needed — a fixed
+    // shader intensity; the flag alone gates it. Every non-foliage draw is unchanged.
+    static constexpr uint32_t kFlagFoliage = 1u << 4;
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {

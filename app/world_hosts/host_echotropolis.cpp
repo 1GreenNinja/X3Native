@@ -749,7 +749,10 @@ int hostEchotropolis(HostContext& hc) {
             const float c=std::cos(yaw), s=std::sin(yaw);
             const float T[16] = { c*sc,0,-s*sc,0, 0,sc,0,0, s*sc,0,c*sc,0, x, gy, z, 1 };
             auto e = std::make_unique<x3::game::EnvArtSystem>();
-            if (e->buildFromGlbAt(*device, vdir, kPines[variant % 6], T)) mineForest.push_back(std::move(e));
+            if (e->buildFromGlbAt(*device, vdir, kPines[variant % 6], T)) {
+                e->setFoliage(1.0f);                       // canopy wrap + back-translucency
+                mineForest.push_back(std::move(e));
+            }
         };
         uint32_t seed = 0;
         auto emit = [&](int count, float aCenter, float aSpread, float rMin, float rMax){

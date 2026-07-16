@@ -910,7 +910,7 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
                       TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                       uint32_t extraFlags, const GlassMaterial* glass,
                       float clearcoat , float clearcoatRough , float selfLight ,
-                      float metallicScale ) {
+                      float metallicScale , float foliage ) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -978,6 +978,11 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             const float sl = selfLight < 0.0f ? 0.0f : (selfLight > 1.0f ? 1.0f : selfLight);
             r.flags |= kFlagShipSelfLit;
             r.terrainPack2 = (uint32_t)(sl * 255.0f + 0.5f);
+        }
+        // FOLIAGE (trees): a flag-only gate — mesh.frag applies fixed wrap + warm
+        // back-translucency. No packed lane (never terrain), so nothing collides.
+        if (foliage > 0.001f && (r.flags & kFlagTerrain) == 0u) {
+            r.flags |= kFlagFoliage;
         }
         uint32_t emisIdx = 0;
         if (emissiveTex.valid()) {

@@ -449,7 +449,10 @@ public:
                                       // clamp (every existing call site shades byte-identically).
                                       // Rides the spare glass .w lane; selfLight rides terrainPack2 —
                                       // orthogonal, so a ship hull can carry both.
-                                      float /*metallicScale*/ = 1.0f) {
+                                      float /*metallicScale*/ = 1.0f,
+                                      // FOLIAGE (>0): mesh.frag wraps the diffuse + adds warm
+                                      // back-translucency so the sun glows through canopies.
+                                      float /*foliage*/ = 0.0f) {
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
     }
 
