@@ -9,4 +9,4 @@ REM ============================================================================
 cd /d "%~dp0"
 set ECHO_TOD=golden
 title Echo Harbor (log — closing this closes the game)
-"build\bin\Release\EchoHarbor.exe" --world echotropolis
+"build\bin\Release\X3Engine.exe" --world echotropolis

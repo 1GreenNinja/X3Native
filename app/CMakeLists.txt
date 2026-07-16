@@ -12,6 +12,7 @@ add_executable(X3Engine WIN32
     screenshot_hosts.cpp
     # #28 deep monolith split — extracted self-contained --world hosts
     world_hosts/world_hosts.cpp
+    world_hosts/host_echotropolis.cpp
     world_hosts/host_destruct.cpp
     world_hosts/host_physjoint.cpp
     world_hosts/host_ragdoll.cpp
