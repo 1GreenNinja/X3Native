@@ -54,7 +54,11 @@ struct CliOptions {
          testSealife = false,    // --test-sealife (the great white hunt + the ocean)
          // --test-canonvehicle (WORLD CARS: enter/drive/exit + hold-E hack +
          // unlocked-latch region persistence). See runCanonVehicleSelfTest.
-         testCanonVehicle = false;
+         testCanonVehicle = false,
+         // --test-npclife (LIVING CITY: 12-archetype daily schedules + street routing +
+         // the bank-robbery set-piece + scan-card karma + freeway traffic). See
+         // runNpcLifeSelfTest. --test-hacking (the WD2 scan/hack registry). runHackingSelfTest.
+         testNpcLife = false, testHacking = false;
     // --shot-drive (canonlevel screenshot staging): enter the parked car nearest
     // the shot camera and DRIVE it through the settle frames; the capture camera
     // follows the live chase framing and the "[E] Exit" HUD hint is drawn — the

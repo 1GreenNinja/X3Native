@@ -372,6 +372,8 @@ int main(int argc, char** argv) {
         _tf.testVehParts = o.testVehParts;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
+        _tf.testNpcLife = o.testNpcLife;
+        _tf.testHacking = o.testHacking;
         _tf.testWaterZap = o.testWaterZap;
         _tf.testSealife = o.testSealife;
         _tf.testAlert = o.testAlert;

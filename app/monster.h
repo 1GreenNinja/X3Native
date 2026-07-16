@@ -818,6 +818,18 @@ public:
     // (mirrors RagdollDemo::shutdown). Harmless if no ragdoll is active.
     void shutdownRagdoll() { clearDeathRagdoll(); }
 
+    // ---- EXTERNAL death-flop trigger (living-city citizens) ----------------
+    // Force the SKINNED DEATH RAGDOLL flop NOW, driven by an external kill (a shot
+    // citizen in the crowd-skin layer, not the combat AI). Runs the SAME death
+    // teardown the fire()/melee kill path does — marks the character dead, drops its
+    // physics body + the entity's body handle, and spawns the death ragdoll kicked by
+    // `shove` (the shot direction). From then on update() reads the bones back and
+    // flops the skin (the corpse settles + despawns on the usual timers). Idempotent
+    // (no-op if already dead/ragdolled). Returns true iff a skinned ragdoll spawned
+    // (false on an unrigged/non-skinnable model — the caller keeps the standing prop).
+    bool triggerRagdoll(Scene& scene, x3::phys::IPhysicsWorld& physics,
+                        const x3::phys::Vec3& shove);
+
     // ---- GENERAL navigation (optional) ------------------------------------
     // Give this monster a shared nav grid so it ROUTES AROUND walls/obstacles
     // instead of beelining into them. When set, the Advance/Search states steer

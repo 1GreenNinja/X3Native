@@ -1735,6 +1735,30 @@ void MonsterSystem::spawnDeathRagdoll(x3::phys::IPhysicsWorld& physics,
                 (flyer ? "flyer/drone spin" : "grounded topple") + ")");
 }
 
+// EXTERNAL death-flop trigger (living-city citizens; see monster.h). Runs the SAME
+// death teardown the fire()/melee kill path uses, then spawns the skinned ragdoll —
+// factored here so the crowd-skin layer can flop a shot citizen without routing a
+// fake combat hit (no hit-flash / damage-memory / cue side effects).
+bool MonsterSystem::triggerRagdoll(Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                   const x3::phys::Vec3& shove) {
+    if (!m_alive || m_ragdollActive || m_deathRagdoll) return m_ragdollActive;
+    m_alive    = false;
+    m_dying    = true;
+    m_deathPop = kDeathToppleTime;
+    // Drop the entity's body handle + remove the physics body (parity with fire()'s
+    // kill: a prop built with noBody has none, so both are simple no-ops there).
+    if (m_entity != kNoLink && m_entity < scene.size())
+        scene.get(m_entity).body = x3::phys::BodyId{};
+    if (m_body.valid()) physics.removeBody(m_body);
+    m_body = x3::phys::BodyId{};
+    // Spawn the skinned death ragdoll kicked by the shot direction (no-op unrigged ->
+    // m_ragdollActive stays false and the caller keeps the standing prop).
+    spawnDeathRagdoll(physics, shove);
+    x3::logInfo(std::string("[monster] external triggerRagdoll -> ") +
+                (m_ragdollActive ? "skinned flop" : "no rig (standing corpse)"));
+    return m_ragdollActive;
+}
+
 // Per-frame: read the ragdoll bone WORLD transforms, convert to model-local, run the
 // rigid bone->skin attach, and feed the result to the Skinner's external-pose path so
 // the GPU-skinned model flops physically with the bones. No device upload work beyond

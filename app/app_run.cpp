@@ -84,6 +84,7 @@
 #include "world_stream.h"                    // SEAMLESS region-graph streaming (--world streamed / --test-worldstream)
 #include "world_map.h"                       // INTERACTIVE WORLD MAP (M key / --test-worldmap)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
+#include "npc_life.h"                         // LIVING CITY: authored occupation NPCs w/ daily schedules + heist (--test-npclife)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
 #include "strata.h"   // R-3 fold: THE DESCENT — live strata shaft around the elevator column
@@ -1257,6 +1258,13 @@ int runDefaultHost(HostContext& hc) {
     // zero reloads on re-realize). A failed rig keeps that agent's blockout.
     x3::game::CrowdSkin canonCrowdSkins[3];
     x3::game::CrowdSkin cityCrowdSkins[3];
+    // LIVING CITY (npc_life.h): the SOUL layer over the ambient street crowd —
+    // authored occupation NPCs (12 archetypes) that walk real daily schedules to
+    // home/work/leisure posts, with scan-card personas + the bank-robbery set-piece.
+    // Host-owned + PERSISTENT (built once the `city` region is resident, PVS-culled
+    // with the district via cfg.roomId), rendered as plain Scene entities SEPARATE
+    // from MonsterSystem (citizens, not monsters — Echo Harbor's explicit need).
+    x3::game::NpcLife cityNpcLife;
     // CROWD CHATTER — "hear the people talk.. mumble.. see it in chat bubbles
     // over their heads" (app/crowd_chatter.h): a deterministic voice layer over
     // each crowd deployment. Converse pairs trade authored 2-6 word lines in
@@ -9101,6 +9109,30 @@ int runDefaultHost(HostContext& hc) {
             for (auto& cc : cityCrowds)
                 if (cc.built() && scene.roomVisible(cc.config().roomId))
                     cc.update(dt, scene);
+            // LIVING CITY (npc_life): the authored occupation NPCs + the bank-robbery
+            // set-piece, riding the SAME streamed `city` region as the ambient crowds.
+            // Built ONCE the first frame the region is resident — OUTSIDE any region
+            // capture window, so the bodies/props/markers are host-owned + persistent
+            // (never enter the region ledger) and simply PVS-cull with the district
+            // (cfg.roomId == kStreamedExteriorRoom). No monster hitboxes: pure citizens.
+            if (!cityNpcLife.built() && cityCrowds[0].built()) {
+                x3::game::NpcLifeConfig lc;
+                lc.centerX = -600.0f; lc.centerZ = 495.0f;   // the Scrapyard plaza drag
+                float g[3]; x3::game::placeOnTerrain(lc.centerX, lc.centerZ, g);
+                lc.groundY = g[1] + 0.20f;                    // stand on the plaza slab
+                lc.roomId  = x3::game::kStreamedExteriorRoom;
+                cityNpcLife.build(lc, scene, *device);
+                cityNpcLife.setAlarmSink([](const x3::phys::Vec3& /*p*/, int heat){
+                    // Outdoors never feeds the facility heat net (the app-run doctrine:
+                    // the security AlertSystem is an indoor system). The heist still
+                    // plays out visibly (cops converge, the robber flees) — log only.
+                    x3::logInfo("[npc_life] BANK ALARM tripped (heat " +
+                                std::to_string(heat) + ") — street cops converging");
+                });
+            }
+            if (cityNpcLife.built() &&
+                scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                cityNpcLife.update(dt, scene);
             // CROWD CHATTER: the voice layer rides the SAME PVS gate as its
             // crowd (a culled room's chat costs nothing and its bubbles just
             // age out). Audio murmurs are range-gated inside (<= ~20 m).
