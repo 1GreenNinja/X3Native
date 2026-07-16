@@ -113,6 +113,7 @@
 #include "fish.h"                          // FISH: ambient schools in THE RIVER + the sea shallows
 #include "waterzap.h"                      // THE WATER ZAP: the lightning gun electrifies the water
 #include "sealife.h"                       // SEALIFE: the great white, the blue shark, the abyss
+#include "god_rays.h"                      // GOD RAYS: sun shafts under the water surface
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
 #include "crowd_skin.h"                    // SKINNED CITIZENS: the crowds' rigged visual layer
 #include "crowd_chatter.h"                 // CROWD CHATTER: chat bubbles + murmur walla over the crowds
@@ -1303,6 +1304,9 @@ int runDefaultHost(HostContext& hc) {
     // range-gated on the player. Kinematic — no physics bodies.
     x3::game::FishSystem worldFish;
     x3::game::SeaLifeSystem worldSea;      // THE OCEAN LIVES: big animals (sharks + the squid)
+    // GOD RAYS (app/god_rays.h) — sun shafts under the water surface (river
+    // reach + estuary shallows), additive glass, host-owned like the fish.
+    x3::game::GodRays worldRays;
     // THE WATER ZAP (app/waterzap.h) — "one Zap": the latch + cooldown that keeps
     // a HELD lightning trigger from re-zapping the river every frame.
     x3::game::WaterZapper waterZapper;
@@ -3316,6 +3320,25 @@ int runDefaultHost(HostContext& hc) {
                     x3::boot::mark("SEALIFE (sharks + the abyss)");
                 }
 
+                // ---- GOD RAYS (underwater beauty): sun shafts hanging from the
+                // water surface over the fish reach + the estuary shallows —
+                // additive glass (the street-light cone mode; rides the BLEND
+                // tail, never writes depth), leaning down-sun, breathing slowly.
+                // Brightness keys off the host sky actually in effect (--day /
+                // --dusk / the golden-hour default): the rays die with the sun.
+                {
+                    x3::game::GodRays::Config gr;
+                    gr.roomId = x3::game::kStreamedExteriorRoom;
+                    gr.nearX = towerCx; gr.nearZ = towerCz;
+                    float sunX = 0.55f, sunY = 0.16f, sunZ = -0.35f, sunI = 1.25f; // golden hour
+                    if (hc.duskSky) { sunX = 0.55f; sunY = 0.035f; sunZ = -0.35f; sunI = 0.30f; }
+                    if (hc.daySky)  { sunX = 0.20f; sunY = 0.94f;  sunZ = -0.28f; sunI = 1.25f; }
+                    gr.sunDirX = sunX; gr.sunDirY = sunY; gr.sunDirZ = sunZ;
+                    gr.sunScale = std::min(sunY / 0.5f, 1.0f) * sunI;
+                    worldRays.build(gr, scene, *device);
+                    x3::boot::mark("GOD RAYS (sun shafts under the surface)");
+                }
+
                 // ---- THE WATER FLASH (the zap's biggest read): a radial-gradient
                 // disc lying ON the water that lights the whole pool cyan-white at
                 // the discharge, then decays to an afterglow. Same material as the
@@ -5204,6 +5227,9 @@ int runDefaultHost(HostContext& hc) {
                 // HUD then reads). Nothing here is painted on.
                 if (worldFish.built()) {
                     worldFish.update(dt, scene, ssEye);
+                    // GOD RAYS breathe/drift through the settle so the capture
+                    // catches them mid-life, exactly like the live loop.
+                    if (worldRays.built()) worldRays.update(dt, scene);
                     // STEADICAM on the subject (X3_SHOT_ZAP=pike|perch): hold the
                     // fish in PROFILE with the staged sun on its near flank. We
                     // stand on whichever beam of the fish faces the sun (the dot
@@ -5562,6 +5588,23 @@ int runDefaultHost(HostContext& hc) {
                           uf.color[0] = 0.020f; uf.color[1] = 0.095f; uf.color[2] = 0.110f;
                           uf.density  = 0.055f; uf.start = 0.15f; uf.maxOpacity = 0.94f;
                           device->setFog(uf);
+                      }
+                      // UNDERWATER CAUSTICS in the capture — mirrors the live
+                      // loop (enabled over any water column; the shader gates
+                      // per-fragment). Clock = settle-frame time, plus the
+                      // X3_CAUSTICS_TSHIFT staging offset so two otherwise-
+                      // identical captures can prove the pattern MOVES.
+                      {
+                          static float s_shotCausticShift = [] {
+                              const char* e = std::getenv("X3_CAUSTICS_TSHIFT");
+                              return e ? (float)std::atof(e) : 0.0f;
+                          }();
+                          x3::rhi::IRenderDevice::CausticsParams cw;
+                          cw.enabled   = ssWY > -1.0e30f;
+                          cw.waterY    = cw.enabled ? ssWY : 0.0f;
+                          cw.time      = (float)i * dt + s_shotCausticShift;
+                          cw.intensity = 1.0f;
+                          device->setCaustics(cw);
                       } }
                     // X3_SHOT_SWIM=3p: LIFT THE AIR for the capture (applied after
                     // applyZoneAtmosphere, same as the underwater override). Jake's
@@ -7048,6 +7091,13 @@ int runDefaultHost(HostContext& hc) {
     // W10 SWIMMING: was the camera under a water surface LAST frame? Drives the
     // underwater fog override + its clean restore (resetZoneAtmosphere) on surfacing.
     bool  prevCamUnderwater = false;
+    // UNDERWATER CAUSTICS: the host-advanced animation clock (deterministic in
+    // headless captures — the setWaterParams convention). X3_CAUSTICS_TSHIFT
+    // (seconds, staging only) offsets it so two otherwise-identical captures
+    // can prove the pattern MOVES.
+    float causticsClock = 0.0f;
+    if (const char* cts = std::getenv("X3_CAUSTICS_TSHIFT"))
+        causticsClock = (float)std::atof(cts);
 
     // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
     // (playtest fix, PB fold 4b9f067: DEFAULT music vol 0 -> MUTED on boot; SFX
@@ -8956,6 +9006,9 @@ int runDefaultHost(HostContext& hc) {
             // dead. Per-school range gate inside; the entities are PVS-gated on the
             // outdoor room, so an indoor player pays a handful of distance checks.
             if (worldFish.built() && !simFrozen) worldFish.update(dt, scene, camPos);
+            // GOD RAYS: the sun shafts breathe + drift (additive-glass whisper;
+            // ~16 entities, PVS-gated on the outdoor room like the fish).
+            if (worldRays.built() && !simFrozen) worldRays.update(dt, scene);
             // FEET, not the eye: "in the water" is about where he is standing /
             // floating — a wading player's eye is above the surface.
             if (worldSea.built() && !simFrozen)
@@ -9439,6 +9492,22 @@ int runDefaultHost(HostContext& hc) {
                     canonRooms.resetZoneAtmosphere();   // recipe fog re-applies next frame
                 }
                 prevCamUnderwater = camUnder;
+                // UNDERWATER CAUSTICS (mesh.frag, setCaustics): dancing sun
+                // filaments on everything sunlit below the local water surface.
+                // Enabled whenever the camera stands over a WATER COLUMN (river
+                // reach or sea — swimming, wading, or looking down through the
+                // surface); the shader gates per-fragment on being below wY, so
+                // dry land is untouched even mid-swim. Water is treated as
+                // locally flat (the river is flat per-reach, the sea is flat).
+                if (!simFrozen) causticsClock += dt;
+                {
+                    x3::rhi::IRenderDevice::CausticsParams cw;
+                    cw.enabled   = wY > -1.0e30f;
+                    cw.waterY    = cw.enabled ? wY : 0.0f;
+                    cw.time      = causticsClock;
+                    cw.intensity = 1.0f;
+                    device->setCaustics(cw);
+                }
             }
         }
         // (W10: no footsteps while swimming — bed contact is not a floor walk.)

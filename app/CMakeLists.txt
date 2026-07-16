@@ -147,6 +147,7 @@ add_executable(X3Engine WIN32
     fish.cpp
     waterzap.cpp
     sealife.cpp
+    god_rays.cpp
     crowd.cpp
     crowd_skin.cpp
     crowd_chatter.cpp

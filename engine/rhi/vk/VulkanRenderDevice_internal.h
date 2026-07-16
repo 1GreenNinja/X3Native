@@ -175,6 +175,8 @@ public:
     // cvars live and must not clobber a zone's atmosphere).
     void setFog(const FogParams& f) override;
     void setGrade(const GradeParams& g) override;
+    // Underwater caustics (mesh.frag; rides the SsaoControl caustics lane).
+    void setCaustics(const CausticsParams& c) override;
 
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
@@ -2490,6 +2492,9 @@ private:
         // all zero when inactive (the plain variant never references them).
         glm::vec4 rtsh0;        // x = tier, y = tan(sun angular radius), z = point ray budget K, w = light source radius (m)
         glm::vec4 rtsh1;        // x = frame seed (0 when TAA is off -> static dither)
+        // Underwater caustics (setCaustics): all zero when no host opted in ->
+        // the mesh.frag gate never opens (dry worlds byte-identical).
+        glm::vec4 caustics;     // x = enabled, y = water surface Y, z = time (s), w = intensity
     };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
@@ -2991,6 +2996,7 @@ private:
     float                   m_exposure = 1.0f;   // whole-scene brightness (composite pre-tonemap)
     // ---- Painterly levers (ART_BIBLE §5): host-opted zone atmosphere + grade ----
     FogParams               m_fogParams{};       // enabled=false -> fog pass never recorded
+    CausticsParams          m_caustics{};        // enabled=false -> mesh.frag caustics gate stays shut
     GradeParams             m_gradeParams{};     // strength=0 -> composite grade block inert
     glm::mat4               m_fogInvProjCPU{ 1.0f };  // frame inverse-projection for fog.frag
     VkPipelineLayout        m_fogLayout = VK_NULL_HANDLE;

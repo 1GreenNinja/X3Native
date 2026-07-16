@@ -250,6 +250,26 @@ public:
         float maxOpacity = 0.85f;                // far-wall cap (no milky wash law)
     };
     virtual void setFog(const FogParams& f) {}
+    // UNDERWATER CAUSTICS (mesh.frag): dancing refracted-sun filaments on any
+    // sunlit surface BELOW the local water plane — the riverbed, the fish, the
+    // swimmer. Purely procedural in the fragment stage (no textures, no extra
+    // pass): the params ride the per-frame mesh control UBO and the shader
+    // modulates the DIRECT SUN term only, so shadowed water stays dark and
+    // ambient / point lights are untouched; the effect fades with depth so the
+    // shallows dance while the deep stays moody. `waterY` is the CAMERA-LOCAL
+    // water surface height — the host queries its own water (river reach or
+    // sea) and treats it as locally flat; the shader never evaluates a spline.
+    // `time` is host-advanced (deterministic captures — the setWaterParams
+    // convention). enabled=false (the default) is byte-identical: the whole
+    // shader path is gated on a uniform flag, so worlds without water never
+    // spend a single extra ALU.
+    struct CausticsParams {
+        bool  enabled   = false;
+        float waterY    = 0.0f;   // world Y of the local water surface
+        float time      = 0.0f;   // animation clock (seconds, host-advanced)
+        float intensity = 1.0f;   // 0..1 master scale (1 = calibrated look)
+    };
+    virtual void setCaustics(const CausticsParams&) {}
     // Filmic grade + split-tone + vignette in the composite pass, master-lerped by
     // `strength` (0 = bit-identical passthrough — the shader never enters the block).
     struct GradeParams {

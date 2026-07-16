@@ -291,6 +291,17 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             // lookup. Rows are stable while the draw list is stable; any shift
             // changes the signature below and triggers a rebuild.
             inst.customIndex = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
+            // GLASS TRANSMITS THE SUN. Glass records get mask 0x7F (bit 7 clear)
+            // so the RT shadow rays (cullMask 0x80, mesh.frag rtshVisibility)
+            // pass through every glass surface — the WATER above all: a sun ray
+            // from the riverbed used to hit the water ribbon as an OPAQUE TLAS
+            // occluder and zero the entire submerged direct-sun term, silently
+            // undoing the 24371e2 depth/shadow fix on RT-shadow hardware (the
+            // default tier here). This also makes RT shadows CONSISTENT with
+            // the raster CSM, which replays only [0, m_frameCmdOpaque) and has
+            // never drawn glass. AO / reflections / DDGI / acoustics trace with
+            // cullMask 0xFF and still see glass exactly as before.
+            inst.mask = (dr.flags & kFlagGlass) ? 0x7Fu : 0xFFu;
             std::memcpy(inst.model, dr.model, sizeof(inst.model));
             m_rtInstScratch.push_back(inst);
             if (m_rt.hasSkinnedBlas(dr.meshId)) ++m_skinnedRtInstances;
@@ -1574,6 +1585,12 @@ void VulkanRenderDevice::prepareFrameData() {
             }
             // r_debugview rides the reserved rtsh1.w lane (0 = off -> byte-identical).
             sc.rtsh1.w = (float)m_debugView;
+            // UNDERWATER CAUSTICS lane (setCaustics): the host-owned local water
+            // plane + animation clock. All zero when no host opted in, so the
+            // mesh.frag gate never opens and dry worlds are byte-identical.
+            sc.caustics = glm::vec4(m_caustics.enabled ? 1.0f : 0.0f,
+                                    m_caustics.waterY, m_caustics.time,
+                                    m_caustics.intensity);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
