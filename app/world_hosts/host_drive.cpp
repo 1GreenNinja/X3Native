@@ -386,6 +386,10 @@ int hostDrive(HostContext& hc) {
         bool prevR = false, prevN = false;
         if (isDrive && shopBuilt)
             x3::logInfo("--world drive: PERFORMANCE SHOP ahead (follow -Z ~64 m) — stop on the lift");
+        // BANKING chase cam: the roll-capable basis leans the view into turns.
+        // Persistent across the interactive loop so the lean eases in/out smoothly
+        // (init level; car-only — see the setCameraBasis site below).
+        float camBank = 0.0f;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
@@ -599,7 +603,53 @@ int hostDrive(HostContext& hc) {
                 shop.selectLights(cx, cy, cz, pls, 16);
                 device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
             }
-            device->setCamera(cx, cy, cz, viewYaw, viewPitch, fovNow);
+            // ---- BANKING chase cam: lean the view into the turn (CAR ONLY). ----
+            // A roll-capable basis (setCameraBasis) banks the camera up-vector by an
+            // angle that tracks steering * speed, so the horizon rolls like an arcade
+            // racer leaning into a corner. Gated to the live car chase — on-foot,
+            // the shop orbit-cam, and the boat/fly hosts keep the level, roll-free
+            // view (they call the unchanged setCamera below, pixel-identical). The
+            // bank is smoothed + dt-scaled (never per-frame — the HARD rule) and
+            // eases back to level as the wheel centres.
+            const bool bankActive = isDrive && inCar && !(shopBuilt && shop.shopMode());
+            {
+                constexpr float kBank     = 0.30f;   // steer->bank gain (radians)
+                constexpr float kMaxBank  = 0.20f;   // ~11.5 deg lean ceiling
+                constexpr float kBankLerp = 5.0f;    // approach rate (1/s)
+                // speedFactor 0..1: a fast turn banks more than a crawl.
+                const float speedFactor = bankActive
+                    ? std::min(std::fabs(car.forwardSpeed()) / 20.0f, 1.0f) : 0.0f;
+                const float bankTarget = bankActive
+                    ? std::clamp(kBank * in.steer * speedFactor, -kMaxBank, kMaxBank) : 0.0f;
+                camBank += (bankTarget - camBank) * std::min(1.0f, kBankLerp * fdt);
+            }
+            if (bankActive) {
+                // fwd = the SAME forward the old setCamera implied from yaw/pitch.
+                const float cyaw = std::cos(viewYaw), syaw = std::sin(viewYaw);
+                const float cpit = std::cos(viewPitch), spit = std::sin(viewPitch);
+                const float fwd[3] = { cpit * cyaw, spit, cpit * syaw };
+                // camRight = normalize(cross(fwd, worldUp)), worldUp = (0,1,0)
+                //          = normalize(-fwd.z, 0, fwd.x).
+                float cr[3] = { -fwd[2], 0.0f, fwd[0] };
+                const float crl = std::sqrt(cr[0]*cr[0] + cr[1]*cr[1] + cr[2]*cr[2]);
+                if (crl > 1e-5f) { cr[0] /= crl; cr[1] /= crl; cr[2] /= crl; }
+                // camUp = cross(camRight, fwd) — the level (roll-free) up.
+                const float cu[3] = {
+                    cr[1]*fwd[2] - cr[2]*fwd[1],
+                    cr[2]*fwd[0] - cr[0]*fwd[2],
+                    cr[0]*fwd[1] - cr[1]*fwd[0]
+                };
+                // Roll the up-vector into the turn: up = cos(b)*camUp + sin(b)*camRight.
+                const float cb = std::cos(camBank), sb = std::sin(camBank);
+                const float up[3] = {
+                    cb*cu[0] + sb*cr[0],
+                    cb*cu[1] + sb*cr[1],
+                    cb*cu[2] + sb*cr[2]
+                };
+                device->setCameraBasis(cx, cy, cz, fwd, up, fovNow);
+            } else {
+                device->setCamera(cx, cy, cz, viewYaw, viewPitch, fovNow);
+            }
             auto frame = device->beginFrame();
             if (frame.valid) vrender(frame);
             device->endFrame(frame);
