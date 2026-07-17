@@ -43,6 +43,7 @@ int hostWormhole(HostContext& hc);        // --world wormhole (feast fold: Salva
 int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fold: S3 autopilot jump ride)
 int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
 int hostEchotropolis(HostContext& hc); // --world echotropolis (Echo Harbor: island + city + day-night)
+int hostEosScene(HostContext& hc);     // --world eos-scene (EoS grey-box: native-client spike)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);

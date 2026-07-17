@@ -22,12 +22,14 @@ echo ==================================================
 echo.
 echo     [1]  Echo Harbor       island city, day/night
 echo     [2]  Escape Lab Zero   the canon lab
+echo     [3]  EoS Grey-Box      Empires of Shadow spike orbit
 echo.
 echo     [Q]  Quit
 echo.
 echo ==================================================
-choice /c 12Q /n /m "  Pick a world: "
-if errorlevel 3 exit /b 0
+choice /c 123Q /n /m "  Pick a world: "
+if errorlevel 4 exit /b 0
+if errorlevel 3 goto eos
 if errorlevel 2 goto lab
 if errorlevel 1 goto harbor
 
@@ -37,6 +39,13 @@ title Echo Harbor  (log - closing this window closes the game)
 echo.
 echo   Launching Echo Harbor...
 "%EXE%" --world echotropolis
+goto done
+
+:eos
+title EoS Grey-Box  (log - closing this window closes the game)
+echo.
+echo   Launching the EoS grey-box orbit...
+"%EXE%" --world eos-scene
 goto done
 
 :lab

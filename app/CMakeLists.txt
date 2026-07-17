@@ -13,6 +13,9 @@ add_executable(X3Engine WIN32
     # #28 deep monolith split — extracted self-contained --world hosts
     world_hosts/world_hosts.cpp
     world_hosts/host_echotropolis.cpp
+    # EoS native-client spike — the eos-scene grey-box world + its loader
+    world_hosts/host_eosscene.cpp
+    eos_scene.cpp
     world_hosts/host_destruct.cpp
     world_hosts/host_physjoint.cpp
     world_hosts/host_ragdoll.cpp
