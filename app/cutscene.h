@@ -15,6 +15,7 @@
 // capital ship -> shot down -> smash to black -> "ESCAPE FROM LAB ZERO" ->
 // "SIX MONTHS LATER" -> wake in the Level-1 cell.
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -32,6 +33,9 @@ struct CameraKey {
     Vec3  pos{};
     Vec3  look{};          // LOOK-AT target point (yaw/pitch derived at eval)
     float fov = 60.0f;     // degrees
+    float roll = 0.0f;     // DUTCH ANGLE / camera bank (degrees, +CW). 0 = level horizon
+                           // (default -> every legacy cutscene is byte-identical). Lerps
+                           // between keys exactly like fov; drives setCameraBasis at play.
     bool  cut = false;     // true = HARD CUT into this key (starts a new shot/spline span;
                            // interpolation never crosses a cut boundary)
 };
@@ -139,10 +143,38 @@ bool validate(const Cutscene& cs, std::vector<std::string>& errors);
 struct CamPose {
     Vec3  pos{};
     float yaw = 0, pitch = 0;   // radians, device convention
+    float roll = 0.0f;          // radians, dutch/bank about the view axis (0 = level)
     float fov = 60.0f;          // degrees
 };
-// Camera spline (Catmull-Rom pos + look, lerped FOV) + summed deterministic shake.
+// Camera spline (Catmull-Rom pos + look, lerped FOV + roll) + summed deterministic shake.
 CamPose evalCamera(const Cutscene& cs, float t);
+
+// Build the camera ORIENTATION BASIS from a pose (yaw/pitch -> fwd, roll banks up
+// about the view axis). Feeds IRenderDevice::setCameraBasis so cutscenes can DUTCH
+// the frame. When pose.roll == 0 the returned `up` is the world-up projected onto
+// the view plane -> pixel-identical to the old yaw/pitch setCamera path.
+inline void camBasis(const CamPose& p, float outFwd[3], float outUp[3]) {
+    const float cp = std::cos(p.pitch), sp = std::sin(p.pitch);
+    const float cy = std::cos(p.yaw),   sy = std::sin(p.yaw);
+    // Device convention (matches evalCamera): fwd = (cos p cos y, sin p, cos p sin y).
+    const float fwd[3] = { cp * cy, sp, cp * sy };
+    const float worldUp[3] = { 0.0f, 1.0f, 0.0f };
+    // camRight = normalize(cross(fwd, worldUp)); camUp = cross(camRight, fwd).
+    float r[3] = { fwd[1] * worldUp[2] - fwd[2] * worldUp[1],
+                   fwd[2] * worldUp[0] - fwd[0] * worldUp[2],
+                   fwd[0] * worldUp[1] - fwd[1] * worldUp[0] };
+    float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    if (rl > 1e-6f) { r[0] /= rl; r[1] /= rl; r[2] /= rl; }
+    const float camUp[3] = { r[1] * fwd[2] - r[2] * fwd[1],
+                             r[2] * fwd[0] - r[0] * fwd[2],
+                             r[0] * fwd[1] - r[1] * fwd[0] };
+    const float cr = std::cos(p.roll), sr = std::sin(p.roll);
+    outFwd[0] = fwd[0]; outFwd[1] = fwd[1]; outFwd[2] = fwd[2];
+    // up = cos(roll)*camUp + sin(roll)*camRight  (roll==0 -> camUp, the level basis).
+    outUp[0] = cr * camUp[0] + sr * r[0];
+    outUp[1] = cr * camUp[1] + sr * r[1];
+    outUp[2] = cr * camUp[2] + sr * r[2];
+}
 
 struct ActorPose {
     Vec3  pos{};

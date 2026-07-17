@@ -211,6 +211,7 @@ bool parseCutscene(std::string_view jsonText, Cutscene& out, std::vector<std::st
                 ck.pos  = jv3(&k, "pos");
                 ck.look = jv3(&k, "look");
                 ck.fov  = jf(&k, "fov", 60.0f);
+                ck.roll = jf(&k, "roll", 0.0f);   // dutch angle (deg); absent -> 0 (level)
                 ck.cut  = jb(&k, "cut", false);
                 cs.camKeys.push_back(ck);
             }
@@ -454,8 +455,10 @@ CamPose evalCamera(const Cutscene& cs, float t) {
             if (K[i].cut) { hi = i - 1; break; }
     }
 
+    const float kDeg2Rad = kPi / 180.0f;
     if (lo == hi) {
         out.pos = K[lo].pos; out.fov = K[lo].fov;
+        out.roll = K[lo].roll * kDeg2Rad;
         float fx = K[lo].look.x - out.pos.x, fy = K[lo].look.y - out.pos.y, fz = K[lo].look.z - out.pos.z;
         const float len = std::sqrt(fx * fx + fy * fy + fz * fz);
         if (len > 1e-5f) { fx /= len; fy /= len; fz /= len; }
@@ -478,6 +481,7 @@ CamPose evalCamera(const Cutscene& cs, float t) {
         out.pos = catmull(k0.pos, k1.pos, k2.pos, k3.pos, u);
         const Vec3 look = catmull(k0.look, k1.look, k2.look, k3.look, u);
         out.fov = lerpf(k1.fov, k2.fov, u);
+        out.roll = lerpf(k1.roll, k2.roll, u) * kDeg2Rad;   // dutch angle eases like fov
         // Derive yaw/pitch (device convention: fwd = (cos p cos y, sin p, cos p sin y)).
         float fx = look.x - out.pos.x, fy = look.y - out.pos.y, fz = look.z - out.pos.z;
         const float len = std::sqrt(fx * fx + fy * fy + fz * fz);
@@ -931,6 +935,40 @@ bool runCutsceneSelfTest() {
         CamPose mid = evalCamera(cc, 7.5f);
         check(nearf(mid.pos.x, 100.0f, 0.01f) && mid.pos.y > 0.0f && mid.pos.y < 5.0f,
               "shot-B spline ignores shot-A neighbors across the cut");
+    }
+
+    // ---- 3c) DUTCH ANGLE / roll: default is level + additive; camBasis matches the
+    //          Euler path at roll==0; roll eases between keys exactly like fov ----
+    {
+        // (a) Every legacy key defaults roll=0 -> pose.roll==0 -> level basis.
+        CamPose lvl = evalCamera(cs, 2.5f);
+        check(nearf(lvl.roll, 0.0f), "roll defaults to 0 (legacy cutscenes stay level)");
+        float f0[3], u0[3];
+        camBasis(lvl, f0, u0);
+        // fwd must equal the device-convention forward derived from yaw/pitch...
+        const float cp = std::cos(lvl.pitch), sp = std::sin(lvl.pitch);
+        const float cy = std::cos(lvl.yaw),   sy = std::sin(lvl.yaw);
+        check(nearf(f0[0], cp * cy, 1e-5f) && nearf(f0[1], sp, 1e-5f) && nearf(f0[2], cp * sy, 1e-5f),
+              "camBasis fwd matches yaw/pitch (Euler path)");
+        // ...and at roll==0 up must be world-up projected onto the view plane: since
+        // this shot looks level (pitch~0), up ~ (0,1,0) and up.y is the max component.
+        check(u0[1] > 0.9f && std::fabs(u0[0]) < 0.1f,
+              "camBasis up ~ world-up-projected when roll==0 (pixel-identical to setCamera)");
+
+        // (b) Roll interpolates between keys like fov (single-shot span, no cuts).
+        Cutscene rc = cs;
+        rc.camKeys.clear();
+        CameraKey r0; r0.t = 0;  r0.pos = {0,0,0}; r0.look = {10,0,0}; r0.fov = 60; r0.roll = 0.0f;
+        CameraKey r1; r1.t = 10; r1.pos = {0,0,0}; r1.look = {10,0,0}; r1.fov = 60; r1.roll = 10.0f;
+        rc.camKeys = { r0, r1 };
+        const float d2r = kPi / 180.0f;
+        check(nearf(evalCamera(rc, 0.0f).roll, 0.0f), "roll hits key 0 (0 deg)");
+        check(nearf(evalCamera(rc, 10.0f).roll, 10.0f * d2r, 1e-4f), "roll hits key 1 (10 deg)");
+        check(nearf(evalCamera(rc, 5.0f).roll, 5.0f * d2r, 1e-4f), "roll lerps to 5 deg at midpoint");
+        // A non-zero roll must actually bank `up` off world-up (into the +right dir).
+        float fR[3], uR[3];
+        camBasis(evalCamera(rc, 10.0f), fR, uR);
+        check(std::fabs(uR[2]) > 0.1f, "roll banks the up vector off world-up (dutch tilt is real)");
     }
 
     // ---- 4) Actor eval: visibility window + key interpolation + matrix ----
