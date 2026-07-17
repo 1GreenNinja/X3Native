@@ -159,9 +159,19 @@ int hostWormhole(HostContext& hc) {
             float camZ = isShot ? kFlyZ0 : (kFlyZ0 + (kFlyZ1 - kFlyZ0) * u);
             float prog = isShot ? kShotProgress : u;
             float roll = 0.25f * t;
-            float yaw   = kAxisYaw + (isShot ? 0.0f : 0.04f * std::sin(roll));
-            float pitch = isShot ? 0.0f : 0.03f * std::cos(roll);
-            device->setCamera(0.0f, 0.0f, camZ, yaw, pitch, 80.0f);
+            if (isShot) {
+                // Level for the gated screenshot (unchanged framing).
+                device->setCamera(0.0f, 0.0f, camZ, kAxisYaw, 0.0f, 80.0f);
+            } else {
+                // REAL barrel roll (setCameraBasis): forward straight down the tunnel
+                // (+Z), up rotated around forward by `roll`. Replaces the faked
+                // 0.04-rad yaw/pitch wobble that stood in for roll before the engine
+                // had a roll-capable camera. THIS is what the "roll + white-hot core"
+                // comment at the top of the file always wanted.
+                const float fwd[3] = { 0.0f, 0.0f, 1.0f };
+                const float up[3]  = { -std::sin(roll), std::cos(roll), 0.0f };
+                device->setCameraBasis(0.0f, 0.0f, camZ, fwd, up, 80.0f);
+            }
             if (hc.shotCamOverride) {
                 device->setCamera(hc.shotCam[0], hc.shotCam[1], hc.shotCam[2],
                                   hc.shotCam[3], hc.shotCam[4], 80.0f);
@@ -196,11 +206,13 @@ int hostWormhole(HostContext& hc) {
         float u = std::fmod(t, 6.0f) / 6.0f;
         float camZ = kFlyZ0 + (kFlyZ1 - kFlyZ0) * u;
         float roll = 0.25f * t;
-        float yaw   = kAxisYaw + 0.04f * std::sin(roll);
-        float pitch = 0.03f * std::cos(roll);
         int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
         if (cw != lastWsW || chh != lastHsW) { lastWsW = cw; lastHsW = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
-        device->setCamera(0.0f, 0.0f, camZ, yaw, pitch, 80.0f);
+        // REAL barrel roll down the tunnel (roll-capable camera) — a true spiral,
+        // not the faked yaw/pitch wobble the roll-less setCamera forced before.
+        const float fwd[3] = { 0.0f, 0.0f, 1.0f };
+        const float up[3]  = { -std::sin(roll), std::cos(roll), 0.0f };
+        device->setCameraBasis(0.0f, 0.0f, camZ, fwd, up, 80.0f);
         auto frame = device->beginFrame();
         if (frame.valid) {
             wh.render(*device, frame, nullptr, t, u, whT);
