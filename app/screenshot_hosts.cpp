@@ -1572,7 +1572,10 @@ int dispatchScreenshotHosts(HostContext& hc) {
 
         const float t = player.time();
         const x3::cut::CamPose cam = x3::cut::evalCamera(cs, t);
-        device->setCamera(cam.pos.x, cam.pos.y, cam.pos.z, cam.yaw, cam.pitch, cam.fov);
+        // ROLL-CAPABLE still: full basis so a keyed dutch angle banks the frame.
+        float camFwd[3], camUp[3];
+        x3::cut::camBasis(cam, camFwd, camUp);
+        device->setCameraBasis(cam.pos.x, cam.pos.y, cam.pos.z, camFwd, camUp, cam.fov);
         device->setSkyTime(10.0f + t * 0.02f);
 
         const int kSettle = 8;   // TAA/auto-exposure settle, like the other stills

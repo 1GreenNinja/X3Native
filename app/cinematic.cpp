@@ -304,7 +304,12 @@ bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
         scene.update(cs, t);
 
         const x3::cut::CamPose cam = x3::cut::evalCamera(cs, t);
-        device.setCamera(cam.pos.x, cam.pos.y, cam.pos.z, cam.yaw, cam.pitch, cam.fov);
+        // ROLL-CAPABLE view: drive from a full orientation basis so a keyed dutch
+        // angle (cam.roll) banks the horizon. roll==0 -> up is world-up projected,
+        // i.e. pixel-identical to the old setCamera(yaw,pitch) path.
+        float camFwd[3], camUp[3];
+        x3::cut::camBasis(cam, camFwd, camUp);
+        device.setCameraBasis(cam.pos.x, cam.pos.y, cam.pos.z, camFwd, camUp, cam.fov);
         device.setSkyTime(10.0f + t * 0.02f);
 
         auto frame = device.beginFrame();
