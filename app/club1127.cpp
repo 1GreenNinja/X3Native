@@ -2172,11 +2172,12 @@ void Club1127World::showcaseCamera(float out[5]) const {
     // toward -X/-Z across the dance floor so the glowing checkerboard, the DJ
     // booth + ORB on the far north wall, the ground bar (left), and the PA stacks
     // all read in one frame. Y/Z keep us inside the 30 ft ceiling.
-    out[0] = kCW / 2 - 3.0f;   // x: by the east wall / elevator entrance
-    out[1] = kClubY + 4.5f;    // y: above the floor, below the 30 ft ceiling
-    out[2] = 1.5f;             // z: slightly off centre
-    out[3] = -1.571f;          // yaw: look WEST (-X) down the 100 ft long axis
-    out[4] = -0.14f;           // pitch: slightly down over the dance floor
+    out[0] = kCW / 2 - 2.5f;   // x: by the east wall / elevator entrance
+    out[1] = kClubY + 4.0f;    // y: above the floor, below the 30 ft ceiling
+    out[2] = 0.5f;             // z: slightly off centre
+    out[3] = -2.9f;            // yaw: look WEST + a touch north (dir=(cos,sin)): frames
+                               // the dance floor, ORB, moving-head beams + DJ/engine room
+    out[4] = -0.13f;           // pitch: slightly down over the dance floor
 }
 
 // ===========================================================================
