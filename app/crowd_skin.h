@@ -106,7 +106,10 @@ private:
         bool  skinned  = false;   // real rig bound + skinnable
         bool  failed   = false;   // load failed once — blockout keeps this agent
         bool  attached = false;   // swapped in over the CURRENT crowd's blockout
-        bool  talking  = false;   // Talk calm-loop currently engaged
+        // ANIM-ENRICH: the civilian-gesture calm-loop key currently engaged
+        // (nullptr = none). Was a bool `talking`; generalized to converse/work/sit
+        // so the crowd's states drive the authored gesture clips.
+        const char* gesture = nullptr;
         float lastSpeed = 0.0f;
         x3::phys::Vec3 lastPos{};
         bool  hasLastPos = false;

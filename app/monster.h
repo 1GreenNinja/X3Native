@@ -956,7 +956,15 @@ private:
     // W2-D: one-shot combat clips (fuzzy-found at bind; -1 = rig has none — the
     // procedural lunge tell below carries the attack read instead).
     int                      m_attackClip = -1;
+    int                      m_attackClip2 = -1;     // 2nd attack variant (alternated for variety)
     int                      m_deathClip  = -1;
+    // ANIM-ENRICH: one-shot HIT-REACTION flinch — fuzzy-found ("hit/react/flinch/
+    // stagger"); played once when the enemy SURVIVES a shot/melee (not while
+    // attacking or dying) so it visibly reacts. -1 on rigs that ship no flinch.
+    int                      m_hitReactClip = -1;
+    float                    m_hitReactAnimT = -1.0f; // >=0 while the flinch plays
+    int                      m_attackActiveClip = -1; // the variant chosen for the CURRENT swing
+    bool                     m_attackAlt = false;     // toggles Attack <-> Attack2
     float                    m_attackAnimT = -1.0f;  // >=0 while the attack one-shot plays
     float                    m_deathAnimT  = -1.0f;  // >=0 while the death clip plays
     bool                     m_deathClipDone = false; // clip finished -> freeze final pose

@@ -59,7 +59,7 @@ void CrowdSkin::build(const CrowdSkinConfig& cfg, const CrowdSystem& crowd) {
     for (Slot& s : m_slots) {
         s.attached = false;
         s.hasLastPos = false;
-        s.talking = false;
+        s.gesture = nullptr;
     }
     m_roomId = crowd.config().roomId;
     m_active = true;
@@ -189,11 +189,25 @@ void CrowdSkin::update(float dt, const CrowdSystem& crowd, Scene& scene,
             x3::phys::Vec3{ a.pos.x, a.pos.y + a.visBob - dip, a.pos.z }, a.yaw);
         s.sys->setPropMotion(speed, lean);
 
-        // Conversations: rigs with a Talk clip play it while mid-chat and
-        // stationary (the calm-loop hook); everyone else keeps the nod/lean.
-        const bool wantTalk = (a.state == CrowdState::Converse) && speed < 0.15f;
-        if (wantTalk && !s.talking) { s.sys->setCalmLoop("talk"); s.talking = true; }
-        else if (!wantTalk && s.talking) { s.sys->clearCalmLoop(); s.talking = false; }
+        // ANIM-ENRICH: living-world GESTURES. Map the agent's STATE (while roughly
+        // stationary) to an authored calm-loop clip: Converse->talk gesture,
+        // Work->task loop, Play(seated knot)->sit. setCalmLoop fuzzy-finds the clip;
+        // rigs lacking it keep the procedural nod/lean fallback (calm-loop stays -1).
+        // Only re-issue when the desired key CHANGES (no per-frame findClip churn).
+        const char* want = nullptr;
+        if (speed < 0.15f) {
+            switch (a.state) {
+                case CrowdState::Converse: want = "converse"; break;
+                case CrowdState::Work:     want = "work";     break;
+                case CrowdState::Play:     want = "sit";      break;  // seated hangout knot
+                default: break;
+            }
+        }
+        if (want != s.gesture) {
+            if (want) s.sys->setCalmLoop(want);
+            else      s.sys->clearCalmLoop();
+            s.gesture = want;
+        }
 
         // Tick the inert character (skinning + clip playback; chaseSpeed 0 and
         // playerPos = self => the AI never fights the fed pose).
@@ -221,7 +235,7 @@ void CrowdSkin::deactivate(Scene& scene) {
         }
         s.attached = false;
         s.hasLastPos = false;
-        s.talking = false;
+        s.gesture = nullptr;
     }
     m_active = false;
 }
