@@ -7107,6 +7107,8 @@ int runDefaultHost(HostContext& hc) {
     bool  s_musicOn  = true;
     float s_musicVol = 0.0f;     // muted by default (was 0.25) — raise via the slider/cfg
     float s_sfxVol   = 1.0f;
+    console.registerCVar("music_bed", "0",
+        "SMP1 synth action bed at boot: 0=KILLED (owner order), 1=start it");
     readAudioSettings(s_musicOn, s_musicVol, s_sfxVol);
     audio->setMasterSfxVolume(s_sfxVol);
     audio->setMusicVolume(s_musicVol);
@@ -7142,9 +7144,14 @@ int runDefaultHost(HostContext& hc) {
                     (ambBuzzLoop.valid() ? "on" : "silent") +
                     " (real loop channels, no retrigger)");
     }
-    // M9: start the low-volume looping ambient/music bed at launch. playMusic remembers
-    // the track + current music volume; when musicOn is false the bed stays silent.
-    audio->playMusic(kMusicPath, /*loop*/true, s_musicVol);
+    // M9 SYNTH BED — KILLED (owner: "KILL the in game synth music"). The SMP1
+    // sci-fi synth action loop used to start here as a permanent background bed;
+    // a pre-mute-era saved cfg (musicVol > 0) resurrected it. The MUSIC CHANNEL
+    // itself stays fully alive — the elevator disco and Club 1127 tracks play
+    // through it on entry, and the volume slider still governs them. Re-enable
+    // the bed only via the cvar below (default OFF).
+    if (console.getFloat("music_bed") > 0.5f)
+        audio->playMusic(kMusicPath, /*loop*/true, s_musicVol);
 
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
