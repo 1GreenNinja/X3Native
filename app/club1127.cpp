@@ -974,32 +974,52 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
-    // TV MULTIPLEX (POE) — 6 screens at the real JS sizes/positions.
+    // 85" OLED WALL ARRAY — 4 PER WALL, all four walls (Tim extension). The
+    // Babylon had a single 85" + a 65"; Tim wants the FULL wall array. 16 big
+    // emissive EQ/visualizer panels (per-texel emissive glass — glow where the EQ
+    // is bright), evenly spaced on every wall, + the lounge 65" from the original.
+    // axis=0 => wall-normal is X (E/W walls, panel spans Z); axis=1 => normal Z
+    // (N/S walls, panel spans X). Thin bezel + a proud glass screen facing the room.
     // ==================================================================
     {
-        // MAX-OUT: every screen carries a baked OLED equalizer frame (palette
-        // cycles per screen) + registers for the live emissive shimmer in
-        // update() — the wall reads as playing VIDEO, not frozen blue slabs.
         int tvIdx = 0;
-        auto tv = [&](float inches, float x, float y, float z) {
+        auto panel = [&](float inches, float x, float y, float z, int axis, bool wallArray) {
             const float dm  = inches * 0.0254f;
             const float tvH = dm / std::sqrt(1.0f + (16.0f / 9.0f) * (16.0f / 9.0f));
             const float tvW = tvH * 16.0f / 9.0f;
-            box(x, y, z, (tvW + 0.05f) / 2, (tvH + 0.05f) / 2, 0.03f, kTvFrame, kEmitOff, false); // bezel
+            const float bhx = axis == 0 ? 0.03f : (tvW + 0.05f) / 2;
+            const float bhz = axis == 0 ? (tvW + 0.05f) / 2 : 0.03f;
+            box(x, y, z, bhx, (tvH + 0.05f) / 2, bhz, kTvFrame, kEmitOff, false); // bezel
+            // Screen pushed ~0.045 m toward the room center along the inward normal.
+            const float sx = x + (axis == 0 ? (x > 0 ? -0.045f : 0.045f) : 0.0f);
+            const float sz = z + (axis == 1 ? (z > 0 ? -0.045f : 0.045f) : 0.0f);
+            const float shx = axis == 0 ? 0.008f : tvW / 2;
+            const float shz = axis == 0 ? tvW / 2 : 0.008f;
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.9f };
-            const uint32_t scrId = box(x, y, z + 0.035f, tvW / 2, tvH / 2, 0.005f, kTvFrame, emScr, false);
+            const uint32_t scrId = box(sx, y, sz, shx, tvH / 2, shz, kTvFrame, emScr, false);
             oledGlass(scrId, texEq[tvIdx % 4]);
             m_oledEnts.push_back(scrId);
             ++tvIdx;
             ++m_stats.tvScreens;
+            if (wallArray) ++m_stats.wallOleds;
         };
-        const float nwSideX = -(ER_W / 2 + nwSide / 2);
-        tv(80, nwSideX, 2.74f, -CL / 2 + 0.05f);
-        tv(85, 0, CH * 0.55f, CL / 2 - 0.05f);
-        tv(55, CW / 2 - 0.8f, 1.8f, CL / 2 - 2.0f);
-        tv(75, CW / 2 - 1.5f, 2.2f, CL / 2 - 5.0f);
-        tv(65, -ER_W / 2 + 0.1f, LOUNGE_Y + 1.5f, -CL / 2 - ER_D / 2);
-        tv(55, -CW / 2 + 0.8f, 2.0f, CL / 2 - 1.5f);
+        const float xFaceE =  CW / 2 - T / 2 - 0.04f;   // east wall inner face
+        const float xFaceW = -CW / 2 + T / 2 + 0.04f;   // west wall inner face
+        const float zFaceS =  CL / 2 - T / 2 - 0.04f;   // south wall inner face
+        const float zFaceN = -CL / 2 + T / 2 + 0.04f;   // north wall inner face
+        // East + West long walls: 4 panels along Z (clear of the elevator gap /
+        // catwalk booths), at y=4.0 m (below the 6.4 m catwalk deck).
+        const float ewZ[4] = { -11.0f, -4.0f, 3.0f, 10.0f };
+        for (int i = 0; i < 4; ++i) { panel(85, xFaceE, 4.0f, ewZ[i], 0, true); panel(85, xFaceW, 4.0f, ewZ[i], 0, true); }
+        // South end wall: 4 panels above the U-bar backbar, y=6.0 m.
+        const float sX[4] = { -6.5f, -3.5f, 3.5f, 6.5f };
+        for (int i = 0; i < 4; ++i) panel(85, sX[i], 6.0f, zFaceS, 1, true);
+        // North end wall: 4 panels clear of the engine-room gap (|x|>3.05), high
+        // (y=8.5 m) so they read over the DJ booth / aerial bar below.
+        const float nX[4] = { -6.5f, -3.6f, 3.6f, 6.5f };
+        for (int i = 0; i < 4; ++i) panel(85, nX[i], 8.5f, zFaceN, 1, true);
+        // The original lounge 65" (engine-room west wall), NOT part of the wall array.
+        panel(65, -ER_W / 2 + 0.1f, LOUNGE_Y + 1.5f, -CL / 2 - ER_D / 2, 0, false);
     }
 
     // ==================================================================
@@ -1053,9 +1073,13 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 box(x - side * 0.01f, wy - 0.5f, z + 0.18f, 0.015f, 0.015f, 0.015f, kAmp, kEmitLed, false); // power LED
             }
     }
-    // 4x JBL PRO 18" subs flanking the dance floor.
+    // 8x JBL PRO 18" subs flanking the dance floor (Tim extension: MORE subs —
+    // was 4; a second pair per side stacks the low end for the bigger room).
     {
-        const float p[4][2] = { {-1,-1.f/3}, {-1,1.f/3}, {1,-1.f/3}, {1,1.f/3} };
+        const float p[8][2] = {
+            {-1,-0.45f}, {-1,-0.15f}, {-1,0.15f}, {-1,0.45f},
+            { 1,-0.45f}, { 1,-0.15f}, { 1,0.15f}, { 1,0.45f},
+        };
         for (auto& s : p) {
             const float cx = s[0] * (CW / 2 - 0.5f), cz = s[1] * CL;
             box(cx, 0.35f, cz, 0.305f, 0.305f, 0.305f, kSub, kEmitOff, true);
@@ -1105,16 +1129,20 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(tx2 - side * (cabW[0] + 0.03f), 1.4f, tz2, 0.02f, 1.35f, 0.02f, kWall, kEmitNeon, false);
     }
 
-    // 16x JBL N26/S38 surrounds (walls, alternating sizes).
+    // 24x JBL N26/S38 satellite surrounds (Tim extension: MORE satellites — was 16).
+    // 12 per long wall, on TWO height rows (mid-wall + up near the catwalk) so the
+    // room is wrapped in satellites top-to-bottom.
     {
-        const float surSp = CL / 9;
+        const float surSp = CL / 7;
         for (int side = -1; side <= 1; side += 2)
-            for (int n = 0; n < 8; ++n) {
+            for (int n = 0; n < 6; ++n) {
                 const float z = -CL / 2 + surSp * (n + 1);
                 const float x = side * (CW / 2 - 0.15f);
                 const bool s38 = (n % 2 == 0);
-                box(x, CH * 0.75f, z, (s38 ? 0.25f : 0.2f) / 2, (s38 ? 0.5f : 0.3f) / 2, 0.09f, kSpk, kEmitOff, false);
-                ++m_stats.surrounds;
+                const float hw = (s38 ? 0.25f : 0.2f) / 2, hh = (s38 ? 0.5f : 0.3f) / 2;
+                box(x, CH * 0.55f, z, hw, hh, 0.09f, kSpk, kEmitOff, false);   // mid-wall row
+                box(x, CH * 0.82f, z, hw, hh, 0.09f, kSpk, kEmitOff, false);   // high row (near catwalk)
+                m_stats.surrounds += 2;
             }
     }
 
@@ -1153,7 +1181,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // THE ORB — 2 m mirror ball on a cable, 4 spotlights + 4 ring lights.
     // ==================================================================
     {
-        m_orbY = oy + (CH - 1.5f);
+        m_orbY = oy + 8.6f;   // hung over the floor, below the 42 ft ceiling / above the catwalk
         // POLISH (fix/club-polish): a REAL faceted MIRROR BALL — a LOW-poly sphere
         // with FLAT per-facet normals (makeFacetedBall) under a chrome/mirror MR, so
         // it catches the club's colored beams as hundreds of discrete tile glints
@@ -1170,8 +1198,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         }
         m_orbValid = true;
         m_stats.hasOrb = true;
-        // Suspending cable.
-        box(0, CH - 0.5f, 0, 0.02f, 0.75f, 0.02f, kCable, kEmitOff, false);
+        // Suspending cable (ceiling down to the lowered orb).
+        box(0, (CH + 9.6f) / 2, 0, 0.02f, (CH - 9.6f) / 2, 0.02f, kCable, kEmitOff, false);
         // POLISH: MIRROR-BALL SPARKLE — 6 small colored point lights that orbit with
         // the ball's spin and paint the signature MOVING DOTS of colored light across
         // the walls / floor / dancers. Short range so each reads as a discrete
@@ -1304,124 +1332,124 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
-    // GROUND BAR + 7 STOOLS (west side).
+    // U-SHAPED GRANITE BAR, centered at the SOUTH END (Tim extension). A
+    // horseshoe of DARK POLISHED GRANITE (reflective PBR — mirror-gloss MR):
+    // a back run along the south wall + two arms reaching toward the floor, the
+    // bartender working the inner well, guests on stools around the outer faces,
+    // the glowing BOTTLE WALL back-bar on the south wall behind. Replaces the old
+    // west-wall ground bar (the Babylon original had a west ground bar; Tim's
+    // extension is this centered granite U).
     // ==================================================================
     {
-        // Tim: 'the bar needs walk-around capability' — counter pulled off the
-        // wall so the lane behind is player-walkable (~1.2 m) with open ends.
-        const float bx = -CW / 2 + 1.9f, bz = CL / 4;
-        box(bx, 0.55f, bz, 0.4f, 0.55f, 2.5f, kBar, kEmitOff, true, 1.0f, &sBar);     // bar body
-        // MAX-OUT: GLEAMING GLASSY COUNTERTOP — a near-black glass slab on the
-        // mirror-gloss MR route (tight specular hot-spots from the bar pendants =
-        // the gleam), edge-lit by a cyan under-lip strip, over a warm kick LED.
-        {
-            x3::prims::PrimMesh top = x3::prims::makeBox(0.50f, 0.035f, 2.6f, bx, oy + 1.13f, bz, 1.0f);
-            const float glassCol[4] = { 0.05f, 0.065f, 0.085f, 1.0f };
-            const float glassEm[4]  = { 0.02f, 0.10f, 0.13f, 0.5f };
-            prim(std::move(top), glassCol, glassEm, x3::rhi::TextureHandle{}, mrGlass, false);
-        }
-        const float emCyanStrip[4] = { 0.05f, 0.85f, 1.0f, 2.6f };
-        box(bx + 0.48f, 1.10f, bz, 0.012f, 0.012f, 2.58f, kWall, emCyanStrip, false);   // under-lip strip (guest side)
-        const float emWarmKick[4] = { 1.0f, 0.55f, 0.15f, 1.6f };
-        box(bx + 0.40f, 0.06f, bz, 0.012f, 0.012f, 2.5f, kWall, emWarmKick, false);     // kick-panel LED
+        const float uCx = 0.0f;                 // U centered on X
+        const float zWall = CL / 2 - T / 2;      // south wall inner face
+        const float zBack = zWall - 1.1f;        // back counter center Z (well behind)
+        const float armHalfX = 0.35f, armX = 3.0f;   // arm counters at x = ±3.0
+        const float zArmN = 8.6f;                // arms reach north to here
+        const float zArmC = (zBack + zArmN) / 2, zArmHalf = (zBack - zArmN) / 2;
+        const float bh = 0.55f;                  // counter body half-height
+        // DARK POLISHED GRANITE — near-black with a faint warm fleck, glass-gloss MR.
+        const float kGranite[4] = { 0.055f, 0.050f, 0.060f, 1.0f };
+        const float kGranEm[4]  = { 0.015f, 0.02f, 0.03f, 0.35f };
         m_stats.hasGroundBar = true;
-        // THREE warm pendant pools raking the glass top (the specular gleam).
-        // (relight: 1.15/0.85/0.45 -> 1.6/1.15/0.55 so the bar reads as a glowing hub.)
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz - 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz,        1.60f, 1.15f, 0.55f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz + 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
-        // Pendant fixtures (small chrome cones -> boxes + glowing bulbs).
-        for (int pnd = -1; pnd <= 1; ++pnd) {
-            const float pz = bz + pnd * 1.6f;
-            box(bx + 0.3f, 2.75f, pz, 0.015f, 0.35f, 0.015f, kChrome, kEmitOff, false);   // drop rod
-            box(bx + 0.3f, 2.35f, pz, 0.06f, 0.045f, 0.06f, kSpk, kEmitOff, false);       // shade (near-black)
-            const float emBulb[4] = { 1.0f, 0.78f, 0.45f, 2.8f };
-            box(bx + 0.3f, 2.27f, pz, 0.035f, 0.025f, 0.035f, kBarTop, emBulb, false);    // bulb
+        m_stats.hasUBar = true;
+        // --- Counter bodies (the U): back run + two arms. ---
+        box(uCx, bh, zBack, 3.35f, bh, 0.35f, kBar, kEmitOff, true, 1.0f, &sBar);           // back run
+        for (int s = -1; s <= 1; s += 2)
+            box(s * armX, bh, zArmC, armHalfX, bh, std::fabs(zArmHalf), kBar, kEmitOff, true, 1.0f, &sBar); // arms
+        // --- Polished granite tops (reflective slabs on the mirror-gloss MR route). ---
+        auto granTop = [&](float cx, float cy, float cz, float hx, float hz) {
+            x3::prims::PrimMesh top = x3::prims::makeBox(hx * 2, 0.05f, hz * 2, cx, oy + cy, cz, 1.0f);
+            prim(std::move(top), kGranite, kGranEm, x3::rhi::TextureHandle{}, mrChrome, false);
+        };
+        granTop(uCx, 1.16f, zBack, 3.45f, 0.45f);                        // back top
+        for (int s = -1; s <= 1; s += 2)
+            granTop(s * armX, 1.16f, zArmC, 0.45f, std::fabs(zArmHalf) + 0.1f);  // arm tops
+        // Cyan under-lip + warm kick LED tracing the U's OUTER guest edge.
+        const float emCyan[4] = { 0.05f, 0.85f, 1.0f, 2.4f };
+        const float emKick[4] = { 1.0f, 0.55f, 0.15f, 1.5f };
+        for (int s = -1; s <= 1; s += 2) {
+            box(s * (armX + 0.37f), 1.12f, zArmC, 0.012f, 0.012f, std::fabs(zArmHalf), kWall, emCyan, false);
+            box(s * (armX + 0.30f), 0.06f, zArmC, 0.012f, 0.012f, std::fabs(zArmHalf), kWall, emKick, false);
         }
-        for (int i = 0; i < 7; ++i) {
-            const float sz = CL / 4 - 2.5f + 0.5f + i * 5.0f / 7.0f;
-            box(-CW / 2 + 2.7f, 0.75f, sz, 0.2f, 0.035f, 0.2f, kLeather, kEmitOff, false);       // seat (dark leather)
-            box(-CW / 2 + 2.7f, 0.36f, sz, 0.03f, 0.36f, 0.03f, kStoolLeg, kEmitOff, false);     // leg
-            ++m_stats.barStools;
+        box(uCx, 1.12f, zArmN + 0.02f, armX, 0.012f, 0.012f, kWall, emCyan, false);   // across the open mouth
+        // --- Stools around the U's outer faces (5 per arm = 10). ---
+        for (int s = -1; s <= 1; s += 2)
+            for (int i = 0; i < 5; ++i) {
+                const float sz = zArmN + 0.4f + i * (std::fabs(zArmHalf) * 2 - 0.8f) / 4.0f;
+                box(s * (armX + 0.75f), 0.75f, sz, 0.2f, 0.035f, 0.2f, kLeather, kEmitOff, false);   // seat
+                box(s * (armX + 0.75f), 0.36f, sz, 0.03f, 0.36f, 0.03f, kStoolLeg, kEmitOff, false); // leg
+                ++m_stats.barStools;
+            }
+        // --- Three warm pendant pools over the U (the granite gleam) + fixtures. ---
+        for (int pnd = -1; pnd <= 1; ++pnd) {
+            const float pz = zArmC + pnd * (std::fabs(zArmHalf) - 0.3f);
+            addLight(m_lights, uCx, oy + 2.6f, pz, 1.60f, 1.15f, 0.55f, 4.5f);
+            box(uCx, 3.0f, pz, 0.015f, 0.35f, 0.015f, kChrome, kEmitOff, false);     // drop rod
+            box(uCx, 2.6f, pz, 0.06f, 0.045f, 0.06f, kSpk, kEmitOff, false);         // shade
+            const float emBulb[4] = { 1.0f, 0.78f, 0.45f, 2.8f };
+            box(uCx, 2.52f, pz, 0.035f, 0.025f, 0.035f, kBarTop, emBulb, false);     // bulb
         }
 
-        // MAX-OUT: BACK-BAR — a lit bottle wall on the west wall behind the bar:
-        // backlit panel, three polished glass shelves, 18 glowing bottles in five
-        // liquor hues, chrome shelf brackets, and a wide OLED band above (the
-        // "now mixing" display). This is what a camera at the bar SEES.
+        // --- BACK-BAR bottle wall on the SOUTH wall (behind the bartender). Smoked
+        // crystal panel, 3 polished glass shelves, 18 glowing bottles, chrome
+        // brackets, a violet frame, + a wide OLED band above (the "now mixing" display). ---
         {
-            const float wallX = -CW / 2 + 0.35f;
-            // DARK GLASS CRYSTAL panel (Tim) — a real transparent pane, near-black
-            // with a deep violet-blue tint + full fresnel: the rack reads as smoked
-            // crystal and the glowing bottles pop against it.
+            const float zPanel = zWall - 0.35f;      // proud of the south wall
             {
-                x3::prims::PrimMesh pg = x3::prims::makeBox(0.015f, 1.05f, 2.4f, wallX, oy + 1.75f, bz, 1.0f);
+                x3::prims::PrimMesh pg = x3::prims::makeBox(6.4f, 1.05f, 0.015f, uCx, oy + 1.75f, zPanel, 1.0f);
                 Entity pe;
                 pe.mesh = device.createMesh(pg.verts.data(), (uint32_t)pg.verts.size(),
                                             pg.index.data(), (uint32_t)pg.index.size());
                 pe.baseColor[0] = 0.04f; pe.baseColor[1] = 0.03f; pe.baseColor[2] = 0.07f; pe.baseColor[3] = 1.0f;
                 pe.emissive[0] = 0.18f; pe.emissive[1] = 0.06f; pe.emissive[2] = 0.35f; pe.emissive[3] = 0.30f;
                 pe.transparent = true;
-                pe.glass.opacity = 0.55f;
-                pe.glass.refraction = 0.0f;
-                pe.glass.roughness = 0.04f;
-                pe.glass.specular = 1.0f;
+                pe.glass.opacity = 0.55f; pe.glass.refraction = 0.0f; pe.glass.roughness = 0.04f; pe.glass.specular = 1.0f;
                 pe.glass.tint[0] = 0.35f; pe.glass.tint[1] = 0.25f; pe.glass.tint[2] = 0.60f;
                 pe.tag = (uint32_t)Tag::Static;
                 scene.add(pe);
             }
-            // Violet edge-light strips framing the crystal panel.
             const float emViolet[4] = { 0.55f, 0.10f, 1.0f, 2.2f };
-            box(wallX + 0.01f, 2.82f, bz, 0.008f, 0.010f, 2.42f, kWall, emViolet, false);
-            box(wallX + 0.01f, 0.68f, bz, 0.008f, 0.010f, 2.42f, kWall, emViolet, false);
+            box(uCx, 2.82f, zPanel + 0.01f, 6.42f / 2, 0.010f, 0.008f, kWall, emViolet, false);
+            box(uCx, 0.68f, zPanel + 0.01f, 6.42f / 2, 0.010f, 0.008f, kWall, emViolet, false);
             const float bottleHue[5][3] = {
-                { 1.0f, 0.55f, 0.10f },   // bourbon amber
-                { 0.15f, 1.0f, 0.45f },   // absinthe emerald
-                { 0.10f, 0.75f, 1.0f },   // curacao cyan
-                { 0.80f, 0.20f, 1.0f },   // violet
-                { 1.0f, 0.25f, 0.35f },   // campari rose
+                { 1.0f, 0.55f, 0.10f }, { 0.15f, 1.0f, 0.45f }, { 0.10f, 0.75f, 1.0f },
+                { 0.80f, 0.20f, 1.0f }, { 1.0f, 0.25f, 0.35f },
             };
             for (int shelf = 0; shelf < 3; ++shelf) {
                 const float shY = 1.15f + shelf * 0.55f;
-                // Polished glass shelf (mirror-gloss slab) + chrome brackets.
-                x3::prims::PrimMesh sh = x3::prims::makeBox(0.16f, 0.014f, 2.3f, wallX + 0.18f, oy + shY, bz, 1.0f);
+                x3::prims::PrimMesh sh = x3::prims::makeBox(6.0f, 0.014f, 0.16f, uCx, oy + shY, zPanel - 0.18f, 1.0f);
                 Entity she;
                 she.mesh = device.createMesh(sh.verts.data(), (uint32_t)sh.verts.size(),
                                              sh.index.data(), (uint32_t)sh.index.size());
                 she.baseColor[0] = 0.06f; she.baseColor[1] = 0.07f; she.baseColor[2] = 0.10f; she.baseColor[3] = 1.0f;
                 she.transparent = true;
-                she.glass.opacity = 0.35f;      // crystal shelf — see the bottles through it
-                she.glass.refraction = 0.0f;
-                she.glass.roughness = 0.05f;
-                she.glass.specular = 1.0f;
+                she.glass.opacity = 0.35f; she.glass.refraction = 0.0f; she.glass.roughness = 0.05f; she.glass.specular = 1.0f;
                 she.glass.tint[0] = 0.55f; she.glass.tint[1] = 0.60f; she.glass.tint[2] = 0.85f;
                 she.tag = (uint32_t)Tag::Static;
                 scene.add(she);
-                for (int br = -1; br <= 1; ++br)
-                    box(wallX + 0.18f, shY - 0.05f, bz + br * 1.05f, 0.02f, 0.05f, 0.02f, kChrome, kEmitOff, false);
-                // Six bottles per shelf, varied hue/height, backlit glow.
+                for (int br = -2; br <= 2; ++br)
+                    box(uCx + br * 1.4f, shY - 0.05f, zPanel - 0.18f, 0.02f, 0.05f, 0.02f, kChrome, kEmitOff, false);
                 for (int bt = 0; bt < 6; ++bt) {
-                    const float btZ = bz - 1.0f + bt * 0.4f + ((shelf * 7 + bt) % 3) * 0.05f;
+                    const float btX = uCx - 2.5f + bt * 1.0f + ((shelf * 7 + bt) % 3) * 0.08f;
                     const float btH = 0.13f + ((clubHash(shelf * 61 + bt * 17) % 100) / 100.0f) * 0.07f;
                     const float* hue = bottleHue[(shelf * 6 + bt) % 5];
                     const float btEm[4] = { hue[0], hue[1], hue[2], 1.7f };
                     const float btCol[4] = { hue[0] * 0.3f, hue[1] * 0.3f, hue[2] * 0.3f, 1.0f };
                     x3::prims::PrimMesh btm = x3::prims::makeBox(0.035f, btH, 0.035f,
-                                                                 wallX + 0.18f, oy + shY + 0.014f + btH, btZ, 1.0f);
+                                                                 btX, oy + shY + 0.014f + btH, zPanel - 0.18f, 1.0f);
                     prim(std::move(btm), btCol, btEm, x3::rhi::TextureHandle{}, mrGlass, false);
-                    // Neck.
-                    box(wallX + 0.18f, shY + 0.014f + btH * 2.0f + 0.035f, btZ, 0.012f, 0.035f, 0.012f,
-                        kChrome, kEmitOff, false);
+                    box(btX, shY + 0.014f + btH * 2.0f + 0.035f, zPanel - 0.18f, 0.012f, 0.035f, 0.012f, kChrome, kEmitOff, false);
                 }
             }
             // Wide OLED band above the back-bar (registered for the live shimmer).
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.9f };
-            const uint32_t bandId = box(wallX + 0.05f, 3.25f, bz, 0.015f, 0.42f, 2.35f, kTvFrame, emScr, false);
+            const uint32_t bandId = box(uCx, 3.25f, zPanel + 0.05f, 2.35f, 0.42f, 0.015f, kTvFrame, emScr, false);
             oledGlass(bandId, texEq[1]);
             m_oledEnts.push_back(bandId);
-            // Bartender behind the counter, facing the room (+X).
+            // Bartender in the well, facing the floor (-Z).
             addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
-                         x3::phys::Vec3{ bx - 0.75f, oy + 0.0f, bz }, 1.0f, false, nullptr);
+                         x3::phys::Vec3{ uCx, oy + 0.0f, zBack - 0.6f }, 1.0f, false, nullptr);
         }
     }
 
@@ -2073,9 +2101,9 @@ bool runClubSelfTest() {
     // (3) THE ORB — the 2 m mirror ball.
     check(s.hasOrb, "THE ORB (mirror ball) exists");
 
-    // (4) Aerial bar + ground bar with exactly 7 stools.
-    check(s.hasAerialBar && s.hasGroundBar && s.barStools == 7,
-          "aerial bar + ground bar with 7 stools");
+    // (4) Aerial bar + U-shaped granite bar (centered at one end) with 10 stools.
+    check(s.hasAerialBar && s.hasGroundBar && s.hasUBar && s.barStools == 10,
+          "aerial bar + U-shaped granite bar with 10 stools around the U");
 
     // (5) Engine-room/lounge with a 12-step stair.
     check(s.hasLoungeFloor && s.stairSteps == 12,
@@ -2083,8 +2111,8 @@ bool runClubSelfTest() {
 
     // (6) The real PA rig: 4 SVS subs + 16 JBL line-array cabs + 4 JBL 18" subs +
     //     16 surrounds.
-    check(s.svsSubs == 4 && s.jblLineArray == 16 && s.jbl18Subs == 4 && s.surrounds == 16,
-          "PA rig: 4 SVS subs + 16 JBL line-array + 4 JBL 18\" subs + 16 surrounds");
+    check(s.svsSubs == 4 && s.jblLineArray == 16 && s.jbl18Subs == 8 && s.surrounds == 24,
+          "PA rig (expanded): 4 SVS + 16 JBL line-array + 8 JBL 18\" subs + 24 surrounds");
 
     // (7) 20 blacklights at Tim's spec: vertical wall tubes every 12 ft, centered
     //     5 ft off the floor, EACH casting a companion UV point light (8 per long
@@ -2094,8 +2122,8 @@ bool runClubSelfTest() {
     check(club.pointLights().size() <= 64,
           "point-light set fits the kMaxPointLights=64 device cap");
 
-    // (8) 6-screen TV multiplex.
-    check(s.tvScreens == 6, "6-screen TV multiplex");
+    // (8) 85" OLED WALL ARRAY: 4 per wall x 4 walls = 16 panels (+ lounge 65").
+    check(s.wallOleds == 16, "85\" OLED wall array (4 per wall, all 4 walls)");
 
     // (9) Dance floor + VIP/couch seating.
     check(s.hasDanceFloor && s.couches >= 3, "dance-floor checkerboard + VIP/couch seating");
@@ -2167,8 +2195,8 @@ bool runClubSelfTest() {
             if (mx - mn > 0.05f) allOk = false;
             if (e.emissive[3] <= 0.5f) allOk = false;   // and bright enough to READ
         }
-        check(allOk && oled.size() == 10,
-              "all 10 OLED screens are textured glass on the per-texel emissive path");
+        check(allOk && oled.size() == 21,
+              "all 21 OLED screens are textured glass on the per-texel emissive path");
     }
 
     // (14) THE SCREEN-CONTRAST PROBE + ITS NEGATIVE CONTROL. Run glass.frag's emissive
