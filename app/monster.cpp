@@ -330,8 +330,9 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         // W2-D: one-shot combat clips. Absent on today's retargeted rigs (Idle/Walk/
         // Run[/Jump] only) — the attack_death_bake.py pipeline appends them; lookup
         // degrades to -1 gracefully so this wiring is drop-in either way.
-        m_attackClip = m_skinner.findClip({ "attack", "strike", "swing", "punch", "bite", "swipe", "slash" });
+        m_attackClip = m_skinner.findClip({ "attack", "strike", "swing", "punch", "bite", "swipe", "slash", "melee" });
         m_deathClip  = m_skinner.findClip({ "death", "die", "collapse" });
+        m_hitClip    = m_skinner.findClip({ "hit", "hurt", "flinch", "stagger", "react", "impact", "damage" });
         if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
         if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
         m_animActive = (m_idleClip >= 0);
@@ -355,7 +356,32 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                     " jump=" + std::to_string(m_jumpClip) +
                     " attack=" + std::to_string(m_attackClip) +
                     " death=" + std::to_string(m_deathClip) +
+                    " hit=" + std::to_string(m_hitClip) +
                     " locoBlend=" + (m_useLocoBlend ? "1" : "0"));
+        // ---- PER-RIG ANIMATION AUDIT (Tim's #1 ask): one glance tells you, per
+        // state, whether a REAL baked clip drives it or the never-broken PROCEDURAL
+        // floor does. If any combat state reads PROCEDURAL on a humanoid enemy, the
+        // rig is missing baked clips (run tools/attack_death_bake.py). No state ever
+        // collapses to a static/idle pose — every row resolves to a clip OR proc. ----
+        {
+            auto row = [&](const char* state, int clip) -> std::string {
+                if (clip >= 0)
+                    return std::string(state) + "=BAKED'" +
+                           std::string(m_skinner.clipName((uint32_t)clip)) + "'";
+                return std::string(state) + "=PROCEDURAL";
+            };
+            // Locomotion is BAKED if a real walk/run set drives the blend; else the
+            // legacy idle-pump/procedural stride carries it.
+            const std::string loco = m_useLocoBlend
+                ? std::string("WALK/RUN=BAKED'") +
+                  std::string(m_skinner.clipName((uint32_t)m_walkClip)) + "'"
+                : std::string("WALK/RUN=PROCEDURAL(idle-pump)");
+            x3::logInfo("[monster-anim] " + modelFile + " STATE AUDIT: " +
+                        row("IDLE",  m_idleClip)   + " " + loco + " " +
+                        row("ATTACK", m_attackClip) + " " +
+                        row("HIT",    m_hitClip)    + " " +
+                        row("DEATH",  m_deathClip));
+        }
         // Pose the bind-pose mesh into the idle pose at t=0 once up front so the
         // very first rendered frame already shows the animated pose (not bind pose).
         if (m_animActive && m_device) {
@@ -597,6 +623,8 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
+        // VISIBLE FLINCH: baked Hit clip (if any) + guaranteed procedural stagger.
+        kickHitReact();
     }
     return r;
 }
@@ -662,6 +690,8 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
+        // VISIBLE FLINCH: baked Hit clip (if any) + guaranteed procedural stagger.
+        kickHitReact();
     }
     return dead;
 }
@@ -1023,6 +1053,21 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                             " (hp=" + std::to_string(m_hp) + "/" + std::to_string(m_maxHp) +
                             " los=" + (los ? "1" : "0") +
                             " d=" + std::to_string((int)horiz) + "m)");
+                // ALERT BARK / TELEGRAPH: transitioning from a non-engaged state
+                // (Idle/Search/Patrol) INTO an engage state == the enemy just SPOTTED
+                // the player. Fire a punchy full-intensity growl so the player HEARS
+                // the aggro land before the first swing (readability). One-shot; the
+                // ongoing harass taunt takes over from here.
+                auto engaged = [](AiState s) {
+                    return s == AiState::Advance || s == AiState::Attack ||
+                           s == AiState::Strafe;
+                };
+                if (m_dmg > 0 && !engaged(m_ai) && engaged(want)) {
+                    emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyTaunt,
+                        x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 1.0f,
+                        (uint32_t)m_species });
+                    m_tauntTimer = 1.2f;   // don't double-bark immediately after
+                }
                 m_ai = want;
                 m_stateTime = 0.0f;
                 if (m_ai == AiState::Search)  m_searchTimer = kAiSearchTime;
@@ -1467,6 +1512,14 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         m_lunge    += (wantLunge - m_lunge) * k;
         m_lungeDip += (wantDip  - m_lungeDip) * k;
     }
+    // ---- Procedural STAGGER decay (visual floor). kickHitReact() sets m_procStagger
+    // to 1 on a surviving hit; it decays here so the body recoils then recovers. When
+    // a baked Hit clip drives the recoil the offset is small (the clip carries it);
+    // with no clip it is the whole read. Folded into drawPos below. ----
+    if (m_procStagger > 0.0f) {
+        m_procStagger -= dt * 3.0f;               // ~0.33 s recoil
+        if (m_procStagger < 0.0f) m_procStagger = 0.0f;
+    }
 
     // ---- Bake the facing yaw into the render transform's upper-left 3x3, keeping
     // the uniform model scale, and set the translation to the (possibly moved)
@@ -1492,6 +1545,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             drawPos.x += -fs * m_lunge;
             drawPos.z += -fc * m_lunge;
             drawPos.y -= m_lungeDip;
+        }
+        // Procedural stagger: shove the DRAW position AWAY from the player (backward
+        // along facing) with a small dip, scaled by the decaying intensity — a shot
+        // ALWAYS knocks the body back visibly even on a rig with no baked Hit clip.
+        if (m_procStagger > 0.0f) {
+            const float fs = std::sin(m_yaw), fc = std::cos(m_yaw);
+            const float amp = 0.18f * m_procStagger;   // metres of recoil
+            drawPos.x += fs * amp;                      // +facing-back = away from target
+            drawPos.z += fc * amp;
+            drawPos.y -= 0.05f * m_procStagger;         // brief crouch dip
         }
         Entity& me = scene.get(m_entity);
         if (m_propLean != 0.0f) {
@@ -1541,6 +1604,14 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // at wind-up start). Hard-cut in/out — consistent with the engine's existing
         // clip switching; returns to the locomotion blend the frame after it ends.
         if (m_attackAnimT >= 0.0f && m_attackClip >= 0) {
+            // PROOF (Tim's #1 ask): log once at the START of each swing that a REAL
+            // non-idle Attack clip is now driving the pose — so a headless run shows
+            // attacks animate, not idle-during-swing. Fires on the first frame only.
+            if (m_attackAnimT == 0.0f)
+                x3::logInfo("[monster-anim] ATTACK clip '" +
+                            std::string(m_skinner.clipName((uint32_t)m_attackClip)) +
+                            "' now driving pose (entity " + std::to_string(m_entity) +
+                            ", not idle) — swing animating");
             m_attackAnimT += dt;
             const float dur = m_skinner.clipDuration((uint32_t)m_attackClip);
             if (m_attackAnimT < dur && dur > 1e-4f) {
@@ -1550,6 +1621,19 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 return;                    // locomotion resumes next frame after the swing
             }
             m_attackAnimT = -1.0f;         // finished -> fall through to locomotion
+        }
+        // HIT-REACT: the one-shot flinch clip preempts locomotion while it plays
+        // (kicked by kickHitReact on a surviving hit). Attack outranks it (checked
+        // first + kickHitReact won't fire mid-attack); a fresh hit during the flinch
+        // just restarts m_hitAnimT. Returns to locomotion the frame after it ends.
+        if (m_hitAnimT >= 0.0f && m_hitClip >= 0) {
+            m_hitAnimT += dt;
+            const float dur = m_skinner.clipDuration((uint32_t)m_hitClip);
+            if (m_hitAnimT < dur && dur > 1e-4f) {
+                m_skinner.apply(m_model, *m_device, (uint32_t)m_hitClip, m_hitAnimT);
+                return;                    // locomotion resumes next frame after the flinch
+            }
+            m_hitAnimT = -1.0f;           // finished -> fall through to locomotion
         }
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         // SKINNED CITIZENS: a prop posed via setPropPose already moved BEFORE this
@@ -2069,6 +2153,29 @@ void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phy
             }
             if (!best) break;                 // no more in-reach melee enemies
             best->setMeleeAttackPermit(true);
+        }
+    }
+
+    // ---- PACK ALERT (spotted-signal spread). If ANY squadmate currently has LOS to
+    // the player, wake the rest of the pack within kPackAlertRadius: allies with no
+    // sight of their own turn and Search toward the shared position instead of idling
+    // until they personally round the corner — the squad reacts as a unit. Cheap
+    // O(N^2) over the small live roster; skips dormant/inert/already-seeing enemies. -
+    {
+        constexpr float kPackAlertRadius = 14.0f;
+        const float r2 = kPackAlertRadius * kPackAlertRadius;
+        const MonsterSystem* spotter = nullptr;
+        for (const auto& m : m_monsters) {
+            if (m->alive() && m->hasLineOfSight() && !m->dormant() &&
+                m->attackDamage() > 0) { spotter = m.get(); break; }
+        }
+        if (spotter) {
+            for (auto& m : m_monsters) {
+                if (m.get() == spotter || !m->alive()) continue;
+                const x3::phys::Vec3 p = m->pos();
+                const float ddx = p.x - spotter->pos().x, ddz = p.z - spotter->pos().z;
+                if (ddx*ddx + ddz*ddz <= r2) m->notifyPackAlert(playerPos);
+            }
         }
     }
 

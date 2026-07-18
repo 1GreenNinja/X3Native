@@ -756,6 +756,20 @@ public:
     x3::phys::Vec3 lastKnownPlayerPos() const { return m_lastKnown; }
     bool    hasLineOfSight() const { return m_hasLos; }
 
+    // PACK ALERT: a squadmate that CAN see the player calls this on nearby allies so
+    // the pack reacts together — an enemy with no LOS of its own still turns and
+    // moves to investigate (a Search toward the shared last-known spot) instead of
+    // idling until it personally rounds the corner. Data-light: seeds the same
+    // last-known / search fields a real sighting would. Does NOT wake a DORMANT
+    // (opening-flow-gated) spawn — those stay gated until their own trigger/damage.
+    void notifyPackAlert(const x3::phys::Vec3& playerPos) {
+        if (!m_alive || m_dormant || m_dmg <= 0) return;   // combat, ungated only
+        if (m_hasLos) return;                              // already sees for itself
+        m_everSawPlayer = true;
+        m_lastKnown     = playerPos;
+        if (m_searchTimer <= 0.0f) m_searchTimer = kAiSearchTime;
+    }
+
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
     // invalid render mesh so Scene::render skips it; this is the single source of
@@ -931,6 +945,17 @@ private:
     // the skinned vertices. Unskinned models leave m_skinner invalid -> static draw. ----
     x3::anim::Skinner        m_skinner;
     x3::rhi::IRenderDevice*  m_device = nullptr;
+
+    // Kick the flinch/hit-react on a surviving hit: plays the BAKED Hit clip one-shot
+    // if the rig has one; ALWAYS raises the procedural stagger floor so a shot ALWAYS
+    // produces a visible recoil (never a silent no-react), regardless of asset state.
+    // Suppressed while a death or attack one-shot owns the pose (don't stomp them).
+    inline void kickHitReact() {
+        if (m_dying) return;
+        m_procStagger = 1.0f;                       // guaranteed visible recoil floor
+        if (m_animActive && m_hitClip >= 0 && m_attackAnimT < 0.0f)
+            m_hitAnimT = 0.0f;                       // preferred: real baked clip
+    }
     // Game-feel cue sink (footstep / impact). Empty => throttled-log stub.
     GameCueFn                m_cueSink;
     // Death FX sink (gib burst). Empty => no extra FX. Fired once at the kill moment.
@@ -949,9 +974,15 @@ private:
     // procedural lunge tell below carries the attack read instead).
     int                      m_attackClip = -1;
     int                      m_deathClip  = -1;
+    int                      m_hitClip    = -1;      // one-shot flinch/hit-react (baked)
     float                    m_attackAnimT = -1.0f;  // >=0 while the attack one-shot plays
     float                    m_deathAnimT  = -1.0f;  // >=0 while the death clip plays
+    float                    m_hitAnimT    = -1.0f;  // >=0 while the hit-react one-shot plays
     bool                     m_deathClipDone = false; // clip finished -> freeze final pose
+    // Procedural STAGGER TELL (visual-only floor): a short recoil offset applied to the
+    // DRAW transform when the monster is shot, guaranteeing a visible flinch even on a
+    // rig with no baked Hit clip. Decays back to 0. Never touches the physics body.
+    float                    m_procStagger  = 0.0f;  // 0..1 recoil intensity (decays)
     // Procedural attack TELL (visual-only): a rear-back + lunge offset applied to the
     // DRAW transform during the melee wind-up so attacks read at gameplay distance
     // even on rigs with no authored Attack clip. Never touches the physics body.
