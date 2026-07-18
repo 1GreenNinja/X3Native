@@ -7915,11 +7915,11 @@ int runDefaultHost(HostContext& hc) {
                            const bool needCode = d->code != 0;
                            if (d->requireBoth) {                       // need card AND code (Armory)
                                if (needCard && !hasCard) {
-                                   npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                                   npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                                    npcBarkTimer = 3.0f; return true;
                                }
                                codeMode = true; keypad.clear();        // card ok -> enter the code
-                               npcBarkText = std::string("Keycard OK — enter code ") + std::to_string(d->code);
+                               npcBarkText = std::string("Keycard OK - enter code ") + std::to_string(d->code);
                                npcBarkTimer = 4.0f; return true;
                            }
                            if (needCard && hasCard) {                  // either-credential: card opens it outright
@@ -7934,7 +7934,7 @@ int runDefaultHost(HostContext& hc) {
                                    : (std::string("LOCKED — enter code ") + std::to_string(d->code));
                                npcBarkTimer = 4.0f; return true;
                            }
-                           npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                           npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                            npcBarkTimer = 3.0f; return true;
                        }()) {
                 // canon door interaction handled inside the lambda (toggle / unlock / keypad / message)
@@ -7971,7 +7971,7 @@ int runDefaultHost(HostContext& hc) {
                            }
                            if (audio) { audio->playSound2D(sElevClose, 0.8f, 1.0f);
                                         audio->playSound2D(sElevOpen, 0.6f, 0.92f); }
-                           npcBarkText = std::string("ELEVATOR → ") + T.name;
+                           npcBarkText = std::string("ELEVATOR -> ") + T.name;
                            npcBarkTimer = 3.5f;
                            x3::logInfo("use: elevator travel -> " + T.name);
                            return true;
@@ -9423,7 +9423,7 @@ int runDefaultHost(HostContext& hc) {
                         chatTrees.flags().set("clone.defeated");
                         npcBarkText  = "VIGIL: SUCCESSOR UNIT TERMINATED. HOLDING-FIELD KEY... INVALID.";
                         npcBarkTimer = 6.0f;
-                        game.objectives().setText("THE FIELD IS DOWN — GET BACK TO SARAH");
+                        game.objectives().setText("THE FIELD IS DOWN - GET BACK TO SARAH");
                         x3::logInfo("[endgame] clone defeated — Sarah's containment key is dead");
                         // [W9-3 RPG] boss-objective XP (once, latched by the flag).
                         if (progression.addXp(x3::game::kXpBoss) > 0)

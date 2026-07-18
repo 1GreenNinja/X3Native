@@ -407,7 +407,13 @@ void RpgUi::drawHudChip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     if (ui.screenW() == 0) { ui.end(); return; }
     const float w = (float)ui.screenW(), h = (float)ui.screenH();
 
-    // Level + XP sliver, bottom center-left of the chip row.
+    // Level + XP sliver, bottom center-left of the chip row. The "+N PT [K]"
+    // call-out used to be planted at a fixed lvX+66, straight over the level
+    // number (the "LV 51 PT [K" HUD mash, clipped by the item chip) — and the
+    // 150 px panel cannot seat both texts on one line at any safe font size
+    // (widening it left instead collided with the HP readout at 1280 wide). So
+    // the call-out gets its OWN mini-chip stacked directly ABOVE the LV panel:
+    // no horizontal pressure against anything, at any resolution.
     const float chipY = h - 58.0f;
     const float lvX = w * 0.5f - 220.0f;
     {
@@ -420,14 +426,13 @@ void RpgUi::drawHudChip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
         const float fill[4] = { 0.35f, 0.80f, 1.00f, 1.0f };
         ui.bar(lvX + 12.0f, chipY + 30.0f, 126.0f, 7.0f, frac, fill);
         if (prog.skillPoints() > 0) {
-            // Skill-point call-out, RIGHT-ALIGNED inside the panel (it used to be
-            // planted at a fixed lvX+66, straight over the level number — the
-            // "LV 51 PT [K" HUD mash). Measured placement can't collide.
             char pts[24];
             std::snprintf(pts, sizeof(pts), "+%d PT [K]", prog.skillPoints());
-            const float ptsW = UiContext::textWidth(FontRole::HudMono, pts, 13.0f);
-            ui.text(pts, lvX + 150.0f - 12.0f - ptsW, chipY + 8.0f, 13.0f,
-                    kWarnCol, FontRole::HudMono);
+            const float ptsPx = 12.0f;
+            const float ptsW  = UiContext::textWidth(FontRole::HudMono, pts, ptsPx);
+            const float chipW = ptsW + 16.0f;
+            ui.panel(lvX, chipY - 22.0f, chipW, 18.0f, kPanel);
+            ui.text(pts, lvX + 8.0f, chipY - 19.0f, ptsPx, kWarnCol, FontRole::HudMono);
         }
     }
 
