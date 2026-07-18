@@ -206,10 +206,11 @@ void clearInputState(GLFWwindow* window) {
 // Play one cinematic clip span (blocking, K-skip). With a window this drives the
 // real CutscenePlayer via runCutsceneWindowed seeked to clipStart; headless it is
 // a deterministic no-op (the cutscene player is exercised by --test-cutscene).
-// ---- F9 skip-all latch (see intro_orchestrator.h) --------------------------
+// ---- F9 skip-all latch (see intro_orchestrator.h). The flag lives here (file
+// scope) so the anon-namespace beat helpers can read it; the PUBLIC accessors are
+// defined after the anon namespace closes — inside it they'd get internal linkage
+// and cinematic.obj's reference would not resolve (LNK2019, been there).
 static bool s_skipAllIntro = false;
-void requestSkipAllIntro()      { s_skipAllIntro = true; }
-bool skipAllIntroRequested()    { return s_skipAllIntro; }
 
 void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
                        const x3::cut::Cutscene* cs) {
@@ -934,6 +935,11 @@ uint32_t deriveSaveSeed(const x3::game::StoryFlags& flags) {
 }
 
 } // namespace
+
+// F9 skip-all accessors — EXTERNAL linkage (cinematic.cpp's film loop calls
+// requestSkipAllIntro on F9). The latch itself is the file-scope static above.
+void requestSkipAllIntro()      { s_skipAllIntro = true; }
+bool skipAllIntroRequested()    { return s_skipAllIntro; }
 
 IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     x3::logInfo("[intro] runInteractiveIntro: beat sequence start");
