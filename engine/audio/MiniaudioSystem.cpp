@@ -306,8 +306,20 @@ public:
         m_musicPath = std::string(absPath);
         m_musicLoop = loop;
         m_musicVol  = clamp01(vol);
+        m_musicRequested = !m_musicPath.empty();
         if (!m_musicEnabled) return;   // music turned off in settings -> don't start the bed
         startMusicVoice();
+    }
+
+    // Playlist advance signal (Club Jukebox). See IAudioSystem::isMusicFinished.
+    bool isMusicFinished() const override {
+        if (!m_musicRequested || !m_musicEnabled || m_musicLoop) return false;
+        // Live non-looping voice: done once the decoder has read to the end.
+        if (m_music) return ma_sound_at_end(m_music.get()) != 0;
+        // Requested, non-looping, enabled, but no live voice -> the file failed to
+        // load (missing/corrupt) or we are in silent/no-device mode: treat as done
+        // so a playlist skips past it instead of stalling.
+        return true;
     }
 
     void stopMusic() override {
@@ -648,6 +660,7 @@ private:
     bool        m_musicLoop = true;
     float       m_musicVol  = 1.0f;     // current music volume [0,1]
     bool        m_musicEnabled = true;  // Settings "Music ON/OFF"
+    bool        m_musicRequested = false; // a playMusic() with a real path was issued
 
     // Master SFX volume [0,1]: applied to EVERY one-shot in playInternal (one place).
     float       m_sfxMaster = 1.0f;

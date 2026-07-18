@@ -222,6 +222,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-valley") o.testValley = true;
         else if (a == "--test-cliffs") o.testCliffs = true;
         else if (a == "--test-club") o.testClub = true;
+        else if (a == "--test-jukebox") o.testJukebox = true;
         else if (a == "--test-perfshop") o.testPerfshop = true;
         else if (a == "--test-space") o.testSpace = true;
         else if (a == "--test-eva") o.testEva = true;

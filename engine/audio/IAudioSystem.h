@@ -77,6 +77,16 @@ public:
     // Stop the music track (if any).
     virtual void stopMusic() = 0;
 
+    // Playlist support (Club Jukebox): true when the CURRENT music request has
+    // finished and a playlist driver should advance to the next track. Precisely:
+    // a non-looping track that has reached its end, OR a non-looping track that
+    // was requested-and-enabled but has no live voice (missing/corrupt file, or
+    // silent/no-device mode) — both mean "done, move on". Returns false while a
+    // track is actively playing, while it loops, when music is disabled, and when
+    // no track has ever been requested. Default no-op returns false so backends
+    // opt in (the miniaudio backend overrides it).
+    virtual bool isMusicFinished() const { return false; }
+
     // ---- Live volume controls (Settings menu) -----------------------------
     // Set the music bed's volume in [0,1]. Applied immediately to the playing
     // music voice (and remembered for any music started later). Silent/no-music

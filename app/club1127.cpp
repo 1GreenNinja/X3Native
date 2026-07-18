@@ -47,9 +47,11 @@ namespace x3::game {
 namespace {
 
 constexpr float kPi = 3.14159265358979f;
-// The house tempo — matched to assets/audio/music/club_descent.wav (measured
-// ~85.5 BPM base / 171 eighth-grid) so subs, tiles, and dancers ride the track.
-constexpr float kClubBpm = 85.5f;
+// The house tempo default lives in the header (Club1127World::kDefaultBpm =
+// 85.5f) — matched to assets/audio/music/club_descent.wav (measured ~85.5 BPM
+// base / 171 eighth-grid) so subs, tiles, and dancers ride the built-in track.
+// It is now RUNTIME-CONFIGURABLE (m_bpm, driven by the Club Jukebox's per-track
+// BPM); update() reads m_bpm below instead of a hard-coded constant.
 
 // ---- Tints (linear-ish; the device tonemaps) ------------------------------
 // Ported from the JS StandardMaterial diffuse colors (hex -> 0..1 RGB).
@@ -1940,10 +1942,11 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     const float t = m_time;
 
     // ---- THE BEAT GRID (Tim addendum: "we had the lights that move to the music
-    // too"). ONE clock: the same kClubBpm envelope the subs/tiles/dancers already
+    // too"). ONE clock: the same tempo envelope the subs/tiles/dancers already
     // rode, hoisted here so the LIGHTS share it instead of free-running on their
-    // own arbitrary rates. Everything music-reactive below derives from these. ----
-    const float beatHz    = kClubBpm / 60.0f;
+    // own arbitrary rates. Everything music-reactive below derives from these.
+    // m_bpm is runtime-configurable (Club Jukebox retunes it per user track). ----
+    const float beatHz    = m_bpm / 60.0f;
     const float beatCount = t * beatHz;                    // absolute beat position
     const float thump     = std::pow(std::max(0.0f, std::sin(beatCount * kPi)), 6.0f);
     const float breathe   = 0.72f + 0.48f * thump;         // gel beat envelope (floor
