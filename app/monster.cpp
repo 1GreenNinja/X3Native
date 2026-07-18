@@ -341,6 +341,10 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         // Run[/Jump] only) — the attack_death_bake.py pipeline appends them; lookup
         // degrades to -1 gracefully so this wiring is drop-in either way.
         m_attackClip = m_skinner.findClip({ "attack", "strike", "swing", "punch", "bite", "swipe", "slash" });
+        // ANIM-ENRICH: a 2nd attack variant (alternated per swing) + a hit-reaction
+        // flinch. Both degrade to -1 on rigs lacking them (wiring stays drop-in).
+        m_attackClip2  = m_skinner.findClip({ "attack2", "strike2", "swing2" });
+        m_hitReactClip = m_skinner.findClip({ "hitreact", "hit", "react", "flinch", "stagger" });
         m_deathClip  = m_skinner.findClip({ "death", "die", "collapse" });
         if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
         if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
@@ -364,6 +368,8 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                     " run=" + std::to_string(m_runClip) +
                     " jump=" + std::to_string(m_jumpClip) +
                     " attack=" + std::to_string(m_attackClip) +
+                    " attack2=" + std::to_string(m_attackClip2) +
+                    " hitreact=" + std::to_string(m_hitReactClip) +
                     " death=" + std::to_string(m_deathClip) +
                     " locoBlend=" + (m_useLocoBlend ? "1" : "0"));
         // Pose the bind-pose mesh into the idle pose at t=0 once up front so the
@@ -635,6 +641,10 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
+        // ANIM-ENRICH: visibly FLINCH when shot & surviving (unless mid-swing, so a
+        // wind-up attack isn't clipped). The single biggest combat-feel win — enemies
+        // now react to fire instead of soaking shots statically.
+        if (m_hitReactClip >= 0 && m_attackAnimT < 0.0f) m_hitReactAnimT = 0.0f;
     }
     return r;
 }
@@ -702,6 +712,8 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
+        // ANIM-ENRICH: visibly FLINCH (unless mid-swing — don't clip the attack).
+        if (m_hitReactClip >= 0 && m_attackAnimT < 0.0f) m_hitReactAnimT = 0.0f;
     }
     return dead;
 }
@@ -1440,7 +1452,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             m_windupTimer = m_attackWindup;
             // W2-D: kick the one-shot ATTACK clip (if the rig has one). The anim
             // block below plays it to completion, preempting locomotion.
-            if (m_animActive && m_attackClip >= 0) m_attackAnimT = 0.0f;
+            // ANIM-ENRICH: alternate Attack <-> Attack2 for variety when a 2nd
+            // variant exists; the play gate uses m_attackActiveClip.
+            if (m_animActive && m_attackClip >= 0) {
+                m_attackActiveClip = (m_attackAlt && m_attackClip2 >= 0)
+                                   ? m_attackClip2 : m_attackClip;
+                m_attackAlt = !m_attackAlt;
+                m_attackAnimT = 0.0f;
+                // A fresh attack overrides any in-progress flinch.
+                m_hitReactAnimT = -1.0f;
+            }
             // Telegraph FX up front (a beam toward the player) so the attack reads.
             if (fx) {
                 x3::phys::Vec3 tp = target->damageTargetPos();
@@ -1604,16 +1625,29 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // W2-D: the one-shot ATTACK clip preempts locomotion while it plays (kicked
         // at wind-up start). Hard-cut in/out — consistent with the engine's existing
         // clip switching; returns to the locomotion blend the frame after it ends.
-        if (m_attackAnimT >= 0.0f && m_attackClip >= 0) {
+        if (m_attackAnimT >= 0.0f && m_attackActiveClip >= 0) {
             m_attackAnimT += dt;
-            const float dur = m_skinner.clipDuration((uint32_t)m_attackClip);
+            const float dur = m_skinner.clipDuration((uint32_t)m_attackActiveClip);
             if (m_attackAnimT < dur && dur > 1e-4f) {
-                m_skinner.apply(m_model, *m_device, (uint32_t)m_attackClip, m_attackAnimT);
+                m_skinner.apply(m_model, *m_device, (uint32_t)m_attackActiveClip, m_attackAnimT);
                 // (m_lastFootPhase untouched: locomotion phase is frozen during the
                 // swing, so no footstep-mark jump on resume.)
                 return;                    // locomotion resumes next frame after the swing
             }
             m_attackAnimT = -1.0f;         // finished -> fall through to locomotion
+        }
+        // ANIM-ENRICH: one-shot HIT-REACTION flinch — plays once when the enemy
+        // survived a shot/melee (m_hitReactAnimT reset to 0 on the survive path),
+        // preempting locomotion for its short duration, then hard-cuts back. Yields
+        // to the attack gate above (a mid-swing hit doesn't interrupt the swing).
+        if (m_hitReactAnimT >= 0.0f && m_hitReactClip >= 0) {
+            m_hitReactAnimT += dt;
+            const float dur = m_skinner.clipDuration((uint32_t)m_hitReactClip);
+            if (m_hitReactAnimT < dur && dur > 1e-4f) {
+                m_skinner.apply(m_model, *m_device, (uint32_t)m_hitReactClip, m_hitReactAnimT);
+                return;                    // locomotion resumes the frame after the flinch
+            }
+            m_hitReactAnimT = -1.0f;       // finished -> fall through to locomotion
         }
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         // SKINNED CITIZENS: a prop posed via setPropPose already moved BEFORE this

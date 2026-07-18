@@ -487,9 +487,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
-      "sha256": "b613f862545ec40e19290b27714e2c3d0dfecadc29a18945064ee7d899b57a46",
-      "size": 56267024,
-      "source_note": "W2-D attack+death one-shot clips appended"
+      "sha256": "73ab0d84d21dba92d21c042000559d5ee36638f898014ac5a1f4ff383a75032e",
+      "size": 56286580,
+      "source_note": "anim-enrichment: +Hitreaction +Attack2 (procedural biped)"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
@@ -499,9 +499,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
-      "sha256": "990e8a1c0323264adec21b4a293d80d09f408d702e166e43e200fdd42ae57d24",
-      "size": 43421796,
-      "source_note": "W5-2 Struggle loop baked (tools/struggle_bake.py)"
+      "sha256": "5ec9da0ffe32d189ff52d8df1c12b79bf301e2e2abcf4326e534ad14a2793954",
+      "size": 43439140,
+      "source_note": "anim-enrichment: +Hitreaction +Attack2 (procedural biped)"
     },
     {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",

@@ -44,6 +44,7 @@
 #include "combat_log.h"                     // [P3-5] LOG-1: combat_log / ai_log spam gates
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "canon_aliens.h"                   // CANON ALIENS: the four Rodin species living on the planet
 #include "desc_mechanics.h"                 // W9-1: the desc-field Tier-A mechanics (interactables + status effects)
 #include "item_db.h"                        // [W9-3 RPG] data-driven item defs (assets/items/items.json)
 #include "inventory.h"                      // [W9-3 RPG] backpack + key-section inventory
@@ -1336,6 +1337,14 @@ int runDefaultHost(HostContext& hc) {
     // range-gated on the player. Kinematic — no physics bodies.
     x3::game::FishSystem worldFish;
     x3::game::SeaLifeSystem worldSea;      // THE OCEAN LIVES: big animals (sharks + the squid)
+    // CANON ALIENS (app/canon_aliens.h) — the four Rodin species placed on the
+    // planet per the lore-faction map: Saurian Soldiers patrol the facility
+    // perimeter, Grey workers dot the crash-site approach, the Nordic Steward
+    // watches from the ridge, the Mantis Arbiter stalks the pass. Host-owned
+    // like the fish (built once at canon boot); hostile rows fight the player
+    // through the same MonsterManager lane the canon enemies use. The Saurian
+    // WARLORD boss only spawns under X3_SPAWN_WARLORD=1 (dev flag).
+    x3::game::MonsterManager canonAliens;
     // GOD RAYS (app/god_rays.h) — sun shafts under the water surface (river
     // reach + estuary shallows), additive glass, host-owned like the fish.
     x3::game::GodRays worldRays;
@@ -1569,6 +1578,7 @@ int runDefaultHost(HostContext& hc) {
         subLevels.shutdown();                          // hidden sub-level enemy + mini-boss ragdolls
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
+        canonAliens.shutdown();                    // CANON ALIENS: planet alien ragdolls
         // W-RIFT: sub-level R1's meshes/textures (the hub's gates, membranes, holo
         // glass; the approach's shell). The smoketest gates on allocationCount == 0,
         // and this runs on EVERY exit path (headless captures included).
@@ -3395,6 +3405,66 @@ int runDefaultHost(HostContext& hc) {
                     x3::logInfo("SEALIFE: " + std::to_string(worldSea.count())
                                 + " big animals - " + std::to_string(seaMs) + " ms");
                     x3::boot::mark("SEALIFE (sharks + the abyss)");
+                }
+
+                // ---- CANON ALIENS on the planet (app/canon_aliens.h roster) —
+                // placed per the lore-faction map, grounded with the SAME
+                // terrainHeightAtWorld query the fish/sealife use, coords logged
+                // like the fish schools. patrolRadius here is PLACEMENT
+                // behaviour (a calm waypoint loop around the spawn anchor) — the
+                // roster's designed combat stats are untouched.
+                {
+                    const auto ca0 = std::chrono::steady_clock::now();
+                    using x3::game::CanonAlien;
+                    auto spawnAlien = [&](CanonAlien sp, float x, float z, float patrolR) {
+                        x3::game::MonsterSystem::Tuning t = x3::game::canonAlienTuning(sp);
+                        if (patrolR > 0.0f) t.patrolRadius = patrolR;
+                        const float y = x3::game::terrainHeightAtWorld(x, z);
+                        canonAliens.spawn(scene, *device, *physics,
+                                          x3::game::riggedGlbRoot(),
+                                          x3::phys::Vec3{ x, y, z }, t);
+                        x3::logInfo(std::string("canonaliens: ") +
+                                    x3::game::canonAlienTypeName(sp) + " at (" +
+                                    std::to_string(x) + ", " + std::to_string(z) +
+                                    ") groundY=" + std::to_string(y));
+                    };
+                    // Overlord enforcers: a hostile 3-point patrol ring around
+                    // the facility exterior perimeter (past the apron, on soil).
+                    spawnAlien(CanonAlien::SaurianSoldier, towerCx - 52.0f, towerCz + 6.0f,  8.0f);
+                    spawnAlien(CanonAlien::SaurianSoldier, towerCx + 46.0f, towerCz + 52.0f, 8.0f);
+                    spawnAlien(CanonAlien::SaurianSoldier, towerCx + 40.0f, towerCz - 58.0f, 8.0f);
+                    // Grey worker drones: industrious on the crash-site approach
+                    // (the strata-bound salvage path) — fragile ranged kiters.
+                    spawnAlien(CanonAlien::GreyTasked, 96.0f, 148.0f, 5.0f);
+                    spawnAlien(CanonAlien::GreyTasked, 118.0f, 176.0f, 5.0f);
+                    // The Nordic Steward watches from the RIDGE — the same
+                    // highest-ground-on-the-620m-ring sampling the "ridge"
+                    // destination uses (ask the terrain, don't invent a coord).
+                    // The Mantis Arbiter stalks the PASS — the lowest DRY point
+                    // on that same ring (a pass is the low ground between highs).
+                    {
+                        float rx = 620.0f, rz = 0.0f, rh = -1e9f;   // ridge (max)
+                        float px = 620.0f, pz = 0.0f, ph = 1e9f;    // pass  (min, dry)
+                        for (int i = 0; i < 64; ++i) {
+                            const float a = (float)i * (6.2831853f / 64.0f);
+                            const float x = std::cos(a) * 620.0f, z = std::sin(a) * 620.0f;
+                            const float h = x3::game::terrainHeightAtWorld(x, z);
+                            const float w = x3::game::worldWaterLevelAt(x, z);
+                            if (h > rh) { rh = h; rx = x; rz = z; }
+                            if (h < ph && h > w + 0.5f) { ph = h; px = x; pz = z; }
+                        }
+                        spawnAlien(CanonAlien::NordicSteward, rx, rz, 0.0f);
+                        spawnAlien(CanonAlien::MantisArbiter, px, pz, 12.0f);
+                    }
+                    // The Saurian WARLORD boss is DEV-GATED (X3_SPAWN_WARLORD=1)
+                    // so it is testable without ambushing players at the door.
+                    if (const char* wl = std::getenv("X3_SPAWN_WARLORD"); wl && wl[0] == '1')
+                        spawnAlien(CanonAlien::SaurianWarlord, towerCx + 34.0f, towerCz + 40.0f, 0.0f);
+                    const double caMs = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - ca0).count();
+                    x3::logInfo("canonaliens: " + std::to_string(canonAliens.count())
+                                + " planet aliens - " + std::to_string(caMs) + " ms");
+                    x3::boot::mark("CANON ALIENS (the four species walk the planet)");
                 }
 
                 // ---- GOD RAYS (underwater beauty): sun shafts hanging from the
@@ -5254,6 +5324,7 @@ int runDefaultHost(HostContext& hc) {
             // capture path fed only the (empty) legacy fixtures — the cell read flat.
             if (canonWorld && canonFloor.valid()) {
                 canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
+                canonAliens.update(dt, scene, *physics, ssEye);   // planet aliens settle into their Idle/Walk poses
                 canonDressing.tick(dt);
                 // X3_SHOT_SWIM=3p: hold the avatar in the swim state through every
                 // settle frame, so the water pose settles and the REAL swim clip is
@@ -5707,6 +5778,7 @@ int runDefaultHost(HostContext& hc) {
                         scene.roomVisible(x3::game::kStreamedExteriorRoom))
                         worldCars.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                    canonAliens.drawAll(*device, frame, scene);   // CANON ALIENS in captures
                     // ---- HEALTHBAR CAPTURE PROOF (gate: screenshot filename contains
                     // "healthbar"). Renders the SAME room-gated + LOS-culled enemy bar
                     // as the live loop's barsFor (app_run.cpp interactive path) so a
@@ -6360,6 +6432,8 @@ int runDefaultHost(HostContext& hc) {
             // under validation so the skin/attack paths run; null player (no damage sink).
             if (canonWorld && canonPlay.built())
                 canonPlay.tick(dt, scene, *physics, eye, nullptr, x3::game::AttackFxFn{});
+            // CANON ALIENS under validation: movement-only tick (no damage sink).
+            if (canonWorld) canonAliens.update(dt, scene, *physics, eye);
             // Spire mid floors under validation: dispatch hub triggers + tick the
             // F3/F4/F5 enemy groups + the gated F5 victim.
             for (uint32_t tid : midTriggers.update(eye)) midFloors.onTrigger(tid);
@@ -6549,6 +6623,7 @@ int runDefaultHost(HostContext& hc) {
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
                 if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                if (canonWorld) canonAliens.drawAll(*device, frame, scene);   // CANON ALIENS under validation
                 if (canon45.built()) canon45.draw(*device, frame, scene);
                 // SKINNED CITIZENS (room-gated inside draw()).
                 for (int ci = 0; ci < 3; ++ci) {
@@ -9489,6 +9564,10 @@ int runDefaultHost(HostContext& hc) {
                 // (~15-25 ms each — bounded, and the player is floors away in the cell).
                 canonPlay.tickUpperSpawns(canonFloor, scene, *device, *physics, 1);
                 canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
+                // CANON ALIENS: the planet aliens live in the same combat lane —
+                // hostile rows patrol/chase/attack the player (same damage sink +
+                // attack FX as the canon enemies); the allied Nordic just watches.
+                canonAliens.update(dt, scene, *physics, camPos, &player, enemyAttackFx);
                 // W5-1: the Nexus Chamber — whispers / the name-call / apex wake /
                 // cavern creatures. Creature-bucket vocals stand in for VO (none in
                 // the packs); pitched low they read as The Chorus murmuring.
@@ -10307,6 +10386,8 @@ int runDefaultHost(HostContext& hc) {
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
             if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
+            // CANON ALIENS: the planet aliens (few instances, all outdoors).
+            if (canonWorld) canonAliens.drawAll(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
             // SKINNED CITIZENS: the crowds as real people — the same drawMonster
             // PBR fan as the club's dancers, room-gated inside draw().
