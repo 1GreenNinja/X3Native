@@ -6605,8 +6605,13 @@ int runDefaultHost(HostContext& hc) {
         });
     }
     if (canonWorld && canonFloor.valid()) {
-        // Spawn in Jake's Cell (the canonical detention spawn).
-        uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
+        // Spawn in Jake's Cell (the canonical detention spawn). Resolve the cell BY
+        // NAME (canonBeats — the same lookup every other cell system uses), not by a
+        // hardcoded probe point: if the data ever moves the cell, the old
+        // roomAt(2,0,40) probe fell back to rooms[0] — which is the MAIN HALL in the
+        // canonical data, i.e. the "spawned mid-corridor" opening bug.
+        uint32_t jake = x3::game::canonBeats(canonFloor).jakeCell;
+        if (jake == x3::game::kNoRoom) jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
         if (jake == x3::game::kNoRoom) jake = 0;
         const x3::game::CanonRoom& jc = canonFloor.rooms[jake];
         player.spawn(*physics, jc.cx, jc.y0() + 0.1f, jc.cz);
@@ -10760,13 +10765,26 @@ int runDefaultHost(HostContext& hc) {
                 // + checkpoint + Phase-3 boss adds + bosses), so it never reads "AREA
                 // CLEAR" while a boss add is still alive. -1 (default) hides it elsewhere.
                 // --world canonlevel: fold the canon enemies/boss so the counter reflects
-                // the canon spawns (not the empty legacy groups).
+                // the canon spawns (not the empty legacy groups). OPENING FLOW: the canon
+                // count is the AWAKE (locally active) hostiles, not the whole spire —
+                // dormant far-floor spawns are gated threats, not on the counter. (The
+                // old fold of enemiesRemaining() put "ENEMIES: 101" on screen at wake.)
                 hm.enemiesRemaining = game.enemiesRemaining() +
-                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesRemaining() : 0);
-                if (canonWorld && canonPlay.built())
-                    hm.objective = (canonPlay.enemiesRemaining() > 0)
-                        ? "Fight down the spire — save the captives, reach Martinez"
-                        : "AREA CLEAR — reach the Elevator Lobby";
+                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesAwake() : 0);
+                // OPENING OBJECTIVE BEATS (canon): escape the cell -> fight what's
+                // around you -> push on -> clear. ASCII ONLY: the HUD glyph atlas maps
+                // every byte >= 128 to '?', so the old em-dash literal rendered as
+                // "Fight down the spire ??? save the captives" on screen.
+                if (canonWorld && canonPlay.built()) {
+                    if (!canonPlay.leftCell())
+                        hm.objective = "Find a way out of the cell";
+                    else if (canonPlay.enemiesAwake() > 0)
+                        hm.objective = "Fight down the spire - save the captives, reach Martinez";
+                    else if (canonPlay.enemiesRemaining() > 0)
+                        hm.objective = "Push on - save the captives, reach Martinez";
+                    else
+                        hm.objective = "AREA CLEAR - reach the Elevator Lobby";
+                }
                 if (game.armed() || (canonWorld && canonPlay.armed())) {
                     const x3::game::WeaponDef&         wd = arsenal.current();
                     const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();

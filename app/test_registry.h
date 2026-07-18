@@ -42,6 +42,7 @@ struct TestFlags {
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
     bool testGoldenPath = false;
+    bool testOpening = false;     // --test-opening (opening-flow: the wake-in-cell contract)
     bool testDescMech = false;    // --test-descmech (W9-1: desc-field Tier-A mechanics)
     bool testInventory = false;    // W9-3 RPG: backpack/item-db (--test-inventory)
     bool testProgression = false;  // W9-3 RPG: XP/levels (--test-progression)

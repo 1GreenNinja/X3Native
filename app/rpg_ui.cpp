@@ -420,9 +420,14 @@ void RpgUi::drawHudChip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
         const float fill[4] = { 0.35f, 0.80f, 1.00f, 1.0f };
         ui.bar(lvX + 12.0f, chipY + 30.0f, 126.0f, 7.0f, frac, fill);
         if (prog.skillPoints() > 0) {
+            // Skill-point call-out, RIGHT-ALIGNED inside the panel (it used to be
+            // planted at a fixed lvX+66, straight over the level number — the
+            // "LV 51 PT [K" HUD mash). Measured placement can't collide.
             char pts[24];
             std::snprintf(pts, sizeof(pts), "+%d PT [K]", prog.skillPoints());
-            ui.text(pts, lvX + 66.0f, chipY + 8.0f, 13.0f, kWarnCol, FontRole::HudMono);
+            const float ptsW = UiContext::textWidth(FontRole::HudMono, pts, 13.0f);
+            ui.text(pts, lvX + 150.0f - 12.0f - ptsW, chipY + 8.0f, 13.0f,
+                    kWarnCol, FontRole::HudMono);
         }
     }
 
@@ -441,8 +446,10 @@ void RpgUi::drawHudChip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             std::snprintf(sub, sizeof(sub), "x%d   [Q] USE", qs->count);
             ui.text(sub, cx + 42.0f, chipY + 24.0f, 12.0f, kDimCol, FontRole::HudMono);
         } else {
-            ui.text("NO ITEM EQUIPPED", cx + 12.0f, chipY + 8.0f, 13.0f, kDimCol, FontRole::HudMono);
-            ui.text("[I] BACKPACK", cx + 12.0f, chipY + 25.0f, 12.0f, kDimCol, FontRole::HudMono);
+            // Empty slot: just the quiet backpack hint. (The old "NO ITEM EQUIPPED"
+            // shout read as a bug next to a HELD WEAPON — the item slot is the
+            // consumable quick slot, not the weapon hand; don't advertise emptiness.)
+            ui.text("[I] BACKPACK", cx + 12.0f, chipY + 16.0f, 12.0f, kDimCol, FontRole::HudMono);
         }
     }
 

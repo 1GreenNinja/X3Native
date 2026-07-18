@@ -322,6 +322,10 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running the ENDGAME SPINE self-test (G1-G9: tower -> clone gate -> Sarah -> Helipad WIN)...");
         return x3::game::runGoldenPathSelfTest() ? 0 : 1;
     }
+    if (tf.testOpening) {
+        x3::logInfo("running the OPENING-FLOW self-test (O1-O5: wake in the cell, unarmed, dormant spawns, CALM alert)...");
+        return x3::game::runOpeningFlowSelfTest() ? 0 : 1;
+    }
     if (tf.testDescMech) {
         x3::logInfo("running the DESC-MECHANICS self-test (D1-D12: interact framework + the 5 Tier-A verbs)...");
         return x3::game::runDescMechSelfTest() ? 0 : 1;

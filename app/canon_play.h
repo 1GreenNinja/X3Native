@@ -217,6 +217,21 @@ public:
     // so it never reads "AREA CLEAR" while something is alive.
     int enemiesRemaining() const;
 
+    // ---- OPENING-FLOW SPAWN GATING (the 101-enemy-horde fix) ----------------
+    // Every boot spawn starts DORMANT (idling/patrolling its beat, blind to the
+    // player). tick() wakes monsters by REGION/PROGRESSION: nothing wakes while
+    // Jake is still inside his cell (the wake-as-a-captive beat is quiet, alert
+    // stays CALM); once he leaves the cell, spawns wake by proximity (same-floor
+    // radius / a tight 3D radius) and STAY awake. Taking damage always wakes a
+    // monster (MonsterSystem::fire). Alert reinforcements spawn awake (they hunt).
+    //
+    // LIVE hostiles that are AWAKE (non-dormant): the honest HUD "ENEMIES" count —
+    // the LOCAL threats, not the whole spire.
+    int enemiesAwake() const;
+    // True once the player has left Jake's Cell (through the door OR down the
+    // trapdoor). Drives the opening objective beat ("find a way out of the cell").
+    bool leftCell() const { return m_leftCell; }
+
     bool martinezSpawned() const { return m_martinezSpawned; }
     bool martinezAlive()   const { return m_martinezSpawned && m_martinez.alive(); }
 
@@ -422,6 +437,15 @@ private:
     void addBattery(Scene& scene, x3::rhi::IRenderDevice& device,
                     const x3::phys::Vec3& pos, uint32_t room);
 
+    // ---- Opening-flow spawn gating state (see the public block) -------------
+    // Jake's Cell XZ rect + floor Y, cached at build (tick has no floor ref).
+    bool  m_cellValid = false;
+    bool  m_leftCell  = false;
+    float m_cellX0 = 0, m_cellX1 = 0, m_cellZ0 = 0, m_cellZ1 = 0, m_cellFloorY = 0;
+    // Mark every live boot spawn dormant / wake spawns near the player.
+    void setAllDormant();
+    void wakeNearbySpawns(const x3::phys::Vec3& eye);
+
     uint32_t m_pickupRoom    = kNoRoom;
     uint32_t m_bossRoom      = kNoRoom;
     uint32_t m_taggedHostiles = 0;
@@ -451,5 +475,17 @@ bool runCanonPlaySelfTest();
 // her = the WIN latch. Also proves sarah.json loads + her first_meeting tree starts.
 // This is the Gate-C foundation. Logs PASS/FAIL G#, returns true iff all pass.
 bool runGoldenPathSelfTest();
+
+// --test-opening (opening-flow fix): the WAKE-IN-CELL contract, asserted headless.
+// Loads the tower + builds CanonPlay exactly like the host, then asserts: the spawn
+// room resolves to Jake's Cell and the spawn point is inside it on the floor; the
+// player is UNARMED at wake and the sidearm pickup is out of auto-arm reach of the
+// spawn point (a first tick at the spawn must NOT arm); every boot spawn is DORMANT
+// (enemiesAwake()==0 while enemiesRemaining() counts the full roster); no hostile
+// holds LOS at wake so a fed AlertSystem stays 0 CALM across simulated seconds; and
+// stepping OUT of the cell latches leftCell + wakes only the LOCAL hall spawns
+// (0 < awake << total). Logs PASS/FAIL O#, returns true iff all pass. Skips (PASS)
+// when the canonical JSON is absent.
+bool runOpeningFlowSelfTest();
 
 } // namespace x3::game

@@ -4,6 +4,7 @@
 // WeaponSystem / level_loader CanonFloor) + the engine interfaces only. No purchased
 // C# / id Tech source consulted. Mirrors level1_game.cpp's spawn pattern.
 #include "canon_play.h"
+#include "alert.h"        // --test-opening: prove the wake beat starts 0 CALM
 #include "asset_root.h"
 #include "headless_device.h"
 #include "mesh_prims.h"   // R-5: x3::prims::makeBox for the upper-floor pickup props
@@ -344,14 +345,25 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
     };
 
     // ---- SIDEARM in Jake's Cell: armed leaving the cell (mirror level1's cell pistol). ----
+    // OPENING FLOW: Jake wakes UNARMED. The pickup is OFFSET into the debris corner
+    // (+X/+Z per the cell dressing: bunk -X/-Z, console -Z, hatch +X/-Z) instead of
+    // the cell center — the center IS the spawn point, so a centered pickup auto-armed
+    // the player on frame 1 (inside kPickupRadius before they ever moved). Now the
+    // pistol glints in the debris and picking it up is a deliberate step.
     if (bt.jakeCell != kNoRoom) {
         const CanonRoom& jc = floor.rooms[bt.jakeCell];
         m_weapon.buildWeaponPickup(scene, device, m_modelDir,
-                                   x3::phys::Vec3{ jc.cx, roomFloorY(bt.jakeCell, kPickupUp), jc.cz });
+                                   x3::phys::Vec3{ jc.cx + 2.1f, roomFloorY(bt.jakeCell, kPickupUp),
+                                                   jc.cz + 1.6f });
         // Tag the pickup entity with Jake's Cell so the cull + lights include it.
         const uint32_t pe = m_weapon.pickupEntity();
         if (pe != kNoLink && pe < scene.size()) scene.get(pe).roomId = bt.jakeCell;
         m_pickupRoom = bt.jakeCell;
+        // Cache the cell bounds for the opening-flow gating (tick has no floor ref).
+        m_cellValid  = true;
+        m_cellX0 = jc.x0(); m_cellX1 = jc.x1();
+        m_cellZ0 = jc.z0(); m_cellZ1 = jc.z1();
+        m_cellFloorY = jc.y0();
     }
 
     // ---- LIGHTNING BATTERY CELLS: floating, spinning, TRANSLUCENT faceted energy
@@ -690,6 +702,14 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
     setDeathFxSink(m_deathFx);
 
     if (prof) x3::logInfo("[canonplay-prof] " + profSummary);
+
+    // ---- OPENING-FLOW SPAWN GATING: every boot spawn starts DORMANT (idle/patrol,
+    // blind to the player). tick() wakes them by region/progression — nothing wakes
+    // while Jake is still in his cell, so the wake-as-a-captive beat is quiet and
+    // the facility alert starts CALM. (Deferred upper-floor spawns are marked in
+    // spawnOneUpper; alert reinforcements spawn awake — they are hunting.) ----
+    setAllDormant();
+
     m_built = true;
     x3::logInfo("[canonplay] build complete — sidearm + " +
                 std::to_string(m_taggedHostiles) + " room-tagged hostiles + Martinez + 3 girls; "
@@ -731,9 +751,74 @@ void CanonPlay::shutdown() {
     if (m_martinezSpawned) m_martinez.shutdownRagdoll();
 }
 
+// ---- Opening-flow spawn gating helpers (see canon_play.h public block). ---------
+void CanonPlay::setAllDormant() {
+    auto sleepAll = [](MonsterManager& mm) {
+        for (uint32_t i = 0; i < mm.count(); ++i)
+            if (mm.at(i).alive()) mm.at(i).setDormant(true);
+    };
+    sleepAll(m_mainHall); sleepAll(m_cellGuards); sleepAll(m_attackers);
+    sleepAll(m_floorBosses); sleepAll(m_upperEnemies);
+    if (m_martinezSpawned && m_martinez.alive()) m_martinez.setDormant(true);
+}
+
+void CanonPlay::wakeNearbySpawns(const x3::phys::Vec3& eye) {
+    constexpr float kWakeRadius = 26.0f;   // same-floor wake radius (m)
+    constexpr float kWakeYBand  = 4.5f;    // "same floor" vertical band (m)
+    constexpr float kWakeNear3D = 9.0f;    // tight any-direction radius (hatches/stairs)
+    auto shouldWake = [&](const x3::phys::Vec3& p) -> bool {
+        const float dx = p.x - eye.x, dy = p.y - eye.y, dz = p.z - eye.z;
+        const float d2 = dx * dx + dz * dz;
+        if (std::fabs(dy) <= kWakeYBand && d2 <= kWakeRadius * kWakeRadius) return true;
+        return d2 + dy * dy <= kWakeNear3D * kWakeNear3D;
+    };
+    auto wake = [&](MonsterManager& mm) {
+        for (uint32_t i = 0; i < mm.count(); ++i) {
+            MonsterSystem& m = mm.at(i);
+            if (m.alive() && m.dormant() && shouldWake(m.pos())) m.setDormant(false);
+        }
+    };
+    wake(m_mainHall); wake(m_cellGuards); wake(m_attackers);
+    wake(m_floorBosses); wake(m_upperEnemies);
+    if (m_martinezSpawned && m_martinez.alive() && m_martinez.dormant() &&
+        shouldWake(m_martinez.pos()))
+        m_martinez.setDormant(false);
+}
+
+int CanonPlay::enemiesAwake() const {
+    auto n = [](const MonsterManager& mm) {
+        int k = 0;
+        for (uint32_t i = 0; i < mm.count(); ++i)
+            if (mm.at(i).alive() && !mm.at(i).dormant()) ++k;
+        return k;
+    };
+    int k = n(m_mainHall) + n(m_cellGuards) + n(m_attackers) +
+            n(m_floorBosses) + n(m_upperEnemies) + n(m_rescue.bosses());
+    if (m_martinezSpawned && m_martinez.alive() && !m_martinez.dormant()) ++k;
+    return k;
+}
+
 void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                      const x3::phys::Vec3& eye, IDamageSink* player, const AttackFxFn& attackFx) {
     if (!m_built) return;
+    // ---- OPENING-FLOW SPAWN GATING: latch "left the cell" (through the door OR
+    // down the trapdoor), then wake dormant spawns near the player. Nothing wakes
+    // while Jake is still inside his cell — the captive wake beat stays quiet and
+    // the facility alert has nothing to see. Woken monsters STAY awake. ----
+    if (m_cellValid) {
+        if (!m_leftCell) {
+            const bool insideXZ = eye.x > m_cellX0 - 0.5f && eye.x < m_cellX1 + 0.5f &&
+                                  eye.z > m_cellZ0 - 0.5f && eye.z < m_cellZ1 + 0.5f;
+            const bool belowFloor = eye.y < m_cellFloorY - 0.8f;
+            if (!insideXZ || belowFloor) {
+                m_leftCell = true;
+                x3::logInfo("[canonplay] opening: Jake LEFT the cell — local spawns may wake");
+            }
+        }
+    } else {
+        m_leftCell = true;   // no authored cell (odd data): no story gate to hold
+    }
+    if (m_leftCell) wakeNearbySpawns(eye);
     // Sidearm pickup: arm the player when they walk into it (mirrors level1).
     m_weapon.update(dt, scene, eye);
     // Lightning battery cells: spin + bob, then collect on proximity -> grant charge + hide.
@@ -1148,6 +1233,10 @@ void CanonPlay::spawnOneUpper(const CanonFloor& floor, Scene& scene,
                                              x3::phys::Vec3{ R.cx + dx, fy, R.cz + dz },
                                              tn);
     tagRoom(scene, m_upperEnemies.at(mi), room);
+    // Opening-flow gating: BOOT squads (by-name jobs) spawn DORMANT and wake by
+    // proximity; alert REINFORCEMENTS (roomIdx-resolved jobs) spawn awake — they
+    // were dispatched to hunt the player.
+    m_upperEnemies.at(mi).setDormant(job.roomIdx == kNoRoom);
     // (Cue/death-FX sinks: MonsterManager::spawn wires its stored sinks onto every
     // late spawn, so the build()-time fan covers these deferred enemies too.)
     ++m_taggedHostiles;
@@ -1715,6 +1804,114 @@ bool runGoldenPathSelfTest() {
     play.shutdown();
     physics->shutdown();
     x3::logInfo("--test-goldenpath: " + std::to_string(g_cpass) + " passed, " +
+                std::to_string(g_cfail) + " failed");
+    return g_cfail == 0;
+}
+
+// =====================================================================================
+// --test-opening: the WAKE-IN-CELL contract (opening-flow fix). Headless, no window.
+// =====================================================================================
+bool runOpeningFlowSelfTest() {
+    g_cpass = g_cfail = 0;
+
+    CanonFloor tower = loadCanonTower(canonProjectJsonPath());
+    if (!tower.valid()) {
+        x3::logInfo("--test-opening: SKIPPED (no canonical JSON) — treating as PASS");
+        return true;
+    }
+
+    HeadlessRenderDevice device;
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    Scene scene;
+    buildCanonFloor(tower, scene, device, *physics);
+
+    CanonPlay play;
+    play.build(tower, scene, device, *physics, riggedGlbRoot(), canonGirlsDialogPath());
+
+    const CanonBeats bt = canonBeats(tower);
+
+    // ---- O1: the wake spawn is INSIDE Jake's Cell, feet on the cell floor. ----
+    // (Mirrors the host: player.spawn at the cell center, y0 + 0.1.)
+    x3::phys::Vec3 spawn{ 0, 0, 0 };
+    {
+        bool ok = bt.jakeCell != kNoRoom;
+        if (ok) {
+            const CanonRoom& jc = tower.rooms[bt.jakeCell];
+            spawn = x3::phys::Vec3{ jc.cx, jc.y0() + 0.1f, jc.cz };
+            ok = tower.roomAt(spawn.x, spawn.y + 0.5f, spawn.z) == bt.jakeCell;
+        }
+        pcheck(ok, "O1 wake spawn resolves to Jake's Cell (feet on the cell floor)");
+    }
+    const x3::phys::Vec3 wakeEye{ spawn.x, spawn.y + 1.6f, spawn.z };
+
+    // ---- O2: Jake wakes UNARMED — the first tick at the spawn must NOT auto-arm
+    // (the sidearm pickup sits in the debris corner, out of kPickupRadius). ----
+    {
+        play.tick(1.0f / 60.0f, scene, *physics, wakeEye, nullptr, AttackFxFn{});
+        pcheck(!play.armed(), "O2 unarmed at wake (sidearm pickup out of auto-arm reach)");
+    }
+
+    // ---- O3: every boot spawn is DORMANT at wake — the HUD's local count is 0
+    // while the full roster still exists (no despawn, just gated). ----
+    {
+        const int total = play.enemiesRemaining();
+        const int awake = play.enemiesAwake();
+        x3::logInfo("    O3 wake counts: awake=" + std::to_string(awake) +
+                    " total=" + std::to_string(total));
+        pcheck(awake == 0 && total >= 15,
+               "O3 all boot spawns dormant at wake (awake=0, full roster alive)");
+    }
+
+    // ---- O4: the alert stays 0 CALM across the wake — no hostile holds LOS, no
+    // stimuli. Feed a real AlertSystem exactly like the host for 6 sim-seconds. ----
+    {
+        AlertSystem alert;
+        alert.configure(defaultAlertConfig());
+        bool anyLos = false;
+        for (int i = 0; i < 360; ++i) {
+            play.tick(1.0f / 60.0f, scene, *physics, wakeEye, nullptr, AttackFxFn{});
+            static CanonPlay::EnemyMark marks[128];
+            const uint32_t nm = play.liveEnemyMarks(marks, 128);
+            x3::phys::Vec3 obs[128];
+            for (uint32_t k = 0; k < nm; ++k) obs[k] = marks[k].pos;
+            const bool seen = play.anyHostileLineOfSight();
+            anyLos = anyLos || seen;
+            alert.update(1.0f / 60.0f, wakeEye, obs, nm, seen);
+        }
+        x3::logInfo("    O4 after 6s at wake: alert level=" + std::to_string(alert.level()) +
+                    " heat=" + std::to_string(alert.heat()) +
+                    " anyLos=" + std::to_string(anyLos ? 1 : 0));
+        pcheck(alert.level() == 0 && !anyLos,
+               "O4 alert stays 0 CALM at wake (no LOS, no heat)");
+        pcheck(!play.leftCell(), "O4b the left-cell latch holds while Jake stays in the cell");
+    }
+
+    // ---- O5: stepping OUT of the cell latches leftCell and wakes only the LOCAL
+    // spawns (the hall mouth), never the whole spire. ----
+    {
+        bool ok = bt.jakeCell != kNoRoom && bt.mainHall != kNoRoom;
+        int awake = 0, total = 0;
+        if (ok) {
+            const CanonRoom& jc = tower.rooms[bt.jakeCell];
+            const CanonRoom& H  = tower.rooms[bt.mainHall];
+            // The hall mouth: on the hall's center line (clear of the cell rect +
+            // its latch margin), at the X nearest the cell.
+            const float hx = std::min(std::max(jc.cx, H.x0() + 1.0f), H.x1() - 1.0f);
+            const x3::phys::Vec3 hallEye{ hx, H.y0() + 1.7f, H.cz };
+            play.tick(1.0f / 60.0f, scene, *physics, hallEye, nullptr, AttackFxFn{});
+            awake = play.enemiesAwake();
+            total = play.enemiesRemaining();
+            ok = play.leftCell() && awake > 0 && awake <= 8 && awake < total / 2;
+        }
+        x3::logInfo("    O5 hall mouth: awake=" + std::to_string(awake) +
+                    " total=" + std::to_string(total));
+        pcheck(ok, "O5 leaving the cell wakes ONLY the local hall spawns (0 < awake << total)");
+    }
+
+    play.shutdown();
+    physics->shutdown();
+    x3::logInfo("--test-opening: " + std::to_string(g_cpass) + " passed, " +
                 std::to_string(g_cfail) + " failed");
     return g_cfail == 0;
 }

@@ -727,6 +727,15 @@ public:
     // attacks again; killing it afterwards still counts (fire() path untouched).
     void  setDocile(bool d) { m_docile = d; }
     bool  docile() const { return m_docile; }
+    // DORMANT (opening-flow spawn gating): the monster idles/patrols its beat but
+    // neither perceives nor engages the player — no LOS, no chase, no attack, no
+    // alert feed — until the host wakes it (region/progression gating, CanonPlay).
+    // Implemented by substituting a null target in update(), i.e. the exact
+    // "no target" AI path, so animation/calm loops/presence stay fully live.
+    // Unlike stun it is not a combat state (no timer); unlike docile it is
+    // reversible and is the NORMAL pre-activation state of far-away spawns.
+    void  setDormant(bool d) { m_dormant = d; }
+    bool  dormant() const { return m_dormant; }
     // Damage-taken multiplier (coolant sabotage: The Collective x1.5). Applied
     // at damage application in fire()/takeMeleeDamage(), stacking with the
     // memory-flash incomingDamageMul (both are >1 vulnerability windows).
@@ -1112,6 +1121,7 @@ private:
     // ---- W9-1 desc-mechanics state ------------------------------------------
     float    m_stunTimer      = 0.0f;        // EMP stun: frozen while > 0
     bool     m_docile         = false;       // master-hack power-down (permanent)
+    bool     m_dormant        = false;       // opening-flow spawn gating (see setDormant)
     float    m_damageTakenMul = 1.0f;        // coolant-sabotage vulnerability
 
     // ---- Guard-life (W4-3): species + patrol state -------------------------

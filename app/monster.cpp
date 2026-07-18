@@ -556,6 +556,7 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     // D-ai: remember recent damage so the state machine can flinch/retreat.
     m_dmgMemory   = kAiDamageMemory;
     m_dmgWindowHp += shotDmg;
+    m_dormant     = false;   // taking fire WAKES a gated spawn (it fights back)
 
     if (dead) {
         // ---- Death: remove the physics body IMMEDIATELY (so subsequent rays
@@ -631,6 +632,7 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
     // D-ai: heavy melee is a strong flinch trigger.
     m_dmgMemory   = kAiDamageMemory;
     m_dmgWindowHp += dmg;
+    m_dormant     = false;   // taking damage WAKES a gated spawn (it fights back)
     if (dead) {
         m_alive    = false;
         m_dying    = true;
@@ -739,6 +741,12 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                            IDamageSink* target, const AttackFxFn& fx,
                            const BossPhaseFn& onPhase, const AllyQueryFn& allies) {
     if (dt <= 0.0f) return;
+
+    // SPAWN GATING (opening flow): a DORMANT monster runs the exact "no target"
+    // AI path — Idle/Patrol/calm loops keep animating, but it neither perceives
+    // nor engages the player (no LOS, no chase, no attack, no alert feed) until
+    // the host wakes it (region/progression gating — see CanonPlay::tick).
+    if (m_dormant) { target = nullptr; m_hasLos = false; }
 
     // ---- Boss phase machine (Phase 2b). Monotone HP-fraction latch: only ever
     // advances Phase1 -> Phase2 -> Phase3. On a transition, fold in that phase's

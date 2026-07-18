@@ -37,6 +37,7 @@ struct CliOptions {
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
+         testOpening = false,      // --test-opening: opening-flow wake-in-cell contract (O1-O5)
          testDescMech = false,      // --test-descmech: W9-1 desc-field mechanics (Tier A verbs)
          testInventory = false,    // --test-inventory: W9-3 RPG backpack (add/stack/consume/cap + keycard door)
          testProgression = false,  // --test-progression: W9-3 XP -> level -> skill points + save round-trip
