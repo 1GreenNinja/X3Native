@@ -88,3 +88,38 @@ doors/door_close.wav).
 |---|---|---|
 | music/club_ascension.wav | Free - Sci-Fi and Cyberpunk Music Pack / 01 Ascension.wav (~133 BPM) | -3 dB + 30 ms loop-seam crossfade |
 | interact/muzak_loop.wav  | Free - Sci-Fi and Cyberpunk Music Pack / 03 Descent.wav (~120 BPM) | mono mix, -10 dB (cabin background), loop crossfade — REPLACES the stdlib-synth loop |
+
+## Audio Armory refresh (feat/audio-armory-refresh, 2026-07-17)
+
+Sourced from Tim's cataloged `D:\Assets` Audio Armory (`D:\Assets\_audio\audio_manifest.json`,
+4,189 files). Same conversion as the rest of the tree: `ffmpeg -ar 44100 -ac 1 -sample_fmt s16`
+(PCM s16le mono) for SFX; the music bed keeps stereo (`-ac 2`) matching `music/club_descent.wav`.
+Total added/replaced: 12 files, ~9.3 MB (5.9 MB of which is the stereo music bed).
+
+### Silent-miss slots made portable (were external-pack-only, silent on a fresh clone)
+| Repo path | Source pack | Original filename | Notes |
+|---|---|---|---|
+| `interact/pickup_energy.wav` | Sci-fi Evolution Gift Pack | `Health or Energy Game Recharge 2.wav` | The EXACT original `bootAudio.pickup` design pick, 1.23s — now committed. |
+| `explosions/explosion_big.wav` | Free Sound Effects Pack ("Free Pack") | `Explosion 1.wav` | Original `bootAudio.death` + cinematic `boom` pick, 5.5s. |
+| `explosions/explosion_rumble.wav` | Free Sound Effects Pack ("Free Pack") | `Explosion 2.wav` | Original cinematic `rumble.capital` pick, 8.0s. |
+| `music/action_bed_zero8.wav` | Sci-Fi Music Pack 1 | `Loops/SMP1_LOOP_Zero8 _1.wav` | The main gameplay music bed + cold-open cutscene music, 33.4s stereo. Previously resolved ONLY via the EscapeLab48 G: mount. |
+| `ambient/alarm_facility.wav` | Sci-Fi Alarm SFX | `Sci_Fi_Alarm_Loop_21.wav` | NEW pick (6s klaxon). The referenced original (`Sci-fi Evolution Gift Pack/Alarm.wav`) does not exist in any known pack root — the cinematic alarm cue has been a silent miss on every machine. Audition-by-ear recommended (chosen from the 30-file alarm pack by duration fit). |
+
+`app/boot_audio.h` gun/door were also repointed to the ALREADY-committed identical files
+(`weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav`, `doors/door_open.wav`) — no new files needed.
+
+### Placeholder-quality upgrades (real takes replacing documented substitutes)
+| Repo path | Source pack | Original filename | Notes |
+|---|---|---|---|
+| `player/pain_1.wav` | Ancient Monster Voice | `Ancient_Game_Character_Male_Grunt.wav` | REAL male pain-grunt VO, 0.37s — closes the W2-B "no pain VO exists" gap (the drop-in upgrade that pass called for; replaces the `Bloody punch.wav` impact substitute). |
+| `player/pain_2.wav` | Ancient Monster Voice | `Ancient_Game_Creature_Grunt_1.wav` | Second gruff grunt take, 0.62s (replaces `Indiana Jones Punch.wav`). |
+| `player/pain_3.wav` | Ancient Monster Voice | `Ancient_Game_Creature_Grunt_2.wav` | NEW third take, 0.81s — 3-way rotation wired app-side (app_run.cpp cue sink). |
+| `enemies/creature/taunt.wav` | Ancient Monster Voice | `Ancient_Game_Monster_Voice_Growl_2.wav` | Purpose-made monster growl, 1.25s (replaces the egg-sac-open substitute). |
+| `enemies/creature/hit.wav` | Ancient Monster Voice | `Ancient_Game_Monster_Voice_Hit_2.wav` | Purpose-made monster hit-reaction vocal, 1.19s (replaces trimmed Monster Bite on Armor). |
+| `enemies/creature/death.wav` | Ancient Monster Voice | `Ancient_Game_Monster_Voice_Death_2_Grunt.wav` | Purpose-made monster death vocal, 2.0s (replaces pitched Monster Bite variant). |
+| `ambient/room_tone_cell.wav` | Sci-Industrial Ambience | `WAV/Elements/Low Hum 1.wav` | Same pack + same "Low Hum" family as the old pick, but 12.2s (old: 4.77s, flagged short vs the 10-30s loop guidance). Steady-state drone, loops tolerably. |
+
+Deliberately left alone: `enemies/creature/attack.wav` (Monster Bite — a bite IS the right
+attack sound), the shared humanoid `enemies/*.wav` set and `enemies/synth/*` (original design
+picks), all weapon fire/impact/reload sets (deliberate per-weapon curated pass), footsteps
+(purpose-built takes), doors, interact, crowd, rifthub, space, water, vehicles.

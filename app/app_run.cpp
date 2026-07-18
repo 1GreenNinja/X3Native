@@ -1016,8 +1016,12 @@ int runDefaultHost(HostContext& hc) {
         bootAudio.footstepConcrete[0].valid() ? bootAudio.footstepConcrete[0] : sndGun;
     // Resolved path for the looping music/ambient bed (started after the world is
     // built, below). Spaceship-ambience-style sci-fi action loop.
+    // AUDIO-ARMORY REFRESH (2026-07-17): the SAME Sci-Fi Music Pack 1 loop
+    // (SMP1_LOOP_Zero8 _1) is now COMMITTED at assets/audio/music/ so the bed
+    // plays on a fresh clone — previously it only resolved on a box with the
+    // EscapeLab48 Unity project mounted at G:.
     const std::string kMusicPath = x3::game::resolveAudio(
-        "Sci-Fi Music Pack 1/Loops/SMP1_LOOP_Zero8 _1.wav");
+        "music/action_bed_zero8.wav");
 
     x3::boot::mark("audio init + sfx loads");
 
@@ -6575,16 +6579,21 @@ int runDefaultHost(HostContext& hc) {
     x3::audio::SoundHandle sndSplashExit =
         audio->load(x3::game::resolveAudio("water/splash_exit.wav"));
     {
-        auto painA = bootAudio.playerPain[0], painB = bootAudio.playerPain[1];
+        // AUDIO-ARMORY REFRESH (2026-07-17): 3 rotating pain VO takes (was 2
+        // alternating punch-impact substitutes) — Riftward-style variant slot.
+        auto painA = bootAudio.playerPain[0], painB = bootAudio.playerPain[1],
+             painC = bootAudio.playerPain[2];
         auto landH = bootAudio.playerLand;
         auto splashH = sndSplashEnter;
         auto* asys = audio.get();
-        player.setCueSink([asys, painA, painB, landH, splashH](const x3::game::GameCue& c) {
+        player.setCueSink([asys, painA, painB, painC, landH, splashH](const x3::game::GameCue& c) {
             if (!asys) return;
-            static bool alt = false;
             switch (c.kind) {
                 case x3::game::CueKind::PlayerPain: {
-                    const x3::audio::SoundHandle h = (alt = !alt) ? painA : painB;
+                    static unsigned painIdx = 0;
+                    const x3::audio::SoundHandle takes[3] = { painA, painB, painC };
+                    x3::audio::SoundHandle h = takes[painIdx++ % 3u];
+                    if (!h.valid()) h = painA;   // clean-machine grace: fall back to take 1
                     if (h.valid()) asys->playSound2D(h, std::min(0.9f, 0.45f + 0.4f * c.intensity), 1.0f);
                     break;
                 }

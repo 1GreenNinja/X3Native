@@ -40,11 +40,15 @@ struct BootAudio {
     // Player pain / landing audio hooks (audio-assets pass, W2-B). Player emits
     // CueKind::PlayerPain (see Player::takeDamage) and CueKind::PlayerLand (see
     // Player::update's airborne->grounded edge); these are the handles a wired
-    // cue sink would play. Two pain takes so back-to-back hits don't repeat the
-    // exact same grunt. Loading here is the sound department's part; the host
+    // cue sink would play. Multiple pain takes so back-to-back hits don't repeat
+    // the exact same grunt. Loading here is the sound department's part; the host
     // still needs the one-line `player.setCueSink(...)` subscription (out of
     // scope: that line lives in app_run.cpp).
-    x3::audio::SoundHandle playerPain[2];
+    // AUDIO-ARMORY REFRESH (2026-07-17): the two punch-impact SUBSTITUTES are
+    // replaced with real male-grunt VO takes (Ancient Monster Voice pack) — the
+    // straight drop-in upgrade the W2-B gap note called for — plus a third take
+    // so the rotation repeats less (Riftward-style variant slot).
+    x3::audio::SoundHandle playerPain[3];
     x3::audio::SoundHandle playerLand;
     // Per-species enemy vocal buckets (guard-life pass, W4-3). Indexed by the
     // host's species->bucket map: [0]=humanoid (Trooper/Illuminated — reuses the
@@ -59,15 +63,19 @@ inline BootAudio makeBootAudio() {
     BootAudio ba;
     ba.audio.reset(x3::audio::createAudioSystem());
     ba.audio->init();
+    // AUDIO-ARMORY REFRESH (2026-07-17): all four boot cues now point at the
+    // committed repo-local mirror (assets/audio/), so they resolve on a fresh
+    // clone with no external pack mount. gun/door are the SAME source files the
+    // old external paths named (see AUDIO_MANIFEST.md); pickup/death are newly
+    // committed copies of the original external design picks.
     ba.gun = ba.audio->load(x3::game::resolveAudio(
-        "Sci-Fi_Guns_Game-Of-Weapons/Audio/SFX/Wave/Single_Gunshots/"
-        "Single_Gunshot_Sci-Fi_Gun-01.wav"));
+        "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav"));
     ba.door = ba.audio->load(x3::game::resolveAudio(
-        "ModularScifiInterior/Sound/S_ScifiDoor_A.WAV"));
+        "doors/door_open.wav"));
     ba.pickup = ba.audio->load(x3::game::resolveAudio(
-        "Sci-fi Evolution Gift Pack/Health or Energy Game Recharge 2.wav"));
+        "interact/pickup_energy.wav"));
     ba.death = ba.audio->load(x3::game::resolveAudio(
-        "Free Pack/Explosion 1.wav"));
+        "explosions/explosion_big.wav"));
     // Enemy creature vocalizations: committed repo-local mirror (assets/audio/enemies/),
     // resolved first; external per-machine pack roots remain as the fallback chain
     // inside resolveAudio() itself (see audio_root.h).
@@ -80,9 +88,10 @@ inline BootAudio makeBootAudio() {
     ba.footstepConcrete[1] = ba.audio->load(x3::game::resolveAudio("footsteps/step_concrete_2.wav"));
     ba.footstepConcrete[2] = ba.audio->load(x3::game::resolveAudio("footsteps/step_concrete_3.wav"));
     ba.footstepConcrete[3] = ba.audio->load(x3::game::resolveAudio("footsteps/step_concrete_4.wav"));
-    // Player pain (2 takes) + landing thud, committed repo-local.
+    // Player pain (3 VO takes) + landing thud, committed repo-local.
     ba.playerPain[0] = ba.audio->load(x3::game::resolveAudio("player/pain_1.wav"));
     ba.playerPain[1] = ba.audio->load(x3::game::resolveAudio("player/pain_2.wav"));
+    ba.playerPain[2] = ba.audio->load(x3::game::resolveAudio("player/pain_3.wav"));
     ba.playerLand    = ba.audio->load(x3::game::resolveAudio("player/land.wav"));
     // Per-species enemy vocal buckets (guard-life W4-3). Bucket 0 (humanoid)
     // aliases the shared set — the shared WAVs ARE the humanoid takes; buckets

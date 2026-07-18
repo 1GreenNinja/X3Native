@@ -523,12 +523,18 @@ struct CinAudioMap {
     void init(x3::audio::IAudioSystem* a) {
         audio = a;
         if (!audio) return;
-        alarm  = audio->load(x3::game::resolveAudio("Sci-fi Evolution Gift Pack/Alarm.wav"));
-        rumble = audio->load(x3::game::resolveAudio("Free Pack/Explosion 2.wav"));
+        // AUDIO-ARMORY REFRESH (2026-07-17): all cues now resolve from the
+        // committed repo-local mirror. rumble/boom/music are the original
+        // external design picks, now committed; alarm is a NEW pick (Sci-Fi
+        // Alarm SFX pack) — the old "Sci-fi Evolution Gift Pack/Alarm.wav"
+        // does not exist in ANY known pack root, so this cue had been a
+        // silent miss on every machine since it was authored.
+        alarm  = audio->load(x3::game::resolveAudio("ambient/alarm_facility.wav"));
+        rumble = audio->load(x3::game::resolveAudio("explosions/explosion_rumble.wav"));
         charge = audio->load(x3::game::resolveAudio("weapons/loops/Vefects_Zap_Medium_01.wav"));
         bolt   = audio->load(x3::game::resolveAudio("weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav"));
-        boom   = audio->load(x3::game::resolveAudio("Free Pack/Explosion 1.wav"));
-        musicPath = x3::game::resolveAudio("Sci-Fi Music Pack 1/Loops/SMP1_LOOP_Zero8 _1.wav");
+        boom   = audio->load(x3::game::resolveAudio("explosions/explosion_big.wav"));
+        musicPath = x3::game::resolveAudio("music/action_bed_zero8.wav");
     }
     void fire(const x3::cut::AudioCue& cue) {
         if (!audio) return;
