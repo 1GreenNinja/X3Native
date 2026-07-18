@@ -1543,30 +1543,90 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         rail(-HL + ckW, 0, 0.03f, (CL - 2 * ckW) / 2);                 // west
         rail(-(egH / 2 + nSeg / 2), -(HW - ckW), nSeg / 2, 0.03f);     // north (two segments)
         rail( (egH / 2 + nSeg / 2), -(HW - ckW), nSeg / 2, 0.03f);
-        // ROUND HALF-MOON private pods (curved baluster arc = the half-moon read).
-        // dir = +1 pod bulges toward +Z, -1 toward -Z (into the room).
-        auto pod = [&](float cx, float cz, float dir) {
-            const float r = 0.95f, yb = LYc;
-            box(cx, yb - 0.02f, cz - dir * r * 0.35f, r * 0.8f, 0.03f, r * 0.42f, kCatwalk, kEmitOff, true); // pad
-            for (int a = 0; a <= 8; ++a) {                    // curved rail (semicircle)
-                const float th = kPi * a / 8.0f;
-                const float px = cx + r * std::cos(th);
-                const float pz = cz - dir * r * std::sin(th);
-                box(px, yb + 0.45f, pz, 0.03f, 0.45f, 0.03f, kRail, kEmitOff, false);
-                box(px, yb + 0.90f, pz, 0.05f, 0.02f, 0.05f, kWall, kEmitAmberLo, false);
+        // ROUND HALF-MOON private pods — REAL HALF-DISC BOOTHS (POLISH stage15).
+        // Was: a curved baluster ARC over a flat rectangular pad — from below it read
+        // as a fence, not a booth. Now each pod is a proper SEMICIRCULAR FLOOR PLATE
+        // (a real half-disc) cantilevering off the catwalk inner edge INTO the room,
+        // ringed by a curved rail, with a CURVED bench following the arc and a small
+        // center table. Reads as a round half-moon booth from the floor below AND the
+        // catwalk above.
+        //   C=(cx,cz) sits on the catwalk INNER edge; (bdx,bdz)=unit bulge INTO room;
+        //   perp=(-bdz,bdx) runs the flat diameter along the catwalk.
+        auto halfDiscFloor = [&](float cx, float cy, float cz, float r, float hy,
+                                 float bdx, float bdz) {
+            const float px = -bdz, pz = bdx;              // diameter (flat-edge) axis
+            const int N = 18;
+            float ax[N + 1], az[N + 1];
+            for (int i = 0; i <= N; ++i) {
+                const float th = kPi * i / N, c = std::cos(th), s = std::sin(th);
+                ax[i] = cx + px * (r * c) + bdx * (r * s);
+                az[i] = cz + pz * (r * c) + bdz * (r * s);
             }
-            box(cx, yb + 0.6f, cz - dir * r * 0.25f, 0.06f, 0.08f, 0.06f, kBarTop, kEmitAmberLo, false); // lantern
-            box(cx, yb + 0.2f, cz - dir * r * 0.22f, r * 0.55f, 0.06f, 0.14f, kLeather, kEmitOff, false); // bench
+            x3::prims::PrimMesh m;
+            auto pushTri = [&](float Ax, float Ay, float Az, float Bx, float By, float Bz,
+                               float Cx, float Cy, float Cz, float wx, float wy, float wz) {
+                float ux = Bx - Ax, uy = By - Ay, uz = Bz - Az;
+                float vx = Cx - Ax, vy = Cy - Ay, vz = Cz - Az;
+                float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+                if (nx * wx + ny * wy + nz * wz < 0.0f) {   // orient front face toward `want`
+                    float tx = Bx, ty = By, tz = Bz; Bx = Cx; By = Cy; Bz = Cz; Cx = tx; Cy = ty; Cz = tz;
+                }
+                const uint32_t b = (uint32_t)m.verts.size();
+                m.verts.push_back({ { Ax, Ay, Az }, { wx, wy, wz }, { 0, 0 } });
+                m.verts.push_back({ { Bx, By, Bz }, { wx, wy, wz }, { 1, 0 } });
+                m.verts.push_back({ { Cx, Cy, Cz }, { wx, wy, wz }, { 0.5f, 1 } });
+                m.index.insert(m.index.end(), { b, b + 1, b + 2 });
+            };
+            for (int i = 0; i < N; ++i) {                 // top + bottom fans
+                pushTri(cx, cy + hy, cz, ax[i], cy + hy, az[i], ax[i + 1], cy + hy, az[i + 1], 0, 1, 0);
+                pushTri(cx, cy - hy, cz, ax[i], cy - hy, az[i], ax[i + 1], cy - hy, az[i + 1], 0, -1, 0);
+            }
+            for (int i = 0; i < N; ++i) {                 // curved rim
+                float nx0 = ax[i] - cx, nz0 = az[i] - cz;
+                float l = std::sqrt(nx0 * nx0 + nz0 * nz0); if (l < 1e-5f) l = 1.0f; nx0 /= l; nz0 /= l;
+                pushTri(ax[i], cy + hy, az[i], ax[i + 1], cy + hy, az[i + 1], ax[i + 1], cy - hy, az[i + 1], nx0, 0, nz0);
+                pushTri(ax[i], cy + hy, az[i], ax[i + 1], cy - hy, az[i + 1], ax[i], cy - hy, az[i], nx0, 0, nz0);
+            }
+            // straight EDGE face (the diameter, along the catwalk).
+            pushTri(ax[0], cy + hy, az[0], ax[N], cy + hy, az[N], ax[N], cy - hy, az[N], -bdx, 0, -bdz);
+            pushTri(ax[0], cy + hy, az[0], ax[N], cy - hy, az[N], ax[0], cy - hy, az[0], -bdx, 0, -bdz);
+            m.cverts.reserve(m.verts.size() * 3);         // walkable pod floor
+            for (const auto& vt : m.verts) { m.cverts.push_back(vt.pos[0]); m.cverts.push_back(vt.pos[1]); m.cverts.push_back(vt.pos[2]); }
+            m.cindex = m.index;
+            prim(std::move(m), kCatwalk, kEmitOff, x3::rhi::TextureHandle{}, mrChrome, true);
         };
-        const float podZS =  (HW - ckW - 0.15f);     // just inside the south catwalk
-        const float podZN = -(HW - ckW - 0.15f);     // north
-        for (int k = 0; k < 5; ++k) {                 // 5 pods on the south wall (~20 ft)
+        auto pod = [&](float cx, float cz, float bdx, float bdz) {
+            const float r = 0.95f, yb = LYc;
+            const float px = -bdz, pz = bdx;              // diameter axis
+            halfDiscFloor(cx, yb - 0.02f, cz, r, 0.04f, bdx, bdz);     // REAL half-disc floor plate
+            for (int a = 0; a <= 8; ++a) {                // curved rail around the arc
+                const float th = kPi * a / 8.0f, c = std::cos(th), s = std::sin(th);
+                const float rx = cx + px * (r * c) + bdx * (r * s);
+                const float rz = cz + pz * (r * c) + bdz * (r * s);
+                box(rx, yb + 0.45f, rz, 0.03f, 0.45f, 0.03f, kRail, kEmitOff, false);      // baluster
+                box(rx, yb + 0.90f, rz, 0.05f, 0.02f, 0.05f, kWall, kEmitAmberLo, false);  // amber cap
+            }
+            for (int a = 1; a < 8; ++a) {                 // CURVED bench following the arc
+                const float th = kPi * a / 8.0f, c = std::cos(th), s = std::sin(th);
+                const float rb = r * 0.62f;
+                const float bx = cx + px * (rb * c) + bdx * (rb * s);
+                const float bz = cz + pz * (rb * c) + bdz * (rb * s);
+                box(bx, yb + 0.22f, bz, 0.11f, 0.06f, 0.11f, kLeather, kEmitOff, false);   // seat pad
+                box(bx, yb + 0.11f, bz, 0.05f, 0.11f, 0.05f, kRail,    kEmitOff, false);   // seat leg
+            }
+            box(cx + bdx * r * 0.34f, yb + 0.25f, cz + bdz * r * 0.34f, 0.16f, 0.02f, 0.16f, kBarTop, kEmitAmberLo, false); // table top
+            box(cx + bdx * r * 0.34f, yb + 0.12f, cz + bdz * r * 0.34f, 0.03f, 0.13f, 0.03f, kChrome, kEmitOff, false);      // table stem
+            box(cx + bdx * r * 0.9f, yb + 0.75f, cz + bdz * r * 0.9f, 0.05f, 0.07f, 0.05f, kBarTop, kEmitAmberLo, false);    // lantern
+        };
+        const float podZS =  (HW - ckW);              // south catwalk inner edge (into room = -Z)
+        const float podZN = -(HW - ckW);              // north inner edge (into room = +Z)
+        for (int k = 0; k < 5; ++k) {                 // 5 pods on the south catwalk (~20 ft)
             const float cx = -HL + (k + 0.5f) * (CW / 5.0f);
-            pod(cx, podZS, -1.0f);
-            if (std::fabs(cx) > egH / 2 + 1.2f) pod(cx, podZN, +1.0f);   // north, skip ER gap
+            pod(cx, podZS, 0.0f, -1.0f);
+            if (std::fabs(cx) > egH / 2 + 1.2f) pod(cx, podZN, 0.0f, +1.0f);   // north, skip ER gap
         }
-        pod(HL - ckW - 0.4f, -2.5f, 0.0f);            // 1 east-wall pod (dir 0 = flat bench)
-        pod(-HL + ckW + 0.4f, 2.5f, 0.0f);            // 1 west-wall pod
+        pod(HL - ckW, -2.5f, -1.0f, 0.0f);            // 1 east-wall pod (bulges -X into room)
+        pod(-HL + ckW, 2.5f, +1.0f, 0.0f);           // 1 west-wall pod (bulges +X into room)
     }
 
     // ==================================================================
@@ -1656,6 +1716,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             pe.glass.tint[0] = 0.20f; pe.glass.tint[1] = 0.30f; pe.glass.tint[2] = 0.55f;
             pe.tag = (uint32_t)Tag::Static;
             scene.add(pe);
+            // DEDICATED NEUTRAL SHELF KEY (POLISH stage15): the blue UV wash above
+            // rendered the emerald granite blue-black. A soft warm-WHITE key just over
+            // the shelf lights the stone with NEUTRAL light so its DARK GREEN reads (the
+            // UV glow stays as the §3.5 mood accent). Tight range = shelf-local. (+1 to
+            // the point-light set — see the report; total stays under the 64 cap.)
+            addLight(m_lights, shX - 0.3f, oy + shY + 0.55f, shZ, 1.65f, 1.54f, 1.38f, 2.4f);
         }
     }
 
@@ -1716,12 +1782,6 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(srX, pY + pH / 2, srZ + 1.6f, eastD / 2, pH / 2, T / 2, kWood, kEmitOff, true);
         box(srX, pY + 0.4f, srZ, 0.7f, 0.05f, 0.5f, kWood, kEmitOff, true);                 // heavy table
         box(srX, pY + 0.25f, srZ + 0.9f, 0.7f, 0.25f, 0.3f, kLeather, kEmitOff, true);      // leather seating
-            // DEDICATED NEUTRAL SHELF KEY (POLISH stage15): the blue UV wash above
-            // rendered the emerald granite blue-black. A soft warm-WHITE key just over
-            // the shelf lights the stone with NEUTRAL light so its DARK GREEN reads (the
-            // UV glow stays as the §3.5 mood accent). Tight range = shelf-local. (+1 to
-            // the point-light set — see the report; total stays under the 64 cap.)
-            addLight(m_lights, shX - 0.3f, oy + shY + 0.55f, shZ, 1.65f, 1.54f, 1.38f, 2.4f);
         { const float emFeed[4] = { 0.30f, 0.35f, 0.55f, 1.5f };                            // silent club-feed OLED
           box(srX + eastD / 2 - 0.05f, pY + 1.5f, srZ, 0.02f, 0.5f, 0.9f, kTvFrame, emFeed, false); }
         addLight(m_lights, srX, oy + pY + 2.5f, srZ, 1.0f, 0.72f, 0.4f, 5.0f);              // steady warm light
