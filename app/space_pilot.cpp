@@ -543,6 +543,17 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
         } else {
             const float kLag = std::min(1.0f, 7.5f * dt);   // spring stiffness
             for (int k = 0; k < 3; ++k) m_chaseSm[k] += (ideal[k] - m_chaseSm[k]) * kLag;
+            // CLAMP the lag so the ship DARTS in frame but can never leave it
+            // (owner screenshot: a hard maneuver swung the hull to the frame
+            // edge). 5 m of displacement on a 22 m arm reads as violent zip while
+            // keeping the ship comfortably on screen.
+            float off[3] = { m_chaseSm[0]-ideal[0], m_chaseSm[1]-ideal[1], m_chaseSm[2]-ideal[2] };
+            const float od = length3(off);
+            constexpr float kMaxLag = 5.0f;
+            if (od > kMaxLag) {
+                const float sc = kMaxLag / od;
+                for (int k = 0; k < 3; ++k) m_chaseSm[k] = ideal[k] + off[k] * sc;
+            }
         }
     }
     // Target-keeping look bias: ease the amount toward the host's request.

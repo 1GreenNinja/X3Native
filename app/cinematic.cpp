@@ -182,7 +182,7 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
                                 x3::rhi::MeshHandle mesh,
                                 const std::vector<NightSkyPlanet>& planets, float uTime,
                                 float eyeX, float eyeY, float eyeZ,
-                                x3::rhi::MeshHandle ringMesh) {
+                                x3::rhi::MeshHandle ringMesh, float anchorDist) {
     if (!fc.valid) return;
     // PlanetType transparent indices (see VulkanRenderDevice PlanetType enum).
     constexpr uint32_t kAtmosphere = 9u, kSunCorona = 10u, kRing = 11u;
@@ -191,11 +191,11 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
         // Sky direction from the body's azimuth/elevation (az 0 = -Z, +90 = +X).
         const float az = b.azimuthDeg * kDegToRad, el = b.elevationDeg * kDegToRad;
         const float ce = std::cos(el);
-        const float px = eyeX + std::sin(az) * ce * kNightSkyDist;
-        const float py = eyeY + std::sin(el)      * kNightSkyDist;
-        const float pz = eyeZ - std::cos(az) * ce * kNightSkyDist;
+        const float px = eyeX + std::sin(az) * ce * anchorDist;
+        const float py = eyeY + std::sin(el)      * anchorDist;
+        const float pz = eyeZ - std::cos(az) * ce * anchorDist;
         // Apparent angular diameter -> world radius at the anchor distance.
-        const float r = kNightSkyDist * std::tan(b.angularDiameterDeg * 0.5f * kDegToRad);
+        const float r = anchorDist * std::tan(b.angularDiameterDeg * 0.5f * kDegToRad);
         // OPAQUE body: uniform scale by the apparent radius, translated to world pos.
         const float model[16] = {
             r, 0, 0, 0,

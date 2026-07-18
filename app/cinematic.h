@@ -94,7 +94,8 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
                          x3::rhi::MeshHandle mesh,
                          const std::vector<NightSkyPlanet>& planets, float uTime,
                          float eyeX, float eyeY, float eyeZ,
-                         x3::rhi::MeshHandle ringMesh = {});
+                         x3::rhi::MeshHandle ringMesh = {},
+                         float anchorDist = kNightSkyDist);
 
 // ============================================================================
 // COLD-OPEN CINEMATIC DRIVER (x3.cutscene/1 — app/cutscene.h holds the pure

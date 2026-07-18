@@ -260,6 +260,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     tun.boostMul       = 5.0f;    // SHIFT = ANTIMATTER BOOST (owner ask) — dramatic,
                                   // you feel it slam the ship forward, not a nudge.
     tun.maxSpeed       = 360.0f;  // raised so the boost has real top-end to reach for
+    // COMMERCIAL CHASE FRAMING (owner: "match commercial flight space games — a
+    // chase cam always behind a SMALLER ship which can dart wherever"): pull the
+    // cam back + up so the ~10 m hull reads Everspace-small (roughly 15% of frame
+    // height, low-center) with sky all around it for the dart room.
+    tun.chaseDistance  = 22.0f;   // was 12 — the hull filled the frame
+    tun.chaseHeight    = 5.0f;
     tun.maxShield      = 5000;    // owner ask: fat shield pool — survive the salvos and
     tun.maxHull        = 2000;    // fly around freely instead of dying in the first pass
     tun.shieldRegenPerSec = 120.0f;   // and it recharges fast, so a hit is not the end
@@ -457,6 +463,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // ALWAYS_VISIBLE flag exists in the cull design but nothing ever wired a
         // setter — when that API lands, flag the ships instead.)
         hc.device->setFrustumCullEnabled(false);
+        // FAR PLANE 15 km (landmine L7, THIRD appearance — owner: "it has never
+        // changed: as soon as you back up a TINY BIT the ship is visibly taken off
+        // screen"). The interactive beat never set the far plane, so it ran the
+        // 200 m ENGINE DEFAULT — and the capital SPAWNS at 200 m: one tap of
+        // reverse clipped it out of the universe (his screenshot showed its
+        // far-plane CROSS-SECTION as a floating box, and enemy brackets around
+        // clipped-away fighters). Paired with the 10.5 km planet anchor below.
+        hc.device->setCameraFar(15000.0f);
     }
     // Re-apply the deep-space look EVERY beat: the one-time set at intro start
     // was getting undone before the first interactive window (live evidence:
@@ -825,9 +839,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 cockpit->scene.render(*hc.device, frame);
                 // The planet backdrop first (eye-anchored; depth-occluded by everything
                 // drawn after). Space now has a WORLD behind the fight.
+                // ANCHOR 10.5 km — THE PAIR RULE (landmine L7): the far plane below is
+                // 15 km, so the planet shell must sit INSIDE it but BEYOND every ship,
+                // or the discs punch holes in hulls (the original B10 bug). 140 m
+                // (the default) + 15 km far = planets carving ships again. Never
+                // move one of these numbers without the other.
                 if (!planets.empty())
                     x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh, planets,
-                                                     beatT, cx, cy, cz, ringMesh);
+                                                     beatT, cx, cy, cz, ringMesh, 10500.0f);
                 // YOUR fighter, in 3P — at the ship's own position + facing, so it sits
                 // AHEAD of the chase camera. Skipped in 1P (you're inside it).
                 if (pilot.isThirdPerson() && !playerDraw.empty()) {
@@ -1008,6 +1027,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     if (live) glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     if (live) hc.device->setFrustumCullEnabled(true);   // restore (beat-scoped off)
+    if (live) hc.device->setCameraFar(200.0f);          // restore engine default (L7 pair)
     if (fxOn) fxPtr->shutdown(*hc.device);
     // Stop the engine bed (loops would otherwise drone under the next cinematic
     // beat). stopLoop on an invalid handle is a safe no-op.
