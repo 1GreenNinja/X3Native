@@ -100,6 +100,7 @@
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
+#include "survival_complex.h"
 #include "perfshop.h"
 #include "valley.h"
 #include "cliffs.h"
@@ -978,6 +979,13 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
+    }
+    if (tf.testComplex) {
+        x3::logInfo("running SURVIVAL COMPLEX self-test "
+                    "(7-level dungeon west of the club: L2-L7 build, stairwell connects "
+                    "top-to-bottom, both entrances reach it, L7 hydroponics, NPC markers, "
+                    "light budget, leak-clean)...");
+        return x3::game::runComplexSelfTest() ? 0 : 1;
     }
     if (tf.testPerfshop) {
         x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "
