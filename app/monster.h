@@ -578,6 +578,23 @@ public:
                     int damage = kDamagePerShot,
                     x3::DamageType type = x3::DamageType::Kinetic);
 
+    // [P2-5] Single-raycast fire path (specs/MONSTER_FIRE_SINGLE_RAY.spec.md).
+    // Resolve a PRECOMPUTED Enemy-layer ray hit against THIS monster: if the hit
+    // body is this live monster's, apply the full fire() damage path (headshot /
+    // adaptive-hide / memory-flash / death) and return the same FireResult fire()
+    // would. If the hit is some other body (or a miss), report the geometry
+    // hit/miss for the tracer and no-op on this instance. This lets a container
+    // (MonsterManager / MultiPodBoss) cast ONE ray per shot and fan the SAME hit
+    // across all instances instead of one rayCast per monster. fire() itself is
+    // now cast-one-ray + applyFireHit(), so single-monster behaviour is unchanged.
+    // `eye`/`dir` are the original shot ray (used only for the miss-tracer end
+    // point and the death-ragdoll shove direction).
+    FireResult applyFireHit(const x3::phys::RayHit& hit,
+                            const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                            Scene& scene, x3::phys::IPhysicsWorld& physics,
+                            int damage = kDamagePerShot,
+                            x3::DamageType type = x3::DamageType::Kinetic);
+
     // Advance one frame: decay the hit-flash timer and, if chaseSpeed > 0 and the
     // monster is alive, move it relative to `playerPos` (chase for melee, hold a
     // standoff for the drone) via setBodyPosition + sync the Entity transform, and
@@ -746,6 +763,9 @@ public:
     // Player position last seen with LOS (the Search target). Valid once LOS held.
     x3::phys::Vec3 lastKnownPlayerPos() const { return m_lastKnown; }
     bool    hasLineOfSight() const { return m_hasLos; }
+    // [P2-6] True while an attack wind-up is in flight (the telegraph window
+    // between attack start and the hit landing). Read by the fresh-LOS self-test.
+    bool    winding() const { return m_winding; }
 
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
@@ -873,6 +893,15 @@ private:
     // `tint` multiplied into each primitive's base color (for the hit-flash).
     void drawMonsterAt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                        const float model[16], const float tint[4]) const;
+
+    // [P2-6] One line-of-sight probe: ray from our body center (+0.3 m, stepped
+    // past our own collision box) toward `playerEye` against Layer::Static; clear
+    // iff no wall blocks it before the player. Extracted from the decision-cadence
+    // block so the ATTACK path can re-run it FRESH (every frame while in attack
+    // range / winding) instead of trusting the ~0.3 s-stale decision snapshot.
+    // See docs/design/SUBSYSTEM_HARDENING_PLAN.md AI-2.
+    bool probeLos(x3::phys::IPhysicsWorld& physics,
+                  const x3::phys::Vec3& playerEye) const;
 
     // ---- SKINNED DEATH RAGDOLL helpers (TASK#12) --------------------------
     // Try to spawn the physics ragdoll at the kill moment (rigged models only). On
