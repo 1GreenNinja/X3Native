@@ -87,8 +87,15 @@ const float kOrb[4]    = { 0.700f, 0.700f, 0.800f, 1.0f }; // mirror ball facets
 // catches the blue-UV beams. Used for the U-bar countertop + the Lair reading
 // shelf (one consistent stone across Tim's spaces). Paired with mrGlass (low
 // roughness / near-mirror) so it gleams. baseColor ~ #0E2114.
-const float kGranite[4]    = { 0.055f, 0.130f, 0.075f, 1.0f };
-const float kGraniteEm[4]  = { 0.010f, 0.040f, 0.020f, 0.35f }; // faint deep-green sheen
+// POLISH (feat/club-polish-stage15, Tim 2026-07-18): the emerald read near-black
+// and the colored moving-head beams washed it magenta. Green channel raised
+// 0.130 -> 0.190 (red/blue held low to keep it SATURATED + dark/polished) so it
+// resolves to visible deep green under the new neutral bar/shelf keys, and the
+// green-tinted sheen emissive is bumped (0.040->0.085 g, str 0.35->0.55) so the
+// stone LEANS emerald even when a magenta gel rakes it — never fully black.
+const float kGranite[4]    = { 0.045f, 0.225f, 0.090f, 1.0f };
+const float kGraniteEm[4]  = { 0.015f, 0.160f, 0.055f, 0.70f }; // deep-green sheen (self-reads emerald
+                                                               // even when a magenta gel rakes it)
 // White-oak (1897 barn-wood) U-bar base — warm aged oak.
 const float kOak[4]    = { 0.230f, 0.150f, 0.090f, 1.0f };
 // THE LAIR (NE corner, upstairs) — charcoal light-absorbing walls + warm dens.
@@ -1241,8 +1248,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(uX, bH2 - 0.04f,  bBase / 2 + 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitAmberLo, false);
         box(uX, bH2 - 0.04f, -bBase / 2 - 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitAmberLo, false);
         box(uX - bArm / 2 - 0.28f, bH2 - 0.04f, 0, 0.015f, 0.01f, (bBase + 0.3f) / 2, kWall, kEmitAmberLo, false);
-        // Warm bar glow.
-        addLight(m_lights, uX - bArm / 4, oy + bH2 - 0.3f, 0, 1.0f, 0.7f, 0.2f, 8.0f);
+        // NEUTRAL BAR KEY (POLISH stage15): was a low amber glow (1.0,0.7,0.2) BELOW
+        // the top — that orange cast muddied the emerald and the moving-head gels
+        // washed the granite magenta. Now a soft warm-WHITE key hung ABOVE the U-bar
+        // top so the DARK GREEN GRANITE is lit by NEUTRAL light and shows its color,
+        // not only by colored disco beams. Local range so it keys the bar, not the room.
+        addLight(m_lights, uX, oy + bH2 + 1.5f, 0, 1.75f, 1.64f, 1.48f, 6.0f);
         // Back-bar shelf + 12 jewel-tone bottles inside the U (over the west base).
         for (int i = 0; i < 12; ++i) {
             const float bxp = uX - bArm / 2 + 0.8f + i * 0.35f;
@@ -1705,6 +1716,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         addLight(m_lights, bdX,   oy + pY + 2.4f, 2.5f, 1.0f, 0.75f, 0.50f, 5.0f); // bedroom glow
         // MARKED future connection (Levels 2-7 later): stairwell-down hatch + blocked door.
         const float emMark[4] = { 0.10f, 0.85f, 0.35f, 1.4f };
+            // DEDICATED NEUTRAL SHELF KEY (POLISH stage15): the blue UV wash above
+            // rendered the emerald granite blue-black. A soft warm-WHITE key just over
+            // the shelf lights the stone with NEUTRAL light so its DARK GREEN reads (the
+            // UV glow stays as the §3.5 mood accent). Tight range = shelf-local. (+1 to
+            // the point-light set — see the report; total stays under the 64 cap.)
+            addLight(m_lights, shX - 0.3f, oy + shY + 0.55f, shZ, 1.65f, 1.54f, 1.38f, 2.4f);
         box(hallX, pY + 0.09f, pzS - 1.2f, hallW / 2 - 0.2f, 0.02f, 0.6f, kStair, emMark, false);
         box(hallX, pY + 1.0f, pzN + 0.25f, hallW / 2 - 0.2f, 1.0f, 0.05f, kWood, emMark, false);
     }
