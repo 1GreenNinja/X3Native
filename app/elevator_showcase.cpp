@@ -151,7 +151,10 @@ bool ElevatorShowcase::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_stats.clubStopY = m_clubStop >= 0 ? m_floors[m_clubStop].centerY : 0.0f;
 
     // ---- The shell (shaft + per-floor doors + call panels) ----
-    if (spec.buildShaftShell) buildShaft(scene, device, physics);
+    if (spec.buildShaftShell) {
+        buildShaft(scene, device, physics);
+        buildStrataLiner(scene, device);   // the descent's glowing geology (goal #3)
+    }
 
     // ---- The thick dark-glass cab interior + holo control panel ----
     buildCabInterior(scene, device);
@@ -279,6 +282,82 @@ void ElevatorShowcase::buildShaft(Scene& scene, x3::rhi::IRenderDevice& device,
         box(doorHalfW + 0.6f, 0.12f, 0.7f, m_shaftX, m_floors[f].centerY + m_cabHY - 0.12f,
             frontZ + 0.75f, kCabFloor, true);
     }
+}
+
+// ===========================================================================
+// STRATA LINER — the DESCENT experience (goal #3). Band the shaft interior faces
+// with depth-tinted GLOWING geology (limestone -> granite -> basalt -> obsidian ->
+// the club's crystal glow near the bottom). World-FIXED thin panels hugging just
+// inside the walls (outside the cab footprint, so they never clip the interior);
+// as the cab descends they slide past the dark glass = "rock layers rushing past".
+// update() scrolls a bright seam down them + swells the glow while travelling.
+// ===========================================================================
+void ElevatorShowcase::buildStrataLiner(Scene& scene, x3::rhi::IRenderDevice& device) {
+    using namespace x3::elevmesh;
+    // The visible descent shaft: from just under the top served floor down to the club.
+    const float topY = m_floors.back().centerY + m_cabHY;      // ~surface
+    const float botY = m_floors.front().centerY + m_cabHY - 2.0f; // just past the club
+    // Panels hug the shaft interior faces (inHX/inHZ from buildShaft), just proud of the
+    // dark-steel walls so their glow reads without z-fighting.
+    const float inHX = m_cabHX + 0.55f, inHZ = m_cabHZ + 0.55f;
+    const float seg = 5.0f;                                     // band segment height (m)
+    const int   n = std::max(1, (int)((topY - botY) / seg));
+    m_eStrataBands.clear(); m_eStrataBandY.clear(); m_eStrataBandEm.clear();
+
+    // STYLIZED NEON GEOLOGY palette (premium, club-UV direction): the raw survey rock
+    // colours are desaturated greys/tans that wash to a flat haze behind the smoked glass,
+    // so the liner uses SATURATED hues per depth band — the hue survives the glass even
+    // when the band is kept dim, reading as coloured strata rather than grey fog. Ordered
+    // surface -> deep (amber limestone -> teal granite -> indigo basalt -> violet obsidian
+    // -> the club's magenta crystal glow). glow flag marks the bright crystal/magma layers.
+    auto stratumAt = [](float y, float rgb[3], bool& glow, float grgb[3]) {
+        struct Band { float yMin; float rgb[3]; bool glow; };  // yMin = band's lower bound
+        static const Band kNeon[] = {
+            { -20.0f,  {0.55f, 0.42f, 0.18f}, false },  // surface amber (limestone/foundation)
+            { -80.0f,  {0.12f, 0.55f, 0.52f}, false },  // teal granite
+            {-140.0f,  {0.14f, 0.22f, 0.62f}, false },  // indigo basalt
+            {-200.0f,  {0.42f, 0.14f, 0.68f}, true  },  // violet obsidian (deep, glows)
+            {-1e9f,    {0.85f, 0.12f, 0.75f}, true  },  // magenta crystal (the club approach)
+        };
+        for (const Band& b : kNeon) {
+            if (y >= b.yMin) { for(int k=0;k<3;++k){rgb[k]=b.rgb[k]; grgb[k]=b.rgb[k];} glow=b.glow; return; }
+        }
+        const Band& b = kNeon[4];
+        for(int k=0;k<3;++k){rgb[k]=b.rgb[k]; grgb[k]=b.rgb[k];} glow=b.glow;
+    };
+
+    // A thin tinted, self-lit panel on one interior face at band center cy.
+    auto face = [&](float hx,float hy,float hz,float cx,float cy,float cz,
+                    const float rgb[3], float em) {
+        ElevPrim p; p.mesh = beveledBox(hx,hy,hz,cx,cy,cz,0.01f);
+        float c[4]  = { rgb[0], rgb[1], rgb[2], 1.0f };
+        float e[4]  = { rgb[0], rgb[1], rgb[2], em };
+        uint32_t id = addDecor(scene, device, p, c, e, (uint32_t)Tag::Prop);   // world-FIXED, no layoutCab offset
+        m_eStrataBands.push_back(id);
+        m_eStrataBandY.push_back(cy);
+        m_eStrataBandEm.push_back(em);
+    };
+
+    const float panelHY = seg * 0.5f - 0.06f;   // panel half-height (leaves a dark seam)
+    for (int i = 0; i < n; ++i) {
+        const float cy = topY - (i + 0.5f) * seg;
+        float rgb[3]; bool glow=false; float grgb[3];
+        stratumAt(cy, rgb, glow, grgb);
+        // MOOD, not lightbox: a DARK shaft where distinct glowing bands + a bright moving
+        // seam stream past. Crystal/magma layers glow; plain rock is a low self-lit band so
+        // the geology reads without washing the premium dark-glass cab. The seam (update())
+        // is the motion star.
+        const float em = glow ? 1.5f : 0.40f;   // saturated bands: enough to show hue, not bloom-white
+        const float* tint = glow ? grgb : rgb;
+        // Back face (-Z, the "spine" seen through the -Z glass wall + straight down the shaft).
+        face(inHX - 0.02f, panelHY, 0.03f, m_shaftX, cy, m_shaftZ - inHZ + 0.05f, tint, em);
+        // Two side faces (+/-X) so the banded rock wraps the descent (dimmer — they flank
+        // the camera and would wash the cab if as hot as the spine).
+        face(0.03f, panelHY, inHZ - 0.02f, m_shaftX - inHX + 0.05f, cy, m_shaftZ, tint, em * 0.45f);
+        face(0.03f, panelHY, inHZ - 0.02f, m_shaftX + inHX - 0.05f, cy, m_shaftZ, tint, em * 0.45f);
+    }
+    x3::logInfo("[showcase] strata liner: " + std::to_string(m_eStrataBands.size()) +
+                " glowing geology bands (" + std::to_string(topY) + " -> " + std::to_string(botY) + " m)");
 }
 
 // ===========================================================================
@@ -576,6 +655,35 @@ float ElevatorShowcase::update(float dt, Scene& scene, x3::rhi::IRenderDevice& d
         Entity& e = scene.get(m_eVent);
         e.emissive[3] = 0.25f + 0.05f * std::sin(m_time * 9.0f);
     }
+    // STRATA STREAMING (goal #3): the world-fixed geology bands swell + a bright seam
+    // sweeps DOWN them while the cab travels, so looking through the dark glass the rock
+    // layers read as rushing past. When the real streamed strata takes over (setStrataStreamed)
+    // the placeholder liner eases its glow off so the streamed layers own the view.
+    if (!m_eStrataBands.empty()) {
+        const bool travelling = m_elev.moving();
+        const float cabY = m_elev.cabCenter().y;
+        // A downward-sweeping bright band centered near the cab's own depth (the "rush").
+        const float sweepY = cabY - std::fmod(m_time * 22.0f, 12.0f);   // 22 m/s sweep, 12 m wrap
+        const float yield = m_strataStreamed ? 0.25f : 1.0f;           // ease off if streamed
+        for (size_t i = 0; i < m_eStrataBands.size(); ++i) {
+            uint32_t id = m_eStrataBands[i];
+            if (id == kNoLink || id >= scene.size()) continue;
+            Entity& e = scene.get(id);
+            const float base = m_eStrataBandEm[i];
+            // Proximity of this band to the moving sweep -> a passing highlight.
+            float d = std::fabs(m_eStrataBandY[i] - sweepY);
+            float seam = travelling ? std::max(0.0f, 1.0f - d / 2.2f) : 0.0f;
+            // Depth-swell: deeper bands (nearer the club) glow up as you descend into them.
+            float depthLift = 0.5f + 0.5f * descentProgress();
+            e.emissive[3] = (base * depthLift + seam * 2.2f) * yield;
+            // The seam shifts each band's glow toward a bright cool scan-line as it passes
+            // (the clear "rushing" tell); it eases back to the band's rock tint behind it.
+            e.emissive[0] = e.baseColor[0] + (0.45f - e.baseColor[0]) * seam;
+            e.emissive[1] = e.baseColor[1] + (0.85f - e.baseColor[1]) * seam;
+            e.emissive[2] = e.baseColor[2] + (1.00f - e.baseColor[2]) * seam;
+        }
+    }
+
     // Accent strips brighten subtly while moving (the lift "comes alive").
     float pulse = m_elev.moving() ? (0.7f + 0.3f * std::sin(m_time * 5.0f)) : 1.0f;
     for (int i = 0; i < 4; ++i) {
@@ -606,6 +714,13 @@ int ElevatorShowcase::currentFloorIndex() const {
     return best;
 }
 
+// Descent progress 0..1: surface (Y>=0) -> Club 1127 (kDefaultClubFloorY = -200).
+float ElevatorShowcase::descentProgress() const {
+    const float y = m_elev.cabCenter().y;
+    const float p = (0.0f - y) / (0.0f - ElevatorSystem::kDefaultClubFloorY);
+    return p < 0.0f ? 0.0f : (p > 1.0f ? 1.0f : p);
+}
+
 void ElevatorShowcase::showcaseCamera(int variant, float out[5]) const {
     const x3::phys::Vec3 c = m_elev.cabCenter();
     const float floorY = c.y + m_cabHY;
@@ -614,9 +729,13 @@ void ElevatorShowcase::showcaseCamera(int variant, float out[5]) const {
         out[0] = m_shaftX; out[1] = floorY + 1.6f; out[2] = m_shaftZ + m_cabHZ + 2.6f;
         out[3] = -1.5708f; out[4] = 0.05f;
     } else if (variant == 2) {
-        // Strata descent: inside, looking down through the glass floor.
-        out[0] = m_shaftX - 0.4f; out[1] = floorY + 1.3f; out[2] = m_shaftZ + 0.3f;
-        out[3] = 0.6f; out[4] = -0.65f;
+        // Strata descent: stand at the FRONT of the cab and look back across it at the
+        // -Z "spine" glass wall — the glowing geology bands stream vertically behind the
+        // dark glass as the cab descends (the "rock layers rushing past" read). A slight
+        // downward tilt lets the near strata + the glass-floor edge catch the eye too.
+        out[0] = m_shaftX + 0.15f; out[1] = floorY + 1.55f; out[2] = m_shaftZ + m_cabHZ - 0.35f;
+        out[3] = -1.5708f;   // face -Z (toward the strata spine)
+        out[4] = -0.18f;
     } else {
         // Interior beauty: stand in a back corner of the cab looking across the dark-
         // glass interior toward the +X holo wall + accent strips (eye height, slight

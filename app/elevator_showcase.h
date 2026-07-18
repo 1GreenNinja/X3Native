@@ -94,6 +94,15 @@ public:
     int   currentFloorIndex() const;
     const std::vector<ShowcaseFloor>& floors() const { return m_floors; }
 
+    // Descent progress 0..1 (surface Y=0 -> Club 1127 at Y=-200), clamped. Drives the
+    // depth readout, the geology-glow swell, and the club-music crossfade. 0 above ground.
+    float descentProgress() const;
+    // STRATA STREAMING HOOK: the real streamed planet-strata (built separately) declares
+    // itself LIVE here; the placeholder liner then yields (its own glow eases off) so the
+    // streamed layers own the view. No-op today (self-contained placeholder).
+    void  setStrataStreamed(bool on) { m_strataStreamed = on; }
+    bool  strataStreamed() const { return m_strataStreamed; }
+
     // The interior + accent + disco point lights the host pushes via setPointLights
     // every frame (the disco cue + door-glow animate them in update()).
     const std::vector<x3::rhi::PointLight>& pointLights() const { return m_lights; }
@@ -146,6 +155,13 @@ private:
 
     void buildShaft(Scene& scene, x3::rhi::IRenderDevice& device,
                     x3::phys::IPhysicsWorld& physics);
+    // THE DESCENT (goal #3): line the shaft interior faces with depth-tinted, glowing
+    // GEOLOGY bands (limestone -> granite -> basalt -> obsidian -> the club's crystal
+    // glow), one segment per ~depth band, hugging just inside the walls (outside the
+    // cab, so nothing clips through the interior). World-FIXED, so as the cab descends
+    // the bands slide past the dark-glass — the "rock layers rushing past" read. update()
+    // scrolls a bright seam down them + swells their glow while travelling.
+    void buildStrataLiner(Scene& scene, x3::rhi::IRenderDevice& device);
     void buildCabInterior(Scene& scene, x3::rhi::IRenderDevice& device);
     void buildHoloPanel(Scene& scene, x3::rhi::IRenderDevice& device);
     void layoutCab(Scene& scene);            // reposition cab-child entities each frame
@@ -175,6 +191,17 @@ private:
     uint32_t m_eHoloButtons[16] = {kNoLink};                     // interior floor-select buttons
     int      m_holoButtonCount = 0;
     uint32_t m_eStrata = kNoLink;                                // the strata plane seen below
+    // Shaft-interior GEOLOGY liner (world-FIXED strata bands; the descent streams past
+    // these). Each entry carries its band's seam Y so update() can scroll a bright edge.
+    std::vector<uint32_t> m_eStrataBands;    // tinted glowing wall segments down the shaft
+    std::vector<float>    m_eStrataBandY;    // world-Y center of each band segment
+    std::vector<float>    m_eStrataBandEm;   // each band's base emissive strength (for the pulse)
+    // STRATA STREAMING HOOK (for the separately-built streamed planet-strata): today the
+    // liner is a self-contained placeholder. When the real streamed geology exists, a host
+    // sets this true and feeds live layers by re-tinting m_eStrataBands (or swaps the liner
+    // for the streamed meshes) — the cab, glass wall, camera + descent timing are already
+    // sized for Y=0..-200, so the streamed strata drops straight into this view.
+    bool m_strataStreamed = false;
     // Per-floor exterior sliding door leaves (2 per floor) for door animation.
     std::vector<uint32_t> m_shaftDoorL, m_shaftDoorR;
     std::vector<float>    m_shaftDoorY;        // each floor's door center Y (cab-center)
