@@ -18,6 +18,7 @@
 #include "cutscene.h"
 #include "mesh_prims.h"
 #include "asset_root.h"
+#include "star_systems.h"   // x3::starsys::StarSystem — buildSystemSky() bridge
 #include "audio_root.h"
 
 #include <functional>
@@ -88,6 +89,19 @@ std::vector<NightSkyPlanet> loadNightSkyPlanets(
         x3::rhi::IRenderDevice* device, x3::rhi::MeshHandle& outMesh,
         int& nTexFail, const char* logTag,
         x3::rhi::MeshHandle* outRingMesh = nullptr);
+
+// Build a per-system night sky from the loaded texture TEMPLATES (the one-per-type
+// list loadNightSkyPlanets returns) + a star system's body layout. For each of the
+// system's bodies, clones the template whose type matches and hangs the clone at
+// that body's sky azimuth/elevation/apparent-diameter (with the body's label). The
+// star system thus DRIVES which bodies render + where — a different system reads as
+// a visibly different sky. When `includeSolPinpoint` and the system is not Sol, a
+// FAINT tiny Sun-type body labelled "SOL" is appended at kSolPinpoint* (the "far
+// from Earth" tell). Bodies whose type has no loaded template are skipped (logged).
+std::vector<NightSkyPlanet> buildSystemSky(
+        const std::vector<NightSkyPlanet>& templates,
+        const x3::starsys::StarSystem& sys,
+        bool includeSolPinpoint = true);
 
 // Draw every planet for the current frame (see cinematic.cpp).
 void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameContext& fc,

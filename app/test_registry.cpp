@@ -61,6 +61,7 @@
 #include "intro_coldopen.h"
 #include "intro_orchestrator.h"   // x3::intro::runIntroOrchestratorSelfTest (--test-introorch)
 #include "world_hosts.h"          // x3::apphost::runSurfaceStartSelfTest (--test-surfacestart)
+#include "star_systems.h"         // x3::starsys::runStarSystemsSelfTest (--test-starsystems)
 #include "cutscene.h"
 #include "npc_dialog.h"
 #include "chat_tree.h"
@@ -358,6 +359,11 @@ int dispatchTests(const TestFlags& tf) {
                     "mapping bounds + deterministic chanceRoll outcome + StoryFlags['intro.outcome'] "
                     "write + input-cleared/deterministic headless interactive windows)...");
         return x3::intro::runIntroOrchestratorSelfTest() ? 0 : 1;
+    }
+    if (tf.testStarsystems) {
+        x3::logInfo("running x3.starsys/1 star-systems registry self-test (star + bodies per "
+                    "system + id/name lookup + negative control + dogfight-far-from-Sol)...");
+        return x3::starsys::runStarSystemsSelfTest() ? 0 : 1;
     }
     if (tf.testIntroCockpit) {
         x3::logInfo("running INTRO COCKPIT self-test (fighter_cockpit.glb -> Scene entities: "

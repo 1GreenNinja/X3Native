@@ -300,13 +300,25 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // the same helper the showroom + cutscenes use, so no new asset path.
     x3::rhi::MeshHandle planetMesh{}, ringMesh{};
     std::vector<x3::apphost::NightSkyPlanet> planets;
+    // THE DOGFIGHT IS IN A NAMED SYSTEM, FAR FROM SOL (owner: "far from earth").
+    // Kethzar Prime (x3.starsys/1): an amber-hypergiant sky, a huge hero LAVA world,
+    // a ringed gas giant, an ice world — the most dramatic sky in the registry. Its
+    // body set drives the far-distance backdrop AND the HUD minimap below; a faint
+    // labelled SOL is appended so "far from Earth" is a findable point, not implied.
+    const x3::starsys::StarSystem& dfSystem = x3::starsys::dogfightSystem();
     if (hc.window != nullptr && hc.device != nullptr) {   // live (declared below as `live`)
         int planetTexFail = 0;
-        planets = x3::apphost::loadNightSkyPlanets(hc.device, planetMesh, planetTexFail,
-                                                   "[intro]", &ringMesh);
+        std::vector<x3::apphost::NightSkyPlanet> templates =
+            x3::apphost::loadNightSkyPlanets(hc.device, planetMesh, planetTexFail,
+                                             "[intro]", &ringMesh);
         if (planetTexFail > 0)
             x3::logWarn("[intro] " + std::to_string(planetTexFail) +
                         " planet texture(s) missing — some bodies flat");
+        // Re-hang the loaded texture templates as THIS system's sky (+ faint SOL).
+        planets = x3::apphost::buildSystemSky(templates, dfSystem, /*includeSolPinpoint*/ true);
+        x3::logInfo("[intro] dogfight sky = " + std::string(dfSystem.name) + " (" +
+                    std::to_string((int)dfSystem.distanceLy) + " ly from Sol), " +
+                    std::to_string(planets.size()) + " bodies + SOL pinpoint");
     }
 
     x3::space::TargetingSystem targeting;
@@ -999,6 +1011,143 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                             const float cyanB[4] = { 0.45f, 0.95f, 1.0f, 0.95f };
                             marker(aimP, "-+-", cyanB, 24.0f);
                         }
+                        // FAR-FROM-EARTH TELL: label the faint SOL pinpoint so the
+                        // player can FIND home — a tiny point ~10.5 km out at the
+                        // shared Sol sky slot (matches the SOL body buildSystemSky
+                        // appended to the far sky). Onscreen when Sol is in view; an
+                        // edge arrow toward it otherwise (marker() handles both).
+                        {
+                            constexpr float kD2R = 3.14159265f / 180.0f;
+                            const float sAz = x3::starsys::kSolPinpointAzDeg * kD2R;
+                            const float sEl = x3::starsys::kSolPinpointElDeg * kD2R;
+                            const float sCe = std::cos(sEl);
+                            const float solP[3] = {
+                                cx + std::sin(sAz) * sCe * 10500.0f,
+                                cy + std::sin(sEl)        * 10500.0f,
+                                cz - std::cos(sAz) * sCe * 10500.0f };
+                            const float solCol[4] = { 0.92f, 0.95f, 1.0f, 0.95f };
+                            marker(solP, "SOL", solCol, 15.0f);
+                        }
+                    }
+                }
+                // ---- SYSTEM MINIMAP (owner: "visible on a minimap") — top-right box.
+                // A north-up SYSTEM MAP, not just a contacts radar: the outer compass
+                // ring carries the star + planets (+ faint SOL) at their sky bearing,
+                // so the player reads the whole system layout at a glance; the inner
+                // disc is the tactical radar (player at centre + heading tick, hostile
+                // blips, the capital) scaled by range. Built from drawHudQuad/Text.
+                {
+                    int mw = 0, mh = 0;
+                    glfwGetWindowSize(hc.window, &mw, &mh);
+                    if (mw > 0 && mh > 0) {
+                        constexpr float kD2R = 3.14159265f / 180.0f;
+                        const float box  = 196.0f;                 // map box (px)
+                        const float pad  = 18.0f;
+                        const float x0   = (float)mw - box - pad;
+                        const float titleH = 20.0f;
+                        const float y0   = pad + titleH;
+                        const float cxm  = x0 + box * 0.5f;
+                        const float cym  = y0 + box * 0.5f;
+                        const float Rrim = box * 0.42f;            // compass ring (bodies)
+                        const float Rin  = box * 0.34f;            // tactical disc (contacts)
+                        // Backing + frame.
+                        const float bg[4]   = { 0.02f, 0.04f, 0.06f, 0.62f };
+                        const float frame4[4]= { 0.40f, 0.80f, 1.0f, 0.55f };
+                        hc.device->drawHudQuad(frame, x0 - 4.0f, y0 - 4.0f, box + 8.0f, box + 8.0f, bg);
+                        const float bt = 2.0f;
+                        hc.device->drawHudQuad(frame, x0 - 4.0f, y0 - 4.0f, box + 8.0f, bt, frame4);
+                        hc.device->drawHudQuad(frame, x0 - 4.0f, y0 + box + 4.0f - bt, box + 8.0f, bt, frame4);
+                        hc.device->drawHudQuad(frame, x0 - 4.0f, y0 - 4.0f, bt, box + 8.0f, frame4);
+                        hc.device->drawHudQuad(frame, x0 + box + 4.0f - bt, y0 - 4.0f, bt, box + 8.0f, frame4);
+                        // Title = the system name (owner: this reads a DIFFERENT system).
+                        const float titleCol[4] = { dfSystem.starColor[0], dfSystem.starColor[1],
+                                                    dfSystem.starColor[2], 0.95f };
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy, dfSystem.name,
+                                                x0 - 4.0f, pad - 2.0f, 15.0f, titleCol);
+                        // A faint centre crosshair for the tactical disc.
+                        const float grid[4] = { 0.30f, 0.55f, 0.70f, 0.30f };
+                        hc.device->drawHudQuad(frame, x0, cym - 0.5f, box, 1.0f, grid);
+                        hc.device->drawHudQuad(frame, cxm - 0.5f, y0, 1.0f, box, grid);
+                        auto dot = [&](float px, float py, float s, const float col[4]) {
+                            hc.device->drawHudQuad(frame, px - s * 0.5f, py - s * 0.5f, s, s, col);
+                        };
+                        // Colour per body type (star = amber; worlds by kind).
+                        auto bodyColor = [](x3::starsys::BodyType t, float out[4]) {
+                            switch (t) {
+                                case x3::starsys::BodyType::Sun:  out[0]=1.0f;  out[1]=0.72f; out[2]=0.22f; break;
+                                case x3::starsys::BodyType::Lava: out[0]=1.0f;  out[1]=0.40f; out[2]=0.16f; break;
+                                case x3::starsys::BodyType::Ice:  out[0]=0.62f; out[1]=0.86f; out[2]=1.0f;  break;
+                                case x3::starsys::BodyType::Gas:  out[0]=0.82f; out[1]=0.70f; out[2]=0.48f; break;
+                                case x3::starsys::BodyType::Terrestrial: out[0]=0.34f; out[1]=0.78f; out[2]=0.62f; break;
+                                default:                          out[0]=0.72f; out[1]=0.72f; out[2]=0.74f; break; // Moon
+                            }
+                            out[3] = 0.95f;
+                        };
+                        // Compact map tag from a body label: drop a trailing " (...)"
+                        // qualifier, keep the last whitespace token (so "Kethzar II" ->
+                        // "II", "Ashk (moon)" -> "Ashk"), <= 7 chars. Keeps distinct
+                        // worlds distinct (full names all begin "Kethzar" + truncate same).
+                        auto shortTag = [](const char* full, char* out, size_t n) {
+                            std::string s = full ? full : "";
+                            size_t par = s.find(" (");
+                            if (par != std::string::npos) s = s.substr(0, par);
+                            size_t sp = s.find_last_of(' ');
+                            std::string tok = (sp == std::string::npos) ? s : s.substr(sp + 1);
+                            std::snprintf(out, n, "%.7s", tok.c_str());
+                        };
+                        // Draw an icon + a SIDE-AWARE label (kept inside the box: labels
+                        // on the right half sit to the LEFT of the icon).
+                        auto labelIcon = [&](float bx, float by, const char* tag, const float col[4]) {
+                            const float glyph = 10.0f;
+                            const float w = (float)std::strlen(tag) * glyph * 0.62f;
+                            const float lx = (bx > cxm) ? (bx - 6.0f - w) : (bx + 6.0f);
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono, tag,
+                                                    lx, by - 5.0f, glyph, col);
+                        };
+                        // -- Outer compass ring: the system's bodies at their sky bearing.
+                        for (const x3::starsys::SystemBody& b : dfSystem.bodies) {
+                            const float az = b.azimuthDeg * kD2R;
+                            const float bx = cxm + std::sin(az) * Rrim;
+                            const float by = cym - std::cos(az) * Rrim;
+                            float col[4]; bodyColor(b.type, col);
+                            // Star bigger; gas giant medium; rest small.
+                            const float s = (b.type == x3::starsys::BodyType::Sun) ? 12.0f
+                                          : (b.type == x3::starsys::BodyType::Gas) ? 9.0f : 7.0f;
+                            dot(bx, by, s, col);
+                            char tag[10]; shortTag(b.label, tag, sizeof(tag));
+                            labelIcon(bx, by, tag, col);
+                        }
+                        // Faint SOL on the ring (the far-from-Earth marker on the map).
+                        {
+                            const float az = x3::starsys::kSolPinpointAzDeg * kD2R;
+                            const float bx = cxm + std::sin(az) * Rrim;
+                            const float by = cym - std::cos(az) * Rrim;
+                            const float solC[4] = { 0.95f, 0.97f, 1.0f, 0.95f };
+                            dot(bx, by, 5.0f, solC);
+                            labelIcon(bx, by, "SOL", solC);
+                        }
+                        // -- Inner tactical disc: player, heading, hostiles, capital.
+                        auto plotContact = [&](const float p[3], float range, const float col[4], float s) {
+                            const float dx = p[0] - cx, dz = p[2] - cz;
+                            const float dist = std::sqrt(dx*dx + dz*dz);
+                            const float az = std::atan2(dx, -dz);          // world bearing
+                            const float rr = Rin * std::min(1.0f, dist / range);
+                            dot(cxm + std::sin(az) * rr, cym - std::cos(az) * rr, s, col);
+                        };
+                        const float redBlip[4]   = { 1.0f, 0.32f, 0.24f, 0.95f };
+                        const float amberBlip[4] = { 1.0f, 0.72f, 0.20f, 0.95f };
+                        for (uint32_t i = 0; i < enemies.count(); ++i) {
+                            const auto& e = enemies.ship(i);
+                            if (e.hull <= 0) continue;
+                            plotContact(e.pos, 400.0f, redBlip, 5.0f);
+                        }
+                        plotContact(capPos, 400.0f, amberBlip, 8.0f);
+                        // Player at centre + a heading tick (sky bearing = yaw + 90 deg).
+                        const float pcol[4] = { 0.45f, 0.95f, 1.0f, 1.0f };
+                        const float haz = (float)pilot.yaw() + 1.5707963f;
+                        for (float t = 4.0f; t <= 16.0f; t += 4.0f)
+                            dot(cxm + std::sin(haz) * t, cym - std::cos(haz) * t, 3.0f, pcol);
+                        dot(cxm, cym, 7.0f, pcol);
                     }
                 }
             }

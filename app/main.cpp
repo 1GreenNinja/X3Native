@@ -310,6 +310,7 @@ int main(int argc, char** argv) {
         _tf.testWingDressing = o.testWingDressing;
         _tf.testIntroBranch = o.testIntroBranch;
         _tf.testSurfaceStart = o.testSurfaceStart;
+        _tf.testStarsystems = o.testStarsystems;
         _tf.testCutscene = o.testCutscene;
         _tf.testPhase2a = o.testPhase2a;
         _tf.testPhase2b = o.testPhase2b;

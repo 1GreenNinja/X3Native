@@ -334,6 +334,10 @@ struct CliOptions {
     // cell-vs-surface branch selection + the surface scene standing up headlessly
     // (glass facility, player outside + armed, Sarah rescue target). No window/Vulkan.
     bool        testSurfaceStart = false;
+    // --test-starsystems (x3.starsys/1): the named-star-system registry integrity
+    // gate — every system has a valid star + bodies, lookup by id/name round-trips,
+    // a negative control, the dogfight system is far from Sol. No window/Vulkan.
+    bool        testStarsystems = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;

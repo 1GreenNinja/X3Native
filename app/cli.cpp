@@ -497,6 +497,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
+        else if (a == "--test-starsystems") o.testStarsystems = true;
         else if (a == "--intro-force") {
             // DEV: force the interactive-intro outcome branch.
             if (i + 1 < argc && argv[i + 1][0] != '-') {
