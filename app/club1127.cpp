@@ -650,6 +650,13 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     auto mrGlassPx  = makeMr1x1(/*rough*/ 15, /*metal*/ 40);
     const x3::rhi::TextureHandle mrChrome = device.createTexture(mrChromePx.data(), 1, 1, false);
     const x3::rhi::TextureHandle mrGlass  = device.createTexture(mrGlassPx.data(), 1, 1, false);
+    // LNS GARAGE FLOOR (Tim 2026-07-18): the real Late Night Speed floor is a GLOSSY
+    // checkerboard on sheened shop concrete — SHINY + DIMMER. A wetter-than-chrome MR
+    // (rough 8, metal 255) so the DIY party-dot projections + moving-head beams POOL
+    // and shimmer in the surface exactly like the photos. Tile self-glow is dropped
+    // way down elsewhere (kEmitTileGarage) so the floor is a moody mirror, not a lightbox.
+    auto mrWetPx = makeMr1x1(/*rough*/ 8, /*metal*/ 255);
+    const x3::rhi::TextureHandle mrWet = device.createTexture(mrWetPx.data(), 1, 1, false);
 
     // OLED-GLASS: a screen entity becomes a REAL glass pane carrying its EQ
     // frame as the pane texture — the transparent pass adds the fresnel grazing
@@ -1189,16 +1196,20 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 // alternates carry a FAINT violet under-glow breathing on the beat;
                 // the blacklights own the color now, not the tiles.
                 const bool lit = ((gx + gz) % 2 == 0);
-                // BLUE-UV (fix/blacklight-blue): red 0.32 -> 0.08 so the floor
-                // under-glow reads deep BLUE-violet, not pink/magenta — matches the
-                // blacklight tubes so the whole room's UV wash reads blue.
-                const float emTileA[4] = { 0.08f, 0.05f, 0.60f, 0.55f };
-                const float tileCol[4] = { lit ? 0.055f : 0.035f, lit ? 0.055f : 0.035f,
-                                           lit ? 0.075f : 0.05f, 1.0f };
+                // LNS GARAGE FLOOR (Tim 2026-07-18): "BOTH — checkerboard AND projected
+                // party light, but SHINY + DIMMER." The old tiles self-lit at 0.55 blue
+                // (a lightbox). Dropped WAY down to a whisper (0.10) so the floor reads as
+                // a dim glossy checkerboard — the LIGHT SHOW (dome dots + moving beams)
+                // dances AND reflects in it, instead of the tiles blasting their own blue.
+                // Glossier albedo split (bright vs dark squares) carries the checker; the
+                // wet MR (mrWet, rough 8) makes the beams POOL and shimmer in the surface.
+                const float emTileA[4] = { 0.06f, 0.04f, 0.42f, 0.10f };
+                const float tileCol[4] = { lit ? 0.090f : 0.020f, lit ? 0.092f : 0.020f,
+                                           lit ? 0.105f : 0.028f, 1.0f };
                 const uint32_t tid = box(tx, 0.12f, tz, (tw - 0.02f) / 2, 0.015f, (td - 0.02f) / 2,
                                          tileCol, lit ? emTileA : kEmitOff, false, 1.0f, nullptr);
                 Entity& te = scene.get(tid);
-                te.mrTex = mrChrome;              // the silvery reflective finish
+                te.mrTex = mrWet;                // wet-look shop-floor reflectivity
                 if (lit) m_tilePulseEnts.push_back(tid);
             }
         m_stats.hasDanceFloor = true;
@@ -2227,12 +2238,12 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
             m_lights[li].color[1] = 0.65f * k;
             m_lights[li].color[2] = 0.15f * k;
         }
-        // Bright dance tiles: a soft breathe (never dark — the floor is the star).
+        // Dim glossy checker tiles (LNS garage floor): only a WHISPER of self-glow on
+        // the beat — the floor is a moody mirror for the projected dots + beams now, not
+        // a lightbox. (Tim 2026-07-18: shiny + dimmer. Was 0.28+0.38*thump, a blue slab.)
         for (const uint32_t id : m_tilePulseEnts) {
             if (id >= scene.size()) continue;
-            scene.get(id).emissive[3] = 0.28f + 0.38f * thump;   // faint violet breath
-                                        // (blacklights pass: trimmed with kEmitTile1
-                                        // so the floor stops owning the exposure)
+            scene.get(id).emissive[3] = 0.07f + 0.10f * thump;   // faint violet breath, dim
         }
         // OLED shimmer: each screen's brightness wanders on its own phase, so the
         // baked equalizer frames read as LIVE video from across the room. This rides
