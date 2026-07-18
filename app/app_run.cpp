@@ -1430,6 +1430,10 @@ int runDefaultHost(HostContext& hc) {
     // "drops the player at spawn()" design in club1127.h).
     x3::game::Club1127World  club1127;
     bool                     club1127Handoff = false;
+    // fix/club-relight: latches while the player is down in The Deep so the interior
+    // ambient/IBL lift (a dim-but-readable neon club, matching --world club) is applied
+    // ONCE on entry and restored to the world air ONCE on exit — never per-frame.
+    bool                     clubAtmoOn = false;
     // ---- Spire mid floors (F3 Labs / F4 Offices / F5 Synth bay) encounter content.
     // Authored onto the same Spire plates buildLevel1() produced; reached via the
     // per-floor elevator stops below. Has its own enemy groups + a gated F5 rescue
@@ -8921,6 +8925,25 @@ int runDefaultHost(HostContext& hc) {
                 fl.clear();
                 const auto& cl = club1127.pointLights();
                 for (const auto& L : cl) fl.push_back(L);
+                // ATMOSPHERE (fix/club-relight): the canon club used to inherit the
+                // FACILITY air (neutral ambient 0.030 + facility IBL) and read as a
+                // dark void the same way --world club did. On ENTRY, lift the ambient
+                // to the club's low VIOLET floor and raise the IBL fill so surfaces
+                // the point lights miss are still readable (dim, not black). Edge-only
+                // (clubAtmoOn) so it never re-bakes/spams per frame; the elevator's
+                // cab-air edge owns the cab interior, so this only governs the room.
+                if (!clubAtmoOn) {
+                    clubAtmoOn = true;
+                    device->setIblIntensity(0.40f);
+                    device->setAmbient(0.045f, 0.035f, 0.070f);
+                }
+            } else if (clubAtmoOn) {
+                // EXIT: hand the world's air back (the SAME values the elevator restores
+                // on cab-exit, so the two owners agree instead of racing).
+                clubAtmoOn = false;
+                device->setIblIntensity(x3::game::kLevel1Ibl);
+                device->setAmbient(x3::game::kLevel1Ambient[0], x3::game::kLevel1Ambient[1],
+                                   x3::game::kLevel1Ambient[2]);
             }
             // W-RIFT: in SUB-LEVEL R1 the hub's rig (gate cores + keys + the hall) and
             // the approach's failing strips own the budget — same rule as the club: no
@@ -10289,10 +10312,17 @@ int runDefaultHost(HostContext& hc) {
                 // curve. A no-op at 0 (dry land byte-for-byte unchanged).
                 applySwimViewmodelLower(vmPose, swimVmAmt);
                 const bool vmArmed = game.armed() || (canonWorld && canonPlay.armed());
+                // CLUB SAFE ZONE (fix/club-relight): "we do not need our weapons equipped
+                // in the club" (Tim). Down at The Deep (Y=-200) the club is a safe social
+                // space — holster the FP weapon so there is no raised gun / HUD viewmodel.
+                // Same zone test the club light-takeover uses (camY < -150 with the club
+                // built), so it engages exactly when the player is in the room and restores
+                // itself the instant they ride the elevator back up.
+                const bool clubHolster = club1127.built() && camY < -150.0f;
                 // THIRD-PERSON: hide the FP weapon viewmodel ENTIRELY (the gun is shown
                 // in the avatar's hand instead — drawn after scene.render below).
                 // viewmodelVisible() is true in FP / unbuilt, so FP behaviour is unchanged.
-                if (!thirdPerson.viewmodelVisible() || worldCars.driving()) {
+                if (!thirdPerson.viewmodelVisible() || worldCars.driving() || clubHolster) {
                     // 3P / AT THE WHEEL: no FP viewmodel this frame (hands are
                     // on the wheel; the chase camera is not an FP eye).
                 } else if (arsenal.viewmodelsLoaded() && vmArmed) {

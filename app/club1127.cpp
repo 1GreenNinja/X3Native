@@ -576,8 +576,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         erbox(eastCenterX, LOUNGE_Y, erSZ - 0.6f + 0.2f, (eastSectionW + 0.3f) / 2, 0.075f, (0.6f + 0.4f) / 2, kFloor, kEmitOff, true);
     }
 
-    // Engine-room fill light.
-    addLight(m_lights, 0, oy + 3.0f, erZ0, 0.30f, 0.20f, 0.45f, 9.0f);
+    // Engine-room fill light. (relight: dim 0.30/0.20/0.45 -> vibrant HDR violet.)
+    addLight(m_lights, 0, oy + 3.0f, erZ0, 0.70f, 0.35f, 1.30f, 9.0f);
 
     // ==================================================================
     // SUSPENDED DJ BOOTH (turntables, mixer, 2 OLED, keypad door, brackets).
@@ -626,8 +626,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         for (int s = -1; s <= 1; s += 2)
             box(s * (djW / 2 - 0.2f), djY / 2, -CL / 2 + djD + 0.3f, 0.075f, djY / 2, 0.075f, kMetal, kEmitOff, true);
 
-        // Booth glow.
-        addLight(m_lights, 0, oy + djY + 1.6f, djZ, 0.30f, 0.30f, 0.80f, 7.0f);
+        // Booth glow. (relight: dim 0.30/0.30/0.80 -> hot electric-blue HDR.)
+        addLight(m_lights, 0, oy + djY + 1.6f, djZ, 0.50f, 0.60f, 2.20f, 7.0f);
 
         // ==============================================================
         // AERIAL BAR (beside the booth, neon underglow, polished top, railings).
@@ -641,7 +641,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(abX, djY - 0.08f, abZ + abD / 2, (abW - 0.4f) / 2, 0.02f, 0.02f, kWall, kEmitNeon, false);
         box(abX, djY - 0.08f, abZ - abD / 2, (abW - 0.4f) / 2, 0.02f, 0.02f, kWall, kEmitNeon, false);
         box(abX - abW / 2 + 0.2f, djY - 0.08f, abZ, 0.02f, 0.02f, (abD - 0.2f) / 2, kWall, kEmitNeon, false);
-        addLight(m_lights, abX, oy + djY - 0.3f, abZ, 2.0f, 0.0f, 2.0f, 8.0f);  // magenta underglow
+        addLight(m_lights, abX, oy + djY - 0.3f, abZ, 2.8f, 0.0f, 2.8f, 8.0f);  // magenta underglow (relight: 2.0 -> 2.8 HDR)
         // Safety railings.
         box(abX, djY + 0.5f, abZ + abD / 2, abW / 2, 0.5f, 0.02f, kRail, kEmitOff, true);
         box(abX, djY + 0.5f, abZ - abD / 2, abW / 2, 0.5f, 0.02f, kRail, kEmitOff, true);
@@ -660,7 +660,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             // Set its starting emissive (update() pulses it).
             Entity& e = scene.get(id);
             e.emissive[0] = kBlacklightR; e.emissive[1] = kBlacklightG;
-            e.emissive[2] = kBlacklightB; e.emissive[3] = 3.0f;
+            e.emissive[2] = kBlacklightB; e.emissive[3] = 4.0f;   // relight: UV tube bloom 3.0 -> 4.0
             m_blacklightEnts.push_back(id);
             ++m_stats.blacklights;
         };
@@ -685,7 +685,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             { -CW / 3, CH * 0.5f, 0 }, { CW / 3, CH * 0.5f, 0 }
         };
         for (auto& p : uv)
-            addLight(m_lights, p[0], oy + p[1], p[2], 0.4f, 0.05f, 1.0f, 22.0f);
+            addLight(m_lights, p[0], oy + p[1], p[2], 0.90f, 0.10f, 2.00f, 22.0f); // relight: UV wash 0.4/.05/1.0 -> HDR violet
     }
 
     // ==================================================================
@@ -738,7 +738,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         m_subPulseEnts.push_back(coneId);
         // Amber floor pulse light in front of the cab (index recorded for update()).
         m_subLightIdx.push_back(m_lights.size());
-        addLight(m_lights, cx - sx * 0.9f, oy + 0.4f, cz, 0.9f, 0.45f, 0.10f, 3.5f);
+        addLight(m_lights, cx - sx * 0.9f, oy + 0.4f, cz, 1.40f, 0.65f, 0.15f, 3.5f); // relight: amber sub pulse base 0.9 -> 1.4 (update() modulates)
     }
     // 8 stacked pairs JBL JRX200 (16 cabinets) + 8 amps + power LEDs on the walls.
     {
@@ -894,9 +894,10 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(bx + 0.40f, 0.06f, bz, 0.012f, 0.012f, 2.5f, kWall, emWarmKick, false);     // kick-panel LED
         m_stats.hasGroundBar = true;
         // THREE warm pendant pools raking the glass top (the specular gleam).
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz - 1.6f, 1.15f, 0.85f, 0.45f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz,        1.15f, 0.85f, 0.45f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz + 1.6f, 1.15f, 0.85f, 0.45f, 4.0f);
+        // (relight: 1.15/0.85/0.45 -> 1.6/1.15/0.55 so the bar reads as a glowing hub.)
+        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz - 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
+        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz,        1.60f, 1.15f, 0.55f, 4.0f);
+        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz + 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
         // Pendant fixtures (small chrome cones -> boxes + glowing bulbs).
         for (int pnd = -1; pnd <= 1; ++pnd) {
             const float pz = bz + pnd * 1.6f;
@@ -1035,7 +1036,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     box(CW / 2 - 1.5f, 0.66f, CL / 2 - 2.4f, 0.025f, 0.09f, 0.025f, kChrome, kEmitOff, false);   // lamp stem
     const float emLamp[4] = { 1.0f, 0.72f, 0.40f, 2.2f };
     box(CW / 2 - 1.5f, 0.80f, CL / 2 - 2.4f, 0.09f, 0.06f, 0.09f, kBarTop, emLamp, false);       // shade
-    addLight(m_lights, CW / 2 - 1.5f, oy + 1.0f, CL / 2 - 2.4f, 0.95f, 0.62f, 0.30f, 3.5f);
+    addLight(m_lights, CW / 2 - 1.5f, oy + 1.0f, CL / 2 - 2.4f, 1.40f, 0.90f, 0.45f, 3.5f); // relight: warm lounge lamp 0.95 -> 1.40
     ++m_stats.couches;
     couch(-CW / 2 + 2.0f, CL / 2 - 1.5f, 1, 1.25f);   // VIP couch (faces -Z)
     ++m_stats.couches;
@@ -1092,9 +1093,9 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         for (int s3 = -1; s3 <= 1; s3 += 2)
             box(s3 * (ER_W / 2 - 0.25f), ly + 0.02f, lz, 0.012f, 0.012f, ER_D / 2 - 0.3f, kWall, emRope, false);
         // Two warm pools + the lounge wall OLED.
-        addLight(m_lights, -1.2f, oy + ly + 1.7f, lz, 1.5f, 1.0f, 0.55f, 6.0f);
-        addLight(m_lights,  1.2f, oy + ly + 1.7f, lz, 1.5f, 1.0f, 0.55f, 6.0f);
-        addLight(m_lights,  0.0f, oy + ly + 1.2f, lz, 0.15f, 0.45f, 0.60f, 4.0f);  // cool counter-accent
+        addLight(m_lights, -1.2f, oy + ly + 1.7f, lz, 1.90f, 1.25f, 0.65f, 6.0f); // relight: warm pool 1.5 -> 1.9
+        addLight(m_lights,  1.2f, oy + ly + 1.7f, lz, 1.90f, 1.25f, 0.65f, 6.0f);
+        addLight(m_lights,  0.0f, oy + ly + 1.2f, lz, 0.30f, 0.90f, 1.30f, 4.0f);  // cool cyan counter-accent (relight: 0.15/0.45/0.60 -> HDR cyan)
         {
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.8f };
             const uint32_t lsId = box(ER_W / 2 - 0.12f, ly + 1.6f, lz, 0.015f, 0.35f, 0.62f, kTvFrame, emScr, false);
@@ -1109,22 +1110,30 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // ==================================================================
     // CLUB AMBIENT + KEY LIGHTS (Babylon hemi/point/fill -> point lights).
     // ==================================================================
-    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.30f, 0.20f, 0.40f, 25.0f);       // central overhead fill
-    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.25f, 0.15f, 0.35f, 10.0f); // ground-bar area fill
-    addLight(m_lights, 0, oy + 2.0f, 0, 0.16f, 0.10f, 0.30f, 18.0f);            // dim UV wash (mirror floor)
+    // (relight: these three ROOM-WIDE fills were the darkest offenders — 0.16-0.40
+    // saturated the whole 50x100 ft room to near-black. Reworked to VIBRANT HDR
+    // club washes: violet overhead, magenta over the bar side, UV-violet on the
+    // mirror floor. They set the room's colored mood; the orbiters + fixtures pop
+    // on top.)
+    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.85f, 0.25f, 1.30f, 25.0f);       // central overhead VIOLET wash
+    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.70f, 0.20f, 1.10f, 10.0f); // ground-bar MAGENTA wash
+    addLight(m_lights, 0, oy + 2.0f, 0, 0.55f, 0.12f, 1.40f, 18.0f);            // UV-violet wash (mirror floor)
 
     // ---- ORBITING ORB LIGHTS: 4 spots + 4 ring lights. These trail the static
     // lights and are rewritten each frame by update(). Record where they start. ----
     m_staticLightCount = m_lights.size();
     // 4 colored spotlights (orbit radius ~4, near the ceiling).
-    const float spotCols[4][3] = { {2.0f,0.0f,0.0f}, {0.0f,0.0f,2.0f}, {0.0f,2.0f,0.0f}, {2.0f,1.0f,0.0f} };
+    // (relight: saturated HDR gels — hot pink / electric blue / laser green / amber —
+    // pushed to ~2.8 so the moving pools bloom and rake the walls + dancers.)
+    const float spotCols[4][3] = { {2.8f,0.10f,0.90f}, {0.10f,0.40f,2.8f}, {0.20f,2.6f,0.60f}, {2.8f,1.10f,0.10f} };
     for (int i = 0; i < 4; ++i) {
         const float a = (i / 4.0f) * 2.0f * kPi;
         addLight(m_lights, std::cos(a) * 4.0f, m_orbY, std::sin(a) * 4.0f,
                  spotCols[i][0], spotCols[i][1], spotCols[i][2], 22.0f);
     }
     // 4 ring lights (orbit radius ~8, mid-height).
-    const float ringCols[4][3] = { {1.0f,0.0f,0.5f}, {0.0f,0.5f,1.0f}, {0.5f,0.0f,1.0f}, {0.0f,1.0f,0.5f} };
+    // (relight: 1.0-max -> ~2.0 saturated HDR so the outer ring washes the walls too.)
+    const float ringCols[4][3] = { {2.0f,0.0f,1.0f}, {0.0f,1.0f,2.0f}, {1.0f,0.0f,2.0f}, {0.0f,2.0f,1.0f} };
     for (int i = 0; i < 4; ++i) {
         const float a = (i / 4.0f) * 2.0f * kPi;
         addLight(m_lights, std::cos(a) * 8.0f, oy + 4.0f, std::sin(a) * 8.0f,
@@ -1254,7 +1263,7 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         e.emissive[0] = kBlacklightR * pulse;
         e.emissive[1] = kBlacklightG;
         e.emissive[2] = kBlacklightB * pulse;
-        e.emissive[3] = 3.0f;
+        e.emissive[3] = 4.0f;   // relight: UV tube bloom 3.0 -> 4.0
     }
 
     // --- MAX-OUT: the 128 BPM BEAT CLOCK (matches the Babylon club track). A
@@ -1274,9 +1283,9 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         for (const size_t li : m_subLightIdx) {
             if (li >= m_lights.size()) continue;
             const float k = 0.25f + 0.75f * thump;
-            m_lights[li].color[0] = 0.9f * k;
-            m_lights[li].color[1] = 0.45f * k;
-            m_lights[li].color[2] = 0.10f * k;
+            m_lights[li].color[0] = 1.40f * k;   // relight: amber sub thump 0.9 -> 1.4 HDR
+            m_lights[li].color[1] = 0.65f * k;
+            m_lights[li].color[2] = 0.15f * k;
         }
         // Bright dance tiles: a soft breathe (never dark — the floor is the star).
         for (const uint32_t id : m_tilePulseEnts) {
