@@ -1604,8 +1604,22 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(exW, LYl + lrH / 2, lzc, T / 2, lrH / 2, lzHalf, kCharcoal, kEmitOff, true);
         // ===== DEN ZONE (north half) =====
         const float denZ = (lzN + 0.0f) / 2;
-        { const float emTV[4] = { 0.35f, 0.42f, 0.85f, 2.2f };                   // 77" LG C1 OLED
-          box(lxc, LYl + 1.3f, lzN + 0.06f, 0.87f, 0.50f, 0.02f, kTvFrame, emTV, false); }
+        // 77" LG C1 OLED — was a dim flat-emissive slab ({.35,.42,.85}@2.2) that read
+        // near-black in the charcoal den. POLISH stage15: make it a REAL per-texel
+        // OLED-glass screen showing content (the same path as the club's wall OLEDs),
+        // and push its emissive HOTTER than the club panels (kOledEmit 1.80 -> 3.4) so
+        // it reads as a big BRIGHT wall TV in the dim Lair. NOT registered in
+        // m_oledEnts (keeps the "20 OLED" gate exact + leaves it a steady bright glow).
+        {
+            // z = lzN + 0.18 lifts the pane's FRONT clear of the 0.30 m charcoal wall's
+            // inner face (lzN + T/2 = lzN + 0.15) — at the old lzN + 0.06 the pane was
+            // BURIED inside the wall and the opaque wall occluded it (that, not just the
+            // emissive, is why it read black/dim).
+            const uint32_t tvId = box(lxc, LYl + 1.3f, lzN + 0.18f, 0.87f, 0.50f, 0.02f,
+                                      kTvFrame, kEmitOff, false);
+            oledGlass(tvId, texEq[2]);
+            scene.get(tvId).emissive[3] = 3.4f;   // brighter than the club OLEDs (den is dark)
+        }
         box(lxc - 1.0f, LYl + 0.5f, lzN + 0.2f, 0.12f, 0.5f, 0.12f, kSpk, kEmitOff, false); // JBL towers
         box(lxc + 1.0f, LYl + 0.5f, lzN + 0.2f, 0.12f, 0.5f, 0.12f, kSpk, kEmitOff, false);
         box(lxc, LYl + 0.25f, lzN + 0.25f, 0.2f, 0.25f, 0.2f, kSub, kEmitOff, false);       // Velodyne sub
@@ -1702,6 +1716,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(srX, pY + pH / 2, srZ + 1.6f, eastD / 2, pH / 2, T / 2, kWood, kEmitOff, true);
         box(srX, pY + 0.4f, srZ, 0.7f, 0.05f, 0.5f, kWood, kEmitOff, true);                 // heavy table
         box(srX, pY + 0.25f, srZ + 0.9f, 0.7f, 0.25f, 0.3f, kLeather, kEmitOff, true);      // leather seating
+            // DEDICATED NEUTRAL SHELF KEY (POLISH stage15): the blue UV wash above
+            // rendered the emerald granite blue-black. A soft warm-WHITE key just over
+            // the shelf lights the stone with NEUTRAL light so its DARK GREEN reads (the
+            // UV glow stays as the §3.5 mood accent). Tight range = shelf-local. (+1 to
+            // the point-light set — see the report; total stays under the 64 cap.)
+            addLight(m_lights, shX - 0.3f, oy + shY + 0.55f, shZ, 1.65f, 1.54f, 1.38f, 2.4f);
         { const float emFeed[4] = { 0.30f, 0.35f, 0.55f, 1.5f };                            // silent club-feed OLED
           box(srX + eastD / 2 - 0.05f, pY + 1.5f, srZ, 0.02f, 0.5f, 0.9f, kTvFrame, emFeed, false); }
         addLight(m_lights, srX, oy + pY + 2.5f, srZ, 1.0f, 0.72f, 0.4f, 5.0f);              // steady warm light
@@ -1716,12 +1736,6 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         addLight(m_lights, bdX,   oy + pY + 2.4f, 2.5f, 1.0f, 0.75f, 0.50f, 5.0f); // bedroom glow
         // MARKED future connection (Levels 2-7 later): stairwell-down hatch + blocked door.
         const float emMark[4] = { 0.10f, 0.85f, 0.35f, 1.4f };
-            // DEDICATED NEUTRAL SHELF KEY (POLISH stage15): the blue UV wash above
-            // rendered the emerald granite blue-black. A soft warm-WHITE key just over
-            // the shelf lights the stone with NEUTRAL light so its DARK GREEN reads (the
-            // UV glow stays as the §3.5 mood accent). Tight range = shelf-local. (+1 to
-            // the point-light set — see the report; total stays under the 64 cap.)
-            addLight(m_lights, shX - 0.3f, oy + shY + 0.55f, shZ, 1.65f, 1.54f, 1.38f, 2.4f);
         box(hallX, pY + 0.09f, pzS - 1.2f, hallW / 2 - 0.2f, 0.02f, 0.6f, kStair, emMark, false);
         box(hallX, pY + 1.0f, pzN + 0.25f, hallW / 2 - 0.2f, 1.0f, 0.05f, kWood, emMark, false);
     }
