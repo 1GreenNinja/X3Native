@@ -147,6 +147,14 @@ void setIntroCockpitLook(x3::rhi::IRenderDevice& device) {
       sp.sunDir[0] = 0.25f; sp.sunDir[1] = 0.55f; sp.sunDir[2] = -0.75f;  // sun out the windshield
       sp.sunColor[0] = 0.85f; sp.sunColor[1] = 0.88f; sp.sunColor[2] = 1.0f;
       sp.sunIntensity = 0.55f;
+      // TREK-GRADE KEY (owner: "the illumination needs a TRUE match to Star Trek
+      // — those ships were Nice and Sharp and visible. Ours are dull Gray").
+      // sunIntensity only scales the SKY DISK; the radiance mesh.frag actually
+      // shades hulls with is sunLight — which was never set here, so ships flew
+      // under the 1.0 default (a windowless-cell sun). 3.2 gives the hard, sharp
+      // single-key modeling that IS the Trek hull look; selfLight fills the dark
+      // side (drawIntroShip) so the ship reads bright + dimensional, never gray mush.
+      sp.sunLight = 3.2f;
       sp.haze = 0.0f;                          // haze 0 == deep space, stars on the full sphere
       sp.exposure = 1.0f;
       sp.zenith[0]  = 0.003f; sp.zenith[1]  = 0.003f; sp.zenith[2]  = 0.008f;
@@ -230,7 +238,7 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
     // near-black hull paint stays dark) + the shaped selfLight rim so the unlit
     // side reads as a hull, never a cutout. fallbackMr routes MR-less drawables
     // onto the PBR branch so the star has a specular lobe to shape them.
-    constexpr float kIntroShipSelfLight = 0.35f;
+    constexpr float kIntroShipSelfLight = 0.50f;   // Trek fill (0.35 read dull gray)
     for (const auto& dr : draws) {
         if (!dr.meshId) continue;
         float fin[16];
@@ -245,7 +253,7 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             emisTex = x3::rhi::TextureHandle{ dr.emissiveTexId ? dr.emissiveTexId
                                                                : dr.baseColorTexId };
         } else {
-            emis[0] = 0.45f; emis[1] = 0.52f; emis[2] = 0.62f; emis[3] = 1.0f;
+            emis[0] = 0.85f; emis[1] = 0.95f; emis[2] = 1.10f; emis[3] = 1.0f;   // Trek window rows: bright, crisp
             emisTex = x3::rhi::TextureHandle{ dr.baseColorTexId };
         }
         const x3::rhi::TextureHandle mr =

@@ -506,8 +506,19 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             in.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
             rollAxis      = (kd(GLFW_KEY_Q)?-1.f:0.f) + (kd(GLFW_KEY_E)?1.f:0.f);
             double mx, my; glfwGetCursorPos(hc.window, &mx, &my);
-            in.lookDX = (float)(mx - lastMX);   // mouse-look: yaw/pitch the ship
-            in.lookDY = (float)(my - lastMY);
+            // HOLD-ALT FREELOOK (owner: "the player will be ABLE to keep the enemy
+            // ship in sight by looking around while zipping around"): while ALT is
+            // held the mouse ORBITS the camera around the ship (flight keeps its
+            // heading, momentum carries); release eases the view back dead-astern.
+            const bool freeLookHeld = kd(GLFW_KEY_LEFT_ALT) || kd(GLFW_KEY_RIGHT_ALT);
+            if (freeLookHeld) {
+                pilot.addFreeLook((float)(mx - lastMX), (float)(my - lastMY));
+                in.lookDX = 0.0f;               // the ship holds its heading
+                in.lookDY = 0.0f;
+            } else {
+                in.lookDX = (float)(mx - lastMX);   // mouse-look: yaw/pitch the ship
+                in.lookDY = (float)(my - lastMY);
+            }
             lastMX = mx; lastMY = my;
             fire = glfwGetMouseButton(hc.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         } else {
@@ -620,6 +631,27 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                    std::sin(pilot.pitch()),
                                    std::cos(pilot.pitch()) * std::sin(pilot.yaw()) };
             targeting.lockNearest(ppos, pfw);
+            // TARGET-KEEPING LOOK: pull the 3P gaze gently toward the locked
+            // contact (capped in the pilot at 0.6) so the fight tends to stay in
+            // frame while you maneuver. Releases (amount 0) when nothing's locked.
+            bool fedBias = false;
+            if (targeting.hasLock()) {
+                const uint32_t lid = targeting.lockedId();
+                for (uint32_t ci = 0; ci < nc; ++ci) {
+                    if (contacts[ci].id != lid) continue;
+                    float dirT[3] = { contacts[ci].pos[0] - ppos[0],
+                                      contacts[ci].pos[1] - ppos[1],
+                                      contacts[ci].pos[2] - ppos[2] };
+                    const float dl = std::sqrt(dirT[0]*dirT[0] + dirT[1]*dirT[1] + dirT[2]*dirT[2]);
+                    if (dl > 1.0f) {
+                        dirT[0] /= dl; dirT[1] /= dl; dirT[2] /= dl;
+                        pilot.setCameraLookBias(dirT, 0.30f);
+                        fedBias = true;
+                    }
+                    break;
+                }
+            }
+            if (!fedBias) { const float z[3] = { 1, 0, 0 }; pilot.setCameraLookBias(z, 0.0f); }
         }
         // LOCK-ACQUIRED chirp (edge-detected: one chirp per acquisition).
         {
@@ -745,14 +777,35 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
             }
             if (fxOn && playerFiredThisStep) {
-                const float fh = std::cos(cpit);
-                const float fwx = fh * std::cos(cyaw);
-                const float fwy = std::sin(cpit);
-                const float fwz = fh * std::sin(cyaw);
-                fxPtr->addTracer({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f, cz + fwz * 2.0f },
-                             { cx + fwx * 600.0f, cy + fwy * 600.0f, cz + fwz * 600.0f });
-                fxPtr->spawnMuzzleFlash({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f,
-                                          cz + fwz * 2.0f }, { fwx, fwy, fwz });
+                // WING-MOUNTED FIRE (owner: "the fire needs to COme from weapons
+                // MOUNTED ON THE Ship"): bolts leave alternating wingtip hardpoints
+                // and CONVERGE on the aim point 600 m down the player's look ray —
+                // hit detection stays on the crosshair; the muzzle is on the hull.
+                static int wingSide = 1;
+                wingSide = -wingSide;
+                float wm[3], wd[3];
+                pilot.wingMuzzle(wingSide, wm, wd);
+                const float fh2 = std::cos(pilot.pitch());
+                const x3::phys::Vec3 pj = pilot.pos();
+                const float aim[3] = {
+                    pj.x + fh2 * std::cos(pilot.yaw()) * 600.0f,
+                    pj.y + std::sin(pilot.pitch()) * 600.0f,
+                    pj.z + fh2 * std::sin(pilot.yaw()) * 600.0f };
+                fxPtr->addTracer({ wm[0], wm[1], wm[2] }, { aim[0], aim[1], aim[2] });
+                fxPtr->spawnMuzzleFlash({ wm[0], wm[1], wm[2] }, { wd[0], wd[1], wd[2] });
+            }
+            // DAMAGE READS ON THE HULL (owner: "we should see some representation
+            // of the damage on the enemy ship"): wounded fighters trail smoke,
+            // thicker as hull drops — you can SEE who you've hurt.
+            if (fxOn) {
+                for (uint32_t i = 0; i < enemies.count(); ++i) {
+                    const auto& e = enemies.ship(i);
+                    if (e.hull <= 0 || e.hull >= e.maxHull) continue;
+                    const float dmg = 1.0f - (float)e.hull / (float)e.maxHull;
+                    const int period = (dmg > 0.65f) ? 5 : (dmg > 0.34f ? 10 : 18);
+                    if ((int)(step + e.seed * 3u) % period == 0)
+                        fxPtr->spawnSmoke({ e.pos[0], e.pos[1], e.pos[2] });
+                }
             }
             if (fxOn) fxPtr->update(dt);
             // DEV evidence capture: X3_INTRO_CAPTURE=<dir> dumps the presented

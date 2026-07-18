@@ -519,6 +519,75 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
                             m_energy + m_tuning.energyRegenPerSec * dt);
     }
     tickCooldowns(dt);
+
+    // ---- ELASTIC CHASE CAM (owner: "we need to visibly ZOOM left, right,
+    // forward, back"). The ideal chase point rides the hull; the ACTUAL camera
+    // springs toward it, so thrust/strafe/boost visibly displace the ship in
+    // frame instead of the camera moving in lockstep. Boost also stretches the
+    // arm with speed — the hull pulls away from the lens when you punch it.
+    {
+        const float fwdLocal[3] = { 1, 0, 0 };
+        const float upLocal[3]  = { 0, 1, 0 };
+        float fwdW[3], upW[3];
+        quatRotate(m_quat, fwdLocal, fwdW);
+        quatRotate(m_quat, upLocal,  upW);
+        const float spd = length3(m_vel);
+        const float stretch = 1.0f + 0.35f * std::min(1.0f, spd / std::max(1.0f, m_tuning.maxSpeed));
+        const float dist = m_tuning.chaseDistance * stretch;
+        float ideal[3];
+        for (int k = 0; k < 3; ++k)
+            ideal[k] = m_pos[k] - fwdW[k] * dist + upW[k] * m_tuning.chaseHeight;
+        if (!m_chaseSmValid) {
+            for (int k = 0; k < 3; ++k) m_chaseSm[k] = ideal[k];
+            m_chaseSmValid = true;
+        } else {
+            const float kLag = std::min(1.0f, 7.5f * dt);   // spring stiffness
+            for (int k = 0; k < 3; ++k) m_chaseSm[k] += (ideal[k] - m_chaseSm[k]) * kLag;
+        }
+    }
+    // Target-keeping look bias: ease the amount toward the host's request.
+    m_lookBiasAmt += (m_lookBiasTgt - m_lookBiasAmt) * std::min(1.0f, 5.0f * dt);
+    // Freelook: if the host fed no deltas this frame (ALT released), ease home.
+    if (!m_freeFed) {
+        const float kHome = std::min(1.0f, 4.0f * dt);
+        m_freeYaw   -= m_freeYaw   * kHome;
+        m_freePitch -= m_freePitch * kHome;
+    }
+    m_freeFed = false;   // consumed; host re-arms it next frame while ALT is held
+}
+
+void SpacePilotController::setCameraLookBias(const float dirWorld[3], float amount) {
+    if (amount > 0.001f) {
+        m_lookBiasDir[0] = dirWorld[0]; m_lookBiasDir[1] = dirWorld[1];
+        m_lookBiasDir[2] = dirWorld[2];
+        { const float n = length3(m_lookBiasDir); if (n > 1e-6f) { m_lookBiasDir[0]/=n; m_lookBiasDir[1]/=n; m_lookBiasDir[2]/=n; } }
+    }
+    m_lookBiasTgt = clampf(amount, 0.0f, 0.6f);   // cap: never fully hijack the view
+}
+
+void SpacePilotController::addFreeLook(float dx, float dy) {
+    m_freeYaw   += dx * kMouseSens * kPxToRad;
+    m_freePitch -= dy * kMouseSens * kPxToRad;
+    m_freeYaw   = clampf(m_freeYaw,   -2.7f, 2.7f);   // almost fully astern
+    m_freePitch = clampf(m_freePitch, -1.15f, 1.15f);
+    m_freeFed = true;
+}
+
+void SpacePilotController::wingMuzzle(int side, float outPos[3], float outDir[3]) const {
+    const float fwdLocal[3]   = { 1, 0, 0 };
+    const float upLocal[3]    = { 0, 1, 0 };
+    const float rightLocal[3] = { 0, 0, 1 };
+    float fwdW[3], upW[3], rightW[3];
+    quatRotate(m_quat, fwdLocal,   fwdW);
+    quatRotate(m_quat, upLocal,    upW);
+    quatRotate(m_quat, rightLocal, rightW);
+    const float s = (side < 0) ? -1.0f : 1.0f;
+    // Hardpoints on the ~10 m hull (measured 7.1 wide): wingtips, slightly below
+    // the centerline, ahead of the wing's leading edge.
+    for (int k = 0; k < 3; ++k) {
+        outPos[k] = m_pos[k] + rightW[k] * (s * 3.1f) + upW[k] * (-0.15f) + fwdW[k] * 2.2f;
+        outDir[k] = fwdW[k];
+    }
 }
 
 void SpacePilotController::tickCooldowns(float dt) {
@@ -593,18 +662,49 @@ float SpacePilotController::fov() const {
 void SpacePilotController::cameraBasis(float outPos[3], float outFwd[3], float outUp[3]) const {
     // Full basis from the ship quaternion — fwd/up BOTH bank + loop with the hull,
     // so the horizon rolls correctly and there is no gimbal wall or pinwheel.
-    const float fwdLocal[3] = { 1, 0, 0 };
-    const float upLocal[3]  = { 0, 1, 0 };
-    float fwdW[3], upW[3];
-    quatRotate(m_quat, fwdLocal, fwdW);
-    quatRotate(m_quat, upLocal,  upW);
-    outFwd[0] = fwdW[0]; outFwd[1] = fwdW[1]; outFwd[2] = fwdW[2];
+    const float fwdLocal[3]   = { 1, 0, 0 };
+    const float upLocal[3]    = { 0, 1, 0 };
+    const float rightLocal[3] = { 0, 0, 1 };
+    float fwdW[3], upW[3], rightW[3];
+    quatRotate(m_quat, fwdLocal,   fwdW);
+    quatRotate(m_quat, upLocal,    upW);
+    quatRotate(m_quat, rightLocal, rightW);
+    // ---- GAZE: ship-forward, orbited by hold-to-freelook, pulled by the
+    //      target-keeping bias. Rodrigues about upW (freeYaw) then rightW
+    //      (freePitch); both zero in plain flight -> gaze == fwdW exactly.
+    float gaze[3] = { fwdW[0], fwdW[1], fwdW[2] };
+    auto rotAxis = [](float v[3], const float ax[3], float ang) {
+        if (std::fabs(ang) < 1e-5f) return;
+        const float c = std::cos(ang), s = std::sin(ang);
+        const float d = ax[0]*v[0] + ax[1]*v[1] + ax[2]*v[2];
+        float cr[3] = { ax[1]*v[2]-ax[2]*v[1], ax[2]*v[0]-ax[0]*v[2], ax[0]*v[1]-ax[1]*v[0] };
+        for (int k = 0; k < 3; ++k)
+            v[k] = v[k]*c + cr[k]*s + ax[k]*d*(1.0f - c);
+    };
+    rotAxis(gaze, upW,    m_freeYaw);
+    rotAxis(gaze, rightW, m_freePitch);
+    if (m_lookBiasAmt > 0.001f) {
+        for (int k = 0; k < 3; ++k)
+            gaze[k] = gaze[k] * (1.0f - m_lookBiasAmt) + m_lookBiasDir[k] * m_lookBiasAmt;
+    }
+    { const float n = length3(gaze); if (n > 1e-6f) { gaze[0]/=n; gaze[1]/=n; gaze[2]/=n; } }
+    outFwd[0] = gaze[0]; outFwd[1] = gaze[1]; outFwd[2] = gaze[2];
     outUp[0]  = upW[0];  outUp[1]  = upW[1];  outUp[2]  = upW[2];
     if (m_thirdPerson) {
-        // Chase behind (-fwd) + above (+up), rolling with the ship.
-        outPos[0] = m_pos[0] - fwdW[0] * m_tuning.chaseDistance + upW[0] * m_tuning.chaseHeight;
-        outPos[1] = m_pos[1] - fwdW[1] * m_tuning.chaseDistance + upW[1] * m_tuning.chaseHeight;
-        outPos[2] = m_pos[2] - fwdW[2] * m_tuning.chaseDistance + upW[2] * m_tuning.chaseHeight;
+        // Camera position: the ELASTIC spring point in plain flight (visible
+        // zip/zoom), cross-faded to a rigid ORBIT arm along the gaze while
+        // freelooking (crisp look-around that keeps the ship centered).
+        const float spd = length3(m_vel);
+        const float stretch = 1.0f + 0.35f * std::min(1.0f, spd / std::max(1.0f, m_tuning.maxSpeed));
+        const float dist = m_tuning.chaseDistance * stretch;
+        float orbitPos[3];
+        for (int k = 0; k < 3; ++k)
+            orbitPos[k] = m_pos[k] - gaze[k] * dist + upW[k] * m_tuning.chaseHeight;
+        const float t = std::min(1.0f, (std::fabs(m_freeYaw) + std::fabs(m_freePitch)) / 0.15f);
+        for (int k = 0; k < 3; ++k) {
+            const float springP = m_chaseSmValid ? m_chaseSm[k] : orbitPos[k];
+            outPos[k] = springP * (1.0f - t) + orbitPos[k] * t;
+        }
     } else {
         outPos[0] = m_pos[0] + fwdW[0] * 0.4f;
         outPos[1] = m_pos[1] + fwdW[1] * 0.4f;
