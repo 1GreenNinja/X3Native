@@ -714,22 +714,38 @@ void ElevatorSystem::updateMotorAudio(float dt) {
     const float targetHz = m_tune.motorIdleHz + ratio * (m_tune.motorMoveHz - m_tune.motorIdleHz);
     m_motorHz += (targetHz - m_motorHz) * std::min(1.0f, dt * 5.0f);
 
-    if (!m_audio || !m_snd.motor.valid()) return;
+    if (!m_audio) return;                   // no backend: nothing to drive (headless/tests)
 
-    const bool wantHum = m_fsmSpeed > 0.05f;   // only while the cab is actually moving
-    // Pitch the hum from the tracked frequency (idle Hz -> rate 0.6, full -> 1.4).
-    const float rate = 0.6f + (m_motorHz - m_tune.motorIdleHz) /
-                       std::max(1.0f, m_tune.motorMoveHz - m_tune.motorIdleHz) * 0.8f;
-    const float vol  = 0.18f + 0.42f * ratio;  // louder under load
+    if (m_snd.motor.valid()) {              // motor hum needs its WAV; the club swell below does not
+        const bool wantHum = m_fsmSpeed > 0.05f;   // only while the cab is actually moving
+        // Pitch the hum from the tracked frequency (idle Hz -> rate 0.6, full -> 1.4).
+        const float rate = 0.6f + (m_motorHz - m_tune.motorIdleHz) /
+                           std::max(1.0f, m_tune.motorMoveHz - m_tune.motorIdleHz) * 0.8f;
+        const float vol  = 0.18f + 0.42f * ratio;  // louder under load
+        if (wantHum) {
+            if (!m_motorLoop.valid())
+                m_motorLoop = m_audio->startLoop(m_snd.motor, vol, std::max(0.25f, rate));
+            else
+                m_audio->setLoopParams(m_motorLoop, vol, std::max(0.25f, rate));
+        } else if (m_motorLoop.valid()) {
+            m_audio->stopLoop(m_motorLoop);
+            m_motorLoop = x3::audio::LoopHandle{};
+        }
+    }
 
-    if (wantHum) {
-        if (!m_motorLoop.valid())
-            m_motorLoop = m_audio->startLoop(m_snd.motor, vol, std::max(0.25f, rate));
-        else
-            m_audio->setLoopParams(m_motorLoop, vol, std::max(0.25f, rate));
-    } else if (m_motorLoop.valid()) {
-        m_audio->stopLoop(m_motorLoop);
-        m_motorLoop = x3::audio::LoopHandle{};
+    // THE DESCENT CROSSFADE (goal #3, the signature): the club track does not just snap
+    // on at the club — it SWELLS as the cab sinks toward Club 1127, rising from a distant
+    // low bed near the surface to full at the floor, while the cabin muzak DUCKS under it.
+    // So the ride from the 1127 code down to Y=-200 audibly becomes the club. Proximity is
+    // the cab's depth between the surface (Y=0) and the club stop; graceful no-op if either
+    // voice isn't live (music off / headless).
+    if (m_clubStopY > kUninit) {
+        const float depthMix = std::clamp((0.0f - m_pos.y) / std::max(1.0f, 0.0f - m_clubStopY),
+                                          0.0f, 1.0f);
+        if (m_clubLoop.valid())                      // club bed rises 0.20 -> 0.95 by depth
+            m_audio->setLoopParams(m_clubLoop, 0.20f + 0.75f * depthMix, 1.0f);
+        if (m_muzakLoop.valid())                     // muzak ducks out under the swelling club
+            m_audio->setLoopParams(m_muzakLoop, 0.55f * (1.0f - 0.85f * depthMix), 1.0f);
     }
 }
 
