@@ -260,6 +260,20 @@ private:
     float                                         m_time = 0.0f;
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).
     std::vector<std::unique_ptr<MonsterSystem>>   m_chars;
+    // LNS GARAGE: DIY dome/starburst PARTY-PROJECTOR pattern discs (additive emissive
+    // geometry, NOT point lights — the budget is maxed). Authored centered at local
+    // origin; update() SPINS each about its own axis (transform 3x3) on the beat clock
+    // and breathes its emissive, throwing the signature spinning colored dots across
+    // the floor/ceiling. Reuses the beat grid; alongside (not replacing) the moving heads.
+    struct Projector {
+        uint32_t ent  = 0xFFFFFFFFu;   // the pattern disc entity
+        float    cx = 0, cy = 0, cz = 0;  // world center (transform translation)
+        float    spin = 0.5f;          // rad/s (sign = direction)
+        float    axis = 1.0f;          // +1 = spin about Y (floor/ceiling disc)
+        float    emBase = 2.0f, emAmp = 1.2f;
+        float    phase = 0.0f;         // spin phase offset
+    };
+    std::vector<Projector>                        m_projectors;
 };
 
 // OLED SCREEN-CONTRAST PROBE (the regression guard for the washed-out-slab bug).

@@ -427,6 +427,67 @@ void makeDriverInto(x3::prims::PrimMesh& m, float cx, float cy,
         }
 }
 
+// DIY DOME-PROJECTOR dot field (LNS GARAGE): a black disc scattered with ~48 small
+// soft RGB dots at hashed radii/angles (the cheap mushroom/dome party light's spinning
+// spirograph field). BLACK background so an ADDITIVE disc shows only the dots — the
+// glossy floor + checkerboard read through the gaps. Spun in update() so the dots sweep.
+std::vector<uint8_t> makeDotFieldRGBA(uint32_t n, uint32_t seed) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    for (size_t i = 0; i < (size_t)n * n; ++i) px[i*4+3] = 255;   // opaque; additive uses rgb
+    const float cxN = n * 0.5f;
+    const float palette[6][3] = {
+        {1.0f,0.12f,0.20f}, {0.15f,0.45f,1.0f}, {0.15f,1.0f,0.35f},
+        {1.0f,0.85f,0.10f}, {1.0f,0.20f,0.90f}, {0.20f,0.95f,0.95f},
+    };
+    const int kDots = 52;
+    for (int d = 0; d < kDots; ++d) {
+        const uint32_t h = clubHash(seed * 2654435761u + (uint32_t)d * 40503u);
+        const float ang = (h % 3600) / 3600.0f * 2.0f * kPi;
+        const float rad = (0.10f + 0.86f * ((clubHash(h) % 1000) / 1000.0f)) * (n * 0.48f);
+        const float dr  = (0.010f + 0.028f * ((clubHash(h * 7u) % 1000) / 1000.0f)) * n;
+        const float dcx = cxN + std::cos(ang) * rad, dcy = cxN + std::sin(ang) * rad;
+        const float* col = palette[h % 6];
+        const int x0 = std::max(0,(int)(dcx-dr)), x1 = std::min((int)n-1,(int)(dcx+dr));
+        const int y0 = std::max(0,(int)(dcy-dr)), y1 = std::min((int)n-1,(int)(dcy+dr));
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const float dd = std::sqrt((x-dcx)*(x-dcx)+(y-dcy)*(y-dcy)) / dr;
+                if (dd > 1.0f) continue;
+                const float f = (1.0f - dd) * (1.0f - dd);        // soft falloff
+                uint8_t* p = &px[((size_t)y*n+x)*4];
+                p[0] = (uint8_t)std::min(255.0f, p[0] + col[0]*f*255);
+                p[1] = (uint8_t)std::min(255.0f, p[1] + col[1]*f*255);
+                p[2] = (uint8_t)std::min(255.0f, p[2] + col[2]*f*255);
+            }
+    }
+    return px;
+}
+
+// CEILING STARBURST projector (LNS GARAGE): a red radial burst — many thin spokes
+// from a hot center. BLACK bg (additive). Spun in update() so the rays rotate.
+std::vector<uint8_t> makeStarburstRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    for (size_t i = 0; i < (size_t)n * n; ++i) px[i*4+3] = 255;
+    const float c = n * 0.5f;
+    const int spokes = 16;
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            const float dx = x - c, dy = y - c;
+            const float r = std::sqrt(dx*dx + dy*dy) / (n * 0.5f);
+            if (r > 1.0f) continue;
+            const float a = std::atan2(dy, dx);
+            const float spoke = 0.5f + 0.5f * std::cos(a * spokes);   // 0..1 ray mask
+            const float ray = std::pow(spoke, 6.0f) * (1.0f - r);     // thin rays, fade out
+            const float core = std::max(0.0f, 1.0f - r * 6.0f);       // hot center
+            const float v = std::min(1.0f, ray + core);
+            uint8_t* p = &px[((size_t)y*n+x)*4];
+            p[0] = (uint8_t)(v * 255);
+            p[1] = (uint8_t)(v * 0.10f * 255);
+            p[2] = (uint8_t)(v * 0.10f * 255);
+        }
+    return px;
+}
+
 // Mirror-ball facets: silver tile grid with per-tile hashed brightness (sparkle)
 // and dark grout — reads as hundreds of tiny mirrors under the moving lights.
 std::vector<uint8_t> makeFacetRGBA(uint32_t n) {
@@ -1601,6 +1662,86 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
+    // ★ DIY DOME PARTY-PROJECTORS + CEILING STARBURST (LNS GARAGE, Tim 2026-07-18).
+    // The REAL Late Night Speed light signature: cheap RGB dome/mushroom projectors +
+    // a red ceiling starburst throwing SPINNING colored dots + spirograph patterns
+    // across the floor & ceiling. Built as ADDITIVE emissive pattern DISCS (NOT point
+    // lights — the 64 cap is maxed): black bg adds nothing, the dots add their colour
+    // over the glossy floor and pool in its reflection. update() spins them on the beat
+    // clock. Alongside (not replacing) the moving-head beams. Plus visible dome fixtures.
+    // ==================================================================
+    {
+        const uint32_t kDotN = 256;
+        auto d0 = makeDotFieldRGBA(kDotN, 11u);
+        auto d1 = makeDotFieldRGBA(kDotN, 47u);
+        auto stx = makeStarburstRGBA(kDotN);
+        const x3::rhi::TextureHandle dotTex0 = device.createTexture(d0.data(), kDotN, kDotN, true);
+        const x3::rhi::TextureHandle dotTex1 = device.createTexture(d1.data(), kDotN, kDotN, true);
+        const x3::rhi::TextureHandle starTex = device.createTexture(stx.data(), kDotN, kDotN, true);
+        // Build a flat disc mesh centred at LOCAL origin in the XZ plane, facing `up`
+        // (+1 = up for a floor pattern, -1 = down for a ceiling pattern), UV planar 0..1.
+        auto makeDisc = [](float R, float up) {
+            x3::prims::PrimMesh m;
+            const int seg = 48;
+            m.verts.push_back({{0,0,0}, {0,up,0}, {0.5f,0.5f}});   // center
+            for (int i = 0; i <= seg; ++i) {
+                const float a = (float)i / seg * 2.0f * kPi;
+                const float cx = std::cos(a), sz = std::sin(a);
+                m.verts.push_back({{cx*R, 0.0f, sz*R}, {0,up,0}, {0.5f+0.5f*cx, 0.5f+0.5f*sz}});
+            }
+            for (int i = 1; i <= seg; ++i) {
+                if (up > 0) m.index.insert(m.index.end(), { 0, (uint32_t)i, (uint32_t)(i+1) });
+                else        m.index.insert(m.index.end(), { 0, (uint32_t)(i+1), (uint32_t)i });
+            }
+            return m;
+        };
+        // Place a spinning ADDITIVE pattern disc at a world centre; returns nothing but
+        // records it for update()'s spin. `up`>0 lies on the floor, <0 hugs the ceiling.
+        auto addProjectorDisc = [&](float R, float wx, float wy, float wz, float up,
+                                    x3::rhi::TextureHandle tex, float spin, float emBase,
+                                    float emAmp, float phase) {
+            x3::prims::PrimMesh g = makeDisc(R, up);
+            Entity e;
+            e.mesh = device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                       g.index.data(), (uint32_t)g.index.size());
+            e.tex = tex; e.emissiveTex = tex;
+            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+            e.emissive[0] = 1.0f; e.emissive[1] = 1.0f; e.emissive[2] = 1.0f; e.emissive[3] = emBase;
+            e.transparent = true;
+            e.glass.opacity = 0.0f;        // pure additive — black bg contributes nothing
+            e.glass.refraction = 0.0f;
+            e.glass.roughness = 0.0f;
+            e.glass.specular = 0.0f;
+            e.glass.additive = 1.0f;
+            e.transform[12] = wx; e.transform[13] = wy; e.transform[14] = wz;   // world place
+            e.tag = (uint32_t)Tag::Static;
+            const uint32_t id = scene.add(e);
+            m_projectors.push_back(Projector{ id, wx, wy, wz, spin, up, emBase, emAmp, phase });
+        };
+        // TWO floor dot-fields spinning opposite ways over the dance floor (spirograph
+        // sweep), lifted just above the tiles so they pool + reflect in the wet floor.
+        addProjectorDisc(6.0f, -6.0f, oy + 0.16f, -1.5f,  1.0f, dotTex0,  0.6f, 2.4f, 1.4f, 0.0f);
+        addProjectorDisc(4.6f,  1.5f, oy + 0.17f,  2.0f,  1.0f, dotTex1, -0.9f, 2.2f, 1.3f, 1.7f);
+        // Red CEILING STARBURST just under the deck, spinning (seen looking up + it
+        // rakes the trusses). Hugs the ceiling, faces DOWN.
+        addProjectorDisc(4.0f,  0.0f, oy + CH - 0.30f, -2.0f, -1.0f, starTex, 1.1f, 2.6f, 1.2f, 0.0f);
+        // A third dot-field high on the SOUTH wall region (dots on the wall at eye height),
+        // tilted flat but placed near the wall so its dots read on the CMU block.
+        addProjectorDisc(3.4f, -10.0f, oy + 0.16f, 3.5f, 1.0f, dotTex0, 0.75f, 2.0f, 1.2f, 3.1f);
+
+        // Visible DOME/MUSHROOM PROJECTOR FIXTURES on the ceiling (the cheap party
+        // lights themselves): a stem + a multi-faceted emissive dome throwing colour.
+        auto domeFixture = [&](float fx, float fz, const float* domeEm) {
+            box(fx, CH - 0.18f, fz, 0.05f, 0.12f, 0.05f, kMetal, kEmitOff, false);   // stem
+            box(fx, CH - 0.30f, fz, 0.13f, 0.06f, 0.13f, kSpk, domeEm, false);        // dome base (emissive)
+            box(fx, CH - 0.37f, fz, 0.08f, 0.05f, 0.08f, kTvFrame, domeEm, false);    // lens cap
+        };
+        { const float emR[4] = { 1.4f, 0.3f, 1.4f, 2.4f }; domeFixture(-6.0f, -1.5f, emR); }
+        { const float emB[4] = { 0.3f, 0.8f, 1.6f, 2.4f }; domeFixture( 1.5f,  2.0f, emB); }
+        { const float emG[4] = { 0.3f, 1.5f, 0.6f, 2.4f }; domeFixture(-10.0f, 3.5f, emG); }
+    }
+
+    // ==================================================================
     // U-SHAPED BAR — Danny's station, centre of the room, NOSE → EAST toward the
     // elevator entrance. DARK GREEN GRANITE top on a white-oak (1897 barn-wood)
     // base (spec §1.2 / §1.10). Arms run E-W (X); base runs N-S (Z) on the west
@@ -2438,6 +2579,20 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         // POLISH: the ball is REFLECTIVE, not a lamp — keep its self-glow a faint
         // floor (a touch of facet glint on the beat), NOT a blown-out white bulb.
         e.emissive[3] = 0.14f + 0.14f * thump;
+    }
+
+    // --- SPIN the DIY dome/starburst PROJECTOR discs (transform 3x3 = Y-rotation about
+    // their own centre; translation kept) + breathe their emissive on the beat. This
+    // throws the signature spinning colored dots across the floor/ceiling. ---
+    for (const auto& pj : m_projectors) {
+        if (pj.ent >= scene.size()) continue;
+        const float ang = t * pj.spin + pj.phase;
+        const float c = std::cos(ang), s = std::sin(ang);
+        Entity& e = scene.get(pj.ent);
+        // Y-rotation in the upper 3x3 (disc lies in XZ), translation columns untouched.
+        e.transform[0] = c;  e.transform[2] = -s;
+        e.transform[8] = s;  e.transform[10] = c;
+        e.emissive[3] = pj.emBase + pj.emAmp * thump;   // dots pulse to the track
     }
 
     // --- POLISH: MIRROR-BALL SPARKLE DOTS. The cluster of colored point lights orbits
