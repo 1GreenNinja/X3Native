@@ -4,6 +4,7 @@
 // IPhysicsWorld + Scene interfaces only. No purchased C# copied; no id Tech /
 // RBDOOM source consulted.
 #include "monster.h"
+#include "combat_log.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
 #include "asset_root.h"
@@ -577,7 +578,8 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
     // on The Collective once the F4 console is used; 1.0 for everything else).
     const int shotDmg = (int)(baseDmg * incomingDamageMul() * resistMul *
                               m_damageTakenMul + 0.5f);
-    if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
+    if (headshot && combatLogEnabled())                     // [P3-5] combat_log
+        x3::logInfo("[monster] HEADSHOT! 3x damage");
     bool dead = applyDamage(&m_hp, shotDmg);
     // Latch the new type + reset the resist window AFTER applying damage. Only
     // bookkeep when the row has opted in (avoids touching state for normal rows).
@@ -607,7 +609,8 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
         }
         if (m_body.valid()) physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
-        x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
         // TASK#12: try the SKINNED DEATH RAGDOLL — a rigged enemy physically flops
         // with its model (the shot direction carries the topple shove). No-op on an
         // unrigged model -> the legacy rigid topple draws instead. Spawn AFTER the
@@ -624,8 +627,9 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
     } else {
-        x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
-                    " — HP now " + std::to_string(m_hp));
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
+                        " — HP now " + std::to_string(m_hp));
         // Enemy-SFX: a TAKE-HIT grunt when it survives the shot (host -> creature-pain).
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
@@ -673,7 +677,8 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
             scene.get(m_entity).body = x3::phys::BodyId{};
         if (m_body.valid()) physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
-        x3::logInfo("[monster] melee-killed (HP 0) — body removed, death-pop started");
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[monster] melee-killed (HP 0) — body removed, death-pop started");
         // TASK#12: skinned death ragdoll (melee). No explicit shot dir here — pass a
         // zero shove so spawnDeathRagdoll topples it along its facing (the caller owns
         // the separate rigid-body knockback; the body is already gone). No-op unrigged.
@@ -688,8 +693,9 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
     } else {
-        x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
-                    " — HP now " + std::to_string(m_hp));
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
+                        " — HP now " + std::to_string(m_hp));
         // Enemy-SFX: take-hit grunt on a surviving melee hit.
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
@@ -1051,11 +1057,12 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 want = AiState::Regroup;   // hold regroup its min dwell
             }
             if (want != m_ai) {
-                x3::logInfo(std::string("[ai] entity ") + std::to_string(m_entity) +
-                            " " + aiStateName(m_ai) + " -> " + aiStateName(want) +
-                            " (hp=" + std::to_string(m_hp) + "/" + std::to_string(m_maxHp) +
-                            " los=" + (los ? "1" : "0") +
-                            " d=" + std::to_string((int)horiz) + "m)");
+                if (aiLogEnabled())                         // [P3-5] ai_log
+                    x3::logInfo(std::string("[ai] entity ") + std::to_string(m_entity) +
+                                " " + aiStateName(m_ai) + " -> " + aiStateName(want) +
+                                " (hp=" + std::to_string(m_hp) + "/" + std::to_string(m_maxHp) +
+                                " los=" + (los ? "1" : "0") +
+                                " d=" + std::to_string((int)horiz) + "m)");
                 m_ai = want;
                 m_stateTime = 0.0f;
                 if (m_ai == AiState::Search)  m_searchTimer = kAiSearchTime;
@@ -1480,9 +1487,10 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                     const int dmg = effectiveDamage();
                     bool hit = target->takeDamage(dmg);
                     if (hit) {
-                        x3::logInfo(std::string("[monster] ") +
-                                    (m_ranged ? "drone ranged" : "melee") +
-                                    " hit player for " + std::to_string(dmg));
+                        if (combatLogEnabled())             // [P3-5] combat_log
+                            x3::logInfo(std::string("[monster] ") +
+                                        (m_ranged ? "drone ranged" : "melee") +
+                                        " hit player for " + std::to_string(dmg));
                         // Impact cue at the player so audio/FX can land a hit sound.
                         emitCueOrLog(m_cueSink, GameCue{
                             m_ranged ? CueKind::BulletImpact : CueKind::MeleeImpact,

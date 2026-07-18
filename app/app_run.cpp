@@ -41,6 +41,7 @@
 #include "leveldoc_world.h"                  // EDITOR LevelDoc loader: --world fromdoc + hot reload (--test-loader)
 #include "player.h"
 #include "monster.h"
+#include "combat_log.h"                     // [P3-5] LOG-1: combat_log / ai_log spam gates
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "desc_mechanics.h"                 // W9-1: the desc-field Tier-A mechanics (interactables + status effects)
@@ -405,6 +406,13 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
     // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
     console.registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    // [P3-5] LOG-1: combat/AI per-event log spam, DEFAULT QUIET (app/combat_log.h).
+    // `combat_log 1` restores the per-hit lines ("[monster] hit for", "[player] took",
+    // HEADSHOT / kill lines); `ai_log 1` restores the "[ai] entity N A -> B" state-
+    // transition lines. Live-tunable; pushed into the gate flags each frame in
+    // applyRtaoCVars (the per-frame cvar sync hub).
+    console.registerCVar("combat_log", "0", "combat per-event log lines (player/monster hits, kills); 0 = quiet");
+    console.registerCVar("ai_log",     "0", "[ai] state-transition log lines; 0 = quiet");
     // Hardware ray-traced ambient occlusion (RT AO — Vulkan ray-query path). Gated
     // + DEFAULT OFF: only takes effect on a device that supports ray tracing. Live-
     // tunable: `r_rtao 1` turns on ground-truth ray-traced contact occlusion (BLAS/
@@ -604,6 +612,10 @@ static VisCvarSync g_visSync;
 // NON-const console (vis-unify): the alias fold writes r_vis back from the legacy
 // r_cullpath/r_hzb cvars through console.set().
 void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) {
+    // [P3-5] LOG-1: push the combat/AI log-spam cvars into their gate flags (this
+    // function is the per-frame cvar sync hub, rtao naming notwithstanding).
+    x3::game::setCombatLogEnabled(console.getInt("combat_log") != 0);
+    x3::game::setAiLogEnabled(console.getInt("ai_log") != 0);
     x3::rhi::IRenderDevice::RtaoParams p{};
     p.enabled  = console.getInt("r_rtao") != 0;
     p.radius   = console.getFloat("r_rtao_radius");

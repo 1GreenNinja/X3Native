@@ -15,6 +15,7 @@
 //   * characterGrounded(id): true only while OnGround.
 
 #include "player.h"
+#include "combat_log.h"
 
 #include "engine/core/x3_log.h"
 
@@ -118,8 +119,9 @@ bool Player::takeDamage(int amount) {
         x3::logInfo("[player] HP 0 — YOU DIED (respawning in " +
                     std::to_string(kRespawnDelay) + "s)");
     } else {
-        x3::logInfo("[player] took " + std::to_string(amount) +
-                    " damage — HP now " + std::to_string(m_hp));
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[player] took " + std::to_string(amount) +
+                        " damage — HP now " + std::to_string(m_hp));
     }
     // A real hit landed (not absorbed by god/iframe/dead) — give the player a
     // pain vocal. Intensity scales with the hit size so a chip tap and a heavy
