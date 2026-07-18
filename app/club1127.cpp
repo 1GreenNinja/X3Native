@@ -100,6 +100,7 @@ const float kStrata[4]   = { 0.080f, 0.072f, 0.060f, 1.0f }; // strata concrete
 const float kBunker[4]   = { 0.095f, 0.085f, 0.070f, 1.0f }; // private-lounge walls
 const float kWood[4]     = { 0.110f, 0.070f, 0.045f, 1.0f }; // dark wood panelling
 const float kEmitAmberLo[4] = { 1.0f, 0.62f, 0.26f, 1.6f };  // warm amber strip/lantern
+const float kCatwalk[4]  = { 0.100f, 0.100f, 0.130f, 1.0f }; // steel-grate catwalk
 
 // ---- Emissive helpers: { r, g, b, strength }. strength > 1 => HDR bloom. -----
 const float kEmitOff[4]     = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -572,6 +573,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // The club Y origin: everything authored at JS-local y is offset by oy.
     const float oy = kClubY;          // -200
     const float CW = kCW, CL = kCL, CH = kCH;
+    const float HL = CW / 2, HW = CL / 2;   // half-extents: X (long) / Z (short)
     const float T  = 0.3f;            // wall thickness (JS WALL_T)
 
     // Engine-room/lounge dims (JS D.ER_*).
@@ -1505,6 +1507,205 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
+    // PERIMETER CATWALK @ 22 ft + ROUND HALF-MOON ALCOVES (spec §1.8, refinement
+    // (a): ~20 ft spacing, half-moon shape). A continuous mezzanine ring around all
+    // four walls with amber-LED guard rails; semicircular private pods cantilever
+    // off it overlooking the floor. Lanterns are EMISSIVE-only (point-light budget).
+    // ==================================================================
+    {
+        const float LYc = 22.0f * 0.3048f;    // 6.71 m catwalk level
+        const float ckW = 4.0f * 0.3048f;     // 1.22 m grate width
+        const float egH = ER_W;               // engine-room gap on the north (-Z) wall
+        const float nSeg = (CW - egH) / 2.0f - 0.1f;
+        // Grate ring (thin steel). North (-Z) split around the engine-room gap.
+        box(-(egH / 2 + nSeg / 2), LYc, -(HW - ckW / 2), nSeg / 2, 0.04f, ckW / 2, kCatwalk, kEmitOff, true);
+        box( (egH / 2 + nSeg / 2), LYc, -(HW - ckW / 2), nSeg / 2, 0.04f, ckW / 2, kCatwalk, kEmitOff, true);
+        box(0, LYc, HW - ckW / 2, (CW - 1.0f) / 2, 0.04f, ckW / 2, kCatwalk, kEmitOff, true);   // south
+        box(HL - ckW / 2, LYc, 0, ckW / 2, 0.04f, (CL - 2 * ckW) / 2, kCatwalk, kEmitOff, true); // east
+        box(-HL + ckW / 2, LYc, 0, ckW / 2, 0.04f, (CL - 2 * ckW) / 2, kCatwalk, kEmitOff, true);// west
+        // Inner amber-LED guard rails ("a halo of amber light around the room").
+        auto rail = [&](float x, float z, float hx, float hz) {
+            box(x, LYc + 0.5f, z, hx, 0.5f, hz, kRail, kEmitOff, true);
+            box(x, LYc + 1.0f, z, hx, 0.02f, hz, kWall, kEmitLed, false);   // amber cap
+        };
+        rail(0, HW - ckW, (CW - 1.0f) / 2, 0.03f);                     // south
+        rail(HL - ckW, 0, 0.03f, (CL - 2 * ckW) / 2);                  // east
+        rail(-HL + ckW, 0, 0.03f, (CL - 2 * ckW) / 2);                 // west
+        rail(-(egH / 2 + nSeg / 2), -(HW - ckW), nSeg / 2, 0.03f);     // north (two segments)
+        rail( (egH / 2 + nSeg / 2), -(HW - ckW), nSeg / 2, 0.03f);
+        // ROUND HALF-MOON private pods (curved baluster arc = the half-moon read).
+        // dir = +1 pod bulges toward +Z, -1 toward -Z (into the room).
+        auto pod = [&](float cx, float cz, float dir) {
+            const float r = 0.95f, yb = LYc;
+            box(cx, yb - 0.02f, cz - dir * r * 0.35f, r * 0.8f, 0.03f, r * 0.42f, kCatwalk, kEmitOff, true); // pad
+            for (int a = 0; a <= 8; ++a) {                    // curved rail (semicircle)
+                const float th = kPi * a / 8.0f;
+                const float px = cx + r * std::cos(th);
+                const float pz = cz - dir * r * std::sin(th);
+                box(px, yb + 0.45f, pz, 0.03f, 0.45f, 0.03f, kRail, kEmitOff, false);
+                box(px, yb + 0.90f, pz, 0.05f, 0.02f, 0.05f, kWall, kEmitLed, false);
+            }
+            box(cx, yb + 0.6f, cz - dir * r * 0.25f, 0.06f, 0.08f, 0.06f, kBarTop, kEmitAmberLo, false); // lantern
+            box(cx, yb + 0.2f, cz - dir * r * 0.22f, r * 0.55f, 0.06f, 0.14f, kLeather, kEmitOff, false); // bench
+        };
+        const float podZS =  (HW - ckW - 0.15f);     // just inside the south catwalk
+        const float podZN = -(HW - ckW - 0.15f);     // north
+        for (int k = 0; k < 5; ++k) {                 // 5 pods on the south wall (~20 ft)
+            const float cx = -HL + (k + 0.5f) * (CW / 5.0f);
+            pod(cx, podZS, -1.0f);
+            if (std::fabs(cx) > egH / 2 + 1.2f) pod(cx, podZN, +1.0f);   // north, skip ER gap
+        }
+        pod(HL - ckW - 0.4f, -2.5f, 0.0f);            // 1 east-wall pod (dir 0 = flat bench)
+        pod(-HL + ckW + 0.4f, 2.5f, 0.0f);            // 1 west-wall pod
+    }
+
+    // ==================================================================
+    // THE LAIR — NE corner, ENTIRELY UPSTAIRS (spec §3). Ground floor NE = the
+    // OFFICE only; the 2nd floor NE = the whole Lair. DEN (77" LG C1 OLED, black-
+    // leather Ashley recliners, queen pillowtop bed) + ★ READING NOOK (green-granite
+    // shelf + UV blacklight underneath + a cup — the emotional anchor, §3.5) + the
+    // south ADDITION (kitchen, living room, ★ dark one-way-glass overlook onto the
+    // dance floor). Charcoal light-absorbing walls, low 8 ft ceiling.
+    // ==================================================================
+    {
+        const float SVC = 10.0f * 0.3048f;     // 3.05 m service-block depth (east of +X)
+        const float LYl = 22.0f * 0.3048f;     // 6.71 m upstairs floor (catwalk elevation)
+        const float lrH = 8.0f * 0.3048f;      // 2.44 m low Lair ceiling
+        const float exW = HL + SVC;            // outer east wall X
+        const float lxc = HL + SVC / 2, lxHalf = SVC / 2;
+        const float lzN = -HW, lzS = 2.6f;
+        const float lzc = (lzN + lzS) / 2, lzHalf = (lzS - lzN) / 2;
+        const float emUV[4] = { kBlacklightR, kBlacklightG, kBlacklightB, 2.0f };
+        // East SERVICE BLOCK shell (ground floor beneath the Lair).
+        box(lxc, 0.1f, 0, lxHalf, 0.1f, HW, kOfficeF, kEmitOff, true);           // floor
+        box(exW, CH / 2, 0, T / 2, CH / 2, HW, kWall, kEmitOff, true);           // outer east wall
+        box(lxc, CH / 2, -HW, lxHalf, CH / 2, T / 2, kWall, kEmitOff, true);     // north end
+        box(lxc, CH / 2,  HW, lxHalf, CH / 2, T / 2, kWall, kEmitOff, true);     // south end
+        box(lxc, 0.8f, 1.2f, 0.9f, 0.05f, 0.5f, kStair, kEmitOff, true);         // office desk
+        // Office -> Lair STAIRS (10 steps, up the north end).
+        for (int s = 0; s < 10; ++s)
+            box(HL + 0.5f + s * (SVC - 1.0f) / 10.0f, LYl * (s + 0.5f) / 10.0f, -HW + 0.6f,
+                (SVC - 1.0f) / 20.0f, 0.05f, 0.5f, kStair, kEmitOff, true);
+        // LAIR upstairs shell (charcoal, 8 ft).
+        box(lxc, LYl, lzc, lxHalf, 0.08f, lzHalf, kLairFloor, kEmitOff, true);
+        box(lxc, LYl + lrH, lzc, lxHalf, 0.08f, lzHalf, kCharcoal, kEmitOff, false);
+        box(lxc, LYl + lrH / 2, lzN, lxHalf, lrH / 2, T / 2, kCharcoal, kEmitOff, true);
+        box(lxc, LYl + lrH / 2, lzS, lxHalf, lrH / 2, T / 2, kCharcoal, kEmitOff, true);
+        box(exW, LYl + lrH / 2, lzc, T / 2, lrH / 2, lzHalf, kCharcoal, kEmitOff, true);
+        // ===== DEN ZONE (north half) =====
+        const float denZ = (lzN + 0.0f) / 2;
+        { const float emTV[4] = { 0.35f, 0.42f, 0.85f, 2.2f };                   // 77" LG C1 OLED
+          box(lxc, LYl + 1.3f, lzN + 0.06f, 0.87f, 0.50f, 0.02f, kTvFrame, emTV, false); }
+        box(lxc - 1.0f, LYl + 0.5f, lzN + 0.2f, 0.12f, 0.5f, 0.12f, kSpk, kEmitOff, false); // JBL towers
+        box(lxc + 1.0f, LYl + 0.5f, lzN + 0.2f, 0.12f, 0.5f, 0.12f, kSpk, kEmitOff, false);
+        box(lxc, LYl + 0.25f, lzN + 0.25f, 0.2f, 0.25f, 0.2f, kSub, kEmitOff, false);       // Velodyne sub
+        box(lxc - 0.5f, LYl + 0.3f, denZ, 0.35f, 0.3f, 0.35f, kLeather, kEmitOff, true);    // recliner L
+        box(lxc + 0.5f, LYl + 0.3f, denZ, 0.35f, 0.3f, 0.35f, kLeather, kEmitOff, true);    // recliner R (reading)
+        // ===== ★ THE READING NOOK (§3.5) — green-granite shelf + UV blacklight + cup =====
+        {
+            const float shX = exW - 0.2f, shZ = denZ + 0.55f, shY = LYl + 0.7f;
+            x3::prims::PrimMesh g = x3::prims::makeBox(0.15f, 0.02f, 0.5f, shX, oy + shY, shZ, 1.0f);
+            prim(std::move(g), kGranite, kGraniteEm, x3::rhi::TextureHandle{}, mrGlass, false); // GRANITE shelf
+            box(shX, shY - 0.05f, shZ, 0.14f, 0.015f, 0.45f, kSub, emUV, false);               // UV fixture under
+            const float cupCol[4] = { 0.6f, 0.6f, 0.62f, 1.0f };
+            box(shX - 0.03f, shY + 0.06f, shZ + 0.12f, 0.04f, 0.05f, 0.04f, cupCol, kEmitOff, false); // the cup
+            addLight(m_lights, shX - 0.35f, oy + shY - 0.15f, shZ, 0.11f, 0.05f, 1.10f, 2.6f);  // UV reading glow
+        }
+        box(lxc, LYl + 0.25f, -0.3f, 0.9f, 0.2f, 0.55f, kLeatherHi, kEmitOff, true);        // queen bed
+        addLight(m_lights, lxc, oy + LYl + lrH - 0.3f, denZ, 1.2f, 0.9f, 0.6f, 4.0f);       // warm den light
+        // ===== ADDITION ZONE (south half) — kitchen, living room, overlook =====
+        box(exW - 0.4f, LYl + 0.45f, 1.2f, 0.35f, 0.45f, 0.8f, kMetal, kEmitOff, true);     // kitchen counter
+        box(lxc - 0.2f, LYl + 0.3f, lzS - 0.4f, 0.7f, 0.3f, 0.35f, kLeather, kEmitOff, true); // living couch
+        // ★ DARK ONE-WAY GLASS OVERLOOK — wall-scale smoked blue-UV panel on the west
+        // (club) wall of the living room, looking DOWN over the dance floor.
+        {
+            x3::prims::PrimMesh pg = x3::prims::makeBox(0.02f, lrH * 0.42f, 1.2f,
+                                                        HL - 0.04f, oy + LYl + lrH * 0.5f, 1.4f, 1.0f);
+            Entity pe;
+            pe.mesh = device.createMesh(pg.verts.data(), (uint32_t)pg.verts.size(),
+                                        pg.index.data(), (uint32_t)pg.index.size());
+            pe.baseColor[0] = 0.03f; pe.baseColor[1] = 0.04f; pe.baseColor[2] = 0.08f; pe.baseColor[3] = 1.0f;
+            pe.emissive[0] = 0.04f; pe.emissive[1] = 0.05f; pe.emissive[2] = 0.14f; pe.emissive[3] = 0.25f;
+            pe.transparent = true;
+            pe.glass.opacity = 0.55f; pe.glass.refraction = 0.0f; pe.glass.roughness = 0.05f;
+            pe.glass.specular = 1.0f;
+            pe.glass.tint[0] = 0.20f; pe.glass.tint[1] = 0.30f; pe.glass.tint[2] = 0.55f;
+            pe.tag = (uint32_t)Tag::Static;
+            scene.add(pe);
+        }
+    }
+
+    // ==================================================================
+    // SECRET TUNNEL (Route A, spec §4.1): observation-lounge landing -> LEFT to a
+    // secret panel -> STRATA -> 80 ft WEST -> hook LEFT -> 30 ft SOUTH -> Private
+    // Lounge Complex L1. Walkable, amber strip-lit, dead silent.
+    // ==================================================================
+    {
+        const float tY = LOUNGE_Y, tH = 2.3f, tW = 1.3f;
+        const float zBehind = -HW - 1.2f;      // behind (north of) the north wall
+        const float emPanel[4] = { 0.10f, 0.95f, 0.30f, 1.6f };
+        box(-ER_W / 2 - 0.1f, tY + 1.0f, -HW - 0.05f, 0.03f, 0.6f, 0.4f, kStair, emPanel, false); // secret panel
+        // Seg 1: WEST behind the north wall.
+        const float s1x0 = -ER_W / 2, s1x1 = -HL - 2.4f;
+        const float s1cx = (s1x0 + s1x1) / 2, s1len = std::fabs(s1x1 - s1x0);
+        box(s1cx, tY + 0.05f, zBehind, s1len / 2, 0.08f, tW / 2, kStrata, kEmitOff, true);
+        box(s1cx, tY + tH, zBehind, s1len / 2, 0.08f, tW / 2, kStrata, kEmitOff, false);
+        box(s1cx, tY + tH / 2, zBehind - tW / 2, s1len / 2, tH / 2, T / 2, kStrata, kEmitOff, true);
+        box(s1cx, tY + tH / 2, zBehind + tW / 2, s1len / 2, tH / 2, T / 2, kStrata, kEmitOff, true);
+        box(s1cx, tY + 0.08f, zBehind, s1len / 2 - 0.2f, 0.01f, 0.05f, kWall, kEmitAmberLo, false); // amber strip
+        // Seg 2: SOUTH to the Private Lounge.
+        const float s2x = -HL - 2.4f, s2z0 = zBehind, s2z1 = 0.5f;
+        const float s2cz = (s2z0 + s2z1) / 2, s2len = std::fabs(s2z1 - s2z0);
+        box(s2x, tY + 0.05f, s2cz, tW / 2, 0.08f, s2len / 2, kStrata, kEmitOff, true);
+        box(s2x, tY + tH, s2cz, tW / 2, 0.08f, s2len / 2, kStrata, kEmitOff, false);
+        box(s2x - tW / 2, tY + tH / 2, s2cz, T / 2, tH / 2, s2len / 2, kStrata, kEmitOff, true);
+        box(s2x + tW / 2, tY + tH / 2, s2cz, T / 2, tH / 2, s2len / 2, kStrata, kEmitOff, true);
+        box(s2x, tY + 0.08f, s2cz, 0.05f, 0.01f, s2len / 2 - 0.2f, kWall, kEmitAmberLo, false);
+    }
+
+    // ==================================================================
+    // PRIVATE LOUNGE COMPLEX — LEVEL 1 (spec §4.4). West of the club, reached by the
+    // tunnel. Situation Room (dark wood, heavy table, leather, silent OLED club-feed)
+    // + warm N-S hallway + private bedroom + kitchen + a MARKED spot for the future
+    // stairwell-down + bottom elevator hall (Levels 2-7 = later stage). Intimate, warm.
+    // ==================================================================
+    {
+        const float pY = LOUNGE_Y, pH = 3.0f;
+        const float hallW = 5.0f * 0.3048f, eastD = 3.0f, westD = 3.0f;
+        const float hallX = -HL - 2.4f;
+        const float pzN = -HW, pzS = HW, pLen = pzS - pzN;
+        box(hallX, pY + 0.05f, 0, hallW / 2, 0.08f, pLen / 2, kStrata, kEmitOff, true);
+        box(hallX, pY + pH, 0, hallW / 2, 0.08f, pLen / 2, kCeil, kEmitOff, false);
+        box(hallX, pY + pH / 2, pzN, hallW / 2, pH / 2, T / 2, kBunker, kEmitOff, true);
+        box(hallX, pY + pH / 2, pzS, hallW / 2, pH / 2, T / 2, kBunker, kEmitOff, true);
+        for (int s = -1; s <= 1; s += 2)
+            box(hallX + s * (hallW / 2 - 0.03f), pY + 0.15f, 0, 0.02f, 0.03f, pLen / 2 - 0.3f, kWall, kEmitAmberLo, false);
+        // SITUATION ROOM (east side, dark wood, heavy table, silent club-feed OLED).
+        const float srX = hallX + hallW / 2 + eastD / 2, srZ = -3.0f;
+        box(srX, pY + 0.05f, srZ, eastD / 2, 0.08f, 1.6f, kStrata, kEmitOff, true);
+        box(srX, pY + pH, srZ, eastD / 2, 0.08f, 1.6f, kCeil, kEmitOff, false);
+        box(srX + eastD / 2, pY + pH / 2, srZ, T / 2, pH / 2, 1.6f, kWood, kEmitOff, true);
+        box(srX, pY + pH / 2, srZ - 1.6f, eastD / 2, pH / 2, T / 2, kWood, kEmitOff, true);
+        box(srX, pY + pH / 2, srZ + 1.6f, eastD / 2, pH / 2, T / 2, kWood, kEmitOff, true);
+        box(srX, pY + 0.4f, srZ, 0.7f, 0.05f, 0.5f, kWood, kEmitOff, true);                 // heavy table
+        box(srX, pY + 0.25f, srZ + 0.9f, 0.7f, 0.25f, 0.3f, kLeather, kEmitOff, true);      // leather seating
+        { const float emFeed[4] = { 0.30f, 0.35f, 0.55f, 1.5f };                            // silent club-feed OLED
+          box(srX + eastD / 2 - 0.05f, pY + 1.5f, srZ, 0.02f, 0.5f, 0.9f, kTvFrame, emFeed, false); }
+        addLight(m_lights, srX, oy + pY + 2.5f, srZ, 1.0f, 0.72f, 0.4f, 5.0f);              // steady warm light
+        // PRIVATE BEDROOM (west, queen pillowtop, warm, no screens).
+        const float bdX = hallX - hallW / 2 - westD / 2;
+        box(bdX, pY + 0.05f, 2.5f, westD / 2, 0.08f, 1.6f, kStrata, kEmitOff, true);
+        box(bdX, pY + pH, 2.5f, westD / 2, 0.08f, 1.6f, kCeil, kEmitOff, false);
+        box(bdX - westD / 2, pY + pH / 2, 2.5f, T / 2, pH / 2, 1.6f, kBunker, kEmitOff, true);
+        box(bdX, pY + 0.3f, 2.5f, 0.9f, 0.25f, 0.6f, kLeatherHi, kEmitOff, true);           // bed
+        box(bdX, pY + 0.45f, -2.5f, westD / 2 - 0.3f, 0.45f, 0.4f, kMetal, kEmitOff, true); // kitchen counter
+        // MARKED future connection (Levels 2-7 later): stairwell-down hatch + blocked door.
+        const float emMark[4] = { 0.10f, 0.85f, 0.35f, 1.4f };
+        box(hallX, pY + 0.09f, pzS - 1.2f, hallW / 2 - 0.2f, 0.02f, 0.6f, kStair, emMark, false);
+        box(hallX, pY + 1.0f, pzN + 0.25f, hallW / 2 - 0.2f, 1.0f, 0.05f, kWood, emMark, false);
+    }
+
+    // ==================================================================
     // CLUB AMBIENT + KEY LIGHTS (Babylon hemi/point/fill -> point lights).
     // ==================================================================
     // (relight: these three ROOM-WIDE fills were the darkest offenders — 0.16-0.40
@@ -1526,16 +1727,14 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // centroid (the dancer spots cluster around z ≈ -2) puts actual light on
     // faces/torsos. Deliberately gentle — way under the gel colors — so the room
     // stays a moody club, not a showroom.
-    addLight(m_lights, 0, oy + 4.6f, -1.8f, 1.50f, 1.35f, 1.85f, 14.0f);
-    // ...plus four soft lavender PERIMETER FILLS at head height around the floor:
-    // an overhead key alone lights hair and shoulders, not the faces/torsos a
-    // camera actually sees — these front/side-light the crowd from every axis
-    // (the dark-albedo outfits need N·L from the SIDE to read at all).
+    addLight(m_lights, -6.0f, oy + 4.6f, 0.0f, 1.50f, 1.35f, 1.85f, 14.0f);
+    // ...plus two soft lavender PERIMETER FILLS at head height flanking the dance
+    // floor (dfX≈-6): the dark-albedo outfits need N·L from the SIDE to read at all.
+    // (Reduced 4->2 to reserve point-light budget for the Lair / tunnel / Complex.)
     {
         const float fillC[3] = { 1.00f, 0.88f, 1.25f };
-        const float fillPts[4][3] = {
-            { -5.6f, 1.7f, -1.8f }, { 5.6f, 1.7f, -1.8f },
-            {  0.0f, 1.7f, -8.8f }, { 0.0f, 1.7f,  5.2f },
+        const float fillPts[2][3] = {
+            { -9.5f, 1.7f, -3.0f }, { -3.0f, 1.7f, 3.0f },
         };
         for (auto& f : fillPts)
             addLight(m_lights, f[0], oy + f[1], f[2], fillC[0], fillC[1], fillC[2], 11.0f);
@@ -1692,11 +1891,13 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             };
             // Spots: a loose ring on the dance floor + two by the DJ end. Kept off
             // the bar lane and inside the tile field.
+            // CANON-PORT: cluster on the west dance floor (dfX≈-6), Z within ±4.5
+            // (the room is now 43 ft / ±6.55 m short-axis).
             const float spots[10][3] = {   // x, z, base yaw
-                { -1.5f,  -3.0f,  0.6f }, {  1.8f,  -4.5f, -2.4f }, {  0.2f,  -6.5f,  3.0f },
-                {  3.0f,  -1.5f, -1.2f }, { -2.5f,   0.5f,  1.8f }, {  0.8f,   1.5f, -0.4f },
-                {  2.6f,   3.5f,  2.2f }, { -1.0f,   4.5f, -2.8f }, { -3.0f,  -6.0f,  0.2f },
-                {  4.0f,  -7.5f,  1.4f },
+                { -6.0f, -3.5f,  0.6f }, { -4.0f, -1.5f, -2.4f }, { -8.0f,  0.5f,  3.0f },
+                { -5.0f,  2.5f, -1.2f }, { -9.0f, -2.0f,  1.8f }, { -3.0f,  1.0f, -0.4f },
+                { -7.0f,  3.5f,  2.2f }, {-10.5f, -4.0f, -2.8f }, { -2.5f, -3.0f,  0.2f },
+                { -6.5f,  4.5f,  1.4f },
             };
             for (int d3 = 0; d3 < 10; ++d3) {
                 Dancer dn;
