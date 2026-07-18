@@ -978,8 +978,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 blacklight(s * (xFace - 0.09f), zz * 2.4f, (float)-s, 0.0f);
         // UV point lights (4) — the room-wide violet AIR (kept; the per-tube
         // lights above are the wall/crowd cast, these are the base atmosphere).
-        const float uv[4][3] = {
-            { 0, CH * 0.5f, -CL / 4 }, { 0, CH * 0.5f, CL / 4 },
+        const float uv[2][3] = {   // 2 (was 4) — reserve budget for the underground
             { -CW / 3, CH * 0.5f, 0 }, { CW / 3, CH * 0.5f, 0 }
         };
         for (auto& p : uv)
@@ -1206,11 +1205,11 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // explicitly by update() via m_sparkleLightIdx, so the moving-head loop — which
         // only touches indices >= m_staticLightCount — never clobbers them).
         {
-            const float sparkleHue[6][3] = {
+            const float sparkleHue[4][3] = {   // 4 (was 6) — reserve budget for the underground
                 { 2.4f, 0.6f, 2.4f }, { 0.5f, 1.8f, 2.6f }, { 2.6f, 1.6f, 0.4f },
-                { 0.6f, 2.6f, 1.2f }, { 2.6f, 0.5f, 1.4f }, { 1.4f, 1.4f, 2.6f },
+                { 0.6f, 2.6f, 1.2f },
             };
-            for (int i = 0; i < 6; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 m_sparkleLightIdx.push_back(m_lights.size());
                 addLight(m_lights, 0.0f, oy + 5.0f, 0.0f,
                          sparkleHue[i][0], sparkleHue[i][1], sparkleHue[i][2], 3.2f);
@@ -1239,9 +1238,9 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         graniteTop(uX,            bH2 + 0.03f, -bBase / 2, bArm / 2, 0.03f, 0.325f);
         graniteTop(uX - bArm / 2, bH2 + 0.03f, 0,         0.325f,   0.03f, bBase / 2 + 0.325f);
         // Amber LED under-strips along the top edges.
-        box(uX, bH2 - 0.04f,  bBase / 2 + 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitLed, false);
-        box(uX, bH2 - 0.04f, -bBase / 2 - 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitLed, false);
-        box(uX - bArm / 2 - 0.28f, bH2 - 0.04f, 0, 0.015f, 0.01f, (bBase + 0.3f) / 2, kWall, kEmitLed, false);
+        box(uX, bH2 - 0.04f,  bBase / 2 + 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitAmberLo, false);
+        box(uX, bH2 - 0.04f, -bBase / 2 - 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitAmberLo, false);
+        box(uX - bArm / 2 - 0.28f, bH2 - 0.04f, 0, 0.015f, 0.01f, (bBase + 0.3f) / 2, kWall, kEmitAmberLo, false);
         // Warm bar glow.
         addLight(m_lights, uX - bArm / 4, oy + bH2 - 0.3f, 0, 1.0f, 0.7f, 0.2f, 8.0f);
         // Back-bar shelf + 12 jewel-tone bottles inside the U (over the west base).
@@ -1526,7 +1525,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // Inner amber-LED guard rails ("a halo of amber light around the room").
         auto rail = [&](float x, float z, float hx, float hz) {
             box(x, LYc + 0.5f, z, hx, 0.5f, hz, kRail, kEmitOff, true);
-            box(x, LYc + 1.0f, z, hx, 0.02f, hz, kWall, kEmitLed, false);   // amber cap
+            box(x, LYc + 1.0f, z, hx, 0.02f, hz, kWall, kEmitAmberLo, false);   // amber cap
         };
         rail(0, HW - ckW, (CW - 1.0f) / 2, 0.03f);                     // south
         rail(HL - ckW, 0, 0.03f, (CL - 2 * ckW) / 2);                  // east
@@ -1543,7 +1542,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 const float px = cx + r * std::cos(th);
                 const float pz = cz - dir * r * std::sin(th);
                 box(px, yb + 0.45f, pz, 0.03f, 0.45f, 0.03f, kRail, kEmitOff, false);
-                box(px, yb + 0.90f, pz, 0.05f, 0.02f, 0.05f, kWall, kEmitLed, false);
+                box(px, yb + 0.90f, pz, 0.05f, 0.02f, 0.05f, kWall, kEmitAmberLo, false);
             }
             box(cx, yb + 0.6f, cz - dir * r * 0.25f, 0.06f, 0.08f, 0.06f, kBarTop, kEmitAmberLo, false); // lantern
             box(cx, yb + 0.2f, cz - dir * r * 0.22f, r * 0.55f, 0.06f, 0.14f, kLeather, kEmitOff, false); // bench
@@ -1612,7 +1611,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             addLight(m_lights, shX - 0.35f, oy + shY - 0.15f, shZ, 0.11f, 0.05f, 1.10f, 2.6f);  // UV reading glow
         }
         box(lxc, LYl + 0.25f, -0.3f, 0.9f, 0.2f, 0.55f, kLeatherHi, kEmitOff, true);        // queen bed
-        addLight(m_lights, lxc, oy + LYl + lrH - 0.3f, denZ, 1.2f, 0.9f, 0.6f, 4.0f);       // warm den light
+        addLight(m_lights, lxc, oy + LYl + lrH - 0.3f, denZ, 1.6f, 1.2f, 0.8f, 6.5f);       // warm den light
         // ===== ADDITION ZONE (south half) — kitchen, living room, overlook =====
         box(exW - 0.4f, LYl + 0.45f, 1.2f, 0.35f, 0.45f, 0.8f, kMetal, kEmitOff, true);     // kitchen counter
         box(lxc - 0.2f, LYl + 0.3f, lzS - 0.4f, 0.7f, 0.3f, 0.35f, kLeather, kEmitOff, true); // living couch
@@ -1661,6 +1660,9 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(s2x - tW / 2, tY + tH / 2, s2cz, T / 2, tH / 2, s2len / 2, kStrata, kEmitOff, true);
         box(s2x + tW / 2, tY + tH / 2, s2cz, T / 2, tH / 2, s2len / 2, kStrata, kEmitOff, true);
         box(s2x, tY + 0.08f, s2cz, 0.05f, 0.01f, s2len / 2 - 0.2f, kWall, kEmitAmberLo, false);
+        // Two dim warm strata lamps so the walk actually reads (was pitch black).
+        addLight(m_lights, s1cx, oy + tY + 1.4f, zBehind, 1.0f, 0.6f, 0.25f, 7.0f);
+        addLight(m_lights, s2x,  oy + tY + 1.4f, s2cz,    1.0f, 0.6f, 0.25f, 7.0f);
     }
 
     // ==================================================================
@@ -1699,6 +1701,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(bdX - westD / 2, pY + pH / 2, 2.5f, T / 2, pH / 2, 1.6f, kBunker, kEmitOff, true);
         box(bdX, pY + 0.3f, 2.5f, 0.9f, 0.25f, 0.6f, kLeatherHi, kEmitOff, true);           // bed
         box(bdX, pY + 0.45f, -2.5f, westD / 2 - 0.3f, 0.45f, 0.4f, kMetal, kEmitOff, true); // kitchen counter
+        addLight(m_lights, hallX, oy + pY + 2.4f, 0, 1.0f, 0.72f, 0.40f, 8.0f);   // warm hallway
+        addLight(m_lights, bdX,   oy + pY + 2.4f, 2.5f, 1.0f, 0.75f, 0.50f, 5.0f); // bedroom glow
         // MARKED future connection (Levels 2-7 later): stairwell-down hatch + blocked door.
         const float emMark[4] = { 0.10f, 0.85f, 0.35f, 1.4f };
         box(hallX, pY + 0.09f, pzS - 1.2f, hallW / 2 - 0.2f, 0.02f, 0.6f, kStair, emMark, false);
