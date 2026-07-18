@@ -53,7 +53,7 @@ constexpr float kClubBpm = 85.5f;
 
 // ---- Tints (linear-ish; the device tonemaps) ------------------------------
 // Ported from the JS StandardMaterial diffuse colors (hex -> 0..1 RGB).
-const float kWall[4]   = { 0.26f, 0.26f, 0.34f, 1.0f };    // club wall TINT (multiplies the
+const float kWall[4]   = { 0.36f, 0.36f, 0.42f, 1.0f };    // painted-CMU wall TINT (multiplies the
                                                            // sWall concrete texel). Was 0x0a0a12
                                                            // (~0.04) from the untextured era —
                                                            // that crushed effective albedo to
@@ -451,6 +451,66 @@ std::vector<uint8_t> makeMr1x1(uint8_t rough, uint8_t metal) {
     return { 255, rough, metal, 255 };
 }
 
+// PAINTED CMU BLOCK wall (LNS GARAGE, Tim 2026-07-18): the real Late Night Speed
+// walls are painted concrete-block — gritty industrial white/grey. Running-bond
+// courses (16x8 in / 0.4x0.2 m units), recessed darker mortar joints, faint
+// per-block value variation + fine paint grit. Albedo only (tinted club-grey by
+// kWall); a matching flat-ish normal/rough gives it relief under the club beams.
+std::vector<uint8_t> makeCmuBlockRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    const uint32_t courseH = n / 8;          // 8 courses
+    const uint32_t blockW  = n / 4;          // 4 blocks per row
+    const uint32_t mortar  = std::max(2u, n / 128);   // joint thickness (px)
+    for (uint32_t y = 0; y < n; ++y) {
+        const uint32_t course = y / courseH;
+        const uint32_t offset = (course & 1) ? blockW / 2 : 0;   // running bond
+        for (uint32_t x = 0; x < n; ++x) {
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            const uint32_t bx = (x + offset) / blockW;
+            // Per-block painted value (hashed) — painted CMU is fairly uniform pale grey.
+            float v = 0.58f + 0.10f * ((clubHash(bx * 71 + course * 263) % 1000) / 1000.0f - 0.5f);
+            // Mortar joints: horizontal (between courses) + vertical (between blocks).
+            const bool hJoint = (y % courseH) < mortar;
+            const bool vJoint = ((x + offset) % blockW) < mortar;
+            if (hJoint || vJoint) v *= 0.52f;                    // recessed dark joint
+            // Fine paint grit / porosity speckle.
+            v += 0.03f * ((clubHash(x * 911 + y * 379) % 100) / 100.0f - 0.5f);
+            // Slight cool tint (painted white-grey reads a touch blue under UV).
+            const float r = v * 0.98f, g = v * 0.99f, b = v * 1.03f;
+            p[0] = (uint8_t)(std::max(0.0f, std::min(1.0f, r)) * 255);
+            p[1] = (uint8_t)(std::max(0.0f, std::min(1.0f, g)) * 255);
+            p[2] = (uint8_t)(std::max(0.0f, std::min(1.0f, b)) * 255);
+            p[3] = 255;
+        }
+    }
+    return px;
+}
+
+// Companion normal map for the CMU block: mortar joints push IN (a soft groove),
+// block faces stay flat — so raking club beams catch the coursing.
+std::vector<uint8_t> makeCmuNormalRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    const uint32_t courseH = n / 8, blockW = n / 4, mortar = std::max(2u, n / 128);
+    for (uint32_t y = 0; y < n; ++y) {
+        const uint32_t course = y / courseH;
+        const uint32_t offset = (course & 1) ? blockW / 2 : 0;
+        for (uint32_t x = 0; x < n; ++x) {
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            float nx = 0.0f, ny = 0.0f;
+            const uint32_t yin = y % courseH, xin = (x + offset) % blockW;
+            if (yin < mortar)            ny = -0.6f; else if (yin < mortar * 2) ny = 0.6f;
+            if (xin < mortar)            nx = -0.6f; else if (xin < mortar * 2) nx = 0.6f;
+            const float nz = 1.0f;
+            const float l = std::sqrt(nx*nx + ny*ny + nz*nz);
+            p[0] = (uint8_t)((nx / l * 0.5f + 0.5f) * 255);
+            p[1] = (uint8_t)((ny / l * 0.5f + 0.5f) * 255);
+            p[2] = (uint8_t)((nz / l * 0.5f + 0.5f) * 255);
+            p[3] = 255;
+        }
+    }
+    return px;
+}
+
 // POLISH (fix/club-polish): a FACETED unit mirror ball — a LOW-poly UV sphere with
 // FLAT per-face normals (each tile carries one hard normal), so under a chrome/mirror
 // material it reads as hundreds of discrete mirror facets catching the club's colored
@@ -619,7 +679,21 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     SurfaceLibrary surf;
     surf.mount(assetRoot() + "/surface_library");
     auto set = [&](const char* name) -> const SurfaceSet& { return surf.get(device, name); };
-    const SurfaceSet& sWall  = set("mw_concrete_panels_a"); // dark venue walls
+    // ★ PAINTED CMU BLOCK walls (LNS GARAGE) — the whole shop is painted concrete
+    // block, so the club shell / engine room / booth walls all carry it (running-bond
+    // masonry albedo + mortar-groove normal + matte-rough MR). Built procedurally so
+    // it needs no pack asset; tinted club-grey by kWall at the box() call site.
+    SurfaceSet sWall;
+    {
+        auto cpx = makeCmuBlockRGBA(256);
+        auto cnx = makeCmuNormalRGBA(256);
+        auto cmrPx = makeMr1x1(/*rough*/ 205, /*metal*/ 0);   // matte painted block
+        sWall.albedo   = device.createTexture(cpx.data(), 256, 256, true);
+        sWall.normal   = device.createTexture(cnx.data(), 256, 256, false);
+        sWall.mr       = device.createTexture(cmrPx.data(), 1, 1, false);
+        sWall.albedoLin = 0.30f;   // measured-ish mean so valueTint leaves it be
+        sWall.ok       = true;
+    }
     const SurfaceSet& sFloor = set("sr_rubberfloor");        // dance/club floor
     const SurfaceSet& sMetal = set("mw_metal_trim_b");       // stage/booth platforms
     const SurfaceSet& sBar   = set("mw_wall_plastic");       // bar body laminate
