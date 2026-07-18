@@ -20,3 +20,6 @@ assets/**/*.exr  filter=lfs diff=lfs merge=lfs -text
 assets/**/*.ttf  filter=lfs diff=lfs merge=lfs -text
 assets/**/*.otf  filter=lfs diff=lfs merge=lfs -text
 assets/audio/space/*.wav !text !filter !merge !diff
+# CLUB JUKEBOX test tone: tiny generated WAV, committed raw (not LFS) so a fresh
+# clone always has a playable wiring-proof track even without LFS.
+assets/audio/club_music/*.wav !text !filter !merge !diff

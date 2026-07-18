@@ -93,6 +93,7 @@
 #include "destinations.h" // W-MENU: the ONE registry of every place the game has
 #include "world_menu.h"   // W-MENU: the world / place selection screen (F6 + pause)
 #include "club1127.h"
+#include "club_jukebox.h"
 #include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
 #include "cliffs.h"                          // Salvari cliffs finale (--world cliffs)
@@ -405,6 +406,13 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
     // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
     console.registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    // ---- CLUB JUKEBOX (feat/club-jukebox): user music for Club 1127 ----------
+    // Drop MP3s/WAVs in assets/audio/club_music or Documents/X3Native/club_music
+    // (or point snd_clubmusic_dir at a library); optional "<track>.json" sidecars
+    // ({"bpm":128,"offset_s":0.3}) lock the whole club light show to each track.
+    console.registerCVar("snd_clubmusic_dir",     "",    "extra club-jukebox music folder (scanned with Documents/X3Native/club_music + assets/audio/club_music)");
+    console.registerCVar("snd_clubmusic_bpm",     "120", "club-jukebox default BPM for tracks without a .json sidecar");
+    console.registerCVar("snd_clubmusic_shuffle", "0",   "club-jukebox order: 0 = alphabetical, 1 = shuffled");
     // Hardware ray-traced ambient occlusion (RT AO — Vulkan ray-query path). Gated
     // + DEFAULT OFF: only takes effect on a device that supports ray tracing. Live-
     // tunable: `r_rtao 1` turns on ground-truth ray-traced contact occlusion (BLAS/
@@ -1430,6 +1438,11 @@ int runDefaultHost(HostContext& hc) {
     // "drops the player at spawn()" design in club1127.h).
     x3::game::Club1127World  club1127;
     bool                     club1127Handoff = false;
+    // CLUB JUKEBOX (feat/club-jukebox): the user-music "Self Radio" for The Deep.
+    // Scanned + started on the arrival handoff (hot-rescan on every club entry);
+    // empty folders -> inert, the elevator's baked disco loop plays as before.
+    x3::game::ClubJukebox    clubJukebox;
+    bool                     prevJukeboxN = false;   // N / Shift+N edge (in-club)
     // fix/club-relight: latches while the player is down in The Deep so the interior
     // ambient/IBL lift (a dim-but-readable neon club, matching --world club) is applied
     // ONCE on entry and restored to the world air ONCE on exit — never per-frame.
@@ -8540,10 +8553,46 @@ int runDefaultHost(HostContext& hc) {
                                                  x3::phys::Vec3{ cs.x, cs.y + 1.0f, cs.z });
                         club1127Handoff = true;
                         x3::logInfo("WELCOME TO CLUB 1127 — The Deep");
+                        // CLUB JUKEBOX: hot-rescan on every club entry. With user
+                        // tracks present the baked disco loop yields, the track
+                        // STREAMS on the music channel, and the whole beat grid
+                        // (subs/tiles/dancers/lights) locks to its BPM. Empty
+                        // folders -> nothing changes (the baked loop plays on).
+                        {
+                            x3::game::ClubJukebox::Config jcfg;
+                            jcfg.extraDir   = console->getString("snd_clubmusic_dir");
+                            jcfg.defaultBpm = console->getFloat("snd_clubmusic_bpm");
+                            jcfg.shuffle    = console->getInt("snd_clubmusic_shuffle") != 0;
+                            jcfg.volume     = 0.75f;   // house volume (live music slider still applies)
+                            clubJukebox.configure(jcfg);
+                            clubJukebox.scan();
+                            clubJukebox.attach(audio.get(), &club1127);
+                            if (!clubJukebox.empty() && clubJukebox.startPlayback())
+                                elevator.stopClubMusic();
+                        }
                     }
                     // Re-arm for the next descent once the cab is back near the surface.
-                    if (club1127Handoff && elevator.cabCenter().y > -50.0f)
+                    if (club1127Handoff && elevator.cabCenter().y > -50.0f) {
                         club1127Handoff = false;
+                        // Left The Deep: the jukebox yields the music channel back
+                        // to the ambient bed at its saved settings volume.
+                        if (clubJukebox.playing()) {
+                            clubJukebox.stopPlayback();
+                            audio->playMusic(kMusicPath, /*loop*/true, s_musicVol);
+                        }
+                    }
+                    // DJ BOOTH CONTROL while in the club: N = next, Shift+N = prev.
+                    if (club1127Handoff && clubJukebox.playing() && window) {
+                        const bool nNow = glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS;
+                        if (nNow && !prevJukeboxN) {
+                            const bool sh =
+                                glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                                glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+                            if (sh) clubJukebox.prev(); else clubJukebox.next();
+                        }
+                        prevJukeboxN = nNow;
+                    }
+                    clubJukebox.update(x3::net::kSimDt);   // auto-advance + toast
                 }
 
                 // ---- W-RIFT: SUB-LEVEL R1 lives ------------------------------------
@@ -11249,6 +11298,9 @@ int runDefaultHost(HostContext& hc) {
             if (facilityAlertOn)
                 hud.drawAlert(*device, frame, facilityAlert.level(),
                               facilityAlert.redShift(), alertHudClock);
+            // CLUB JUKEBOX: "Now Playing: <track> [BPM]" toast on track change
+            // (bottom-center, fades; a no-op outside the club / when faded).
+            clubJukebox.drawToast(*device, frame);
             hud.drawConsole(*device, frame, *console, dt);
             // EDITOR (--editor): the HOST submits the editor panels (menu bar /
             // Outliner / Blockout / Status) between begin and end, then endEditorUI

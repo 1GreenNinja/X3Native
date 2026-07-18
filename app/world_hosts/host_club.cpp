@@ -2,6 +2,7 @@
 #include "world_host_common.h"
 #include "../scene.h"
 #include "../club1127.h"
+#include "../club_jukebox.h"               // CLUB JUKEBOX (user MP3s + BPM grid lock)
 #include "../crowd.h"
 #include "../player.h"
 #include "../asset_root.h"
@@ -190,11 +191,33 @@ int hostClub(HostContext& hc) {
         // THE MUSIC (max-out): the real club track (the
         // tempo every beat-locked pulse in club1127.cpp rides; Descent, ~85.5 BPM) at
         // house volume. Graceful: no device / missing WAV -> silent club.
+        //
+        // CLUB JUKEBOX (feat/club-jukebox): if the user dropped MP3s/WAVs in the
+        // club_music folders (assets/audio/club_music, Documents/X3Native/
+        // club_music, or X3_CLUBMUSIC_DIR), THOSE stream instead — and the whole
+        // beat grid (subs/tiles/dancers/lights) retunes to each track's sidecar
+        // BPM. Empty folders -> the built-in Descent loop, byte-for-byte as before.
         std::unique_ptr<x3::audio::IAudioSystem> caudio(x3::audio::createAudioSystem());
         x3::audio::LoopHandle clubTrack{};
+        x3::game::ClubJukebox jukebox;
         if (caudio && caudio->init()) {
-            auto h = caudio->load(x3::game::resolveAudio("music/club_descent.wav"));
-            if (h.valid()) clubTrack = caudio->startLoop(h, 0.75f, 1.0f);
+            {
+                x3::game::ClubJukebox::Config jcfg;
+                if (const char* d = std::getenv("X3_CLUBMUSIC_DIR")) jcfg.extraDir = d;
+                if (const char* bp = std::getenv("X3_CLUBMUSIC_BPM"))
+                    jcfg.defaultBpm = (float)std::atof(bp);
+                if (const char* sh = std::getenv("X3_CLUBMUSIC_SHUFFLE"))
+                    jcfg.shuffle = std::atoi(sh) != 0;
+                jukebox.configure(jcfg);
+                jukebox.scan();
+                jukebox.attach(caudio.get(), &club);
+            }
+            if (!jukebox.empty() && jukebox.startPlayback()) {
+                // user music took the floor (grid retuned inside startPlayback)
+            } else {
+                auto h = caudio->load(x3::game::resolveAudio("music/club_descent.wav"));
+                if (h.valid()) clubTrack = caudio->startLoop(h, 0.75f, 1.0f);
+            }
         }
         x3::game::Player cplayer;
         cplayer.spawn(*cphys, spawn.x, spawn.y, spawn.z);
@@ -203,10 +226,10 @@ int hostClub(HostContext& hc) {
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
         double prevTime = glfwGetTime();
-        bool prevSpaceC = false, prevFC = false;
+        bool prevSpaceC = false, prevFC = false, prevNc = false;
         bool noclipC = false;
         float flyXc = spawn.x, flyYc = spawn.y + 1.6f, flyZc = spawn.z, flyYawC = 3.14159f, flyPitchC = -0.2f;
-        x3::logInfo("--world club: walk THE DEEP at Y=-200 — WASD, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
+        x3::logInfo("--world club: walk THE DEEP at Y=-200 — WASD, mouse look, Space jump, LeftShift sprint, F noclip, N next track / Shift+N prev (jukebox), Esc to quit");
 
         int lastWc = (int)W, lastHc = (int)H;
         while (!glfwWindowShouldClose(window)) {
@@ -229,6 +252,15 @@ int hostClub(HostContext& hc) {
                 if (noclipC) { float yy, pp; cplayer.camera(flyXc, flyYc, flyZc, yy, pp); flyYawC = yy; flyPitchC = pp; }
             }
             prevFC = fNow;
+            // DJ BOOTH CONTROL: N = next track, Shift+N = previous (jukebox only —
+            // the built-in Descent loop has no playlist to step).
+            const bool nNow = kd(GLFW_KEY_N);
+            if (nNow && !prevNc && jukebox.playing()) {
+                if (kd(GLFW_KEY_LEFT_SHIFT) || kd(GLFW_KEY_RIGHT_SHIFT)) jukebox.prev();
+                else                                                     jukebox.next();
+            }
+            prevNc = nNow;
+            jukebox.update(dt);   // auto-advance on track end + toast timer
 
             float camX, camY, camZ, camYaw, camPitch;
             if (!noclipC) {
@@ -279,6 +311,7 @@ int hostClub(HostContext& hc) {
             if (frame.valid) {
                 cscene.render(*device, frame);
                 club.drawCharacters(*device, frame, cscene);
+                jukebox.drawToast(*device, frame);   // "Now Playing: ..." on change
             }
             device->endFrame(frame);
         }

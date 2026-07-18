@@ -281,6 +281,12 @@ public:
     bool  disco() const { return m_disco; }
     float doorPct() const { return m_doorPct; }   // 1=open, 0=closed (arrival handoff reads this)
 
+    // CLUB JUKEBOX handoff: stop the elevator's baked 128 BPM disco loop so the
+    // user-music jukebox can take the floor on club arrival (the loop otherwise
+    // rides until disco is toggled off). Safe no-op when nothing is playing;
+    // disco mode itself stays ON (the descent/lights are unaffected).
+    void stopClubMusic();
+
     // Force the EMERGENCY_STOP / FREEFALL states (horror events; reachable for the
     // test). emergencyStop() halts the cab + shakes; freefall() drops it. Both no-op
     // unless the FSM is enabled.

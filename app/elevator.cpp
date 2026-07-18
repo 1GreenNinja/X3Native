@@ -816,6 +816,14 @@ bool ElevatorSystem::keypadDigit(int digit) {
     return false;
 }
 
+void ElevatorSystem::stopClubMusic() {
+    if (m_clubLoop.valid() && m_audio) {
+        m_audio->stopLoop(m_clubLoop);
+        m_clubLoop = {};
+        x3::logInfo("[elevator] baked disco loop stopped (jukebox takes the floor)");
+    }
+}
+
 // ===========================================================================
 // VISUALS — graybox in-car kit (glass / strata / OLEDs / mirror / terminal /
 // ceiling light / disco ball) as child Scene entities offset around the cab.

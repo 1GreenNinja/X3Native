@@ -135,3 +135,10 @@ build-*/
 # Scratch dirs for the kit re-convert (tools/convert_modular_scifi.py).
 tmp_glb/
 tmp_tex/
+
+# CLUB JUKEBOX (feat/club-jukebox): personal music NEVER ships with the repo.
+# Only the README + the tiny generated test tone (+ its BPM sidecar) commit.
+assets/audio/club_music/*
+!assets/audio/club_music/README.txt
+!assets/audio/club_music/jukebox_test_tone.wav
+!assets/audio/club_music/jukebox_test_tone.json
