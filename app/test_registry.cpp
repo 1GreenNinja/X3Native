@@ -979,6 +979,13 @@ int dispatchTests(const TestFlags& tf) {
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
     }
+    if (tf.testClubNpcs) {
+        x3::logInfo("running Club 1127 CANON NPCs self-test (feat/club-npcs) "
+                    "(Danny @ U-bar + Amara/Emma @ Private Lounge place with talk anchors; "
+                    "danny/amara/emma chat trees parse + full-reachability validate; "
+                    "E-to-talk resolves each; hub trees start + reach their menu)...");
+        return x3::game::runClubNpcsSelfTest() ? 0 : 1;
+    }
     if (tf.testPerfshop) {
         x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "
                     "(build headless; assert the terminal glass + neon sign are DISPLAYS: "

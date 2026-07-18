@@ -187,6 +187,11 @@ struct CliOptions {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+    // --test-clubnpcs (feat/club-npcs): the three canon dialogue NPCs (Danny at the
+    // U-bar, Amara + Emma in the Private Lounge) place with valid talk anchors; their
+    // three chat trees parse + FULL-reachability validate; E-to-talk resolves each;
+    // each `hub` tree starts + reaches its menu. Additive flag.
+    bool        testClubNpcs = false;
 
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark

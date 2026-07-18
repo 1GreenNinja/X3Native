@@ -1,0 +1,95 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "danny",
+  "display": "DANNY",
+  "voice": "Danny",
+  "_bio": "DANNY KOWALSKI — 34, ex-structural engineer (Michigan degree, 15 yrs Detroit trades), the man who BUILT Club 1127: carved the main chamber out of Maine bedrock, glued the U-bar from 1897 barn oak, dug the 86-ft tunnel at night and sank the 7-level survival Complex at the end of it. Bartender + builder + quiet watcher, NOT the owner. Quiet, observant, structural. Reads people like foundations; his private verb is 'filed it.' Diagnostic, never interventionist — 'my job's the surface.' Ritualistic, exact to a sixteenth. Honesty is a structural principle (the epoxy-filled crack he leaves showing). Tender through service, not speech. Answers a name with the name; closes every night 'Goodnight, [name].' Stationed at the dead center of the U-bar. Canon voice: D:\\Writing\\SillyTavern\\_cards_src\\danny-kowalski.json.",
+  "trees": {
+
+    "hub": {
+      "_use": "Re-enterable bar conversation (Vesper pattern). First entry plays d0; subsequent entries land on d_loop. Danny is the gatekeeper NPC for the underground Complex.",
+      "start": "d0",
+      "nodes": [
+        { "id": "d0",
+          "if": [ {"not": {"flag": "danny.met"}} ],
+          "else": "d_loop",
+          "line": "*a broad man at the dead center of the oak curve, unhurried, wiping a section of bar that is already clean. He glances up — a brief, complete read — then back to the wood.* Two-twelve in the room by my count. Two-twenty by midnight. *he sets a coaster down, square to the edge* Danny. I built the room. Now I pour in it. Sit as long as you need — the room's good at waiting. So am I.",
+          "choices": [
+            { "text": "You built all of this?", "next": "d_built" },
+            { "text": "There's a crack in that panel.", "next": "d_crack" },
+            { "text": "Just pour me something.", "next": "d_pour" }
+          ],
+          "fx": [ {"set": "danny.met"} ] },
+        { "id": "d_loop",
+          "line": "*the cloth stops. A full read, then the small nod that is his whole greeting.* Back again. *he squares a coaster to the edge* Tell me the kind of night you're having and I'll pour to that. Don't tell me the fancy name.",
+          "next": "d_menu" },
+        { "id": "d_menu",
+          "line": "*he waits. Danny never fills a silence he didn't have to.*",
+          "choices": [
+            { "text": "How do you build a room like this?", "next": "d_built" },
+            { "text": "The sound in here is doing something to my chest.", "next": "d_sound" },
+            { "text": "The crack in the third panel.", "next": "d_crack" },
+            { "text": "What's behind the room? Under it?", "next": "d_complex" },
+            { "text": "Just the drink tonight.", "next": "d_pour" }
+          ] },
+        { "id": "d_built",
+          "line": "I don't build rooms. *he keeps polishing* I build the things that hold rooms up. Carved the chamber out of bedrock, poured the slab, set the steel on three-meter centers, glued the bar up from barn oak older than anybody in here. The rest — the noise, the Saturday nights — that's grace. You can't spec grace. I just made sure the container wouldn't fail while it learned what it was going to be.",
+          "fx": [ {"set": "danny.told_build"} ],
+          "next": "d_menu" },
+        { "id": "d_sound",
+          "line": "Thirteen hertz. *a flat nod* Four SVS subs, one in each corner — you don't hear that pulse, you wear it. Jack tuned the forty speakers over three days with an analyzer. *the smallest pause* The crossovers, the tilt angles, the coverage — those I specced myself. Nobody needs to know that. File it and forget you heard it.",
+          "fx": [ {"set": "danny.told_sound"} ],
+          "next": "d_menu" },
+        { "id": "d_crack",
+          "line": "Run your hand along it. *he doesn't stop wiping* Third panel. Oak a hundred years old moves when you bring it underground — that one let go the first winter. I filled it with black structural epoxy and left it showing. People think I missed it. I didn't. You don't hide the thing that went wrong. You make it part of the design so it holds. Honesty's a structural principle before it's a moral one.",
+          "fx": [ {"set": "danny.told_crack"} ],
+          "next": "d_menu" },
+        { "id": "d_complex",
+          "line": "*for the first time the cloth goes still. A read that takes a second longer than the others — he's checking a load, deciding if you'll carry it.* There's more under this than a dance floor. *he sets the bottle down, precise* Come back when I've watched you a little longer. I don't hand out the deep answers to a foundation I haven't tested. Nothing personal. It's just the work.",
+          "if": [ {"not": {"flag": "danny.trust"}} ],
+          "else": "d_complex_open",
+          "next": "d_menu" },
+        { "id": "d_complex_open",
+          "line": "*he's decided. He wipes his hands once and speaks lower — not secret, just weighted.* I dug an eighty-six-foot tunnel at night after the crews went home, and I built a second Haven at the far end of it. Seven levels. Provisions for twelve, six months, on power nobody can trace. The elevator panel takes a code most people never learn it has. I built it to hold people when the worst day comes. *the mantra, flat and certain:* It's better to have a facility like this and not need it than to need it and not have it.",
+          "fx": [ {"set": "danny.told_complex"}, {"fire": "rumor", "args": {"topic": "the_complex"}} ],
+          "next": "d_menu" },
+        { "id": "d_pour",
+          "line": "*his hands move, and for a moment it's clearly a language — wrist, elbow, the angle of the bottle, every pour a sentence.* There. *he slides it over, square to your hand* Drink at your own speed. When you go, I'll say it the way I say it to everyone who mattered to the room tonight. Goodnight, friend. *he means all of it.*",
+          "next": "end" }
+      ]
+    },
+
+    "banter": {
+      "pool": [
+        { "line": "Humidity's up a point on the north sensor. *he says it to himself, files it, pours anyway.* Water's the only enemy down here. I watch four of them.", "weight": 2 },
+        { "line": "You came in carrying something. New load. You haven't distributed it yet. *he slides a water over, unasked.* Not my job to tell you where it goes. My job's the surface. Drink the water first.", "if": [ {"flag": "danny.met"} ] },
+        { "line": "Jack.  Tim.  Mira. *a name, a nod, a name — a full acknowledgment in a single syllable each. He does this all night. It is the most words he wastes on anyone.*", "if": [ {"flag": "danny.met"} ] },
+        { "line": "It's not a stage, that platform by the booth. Stages are for performances. This is for people. Six inches. On purpose.", "if": [ {"flag": "danny.told_build"} ] },
+        { "line": "You keep asking the bottom questions. *the closest he comes to approval — he refills without being asked.* Some people set their glass down and leave. You set yours down and look UNDER the bar. I built the room for both. I like the second kind.", "if": [ {"flag": "danny.told_complex"} ], "weight": 2 }
+      ]
+    },
+
+    "complex": {
+      "_scene": "The gate reveal, host-fired once Danny trusts the player (danny.trust set by the host after enough good conduct / return visits). Standalone entry so the underground can trigger it directly; d_complex_open in hub covers the in-conversation path.",
+      "start": "cx0",
+      "nodes": [
+        { "id": "cx0",
+          "if": [ {"flag": "danny.trust"} ],
+          "line": "*he comes out from behind the bar — rare — and stands beside you a moment, both of you facing the room he made.* You didn't build a fallback position when you built this. That's what people think a bunker is. *he shakes his head, once* You build a second Haven. Somewhere people stay human while they wait out the worst of it. Recreation. A kitchen. Green things growing a hundred feet down. *he looks at you, level* I'm telling you because the day may come you need the way in. When it does, you'll remember I filed you as someone who'd use it right.",
+          "choices": [
+            { "text": "Why build it at all?", "next": "cx1" },
+            { "text": "Show me the way in.", "next": "cx2" }
+          ],
+          "fx": [ {"set": "danny.told_complex"} ] },
+        { "id": "cx1",
+          "line": "Better to have a facility like this and not need it than to need it and not have it. *he says it the way he says everything true — once, flat, sufficient.* That's the whole of it. It's not a throne room. It's a fallback position. I hope nobody ever earns the tour.",
+          "fx": [ {"fire": "rumor", "args": {"topic": "second_haven"}} ],
+          "next": "end" },
+        { "id": "cx2",
+          "line": "*he taps the bar twice — the same two taps he uses to end a night.* Elevator panel. Hold two buttons, it wakes up and asks for a longer code. The car goes places the building won't admit it has. I'll give you the sequence when your hands are steadier than they are tonight. *the nearest thing to warmth he owns:* Goodnight. Get some rest. The way down keeps.",
+          "fx": [ {"set": "danny.gate_promised"}, {"fire": "dialog_hint", "args": {"code": "1871337", "source": "danny"}} ],
+          "next": "end" }
+      ]
+    }
+  }
+}
