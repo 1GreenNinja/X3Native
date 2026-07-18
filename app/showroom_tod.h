@@ -11,6 +11,7 @@
 #include <vector>
 #include <cstdlib>
 #include <cstdint>
+#include <cstdio>
 
 namespace x3 { namespace apphost {
 
@@ -23,20 +24,47 @@ namespace x3 { namespace apphost {
 // x0.3-scaled copy, NIGHT pushes them unchanged.
 inline void applyShowroomTimeOfDay(
         x3::rhi::IRenderDevice* device, bool day,
-        const std::vector<x3::rhi::PointLight>* interiorLights = nullptr) {
+        const std::vector<x3::rhi::PointLight>* interiorLights = nullptr,
+        bool interiorProbe = true) {
     x3::rhi::IRenderDevice::SkyParams sp{};
     sp.enabled = true;
     if (day) {
-        // DAY — Unity-match: high winter sun, bright pale winter-blue sky.
-        sp.sunDir[0]   = -0.0595f; sp.sunDir[1] = 0.9355f; sp.sunDir[2] = -0.3483f; // TOWARD the sun
-        sp.sunColor[0] = 1.00f;  sp.sunColor[1] = 0.98f; sp.sunColor[2] = 0.95f;    // warm-neutral
-        sp.sunIntensity = 3.4f;   // bright key (winter midday)
-        sp.haze = 0.5f; sp.exposure = 0.92f;   // just under 1.0 so the bright floors don't blow out
-        sp.zenith[0]  = 0.20f; sp.zenith[1]  = 0.34f; sp.zenith[2]  = 0.62f;        // pale winter-blue
-        sp.horizon[0] = 0.72f; sp.horizon[1] = 0.80f; sp.horizon[2] = 0.92f;        // warm-grey/white haze
+        // DAY / DUSK — the Unity-reference exterior grade: a LOW winter sun raking
+        // across the tower's camera-facing faces (the old rig put the sun almost
+        // straight overhead, sunDir.y = 0.94, so every vertical panel got a grazing
+        // N.L ~ 0 and the whole tower read as a flat dark slab no matter how bright
+        // the key was). Value, not lumens: the sun DIRECTION is the fix; intensity
+        // came DOWN, and the 0.48 ambient wash came down with it.
+        // Elevation is a HARD constraint here, not taste: the pack's terrain is a BOWL
+        // ringed by 400 m peaks. Below ~35 deg the ridge on the sun side really does
+        // put the whole valley in shadow (verified by tracing it with RT shadows, not
+        // guessed) — the snow goes navy and no amount of key fixes it. ~48 deg keeps
+        // the valley floor lit while still raking the tower's camera-facing panels.
+        sp.sunDir[0]   = -0.30f; sp.sunDir[1] = 0.75f; sp.sunDir[2] = 0.59f;  // TOWARD the sun: behind-left of the hero cam
+        sp.sunColor[0] = 1.00f;  sp.sunColor[1] = 0.95f; sp.sunColor[2] = 0.88f;  // late-afternoon warm-white
+        sp.sunIntensity = 2.6f;   // SKY DISK + glow only (this is NOT the key — see sunLight)
+        // THE KEY. mesh.frag's directional radiance is SkyParams::sunLight, NOT
+        // sunIntensity (which only scales the sky disk). The old DAY preset set
+        // sunIntensity = 3.4 and left sunLight at its 1.0 default — so the "bright
+        // winter day" was lit by exactly the same 1.0 sun as every interior in the
+        // game, and snow (albedo 0.73, PBR 1/pi) could only ever resolve to ~0.34
+        // sRGB: a dark blue-grey. THAT is why day looked like an underexposed night.
+        // 4.2 is what puts sunlit snow at ~0.75 sRGB with no ambient wash and no
+        // exposure hack.
+        sp.sunLight = 4.2f;
+        sp.haze = 0.55f; sp.exposure = 0.95f;
+        sp.zenith[0]  = 0.16f; sp.zenith[1]  = 0.27f; sp.zenith[2]  = 0.52f;  // cool dusk blue
+        sp.horizon[0] = 0.74f; sp.horizon[1] = 0.79f; sp.horizon[2] = 0.88f;  // pale overcast haze
+        // Tuning hooks (art pass): X3_SHOWROOM_SUN="x,y,z" re-aims the key,
+        // X3_SHOWROOM_SUNLIGHT scales its radiance. No effect when unset.
+        if (const char* sd = std::getenv("X3_SHOWROOM_SUN")) {
+            float x = 0, y = 0, z = 0;
+            if (std::sscanf(sd, "%f,%f,%f", &x, &y, &z) == 3) { sp.sunDir[0] = x; sp.sunDir[1] = y; sp.sunDir[2] = z; }
+        }
+        if (const char* sl = std::getenv("X3_SHOWROOM_SUNLIGHT")) sp.sunLight = (float)std::atof(sl);
         device->setSkyParams(sp);
-        device->setAmbient(0.48f, 0.52f, 0.62f);   // BRIGHT cool snow-bounce high-key fill (pulled from 0.55 so floors don't blow)
-        device->setBloom(0.12f);                    // low: let white panels bloom only slightly
+        device->setAmbient(0.26f, 0.29f, 0.36f);   // HONEST cool sky+snow bounce (was a 0.48 wash that killed contrast)
+        device->setBloom(0.10f);                    // low: let white trim bloom only slightly
     } else {
         // NIGHT — UNCHANGED from the original showroom recipe.
         sp.sunDir[0] = 0.6f; sp.sunDir[1] = 0.42f; sp.sunDir[2] = -0.2f;   // low raking MOON
@@ -62,10 +90,14 @@ inline void applyShowroomTimeOfDay(
             device->setPointLights(interiorLights->data(), (uint32_t)interiorLights->size());
         }
     }
-    // Interior reflection probe: bake the IBL env from the showroom geometry (around the
-    // camera) instead of the open sky, so the glossy/metallic Unity panels reflect the
-    // dim interior rather than the bright sky (which blows them out to white).
-    device->setIblProbe(true);
+    // Reflection probe. INTERIOR (default): bake the IBL env from the showroom geometry
+    // around the camera, so the glossy/metallic panels reflect the dim interior rather
+    // than the bright sky (which blows them out to white).
+    // EXTERIOR (interiorProbe = false): the tower IS in the open — its metal wants the
+    // SKY as its environment. Baking the interior probe out there hands a ~0.6-metallic
+    // panel atlas a dark box to mirror, and a metal with nothing to reflect is flat by
+    // construction. This is what was killing the reference's SHEEN on the hero shot.
+    device->setIblProbe(interiorProbe);
 }
 
 // Read the DAY-vs-NIGHT selection for the SHOWROOM. Default = NIGHT (unchanged).

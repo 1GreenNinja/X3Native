@@ -92,6 +92,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-canonplay") o.testCanonPlay = true;
         else if (a == "--test-goldenpath") o.testGoldenPath = true;
+        else if (a == "--test-opening") o.testOpening = true;   // opening-flow wake-in-cell contract
         else if (a == "--test-descmech") o.testDescMech = true;   // W9-1 desc-field mechanics (Tier A)
         else if (a == "--test-inventory") o.testInventory = true;       // W9-3 RPG backpack
         else if (a == "--test-progression") o.testProgression = true;   // W9-3 XP/levels
@@ -181,6 +182,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;
+        else if (a == "--test-npclife") o.testNpcLife = true;
+        else if (a == "--test-hacking") o.testHacking = true;
         else if (a == "--test-waterzap") o.testWaterZap = true;
         else if (a == "--test-sealife") o.testSealife = true;
         else if (a == "--test-alert") o.testAlert = true;

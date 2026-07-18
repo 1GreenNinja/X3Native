@@ -137,6 +137,24 @@ void CrowdSkin::attach(uint32_t i, const CrowdSystem& crowd, Scene& scene) {
     s.sys->setPropMotion(0.0f, 0.0f);
     s.hasLastPos = false;
     s.attached = true;
+    s.ragdolled = false;   // a fresh agent stands (any prior corpse is forgotten)
+}
+
+bool CrowdSkin::triggerRagdoll(uint32_t i, Scene& scene,
+                               x3::phys::IPhysicsWorld& physics,
+                               const x3::phys::Vec3& shove) {
+    if (i >= m_slots.size()) return false;
+    Slot& s = m_slots[i];
+    if (!s.skinned || !s.sys || !s.attached || s.ragdolled) return false;
+    const bool flopped = s.sys->triggerRagdoll(scene, physics, shove);
+    // Latch even if the model was unrigged (it can't flop, but it's dead): the pose
+    // feed still stops so a "killed" citizen doesn't keep walking its schedule.
+    s.ragdolled = true;
+    return flopped;
+}
+
+bool CrowdSkin::agentRagdolled(uint32_t i) const {
+    return i < m_slots.size() && m_slots[i].ragdolled;
 }
 
 void CrowdSkin::update(float dt, const CrowdSystem& crowd, Scene& scene,
@@ -166,6 +184,10 @@ void CrowdSkin::update(float dt, const CrowdSystem& crowd, Scene& scene,
     for (uint32_t i = 0; i < n; ++i) {
         Slot& s = m_slots[i];
         if (!s.skinned || !s.sys) continue;
+        // Shot dead: the death ragdoll owns the skin now. Stop feeding the pose (it
+        // would fight the flop) but keep TICKING the character so update() reads the
+        // ragdoll bones back and settles/despawns the corpse on its usual timers.
+        if (s.ragdolled) { s.sys->update(dt, scene, physics, s.sys->pos()); continue; }
         if (!s.attached) attach(i, crowd, scene);
         const CrowdAgent& a = crowd.agent(i);
 
@@ -222,6 +244,7 @@ void CrowdSkin::deactivate(Scene& scene) {
         s.attached = false;
         s.hasLastPos = false;
         s.talking = false;
+        s.ragdolled = false;
     }
     m_active = false;
 }
@@ -425,6 +448,28 @@ bool runCrowdSkinSelfTest() {
         cscheck(hidden, "S5 deactivate() hides every skinned character");
         cscheck(reattached && device.meshCreates == meshes && device.texCreates == texes,
                 "S5b re-build re-attaches the pool with ZERO reloads (stream cycle)");
+    }
+
+    // ---- S6: a shot citizen FLOPS — the harvested death-flop wired onto the
+    // per-agent MonsterSystem. triggerRagdoll latches the slot (pose-follow stops)
+    // and, on a skinnable rig, drives the skin from a physics ragdoll. ----
+    {
+        // Find a skinned + attached agent and shoot it.
+        int victim = -1;
+        for (uint32_t i = 0; i < crowd.agentCount(); ++i)
+            if (skin.agentSkinned(i) && skin.character(i)) { victim = (int)i; break; }
+        bool flopped = false, latched = false, ragActive = false;
+        if (victim >= 0) {
+            flopped = skin.triggerRagdoll((uint32_t)victim, scene, *physics,
+                                          x3::phys::Vec3{ 1.0f, 0.2f, 0.0f });
+            latched = skin.agentRagdolled((uint32_t)victim);
+            // Tick a few frames so update() drives the flop.
+            tick(20);
+            const MonsterSystem* c = skin.character((uint32_t)victim);
+            ragActive = c && c->ragdollActive();
+        }
+        cscheck(victim >= 0 && flopped && latched && ragActive,
+                "S6 a shot citizen ragdolls (death-flop wired onto the crowd skin)");
     }
 
     x3::logInfo("crowd-skin: " + std::to_string(cs_pass) + "/" +

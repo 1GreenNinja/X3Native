@@ -1,0 +1,1195 @@
+// --world echotropolis host — F1 P1 app skeleton (Echotropolis: the island in 3D).
+//
+// The strategic ORBIT camera over an open sea. This is a pure CONSUMER of the
+// engine: analytic sky (setSkyParams via TimeOfDay), the Gerstner ocean
+// (setWaterParams — a device-internal 240m patch that re-centers under the camera
+// each frame, so it reads as an infinite sea), and the FPS camera primitive
+// (setCamera). P2: the authored island lands as a baked GLB (EnvArtSystem, see
+// the island block in hostEchotropolis). P3: a live TimeOfDay cycle drives sky/
+// sun/ambient/water through the art bible's four canonical times (golden/dusk/
+// night/noon — keys 1-4, T pauses, ECHO_TOD pins headless captures). Modeled on host_valley.cpp for the
+// scene/teardown lifecycle, but there is no physics/streamer here — water and sky
+// are device-internal passes, so the loop just poses the camera and renders.
+//
+// ORBIT CAMERA (RTS-grade feel — retuned after live playtest):
+//   - orbit a focus point on the sea plane (y=0), camera pitched DOWN toward it;
+//   - LMB/MMB-drag PANS with a "grab the ground" 1:1 gain that scales with orbit
+//     radius (groundPerPixel) so the terrain tracks the cursor at any zoom;
+//   - RMB-drag ORBITS (yaw/pitch) directly at ~0.25°/px — no ease-back detach;
+//   - wheel zoom is EXPONENTIAL (~12% radius/notch), no momentum;
+//   - light critically-damped smoothing (~0.10-0.14s) so nothing snaps or floats;
+//   - CLAMPS: radius 100m..6000m, focus to island bounds +1km, camera height never
+//     below waterline+5m (also stops flying outside the world / seeing the sea slab);
+//   - pitch (elevation above the sea) clamped 2°..85° (near-top-down RTS view
+//     available), default UNCHANGED at 14° (0.2443 rad — the postcard vista);
+//   - momentum edge-scroll: cursor in a 12px window-edge band pans the focus that
+//     way, velocity-based (tau=0.11s accel/glide), radius-scaled, off while dragging;
+//   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
+#include "world_host_common.h"
+#include "../tod.h"
+#include "../env_art.h"
+#include "../player.h"                // WALK MODE (Phase A): first-person character on the streets
+#include "../scene.h"                 // RESIDENTS: crowd entities live in a Scene
+#include "../crowd.h"                 // RESIDENTS: wandering citizen agents
+#include "../crowd_skin.h"            // RESIDENTS: real rigged-GLB characters over the agents
+#include "../npc_life.h"              // LIVING CITY: 12-archetype NPCs with daily schedules
+#include "../asset_root.h"            // riggedGlbRoot()
+#include "../holo_terminal.h"         // CONTROL ROOM: in-world ops dashboard screen
+#include <string>
+
+#include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
+#include <fstream>
+#include <vector>
+#include <memory>
+#include <string>
+
+namespace x3 { namespace apphost {
+
+namespace {
+
+// Unity-style critically-damped spring (Game Programming Gems 4). Eases `cur`
+// toward `target`, carrying `vel` between frames — no overshoot, no snap. The
+// single `smoothTime` (seconds to ~reach target) IS the inertia knob per channel.
+inline float smoothDamp(float cur, float target, float& vel, float smoothTime, float dt) {
+    if (smoothTime < 1e-4f) smoothTime = 1e-4f;
+    const float omega = 2.0f / smoothTime;
+    const float x = omega * dt;
+    const float expf_ = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
+    const float change = cur - target;
+    const float temp = (vel + omega * change) * dt;
+    vel = (vel - omega * temp) * expf_;
+    return target + (change + temp) * expf_;
+}
+
+// Shortest-arc damp for an angle (keeps yaw wrapping seamless across +/-pi).
+inline float smoothDampAngle(float cur, float target, float& vel, float smoothTime, float dt) {
+    float d = target - cur;
+    while (d >  3.14159265f) { d -= 6.28318531f; }
+    while (d < -3.14159265f) { d += 6.28318531f; }
+    return smoothDamp(cur, cur + d, vel, smoothTime, dt);
+}
+
+inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// "Grab the ground" pan gain: world metres of GROUND spanned per screen pixel at
+// the focus, from the perspective vertical coverage 2*radius*tan(fovV/2)/screenH.
+// A drag scales its pixel delta by this so the terrain tracks the cursor ~1:1 (RTS
+// map-drag) at any zoom, instead of a fixed rate unusable across the 100m..6km range.
+inline float groundPerPixel(float radius, float fovDeg, int screenH) {
+    const float fovV = fovDeg * 3.14159265f / 180.0f;
+    return (2.0f * radius * std::tan(fovV * 0.5f)) / (float)(screenH > 0 ? screenH : 1);
+}
+
+// Host-side sample of the authored island's 16-bit heightmap (the SAME PNG
+// island_to_glb.py meshed the GLB from). Lets the orbit PIVOT ride the terrain
+// height under the focus so rotating/zooming keeps the ground under the crosshair
+// pinned (RTS feel) instead of pivoting around the flat y=0 plane while the mesa
+// sweeps past. Optional: if the PNG is absent heightAt() returns 0 and the pivot
+// falls back to the water plane. The world mapping mirrors island_to_glb.py exactly
+// (extent 4096 m, HEIGHT_SCALE 320, sea level = normalized 0.20 -> world y 0).
+struct Heightfield {
+    int w = 0, h = 0;
+    std::vector<uint16_t> px;                     // 16-bit grayscale, row-major
+    static constexpr float kMeters  = 4096.0f;    // world extent (island frame)
+    static constexpr float kScale   = 320.0f;     // HEIGHT_SCALE
+    static constexpr float kSeaNorm = 0.20f;      // normalized sea level
+
+    bool load(const std::string& path) {
+        // The engine's stb build is STBI_NO_STDIO (memory loaders only), so slurp
+        // the file ourselves and decode from memory.
+        std::ifstream f(path, std::ios::binary);
+        if (!f) { w = h = 0; return false; }
+        std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(f)),
+                                          std::istreambuf_iterator<char>());
+        if (bytes.empty()) { w = h = 0; return false; }
+        int comp = 0;
+        uint16_t* d = stbi_load_16_from_memory(bytes.data(), (int)bytes.size(), &w, &h, &comp, 1);
+        if (!d || w < 2 || h < 2) { if (d) stbi_image_free(d); w = h = 0; return false; }
+        px.assign(d, d + (size_t)w * h);
+        stbi_image_free(d);
+        return true;
+    }
+    bool ok() const { return w >= 2 && h >= 2; }
+
+    // Bilinear world height (metres) at world (x,z). Off-grid clamps to the edge.
+    float heightAt(float x, float z) const {
+        if (!ok()) return 0.0f;
+        float u = clampf((x / kMeters + 0.5f) * (float)(w - 1), 0.0f, (float)(w - 1));
+        float v = clampf((z / kMeters + 0.5f) * (float)(h - 1), 0.0f, (float)(h - 1));
+        const int x0 = (int)u, z0 = (int)v;
+        const int x1 = x0 < w - 1 ? x0 + 1 : x0;
+        const int z1 = z0 < h - 1 ? z0 + 1 : z0;
+        const float fx = u - (float)x0, fz = v - (float)z0;
+        auto S = [&](int cx, int cz) { return (float)px[(size_t)cz * w + cx] / 65535.0f; };
+        const float a = S(x0, z0), b = S(x1, z0), c = S(x0, z1), d2 = S(x1, z1);
+        const float hn = a + (b - a) * fx + (c - a) * fz + (a - b - c + d2) * fx * fz;
+        return (hn - kSeaNorm) * kScale;
+    }
+};
+
+// TU-local scroll accumulator (only one --world host ever runs at a time). GLFW
+// scroll is event-driven, so we sum deltas here and drain them once per frame.
+double g_scrollY = 0.0;
+void scrollCB(GLFWwindow*, double /*xoff*/, double yoff) { g_scrollY += yoff; }
+
+// The F1 camera-settings scaffold: one tunable block every controller reads
+// (D1/D3 doctrine). F2 hangs a settings UI + remap table on these fields.
+struct CameraOptions {
+    float fovDeg        = 60.0f;    // vertical FOV
+    // RMB orbit-rotate: direct degrees-per-pixel (converted to rad in the loop).
+    float orbitDegPerPx = 0.25f;    // ~0.25°/px — RTS look feel, no heavy easing
+    // Q/E keyboard orbit-yaw rate (rad/s) — ~90°/s, Q counter-clockwise, E clockwise.
+    float keyYawRate    = 1.5708f;  // pi/2 rad/s
+    // WASD pan speed as a FRACTION of the orbit radius per second (so keyboard pan
+    // covers the frame at a consistent visual rate whether zoomed in or out): 0.5 ->
+    // cross the 4km island in ~3s at 3km out, street-scale (~100 m/s) at 200m.
+    float wasdPanFrac   = 0.50f;
+    // Wheel zoom: EXPONENTIAL — a constant fraction of the radius per notch.
+    float zoomPerNotch  = 0.12f;    // 12% radius per wheel notch (multiplicative)
+    // Critically-damped smoothTimes (s) — snappy RTS response (no float/overshoot).
+    float smoothFocus   = 0.12f;
+    float smoothYaw     = 0.10f;
+    float smoothPitch   = 0.10f;
+    // Zoom smoothing time-constant. EoS uses a dt*10 exponential approach (~0.10s);
+    // we keep our critically-damped smoothDamp model (nicer curve, no overshoot) but
+    // ALIGN its time-constant to EoS: 0.14s -> 0.10s (adopt-now cross-check, item 3).
+    float smoothRadius  = 0.10f;
+    // Radius (orbit distance) limits — island stays >= ~1/3 of frame at maxRadius.
+    float minRadius     = 100.0f;
+    float maxRadius     = 6000.0f;
+    // Focus clamp: island half-extent (~2048 m) + 1 km margin, so panning can't
+    // drift off into empty sea and lose the island.
+    float focusLimit    = 3048.0f;
+    // Camera never below waterline + this many metres (also blocks flying under the
+    // world and seeing the sea-slab underside / fog dome).
+    float minCamHeight  = 5.0f;
+    // ---- Momentum edge-scroll (EoS "adopt now") --------------------------------
+    // Cursor inside this many px of a window edge pushes the focus that way.
+    float edgeMarginPx  = 12.0f;
+    // Edge-scroll speed as a FRACTION of the orbit radius per second (radius-scaled
+    // like WASD pan, so it feels identical at any zoom — matches wasdPanFrac feel;
+    // EoS's 15 wu/s * dist/24 works out to ~0.62 frac, we use the host's 0.5 for
+    // consistency with the existing WASD pan).
+    float edgeScrollFrac = 0.50f;
+    // Velocity accel/decay time-constant for edge-scroll momentum (EoS PAN_SMOOTH_TAU;
+    // our focus smoothDamp uses 0.12s critically-damped, comparable — left as-is).
+    float panSmoothTau  = 0.11f;
+};
+
+// Orbit rig state (targets + smoothed values + spring velocities).
+struct OrbitRig {
+    // Targets (driven by input).
+    float focusX = 0.0f, focusZ = 0.0f;   // focus point on the sea (y=0)
+    float yaw    = 3.93f;                  // orbit azimuth (rad) — from the SE: town shelf
+                                           // in front, mesa cliffs behind (tiers readable)
+    float pitch  = 0.2443f;                // elevation above sea (rad) — 14deg default
+    float radius = 2800.0f;                // orbit distance — frames the whole 4km island
+    // Orbit-pivot height: the terrain height under (focusX,focusZ), so the pivot
+    // rides the land (0 over water). Keeps the crosshair point fixed while rotating.
+    float pivotY = 0.0f;
+    // Smoothed (what the camera actually uses).
+    float sFocusX = 0.0f, sFocusZ = 0.0f, sPivotY = 0.0f;
+    float sYaw = 3.93f, sPitch = 0.2443f, sRadius = 2800.0f;
+    // Spring velocities.
+    float vFocusX = 0.0f, vFocusZ = 0.0f, vPivotY = 0.0f, vYaw = 0.0f, vPitch = 0.0f, vRadius = 0.0f;
+    // Edge-scroll momentum velocity (world m/s on the sea plane), eased with panSmoothTau.
+    float vEdgeX = 0.0f, vEdgeZ = 0.0f;
+};
+
+constexpr float kPitchMin = 0.0349f;   //   2 degrees (see the sky just above the horizon)
+constexpr float kPitchMax = 1.4835f;   //  85 degrees (near-top-down RTS city view)
+
+inline float clampPitch(float p) { return p < kPitchMin ? kPitchMin : (p > kPitchMax ? kPitchMax : p); }
+
+// Pose the engine FPS camera FROM the orbit rig (looking down at the focus). The
+// pitch is raised if needed so the camera height (sin(pitch)*radius, since focus.y
+// = 0) never drops below the waterline + minCamHeight — this both keeps the horizon
+// composed and blocks flying under the world at low pitch / small radius.
+void applyOrbitCamera(x3::rhi::IRenderDevice* device, const OrbitRig& r,
+                      float useYaw, float usePitch, float fovDeg, float minCamHeight) {
+    const float minPitch = std::asin(clampf(minCamHeight / std::max(r.sRadius, 1e-3f), 0.0f, 1.0f));
+    if (usePitch < minPitch) usePitch = minPitch;
+    const float lookPitch = -usePitch;             // camera pitches DOWN toward the sea
+    const float cp = std::cos(lookPitch), sp = std::sin(lookPitch);
+    const float fwdX = cp * std::cos(useYaw);
+    const float fwdY = sp;
+    const float fwdZ = cp * std::sin(useYaw);
+    const float camX = r.sFocusX  - fwdX * r.sRadius;
+    const float camY = r.sPivotY  - fwdY * r.sRadius;   // pivot on terrain -> camY = pivotY + sin(pitch)*radius
+    const float camZ = r.sFocusZ  - fwdZ * r.sRadius;
+    device->setCamera(camX, camY, camZ, useYaw, lookPitch, fovDeg);
+}
+
+// ---- F3 HERO MODE (dive) — HOOK/SPEC ONLY, not implemented (EoS "later" tier). ----
+// Port of epochs-rts hero-mode.ts: F3 dives from the orbit pose into an over-the-
+// shoulder 3rd-person chase on a walked unit; ESC parks the orbit back on the unit.
+// When implemented, add a `bool heroActive` gate around the orbit input/apply below
+// and branch to a HeroRig here. Study constants to lift verbatim:
+//   ENTER_BLEND_S 0.55 (smoothstep eye+aim RTS->shoulder); FOLLOW_DIST 3.4 (boom),
+//   SHOULDER 0.55 (right lateral), ANCHOR_HEIGHT 1.15, AIM_AHEAD 1.6, EYE_CLEARANCE 0.34;
+//   LOOK_SENS 0.0028 rad/px, pitch clamp -1.1..1.25 rad, enter pitch -0.08;
+//   3-point boom terrain collision (t=0.5/0.8/1.0), eye snaps up instantly / eases
+//   down at dt*6; drive movement via sim orders (ORDER_PERIOD 0.22s, LEAD 2.6) to
+//   preserve determinism; waterline sub-cam auto-triggers on depth.
+// NO IMPLEMENTATION HERE — comment hook only.
+
+// ---- P3: the four canonical times (ART_DIRECTION.md lighting doctrine) mapped
+// onto TimeOfDay's normalized clock. Dusk spans [0.55,0.75): golden hour sits
+// early in it (low warm sun), blue dusk late (sun at the horizon). Night midpoint
+// gets the aurora swell + starfield; noon is the clear-day baseline.
+constexpr float kTodGolden = 0.715f;  // "The Postcard" — sun elevation ~0.15, warm + low
+constexpr float kTodDusk   = 0.75f;   // "Lamps Coming On" — sun ON the horizon, ember line
+constexpr float kTodNight  = 0.875f;  // "The Answering Light" — moon fill + stars
+constexpr float kTodNoon   = 0.40f;   // "The Clear Day" — bright PNW noon
+float canonTodFraction(const char* name) {
+    std::string n(name);
+    if (n == "golden") return kTodGolden;
+    if (n == "dusk")   return kTodDusk;
+    if (n == "night")  return kTodNight;
+    if (n == "noon")   return kTodNoon;
+    const float f = std::strtof(name, nullptr);   // also accepts a raw fraction
+    return (f >= 0.0f && f < 1.0f) ? f : kTodGolden;
+}
+
+// Push a TOD sample to the device: analytic sky (sun dir/color/haze/exposure —
+// this sun ALSO lights the island's PBR meshes) + the ambient fill, with the
+// midnight aurora tint folded into the ambient so the night isn't pure black.
+//
+// ART_DIRECTION.md doctrine layer: TimeOfDay's keyframes animate the sun but
+// leave SkyParams' zenith/horizon at their bright DAY defaults, so night skies
+// render pale. Grade the dome here by sun elevation — deep blue-black at night,
+// and an amber horizon blush when the sun is low but up (golden hour / dawn).
+void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s) {
+    x3::rhi::IRenderDevice::SkyParams sky = s.sky;
+    sky.enabled = true;
+
+    auto clamp01 = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
+    // dayness: 1 in full day, ramping to 0 as the sun sinks past the horizon.
+    const float dayness = clamp01((s.sunElevation + 0.06f) / 0.30f);
+    constexpr float kNightZenith[3]  = { 0.0f, 0.0f, 0.0f };        // DARK BLACK (Tim's canon)
+    constexpr float kNightHorizon[3] = { 0.0f, 0.0f, 0.0f };        // stars own the night
+    for (int i = 0; i < 3; ++i) {
+        sky.zenith[i]  = kNightZenith[i]  + (sky.zenith[i]  - kNightZenith[i])  * dayness;
+        sky.horizon[i] = kNightHorizon[i] + (sky.horizon[i] - kNightHorizon[i]) * dayness;
+    }
+    // Golden-hour blush: sun above the horizon but LOW -> horizon warms to amber,
+    // zenith picks up a touch of it. Peaks at elevation 0, gone by ~0.35.
+    if (s.sunElevation > 0.0f) {
+        const float low = clamp01(1.0f - s.sunElevation / 0.35f);
+        constexpr float kAmber[3] = { 0.98f, 0.52f, 0.24f };
+        for (int i = 0; i < 3; ++i) {
+            sky.horizon[i] += (kAmber[i] - sky.horizon[i]) * (0.65f * low);
+            sky.zenith[i]  += (kAmber[i] - sky.zenith[i])  * (0.12f * low);
+        }
+    }
+    device->setSkyParams(sky);
+    // Night ambient FLOOR: the pure-black sky kills the IBL contribution, so at
+    // night the terrain is lit by ambient alone — hold a moonlight minimum so the
+    // island stays readable while the sky dome itself stays black.
+    constexpr float kNightAmbFloor[3] = { 0.11f, 0.12f, 0.17f };
+    float amb[3];
+    for (int i = 0; i < 3; ++i) {
+        amb[i] = s.ambient[i] + s.auroraTint[i];
+        const float floorI = kNightAmbFloor[i] * (1.0f - dayness);
+        if (amb[i] < floorI) amb[i] = floorI;
+    }
+    device->setAmbient(amb[0], amb[1], amb[2]);
+}
+
+// Gerstner ocean at sea level 0, lit by the SAME sun as the sky (doctrine: one
+// light). Water color follows the daylight: full color at noon, ember-dark at
+// night (the baked GLB ocean ring darkens automatically via the PBR sun).
+void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSample& s) {
+    x3::rhi::IRenderDevice::WaterParams wp{};
+    const float daynessGate = (s.sunElevation + 0.06f) / 0.30f;
+    // DEEP NIGHT: the Gerstner shader's reflection term renders bright white no
+    // matter what params we pass (engine-side; flagged to the fleet) — so the
+    // patch is DISABLED at night and the island GLB's dark ocean ring owns the
+    // water. No patch = no white sheet, no trough checkering, calm night sea.
+    if (daynessGate < 0.15f) {
+        x3::rhi::IRenderDevice::WaterParams off{};
+        off.enabled = false;
+        device->setWaterParams(off);
+        return;
+    }
+    wp.enabled = true; wp.seaLevel = 0.0f; wp.time = t;
+    // Amplitude must stay UNDER the island GLB's baked ocean ring (y=-0.4) or the
+    // Gerstner troughs punch through it and checker with the ring (seen in P2).
+    // NOTE the shader's octave sum overshoots the amplitude param — 0.32 still
+    // punched through at night (bright patch vs black ring = checkerboard). 0.26
+    // leaves real margin.
+    wp.amplitude = 0.26f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
+    const float dayness = std::min(1.0f, std::max(0.0f, (s.sunElevation + 0.06f) / 0.30f));
+    const float dayF = 0.12f + 0.88f * std::max(0.0f, s.sunElevation);
+    wp.deepColor[0]    = 0.015f * dayF; wp.deepColor[1]    = 0.055f * dayF; wp.deepColor[2]    = 0.11f * dayF;
+    wp.shallowColor[0] = 0.06f  * dayF; wp.shallowColor[1] = 0.24f  * dayF; wp.shallowColor[2] = 0.32f * dayF;
+    // A below-horizon sunDir blows the Gerstner glint out to full white (seen at
+    // night) — swap in a high dim "moon" and wind the specular down with the day.
+    wp.sunDir[0] = s.sky.sunDir[0];
+    wp.sunDir[1] = std::max(0.45f, s.sky.sunDir[1]);
+    wp.sunDir[2] = s.sky.sunDir[2];
+    if (s.sunElevation > 0.10f) wp.sunDir[1] = s.sky.sunDir[1];   // day: the real sun
+    wp.specular = 1.0f + 15.0f * dayness;
+    wp.fresnel = 0.02f;
+    device->setWaterParams(wp);
+}
+
+// ============================ ATMOSPHERE (cinematic pass) =====================
+// Owner: cinematic-atmosphere session (2026-07-11). Layers Steam-key-art depth on
+// TOP of the TOD sky/sun/water (applyTodSample / applyOcean), using ONLY engine
+// levers documented in IRenderDevice.h: setFog (aerial perspective), setGrade
+// (filmic + vivid split-tone + vignette), setBloom / setExposure / setPostFX
+// (ACES tonemap + sun-glint bloom), setShadowBounds (frame the 4km island).
+// Deliberately SEPARATE from applyTodSample so the sky/water/TOD session's edits
+// never collide — call this AFTER applyTodSample each frame. Engine has NO
+// world-cloud layer / skybox-texture / god-ray pass, so those are intentionally
+// absent (clouds only exist on procedural planet spheres). Direction: vivid,
+// saturated, storybook-postcard (NMS/Aincrad key-art), not muted photorealism.
+void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s) {
+    auto clamp01 = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
+    auto mix3 = [](float out[3], const float a[3], const float b[3], float t) {
+        for (int i = 0; i < 3; ++i) out[i] = a[i] + (b[i] - a[i]) * t;
+    };
+    // dayness: 0 deep night .. 1 full day (matches applyTodSample's ramp).
+    const float dayness = clamp01((s.sunElevation + 0.06f) / 0.30f);
+    // low: golden-hour weight — sun up but near the horizon (peaks at elev 0).
+    const float low = (s.sunElevation > 0.0f) ? clamp01(1.0f - s.sunElevation / 0.35f) : 0.0f;
+
+    // ---- 1. AERIAL PERSPECTIVE -------------------------------------------------
+    // Beer-Lambert depth fog whose COLOR matches the sky the island melts into:
+    // cool blue-white by day, warm gold at golden hour, deep blue at night. With
+    // the 2.8km orbit the far island (~4km) hazes to ~0.55 and the 7km ocean-ring
+    // horizon to ~0.8, dissolving the hard water/sky line seen in the baseline.
+    constexpr float kFogDay[3]    = { 0.58f, 0.72f, 0.90f };  // cool scattering blue-white
+    constexpr float kFogGold[3]   = { 1.00f, 0.58f, 0.26f };  // RICH golden-hour haze (saturated)
+    constexpr float kFogNight[3]  = { 0.015f, 0.03f, 0.075f };// deep blue dusk/night
+    x3::rhi::IRenderDevice::FogParams fog;
+    fog.enabled = true;
+    mix3(fog.color, kFogNight, kFogDay, dayness);              // night -> day base
+    // Warm HARD toward saturated gold at golden hour. High weight (not a 50/50
+    // blend) so cool-blue + gold never average into gray — the haze reads amber.
+    const float goldW = clamp01(low * 1.35f);
+    mix3(fog.color, fog.color, kFogGold, goldW);
+    // Tuned after Tim's sea-approach screenshot (2026-07-11): the whole 4km island
+    // was drowning in amber soup at golden hour. The haze must live at the HORIZON
+    // (10km+) while the island — a 3-6km subject — stays readable. Halve the
+    // low-sun density ramp and pull the opacity ceiling down.
+    fog.start      = 900.0f;                                   // crisp foreground island
+    fog.density    = 0.00010f + 0.00004f * low;               // subtle by day, gentle low-sun
+    fog.maxOpacity = 0.78f + 0.08f * low;                     // sky still glows gold out far
+    device->setFog(fog);
+
+    // ---- 2. FILMIC + VIVID GRADE (NMS/storybook: colors you can taste) ---------
+    // Teal shadows / warm highlights split-tone, saturation pushed ABOVE 1 for the
+    // painterly-confident look, warmth + vignette swelling at golden hour.
+    x3::rhi::IRenderDevice::GradeParams gr;
+    gr.strength = 0.90f;
+    gr.shadowTint[0]    = 0.90f; gr.shadowTint[1]    = 1.00f; gr.shadowTint[2]    = 1.08f; // teal shadows
+    gr.highlightTint[0] = 1.06f + 0.06f * low;                                             // warm highlights
+    gr.highlightTint[1] = 1.00f;
+    gr.highlightTint[2] = 0.92f - 0.06f * low;                                             // warmer low-sun
+    gr.saturation = 1.14f + 0.10f * low;                       // vivid; extra pop at golden hour
+    gr.vignette   = 0.08f + 0.04f * low;                      // gentle focus, more at golden hour
+    device->setGrade(gr);
+
+    // ---- 3/4. HDR POST + SUN-GLINT BLOOM --------------------------------------
+    // ACES tonemap, a low bright-pass knee so the sun disc + water glint + lantern
+    // bloom (not a washout), and a touch of positive exposure at golden hour to
+    // make the low sun GLOW. Auto-exposure stays on (bias, not absolute).
+    x3::rhi::IRenderDevice::PostFXParams px;   // defaults: ACES, autoexposure, TAA on
+    px.bloomThreshold = 1.08f;                 // sun-glint blooms; not the whole water sheet
+    px.bloomIntensity = 0.14f + 0.06f * low;   // warm halo at golden hour, no washout
+    px.aeMax          = 2.20f + 0.30f * low;   // let the glowing sky adapt brighter
+    device->setPostFX(px);
+    device->setBloom(0.12f + 0.06f * low);     // composite bloom add (sun/lantern)
+    device->setExposure(1.0f + 0.16f * low);   // golden hour glows
+
+    // ---- 5. SHADOWS: frame the ~4km island so the sun casts across it ----------
+    device->setShadowBounds(0.0f, 0.0f, 0.0f, 2200.0f);
+}
+
+// ============================ RAY TRACING (hardware RT pass) ==================
+// Owner: RT-enable session (2026-07-11). Opts Echotropolis into the engine's
+// EXISTING hardware ray-query features (IRenderDevice.h ~L505-650). SEPARATE from
+// applyAtmosphere/applyTodSample/applyOcean so it never collides with the sky/
+// water/TOD lane. The device CACHES + re-applies each param every frame, so a
+// single call at host start persists across both the headless and windowed loops.
+//
+// ALL of this is gated on rayTracingSupported(): on a non-RT GPU (Pascal / the
+// 1080Ti boxes / headless-no-RT) this is a pure no-op and the raster/CSM/SSAO
+// path is byte-for-byte identical to before — exactly today's fallback.
+//
+// What we turn on (value order), and what we deliberately don't:
+//   1. RT SOFT SUN SHADOWS (tier 1) — the postcard win: cliff faces, the 446
+//      city buildings, and the lighthouse get soft distance-scaled penumbra under
+//      the golden-hour sun (min()-combined with CSM; skinned chars keep raster).
+//      This host has NO point lights (§3 below), so tier 1 (sun-only) is exactly
+//      the useful work — tier 2 would loop for point occluders that don't exist.
+//   2. RT AO — ground-truth contact occlusion multiplies the HDR scene so the
+//      cottages/props read as SITTING ON the terrain (amphitheater contact), not
+//      floating. Radius widened past the 0.5 m contact default because the city
+//      is viewed from a ~2.8 km orbit — sub-metre AO would be sub-pixel there.
+//   3. RT POINT-LIGHT SHADOWS — SKIPPED ON PURPOSE. The city windows, lighthouse
+//      lantern, and fissure embers are PURELY emissive-material + bloom (this host
+//      calls setPointLights zero times) — there are no real point lights to cast,
+//      so tier-2 point shadows have nothing to shadow. If a future pass promotes
+//      the lantern to a real light, bump tier to 2 and it casts for free.
+//   4. DDGI — DEFERRED (not half-done). Its probe grid would have to span the ~4 km
+//      island; a 24x8x24 auto-fit = ~170 m spacing, far too coarse for window-glow-
+//      onto-streets bounce, and a useful grid needs an AUTHORED tight volume over
+//      the night-city district (like screenshot_hosts' explicit 20x6x20). Deferred
+//      pending that authored AABB rather than shipped coarse.
+//   5. RT REFLECTIONS — NOT touched here (water is the sky/water lane's). The API
+//      is setReflectionParams(ssr/rtFallback/fullRes/intensity); available for that
+//      session to enable on the Gerstner ocean when they choose.
+void applyRayTracing(x3::rhi::IRenderDevice* device) {
+    if (!device->rayTracingSupported()) {
+        x3::logInfo("--world echotropolis: RT unsupported on this device — raster/CSM/SSAO fallback (byte-identical)");
+        return;
+    }
+    // Dev A/B opt-out: ECHO_RT=0 forces the raster/CSM/SSAO path even on RT hardware
+    // (same-content baseline capture + Pascal-parity check). Default: RT ON.
+    if (const char* e = std::getenv("ECHO_RT"); e && e[0] == '0') {
+        x3::logInfo("--world echotropolis: ECHO_RT=0 — RT force-disabled (raster/CSM/SSAO baseline)");
+        return;
+    }
+    // 1. RT soft SUN shadows (sun-only; no point lights in this host).
+    x3::rhi::IRenderDevice::RtShadowParams rs{};
+    rs.tier       = 1;      // sun RT (cone-jittered penumbra, min()-combined w/ CSM)
+    rs.sunSizeDeg = 0.6f;   // golden-hour: a touch softer than the 0.5 deg default
+    device->setRtShadowParams(rs);
+    // 2. RT ambient occlusion (contact grounding; radius widened for orbit vista).
+    x3::rhi::IRenderDevice::RtaoParams ao{};
+    ao.enabled  = true;
+    ao.radius   = 2.0f;     // broader than 0.5 m contact — visible from the orbit
+    ao.rays     = 8;        // half-res + depth-aware upsample keeps this cheap
+    ao.strength = 0.90f;
+    ao.power    = 1.5f;
+    device->setRtaoParams(ao);
+    x3::logInfo("--world echotropolis: RT ENABLED — soft sun shadows (tier1, 0.6deg) + RT AO (r2.0, 8 rays); "
+                "point shadows skipped (emissive city, no point lights), DDGI deferred (4km island), "
+                "reflections left to water lane");
+}
+// ============================ END RAY TRACING ================================
+
+} // namespace
+
+int hostEchotropolis(HostContext& hc) {
+    auto* device = hc.device;
+    GLFWwindow* window = hc.window;
+    const bool headless = hc.headless;
+    const bool screenshot = hc.screenshot;
+    const std::string& screenshotPath = hc.screenshotPath;
+    const bool shotCamOverride = hc.shotCamOverride;
+    const float* shotCam = hc.shotCam;
+
+    x3::logInfo("--world echotropolis: F1 P1 skeleton — orbit camera over the open sea");
+
+    CameraOptions opt;
+    OrbitRig rig;
+
+    // ---- P3: time-of-day. A full day-night cycle runs in 240s (windowed); the
+    // clock starts at (and headless captures) ECHO_TOD = golden|dusk|night|noon
+    // or a raw [0,1) fraction. Default: golden hour — the postcard light.
+    x3::game::TodConfig todCfg;
+    todCfg.dayLengthSeconds = 240.0f;
+    x3::game::TimeOfDay tod(todCfg);
+    {
+        const char* e = std::getenv("ECHO_TOD");
+        tod.setDayFraction(canonTodFraction(e ? e : "golden"));
+    }
+    applyTodSample(device, tod.sample());
+    applyAtmosphere(device, tod.sample());   // ATMOSPHERE: aerial haze + grade + bloom
+    applyRayTracing(device);                 // RAY TRACING: soft sun shadows + RT AO (gated; no-op on non-RT)
+    device->setCameraFar(20000.0f);   // far plane covers the GLB's 14km ocean ring corners
+
+    // ---- P2: THE ISLAND. Authored in SimCityLLM2 (gen_heightmap.py seed 20260530),
+    // meshed + splat-baked by tools/island_to_glb.py: land mesh (513^2 grid + skirt)
+    // with a single 4096^2 blended albedo, PLUS a flat ocean ring to the horizon at
+    // y=-0.4 (the engine Gerstner patch only lives near the camera; the ring keeps
+    // sea-to-horizon at vista distance). Sea level = world y 0; mesa tops ~179m.
+    // Dir overridable for other checkouts: ECHO_ISLAND_DIR env var.
+    x3::game::EnvArtSystem island;
+    Heightfield hf;   // orbit-pivot terrain sampler (windowed only; headless keeps y=0)
+    {
+        const char* dirEnv = std::getenv("ECHO_ISLAND_DIR");
+        const std::string islandDir = dirEnv ? dirEnv : "D:/GameDev/SimCityLLM2/refs/terrain";
+        if (island.buildFromGlb(*device, islandDir, "island_20260530.glb"))
+            x3::logInfo("--world echotropolis: island GLB loaded from " + islandDir);
+        else
+            x3::logError("--world echotropolis: island GLB MISSING (" + islandDir +
+                         "/island_20260530.glb) — rendering open sea only");
+        if (hf.load(islandDir + "/island_height_20260530.png"))
+            x3::logInfo("--world echotropolis: heightfield loaded — orbit pivot rides the terrain");
+        else
+            x3::logWarn("--world echotropolis: heightfield PNG absent — orbit pivot uses the y=0 plane");
+    }
+
+    // ---- P4 slice (sibling lane): the NIGHT LIGHTS. Two systems, both night-gated:
+    //   * lighthouse_beam.glb — sweeping beam cone (apex at origin, +X), re-posed per
+    //     frame via setInstanceTransform, mounted on the PROPS lighthouse's lantern
+    //     (tower itself lives in echotropolis_props.glb — integrator's; placement from
+    //     refs/models/props_placement.json, lantern center = base + 25.75m);
+    //   * fissure_glow.glb — GrokCity3 ember quads lining the fjord walls, world-baked.
+    // Missing GLBs degrade gracefully to "not drawn".
+    constexpr float kLightX = -493.24f, kLightY = -0.156f, kLightZ = 789.39f;
+    constexpr float kLanternY = 25.75f;     // beam pivot above the props tower base
+    constexpr float kBeamRate = 0.35f;      // rad/s sweep
+    x3::game::EnvArtSystem beam, fissure;
+    {
+        const char* mEnv = std::getenv("ECHO_MODELS_DIR");
+        const std::string mDir = mEnv ? mEnv : "D:/GameDev/SimCityLLM2/refs/models";
+        const float T[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, kLightX,kLightY,kLightZ,1 };
+        if (beam.buildFromGlbAt(*device, mDir, "lighthouse_beam.glb", T))
+            x3::logInfo("--world echotropolis: lighthouse beam armed (night-gated)");
+        if (fissure.buildFromGlb(*device, mDir, "fissure_glow.glb"))
+            x3::logInfo("--world echotropolis: fissure ember-glow loaded (night-gated)");
+    }
+    auto poseBeam = [&](float theta) {
+        const float c = std::cos(theta), s = std::sin(theta);
+        const float M[16] = { c,0,-s,0, 0,1,0,0, s,0,c,0, kLightX, kLightY + kLanternY, kLightZ, 1 };
+        beam.setInstanceTransform(0, M);
+    };
+
+    // ================= P4 COAST DRESSING (props) — added by the P4 session =========
+    // Lighthouse + dock + fishing boats + mesa skyline hint, all baked at their
+    // WORLD positions into one GLB by tools/place_props.py (positions DERIVED from
+    // the heightmap: bay-arm tip / flat shelf / calm basin / mesa-top-near-fjord —
+    // re-derivable as the landform changes; NOT hand-tuned to a fixed coastline).
+    // Loaded at identity exactly like the island GLB (world-space verts). Purely
+    // visual, no physics. Dir overridable via ECHO_PROPS_DIR. Missing file = no-op
+    // (the island still renders). Iterating placement/scale = rebake only, no rebuild.
+    x3::game::EnvArtSystem props;
+    {
+        const char* pdirEnv = std::getenv("ECHO_PROPS_DIR");
+        const std::string propsDir = pdirEnv ? pdirEnv : "D:/GameDev/SimCityLLM2/refs/models";
+        if (props.buildFromGlb(*device, propsDir, "echotropolis_props.glb"))
+            x3::logInfo("--world echotropolis: P4 props GLB loaded from " + propsDir);
+        else
+            x3::logWarn("--world echotropolis: P4 props GLB absent (" + propsDir +
+                        "/echotropolis_props.glb) — coast undressed");
+    }
+    // ================= END P4 COAST DRESSING ======================================
+
+    // ===================== REAL BUILDINGS (Phase B) =====================
+    // The first REAL textured GLB buildings in Echo Harbor. The Unity packs ship
+    // Draco-compressed (KHR_draco_mesh_compression) — the engine loader now DECODES
+    // Draco natively (fleet's feature/draco-decode, 2db0ebb, merged into main), so we
+    // load the RAW packs directly. Unity cm → scale 0.01; each house lifted by its own
+    // base offset so it sits on the terrain.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> houses;
+    {
+        const std::string hdir = "D:/Assets/_glb/prefab_buildings/HouseForge";
+        auto addHouse = [&](const char* glb, float x, float z, float yaw, float lift) {
+            const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
+            const float s = 0.01f, c = std::cos(yaw), sn = std::sin(yaw);
+            const float T[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
+                                  sn*s, 0.0f,  c*s, 0.0f,   x, gy + lift, z, 1.0f };
+            auto h = std::make_unique<x3::game::EnvArtSystem>();
+            if (h->buildFromGlbAt(*device, hdir, glb, T)) houses.push_back(std::move(h));
+        };
+        addHouse("PF_MetalHouse01.glb",      60.0f, 700.0f, 0.4f, 11.73f);
+        addHouse("PF_MetalHouse02.glb",     125.0f, 745.0f, 2.1f,  2.13f);
+        addHouse("PF_PrimitiveHouse01.glb",  10.0f, 675.0f, 3.6f,  3.17f);
+        addHouse("PF_PrimitiveHouse02.glb", 150.0f, 690.0f, 5.0f,  1.00f);
+        addHouse("PF_PrimitiveHouse03.glb",  85.0f, 640.0f, 1.2f,  8.59f);
+        x3::logInfo("--world echotropolis: REAL BUILDINGS — " +
+                    std::to_string(houses.size()) + " textured HouseForge houses (decoded)");
+    }
+
+    // ===================== THE UFO (Tim's Grok→Rodin saucer) ============
+    // A mothership DRIFTING on a slow circular patrol high over the crown, spinning
+    // + bobbing, with an emissive underbelly GLOW and a downward ABDUCTION BEAM
+    // (ufo_fx.glb, authored in world metres) tracking it. Both re-posed per frame.
+    x3::game::EnvArtSystem ufo, ufoFx;
+    bool ufoBuilt = false, ufoFxBuilt = false;
+    constexpr float kUfoScale = 120.0f;        // ~228 m across
+    constexpr float kUfoCenX = -20.0f, kUfoCenZ = 760.0f, kUfoY = 470.0f;  // patrol centre
+    constexpr float kUfoDriftR = 360.0f;       // patrol radius over the city
+    {
+        const std::string mdir = "D:/GameDev/SimCityLLM2/refs/models";
+        const float T[16] = { kUfoScale,0,0,0, 0,kUfoScale,0,0, 0,0,kUfoScale,0, kUfoCenX,kUfoY,kUfoCenZ,1 };
+        if (ufo.buildFromGlbAt(*device, mdir, "ufo.glb", T)) {
+            ufoBuilt = true;
+            x3::logInfo("--world echotropolis: THE UFO patrols the crown");
+        }
+        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, kUfoCenX,kUfoY,kUfoCenZ,1 };
+        if (ufoFx.buildFromGlbAt(*device, mdir, "ufo_fx.glb", I)) ufoFxBuilt = true;
+    }
+    auto poseUfo = [&](float t) {
+        const float w = t * 0.045f;                     // slow orbit
+        const float ux = kUfoCenX + kUfoDriftR * std::cos(w);
+        const float uz = kUfoCenZ + kUfoDriftR * std::sin(w);
+        const float uy = kUfoY + std::sin(t * 0.30f) * 8.0f;   // bob
+        const float spin = t * 0.22f, c = std::cos(spin), sn = std::sin(spin);
+        const float s = kUfoScale;
+        const float MU[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
+                               sn*s, 0.0f,  c*s, 0.0f,   ux, uy, uz, 1.0f };
+        ufo.setInstanceTransform(0, MU);
+        // FX authored in world metres: translate under the hull (no spin/scale).
+        const float MF[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, ux, uy, uz, 1.0f };
+        if (ufoFxBuilt) ufoFx.setInstanceTransform(0, MF);
+    };
+
+    // RESIDENTS: character height (5-6 ft). Env-tunable (ECHO_PED_SCALE) so it can be
+    // dialed live without a rebuild; default 1.7 → ~5.9 ft citizens. (The citizens
+    // ARE real textured animated people — the earlier "green blobs" were the grass-
+    // tuft flora props in echotropolis_props.glb, misread as residents.)
+    const float kPedScale = [](){ const char* e = std::getenv("ECHO_PED_SCALE");
+                                  return e ? (float)std::atof(e) : 1.7f; }();
+
+    // ===================== Headless screenshot path =====================
+    // Pose the default orbit (17deg, radius 70), settle the waves a few frames so
+    // the Gerstner surface isn't flat, then arm+grab. Mirrors host_valley's grab.
+    if (headless || screenshot) {
+        // Snap the smoothed state onto the targets (no live input to ease from).
+        rig.sFocusX = rig.focusX; rig.sFocusZ = rig.focusZ;
+        rig.sYaw = rig.yaw; rig.sPitch = rig.pitch; rig.sRadius = rig.radius;
+
+        const std::string outPath = screenshot ? screenshotPath
+                                               : std::string("agent_echotropolis.png");
+        // ECHO_RESIDENTS=1 → build the citizen crowd + rigged skins for the capture
+        // (verify/showcase the living city in a still). Extra settle frames let the
+        // deferred skin spawns drain. Local instances (headless never runs the loop).
+        const bool shotResidents = [](){ const char* e = std::getenv("ECHO_RESIDENTS"); return e && e[0]=='1'; }();
+        std::unique_ptr<x3::phys::IPhysicsWorld> sphys;
+        x3::game::Scene sScene; x3::game::CrowdSystem sCrowd; x3::game::CrowdSkin sSkin;
+        x3::game::HoloTerminal sOps; bool sOpsBuilt = false;
+        x3::game::NpcLife sNpc; bool sNpcBuilt = false;   // living-city NPCs (schedules/archetypes)
+        bool sResBuilt = false;
+        if (shotResidents && hf.ok()) {
+            sphys.reset(x3::phys::createPhysicsWorld());
+            if (sphys && sphys->init()) {
+                x3::game::CrowdConfig cc; cc.count = 40;
+                cc.centerX = -20.0f; cc.centerZ = 760.0f;
+                cc.groundY = hf.heightAt(-20.0f, 760.0f); cc.radius = 340.0f;
+                cc.walkSpeed = 1.3f; cc.converse = true;
+                sCrowd.build(cc, sScene, *device);
+                // CONTROL ROOM ops dashboard (verify in captures)
+                sOps.build(sScene, *device,
+                           x3::phys::Vec3{ -14.0f, hf.heightAt(-20.0f, 760.0f) + 2.2f, 752.0f },
+                           0.0f, 6.4f, 3.6f);
+                sOps.setLayout(x3::game::HoloTerminal::Layout::Readout);
+                sOps.setTextColor(1.0f, 0.62f, 0.18f, 1.0f);
+                sOpsBuilt = sOps.built();
+                x3::game::CrowdSkinConfig sc; sc.site = "residents-shot";
+                sc.modelDir = x3::game::riggedGlbRoot(); sc.spawnsPerFrame = 4;
+                sc.scale = kPedScale;   // 5-6 ft citizens
+                sSkin.build(sc, sCrowd);
+                sResBuilt = sCrowd.built();
+                // LIVING CITY: the 12-archetype NPCs with real daily schedules on the crown.
+                x3::game::NpcLifeConfig lc;
+                lc.centerX = -20.0f; lc.centerZ = 760.0f;
+                lc.groundY = hf.heightAt(-20.0f, 760.0f);
+                lc.freewayMovers = 0;            // no freeway in the crown
+                sNpc.build(lc, sScene, *device);
+                sNpcBuilt = sNpc.built();
+                x3::logInfo(std::string("--world echotropolis: SHOT NpcLife ") +
+                            (sNpcBuilt ? "built (living-city archetypes)" : "FAILED"));
+                x3::logInfo(std::string("--world echotropolis: SHOT residents ") +
+                            (sResBuilt ? "built" : "FAILED"));
+            }
+        }
+        const int kSettle = shotResidents ? 90 : 24;   // drain skin spawns
+        const float dt = 1.0f / 60.0f;
+        const x3::game::TodSample shotTod = tod.sample();   // frozen at ECHO_TOD
+        for (int i = 0; i < kSettle; ++i) {
+            glfwPollEvents();
+            applyTodSample(device, shotTod);
+            applyAtmosphere(device, shotTod);   // ATMOSPHERE: aerial haze + grade + bloom
+            applyOcean(device, (float)i * dt, shotTod);
+            if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
+            if (sNpcBuilt) sNpc.update(dt, sScene);   // living-city schedules advance
+            if (sOpsBuilt) {
+                sOps.setLines({
+                    "ECHO HARBOR   //   CITY OPS", "",
+                    "POPULATION        40",
+                    "   WORKING          4",
+                    "   AT LEISURE       7",
+                    "   ABOUT TOWN      29", "",
+                    std::string("TIME OF DAY     ") + x3::game::todPhaseName(shotTod.phase),
+                    "POWER GRID      ONLINE",
+                    "HARBOR WATCH    NOMINAL",
+                    "VIGIL           MONITORING",
+                });
+                sOps.update(dt);
+            }
+            if (shotCamOverride) {
+                device->setCamera(shotCam[0], shotCam[1], shotCam[2], shotCam[3], shotCam[4], opt.fovDeg);
+            } else {
+                applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
+            }
+            if (i == kSettle - 1) device->armCapture(outPath.c_str());
+            auto frame = device->beginFrame();
+            island.draw(*device, frame);   // the island (sky + water are device-internal)
+            props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
+            for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
+            if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
+                            if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
+            if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
+            if (shotTod.cityLightsOn) {    // P4 night lights: beam aimed over the bay + embers
+                poseBeam(-2.13f);
+                beam.draw(*device, frame);
+                fissure.draw(*device, frame);
+            }
+            device->endFrame(frame);
+        }
+        const bool wrote = device->captureFrame(outPath.c_str());
+        if (wrote) x3::logInfo("--world echotropolis: wrote screenshot " + outPath);
+        else       x3::logError("--world echotropolis: capture FAILED");
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ===================== Windowed interactive orbit ===================
+    glfwSetScrollCallback(window, scrollCB);
+    double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+    double prevTime = glfwGetTime();
+    float  waterTime = 0.0f;
+
+    // FPS accounting (log once per second — there is no HUD text API in this host).
+    double fpsAccum = 0.0; int fpsFrames = 0;
+    // Optional auto-exit for CI / FPS capture: `ECHO_AUTOEXIT_SEC=<n>` env var.
+    double autoExitSec = 0.0;
+    if (const char* e = std::getenv("ECHO_AUTOEXIT_SEC")) autoExitSec = std::atof(e);
+    double runElapsed = 0.0; double runFrames = 0.0; double runSecs = 0.0;
+
+    x3::logInfo("--world echotropolis: LMB/MMB-drag or WASD pan (grab-the-ground), "
+                "wheel zoom, RMB-drag or Q/E orbit-rotate; TOD keys 1=golden 2=dusk "
+                "3=night 4=noon, T pauses the cycle; Esc to quit");
+    // Start with the day-night cycle PAUSED so the launch HOLDS its ECHO_TOD light
+    // (golden by default) instead of sprinting into night in ~20s — press T to run time.
+    bool todPaused = true, prevT = false;
+    x3::game::TodPhase prevPhase = tod.phase();
+
+    // ESC opens a PAUSE MENU (it never quits the app — Tim's rule 2026-07-11). Only the
+    // menu's QUIT item (click, or press Q) exits. Edge-detected so a held key toggles once.
+    bool menuOpen = false, prevEsc = false, prevQ = false, prevEnter = false, prevLmb = false;
+    bool wantQuit = false;
+
+    // ===================== WALK MODE (Phase A) ==========================
+    // Press G to drop from the orbit vista INTO a first-person character who WALKS
+    // the REAL island (WASD, mouse look, Shift sprint, Space jump) — down the
+    // cliffs to the harbor and INTO the sea to swim. G returns to the orbit view.
+    std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
+    const bool physOk = phys && phys->init();
+    const float kWalkX = -20.0f, kWalkZ = 760.0f;             // crown spawn (+195 m)
+    const float kWalkGroundY = hf.ok() ? hf.heightAt(kWalkX, kWalkZ) : 190.0f;
+    x3::game::Player player;
+    if (physOk && hf.ok()) {
+        // REAL TERRAIN COLLISION: a Jolt static mesh sampled from the SAME height-
+        // field the island GLB was meshed from, so the player collides with the
+        // actual landform — cliffs, shelves, the harbor bowl. Covers the central
+        // 2600 m (the land); the ocean skirt beyond is water. 512 grid = ~5 m cells.
+        const int N = 512; const float EXT = 2600.0f;
+        std::vector<float> verts; verts.reserve((size_t)(N + 1) * (N + 1) * 3);
+        std::vector<uint32_t> idx; idx.reserve((size_t)N * N * 6);
+        for (int r = 0; r <= N; ++r)
+            for (int c = 0; c <= N; ++c) {
+                const float x = -EXT * 0.5f + EXT * (float)c / N;
+                const float z = -EXT * 0.5f + EXT * (float)r / N;
+                verts.push_back(x); verts.push_back(hf.heightAt(x, z)); verts.push_back(z);
+            }
+        auto vid = [&](int r, int c) { return (uint32_t)(r * (N + 1) + c); };
+        for (int r = 0; r < N; ++r)
+            for (int c = 0; c < N; ++c) {
+                idx.push_back(vid(r, c)); idx.push_back(vid(r + 1, c)); idx.push_back(vid(r + 1, c + 1));
+                idx.push_back(vid(r, c)); idx.push_back(vid(r + 1, c + 1)); idx.push_back(vid(r, c + 1));
+            }
+        phys->addStaticMesh(verts.data(), (uint32_t)(verts.size() / 3),
+                            idx.data(), (uint32_t)idx.size());
+        x3::logInfo("--world echotropolis: terrain collision mesh built (" +
+                    std::to_string(idx.size() / 3) + " tris)");
+
+        // SWIM: sea + basin surface sits at y=0; anywhere the terrain is below the
+        // waterline the player can wade in and swim (Player runs its swim state off
+        // this feed). Deeply-negative elsewhere = dry land (never swims on land).
+        player.setWaterQuery([&hf](float x, float z) -> float {
+            return (hf.ok() && hf.heightAt(x, z) < -0.30f) ? 0.0f : -1.0e30f;
+        });
+        player.spawn(*phys, kWalkX, kWalkGroundY + 1.0f, kWalkZ);
+        player.setLook(2.2f, -0.05f);   // face toward the city cluster
+    }
+
+    // ===================== RESIDENTS (the living city) ==================
+    // A crowd of citizens wandering the crown, rendered as the REAL rigged-GLB
+    // characters (66 in riggedGlbRoot()) via CrowdSkin over the blockout agents.
+    // Visible from the orbit vista (watch them move) AND up close in walk mode.
+    // These are the lives you will step into (possess) in a later phase.
+    x3::game::Scene walkScene;
+    x3::game::CrowdSystem residents;
+    x3::game::CrowdSkin residentsSkin;
+    bool residentsBuilt = false;
+    x3::game::HoloTerminal opsScreen;   // CONTROL ROOM: live city-ops dashboard on the crown
+    x3::game::NpcLife npcLife; bool npcLifeBuilt = false;   // LIVING CITY: scheduled NPCs
+    bool opsBuilt = false;
+    if (physOk) {
+        x3::game::CrowdConfig cc;
+        cc.count   = 40;
+        cc.centerX = kWalkX; cc.centerZ = kWalkZ;
+        cc.groundY = kWalkGroundY;
+        cc.radius  = 340.0f;             // spread across the crown plateau
+        cc.walkSpeed = 1.3f;
+        cc.converse  = true;             // they pair up and chat
+        cc.scale     = 1.0f;
+        // AUTONOMOUS LIFE: jobs + play so residents have PURPOSE, not just wander.
+        // Per-workpoint a Worker loops its task (Carry/Console/Sweep); each play spot
+        // gets its Gamers; the rest are Civilians who wander + converse. A basic
+        // daily-life read on top of the crown until the full NpcLife schedule system
+        // (feat/living-city) is rebased onto main and merged.
+        cc.work = {
+            { x3::game::CrowdWorkPoint::Kind::Carry,   -120.0f, 700.0f, -60.0f, 700.0f },
+            { x3::game::CrowdWorkPoint::Kind::Console,    40.0f, 820.0f,  40.0f, 820.0f },
+            { x3::game::CrowdWorkPoint::Kind::Sweep,      80.0f, 700.0f, 140.0f, 760.0f },
+            { x3::game::CrowdWorkPoint::Kind::Carry,    -140.0f, 800.0f, -80.0f, 800.0f },
+        };
+        cc.play = {
+            { -60.0f, 840.0f, 4, true },
+            {  90.0f, 690.0f, 3, true },
+        };
+        residents.build(cc, walkScene, *device);
+        // LIVING CITY: the 12-archetype NPCs with real daily schedules (home/work/leisure)
+        // + hackable scan-cards — the "real lives" layer over the crowd.
+        {
+            x3::game::NpcLifeConfig lc;
+            lc.centerX = kWalkX; lc.centerZ = kWalkZ;
+            lc.groundY = kWalkGroundY;
+            lc.freewayMovers = 0;
+            npcLife.build(lc, walkScene, *device);
+            npcLifeBuilt = npcLife.built();
+            x3::logInfo(std::string("--world echotropolis: living-city NpcLife ") +
+                        (npcLifeBuilt ? "built" : "off"));
+        }
+        x3::game::CrowdSkinConfig sc;
+        sc.site = "Echo Harbor residents";
+        sc.modelDir = x3::game::riggedGlbRoot();
+        sc.spawnsPerFrame = 2;
+        sc.scale = kPedScale;   // 5-6 ft citizens
+        residentsSkin.build(sc, residents);
+        residentsBuilt = residents.built();
+        x3::logInfo(std::string("--world echotropolis: residents ") +
+                    (residentsBuilt ? "built (40 citizens, rigged skins loading)" : "FAILED"));
+
+        // CONTROL ROOM: a live ops-dashboard screen on the crown plaza (HoloTerminal
+        // Readout, Vigil-orange ink). Renders through walkScene like the residents.
+        opsScreen.build(walkScene, *device,
+                        x3::phys::Vec3{ kWalkX + 6.0f, kWalkGroundY + 2.2f, kWalkZ - 8.0f },
+                        0.0f, 6.4f, 3.6f);
+        opsScreen.setLayout(x3::game::HoloTerminal::Layout::Readout);
+        opsScreen.setTextColor(1.0f, 0.62f, 0.18f, 1.0f);   // VIGIL orange
+        opsBuilt = opsScreen.built();
+    }
+    // Live ops-dashboard lines from the current city state (per-role crowd split +
+    // time of day). The deep economy KPIs arrive when echo_core is wired in.
+    auto opsLines = [&](const x3::game::TodSample& s) {
+        const int pop = 40, workers = 4, gamers = 7;
+        return std::vector<std::string>{
+            "ECHO HARBOR   //   CITY OPS",
+            "",
+            "POPULATION        " + std::to_string(pop),
+            "   WORKING         " + std::to_string(workers),
+            "   AT LEISURE      " + std::to_string(gamers),
+            "   ABOUT TOWN      " + std::to_string(pop - workers - gamers),
+            "",
+            std::string("TIME OF DAY     ") + x3::game::todPhaseName(s.phase),
+            "POWER GRID      ONLINE",
+            "HARBOR WATCH    NOMINAL",
+            "VIGIL           MONITORING",
+        };
+    };
+    bool walkMode = false, prevG = false;
+
+    int lastW = (int)hc.W, lastH = (int)hc.H;
+    while (!glfwWindowShouldClose(window) && !wantQuit) {
+        glfwPollEvents();
+        {
+            const bool esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            if (esc && !prevEsc) menuOpen = !menuOpen;   // toggle, never break
+            prevEsc = esc;
+        }
+
+        double now = glfwGetTime();
+        float dt = (float)(now - prevTime); prevTime = now;
+        if (dt > 0.1f) dt = 0.1f;
+        if (dt < 1e-5f) dt = 1e-5f;
+
+        double mx, my; glfwGetCursorPos(window, &mx, &my);
+        float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+        lastMX = mx; lastMY = my;
+
+        auto kd  = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+        auto mbd = [&](int b) { return glfwGetMouseButton(window, b) == GLFW_PRESS; };
+
+        // ---- WALK MODE toggle (G) + first-person character step -------------
+        { const bool g = kd(GLFW_KEY_G); if (g && !prevG && physOk) walkMode = !walkMode; prevG = g; }
+        if (walkMode && physOk) {
+            x3::game::PlayerInput in{};
+            in.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
+            in.moveStrafe = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
+            in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+            in.jumpPressed = kd(GLFW_KEY_SPACE);
+            in.jumpHeld    = kd(GLFW_KEY_SPACE);              // swim: stroke up
+            in.diveHeld    = kd(GLFW_KEY_LEFT_CONTROL) || kd(GLFW_KEY_C);  // swim: dive
+            in.lookDX = ddx; in.lookDY = ddy;
+            player.update(in, dt, *phys);
+            phys->step(dt);
+        }
+
+        // ===== PAUSE MENU: world + camera frozen, menu drawn, only QUIT exits =====
+        if (menuOpen) {
+            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+            const float cx = hw * 0.5f, cy = hh * 0.5f;
+            // Quit button rect (centered). Q key or a click inside it quits.
+            const float bw = 260.0f, bh = 56.0f;
+            const float bx = cx - bw * 0.5f, by = cy + 40.0f;
+            const bool overQuit = (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh);
+            const bool lmb = mbd(GLFW_MOUSE_BUTTON_LEFT);
+            const bool qkey = kd(GLFW_KEY_Q);
+            if ((lmb && !prevLmb && overQuit) || (qkey && !prevQ)) wantQuit = true;
+            const bool ent = kd(GLFW_KEY_ENTER);
+            if (ent && !prevEnter) menuOpen = false;   // Enter also resumes
+            prevLmb = lmb; prevQ = qkey; prevEnter = ent;
+
+            auto frame = device->beginFrame();
+            island.draw(*device, frame);
+            props.draw(*device, frame);
+            if (tod.sample().cityLightsOn) { beam.draw(*device, frame); fissure.draw(*device, frame); }
+            const float dim[4]   = { 0.02f, 0.03f, 0.05f, 0.66f };
+            device->drawHudQuad(frame, 0, 0, (float)hw, (float)hh, dim);
+            const float gold[4]  = { 1.0f, 0.82f, 0.45f, 1.0f };
+            const float white[4] = { 0.90f, 0.93f, 1.0f, 1.0f };
+            const float dimtxt[4]= { 0.62f, 0.66f, 0.76f, 1.0f };
+            device->drawHudText(frame, "ECHO  HARBOR", cx - 11 * 19.0f, cy - 150.0f, 38.0f, gold);
+            device->drawHudText(frame, "PAUSED", cx - 6 * 11.0f, cy - 96.0f, 22.0f, dimtxt);
+            const float qcol[4] = { overQuit ? 0.35f : 0.18f, overQuit ? 0.10f : 0.06f,
+                                    overQuit ? 0.12f : 0.07f, 1.0f };
+            device->drawHudQuad(frame, bx, by, bw, bh, qcol);
+            device->drawHudText(frame, "QUIT  TO  DESKTOP", bx + 22.0f, by + 18.0f, 17.0f, white);
+            device->drawHudText(frame,
+                "ESC / ENTER  resume        1-4 time of day    5-8 camera views\n"
+                "WASD / drag  pan           wheel  zoom         Q  quit         T  run clock",
+                cx - 34 * 8.5f, cy + 120.0f, 15.0f, dimtxt);
+            device->endFrame(frame);
+
+            fpsAccum += dt; ++fpsFrames;
+            if (fpsAccum >= 1.0) { fpsAccum = 0.0; fpsFrames = 0; }
+            continue;   // skip all world sim while paused in the menu
+        }
+
+        const bool rmb = mbd(GLFW_MOUSE_BUTTON_RIGHT);
+        const bool mmb = mbd(GLFW_MOUSE_BUTTON_LEFT) || mbd(GLFW_MOUSE_BUTTON_MIDDLE);
+
+        // ---- Wheel zoom: EXPONENTIAL (a constant fraction of radius per notch),
+        // no momentum. scroll up (yoff>0) zooms in -> radius shrinks. ----
+        if (g_scrollY != 0.0) {
+            rig.radius *= std::pow(1.0f - opt.zoomPerNotch, (float)g_scrollY);
+            g_scrollY = 0.0;
+        }
+        rig.radius = clampf(rig.radius, opt.minRadius, opt.maxRadius);
+
+        // Screen-relative ground basis from the orbit yaw: forward (into screen) +
+        // right, both flattened onto the sea plane.
+        const float cy = std::cos(rig.sYaw), sy = std::sin(rig.sYaw);
+        const float fwdSeaX = cy, fwdSeaZ = sy;
+        const float rightX  = -sy, rightZ = cy;
+
+        // ---- RMB-drag ORBIT-ROTATE: direct ~0.25°/px, no ease-back detach. ----
+        const float radPerPx = opt.orbitDegPerPx * (3.14159265f / 180.0f);
+        if (rmb) {
+            rig.yaw   += ddx * radPerPx;
+            rig.pitch  = clampPitch(rig.pitch - ddy * radPerPx);
+        }
+
+        // ---- Q/E keyboard orbit-yaw (RTS convention): Q counter-clockwise, E
+        // clockwise, constant ~90°/s while held; the light yaw damping stops it. ----
+        if (kd(GLFW_KEY_Q)) rig.yaw -= opt.keyYawRate * dt;
+        if (kd(GLFW_KEY_E)) rig.yaw += opt.keyYawRate * dt;
+
+        // ---- LMB/MMB-drag PAN: "grab the ground" — the terrain tracks the cursor
+        // ~1:1. Horizontal is exact (groundPerPixel); the forward axis is stretched
+        // by the view foreshortening (÷sin(pitch), bounded) so shallow-angle vertical
+        // drags don't crawl. Direct target move, no inertia. (Suppressed while RMB
+        // is held so orbit-rotate and pan never fight.) ----
+        if (mmb && !rmb) {
+            const float gpp = groundPerPixel(rig.sRadius, opt.fovDeg, lastH);
+            const float fwdGain = gpp / clampf(std::sin(rig.sPitch), 0.35f, 1.0f);
+            rig.focusX -= ddx * rightX * gpp + ddy * fwdSeaX * fwdGain;
+            rig.focusZ -= ddx * rightZ * gpp + ddy * fwdSeaZ * fwdGain;
+        }
+
+        // ---- WASD pan: radius-scaled so it covers the frame at a steady rate. ----
+        {
+            float wf = 0.0f, ws = 0.0f;
+            if (kd(GLFW_KEY_W)) wf += 1.0f;
+            if (kd(GLFW_KEY_S)) wf -= 1.0f;
+            if (kd(GLFW_KEY_D)) ws += 1.0f;
+            if (kd(GLFW_KEY_A)) ws -= 1.0f;
+            if (wf != 0.0f || ws != 0.0f) {
+                const float step = opt.wasdPanFrac * rig.sRadius * dt;
+                rig.focusX += (wf * fwdSeaX + ws * rightX) * step;
+                rig.focusZ += (wf * fwdSeaZ + ws * rightZ) * step;
+            }
+        }
+
+        // ---- Momentum EDGE-SCROLL pan (EoS "adopt now"): cursor inside a 12px band
+        // at any window edge pushes the focus that way. Velocity eases toward the
+        // radius-scaled target with tau=panSmoothTau (accel-in + glide-to-stop);
+        // diagonals normalized. DISABLED while any mouse button is held (velocity
+        // hard-zeroed) so it never fights drag-pan/orbit; gated to cursor-in-window. ----
+        {
+            const bool anyBtn = rmb || mmb;   // mmb already folds in LMB || MMB
+            float exd = 0.0f, ezd = 0.0f;     // screen push: +x=right, +z=forward(top)
+            const bool inWin = (mx >= 0.0 && my >= 0.0 &&
+                                mx <= (double)lastW && my <= (double)lastH);
+            if (!anyBtn && inWin) {
+                const float m = opt.edgeMarginPx;
+                if (mx < m)               exd -= 1.0f;   // left  edge -> pan -right
+                if (mx > (double)lastW-m) exd += 1.0f;   // right edge -> pan +right
+                if (my < m)               ezd += 1.0f;   // top   edge -> pan +forward
+                if (my > (double)lastH-m) ezd -= 1.0f;   // bottom edge-> pan -forward
+            }
+            float tvx = 0.0f, tvz = 0.0f;                // target world velocity (m/s)
+            if (exd != 0.0f || ezd != 0.0f) {
+                const float inv   = 1.0f / std::sqrt(exd*exd + ezd*ezd);
+                const float speed = opt.edgeScrollFrac * rig.sRadius;
+                tvx = (exd * rightX + ezd * fwdSeaX) * inv * speed;
+                tvz = (exd * rightZ + ezd * fwdSeaZ) * inv * speed;
+            }
+            if (anyBtn) {                 // never fight drag-pan: kill momentum outright
+                rig.vEdgeX = 0.0f; rig.vEdgeZ = 0.0f;
+            } else {
+                const float k = 1.0f - std::exp(-dt / std::max(opt.panSmoothTau, 1e-4f));
+                rig.vEdgeX += (tvx - rig.vEdgeX) * k;
+                rig.vEdgeZ += (tvz - rig.vEdgeZ) * k;
+                if (tvx == 0.0f && std::fabs(rig.vEdgeX) < 0.5f) rig.vEdgeX = 0.0f;
+                if (tvz == 0.0f && std::fabs(rig.vEdgeZ) < 0.5f) rig.vEdgeZ = 0.0f;
+                rig.focusX += rig.vEdgeX * dt;
+                rig.focusZ += rig.vEdgeZ * dt;
+            }
+        }
+
+        // Clamp targets to the playable envelope (island bounds + 1km; pitch 2..85°).
+        rig.focusX = clampf(rig.focusX, -opt.focusLimit, opt.focusLimit);
+        rig.focusZ = clampf(rig.focusZ, -opt.focusLimit, opt.focusLimit);
+        rig.pitch  = clampPitch(rig.pitch);
+        // Pivot rides the terrain height under the focus (0 over water) so the point
+        // under the crosshair stays fixed while rotating/zooming.
+        rig.pivotY = std::max(hf.heightAt(rig.focusX, rig.focusZ), 0.0f);
+
+        // ---- Critically-damped smoothing of every channel (no snapping) -------
+        rig.sFocusX = smoothDamp(rig.sFocusX, rig.focusX, rig.vFocusX, opt.smoothFocus, dt);
+        rig.sFocusZ = smoothDamp(rig.sFocusZ, rig.focusZ, rig.vFocusZ, opt.smoothFocus, dt);
+        rig.sPivotY = smoothDamp(rig.sPivotY, rig.pivotY, rig.vPivotY, opt.smoothFocus, dt);
+        rig.sYaw    = smoothDampAngle(rig.sYaw, rig.yaw, rig.vYaw, opt.smoothYaw, dt);
+        rig.sPitch  = smoothDamp(rig.sPitch, rig.pitch, rig.vPitch, opt.smoothPitch, dt);
+        rig.sRadius = smoothDamp(rig.sRadius, rig.radius, rig.vRadius, opt.smoothRadius, dt);
+
+        // Framebuffer resize passthrough (match host_valley).
+        int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+        if (cw != lastW || chh != lastH) {
+            lastW = cw; lastH = chh;
+            if (cw > 0 && chh > 0) device->onResize((uint32_t)cw, (uint32_t)chh);
+        }
+
+        // ---- P3: advance the day (pause with T; 1-4 jump to the canon times) ----
+        {
+            const bool tNow = kd(GLFW_KEY_T);
+            if (tNow && !prevT) todPaused = !todPaused;
+            prevT = tNow;
+            if (kd(GLFW_KEY_1)) tod.setDayFraction(kTodGolden);
+            if (kd(GLFW_KEY_2)) tod.setDayFraction(kTodDusk);
+            if (kd(GLFW_KEY_3)) tod.setDayFraction(kTodNight);
+            if (kd(GLFW_KEY_4)) tod.setDayFraction(kTodNoon);
+            // ---- P5 camera bookmarks: the four signature shots (keys 5-8). Set
+            // the orbit TARGETS; the critically-damped springs fly there smoothly.
+            auto bookmark = [&](float fx, float fz, float yw, float pt, float rd) {
+                rig.focusX = fx; rig.focusZ = fz;
+                rig.yaw = yw; rig.pitch = clampPitch(pt); rig.radius = rd;
+            };
+            if (kd(GLFW_KEY_5)) bookmark(-450.0f,  900.0f, -1.02f, 0.31f, 1400.0f); // THE POSTCARD
+            if (kd(GLFW_KEY_6)) bookmark( 412.0f, -106.0f,  3.93f, 0.60f,  950.0f); // crown promenade
+            if (kd(GLFW_KEY_7)) bookmark( 331.0f,  459.0f,  2.40f, 0.35f,  750.0f); // fissure rim
+            if (kd(GLFW_KEY_8)) bookmark(   0.0f,    0.0f,  5.50f, 0.10f, 4400.0f); // sea approach
+            if (!todPaused) tod.advance(dt);
+            if (tod.phase() != prevPhase) {
+                prevPhase = tod.phase();
+                x3::logInfo(std::string("--world echotropolis: ") +
+                            x3::game::todPhaseName(prevPhase));
+            }
+        }
+        const x3::game::TodSample todS = tod.sample();
+        applyTodSample(device, todS);
+        applyAtmosphere(device, todS);   // ATMOSPHERE: aerial haze + grade + bloom
+
+        // RESIDENTS: the crowd lives every frame (orbit or walk); the skinned layer
+        // drains its deferred spawn queue and pose-follows the agents.
+        if (residentsBuilt) {
+            residents.update(dt, walkScene);
+            if (npcLifeBuilt) npcLife.update(dt, walkScene);   // living-city schedules advance
+            residentsSkin.update(dt, residents, walkScene, *device, *phys);
+        }
+        if (opsBuilt) {                 // CONTROL ROOM: refresh the live dashboard
+            opsScreen.setLines(opsLines(todS));
+            opsScreen.update(dt);
+        }
+
+        // Ocean + camera + render. WALK MODE poses the first-person eye camera from
+        // the physics character; ORBIT MODE keeps the strategic vista camera.
+        waterTime += dt; applyOcean(device, waterTime, todS);
+        if (walkMode && physOk) {
+            float px, py, pz, pyaw, ppit;
+            player.camera(px, py, pz, pyaw, ppit);
+            device->setCamera(px, py, pz, pyaw, ppit, opt.fovDeg);
+        } else {
+            applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
+        }
+
+        auto frame = device->beginFrame();
+        island.draw(*device, frame);
+        props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
+        for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
+        if (ufoBuilt) { poseUfo(waterTime); ufo.draw(*device, frame);
+                        if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
+        if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
+            walkScene.render(*device, frame);
+            residentsSkin.draw(*device, frame, walkScene);
+        }
+        if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
+            poseBeam(waterTime * kBeamRate);
+            beam.draw(*device, frame);
+            fissure.draw(*device, frame);
+        }
+        device->endFrame(frame);
+
+        // FPS: log once per second.
+        fpsAccum += dt; ++fpsFrames;
+        if (fpsAccum >= 1.0) {
+            const double fps = fpsFrames / fpsAccum;
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "--world echotropolis: FPS %.1f (%.2f ms/frame)",
+                          fps, 1000.0 * fpsAccum / fpsFrames);
+            x3::logInfo(buf);
+            runSecs += fpsAccum; runFrames += fpsFrames;
+            fpsAccum = 0.0; fpsFrames = 0;
+        }
+
+        if (autoExitSec > 0.0) { runElapsed += dt; if (runElapsed >= autoExitSec) break; }
+    }
+
+    if (runSecs > 0.0) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "--world echotropolis: avg FPS %.1f over %.1fs",
+                      runFrames / runSecs, runSecs);
+        x3::logInfo(buf);
+    }
+
+    device->shutdown();
+    if (window) glfwDestroyWindow(window);
+    glfwTerminate();
+    return 0;
+}
+
+}} // namespace x3::apphost

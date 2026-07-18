@@ -744,6 +744,15 @@ public:
     // attacks again; killing it afterwards still counts (fire() path untouched).
     void  setDocile(bool d) { m_docile = d; }
     bool  docile() const { return m_docile; }
+    // DORMANT (opening-flow spawn gating): the monster idles/patrols its beat but
+    // neither perceives nor engages the player — no LOS, no chase, no attack, no
+    // alert feed — until the host wakes it (region/progression gating, CanonPlay).
+    // Implemented by substituting a null target in update(), i.e. the exact
+    // "no target" AI path, so animation/calm loops/presence stay fully live.
+    // Unlike stun it is not a combat state (no timer); unlike docile it is
+    // reversible and is the NORMAL pre-activation state of far-away spawns.
+    void  setDormant(bool d) { m_dormant = d; }
+    bool  dormant() const { return m_dormant; }
     // Damage-taken multiplier (coolant sabotage: The Collective x1.5). Applied
     // at damage application in fire()/takeMeleeDamage(), stacking with the
     // memory-flash incomingDamageMul (both are >1 vulnerability windows).
@@ -837,6 +846,18 @@ public:
     // could still be mid-flop, so the Jolt bodies are removed while the world is alive
     // (mirrors RagdollDemo::shutdown). Harmless if no ragdoll is active.
     void shutdownRagdoll() { clearDeathRagdoll(); }
+
+    // ---- EXTERNAL death-flop trigger (living-city citizens) ----------------
+    // Force the SKINNED DEATH RAGDOLL flop NOW, driven by an external kill (a shot
+    // citizen in the crowd-skin layer, not the combat AI). Runs the SAME death
+    // teardown the fire()/melee kill path does — marks the character dead, drops its
+    // physics body + the entity's body handle, and spawns the death ragdoll kicked by
+    // `shove` (the shot direction). From then on update() reads the bones back and
+    // flops the skin (the corpse settles + despawns on the usual timers). Idempotent
+    // (no-op if already dead/ragdolled). Returns true iff a skinned ragdoll spawned
+    // (false on an unrigged/non-skinnable model — the caller keeps the standing prop).
+    bool triggerRagdoll(Scene& scene, x3::phys::IPhysicsWorld& physics,
+                        const x3::phys::Vec3& shove);
 
     // ---- GENERAL navigation (optional) ------------------------------------
     // Give this monster a shared nav grid so it ROUTES AROUND walls/obstacles
@@ -1129,6 +1150,7 @@ private:
     // ---- W9-1 desc-mechanics state ------------------------------------------
     float    m_stunTimer      = 0.0f;        // EMP stun: frozen while > 0
     bool     m_docile         = false;       // master-hack power-down (permanent)
+    bool     m_dormant        = false;       // opening-flow spawn gating (see setDormant)
     float    m_damageTakenMul = 1.0f;        // coolant-sabotage vulnerability
 
     // ---- Guard-life (W4-3): species + patrol state -------------------------

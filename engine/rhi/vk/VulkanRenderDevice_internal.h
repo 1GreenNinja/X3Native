@@ -191,6 +191,7 @@ public:
     bool velocityAvailable() const override;
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override;
+    void setShadowCutout(bool enable) override;
 
     // Interior reflection probe: when ON, the IBL environment cube is baked from the
     // SCENE geometry (around the camera) instead of the analytic sky, so glossy metals
@@ -2815,6 +2816,12 @@ private:
     VkSampler             m_shadowSampler  = VK_NULL_HANDLE;   // compare-enabled
     VkPipeline            m_shadowPipeline = VK_NULL_HANDLE;   // depth-only
     VkPipelineLayout      m_shadowLayout   = VK_NULL_HANDLE;   // set0 = objSet
+    // ALPHA-CUTOUT shadow variant (shadow_cutout.vert + depth_cutout.frag): a
+    // fir billboard casts a FIR-shaped shadow instead of its full quad. Opt-in
+    // per host via setShadowCutout(); off = the historical shadow, bit-for-bit.
+    VkPipeline            m_shadowCutoutPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout      m_shadowCutoutLayout   = VK_NULL_HANDLE;  // set0 = objSet, set1 = bindless
+    bool                  m_shadowCutout = false;
     VkDescriptorSetLayout m_shadowSetLayout = VK_NULL_HANDLE;  // set2: sampler2DShadow
     VkDescriptorPool      m_shadowDescPool = VK_NULL_HANDLE;
     VkDescriptorSet       m_shadowSet      = VK_NULL_HANDLE;   // points at the map

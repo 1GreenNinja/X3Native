@@ -40,7 +40,18 @@ namespace x3::game {
 struct EnvAsset {
     x3::asset::Model                      model;
     std::vector<x3::asset::ModelDrawable> drawables;
+    std::vector<std::string>              drawableNames;  // glTF node name per drawable (parallel)
     bool ok = false;
+};
+
+// One SCATTERED clone of a single drawable (foliage densification). Unlike an
+// EnvInstance (which re-draws the WHOLE asset), a ScatterDraw re-draws ONE
+// drawable at a full world transform of its own — so a forest can be thickened
+// with per-tree position/yaw/scale variation instead of a rigid group copy.
+struct ScatterDraw {
+    uint32_t asset    = 0;
+    uint32_t drawable = 0;
+    float    transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};  // world (replaces nodeTransform)
 };
 
 // One placed instance: an index into the asset table + its world transform
@@ -108,7 +119,26 @@ public:
                   uint32_t maxDrawables = 0xFFFFFFFFu,
                   const float* cullMin = nullptr, const float* cullMax = nullptr) const;
 
+    // FOLIAGE DENSIFY (showroom forest). Thickens an already-placed baked scene's
+    // foliage by CLONING its matching drawables (node name contains any of `nameSubs`,
+    // lowercased substring match) into extra scatter draws. Each clone is seeded from a
+    // random EXISTING one — so it inherits a position the artist already put ON the
+    // ground — then offset in XZ by [minR,maxR] metres, re-yawed, and re-scaled in
+    // [scaleMin,scaleMax]. It is sunk by `sink` metres so a clone that lands on a slope
+    // buries its trunk instead of floating (a hovering tree is fatal; a slightly buried
+    // one is invisible under the snow skirt). Clustering around existing trees is also
+    // what a real forest does — it breaks the lattice instead of building one.
+    // Returns the number of clones added. No-op if nothing matches.
+    // `keepOutXZR` (nullable) = { centerX, centerZ, radius }: clones landing inside that
+    // XZ disc are rejected, so the densified forest never grows onto the hero building's
+    // apron/platform.
+    uint32_t densifyFoliage(const std::vector<std::string>& nameSubs, uint32_t addCount,
+                            uint32_t seed, float minR, float maxR,
+                            float scaleMin, float scaleMax, float sink,
+                            const float* keepOutXZR = nullptr);
+
     // Diagnostics for logging / the host: how many assets loaded ok / instances.
+    uint32_t scatterCount() const { return (uint32_t)m_scatter.size(); }
     uint32_t assetsLoaded() const;
     uint32_t instanceCount() const { return (uint32_t)m_instances.size(); }
     bool any() const { return assetsLoaded() > 0; }
@@ -139,6 +169,7 @@ private:
     std::vector<EnvAsset>                    m_assetTable;
     std::vector<std::string>                 m_assetPaths; // parallel to m_assetTable
     std::vector<EnvInstance>                 m_instances;
+    std::vector<ScatterDraw>                 m_scatter;   // foliage densify clones (drawn after m_instances)
     std::vector<x3::rhi::PointLight>         m_lightFixtures; // omni per Light_A fixture
 };
 

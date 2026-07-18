@@ -85,6 +85,7 @@
 #include "world_stream.h"                    // SEAMLESS region-graph streaming (--world streamed / --test-worldstream)
 #include "world_map.h"                       // INTERACTIVE WORLD MAP (M key / --test-worldmap)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
+#include "npc_life.h"                         // LIVING CITY: authored occupation NPCs w/ daily schedules + heist (--test-npclife)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
 #include "strata.h"   // R-3 fold: THE DESCENT — live strata shaft around the elevator column
@@ -1282,6 +1283,13 @@ int runDefaultHost(HostContext& hc) {
     // zero reloads on re-realize). A failed rig keeps that agent's blockout.
     x3::game::CrowdSkin canonCrowdSkins[3];
     x3::game::CrowdSkin cityCrowdSkins[3];
+    // LIVING CITY (npc_life.h): the SOUL layer over the ambient street crowd —
+    // authored occupation NPCs (12 archetypes) that walk real daily schedules to
+    // home/work/leisure posts, with scan-card personas + the bank-robbery set-piece.
+    // Host-owned + PERSISTENT (built once the `city` region is resident, PVS-culled
+    // with the district via cfg.roomId), rendered as plain Scene entities SEPARATE
+    // from MonsterSystem (citizens, not monsters — Echo Harbor's explicit need).
+    x3::game::NpcLife cityNpcLife;
     // CROWD CHATTER — "hear the people talk.. mumble.. see it in chat bubbles
     // over their heads" (app/crowd_chatter.h): a deterministic voice layer over
     // each crowd deployment. Converse pairs trade authored 2-6 word lines in
@@ -1450,6 +1458,10 @@ int runDefaultHost(HostContext& hc) {
     // "drops the player at spawn()" design in club1127.h).
     x3::game::Club1127World  club1127;
     bool                     club1127Handoff = false;
+    // fix/club-relight: latches while the player is down in The Deep so the interior
+    // ambient/IBL lift (a dim-but-readable neon club, matching --world club) is applied
+    // ONCE on entry and restored to the world air ONCE on exit — never per-frame.
+    bool                     clubAtmoOn = false;
     // ---- Spire mid floors (F3 Labs / F4 Offices / F5 Synth bay) encounter content.
     // Authored onto the same Spire plates buildLevel1() produced; reached via the
     // per-floor elevator stops below. Has its own enemy groups + a gated F5 rescue
@@ -5695,6 +5707,108 @@ int runDefaultHost(HostContext& hc) {
                         scene.roomVisible(x3::game::kStreamedExteriorRoom))
                         worldCars.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                    // ---- HEALTHBAR CAPTURE PROOF (gate: screenshot filename contains
+                    // "healthbar"). Renders the SAME room-gated + LOS-culled enemy bar
+                    // as the live loop's barsFor (app_run.cpp interactive path) so a
+                    // still deterministically shows: near/same-room monster -> bar drawn;
+                    // adjacent-room monster (through a doorway) -> bar SUPPRESSED. Also
+                    // logs each enemy's room + decision so the proof is textual too.
+                    // Capture-only: zero effect on gameplay or any normal screenshot.
+                    if (canonPlay.built() &&
+                        screenshotPath.find("healthbar") != std::string::npos) {
+                        const x3::phys::Vec3 hbEye = ssEye;
+                        const uint32_t hbPlayerRoom =
+                            canonFloor.valid() ? canonFloor.roomAt(hbEye.x, hbEye.y, hbEye.z)
+                                               : x3::game::kNoRoom;
+                        const bool hbRoomGate =
+                            canonFloor.valid() && hbPlayerRoom != x3::game::kNoRoom;
+                        // Two capture modes (by filename token):
+                        //   "...ROOM..." -> ISOLATE the new room gate: draw bars for
+                        //     same-room, on-screen enemies REGARDLESS of LOS (so same-room
+                        //     props/bars don't hide the demonstrative bar). LOS is still
+                        //     computed + logged. This proves adjacent-room enemies get NO
+                        //     bar while same-room enemies do.
+                        //   otherwise -> REAL combined behaviour (room + LOS + on-screen),
+                        //     identical to the live loop's barsFor.
+                        const bool losIsolate =
+                            screenshotPath.find("ROOM") != std::string::npos;
+                        x3::logInfo(std::string("[healthbar-proof] player room=") +
+                            (hbPlayerRoom == x3::game::kNoRoom ? std::string("NONE")
+                                                              : std::to_string(hbPlayerRoom)) +
+                            " roomGate=" + (hbRoomGate ? "ON" : "off"));
+                        auto proofBars = [&](x3::game::MonsterManager& mm) {
+                            for (uint32_t mi = 0; mi < mm.count(); ++mi) {
+                                x3::game::MonsterSystem& m = mm.at(mi);
+                                if (!m.alive()) continue;
+                                x3::phys::Vec3 c = m.pos();
+                                const uint32_t mRoom = canonFloor.valid()
+                                    ? canonFloor.roomAt(c.x, c.y + 1.0f, c.z) : x3::game::kNoRoom;
+                                const char* verdict = "DRAWN";
+                                // Room gate (mirrors barsFor).
+                                if (hbRoomGate && mRoom != x3::game::kNoRoom &&
+                                    mRoom != hbPlayerRoom) verdict = "culled:ROOM";
+                                // LOS gate (mirrors barsFor).
+                                const x3::phys::Vec3 chest{ c.x, c.y + 1.0f, c.z };
+                                const x3::phys::Vec3 d{ chest.x - hbEye.x, chest.y - hbEye.y, chest.z - hbEye.z };
+                                const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+                                if (verdict[0] == 'D' && dist > 0.001f) {
+                                    const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
+                                    const x3::phys::RayHit los = physics->rayCast(
+                                        hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
+                                    if (los.hit) verdict = "culled:LOS";
+                                }
+                                x3::phys::Vec3 head{ c.x, c.y + 2.2f, c.z };
+                                float sx = 0.0f, sy = 0.0f;
+                                const bool onScreen =
+                                    device->worldToScreen(head.x, head.y, head.z, sx, sy);
+                                if (verdict[0] == 'D' && !onScreen) verdict = "culled:OFFSCREEN";
+                                // Capture draw decision: in ROOM-isolate mode, ignore LOS
+                                // culling (draw same-room + on-screen); else use the real
+                                // combined verdict.
+                                const bool captureDraw = losIsolate
+                                    ? (!(hbRoomGate && mRoom != x3::game::kNoRoom &&
+                                         mRoom != hbPlayerRoom) && onScreen)
+                                    : (std::string(verdict) == "DRAWN");
+                                x3::logInfo(std::string("[healthbar-proof]   enemy room=") +
+                                    (mRoom == x3::game::kNoRoom ? std::string("NONE")
+                                                               : std::to_string(mRoom)) +
+                                    " pos=(" + std::to_string(c.x) + "," + std::to_string(c.y) +
+                                    "," + std::to_string(c.z) + ")" +
+                                    " screen=(" + std::to_string(sx) + "," + std::to_string(sy) + ")" +
+                                    (onScreen ? "" : "[off]") +
+                                    " dist=" + std::to_string(dist) + "m -> " + verdict);
+                                if (!captureDraw) continue;
+                                // Draw the thin bar (same geometry as the live bar).
+                                const int hpv = m.hp(), mx = m.maxHp();
+                                if (mx <= 0 || hpv <= 0) continue;
+                                const float frac = (hpv >= mx) ? 1.0f : (float)hpv / (float)mx;
+                                uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                                const float bw = 40.0f, bh = 3.0f, x0 = sx - bw * 0.5f;
+                                float y0 = sy; if (y0 < 14.0f) y0 = 14.0f;
+                                if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
+                                // Warm HP ramp + dim, matching the live hpBar (yellow full ->
+                                // orange mid -> red low, no green; kBarDim 0.60 overall scale).
+                                const float kBarDim = 0.60f;
+                                const float hpY[3] = { 1.00f, 0.85f, 0.20f };
+                                const float hpO[3] = { 1.00f, 0.50f, 0.10f };
+                                const float hpR[3] = { 0.90f, 0.15f, 0.10f };
+                                float rmp[3];
+                                if (frac >= 0.5f) { const float t = (frac - 0.5f) * 2.0f;
+                                    for (int k = 0; k < 3; ++k) rmp[k] = hpO[k] + t * (hpY[k] - hpO[k]); }
+                                else              { const float t = frac * 2.0f;
+                                    for (int k = 0; k < 3; ++k) rmp[k] = hpR[k] + t * (hpO[k] - hpR[k]); }
+                                const float outl[4]   = { 0.0f, 0.0f, 0.0f, 0.55f };
+                                const float frameC[4] = { 0.34f, 0.28f, 0.16f, 0.62f };
+                                const float backC[4]  = { 0.03f, 0.03f, 0.05f, 0.55f };
+                                const float baseC[4]  = { rmp[0]*kBarDim, rmp[1]*kBarDim, rmp[2]*kBarDim, 0.65f };
+                                device->drawHudQuad(frame, x0 - 2.0f, y0 - 2.0f, bw + 4.0f, bh + 4.0f, outl);
+                                device->drawHudQuad(frame, x0 - 1.5f, y0 - 1.5f, bw + 3.0f, bh + 3.0f, frameC);
+                                device->drawHudQuad(frame, x0, y0, bw, bh, backC);
+                                device->drawHudQuad(frame, x0, y0, bw * frac, bh, baseC);
+                            }
+                        };
+                        canonPlay.forEachHostileManager(proofBars);
+                    }
                     // X3_SHOT_SWIM=3p: the prone swimmer into the frame.
                     if (swimShotOk && swimShotMode == "3p")
                         thirdPerson.drawAvatar(*device, frame, scene);
@@ -6605,8 +6719,13 @@ int runDefaultHost(HostContext& hc) {
         });
     }
     if (canonWorld && canonFloor.valid()) {
-        // Spawn in Jake's Cell (the canonical detention spawn).
-        uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
+        // Spawn in Jake's Cell (the canonical detention spawn). Resolve the cell BY
+        // NAME (canonBeats — the same lookup every other cell system uses), not by a
+        // hardcoded probe point: if the data ever moves the cell, the old
+        // roomAt(2,0,40) probe fell back to rooms[0] — which is the MAIN HALL in the
+        // canonical data, i.e. the "spawned mid-corridor" opening bug.
+        uint32_t jake = x3::game::canonBeats(canonFloor).jakeCell;
+        if (jake == x3::game::kNoRoom) jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
         if (jake == x3::game::kNoRoom) jake = 0;
         const x3::game::CanonRoom& jc = canonFloor.rooms[jake];
         player.spawn(*physics, jc.cx, jc.y0() + 0.1f, jc.cz);
@@ -6704,6 +6823,26 @@ int runDefaultHost(HostContext& hc) {
         x3::game::setRequestedFlightMode(fm);
         console->print(std::string("flightmode = ") + x3::game::flightModeName(fm));
     }, "flightmode [arcade|assist|loose] - select the space-pilot feel preset");
+
+    // ---- restart: spawn a fresh X3Engine.exe + close this window so the main
+    // loop unwinds cleanly through the normal shutdown path (texture/mesh release,
+    // VMA leak check, etc.). We resolve the running exe's ABSOLUTE path via Win32
+    // GetModuleFileName (argv[0] is not threaded into the host context): cmd's
+    // `start` resolves bare names against CWD, which is the project root, not the
+    // build/bin/<Config> dir where the exe actually lives. Playtest aid — not a
+    // true in-place level reset, just the fastest way back to a clean slate.
+    std::string restartExe = "X3Engine.exe";
+#ifdef _WIN32
+    { char rbuf[1024]; DWORD rn = GetModuleFileNameA(nullptr, rbuf, (DWORD)sizeof(rbuf));
+      if (rn > 0 && rn < sizeof(rbuf)) restartExe.assign(rbuf, rn); }
+#endif
+    console->registerCommand("restart", [&console, window, restartExe](const std::vector<std::string>&) {
+        const std::string cmd = std::string("start \"\" \"") + restartExe + "\"";
+        console->print(std::string("restart: spawning ") + restartExe);
+        const int rc = std::system(cmd.c_str());
+        console->print(std::string("restart: spawn rc=") + std::to_string(rc) + " — closing this window...");
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    }, "restart - spawn a fresh X3Engine + exit this one");
 
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
@@ -7246,10 +7385,16 @@ int runDefaultHost(HostContext& hc) {
     x3::ui::UiController gameUi;
     {
         x3::ui::SettingsModel sm{};
-        // Seed from current engine defaults: SSAO + SSGI are ON by default in the
-        // device; bloom is always-on in the HDR pipeline; shadows on; vsync from
-        // the device desc; resolution = the actual window size.
-        sm.bloom = true; sm.ssao = true; sm.ssgi = true; sm.shadows = true;
+        // Seed from current engine defaults: bloom is always-on in the HDR pipeline;
+        // shadows on; vsync from the device desc; resolution = the actual window size.
+        // SSAO + SSGI default ON only when the device has hardware ray-tracing. Their
+        // raster fallback renders the scene BLACK on non-RT GPUs (e.g. GTX 1080 Ti —
+        // see [rhi] "RT: not available on this device — SSAO/CSM raster fallback").
+        // The fleet's RTX boxes still get them on; older cards default OFF so the
+        // level is visible on launch. init() applies this seed to the device, so
+        // SSAO/SSGI are OFF from the very first frame on non-RT GPUs.
+        const bool hasRT = device && device->rayTracingSupported();
+        sm.bloom = true; sm.ssao = hasRT; sm.ssgi = hasRT; sm.shadows = true;
         sm.vsync = desc.vsync; sm.width = W; sm.height = H;
         sm.rtao = (console->getInt("r_rtao") != 0);   // RT AO: reflect the cvar (default OFF)
         // Audio: seed from the persisted values applied to the audio system above.
@@ -7898,11 +8043,11 @@ int runDefaultHost(HostContext& hc) {
                            const bool needCode = d->code != 0;
                            if (d->requireBoth) {                       // need card AND code (Armory)
                                if (needCard && !hasCard) {
-                                   npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                                   npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                                    npcBarkTimer = 3.0f; return true;
                                }
                                codeMode = true; keypad.clear();        // card ok -> enter the code
-                               npcBarkText = std::string("Keycard OK — enter code ") + std::to_string(d->code);
+                               npcBarkText = std::string("Keycard OK - enter code ") + std::to_string(d->code);
                                npcBarkTimer = 4.0f; return true;
                            }
                            if (needCard && hasCard) {                  // either-credential: card opens it outright
@@ -7917,7 +8062,7 @@ int runDefaultHost(HostContext& hc) {
                                    : (std::string("LOCKED — enter code ") + std::to_string(d->code));
                                npcBarkTimer = 4.0f; return true;
                            }
-                           npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                           npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                            npcBarkTimer = 3.0f; return true;
                        }()) {
                 // canon door interaction handled inside the lambda (toggle / unlock / keypad / message)
@@ -7954,7 +8099,7 @@ int runDefaultHost(HostContext& hc) {
                            }
                            if (audio) { audio->playSound2D(sElevClose, 0.8f, 1.0f);
                                         audio->playSound2D(sElevOpen, 0.6f, 0.92f); }
-                           npcBarkText = std::string("ELEVATOR → ") + T.name;
+                           npcBarkText = std::string("ELEVATOR -> ") + T.name;
                            npcBarkTimer = 3.5f;
                            x3::logInfo("use: elevator travel -> " + T.name);
                            return true;
@@ -8909,6 +9054,25 @@ int runDefaultHost(HostContext& hc) {
                 fl.clear();
                 const auto& cl = club1127.pointLights();
                 for (const auto& L : cl) fl.push_back(L);
+                // ATMOSPHERE (fix/club-relight): the canon club used to inherit the
+                // FACILITY air (neutral ambient 0.030 + facility IBL) and read as a
+                // dark void the same way --world club did. On ENTRY, lift the ambient
+                // to the club's low VIOLET floor and raise the IBL fill so surfaces
+                // the point lights miss are still readable (dim, not black). Edge-only
+                // (clubAtmoOn) so it never re-bakes/spams per frame; the elevator's
+                // cab-air edge owns the cab interior, so this only governs the room.
+                if (!clubAtmoOn) {
+                    clubAtmoOn = true;
+                    device->setIblIntensity(0.40f);
+                    device->setAmbient(0.045f, 0.035f, 0.070f);
+                }
+            } else if (clubAtmoOn) {
+                // EXIT: hand the world's air back (the SAME values the elevator restores
+                // on cab-exit, so the two owners agree instead of racing).
+                clubAtmoOn = false;
+                device->setIblIntensity(x3::game::kLevel1Ibl);
+                device->setAmbient(x3::game::kLevel1Ambient[0], x3::game::kLevel1Ambient[1],
+                                   x3::game::kLevel1Ambient[2]);
             }
             // W-RIFT: in SUB-LEVEL R1 the hub's rig (gate cores + keys + the hall) and
             // the approach's failing strips own the budget — same rule as the club: no
@@ -9100,6 +9264,30 @@ int runDefaultHost(HostContext& hc) {
             for (auto& cc : cityCrowds)
                 if (cc.built() && scene.roomVisible(cc.config().roomId))
                     cc.update(dt, scene);
+            // LIVING CITY (npc_life): the authored occupation NPCs + the bank-robbery
+            // set-piece, riding the SAME streamed `city` region as the ambient crowds.
+            // Built ONCE the first frame the region is resident — OUTSIDE any region
+            // capture window, so the bodies/props/markers are host-owned + persistent
+            // (never enter the region ledger) and simply PVS-cull with the district
+            // (cfg.roomId == kStreamedExteriorRoom). No monster hitboxes: pure citizens.
+            if (!cityNpcLife.built() && cityCrowds[0].built()) {
+                x3::game::NpcLifeConfig lc;
+                lc.centerX = -600.0f; lc.centerZ = 495.0f;   // the Scrapyard plaza drag
+                float g[3]; x3::game::placeOnTerrain(lc.centerX, lc.centerZ, g);
+                lc.groundY = g[1] + 0.20f;                    // stand on the plaza slab
+                lc.roomId  = x3::game::kStreamedExteriorRoom;
+                cityNpcLife.build(lc, scene, *device);
+                cityNpcLife.setAlarmSink([](const x3::phys::Vec3& /*p*/, int heat){
+                    // Outdoors never feeds the facility heat net (the app-run doctrine:
+                    // the security AlertSystem is an indoor system). The heist still
+                    // plays out visibly (cops converge, the robber flees) — log only.
+                    x3::logInfo("[npc_life] BANK ALARM tripped (heat " +
+                                std::to_string(heat) + ") — street cops converging");
+                });
+            }
+            if (cityNpcLife.built() &&
+                scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                cityNpcLife.update(dt, scene);
             // CROWD CHATTER: the voice layer rides the SAME PVS gate as its
             // crowd (a culled room's chat costs nothing and its bubbles just
             // age out). Audio murmurs are range-gated inside (<= ~20 m).
@@ -9385,7 +9573,7 @@ int runDefaultHost(HostContext& hc) {
                         chatTrees.flags().set("clone.defeated");
                         npcBarkText  = "VIGIL: SUCCESSOR UNIT TERMINATED. HOLDING-FIELD KEY... INVALID.";
                         npcBarkTimer = 6.0f;
-                        game.objectives().setText("THE FIELD IS DOWN — GET BACK TO SARAH");
+                        game.objectives().setText("THE FIELD IS DOWN - GET BACK TO SARAH");
                         x3::logInfo("[endgame] clone defeated — Sarah's containment key is dead");
                         // [W9-3 RPG] boss-objective XP (once, latched by the flag).
                         if (progression.addXp(x3::game::kXpBoss) > 0)
@@ -10152,6 +10340,20 @@ int runDefaultHost(HostContext& hc) {
                 {
                     const double barT = glfwGetTime();
                     const x3::phys::Vec3 hbEye{ camX, camY, camZ };
+                    // ROOM GATE (owner spec: "show on monsters, but NOT outside the room
+                    // you are in"). Resolve the player's current PVS room ONCE from the
+                    // same per-room cull data (CanonFloor::roomAt) that drives r_roomcull/
+                    // r_vis. A bar then draws only for an enemy in the SAME room. This sits
+                    // ON TOP of the LOS raycast below: LOS blocks bars through solid walls,
+                    // the room gate blocks bars leaking through an OPEN doorway into the
+                    // next room. kNoRoom (non-canon world, or player straddling a doorway
+                    // seam / standing outdoors) disables the gate so those paths keep the
+                    // prior LOS+range behaviour and never hide a legitimate same-space bar.
+                    const uint32_t hbPlayerRoom =
+                        canonFloor.valid() ? canonFloor.roomAt(camX, camY, camZ)
+                                           : x3::game::kNoRoom;
+                    const bool hbRoomGate =
+                        canonFloor.valid() && hbPlayerRoom != x3::game::kNoRoom;
                     auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
                         if (mx <= 0 || hpv <= 0) return;   // living enemies only
                         // Only show a bar for NEARBY enemies — fades out by ~18 m, gone by 22 m
@@ -10169,27 +10371,43 @@ int runDefaultHost(HostContext& hc) {
                         // Per-bar phase from world X so bars don't pulse/shimmer in lockstep.
                         const float ph    = head.x * 0.7f;
                         const float pulse = 0.86f + 0.14f * (float)std::sin(barT * 3.2 + ph);
-                        const float outl[4]   = { 0.00f, 0.00f, 0.00f, 0.65f };                       // black definition outline
-                        const float frameC[4] = { 0.78f*pulse, 0.86f*pulse, 1.00f*pulse, 0.95f };      // breathing steel frame
-                        const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };                        // dark inset bg
-                        // Metallic fill: darker base + lighter top band fakes a vertical
-                        // gradient; warms toward red at low HP; flares white on a hit.
-                        const float baseC[4]  = { 0.52f + 0.30f*lowH + 0.18f*flash, 0.55f - 0.20f*lowH, 0.62f - 0.30f*lowH, 1.0f };
-                        const float topC[4]   = { 0.90f + 0.10f*flash,              0.92f - 0.30f*lowH, 0.98f - 0.45f*lowH, 1.0f };
+                        // Owner art direction (2026-07): WARM HP ramp + DIMMER read. The fill
+                        // lerps YELLOW (full HP) -> ORANGE (mid) -> RED (low) across the HP
+                        // fraction — no green anywhere — and every layer is scaled down so the
+                        // bars read as subtle world-UI, not neon signs. kBarDim (0.60) is the
+                        // overall brightness scale; fill/frame alphas drop to ~0.62-0.65.
+                        const float kBarDim = 0.60f;
+                        const float hpY[3] = { 1.00f, 0.85f, 0.20f };         // healthy = warm yellow
+                        const float hpO[3] = { 1.00f, 0.50f, 0.10f };         // mid     = orange
+                        const float hpR[3] = { 0.90f, 0.15f, 0.10f };         // low     = red
+                        float rmp[3];
+                        if (frac >= 0.5f) { const float t = (frac - 0.5f) * 2.0f;   // 0..1 orange -> yellow
+                            for (int k = 0; k < 3; ++k) rmp[k] = hpO[k] + t * (hpY[k] - hpO[k]); }
+                        else              { const float t = frac * 2.0f;            // 0..1 red -> orange
+                            for (int k = 0; k < 3; ++k) rmp[k] = hpR[k] + t * (hpO[k] - hpR[k]); }
+                        const float outl[4]   = { 0.00f, 0.00f, 0.00f, 0.55f };                       // black definition outline
+                        // Warm, dim bronze frame (was bright steel-blue) — still breathes.
+                        const float frameC[4] = { 0.34f*pulse, 0.28f*pulse, 0.16f*pulse, 0.62f };
+                        const float backC[4]  = { 0.03f, 0.03f, 0.05f, 0.55f };                        // dark inset bg, dimmed
+                        // Dimmed warm fill: base body + a slightly lighter top band fakes a
+                        // vertical gradient; a hit adds a small warm flare (no white blowout).
+                        const float baseC[4]  = { rmp[0]*kBarDim + 0.14f*flash, rmp[1]*kBarDim + 0.06f*flash, rmp[2]*kBarDim, 0.65f };
+                        const float topC[4]   = { rmp[0]*kBarDim*1.30f + 0.10f*flash, rmp[1]*kBarDim*1.30f, rmp[2]*kBarDim*1.30f, 0.65f };
                         const float fillW = bw * frac;
                         device->drawHudQuad(frame, x0 - 2.0f, y0 - 2.0f, bw + 4.0f, bh + 4.0f, outl);
                         device->drawHudQuad(frame, x0 - 1.5f, y0 - 1.5f, bw + 3.0f, bh + 3.0f, frameC);
                         device->drawHudQuad(frame, x0, y0, bw, bh, backC);
                         device->drawHudQuad(frame, x0, y0, fillW, bh, baseC);            // body
                         device->drawHudQuad(frame, x0, y0, fillW, bh * 0.45f, topC);     // top sheen band
-                        // Sweeping specular sliver = the "shimmer", looping across the fill.
+                        // Sweeping specular sliver = the "shimmer", dimmed + warmed so it
+                        // reads as a soft glint, not a neon flash.
                         if (fillW > 6.0f) {
                             const float sw = 7.0f;
                             const float swp = (float)std::fmod(barT * 0.55 + head.x * 0.05, 1.0);
                             float sxx = x0 + swp * fillW - sw * 0.5f;
                             if (sxx < x0)              sxx = x0;
                             if (sxx > x0 + fillW - sw) sxx = x0 + fillW - sw;
-                            const float sheen[4] = { 1.0f, 1.0f, 1.0f, 0.40f };
+                            const float sheen[4] = { 1.00f, 0.92f, 0.70f, 0.22f };
                             device->drawHudQuad(frame, sxx, y0, sw, bh, sheen);
                         }
                     };
@@ -10198,6 +10416,15 @@ int runDefaultHost(HostContext& hc) {
                             x3::game::MonsterSystem& m = mm.at(i);
                             if (!m.alive()) continue;
                             x3::phys::Vec3 c = m.pos();
+                            // ROOM cull: skip the bar if this enemy is not in the player's
+                            // current room. An enemy that resolves to kNoRoom (off the room
+                            // grid — e.g. an outdoor/seam spawn) falls through to the LOS
+                            // gate so it is not silently hidden. This is what stops a bar in
+                            // the NEXT room (visible through an open doorway) from drawing.
+                            if (hbRoomGate) {
+                                const uint32_t mRoom = canonFloor.roomAt(c.x, c.y + 1.0f, c.z);
+                                if (mRoom != x3::game::kNoRoom && mRoom != hbPlayerRoom) continue;
+                            }
                             // LOS cull: skip the bar if a static wall sits between the
                             // camera and the enemy's chest (no more bars through walls).
                             const x3::phys::Vec3 chest{ c.x, c.y + 1.0f, c.z };
@@ -10216,6 +10443,14 @@ int runDefaultHost(HostContext& hc) {
                     const double _pbar0 = glfwGetTime();
                     barsFor(game.corridorEnemies());
                     barsFor(game.checkpointEnemies());
+                    // CANON LEVEL enemies (the playable build's monsters: Main Hall
+                    // squad, cell guards, Medical-Bay attackers, floor bosses, upper
+                    // squads) live in canonPlay, not `game`. Feed them through the same
+                    // room-gated + LOS + billboarded bar so the owner's "show on
+                    // monsters" holds on --world canonlevel too. Same idiom as the
+                    // zapMonsters visitor above.
+                    if (canonWorld && canonPlay.built())
+                        canonPlay.forEachHostileManager(barsFor);
                     g_perf.healthbars += glfwGetTime() - _pbar0;
                     for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
                         barsFor(midFloors.enemies((x3::game::SpireMidFloor)f));
@@ -10233,10 +10468,17 @@ int runDefaultHost(HostContext& hc) {
                 // curve. A no-op at 0 (dry land byte-for-byte unchanged).
                 applySwimViewmodelLower(vmPose, swimVmAmt);
                 const bool vmArmed = game.armed() || (canonWorld && canonPlay.armed());
+                // CLUB SAFE ZONE (fix/club-relight): "we do not need our weapons equipped
+                // in the club" (Tim). Down at The Deep (Y=-200) the club is a safe social
+                // space — holster the FP weapon so there is no raised gun / HUD viewmodel.
+                // Same zone test the club light-takeover uses (camY < -150 with the club
+                // built), so it engages exactly when the player is in the room and restores
+                // itself the instant they ride the elevator back up.
+                const bool clubHolster = club1127.built() && camY < -150.0f;
                 // THIRD-PERSON: hide the FP weapon viewmodel ENTIRELY (the gun is shown
                 // in the avatar's hand instead — drawn after scene.render below).
                 // viewmodelVisible() is true in FP / unbuilt, so FP behaviour is unchanged.
-                if (!thirdPerson.viewmodelVisible() || worldCars.driving()) {
+                if (!thirdPerson.viewmodelVisible() || worldCars.driving() || clubHolster) {
                     // 3P / AT THE WHEEL: no FP viewmodel this frame (hands are
                     // on the wheel; the chase camera is not an FP eye).
                 } else if (arsenal.viewmodelsLoaded() && vmArmed) {
@@ -10704,13 +10946,26 @@ int runDefaultHost(HostContext& hc) {
                 // + checkpoint + Phase-3 boss adds + bosses), so it never reads "AREA
                 // CLEAR" while a boss add is still alive. -1 (default) hides it elsewhere.
                 // --world canonlevel: fold the canon enemies/boss so the counter reflects
-                // the canon spawns (not the empty legacy groups).
+                // the canon spawns (not the empty legacy groups). OPENING FLOW: the canon
+                // count is the AWAKE (locally active) hostiles, not the whole spire —
+                // dormant far-floor spawns are gated threats, not on the counter. (The
+                // old fold of enemiesRemaining() put "ENEMIES: 101" on screen at wake.)
                 hm.enemiesRemaining = game.enemiesRemaining() +
-                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesRemaining() : 0);
-                if (canonWorld && canonPlay.built())
-                    hm.objective = (canonPlay.enemiesRemaining() > 0)
-                        ? "Fight down the spire — save the captives, reach Martinez"
-                        : "AREA CLEAR — reach the Elevator Lobby";
+                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesAwake() : 0);
+                // OPENING OBJECTIVE BEATS (canon): escape the cell -> fight what's
+                // around you -> push on -> clear. ASCII ONLY: the HUD glyph atlas maps
+                // every byte >= 128 to '?', so the old em-dash literal rendered as
+                // "Fight down the spire ??? save the captives" on screen.
+                if (canonWorld && canonPlay.built()) {
+                    if (!canonPlay.leftCell())
+                        hm.objective = "Find a way out of the cell";
+                    else if (canonPlay.enemiesAwake() > 0)
+                        hm.objective = "Fight down the spire - save the captives, reach Martinez";
+                    else if (canonPlay.enemiesRemaining() > 0)
+                        hm.objective = "Push on - save the captives, reach Martinez";
+                    else
+                        hm.objective = "AREA CLEAR - reach the Elevator Lobby";
+                }
                 if (game.armed() || (canonWorld && canonPlay.armed())) {
                     const x3::game::WeaponDef&         wd = arsenal.current();
                     const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();
@@ -10757,11 +11012,15 @@ int runDefaultHost(HostContext& hc) {
                     x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
                     uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
                     // --world canonlevel: the canon enemies (Level1Game's are empty here).
+                    // OPENING FLOW: only AWAKE spawns blip — a dormant (gated) spawn is
+                    // an undetected threat, and the radar must agree with the awake-only
+                    // ENEMIES counter (red blips beside "AREA CLEAR" read as a bug).
                     if (canonWorld && canonPlay.built()) {
                         x3::game::CanonPlay::EnemyMark cm[x3::ui::HudModel::kMaxBlips];
                         const uint32_t nc = canonPlay.liveEnemyMarks(cm, x3::ui::HudModel::kMaxBlips);
                         ne = 0;
                         for (uint32_t i = 0; i < nc && ne < x3::ui::HudModel::kMaxBlips; ++i) {
+                            if (!cm[i].awake) continue;
                             marks[ne].pos = cm[i].pos; marks[ne].label = cm[i].label; ++ne;
                         }
                     }

@@ -1238,6 +1238,41 @@ bool VulkanRenderDevice::createShadowPipeline() {
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] shadow pipeline create failed"); return false; }
 
+        // ---- ALPHA-CUTOUT shadow variant (shadow_cutout.vert + depth_cutout.frag) ----
+        // The depth-only pipeline above has NO fragment stage, so an alphaMode==MASK
+        // billboard (snow firs, people sprites) casts the shadow of its FULL QUAD —
+        // on snow under a high sun that reads as hard black RECTANGLES around every
+        // tree. This variant adds the fragment stage that replicates mesh.frag's
+        // exact cutout discard, so a fir casts a fir-shaped shadow. Same fixed-
+        // function state (front-face cull + the same bias) so shadow depths are
+        // otherwise unchanged. Engaged PER DRAW GROUP only when the host opts in via
+        // setShadowCutout(true) — every other world keeps the historical shadow
+        // bit-for-bit. NON-FATAL on failure.
+        if (m_objSetLayout && m_bindlessLayout) {
+            VkDescriptorSetLayout cutSets[2] = { m_objSetLayout, m_bindlessLayout };
+            VkPipelineLayoutCreateInfo cplci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            cplci.setLayoutCount = 2; cplci.pSetLayouts = cutSets;
+            if (vkCreatePipelineLayout(m_dev.device, &cplci, nullptr, &m_shadowCutoutLayout) == VK_SUCCESS) {
+                VkShaderModule cvs = loadShaderModule("shaders\\shadow_cutout.vert.spv");
+                VkShaderModule cfs = loadShaderModule("shaders\\depth_cutout.frag.spv");
+                if (cvs && cfs) {
+                    VkPipelineShaderStageCreateInfo cstages[2]{};
+                    cstages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cstages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   cstages[0].module = cvs; cstages[0].pName = "main";
+                    cstages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cstages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; cstages[1].module = cfs; cstages[1].pName = "main";
+                    gpci.stageCount = 2; gpci.pStages = cstages;
+                    gpci.layout = m_shadowCutoutLayout;
+                    if (x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_shadowCutoutPipeline) != VK_SUCCESS)
+                        m_shadowCutoutPipeline = VK_NULL_HANDLE;
+                }
+                if (cvs) vkDestroyShaderModule(m_dev.device, cvs, nullptr);
+                if (cfs) vkDestroyShaderModule(m_dev.device, cfs, nullptr);
+            }
+            if (!m_shadowCutoutPipeline)
+                logError("[rhi] shadow CUTOUT pipeline unavailable — foliage keeps full-quad shadows");
+        }
+
         logInfo("[rhi] directional shadow pipeline ready (2048^2 depth, depth-only, PCF compare sampler)");
         return true;
     }
@@ -1282,6 +1317,8 @@ void VulkanRenderDevice::destroyGraphics() {
 
         // Shadow mapping resources (perf-stack E).
         if (m_shadowPipeline)  { vkDestroyPipeline(m_dev.device, m_shadowPipeline, nullptr); m_shadowPipeline = VK_NULL_HANDLE; }
+        if (m_shadowCutoutPipeline) { vkDestroyPipeline(m_dev.device, m_shadowCutoutPipeline, nullptr); m_shadowCutoutPipeline = VK_NULL_HANDLE; }
+        if (m_shadowCutoutLayout)   { vkDestroyPipelineLayout(m_dev.device, m_shadowCutoutLayout, nullptr); m_shadowCutoutLayout = VK_NULL_HANDLE; }
         if (m_shadowLayout)    { vkDestroyPipelineLayout(m_dev.device, m_shadowLayout, nullptr); m_shadowLayout = VK_NULL_HANDLE; }
         if (m_shadowDescPool)  { vkDestroyDescriptorPool(m_dev.device, m_shadowDescPool, nullptr); m_shadowDescPool = VK_NULL_HANDLE; }
         if (m_shadowSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_shadowSetLayout, nullptr); m_shadowSetLayout = VK_NULL_HANDLE; }

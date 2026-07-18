@@ -243,3 +243,12 @@ R2 charges **$0.015/GB/mo and zero egress** → ~274 GB ≈ **$4/mo, no bandwidt
 ## When this doc moves
 
 Edits are welcome from any fleet machine. **Workers**: push as a branch (`docs/fleet-<topic>`) and ping in Slack for a primary to merge. **Primaries**: edit + push directly. Keep this doc tight — it's the canon, not a journal.
+
+## TEXTURE DISTRIBUTION — G: IS THE CANON (Tim's ruling, 2026-07-11)
+GitHub LFS budget is EXHAUSTED (fetches hard-fail fleet-wide). Per Tim: forged texture /
+surface sets are distributed via the fleet share, NOT LFS.
+- Canonical location: `G:\Assets\X3Native\surface_library\<set_name>\` (\p13700\G\)
+- Seeded 2026-07-11: the 24 materialized SD3.5 sets (293MB) from playable-build/rifthub-aaa.
+- WHOEVER FORGED the 18 intro-cockpit sets (commit 1622584): please copy them to G: too —
+  their LFS objects are stranded on your box.
+- New forges: write to G: FIRST, commit only small pointers/manifests to git if needed.

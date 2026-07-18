@@ -80,7 +80,41 @@ int hostClub(HostContext& hc) {
         // re-pushed each frame by club.update()). The club has NO sky (deep interior).
         const auto& clights = club.pointLights();
         device->setPointLights(clights.data(), (uint32_t)clights.size());
+
+        // ==== INTERIOR ATMOSPHERE (fix/club-relight) ============================
+        // THE CLUB WAS A BLACK VOID. It disabled the sky and then set NOTHING else —
+        // so iblValid=0 and every surface the point lights didn't directly hit fell
+        // to near-black (the SAME "metals go black" root the facility/rifthub/level1
+        // already fixed: an interior needs an ENVIRONMENT to be lit, not just lamps).
+        // Give it the interior recipe those scenes use (setIblProbe + setIblIntensity
+        // + a low ambient floor), tuned for a DARK-BUT-READABLE neon club instead of
+        // an overcast hall:
+        //   * NO sky background (deep windowless interior) — the env cube is baked
+        //     FROM THE SCENE (setIblProbe true), so the club's own neon/UV lights,
+        //     blacklight tubes, mirror ball, OLED walls and glowing dance tiles
+        //     become the environment every wall/floor/dancer reflects. That is
+        //     exactly what a club is: colored bounce off saturated sources.
+        //   * ibl 0.40 — enough colored ambient FILL to read the room, low enough to
+        //     keep the moody contrast (a club is dim, not flat-lit).
+        //   * ambient a low VIOLET floor — the club IS purple, so the deepest corners
+        //     lift into club-violet rather than dead gray (unlike the facility, where
+        //     a neutral floor was correct).
+        //   * iblSpecular 1.3 so the mirror ball, chrome handles and the gleaming
+        //     glass bar/countertops catch bright reflections.
+        //   * bloom 0.28 (showroom "hero" range) so the HDR emissives + saturated
+        //     lights actually BLOOM through the ACES post stack.
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+        device->setIblProbe(true);          // bake the neon room into the env cube
+        device->setIblIntensity(0.46f);     // colored ambient fill — moody but readable
+                                            // (fix/club-blacklights: 0.40 -> 0.46, one
+                                            // notch so dancer faces/torsos catch fill)
+        device->setIblSpecular(1.30f);      // mirror ball / chrome / glass bar shine
+        device->setMetalAmbient(1.0f);      // metals keep an F0 response (never black)
+        device->setAmbient(0.060f, 0.048f, 0.095f);  // low VIOLET floor (club-purple, not gray)
+                                            // (fix/club-blacklights: lifted a notch —
+                                            // the dancers read as SOLID BLACK cutouts)
+        device->setExposure(1.0f);
+        device->setBloom(0.28f);            // let the neon/blacklight/OLED sing
 
         const x3::phys::Vec3 spawn = club.spawn();
 

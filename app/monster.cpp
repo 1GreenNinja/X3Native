@@ -592,6 +592,7 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
     // D-ai: remember recent damage so the state machine can flinch/retreat.
     m_dmgMemory   = kAiDamageMemory;
     m_dmgWindowHp += shotDmg;
+    m_dormant     = false;   // taking fire WAKES a gated spawn (it fights back)
 
     if (dead) {
         // ---- Death: remove the physics body IMMEDIATELY (so subsequent rays
@@ -669,6 +670,7 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
     // D-ai: heavy melee is a strong flinch trigger.
     m_dmgMemory   = kAiDamageMemory;
     m_dmgWindowHp += dmg;
+    m_dormant     = false;   // taking damage WAKES a gated spawn (it fights back)
     if (dead) {
         m_alive    = false;
         m_dying    = true;
@@ -804,6 +806,12 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                            IDamageSink* target, const AttackFxFn& fx,
                            const BossPhaseFn& onPhase, const AllyQueryFn& allies) {
     if (dt <= 0.0f) return;
+
+    // SPAWN GATING (opening flow): a DORMANT monster runs the exact "no target"
+    // AI path — Idle/Patrol/calm loops keep animating, but it neither perceives
+    // nor engages the player (no LOS, no chase, no attack, no alert feed) until
+    // the host wakes it (region/progression gating — see CanonPlay::tick).
+    if (m_dormant) { target = nullptr; m_hasLos = false; }
 
     // ---- Boss phase machine (Phase 2b). Monotone HP-fraction latch: only ever
     // advances Phase1 -> Phase2 -> Phase3. On a transition, fold in that phase's
@@ -1797,6 +1805,30 @@ void MonsterSystem::spawnDeathRagdoll(x3::phys::IPhysicsWorld& physics,
     x3::logInfo(std::string("[monster] SKINNED DEATH RAGDOLL spawned (") +
                 std::to_string(bn) + " bones, " +
                 (flyer ? "flyer/drone spin" : "grounded topple") + ")");
+}
+
+// EXTERNAL death-flop trigger (living-city citizens; see monster.h). Runs the SAME
+// death teardown the fire()/melee kill path uses, then spawns the skinned ragdoll —
+// factored here so the crowd-skin layer can flop a shot citizen without routing a
+// fake combat hit (no hit-flash / damage-memory / cue side effects).
+bool MonsterSystem::triggerRagdoll(Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                   const x3::phys::Vec3& shove) {
+    if (!m_alive || m_ragdollActive || m_deathRagdoll) return m_ragdollActive;
+    m_alive    = false;
+    m_dying    = true;
+    m_deathPop = kDeathToppleTime;
+    // Drop the entity's body handle + remove the physics body (parity with fire()'s
+    // kill: a prop built with noBody has none, so both are simple no-ops there).
+    if (m_entity != kNoLink && m_entity < scene.size())
+        scene.get(m_entity).body = x3::phys::BodyId{};
+    if (m_body.valid()) physics.removeBody(m_body);
+    m_body = x3::phys::BodyId{};
+    // Spawn the skinned death ragdoll kicked by the shot direction (no-op unrigged ->
+    // m_ragdollActive stays false and the caller keeps the standing prop).
+    spawnDeathRagdoll(physics, shove);
+    x3::logInfo(std::string("[monster] external triggerRagdoll -> ") +
+                (m_ragdollActive ? "skinned flop" : "no rig (standing corpse)"));
+    return m_ragdollActive;
 }
 
 // Per-frame: read the ragdoll bone WORLD transforms, convert to model-local, run the

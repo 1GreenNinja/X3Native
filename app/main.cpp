@@ -291,6 +291,7 @@ int main(int argc, char** argv) {
         _tf.testLevelLint = o.testLevelLint;
         _tf.testCanonPlay = o.testCanonPlay;
         _tf.testGoldenPath = o.testGoldenPath;
+        _tf.testOpening = o.testOpening;
         _tf.testDescMech = o.testDescMech;
         _tf.testInventory = o.testInventory;      // W9-3 RPG
         _tf.testProgression = o.testProgression;  // W9-3 RPG
@@ -373,6 +374,8 @@ int main(int argc, char** argv) {
         _tf.testVehParts = o.testVehParts;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
+        _tf.testNpcLife = o.testNpcLife;
+        _tf.testHacking = o.testHacking;
         _tf.testWaterZap = o.testWaterZap;
         _tf.testSealife = o.testSealife;
         _tf.testAlert = o.testAlert;

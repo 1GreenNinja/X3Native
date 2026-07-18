@@ -407,7 +407,13 @@ void RpgUi::drawHudChip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     if (ui.screenW() == 0) { ui.end(); return; }
     const float w = (float)ui.screenW(), h = (float)ui.screenH();
 
-    // Level + XP sliver, bottom center-left of the chip row.
+    // Level + XP sliver, bottom center-left of the chip row. The "+N PT [K]"
+    // call-out used to be planted at a fixed lvX+66, straight over the level
+    // number (the "LV 51 PT [K" HUD mash, clipped by the item chip) — and the
+    // 150 px panel cannot seat both texts on one line at any safe font size
+    // (widening it left instead collided with the HP readout at 1280 wide). So
+    // the call-out gets its OWN mini-chip stacked directly ABOVE the LV panel:
+    // no horizontal pressure against anything, at any resolution.
     const float chipY = h - 58.0f;
     const float lvX = w * 0.5f - 220.0f;
     {
@@ -422,7 +428,11 @@ void RpgUi::drawHudChip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
         if (prog.skillPoints() > 0) {
             char pts[24];
             std::snprintf(pts, sizeof(pts), "+%d PT [K]", prog.skillPoints());
-            ui.text(pts, lvX + 66.0f, chipY + 8.0f, 13.0f, kWarnCol, FontRole::HudMono);
+            const float ptsPx = 12.0f;
+            const float ptsW  = UiContext::textWidth(FontRole::HudMono, pts, ptsPx);
+            const float chipW = ptsW + 16.0f;
+            ui.panel(lvX, chipY - 22.0f, chipW, 18.0f, kPanel);
+            ui.text(pts, lvX + 8.0f, chipY - 19.0f, ptsPx, kWarnCol, FontRole::HudMono);
         }
     }
 
@@ -441,8 +451,10 @@ void RpgUi::drawHudChip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             std::snprintf(sub, sizeof(sub), "x%d   [Q] USE", qs->count);
             ui.text(sub, cx + 42.0f, chipY + 24.0f, 12.0f, kDimCol, FontRole::HudMono);
         } else {
-            ui.text("NO ITEM EQUIPPED", cx + 12.0f, chipY + 8.0f, 13.0f, kDimCol, FontRole::HudMono);
-            ui.text("[I] BACKPACK", cx + 12.0f, chipY + 25.0f, 12.0f, kDimCol, FontRole::HudMono);
+            // Empty slot: just the quiet backpack hint. (The old "NO ITEM EQUIPPED"
+            // shout read as a bug next to a HELD WEAPON — the item slot is the
+            // consumable quick slot, not the weapon hand; don't advertise emptiness.)
+            ui.text("[I] BACKPACK", cx + 12.0f, chipY + 16.0f, 12.0f, kDimCol, FontRole::HudMono);
         }
     }
 

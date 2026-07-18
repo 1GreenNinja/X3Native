@@ -1975,11 +1975,34 @@ void VulkanRenderDevice::recordShadowPassBody(VkCommandBuffer cmd) {
         vkCmdSetScissor(cmd, 0, 1, &scis);
 
         if (m_frameCmdCount > 0) {
+            // Alpha-CUTOUT groups (foliage/people billboards, texIndex bit31): the
+            // plain pipeline has no fragment stage, so a fir billboard casts its FULL
+            // QUAD as a shadow (hard black rectangles on snow). The cutout pipeline
+            // discards exactly like mesh.frag. Opt-in per host (setShadowCutout) —
+            // OFF leaves every other world's shadow map bit-for-bit unchanged.
+            const bool cutoutAware = m_shadowCutout && (m_shadowCutoutPipeline != VK_NULL_HANDLE);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline);
             // set 0 = object SSBO + camera UBO (shadow.vert reads lightViewProj).
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
                                     0, 1, &fr.objSet, 0, nullptr);
+            bool cutoutBound = false;
             for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
+                const bool wantCutout = cutoutAware && (m_drawMeshCutout[i] != 0);
+                if (wantCutout != cutoutBound) {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        wantCutout ? m_shadowCutoutPipeline : m_shadowPipeline);
+                    if (wantCutout) {
+                        // set 0 = objSet (layout-compatible), set 1 = bindless textures.
+                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_shadowCutoutLayout, 0, 1, &fr.objSet, 0, nullptr);
+                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_shadowCutoutLayout, 1, 1, &m_bindlessSet, 0, nullptr);
+                    } else {
+                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_shadowLayout, 0, 1, &fr.objSet, 0, nullptr);
+                    }
+                    cutoutBound = wantCutout;
+                }
                 const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
                 VkDeviceSize off = 0;
                 VkBuffer vb = mh.drawVbo(m_frameIdx); // fix 2: per-frame dynamic vbo

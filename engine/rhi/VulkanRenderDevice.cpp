@@ -631,6 +631,10 @@ void VulkanRenderDevice::setShadowBounds(float cx, float cy, float cz, float hal
         m_shadowDepthHalf = halfExtent * 1.6f;   // deep enough for tall geometry + sun setback
     }
 
+void VulkanRenderDevice::setShadowCutout(bool enable) {
+        m_shadowCutout = enable;
+    }
+
 void VulkanRenderDevice::setIblProbe(bool enable) {
         if (m_iblProbeScene != enable) { m_iblProbeScene = enable; m_iblDirty = true; }
     }

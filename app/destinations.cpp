@@ -98,12 +98,12 @@ const Destination kDest[] = {
 { "river",        "The River Valley",         "The carved river - real, swimmable water. You land on the bank.",       "valley",            DestGroup::Planet,     true  },
 { "ridge",        "The Cliff Ridge",          "The highest ground on the ring out from the tower.",                    "cliffs",            DestGroup::Planet,     true  },
 
-// ECHO HARBOR — the second product. Its host (--world echotropolis) ships on
-// the echotropolis line, NOT in this build, so the flag here is EMPTY and the
-// menu shows the row greyed UNAVAILABLE. The row exists because the directory
-// claims to list every place the game has — hiding a whole product is the
-// bigger lie. (DESTINATIONS_REGISTRY.spec §3.3/§6; kUnreachableAllowed below.)
-{ "echotropolis", "Echo Harbor",              "The island city - a second product. Its world ships on the echotropolis line, not in this build.", "",  DestGroup::EchoHarbor, false },
+// ECHO HARBOR — the second product. Its host (--world echotropolis) FOLDED
+// into this build at the converge (playtest-consolidated brought host_echotropolis
+// in), so the flag is now LIVE and the row is reachable. The row exists because
+// the directory claims to list every place the game has.
+// (DESTINATIONS_REGISTRY.spec §3.3/§6.)
+{ "echotropolis", "Echo Harbor",              "The island city - a second product, now folded into this build (F1 P1: island + open sea).", "echotropolis",  DestGroup::EchoHarbor, true },
 
 { "canonlevel",   "Canon World (spawn)",      "THE GAME: tower + elevator + exterior + streamed planet. From spawn.",  "canonlevel",        DestGroup::DevWorld,   false },
 { "intro",        "The Cold Open",            "The canon world, entered through the prologue cutscene.",               "intro",             DestGroup::DevWorld,   false },
@@ -255,12 +255,11 @@ bool isDispatched(const std::vector<const char*>& dispatched, const char* flag) 
 // Each needs a reviewer-checkable reason; D3 exempts exactly these, and D9
 // fails if one goes stale (missing row, or the row became reachable).
 struct KnownUnreachable { const char* key; const char* why; };
-const KnownUnreachable kUnreachableAllowed[] = {
-    { "echotropolis",
-      "Echo Harbor's host ships on the echotropolis line, not in this build; "
-      "the row is registered so the directory admits the product exists "
-      "(DESTINATIONS_REGISTRY.spec section 6)" },
-};
+// Empty since the converge: echotropolis's host folded into this build, so its
+// row is now reachable (worldFlag "echotropolis") and no longer belongs here.
+// A std::vector so the list can legally be empty (a zero-size C array is
+// ill-formed on MSVC); D9 iterates it and passes vacuously.
+const std::vector<KnownUnreachable> kUnreachableAllowed = {};
 
 bool isUnreachableAllowed(const char* key) {
     for (const KnownUnreachable& u : kUnreachableAllowed)

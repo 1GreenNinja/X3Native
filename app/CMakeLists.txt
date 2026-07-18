@@ -14,6 +14,7 @@ add_executable(X3Engine WIN32
     screenshot_hosts.cpp
     # #28 deep monolith split — extracted self-contained --world hosts
     world_hosts/world_hosts.cpp
+    world_hosts/host_echotropolis.cpp
     world_hosts/host_destruct.cpp
     world_hosts/host_physjoint.cpp
     world_hosts/host_ragdoll.cpp
@@ -153,6 +154,8 @@ add_executable(X3Engine WIN32
     crowd.cpp
     crowd_skin.cpp
     crowd_chatter.cpp
+    npc_life.cpp
+    hackables.cpp
     alert.cpp
     fx.cpp
     hud.cpp
@@ -237,6 +240,7 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/depth.vert
     ${CMAKE_SOURCE_DIR}/shaders/depth_cutout.vert
     ${CMAKE_SOURCE_DIR}/shaders/depth_cutout.frag
+    ${CMAKE_SOURCE_DIR}/shaders/shadow_cutout.vert
     ${CMAKE_SOURCE_DIR}/shaders/ssao.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssao_blur.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_gather.frag
