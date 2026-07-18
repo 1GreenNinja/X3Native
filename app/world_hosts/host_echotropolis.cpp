@@ -1103,6 +1103,50 @@ int hostEchotropolis(HostContext& hc) {
         subwayTrain->setInstanceTransform(0, M);
     };
 
+    // ===================== LIVING CONDOS (visitable interiors) ==============
+    // Cutaway condo towers: stacks of open-fronted room dioramas so you can SEE
+    // citizens living their lives — watching TV (blue flicker), cooking dinner,
+    // romancing, raising kids, a novelist at a glowing laptop... and one hidden
+    // green 'lab' cooking questionable materials. Visible up close (walk / ride-
+    // along) and their characteristic light reads from the street at night.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> condos;
+    const std::string condodir = "D:/GameDev/EchoHarbor/assets/interiors";
+    {
+        static const char* kRooms[] = { "cond_tv.glb", "cond_kitchen.glb", "cond_romance.glb",
+                                        "cond_kids.glb", "cond_novelist.glb" };   // domestic (lab is hidden)
+        auto hashi = [](uint32_t n){ n=(n^61u)^(n>>16); n*=9u; n^=n>>4; n*=0x27d4eb2du; n^=n>>15; return n; };
+        auto room = [&](const char* glb, float x, float y, float z, float yaw, float s){
+            const float c=std::cos(yaw), sn=std::sin(yaw);
+            const float T[16] = { c*s,0,-sn*s,0, 0,s,0,0, sn*s,0,c*s,0, x, y, z, 1 };
+            auto e = std::make_unique<x3::game::EnvArtSystem>();
+            if (e->buildFromGlbAt(*device, condodir, glb, T)) condos.push_back(std::move(e));
+        };
+        // A condo = cols x floors grid of rooms; the facade runs along local X and the
+        // open front (+Z local) is rotated by yaw to face the street.
+        auto condo = [&](float wx, float wz, float yaw, int cols, int floors, float s,
+                         uint32_t seed, bool hasLab){
+            const float gy = hf.ok()?hf.heightAt(wx,wz):190.0f;
+            const float rw = 3.75f*s, rh = 3.25f*s, c=std::cos(yaw), sn=std::sin(yaw);
+            for (int f=0; f<floors; ++f)
+              for (int j=0; j<cols; ++j) {
+                const float lx = (j - (cols-1)*0.5f) * rw;
+                const float x = wx + c*lx, z = wz - sn*lx, y = gy + f*rh;
+                const char* g = kRooms[hashi(seed + f*7u + j*13u) % 5];
+                if (hasLab && f==floors-1 && j==cols-1) g = "cond_lab.glb";   // the hidden lab, top corner
+                room(g, x, y, z, yaw, s);
+              }
+        };
+        // STREET-FRONT HIGH-RISES: lining the north avenue (the z=818 car lane) on
+        // its north side, open fronts facing the street — so walking/driving that
+        // road you look straight into the lit lives, Watch-Dogs style. The road
+        // corridor is guaranteed clear (traffic drives it), so the facades read.
+        condo(-100.0f, 842.0f, 3.14159f, 3, 5, 2.0f, 11u, false);
+        condo( -20.0f, 842.0f, 3.14159f, 3, 6, 2.0f, 29u, true);   // the block WITH the hidden lab
+        condo(  60.0f, 842.0f, 3.14159f, 3, 5, 2.0f, 47u, false);
+        x3::logInfo("--world echotropolis: LIVING CONDOS — " + std::to_string(condos.size()) +
+                    " lit rooms (TV/kitchen/romance/kids/novelist + 1 hidden lab)");
+    }
+
     // ===================== HARBOR BOATS ==================================
     // Low-poly boats (Boats Pack, Draco GLBs) cruising straight lanes on the open
     // SEA at water level (y~0), wrapping their lane with a gentle bob. Only visible
@@ -1457,6 +1501,7 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
             for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
             for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
+            for (auto& r : condos) r->draw(*device, frame);      // living cutaway condo interiors
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
             mineGlowScene.render(*device, frame);            // authentic EoS arch mouth-glow
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
@@ -2183,6 +2228,7 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
         for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
         for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
+        for (auto& r : condos) r->draw(*device, frame);      // living cutaway condo interiors
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
         for (auto& p : placed) p->draw(*device, frame);      // BUILD MENU: player-placed lots
         mineGlowScene.render(*device, frame);                // authentic EoS arch mouth-glow
