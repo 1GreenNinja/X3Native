@@ -143,6 +143,13 @@ def zero_pose(arm):
 def new_action(arm, name):
     if not arm.animation_data:
         arm.animation_data_create()
+    # Idempotent RE-BAKE: if a clip of this exact name already exists (e.g. we are
+    # re-baking Hitreaction/Attack onto an already-enriched GLB), drop the old one
+    # first so Blender doesn't dedup us to "Hitreaction.001" and break the wired
+    # fuzzy-find. Actions we are NOT re-baking are left untouched.
+    for old in [a for a in bpy.data.actions if a.name == name]:
+        old.use_fake_user = False
+        bpy.data.actions.remove(old)
     act = bpy.data.actions.new(name)
     act.use_fake_user = True
     arm.animation_data.action = act
@@ -213,9 +220,12 @@ def bake_attack_core(arm, g, frames=20):
     for i in range(frames):
         f = i + 1
         t = i / (frames - 1.0)
-        if t < 0.4:   k = ease(t / 0.4);        rx, z = -D(18) * k, 0.03 * k
-        elif t < 0.7: k = ease((t - 0.4) / 0.3); rx, z = -D(18) + D(46) * k, 0.03 - 0.08 * k
-        else:         k = ease((t - 0.7) / 0.3); rx, z = D(28) * (1 - k), -0.05 * (1 - k)
+        # POLISH: the prior bake peaked at only +28 deg -> a weak forward bow. Now a
+        # COMMITTED lunge: coil back, then whip the whole body forward ~46 deg with
+        # a downward drop (weight behind the strike), then settle back to rest.
+        if t < 0.35:   k = ease(t / 0.35);        rx, z = -D(24) * k, 0.05 * k              # coil back + rise
+        elif t < 0.60: k = ease((t - 0.35) / 0.25); rx, z = -D(24) + D(64) * k, 0.05 - 0.12 * k  # LUNGE fwd + drop
+        else:          k = ease((t - 0.60) / 0.40); rx, z = D(40) * (1 - k), -0.07 * (1 - k)      # settle back
         key_euler(arm, drv, f, rx=rx)
         key_loc(arm, drv, f, z=z)
     return act
@@ -272,21 +282,25 @@ def bake_hitreact_biped(arm, g, frames=10):
     for i in range(frames):
         f = i + 1
         t = i / (frames - 1.0)
-        # Fast rise to a peak near t=0.3, then ease back to 0 by the last frame.
-        k = math.sin(min(t / 0.3, 1.0) * math.pi * 0.5) if t < 0.3 \
-            else math.cos((t - 0.3) / 0.7 * math.pi * 0.5)
+        # Fast rise to a peak near t=0.25 (frame ~3 of 10), then ease back to 0.
+        # POLISH: the prior bake stacked spine(-20)+spine(-12)+head(-24) -> the
+        # head pitched ~55 deg back (chin-to-sky, near-knockdown). Now the
+        # cumulative head+torso recoil is ~20 deg: a CRISP readable snap-back, not
+        # a backbend. Feet stay planted (no leg/hip keys) + a defensive shoulder
+        # hitch (shoulders/forearms jerk up to guard) sells the impact.
+        tp = 0.25
+        k = math.sin(min(t / tp, 1.0) * math.pi * 0.5) if t < tp \
+            else math.cos((t - tp) / (1.0 - tp) * math.pi * 0.5)
         if g["spine"]:
-            key_euler(arm, g["spine"][0], f, rx=-D(20) * k, ry=D(8) * k)  # torso jerks back+twist
+            key_euler(arm, g["spine"][0], f, rx=-D(8) * k, ry=D(5) * k)   # torso jerks back+twist
             if len(g["spine"]) > 1:
-                key_euler(arm, g["spine"][1], f, rx=-D(12) * k)
-        key_euler(arm, g.get("head"), f, rx=-D(24) * k, rz=D(10) * k)     # head snaps back
-        key_euler(arm, g.get("armR"), f, rx=D(15) * k, rz=-D(28) * k)     # arms recoil out
-        key_euler(arm, g.get("armL"), f, rx=D(12) * k, rz=D(30) * k)
-        key_euler(arm, g.get("foreR"), f, rx=-D(25) * k)
-        # slight knee give + hip nudge so the whole body absorbs the hit.
-        key_euler(arm, g.get("upLegL"), f, rx=-D(8) * k)
-        key_euler(arm, g.get("upLegR"), f, rx=-D(6) * k)
-        key_loc(arm, g.get("hips"), f, z=-0.03 * k)
+                key_euler(arm, g["spine"][1], f, rx=-D(5) * k)
+        key_euler(arm, g.get("head"), f, rx=-D(9) * k, rz=D(8) * k)       # head snaps back
+        # SHOULDER HITCH: upper arms + forearms jerk up/in (a flinch guard).
+        key_euler(arm, g.get("armR"), f, rx=-D(20) * k, rz=-D(18) * k)
+        key_euler(arm, g.get("armL"), f, rx=-D(18) * k, rz=D(20) * k)
+        key_euler(arm, g.get("foreR"), f, rx=-D(38) * k)
+        key_euler(arm, g.get("foreL"), f, rx=-D(35) * k)
     return act
 
 def bake_hitreact_core(arm, g, frames=10):
@@ -297,12 +311,15 @@ def bake_hitreact_core(arm, g, frames=10):
     for i in range(frames):
         f = i + 1
         t = i / (frames - 1.0)
-        k = math.sin(min(t / 0.3, 1.0) * math.pi * 0.5) if t < 0.3 \
-            else math.cos((t - 0.3) / 0.7 * math.pi * 0.5)
-        # A quick recoil: rear back + a side flick, returning to rest. Contained so
-        # a single-bone alien reads as "stung" without toppling.
-        key_euler(arm, drv, f, rx=-D(16) * k, rz=D(11) * k)
-        key_loc(arm, drv, f, z=0.02 * k)
+        # POLISH: the prior bake (rx-16, z+0.02) was near-invisible vs Idle. A
+        # single-bone rig can ONLY move the whole body, so PUNCH IT: a sharp fast
+        # snap straight back (big base-pivot tip throws the whole body rearward) +
+        # a clear upward hitch, peaking early (~frame 2) then settling to rest.
+        tp = 0.2
+        k = math.sin(min(t / tp, 1.0) * math.pi * 0.5) if t < tp \
+            else math.cos((t - tp) / (1.0 - tp) * math.pi * 0.5)
+        key_euler(arm, drv, f, rx=-D(30) * k, rz=D(14) * k)   # hard recoil back + side flick
+        key_loc(arm, drv, f, z=0.10 * k)                      # upward jolt/hitch
     return act
 
 # ---------------------------------------------------------------------------

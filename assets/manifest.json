@@ -487,9 +487,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
-      "sha256": "73ab0d84d21dba92d21c042000559d5ee36638f898014ac5a1f4ff383a75032e",
-      "size": 56286580,
-      "source_note": "anim-enrichment: +Hitreaction +Attack2 (procedural biped)"
+      "sha256": "cfb97340e5b50e9545b5416f4c82af94451d37c7de0bac81a4d4452010e79f6b",
+      "size": 56291300,
+      "source_note": "anim-enrichment +Hitreaction +Attack2 (procedural biped); hitreact POLISH 2026-07-18 \u2014 contained ~20deg snap-back + shoulder hitch (was near-knockdown)"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
@@ -499,9 +499,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
-      "sha256": "5ec9da0ffe32d189ff52d8df1c12b79bf301e2e2abcf4326e534ad14a2793954",
-      "size": 43439140,
-      "source_note": "anim-enrichment: +Hitreaction +Attack2 (procedural biped)"
+      "sha256": "eed641cbcd5cfae9f7d2506c610fa9e53fd07f7adb82e02d360cd2571af6a648",
+      "size": 43457068,
+      "source_note": "anim-enrichment +Hitreaction +Attack2 (procedural biped); hitreact POLISH 2026-07-18 \u2014 contained ~20deg snap-back + shoulder hitch (was near-knockdown)"
     },
     {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",
