@@ -38,6 +38,7 @@
 #include "cutscene.h"         // x3::cut::CutscenePlayer + the cold-open asset
 #include "cinematic.h"        // runCutsceneWindowed (public cinematic driver)
 #include "asset_root.h"
+#include "audio_root.h"       // resolveAudio(...) — dogfight combat SFX (repo-local first)
 #include "engine/asset/IAssetSource.h"   // player fighter model for the 3P view
 #include "engine/asset/IModelLoader.h"
 #include "space_pilot.h"
@@ -328,6 +329,77 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     const bool fxOn = live && cockpit != nullptr;
     if (fxOn) { fxPtr = std::make_unique<x3::game::CombatFx>(); fxPtr->init(*hc.device); }
 
+    // ---- COMBAT SFX (dogfight-feel): every combat event now SOUNDS. ---------
+    // Cues are COMMITTED under assets/audio/space/dogfight/ (resolveAudio tries
+    // the repo-local mirror first — see AUDIO_MANIFEST.md for pack provenance),
+    // so a fresh clone gets the full mix with no external library. Load failure
+    // is non-fatal (IAudioSystem::load logs once, returns an invalid handle,
+    // every play on it no-ops) and hc.audio == nullptr (headless) degrades to
+    // LOG-ONLY triggers — which is exactly what the headless SFX probe
+    // (X3_INTRO_SFXPROBE=1) captures as evidence that the hooks are live.
+    x3::audio::IAudioSystem* sfx = hc.audio;
+    auto loadCue = [&](const char* rel) {
+        return sfx ? sfx->load(x3::game::resolveAudio(rel)) : x3::audio::SoundHandle{};
+    };
+    const x3::audio::SoundHandle sndPlayerLaser  = loadCue("space/dogfight/player_laser.wav");
+    const x3::audio::SoundHandle sndEnemyLaser   = loadCue("space/dogfight/enemy_laser.wav");
+    const x3::audio::SoundHandle sndImpactShield = loadCue("space/dogfight/impact_shield.wav");
+    const x3::audio::SoundHandle sndImpactHull   = loadCue("space/dogfight/impact_hull.wav");
+    const x3::audio::SoundHandle sndExplosion    = loadCue("space/dogfight/explosion_fighter.wav");
+    const x3::audio::SoundHandle sndBoost        = loadCue("space/dogfight/boost_antimatter.wav");
+    const x3::audio::SoundHandle sndZap          = loadCue("space/dogfight/forcefield_zap.wav");
+    const x3::audio::SoundHandle sndLock         = loadCue("space/dogfight/lock_chirp.wav");
+    const x3::audio::SoundHandle sndHum          = loadCue("space/engine_hum.wav");
+    const x3::audio::SoundHandle sndThrust       = loadCue("space/engine_thrust.wav");
+    // ENGINE BED: reactor hum + thruster whoosh, both at FIXED pitch and ridden
+    // by VOLUME only (the --world space ruling — a pitch sweep reads as a car
+    // shifting gears). Hum tracks speed; thrust tracks throttle and swells on
+    // the antimatter boost. The music bus is untouched.
+    x3::audio::LoopHandle humLoop{}, thrustLoop{};
+    if (sfx && sndHum.valid())    humLoop    = sfx->startLoop(sndHum, 0.22f, 1.0f);
+    if (sfx && sndThrust.valid()) thrustLoop = sfx->startLoop(sndThrust, 0.0f, 1.0f);
+    // One log line per event TYPE on its first trigger — headless-verifiable
+    // evidence that each hook fires, audio device or not.
+    enum { kSfxPlayerLaser = 0, kSfxEnemyLaser, kSfxImpactShield, kSfxImpactHull,
+           kSfxExplosion, kSfxBoost, kSfxZap, kSfxLock, kSfxCount };
+    bool sfxLogged[kSfxCount] = {};
+    auto sfxMark = [&](int type, const char* name) {
+        if (!sfxLogged[type]) {
+            sfxLogged[type] = true;
+            x3::logInfo(std::string("[intro-sfx] first trigger: ") + name +
+                        (sfx ? "" : " (no audio system — log only)"));
+        }
+    };
+    auto play2D = [&](int type, const char* name, x3::audio::SoundHandle h,
+                      float vol, float pitch) {
+        sfxMark(type, name);
+        if (sfx && h.valid()) sfx->playSound2D(h, vol, pitch);
+    };
+    auto play3D = [&](int type, const char* name, x3::audio::SoundHandle h,
+                      const float p[3], float vol, float pitch) {
+        sfxMark(type, name);
+        if (sfx && h.valid()) sfx->playSound3D(h, p[0], p[1], p[2], vol, pitch);
+    };
+    // A fighter kill: the 3D explosion + the death/smoke FX burst, in one place —
+    // deaths are detected AT THE DAMAGE SITE (EnemyShipManager swap-removes a
+    // dead ship immediately, so a post-update hull scan can never see one; the
+    // old prevHull compare below was dead code).
+    auto fighterKillFx = [&](const float p[3]) {
+        play3D(kSfxExplosion, "explosion_fighter (3D, fighter kill)", sndExplosion,
+               p, 1.0f, 1.0f);
+        if (fxOn) {
+            fxPtr->spawnDeath({ p[0], p[1], p[2] });
+            fxPtr->spawnSmoke({ p[0], p[1], p[2] });
+        }
+    };
+    float zapCooldown = 0.0f;   // one zap per bounce, not per frame on the bubble
+    float zapFlashT   = 0.0f;   // HUD border cyan flash timer
+    bool  prevSprint  = false, prevLock = false;
+    const bool sfxProbe = [] {
+        const char* e = std::getenv("X3_INTRO_SFXPROBE");
+        return e && *e && *e != '0';
+    }();
+
     // ---- Player fighter model: drawn in 3P so you SEE your own ship, AHEAD of the
     //      chase camera (owner: "Draw my ship in 3rd person ... in FRONT of the
     //      camera"). Reuses the same drawIntroShip helper the enemy wing uses.
@@ -407,7 +479,28 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         } else {
             in.moveFwd = 1.0f;                  // close the distance
             fire = (step % 12) == 0;            // a measured firing cadence
+            // SFX PROBE (X3_INTRO_SFXPROBE=1): a scripted headless flight that
+            // exercises the remaining combat cues so the [intro-sfx] first-trigger
+            // log lines prove every hook fires. Boost window ~2-5 s; a forced
+            // fighter kill at ~7 s (through the same fighterKillFx path the live
+            // ray-kill uses). The straight-ahead flight crosses the capital's
+            // 110 m bubble on its own, so the force-field zap triggers naturally.
+            // Env-gated: the default headless runs (self-tests) are untouched.
+            if (sfxProbe) {
+                in.sprint = (step >= 120 && step < 300);
+                if (step == 420 && enemies.count() > 0) {
+                    const auto& es0 = enemies.ship(0);
+                    const float hp[3] = { es0.pos[0], es0.pos[1], es0.pos[2] };
+                    fighterKillFx(hp);
+                    enemies.damageShip(0, 100000);
+                }
+            }
         }
+        // ANTIMATTER BOOST: one whoosh per Shift ENGAGE (edge-detected — the
+        // sustained roar is the thrust bed swelling below, not a retrigger).
+        if (in.sprint && !prevSprint)
+            play2D(kSfxBoost, "boost_antimatter (Shift engage)", sndBoost, 0.9f, 1.0f);
+        prevSprint = in.sprint;
         pilot.setRollInput(rollAxis);
         pilot.update(in, dt, *phys);
 
@@ -416,33 +509,38 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         //      bubble — a shield BOUNCE (pushOut cancels+reflects inward velocity).
         {
             const float capC[3] = { 200.0f, 0.0f, 0.0f };
-            pilot.pushOut(capC, 110.0f);                    // capital shield bubble
+            bool zapped = pilot.pushOut(capC, 110.0f);      // capital shield bubble
             for (uint32_t i = 0; i < enemies.count(); ++i) {
                 const auto& es = enemies.ship(i);
                 if (es.hull <= 0) continue;
-                pilot.pushOut(es.pos, 16.0f);               // fighter hull bubble
+                zapped = pilot.pushOut(es.pos, 16.0f) || zapped;   // fighter hull bubble
+            }
+            // pushOut returns true exactly for this: the field ZAPS (2D — it is
+            // the player's own hull on the bubble) and the HUD border flashes
+            // cyan. Cooldown so sliding along a bubble reads as one bounce, not
+            // a 60 Hz machine-gun.
+            if (zapped && zapCooldown <= 0.0f) {
+                play2D(kSfxZap, "forcefield_zap (pushOut bounce)", sndZap, 0.85f, 1.0f);
+                zapCooldown = 0.4f;
+                zapFlashT   = 0.15f;
             }
         }
+        if (zapCooldown > 0.0f) zapCooldown -= dt;
+        if (zapFlashT   > 0.0f) zapFlashT   -= dt;
 
         // ---- Enemy AI tick + salvo accounting (dodge metric). ----
         const x3::phys::Vec3 pp = pilot.pos();
         const x3::phys::Vec3 pv = pilot.velocity();
         const float ppos[3] = { pp.x, pp.y, pp.z };
         const float pvel[3] = { pv.x, pv.y, pv.z };
-        std::vector<int> prevHull(enemies.count());
-        for (uint32_t i = 0; i < enemies.count(); ++i) prevHull[i] = enemies.ship(i).hull;
         enemies.update(dt, ppos, pvel);
-        if (fxOn) {
-            for (uint32_t i = 0; i < enemies.count() && i < prevHull.size(); ++i) {
-                const auto& e = enemies.ship(i);
-                if (prevHull[i] > 0 && e.hull <= 0) {   // died this tick
-                    fxPtr->spawnDeath({ e.pos[0], e.pos[1], e.pos[2] });
-                    fxPtr->spawnSmoke({ e.pos[0], e.pos[1], e.pos[2] });
-                }
-            }
-        }
+        // (Death FX/SFX are triggered at the DAMAGE SITES via fighterKillFx —
+        //  the old post-update prevHull scan here could never fire, because the
+        //  manager swap-removes a dead ship the instant its hull hits zero.)
         bool playerFiredThisStep = false;
         for (const auto& fe : enemies.fireEvents()) {
+            play3D(kSfxEnemyLaser, "enemy_laser (3D at muzzle)", sndEnemyLaser,
+                   fe.from, 0.8f, 1.0f);
             if (fxOn) {
                 fxPtr->addTracer({ fe.from[0], fe.from[1], fe.from[2] },
                              { fe.to[0],   fe.to[1],   fe.to[2] });
@@ -458,7 +556,16 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float dz = fe.to[2] - ppos[2];
             const float d2 = dx*dx + dy*dy + dz*dz;
             if (d2 < 30.0f * 30.0f) {
+                // DISTINCT hit voices: energy shield-splash while the shield
+                // holds, metal-on-metal armor crunch once it's down.
+                const bool shielded = pilot.shield() > 0;
                 pilot.takeDamage(x3::space::shipai::kLaserDamage);
+                if (shielded)
+                    play2D(kSfxImpactShield, "impact_shield (hit, shields up)",
+                           sndImpactShield, 0.9f, 1.0f);
+                else
+                    play2D(kSfxImpactHull, "impact_hull (hit, shields DOWN)",
+                           sndImpactHull, 0.95f, 1.0f);
                 if (fxOn) fxPtr->spawnImpact({ fe.to[0], fe.to[1], fe.to[2] },
                                              { -dx, -dy, -dz });
             } else {
@@ -483,11 +590,76 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                    std::cos(pilot.pitch()) * std::sin(pilot.yaw()) };
             targeting.lockNearest(ppos, pfw);
         }
+        // LOCK-ACQUIRED chirp (edge-detected: one chirp per acquisition).
+        {
+            const bool lockNow = targeting.hasLock();
+            if (lockNow && !prevLock)
+                play2D(kSfxLock, "lock_chirp (lock acquired)", sndLock, 0.6f, 1.0f);
+            prevLock = lockNow;
+        }
 
-        // ---- Player fire -> resolve onto the capital's subsystems. ----
+        // ---- Audio frame: listener rides the pilot camera; the engine bed is
+        //      volume-ridden at fixed pitch (hum <- speed, thrust <- throttle +
+        //      antimatter boost swell). Music bus untouched.
+        if (sfx) {
+            float lx, ly, lz, lyaw, lpit;
+            pilot.camera(lx, ly, lz, lyaw, lpit);
+            sfx->setListener(lx, ly, lz, lyaw, lpit);
+            const x3::phys::Vec3 v3 = pilot.velocity();
+            const float spd = std::sqrt(v3.x*v3.x + v3.y*v3.y + v3.z*v3.z);
+            const float spdFrac = std::min(1.0f, spd / std::max(1.0f, tun.maxSpeed));
+            const float throttle = std::min(1.0f, std::fabs(in.moveFwd) +
+                                                  0.6f * std::fabs(in.moveStrafe));
+            const float boostSwell = in.sprint ? 0.35f : 0.0f;
+            if (humLoop.valid())
+                sfx->setLoopParams(humLoop, 0.18f + 0.30f * spdFrac, 1.0f);
+            if (thrustLoop.valid())
+                sfx->setLoopParams(thrustLoop,
+                    std::min(1.0f, 0.55f * throttle + boostSwell + 0.10f * spdFrac), 1.0f);
+            sfx->update(dt);
+        }
+
+        // ---- Player fire -> fighters first (live ray), else the capital. ----
         if (fire && pilot.fireLaser(dt)) {
             playerFiredThisStep = true;
             ++localShotsFired;
+            play2D(kSfxPlayerLaser, "player_laser (per shot)", sndPlayerLaser,
+                   0.7f, 0.96f + 0.04f * (float)(step % 3));   // tiny pitch jitter
+            // LIVE FIGHTER KILLS: a ray-sphere test along the aim so the laser
+            // can actually down the wing (before this, player shots ONLY damaged
+            // the capital — the "all enemies down" exit was unreachable and no
+            // fighter ever exploded). Headless keeps the pure capital model so
+            // the deterministic metrics/tests are byte-identical.
+            bool hitFighter = false;
+            if (live) {
+                const float fhp = std::cos(pilot.pitch());
+                const float fw[3] = { fhp * std::cos(pilot.yaw()), std::sin(pilot.pitch()),
+                                      fhp * std::sin(pilot.yaw()) };
+                int best = -1; float bestT = 1e9f;
+                for (uint32_t i = 0; i < enemies.count(); ++i) {
+                    const auto& es = enemies.ship(i);
+                    const float oc[3] = { es.pos[0] - ppos[0], es.pos[1] - ppos[1],
+                                          es.pos[2] - ppos[2] };
+                    const float tca = oc[0]*fw[0] + oc[1]*fw[1] + oc[2]*fw[2];
+                    if (tca < 0.0f || tca > 700.0f) continue;
+                    const float d2c = oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - tca*tca;
+                    constexpr float kHitR = 9.0f;   // generous vs the 6 m draw scale
+                    if (d2c <= kHitR * kHitR && tca < bestT) { bestT = tca; best = (int)i; }
+                }
+                if (best >= 0) {
+                    hitFighter = true;
+                    ++localShotsHit;
+                    constexpr int kPlayerLaserDamage = 20;      // 3 hits downs a fighter
+                    const auto& es = enemies.ship((uint32_t)best);
+                    const float hp[3] = { es.pos[0], es.pos[1], es.pos[2] };
+                    const bool willDie = es.hull <= kPlayerLaserDamage;
+                    if (fxOn) fxPtr->spawnImpact({ hp[0], hp[1], hp[2] },
+                                                 { -fw[0], -fw[1], -fw[2] });
+                    enemies.damageShip((uint32_t)best, kPlayerLaserDamage);
+                    if (willDie) fighterKillFx(hp);
+                }
+            }
+            if (!hitFighter) {
             // Deterministic "competent" hit model: when crippling is still
             // possible, route a hit to a subsystem (shields down first), counting
             // a hit. (Live aim quality will replace this with a real raycast in a
@@ -506,6 +678,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             if (x3::space::ShipDamage::subsystemDown(capital,
                     (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
                 ++localSubsDestroyed;
+            }   // !hitFighter (capital routing)
         }
         x3::space::ShipDamage::tick(capital, dt);
 
@@ -601,6 +774,21 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (fxOn) {
                     fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
                     fxPtr->submit(*hc.device, frame);
+                }
+                // FORCE-FIELD FLASH: a one-blink cyan border while the zap timer
+                // runs (pushOut bounced us this instant) — cheap: four hud quads.
+                if (zapFlashT > 0.0f) {
+                    int fw2 = 0, fh2 = 0;
+                    glfwGetWindowSize(hc.window, &fw2, &fh2);
+                    if (fw2 > 0 && fh2 > 0) {
+                        const float a = std::min(1.0f, zapFlashT / 0.15f);
+                        const float cyan4[4] = { 0.45f, 0.90f, 1.0f, 0.55f * a };
+                        const float th = 6.0f;
+                        hc.device->drawHudQuad(frame, 0.0f, 0.0f, (float)fw2, th, cyan4);
+                        hc.device->drawHudQuad(frame, 0.0f, (float)fh2 - th, (float)fw2, th, cyan4);
+                        hc.device->drawHudQuad(frame, 0.0f, 0.0f, th, (float)fh2, cyan4);
+                        hc.device->drawHudQuad(frame, (float)fw2 - th, 0.0f, th, (float)fh2, cyan4);
+                    }
                 }
                 // ---- HUD readout: hull/shield, contacts, lock state ----
                 {
@@ -707,6 +895,9 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     if (live) glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     if (fxOn) fxPtr->shutdown(*hc.device);
+    // Stop the engine bed (loops would otherwise drone under the next cinematic
+    // beat). stopLoop on an invalid handle is a safe no-op.
+    if (sfx) { sfx->stopLoop(humLoop); sfx->stopLoop(thrustLoop); }
 
     // Fold this window's metrics into the running totals. The CLIMAX window owns
     // the hull/time-to-cripple snapshot (the roll inputs); both windows contribute
