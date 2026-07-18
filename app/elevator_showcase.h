@@ -167,6 +167,37 @@ private:
     void layoutCab(Scene& scene);            // reposition cab-child entities each frame
     void animateDoors(Scene& scene);         // slide leaves to the FSM door %
 
+    // ===================================================================================
+    // THE HERO SET PIECE — "an elevator you DON'T WANT TO GET OFF" (Tim's north star).
+    // Four layers, ALL driven off ONE beat clock (m_time at the elevator club-track
+    // tempo — no second clock) so the whole cab pulses as one instrument. The show runs
+    // CONTINUOUSLY whenever a rider is aboard (idle, stopped, or descending) so standing
+    // in the cab is a private micro-concert that keeps evolving and never gets boring.
+    //   1. THE VEGAS SPHERE  — a wraparound faceted dome + upper-wall band of emissive
+    //      facets playing beat-synced visualizer "scenes" that cycle so it never repeats.
+    //   2. MUSIC-VIDEO GLASS — translucent holo panels flipping through a baked strip of
+    //      procedural "music video" frames (dancer silhouettes, equalizer, lyric cards,
+    //      cityscape) cut on the beat.
+    //   3. CONCERT PA        — a real line-array + subwoofers with cones that PUMP on the
+    //      bass and driver lenses that STROBE on the beat (a private PA firing at you).
+    //   4. 5-STAR LUXURY     — polished marble floor, brushed-gold trim, a plush bench, a
+    //      warm chandelier + warm key light layered UNDER the show (the Ritz, not a lift).
+    // ===================================================================================
+    void buildLuxury(Scene& scene, x3::rhi::IRenderDevice& device,
+                     x3::phys::IPhysicsWorld& physics);
+    void buildSphere(Scene& scene, x3::rhi::IRenderDevice& device);
+    void buildMusicVideoGlass(Scene& scene, x3::rhi::IRenderDevice& device);
+    void buildConcertPA(Scene& scene, x3::rhi::IRenderDevice& device);
+    void animateShow(float dt, Scene& scene);   // per-frame beat-driven show (all 4 layers)
+
+    // ONE beat grid (reused everywhere; derived from m_time at kBeatBpm). beatCount() is
+    // the absolute beat position; beatThump() the sharp per-beat kick envelope (0..1) the
+    // club's subs/tiles/dancers already ride, hoisted here so the Sphere, MV glass, PA
+    // and concert-wash lights all share it. discoBoost() ramps the whole show up on 1127.
+    float beatCount() const;
+    float beatThump() const;
+    float discoBoost() const;
+
     bool m_built = false;
     ElevatorSystem m_elev;
     HoloTerminal   m_holo;
@@ -217,6 +248,51 @@ private:
     // — current floor / depth counting down to -200 / stratum / state. Re-baked onto the
     // glass only when the formatted text actually changes (stb_truetype bakes are dear).
     std::string m_holoStatusLine;
+
+    // ===================================================================================
+    // HERO SET-PIECE STATE (the 4 layers above). All entities here RIDE the cab: they are
+    // authored at a fixed local offset from the interior origin and re-posed each frame by
+    // a single ride-along loop in layoutCab (m_ride). Per-frame EMISSIVE / COLOR / PUMP is
+    // driven in animateShow() off the shared beat clock.
+    // ===================================================================================
+    // A cab-child entity that rides the interior origin at a fixed offset, plus an optional
+    // per-beat PUMP translation (the speaker cones punch outward on the bass). p* = pump
+    // axis * amplitude (metres at full thump); {0,0,0} = a static ride-along.
+    struct RideEnt { uint32_t id; float ox, oy, oz; float px, py, pz; };
+    std::vector<RideEnt> m_ride;
+    void addRide(uint32_t id, float ox, float oy, float oz,
+                 float px = 0.0f, float py = 0.0f, float pz = 0.0f) {
+        if (id != kNoLink) m_ride.push_back({id, ox, oy, oz, px, py, pz});
+    }
+
+    // 1. VEGAS SPHERE facets. Each facet stores its angle around the cab (0..2pi) and a
+    //    vertical coord v (0 = low wall band, 1 = dome crown) so the visualizer can paint
+    //    flowing patterns across the wraparound surface.
+    std::vector<uint32_t> m_eSphere;
+    std::vector<float>    m_eSphereAng;
+    std::vector<float>    m_eSphereV;
+
+    // 2. MUSIC-VIDEO glass. A baked strip of procedural MV frames (dancer silhouettes /
+    //    equalizer / lyric card / cityscape), cut on the beat onto translucent holo panes.
+    static constexpr int kMvFrames = 8;
+    x3::rhi::TextureHandle m_mvFrame[kMvFrames] = {};
+    x3::rhi::TextureHandle m_mvMr{};             // glossy dielectric MR -> PBR route (emissiveTex honored)
+    std::vector<uint32_t>  m_eMvPanel;           // holo MV panes (emissiveTex swapped per beat)
+    int                    m_mvLastFrame = -1;   // last frame index assigned (change-gate the swap)
+
+    // 3. CONCERT PA. Sub cones that pump on the bass + driver lenses that strobe on the beat.
+    std::vector<uint32_t> m_eSubCone;            // pumping woofer/sub cones (m_ride carries the pump)
+    std::vector<uint32_t> m_eDriver;             // driver/tweeter lenses (emissive strobe)
+
+    // 4. LUXURY. Warm chandelier drop beads (breathe warm under the show) + gold trim.
+    std::vector<uint32_t> m_eChandelier;
+
+    // Shared 1x1 PBR texels: polished marble (low-rough dielectric), brushed gold (metal),
+    // glossy screen panel (dielectric). Created once; drive the premium material routes.
+    x3::rhi::TextureHandle m_mrMarble{}, m_mrGold{}, m_mrPanel{};
+    // The current bass-pump amount (0..~1), written by animateShow() and read by the
+    // ride-along loop in layoutCab() so the speaker cones punch outward on the beat.
+    float m_showPump = 0.0f;
 };
 
 // Headless self-test (--test-elevator-showcase): build the showcase with a default

@@ -72,34 +72,43 @@ int hostElevator(HostContext& hc) {
             struct Shot { int variant; const char* name; float driveToY; };
             std::vector<Shot> shots;
             const float clubY = x3::game::ElevatorSystem::kDefaultClubFloorY + 0.18f;
+            // THE HERO SET PIECE reads best with the doors SEALED and the cab in the dark
+            // shaft — at the lobby the open doors show the bright shaft and auto-exposure
+            // crushes the whole cab to black (the recipe's "brightest thing in frame" trap).
+            // So every beauty frame is shot MID-DESCENT, doors closed, at full disco boost:
+            // the Vegas Sphere, the MV glass, the PA and the luxury all sing in the dark.
             if (elevShot) {
                 shots = {
-                    {0, "elevator_interior.png", 1e9f},
-                    {3, "elevator_holo.png",     1e9f},
-                    {2, "elevator_descent.png", -100.0f},
-                    {1, "elevator_arrival.png",  clubY + 5.0f},
+                    {0, "elevator_interior.png",    -8.0f},   // 5-star luxury cab, show playing
+                    {4, "elevator_sphere.png",     -16.0f},   // the Vegas Sphere wraparound dome
+                    {5, "elevator_musicvideo.png", -26.0f},   // music video on holo glass
+                    {6, "elevator_concert_pa.png", -36.0f},   // the concert PA line-array
+                    {3, "elevator_holo.png",       -50.0f},   // holo directory + depth readout
+                    {2, "elevator_descent.png",    -80.0f},   // mid-descent, full show, wide
+                    {1, "elevator_arrival.png", clubY + 5.0f},
                 };
             } else {
                 shots = { {0, screenshot ? "" : "", 1e9f} };   // single --screenshot
             }
-            // Settle a few frames so the doors open at the lobby + the holo bakes its glass.
-            for (int i = 0; i < 40; ++i) {
+            // Settle a few frames so the holo bakes its glass + the show spins up.
+            for (int i = 0; i < 20; ++i) {
                 show.update(dt, escene, *device, *ephys);
                 const auto& l = show.pointLights(); device->setPointLights(l.data(), (uint32_t)l.size());
                 ephys->step(dt); escene.update(*ephys);
             }
-            const bool disco = std::getenv("X3_ELEV_DISCO") != nullptr;
+            // The beauty set ALWAYS rides the DISCO descent (code 1127) so the show is at
+            // full boost + the dreamy 1/4-speed glide (a savorable ride). X3_ELEV_DISCO
+            // forces it for the single --screenshot path too.
+            const bool disco = elevShot || std::getenv("X3_ELEV_DISCO") != nullptr;
             bool descentIssued = false;
-            // Drive the cab down until its center reaches targetY (or a safety cap of ~30 s).
+            // Drive the cab down until its center reaches targetY (headless safety cap).
             auto descendTo = [&](float targetY) {
                 if (!descentIssued) {
-                    // X3_ELEV_DISCO=1 proves the disco cue (ball glow / strobe / magenta) on
-                    // the way down; otherwise a plain club call.
                     if (disco) { show.keypadDigit(1); show.keypadDigit(1); show.keypadDigit(2); show.keypadDigit(7); }
                     else       { show.callClub(); }
                     descentIssued = true;
                 }
-                for (int i = 0; i < 1800 && show.cabCenter().y > targetY; ++i) {
+                for (int i = 0; i < 12000 && show.cabCenter().y > targetY; ++i) {
                     show.update(dt, escene, *device, *ephys);
                     const auto& l = show.pointLights(); device->setPointLights(l.data(), (uint32_t)l.size());
                     ephys->step(dt); escene.update(*ephys);
