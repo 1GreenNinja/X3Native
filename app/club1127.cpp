@@ -81,6 +81,25 @@ const float kTvFrame[4]= { 0.031f, 0.031f, 0.031f, 1.0f }; // 0x080808 TV bezel
 const float kGlass[4]  = { 0.200f, 0.267f, 0.333f, 0.55f }; // 0x334455 glass door
 const float kCable[4]  = { 0.267f, 0.267f, 0.267f, 1.0f }; // 0x444444 cable
 const float kOrb[4]    = { 0.700f, 0.700f, 0.800f, 1.0f }; // mirror ball facets
+// CANON-PORT §1.10 — DARK GREEN GRANITE (LOCKED, Tim's decision). Deep
+// emerald-black polished stone (Verde-Ubatuba): green-dominant, very dark value,
+// reads near-black in dim light and resolves to deep green under direct light,
+// catches the blue-UV beams. Used for the U-bar countertop + the Lair reading
+// shelf (one consistent stone across Tim's spaces). Paired with mrGlass (low
+// roughness / near-mirror) so it gleams. baseColor ~ #0E2114.
+const float kGranite[4]    = { 0.055f, 0.130f, 0.075f, 1.0f };
+const float kGraniteEm[4]  = { 0.010f, 0.040f, 0.020f, 0.35f }; // faint deep-green sheen
+// White-oak (1897 barn-wood) U-bar base — warm aged oak.
+const float kOak[4]    = { 0.230f, 0.150f, 0.090f, 1.0f };
+// THE LAIR (NE corner, upstairs) — charcoal light-absorbing walls + warm dens.
+const float kCharcoal[4] = { 0.045f, 0.045f, 0.050f, 1.0f }; // Lair charcoal wall
+const float kLairFloor[4]= { 0.090f, 0.070f, 0.055f, 1.0f }; // warm dark den floor
+const float kOfficeF[4]  = { 0.075f, 0.075f, 0.085f, 1.0f }; // ground-floor office
+// SECRET TUNNEL / STRATA + PRIVATE LOUNGE COMPLEX (poured concrete, warm).
+const float kStrata[4]   = { 0.080f, 0.072f, 0.060f, 1.0f }; // strata concrete
+const float kBunker[4]   = { 0.095f, 0.085f, 0.070f, 1.0f }; // private-lounge walls
+const float kWood[4]     = { 0.110f, 0.070f, 0.045f, 1.0f }; // dark wood panelling
+const float kEmitAmberLo[4] = { 1.0f, 0.62f, 0.26f, 1.6f };  // warm amber strip/lantern
 
 // ---- Emissive helpers: { r, g, b, strength }. strength > 1 => HDR bloom. -----
 const float kEmitOff[4]     = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -938,25 +957,23 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                      kBlacklightCastRange);
             ++m_stats.blacklights;
         };
-        // Mount tubes PROUD of the wall's INNER FACE. The walls are boxes
-        // CENTERED at ±CW/2 (half thickness T/2), so their inner face sits at
-        // ±(CW/2 - T/2) — the old `CW/2 - 0.05` tube center put the whole tube
-        // INSIDE the wall slab, which is the real reason the blacklights
-        // "barely read": only a z-fighting sliver ever showed.
-        const float xFace = CW / 2 - T / 2;   // long-wall inner face (±7.47)
-        const float zFace = CL / 2 - T / 2;   // south-wall inner face (15.09)
-        // Long walls: 8 tubes per wall at EXACT 12 ft spacing, centered along Z
-        // (z = ±12.81 m max, comfortably inside the ±15.24 m room).
+        // CANON-PORT: the N & S walls are the LONG (100 ft) ±Z walls. Mount tubes
+        // PROUD of each wall's INNER FACE (walls centered at ±CL/2, half T/2, inner
+        // face ±(CL/2 - T/2)). 8 tubes per long wall at 12 ft spacing along X + 2
+        // per short (E/W ±X) wall = 20 total.
+        const float zFace = CL / 2 - T / 2;   // long (N/S) wall inner face (±6.40)
+        const float xFace = CW / 2 - T / 2;   // short (E/W) wall inner face (±15.09)
+        // N & S long walls: 8 tubes each, 12 ft spacing along X (x = ±12.81 max,
+        // inside the ±15.24 m half-length). Normal points into the room along Z.
         for (int side = -1; side <= 1; side += 2)
             for (int n = 0; n < 8; ++n) {
-                const float z = (n - 3.5f) * bi;
-                blacklight(side * (xFace - 0.09f), z, (float)-side, 0.0f);
+                const float x = (n - 3.5f) * bi;
+                blacklight(x, side * (zFace - 0.09f), 0.0f, (float)-side);
             }
-        // South wall: 2 per side flanking the centered 85" display, 12 ft apart
-        // (x = ±1.83, ±5.49 — inside the ±7.62 m half-width).
+        // E & W short walls: 2 tubes each flanking the wall centre. Normal along X.
         for (int s = -1; s <= 1; s += 2)
-            for (int n = 0; n < 2; ++n)
-                blacklight(s * (bi / 2 + n * bi), zFace - 0.09f, 0.0f, -1.0f);
+            for (int zz = -1; zz <= 1; zz += 2)
+                blacklight(s * (xFace - 0.09f), zz * 2.4f, (float)-s, 0.0f);
         // UV point lights (4) — the room-wide violet AIR (kept; the per-tube
         // lights above are the wall/crowd cast, these are the base atmosphere).
         const float uv[4][3] = {
@@ -971,32 +988,41 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
-    // TV MULTIPLEX (POE) — 6 screens at the real JS sizes/positions.
+    // 16 × 85" OLED WALL SCREENS — 4 PER WALL (canon refinement, spec §1.6).
+    //   Every screen carries a baked OLED equalizer frame (palette cycles per
+    //   screen) + registers for the live emissive shimmer in update().
+    //   axis 0 = pane thin in Z (N & S long walls); axis 1 = thin in X (E & W).
     // ==================================================================
     {
-        // MAX-OUT: every screen carries a baked OLED equalizer frame (palette
-        // cycles per screen) + registers for the live emissive shimmer in
-        // update() — the wall reads as playing VIDEO, not frozen blue slabs.
         int tvIdx = 0;
-        auto tv = [&](float inches, float x, float y, float z) {
+        auto wallTv = [&](float inches, float x, float y, float z, int axis) {
             const float dm  = inches * 0.0254f;
             const float tvH = dm / std::sqrt(1.0f + (16.0f / 9.0f) * (16.0f / 9.0f));
             const float tvW = tvH * 16.0f / 9.0f;
-            box(x, y, z, (tvW + 0.05f) / 2, (tvH + 0.05f) / 2, 0.03f, kTvFrame, kEmitOff, false); // bezel
+            const float bhx = (axis == 0) ? (tvW + 0.05f) / 2 : 0.03f;
+            const float bhz = (axis == 0) ? 0.03f : (tvW + 0.05f) / 2;
+            box(x, y, z, bhx, (tvH + 0.05f) / 2, bhz, kTvFrame, kEmitOff, false);   // bezel
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.9f };
-            const uint32_t scrId = box(x, y, z + 0.035f, tvW / 2, tvH / 2, 0.005f, kTvFrame, emScr, false);
+            const float shx = (axis == 0) ? tvW / 2 : 0.005f;
+            const float shz = (axis == 0) ? 0.005f : tvW / 2;
+            const uint32_t scrId = box(x, y, z, shx, tvH / 2, shz, kTvFrame, emScr, false);
             oledGlass(scrId, texEq[tvIdx % 4]);
             m_oledEnts.push_back(scrId);
-            ++tvIdx;
-            ++m_stats.tvScreens;
+            ++tvIdx; ++m_stats.tvScreens;
         };
-        const float nwSideX = -(ER_W / 2 + nwSide / 2);
-        tv(80, nwSideX, 2.74f, -CL / 2 + 0.05f);
-        tv(85, 0, CH * 0.55f, CL / 2 - 0.05f);
-        tv(55, CW / 2 - 0.8f, 1.8f, CL / 2 - 2.0f);
-        tv(75, CW / 2 - 1.5f, 2.2f, CL / 2 - 5.0f);
-        tv(65, -ER_W / 2 + 0.1f, LOUNGE_Y + 1.5f, -CL / 2 - ER_D / 2);
-        tv(55, -CW / 2 + 0.8f, 2.0f, CL / 2 - 1.5f);
+        const float ty = CH * 0.5f;
+        const float zN = -CL / 2 + 0.07f, zS = CL / 2 - 0.07f;   // N/S long walls
+        const float xW = -CW / 2 + 0.07f, xE = CW / 2 - 0.07f;   // W/E short walls
+        for (int n = 0; n < 4; ++n) {                            // 4 on each long wall
+            const float x = -CW / 2 + CW * (n + 0.5f) / 4.0f;
+            wallTv(85, x, ty, zN, 0);   // north
+            wallTv(85, x, ty, zS, 0);   // south
+        }
+        for (int n = 0; n < 4; ++n) {                            // 4 on each short wall
+            const float z = -CL / 2 + CL * (n + 0.5f) / 4.0f;
+            wallTv(85, xW, ty, z, 1);   // west
+            wallTv(85, xE, ty, z, 1);   // east (elevator wall)
+        }
     }
 
     // ==================================================================
@@ -1009,7 +1035,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     for (int i = 0; i < 4; ++i) {
         const float sx = (i & 1) ? 1.0f : -1.0f;
         const float sz = (i & 2) ? 1.0f : -1.0f;
-        const float cx = sx * (CW / 2 - 1), cz = sz * (CL / 4);
+        const float cx = sx * (CW / 2 - 1), cz = sz * (CL / 2 - 1);
         box(cx, 0.37f, cz, 0.32f, 0.37f, 0.28f, kSub, kEmitOff, true);
         ++m_stats.svsSubs;
         // POLISH: a REAL recessed 16" sub DRIVER (cone dish + dust cap + surround)
@@ -1027,42 +1053,43 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
     // 8 stacked pairs JBL JRX200 (16 cabinets) + 8 amps + power LEDs on the walls.
     {
-        const float jrxSp = CL / 5;
-        for (int side = -1; side <= 1; side += 2)
+        // CANON-PORT: mains stack in pairs along the N & S LONG (100 ft) ±Z walls,
+        // every ~20 ft along X; drivers face into the room along Z.
+        const float jrxSp = CW / 5;                       // spacing along the 100 ft wall
+        for (int side = -1; side <= 1; side += 2)          // -1 = north wall, +1 = south
             for (int n = 0; n < 4; ++n) {
-                const float z = -CL / 2 + jrxSp * (n + 1);
-                const float x = side * (CW / 2 - 0.5f);
+                const float x = -CW / 2 + jrxSp * (n + 1);
+                const float z = side * (CL / 2 - 0.5f);
                 const float wy = CH * 0.55f;
-                box(x, wy,        z, 0.265f, 0.38f, 0.215f, kSpk, kEmitOff, false); m_stats.jblLineArray++;
-                box(x, wy + 0.8f, z, 0.265f, 0.38f, 0.215f, kSpk, kEmitOff, false); m_stats.jblLineArray++;
-                // POLISH: each cab now carries REAL 3D drivers — a recessed MID cone
-                // + a small convex HORN TWEETER dome above it — facing the room
-                // (-side in X). The mids RIPPLE gently on the beat (far less than the
-                // subs); the tweeter barely stirs. One mesh/entity per cab.
+                box(x, wy,        z, 0.265f, 0.38f, 0.18f, kSpk, kEmitOff, false); m_stats.jblLineArray++;
+                box(x, wy + 0.8f, z, 0.265f, 0.38f, 0.18f, kSpk, kEmitOff, false); m_stats.jblLineArray++;
+                // REAL 3D drivers (mid cone + horn tweeter dome) facing the room
+                // (-side in Z). Mids ripple on the beat; the tweeter barely stirs.
                 for (int cab = 0; cab < 2; ++cab) {
                     x3::prims::PrimMesh dg;
                     makeDriverInto(dg, 0.0f, -0.09f, 0.165f, 0.075f, 0.045f, 0.016f);  // mid cone
                     makeDriverInto(dg, 0.0f,  0.235f, 0.062f, 0.028f, 0.030f, 0.010f); // horn tweeter dome
-                    addDriver(dg, x - side * 0.24f, oy + wy + cab * 0.8f, z, -side, 0.0f, 0.0f, texSpk,
+                    addDriver(dg, x, oy + wy + cab * 0.8f, z - side * 0.20f, 0.0f, 0.0f, -side, texSpk,
                               /*posAmp*/ 0.010f, /*emBase*/ 0.35f, /*emAmp*/ 0.55f);
                 }
                 box(x, wy - 0.55f, z, 0.24f, 0.10f, 0.175f, kAmp, kEmitOff, false);                 // amp
-                box(x - side * 0.01f, wy - 0.5f, z + 0.18f, 0.015f, 0.015f, 0.015f, kAmp, kEmitLed, false); // power LED
+                box(x, wy - 0.5f, z - side * 0.18f, 0.015f, 0.015f, 0.015f, kAmp, kEmitLed, false);  // power LED
             }
     }
-    // 4x JBL PRO 18" subs flanking the dance floor.
+    // 4x JBL PRO 18" subs flanking the dance floor (center-west, near the DJ).
     {
-        const float p[4][2] = { {-1,-1.f/3}, {-1,1.f/3}, {1,-1.f/3}, {1,1.f/3} };
+        const float dfX = -6.0f;   // dance-floor centre X (west of room centre)
+        const float p[4][2] = { {dfX-4.0f,-3.2f}, {dfX-4.0f,3.2f}, {dfX+4.0f,-3.2f}, {dfX+4.0f,3.2f} };
         for (auto& s : p) {
-            const float cx = s[0] * (CW / 2 - 0.5f), cz = s[1] * CL;
+            const float cx = s[0], cz = s[1];
             box(cx, 0.35f, cz, 0.305f, 0.305f, 0.305f, kSub, kEmitOff, true);
             ++m_stats.jbl18Subs;
-            // POLISH: a REAL recessed 18" sub DRIVER facing the floor center (-s[0]
-            // in X) — pumps on the beat + surges amber emissive.
+            // REAL recessed 18" sub DRIVER facing the floor centre — pumps on the beat.
             {
                 x3::prims::PrimMesh dg;
                 makeDriverInto(dg, 0.0f, 0.0f, 0.245f, 0.12f, 0.06f, 0.022f);
-                addDriver(dg, cx - s[0] * 0.29f, oy + 0.35f, cz, -s[0], 0.0f, 0.0f, texSub,
+                const float nrm = (cx < dfX) ? 1.0f : -1.0f;
+                addDriver(dg, cx + nrm * 0.29f, oy + 0.35f, cz, nrm, 0.0f, 0.0f, texSub,
                           /*posAmp*/ 0.032f, /*emBase*/ 0.25f, /*emAmp*/ 2.0f);
             }
         }
@@ -1104,11 +1131,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
 
     // 16x JBL N26/S38 surrounds (walls, alternating sizes).
     {
-        const float surSp = CL / 9;
+        // CANON-PORT: surrounds at ear height on the N & S long (±Z) walls, along X.
+        const float surSp = CW / 9;
         for (int side = -1; side <= 1; side += 2)
             for (int n = 0; n < 8; ++n) {
-                const float z = -CL / 2 + surSp * (n + 1);
-                const float x = side * (CW / 2 - 0.15f);
+                const float x = -CW / 2 + surSp * (n + 1);
+                const float z = side * (CL / 2 - 0.15f);
                 const bool s38 = (n % 2 == 0);
                 box(x, CH * 0.75f, z, (s38 ? 0.25f : 0.2f) / 2, (s38 ? 0.5f : 0.3f) / 2, 0.09f, kSpk, kEmitOff, false);
                 ++m_stats.surrounds;
@@ -1186,6 +1214,58 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                          sparkleHue[i][0], sparkleHue[i][1], sparkleHue[i][2], 3.2f);
             }
         }
+    }
+
+    // ==================================================================
+    // U-SHAPED BAR — Danny's station, centre of the room, NOSE → EAST toward the
+    // elevator entrance. DARK GREEN GRANITE top on a white-oak (1897 barn-wood)
+    // base (spec §1.2 / §1.10). Arms run E-W (X); base runs N-S (Z) on the west
+    // side. bH 1.1 m, arm 5 m, base 4 m (Tim's blockout dims).
+    // ==================================================================
+    {
+        const float uX = 3.0f, bH2 = 1.1f, bArm = 5.0f, bBase = 4.0f;
+        // Oak base carcass (the U): north arm, south arm, west base.
+        box(uX,           bH2 / 2,  bBase / 2, bArm / 2, bH2 / 2, 0.075f, kOak, kEmitOff, true);
+        box(uX,           bH2 / 2, -bBase / 2, bArm / 2, bH2 / 2, 0.075f, kOak, kEmitOff, true);
+        box(uX - bArm / 2, bH2 / 2, 0,         0.075f,   bH2 / 2, bBase / 2, kOak, kEmitOff, true);
+        // DARK GREEN GRANITE tops (§1.10) — polished, gleaming (mrGlass near-mirror).
+        auto graniteTop = [&](float cx, float cy, float cz, float hx, float hy, float hz) {
+            x3::prims::PrimMesh g = x3::prims::makeBox(hx, hy, hz, cx, oy + cy, cz, 1.0f);
+            prim(std::move(g), kGranite, kGraniteEm, x3::rhi::TextureHandle{}, mrGlass, true);
+        };
+        graniteTop(uX,            bH2 + 0.03f,  bBase / 2, bArm / 2, 0.03f, 0.325f);
+        graniteTop(uX,            bH2 + 0.03f, -bBase / 2, bArm / 2, 0.03f, 0.325f);
+        graniteTop(uX - bArm / 2, bH2 + 0.03f, 0,         0.325f,   0.03f, bBase / 2 + 0.325f);
+        // Amber LED under-strips along the top edges.
+        box(uX, bH2 - 0.04f,  bBase / 2 + 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitLed, false);
+        box(uX, bH2 - 0.04f, -bBase / 2 - 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitLed, false);
+        box(uX - bArm / 2 - 0.28f, bH2 - 0.04f, 0, 0.015f, 0.01f, (bBase + 0.3f) / 2, kWall, kEmitLed, false);
+        // Warm bar glow.
+        addLight(m_lights, uX - bArm / 4, oy + bH2 - 0.3f, 0, 1.0f, 0.7f, 0.2f, 8.0f);
+        // Back-bar shelf + 12 jewel-tone bottles inside the U (over the west base).
+        for (int i = 0; i < 12; ++i) {
+            const float bxp = uX - bArm / 2 + 0.8f + i * 0.35f;
+            const float hue[6][3] = { {0.53f,0.13f,0.0f}, {0.0f,0.4f,0.2f}, {0.8f,0.66f,0.0f},
+                                      {0.27f,0.0f,0.13f}, {0.13f,0.27f,0.53f}, {0.53f,0.27f,0.0f} };
+            const float* h = hue[i % 6];
+            const float bem[4]  = { h[0] + 0.2f, h[1] + 0.2f, h[2] + 0.2f, 1.2f };
+            const float bcol[4] = { h[0], h[1], h[2], 1.0f };
+            x3::prims::PrimMesh bt = x3::prims::makeBox(0.04f, 0.15f, 0.04f, bxp, oy + bH2 + 0.65f, 0, 1.0f);
+            prim(std::move(bt), bcol, bem, x3::rhi::TextureHandle{}, mrGlass, false);
+        }
+        // Stools along both arms (5 pairs, dark leather seats).
+        for (int i = 0; i < 5; ++i) {
+            const float sx = uX - bArm / 2 + 0.8f + i * (bArm - 1.0f) / 4.0f;
+            for (int j = 0; j < 2; ++j) {
+                const float sz = (j == 0 ? bBase / 2 + 0.65f : -bBase / 2 - 0.65f);
+                box(sx, 0.78f, sz, 0.19f, 0.025f, 0.19f, kLeather,  kEmitOff, false);
+                box(sx, 0.39f, sz, 0.025f, 0.39f, 0.025f, kStoolLeg, kEmitOff, false);
+            }
+        }
+        // Signature epoxy-filled crack on the 3rd oak panel — "you don't hide what
+        // went wrong" (§1.2): a thin dark filled diagonal left showing.
+        box(uX - bArm / 2 + 1.6f, bH2 / 2, bBase / 2 + 0.08f, 0.006f, bH2 / 2 - 0.12f, 0.006f,
+            kCeil, kEmitOff, false);
     }
 
     // ==================================================================
@@ -1887,11 +1967,11 @@ void Club1127World::showcaseCamera(float out[5]) const {
     // toward -X/-Z across the dance floor so the glowing checkerboard, the DJ
     // booth + ORB on the far north wall, the ground bar (left), and the PA stacks
     // all read in one frame. Y/Z keep us inside the 30 ft ceiling.
-    out[0] = kCW / 2 - 2.0f;   // x: by the east wall / elevator
-    out[1] = kClubY + 5.0f;    // y: above the floor, below the ceiling
-    out[2] = kCL / 2 - 3.0f;   // z: south end
-    out[3] = -2.35f;           // yaw: look toward -X/-Z (the dance floor + booth)
-    out[4] = -0.18f;           // pitch: slightly down over the floor
+    out[0] = kCW / 2 - 3.0f;   // x: by the east wall / elevator entrance
+    out[1] = kClubY + 4.5f;    // y: above the floor, below the 30 ft ceiling
+    out[2] = 1.5f;             // z: slightly off centre
+    out[3] = -1.571f;          // yaw: look WEST (-X) down the 100 ft long axis
+    out[4] = -0.14f;           // pitch: slightly down over the dance floor
 }
 
 // ===========================================================================
@@ -1939,16 +2019,17 @@ bool runClubSelfTest() {
     const Club1127World::Stats& s = club.build(scene, device, *physics, x3::game::riggedGlbRoot());
 
     // (1) Room footprint + Y. The main floor sits at world Y = -200, the room is
-    //     the real 50x100x30 ft (15.24 x 30.48 x 9.14 m), ceiling 30 ft above.
+    //     the canon 100x43x30 ft (30.48 x 13.11 x 9.14 m) — X = 100 ft long E-W
+    //     axis, Z = 43 ft N-S — ceiling 30 ft above (Tim's bar2_architecture.js).
     {
-        const float wX = s.roomMaxX - s.roomMinX;   // ~15.24
-        const float wZ = s.roomMaxZ - s.roomMinZ;   // ~30.48
+        const float wX = s.roomMaxX - s.roomMinX;   // ~30.48 (100 ft, long axis)
+        const float wZ = s.roomMaxZ - s.roomMinZ;   // ~13.11 (43 ft)
         const float h  = s.ceilingY - s.floorY;     // ~9.14
         const bool yOk   = std::fabs(s.floorY - (-200.0f)) < 0.01f;
-        const bool footOk = std::fabs(wX - 15.24f) < 0.05f && std::fabs(wZ - 30.48f) < 0.05f;
+        const bool footOk = std::fabs(wX - 30.48f) < 0.05f && std::fabs(wZ - 13.106f) < 0.05f;
         const bool ceilOk = std::fabs(h - 9.14f) < 0.05f;
         check(yOk && footOk && ceilOk,
-              "main room is 50x100x30 ft (15.24x30.48x9.14 m) with its floor at Y=-200");
+              "main room is 100x43x30 ft (30.48x13.11x9.14 m) with its floor at Y=-200");
     }
 
     // (2) Suspended DJ booth: platform + turntables + 2 OLED + keypad door.
@@ -1979,8 +2060,8 @@ bool runClubSelfTest() {
     check(club.pointLights().size() <= 64,
           "point-light set fits the kMaxPointLights=64 device cap");
 
-    // (8) 6-screen TV multiplex.
-    check(s.tvScreens == 6, "6-screen TV multiplex");
+    // (8) 16 × 85" OLED wall screens (4 per wall — canon refinement).
+    check(s.tvScreens == 16, "16 OLED wall screens (4 per wall)");
 
     // (9) Dance floor + VIP/couch seating.
     check(s.hasDanceFloor && s.couches >= 3, "dance-floor checkerboard + VIP/couch seating");
@@ -2047,8 +2128,8 @@ bool runClubSelfTest() {
             if (mx - mn > 0.05f) allOk = false;
             if (e.emissive[3] <= 0.5f) allOk = false;   // and bright enough to READ
         }
-        check(allOk && oled.size() == 10,
-              "all 10 OLED screens are textured glass on the per-texel emissive path");
+        check(allOk && oled.size() == 20,
+              "all 20 OLED screens are textured glass on the per-texel emissive path");
     }
 
     // (14) THE SCREEN-CONTRAST PROBE + ITS NEGATIVE CONTROL. Run glass.frag's emissive

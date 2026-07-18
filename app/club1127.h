@@ -76,12 +76,14 @@ public:
     // The club's world Y (floor of the main room). Canon: Y = -200 (§2.3).
     static constexpr float kClubY = -200.0f;
 
-    // Real Club 1127 main-room footprint (Tim's measurements; meters).
-    //   CW = 50 ft depth (east-west, X)    = 15.24 m
-    //   CL = 100 ft length (north-south, Z) = 30.48 m
+    // Real Club 1127 main-room footprint (Tim's OWN bar2_architecture.js blueprint;
+    // meters). CANON-PORT (feat/club-canon-port): the authoritative axis convention
+    // is X = East(+)/West(-) 100 ft LONG axis · Z = North(+)/South(-) 43 ft · Y up.
+    //   CW = 100 ft length (east-west, X)   = 30.48 m   (long axis)
+    //   CL = 43 ft depth (north-south, Z)   = 13.11 m   (short axis)
     //   CH = 30 ft ceiling                  =  9.14 m
-    static constexpr float kCW = 15.24f;   // X span (50 ft)
-    static constexpr float kCL = 30.48f;   // Z span (100 ft)
+    static constexpr float kCW = 30.48f;   // X span (100 ft, long E-W axis)
+    static constexpr float kCL = 13.106f;  // Z span (43 ft, short N-S axis)
     static constexpr float kCH = 9.14f;    // ceiling height (30 ft)
     static constexpr float kCullDist = 80.0f;   // §2.3 distance cull (m)
 
