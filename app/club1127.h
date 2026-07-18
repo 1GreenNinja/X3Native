@@ -211,6 +211,20 @@ private:
     std::vector<uint32_t>                         m_subPulseEnts;
     std::vector<uint32_t>                         m_tilePulseEnts;
     std::vector<size_t>                           m_subLightIdx;   // corner-sub pulse lights (into m_lights)
+    // CEILING MOVING-HEAD RIG (Tim addenda: beat-synced lights, mounted on the
+    // ceiling, projecting DOWN onto the dance floor): 4 fixtures on a ring over
+    // the floor. update() sweeps each fixture's pool light in a beat-locked
+    // figure-8 below it, re-poses its translucent beam shaft (lens -> pool),
+    // and rotates the gels on every 8-beat phrase.
+    struct MovingHead {
+        float    fx = 0, fz = 0;          // fixture XZ on the ceiling ring
+        uint32_t lensEnt = 0xFFFFFFFFu;   // emissive lens (gel + beat breathe)
+        uint32_t beamEnt = 0xFFFFFFFFu;   // translucent beam shaft (re-posed)
+    };
+    std::vector<MovingHead>                       m_movingHeads;
+    // White phrase-drop strobe over the floor (index into m_lights; color is
+    // zero except a few quick pops at the end of every 32-beat phrase).
+    size_t                                        m_strobeLightIdx = (size_t)-1;
     // DANCERS (Tim: 'work on those dancers') — real skinned GLB characters on the
     // floor, choreographed by update(): a beat-locked bounce + hip sway + a slow
     // personal-space shuffle, phase-offset per dancer, layered over their idle
