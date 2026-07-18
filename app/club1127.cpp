@@ -820,6 +820,50 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
+    // ★ INDUSTRIAL CEILING (LNS GARAGE, Tim 2026-07-18) — the working-shop bones.
+    // Club 1127 IS the Late Night Speed auto shop: exposed STEEL TRUSSES on 3 m
+    // centres (also HARD CANON §1.1: "steel I-beams on three-metre centres"),
+    // longitudinal purlins, CONDUIT runs, and HVAC DUCTS slung under the dark
+    // concrete deck. All up high (chords at ~8.6-8.98 m) — ABOVE the moving-head
+    // fixtures (heads at CH-0.42) and clear of THE ORB / catwalk (22 ft) — so the
+    // beams drop cleanly below. Decorative (collide=false); the deck slab collides.
+    // ==================================================================
+    {
+        const float kSteel[4]  = { 0.085f, 0.088f, 0.100f, 1.0f };  // dark shop steel
+        const float kSteelHi[4]= { 0.140f, 0.145f, 0.165f, 1.0f };  // lighter web/purlin
+        const float kDuct[4]   = { 0.300f, 0.310f, 0.340f, 1.0f };  // galvanised HVAC
+        const float kConduit[4]= { 0.110f, 0.095f, 0.075f, 1.0f };  // EMT conduit (grey-tan)
+        const float yBot = 8.60f, yTop = 8.98f, yMid = (yBot + yTop) / 2;
+        const float zHalf = CL / 2 - 0.20f;
+        // Transverse trusses (span the 43 ft N-S short axis), 3 m centres, offset
+        // from the moving-head ring (fixtures at x≈±2.83) so nothing clips a head.
+        const float txs[10] = { -13.5f,-10.5f,-7.5f,-4.5f,-1.5f, 1.5f,4.5f,7.5f,10.5f,13.5f };
+        for (float tx : txs) {
+            box(tx, yBot, 0, 0.05f, 0.05f, zHalf, kSteel, kEmitOff, false);   // bottom chord
+            box(tx, yTop, 0, 0.05f, 0.05f, zHalf, kSteel, kEmitOff, false);   // top chord
+            for (int w = 0; w < 7; ++w) {                                     // vertical webs (Vierendeel)
+                const float wz = -zHalf + 0.3f + w * (2.0f * zHalf - 0.6f) / 6.0f;
+                box(tx, yMid, wz, 0.035f, (yTop - yBot) / 2, 0.035f, kSteelHi, kEmitOff, false);
+            }
+        }
+        // Longitudinal purlins (E-W) tying the truss tops.
+        for (float pz : { -4.6f, -1.5f, 1.5f, 4.6f })
+            box(0, yTop + 0.03f, pz, CW / 2 - 0.3f, 0.03f, 0.03f, kSteelHi, kEmitOff, false);
+        // EMT CONDUIT runs slung under the deck along both long walls + two branch drops.
+        for (float cz : { -zHalf + 0.15f, zHalf - 0.15f }) {
+            box(0, yBot - 0.12f, cz, CW / 2 - 0.6f, 0.028f, 0.028f, kConduit, kEmitOff, false);
+            box(0, yBot - 0.20f, cz, CW / 2 - 0.6f, 0.022f, 0.022f, kConduit, kEmitOff, false);
+        }
+        // HVAC DUCT: a big galvanised trunk running E-W along the south side, with a
+        // branch elbow crossing north — the unmistakable shop-ceiling silhouette.
+        box(-2.0f, 8.30f, zHalf - 0.9f, CW / 2 - 4.0f, 0.28f, 0.24f, kDuct, kEmitOff, false); // south trunk
+        box(-CW / 2 + 5.0f, 8.30f, 0.5f, 0.24f, 0.26f, zHalf - 1.2f, kDuct, kEmitOff, false); // N-S branch
+        box(-CW / 2 + 5.0f, 8.30f, zHalf - 0.9f, 0.30f, 0.30f, 0.30f, kDuct, kEmitOff, false); // elbow box
+        // A short return-air duct near the east/entrance side.
+        box(9.5f, 8.35f, -zHalf + 1.1f, 2.4f, 0.22f, 0.20f, kDuct, kEmitOff, false);
+    }
+
+    // ==================================================================
     // ENGINE ROOM + LOUNGE (north side, 2 stories, 12-step stair).
     //   The JS parents these to a node at z = -CL/2 - ER_D/2; we add that offset.
     // ==================================================================
