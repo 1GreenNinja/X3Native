@@ -476,6 +476,7 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_fogstart",       "-1",   "depth-fog clean-air start meters override (canonlevel; -1 = keep zone value)");
     console.registerCVar("r_gradestrength",  "-1",   "filmic grade master strength override 0..1 (canonlevel; -1 = keep zone value)");
     console.registerCVar("r_vignette",       "-1",   "vignette strength override 0..0.25 (canonlevel; -1 = keep zone value)");
+    console.registerCVar("r_filmic",         "1",    "cinematic filmic post master gate (cutscene vignette/grain/split-tone; 0 = force off for A/B — the look itself only turns on during cutscene playback)");
     console.registerCVar("r_autoexposure",   "1",    "auto-exposure (eye adaptation): scene log-luminance drives exposure; r_exposure becomes a bias");
     console.registerCVar("r_aespeed",        "1.5",  "auto-exposure adaptation speed (1/s; higher = faster eye)");
     console.registerCVar("r_aemin",          "0.7",  "auto-exposure clamp floor (max darkening of bright scenes)");
@@ -728,6 +729,10 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     // (r_velocity, default 0 = byte-identical camera-only reproj). The device
     // gates on TAA being active + velocity.spv present (graceful fallback).
     px.velocity   = console.getInt("r_velocity") != 0;
+    // Cinematic filmic post master gate (r_filmic, default 1 = allowed). The look
+    // itself only turns ON while a cutscene holds setFilmic(); this is the live
+    // A/B kill-switch (r_filmic 0 forces the byte-identical composite path).
+    px.filmicAllowed = console.getInt("r_filmic") != 0;
     device.setPostFX(px);
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));

@@ -41,6 +41,7 @@ struct TestFlags {
     bool testKeypad = false;      // --test-keypad (realistic high-poly access keypad, KP1-KP6)
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
+    bool testFilmic = false;      // --test-filmic (composite filmic block: CPU-mirror identity probe)
     bool testGoldenPath = false;
     bool testDescMech = false;    // --test-descmech (W9-1: desc-field Tier-A mechanics)
     bool testInventory = false;    // W9-3 RPG: backpack/item-db (--test-inventory)

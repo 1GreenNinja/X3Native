@@ -280,6 +280,26 @@ public:
         float vignette   = 0.0f;                        // 0..~0.12 per the bible
     };
     virtual void setGrade(const GradeParams& g) {}
+    // CINEMATIC FILMIC POST (feat/filmic-post): the cutscene FILM LOOK — vignette
+    // + animated luma-weighted film grain + split-tone grade + saturation, applied
+    // in the composite pass AFTER tonemap and AFTER the zone grade (the last word
+    // on the frame). Owned by cinematic playback (CinematicScene::applyLook sets
+    // it, restoreLook clears it — the look never leaks into gameplay). Defaults
+    // are OFF and mathematically identity: enabled=false never enters the shader
+    // block (byte-identical output), and enabled-with-defaults is exact identity
+    // too (every sub-op self-gates; see --test-filmic). PostFXParams.filmicAllowed
+    // (r_filmic) is the live kill-switch for A/B.
+    struct FilmicParams {
+        bool  enabled   = false;
+        float vignette  = 0.0f;   // 0..~0.35 corner darkening (film: felt, not seen)
+        float grain     = 0.0f;   // 0..~0.15 grain amplitude (luma-weighted in-shader)
+        float grainSeed = 0.0f;   // seed OFFSET; the device advances a per-frame
+                                  // counter on top so the grain always crawls
+        float shadowTint[3]    = { 1.0f, 1.0f, 1.0f };  // shadows pulled toward (teal)
+        float highlightTint[3] = { 1.0f, 1.0f, 1.0f };  // highlights pulled toward (warm)
+        float saturation = 1.0f;                        // 1 = unchanged
+    };
+    virtual void setFilmic(const FilmicParams&) {}
 
     // CPU per-object frustum cull toggle (live r_frustumcull cvar; default ON). When
     // disabled the draw path is byte-identical to before the cull existed
@@ -359,6 +379,12 @@ public:
                                        // camera-only reprojection (pre-velocity
                                        // behavior). No-op when taa is off or
                                        // velocity.spv is absent (graceful fallback).
+        bool  filmicAllowed  = true;   // r_filmic: master gate on the cinematic
+                                       // filmic post (setFilmic). Default TRUE so
+                                       // headless/screenshot paths that never call
+                                       // setPostFX still honor a host's setFilmic;
+                                       // the look itself stays OFF until a host
+                                       // enables it, so worlds are byte-identical.
     };
     virtual void setPostFX(const PostFXParams&) {}
 

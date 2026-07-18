@@ -157,6 +157,119 @@ using x3::apphost::runGpuCullSelfTest;
 using x3::apphost::runVisUnifySelfTest;
 using x3::apphost::runHatchChainSelfTest;
 
+// ---------------------------------------------------------------------------
+// --test-filmic — CPU mirror of composite.frag's CINEMATIC FILMIC POST block
+// (feat/filmic-post). Proves the headline invariant in plain math: DISABLED and
+// ENABLED-AT-DEFAULTS are both EXACT identity (every sub-op self-gates), and the
+// probe itself can fail (negative controls: vignette darkens corners, grain
+// moves mids but not pure white, split-tone shifts hue the documented way,
+// saturation 0 collapses to grey). Keep the math in lock-step with the shader.
+// ---------------------------------------------------------------------------
+static bool runFilmicMathSelfTest() {
+    using FP = x3::rhi::IRenderDevice::FilmicParams;
+    int fails = 0;
+    auto check = [&](const char* what, bool ok) {
+        x3::logInfo(std::string("    [filmic] ") + (ok ? "PASS " : "FAIL ") + what);
+        if (!ok) ++fails;
+    };
+    auto clampf = [](float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    auto sstep = [&](float e0, float e1, float x) {
+        float t = clampf((x - e0) / (e1 - e0), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+    auto fractf = [](float v) { return v - std::floor(v); };
+    // grainHash mirror (Dave Hoskins hash12 family — same constants as the shader).
+    auto grainHash = [&](float px, float py) {
+        float p3x = fractf(px * 0.1031f), p3y = fractf(py * 0.1031f), p3z = fractf(px * 0.1031f);
+        float d = p3x * (p3y + 33.33f) + p3y * (p3z + 33.33f) + p3z * (p3x + 33.33f);
+        p3x += d; p3y += d; p3z += d;
+        return fractf((p3x + p3y) * p3z);
+    };
+    auto luma = [](const float c[3]) { return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2]; };
+    // The shader block, mirrored 1:1 (uv in [0,1]^2; fragX/fragY = grain cell coords).
+    auto apply = [&](const FP& p, const float in[3], float u, float v,
+                     float fragX, float fragY, float seed, float out[3]) {
+        out[0] = in[0]; out[1] = in[1]; out[2] = in[2];
+        if (!p.enabled) return;                       // block never entered
+        float f[3] = { in[0], in[1], in[2] };
+        float l = luma(f);
+        const bool shadowOn = p.shadowTint[0] != 1.0f || p.shadowTint[1] != 1.0f || p.shadowTint[2] != 1.0f;
+        const bool highOn   = p.highlightTint[0] != 1.0f || p.highlightTint[1] != 1.0f || p.highlightTint[2] != 1.0f;
+        if (shadowOn) { float w = sstep(0.0f, 0.45f, l);
+            for (int i = 0; i < 3; ++i) f[i] = f[i] * p.shadowTint[i] * (1.0f - w) + f[i] * w; }
+        if (highOn)   { float w = sstep(0.55f, 1.0f, l);
+            for (int i = 0; i < 3; ++i) f[i] = f[i] * (1.0f - w) + f[i] * p.highlightTint[i] * w; }
+        if (p.saturation != 1.0f) { float ls = luma(f);
+            for (int i = 0; i < 3; ++i) f[i] = ls * (1.0f - p.saturation) + f[i] * p.saturation; }
+        if (p.vignette > 0.0f) {
+            float vx = u - 0.5f, vy = v - 0.5f;
+            float k = 1.0f - p.vignette * sstep(0.08f, 0.85f, (vx * vx + vy * vy) * 2.0f);
+            for (int i = 0; i < 3; ++i) f[i] *= k;
+        }
+        if (p.grain > 0.0f) {
+            float n = grainHash(fragX + seed * 17.0f, fragY + seed * 47.0f) * 2.0f - 1.0f;
+            float lg = luma(f);
+            float w = (1.0f - sstep(0.40f, 0.85f, lg)) * (0.55f + 0.45f * sstep(0.0f, 0.30f, lg));
+            for (int i = 0; i < 3; ++i) f[i] += n * p.grain * w;
+        }
+        for (int i = 0; i < 3; ++i) out[i] = clampf(f[i], 0.0f, 1.0f);
+    };
+
+    const float sweep[][3] = { {0,0,0}, {0.02f,0.03f,0.05f}, {0.18f,0.18f,0.18f},
+                               {0.5f,0.4f,0.3f}, {0.85f,0.9f,0.95f}, {1,1,1}, {1,0,0}, {0,0.6f,1} };
+    const float uvs[][2] = { {0.5f,0.5f}, {0.02f,0.03f}, {0.97f,0.96f}, {0.25f,0.75f} };
+
+    // F1: DISABLED == exact identity (the headline invariant, CPU-side).
+    { bool ok = true;
+      for (auto& c : sweep) for (auto& uv : uvs) {
+          float o[3]; FP p{}; apply(p, c, uv[0], uv[1], 320.0f, 200.0f, 3.0f, o);
+          ok = ok && o[0] == c[0] && o[1] == c[1] && o[2] == c[2];
+      }
+      check("F1 disabled -> bit-exact identity over the color/uv sweep", ok); }
+    // F2: ENABLED at pure defaults == exact identity (every sub-op self-gates).
+    { bool ok = true;
+      for (auto& c : sweep) for (auto& uv : uvs) {
+          float o[3]; FP p{}; p.enabled = true; apply(p, c, uv[0], uv[1], 320.0f, 200.0f, 3.0f, o);
+          ok = ok && o[0] == c[0] && o[1] == c[1] && o[2] == c[2];
+      }
+      check("F2 enabled + defaults -> bit-exact identity (self-gating sub-ops)", ok); }
+    // F3: NEGATIVE CONTROL — vignette 0.25 darkens the corner, leaves dead-center alone.
+    { FP p{}; p.enabled = true; p.vignette = 0.25f;
+      const float c[3] = { 0.5f, 0.5f, 0.5f }; float oc[3], oe[3];
+      apply(p, c, 0.5f, 0.5f, 320.0f, 200.0f, 3.0f, oc);   // center
+      apply(p, c, 0.02f, 0.03f, 320.0f, 200.0f, 3.0f, oe); // corner
+      check("F3 vignette: corner darkened (probe CAN fail)", oe[0] < c[0] && oe[1] < c[1] && oe[2] < c[2]);
+      check("F3 vignette: dead-center untouched", oc[0] == c[0] && oc[1] == c[1] && oc[2] == c[2]); }
+    // F4: grain moves a MID-GREY pixel, changes with the seed, and vanishes at pure white.
+    { FP p{}; p.enabled = true; p.grain = 0.06f;
+      const float mid[3] = { 0.35f, 0.35f, 0.35f }, wht[3] = { 1, 1, 1 };
+      float a[3], b[3], w[3];
+      apply(p, mid, 0.5f, 0.5f, 320.0f, 200.0f, 3.0f, a);
+      apply(p, mid, 0.5f, 0.5f, 320.0f, 200.0f, 4.0f, b);
+      apply(p, wht, 0.5f, 0.5f, 320.0f, 200.0f, 3.0f, w);
+      check("F4 grain: mid-grey perturbed", a[0] != mid[0]);
+      check("F4 grain: seed advance changes the noise (the crawl)", a[0] != b[0]);
+      check("F4 grain: vanishes in pure-white highlights", w[0] == 1.0f && w[1] == 1.0f && w[2] == 1.0f); }
+    // F5: split-tone — teal shadows push B/R up in the darks; warm highlights push R/B up in the brights.
+    { FP p{}; p.enabled = true;
+      p.shadowTint[0] = 0.94f; p.shadowTint[2] = 1.06f;
+      p.highlightTint[0] = 1.06f; p.highlightTint[2] = 0.95f;
+      const float dark[3] = { 0.08f, 0.08f, 0.08f }, brt[3] = { 0.9f, 0.9f, 0.9f };
+      float od[3], ob[3];
+      apply(p, dark, 0.5f, 0.5f, 320.0f, 200.0f, 3.0f, od);
+      apply(p, brt, 0.5f, 0.5f, 320.0f, 200.0f, 3.0f, ob);
+      check("F5 shadows lean teal (B up, R down)", od[2] > dark[2] && od[0] < dark[0]);
+      check("F5 highlights lean warm (R up, B down)", ob[0] > brt[0] && ob[2] < brt[2]); }
+    // F6: saturation 0 collapses to grey (all channels equal).
+    { FP p{}; p.enabled = true; p.saturation = 0.0f;
+      const float c[3] = { 0.6f, 0.3f, 0.1f }; float o[3];
+      apply(p, c, 0.5f, 0.5f, 320.0f, 200.0f, 3.0f, o);
+      check("F6 saturation 0 -> grey", o[0] == o[1] && o[1] == o[2]); }
+
+    x3::logInfo("    [filmic] " + std::string(fails == 0 ? "ALL PASS" : (std::to_string(fails) + " FAILURE(S)")));
+    return fails == 0;
+}
+
 int dispatchTests(const TestFlags& tf) {
     // Headless self-tests (no window / Vulkan needed)
     if (tf.testJobs) {
@@ -352,6 +465,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running x3.cutscene/1 self-test (format + splines/cuts + player tick/seek/skip + "
                     "StoryFlags + the shipped cold open)...");
         return x3::cut::runCutsceneSelfTest() ? 0 : 1;
+    }
+    if (tf.testFilmic) {
+        x3::logInfo("running FILMIC POST self-test (composite.frag CPU mirror: disabled/defaults "
+                    "== exact identity + vignette/grain/split-tone/saturation negative controls)...");
+        return runFilmicMathSelfTest() ? 0 : 1;
     }
     if (tf.testIntroOrch) {
         x3::logInfo("running Phase 3 INTRO ORCHESTRATOR self-test (beat sequencing + skill->p "

@@ -504,7 +504,15 @@ struct CliOptions {
     // --cuetime <s>            : start the played cutscene scrubbed to s seconds.
     // --cutscene-shot [path]   : HEADLESS film still — build the cinematic scene,
     //                            seek to --cuetime, capture one frame, exit. 4x SSAA.
+    // --nofilmic               : disable the cinematic FILMIC POST (vignette/grain/
+    //                            split-tone) for this run's cutscene playback/stills
+    //                            — the A/B lever for the film-strip pipeline.
+    // --test-filmic            : headless CPU-mirror self-test of the composite
+    //                            filmic block (defaults == identity + negative
+    //                            controls proving the probe can fail).
     bool        testCutscene = false;
+    bool        testFilmic   = false;
+    bool        noFilmic     = false;
     bool        skipIntro    = false;
     // --intro-force <shot_down|escaped> : DEV override for the interactive intro's
     // outcome (QA/tests). -1 = none (roll the skill-biased {chance}); 0 = force the
