@@ -578,6 +578,23 @@ public:
                     int damage = kDamagePerShot,
                     x3::DamageType type = x3::DamageType::Kinetic);
 
+    // [P2-5] Single-raycast fire path (specs/MONSTER_FIRE_SINGLE_RAY.spec.md).
+    // Resolve a PRECOMPUTED Enemy-layer ray hit against THIS monster: if the hit
+    // body is this live monster's, apply the full fire() damage path (headshot /
+    // adaptive-hide / memory-flash / death) and return the same FireResult fire()
+    // would. If the hit is some other body (or a miss), report the geometry
+    // hit/miss for the tracer and no-op on this instance. This lets a container
+    // (MonsterManager / MultiPodBoss) cast ONE ray per shot and fan the SAME hit
+    // across all instances instead of one rayCast per monster. fire() itself is
+    // now cast-one-ray + applyFireHit(), so single-monster behaviour is unchanged.
+    // `eye`/`dir` are the original shot ray (used only for the miss-tracer end
+    // point and the death-ragdoll shove direction).
+    FireResult applyFireHit(const x3::phys::RayHit& hit,
+                            const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                            Scene& scene, x3::phys::IPhysicsWorld& physics,
+                            int damage = kDamagePerShot,
+                            x3::DamageType type = x3::DamageType::Kinetic);
+
     // Advance one frame: decay the hit-flash timer and, if chaseSpeed > 0 and the
     // monster is alive, move it relative to `playerPos` (chase for melee, hold a
     // standoff for the drone) via setBodyPosition + sync the Entity transform, and

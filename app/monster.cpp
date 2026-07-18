@@ -119,6 +119,15 @@ float rng01(uint32_t& s) {
     return (float)(s >> 8) * (1.0f / 16777216.0f);
 }
 
+// [P2-5] Normalize a fire() aim direction (guarding the near-zero case) so the
+// miss-tracer end point (eye + dir*range) sits at the true max range regardless
+// of the caller's dir magnitude. Shared by fire() and applyFireHit().
+x3::phys::Vec3 fireDirNormalized(const x3::phys::Vec3& dir) {
+    float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dl < 1e-6f) dl = 1e-6f;
+    return x3::phys::Vec3{ dir.x / dl, dir.y / dl, dir.z / dl };
+}
+
 } // namespace
 
 const char* aiStateName(AiState s) {
@@ -488,14 +497,40 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
 FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                                Scene& scene, x3::phys::IPhysicsWorld& physics,
                                int damage, x3::DamageType type) {
+    // [P2-5] fire() = ONE Enemy-layer cast + applyFireHit() on the result. The
+    // single-monster behaviour is byte-identical to the pre-split code; the split
+    // exists so MonsterManager / MultiPodBoss can cast once and fan the same hit.
+    if (!m_alive) {
+        // Already dead: nothing to hit (and no cast — same as before the split).
+        FireResult r;
+        r.hpAfter  = m_hp;
+        const x3::phys::Vec3 nd = fireDirNormalized(dir);
+        r.endPoint = x3::phys::Vec3{ eye.x + nd.x * kFireMaxDist,
+                                     eye.y + nd.y * kFireMaxDist,
+                                     eye.z + nd.z * kFireMaxDist };
+        return r;
+    }
+    const x3::phys::RayHit hit =
+        physics.rayCast(eye, fireDirNormalized(dir), kFireMaxDist, x3::phys::Layer::Enemy);
+    return applyFireHit(hit, eye, dir, scene, physics, damage, type);
+}
+
+// ---------------------------------------------------------------------------
+// [P2-5] Resolve a precomputed Enemy-layer ray hit against THIS monster. This is
+// the entire former body of fire() after its rayCast: tracer bookkeeping, "is the
+// hit body mine?" resolution, damage (headshot / adaptive-hide / memory-flash),
+// and the death path. See specs/MONSTER_FIRE_SINGLE_RAY.spec.md.
+// ---------------------------------------------------------------------------
+FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
+                                       const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                                       Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                       int damage, x3::DamageType type) {
     FireResult r;
     r.hpAfter = m_hp;
 
     // Normalize the look dir so the FX tracer "miss" end point (eye + dir*range)
     // is at the true max range regardless of the caller's dir magnitude.
-    float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dl < 1e-6f) dl = 1e-6f;
-    const x3::phys::Vec3 ndir{ dir.x / dl, dir.y / dl, dir.z / dl };
+    const x3::phys::Vec3 ndir = fireDirNormalized(dir);
     // Default tracer end on a miss: straight out to max range.
     r.endPoint = x3::phys::Vec3{ eye.x + ndir.x * kFireMaxDist,
                                  eye.y + ndir.y * kFireMaxDist,
@@ -503,7 +538,6 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
 
     if (!m_alive) return r;                       // already dead: nothing to hit
 
-    x3::phys::RayHit hit = physics.rayCast(eye, ndir, kFireMaxDist, x3::phys::Layer::Enemy);
     if (hit.hit && hit.body.valid()) {
         r.hit      = true;
         r.hitPoint = hit.point;
@@ -2054,15 +2088,21 @@ void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
 FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                                 Scene& scene, x3::phys::IPhysicsWorld& physics,
                                 int damage, x3::DamageType type) {
-    // Each MonsterSystem::fire() casts an Enemy-layer ray that returns the NEAREST
-    // enemy body, but only applies damage if that body is its own. So the first
-    // monster whose fire() reports a real monster hit is the one the ray actually
-    // struck (the nearest); the others see the same nearest body, recognise it as
-    // "not me", and no-op. We therefore take the first hitMonster result. We also
-    // keep the best non-monster result (a wall/miss tracer end) for FX.
+    // [P2-5] ONE Enemy-layer rayCast per shot (specs/MONSTER_FIRE_SINGLE_RAY.spec.md).
+    // The single cast returns the NEAREST enemy body along the ray; each monster
+    // then merely checks "is that my body?" against the SAME precomputed hit (a
+    // map lookup, no ray). Previously every MonsterSystem::fire() re-cast the
+    // identical ray — O(N monsters) physics rays per shot. Nearest-hit semantics
+    // are unchanged (the cast itself is nearest-wins, independent of vector
+    // order); at most one monster is damaged per call; a hit on an Enemy-layer
+    // body that is NOT one of ours is kept as a geometry hit for the tracer,
+    // exactly as before. Zero monsters => no cast, default miss (as before).
     FireResult best;
+    if (m_monsters.empty()) return best;
+    const x3::phys::RayHit hit =
+        physics.rayCast(eye, fireDirNormalized(dir), kFireMaxDist, x3::phys::Layer::Enemy);
     for (auto& m : m_monsters) {
-        FireResult r = m->fire(eye, dir, scene, physics, damage, type);
+        FireResult r = m->applyFireHit(hit, eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;       // the nearest monster took the shot
         if (r.hit && !best.hit) best = r; // remember a geometry hit for the tracer
     }
@@ -2109,6 +2149,82 @@ x3::phys::BodyId combatGround(x3::phys::IPhysicsWorld& w, float half) {
     uint32_t idx[] = { 0,2,1, 0,3,2 };
     return w.addStaticMesh(v, 4, idx, 6);
 }
+
+// [P2-5] Counting physics world: a transparent forwarding wrapper over a real
+// IPhysicsWorld that COUNTS rayCast() invocations. This is the spec's F5 probe:
+// it observes real physics-interface traffic (not a self-reported counter inside
+// the code under test), so "fire() performs exactly ONE world raycast" is proven
+// at the boundary. Everything else forwards 1:1.
+class CountingPhysicsWorld final : public x3::phys::IPhysicsWorld {
+public:
+    explicit CountingPhysicsWorld(x3::phys::IPhysicsWorld& inner) : m_w(inner) {}
+    uint32_t rayCasts = 0;
+
+    x3::phys::RayHit rayCast(x3::phys::Vec3 o, x3::phys::Vec3 d, float maxDist,
+                             x3::phys::Layer mask) override {
+        ++rayCasts;
+        return m_w.rayCast(o, d, maxDist, mask);
+    }
+
+    // ---- pure forwarding below ----
+    bool init() override { return m_w.init(); }
+    void shutdown() override { m_w.shutdown(); }
+    void step(float dt) override { m_w.step(dt); }
+    x3::phys::BodyId addStaticMesh(const float* v, uint32_t vc,
+                                   const uint32_t* i, uint32_t ic) override {
+        return m_w.addStaticMesh(v, vc, i, ic);
+    }
+    x3::phys::BodyId addBox(x3::phys::Vec3 h, x3::phys::Vec3 p, float m,
+                            x3::phys::Layer l) override { return m_w.addBox(h, p, m, l); }
+    x3::phys::BodyId addSphere(float r, x3::phys::Vec3 p, float m,
+                               x3::phys::Layer l) override { return m_w.addSphere(r, p, m, l); }
+    void removeBody(x3::phys::BodyId b) override { m_w.removeBody(b); }
+    void setBodyPosition(x3::phys::BodyId b, x3::phys::Vec3 p) override { m_w.setBodyPosition(b, p); }
+    x3::phys::Vec3 getBodyPosition(x3::phys::BodyId b) const override { return m_w.getBodyPosition(b); }
+    void applyImpulse(x3::phys::BodyId b, x3::phys::Vec3 i) override { m_w.applyImpulse(b, i); }
+    void getBodyRotation(x3::phys::BodyId b, float q[4]) const override { m_w.getBodyRotation(b, q); }
+    void setBodyRotation(x3::phys::BodyId b, const float q[4]) override { m_w.setBodyRotation(b, q); }
+    void setBodyLinearVelocity(x3::phys::BodyId b, const float v[3]) override { m_w.setBodyLinearVelocity(b, v); }
+    void getBodyLinearVelocity(x3::phys::BodyId b, float v[3]) const override { m_w.getBodyLinearVelocity(b, v); }
+    void setBodyAngularVelocity(x3::phys::BodyId b, const float v[3]) override { m_w.setBodyAngularVelocity(b, v); }
+    void getBodyAngularVelocity(x3::phys::BodyId b, float v[3]) const override { m_w.getBodyAngularVelocity(b, v); }
+    x3::phys::ConstraintId addPointConstraint(x3::phys::BodyId a, x3::phys::BodyId b,
+                                              x3::phys::Vec3 anchor) override {
+        return m_w.addPointConstraint(a, b, anchor);
+    }
+    void setBodyUserData(x3::phys::BodyId b, uint64_t u) override { m_w.setBodyUserData(b, u); }
+    uint64_t getBodyUserData(x3::phys::BodyId b) const override { return m_w.getBodyUserData(b); }
+    x3::phys::BodyId createCharacter(float r, float h, x3::phys::Vec3 p) override {
+        return m_w.createCharacter(r, h, p);
+    }
+    void moveCharacter(x3::phys::BodyId b, x3::phys::Vec3 v, float dt) override { m_w.moveCharacter(b, v, dt); }
+    bool characterGrounded(x3::phys::BodyId b) const override { return m_w.characterGrounded(b); }
+    bool setCharacterHeight(x3::phys::BodyId b, float h) override { return m_w.setCharacterHeight(b, h); }
+    void setCharacterSwim(x3::phys::BodyId b, bool e) override { m_w.setCharacterSwim(b, e); }
+    void setTriggerCallback(TriggerFn f, void* u) override { m_w.setTriggerCallback(f, u); }
+    x3::phys::ShapeId addConvexHull(const float* pts, uint32_t n) override { return m_w.addConvexHull(pts, n); }
+    x3::phys::ShapeId addCompound(const x3::phys::ShapeId* parts, const float* xf,
+                                  uint32_t n) override { return m_w.addCompound(parts, xf, n); }
+    x3::phys::BodyId addBodyFromShape(x3::phys::ShapeId s, x3::phys::Vec3 p, float m,
+                                      x3::phys::Layer l) override { return m_w.addBodyFromShape(s, p, m, l); }
+    void setContactCallback(ContactFn f, void* u) override { m_w.setContactCallback(f, u); }
+    void optimizeBroadphase() override { m_w.optimizeBroadphase(); }
+    x3::phys::ConstraintId addPointConstraint(x3::phys::BodyId b, x3::phys::Vec3 a,
+                                              x3::phys::Vec3 att) override {
+        return m_w.addPointConstraint(b, a, att);
+    }
+    x3::phys::ConstraintId addDistanceConstraint(x3::phys::BodyId b, x3::phys::Vec3 a,
+                                                 x3::phys::Vec3 att, float mn, float mx) override {
+        return m_w.addDistanceConstraint(b, a, att, mn, mx);
+    }
+    void removeConstraint(x3::phys::ConstraintId c) override { m_w.removeConstraint(c); }
+    void setBodyDamping(x3::phys::BodyId b, float l, float a) override { m_w.setBodyDamping(b, l, a); }
+    void* nativeSystem() override { return m_w.nativeSystem(); }
+    void* nativeBody(x3::phys::BodyId b) override { return m_w.nativeBody(b); }
+
+private:
+    x3::phys::IPhysicsWorld& m_w;
+};
 
 } // namespace
 
@@ -2288,6 +2404,82 @@ bool runCombatSelfTest() {
         check(capRespected && capActive && hitsBounded,
               "T6 dogpile cap: at most kMaxMeleeAttackers melee enemies swing at once");
         w->shutdown();
+    }
+
+    // =======================================================================
+    // [P2-5] Single-raycast fire (specs/MONSTER_FIRE_SINGLE_RAY.spec.md).
+    // T7: with TWO monsters on the same ray, one MonsterManager::fire() performs
+    //     EXACTLY ONE world raycast (spec F5, counted at the physics interface),
+    //     the NEARER monster takes the damage and the farther is untouched (F2),
+    //     a miss damages nobody and still costs one cast (F4) — plus a negative
+    //     control proving the ray counter actually counts.
+    // T8: spawn order reversed -> the same NEARER monster is the victim (F3).
+    // =======================================================================
+
+    // ---- T7: exactly one raycast per shot; nearest wins; miss is clean. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> inner(x3::phys::createPhysicsWorld());
+        inner->init();
+        CountingPhysicsWorld w(*inner);
+        Scene scene7; MonsterManager mm;
+        MonsterSystem::Tuning tn;               // NEAR: modest HP
+        tn.hp = 40;  tn.chaseSpeed = 0.0f;
+        MonsterSystem::Tuning tf = tn;          // FAR: more HP (spec F2)
+        tf.hp = 400;
+        // Both centered on x=0 so a -Z -> +Z ray runs through both hitboxes.
+        mm.spawn(scene7, device, w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, tn);
+        mm.spawn(scene7, device, w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, 3.0f }, tf);
+        const x3::phys::Vec3 eye7{ 0.0f, 0.4f, -3.0f };
+        const x3::phys::Vec3 aimZ{ 0.0f, 0.0f, 1.0f };   // through near, then far
+        const x3::phys::Vec3 away{ 0.0f, 0.0f, -1.0f };  // empty space behind the eye
+
+        // Negative control FIRST: the counter must see direct rayCast traffic.
+        w.rayCasts = 0;
+        (void)w.rayCast(eye7, aimZ, 1.0f, x3::phys::Layer::Enemy);
+        (void)w.rayCast(eye7, aimZ, 1.0f, x3::phys::Layer::Enemy);
+        const bool probeWorks = (w.rayCasts == 2);
+        check(probeWorks, "T7a ray-count probe counts direct casts (negative control)");
+
+        // One shot at both monsters: ONE cast, nearest damaged, farther untouched.
+        w.rayCasts = 0;
+        FireResult r = mm.fire(eye7, aimZ, scene7, w);
+        const uint32_t castsPerShot = w.rayCasts;
+        const bool oneCast   = (castsPerShot == 1);                       // F5
+        const bool nearHit   = r.hitMonster && mm.at(0).hp() == 40 - kDamagePerShot;
+        const bool farUntouched = mm.at(1).hp() == 400;                   // F2
+        x3::logInfo(std::string("[combat-test] T7 rayCasts/shot=") +
+                    std::to_string(castsPerShot) + " (monsters=" +
+                    std::to_string(mm.count()) + ")");
+        check(oneCast, "T7b fire() performs exactly ONE world raycast (was one per monster)");
+        check(nearHit && farUntouched, "T7c nearest monster takes the shot; farther untouched");
+
+        // Miss: aim at empty space — no HP change anywhere, still a single cast.
+        w.rayCasts = 0;
+        FireResult rm = mm.fire(eye7, away, scene7, w);
+        const bool missClean = !rm.hitMonster && mm.at(0).hp() == 40 - kDamagePerShot &&
+                               mm.at(1).hp() == 400 && w.rayCasts == 1;   // F4 + F5
+        check(missClean, "T7d miss damages nobody (single cast)");
+        w.shutdown();
+    }
+
+    // ---- T8: ORDER INDEPENDENCE (F3) — reversed spawn order, same victim. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> inner(x3::phys::createPhysicsWorld());
+        inner->init();
+        CountingPhysicsWorld w(*inner);
+        Scene scene8; MonsterManager mm;
+        MonsterSystem::Tuning tn; tn.hp = 40;  tn.chaseSpeed = 0.0f;
+        MonsterSystem::Tuning tf; tf.hp = 400; tf.chaseSpeed = 0.0f;
+        // FAR spawned FIRST this time (index 0), NEAR second (index 1).
+        mm.spawn(scene8, device, w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, 3.0f }, tf);
+        mm.spawn(scene8, device, w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, tn);
+        const x3::phys::Vec3 eye8{ 0.0f, 0.4f, -3.0f };
+        w.rayCasts = 0;
+        FireResult r = mm.fire(eye8, x3::phys::Vec3{ 0.0f, 0.0f, 1.0f }, scene8, w);
+        const bool nearVictim = r.hitMonster && mm.at(1).hp() == 40 - kDamagePerShot &&
+                                mm.at(0).hp() == 400 && w.rayCasts == 1;
+        check(nearVictim, "T8 vector order reversed: same (nearer) victim, one cast");
+        w.shutdown();
     }
 
     x3::logInfo(std::string("[combat-test] ") + std::to_string(g_pass) + " passed, " +
@@ -3410,9 +3602,15 @@ void MultiPodBoss::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameC
 FireResult MultiPodBoss::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics,
                               int damage, x3::DamageType type) {
+    // [P2-5] ONE Enemy-layer rayCast per shot, fanned across the pods — same
+    // single-cast pattern as MonsterManager::fire (see the comment there and
+    // specs/MONSTER_FIRE_SINGLE_RAY.spec.md). Previously one cast PER POD.
     FireResult best;
+    if (m_pods.empty()) return best;
+    const x3::phys::RayHit hit =
+        physics.rayCast(eye, fireDirNormalized(dir), kFireMaxDist, x3::phys::Layer::Enemy);
     for (auto& p : m_pods) {
-        FireResult r = p->fire(eye, dir, scene, physics, damage, type);
+        FireResult r = p->applyFireHit(hit, eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;   // a pod took the shot; at most one per call
         if (r.hit && !best.hit) best = r;  // remember a wall hit for the tracer
     }
