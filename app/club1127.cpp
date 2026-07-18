@@ -1742,182 +1742,128 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
-    // U-SHAPED BAR — Danny's station, centre of the room, NOSE → EAST toward the
-    // elevator entrance. DARK GREEN GRANITE top on a white-oak (1897 barn-wood)
-    // base (spec §1.2 / §1.10). Arms run E-W (X); base runs N-S (Z) on the west
-    // side. bH 1.1 m, arm 5 m, base 4 m (Tim's blockout dims).
+    // ★ THE L-WRAPAROUND BAR (LNS GARAGE, Tim 2026-07-18) — SUPERSEDES the U-bar.
+    // The REAL Late Night Speed bar: DARK GREEN GRANITE, L-shaped, running the FULL
+    // WEST WALL (N-S) then CURVING EAST around the NW corner and along the NORTH WALL
+    // to the EDGE OF THE LOUNGE (the engine room / observation lounge is north-centre,
+    // so the north run stops at the ER west edge). Backbar bottle walls behind both
+    // legs; a big SVS PB16-Ultra SUB cabinet under a west-leg section (granite-over-SVS);
+    // Snap-on stools (red seat, chrome pedestal); Danny the bartender behind it.
     // ==================================================================
     {
-        const float uX = 3.0f, bH2 = 1.1f, bArm = 5.0f, bBase = 4.0f;
-        // Oak base carcass (the U): north arm, south arm, west base.
-        box(uX,           bH2 / 2,  bBase / 2, bArm / 2, bH2 / 2, 0.075f, kOak, kEmitOff, true);
-        box(uX,           bH2 / 2, -bBase / 2, bArm / 2, bH2 / 2, 0.075f, kOak, kEmitOff, true);
-        box(uX - bArm / 2, bH2 / 2, 0,         0.075f,   bH2 / 2, bBase / 2, kOak, kEmitOff, true);
-        // DARK GREEN GRANITE tops (§1.10) — polished, gleaming (mrGlass near-mirror).
+        const float bH2 = 1.1f;                        // bar height
+        const float wX  = -CW / 2 + 1.0f;              // west-leg counter centre X (0.72 m lane behind)
+        const float wZ0 = -CL / 2 + 0.3f, wZ1 = CL / 2 - 0.3f;   // west leg Z span (full wall)
+        const float nZ  = -CL / 2 + 1.0f;              // north-leg counter centre Z
+        const float erWest = -ER_W / 2 - 0.3f;         // north run stops just west of the lounge/ER
+        const float nX0 = wX - 0.28f;                  // north leg X span: NW corner ...
+        const float nX1 = erWest;                      //           ... to the lounge edge
+        const float dHalf = 0.28f;                     // counter half-depth
+        // DARK GREEN GRANITE top helper (§1.10) — polished, gleaming.
         auto graniteTop = [&](float cx, float cy, float cz, float hx, float hy, float hz) {
             x3::prims::PrimMesh g = x3::prims::makeBox(hx, hy, hz, cx, oy + cy, cz, 1.0f);
             prim(std::move(g), kGranite, kGraniteEm, x3::rhi::TextureHandle{}, mrGlass, true);
         };
-        graniteTop(uX,            bH2 + 0.03f,  bBase / 2, bArm / 2, 0.03f, 0.325f);
-        graniteTop(uX,            bH2 + 0.03f, -bBase / 2, bArm / 2, 0.03f, 0.325f);
-        graniteTop(uX - bArm / 2, bH2 + 0.03f, 0,         0.325f,   0.03f, bBase / 2 + 0.325f);
-        // Amber LED under-strips along the top edges.
-        box(uX, bH2 - 0.04f,  bBase / 2 + 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitAmberLo, false);
-        box(uX, bH2 - 0.04f, -bBase / 2 - 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitAmberLo, false);
-        box(uX - bArm / 2 - 0.28f, bH2 - 0.04f, 0, 0.015f, 0.01f, (bBase + 0.3f) / 2, kWall, kEmitAmberLo, false);
-        // NEUTRAL BAR KEY (POLISH stage15): was a low amber glow (1.0,0.7,0.2) BELOW
-        // the top — that orange cast muddied the emerald and the moving-head gels
-        // washed the granite magenta. Now a soft warm-WHITE key hung ABOVE the U-bar
-        // top so the DARK GREEN GRANITE is lit by NEUTRAL light and shows its color,
-        // not only by colored disco beams. Local range so it keys the bar, not the room.
-        addLight(m_lights, uX, oy + bH2 + 1.5f, 0, 1.75f, 1.64f, 1.48f, 6.0f);
-        // Back-bar shelf + 12 jewel-tone bottles inside the U (over the west base).
-        for (int i = 0; i < 12; ++i) {
-            const float bxp = uX - bArm / 2 + 0.8f + i * 0.35f;
-            const float hue[6][3] = { {0.53f,0.13f,0.0f}, {0.0f,0.4f,0.2f}, {0.8f,0.66f,0.0f},
-                                      {0.27f,0.0f,0.13f}, {0.13f,0.27f,0.53f}, {0.53f,0.27f,0.0f} };
-            const float* h = hue[i % 6];
-            const float bem[4]  = { h[0] + 0.2f, h[1] + 0.2f, h[2] + 0.2f, 1.2f };
-            const float bcol[4] = { h[0], h[1], h[2], 1.0f };
-            x3::prims::PrimMesh bt = x3::prims::makeBox(0.04f, 0.15f, 0.04f, bxp, oy + bH2 + 0.65f, 0, 1.0f);
-            prim(std::move(bt), bcol, bem, x3::rhi::TextureHandle{}, mrGlass, false);
-        }
-        // Stools along both arms (5 pairs, dark leather seats).
-        for (int i = 0; i < 5; ++i) {
-            const float sx = uX - bArm / 2 + 0.8f + i * (bArm - 1.0f) / 4.0f;
-            for (int j = 0; j < 2; ++j) {
-                const float sz = (j == 0 ? bBase / 2 + 0.65f : -bBase / 2 - 0.65f);
-                box(sx, 0.78f, sz, 0.19f, 0.025f, 0.19f, kLeather,  kEmitOff, false);
-                box(sx, 0.39f, sz, 0.025f, 0.39f, 0.025f, kStoolLeg, kEmitOff, false);
-            }
-        }
-        // Signature epoxy-filled crack on the 3rd oak panel — "you don't hide what
-        // went wrong" (§1.2): a thin dark filled diagonal left showing.
-        box(uX - bArm / 2 + 1.6f, bH2 / 2, bBase / 2 + 0.08f, 0.006f, bH2 / 2 - 0.12f, 0.006f,
-            kCeil, kEmitOff, false);
-    }
-
-    // ==================================================================
-    // GROUND BAR + 7 STOOLS (west side).
-    // ==================================================================
-    {
-        // Tim: 'the bar needs walk-around capability' — counter pulled off the
-        // wall so the lane behind is player-walkable (~1.2 m) with open ends.
-        const float bx = -CW / 2 + 1.9f, bz = CL / 4;
-        box(bx, 0.55f, bz, 0.4f, 0.55f, 2.5f, kBar, kEmitOff, true, 1.0f, &sBar);     // bar body
-        // MAX-OUT: GLEAMING GLASSY COUNTERTOP — a near-black glass slab on the
-        // mirror-gloss MR route (tight specular hot-spots from the bar pendants =
-        // the gleam), edge-lit by a cyan under-lip strip, over a warm kick LED.
+        const float kBarBase[4] = { 0.10f, 0.09f, 0.08f, 1.0f };   // dark cabinet base
+        // ---- WEST LEG (full N-S along the west wall) ----
         {
-            x3::prims::PrimMesh top = x3::prims::makeBox(0.50f, 0.035f, 2.6f, bx, oy + 1.13f, bz, 1.0f);
-            const float glassCol[4] = { 0.05f, 0.065f, 0.085f, 1.0f };
-            const float glassEm[4]  = { 0.02f, 0.10f, 0.13f, 0.5f };
-            prim(std::move(top), glassCol, glassEm, x3::rhi::TextureHandle{}, mrGlass, false);
+            const float lenZ = wZ1 - wZ0, cz = (wZ0 + wZ1) / 2;
+            box(wX, bH2 / 2, cz, dHalf, bH2 / 2, lenZ / 2, kBarBase, kEmitOff, true, 1.0f, &sBar); // base cabinet
+            graniteTop(wX, bH2 + 0.03f, cz, dHalf + 0.05f, 0.03f, lenZ / 2 + 0.05f);
+            box(wX + dHalf + 0.02f, bH2 - 0.04f, cz, 0.012f, 0.012f, lenZ / 2, kWall, kEmitAmberLo, false); // amber under-lip
         }
-        const float emCyanStrip[4] = { 0.05f, 0.85f, 1.0f, 2.6f };
-        box(bx + 0.48f, 1.10f, bz, 0.012f, 0.012f, 2.58f, kWall, emCyanStrip, false);   // under-lip strip (guest side)
-        const float emWarmKick[4] = { 1.0f, 0.55f, 0.15f, 1.6f };
-        box(bx + 0.40f, 0.06f, bz, 0.012f, 0.012f, 2.5f, kWall, emWarmKick, false);     // kick-panel LED
-        m_stats.hasGroundBar = true;
-        // THREE warm pendant pools raking the glass top (the specular gleam).
-        // (relight: 1.15/0.85/0.45 -> 1.6/1.15/0.55 so the bar reads as a glowing hub.)
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz - 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz,        1.60f, 1.15f, 0.55f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz + 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
-        // Pendant fixtures (small chrome cones -> boxes + glowing bulbs).
-        for (int pnd = -1; pnd <= 1; ++pnd) {
-            const float pz = bz + pnd * 1.6f;
-            box(bx + 0.3f, 2.75f, pz, 0.015f, 0.35f, 0.015f, kChrome, kEmitOff, false);   // drop rod
-            box(bx + 0.3f, 2.35f, pz, 0.06f, 0.045f, 0.06f, kSpk, kEmitOff, false);       // shade (near-black)
-            const float emBulb[4] = { 1.0f, 0.78f, 0.45f, 2.8f };
-            box(bx + 0.3f, 2.27f, pz, 0.035f, 0.025f, 0.035f, kBarTop, emBulb, false);    // bulb
+        // ---- NORTH LEG (NW corner east to the lounge edge) ----
+        {
+            const float lenX = nX1 - nX0, cx = (nX0 + nX1) / 2;
+            box(cx, bH2 / 2, nZ, lenX / 2, bH2 / 2, dHalf, kBarBase, kEmitOff, true, 1.0f, &sBar);
+            graniteTop(cx, bH2 + 0.03f, nZ, lenX / 2 + 0.05f, 0.03f, dHalf + 0.05f);
+            box(cx, bH2 - 0.04f, nZ + dHalf + 0.02f, lenX / 2, 0.012f, 0.012f, kWall, kEmitAmberLo, false);
         }
-        for (int i = 0; i < 7; ++i) {
-            const float sz = CL / 4 - 2.5f + 0.5f + i * 5.0f / 7.0f;
-            box(-CW / 2 + 2.7f, 0.75f, sz, 0.2f, 0.035f, 0.2f, kLeather, kEmitOff, false);       // seat (dark leather)
-            box(-CW / 2 + 2.7f, 0.36f, sz, 0.03f, 0.36f, 0.03f, kStoolLeg, kEmitOff, false);     // leg
+        // ---- NW CORNER curve (a 45° chamfer block tying the two legs) ----
+        graniteTop(wX + 0.15f, bH2 + 0.03f, nZ + 0.15f, dHalf + 0.2f, 0.03f, dHalf + 0.2f);
+        box(wX, bH2 / 2, nZ, dHalf + 0.15f, bH2 / 2, dHalf + 0.15f, kBarBase, kEmitOff, true);
+        // ---- ★ SVS PB16-Ultra SUB cabinet under a west-leg section (granite over SVS) ----
+        {
+            const float sX = wX, sZ = 2.6f;
+            box(sX, 0.42f, sZ, dHalf + 0.02f, 0.42f, 0.34f, kSub, kEmitOff, true);   // big black sub box
+            box(sX + dHalf, 0.42f, sZ, 0.01f, 0.28f, 0.24f, kSpk, kEmitOff, false);  // driver face (front)
+            const float emSubLed[4] = { 0.10f, 1.0f, 0.30f, 2.0f };
+            box(sX + dHalf + 0.005f, 0.68f, sZ, 0.006f, 0.01f, 0.02f, kWall, emSubLed, false); // status LED
+        }
+        // ---- SNAP-ON STOOLS (red round seat, chrome pedestal + footring + base) ----
+        auto snapStool = [&](float sx, float sz) {
+            const float kSnapRed[4] = { 0.55f, 0.05f, 0.06f, 1.0f };
+            box(sx, 0.76f, sz, 0.20f, 0.05f, 0.20f, kSnapRed, kEmitOff, false);   // red seat
+            box(sx, 0.38f, sz, 0.035f, 0.38f, 0.035f, kChrome, kEmitOff, false);  // chrome pedestal
+            box(sx, 0.30f, sz, 0.14f, 0.012f, 0.14f, kChrome, kEmitOff, false);   // chrome footring
+            box(sx, 0.02f, sz, 0.19f, 0.02f, 0.19f, kChrome, kEmitOff, false);    // chrome base disc
             ++m_stats.barStools;
-        }
-
-        // MAX-OUT: BACK-BAR — a lit bottle wall on the west wall behind the bar:
-        // backlit panel, three polished glass shelves, 18 glowing bottles in five
-        // liquor hues, chrome shelf brackets, and a wide OLED band above (the
-        // "now mixing" display). This is what a camera at the bar SEES.
+        };
+        // 6 along the west leg (room side, +X), 4 along the north leg (room side, +Z).
+        for (int i = 0; i < 6; ++i)
+            snapStool(wX + dHalf + 0.55f, wZ0 + 1.2f + i * (wZ1 - wZ0 - 2.4f) / 5.0f);
+        for (int i = 0; i < 4; ++i)
+            snapStool(nX0 + 1.4f + i * (nX1 - nX0 - 2.0f) / 3.0f, nZ + dHalf + 0.55f);
+        // ---- BACKBAR bottle walls behind BOTH legs (west wall + north wall) ----
+        const float bottleHue[5][3] = {
+            { 1.0f, 0.55f, 0.10f }, { 0.15f, 1.0f, 0.45f }, { 0.10f, 0.75f, 1.0f },
+            { 0.80f, 0.20f, 1.0f }, { 1.0f, 0.25f, 0.35f },
+        };
+        // West-wall backbar: 3 shelves of glowing bottles + violet edge strips.
         {
-            const float wallX = -CW / 2 + 0.35f;
-            // DARK GLASS CRYSTAL panel (Tim) — a real transparent pane, near-black
-            // with a deep violet-blue tint + full fresnel: the rack reads as smoked
-            // crystal and the glowing bottles pop against it.
-            {
-                x3::prims::PrimMesh pg = x3::prims::makeBox(0.015f, 1.05f, 2.4f, wallX, oy + 1.75f, bz, 1.0f);
-                Entity pe;
-                pe.mesh = device.createMesh(pg.verts.data(), (uint32_t)pg.verts.size(),
-                                            pg.index.data(), (uint32_t)pg.index.size());
-                pe.baseColor[0] = 0.04f; pe.baseColor[1] = 0.03f; pe.baseColor[2] = 0.07f; pe.baseColor[3] = 1.0f;
-                pe.emissive[0] = 0.18f; pe.emissive[1] = 0.06f; pe.emissive[2] = 0.35f; pe.emissive[3] = 0.30f;
-                pe.transparent = true;
-                pe.glass.opacity = 0.55f;
-                pe.glass.refraction = 0.0f;
-                pe.glass.roughness = 0.04f;
-                pe.glass.specular = 1.0f;
-                pe.glass.tint[0] = 0.35f; pe.glass.tint[1] = 0.25f; pe.glass.tint[2] = 0.60f;
-                pe.tag = (uint32_t)Tag::Static;
-                scene.add(pe);
-            }
-            // Violet edge-light strips framing the crystal panel.
-            const float emViolet[4] = { 0.55f, 0.10f, 1.0f, 2.2f };
-            box(wallX + 0.01f, 2.82f, bz, 0.008f, 0.010f, 2.42f, kWall, emViolet, false);
-            box(wallX + 0.01f, 0.68f, bz, 0.008f, 0.010f, 2.42f, kWall, emViolet, false);
-            const float bottleHue[5][3] = {
-                { 1.0f, 0.55f, 0.10f },   // bourbon amber
-                { 0.15f, 1.0f, 0.45f },   // absinthe emerald
-                { 0.10f, 0.75f, 1.0f },   // curacao cyan
-                { 0.80f, 0.20f, 1.0f },   // violet
-                { 1.0f, 0.25f, 0.35f },   // campari rose
-            };
+            const float wallX = -CW / 2 + 0.35f, cz = 0.0f, run = (wZ1 - wZ0) - 1.5f;
+            const float emViolet[4] = { 0.55f, 0.10f, 1.0f, 2.0f };
+            box(wallX + 0.02f, 2.7f, cz, 0.008f, 0.010f, run / 2, kWall, emViolet, false);
             for (int shelf = 0; shelf < 3; ++shelf) {
-                const float shY = 1.15f + shelf * 0.55f;
-                // Polished glass shelf (mirror-gloss slab) + chrome brackets.
-                x3::prims::PrimMesh sh = x3::prims::makeBox(0.16f, 0.014f, 2.3f, wallX + 0.18f, oy + shY, bz, 1.0f);
-                Entity she;
-                she.mesh = device.createMesh(sh.verts.data(), (uint32_t)sh.verts.size(),
-                                             sh.index.data(), (uint32_t)sh.index.size());
-                she.baseColor[0] = 0.06f; she.baseColor[1] = 0.07f; she.baseColor[2] = 0.10f; she.baseColor[3] = 1.0f;
-                she.transparent = true;
-                she.glass.opacity = 0.35f;      // crystal shelf — see the bottles through it
-                she.glass.refraction = 0.0f;
-                she.glass.roughness = 0.05f;
-                she.glass.specular = 1.0f;
-                she.glass.tint[0] = 0.55f; she.glass.tint[1] = 0.60f; she.glass.tint[2] = 0.85f;
-                she.tag = (uint32_t)Tag::Static;
-                scene.add(she);
-                for (int br = -1; br <= 1; ++br)
-                    box(wallX + 0.18f, shY - 0.05f, bz + br * 1.05f, 0.02f, 0.05f, 0.02f, kChrome, kEmitOff, false);
-                // Six bottles per shelf, varied hue/height, backlit glow.
-                for (int bt = 0; bt < 6; ++bt) {
-                    const float btZ = bz - 1.0f + bt * 0.4f + ((shelf * 7 + bt) % 3) * 0.05f;
-                    const float btH = 0.13f + ((clubHash(shelf * 61 + bt * 17) % 100) / 100.0f) * 0.07f;
-                    const float* hue = bottleHue[(shelf * 6 + bt) % 5];
-                    const float btEm[4] = { hue[0], hue[1], hue[2], 1.7f };
-                    const float btCol[4] = { hue[0] * 0.3f, hue[1] * 0.3f, hue[2] * 0.3f, 1.0f };
-                    x3::prims::PrimMesh btm = x3::prims::makeBox(0.035f, btH, 0.035f,
-                                                                 wallX + 0.18f, oy + shY + 0.014f + btH, btZ, 1.0f);
+                const float shY = 1.35f + shelf * 0.55f;
+                box(wallX + 0.16f, shY - 0.03f, cz, 0.14f, 0.012f, run / 2, kChrome, kEmitOff, false); // shelf
+                const int nb = (int)(run / 0.42f);
+                for (int bt = 0; bt < nb; ++bt) {
+                    const float btZ = cz - run / 2 + 0.3f + bt * 0.42f;
+                    const float btH = 0.12f + ((clubHash(shelf * 61 + bt * 17) % 100) / 100.0f) * 0.06f;
+                    const float* hue = bottleHue[(shelf * 3 + bt) % 5];
+                    const float btEm[4] = { hue[0], hue[1], hue[2], 1.6f };
+                    const float btCol[4] = { hue[0]*0.3f, hue[1]*0.3f, hue[2]*0.3f, 1.0f };
+                    x3::prims::PrimMesh btm = x3::prims::makeBox(0.032f, btH, 0.032f, wallX + 0.16f, oy + shY + btH, btZ, 1.0f);
                     prim(std::move(btm), btCol, btEm, x3::rhi::TextureHandle{}, mrGlass, false);
-                    // Neck.
-                    box(wallX + 0.18f, shY + 0.014f + btH * 2.0f + 0.035f, btZ, 0.012f, 0.035f, 0.012f,
-                        kChrome, kEmitOff, false);
                 }
             }
-            // Wide OLED band above the back-bar (registered for the live shimmer).
+            // Wide OLED "now mixing" band above the west backbar (live shimmer).
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.9f };
-            const uint32_t bandId = box(wallX + 0.05f, 3.25f, bz, 0.015f, 0.42f, 2.35f, kTvFrame, emScr, false);
+            const uint32_t bandId = box(wallX + 0.05f, 3.15f, cz, 0.015f, 0.40f, run / 2, kTvFrame, emScr, false);
             oledGlass(bandId, texEq[1]);
             m_oledEnts.push_back(bandId);
-            // Bartender behind the counter, facing the room (+X).
-            addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
-                         x3::phys::Vec3{ bx - 0.75f, oy + 0.0f, bz }, 1.0f, false, nullptr);
         }
+        // North-wall backbar: 2 shelves of bottles along the north run.
+        {
+            const float wallZ = -CL / 2 + 0.35f, cx = (nX0 + nX1) / 2, run = (nX1 - nX0) - 1.2f;
+            for (int shelf = 0; shelf < 2; ++shelf) {
+                const float shY = 1.45f + shelf * 0.55f;
+                box(cx, shY - 0.03f, wallZ + 0.16f, run / 2, 0.012f, 0.14f, kChrome, kEmitOff, false);
+                const int nb = (int)(run / 0.42f);
+                for (int bt = 0; bt < nb; ++bt) {
+                    const float btX = cx - run / 2 + 0.3f + bt * 0.42f;
+                    const float btH = 0.12f + ((clubHash(shelf * 41 + bt * 23) % 100) / 100.0f) * 0.06f;
+                    const float* hue = bottleHue[(shelf * 4 + bt) % 5];
+                    const float btEm[4] = { hue[0], hue[1], hue[2], 1.6f };
+                    const float btCol[4] = { hue[0]*0.3f, hue[1]*0.3f, hue[2]*0.3f, 1.0f };
+                    x3::prims::PrimMesh btm = x3::prims::makeBox(0.032f, btH, 0.032f, btX, oy + shY + btH, wallZ + 0.16f, 1.0f);
+                    prim(std::move(btm), btCol, btEm, x3::rhi::TextureHandle{}, mrGlass, false);
+                }
+            }
+        }
+        // ---- NEUTRAL WARM KEYS over the granite (so the emerald reads, not only gels).
+        // (Reclaimed from the removed U-bar key + ground-bar pendants — net light-neutral.)
+        addLight(m_lights, wX + 0.3f, oy + bH2 + 1.6f, -2.5f, 1.70f, 1.55f, 1.35f, 5.5f);
+        addLight(m_lights, wX + 0.3f, oy + bH2 + 1.6f,  2.5f, 1.70f, 1.55f, 1.35f, 5.5f);
+        addLight(m_lights, -10.0f,    oy + bH2 + 1.6f, nZ + 0.3f, 1.70f, 1.55f, 1.35f, 5.5f);
+        addLight(m_lights, -5.5f,     oy + bH2 + 1.6f, nZ + 0.3f, 1.70f, 1.55f, 1.35f, 5.5f);
+        m_stats.hasGroundBar = true;
+        // ---- DANNY the bartender, behind the L (in the service lane), facing the room.
+        addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
+                     x3::phys::Vec3{ wX - 0.55f, oy + 0.0f, -1.5f }, 1.0f, false, nullptr);
     }
+
 
     // ==================================================================
     // BLACK COUCHES + END TABLE (SE corner) + VIP COUCH (SW corner).
@@ -2873,8 +2819,8 @@ bool runClubSelfTest() {
     check(s.hasOrb, "THE ORB (mirror ball) exists");
 
     // (4) Aerial bar + ground bar with exactly 7 stools.
-    check(s.hasAerialBar && s.hasGroundBar && s.barStools == 7,
-          "aerial bar + ground bar with 7 stools");
+    check(s.hasAerialBar && s.hasGroundBar && s.barStools == 10,
+          "aerial bar + L-wraparound bar with 10 Snap-on stools");
 
     // (5) Engine-room/lounge with a 12-step stair.
     check(s.hasLoungeFloor && s.stairSteps == 12,
