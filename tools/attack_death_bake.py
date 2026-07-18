@@ -31,9 +31,15 @@ import bpy, sys, os, math
 
 ARGV = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 if len(ARGV) < 2:
-    raise SystemExit("Usage: ... -- <name_anim.glb> <out.glb> [style]")
+    raise SystemExit("Usage: ... -- <name_anim.glb> <out.glb> [style] [clips]")
 TARGET, OUT = ARGV[0], ARGV[1]
 STYLE = ARGV[2].lower() if len(ARGV) > 2 else "auto"
+# Which one-shots to bake (comma-separated). Default keeps the original behaviour.
+# Recognised: attack, death, hitreact, attack2. Enemies that already carry
+# Attack/Death (chief/marcus) pass "hitreact,attack2"; the aliens (no combat
+# clips) pass "attack,death,hitreact".
+CLIPS = [c.strip().lower() for c in
+         (ARGV[3] if len(ARGV) > 3 else "attack,death").split(",") if c.strip()]
 
 LOG_PATH  = OUT + ".log"
 DONE_PATH = OUT + ".done"
@@ -81,6 +87,7 @@ def classify(bones):
     exact = [b.name for b in bones if b.name.lower().endswith("rightarm") or b.name.lower().endswith("arm.r")]
     if exact: g["armR"] = exact[0]
     g["foreR"]  = find_bone(bones, "forearm", side="R") or find_bone(bones, "lowerarm", side="R")
+    g["foreL"]  = find_bone(bones, "forearm", side="L") or find_bone(bones, "lowerarm", side="L")
     g["armL"]   = ([b.name for b in bones if b.name.lower().endswith("leftarm") or b.name.lower().endswith("arm.l")] or
                    [find_bone(bones, "arm", side="L")])[0]
     g["spine"]  = [b.name for b in bones if "spine" in b.name.lower() or "chest" in b.name.lower()]
@@ -253,6 +260,100 @@ def bake_death_core(arm, g, frames=29):
     return act
 
 # ---------------------------------------------------------------------------
+# HITREACTION (~0.4 s @24fps = 10 frames): a SHARP, CONTAINED flinch that RETURNS
+# to neutral so the runtime can hard-cut back to locomotion with no pop. Authored
+# in the target's own bone space (rest-relative euler), so it is orientation-safe
+# on Z-up-authored rigs (no full-body pitch like a mocap knockback would give).
+# The single half-sine pulse: snap back on impact (~35%), settle back to rest.
+# ---------------------------------------------------------------------------
+def bake_hitreact_biped(arm, g, frames=10):
+    act = new_action(arm, "Hitreaction")
+    zero_pose(arm)
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        # Fast rise to a peak near t=0.3, then ease back to 0 by the last frame.
+        k = math.sin(min(t / 0.3, 1.0) * math.pi * 0.5) if t < 0.3 \
+            else math.cos((t - 0.3) / 0.7 * math.pi * 0.5)
+        if g["spine"]:
+            key_euler(arm, g["spine"][0], f, rx=-D(20) * k, ry=D(8) * k)  # torso jerks back+twist
+            if len(g["spine"]) > 1:
+                key_euler(arm, g["spine"][1], f, rx=-D(12) * k)
+        key_euler(arm, g.get("head"), f, rx=-D(24) * k, rz=D(10) * k)     # head snaps back
+        key_euler(arm, g.get("armR"), f, rx=D(15) * k, rz=-D(28) * k)     # arms recoil out
+        key_euler(arm, g.get("armL"), f, rx=D(12) * k, rz=D(30) * k)
+        key_euler(arm, g.get("foreR"), f, rx=-D(25) * k)
+        # slight knee give + hip nudge so the whole body absorbs the hit.
+        key_euler(arm, g.get("upLegL"), f, rx=-D(8) * k)
+        key_euler(arm, g.get("upLegR"), f, rx=-D(6) * k)
+        key_loc(arm, g.get("hips"), f, z=-0.03 * k)
+    return act
+
+def bake_hitreact_core(arm, g, frames=10):
+    act = new_action(arm, "Hitreaction")
+    zero_pose(arm)
+    drv = g.get("root") or g.get("hips") or (arm.pose.bones[0].name if len(arm.pose.bones) else None)
+    if not drv: return act
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        k = math.sin(min(t / 0.3, 1.0) * math.pi * 0.5) if t < 0.3 \
+            else math.cos((t - 0.3) / 0.7 * math.pi * 0.5)
+        # A quick recoil: rear back + a side flick, returning to rest. Contained so
+        # a single-bone alien reads as "stung" without toppling.
+        key_euler(arm, drv, f, rx=-D(16) * k, rz=D(11) * k)
+        key_loc(arm, drv, f, z=0.02 * k)
+    return act
+
+# ---------------------------------------------------------------------------
+# ATTACK2 (~0.75 s): a distinct SECOND attack so successive strikes vary. Biped:
+# a LEFT-hand cross/hook (mirrors the right-hand haymaker of Attack) with a
+# forward step-in. Core: a low double-jab lunge (two quick forward pulses).
+# ---------------------------------------------------------------------------
+def bake_attack2_biped(arm, g, frames=19):
+    act = new_action(arm, "Attack2")
+    zero_pose(arm)
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        if t < 0.35:                        # WIND-UP: left arm back, spine coils
+            k = ease(t / 0.35)
+            armLx, armLz = -D(60) * k, -D(28) * k
+            foreLx = -D(45) * k
+            spineY = -D(16) * k
+        elif t < 0.65:                      # HOOK through
+            k = ease((t - 0.35) / 0.3)
+            armLx, armLz = -D(60) + D(120) * k, -D(28) + D(50) * k
+            foreLx = -D(45) + D(40) * k
+            spineY = -D(16) + D(30) * k
+        else:                               # RECOVER
+            k = ease((t - 0.65) / 0.35)
+            armLx, armLz = D(60) * (1 - k), D(22) * (1 - k)
+            foreLx = -D(5) * (1 - k)
+            spineY = D(14) * (1 - k)
+        key_euler(arm, g.get("armL"), f, rx=armLx, rz=armLz)
+        key_euler(arm, g.get("foreL") or g.get("foreR"), f, rx=foreLx)
+        if g["spine"]: key_euler(arm, g["spine"][0], f, ry=spineY, rx=D(5) * math.sin(t * math.pi))
+        key_euler(arm, g.get("armR"), f, rx=-armLx * 0.22)     # counter-balance
+        key_loc(arm, g.get("hips"), f, z=0.05 * math.sin(t * math.pi))  # step-in bob
+    return act
+
+def bake_attack2_core(arm, g, frames=19):
+    act = new_action(arm, "Attack2")
+    zero_pose(arm)
+    drv = g.get("root") or g.get("hips") or (arm.pose.bones[0].name if len(arm.pose.bones) else None)
+    if not drv: return act
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        # Two quick forward jabs (a 2 Hz lunge pulse) that decay back to rest.
+        env = (1.0 - t)
+        pulse = max(0.0, math.sin(t * 2.0 * math.tau))
+        key_euler(arm, drv, f, rx=D(30) * pulse * env)
+        key_loc(arm, drv, f, z=-0.05 * pulse * env)
+    return act
+
+# ---------------------------------------------------------------------------
 def main():
     arm = import_target()
     before = [a.name for a in bpy.data.actions]
@@ -263,12 +364,19 @@ def main():
         "spine:", g["spine"][:3])
     log("existing actions (kept):", before)
 
-    if style == "biped":
-        bake_attack_biped(arm, g)
-        bake_death_biped(arm, g)
-    else:
-        bake_attack_core(arm, g)
-        bake_death_core(arm, g)
+    biped = (style == "biped")
+    BAKERS = {
+        "attack":   bake_attack_biped   if biped else bake_attack_core,
+        "death":    bake_death_biped    if biped else bake_death_core,
+        "hitreact": bake_hitreact_biped if biped else bake_hitreact_core,
+        "attack2":  bake_attack2_biped  if biped else bake_attack2_core,
+    }
+    log("baking clips:", CLIPS)
+    for c in CLIPS:
+        fn = BAKERS.get(c)
+        if fn is None:
+            log("  unknown clip requested, skipping:", c); continue
+        fn(arm, g)
     arm.animation_data.action = None
     log("actions now:", [a.name for a in bpy.data.actions])
 
