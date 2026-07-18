@@ -742,6 +742,31 @@ int MonsterSystem::effectiveDamage() const {
 }
 
 // ---------------------------------------------------------------------------
+// [P2-6] One LOS probe (extracted from the decision-cadence block so the attack
+// path can re-run it FRESH). Ray from our center toward the player's eye; clear
+// if no Static wall blocks it before the player. Skip past our own collision
+// box first (the Static mask also matches Enemy bodies, so a center-origin ray
+// self-hits). See docs/design/SUBSYSTEM_HARDENING_PLAN.md AI-2.
+// ---------------------------------------------------------------------------
+bool MonsterSystem::probeLos(x3::phys::IPhysicsWorld& physics,
+                             const x3::phys::Vec3& playerEye) const {
+    const x3::phys::Vec3 from0{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
+    x3::phys::Vec3 d{ playerEye.x - from0.x, playerEye.y - from0.y,
+                      playerEye.z - from0.z };
+    float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+    if (dl < 1e-4f) dl = 1e-4f;
+    const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
+    const float skip = kMonsterHalf.x + 0.15f;
+    const x3::phys::Vec3 from{ from0.x + nd.x*skip, from0.y + nd.y*skip,
+                               from0.z + nd.z*skip };
+    float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
+    x3::phys::RayHit wall = (losLen > 1e-3f)
+        ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
+        : x3::phys::RayHit{};
+    return !wall.hit;
+}
+
+// ---------------------------------------------------------------------------
 // Per-frame: decay hit-flash; run the death pop; else face + chase the player.
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -932,27 +957,9 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                           kAiDecisionJitter * (2.0f * rng01(m_rng) - 1.0f);
 
         // LOS: ray from our center toward the player's eye; clear if no Static wall
-        // blocks it before the player. Skip past our own collision box first (the
-        // Static mask also matches Enemy bodies, so a center-origin ray self-hits).
-        bool los = true;
-        if (target) {
-            const x3::phys::Vec3 from0{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
-            x3::phys::Vec3 d{ playerEye.x - from0.x, playerEye.y - from0.y,
-                              playerEye.z - from0.z };
-            float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
-            if (dl < 1e-4f) dl = 1e-4f;
-            const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
-            const float skip = kMonsterHalf.x + 0.15f;
-            const x3::phys::Vec3 from{ from0.x + nd.x*skip, from0.y + nd.y*skip,
-                                       from0.z + nd.z*skip };
-            float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
-            x3::phys::RayHit wall = (losLen > 1e-3f)
-                ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
-                : x3::phys::RayHit{};
-            los = !wall.hit;
-        } else {
-            los = false;   // no target -> nothing to see -> Search/Idle
-        }
+        // blocks it before the player (probeLos, shared with the [P2-6] fresh
+        // attack-time re-check below). No target -> nothing to see -> Search/Idle.
+        const bool los = target ? probeLos(physics, playerEye) : false;
         m_hasLos = los;
         if (los) { m_lastKnown = playerPos; m_everSawPlayer = true; }
 
@@ -1393,6 +1400,21 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // test at all (only the ranged path did). This closes both: no LOS or too much
     // vertical separation => no wind-up, no hit. The ranged path keeps its own
     // muzzle->player wall ray as a second, finer check at the moment of the shot.
+    //
+    // [P2-6] FRESH attack-time LOS (SUBSYSTEM_HARDENING_PLAN AI-2): the decision
+    // cadence is jittered ~0.15-0.45 s, so between ticks m_hasLos is STALE — an
+    // enemy kept shooting/swinging at where the player WAS (through the corner or
+    // doorframe just vacated), and refused fair shots for up to half a second
+    // after the player stepped into view. Whenever an attack is even plausible
+    // (live target, armed, permitted, and in range or already winding), re-run
+    // the SAME LOS probe THIS frame and overwrite m_hasLos, so both the wind-up
+    // gate and the melee land use the current world, not the stale snapshot. One
+    // extra Static ray per frame, only for enemies actually in attack range.
+    if (target && target->isAlive() && m_dmg > 0 && mayAttack &&
+        (m_winding || horiz <= m_attackRange)) {
+        m_hasLos = probeLos(physics, playerEye);
+        if (m_hasLos) { m_lastKnown = playerPos; m_everSawPlayer = true; }
+    }
     const float vsep = std::fabs(playerPos.y - m_pos.y);
     const bool attackClear = m_hasLos && vsep <= kAttackMaxVertical;
     if (target && target->isAlive() && m_dmg > 0 && horiz <= m_attackRange &&
@@ -3207,6 +3229,113 @@ bool runAiSelfTest() {
                     " backToPatrol=" + (backToPatrol?"1":"0"));
         aicheck(walked && confined && engaged && backToPatrol,
                 "Tg patrol: walks the beat near the anchor, aggro interrupts, returns after search");
+        w->shutdown();
+    }
+
+    // ---- (h) [P2-6] FRESH attack LOS (SUBSYSTEM_HARDENING_PLAN AI-2): corner/
+    // door fairness. The decision cadence is jittered ~0.15-0.45 s, so m_hasLos
+    // alone is a stale snapshot at attack time. Two directions:
+    //   Th1: a wall raised MID-WIND-UP (player ducks behind the doorframe) must
+    //        cancel the melee — no hit lands through the just-raised wall.
+    //   Th2: with the wall REMOVED (player steps into view inside melee range),
+    //        the attack must begin within a few frames — not after waiting out
+    //        the rest of the decision period — and the fair hit then lands.
+    // Both are deterministic under the per-frame refresh (the fresh probe runs
+    // every frame an attack is plausible); pre-fix they depended on where the
+    // jittered decision tick happened to fall. ----
+    {
+        // Th1: cancel mid-wind-up when a wall appears.
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; CountingSink sink;
+        MonsterSystem::Tuning t;
+        t.type = MonsterType::Guard;
+        t.hp = 100; t.chaseSpeed = 0.0f;          // stationary: geometry stays fixed
+        t.damage = 8; t.attackRange = 2.5f;
+        t.attackCooldown = 10.0f;                  // one attack per scenario
+        t.attackWindup = 0.30f;                    // a real telegraph window
+        t.ranged = false;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+        sink.eye = x3::phys::Vec3{ 0.0f, 1.6f, -2.0f };   // inside melee range
+        bool wound = false;
+        for (int i = 0; i < 120 && !wound; ++i) {
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            wound = m.winding();
+        }
+        // The player "ducks behind the corner": raise a tall double-sided wall
+        // between enemy (z=0) and player (z=-2) while the wind-up is in flight.
+        {
+            float wx0=-10, wx1=10, wy0=0, wy1=5, wz=-1.0f;
+            float v[] = { wx0,wy0,wz, wx1,wy0,wz, wx1,wy1,wz, wx0,wy1,wz };
+            uint32_t idx[] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 }; // double-sided
+            w->addStaticMesh(v, 4, idx, 12);
+        }
+        for (int i = 0; i < 30; ++i) {             // ride out the full wind-up
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        x3::logInfo(std::string("[ai-test] (h1) wound=") + (wound?"1":"0") +
+                    " hitsThroughWall=" + std::to_string(sink.hits));
+        aicheck(wound && sink.hits == 0,
+                "Th1 fresh LOS cancels a mid-wind-up melee when a wall appears");
+        w->shutdown();
+    }
+    {
+        // Th2: attack begins promptly once the wall is gone (no stale refusal).
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; CountingSink sink;
+        MonsterSystem::Tuning t;
+        t.type = MonsterType::Guard;
+        t.hp = 100; t.chaseSpeed = 0.0f;
+        t.damage = 8; t.attackRange = 2.5f;
+        t.attackCooldown = 10.0f;
+        t.attackWindup = 0.30f;
+        t.ranged = false;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+        sink.eye = x3::phys::Vec3{ 0.0f, 1.6f, -2.0f };
+        x3::phys::BodyId wall;
+        {
+            float wx0=-10, wx1=10, wy0=0, wy1=5, wz=-1.0f;
+            float v[] = { wx0,wy0,wz, wx1,wy0,wz, wx1,wy1,wz, wx0,wy1,wz };
+            uint32_t idx[] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 };
+            wall = w->addStaticMesh(v, 4, idx, 12);
+        }
+        // Blocked: half a second in melee range with a wall between -> no attack.
+        for (int i = 0; i < 30; ++i) {
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        const bool noBlindHits = (sink.hits == 0) && !m.winding();
+        // The wall drops (player steps through the door): the wind-up must begin
+        // within a FEW frames (fresh per-frame probe), not after the remainder of
+        // the ~0.15-0.45 s decision period.
+        w->removeBody(wall);
+        int framesToWindup = -1;
+        for (int i = 0; i < 10; ++i) {
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            if (m.winding()) { framesToWindup = i + 1; break; }
+        }
+        const bool prompt = (framesToWindup > 0 && framesToWindup <= 3);
+        // And the fair hit then actually lands once the wind-up elapses.
+        for (int i = 0; i < 30; ++i) {
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        x3::logInfo(std::string("[ai-test] (h2) noBlindHits=") + (noBlindHits?"1":"0") +
+                    " framesToWindup=" + std::to_string(framesToWindup) +
+                    " fairHits=" + std::to_string(sink.hits));
+        aicheck(noBlindHits && prompt && sink.hits >= 1,
+                "Th2 fresh LOS grants a fair attack promptly after cover breaks");
         w->shutdown();
     }
 

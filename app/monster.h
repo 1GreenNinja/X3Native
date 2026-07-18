@@ -763,6 +763,9 @@ public:
     // Player position last seen with LOS (the Search target). Valid once LOS held.
     x3::phys::Vec3 lastKnownPlayerPos() const { return m_lastKnown; }
     bool    hasLineOfSight() const { return m_hasLos; }
+    // [P2-6] True while an attack wind-up is in flight (the telegraph window
+    // between attack start and the hit landing). Read by the fresh-LOS self-test.
+    bool    winding() const { return m_winding; }
 
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
@@ -890,6 +893,15 @@ private:
     // `tint` multiplied into each primitive's base color (for the hit-flash).
     void drawMonsterAt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                        const float model[16], const float tint[4]) const;
+
+    // [P2-6] One line-of-sight probe: ray from our body center (+0.3 m, stepped
+    // past our own collision box) toward `playerEye` against Layer::Static; clear
+    // iff no wall blocks it before the player. Extracted from the decision-cadence
+    // block so the ATTACK path can re-run it FRESH (every frame while in attack
+    // range / winding) instead of trusting the ~0.3 s-stale decision snapshot.
+    // See docs/design/SUBSYSTEM_HARDENING_PLAN.md AI-2.
+    bool probeLos(x3::phys::IPhysicsWorld& physics,
+                  const x3::phys::Vec3& playerEye) const;
 
     // ---- SKINNED DEATH RAGDOLL helpers (TASK#12) --------------------------
     // Try to spawn the physics ragdoll at the kill moment (rigged models only). On
