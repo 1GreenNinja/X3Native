@@ -317,6 +317,25 @@ public:
         }
     }
 
+    bool musicAtEnd() const override {
+        // Only a live NON-LOOPING music voice can "end" (a looping bed wraps).
+        return m_music && !m_musicLoop &&
+               ma_sound_at_end(m_music.get()) == MA_TRUE;
+    }
+
+    bool probeAudioFile(std::string_view absPath) override {
+        // ma_decoder is device-independent: this works headless/silent too, so
+        // the jukebox can vet a playlist on any machine. Open + immediately
+        // close — the STREAM decode of playMusic never touches a dud.
+        ma_decoder dec;
+        const std::string path(absPath);
+        ma_decoder_config cfg = ma_decoder_config_init_default();
+        if (ma_decoder_init_file(path.c_str(), &cfg, &dec) != MA_SUCCESS)
+            return false;
+        ma_decoder_uninit(&dec);
+        return true;
+    }
+
     void setMusicVolume(float vol) override {
         m_musicVol = clamp01(vol);
         if (m_music) ma_sound_set_volume(m_music.get(), m_musicVol);

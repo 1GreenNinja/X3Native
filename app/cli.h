@@ -187,6 +187,10 @@ struct CliOptions {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+    // --test-jukebox (feat/club-jukebox): the user-music CLUB JUKEBOX — folder
+    // scan, sidecar BPM parse, beat-grid retune, corrupt-file skip, empty-folder
+    // fallback. Headless (tiny generated WAVs in a temp dir). Additive flag.
+    bool        testJukebox = false;
 
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark

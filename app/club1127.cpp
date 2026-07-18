@@ -49,7 +49,11 @@ namespace {
 constexpr float kPi = 3.14159265358979f;
 // The house tempo — matched to assets/audio/music/club_descent.wav (measured
 // ~85.5 BPM base / 171 eighth-grid) so subs, tiles, and dancers ride the track.
-constexpr float kClubBpm = 85.5f;
+// JUKEBOX PASS: no longer a hardwired constant in update() — it is the DEFAULT
+// of the runtime-retunable beat grid (Club1127World::kDefaultBpm == this;
+// setBeatGrid() swaps the tempo per user track, see club_jukebox.*).
+static_assert(Club1127World::kDefaultBpm == 85.5f,
+              "club default tempo must stay matched to club_descent.wav");
 
 // ---- Tints (linear-ish; the device tonemaps) ------------------------------
 // Ported from the JS StandardMaterial diffuse colors (hex -> 0..1 RGB).
@@ -1222,6 +1226,11 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     if (!m_built) return;
     m_time += dt;
     const float t = m_time;
+    // Advance the BEAT GRID (in beats). Everything beat-locked below reads this
+    // accumulated phase instead of t*BPM so a setBeatGrid() retune mid-set only
+    // changes the RATE — no phase snap, no light/dancer glitch.
+    m_beatPhase += (double)dt * (double)(m_bpm / 60.0f);
+    const float beats = (float)m_beatPhase;
 
     // --- Spin THE ORB (rotate about Y) by rewriting its transform's upper 3x3. ---
     if (m_orbValid && m_orbEnt < scene.size()) {
@@ -1266,13 +1275,12 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         e.emissive[3] = 4.0f;   // relight: UV tube bloom 3.0 -> 4.0
     }
 
-    // --- MAX-OUT: the 128 BPM BEAT CLOCK (matches the Babylon club track). A
+    // --- MAX-OUT: the BEAT CLOCK (jukebox: per-track BPM via setBeatGrid). A
     // sharp thump curve (sin^6 of the beat phase) drives the sub cones, the
     // corner sub pulse lights, and the bright dance tiles — the whole room
     // breathes with the music instead of idling frozen. ---
     {
-        const float beatHz = kClubBpm / 60.0f;
-        const float ph = std::sin(t * beatHz * kPi);          // one lobe per beat
+        const float ph = std::sin(beats * kPi);               // one lobe per beat
         const float thump = std::pow(std::max(0.0f, ph), 6.0f);
         // Sub driver cones: amber surge on the hit, near-dark between.
         for (const uint32_t id : m_subPulseEnts) {
@@ -1316,15 +1324,19 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     //   SWAY   — hips/heading rock at half-tempo (yaw oscillation);
     //   SHUFFLE— a slow personal-space drift around the home spot (XZ orbit).
     {
-        const float beatHz = kClubBpm / 60.0f;
+        const float beatHz = m_bpm / 60.0f;
         for (const Dancer& dn : m_dancers) {
             if (dn.charIdx >= m_chars.size()) continue;
+            // Beat-locked layers ride the GRID PHASE (dn.phase, authored in
+            // seconds, converts at the live tempo so the floor keeps its
+            // per-dancer desync at any BPM); the slow shuffle stays wall-clock.
+            const float bp = beats + dn.phase * beatHz;
             const float tp = t + dn.phase;
-            const float lobe = std::sin(tp * beatHz * kPi);
+            const float lobe = std::sin(bp * kPi);
             // The baked clips carry the bounce/arms now — the procedural layer is
             // just a gentle weight-shift + facing drift so no two dancers match.
             const float bounce = std::pow(std::max(0.0f, lobe), 4.0f) * 0.025f * dn.energy;
-            const float sway = std::sin(tp * beatHz * kPi * 0.5f) * 0.22f * dn.energy;
+            const float sway = std::sin(bp * kPi * 0.5f) * 0.22f * dn.energy;
             const float sx = dn.bx + std::sin(tp * 0.31f) * 0.30f;
             const float sz = dn.bz + std::cos(tp * 0.23f) * 0.28f;
             m_chars[dn.charIdx]->setPropPose(
@@ -1335,6 +1347,18 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     // Tick the inert character props (idle clips; chaseSpeed 0 => no movement).
     for (auto& c : m_chars)
         c->update(dt, scene, physics, c->pos());
+}
+
+void Club1127World::setBeatGrid(float bpm, float offsetS) {
+    if (!(bpm > 0.0f)) bpm = kDefaultBpm;          // NaN/0/negative -> house tempo
+    if (bpm < 40.0f)  bpm = 40.0f;
+    if (bpm > 240.0f) bpm = 240.0f;
+    m_bpm = bpm;
+    // Rewind the phase so beat 0 lands `offsetS` seconds from NOW — called at
+    // track start, the first thump hits on the track's real downbeat.
+    m_beatPhase = -(double)offsetS * (double)(m_bpm / 60.0f);
+    x3::logInfo("[club1127] beat grid retuned: " + std::to_string(m_bpm) +
+                " BPM (first-beat offset " + std::to_string(offsetS) + "s)");
 }
 
 void Club1127World::drawCharacters(x3::rhi::IRenderDevice& device,

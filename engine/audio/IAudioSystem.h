@@ -77,6 +77,19 @@ public:
     // Stop the music track (if any).
     virtual void stopMusic() = 0;
 
+    // TRUE iff a NON-LOOPING music track was started with playMusic() and has
+    // reached its end (a playlist's auto-advance edge). Looping music, silent
+    // mode, or no music -> false. Default false so backends may opt out — a
+    // caller polling this simply never advances, which is the safe behavior.
+    virtual bool musicAtEnd() const { return false; }
+
+    // Cheap decodability probe: open+close the file's decoder WITHOUT playing it
+    // (no device needed — works headless/silent). Returns false for a missing or
+    // corrupt/undecodable file so a playlist can SKIP it with one log line
+    // instead of handing playMusic a dud. Default true (backends may opt out;
+    // playMusic stays graceful on failure regardless).
+    virtual bool probeAudioFile(std::string_view /*absPath*/) { return true; }
+
     // ---- Live volume controls (Settings menu) -----------------------------
     // Set the music bed's volume in [0,1]. Applied immediately to the playing
     // music voice (and remembered for any music started later). Silent/no-music

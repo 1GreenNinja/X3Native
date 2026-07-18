@@ -160,6 +160,21 @@ public:
     // Recommended cull distance (m): hide the club beyond this from the player.
     float cullDistance() const { return kCullDist; }
 
+    // ---- JUKEBOX BEAT GRID (feat/club-jukebox) -----------------------------
+    // RETUNE the club's beat grid to a new tempo. Everything beat-locked — the
+    // sub-cone thumps, the corner sub pulse lights, the dance-tile breathe, the
+    // OLED thump component, and the dancers' bounce/sway — rides an accumulated
+    // BEAT PHASE (beats, not seconds), so a mid-set tempo change is glitch-free:
+    // the phase keeps counting from where it is, only the rate changes.
+    // `offsetS` (optional) is the track's first-beat offset: the grid phase is
+    // rewound so beat 0 lands `offsetS` seconds after the call — call this the
+    // moment a new track starts and the lights hit ON the track's downbeat.
+    // bpm is clamped to a sane 40..240; the default grid is kDefaultBpm (85.5,
+    // matched to the built-in club_descent.wav).
+    void setBeatGrid(float bpm, float offsetS = 0.0f);
+    float beatBpm() const { return m_bpm; }
+    static constexpr float kDefaultBpm = 85.5f;
+
     bool built() const { return m_built; }
 
 private:
@@ -222,6 +237,11 @@ private:
     std::vector<Dancer>                           m_dancers;
     // Running animation clock (seconds) advanced by update().
     float                                         m_time = 0.0f;
+    // JUKEBOX BEAT GRID: current tempo + the accumulated beat phase (in BEATS,
+    // advanced by update() at m_bpm/60 per second). All beat-locked machinery
+    // reads m_beatPhase so setBeatGrid() retunes are click-free.
+    float                                         m_bpm = kDefaultBpm;
+    double                                        m_beatPhase = 0.0;
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).
     std::vector<std::unique_ptr<MonsterSystem>>   m_chars;
 };

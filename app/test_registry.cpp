@@ -100,6 +100,7 @@
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
+#include "club_jukebox.h"
 #include "perfshop.h"
 #include "valley.h"
 #include "cliffs.h"
@@ -978,6 +979,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
+    }
+    if (tf.testJukebox) {
+        x3::logInfo("running CLUB JUKEBOX self-test "
+                    "(folder scan + sidecar BPM + beat-grid retune + corrupt skip + empty fallback)...");
+        return x3::game::runJukeboxSelfTest() ? 0 : 1;
     }
     if (tf.testPerfshop) {
         x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "
