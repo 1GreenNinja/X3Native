@@ -3260,7 +3260,9 @@ bool runAiSelfTest() {
         t.type = MonsterType::Guard;
         t.hp = 100; t.chaseSpeed = 0.0f;          // stationary: geometry stays fixed
         t.damage = 8; t.attackRange = 2.5f;
-        t.attackCooldown = 10.0f;                  // one attack per scenario
+        // NOTE: buildMonsterTuned seeds m_atkTimer = attackCooldown (an initial
+        // stagger), so the FIRST wind-up begins one full cooldown after build.
+        t.attackCooldown = 0.8f;                   // first wind-up at ~48 frames
         t.attackWindup = 0.30f;                    // a real telegraph window
         t.ranged = false;
         m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
@@ -3301,7 +3303,7 @@ bool runAiSelfTest() {
         t.type = MonsterType::Guard;
         t.hp = 100; t.chaseSpeed = 0.0f;
         t.damage = 8; t.attackRange = 2.5f;
-        t.attackCooldown = 10.0f;
+        t.attackCooldown = 0.8f;                   // initial stagger = one cooldown
         t.attackWindup = 0.30f;
         t.ranged = false;
         m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
@@ -3314,8 +3316,10 @@ bool runAiSelfTest() {
             uint32_t idx[] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 };
             wall = w->addStaticMesh(v, 4, idx, 12);
         }
-        // Blocked: half a second in melee range with a wall between -> no attack.
-        for (int i = 0; i < 30; ++i) {
+        // Blocked: 1.5 s in melee range with a wall between -> no attack. (Also
+        // long enough for the initial-cooldown stagger to fully elapse, so the
+        // prompt-wind-up probe below measures the LOS path, not the cooldown.)
+        for (int i = 0; i < 90; ++i) {
             m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
                      BossPhaseFn{}, AllyQueryFn{});
             w->step(kAiDt);
