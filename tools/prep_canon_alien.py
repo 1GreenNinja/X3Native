@@ -154,10 +154,18 @@ def main():
     log("armature: single Root bone, all verts weight 1.0")
 
     # ---- 6. pack textures + export ----
+    # NPC texture budget: cap at 1024px (Rodin ships 2048 PNGs; 3 of them per
+    # model = ~10 MB decode per spawn, which showed up as ~900 ms of boot for
+    # 7 aliens). 1024 is plenty at NPC screen size and quarters the decode.
+    MAX_TEX = 1024
     for img in bpy.data.images:
         try:
             if not img.has_data:
                 _ = img.pixels[0]
+            w, h = img.size
+            if max(w, h) > MAX_TEX:
+                img.scale(min(w, MAX_TEX), min(h, MAX_TEX))
+                log("tex downres", img.name, (w, h), "->", tuple(img.size))
             if not img.packed_file:
                 img.pack()
             img.use_fake_user = True

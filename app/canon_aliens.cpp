@@ -8,6 +8,7 @@
 
 #include "engine/core/x3_log.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -27,6 +28,26 @@ const char* canonAlienTypeName(CanonAlien t) {
 
 namespace {
 
+// CANON ALIENS art pass: point a roster row at its Rodin-built GLB in
+// rigged_glb, preferring the multi-clip "<stem>_anim.glb" (Idle/Walk/Run baked
+// by tools/animate_creature.py, core gait) when present — mirrors monster.cpp's
+// defRigged(). The canon GLBs are authored Y-up, feet at y=0, and PRE-SCALED so
+// authoredHeight x the row's designed modelScale = the lore height (Grey 1.2 m,
+// Nordic 2.0 m, Mantis 2.2 m, Saurian 2.4 m; Warlord reads bigger via its own
+// modelScale on the same GLB) — the tested tunings stay untouched.
+void setCanonModel(MonsterSystem::Tuning& t, const char* stem) {
+    namespace fs = std::filesystem;
+    const std::string riggedDir = riggedGlbRoot();
+    const std::string base(stem);
+    std::string chosen = base + ".glb";
+    std::error_code ec;
+    if (fs::exists(fs::path(riggedDir) / (base + "_anim.glb"), ec))
+        chosen = base + "_anim.glb";
+    t.modelFile        = chosen;
+    t.modelDirOverride = riggedDir;
+    t.standUpZtoY      = false;   // canon alien GLBs are authored Y-up
+}
+
 // SAURIAN SOLDIER — rank-and-file Reptilian Overlord enforcer. Built on the
 // DominionTrooper melee Guard, scaled up to bruiser tier (apex predator).
 // Visual: 6–8 ft armored saurian in a white exo-suit, scaled brown/green skin.
@@ -43,6 +64,7 @@ MonsterSystem::Tuning saurianSoldierTuning() {
     t.aiStrafeBias   = 0.15f;                                // apex; charges, low strafe
     t.modelScale     = 1.10f;                                // 6–8 ft canon
     t.tint[0] = 0.55f; t.tint[1] = 0.50f; t.tint[2] = 0.30f; t.tint[3] = 1.0f;
+    setCanonModel(t, "canon_saurian");             // authored 2.182 m -> x1.10 = 2.4 m lore
     return t;
 }
 
@@ -77,6 +99,7 @@ MonsterSystem::Tuning saurianWarlordTuning() {
     // Memory-flash = the "rotate damage type" vulnerability beat (1.2 s @ 1.5x).
     t.memoryFlashTime       = 1.2f;
     t.memoryFlashDamageMul  = 1.5f;
+    setCanonModel(t, "canon_saurian");             // same GLB as the Soldier; x1.20 = 2.62 m boss bulk
     return t;
 }
 
@@ -97,6 +120,7 @@ MonsterSystem::Tuning greyTaskedTuning() {
     t.modelScale     = 0.75f;                                // 4–5 ft canon
     t.flyer          = false;
     t.tint[0] = 0.65f; t.tint[1] = 0.66f; t.tint[2] = 0.70f; t.tint[3] = 1.0f;
+    setCanonModel(t, "canon_grey");                // authored 1.6 m -> x0.75 = 1.2 m lore
     return t;
 }
 
@@ -112,6 +136,7 @@ MonsterSystem::Tuning nordicStewardTuning() {
     t.startAllied    = true;                                 // (inherited; explicit for clarity)
     // Re-tint from bioluminescent teal -> luminous Nordic white.
     t.tint[0] = 0.92f; t.tint[1] = 0.94f; t.tint[2] = 0.98f; t.tint[3] = 1.0f;
+    setCanonModel(t, "canon_nordic");              // authored 1.905 m -> x1.05 = 2.0 m lore
     return t;
 }
 
@@ -149,6 +174,7 @@ MonsterSystem::Tuning mantisArbiterTuning() {
     // transition — the canon "she's open" beat the player rotates types into.
     t.memoryFlashTime      = 0.8f;
     t.memoryFlashDamageMul = 1.35f;
+    setCanonModel(t, "canon_mantis");              // authored 2.095 m -> x1.05 = 2.2 m lore
     return t;
 }
 
@@ -303,6 +329,25 @@ bool runCanonAliensSelfTest() {
             for (size_t j = i + 1; j < roster.size(); ++j)
                 if (tuningEq(roster[i].tuning, roster[j].tuning)) distinct = false;
         check(distinct, "T7 canon-alien rows are DISTINCT (no duplicate stat blocks)");
+    }
+    // ---- T8: ART ATTACHED — every row names a real canon GLB on disk (the
+    // CANON ALIENS wave: no row rides the alien_crawler fallback any more). ----
+    {
+        namespace fs = std::filesystem;
+        int wired = 0;
+        for (uint32_t i = 0; i < (uint32_t)CanonAlien::Count; ++i) {
+            const CanonAlienDef& d = canonAlienDef((CanonAlien)i);
+            const bool named  = !d.tuning.modelFile.empty() &&
+                                !d.tuning.modelDirOverride.empty();
+            std::error_code ec;
+            const bool onDisk = named &&
+                fs::exists(fs::path(d.tuning.modelDirOverride) / d.tuning.modelFile, ec);
+            if (named && onDisk) ++wired;
+            else x3::logError(std::string("[canonaliens-test] model missing: ") + d.name +
+                              " -> " + d.tuning.modelFile);
+        }
+        check(wired == (int)CanonAlien::Count,
+              "T8 every canon-alien row has its canon GLB wired + present on disk");
     }
 
     x3::logInfo(std::string("canonaliens: ") + std::to_string(g_pass) + "/" +
