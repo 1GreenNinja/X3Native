@@ -1746,6 +1746,66 @@ bool runAnimSelfTest() {
         }
     }
 
+    // ---- T6 ANIM-ENRICH: the combat/gesture clips baked this wave are PRESENT and
+    // PLAY (a distinct pose vs Idle). Asserts on both a humanoid enemy (chief:
+    // Hitreaction + Attack2) and a canon alien (grey: Attack + Death + Hitreaction).
+    // A clip "plays" when its joint palette at mid-time differs from the Idle pose.
+    // Present-asset only (skipped, still PASS, on a clean checkout without the GLBs).
+    {
+        auto clipPlays = [](Skinner& sk, const x3::asset::Model& m, int idle, int clip) -> bool {
+            if (clip < 0 || idle < 0) return false;
+            std::vector<float> pi, pc;
+            const float mid = 0.5f * sk.clipDuration((uint32_t)clip);
+            uint32_t ni = sk.computePalette(m, (uint32_t)idle, 0.0f, pi);
+            uint32_t nc = sk.computePalette(m, (uint32_t)clip, mid,  pc);
+            if (ni == 0 || ni != nc || pi.size() != pc.size()) return false;
+            double d = 0.0;
+            for (size_t k = 0; k < pi.size(); ++k) d += std::fabs(pi[k] - pc[k]);
+            return d > 1e-3;   // palette meaningfully differs from Idle
+        };
+        const std::string chiefGlb = x3::game::riggedGlbRoot() + "/chief_martinez_anim.glb";
+        if (fs::exists(chiefGlb)) {
+            fs::path p(chiefGlb);
+            std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+            src->mountDir(p.parent_path().string(), 0);
+            std::unique_ptr<x3::asset::IModelLoader> ld(x3::asset::createModelLoader(nullptr, src.get()));
+            x3::asset::Model m = ld->load(p.filename().string());
+            Skinner sk; bool b = sk.bind(m);
+            int idle = sk.findClip({ "idle", "stand" });
+            int hit  = sk.findClip({ "hitreact", "hit", "flinch", "stagger" });
+            int atk2 = sk.findClip({ "attack2" });
+            check(b && hit >= 0 && clipPlays(sk, m, idle, hit),
+                  "T6 chief Hitreaction present + plays (palette != idle)");
+            check(atk2 >= 0 && clipPlays(sk, m, idle, atk2),
+                  "T6 chief Attack2 present + plays (palette != idle)");
+            ld->unload(m);
+        } else {
+            x3::logInfo("[anim-test] (chief GLB absent — skipping T6 combat-clip checks)");
+        }
+        const std::string alienGlb = x3::game::riggedGlbRoot() + "/canon_grey_anim.glb";
+        if (fs::exists(alienGlb)) {
+            fs::path p(alienGlb);
+            std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+            src->mountDir(p.parent_path().string(), 0);
+            std::unique_ptr<x3::asset::IModelLoader> ld(x3::asset::createModelLoader(nullptr, src.get()));
+            x3::asset::Model m = ld->load(p.filename().string());
+            Skinner sk; bool b = sk.bind(m);
+            int idle = sk.findClip({ "idle", "stand" });
+            int atk  = sk.findClip({ "attack", "strike", "bite", "swipe" });
+            int dth  = sk.findClip({ "death", "die", "collapse" });
+            int hit  = sk.findClip({ "hitreact", "hit", "flinch", "stagger" });
+            check(b && atk >= 0 && clipPlays(sk, m, idle, atk),
+                  "T6 alien(grey) Attack present + plays (was clip-less)");
+            check(dth >= 0 && clipPlays(sk, m, idle, dth),
+                  "T6 alien(grey) Death present + plays");
+            check(hit >= 0 && clipPlays(sk, m, idle, hit),
+                  "T6 alien(grey) Hitreaction present + plays");
+            ld->unload(m);
+        } else {
+            x3::logInfo("[anim-test] (canon_grey GLB absent — skipping T6 alien combat-clip checks)");
+        }
+    }
+
     x3::logInfo("[anim-test] " + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
