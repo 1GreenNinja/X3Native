@@ -168,6 +168,56 @@ std::vector<NightSkyPlanet> loadNightSkyPlanets(
     return bodies;
 }
 
+// Build a per-system night sky from the loaded templates + a star-system layout.
+// See cinematic.h. The templates carry the textures (loaded once); this only
+// re-hangs clones at the system's sky positions, so it is cheap + allocates no GPU.
+std::vector<NightSkyPlanet> buildSystemSky(
+        const std::vector<NightSkyPlanet>& templates,
+        const x3::starsys::StarSystem& sys,
+        bool includeSolPinpoint) {
+    // Index the loaded templates by their FORGE3D type index for O(1) lookup.
+    auto findTemplate = [&](uint32_t typeIndex) -> const NightSkyPlanet* {
+        for (const NightSkyPlanet& t : templates)
+            if (t.typeIndex == typeIndex) return &t;
+        return nullptr;
+    };
+
+    std::vector<NightSkyPlanet> sky;
+    sky.reserve(sys.bodies.size() + 1);
+    for (const x3::starsys::SystemBody& b : sys.bodies) {
+        const uint32_t typeIndex = (uint32_t)b.type;
+        const NightSkyPlanet* tpl = findTemplate(typeIndex);
+        if (!tpl) {
+            x3::logWarn(std::string("[starsys] system '") + sys.id + "' body '" +
+                        b.label + "': no loaded template for type " +
+                        std::to_string(typeIndex) + " — skipped");
+            continue;
+        }
+        NightSkyPlanet body = *tpl;   // copy textures + glow-layer handles
+        body.azimuthDeg          = b.azimuthDeg;
+        body.elevationDeg        = b.elevationDeg;
+        body.angularDiameterDeg  = b.angularDiameterDeg;
+        body.name                = b.label;
+        sky.push_back(body);
+    }
+
+    // The faint distant SOL pinpoint — a tiny Sun disc so "far from Earth" is a
+    // LEGIBLE point in the sky, not just implied. Skipped when we ARE at Sol.
+    if (includeSolPinpoint && std::strcmp(sys.id, "sol") != 0) {
+        const NightSkyPlanet* sunTpl = findTemplate((uint32_t)x3::starsys::BodyType::Sun);
+        if (sunTpl) {
+            NightSkyPlanet sol = *sunTpl;
+            sol.azimuthDeg         = x3::starsys::kSolPinpointAzDeg;
+            sol.elevationDeg       = x3::starsys::kSolPinpointElDeg;
+            sol.angularDiameterDeg = x3::starsys::kSolPinpointDiamDeg;
+            sol.name               = "SOL";
+            sol.coronaTex          = {};   // no corona: a crisp, faint distant point
+            sky.push_back(sol);
+        }
+    }
+    return sky;
+}
+
 // Draw every planet for the current frame (call AFTER the scene's own draws so the
 // depth buffer occludes correctly). Each body uses its per-type planet pipeline.
 //

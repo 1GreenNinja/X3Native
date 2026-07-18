@@ -51,6 +51,7 @@ struct TestFlags {
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
     bool testIntroCockpit = false;// --test-introcockpit (intro cockpit Scene-entity rig)
+    bool testStarsystems = false; // --test-starsystems (x3.starsys/1 registry integrity)
     bool testShipInterior = false;// --test-shipinterior (S5 walkable interior, headless)
     bool testShipWindows  = false;// --test-shipwindows (S6 true-portal windows, headless)
     // Space-combat feast fold (14900K lanes, headless):
