@@ -53,7 +53,16 @@ constexpr float kClubBpm = 85.5f;
 
 // ---- Tints (linear-ish; the device tonemaps) ------------------------------
 // Ported from the JS StandardMaterial diffuse colors (hex -> 0..1 RGB).
-const float kWall[4]   = { 0.039f, 0.039f, 0.070f, 1.0f }; // 0x0a0a12 club wall
+const float kWall[4]   = { 0.26f, 0.26f, 0.34f, 1.0f };    // club wall TINT (multiplies the
+                                                           // sWall concrete texel). Was 0x0a0a12
+                                                           // (~0.04) from the untextured era —
+                                                           // that crushed effective albedo to
+                                                           // ~1%, so NO light (blacklight cast,
+                                                           // gels, fills) could EVER register on
+                                                           // a wall: they stayed dead-black even
+                                                           // when directly lit. The texture
+                                                           // carries the darkness now; the tint
+                                                           // just cools it.
 const float kFloor[4]  = { 0.031f, 0.031f, 0.063f, 1.0f }; // 0x080810 club floor
 const float kCeil[4]   = { 0.020f, 0.020f, 0.031f, 1.0f }; // 0x050508 ceiling
 const float kSpk[4]    = { 0.039f, 0.039f, 0.039f, 1.0f }; // 0x0a0a0a speaker cab
@@ -80,13 +89,37 @@ const float kEmitDjCon[4]   = { 0.10f, 0.10f, 0.28f, 1.5f }; // DJ console glow
 const float kEmitDjScr[4]   = { 0.30f, 0.30f, 0.90f, 3.0f }; // DJ/OLED screens
 const float kEmitKeypad[4]  = { 0.10f, 0.95f, 0.30f, 2.0f }; // green keypad
 const float kEmitBarTop[4]  = { 0.30f, 0.20f, 0.50f, 1.5f }; // bar-top glow
-const float kEmitTile1[4]   = { 0.45f, 0.0f, 0.85f, 2.2f };  // purple dance tile (0x2a0050)
+const float kEmitTile1[4]   = { 0.45f, 0.0f, 0.85f, 1.5f };  // purple dance tile (0x2a0050)
+                                                             // (blacklights pass: 2.2 -> 1.5 — the
+                                                             // blazing floor owned the exposure and
+                                                             // crushed the dancers to silhouettes)
 const float kEmitTile2[4]   = { 0.12f, 0.0f, 0.30f, 1.2f };  // dark dance tile (0x0a0020)
 const float kEmitOrb[4]     = { 0.45f, 0.45f, 0.60f, 1.4f };  // ORB self-glow
 const float kEmitLed[4]     = { 0.10f, 1.00f, 0.10f, 3.0f };  // amp power LED
 const float kEmitAbTop[4]   = { 0.353f, 0.353f, 0.416f, 1.2f };// aerial-bar polished top
 // Blacklight base emissive (PULSED each frame in update()): deep UV violet.
 const float kBlacklightR = 0.50f, kBlacklightG = 0.0f, kBlacklightB = 1.0f;
+// Companion CAST color for each tube's point light (fix/club-blacklights): the
+// tubes were emissive-only geometry — they glowed as thin bars but cast NOTHING,
+// so the wall behind them stayed dead-black. Each tube now carries a violet
+// point light at this HDR color; update() pulses it in phase with the emissive.
+const float kBlacklightCast[3] = { 2.00f, 0.18f, 4.00f };  // hot HDR violet — the wall is
+                                                           // dark-albedo concrete under an
+                                                           // ACES curve keyed to the bright
+                                                           // floor; anything gentler reads
+                                                           // as black (0.65 and 1.1 both did)
+const float kBlacklightCastRange = 5.5f;   // ~5 m: washes the wall + nearby dancers
+
+// Orbiter gel palettes (Tim addendum: "the lights move to the music"): update()
+// rotates which gel each orbiter carries on every 8-beat phrase (pink -> blue ->
+// green -> amber) and scales all of them with the beat envelope. File-scope so
+// build() seeds them and update() re-derives them from the beat grid.
+const float kSpotGels[4][3] = { {2.8f,0.10f,0.90f}, {0.10f,0.40f,2.8f}, {0.20f,2.6f,0.60f}, {2.8f,1.10f,0.10f} };
+const float kRingGels[4][3] = { {2.0f,0.0f,1.0f},   {0.0f,1.0f,2.0f},  {1.0f,0.0f,2.0f},   {0.0f,2.0f,1.0f} };
+// Ceiling moving-head rig (Tim: fixtures mounted ON THE CEILING projecting
+// patterns DOWN onto the dance floor): 4 fixtures on this ring over the floor.
+const float kHeadRingR  = 4.0f;    // fixture ring radius
+const float kHeadRingCz = -1.5f;   // ring center Z (the dancer-crowd centroid)
 
 // OLED screen emissive strength (the panes set emissiveMap=1, so this is MULTIPLIED
 // by the texel — it is the brightness of a LIT EQ column, not a wash over the pane).
@@ -102,6 +135,30 @@ void addLight(std::vector<x3::rhi::PointLight>& v, float x, float y, float z,
     l.pos[0] = x; l.pos[1] = y; l.pos[2] = z; l.range = range;
     l.color[0] = r; l.color[1] = g; l.color[2] = b;
     v.push_back(l);
+}
+
+// Pose a UNIT box (verts authored ±1 around the world origin) as a thin shaft
+// from A (a fixture lens) to B (its floor pool point): the Y column becomes the
+// half-vector A->B, the X/Z columns the beam half-width, translation the
+// midpoint. Same rewrite-the-column-major-transform trick as THE ORB's spin.
+void poseBeam(Entity& e, float ax, float ay, float az, float bx, float by, float bz) {
+    const float dx = bx - ax, dy = by - ay, dz = bz - az;
+    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-4f) return;
+    const float ux = dx / len, uy = dy / len, uz = dz / len;
+    // A stable perpendicular pair (the beam is near-vertical, so cross with X).
+    float hx = 1.0f, hy = 0.0f, hz = 0.0f;
+    if (std::fabs(ux) > 0.9f) { hx = 0.0f; hy = 0.0f; hz = 1.0f; }
+    float xx = hy * uz - hz * uy, xy = hz * ux - hx * uz, xz = hx * uy - hy * ux;
+    const float xl = std::sqrt(xx * xx + xy * xy + xz * xz);
+    xx /= xl; xy /= xl; xz /= xl;
+    const float zx = uy * xz - uz * xy, zy = uz * xx - ux * xz, zz = ux * xy - uy * xx;
+    const float w = 0.055f;                       // beam half-width (slim shaft)
+    e.transform[0]  = xx * w;  e.transform[1]  = xy * w;  e.transform[2]  = xz * w;  e.transform[3]  = 0;
+    e.transform[4]  = dx * 0.5f; e.transform[5] = dy * 0.5f; e.transform[6] = dz * 0.5f; e.transform[7] = 0;
+    e.transform[8]  = zx * w;  e.transform[9]  = zy * w;  e.transform[10] = zz * w;  e.transform[11] = 0;
+    e.transform[12] = (ax + bx) * 0.5f; e.transform[13] = (ay + by) * 0.5f;
+    e.transform[14] = (az + bz) * 0.5f; e.transform[15] = 1;
 }
 
 // ============================================================================
@@ -576,8 +633,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         erbox(eastCenterX, LOUNGE_Y, erSZ - 0.6f + 0.2f, (eastSectionW + 0.3f) / 2, 0.075f, (0.6f + 0.4f) / 2, kFloor, kEmitOff, true);
     }
 
-    // Engine-room fill light.
-    addLight(m_lights, 0, oy + 3.0f, erZ0, 0.30f, 0.20f, 0.45f, 9.0f);
+    // Engine-room fill light. (relight: dim 0.30/0.20/0.45 -> vibrant HDR violet.)
+    addLight(m_lights, 0, oy + 3.0f, erZ0, 0.70f, 0.35f, 1.30f, 9.0f);
 
     // ==================================================================
     // SUSPENDED DJ BOOTH (turntables, mixer, 2 OLED, keypad door, brackets).
@@ -626,8 +683,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         for (int s = -1; s <= 1; s += 2)
             box(s * (djW / 2 - 0.2f), djY / 2, -CL / 2 + djD + 0.3f, 0.075f, djY / 2, 0.075f, kMetal, kEmitOff, true);
 
-        // Booth glow.
-        addLight(m_lights, 0, oy + djY + 1.6f, djZ, 0.30f, 0.30f, 0.80f, 7.0f);
+        // Booth glow. (relight: dim 0.30/0.30/0.80 -> hot electric-blue HDR.)
+        addLight(m_lights, 0, oy + djY + 1.6f, djZ, 0.50f, 0.60f, 2.20f, 7.0f);
 
         // ==============================================================
         // AERIAL BAR (beside the booth, neon underglow, polished top, railings).
@@ -641,7 +698,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(abX, djY - 0.08f, abZ + abD / 2, (abW - 0.4f) / 2, 0.02f, 0.02f, kWall, kEmitNeon, false);
         box(abX, djY - 0.08f, abZ - abD / 2, (abW - 0.4f) / 2, 0.02f, 0.02f, kWall, kEmitNeon, false);
         box(abX - abW / 2 + 0.2f, djY - 0.08f, abZ, 0.02f, 0.02f, (abD - 0.2f) / 2, kWall, kEmitNeon, false);
-        addLight(m_lights, abX, oy + djY - 0.3f, abZ, 2.0f, 0.0f, 2.0f, 8.0f);  // magenta underglow
+        addLight(m_lights, abX, oy + djY - 0.3f, abZ, 2.8f, 0.0f, 2.8f, 8.0f);  // magenta underglow (relight: 2.0 -> 2.8 HDR)
         // Safety railings.
         box(abX, djY + 0.5f, abZ + abD / 2, abW / 2, 0.5f, 0.02f, kRail, kEmitOff, true);
         box(abX, djY + 0.5f, abZ - abD / 2, abW / 2, 0.5f, 0.02f, kRail, kEmitOff, true);
@@ -649,43 +706,64 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
-    // 28 BLACKLIGHTS — 4 ft UV tubes on the walls at 10 ft intervals (pulsing).
-    //   Long walls: 10 + 10; south wall flanking the 85": 3 + 3 (capped) = 28.
+    // BLACKLIGHTS — VERTICAL UV tubes on the walls (Tim's spec, 2026-07-17 review):
+    //   spaced every ~12 ft (3.66 m), centered ~5 ft (1.5 m) off the floor.
+    //   (Was: 28 tubes at 10 ft intervals centered at mid-wall 4.57 m — too high,
+    //   too dense, and EMISSIVE-ONLY: they glowed as thin bars but CAST no light,
+    //   so the walls behind them stayed dead-black and the tubes barely read.)
+    //   Each tube now carries a companion UV POINT LIGHT just off the wall so it
+    //   does a blacklight's actual job: wash the wall behind it AND the nearby
+    //   dancers with violet. 20 tubes total: 8 per long wall (16) + 2 per side
+    //   of the south wall flanking the centered 85" (4). update() pulses tube
+    //   emissive + cast color in phase.
     // ==================================================================
     {
-        const float bi = 3.048f;     // 10 ft interval
-        const float bh = 1.83f;      // tube half-... (JS BL_HEIGHT 1.83 m full)
-        auto blacklight = [&](float x, float z) {
-            const uint32_t id = box(x, CH * 0.5f, z, 0.07f, bh / 2, 0.07f, kWall, nullptr, false);
+        const float bi  = 3.66f;     // 12 ft spacing (Tim spec; was 10 ft)
+        const float bcY = 1.5f;      // tube CENTER ~5 ft off the floor
+        const float bh  = 1.22f;     // 4 ft tube (canon tube length)
+        // (nx,nz) = wall normal INTO the room: the cast light sits proud of the
+        // tube so the wall glows around it instead of the light being buried.
+        auto blacklight = [&](float x, float z, float nx, float nz) {
+            const uint32_t id = box(x, bcY, z, 0.07f, bh / 2, 0.07f, kWall, nullptr, false);
             // Set its starting emissive (update() pulses it).
             Entity& e = scene.get(id);
             e.emissive[0] = kBlacklightR; e.emissive[1] = kBlacklightG;
-            e.emissive[2] = kBlacklightB; e.emissive[3] = 3.0f;
+            e.emissive[2] = kBlacklightB; e.emissive[3] = 4.0f;   // relight: UV tube bloom 3.0 -> 4.0
             m_blacklightEnts.push_back(id);
+            // THE CAST (fix/club-blacklights): a violet point light per tube.
+            m_blacklightLightIdx.push_back(m_lights.size());
+            addLight(m_lights, x + nx * 0.45f, oy + bcY, z + nz * 0.45f,
+                     kBlacklightCast[0], kBlacklightCast[1], kBlacklightCast[2],
+                     kBlacklightCastRange);
             ++m_stats.blacklights;
         };
-        // 28 blacklights total (canon §2.3): 10 per long wall (20) + 4 per side of
-        // the south wall (8). The long-wall tubes are evenly spread along Z inside
-        // the room; the south-wall tubes flank the 85" centered display.
-        const float zLo = -CL / 2 + bi, zHi = CL / 2 - bi;   // inner Z band
+        // Mount tubes PROUD of the wall's INNER FACE. The walls are boxes
+        // CENTERED at ±CW/2 (half thickness T/2), so their inner face sits at
+        // ±(CW/2 - T/2) — the old `CW/2 - 0.05` tube center put the whole tube
+        // INSIDE the wall slab, which is the real reason the blacklights
+        // "barely read": only a z-fighting sliver ever showed.
+        const float xFace = CW / 2 - T / 2;   // long-wall inner face (±7.47)
+        const float zFace = CL / 2 - T / 2;   // south-wall inner face (15.09)
+        // Long walls: 8 tubes per wall at EXACT 12 ft spacing, centered along Z
+        // (z = ±12.81 m max, comfortably inside the ±15.24 m room).
         for (int side = -1; side <= 1; side += 2)
-            for (int n = 0; n < 10; ++n) {
-                const float z = zLo + (zHi - zLo) * n / 9.0f;  // 10 tubes, n=0..9
-                blacklight(side * (CW / 2 - 0.05f), z);
+            for (int n = 0; n < 8; ++n) {
+                const float z = (n - 3.5f) * bi;
+                blacklight(side * (xFace - 0.09f), z, (float)-side, 0.0f);
             }
-        // South wall: 4 per side, snug within the room half-width.
+        // South wall: 2 per side flanking the centered 85" display, 12 ft apart
+        // (x = ±1.83, ±5.49 — inside the ±7.62 m half-width).
         for (int s = -1; s <= 1; s += 2)
-            for (int n = 0; n < 4; ++n) {
-                const float x = s * (1.5f + n * 1.7f);          // max |x| = 6.6 < CW/2
-                blacklight(x, CL / 2 - 0.05f);
-            }
-        // UV point lights (4) — the violet wash over the room.
+            for (int n = 0; n < 2; ++n)
+                blacklight(s * (bi / 2 + n * bi), zFace - 0.09f, 0.0f, -1.0f);
+        // UV point lights (4) — the room-wide violet AIR (kept; the per-tube
+        // lights above are the wall/crowd cast, these are the base atmosphere).
         const float uv[4][3] = {
             { 0, CH * 0.5f, -CL / 4 }, { 0, CH * 0.5f, CL / 4 },
             { -CW / 3, CH * 0.5f, 0 }, { CW / 3, CH * 0.5f, 0 }
         };
         for (auto& p : uv)
-            addLight(m_lights, p[0], oy + p[1], p[2], 0.4f, 0.05f, 1.0f, 22.0f);
+            addLight(m_lights, p[0], oy + p[1], p[2], 0.90f, 0.10f, 2.00f, 22.0f); // relight: UV wash 0.4/.05/1.0 -> HDR violet
     }
 
     // ==================================================================
@@ -738,7 +816,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         m_subPulseEnts.push_back(coneId);
         // Amber floor pulse light in front of the cab (index recorded for update()).
         m_subLightIdx.push_back(m_lights.size());
-        addLight(m_lights, cx - sx * 0.9f, oy + 0.4f, cz, 0.9f, 0.45f, 0.10f, 3.5f);
+        addLight(m_lights, cx - sx * 0.9f, oy + 0.4f, cz, 1.40f, 0.65f, 0.15f, 3.5f); // relight: amber sub pulse base 0.9 -> 1.4 (update() modulates)
     }
     // 8 stacked pairs JBL JRX200 (16 cabinets) + 8 amps + power LEDs on the walls.
     {
@@ -894,9 +972,10 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(bx + 0.40f, 0.06f, bz, 0.012f, 0.012f, 2.5f, kWall, emWarmKick, false);     // kick-panel LED
         m_stats.hasGroundBar = true;
         // THREE warm pendant pools raking the glass top (the specular gleam).
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz - 1.6f, 1.15f, 0.85f, 0.45f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz,        1.15f, 0.85f, 0.45f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz + 1.6f, 1.15f, 0.85f, 0.45f, 4.0f);
+        // (relight: 1.15/0.85/0.45 -> 1.6/1.15/0.55 so the bar reads as a glowing hub.)
+        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz - 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
+        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz,        1.60f, 1.15f, 0.55f, 4.0f);
+        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz + 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
         // Pendant fixtures (small chrome cones -> boxes + glowing bulbs).
         for (int pnd = -1; pnd <= 1; ++pnd) {
             const float pz = bz + pnd * 1.6f;
@@ -1035,7 +1114,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     box(CW / 2 - 1.5f, 0.66f, CL / 2 - 2.4f, 0.025f, 0.09f, 0.025f, kChrome, kEmitOff, false);   // lamp stem
     const float emLamp[4] = { 1.0f, 0.72f, 0.40f, 2.2f };
     box(CW / 2 - 1.5f, 0.80f, CL / 2 - 2.4f, 0.09f, 0.06f, 0.09f, kBarTop, emLamp, false);       // shade
-    addLight(m_lights, CW / 2 - 1.5f, oy + 1.0f, CL / 2 - 2.4f, 0.95f, 0.62f, 0.30f, 3.5f);
+    addLight(m_lights, CW / 2 - 1.5f, oy + 1.0f, CL / 2 - 2.4f, 1.40f, 0.90f, 0.45f, 3.5f); // relight: warm lounge lamp 0.95 -> 1.40
     ++m_stats.couches;
     couch(-CW / 2 + 2.0f, CL / 2 - 1.5f, 1, 1.25f);   // VIP couch (faces -Z)
     ++m_stats.couches;
@@ -1092,9 +1171,9 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         for (int s3 = -1; s3 <= 1; s3 += 2)
             box(s3 * (ER_W / 2 - 0.25f), ly + 0.02f, lz, 0.012f, 0.012f, ER_D / 2 - 0.3f, kWall, emRope, false);
         // Two warm pools + the lounge wall OLED.
-        addLight(m_lights, -1.2f, oy + ly + 1.7f, lz, 1.5f, 1.0f, 0.55f, 6.0f);
-        addLight(m_lights,  1.2f, oy + ly + 1.7f, lz, 1.5f, 1.0f, 0.55f, 6.0f);
-        addLight(m_lights,  0.0f, oy + ly + 1.2f, lz, 0.15f, 0.45f, 0.60f, 4.0f);  // cool counter-accent
+        addLight(m_lights, -1.2f, oy + ly + 1.7f, lz, 1.90f, 1.25f, 0.65f, 6.0f); // relight: warm pool 1.5 -> 1.9
+        addLight(m_lights,  1.2f, oy + ly + 1.7f, lz, 1.90f, 1.25f, 0.65f, 6.0f);
+        addLight(m_lights,  0.0f, oy + ly + 1.2f, lz, 0.30f, 0.90f, 1.30f, 4.0f);  // cool cyan counter-accent (relight: 0.15/0.45/0.60 -> HDR cyan)
         {
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.8f };
             const uint32_t lsId = box(ER_W / 2 - 0.12f, ly + 1.6f, lz, 0.015f, 0.35f, 0.62f, kTvFrame, emScr, false);
@@ -1109,27 +1188,120 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // ==================================================================
     // CLUB AMBIENT + KEY LIGHTS (Babylon hemi/point/fill -> point lights).
     // ==================================================================
-    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.30f, 0.20f, 0.40f, 25.0f);       // central overhead fill
-    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.25f, 0.15f, 0.35f, 10.0f); // ground-bar area fill
-    addLight(m_lights, 0, oy + 2.0f, 0, 0.16f, 0.10f, 0.30f, 18.0f);            // dim UV wash (mirror floor)
+    // (relight: these three ROOM-WIDE fills were the darkest offenders — 0.16-0.40
+    // saturated the whole 50x100 ft room to near-black. Reworked to VIBRANT HDR
+    // club washes: violet overhead, magenta over the bar side, UV-violet on the
+    // mirror floor. They set the room's colored mood; the orbiters + fixtures pop
+    // on top.)
+    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.85f, 0.25f, 1.30f, 25.0f);       // central overhead VIOLET wash
+    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.70f, 0.20f, 1.10f, 10.0f); // ground-bar MAGENTA wash
+    addLight(m_lights, 0, oy + 2.0f, 0, 0.55f, 0.12f, 1.40f, 18.0f);            // UV-violet wash (mirror floor)
 
-    // ---- ORBITING ORB LIGHTS: 4 spots + 4 ring lights. These trail the static
-    // lights and are rewritten each frame by update(). Record where they start. ----
+    // DANCE-FLOOR KEY (fix/club-blacklights): the dancers rendered as SOLID BLACK
+    // silhouettes — the orbiters sat at ceiling height so their pools hit the
+    // FLOOR, and the floor tiles are self-lit emissive, so the only thing that
+    // glowed was the checkerboard. A soft neutral-violet key hung over the crowd
+    // centroid (the dancer spots cluster around z ≈ -2) puts actual light on
+    // faces/torsos. Deliberately gentle — way under the gel colors — so the room
+    // stays a moody club, not a showroom.
+    addLight(m_lights, 0, oy + 4.6f, -1.8f, 1.50f, 1.35f, 1.85f, 14.0f);
+    // ...plus four soft lavender PERIMETER FILLS at head height around the floor:
+    // an overhead key alone lights hair and shoulders, not the faces/torsos a
+    // camera actually sees — these front/side-light the crowd from every axis
+    // (the dark-albedo outfits need N·L from the SIDE to read at all).
+    {
+        const float fillC[3] = { 1.00f, 0.88f, 1.25f };
+        const float fillPts[4][3] = {
+            { -5.6f, 1.7f, -1.8f }, { 5.6f, 1.7f, -1.8f },
+            {  0.0f, 1.7f, -8.8f }, { 0.0f, 1.7f,  5.2f },
+        };
+        for (auto& f : fillPts)
+            addLight(m_lights, f[0], oy + f[1], f[2], fillC[0], fillC[1], fillC[2], 11.0f);
+    }
+
+    // ==================================================================
+    // CEILING MOVING-HEAD RIG (Tim addenda: "we had the lights that move to the
+    // music" + "they're ceiling-mounted fixtures that project patterns DOWN onto
+    // the dance floor"). Four visible fixtures hang from the ceiling on a ring
+    // over the dance floor; each throws a translucent BEAM shaft down to a
+    // colored POOL that sweeps a beat-locked figure-8 on the floor below it,
+    // stepping on the eighth-note grid, gels rotating every 8-beat phrase.
+    //   * fixture body: mount plate + yoke + head + emissive LENS (gel-colored,
+    //     breathing with the beat — update() drives it);
+    //   * beam: a thin unit-box shaft on the GLASS route (transparent + flat
+    //     emissive), re-posed each frame from the lens to the pool point so the
+    //     light DEMONSTRABLY comes from the fixture;
+    //   * pool: the fixture's point light rides at ~1.15 m over the pool point —
+    //     it paints the floor AND lights the dancers' bodies as it sweeps.
+    // (True GOBO pattern projection — dots/bars/starburst in the footprint —
+    // needs a projected-texture/decal path the engine doesn't have; the decal
+    // system is bullet-impact rings only. Noted as follow-up; beat-swept pools
+    // from visible ceiling fixtures is the v1.)
+    // ==================================================================
+    {
+        for (int i = 0; i < 4; ++i) {
+            const float a = (i + 0.5f) / 4.0f * 2.0f * kPi;   // 45/135/225/315° — clear of THE ORB
+            MovingHead mh;
+            mh.fx = std::cos(a) * kHeadRingR;
+            mh.fz = kHeadRingCz + std::sin(a) * kHeadRingR;
+            // Fixture body, hung from the ceiling: plate -> yoke -> head -> lens.
+            box(mh.fx, CH - 0.045f, mh.fz, 0.16f, 0.045f, 0.16f, kMetal, kEmitOff, false, 1.0f, &sMetal);
+            box(mh.fx, CH - 0.17f,  mh.fz, 0.05f, 0.09f,  0.05f, kMetal, kEmitOff, false);
+            box(mh.fx, CH - 0.42f,  mh.fz, 0.11f, 0.16f,  0.11f, kSub,   kEmitOff, false);
+            {
+                const float* gel = kSpotGels[i & 3];
+                const float lensEm[4] = { gel[0], gel[1], gel[2], 3.0f };
+                mh.lensEnt = box(mh.fx, CH - 0.60f, mh.fz, 0.085f, 0.03f, 0.085f, kTvFrame, lensEm, false);
+            }
+            // Beam shaft: UNIT box authored at the world origin (extents ±1) so
+            // update() can pose it with a full basis (lens -> pool) each frame —
+            // same rewrite-the-transform trick as THE ORB's spin. Posed once
+            // below so it never renders at the origin.
+            {
+                const float beamCol[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                mh.beamEnt = addBox(scene, device, physics, 0, 0, 0, 1, 1, 1,
+                                    beamCol, kEmitOff, false);
+                Entity& be = scene.get(mh.beamEnt);
+                be.transparent = true;
+                be.glass.opacity = 0.10f;     // a light shaft, not a solid
+                be.glass.refraction = 0.0f;
+                be.glass.roughness = 1.0f;
+                be.glass.specular = 0.0f;
+                const float* gel = kSpotGels[i & 3];
+                be.glass.tint[0] = gel[0]; be.glass.tint[1] = gel[1]; be.glass.tint[2] = gel[2];
+                be.emissive[0] = gel[0]; be.emissive[1] = gel[1]; be.emissive[2] = gel[2];
+                be.emissive[3] = 0.22f;       // soft volumetric-ish glow
+                poseBeam(be, mh.fx, oy + CH - 0.63f, mh.fz, mh.fx, oy + 0.05f, mh.fz);
+            }
+            m_movingHeads.push_back(mh);
+        }
+    }
+
+    // ---- MOVING LIGHTS: 4 fixture POOL lights + 4 ring lights. These trail the
+    // static lights and are rewritten each frame by update(). Record the start. ----
     m_staticLightCount = m_lights.size();
-    // 4 colored spotlights (orbit radius ~4, near the ceiling).
-    const float spotCols[4][3] = { {2.0f,0.0f,0.0f}, {0.0f,0.0f,2.0f}, {0.0f,2.0f,0.0f}, {2.0f,1.0f,0.0f} };
+    // 4 moving-head pool lights (one per ceiling fixture; positions/colors are
+    // beat-driven in update() — created at each fixture's rest pool).
+    // (relight: saturated HDR gels — hot pink / electric blue / laser green / amber —
+    // pushed to ~2.8 so the moving pools bloom and rake the walls + dancers.)
+    for (int i = 0; i < 4; ++i) {
+        const auto& mh = m_movingHeads[i];
+        addLight(m_lights, mh.fx, oy + 1.15f, mh.fz,
+                 kSpotGels[i][0], kSpotGels[i][1], kSpotGels[i][2], 9.0f);
+    }
+    // 4 ring lights (orbit radius ~8).
+    // (relight: 1.0-max -> ~2.0 saturated HDR so the outer ring washes the walls too.)
+    // (fix/club-blacklights: 4.0 -> 2.4 m so the outer ring doubles as a colored
+    // BACK/RIM light on the crowd from outside the floor.)
     for (int i = 0; i < 4; ++i) {
         const float a = (i / 4.0f) * 2.0f * kPi;
-        addLight(m_lights, std::cos(a) * 4.0f, m_orbY, std::sin(a) * 4.0f,
-                 spotCols[i][0], spotCols[i][1], spotCols[i][2], 22.0f);
+        addLight(m_lights, std::cos(a) * 8.0f, oy + 2.4f, std::sin(a) * 8.0f,
+                 kRingGels[i][0], kRingGels[i][1], kRingGels[i][2], 22.0f);
     }
-    // 4 ring lights (orbit radius ~8, mid-height).
-    const float ringCols[4][3] = { {1.0f,0.0f,0.5f}, {0.0f,0.5f,1.0f}, {0.5f,0.0f,1.0f}, {0.0f,1.0f,0.5f} };
-    for (int i = 0; i < 4; ++i) {
-        const float a = (i / 4.0f) * 2.0f * kPi;
-        addLight(m_lights, std::cos(a) * 8.0f, oy + 4.0f, std::sin(a) * 8.0f,
-                 ringCols[i][0], ringCols[i][1], ringCols[i][2], 22.0f);
-    }
+    // PHRASE-DROP STROBE (addendum, "tasteful"): one white light over the floor,
+    // dark except a few quick pops at the END of every 32-beat phrase (update()).
+    m_strobeLightIdx = m_lights.size();
+    addLight(m_lights, 0, oy + 5.2f, kHeadRingCz, 0.0f, 0.0f, 0.0f, 14.0f);
 
     // ==================================================================
     // CHARACTERS — a DJ behind the booth + a bouncer at the landing (inert props
@@ -1163,12 +1335,15 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             // AnnaBodySuit is node-animated (no armature — clips won't bake onto
             // it) so she works the BAR and the lounge instead of the floor.
             const char* rigs[2] = { "AnnaCasual.glb", "AnnaTactical.glb" };
+            // (fix/club-blacklights: tints lifted ~1.25x — the rigs' outfits are
+            // dark-albedo, so at 1.0x they swallowed the club light and rendered
+            // as silhouettes even when lit. Hue variety preserved.)
             const float tints[5][4] = {
-                { 1.05f, 0.85f, 1.25f, 1.0f },   // violet wash
-                { 0.85f, 1.05f, 1.30f, 1.0f },   // cyan wash
-                { 1.25f, 0.90f, 1.00f, 1.0f },   // warm rose
-                { 0.90f, 1.20f, 0.95f, 1.0f },   // green tinge
-                { 1.10f, 1.05f, 0.90f, 1.0f },   // amber
+                { 1.30f, 1.05f, 1.55f, 1.0f },   // violet wash
+                { 1.05f, 1.30f, 1.60f, 1.0f },   // cyan wash
+                { 1.55f, 1.10f, 1.25f, 1.0f },   // warm rose
+                { 1.10f, 1.50f, 1.20f, 1.0f },   // green tinge
+                { 1.40f, 1.30f, 1.10f, 1.0f },   // amber
             };
             // Spots: a loose ring on the dance floor + two by the DJ end. Kept off
             // the bar lane and inside the tile field.
@@ -1214,6 +1389,17 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     m_time += dt;
     const float t = m_time;
 
+    // ---- THE BEAT GRID (Tim addendum: "we had the lights that move to the music
+    // too"). ONE clock: the same kClubBpm envelope the subs/tiles/dancers already
+    // rode, hoisted here so the LIGHTS share it instead of free-running on their
+    // own arbitrary rates. Everything music-reactive below derives from these. ----
+    const float beatHz    = kClubBpm / 60.0f;
+    const float beatCount = t * beatHz;                    // absolute beat position
+    const float thump     = std::pow(std::max(0.0f, std::sin(beatCount * kPi)), 6.0f);
+    const float breathe   = 0.72f + 0.48f * thump;         // gel beat envelope (floor
+                                                           // 0.72: the crowd never drops
+                                                           // back to silhouettes mid-beat)
+
     // --- Spin THE ORB (rotate about Y) by rewriting its transform's upper 3x3. ---
     if (m_orbValid && m_orbEnt < scene.size()) {
         const float ang = t * 0.5f;            // matches JS dt*0.5 cadence
@@ -1227,44 +1413,103 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         e.transform[8] = s;  e.transform[10] = c;
         // (The orb geometry is authored at world (0, m_orbY, 0); rotating its model
         //  matrix about the origin spins it in place since its center is the origin.)
+        // Mirror-ball SPARKLE rides the beat (facet glow surges on the thump).
+        e.emissive[3] = 1.15f + 0.55f * thump;
     }
 
-    // --- Orbit the 4 spotlights + 4 ring lights (the JS spotlight orbit). ---
-    if (m_lights.size() >= m_staticLightCount + 8) {
-        for (int i = 0; i < 4; ++i) {     // spotlights: radius 4
-            const float a = t * 1.2f + (i / 4.0f) * 2.0f * kPi;
+    // --- CEILING MOVING-HEAD RIG + ring lights + strobe — ALL BEAT-LOCKED (was:
+    // a smooth free-running orbit at ceiling height). Behavior per fixture:
+    //   * the pool STEPS on the eighth-note grid (2 steps/beat, 16 steps per
+    //     figure — a full figure-8 under the fixture every 8-beat phrase), each
+    //     step snapped in fast then held: the classic moving-head jerk;
+    //   * gels rotate one slot every 8-beat phrase (pink->blue->green->amber);
+    //   * every gel (pool light, lens, beam) breathes with the beat envelope;
+    //   * the beam shaft is re-posed lens -> pool so the light visibly comes
+    //     from the ceiling fixture. ---
+    if (m_lights.size() >= m_staticLightCount + 8 && m_movingHeads.size() == 4) {
+        const float eighth = beatCount * 2.0f;
+        const float frac   = eighth - std::floor(eighth);
+        const float snap   = std::min(1.0f, frac * 4.0f);              // land in the first quarter
+        const float step   = std::floor(eighth) + snap * snap * (3.0f - 2.0f * snap);
+        const float sweep  = step * (2.0f * kPi / 16.0f);
+        const int   phrase = (int)(beatCount / 8.0f);
+        for (int i = 0; i < 4; ++i) {
+            auto& mh = m_movingHeads[i];
+            const float* gel = kSpotGels[(i + phrase) & 3];
+            // Pool point: a figure-8 on the floor under the fixture.
+            const float p2 = sweep + i * (kPi / 2.0f);
+            const float px = mh.fx + 1.7f * std::sin(p2);
+            const float pz = mh.fz + 1.1f * std::sin(2.0f * p2);
             auto& L = m_lights[m_staticLightCount + i];
-            L.pos[0] = std::cos(a) * 4.0f;
-            L.pos[2] = std::sin(a) * 4.0f;
+            L.pos[0] = px; L.pos[2] = pz;                  // Y stays at 1.15 m
+            L.color[0] = gel[0] * breathe; L.color[1] = gel[1] * breathe; L.color[2] = gel[2] * breathe;
+            if (mh.lensEnt < scene.size()) {               // lens carries the gel + breathe
+                Entity& le = scene.get(mh.lensEnt);
+                le.emissive[0] = gel[0]; le.emissive[1] = gel[1]; le.emissive[2] = gel[2];
+                le.emissive[3] = 2.2f + 1.6f * thump;
+            }
+            if (mh.beamEnt < scene.size()) {               // beam re-posed lens -> pool
+                Entity& be = scene.get(mh.beamEnt);
+                be.glass.tint[0] = gel[0]; be.glass.tint[1] = gel[1]; be.glass.tint[2] = gel[2];
+                be.emissive[0] = gel[0]; be.emissive[1] = gel[1]; be.emissive[2] = gel[2];
+                be.emissive[3] = 0.20f + 0.26f * thump;   // a light SHAFT, not a laser rod
+                                                          // (0.40/0.45 read as solid neon pillars)
+                poseBeam(be, mh.fx, kClubY + kCH - 0.63f, mh.fz, px, kClubY + 0.05f, pz);
+            }
         }
-        for (int i = 0; i < 4; ++i) {     // ring lights: radius 8
-            const float a = -t * 0.8f + (i / 4.0f) * 2.0f * kPi;
+        for (int i = 0; i < 4; ++i) {     // ring lights: half-rate counter-sweep
+            const float a = -sweep * 0.5f + (i / 4.0f) * 2.0f * kPi;
             auto& L = m_lights[m_staticLightCount + 4 + i];
             L.pos[0] = std::cos(a) * 8.0f;
             L.pos[2] = std::sin(a) * 8.0f;
+            const float* gel = kRingGels[(i + phrase) & 3];
+            L.color[0] = gel[0] * breathe; L.color[1] = gel[1] * breathe; L.color[2] = gel[2] * breathe;
+        }
+        // PHRASE-DROP STROBE: three quick white pops in the LAST half-beat of
+        // every 32-beat phrase (peak 2.2, ~0.35 s total) — an accent over the
+        // dance floor, deliberately subtle, and never live during the first
+        // seconds a screenshot settles.
+        if (m_strobeLightIdx < m_lights.size()) {
+            auto& S = m_lights[m_strobeLightIdx];
+            const float ph32 = std::fmod(beatCount, 32.0f);
+            float w = 0.0f;
+            if (ph32 > 31.5f) {
+                const float u = (ph32 - 31.5f) * 2.0f;     // 0..1 across the window
+                w = (std::fmod(u * 3.0f, 1.0f) < 0.5f) ? 2.2f : 0.0f;
+            }
+            S.color[0] = S.color[1] = S.color[2] = w;
         }
     }
 
-    // --- Pulse the blacklight emissive (each tube phase-offset). ---
+    // --- Pulse the blacklight emissive + its CAST light in phase, BEAT-LOCKED:
+    // a slow wave (one cycle per 2 beats) CHASES around the room tube-by-tube
+    // (the per-tube offset walks the full circle across the 20 tubes), plus a
+    // small kick on every thump — so even the walls breathe with the track. ---
     for (size_t i = 0; i < m_blacklightEnts.size(); ++i) {
         const uint32_t id = m_blacklightEnts[i];
         if (id >= scene.size()) continue;
-        const float pulse = 0.7f + 0.3f * std::sin(t * 0.8f + i * 0.3f);
+        const float pulse = 0.72f + 0.18f * std::sin(kPi * beatCount + i * (2.0f * kPi / 20.0f))
+                          + 0.22f * thump;
         Entity& e = scene.get(id);
         e.emissive[0] = kBlacklightR * pulse;
         e.emissive[1] = kBlacklightG;
         e.emissive[2] = kBlacklightB * pulse;
-        e.emissive[3] = 3.0f;
+        e.emissive[3] = 4.0f;   // relight: UV tube bloom 3.0 -> 4.0
+        if (i < m_blacklightLightIdx.size()) {
+            const size_t li = m_blacklightLightIdx[i];
+            if (li < m_lights.size()) {
+                m_lights[li].color[0] = kBlacklightCast[0] * pulse;
+                m_lights[li].color[1] = kBlacklightCast[1] * pulse;
+                m_lights[li].color[2] = kBlacklightCast[2] * pulse;
+            }
+        }
     }
 
-    // --- MAX-OUT: the 128 BPM BEAT CLOCK (matches the Babylon club track). A
-    // sharp thump curve (sin^6 of the beat phase) drives the sub cones, the
-    // corner sub pulse lights, and the bright dance tiles — the whole room
-    // breathes with the music instead of idling frozen. ---
+    // --- MAX-OUT: the BEAT CLOCK drives the sub cones, the corner sub pulse
+    // lights, and the bright dance tiles — the whole room breathes with the
+    // music instead of idling frozen. (thump now hoisted to the top of update()
+    // — the ONE beat grid the lights ride too.) ---
     {
-        const float beatHz = kClubBpm / 60.0f;
-        const float ph = std::sin(t * beatHz * kPi);          // one lobe per beat
-        const float thump = std::pow(std::max(0.0f, ph), 6.0f);
         // Sub driver cones: amber surge on the hit, near-dark between.
         for (const uint32_t id : m_subPulseEnts) {
             if (id >= scene.size()) continue;
@@ -1274,14 +1519,16 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         for (const size_t li : m_subLightIdx) {
             if (li >= m_lights.size()) continue;
             const float k = 0.25f + 0.75f * thump;
-            m_lights[li].color[0] = 0.9f * k;
-            m_lights[li].color[1] = 0.45f * k;
-            m_lights[li].color[2] = 0.10f * k;
+            m_lights[li].color[0] = 1.40f * k;   // relight: amber sub thump 0.9 -> 1.4 HDR
+            m_lights[li].color[1] = 0.65f * k;
+            m_lights[li].color[2] = 0.15f * k;
         }
         // Bright dance tiles: a soft breathe (never dark — the floor is the star).
         for (const uint32_t id : m_tilePulseEnts) {
             if (id >= scene.size()) continue;
-            scene.get(id).emissive[3] = 0.40f + 0.45f * thump;   // faint violet breath
+            scene.get(id).emissive[3] = 0.28f + 0.38f * thump;   // faint violet breath
+                                        // (blacklights pass: trimmed with kEmitTile1
+                                        // so the floor stops owning the exposure)
         }
         // OLED shimmer: each screen's brightness wanders on its own phase, so the
         // baked equalizer frames read as LIVE video from across the room. This rides
@@ -1307,7 +1554,7 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     //   SWAY   — hips/heading rock at half-tempo (yaw oscillation);
     //   SHUFFLE— a slow personal-space drift around the home spot (XZ orbit).
     {
-        const float beatHz = kClubBpm / 60.0f;
+        // (beatHz hoisted to the top of update() — the shared beat grid.)
         for (const Dancer& dn : m_dancers) {
             if (dn.charIdx >= m_chars.size()) continue;
             const float tp = t + dn.phase;
@@ -1423,8 +1670,13 @@ bool runClubSelfTest() {
     check(s.svsSubs == 4 && s.jblLineArray == 16 && s.jbl18Subs == 4 && s.surrounds == 16,
           "PA rig: 4 SVS subs + 16 JBL line-array + 4 JBL 18\" subs + 16 surrounds");
 
-    // (7) 28 blacklights.
-    check(s.blacklights == 28, "28 blacklights");
+    // (7) 20 blacklights at Tim's spec: vertical wall tubes every 12 ft, centered
+    //     5 ft off the floor, EACH casting a companion UV point light (8 per long
+    //     wall + 2 per side of the south 85"). The light set (static + tube casts
+    //     + orbiters) must stay under the device cap of 64.
+    check(s.blacklights == 20, "20 blacklights (12 ft spacing, 5 ft centers)");
+    check(club.pointLights().size() <= 64,
+          "point-light set fits the kMaxPointLights=64 device cap");
 
     // (8) 6-screen TV multiplex.
     check(s.tvScreens == 6, "6-screen TV multiplex");
