@@ -759,10 +759,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // ROLL-CAPABLE view: feed the ship's full orientation basis so the
             // horizon banks and the fighter can loop (owner: "add a roll capable
             // camera"). Replaces the roll-less setCamera that pinwheeled past vertical.
+            float camF[3] = { 1, 0, 0 }, camU[3] = { 0, 1, 0 };   // ACTUAL view basis
             {
-                float cpos[3], cfwd[3], cup[3];
-                pilot.cameraBasis(cpos, cfwd, cup);
-                hc.device->setCameraBasis(cpos[0], cpos[1], cpos[2], cfwd, cup, 65.0f);
+                float cpos[3];
+                pilot.cameraBasis(cpos, camF, camU);
+                hc.device->setCameraBasis(cpos[0], cpos[1], cpos[2], camF, camU, 65.0f);
                 cx = cpos[0]; cy = cpos[1]; cz = cpos[2];
             }
             // THE VISIBLE LAYER (feat/intro-cockpit): the player flies the beat
@@ -914,10 +915,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     if (winW > 0 && winH > 0) {
                         const float tanHalfY = std::tan(65.0f * 0.5f * 3.14159265f / 180.0f);
                         const float tanHalfX = tanHalfY * (float)winW / (float)winH;
-                        const float fh2 = std::cos(cpit);
-                        const float fw[3] = { fh2 * std::cos(cyaw), std::sin(cpit),
-                                              fh2 * std::sin(cyaw) };
-                        const float rt[3] = { -std::sin(cyaw), 0.0f, std::cos(cyaw) };
+                        // Project from the ACTUAL camera basis (camF/camU), not the
+                        // ship's yaw/pitch — with lock-bias / ALT-freelook the view
+                        // no longer equals the nose, and Euler-derived markers drift
+                        // off the ships they bracket (owner caught it via "does the
+                        // fire damage the enemy?!" — the crosshair was lying too).
+                        const float fw[3] = { camF[0], camF[1], camF[2] };
+                        const float rt[3] = { fw[1]*camU[2] - fw[2]*camU[1],
+                                              fw[2]*camU[0] - fw[0]*camU[2],
+                                              fw[0]*camU[1] - fw[1]*camU[0] };
                         const float up[3] = { fw[1]*rt[2] - fw[2]*rt[1],
                                               fw[2]*rt[0] - fw[0]*rt[2],
                                               fw[0]*rt[1] - fw[1]*rt[0] };
@@ -959,6 +965,21 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                             marker(e.pos, "[ ]", redM, 26.0f);
                         }
                         marker(capPos, "[CAP]", amberM, 22.0f);
+                        // GUN BORESIGHT — the reticle that CANNOT lie: projected at
+                        // the point 600 m down the NOSE (the exact ray hits use).
+                        // With lock-bias / freelook the camera gaze != the nose, so
+                        // screen-center stops being the aim; this marker is. ("the
+                        // aim must come from the sight" — the scope doctrine.)
+                        {
+                            const float fhN = std::cos(pilot.pitch());
+                            const x3::phys::Vec3 pN = pilot.pos();
+                            const float aimP[3] = {
+                                pN.x + fhN * std::cos(pilot.yaw()) * 600.0f,
+                                pN.y + std::sin(pilot.pitch()) * 600.0f,
+                                pN.z + fhN * std::sin(pilot.yaw()) * 600.0f };
+                            const float cyanB[4] = { 0.45f, 0.95f, 1.0f, 0.95f };
+                            marker(aimP, "-+-", cyanB, 24.0f);
+                        }
                     }
                 }
             }
