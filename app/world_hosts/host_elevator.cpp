@@ -65,28 +65,49 @@ int hostElevator(HostContext& hc) {
         // ===== Headless beauty set: interior / exterior / strata-descent =====
         if (headless) {
             const float dt = 1.0f / 60.0f;
-            struct Shot { int variant; const char* name; };
+            // driveToY: descend to this cab-center Y before the shot (1e9 = shoot in place
+            // at the lobby). The task's four beauty frames: the premium cab interior + the
+            // holo panel are shot at the top (doors open, panel lit), then the cab descends
+            // for the MID-DESCENT strata frame and the CLUB ARRIVAL frame.
+            struct Shot { int variant; const char* name; float driveToY; };
             std::vector<Shot> shots;
+            const float clubY = x3::game::ElevatorSystem::kDefaultClubFloorY + 0.18f;
             if (elevShot) {
-                shots = { {0, "elevator_interior.png"}, {1, "elevator_exterior.png"}, {2, "elevator_strata.png"} };
+                shots = {
+                    {0, "elevator_interior.png", 1e9f},
+                    {3, "elevator_holo.png",     1e9f},
+                    {2, "elevator_descent.png", -100.0f},
+                    {1, "elevator_arrival.png",  clubY + 5.0f},
+                };
             } else {
-                shots = { {0, screenshot ? "" : ""} };   // single --screenshot
+                shots = { {0, screenshot ? "" : "", 1e9f} };   // single --screenshot
             }
-            // Drive the lift partway down so the strata shot has rock layers below.
-            // X3_ELEV_DISCO=1: enter the 1127 code instead, so the beauty set proves
-            // the DISCO cue (ball glow, strobe, magenta terminal/LED, club descent).
-            if (std::getenv("X3_ELEV_DISCO")) {
-                show.keypadDigit(1); show.keypadDigit(1); show.keypadDigit(2); show.keypadDigit(7);
-            } else {
-                show.callClub();
-            }
-            for (int i = 0; i < 90; ++i) {
+            // Settle a few frames so the doors open at the lobby + the holo bakes its glass.
+            for (int i = 0; i < 40; ++i) {
                 show.update(dt, escene, *device, *ephys);
                 const auto& l = show.pointLights(); device->setPointLights(l.data(), (uint32_t)l.size());
                 ephys->step(dt); escene.update(*ephys);
             }
+            const bool disco = std::getenv("X3_ELEV_DISCO") != nullptr;
+            bool descentIssued = false;
+            // Drive the cab down until its center reaches targetY (or a safety cap of ~30 s).
+            auto descendTo = [&](float targetY) {
+                if (!descentIssued) {
+                    // X3_ELEV_DISCO=1 proves the disco cue (ball glow / strobe / magenta) on
+                    // the way down; otherwise a plain club call.
+                    if (disco) { show.keypadDigit(1); show.keypadDigit(1); show.keypadDigit(2); show.keypadDigit(7); }
+                    else       { show.callClub(); }
+                    descentIssued = true;
+                }
+                for (int i = 0; i < 1800 && show.cabCenter().y > targetY; ++i) {
+                    show.update(dt, escene, *device, *ephys);
+                    const auto& l = show.pointLights(); device->setPointLights(l.data(), (uint32_t)l.size());
+                    ephys->step(dt); escene.update(*ephys);
+                }
+            };
             bool allOk = true;
             for (const Shot& s : shots) {
+                if (s.driveToY < 1e8f) descendTo(s.driveToY);
                 std::string outPath = elevShot ? (elevShotDir + "/" + s.name) : screenshotPath;
                 float cam[5]; show.showcaseCamera(s.variant, cam);
                 if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];

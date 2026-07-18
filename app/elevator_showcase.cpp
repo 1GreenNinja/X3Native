@@ -302,7 +302,7 @@ void ElevatorShowcase::buildStrataLiner(Scene& scene, x3::rhi::IRenderDevice& de
     const float inHX = m_cabHX + 0.55f, inHZ = m_cabHZ + 0.55f;
     const float seg = 5.0f;                                     // band segment height (m)
     const int   n = std::max(1, (int)((topY - botY) / seg));
-    m_eStrataBands.clear(); m_eStrataBandY.clear(); m_eStrataBandEm.clear();
+    m_eStrataBands.clear(); m_eStrataBandY.clear(); m_eStrataBandEm.clear(); m_eStrataBandTint.clear();
 
     // STYLIZED NEON GEOLOGY palette (premium, club-UV direction): the raw survey rock
     // colours are desaturated greys/tans that wash to a flat haze behind the smoked glass,
@@ -326,16 +326,20 @@ void ElevatorShowcase::buildStrataLiner(Scene& scene, x3::rhi::IRenderDevice& de
         for(int k=0;k<3;++k){rgb[k]=b.rgb[k]; grgb[k]=b.rgb[k];} glow=b.glow;
     };
 
-    // A thin tinted, self-lit panel on one interior face at band center cy.
+    // A thin SELF-LIT geology panel on one interior face at band center cy. The baseColor
+    // is kept near-BLACK so the cab's bright interior lights don't blow the saturated rock
+    // hue into a flood — the colour comes purely from the emissive term (real geology reads
+    // as glowing depth, not a lit wall). The hue is stored for the seam blend in update().
     auto face = [&](float hx,float hy,float hz,float cx,float cy,float cz,
                     const float rgb[3], float em) {
         ElevPrim p; p.mesh = beveledBox(hx,hy,hz,cx,cy,cz,0.01f);
-        float c[4]  = { rgb[0], rgb[1], rgb[2], 1.0f };
-        float e[4]  = { rgb[0], rgb[1], rgb[2], em };
+        float c[4]  = { 0.03f, 0.03f, 0.035f, 1.0f };   // near-black: lighting must not amplify it
+        float e[4]  = { rgb[0], rgb[1], rgb[2], em };    // colour lives in the emissive term
         uint32_t id = addDecor(scene, device, p, c, e, (uint32_t)Tag::Prop);   // world-FIXED, no layoutCab offset
         m_eStrataBands.push_back(id);
         m_eStrataBandY.push_back(cy);
         m_eStrataBandEm.push_back(em);
+        m_eStrataBandTint.push_back(rgb[0]); m_eStrataBandTint.push_back(rgb[1]); m_eStrataBandTint.push_back(rgb[2]);
     };
 
     const float panelHY = seg * 0.5f - 0.06f;   // panel half-height (leaves a dark seam)
@@ -347,14 +351,17 @@ void ElevatorShowcase::buildStrataLiner(Scene& scene, x3::rhi::IRenderDevice& de
         // seam stream past. Crystal/magma layers glow; plain rock is a low self-lit band so
         // the geology reads without washing the premium dark-glass cab. The seam (update())
         // is the motion star.
-        const float em = glow ? 1.5f : 0.40f;   // saturated bands: enough to show hue, not bloom-white
+        // The bands hug the cab closely, so even a modest emissive would FLOOD the premium
+        // dark interior with colour through the glass. Keep the base glow LOW (a coloured
+        // depth cue, not an area light); the bright moving scan-seam (update()) is the real
+        // streaming tell, and it rides additively on top so it still pops.
+        const float em = glow ? 0.70f : 0.16f;
         const float* tint = glow ? grgb : rgb;
         // Back face (-Z, the "spine" seen through the -Z glass wall + straight down the shaft).
         face(inHX - 0.02f, panelHY, 0.03f, m_shaftX, cy, m_shaftZ - inHZ + 0.05f, tint, em);
-        // Two side faces (+/-X) so the banded rock wraps the descent (dimmer — they flank
-        // the camera and would wash the cab if as hot as the spine).
-        face(0.03f, panelHY, inHZ - 0.02f, m_shaftX - inHX + 0.05f, cy, m_shaftZ, tint, em * 0.45f);
-        face(0.03f, panelHY, inHZ - 0.02f, m_shaftX + inHX - 0.05f, cy, m_shaftZ, tint, em * 0.45f);
+        // Two side faces (+/-X): dimmer still — they flank the camera closest of all.
+        face(0.03f, panelHY, inHZ - 0.02f, m_shaftX - inHX + 0.05f, cy, m_shaftZ, tint, em * 0.35f);
+        face(0.03f, panelHY, inHZ - 0.02f, m_shaftX + inHX - 0.05f, cy, m_shaftZ, tint, em * 0.35f);
     }
     x3::logInfo("[showcase] strata liner: " + std::to_string(m_eStrataBands.size()) +
                 " glowing geology bands (" + std::to_string(topY) + " -> " + std::to_string(botY) + " m)");
@@ -485,6 +492,11 @@ void ElevatorShowcase::buildHoloPanel(Scene& scene, x3::rhi::IRenderDevice& devi
         m_holo.addLine(row);
     }
     m_holo.addLine(std::string("ENTER CODE 1127 -> DISCO DESCENT"));
+    m_holo.addLine(std::string("--------------------------------"));
+    // The LIVE status row (updated each frame via setLastLine): floor / depth-to-club /
+    // stratum / motion. Seeded here; update() re-bakes it only when the text changes.
+    m_holoStatusLine = "SURFACE  -  DEPTH 0 m  -  IDLE";
+    m_holo.addLine(m_holoStatusLine);
     m_stats.hasHoloPanel = true;
 
     // Interior floor-select ROUND BUTTONS in a column beside the holo glass (real
@@ -537,6 +549,15 @@ void ElevatorShowcase::layoutCab(Scene& scene) {
     for (int i = 0; i < m_holoButtonCount; ++i) {
         float by = 0.4f + (float)i * 0.16f - 1.0f;
         place(m_eHoloButtons[i], W - 0.13f, by, -0.55f);
+    }
+
+    // THE HOLO PANEL RIDES THE CAB. It builds its own meshes (not offset by place()), so
+    // without this the control panel + its ceiling pipe stayed at the boot floor while the
+    // car descended 200 m — you'd lose your panel mid-ride. Track it to the live cab Y
+    // (same anchor buildHoloPanel used: +X wall, chest height above the deck).
+    if (m_holo.built()) {
+        const float floorY = c.y + m_cabHY;
+        m_holo.reposition(x3::phys::Vec3{ m_shaftX + W - 0.10f, floorY + 1.35f, m_shaftZ + 0.2f });
     }
 
     // Disco-ball glow when disco mode is on.
@@ -639,6 +660,27 @@ float ElevatorShowcase::update(float dt, Scene& scene, x3::rhi::IRenderDevice& d
     float dy = m_elev.update(dt, scene, physics);
     layoutCab(scene);
     animateDoors(scene);
+
+    // LIVE HOLO DEPTH READOUT (goal #2): the panel's last row counts the cab DOWN to the
+    // club at Y=-200 with the live stratum + motion state. Re-baked only when the text
+    // actually changes (depth quantized to 2 m so a full-speed descent doesn't rebake the
+    // glass every frame).
+    {
+        const float y = m_elev.cabCenter().y;
+        const int   depth = ((int)std::lround(-y / 2.0f)) * 2;   // metres below surface, 2 m steps
+        std::string state;
+        if (m_elev.disco())               state = "DISCO DESCENT";
+        else if (!m_elev.moving())        state = (depth > 4 ? "ARRIVED" : "IDLE");
+        else if (m_elev.targetStop() >= 0 &&
+                 m_floors[m_elev.targetStop()].centerY < y) state = "DESCENDING v";
+        else                              state = "ASCENDING ^";
+        std::string line = (depth <= 0)
+            ? std::string("SURFACE  -  DEPTH 0 m  -  ") + state
+            : std::string("DEPTH -") + std::to_string(depth) + " m / -200  -  " +
+              m_elev.currentStratum() + "  -  " + state;
+        if (line != m_holoStatusLine) { m_holoStatusLine = line; m_holo.setLastLine(line); }
+    }
+
     m_holo.update(dt);
 
     // Entertainment screen: a slow hue-cycling glow (looping ad visuals).
@@ -670,17 +712,18 @@ float ElevatorShowcase::update(float dt, Scene& scene, x3::rhi::IRenderDevice& d
             if (id == kNoLink || id >= scene.size()) continue;
             Entity& e = scene.get(id);
             const float base = m_eStrataBandEm[i];
+            const float tr = m_eStrataBandTint[i*3], tg = m_eStrataBandTint[i*3+1], tb = m_eStrataBandTint[i*3+2];
             // Proximity of this band to the moving sweep -> a passing highlight.
             float d = std::fabs(m_eStrataBandY[i] - sweepY);
             float seam = travelling ? std::max(0.0f, 1.0f - d / 2.2f) : 0.0f;
             // Depth-swell: deeper bands (nearer the club) glow up as you descend into them.
             float depthLift = 0.5f + 0.5f * descentProgress();
             e.emissive[3] = (base * depthLift + seam * 2.2f) * yield;
-            // The seam shifts each band's glow toward a bright cool scan-line as it passes
-            // (the clear "rushing" tell); it eases back to the band's rock tint behind it.
-            e.emissive[0] = e.baseColor[0] + (0.45f - e.baseColor[0]) * seam;
-            e.emissive[1] = e.baseColor[1] + (0.85f - e.baseColor[1]) * seam;
-            e.emissive[2] = e.baseColor[2] + (1.00f - e.baseColor[2]) * seam;
+            // Rests at the band's rock hue; the passing seam shifts it toward a bright cool
+            // scan-line (the clear "rushing" tell), easing back to rock behind it.
+            e.emissive[0] = tr + (0.45f - tr) * seam;
+            e.emissive[1] = tg + (0.85f - tg) * seam;
+            e.emissive[2] = tb + (1.00f - tb) * seam;
         }
     }
 
@@ -736,6 +779,12 @@ void ElevatorShowcase::showcaseCamera(int variant, float out[5]) const {
         out[0] = m_shaftX + 0.15f; out[1] = floorY + 1.55f; out[2] = m_shaftZ + m_cabHZ - 0.35f;
         out[3] = -1.5708f;   // face -Z (toward the strata spine)
         out[4] = -0.18f;
+    } else if (variant == 3) {
+        // Holo panel HERO: stand close in front of the +X control panel, looking straight
+        // at it (the glowing directory + live depth readout fill the frame).
+        out[0] = m_shaftX + 0.15f; out[1] = floorY + 1.42f; out[2] = m_shaftZ + 0.22f;
+        out[3] = 0.0f;             // face +X (straight at the holo glass)
+        out[4] = -0.04f;
     } else {
         // Interior beauty: stand in a back corner of the cab looking across the dark-
         // glass interior toward the +X holo wall + accent strips (eye height, slight

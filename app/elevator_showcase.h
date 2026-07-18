@@ -196,6 +196,7 @@ private:
     std::vector<uint32_t> m_eStrataBands;    // tinted glowing wall segments down the shaft
     std::vector<float>    m_eStrataBandY;    // world-Y center of each band segment
     std::vector<float>    m_eStrataBandEm;   // each band's base emissive strength (for the pulse)
+    std::vector<float>    m_eStrataBandTint; // 3 floats/band: the band's SELF-LIT rock hue
     // STRATA STREAMING HOOK (for the separately-built streamed planet-strata): today the
     // liner is a self-contained placeholder. When the real streamed geology exists, a host
     // sets this true and feeds live layers by re-tinting m_eStrataBands (or swaps the liner
@@ -208,6 +209,10 @@ private:
 
     float m_time = 0.0f;
     float m_entScroll = 0.0f;
+    // Live holo DEPTH readout (goal #2): the panel's last line is an animated status row
+    // — current floor / depth counting down to -200 / stratum / state. Re-baked onto the
+    // glass only when the formatted text actually changes (stb_truetype bakes are dear).
+    std::string m_holoStatusLine;
 };
 
 // Headless self-test (--test-elevator-showcase): build the showcase with a default
