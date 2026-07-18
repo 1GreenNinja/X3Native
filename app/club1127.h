@@ -76,14 +76,16 @@ public:
     // The club's world Y (floor of the main room). Canon: Y = -200 (§2.3).
     static constexpr float kClubY = -200.0f;
 
-    // Real Club 1127 main-room footprint (Tim's measurements; meters).
-    //   CW = 50 ft depth (east-west, X)    = 15.24 m
+    // Club 1127 main-room footprint (Tim's ARCHITECTURE pass 2026-07: the room is
+    // WIDENED + made TALL so the suspended catwalk at ~21 ft has real headroom).
+    //   CW = 60 ft depth (east-west, X)    = 18.29 m  (was 50 ft)
     //   CL = 100 ft length (north-south, Z) = 30.48 m
-    //   CH = 30 ft ceiling                  =  9.14 m
-    static constexpr float kCW = 15.24f;   // X span (50 ft)
+    //   CH = 42 ft ceiling                  = 12.80 m  (was 30 ft)
+    static constexpr float kCW = 18.29f;   // X span (60 ft)
     static constexpr float kCL = 30.48f;   // Z span (100 ft)
-    static constexpr float kCH = 9.14f;    // ceiling height (30 ft)
-    static constexpr float kCullDist = 80.0f;   // §2.3 distance cull (m)
+    static constexpr float kCH = 12.80f;   // ceiling height (42 ft)
+    static constexpr float kCatwalkY = 6.40f;   // suspended catwalk deck (21 ft above floor)
+    static constexpr float kCullDist = 90.0f;   // §2.3 distance cull (m) — bigger room
 
     // A census of the fixtures the test asserts. Populated by build().
     struct Stats {

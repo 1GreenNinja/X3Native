@@ -920,8 +920,11 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // ==================================================================
     {
         const float bi  = 3.66f;     // 12 ft spacing (Tim spec; was 10 ft)
-        const float bcY = 1.5f;      // tube CENTER ~5 ft off the floor
-        const float bh  = 1.22f;     // 4 ft tube (canon tube length)
+        // Tim 2026-07-17 review: tubes were "half as long as they should be, and too
+        // low to the ground." DOUBLED length (4 ft -> 8 ft) + RAISED the center (5 ft
+        // -> ~8.5 ft) so they read as tall UV bars covering floor-to-mid-wall.
+        const float bcY = 2.6f;      // tube CENTER ~8.5 ft off the floor (was 1.5)
+        const float bh  = 2.44f;     // 8 ft tube (was 4 ft) — doubled
         // (nx,nz) = wall normal INTO the room: the cast light sits proud of the
         // tube so the wall glows around it instead of the light being buried.
         auto blacklight = [&](float x, float z, float nx, float nz) {
@@ -1945,10 +1948,10 @@ bool runClubSelfTest() {
         const float wZ = s.roomMaxZ - s.roomMinZ;   // ~30.48
         const float h  = s.ceilingY - s.floorY;     // ~9.14
         const bool yOk   = std::fabs(s.floorY - (-200.0f)) < 0.01f;
-        const bool footOk = std::fabs(wX - 15.24f) < 0.05f && std::fabs(wZ - 30.48f) < 0.05f;
-        const bool ceilOk = std::fabs(h - 9.14f) < 0.05f;
+        const bool footOk = std::fabs(wX - 18.29f) < 0.05f && std::fabs(wZ - 30.48f) < 0.05f;
+        const bool ceilOk = std::fabs(h - 12.80f) < 0.05f;
         check(yOk && footOk && ceilOk,
-              "main room is 50x100x30 ft (15.24x30.48x9.14 m) with its floor at Y=-200");
+              "main room is 60x100x42 ft (18.29x30.48x12.80 m) with its floor at Y=-200");
     }
 
     // (2) Suspended DJ booth: platform + turntables + 2 OLED + keypad door.
