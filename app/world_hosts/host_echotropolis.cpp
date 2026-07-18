@@ -48,6 +48,7 @@
 #include "../asset_root.h"            // riggedGlbRoot()
 #include "../holo_terminal.h"         // CONTROL ROOM: in-world ops dashboard screen
 #include "engine/audio/IAudioSystem.h" // CYBERPUNK AUDIO: rainy-city bed + positional hums + UI SFX
+#include "../audio_root.h"           // LIVING-CITY AUDIO: repo-local curated WAVs (works on a fresh clone)
 #include "engine/llm/ILlmSystem.h"     // CITIZEN TALK: local LLM conversations with residents
 #include "../street_lights.h"          // DISTRICT NIGHT: warm lamp rows through the pack districts
 #include "../hackables.h"              // WD2 STACK: city-wide hackables (H = nethack vision, E = hack)
@@ -2581,31 +2582,36 @@ int hostEchotropolis(HostContext& hc) {
     // the mine / drones / harbor, and UI one-shots fired on the panels/build/ride.
     std::unique_ptr<x3::audio::IAudioSystem> eaudio(x3::audio::createAudioSystem());
     const bool audioOn = eaudio && eaudio->init();
-    const std::string kit = "D:/Assets/Cyberpunk Game/Assets/Cyberpunk_Game_16bit/Cyberpunk_Game_16bit/";
-    auto snd = [&](const char* rel){ return audioOn ? eaudio->load(kit + rel) : x3::audio::SoundHandle{}; };
+    // Repo-local curated WAVs under assets/audio/echotropolis/** (audio-armory pass):
+    // resolveAudio() tries the committed mirror FIRST, so the city sounds on a fresh
+    // clone with no external packs — the same portability win the curated GLBs got.
+    // Provenance for every file: assets/audio/AUDIO_MANIFEST.md (Echo Harbor section).
+    auto snd = [&](const char* rel){ return audioOn
+        ? eaudio->load(x3::game::resolveAudio(std::string("echotropolis/") + rel))
+        : x3::audio::SoundHandle{}; };
     x3::audio::SoundHandle sfxConfirm, sfxAccept, sfxDeny;
     std::vector<x3::audio::LoopHandle> audioLoops;
     if (audioOn) {
         // LAYER 1 — 2D rainy cyber-city ambient bed (always on) + a low server hum.
-        auto bed = snd("Ambience/AMBSubn_Ambience Rainy Cyber City Noises Vehicles Urban Movements 01_ESM_CPG.wav");
+        auto bed = snd("ambient/city_bed.wav");
         if (bed.valid()) audioLoops.push_back(eaudio->startLoop(bed, 0.55f, 1.0f));
-        auto rain = snd("Ambience/RAIN_Ambience Loop Weather Rain Urban Heavy 01_ESM_CPG.wav");
+        auto rain = snd("ambient/rain_urban.wav");
         if (rain.valid()) audioLoops.push_back(eaudio->startLoop(rain, 0.22f, 1.0f));
         // LAYER 2 — night exploration music bed (2D loop, low under the ambience).
-        auto mus = snd("Music/MUSCLoop_Music Loop Explore Dark City Alleyways 01_ESM_CPG.wav");
+        auto mus = snd("music/night_alleyways.wav");
         if (mus.valid()) audioLoops.push_back(eaudio->startLoop(mus, 0.30f, 1.0f));
         // LAYER 3 — positional 3D loops (attenuate against the listener each frame).
         const float mgy = hf.ok()?hf.heightAt(kMineX,kMineZ):190.0f;
-        auto mineHum = snd("Ambience/AMBDsgn_Ambience Loop Computer Servers High Hum 01_ESM_CPG.wav");
+        auto mineHum = snd("ambient/mine_hum.wav");
         if (mineHum.valid()) audioLoops.push_back(eaudio->startLoop3D(mineHum, kMineX, mgy+3.0f, kMineZ, 0.85f, 1.0f));
-        auto droneHum = snd("Ambience/DSGNDron_Ambience Loop Buzz Drone Hum Steady 01_ESM_CPG.wav");
+        auto droneHum = snd("ambient/drone_buzz.wav");
         if (droneHum.valid()) audioLoops.push_back(eaudio->startLoop3D(droneHum, -20.0f, 250.0f, 760.0f, 0.6f, 1.0f));
-        auto boatHum = snd("Ambience/BOATInt_Ambience Loop Ship Cargo Engine Idle Dark 01_ESM_CPG.wav");
+        auto boatHum = snd("ambient/harbor_ship_idle.wav");
         if (boatHum.valid()) audioLoops.push_back(eaudio->startLoop3D(boatHum, -400.0f, 192.0f, 300.0f, 0.7f, 1.0f));
         // LAYER 4 — UI one-shots (played on events).
-        sfxConfirm = snd("UI/UIAlert_UI Chatter Confirm Select Interact Short Techy 01_ESM_CPG.wav");
-        sfxAccept  = snd("UI/UIAlert_UI Confirm Purchase Upgrade Positive Interact Interface 01_ESM_CPG.wav");
-        sfxDeny    = snd("UI/UIAlert_UI Deny Error Wrong Negative Computer Interact Malfunction 01_ESM_CPG.wav");
+        sfxConfirm = snd("ui/confirm.wav");
+        sfxAccept  = snd("ui/accept.wav");
+        sfxDeny    = snd("ui/deny.wav");
         x3::logInfo("--world echotropolis: CYBERPUNK AUDIO on — " +
                     std::to_string(audioLoops.size()) + " loops (bed/rain/music/mine/drone/harbor) + UI SFX");
     }
@@ -3231,6 +3237,83 @@ int hostEchotropolis(HostContext& hc) {
         console->print(on ? "frustum cull ON" : "frustum cull OFF (diagnostic)");
     }, "frustum culling on|off (alias of r_frustumcull)");
 
+    // ===================== LIVING-CITY AUDIO (audio-armory pass) =============
+    // Fill the audible gaps the cyberpunk layer left: the helicopters visibly spin
+    // but made no sound, the miners hauled in silence, the crowd never murmured,
+    // day and night sounded identical, and the gold economy earned invisibly.
+    // Everything below is ADDITIVE — the cyberpunk layer's loops are untouched.
+    //
+    // Rotor loops: IAudioSystem loops can't be re-positioned after startLoop3D, so
+    // the MOVING helis get 2D loops with app-side manual attenuation — each frame
+    // vol = base * ref^2/(ref^2 + d^2) against the listener via setLoopParams. No
+    // panning, but the thump swells exactly when a bird passes over, which is the
+    // audible truth that matters. Slight per-heli pitch detune stops phasing.
+    struct RotorVoice { x3::audio::LoopHandle lh; float pitch; };
+    std::vector<RotorVoice> rotorVoices;         // [0..2] patrol helis, [3] OH1 hero
+    x3::audio::LoopHandle loopDayBirds{};        // day ambience bed (vol driven by sun)
+    x3::audio::SoundHandle sfxShovel[2], sfxClank[2], sfxFlyby[3], sfxStep[4];
+    x3::audio::SoundHandle sfxGoldCoin, sfxChaChing, sfxBuildTick, sfxPhaseChime;
+    if (audioOn) {
+        // DAY BED — wind + city birds, faded in by sun elevation (night = silent).
+        if (auto s = snd("ambient/city_day_birds.wav"); s.valid()) {
+            loopDayBirds = eaudio->startLoop(s, 0.0f, 1.0f);
+            audioLoops.push_back(loopDayBirds);
+        }
+        // HELI ROTORS — one loop per patrol heli + the OH1 hero (variant + detune).
+        {
+            x3::audio::SoundHandle rotor[3] = { snd("vehicles/heli_rotor_a.wav"),
+                                                snd("vehicles/heli_rotor_b.wav"),
+                                                snd("vehicles/heli_rotor_c.wav") };
+            const float det[4] = { 0.88f, 0.94f, 0.84f, 0.78f };   // low = heavier bird
+            for (size_t i = 0; i < helis.size() && i < 3; ++i)
+                if (rotor[i % 3].valid()) {
+                    RotorVoice v{ eaudio->startLoop(rotor[i % 3], 0.0f, det[i]), det[i] };
+                    rotorVoices.push_back(v); audioLoops.push_back(v.lh);
+                }
+            if (oh1Built && rotor[2].valid()) {   // OH1 hero — deepest detune, tracked via oh1.pos()
+                RotorVoice v{ eaudio->startLoop(rotor[2], 0.0f, det[3]), det[3] };
+                rotorVoices.push_back(v); audioLoops.push_back(v.lh);
+            }
+        }
+        // CROWD MURMUR — the committed crowd WAVs as fixed 3D loops at the two
+        // plaza play-spots + the ops plaza, so the crown sounds inhabited up close.
+        {
+            auto murA = eaudio->load(x3::game::resolveAudio("crowd/murmur_a.wav"));
+            auto murB = eaudio->load(x3::game::resolveAudio("crowd/murmur_b.wav"));
+            const float gy = kWalkGroundY;
+            if (murA.valid()) audioLoops.push_back(eaudio->startLoop3D(murA, -60.0f, gy + 1.6f, 840.0f, 0.8f, 1.0f));
+            if (murB.valid()) audioLoops.push_back(eaudio->startLoop3D(murB,  90.0f, gy + 1.6f, 690.0f, 0.8f, 0.94f));
+            if (murA.valid()) audioLoops.push_back(eaudio->startLoop3D(murA, kWalkX, gy + 1.6f, kWalkZ, 0.65f, 1.05f));
+        }
+        // One-shots: mine work, drone flybys, gold/economy, UI ticks, footsteps.
+        sfxShovel[0] = snd("mine/shovel_1.wav");   sfxShovel[1] = snd("mine/shovel_2.wav");
+        sfxClank[0]  = snd("mine/ore_clank_1.wav"); sfxClank[1] = snd("mine/ore_clank_2.wav");
+        sfxFlyby[0]  = snd("vehicles/drone_flyby_1.wav");
+        sfxFlyby[1]  = snd("vehicles/drone_flyby_2.wav");
+        sfxFlyby[2]  = snd("vehicles/drone_flyby_3.wav");
+        sfxStep[0]   = snd("footsteps/step_street_1.wav");
+        sfxStep[1]   = snd("footsteps/step_street_2.wav");
+        sfxStep[2]   = snd("footsteps/step_street_3.wav");
+        sfxStep[3]   = snd("footsteps/step_street_4.wav");
+        sfxGoldCoin   = snd("ui/gold_coin.wav");
+        sfxChaChing   = snd("ui/gold_chaching.wav");
+        sfxBuildTick  = snd("ui/build_tick.wav");
+        sfxPhaseChime = snd("ui/phase_chime.wav");
+        x3::logInfo("--world echotropolis: LIVING-CITY AUDIO on — " +
+                    std::to_string(rotorVoices.size()) + " rotor voices + day bed + murmur + mine/econ/step one-shots");
+    }
+    // Living-city audio state (timers/edges advanced in the frame audio block).
+    float  mineWorkT = 3.0f;         // next mine work one-shot (s)
+    float  flybyT    = 9.0f;         // next drone flyby (s)
+    int    mineWorkAlt = 0;          // shovel/clank alternator
+    int    goldMilestone = 0;        // last celebrated (int)(goldOz/5)
+    int    audPrevDay  = simDay;     // day-rollover edge for the treasury cha-ching
+    x3::game::TodPhase audPrevPhase = tod.phase();   // phase-change chime edge
+    float  stepAccum = 0.0f; float stepPX = 0.0f, stepPZ = 0.0f; bool stepInit = false;
+    uint32_t audRng = 0x9E3779B9u;   // tiny xorshift for variant/pitch jitter
+    auto audRand01 = [&audRng](){ audRng ^= audRng << 13; audRng ^= audRng >> 17;
+                                  audRng ^= audRng << 5; return (audRng & 0xFFFFFF) / 16777216.0f; };
+
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
         glfwPollEvents();
@@ -3238,7 +3321,7 @@ int hostEchotropolis(HostContext& hc) {
             const bool esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
             if (esc && !prevEsc) {
                 if (hud.consoleOpen()) hud.closeConsole();   // ESC closes console first
-                else menuOpen = !menuOpen;   // toggle, never break
+                else { menuOpen = !menuOpen; uiSfx(sfxConfirm, 0.4f); }   // toggle, never break
             }
             prevEsc = esc;
             // CONSOLE toggle (` / ~): quake-style drop-down (engine Hud front-end).
@@ -3919,11 +4002,11 @@ int hostEchotropolis(HostContext& hc) {
         // ---- BUILD MENU interaction: cursor = orbit focus on the ground ----
         if (buildMode) {
             { const bool lb = kd(GLFW_KEY_LEFT_BRACKET);
-              if (lb && !prevLB) buildSel = (buildSel + kBuildCount - 1) % kBuildCount; prevLB = lb; }
+              if (lb && !prevLB) { buildSel = (buildSel + kBuildCount - 1) % kBuildCount; uiSfx(sfxBuildTick, 0.5f); } prevLB = lb; }
             { const bool rb = kd(GLFW_KEY_RIGHT_BRACKET);
-              if (rb && !prevRB) buildSel = (buildSel + 1) % kBuildCount; prevRB = rb; }
+              if (rb && !prevRB) { buildSel = (buildSel + 1) % kBuildCount; uiSfx(sfxBuildTick, 0.5f); } prevRB = rb; }
             { const bool r = kd(GLFW_KEY_R);
-              if (r && !prevRk) buildYaw += 0.7853982f; prevRk = r; }   // +45 deg
+              if (r && !prevRk) { buildYaw += 0.7853982f; uiSfx(sfxBuildTick, 0.45f); } prevRk = r; }   // +45 deg
             // PLACE (Enter): drop a permanent lot at the cursor if affordable.
             { const bool pl = kd(GLFW_KEY_ENTER);
               if (pl && !prevPlace) {
@@ -4162,6 +4245,96 @@ int hostEchotropolis(HostContext& hc) {
                 lx=rig.sFocusX; ly=rig.sPivotY+40.0f; lz=rig.sFocusZ; lyaw=rig.sYaw; lpit=rig.sPitch;
             }
             eaudio->setListener(lx, ly, lz, lyaw, lpit);
+
+            // ---- LIVING-CITY AUDIO frame step (additive; see decl block) ----
+            // Day bed: birds fade in with the sun (silent at night, full by mid-day).
+            const float dayness = clampf(todS.sunElevation * 4.0f, 0.0f, 1.0f);
+            if (loopDayBirds.valid()) eaudio->setLoopParams(loopDayBirds, 0.34f * dayness, 1.0f);
+
+            // Rotor thump: manual attenuation of each 2D rotor loop against the
+            // listener (loops can't be re-positioned; see decl comment). ref=60 m.
+            {
+                const float ref2 = 60.0f * 60.0f;
+                auto rotorVol = [&](float x, float y, float z, float base){
+                    const float dx = x - lx, dy = y - ly, dz = z - lz;
+                    const float d2 = dx*dx + dy*dy + dz*dz;
+                    return base * (ref2 / (ref2 + d2));
+                };
+                for (size_t i = 0; i < rotorVoices.size(); ++i) {
+                    float hx, hy, hz;
+                    if (i < helis.size()) {          // patrol helis: circle pose (poseHeli math)
+                        const Heli& h = helis[i];
+                        const float a = h.phase + waterTime * h.w;
+                        hx = h.cx + std::cos(a) * h.r; hz = h.cz + std::sin(a) * h.r;
+                        hy = h.y + std::sin(waterTime * 0.5f + h.phase) * 3.0f;
+                    } else if (oh1Built) {           // OH1 hero: live prop position
+                        const auto p = oh1.pos(); hx = p.x; hy = p.y; hz = p.z;
+                    } else break;
+                    eaudio->setLoopParams(rotorVoices[i].lh,
+                                          rotorVol(hx, hy, hz, 0.9f), rotorVoices[i].pitch);
+                }
+            }
+
+            // Mine work: shovel bites + ore clanks at the seam while the crew hauls.
+            if (minersBuilt) {
+                mineWorkT -= dt;
+                if (mineWorkT <= 0.0f) {
+                    mineWorkT = 2.2f + audRand01() * 2.6f;
+                    const auto& s = (mineWorkAlt++ & 1)
+                        ? sfxClank[audRng & 1] : sfxShovel[audRng & 1];
+                    if (s.valid())
+                        eaudio->playSound3D(s, kMineX + (audRand01() - 0.5f) * 10.0f,
+                                            kMineGy + 1.0f, kMineZ + (audRand01() - 0.5f) * 10.0f,
+                                            0.85f, 0.92f + audRand01() * 0.16f);
+                }
+            }
+
+            // Drone flybys: an occasional pass fired AT a live drone's position.
+            if (!drones.empty()) {
+                flybyT -= dt;
+                if (flybyT <= 0.0f) {
+                    flybyT = 12.0f + audRand01() * 14.0f;
+                    const Drone& d = drones[audRng % drones.size()];
+                    const float a = d.phase + waterTime * d.w;
+                    const auto& s = sfxFlyby[audRng % 3];
+                    if (s.valid())
+                        eaudio->playSound3D(s, d.cx + std::cos(a) * d.r,
+                                            d.y, d.cz + std::sin(a) * d.r, 0.55f, 1.0f);
+                }
+            }
+
+            // Gold economy: a coin clink AT THE MINE every 5 oz banked; the treasury
+            // cha-ching on each day rollover (the daily net lands).
+            if ((int)(goldOz / 5.0) > goldMilestone) {
+                goldMilestone = (int)(goldOz / 5.0);
+                if (sfxGoldCoin.valid())
+                    eaudio->playSound3D(sfxGoldCoin, kMineX, kMineGy + 1.5f, kMineZ, 0.8f, 1.0f);
+            }
+            if (simDay != audPrevDay) {
+                audPrevDay = simDay;
+                if (sfxChaChing.valid()) eaudio->playSound2D(sfxChaChing, 0.7f, 1.0f);
+            }
+            // Time-of-day phase change: one soft chime (lamps-on, dawn, ...).
+            if (todS.phase != audPrevPhase) {
+                audPrevPhase = todS.phase;
+                if (sfxPhaseChime.valid()) eaudio->playSound2D(sfxPhaseChime, 0.45f, 1.0f);
+            }
+
+            // Walk-mode footsteps: distance-driven street steps (your own feet, 2D).
+            if (walkMode && physOk && followIdx < 0) {
+                float px_, py_, pz_, pyaw_, ppit_;
+                player.camera(px_, py_, pz_, pyaw_, ppit_);
+                if (!stepInit) { stepPX = px_; stepPZ = pz_; stepInit = true; }
+                const float ddx2 = px_ - stepPX, ddz2 = pz_ - stepPZ;
+                stepAccum += std::sqrt(ddx2*ddx2 + ddz2*ddz2);
+                stepPX = px_; stepPZ = pz_;
+                if (stepAccum >= 2.1f) {
+                    stepAccum = 0.0f;
+                    const auto& s = sfxStep[audRng & 3];
+                    if (s.valid()) eaudio->playSound2D(s, 0.32f, 0.95f + audRand01() * 0.1f);
+                }
+            } else { stepInit = false; stepAccum = 0.0f; }
+
             eaudio->update(dt);
         }
 
