@@ -37,6 +37,7 @@
 #include "../npc_life.h"              // LIVING CITY: 12-archetype NPCs with daily schedules
 #include "../asset_root.h"            // riggedGlbRoot()
 #include "../holo_terminal.h"         // CONTROL ROOM: in-world ops dashboard screen
+#include "engine/audio/IAudioSystem.h" // CYBERPUNK AUDIO: rainy-city bed + positional hums + UI SFX
 #include <string>
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
@@ -1790,6 +1791,42 @@ int hostEchotropolis(HostContext& hc) {
         T[8]=sn*s; T[9]=0; T[10]=c*s; T[11]=0; T[12]=x; T[13]=gy+lift; T[14]=z; T[15]=1;
     };
 
+    // ===================== CYBERPUNK AUDIO (Cyberpunk Game SFX kit) ==========
+    // Echo Harbor was dead silent. Wire a layered soundscape from the 1067-sound
+    // kit: a 2D rainy-cyber-city ambient bed + night music, positional 3D hums at
+    // the mine / drones / harbor, and UI one-shots fired on the panels/build/ride.
+    std::unique_ptr<x3::audio::IAudioSystem> eaudio(x3::audio::createAudioSystem());
+    const bool audioOn = eaudio && eaudio->init();
+    const std::string kit = "D:/Assets/Cyberpunk Game/Assets/Cyberpunk_Game_16bit/Cyberpunk_Game_16bit/";
+    auto snd = [&](const char* rel){ return audioOn ? eaudio->load(kit + rel) : x3::audio::SoundHandle{}; };
+    x3::audio::SoundHandle sfxConfirm, sfxAccept, sfxDeny;
+    std::vector<x3::audio::LoopHandle> audioLoops;
+    if (audioOn) {
+        // LAYER 1 — 2D rainy cyber-city ambient bed (always on) + a low server hum.
+        auto bed = snd("Ambience/AMBSubn_Ambience Rainy Cyber City Noises Vehicles Urban Movements 01_ESM_CPG.wav");
+        if (bed.valid()) audioLoops.push_back(eaudio->startLoop(bed, 0.55f, 1.0f));
+        auto rain = snd("Ambience/RAIN_Ambience Loop Weather Rain Urban Heavy 01_ESM_CPG.wav");
+        if (rain.valid()) audioLoops.push_back(eaudio->startLoop(rain, 0.22f, 1.0f));
+        // LAYER 2 — night exploration music bed (2D loop, low under the ambience).
+        auto mus = snd("Music/MUSCLoop_Music Loop Explore Dark City Alleyways 01_ESM_CPG.wav");
+        if (mus.valid()) audioLoops.push_back(eaudio->startLoop(mus, 0.30f, 1.0f));
+        // LAYER 3 — positional 3D loops (attenuate against the listener each frame).
+        const float mgy = hf.ok()?hf.heightAt(kMineX,kMineZ):190.0f;
+        auto mineHum = snd("Ambience/AMBDsgn_Ambience Loop Computer Servers High Hum 01_ESM_CPG.wav");
+        if (mineHum.valid()) audioLoops.push_back(eaudio->startLoop3D(mineHum, kMineX, mgy+3.0f, kMineZ, 0.85f, 1.0f));
+        auto droneHum = snd("Ambience/DSGNDron_Ambience Loop Buzz Drone Hum Steady 01_ESM_CPG.wav");
+        if (droneHum.valid()) audioLoops.push_back(eaudio->startLoop3D(droneHum, -20.0f, 250.0f, 760.0f, 0.6f, 1.0f));
+        auto boatHum = snd("Ambience/BOATInt_Ambience Loop Ship Cargo Engine Idle Dark 01_ESM_CPG.wav");
+        if (boatHum.valid()) audioLoops.push_back(eaudio->startLoop3D(boatHum, -400.0f, 192.0f, 300.0f, 0.7f, 1.0f));
+        // LAYER 4 — UI one-shots (played on events).
+        sfxConfirm = snd("UI/UIAlert_UI Chatter Confirm Select Interact Short Techy 01_ESM_CPG.wav");
+        sfxAccept  = snd("UI/UIAlert_UI Confirm Purchase Upgrade Positive Interact Interface 01_ESM_CPG.wav");
+        sfxDeny    = snd("UI/UIAlert_UI Deny Error Wrong Negative Computer Interact Malfunction 01_ESM_CPG.wav");
+        x3::logInfo("--world echotropolis: CYBERPUNK AUDIO on — " +
+                    std::to_string(audioLoops.size()) + " loops (bed/rain/music/mine/drone/harbor) + UI SFX");
+    }
+    auto uiSfx = [&](x3::audio::SoundHandle s, float v){ if (audioOn && s.valid()) eaudio->playSound2D(s, v, 1.0f); };
+
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
         glfwPollEvents();
@@ -1813,9 +1850,9 @@ int hostEchotropolis(HostContext& hc) {
 
         // ---- WALK MODE toggle (G) + first-person character step -------------
         { const bool g = kd(GLFW_KEY_G); if (g && !prevG && physOk) walkMode = !walkMode; prevG = g; }
-        { const bool tb = kd(GLFW_KEY_TAB); if (tb && !prevTab) cityPanelOpen = !cityPanelOpen; prevTab = tb; }
+        { const bool tb = kd(GLFW_KEY_TAB); if (tb && !prevTab) { cityPanelOpen = !cityPanelOpen; uiSfx(sfxConfirm, 0.75f); } prevTab = tb; }
         // BUILD MODE (B): orbit-only; entering walk mode drops it.
-        { const bool b = kd(GLFW_KEY_B); if (b && !prevB && !walkMode) buildMode = !buildMode; prevB = b; }
+        { const bool b = kd(GLFW_KEY_B); if (b && !prevB && !walkMode) { buildMode = !buildMode; uiSfx(sfxConfirm, 0.6f); } prevB = b; }
         if (walkMode) buildMode = false;
         // RIDE-ALONG (F): attach the camera to the citizen you're inspecting; F again releases.
         { const bool f = kd(GLFW_KEY_F);
@@ -1823,9 +1860,11 @@ int hostEchotropolis(HostContext& hc) {
               if (followIdx >= 0) {                       // release
                   followIdx = -1; playAs = false;
                   if (npcLifeBuilt) npcLife.setControlled(-1);
+                  uiSfx(sfxConfirm, 0.6f);
               } else if (walkMode && npcLifeBuilt && lastPickedIdx >= 0) {  // enter (spectate)
                   followIdx = lastPickedIdx; playAs = false; npcLife.setControlled(-1);
                   driveYaw = npcLife.agent((uint32_t)followIdx).yaw;
+                  uiSfx(sfxConfirm, 0.7f);
               }
           }
           prevF = f; }
@@ -1836,6 +1875,7 @@ int hostEchotropolis(HostContext& hc) {
               if (playAs) { npcLife.setControlled(followIdx);
                             driveYaw = npcLife.agent((uint32_t)followIdx).yaw; }
               else npcLife.setControlled(-1);
+              uiSfx(sfxAccept, 0.7f);
           }
           prevE = e; }
         // PLAY-AS drive: tank-style third-person steering (A/D turn, W/S move, Shift run).
@@ -2022,8 +2062,9 @@ int hostEchotropolis(HostContext& hc) {
                       if (e->buildFromGlbAt(*device, d.dir, d.glb, T)) {
                           placed.push_back(std::move(e)); placedCost.push_back(d.cost);
                           treasury -= (double)d.cost;
+                          uiSfx(sfxAccept, 0.85f);
                       }
-                  }
+                  } else uiSfx(sfxDeny, 0.7f);
               }
               prevPlace = pl; }
             // UNDO (Backspace): remove + refund the last placed lot.
@@ -2031,6 +2072,7 @@ int hostEchotropolis(HostContext& hc) {
               if (bk && !prevBk && !placed.empty()) {
                   treasury += (double)placedCost.back();
                   placed.pop_back(); placedCost.pop_back();
+                  uiSfx(sfxDeny, 0.65f);
               }
               prevBk = bk; }
         }
@@ -2118,6 +2160,20 @@ int hostEchotropolis(HostContext& hc) {
             device->setCamera(px, py, pz, pyaw, ppit, opt.fovDeg);
         } else {
             applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
+        }
+        // AUDIO listener rides the active camera so positional hums pan/attenuate.
+        if (audioOn) {
+            float lx, ly, lz, lyaw, lpit;
+            if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
+                const auto& a = npcLife.agent((uint32_t)followIdx);
+                lx=a.pos.x; ly=a.pos.y+2.0f; lz=a.pos.z; lyaw=a.yaw; lpit=0.0f;
+            } else if (walkMode && physOk) {
+                player.camera(lx, ly, lz, lyaw, lpit);
+            } else {
+                lx=rig.sFocusX; ly=rig.sPivotY+40.0f; lz=rig.sFocusZ; lyaw=rig.sYaw; lpit=rig.sPitch;
+            }
+            eaudio->setListener(lx, ly, lz, lyaw, lpit);
+            eaudio->update(dt);
         }
 
         auto frame = device->beginFrame();
@@ -2325,6 +2381,7 @@ int hostEchotropolis(HostContext& hc) {
         x3::logInfo(buf);
     }
 
+    if (audioOn) { for (auto l : audioLoops) eaudio->stopLoop(l); eaudio->shutdown(); }
     device->shutdown();
     if (window) glfwDestroyWindow(window);
     glfwTerminate();
