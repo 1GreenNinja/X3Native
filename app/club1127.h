@@ -211,6 +211,22 @@ private:
     std::vector<uint32_t>                         m_subPulseEnts;
     std::vector<uint32_t>                         m_tilePulseEnts;
     std::vector<size_t>                           m_subLightIdx;   // corner-sub pulse lights (into m_lights)
+    // POLISH (fix/club-polish): animated 3D speaker DRIVER cones. Each is real
+    // recessed cone geometry (makeDriverInto) that PUMPS in/out along its face
+    // normal on the beat — subs punch hard, mids ripple, tweeters shimmer — and the
+    // sub cones surge emissive. update() translates each along its normal by
+    // posAmp*thump and breathes emissive between emBase and emBase+emAmp.
+    struct DriverCone {
+        uint32_t ent = 0xFFFFFFFFu;              // driver mesh entity
+        float    nx = 0.0f, ny = 0.0f, nz = 1.0f; // outward face normal (pump axis)
+        float    posAmp = 0.0f;                  // cone travel (m) on the kick
+        float    emBase = 0.0f, emAmp = 0.0f;    // emissive floor + beat surge
+    };
+    std::vector<DriverCone>                       m_driverCones;
+    // POLISH: mirror-ball SPARKLE lights — a cluster of small colored point lights
+    // that orbit with the ball's spin, painting moving dots on the walls / floor /
+    // dancers as it turns (indices into m_lights; update() moves + recolors them).
+    std::vector<size_t>                           m_sparkleLightIdx;
     // CEILING MOVING-HEAD RIG (Tim addenda: beat-synced lights, mounted on the
     // ceiling, projecting DOWN onto the dance floor): 4 fixtures on a ring over
     // the floor. update() sweeps each fixture's pool light in a beat-locked
