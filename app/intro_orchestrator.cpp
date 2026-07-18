@@ -380,6 +380,20 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         sfxMark(type, name);
         if (sfx && h.valid()) sfx->playSound3D(h, p[0], p[1], p[2], vol, pitch);
     };
+    // A hit on the PLAYER: distinct voices — energy shield-splash while the
+    // shield holds, metal-on-metal armor crunch once it's down. One path for the
+    // real salvo branch AND the headless probe, so the probe exercises the same
+    // code the live fight runs.
+    auto playerHitSfx = [&](int dmg) {
+        const bool shielded = pilot.shield() > 0;
+        pilot.takeDamage(dmg);
+        if (shielded)
+            play2D(kSfxImpactShield, "impact_shield (hit, shields up)",
+                   sndImpactShield, 0.9f, 1.0f);
+        else
+            play2D(kSfxImpactHull, "impact_hull (hit, shields DOWN)",
+                   sndImpactHull, 0.95f, 1.0f);
+    };
     // A fighter kill: the 3D explosion + the death/smoke FX burst, in one place —
     // deaths are detected AT THE DAMAGE SITE (EnemyShipManager swap-removes a
     // dead ship immediately, so a post-update hull scan can never see one; the
@@ -494,6 +508,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     fighterKillFx(hp);
                     enemies.damageShip(0, 100000);
                 }
+                // Scripted hits through the SAME playerHitSfx path the live salvo
+                // branch uses: shields-up splash at 8 s, then a shield-draining
+                // slam so the 8.7 s hit lands on bare hull (distinct crunch).
+                if (step == 480) playerHitSfx(x3::space::shipai::kLaserDamage);
+                if (step == 500) playerHitSfx(pilot.shield() + 100);   // drain shield
+                if (step == 520) playerHitSfx(x3::space::shipai::kLaserDamage);
             }
         }
         // ANTIMATTER BOOST: one whoosh per Shift ENGAGE (edge-detected — the
@@ -556,16 +576,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float dz = fe.to[2] - ppos[2];
             const float d2 = dx*dx + dy*dy + dz*dz;
             if (d2 < 30.0f * 30.0f) {
-                // DISTINCT hit voices: energy shield-splash while the shield
-                // holds, metal-on-metal armor crunch once it's down.
-                const bool shielded = pilot.shield() > 0;
-                pilot.takeDamage(x3::space::shipai::kLaserDamage);
-                if (shielded)
-                    play2D(kSfxImpactShield, "impact_shield (hit, shields up)",
-                           sndImpactShield, 0.9f, 1.0f);
-                else
-                    play2D(kSfxImpactHull, "impact_hull (hit, shields DOWN)",
-                           sndImpactHull, 0.95f, 1.0f);
+                playerHitSfx(x3::space::shipai::kLaserDamage);
                 if (fxOn) fxPtr->spawnImpact({ fe.to[0], fe.to[1], fe.to[2] },
                                              { -dx, -dy, -dz });
             } else {
@@ -725,12 +736,16 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             }
             if (fxOn) fxPtr->update(dt);
             // DEV evidence capture: X3_INTRO_CAPTURE=<dir> dumps the presented
-            // frame once per interactive beat (step 180 ~= 3 s in) — the tool that
-            // root-caused the milky-canopy bug. Off (empty env) in normal play.
+            // frame at steps 180/420/660/900 (~3/7/11/15 s) per interactive beat —
+            // a bearing-over-time series that shows the wing CIRCLING (the tool
+            // that root-caused the milky-canopy bug, extended for the orbit AI).
+            // Off (empty env) in normal play.
             static const char* evDir = std::getenv("X3_INTRO_CAPTURE");
-            const bool evShot = evDir && *evDir && (step == 180);
+            const bool evShot = evDir && *evDir &&
+                (step == 180 || step == 420 || step == 660 || step == 900);
             if (evShot)
-                hc.device->armCapture((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
+                hc.device->armCapture((std::string(evDir) + "/live_" + beat.id +
+                                       "_s" + std::to_string(step) + ".png").c_str());
             auto frame = hc.device->beginFrame();
             if (frame.valid && cockpit) {
                 cockpit->scene.render(*hc.device, frame);
@@ -876,7 +891,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             }
             hc.device->endFrame(frame);
             if (evShot)
-                hc.device->captureFrame((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
+                hc.device->captureFrame((std::string(evDir) + "/live_" + beat.id +
+                                         "_s" + std::to_string(step) + ".png").c_str());
+            // Evidence runs are BOUNDED (nobody is at the controls to cripple the
+            // capital or press Esc): end the beat just past the last capture.
+            if (evDir && *evDir && step >= 960) break;
 
             // Hold this step until real time catches up to where the sim thinks it is
             // (see tStart). target = when step (step+1) SHOULD begin, in wall seconds.
