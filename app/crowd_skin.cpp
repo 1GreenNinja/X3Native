@@ -4,6 +4,7 @@
 #include "crowd_skin.h"
 #include "asset_root.h"
 #include "headless_device.h"
+#include "mesh_prims.h"          // x3::prims::makeBox — the seat-prop crate mesh
 
 #include "engine/core/x3_log.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <string>
 
 namespace x3::game {
@@ -140,6 +142,50 @@ void CrowdSkin::attach(uint32_t i, const CrowdSystem& crowd, Scene& scene) {
     s.ragdolled = false;   // a fresh agent stands (any prior corpse is forgotten)
 }
 
+void CrowdSkin::updateSeat(Slot& s, const CrowdAgent& a, bool seated,
+                           Scene& scene, x3::rhi::IRenderDevice& device) {
+    // Seat height: the Sit clip is a knees-bent perch whose hips rest ~0.44 m above
+    // the feet (grounded-verified in Blender against AnnaCasual's Sit pose). A 0.44 m
+    // crate (half-extent 0.22) under the agent puts its top exactly at that seat, so
+    // the citizen sits ON something instead of squatting on air. Feet stay on the
+    // floor (a.pos.y); the crate rests on the same floor, centered under the agent.
+    constexpr float kSeatHalf = 0.22f;
+    if (!seated) {
+        if (s.seatEnt != kNoLink && s.seatEnt < scene.size())
+            scene.get(s.seatEnt).visible = false;
+        return;
+    }
+    const float scl = (m_cfg.scale > 0.01f) ? m_cfg.scale : 1.0f;
+    // Lazy-build the shared crate mesh once (one upload, instanced across all seats).
+    if (!m_seatMeshBuilt) {
+        x3::prims::PrimMesh m = x3::prims::makeBox(kSeatHalf, kSeatHalf, kSeatHalf, 0, 0, 0, 1.0f);
+        m_seatMesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                       m.index.data(), (uint32_t)m.index.size());
+        m_seatMeshBuilt = true;
+    }
+    if (s.seatEnt == kNoLink) {
+        Entity e;
+        e.mesh = m_seatMesh;
+        e.baseColor[0] = 0.28f; e.baseColor[1] = 0.20f; e.baseColor[2] = 0.13f; e.baseColor[3] = 1.0f; // crate wood
+        e.tag     = (uint32_t)Tag::Prop;
+        e.roomId  = m_roomId;    // Scene::render PVS-culls with the crowd's room
+        e.visible = false;
+        s.seatEnt = scene.add(e);
+    }
+    if (s.seatEnt >= scene.size()) return;
+    Entity& e = scene.get(s.seatEnt);
+    // Column-major model matrix: uniform scale `scl` + translation. The crate rests on
+    // the floor, so its centre is one half-height up; top = floor + 0.44*scl.
+    for (int k = 0; k < 16; ++k) e.transform[k] = 0.0f;
+    e.transform[0] = e.transform[5] = e.transform[10] = scl;
+    e.transform[15] = 1.0f;
+    e.transform[12] = a.pos.x;
+    e.transform[13] = a.pos.y + kSeatHalf * scl;
+    e.transform[14] = a.pos.z;
+    e.roomId  = m_roomId;
+    e.visible = true;
+}
+
 bool CrowdSkin::triggerRagdoll(uint32_t i, Scene& scene,
                                x3::phys::IPhysicsWorld& physics,
                                const x3::phys::Vec3& shove) {
@@ -231,6 +277,13 @@ void CrowdSkin::update(float dt, const CrowdSystem& crowd, Scene& scene,
             s.gesture = want;
         }
 
+        // Seat prop: show a crate under the agent ONLY when it is actually seated —
+        // i.e. the Sit gesture is engaged AND this rig owns a Sit clip (calmLoopActive
+        // is false on rigs that lack it, so those keep the procedural huddle with no
+        // stray crate). Placed/hidden every frame; Scene::render PVS-culls it.
+        const bool seated = want && std::strcmp(want, "sit") == 0 && s.sys->calmLoopActive();
+        updateSeat(s, a, seated, scene, device);
+
         // Tick the inert character (skinning + clip playback; chaseSpeed 0 and
         // playerPos = self => the AI never fights the fed pose).
         s.sys->update(dt, scene, physics, s.sys->pos());
@@ -255,6 +308,9 @@ void CrowdSkin::deactivate(Scene& scene) {
             const uint32_t ent = s.sys->entity();
             if (ent != kNoLink && ent < scene.size()) scene.get(ent).visible = false;
         }
+        // Hide the seat prop too (host-owned, survives for the next build()).
+        if (s.seatEnt != kNoLink && s.seatEnt < scene.size())
+            scene.get(s.seatEnt).visible = false;
         s.attached = false;
         s.hasLastPos = false;
         s.gesture = nullptr;

@@ -125,11 +125,20 @@ private:
         float lastSpeed = 0.0f;
         x3::phys::Vec3 lastPos{};
         bool  hasLastPos = false;
+        // ANIM-ENRICH POLISH: a seat prop under a SEATED agent (the Sit gesture is a
+        // knees-bent perch that reads as "sitting on air" with nothing under it).
+        // Lazily created the first time this agent sits; a plain host-owned Scene
+        // prop (no physics body), shown only while seated, hidden otherwise.
+        uint32_t seatEnt = kNoLink;
     };
 
     void spawnOne(uint32_t i, const CrowdSystem& crowd, Scene& scene,
                   x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
     void attach(uint32_t i, const CrowdSystem& crowd, Scene& scene);
+    // Show/hide + place agent `i`'s seat prop for this frame (lazy-creates the prop
+    // and the shared crate mesh on first need). `seated` drives visibility.
+    void updateSeat(Slot& s, const CrowdAgent& a, bool seated,
+                    Scene& scene, x3::rhi::IRenderDevice& device);
 
     CrowdSkinConfig  m_cfg;
     std::vector<Slot> m_slots;
@@ -137,6 +146,10 @@ private:
     uint32_t m_roomId = kNoRoom;   // deployment PVS room (from the crowd config)
     bool     m_active = false;
     double   m_totalSpawnMs = 0.0;
+    // Shared crate mesh for the seat props (one upload, instanced across every
+    // seated agent). Lazily built on the first seated agent.
+    x3::rhi::MeshHandle m_seatMesh{};
+    bool                m_seatMeshBuilt = false;
 };
 
 // Headless self-test section for --test-crowd (called from runCrowdSelfTest):
