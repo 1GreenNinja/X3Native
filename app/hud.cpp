@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <algorithm>
 #include <cmath>
+#include <string>
+#include <vector>
 
 namespace x3::game {
 
@@ -397,6 +399,67 @@ void Hud::drawAlert(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
         device.drawHudQuad(frame, 0, (float)h - t, (float)w, t, edge);
         device.drawHudQuad(frame, 0, 0, t, (float)h, edge);
         device.drawHudQuad(frame, (float)w - t, 0, t, (float)h, edge);
+    }
+}
+
+void Hud::drawVigilBark(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                        const char* text, float alpha) const {
+    if (!text || !*text || alpha <= 0.0f) return;
+    if (alpha > 1.0f) alpha = 1.0f;
+    uint32_t w = 0, h = 0;
+    device.hudSize(w, h);
+    if (w == 0 || h == 0) return;
+
+    // VIGIL's terminal orange (matches the on-glass ink the terminal turns while he
+    // speaks). A dark plate keeps him readable over any scene.
+    const float px = std::max(12.0f, (float)h * 0.020f);   // glyph size scales with res
+    const float pad = px * 0.9f;
+    const float lineH = px * 1.4f;
+    const float maxTextW = (float)w * 0.70f;               // wrap to 70% of the screen
+
+    // Word-wrap "VIGIL: <text>" to maxTextW using the proportional Menu atlas.
+    const std::string full = std::string("VIGIL: ") + text;
+    std::vector<std::string> lines;
+    {
+        std::string cur;
+        size_t i = 0;
+        while (i < full.size()) {
+            size_t j = full.find(' ', i);
+            if (j == std::string::npos) j = full.size();
+            const std::string word = full.substr(i, j - i);
+            const std::string trial = cur.empty() ? word : cur + " " + word;
+            if (!cur.empty() &&
+                device.textAdvance(x3::rhi::FontRole::Menu, trial.c_str(), px) > maxTextW) {
+                lines.push_back(cur); cur = word;
+            } else cur = trial;
+            i = j + 1;
+        }
+        if (!cur.empty()) lines.push_back(cur);
+    }
+    if (lines.empty()) return;
+
+    // Plate: centered horizontally, sitting in the lower third (above the health HUD).
+    float blockW = 0.0f;
+    for (const auto& l : lines)
+        blockW = std::max(blockW, device.textAdvance(x3::rhi::FontRole::Menu, l.c_str(), px));
+    const float blockH = lineH * (float)lines.size();
+    const float x0 = ((float)w - blockW) * 0.5f;
+    const float y0 = (float)h * 0.70f;
+    const float plate[4] = { 0.02f, 0.02f, 0.03f, 0.62f * alpha };
+    device.drawHudQuad(frame, x0 - pad, y0 - pad * 0.6f,
+                       blockW + pad * 2.0f, blockH + pad * 1.2f, plate);
+    // A thin orange accent bar on the left edge — his "signal".
+    const float bar[4] = { 1.0f, 0.60f, 0.16f, 0.9f * alpha };
+    device.drawHudQuad(frame, x0 - pad, y0 - pad * 0.6f, 3.0f, blockH + pad * 1.2f, bar);
+
+    // The text: label row hotter, body rows slightly dimmer; drop shadow for punch.
+    const float col[4] = { 1.0f, 0.68f, 0.26f, 0.98f * alpha };
+    const float sh[4]  = { 0.0f, 0.0f, 0.0f, 0.7f * alpha };
+    float ty = y0;
+    for (const auto& l : lines) {
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, l.c_str(), x0 + 1.5f, ty + 1.5f, px, sh);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, l.c_str(), x0, ty, px, col);
+        ty += lineH;
     }
 }
 

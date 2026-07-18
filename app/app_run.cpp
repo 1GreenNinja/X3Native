@@ -58,6 +58,7 @@
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "chat_tree.h"                      // x3.chattree/1 data-driven dialog runner (--test-chattree)
+#include "vigil_barks.h"                     // VIGIL ambient companion barks (gated on vigilLink)
 #include "mission.h"                        // x3.mission/1 data-driven mission runner (--test-mission, g_missiondoc)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
@@ -1333,6 +1334,26 @@ int runDefaultHost(HostContext& hc) {
     x3::game::AlertDoorLock alertDoorLock;
     bool  facilityAlertOn = false;   // armed in level1 AND canonlevel (see the world-build arm)
     float alertHudClock   = 0.0f;    // drives the lockdown HUD pulse
+
+    // ---- VIGIL BARKS: the ambient in-ear companion layer. Proactive one-liners on
+    // real game events (alert changes, first combat, low HP, elevator/club entry,
+    // idle), shown as an on-screen toast. CANON-GATED: barks are SILENT until Jake
+    // acquires the neural link (the vigilLink StoryFlag). Terminal chat works before
+    // then; this overlay is what the link unlocks. Tuned by vigil_chatter (off/
+    // occasional/chatty) + vigil_cooldown. State tracked frame-to-frame below.
+    x3::game::VigilBarks vigilBarks;
+    int   vigilPrevAlert    = 0;       // last-seen alert level (edge-detect rising/clear)
+    bool  vigilSawCombat    = false;   // FirstCombat one-shot
+    bool  vigilLowHpLatch   = false;   // LowHealth re-arms only after HP recovers
+    bool  vigilSawElevator  = false;   // EnterElevator one-shot per session
+    bool  vigilSawClub      = false;   // EnterClub one-shot
+    bool  vigilSawSidearm   = false;   // PickupSidearm one-shot
+    bool  vigilSawTrapdoor  = false;   // Trapdoor one-shot
+    bool  vigilLinkPrev     = false;   // detects the link being acquired (welcome bark)
+    float vigilClock        = 0.0f;    // monotonic seconds for the bark cooldown/toast
+    x3::phys::Vec3 vigilPrevPos{0,0,0}; // last frame's cam pos (idle/movement detection)
+    bool  vigilPrevPosSet   = false;
+    int   vigilPrevRoom     = -999;    // last canon room id (EnterArea on change)
     // B3: the terrain world is now STREAMED around the player via a residency
     // ring (TerrainStreamer) fed by the engine job system. Both are only created
     // in terrain mode; Level 1 is unaffected.
@@ -3603,6 +3624,10 @@ int runDefaultHost(HostContext& hc) {
     console->registerCVar("ai_ctx",       "2048", "LLM context tokens per chat");
     console->registerCVar("ai_maxtokens", "256",  "LLM max tokens per reply");
     console->registerCVar("ai_temp",      "0.7",  "LLM sampling temperature");
+    // VIGIL ambient barks: chattiness (0 off / 1 occasional / 2 chatty) + base
+    // cooldown seconds between barks. Gated on the vigilLink flag regardless.
+    console->registerCVar("vigil_chatter",  "1",  "VIGIL ambient barks: 0 off, 1 occasional, 2 chatty");
+    console->registerCVar("vigil_cooldown", "9",  "VIGIL bark minimum seconds between one-liners");
     std::unique_ptr<x3::llm::ILlmSystem> llm;
     if (!headless && llmModelPresent && console->getInt("ai_npc") != 0) {
         x3::llm::ModelOpts lopts;
@@ -6683,6 +6708,24 @@ int runDefaultHost(HostContext& hc) {
         if (on && !player.god()) player.setGod(true);   // don't take env damage while flying
         console->print(std::string("noclip ") + (on ? "ON  (IDCLIP) — fly with WASD, look up/down to climb" : "OFF"));
     }, "idclip [0|1] - toggle noclip free-flight (no collision)");
+    // ---- vigil_link: acquire (or drop) the NEURAL LINK that lets Jake hear VIGIL
+    // in his head. This sets the vigilLink StoryFlag, which is the master enable for
+    // the ambient BARK layer (VigilBarks). Before the link VIGIL is terminal-only;
+    // after it he pipes up proactively during play.
+    //
+    // CANON HOOK / TODO: the real story-beat acquisition belongs on FLOOR 4 (the
+    // Cybernetics Workshop with the augmentation chairs + the Humanity meter) — Jake
+    // jacks in at an augment chair (VIGIL talks him into it in his snarky voice) and
+    // accepting the link could cost a sliver of Humanity. Until that beat is authored,
+    // this console command + a placeholder pickup below stand in for the trigger.
+    console->registerCommand("vigil_link", [&chatTrees, &console](const std::vector<std::string>& a) {
+        const bool on = a.empty() ? true : (a[0] != "0");
+        if (on) { chatTrees.flags().set("vigilLink");
+                  console->print("vigil_link - NEURAL LINK ACQUIRED. VIGIL is now in your head. Regrettably, for both of you."); }
+        else    { chatTrees.flags().clear("vigilLink");
+                  console->print("vigil_link 0 - neural link severed. Silence. VIGIL will sulk."); }
+    }, "vigil_link [0|1] - acquire/drop the neural link that unlocks VIGIL's ambient barks");
+
     // ---- intro_play: replay the COLD OPEN cinematic mid-game (x3.cutscene/1).
     // Deferred via a pending flag — the film runs a blocking frame loop of its own,
     // so it must start at the TOP of a host frame (never inside one). Control +
@@ -8322,6 +8365,10 @@ int runDefaultHost(HostContext& hc) {
                     bool ok = submitTerminalToScripts(scripts.get(), term);
                     if (ok) { termMode = false; term.setActive(false);
                               vigilStop(term);   // W4-2: end any live VIGIL chat cleanly
+                              if (!vigilSawTrapdoor) {   // VIGIL crows about the hatch (if linked)
+                                  vigilSawTrapdoor = true;
+                                  vigilBarks.fire(x3::game::VigilEvent::Trapdoor, vigilClock);
+                              }
                               x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
                     else      x3::logInfo("terminal: code rejected");
                 } else if (!llmBusy) {
@@ -9333,6 +9380,99 @@ int runDefaultHost(HostContext& hc) {
                                      (canonWorld && canonFloor.valid()) ? canonDoors
                                                                         : game.doors());
             }
+
+            // ---- VIGIL BARKS TICK (the ambient companion layer) --------------------
+            // Runs every live frame. Master-gated on the vigilLink StoryFlag: SILENT
+            // until Jake jacks in. Reads real game state and fires in-character one-
+            // liners (with a cooldown / no-repeat / chatter setting) into the toast.
+            {
+                vigilClock += dt;
+                // Sync tunables from the cvars every frame (cheap; console-live).
+                const int chat = console->getInt("vigil_chatter");
+                vigilBarks.setChatter(chat <= 0 ? x3::game::VigilChatter::Off
+                                     : chat == 1 ? x3::game::VigilChatter::Occasional
+                                                 : x3::game::VigilChatter::Chatty);
+                vigilBarks.setCooldown(std::max(0.5f, console->getFloat("vigil_cooldown")));
+                const bool linked = chatTrees.flags().has("vigilLink");
+                vigilBarks.setEnabled(linked);
+
+                // LINK ACQUIRED edge: VIGIL's first words in your head.
+                if (linked && !vigilLinkPrev) {
+                    vigilBarks.setLine(x3::game::VigilEvent::EnterArea,
+                        "Oh, THERE you are - loud and clear, right between your ears. I could shout "
+                        "through wall-screens like it's 1985, but this is so much cozier. You're "
+                        "stuck with me now.", vigilClock);
+                }
+                vigilLinkPrev = linked;
+
+                if (linked) {
+                    // Movement / idle bookkeeping (idle timer resets on real motion).
+                    if (vigilPrevPosSet) {
+                        const float mdx = camPos.x - vigilPrevPos.x;
+                        const float mdz = camPos.z - vigilPrevPos.z;
+                        const float mdy = camPos.y - vigilPrevPos.y;
+                        if (mdx*mdx + mdz*mdz + mdy*mdy > 0.02f) vigilBarks.noteActivity();
+                    }
+                    vigilPrevPos = camPos; vigilPrevPosSet = true;
+
+                    // ALERT edges (rising / all-clear) + first-ever combat.
+                    const int lvl = facilityAlert.level();
+                    if (facilityAlertOn) {
+                        if (lvl >= 1 && !vigilSawCombat) {
+                            vigilSawCombat = true;
+                            vigilBarks.fire(x3::game::VigilEvent::FirstCombat, vigilClock);
+                        } else if (lvl > vigilPrevAlert && lvl >= 1) {
+                            vigilBarks.fire(x3::game::VigilEvent::AlertRising, vigilClock);
+                        } else if (lvl == 0 && vigilPrevAlert > 0) {
+                            vigilBarks.fire(x3::game::VigilEvent::AlertClear, vigilClock);
+                        }
+                        vigilPrevAlert = lvl;
+                    }
+
+                    // LOW HEALTH (re-arms only after recovering above half).
+                    const int hp = player.hp(), mx = player.maxHp();
+                    if (mx > 0) {
+                        if (!vigilLowHpLatch && hp > 0 && hp < mx * 3 / 10) {
+                            vigilLowHpLatch = true;
+                            vigilBarks.fire(x3::game::VigilEvent::LowHealth, vigilClock);
+                        } else if (hp > mx / 2) vigilLowHpLatch = false;
+                    }
+
+                    // PICKUP SIDEARM (canon world's first weapon).
+                    if (!vigilSawSidearm && canonPlay.built() && canonPlay.armed()) {
+                        vigilSawSidearm = true;
+                        vigilBarks.fire(x3::game::VigilEvent::PickupSidearm, vigilClock);
+                    }
+
+                    // ENTER ELEVATOR (near the cab) / ENTER CLUB (bottom of the Spire).
+                    if (!vigilSawElevator && elevator.built()) {
+                        const x3::phys::Vec3 cc = elevator.cabCenter();
+                        const float edx = camPos.x - cc.x, edz = camPos.z - cc.z;
+                        if (edx*edx + edz*edz < 2.6f * 2.6f) {
+                            vigilSawElevator = true;
+                            vigilBarks.fire(x3::game::VigilEvent::EnterElevator, vigilClock);
+                        }
+                    }
+                    if (!vigilSawClub &&
+                        camPos.y < x3::game::ElevatorSystem::kDefaultClubFloorY + 12.0f) {
+                        vigilSawClub = true;
+                        vigilBarks.fire(x3::game::VigilEvent::EnterClub, vigilClock);
+                    }
+
+                    // ENTER AREA (canon room change).
+                    if (canonWorld && canonFloor.valid()) {
+                        const int room = (int)canonFloor.roomAt(camPos.x, camPos.y, camPos.z);
+                        if (room != vigilPrevRoom && room != (int)x3::game::kNoRoom &&
+                            vigilPrevRoom != -999)
+                            vigilBarks.fire(x3::game::VigilEvent::EnterArea, vigilClock);
+                        vigilPrevRoom = room;
+                    }
+
+                    // BOREDOM: advance the idle timer; fires an Idle bark when stalled.
+                    vigilBarks.update(dt, vigilClock);
+                }
+            }
+
             // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation. Doors are
             // MANUAL — the player opens/closes one by aiming at the slab (or its button)
             // and pressing E (the use block above calls tryUse()->toggle()). There is
@@ -11293,6 +11433,11 @@ int runDefaultHost(HostContext& hc) {
             if (facilityAlertOn)
                 hud.drawAlert(*device, frame, facilityAlert.level(),
                               facilityAlert.redShift(), alertHudClock);
+            // VIGIL BARK toast (ambient companion). Only visible once linked and a
+            // bark is live; the object self-gates on the vigilLink flag when firing.
+            if (vigilBarks.toastActive(vigilClock))
+                hud.drawVigilBark(*device, frame, vigilBarks.toastText().c_str(),
+                                  vigilBarks.toastAlpha(vigilClock));
             hud.drawConsole(*device, frame, *console, dt);
             // EDITOR (--editor): the HOST submits the editor panels (menu bar /
             // Outliner / Blockout / Status) between begin and end, then endEditorUI

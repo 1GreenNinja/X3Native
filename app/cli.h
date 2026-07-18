@@ -33,6 +33,7 @@ struct CliOptions {
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
+         testVigil = false,      // --test-vigil: VIGIL bark system (trigger/cooldown/no-repeat/gate/idle)
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)

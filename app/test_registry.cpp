@@ -64,6 +64,7 @@
 #include "cutscene.h"
 #include "npc_dialog.h"
 #include "chat_tree.h"
+#include "vigil_barks.h"
 #include "mission.h"
 #include "physprops.h"
 #include "ragdoll.h"
@@ -735,6 +736,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running x3.chattree/1 dialog-runner self-test (parse all 8 trees + "
                     "the lena walk: gates/fx/follow/1278/banter/flags round-trip)...");
         return x3::game::runChatTreeSelfTest() ? 0 : 1;
+    }
+    if (tf.testVigil) {
+        x3::logInfo("running VIGIL bark self-test (trigger->line, cooldown, no-repeat, "
+                    "chatter levels, vigilLink master gate, idle firing; V0-V8)...");
+        return x3::game::runVigilBarkSelfTest() ? 0 : 1;
     }
     if (tf.testMission) {
         x3::logInfo("running x3.mission/1 mission-runner self-test (doc parse/validate + "
