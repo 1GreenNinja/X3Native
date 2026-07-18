@@ -289,9 +289,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/alien_crawler_anim.glb",
-      "sha256": "24a306f7b53a17401939cfa2ab79de5a3a2af9954ce10ed4748c0f4714f57bfa",
-      "size": 11109252,
-      "source_note": "W5-2 Struggle loop baked (tools/struggle_bake.py)"
+      "sha256": "6f61ad486f64af60a2bea8169cba834c83c5790b88541c5ef588d68c3d695513",
+      "size": 11098836,
+      "source_note": "baked Attack/Hit/Death clips spliced onto Idle/Walk/Run rigs (monster-behavior pass 2026-07-18)"
     },
     {
       "repo_path": "assets/rigged_glb/blueshark.glb",
@@ -307,9 +307,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
-      "sha256": "b613f862545ec40e19290b27714e2c3d0dfecadc29a18945064ee7d899b57a46",
-      "size": 56267024,
-      "source_note": "W2-D attack+death one-shot clips appended"
+      "sha256": "3b3e813f55c36229a8202d1cee7ae08ff5b1840cd8057a2f8ae180cae24f2609",
+      "size": 64356480,
+      "source_note": "baked Attack/Hit/Death clips spliced onto Idle/Walk/Run rigs (monster-behavior pass 2026-07-18)"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
@@ -319,9 +319,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
-      "sha256": "990e8a1c0323264adec21b4a293d80d09f408d702e166e43e200fdd42ae57d24",
-      "size": 43421796,
-      "source_note": "W5-2 Struggle loop baked (tools/struggle_bake.py)"
+      "sha256": "295a27f9adbabc1d30ed25eef93b1127eb2bc8c61e4368a83042b3507c60de5e",
+      "size": 49177624,
+      "source_note": "baked Attack/Hit/Death clips spliced onto Idle/Walk/Run rigs (monster-behavior pass 2026-07-18)"
     },
     {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",

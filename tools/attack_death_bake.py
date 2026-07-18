@@ -253,6 +253,55 @@ def bake_death_core(arm, g, frames=29):
     return act
 
 # ---------------------------------------------------------------------------
+# HIT / FLINCH (~0.5 s @24fps = 12 frames): sharp recoil back on impact, brief
+# hold, snap back to neutral. One-shot; the runtime plays it on takeDamage and
+# returns to locomotion. Real keyframed motion (same authoring as Attack/Death).
+# ---------------------------------------------------------------------------
+def bake_hit_biped(arm, g, frames=12):
+    act = new_action(arm, "Hit")
+    zero_pose(arm)
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        if t < 0.30:                      # IMPACT: torso + head snap back, arm flails
+            k = ease(t / 0.30)
+            spineX = -D(26) * k
+            headX  = -D(34) * k
+            armLz  =  D(40) * k
+            armRz  = -D(20) * k
+            hipsZ  =  0.05 * k
+        elif t < 0.55:                    # HOLD near the recoil peak
+            spineX = -D(26); headX = -D(34); armLz = D(40); armRz = -D(20); hipsZ = 0.05
+        else:                             # RECOVER to neutral
+            k = ease((t - 0.55) / 0.45)
+            spineX = -D(26) * (1 - k)
+            headX  = -D(34) * (1 - k)
+            armLz  =  D(40) * (1 - k)
+            armRz  = -D(20) * (1 - k)
+            hipsZ  =  0.05 * (1 - k)
+        if g["spine"]: key_euler(arm, g["spine"][0], f, rx=spineX)
+        key_euler(arm, g.get("head"), f, rx=headX)
+        key_euler(arm, g.get("armL"), f, rz=armLz, rx=-D(15) * (armLz / max(D(40), 1e-6)))
+        key_euler(arm, g.get("armR"), f, rz=armRz)
+        key_loc(arm, g.get("hips"), f, z=hipsZ)
+    return act
+
+def bake_hit_core(arm, g, frames=12):
+    act = new_action(arm, "Hit")
+    zero_pose(arm)
+    drv = g.get("root") or g.get("hips") or (arm.pose.bones[0].name if len(arm.pose.bones) else None)
+    if not drv: return act
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        if t < 0.30:   k = ease(t / 0.30);        rx, z = D(22) * k, 0.04 * k   # rear back
+        elif t < 0.55: rx, z = D(22), 0.04                                       # hold
+        else:          k = ease((t - 0.55) / 0.45); rx, z = D(22) * (1 - k), 0.04 * (1 - k)
+        key_euler(arm, drv, f, rx=rx)
+        key_loc(arm, drv, f, z=z)
+    return act
+
+# ---------------------------------------------------------------------------
 def main():
     arm = import_target()
     before = [a.name for a in bpy.data.actions]
@@ -265,9 +314,11 @@ def main():
 
     if style == "biped":
         bake_attack_biped(arm, g)
+        bake_hit_biped(arm, g)
         bake_death_biped(arm, g)
     else:
         bake_attack_core(arm, g)
+        bake_hit_core(arm, g)
         bake_death_core(arm, g)
     arm.animation_data.action = None
     log("actions now:", [a.name for a in bpy.data.actions])
