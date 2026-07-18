@@ -5,6 +5,7 @@
 // namespace set to x3::apphost.
 // ===========================================================================
 #include "cinematic.h"
+#include "intro_orchestrator.h"   // F9 skip-all-intro latch (dev shortcut)
 
 // stb_image for loadNightSkyPlanets' stbi_load (FORGE3D planet PNGs). The engine
 // already hosts a FILE-LOCAL STB_IMAGE_IMPLEMENTATION in ModelLoader.cpp, and
@@ -298,6 +299,13 @@ bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
         const bool skipKey = (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS);
         if (skipKey && !prevAnyKey) { if (clipped) player.seek(clipEndT); else player.skip(); }
         prevAnyKey = skipKey;
+        // F9: skip the WHOLE intro, not just this clip (owner dev shortcut). Latch
+        // the orchestrator's skip-all flag and end this clip; the beat loop bails
+        // at the next boundary and the run collapses to the canon cell wake.
+        if (glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS) {
+            x3::intro::requestSkipAllIntro();
+            if (clipped) player.seek(clipEndT); else player.skip();
+        }
 
         player.tick(dt);
         const float t = player.time();

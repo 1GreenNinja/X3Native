@@ -80,9 +80,16 @@ bool buildIntroCombatArt(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device);
 
 // Direct-draw a ship model at a world position facing `fwd` (XZ yaw), uniformly
 // scaled — the host_space drawMeshPBR convention. Call between begin/endFrame.
+// CANON: ALL SPACESHIPS ARE SELF-LIT (Star Trek rule, docs/DECISIONS.md). A hull
+// drawable with no authored emissive gets its own base-color map bound as the
+// per-texel emissive gate (window rows / strips / nav markings glow, near-black
+// hull paint stays dark) + the shaped selfLight rim, so a ship NEVER renders as a
+// black silhouette. `fallbackMr` (e.g. the rig's mrShared 1x1) routes MR-less
+// drawables onto the PBR branch so the star has a specular lobe to shape them.
 void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                    const std::vector<x3::asset::ModelDrawable>& draws,
-                   const float pos[3], const float fwd[3], float scale);
+                   const float pos[3], const float fwd[3], float scale,
+                   x3::rhi::TextureHandle fallbackMr = {});
 
 // Pulse the MFD/gauge screens' emissive strength (subtle alive flicker). Call
 // once per frame with the running time.

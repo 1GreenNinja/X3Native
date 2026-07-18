@@ -206,6 +206,11 @@ void clearInputState(GLFWwindow* window) {
 // Play one cinematic clip span (blocking, K-skip). With a window this drives the
 // real CutscenePlayer via runCutsceneWindowed seeked to clipStart; headless it is
 // a deterministic no-op (the cutscene player is exercised by --test-cutscene).
+// ---- F9 skip-all latch (see intro_orchestrator.h) --------------------------
+static bool s_skipAllIntro = false;
+void requestSkipAllIntro()      { s_skipAllIntro = true; }
+bool skipAllIntroRequested()    { return s_skipAllIntro; }
+
 void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
                        const x3::cut::Cutscene* cs) {
     x3::logInfo("[intro] beat '" + beat.id + "' (cinematic clip [" +
@@ -357,6 +362,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     if (live) {
         glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         glfwGetCursorPos(hc.window, &lastMX, &lastMY);
+        // FRUSTUM CULL OFF for the space beat (owner: "get even half a screen away
+        // from that capital ship and it goes invis ... should NEVER lose sight of a
+        // ship that is IN VIEW"). The cull sphere mis-bounds these direct-drawn
+        // scaled ships and eats them at frame edges; space draws ~12 objects, so
+        // culling buys nothing here. Restored at beat exit. (The noCull /
+        // ALWAYS_VISIBLE flag exists in the cull design but nothing ever wired a
+        // setter — when that API lands, flag the ships instead.)
+        hc.device->setFrustumCullEnabled(false);
     }
     // Re-apply the deep-space look EVERY beat: the one-time set at intro start
     // was getting undone before the first interactive window (live evidence:
@@ -393,6 +406,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 const bool f2 = glfwGetKey(hc.window, GLFW_KEY_F2) == GLFW_PRESS;
                 if (f2 && !f2Prev) pilot.toggleCameraMode();
                 f2Prev = f2;
+            }
+            // F9: skip the ENTIRE intro (owner dev shortcut) — latch + bail this
+            // beat; the orchestrator returns canon ShotDown at the next boundary.
+            if (glfwGetKey(hc.window, GLFW_KEY_F9) == GLFW_PRESS) {
+                requestSkipAllIntro();
+                break;
             }
             auto kd = [&](int k){ return glfwGetKey(hc.window, k) == GLFW_PRESS; };
             in.moveFwd    = (kd(GLFW_KEY_W)?1.f:0.f) + (kd(GLFW_KEY_S)?-1.f:0.f);
@@ -578,7 +597,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     // it was a 40 m building wrapped around the chase camera — the
                     // owner's whole screen was his own unlit hull, every enemy hidden
                     // behind it ("I cannot see the enemy ship at ALL in combat").
-                    x3::apphost::drawIntroShip(*hc.device, frame, playerDraw, sp, sf, 1.0f);
+                    x3::apphost::drawIntroShip(*hc.device, frame, playerDraw, sp, sf, 1.0f, cockpit->mrShared);
                 }
                 for (uint32_t i = 0; i < enemies.count(); ++i) {
                     const auto& e = enemies.ship(i);
@@ -593,11 +612,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     const float dE = std::sqrt(dxE*dxE + dyE*dyE + dzE*dzE);
                     const float visScale = 6.0f * std::min(4.0f, std::max(1.0f, dE / 150.0f));
                     x3::apphost::drawIntroShip(*hc.device, frame, cockpit->enemyDraw,
-                                  e.pos, e.fwd, visScale);
+                                  e.pos, e.fwd, visScale, cockpit->mrShared);
                 }
                 const float capPos[3] = { 200.0f, 0.0f, 0.0f };   // was 280 — loom bigger
                 const float capFwd[3] = { -1.0f, 0.0f, 0.0f };
-                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 34.0f);
+                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 34.0f, cockpit->mrShared);
                 if (fxOn) {
                     fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
                     fxPtr->submit(*hc.device, frame);
@@ -706,6 +725,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     }
 
     if (live) glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    if (live) hc.device->setFrustumCullEnabled(true);   // restore (beat-scoped off)
     if (fxOn) fxPtr->shutdown(*hc.device);
 
     // Fold this window's metrics into the running totals. The CLIMAX window owns
@@ -917,6 +937,7 @@ uint32_t deriveSaveSeed(const x3::game::StoryFlags& flags) {
 
 IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     x3::logInfo("[intro] runInteractiveIntro: beat sequence start");
+    s_skipAllIntro = false;   // F9 latch: fresh per run
 
     // Load the cold-open cutscene for the cinematic clips (best-effort; the live
     // cinematic beats no-op if it fails to load — the combat/outcome core still runs).
@@ -955,6 +976,7 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     // FIRST, then play the matching stinger (below).
     Beat outcomeBeat{}; bool haveOutcomeBeat = false;
     for (const Beat& beat : beats) {
+        if (s_skipAllIntro) break;   // F9: bail at the beat boundary
         if (beat.kind == BeatKind::CutsceneClip && beat.id == "cine.outcome") {
             outcomeBeat = beat; haveOutcomeBeat = true; continue;
         }
@@ -990,6 +1012,16 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     x3::game::StoryFlags flags;
     const std::string flagsPath = defaultGameStoryFlagsPath();
     flags.loadFile(flagsPath);   // false + untouched on a fresh save — fine
+
+    // F9 SKIP-ALL: no roll, no stinger, no descent — the canon ShotDown outcome,
+    // written exactly like the real path, straight to waking in the cell.
+    if (s_skipAllIntro) {
+        x3::logInfo("[intro] F9 — SKIP ALL: intro aborted by the owner, canon ShotDown");
+        writeOutcomeFlag(flags, IntroOutcome::ShotDown);
+        flags.clear(kIntroLandedFlag);
+        flags.saveFile(flagsPath);
+        return IntroOutcome::ShotDown;
+    }
 
     const float skill = skillScore(metrics);
     const float p = outcomeProbability(skill);

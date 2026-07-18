@@ -214,29 +214,53 @@ bool buildIntroCombatArt(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device) {
 
 void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                    const std::vector<x3::asset::ModelDrawable>& draws,
-                   const float pos[3], const float fwd[3], float scale) {
+                   const float pos[3], const float fwd[3], float scale,
+                   x3::rhi::TextureHandle fallbackMr) {
     const float yaw = std::atan2(fwd[2], fwd[0]);
     const float a = 1.5707963f - yaw;             // model +Z forward -> world yaw
     const float ca = std::cos(a) * scale, sa = std::sin(a) * scale;
     float T[16] = { ca, 0, -sa, 0,   0, scale, 0, 0,   sa, 0, ca, 0,
                     pos[0], pos[1], pos[2], 1.0f };
     const float tint[4] = { 1, 1, 1, 1 };
+    // CANON: SHIPS ARE SELF-LIT (Star Trek rule — owner, over a screenshot of his
+    // fighter rendering as a black silhouette: "We need the ship to have emissive
+    // tendencies like Star Trek ships do"). Same recipe as host_space drawShipAt:
+    // a drawable with NO authored emissive gets its OWN base-color map as the
+    // per-texel emissive gate (window rows / strips / nav markings glow; the
+    // near-black hull paint stays dark) + the shaped selfLight rim so the unlit
+    // side reads as a hull, never a cutout. fallbackMr routes MR-less drawables
+    // onto the PBR branch so the star has a specular lobe to shape them.
+    constexpr float kIntroShipSelfLight = 0.35f;
     for (const auto& dr : draws) {
         if (!dr.meshId) continue;
         float fin[16];
         x3::asset::mulMat4(T, dr.nodeTransform, fin);
-        const float emis[4] = { dr.emissiveFactor[0] + 0.02f,
-                                dr.emissiveFactor[1] + 0.022f,
-                                dr.emissiveFactor[2] + 0.026f, 1.0f };
+        const bool hasEmis = (dr.emissiveFactor[0] + dr.emissiveFactor[1] +
+                              dr.emissiveFactor[2]) > 0.001f || dr.emissiveTexId != 0;
+        float emis[4];
+        x3::rhi::TextureHandle emisTex{};
+        if (hasEmis) {
+            emis[0] = dr.emissiveFactor[0]; emis[1] = dr.emissiveFactor[1];
+            emis[2] = dr.emissiveFactor[2]; emis[3] = 1.0f;
+            emisTex = x3::rhi::TextureHandle{ dr.emissiveTexId ? dr.emissiveTexId
+                                                               : dr.baseColorTexId };
+        } else {
+            emis[0] = 0.45f; emis[1] = 0.52f; emis[2] = 0.62f; emis[3] = 1.0f;
+            emisTex = x3::rhi::TextureHandle{ dr.baseColorTexId };
+        }
+        const x3::rhi::TextureHandle mr =
+            dr.mrTexId ? x3::rhi::TextureHandle{ dr.mrTexId } : fallbackMr;
         device.drawMeshPBR(frame, x3::rhi::MeshHandle{ dr.meshId },
                            x3::rhi::TextureHandle{ dr.baseColorTexId },
                            x3::rhi::TextureHandle{ dr.normalTexId },
-                           x3::rhi::TextureHandle{ dr.mrTexId },
+                           mr,
                            tint, emis, fin,
                            dr.alphaMask, dr.alphaBlend,
-                           x3::rhi::TextureHandle{ dr.emissiveTexId },
+                           emisTex,
                            x3::rhi::TextureHandle{ dr.detailTexId },
-                           dr.detailUvScale);
+                           dr.detailUvScale,
+                           /*clearcoat=*/0.0f, /*clearcoatRough=*/0.05f,
+                           /*selfLight=*/kIntroShipSelfLight);
     }
 }
 
