@@ -1192,6 +1192,118 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
+    // SUSPENDED CATWALK + HALF-MOON PRIVATE BOOTHS (Tim extension — THE
+    // signature). A railed mezzanine walkway ring at kCatwalkY (~21 ft) high above
+    // the dance floor, hung from the ceiling on chrome rods, reached by a stair
+    // from the floor, and lined with SEMICIRCULAR (half-moon) private booth alcoves
+    // that bump out over the dancers. A U (both long walls + the south end) — the
+    // north end is left open for the DJ booth / engine-room 2-story stack below.
+    // All booth/rim glow is EMISSIVE (bloom), NOT point lights, to respect the 64
+    // point-light cap in the now-bigger room.
+    // ==================================================================
+    {
+        const float cwy = kCatwalkY;       // deck top (local Y; box() offsets by oy)
+        const float dw  = 2.2f;            // deck width along each wall
+        const float wInner = -CW / 2 + dw; // west deck inner edge X (toward floor)
+        const float eInner =  CW / 2 - dw; // east deck inner edge X
+        const float sInner =  CL / 2 - dw; // south connector inner edge Z
+        // --- Decks: west + east full length + south connector (a U). ---
+        box(-CW / 2 + dw / 2, cwy, 0, dw / 2, 0.08f, CL / 2, kMetal, kEmitOff, true, 0.6f, &sMetal); // west deck
+        box( CW / 2 - dw / 2, cwy, 0, dw / 2, 0.08f, CL / 2, kMetal, kEmitOff, true, 0.6f, &sMetal); // east deck
+        box(0, cwy, CL / 2 - dw / 2, (CW / 2 - dw), 0.08f, dw / 2, kMetal, kEmitOff, true, 0.6f, &sMetal); // south connector
+        m_stats.hasCatwalk = true;
+        // --- Inner safety railing along each deck edge (facing the dance floor). ---
+        const float rh = 0.55f;            // rail half-height
+        box(wInner, cwy + rh, 0, 0.03f, rh, CL / 2, kRail, kEmitOff, true);   // west inner rail
+        box(eInner, cwy + rh, 0, 0.03f, rh, CL / 2, kRail, kEmitOff, true);   // east inner rail
+        box(0, cwy + rh, sInner, (CW / 2 - dw), rh, 0.03f, kRail, kEmitOff, true); // south inner rail
+        // North end caps (the U's open mouth) so no one walks off into the void.
+        box(-CW / 2 + dw / 2, cwy + rh, -CL / 2 + 0.05f, dw / 2, rh, 0.03f, kRail, kEmitOff, true);
+        box( CW / 2 - dw / 2, cwy + rh, -CL / 2 + 0.05f, dw / 2, rh, 0.03f, kRail, kEmitOff, true);
+        // Emissive rope-light running the inner rail base (the mezzanine glow line).
+        const float emCatRope[4] = { 0.35f, 0.55f, 1.0f, 2.2f };   // cool blue edge
+        box(wInner + 0.04f, cwy + 0.06f, 0, 0.012f, 0.012f, CL / 2 - 0.2f, kWall, emCatRope, false);
+        box(eInner - 0.04f, cwy + 0.06f, 0, 0.012f, 0.012f, CL / 2 - 0.2f, kWall, emCatRope, false);
+        box(0, cwy + 0.06f, sInner - 0.04f, (CW / 2 - dw) - 0.2f, 0.012f, 0.012f, kWall, emCatRope, false);
+        // --- Hanger rods (ceiling -> deck) so the catwalk reads as SUSPENDED. ---
+        for (int side = -1; side <= 1; side += 2)
+            for (int n = 0; n < 5; ++n) {
+                const float hz = -CL / 2 + CL * (n + 0.5f) / 5.0f;
+                const float hx = side < 0 ? (-CW / 2 + dw / 2) : (CW / 2 - dw / 2);
+                box(hx, (cwy + CH) / 2, hz, 0.03f, (CH - cwy) / 2, 0.03f, kChrome, kEmitOff, false);
+            }
+        // --- HALF-MOON BOOTHS: 3 per long wall (6), bumping into the room over the
+        // dancers. Curved bench + backrest + curved rim railing + glowing rim + a
+        // round table. `faceX` = +1 (west deck bulges +X toward floor) / -1 (east). ---
+        const float boothHue[3][3] = {
+            { 1.0f, 0.55f, 0.20f },   // warm amber
+            { 0.35f, 0.55f, 1.0f },   // cool blue
+            { 0.85f, 0.20f, 0.75f },  // magenta
+        };
+        auto halfMoonBooth = [&](float cx, float cz, float faceX, int hue) {
+            const float R = 1.7f;              // booth radius
+            const int   segs = 9;
+            // Semicircle floor pad (bump out over the floor), sitting on the deck top.
+            box(cx + faceX * R * 0.45f, cwy + 0.05f, cz, R * 0.5f, 0.05f, R * 0.92f,
+                kMetal, kEmitOff, true, 1.0f, &sMetal);
+            const float* h = boothHue[hue % 3];
+            const float emRim[4]  = { h[0], h[1], h[2], 3.4f };
+            const float emArc[4]  = { h[0], h[1], h[2], 4.2f };   // the bright half-moon read from below
+            for (int i = 0; i < segs; ++i) {
+                const float th = -kPi / 2 + kPi * (i + 0.5f) / segs;   // -90..+90
+                const float dx = faceX * std::cos(th), dz = std::sin(th);
+                // Curved seat cushions (inner radius) + backrest (outer) + rim rail.
+                box(cx + dx * 1.15f, cwy + 0.25f, cz + dz * 1.15f, 0.22f, 0.10f, 0.22f, kLeatherHi, kEmitOff, false); // seat
+                box(cx + dx * 1.45f, cwy + 0.52f, cz + dz * 1.45f, 0.14f, 0.30f, 0.14f, kLeather, kEmitOff, false);   // backrest
+                box(cx + dx * R,     cwy + rh,    cz + dz * R,     0.04f, rh,    0.04f, kRail, kEmitOff, false);      // rim post
+                box(cx + dx * R,     cwy + 0.05f, cz + dz * R,     0.05f, 0.03f, 0.05f, kWall, emRim, false);         // glowing rim (top)
+                // BRIGHT half-moon glow ARC on the OUTER FACE of the booth floor — this
+                // is the signature curved neon the dancers SEE overhead from the floor.
+                box(cx + dx * (R + 0.02f), cwy - 0.02f, cz + dz * (R + 0.02f), 0.07f, 0.05f, 0.07f, kWall, emArc, false);
+            }
+            // Curved top rail cap (a short arc of segments over the posts).
+            for (int i = 0; i < segs - 1; ++i) {
+                const float th = -kPi / 2 + kPi * (i + 1.0f) / segs;
+                const float dx = faceX * std::cos(th), dz = std::sin(th);
+                box(cx + dx * R, cwy + rh * 2.0f, cz + dz * R, 0.06f, 0.03f, 0.06f, kRail, kEmitOff, false);
+            }
+            // Round cocktail table + a glowing drink.
+            box(cx + faceX * 0.55f, cwy + 0.40f, cz, 0.28f, 0.03f, 0.28f, kStair, kEmitOff, false);
+            box(cx + faceX * 0.55f, cwy + 0.23f, cz, 0.04f, 0.20f, 0.04f, kChrome, kEmitOff, false);
+            const float emDrink[4] = { h[0], h[1], h[2], 1.7f };
+            box(cx + faceX * 0.55f, cwy + 0.47f, cz, 0.03f, 0.05f, 0.03f, kBarTop, emDrink, false);
+            ++m_stats.halfMoonBooths;
+        };
+        for (int b = 0; b < 3; ++b) {
+            const float bz = (b - 1) * 8.5f;   // z = -8.5, 0, +8.5
+            halfMoonBooth(wInner, bz, +1.0f, b);   // west long wall
+            halfMoonBooth(eInner, bz, -1.0f, b + 1); // east long wall
+        }
+        // Two warm accent pools up on the catwalk (one per long wall, mid-run) so the
+        // booth benches/tables READ from the floor and the mezzanine. Kept modest and
+        // few (the 64 point-light cap is tight in the bigger room).
+        addLight(m_lights, wInner + 0.8f, oy + cwy + 1.4f, 0.0f, 1.30f, 0.85f, 0.55f, 12.0f);
+        addLight(m_lights, eInner - 0.8f, oy + cwy + 1.4f, 0.0f, 1.30f, 0.85f, 0.55f, 12.0f);
+        // --- STAIR up to the catwalk: a straight run against the EAST wall from the
+        // floor to the east deck, ascending toward -Z (near the elevator spawn). ---
+        {
+            const int stCt = 16;
+            const float rise = cwy / stCt;         // ~0.40 m riser
+            const float run  = 0.30f;              // tread depth
+            const float sx   = CW / 2 - 0.7f;      // hard against the east wall
+            const float sz0  = CL / 2 - 2.0f;      // start near the SE
+            for (int s = 0; s < stCt; ++s) {
+                box(sx, rise * (s + 0.5f), sz0 - run * (s + 0.5f), 0.55f, rise * (s + 0.5f) / 2.0f + 0.02f,
+                    run / 2.0f, kStair, kEmitOff, true, 1.0f, &sStair);
+                ++m_stats.catwalkStairs;
+            }
+            // Outer stair rail.
+            box(sx - 0.55f, cwy * 0.5f + 0.5f, sz0 - run * stCt * 0.5f, 0.03f, cwy * 0.5f + 0.5f,
+                run * stCt * 0.5f, kRail, kEmitOff, false);
+        }
+    }
+
+    // ==================================================================
     // GROUND BAR + 7 STOOLS (west side).
     // ==================================================================
     {
@@ -1987,6 +2099,11 @@ bool runClubSelfTest() {
 
     // (9) Dance floor + VIP/couch seating.
     check(s.hasDanceFloor && s.couches >= 3, "dance-floor checkerboard + VIP/couch seating");
+
+    // (9b) SUSPENDED CATWALK (the signature): a mezzanine deck + 6 half-moon booths
+    //      + a stair up to it (>=12 steps).
+    check(s.hasCatwalk && s.halfMoonBooths == 6 && s.catwalkStairs >= 12,
+          "suspended catwalk + 6 half-moon booths + stair up");
 
     // (10) Player spawn sits inside the room footprint, on the floor at Y=-200.
     {

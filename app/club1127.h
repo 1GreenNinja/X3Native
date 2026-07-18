@@ -99,6 +99,11 @@ public:
         int   jbl18Subs     = 0;   // JBL PRO 18" subs (target: 4)
         int   surrounds     = 0;   // JBL N26/S38 surrounds (target: 16)
         int   couches       = 0;   // couch/VIP seating pieces (target: >=3)
+        int   wallOleds     = 0;   // 4-per-wall 85" OLED array panels (target: 16)
+        int   halfMoonBooths = 0;  // suspended-catwalk semicircular booths (target: 6)
+        int   catwalkStairs = 0;   // steps up to the catwalk (target: >=12)
+        bool  hasCatwalk    = false;   // suspended mezzanine walkway (THE signature)
+        bool  hasUBar       = false;   // U-shaped granite bar at one end
         bool  hasDjBooth    = false;
         bool  hasDjTurntables = false;
         bool  hasDjScreens  = false;   // 2 OLED screens on the booth
