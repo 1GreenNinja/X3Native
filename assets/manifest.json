@@ -108,6 +108,186 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Corridor_Coin_Big_01.glb",
+      "sha256": "4cdcfb8d63a2afa3dd985cd939b5356c3ed629816b470d4c7520e3fdb6ff3d03",
+      "size": 20704,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Corridor_Coin_Big_Bottom_01.glb",
+      "sha256": "a64265ed5628149b3dd017272ab8f4739ffd3486fd0b0b47831d8e2a8077f91d",
+      "size": 7192,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Plateform_Angle_05.glb",
+      "sha256": "e2083bd654568528d425f52bf9c5892a3aa88b96e99ce71d886d94af0f030580",
+      "size": 19200,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Plateform_Center_01.glb",
+      "sha256": "883f1fdcf954fd7d1196348fcd6f2182a26685877ec2c576bb9a5922b84063f5",
+      "size": 569280,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Plateform_Line_05.glb",
+      "sha256": "3190735282fe6428ec4bc124f7848bee4e751a35535b7ca26cc46821a696e948",
+      "size": 576996,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Room_Fence_01.glb",
+      "sha256": "8e9af9464d09eaae27cebde8150ad3cf21df17f2f752259797c932ba9a4d49ec",
+      "size": 10376,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Air_Grid_01.glb",
+      "sha256": "3e7bb926579a68ace8cfb832647f370e3f3f38a01a786ccd7c4a6f590d335dfe",
+      "size": 32592,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Air_Grid_02.glb",
+      "sha256": "673cb7426eadbf335fef9e132e4694b3c7b37c3ba1fdd42b98411798b0175800",
+      "size": 32592,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Antena_03.glb",
+      "sha256": "d39f5c1d7cbbf8808e60faf8e9d8751e87a6346539d41d1fec364ab611b87b07",
+      "size": 104300,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Cruiser_Reactor_01.glb",
+      "sha256": "3e219fa015e77cbf20204629c7cfef9c225eca4524b529a5b2fb5f067044601e",
+      "size": 24404,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+      "sha256": "2e7b057921db99f8fbf7c8ee3ad0d170279ca35a279c991ff5c2daad09a8e81b",
+      "size": 18316,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Landing_Gear_01.glb",
+      "sha256": "aad9ff3f1a10fd3ed61cdf2830914012239ec06b286ccd344deb9891ecc15a1f",
+      "size": 507768,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Light_Exterior_01.glb",
+      "sha256": "952009ae6a6db66ecc744eedade5bf0c59a2556ebe383fcd1efbff93439f602a",
+      "size": 437564,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Light_Ring_01.glb",
+      "sha256": "7f6be225a1173ca649c56f88aa499230a6d7fad297a11ea1997a666f756a1a1c",
+      "size": 462688,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+      "sha256": "d3e0b97383d6c39d4de3a9ca72746c93bd6b100bdf5871d38bde02ad3aaea0e6",
+      "size": 405668,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Platerform_Metal_02.glb",
+      "sha256": "bbd4d9c3c1051e5e5b540efd44918c71ab9593d683011b96ba87946fff7153a1",
+      "size": 1168812,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Radar_Base_01.glb",
+      "sha256": "bf808a39158e969f2e6452a2ed3e46c721ef6f10ba4c1516d08a882bbb1d45b8",
+      "size": 461576,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Radar_Part_02.glb",
+      "sha256": "ca0b5b4d7ba18efd7d899f149366e70d546eaa452c8f4b27b49fde2f9e6bd284",
+      "size": 548948,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Reactor_ColdFusion_01.glb",
+      "sha256": "6c9450a01b7ed63636fa3a1cb1707ba9958f27cfaa1e6960d3ce2c7d3c08b36a",
+      "size": 949160,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Reactor_Support_01.glb",
+      "sha256": "1cedc29e3e27d33c5c30b6ca3dac159c401ba5ce3535e55e871dc29837f87e4e",
+      "size": 421388,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Roof_01.glb",
+      "sha256": "4738226543ccada3d06bada27645e85ac3fd92defb45b23c1001a32b9288dc08",
+      "size": 387080,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Solar_Panel_01.glb",
+      "sha256": "975c455761064083c7ad411b962aa68fae26e09b6d5314afd00f32eba5394cee",
+      "size": 394864,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Solar_Panel_04.glb",
+      "sha256": "80ef4aea183d2b237049b49ba1d5cd461433ac25d0e290e806f0cf1366156ed2",
+      "size": 425672,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Space_Base_Module_01.glb",
+      "sha256": "9c43b4d0cd3c969b46a1f3d9912123a08cf8df4ddc2289e50639852d27b2f7ba",
+      "size": 1469420,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Stargate_Part_A.glb",
+      "sha256": "123884429249acdd4273ae773a173e06cd360eb683438fd835d67b2544a2c232",
+      "size": 525844,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Stargate_Part_B.glb",
+      "sha256": "a8f3eacf2b740903b90f7562d345977911fae74ce20b8e41cdbb2c7a51120e61",
+      "size": 429512,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Stargate_Part_C.glb",
+      "sha256": "7e493e72b2b421fd4bb03771682378bbad2069af563f0b935debe3176e8a6eba",
+      "size": 502492,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Stargate_Warp_01.glb",
+      "sha256": "76f4b1c27cddca34359244c379ac2046932a929c2d8701ea168daa3ee39022ef",
+      "size": 13340,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Wall_Big_Angle_01.glb",
+      "sha256": "7730c631a4a303678b39f4b66476bcfeb760f31baf98796bef674a9a58b63173",
+      "size": 241492,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
+      "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Wall_Big_Simple_02.glb",
+      "sha256": "daaff1748335a217e412c0992f2418b0c578d1532af5c8dc0c69effe4fd57fea",
+      "size": 265536,
+      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+    },
+    {
       "repo_path": "assets/converted_glb/ShowRoom_Vol30/Example_01.glb",
       "sha256": "baf4773eea6c0750125a5928ec61624750332879199c56c3c11de007942f6c9d",
       "size": 84109696,

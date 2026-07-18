@@ -1200,7 +1200,10 @@ int runDefaultHost(HostContext& hc) {
     // `level_reload` console command tear down ONLY the doc-built objects and rebuild
     // in place (player position preserved). The editor's File>Save writes the same
     // default path, closing the edit -> save -> live-reload loop.
-    const bool docWorld = (worldMode == "fromdoc");
+    // `spacestation` is a thin alias over the LevelDoc loader (cli.cpp seeds its
+    // docWorldPath). Same live-edit/hot-reload path; its doc's biome "space"
+    // drives the deep-space sky + distant-Sol bodies set up after the doc loads.
+    const bool docWorld = (worldMode == "fromdoc" || worldMode == "spacestation");
     // Hard cap on how many rooms the portal flood-fill may add per frame. Even down the
     // longest sightline with a deep r_culldepth, the cull stays well under the whole 53-room
     // tower so the GPU never spikes (the spec's "must NOT regress to drawing the tower").
@@ -1241,6 +1244,15 @@ int runDefaultHost(HostContext& hc) {
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
     bool docReloadRequested = false;           // set by the `level_reload` console cmd
+    // --world spacestation (LevelDoc biome "space"): deep-space sky bodies. The
+    // station is FAR from Earth, so Sol/Earth ride the sky as a tiny faint star,
+    // a local star is the sun, and the FORGE3D planets are small. Bodies are
+    // direction-anchored (parallax-free) and re-projected on the eye each frame.
+    // TODO(star-systems): adopt the feat/star-systems registry for this system's
+    // name + real body catalog when it lands; hardcoded "distant Sol" for now.
+    bool spaceBiome = false;
+    x3::rhi::MeshHandle spacePlanetMesh{}, spacePlanetRingMesh{};
+    std::vector<NightSkyPlanet> spacePlanets;
     x3::game::Scene scene;
     x3::game::Level1Game game;
     // LIVING WORLD: facility civilians (detained workers) — a small crowd that
@@ -2451,6 +2463,47 @@ int runDefaultHost(HostContext& hc) {
                         std::to_string(docLevel.triggerCount()) + " triggers). "
                         "HOT RELOAD: save the JSON (or the F8 editor's File>Save) or run "
                         "`level_reload` in the console — the world rebuilds in place.");
+            // ---- DEEP-SPACE SKY (LevelDoc biome "space", e.g. --world spacestation).
+            // Enable the analytic sky as a near-black void with a single hot star
+            // disk (the local sun) + a low starlight fill, then load the FORGE3D
+            // celestial bodies and re-lay them FAR-FROM-EARTH: the local Sun is the
+            // key, Earth/Sol is a TINY faint speck, the other planets stay small.
+            if (docLevel.doc().biome == "space") {
+                spaceBiome = true;
+                x3::rhi::IRenderDevice::SkyParams sp{};
+                sp.enabled = true;
+                sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.22f; sp.sunDir[2] = 0.80f;   // toward the local star
+                sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.90f;
+                sp.sunIntensity = 0.05f;      // sky DISK only (higher greys the dome)
+                sp.sunLight = 2.6f;           // the real key on the hulls
+                sp.haze = 0.0f; sp.exposure = 1.0f;
+                sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.012f;
+                sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.022f;
+                device->setSkyParams(sp);
+                device->setAmbient(0.030f, 0.034f, 0.050f);   // starlight + planetshine only
+                device->setBloom(0.28f);                       // let the emissive cores/gate bloom
+                int nTexFail = 0;
+                spacePlanets = loadNightSkyPlanets(device, spacePlanetMesh, nTexFail,
+                                                   "[spacestation]", &spacePlanetRingMesh);
+                for (NightSkyPlanet& b : spacePlanets) {
+                    const std::string n = b.name ? b.name : "";
+                    if (n == "Sun") {                 // the LOCAL star — the system's sun
+                        b.azimuthDeg = 40.0f; b.elevationDeg = 18.0f; b.angularDiameterDeg = 1.4f;
+                    } else if (n == "Terrestrial") {  // Sol/Earth: DISTANT faint speck, far away
+                        b.azimuthDeg = -128.0f; b.elevationDeg = 34.0f; b.angularDiameterDeg = 0.18f;
+                    } else if (n == "Gas") {          // a small system gas giant, off to one side
+                        b.azimuthDeg = -150.0f; b.elevationDeg = 20.0f; b.angularDiameterDeg = 1.1f;
+                    } else if (n == "Moon" || n == "Ice") {   // small accents
+                        b.angularDiameterDeg = std::min(b.angularDiameterDeg, 0.9f);
+                    } else if (n == "Lava") {
+                        b.angularDiameterDeg = std::min(b.angularDiameterDeg, 0.7f);
+                    }
+                }
+                x3::logInfo("--world spacestation: DEEP-SPACE sky up (" +
+                            std::to_string(spacePlanets.size()) + " bodies; Sol/Earth a distant "
+                            "faint speck, local star as sun). " +
+                            (nTexFail ? std::to_string(nTexFail) + " planet texture(s) missing." : ""));
+            }
         } else {
             x3::logInfo("--world fromdoc: doc unreadable; falling back to legacy Level 1 build");
             game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
@@ -6473,6 +6526,8 @@ int runDefaultHost(HostContext& hc) {
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
+        if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
+        if (spacePlanetRingMesh.valid()) { device->destroyMesh(spacePlanetRingMesh); spacePlanetRingMesh = {}; }
         docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
         physics->shutdown();
         device->shutdown();
@@ -10019,6 +10074,14 @@ int runDefaultHost(HostContext& hc) {
                 if (roomCull) scene.setVisibleRooms(canonVisRooms);   // same set as the lights
             }
             scene.render(*device, frame);
+            // DEEP-SPACE SKY BODIES (--world spacestation / LevelDoc biome "space"):
+            // the local star, distant Sol/Earth, and the small system planets, drawn
+            // after the opaque scene as direction-anchored, parallax-free bodies
+            // re-projected on the live eye. No-op for every non-space world.
+            if (spaceBiome && spacePlanetMesh.valid())
+                drawNightSkyPlanets(device, frame, spacePlanetMesh, spacePlanets,
+                                    (float)glfwGetTime() * 0.02f, camX, camY, camZ,
+                                    spacePlanetRingMesh);
             // W-RIFT: the hub's membrane FX (lightning arcs + spark motes + the hall's
             // light shafts) are drawn AFTER the scene pass, exactly as the dev host does
             // — and only from inside the region.
@@ -11170,6 +11233,8 @@ int runDefaultHost(HostContext& hc) {
     // adds (the bare group calls missed Martinez/bossAdds -> exit crash after a boss
     // kill); a no-op when nothing is ragdolling.
     shutdownGameSystems();   // every enemy group + Martinez + barrels + Nexus/canon ragdolls
+    if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
+    if (spacePlanetRingMesh.valid()) { device->destroyMesh(spacePlanetRingMesh); spacePlanetRingMesh = {}; }
     docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
     worldMap.shutdown(*device);                    // baked map-tile textures
     physics->shutdown();

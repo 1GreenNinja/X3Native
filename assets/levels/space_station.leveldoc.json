@@ -1753,7 +1753,13 @@
     0
    ],
    "model": "ScifiKitVol3Decoded/Stargate_Warp_01.glb",
-   "script": ""
+   "script": "",
+   "emissive": [
+    0.3,
+    0.7,
+    1.0,
+    2.2
+   ]
   },
   {
    "name": "stargate_part_a",
@@ -1845,52 +1851,6 @@
     0
    ],
    "model": "ScifiKitVol3Decoded/Space_Base_Module_01.glb",
-   "script": ""
-  },
-  {
-   "name": "solar_a",
-   "type": "model",
-   "pos": [
-    -10.0,
-    2.0,
-    20.0
-   ],
-   "yaw": 0.4,
-   "scale": 1.0,
-   "tint": [
-    1,
-    1,
-    1
-   ],
-   "size": [
-    0,
-    0,
-    0
-   ],
-   "model": "ScifiKitVol3Decoded/Solar_Panel_01.glb",
-   "script": ""
-  },
-  {
-   "name": "solar_b",
-   "type": "model",
-   "pos": [
-    8.0,
-    2.0,
-    20.0
-   ],
-   "yaw": -0.4,
-   "scale": 1.0,
-   "tint": [
-    1,
-    1,
-    1
-   ],
-   "size": [
-    0,
-    0,
-    0
-   ],
-   "model": "ScifiKitVol3Decoded/Solar_Panel_01.glb",
    "script": ""
   },
   {
@@ -2078,6 +2038,908 @@
    "script": ""
   },
   {
+   "name": "solar_east_mast_a",
+   "type": "model",
+   "pos": [
+    14.0,
+    2.0,
+    -15.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+   "script": ""
+  },
+  {
+   "name": "solar_east_mast_b",
+   "type": "model",
+   "pos": [
+    14.0,
+    7.0,
+    -15.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+   "script": ""
+  },
+  {
+   "name": "solar_east_cell_0_0",
+   "type": "model",
+   "pos": [
+    18.6,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_0_1",
+   "type": "model",
+   "pos": [
+    18.6,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_1_0",
+   "type": "model",
+   "pos": [
+    20.9,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_1_1",
+   "type": "model",
+   "pos": [
+    20.9,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_2_0",
+   "type": "model",
+   "pos": [
+    23.2,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_2_1",
+   "type": "model",
+   "pos": [
+    23.2,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_3_0",
+   "type": "model",
+   "pos": [
+    25.5,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_3_1",
+   "type": "model",
+   "pos": [
+    25.5,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_mast_a",
+   "type": "model",
+   "pos": [
+    -14.0,
+    2.0,
+    -15.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+   "script": ""
+  },
+  {
+   "name": "solar_west_mast_b",
+   "type": "model",
+   "pos": [
+    -14.0,
+    7.0,
+    -15.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+   "script": ""
+  },
+  {
+   "name": "solar_west_cell_0_0",
+   "type": "model",
+   "pos": [
+    -18.6,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_0_1",
+   "type": "model",
+   "pos": [
+    -18.6,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_1_0",
+   "type": "model",
+   "pos": [
+    -20.9,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_1_1",
+   "type": "model",
+   "pos": [
+    -20.9,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_2_0",
+   "type": "model",
+   "pos": [
+    -23.2,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_2_1",
+   "type": "model",
+   "pos": [
+    -23.2,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_3_0",
+   "type": "model",
+   "pos": [
+    -25.5,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_3_1",
+   "type": "model",
+   "pos": [
+    -25.5,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_glow",
+   "type": "light",
+   "pos": [
+    22.0,
+    12.0,
+    -15.0
+   ],
+   "yaw": 0,
+   "scale": 1.4,
+   "tint": [
+    0.25,
+    0.5,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "solar_west_glow",
+   "type": "light",
+   "pos": [
+    -22.0,
+    12.0,
+    -15.0
+   ],
+   "yaw": 0,
+   "scale": 1.4,
+   "tint": [
+    0.25,
+    0.5,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "reactor_pad",
+   "type": "model",
+   "pos": [
+    -28.0,
+    11.691316328831505,
+    6.0
+   ],
+   "yaw": 0.0,
+   "scale": 0.8,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Platerform_Metal_02.glb",
+   "script": ""
+  },
+  {
+   "name": "reactor_bridge_0",
+   "type": "model",
+   "pos": [
+    -10.0,
+    2.0,
+    9.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "reactor_bridge_1",
+   "type": "model",
+   "pos": [
+    -16.0,
+    2.0,
+    9.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "fusion_core",
+   "type": "model",
+   "pos": [
+    -28.0,
+    5.000034664886677,
+    6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Reactor_ColdFusion_01.glb",
+   "script": "",
+   "emissive": [
+    0.55,
+    0.88,
+    1.0,
+    3.2
+   ]
+  },
+  {
+   "name": "fusion_torus",
+   "type": "model",
+   "pos": [
+    -28.0,
+    6.880972551712137,
+    6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.6,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Light_Ring_01.glb",
+   "script": "",
+   "emissive": [
+    0.35,
+    0.8,
+    1.0,
+    2.6
+   ]
+  },
+  {
+   "name": "fusion_torus_up",
+   "type": "model",
+   "pos": [
+    -28.0,
+    10.080972551712136,
+    6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.2,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Light_Ring_01.glb",
+   "script": "",
+   "emissive": [
+    0.35,
+    0.8,
+    1.0,
+    2.2
+   ]
+  },
+  {
+   "name": "fusion_strut_a",
+   "type": "model",
+   "pos": [
+    -28.0,
+    2.0,
+    0.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Reactor_Support_01.glb",
+   "script": ""
+  },
+  {
+   "name": "fusion_strut_b",
+   "type": "model",
+   "pos": [
+    -28.0,
+    2.0,
+    12.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Reactor_Support_01.glb",
+   "script": ""
+  },
+  {
+   "name": "fusion_bank",
+   "type": "model",
+   "pos": [
+    -33.0,
+    5.0,
+    6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 0.7,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Cruiser_Reactor_01.glb",
+   "script": "",
+   "emissive": [
+    0.3,
+    0.75,
+    1.0,
+    2.4
+   ]
+  },
+  {
+   "name": "fusion_key",
+   "type": "light",
+   "pos": [
+    -25.0,
+    6.880972551712137,
+    6.0
+   ],
+   "yaw": 0,
+   "scale": 3.2,
+   "tint": [
+    0.5,
+    0.85,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "fusion_fill",
+   "type": "light",
+   "pos": [
+    -28.0,
+    8.880972551712137,
+    6.0
+   ],
+   "yaw": 0,
+   "scale": 2.6,
+   "tint": [
+    0.45,
+    0.9,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "fusion_corridor",
+   "type": "light",
+   "pos": [
+    -6.0,
+    5.0,
+    6.0
+   ],
+   "yaw": 0,
+   "scale": 2.0,
+   "tint": [
+    0.4,
+    0.8,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
    "name": "hangar_key",
    "type": "light",
    "pos": [
@@ -2194,6 +3056,50 @@
   }
  ],
  "brushes": [
+  {
+   "name": "floor_reactor_pad",
+   "type": 0,
+   "pos": [
+    -28.0,
+    1.85,
+    6.0
+   ],
+   "size": [
+    18.0,
+    0.3,
+    18.0
+   ],
+   "yaw": 0.0,
+   "tint": [
+    0.3,
+    0.3,
+    0.34
+   ],
+   "material": "floor",
+   "collide": 1
+  },
+  {
+   "name": "floor_reactor_bridge",
+   "type": 0,
+   "pos": [
+    -14.0,
+    1.85,
+    9.0
+   ],
+   "size": [
+    20.0,
+    0.3,
+    6.0
+   ],
+   "yaw": 0.0,
+   "tint": [
+    0.3,
+    0.3,
+    0.34
+   ],
+   "material": "floor",
+   "collide": 1
+  },
   {
    "name": "floor_hangar",
    "type": 0,

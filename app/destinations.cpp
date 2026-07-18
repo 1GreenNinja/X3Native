@@ -40,6 +40,9 @@ namespace {
 const char* const kDefaultHostWorlds[] = {
     // default host (app_run.cpp world branches — see header comment)
     "canonlevel", "intro", "level1", "elevator", "terrain", "ocean", "fromdoc",
+    // `spacestation` is a LevelDoc alias dispatched by the default host (it sets
+    // docWorld and boots assets/levels/space_station.leveldoc.json).
+    "spacestation",
 };
 
 // The union of both dispatch sites: the default-host hand list + the LIVE
@@ -127,6 +130,7 @@ const Destination kDest[] = {
 { "physjoint",    "Joint Bench",              "Physics test bench: constraints and joints.",                           "physjoint",         DestGroup::DevWorld,   false },
 { "ragdoll",      "Ragdoll Bench",            "Physics test bench: ragdolls.",                                         "ragdoll",           DestGroup::DevWorld,   false },
 { "fromdoc",      "LevelDoc (live edit)",     "Boot straight into a LevelDoc JSON - the editor loop.",                 "fromdoc",           DestGroup::DevWorld,   false },
+{ "spacestation", "The Deep-Space Station",   "Solar+fusion station far from Earth: hangar, corridor, stargate ring.", "spacestation",      DestGroup::DevWorld,   false },
 };
 constexpr uint32_t kDestCount = (uint32_t)(sizeof(kDest) / sizeof(kDest[0]));
 

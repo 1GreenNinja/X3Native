@@ -147,6 +147,9 @@ std::string num(float f) {
 std::string vec3(const float v[3]) {
     return "[" + num(v[0]) + ", " + num(v[1]) + ", " + num(v[2]) + "]";
 }
+std::string vec4(const float v[4]) {
+    return "[" + num(v[0]) + ", " + num(v[1]) + ", " + num(v[2]) + ", " + num(v[3]) + "]";
+}
 std::string esc(const std::string& s) {
     std::string o; o.reserve(s.size() + 2);
     for (char c : s) { if (c == '"' || c == '\\') o += '\\'; o += c; }
@@ -171,7 +174,11 @@ std::string LevelDoc::toJson() const {
           << ", \"tint\": " << vec3(e.tint)
           << ", \"size\": " << vec3(e.size)
           << ", \"model\": \"" << esc(e.model) << "\""
-          << ", \"script\": \"" << esc(e.script) << "\" }";
+          << ", \"script\": \"" << esc(e.script) << "\"";
+        // Self-lit emissive (canon glow) — emitted only when set, so every
+        // existing level file round-trips byte-identical.
+        if (e.emissive[3] > 0.0f) o << ", \"emissive\": " << vec4(e.emissive);
+        o << " }";
         if (i + 1 < entities.size()) o << ",";
         o << "\n";
     }
@@ -235,6 +242,11 @@ struct JParse {
         out[0] = number(); out[1] = number(); out[2] = number();
         eat(']');
     }
+    void vec4(float out[4]) {
+        if (!eat('[')) { ok = false; return; }
+        out[0] = number(); out[1] = number(); out[2] = number(); out[3] = number();
+        eat(']');
+    }
     // Read a key string followed by ':'.
     std::string key() { std::string k = str(); eat(':'); return k; }
 };
@@ -266,6 +278,7 @@ bool LevelDoc::fromJson(const std::string& json) {
                     else if (ek == "size")  j.vec3(e.size);
                     else if (ek == "model") e.model = j.str();
                     else if (ek == "script") e.script = j.str();
+                    else if (ek == "emissive") j.vec4(e.emissive);
                     else { /* skip unknown scalar */ j.str(); }
                 }
                 j.eat('}');

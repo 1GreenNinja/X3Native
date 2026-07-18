@@ -238,6 +238,14 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // the LevelDoc to boot (default = the editor's File>Save target).
             if (o.worldMode == "fromdoc" && i + 1 < argc && argv[i + 1][0] != '-')
                 o.docWorldPath = argv[++i];
+            // `--world spacestation`: the rescued deep-space station scene. A thin
+            // alias over the LevelDoc loader — it boots the committed station doc
+            // (whose biome "space" drives the deep-space sky + distant-Sol bodies)
+            // unless an explicit doc path is given after it.
+            if (o.worldMode == "spacestation") {
+                if (i + 1 < argc && argv[i + 1][0] != '-') o.docWorldPath = argv[++i];
+                else o.docWorldPath = "assets/levels/space_station.leveldoc.json";
+            }
         }
         else if (a == "--stress") {
             if (i + 1 < argc) { o.stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
