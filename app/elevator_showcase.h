@@ -209,6 +209,10 @@ private:
 
     float m_time = 0.0f;
     float m_entScroll = 0.0f;
+    // 1x1 dielectric MR texel (glTF: B=metallic 0, G=roughness) that routes the cab's
+    // brushed-steel handrail through the PBR path so it can carry a CLEARCOAT lobe (goal
+    // #1: premium clearcoated metal, reusing the engine's x3Clearcoat drawMeshPBR arg).
+    x3::rhi::TextureHandle m_mrSteel{};
     // Live holo DEPTH readout (goal #2): the panel's last line is an animated status row
     // — current floor / depth counting down to -200 / stratum / state. Re-baked onto the
     // glass only when the formatted text actually changes (stb_truetype bakes are dear).

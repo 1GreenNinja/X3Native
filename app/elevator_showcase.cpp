@@ -424,13 +424,26 @@ void ElevatorShowcase::buildCabInterior(Scene& scene, x3::rhi::IRenderDevice& de
     m_eCeil = decorBox(W - 0.35f, 0.04f, D - 0.35f, 0, H - 0.14f, 0, kCabFloor, kCeilFill);
 
     // --- Octagonal brushed HANDRAIL around 3 walls at waist height ---
+    // PREMIUM METAL (goal #1): the rail routes through the PBR path with a CLEARCOAT lobe
+    // so it reads as a glossy clearcoated-steel rail (a lacquer highlight over the brushed
+    // base) rather than a flat grey tube. A dielectric MR texel (metallic 0) keeps it from
+    // going black in the cab's low-IBL interior; the clearcoat sheen rides on top.
+    if (!m_mrSteel.valid()) {
+        const uint8_t mr[4] = { 0, 80, 0, 255 };   // glTF MR: G=rough ~0.31, B=metal 0 (dielectric)
+        m_mrSteel = device.createTexture(mr, 1, 1, false);
+    }
     const float railY = -0.15f, railR = 0.035f;
-    { ElevPrim p; p.mesh = tube(railR, W - 0.12f, 0, railY, -(D - 0.10f), 0, 8);   // back run (along X)
-      m_eRailEnts[0] = addDecor(scene, device, p, kBrushedSteel, kNoEm, (uint32_t)Tag::Prop); }
-    { ElevPrim p; p.mesh = tube(railR, D - 0.12f, -(W - 0.10f), railY, 0, 2, 8);   // -X run (along Z)
-      m_eRailEnts[1] = addDecor(scene, device, p, kBrushedSteel, kNoEm, (uint32_t)Tag::Prop); }
-    { ElevPrim p; p.mesh = tube(railR, D - 0.12f,  (W - 0.10f), railY, 0, 2, 8);   // +X run
-      m_eRailEnts[2] = addDecor(scene, device, p, kBrushedSteel, kNoEm, (uint32_t)Tag::Prop); }
+    auto rail = [&](const x3::prims::PrimMesh& mesh) {
+        ElevPrim p; p.mesh = mesh;
+        uint32_t id = addDecor(scene, device, p, kBrushedSteel, kNoEm, (uint32_t)Tag::Prop);
+        Entity& e = scene.get(id);
+        e.mrTex = m_mrSteel;            // -> PBR route
+        e.clearcoat = 1.0f; e.clearcoatRough = 0.10f;   // premium lacquer sheen
+        return id;
+    };
+    m_eRailEnts[0] = rail(tube(railR, W - 0.12f, 0, railY, -(D - 0.10f), 0, 8));   // back run (along X)
+    m_eRailEnts[1] = rail(tube(railR, D - 0.12f, -(W - 0.10f), railY, 0, 2, 8));   // -X run (along Z)
+    m_eRailEnts[2] = rail(tube(railR, D - 0.12f,  (W - 0.10f), railY, 0, 2, 8));   // +X run
     m_stats.hasHandrail = true;
 
     // --- Glowing ACCENT light strips (vertical, at the wall corners) ---
