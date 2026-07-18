@@ -196,6 +196,10 @@ private:
     // Scene-entity ids of the animated emissive blacklight tubes (their emissive
     // pulses each frame) + the ORB (it spins) so update() can touch just those.
     std::vector<uint32_t>                         m_blacklightEnts;
+    // Companion UV CAST light per tube (index into m_lights, parallel to
+    // m_blacklightEnts): update() pulses its color in phase with the tube's
+    // emissive so the wall wash breathes with the tube (fix/club-blacklights).
+    std::vector<size_t>                           m_blacklightLightIdx;
     uint32_t                                       m_orbEnt = 0xFFFFFFFFu;
     bool                                           m_orbValid = false;
     float                                          m_orbY = 0.0f; // ORB center world-Y

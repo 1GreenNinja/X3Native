@@ -87,6 +87,12 @@ const float kEmitLed[4]     = { 0.10f, 1.00f, 0.10f, 3.0f };  // amp power LED
 const float kEmitAbTop[4]   = { 0.353f, 0.353f, 0.416f, 1.2f };// aerial-bar polished top
 // Blacklight base emissive (PULSED each frame in update()): deep UV violet.
 const float kBlacklightR = 0.50f, kBlacklightG = 0.0f, kBlacklightB = 1.0f;
+// Companion CAST color for each tube's point light (fix/club-blacklights): the
+// tubes were emissive-only geometry — they glowed as thin bars but cast NOTHING,
+// so the wall behind them stayed dead-black. Each tube now carries a violet
+// point light at this HDR color; update() pulses it in phase with the emissive.
+const float kBlacklightCast[3] = { 0.65f, 0.06f, 1.30f };
+const float kBlacklightCastRange = 5.0f;   // ~5 m: washes the wall + nearby dancers
 
 // OLED screen emissive strength (the panes set emissiveMap=1, so this is MULTIPLIED
 // by the texel — it is the brightness of a LIT EQ column, not a wash over the pane).
@@ -649,37 +655,51 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
-    // 28 BLACKLIGHTS — 4 ft UV tubes on the walls at 10 ft intervals (pulsing).
-    //   Long walls: 10 + 10; south wall flanking the 85": 3 + 3 (capped) = 28.
+    // BLACKLIGHTS — VERTICAL UV tubes on the walls (Tim's spec, 2026-07-17 review):
+    //   spaced every ~12 ft (3.66 m), centered ~5 ft (1.5 m) off the floor.
+    //   (Was: 28 tubes at 10 ft intervals centered at mid-wall 4.57 m — too high,
+    //   too dense, and EMISSIVE-ONLY: they glowed as thin bars but CAST no light,
+    //   so the walls behind them stayed dead-black and the tubes barely read.)
+    //   Each tube now carries a companion UV POINT LIGHT just off the wall so it
+    //   does a blacklight's actual job: wash the wall behind it AND the nearby
+    //   dancers with violet. 20 tubes total: 8 per long wall (16) + 2 per side
+    //   of the south wall flanking the centered 85" (4). update() pulses tube
+    //   emissive + cast color in phase.
     // ==================================================================
     {
-        const float bi = 3.048f;     // 10 ft interval
-        const float bh = 1.83f;      // tube half-... (JS BL_HEIGHT 1.83 m full)
-        auto blacklight = [&](float x, float z) {
-            const uint32_t id = box(x, CH * 0.5f, z, 0.07f, bh / 2, 0.07f, kWall, nullptr, false);
+        const float bi  = 3.66f;     // 12 ft spacing (Tim spec; was 10 ft)
+        const float bcY = 1.5f;      // tube CENTER ~5 ft off the floor
+        const float bh  = 1.22f;     // 4 ft tube (canon tube length)
+        // (nx,nz) = wall normal INTO the room: the cast light sits proud of the
+        // tube so the wall glows around it instead of the light being buried.
+        auto blacklight = [&](float x, float z, float nx, float nz) {
+            const uint32_t id = box(x, bcY, z, 0.07f, bh / 2, 0.07f, kWall, nullptr, false);
             // Set its starting emissive (update() pulses it).
             Entity& e = scene.get(id);
             e.emissive[0] = kBlacklightR; e.emissive[1] = kBlacklightG;
             e.emissive[2] = kBlacklightB; e.emissive[3] = 4.0f;   // relight: UV tube bloom 3.0 -> 4.0
             m_blacklightEnts.push_back(id);
+            // THE CAST (fix/club-blacklights): a violet point light per tube.
+            m_blacklightLightIdx.push_back(m_lights.size());
+            addLight(m_lights, x + nx * 0.45f, oy + bcY, z + nz * 0.45f,
+                     kBlacklightCast[0], kBlacklightCast[1], kBlacklightCast[2],
+                     kBlacklightCastRange);
             ++m_stats.blacklights;
         };
-        // 28 blacklights total (canon §2.3): 10 per long wall (20) + 4 per side of
-        // the south wall (8). The long-wall tubes are evenly spread along Z inside
-        // the room; the south-wall tubes flank the 85" centered display.
-        const float zLo = -CL / 2 + bi, zHi = CL / 2 - bi;   // inner Z band
+        // Long walls: 8 tubes per wall at EXACT 12 ft spacing, centered along Z
+        // (z = ±12.81 m max, comfortably inside the ±15.24 m room).
         for (int side = -1; side <= 1; side += 2)
-            for (int n = 0; n < 10; ++n) {
-                const float z = zLo + (zHi - zLo) * n / 9.0f;  // 10 tubes, n=0..9
-                blacklight(side * (CW / 2 - 0.05f), z);
+            for (int n = 0; n < 8; ++n) {
+                const float z = (n - 3.5f) * bi;
+                blacklight(side * (CW / 2 - 0.05f), z, (float)-side, 0.0f);
             }
-        // South wall: 4 per side, snug within the room half-width.
+        // South wall: 2 per side flanking the centered 85" display, 12 ft apart
+        // (x = ±1.83, ±5.49 — inside the ±7.62 m half-width).
         for (int s = -1; s <= 1; s += 2)
-            for (int n = 0; n < 4; ++n) {
-                const float x = s * (1.5f + n * 1.7f);          // max |x| = 6.6 < CW/2
-                blacklight(x, CL / 2 - 0.05f);
-            }
-        // UV point lights (4) — the violet wash over the room.
+            for (int n = 0; n < 2; ++n)
+                blacklight(s * (bi / 2 + n * bi), CL / 2 - 0.05f, 0.0f, -1.0f);
+        // UV point lights (4) — the room-wide violet AIR (kept; the per-tube
+        // lights above are the wall/crowd cast, these are the base atmosphere).
         const float uv[4][3] = {
             { 0, CH * 0.5f, -CL / 4 }, { 0, CH * 0.5f, CL / 4 },
             { -CW / 3, CH * 0.5f, 0 }, { CW / 3, CH * 0.5f, 0 }
@@ -1119,24 +1139,38 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.70f, 0.20f, 1.10f, 10.0f); // ground-bar MAGENTA wash
     addLight(m_lights, 0, oy + 2.0f, 0, 0.55f, 0.12f, 1.40f, 18.0f);            // UV-violet wash (mirror floor)
 
+    // DANCE-FLOOR KEY (fix/club-blacklights): the dancers rendered as SOLID BLACK
+    // silhouettes — the orbiters sat at ceiling height so their pools hit the
+    // FLOOR, and the floor tiles are self-lit emissive, so the only thing that
+    // glowed was the checkerboard. A soft neutral-violet key hung over the crowd
+    // centroid (the dancer spots cluster around z ≈ -2) puts actual light on
+    // faces/torsos. Deliberately gentle — way under the gel colors — so the room
+    // stays a moody club, not a showroom.
+    addLight(m_lights, 0, oy + 4.6f, -1.8f, 1.05f, 0.95f, 1.30f, 13.0f);
+
     // ---- ORBITING ORB LIGHTS: 4 spots + 4 ring lights. These trail the static
     // lights and are rewritten each frame by update(). Record where they start. ----
     m_staticLightCount = m_lights.size();
-    // 4 colored spotlights (orbit radius ~4, near the ceiling).
+    // 4 colored spotlights (orbit radius ~4).
     // (relight: saturated HDR gels — hot pink / electric blue / laser green / amber —
     // pushed to ~2.8 so the moving pools bloom and rake the walls + dancers.)
+    // (fix/club-blacklights: dropped from m_orbY (7.6 m, ceiling) to 3.0 m so the
+    // gels RAKE THE CROWD at body height instead of pooling on the floor — this
+    // is the magenta/cyan/pink rim light on the dancers.)
     const float spotCols[4][3] = { {2.8f,0.10f,0.90f}, {0.10f,0.40f,2.8f}, {0.20f,2.6f,0.60f}, {2.8f,1.10f,0.10f} };
     for (int i = 0; i < 4; ++i) {
         const float a = (i / 4.0f) * 2.0f * kPi;
-        addLight(m_lights, std::cos(a) * 4.0f, m_orbY, std::sin(a) * 4.0f,
+        addLight(m_lights, std::cos(a) * 4.0f, oy + 3.0f, std::sin(a) * 4.0f,
                  spotCols[i][0], spotCols[i][1], spotCols[i][2], 22.0f);
     }
-    // 4 ring lights (orbit radius ~8, mid-height).
+    // 4 ring lights (orbit radius ~8).
     // (relight: 1.0-max -> ~2.0 saturated HDR so the outer ring washes the walls too.)
+    // (fix/club-blacklights: 4.0 -> 2.4 m so the outer ring doubles as a colored
+    // BACK/RIM light on the crowd from outside the floor.)
     const float ringCols[4][3] = { {2.0f,0.0f,1.0f}, {0.0f,1.0f,2.0f}, {1.0f,0.0f,2.0f}, {0.0f,2.0f,1.0f} };
     for (int i = 0; i < 4; ++i) {
         const float a = (i / 4.0f) * 2.0f * kPi;
-        addLight(m_lights, std::cos(a) * 8.0f, oy + 4.0f, std::sin(a) * 8.0f,
+        addLight(m_lights, std::cos(a) * 8.0f, oy + 2.4f, std::sin(a) * 8.0f,
                  ringCols[i][0], ringCols[i][1], ringCols[i][2], 22.0f);
     }
 
@@ -1254,7 +1288,8 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         }
     }
 
-    // --- Pulse the blacklight emissive (each tube phase-offset). ---
+    // --- Pulse the blacklight emissive (each tube phase-offset) + its CAST light
+    // in phase, so the violet wash on the wall breathes with the tube itself. ---
     for (size_t i = 0; i < m_blacklightEnts.size(); ++i) {
         const uint32_t id = m_blacklightEnts[i];
         if (id >= scene.size()) continue;
@@ -1264,6 +1299,14 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         e.emissive[1] = kBlacklightG;
         e.emissive[2] = kBlacklightB * pulse;
         e.emissive[3] = 4.0f;   // relight: UV tube bloom 3.0 -> 4.0
+        if (i < m_blacklightLightIdx.size()) {
+            const size_t li = m_blacklightLightIdx[i];
+            if (li < m_lights.size()) {
+                m_lights[li].color[0] = kBlacklightCast[0] * pulse;
+                m_lights[li].color[1] = kBlacklightCast[1] * pulse;
+                m_lights[li].color[2] = kBlacklightCast[2] * pulse;
+            }
+        }
     }
 
     // --- MAX-OUT: the 128 BPM BEAT CLOCK (matches the Babylon club track). A
@@ -1432,8 +1475,13 @@ bool runClubSelfTest() {
     check(s.svsSubs == 4 && s.jblLineArray == 16 && s.jbl18Subs == 4 && s.surrounds == 16,
           "PA rig: 4 SVS subs + 16 JBL line-array + 4 JBL 18\" subs + 16 surrounds");
 
-    // (7) 28 blacklights.
-    check(s.blacklights == 28, "28 blacklights");
+    // (7) 20 blacklights at Tim's spec: vertical wall tubes every 12 ft, centered
+    //     5 ft off the floor, EACH casting a companion UV point light (8 per long
+    //     wall + 2 per side of the south 85"). The light set (static + tube casts
+    //     + orbiters) must stay under the device cap of 64.
+    check(s.blacklights == 20, "20 blacklights (12 ft spacing, 5 ft centers)");
+    check(club.pointLights().size() <= 64,
+          "point-light set fits the kMaxPointLights=64 device cap");
 
     // (8) 6-screen TV multiplex.
     check(s.tvScreens == 6, "6-screen TV multiplex");

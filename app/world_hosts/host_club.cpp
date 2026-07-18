@@ -105,10 +105,14 @@ int hostClub(HostContext& hc) {
         //     lights actually BLOOM through the ACES post stack.
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
         device->setIblProbe(true);          // bake the neon room into the env cube
-        device->setIblIntensity(0.40f);     // colored ambient fill — moody but readable
+        device->setIblIntensity(0.46f);     // colored ambient fill — moody but readable
+                                            // (fix/club-blacklights: 0.40 -> 0.46, one
+                                            // notch so dancer faces/torsos catch fill)
         device->setIblSpecular(1.30f);      // mirror ball / chrome / glass bar shine
         device->setMetalAmbient(1.0f);      // metals keep an F0 response (never black)
-        device->setAmbient(0.045f, 0.035f, 0.070f);  // low VIOLET floor (club-purple, not gray)
+        device->setAmbient(0.060f, 0.048f, 0.095f);  // low VIOLET floor (club-purple, not gray)
+                                            // (fix/club-blacklights: lifted a notch —
+                                            // the dancers read as SOLID BLACK cutouts)
         device->setExposure(1.0f);
         device->setBloom(0.28f);            // let the neon/blacklight/OLED sing
 
