@@ -88,3 +88,26 @@ doors/door_close.wav).
 |---|---|---|
 | music/club_ascension.wav | Free - Sci-Fi and Cyberpunk Music Pack / 01 Ascension.wav (~133 BPM) | -3 dB + 30 ms loop-seam crossfade |
 | interact/muzak_loop.wav  | Free - Sci-Fi and Cyberpunk Music Pack / 03 Descent.wav (~120 BPM) | mono mix, -10 dB (cabin background), loop crossfade — REPLACES the stdlib-synth loop |
+
+## Space dogfight combat SFX (feat/dogfight-feel, 2026-07-17)
+
+Curated from Tim's new `D:\Assets` library (4,563-file sweep) for the intro
+dogfight beats (`app/intro_orchestrator.cpp` interactive windows). Same
+conversion as above: `ffmpeg -ar 44100 -ac 1 -sample_fmt s16` (PCM s16le mono).
+Total added: ~0.9 MB.
+
+| Repo path | Source pack | Original filename | Notes |
+|---|---|---|---|
+| `space/dogfight/player_laser.wav` | Cyberpunk Game (Epic Stock Media) | `Weapons/GUNTech_Weapons Pistol Laser Shot Crisp Energy Quick 01_ESM_CPG.wav` | Crisp quick energy shot, 0.27s — per-shot player laser (2D). |
+| `space/dogfight/enemy_laser.wav` | Cyberpunk Game (Epic Stock Media) | `Weapons/GUNTech_Weapon Gunshot Laser Zap Source Layer Shimmer 01_ESM_CPG.wav` | Shimmery laser-zap, trimmed 1.96s -> 1.0s w/ 0.1s fade — enemy fire (3D at muzzle), distinct timbre from the player's. |
+| `space/dogfight/impact_shield.wav` | Universe Sounds Free Pack | `Blows/Blow shield.wav` | Pack's purpose-made energy-shield hit, 1.4s — hit while shields up. |
+| `space/dogfight/impact_hull.wav` | Cyberpunk Game (Epic Stock Media) | `Damage/GOREMisc_Damage Impact Blunt Metal Armor Bash 01_ESM_CPG.wav` | Metallic armor bash, 0.64s — hit with shields down (DISTINCT from shield). |
+| `space/dogfight/explosion_fighter.wav` | Cyberpunk Game (Epic Stock Media) | `Explosions/EXPLDsgn_Explosion Ballistic Massive Cannon Debris 01_ESM_CPG.wav` | Big debris explosion, 2.3s — fighter kill (3D at wreck). |
+| `space/dogfight/boost_antimatter.wav` | Universe Sounds Free Pack | `Various Sounds/Teleportation Jump.wav` | Sci-fi energy-jump whoosh, 2.2s — Shift ANTIMATTER BOOST engage. |
+| `space/dogfight/forcefield_zap.wav` | Zap VFX - HDRP (Vefects) | `Audio/WAV/SFX_Vefects_Zap_Small_01.wav` | Electric zap, trimmed 2.75s -> 1.2s w/ fade — shield-bubble bounce (`pushOut()`). |
+| `space/dogfight/lock_chirp.wav` | Cyberpunk Game (Epic Stock Media) | `UI/UIAlert_UI Chatter Confirm Select Interact Short Techy 01_ESM_CPG.wav` | Short techy confirm chatter — target-lock acquired chirp. |
+
+Engine loops for the dogfight beats reuse the existing committed
+`space/engine_hum.wav` + `space/engine_thrust.wav` (synthesized loops from the
+--world space pass; volume-crossfaded at FIXED pitch per the owner's "no gear
+shifts" ruling — hum tracks speed, thrust tracks throttle/boost).
