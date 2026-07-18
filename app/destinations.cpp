@@ -158,6 +158,7 @@ const char* destGroupName(DestGroup g) {
     case DestGroup::Facility:   return "THE FACILITY";
     case DestGroup::Underworld: return "THE DESCENT";
     case DestGroup::Planet:     return "THE PLANET";
+    case DestGroup::EchoHarbor: return "ECHO HARBOR";
     case DestGroup::DevWorld:   return "DEV WORLDS";
     default:                    return "?";
     }
@@ -299,6 +300,9 @@ bool runDestinationsSelfTest() {
         bool ok = true;
         for (uint32_t i = 0; i < kDestCount; ++i) {
             if (!kDest[i].key[0] || !kDest[i].name[0] || !kDest[i].desc[0]) ok = false;
+            // ...and its group renders a REAL section header, not the "?"
+            // fallback (caught live: ECHO HARBOR's header shipped as "?").
+            if (std::strcmp(destGroupName(kDest[i].group), "?") == 0) ok = false;
             for (uint32_t j = i + 1; j < kDestCount; ++j)
                 if (eqCI(kDest[i].key, kDest[j].key) || eqCI(kDest[i].name, kDest[j].name))
                     ok = false;
