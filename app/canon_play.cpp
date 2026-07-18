@@ -1069,7 +1069,10 @@ uint32_t CanonPlay::liveEnemyMarks(EnemyMark* out, uint32_t cap) const {
     uint32_t n = 0;
     auto addManager = [&](const MonsterManager& mm, const char* lbl) {
         for (uint32_t i = 0; i < mm.count() && n < cap; ++i)
-            if (mm.at(i).alive()) { out[n].pos = mm.at(i).pos(); out[n].label = lbl; ++n; }
+            if (mm.at(i).alive()) {
+                out[n].pos = mm.at(i).pos(); out[n].label = lbl;
+                out[n].awake = !mm.at(i).dormant(); ++n;
+            }
     };
     addManager(m_mainHall,   "HOSTILE");
     addManager(m_cellGuards, "GUARD");
@@ -1078,7 +1081,8 @@ uint32_t CanonPlay::liveEnemyMarks(EnemyMark* out, uint32_t cap) const {
     addManager(m_upperEnemies, "HOSTILE");   // R-5: upper-floor squads
     addManager(m_rescue.bosses(), "BOSS");
     if (m_martinezSpawned && m_martinez.alive() && n < cap) {
-        out[n].pos = m_martinez.pos(); out[n].label = "MARTINEZ"; ++n;
+        out[n].pos = m_martinez.pos(); out[n].label = "MARTINEZ";
+        out[n].awake = !m_martinez.dormant(); ++n;
     }
     return n;
 }

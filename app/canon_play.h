@@ -297,7 +297,11 @@ public:
     }
 
     // ---- HUD radar / nameplate feed (read-only enumeration) ----
-    struct EnemyMark { x3::phys::Vec3 pos; const char* label; };
+    // `awake`: opening-flow gating state — a DORMANT spawn still enumerates (the
+    // alert system's observers = the facility's ears, and the P6 marks==remaining
+    // invariant holds), but the host's radar skips it (an undetected threat is not
+    // a red blip; the counter reads awake-only, and the two must agree).
+    struct EnemyMark { x3::phys::Vec3 pos; const char* label; bool awake = true; };
     uint32_t liveEnemyMarks(EnemyMark* out, uint32_t cap) const;
     uint32_t liveCompanionPositions(x3::phys::Vec3* out, uint32_t cap) const;
 

@@ -10831,11 +10831,15 @@ int runDefaultHost(HostContext& hc) {
                     x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
                     uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
                     // --world canonlevel: the canon enemies (Level1Game's are empty here).
+                    // OPENING FLOW: only AWAKE spawns blip — a dormant (gated) spawn is
+                    // an undetected threat, and the radar must agree with the awake-only
+                    // ENEMIES counter (red blips beside "AREA CLEAR" read as a bug).
                     if (canonWorld && canonPlay.built()) {
                         x3::game::CanonPlay::EnemyMark cm[x3::ui::HudModel::kMaxBlips];
                         const uint32_t nc = canonPlay.liveEnemyMarks(cm, x3::ui::HudModel::kMaxBlips);
                         ne = 0;
                         for (uint32_t i = 0; i < nc && ne < x3::ui::HudModel::kMaxBlips; ++i) {
+                            if (!cm[i].awake) continue;
                             marks[ne].pos = cm[i].pos; marks[ne].label = cm[i].label; ++ne;
                         }
                     }
