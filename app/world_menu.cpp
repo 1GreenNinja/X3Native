@@ -23,7 +23,8 @@ int columnFor(DestGroup g, int devSeen, int devTotal) {
     case DestGroup::Hub:
     case DestGroup::Facility:   return 0;
     case DestGroup::Underworld:
-    case DestGroup::Planet:     return 1;
+    case DestGroup::Planet:
+    case DestGroup::EchoHarbor: return 1;
     default:                    return (devSeen < (devTotal + 1) / 2) ? 2 : 3;
     }
 }

@@ -45,6 +45,8 @@ enum class DestGroup : uint8_t {
     Facility,       // the 7-floor canonical tower
     Underworld,     // THE DESCENT's strata offshoots + Club 1127
     Planet,         // the streamed exterior (crash site / city / river / ridge)
+    EchoHarbor,     // ECHO HARBOR — the second product (its host ships on the
+                    // echotropolis line; listed here so the directory tells the truth)
     DevWorld,       // a `--world` dev shortcut with no place in the one world
     Count
 };
@@ -79,9 +81,21 @@ uint32_t destinationIndex(const Destination* d);
 const Destination& cycleDestination(std::string_view from, int step);
 
 // Headless self-test (folded into --test-rifthub): asserts the table is non-empty,
-// every key/name is unique and non-empty, every worldFlag names a host the program
-// really dispatches, findDestination round-trips every key/name, and the legacy
-// destination strings the hub shipped with still resolve.
+// every key/name is unique and non-empty, findDestination round-trips every
+// key/name, and the legacy destination strings the hub shipped with still resolve.
+//
+// [P0-2] TOTAL in BOTH directions against the LIVE dispatch:
+//   registry -> dispatch (D2): every non-empty worldFlag names a --world the
+//     program really dispatches (default host list + world_hosts' exported
+//     route table). No row may signpost a world that 404s.
+//   dispatch -> registry (D7): every dispatchable --world is a registry row OR
+//     an explicit, reasoned entry in kRegistryExclusions. A host added without
+//     a row FAILS the gate — silent drift is the bug class this kills.
+// Hygiene: exclusions must be live and reasoned (D8); unreachable rows must be
+// on the documented kUnreachableAllowed list and stay unreachable (D9); and a
+// negative control proves the coverage check rejects a fake dispatch-only
+// world (D10). Manual RED proof: run with X3_DEST_TEST_INJECT=<junk> and D7
+// must fail.
 bool runDestinationsSelfTest();
 
 } // namespace x3::game

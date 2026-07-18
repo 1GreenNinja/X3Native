@@ -1,10 +1,13 @@
 #include "destinations.h"
 
 #include "engine/core/x3_log.h"
+#include "world_hosts.h"   // dispatchedWorldModes() — the LIVE dispatch table
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace x3::game {
@@ -14,24 +17,54 @@ namespace {
 // ---------------------------------------------------------------------------
 // THE `--world` FLAGS THIS PROGRAM ACTUALLY DISPATCHES.
 //
-// Verified against, and must stay in step with, BOTH dispatch sites:
-//   * app/world_hosts/world_hosts.cpp  — dispatchWorldHost()
-//   * app/app_run.cpp                  — the default host's own world branches
+// [P0-2] Two dispatch sites, two very different truths:
 //
-// Note what is NOT here: `act2` and `act2caves`. rift_console.cpp's old kWorlds
-// whitelist offered both as re-target options and runRifthubSelfTest() asserted
-// they were "real --world targets" — but neither has had a host since the Act-2
-// split. Two of the hub's eight gates were signposting worlds that do not exist.
-// `city` and `perfshop` are in the same boat (a screenshot host forces --world
-// drive / a region inside canonlevel; there is no `--world city`).
+//   * app/world_hosts/world_hosts.cpp — dispatchWorldHost(). NOT copied here
+//     any more. Its route table is exported (dispatchedWorldModes()) and the
+//     self-test walks the LIVE table. The old hand copy drifted 8 worlds
+//     behind in one week; a copy of a list is where honesty goes to die.
+//   * app/app_run.cpp — the default host's own world branches. Those are
+//     bare `if (worldMode == ...)` lines with nothing enumerable to export
+//     (yet — the app_run split will fix that), so they stay a hand list
+//     below. It is 7 stable names and each is asserted registry-covered.
+//
+// Note what is NOT dispatched: `act2` and `act2caves`. rift_console.cpp's old
+// kWorlds whitelist offered both as re-target options and runRifthubSelfTest()
+// asserted they were "real --world targets" — but neither has had a host since
+// the Act-2 split. `city` and `perfshop` are in the same boat (a screenshot
+// host forces --world drive / a region inside canonlevel; there is no
+// `--world city`). And `echotropolis` (Echo Harbor) has NO host on this line —
+// its host ships on the echotropolis branch — so its registry row carries an
+// empty worldFlag and the menu shows it UNAVAILABLE. Never a flag that 404s.
 // ---------------------------------------------------------------------------
-const char* const kDispatchedWorlds[] = {
-    // default host (app_run.cpp)
+const char* const kDefaultHostWorlds[] = {
+    // default host (app_run.cpp world branches — see header comment)
     "canonlevel", "intro", "level1", "elevator", "terrain", "ocean", "fromdoc",
-    // discrete world hosts (world_hosts.cpp)
-    "destruct", "physjoint", "ragdoll", "drive", "boat", "fly", "club",
-    "showroom", "valley", "cliffs", "streamed", "space", "surface", "strata",
-    "elevator-showcase", "rifthub",
+};
+
+// The union of both dispatch sites: the default-host hand list + the LIVE
+// world_hosts route table. THIS is what "dispatchable" means to the self-test.
+std::vector<const char*> dispatchedFlagUnion() {
+    std::vector<const char*> all(std::begin(kDefaultHostWorlds),
+                                 std::end(kDefaultHostWorlds));
+    unsigned n = 0;
+    const char* const* hosted = x3::apphost::dispatchedWorldModes(n);
+    for (unsigned i = 0; i < n; ++i) all.push_back(hosted[i]);
+    return all;
+}
+
+// ---------------------------------------------------------------------------
+// DISPATCH-SIDE EXCLUSIONS — dispatchable flags deliberately NOT given their
+// own registry row. Every entry needs a reason a reviewer can check; the
+// self-test (D8) fails on a stale or unreasoned exclusion, and (D7) fails on
+// any dispatchable flag that is neither a row nor listed here. There is no
+// third bucket — that is how the drift class dies.
+// ---------------------------------------------------------------------------
+struct DispatchExclusion { const char* flag; const char* why; };
+const DispatchExclusion kRegistryExclusions[] = {
+    { "ship-interior",
+      "alias --world flag: routes to the SAME host as ship-windows "
+      "(hostShipWindows); the registry lists the place once, as ship-windows" },
 };
 
 // ---------------------------------------------------------------------------
@@ -62,6 +95,13 @@ const Destination kDest[] = {
 { "river",        "The River Valley",         "The carved river - real, swimmable water. You land on the bank.",       "valley",            DestGroup::Planet,     true  },
 { "ridge",        "The Cliff Ridge",          "The highest ground on the ring out from the tower.",                    "cliffs",            DestGroup::Planet,     true  },
 
+// ECHO HARBOR — the second product. Its host (--world echotropolis) ships on
+// the echotropolis line, NOT in this build, so the flag here is EMPTY and the
+// menu shows the row greyed UNAVAILABLE. The row exists because the directory
+// claims to list every place the game has — hiding a whole product is the
+// bigger lie. (DESTINATIONS_REGISTRY.spec §3.3/§6; kUnreachableAllowed below.)
+{ "echotropolis", "Echo Harbor",              "The island city - a second product. Its world ships on the echotropolis line, not in this build.", "",  DestGroup::EchoHarbor, false },
+
 { "canonlevel",   "Canon World (spawn)",      "THE GAME: tower + elevator + exterior + streamed planet. From spawn.",  "canonlevel",        DestGroup::DevWorld,   false },
 { "intro",        "The Cold Open",            "The canon world, entered through the prologue cutscene.",               "intro",             DestGroup::DevWorld,   false },
 { "level1",       "Legacy Spire (level1)",    "The pre-canon hand-coded spire. Reference build.",                      "level1",            DestGroup::DevWorld,   false },
@@ -72,6 +112,13 @@ const Destination kDest[] = {
 { "streamed",     "Streamed Tour World",      "The WorldStreamer's own tour graph (regions.json, with spire_f1).",     "streamed",          DestGroup::DevWorld,   false },
 { "surface",      "Act-1 Surface Landing",    "The cold-open landing slice (the exterior module's other caller).",     "surface",           DestGroup::DevWorld,   false },
 { "space",        "Space Combat",             "The intro space-combat slice: fly the ship.",                           "space",             DestGroup::DevWorld,   false },
+{ "introcockpit", "Intro Cockpit",            "The cold-open cockpit interior: the GLB rig with live content screens.", "introcockpit",     DestGroup::DevWorld,   false },
+{ "ship-windows", "Ship Interior",            "The walkable ship interior with true-portal space out the windows.",    "ship-windows",      DestGroup::DevWorld,   false },
+{ "wormhole",     "Wormhole Tunnel",          "The Salvari crystal-matrix wormhole tunnel VFX slice.",                 "wormhole",          DestGroup::DevWorld,   false },
+{ "wormhole-transit","Wormhole Transit",      "The S3 autopilot jump: ride the wormhole end to end.",                  "wormhole-transit",  DestGroup::DevWorld,   false },
+{ "tractor",      "Tractor Beam",             "The intro capture: the capital ship's tractor beam takes you.",         "tractor",           DestGroup::DevWorld,   false },
+{ "descentslide", "Descent Slide",            "The B1 to -178 m coaster-grade slide ride.",                            "descentslide",      DestGroup::DevWorld,   false },
+{ "bodycontact",  "Body Contact Bench",       "Feature bench: rigid rest on surfaces + soft mattress indent.",         "bodycontact",       DestGroup::DevWorld,   false },
 { "showroom",     "Asset Showroom",           "The asset showroom family (models, lighting, companion staging).",      "showroom",          DestGroup::DevWorld,   false },
 { "drive",        "Drive (vehicles)",         "The vehicle framework: cars, the perf shop, LATE NIGHT SPEED.",         "drive",             DestGroup::DevWorld,   false },
 { "boat",         "Boat",                     "The vehicle framework on water.",                                       "boat",              DestGroup::DevWorld,   false },
@@ -154,6 +201,10 @@ const Destination* findDestination(std::string_view s) {
         { "rift", "hub" },        { "hub", "hub" },
         { "magma", "magma" },     { "obsidian", "obsidian" },
         { "basalt", "basalt" },   { "granite", "granite" },
+        // `--world ship-interior` is a live dispatch alias for the ship-windows
+        // host; typed TARGETs and old strings with "interior" land on the row.
+        { "ship-interior", "ship-windows" }, { "interior", "ship-windows" },
+        { "echo", "echotropolis" }, { "harbor", "echotropolis" },
     };
     // Facility floors first: "F3" inside a longer string must not be beaten by a
     // generic alias.
@@ -189,8 +240,39 @@ void dtCheck(bool cond, const char* name) {
     if (cond) { ++dt_pass; x3::logInfo(std::string("[dest-test] PASS ") + name); }
     else      { ++dt_fail; x3::logError(std::string("[dest-test] FAIL ") + name); }
 }
-bool isDispatched(const char* flag) {
-    for (const char* w : kDispatchedWorlds) if (std::strcmp(w, flag) == 0) return true;
+
+bool isDispatched(const std::vector<const char*>& dispatched, const char* flag) {
+    for (const char* w : dispatched) if (std::strcmp(w, flag) == 0) return true;
+    return false;
+}
+
+// Registry rows that are ALLOWED to be unreachable (no anchor, no world flag).
+// Each needs a reviewer-checkable reason; D3 exempts exactly these, and D9
+// fails if one goes stale (missing row, or the row became reachable).
+struct KnownUnreachable { const char* key; const char* why; };
+const KnownUnreachable kUnreachableAllowed[] = {
+    { "echotropolis",
+      "Echo Harbor's host ships on the echotropolis line, not in this build; "
+      "the row is registered so the directory admits the product exists "
+      "(DESTINATIONS_REGISTRY.spec section 6)" },
+};
+
+bool isUnreachableAllowed(const char* key) {
+    for (const KnownUnreachable& u : kUnreachableAllowed)
+        if (std::strcmp(u.key, key) == 0) return true;
+    return false;
+}
+
+// THE TOTALITY CHECK, dispatch -> registry direction: a dispatchable flag is
+// covered iff some registry row claims it as worldFlag OR it is an explicit,
+// reasoned exclusion. Factored out so D10 can prove the check REJECTS a fake
+// dispatch-only world (the negative control), not just that it accepts today's.
+bool dispatchedFlagCovered(const char* flag) {
+    for (uint32_t i = 0; i < kDestCount; ++i)
+        if (kDest[i].worldFlag[0] && std::strcmp(kDest[i].worldFlag, flag) == 0)
+            return true;
+    for (const DispatchExclusion& e : kRegistryExclusions)
+        if (std::strcmp(e.flag, flag) == 0 && e.why[0]) return true;
     return false;
 }
 } // namespace
@@ -198,7 +280,18 @@ bool isDispatched(const char* flag) {
 bool runDestinationsSelfTest() {
     dt_pass = dt_fail = 0;
 
-    dtCheck(kDestCount >= 30, "D0 the registry lists every place (>= 30 entries)");
+    // The dispatchable-world set, straight off the live route table (plus the
+    // 7 default-host names). X3_DEST_TEST_INJECT=<flag> appends a pretend
+    // dispatch-only world — a manual negative control: set it to any junk name
+    // and D7 must go RED, proving this gate actually bites on drift.
+    std::vector<const char*> dispatched = dispatchedFlagUnion();
+    if (const char* inj = std::getenv("X3_DEST_TEST_INJECT")) {
+        dispatched.push_back(inj);
+        x3::logWarn(std::string("[dest-test] NEGATIVE CONTROL: injecting fake "
+                                "dispatch-only world '") + inj + "'");
+    }
+
+    dtCheck(kDestCount >= 44, "D0 the registry lists every place (>= 44 entries)");
 
     // D1 — keys and names are unique and non-empty (a duplicate key would make the
     //      console's TARGET ambiguous and the menu lie).
@@ -220,7 +313,7 @@ bool runDestinationsSelfTest() {
         bool ok = true;
         for (uint32_t i = 0; i < kDestCount; ++i) {
             const char* f = kDest[i].worldFlag;
-            if (f[0] && !isDispatched(f)) {
+            if (f[0] && !isDispatched(dispatched, f)) {
                 ok = false;
                 x3::logError(std::string("[dest-test]   '") + kDest[i].key +
                              "' claims --world " + f + " — NO SUCH HOST");
@@ -229,12 +322,19 @@ bool runDestinationsSelfTest() {
         dtCheck(ok, "D2 every worldFlag names a --world the program dispatches");
     }
 
-    // D3 — a destination must be reachable SOME way: a canon anchor or a world.
+    // D3 — a destination must be reachable SOME way (a canon anchor or a world)
+    //      UNLESS it is on the explicit, reasoned kUnreachableAllowed list
+    //      (Echo Harbor: the row is the truth, the grey tag is the honesty).
     {
         bool ok = true;
         for (uint32_t i = 0; i < kDestCount; ++i)
-            if (!kDest[i].canonAnchor && !kDest[i].worldFlag[0]) ok = false;
-        dtCheck(ok, "D3 no orphan entries (each has a canon anchor or a --world)");
+            if (!kDest[i].canonAnchor && !kDest[i].worldFlag[0] &&
+                !isUnreachableAllowed(kDest[i].key)) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   '") + kDest[i].key +
+                             "' is unreachable and NOT on kUnreachableAllowed");
+            }
+        dtCheck(ok, "D3 no orphan entries (anchor, world, or documented exception)");
     }
 
     // D4 — findDestination round-trips every key and every name.
@@ -289,6 +389,57 @@ bool runDestinationsSelfTest() {
                         kDest[kDestCount - 1].key) != 0) ok = false;
         dtCheck(ok, "D6 PREV/NEXT cycling reaches EVERY destination and wraps");
     }
+
+    // D7 — THE OTHER DIRECTION, TOTAL: every world the program can dispatch is
+    //      either a registry row or an explicit, reasoned exclusion. This is
+    //      the check whose absence let 8 hosts land in one week with no menu
+    //      row, no console target and no hub reach. Drift now FAILS the gate.
+    {
+        bool ok = true;
+        for (const char* f : dispatched)
+            if (!dispatchedFlagCovered(f)) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   --world ") + f +
+                             " is DISPATCHABLE but has no registry row and no "
+                             "documented exclusion — the menu/hub cannot see it");
+            }
+        dtCheck(ok, "D7 every dispatchable world is a registry row or a reasoned exclusion");
+    }
+
+    // D8 — exclusion hygiene: each exclusion has a reason, names a flag that is
+    //      REALLY dispatched (a stale exclusion is drift wearing a badge), and
+    //      is not ALSO a registry row (an excluded row is a contradiction).
+    {
+        bool ok = true;
+        for (const DispatchExclusion& e : kRegistryExclusions) {
+            if (!e.why[0])                        ok = false;
+            if (!isDispatched(dispatched, e.flag)) ok = false;
+            for (uint32_t i = 0; i < kDestCount; ++i)
+                if (kDest[i].worldFlag[0] &&
+                    std::strcmp(kDest[i].worldFlag, e.flag) == 0) ok = false;
+        }
+        dtCheck(ok, "D8 exclusions are reasoned, live, and not double-listed");
+    }
+
+    // D9 — kUnreachableAllowed hygiene: every listed key exists, has a reason,
+    //      and IS still unreachable (if it gained an anchor or a world, the
+    //      exception is stale and must be deleted).
+    {
+        bool ok = true;
+        for (const KnownUnreachable& u : kUnreachableAllowed) {
+            if (!u.why[0]) ok = false;
+            const Destination* d = findDestination(u.key);
+            if (!d || std::strcmp(d->key, u.key) != 0) { ok = false; continue; }
+            if (d->canonAnchor || d->worldFlag[0]) ok = false;
+        }
+        dtCheck(ok, "D9 unreachable exceptions are real rows and still unreachable");
+    }
+
+    // D10 — NEGATIVE CONTROL, in-suite: the coverage check must REJECT a world
+    //       that is dispatch-only and unregistered. If this ever passes for the
+    //       fake, D7 is a rubber stamp and the whole gate is theatre.
+    dtCheck(!dispatchedFlagCovered("zz-fake-drifted-world"),
+            "D10 negative control: a fake unregistered dispatch flag is CAUGHT");
 
     x3::logInfo("destinations: " + std::to_string(dt_pass) + "/" +
                 std::to_string(dt_pass + dt_fail) + " passed");
