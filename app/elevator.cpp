@@ -36,7 +36,7 @@ static const std::array<StrataLayer, 9> kStrata = {{
     { -80.0f,  -20.0f, "Granite",         {0.30f, 0.28f, 0.32f}, false, {0,0,0} },
     {-140.0f,  -80.0f, "Basalt",          {0.20f, 0.18f, 0.15f}, false, {0,0,0} },
     {-200.0f, -140.0f, "Obsidian",        {0.10f, 0.08f, 0.12f}, false, {0,0,0} },
-    {-260.0f, -200.0f, "Crystal Veins",   {0.12f, 0.08f, 0.18f}, true,  {0.30f, 0.10f, 0.60f} },
+    {-260.0f, -200.0f, "Crystal Veins",   {0.10f, 0.05f, 0.20f}, true,  {0.10f, 0.00f, 1.00f} },
     {-320.0f, -260.0f, "Magma Zone",      {0.25f, 0.06f, 0.02f}, true,  {0.80f, 0.20f, 0.05f} },
     {-400.0f, -320.0f, "Alien Substrate", {0.08f, 0.04f, 0.12f}, true,  {0.20f, 0.04f, 0.40f} },
 }};
