@@ -105,7 +105,11 @@ void EnemyShipManager::update(float dt, const float playerPos[3], const float pl
     //      coordinates and flying ON TOP OF the camera. The player's shield bubble
     //      repels any enemy that penetrates it back out to kShieldStandoff, so a
     //      contact is always at a readable range instead of clipping through you.
-    constexpr float kShieldStandoff = 500.0f;
+    // 60 m, NOT 500: at 500 every fighter lived beyond visual range (a 10 m ship
+    // subtends ~15 px at 500 m) — "the enemy just disappears!". 60 m keeps the
+    // dogfight CLOSE and readable while still refusing hull overlap ("I fly right
+    // thru the enemy ship").
+    constexpr float kShieldStandoff = 60.0f;
     for (auto& s : ships_) {
         float to[3] = { s.pos[0] - playerPos[0], s.pos[1] - playerPos[1], s.pos[2] - playerPos[2] };
         const float d = len3(to);

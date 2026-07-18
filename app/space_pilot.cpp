@@ -356,14 +356,17 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // Forward / back (W/S).
     for (int k = 0; k < 3; ++k)
         accel[k] += fwdW[k] * in.moveFwd * m_tuning.maxLinearAccel * boost;
-    // Strafe (A/D).
+    // Strafe (A/D). BOOSTED like forward thrust — Shift + A/D is the ESCAPE move
+    // (owner, live: "I need MASSIVE acceleration to get AWAY ... STRAFE needs to
+    // work"). Before, boost only multiplied W/S, so a boosted dodge was 5x weaker
+    // than a boosted charge and escaping a close contact felt impossible.
     for (int k = 0; k < 3; ++k)
-        accel[k] += rightW[k] * in.moveStrafe * m_tuning.maxStrafeAccel;
+        accel[k] += rightW[k] * in.moveStrafe * m_tuning.maxStrafeAccel * boost;
     // Up impulse (Space mapped to jumpPressed; we re-use the bool as a held
     // axis here — the showcase wraps the polling so press = +1, release = 0).
     if (in.jumpPressed) {
         for (int k = 0; k < 3; ++k)
-            accel[k] += upW[k] * m_tuning.maxStrafeAccel;
+            accel[k] += upW[k] * m_tuning.maxStrafeAccel * boost;
     }
 
     // ---- Integrate linear velocity + drag ----------------------------------
@@ -607,6 +610,21 @@ void SpacePilotController::cameraBasis(float outPos[3], float outFwd[3], float o
         outPos[1] = m_pos[1] + fwdW[1] * 0.4f;
         outPos[2] = m_pos[2] + fwdW[2] * 0.4f;
     }
+}
+
+bool SpacePilotController::pushOut(const float center[3], float radius) {
+    float to[3] = { m_pos[0] - center[0], m_pos[1] - center[1], m_pos[2] - center[2] };
+    const float d = length3(to);
+    if (d >= radius || d < 1e-3f) return false;
+    const float inv = 1.0f / d;
+    for (int k = 0; k < 3; ++k) to[k] *= inv;              // outward normal
+    for (int k = 0; k < 3; ++k) m_pos[k] = center[k] + to[k] * radius;
+    // Cancel the inward velocity component (elastic-ish: reflect a little so the
+    // field reads as a BOUNCE, not molasses).
+    const float vin = m_vel[0]*to[0] + m_vel[1]*to[1] + m_vel[2]*to[2];
+    if (vin < 0.0f)
+        for (int k = 0; k < 3; ++k) m_vel[k] -= 1.35f * vin * to[k];
+    return true;
 }
 
 void SpacePilotController::toggleCameraMode() {

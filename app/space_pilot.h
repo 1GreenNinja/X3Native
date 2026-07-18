@@ -169,6 +169,13 @@ public:
     // 1P sits at the nose; 3P chases behind + above, both rolling with the hull.
     void cameraBasis(float outPos[3], float outFwd[3], float outUp[3]) const;
 
+    // FORCE FIELD: if the ship is inside the sphere (center, radius), project it
+    // back to the surface and cancel the inward velocity component — a shield
+    // BOUNCE, not a wall glitch. Host calls this per frame against capital-ship /
+    // hazard bubbles ("I fly right thru the enemy ship ... we SERIOUSLY NEED the
+    // force field"). Returns true if it pushed (host can flash HUD / play a zap).
+    bool pushOut(const float center[3], float radius);
+
     // 1P / 3P toggle (showcase binds it to V).
     void toggleCameraMode();
     bool isThirdPerson() const { return m_thirdPerson; }

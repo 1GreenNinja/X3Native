@@ -246,8 +246,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // The stock cinematic-arcade defaults read sluggish from inside the cockpit;
     // a fighter wants violent thrust + hard strafe so dodging feels like flying.
     x3::game::SpacePilotController::Tuning tun{};
-    tun.maxLinearAccel = 70.0f;   // was 25 — throws you back in the seat
+    tun.maxLinearAccel = 130.0f;  // owner, live: "W and S do not provide enough
+                                  // acceleration" (was 70; boosted strafe outran it)
     tun.maxStrafeAccel = 44.0f;   // A/D strafe: hard left/right dodge authority
+                                  // (x5 under Shift — the escape move)
     tun.boostMul       = 5.0f;    // SHIFT = ANTIMATTER BOOST (owner ask) — dramatic,
                                   // you feel it slam the ship forward, not a nudge.
     tun.maxSpeed       = 360.0f;  // raised so the boost has real top-end to reach for
@@ -409,6 +411,19 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         pilot.setRollInput(rollAxis);
         pilot.update(in, dt, *phys);
 
+        // ---- FORCE FIELDS (owner: "I fly right thru the enemy ship"). The player
+        //      bounces off the capital's shield bubble and off each fighter's hull
+        //      bubble — a shield BOUNCE (pushOut cancels+reflects inward velocity).
+        {
+            const float capC[3] = { 200.0f, 0.0f, 0.0f };
+            pilot.pushOut(capC, 110.0f);                    // capital shield bubble
+            for (uint32_t i = 0; i < enemies.count(); ++i) {
+                const auto& es = enemies.ship(i);
+                if (es.hull <= 0) continue;
+                pilot.pushOut(es.pos, 16.0f);               // fighter hull bubble
+            }
+        }
+
         // ---- Enemy AI tick + salvo accounting (dodge metric). ----
         const x3::phys::Vec3 pp = pilot.pos();
         const x3::phys::Vec3 pv = pilot.velocity();
@@ -558,15 +573,27 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     const x3::phys::Vec3 pf3 = pilot.forward();
                     const float sp[3] = { pp3.x, pp3.y, pp3.z };
                     const float sf[3] = { pf3.x, pf3.y, pf3.z };
-                    x3::apphost::drawIntroShip(*hc.device, frame, playerDraw, sp, sf, 4.0f);
+                    // Scale 1.0, NOT 4.0: JakeFighterShip_textured.glb is ALREADY a
+                    // ~10 m hull at native scale (measured 7.1 x 2.6 x 10.1 m). At 4x
+                    // it was a 40 m building wrapped around the chase camera — the
+                    // owner's whole screen was his own unlit hull, every enemy hidden
+                    // behind it ("I cannot see the enemy ship at ALL in combat").
+                    x3::apphost::drawIntroShip(*hc.device, frame, playerDraw, sp, sf, 1.0f);
                 }
                 for (uint32_t i = 0; i < enemies.count(); ++i) {
                     const auto& e = enemies.ship(i);
                     if (e.hull <= 0) continue;
-                    // Drawn at 6 m (was 2.5): a fighter you can actually SEE and read the
-                    // facing of at dogfight range, not a dot.
+                    // DISTANCE-COMPENSATED scale (owner: "I cannot SEE the enemy
+                    // ship after I get even a TINY bit away — it just disappears").
+                    // Base 6 m reads at dogfight range; past 150 m the draw grows
+                    // linearly (capped 4x at 600 m+) so a contact NEVER falls below
+                    // a readable on-screen size. The arcade trick every space game
+                    // uses — physical honesty loses to gameplay legibility here.
+                    const float dxE = e.pos[0]-cx, dyE = e.pos[1]-cy, dzE = e.pos[2]-cz;
+                    const float dE = std::sqrt(dxE*dxE + dyE*dyE + dzE*dzE);
+                    const float visScale = 6.0f * std::min(4.0f, std::max(1.0f, dE / 150.0f));
                     x3::apphost::drawIntroShip(*hc.device, frame, cockpit->enemyDraw,
-                                  e.pos, e.fwd, 6.0f);
+                                  e.pos, e.fwd, visScale);
                 }
                 const float capPos[3] = { 200.0f, 0.0f, 0.0f };   // was 280 — loom bigger
                 const float capFwd[3] = { -1.0f, 0.0f, 0.0f };
