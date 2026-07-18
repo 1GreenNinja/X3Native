@@ -88,3 +88,41 @@ doors/door_close.wav).
 |---|---|---|
 | music/club_ascension.wav | Free - Sci-Fi and Cyberpunk Music Pack / 01 Ascension.wav (~133 BPM) | -3 dB + 30 ms loop-seam crossfade |
 | interact/muzak_loop.wav  | Free - Sci-Fi and Cyberpunk Music Pack / 03 Descent.wav (~120 BPM) | mono mix, -10 dB (cabin background), loop crossfade — REPLACES the stdlib-synth loop |
+
+## Echo Harbor / echotropolis (audio-armory pass, 2026-07-17)
+
+The living-city soundscape for `--world echotropolis`, all under
+`assets/audio/echotropolis/**`. The first nine rows are the SAME files the
+cyberpunk-audio commit (5ecdeca) loaded from the hardcoded 14900K-only
+`D:/Assets/Cyberpunk Game/...` path — now committed repo-local and resolved via
+`resolveAudio()` so the city sounds on a fresh clone. The rest fill the silent
+slots: heli rotors, mine work, crowd murmur (reuses the committed `crowd/*.wav`),
+day-birds bed, gold-economy cues, build ticks, walk-mode footsteps.
+Conversion: `ffmpeg -ar 44100 -ac 1 -sample_fmt s16` (house convention).
+
+| Repo path (echotropolis/) | Source pack | Original filename | Use |
+|---|---|---|---|
+| ambient/city_bed.wav | Cyberpunk Game (ESM) | AMBSubn_Ambience Rainy Cyber City Noises Vehicles Urban Movements 01 | 2D city bed loop (80.7s) |
+| ambient/rain_urban.wav | Cyberpunk Game (ESM) | RAIN_Ambience Loop Weather Rain Urban Heavy 01 | 2D rain layer (26.7s) |
+| music/night_alleyways.wav | Cyberpunk Game (ESM) | MUSCLoop_Music Loop Explore Dark City Alleyways 01 | 2D music bed (120s) |
+| ambient/mine_hum.wav | Cyberpunk Game (ESM) | AMBDsgn_Ambience Loop Computer Servers High Hum 01 | 3D loop at the gold mine |
+| ambient/drone_buzz.wav | Cyberpunk Game (ESM) | DSGNDron_Ambience Loop Buzz Drone Hum Steady 01 | 3D loop over the crown |
+| ambient/harbor_ship_idle.wav | Cyberpunk Game (ESM) | BOATInt_Ambience Loop Ship Cargo Engine Idle Dark 01 | 3D loop in the harbor |
+| ui/confirm.wav | Cyberpunk Game (ESM) | UIAlert_UI Chatter Confirm Select Interact Short Techy 01 | panel/build/ride confirm |
+| ui/accept.wav | Cyberpunk Game (ESM) | UIAlert_UI Confirm Purchase Upgrade Positive Interact Interface 01 | play-as / build place |
+| ui/deny.wav | Cyberpunk Game (ESM) | UIAlert_UI Deny Error Wrong Negative Computer Interact Malfunction 01 | undo / unaffordable |
+| ambient/city_day_birds.wav | Cyberpunk Game (ESM) | AMBSubn_Ambience Loop Weather Wind City Birds Downpour 01 | NEW day bed; vol = f(sun elevation), silent at night |
+| vehicles/heli_rotor_a.wav | Cyberpunk Game (ESM) | SCIShip_Transportation Loop Hovercraft Idle 01 | patrol-heli rotor loop (pitch 0.88) — closest rotor-analog in the library; no true helicopter loop exists in D:\Assets |
+| vehicles/heli_rotor_b.wav | Cyberpunk Game (ESM) | SCIShip_Transportation Loop Hovercraft Idle 03 | patrol-heli rotor loop (pitch 0.94) |
+| vehicles/heli_rotor_c.wav | Cyberpunk Game (ESM) | SCIShip_Transportation Loop Hovercraft Idle 06 | patrol heli 3 (0.84) + OH1 hero (0.78) |
+| vehicles/drone_flyby_1..3.wav | Cyberpunk Game (ESM) | SCIShip_Transportation Drone Overhead Flyby 01/02/03 | occasional 3D flyby at a live drone's position |
+| mine/shovel_1..2.wav | Basic RPG Sounds (Multiple Solutions) | Shovel Digging 1/2 | mine-crew work one-shots at the seam |
+| mine/ore_clank_1..2.wav | Cyberpunk Game (ESM) | GOREMisc_Damage Impact Blunt Metal Armor Bash 01/03 | pick-on-ore clank variants (pitch-jittered at play) |
+| ui/gold_coin.wav | UI SFX Free Pack | Purchase/coins_1.wav | 3D coin clink AT the mine every 5 oz banked |
+| ui/gold_chaching.wav | UI SFX Free Pack | Purchase/coins_270.wav | 2D treasury cha-ching on day rollover |
+| ui/build_tick.wav | Terminal User Interface SFX Pack LITE | Navigation/Clicks/UIClick_Digital_HA_TerminalUI_09 | build-palette cycle/rotate tick |
+| ui/phase_chime.wav | Notification and Alerts | Chirp_Bell_Tone.wav | soft chime on time-of-day phase change |
+| footsteps/step_street_1..4.wav | Footsteps Sounds - Volume 02 (The Sound Guild) | Footstep_Shoe_On_Street_01..04 | walk-mode footsteps (distance-driven, round-robin + pitch jitter) |
+
+Crowd murmur reuses the already-committed `crowd/murmur_a.wav` / `crowd/murmur_b.wav`
+(see the crowd-chatter pass) as fixed 3D loops at the crown play-spots — no new files.
