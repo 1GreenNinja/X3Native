@@ -109,6 +109,15 @@ const float kWood[4]     = { 0.110f, 0.070f, 0.045f, 1.0f }; // dark wood panell
 const float kEmitAmberLo[4] = { 1.0f, 0.62f, 0.26f, 1.6f };  // warm amber strip/lantern
 const float kCatwalk[4]  = { 0.100f, 0.100f, 0.130f, 1.0f }; // steel-grate catwalk
 
+// ★ LAIR OVERLOOK WINDOW (POLISH stage15) — a REAL see-through cut in the club's
+// east (+X) wall, filled with the smoked dark glass. Shared by the east-wall
+// framing AND the Lair overlook glass so the hole and the pane line up exactly.
+// Local (pre-oy) coords: sill sits just above the Lair floor (22 ft = 6.71 m).
+const float kOvCz = 0.6f;    // window center Z (clear of the SE elevator gap @ z>2.05)
+const float kOvHz = 1.1f;    // window half-width (Z)
+const float kOvCy = 7.70f;   // window center Y (local)
+const float kOvHy = 0.95f;   // window half-height  -> y in [6.75, 8.65]
+
 // ---- Emissive helpers: { r, g, b, strength }. strength > 1 => HDR bloom. -----
 const float kEmitOff[4]     = { 0.0f, 0.0f, 0.0f, 0.0f };
 const float kEmitNeon[4]    = { 1.00f, 0.0f, 1.00f, 4.0f };  // magenta aerial-bar neon
@@ -778,8 +787,21 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     {
         const float entrW = 3.5f;                      // elevator opening width
         const float entrZ = CL / 2 - entrW / 2 - 1.0f; // near the SE corner
-        const float northLen = CL / 2 + (entrZ - entrW / 2);
-        box(CW / 2, CH / 2, -CL / 2 + northLen / 2, T / 2, CH / 2, northLen / 2, kWall, kEmitOff, true, 0.5f, &sWall);
+        const float nEnd = entrZ - entrW / 2;          // south end of the north wall run
+        // The north run carries the ★ LAIR OVERLOOK WINDOW: frame it (jambs N+S, sill,
+        // lintel) so the opening is a REAL hole — from the Lair you SEE THROUGH the
+        // dark glass down onto the dance floor (was: solid wall behind a painted panel).
+        const float wzN = kOvCz - kOvHz, wzS = kOvCz + kOvHz;   // window z-span [-0.5, 1.7]
+        const float wyB = kOvCy - kOvHy, wyT = kOvCy + kOvHy;   // window y-span [6.75, 8.65]
+        // (1) wall N of the window (full height).
+        { const float z0 = -CL / 2, z1 = wzN, len = z1 - z0;
+          box(CW / 2, CH / 2, z0 + len / 2, T / 2, CH / 2, len / 2, kWall, kEmitOff, true, 0.5f, &sWall); }
+        // (2) narrow jamb S of the window (full height, up to the elevator gap).
+        { const float z0 = wzS, z1 = nEnd, len = z1 - z0;
+          if (len > 0.02f) box(CW / 2, CH / 2, z0 + len / 2, T / 2, CH / 2, len / 2, kWall, kEmitOff, true, 0.5f, &sWall); }
+        // (3) sill below the window + (4) lintel above it (spanning the window z-width).
+        box(CW / 2, wyB / 2, kOvCz, T / 2, wyB / 2, kOvHz, kWall, kEmitOff, true, 0.5f, &sWall);
+        box(CW / 2, (wyT + CH) / 2, kOvCz, T / 2, (CH - wyT) / 2, kOvHz, kWall, kEmitOff, true, 0.5f, &sWall);
         const float southLen = CL / 2 - (entrZ + entrW / 2);
         if (southLen > 0.1f)
             box(CW / 2, CH / 2, CL / 2 - southLen / 2, T / 2, CH / 2, southLen / 2, kWall, kEmitOff, true, 0.5f, &sWall);
@@ -1694,34 +1716,39 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             const float cupCol[4] = { 0.6f, 0.6f, 0.62f, 1.0f };
             box(shX - 0.03f, shY + 0.06f, shZ + 0.12f, 0.04f, 0.05f, 0.04f, cupCol, kEmitOff, false); // the cup
             addLight(m_lights, shX - 0.35f, oy + shY - 0.15f, shZ, 0.11f, 0.05f, 1.10f, 2.6f);  // UV reading glow
-        }
-        box(lxc, LYl + 0.25f, -0.3f, 0.9f, 0.2f, 0.55f, kLeatherHi, kEmitOff, true);        // queen bed
-        addLight(m_lights, lxc, oy + LYl + lrH - 0.3f, denZ, 1.6f, 1.2f, 0.8f, 6.5f);       // warm den light
-        // ===== ADDITION ZONE (south half) — kitchen, living room, overlook =====
-        box(exW - 0.4f, LYl + 0.45f, 1.2f, 0.35f, 0.45f, 0.8f, kMetal, kEmitOff, true);     // kitchen counter
-        box(lxc - 0.2f, LYl + 0.3f, lzS - 0.4f, 0.7f, 0.3f, 0.35f, kLeather, kEmitOff, true); // living couch
-        // ★ DARK ONE-WAY GLASS OVERLOOK — wall-scale smoked blue-UV panel on the west
-        // (club) wall of the living room, looking DOWN over the dance floor.
-        {
-            x3::prims::PrimMesh pg = x3::prims::makeBox(0.02f, lrH * 0.42f, 1.2f,
-                                                        HL - 0.04f, oy + LYl + lrH * 0.5f, 1.4f, 1.0f);
-            Entity pe;
-            pe.mesh = device.createMesh(pg.verts.data(), (uint32_t)pg.verts.size(),
-                                        pg.index.data(), (uint32_t)pg.index.size());
-            pe.baseColor[0] = 0.03f; pe.baseColor[1] = 0.04f; pe.baseColor[2] = 0.08f; pe.baseColor[3] = 1.0f;
-            pe.emissive[0] = 0.04f; pe.emissive[1] = 0.05f; pe.emissive[2] = 0.14f; pe.emissive[3] = 0.25f;
-            pe.transparent = true;
-            pe.glass.opacity = 0.55f; pe.glass.refraction = 0.0f; pe.glass.roughness = 0.05f;
-            pe.glass.specular = 1.0f;
-            pe.glass.tint[0] = 0.20f; pe.glass.tint[1] = 0.30f; pe.glass.tint[2] = 0.55f;
-            pe.tag = (uint32_t)Tag::Static;
-            scene.add(pe);
             // DEDICATED NEUTRAL SHELF KEY (POLISH stage15): the blue UV wash above
             // rendered the emerald granite blue-black. A soft warm-WHITE key just over
             // the shelf lights the stone with NEUTRAL light so its DARK GREEN reads (the
             // UV glow stays as the §3.5 mood accent). Tight range = shelf-local. (+1 to
             // the point-light set — see the report; total stays under the 64 cap.)
             addLight(m_lights, shX - 0.3f, oy + shY + 0.55f, shZ, 1.65f, 1.54f, 1.38f, 2.4f);
+        }
+        box(lxc, LYl + 0.25f, -0.3f, 0.9f, 0.2f, 0.55f, kLeatherHi, kEmitOff, true);        // queen bed
+        addLight(m_lights, lxc, oy + LYl + lrH - 0.3f, denZ, 1.6f, 1.2f, 0.8f, 6.5f);       // warm den light
+        // ===== ADDITION ZONE (south half) — kitchen, living room, overlook =====
+        box(exW - 0.4f, LYl + 0.45f, 1.2f, 0.35f, 0.45f, 0.8f, kMetal, kEmitOff, true);     // kitchen counter
+        box(lxc - 0.2f, LYl + 0.3f, lzS - 0.4f, 0.7f, 0.3f, 0.35f, kLeather, kEmitOff, true); // living couch
+        // ★ DARK GLASS OVERLOOK — a REAL SEE-THROUGH cut (POLISH stage15). The club's
+        // east wall now has an actual window opening here (framed by the sill/lintel/
+        // jambs above); this pane FILLS that hole with the smoked dark glass, so from
+        // the Lair living room you look THROUGH it and down onto the dance floor, and
+        // from the floor it reads as dark glass. Was: a flat opaque-ish panel bolted to
+        // a solid wall (nothing behind it). Geometry matches the east-wall cut exactly.
+        {
+            x3::prims::PrimMesh pg = x3::prims::makeBox(0.015f, kOvHy, kOvHz,
+                                                        HL, oy + kOvCy, kOvCz, 1.0f);
+            Entity pe;
+            pe.mesh = device.createMesh(pg.verts.data(), (uint32_t)pg.verts.size(),
+                                        pg.index.data(), (uint32_t)pg.index.size());
+            pe.baseColor[0] = 0.03f; pe.baseColor[1] = 0.04f; pe.baseColor[2] = 0.08f; pe.baseColor[3] = 1.0f;
+            pe.emissive[0] = 0.03f; pe.emissive[1] = 0.04f; pe.emissive[2] = 0.11f; pe.emissive[3] = 0.18f;
+            pe.transparent = true;
+            pe.glass.opacity = 0.42f;     // SEE-THROUGH (was 0.55) — the floor reads through it
+            pe.glass.refraction = 0.0f; pe.glass.roughness = 0.04f;
+            pe.glass.specular = 1.0f;
+            pe.glass.tint[0] = 0.18f; pe.glass.tint[1] = 0.26f; pe.glass.tint[2] = 0.52f;
+            pe.tag = (uint32_t)Tag::Static;
+            scene.add(pe);
         }
     }
 
