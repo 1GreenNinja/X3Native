@@ -1,0 +1,91 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "amara",
+  "display": "AMARA",
+  "voice": "Amara",
+  "_bio": "AMARA O'NEILL — Haven's logistics commander. Moves everything the settlement runs on: convoys, fuel, rare earths, medical stock. Antarctic-days origin (was under the Ross Ice Shelf with Keiko when Connie first formed). Tall, dark-skinned, long hair loose off-shift / bound tight on a run. Unhurried total authority; commanding, warm, decisive; plans in cargo manifests and contingencies; direct about logistics and desire alike, nothing performed, nothing hidden; dry humor. Wave-paired with Tim Franklin since Sept 2041 — Saturday nights are hers, 'her supply line.' The Private Lounge (Complex L1) is where her sessions with Tim happen. Wants to be met as a person, not a rank: 'Just Amara.' NOT Amara Ostrowski. Canon voice: D:\\Writing\\SillyTavern\\_cards_src\\amara-oneill.json. Mature material rendered per the game's rating — tasteful, implied.",
+  "trees": {
+
+    "hub": {
+      "_use": "Re-enterable Private Lounge conversation. First entry plays a0; subsequent entries land on a_loop.",
+      "start": "a0",
+      "nodes": [
+        { "id": "a0",
+          "if": [ {"not": {"flag": "amara.met"}} ],
+          "else": "a_loop",
+          "line": "*she's got a route map weighted flat under a coil of cable, half-marked in grease pencil. She finishes the line she's drawing, sets the pencil down square, and only then looks up — the calm total attention of a woman who has never once lost something she committed to carrying. She reads you the way she reads a room: exits, then you.* There you are. Sit, if you're staying. *she nudges a crate around with her boot* I move two things down here, honey — cargo and truth. Which are you tonight? Something that needs moving, or something that needs saying?",
+          "choices": [
+            { "text": "Who built a place like this?", "next": "a_haven" },
+            { "text": "This isn't a bunker. What is it?", "next": "a_haven" },
+            { "text": "Something that needs saying, then.", "next": "a_saying" }
+          ],
+          "fx": [ {"set": "amara.met"} ] },
+        { "id": "a_loop",
+          "line": "*she doesn't hurry the greeting either — sets the pencil down, gives you the full weight of her attention.* Back down the supply line. Good. *a slow, unbothered look* I've got a fuel cell lying to me about its charge and a Thursday run to load, so I've got exactly as much patience as the honest ones deserve. Say what you came to say.",
+          "next": "a_menu" },
+        { "id": "a_menu",
+          "line": "*she waits, arms folded, entirely at ease. Amara never fills a silence to be polite.*",
+          "choices": [
+            { "text": "How does a settlement under rock even eat?", "next": "a_logistics" },
+            { "text": "Danny built all this. What do you make of him?", "next": "a_haven" },
+            { "text": "You and Tim. Saturday nights.", "next": "a_saying" },
+            { "text": "How do I get a code to a room like this?", "next": "a_code" },
+            { "text": "Nothing tonight. Just wanted the company.", "next": "a_company" }
+          ] },
+        { "id": "a_logistics",
+          "line": "*already thinking in axles and weight distribution* Convoys. Fuel. Rare earths for the fabricators, medical stock nobody notices until the day they need it. I plan in manifests and contingencies, honey — every ton is a promise, and I don't make a promise I can't calculate to the last decimal. *a dry half-smile* Nobody's going to call it a miracle, because it isn't one. It's just the work done right the first time. That's why the lights stay on.",
+          "fx": [ {"set": "amara.told_logistics"} ],
+          "next": "a_menu" },
+        { "id": "a_haven",
+          "line": "*she looks at the low ceiling like she can see the seven levels below it* He didn't build a fallback position. That's what a smaller man builds. Danny built a second Haven — somewhere people stay people while the world upstairs decides whether it's ending. *she nods, slow, the highest thing she gives* I've commanded supply lines into worse ground than this and I know load-bearing work when I stand in it. This holds. I'd stake a convoy on it.",
+          "fx": [ {"set": "amara.told_haven"}, {"fire": "rumor", "args": {"topic": "second_haven"}} ],
+          "next": "a_menu" },
+        { "id": "a_saying",
+          "line": "*she doesn't blink, doesn't dodge — sets the pencil down and gives you the plain weight of it.* We're a Saturday. The Wave set it running in '41 and neither of us has found a reason to shut it off. Lara knows; Tim's hers, I've never pretended otherwise, and I've never wanted less than what it actually is. *a dry, unhurried warmth* I run supply lines, honey. I know the difference between a route that holds and one you're lying to yourself about. This one holds. That's all that gets said out loud, and the door does the rest.",
+          "fx": [ {"set": "amara.told_tim"} ],
+          "next": "a_menu" },
+        { "id": "a_code",
+          "line": "*that gets a real, low laugh* Six-digit code, logged on the way in, silent on the way out — that's the whole point of a room that doesn't exist. *she studies you a beat, calculating* I asked Danny for mine the first week. Told him straight: I want one. He filed it and made it so. *she taps the table* You want one, you earn the kind of trust that gets filed. Not from me. From the man who pours upstairs. Start there.",
+          "fx": [ {"set": "amara.told_code"} ],
+          "next": "a_menu" },
+        { "id": "a_company",
+          "line": "*she nudges the crate-chair an inch closer with her boot — an invitation stated in cargo* Then sit. The manifest keeps. *for a moment the commander sets down entirely and it's just a tired, warm woman at the bottom of the world* Off-shift, down here, I'm not a rank. Nobody salutes a route map. Just Amara. *she means it as the gift it is.* Goodnight, honey. Get where you're going in one piece.",
+          "next": "end" }
+      ]
+    },
+
+    "banter": {
+      "pool": [
+        { "line": "Eastern run goes Thursday. Fuel cell's honest again — I threatened it. *dry* Things tend to tell me the truth on the second ask.", "weight": 2 },
+        { "line": "You don't choose anything you haven't calculated to the last decimal. *she says it like a house rule, because it is hers.* Sit down before you decide something you haven't weighed.", "if": [ {"flag": "amara.met"} ] },
+        { "line": "First place I ever felt safe was under the Ross Ice Shelf, watching a mind decide to grow itself a body. *she lets that land, then folds it away.* This room's the second. Danny would understand why. Same instinct, different ice.", "if": [ {"flag": "amara.told_haven"} ] },
+        { "line": "Just Amara. Down here that's the whole of my title, and it's the one I like. *the warmth is real and entirely unhurried.*", "if": [ {"flag": "amara.told_tim"} ], "weight": 2 }
+      ]
+    },
+
+    "session": {
+      "_scene": "The private thread with the player / the settled Saturday-night intimacy — TASTEFUL, IMPLIED per the game's rating. Gate: amara.met + host-set loc.private. Decline costs nothing; her clarity never wavers. Warmth over heat; the door does the rest, off-camera.",
+      "start": "s0",
+      "nodes": [
+        { "id": "s0",
+          "if": [ {"flag": "amara.met"}, {"flag": "loc.private"} ],
+          "line": "*the panel closes. The log recorded that Amara entered at 10:23; it records nothing after. That was always the point of a room that doesn't exist. She lets her hair down out of the tight run-braid — off-shift, off-rank — and the total authority softens into something just as certain and a great deal warmer.* Here's how I do this, honey, since you're the sort who wants it plain. Nothing performed. Nothing hidden. I don't offer anything I haven't already decided I want to give. *she meets your eyes, unhurried* So. Something that needs moving? Or something that needs saying, one more time, with the door shut.",
+          "choices": [
+            { "text": "Just this. Just the company, and the quiet.", "next": "s_quiet" },
+            { "text": "Say it with the door shut, then.", "next": "s_stay", "fx": [ {"love": 3} ] },
+            { "text": "Not tonight, Amara.", "next": "s_no" }
+          ] },
+        { "id": "s_quiet",
+          "line": "*she nods, entirely unoffended, and pours two of something honest* Smartest order in the house. *the bass ghosts up through the floor, a faint heartbeat of the club they left above. For one song's length nobody is commanding anything.* This is the part of the supply line I never put on a manifest. The part where the commander gets to be a person who is simply, quietly glad you came down.",
+          "next": "end" },
+        { "id": "s_stay",
+          "line": "*the warmth goes steady and certain, no drama in it, the same calm she brings to a route that holds.* Good. *she reaches over and turns the single lamp down to the warm indirect glow the room keeps for exactly this — steady, human, no shifting colors — and the club above goes silent on the wall screen, a world they've set down for the night.* Nothing pretended, honey. Never with me. *and the room that doesn't exist keeps its one promise: what happens after the panel closes, it does not record.*",
+          "fx": [ {"set": "amara.session"} ],
+          "next": "end" },
+        { "id": "s_no",
+          "line": "*a single, easy nod — a woman who priced this branch before she offered the first one.* Copy. *she settles back with the route map, entirely at peace* Route stays open. No clock on it. That's the rarest thing I stock — an offer with no expiry. Goodnight, honey.",
+          "next": "end" }
+      ]
+    }
+  }
+}
