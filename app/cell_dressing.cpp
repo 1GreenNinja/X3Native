@@ -1002,6 +1002,37 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // 2.4 -> 1.10, the /PI cut — it was tuned against GLB props that shaded at 1/PI.
         // The BARREL above stays the explodable one (e7a2986); only the LIGHT takes the cut.
         addLight(bt.mainHall, hx0 + 1.2f, hCeil - 0.4f, hz, 5.0f, 1.10f, 0.055f, 0.03f);
+
+        // ================= OPENING-ROUTE SCONCE RUN (corridor readability) =========
+        // OBSERVED (live playtest + docs/screenshots/opening_flow baseline): the Main
+        // Hall read as a BLACK TUBE — the recipe's ceiling row shows as a line of
+        // bright dots down the lid, but their pools die before the walls/floor, and
+        // the only other cue was the red mouth light ("red ceiling dots" corridor).
+        // Doctrine fix (motivated lighting, NOT an ambient boost): a run of REAL wall
+        // sconces down BOTH long walls of the hall — the same SciFi_Warehouse_Kit
+        // fixture + warm pool the cell's door sconce proved, alternating sides every
+        // ~6.5 m at head height, each carrying a local pool that overlaps the next.
+        // Visible sources, pools of light, navigable without the flashlight; the
+        // in-between stays moody. OPENING ROUTE ONLY: this dresses bt.mainHall (the
+        // first corridor past the cell) — no other room's statement is touched.
+        {
+            const float hx1 = H.x1();
+            const float emSconce[4] = { 1.0f, 0.86f, 0.62f, 1.0f };   // lit lens
+            const float sconceY = hfY + 2.2f;                          // head height
+            int side = 0;
+            for (float sx = hx0 + 3.0f; sx <= hx1 - 3.0f; sx += 6.5f, ++side) {
+                const bool onMinZ = (side % 2) == 0;                  // alternate walls
+                // Screen = local -Z -> world (sin yaw, 0, -cos yaw): face INTO the hall.
+                const float yaw = onMinZ ? kPi : 0.0f;
+                const float wz  = onMinZ ? (H.z0() + 0.10f) : (H.z1() - 0.10f);
+                place(aWLight, yaw, 1.0f, cx(kWLightAabb), cy(kWLightAabb), kWLightAabb.maxz,
+                      sx, sconceY, wz, emSconce, tSteel);
+                // Its pool: warm tungsten, ranged so neighbouring pools OVERLAP on the
+                // walls (6.5 m pitch / 6.5 m range) — a rhythm of pools, not a wash.
+                const float lz = onMinZ ? (H.z0() + 0.55f) : (H.z1() - 0.55f);
+                addLight(bt.mainHall, sx, sconceY, lz, 6.5f, 2.60f, 2.17f, 1.51f);
+            }
+        }
     }
 
     m_built = propsLoaded() > 0;
