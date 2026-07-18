@@ -40,6 +40,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 namespace x3::game {
@@ -483,6 +484,70 @@ std::vector<uint8_t> makeCmuBlockRGBA(uint32_t n) {
             p[3] = 255;
         }
     }
+    return px;
+}
+
+// LATE NIGHT SPEED neon SIGN (LNS GARAGE, Tim 2026-07-18): the shop branding on the
+// wall. A compact 5x7 uppercase bitmap font bakes the words onto a dark panel as a
+// hot red/white neon glow (letters + a soft 1-cell halo). Only the glyphs the sign
+// needs are defined. `line` is centred; empty cells stay near-black.
+std::vector<uint8_t> makeSignRGBA(uint32_t w, uint32_t h, const char* line,
+                                  float rr, float rg, float rb) {
+    // 5x7 glyphs (7 rows, each a 5-bit mask, MSB = left).
+    auto glyph = [](char c, uint8_t rows[7]) -> bool {
+        auto set = [&](uint8_t a,uint8_t b,uint8_t d,uint8_t e,uint8_t f,uint8_t g,uint8_t i){
+            rows[0]=a;rows[1]=b;rows[2]=d;rows[3]=e;rows[4]=f;rows[5]=g;rows[6]=i; };
+        switch (c) {
+            case 'L': set(0x10,0x10,0x10,0x10,0x10,0x10,0x1F); return true;
+            case 'A': set(0x0E,0x11,0x11,0x1F,0x11,0x11,0x11); return true;
+            case 'T': set(0x1F,0x04,0x04,0x04,0x04,0x04,0x04); return true;
+            case 'E': set(0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F); return true;
+            case 'N': set(0x11,0x19,0x15,0x13,0x11,0x11,0x11); return true;
+            case 'I': set(0x1F,0x04,0x04,0x04,0x04,0x04,0x1F); return true;
+            case 'G': set(0x0E,0x11,0x10,0x17,0x11,0x11,0x0E); return true;
+            case 'H': set(0x11,0x11,0x11,0x1F,0x11,0x11,0x11); return true;
+            case 'S': set(0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E); return true;
+            case 'P': set(0x1E,0x11,0x11,0x1E,0x10,0x10,0x10); return true;
+            case 'D': set(0x1E,0x11,0x11,0x11,0x11,0x11,0x1E); return true;
+            default:  set(0,0,0,0,0,0,0); return false;   // space / unknown
+        }
+    };
+    std::vector<uint8_t> px((size_t)w * h * 4);
+    for (size_t i = 0; i < (size_t)w * h; ++i) {   // dark panel bg
+        px[i*4+0] = 6; px[i*4+1] = 5; px[i*4+2] = 9; px[i*4+3] = 255;
+    }
+    const uint32_t n = (uint32_t)std::strlen(line);
+    if (n == 0) return px;
+    const uint32_t cellW = 6, cellH = 7;                    // 5+1 spacing
+    const uint32_t textWcells = n * cellW;
+    // Scale each font-cell to fill ~80% of the panel width.
+    const uint32_t scale = std::max(1u, (uint32_t)((w * 0.86f) / textWcells));
+    const uint32_t textPxW = textWcells * scale, textPxH = cellH * scale;
+    const uint32_t ox = (w > textPxW) ? (w - textPxW) / 2 : 0;
+    const uint32_t oy2 = (h > textPxH) ? (h - textPxH) / 2 : 0;
+    // Render lit cells + a soft halo.
+    auto lit = [&](int cx, int cy) -> bool {
+        if (cx < 0 || cy < 0) return false;
+        const uint32_t ci = (uint32_t)cx / cellW;
+        if (ci >= n) return false;
+        const uint32_t gx = (uint32_t)cx % cellW, gy = (uint32_t)cy;
+        if (gx >= 5 || gy >= 7) return false;
+        uint8_t rows[7]; glyph(line[ci], rows);
+        return (rows[gy] >> (4 - gx)) & 1;
+    };
+    for (uint32_t y = 0; y < textPxH; ++y)
+        for (uint32_t x = 0; x < textPxW; ++x) {
+            const int cx = (int)(x / scale), cy = (int)(y / scale);
+            float glow = 0.0f;
+            if (lit(cx, cy)) glow = 1.0f;
+            else if (lit(cx-1,cy)||lit(cx+1,cy)||lit(cx,cy-1)||lit(cx,cy+1)) glow = 0.35f; // halo
+            if (glow <= 0.0f) continue;
+            uint8_t* p = &px[((size_t)(oy2 + y) * w + (ox + x)) * 4];
+            const float br = glow;
+            p[0] = (uint8_t)(std::min(1.0f, rr * br + (glow>0.9f?0.35f:0.0f)) * 255);
+            p[1] = (uint8_t)(std::min(1.0f, rg * br + (glow>0.9f?0.30f:0.0f)) * 255);
+            p[2] = (uint8_t)(std::min(1.0f, rb * br + (glow>0.9f?0.30f:0.0f)) * 255);
+        }
     return px;
 }
 
@@ -1449,6 +1514,89 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                     box(wxp, (carY + 0.02f) - oy, wzp, 0.10f, 0.33f, 0.33f, kTire, kEmitOff, false);
                     box(wxp + wx * 0.02f, (carY + 0.02f) - oy, wzp, 0.05f, 0.17f, 0.17f, kRim, kEmitOff, false);
                 }
+        }
+    }
+
+    // ==================================================================
+    // ★ SHOP PROPS + LATE NIGHT SPEED BRANDING (LNS GARAGE, Tim 2026-07-18).
+    // Red Snap-on-style rolling TOOL CHESTS + a WORKBENCH (with vise + pegboard) +
+    // a push BROOM against a cabinet, along the SOUTH wall by the car; and the
+    // emissive "LATE NIGHT SPEED" neon sign high on the wall — the club IS the shop.
+    // ==================================================================
+    {
+        const float southZ = CL / 2 - 0.55f;    // just off the south wall (+Z)
+        const float kToolRed[4]  = { 0.46f, 0.05f, 0.055f, 1.0f };  // Snap-on red
+        const float kToolRedHi[4]= { 0.60f, 0.08f, 0.08f, 1.0f };
+        const float kChromeD[4]  = { 0.62f, 0.63f, 0.70f, 1.0f };
+        const float kBenchTop[4] = { 0.20f, 0.21f, 0.24f, 1.0f };   // steel bench top
+        const float kBlackR[4]   = { 0.05f, 0.05f, 0.06f, 1.0f };
+        // --- Three rolling TOOL CHESTS in a row (roll-cab + top chest + chrome drawers). ---
+        auto toolChest = [&](float cx, float widthHalf) {
+            const float bodyH = 0.55f;      // roll cab lower body half-height
+            // Roll cab body.
+            box(cx, bodyH, southZ, widthHalf, bodyH, 0.28f, kToolRed, kEmitOff, true);
+            // Top chest (slightly inset), sits on the cab.
+            box(cx, bodyH * 2 + 0.28f, southZ, widthHalf - 0.02f, 0.28f, 0.26f, kToolRedHi, kEmitOff, true);
+            // Chrome drawer pulls (horizontal strips) down the cab + chest faces.
+            for (int d = 0; d < 4; ++d)
+                box(cx, 0.28f + d * 0.26f, southZ - 0.29f, widthHalf - 0.06f, 0.022f, 0.02f, kChromeD, kEmitOff, false);
+            for (int d = 0; d < 2; ++d)
+                box(cx, bodyH * 2 + 0.14f + d * 0.28f, southZ - 0.27f, widthHalf - 0.08f, 0.02f, 0.02f, kChromeD, kEmitOff, false);
+            // Casters.
+            for (int s = -1; s <= 1; s += 2)
+                box(cx + s * (widthHalf - 0.06f), 0.04f, southZ, 0.05f, 0.04f, 0.05f, kBlackR, kEmitOff, false);
+        };
+        toolChest(-1.2f, 0.42f);
+        toolChest( 0.0f, 0.42f);
+        toolChest( 1.7f, 0.55f);   // wider top-box unit
+        // --- WORKBENCH (steel top on legs) with a red bench VISE + a wall PEGBOARD. ---
+        {
+            const float bx = 4.2f, bTopY = 0.92f;
+            box(bx, bTopY, southZ, 0.9f, 0.04f, 0.32f, kBenchTop, kEmitOff, true);   // top
+            for (int s = -1; s <= 1; s += 2)                                          // legs
+                for (int t = -1; t <= 1; t += 2)
+                    box(bx + s * 0.8f, bTopY / 2, southZ + t * 0.24f, 0.04f, bTopY / 2, 0.04f, kBlackR, kEmitOff, true);
+            box(bx - 0.55f, bTopY + 0.12f, southZ, 0.10f, 0.08f, 0.10f, kToolRed, kEmitOff, false); // vise
+            box(bx - 0.55f, bTopY + 0.12f, southZ - 0.12f, 0.02f, 0.06f, 0.06f, kChromeD, kEmitOff, false); // vise screw
+            // Pegboard on the wall behind the bench (a panel + a few hung tool silhouettes).
+            box(bx, 2.0f, CL / 2 - 0.16f, 0.9f, 0.55f, 0.02f, kBlackR, kEmitOff, false);
+            for (int p = -2; p <= 2; ++p)
+                box(bx + p * 0.3f, 2.05f, CL / 2 - 0.19f, 0.03f, 0.18f, 0.015f, kChromeD, kEmitOff, false);
+        }
+        // --- Push BROOM leaning against the last tool chest (near-vertical handle + head). ---
+        {
+            const float brX = 2.5f, brZ = southZ - 0.5f;
+            box(brX, 0.9f, brZ, 0.015f, 0.9f, 0.015f, kWood, kEmitOff, false);        // handle
+            box(brX, 0.04f, brZ + 0.06f, 0.16f, 0.04f, 0.05f, kBlackR, kEmitOff, false); // bristle head
+        }
+        // --- ★ "LATE NIGHT SPEED" neon SIGN, high on the south wall (faces the floor). ---
+        {
+            const uint32_t sw = 512, sh = 96;
+            auto sgpx = makeSignRGBA(sw, sh, "LATE NIGHT SPEED", 1.0f, 0.10f, 0.10f);   // hot red neon
+            const x3::rhi::TextureHandle sgTex = device.createTexture(sgpx.data(), sw, sh, true);
+            const float sX = 1.5f, sY = 5.4f, sZ = CL / 2 - 0.42f;   // clear of the wall inner face (~-0.15)
+            const float sHW = 3.6f, sHH = sHW * (float)sh / (float)sw;   // keep aspect
+            const float wy = oy + sY;
+            // A single front-facing QUAD with explicit 0..1 UVs (makeBox tiles a wide
+            // decal — a quad maps the sign texture exactly ONCE). Normal faces -Z (into
+            // the room). Winding CCW when viewed from -Z.
+            x3::prims::PrimMesh sg;
+            const float nZ = -1.0f;
+            // U flipped (viewer at -Z looking +Z sees +X on the left): U=1 at -X, U=0 at +X
+            // so "LATE NIGHT SPEED" reads left-to-right, not mirrored.
+            sg.verts.push_back({{sX-sHW, wy+sHH, sZ}, {0,0,nZ}, {1,0}});   // TL
+            sg.verts.push_back({{sX-sHW, wy-sHH, sZ}, {0,0,nZ}, {1,1}});   // BL
+            sg.verts.push_back({{sX+sHW, wy-sHH, sZ}, {0,0,nZ}, {0,1}});   // BR
+            sg.verts.push_back({{sX+sHW, wy+sHH, sZ}, {0,0,nZ}, {0,0}});   // TR
+            sg.index = { 0, 1, 3, 1, 2, 3,   0, 3, 1, 1, 3, 2 };   // double-sided (cull-proof)
+            const float signCol[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+            const uint32_t sid = prim(std::move(sg), signCol, kEmitOff, sgTex, x3::rhi::TextureHandle{}, false);
+            // Use the PROVEN OLED-glass per-texel emissive path (the EQ screens glow this
+            // way): the letters emit, the dark panel emits nothing.
+            oledGlass(sid, sgTex);
+            Entity& se = scene.get(sid);
+            se.emissive[3] = 3.2f;             // brighter than a screen — it's a neon sign
+            se.glass.opacity = 1.0f;           // solid panel (no see-through)
         }
     }
 
