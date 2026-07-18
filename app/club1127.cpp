@@ -1363,15 +1363,92 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // explicitly by update() via m_sparkleLightIdx, so the moving-head loop — which
         // only touches indices >= m_staticLightCount — never clobbers them).
         {
-            const float sparkleHue[4][3] = {   // 4 (was 6) — reserve budget for the underground
+            const float sparkleHue[3][3] = {   // 3 (was 4) — reclaimed ONE for the garage
                 { 2.4f, 0.6f, 2.4f }, { 0.5f, 1.8f, 2.6f }, { 2.6f, 1.6f, 0.4f },
-                { 0.6f, 2.6f, 1.2f },
-            };
-            for (int i = 0; i < 4; ++i) {
+            };                                 // shop worklight (point-light cap = 64)
+            for (int i = 0; i < 3; ++i) {
                 m_sparkleLightIdx.push_back(m_lights.size());
                 addLight(m_lights, 0.0f, oy + 5.0f, 0.0f,
                          sparkleHue[i][0], sparkleHue[i][1], sparkleHue[i][2], 3.2f);
             }
+        }
+    }
+
+    // ==================================================================
+    // ★ THE GARAGE — SPORTS CAR UP ON A TWO-POST LIFT (LNS GARAGE, Tim 2026-07-18).
+    // Club 1127 IS the Late Night Speed shop: a real sports car (CTR.glb) hoisted on a
+    // symmetric two-post lift is the centrepiece. Parked off to the SOUTH-EAST, clear
+    // of the dance floor. The lift = 2 columns + base plates + overhead beam + 4 swing
+    // arms & pads; the CAR is a static GLB instance raised ~1.85 m so you can stand
+    // under it. (The GLB sits on y=0, +Z=nose, scale 1 — same as --screenshot-car.)
+    // ==================================================================
+    {
+        const float lx = 9.2f, lz = 4.4f;      // lift XZ (SE, near the south wall)
+        const float liftH = 1.85f;             // wheels/car raised this high
+        const float armY  = liftH;             // swing-arm/pad plane
+        const float postHalfZ = 1.55f;         // posts sit fore/aft of the car (along Z=car length)
+        const float kLiftRed[4]   = { 0.42f, 0.045f, 0.045f, 1.0f };  // shop-equipment red
+        const float kLiftSteel[4] = { 0.22f, 0.22f, 0.25f, 1.0f };
+        // Two columns (fore & aft of the car, straddling its length along Z).
+        for (int s = -1; s <= 1; s += 2) {
+            const float pz = lz + s * postHalfZ;
+            box(lx, 1.35f, pz, 0.14f, 1.35f, 0.16f, kLiftRed, kEmitOff, true);   // column
+            box(lx, 0.04f, pz, 0.55f, 0.04f, 0.34f, kLiftSteel, kEmitOff, true); // base plate
+            // Two swing arms + lift pads reaching UNDER the car from this column.
+            for (int a = -1; a <= 1; a += 2) {
+                box(lx + a * 0.55f, armY, pz + (s > 0 ? -0.45f : 0.45f), 0.45f, 0.05f, 0.06f, kLiftSteel, kEmitOff, false); // arm
+                box(lx + a * 0.55f, armY + 0.05f, pz + (s > 0 ? -0.75f : 0.75f), 0.10f, 0.06f, 0.10f, kLiftRed, kEmitOff, false); // rubber pad
+            }
+        }
+        // Overhead equaliser beam tying the two column tops (symmetric two-post look).
+        box(lx, 2.78f, lz, 0.12f, 0.10f, postHalfZ + 0.16f, kLiftRed, kEmitOff, false);
+        // Caged SHOP WORKLIGHT clamped to the overhead beam (the one warm work-lamp that
+        // lights the hoist — reclaimed from an ORB sparkle so the point-light cap holds).
+        {
+            const float emWork[4] = { 1.0f, 0.86f, 0.55f, 3.4f };
+            box(lx - 0.7f, 2.55f, lz - 0.4f, 0.09f, 0.06f, 0.09f, kMetal, emWork, false); // lamp head (room side)
+            box(lx - 0.7f, 2.70f, lz - 0.4f, 0.012f, 0.12f, 0.012f, kChrome, kEmitOff, false); // hook wire
+            // Warm shop key raking the WEST/nose flank that faces the dance floor.
+            addLight(m_lights, lx - 1.3f, oy + 2.5f, lz - 0.6f, 1.75f, 1.35f, 0.80f, 8.0f);
+        }
+        // THE SPORTS CAR — a low, wide, glossy coupe modelled from primitives (the
+        // module is graybox-faithful; a boxed silhouette reads as a car on the hoist).
+        // Long axis runs Z (fore/aft between the posts), raised on the pads at carY.
+        {
+            const float carY = oy + armY + 0.16f;   // sits on the rubber pads
+            const float halfL = 1.95f, halfW = 0.86f; // ~3.9 m long, 1.7 m wide
+            const float kCarPaint[4] = { 0.55f, 0.045f, 0.05f, 1.0f };  // candy red
+            const float kCarGlass[4] = { 0.03f, 0.04f, 0.06f, 1.0f };   // dark glass
+            const float kTire[4]     = { 0.028f, 0.028f, 0.032f, 1.0f };
+            const float kRim[4]      = { 0.55f, 0.56f, 0.62f, 1.0f };
+            const float emHead[4]    = { 1.0f, 0.95f, 0.75f, 2.2f };    // headlight
+            const float emTail[4]    = { 1.0f, 0.05f, 0.05f, 2.4f };    // taillight
+            auto glossy = [&](float x, float y, float z, float hx, float hy, float hz,
+                              const float* col) {
+                x3::prims::PrimMesh g = x3::prims::makeBox(hx, hy, hz, x, y, z, 1.0f);
+                prim(std::move(g), col, kEmitOff, x3::rhi::TextureHandle{}, mrGlass, false);
+            };
+            // Lower body (sill-to-belt) + upper body taper.
+            glossy(lx, carY + 0.28f, lz, halfW, 0.22f, halfL, kCarPaint);
+            glossy(lx, carY + 0.54f, lz, halfW - 0.06f, 0.10f, halfL - 0.10f, kCarPaint);
+            // Greenhouse / cabin (set back, narrower) + raked dark glass.
+            glossy(lx, carY + 0.78f, lz - 0.15f, halfW - 0.24f, 0.20f, halfL - 0.95f, kCarPaint);
+            box(lx, (carY + 0.78f) - oy, lz - 0.15f, halfW - 0.20f, 0.18f, halfL - 1.05f, kCarGlass, kEmitOff, false);
+            // Hood + trunk slopes (thin wedges front & rear).
+            glossy(lx, carY + 0.50f, lz + halfL - 0.55f, halfW - 0.10f, 0.05f, 0.55f, kCarPaint); // hood (front +Z? nose -Z)
+            glossy(lx, carY + 0.52f, lz - halfL + 0.45f, halfW - 0.12f, 0.05f, 0.45f, kCarPaint); // deck
+            // Headlights (nose, -Z) + taillights (tail, +Z).
+            box(lx - 0.5f, (carY + 0.42f) - oy, lz - halfL + 0.02f, 0.16f, 0.07f, 0.03f, kRim, emHead, false);
+            box(lx + 0.5f, (carY + 0.42f) - oy, lz - halfL + 0.02f, 0.16f, 0.07f, 0.03f, kRim, emHead, false);
+            box(lx, (carY + 0.48f) - oy, lz + halfL - 0.02f, halfW - 0.16f, 0.05f, 0.03f, kRim, emTail, false);
+            // Four wheels (tires + rims) hanging under the raised body.
+            for (int wx = -1; wx <= 1; wx += 2)
+                for (int wz = -1; wz <= 1; wz += 2) {
+                    const float wxp = lx + wx * (halfW - 0.02f);
+                    const float wzp = lz + wz * (halfL - 0.55f);
+                    box(wxp, (carY + 0.02f) - oy, wzp, 0.10f, 0.33f, 0.33f, kTire, kEmitOff, false);
+                    box(wxp + wx * 0.02f, (carY + 0.02f) - oy, wzp, 0.05f, 0.17f, 0.17f, kRim, kEmitOff, false);
+                }
         }
     }
 
