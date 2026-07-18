@@ -99,12 +99,16 @@ const float kEmitLed[4]     = { 0.10f, 1.00f, 0.10f, 3.0f };  // amp power LED
 const float kEmitAbTop[4]   = { 0.353f, 0.353f, 0.416f, 1.2f };// aerial-bar polished top
 // Blacklight base emissive (PULSED each frame in update()): deep UV violet.
 // POLISH (fix/club-polish, Tim 2026-07-17): a REAL blacklight FLUORESCES — it does
-// not blast light. The signature is a DEEP, DIM UV-violet glow. Hue kept a true UV
-// violet (a little red under a lot of blue) and the tube bloom dropped 4.0 -> 1.35 so
-// the tubes read as SUBTLE deep-violet bars, NOT blown magenta rods. The room stays
+// not blast light. The signature is a DEEP, DIM UV-blue glow. Hue is now PURE BLUE-UV
+// (fix/blacklight-blue: red dropped 0.45 -> 0.10, a whisper of violet under a lot of
+// blue — no pink) and the tube bloom stays dim at 1.35 so the tubes read as SUBTLE
+// deep blue-violet bars, NOT blown magenta rods. The room stays
 // as lit as the prior build because the light the hot tubes used to throw is
 // COMPENSATED by the raised room-wide UV washes (see the UV atmosphere + washes below).
-const float kBlacklightR = 0.45f, kBlacklightG = 0.0f, kBlacklightB = 1.0f;
+// PURE BLUE-UV (fix/blacklight-blue, Tim 2026-07-17): the 0.45 red read PINK-violet.
+// A real blacklight is deep blue-violet — almost pure blue with a whisper of violet.
+// Red dropped 0.45 -> 0.10 (near-zero, just a whisper), blue held at 1.0, green 0.
+const float kBlacklightR = 0.10f, kBlacklightG = 0.0f, kBlacklightB = 1.0f;
 const float kBlacklightEmit = 1.35f;   // dim UV tube bloom (was 4.0 — a magenta bar)
 // Companion CAST color for each tube's point light (fix/club-blacklights): the
 // tubes were emissive-only geometry — they glowed as thin bars but cast NOTHING,
@@ -112,7 +116,7 @@ const float kBlacklightEmit = 1.35f;   // dim UV tube bloom (was 4.0 — a magen
 // update() pulses it in phase with the emissive. POLISH: dropped from a hot
 // 2.0/0.18/4.0 HDR wash to a GENTLE deep-violet local glow so the tube fluoresces
 // its patch of wall softly instead of blasting a magenta wash.
-const float kBlacklightCast[3] = { 0.55f, 0.05f, 1.10f };  // gentle deep-violet wall glow
+const float kBlacklightCast[3] = { 0.11f, 0.05f, 1.10f };  // BLUE-UV wall glow (red 0.55->0.11: no pink)
 const float kBlacklightCastRange = 5.0f;   // ~5 m local wall/near-dancer glow
 
 // Orbiter gel palettes (Tim addendum: "the lights move to the music"): update()
@@ -960,10 +964,10 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             { -CW / 3, CH * 0.5f, 0 }, { CW / 3, CH * 0.5f, 0 }
         };
         for (auto& p : uv)
-            addLight(m_lights, p[0], oy + p[1], p[2], 1.40f, 0.16f, 2.70f, 22.0f); // POLISH: raised
-                                        // (0.90/0.10/2.00 -> 1.40/0.16/2.70) to CARRY the room-wide
-                                        // violet the now-subtle blacklight tubes no longer blast —
-                                        // walls stay washed, tubes stay dim.
+            addLight(m_lights, p[0], oy + p[1], p[2], 0.28f, 0.16f, 2.70f, 22.0f); // BLUE-UV air
+                                        // (red 1.40 -> 0.28: was pink; blue held at 2.70 so the room-wide
+                                        // UV wash reads BLUE, not pink. Carries the room-wide UV the
+                                        // now-subtle blacklight tubes no longer blast — walls stay washed.)
     }
 
     // ==================================================================
@@ -1127,7 +1131,10 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 // alternates carry a FAINT violet under-glow breathing on the beat;
                 // the blacklights own the color now, not the tiles.
                 const bool lit = ((gx + gz) % 2 == 0);
-                const float emTileA[4] = { 0.32f, 0.05f, 0.60f, 0.55f };
+                // BLUE-UV (fix/blacklight-blue): red 0.32 -> 0.08 so the floor
+                // under-glow reads deep BLUE-violet, not pink/magenta — matches the
+                // blacklight tubes so the whole room's UV wash reads blue.
+                const float emTileA[4] = { 0.08f, 0.05f, 0.60f, 0.55f };
                 const float tileCol[4] = { lit ? 0.055f : 0.035f, lit ? 0.055f : 0.035f,
                                            lit ? 0.075f : 0.05f, 1.0f };
                 const uint32_t tid = box(tx, 0.12f, tz, (tw - 0.02f) / 2, 0.015f, (td - 0.02f) / 2,
@@ -1425,12 +1432,12 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // club washes: violet overhead, magenta over the bar side, UV-violet on the
     // mirror floor. They set the room's colored mood; the orbiters + fixtures pop
     // on top.)
-    addLight(m_lights, 0, oy + CH * 0.7f, 0, 1.05f, 0.30f, 1.55f, 25.0f);       // central overhead VIOLET wash
-                                                // (POLISH: 0.85/0.25/1.30 -> 1.05/0.30/1.55 — compensates
-                                                //  the dimmed blacklight tubes so the room stays lit)
-    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.70f, 0.20f, 1.10f, 10.0f); // ground-bar MAGENTA wash
-    addLight(m_lights, 0, oy + 2.0f, 0, 0.72f, 0.16f, 1.75f, 18.0f);            // UV-violet wash (mirror floor)
-                                                // (POLISH: 0.55/0.12/1.40 -> 0.72/0.16/1.75, same reason)
+    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.22f, 0.30f, 1.55f, 25.0f);       // central overhead BLUE-UV wash
+                                                // (BLUE-UV: red 1.05 -> 0.22 so the overhead UV reads blue,
+                                                //  not pink; blue held at 1.55 so the room stays lit)
+    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.70f, 0.20f, 1.10f, 10.0f); // ground-bar MAGENTA wash (bar-side accent, kept)
+    addLight(m_lights, 0, oy + 2.0f, 0, 0.20f, 0.16f, 1.75f, 18.0f);            // BLUE-UV wash (mirror floor)
+                                                // (BLUE-UV: red 0.72 -> 0.20, blue held at 1.75 — no pink)
 
     // DANCE-FLOOR KEY (fix/club-blacklights): the dancers rendered as SOLID BLACK
     // silhouettes — the orbiters sat at ceiling height so their pools hit the
