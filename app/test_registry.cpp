@@ -16,6 +16,7 @@
 #include "engine/core/x3_log.h"
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
+#include "club_listen.h"   // CLUB LISTEN MODE self-test (--test-listen)
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/rhi/FrustumCull.h"
 #include "engine/rhi/GpuCull.h"
@@ -978,6 +979,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
+    }
+    if (tf.testListen) {
+        x3::logInfo("running CLUB LISTEN MODE beat-detector self-test "
+                    "(synthetic click-track -> onset/tempo recovery; no audio device)...");
+        return x3::club_listen::runListenSelfTest() ? 0 : 1;
     }
     if (tf.testPerfshop) {
         x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "

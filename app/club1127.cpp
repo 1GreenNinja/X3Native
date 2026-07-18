@@ -35,6 +35,7 @@
 #include "club1127.h"
 #include "mesh_prims.h"
 #include "asset_root.h"
+#include "club_listen.h"   // CLUB LISTEN MODE: live-detected beat drive (external input)
 
 #include "engine/core/x3_log.h"
 
@@ -1943,9 +1944,24 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     // too"). ONE clock: the same kClubBpm envelope the subs/tiles/dancers already
     // rode, hoisted here so the LIGHTS share it instead of free-running on their
     // own arbitrary rates. Everything music-reactive below derives from these. ----
-    const float beatHz    = kClubBpm / 60.0f;
-    const float beatCount = t * beatHz;                    // absolute beat position
-    const float thump     = std::pow(std::max(0.0f, std::sin(beatCount * kPi)), 6.0f);
+    float beatHz    = kClubBpm / 60.0f;
+    float beatCount = t * beatHz;                          // absolute beat position
+    float thump     = std::pow(std::max(0.0f, std::sin(beatCount * kPi)), 6.0f);
+
+    // ---- CLUB LISTEN MODE (external drive input) ----------------------------
+    // When snd_listen is ON and a live signal is captured from the PC's audio
+    // (WASAPI loopback), the club rides the LIVE detected beat instead of the
+    // fixed house tempo: `beatCount` becomes the phase-locked live beat position
+    // (moving heads step on real onsets), `beatHz` the live tempo (dancers), and
+    // `thump` the live kick/bass envelope (subs/cones/tiles pump on the music).
+    // Off / silent -> this is a no-op and the internal kClubBpm clock stands.
+    x3::club_listen::BeatFrame lbf;
+    if (x3::club_listen::sample(dt, lbf) && lbf.active) {
+        beatHz    = lbf.bpm / 60.0f;
+        beatCount = lbf.beatCount;
+        thump     = lbf.thump;
+    }
+
     const float breathe   = 0.72f + 0.48f * thump;         // gel beat envelope (floor
                                                            // 0.72: the crowd never drops
                                                            // back to silhouettes mid-beat)
@@ -2144,11 +2160,15 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         for (const Dancer& dn : m_dancers) {
             if (dn.charIdx >= m_chars.size()) continue;
             const float tp = t + dn.phase;
-            const float lobe = std::sin(tp * beatHz * kPi);
+            // Beat-locked bounce/sway ride the SHARED beat grid (beatCount), so in
+            // Listen Mode the knee-pop lands on the LIVE onset. Identical to the old
+            // tp*beatHz form when the internal clock is running (beatCount = t*beatHz).
+            const float dbeat = beatCount + dn.phase * beatHz;
+            const float lobe = std::sin(dbeat * kPi);
             // The baked clips carry the bounce/arms now — the procedural layer is
             // just a gentle weight-shift + facing drift so no two dancers match.
             const float bounce = std::pow(std::max(0.0f, lobe), 4.0f) * 0.025f * dn.energy;
-            const float sway = std::sin(tp * beatHz * kPi * 0.5f) * 0.22f * dn.energy;
+            const float sway = std::sin(dbeat * kPi * 0.5f) * 0.22f * dn.energy;
             const float sx = dn.bx + std::sin(tp * 0.31f) * 0.30f;
             const float sz = dn.bz + std::cos(tp * 0.23f) * 0.28f;
             m_chars[dn.charIdx]->setPropPose(

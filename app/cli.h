@@ -188,6 +188,11 @@ struct CliOptions {
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
 
+    // --test-listen (CLUB LISTEN MODE): deterministic beat-detector self-test —
+    // feed a synthetic click-track at a known BPM through the detector (NO real
+    // audio device) and assert it recovers the onsets + tempo + fires the pulse.
+    bool        testListen = false;
+
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark
     // substrate, and a texture-gated neon sign (not a flat lit slab).
