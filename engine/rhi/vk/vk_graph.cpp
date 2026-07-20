@@ -1820,6 +1820,30 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 cp.highlightTint[1] = gp.highlightTint[1];
                 cp.highlightTint[2] = gp.highlightTint[2];
                 cp.highlightTint[3] = std::clamp(gp.vignette, 0.0f, 0.25f);
+                // Cinematic filmic post (feat/filmic-post): enabled only while a
+                // cutscene holds setFilmic() AND r_filmic allows it. filmic[0] == 0
+                // (the default) keeps the shader block un-entered -> byte-identical
+                // composite (same law as sharpen/bloom/grade above).
+                const auto& fm = self->m_filmic;
+                const bool  filmicOn = fm.enabled && self->m_post.filmicAllowed;
+                cp.filmic[0] = filmicOn ? 1.0f : 0.0f;
+                cp.filmic[1] = std::clamp(fm.vignette, 0.0f, 0.60f);
+                cp.filmic[2] = std::clamp(fm.grain,    0.0f, 0.25f);
+                // Grain seed: host offset + a device frame counter so the grain
+                // CRAWLS like film with no per-frame host calls. Deterministic per
+                // run (counter starts at 0), so repeated stills stay reproducible.
+                cp.filmic[3] = fm.grainSeed + (float)(self->m_filmicFrame & 1023u);
+                if (filmicOn) self->m_filmicFrame++;
+                for (int i = 0; i < 3; ++i) {
+                    // Gentle by design (post-tonemap; the per-channel ACES hue skew
+                    // must not be compounded): tints clamped to +-30% around 1.
+                    cp.filmicShadow[i]    = std::clamp(fm.shadowTint[i],    0.7f, 1.3f);
+                    cp.filmicHighlight[i] = std::clamp(fm.highlightTint[i], 0.7f, 1.3f);
+                }
+                cp.filmicShadow[3]    = std::clamp(fm.saturation, 0.0f, 2.0f);
+                // Grain cell size = the SSAA factor: one grain cell per FINAL
+                // output pixel, so a 4x supersampled still reads like realtime.
+                cp.filmicHighlight[3] = (float)std::max(1u, self->m_ssaa);
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);

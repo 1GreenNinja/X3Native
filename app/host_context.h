@@ -129,6 +129,7 @@ struct HostContext {
     bool        captureFootIk = false;  std::string captureFootIkPath;
     std::string cutsceneFile;           // --cutscene <file>
     float       cueTime = 0.0f;         // --cuetime <s>
+    bool        noFilmic = false;       // --nofilmic: cutscene filmic post OFF (A/B stills)
 
     // ---- Default-host (interactive render loop) extra prelude state (Phase C) ----
     bool        descVsync = true;       // DeviceDesc.vsync (smoketest UBO mirror)

@@ -419,6 +419,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // else-if ladder above — MSVC C1061 nesting limit). Disjoint exact matches,
         // so re-starting the chain is behavior-identical.
         if (a == "--test-cutscene") o.testCutscene = true;
+        else if (a == "--test-filmic") o.testFilmic = true;
+        else if (a == "--nofilmic") o.noFilmic = true;
         else if (a == "--skipintro") o.skipIntro = true;
         else if (a == "--cutscene") {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.cutsceneFile = argv[++i];

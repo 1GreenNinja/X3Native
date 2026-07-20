@@ -276,6 +276,20 @@ public:
             const uint8_t px[4] = { 0, (uint8_t)(0.58f * 255.0f), (uint8_t)(0.15f * 255.0f), 255 };
             m_hullMr = device.createTexture(px, 1, 1, /*srgb=*/false);   // DATA, linear
         }
+        // ---- FILMIC POST (feat/filmic-post): the FILM LOOK for cutscene playback.
+        // ONE tasteful hardcoded default for every cutscene for now — deliberately
+        // NOT in the cutscene JSON schema (another lane owns that schema; per-shot
+        // data can drive these fields later). restoreLook() clears it, so the look
+        // never leaks into gameplay; r_filmic 0 is the live A/B kill-switch.
+        // Values per the movie-grade bar: felt, not seen (|tint-1| <= 0.07).
+        x3::rhi::IRenderDevice::FilmicParams fp{};
+        fp.enabled  = true;
+        fp.vignette = 0.25f;   // gentle corner falloff pulling the eye center-frame
+        fp.grain    = 0.06f;   // luma-weighted animated grain — crawls like film
+        fp.shadowTint[0]    = 0.94f; fp.shadowTint[1]    = 1.00f; fp.shadowTint[2]    = 1.06f; // shadows lean teal
+        fp.highlightTint[0] = 1.06f; fp.highlightTint[1] = 1.00f; fp.highlightTint[2] = 0.95f; // highlights lean warm
+        fp.saturation = 0.97f; // film prints sit a hair under digital
+        device.setFilmic(fp);
     }
 
     // PER-SHOT SUN drive (CameraKey sunDir/sunLight — the authoring tool for
@@ -302,6 +316,9 @@ public:
         device.setBloom(0.06f);                       // device default (kBloomIntensity)
         device.setSkyTime(0.0f);
         device.setPointLights(nullptr, 0);
+        // Filmic post OFF (default-constructed = disabled): the cutscene film look
+        // must never leak into gameplay (byte-identical composite when off).
+        device.setFilmic(x3::rhi::IRenderDevice::FilmicParams{});
     }
 
     // x3.fire event hook (driver-reserved fx.* names; everything else is host's).

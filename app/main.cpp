@@ -313,6 +313,7 @@ int main(int argc, char** argv) {
         _tf.testSurfaceStart = o.testSurfaceStart;
         _tf.testStarsystems = o.testStarsystems;
         _tf.testCutscene = o.testCutscene;
+        _tf.testFilmic = o.testFilmic;
         _tf.testPhase2a = o.testPhase2a;
         _tf.testPhase2b = o.testPhase2b;
         _tf.testAnim = o.testAnim;
@@ -722,6 +723,7 @@ int main(int argc, char** argv) {
         _hc.planetShot       = o.planetShot;       _hc.planetShotPath   = o.planetShotPath;
         _hc.nightskyShot     = o.nightskyShot;     _hc.nightskyShotPath = o.nightskyShotPath;
         _hc.cutsceneShot     = o.cutsceneShot;     _hc.cutsceneShotPath = o.cutsceneShotPath;
+        _hc.noFilmic         = o.noFilmic;
         _hc.terrainShot      = o.terrainShot;      _hc.terrainShotPath  = o.terrainShotPath;
         _hc.oceanShot        = o.oceanShot;        _hc.oceanShotPath    = o.oceanShotPath;
         _hc.oceanBaseShot    = o.oceanBaseShot;    _hc.oceanBaseShotPath = o.oceanBaseShotPath;

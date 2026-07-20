@@ -35,10 +35,30 @@ layout(push_constant) uniform Push {
     float gradeStrength;   // master lerp [0..1]; host opt-in (canonlevel)
     vec4  shadowTint;      // rgb = shadow tint target (teal), w = saturation mul
     vec4  highlightTint;   // rgb = highlight tint target (warm), w = vignette amt
+    // ---- CINEMATIC FILMIC POST (feat/filmic-post) — the cutscene FILM LOOK:
+    // vignette + animated luma-weighted grain + split-tone grade, applied AFTER
+    // tonemap (and after the zone grade) so it can't fight ACES. filmic.x == 0
+    // (the default) -> the block is never entered -> byte-identical output
+    // (sharpen-guard law). Every sub-op ALSO self-gates at its identity default,
+    // so enabled-with-defaults is exact identity too (the --test-filmic probe).
+    vec4  filmic;          // x = enabled (0/1), y = vignette amt, z = grain amt,
+                           // w = grain seed (advances per frame -> the crawl)
+    vec4  filmicShadow;    // rgb = shadow tint target (teal), w = saturation mul
+    vec4  filmicHighlight; // rgb = highlight tint target (warm), w = grain px
+                           // scale (= SSAA factor: one grain cell per FINAL
+                           // output pixel, so stills match realtime)
 } pc;
 
 layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
+
+// Screen-space grain hash (Dave Hoskins hash12 family, original constants kept).
+// Input is the FINAL-pixel grain cell + a per-frame seed offset, output [0,1).
+float grainHash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
 
 // ACES filmic tonemap (Narkowicz approximation) — IDENTICAL constants to the
 // curve mesh.frag/sky.frag used before, so the composited look matches the prior
@@ -95,6 +115,49 @@ void main() {
         vec2 vc = vUV - 0.5;
         graded *= 1.0 - pc.highlightTint.w * smoothstep(0.25, 0.75, dot(vc, vc) * 2.0);
         color = mix(color, clamp(graded, 0.0, 1.0), pc.gradeStrength);
+    }
+    // ---- CINEMATIC FILMIC POST (feat/filmic-post): the cutscene film look, the
+    // LAST word on the frame. Disabled (filmic.x == 0, the default) -> never
+    // entered -> byte-identical. Each element self-gates at its identity default
+    // so enabled-with-defaults is exact identity as well. Post-tonemap + gentle
+    // tints (|tint-1| <= ~0.15) by design: the per-channel Narkowicz ACES never
+    // rolls pure-hue emitters to white (KNOWN_BUGS L8 area), and a strong
+    // post-grade would compound that hue skew.
+    if (pc.filmic.x > 0.5) {
+        vec3 f = color;
+        const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+        // Split-tone: shadows toward the (teal) target, highlights toward the
+        // (warm) target, luma-weighted — the classic film complementary spine.
+        float luma = dot(f, kLuma);
+        if (any(notEqual(pc.filmicShadow.rgb, vec3(1.0))))
+            f = mix(f * pc.filmicShadow.rgb, f, smoothstep(0.0, 0.45, luma));
+        if (any(notEqual(pc.filmicHighlight.rgb, vec3(1.0))))
+            f = mix(f, f * pc.filmicHighlight.rgb, smoothstep(0.55, 1.0, luma));
+        // Saturation (filmicShadow.w): film prints sit a hair under digital.
+        if (pc.filmicShadow.w != 1.0) {
+            float ls = dot(f, kLuma);
+            f = mix(vec3(ls), f, pc.filmicShadow.w);
+        }
+        // Vignette: smooth radial darkening from mid-frame out — felt, not seen.
+        // dot(vc,vc)*2 is 0 at center, 1.0 at the corners (16:9 or any aspect).
+        if (pc.filmic.y > 0.0) {
+            vec2 vc = vUV - 0.5;
+            f *= 1.0 - pc.filmic.y * smoothstep(0.08, 0.85, dot(vc, vc) * 2.0);
+        }
+        // Film grain: signed hash noise in FINAL-pixel cells (filmicHighlight.w
+        // = SSAA factor, so a 4x supersampled still carries the same grain as
+        // realtime), re-seeded per frame (filmic.w) so it crawls like film.
+        // Luma weight: full in the mids, softened in deep blacks, vanishing in
+        // the highlights — where print film actually holds its grain.
+        if (pc.filmic.z > 0.0) {
+            vec2 cell = floor(gl_FragCoord.xy / max(pc.filmicHighlight.w, 1.0));
+            float n = grainHash(cell + pc.filmic.w * vec2(17.0, 47.0)) * 2.0 - 1.0;
+            float lg = dot(f, kLuma);
+            float w = (1.0 - smoothstep(0.40, 0.85, lg))
+                    * (0.55 + 0.45 * smoothstep(0.0, 0.30, lg));
+            f += n * pc.filmic.z * w;
+        }
+        color = clamp(f, 0.0, 1.0);
     }
     outColor = vec4(color, 1.0);
 }

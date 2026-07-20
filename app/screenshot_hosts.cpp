@@ -1612,6 +1612,9 @@ int dispatchScreenshotHosts(HostContext& hc) {
         cin.load(*device, cs);
         device->endUploadBatch();
         cin.applyLook(*device);
+        // --nofilmic: strip the film look (vignette/grain/split-tone) applyLook
+        // just enabled — the A/B lever for the film-strip pipeline (OFF frames).
+        if (hc.noFilmic) device->setFilmic(x3::rhi::IRenderDevice::FilmicParams{});
 
         x3::cut::CutscenePlayer player(cs);
         player.onEvent([&](const x3::cut::Event& e, bool) { cin.onEvent(e.name, cs, e.t); });
