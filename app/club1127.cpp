@@ -94,9 +94,17 @@ const float kOrb[4]    = { 0.700f, 0.700f, 0.800f, 1.0f }; // mirror ball facets
 // resolves to visible deep green under the new neutral bar/shelf keys, and the
 // green-tinted sheen emissive is bumped (0.040->0.085 g, str 0.35->0.55) so the
 // stone LEANS emerald even when a magenta gel rakes it — never fully black.
-const float kGranite[4]    = { 0.045f, 0.225f, 0.090f, 1.0f };
-const float kGraniteEm[4]  = { 0.015f, 0.160f, 0.055f, 0.70f }; // deep-green sheen (self-reads emerald
-                                                               // even when a magenta gel rakes it)
+// RE-TUNE (feat/club-lns-polish, Tim 2026-07-19): stage15 overshot — the emerald
+// read too BRIGHT/saturated ("glowing felt") because the base green was pushed to
+// 0.225 AND the sheen emissive to 0.160@0.70 (effective self-glow ~0.112, a lamp).
+// Dialed to BELIEVABLE dark Verde-Ubatuba: base green 0.225 -> 0.140 (still clearly
+// green-dominant + dark, a rich polished stone value), and the sheen emissive cut to
+// 0.050@0.30 (effective ~0.015 — a faint emerald floor, NOT a glow). The mrGlass
+// near-mirror reflectivity + the warm bar keys now LIGHT the stone; it no longer
+// lights itself. Reads as deep emerald-black granite, never neon.
+const float kGranite[4]    = { 0.050f, 0.140f, 0.078f, 1.0f };
+const float kGraniteEm[4]  = { 0.010f, 0.050f, 0.026f, 0.30f }; // faint emerald sheen floor
+                                                               // (reflectivity + warm keys do the lighting)
 // White-oak (1897 barn-wood) U-bar base — warm aged oak.
 const float kOak[4]    = { 0.230f, 0.150f, 0.090f, 1.0f };
 // THE LAIR (NE corner, upstairs) — charcoal light-absorbing walls + warm dens.
