@@ -1293,44 +1293,61 @@ int hostEchotropolis(HostContext& hc) {
     // SEA at water level (y~0), wrapping their lane with a gentle bob. Only visible
     // over real water (a boat over land is buried underground) — lanes sit off the
     // island's coast. +Z-forward hull; heading = atan2(dx,dz).
-    const std::string boatdir = "D:/Assets/_glb/tech/Boats Pack/Assets/Boats/Models";
-    const float kBoatScale = [](){ const char* e=std::getenv("ECHO_BOAT_SCALE"); return e?(float)std::atof(e):6.5f; }();
+    // NICER FLEET (Tim's ask): a mixed textured armada from across the armory —
+    // a tall-ship hero, a Dutch full-rigger, a fishing trawler w/ net, a wooden
+    // rowboat, a HIVEMIND sci-fi hover skiff, and a jolly-boat tender. Per-boat
+    // dir/scale (packs mix meters vs centimetres; see recon 2026-07-20).
     const float kBoatYaw   = [](){ const char* e=std::getenv("ECHO_BOAT_YAW");   return e?(float)std::atof(e):0.0f; }();
     const float kBoatY     = [](){ const char* e=std::getenv("ECHO_BOAT_Y");     return e?(float)std::atof(e):0.6f; }();
-    struct Boat { std::unique_ptr<x3::game::EnvArtSystem> body; float sx,sz,dx,dz,len,speed,off; };
+    struct FleetDef { const char* dir; const char* glb; float scale; float speedMul; };
+    static const FleetDef kFleet[] = {
+        { "D:/Assets/_glb/tech/Medieval Ship/Assets/MedievalShip/MedievalShip 3D_Model",
+          "MedievalShip_.glb", 1.0f, 0.55f },                                   // hero tall ship (~43m)
+        { "D:/Assets/_glb/tech/Oceanis 2024 Pro URP Water Framework/ARTnGAME/Oceanis/Oceanis URP/DEMO ASSETS/SHIPS/dutch_ship_large_02",
+          "dutch_ship_large_02_2k.glb", 1.0f, 0.6f },                           // Dutch full-rigger (~34m)
+        { "D:/Assets/_glb/tech/Asian Fishing Village Environment/Assets/LeartesStudios/Asian_Fishing_Village/HDRP/Art/Meshes",
+          "SM_Boat_1_net_01.glb", 2.0f, 0.9f },                                 // fishing trawler w/ net
+        { "D:/Assets/_glb/tech/Old Rowboat/Assets/Boats/Legacy_Content/Imports",
+          "RowBoat.glb", 1.0f, 0.8f },                                          // detailed wooden rowboat
+        { "D:/Assets/_glb/tech/Cyberpunk City Cyberpunk Cyberpunk City Sci-Fi City/HIVEMIND/CyberpunkCity/HDRP(Default)/Art/Meshes/Props",
+          "SM_Boat_B.glb", 0.02f, 1.2f },                                       // sci-fi hover skiff (cm pack)
+        { "D:/Assets/_glb/ancients/Pirate Island/Assets/Hivemind/PirateIsland/HDRP(Default)/Art/Meshes/Props/JollyBoat",
+          "SM_JollyBoat_01.glb", 1.5f, 0.9f },                                  // jolly-boat tender
+    };
+    struct Boat { std::unique_ptr<x3::game::EnvArtSystem> body; float sx,sz,dx,dz,len,speed,off,scale; };
     std::vector<Boat> boats;
-    auto addBoat = [&](const char* glb, float sx, float sz, float dx, float dz,
+    auto addBoat = [&](const FleetDef& fd, float sx, float sz, float dx, float dz,
                        float len, float speed, float off){
         const float L = std::sqrt(dx*dx + dz*dz); dx/=L; dz/=L;
         Boat b; b.body = std::make_unique<x3::game::EnvArtSystem>();
         const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, sx, kBoatY, sz, 1 };
-        if (b.body->buildFromGlbAt(*device, boatdir, glb, I)) {
-            b.sx=sx; b.sz=sz; b.dx=dx; b.dz=dz; b.len=len; b.speed=speed; b.off=off;
+        if (b.body->buildFromGlbAt(*device, fd.dir, fd.glb, I)) {
+            b.sx=sx; b.sz=sz; b.dx=dx; b.dz=dz; b.len=len;
+            b.speed=speed*fd.speedMul; b.off=off; b.scale=fd.scale;
             boats.push_back(std::move(b));
         }
     };
     {
-        static const char* kB[] = { "Boat_1.glb","Boat_2.glb","Boat_3.glb","Boat_4.glb" };
         struct BL { float sx,sz,dx,dz,len,speed; int n; };
         const BL bl[] = {
-            { -400.0f,  330.0f,  1.0f,  0.0f, 760.0f, 15.0f, 4 },   // south bay, eastbound
-            {  340.0f,  240.0f, -1.0f,  0.0f, 760.0f, 13.0f, 4 },   // south bay, westbound
+            { -400.0f,  330.0f,  1.0f,  0.0f, 760.0f, 15.0f, 3 },   // south bay, eastbound
+            {  340.0f,  240.0f, -1.0f,  0.0f, 760.0f, 13.0f, 3 },   // south bay, westbound
             { -560.0f,  260.0f,  0.0f,  1.0f, 420.0f, 12.0f, 3 },   // SW inlet, northbound
         };
         int vi = 0;
         for (const BL& l : bl)
             for (int k = 0; k < l.n; ++k) {
-                addBoat(kB[vi % 4], l.sx, l.sz, l.dx, l.dz, l.len, l.speed, l.len * (float)k / (float)l.n);
+                addBoat(kFleet[vi % 6], l.sx, l.sz, l.dx, l.dz, l.len, l.speed, l.len * (float)k / (float)l.n);
                 ++vi;
             }
-        x3::logInfo("--world echotropolis: HARBOR BOATS — " + std::to_string(boats.size()) + " boats");
+        x3::logInfo("--world echotropolis: HARBOR FLEET — " + std::to_string(boats.size()) + " vessels");
     }
     auto poseBoat = [&](Boat& b, float t){
         const float d = std::fmod(b.off + t * b.speed, b.len);
         const float x = b.sx + b.dx * d, z = b.sz + b.dz * d;
         const float y = kBoatY + std::sin(t * 0.7f + b.off) * 0.35f;   // gentle bob
         const float heading = std::atan2(b.dx, b.dz) + kBoatYaw;
-        const float s = kBoatScale, ch = std::cos(heading), sh = std::sin(heading);
+        const float s = b.scale, ch = std::cos(heading), sh = std::sin(heading);
         const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, y, z, 1 };
         b.body->setInstanceTransform(0, M);
     };
