@@ -1175,12 +1175,13 @@ int hostEchotropolis(HostContext& hc) {
     // every prefab GLB loads once (path-cached) and is instanced at the designer's
     // transform, seated on an open pad of the island.
     std::vector<std::unique_ptr<x3::game::EnvArtSystem>> districts;
-    // meshFixXDeg: constant mesh-local rotation about X (degrees) applied to every
-    // prefab — corrects the FBX->GLB baked-root convention mismatch that left a
-    // whole district hanging upside-down (docs/COORDINATES.md).
+    // meshFix: constant mesh-local rotation applied to every prefab — "x-90",
+    // "y90", "z180", or "0" for none. Corrects the FBX->GLB baked-node convention
+    // mismatch vs Unity's importer (the armory bakes quat [0.5,-0.5,0.5,0.5], an
+    // axis PERMUTATION — off from Unity's plain -90X by a yaw; docs/COORDINATES.md).
     auto loadDistrict = [&](const char* layoutPath, const char* glbDir,
                             float padX, float padZ, float padYaw, float padScale,
-                            float meshFixXDeg, const char* tag){
+                            const char* meshFix, const char* tag){
         std::ifstream lf(layoutPath);
         if (!lf) { x3::logWarn(std::string("--world echotropolis: district layout missing: ") + layoutPath); return; }
         auto d = std::make_unique<x3::game::EnvArtSystem>();
@@ -1190,34 +1191,63 @@ int hostEchotropolis(HostContext& hc) {
         // SEAT at the footprint's MAX terrain height (5-point sample): seating at the
         // centre height buried the district's edges when the flats bowl (only roofs
         // showed). A ground SLAB under the pad hides the terrain mismatch beneath.
-        float gy = hf.ok() ? hf.heightAt(padX, padZ) : 190.0f;
-        if (hf.ok()) {
-            for (int sx = -1; sx <= 1; ++sx) for (int sz = -1; sz <= 1; ++sz)
-                gy = std::max(gy, hf.heightAt(padX + sx * 180.0f, padZ + sz * 180.0f));
-            gy += 0.4f;
+        // Read every line FIRST so the slab + seat can be sized from the layout's
+        // REAL content bounds (a fixed 640x420 slab dwarfed the Leartes diorama and
+        // read as a dead parking lot).
+        struct Piece { std::string glb; float px,py,pz,qx,qy,qz,qw,sx,sy,sz; };
+        std::vector<Piece> pieces; pieces.reserve(4096);
+        float lminx = 1e9f, lmaxx = -1e9f, lminz = 1e9f, lmaxz = -1e9f;
+        {
+            std::string line; char name[256]; Piece pp;
+            while (std::getline(lf, line)) {
+                if (line.empty() || line[0] == '#') continue;
+                if (std::sscanf(line.c_str(), "%255s %f %f %f %f %f %f %f %f %f %f",
+                                name,&pp.px,&pp.py,&pp.pz,&pp.qx,&pp.qy,&pp.qz,&pp.qw,&pp.sx,&pp.sy,&pp.sz) != 11) continue;
+                pp.glb = name; pieces.push_back(pp);
+                lminx = std::min(lminx, pp.px); lmaxx = std::max(lmaxx, pp.px);
+                lminz = std::min(lminz, pp.pz); lmaxz = std::max(lmaxz, pp.pz);
+            }
         }
-        placeDeck("road_asphalt.glb", padX, padZ, gy - 0.05f, 0.0f, 640.0f, 420.0f);
+        if (pieces.empty()) return;
+        const float cw = (lmaxx - lminx) * padScale + 40.0f;   // slab = content + 20m margin
+        const float cl = (lmaxz - lminz) * padScale + 40.0f;
+        const float ccx = padX + (lminx + lmaxx) * 0.5f * padScale;   // content centre (padYaw=0 pads)
+        const float ccz = padZ + (lminz + lmaxz) * 0.5f * padScale;
+        // Seat at the max terrain height over the CONTENT extent: any ridge above
+        // pad level pokes through the slab and buries the district behind grass.
+        float gy = hf.ok() ? hf.heightAt(ccx, ccz) : 190.0f;
+        if (hf.ok()) {
+            for (float ox = -cw*0.5f; ox <= cw*0.5f; ox += 20.0f)
+                for (float oz = -cl*0.5f; oz <= cl*0.5f; oz += 20.0f)
+                    gy = std::max(gy, hf.heightAt(ccx + ox, ccz + oz));
+            gy += 1.0f;   // safety: heightfield bumps narrower than the stride
+        }
+        placeDeck("road_asphalt.glb", ccx, ccz, gy - 0.05f, 0.0f, cw, cl);
         const float S = padScale, pc = std::cos(padYaw) * S, ps = std::sin(padYaw) * S;
         // Column-major 3x3 pad basis: col0=(c,0,-s), col1=(0,1,0), col2=(s,0,c), all *S.
         const float P[9] = { pc, 0.0f, -ps,   0.0f, S, 0.0f,   ps, 0.0f, pc };
-        int placed = 0; std::string line;
-        char name[256]; float px,py,pz,qx,qy,qz,qw,sx,sy,sz;
-        while (std::getline(lf, line)) {
-            if (line.empty() || line[0] == '#') continue;
-            if (std::sscanf(line.c_str(), "%255s %f %f %f %f %f %f %f %f %f %f",
-                            name,&px,&py,&pz,&qx,&qy,&qz,&qw,&sx,&sy,&sz) != 11) continue;
+        int placed = 0;
+        for (const Piece& pcs : pieces) {
+            const char* name = pcs.glb.c_str();
+            const float px=pcs.px, py=pcs.py, pz=pcs.pz, qx=pcs.qx, qy=pcs.qy, qz=pcs.qz, qw=pcs.qw,
+                        sx=pcs.sx, sy=pcs.sy, sz=pcs.sz;
             // Line quat+scale -> column-major 3x3 L (cols scaled by sx/sy/sz).
             float L0[9] = {
                 (1-2*(qy*qy+qz*qz))*sx, (2*(qx*qy+qz*qw))*sx, (2*(qx*qz-qy*qw))*sx,   // col0
                 (2*(qx*qy-qz*qw))*sy,   (1-2*(qx*qx+qz*qz))*sy, (2*(qy*qz+qx*qw))*sy, // col1
                 (2*(qx*qz+qy*qw))*sz,   (2*(qy*qz-qx*qw))*sz,  (1-2*(qx*qx+qy*qy))*sz };
-            // Mesh-local fix: L = L0 * RotX(meshFixXDeg) (applied before the piece pose).
+            // Mesh-local fix: L = L0 * Rot<axis>(deg) (applied before the piece pose).
             float L[9];
             {
-                const float a = meshFixXDeg * 0.01745329252f;
+                const char ax = (meshFix && (*meshFix=='x'||*meshFix=='y'||*meshFix=='z')) ? *meshFix : 'x';
+                const float deg = (meshFix && *meshFix) ?
+                    (float)std::atof((*meshFix=='x'||*meshFix=='y'||*meshFix=='z') ? meshFix+1 : meshFix) : 0.0f;
+                const float a = deg * 0.01745329252f;
                 const float ca = std::cos(a), sa = std::sin(a);
-                // col-major RotX: col0=(1,0,0), col1=(0,ca,sa), col2=(0,-sa,ca)
-                const float F[9] = { 1,0,0, 0,ca,sa, 0,-sa,ca };
+                float F[9];
+                if      (ax=='y') { const float G[9]={ca,0,-sa, 0,1,0, sa,0,ca}; std::copy(G,G+9,F); }
+                else if (ax=='z') { const float G[9]={ca,sa,0, -sa,ca,0, 0,0,1}; std::copy(G,G+9,F); }
+                else              { const float G[9]={1,0,0, 0,ca,sa, 0,-sa,ca}; std::copy(G,G+9,F); }
                 for (int j = 0; j < 3; ++j)
                     for (int r = 0; r < 3; ++r)
                         L[j*3+r] = L0[0*3+r]*F[j*3+0] + L0[1*3+r]*F[j*3+1] + L0[2*3+r]*F[j*3+2];
@@ -1250,11 +1280,11 @@ int hostEchotropolis(HostContext& hc) {
         std::string line;
         while (mf && std::getline(mf, line)) {
             if (line.empty() || line[0] == '#') continue;
-            char tag[96], lay[512], dir[512]; float x, z, yaw, sc, fx;
-            const int got = std::sscanf(line.c_str(), "%95[^|]|%511[^|]|%511[^|]|%f|%f|%f|%f|%f",
-                                        tag, lay, dir, &x, &z, &yaw, &sc, &fx);
+            char tag[96], lay[512], dir[512], fix[16] = "0"; float x, z, yaw, sc;
+            const int got = std::sscanf(line.c_str(), "%95[^|]|%511[^|]|%511[^|]|%f|%f|%f|%f|%15s",
+                                        tag, lay, dir, &x, &z, &yaw, &sc, fix);
             if (got >= 7)
-                loadDistrict(lay, dir, x, z, yaw, sc, (got >= 8 ? fx : 0.0f), tag);
+                loadDistrict(lay, dir, x, z, yaw, sc, (got >= 8 ? fix : "0"), tag);
         }
     }
 

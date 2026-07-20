@@ -3,3 +3,4 @@
 # real heightfield: the NORTH PLATEAU (~x -470..170, z 940..1360, h 178-191,
 # spread <9m) is the island's flattest large ground.
 URBAN DISTRICT|assets/districts/urban.layout|D:/Assets/_glb/prefab_buildings/Urban Abandoned District|700|350|0|1|0
+RECIFE 2050|assets/districts/recife.layout|D:/Assets/_glb/prefab_buildings/Cyberpunk City Recife Environment|950|1250|0|1|0

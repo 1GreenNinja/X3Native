@@ -36,7 +36,10 @@ def parse_scene(path):
         if cls == 4:  # Transform
             if stripped:
                 m = re.search(r'm_PrefabInstance:\s*\{fileID:\s*(\d+)\}', body)
-                if m: stripped_owner[oid] = int(m.group(1))
+                c = re.search(r'm_CorrespondingSourceObject:\s*\{fileID:\s*(\d+),\s*guid:\s*([0-9a-f]+)', body)
+                if m:
+                    stripped_owner[oid] = {'owner': int(m.group(1)),
+                                           'src': (int(c.group(1)), c.group(2)) if c else None}
                 continue
             def vec(name, d):
                 m = re.search(name + r':\s*\{x:\s*([-\d.e]+),\s*y:\s*([-\d.e]+),\s*z:\s*([-\d.e]+)(?:,\s*w:\s*([-\d.e]+))?\}', body)
@@ -97,9 +100,77 @@ def mat_decompose(m):
         s_ = math.sqrt(1.0+r[2][2]-r[0][0]-r[1][1])*2; qw=(r[1][0]-r[0][1])/s_; qx=(r[0][2]+r[2][0])/s_; qy=(r[1][2]+r[2][1])/s_; qz=0.25*s_
     return p, [qx,qy,qz,qw], [sx,sy,sz]
 
+def prefab_transform_tree(prefab_path, cache={}):
+    """All Transforms inside a .prefab: {fileID: {pos,rot,scl,father}}. Cached."""
+    if prefab_path in cache: return cache[prefab_path]
+    tree = {}
+    try:
+        txt = open(prefab_path, encoding='utf-8', errors='replace').read()
+        docs = re.split(r'^--- !u!(\d+) &(\d+)( stripped)?\s*$', txt, flags=re.M)
+        i = 1
+        while i + 3 <= len(docs):
+            cls, oid, body = int(docs[i]), int(docs[i+1]), docs[i+3]; i += 4
+            if cls != 4: continue
+            def vec(name, dflt):
+                m = re.search(name + r':\s*\{x:\s*([-\d.e]+),\s*y:\s*([-\d.e]+),\s*z:\s*([-\d.e]+)(?:,\s*w:\s*([-\d.e]+))?\}', body)
+                if not m: return dflt
+                return [float(x) for x in m.groups() if x is not None]
+            fa = re.search(r'm_Father:\s*\{fileID:\s*(\d+)\}', body)
+            tree[oid] = {'pos': vec('m_LocalPosition', [0,0,0]),
+                         'rot': vec('m_LocalRotation', [0,0,0,1]),
+                         'scl': vec('m_LocalScale', [1,1,1]),
+                         'father': int(fa.group(1)) if fa else 0}
+    except OSError:
+        pass
+    cache[prefab_path] = tree
+    return tree
+
+def prefab_internal_matrix(prefab_path, node_id):
+    """Compose node..root chain INSIDE a prefab, EXCLUDING the root's own TRS (the
+    scene's PrefabInstance supplies the root TRS via defaults+mods). Identity if
+    the node is the root itself or the prefab is unreadable."""
+    tree = prefab_transform_tree(prefab_path)
+    m, tid, depth = None, node_id, 0
+    while tid in tree and depth < 64:
+        t = tree[tid]
+        if t['father'] == 0: break          # reached root: stop, exclude its TRS
+        local = trs(t['pos'], t['rot'], t['scl'])
+        m = local if m is None else matmul(local, m)
+        tid = t['father']; depth += 1
+    return m
+
+def prefab_root_defaults(prefab_path, cache={}):
+    """Authored TRS of a .prefab's ROOT transform (m_Father == 0). Unity scenes only
+    write CHANGED axes into m_Modifications — unwritten axes inherit these defaults
+    (discarding them scattered pieces into the sky; see docs/COORDINATES.md)."""
+    if prefab_path in cache: return cache[prefab_path]
+    d = {'p': [0,0,0], 'q': [0,0,0,1], 's': [1,1,1]}
+    try:
+        txt = open(prefab_path, encoding='utf-8', errors='replace').read()
+        docs = re.split(r'^--- !u!(\d+) &(\d+)( stripped)?\s*$', txt, flags=re.M)
+        i = 1
+        while i + 3 <= len(docs):
+            cls, body = int(docs[i]), docs[i+3]; i += 4
+            if cls != 4: continue
+            fa = re.search(r'm_Father:\s*\{fileID:\s*(\d+)\}', body)
+            if not fa or int(fa.group(1)) != 0: continue
+            def vec(name, dflt):
+                m = re.search(name + r':\s*\{x:\s*([-\d.e]+),\s*y:\s*([-\d.e]+),\s*z:\s*([-\d.e]+)(?:,\s*w:\s*([-\d.e]+))?\}', body)
+                if not m: return dflt
+                return [float(x) for x in m.groups() if x is not None]
+            d = {'p': vec('m_LocalPosition', [0,0,0]),
+                 'q': vec('m_LocalRotation', [0,0,0,1]),
+                 's': vec('m_LocalScale', [1,1,1])}
+            break
+    except OSError:
+        pass
+    cache[prefab_path] = d
+    return d
+
 def main():
     scene, guidmap_p, glb_dir, out_p = sys.argv[1:5]
     guidmap = json.load(open(guidmap_p))
+    layouts_root = os.path.dirname(os.path.abspath(guidmap_p))
     transforms, prefabs, stripped_owner = parse_scene(scene)
     print(f"scene: {len(transforms)} transforms, {len(prefabs)} prefab instances, {len(stripped_owner)} stripped")
 
@@ -119,7 +190,18 @@ def main():
             pw = world_of_transform(t['father'], depth+1)
             w = matmul(pw, local) if pw else local
         elif tid in stripped_owner:
-            w = world_of_prefab(stripped_owner[tid], depth+1)
+            so = stripped_owner[tid]
+            w = world_of_prefab(so['owner'], depth+1)
+            # A stripped transform may be a node DEEP INSIDE the source prefab (a
+            # building's anchor); compose its prefab-internal chain (root-relative)
+            # under the owner's world — treating it as the root scattered every
+            # nested-parented piece into the sky.
+            if w is not None and so['src'] is not None:
+                fid, guid = so['src']
+                path = guidmap.get(guid, '')
+                if path.endswith('.prefab'):
+                    inner = prefab_internal_matrix(os.path.join(layouts_root, path), fid)
+                    if inner is not None: w = matmul(w, inner)
         else:
             w = None
         memo[tid] = w
@@ -131,9 +213,14 @@ def main():
         pr = prefabs.get(pid)
         if pr is None: return None
         md = pr['mods']
-        p = [md.get('m_LocalPosition.x',0.0), md.get('m_LocalPosition.y',0.0), md.get('m_LocalPosition.z',0.0)]
-        q = [md.get('m_LocalRotation.x',0.0), md.get('m_LocalRotation.y',0.0), md.get('m_LocalRotation.z',0.0), md.get('m_LocalRotation.w',1.0)]
-        s = [md.get('m_LocalScale.x',1.0), md.get('m_LocalScale.y',1.0), md.get('m_LocalScale.z',1.0)]
+        # PER-AXIS merge over the source prefab root's AUTHORED defaults (a mod
+        # only exists for axes the designer changed in the scene).
+        path = guidmap.get(pr['guid'] or '', '')
+        dfl = prefab_root_defaults(os.path.join(layouts_root, path)) if path.endswith('.prefab') \
+              else {'p': [0,0,0], 'q': [0,0,0,1], 's': [1,1,1]}
+        p = [md.get('m_LocalPosition.x',dfl['p'][0]), md.get('m_LocalPosition.y',dfl['p'][1]), md.get('m_LocalPosition.z',dfl['p'][2])]
+        q = [md.get('m_LocalRotation.x',dfl['q'][0]), md.get('m_LocalRotation.y',dfl['q'][1]), md.get('m_LocalRotation.z',dfl['q'][2]), md.get('m_LocalRotation.w',dfl['q'][3])]
+        s = [md.get('m_LocalScale.x',dfl['s'][0]), md.get('m_LocalScale.y',dfl['s'][1]), md.get('m_LocalScale.z',dfl['s'][2])]
         local = trs(p, q, s)
         pw = world_of_transform(pr['parent'], depth+1)
         w = matmul(pw, local) if pw else local
