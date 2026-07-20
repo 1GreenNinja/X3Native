@@ -1041,34 +1041,46 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         const float kSteelHi[4]= { 0.140f, 0.145f, 0.165f, 1.0f };  // lighter web/purlin
         const float kDuct[4]   = { 0.300f, 0.310f, 0.340f, 1.0f };  // galvanised HVAC
         const float kConduit[4]= { 0.110f, 0.095f, 0.075f, 1.0f };  // EMT conduit (grey-tan)
+        // ★ CEILING READ (feat/club-lns-polish, Tim 2026-07-19). The industrial
+        // ceiling had NO dedicated light (the 64-light cap is maxed) so the trusses/
+        // ducts/conduit sank into a black void — the shop bones couldn't be seen as a
+        // feature. Give the structure a SUBTLE emissive self-read (no new lights — the
+        // budget-safe fix): a faint cool floor on the steel, a galvanised sheen on the
+        // ducts, a warm sheen on the conduit. Effective add (rgb*str): steel ~0.078,
+        // duct ~0.077, conduit ~0.036 — enough to lift the silhouette out of black so
+        // the exposed-truss ceiling READS, low enough that it grazes as lit metal (not
+        // a neon lightbox). The geometry's own form + the room bounce still shade it.
+        const float kSteelEm[4]  = { 0.130f, 0.140f, 0.170f, 0.60f }; // faint cool steel self-read
+        const float kDuctEm[4]   = { 0.170f, 0.180f, 0.200f, 0.45f }; // galvanised duct sheen
+        const float kCondEm[4]   = { 0.115f, 0.100f, 0.078f, 0.40f }; // warm conduit sheen
         const float yBot = 8.60f, yTop = 8.98f, yMid = (yBot + yTop) / 2;
         const float zHalf = CL / 2 - 0.20f;
         // Transverse trusses (span the 43 ft N-S short axis), 3 m centres, offset
         // from the moving-head ring (fixtures at x≈±2.83) so nothing clips a head.
         const float txs[10] = { -13.5f,-10.5f,-7.5f,-4.5f,-1.5f, 1.5f,4.5f,7.5f,10.5f,13.5f };
         for (float tx : txs) {
-            box(tx, yBot, 0, 0.05f, 0.05f, zHalf, kSteel, kEmitOff, false);   // bottom chord
-            box(tx, yTop, 0, 0.05f, 0.05f, zHalf, kSteel, kEmitOff, false);   // top chord
+            box(tx, yBot, 0, 0.05f, 0.05f, zHalf, kSteel, kSteelEm, false);   // bottom chord
+            box(tx, yTop, 0, 0.05f, 0.05f, zHalf, kSteel, kSteelEm, false);   // top chord
             for (int w = 0; w < 7; ++w) {                                     // vertical webs (Vierendeel)
                 const float wz = -zHalf + 0.3f + w * (2.0f * zHalf - 0.6f) / 6.0f;
-                box(tx, yMid, wz, 0.035f, (yTop - yBot) / 2, 0.035f, kSteelHi, kEmitOff, false);
+                box(tx, yMid, wz, 0.035f, (yTop - yBot) / 2, 0.035f, kSteelHi, kSteelEm, false);
             }
         }
         // Longitudinal purlins (E-W) tying the truss tops.
         for (float pz : { -4.6f, -1.5f, 1.5f, 4.6f })
-            box(0, yTop + 0.03f, pz, CW / 2 - 0.3f, 0.03f, 0.03f, kSteelHi, kEmitOff, false);
+            box(0, yTop + 0.03f, pz, CW / 2 - 0.3f, 0.03f, 0.03f, kSteelHi, kSteelEm, false);
         // EMT CONDUIT runs slung under the deck along both long walls + two branch drops.
         for (float cz : { -zHalf + 0.15f, zHalf - 0.15f }) {
-            box(0, yBot - 0.12f, cz, CW / 2 - 0.6f, 0.028f, 0.028f, kConduit, kEmitOff, false);
-            box(0, yBot - 0.20f, cz, CW / 2 - 0.6f, 0.022f, 0.022f, kConduit, kEmitOff, false);
+            box(0, yBot - 0.12f, cz, CW / 2 - 0.6f, 0.028f, 0.028f, kConduit, kCondEm, false);
+            box(0, yBot - 0.20f, cz, CW / 2 - 0.6f, 0.022f, 0.022f, kConduit, kCondEm, false);
         }
         // HVAC DUCT: a big galvanised trunk running E-W along the south side, with a
         // branch elbow crossing north — the unmistakable shop-ceiling silhouette.
-        box(-2.0f, 8.30f, zHalf - 0.9f, CW / 2 - 4.0f, 0.28f, 0.24f, kDuct, kEmitOff, false); // south trunk
-        box(-CW / 2 + 5.0f, 8.30f, 0.5f, 0.24f, 0.26f, zHalf - 1.2f, kDuct, kEmitOff, false); // N-S branch
-        box(-CW / 2 + 5.0f, 8.30f, zHalf - 0.9f, 0.30f, 0.30f, 0.30f, kDuct, kEmitOff, false); // elbow box
+        box(-2.0f, 8.30f, zHalf - 0.9f, CW / 2 - 4.0f, 0.28f, 0.24f, kDuct, kDuctEm, false); // south trunk
+        box(-CW / 2 + 5.0f, 8.30f, 0.5f, 0.24f, 0.26f, zHalf - 1.2f, kDuct, kDuctEm, false); // N-S branch
+        box(-CW / 2 + 5.0f, 8.30f, zHalf - 0.9f, 0.30f, 0.30f, 0.30f, kDuct, kDuctEm, false); // elbow box
         // A short return-air duct near the east/entrance side.
-        box(9.5f, 8.35f, -zHalf + 1.1f, 2.4f, 0.22f, 0.20f, kDuct, kEmitOff, false);
+        box(9.5f, 8.35f, -zHalf + 1.1f, 2.4f, 0.22f, 0.20f, kDuct, kDuctEm, false);
     }
 
     // ==================================================================
