@@ -41,6 +41,7 @@
 #include <string>
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
+#include <cstdio>        // sscanf (district .layout parsing)
 #include <fstream>
 #include <vector>
 #include <memory>
@@ -417,7 +418,9 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // finding). Recentre on the downtown crown (-20,760) and shrink to a 1.64km box
     // (~0.4-0.8m/texel) so the low sun throws crisp long shadows across the city +
     // grounds the mine forest (which sits within the box) with real contact shadow.
-    device->setShadowBounds(-20.0f, 0.0f, 760.0f, 820.0f);
+    // Metropolis: widened + recentred to also cover the east-flats district pads
+    // (x to ~1120) — a pad outside the box reads fully shadowed (fake dark city).
+    device->setShadowBounds(140.0f, 0.0f, 980.0f, 1050.0f);
 }
 
 // ============================ RAY TRACING (hardware RT pass) ==================
@@ -805,8 +808,10 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::EnvArtSystem ufo, ufoFx;
     bool ufoBuilt = false, ufoFxBuilt = false;
     constexpr float kUfoScale = 120.0f;        // ~228 m across
-    constexpr float kUfoCenX = -20.0f, kUfoCenZ = 760.0f, kUfoY = 470.0f;  // patrol centre
-    constexpr float kUfoDriftR = 360.0f;       // patrol radius over the city
+    // Tim (2026-07-17): "way too low" — lifted 470 -> 780 so it rides HIGH over the
+    // island, and the patrol widened to sweep the whole region, not hug downtown.
+    constexpr float kUfoCenX = -20.0f, kUfoCenZ = 760.0f, kUfoY = 780.0f;  // patrol centre
+    constexpr float kUfoDriftR = 520.0f;       // patrol radius over the island
     {
         const std::string mdir = "D:/GameDev/SimCityLLM2/refs/models";
         const float T[16] = { kUfoScale,0,0,0, 0,kUfoScale,0,0, 0,0,kUfoScale,0, kUfoCenX,kUfoY,kUfoCenZ,1 };
@@ -827,8 +832,22 @@ int hostEchotropolis(HostContext& hc) {
         const float MU[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
                                sn*s, 0.0f,  c*s, 0.0f,   ux, uy, uz, 1.0f };
         ufo.setInstanceTransform(0, MU);
-        // FX authored in world metres: translate under the hull (no spin/scale).
-        const float MF[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, ux, uy, uz, 1.0f };
+        // ABDUCTION BEAM: no longer a permanent slab (the "solid ice-cream cone"
+        // slop). It fires as an EVENT — ~12s out of every 75 — ramping smoothly in
+        // and out (sine ease on scale; 0 = hidden), so it reads as the mothership
+        // DOING something, not scenery.
+        float beamS = 0.0f;
+        {
+            const float ph = std::fmod(t, 75.0f);
+            if (ph < 12.0f) {
+                const float u = ph / 12.0f;                       // 0..1 over the event
+                beamS = std::sin(u * 3.14159265f);                // ease in-out
+            }
+        }
+        // FX was authored to span hull->ground from the OLD 470m altitude (~270m
+        // drop); stretch Y so the fired beam still touches the ground from 780m.
+        const float beamY = beamS * ((uy - 200.0f) / 270.0f);
+        const float MF[16] = { beamS,0,0,0, 0,beamY,0,0, 0,0,beamS,0, ux, uy, uz, 1.0f };
         if (ufoFxBuilt) ufoFx.setInstanceTransform(0, MF);
     };
 
@@ -1145,6 +1164,98 @@ int hostEchotropolis(HostContext& hc) {
         condo(  60.0f, 842.0f, 3.14159f, 3, 5, 2.0f, 47u, false);
         x3::logInfo("--world echotropolis: LIVING CONDOS — " + std::to_string(condos.size()) +
                     " lit rooms (TV/kitchen/romance/kids/novelist + 1 hidden lab)");
+    }
+
+    // ===================== METROPOLIS DISTRICTS (designer layouts) ==========
+    // Real city packs rebuilt EXACTLY as their artists arranged them. Offline,
+    // tools/unity_scene_to_layout.py parses a pack's Unity demo scene + guid map
+    // into a .layout file (one line per prefab: glb + engine-frame TRS — the
+    // Unity left-handed mirror is ALREADY applied there; see docs/COORDINATES.md).
+    // Here each district = ONE EnvArtSystem: the GLB library is mounted once,
+    // every prefab GLB loads once (path-cached) and is instanced at the designer's
+    // transform, seated on an open pad of the island.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> districts;
+    // meshFixXDeg: constant mesh-local rotation about X (degrees) applied to every
+    // prefab — corrects the FBX->GLB baked-root convention mismatch that left a
+    // whole district hanging upside-down (docs/COORDINATES.md).
+    auto loadDistrict = [&](const char* layoutPath, const char* glbDir,
+                            float padX, float padZ, float padYaw, float padScale,
+                            float meshFixXDeg, const char* tag){
+        std::ifstream lf(layoutPath);
+        if (!lf) { x3::logWarn(std::string("--world echotropolis: district layout missing: ") + layoutPath); return; }
+        auto d = std::make_unique<x3::game::EnvArtSystem>();
+        if (!d->beginFromDir(*device, glbDir)) return;
+        d->setMetallicClamp(0.22f);   // BLACK-PROP fix: packed MRAOH maps bake metallic~1
+        // PAD transform (engine frame, docs/COORDINATES.md): world = T(pad) * RotY(yaw) * S.
+        // SEAT at the footprint's MAX terrain height (5-point sample): seating at the
+        // centre height buried the district's edges when the flats bowl (only roofs
+        // showed). A ground SLAB under the pad hides the terrain mismatch beneath.
+        float gy = hf.ok() ? hf.heightAt(padX, padZ) : 190.0f;
+        if (hf.ok()) {
+            for (int sx = -1; sx <= 1; ++sx) for (int sz = -1; sz <= 1; ++sz)
+                gy = std::max(gy, hf.heightAt(padX + sx * 180.0f, padZ + sz * 180.0f));
+            gy += 0.4f;
+        }
+        placeDeck("road_asphalt.glb", padX, padZ, gy - 0.05f, 0.0f, 640.0f, 420.0f);
+        const float S = padScale, pc = std::cos(padYaw) * S, ps = std::sin(padYaw) * S;
+        // Column-major 3x3 pad basis: col0=(c,0,-s), col1=(0,1,0), col2=(s,0,c), all *S.
+        const float P[9] = { pc, 0.0f, -ps,   0.0f, S, 0.0f,   ps, 0.0f, pc };
+        int placed = 0; std::string line;
+        char name[256]; float px,py,pz,qx,qy,qz,qw,sx,sy,sz;
+        while (std::getline(lf, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            if (std::sscanf(line.c_str(), "%255s %f %f %f %f %f %f %f %f %f %f",
+                            name,&px,&py,&pz,&qx,&qy,&qz,&qw,&sx,&sy,&sz) != 11) continue;
+            // Line quat+scale -> column-major 3x3 L (cols scaled by sx/sy/sz).
+            float L0[9] = {
+                (1-2*(qy*qy+qz*qz))*sx, (2*(qx*qy+qz*qw))*sx, (2*(qx*qz-qy*qw))*sx,   // col0
+                (2*(qx*qy-qz*qw))*sy,   (1-2*(qx*qx+qz*qz))*sy, (2*(qy*qz+qx*qw))*sy, // col1
+                (2*(qx*qz+qy*qw))*sz,   (2*(qy*qz-qx*qw))*sz,  (1-2*(qx*qx+qy*qy))*sz };
+            // Mesh-local fix: L = L0 * RotX(meshFixXDeg) (applied before the piece pose).
+            float L[9];
+            {
+                const float a = meshFixXDeg * 0.01745329252f;
+                const float ca = std::cos(a), sa = std::sin(a);
+                // col-major RotX: col0=(1,0,0), col1=(0,ca,sa), col2=(0,-sa,ca)
+                const float F[9] = { 1,0,0, 0,ca,sa, 0,-sa,ca };
+                for (int j = 0; j < 3; ++j)
+                    for (int r = 0; r < 3; ++r)
+                        L[j*3+r] = L0[0*3+r]*F[j*3+0] + L0[1*3+r]*F[j*3+1] + L0[2*3+r]*F[j*3+2];
+            }
+            float W[9];  // W = P * L (column-major multiply)
+            for (int j = 0; j < 3; ++j)
+                for (int r = 0; r < 3; ++r)
+                    W[j*3+r] = P[0*3+r]*L[j*3+0] + P[1*3+r]*L[j*3+1] + P[2*3+r]*L[j*3+2];
+            const float tx = padX + P[0]*px + P[3]*py + P[6]*pz;
+            const float ty = gy   + P[1]*px + P[4]*py + P[7]*pz;
+            const float tz = padZ + P[2]*px + P[5]*py + P[8]*pz;
+            const float T[16] = { W[0],W[1],W[2],0, W[3],W[4],W[5],0, W[6],W[7],W[8],0, tx,ty,tz,1 };
+            if (d->addGlbInstance(name, T)) ++placed;
+        }
+        float mn[3], mx[3]; d->worldBounds(mn, mx);
+        x3::logInfo(std::string("--world echotropolis: DISTRICT ") + tag + " — " +
+                    std::to_string(placed) + " prefabs placed at (" +
+                    std::to_string((int)padX) + "," + std::to_string((int)padZ) + "), world bounds X[" +
+                    std::to_string((int)mn[0]) + "," + std::to_string((int)mx[0]) + "] Y[" +
+                    std::to_string((int)mn[1]) + "," + std::to_string((int)mx[1]) + "] Z[" +
+                    std::to_string((int)mn[2]) + "," + std::to_string((int)mx[2]) + "]");
+        if (placed > 0) districts.push_back(std::move(d));
+    };
+    // Districts are DATA-DRIVEN: assets/districts/districts.txt lists one district
+    // per line — `tag|layout|glbDir|padX|padZ|padYaw|padScale` — so adding/moving
+    // a district needs no rebuild. Pads live on the open EAST flats
+    // (docs/COORDINATES.md: big open land x +300..+1800; west ends in sea cliffs).
+    {
+        std::ifstream mf("assets/districts/districts.txt");
+        std::string line;
+        while (mf && std::getline(mf, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            char tag[96], lay[512], dir[512]; float x, z, yaw, sc, fx;
+            const int got = std::sscanf(line.c_str(), "%95[^|]|%511[^|]|%511[^|]|%f|%f|%f|%f|%f",
+                                        tag, lay, dir, &x, &z, &yaw, &sc, &fx);
+            if (got >= 7)
+                loadDistrict(lay, dir, x, z, yaw, sc, (got >= 8 ? fx : 0.0f), tag);
+        }
     }
 
     // ===================== HARBOR BOATS ==================================
@@ -1502,6 +1613,7 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
             for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
             for (auto& r : condos) r->draw(*device, frame);      // living cutaway condo interiors
+            for (auto& d : districts) d->draw(*device, frame);   // METROPOLIS pack districts
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
             mineGlowScene.render(*device, frame);            // authentic EoS arch mouth-glow
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
@@ -2229,6 +2341,7 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
         for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
         for (auto& r : condos) r->draw(*device, frame);      // living cutaway condo interiors
+        for (auto& d : districts) d->draw(*device, frame);   // METROPOLIS pack districts
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
         for (auto& p : placed) p->draw(*device, frame);      // BUILD MENU: player-placed lots
         mineGlowScene.render(*device, frame);                // authentic EoS arch mouth-glow

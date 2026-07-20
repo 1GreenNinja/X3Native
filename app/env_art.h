@@ -85,6 +85,14 @@ public:
     // capture rig (re-pose the car between stills) — cheap, no reload.
     void setInstanceTransform(uint32_t idx, const float transform[16]);
 
+    // ---- DISTRICT API: a whole designer layout in ONE system ----
+    // beginFromDir mounts a GLB library dir + creates the loader (call once);
+    // addGlbInstance then loads (cached by path — repeated prefabs share one
+    // upload) and places one prefab at a world transform. Used by the district
+    // loader to replicate a Unity demo scene's exact placements.
+    bool beginFromDir(x3::rhi::IRenderDevice& device, std::string_view glbDir);
+    bool addGlbInstance(std::string_view relPath, const float transform[16]);
+
     // World-space AABB of all placed drawables' origins (engine-space ground truth —
     // for framing a preview camera). outMin/outMax are float[3]. No-op (huge/inverted)
     // if nothing is placed.
@@ -112,6 +120,11 @@ public:
     // diffuse + adds warm back-translucency (sun glowing through a canopy). Applies
     // to every instance/primitive this system draws. 0 = off (default; unchanged).
     void setFoliage(float f) { m_foliage = f; }
+
+    // METALLIC CLAMP (the engine's BLACK-PROP fix, see drawMeshPBR): kit packs whose
+    // packed MR maps bake metallic~1 render black (no diffuse lobe + dark env spec).
+    // Clamp metallic to `m` (e.g. 0.2) so the albedo actually lights. 1 = off.
+    void setMetallicClamp(float m) { m_metalClamp = m; }
 
     // Diagnostics for logging / the host: how many assets loaded ok / instances.
     uint32_t assetsLoaded() const;
@@ -146,6 +159,7 @@ private:
     std::vector<EnvInstance>                 m_instances;
     std::vector<x3::rhi::PointLight>         m_lightFixtures; // omni per Light_A fixture
     float                                    m_foliage = 0.0f; // >0 = vegetation shading
+    float                                    m_metalClamp = 1.0f; // <1 = BLACK-PROP fix
 };
 
 } // namespace x3::game

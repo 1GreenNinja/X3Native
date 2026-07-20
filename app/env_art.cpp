@@ -179,6 +179,24 @@ void EnvArtSystem::setInstanceTransform(uint32_t idx, const float transform[16])
     for (int i = 0; i < 16; ++i) m_instances[idx].transform[i] = transform[i];
 }
 
+bool EnvArtSystem::beginFromDir(x3::rhi::IRenderDevice& device, std::string_view glbDir) {
+    m_assets.reset(x3::asset::createAssetSource());
+    if (!m_assets->mountDir(glbDir, 0)) {
+        x3::logWarn("[env-art] beginFromDir mountDir failed: " + std::string(glbDir));
+        return false;
+    }
+    m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    return true;
+}
+
+bool EnvArtSystem::addGlbInstance(std::string_view relPath, const float transform[16]) {
+    if (!m_loader) return false;
+    const uint32_t a = loadAsset(std::string(relPath));   // cached by path
+    if (a >= m_assetTable.size() || !m_assetTable[a].ok) return false;
+    addInstance(a, transform);
+    return true;
+}
+
 Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                                   std::string_view convertedGlbDir,
                                   const Level1Layout& layout) {
@@ -670,7 +688,7 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                x3::rhi::TextureHandle{ d.detailTexId },   // HDRP micro-detail
                                d.detailUvScale,
                                d.clearcoat, d.clearcoatRough,             // car-paint clearcoat lobe
-                               /*selfLight=*/0.0f, /*metallicScale=*/1.0f,
+                               /*selfLight=*/0.0f, m_metalClamp,          // BLACK-PROP metallic clamp
                                m_foliage);                                // vegetation wrap/translucency
         }
     }
