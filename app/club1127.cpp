@@ -1557,44 +1557,24 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             // Warm shop key raking the WEST/nose flank that faces the dance floor.
             addLight(m_lights, lx - 1.3f, oy + 2.5f, lz - 0.6f, 1.75f, 1.35f, 0.80f, 8.0f);
         }
-        // THE SPORTS CAR — a low, wide, glossy coupe modelled from primitives (the
-        // module is graybox-faithful; a boxed silhouette reads as a car on the hoist).
-        // Long axis runs Z (fore/aft between the posts), raised on the pads at carY.
+        // THE SPORTS CAR — the REAL hero-car GLB (Vehicles/CTR.glb: clearcoat paint +
+        // emissive lights, the same asset --screenshot-car poses) hoisted on the pads.
+        // LOADED AS AN INERT CHARACTER PROP via addCharacter() — the SAME include-safe
+        // MonsterSystem rig/mesh-load path the dancers use, so this needs NO env_art.h
+        // (the prior agent's build fault: env_art.h drags fx.h + reorders x3::phys into
+        // a cascade — sidestepped entirely by never including it here). A static (un-
+        // skinned) GLB just draws statically through the monster path; if it fails to
+        // load it falls back to a box, so the hoist is never empty. update() FREEZES it
+        // each frame via setPropPose so the Idle-AI yaw sway never drifts the car.
         {
-            const float carY = oy + armY + 0.16f;   // sits on the rubber pads
-            const float halfL = 1.95f, halfW = 0.86f; // ~3.9 m long, 1.7 m wide
-            const float kCarPaint[4] = { 0.55f, 0.045f, 0.05f, 1.0f };  // candy red
-            const float kCarGlass[4] = { 0.03f, 0.04f, 0.06f, 1.0f };   // dark glass
-            const float kTire[4]     = { 0.028f, 0.028f, 0.032f, 1.0f };
-            const float kRim[4]      = { 0.55f, 0.56f, 0.62f, 1.0f };
-            const float emHead[4]    = { 1.0f, 0.95f, 0.75f, 2.2f };    // headlight
-            const float emTail[4]    = { 1.0f, 0.05f, 0.05f, 2.4f };    // taillight
-            auto glossy = [&](float x, float y, float z, float hx, float hy, float hz,
-                              const float* col) {
-                x3::prims::PrimMesh g = x3::prims::makeBox(hx, hy, hz, x, y, z, 1.0f);
-                prim(std::move(g), col, kEmitOff, x3::rhi::TextureHandle{}, mrGlass, false);
-            };
-            // Lower body (sill-to-belt) + upper body taper.
-            glossy(lx, carY + 0.28f, lz, halfW, 0.22f, halfL, kCarPaint);
-            glossy(lx, carY + 0.54f, lz, halfW - 0.06f, 0.10f, halfL - 0.10f, kCarPaint);
-            // Greenhouse / cabin (set back, narrower) + raked dark glass.
-            glossy(lx, carY + 0.78f, lz - 0.15f, halfW - 0.24f, 0.20f, halfL - 0.95f, kCarPaint);
-            box(lx, (carY + 0.78f) - oy, lz - 0.15f, halfW - 0.20f, 0.18f, halfL - 1.05f, kCarGlass, kEmitOff, false);
-            // Hood + trunk slopes (thin wedges front & rear).
-            glossy(lx, carY + 0.50f, lz + halfL - 0.55f, halfW - 0.10f, 0.05f, 0.55f, kCarPaint); // hood (front +Z? nose -Z)
-            glossy(lx, carY + 0.52f, lz - halfL + 0.45f, halfW - 0.12f, 0.05f, 0.45f, kCarPaint); // deck
-            // Headlights (nose, -Z) + taillights (tail, +Z).
-            box(lx - 0.5f, (carY + 0.42f) - oy, lz - halfL + 0.02f, 0.16f, 0.07f, 0.03f, kRim, emHead, false);
-            box(lx + 0.5f, (carY + 0.42f) - oy, lz - halfL + 0.02f, 0.16f, 0.07f, 0.03f, kRim, emHead, false);
-            box(lx, (carY + 0.48f) - oy, lz + halfL - 0.02f, halfW - 0.16f, 0.05f, 0.03f, kRim, emTail, false);
-            // Four wheels (tires + rims) hanging under the raised body.
-            for (int wx = -1; wx <= 1; wx += 2)
-                for (int wz = -1; wz <= 1; wz += 2) {
-                    const float wxp = lx + wx * (halfW - 0.02f);
-                    const float wzp = lz + wz * (halfL - 0.55f);
-                    box(wxp, (carY + 0.02f) - oy, wzp, 0.10f, 0.33f, 0.33f, kTire, kEmitOff, false);
-                    box(wxp + wx * 0.02f, (carY + 0.02f) - oy, wzp, 0.05f, 0.17f, 0.17f, kRim, kEmitOff, false);
-                }
+            const float carY = oy + armY + 0.10f;   // wheels rest on the rubber pads (~1.95 m up)
+            const float kPaint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };  // white = preserve the GLB's own paint
+            const x3::phys::Vec3 carPos{ lx, carY, lz };
+            addCharacter(scene, device, physics, x3::game::convertedGlbRoot(),
+                         "Vehicles/CTR.glb", carPos, /*scale*/ 1.0f, /*standUpZtoY*/ false, kPaint);
+            m_carCharIdx = (int)m_chars.size() - 1;   // freeze target for update()
+            m_carPos     = carPos;
+            m_carYaw     = 0.0f;   // length along Z between the posts (drawMonster adds R(yaw+pi))
         }
     }
 
@@ -2794,6 +2774,12 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     // Tick the inert character props (idle clips; chaseSpeed 0 => no movement).
     for (auto& c : m_chars)
         c->update(dt, scene, physics, c->pos());
+
+    // Freeze the hero CAR on the two-post lift AFTER the tick, so the drawn transform
+    // is exactly the parked pose (the generic Idle AI adds a tiny yaw sway that would
+    // otherwise slowly rock the car). No-op if the GLB never loaded (m_carCharIdx<0).
+    if (m_carCharIdx >= 0 && (size_t)m_carCharIdx < m_chars.size())
+        m_chars[m_carCharIdx]->setPropPose(m_carPos, m_carYaw);
 }
 
 void Club1127World::drawCharacters(x3::rhi::IRenderDevice& device,

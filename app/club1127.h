@@ -260,6 +260,12 @@ private:
     float                                         m_time = 0.0f;
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).
     std::vector<std::unique_ptr<MonsterSystem>>   m_chars;
+    // LNS GARAGE: the hero CAR on the two-post lift is a real GLB (Vehicles/CTR.glb)
+    // loaded as an inert prop in m_chars (index m_carCharIdx, -1 = not loaded).
+    // update() freezes it to (m_carPos, m_carYaw) each frame so it never drifts.
+    int                                           m_carCharIdx = -1;
+    x3::phys::Vec3                                m_carPos{};
+    float                                         m_carYaw = 0.0f;
     // LNS GARAGE: DIY dome/starburst PARTY-PROJECTOR pattern discs (additive emissive
     // geometry, NOT point lights — the budget is maxed). Authored centered at local
     // origin; update() SPINS each about its own axis (transform 3x3) on the beat clock
