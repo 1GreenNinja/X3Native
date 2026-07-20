@@ -38,6 +38,15 @@ struct CameraKey {
                            // between keys exactly like fov; drives setCameraBasis at play.
     bool  cut = false;     // true = HARD CUT into this key (starts a new shot/spline span;
                            // interpolation never crosses a cut boundary)
+    // ---- PER-SHOT SUN (optional, default ABSENT -> the scene look is untouched,
+    // legacy cutscenes render byte-identical). `sunDir` points TOWARD the star
+    // (SkyParams convention); `sunLight` overrides SkyParams::sunLight when >= 0.
+    // The sun lane eases between sun-bearing keys WITHIN a shot span exactly like
+    // fov/roll, and never crosses a cut boundary — so each shot can be keyed
+    // (backlight the reveal, side-key the kill, drop the tumble into shadow).
+    bool  hasSun = false;
+    Vec3  sunDir{};
+    float sunLight = -1.0f;   // < 0 = keep the baseline intensity
 };
 
 struct ShakeBurst {
@@ -145,6 +154,11 @@ struct CamPose {
     float yaw = 0, pitch = 0;   // radians, device convention
     float roll = 0.0f;          // radians, dutch/bank about the view axis (0 = level)
     float fov = 60.0f;          // degrees
+    // Per-shot sun lane (see CameraKey): hasSun == false -> the driver leaves the
+    // scene's baseline SkyParams untouched. sunDir is normalized at eval.
+    bool  hasSun = false;
+    Vec3  sunDir{};
+    float sunLight = -1.0f;     // < 0 = keep the baseline intensity
 };
 // Camera spline (Catmull-Rom pos + look, lerped FOV + roll) + summed deterministic shake.
 CamPose evalCamera(const Cutscene& cs, float t);

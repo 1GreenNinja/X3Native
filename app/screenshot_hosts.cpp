@@ -1624,6 +1624,8 @@ int dispatchScreenshotHosts(HostContext& hc) {
         float camFwd[3], camUp[3];
         x3::cut::camBasis(cam, camFwd, camUp);
         device->setCameraBasis(cam.pos.x, cam.pos.y, cam.pos.z, camFwd, camUp, cam.fov);
+        // Per-shot sun lane (no sun keys -> re-applies the applyLook baseline).
+        cin.applyShotSun(*device, cam);
         device->setSkyTime(10.0f + t * 0.02f);
 
         const int kSettle = 8;   // TAA/auto-exposure settle, like the other stills

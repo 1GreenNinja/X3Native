@@ -252,6 +252,7 @@ public:
         sp.haze = 0.0f; sp.exposure = 1.0f;
         sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.010f;
         sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.020f;
+        m_baseSky = sp;   // the baseline the per-shot sun lane overrides (applyShotSun)
         device.setSkyParams(sp);
         // ---- THE WASH-OUT WAS HERE ----------------------------------------
         // ambient (0.17, 0.18, 0.25) looked like a harmless "starlight fill", but
@@ -275,6 +276,21 @@ public:
             const uint8_t px[4] = { 0, (uint8_t)(0.58f * 255.0f), (uint8_t)(0.15f * 255.0f), 255 };
             m_hullMr = device.createTexture(px, 1, 1, /*srgb=*/false);   // DATA, linear
         }
+    }
+
+    // PER-SHOT SUN drive (CameraKey sunDir/sunLight — the authoring tool for
+    // light-as-drama: backlight the reveal, side-key the kill, drop the tumble
+    // into shadow). Call once per frame after evalCamera: a pose WITHOUT a sun
+    // lane re-applies the applyLook baseline verbatim (legacy films identical);
+    // a keyed sun overrides direction and, when authored >= 0, intensity. The
+    // planet bodies read SkyParams::sunDir too, so the terminator follows.
+    void applyShotSun(x3::rhi::IRenderDevice& device, const x3::cut::CamPose& cam) {
+        x3::rhi::IRenderDevice::SkyParams sp = m_baseSky;
+        if (cam.hasSun) {
+            sp.sunDir[0] = cam.sunDir.x; sp.sunDir[1] = cam.sunDir.y; sp.sunDir[2] = cam.sunDir.z;
+            if (cam.sunLight >= 0.0f) sp.sunLight = cam.sunLight;
+        }
+        device.setSkyParams(sp);
     }
 
     // Restore the device state the cutscene touched to the engine defaults the
@@ -519,6 +535,9 @@ private:
     // 1x1 metallic-roughness for hulls whose GLB carries no MR map (SpaceShip*.glb);
     // created in applyLook(), freed in destroy(). Puts them on the PBR branch.
     x3::rhi::TextureHandle m_hullMr{};
+    // The applyLook sky baseline; applyShotSun re-applies it (with any keyed
+    // per-shot sun override) every frame.
+    x3::rhi::IRenderDevice::SkyParams m_baseSky{};
     struct CelAnchor { float dir[3] = {0, 0, -1}; float angSin = 0.05f; };
     std::vector<NightSkyPlanet> m_planets;
     std::vector<CelAnchor> m_anchors;     // parallel to m_planets (direction + apparent size)

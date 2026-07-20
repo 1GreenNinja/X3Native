@@ -212,6 +212,9 @@ bool parseCutscene(std::string_view jsonText, Cutscene& out, std::vector<std::st
                 ck.look = jv3(&k, "look");
                 ck.fov  = jf(&k, "fov", 60.0f);
                 ck.roll = jf(&k, "roll", 0.0f);   // dutch angle (deg); absent -> 0 (level)
+                // Per-shot sun (optional; absent -> lane untouched, legacy-identical).
+                if (k.find("sunDir")) { ck.sunDir = jv3(&k, "sunDir"); ck.hasSun = true; }
+                ck.sunLight = jf(&k, "sunLight", -1.0f);
                 ck.cut  = jb(&k, "cut", false);
                 cs.camKeys.push_back(ck);
             }
@@ -355,6 +358,12 @@ bool validate(const Cutscene& cs, std::vector<std::string>& errors) {
         if (!inRange(k.t)) err("camera key t out of range: " + std::to_string(k.t));
         if (k.fov <= 1.0f || k.fov >= 170.0f) err("camera fov out of (1,170): " + std::to_string(k.fov));
         if (i > 0 && !(cs.camKeys[i - 1].t <= k.t)) err("camera keys not sorted by t");
+        if (k.hasSun) {
+            const float l2 = k.sunDir.x * k.sunDir.x + k.sunDir.y * k.sunDir.y + k.sunDir.z * k.sunDir.z;
+            if (l2 < 1e-8f) err("camera key sunDir is zero-length");
+        } else if (k.sunLight >= 0.0f) {
+            err("camera key has sunLight without sunDir");
+        }
     }
     for (const ShakeBurst& s : cs.shakes) {
         if (!inRange(s.t) || s.dur < 0.0f) err("shake t/dur invalid");
@@ -488,6 +497,36 @@ CamPose evalCamera(const Cutscene& cs, float t) {
         if (len > 1e-5f) { fx /= len; fy /= len; fz /= len; }
         out.yaw   = std::atan2(fz, fx);
         out.pitch = std::asin(fy < -1.0f ? -1.0f : (fy > 1.0f ? 1.0f : fy));
+    }
+    // ---- Per-shot SUN lane: eases between the sun-bearing keys of THIS shot
+    // span (never across a cut). A span with no sun keys -> hasSun == false, the
+    // driver leaves the baseline look untouched (legacy cutscenes identical). A
+    // single sun key holds across its span; two or more ease like fov/roll.
+    {
+        size_t prev = SIZE_MAX, next = SIZE_MAX;
+        for (size_t i = lo; i <= hi; ++i) {
+            if (!K[i].hasSun) continue;
+            if (K[i].t <= t) prev = i;
+            else if (next == SIZE_MAX) next = i;
+        }
+        if (prev != SIZE_MAX || next != SIZE_MAX) {
+            out.hasSun = true;
+            if (prev != SIZE_MAX && next != SIZE_MAX) {
+                const float span = K[next].t - K[prev].t;
+                const float u = span > 1e-6f ? (t - K[prev].t) / span : 0.0f;
+                out.sunDir = lerp3(K[prev].sunDir, K[next].sunDir, u);
+                const float la = K[prev].sunLight, lb = K[next].sunLight;
+                out.sunLight = (la >= 0.0f && lb >= 0.0f) ? lerpf(la, lb, u)
+                             : (la >= 0.0f ? la : lb);
+            } else {
+                const CameraKey& k = K[prev != SIZE_MAX ? prev : next];
+                out.sunDir = k.sunDir; out.sunLight = k.sunLight;
+            }
+            const float l = std::sqrt(out.sunDir.x * out.sunDir.x +
+                                      out.sunDir.y * out.sunDir.y +
+                                      out.sunDir.z * out.sunDir.z);
+            if (l > 1e-5f) { out.sunDir.x /= l; out.sunDir.y /= l; out.sunDir.z /= l; }
+        }
     }
     // ---- summed deterministic shake ----
     float sx = 0, sy = 0, sz = 0;
@@ -969,6 +1008,79 @@ bool runCutsceneSelfTest() {
         float fR[3], uR[3];
         camBasis(evalCamera(rc, 10.0f), fR, uR);
         check(std::fabs(uR[2]) > 0.1f, "roll banks the up vector off world-up (dutch tilt is real)");
+    }
+
+    // ---- 3d) PER-SHOT SUN lane: default-absent leaves the look untouched; a
+    //          keyed sun eases across its span like fov; the lane never crosses
+    //          a cut (negative control: a sunless span after a sun span) ----
+    {
+        // (a) Legacy default: NO sun keys anywhere -> hasSun false at every t.
+        check(!evalCamera(cs, 0.0f).hasSun && !evalCamera(cs, 5.0f).hasSun &&
+              !evalCamera(cs, 9.9f).hasSun,
+              "sun lane absent by default (legacy cutscenes leave SkyParams untouched)");
+
+        // (b) Two sun keys in one span ease dir (normalized) + intensity.
+        Cutscene sc = cs;
+        sc.camKeys.clear();
+        CameraKey s0; s0.t = 0;  s0.pos = {0,0,0}; s0.look = {10,0,0}; s0.fov = 60;
+        s0.hasSun = true; s0.sunDir = {2, 0, 0}; s0.sunLight = 2.0f;   // un-normalized on purpose
+        CameraKey s1; s1.t = 10; s1.pos = {0,0,0}; s1.look = {10,0,0}; s1.fov = 60;
+        s1.hasSun = true; s1.sunDir = {0, 0, 2}; s1.sunLight = 6.0f;
+        sc.camKeys = { s0, s1 };
+        CamPose pa = evalCamera(sc, 0.0f), pm2 = evalCamera(sc, 5.0f), pb = evalCamera(sc, 10.0f);
+        check(pa.hasSun && nearf(pa.sunDir.x, 1.0f, 1e-4f) && nearf(pa.sunLight, 2.0f),
+              "sun key 0 held + normalized");
+        const float inv2 = 1.0f / std::sqrt(2.0f);
+        check(pm2.hasSun && nearf(pm2.sunDir.x, inv2, 1e-3f) && nearf(pm2.sunDir.z, inv2, 1e-3f) &&
+              nearf(pm2.sunLight, 4.0f, 1e-3f),
+              "sun dir+light ease across the span (midpoint, renormalized)");
+        check(pb.hasSun && nearf(pb.sunDir.z, 1.0f, 1e-4f) && nearf(pb.sunLight, 6.0f),
+              "sun key 1 held + normalized");
+
+        // (c) A single sun key HOLDS across its whole span; sunLight < 0 = keep baseline.
+        Cutscene hc = sc;
+        hc.camKeys[1].hasSun = false; hc.camKeys[1].sunLight = -1.0f;
+        CamPose ph = evalCamera(hc, 9.0f);
+        check(ph.hasSun && nearf(ph.sunDir.x, 1.0f, 1e-4f) && nearf(ph.sunLight, 2.0f),
+              "single sun key holds across the span");
+
+        // (d) NEGATIVE CONTROL: the lane never crosses a cut — a sun in shot A
+        //     does not leak into a sunless shot B.
+        Cutscene nc = sc;
+        CameraKey c0; c0.t = 10; c0.pos = {0,0,0}; c0.look = {0,0,10}; c0.fov = 50; c0.cut = true;
+        CameraKey c1; c1.t = 20; c1.pos = {0,0,0}; c1.look = {0,0,10}; c1.fov = 50;
+        nc.camKeys.push_back(c0);
+        nc.camKeys.push_back(c1);
+        check(evalCamera(nc, 9.9f).hasSun, "sun span still keyed just before the cut");
+        check(!evalCamera(nc, 12.0f).hasSun && !evalCamera(nc, 20.0f).hasSun,
+              "sun lane does NOT cross a cut (sunless shot stays baseline)");
+
+        // (e) Validation: sunLight without sunDir + zero-length sunDir are rejected.
+        {
+            Cutscene bad = sc;
+            bad.camKeys[0].hasSun = false;            // sunLight 2.0 left behind
+            std::vector<std::string> verr;
+            check(!validate(bad, verr), "validate rejects sunLight without sunDir");
+            Cutscene bad2 = sc;
+            bad2.camKeys[0].sunDir = {0, 0, 0};
+            verr.clear();
+            check(!validate(bad2, verr), "validate rejects zero-length sunDir");
+        }
+
+        // (f) Parse: sunDir/sunLight fields round-trip from JSON.
+        {
+            const char* sunJson = R"({ "format": "x3.cutscene/1", "name": "sun", "duration": 4,
+              "camera": { "keys": [
+                { "t": 0, "pos": [0,0,0], "look": [1,0,0], "fov": 50,
+                  "sunDir": [0, 1, 0], "sunLight": 4.5 },
+                { "t": 4, "pos": [0,0,0], "look": [1,0,0], "fov": 50 } ] } })";
+            Cutscene scs; std::vector<std::string> perr;
+            check(parseCutscene(sunJson, scs, perr), "sun-key cutscene parses");
+            check(scs.camKeys.size() == 2 && scs.camKeys[0].hasSun &&
+                  nearf(scs.camKeys[0].sunDir.y, 1.0f) && nearf(scs.camKeys[0].sunLight, 4.5f) &&
+                  !scs.camKeys[1].hasSun && scs.camKeys[1].sunLight < 0.0f,
+                  "sun fields parse (and stay absent where unauthored)");
+        }
     }
 
     // ---- 4) Actor eval: visibility window + key interpolation + matrix ----
