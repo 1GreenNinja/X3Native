@@ -227,12 +227,32 @@ def main():
         pmemo[pid] = w
         return w
 
+    # Fallback resolver: a .prefab whose STEM has no GLB may still carry a MeshFilter
+    # whose mesh GUID resolves to the FBX we converted (Recife: 'Cube_1.prefab' ->
+    # SM_Build03.fbx -> SM_Build03.glb). Root-level mesh only (v1).
+    def prefab_mesh_stem(prefab_path, cache={}):
+        if prefab_path in cache: return cache[prefab_path]
+        stem = None
+        try:
+            txt = open(prefab_path, encoding='utf-8', errors='replace').read()
+            m = re.search(r'm_Mesh:\s*\{fileID:\s*\d+,\s*guid:\s*([0-9a-f]+)', txt)
+            if m:
+                mp = guidmap.get(m.group(1), '')
+                if mp: stem = os.path.splitext(os.path.basename(mp))[0].lower()
+        except OSError:
+            pass
+        cache[prefab_path] = stem
+        return stem
+
     placed, unmatched = [], defaultdict(int)
     for pid, pr in prefabs.items():
         path = guidmap.get(pr['guid'] or '', '')
         stem = os.path.splitext(os.path.basename(path))[0].lower() if path else ''
         if not stem: unmatched['<no-guid>'] += 1; continue
         glb = glbs.get(stem)
+        if not glb and path.endswith('.prefab'):
+            ms = prefab_mesh_stem(os.path.join(layouts_root, path))
+            if ms: glb = glbs.get(ms)
         if not glb:
             unmatched[stem] += 1; continue
         w = world_of_prefab(pid)
