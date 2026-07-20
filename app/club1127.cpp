@@ -1600,36 +1600,78 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
 
     // ==================================================================
     // ★ SHOP PROPS + LATE NIGHT SPEED BRANDING (LNS GARAGE, Tim 2026-07-18).
-    // Red Snap-on-style rolling TOOL CHESTS + a WORKBENCH (with vise + pegboard) +
-    // a push BROOM against a cabinet, along the SOUTH wall by the car; and the
-    // emissive "LATE NIGHT SPEED" neon sign high on the wall — the club IS the shop.
+    // Tim's REAL MATCO tool storage (feat/club-lns-polish 2026-07-19: NOT red, NOT
+    // Snap-on) + a WORKBENCH (vise + pegboard) + a push BROOM, along the SOUTH wall
+    // by the car; and the emissive "LATE NIGHT SPEED" neon sign — the club IS the shop.
+    //
+    // THE MATCO LINEUP (all one dark wrinkle/silver-vein GREY powdercoat family):
+    //   * 1× MATCO 6S 3-BAY roll cab — the HERO: wide 3-bay box, BLUE drawer faces,
+    //     chrome pulls, stainless top edge (grey body).
+    //   * 1× MATCO 4S roll cab — smaller, GREY drawer faces (no blue), chrome pulls.
+    //   * 3× MATCO MSC4 carts — small 2-drawer rolling utility carts on casters.
     // ==================================================================
     {
         const float southZ = CL / 2 - 0.55f;    // just off the south wall (+Z)
-        const float kToolRed[4]  = { 0.46f, 0.05f, 0.055f, 1.0f };  // Snap-on red
-        const float kToolRedHi[4]= { 0.60f, 0.08f, 0.08f, 1.0f };
-        const float kChromeD[4]  = { 0.62f, 0.63f, 0.70f, 1.0f };
+        const float kToolRed[4]  = { 0.46f, 0.05f, 0.055f, 1.0f };  // red bench-vise accent (kept)
+        const float kChromeD[4]  = { 0.62f, 0.63f, 0.70f, 1.0f };   // chrome pulls / stainless top
         const float kBenchTop[4] = { 0.20f, 0.21f, 0.24f, 1.0f };   // steel bench top
         const float kBlackR[4]   = { 0.05f, 0.05f, 0.06f, 1.0f };
-        // --- Three rolling TOOL CHESTS in a row (roll-cab + top chest + chrome drawers). ---
-        auto toolChest = [&](float cx, float widthHalf) {
-            const float bodyH = 0.55f;      // roll cab lower body half-height
-            // Roll cab body.
-            box(cx, bodyH, southZ, widthHalf, bodyH, 0.28f, kToolRed, kEmitOff, true);
-            // Top chest (slightly inset), sits on the cab.
-            box(cx, bodyH * 2 + 0.28f, southZ, widthHalf - 0.02f, 0.28f, 0.26f, kToolRedHi, kEmitOff, true);
-            // Chrome drawer pulls (horizontal strips) down the cab + chest faces.
-            for (int d = 0; d < 4; ++d)
-                box(cx, 0.28f + d * 0.26f, southZ - 0.29f, widthHalf - 0.06f, 0.022f, 0.02f, kChromeD, kEmitOff, false);
-            for (int d = 0; d < 2; ++d)
-                box(cx, bodyH * 2 + 0.14f + d * 0.28f, southZ - 0.27f, widthHalf - 0.08f, 0.02f, 0.02f, kChromeD, kEmitOff, false);
-            // Casters.
-            for (int s = -1; s <= 1; s += 2)
-                box(cx + s * (widthHalf - 0.06f), 0.04f, southZ, 0.05f, 0.04f, 0.05f, kBlackR, kEmitOff, false);
+        // MATCO powdercoat palette. The whole lineup shares kMatcoGrey (dark grey
+        // metallic with a subtle silver-vein/wrinkle read); the 6S is the hero with
+        // kMatcoBlue faces; the 4S + carts use kMatcoGreyFace (a notch lighter than
+        // the body so the drawers read as drawers, not a solid slab).
+        const float kMatcoGrey[4]     = { 0.090f, 0.093f, 0.104f, 1.0f };  // wrinkled grey body
+        const float kMatcoBlue[4]     = { 0.055f, 0.135f, 0.440f, 1.0f };  // Matco blue drawer faces (6S)
+        const float kMatcoGreyFace[4] = { 0.150f, 0.155f, 0.170f, 1.0f };  // grey drawer faces (4S/carts)
+        // --- ROLL CAB helper (6S / 4S): grey body + stainless top edge + a grid of
+        // drawer faces (nBay wide × nDr tall) with a chrome pull per drawer + casters. --
+        auto rollCab = [&](float cx, float halfW, float bodyHalfH,
+                           const float* faceCol, int nBay, int nDr) {
+            const float dZ = 0.30f;                 // half depth (0.6 m box)
+            const float frontZ = southZ - dZ;       // room-facing (-Z) face plane
+            box(cx, bodyHalfH, southZ, halfW, bodyHalfH, dZ, kMatcoGrey, kEmitOff, true);          // body
+            box(cx, bodyHalfH * 2 + 0.03f, southZ, halfW + 0.02f, 0.03f, dZ + 0.02f,
+                kChromeD, kEmitOff, true);                                                          // stainless top edge
+            const float bayW = (2 * halfW - 0.06f) / (float)nBay;
+            const float drH  = (2 * bodyHalfH - 0.08f) / (float)nDr;
+            for (int b = 0; b < nBay; ++b) {
+                const float bcx = cx - halfW + 0.03f + bayW * (b + 0.5f);
+                for (int d = 0; d < nDr; ++d) {
+                    const float dy = 0.05f + drH * (d + 0.5f);
+                    box(bcx, dy, frontZ - 0.012f, bayW / 2 - 0.015f, drH / 2 - 0.012f, 0.012f,
+                        faceCol, kEmitOff, false);                                                  // drawer face
+                    box(bcx, dy, frontZ - 0.03f, bayW / 2 - 0.05f, 0.012f, 0.012f,
+                        kChromeD, kEmitOff, false);                                                 // chrome pull
+                }
+            }
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    box(cx + sx * (halfW - 0.06f), 0.04f, southZ + sz * (dZ - 0.06f),
+                        0.05f, 0.04f, 0.05f, kBlackR, kEmitOff, false);                             // casters
         };
-        toolChest(-1.2f, 0.42f);
-        toolChest( 0.0f, 0.42f);
-        toolChest( 1.7f, 0.55f);   // wider top-box unit
+        // --- MSC4 CART helper: small grey utility cart, 2 grey drawers + chrome tray
+        // edge + a chrome push handle on the side + casters. --
+        auto msc4Cart = [&](float cx) {
+            const float halfW = 0.28f, dZ = 0.22f, topY = 0.86f;
+            const float frontZ = southZ - dZ;
+            box(cx, 0.44f, southZ, halfW, 0.44f, dZ, kMatcoGrey, kEmitOff, true);                   // body
+            box(cx, topY, southZ, halfW + 0.02f, 0.02f, dZ + 0.02f, kChromeD, kEmitOff, false);     // chrome tray edge
+            for (int d = 0; d < 2; ++d) {
+                const float dy = 0.30f + d * 0.28f;
+                box(cx, dy, frontZ - 0.012f, halfW - 0.03f, 0.11f, 0.012f, kMatcoGreyFace, kEmitOff, false); // drawer face
+                box(cx, dy, frontZ - 0.03f, halfW - 0.08f, 0.012f, 0.012f, kChromeD, kEmitOff, false);       // pull
+            }
+            box(cx - halfW - 0.03f, topY - 0.06f, southZ, 0.02f, 0.20f, 0.02f, kChromeD, kEmitOff, false);   // push handle
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    box(cx + sx * (halfW - 0.04f), 0.05f, southZ + sz * (dZ - 0.04f),
+                        0.04f, 0.05f, 0.04f, kBlackR, kEmitOff, false);                             // casters
+        };
+        rollCab(-3.2f, 0.95f, 0.52f, kMatcoBlue,     3, 5);   // ★ MATCO 6S 3-BAY (hero, blue faces)
+        rollCab(-1.1f, 0.45f, 0.50f, kMatcoGreyFace, 1, 5);   // MATCO 4S (grey faces)
+        msc4Cart(0.2f);                                        // ┐
+        msc4Cart(1.0f);                                        // ├ 3× MATCO MSC4 carts
+        msc4Cart(1.8f);                                        // ┘
         // --- WORKBENCH (steel top on legs) with a red bench VISE + a wall PEGBOARD. ---
         {
             const float bx = 4.2f, bTopY = 0.92f;
