@@ -1482,9 +1482,17 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         // Ceiling lid (collision-only, invisible — GLB ceiling drapes over).
         // W5-1: openCeiling rooms (Nexus Access) get NO lid — the cavern void above
         // is the ceiling; canon_45's shell seals the outer envelope.
-        if (!r.openCeiling)
+        // QA MAINLEVEL SWEEP: the DEEP rooms (Cave System / Hidden Sub-Level, cy<-50)
+        // get NO dressing (RoomDressing classifies them ZNone), so an invisible lid
+        // left them staring straight up into raw shaft scenery: the Crystal-Veins
+        // strata band's violet slabs from the Sub-Level, the open SKY from the cave
+        // at y=-178 (docs/QA_MAINLEVEL_SWEEP.md D3/D4). Their lid renders.
+        if (!r.openCeiling) {
+            const bool deepLid = r.cy < -50.0f;
             addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
-                   r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);
+                   r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true,
+                   /*visible*/deepLid);
+        }
 
         // 4 walls with doorway gaps where the resolver produced them.
         // W2-E: consult the doorway wall dedup (it was computed above but never USED —

@@ -238,6 +238,19 @@ void DoorSystem::loadDoorMesh(x3::rhi::IRenderDevice& device, std::string_view c
     else
         x3::logWarn("[door] FAILED to load " + std::string(kDoorGlbRel) +
                     " (graybox door box kept)");
+
+    // LAW 1 seal: build the shared unit-cube backing slab (see door.h m_fillMesh).
+    if (m_meshOk && !m_fillMesh.valid()) {
+        x3::prims::PrimMesh geo = x3::prims::makeBox(0.5f, 0.5f, 0.5f, 0, 0, 0, 1.0f);
+        m_fillMesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                       geo.index.data(), (uint32_t)geo.index.size());
+        // Matte dielectric MR texel (glTF MR: G=rough 0.85, B=metal 0). Reusing the
+        // LEAF's MR map here was measured blown-white: its metal zones sampled with
+        // unit-cube UVs made the slab a mirror aimed at the room probe (L5's WHITE
+        // case). A door back-plate is painted steel, not chrome.
+        const uint8_t mr[4] = { 0, 217, 0, 255 };
+        m_fillMr = device.createTexture(mr, 1, 1, false);
+    }
 }
 
 void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
@@ -311,6 +324,32 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                fin,
                                dr.alphaMask, dr.alphaBlend,
                                x3::rhi::TextureHandle{ dr.emissiveTexId });
+        }
+
+        // LAW 1 SEAL (QA mainlevel sweep): the pentagon leaf covers only ~72% of the
+        // rectangular wall cut (top-right triangle + ~10 cm side margins are open air),
+        // so a Closed door leaked a fog-void sightline into the PVS-culled neighbour.
+        // Draw the opaque backing slab: full opening + bezel, sliding with the leaf.
+        // It is 0.04 m thin, centred on the same plane, so it hides INSIDE the leaf's
+        // 0.13 m body wherever the leaf exists and shows as a dark back-plate through
+        // the notch. Dark institutional steel in the honest value band; the leaf's MR
+        // map rides along so the PBR path keeps a real roughness response (L4 rule:
+        // a missing MR texel silently demotes the draw to the unlit emissive path).
+        if (m_fillMesh.valid() && !m_doorDrawables.empty()) {
+            const float fw = d.halfWidth * 2.0f + 0.16f;  // cut width + bezel into the jambs
+            const float fh = d.height + 0.10f;            // covers the head seam
+            const float ft = 0.04f;
+            const float sxw = (d.axis == 0) ? ft : fw;    // axis 0: wall plane x=const
+            const float szw = (d.axis == 0) ? fw : ft;
+            float fm[16] = { sxw, 0, 0, 0,   0, fh, 0, 0,   0, 0, szw, 0,
+                             cxw, bottomY - 0.03f + fh * 0.5f, czw, 1.0f };
+            const float steel[4] = { 0.16f, 0.17f, 0.19f, 1.0f };
+            const float noEmis[4] = { 0, 0, 0, 1 };
+            device.drawMeshPBR(frame, m_fillMesh,
+                               x3::rhi::TextureHandle{},   // flat dark albedo (factor below)
+                               x3::rhi::TextureHandle{},   // no normal map
+                               m_fillMr,                   // matte dielectric MR texel
+                               steel, noEmis, fm);
         }
     }
 }

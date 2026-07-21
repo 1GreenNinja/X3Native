@@ -54,6 +54,7 @@ add_executable(X3Engine WIN32
     level.cpp
     level1.cpp
     level_lint.cpp
+    qa_propclip.cpp
     level_loader.cpp
     leveldoc_world.cpp
     player.cpp

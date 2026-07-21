@@ -50,6 +50,7 @@
 #include "level1.h"
 #include "level_loader.h"
 #include "level_lint.h"
+#include "qa_propclip.h"          // x3::game::runPropClipSelfTest (--test-propclip)
 #include "keypad.h"      // PB fold: --test-keypad (realistic access keypad geometry)
 #include "leveldoc_world.h"
 #include "player.h"
@@ -427,6 +428,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testLevelLint) {
         x3::logInfo("running GATE A geometric level lint (door-seat/junction/cut-span/reach)...");
         return x3::game::runLevelLintSelfTest() ? 0 : 1;
+    }
+    if (tf.testPropClip) {
+        x3::logInfo("running GATE A dressing prop-clip lint (wall/floor/ceil AABB penetration)...");
+        return x3::game::runPropClipSelfTest() ? 0 : 1;
     }
     if (tf.testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");

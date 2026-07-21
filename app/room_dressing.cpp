@@ -1769,4 +1769,16 @@ void RoomDressing::applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t 
     }
 }
 
+void RoomDressing::forEachPropInstance(
+    const std::function<void(uint32_t, const std::string&,
+                             const std::vector<x3::asset::ModelDrawable>&,
+                             const float*)>& fn) const {
+    for (const PropInst& p : m_props) {
+        if (p.asset >= m_assetTable.size()) continue;
+        const Asset& a = m_assetTable[p.asset];
+        if (!a.ok) continue;
+        fn(p.room, m_assetPaths[p.asset], a.drawables, p.transform);
+    }
+}
+
 } // namespace x3::game

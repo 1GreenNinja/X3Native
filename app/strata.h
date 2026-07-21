@@ -146,12 +146,20 @@ public:
     // boulder or ledge whose center lands inside this world AABB is simply not built —
     // which is what "we bored a tunnel through it" means. Call BEFORE build(); unset by
     // default, so `--world strata` and --test-strata are untouched.
+    // QA MAINLEVEL SWEEP: now a LIST — the canon facility's deep rooms (Cave System /
+    // Hidden Sub-Level, y=-174/-178) sit INSIDE the shaft's 16 m bore + offshoot span,
+    // and the Crystal-Veins glow band (emissive {0.30,0.10,0.60}) was building violet
+    // slabs THROUGH their interiors (the "pink ceiling panels" in the sweep). Each
+    // caller appends its bored volume; every check walks the list.
     void setKeepOut(const x3::phys::Vec3& mn, const x3::phys::Vec3& mx) {
-        m_koMin = mn; m_koMax = mx; m_koOn = true;
+        m_keepOuts.push_back({ mn, mx });
     }
     bool keptOut(float x, float y, float z) const {
-        return m_koOn && x >= m_koMin.x && x <= m_koMax.x && y >= m_koMin.y &&
-               y <= m_koMax.y && z >= m_koMin.z && z <= m_koMax.z;
+        for (const auto& ko : m_keepOuts)
+            if (x >= ko.mn.x && x <= ko.mx.x && y >= ko.mn.y && y <= ko.mx.y &&
+                z >= ko.mn.z && z <= ko.mx.z)
+                return true;
+        return false;
     }
 
     float shaftX() const { return m_shaftX; }
@@ -240,8 +248,8 @@ private:
     bool   m_built = false;
     Stats  m_stats{};
     float  m_shaftX = 0.0f, m_shaftZ = 0.0f, m_radius = 14.0f;
-    bool   m_koOn = false;                 // W-RIFT keep-out (the bored corridor)
-    x3::phys::Vec3 m_koMin{}, m_koMax{};
+    struct KeepOut { x3::phys::Vec3 mn{}, mx{}; };
+    std::vector<KeepOut> m_keepOuts;       // bored volumes (rift corridor + deep canon rooms)
 
     std::vector<StrataBand>     m_bands;        // modeled depth bands (top->bottom)
     std::vector<StrataOffshoot> m_offshoots;    // Phase-2 offshoot tunnels

@@ -566,10 +566,18 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             // its inner face is at -0.10 — 0.14 keeps the panel underside past it (no
             // coplanar z-fight), same inset law the wall panels use.
             const float cInset = 0.14f;
+            // QA MAINLEVEL SWEEP (propclip lint): the old 2x2 grid of RAW 4x3 m panels
+            // (x0+2 + 4*ix) spanned 8 m over a 7 m cell — the east tile overhung Jake's
+            // Cell by 1 m and hung VISIBLY inside the West Cell Hall's airspace (0.5 m
+            // below the hall ceiling, over the throat). Scale 0.875 makes the X span
+            // exactly 7 m (2 x 3.5); Z becomes 2 x 2.625 = 5.25 over the 6 m cell, the
+            // 0.375 m end borders reading as honest shadow gaps at the wall junctions.
+            const float cs = 0.875f;
             for (int ix = 0; ix < 2; ++ix)
                 for (int iz = 0; iz < 2; ++iz)
-                    place(aCeil, 0.0f, 1.0f, cx(kCeilAabb), kCeilAabb.miny, cz(kCeilAabb),
-                          x0 + 2.0f + 4.0f * ix, ceilY - cInset, z0 + 1.5f + 3.0f * iz,
+                    place(aCeil, 0.0f, cs, cx(kCeilAabb), kCeilAabb.miny, cz(kCeilAabb),
+                          x0 + 1.75f + 3.5f * ix, ceilY - cInset,
+                          z0 + 1.6875f + 2.625f * iz,
                           nullptr, tCeil);
         }
     }
@@ -992,11 +1000,15 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // explodable barrel when the host wires the sink (canon loop -> BarrelSystem). The
         // BarrelSystem owns the intact Barrel.glb + fracture + blast, so we DON'T also draw
         // a static barrel over it. No sink (tests) -> the static rusted drum, as before.
+        // QA MAINLEVEL SWEEP (propclip lint): hz + 3.2 put the drum at z=47.7 — THROUGH
+        // the hall's +Z wall (z1 = 47, the hall is only 5 m deep) and 0.6 m INTO the
+        // Entrance room's corner. hz + 1.1 keeps it against the -X end wall beside the
+        // crate stack, fully inside the hall (barrel radius 0.44 -> z 45.16..46.04).
         if (m_barrelSink) {
-            m_barrelSink(hx0 + 0.9f, hfY, hz + 3.2f);
+            m_barrelSink(hx0 + 0.9f, hfY, hz + 1.1f);
         } else {
             place(aBarrel, 0.0f, 1.0f, cx(kBarrelAabb), kBarrelAabb.miny, cz(kBarrelAabb),
-                  hx0 + 0.9f, hfY + 0.02f, hz + 3.2f, nullptr, tBarrel);
+                  hx0 + 0.9f, hfY + 0.02f, hz + 1.1f, nullptr, tBarrel);
         }
         // A red running light at the hall mouth (guard-corridor mood). R11 (playable-build):
         // 2.4 -> 1.10, the /PI cut — it was tuned against GLB props that shaded at 1/PI.
@@ -1173,6 +1185,18 @@ void CellDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
 
 uint32_t CellDressing::propsLoaded() const {
     uint32_t n = 0; for (const auto& a : m_assetTable) if (a.ok) ++n; return n;
+}
+
+void CellDressing::forEachPropInstance(
+    const std::function<void(uint32_t, const std::string&,
+                             const std::vector<x3::asset::ModelDrawable>&,
+                             const float*)>& fn) const {
+    for (const Instance& in : m_instances) {
+        if (in.asset >= m_assetTable.size()) continue;
+        const Asset& a = m_assetTable[in.asset];
+        if (!a.ok) continue;
+        fn(kNoRoom, m_assetPaths[in.asset], a.drawables, in.transform);
+    }
 }
 
 } // namespace x3::game

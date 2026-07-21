@@ -2258,6 +2258,19 @@ int runDefaultHost(HostContext& hc) {
                         }
                     }
 
+                    // QA MAINLEVEL SWEEP — bore the strata AROUND the deep canon rooms.
+                    // Cave System (y=-178) + Hidden Sub-Level (y=-174) sit inside the
+                    // shaft's 16 m bore/offshoot span, and the Crystal-Veins glow band was
+                    // building violet emissive slabs THROUGH their interiors (the "pink
+                    // ceiling panels", docs/QA_MAINLEVEL_SWEEP.md D3). Same move as the
+                    // rift corridor: any strata piece whose anchor lands inside a room's
+                    // volume (+1 m margin) is simply not built.
+                    for (const x3::game::CanonRoom& dr : canonFloor.rooms) {
+                        if (dr.cy > -50.0f) continue;   // only the deep rooms clash
+                        liveStrata.setKeepOut(
+                            { dr.x0() - 1.0f, dr.y0() - 1.0f, dr.z0() - 1.0f },
+                            { dr.x1() + 1.0f, dr.y1() + 1.0f, dr.z1() + 1.0f });
+                    }
                     soupUpElevator(L0.cx, L0.cz, labels);
                     x3::logInfo("--world canonlevel: THE REAL ELEVATOR live in the lobby spine at (" +
                                 std::to_string(L0.cx) + ", " + std::to_string(L0.cz) + ") — " +
@@ -8901,6 +8914,30 @@ int runDefaultHost(HostContext& hc) {
                                player.swimming());       // W10 3P read: prone + slow stroke
             x3::game::ThirdPersonCamera tc =
                 thirdPerson.camera(pfeet, eyeH, camYaw, camPitch);
+            // QA MAINLEVEL SWEEP — 3P camera wall clip: the orbit boom sits up to
+            // ~3.6 m behind the player; in the facility's 3-5 m rooms backing into
+            // a wall put the camera inside/behind the wall and the near plane cut
+            // a hole in it (you saw the culled void). Clamp the boom against static
+            // geometry: cast head -> desired camera, pull in to first hit - margin.
+            {
+                const x3::phys::Vec3 head{ pfeet.x, pfeet.y + eyeH, pfeet.z };
+                const x3::phys::Vec3 dv{ tc.camX - head.x, tc.camY - head.y,
+                                         tc.camZ - head.z };
+                const float blen = std::sqrt(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z);
+                if (blen > 1e-4f) {
+                    const x3::phys::Vec3 dn{ dv.x / blen, dv.y / blen, dv.z / blen };
+                    const x3::phys::RayHit bh = physics->rayCast(
+                        head, dn, blen + 0.25f, x3::phys::Layer::Static);
+                    if (bh.hit) {
+                        const float keep = std::max(bh.distance - 0.25f, 0.35f);
+                        if (keep < blen) {
+                            tc.camX = head.x + dn.x * keep;
+                            tc.camY = head.y + dn.y * keep;
+                            tc.camZ = head.z + dn.z * keep;
+                        }
+                    }
+                }
+            }
             // W10 3P + swim camera manners: while SWIMMING (not diving) the
             // orbit camera is clamped ABOVE the water surface — pitching up
             // would otherwise drag the render camera through the surface plane
