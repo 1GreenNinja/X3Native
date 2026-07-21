@@ -320,6 +320,131 @@ void SeaLifeSystem::swim(SeaCreature& c, float dt) {
     c.pitch += (wantPitch - c.pitch) * std::min(1.0f, 3.0f * dt);
 }
 
+// ---------------------------------------------------------------------------
+// THE WAKE (surface foam). See the design block in sealife.h: a per-creature
+// ring of surface samples drawn as soft alpha billboards through the engine's
+// particle pass — the scene-entity attempt died in the glass depth pre-pass.
+// ---------------------------------------------------------------------------
+float SeaLifeSystem::wakeGate(const SeaCreature& c) const {
+    if (c.dead || c.gone) return 0.0f;
+    const float surf = waterAt(c.x, c.z);
+    if (surf <= kFishDryTest) return 0.0f;
+    // Depth of the BODY TOP (his back), not his centre: the mark on the surface
+    // is made by the part of him nearest to it.
+    const float topDepth = (surf - c.y) - seaSpeciesDef(c.species).length * kWakeTopFrac;
+    return std::clamp((kWakeZeroTop - topDepth) / (kWakeZeroTop - kWakeFullTop),
+                      0.0f, 1.0f);
+}
+
+void SeaLifeSystem::updateWake(SeaCreature& c, float dt) {
+    // Age the whole trail first — dead or diving, old foam keeps dissipating.
+    for (auto& p : c.wake)
+        if (p.age < kWakeLife) p.age += dt;
+    if (c.dead) return;
+
+    const float s = wakeGate(c);
+    if (s <= 0.0f) { c.wakeDist = 0.0f; return; }   // deep: no surface mark
+
+    c.wakeDist += c.speed * dt;
+    if (c.wakeDist < kWakeSampleDist) return;
+    c.wakeDist -= kWakeSampleDist;
+
+    const float surf = waterAt(c.x, c.z);
+    if (surf <= kFishDryTest) return;
+
+    SeaCreature::WakePoint& p = c.wake[c.wakeHead];
+    c.wakeHead = (c.wakeHead + 1) % kWakePoints;
+    const float fx = -std::sin(c.yaw), fz = -std::cos(c.yaw);   // model faces -Z
+    p.x = c.x; p.z = c.z;
+    p.surfY = surf;
+    p.perpX = -fz; p.perpZ = fx;    // unit perpendicular in the surface plane
+    p.speed = c.speed;
+    p.strength = s;
+    p.age = 0.0f;
+}
+
+uint32_t SeaLifeSystem::buildWakeInstances(x3::rhi::IRenderDevice::ParticleInstance* out,
+                                           uint32_t cap, int only) const {
+    uint32_t n = 0;
+    // Foam tint: unlit grey-white with a cold cast. ALPHA-blended (never additive),
+    // per DECISIONS.md "VALUE, NOT LUMENS" — bright against dark water without ever
+    // feeding bloom, so it cannot become a flat white slab.
+    constexpr float kR = 0.70f, kG = 0.74f, kB = 0.78f;
+    for (uint32_t ci = 0; ci < m_creatures.size(); ++ci) {
+        if (only >= 0 && (int)ci != only) continue;
+        const SeaCreature& c = m_creatures[ci];
+        if (c.gone || !c.active) continue;
+
+        // ---- THE V: two spreading arms + the churned centreline they peel from.
+        for (const auto& p : c.wake) {
+            if (p.age >= kWakeLife) continue;
+            const float f = p.strength * (1.0f - p.age / kWakeLife);
+            if (f <= 0.01f) continue;
+            if (n + 3 > cap) return n;
+            // The arms leave the path at the Kelvin half-angle: a point dropped
+            // t seconds ago sits offset (t * speed * tan 19.47°) off the line.
+            const float off = 0.18f
+                + std::min(kWakeSpreadMax, p.age * p.speed * kWakeSpreadTan);
+            const float y        = p.surfY + kWakeLift;
+            const float armSize  = 0.30f + p.age * 0.20f;   // patches GROW...
+            const float armAlpha = 0.42f * f;               // ...as they thin out
+            for (int side = -1; side <= 1; side += 2) {
+                auto& q = out[n++];
+                q.pos[0] = p.x + p.perpX * off * (float)side;
+                q.pos[1] = y;
+                q.pos[2] = p.z + p.perpZ * off * (float)side;
+                q.size = armSize;
+                q.color[0] = kR; q.color[1] = kG; q.color[2] = kB;
+                q.color[3] = armAlpha;
+            }
+            auto& mid = out[n++];                            // the centreline: wider, fainter
+            mid.pos[0] = p.x; mid.pos[1] = y; mid.pos[2] = p.z;
+            mid.size = 0.46f + p.age * 0.26f;
+            mid.color[0] = kR; mid.color[1] = kG; mid.color[2] = kB;
+            mid.color[3] = 0.26f * f;
+        }
+
+        // ---- THE CHURN: froth boiling where the fin cuts, right now. Immediate-
+        // mode blobs orbiting the cut on deterministic per-blob phases — animated
+        // by m_time, owning no state at all.
+        const float s = wakeGate(c);
+        if (s > 0.0f) {
+            const float surf = waterAt(c.x, c.z);
+            if (surf > kFishDryTest) {
+                const float y = surf + kWakeLift;
+                for (int k = 0; k < kWakeChurnBlobs; ++k) {
+                    if (n >= cap) return n;
+                    const float ph = (float)(((ci * 7919u + (uint32_t)k * 2654435761u) >> 8)
+                                             & 1023u) * (2.0f * kPi / 1024.0f);
+                    const float wob = m_time * (1.3f + 0.45f * std::sin(ph * 3.0f));
+                    const float r   = 0.10f + 0.34f
+                        * (0.5f + 0.5f * std::sin(ph * 5.0f + wob * 0.7f));
+                    const float ang = ph + wob;
+                    auto& q = out[n++];
+                    q.pos[0] = c.x + std::cos(ang) * r;
+                    q.pos[1] = y;
+                    q.pos[2] = c.z + std::sin(ang) * r;
+                    q.size = 0.16f + 0.10f * (0.5f + 0.5f * std::sin(m_time * 3.1f + ph * 7.0f));
+                    q.color[0] = kR; q.color[1] = kG; q.color[2] = kB;
+                    q.color[3] = s * (0.30f + 0.25f * (0.5f + 0.5f * std::sin(m_time * 2.3f + ph)));
+                }
+            }
+        }
+    }
+    return n;
+}
+
+float SeaLifeSystem::wakeStrength(uint32_t i) const {
+    return (i < m_creatures.size()) ? wakeGate(m_creatures[i]) : 0.0f;
+}
+uint32_t SeaLifeSystem::wakeQuadCount() const {
+    return buildWakeInstances(m_wakeScratch, kWakeMaxInstances, -1);
+}
+uint32_t SeaLifeSystem::wakeQuadCount(uint32_t i) const {
+    if (i >= m_creatures.size()) return 0;
+    return buildWakeInstances(m_wakeScratch, kWakeMaxInstances, (int)i);
+}
+
 void SeaLifeSystem::writeTransform(SeaCreature& c, Scene& scene) {
     if (!c.sys || !c.skinned) return;
     const uint32_t ent = c.sys->entity();
@@ -378,6 +503,7 @@ void SeaLifeSystem::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
 
         if (c.dead) {
             swim(c, dt);
+            updateWake(c, dt);                       // the last trail dissipates
             if (c.deadT > 30.0f) {                   // corpse despawns
                 c.gone = true;
                 if (c.sys && c.skinned) scene.get(c.sys->entity()).visible = false;
@@ -386,6 +512,7 @@ void SeaLifeSystem::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         } else {
             think(c, dt, playerFeet, playerInWater, player);
             swim(c, dt);
+            updateWake(c, dt);                       // THE WAKE follows the fin
 
             // He scatters the shoals he swims through.
             if (m_fish && m_fish->built()) {
@@ -415,6 +542,14 @@ void SeaLifeSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCon
         if (c.gone || !c.active || !c.skinned || !c.sys) continue;
         c.sys->drawMonster(device, frame, scene);
     }
+    // THE WAKE: one alpha batch of foam billboards riding the surface. The device
+    // draws them in the particle pass — after the water, depth-tested read-only
+    // (banks occlude foam), soft-edged, never additive. Empty when everyone is
+    // deep: zero submit, zero GPU cost. (Self-test S11.)
+    const uint32_t wn = buildWakeInstances(m_wakeScratch, kWakeMaxInstances, -1);
+    if (wn > 0)
+        device.submitParticles(m_wakeScratch, wn,
+                               x3::rhi::IRenderDevice::ParticleBlend::Alpha);
 }
 
 // THE ZAP. A surface phenomenon: it cannot reach the abyss.
@@ -726,6 +861,55 @@ bool runSealifeSelfTest() {
                        x3::phys::Vec3{ 0, -6, 0 }, nullptr);
         scheck(device.meshCreates == m0 && device.texCreates == t0,
                "S10 600 frames of update create ZERO meshes/textures (no per-frame alloc)");
+    }
+
+    // ---- S11: THE WAKE — foam exists iff a shark rides the surface.
+    {
+        Scene scene;
+        SeaLifeSystem sea;
+        sea.setWaterQuery(testWater);
+        sea.setBedQuery(testBed);
+        sea.build(makeCfg(SeaSpecies::GreatWhite, 0, 0, 30.0f), scene, device, *physics);
+        if (sea.count() == 0) {
+            scheck(false, "S11 the great white spawned");
+        } else {
+            // An observer inside activeRadius but DRY and playerless: he patrols,
+            // and the wake sim runs (an inactive creature is neither simmed nor drawn).
+            const x3::phys::Vec3 obs{ 150.0f, 5.0f, 0.0f };
+            // Stage him AT the surface — the fin-shot trick: pin wantDepth.
+            SeaCreature& c = sea.creatureMut(0);
+            c.holdDepth = true;
+            c.wantDepth = 0.55f;
+            for (int i = 0; i < 900; ++i)
+                sea.update(1.0f / 60.0f, scene, device, *physics, obs, nullptr);
+            scheck(sea.finUp(0), "S11 staged shallow: THE FIN cuts the surface");
+            scheck(sea.wakeStrength(0) > 0.9f, "S11 the wake gate is FULL at the surface");
+            scheck(sea.wakeQuadCount() > 0, "S11 wake foam EXISTS while he rides the surface");
+            // Send him deep: the gate closes and the old trail dissipates fully
+            // (descent ~4 s at the rise rate + kWakeLife of fade + margin = 13 s).
+            c.wantDepth = 5.5f;
+            for (int i = 0; i < 780; ++i)
+                sea.update(1.0f / 60.0f, scene, device, *physics, obs, nullptr);
+            scheck(sea.wakeStrength(0) <= 0.0f, "S11 the wake gate is CLOSED deep");
+            scheck(sea.wakeQuadCount() == 0, "S11 a DEEP shark leaves NO surface foam");
+        }
+        // Negative control: the squid lives in the abyss — never one blob of foam.
+        Scene scene2;
+        SeaLifeSystem sq;
+        sq.setWaterQuery(testWater);
+        sq.setBedQuery(testBed);
+        sq.build(makeCfg(SeaSpecies::GiantSquid, 0, 0, 20.0f), scene2, device, *physics);
+        if (sq.count() == 0) {
+            scheck(false, "S11 the squid spawned (negative control)");
+        } else {
+            bool everFoam = false;
+            for (int i = 0; i < 900; ++i) {
+                sq.update(1.0f / 60.0f, scene2, device, *physics,
+                          x3::phys::Vec3{ 150.0f, 5.0f, 0.0f }, nullptr);
+                if (sq.wakeQuadCount() != 0) everFoam = true;
+            }
+            scheck(!everFoam, "S11 negative control: the deep-water squid NEVER foams");
+        }
     }
 
     x3::logInfo("sealife: " + std::to_string(g_pass) + "/" + std::to_string(g_pass + g_fail)

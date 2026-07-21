@@ -13,8 +13,8 @@
 //       the water, STALKS (circles, closing — this is the dread), CHARGES, BITES
 //       for 40 (two or three bites kill), VEERS OFF, and comes back around.
 //       THE TELL: his dorsal fin CUTS THE SURFACE when he is shallow — visible from
-//       the bank and while swimming. (The foam wake behind it did not survive contact
-//       with the water's glass depth pre-pass; see kSeaFinDepth below.)
+//       the bank and while swimming — and it drags a FOAM WAKE: the spreading V +
+//       fin churn (see THE WAKE below; unblocked by the 24371e2 water-depth fix).
 //   * BLUE SHARK   — the deep-water second predator: same kit, longer stalk, rarer
 //       commit, less damage. Deeper, so you meet him when you go down.
 //   * GIANT SQUID  — THE ABYSS. Down at the undersea base in the dark, huge, slow,
@@ -92,16 +92,44 @@ constexpr float kSeaZapDepth  = 10.0f;   // the zap only reaches this far DOWN (
 constexpr int   kSeaZapDamage = 500;     // Energy per zap — lethal to any shark
 constexpr float kSeaFinDepth  = 1.10f;   // dorsal breaks the surface above this depth
 
-// NO WAKE (yet). A foam trail behind the surfaced fin was built and CUT: as a Scene
-// Entity it renders as a BLACK SLICK on the night sea. Two causes, both real:
-//   * the sea surface is GLASS and replays in the DEPTH PRE-PASS (the same quirk that
-//     hides live fish seen from the bank), so a quad hugging the surface is swallowed;
-//     lifting it +0.30 m makes it draw, but
-//   * an unlit quad has nothing to light it out there, and neither the alphaBlend path
-//     nor the additive/glass path (copied from the zap's water-flash disc) got emissive
-//     foam out of it — it stays black, which is WORSE than no wake at all.
-// The dorsal breaking the surface is the tell and it reads on its own. Foam wants a
-// real FX/particle path, not a scene Entity; it is NOT shipped rather than shipped broken.
+// THE WAKE (shipped — take 2). A foam trail behind the surfaced fin was first built
+// as a Scene Entity and CUT: the sea surface was GLASS replayed in the DEPTH
+// PRE-PASS, so a quad hugging the surface was swallowed, and no scene-entity blend
+// path could light it — it rendered as a BLACK SLICK on the night sea. The note
+// here used to end "foam wants a real FX/particle path, not a scene Entity", and
+// once 24371e2 took the water off the opaque depth range that is EXACTLY what
+// shipped: the wake rides the engine's PARTICLE pass (the CombatFx primitive —
+// soft round billboards, ALPHA-blended so it cannot bloom into a white slab,
+// UNLIT-tinted so it cannot go black at night, depth-TESTED read-only so banks
+// and terrain occlude it, drawn AFTER the water so it sits ON the surface).
+//   * THE V     — two arms of foam trailing the fin along his ACTUAL path (a
+//                 per-creature ring of surface samples; each remembers where the
+//                 fin crossed and which way he was heading). The arms spread at
+//                 the Kelvin half-angle (tan 19.47° — the real physics number is
+//                 also the cheapest one to pick) and grow/fade as they age.
+//   * THE CHURN — a handful of froth blobs boiling at the fin cut itself,
+//                 jittered deterministically off the sim clock. Immediate-mode:
+//                 nothing simulated, nothing allocated, nothing persisted.
+//   * THE GATE  — full foam while the body's TOP is within kWakeFullTop of the
+//                 surface, NOTHING once it is deeper than kWakeZeroTop: a deep
+//                 shark leaves no surface mark (self-test S11), and a dead one
+//                 stops sampling while his last trail dissipates.
+// Budgeted like the god rays: <= ~80 billboards per surfaced shark, ONE
+// submitParticles call per frame, zero per-frame allocation (fixed rings + a
+// member scratch — S10 still holds).
+constexpr int   kWakePoints       = 24;     // path-history ring slots per creature
+constexpr float kWakeSampleDist   = 0.9f;   // metres of travel between surface samples
+constexpr float kWakeLife         = 6.0f;   // seconds one wake point lives
+constexpr float kWakeSpreadTan    = 0.353f; // tan(19.47 deg) — the Kelvin wake half-angle
+constexpr float kWakeSpreadMax    = 3.2f;   // arm half-width cap (m)
+constexpr float kWakeTopFrac      = 0.11f;  // body TOP above centre, as a fraction of
+                                            // length (the 5 m great white's back rides
+                                            // ~0.55 m above his origin — the fin-shot math)
+constexpr float kWakeFullTop      = 0.5f;   // body top within this of the surface: FULL wake
+constexpr float kWakeZeroTop      = 2.0f;   // body top deeper than this: NO wake at all
+constexpr float kWakeLift         = 0.06f;  // foam rides this high off the surface plane
+constexpr int   kWakeChurnBlobs   = 7;      // froth blobs boiling at the fin cut
+constexpr int   kWakeMaxInstances = 512;    // global per-frame billboard cap (scratch size)
 
 enum class SeaSpecies : uint8_t {
     GreatWhite = 0,
@@ -191,6 +219,22 @@ struct SeaCreature {
     bool  gone = false;          // corpse despawned
     bool  active = false;        // player within activeRadius
     bool  skinned = false;       // the rigged GLB actually loaded
+
+    // THE WAKE: ring of surface samples the foam trail is drawn from. Each point
+    // remembers where the fin crossed, the heading's perpendicular (the V arms
+    // spread along it), how fast he was going, and how open the wake gate was.
+    struct WakePoint {
+        float x = 0, z = 0;         // surface crossing (world)
+        float surfY = 0;            // the water surface there
+        float perpX = 0, perpZ = 0; // unit perpendicular to the heading at sample time
+        float speed = 0;            // his speed at sample time (drives the V spread)
+        float strength = 0;         // wake gate at sample time [0,1]
+        float age = kWakeLife;      // seconds since sampled (>= kWakeLife == free slot)
+    };
+    WakePoint wake[kWakePoints];
+    int   wakeHead = 0;             // next ring slot to write
+    float wakeDist = 0.0f;          // metres travelled since the last sample
+
     std::unique_ptr<MonsterSystem> sys;   // inert prop: owns the skinned GLB
 };
 
@@ -240,6 +284,14 @@ public:
     bool finUp(uint32_t i) const;
     // Index of the nearest live creature of a species, or -1.
     int findSpecies(SeaSpecies s) const;
+    // ---- THE WAKE queries (self-test S11 / debug) ----
+    // The wake gate for one creature: 1 with the body top at the surface, fading
+    // to 0 by kWakeZeroTop down. 0 for dead/gone/dry.
+    float wakeStrength(uint32_t i) const;
+    // How many foam billboards the wake would submit THIS frame (all creatures /
+    // one creature). draw() submits exactly this many.
+    uint32_t wakeQuadCount() const;
+    uint32_t wakeQuadCount(uint32_t i) const;
 
 private:
     void  spawn(const SeaCreatureDesc& d, Scene& scene, x3::rhi::IRenderDevice& device,
@@ -247,6 +299,18 @@ private:
     void  think(SeaCreature& c, float dt, const x3::phys::Vec3& playerFeet,
                 bool playerInWater, Player* player);
     void  swim(SeaCreature& c, float dt);
+    // THE WAKE: age the trail ring; while the gate is open, drop a fresh surface
+    // sample every kWakeSampleDist of travel. Dead creatures only age (the last
+    // trail dissipates behind the corpse).
+    void  updateWake(SeaCreature& c, float dt);
+    // The wake gate [0,1] for one creature (body-top depth against kWakeFullTop /
+    // kWakeZeroTop). 0 for dead/gone/dry water.
+    float wakeGate(const SeaCreature& c) const;
+    // Fill `out` (capacity `cap`) with this frame's foam billboards — V arms +
+    // centreline from the rings, churn at each open fin cut. `only` restricts to
+    // one creature index (-1 = all). Returns the count. No allocation.
+    uint32_t buildWakeInstances(x3::rhi::IRenderDevice::ParticleInstance* out,
+                                uint32_t cap, int only) const;
     void  writeTransform(SeaCreature& c, Scene& scene);
     float waterAt(float x, float z) const;
     float bedAt(float x, float z, float surface) const;
@@ -260,6 +324,9 @@ private:
     FishSystem* m_fish = nullptr;
     std::vector<SeaCreature> m_creatures;
 
+    // Per-frame foam scratch (member-owned: draw() allocates NOTHING; mutable so
+    // the const draw()/wakeQuadCount() can fill it — the CombatFx submit trick).
+    mutable x3::rhi::IRenderDevice::ParticleInstance m_wakeScratch[kWakeMaxInstances];
 
     float    m_time = 0.0f;
     uint32_t m_rngState = 0x5EA1Fu;
@@ -279,6 +346,9 @@ private:
 //   S8  harmless species (predator == false) never damage the player.
 //   S9  DETERMINISM: two systems, identical ticks -> identical positions/states.
 //  S10  no mesh/texture leaks across build/teardown.
+//  S11  THE WAKE: foam billboards EXIST while a shark rides the surface; ZERO once
+//       he runs deep (the gate closes and the trail dissipates); and the deep-water
+//       species (the squid) NEVER foams — the negative control.
 // Prints "sealife: X/Y passed"; returns true iff all pass. No window/Vulkan.
 bool runSealifeSelfTest();
 

@@ -4823,6 +4823,8 @@ int runDefaultHost(HostContext& hc) {
         // flex by its own baked clip. Nothing here is a painting: the zap goes off
         // through the REAL fireWaterZap() path.
         //   fin   = the dorsal cutting the surface + wake (the money shot)
+        //   wake  = the fin staging, framed WIDE from above-behind so the trailing
+        //           foam V (app/sealife.h THE WAKE) is the subject, not the fin
         //   shark = close, in profile, underwater, mid-cruise
         //   squid = the abyss: the giant squid down in the dark
         //   zap   = the payoff: the water goes live and the shark dies
@@ -4871,6 +4873,15 @@ int runDefaultHost(HostContext& hc) {
                         c.wantDepth = 0.62f;      // ~0.44 m of FIN through the surface
                         c.y = wY - 0.62f;
                         seaShotSide = 3.0f; seaShotBack = 1.6f; seaShotUp = 0.38f;
+                        seaShotAtSurface = true;
+                    } else if (seaShotMode == "wake") {
+                        // THE WAKE from the bank: same surfaced staging as `fin`,
+                        // but the camera stands off high and behind so the foam V
+                        // trailing him is the subject. Use a big --screenshot
+                        // settle count (~400) so he drags a full-length trail.
+                        c.wantDepth = 0.62f;
+                        c.y = wY - 0.62f;
+                        seaShotSide = 7.5f; seaShotBack = 12.0f; seaShotUp = 3.4f;
                         seaShotAtSurface = true;
                     } else if (seaShotMode == "shark") {
                         // UNDERWATER, close, in profile: he should FILL the frame.
