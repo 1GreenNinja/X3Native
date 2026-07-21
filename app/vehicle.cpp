@@ -453,9 +453,13 @@ bool BoatDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& ph
     if (isSub) bd.diveThrust = mass * 12.0f; // strong enough to submerge
     // Gentle synthetic SWELL (see BuoyancyDesc): the flat buoyancy plane would
     // otherwise settle the hull dead level — this rocks it a few degrees so the
-    // attitude-following chase camera has REAL motion to read off the body.
-    bd.swellTorque = mass * 0.12f;
-    bd.swellFreqHz = 0.18f;
+    // attitude-following chase camera has REAL motion to read off the body. The
+    // righting term makes it rock ABOUT LEVEL (the COM-buoyancy model has no
+    // self-righting moment, so a spawn/drop transient would otherwise leave a
+    // permanent list the camera would faithfully — and wrongly — show).
+    bd.swellTorque    = mass * 0.18f;
+    bd.swellFreqHz    = 0.18f;
+    bd.rightingTorque = mass * 2.0f;
     m_ctl.reset(x3::phys::createBuoyancyController(physics, bd));
     if (!m_ctl) { physics.removeBody(m_hull); m_hull = {}; return false; }
 
@@ -733,7 +737,7 @@ bool runVehicleCamSelfTest() {
     // --- SWELL: a floating hull with swellTorque genuinely rocks (bounded);
     //     without it the flat plane settles it dead level. Real Jolt physics. ---
     {
-        auto rockAmplitude = [&](bool swell) -> float {
+        auto rockAmplitude = [&](bool swell, float* outMean = nullptr) -> float {
             std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
             if (!w->init()) return -1.0f;
             const float hx = 1.5f, hy = 0.6f, hz = 3.0f, sea = 8.0f;
@@ -745,12 +749,17 @@ bool runVehicleCamSelfTest() {
             bd.body = hull; bd.seaLevel = sea;
             bd.halfExtents[0]=hx; bd.halfExtents[1]=hy; bd.halfExtents[2]=hz;
             bd.fluidDensity = 1025.0f; bd.linearDrag = 2.5f; bd.angularDrag = 2.5f;
-            if (swell) { bd.swellTorque = mass * 0.12f; bd.swellFreqHz = 0.18f; }
+            if (swell) {   // mirror BoatDemo::build's live config
+                bd.swellTorque    = mass * 0.18f;
+                bd.swellFreqHz    = 0.18f;
+                bd.rightingTorque = mass * 2.0f;
+            }
             std::unique_ptr<x3::phys::IVehicleController> ctl(
                 x3::phys::createBuoyancyController(*w, bd));
             if (!ctl) { w->shutdown(); return -1.0f; }
             const float dt = 1.0f / 60.0f;
-            float maxRoll = 0.0f;
+            float maxRoll = 0.0f, sumRoll = 0.0f;
+            int   samples = 0;
             for (int i = 0; i < 1800; ++i) {           // 30 s: several swell periods
                 ctl->preStep(dt); w->step(dt); ctl->postStep(dt);
                 if (i < 300) continue;                  // let the drop/settle pass
@@ -759,16 +768,22 @@ bool runVehicleCamSelfTest() {
                 vehcam::hullAxes(q, f, u);
                 vehcam::hullRollPitch(f, u, r, p);
                 maxRoll = std::max(maxRoll, std::fabs(r));
+                sumRoll += r; ++samples;
             }
             ctl.reset(); w->shutdown();
+            if (outMean) *outMean = samples ? sumRoll / (float)samples : 0.0f;
             return maxRoll;
         };
-        const float withSwell = rockAmplitude(true);
+        float meanRoll = 0.0f;
+        const float withSwell = rockAmplitude(true, &meanRoll);
         const float calm      = rockAmplitude(false);
-        x3::logInfo("[vehcam-test] swell roll amplitude: with=" + std::to_string(withSwell) +
-                    " rad, calm=" + std::to_string(calm) + " rad");
+        x3::logInfo("[vehcam-test] swell roll: max=" + std::to_string(withSwell) +
+                    " mean=" + std::to_string(meanRoll) + " rad, calm max=" +
+                    std::to_string(calm) + " rad");
         check(withSwell > 0.01f && withSwell < 0.30f,
               "swell: hull rocks (0.01 < maxRoll < 0.30 rad)");
+        check(std::fabs(meanRoll) < 0.02f,
+              "swell: hull rocks ABOUT LEVEL (|mean roll| < 0.02 rad — righting kills the list)");
         check(calm >= 0.0f && calm < 0.005f,
               "swell (negative control): calm water stays level");
     }

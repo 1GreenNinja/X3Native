@@ -150,6 +150,15 @@ struct BuoyancyDesc {
     // then genuinely rocks; cameras read the REAL attitude off the body.
     float swellTorque    = 0.0f;    // N·m roll-torque amplitude (0 = calm)
     float swellFreqHz    = 0.15f;   // primary swell frequency (Hz)
+    // METACENTRIC self-righting (N·m per radian of roll/pitch; default 0 =
+    // byte-identical). The buoyancy force above acts at the COM, so the model
+    // has NO restoring attitude moment — any transient (the spawn drop, a
+    // swell) leaves the hull with a PERMANENT list, since zero-mean torque
+    // only bounds angular velocity, not angle. Real hulls self-right (the
+    // buoyancy centroid shifts to leeward of the COM); this linearized
+    // righting torque about the horizontal axes restores level so the swell
+    // rocks the hull ABOUT zero instead of about an accidental list.
+    float rightingTorque = 0.0f;
 };
 
 // ---------------------------------------------------------------------------
