@@ -28,11 +28,18 @@ RULES = [
     (r'coinhologram|coin',                   [1.00, 0.85, 0.20], 12.0),   # gold coin holo
     (r'drone',                               [1.00, 0.30, 0.20], 8.0),   # drone tail light
 ]
-# image-name substring -> emissive TGA to embed
+# image-name substring -> emissive TGA to embed (absolute paths bypass texdir)
+_HM = 'D:/Assets/Cyberpunk City Cyberpunk Cyberpunk City Sci-Fi City/HIVEMIND/CyberpunkCity/HDRP(Default)/Art/Textures/Unique'
 MAP_RULES = [
     ('buildbg', 'T_BuildBG_Emissive.TGA',     [1,1,1], 10.0),   # BG tower windows
     ('trim_01', 'T_Trim_01_EmissiveMask.TGA', [0.3,0.9,1.0], 12.0),  # neon trim strips
     ('poste01', 'T_Emissive_Poste01_D.TGA',   [1,1,1], 16.0),
+    # HIVEMIND uniques (the merged-building .mat neon needs the HDRP-mat pass, next session)
+    ('lantern',    _HM + '/China_Lantern/T_China_lantern_Emissive.png', [1,0.5,0.3], 12.0),
+    ('coffe',      _HM + '/Coffee/T_Coffe_Emissive.png',                [1,1,1], 12.0),
+    ('lamp_street',_HM + '/LampStreet/T_Lamp_STreet_Emissive.png',      [1,1,1], 16.0),
+    ('lamp_low',   _HM + '/Lamp_Low/T_Lamp_Low_Emissive.png',           [1,1,1], 14.0),
+    ('train',      _HM + '/Train/T_Train_A_Emissive.png',               [1,1,1], 10.0),
 ]
 
 def read_glb(path):
@@ -139,9 +146,13 @@ def main():
     glb_dir, texdir = sys.argv[1], sys.argv[2]
     dry = '--dry' in sys.argv
     hits = 0
-    for f in sorted(os.listdir(glb_dir)):
-        if not f.lower().endswith('.glb'): continue
-        t = process(os.path.join(glb_dir, f), texdir, dry)
+    all_glbs = []
+    for root, _dirs, files in os.walk(glb_dir):          # recursive: tree-style packs
+        for f in files:
+            if f.lower().endswith('.glb'): all_glbs.append(os.path.join(root, f))
+    for path in sorted(all_glbs):
+        f = os.path.basename(path)
+        t = process(path, texdir, dry)
         if t:
             hits += 1
             print(('DRY  ' if dry else 'LIT  ') + f + '  ' + '; '.join(t[:3]) +

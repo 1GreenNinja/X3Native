@@ -27,7 +27,7 @@ def parse_scene(path):
     txt = open(path, encoding='utf-8', errors='replace').read()
     docs = re.split(r'^--- !u!(\d+) &(\d+)( stripped)?\s*$', txt, flags=re.M)
     # docs[0] = header; then groups of (cls, id, stripped, body)
-    transforms, prefabs, stripped_owner = {}, {}, {}
+    transforms, prefabs, stripped_owner, meshfilters = {}, {}, {}, []
     i = 1
     while i + 3 <= len(docs):
         cls, oid, stripped, body = docs[i], docs[i+1], docs[i+2], docs[i+3]
@@ -47,12 +47,19 @@ def parse_scene(path):
                 g = [float(x) for x in m.groups() if x is not None]
                 return g
             father = re.search(r'm_Father:\s*\{fileID:\s*(\d+)\}', body)
+            go = re.search(r'm_GameObject:\s*\{fileID:\s*(\d+)\}', body)
             transforms[oid] = {
                 'pos': vec('m_LocalPosition', [0,0,0]),
                 'rot': vec('m_LocalRotation', [0,0,0,1]),
                 'scl': vec('m_LocalScale', [1,1,1]),
                 'father': int(father.group(1)) if father else 0,
+                'go': int(go.group(1)) if go else 0,
             }
+        elif cls == 33:  # MeshFilter (PLAIN scene object — the architecture class!)
+            go = re.search(r'm_GameObject:\s*\{fileID:\s*(\d+)\}', body)
+            mm = re.search(r'm_Mesh:\s*\{fileID:\s*\d+,\s*guid:\s*([0-9a-f]{32})', body)
+            if go and mm and not mm.group(1).startswith('0000000000000000'):
+                meshfilters.append({'go': int(go.group(1)), 'mesh_guid': mm.group(1)})
         elif cls == 1001:  # PrefabInstance
             src = re.search(r'm_SourcePrefab:\s*\{fileID:\s*\d+,\s*guid:\s*([0-9a-f]+)', body)
             par = re.search(r'm_TransformParent:\s*\{fileID:\s*(\d+)\}', body)
@@ -64,7 +71,7 @@ def parse_scene(path):
                 'parent': int(par.group(1)) if par else 0,
                 'mods': mods,
             }
-    return transforms, prefabs, stripped_owner
+    return transforms, prefabs, stripped_owner, meshfilters
 
 # ---- minimal TRS math (column-major 4x4 as nested lists) ----
 def quat_mat(q):
@@ -174,11 +181,15 @@ def main():
     transforms, prefabs, stripped_owner = parse_scene(scene)
     print(f"scene: {len(transforms)} transforms, {len(prefabs)} prefab instances, {len(stripped_owner)} stripped")
 
-    # GLB name index (case-insensitive stem match).
+    # GLB name index (case-insensitive stem match), RECURSIVE — armory packs like
+    # HIVEMIND mirror the pack's folder tree. Values are glb_dir-relative paths
+    # (forward slashes) so the host's addGlbInstance(relPath) resolves them.
     glbs = {}
-    for f in os.listdir(glb_dir):
-        if f.lower().endswith('.glb'):
-            glbs[os.path.splitext(f)[0].lower()] = f
+    for root, _dirs, files in os.walk(glb_dir):
+        for f in files:
+            if f.lower().endswith('.glb'):
+                rel = os.path.relpath(os.path.join(root, f), glb_dir).replace('\\', '/')
+                glbs.setdefault(os.path.splitext(f)[0].lower(), rel)
 
     memo = {}
     def world_of_transform(tid, depth=0):

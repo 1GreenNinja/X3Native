@@ -1076,16 +1076,57 @@ int hostEchotropolis(HostContext& hc) {
             placeDeck("road_asphalt.glb", mx, mz, ry,        yaw, 15.0f, L.len);
             placeDeck("road_curbs.glb",   mx, mz, ry + 0.02f, yaw, 15.0f, L.len);
         }
-        // FREEWAY: elevated concrete deck on the courier arc (x -160..120, z 720), +7m.
+        // FREEWAY NETWORK: an elevated interstate stitching the METROPOLIS —
+        // downtown crown -> Recife 2050 (east flats) -> south -> Urban District
+        // (the bay) -> back up the west shore to the crown. Polyline waypoints;
+        // each leg is deck segments + twin pillar rows. Deck height per waypoint =
+        // max terrain near it + clearance, linearly graded along the leg (real
+        // interstates cut across terrain on pillars — that's the look we want).
         {
-            const float fx0=-160.0f, fx1=120.0f, fz=720.0f, flen=fx1-fx0, fmx=(fx0+fx1)*0.5f;
-            const float fgy = hf.ok()?hf.heightAt(fmx,fz):kCarY;
-            const float fy  = fgy + 7.0f;
-            placeDeck("freeway_deck.glb", fmx, fz, fy, std::atan2(1.0f,0.0f), 18.0f, flen);
-            for (float x=fx0+16.0f; x<fx1; x+=36.0f) {
-                placePillar(x, fz-5.5f, fy-0.3f, 2.6f);
-                placePillar(x, fz+5.5f, fy-0.3f, 2.6f);
+            struct Wp { float x, z; };
+            static const Wp kRoute[] = {
+                { -160.0f,  720.0f },   // crown west (the original stub's start)
+                {  120.0f,  720.0f },   // crown east edge
+                {  480.0f,  900.0f },   // descend the east slope
+                {  820.0f, 1120.0f },   // Recife 2050 south-west gate
+                { 1060.0f,  900.0f },   // turn south along the flats
+                {  980.0f,  560.0f },   // down the coast
+                {  700.0f,  420.0f },   // Urban District north gate (the bay)
+                {  300.0f,  430.0f },   // west along the shore
+                {  -60.0f,  560.0f },   // climb back toward the crown
+                { -160.0f,  700.0f },   // close the loop
+            };
+            const int nWp = (int)(sizeof(kRoute)/sizeof(kRoute[0]));
+            auto deckH = [&](float x, float z){
+                float g = hf.ok()?hf.heightAt(x,z):kCarY;
+                if (hf.ok())     // clear nearby ridges so the deck never dips underground
+                    for (int s = 0; s < 4; ++s)
+                        g = std::max(g, hf.heightAt(x + (s%2?38.0f:-38.0f), z + (s<2?38.0f:-38.0f)));
+                return std::max(g, 2.0f) + 11.0f;   // over water too (min deck ~13m)
+            };
+            int fseg = 0;
+            for (int w = 0; w + 1 < nWp; ++w) {
+                const float ax=kRoute[w].x, az=kRoute[w].z, bx=kRoute[w+1].x, bz=kRoute[w+1].z;
+                const float dx=bx-ax, dz=bz-az, len=std::sqrt(dx*dx+dz*dz);
+                const float ya=deckH(ax,az), yb=deckH(bx,bz);
+                const float yaw = std::atan2(dx, dz);
+                const float step = 40.0f;
+                for (float d = 0.0f; d < len; d += step, ++fseg) {
+                    const float seg = std::min(step, len - d) + 1.5f;   // overlap seam
+                    const float mx = ax + dx*(d+seg*0.5f)/len, mz = az + dz*(d+seg*0.5f)/len;
+                    const float my = ya + (yb-ya)*(d+seg*0.5f)/len;
+                    placeDeck("freeway_deck.glb", mx, mz, my, yaw, 18.0f, seg);
+                    if (((int)(d/step)) % 1 == 0) {                     // pillars every span
+                        const float px_ = ax + dx*d/len, pz_ = az + dz*d/len;
+                        const float py_ = ya + (yb-ya)*d/len;
+                        const float rx = std::cos(yaw)*5.5f, rz = -std::sin(yaw)*5.5f;
+                        placePillar(px_ + rx, pz_ + rz, py_ - 0.3f, 2.6f);
+                        placePillar(px_ - rx, pz_ - rz, py_ - 0.3f, 2.6f);
+                    }
+                }
             }
+            x3::logInfo("--world echotropolis: FREEWAY NETWORK — " +
+                        std::to_string(fseg) + " deck segments looping the metropolis");
         }
         // METRO: elevated N-S rail line crossing the crown at +11m (over the freeway).
         const float mgx=-60.0f, mz0=540.0f, mz1=980.0f, mlen=mz1-mz0, mmz=(mz0+mz1)*0.5f;
@@ -1181,7 +1222,7 @@ int hostEchotropolis(HostContext& hc) {
     // axis PERMUTATION — off from Unity's plain -90X by a yaw; docs/COORDINATES.md).
     auto loadDistrict = [&](const char* layoutPath, const char* glbDir,
                             float padX, float padZ, float padYaw, float padScale,
-                            const char* meshFix, const char* tag){
+                            const char* meshFix, float padYOff, const char* tag){
         std::ifstream lf(layoutPath);
         if (!lf) { x3::logWarn(std::string("--world echotropolis: district layout missing: ") + layoutPath); return; }
         auto d = std::make_unique<x3::game::EnvArtSystem>();
@@ -1257,7 +1298,7 @@ int hostEchotropolis(HostContext& hc) {
                 for (int r = 0; r < 3; ++r)
                     W[j*3+r] = P[0*3+r]*L[j*3+0] + P[1*3+r]*L[j*3+1] + P[2*3+r]*L[j*3+2];
             const float tx = padX + P[0]*px + P[3]*py + P[6]*pz;
-            const float ty = gy   + P[1]*px + P[4]*py + P[7]*pz;
+            const float ty = gy + padYOff + P[1]*px + P[4]*py + P[7]*pz;
             const float tz = padZ + P[2]*px + P[5]*py + P[8]*pz;
             const float T[16] = { W[0],W[1],W[2],0, W[3],W[4],W[5],0, W[6],W[7],W[8],0, tx,ty,tz,1 };
             if (d->addGlbInstance(name, T)) ++placed;
@@ -1280,11 +1321,12 @@ int hostEchotropolis(HostContext& hc) {
         std::string line;
         while (mf && std::getline(mf, line)) {
             if (line.empty() || line[0] == '#') continue;
-            char tag[96], lay[512], dir[512], fix[16] = "0"; float x, z, yaw, sc;
-            const int got = std::sscanf(line.c_str(), "%95[^|]|%511[^|]|%511[^|]|%f|%f|%f|%f|%15s",
-                                        tag, lay, dir, &x, &z, &yaw, &sc, fix);
+            char tag[96], lay[512], dir[512], fix[16] = "0"; float x, z, yaw, sc, yoff = 0.0f;
+            const int got = std::sscanf(line.c_str(), "%95[^|]|%511[^|]|%511[^|]|%f|%f|%f|%f|%15[^|]|%f",
+                                        tag, lay, dir, &x, &z, &yaw, &sc, fix, &yoff);
             if (got >= 7)
-                loadDistrict(lay, dir, x, z, yaw, sc, (got >= 8 ? fix : "0"), tag);
+                loadDistrict(lay, dir, x, z, yaw, sc, (got >= 8 ? fix : "0"),
+                             (got >= 9 ? yoff : 0.0f), tag);
         }
     }
 
