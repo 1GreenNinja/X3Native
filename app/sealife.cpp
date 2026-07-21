@@ -363,9 +363,10 @@ void SeaLifeSystem::updateWake(SeaCreature& c, float dt) {
     p.age = 0.0f;
 }
 
-uint32_t SeaLifeSystem::buildWakeInstances(x3::rhi::IRenderDevice::ParticleInstance* out,
-                                           uint32_t cap, int only) const {
-    uint32_t n = 0;
+uint32_t SeaLifeSystem::buildWakeFoam(int only, uint32_t& decalCount,
+                                      uint32_t& churnCount) const {
+    uint32_t nd = 0;   // trail decals  -> m_wakeTrailScratch
+    uint32_t np = 0;   // churn blobs   -> m_wakeChurnScratch
     // Foam tint: unlit grey-white with a cold cast. ALPHA-blended (never additive),
     // per DECISIONS.md "VALUE, NOT LUMENS" — bright against dark water without ever
     // feeding bloom, so it cannot become a flat white slab.
@@ -376,11 +377,15 @@ uint32_t SeaLifeSystem::buildWakeInstances(x3::rhi::IRenderDevice::ParticleInsta
         if (c.gone || !c.active) continue;
 
         // ---- THE V: two spreading arms + the churned centreline they peel from.
+        // DECALS, laid flat on the surface plane (normal +Y): a billboard trail
+        // smears vertically when seen from a low bank; a decal hugs the water.
+        uint32_t pi = 0;
         for (const auto& p : c.wake) {
+            const uint32_t pIdx = pi++;
             if (p.age >= kWakeLife) continue;
             const float f = p.strength * (1.0f - p.age / kWakeLife);
             if (f <= 0.01f) continue;
-            if (n + 3 > cap) return n;
+            if (nd + 3 > kWakeMaxInstances) break;
             // The arms leave the path at the Kelvin half-angle: a point dropped
             // t seconds ago sits offset (t * speed * tan 19.47°) off the line.
             const float off = 0.18f
@@ -388,39 +393,47 @@ uint32_t SeaLifeSystem::buildWakeInstances(x3::rhi::IRenderDevice::ParticleInsta
             const float y        = p.surfY + kWakeLift;
             const float armSize  = 0.30f + p.age * 0.20f;   // patches GROW...
             const float armAlpha = 0.42f * f;               // ...as they thin out
+            // deterministic per-point spin so the round marks don't tile
+            const float spin = (float)((pIdx * 2654435761u + ci * 7919u) & 1023u)
+                               * (2.0f * kPi / 1024.0f);
             for (int side = -1; side <= 1; side += 2) {
-                auto& q = out[n++];
-                q.pos[0] = p.x + p.perpX * off * (float)side;
-                q.pos[1] = y;
-                q.pos[2] = p.z + p.perpZ * off * (float)side;
-                q.size = armSize;
+                auto& q = m_wakeTrailScratch[nd++];
+                q.center[0] = p.x + p.perpX * off * (float)side;
+                q.center[1] = y;
+                q.center[2] = p.z + p.perpZ * off * (float)side;
+                q.halfSize  = armSize;
+                q.normal[0] = 0.0f; q.normal[1] = 1.0f; q.normal[2] = 0.0f;
+                q.angle     = spin * (float)side;
                 q.color[0] = kR; q.color[1] = kG; q.color[2] = kB;
                 q.color[3] = armAlpha;
             }
-            auto& mid = out[n++];                            // the centreline: wider, fainter
-            mid.pos[0] = p.x; mid.pos[1] = y; mid.pos[2] = p.z;
-            mid.size = 0.46f + p.age * 0.26f;
+            auto& mid = m_wakeTrailScratch[nd++];   // the centreline: wider, fainter
+            mid.center[0] = p.x; mid.center[1] = y; mid.center[2] = p.z;
+            mid.halfSize  = 0.46f + p.age * 0.26f;
+            mid.normal[0] = 0.0f; mid.normal[1] = 1.0f; mid.normal[2] = 0.0f;
+            mid.angle     = spin;
             mid.color[0] = kR; mid.color[1] = kG; mid.color[2] = kB;
             mid.color[3] = 0.26f * f;
         }
 
         // ---- THE CHURN: froth boiling where the fin cuts, right now. Immediate-
-        // mode blobs orbiting the cut on deterministic per-blob phases — animated
-        // by m_time, owning no state at all.
+        // mode billboard blobs orbiting the cut on deterministic per-blob phases —
+        // animated by m_time, owning no state at all. Billboards on purpose:
+        // churned froth genuinely stands out of the water at the cut.
         const float s = wakeGate(c);
         if (s > 0.0f) {
             const float surf = waterAt(c.x, c.z);
             if (surf > kFishDryTest) {
                 const float y = surf + kWakeLift;
                 for (int k = 0; k < kWakeChurnBlobs; ++k) {
-                    if (n >= cap) return n;
+                    if (np >= kWakeMaxInstances) break;
                     const float ph = (float)(((ci * 7919u + (uint32_t)k * 2654435761u) >> 8)
                                              & 1023u) * (2.0f * kPi / 1024.0f);
                     const float wob = m_time * (1.3f + 0.45f * std::sin(ph * 3.0f));
                     const float r   = 0.10f + 0.34f
                         * (0.5f + 0.5f * std::sin(ph * 5.0f + wob * 0.7f));
                     const float ang = ph + wob;
-                    auto& q = out[n++];
+                    auto& q = m_wakeChurnScratch[np++];
                     q.pos[0] = c.x + std::cos(ang) * r;
                     q.pos[1] = y;
                     q.pos[2] = c.z + std::sin(ang) * r;
@@ -431,18 +444,22 @@ uint32_t SeaLifeSystem::buildWakeInstances(x3::rhi::IRenderDevice::ParticleInsta
             }
         }
     }
-    return n;
+    decalCount = nd;
+    churnCount = np;
+    return nd + np;
 }
 
 float SeaLifeSystem::wakeStrength(uint32_t i) const {
     return (i < m_creatures.size()) ? wakeGate(m_creatures[i]) : 0.0f;
 }
 uint32_t SeaLifeSystem::wakeQuadCount() const {
-    return buildWakeInstances(m_wakeScratch, kWakeMaxInstances, -1);
+    uint32_t nd = 0, np = 0;
+    return buildWakeFoam(-1, nd, np);
 }
 uint32_t SeaLifeSystem::wakeQuadCount(uint32_t i) const {
     if (i >= m_creatures.size()) return 0;
-    return buildWakeInstances(m_wakeScratch, kWakeMaxInstances, (int)i);
+    uint32_t nd = 0, np = 0;
+    return buildWakeFoam((int)i, nd, np);
 }
 
 void SeaLifeSystem::writeTransform(SeaCreature& c, Scene& scene) {
@@ -542,13 +559,22 @@ void SeaLifeSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCon
         if (c.gone || !c.active || !c.skinned || !c.sys) continue;
         c.sys->drawMonster(device, frame, scene);
     }
-    // THE WAKE: one alpha batch of foam billboards riding the surface. The device
-    // draws them in the particle pass — after the water, depth-tested read-only
-    // (banks occlude foam), soft-edged, never additive. Empty when everyone is
-    // deep: zero submit, zero GPU cost. (Self-test S11.)
-    const uint32_t wn = buildWakeInstances(m_wakeScratch, kWakeMaxInstances, -1);
-    if (wn > 0)
-        device.submitParticles(m_wakeScratch, wn,
+    // THE WAKE: foam riding the surface — the trail as DECALS laid flat on the
+    // water plane, the fin churn as one alpha billboard batch. Both draw in the
+    // particle pass: after the water, depth-tested read-only (banks occlude
+    // foam), soft-edged, never additive. Empty when everyone is deep: zero
+    // submit, zero GPU cost. (Self-test S11.)
+    uint32_t nd = 0, np = 0;
+    buildWakeFoam(-1, nd, np);
+    static bool s_wakeLogged = false;    // one boot-style line the first time foam flows
+    if (!s_wakeLogged && (nd + np) > 0) {
+        s_wakeLogged = true;
+        x3::logInfo("sealife wake: first foam submit — " + std::to_string(nd)
+                    + " trail decals + " + std::to_string(np) + " churn blobs");
+    }
+    if (nd > 0) device.submitDecals(m_wakeTrailScratch, nd);
+    if (np > 0)
+        device.submitParticles(m_wakeChurnScratch, np,
                                x3::rhi::IRenderDevice::ParticleBlend::Alpha);
 }
 

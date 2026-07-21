@@ -98,18 +98,24 @@ constexpr float kSeaFinDepth  = 1.10f;   // dorsal breaks the surface above this
 // path could light it — it rendered as a BLACK SLICK on the night sea. The note
 // here used to end "foam wants a real FX/particle path, not a scene Entity", and
 // once 24371e2 took the water off the opaque depth range that is EXACTLY what
-// shipped: the wake rides the engine's PARTICLE pass (the CombatFx primitive —
-// soft round billboards, ALPHA-blended so it cannot bloom into a white slab,
-// UNLIT-tinted so it cannot go black at night, depth-TESTED read-only so banks
-// and terrain occlude it, drawn AFTER the water so it sits ON the surface).
+// shipped: the wake rides the engine's PARTICLE-pass primitives (the CombatFx
+// path — ALPHA-blended so it cannot bloom into a white slab, UNLIT-tinted so it
+// cannot go black at night, depth-TESTED read-only so banks and terrain occlude
+// it, drawn AFTER the water so it sits ON the surface).
 //   * THE V     — two arms of foam trailing the fin along his ACTUAL path (a
 //                 per-creature ring of surface samples; each remembers where the
 //                 fin crossed and which way he was heading). The arms spread at
 //                 the Kelvin half-angle (tan 19.47° — the real physics number is
 //                 also the cheapest one to pick) and grow/fade as they age.
+//                 Drawn as DECALS — oriented quads laid FLAT on the surface plane
+//                 (normal +Y), NOT camera-facing billboards: a billboard trail
+//                 viewed from a low bank smears VERTICALLY at grazing angles
+//                 (foam standing half a metre out of the sea), while a decal
+//                 hugs the plane from every angle.
 //   * THE CHURN — a handful of froth blobs boiling at the fin cut itself,
-//                 jittered deterministically off the sim clock. Immediate-mode:
-//                 nothing simulated, nothing allocated, nothing persisted.
+//                 jittered deterministically off the sim clock. These ARE
+//                 billboards: churned froth genuinely has height at the cut.
+//                 Immediate-mode: nothing simulated, nothing allocated.
 //   * THE GATE  — full foam while the body's TOP is within kWakeFullTop of the
 //                 surface, NOTHING once it is deeper than kWakeZeroTop: a deep
 //                 shark leaves no surface mark (self-test S11), and a dead one
@@ -127,7 +133,13 @@ constexpr float kWakeTopFrac      = 0.11f;  // body TOP above centre, as a fract
                                             // ~0.55 m above his origin — the fin-shot math)
 constexpr float kWakeFullTop      = 0.5f;   // body top within this of the surface: FULL wake
 constexpr float kWakeZeroTop      = 2.0f;   // body top deeper than this: NO wake at all
-constexpr float kWakeLift         = 0.06f;  // foam rides this high off the surface plane
+// Foam rides this high off the surface plane. NOT a taste number: the estuary
+// surface still swallows coplanar transparents exactly as the original wake
+// post-mortem measured ("lifting it +0.30 m makes it draw") — foam at +0.07 m
+// is eaten to nothing while +0.35 m draws clean (bisected empirically 7/20 with
+// alpha-1.0 probe decals). 0.35 clears the kill zone; at gameplay distances the
+// offset is imperceptible and the trail reads as sitting ON the water.
+constexpr float kWakeLift         = 0.35f;
 constexpr int   kWakeChurnBlobs   = 7;      // froth blobs boiling at the fin cut
 constexpr int   kWakeMaxInstances = 512;    // global per-frame billboard cap (scratch size)
 
@@ -306,11 +318,11 @@ private:
     // The wake gate [0,1] for one creature (body-top depth against kWakeFullTop /
     // kWakeZeroTop). 0 for dead/gone/dry water.
     float wakeGate(const SeaCreature& c) const;
-    // Fill `out` (capacity `cap`) with this frame's foam billboards — V arms +
-    // centreline from the rings, churn at each open fin cut. `only` restricts to
-    // one creature index (-1 = all). Returns the count. No allocation.
-    uint32_t buildWakeInstances(x3::rhi::IRenderDevice::ParticleInstance* out,
-                                uint32_t cap, int only) const;
+    // Fill the member scratch with this frame's foam — the trail (V arms +
+    // centreline) as surface DECALS, the fin churn as billboard PARTICLES.
+    // `only` restricts to one creature index (-1 = all). Returns counts via the
+    // out-params; total foam primitives as the return. No allocation.
+    uint32_t buildWakeFoam(int only, uint32_t& decalCount, uint32_t& churnCount) const;
     void  writeTransform(SeaCreature& c, Scene& scene);
     float waterAt(float x, float z) const;
     float bedAt(float x, float z, float surface) const;
@@ -326,7 +338,9 @@ private:
 
     // Per-frame foam scratch (member-owned: draw() allocates NOTHING; mutable so
     // the const draw()/wakeQuadCount() can fill it — the CombatFx submit trick).
-    mutable x3::rhi::IRenderDevice::ParticleInstance m_wakeScratch[kWakeMaxInstances];
+    // Trail patches are decals ON the surface plane; churn froth is billboards.
+    mutable x3::rhi::IRenderDevice::DecalInstance    m_wakeTrailScratch[kWakeMaxInstances];
+    mutable x3::rhi::IRenderDevice::ParticleInstance m_wakeChurnScratch[kWakeMaxInstances];
 
     float    m_time = 0.0f;
     uint32_t m_rngState = 0x5EA1Fu;
