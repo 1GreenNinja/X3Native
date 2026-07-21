@@ -516,6 +516,9 @@ int hostEchotropolis(HostContext& hc) {
     applyTodSample(device, tod.sample());
     applyAtmosphere(device, tod.sample());   // ATMOSPHERE: aerial haze + grade + bloom
     applyRayTracing(device);                 // RAY TRACING: soft sun shadows + RT AO (gated; no-op on non-RT)
+    // Diagnostic: ECHO_DEBUGVIEW=1 renders SHADING NORMALS (the instrument that
+    // separates "light can't reach it" from "its normal points into the wall").
+    if (const char* dv = std::getenv("ECHO_DEBUGVIEW")) device->setDebugView(std::atoi(dv));
     device->setCameraFar(20000.0f);   // far plane covers the GLB's 14km ocean ring corners
 
     // ---- P2: THE ISLAND. Authored in SimCityLLM2 (gen_heightmap.py seed 20260530),

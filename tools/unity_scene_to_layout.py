@@ -95,6 +95,14 @@ def mat_decompose(m):
     sx = math.sqrt(m[0][0]**2 + m[1][0]**2 + m[2][0]**2)
     sy = math.sqrt(m[0][1]**2 + m[1][1]**2 + m[2][1]**2)
     sz = math.sqrt(m[0][2]**2 + m[1][2]**2 + m[2][2]**2)
+    # MIRRORED PIECES (Unity designers flip modular walls with negative scale):
+    # det<0 means a mirror lives in this matrix. sqrt() would silently drop it,
+    # flipping geometry + pointing normals into the wall (the "black buildings").
+    # Carry it on X: negate sx + the rotation's first column stays orthonormal.
+    det = (m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
+         - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
+         + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]))
+    if det < 0: sx = -sx
     r = [[m[i][j]/(sx,sy,sz)[j] for j in range(3)] for i in range(3)]
     tr = r[0][0]+r[1][1]+r[2][2]
     if tr > 0:
@@ -108,35 +116,44 @@ def mat_decompose(m):
     return p, [qx,qy,qz,qw], [sx,sy,sz]
 
 def prefab_transform_tree(prefab_path, cache={}):
-    """All Transforms inside a .prefab: {fileID: {pos,rot,scl,father}}. Cached."""
+    """Everything inside a .prefab: transforms {fileID: {pos,rot,scl,father,go}},
+    go->transform index, and [(go, mesh_guid)] for every MeshFilter. Cached."""
     if prefab_path in cache: return cache[prefab_path]
-    tree = {}
+    tree, go2t, meshes = {}, {}, []
     try:
         txt = open(prefab_path, encoding='utf-8', errors='replace').read()
         docs = re.split(r'^--- !u!(\d+) &(\d+)( stripped)?\s*$', txt, flags=re.M)
         i = 1
         while i + 3 <= len(docs):
             cls, oid, body = int(docs[i]), int(docs[i+1]), docs[i+3]; i += 4
+            if cls == 33:
+                go = re.search(r'm_GameObject:\s*\{fileID:\s*(\d+)\}', body)
+                mm = re.search(r'm_Mesh:\s*\{fileID:\s*\d+,\s*guid:\s*([0-9a-f]{32})', body)
+                if go and mm and not mm.group(1).startswith('0000000000000000'):
+                    meshes.append((int(go.group(1)), mm.group(1)))
+                continue
             if cls != 4: continue
             def vec(name, dflt):
                 m = re.search(name + r':\s*\{x:\s*([-\d.e]+),\s*y:\s*([-\d.e]+),\s*z:\s*([-\d.e]+)(?:,\s*w:\s*([-\d.e]+))?\}', body)
                 if not m: return dflt
                 return [float(x) for x in m.groups() if x is not None]
             fa = re.search(r'm_Father:\s*\{fileID:\s*(\d+)\}', body)
+            go = re.search(r'm_GameObject:\s*\{fileID:\s*(\d+)\}', body)
             tree[oid] = {'pos': vec('m_LocalPosition', [0,0,0]),
                          'rot': vec('m_LocalRotation', [0,0,0,1]),
                          'scl': vec('m_LocalScale', [1,1,1]),
                          'father': int(fa.group(1)) if fa else 0}
+            if go: go2t[int(go.group(1))] = oid
     except OSError:
         pass
-    cache[prefab_path] = tree
-    return tree
+    cache[prefab_path] = (tree, go2t, meshes)
+    return cache[prefab_path]
 
 def prefab_internal_matrix(prefab_path, node_id):
     """Compose node..root chain INSIDE a prefab, EXCLUDING the root's own TRS (the
     scene's PrefabInstance supplies the root TRS via defaults+mods). Identity if
     the node is the root itself or the prefab is unreadable."""
-    tree = prefab_transform_tree(prefab_path)
+    tree, _go2t, _meshes = prefab_transform_tree(prefab_path)
     m, tid, depth = None, node_id, 0
     while tid in tree and depth < 64:
         t = tree[tid]
@@ -145,6 +162,17 @@ def prefab_internal_matrix(prefab_path, node_id):
         m = local if m is None else matmul(local, m)
         tid = t['father']; depth += 1
     return m
+
+def prefab_all_meshes(prefab_path):
+    """[(mesh_guid, inner_matrix_or_None)] for EVERY MeshFilter inside a prefab —
+    the multi-mesh expansion that recovers assembled buildings (a Leartes 'building'
+    prefab is dozens of child meshes; root-only resolution kept 1 of them)."""
+    tree, go2t, meshes = prefab_transform_tree(prefab_path)
+    out = []
+    for go, guid in meshes:
+        tid = go2t.get(go)
+        out.append((guid, prefab_internal_matrix(prefab_path, tid) if tid else None))
+    return out
 
 def prefab_root_defaults(prefab_path, cache={}):
     """Authored TRS of a .prefab's ROOT transform (m_Father == 0). Unity scenes only
@@ -178,8 +206,10 @@ def main():
     scene, guidmap_p, glb_dir, out_p = sys.argv[1:5]
     guidmap = json.load(open(guidmap_p))
     layouts_root = os.path.dirname(os.path.abspath(guidmap_p))
-    transforms, prefabs, stripped_owner = parse_scene(scene)
-    print(f"scene: {len(transforms)} transforms, {len(prefabs)} prefab instances, {len(stripped_owner)} stripped")
+    transforms, prefabs, stripped_owner, meshfilters = parse_scene(scene)
+    print(f"scene: {len(transforms)} transforms, {len(prefabs)} prefab instances, "
+          f"{len(stripped_owner)} stripped, {len(meshfilters)} plain mesh objects")
+    go2t = {t['go']: tid for tid, t in transforms.items() if t.get('go')}
 
     # GLB name index (case-insensitive stem match), RECURSIVE — armory packs like
     # HIVEMIND mirror the pack's folder tree. Values are glb_dir-relative paths
@@ -255,24 +285,70 @@ def main():
         cache[prefab_path] = stem
         return stem
 
+    def emit(glb, w):
+        p, q, s = mat_decompose(w)
+        # Unity (LH) -> glTF (RH): mirror Z.
+        placed.append((glb, [p[0], p[1], -p[2]], [-q[0], -q[1], q[2], q[3]], s))
+
     placed, unmatched = [], defaultdict(int)
     for pid, pr in prefabs.items():
         path = guidmap.get(pr['guid'] or '', '')
         stem = os.path.splitext(os.path.basename(path))[0].lower() if path else ''
         if not stem: unmatched['<no-guid>'] += 1; continue
+        if path.endswith('.prefab'):
+            # MULTI-MESH EXPANSION: place EVERY MeshFilter inside the prefab at
+            # instance-world x its prefab-internal chain (assembled buildings!).
+            inner = prefab_all_meshes(os.path.join(layouts_root, path))
+            if inner:
+                w0 = world_of_prefab(pid)
+                if w0 is None: continue
+                # ALL-OR-NOTHING: only use the expansion when EVERY (non-LOD) inner
+                # mesh resolves to a GLB — a partial expansion drops the missing
+                # pieces (Urban lost its signs/gates); the prefab-stem GLB already
+                # contains the whole assembly, so fall back to it instead.
+                todo = []
+                complete = True
+                for guid, im in inner:
+                    mp = guidmap.get(guid, '')
+                    ms = os.path.splitext(os.path.basename(mp))[0].lower() if mp else ''
+                    if re.search(r'_lod[1-9]$', ms): continue   # LOD0 only — prefabs stack LOD1-3 copies
+                    g = glbs.get(ms)
+                    if not g: complete = False; break
+                    todo.append((g, im))
+                if complete and todo:
+                    for g, im in todo:
+                        emit(g, matmul(w0, im) if im else w0)
+                    continue
+            # fall through: unresolvable/partial expansion -> whole-assembly stem match
         glb = glbs.get(stem)
-        if not glb and path.endswith('.prefab'):
-            ms = prefab_mesh_stem(os.path.join(layouts_root, path))
-            if ms: glb = glbs.get(ms)
         if not glb:
             unmatched[stem] += 1; continue
         w = world_of_prefab(pid)
         if w is None: continue
-        p, q, s = mat_decompose(w)
-        # Unity (LH) -> glTF (RH): mirror Z.
-        p = [p[0], p[1], -p[2]]
-        q = [-q[0], -q[1], q[2], q[3]]
-        placed.append((glb, p, q, s))
+        emit(glb, w)
+
+    # PLAIN SCENE OBJECTS (class-33 MeshFilters): the architecture class. The
+    # _Layouts repack dropped these; the ORIGINAL package scene carries them.
+    for mf in meshfilters:
+        tid = go2t.get(mf['go'])
+        if tid is None: unmatched['<mesh-no-transform>'] += 1; continue
+        mp = guidmap.get(mf['mesh_guid'], '')
+        stem = os.path.splitext(os.path.basename(mp))[0].lower() if mp else ''
+        glb = glbs.get(stem)
+        if not glb: unmatched[stem or '<mesh-no-guid>'] += 1; continue
+        w = world_of_transform(tid)
+        if w is None: continue
+        emit(glb, w)
+
+    # Dedupe exact duplicates (same glb at same rounded position — LOD stacks etc.).
+    seen, uniq = set(), []
+    for glb, p, q, s in placed:
+        k = (glb, round(p[0],2), round(p[1],2), round(p[2],2))
+        if k in seen: continue
+        seen.add(k); uniq.append((glb, p, q, s))
+    if len(uniq) != len(placed):
+        print(f"deduped {len(placed)-len(uniq)} co-located duplicates")
+    placed = uniq
 
     with open(out_p, 'w') as f:
         f.write(f"# layout from {os.path.basename(scene)} — {len(placed)} placements\n")

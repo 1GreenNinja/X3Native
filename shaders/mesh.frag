@@ -733,6 +733,10 @@ void main() {
     if ((vFlags & FLAG_GLASS) != 0u) discard;
 
     vec3 N = normalize(vNormal);
+    // TWO-SIDED lighting (pipeline is cull NONE): flip the normal on backfaces so
+    // mixed-winding HDRP kit meshes shade correctly from both sides — without this
+    // a flipped sub-mesh lights as if facing away (black wall).
+    if (!gl_FrontFacing) N = -N;
     // PBR normal map (non-terrain): perturb the geometry normal via a derivative TBN.
     if ((vFlags & FLAG_TERRAIN) == 0u && vNormalTexIndex > 0u)
         N = perturbNormal(N, vWorldPos, vUV, vNormalTexIndex);
