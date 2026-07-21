@@ -929,7 +929,10 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running DRIVE enter/exit self-test "
                     "(spawn -> E enter -> throttle 4 s -> displacement + wheel contact -> E exit restores control)...");
         const bool driveOk = x3::game::runDriveEnterExitSelfTest();
-        return (frameworkOk && driveOk) ? 0 : 1;
+        x3::logInfo("running vehicle CAMERA self-test "
+                    "(fly cam tracks hull roll + boat cam fractional roll + swell rocks the hull)...");
+        const bool camOk = x3::game::runVehicleCamSelfTest();
+        return (frameworkOk && driveOk && camOk) ? 0 : 1;
     }
     if (tf.testCanonVehicle) {
         x3::logInfo("running WORLD CARS canon-vehicle self-test "

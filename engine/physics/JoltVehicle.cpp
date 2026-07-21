@@ -418,6 +418,39 @@ public:
             if (m_d.steerTorque != 0.0f && std::fabs(m_in.steer) > 1e-3f) {
                 m_body->AddTorque(JPH::Vec3(0.0f, -m_d.steerTorque * m_in.steer * frac, 0.0f));
             }
+            // SWELL + METACENTRIC RIGHTING (see BuoyancyDesc): the swell is a
+            // gentle periodic roll about the hull's horizontal forward axis +
+            // a smaller off-phase pitch about its horizontal right axis, so
+            // the hull genuinely rocks on the water. The righting term is the
+            // linearized self-righting moment (-k * attitude) the COM-applied
+            // buoyancy force lacks — without it any transient leaves a
+            // PERMANENT list (zero-mean torque bounds angular velocity, not
+            // angle) and the swell would rock about the list, not about level.
+            if (m_d.swellTorque != 0.0f || m_d.rightingTorque != 0.0f) {
+                JPH::Vec3 fwdH = m_body->GetRotation() * JPH::Vec3(0, 0, -1);
+                fwdH.SetY(0.0f);
+                if (fwdH.LengthSq() > 1e-6f) {
+                    fwdH = norm(fwdH);
+                    JPH::Vec3 rightH(-fwdH.GetZ(), 0.0f, fwdH.GetX());
+                    JPH::Vec3 tq = JPH::Vec3::sZero();
+                    if (m_d.swellTorque != 0.0f) {
+                        m_swellT += dt;
+                        const float w1 = 2.0f * 3.14159265f * m_d.swellFreqHz;
+                        const float roll  = std::sin(w1 * m_swellT);
+                        const float pitch = 0.4f * std::sin(0.63f * w1 * m_swellT + 1.3f);
+                        tq += (fwdH * roll + rightH * pitch) * m_d.swellTorque;
+                    }
+                    if (m_d.rightingTorque != 0.0f) {
+                        JPH::Vec3 up  = m_body->GetRotation() * JPH::Vec3(0, 1, 0);
+                        JPH::Vec3 fwd = m_body->GetRotation() * JPH::Vec3(0, 0, -1);
+                        const float sinRoll  = up.Dot(rightH);   // + = starboard lean
+                        const float sinPitch = fwd.GetY();       // + = nose up
+                        tq += fwdH   * (-m_d.rightingTorque * sinRoll);
+                        tq += rightH * (-m_d.rightingTorque * sinPitch);
+                    }
+                    m_body->AddTorque(tq * frac);
+                }
+            }
         }
     }
 
@@ -441,6 +474,7 @@ private:
     BodyId              m_bodyId;
     VehicleInput        m_in;
     float               m_submergedFrac = 0.0f;
+    float               m_swellT = 0.0f;   // swell phase clock (s)
 };
 
 // =====================================================================

@@ -211,4 +211,58 @@ private:
     x3::rhi::TextureHandle m_bodyTex;
 };
 
+// ---------------------------------------------------------------------------
+// vehcam — hull-attitude chase-camera math for the REAL rigid-body vehicles
+// (fly / boat). Unlike the car (which SYNTHESIZES bank from steer input), the
+// flyer and boat are Jolt bodies whose orientation the physics already owns:
+// these helpers read the body quaternion and derive a roll-capable camera
+// basis (IRenderDevice::setCameraBasis) from the REAL attitude. Pure math +
+// tiny persistent smoothing state, factored here so the host stays surgical
+// and the math is unit-testable headlessly (--test-vehicle).
+// Conventions (CONVENTIONS.md): body quat is (x,y,z,w); hull local forward =
+// (0,0,-1), up = (0,1,0); setCamera fwd = (cos p cos y, sin p, cos p sin y).
+// ---------------------------------------------------------------------------
+namespace vehcam {
+
+// World-space hull forward/up from the body quaternion (unit output).
+void hullAxes(const float q[4], float outFwd[3], float outUp[3]);
+
+// Signed hull roll (+ = starboard/right lean) and pitch (+ = nose up), radians,
+// extracted from the world axes. Meaningful in the near-level band (the boat);
+// a looping flyer should use the full basis (flyChase), not these Eulers.
+void hullRollPitch(const float fwdW[3], const float upW[3],
+                   float& outRoll, float& outPitch);
+
+// FLY chase basis: the smoothed camera fwd/up trail the hull's genuine
+// attitude. Target up is the hull up BLENDED toward world-up by upLevelBlend
+// (a hard-mounted cam feels rigid; a chase plane lags slightly level); the
+// whole basis eases at lerpRate (1/s, dt-scaled — never per-frame). Vector
+// lerp on the basis handles past-vertical natively: a loop rolls the horizon
+// over the top instead of pinwheeling through an Euler wall.
+struct FlyCamState { float fwd[3] = {0,0,-1}; float up[3] = {0,1,0}; bool valid = false; };
+void flyChase(FlyCamState& s, const float q[4], float dt,
+              float upLevelBlend, float lerpRate);
+
+// BOAT attitude-follow: smoothed FRACTIONS of the hull's wave roll and pitch
+// (heavily damped — the camera is ON the water, not bolted to the hull).
+struct BoatCamState { float roll = 0.0f; float pitch = 0.0f; };
+void boatFollow(BoatCamState& s, const float q[4], float dt,
+                float rollFrac, float pitchFrac, float lerpRate);
+
+// Roll-capable basis from FPS yaw/pitch (the setCamera convention) + a roll
+// about the view axis: up = cos(roll)*levelUp + sin(roll)*right (the car's
+// banking construction, shared).
+void basisYawPitchRoll(float yaw, float pitch, float roll,
+                       float outFwd[3], float outUp[3]);
+
+} // namespace vehcam
+
+// Headless vehicle-camera self-test (--test-vehicle): asserts (1) the fly
+// camera's up-vector tracks a rolled hull within tolerance (and stays level on
+// a level hull — negative control), (2) the boat camera's roll is a FRACTION
+// (< 0.5) of the hull roll with matching sign (level control likewise), and
+// (3) the buoyancy SWELL genuinely rocks a floating hull (bounded amplitude;
+// calm without it). Physics-only, no window/Vulkan.
+bool runVehicleCamSelfTest();
+
 } // namespace x3::game
