@@ -83,6 +83,12 @@ public:
     void buildHostLamps(Scene& scene, x3::rhi::IRenderDevice& device,
                         float apronY, float breachX, float apronZ);
 
+    // DISTRICT lamps (echotropolis metropolis): arbitrary host-supplied rows —
+    // rows[i] = {x0, z0, x1, z1, y, spacing}. Warm pools so the pack districts
+    // read at night (their HDRP kits carry only sparse baked neon).
+    void buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& device,
+                            const float (*rows)[6], uint32_t nRows);
+
     // Per-frame: advance the flicker machines (dt-scaled, irregular 8-13 Hz
     // bursts) and write cone/head/disc emissive levels into the scene.
     void update(float dt, Scene& scene);

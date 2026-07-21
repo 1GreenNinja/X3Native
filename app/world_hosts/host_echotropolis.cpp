@@ -38,6 +38,7 @@
 #include "../asset_root.h"            // riggedGlbRoot()
 #include "../holo_terminal.h"         // CONTROL ROOM: in-world ops dashboard screen
 #include "engine/audio/IAudioSystem.h" // CYBERPUNK AUDIO: rainy-city bed + positional hums + UI SFX
+#include "../street_lights.h"          // DISTRICT NIGHT: warm lamp rows through the pack districts
 #include <string>
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
@@ -1333,6 +1334,79 @@ int hostEchotropolis(HostContext& hc) {
         }
     }
 
+    // ===================== HACKABLES (Meshy-generated ctOS props) ===========
+    // The Watch-Dogs layer's physical targets, generated via the Meshy premium
+    // pipeline (tools/meshy_gen.py): retractable bollards at the avenue mouth,
+    // junction boxes + wall cameras on the condo street, and a police drone on
+    // patrol. Static props now; the hacking system wires them next.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> hackProps;
+    std::unique_ptr<x3::game::EnvArtSystem> hackDrone;
+    {
+        const std::string hdir = "D:/GameDev/EchoHarbor/assets/hackables";
+        auto envf2 = [](const char* k, float d){ const char* e = std::getenv(k); return e ? (float)std::atof(e) : d; };
+        const float sB = envf2("ECHO_BOLLARD_SCALE", 1.0f);
+        const float sJ = envf2("ECHO_JBOX_SCALE", 1.0f);
+        const float sC = envf2("ECHO_CAM_SCALE", 1.0f);
+        auto place2 = [&](const char* glb, float x, float z, float yaw, float s, float lift){
+            const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
+            const float c = std::cos(yaw), sn = std::sin(yaw);
+            const float T[16] = { c*s,0,-sn*s,0, 0,s,0,0, sn*s,0,c*s,0, x, gy + lift, z, 1 };
+            auto e = std::make_unique<x3::game::EnvArtSystem>();
+            if (e->buildFromGlbAt(*device, hdir, glb, T)) hackProps.push_back(std::move(e));
+        };
+        for (int i = 0; i < 4; ++i)                       // bollard line across the avenue mouth
+            place2("bollard.glb", -44.0f + i * 5.0f, 806.0f, 0.0f, sB, 0.0f);
+        place2("junction_box.glb", -136.0f, 836.0f, 3.14159f, sJ, 0.6f);   // condo street
+        place2("junction_box.glb",   24.0f, 836.0f, 3.14159f, sJ, 0.6f);
+        place2("cam_wall.glb",  -58.0f, 838.0f, 3.14159f, sC, 7.5f);       // condo corners, high
+        place2("cam_wall.glb",   18.0f, 838.0f, 3.14159f, sC, 7.5f);
+        hackDrone = std::make_unique<x3::game::EnvArtSystem>();
+        const float I2[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, -20, 230, 760, 1 };
+        if (!hackDrone->buildFromGlbAt(*device, hdir, "drone_police.glb", I2)) hackDrone.reset();
+        x3::logInfo("--world echotropolis: HACKABLES — " + std::to_string(hackProps.size()) +
+                    " props (bollards/jboxes/cams) + " + (hackDrone ? "police drone" : "NO drone"));
+    }
+    auto poseHackDrone = [&](float t){
+        if (!hackDrone) return;
+        const float w = t * 0.12f, r = 130.0f;
+        const float x = -20.0f + r * std::cos(w), z = 760.0f + r * std::sin(w);
+        const float y = 228.0f + std::sin(t * 0.7f) * 3.0f;
+        const float yaw = w + 1.5708f, c = std::cos(yaw), sn = std::sin(yaw);
+        const float sD = [](){ const char* e = std::getenv("ECHO_DRONE2_SCALE"); return e ? (float)std::atof(e) : 1.2f; }();
+        const float M[16] = { c*sD,0,-sn*sD,0, 0,sD,0,0, sn*sD,0,c*sD,0, x, y, z, 1 };
+        hackDrone->setInstanceTransform(0, M);
+    };
+
+    // ===================== DISTRICT STREET LAMPS (night readability) ========
+    // The pack districts carry only sparse baked neon — at night they read as
+    // black shells. Real street lamps (StreetLights: post+arm+head meshes, fake-
+    // volumetric cones, ground pools, flicker) in warm rows down each district's
+    // main streets. Nearest lamps feed setPointLights so walls catch the glow.
+    x3::game::Scene lampScene;
+    x3::game::StreetLights streetLamps;
+    {
+        auto seatOf = [&](float cx, float cz){
+            float gy = hf.ok() ? hf.heightAt(cx, cz) : 190.0f;
+            if (hf.ok()) {
+                for (int sx = -1; sx <= 1; ++sx) for (int sz = -1; sz <= 1; ++sz)
+                    gy = std::max(gy, hf.heightAt(cx + sx*180.0f, cz + sz*180.0f));
+                gy += 0.4f;
+            }
+            return gy;
+        };
+        const float rs = seatOf(950.0f, 1250.0f);    // Recife pad seat
+        const float us = seatOf(700.0f, 350.0f);     // Urban bay pad seat
+        const float hs = seatOf(1340.0f, 1000.0f);   // HIVEMIND pad seat
+        const float rows[][6] = {
+            { 975.0f, 1222.0f, 1090.0f, 1222.0f, rs, 26.0f },   // Recife alley N row
+            { 975.0f, 1258.0f, 1090.0f, 1258.0f, rs, 26.0f },   // Recife alley S row
+            { 560.0f,  350.0f,  840.0f,  350.0f, us, 30.0f },   // Urban main drag E-W
+            { 700.0f,  240.0f,  700.0f,  470.0f, us, 30.0f },   // Urban cross street N-S
+            {1240.0f, 1000.0f, 1440.0f, 1000.0f, hs, 30.0f },   // HIVEMIND main street
+        };
+        streetLamps.buildDistrictLamps(lampScene, *device, rows, 5);
+    }
+
     // ===================== HARBOR BOATS ==================================
     // Low-poly boats (Boats Pack, Draco GLBs) cruising straight lanes on the open
     // SEA at water level (y~0), wrapping their lane with a gentle bob. Only visible
@@ -1706,6 +1780,15 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
             for (auto& r : condos) r->draw(*device, frame);      // living cutaway condo interiors
             for (auto& d : districts) d->draw(*device, frame);   // METROPOLIS pack districts
+            for (auto& h : hackProps) h->draw(*device, frame);   // ctOS hackable props
+            if (hackDrone) { poseHackDrone((float)i * dt); hackDrone->draw(*device, frame); }
+            streetLamps.update(dt, lampScene);                   // flicker machines
+            {   // nearest district lamps light the walls around the shot camera
+                std::vector<x3::rhi::PointLight> pls;
+                streetLamps.selectLights(shotCam[0], shotCam[1], shotCam[2], pls, 8);
+                device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
+            }
+            lampScene.render(*device, frame);                    // posts + cones + pools
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
             mineGlowScene.render(*device, frame);            // authentic EoS arch mouth-glow
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
@@ -2434,6 +2517,17 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
         for (auto& r : condos) r->draw(*device, frame);      // living cutaway condo interiors
         for (auto& d : districts) d->draw(*device, frame);   // METROPOLIS pack districts
+        for (auto& h : hackProps) h->draw(*device, frame);   // ctOS hackable props
+        if (hackDrone) { poseHackDrone(waterTime); hackDrone->draw(*device, frame); }
+        streetLamps.update(dt, lampScene);                   // flicker machines
+        {   // nearest district lamps light the walls around the active camera
+            float lx = rig.sFocusX, ly = rig.sPivotY + 20.0f, lz = rig.sFocusZ;
+            if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
+            std::vector<x3::rhi::PointLight> pls;
+            streetLamps.selectLights(lx, ly, lz, pls, 8);
+            device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
+        }
+        lampScene.render(*device, frame);                    // posts + cones + pools
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
         for (auto& p : placed) p->draw(*device, frame);      // BUILD MENU: player-placed lots
         mineGlowScene.render(*device, frame);                // authentic EoS arch mouth-glow

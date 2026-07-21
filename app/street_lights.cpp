@@ -414,6 +414,29 @@ void StreetLights::buildHostLamps(Scene& scene, x3::rhi::IRenderDevice& device,
     logBuild("host (apron + approach)", first);
 }
 
+void StreetLights::buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& device,
+                                      const float (*rows)[6], uint32_t nRows) {
+    const uint32_t first = (uint32_t)m_lamps.size();
+    Kit kit = makeKit(device);
+    for (uint32_t r = 0; r < nRows; ++r) {
+        const float x0 = rows[r][0], z0 = rows[r][1], x1 = rows[r][2], z1 = rows[r][3];
+        const float y = rows[r][4], spacing = std::max(8.0f, rows[r][5]);
+        const float dx = x1 - x0, dz = z1 - z0;
+        const float len = std::sqrt(dx*dx + dz*dz);
+        if (len < 1.0f) continue;
+        const float px = -dz/len, pz = dx/len;      // perpendicular (arm faces the road)
+        const int n = std::max(2, (int)(len / spacing) + 1);
+        for (int i = 0; i < n; ++i) {
+            const float t = (float)i / (float)(n - 1);
+            const float side = (i & 1) ? 1.0f : -1.0f;   // alternate road sides
+            addLamp(scene, kit, device,
+                    x0 + dx*t + px*side*4.5f, z0 + dz*t + pz*side*4.5f, y,
+                    -px*side, -pz*side, Zone::Approach, false, false);
+        }
+    }
+    logBuild("district rows", first);
+}
+
 void StreetLights::logBuild(const char* who, uint32_t first) const {
     uint32_t dead = 0, flick = 0;
     for (size_t i = first; i < m_lamps.size(); ++i) {
