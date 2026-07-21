@@ -7,6 +7,7 @@
 
 #include "engine/core/x3_log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -450,6 +451,11 @@ bool BoatDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& ph
     bd.propThrust = mass * 4.0f;     // can motor forward
     bd.steerTorque = mass * 1.5f;    // and turn
     if (isSub) bd.diveThrust = mass * 12.0f; // strong enough to submerge
+    // Gentle synthetic SWELL (see BuoyancyDesc): the flat buoyancy plane would
+    // otherwise settle the hull dead level — this rocks it a few degrees so the
+    // attitude-following chase camera has REAL motion to read off the body.
+    bd.swellTorque = mass * 0.12f;
+    bd.swellFreqHz = 0.18f;
     m_ctl.reset(x3::phys::createBuoyancyController(physics, bd));
     if (!m_ctl) { physics.removeBody(m_hull); m_hull = {}; return false; }
 
@@ -552,6 +558,224 @@ void FlyDemo::shutdown() {
         if (m_bodyTex.valid())  m_device->destroyTexture(m_bodyTex);
     }
     m_device = nullptr; m_physics = nullptr;
+}
+
+// ===========================================================================
+// vehcam — hull-attitude chase-camera math (see vehicle.h)
+// ===========================================================================
+namespace vehcam {
+
+namespace {
+inline void quatRotate(const float q[4], const float v[3], float out[3]) {
+    // v' = v + 2*qv x (qv x v + w*v), quat (x,y,z,w).
+    const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    float t[3] = { qy*v[2] - qz*v[1] + qw*v[0],
+                   qz*v[0] - qx*v[2] + qw*v[1],
+                   qx*v[1] - qy*v[0] + qw*v[2] };
+    out[0] = v[0] + 2.0f * (qy*t[2] - qz*t[1]);
+    out[1] = v[1] + 2.0f * (qz*t[0] - qx*t[2]);
+    out[2] = v[2] + 2.0f * (qx*t[1] - qy*t[0]);
+}
+inline float len3(const float v[3]) {
+    return std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+}
+inline bool norm3(float v[3]) {
+    const float l = len3(v);
+    if (l < 1e-5f) return false;
+    v[0] /= l; v[1] /= l; v[2] /= l; return true;
+}
+} // namespace
+
+void hullAxes(const float q[4], float outFwd[3], float outUp[3]) {
+    const float fL[3] = { 0.0f, 0.0f, -1.0f };
+    const float uL[3] = { 0.0f, 1.0f,  0.0f };
+    quatRotate(q, fL, outFwd);
+    quatRotate(q, uL, outUp);
+}
+
+void hullRollPitch(const float fwdW[3], const float upW[3],
+                   float& outRoll, float& outPitch) {
+    // Pitch: elevation of the hull nose. Roll: the hull up decomposed in the
+    // LEVEL frame of the horizontal forward (rightLevel = cross(fwd, worldUp)
+    // = (-fz, 0, fx) — the car's construction), + = leaning starboard.
+    const float fy = std::clamp(fwdW[1], -1.0f, 1.0f);
+    outPitch = std::asin(fy);
+    float rl[3] = { -fwdW[2], 0.0f, fwdW[0] };
+    if (!norm3(rl)) { outRoll = 0.0f; return; }   // nose straight up/down
+    // levelUp = cross(rightLevel, fwd)
+    const float lu[3] = { rl[1]*fwdW[2] - rl[2]*fwdW[1],
+                          rl[2]*fwdW[0] - rl[0]*fwdW[2],
+                          rl[0]*fwdW[1] - rl[1]*fwdW[0] };
+    const float sr = upW[0]*rl[0] + upW[1]*rl[1] + upW[2]*rl[2];
+    const float cr = upW[0]*lu[0] + upW[1]*lu[1] + upW[2]*lu[2];
+    outRoll = std::atan2(sr, cr);
+}
+
+void flyChase(FlyCamState& s, const float q[4], float dt,
+              float upLevelBlend, float lerpRate) {
+    float f[3], u[3];
+    hullAxes(q, f, u);
+    // Up target: hull up blended toward world-up (a chase plane lags level).
+    const float b = std::clamp(upLevelBlend, 0.0f, 1.0f);
+    float ut[3] = { u[0]*(1.0f-b), u[1]*(1.0f-b) + b, u[2]*(1.0f-b) };
+    if (!norm3(ut)) { ut[0] = u[0]; ut[1] = u[1]; ut[2] = u[2]; }
+    if (!s.valid) {
+        for (int k = 0; k < 3; ++k) { s.fwd[k] = f[k]; s.up[k] = ut[k]; }
+        s.valid = true;
+        return;
+    }
+    // dt-scaled ease (never per-frame — the HARD rule).
+    const float k = 1.0f - std::exp(-std::max(0.0f, lerpRate) * dt);
+    for (int i = 0; i < 3; ++i) {
+        s.fwd[i] += (f[i]  - s.fwd[i]) * k;
+        s.up[i]  += (ut[i] - s.up[i])  * k;
+    }
+    // Renormalize; snap through the (transient) antipodal degeneracy mid-loop.
+    if (!norm3(s.fwd)) { for (int i = 0; i < 3; ++i) s.fwd[i] = f[i]; }
+    if (!norm3(s.up))  { for (int i = 0; i < 3; ++i) s.up[i]  = ut[i]; }
+    const float d = s.fwd[0]*s.up[0] + s.fwd[1]*s.up[1] + s.fwd[2]*s.up[2];
+    if (std::fabs(d) > 0.995f) {   // up collapsed onto fwd — take the target
+        for (int i = 0; i < 3; ++i) s.up[i] = ut[i];
+    }
+}
+
+void boatFollow(BoatCamState& s, const float q[4], float dt,
+                float rollFrac, float pitchFrac, float lerpRate) {
+    float f[3], u[3], hr, hp;
+    hullAxes(q, f, u);
+    hullRollPitch(f, u, hr, hp);
+    const float k = 1.0f - std::exp(-std::max(0.0f, lerpRate) * dt);
+    s.roll  += (rollFrac  * hr - s.roll)  * k;
+    s.pitch += (pitchFrac * hp - s.pitch) * k;
+}
+
+void basisYawPitchRoll(float yaw, float pitch, float roll,
+                       float outFwd[3], float outUp[3]) {
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    outFwd[0] = cp * cy; outFwd[1] = sp; outFwd[2] = cp * sy;
+    // camRight = normalize(cross(fwd, worldUp)) = normalize(-fz, 0, fx).
+    float cr[3] = { -outFwd[2], 0.0f, outFwd[0] };
+    if (!norm3(cr)) { cr[0] = -sy; cr[1] = 0.0f; cr[2] = cy; }
+    // levelUp = cross(right, fwd); rolled: up = cos(r)*levelUp + sin(r)*right.
+    const float cu[3] = { cr[1]*outFwd[2] - cr[2]*outFwd[1],
+                          cr[2]*outFwd[0] - cr[0]*outFwd[2],
+                          cr[0]*outFwd[1] - cr[1]*outFwd[0] };
+    const float cb = std::cos(roll), sb = std::sin(roll);
+    for (int i = 0; i < 3; ++i) outUp[i] = cb*cu[i] + sb*cr[i];
+}
+
+} // namespace vehcam
+
+// ===========================================================================
+// runVehicleCamSelfTest (--test-vehicle) — see vehicle.h
+// ===========================================================================
+bool runVehicleCamSelfTest() {
+    int passN = 0, failN = 0;
+    auto check = [&](bool ok, const char* what) {
+        if (ok) { ++passN; x3::logInfo(std::string("PASS C") + std::to_string(passN + failN) + " " + what); }
+        else    { ++failN; x3::logError(std::string("FAIL C") + std::to_string(passN + failN) + " " + what); }
+    };
+    const float kRoll = 0.3f;                       // 17.2 deg hull roll
+    // Quat for roll about the hull's local forward (0,0,-1): axis*sin(a/2), cos(a/2).
+    const float hs = std::sin(kRoll * 0.5f), hc = std::cos(kRoll * 0.5f);
+    const float qRoll[4]  = { 0.0f, 0.0f, -hs, hc };
+    const float qLevel[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    // Pitch 0.2 rad about local right (+X): nose up.
+    const float ps = std::sin(0.1f), pc = std::cos(0.1f);
+    const float qPitch[4] = { ps, 0.0f, 0.0f, pc };
+
+    // --- Extraction sanity: the rolled hull reads back its own roll. ---
+    {
+        float f[3], u[3], r, p;
+        vehcam::hullAxes(qRoll, f, u);
+        vehcam::hullRollPitch(f, u, r, p);
+        check(std::fabs(r - kRoll) < 0.01f && std::fabs(p) < 0.01f,
+              "extract: rolled hull reads roll=0.3, pitch=0");
+        vehcam::hullAxes(qPitch, f, u);
+        vehcam::hullRollPitch(f, u, r, p);
+        check(std::fabs(p - 0.2f) < 0.01f && std::fabs(r) < 0.01f,
+              "extract: pitched hull reads pitch=0.2, roll=0");
+    }
+
+    // --- FLY: converged camera up TRACKS hull roll (blended toward level). ---
+    {
+        const float kBlend = 0.30f, kRate = 5.0f, dt = 1.0f / 60.0f;
+        vehcam::FlyCamState s;
+        for (int i = 0; i < 600; ++i) vehcam::flyChase(s, qRoll, dt, kBlend, kRate);
+        float r, p; vehcam::hullRollPitch(s.fwd, s.up, r, p);
+        // Expected converged roll = atan2(0.7 sin, 0.7 cos + 0.3) ~= 0.21 rad.
+        check(r > 0.15f && r < 0.30f,
+              "fly: camera up tracks hull roll (0.15 < r < 0.30 for hull 0.3)");
+        vehcam::FlyCamState s2;
+        for (int i = 0; i < 600; ++i) vehcam::flyChase(s2, qLevel, dt, kBlend, kRate);
+        float r2, p2; vehcam::hullRollPitch(s2.fwd, s2.up, r2, p2);
+        check(std::fabs(r2) < 1e-3f, "fly (negative control): level hull -> level camera");
+    }
+
+    // --- BOAT: camera roll is a FRACTION (< 0.5) of hull roll, same sign. ---
+    {
+        const float kRollFrac = 0.40f, kPitchFrac = 0.20f, kRate = 2.5f, dt = 1.0f / 60.0f;
+        vehcam::BoatCamState s;
+        for (int i = 0; i < 900; ++i) vehcam::boatFollow(s, qRoll, dt, kRollFrac, kPitchFrac, kRate);
+        check(s.roll > 0.02f && s.roll < 0.5f * kRoll,
+              "boat: camera roll a positive fraction < 0.5 of hull roll");
+        vehcam::BoatCamState sp;
+        for (int i = 0; i < 900; ++i) vehcam::boatFollow(sp, qPitch, dt, kRollFrac, kPitchFrac, kRate);
+        check(sp.pitch > 0.005f && sp.pitch < 0.5f * 0.2f,
+              "boat: camera pitch a positive fraction < 0.5 of hull pitch");
+        vehcam::BoatCamState sl;
+        for (int i = 0; i < 900; ++i) vehcam::boatFollow(sl, qLevel, dt, kRollFrac, kPitchFrac, kRate);
+        check(std::fabs(sl.roll) < 1e-4f && std::fabs(sl.pitch) < 1e-4f,
+              "boat (negative control): level hull -> zero camera roll/pitch");
+    }
+
+    // --- SWELL: a floating hull with swellTorque genuinely rocks (bounded);
+    //     without it the flat plane settles it dead level. Real Jolt physics. ---
+    {
+        auto rockAmplitude = [&](bool swell) -> float {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            if (!w->init()) return -1.0f;
+            const float hx = 1.5f, hy = 0.6f, hz = 3.0f, sea = 8.0f;
+            const float fullVol = 8.0f * hx * hy * hz;
+            const float mass = 0.5f * fullVol * 1025.0f * 0.95f;
+            x3::phys::BodyId hull = w->addBox({hx, hy, hz}, {0.0f, sea + 0.2f, 0.0f},
+                                              mass, x3::phys::Layer::Dynamic);
+            x3::phys::BuoyancyDesc bd;
+            bd.body = hull; bd.seaLevel = sea;
+            bd.halfExtents[0]=hx; bd.halfExtents[1]=hy; bd.halfExtents[2]=hz;
+            bd.fluidDensity = 1025.0f; bd.linearDrag = 2.5f; bd.angularDrag = 2.5f;
+            if (swell) { bd.swellTorque = mass * 0.12f; bd.swellFreqHz = 0.18f; }
+            std::unique_ptr<x3::phys::IVehicleController> ctl(
+                x3::phys::createBuoyancyController(*w, bd));
+            if (!ctl) { w->shutdown(); return -1.0f; }
+            const float dt = 1.0f / 60.0f;
+            float maxRoll = 0.0f;
+            for (int i = 0; i < 1800; ++i) {           // 30 s: several swell periods
+                ctl->preStep(dt); w->step(dt); ctl->postStep(dt);
+                if (i < 300) continue;                  // let the drop/settle pass
+                float q[4]; w->getBodyRotation(hull, q);
+                float f[3], u[3], r, p;
+                vehcam::hullAxes(q, f, u);
+                vehcam::hullRollPitch(f, u, r, p);
+                maxRoll = std::max(maxRoll, std::fabs(r));
+            }
+            ctl.reset(); w->shutdown();
+            return maxRoll;
+        };
+        const float withSwell = rockAmplitude(true);
+        const float calm      = rockAmplitude(false);
+        x3::logInfo("[vehcam-test] swell roll amplitude: with=" + std::to_string(withSwell) +
+                    " rad, calm=" + std::to_string(calm) + " rad");
+        check(withSwell > 0.01f && withSwell < 0.30f,
+              "swell: hull rocks (0.01 < maxRoll < 0.30 rad)");
+        check(calm >= 0.0f && calm < 0.005f,
+              "swell (negative control): calm water stays level");
+    }
+
+    x3::logInfo("[vehcam-test] " + std::to_string(passN) + " passed, " +
+                std::to_string(failN) + " failed");
+    return failN == 0;
 }
 
 } // namespace x3::game

@@ -418,6 +418,24 @@ public:
             if (m_d.steerTorque != 0.0f && std::fabs(m_in.steer) > 1e-3f) {
                 m_body->AddTorque(JPH::Vec3(0.0f, -m_d.steerTorque * m_in.steer * frac, 0.0f));
             }
+            // SWELL (see BuoyancyDesc): gentle periodic roll about the hull's
+            // horizontal forward axis + a smaller off-phase pitch about its
+            // horizontal right axis, so the hull genuinely rocks on the water.
+            // Zero-mean sinusoids; the angular drag above bounds the response.
+            if (m_d.swellTorque != 0.0f) {
+                m_swellT += dt;
+                const float w1 = 2.0f * 3.14159265f * m_d.swellFreqHz;
+                JPH::Vec3 fwdH = m_body->GetRotation() * JPH::Vec3(0, 0, -1);
+                fwdH.SetY(0.0f);
+                if (fwdH.LengthSq() > 1e-6f) {
+                    fwdH = norm(fwdH);
+                    JPH::Vec3 rightH(-fwdH.GetZ(), 0.0f, fwdH.GetX());
+                    const float roll  = std::sin(w1 * m_swellT);
+                    const float pitch = 0.4f * std::sin(0.63f * w1 * m_swellT + 1.3f);
+                    m_body->AddTorque((fwdH * roll + rightH * pitch) *
+                                      (m_d.swellTorque * frac));
+                }
+            }
         }
     }
 
@@ -441,6 +459,7 @@ private:
     BodyId              m_bodyId;
     VehicleInput        m_in;
     float               m_submergedFrac = 0.0f;
+    float               m_swellT = 0.0f;   // swell phase clock (s)
 };
 
 // =====================================================================

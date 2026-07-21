@@ -390,6 +390,14 @@ int hostDrive(HostContext& hc) {
         // Persistent across the interactive loop so the lean eases in/out smoothly
         // (init level; car-only — see the setCameraBasis site below).
         float camBank = 0.0f;
+        // HULL-ATTITUDE chase cams (fly/boat): unlike the car (bank SYNTHESIZED
+        // from steer), these are real Jolt bodies whose orientation the physics
+        // already owns (flight torques / buoyancy + swell) — the camera READS the
+        // hull quaternion off the body and follows the genuine attitude (see
+        // vehcam in vehicle.h). Persistent smoothing state across the loop.
+        x3::game::vehcam::FlyCamState  flyCam;
+        x3::game::vehcam::BoatCamState boatCam;
+        const float kFlyYaw0 = camYaw, kFlyPitch0 = camPitch;  // freelook zero
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
@@ -647,6 +655,55 @@ int hostDrive(HostContext& hc) {
                     cb*cu[2] + sb*cr[2]
                 };
                 device->setCameraBasis(cx, cy, cz, fwd, up, fovNow);
+            } else if (isFly) {
+                // ---- FLY chase: bank + pitch with the aircraft's REAL attitude.
+                // The smoothed basis (flyChase) trails the hull quaternion — up
+                // blended ~30% toward world-up (a chase plane lags slightly
+                // level), the whole basis eased at 5/s so it TRAILS the motion.
+                // Rolling the plane rolls the horizon; a loop goes over the top
+                // natively (no Euler pinwheel). Mouse freelook rides ON the hull
+                // basis as yaw/pitch offsets (zero = dead astern).
+                float q[4]; vphys->getBodyRotation(plane.airframe(), q);
+                x3::game::vehcam::flyChase(flyCam, q, fdt, /*upLevelBlend=*/0.30f,
+                                           /*lerpRate=*/5.0f);
+                float gaze[3] = { flyCam.fwd[0], flyCam.fwd[1], flyCam.fwd[2] };
+                const float offYaw   = camYaw - kFlyYaw0;
+                const float offPitch = std::clamp(camPitch - kFlyPitch0, -1.2f, 1.2f);
+                auto rotAxis = [](float v[3], const float ax[3], float ang) {
+                    if (std::fabs(ang) < 1e-5f) return;
+                    const float c = std::cos(ang), s = std::sin(ang);
+                    const float d = ax[0]*v[0] + ax[1]*v[1] + ax[2]*v[2];
+                    const float x[3] = { ax[1]*v[2] - ax[2]*v[1],
+                                         ax[2]*v[0] - ax[0]*v[2],
+                                         ax[0]*v[1] - ax[1]*v[0] };
+                    for (int k = 0; k < 3; ++k)
+                        v[k] = v[k]*c + x[k]*s + ax[k]*d*(1.0f - c);
+                };
+                rotAxis(gaze, flyCam.up, -offYaw);
+                float rt[3] = { gaze[1]*flyCam.up[2] - gaze[2]*flyCam.up[1],
+                                gaze[2]*flyCam.up[0] - gaze[0]*flyCam.up[2],
+                                gaze[0]*flyCam.up[1] - gaze[1]*flyCam.up[0] };
+                const float rl = std::sqrt(rt[0]*rt[0] + rt[1]*rt[1] + rt[2]*rt[2]);
+                if (rl > 1e-5f) { rt[0]/=rl; rt[1]/=rl; rt[2]/=rl; }
+                rotAxis(gaze, rt, offPitch);
+                const float dist = 16.0f, height = 4.0f;
+                cx = vp[0] - gaze[0]*dist + flyCam.up[0]*height;
+                cy = vp[1] - gaze[1]*dist + flyCam.up[1]*height;
+                cz = vp[2] - gaze[2]*dist + flyCam.up[2]*height;
+                device->setCameraBasis(cx, cy, cz, gaze, flyCam.up, fovNow);
+            } else if (isBoat) {
+                // ---- BOAT: the horizon breathes with the swell. The camera
+                // picks up the hull's wave-induced roll at 40% amplitude
+                // (heavily damped, 2.5/s) and pitch at 20% — ON the water, not
+                // bolted to the hull; when in doubt, damp more. Mouse orbit and
+                // camera position are unchanged; only the basis tilts.
+                float q[4]; vphys->getBodyRotation(boat.hull(), q);
+                x3::game::vehcam::boatFollow(boatCam, q, fdt, /*rollFrac=*/0.40f,
+                                             /*pitchFrac=*/0.20f, /*lerpRate=*/2.5f);
+                float bfwd[3], bup[3];
+                x3::game::vehcam::basisYawPitchRoll(viewYaw, viewPitch + boatCam.pitch,
+                                                    boatCam.roll, bfwd, bup);
+                device->setCameraBasis(cx, cy, cz, bfwd, bup, fovNow);
             } else {
                 device->setCamera(cx, cy, cz, viewYaw, viewPitch, fovNow);
             }

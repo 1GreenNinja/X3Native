@@ -140,6 +140,16 @@ struct BuoyancyDesc {
     float propThrust     = 0.0f;
     // Yaw torque (N·m) at steer=+1 — lets a powered boat turn. 0 = no steering.
     float steerTorque    = 0.0f;
+    // ---- SWELL (optional; default 0 = calm water, behavior byte-identical). ----
+    // The buoyancy plane is FLAT, so a floating hull settles dead level — there is
+    // no wave-induced rocking for a chase camera to follow. A non-zero swellTorque
+    // applies a gentle periodic attitude torque THROUGH THE PHYSICS (roll about
+    // the hull's horizontal forward axis at the amplitude below, plus a smaller
+    // off-phase pitch component so the motion reads organic, not a metronome).
+    // Applied only while submerged, scaled by the submerged fraction. The hull
+    // then genuinely rocks; cameras read the REAL attitude off the body.
+    float swellTorque    = 0.0f;    // N·m roll-torque amplitude (0 = calm)
+    float swellFreqHz    = 0.15f;   // primary swell frequency (Hz)
 };
 
 // ---------------------------------------------------------------------------
