@@ -168,7 +168,7 @@ add_executable(X3Engine WIN32
     rpg_ui.cpp
     ui.cpp)
 
-target_link_libraries(X3Engine PRIVATE x3engine glfw)
+target_link_libraries(X3Engine PRIVATE x3core glfw)
 
 # Dear ImGui (docking) — EDITOR-ONLY. The Level Architect host (app/editor/
 # editor_host.cpp) submits its panels with the CORE ImGui widget API directly; the
