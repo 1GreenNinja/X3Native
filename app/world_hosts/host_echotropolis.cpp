@@ -1356,10 +1356,10 @@ int hostEchotropolis(HostContext& hc) {
         };
         for (int i = 0; i < 4; ++i)                       // bollard line across the avenue mouth
             place2("bollard.glb", -44.0f + i * 5.0f, 806.0f, 0.0f, sB, 0.0f);
-        place2("junction_box.glb", -136.0f, 836.0f, 3.14159f, sJ, 0.6f);   // condo street
-        place2("junction_box.glb",   24.0f, 836.0f, 3.14159f, sJ, 0.6f);
-        place2("cam_wall.glb",  -58.0f, 838.0f, 3.14159f, sC, 7.5f);       // condo corners, high
-        place2("cam_wall.glb",   18.0f, 838.0f, 3.14159f, sC, 7.5f);
+        place2("junction_box.glb", -136.0f, 841.2f, 3.14159f, sJ, 0.6f);   // flush on the condo facade
+        place2("junction_box.glb",   24.0f, 841.2f, 3.14159f, sJ, 0.6f);
+        place2("cam_wall.glb",  -58.0f, 841.5f, 3.14159f, sC, 7.5f);       // condo corners, high, flush
+        place2("cam_wall.glb",   18.0f, 841.5f, 3.14159f, sC, 7.5f);
         hackDrone = std::make_unique<x3::game::EnvArtSystem>();
         const float I2[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, -20, 230, 760, 1 };
         if (!hackDrone->buildFromGlbAt(*device, hdir, "drone_police.glb", I2)) hackDrone.reset();
