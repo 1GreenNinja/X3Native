@@ -6,6 +6,7 @@
 // from the same inputs, without needing a device or physics world).
 #include "level_lint.h"
 #include "level_loader.h"
+#include "mesh_prims.h"           // PRIM WINDING check (makeRamp regression gate)
 #include "engine/core/x3_log.h"
 
 #include <cmath>
@@ -151,6 +152,29 @@ LevelLintReport lintCanonFloor(const CanonFloor& floor) {
     return rep;
 }
 
+// ---- PRIM WINDING lint (QA mainlevel sweep, D10 root cause) -----------------------
+// makeRamp shipped faces whose geometric winding flipped with `dir`/`axis` (mixed
+// front/back parity). Invisible on the no-cull emissive route; on the backface-culling
+// PBR route a wrong-parity ramp TOP disappears and the threshold opens a fog-void
+// window. This gate builds every (axis, dir) ramp variant and asserts each triangle's
+// geometric normal agrees with its authored outward vertex normal, so the class can
+// never regress silently again.
+namespace {
+uint32_t primWindingViolations(const x3::prims::PrimMesh& m) {
+    uint32_t bad = 0;
+    for (size_t t = 0; t + 2 < m.index.size(); t += 3) {
+        const auto& a = m.verts[m.index[t]];
+        const auto& b = m.verts[m.index[t+1]];
+        const auto& c = m.verts[m.index[t+2]];
+        const float e1x = b.pos[0]-a.pos[0], e1y = b.pos[1]-a.pos[1], e1z = b.pos[2]-a.pos[2];
+        const float e2x = c.pos[0]-a.pos[0], e2y = c.pos[1]-a.pos[1], e2z = c.pos[2]-a.pos[2];
+        const float gnx = e1y*e2z - e1z*e2y, gny = e1z*e2x - e1x*e2z, gnz = e1x*e2y - e1y*e2x;
+        if (gnx*a.normal[0] + gny*a.normal[1] + gnz*a.normal[2] < 1e-6f) ++bad;
+    }
+    return bad;
+}
+} // namespace
+
 bool runLevelLintSelfTest() {
     // W3-2: lint the WHOLE TOWER (all floors merged + the elevator spine) — the same
     // CanonFloor shape the game now builds, so the gate checks what ships.
@@ -160,6 +184,32 @@ bool runLevelLintSelfTest() {
         return true;
     }
     LevelLintReport rep = lintCanonFloor(floor);
+
+    // PRIM WINDING gate: every ramp variant the threshold builder can emit, plus a
+    // NEGATIVE CONTROL (a deliberately flipped triangle must be caught red).
+    {
+        uint32_t windingBad = 0;
+        for (uint32_t axis = 0; axis <= 1; ++axis)
+            for (int d = -1; d <= 1; d += 2) {
+                x3::prims::PrimMesh ramp = x3::prims::makeRamp(
+                    2.0f, 0.0f, 3.0f, 0.6f, 1.07f, 0.75f, axis, (float)d, 0.5f);
+                const uint32_t bad = primWindingViolations(ramp);
+                if (bad) {
+                    windingBad += bad;
+                    rep.violations.push_back(fmt("WINDING   makeRamp axis=%u dir=%+d: %u backward tri(s)",
+                                                 axis, d, bad));
+                }
+            }
+        // Negative control: swap one triangle of a known-good ramp — must be detected.
+        x3::prims::PrimMesh ctrl = x3::prims::makeRamp(0, 0, 0, 0.6f, 1.0f, 0.7f, 0, 1.0f, 0.5f);
+        if (ctrl.index.size() >= 3) std::swap(ctrl.index[1], ctrl.index[2]);
+        const bool ctrlCaught = primWindingViolations(ctrl) > 0;
+        if (!ctrlCaught)
+            rep.violations.push_back("WINDING   NEGATIVE CONTROL FAILED: flipped tri not detected");
+        x3::logInfo("[levellint] prim-winding: " + std::to_string(windingBad) +
+                    " backward tris across ramp variants; negative control " +
+                    (ctrlCaught ? "red-capable" : "BROKEN"));
+    }
     for (const std::string& v : rep.violations) x3::logWarn("[levellint] " + v);
     // Per-floor room counts (roomFloorNum is filled by loadCanonTower).
     if (!floor.roomFloorNum.empty()) {

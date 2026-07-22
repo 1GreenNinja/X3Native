@@ -1532,6 +1532,7 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // stays on the normalized PBR route instead of the blown Lambert prim path.
     float rampTint[4] = { 0.46f, 0.50f, 0.58f, 1.0f };
     x3::rhi::TextureHandle rampAlbedo = floorTex, rampMr{}, rampNormal{};
+    x3::rhi::TextureHandle bridgeWallAlbedo{}, bridgeWallMr{}, bridgeWallNormal{};
     {
         static SurfaceLibrary rampSurf;                    // texture cache lives for the device
         if (!rampSurf.mounted()) rampSurf.mount(assetRoot() + "/surface_library");
@@ -1542,6 +1543,15 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         } else {
             const uint8_t mr[4] = { 0, 217, 0, 255 };
             rampMr = device.createTexture(mr, 1, 1, false);
+        }
+        // D15 (same Lambert-brightness family): the GAP-BRIDGE corridor interiors are
+        // the one graybox shell the player LOOKS INTO from dressed rooms (the secured
+        // rooms' mouths read as glowing cream boxes). Dress their walls with the same
+        // authored wall set the cell dressing uses.
+        const SurfaceSet& wallSet = rampSurf.get(device, "hh_wall_01a");
+        if (wallSet.ok) {
+            bridgeWallAlbedo = wallSet.albedo; bridgeWallMr = wallSet.mr;
+            bridgeWallNormal = wallSet.normal;
         }
     }
     for (const CanonDoorway& dw : floor.doorways) {
@@ -1599,8 +1609,13 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (yCeil > clearTop)                     // header above the clear opening
                 addBox(scene, device, physics, dH, (yCeil - clearTop) * 0.5f, half,
                        dC, (clearTop + yCeil) * 0.5f, cut, wallTexA, rvTint, dw.a, true, wallVis);
-            addBox(scene, device, physics, dH, 0.05f, half,                       // floor strip
-                   dC, yFloor - 0.05f, cut, wallTexA, rvTint, dw.a, true, wallVis);
+            {   // floor strip — the throat floor the player crosses at an open door.
+                // D10 family: on the Lambert route it glowed vs the dressed decks;
+                // give it the SAME deck set + tint the ramps/dressing wear.
+                const uint32_t ei = addBox(scene, device, physics, dH, 0.05f, half,
+                       dC, yFloor - 0.05f, cut, rampAlbedo, rampTint, dw.a, true, wallVis);
+                scene.get(ei).mrTex = rampMr; scene.get(ei).normalTex = rampNormal;
+            }
         } else {
             addBox(scene, device, physics, jamT * 0.5f, (yCeil - yFloor) * 0.5f, dH,
                    cut - half - jamT * 0.5f, (yFloor + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
@@ -1609,8 +1624,11 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (yCeil > clearTop)
                 addBox(scene, device, physics, half, (yCeil - clearTop) * 0.5f, dH,
                        cut, (clearTop + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
-            addBox(scene, device, physics, half, 0.05f, dH,
-                   cut, yFloor - 0.05f, dC, wallTexA, rvTint, dw.a, true, wallVis);
+            {   // floor strip (see the planeIsX branch note — deck-matched)
+                const uint32_t ei = addBox(scene, device, physics, half, 0.05f, dH,
+                       cut, yFloor - 0.05f, dC, rampAlbedo, rampTint, dw.a, true, wallVis);
+                scene.get(ei).mrTex = rampMr; scene.get(ei).normalTex = rampNormal;
+            }
         }
     }
 
@@ -1619,7 +1637,6 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // floor-to-a-low-ceiling. Tagged to room `a` so it culls with that room's PVS (a is
     // also in b's PVS, so it shows from either side). The bridge punches the connection;
     // we also cut a doorway in each room's facing wall at the bridge mouth. ----
-    const float bridgeTint[4] = { 0.52f, 0.56f, 0.66f, 1.0f };
     for (const CanonDoorway& dw : floor.doorways) {
         if (dw.kind != DoorwayKind::GapBridge) continue;
         const CanonRoom& a = floor.rooms[dw.a];
@@ -1633,10 +1650,22 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (xhi < xlo) std::swap(xlo, xhi);
             const float zc = dw.cz;
             // Two side walls of the corridor at z = zc ± kDoorHalf, floor slab + ceiling.
-            addBox(scene, device, physics, (xhi - xlo) * 0.5f, 0.05f, kDoorHalf,
-                   (xlo + xhi) * 0.5f, floorY - 0.05f, zc, floorTex, bridgeTint, dw.a, true, floorVis);
-            wallX(scene, device, physics, xlo, xhi, zc - kDoorHalf - kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
-            wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            {   // D10/D15 family: bridge floor wears the deck set, walls the wall set,
+                // so the corridor interior reads as construction, not glowing graybox.
+                const uint32_t e0 = scene.size();
+                addBox(scene, device, physics, (xhi - xlo) * 0.5f, 0.05f, kDoorHalf,
+                       (xlo + xhi) * 0.5f, floorY - 0.05f, zc, rampAlbedo, rampTint, dw.a, true, floorVis);
+                scene.get(e0).mrTex = rampMr; scene.get(e0).normalTex = rampNormal;
+                const uint32_t w0 = scene.size();
+                wallX(scene, device, physics, xlo, xhi, zc - kDoorHalf - kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                if (bridgeWallMr.valid())
+                    for (uint32_t ei = w0; ei < scene.size(); ++ei) {
+                        scene.get(ei).mrTex = bridgeWallMr; scene.get(ei).normalTex = bridgeWallNormal;
+                    }
+            }
             addBox(scene, device, physics, (xhi - xlo) * 0.5f, kCeilT * 0.5f, kDoorHalf + kWallT,
                    (xlo + xhi) * 0.5f, floorY + h + kCeilT * 0.5f, zc, ceilTex, ceilWhite, dw.a, true, false);
         } else {
@@ -1645,10 +1674,21 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (a.cz < b.cz) { zlo = a.z1(); zhi = b.z0(); } else { zlo = b.z1(); zhi = a.z0(); }
             if (zhi < zlo) std::swap(zlo, zhi);
             const float xc = dw.cx;
-            addBox(scene, device, physics, kDoorHalf, 0.05f, (zhi - zlo) * 0.5f,
-                   xc, floorY - 0.05f, (zlo + zhi) * 0.5f, floorTex, bridgeTint, dw.a, true, floorVis);
-            wallZ(scene, device, physics, zlo, zhi, xc - kDoorHalf - kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
-            wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            {   // (mirror of the X branch — see its D10/D15 note)
+                const uint32_t e0 = scene.size();
+                addBox(scene, device, physics, kDoorHalf, 0.05f, (zhi - zlo) * 0.5f,
+                       xc, floorY - 0.05f, (zlo + zhi) * 0.5f, rampAlbedo, rampTint, dw.a, true, floorVis);
+                scene.get(e0).mrTex = rampMr; scene.get(e0).normalTex = rampNormal;
+                const uint32_t w0 = scene.size();
+                wallZ(scene, device, physics, zlo, zhi, xc - kDoorHalf - kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                if (bridgeWallMr.valid())
+                    for (uint32_t ei = w0; ei < scene.size(); ++ei) {
+                        scene.get(ei).mrTex = bridgeWallMr; scene.get(ei).normalTex = bridgeWallNormal;
+                    }
+            }
             addBox(scene, device, physics, kDoorHalf + kWallT, kCeilT * 0.5f, (zhi - zlo) * 0.5f,
                    xc, floorY + h + kCeilT * 0.5f, (zlo + zhi) * 0.5f, ceilTex, ceilWhite, dw.a, true, false);
         }
