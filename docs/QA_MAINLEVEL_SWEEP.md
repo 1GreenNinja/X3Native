@@ -67,14 +67,39 @@ violet), D5/D6 hold, D12 amber tells present.
 
 | id | room / where | class | sev | evidence | root cause | status |
 |----|--------------|-------|-----|----------|------------|--------|
-| D15 | gap-bridge corridor interiors (secured-room mouths: Security/Medical/Armory + every GapBridge) | surface / Lambert-blown graybox | SEV-3 | sweep2/F1_Armory_a (glowing cream mouth rectangle) | bridge floor/walls are raw graybox (floorTex/wallTexA + tint) on the unnormalized Lambert route — the one graybox shell the player looks INTO from dressed rooms | **FIXED** (session 2): bridge floors wear the deck set, bridge walls the hh_wall_01a set, same fallback law as ramps |
-| D16 | Medical Bay doorways (3 visible) | surface / blown-white leaves | SEV-3 | sweep2/F1_Medical_Bay_a vs sweep/F1_Medical_Bay_a | under diagnosis — white shapes match the OLD frame's void regions; suspect leaf/backing under the Bay's bright rig | see below |
-| D17 | F2 Main Corridor | surface / bright graybox floor expanse | SEV-3 | sweep2/F2_F2_Main_Corridor_a (identical pre-fix — NOT a session regression) | under diagnosis — classify() routes it ZHall/ZCorridor so a recipe SHOULD apply; render shows a raw bright floor | see below |
+| D15 | gap-bridge corridor interiors (secured-room mouths: Security/Medical/Armory + every GapBridge) | surface / Lambert-blown graybox | SEV-3 | sweep2/F1_Armory_a (glowing cream mouth rectangle); normals debugview from the room cam confirms geometry present in the mouth | bridge floor/walls are raw graybox (floorTex/wallTexA + tint) on the unnormalized Lambert route — the one graybox shell the player looks INTO from dressed rooms | **FIXED** (session 2): bridge floors wear the deck set, bridge walls the hh_wall_01a set, same fallback law as ramps. Residual: the mouth still reads bright-ish from across the room — that residue is the D17 fog-wash class (lighting lane), not graybox |
+| D16 | door leaves under bright rigs (Medical Bay worst; every honest key) | surface / blown-white leaves | SEV-3 | BEFORE_medbay_doors vs AFTER_medbay_doors; albedo debugview proved the leaves textured + geometry sound — the ALBEDO VALUE was the defect | SM_Door_A leaf albedo means ~0.78 LINEAR — double the facility value-band ceiling (0.40) every dressed wall is clamped into, so any honest key made the leaves the one blown-white thing in the room | **FIXED** `door.cpp`: hue-preserving value tint 0.51 on the leaf draw (the surface library's own normalization law) |
+| D17 | F2-F7 main corridors/halls read as a bright cream floor expanse at eye level | lighting / zone-fog saturation (NOT geometry) | SEV-3 | sweep2/F2_F2_Main_Corridor_a, F3_F3_Specimen_Hall_a, F4_F4_Augmentation_Corridor_a; diagnosis: nadir view shows a DARK dressed tiled floor + guide strip; immune to --norefl; absent in debugview (which skips fog) | the tower-floor zone fog washes accumulate to their cream tint over long eye-level sight lines — the floor is present, dressed, in-band | **DEFERRED to the lighting lane** with the diagnosis written down (the next agent must NOT chase "missing floor"). Session-2 side fix landed anyway: the dressing's CrossLevel skip no longer throws away WHOLE floors (spine lobbies/linked corridors dressed no floor at all); floors now lay AROUND the 3x3 tube mouth, upper room only |
 | D18 | F1 Elevator Lobby a-frame | n/a (survey artifact) | — | sweep2 + sweep F1_Elevator_Lobby_a identical grey wash | survey camera lands inside lobby geometry (D8 class); session-1's D11 note "geometry verified present in the a-frame" was WRONG — the a-frame is blank | N/A (sweep artifact; D11 stays with the lighting lane) |
 
-## GATES (post-fix, all green)
-`--test-levellint` PASS (124 rooms/180 doorways, 0 violations) · `--test-propclip` PASS
-(381 props, 0 visible-class violations, negative controls red-capable) · `--test-canonlevel`
-16/16 · `--test-canonplay` 10/10 · `--test-level1` 21/21 · `--test-basis` 11/11 ·
-`--test-primlight` 9/9 · `--smoketest` default + canonlevel: exit 0, **0 VUID,
-allocationCount=0**.
+### Session-2 verdict
+
+Geometry + surface state of the canon facility after both sessions: **clean**. Every
+defect class in families A (clipping/sightline) and B (surface/material) that was found
+is either FIXED with before/after evidence or reclassified with a written diagnosis to
+the lane that owns it (lighting/atmosphere: D11, D17-symptom, F5's under-lit floor,
+cell-rig hotspots seen through opened doors). The remaining visible uglies on the upper
+floors are LIGHT and FOG calibration, not holes, not clips, not graybox. Three lint
+gates (levellint + winding, propclip) hold the fixed classes down.
+
+## UPPER FLOORS (session-2 triage, post-fix sweep2 + pre-fix sweep compared)
+
+F2: wards (Keisha/Emily/Aria) + theaters dressed and coherent; corridor/lobby = D17 fog
+class. F3: labs/tanks dressed (green goo aprons + biomesh = authored); Specimen Hall =
+D17. F4: wing rooms dressed; Augmentation Corridor = D17; the F4.5 Nexus tiers are
+near-black BY DESIGN (ZCave fog-only, silhouettes-over-detail). F5: whole floor reads
+near-black — the known under-authored floor; geometry present; LIGHTING lane owns it
+(same lane as D11). F6: Portal Chamber / organic rooms authored (green portal, biolume);
+corridors dark. F7: exec/rooftop rooms read as intended (night rooftop). NO new clipping
+or void-leak classes found on F2-F7 in 196 post-fix frames; the D1 backing-slab seal
+holds on every floor's doors that were read. Survey-camera artifacts (D8/D18 class):
+F1/F2 Elevator Lobby a-frames land inside lobby machinery — sweep tool improvement, not
+world defects.
+
+## GATES (session 2 final, all green)
+`--test-levellint` PASS (124 rooms/180 doorways, 0 violations, **+ prim-winding gate:
+0 backward tris across all four (axis,dir) ramp variants, negative control red-capable**)
+· `--test-propclip` PASS (0 visible-class violations, negative controls red-capable) ·
+`--test-canonlevel` 16/16 · `--test-canonplay` 10/10 · `--test-level1` 21/21 ·
+`--test-basis` 11/11 · `--test-primlight` 9/9 · `--smoketest` default + canonlevel:
+exit 0, 0 VUID, allocationCount=0.
