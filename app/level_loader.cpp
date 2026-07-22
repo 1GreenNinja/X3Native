@@ -6,6 +6,7 @@
 #include "level_loader.h"
 #include "mesh_prims.h"
 #include "asset_root.h"
+#include "surface_library.h"  // D10: ramps wear the dressing deck set
 #include "keypad.h"    // PB fold: realistic high-poly keypad beside each secured-room lock
 
 #include "engine/core/x3_log.h"
@@ -303,6 +304,7 @@ void lintelZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
 void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
                  float cx, float cz, float yLo, float yHi, uint32_t axis, float sideSign,
                  x3::rhi::TextureHandle tex, x3::rhi::TextureHandle mrTex,
+                 x3::rhi::TextureHandle normalTex,
                  const float color[4], uint32_t room, bool vis) {
     const float rise = yHi - yLo;
     if (rise <= 0.02f) return;                       // flat: no ramp needed
@@ -319,10 +321,6 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
     x3::prims::PrimMesh geo = (axis == 1)
         ? x3::prims::makeRamp(cx, yLo, cz + origin, kDoorHalf, run, rise, /*axis*/1, dir, 0.5f)
         : x3::prims::makeRamp(cx + origin, yLo, cz, kDoorHalf, run, rise, /*axis*/0, dir, 0.5f);
-    x3::logInfo("[ramp] plane(" + std::to_string(cx) + "," + std::to_string(cz) +
-                ") axis=" + std::to_string(axis) + " rise=" + std::to_string(rise) +
-                " run=" + std::to_string(run) + " origin=" + std::to_string(origin) +
-                " room=" + std::to_string(room) + " vis=" + std::to_string(vis));
     Entity e;
     if (vis)
         e.mesh = d.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
@@ -330,9 +328,14 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
     e.tex = tex;
     // QA MAINLEVEL SWEEP (D10): with no MR texel the ramp rode the unnormalized
     // Lambert prim path (~pi x brighter than every PBR surface around it — R1) and
-    // read as a BLOWN flat wedge at every stepped doorway. A matte dielectric MR
-    // texel puts it on the same normalized PBR route as the panels beside it.
+    // read as a BLOWN flat wedge at every stepped doorway. The MR texel alone was
+    // not enough: every room/hall FLOOR the player actually sees is the dressing's
+    // surface-library deck (hh_floor_01a @ tint 0.40), so a graybox-textured ramp
+    // still read as the one bright untextured wedge in a dressed scene. The call
+    // site now passes the SAME deck set (albedo+normal+mr, same 2 m tile density —
+    // makeRamp uvScale 0.5 == makePanel tileMeters 2.0) with the deck tint.
     e.mrTex = mrTex;
+    e.normalTex = normalTex;
     for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
     for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
     e.tag = (uint32_t)Tag::Static;
@@ -1521,12 +1524,26 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // can't get through" bug — it was a threshold step, not the opening size). Drop a
     // walkable wedge ramp into the lower room at each such opening so the player walks
     // up/down through it. (Gap-bridges + cross-level tubes are handled separately.) ----
-    const float rampTint[4] = { 0.46f, 0.50f, 0.58f, 1.0f };
-    // Matte dielectric MR texel for the ramps (glTF MR: G=rough 0.85, B=metal 0) —
-    // see doorwayRamp's D10 note. One texel shared by every ramp on the floor.
-    x3::rhi::TextureHandle rampMr{};
-    { const uint8_t mr[4] = { 0, 217, 0, 255 };
-      rampMr = device.createTexture(mr, 1, 1, false); }
+    // D10: ramps wear the SAME surface-library deck the cell/room dressing lays over
+    // every floor the player sees (hh_floor_01a, deck tint 0.40 — cell_dressing.cpp's
+    // judged value), so a threshold reads as floor, not as a bright graybox wedge.
+    // Fallback (set missing, e.g. assets not fetched): old graybox tex + a matte
+    // dielectric MR texel (glTF MR: G=rough 0.85, B=metal 0) so the ramp at least
+    // stays on the normalized PBR route instead of the blown Lambert prim path.
+    float rampTint[4] = { 0.46f, 0.50f, 0.58f, 1.0f };
+    x3::rhi::TextureHandle rampAlbedo = floorTex, rampMr{}, rampNormal{};
+    {
+        static SurfaceLibrary rampSurf;                    // texture cache lives for the device
+        if (!rampSurf.mounted()) rampSurf.mount(assetRoot() + "/surface_library");
+        const SurfaceSet& deck = rampSurf.get(device, "hh_floor_01a");
+        if (deck.ok) {
+            rampAlbedo = deck.albedo; rampMr = deck.mr; rampNormal = deck.normal;
+            rampTint[0] = 0.40f; rampTint[1] = 0.41f; rampTint[2] = 0.40f;
+        } else {
+            const uint8_t mr[4] = { 0, 217, 0, 255 };
+            rampMr = device.createTexture(mr, 1, 1, false);
+        }
+    }
     for (const CanonDoorway& dw : floor.doorways) {
         if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
             dw.kind != DoorwayKind::Overlap)
@@ -1541,11 +1558,11 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         if (dw.axis == 1) {
             // AdjacentZ/overlap on a Z-plane: ramp runs along Z into the lower room.
             float sideSign = (lower.cz < dw.cz) ? -1.0f : +1.0f;
-            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, floorTex, rampMr, rampTint, lowerId, floorVis);
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis);
         } else {
             // AdjacentX/overlap on an X-plane: ramp runs along X into the lower room.
             float sideSign = (lower.cx < dw.cx) ? -1.0f : +1.0f;
-            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, floorTex, rampMr, rampTint, lowerId, floorVis);
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis);
         }
     }
 
