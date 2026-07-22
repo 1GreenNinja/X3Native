@@ -43,6 +43,9 @@
 #include "crowd.h"
 #include "monster.h"
 
+#include "engine/asset/IModelLoader.h"   // seat prop = a real textured crate GLB
+#include "engine/asset/IAssetSource.h"
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -146,10 +149,22 @@ private:
     uint32_t m_roomId = kNoRoom;   // deployment PVS room (from the crowd config)
     bool     m_active = false;
     double   m_totalSpawnMs = 0.0;
-    // Shared crate mesh for the seat props (one upload, instanced across every
-    // seated agent). Lazily built on the first seated agent.
+    // Shared seat prop under seated agents (one load, instanced across every seated
+    // agent; host-owned + persistent). Lazily built on the first seated agent. The
+    // ideal is a REAL textured warehouse crate GLB (m_seatIsProp); if that can't
+    // load (e.g. the headless self-test device, which yields no drawables) we fall
+    // back to the original procedural tan box so the world never breaks.
     x3::rhi::MeshHandle m_seatMesh{};
     bool                m_seatMeshBuilt = false;
+    bool                m_seatIsProp    = false;   // true => real crate drawable bound
+    std::unique_ptr<x3::asset::IAssetSource> m_seatAssets;
+    std::unique_ptr<x3::asset::IModelLoader> m_seatLoader;
+    x3::asset::Model    m_seatModel;               // keeps the crate's GPU handles alive
+    x3::rhi::TextureHandle m_seatTex{};            // crate albedo
+    x3::rhi::TextureHandle m_seatMrTex{};          // crate metallic-roughness
+    x3::rhi::TextureHandle m_seatNormalTex{};      // crate normal
+    float m_seatNode[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // crate node world xform
+    float m_seatBaseColor[4] = {1,1,1,1};          // crate baseColorFactor (tints texel)
 };
 
 // Headless self-test section for --test-crowd (called from runCrowdSelfTest):
