@@ -487,9 +487,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
-      "sha256": "cfb97340e5b50e9545b5416f4c82af94451d37c7de0bac81a4d4452010e79f6b",
-      "size": 56291300,
-      "source_note": "anim-enrichment +Hitreaction +Attack2 (procedural biped); hitreact POLISH 2026-07-18 \u2014 contained ~20deg snap-back + shoulder hitch (was near-knockdown)"
+      "sha256": "e7067416b81a50ad78ef832220a7000a33c46b0d266be499c63f765348c1ee60",
+      "size": 56291936,
+      "source_note": "flinch2: Hitreaction re-baked to ~34deg cumulative head+torso snap-back+twist (was ~20deg too-polite), fast peak f3, settles by t0.7, feet planted; Idle/Walk/Run/Death/Attack/Attack2 kept identical"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
@@ -499,9 +499,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
-      "sha256": "eed641cbcd5cfae9f7d2506c610fa9e53fd07f7adb82e02d360cd2571af6a648",
-      "size": 43457068,
-      "source_note": "anim-enrichment +Hitreaction +Attack2 (procedural biped); hitreact POLISH 2026-07-18 \u2014 contained ~20deg snap-back + shoulder hitch (was near-knockdown)"
+      "sha256": "8e20b6f516ac360eb2c01c501e17cd800d71361604d1102bf911ba3d471aec91",
+      "size": 43464496,
+      "source_note": "flinch2: Hitreaction re-baked to ~34deg cumulative head+torso snap-back+twist (was ~20deg too-polite), fast peak f3, settles by t0.7, feet planted; Idle/Walk/Run/Death/Attack/Attack2 kept identical"
     },
     {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",

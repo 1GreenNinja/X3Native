@@ -4,7 +4,9 @@
 #include "crowd_skin.h"
 #include "asset_root.h"
 #include "headless_device.h"
-#include "mesh_prims.h"          // x3::prims::makeBox — the seat-prop crate mesh
+#include "mesh_prims.h"          // x3::prims::makeBox — the seat-prop fallback mesh
+#include "engine/asset/IModelLoader.h"  // load the real crate GLB + makeDrawables/mulMat4
+#include "engine/asset/IAssetSource.h"
 
 #include "engine/core/x3_log.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -145,28 +147,70 @@ void CrowdSkin::attach(uint32_t i, const CrowdSystem& crowd, Scene& scene) {
 void CrowdSkin::updateSeat(Slot& s, const CrowdAgent& a, bool seated,
                            Scene& scene, x3::rhi::IRenderDevice& device) {
     // Seat height: the Sit clip is a knees-bent perch whose hips rest ~0.44 m above
-    // the feet (grounded-verified in Blender against AnnaCasual's Sit pose). A 0.44 m
-    // crate (half-extent 0.22) under the agent puts its top exactly at that seat, so
-    // the citizen sits ON something instead of squatting on air. Feet stay on the
-    // floor (a.pos.y); the crate rests on the same floor, centered under the agent.
-    constexpr float kSeatHalf = 0.22f;
+    // the feet (grounded-verified in Blender against AnnaCasual's Sit pose). Whatever
+    // prop we drop under the agent must present its SEAT SURFACE at ~0.44 m so the
+    // citizen sits ON something instead of squatting on air; feet stay on the floor
+    // (a.pos.y), the prop rests on the same floor, centred under the agent.
+    constexpr float kSeatTop  = 0.44f;   // target seat-surface height above the feet
+    constexpr float kSeatHalf = 0.22f;   // fallback box half-extent (top = 2*half = 0.44)
+    // Real crate prop (SciFi_Warehouse_Kit/Crate Short.glb) measured in Blender
+    // (engineY == Blender Z): height 0.600 m, footprint centred at engine
+    // (X=-0.334, Z=+0.3355), base at Y=0. We uniformly scale it so its top lands on
+    // kSeatTop and offset it so its footprint centres under the agent, feet on floor.
+    constexpr float kCrateH   = 0.600f;  // crate height in its own space
+    constexpr float kCrateCx  = -0.334f; // engine-X centre of the crate footprint
+    constexpr float kCrateCz  =  0.3355f;// engine-Z centre of the crate footprint
+    constexpr const char* kSeatCrateRel = "SciFi_Warehouse_Kit/Crate Short.glb";
     if (!seated) {
         if (s.seatEnt != kNoLink && s.seatEnt < scene.size())
             scene.get(s.seatEnt).visible = false;
         return;
     }
     const float scl = (m_cfg.scale > 0.01f) ? m_cfg.scale : 1.0f;
-    // Lazy-build the shared crate mesh once (one upload, instanced across all seats).
+    // Lazy-build the shared seat prop once (one load, instanced across all seats).
     if (!m_seatMeshBuilt) {
-        x3::prims::PrimMesh m = x3::prims::makeBox(kSeatHalf, kSeatHalf, kSeatHalf, 0, 0, 0, 1.0f);
-        m_seatMesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
-                                       m.index.data(), (uint32_t)m.index.size());
-        m_seatMeshBuilt = true;
+        m_seatMeshBuilt = true;   // attempt exactly once; box fallback on any failure
+        // Prefer the REAL textured crate. On a real device makeDrawables yields the
+        // crate's mesh + material handles; on the headless self-test device it yields
+        // nothing, so we fall through to the procedural box below.
+        m_seatAssets.reset(x3::asset::createAssetSource());
+        if (m_seatAssets && m_seatAssets->mountDir(convertedGlbRoot(), 0)) {
+            m_seatLoader.reset(x3::asset::createModelLoader(&device, m_seatAssets.get()));
+            if (m_seatLoader) {
+                m_seatModel = m_seatLoader->load(kSeatCrateRel);
+                if (m_seatModel.ok) {
+                    std::vector<x3::asset::ModelDrawable> dr = x3::asset::makeDrawables(m_seatModel);
+                    if (!dr.empty()) {
+                        const x3::asset::ModelDrawable& d = dr[0];   // crate is a single mesh
+                        m_seatMesh      = x3::rhi::MeshHandle{ d.meshId };
+                        m_seatTex       = x3::rhi::TextureHandle{ d.baseColorTexId };
+                        m_seatMrTex     = x3::rhi::TextureHandle{ d.mrTexId };
+                        m_seatNormalTex = x3::rhi::TextureHandle{ d.normalTexId };
+                        for (int k = 0; k < 16; ++k) m_seatNode[k]      = d.nodeTransform[k];
+                        for (int k = 0; k < 4;  ++k) m_seatBaseColor[k] = d.baseColorFactor[k];
+                        m_seatIsProp = true;
+                        x3::logInfo("[crowd-skin] " + m_cfg.site + ": seat prop = " +
+                                    std::string(kSeatCrateRel));
+                    }
+                }
+            }
+        }
+        if (!m_seatIsProp) {
+            x3::prims::PrimMesh m = x3::prims::makeBox(kSeatHalf, kSeatHalf, kSeatHalf, 0, 0, 0, 1.0f);
+            m_seatMesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                           m.index.data(), (uint32_t)m.index.size());
+            x3::logInfo("[crowd-skin] " + m_cfg.site + ": seat prop = procedural box (crate GLB unavailable)");
+        }
     }
     if (s.seatEnt == kNoLink) {
         Entity e;
         e.mesh = m_seatMesh;
-        e.baseColor[0] = 0.28f; e.baseColor[1] = 0.20f; e.baseColor[2] = 0.13f; e.baseColor[3] = 1.0f; // crate wood
+        if (m_seatIsProp) {
+            e.tex = m_seatTex; e.mrTex = m_seatMrTex; e.normalTex = m_seatNormalTex;
+            for (int k = 0; k < 4; ++k) e.baseColor[k] = m_seatBaseColor[k];
+        } else {
+            e.baseColor[0] = 0.28f; e.baseColor[1] = 0.20f; e.baseColor[2] = 0.13f; e.baseColor[3] = 1.0f; // crate wood
+        }
         e.tag     = (uint32_t)Tag::Prop;
         e.roomId  = m_roomId;    // Scene::render PVS-culls with the crowd's room
         e.visible = false;
@@ -174,14 +218,27 @@ void CrowdSkin::updateSeat(Slot& s, const CrowdAgent& a, bool seated,
     }
     if (s.seatEnt >= scene.size()) return;
     Entity& e = scene.get(s.seatEnt);
-    // Column-major model matrix: uniform scale `scl` + translation. The crate rests on
-    // the floor, so its centre is one half-height up; top = floor + 0.44*scl.
-    for (int k = 0; k < 16; ++k) e.transform[k] = 0.0f;
-    e.transform[0] = e.transform[5] = e.transform[10] = scl;
-    e.transform[15] = 1.0f;
-    e.transform[12] = a.pos.x;
-    e.transform[13] = a.pos.y + kSeatHalf * scl;
-    e.transform[14] = a.pos.z;
+    if (m_seatIsProp) {
+        // Uniform scale so the crate's 0.600 m height maps to kSeatTop*scl, base on the
+        // floor (crate base Y==0), footprint centred under the agent; then bake the
+        // crate's node transform: model = object(scale+translate) * nodeTransform.
+        const float fit = (kSeatTop * scl) / kCrateH;
+        float obj[16] = {0};
+        obj[0] = obj[5] = obj[10] = fit; obj[15] = 1.0f;
+        obj[12] = a.pos.x - fit * kCrateCx;
+        obj[13] = a.pos.y;                       // crate base is at its own Y=0
+        obj[14] = a.pos.z - fit * kCrateCz;
+        x3::asset::mulMat4(obj, m_seatNode, e.transform);
+    } else {
+        // Fallback box: uniform scale + translation; centre one half-height up so
+        // top = floor + 0.44*scl.
+        for (int k = 0; k < 16; ++k) e.transform[k] = 0.0f;
+        e.transform[0] = e.transform[5] = e.transform[10] = scl;
+        e.transform[15] = 1.0f;
+        e.transform[12] = a.pos.x;
+        e.transform[13] = a.pos.y + kSeatHalf * scl;
+        e.transform[14] = a.pos.z;
+    }
     e.roomId  = m_roomId;
     e.visible = true;
 }

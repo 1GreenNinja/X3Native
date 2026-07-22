@@ -282,25 +282,38 @@ def bake_hitreact_biped(arm, g, frames=10):
     for i in range(frames):
         f = i + 1
         t = i / (frames - 1.0)
-        # Fast rise to a peak near t=0.25 (frame ~3 of 10), then ease back to 0.
-        # POLISH: the prior bake stacked spine(-20)+spine(-12)+head(-24) -> the
-        # head pitched ~55 deg back (chin-to-sky, near-knockdown). Now the
-        # cumulative head+torso recoil is ~20 deg: a CRISP readable snap-back, not
-        # a backbend. Feet stay planted (no leg/hip keys) + a defensive shoulder
-        # hitch (shoulders/forearms jerk up to guard) sells the impact.
-        tp = 0.25
-        k = math.sin(min(t / tp, 1.0) * math.pi * 0.5) if t < tp \
-            else math.cos((t - tp) / (1.0 - tp) * math.pi * 0.5)
+        # POLISH v2: the previous retune (~20 deg) read too POLITE ("standing
+        # alert", not "took a bullet"). Punch the recoil to ~34 deg cumulative
+        # head+upper-spine WITHOUT going back to the chin-to-sky backbend, and
+        # settle to neutral EARLY (by ~t=0.7) so the runtime hard-cuts clean.
+        #   * peak near t=0.22 (frame ~3 of 10), fast attack (sin ease-in);
+        #   * decays to 0 across t=0.22..0.7 (cos ease-out), then HELD at rest.
+        tp, settle_end = 0.22, 0.70
+        if t < tp:
+            k = math.sin(t / tp * math.pi * 0.5)          # fast snap in
+        elif t < settle_end:
+            k = math.cos((t - tp) / (settle_end - tp) * math.pi * 0.5)  # ease back
+        else:
+            k = 0.0                                        # neutral, held to clip end
+        # ~34 deg cumulative recoil: upper spine + head jerk back (12+8+14). A firm
+        # TWIST (spine ry / head rz) rotates the impact off-axis so the pose reads as
+        # "spun by a frontal hit" rather than "calmly looking up" (a pure symmetric
+        # back-pitch is ambiguous as a still; the twist sells the impact direction).
         if g["spine"]:
-            key_euler(arm, g["spine"][0], f, rx=-D(8) * k, ry=D(5) * k)   # torso jerks back+twist
+            key_euler(arm, g["spine"][0], f, rx=-D(12) * k, ry=D(12) * k)  # torso jerks back+twist
             if len(g["spine"]) > 1:
-                key_euler(arm, g["spine"][1], f, rx=-D(5) * k)
-        key_euler(arm, g.get("head"), f, rx=-D(9) * k, rz=D(8) * k)       # head snaps back
+                key_euler(arm, g["spine"][1], f, rx=-D(8) * k, ry=D(6) * k)
+        key_euler(arm, g.get("head"), f, rx=-D(14) * k, rz=D(12) * k)     # head snaps back+aside
         # SHOULDER HITCH: upper arms + forearms jerk up/in (a flinch guard).
-        key_euler(arm, g.get("armR"), f, rx=-D(20) * k, rz=-D(18) * k)
-        key_euler(arm, g.get("armL"), f, rx=-D(18) * k, rz=D(20) * k)
-        key_euler(arm, g.get("foreR"), f, rx=-D(38) * k)
-        key_euler(arm, g.get("foreL"), f, rx=-D(35) * k)
+        key_euler(arm, g.get("armR"), f, rx=-D(24) * k, rz=-D(20) * k)
+        key_euler(arm, g.get("armL"), f, rx=-D(22) * k, rz=D(22) * k)
+        key_euler(arm, g.get("foreR"), f, rx=-D(42) * k)
+        key_euler(arm, g.get("foreL"), f, rx=-D(40) * k)
+        # WEIGHT-SHIFT / BRACE: a small downward hip drop (absorb the hit). DOWN
+        # presses the feet INTO the floor -> never airborne (the QA failure mode
+        # is levitation, and a drop can't cause it); reads as rocking under the
+        # impact, feet staying in contact. Returns to rest with the recoil.
+        key_loc(arm, g.get("hips"), f, z=-0.03 * k)
     return act
 
 def bake_hitreact_core(arm, g, frames=10):
