@@ -314,12 +314,23 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
             // ModelDrawable::emissiveFactor is float[3]; drawMeshPBR takes float[4].
             const float emis[4] = { dr.emissiveFactor[0], dr.emissiveFactor[1],
                                     dr.emissiveFactor[2], 1.0f };
+            // QA MAINLEVEL SWEEP D16: the leaf's albedo means ~0.78 LINEAR — double the
+            // facility's surface-library VALUE band ceiling (0.40, surface_library.h).
+            // Every dressed wall beside it is clamped into that band, so under an honest
+            // key (Medical Bay's white rig) the leaves were the ONE blown-white thing in
+            // the room (sweep2/F1_Medical_Bay_a). Same hue-preserving VALUE normalization
+            // the library applies: scale value only, 0.40 / 0.78 ≈ 0.51.
+            constexpr float kLeafValueTint = 0.51f;
+            const float bc[4] = { dr.baseColorFactor[0] * kLeafValueTint,
+                                  dr.baseColorFactor[1] * kLeafValueTint,
+                                  dr.baseColorFactor[2] * kLeafValueTint,
+                                  dr.baseColorFactor[3] };
             device.drawMeshPBR(frame,
                                x3::rhi::MeshHandle{ dr.meshId },
                                x3::rhi::TextureHandle{ dr.baseColorTexId },
                                x3::rhi::TextureHandle{ dr.normalTexId },
                                x3::rhi::TextureHandle{ dr.mrTexId },
-                               dr.baseColorFactor,
+                               bc,
                                emis,
                                fin,
                                dr.alphaMask, dr.alphaBlend,
