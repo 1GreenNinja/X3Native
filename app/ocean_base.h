@@ -71,12 +71,30 @@ public:
     bool playerSubPresent() const { return m_playerSub; }
     uint32_t propCount() const { return (uint32_t)m_props.size(); }
 
+    // ---- Abyssal Station (hero deep-sea landmark) ----
+    // True iff the real abyssal_station.glb loaded (false => a graybox block stands
+    // in, so the landmark never disappears). Diagnostics / the self-test proof.
+    bool stationPlaced() const { return m_stationPlaced; }
+    // The cool key/rim point lights the station needs to read as a POWERED structure
+    // in the dark deep (its blue-emissive windows carry the glow; these lights catch
+    // the hull so it isn't a flat silhouette). The host feeds these to
+    // IRenderDevice::setPointLights — same convention as EnvArtSystem::lightFixtures().
+    // Empty until build(); positions are in world space at the station's placement.
+    const std::vector<x3::rhi::PointLight>& stationLights() const { return m_stationLights; }
+    // World position the station rests at (XZ center on the seabed) — for framing a
+    // capture / approach camera on the landmark. seafloorY is the contact plane.
+    void stationPos(float& x, float& y, float& z) const { x = m_stationX; y = m_stationY; z = m_stationZ; }
+
 private:
     bool m_built = false;
     OceanBasePlan m_plan{};
     SubCombat     m_combat{};
     bool          m_playerSub = false;
     std::vector<uint32_t> m_props;   // Scene entity ids
+    // Abyssal Station landmark: load state, world placement, and its key/rim lights.
+    bool          m_stationPlaced = false;
+    float         m_stationX = 0.0f, m_stationY = 0.0f, m_stationZ = 0.0f;
+    std::vector<x3::rhi::PointLight> m_stationLights;
 };
 
 // Headless self-test (--test-oceanbase). Builds the undersea zone on a HeadlessDevice
