@@ -10,6 +10,8 @@
 #include "terrain.h"           // W10: kWorldSeaLevel (single source for the sea surface)
 
 #include "engine/core/x3_log.h"
+#include "engine/asset/IModelLoader.h"  // station: load abyssal_station.glb -> Scene entities
+#include "engine/asset/IAssetSource.h"
 
 #include <cmath>
 #include <memory>
@@ -37,6 +39,16 @@ constexpr float kSeafloorY = -80.0f;   // seafloor
 constexpr float kBaseRadius = 80.0f;
 constexpr uint32_t kLevels = 3;
 constexpr float kLevelH = 6.0f;        // disc level height
+
+// ---- Abyssal Station — a HERO deep-sea landmark, a discoverable destination a
+// good distance offshore from the sub-dock (the dock is at the base's +X edge; the
+// station sits ~370 m along -Z, out in the dark deep). It rests ON the seabed
+// (X3_WORLD_RULES Rule 4: the GLB's origin is already at its base — native minY≈0 —
+// so its origin sits at kSeafloorY). The GLB is ~42x21x24 m native; kStationScale
+// blows it up to a ~63 m wide, ~31 m tall structure that reads as a large station.
+constexpr float kStationCx    = 1100.0f;    // straight offshore (dock is on +X)
+constexpr float kStationCz    = -1720.0f;   // ~370 m past the base center, deeper in
+constexpr float kStationScale = 1.5f;       // 42.25 m -> ~63 m wide; 20.93 m -> ~31 m tall
 } // namespace
 
 void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
@@ -144,6 +156,111 @@ void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IP
                      &set("sr_metal_b"), 1.0f);
       m_combat.enemySubs = 3; }
 
+    // ========================================================================
+    // ABYSSAL STATION — the hero deep-sea landmark (a destination out in the deep).
+    // ========================================================================
+    // A dedicated seabed pad UNDER the station so it rests on real ground far from
+    // the base's own floor pad (mirrors the base seafloor-pad pattern above — same
+    // rough dark stone, coarse tiling). Without it the station would hang over the
+    // fog void; with it the landmark reads as a genuine seafloor structure.
+    { const float floorCol[4] = { 0.42f, 0.42f, 0.38f, 1.0f };
+      addBoxProp(kStationCx, kSeafloorY - 0.5f, kStationCz, 120.0f, 0.5f, 120.0f, floorCol, nullptr,
+                 &set("sr_concrete_01"), 0.125f); }
+
+    m_stationX = kStationCx; m_stationY = kSeafloorY; m_stationZ = kStationCz;
+
+    // Load the station GLB and add each primitive as a Scene entity (rides
+    // scene.render() in every host — no per-host draw plumbing). Its blue-emissive
+    // windows/panels GLOW because each entity carries mrTex + emissiveTex, which
+    // routes Scene::render through drawMeshPBR with the emissive map honored
+    // (X3_WORLD_RULES Rule 5: emissiveTex is only honored on the PBR route). The
+    // loader/model are LOCAL — once makeDrawables() has minted the device mesh/
+    // texture handles they are owned by the device and outlive this scope (the
+    // loader only frees on an explicit unload(), which we never call).
+    {
+        std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
+        if (assets->mountDir(convertedGlbRoot(), 0)) {
+            std::unique_ptr<x3::asset::IModelLoader> loader(
+                x3::asset::createModelLoader(&device, assets.get()));
+            x3::asset::Model model = loader->load("Undersea/abyssal_station.glb");
+            if (model.ok) {
+                std::vector<x3::asset::ModelDrawable> draws = x3::asset::makeDrawables(model);
+                // object transform = T(station) * S(scale) (column-major). The GLB's
+                // baked node transforms (Y-up correction + part placement) ride on top.
+                const float S = kStationScale;
+                const float obj[16] = { S,0,0,0,  0,S,0,0,  0,0,S,0,
+                                        kStationCx, kSeafloorY, kStationCz, 1.0f };
+                uint32_t emisPrims = 0;
+                for (const auto& d : draws) {
+                    if (!d.meshId) continue;   // headless / un-uploaded primitive
+                    float fin[16];
+                    x3::asset::mulMat4(obj, d.nodeTransform, fin);
+                    Entity e;
+                    e.mesh        = x3::rhi::MeshHandle{ d.meshId };
+                    e.tex         = x3::rhi::TextureHandle{ d.baseColorTexId };
+                    e.normalTex   = x3::rhi::TextureHandle{ d.normalTexId };
+                    e.mrTex       = x3::rhi::TextureHandle{ d.mrTexId };
+                    e.emissiveTex = x3::rhi::TextureHandle{ d.emissiveTexId };
+                    for (int i = 0; i < 4; ++i) e.baseColor[i] = d.baseColorFactor[i];
+                    // Material emissive, gated per-texel by the emissive map in the
+                    // shader: the blue window/panel texels glow, the black hull stays
+                    // dark. Strength 1.3 = a touch of HDR headroom (the bible's window
+                    // bands use 1.25) so it reads as POWERED in the murk — NOT an
+                    // over-unity crutch (honest emissive over a real light).
+                    const bool matEmis = d.emissiveTexId != 0 ||
+                        d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f ||
+                        d.emissiveFactor[2] > 0.001f;
+                    if (matEmis) {
+                        e.emissive[0] = d.emissiveFactor[0];
+                        e.emissive[1] = d.emissiveFactor[1];
+                        e.emissive[2] = d.emissiveFactor[2];
+                        e.emissive[3] = 1.3f;
+                        ++emisPrims;
+                    }
+                    e.alphaBlend = d.alphaBlend;
+                    for (int i = 0; i < 16; ++i) e.transform[i] = fin[i];
+                    e.tag = (uint32_t)Tag::Prop;
+                    m_props.push_back(scene.add(e));
+                }
+                m_stationPlaced = !draws.empty();
+                x3::logInfo("OceanBase: abyssal_station.glb placed @ (" +
+                            std::to_string((int)kStationCx) + "," + std::to_string((int)kSeafloorY) +
+                            "," + std::to_string((int)kStationCz) + ") scale " +
+                            std::to_string(kStationScale) + " — " + std::to_string(draws.size()) +
+                            " prims (" + std::to_string(emisPrims) + " emissive)");
+            }
+        }
+    }
+    if (!m_stationPlaced) {
+        // Per-piece FALLBACK: a station-sized graybox block with a cool blue glow so
+        // the landmark (and its "powered" read) survive even if the GLB fails to load.
+        const float boxCol[4] = { 0.30f, 0.34f, 0.40f, 1.0f };
+        const float boxEm[4]  = { 0.22f, 0.48f, 0.90f, 0.9f };   // cool blue "powered"
+        const float hw = 21.0f * kStationScale, hh = 10.5f * kStationScale, hd = 12.0f * kStationScale;
+        addBoxProp(kStationCx, kSeafloorY + hh, kStationCz, hw, hh, hd, boxCol, boxEm);
+        x3::logWarn("OceanBase: abyssal_station.glb failed to load — graybox landmark placed");
+    }
+
+    // Cool key + rim lights so the hull CATCHES light (not a flat silhouette),
+    // sized to the station, moderate range — kept inside the ocean's deep-water
+    // fog/diver mood (pre-multiplied color = linear RGB * intensity; blue-dominant
+    // cool key, dim cool rim from below-front for a 3D read). The host feeds these
+    // to setPointLights (EnvArtSystem::lightFixtures convention).
+    {
+        const float top = kSeafloorY + 20.93f * kStationScale;   // ~ -48.6 (station crown)
+        x3::rhi::PointLight key{};       // cool blue-white key, above-front
+        key.pos[0] = kStationCx + 3.0f; key.pos[1] = top + 14.0f; key.pos[2] = kStationCz + 20.0f;
+        key.range  = 155.0f;
+        key.color[0] = 3.2f; key.color[1] = 4.4f; key.color[2] = 6.2f;
+        m_stationLights.push_back(key);
+
+        x3::rhi::PointLight rim{};        // dim cool rim/up-light, below-front
+        rim.pos[0] = kStationCx + 2.0f; rim.pos[1] = kSeafloorY + 6.0f; rim.pos[2] = kStationCz - 14.0f;
+        rim.range  = 95.0f;
+        rim.color[0] = 0.9f; rim.color[1] = 1.7f; rim.color[2] = 2.6f;
+        m_stationLights.push_back(rim);
+    }
+
     // ---- Fill the plan + the (inert) submarine-combat model. ----
     m_plan.cx = kBaseCx; m_plan.cz = kBaseCz;
     m_plan.surfaceY = kSurfaceY; m_plan.baseDeckY = baseDeckY; m_plan.seafloorY = kSeafloorY;
@@ -153,7 +270,10 @@ void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IP
     m_built = true;
     x3::logInfo("OceanBase::build complete — undersea base @ (1100,-1350): 3-level disc (r=80) + "
                 "sub-dock + airlock + reactor; ocean surface + seafloor; 1 player + 3 enemy subs; "
-                "sub-combat model inert; " + std::to_string((uint32_t)m_props.size()) + " graybox props");
+                "sub-combat model inert; abyssal station landmark " +
+                std::string(m_stationPlaced ? "(real GLB)" : "(graybox fallback)") + " @ (1100,-80,-1720) + " +
+                std::to_string((uint32_t)m_stationLights.size()) + " station lights; " +
+                std::to_string((uint32_t)m_props.size()) + " props");
 }
 
 // ===========================================================================
@@ -215,6 +335,22 @@ bool runOceanBaseSelfTest() {
 
     // ---- Graybox props placed. ----
     check(ob.propCount() > 0, "O5 graybox props placed (total " + std::to_string(ob.propCount()) + ")");
+
+    // ---- Abyssal Station landmark placed + lit. On the HEADLESS device the GLB
+    // primitives get non-zero fake mesh ids (so stationPlaced() is true even without
+    // Vulkan), and the key/rim lights are populated regardless. Assert both a distinct
+    // offshore position and that the station carries its cool lights. ----
+    {
+        float sx, sy, sz; ob.stationPos(sx, sy, sz);
+        const OceanBasePlan& p = ob.plan();
+        const float dx = sx - p.cx, dz = sz - p.cz;
+        const bool farOff = std::sqrt(dx * dx + dz * dz) > 200.0f;   // a real destination, not on top of the base
+        const bool onFloor = std::abs(sy - p.seafloorY) < 0.01f;     // resting on the seabed
+        check(farOff && onFloor && ob.stationLights().size() >= 2,
+              "O6 abyssal station landmark offshore on the seabed (" +
+              std::to_string((int)sx) + "," + std::to_string((int)sy) + "," + std::to_string((int)sz) +
+              ") + " + std::to_string(ob.stationLights().size()) + " cool lights");
+    }
 
     physics->shutdown();
     x3::logInfo(std::string("oceanbase: ") + std::to_string(g_pass) + "/" +

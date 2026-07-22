@@ -1969,6 +1969,12 @@ int dispatchScreenshotHosts(HostContext& hc) {
         fog.maxOpacity = 0.94f;
         device->setFog(fog);
 
+        // The abyssal station's cool key/rim lights (OceanBase::build sized + placed
+        // them at the landmark) so its hull catches light in the dark deep — the blue
+        // emissive windows carry the glow, these make it read in 3D, not a silhouette.
+        const auto& slights = base.stationLights();
+        if (!slights.empty()) device->setPointLights(slights.data(), (uint32_t)slights.size());
+
         auto renderShot = [&](float cx, float cy, float cz, float yaw, float pitch,
                               const std::string& path) -> bool {
             const int kFrames = 90;    // settle: shadows + TAA history + bloom
@@ -2000,17 +2006,31 @@ int dispatchScreenshotHosts(HostContext& hc) {
         const float dYaw = std::atan2(plan.cz - dz, (plan.cx + plan.radius) - dx);
         const bool w2 = renderShot(dx, dy, dz, dYaw, -0.06f, dockPath);
 
+        // Shot 3 — the HERO station shot: the abyssal station lit on the seabed out
+        // in the deep, framed close so its blue-emissive windows + cool-lit hull read
+        // as a POWERED structure through the murk, with seabed + water column context.
+        std::string stationPath = oceanBaseShotPath;
+        const size_t sdot = stationPath.find_last_of('.');
+        stationPath = (sdot == std::string::npos) ? stationPath + "_station"
+                                                  : stationPath.substr(0, sdot) + "_station" + stationPath.substr(sdot);
+        float stx, sty, stz; base.stationPos(stx, sty, stz);
+        const float svx = stx, svy = sty + 26.0f, svz = stz + 62.0f;   // above-front, close
+        const float sYaw = std::atan2(stz - svz, stx - svx);
+        const bool w3 = renderShot(svx, svy, svz, sYaw, -0.14f, stationPath);
+
         if (w1) x3::logInfo("--screenshot-oceanbase: wrote " + oceanBaseShotPath);
         if (w2) x3::logInfo("--screenshot-oceanbase: wrote " + dockPath);
-        if (!w1 || !w2) x3::logError("--screenshot-oceanbase: capture FAILED");
+        if (w3) x3::logInfo("--screenshot-oceanbase: wrote " + stationPath);
+        if (!w1 || !w2 || !w3) x3::logError("--screenshot-oceanbase: capture FAILED");
 
         x3::rhi::IRenderDevice::FogParams off{};
         device->setFog(off);   // leave the device clean for whoever runs next
+        device->setPointLights(nullptr, 0);   // clear the station lights for the next host
         bphys->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
         glfwTerminate();
-        return (w1 && w2) ? 0 : 1;
+        return (w1 && w2 && w3) ? 0 : 1;
     }
 
     // ---- City vantage (--screenshot-city [path.png]) — W8-3 -----------------
