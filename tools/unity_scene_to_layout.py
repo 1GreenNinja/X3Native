@@ -9,7 +9,13 @@ district loader to place per-prefab GLBs from D:/Assets/_glb at the designer's e
 transforms ("build it out just how the designers intended").
 
 Usage:
-  python unity_scene_to_layout.py <scene.unity> <guid_map.json> <glb_dir> <out.layout>
+  python unity_scene_to_layout.py <scene.unity> <guid_map.json> <glb_dir> <out.layout> [--flatten <cell>]
+
+  --flatten <cell>: estimate the invisible Unity-Terrain ground surface from the
+    pieces' own minimum Y per <cell>-meter XZ cell (nearest-neighbor fill + 3x3
+    box blur x2), then subtract it from every piece's Y (clamped >= -0.5). Fixes
+    districts that were authored to sit on a terrain we don't import, which
+    otherwise float/hang in the air.
 
 Notes:
 - The scene's placements are PrefabInstances: m_SourcePrefab guid + m_Modification
@@ -202,8 +208,105 @@ def prefab_root_defaults(prefab_path, cache={}):
     cache[prefab_path] = d
     return d
 
+def build_ground_grid(placed, cell):
+    """Estimate the invisible ground surface under `placed` pieces: a 2D XZ grid
+    (cell size `cell`, meters) of MIN piece-Y per cell, holes filled by nearest
+    neighbor, then smoothed with a 3x3 box blur (2 passes; missing/out-of-bounds
+    neighbors count as the cell's own value). Returns (grid, ix_min, iz_min, nx, nz)
+    for use with grid_bilinear(); grid is a nx x nz list-of-lists of floats."""
+    cell_min = {}
+    for _glb, p, _q, _s in placed:
+        x, y, z = p
+        k = (math.floor(x / cell), math.floor(z / cell))
+        if k not in cell_min or y < cell_min[k]:
+            cell_min[k] = y
+    ixs = [k[0] for k in cell_min]; izs = [k[1] for k in cell_min]
+    ix_min, iz_min = min(ixs), min(izs)
+    nx, nz = max(ixs) - ix_min + 1, max(izs) - iz_min + 1
+    grid = [[None] * nz for _ in range(nx)]
+    for (ix, iz), y in cell_min.items():
+        grid[ix - ix_min][iz - iz_min] = y
+
+    # Fill empty cells by nearest neighbor (multi-source BFS over the grid graph).
+    filled = [row[:] for row in grid]
+    dist = [[-1] * nz for _ in range(nx)]
+    dq = []
+    for i in range(nx):
+        for j in range(nz):
+            if grid[i][j] is not None:
+                dist[i][j] = 0
+                dq.append((i, j))
+    head = 0
+    while head < len(dq):
+        i, j = dq[head]; head += 1
+        for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ni, nj = i + di, j + dj
+            if 0 <= ni < nx and 0 <= nj < nz and dist[ni][nj] == -1:
+                dist[ni][nj] = dist[i][j] + 1
+                filled[ni][nj] = filled[i][j]
+                dq.append((ni, nj))
+
+    # 3x3 box blur, 2 iterations; out-of-grid neighbors treated as the cell's own value.
+    g = filled
+    for _ in range(2):
+        newg = [[0.0] * nz for _ in range(nx)]
+        for i in range(nx):
+            for j in range(nz):
+                center = g[i][j]
+                total = 0.0
+                for di in (-1, 0, 1):
+                    for dj in (-1, 0, 1):
+                        ni, nj = i + di, j + dj
+                        total += g[ni][nj] if (0 <= ni < nx and 0 <= nj < nz) else center
+                newg[i][j] = total / 9.0
+        g = newg
+    return g, ix_min, iz_min, nx, nz
+
+def grid_bilinear(grid, ix_min, iz_min, nx, nz, cell, x, z):
+    """Bilinear sample of a ground grid from build_ground_grid() at world (x,z).
+    Cell (i,j) holds the ground estimate at its center, i.e. world
+    ((ix_min+i+0.5)*cell, (iz_min+j+0.5)*cell); edges clamp (no extrapolation)."""
+    fx = x / cell - ix_min - 0.5
+    fz = z / cell - iz_min - 0.5
+    fx = max(0.0, min(nx - 1, fx))
+    fz = max(0.0, min(nz - 1, fz))
+    i0 = int(math.floor(fx)); j0 = int(math.floor(fz))
+    i1 = min(i0 + 1, nx - 1); j1 = min(j0 + 1, nz - 1)
+    tx, tz = fx - i0, fz - j0
+    v00, v10 = grid[i0][j0], grid[i1][j0]
+    v01, v11 = grid[i0][j1], grid[i1][j1]
+    v0 = v00 * (1 - tx) + v10 * tx
+    v1 = v01 * (1 - tx) + v11 * tx
+    return v0 * (1 - tz) + v1 * tz
+
+def flatten_placed(placed, cell):
+    """Subtract the estimated invisible-terrain ground surface from every piece's
+    Y (see build_ground_grid docstring for why). Clamps result to >= -0.5. Prints
+    move count + before/after Y range; returns the new `placed` list."""
+    ys_before = [p[1] for _, p, _, _ in placed]
+    grid, ix_min, iz_min, nx, nz = build_ground_grid(placed, cell)
+    out, moved = [], 0
+    for glb, p, q, s in placed:
+        x, y, z = p
+        gy = grid_bilinear(grid, ix_min, iz_min, nx, nz, cell, x, z)
+        new_y = max(y - gy, -0.5)
+        if abs(new_y - y) > 1e-6:
+            moved += 1
+        out.append((glb, [x, new_y, z], q, s))
+    ys_after = [p[1] for _, p, _, _ in out]
+    print(f"flatten --flatten {cell}: {moved}/{len(out)} pieces moved | "
+          f"Y before [{min(ys_before):.2f},{max(ys_before):.2f}] "
+          f"-> after [{min(ys_after):.2f},{max(ys_after):.2f}]")
+    return out
+
 def main():
-    scene, guidmap_p, glb_dir, out_p = sys.argv[1:5]
+    argv = sys.argv[1:]
+    flatten_cell = None
+    if '--flatten' in argv:
+        idx = argv.index('--flatten')
+        flatten_cell = float(argv[idx + 1])
+        del argv[idx:idx + 2]
+    scene, guidmap_p, glb_dir, out_p = argv[:4]
     guidmap = json.load(open(guidmap_p))
     layouts_root = os.path.dirname(os.path.abspath(guidmap_p))
     transforms, prefabs, stripped_owner, meshfilters = parse_scene(scene)
@@ -340,6 +443,12 @@ def main():
         if w is None: continue
         emit(glb, w)
 
+    # Skip pack sky-domes/backdrops (they belong to the demo scene's own sky,
+    # not the district — a giant textured egg floating over the pad otherwise).
+    before = len(placed)
+    placed = [e for e in placed if not re.match(r'(?i)(sm_)?sky', e[0])]
+    if len(placed) != before: print(f"skipped {before-len(placed)} sky/backdrop pieces")
+
     # Dedupe exact duplicates (same glb at same rounded position — LOD stacks etc.).
     seen, uniq = set(), []
     for glb, p, q, s in placed:
@@ -349,6 +458,9 @@ def main():
     if len(uniq) != len(placed):
         print(f"deduped {len(placed)-len(uniq)} co-located duplicates")
     placed = uniq
+
+    if flatten_cell is not None and placed:
+        placed = flatten_placed(placed, flatten_cell)
 
     with open(out_p, 'w') as f:
         f.write(f"# layout from {os.path.basename(scene)} — {len(placed)} placements\n")

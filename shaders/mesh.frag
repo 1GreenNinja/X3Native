@@ -791,6 +791,11 @@ void main() {
                            + uint(ssao.rtsh1.x)   * 26699u);
     int  rtshRaysLeft = int(ssao.rtsh0.z);
     vec3 rtshNg = normalize(vNormal);
+    // TWO-SIDED (see the N flip above): mixed-winding pack meshes present their
+    // BACK face — the unflipped vertex normal then points INTO the solid, so ray
+    // origins offset inside the wall and every sun ray self-intersects (whole
+    // districts read shadow=0 = pitch black). Flip the ray-offset normal too.
+    if (!gl_FrontFacing) rtshNg = -rtshNg;
     // SUN (tier >= 1): min() with the CSM term — the traced ray gives the
     // contact-hardening penumbra from STATIC geometry; the raster map keeps
     // shadows from skinned characters (absent from the static TLAS). Skip the

@@ -292,10 +292,16 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     // night the terrain is lit by ambient alone — hold a moonlight minimum so the
     // island stays readable while the sky dome itself stays black.
     constexpr float kNightAmbFloor[3] = { 0.11f, 0.12f, 0.17f };
+    // DAY sky-fill floor (AAA-eye pass, 2026-07-22): the old day ambient was tuned
+    // for open sunlit terrain (~0), which crushed every sun-shadowed CITY wall to
+    // black — at noon vertical walls receive almost no direct sun and live on this
+    // fill. Cool sky-blue, full strength in day, fading with dayness.
+    constexpr float kDayAmbFloor[3] = { 0.34f, 0.38f, 0.46f };
     float amb[3];
     for (int i = 0; i < 3; ++i) {
         amb[i] = s.ambient[i] + s.auroraTint[i];
-        const float floorI = kNightAmbFloor[i] * (1.0f - dayness);
+        const float floorI = kNightAmbFloor[i] * (1.0f - dayness)
+                           + kDayAmbFloor[i]   * dayness;
         if (amb[i] < floorI) amb[i] = floorI;
     }
     device->setAmbient(amb[0], amb[1], amb[2]);
@@ -463,10 +469,14 @@ void applyRayTracing(x3::rhi::IRenderDevice* device) {
         x3::logInfo("--world echotropolis: RT unsupported on this device — raster/CSM/SSAO fallback (byte-identical)");
         return;
     }
-    // Dev A/B opt-out: ECHO_RT=0 forces the raster/CSM/SSAO path even on RT hardware
-    // (same-content baseline capture + Pascal-parity check). Default: RT ON.
-    if (const char* e = std::getenv("ECHO_RT"); e && e[0] == '0') {
-        x3::logInfo("--world echotropolis: ECHO_RT=0 — RT force-disabled (raster/CSM/SSAO baseline)");
+    // RT default OFF for this world (AAA-eye pass 2026-07-22): the pack districts'
+    // prefab expansion leaves coplanar duplicate shells in the TLAS — RTAO/RT-sun
+    // rays self-intersect at ~zero distance and crush whole districts to black.
+    // Raster CSM+SSAO renders them correctly. ECHO_RT=1 re-enables for A/B until
+    // the dupe-geometry cleanup lands.
+    const char* e = std::getenv("ECHO_RT");
+    if (!e || e[0] != '1') {
+        x3::logInfo("--world echotropolis: RT default-off (district coplanar-dupe self-shadow; ECHO_RT=1 to opt in)");
         return;
     }
     // 1. RT soft SUN shadows (sun-only; no point lights in this host).
