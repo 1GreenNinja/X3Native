@@ -646,14 +646,51 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
 
         // ---- Floor + ceiling (single panels; floor skipped if a descent tube pierces
         // this room — the graybox segments there stay the truth). ----
-        bool hasTube = false;
-        for (const CanonDoorway& d : floor.doorways)
-            if ((d.a == ri || d.b == ri) && d.kind == DoorwayKind::CrossLevel) hasTube = true;
-        if (!hasTube) {
-            Panel p; p.room = ri; p.set = floorSet;
-            p.mesh = quadMesh(device, r.w - 0.1f, r.d - 0.1f, rec.floorTile);
-            makeTR(p.transform, 0, -kPi * 0.5f, r.cx, fY + kFloorLift, r.cz);
-            m_panels.push_back(p); ++nPanels;
+        // QA MAINLEVEL SWEEP D17 (2026-07-22): the old rule skipped the WHOLE floor
+        // panel for ANY room a CrossLevel doorway touches. Written for the deep
+        // descent tubes, but the merged tower's elevator SPINE and the isolated-room
+        // linker also emit CrossLevel edges — so EVERY tower floor's main corridor +
+        // elevator lobby dressed no floor and showed a huge Lambert-bright graybox
+        // expanse (sweep2 F2_F2_Main_Corridor_a / F3_F3_Specimen_Hall_a /
+        // F4_F4_Augmentation_Corridor_a — the worst surface read on every floor).
+        // A tube only pierces the floor of the UPPER room of its pair. Lay the lower
+        // room's floor whole, and the upper room's floor as up to FOUR panels AROUND
+        // the tube's 3x3 m mouth so a real descent hole is never sealed by dressing.
+        {
+            const float x0 = r.x0() + 0.05f, x1 = r.x1() - 0.05f;
+            const float z0 = r.z0() + 0.05f, z1 = r.z1() - 0.05f;
+            // Collect this room's tube mouths (upper-room piercings only).
+            struct Hole { float x0, x1, z0, z1; };
+            std::vector<Hole> holes;
+            for (const CanonDoorway& d : floor.doorways) {
+                if (d.kind != DoorwayKind::CrossLevel) continue;
+                if (d.a != ri && d.b != ri) continue;
+                const CanonRoom& other = floor.rooms[(d.a == ri) ? d.b : d.a];
+                if (r.y0() <= other.y0()) continue;        // we are the LOWER room: floor intact
+                const float m = 1.5f + 0.2f;               // tube half (1.5) + wall + margin
+                holes.push_back({ d.cx - m, d.cx + m, d.cz - m, d.cz + m });
+            }
+            auto layFloor = [&](float fx0, float fx1, float fz0, float fz1) {
+                if (fx1 - fx0 < 0.30f || fz1 - fz0 < 0.30f) return;   // sliver: skip
+                Panel p; p.room = ri; p.set = floorSet;
+                p.mesh = quadMesh(device, fx1 - fx0, fz1 - fz0, rec.floorTile);
+                makeTR(p.transform, 0, -kPi * 0.5f,
+                       (fx0 + fx1) * 0.5f, fY + kFloorLift, (fz0 + fz1) * 0.5f);
+                m_panels.push_back(p); ++nPanels;
+            };
+            if (holes.empty()) {
+                layFloor(x0, x1, z0, z1);
+            } else {
+                // One hole is the practical case (spine lobby / linked corridor):
+                // frame it with 4 panels (W/E full-depth strips + N/S center strips).
+                const Hole& h = holes.front();
+                const float hx0 = std::max(h.x0, x0), hx1 = std::min(h.x1, x1);
+                const float hz0 = std::max(h.z0, z0), hz1 = std::min(h.z1, z1);
+                layFloor(x0, hx0, z0, z1);                 // west strip
+                layFloor(hx1, x1, z0, z1);                 // east strip
+                layFloor(hx0, hx1, z0, hz0);               // south center
+                layFloor(hx0, hx1, hz1, z1);               // north center
+            }
         }
         {
             Panel p; p.room = ri; p.set = ceilSet;
@@ -1766,6 +1803,18 @@ void RoomDressing::applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t 
     } else {
         device.setAmbient(kExteriorAmbient[0], kExteriorAmbient[1], kExteriorAmbient[2]);
         device.setIblIntensity(kExteriorIbl);
+    }
+}
+
+void RoomDressing::forEachPropInstance(
+    const std::function<void(uint32_t, const std::string&,
+                             const std::vector<x3::asset::ModelDrawable>&,
+                             const float*)>& fn) const {
+    for (const PropInst& p : m_props) {
+        if (p.asset >= m_assetTable.size()) continue;
+        const Asset& a = m_assetTable[p.asset];
+        if (!a.ok) continue;
+        fn(p.room, m_assetPaths[p.asset], a.drawables, p.transform);
     }
 }
 

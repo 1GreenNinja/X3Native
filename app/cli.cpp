@@ -90,6 +90,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-canonlevel") o.testCanonLevel = true;
         else if (a == "--test-keypad") o.testKeypad = true;   // realistic keypad geometry (KP1-KP6)
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
+        else if (a == "--test-propclip") o.testPropClip = true;     // GATE A ext: dressing prop clip audit
         else if (a == "--test-canonplay") o.testCanonPlay = true;
         else if (a == "--test-goldenpath") o.testGoldenPath = true;
         else if (a == "--test-opening") o.testOpening = true;   // opening-flow wake-in-cell contract

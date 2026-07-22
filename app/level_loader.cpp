@@ -6,6 +6,7 @@
 #include "level_loader.h"
 #include "mesh_prims.h"
 #include "asset_root.h"
+#include "surface_library.h"  // D10: ramps wear the dressing deck set
 #include "keypad.h"    // PB fold: realistic high-poly keypad beside each secured-room lock
 
 #include "engine/core/x3_log.h"
@@ -302,7 +303,9 @@ void lintelZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
 // axis (-1 if the lower room's center is on the −axis side of the plane, +1 if +).
 void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
                  float cx, float cz, float yLo, float yHi, uint32_t axis, float sideSign,
-                 x3::rhi::TextureHandle tex, const float color[4], uint32_t room, bool vis) {
+                 x3::rhi::TextureHandle tex, x3::rhi::TextureHandle mrTex,
+                 x3::rhi::TextureHandle normalTex,
+                 const float color[4], uint32_t room, bool vis) {
     const float rise = yHi - yLo;
     if (rise <= 0.02f) return;                       // flat: no ramp needed
     // Run keeps the slope ≤ ~35° (tan 35° ≈ 0.70); never shorter than the wall so
@@ -323,6 +326,16 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
         e.mesh = d.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                               geo.index.data(), (uint32_t)geo.index.size());
     e.tex = tex;
+    // QA MAINLEVEL SWEEP (D10): with no MR texel the ramp rode the unnormalized
+    // Lambert prim path (~pi x brighter than every PBR surface around it — R1) and
+    // read as a BLOWN flat wedge at every stepped doorway. The MR texel alone was
+    // not enough: every room/hall FLOOR the player actually sees is the dressing's
+    // surface-library deck (hh_floor_01a @ tint 0.40), so a graybox-textured ramp
+    // still read as the one bright untextured wedge in a dressed scene. The call
+    // site now passes the SAME deck set (albedo+normal+mr, same 2 m tile density —
+    // makeRamp uvScale 0.5 == makePanel tileMeters 2.0) with the deck tint.
+    e.mrTex = mrTex;
+    e.normalTex = normalTex;
     for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
     for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
     e.tag = (uint32_t)Tag::Static;
@@ -1482,9 +1495,17 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         // Ceiling lid (collision-only, invisible — GLB ceiling drapes over).
         // W5-1: openCeiling rooms (Nexus Access) get NO lid — the cavern void above
         // is the ceiling; canon_45's shell seals the outer envelope.
-        if (!r.openCeiling)
+        // QA MAINLEVEL SWEEP: the DEEP rooms (Cave System / Hidden Sub-Level, cy<-50)
+        // get NO dressing (RoomDressing classifies them ZNone), so an invisible lid
+        // left them staring straight up into raw shaft scenery: the Crystal-Veins
+        // strata band's violet slabs from the Sub-Level, the open SKY from the cave
+        // at y=-178 (docs/QA_MAINLEVEL_SWEEP.md D3/D4). Their lid renders.
+        if (!r.openCeiling) {
+            const bool deepLid = r.cy < -50.0f;
             addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
-                   r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);
+                   r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true,
+                   /*visible*/deepLid);
+        }
 
         // 4 walls with doorway gaps where the resolver produced them.
         // W2-E: consult the doorway wall dedup (it was computed above but never USED —
@@ -1503,7 +1524,36 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // can't get through" bug — it was a threshold step, not the opening size). Drop a
     // walkable wedge ramp into the lower room at each such opening so the player walks
     // up/down through it. (Gap-bridges + cross-level tubes are handled separately.) ----
-    const float rampTint[4] = { 0.46f, 0.50f, 0.58f, 1.0f };
+    // D10: ramps wear the SAME surface-library deck the cell/room dressing lays over
+    // every floor the player sees (hh_floor_01a, deck tint 0.40 — cell_dressing.cpp's
+    // judged value), so a threshold reads as floor, not as a bright graybox wedge.
+    // Fallback (set missing, e.g. assets not fetched): old graybox tex + a matte
+    // dielectric MR texel (glTF MR: G=rough 0.85, B=metal 0) so the ramp at least
+    // stays on the normalized PBR route instead of the blown Lambert prim path.
+    float rampTint[4] = { 0.46f, 0.50f, 0.58f, 1.0f };
+    x3::rhi::TextureHandle rampAlbedo = floorTex, rampMr{}, rampNormal{};
+    x3::rhi::TextureHandle bridgeWallAlbedo{}, bridgeWallMr{}, bridgeWallNormal{};
+    {
+        static SurfaceLibrary rampSurf;                    // texture cache lives for the device
+        if (!rampSurf.mounted()) rampSurf.mount(assetRoot() + "/surface_library");
+        const SurfaceSet& deck = rampSurf.get(device, "hh_floor_01a");
+        if (deck.ok) {
+            rampAlbedo = deck.albedo; rampMr = deck.mr; rampNormal = deck.normal;
+            rampTint[0] = 0.40f; rampTint[1] = 0.41f; rampTint[2] = 0.40f;
+        } else {
+            const uint8_t mr[4] = { 0, 217, 0, 255 };
+            rampMr = device.createTexture(mr, 1, 1, false);
+        }
+        // D15 (same Lambert-brightness family): the GAP-BRIDGE corridor interiors are
+        // the one graybox shell the player LOOKS INTO from dressed rooms (the secured
+        // rooms' mouths read as glowing cream boxes). Dress their walls with the same
+        // authored wall set the cell dressing uses.
+        const SurfaceSet& wallSet = rampSurf.get(device, "hh_wall_01a");
+        if (wallSet.ok) {
+            bridgeWallAlbedo = wallSet.albedo; bridgeWallMr = wallSet.mr;
+            bridgeWallNormal = wallSet.normal;
+        }
+    }
     for (const CanonDoorway& dw : floor.doorways) {
         if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
             dw.kind != DoorwayKind::Overlap)
@@ -1518,11 +1568,11 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         if (dw.axis == 1) {
             // AdjacentZ/overlap on a Z-plane: ramp runs along Z into the lower room.
             float sideSign = (lower.cz < dw.cz) ? -1.0f : +1.0f;
-            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, floorTex, rampTint, lowerId, floorVis);
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis);
         } else {
             // AdjacentX/overlap on an X-plane: ramp runs along X into the lower room.
             float sideSign = (lower.cx < dw.cx) ? -1.0f : +1.0f;
-            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, floorTex, rampTint, lowerId, floorVis);
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis);
         }
     }
 
@@ -1559,8 +1609,13 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (yCeil > clearTop)                     // header above the clear opening
                 addBox(scene, device, physics, dH, (yCeil - clearTop) * 0.5f, half,
                        dC, (clearTop + yCeil) * 0.5f, cut, wallTexA, rvTint, dw.a, true, wallVis);
-            addBox(scene, device, physics, dH, 0.05f, half,                       // floor strip
-                   dC, yFloor - 0.05f, cut, wallTexA, rvTint, dw.a, true, wallVis);
+            {   // floor strip — the throat floor the player crosses at an open door.
+                // D10 family: on the Lambert route it glowed vs the dressed decks;
+                // give it the SAME deck set + tint the ramps/dressing wear.
+                const uint32_t ei = addBox(scene, device, physics, dH, 0.05f, half,
+                       dC, yFloor - 0.05f, cut, rampAlbedo, rampTint, dw.a, true, wallVis);
+                scene.get(ei).mrTex = rampMr; scene.get(ei).normalTex = rampNormal;
+            }
         } else {
             addBox(scene, device, physics, jamT * 0.5f, (yCeil - yFloor) * 0.5f, dH,
                    cut - half - jamT * 0.5f, (yFloor + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
@@ -1569,8 +1624,11 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (yCeil > clearTop)
                 addBox(scene, device, physics, half, (yCeil - clearTop) * 0.5f, dH,
                        cut, (clearTop + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
-            addBox(scene, device, physics, half, 0.05f, dH,
-                   cut, yFloor - 0.05f, dC, wallTexA, rvTint, dw.a, true, wallVis);
+            {   // floor strip (see the planeIsX branch note — deck-matched)
+                const uint32_t ei = addBox(scene, device, physics, half, 0.05f, dH,
+                       cut, yFloor - 0.05f, dC, rampAlbedo, rampTint, dw.a, true, wallVis);
+                scene.get(ei).mrTex = rampMr; scene.get(ei).normalTex = rampNormal;
+            }
         }
     }
 
@@ -1579,7 +1637,6 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // floor-to-a-low-ceiling. Tagged to room `a` so it culls with that room's PVS (a is
     // also in b's PVS, so it shows from either side). The bridge punches the connection;
     // we also cut a doorway in each room's facing wall at the bridge mouth. ----
-    const float bridgeTint[4] = { 0.52f, 0.56f, 0.66f, 1.0f };
     for (const CanonDoorway& dw : floor.doorways) {
         if (dw.kind != DoorwayKind::GapBridge) continue;
         const CanonRoom& a = floor.rooms[dw.a];
@@ -1593,10 +1650,22 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (xhi < xlo) std::swap(xlo, xhi);
             const float zc = dw.cz;
             // Two side walls of the corridor at z = zc ± kDoorHalf, floor slab + ceiling.
-            addBox(scene, device, physics, (xhi - xlo) * 0.5f, 0.05f, kDoorHalf,
-                   (xlo + xhi) * 0.5f, floorY - 0.05f, zc, floorTex, bridgeTint, dw.a, true, floorVis);
-            wallX(scene, device, physics, xlo, xhi, zc - kDoorHalf - kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
-            wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            {   // D10/D15 family: bridge floor wears the deck set, walls the wall set,
+                // so the corridor interior reads as construction, not glowing graybox.
+                const uint32_t e0 = scene.size();
+                addBox(scene, device, physics, (xhi - xlo) * 0.5f, 0.05f, kDoorHalf,
+                       (xlo + xhi) * 0.5f, floorY - 0.05f, zc, rampAlbedo, rampTint, dw.a, true, floorVis);
+                scene.get(e0).mrTex = rampMr; scene.get(e0).normalTex = rampNormal;
+                const uint32_t w0 = scene.size();
+                wallX(scene, device, physics, xlo, xhi, zc - kDoorHalf - kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                if (bridgeWallMr.valid())
+                    for (uint32_t ei = w0; ei < scene.size(); ++ei) {
+                        scene.get(ei).mrTex = bridgeWallMr; scene.get(ei).normalTex = bridgeWallNormal;
+                    }
+            }
             addBox(scene, device, physics, (xhi - xlo) * 0.5f, kCeilT * 0.5f, kDoorHalf + kWallT,
                    (xlo + xhi) * 0.5f, floorY + h + kCeilT * 0.5f, zc, ceilTex, ceilWhite, dw.a, true, false);
         } else {
@@ -1605,10 +1674,21 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (a.cz < b.cz) { zlo = a.z1(); zhi = b.z0(); } else { zlo = b.z1(); zhi = a.z0(); }
             if (zhi < zlo) std::swap(zlo, zhi);
             const float xc = dw.cx;
-            addBox(scene, device, physics, kDoorHalf, 0.05f, (zhi - zlo) * 0.5f,
-                   xc, floorY - 0.05f, (zlo + zhi) * 0.5f, floorTex, bridgeTint, dw.a, true, floorVis);
-            wallZ(scene, device, physics, zlo, zhi, xc - kDoorHalf - kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
-            wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            {   // (mirror of the X branch — see its D10/D15 note)
+                const uint32_t e0 = scene.size();
+                addBox(scene, device, physics, kDoorHalf, 0.05f, (zhi - zlo) * 0.5f,
+                       xc, floorY - 0.05f, (zlo + zhi) * 0.5f, rampAlbedo, rampTint, dw.a, true, floorVis);
+                scene.get(e0).mrTex = rampMr; scene.get(e0).normalTex = rampNormal;
+                const uint32_t w0 = scene.size();
+                wallZ(scene, device, physics, zlo, zhi, xc - kDoorHalf - kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                if (bridgeWallMr.valid())
+                    for (uint32_t ei = w0; ei < scene.size(); ++ei) {
+                        scene.get(ei).mrTex = bridgeWallMr; scene.get(ei).normalTex = bridgeWallNormal;
+                    }
+            }
             addBox(scene, device, physics, kDoorHalf + kWallT, kCeilT * 0.5f, (zhi - zlo) * 0.5f,
                    xc, floorY + h + kCeilT * 0.5f, (zlo + zhi) * 0.5f, ceilTex, ceilWhite, dw.a, true, false);
         }

@@ -197,19 +197,39 @@ inline PrimMesh makeRamp(float cx, float cy, float cz,
         quad(HLb[0],HLb[1],HLb[2], HRb[0],HRb[1],HRb[2], HRt[0],HRt[1],HRt[2], HLt[0],HLt[1],HLt[2], nx,0,nz, sv, rise*uvScale);
     }
     // Two side triangles (walls of the wedge). Emit as degenerate quads (tri).
+    // Side faces span the WIDTH axis: ±X when the run is along Z (axis 1), ±Z when
+    // the run is along X (axis 0) — the old hardcoded ±X was wrong for axis 0.
     {
+        const float lnx = (axis == 1) ? -1.0f : 0.0f, lnz = (axis == 1) ? 0.0f : -1.0f;
         // Left side (w=-halfW): LL, HLb, HLt.
         uint32_t base = (uint32_t)m.verts.size();
-        m.verts.push_back({{LL[0],LL[1],LL[2]},{-1,0,0},{0,0}});
-        m.verts.push_back({{HLb[0],HLb[1],HLb[2]},{-1,0,0},{1,0}});
-        m.verts.push_back({{HLt[0],HLt[1],HLt[2]},{-1,0,0},{1,1}});
+        m.verts.push_back({{LL[0],LL[1],LL[2]},{lnx,0,lnz},{0,0}});
+        m.verts.push_back({{HLb[0],HLb[1],HLb[2]},{lnx,0,lnz},{1,0}});
+        m.verts.push_back({{HLt[0],HLt[1],HLt[2]},{lnx,0,lnz},{1,1}});
         m.index.insert(m.index.end(), {base, base+1, base+2});
         // Right side (w=+halfW): LR, HRt, HRb.
         base = (uint32_t)m.verts.size();
-        m.verts.push_back({{LR[0],LR[1],LR[2]},{1,0,0},{0,0}});
-        m.verts.push_back({{HRt[0],HRt[1],HRt[2]},{1,0,0},{1,1}});
-        m.verts.push_back({{HRb[0],HRb[1],HRb[2]},{1,0,0},{1,0}});
+        m.verts.push_back({{LR[0],LR[1],LR[2]},{-lnx,0,-lnz},{0,0}});
+        m.verts.push_back({{HRt[0],HRt[1],HRt[2]},{-lnx,0,-lnz},{1,1}});
+        m.verts.push_back({{HRb[0],HRb[1],HRb[2]},{-lnx,0,-lnz},{1,0}});
         m.index.insert(m.index.end(), {base, base+1, base+2});
+    }
+    // WINDING ORIENT (QA mainlevel sweep, D10 root fix): the faces above are emitted
+    // with a FIXED vertex order, so their geometric winding flips with `dir` (and
+    // differs per axis) — the mesh shipped with mixed front/back parity. The old
+    // emissive draw route never backface-culled, so it hid the defect; the PBR route
+    // culls, and a wrong-parity ramp TOP disappears from above, opening a fog-void
+    // window at the threshold. Enforce outward winding per triangle: if the geometric
+    // normal disagrees with the authored (outward) vertex normal, swap the triangle.
+    for (size_t t = 0; t + 2 < m.index.size(); t += 3) {
+        const auto& a = m.verts[m.index[t]];
+        const auto& b = m.verts[m.index[t+1]];
+        const auto& c = m.verts[m.index[t+2]];
+        const float e1x = b.pos[0]-a.pos[0], e1y = b.pos[1]-a.pos[1], e1z = b.pos[2]-a.pos[2];
+        const float e2x = c.pos[0]-a.pos[0], e2y = c.pos[1]-a.pos[1], e2z = c.pos[2]-a.pos[2];
+        const float gnx = e1y*e2z - e1z*e2y, gny = e1z*e2x - e1x*e2z, gnz = e1x*e2y - e1y*e2x;
+        if (gnx*a.normal[0] + gny*a.normal[1] + gnz*a.normal[2] < 0.0f)
+            std::swap(m.index[t+1], m.index[t+2]);
     }
     // Collision: reuse render positions + indices.
     m.cverts.reserve(m.verts.size() * 3);

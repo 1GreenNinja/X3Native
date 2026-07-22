@@ -74,6 +74,15 @@ public:
     uint32_t propInstances() const { return (uint32_t)m_instances.size(); }
     uint32_t propsLoaded() const;
 
+    // QA PROP-CLIP LINT (GATE A extension, app/qa_propclip.cpp): enumerate every
+    // placed kit-prop instance for the headless AABB audit. CellDressing does not
+    // room-tag its instances, so `room` is always kNoRoom — the audit resolves the
+    // containing room via CanonFloor::roomAt on the world AABB centre.
+    void forEachPropInstance(
+        const std::function<void(uint32_t room, const std::string& assetPath,
+                                 const std::vector<x3::asset::ModelDrawable>& drawables,
+                                 const float* transform)>& fn) const;
+
 private:
     struct Asset {
         x3::asset::Model                      model;
