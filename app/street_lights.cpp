@@ -72,7 +72,7 @@ const ZoneLook& zoneLook(StreetLights::Zone z) {
         { 1.00f, 0.72f, 0.42f,  8.0f, 16.0f, 2.0f, 0.55f, 2.6f, 0.07f },  // Scrapyard sodium
         { 0.80f, 0.90f, 1.00f,  8.5f, 17.0f, 2.2f, 0.52f, 2.8f, 0.07f },  // New District LED
         { 1.00f, 0.70f, 0.38f,  8.0f, 16.0f, 2.0f, 0.55f, 2.5f, 0.07f },  // Industrial sodium
-        { 0.84f, 0.92f, 1.00f,  8.0f, 17.0f, 2.1f, 0.50f, 2.7f, 0.06f },  // Approach LED
+        { 0.84f, 0.92f, 1.00f,  8.0f, 17.0f, 2.6f, 0.50f, 2.7f, 0.10f },  // Approach LED (pool bumped for district night streets)
         { 1.00f, 0.85f, 0.60f,  7.0f, 15.0f, 2.0f, 0.50f, 2.5f, 0.06f },  // Apron warm white
         { 0.88f, 0.95f, 1.00f, 13.0f, 26.0f, 5.0f, 0.85f, 3.4f, 0.14f },  // Dock work light
     };
@@ -288,7 +288,12 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
             e.transparent = true;
             e.glass.opacity = 0.0f; e.glass.refraction = 0.0f;
             e.glass.roughness = 0.0f; e.glass.specular = 0.0f;
-            e.glass.additive = 3.5f;                 // soft silhouette rim fade
+            // Was 3.5 — over TWICE glass.frag's documented design value ("~1.5
+            // cones"). The rim term pow(dot(N,V), w) at 3.5 only lights a narrow
+            // face-on band; from oblique/orbit angles (every establishing shot)
+            // the whole cone read black — the "cones missing in captures" bug.
+            // 1.8 widens the band while still avoiding the solid-funnel look.
+            e.glass.additive = 1.8f;
             e.tag = (uint32_t)Tag::Prop;
             l.coneEnt = scene.handle(scene.add(e));
         }

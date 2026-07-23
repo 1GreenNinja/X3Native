@@ -291,7 +291,7 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     // Night ambient FLOOR: the pure-black sky kills the IBL contribution, so at
     // night the terrain is lit by ambient alone — hold a moonlight minimum so the
     // island stays readable while the sky dome itself stays black.
-    constexpr float kNightAmbFloor[3] = { 0.11f, 0.12f, 0.17f };
+    constexpr float kNightAmbFloor[3] = { 0.16f, 0.17f, 0.24f };   // night lane: +45% moon fill for city readability (sky dome stays black)
     // DAY sky-fill floor (AAA-eye pass, 2026-07-22): the old day ambient was tuned
     // for open sunlit terrain (~0), which crushed every sun-shadowed CITY wall to
     // black — at noon vertical walls receive almost no direct sun and live on this
@@ -373,7 +373,7 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // horizon to ~0.8, dissolving the hard water/sky line seen in the baseline.
     constexpr float kFogDay[3]    = { 0.58f, 0.72f, 0.90f };  // cool scattering blue-white
     constexpr float kFogGold[3]   = { 1.00f, 0.58f, 0.26f };  // RICH golden-hour haze (saturated)
-    constexpr float kFogNight[3]  = { 0.015f, 0.03f, 0.075f };// deep blue dusk/night
+    constexpr float kFogNight[3]  = { 0.02f, 0.03f, 0.05f };  // urban light-pollution haze (was rural deep-blue)
     x3::rhi::IRenderDevice::FogParams fog;
     fog.enabled = true;
     mix3(fog.color, kFogNight, kFogDay, dayness);              // night -> day base
@@ -1196,6 +1196,21 @@ int hostEchotropolis(HostContext& hc) {
         auto e = std::make_unique<x3::game::EnvArtSystem>();
         if (e->buildFromGlbAt(*device, infradir, glb, T)) infra.push_back(std::move(e));
     };
+    // PITCHED deck: rises `dy` over its length so sloped freeway legs read as a
+    // continuous graded ribbon instead of stair-stepped flats (whose risers read
+    // as gaps from the air — the night lane's "dashes" finding).
+    auto placeDeckP = [&](const char* glb, float cx, float cz, float y, float yaw,
+                          float width, float len, float dy){
+        const float c=std::cos(yaw), s=std::sin(yaw);
+        const float L = std::sqrt(len*len + dy*dy);
+        const float cp = len / L, sp = dy / L;
+        const float T[16] = { c*width, 0.0f, -s*width, 0.0f,
+                              -s*sp,   cp,   -c*sp,    0.0f,
+                              s*cp*L,  sp*L,  c*cp*L,  0.0f,
+                              cx, y, cz, 1.0f };
+        auto e = std::make_unique<x3::game::EnvArtSystem>();
+        if (e->buildFromGlbAt(*device, infradir, glb, T)) infra.push_back(std::move(e));
+    };
     // A concrete support column from ground up to just under deck height topY.
     auto placePillar = [&](float x, float z, float topY, float w){
         const float gy = hf.ok()?hf.heightAt(x,z):kCarY;
@@ -1255,7 +1270,8 @@ int hostEchotropolis(HostContext& hc) {
                     const float seg = std::min(step, len - d) + 1.5f;   // overlap seam
                     const float mx = ax + dx*(d+seg*0.5f)/len, mz = az + dz*(d+seg*0.5f)/len;
                     const float my = ya + (yb-ya)*(d+seg*0.5f)/len;
-                    placeDeck("freeway_deck.glb", mx, mz, my, yaw, 18.0f, seg);
+                    placeDeckP("freeway_deck.glb", mx, mz, my, yaw, 18.0f, seg,
+                               (yb - ya) * (seg / len));   // follow the grade — no stair risers
                     if (((int)(d/step)) % 1 == 0) {                     // pillars every span
                         const float px_ = ax + dx*d/len, pz_ = az + dz*d/len;
                         const float py_ = ya + (yb-ya)*d/len;
