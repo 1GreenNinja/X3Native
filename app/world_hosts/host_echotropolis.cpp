@@ -998,7 +998,10 @@ int hostEchotropolis(HostContext& hc) {
     // is visible in the launch log. kRotorHubY is the rotor hub's up-offset (GLB
     // metres) measured when the mesh was split.
     const std::string adir = "D:/GameDev/EchoHarbor/assets/aircraft";
-    const float kHeliScale  = [](){ const char* e=std::getenv("ECHO_HELI_SCALE");  return e?(float)std::atof(e):2.2f;  }();
+    // 0.38 (was 2.2): heli_body.glb is 42m RAW — 2.2x made a 92m fuselage / 84m
+    // rotor (bigger than any aircraft ever flown) that dominated every frame.
+    // 0.38 = ~16m fuselage / ~14m rotor, Black Hawk scale (aircraft lane).
+    const float kHeliScale  = [](){ const char* e=std::getenv("ECHO_HELI_SCALE");  return e?(float)std::atof(e):0.38f;  }();
     const float kPlaneScale = [](){ const char* e=std::getenv("ECHO_PLANE_SCALE"); return e?(float)std::atof(e):0.8f;  }();
     const float kHeliYaw    = [](){ const char* e=std::getenv("ECHO_HELI_YAW");    return e?(float)std::atof(e):0.0f;  }();
     const float kPlaneYaw   = [](){ const char* e=std::getenv("ECHO_PLANE_YAW");   return e?(float)std::atof(e):0.0f;  }();
@@ -1041,7 +1044,7 @@ int hostEchotropolis(HostContext& hc) {
                           helis.push_back(std::move(h)); }
     };
     addHeli(-20.0f,  760.0f, 250.0f, 275.0f,  0.10f, 0.0f);
-    addHeli( 120.0f, 620.0f, 185.0f, 250.0f, -0.13f, 2.1f);
+    addHeli( 120.0f, 620.0f, 285.0f, 295.0f, -0.13f, 2.1f);   // wider+higher: was skimming the crown at ~13m
     addHeli(-170.0f, 850.0f, 300.0f, 300.0f,  0.08f, 4.2f);
 
     auto addPlane = [&](float x0, float z0, float dx, float dz, float len,
@@ -1473,7 +1476,7 @@ int hostEchotropolis(HostContext& hc) {
     // junction boxes + wall cameras on the condo street, and a police drone on
     // patrol. Static props now; the hacking system wires them next.
     std::vector<std::unique_ptr<x3::game::EnvArtSystem>> hackProps;
-    std::unique_ptr<x3::game::EnvArtSystem> hackDrone;
+    std::unique_ptr<x3::game::EnvArtSystem> hackDrone, vtolPolice;
     {
         const std::string hdir = "D:/GameDev/EchoHarbor/assets/hackables";
         auto envf2 = [](const char* k, float d){ const char* e = std::getenv(k); return e ? (float)std::atof(e) : d; };
@@ -1496,6 +1499,10 @@ int hostEchotropolis(HostContext& hc) {
         hackDrone = std::make_unique<x3::game::EnvArtSystem>();
         const float I2[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, -20, 230, 760, 1 };
         if (!hackDrone->buildFromGlbAt(*device, hdir, "drone_police.glb", I2)) hackDrone.reset();
+        // POLICE VTOL (Meshy, 30k tris, 2048 PBR + POLICE livery): the AAA-quality
+        // patrol craft — wide counter-rotating sweep over the whole crown.
+        vtolPolice = std::make_unique<x3::game::EnvArtSystem>();
+        if (!vtolPolice->buildFromGlbAt(*device, hdir, "vtol_police.glb", I2)) vtolPolice.reset();
         x3::logInfo("--world echotropolis: HACKABLES — " + std::to_string(hackProps.size()) +
                     " props (bollards/jboxes/cams) + " + (hackDrone ? "police drone" : "NO drone"));
     }
@@ -1508,6 +1515,18 @@ int hostEchotropolis(HostContext& hc) {
         const float sD = [](){ const char* e = std::getenv("ECHO_DRONE2_SCALE"); return e ? (float)std::atof(e) : 1.2f; }();
         const float M[16] = { c*sD,0,-sn*sD,0, 0,sD,0,0, sn*sD,0,c*sD,0, x, y, z, 1 };
         hackDrone->setInstanceTransform(0, M);
+    };
+    auto poseVtol = [&](float t){
+        if (!vtolPolice) return;
+        // Counter-rotating wide sweep, higher than the drone (the beat cop's bird).
+        const float w = -t * 0.07f + 2.6f, r = 300.0f;
+        const float x = -20.0f + r * std::cos(w), z = 760.0f + r * std::sin(w);
+        const float y = 262.0f + std::sin(t * 0.5f) * 4.0f;
+        // Nose along the tangent (counter-clockwise orbit -> tangent = w - pi/2).
+        const float yaw = w - 1.5708f, c = std::cos(yaw), sn = std::sin(yaw);
+        const float sV = [](){ const char* e = std::getenv("ECHO_VTOL_SCALE"); return e ? (float)std::atof(e) : 3.2f; }();
+        const float M[16] = { c*sV,0,-sn*sV,0, 0,sV,0,0, sn*sV,0,c*sV,0, x, y, z, 1 };
+        vtolPolice->setInstanceTransform(0, M);
     };
 
     // ===================== DISTRICT STREET LAMPS (night readability) ========
@@ -1915,6 +1934,7 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& d : districts) d->draw(*device, frame);   // METROPOLIS pack districts
             for (auto& h : hackProps) h->draw(*device, frame);   // ctOS hackable props
             if (hackDrone) { poseHackDrone((float)i * dt); hackDrone->draw(*device, frame); }
+            if (vtolPolice) { poseVtol((float)i * dt); vtolPolice->draw(*device, frame); }
             streetLamps.update(dt, lampScene);                   // flicker machines
             {   // nearest district lamps light the walls around the shot camera
                 std::vector<x3::rhi::PointLight> pls;
@@ -2653,6 +2673,7 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& d : districts) d->draw(*device, frame);   // METROPOLIS pack districts
         for (auto& h : hackProps) h->draw(*device, frame);   // ctOS hackable props
         if (hackDrone) { poseHackDrone(waterTime); hackDrone->draw(*device, frame); }
+        if (vtolPolice) { poseVtol(waterTime); vtolPolice->draw(*device, frame); }
         streetLamps.update(dt, lampScene);                   // flicker machines
         {   // nearest district lamps light the walls around the active camera
             float lx = rig.sFocusX, ly = rig.sPivotY + 20.0f, lz = rig.sFocusZ;
