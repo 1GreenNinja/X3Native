@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <unordered_set>
 
 namespace x3::game {
 
@@ -105,7 +106,21 @@ void placeYaw(float m[16], float yaw, float s,
     m[12]=wx - rpx; m[13]=wy - rpy; m[14]=wz - rpz; m[15]=1.0f;
 }
 
+// Lowercase copy (ASCII only — matches namedBounds()'s ad-hoc loop).
+inline std::string toLowerCopy(std::string s) {
+    for (char& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+    return s;
+}
+
 } // namespace
+
+void EnvArtSystem::setNodeSkip(std::vector<std::string> subs) {
+    m_nodeSkip.clear();
+    for (std::string& s : subs) {
+        std::string ls = toLowerCopy(std::move(s));
+        if (!ls.empty()) m_nodeSkip.push_back(std::move(ls));
+    }
+}
 
 uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
     // Cache: one upload per unique kit piece.
@@ -114,6 +129,42 @@ uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
 
     EnvAsset a;
     a.model = m_loader->load(relPath);
+    if (a.model.ok && !m_nodeSkip.empty()) {
+        // Drop primitives belonging to a skipped NODE (by name) or a skipped
+        // MATERIAL (by name) BEFORE makeDrawables() ever sees them — a dropped
+        // primitive never becomes a drawable, so it never draws. load() always
+        // hands back a private deep-copied Model (the process-wide model cache
+        // stores its own template), so mutating a.model.primitives here is safe
+        // and never corrupts a later loadAsset() of the same path in another
+        // EnvArtSystem instance.
+        std::unordered_set<int> skipMesh;
+        for (const auto& nd : a.model.nodes) {
+            if (nd.meshIndex < 0 || nd.name.empty()) continue;
+            const std::string ln = toLowerCopy(nd.name);
+            for (const std::string& s : m_nodeSkip)
+                if (ln.find(s) != std::string::npos) { skipMesh.insert(nd.meshIndex); break; }
+        }
+        const size_t before = a.model.primitives.size();
+        a.model.primitives.erase(
+            std::remove_if(a.model.primitives.begin(), a.model.primitives.end(),
+                [&](const x3::asset::MeshPrimitive& p) {
+                    if (skipMesh.count((int)p.meshIndex)) return true;
+                    if (p.materialIndex < a.model.materials.size()) {
+                        const std::string& mn = a.model.materials[p.materialIndex].name;
+                        if (!mn.empty()) {
+                            const std::string ln = toLowerCopy(mn);
+                            for (const std::string& s : m_nodeSkip)
+                                if (ln.find(s) != std::string::npos) return true;
+                        }
+                    }
+                    return false;
+                }),
+            a.model.primitives.end());
+        if (a.model.primitives.size() != before)
+            x3::logInfo("[env-art] node/material skip on " + relPath + ": " +
+                        std::to_string(before) + " -> " +
+                        std::to_string(a.model.primitives.size()) + " primitives");
+    }
     if (a.model.ok) {
         a.drawables = x3::asset::makeDrawables(a.model);
         a.ok = !a.drawables.empty();

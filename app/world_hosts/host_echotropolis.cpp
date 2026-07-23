@@ -590,6 +590,16 @@ int hostEchotropolis(HostContext& hc) {
     // (the island still renders). Iterating placement/scale = rebake only, no rebuild.
     x3::game::EnvArtSystem props;
     {
+        // Drop the OLD baked "spike-cone" procedural conifers (flora_conifer_0/1/2 +
+        // their shared flora_trunk primitive) and the flora_grass_0..3 ground-tuft
+        // "dark chip" primitives — echotropolis_props.glb is baked as ONE unnamed node
+        // with 78 primitives keyed by MATERIAL name (SimCityLLM2/tools/make_flora_glb.py
+        // merges every prop into one Mesh), so there's no per-tree NODE name to match —
+        // setNodeSkip() falls back to matching the primitive's MATERIAL name for exactly
+        // this case (see env_art.cpp). The WOODLANDS block below replaces the conifers
+        // with a real pine-GLB scatter; the meadow/wildflower/reed/bird/hawk primitives
+        // are untouched. MUST be called before buildFromGlb().
+        props.setNodeSkip({"flora_conifer", "flora_trunk", "flora_grass"});
         const char* pdirEnv = std::getenv("ECHO_PROPS_DIR");
         const std::string propsDir = pdirEnv ? pdirEnv : "D:/GameDev/SimCityLLM2/refs/models";
         if (props.buildFromGlb(*device, propsDir, "echotropolis_props.glb"))
@@ -790,6 +800,119 @@ int hostEchotropolis(HostContext& hc) {
         emit(44, 0.0f,   3.15159f, 78.0f, 150.0f);   // outer belt, full circle
         x3::logInfo("--world echotropolis: MINE FOREST — " +
                     std::to_string(mineForest.size()) + " pines ringing the pit");
+    }
+
+    // ===================== WOODLANDS (island-wide conifer belts) ============
+    // Replaces the OLD baked "spike-cone" procedural conifers (echotropolis_props.glb's
+    // flora_conifer_0/1/2 + flora_trunk primitives — ~13k stacked-cone silhouettes baked
+    // by SimCityLLM2/tools/make_flora_glb.py's _conifer()/_scatter(); the flora_grass_0..3
+    // "ground tuft" dark-chip primitives are dropped alongside them — see props.setNodeSkip()
+    // above) with a real scatter of the 6 textured Quaternius pine GLBs in assets/veg — the
+    // SAME catalog MINE FOREST above uses. Unlike MINE FOREST (one EnvArtSystem PER TREE,
+    // fine for a few hundred), this is ONE EnvArtSystem for the whole island: beginFromDir
+    // mounts assets/veg once, addGlbInstance loads each of the 6 GLBs ONCE (path-cached) and
+    // instances it per placement — the district-loader pattern, built for thousands of
+    // instances. Deterministic hash grid (NO rand() — same hh() mix as MINE FOREST's, so the
+    // scatter is bit-identical every launch/capture) over the whole island, gated to gentle
+    // mid-elevation ground and kept clear of every district pad, the downtown crown, the mine
+    // (MINE FOREST owns that circle), the freeway loop, and the metro line; 3x density inside
+    // three woodland "belt" rects so the horizon reads as real forest, not scattered park trees.
+    x3::game::EnvArtSystem woodlands;
+    {
+        static const char* kPines[] = {
+            "tree_pineTallA.glb", "tree_pineTallB.glb", "tree_pineTallC.glb",
+            "tree_pineDefaultA.glb", "tree_pineDefaultB.glb", "tree_pineRoundB.glb",
+        };
+        auto hh = [](uint32_t n){ n=(n^61u)^(n>>16); n*=9u; n^=n>>4; n*=0x27d4eb2du; n^=n>>15;
+                                  return (n & 0xffffffu) / (float)0x1000000; };
+        const std::string vdir = "D:/GameDev/EchoHarbor/assets/veg";
+        if (!woodlands.beginFromDir(*device, vdir)) {
+            x3::logWarn("--world echotropolis: WOODLANDS — veg dir mount failed (" + vdir + "), no trees");
+        } else {
+            // KEEP-OUT rects/circles (district pads carry a ~25 m margin baked in below).
+            struct Rect { float x0,x1,z0,z1; };
+            static const Rect kKeepOut[] = {
+                { 935.0f-25.0f, 1110.0f+25.0f, 1180.0f-25.0f, 1290.0f+25.0f },  // Recife 2050 pad
+                { 540.0f-25.0f,  860.0f+25.0f,  190.0f-25.0f,  510.0f+25.0f },  // Urban District pad
+                { 1210.0f-25.0f,1470.0f+25.0f,  870.0f-25.0f, 1130.0f+25.0f },  // HIVEMIND Cybercity pad
+            };
+            const float kCrownCX = -20.0f, kCrownCZ = 760.0f, kCrownR = 470.0f;   // downtown crown (streets/roads)
+            const float kMineCX  = -480.0f, kMineCZ = 850.0f, kMineR = 175.0f;    // MINE FOREST owns this circle
+            const float kMetroX0 = -75.0f, kMetroX1 = -45.0f, kMetroZ0 = 520.0f, kMetroZ1 = 1000.0f;
+            // Mirrors the FREEWAY NETWORK kRoute[] waypoint loop below — kept in sync by hand
+            // (both are baked-deterministic; if the freeway route ever moves, update both).
+            struct Wp { float x, z; };
+            static const Wp kFreeway[] = {
+                { -160.0f,  720.0f }, {  120.0f,  720.0f }, {  480.0f,  900.0f },
+                {  820.0f, 1120.0f }, { 1060.0f,  900.0f }, {  980.0f,  560.0f },
+                {  700.0f,  420.0f }, {  300.0f,  430.0f }, {  -60.0f,  560.0f },
+                { -160.0f,  700.0f },
+            };
+            const int nFwWp = (int)(sizeof(kFreeway)/sizeof(kFreeway[0]));
+            struct Belt { float x0,x1,z0,z1; };
+            static const Belt kBelts[] = {
+                { 150.0f, 900.0f,  950.0f, 1250.0f },    // belt1
+                { 300.0f,1200.0f,  540.0f,  880.0f },    // belt2
+                {-900.0f,-150.0f, 1000.0f, 1550.0f },    // belt3
+            };
+            auto distToSeg = [](float px, float pz, float ax, float az, float bx, float bz){
+                const float dx=bx-ax, dz=bz-az, l2=dx*dx+dz*dz;
+                float t = l2>1e-6f ? ((px-ax)*dx+(pz-az)*dz)/l2 : 0.0f;
+                t = std::max(0.0f, std::min(1.0f, t));
+                const float sx=ax+t*dx, sz=az+t*dz, ex=px-sx, ez=pz-sz;
+                return std::sqrt(ex*ex+ez*ez);
+            };
+            // Base keep-probability tuned (offline Python density survey against the SAME
+            // island_height_20260530.png the C++ Heightfield samples) so TOTAL lands ~9000-
+            // 12000 instances given this gate + these keep-outs + the 3x belt bonus.
+            const float kBaseKeep = 0.46f;
+            uint32_t seed = 0, planted = 0, sampled = 0;
+            for (float x = -1900.0f; x <= 1900.0f; x += 13.0f) {
+                for (float z = -1900.0f; z <= 1900.0f; z += 13.0f, ++seed) {
+                    const float jx = x + (hh(seed*5u+1u)*2.0f-1.0f)*6.0f;
+                    const float jz = z + (hh(seed*5u+2u)*2.0f-1.0f)*6.0f;
+                    if (!hf.ok()) continue;
+                    ++sampled;
+                    const float h0 = hf.heightAt(jx, jz);
+                    if (h0 < 24.0f || h0 > 172.0f) continue;
+                    const float hX = hf.heightAt(jx+9.0f, jz), hZ = hf.heightAt(jx, jz+9.0f);
+                    if (std::fabs(hX-h0) >= 7.0f || std::fabs(hZ-h0) >= 7.0f) continue;
+
+                    bool blocked = false;
+                    for (const Rect& r : kKeepOut)
+                        if (jx>=r.x0 && jx<=r.x1 && jz>=r.z0 && jz<=r.z1) { blocked = true; break; }
+                    if (!blocked) {
+                        const float dcx=jx-kCrownCX, dcz=jz-kCrownCZ;
+                        if (dcx*dcx+dcz*dcz < kCrownR*kCrownR) blocked = true;
+                    }
+                    if (!blocked) {
+                        const float dmx=jx-kMineCX, dmz=jz-kMineCZ;
+                        if (dmx*dmx+dmz*dmz < kMineR*kMineR) blocked = true;
+                    }
+                    if (!blocked && jx>=kMetroX0 && jx<=kMetroX1 && jz>=kMetroZ0 && jz<=kMetroZ1) blocked = true;
+                    if (!blocked)
+                        for (int w = 0; w+1 < nFwWp; ++w)
+                            if (distToSeg(jx, jz, kFreeway[w].x, kFreeway[w].z,
+                                          kFreeway[w+1].x, kFreeway[w+1].z) < 30.0f) { blocked = true; break; }
+                    if (blocked) continue;
+
+                    float density = kBaseKeep;
+                    for (const Belt& b : kBelts)
+                        if (jx>=b.x0 && jx<=b.x1 && jz>=b.z0 && jz<=b.z1) { density *= 3.0f; break; }
+                    if (hh(seed*11u+13u) >= density) continue;
+
+                    const float sc  = 10.0f + hh(seed*7u+5u)*16.0f;     // 10-26 m
+                    const float yaw = hh(seed*7u+3u)*6.2831853f;
+                    const int variant = (int)(hh(seed*7u+9u)*6.0f);
+                    const float c=std::cos(yaw), s=std::sin(yaw);
+                    const float T[16] = { c*sc,0,-s*sc,0, 0,sc,0,0, s*sc,0,c*sc,0, jx, h0, jz, 1 };
+                    if (woodlands.addGlbInstance(kPines[variant % 6], T)) ++planted;
+                }
+            }
+            woodlands.setFoliage(1.0f);
+            x3::logInfo("--world echotropolis: WOODLANDS — " + std::to_string(planted) +
+                        " pines scattered (" + std::to_string(sampled) + " grid cells sampled)");
+        }
     }
 
     // ===================== MINE MOUTH GLOW (authentic EoS arch) ============
@@ -1800,6 +1923,7 @@ int hostEchotropolis(HostContext& hc) {
             }
             lampScene.render(*device, frame);                    // posts + cones + pools
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
+        woodlands.draw(*device, frame);                      // island-wide pine woodland belts
             mineGlowScene.render(*device, frame);            // authentic EoS arch mouth-glow
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
                             if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
@@ -2539,6 +2663,7 @@ int hostEchotropolis(HostContext& hc) {
         }
         lampScene.render(*device, frame);                    // posts + cones + pools
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
+        woodlands.draw(*device, frame);                      // island-wide pine woodland belts
         for (auto& p : placed) p->draw(*device, frame);      // BUILD MENU: player-placed lots
         mineGlowScene.render(*device, frame);                // authentic EoS arch mouth-glow
         // BUILD GHOST: the selected building previewed at the cursor (lazily loaded).

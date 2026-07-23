@@ -47,6 +47,12 @@ struct MeshPrimitive {
 };
 
 struct Material {
+    // glTF material name (empty if unnamed). Populated from cgltf_material::name.
+    // Useful for baked single-node scenes (e.g. a merged-mesh flora bake) where a
+    // per-part identity lives in the MATERIAL, not the node — callers that want a
+    // namedBounds()-style substring skip but only have a material to key on (see
+    // EnvArtSystem::setNodeSkip) read this.
+    std::string name;
     float baseColor[4]   = {1, 1, 1, 1};
     float metallic       = 1.0f;
     float roughness      = 1.0f;

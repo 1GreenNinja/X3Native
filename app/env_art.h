@@ -93,6 +93,18 @@ public:
     bool beginFromDir(x3::rhi::IRenderDevice& device, std::string_view glbDir);
     bool addGlbInstance(std::string_view relPath, const float transform[16]);
 
+    // Skip primitives whose glTF NODE NAME *or* MATERIAL NAME contains any of
+    // `subs` (lowercased substring match, mirrors namedBounds()'s mechanics) —
+    // applied at drawable-creation time in loadAsset(), so a matching primitive
+    // never gets a ModelDrawable and never draws. Node-name matching handles
+    // multi-node models (a whole node's mesh is dropped); material-name matching
+    // covers baked SINGLE-node scenes (e.g. a merged flora bake) where per-part
+    // identity lives in the material, not the node. Must be called BEFORE the
+    // load call (build/buildFromGlb/beginFromDir+addGlbInstance) whose assets it
+    // should filter — it only affects assets loaded afterward. Default empty =
+    // zero behavior change.
+    void setNodeSkip(std::vector<std::string> subs);
+
     // World-space AABB of all placed drawables' origins (engine-space ground truth —
     // for framing a preview camera). outMin/outMax are float[3]. No-op (huge/inverted)
     // if nothing is placed.
@@ -160,6 +172,7 @@ private:
     std::vector<x3::rhi::PointLight>         m_lightFixtures; // omni per Light_A fixture
     float                                    m_foliage = 0.0f; // >0 = vegetation shading
     float                                    m_metalClamp = 1.0f; // <1 = BLACK-PROP fix
+    std::vector<std::string>                 m_nodeSkip; // lowercased node/material-name skip substrings
 };
 
 } // namespace x3::game

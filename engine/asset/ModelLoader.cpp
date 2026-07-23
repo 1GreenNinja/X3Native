@@ -679,6 +679,7 @@ private:
         for (size_t i = 0; i < data.materials_count; ++i) {
             const cgltf_material& cm = data.materials[i];
             Material m;
+            m.name = cm.name ? cm.name : "";
             if (cm.has_pbr_metallic_roughness) {
                 const auto& pbr = cm.pbr_metallic_roughness;
                 for (int k = 0; k < 4; ++k) m.baseColor[k] = pbr.base_color_factor[k];
