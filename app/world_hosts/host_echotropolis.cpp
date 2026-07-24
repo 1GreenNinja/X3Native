@@ -291,7 +291,7 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     // Night ambient FLOOR: the pure-black sky kills the IBL contribution, so at
     // night the terrain is lit by ambient alone — hold a moonlight minimum so the
     // island stays readable while the sky dome itself stays black.
-    constexpr float kNightAmbFloor[3] = { 0.16f, 0.17f, 0.24f };   // night lane: +45% moon fill for city readability (sky dome stays black)
+    constexpr float kNightAmbFloor[3] = { 0.22f, 0.24f, 0.34f };   // night lane: brighter cool moonlight so district walls read (was 0.16, too dark for dense low-rise)
     // DAY sky-fill floor (AAA-eye pass, 2026-07-22): the old day ambient was tuned
     // for open sunlit terrain (~0), which crushed every sun-shadowed CITY wall to
     // black — at noon vertical walls receive almost no direct sun and live on this
@@ -411,13 +411,14 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // ACES tonemap, a low bright-pass knee so the sun disc + water glint + lantern
     // bloom (not a washout), and a touch of positive exposure at golden hour to
     // make the low sun GLOW. Auto-exposure stays on (bias, not absolute).
+    const float night = 1.0f - dayness;        // 1 at deep night, 0 by full day
     x3::rhi::IRenderDevice::PostFXParams px;   // defaults: ACES, autoexposure, TAA on
     px.bloomThreshold = 1.08f;                 // sun-glint blooms; not the whole water sheet
-    px.bloomIntensity = 0.14f + 0.06f * low;   // warm halo at golden hour, no washout
-    px.aeMax          = 2.20f + 0.30f * low;   // let the glowing sky adapt brighter
+    px.bloomIntensity = 0.14f + 0.06f * low + 0.10f * night;  // neon glow at night
+    px.aeMax          = 2.20f + 0.30f * low + 1.6f * night;   // NIGHT: let AE lift the moonlit city (was capped 2.2 -> mostly-black frames)
     device->setPostFX(px);
-    device->setBloom(0.12f + 0.06f * low);     // composite bloom add (sun/lantern)
-    device->setExposure(1.0f + 0.16f * low);   // golden hour glows
+    device->setBloom(0.12f + 0.06f * low + 0.10f * night);    // more composite bloom at night
+    device->setExposure(1.0f + 0.16f * low + 0.35f * night);  // NIGHT exposure lift: walls read, not a black void
 
     // ---- 5. SHADOWS: focus the single shadow map on the CROWN so it RESOLVES -----
     // Was a 4.4km box centred at origin — one shadow map over 4.4km ~= 2m/texel, so
@@ -1372,6 +1373,11 @@ int hostEchotropolis(HostContext& hc) {
     // every prefab GLB loads once (path-cached) and is instanced at the designer's
     // transform, seated on an open pad of the island.
     std::vector<std::unique_ptr<x3::game::EnvArtSystem>> districts;
+    // NIGHT LIGHT TRANSPORT: the districts place ~60 neon/lamp/holo sources each, but
+    // they were EMISSIVE-ONLY (self-glow, illuminating nothing). Harvest each as a real
+    // PointLight so the walls around it catch colored light — the crown reads AAA at
+    // night precisely because its street lamps feed point lights; the districts didn't.
+    std::vector<x3::rhi::PointLight> districtLights;
     // meshFix: constant mesh-local rotation applied to every prefab — "x-90",
     // "y90", "z180", or "0" for none. Corrects the FBX->GLB baked-node convention
     // mismatch vs Unity's importer (the armory bakes quat [0.5,-0.5,0.5,0.5], an
@@ -1458,6 +1464,24 @@ int hostEchotropolis(HostContext& hc) {
             const float tz = padZ + P[2]*px + P[5]*py + P[8]*pz;
             const float T[16] = { W[0],W[1],W[2],0, W[3],W[4],W[5],0, W[6],W[7],W[8],0, tx,ty,tz,1 };
             if (d->addGlbInstance(name, T)) ++placed;
+            // Harvest emissive light sources as point lights (name-classified colour).
+            {
+                auto has = [&](const char* k){ std::string n(name); for(auto&c:n)c=(char)std::tolower((unsigned char)c);
+                                               return n.find(k)!=std::string::npos; };
+                // ONLY harvest LAMPS + small neon signs as casters. Big flat glowing
+                // surfaces (screens/holograms) are EMISSIVE-ONLY — a point light placed
+                // at one blows out its own white billboard face (the pure-white slop).
+                x3::rhi::PointLight pl; bool isLight = true; float lift = 1.6f;
+                if      (has("streetlamp")||has("lampwall")||has("poste")||has("lamp")) {
+                    pl.color[0]=2.4f; pl.color[1]=1.7f; pl.color[2]=0.9f; pl.range=15.0f; lift=3.2f; } // warm sodium, high
+                else if (has("letreiro")||has("luminoso")||(has("neon")&&!has("screen"))) {
+                    pl.color[0]=2.4f; pl.color[1]=0.7f; pl.color[2]=1.9f; pl.range=9.0f; }   // magenta neon (small)
+                else isLight = false;   // screens/holograms glow via emissive, cast nothing
+                if (isLight) {
+                    pl.pos[0]=tx; pl.pos[1]=ty+lift; pl.pos[2]=tz;
+                    districtLights.push_back(pl);
+                }
+            }
         }
         float mn[3], mx[3]; d->worldBounds(mn, mx);
         x3::logInfo(std::string("--world echotropolis: DISTRICT ") + tag + " — " +
@@ -1484,7 +1508,25 @@ int hostEchotropolis(HostContext& hc) {
                 loadDistrict(lay, dir, x, z, yaw, sc, (got >= 8 ? fix : "0"),
                              (got >= 9 ? yoff : 0.0f), tag);
         }
+        x3::logInfo("--world echotropolis: DISTRICT LIGHTS harvested — " +
+                    std::to_string(districtLights.size()) + " neon/lamp point lights");
     }
+    // Append the nearest district neon point lights to `out` (already holding the
+    // street-lamp selection), up to the GPU's 64-light budget. Cheap O(N) nearest —
+    // districts have a few hundred lights total, run once per frame.
+    auto appendDistrictLights = [&](float ex, float ez, std::vector<x3::rhi::PointLight>& out){
+        const uint32_t kBudget = 64;
+        if (out.size() >= kBudget || districtLights.empty()) return;
+        std::vector<std::pair<float,uint32_t>> ord; ord.reserve(districtLights.size());
+        for (uint32_t i = 0; i < districtLights.size(); ++i) {
+            const float dx = districtLights[i].pos[0]-ex, dz = districtLights[i].pos[2]-ez;
+            ord.emplace_back(dx*dx+dz*dz, i);
+        }
+        const uint32_t want = std::min<uint32_t>(kBudget - (uint32_t)out.size(), (uint32_t)ord.size());
+        std::partial_sort(ord.begin(), ord.begin()+want, ord.end(),
+                          [](auto&a,auto&b){ return a.first<b.first; });
+        for (uint32_t i = 0; i < want; ++i) out.push_back(districtLights[ord[i].second]);
+    };
 
     // ===================== HACKABLES (Meshy-generated ctOS props) ===========
     // The Watch-Dogs layer's physical targets, generated via the Meshy premium
@@ -1955,6 +1997,7 @@ int hostEchotropolis(HostContext& hc) {
             {   // nearest district lamps light the walls around the shot camera
                 std::vector<x3::rhi::PointLight> pls;
                 streetLamps.selectLights(shotCam[0], shotCam[1], shotCam[2], pls, 8);
+                appendDistrictLights(shotCam[0], shotCam[2], pls);
                 device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
             }
             lampScene.render(*device, frame);                    // posts + cones + pools
@@ -2696,6 +2739,7 @@ int hostEchotropolis(HostContext& hc) {
             if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
             std::vector<x3::rhi::PointLight> pls;
             streetLamps.selectLights(lx, ly, lz, pls, 8);
+            appendDistrictLights(lx, lz, pls);
             device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
         }
         lampScene.render(*device, frame);                    // posts + cones + pools
