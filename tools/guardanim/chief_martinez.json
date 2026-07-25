@@ -1,0 +1,10 @@
+{
+  "keep_existing": true,
+  "drop_existing": ["Idle", "Walk", "Run", "Jump"],
+  "clips": [
+    {"name":"Idle", "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Idle",      "loop":true},
+    {"name":"Walk", "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Walking",   "loop":true},
+    {"name":"Run",  "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Riflerun",  "loop":true},
+    {"name":"Jump", "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Riflejump", "loop":false, "airborne":true}
+  ]
+}
