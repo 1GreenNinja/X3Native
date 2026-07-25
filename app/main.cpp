@@ -433,7 +433,7 @@ int main(int argc, char** argv) {
             // Common to BOTH cell builds (canon Floor 1 + the legacy tower).
             for (const char* f : { "marcus_webb_anim.glb", "alien_crawler_anim.glb",
                                    "chief_martinez.glb",
-                                   "AnnaCasual.glb", "AnnaBodySuit.glb", "AnnaTactical.glb",
+                                   "AnnaCasual.glb", "AnnaBodySuit_anim.glb", "AnnaTactical.glb",
                                    "Jake_22_actions.glb",
                                    "WeaponEnergyPistol.glb", "WeaponEnergyPistol2.glb",
                                    "WeaponRailgun.glb", "WeaponShotgun2.glb",
@@ -480,7 +480,7 @@ int main(int argc, char** argv) {
             }
             // Legacy tower only (Spire floors + env art).
             if (legacyCell) {
-                for (const char* f : { "chief_martinez_anim.glb", "Oracle.glb" })
+                for (const char* f : { "chief_martinez_anim.glb", "Oracle_anim.glb" })
                     bootManifest.emplace_back(rig, f);
             }
             x3::asset::prewarmModelDecodesAsync(bootManifest);
@@ -731,6 +731,7 @@ int main(int argc, char** argv) {
         _hc.cityShot         = o.cityShot;         _hc.cityShotPath     = o.cityShotPath;
         _hc.captureAi        = o.captureAi;        _hc.captureAiDir     = o.captureAiDir;
         _hc.captureWalk      = o.captureWalk;      _hc.captureWalkPath  = o.captureWalkPath;
+        _hc.captureWalkRig   = o.captureWalkRig;
         _hc.captureFootIk    = o.captureFootIk;    _hc.captureFootIkPath = o.captureFootIkPath;
         _hc.destructShot     = o.destructShot;     _hc.destructShotPath = o.destructShotPath;
         _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;

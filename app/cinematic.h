@@ -248,10 +248,15 @@ public:
         // ~0.004 linear), so an honest key has to be HOT to shade it at all. This
         // is exposure, not a crutch: it scales the real N.L / GGX response, so the
         // shadow side of every hull stays dark and the form survives.
-        sp.sunLight = 3.2f;
+        // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): tuned on the bent curve; the
+        // cold-open void read as a bright hazy navy dome under the honest encode
+        // (owner on the dogfight frames: "Too bright.. Darker night sky! but NOT
+        // TOO dark"). Sun key down with the cockpit look; void floor drops ~3x but
+        // stays a faint deep navy, never a crushed hole — the starfield carries it.
+        sp.sunLight = 2.4f;
         sp.haze = 0.0f; sp.exposure = 1.0f;
-        sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.010f;
-        sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.020f;
+        sp.zenith[0]  = 0.0015f; sp.zenith[1]  = 0.0015f; sp.zenith[2]  = 0.0045f;
+        sp.horizon[0] = 0.0030f; sp.horizon[1] = 0.0035f; sp.horizon[2] = 0.0080f;
         m_baseSky = sp;   // the baseline the per-shot sun lane overrides (applyShotSun)
         device.setSkyParams(sp);
         // ---- THE WASH-OUT WAS HERE ----------------------------------------
@@ -262,7 +267,7 @@ public:
         // rendered as a featureless white silhouette — the same value as the sun
         // disk beside it — with its (very dark) diffuse map barely visible under the
         // fog. Dropped to a real space fill: starlight + planetshine, no more.
-        device.setAmbient(0.032f, 0.036f, 0.052f);
+        device.setAmbient(0.012f, 0.013f, 0.020f);   // GAMMA-RECAL: was 0.032 band (bent-curve tune)
         device.setBloom(0.30f);                        // hero glow: engines / bolts / the sun
         device.setPointLights(nullptr, 0);             // a star is not a light bulb
         // 1x1 MR (glTF: G = roughness, B = metallic) for hulls that ship with
@@ -273,7 +278,9 @@ public:
         // LOW: this is painted plate (a dielectric coat); a metallic black albedo
         // would give a black F0 and land right back on black.
         if (!m_hullMr.valid()) {
-            const uint8_t px[4] = { 0, (uint8_t)(0.58f * 255.0f), (uint8_t)(0.15f * 255.0f), 255 };
+            const uint8_t px[4] = { 0, (uint8_t)(0.38f * 255.0f), (uint8_t)(0.20f * 255.0f), 255 };
+            // GAMMA-RECAL round 2: rough 0.58 -> 0.38, metal 0.15 -> 0.20 — the owner's
+            // ship strategy (speculars carry the hull; painted-plate doctrine stands).
             m_hullMr = device.createTexture(px, 1, 1, /*srgb=*/false);   // DATA, linear
         }
         // ---- FILMIC POST (feat/filmic-post): the FILM LOOK for cutscene playback.
@@ -285,7 +292,10 @@ public:
         x3::rhi::IRenderDevice::FilmicParams fp{};
         fp.enabled  = true;
         fp.vignette = 0.25f;   // gentle corner falloff pulling the eye center-frame
-        fp.grain    = 0.06f;   // luma-weighted animated grain — crawls like film
+        // GAMMA-RECAL: 0.06 was dialled against crushed mids — the honest curve
+        // displays the same amplitude ~2x louder on dark frames (the cold-open
+        // void read as dense speckle). Half strength restores 'felt, not seen'.
+        fp.grain    = 0.03f;   // luma-weighted animated grain — crawls like film
         fp.shadowTint[0]    = 0.94f; fp.shadowTint[1]    = 1.00f; fp.shadowTint[2]    = 1.06f; // shadows lean teal
         fp.highlightTint[0] = 1.06f; fp.highlightTint[1] = 1.00f; fp.highlightTint[2] = 0.95f; // highlights lean warm
         fp.saturation = 0.97f; // film prints sit a hair under digital
@@ -440,7 +450,7 @@ public:
                                        // honestly from the sun; it just never dies to a black
                                        // cutout when the camera cuts to its dark side.
                                        /*clearcoat=*/0.0f, /*clearcoatRough=*/0.05f,
-                                       /*selfLight=*/0.35f);
+                                       /*selfLight=*/0.15f);   // GAMMA-RECAL r2: owner's 0.12-0.18 band (was 0.35 bent-curve)
                 }
             }
         }

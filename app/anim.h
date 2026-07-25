@@ -339,6 +339,33 @@ public:
     // (the blend owns advancement); 0 when the blend isn't driving (idle collapse).
     float locomotionPhase() const { return m_phase; }
 
+    // ======================================================================
+    // ROOT-Y LOCK — guard for characters whose WORLD height is physics-owned.
+    // ======================================================================
+    // Some retargeted clip artifacts carry a broken baked root (pelvis) Y — e.g.
+    // AnnaCasual_anim.glb's Walk/Run were baked with the Jake source armature's
+    // -0.9488 m Y offset corrupting the retarget's hips-height ratio, amplifying
+    // the vertical hips delta ~5.9x and driving the pelvis THROUGH the floor
+    // (the "buried half-way + bouncing" bug). Characters whose world Y is owned
+    // by physics/AI (rescue victims, crowd citizens fed via setPropPose) must
+    // never let a clip's baked root Y move them vertically.
+    //
+    // When enabled, after clip sampling the ROOT node's (pelvis/Hips, resolved
+    // by name at bind; topmost skin joint as fallback) animated LOCAL Y
+    // translation is replaced with its REST-pose Y. X/Z translation and all
+    // rotations are untouched, so idles still sway/lean. The lock applies to the
+    // single-clip path (apply/computePalette/currentGlobals) and the locomotion
+    // blend, but NOT to a triggerClip crossfade target — authored discrete clips
+    // (Sit / Jump) keep their intentional root Y and blend in on top.
+    //
+    // OFF by default (a re-bind resets it) — enable per character AFTER bind().
+    void setRootYLock(bool enabled) { m_rootYLock = enabled && m_rootYLockNode >= 0; }
+    bool rootYLock() const { return m_rootYLock; }
+    // The resolved root-lock node index (-1 if no pelvis/joint resolved) and its
+    // rest local Y — exposed for the self-tests.
+    int   rootYLockNode()  const { return m_rootYLockNode; }
+    float rootYLockRestY() const { return m_rootYLockRestY; }
+
 private:
     // Shared tail of apply()/applyExternalGlobals(): given the joint palette already
     // built into m_palette (jcount joints), either upload it (GPU path) or CPU
@@ -489,6 +516,12 @@ private:
 
     // IK scratch (sized in bind()): a working copy of the blended globals.
     mutable std::vector<float> m_ikGlobals;   // nodeCount * 16
+
+    // ---- Root-Y lock state. Node resolved once in bind() (pelvis/hips by name,
+    // topmost skin joint as fallback); the flag is a per-character opt-in. ----
+    bool  m_rootYLock      = false;
+    int   m_rootYLockNode  = -1;
+    float m_rootYLockRestY = 0.0f;
 
     // ---- Ragdoll-blend state (Physics §2). resolveExternalBones() fills a map
     // from external-bone index -> skin-joint index (-1 if unmatched). The per-frame

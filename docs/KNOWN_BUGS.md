@@ -367,6 +367,42 @@ Beware **L4** when you do: an emissive map with no MR map is silently dropped by
 **Root cause + fix: L8.** The mask was not "left behind" by accident — the pack keys its glow off
 the **alpha of a MRAG map** our converter dropped on the floor. Read L8 before you touch a kit.
 
+### L12. A FAILING TEST EVERYONE AGREES TO IGNORE IS WORSE THAN NO TEST — the guard "glide" — fixed `feat/alien-locomotion`
+Every enemy in the opening level **slid across the floor without moving its legs** for weeks,
+while the test that PROVED it — `--test-locomotion` L3/L5/L6 on `chief_martinez_anim.glb` —
+sat red with a "pre-existing fails, ignore" label that got copy-pasted from handoff to handoff
+(first written down in `docs/screenshots/animpolish/README.md`; after that, *every* session
+stepped around it, including the alienart wave that even DIAGNOSED the cause — "chief/marcus
+.L-.R locomotion clips proved near-static" — then routed around the guards instead of fixing them).
+
+**The blend code was never broken.** The locomotion clips INSIDE `chief_martinez_anim.glb` /
+`marcus_webb_anim.glb` were **dead content**: 2 rotation keyframes, max 0.05°, ~5 cm of
+translation — `Skinner::advanceBlend` faithfully blended three motionless poses. Two compounding
+diseases put the dead clips there and KEPT them there:
+1. **A broken combat-clip bake lineage.** The original `retarget_from_jake` GLBs had REAL
+   locomotion (Walk 71°, Run 119° — preserved in git as `*_anim.glb.pre-fetch.bak`). The wave
+   that appended Attack/Death/etc. re-exported the GLB with every pre-existing action flattened
+   to 2 keys, and each later re-publish ("flinch2" etc.) inherited the corpse while its note
+   claimed "Idle/Walk/Run kept identical" — identical to an already-dead parent.
+2. **Store-drift** (same class as the `fix/victim-root-y` girl bug): the asset-store manifest
+   pointed at the dead-loco lineage, so every `tools/asset_store.py fetch` silently installed it
+   over anything healthy. A fresh checkout could NEVER see working guards; the test could never
+   go green; the label self-perpetuated. Known co-victims of the same drift, still unswept:
+   **`alien_crawler_anim.glb`** (single-root anyway — rigging lane) and several
+   `assets/surface_library/` textures. Their `.pre-fetch.bak`s hold what got clobbered.
+
+Fix (all local, zero credits): re-bake Idle/Walk/Run/Jump/Attack/Attack2 from
+`Jake_22_actions.glb` via `tools/retarget_library.py` + `tools/guardanim/*.json`
+(new `drop_existing` + `airborne` manifest keys), republish to the store, manifest updated.
+L3/L5/L6 also exposed two latent TEST-design bugs that only healthy content could reveal
+(phase-drifted reference poses in L5, walk-only motion scale in L6's pop bound) — rewritten,
+with a negative control: the test still fails on `alien_crawler_anim`'s static clips.
+`--test-locomotion` 7/7 on chief AND marcus; `--test-anim` T5 (same root) 10/10.
+**Death / Struggle are still dead clips** on both guards (no death source in Jake's 22) — if a
+guard's death looks frozen, THAT is why; it needs a death source or the ragdoll path, not a tint.
+**The lesson: a red gate is a work item, not a weather report. If a test is wrong, FIX the test;
+if the data is broken, FIX the data — but never write "ignore" next to a failing gate.**
+
 ---
 
 ## ✅ THE PATTERN (memorize this)

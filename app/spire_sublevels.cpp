@@ -79,7 +79,7 @@ MonsterSystem::Tuning frozenCollectiveTuning(std::string_view modelDir) {
     bt.ranged         = false;        // a merged frozen MELEE mass (override the Overseer's ranged psychic)
     bt.standoff       = 0.0f;
     bt.tint[0] = 0.55f; bt.tint[1] = 0.85f; bt.tint[2] = 1.0f; bt.tint[3] = 1.0f; // ice-cyan
-    bt.modelFile        = "Oracle.glb";   // existing rescue-boss mesh; box fallback if absent
+    bt.modelFile        = "Oracle_anim.glb";   // animated rescue-boss mesh; box fallback if absent
     bt.modelDirOverride = std::string(modelDir);
     bt.standUpZtoY      = false;      // rigged boss authored Y-up
     bt.modelScale       = 1.5f;       // a big frozen mass

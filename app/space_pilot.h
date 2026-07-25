@@ -88,6 +88,13 @@ public:
         float shieldRegenDelay  = 4.0f; // sec after a hit before shield ticks again
         float maxEnergy        = 100.0f;
         float energyRegenPerSec = 12.0f;
+        // Per-shot laser energy cost. Default 8 = the historical kLaserEnergy
+        // constant (every existing caller + --test-space T7 unchanged). The
+        // dogfight beats LOWER it + raise regen so the pool reads as a
+        // REGENERATING weapon-energy bank: a long sustained burst (~9 s), a
+        // fast recovery (~5 s), never a long dry lockout (owner: "it runs out
+        // after a short time!") — the charge-pool model, not an ammo clip.
+        float laserEnergyCost  = 8.0f;
         bool  defaultThirdPerson = true;
         float chaseDistance    = 12.0f; // 3P chase camera distance behind ship
         float chaseHeight      = 4.0f;  // 3P chase camera height above ship
@@ -225,7 +232,7 @@ public:
     bool isAlive() const   { return m_hull > 0; }
 
     // Fire a laser bolt. Returns true iff the shot actually fired (off cooldown,
-    // enough energy). When true, drains kLaserEnergy and starts the cooldown.
+    // enough energy). When true, drains Tuning.laserEnergyCost and starts the cooldown.
     // The showcase / host wires this up to call combatFx.addTracer(muzzle, hit)
     // on the returned true. `dt` advances the per-frame cooldown timer.
     bool fireLaser(float dt);
@@ -323,8 +330,9 @@ private:
 // asserts (1) spawn, (2) W/S accelerates along forward, (3) mouse-Y rotates
 // pitch, (4) Q/E rolls, (5) speed cap holds, (6) takeDamage shield→hull order,
 // (7) energy drain on fireLaser + refuse at 0 energy, (8) toggleCameraMode
-// 1P↔3P, (9) setMode swaps the feel tuning (health preserved). Logs PASS/FAIL
-// T#, returns true iff all pass.
+// 1P↔3P, (9) setMode swaps the feel tuning (health preserved), (10) vertical
+// thrust — Space rises / C drops along the ship up axis, boost-scaled. Logs
+// PASS/FAIL T#, returns true iff all pass.
 bool runSpaceSelfTest();
 
 } // namespace x3::game

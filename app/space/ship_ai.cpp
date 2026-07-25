@@ -76,6 +76,7 @@ void EnemyShipManager::spawn(const float pos[3]) {
     s.maxHull = shipai::kDefaultHull;
     s.state = ShipAIState::Patrol;
     s.fireCooldown = 0.0f;
+    s.hitFlash = 0.0f;
     // Orbit bookkeeping: seed by SPAWN ORDER so every ship in a wing gets its own
     // orbit direction, weave phase, and attack cadence — three fighters circle as
     // individuals, never a synchronized carousel.
@@ -97,6 +98,7 @@ void EnemyShipManager::damageShip(uint32_t i, int amount) {
     if (amount <= 0 || i >= ships_.size()) return;
     EnemyShip& s = ships_[i];
     s.hull -= amount;
+    s.hitFlash = shipai::kHitFlashSec;   // instant hit feedback (host tints the draw)
     if (s.hull <= 0) {
         s.hull = 0;
         // Swap-remove: keep the live array packed (MonsterManager pattern).
@@ -140,6 +142,10 @@ void EnemyShipManager::tickShip(uint32_t i, float dt,
     if (s.fireCooldown > 0.0f) {
         s.fireCooldown -= dt;
         if (s.fireCooldown < 0.0f) s.fireCooldown = 0.0f;
+    }
+    if (s.hitFlash > 0.0f) {
+        s.hitFlash -= dt;
+        if (s.hitFlash < 0.0f) s.hitFlash = 0.0f;
     }
 
     // ---- Geometry vs. the player target ------------------------------------
@@ -574,6 +580,73 @@ bool runShipAiSelfTest() {
         }
         check(std::fabs(cumAngle) < 0.3,
               "T10 negative control: converge-and-hover reads ~zero bearing sweep");
+    }
+
+    // T11 — DAMAGE-STATE FX staging keyed to hull fraction. NEGATIVE CONTROL:
+    //       a full-hull ship gets ZERO damage emitters; staging is monotonic
+    //       (more damage never emits LESS) and each stage adds its layer.
+    {
+        const auto full  = shipai::damageFxProfile(1.0f);
+        const auto s60   = shipai::damageFxProfile(0.60f);   // < 75%: sparks
+        const auto s40   = shipai::damageFxProfile(0.40f);   // < 50%: + smoke
+        const auto s10   = shipai::damageFxProfile(0.10f);   // < 25%: + embers
+        bool noneAtFull  = full.sparkPeriod == 0 && full.smokePeriod == 0 &&
+                           full.emberPeriod == 0;
+        bool sparksAt60  = s60.sparkPeriod > 0 && s60.smokePeriod == 0 &&
+                           s60.emberPeriod == 0;
+        bool smokeAt40   = s40.sparkPeriod > 0 && s40.smokePeriod > 0 &&
+                           s40.emberPeriod == 0;
+        bool burnAt10    = s10.sparkPeriod > 0 && s10.smokePeriod > 0 &&
+                           s10.emberPeriod > 0;
+        // Monotonic: a period never LENGTHENS (0 = off counts as +inf) as hull drops.
+        auto denser = [](int hi, int lo) { return lo != 0 && (hi == 0 || lo <= hi); };
+        bool monotonic = denser(s60.sparkPeriod, s40.sparkPeriod) &&
+                         denser(s40.sparkPeriod, s10.sparkPeriod) &&
+                         denser(s40.smokePeriod, s10.smokePeriod);
+        check(noneAtFull && sparksAt60 && smokeAt40 && burnAt10 && monotonic,
+              "T11 damage FX staged by hull fraction (full hull = ZERO emitters)");
+    }
+
+    // T12 — VIS-COMPENSATED HIT RADIUS (owner: "allow me to hit the tiny enemy
+    //       ships too!"): the draw grows distant ships by visCompFactor, so the
+    //       hit test's acceptance radius must grow by the SAME factor. A shot at
+    //       a 500 m enemy aimed at its VISUAL edge registers; NEGATIVE CONTROL:
+    //       the same shot against the old fixed base radius misses.
+    {
+        const float dist = 500.0f;
+        const float comp = shipai::visCompFactor(dist);
+        // Aim at the drawn silhouette's edge (95% out — inside what the player sees).
+        const float aimOff = shipai::kHitBaseRadius * comp * 0.95f;
+        // Ray from origin toward the enemy at (500, 0, aimOff-off-axis).
+        const float oc[3] = { dist, 0.0f, 0.0f };            // enemy true position
+        float rd[3] = { dist, 0.0f, aimOff };                // aim point on the visual edge
+        const float rl = std::sqrt(rd[0]*rd[0] + rd[2]*rd[2]);
+        rd[0] /= rl; rd[1] = 0.0f; rd[2] /= rl;
+        const float tca = oc[0]*rd[0] + oc[1]*rd[1] + oc[2]*rd[2];
+        const float d2c = oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - tca*tca;
+        const float scaledR = shipai::kHitBaseRadius * shipai::visCompFactor(tca);
+        bool hitsScaled  = d2c <= scaledR * scaledR;                       // NEW: registers
+        bool missesFixed = d2c > shipai::kHitBaseRadius * shipai::kHitBaseRadius; // OLD: missed
+        bool closeUnchanged = shipai::visCompFactor(100.0f) == 1.0f;       // no assist up close
+        check(hitsScaled && missesFixed && closeUnchanged,
+              "T12 hit radius tracks the DRAWN silhouette at range (old fixed radius misses)");
+    }
+
+    // T13 — HULL HIT-FLASH: damageShip arms the flash on a surviving ship; it
+    //       decays back to zero over update() ticks (instant feedback, no latch).
+    {
+        EnemyShipManager m; m.init(2);
+        const float sp[3] = { 100.0f, 0.0f, 0.0f };
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        bool clean = m.ship(0).hitFlash == 0.0f;
+        m.damageShip(0, 5);
+        bool armed = m.ship(0).hitFlash > 0.0f;
+        const int decayTicks = (int)(shipai::kHitFlashSec / dt) + 2;
+        for (int i = 0; i < decayTicks; ++i) m.update(dt, pp, pv);
+        bool decayed = m.ship(0).hitFlash == 0.0f;
+        check(clean && armed && decayed, "T13 hit-flash arms on damage + decays");
     }
 
     x3::logInfo(std::string("[shipai-test] ") + std::to_string(g_pass) + " passed, " +

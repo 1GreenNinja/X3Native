@@ -322,6 +322,9 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // leave the skinner invalid -> static draw. ----
     if (prof) profT0 = profclock::now();
     if (m_model.ok && m_skinner.bind(m_model)) {
+        // ROOT-Y LOCK opt-in (Tuning::lockRootY — crowd citizens whose world Y the
+        // feeder owns): a broken baked clip root Y must never bury/bob them.
+        if (tuning.lockRootY) m_skinner.setRootYLock(true);
         // GPU SKINNING OF MODELS: register this character's skinned primitives with
         // the device's compute-skinning path. When supported, apply/applyLocomotion
         // upload the joint palette + the GPU skins (no per-frame CPU LBS + full vertex
@@ -4665,8 +4668,8 @@ std::vector<Act2BossDef> buildAct2BossDefs() {
         t.phase2SpeedMul = 1.30f; t.phase2DamageMul = 1.35f;
         t.phase3SpeedMul = 1.55f; t.phase3DamageMul = 1.60f;
         t.phase3SummonCount = 5;                            // SUMMONS — the spec's headline beat
-        // Existing BossBreederQueen.glb is in rigged_glb (Y-up); use directly.
-        t.modelFile        = "BossBreederQueen.glb";
+        // Animated BossBreederQueen_anim.glb (Y-up; Idle/Walk/Run/Attack/Hitreaction/Death).
+        t.modelFile        = "BossBreederQueen_anim.glb";
         t.modelDirOverride = riggedGlbRoot();
         t.standUpZtoY      = false;
         t.modelScale       = 1.55f;                         // 12ft frame reads tall

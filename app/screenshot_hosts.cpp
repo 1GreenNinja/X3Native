@@ -1084,6 +1084,24 @@ int dispatchScreenshotHosts(HostContext& hc) {
             ok &= litShot("Operating Theater B", upperShotDir + "/f2_operating_theater.png");
             // 2) F2 Ward C: Aria — a captive in her cell with her attacker.
             ok &= litShot("Ward C: Aria", upperShotDir + "/f2_captive_ward.png");
+            // 2b) GROUNDED-QA bounce check: advance the LIVE sim 0.5 s (the girls'
+            // idle drive runs in CanonPlay::tick) and re-shoot the same ward from
+            // the same camera. Her feet must stay planted at deck level across the
+            // two clip times — a sunken/bouncing captive shows as a vertical shift.
+            {
+                const uint32_t wr = ufloor.roomByName("Ward C: Aria");
+                if (wr != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& WR = ufloor.rooms[wr];
+                    const x3::phys::Vec3 tickEye{ WR.cx - WR.w*0.38f, WR.y0() + 1.7f,
+                                                  WR.cz - WR.d*0.38f };
+                    x3::game::AttackFxFn noFx{};
+                    for (int i = 0; i < 30; ++i) {
+                        uphys->step(1.0f / 60.0f);
+                        uplay.tick(1.0f / 60.0f, uscene, *uphys, tickEye, nullptr, noFx);
+                    }
+                }
+                ok &= litShot("Ward C: Aria", upperShotDir + "/f2_captive_ward_t2.png");
+            }
             // 3) F5 Drone Bay Beta — heavy combat drones + the weapons locker floor.
             ok &= litShot("Drone Bay Beta", upperShotDir + "/f5_drone_bay.png");
             // 4) F7 Executive Corridor — the exec-guard gauntlet before Sarah.
@@ -2548,7 +2566,11 @@ int dispatchScreenshotHosts(HostContext& hc) {
         wt.hp = 100; wt.chaseSpeed = 1.5f;   // ~walk speed: the blend lands on WALK
         wt.tint[0]=1.6f; wt.tint[1]=1.7f; wt.tint[2]=1.5f; wt.tint[3]=1.0f;
         wt.damage = 0; wt.attackRange = 0.5f; wt.attackWindup = 0.0f; wt.ranged = false;
-        wt.modelFile = pickAnimGlb(x3::game::riggedGlbRoot(), "marcus_webb.glb");
+        // Rig selectable via the 2nd --capture-walk arg (grounded-walk QA on any
+        // character; default stays the marcus guard).
+        const std::string walkRig = hc.captureWalkRig.empty() ? "marcus_webb.glb"
+                                                              : hc.captureWalkRig;
+        wt.modelFile = pickAnimGlb(x3::game::riggedGlbRoot(), walkRig.c_str());
         wt.modelDirOverride = x3::game::riggedGlbRoot();
         wt.standUpZtoY = false; wt.modelScale = 1.0f;
 
@@ -2576,18 +2598,27 @@ int dispatchScreenshotHosts(HostContext& hc) {
         }
 
         // Step ~1.5 s so the guard accelerates into a steady WALK and the legs reach
-        // a clear mid-stride; capture the final frame.
+        // a clear mid-stride; capture that frame PLUS a second one 0.5 s later
+        // (<out>_t2.png) so vertical root sink/bounce across clip times is
+        // eye-checkable (the grounded-anim QA rule: floor in frame, two times).
         const float dt = 1.0f / 60.0f;
         x3::game::AttackFxFn noFx{}; x3::game::BossPhaseFn noPhase{}; x3::game::AllyQueryFn noAllies{};
-        const int steps = 90;
-        bool wrote = false;
-        for (int step = 0; step <= steps; ++step) {
+        const int stepsA = 90, stepsB = 120;    // 0.5 s apart
+        std::string pathB = captureWalkPath;
+        {
+            const size_t dot = pathB.rfind('.');
+            if (dot != std::string::npos) pathB.insert(dot, "_t2");
+            else pathB += "_t2.png";
+        }
+        bool wrote = false, wroteB = false;
+        for (int step = 0; step <= stepsB; ++step) {
             glfwPollEvents();
             guard.update(dt, wscene, *wphys, tgt.eye /*planar*/, tgt.eye /*eye*/,
                          &tgt, noFx, noPhase, noAllies);
             wphys->step(dt);
-            const bool last = (step == steps);
-            if (last) device->armCapture(captureWalkPath.c_str());
+            const bool capA = (step == stepsA), capB = (step == stepsB);
+            if (capA) device->armCapture(captureWalkPath.c_str());
+            if (capB) device->armCapture(pathB.c_str());
             auto frame = device->beginFrame();
             if (frame.valid) {
                 device->drawMesh(frame, groundMesh, groundTex, whiteTint, modelGround);
@@ -2595,11 +2626,13 @@ int dispatchScreenshotHosts(HostContext& hc) {
                 guard.drawMonster(*device, frame, wscene);
             }
             device->endFrame(frame);
-            if (last) wrote = device->captureFrame(captureWalkPath.c_str());
+            if (capA) wrote  = device->captureFrame(captureWalkPath.c_str());
+            if (capB) wroteB = device->captureFrame(pathB.c_str());
         }
-        x3::logInfo(std::string("--capture-walk: aiState=") +
-                    x3::game::aiStateName(guard.aiState()) +
-                    (wrote ? "  wrote " + captureWalkPath : "  CAPTURE FAILED"));
+        x3::logInfo(std::string("--capture-walk: rig=") + walkRig +
+                    " aiState=" + x3::game::aiStateName(guard.aiState()) +
+                    (wrote ? "  wrote " + captureWalkPath : "  CAPTURE FAILED") +
+                    (wroteB ? " + " + pathB : " (t2 FAILED)"));
 
         device->destroyMesh(groundMesh);
         device->destroyTexture(groundTex);
