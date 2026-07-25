@@ -5692,6 +5692,26 @@ int runDefaultHost(HostContext& hc) {
                         cl.insert(cl.begin(), beam);
                     }
                 }
+                // X3_SHOT_TORCH=1: ride the player flashlight on the shot camera —
+                // the EXACT torch the live loop adds (see the flashlight block there;
+                // keep the two in sync). Exists so torch-on lighting states can be
+                // photographed headlessly (gamma-recal verification frames).
+                if (std::getenv("X3_SHOT_TORCH")) {
+                    const float tcp = std::cos(ssPitch);
+                    const float tfx = tcp * std::cos(ssYaw);
+                    const float tfy = std::sin(ssPitch);
+                    const float tfz = tcp * std::sin(ssYaw);
+                    x3::rhi::PointLight tpl{};
+                    tpl.pos[0] = ssX + tfx * 2.0f; tpl.pos[1] = ssY + tfy * 2.0f; tpl.pos[2] = ssZ + tfz * 2.0f;
+                    tpl.range  = 10.0f;
+                    tpl.color[0] = 0.85f; tpl.color[1] = 0.80f; tpl.color[2] = 0.71f;
+                    x3::rhi::PointLight teye{};
+                    teye.pos[0] = ssX + tfx * 0.3f; teye.pos[1] = ssY + tfy * 0.3f; teye.pos[2] = ssZ + tfz * 0.3f;
+                    teye.range  = 5.0f;
+                    teye.color[0] = 0.45f; teye.color[1] = 0.42f; teye.color[2] = 0.37f;
+                    cl.insert(cl.begin(), teye);
+                    cl.insert(cl.begin(), tpl);
+                }
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
             }
@@ -9047,18 +9067,25 @@ int runDefaultHost(HostContext& hc) {
                 // over 8 m (was 13). That now sits at PARITY with a room's own key fixture
                 // (the cell tube is 3.30 @ 6.2, level-1 fixtures run 3.6-4.2) — it reads as
                 // a directed beam layered ON the practicals instead of erasing them.
+                // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): 3.30 @ 20 m was parity
+                // with the room fixtures ON THE BENT CURVE — under the honest encode
+                // it read as a floodlight erasing the recalibrated warm hall pools
+                // (which now carry the owner's locked hall look on their own). Cut to
+                // a directed COMPLEMENT: it deepens what the practicals show, never
+                // replaces them. Same warm-white hue. If these values move, move the
+                // X3_SHOT_TORCH capture hook in the screenshot path with them.
                 x3::rhi::PointLight pl{};
                 pl.pos[0] = camX + fX * 2.0f; pl.pos[1] = camY + fY * 2.0f; pl.pos[2] = camZ + fZ * 2.0f;
-                pl.range  = 20.0f;   // big soft circle; point attenuation gives the SOFT edge
-                pl.color[0] = 3.30f; pl.color[1] = 3.10f; pl.color[2] = 2.75f;  // warm-white torch
+                pl.range  = 10.0f;   // big soft circle; point attenuation gives the SOFT edge
+                pl.color[0] = 0.85f; pl.color[1] = 0.80f; pl.color[2] = 0.71f;  // warm-white torch
                 fl.insert(fl.begin(), pl);
                 // Near light AT the eye so things RIGHT in front of you (barrels, enemies,
                 // the held weapon) are still lit — a flashlight should never leave the near
                 // field black. Smaller range, same warm-white.
                 x3::rhi::PointLight eyePl{};
                 eyePl.pos[0] = camX + fX * 0.3f; eyePl.pos[1] = camY + fY * 0.3f; eyePl.pos[2] = camZ + fZ * 0.3f;
-                eyePl.range  = 8.0f;
-                eyePl.color[0] = 1.70f; eyePl.color[1] = 1.60f; eyePl.color[2] = 1.40f;
+                eyePl.range  = 5.0f;
+                eyePl.color[0] = 0.45f; eyePl.color[1] = 0.42f; eyePl.color[2] = 0.37f;
                 fl.insert(fl.begin(), eyePl);
                 torch.push_back(eyePl); torch.push_back(pl);   // survives the rift/club takeover
             }
