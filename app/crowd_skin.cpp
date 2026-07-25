@@ -82,6 +82,10 @@ void CrowdSkin::spawnOne(uint32_t i, const CrowdSystem& crowd, Scene& scene,
     t.damage     = 0;                  // never attacks
     t.ranged     = false;
     t.noBody     = true;               // pure visual — no Enemy hitbox for rays to eat
+    t.lockRootY  = true;               // crowd Y is BRAIN-owned: a broken baked clip
+                                       // root Y (AnnaCasual_anim Walk/Run bake bug)
+                                       // must never bury/bob a citizen (Sit still
+                                       // lowers the hips — it rides the crossfade)
     t.modelFile  = rig;
     t.modelDirOverride = m_cfg.modelDir;
     t.standUpZtoY = false;             // roster rigs are Y-up (canon-play precedent)

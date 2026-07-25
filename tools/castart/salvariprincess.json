@@ -1,0 +1,11 @@
+{
+  "skip_assert": true,
+  "author_height": 1.8,
+  "keep_existing": false,
+  "clips": [
+    {"name":"Idle",        "src":"D:/GameDev/X3Native-cast/assets/rigged_glb/Jake_22_actions.glb", "rig":"meshy_from_mixamo", "action":"Idle",     "loop":true},
+    {"name":"Walk",        "src":"D:/GameDev/X3Native-cast/assets/rigged_glb/Jake_22_actions.glb", "rig":"meshy_from_mixamo", "action":"Walking",  "loop":true},
+    {"name":"Run",         "src":"D:/GameDev/X3Native-cast/assets/rigged_glb/Jake_22_actions.glb", "rig":"meshy_from_mixamo", "action":"Riflerun", "loop":true},
+    {"name":"Talk",        "src":"D:/GameDev/X3Native-cast/assets/rigged_glb/AnnaCasual_anim.glb", "rig":"meshy_from_lr",     "action":"Talk",     "loop":true}
+  ]
+}

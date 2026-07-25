@@ -57,7 +57,7 @@ MonsterSystem::Tuning f5VictimBossTuning(std::string_view modelDir) {
     bt.attackWindup   = 0.30f;
     bt.ranged         = false;
     bt.tint[0] = 0.65f; bt.tint[1] = 0.45f; bt.tint[2] = 1.0f; bt.tint[3] = 1.0f; // synth-violet
-    bt.modelFile        = "Oracle.glb";
+    bt.modelFile        = "Oracle_anim.glb";
     bt.modelDirOverride = std::string(modelDir);
     bt.standUpZtoY      = false;      // rigged boss authored Y-up
     bt.modelScale       = 1.35f;

@@ -126,6 +126,7 @@ struct HostContext {
     bool        cityShot = false;       std::string cityShotPath;        // W8-3 city vantage
     bool        captureAi = false;      std::string captureAiDir;
     bool        captureWalk = false;    std::string captureWalkPath;
+    std::string captureWalkRig;         // --capture-walk optional rig GLB
     bool        captureFootIk = false;  std::string captureFootIkPath;
     std::string cutsceneFile;           // --cutscene <file>
     float       cueTime = 0.0f;         // --cuetime <s>
