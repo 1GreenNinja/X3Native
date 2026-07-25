@@ -499,16 +499,17 @@ void ElevatorShowcase::buildStrataLiner(Scene& scene, x3::rhi::IRenderDevice& de
     // colours are desaturated greys/tans that wash to a flat haze behind the smoked glass,
     // so the liner uses SATURATED hues per depth band — the hue survives the glass even
     // when the band is kept dim, reading as coloured strata rather than grey fog. Ordered
-    // surface -> deep (amber limestone -> teal granite -> indigo basalt -> violet obsidian
-    // -> the club's magenta crystal glow). glow flag marks the bright crystal/magma layers.
+    // surface -> deep (amber limestone -> teal granite -> indigo basalt -> deep blue-UV
+    // -> the club's BLUE-UV crystal glow, matching Club 1127's blacklight so the seam is
+    // seamless on arrival). glow flag marks the bright crystal/magma layers.
     auto stratumAt = [](float y, float rgb[3], bool& glow, float grgb[3]) {
         struct Band { float yMin; float rgb[3]; bool glow; };  // yMin = band's lower bound
         static const Band kNeon[] = {
             { -20.0f,  {0.55f, 0.42f, 0.18f}, false },  // surface amber (limestone/foundation)
             { -80.0f,  {0.12f, 0.55f, 0.52f}, false },  // teal granite
             {-140.0f,  {0.14f, 0.22f, 0.62f}, false },  // indigo basalt
-            {-200.0f,  {0.42f, 0.14f, 0.68f}, true  },  // violet obsidian (deep, glows)
-            {-1e9f,    {0.85f, 0.12f, 0.75f}, true  },  // magenta crystal (the club approach)
+            {-200.0f,  {0.12f, 0.03f, 0.85f}, true  },  // deep blue-UV obsidian (deep, glows — leads into the club seam)
+            {-1e9f,    {0.10f, 0.00f, 1.00f}, true  },  // BLUE-UV crystal (the club approach — matches Club 1127 blacklight)
         };
         for (const Band& b : kNeon) {
             if (y >= b.yMin) { for(int k=0;k<3;++k){rgb[k]=b.rgb[k]; grgb[k]=b.rgb[k];} glow=b.glow; return; }
@@ -711,9 +712,11 @@ void ElevatorShowcase::buildHoloPanel(Scene& scene, x3::rhi::IRenderDevice& devi
     for (int i = 0; i < (int)m_floors.size() && i < 16; ++i) {
         float by = startFloorY + 0.4f + (float)i * 0.16f;
         ElevPrim p; p.mesh = roundButton(0, 0, 0, 0.03f, 0.016f, 12);   // origin-authored; layoutCab offsets
-        float em[4] = { (i == m_clubStop) ? 0.85f : 0.10f,
-                        (i == m_clubStop) ? 0.10f : 0.55f,
-                        (i == m_clubStop) ? 0.60f : 0.80f, 1.5f };
+        // Club stop marker glows BLUE-UV (matches Club 1127's blacklight, was magenta);
+        // the other floors stay cool cyan and remain distinct from the pure-blue club.
+        float em[4] = { (i == m_clubStop) ? 0.10f : 0.10f,
+                        (i == m_clubStop) ? 0.00f : 0.55f,
+                        (i == m_clubStop) ? 1.00f : 0.80f, 1.5f };
         uint32_t id = addDecor(scene, device, p, kDarkSteel, em, (uint32_t)Tag::Button);
         scene.get(id).link = (uint32_t)i;     // which stop this button calls
         m_eHoloButtons[m_holoButtonCount++] = id;
