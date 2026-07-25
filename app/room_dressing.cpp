@@ -158,6 +158,15 @@ constexpr float kExteriorIbl        = 0.50f;   // app_run sets this for the SEAM
 const Recipe& recipeFor(uint8_t z) {
     static const Recipe kRecipes[ZCount] = {
         /*ZNone*/     {},
+        // ===== GAMMA-RECAL (fix/gamma-recal, 2026-07-25): the whole table was tuned
+        // against the BENT curve (5951890b). The owner PLAYED the corrected build and
+        // called the facility 'OK, a bit too bright — turn it down a HAIR', so every
+        // non-corridor zone takes a GENTLE hue-preserving trim: keys+accents x0.85,
+        // fog colours x0.8 (density/reach untouched). ZWard alone takes x0.72+fog x0.7
+        // — measured blown (WR-1 mean 74-76, p50 ~60, p95 175-192, cream-washed walls;
+        // frames in docs/screenshots/gamma_recal/zones_*). ZHall/ZCorridor are NOT in
+        // this scheme: they are precision-anchored to the owner's hall reference
+        // (see their own comment). =====
         // ===== KEY LEVELS — THE WHOLE TABLE WAS HALF-LIT (2026-07-12 facility audit) =====
         // Every zone key in this table was authored at a mean of 0.7-2.4 while EVERY practical
         // that actually WORKS in this building runs 3.2-3.3: the cell's fluorescent tube is
@@ -203,34 +212,34 @@ const Recipe& recipeFor(uint8_t z) {
         // old key was tuned while applyCabAtmosphere washed 0.42 ambient over the whole game
         // (B1) — with the wash gone it under-lights by ~2x. Hue is unchanged (both keys are
         // 1 : 0.77 : 0.47 warm); only the level moves.
-                        4.27f, 3.30f, 2.04f, 3.6f,   1.72f, 0.96f, 0.22f, 2.9f,
-                        fogOf(0.058f, 0.041f, 0.023f, 0.0042f, 1.2f, 0.62f) },
+                        3.07f, 2.38f, 1.47f, 3.6f,   1.24f, 0.69f, 0.16f, 2.9f,
+                        fogOf(0.041f, 0.029f, 0.016f, 0.0042f, 1.2f, 0.62f) },
         /*ZSecurity*/ { "mw_concrete_panels_a", 2.4f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
-                        3.14f, 3.14f, 3.30f, 3.2f,   1.40f, 0.07f, 0.05f, 2.2f,
-                        fogOf(0.020f, 0.022f, 0.026f, 0.0030f, 1.2f, 0.55f) },
+                        2.67f, 2.67f, 2.81f, 3.2f,   1.19f, 0.06f, 0.04f, 2.2f,
+                        fogOf(0.016f, 0.018f, 0.021f, 0.0030f, 1.2f, 0.55f) },
         /*ZLab*/      { "mw_plaster_painted", 2.6f, "sr_rubberfloor", 2.2f, "hh_ceiling_01a", 2.8f,
-                        3.11f, 3.38f, 3.11f, 6.5f,   0.25f, 1.10f, 0.35f, 2.6f,
-                        fogOf(0.038f, 0.046f, 0.040f, 0.0030f, 1.5f, 0.55f) },
+                        2.64f, 2.87f, 2.64f, 6.5f,   0.21f, 0.94f, 0.30f, 2.6f,
+                        fogOf(0.030f, 0.037f, 0.032f, 0.0030f, 1.5f, 0.55f) },
         /*ZBoss*/     { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "mw_metal_panels_a", 3.2f,
-                        4.25f, 3.32f, 2.03f, 6.0f,   1.50f, 0.95f, 0.25f, 2.6f,
-                        fogOf(0.045f, 0.040f, 0.034f, 0.0040f, 1.4f, 0.62f) },
+                        3.61f, 2.82f, 1.73f, 6.0f,   1.28f, 0.81f, 0.21f, 2.6f,
+                        fogOf(0.036f, 0.032f, 0.027f, 0.0040f, 1.4f, 0.62f) },
         /*ZLobby*/    { "mw_metal_trim_a", 2.8f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        2.94f, 3.17f, 3.49f, 4.6f,   0.14f, 0.75f, 0.85f, 2.4f,
-                        fogOf(0.030f, 0.040f, 0.046f, 0.0040f, 1.5f, 0.60f) },
+                        2.50f, 2.69f, 2.97f, 4.6f,   0.12f, 0.64f, 0.72f, 2.4f,
+                        fogOf(0.024f, 0.032f, 0.037f, 0.0040f, 1.5f, 0.60f) },
         /*ZStorage*/  { "mw_concrete_panels_b", 2.6f, "sr_concrete_a", 2.4f, "mw_metal_panels_a", 3.0f,
-                        2.97f, 2.53f, 1.87f, 4.2f,   1.50f, 0.95f, 0.25f, 2.2f,
-                        fogOf(0.045f, 0.040f, 0.034f, 0.0035f, 1.2f, 0.60f) },
+                        2.52f, 2.15f, 1.59f, 4.2f,   1.28f, 0.81f, 0.21f, 2.2f,
+                        fogOf(0.036f, 0.032f, 0.027f, 0.0035f, 1.2f, 0.60f) },
         // ---- W3-2 tower floors. Sets include AD-3's four previously-unused curated
         // survivors (cc_porous_cement, mw_thermal_padding, sr_metal_b, mw_metal_grate). ----
         /*ZMedical*/  { "hh_wall_01a", 3.0f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        3.10f, 3.40f, 3.10f, 5.5f,   0.30f, 1.05f, 0.35f, 2.6f,
-                        fogOf(0.040f, 0.048f, 0.040f, 0.0032f, 1.4f, 0.55f) },
+                        2.64f, 2.89f, 2.64f, 5.5f,   0.26f, 0.89f, 0.30f, 2.6f,
+                        fogOf(0.032f, 0.038f, 0.032f, 0.0032f, 1.4f, 0.55f) },
         /*ZGenetics*/ { "mw_plaster_painted", 2.6f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        2.97f, 3.59f, 3.04f, 5.5f,   0.20f, 1.20f, 0.30f, 2.8f,
-                        fogOf(0.034f, 0.052f, 0.036f, 0.0042f, 1.4f, 0.60f) },
+                        2.52f, 3.05f, 2.58f, 5.5f,   0.17f, 1.02f, 0.26f, 2.8f,
+                        fogOf(0.027f, 0.042f, 0.029f, 0.0042f, 1.4f, 0.60f) },
         /*ZCyber*/    { "sr_metal_b", 2.6f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
-                        2.84f, 3.13f, 3.62f, 5.0f,   0.16f, 0.85f, 1.05f, 2.6f,
-                        fogOf(0.024f, 0.032f, 0.040f, 0.0038f, 1.4f, 0.60f) },
+                        2.41f, 2.66f, 3.08f, 5.0f,   0.14f, 0.72f, 0.89f, 2.6f,
+                        fogOf(0.019f, 0.026f, 0.032f, 0.0038f, 1.4f, 0.60f) },
         // W8-1 floor identity: the drone station stands on HAZARD-STRIPED deck plate
         // (sr_floorstripes — a curated set no zone used yet), not the same grate as F4.
         // W2-A F5 floor scale fix (report §1.2): sr_floorstripes at 2.4 m/repeat read as
@@ -238,27 +247,27 @@ const Recipe& recipeFor(uint8_t z) {
         // so the deck reads as HANGAR LANES (a code dial, not a reforge).
         // LAND-LIGHTING: 6.0 m floor scale KEPT; key takes the audit's honest value (1.75 -> 3.46).
         /*ZDroneBay*/ { "mw_thermal_padding", 2.8f, "sr_floorstripes", 6.0f, "mw_metal_panels_a", 3.2f,
-                        3.46f, 3.27f, 2.87f, 6.5f,   1.55f, 0.95f, 0.25f, 2.8f,
-                        fogOf(0.035f, 0.035f, 0.032f, 0.0035f, 1.5f, 0.60f) },
+                        2.94f, 2.78f, 2.44f, 6.5f,   1.32f, 0.81f, 0.21f, 2.8f,
+                        fogOf(0.028f, 0.028f, 0.026f, 0.0035f, 1.5f, 0.60f) },
         /*ZSalvari*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_concrete_01", 3.2f,
-                        2.42f, 2.02f, 1.36f, 4.5f,   0.25f, 1.10f, 0.45f, 2.8f,
-                        fogOf(0.018f, 0.026f, 0.021f, 0.0060f, 1.2f, 0.72f) },
+                        2.06f, 1.72f, 1.16f, 4.5f,   0.21f, 0.94f, 0.38f, 2.8f,
+                        fogOf(0.014f, 0.021f, 0.017f, 0.0060f, 1.2f, 0.72f) },
         // LAND-LIGHTING: cc_exec_floor (the curated exec carpet) KEPT from main; the key takes
         // the audit's honest value (2.00 -> 3.62).
         /*ZExec*/     { "cc_porous_cement", 3.2f, "cc_exec_floor", 2.6f, "mw_metal_panels_a", 3.2f,
-                        3.62f, 3.26f, 2.72f, 5.5f,   1.60f, 1.15f, 0.45f, 2.6f,
-                        fogOf(0.040f, 0.036f, 0.030f, 0.0025f, 1.6f, 0.50f) },
+                        3.08f, 2.77f, 2.31f, 5.5f,   1.36f, 0.98f, 0.38f, 2.6f,
+                        fogOf(0.032f, 0.029f, 0.024f, 0.0025f, 1.6f, 0.50f) },
         // W5-1: the Nexus Chamber — no surfaces/lights (canon_45 owns the look);
         // the fog IS the recipe: near-black, heavy, silhouettes-over-detail.
         /*ZCave*/     { nullptr, 0, nullptr, 0, nullptr, 0,
                         0, 0, 0, 0,   0, 0, 0, 0,
-                        fogOf(0.010f, 0.014f, 0.010f, 0.0140f, 0.8f, 0.88f) },
+                        fogOf(0.008f, 0.011f, 0.008f, 0.0140f, 0.8f, 0.88f) },
         // W8-1: organic story rooms — dark concrete base under a lattice lid, one dim
         // warm practical, BIOLUME GREEN accent, heavy green-black fog (§3 monster spaces;
         // the blood-red half of the two-accent exception is painted per-room, not here).
         /*ZOrganic*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_metal_lattice", 3.0f,
-                        2.09f, 1.58f, 1.10f, 4.2f,   0.28f, 1.15f, 0.45f, 3.0f,
-                        fogOf(0.012f, 0.022f, 0.015f, 0.0085f, 1.0f, 0.78f) },
+                        1.78f, 1.34f, 0.94f, 4.2f,   0.24f, 0.98f, 0.38f, 3.0f,
+                        fogOf(0.010f, 0.018f, 0.012f, 0.0085f, 1.0f, 0.78f) },
     };
     return kRecipes[z < ZCount ? z : ZNone];
 }
