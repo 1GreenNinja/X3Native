@@ -93,6 +93,7 @@
 #include "destinations.h" // W-MENU: the ONE registry of every place the game has
 #include "world_menu.h"   // W-MENU: the world / place selection screen (F6 + pause)
 #include "club1127.h"
+#include "club_listen.h"   // CLUB LISTEN MODE: cvars + console bind (live-beat drive)
 #include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
 #include "cliffs.h"                          // Salvari cliffs finale (--world cliffs)
@@ -3535,6 +3536,13 @@ int runDefaultHost(HostContext& hc) {
     // and vm_fwd/vm_right/vm_down (m); read them each frame and feed the pose to
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
+
+    // CLUB LISTEN MODE: register snd_listen / snd_listen_offset_ms / snd_listen_gain
+    // and bind the console so the club's beat grid can read them each frame. Set
+    // `snd_listen 1`, play any music on the PC, and the club light show rides the
+    // live-detected beat (WASAPI loopback). Default off -> club uses kClubBpm.
+    x3::club_listen::registerCVars(*console);
+    x3::club_listen::bindConsole(console.get());
 
     // RT DEFAULT ON for ray-tracing-capable devices (owner: "Ray Tracing default
     // should be ON on the 3090 Ti"). Gated on rayTracingSupported() so the fleet's
@@ -11321,6 +11329,7 @@ int runDefaultHost(HostContext& hc) {
     shutdownGameSystems();   // every enemy group + Martinez + barrels + Nexus/canon ragdolls
     docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
     worldMap.shutdown(*device);                    // baked map-tile textures
+    x3::club_listen::shutdown();                    // close the WASAPI loopback device (idempotent)
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);

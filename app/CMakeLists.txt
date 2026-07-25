@@ -89,6 +89,9 @@ add_executable(X3Engine WIN32
     editor/editor_host.cpp
     elevator.cpp
     elevator_showcase.cpp
+    # CLUB LISTEN MODE — WASAPI-loopback live-beat detector that drives the club
+    # light show from whatever audio is playing on the PC.
+    club_listen.cpp
     strata.cpp
     weapon.cpp
     monster.cpp
@@ -184,6 +187,14 @@ target_link_libraries(X3Engine PRIVATE imgui::imgui)
 # header on its include path (declarations, no STB_TRUETYPE_IMPLEMENTATION here).
 find_package(Stb REQUIRED)
 target_include_directories(X3Engine PRIVATE ${Stb_INCLUDE_DIR})
+
+# CLUB LISTEN MODE (club_listen.cpp) includes <miniaudio.h> for DECLARATIONS ONLY
+# (no MINIAUDIO_IMPLEMENTATION — the impl + full WASAPI/loopback backend lives in
+# engine/audio/MiniaudioSystem.cpp and links in). The vcpkg port installs just the
+# header, so locate it and put it on the app's private include path (same pattern
+# as Stb above).
+find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
+target_include_directories(X3Engine PRIVATE ${MINIAUDIO_INCLUDE_DIRS})
 
 # WIN32 subsystem but we want a console for logs during dev:
 if(MSVC)

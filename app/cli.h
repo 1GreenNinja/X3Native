@@ -212,6 +212,11 @@ struct CliOptions {
     // retune / empty-folder fallback / corrupt-skip on tiny generated WAVs.
     bool        testJukebox = false;
 
+    // --test-listen (CLUB LISTEN MODE): deterministic beat-detector self-test —
+    // feed a synthetic click-track at a known BPM through the detector (NO real
+    // audio device) and assert it recovers the onsets + tempo + fires the pulse.
+    bool        testListen = false;
+
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark
     // substrate, and a texture-gated neon sign (not a flat lit slab).

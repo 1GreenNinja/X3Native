@@ -230,6 +230,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--test-clubnpcs") o.testClubNpcs = true;
         else if (a == "--test-jukebox") o.testJukebox = true;
+        else if (a == "--test-listen") o.testListen = true;
         else if (a == "--test-perfshop") o.testPerfshop = true;
         else if (a == "--test-space") o.testSpace = true;
         else if (a == "--test-eva") o.testEva = true;
