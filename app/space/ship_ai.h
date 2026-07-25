@@ -95,7 +95,15 @@ constexpr float kFireConeCos    = 0.92f;   // cos of the half firing cone (~23 d
 constexpr float kFireCooldown   = 0.7f;    // seconds between an enemy's shots
 constexpr float kMaxSpeed       = 90.0f;   // hard speed cap (m/s)
 constexpr float kAccel          = 60.0f;   // steering accel toward desired dir (m/s^2)
-constexpr float kEvadeHullFrac  = 0.30f;   // hull at/below this fraction -> Evade
+constexpr float kEvadeHullFrac  = 0.18f;   // hull at/below this fraction -> Evade.
+                                           // BELOW the <25% burning-FX band
+                                           // (combat readability): at the old
+                                           // 0.30 every ship that reached the
+                                           // ember/heavy-smoke stage instantly
+                                           // fled the fight forever — the player
+                                           // never SAW the burn he had earned.
+                                           // 25%..18% is the visible last-stand
+                                           // window; under 18% it still flees.
 constexpr float kLeadFactor     = 1.0f;    // how strongly to lead the moving target
 constexpr float kLaserRange     = 400.0f;  // tracer length / fire-line endpoint dist
 constexpr int   kDefaultHull    = 60;      // starting hull for a spawned ship

@@ -626,7 +626,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // drains under sustained fire. Env-gated: normal headless untouched.
             if (captureMode) {
                 in.moveFwd = 0.0f;
-                fire = (step >= 412 && step < 424) ||
+                fire = (step >= 402 && step < 424) ||
                        (step >= 630 && step < 900);
                 if (step == 30 && enemies.count() >= 3) {
                     enemies.damageShip(1, 34);   // -> ~43% hull: sparks + smoke trail
@@ -641,6 +641,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     }
                     hitConfirmT = 0.15f;         // the reticle confirm flicker
                 }
+                // THE MONEY SHOT (owner: "fire ... comes from anywhere BUT the
+                // ship"): dead-astern the wing bolts are foreshortened behind
+                // the player's own hull. Swing the FREELOOK camera ~40 deg off-
+                // axis through the s420 fire window so the frame shows the bolt
+                // LEAVING the wingtip. Held by re-feeding (0,0); released after
+                // 460 so the later shots return to the flight framing.
+                if (step == 396) pilot.addFreeLook(150.0f, -30.0f);
+                else if (step > 396 && step < 460) pilot.addFreeLook(0.0f, 0.0f);
             }
         }
         // ANTIMATTER BOOST: one whoosh per Shift ENGAGE (edge-detected — the
@@ -690,9 +698,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             play3D(kSfxEnemyLaser, "enemy_laser (3D at muzzle)", sndEnemyLaser,
                    fe.from, 0.8f, 1.0f);
             if (fxOn) {
+                // SHIP-SCALE bolt + muzzle (the on-foot 0.035 m tracer and
+                // 0.05 m flash are sub-pixel at dogfight range).
                 fxPtr->addTracer({ fe.from[0], fe.from[1], fe.from[2] },
-                             { fe.to[0],   fe.to[1],   fe.to[2] });
-                fxPtr->spawnMuzzleFlash({ fe.from[0], fe.from[1], fe.from[2] },
+                             { fe.to[0],   fe.to[1],   fe.to[2] },
+                             x3::game::WeaponFxKind::Default, /*width*/ 0.55f);
+                fxPtr->spawnShipMuzzle({ fe.from[0], fe.from[1], fe.from[2] },
                                     { fe.to[0] - fe.from[0], fe.to[1] - fe.from[1],
                                       fe.to[2] - fe.from[2] });
             }
@@ -727,7 +738,20 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float pfw[3] = { std::cos(pilot.pitch()) * std::cos(pilot.yaw()),
                                    std::sin(pilot.pitch()),
                                    std::cos(pilot.pitch()) * std::sin(pilot.yaw()) };
-            targeting.lockNearest(ppos, pfw);
+            // Capture script: the capital sits dead ahead and wins the boresight
+            // cone every frame — cycle onto a FIGHTER at s120 and hold it, so
+            // the evidence shows the fighter lock (hull bar + lead pip on a
+            // MOVING target). Interactive play keeps the per-frame cone pick.
+            if (captureMode && step >= 120) {
+                if (step == 120 || !targeting.hasLock() || targeting.lockedId() == 1000u)
+                    targeting.cycleTarget(+1);
+                // Late in the run, shift the lock onto the BURNING ship (hostile
+                // list: cap, f0, f1, f2, ...) so the look-bias frames it and the
+                // s900 shot shows its low hull bar + lead pip on a wounded target.
+                if (step == 600) { targeting.cycleTarget(+1); targeting.cycleTarget(+1); }
+            } else {
+                targeting.lockNearest(ppos, pfw);
+            }
             // TARGET-KEEPING LOOK: pull the 3P gaze gently toward the locked
             // contact (capped in the pilot at 0.6) so the fight tends to stay in
             // frame while you maneuver. Releases (amount 0) when nothing's locked.
@@ -742,7 +766,9 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     const float dl = std::sqrt(dirT[0]*dirT[0] + dirT[1]*dirT[1] + dirT[2]*dirT[2]);
                     if (dl > 1.0f) {
                         dirT[0] /= dl; dirT[1] /= dl; dirT[2] /= dl;
-                        pilot.setCameraLookBias(dirT, 0.30f);
+                        // Capture runs bias harder so the locked target is IN
+                        // the evidence frame; live play keeps the gentle pull.
+                        pilot.setCameraLookBias(dirT, captureMode ? 0.55f : 0.30f);
                         fedBias = true;
                     }
                     break;
@@ -802,7 +828,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // fighter ever exploded). Headless keeps the pure capital model so
             // the deterministic metrics/tests are byte-identical.
             bool hitFighter = false;
-            if (live) {
+            // (captureMode: the scripted fire is for the TRACER/energy imagery;
+            //  ray kills are disabled so the staged damage-state ships survive
+            //  to their capture frames. The scripted s416 hit covers the
+            //  registered-hit path.)
+            if (live && !captureMode) {
                 const float fhp = std::cos(pilot.pitch());
                 const float fw[3] = { fhp * std::cos(pilot.yaw()), std::sin(pilot.pitch()),
                                       fhp * std::sin(pilot.yaw()) };
@@ -920,8 +950,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     pj.x + fh2 * std::cos(pilot.yaw()) * 600.0f,
                     pj.y + std::sin(pilot.pitch()) * 600.0f,
                     pj.z + fh2 * std::sin(pilot.yaw()) * 600.0f };
-                fxPtr->addTracer({ wm[0], wm[1], wm[2] }, { aim[0], aim[1], aim[2] });
-                fxPtr->spawnMuzzleFlash({ wm[0], wm[1], wm[2] }, { wd[0], wd[1], wd[2] });
+                // SHIP-SCALE bolt + wingtip muzzle flash: wide enough to read
+                // from the chase camera (0.035 m rifle tracer is sub-pixel).
+                fxPtr->addTracer({ wm[0], wm[1], wm[2] }, { aim[0], aim[1], aim[2] },
+                                 x3::game::WeaponFxKind::Default, /*width*/ 0.50f);
+                fxPtr->spawnShipMuzzle({ wm[0], wm[1], wm[2] }, { wd[0], wd[1], wd[2] });
             }
             // DAMAGE READS ON THE HULL (owner: "we should see some representation
             // of the damage on the enemy ship"): staged persistent FX keyed to
@@ -1250,7 +1283,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                             const float* col = isTgt ? staged : amberM;
                             bracket(pr.sx, pr.sy, halfPx, isTgt ? 2.0f : 1.0f, col);
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                                "CAP", pr.sx - halfPx, pr.sy - halfPx - 16.0f, 12.0f, col);
+                                isTgt && !lockedNow ? "CAP ACQ" : "CAP",
+                                pr.sx - halfPx, pr.sy - halfPx - 16.0f, 12.0f, col);
                             if (isTgt && lockedNow) {
                                 // Compact capital readout: shield + hull bars and
                                 // one pip per subsystem (lit = up, dark = down).

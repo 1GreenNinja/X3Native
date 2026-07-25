@@ -176,8 +176,12 @@ public:
     // the muzzle-flash particle burst (a few hot additive sparks at the muzzle).
     // `kind` tints/shapes the beam: Lightning renders as a jagged white-cyan bolt
     // (re-randomized each frame); everything else is the straight hot-yellow tracer.
+    // `widthOverride` (m, full ribbon width; 0 = the on-foot kTracerThickness
+    // default): SPACE bolts pass ~0.5 m — the 0.035 m rifle tracer is sub-pixel
+    // at dogfight range (a 10 m hull judged from 60-300 m).
     void addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to,
-                   WeaponFxKind kind = WeaponFxKind::Default);
+                   WeaponFxKind kind = WeaponFxKind::Default,
+                   float widthOverride = 0.0f);
 
     // ---- Combat-event particle/decal presets (the juice) -------------------
     // Each spawns a tuned burst into the bounded pool / decal ring. Called from the
@@ -230,6 +234,10 @@ public:
     void spawnShipSmoke(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, float heavy01);
     // Hot ember/fire glow licking the hull (<25% — the "burning" read).
     void spawnShipEmber(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel);
+    // Ship-scale muzzle flash at a wing hardpoint (the on-foot 0.05 m flash is
+    // invisible from a chase camera): one bright core + a short spray along
+    // the fire direction, so the bolt visibly LEAVES the ship.
+    void spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
     // Drop a scorch decal directly (bullet-hole / impact mark) at a hit point+normal.
     void addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
 
@@ -261,6 +269,7 @@ private:
         x3::phys::Vec3 to{};
         float          life = 0.0f;  // remaining seconds; <= 0 means free slot
         float          age  = 0.0f;  // seconds since spawn (Lightning bolt propagation)
+        float          width = 0.0f; // full ribbon width override (0 = default)
         WeaponFxKind   kind = WeaponFxKind::Default;  // Lightning -> jagged bolt
     };
 

@@ -97,12 +97,14 @@ int CombatFx::spawnParticle(const Particle& p) {
 // addTracer: drop a beam into the pool (round-robin) + light the muzzle flash +
 // spawn the muzzle-flash particle burst (so every shot reads with juice).
 // ---------------------------------------------------------------------------
-void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to, WeaponFxKind kind) {
+void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to, WeaponFxKind kind,
+                         float widthOverride) {
     Tracer& t = m_tracers[m_nextTracer];
     t.from = from;
     t.to   = to;
     t.life = kTracerTime;
     t.age  = 0.0f;        // Lightning bolt grows from the muzzle over time
+    t.width = widthOverride;
     t.kind = kind;
     m_nextTracer = (m_nextTracer + 1) % kMaxTracers;
 
@@ -607,6 +609,32 @@ void CombatFx::spawnShipEmber(const x3::phys::Vec3& pos, const x3::phys::Vec3& v
     }
 }
 
+void CombatFx::spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir) {
+    x3::phys::Vec3 d = normalize(dir);
+    // One bright core flash at the hardpoint...
+    Particle f;
+    f.pos = pos;
+    f.vel = x3::phys::Vec3{ d.x * 2.0f, d.y * 2.0f, d.z * 2.0f };
+    f.life = f.maxLife = 0.07f;
+    f.size0 = 0.85f; f.size1 = 0.15f;
+    f.r = 5.5f; f.g = 4.2f; f.b = 2.2f;        // hot yellow-white (HDR -> bloom)
+    f.a0 = 1.0f; f.gravity = 0.0f; f.drag = 0.0f; f.additive = true;
+    spawnParticle(f);
+    // ...plus a short forward spray so the discharge reads directional.
+    for (int i = 0; i < 3; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ pos.x + d.x * 0.8f, pos.y + d.y * 0.8f, pos.z + d.z * 0.8f };
+        p.vel = x3::phys::Vec3{ d.x * (14.0f + frand() * 10.0f) + frandSym() * 2.0f,
+                                d.y * (14.0f + frand() * 10.0f) + frandSym() * 2.0f,
+                                d.z * (14.0f + frand() * 10.0f) + frandSym() * 2.0f };
+        p.life = p.maxLife = 0.10f + frand() * 0.08f;
+        p.size0 = 0.25f; p.size1 = 0.05f;
+        p.r = 4.5f; p.g = 3.0f; p.b = 1.2f;
+        p.a0 = 1.0f; p.gravity = 0.0f; p.drag = 0.5f; p.additive = true;
+        spawnParticle(p);
+    }
+}
+
 void CombatFx::addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal) {
     Decal& d = m_decalsRing[m_nextDecal];
     m_nextDecal = (m_nextDecal + 1) % kMaxDecals;
@@ -1063,8 +1091,16 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
             // Camera-facing ribbon (playtest "square rod" fix): a thin flat streak
             // that always faces the eye instead of drawBeam's world-fixed square
             // cross-section box. Taper the width as it fades for a fast-streak feel.
-            float width = kTracerThickness * (0.5f + 0.5f * k);
-            drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, tracerColor);
+            const float baseW = (t.width > 0.0f) ? t.width : kTracerThickness;
+            float width = baseW * (0.5f + 0.5f * k);
+            if (t.width > 0.0f) {
+                // SHIP-SCALE bolt: HDR-hot so it BLOOMS as an energy bolt under
+                // the space exposure (the 1.0-range on-foot tint reads olive).
+                const float hot[4] = { 3.2f, 2.9f, 1.3f, 1.0f };
+                drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, hot);
+            } else {
+                drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, tracerColor);
+            }
         }
     }
 
