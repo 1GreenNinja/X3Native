@@ -476,6 +476,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--capture-walk") {
             o.captureWalk = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWalkPath = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWalkRig  = argv[++i];
         }
         else if (a == "--screenshot-footik") {
             o.captureFootIk = true;

@@ -731,6 +731,7 @@ int main(int argc, char** argv) {
         _hc.cityShot         = o.cityShot;         _hc.cityShotPath     = o.cityShotPath;
         _hc.captureAi        = o.captureAi;        _hc.captureAiDir     = o.captureAiDir;
         _hc.captureWalk      = o.captureWalk;      _hc.captureWalkPath  = o.captureWalkPath;
+        _hc.captureWalkRig   = o.captureWalkRig;
         _hc.captureFootIk    = o.captureFootIk;    _hc.captureFootIkPath = o.captureFootIkPath;
         _hc.destructShot     = o.destructShot;     _hc.destructShotPath = o.destructShotPath;
         _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;
