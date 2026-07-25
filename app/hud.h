@@ -83,6 +83,13 @@ public:
     void drawAlert(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                    int level, float redShift, float time) const;
 
+    // ---- VIGIL BARK toast: the ambient companion line. A "VIGIL: ..." caption
+    // in his terminal-orange voice on a dark plate, low-center of the screen, word-
+    // wrapped, fading with `alpha` (0..1). Draws nothing when alpha <= 0 or empty.
+    // The text does NOT include the "VIGIL:" prefix — this adds the styled label.
+    void drawVigilBark(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                       const char* text, float alpha) const;
+
     // Semi-transparent panel + scrollback + input line. Slides down from the top
     // edge when opening and back up when closing over ~0.18 s (smoothstep). The
     // panel is drawn whenever the slide animation is in progress (anim > 0) so the
