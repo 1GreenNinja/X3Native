@@ -287,6 +287,23 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
             sky.zenith[i]  += (kAmber[i] - sky.zenith[i])  * (0.12f * low);
         }
     }
+    // ☀ SUN RADIANCE. sky.sunLight defaults to 1.0 and this world never set it, so
+    // daylight was no brighter than the ambient floor. Drive it with the day ramp.
+    // ⚠ This is a CONTRAST improvement, NOT the "flat towers / no shadows" fix — that
+    // was the SUN ELEVATION (see todCfg.middayElevation in hostEchotropolis, and the
+    // cosE reconstruction in app/tod.cpp). Measured at golden, aerial cam, ratio of
+    // fully-lit to fully-shadowed pixels at equal N.L: sunLight 0/0.5/1/2.3/40 ->
+    // 1.04 / 1.27 / 1.42 / 1.71 / 1.58 (40 loses to tonemap clipping). The reason
+    // raising this "did nothing" to the eye is AUTO-EXPOSURE: over the same sweep the
+    // frame MEAN barely moves (153.8/153.0/151.7/150.0) because AE renormalizes it.
+    // Never judge a light change in this world by frame brightness — use --legacypost
+    // (now honoured, see applyAtmosphere) or an in-frame lit:shadowed ratio.
+    // ECHO_SUNLIGHT overrides for A/B.
+    {
+        const float sunEnv = [](){ const char* e = std::getenv("ECHO_SUNLIGHT");
+                                   return e ? (float)std::atof(e) : -1.0f; }();
+        sky.sunLight = (sunEnv >= 0.0f) ? sunEnv : (0.10f + 3.20f * dayness);
+    }
     device->setSkyParams(sky);
     // Night ambient FLOOR: the pure-black sky kills the IBL contribution, so at
     // night the terrain is lit by ambient alone — hold a moonlight minimum so the
@@ -360,6 +377,11 @@ void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSamp
 // world-cloud layer / skybox-texture / god-ray pass, so those are intentionally
 // absent (clouds only exist on procedural planet spheres). Direction: vivid,
 // saturated, storybook-postcard (NMS/Aincrad key-art), not muted photorealism.
+// --legacypost / --notaa, latched from HostContext at host start so the per-frame
+// setPostFX below cannot clobber them (see the note at that call).
+static int  gLegacyPost = 0;
+static bool gNoTaa      = false;
+
 void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s) {
     auto clamp01 = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
     auto mix3 = [](float out[3], const float a[3], const float b[3], float t) {
@@ -461,6 +483,15 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // un-encoded swapchain, not real darkness. Halved now that *_SRGB encodes properly;
     // re-tune from here against fresh captures.
     px.aeMax          = 2.20f + 0.30f * low + 0.8f * night;
+    // ⚠ This setPostFX runs EVERY FRAME with a DEFAULT-CONSTRUCTED px (autoExposure
+    // and taa both true), so it silently overrode main.cpp's --legacypost / --notaa
+    // A/B levers: eye adaptation could not be turned off in this world. That is not
+    // cosmetic — AE renormalizes the frame, so "raise the sun and see if it changes"
+    // reads FLAT (mean 153.8/151.7/150.0 across sunLight 0/1/2.3) while with AE
+    // genuinely off the same sweep reads 102.9/132.4/146.3. Honour the CLI flags.
+    if (gLegacyPost) { px.autoExposure = false; px.taa = false;
+                       if (gLegacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; } }
+    if (gNoTaa) px.taa = false;
     device->setPostFX(px);
     device->setBloom(0.12f + 0.06f * low + 0.10f * night);    // more composite bloom at night
     device->setExposure(1.0f + 0.16f * low + 0.15f * night);
@@ -573,8 +604,19 @@ int hostEchotropolis(HostContext& hc) {
     // ---- P3: time-of-day. A full day-night cycle runs in 240s (windowed); the
     // clock starts at (and headless captures) ECHO_TOD = golden|dusk|night|noon
     // or a raw [0,1) fraction. Default: golden hour — the postcard light.
+    gLegacyPost = hc.legacyPost;   // let --legacypost / --notaa survive applyAtmosphere
+    gNoTaa      = hc.noTaa;
+
     x3::game::TodConfig todCfg;
     todCfg.dayLengthSeconds = 240.0f;
+    // SUN ELEVATION — the "flat towers / no cast shadows" root cause. The engine
+    // default (1.0 = sin of the peak elevation) puts midday at the ZENITH: the sun
+    // direction is then ~(0, 0.98, 0.2), so every VERTICAL facade sees N.L <= 0.2
+    // and renders at its ambient value regardless of orientation, and every cast
+    // shadow falls straight down inside the caster's own footprint. Echo Harbor is
+    // a PNW fjord city (~lat 47): cap the midday sun at ~46 deg so daylight RAKES
+    // the facades and the towers throw real shadows down the streets.
+    todCfg.middayElevation = 0.72f;   // sin(46 deg)
     x3::game::TimeOfDay tod(todCfg);
     {
         const char* e = std::getenv("ECHO_TOD");
