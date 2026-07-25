@@ -433,7 +433,7 @@ int main(int argc, char** argv) {
             // Common to BOTH cell builds (canon Floor 1 + the legacy tower).
             for (const char* f : { "marcus_webb_anim.glb", "alien_crawler_anim.glb",
                                    "chief_martinez.glb",
-                                   "AnnaCasual.glb", "AnnaBodySuit.glb", "AnnaTactical.glb",
+                                   "AnnaCasual.glb", "AnnaBodySuit_anim.glb", "AnnaTactical.glb",
                                    "Jake_22_actions.glb",
                                    "WeaponEnergyPistol.glb", "WeaponEnergyPistol2.glb",
                                    "WeaponRailgun.glb", "WeaponShotgun2.glb",
@@ -480,7 +480,7 @@ int main(int argc, char** argv) {
             }
             // Legacy tower only (Spire floors + env art).
             if (legacyCell) {
-                for (const char* f : { "chief_martinez_anim.glb", "Oracle.glb" })
+                for (const char* f : { "chief_martinez_anim.glb", "Oracle_anim.glb" })
                     bootManifest.emplace_back(rig, f);
             }
             x3::asset::prewarmModelDecodesAsync(bootManifest);

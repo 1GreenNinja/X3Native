@@ -592,8 +592,8 @@ void RescueSystem::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // boss on expiry: Aria->The Siren, Keisha->Breeder Queen, Emily->Oracle (§5).
     const Spec specs[3] = {
         { VictimId::Aria,   "Aria",   "AnnaCasual.glb",   "BossTheSiren.glb",     520.0f, wardA },
-        { VictimId::Keisha, "Keisha", "AnnaBodySuit.glb", "BossBreederQueen.glb", 600.0f, wardB },
-        { VictimId::Emily,  "Emily",  "AnnaTactical.glb", "Oracle.glb",           480.0f, wardC },
+        { VictimId::Keisha, "Keisha", "AnnaBodySuit_anim.glb", "BossBreederQueen_anim.glb", 600.0f, wardB },
+        { VictimId::Emily,  "Emily",  "AnnaTactical.glb", "Oracle_anim.glb",           480.0f, wardC },
     };
 
     for (const Spec& sp : specs) {
