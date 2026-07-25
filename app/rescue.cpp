@@ -11,7 +11,10 @@
 #include "engine/core/x3_log.h"
 
 #include <cmath>
+#include <cstdio>    // std::snprintf (R8 root-Y negative-control GLB builder)
 #include <cstring>   // std::memcpy (ragdoll bone bind-pose copies)
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -120,6 +123,12 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // the three captives don't breathe in lockstep. Skip when the model isn't
         // skinnable (no skin/clips) -> static draw, no regression. ----
         if (m_model.ok && m_skinner.bind(m_model)) {
+            // ROOT-Y LOCK (buried/bouncing guard): a victim's world Y is OWNED by
+            // her physics spawn (m_pos) — any clip with a broken baked root Y
+            // (the retarget pipeline's Jake -0.9488 armature-offset family, see
+            // anim.h setRootYLock) must never sink or bob her through the floor.
+            // Idle sway/lean is untouched (X/Z + rotations pass through).
+            m_skinner.setRootYLock(true);
             // GPU compute-skin when the device supports it (crowd-scalable); CPU LBS
             // fallback otherwise (headless / non-compute) — transparent to tick().
             const bool gpuSkin = m_skinner.enableGpuSkinning(device, m_model);
@@ -827,6 +836,113 @@ void rcheck(bool cond, const char* name) {
 // no-ops.
 using HeadlessDevice = x3::game::HeadlessRenderDevice;
 
+// ---- R8c negative-control asset: a tiny skinned GLB whose ONE clip carries a
+// BROKEN baked root Y (the retarget bug family: hips rest at +0.9 but the clip
+// translates them to ~-0.05..-0.25 — a metre buried, bouncing 0.2 m), plus a
+// rotation channel so the lock's "rotations still animate" contract is provable.
+// Structure: node0 = skinned mesh, node1 = "Armature" (identity), node2 = "Hips"
+// joint (rest T = [0, 0.9, 0]). Mirrors --test-anim's makeSkinnedGlb().
+void appendU32(std::vector<uint8_t>& b, uint32_t v) {
+    b.push_back(uint8_t(v));       b.push_back(uint8_t(v >> 8));
+    b.push_back(uint8_t(v >> 16)); b.push_back(uint8_t(v >> 24));
+}
+std::vector<uint8_t> makeBuriedRootGlb() {
+    struct V { float p[3]; float n[3]; float uv[2]; uint16_t j[4]; float w[4]; };
+    std::vector<V> v = {
+        {{-0.1f, 0.0f, 0}, {0,0,1}, {0,0}, {0,0,0,0}, {1,0,0,0}},
+        {{ 0.1f, 0.0f, 0}, {0,0,1}, {1,0}, {0,0,0,0}, {1,0,0,0}},
+        {{-0.1f, 1.8f, 0}, {0,0,1}, {0,1}, {0,0,0,0}, {1,0,0,0}},
+        {{ 0.1f, 1.8f, 0}, {0,0,1}, {1,1}, {0,0,0,0}, {1,0,0,0}},
+    };
+    std::vector<uint16_t> idx = { 0,1,2, 2,1,3 };
+
+    std::vector<uint8_t> bin;
+    auto put = [&](const void* d, size_t n) {
+        const uint8_t* p = (const uint8_t*)d; bin.insert(bin.end(), p, p + n);
+    };
+    auto align4 = [&]{ while (bin.size() % 4 != 0) bin.push_back(0); };
+
+    const size_t nv = v.size();
+    size_t posOfs = bin.size(); for (auto& vv : v) put(vv.p, 12);
+    size_t nrmOfs = bin.size(); for (auto& vv : v) put(vv.n, 12);
+    size_t uvOfs  = bin.size(); for (auto& vv : v) put(vv.uv, 8);
+    size_t jOfs   = bin.size(); for (auto& vv : v) put(vv.j, 8);
+    size_t wOfs   = bin.size(); for (auto& vv : v) put(vv.w, 16);
+    size_t idxOfs = bin.size(); put(idx.data(), idx.size()*2); align4();
+    size_t ibmOfs = bin.size();
+    float ibm[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; put(ibm, 64);
+    // Shared key times [0, 0.5, 1].
+    size_t timeOfs = bin.size(); float times[3] = {0.0f, 0.5f, 1.0f}; put(times, 12);
+    // BROKEN translation: rest hips Y is 0.9 but the clip buries them ~1 m down
+    // AND bounces 0.2 m — the exact live-bug signature.
+    size_t trnOfs = bin.size();
+    float trns[9] = { 0,-0.05f,0,  0,-0.25f,0,  0,-0.05f,0 }; put(trns, 36);
+    // Rotation: identity -> 30 deg about Z -> identity (sway that must SURVIVE
+    // the root-Y lock).
+    size_t rotOfs = bin.size();
+    const float s15 = std::sin(0.2617994f), c15 = std::cos(0.2617994f);
+    float quats[12] = { 0,0,0,1,  0,0,s15,c15,  0,0,0,1 }; put(quats, 48);
+
+    char buf[2048];
+    std::string j = "{\"asset\":{\"version\":\"2.0\"},";
+    j += "\"scene\":0,\"scenes\":[{\"nodes\":[0,1]}],";
+    j += "\"nodes\":[{\"mesh\":0,\"skin\":0},"
+         "{\"name\":\"Armature\",\"children\":[2]},"
+         "{\"name\":\"Hips\",\"translation\":[0,0.9,0]}],";
+    j += "\"meshes\":[{\"primitives\":[{\"attributes\":{";
+    j += "\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2,\"JOINTS_0\":3,\"WEIGHTS_0\":4},";
+    j += "\"indices\":5}]}],";
+    j += "\"skins\":[{\"joints\":[2],\"inverseBindMatrices\":6}],";
+    j += "\"animations\":[{\"name\":\"BuriedWalk\",\"channels\":["
+         "{\"sampler\":0,\"target\":{\"node\":2,\"path\":\"translation\"}},"
+         "{\"sampler\":1,\"target\":{\"node\":2,\"path\":\"rotation\"}}],";
+    j += "\"samplers\":[{\"input\":7,\"output\":8,\"interpolation\":\"LINEAR\"},"
+         "{\"input\":7,\"output\":9,\"interpolation\":\"LINEAR\"}]}],";
+    std::snprintf(buf, sizeof buf,
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":%zu,\"type\":\"VEC3\",\"min\":[-0.1,0,0],\"max\":[0.1,1.8,0]},"
+        "{\"bufferView\":1,\"componentType\":5126,\"count\":%zu,\"type\":\"VEC3\"},"
+        "{\"bufferView\":2,\"componentType\":5126,\"count\":%zu,\"type\":\"VEC2\"},"
+        "{\"bufferView\":3,\"componentType\":5123,\"count\":%zu,\"type\":\"VEC4\"},"
+        "{\"bufferView\":4,\"componentType\":5126,\"count\":%zu,\"type\":\"VEC4\"},"
+        "{\"bufferView\":5,\"componentType\":5123,\"count\":%zu,\"type\":\"SCALAR\"},"
+        "{\"bufferView\":6,\"componentType\":5126,\"count\":1,\"type\":\"MAT4\"},"
+        "{\"bufferView\":7,\"componentType\":5126,\"count\":3,\"type\":\"SCALAR\",\"min\":[0],\"max\":[1]},"
+        "{\"bufferView\":8,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":9,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"}],",
+        nv, nv, nv, nv, nv, idx.size());
+    j += buf;
+    std::snprintf(buf, sizeof buf,
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":64},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":12},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":48}],",
+        posOfs, nv*12, nrmOfs, nv*12, uvOfs, nv*8, jOfs, nv*8, wOfs, nv*16,
+        idxOfs, idx.size()*2, ibmOfs, timeOfs, trnOfs, rotOfs);
+    j += buf;
+    std::snprintf(buf, sizeof buf, "\"buffers\":[{\"byteLength\":%zu}]}", bin.size());
+    j += buf;
+
+    while (j.size() % 4 != 0) j.push_back(' ');
+    std::vector<uint8_t> binPad = bin;
+    while (binPad.size() % 4 != 0) binPad.push_back(0);
+    std::vector<uint8_t> glb;
+    const uint32_t total = 12 + 8 + uint32_t(j.size()) + 8 + uint32_t(binPad.size());
+    appendU32(glb, 0x46546C67); appendU32(glb, 2); appendU32(glb, total);
+    appendU32(glb, uint32_t(j.size())); appendU32(glb, 0x4E4F534A);
+    glb.insert(glb.end(), j.begin(), j.end());
+    appendU32(glb, uint32_t(binPad.size())); appendU32(glb, 0x004E4942);
+    glb.insert(glb.end(), binPad.begin(), binPad.end());
+    return glb;
+}
+
 } // namespace
 
 bool runRescueSelfTest() {
@@ -950,6 +1066,102 @@ bool runRescueSelfTest() {
         } else {
             rcheck(true, "R8 (no skinnable victim model on this checkout — drive still wired)");
         }
+    }
+
+    // ---- R8b (BURIED-GIRL FIX): a victim's ROOT (hips) must stay AT SPAWN HEIGHT.
+    // Her world Y is physics-owned (m_pos); with the root-Y lock enabled in build()
+    // the hips' model-space global Y must stay within +-0.05 m of its rest Y at
+    // t = 0 / 0.25 / 0.5 / 0.75 of EVERY clip (world Y = m_pos.y + model Y, scale 1,
+    // so the model-space bound IS the world-space bound). This is the gate that
+    // catches the "half-buried + bouncing" class no matter which clip is playing. --
+    {
+        const RescueVictim* animed = nullptr;
+        for (uint32_t i = 0; i < rescue.victimCount(); ++i)
+            if (rescue.victim(i).animActive()) { animed = &rescue.victim(i); break; }
+        if (animed) {
+            const x3::anim::Skinner& sk = animed->skinner();
+            const int rootNode = sk.rootYLockNode();
+            const float restY  = sk.rootYLockRestY();
+            bool lockOn = sk.rootYLock() && rootNode >= 0;
+            float maxDev = 0.0f;
+            std::vector<float> gl;
+            for (uint32_t c = 0; lockOn && c < sk.clipCount(); ++c) {
+                const float dur = sk.clipDuration(c);
+                for (float u : { 0.0f, 0.25f, 0.5f, 0.75f }) {
+                    if (sk.currentGlobals(animed->model(), c, dur * u, gl) == 0) continue;
+                    const float y = gl[(size_t)rootNode * 16 + 13];
+                    const float dev = std::abs(y - restY);
+                    if (dev > maxDev) maxDev = dev;
+                }
+            }
+            rcheck(lockOn && maxDev <= 0.05f,
+                   "R8b root-Y lock holds the victim's hips at spawn height (+-0.05 m, all clips)");
+            x3::logInfo("[rescue-test] R8b max hips-Y deviation " + std::to_string(maxDev) + " m");
+        } else {
+            rcheck(true, "R8b (no skinnable victim model on this checkout)");
+        }
+    }
+
+    // ---- R8c NEGATIVE CONTROL: a synthetic clip with a BROKEN baked root Y (hips
+    // rest +0.9, animated to -0.05..-0.25 — a metre buried, bouncing 0.2 m). With
+    // the lock DISABLED the R8b gate must FAIL (deviation ~0.95 m >> 0.05) — proving
+    // the gate detects the live-bug class; with the lock ENABLED the hips must pin
+    // to rest while the clip's ROTATION channel still animates (sway preserved). ----
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path tmp = fs::temp_directory_path() / "x3native_rescuetest";
+        fs::remove_all(tmp, ec);
+        fs::create_directories(tmp, ec);
+        {
+            std::vector<uint8_t> glb = makeBuriedRootGlb();
+            std::ofstream f(tmp / "buried.glb", std::ios::binary);
+            f.write((const char*)glb.data(), (std::streamsize)glb.size());
+        }
+        std::unique_ptr<x3::asset::IAssetSource> bsrc(x3::asset::createAssetSource());
+        bsrc->mountDir(tmp.string(), 0);
+        std::unique_ptr<x3::asset::IModelLoader> bloader(
+            x3::asset::createModelLoader(nullptr, bsrc.get()));
+        x3::asset::Model bmodel = bloader->load("buried.glb");
+        x3::anim::Skinner bsk;
+        if (bmodel.ok && bsk.bind(bmodel)) {
+            const int root = bsk.rootYLockNode();
+            std::vector<float> gl;
+            auto hipsY = [&](float t) -> float {
+                if (bsk.currentGlobals(bmodel, 0, t, gl) == 0 || root < 0) return 1e9f;
+                return gl[(size_t)root * 16 + 13];
+            };
+            // Lock OFF (the bind default): the gate MUST detect the burial + bounce.
+            const float y0off = hipsY(0.0f), yMidOff = hipsY(0.5f);
+            const bool detects = std::abs(y0off - 0.9f) > 0.5f &&        // ~1 m buried
+                                 std::abs(yMidOff - y0off) > 0.1f;       // bouncing
+            rcheck(root >= 0 && detects,
+                   "R8c NEGATIVE control: lock disabled -> the gate FAILS the buried clip");
+            // Lock ON: hips pinned to rest at both times...
+            bsk.setRootYLock(true);
+            const float y0on = hipsY(0.0f), yMidOn = hipsY(0.5f);
+            const bool pinned = std::abs(y0on - 0.9f) < 1e-3f &&
+                                std::abs(yMidOn - 0.9f) < 1e-3f;
+            // ...while the rotation channel still animates (the sway contract).
+            std::vector<float> pa, pb;
+            const uint32_t ja = bsk.computePalette(bmodel, 0, 0.0f, pa);
+            const uint32_t jb = bsk.computePalette(bmodel, 0, 0.5f, pb);
+            bool sways = (ja > 0 && ja == jb);
+            if (sways) {
+                bool any = false;
+                for (size_t k = 0; k < pa.size(); ++k)
+                    if (std::abs(pa[k] - pb[k]) > 1e-4f) { any = true; break; }
+                sways = any;
+            }
+            rcheck(pinned, "R8c lock enabled -> hips pinned to rest height (no sink, no bounce)");
+            rcheck(sways,  "R8c lock enabled -> rotations still animate (idle sway preserved)");
+        } else {
+            rcheck(false, "R8c synthetic buried-root GLB failed to load/bind");
+            rcheck(false, "R8c (lock check skipped)");
+            rcheck(false, "R8c (sway check skipped)");
+        }
+        bloader->unload(bmodel);
+        fs::remove_all(tmp, ec);
     }
 
     // ---- R9 (W4-1): EXTRACTION — a Companion that reaches the extraction point

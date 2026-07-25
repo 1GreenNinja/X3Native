@@ -300,6 +300,40 @@ bool Skinner::bind(const x3::asset::Model& model) {
     m_pelvisDropSmoothed = 0.0f;
     resolveFootIkBones(model);
 
+    // ---- Root-Y lock: resolve the root translation-carrying node once. Prefer
+    // the pelvis by NAME ("hips"/"pelvis" — the node broken retargets bury); fall
+    // back to the topmost skin joint (a joint whose parent is not itself a skin
+    // joint). The lock FLAG resets on re-bind (per-character opt-in via
+    // setRootYLock after bind). ----
+    m_rootYLock = false;
+    m_rootYLockNode = -1;
+    m_rootYLockRestY = 0.0f;
+    {
+        const x3::asset::Skin& skin = model.skins[0];
+        for (int j : skin.joints) {
+            if (j < 0 || (uint32_t)j >= m_nodeCount) continue;
+            const std::string& nm = model.nodes[j].name;
+            if (icontains(nm, "hips") || icontains(nm, "pelvis")) { m_rootYLockNode = j; break; }
+        }
+        if (m_rootYLockNode < 0) {
+            // Topmost joint: parent is -1 or not itself a skin joint.
+            auto isJoint = [&](int n) {
+                for (int j : skin.joints) if (j == n) return true;
+                return false;
+            };
+            for (int j : skin.joints) {
+                if (j < 0 || (uint32_t)j >= m_nodeCount) continue;
+                const int parent = model.nodes[j].parent;
+                if (parent < 0 || !isJoint(parent)) { m_rootYLockNode = j; break; }
+            }
+        }
+        if (m_rootYLockNode >= 0) {
+            float T[3], R[4], S[3];
+            decompose(model.nodes[m_rootYLockNode].localTransform, T, R, S);
+            m_rootYLockRestY = T[1];
+        }
+    }
+
     // Ragdoll-blend: a re-bind drops any prior external-bone resolution.
     m_extToJoint.clear();
     m_extResolvedCount = 0;
@@ -453,6 +487,10 @@ void Skinner::computeGlobals(const x3::asset::Model& m, uint32_t clip, float t,
         for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
             int n = *it;
             sampleNodeLocal(m, clip, n, t, local.data());
+            // ROOT-Y LOCK: replace the root node's animated local Y translation
+            // with its rest-pose Y (clips with a broken baked root Y — see anim.h
+            // setRootYLock — must not move a physics-owned character vertically).
+            if (m_rootYLock && n == m_rootYLockNode) local[13] = m_rootYLockRestY;
             int parent = m.nodes[n].parent;
             if (parent >= 0 && (uint32_t)parent < m_nodeCount && done[parent]) {
                 mat4Mul(&globals[(size_t)parent*16], local.data(), &globals[(size_t)n*16]);
@@ -909,6 +947,13 @@ bool Skinner::advanceBlend(const x3::asset::Model& model, float dt) {
             lerp3(&m_poseAS[i3], &m_poseBS[i3], bu, &m_blendS[i3]);
         }
     }
+
+    // ROOT-Y LOCK on the locomotion blend: clamp the root's blended local Y to
+    // rest BEFORE the crossfade mix below, so a broken baked root Y in Idle/Walk/
+    // Run can never bury a physics-owned character — while an authored discrete
+    // crossfade target (Sit / Jump via triggerClip) keeps its intentional root Y.
+    if (m_rootYLock && m_rootYLockNode >= 0 && (uint32_t)m_rootYLockNode < m_nodeCount)
+        m_blendT[(size_t)m_rootYLockNode * 3 + 1] = m_rootYLockRestY;
 
     // ---- 5) Crossfade / inertialization toward a discrete clip (e.g. Jump). ----
     // Ramp m_xfadeW with smoothstep over m_xfadeDur. The target clip plays at its

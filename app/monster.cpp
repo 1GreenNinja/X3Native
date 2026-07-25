@@ -322,6 +322,9 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // leave the skinner invalid -> static draw. ----
     if (prof) profT0 = profclock::now();
     if (m_model.ok && m_skinner.bind(m_model)) {
+        // ROOT-Y LOCK opt-in (Tuning::lockRootY — crowd citizens whose world Y the
+        // feeder owns): a broken baked clip root Y must never bury/bob them.
+        if (tuning.lockRootY) m_skinner.setRootYLock(true);
         // GPU SKINNING OF MODELS: register this character's skinned primitives with
         // the device's compute-skinning path. When supported, apply/applyLocomotion
         // upload the joint palette + the GPU skins (no per-frame CPU LBS + full vertex
