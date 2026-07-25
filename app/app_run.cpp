@@ -52,6 +52,7 @@
 #include "skilltree.h"                      // [W9-3 RPG] skill tree + PlayerStatMods layer
 #include "rpg_ui.h"                         // [W9-3 RPG] backpack/skill screens + HUD chip
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
+#include "canon_stairs.h"                   // THE STAIRWELL — open switchback tower joining the normal floors
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
@@ -1247,6 +1248,7 @@ int runDefaultHost(HostContext& hc) {
     itemDb.load(x3::game::itemsJsonPath());
     skillTree.load(x3::game::skillTreeJsonPath());
     x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
+    x3::game::CanonStairwell canonStairs;      // THE STAIRWELL — open switchback tower joining F1..F7
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
@@ -1857,6 +1859,14 @@ int runDefaultHost(HostContext& hc) {
                 copts.breachCenter = breachCenter;
                 copts.breachHalf = halfCut;
             }
+            // ---- THE STAIRWELL: resolve the open-switchback layout from the Elevator
+            // Lobby column and feed the per-floor wall openings so buildCanonFloor cuts a
+            // doorway from each normal floor's lobby onto its stair landing (same wall
+            // builders as every doorway; NO CanonDoorway -> PVS/lint untouched). The tower
+            // geometry itself is built after the floor (below), like canon_45's climb.
+            const x3::game::StairPlan stairPlan = x3::game::CanonStairwell::plan(canonFloor);
+            for (const auto& so : x3::game::CanonStairwell::openings(stairPlan))
+                copts.stairOpenings.push_back(so);
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
             // W2-A2 (punch-list P0 #5): DOOR SOUNDS — wire the audio system + the
             // W2-B servo/denied WAVs into the door system itself, so every open/
@@ -1971,6 +1981,13 @@ int runDefaultHost(HostContext& hc) {
                           x3::game::riggedGlbRoot(),
                           x3::game::assetRoot() + "/surface_library", canonLights);
             if (bootProf) bootProfMs("canon45");
+            // ---- THE STAIRWELL: build the open switchback tower south of the elevator
+            // spine (flights/landings/walls/rails + motivated lights). Openings into each
+            // lobby were already cut above (copts.stairOpenings). 4.5 is NOT a normal floor
+            // (it hangs at z~=0, far from this shaft at z~=-31) so nothing opens onto it. ----
+            canonStairs.build(stairPlan, scene, *device, *physics,
+                              x3::game::assetRoot() + "/surface_library", canonLights);
+            if (bootProf) bootProfMs("canonStairs");
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the
