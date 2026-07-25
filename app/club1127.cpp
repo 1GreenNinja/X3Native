@@ -103,8 +103,12 @@ const float kOrb[4]    = { 0.700f, 0.700f, 0.800f, 1.0f }; // mirror ball facets
 // near-mirror reflectivity + the warm bar keys now LIGHT the stone; it no longer
 // lights itself. Reads as deep emerald-black granite, never neon.
 const float kGranite[4]    = { 0.050f, 0.140f, 0.078f, 1.0f };
-const float kGraniteEm[4]  = { 0.010f, 0.050f, 0.026f, 0.30f }; // faint emerald sheen floor
-                                                               // (reflectivity + warm keys do the lighting)
+// GAMMA WALK-BACK (feat/club-gamma-fix, 2026-07-25): the sRGB fix brightened darks,
+// so the emerald SELF-GLOW that kept the stone off pure-black is now redundant and
+// reads as a lit lamp. Push it to near-zero (str 0.30 -> 0.08, effective green
+// ~0.004) — real stone is lit by the mrGlass near-mirror reflections + the warm bar
+// keys, never by self-emission.
+const float kGraniteEm[4]  = { 0.010f, 0.050f, 0.026f, 0.08f }; // near-zero emerald sheen (reflections/keys light it)
 // White-oak (1897 barn-wood) U-bar base — warm aged oak.
 const float kOak[4]    = { 0.230f, 0.150f, 0.090f, 1.0f };
 // THE LAIR (NE corner, upstairs) — charcoal light-absorbing walls + warm dens.
@@ -154,7 +158,10 @@ const float kEmitAbTop[4]   = { 0.353f, 0.353f, 0.416f, 1.2f };// aerial-bar pol
 // A real blacklight is deep blue-violet — almost pure blue with a whisper of violet.
 // Red dropped 0.45 -> 0.10 (near-zero, just a whisper), blue held at 1.0, green 0.
 const float kBlacklightR = 0.10f, kBlacklightG = 0.0f, kBlacklightB = 1.0f;
-const float kBlacklightEmit = 1.35f;   // dim UV tube bloom (was 4.0 — a magenta bar)
+// GAMMA WALK-BACK (feat/club-gamma-fix): the HDR tube emissive bloomed harder once
+// the sRGB fix stopped crushing it — 1.35 -> 0.95 so the tubes read as deep dim
+// blue-violet bars again, not blown rods (the cast point light below still washes wall).
+const float kBlacklightEmit = 0.95f;   // dim UV tube bloom (4.0 -> 1.35 -> 0.95 post-gamma)
 // Companion CAST color for each tube's point light (fix/club-blacklights): the
 // tubes were emissive-only geometry — they glowed as thin bars but cast NOTHING,
 // so the wall behind them stayed dead-black. Each tube carries a violet point light;
@@ -1050,9 +1057,14 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // duct ~0.077, conduit ~0.036 — enough to lift the silhouette out of black so
         // the exposed-truss ceiling READS, low enough that it grazes as lit metal (not
         // a neon lightbox). The geometry's own form + the room bounce still shade it.
-        const float kSteelEm[4]  = { 0.130f, 0.140f, 0.170f, 0.60f }; // faint cool steel self-read
-        const float kDuctEm[4]   = { 0.170f, 0.180f, 0.200f, 0.45f }; // galvanised duct sheen
-        const float kCondEm[4]   = { 0.115f, 0.100f, 0.078f, 0.40f }; // warm conduit sheen
+        // GAMMA WALK-BACK (feat/club-gamma-fix, 2026-07-25): this emissive self-read
+        // existed ONLY to lift the truss/duct/conduit silhouette out of the crushed
+        // black void. The sRGB fix already lifts those darks, so the self-read is now
+        // double-lighting the ceiling into a lit grid. Strengths ~halved (0.60/0.45/
+        // 0.40 -> 0.26/0.20/0.18) so the bones still READ as grazed metal, not a lightbox.
+        const float kSteelEm[4]  = { 0.130f, 0.140f, 0.170f, 0.26f }; // faint cool steel self-read (halved)
+        const float kDuctEm[4]   = { 0.170f, 0.180f, 0.200f, 0.20f }; // galvanised duct sheen (halved)
+        const float kCondEm[4]   = { 0.115f, 0.100f, 0.078f, 0.18f }; // warm conduit sheen (halved)
         const float yBot = 8.60f, yTop = 8.98f, yMid = (yBot + yTop) / 2;
         const float zHalf = CL / 2 - 0.20f;
         // Transverse trusses (span the 43 ft N-S short axis), 3 m centres, offset
@@ -1467,7 +1479,10 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 // dances AND reflects in it, instead of the tiles blasting their own blue.
                 // Glossier albedo split (bright vs dark squares) carries the checker; the
                 // wet MR (mrWet, rough 8) makes the beams POOL and shimmer in the surface.
-                const float emTileA[4] = { 0.06f, 0.04f, 0.42f, 0.10f };
+                // GAMMA WALK-BACK (feat/club-gamma-fix): under the corrected curve the
+                // whisper under-glow reads brighter; trim 0.10 -> 0.055 so the floor stays
+                // a DIM glossy checkerboard the light show reflects in (not a lit tile).
+                const float emTileA[4] = { 0.06f, 0.04f, 0.42f, 0.055f };
                 const float tileCol[4] = { lit ? 0.090f : 0.020f, lit ? 0.092f : 0.020f,
                                            lit ? 0.105f : 0.028f, 1.0f };
                 const uint32_t tid = box(tx, 0.12f, tz, (tw - 0.02f) / 2, 0.015f, (td - 0.02f) / 2,
@@ -2318,12 +2333,14 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // club washes: violet overhead, magenta over the bar side, UV-violet on the
     // mirror floor. They set the room's colored mood; the orbiters + fixtures pop
     // on top.)
-    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.22f, 0.30f, 1.55f, 25.0f);       // central overhead BLUE-UV wash
-                                                // (BLUE-UV: red 1.05 -> 0.22 so the overhead UV reads blue,
-                                                //  not pink; blue held at 1.55 so the room stays lit)
-    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.70f, 0.20f, 1.10f, 10.0f); // ground-bar MAGENTA wash (bar-side accent, kept)
-    addLight(m_lights, 0, oy + 2.0f, 0, 0.20f, 0.16f, 1.75f, 18.0f);            // BLUE-UV wash (mirror floor)
-                                                // (BLUE-UV: red 0.72 -> 0.20, blue held at 1.75 — no pink)
+    // GAMMA WALK-BACK (feat/club-gamma-fix, 2026-07-25): these three ROOM-WIDE washes
+    // were cranked to HDR to fight the crushed-dark curve. The sRGB fix lifts the darks
+    // for free, so at full strength they now blow the walls into a bright purple rave
+    // wash. Intensities cut ~35% (blue 1.55->1.00, 1.75->1.10; magenta 1.10->0.72) so
+    // they set a MOODY colored mood the neon/beams pop on top of — not a flat blowout.
+    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.14f, 0.20f, 1.00f, 25.0f);       // central overhead BLUE-UV wash
+    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.46f, 0.13f, 0.72f, 10.0f); // ground-bar MAGENTA wash (bar-side accent)
+    addLight(m_lights, 0, oy + 2.0f, 0, 0.13f, 0.10f, 1.10f, 18.0f);            // BLUE-UV wash (mirror floor)
 
     // DANCE-FLOOR KEY (fix/club-blacklights): the dancers rendered as SOLID BLACK
     // silhouettes — the orbiters sat at ceiling height so their pools hit the
@@ -2332,12 +2349,15 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // centroid (the dancer spots cluster around z ≈ -2) puts actual light on
     // faces/torsos. Deliberately gentle — way under the gel colors — so the room
     // stays a moody club, not a showroom.
-    addLight(m_lights, -6.0f, oy + 4.6f, 0.0f, 1.50f, 1.35f, 1.85f, 14.0f);
+    // GAMMA WALK-BACK: the crowd key was hot to punch through the dark curve; cut
+    // ~30% (1.50/1.35/1.85 -> 1.05/0.95/1.30) so it lights faces without over-exposing.
+    addLight(m_lights, -6.0f, oy + 4.6f, 0.0f, 1.05f, 0.95f, 1.30f, 14.0f);
     // ...plus two soft lavender PERIMETER FILLS at head height flanking the dance
     // floor (dfX≈-6): the dark-albedo outfits need N·L from the SIDE to read at all.
     // (Reduced 4->2 to reserve point-light budget for the Lair / tunnel / Complex.)
+    // GAMMA WALK-BACK: fill trimmed ~30% (1.00/0.88/1.25 -> 0.70/0.62/0.88).
     {
-        const float fillC[3] = { 1.00f, 0.88f, 1.25f };
+        const float fillC[3] = { 0.70f, 0.62f, 0.88f };
         const float fillPts[2][3] = {
             { -9.5f, 1.7f, -3.0f }, { -3.0f, 1.7f, 3.0f },
         };

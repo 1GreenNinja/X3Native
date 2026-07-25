@@ -105,16 +105,18 @@ int hostClub(HostContext& hc) {
         //     lights actually BLOOM through the ACES post stack.
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
         device->setIblProbe(true);          // bake the neon room into the env cube
-        device->setIblIntensity(0.46f);     // colored ambient fill — moody but readable
-                                            // (fix/club-blacklights: 0.40 -> 0.46, one
-                                            // notch so dancer faces/torsos catch fill)
-        device->setIblSpecular(1.30f);      // mirror ball / chrome / glass bar shine
+        // GAMMA WALK-BACK (feat/club-gamma-fix, 2026-07-25): the sRGB-encode fix
+        // brightened crushed darks the most (~2.4x in the midtones, more in shadow),
+        // so the colored ambient FILL that was propping up the black void is now
+        // double-counting — the walls lifted into a glowing-purple rave wash. Cut the
+        // fill/ambient/bloom back HARD and let the real neon/UV lights + reflections
+        // do the work (0.46 -> 0.20 ibl, ambient ~halved, bloom 0.28 -> 0.16).
+        device->setIblIntensity(0.20f);     // colored ambient fill — moody, no longer a wash
+        device->setIblSpecular(1.30f);      // mirror ball / chrome / glass bar shine (reflections = intent, kept)
         device->setMetalAmbient(1.0f);      // metals keep an F0 response (never black)
-        device->setAmbient(0.060f, 0.048f, 0.095f);  // low VIOLET floor (club-purple, not gray)
-                                            // (fix/club-blacklights: lifted a notch —
-                                            // the dancers read as SOLID BLACK cutouts)
+        device->setAmbient(0.024f, 0.019f, 0.040f);  // low VIOLET floor (club-purple, not gray) — halved
         device->setExposure(1.0f);
-        device->setBloom(0.28f);            // let the neon/blacklight/OLED sing
+        device->setBloom(0.16f);            // let the neon/blacklight/OLED sing WITHOUT blowing the beams milky
 
         const x3::phys::Vec3 spawn = club.spawn();
 
