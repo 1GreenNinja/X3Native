@@ -155,6 +155,7 @@ int   g_volOverride = -1;    // console `vol on|off|auto`: -1 env default, else 
 std::string g_playasCapPath; // PLAYAS_DEMO: armed capture to finalize post-endFrame
 std::string g_shotPath;      // console `screenshot`: armed capture to finalize post-endFrame
 float g_ambScale = 1.0f;     // console `amb <scale>`: city ambient multiplier (Tim's glare knob)
+float g_hazeScale = 1.0f;    // console `haze <scale>`: aerial-fog multiplier (distance washout knob)
 float g_sunOverride = -1.0f; // console `sun <scale>|auto`: <0 = auto ramp
 void charCB(GLFWwindow*, unsigned int c) {
     if (g_hud && g_hud->consoleOpen()) g_hud->onChar(c);
@@ -446,8 +447,8 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // (900->380) and lift density so mid/far towers desaturate toward the sky with depth,
     // while maxOpacity stays capped so the 4km sea-approach island doesn't drown in soup.
     fog.start      = 380.0f;                                   // depth begins just past the near towers
-    fog.density    = 0.00019f + 0.00004f * low;               // clear aerial perspective across the city
-    fog.maxOpacity = 0.70f + 0.06f * low;                     // far island hazes but never fully dissolves
+    fog.density    = (0.00019f + 0.00004f * low) * g_hazeScale; // clear aerial perspective across the city
+    fog.maxOpacity = std::min(0.95f, (0.70f + 0.06f * low) * g_hazeScale); // far island hazes, never dissolves
 
     // ---- 1b. VOLUMETRIC LIGHT SCATTERING (the CP2077/Witcher signature) --------
     // Upgrades the flat extinction above into a raymarched medium: the sun shadow
@@ -3070,6 +3071,12 @@ int hostEchotropolis(HostContext& hc) {
                if (f > 0.0f && f <= 4.0f) { g_ambScale = f; console->print("ambient x " + a[0]); }
                else console->print("amb <0.1..4>|auto"); }
     }, "city ambient-light multiplier (glare knob)");
+    console->registerCommand("haze", [&](const std::vector<std::string>& a) {
+        if (a.empty() || a[0] == "auto") { g_hazeScale = 1.0f; console->print("haze auto"); }
+        else { const float f = (float)std::atof(a[0].c_str());
+               if (f >= 0.0f && f <= 4.0f) { g_hazeScale = f; console->print("haze x " + a[0]); }
+               else console->print("haze <0..4>|auto  (0 = crystal air)"); }
+    }, "aerial-fog multiplier (distance washout knob)");
     console->registerCommand("screenshot", [&](const std::vector<std::string>&) {
         static int shotN = 0;
         char p[96]; std::snprintf(p, sizeof(p), "captures/shot_%03d.png", shotN++);
@@ -3257,7 +3264,23 @@ int hostEchotropolis(HostContext& hc) {
                 driveYaw = 0.0f;
             }
             if (followIdx >= 0 && playasFrame <= 240 + 10*60) {
-                driveYaw += dt * (6.2831853f / 8.0f);   // full turn in 8 s
+                // ECHO_PLAYAS_SPIN=0 freezes the yaw (static camera -> TAA
+                // converges -> clean captures for orientation forensics).
+                // ECHO_PLAYAS_FLYCAM=1 swaps the ride-along view for a direct
+                // fly-camera inspection 5m from the agent (isolates the follow-
+                // camera math from the character rendering).
+                static const bool playasSpin = [](){ const char* e = std::getenv("ECHO_PLAYAS_SPIN");
+                                                     return !(e && e[0]=='0'); }();
+                static const bool playasFlyCam = [](){ const char* e = std::getenv("ECHO_PLAYAS_FLYCAM");
+                                                       return e && e[0]=='1'; }();
+                if (playasSpin) driveYaw += dt * (6.2831853f / 8.0f);   // full turn in 8 s
+                if (playasFlyCam) {
+                    const auto& a0 = npcLife.agent(0);
+                    flyMode = true; flySeeded = true;
+                    flyX = a0.pos.x + 5.0f; flyY = a0.pos.y + 1.6f; flyZ = a0.pos.z + 5.0f;
+                    flyYaw = std::atan2(a0.pos.z - flyZ, a0.pos.x - flyX);
+                    flyPitch = -0.12f; flyRoll = 0.0f;
+                }
                 if ((playasFrame % 45) == 0) {
                     char cap[128];
                     std::snprintf(cap, sizeof(cap), "captures/playas_%03d.png", playasFrame);
@@ -3628,7 +3651,24 @@ int hostEchotropolis(HostContext& hc) {
             const float back = 4.6f, up = 2.7f, headY = 1.5f;
             const float camx = a.pos.x - std::cos(a.yaw) * back;
             const float camz = a.pos.z - std::sin(a.yaw) * back;
-            const float camy = a.pos.y + up;
+            // TERRAIN CLEARANCE (the "model only visible in a narrow arc" bug):
+            // it wasn't culling — a terrain rise between the trailing camera and
+            // the citizen blocked the LINE OF SIGHT at most yaws (the fly-cam
+            // inspection saw her fine from a clear bearing). Crane the camera up
+            // until the whole cam->head ray clears the heightfield.
+            float camy = a.pos.y + up;
+            if (hf.ok()) {
+                camy = std::max(camy, hf.heightAt(camx, camz) + 0.6f);
+                const float ty = a.pos.y + headY;
+                for (int s2 = 1; s2 <= 6; ++s2) {
+                    const float t = (float)s2 / 7.0f;
+                    const float sx = camx + (a.pos.x - camx) * t;
+                    const float sz = camz + (a.pos.z - camz) * t;
+                    const float g  = hf.heightAt(sx, sz) + 0.35f;
+                    if (camy + (ty - camy) * t < g)
+                        camy = std::max(camy, (g - ty * t) / (1.0f - t));
+                }
+            }
             const float dx = a.pos.x - camx, dyy = (a.pos.y + headY) - camy, dz = a.pos.z - camz;
             const float yaw = std::atan2(dz, dx);
             const float pitch = std::atan2(dyy, std::sqrt(dx*dx + dz*dz));
@@ -3770,9 +3810,9 @@ int hostEchotropolis(HostContext& hc) {
                 const float silver[4] = { 0.80f, 0.83f, 0.88f, 0.95f };
                 const char* mode =
                     flyMode ? "FLIGHT   WASD + mouse   Q/E roll   SPACE/C up-down   ARROWS fwd + turn   SHIFT fast   G ground   V orbit"
-                  : walkMode ? (followIdx >= 0 ? (playAs ? "PLAY AS   WASD drive   E spectate   F release"
-                                                          : "RIDE-ALONG   E take controls   F release")
-                                               : "GROUND   WASD + mouse   SHIFT run   SPACE jump   G flight   T talk")
+                  : (followIdx >= 0) ? (playAs ? "PLAY AS   WASD drive   E spectate   F release"
+                                               : "RIDE-ALONG   E take controls   F release")
+                  : walkMode ? "GROUND   WASD + mouse   SHIFT run   SPACE jump   G flight   T talk"
                   : "ORBIT   drag pan   RMB rotate   wheel zoom   G ground   V flight";
                 device->drawHudText(frame, mode, 12.0f + pad, 12.0f + barH + 20.0f, 12.0f, silver);
             }
