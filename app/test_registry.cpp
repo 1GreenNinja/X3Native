@@ -55,6 +55,7 @@
 #include "leveldoc_world.h"
 #include "player.h"
 #include "monster.h"
+#include "sarah.h"   // Sarah companion-combat self-test (--test-companion-combat)
 #include "level1_game.h"
 #include "canon_play.h"
 #include "desc_mechanics.h"   // W9-1: runDescMechSelfTest (--test-descmech)
@@ -851,6 +852,11 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testRescue) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
         return x3::game::runRescueSelfTest() ? 0 : 1;
+    }
+    if (tf.testCompanionCombat) {
+        x3::logInfo("running Sarah companion-combat self-test (C1-C6: restrained/onFreed "
+                    "wake/acquire+fire/follow/separation/incapacitate-not-delete)...");
+        return x3::game::runCompanionCombatSelfTest() ? 0 : 1;
     }
     if (tf.testThirdPerson) {
         x3::logInfo("running third-person view (Jake avatar + follow cam + held weapon) self-test (TP1-TP9)...");
