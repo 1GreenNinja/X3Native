@@ -2039,7 +2039,8 @@ int hostSpace(HostContext& hc) {
                 in.moveFwd    = (kd(GLFW_KEY_W) ?  1.0f : 0.0f) + (kd(GLFW_KEY_S) ? -1.0f : 0.0f);
                 in.moveStrafe = (kd(GLFW_KEY_D) ?  1.0f : 0.0f) + (kd(GLFW_KEY_A) ? -1.0f : 0.0f);
                 in.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
-                in.jumpPressed= kd(GLFW_KEY_SPACE);   // held = up impulse
+                in.jumpPressed= kd(GLFW_KEY_SPACE);   // held = rise (ship up axis)
+                in.diveHeld   = kd(GLFW_KEY_C);       // held = drop (ship -up axis)
                 in.lookDX     = ddx;
                 in.lookDY     = ddy;
                 boostActive   = in.sprint;
