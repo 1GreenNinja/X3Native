@@ -31,7 +31,7 @@ const float kCabFloor[4]     = { 0.10f, 0.10f, 0.12f, 1.0f };   // dark cab deck
 const float kDarkGlassTint[3]= { 0.10f, 0.12f, 0.16f };         // SMOKED dark glass tint
 const float kNoEm[4]         = { 0, 0, 0, 0 };
 // Accent strip glow (cool premium teal-white), holo cyan, warm vent amber.
-const float kAccentEm[4]     = { 0.10f, 0.55f, 0.70f, 2.2f };
+const float kAccentEm[4]     = { 0.10f, 0.55f, 0.70f, 1.5f }; // gamma walk-back (was 2.2)
 const float kWarmEm[4]       = { 0.95f, 0.78f, 0.45f, 1.4f };
 
 constexpr float kPi2 = 6.2831853f;
@@ -356,8 +356,12 @@ bool ElevatorShowcase::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // Warm KEY light — intensity baked into the color magnitude (PointLight.color =
     // linear RGB * intensity). Bright enough to lift the dark-glass cab interior so
     // the smoked walls read rich (not black) + the accent strips/holo pop against it.
-    { x3::rhi::PointLight ceil; ceil.color[0]=3.4f; ceil.color[1]=3.0f; ceil.color[2]=2.4f; ceil.range=8.0f; m_lights.push_back(ceil); } // warm key
-    { x3::rhi::PointLight holo; holo.color[0]=0.6f; holo.color[1]=2.2f; holo.color[2]=3.2f; holo.range=5.0f;  m_lights.push_back(holo); }  // holo cyan glow
+    // GAMMA WALK-BACK (integration/gamma-fold, 2026-07-25): these always-on base
+    // lights were tuned on the 2x-dark engine; the sRGB fix lifts them ~2.4x so the
+    // luxury cab reads over-bright (measured mean-luma ~140). Cast intensities cut
+    // ~30% (matching the club's wash walk-back) — still a bright showcase, no blowout.
+    { x3::rhi::PointLight ceil; ceil.color[0]=2.40f; ceil.color[1]=2.10f; ceil.color[2]=1.70f; ceil.range=8.0f; m_lights.push_back(ceil); } // warm key (was 3.4/3.0/2.4)
+    { x3::rhi::PointLight holo; holo.color[0]=0.42f; holo.color[1]=1.55f; holo.color[2]=2.25f; holo.range=5.0f;  m_lights.push_back(holo); }  // holo cyan glow (was 0.6/2.2/3.2)
     // WAVE-2B (LD review #3): the cab read as a BLACK BOX between two beautiful vistas —
     // the exterior crown glow existed but the interior ceiling had no fill, so the coffer
     // + upper walls fell to black (captures/elevtrio/elevator_interior.png). Add ONE SOFT
@@ -366,7 +370,7 @@ bool ElevatorShowcase::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ceiling + rails read without flattening the smoked-glass richness. Placed at [2] so
     // the disco spots stay the TRAILING lights (layoutCab poses this + skips it in the
     // disco sweep). Low intensity: lift the black, don't wash the room.
-    { x3::rhi::PointLight fill; fill.color[0]=2.4f; fill.color[1]=2.6f; fill.color[2]=3.0f; fill.range=6.5f; m_lights.push_back(fill); } // soft ceiling fill
+    { x3::rhi::PointLight fill; fill.color[0]=1.70f; fill.color[1]=1.85f; fill.color[2]=2.10f; fill.range=6.5f; m_lights.push_back(fill); } // soft ceiling fill (gamma walk-back, was 2.4/2.6/3.0)
     // 4 disco spots (off until 1127); placed in layoutCab().
     for (int i = 0; i < 4; ++i) { x3::rhi::PointLight l; l.color[0]=l.color[1]=l.color[2]=0.0f; l.range=7.0f; m_lights.push_back(l); }
 
@@ -547,7 +551,7 @@ void ElevatorShowcase::buildStrataLiner(Scene& scene, x3::rhi::IRenderDevice& de
         // dark interior with colour through the glass. Keep the base glow LOW (a coloured
         // depth cue, not an area light); the bright moving scan-seam (update()) is the real
         // streaming tell, and it rides additively on top so it still pops.
-        const float em = glow ? 0.70f : 0.16f;
+        const float em = glow ? 0.50f : 0.12f;   // gamma walk-back (was 0.70/0.16)
         const float* tint = glow ? grgb : rgb;
         // Back face (-Z, the "spine" seen through the -Z glass wall + straight down the shaft).
         face(inHX - 0.02f, panelHY, 0.03f, m_shaftX, cy, m_shaftZ - inHZ + 0.05f, tint, em);
@@ -913,7 +917,7 @@ void ElevatorShowcase::buildMusicVideoGlass(Scene& scene, x3::rhi::IRenderDevice
         e.mrTex = m_mrPanel;
         e.emissiveTex = m_mvFrame[0];
         e.baseColor[0] = 0.05f; e.baseColor[1] = 0.05f; e.baseColor[2] = 0.07f; e.baseColor[3] = 0.82f;
-        e.emissive[0] = 1.0f; e.emissive[1] = 1.0f; e.emissive[2] = 1.0f; e.emissive[3] = 2.2f;
+        e.emissive[0] = 1.0f; e.emissive[1] = 1.0f; e.emissive[2] = 1.0f; e.emissive[3] = 1.5f; // gamma walk-back (was 2.2)
         e.alphaBlend = true;                         // see-through holo glass (blend tail, no depth trap)
         e.tag = (uint32_t)Tag::Prop; e.body.id = 0;
         uint32_t id = scene.add(e); ++m_stats.entities;
@@ -1047,7 +1051,7 @@ void ElevatorShowcase::animateShow(float dt, Scene& scene) {
         e.emissive[0] = (rA + (rB-rA)*blend) + floorGlow;
         e.emissive[1] = (gA + (gB-gA)*blend) + floorGlow;
         e.emissive[2] = (bA + (bB-bA)*blend) + floorGlow;
-        e.emissive[3] = (1.0f + 1.1f * boost);                // bright, but below the white-clip of the pastel wash
+        e.emissive[3] = (0.70f + 0.75f * boost);              // gamma walk-back (was 1.0+1.1*boost) — enveloping but no white-clip
     }
 
     // ---- 2. MUSIC-VIDEO GLASS: cut frames on the beat. Mostly the 4 dancer poses on the
@@ -1069,7 +1073,7 @@ void ElevatorShowcase::animateShow(float dt, Scene& scene) {
     }
     for (uint32_t id : m_eMvPanel)                            // beat-swell the glow
         if (id != kNoLink && id < scene.size())
-            scene.get(id).emissive[3] = (1.9f + 0.8f * thump) * (0.7f + 0.6f * boost);
+            scene.get(id).emissive[3] = (1.30f + 0.55f * thump) * (0.7f + 0.6f * boost); // gamma walk-back (was 1.9+0.8*thump)
 
     // ---- 3. CONCERT PA: strobe the driver lenses on the beat; the sub cones pump via the
     //         ride-along loop (it scales each RideEnt pump by m_showPump below). ----
@@ -1081,11 +1085,11 @@ void ElevatorShowcase::animateShow(float dt, Scene& scene) {
         const float flash = 0.75f + 1.9f * thump;
         if (i & 1) { e.emissive[0]=0.5f*flash; e.emissive[1]=0.7f*flash; e.emissive[2]=1.0f*flash; }
         else       { e.emissive[0]=1.0f*flash; e.emissive[1]=0.5f*flash; e.emissive[2]=0.8f*flash; }
-        e.emissive[3] = 1.6f * boost + 0.6f;
+        e.emissive[3] = 1.10f * boost + 0.42f;   // gamma walk-back (was 1.6*boost+0.6)
     }
     for (uint32_t id : m_eSubCone)                            // the cone face glows as it pumps
         if (id != kNoLink && id < scene.size())
-            scene.get(id).emissive[3] = 0.6f + 1.3f * thump * boost;
+            scene.get(id).emissive[3] = 0.42f + 0.90f * thump * boost; // gamma walk-back (was 0.6+1.3*thump*boost)
     m_showPump = thump * (0.7f + 0.6f * boost);               // the ride-along loop reads this
 
     // ---- 4. CONCERT-WASH LIGHTS: reuse the 4 (otherwise-dead) disco spots [3..6] as a
@@ -1093,14 +1097,14 @@ void ElevatorShowcase::animateShow(float dt, Scene& scene) {
     //         show — cohesion (the spectacle plays OVER the warm luxury base [0..2]). ----
     for (int i = 3; i < (int)m_lights.size(); ++i) {
         float r,g,b; hsv2rgb((float)(i-3)/4.0f + t*0.10f, 0.85f, 0.6f + 0.9f*thump, r, g, b);
-        const float amp = (1.2f + 2.6f * boost);
+        const float amp = (0.85f + 1.80f * boost);   // gamma walk-back (was 1.2 + 2.6*boost)
         m_lights[i].color[0] = r*amp; m_lights[i].color[1] = g*amp; m_lights[i].color[2] = b*amp;
     }
 
     // ---- LUXURY chandelier: a gentle warm breathe under the show (never strobes). ----
     for (uint32_t id : m_eChandelier)
         if (id != kNoLink && id < scene.size())
-            scene.get(id).emissive[3] = 2.1f + 0.5f * std::sin(t * 1.5f);
+            scene.get(id).emissive[3] = 1.45f + 0.35f * std::sin(t * 1.5f); // gamma walk-back (was 2.1+0.5*sin)
 }
 
 // ===========================================================================
@@ -1162,7 +1166,7 @@ void ElevatorShowcase::layoutCab(Scene& scene) {
         Entity& e = scene.get(m_eDiscoBall);
         float g = m_elev.disco() ? 1.0f : 0.0f;
         e.emissive[0] = 0.8f*g; e.emissive[1] = 0.8f*g; e.emissive[2] = 0.95f*g;
-        e.emissive[3] = m_elev.disco() ? 1.6f : 0.0f;
+        e.emissive[3] = m_elev.disco() ? 1.10f : 0.0f;   // gamma walk-back (was 1.6)
     }
 
     // Drive the strata plane (seen through the glass floor) from the current stratum.
@@ -1171,8 +1175,8 @@ void ElevatorShowcase::layoutCab(Scene& scene) {
         for (const StrataLayer& s : ElevatorSystem::strata()) {
             if (c.y >= s.yMin && c.y <= s.yMax) {
                 for (int k = 0; k < 3; ++k) e.baseColor[k] = s.rgb[k];
-                if (s.glow) { for (int k = 0; k < 3; ++k) e.emissive[k] = s.glowRgb[k]; e.emissive[3] = 1.6f; }
-                else        { for (int k = 0; k < 3; ++k) e.emissive[k] = s.rgb[k];     e.emissive[3] = 0.7f; }
+                if (s.glow) { for (int k = 0; k < 3; ++k) e.emissive[k] = s.glowRgb[k]; e.emissive[3] = 1.10f; } // gamma walk-back (was 1.6)
+                else        { for (int k = 0; k < 3; ++k) e.emissive[k] = s.rgb[k];     e.emissive[3] = 0.48f; } // gamma walk-back (was 0.7)
                 break;
             }
         }
@@ -1291,7 +1295,7 @@ float ElevatorShowcase::update(float dt, Scene& scene, x3::rhi::IRenderDevice& d
         e.emissive[0] = 0.25f + 0.20f * std::sin(m_entScroll);
         e.emissive[1] = 0.40f + 0.20f * std::sin(m_entScroll + 2.1f);
         e.emissive[2] = 0.75f + 0.25f * std::sin(m_entScroll + 4.2f);
-        e.emissive[3] = 1.8f;
+        e.emissive[3] = 1.25f;   // gamma walk-back (was 1.8)
     }
     // Vent hum visual flicker (very subtle) — feel of moving air.
     if (m_eVent != kNoLink && m_eVent < scene.size()) {
@@ -1319,7 +1323,7 @@ float ElevatorShowcase::update(float dt, Scene& scene, x3::rhi::IRenderDevice& d
             float seam = travelling ? std::max(0.0f, 1.0f - d / 2.2f) : 0.0f;
             // Depth-swell: deeper bands (nearer the club) glow up as you descend into them.
             float depthLift = 0.5f + 0.5f * descentProgress();
-            e.emissive[3] = (base * depthLift + seam * 2.2f) * yield;
+            e.emissive[3] = (base * depthLift + seam * 1.5f) * yield;   // gamma walk-back (seam was *2.2)
             // Rests at the band's rock hue; the passing seam shifts it toward a bright cool
             // scan-line (the clear "rushing" tell), easing back to rock behind it.
             e.emissive[0] = tr + (0.45f - tr) * seam;
@@ -1333,7 +1337,7 @@ float ElevatorShowcase::update(float dt, Scene& scene, x3::rhi::IRenderDevice& d
     for (int i = 0; i < 4; ++i) {
         if (m_eAccent[i] != kNoLink && m_eAccent[i] < scene.size()) {
             Entity& e = scene.get(m_eAccent[i]);
-            e.emissive[3] = 2.2f * pulse;
+            e.emissive[3] = 1.5f * pulse;   // gamma walk-back (was 2.2*pulse; matches reduced kAccentEm)
             if (m_elev.disco()) { e.emissive[0] = 0.6f + 0.4f*std::sin(m_time*4.0f + i); e.emissive[1] = 0.2f; e.emissive[2] = 0.7f; }
         }
     }
