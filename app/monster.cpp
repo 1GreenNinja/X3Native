@@ -4668,8 +4668,8 @@ std::vector<Act2BossDef> buildAct2BossDefs() {
         t.phase2SpeedMul = 1.30f; t.phase2DamageMul = 1.35f;
         t.phase3SpeedMul = 1.55f; t.phase3DamageMul = 1.60f;
         t.phase3SummonCount = 5;                            // SUMMONS — the spec's headline beat
-        // Existing BossBreederQueen.glb is in rigged_glb (Y-up); use directly.
-        t.modelFile        = "BossBreederQueen.glb";
+        // Animated BossBreederQueen_anim.glb (Y-up; Idle/Walk/Run/Attack/Hitreaction/Death).
+        t.modelFile        = "BossBreederQueen_anim.glb";
         t.modelDirOverride = riggedGlbRoot();
         t.standUpZtoY      = false;
         t.modelScale       = 1.55f;                         // 12ft frame reads tall
