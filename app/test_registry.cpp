@@ -979,6 +979,11 @@ int dispatchTests(const TestFlags& tf) {
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
     }
+    if (tf.testGamma) {
+        x3::logInfo("running LINEAR-vs-GAMMA acceptance-gate byte measurement "
+                    "(clear B8G8R8A8_SRGB to a linear ramp, read stored byte; linear 0.5 must be ~188)...");
+        return x3::game::runGammaProbe();
+    }
     if (tf.testPerfshop) {
         x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "
                     "(build headless; assert the terminal glass + neon sign are DISPLAYS: "

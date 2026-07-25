@@ -309,4 +309,10 @@ float clubOledEmissiveContrast(int hue, float emissiveMap, const float emissive[
 // Logs "club: X/Y passed" and returns true iff all pass. Lives in club1127.cpp.
 bool runClubSelfTest();
 
+// --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT (app/gamma_probe.cpp).
+// Clears a VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a
+// ramp of known LINEAR values and reads the stored byte back; linear 0.5 MUST land
+// on ~188 (127 = still UNORM/unfixed). Returns 0 on PASS, 1 on failure/gate miss.
+int runGammaProbe();
+
 } // namespace x3::game

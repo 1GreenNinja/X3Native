@@ -188,6 +188,12 @@ struct CliOptions {
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
 
+    // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
+    // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp
+    // of known LINEAR values and reads back the stored byte — linear 0.5 MUST land
+    // on ~188 (127 = still UNORM/unfixed). Self-contained headless Vulkan. Additive.
+    bool        testGamma = false;
+
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark
     // substrate, and a texture-gated neon sign (not a flat lit slab).
