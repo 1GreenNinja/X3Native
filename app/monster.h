@@ -991,6 +991,12 @@ private:
     bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found
+    // GUARANTEED PROCEDURAL MOTION FLOOR (Tim's "anim keeps getting lost" fix): when
+    // NO skeletal clip drives an enemy (the rig-less Drone, a legacy static mesh, or
+    // the box fallback for a missing/stub GLB) this clock advances so update() can
+    // add a hover/idle bob + yaw sway + tilt + attack dive purely in the DRAW
+    // transform — so a rig-less enemy is NEVER a frozen prop. Unused when m_animActive.
+    float                    m_procTime = 0.0f;
     // Footstep cue tracking: the last sampled locomotion phase, so update() can
     // detect a phase crossing (foot plant) between frames and emit a Footstep cue.
     float                    m_lastFootPhase = 0.0f;

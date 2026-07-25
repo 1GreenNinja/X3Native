@@ -449,6 +449,48 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // bigger than a basic enemy while reusing the same crawler GLB.
     if (tuning.modelScale > 0.0f) m_modelScale = tuning.modelScale;
 
+    // ---- STEP 3: SKELETON-FIT SCALE CHECK (Tim playtest: enemies rendered ~2x
+    // player height because monster.cpp lacked the toe->head fit thirdperson.cpp
+    // does at ~line 191). Read the posed bone span (naming-AGNOSTIC: min..max over
+    // ALL joints along the up axis — Z for Z-up-converted GLBs, else Y) and compute
+    // the height this enemy WOULD render at. If a NON-authored (auto-scaled) enemy
+    // would render pathologically giant/tiny (the bug), CORRECT it to ~human 1.8 m;
+    // otherwise leave the scale exactly as-is. Enemies with an explicit
+    // tuning.modelScale (bosses, deliberate sizing) are NEVER touched — so this is a
+    // pure safety guard that fixes the giant bug without regressing correct models
+    // or fighting per-enemy tuning (incl. the parallel humanoid-rig session). ----
+    if (m_animActive && m_skinner.valid() && m_skinner.nodeCount() > 0) {
+        const int upIdx = tuning.standUpZtoY ? 14 : 13;   // col-major translation Z/Y
+        float lo = 1e30f, hi = -1e30f;
+        for (uint32_t n = 0; n < m_skinner.nodeCount(); ++n) {
+            float bm[16];
+            if (m_skinner.boneGlobal(n, bm)) {
+                const float v = bm[upIdx];
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+        }
+        const float span = hi - lo;
+        if (span > 0.2f) {
+            const float renderedH = span * m_modelScale;
+            const bool  authored  = (tuning.modelScale > 0.0f);
+            if (!authored && (renderedH < 1.0f || renderedH > 2.8f)) {
+                const float fit = 1.8f / span;
+                x3::logWarn("[monster] skeleton-fit CORRECTED " + modelFile +
+                            ": bone span=" + std::to_string(span) +
+                            "m rendered=" + std::to_string(renderedH) +
+                            "m (giant/tiny) -> scale " + std::to_string(m_modelScale) +
+                            " => " + std::to_string(fit) + " (target 1.8m)");
+                m_modelScale = fit;
+            } else {
+                x3::logInfo("[monster] skeleton-fit OK " + modelFile +
+                            ": bone span=" + std::to_string(span) +
+                            "m rendered=" + std::to_string(renderedH) + "m" +
+                            (authored ? " (authored scale kept)" : " (within human band)"));
+            }
+        }
+    }
+
     // ---- Enemy-layer collision body for the shoot raycast. mass 0 -> Static
     // motion type but keeps the Enemy ObjectLayer, so it stays put under gravity
     // yet is hittable by a rayCast(Layer::Enemy) and movable by setBodyPosition
@@ -506,6 +548,30 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                 std::to_string(pos.y) + ", " + std::to_string(pos.z) + ")" +
                 " HP=" + std::to_string(m_hp) +
                 (m_usingReal ? " [real GLB]" : " [fallback box]"));
+
+    // ---- STEP 4: STARTUP ANIM AUDIT (Tim's #1 ask). One line per spawned enemy at
+    // load proving its MOTION SOURCE at a glance — so a headless boot shows the whole
+    // opening is animated with NO silent static fallbacks. Three outcomes:
+    //   RIGGED+ANIMATED('clip') — a real skeletal clip drives idle/loco.
+    //   PROCEDURAL(...)        — no rig: the guaranteed motion floor drives it
+    //                            (drone hover+sway+dive, or grounded idle-bob+lunge).
+    //   STATIC                 — should NEVER appear now; if it does, motion is lost.
+    {
+        std::string motion;
+        if (m_animActive) {
+            const std::string idleName = (m_idleClip >= 0)
+                ? std::string(m_skinner.clipName((uint32_t)m_idleClip)) : std::string("?");
+            motion = "RIGGED+ANIMATED('" + idleName + "')" +
+                     std::string(m_useLocoBlend ? " +walk/run blend" : "");
+        } else if (m_flyer || m_type == MonsterType::Drone) {
+            motion = "PROCEDURAL(drone hover+sway+tilt, dive-on-attack — no rig)";
+        } else {
+            motion = "PROCEDURAL(idle-bob + lunge-tell — no rig)";
+        }
+        x3::logInfo("[enemy-audit] type=" + std::to_string((int)m_type) +
+                    " model=" + modelFile + "  ->  " + motion +
+                    (m_usingReal ? "  [real GLB]" : "  [box fallback]"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,10 +1567,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // carries the read). Decays smoothly back to 0 after the strike. ----
     {
         float wantLunge = 0.0f, wantDip = 0.0f;
-        if (m_winding && !m_ranged && m_attackClip < 0 && m_attackWindup > 1e-4f) {
+        if (m_winding && m_attackWindup > 1e-4f) {
             const float t = 1.0f - (m_windupTimer / m_attackWindup);   // 0..1 through wind-up
-            if (t < 0.7f) { const float k = t / 0.7f;        wantLunge = -0.16f * k; wantDip = 0.07f * k; }
-            else          { const float k = (t - 0.7f) / 0.3f; wantLunge = -0.16f + 0.62f * k; wantDip = 0.07f * (1.0f - k); }
+            if (!m_ranged && m_attackClip < 0) {
+                // MELEE with no baked Attack clip: rear back through 70% then LUNGE.
+                if (t < 0.7f) { const float k = t / 0.7f;        wantLunge = -0.16f * k; wantDip = 0.07f * k; }
+                else          { const float k = (t - 0.7f) / 0.3f; wantLunge = -0.16f + 0.62f * k; wantDip = 0.07f * (1.0f - k); }
+            } else if (m_ranged && (m_flyer || m_type == MonsterType::Drone) && !m_animActive) {
+                // DRONE FIRE-DIVE (no rig): nose-dip + a short dive TOWARD the target
+                // across the shot tell, recovering after — sold through the draw
+                // transform only (the physics/hitscan timing is untouched). Positive
+                // lunge = along facing = toward the player the drone is aiming at.
+                if (t < 0.6f) { const float k = t / 0.6f;        wantLunge = 0.22f * k;        wantDip = 0.10f * k; }
+                else          { const float k = (t - 0.6f) / 0.4f; wantLunge = 0.22f * (1.0f - k); wantDip = 0.10f * (1.0f - k); }
+            }
         }
         // Snap toward the wind-up profile fast (it IS the motion), relax slower.
         const float rate = (m_winding ? 30.0f : 8.0f) * dt;
@@ -1531,7 +1607,33 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // facing +Z, but facingDir()/AI assume local -Z forward (CONVENTIONS) — so the
         // MESH renders with its BACK to the player. Flip the VISUAL yaw 180deg here
         // ONLY (m_yaw / facingDir() / aim / --test-ai are unchanged, so AI stays right).
-        const float ry = m_yaw + 3.14159265358979323846f;
+        // ---- GUARANTEED PROCEDURAL MOTION FLOOR (Tim's "anim keeps getting lost"
+        // fix): any enemy with NO live skeletal clip (the rig-less Drone, a legacy
+        // static mesh, or the box fallback for a missing/stub GLB) still MOVES so it
+        // is never a frozen prop. Skinned enemies (m_animActive) skip this entirely —
+        // their baked clips own the pose, and m_propLean keeps the crowd lean read. --
+        float procBobY = 0.0f;                 // vertical hover/breathing bob (m)
+        float swayYaw  = 0.0f;                 // idle yaw sway folded into the heading
+        float lean     = m_propLean;           // default: caller-fed crowd torso lean
+        if (!m_animActive) {
+            m_procTime += dt;
+            const float t = m_procTime;
+            if (m_flyer || m_type == MonsterType::Drone) {
+                // DRONE: floaty hover bob + slow yaw sway + a gentle nose tilt. The
+                // dive-on-attack is carried by the lunge/dip fold above. A drone must
+                // never read as a frozen box — this keeps it alive in the air.
+                procBobY = 0.12f * std::sin(t * 2.3f);          // hover bob  (+/-12 cm)
+                swayYaw  = 0.10f * std::sin(t * 0.9f);          // lazy yaw sway (+/-0.1 rad)
+                lean     = 0.06f * std::sin(t * 1.3f + 0.7f);   // gentle nose tilt (pitch)
+            } else {
+                // GROUNDED unrigged enemy: a subtle breathing bob so it reads alive,
+                // not a statue (its melee lunge-tell above still carries the attack).
+                procBobY = 0.035f * std::sin(t * 1.8f);
+            }
+        }
+        // FACING FIX (recovered from wave3): the rigged character GLBs are authored
+        // facing +Z ... (the +pi visual flip). swayYaw adds the drone's idle sway.
+        const float ry = m_yaw + 3.14159265358979323846f + swayYaw;
         const float c = std::cos(ry), s = std::sin(ry);
         // Yaw about +Y: local +X -> (c,0,-s), +Z -> (s,0,c). The phase scale
         // multiplier up-scales the boss as it enrages (graybox phase feedback).
@@ -1556,15 +1658,17 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             drawPos.z += fc * amp;
             drawPos.y -= 0.05f * m_procStagger;         // brief crouch dip
         }
+        // Procedural hover/breathing bob (rig-less enemies only; 0 for skinned).
+        drawPos.y += procBobY;
         Entity& me = scene.get(m_entity);
-        if (m_propLean != 0.0f) {
-            // SKINNED CITIZENS: fold the caller-fed torso lean (setPropMotion) into
-            // the bake as R = Ry(ry) * Rx(lean-toward-facing). In the render frame
-            // the model's front is local +Z (the +pi visual flip above), so a
-            // positive lean pitches the body toward whatever it faces — the crowd's
-            // carry/console/converse lean read. lean == 0 (every existing monster)
-            // takes the identical branch below.
-            const float sa = std::sin(m_propLean), ca = std::cos(m_propLean);
+        if (lean != 0.0f) {
+            // SKINNED CITIZENS fold the caller-fed torso lean (setPropMotion), and the
+            // rig-less DRONE folds its idle nose tilt, into the bake as
+            // R = Ry(ry) * Rx(lean-toward-facing). In the render frame the model's
+            // front is local +Z (the +pi visual flip above), so a positive lean
+            // pitches the body toward whatever it faces. lean == 0 (every existing
+            // grounded monster) takes the identical branch below.
+            const float sa = std::sin(lean), ca = std::cos(lean);
             composeTRS(me.transform,
                        x3::phys::Vec3{ c, 0.0f, -s },
                        x3::phys::Vec3{ sa * s, ca, sa * c },
