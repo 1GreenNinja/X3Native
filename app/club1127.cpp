@@ -1413,7 +1413,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             m_oledEnts.push_back(lsId);
         }
         // A patron enjoying the lounge (inert idle prop, like the DJ/bouncer).
-        addCharacter(scene, device, physics, modelDir, "AnnaBodySuit.glb",
+        addCharacter(scene, device, physics, modelDir, "AnnaBodySuit_anim.glb",
                      x3::phys::Vec3{ 0.9f, oy + ly, lz - 0.2f }, 1.0f, false, nullptr);
     }
 
@@ -1574,8 +1574,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         addCharacter(scene, device, physics, modelDir, "marcus_webb.glb",
                      x3::phys::Vec3{ 0.0f, oy + djY, djZ }, 1.0f, false, warm);
         // Bouncer near the elevator landing.
-        addCharacter(scene, device, physics, modelDir, "RexBouncer.glb",
-                     x3::phys::Vec3{ CW / 2 - 2.0f, oy + 0.0f, CL / 2 - 4.0f }, 1.0f, true, cool);
+        addCharacter(scene, device, physics, modelDir, "RexBouncer_anim.glb",
+                     x3::phys::Vec3{ CW / 2 - 2.0f, oy + 0.0f, CL / 2 - 4.0f }, 1.0f, false, cool);
 
         // ==============================================================
         // DANCERS — ten real skinned characters on the floor (was: pastel
