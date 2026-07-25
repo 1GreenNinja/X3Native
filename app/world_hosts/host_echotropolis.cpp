@@ -473,7 +473,17 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // grounds the mine forest (which sits within the box) with real contact shadow.
     // Metropolis: widened + recentred to also cover the east-flats district pads
     // (x to ~1120) — a pad outside the box reads fully shadowed (fake dark city).
-    device->setShadowBounds(140.0f, 0.0f, 980.0f, 1050.0f);
+    // ⚠ RESOLUTION MATH (the real constraint): ONE 2048px map over a 2*halfExtent box.
+    //   halfExtent 1050 -> 2100m / 2048px = 1.03 m/TEXEL. A bollard is 0.3m wide; a
+    //   kerb is 0.15m. Nothing smaller than a building can cast a shadow it can even
+    //   resolve — which is exactly the "no cast shadows anywhere" review finding.
+    //   This was 820 (0.8 m/texel) and got WIDENED to 1050 to cover the district pads,
+    //   trading away the resolution that made shadows work. The real fix is CASCADES
+    //   (docs/HANDOFF §5 item 2); until then this is a coverage-vs-sharpness dial.
+    // ECHO_SHADOW_EXTENT overrides for A/B (e.g. 260 => 0.25 m/texel, prop-sharp).
+    const float shExt = [](){ const char* e = std::getenv("ECHO_SHADOW_EXTENT");
+                              return e ? (float)std::atof(e) : 1050.0f; }();
+    device->setShadowBounds(140.0f, 0.0f, 980.0f, shExt);
 }
 
 // ============================ RAY TRACING (hardware RT pass) ==================
@@ -1595,10 +1605,15 @@ int hostEchotropolis(HostContext& hc) {
         };
         for (int i = 0; i < 4; ++i)                       // bollard line across the avenue mouth
             place2("bollard.glb", -44.0f + i * 5.0f, 806.0f, 0.0f, sB, 0.0f);
-        place2("junction_box.glb", -136.0f, 841.2f, 3.14159f, sJ, 0.6f);   // flush on the condo facade
-        place2("junction_box.glb",   24.0f, 841.2f, 3.14159f, sJ, 0.6f);
-        place2("cam_wall.glb",  -58.0f, 841.5f, 3.14159f, sC, 7.5f);       // condo corners, high, flush
-        place2("cam_wall.glb",   18.0f, 841.5f, 3.14159f, sC, 7.5f);
+        // WALL PROPS MUST BE ON AN ACTUAL WALL. The condo blocks are centred at
+        // x = -100 / -20 / +60 and are 3 cols * 3.75m * 2.0 scale = 22.5m wide, so the
+        // only real facade spans are x -111..-89, -31..-9, +49..+71. The previous
+        // x = -136 / -58 / +18 / +24 all sat in the GAPS BETWEEN BLOCKS — an AAA review
+        // flagged them as "floating in mid-air with no wall", correctly.
+        place2("junction_box.glb", -104.0f, 841.2f, 3.14159f, sJ, 0.6f);   // block A facade
+        place2("junction_box.glb",   64.0f, 841.2f, 3.14159f, sJ, 0.6f);   // block C facade
+        place2("cam_wall.glb",  -14.0f, 841.5f, 3.14159f, sC, 7.5f);       // block B, high corner
+        place2("cam_wall.glb",   54.0f, 841.5f, 3.14159f, sC, 7.5f);       // block C, high corner
         hackDrone = std::make_unique<x3::game::EnvArtSystem>();
         const float I2[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, -20, 230, 760, 1 };
         if (!hackDrone->buildFromGlbAt(*device, hdir, "drone_police.glb", I2)) hackDrone.reset();
