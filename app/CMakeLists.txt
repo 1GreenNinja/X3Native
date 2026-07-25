@@ -110,6 +110,7 @@ add_executable(X3Engine WIN32
     interactables.cpp
     desc_mechanics.cpp
     canon_45.cpp
+    canon_stairs.cpp
     cell_dressing.cpp
     room_dressing.cpp
     wing_dressing.cpp

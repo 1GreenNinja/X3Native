@@ -440,6 +440,15 @@ public:
         // is ALSO used by ground elites (e.g. Illuminated). Drives hover + hitbox.
         bool  flyer               = false;
 
+        // ROOT-Y LOCK (Skinner::setRootYLock, see anim.h): clamp the clip-animated
+        // root (pelvis) local Y to its rest-pose Y so a clip with a BROKEN baked
+        // root Y (the retarget "buried half-way + bouncing" family) can never
+        // sink/bob the character through the floor. For characters whose world Y
+        // is OWNED by the feeder (crowd citizens fed via setPropPose). Off by
+        // default — combat enemies keep their authored root bob. Authored
+        // triggerClip crossfades (Sit/Jump) still move their root.
+        bool  lockRootY           = false;
+
         // ---- Data-driven AI weighting (bestiary pass) ---------------------
         // Per-instance strafe/flank bias in [0,1]: the probability, at mid-range,
         // that the enemy STRAFES (orbits/flanks) instead of straight-Advancing. A

@@ -314,6 +314,15 @@ struct CanonBuildOpts {
     uint32_t breachRoom = kNoRoom;
     int   breachFace = 3;
     float breachCenter = 0.0f, breachHalf = 1.5f;
+    // THE STAIRWELL (canon_stairs.*): a LIST of doorway-style openings cut into rooms'
+    // walls so the open switchback stair tower connects to each normal floor's Elevator
+    // Lobby. Cut by the SAME wall builders as the exterior breach / every doorway (gap +
+    // lintel), and — exactly like the breach — NO CanonDoorway is added (the stair tower
+    // is authored brush geometry, not a room), so the PVS/lint doorway graph is untouched.
+    // face: 0=-X 1=+X 2=-Z 3=+Z; center = the run coordinate along that wall; half = the
+    // opening half-width.
+    struct WallOpening { uint32_t room = kNoRoom; int face = 2; float center = 0.0f; float half = 0.8f; };
+    std::vector<WallOpening> stairOpenings;
 };
 // NOTE: `floor` is taken by NON-const reference because the builder records each cut
 // doorway's DoorSystem slab index back into floor.doorways[].doorIndex (so the portal

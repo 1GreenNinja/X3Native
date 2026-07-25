@@ -933,9 +933,15 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // lamp, hung right and fed properly, not a new one. No ambient was raised. No
         // albedo went over unity. The flicker beat is untouched (depth 0.55) and now has a
         // real room to take down with it.
+        // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): x0.80 trim from 9.01/9.34/10.10.
+        // The flux above was tuned against the BENT output curve (5951890b); under the
+        // honest curve the cell measured mean 58-63 / p50 53-61 at four eye cameras,
+        // flashlight OFF — above the room's own locked criteria band (dim, moody,
+        // mean ~35-54, zero clipping; docs/screenshots/cell/). Cool-white ratio
+        // preserved EXACTLY; hang height, reach and flicker untouched.
         const uint32_t li = (uint32_t)m_lights.size();
-        addLight(bt.jakeCell, lx, ceilY - 1.10f, lz, 9.0f, 9.01f, 9.34f, 10.10f);
-        m_flickers.push_back({ li, 9.01f, 9.34f, 10.10f, 0.0f, 9.0f, 0.55f });
+        addLight(bt.jakeCell, lx, ceilY - 1.10f, lz, 9.0f, 7.21f, 7.47f, 8.08f);
+        m_flickers.push_back({ li, 7.21f, 7.47f, 8.08f, 0.0f, 9.0f, 0.55f });
         (void)aLight; (void)aHLight;   // loaded (hall may reuse); no cell placement
     }
 

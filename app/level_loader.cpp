@@ -1324,6 +1324,24 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                     std::to_string(opts.breachHalf) + ")");
     }
 
+    // ---- THE STAIRWELL openings (canon_stairs.*): same doorway-style cut as the breach,
+    // one per normal-floor lobby, so the open switchback tower connects to each floor. No
+    // CanonDoorway is added (the tower is authored brush geometry) — PVS/lint untouched.
+    for (const CanonBuildOpts::WallOpening& so : opts.stairOpenings) {
+        if (so.room == kNoRoom || so.room >= nRooms) continue;
+        const CanonRoom& sr = floor.rooms[so.room];
+        const Gap g{ so.center, sr.y0() + kLintel, so.half };
+        switch (so.face) {
+            case 0:  gapXneg[so.room].push_back(g); break;
+            case 1:  gapXpos[so.room].push_back(g); break;
+            case 2:  gapZneg[so.room].push_back(g); break;
+            default: gapZpos[so.room].push_back(g); break;
+        }
+        x3::logInfo("buildCanonFloor: STAIRWELL opening cut in '" + sr.name +
+                    "' face " + std::to_string(so.face) + " at " +
+                    std::to_string(so.center) + " (half " + std::to_string(so.half) + ")");
+    }
+
     // CELL OBSERVATION WINDOW (feat/cell-real-glass): punch a see-through armored viewport
     // in the detention cell's +Z (Main-Hall-facing) graybox so Jake can look OUT into the
     // hall. Full room height (clearTop = ceiling -> lintelX no-ops, no header slab); the

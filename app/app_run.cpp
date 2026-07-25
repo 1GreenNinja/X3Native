@@ -52,6 +52,7 @@
 #include "skilltree.h"                      // [W9-3 RPG] skill tree + PlayerStatMods layer
 #include "rpg_ui.h"                         // [W9-3 RPG] backpack/skill screens + HUD chip
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
+#include "canon_stairs.h"                   // THE STAIRWELL — open switchback tower joining the normal floors
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
@@ -1265,6 +1266,7 @@ int runDefaultHost(HostContext& hc) {
     itemDb.load(x3::game::itemsJsonPath());
     skillTree.load(x3::game::skillTreeJsonPath());
     x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
+    x3::game::CanonStairwell canonStairs;      // THE STAIRWELL — open switchback tower joining F1..F7
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
@@ -1875,6 +1877,14 @@ int runDefaultHost(HostContext& hc) {
                 copts.breachCenter = breachCenter;
                 copts.breachHalf = halfCut;
             }
+            // ---- THE STAIRWELL: resolve the open-switchback layout from the Elevator
+            // Lobby column and feed the per-floor wall openings so buildCanonFloor cuts a
+            // doorway from each normal floor's lobby onto its stair landing (same wall
+            // builders as every doorway; NO CanonDoorway -> PVS/lint untouched). The tower
+            // geometry itself is built after the floor (below), like canon_45's climb.
+            const x3::game::StairPlan stairPlan = x3::game::CanonStairwell::plan(canonFloor);
+            for (const auto& so : x3::game::CanonStairwell::openings(stairPlan))
+                copts.stairOpenings.push_back(so);
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
             // W2-A2 (punch-list P0 #5): DOOR SOUNDS — wire the audio system + the
             // W2-B servo/denied WAVs into the door system itself, so every open/
@@ -1989,6 +1999,13 @@ int runDefaultHost(HostContext& hc) {
                           x3::game::riggedGlbRoot(),
                           x3::game::assetRoot() + "/surface_library", canonLights);
             if (bootProf) bootProfMs("canon45");
+            // ---- THE STAIRWELL: build the open switchback tower south of the elevator
+            // spine (flights/landings/walls/rails + motivated lights). Openings into each
+            // lobby were already cut above (copts.stairOpenings). 4.5 is NOT a normal floor
+            // (it hangs at z~=0, far from this shaft at z~=-31) so nothing opens onto it. ----
+            canonStairs.build(stairPlan, scene, *device, *physics,
+                              x3::game::assetRoot() + "/surface_library", canonLights);
+            if (bootProf) bootProfMs("canonStairs");
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the
@@ -2533,13 +2550,15 @@ int runDefaultHost(HostContext& hc) {
                 sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.22f; sp.sunDir[2] = 0.80f;   // toward the local star
                 sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.90f;
                 sp.sunIntensity = 0.05f;      // sky DISK only (higher greys the dome)
-                sp.sunLight = 2.6f;           // the real key on the hulls
+                // GAMMA-RECAL: bent-curve values read as a bright navy dome + washed
+                // plate under the honest encode (owner: "Too bright" on space).
+                sp.sunLight = 2.0f;           // the real key on the hulls
                 sp.haze = 0.0f; sp.exposure = 1.0f;
-                sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.012f;
-                sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.022f;
+                sp.zenith[0]  = 0.0015f; sp.zenith[1]  = 0.0015f; sp.zenith[2]  = 0.0045f;
+                sp.horizon[0] = 0.0030f; sp.horizon[1] = 0.0035f; sp.horizon[2] = 0.0080f;
                 device->setSkyParams(sp);
-                device->setAmbient(0.030f, 0.034f, 0.050f);   // starlight + planetshine only
-                device->setBloom(0.28f);                       // let the emissive cores/gate bloom
+                device->setAmbient(0.010f, 0.011f, 0.017f);   // starlight + planetshine only
+                device->setBloom(0.18f);   // GAMMA-RECAL: 0.28 flooded the deck from the sun disk                       // let the emissive cores/gate bloom
                 int nTexFail = 0;
                 spacePlanets = loadNightSkyPlanets(device, spacePlanetMesh, nTexFail,
                                                    "[spacestation]", &spacePlanetRingMesh);
@@ -5707,6 +5726,26 @@ int runDefaultHost(HostContext& hc) {
                         cl.insert(cl.begin(), fill);
                         cl.insert(cl.begin(), beam);
                     }
+                }
+                // X3_SHOT_TORCH=1: ride the player flashlight on the shot camera —
+                // the EXACT torch the live loop adds (see the flashlight block there;
+                // keep the two in sync). Exists so torch-on lighting states can be
+                // photographed headlessly (gamma-recal verification frames).
+                if (std::getenv("X3_SHOT_TORCH")) {
+                    const float tcp = std::cos(ssPitch);
+                    const float tfx = tcp * std::cos(ssYaw);
+                    const float tfy = std::sin(ssPitch);
+                    const float tfz = tcp * std::sin(ssYaw);
+                    x3::rhi::PointLight tpl{};
+                    tpl.pos[0] = ssX + tfx * 2.0f; tpl.pos[1] = ssY + tfy * 2.0f; tpl.pos[2] = ssZ + tfz * 2.0f;
+                    tpl.range  = 10.0f;
+                    tpl.color[0] = 0.85f; tpl.color[1] = 0.80f; tpl.color[2] = 0.71f;
+                    x3::rhi::PointLight teye{};
+                    teye.pos[0] = ssX + tfx * 0.3f; teye.pos[1] = ssY + tfy * 0.3f; teye.pos[2] = ssZ + tfz * 0.3f;
+                    teye.range  = 5.0f;
+                    teye.color[0] = 0.45f; teye.color[1] = 0.42f; teye.color[2] = 0.37f;
+                    cl.insert(cl.begin(), teye);
+                    cl.insert(cl.begin(), tpl);
                 }
                 if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
@@ -9063,18 +9102,25 @@ int runDefaultHost(HostContext& hc) {
                 // over 8 m (was 13). That now sits at PARITY with a room's own key fixture
                 // (the cell tube is 3.30 @ 6.2, level-1 fixtures run 3.6-4.2) — it reads as
                 // a directed beam layered ON the practicals instead of erasing them.
+                // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): 3.30 @ 20 m was parity
+                // with the room fixtures ON THE BENT CURVE — under the honest encode
+                // it read as a floodlight erasing the recalibrated warm hall pools
+                // (which now carry the owner's locked hall look on their own). Cut to
+                // a directed COMPLEMENT: it deepens what the practicals show, never
+                // replaces them. Same warm-white hue. If these values move, move the
+                // X3_SHOT_TORCH capture hook in the screenshot path with them.
                 x3::rhi::PointLight pl{};
                 pl.pos[0] = camX + fX * 2.0f; pl.pos[1] = camY + fY * 2.0f; pl.pos[2] = camZ + fZ * 2.0f;
-                pl.range  = 20.0f;   // big soft circle; point attenuation gives the SOFT edge
-                pl.color[0] = 3.30f; pl.color[1] = 3.10f; pl.color[2] = 2.75f;  // warm-white torch
+                pl.range  = 10.0f;   // big soft circle; point attenuation gives the SOFT edge
+                pl.color[0] = 0.85f; pl.color[1] = 0.80f; pl.color[2] = 0.71f;  // warm-white torch
                 fl.insert(fl.begin(), pl);
                 // Near light AT the eye so things RIGHT in front of you (barrels, enemies,
                 // the held weapon) are still lit — a flashlight should never leave the near
                 // field black. Smaller range, same warm-white.
                 x3::rhi::PointLight eyePl{};
                 eyePl.pos[0] = camX + fX * 0.3f; eyePl.pos[1] = camY + fY * 0.3f; eyePl.pos[2] = camZ + fZ * 0.3f;
-                eyePl.range  = 8.0f;
-                eyePl.color[0] = 1.70f; eyePl.color[1] = 1.60f; eyePl.color[2] = 1.40f;
+                eyePl.range  = 5.0f;
+                eyePl.color[0] = 0.45f; eyePl.color[1] = 0.42f; eyePl.color[2] = 0.37f;
                 fl.insert(fl.begin(), eyePl);
                 torch.push_back(eyePl); torch.push_back(pl);   // survives the rift/club takeover
             }

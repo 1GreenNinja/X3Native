@@ -108,20 +108,20 @@ constexpr float kLightningRerollPeriod = 0.065f;
 // kLightningDecay: displacement multiplier per level. THIS IS THE NATURALNESS KNOB
 //   (the fractal dimension): 0.5 = each halving of length halves the wobble.
 constexpr int   kLightningFractalDepth = 6;      // 64 segments on the trunk
-constexpr float kLightningDisplaceFrac = 0.16f;  // first midpoint kick ~16% of length
-constexpr float kLightningDecay        = 0.55f;  // per-level displacement falloff
+constexpr float kLightningDisplaceFrac = 0.06f;  // first midpoint kick ~6% of length (was 0.16, then 0.11 — owner "STILL goes quite wide": ~62% cut so the bolt HUGS the aim line, tight jitter not a wide splay)
+constexpr float kLightningDecay        = 0.43f;  // per-level displacement falloff (was 0.55 — lower so finer subdivisions swing LESS, killing the wild secondary loops while the trunk stays jagged)
 
 // ---- BRANCHING ----
 // Forks are CHILD BOLTS: they inherit the parent's direction rotated off-axis, take a
 // fraction of the remaining parent length, recurse (so branches branch), and inherit
 // REDUCED brightness + thickness. Probability decays with depth so the tree thins out.
 constexpr int   kLightningMaxBranchDepth = 3;     // a fork can fork, up to this depth
-constexpr float kLightningBranchChance   = 0.28f; // per-midpoint chance at depth 0
+constexpr float kLightningBranchChance   = 0.20f; // per-midpoint chance at depth 0 (was 0.28 — trimmed a notch so forks don't fan the beam out wide; some forking kept)
 constexpr float kLightningBranchDecay    = 0.55f; // chance/brightness falloff per level
 // Most branches DIE partway instead of reaching anything — a dead-end tendril that
 // fades is one of the strongest naturalness cues. Only the TRUNK terminates exactly
 // on the hit point.
-constexpr float kLightningBranchLenFrac  = 0.5f;  // branch length vs remaining parent
+constexpr float kLightningBranchLenFrac  = 0.38f; // branch length vs remaining parent (was 0.5 — shorter fork stubs so forks hug the trunk instead of reaching off to the walls/ceiling; forking kept, just less lateral reach)
 // Core / glow thickness (m): a THIN white-hot core ribbon inside a wider, DIMMER blue
 // glow ribbon, both emissive (HDR) so BLOOM builds the halo.
 //

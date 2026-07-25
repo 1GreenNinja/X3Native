@@ -177,6 +177,17 @@ def import_target(keep_existing):
         # APPEND mode: keep the target GLB's own actions (Idle/Walk/Run/...); they
         # export alongside the freshly-baked clips. Fake-user so no active slot is
         # needed to survive the source-import churn.
+        # REPLACE support ("drop_existing" manifest key): named target actions are
+        # removed FIRST, so a re-bake of a broken clip (e.g. the dead 2-key
+        # Idle/Walk/Run on chief/marcus) lands under its own name instead of a
+        # Blender "Walk.001" collision rename the engine's findClip can't resolve.
+        for name in _DROP_EXISTING:
+            a = bpy.data.actions.get(name)
+            if a is not None:
+                log("drop_existing: removing target action", name)
+                bpy.data.actions.remove(a)
+            else:
+                log("drop_existing: no target action named", name)
         for a in bpy.data.actions:
             a.use_fake_user = True
         log("keep_existing: preserving", [a.name for a in bpy.data.actions])
@@ -239,6 +250,7 @@ _SRC_CACHE = {}
 # Actions that existed BEFORE any source import (target's kept actions + our
 # baked clips) so import_source only tag-renames genuinely-new donor actions.
 _KNOWN_ACTIONS = set()
+_DROP_EXISTING = []   # manifest "drop_existing": target action names to replace
 _TAGS = ("SRC0_", "SRC1_", "SRC2_", "SRC3_", "SRC4_", "SRC5_", "SRC6_", "SRC7_")
 
 def import_source(path):
@@ -530,6 +542,8 @@ def main():
     keep = bool(man.get("keep_existing", True))
     clips = man.get("clips", [])
     author_h = man.get("author_height")   # optional: pre-modelScale mesh height (m)
+    global _DROP_EXISTING
+    _DROP_EXISTING = list(man.get("drop_existing", []))
 
     reset()
     tgt = import_target(keep)
@@ -565,9 +579,13 @@ def main():
 
     # GROUNDED + UPRIGHT assertion gate. Every baked clip must stay grounded;
     # standing clips must also land near-vertical. Fails the run on a violation.
+    # A clip marked "airborne": true in the manifest (Jump/Leap: the feet
+    # legitimately leave/undershoot the floor mid-clip) is exempt from the
+    # grounded check but still upright-gated + logged.
+    airborne = { c.get("name") for c in clips if c.get("airborne") }
     bad = []
     for a in _ASSERTS:
-        grounded = abs(a["foot_off"]) <= GROUND_TOL_M
+        grounded = (a["clip"] in airborne) or abs(a["foot_off"]) <= GROUND_TOL_M
         upright = (not a["stance"]) or a["pelvis_lean"] <= UPRIGHT_TOL_DEG
         ok = grounded and upright
         log("  RETARGET-ASSERT", "PASS" if ok else "FAIL", a["clip"],

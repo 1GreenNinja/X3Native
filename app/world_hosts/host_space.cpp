@@ -633,7 +633,9 @@ int hostSpace(HostContext& hc) {
                 for (const auto& dr : shipDrawables) {
                     float fin[16];
                     x3::asset::mulMat4(xform, dr.nodeTransform, fin);
-                    const float b = 1.0f + 1.2f * bright;   // exposure assist (no floor)
+                    // GAMMA-RECAL round 2: assist 1.2x -> 0.5x — the 2.2-2.8x base-
+                    // colour push was most of the 'overall glow' on the honest curve.
+                    const float b = 1.0f + 0.5f * bright;   // exposure assist (no floor)
                     const float tint[4] = {
                         dr.baseColorFactor[0] * b,
                         dr.baseColorFactor[1] * b,
@@ -645,9 +647,11 @@ int hostSpace(HostContext& hc) {
                     // so pure PBR renders near-black hulls invisible. The floor keeps the
                     // silhouette readable as dim metal while normals/MR still shade from
                     // the real light rig. Kept far below bloom threshold (bible: no blobs).
-                    const float amb = 0.020f * (1.0f + bright);   // R3: halved — the
-                                                                  // directional key carries
-                                                                  // the shading now
+                    const float amb = 0.006f * (1.0f + bright);   // GAMMA-RECAL round 2:
+                                                                  // near-killed — the star's
+                                                                  // GGX highlight + authored
+                                                                  // interior/engine emissive
+                                                                  // carry the hull now
                     const float emis[4] = { dr.emissiveFactor[0] + amb,
                                             dr.emissiveFactor[1] + amb * 1.05f,
                                             dr.emissiveFactor[2] + amb * 1.25f, 1.0f };

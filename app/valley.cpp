@@ -243,8 +243,8 @@ void ValleyWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         placeOnTerrain(kx, kz, anchor);
         m_ktharaPos = x3::phys::Vec3{ anchor[0], anchor[1], anchor[2] };
         const float salvariGlow[4] = { 0.8f, 1.1f, 1.3f, 1.0f }; // bioluminescent-ish
-        addCharacter(scene, device, physics, modelDir, "Oracle.glb",
-                     m_ktharaPos, 1.0f, /*standUpZtoY=*/true, salvariGlow,
+        addCharacter(scene, device, physics, modelDir, "Oracle_anim.glb",
+                     m_ktharaPos, 1.0f, /*standUpZtoY=*/false, salvariGlow,
                      /*hostile=*/false, MonsterType::Guard);
         m_ktharaAlly = true;
         // A soft friendly accent light on K'thara so she reads as the ally beacon.

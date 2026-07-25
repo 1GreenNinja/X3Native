@@ -621,13 +621,18 @@ struct CliOptions {
     // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
     bool        captureAi    = false;
     std::string captureAiDir = "G:/X3Native/ai_action";
-    // Walk-capture mode (--capture-walk [outPath]): build ONE close-up animated
-    // guard (the multi-clip *_anim.glb when present), drive the T1 locomotion blend
-    // toward a steady WALK, settle the blend a fraction of a second, then capture a
-    // single PNG at a clearly mid-stride moment. Verifies the locomotion blend
-    // visibly in-engine. Headless / offscreen. Default outPath: build/walk_pose.png.
+    // Walk-capture mode (--capture-walk [outPath] [rigGlb]): build ONE close-up
+    // animated guard (the multi-clip *_anim.glb when present), drive the T1
+    // locomotion blend toward a steady WALK, settle the blend a fraction of a
+    // second, then capture a PNG at a clearly mid-stride moment PLUS a second
+    // frame 0.5 s later (<out>_t2.png) so vertical root-Y sink/bounce is
+    // eye-checkable across two clip times (grounded-anim QA: floor in frame,
+    // eye-height cam). Optional 2nd arg picks the rig (default marcus_webb.glb;
+    // e.g. AnnaCasual.glb proofs the crowd girl's Walk grounding). Headless /
+    // offscreen. Default outPath: build/walk_pose.png.
     bool        captureWalk     = false;
     std::string captureWalkPath = "G:/X3Native-wt-animt1/build/walk_pose.png";
+    std::string captureWalkRig  = "marcus_webb.glb";
     // Foot-IK capture (--screenshot-footik [outPath]): build ONE animated character
     // standing on a SLOPED + STEPPED surface with foot-IK ON, drive a slow idle/walk
     // blend, plant the feet on the surface (raycast down via the local physics world),
