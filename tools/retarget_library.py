@@ -74,6 +74,14 @@ def flush_log(status):
 
 ROOT_BONE = "Hips"
 
+# Headless GROUNDED + UPRIGHT assertion facts (one dict per baked clip). main()
+# gates on them: every clip must stay GROUNDED (lowest planted foot near the
+# target floor -- guards the vertical-bob scale) and every STANDING clip must
+# land the pelvis near-vertical (guards against a re-introduced rest-tilt lean).
+_ASSERTS = []
+UPRIGHT_TOL_DEG = 3.0    # a standing Jake clip must retarget within this of vertical
+GROUND_TOL_M    = 0.12   # lowest planted foot must stay within this of the floor
+
 # Object identities we must PRESERVE through source-import churn + cleanup: the
 # target armature + the target's own mesh objects. Everything else (donor arms /
 # donor meshes like Jake's grenade Icosphere) is removed before export.
@@ -218,6 +226,39 @@ def _depth_order(arm, names):
     return sorted(names, key=lambda n: depth[n])
 
 
+def _hip_height(arm, bmap):
+    """Rest hip height = hips-head world Z MINUS the lowest foot-head world Z.
+    Robust to a baked Armature-object Y/Z offset (Jake_22_actions shoves the
+    Armature node down ~0.95 m, which would otherwise corrupt |hips.z| into a
+    near-zero and blow up the vertical-bob scale). hips - foot cancels the
+    offset and yields the TRUE pelvis-above-ground height."""
+    hb = arm.data.bones.get(bmap.get(ROOT_BONE, ""))
+    if hb is None:
+        return None
+    hz = (arm.matrix_world @ hb.head_local).z
+    fz = []
+    for k in ("Foot.L", "Foot.R"):
+        fb = arm.data.bones.get(bmap.get(k, ""))
+        if fb is not None:
+            fz.append((arm.matrix_world @ fb.head_local).z)
+    ground = min(fz) if fz else 0.0
+    h = hz - ground
+    return h if h > 1e-3 else None
+
+
+def _hips_rest_lean_deg(s_rest):
+    """MEASURE the source rig's baked pelvis rest-lean: the angle of the Hips
+    along-bone (local +Y) axis away from world +Z. DIAGNOSTIC ONLY -- see the
+    caller: the rest-relative transfer already neutralizes a constant rest tilt,
+    so nothing is applied. Jake_22_actions.glb reads ~5.2 deg here; a clean
+    target-authored .L/.R rig reads ~0."""
+    r = s_rest.get(ROOT_BONE)
+    if r is None:
+        return 0.0
+    up_actual = (r @ Vector((0.0, 1.0, 0.0))).normalized()
+    return math.degrees(up_actual.angle(Vector((0.0, 0.0, 1.0))))
+
+
 def _assign_first_slot(arm, act):
     try:
         if getattr(act, "slots", None) is not None:
@@ -240,11 +281,22 @@ def retarget_one(tgt, src, tag, bmap, clip_name, action_name, fstart, fend):
         fstart = int(math.floor(fr[0])); fend = int(math.ceil(fr[1]))
     log("---- clip", clip_name, "from", sact.name, "frames", fstart, "-", fend)
 
-    b = src.data.bones.get(bmap[ROOT_BONE])
-    sz = abs((src.matrix_world @ b.head_local).z) if b else 1.0
-    tb = tgt.data.bones.get(ROOT_BONE)
-    tz = abs((tgt.matrix_world @ tb.head_local).z) if tb else 1.0
-    loc_scale = (tz / sz) if sz > 1e-6 else 1.0
+    # Vertical-bob scale = target pelvis height / source pelvis height, both
+    # measured hips-head-minus-foot-head so a baked Armature-object offset (Jake
+    # is shoved down ~0.95 m) can't corrupt the ratio (was |hips.z| ~ 0.19 ->
+    # 4.5x bob blow-up; feet-fly). Falls back to |hips.z| only if a foot is
+    # missing from the map.
+    sh = _hip_height(src, bmap)
+    th = _hip_height(tgt, {k: k for k in bmap})  # target uses its own .L/.R names
+    if sh and th:
+        loc_scale = th / sh
+    else:
+        b = src.data.bones.get(bmap[ROOT_BONE])
+        sz = abs((src.matrix_world @ b.head_local).z) if b else 1.0
+        tb = tgt.data.bones.get(ROOT_BONE)
+        tz = abs((tgt.matrix_world @ tb.head_local).z) if tb else 1.0
+        loc_scale = (tz / sz) if sz > 1e-6 else 1.0
+    log("  loc_scale:", round(loc_scale, 4), "(src hip h", sh, "tgt hip h", th, ")")
 
     bpy.ops.object.mode_set(mode='OBJECT')
     bpy.context.view_layer.objects.active = tgt
@@ -261,6 +313,20 @@ def retarget_one(tgt, src, tag, bmap, clip_name, action_name, fstart, fend):
     order = _depth_order(tgt, mapped)
     log("  mapped bones:", len(mapped))
 
+    # SOURCE pelvis rest-lean (diagnostic only -- NOT applied). Jake_22_actions
+    # bakes ~5.2 deg of tilt into the Hips rest node, but the rest-relative
+    # world-delta transfer (Dm = s_pose . s_rest^-1, applied onto t_rest) is
+    # INVARIANT to a constant rest tilt: the target's absolute pose is
+    # target_rest composed with the source's motion-FROM-its-own-rest, so a
+    # standing (rest-following) source clip lands the target UPRIGHT and the rest
+    # tilt never reaches it. A grounded Blender A/B (docs/screenshots/jakecrowd/
+    # r_idle_*) confirmed that explicitly "zeroing" the tilt here instead INJECTS
+    # a ~5 deg backward lean -- so we measure it, log it, and leave the transfer
+    # untouched. The real Jake export bug (a ~0.95 m Armature-node Y offset that
+    # blew the vertical-bob scale up ~4.5x) is fixed in loc_scale above.
+    log("  source pelvis rest-lean:", round(_hips_rest_lean_deg(s_rest), 3),
+        "deg (rest-relative transfer neutralizes it; not applied)")
+
     for pb in tgt.pose.bones:
         pb.rotation_mode = 'QUATERNION'
 
@@ -274,6 +340,14 @@ def retarget_one(tgt, src, tag, bmap, clip_name, action_name, fstart, fend):
     root_tbone = tgt.data.bones.get(ROOT_BONE)
     root_rest_head_world = tgt.matrix_world @ root_tbone.head_local
     src_root_pbone = src.pose.bones.get(bmap[ROOT_BONE])
+    mid_frame = (fstart + fend) // 2   # representative frame for the upright assert
+    # Target rest foot Z (the grounded reference) + the target foot pose bones.
+    tgt_foot_pbs = [tgt.pose.bones.get(k) for k in ("Foot.L", "Foot.R")
+                    if tgt.pose.bones.get(k)]
+    foot_rest_z = min([(tgt.matrix_world @ tgt.data.bones[p.name].head_local).z
+                       for p in tgt_foot_pbs], default=0.0)
+    min_foot_z = 1e9   # lowest planted foot across the clip (grounding guard)
+    _mid_pelvis_lean = [0.0]   # captured at mid_frame (upright guard)
 
     out_frame = 1
     for f in range(fstart, fend + 1):
@@ -304,12 +378,32 @@ def retarget_one(tgt, src, tag, bmap, clip_name, action_name, fstart, fend):
         rpb.matrix = m
         rpb.keyframe_insert("location", frame=out_frame)
         rpb.keyframe_insert("rotation_quaternion", frame=out_frame)
+        # GROUNDED assert: track the lowest planted foot across the clip -- with a
+        # correct vertical-bob scale it stays near the target floor; the old
+        # ~4.5x loc_scale blow-up flung the hips (and via FK the feet) off it.
+        for p in tgt_foot_pbs:
+            min_foot_z = min(min_foot_z, (tgt.matrix_world @ p.matrix.translation).z)
+        # UPRIGHT assert (mid frame): a STANDING Jake clip must land the target
+        # pelvis near-vertical (the rest-relative transfer neutralizes Jake's
+        # rest tilt; a regressed "zero-the-tilt" would lean it ~5 deg).
+        if f == mid_frame:
+            t_up = ((tgt.matrix_world @ rpb.matrix).to_3x3().normalized()
+                    @ Vector((0.0, 1.0, 0.0)))
+            _mid_pelvis_lean[0] = math.degrees(t_up.angle(Vector((0.0, 0.0, 1.0))))
         out_frame += 1
 
     baked = tgt.animation_data.action
     baked.name = clip_name
     baked.use_fake_user = True
     log("  baked action:", baked.name, "range", tuple(baked.frame_range))
+    # Record the grounded/upright assertion facts for this clip (main() gates).
+    is_stance = any(k in action_name.lower() for k in ("idle", "stand", "tpose"))
+    _ASSERTS.append({
+        "clip": clip_name, "stance": is_stance,
+        "pelvis_lean": round(_mid_pelvis_lean[0], 2),
+        "foot_z": round(min_foot_z, 4), "foot_rest_z": round(foot_rest_z, 4),
+        "foot_off": round(min_foot_z - foot_rest_z, 4),
+    })
     tgt.animation_data.action = None
     return baked
 
@@ -344,6 +438,22 @@ def main():
     log("baked clips:", baked)
     if not baked:
         raise RuntimeError("no clips baked")
+
+    # GROUNDED + UPRIGHT assertion gate. Every baked clip must stay grounded;
+    # standing clips must also land near-vertical. Fails the run on a violation.
+    bad = []
+    for a in _ASSERTS:
+        grounded = abs(a["foot_off"]) <= GROUND_TOL_M
+        upright = (not a["stance"]) or a["pelvis_lean"] <= UPRIGHT_TOL_DEG
+        ok = grounded and upright
+        log("  RETARGET-ASSERT", "PASS" if ok else "FAIL", a["clip"],
+            "stance=%s pelvis_lean=%.2f deg foot_off=%.3f m"
+            % (a["stance"], a["pelvis_lean"], a["foot_off"]))
+        if not ok:
+            bad.append(a["clip"] + ("(leaning)" if not upright else "") +
+                       ("(ungrounded)" if not grounded else ""))
+    if bad:
+        raise RuntimeError("grounded/upright assertion FAILED for: " + ", ".join(bad))
 
     # Remove EVERY object that is not the target armature or one of the target's
     # own meshes (donor armatures + donor meshes like Jake's grenade Icosphere),
