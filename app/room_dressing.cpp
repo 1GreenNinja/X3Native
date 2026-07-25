@@ -350,6 +350,15 @@ void collectCuts(const CanonFloor& floor, uint32_t room, const CanonRoom& r,
             cuts[f].push_back({ d.cx - d.cutHalf - m, d.cx + d.cutHalf + m });
         }
     }
+    // fix/spire-hollow-core: openings cut OUTSIDE the doorway graph (the SEAM-2
+    // exterior breach + the stairwell connector mouths), recorded by buildCanonFloor.
+    // Without these the wall paneling seals a real opening back up with panels
+    // (walk-through-panel bug).
+    for (const CanonFloor::BreachCut& bc : floor.breachCuts) {
+        if (bc.room != room) continue;
+        if (bc.face >= 0 && bc.face < 4)
+            cuts[bc.face].push_back({ bc.lo - m, bc.hi + m });
+    }
 }
 
 // Subtract cut intervals from [lo..hi]; append surviving segments >= minLen.

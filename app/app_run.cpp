@@ -52,6 +52,7 @@
 #include "skilltree.h"                      // [W9-3 RPG] skill tree + PlayerStatMods layer
 #include "rpg_ui.h"                         // [W9-3 RPG] backpack/skill screens + HUD chip
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
+#include "stairwell.h"                      // fix/spire-hollow-core: the facility stairwell (open switchback, F1..F7)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
@@ -1247,6 +1248,8 @@ int runDefaultHost(HostContext& hc) {
     itemDb.load(x3::game::itemsJsonPath());
     skillTree.load(x3::game::skillTreeJsonPath());
     x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
+    x3::game::FacilityStairwell stairwell;     // fix/spire-hollow-core: open switchback stairwell (F1..F7, skips 4.5)
+    x3::game::StairwellLayout   stairLayout;   // its shared plan (breach wiring + lint agree)
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
@@ -1820,6 +1823,21 @@ int runDefaultHost(HostContext& hc) {
                 copts.spineMouthY1   = nexusFloorY + x3::game::Canon45::kMouthH;
                 copts.spineMouthHalf = x3::game::Canon45::kMouthHalf;
             }
+            // FACILITY STAIRWELL (owner feature 2026-07-25): register the per-floor
+            // connector mouths as breach cuts so the graybox walls open where the
+            // stairwell module (built after the floor) seals its connectors on.
+            stairLayout = x3::game::stairwellLayout(canonFloor);
+            if (stairLayout.valid) {
+                for (const auto& fe : stairLayout.floors) {
+                    x3::game::CanonBuildOpts::ExtraBreach eb;
+                    eb.room   = fe.room;
+                    eb.face   = 0;                              // every target's -X wall
+                    eb.center = (fe.floorNum == 1) ? 0.0f
+                              : x3::game::StairwellLayout::kDoorZ;
+                    eb.half   = x3::game::StairwellLayout::kDoorHalfW;
+                    copts.extraBreaches.push_back(eb);
+                }
+            }
             // TRAPDOOR CARVE — the canon-cell SECRET-ROOM PORT (Tim's code-locked
             // trapdoor was legacy-tower-only until now). Pick a hatch spot inside
             // Jake's Cell clear of the dressing (bunk in the -X/-Z corner, debris in
@@ -1982,6 +2000,14 @@ int runDefaultHost(HostContext& hc) {
                           x3::game::riggedGlbRoot(),
                           x3::game::assetRoot() + "/surface_library", canonLights);
             if (bootProf) bootProfMs("canon45");
+            // ---- THE FACILITY STAIRWELL (owner feature 2026-07-25): open switchback
+            // F1..F7 on the west edge, railed open well, rubber-nosed treads, locked
+            // keypad doors on every no-floor landing (incl. level 4.5's height — the
+            // hidden floor's tell is a door that won't open, not a blank wall). ----
+            stairwell.build(stairLayout, canonFloor, scene, *device, *physics,
+                            &canonDoors, x3::game::assetRoot() + "/surface_library",
+                            canonLights);
+            if (bootProf) bootProfMs("stairwell");
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the

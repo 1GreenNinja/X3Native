@@ -145,6 +145,13 @@ struct CanonFloor {
     // single-floor loadCanonFloor path — treat empty as "floorNum for every room").
     // Used for per-floor lint/diagnostic grouping only.
     std::vector<int>           roomFloorNum;
+    // BREACH CUTS (fix/spire-hollow-core): openings buildCanonFloor cut in room walls
+    // OUTSIDE the doorway graph (the SEAM-2 exterior breach + the stairwell's
+    // per-floor connector mouths). Recorded so opening-aware consumers (RoomDressing's
+    // wall paneling) do not seal them back up with panels. face: 0=-X 1=+X 2=-Z 3=+Z;
+    // lo/hi = the cut span along the wall run (Z for X-plane faces, X for Z-plane).
+    struct BreachCut { uint32_t room = kNoRoom; int face = 0; float lo = 0, hi = 0; };
+    std::vector<BreachCut>     breachCuts;
 
     bool valid() const { return !rooms.empty(); }
 

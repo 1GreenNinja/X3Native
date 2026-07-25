@@ -1346,6 +1346,9 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             case 2:  gapZneg[opts.breachRoom].push_back(g); break;
             default: gapZpos[opts.breachRoom].push_back(g); break;
         }
+        floor.breachCuts.push_back({ opts.breachRoom, opts.breachFace,
+                                     opts.breachCenter - opts.breachHalf,
+                                     opts.breachCenter + opts.breachHalf });
         x3::logInfo("buildCanonFloor: SEAM-2 exterior breach cut in '" + br.name +
                     "' face " + std::to_string(opts.breachFace) + " at " +
                     std::to_string(opts.breachCenter) + " (half " +
@@ -1365,6 +1368,8 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             case 2:  gapZneg[eb.room].push_back(g); break;
             default: gapZpos[eb.room].push_back(g); break;
         }
+        floor.breachCuts.push_back({ eb.room, eb.face,
+                                     eb.center - eb.half, eb.center + eb.half });
         x3::logInfo("buildCanonFloor: STAIRWELL breach cut in '" + br.name +
                     "' face " + std::to_string(eb.face) + " at " +
                     std::to_string(eb.center) + " (half " + std::to_string(eb.half) + ")");
