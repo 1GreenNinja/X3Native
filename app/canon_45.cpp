@@ -103,6 +103,15 @@ bool nexusEnvelope(const CanonFloor& floor, uint32_t& accessOut,
 }
 } // namespace
 
+bool Canon45::envelope(const CanonFloor& floor, float out[6]) {
+    uint32_t access; std::vector<uint32_t> plats;
+    float x0, x1, z0, z1, top;
+    if (!nexusEnvelope(floor, access, plats, x0, x1, z0, z1, top)) return false;
+    out[0] = x0; out[1] = x1; out[2] = z0; out[3] = z1;
+    out[4] = floorPlaneY(floor); out[5] = top + 5.0f;
+    return true;
+}
+
 float Canon45::floorPlaneY(const CanonFloor& floor) {
     uint32_t access; std::vector<uint32_t> plats;
     float x0, x1, z0, z1, top;

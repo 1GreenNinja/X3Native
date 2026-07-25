@@ -39,6 +39,11 @@ public:
     // carries no Nexus platforms (callers treat that as "no hidden level").
     static float floorPlaneY(const CanonFloor& floor);
 
+    // The 4.5 cavern ENVELOPE box, data-derived (same derivation build() uses):
+    // out = { x0, x1, z0, z1, yFloor, yCeil }. False when the tower has no Nexus.
+    // Consumed by the level lint's hidden-floor seal gate.
+    static bool envelope(const CanonFloor& floor, float out[6]);
+
     // Build the cavern (shell/climb/dressing/spawns) from the loaded tower. Appends its
     // motivated lights into `canonLights` (same per-room-gated feed the tower uses).
     // No-op (built()==false) if the tower carries no Nexus platforms.

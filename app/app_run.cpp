@@ -2331,7 +2331,8 @@ int runDefaultHost(HostContext& hc) {
                     x3::logInfo("--world canonlevel: THE REAL ELEVATOR live in the lobby spine at (" +
                                 std::to_string(L0.cx) + ", " + std::to_string(L0.cz) + ") — " +
                                 std::to_string(stops.size()) + " stops, RIFT + F1-F" +
-                                std::to_string(stops.size() - 1) +
+                                std::to_string(lobbyRooms.size()) +
+                                (nexusStopIdx >= 0 ? " + the locked 4.5 row" : "") +
                                 "; E to summon/ride, 1127 for The Deep, 4790 for SUB-LEVEL R1");
                 }
             }
