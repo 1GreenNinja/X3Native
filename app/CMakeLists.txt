@@ -152,6 +152,7 @@ add_executable(X3Engine WIN32
     crowd_skin.cpp
     crowd_chatter.cpp
     npc_life.cpp
+    npc_skin.cpp
     hackables.cpp
     alert.cpp
     fx.cpp

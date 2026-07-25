@@ -35,6 +35,7 @@
 #include "../monster.h"              // OH1 HERO HELI: rigged skinned draw via MonsterSystem prop
 #include "../crowd_skin.h"            // RESIDENTS: real rigged-GLB characters over the agents
 #include "../npc_life.h"              // LIVING CITY: 12-archetype NPCs with daily schedules
+#include "../npc_skin.h"              // LIVING CITY: rigged skins over the named citizens
 #include "../asset_root.h"            // riggedGlbRoot()
 #include "../holo_terminal.h"         // CONTROL ROOM: in-world ops dashboard screen
 #include "engine/audio/IAudioSystem.h" // CYBERPUNK AUDIO: rainy-city bed + positional hums + UI SFX
@@ -151,6 +152,9 @@ void scrollCB(GLFWwindow*, double /*xoff*/, double yoff) { g_scrollY += yoff; }
 // poke (-1/negative = keep the env-var default behaviour).
 x3::game::Hud* g_hud = nullptr;          // char-callback target while console open
 int   g_volOverride = -1;    // console `vol on|off|auto`: -1 env default, else 0/1
+std::string g_playasCapPath; // PLAYAS_DEMO: armed capture to finalize post-endFrame
+std::string g_shotPath;      // console `screenshot`: armed capture to finalize post-endFrame
+float g_ambScale = 1.0f;     // console `amb <scale>`: city ambient multiplier (Tim's glare knob)
 float g_sunOverride = -1.0f; // console `sun <scale>|auto`: <0 = auto ramp
 void charCB(GLFWwindow*, unsigned int c) {
     if (g_hud && g_hud->consoleOpen()) g_hud->onChar(c);
@@ -348,7 +352,7 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
                            + kDayAmbFloor[i]   * dayness;
         if (amb[i] < floorI) amb[i] = floorI;
     }
-    device->setAmbient(amb[0], amb[1], amb[2]);
+    device->setAmbient(amb[0] * g_ambScale, amb[1] * g_ambScale, amb[2] * g_ambScale);
 }
 
 // Gerstner ocean at sea level 0, lit by the SAME sun as the sky (doctrine: one
@@ -2670,6 +2674,7 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::MonsterSystem oh1; bool oh1Built = false;   // OH1 hero heli (rigged prop)
     x3::game::HoloTerminal opsScreen;   // CONTROL ROOM: live city-ops dashboard on the crown
     x3::game::NpcLife npcLife; bool npcLifeBuilt = false;   // LIVING CITY: scheduled NPCs
+    x3::game::NpcSkin npcSkin;                              // their rigged bodies
     bool opsBuilt = false;
     if (physOk) {
         x3::game::CrowdConfig cc;
@@ -2714,6 +2719,14 @@ int hostEchotropolis(HostContext& hc) {
             npcLifeBuilt = npcLife.built();
             x3::logInfo(std::string("--world echotropolis: living-city NpcLife ") +
                         (npcLifeBuilt ? "built" : "off"));
+            if (npcLifeBuilt) {
+                // RIGGED SKINS over the named citizens ("cube box people" fix):
+                // cops + vendor wear the paid Meshy rigs, the rest the roster.
+                x3::game::NpcSkinConfig nsc;
+                nsc.site = "named citizens";
+                nsc.spawnsPerFrame = 2;
+                npcSkin.build(nsc, npcLife);
+            }
         }
         x3::game::CrowdSkinConfig sc;
         sc.site = "Echo Harbor residents";
@@ -3051,6 +3064,25 @@ int hostEchotropolis(HostContext& hc) {
         const bool on = !a.empty() && a[0] == "on";
         device->setVsync(on); console->print(on ? "vsync on" : "vsync off");
     }, "vsync on|off");
+    console->registerCommand("amb", [&](const std::vector<std::string>& a) {
+        if (a.empty() || a[0] == "auto") { g_ambScale = 1.0f; console->print("ambient auto"); }
+        else { const float f = (float)std::atof(a[0].c_str());
+               if (f > 0.0f && f <= 4.0f) { g_ambScale = f; console->print("ambient x " + a[0]); }
+               else console->print("amb <0.1..4>|auto"); }
+    }, "city ambient-light multiplier (glare knob)");
+    console->registerCommand("screenshot", [&](const std::vector<std::string>&) {
+        static int shotN = 0;
+        char p[96]; std::snprintf(p, sizeof(p), "captures/shot_%03d.png", shotN++);
+        device->armCapture(p);
+        g_shotPath = p;
+        console->print(std::string("capturing -> ") + p);
+        hud.closeConsole();   // the shot is of the world, not the console
+    }, "save a screenshot to captures/");
+    console->registerCommand("cull", [&](const std::vector<std::string>& a) {
+        const bool on = a.empty() || a[0] != "off";
+        device->setFrustumCullEnabled(on);
+        console->print(on ? "frustum cull ON" : "frustum cull OFF (diagnostic)");
+    }, "frustum culling on|off (narrow-arc diagnostic)");
 
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
@@ -3117,8 +3149,32 @@ int hostEchotropolis(HostContext& hc) {
         }
 
         // ---- WALK MODE toggle (G) + first-person character step -------------
+        // G toggles GROUND <-> FLIGHT (Tim's spec). Landing drops you onto the
+        // terrain right under the fly camera; takeoff lifts from the walk eye.
         { const bool g = kd(GLFW_KEY_G);
-          if (g && !prevG && physOk) { walkMode = !walkMode; if (walkMode) flyMode = false; }
+          if (g && !prevG) {
+              if (flyMode && physOk) {           // land where you hover
+                  const float gy = hf.ok() ? hf.heightAt(flyX, flyZ) : 0.0f;
+                  player.spawn(*phys, flyX, gy + 1.2f, flyZ);
+                  flyMode = false; walkMode = true;
+                  uiSfx(sfxConfirm, 0.7f);
+              } else if (walkMode) {             // take off from where you stand
+                  float px, py, pz, pyw, ppt; player.camera(px, py, pz, pyw, ppt);
+                  flyX = px; flyY = py + 2.0f; flyZ = pz;
+                  flyYaw = pyw; flyPitch = ppt; flyRoll = 0.0f; flySeeded = true;
+                  walkMode = false; flyMode = true;
+                  // Taking off ends any ride-along/play-as: otherwise the banner
+                  // stays up and flight WASD keeps driving the poor citizen.
+                  followIdx = -1; playAs = false;
+                  if (npcLifeBuilt) npcLife.setControlled(-1);
+                  uiSfx(sfxConfirm, 0.7f);
+              } else if (physOk) {               // orbit -> ground at the focus
+                  const float gy = hf.ok() ? hf.heightAt(rig.focusX, rig.focusZ) : 0.0f;
+                  player.spawn(*phys, rig.focusX, gy + 1.2f, rig.focusZ);
+                  walkMode = true;
+                  uiSfx(sfxConfirm, 0.7f);
+              }
+          }
           prevG = g; }
         // FLY MODE toggle (V): fly <-> orbit. Entering fly drops walk/ride/build.
         { const bool v = kd(GLFW_KEY_V);
@@ -3186,6 +3242,43 @@ int hostEchotropolis(HostContext& hc) {
                 talkDemoFired = true;
             }
         }
+        // ECHO_PLAYAS_DEMO=1: after settle, ride + play-as agent 0 and spin a slow
+        // full circle, capturing frames — the yaw-arc visibility repro harness for
+        // Tim's live report ("model only visible for a few degrees of rotation").
+        static const bool playasDemo = [](){ const char* e = std::getenv("ECHO_PLAYAS_DEMO");
+                                             return e && e[0]=='1'; }();
+        static int playasFrame = 0;
+        if (playasDemo && npcLifeBuilt) {
+            ++playasFrame;
+            if (playasFrame == 240 && followIdx < 0) {
+                flyMode = false; walkMode = false;
+                followIdx = 0; playAs = true;
+                npcLife.setControlled(0);
+                driveYaw = 0.0f;
+            }
+            if (followIdx >= 0 && playasFrame <= 240 + 10*60) {
+                driveYaw += dt * (6.2831853f / 8.0f);   // full turn in 8 s
+                if ((playasFrame % 45) == 0) {
+                    char cap[128];
+                    std::snprintf(cap, sizeof(cap), "captures/playas_%03d.png", playasFrame);
+                    device->armCapture(cap);           // arms the swapchain copy...
+                    g_playasCapPath = cap;             // ...written after endFrame below
+                }
+                if ((playasFrame % 60) == 0) {
+                    // DIAGNOSTIC: does the skinned body sit where the agent is?
+                    const auto& a0 = npcLife.agent(0);
+                    const auto* m0 = npcSkin.character(0);
+                    char db[192];
+                    std::snprintf(db, sizeof(db),
+                        "[playas-demo] agent0 (%.1f,%.1f,%.1f yaw %.2f) monster0 %s(%.1f,%.1f,%.1f) skinned=%d",
+                        a0.pos.x, a0.pos.y, a0.pos.z, a0.yaw,
+                        m0 ? "" : "NULL", m0 ? m0->pos().x : 0.0f,
+                        m0 ? m0->pos().y : 0.0f, m0 ? m0->pos().z : 0.0f,
+                        (int)npcSkin.agentSkinned(0));
+                    x3::logInfo(db);
+                }
+            }
+        }
         // CITIZEN TALK prompt select ([ / ]) — walk mode only, where build mode (which
         // owns these two keys) is forced off, so the existing binding never collides.
         if (walkMode && talkLlm) {
@@ -3211,7 +3304,8 @@ int hostEchotropolis(HostContext& hc) {
             if (drop) talkClose();
         }
         // PLAY-AS drive: tank-style third-person steering (A/D turn, W/S move, Shift run).
-        if (followIdx >= 0 && playAs && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
+        // Never while flying — flight owns WASD (the citizen must not be dragged along).
+        if (followIdx >= 0 && playAs && !flyMode && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
             const auto& a = npcLife.agent((uint32_t)followIdx);
             // Tim (live play test): A/D were REVERSED — from the trailing camera,
             // +yaw (world CCW) reads as a RIGHT turn, so D gets the +.
@@ -3500,7 +3594,10 @@ int hostEchotropolis(HostContext& hc) {
         // drains its deferred spawn queue and pose-follows the agents.
         if (residentsBuilt) {
             residents.update(dt, walkScene);
-            if (npcLifeBuilt) npcLife.update(dt, walkScene);   // living-city schedules advance
+            if (npcLifeBuilt) {
+                npcLife.update(dt, walkScene);   // living-city schedules advance
+                npcSkin.update(dt, npcLife, walkScene, *device, *phys);   // rigged bodies follow
+            }
             residentsSkin.update(dt, residents, walkScene, *device, *phys);
         }
         talkPoll();       // CITIZEN TALK: drain streamed reply tokens (non-blocking, every frame)
@@ -3625,6 +3722,7 @@ int hostEchotropolis(HostContext& hc) {
         } else if (minersBuilt) {      // miners share walkScene; render it if residents didn't
             walkScene.render(*device, frame);
         }
+        if (npcLifeBuilt) npcSkin.draw(*device, frame, walkScene);   // named-citizen rigs
         if (minersBuilt) minersSkin.draw(*device, frame, walkScene);   // GOLD-MINE crew skins
         if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
             poseBeam(waterTime * kBeamRate);
@@ -3668,11 +3766,15 @@ int hostEchotropolis(HostContext& hc) {
             const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
             device->drawHudQuad(frame, 12.0f, 12.0f, barW, barH, bg);
             device->drawHudText(frame, bar, 12.0f + pad, 12.0f + (barH - glyph) * 0.5f, glyph, gold);
-            if (flyMode) {   // key hints for the default free camera
-                const float dim[4] = { 0.62f, 0.68f, 0.78f, 0.85f };
-                device->drawHudText(frame,
-                    "FLY   WASD + mouse   Q/E roll   SPACE/C up-down   ARROWS fwd + turn   SHIFT fast   V orbit   G walk",
-                    12.0f + pad, 12.0f + barH + 20.0f, 12.0f, dim);
+            {   // MODE LABEL (Tim: "visual on screen, silver text"): always shown.
+                const float silver[4] = { 0.80f, 0.83f, 0.88f, 0.95f };
+                const char* mode =
+                    flyMode ? "FLIGHT   WASD + mouse   Q/E roll   SPACE/C up-down   ARROWS fwd + turn   SHIFT fast   G ground   V orbit"
+                  : walkMode ? (followIdx >= 0 ? (playAs ? "PLAY AS   WASD drive   E spectate   F release"
+                                                          : "RIDE-ALONG   E take controls   F release")
+                                               : "GROUND   WASD + mouse   SHIFT run   SPACE jump   G flight   T talk")
+                  : "ORBIT   drag pan   RMB rotate   wheel zoom   G ground   V flight";
+                device->drawHudText(frame, mode, 12.0f + pad, 12.0f + barH + 20.0f, 12.0f, silver);
             }
 
             // CITY PANEL (TAB): the web-parity dashboard, fed by the live counts.
@@ -3848,6 +3950,14 @@ int hostEchotropolis(HostContext& hc) {
             }
         }
         device->endFrame(frame);
+        if (!g_playasCapPath.empty()) {   // PLAYAS_DEMO: finalize the armed copy
+            device->captureFrame(g_playasCapPath.c_str());
+            g_playasCapPath.clear();
+        }
+        if (!g_shotPath.empty()) {        // console `screenshot`: same finalize
+            device->captureFrame(g_shotPath.c_str());
+            g_shotPath.clear();
+        }
 
         // FPS: log once per second.
         fpsAccum += dt; ++fpsFrames;
