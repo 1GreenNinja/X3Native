@@ -54,8 +54,9 @@ This matches the club canon independently: commit `878dde1` is
 visualizer wall shared one blue identity. **Any port that drifts warm or magenta is wrong**,
 regardless of how good it looks in isolation.
 
-**R231 is the priority.** It is the only one marked "Favorite" — if exactly one preset gets
-ported first, it is this one.
+**R231 is the priority.** It is the only one Tim marked "Favorite" — if exactly one preset gets
+ported first, it is this one. (The pack author rates it 1/5; see the ratings note below. That
+disagreement is exactly why Tim's notes govern.)
 
 **R180 is doubly relevant.** A blue *spectrum analyzer* is both a MilkDrop preset and the
 visual Tim asked for by name ("Spectrum and visualizers like Milkdrop"). It is the natural
@@ -85,8 +86,27 @@ the filename. The pack runs `R0`–`R301`. Tim's notes map one-to-one:
 The bare `142` heading the note is almost certainly R142 too, matching the Green Swirls line
 beneath it.
 
-Descriptions corroborate the files: **R180** is `nWaveMode=7` with `wave_b=0.800` (a
-blue-dominant spectrum mode); **R231** carries `fRating=1.000`, the top rating.
+### `fRating` is the pack author's rating — NOT Tim's. Ignore it.
+
+An earlier revision of this file claimed `fRating=1.000` on R231 "confirmed" it as Tim's
+favorite. That was wrong twice: the scale runs 0–5 (so 1.0 is *low*, not top), and the value is
+the **pack author's** rating shipped in the distribution, not Tim's.
+
+Ratings across all 501 presets: 13 at 0, 31 at 1, 23 at 2, 133 at 3, 168 at 4, 132 at 5.
+
+| Tim's note | Pack author's `fRating` | `nWaveMode` |
+|---|---|---|
+| R142 — Green Swirls | 1.000 | 2 |
+| R146 — "Good" | 4.000 | 7 |
+| R156 — "Good" | 3.000 | 4 |
+| R157 — blue silver ring + starfield | 5.000 | 4 |
+| R180 — blue spectrum analyzer | 5.000 | 7 |
+| **R231 — "Favorite Blue Patterns"** | **1.000** | 1 |
+| R255 — "GOOD" | 2.000000 | 2 |
+
+**Tim's favorite is rated 1/5 by the pack author.** The two judgements diverge sharply, which
+settles the question of authority: **Tim's notes are the spec.** Preset metadata must not be
+used to rank, filter, or prioritize the port.
 
 ## ⚠ LICENSING — do not ship these presets
 
@@ -104,20 +124,32 @@ distribution these presets ship in is **personal use only**. Therefore:
 
 - **Never commit `.milk`/`.milk2` files to this repo.** `X3Native` is public on GitHub;
   committing personal-use-only content is redistribution.
-- **Do not translate a preset's per-frame equations or warp/comp shaders into our source.**
-  That is a derivative work, and it violates the clean-room provenance rule stated in
-  `app/jukebox.h` ("No foreign source").
+- **Do not transcribe a preset's warp/comp shader code or per-pixel equation blocks into our
+  source.** Verbatim or mechanically-translated copying of that code is a derivative work and
+  breaks the clean-room rule stated in `app/jukebox.h` ("No foreign source").
 
-### The clean path
+### What IS allowed — reverse engineering the look
 
-**Tim's written descriptions above ARE the specification.** "Green Swirls", "blue silver ring
-and starfield", "blue spectrum analyzer", "favorite blue patterns" are plain-English
-descriptions, authored by Tim, of his own room. Author **original** shaders to those
-descriptions. The preset files remain on local disk as a visual reference to look at while
-authoring — never as source to port.
+A visual style is not copyrightable. "Green swirls", "a blue spectrum analyzer over a
+starfield" — nobody owns those. Copyright covers the *expression* (the specific shader code),
+not the result, the technique, or the parameter values, which are functional facts.
 
-This is not a compromise on fidelity: the target was always the look Tim remembers from the
-real club, and the descriptions capture exactly that.
+So the following are all fine, and are how this port should proceed:
+
+- **Reading the presets** to understand what they do. They are legitimately on Tim's machine
+  under the personal-use licence.
+- **Recording their configuration as facts** — e.g. "R180: `nWaveMode=7`, blue-weighted wave
+  colour, `zoom=1.004`, `rot=-0.014`, `warp=0.029`, `fDecay=0.500`, `bTexWrap=1`". Settings
+  are facts about a configuration, not authorship.
+- **Writing our own shaders** that produce the same look. That code is ours.
+- Running them side by side while authoring, to compare.
+
+The underlying **mechanisms are openly licensed**: the MilkDrop2 engine — warp mesh, video
+echo, wave modes, the per-frame/per-pixel model — is BSD-3-Clause per the same `LICENSE.txt`.
+Only the individual preset *authorship* sits under personal-use.
+
+Tim's written descriptions plus the observed parameters together form the spec. Fidelity is
+not compromised: the target was always the look he remembers from the real room.
 
 If shipping the real presets ever matters, the route is explicit permission from the author
 (contact link above) — worth asking, but do not plan around it.
