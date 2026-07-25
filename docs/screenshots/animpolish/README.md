@@ -64,6 +64,10 @@ whole-body motion READ.
 
 ## Verification summary
 - `--test-anim` T6 (each new clip's palette != Idle): all green after the re-bake.
-- Pre-existing fails left as-is (not this wave): `--test-anim` T5,
-  `--test-locomotion` L3/L5/L6.
+- ~~Pre-existing fails left as-is (not this wave): `--test-anim` T5,
+  `--test-locomotion` L3/L5/L6.~~ **FIXED in `feat/alien-locomotion` (guard-loco
+  wave): those fails were the guard "glide" itself — dead 2-key locomotion clips
+  inside chief/marcus `_anim.glb` (+ store-drift reinstalling them on every
+  fetch). See `docs/KNOWN_BUGS.md` L12. Both tests fully green now; do NOT
+  re-add an ignore label if they regress — they gate real walking.**
 - `--smoketest`: 0 VUID / 0 validation / 0 VK_ERROR.

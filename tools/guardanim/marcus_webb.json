@@ -1,10 +1,12 @@
 {
   "keep_existing": true,
-  "drop_existing": ["Idle", "Walk", "Run", "Jump"],
+  "drop_existing": ["Idle", "Walk", "Run", "Jump", "Attack", "Attack2"],
   "clips": [
-    {"name":"Idle", "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Idle",      "loop":true},
-    {"name":"Walk", "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Walking",   "loop":true},
-    {"name":"Run",  "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Riflerun",  "loop":true},
-    {"name":"Jump", "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Riflejump", "loop":false, "airborne":true}
+    {"name":"Idle",    "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Idle",        "loop":true},
+    {"name":"Walk",    "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Walking",     "loop":true},
+    {"name":"Run",     "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Riflerun",    "loop":true},
+    {"name":"Jump",    "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Riflejump",   "loop":false, "airborne":true},
+    {"name":"Attack",  "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Tossgrenade", "loop":false},
+    {"name":"Attack2", "src":"D:/GameDev/X3Native-alienwalk/assets/rigged_glb/Jake_22_actions.glb", "rig":"mixamo", "action":"Tossgrenade", "start":25, "end":72, "loop":false}
   ]
 }
