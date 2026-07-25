@@ -124,16 +124,25 @@ x3::rhi::IRenderDevice::FogParams fogOf(float r, float g, float b, float d,
 struct ZoneAir { float amb[3]; float ibl; };
 const ZoneAir& airFor(uint8_t z) {
     // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): these airs were tuned against the BENT
-    // output curve (the swapchain never sRGB-encoded — 5951890b). kMid 0.150 displayed as
-    // ~15% grey then; under the honest curve the same value displays at ~44% — a flat wash
-    // that made every built interior read washed and contrast-less ("ambient is not
-    // light"). Brought DOWN to the honest floor the rifthub/cell discipline already
-    // proved (~0.03 band); the zone KEYS light the rooms now. This is a VALUE retune from
-    // the corrected baseline, not a re-crush: no exposure or encode compensation anywhere.
-    static const ZoneAir kDark   { { 0.014f, 0.015f, 0.018f }, 0.14f };  // detention
-    static const ZoneAir kMid    { { 0.033f, 0.035f, 0.040f }, 0.22f };  // built interiors
-    static const ZoneAir kOrganic{ { 0.010f, 0.013f, 0.011f }, 0.12f };  // cave / monster space
+    // output curve (the swapchain never sRGB-encoded — 5951890b), so they all read
+    // brighter now. TWO calibration sources, two postures:
+    //   * HALLS/CORRIDORS (kHall, NEW) — anchored to the owner's locked acceptance
+    //     target ("the hall outside the cell as it used to look WITH the flashlight —
+    //     without it", reference frames in docs/screenshots/gamma_recal/). That look
+    //     needs a genuinely dark air (~0.024) so the warm pendant pools + near-black
+    //     fog own the read. Precision-matched, not guessed.
+    //   * EVERY OTHER INTERIOR (kMid/kDark/kOrganic) — the owner PLAYED the post-gamma
+    //     build live (2026-07-25) and called the facility "OK, a bit too bright —
+    //     needs to be turned down a HAIR." So these take a GENTLE trim (~20-25%) from
+    //     their pre-fix values, no restructure. Do not overcorrect rooms into gloom.
+    // Both are VALUE retunes from the corrected baseline — no exposure/encode hacks.
+    static const ZoneAir kHall   { { 0.024f, 0.025f, 0.029f }, 0.20f };  // halls/corridors (anchor-matched)
+    static const ZoneAir kDark   { { 0.024f, 0.026f, 0.030f }, 0.17f };  // detention (hair trim)
+    static const ZoneAir kMid    { { 0.115f, 0.121f, 0.134f }, 0.30f };  // built interiors (hair trim)
+    static const ZoneAir kOrganic{ { 0.016f, 0.021f, 0.018f }, 0.15f };  // cave / monster space (hair trim)
     switch (z) {
+        case ZHall:
+        case ZCorridor: return kHall;
         case ZWard:    return kDark;
         case ZCave:
         case ZOrganic: return kOrganic;
@@ -177,11 +186,11 @@ const Recipe& recipeFor(uint8_t z) {
         // fog colours ~5x on screen). Matched against the 5951890b^ reference frames in
         // docs/screenshots/gamma_recal/ (hall_cam{A,B,C}).
         /*ZHall*/     { "mw_metal_trim_b", 2.8f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        3.40f, 3.19f, 2.83f, 9.0f,   0.14f, 0.75f, 0.85f, 2.6f,
-                        fogOf(0.008f, 0.0075f, 0.007f, 0.030f, 1.5f, 0.85f) },
+                        1.90f, 1.79f, 1.58f, 5.5f,   0.14f, 0.75f, 0.85f, 2.6f,
+                        fogOf(0.002f, 0.002f, 0.0018f, 0.100f, 2.5f, 0.97f) },
         /*ZCorridor*/ { "mw_concrete_panels_a", 2.6f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        3.40f, 3.19f, 2.83f, 9.0f,   0.14f, 0.75f, 0.85f, 2.4f,
-                        fogOf(0.008f, 0.0075f, 0.007f, 0.030f, 1.5f, 0.85f) },
+                        1.90f, 1.79f, 1.58f, 5.5f,   0.14f, 0.75f, 0.85f, 2.4f,
+                        fogOf(0.002f, 0.002f, 0.0018f, 0.100f, 2.5f, 0.97f) },
         // W2-A DETENTION = hazard AMBER (bible/audit). The accent was already amber;
         // warm the fog tint from near-neutral to a clear amber wash and widen the
         // accent so every ward cell reads amber, not cold (audit fix: "detention
@@ -770,9 +779,17 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
         const float keyReach = std::max(rec.keyRange, (keyY - fY) + 4.0f);
         const float rowReach = std::max(rec.keyRange, (rowY - fY) + 4.0f);
         if (z == ZHall || z == ZCorridor) {
-            // Rhythm of cool keys along the long axis (the corridor's ONE statement).
+            // GAMMA-RECAL rhythm: DENSE dim warm pendants (4 m pitch, short reach)
+            // instead of the old sparse 8 m rhythm. The reference read (old torch on
+            // the bent curve) is bright IMMEDIATE walls falling fast into darkness —
+            // and the spatial diff of the sparse rig showed exactly the inverse
+            // (dark frame-edge walls beside the camera, bright 5-15 m band where the
+            // pools landed). A 4 m pitch keeps every wall section within ~2 m of a
+            // lamp, so the near field reads warm-lit from ANY standpoint, and the
+            // heavy near-black zone fog owns everything beyond — the same
+            // camera-centric falloff the torch gave, built from real fixtures.
             const float len = longX ? r.w : r.d;
-            const int nKeys = std::max(1, (int)(len / 8.0f));
+            const int nKeys = std::max(1, (int)(len / 4.0f));
             for (int i = 0; i < nKeys; ++i) {
                 const float t = (i + 0.5f) / nKeys - 0.5f;
                 addLight(r.cx + (longX ? t * len : 0), rowY,
