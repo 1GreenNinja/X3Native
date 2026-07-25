@@ -1111,6 +1111,24 @@ int runDefaultHost(HostContext& hc) {
     {
         const bool introCellWorld = (worldMode == "level1") || (worldMode == "elevator") ||
                                     (worldMode == "canonlevel") || (worldMode == "intro");
+        // HEADLESS INTRO CAPTURE (combat-readability evidence): with
+        // X3_INTRO_CAPTURE=<dir> set and NO window (e.g. `--smoketest --world
+        // intro`), run the orchestrator's flight beats OFFSCREEN — the beats
+        // render with a scripted pilot + staged enemy damage and dump the
+        // evidence PNGs — then tear down cleanly and exit. Zero windowed pops
+        // on the owner's box; normal headless (env unset) is untouched.
+        if (!window && introCellWorld && !testBootTime && !skipIntro) {
+            const char* evCap = std::getenv("X3_INTRO_CAPTURE");
+            if (evCap && *evCap) {
+                x3::logInfo("[intro] headless capture run (X3_INTRO_CAPTURE) — offscreen beats");
+                (void)x3::intro::runInteractiveIntro(hc);
+                loading.shutdown(*device);
+                physics->shutdown();
+                device->shutdown();
+                glfwTerminate();
+                return 0;
+            }
+        }
         // --test-boottime skips the cold-open: the intro is CONTENT the player watches
         // (a skippable cinematic), not boot work — the gate measures the machine.
         if (window && introCellWorld && !testBootTime && !skipIntro) {

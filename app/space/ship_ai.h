@@ -60,6 +60,10 @@ struct EnemyShip {
     int   maxHull;       // starting hull
     ShipAIState state;   // current AI behaviour state
     float fireCooldown;  // seconds remaining until the ship may fire again
+    float hitFlash;      // seconds of hull hit-flash remaining (combat readability:
+                         // damageShip sets it, tickShip decays it; the host tints
+                         // the ship's draw brighter/warm while > 0 so a registered
+                         // hit READS instantly at dogfight range)
 
     // ---- Orbit / attack-run bookkeeping (dogfight circling) ----------------
     uint32_t seed;        // per-ship spawn-order seed (staggers timers per ship)
@@ -120,6 +124,48 @@ constexpr float kPeelSec        = 1.4f;    // Evade peel after the pass, then re
 constexpr float kFirstRunDelay  = 0.6f;    // + 0.45 * (seed % 6) — staggered
 constexpr float kNextRunDelay   = 3.5f;    // + 0.5  * (hash % 6) — staggered; wide
                                            // enough that CIRCLING dominates the fight
+
+// ---- Hull hit-flash (combat readability) -----------------------------------
+constexpr float kHitFlashSec    = 0.10f;   // warm hull flash length after a hit
+
+// ---- DISTANCE-COMPENSATED visual scale — ONE formula, TWO consumers ---------
+// The intro flight beats draw an enemy fighter at kVisBaseScale, growing
+// linearly past kVisCompStart (capped kVisCompMax at 600 m+) so a contact never
+// falls below a readable on-screen size (owner: "I cannot SEE the enemy ship").
+// The player therefore aims at what he SEES — so the HIT TEST's acceptance
+// radius must scale by the SAME factor (owner: "allow me to hit the tiny enemy
+// ships too!"). A shot whose ray passes within the DRAWN silhouette's radius at
+// the target's distance is a hit. Do NOT fork this formula: draw + hit share it.
+constexpr float kVisBaseScale   = 6.0f;    // base draw scale (close range)
+constexpr float kVisCompStart   = 150.0f;  // beyond this the draw grows linearly
+constexpr float kVisCompMax     = 4.0f;    // growth cap (reached at 600 m+)
+constexpr float kHitBaseRadius  = 9.0f;    // acceptance radius at factor 1
+                                           // (generous vs the 6 m draw scale)
+inline float visCompFactor(float dist) {
+    const float f = dist / kVisCompStart;
+    return f < 1.0f ? 1.0f : (f > kVisCompMax ? kVisCompMax : f);
+}
+
+// ---- Damage-state FX staging (combat readability) ---------------------------
+// Emission periods (in 60 Hz frames; 0 = OFF) for the persistent hull-damage FX
+// a wounded fighter trails, keyed to hull fraction:
+//   >= 0.75          : pristine — NO damage FX (the negative control).
+//   <  0.75          : intermittent spark bursts.
+//   <  0.50          : + continuous thin grey smoke trail.
+//   <  0.25          : + heavy smoke + ember/fire glow at the hull.
+// Pure + inline so the live emitters and the --test-ship-ai assertions run the
+// exact same staging.
+struct DamageFxProfile {
+    int sparkPeriod;   // frames between spark bursts (0 = none)
+    int smokePeriod;   // frames between smoke puffs  (0 = none)
+    int emberPeriod;   // frames between fire embers  (0 = none)
+};
+inline DamageFxProfile damageFxProfile(float hullFrac) {
+    if (hullFrac >= 0.75f) return { 0, 0, 0 };
+    if (hullFrac >= 0.50f) return { 22, 0, 0 };
+    if (hullFrac >= 0.25f) return { 14, 3, 0 };
+    return { 8, 2, 3 };
+}
 }
 
 // Dense-array, data-driven manager (MonsterManager-style). Owns the per-instance

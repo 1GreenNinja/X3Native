@@ -530,6 +530,83 @@ void CombatFx::spawnSmoke(const x3::phys::Vec3& pos) {
     }
 }
 
+// ===========================================================================
+// SHIP-SCALE damage-state FX (space combat readability — see fx.h). Sizes are
+// ~5x the on-foot presets so the read survives dogfight range (a 0.3 m puff is
+// sub-pixel at 100 m; a 2.5 m churn is a plume). No gravity: this is space.
+// ===========================================================================
+void CombatFx::spawnShipSparks(const x3::phys::Vec3& pos) {
+    const int n = 10;
+    for (int i = 0; i < n; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ pos.x + frandSym() * 1.2f,
+                                pos.y + frandSym() * 1.2f,
+                                pos.z + frandSym() * 1.2f };
+        const float speed = 6.0f + frand() * 10.0f;
+        p.vel = x3::phys::Vec3{ frandSym() * speed, frandSym() * speed, frandSym() * speed };
+        p.life = p.maxLife = 0.20f + frand() * 0.25f;
+        p.size0 = 0.22f + frand() * 0.14f;
+        p.size1 = 0.05f;
+        p.r = 4.5f; p.g = 2.4f; p.b = 0.7f;    // hot electrical-orange (HDR -> bloom)
+        p.a0 = 1.0f;
+        p.gravity = 0.0f; p.drag = 1.6f; p.additive = true;
+        spawnParticle(p);
+    }
+}
+
+void CombatFx::spawnShipSmoke(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel,
+                              float heavy01) {
+    const float h = heavy01 < 0.0f ? 0.0f : (heavy01 > 1.0f ? 1.0f : heavy01);
+    const int n = 2 + (int)(2.0f * h);
+    for (int i = 0; i < n; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ pos.x + frandSym() * 0.8f,
+                                pos.y + frandSym() * 0.8f,
+                                pos.z + frandSym() * 0.8f };
+        // Inherit a fraction of the ship's velocity + a slow random drift: the
+        // puffs stream back along the flight path (a REAL trail, not a bead
+        // chain of stationary blobs the ship leaves behind at 90 m/s).
+        p.vel = x3::phys::Vec3{ vel.x * 0.35f + frandSym() * 1.5f,
+                                vel.y * 0.35f + frandSym() * 1.5f,
+                                vel.z * 0.35f + frandSym() * 1.5f };
+        p.life = p.maxLife = 1.4f + frand() * 1.2f + 0.8f * h;
+        p.size0 = 0.9f + 0.8f * h;
+        p.size1 = 2.6f + 2.2f * h;             // grows into a dissipating plume
+        const float g = 0.16f - 0.08f * h;     // heavy damage = darker smoke
+        p.r = g; p.g = g; p.b = g;
+        p.a0 = 0.34f + 0.28f * h;
+        p.gravity = 0.0f; p.drag = 0.55f; p.additive = false;
+        spawnParticle(p);
+    }
+}
+
+void CombatFx::spawnShipEmber(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel) {
+    // A licking fire glow at the wound + a couple of shed embers.
+    Particle f;
+    f.pos = x3::phys::Vec3{ pos.x + frandSym() * 0.9f,
+                            pos.y + frandSym() * 0.9f,
+                            pos.z + frandSym() * 0.9f };
+    f.vel = x3::phys::Vec3{ vel.x * 0.85f, vel.y * 0.85f, vel.z * 0.85f };
+    f.life = f.maxLife = 0.22f + frand() * 0.18f;
+    f.size0 = 0.9f + frand() * 0.5f;
+    f.size1 = 0.25f;
+    f.r = 5.0f; f.g = 1.9f; f.b = 0.45f;       // HDR fire orange -> bloom halo
+    f.a0 = 1.0f; f.gravity = 0.0f; f.drag = 0.4f; f.additive = true;
+    spawnParticle(f);
+    for (int i = 0; i < 2; ++i) {
+        Particle p;
+        p.pos = f.pos;
+        p.vel = x3::phys::Vec3{ vel.x * 0.3f + frandSym() * 5.0f,
+                                vel.y * 0.3f + frandSym() * 5.0f,
+                                vel.z * 0.3f + frandSym() * 5.0f };
+        p.life = p.maxLife = 0.5f + frand() * 0.5f;
+        p.size0 = 0.2f; p.size1 = 0.04f;
+        p.r = 4.0f; p.g = 1.4f; p.b = 0.3f;
+        p.a0 = 1.0f; p.gravity = 0.0f; p.drag = 0.8f; p.additive = true;
+        spawnParticle(p);
+    }
+}
+
 void CombatFx::addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal) {
     Decal& d = m_decalsRing[m_nextDecal];
     m_nextDecal = (m_nextDecal + 1) % kMaxDecals;

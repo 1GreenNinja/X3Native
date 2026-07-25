@@ -215,6 +215,21 @@ public:
     void spawnExplosion(const x3::phys::Vec3& center, float radius);
     // Lingering smoke puff (alpha, slow rise) — used by death + as a generic cue.
     void spawnSmoke(const x3::phys::Vec3& pos);
+
+    // ---- SHIP-SCALE damage-state FX (space combat readability) -------------
+    // The on-foot presets above are sized for a 2 m humanoid at 5-20 m; a
+    // wounded FIGHTER is a ~10 m hull judged from 60-150 m, so these are the
+    // same primitives scaled up ~5x, zero-gravity (space), and velocity-aware
+    // (the puff inherits a fraction of the ship's velocity so the trail STREAMS
+    // behind the flight path instead of hanging in a bead chain). Staging —
+    // which of these fires, how often — is the pure shipai::damageFxProfile.
+    // Spark burst at the hull (additive, no decal — nothing to scorch in vacuum).
+    void spawnShipSparks(const x3::phys::Vec3& pos);
+    // One grey smoke puff of the trail. heavy01: 0 = thin wisp (<50% hull),
+    // 1 = churning black-grey (<25%). `vel` = the ship's velocity.
+    void spawnShipSmoke(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, float heavy01);
+    // Hot ember/fire glow licking the hull (<25% — the "burning" read).
+    void spawnShipEmber(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel);
     // Drop a scorch decal directly (bullet-hole / impact mark) at a hit point+normal.
     void addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
 

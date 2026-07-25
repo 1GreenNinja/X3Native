@@ -91,6 +91,18 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
                    const float pos[3], const float fwd[3], float scale,
                    x3::rhi::TextureHandle fallbackMr = {});
 
+// FULL-ORIENTATION variant (combat readability): model +Z -> `fwd` (3D, so the
+// hull pitches/banks with the flight path — matching the physics basis the wing
+// muzzles use, which is what makes weapon fire visibly LEAVE the ship), +Y ->
+// `up` (re-orthonormalized). `hitFlash` in [0,1] tints the draw brighter/warm
+// (registered-hit feedback: 1 at the instant of a hit, decayed by the caller).
+// drawIntroShip above forwards here with a flattened yaw-only basis + no flash.
+void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                        const std::vector<x3::asset::ModelDrawable>& draws,
+                        const float pos[3], const float fwd[3], const float up[3],
+                        float scale, x3::rhi::TextureHandle fallbackMr = {},
+                        float hitFlash = 0.0f);
+
 // Pulse the MFD/gauge screens' emissive strength (subtle alive flicker). Call
 // once per frame with the running time.
 void pulseIntroScreens(IntroCockpitRig& rig, float t);
