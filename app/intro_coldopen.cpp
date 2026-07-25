@@ -130,7 +130,7 @@ bool runIntro(x3::rhi::IRenderDevice& device, GLFWwindow* window, const IntroTim
     // --world modes never run the cinematic.
     if (!window) return true;
 
-    x3::logInfo("intro cold-open: Jake's last flight — press any key / Esc to skip");
+    x3::logInfo("intro cold-open: Jake's last flight — press F8 (or any key / Esc) to skip");
 
     IntroSequence seq(timing);
     Starfield field; field.init();
@@ -151,10 +151,12 @@ bool runIntro(x3::rhi::IRenderDevice& device, GLFWwindow* window, const IntroTim
         if (dt > 0.1f)  dt = 0.1f;   // clamp big hitches (alt-tab) so beats don't jump
         if (dt < 0.0f)  dt = 0.0f;
 
-        // ---- Skip poll: any key / mouse / Esc (rising edge) ----
+        // ---- Skip poll: dedicated F8 / any key / mouse / Esc (rising edge) ----
         bool anyKey = false;
-        // A compact sweep of the common keys + Esc + space + the mouse.
-        for (int k : { GLFW_KEY_ESCAPE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_W, GLFW_KEY_A,
+        // A compact sweep of the common keys + Esc + space + the mouse, plus the
+        // dedicated F8 = SKIP INTRO binding (the intro is pre-gameplay, so F8's in-editor
+        // Edit<->Play toggle never overlaps this).
+        for (int k : { GLFW_KEY_F8, GLFW_KEY_ESCAPE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_W, GLFW_KEY_A,
                        GLFW_KEY_S, GLFW_KEY_D, GLFW_KEY_E, GLFW_KEY_F, GLFW_KEY_LEFT_SHIFT,
                        GLFW_KEY_LEFT_CONTROL, GLFW_KEY_TAB }) {
             if (glfwGetKey(window, k) == GLFW_PRESS) { anyKey = true; break; }
@@ -241,7 +243,7 @@ bool runIntro(x3::rhi::IRenderDevice& device, GLFWwindow* window, const IntroTim
                 // Title hint (lower third) on the flight beat only.
                 if (ph == Phase::Flight) {
                     const float hint[4] = { 0.7f, 0.75f, 0.8f, 0.6f };
-                    const char* msg = "PRESS ANY KEY TO SKIP";
+                    const char* msg = "[F8] SKIP  -  OR PRESS ANY KEY";
                     float adv = device.textAdvance(x3::rhi::FontRole::News, msg, 16.0f);
                     device.drawHudTextF(frame, x3::rhi::FontRole::News, msg, cx - adv * 0.5f, fh - 40.0f, 16.0f, hint);
                 }

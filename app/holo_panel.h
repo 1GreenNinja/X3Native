@@ -215,6 +215,12 @@ public:
     // its smoketest gates on allocationCount == 0. Safe to call unbuilt / twice.
     void shutdown(x3::rhi::IRenderDevice& device);
 
+    // Rigidly move the whole panel (screen + frame + mount pipe + glow light) to a new
+    // anchor — the delta from the current anchor is added to every owned entity's transform
+    // translation. Used by a MOVING mount (the elevator cab): the panel + its ceiling pipe
+    // ride down with the cab. No re-bake (geometry only). Safe before build (no-op).
+    void reposition(x3::phys::Vec3 newPos);
+
     bool built() const { return m_pane != kNoLink; }
     x3::phys::Vec3 anchor() const { return m_pos; }
     uint32_t paneEntity() const { return m_pane; }

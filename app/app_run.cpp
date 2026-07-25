@@ -6617,8 +6617,13 @@ int runDefaultHost(HostContext& hc) {
         });
     }
     if (canonWorld && canonFloor.valid()) {
-        // Spawn in Jake's Cell (the canonical detention spawn).
-        uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
+        // Spawn in Jake's Cell (the canonical detention spawn). Resolve the cell BY
+        // NAME (canonBeats — the same lookup every other cell system uses), not by a
+        // hardcoded probe point: if the data ever moves the cell, the old
+        // roomAt(2,0,40) probe fell back to rooms[0] — which is the MAIN HALL in the
+        // canonical data, i.e. the "spawned mid-corridor" opening bug.
+        uint32_t jake = x3::game::canonBeats(canonFloor).jakeCell;
+        if (jake == x3::game::kNoRoom) jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
         if (jake == x3::game::kNoRoom) jake = 0;
         const x3::game::CanonRoom& jc = canonFloor.rooms[jake];
         player.spawn(*physics, jc.cx, jc.y0() + 0.1f, jc.cz);
@@ -7922,11 +7927,11 @@ int runDefaultHost(HostContext& hc) {
                            const bool needCode = d->code != 0;
                            if (d->requireBoth) {                       // need card AND code (Armory)
                                if (needCard && !hasCard) {
-                                   npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                                   npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                                    npcBarkTimer = 3.0f; return true;
                                }
                                codeMode = true; keypad.clear();        // card ok -> enter the code
-                               npcBarkText = std::string("Keycard OK — enter code ") + std::to_string(d->code);
+                               npcBarkText = std::string("Keycard OK - enter code ") + std::to_string(d->code);
                                npcBarkTimer = 4.0f; return true;
                            }
                            if (needCard && hasCard) {                  // either-credential: card opens it outright
@@ -7941,7 +7946,7 @@ int runDefaultHost(HostContext& hc) {
                                    : (std::string("LOCKED — enter code ") + std::to_string(d->code));
                                npcBarkTimer = 4.0f; return true;
                            }
-                           npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                           npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                            npcBarkTimer = 3.0f; return true;
                        }()) {
                 // canon door interaction handled inside the lambda (toggle / unlock / keypad / message)
@@ -7978,7 +7983,7 @@ int runDefaultHost(HostContext& hc) {
                            }
                            if (audio) { audio->playSound2D(sElevClose, 0.8f, 1.0f);
                                         audio->playSound2D(sElevOpen, 0.6f, 0.92f); }
-                           npcBarkText = std::string("ELEVATOR → ") + T.name;
+                           npcBarkText = std::string("ELEVATOR -> ") + T.name;
                            npcBarkTimer = 3.5f;
                            x3::logInfo("use: elevator travel -> " + T.name);
                            return true;
@@ -9449,7 +9454,7 @@ int runDefaultHost(HostContext& hc) {
                         chatTrees.flags().set("clone.defeated");
                         npcBarkText  = "VIGIL: SUCCESSOR UNIT TERMINATED. HOLDING-FIELD KEY... INVALID.";
                         npcBarkTimer = 6.0f;
-                        game.objectives().setText("THE FIELD IS DOWN — GET BACK TO SARAH");
+                        game.objectives().setText("THE FIELD IS DOWN - GET BACK TO SARAH");
                         x3::logInfo("[endgame] clone defeated — Sarah's containment key is dead");
                         // [W9-3 RPG] boss-objective XP (once, latched by the flag).
                         if (progression.addXp(x3::game::kXpBoss) > 0)
@@ -10798,13 +10803,26 @@ int runDefaultHost(HostContext& hc) {
                 // + checkpoint + Phase-3 boss adds + bosses), so it never reads "AREA
                 // CLEAR" while a boss add is still alive. -1 (default) hides it elsewhere.
                 // --world canonlevel: fold the canon enemies/boss so the counter reflects
-                // the canon spawns (not the empty legacy groups).
+                // the canon spawns (not the empty legacy groups). OPENING FLOW: the canon
+                // count is the AWAKE (locally active) hostiles, not the whole spire —
+                // dormant far-floor spawns are gated threats, not on the counter. (The
+                // old fold of enemiesRemaining() put "ENEMIES: 101" on screen at wake.)
                 hm.enemiesRemaining = game.enemiesRemaining() +
-                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesRemaining() : 0);
-                if (canonWorld && canonPlay.built())
-                    hm.objective = (canonPlay.enemiesRemaining() > 0)
-                        ? "Fight down the spire — save the captives, reach Martinez"
-                        : "AREA CLEAR — reach the Elevator Lobby";
+                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesAwake() : 0);
+                // OPENING OBJECTIVE BEATS (canon): escape the cell -> fight what's
+                // around you -> push on -> clear. ASCII ONLY: the HUD glyph atlas maps
+                // every byte >= 128 to '?', so the old em-dash literal rendered as
+                // "Fight down the spire ??? save the captives" on screen.
+                if (canonWorld && canonPlay.built()) {
+                    if (!canonPlay.leftCell())
+                        hm.objective = "Find a way out of the cell";
+                    else if (canonPlay.enemiesAwake() > 0)
+                        hm.objective = "Fight down the spire - save the captives, reach Martinez";
+                    else if (canonPlay.enemiesRemaining() > 0)
+                        hm.objective = "Push on - save the captives, reach Martinez";
+                    else
+                        hm.objective = "AREA CLEAR - reach the Elevator Lobby";
+                }
                 if (game.armed() || (canonWorld && canonPlay.armed())) {
                     const x3::game::WeaponDef&         wd = arsenal.current();
                     const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();
@@ -10851,11 +10869,15 @@ int runDefaultHost(HostContext& hc) {
                     x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
                     uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
                     // --world canonlevel: the canon enemies (Level1Game's are empty here).
+                    // OPENING FLOW: only AWAKE spawns blip — a dormant (gated) spawn is
+                    // an undetected threat, and the radar must agree with the awake-only
+                    // ENEMIES counter (red blips beside "AREA CLEAR" read as a bug).
                     if (canonWorld && canonPlay.built()) {
                         x3::game::CanonPlay::EnemyMark cm[x3::ui::HudModel::kMaxBlips];
                         const uint32_t nc = canonPlay.liveEnemyMarks(cm, x3::ui::HudModel::kMaxBlips);
                         ne = 0;
                         for (uint32_t i = 0; i < nc && ne < x3::ui::HudModel::kMaxBlips; ++i) {
+                            if (!cm[i].awake) continue;
                             marks[ne].pos = cm[i].pos; marks[ne].label = cm[i].label; ++ne;
                         }
                     }
