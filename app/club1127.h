@@ -183,6 +183,20 @@ public:
     // Recommended cull distance (m): hide the club beyond this from the player.
     float cullDistance() const { return kCullDist; }
 
+    // ---- Runtime beat tempo (Club Jukebox) --------------------------------
+    // The house tempo the beat grid rides: subs thump, dance tiles breathe,
+    // dancers bounce, the moving-head gels step + rotate, and the corner-sub
+    // pulse lights all derive from ONE clock in update() (beatHz = m_bpm/60).
+    // Defaults to kDefaultBpm (~85.5), matched to the built-in club_descent
+    // track so the stock club is byte-for-byte unchanged. The Club Jukebox
+    // retunes it per USER track (a <track>.json sidecar bpm, or the
+    // snd_clubmusic_bpm cvar when there is no sidecar) so the whole room rides
+    // whatever MP3 Tim dropped in. Runtime-settable at any time (before or
+    // after build()); clamped to a sane musical range.
+    static constexpr float kDefaultBpm = 85.5f;   // matches club_descent.wav
+    void  setBpm(float bpm) { if (bpm > 20.0f && bpm < 400.0f) m_bpm = bpm; }
+    float bpm() const { return m_bpm; }
+
     bool built() const { return m_built; }
 
 private:
@@ -279,6 +293,10 @@ private:
     std::vector<Dancer>                           m_dancers;
     // Running animation clock (seconds) advanced by update().
     float                                         m_time = 0.0f;
+    // Runtime beat tempo (BPM) the update() beat grid rides. Seeded to the
+    // house default (matches club_descent.wav); the Club Jukebox retunes it
+    // per user track via setBpm(). See setBpm()/bpm() above.
+    float                                         m_bpm = kDefaultBpm;
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).
     std::vector<std::unique_ptr<MonsterSystem>>   m_chars;
     // LNS GARAGE: the hero CAR on the two-post lift is a real GLB (Vehicles/CTR.glb)

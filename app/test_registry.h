@@ -91,6 +91,7 @@ struct TestFlags {
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
     bool testComplex = false;
     bool testClubNpcs = false;   // --test-clubnpcs (feat/club-npcs: 3 canon NPCs + trees)
+    bool testJukebox = false;   // --test-jukebox (Club Jukebox pipeline)
     bool testPerfshop = false;
     bool testGamma = false;    // --test-gamma (LINEAR-vs-GAMMA acceptance-gate byte measurement)
     // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF

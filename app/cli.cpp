@@ -229,6 +229,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.complexShotDir = argv[++i];
         }
         else if (a == "--test-clubnpcs") o.testClubNpcs = true;
+        else if (a == "--test-jukebox") o.testJukebox = true;
         else if (a == "--test-perfshop") o.testPerfshop = true;
         else if (a == "--test-space") o.testSpace = true;
         else if (a == "--test-eva") o.testEva = true;

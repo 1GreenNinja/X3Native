@@ -2,12 +2,14 @@
 #include "world_host_common.h"
 #include "../scene.h"
 #include "../club1127.h"
+#include "../jukebox.h"                     // Club Jukebox — Tim's personal-use "Self Radio"
 #include "../crowd.h"
 #include "../player.h"
 #include "../asset_root.h"
 #include "../audio_root.h"                 // resolveAudio (the committed club track)
 #include "../chat_tree.h"                   // feat/club-npcs: ChatTreeSystem + drawChatTreeUi
 #include "../timeline.h"                    // globalTimeline() (chat-tree axis fx context)
+#include "../settings_io.h"                // readAudioSettings (respect music vol/on)
 #include <cstdlib>                          // getenv (X3_CLUB_SEQ clip capture)
 #include <cstdio>                           // snprintf (clip frame paths)
 #include "engine/audio/IAudioSystem.h"
@@ -227,15 +229,31 @@ int hostClub(HostContext& hc) {
         }
 
         // ===== Walkable windowed path: full first-person controller + physics. ===
-        // THE MUSIC (max-out): the real club track (the
-        // tempo every beat-locked pulse in club1127.cpp rides; Descent, ~85.5 BPM) at
-        // house volume. Graceful: no device / missing WAV -> silent club.
+        // THE MUSIC. The CLUB JUKEBOX (Tim's personal-use "Self Radio") scans
+        // assets/audio/club_music/ + the snd_clubmusic_dir user folder for his own
+        // MP3/WAVs and streams them through the MUSIC channel; the club beat grid
+        // rides each track's BPM (a <track>.json sidecar, else snd_clubmusic_bpm).
+        // EMPTY folder -> fall back to the built-in club_descent track exactly as
+        // before (~85.5 BPM, house volume, seamless loop) — zero behaviour change.
+        // Graceful: no device / missing WAV -> silent club.
         std::unique_ptr<x3::audio::IAudioSystem> caudio(x3::audio::createAudioSystem());
         x3::audio::LoopHandle clubTrack{};
-        if (caudio && caudio->init()) {
-            auto h = caudio->load(x3::game::resolveAudio("music/club_descent.wav"));
-            if (h.valid()) clubTrack = caudio->startLoop(h, 0.75f, 1.0f);
+        x3::game::Jukebox jukebox;
+        {   // Respect the player's music volume + on/off (Settings). House 0.75
+            // default keeps the club audible when the cfg has no music keys yet.
+            bool musicOn = true; float musicVol = 0.75f, sfxVol = 1.0f;
+            x3::apphost::readAudioSettings(musicOn, musicVol, sfxVol);
+            jukebox.rescan(musicVol, musicOn);
+            if (caudio && caudio->init()) {
+                if (jukebox.hasTracks()) {
+                    jukebox.begin(*caudio, club);   // user tracks -> jukebox (retunes the beat grid)
+                } else {
+                    auto h = caudio->load(x3::game::resolveAudio("music/club_descent.wav"));
+                    if (h.valid()) clubTrack = caudio->startLoop(h, 0.75f, 1.0f);
+                }
+            }
         }
+        bool prevNC = false;   // N-key edge for jukebox next/prev
         x3::game::Player cplayer;
         cplayer.spawn(*cphys, spawn.x, spawn.y, spawn.z);
 
@@ -259,6 +277,9 @@ int hostClub(HostContext& hc) {
         bool noclipC = false;
         float flyXc = spawn.x, flyYc = spawn.y + 1.6f, flyZc = spawn.z, flyYawC = 3.14159f, flyPitchC = -0.2f;
         x3::logInfo("--world club: walk THE DEEP at Y=-200 — WASD, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
+        if (jukebox.hasTracks())
+            x3::logInfo("--world club: JUKEBOX active (" + std::to_string(jukebox.count()) +
+                        " track(s)) — N = next, Shift+N = previous");
 
         int lastWc = (int)W, lastHc = (int)H;
         while (!glfwWindowShouldClose(window)) {
@@ -281,6 +302,15 @@ int hostClub(HostContext& hc) {
                 if (noclipC) { float yy, pp; cplayer.camera(flyXc, flyYc, flyZc, yy, pp); flyYawC = yy; flyPitchC = pp; }
             }
             prevFC = fNow;
+
+            // JUKEBOX transport: N = next track, Shift+N = previous (edge-triggered).
+            bool nNow = kd(GLFW_KEY_N);
+            if (nNow && !prevNC && jukebox.hasTracks() && caudio) {
+                const bool shift = kd(GLFW_KEY_LEFT_SHIFT) || kd(GLFW_KEY_RIGHT_SHIFT);
+                if (shift) jukebox.prev(*caudio, club); else jukebox.next(*caudio, club);
+            }
+            prevNC = nNow;
+            if (caudio) jukebox.update(dt, *caudio, club);   // toast countdown + auto-advance
 
             float camX, camY, camZ, camYaw, camPitch;
             if (!noclipC) {
@@ -373,6 +403,19 @@ int hostClub(HostContext& hc) {
                 cscene.render(*device, frame);
                 club.drawCharacters(*device, frame, cscene);
                 x3::game::drawChatTreeUi(*device, frame, clubChat);   // NPC dialog HUD
+                // JUKEBOX "Now Playing" toast (HUD) — a few seconds after each
+                // track change (N/Shift+N or auto-advance). Cyan-tinted mono text,
+                // low-left, with a dim backing plate for legibility over the floor.
+                if (jukebox.toastRemaining() > 0.0f && !jukebox.toastText().empty()) {
+                    const char* txt = jukebox.toastText().c_str();
+                    const float px = 22.0f;
+                    const float x = 28.0f, y = (float)lastHc - 64.0f;
+                    const float w = px * 0.62f * (float)jukebox.toastText().size() + 24.0f;
+                    const float plate[4] = { 0.02f, 0.02f, 0.05f, 0.55f };
+                    const float ink[4]   = { 0.55f, 0.95f, 1.00f, 1.0f };   // club cyan
+                    device->drawHudQuad(frame, x - 12.0f, y - 8.0f, w, px + 18.0f, plate);
+                    device->drawHudText(frame, txt, x, y, px, ink);
+                }
             }
             device->endFrame(frame);
         }

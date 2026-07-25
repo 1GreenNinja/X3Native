@@ -388,6 +388,7 @@ int main(int argc, char** argv) {
         _tf.testClub = o.testClub;
         _tf.testComplex = o.testComplex;
         _tf.testClubNpcs = o.testClubNpcs;
+        _tf.testJukebox = o.testJukebox;
         _tf.testPerfshop = o.testPerfshop;
         _tf.testGamma = o.testGamma;
         _tf.testSpace = o.testSpace;

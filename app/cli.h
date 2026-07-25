@@ -208,6 +208,10 @@ struct CliOptions {
     // each `hub` tree starts + reaches its menu. Additive flag.
     bool        testClubNpcs = false;
 
+    // --test-jukebox (Club Jukebox): headless folder scan / sidecar parse / BPM
+    // retune / empty-folder fallback / corrupt-skip on tiny generated WAVs.
+    bool        testJukebox = false;
+
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark
     // substrate, and a texture-gated neon sign (not a flat lit slab).

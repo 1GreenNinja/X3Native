@@ -138,6 +138,7 @@ add_executable(X3Engine WIN32
     gamma_probe.cpp
     survival_complex.cpp
     world_hosts/host_complex.cpp
+    jukebox.cpp
     cues.cpp
     valley.cpp
     cliffs.cpp

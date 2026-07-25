@@ -101,6 +101,7 @@
 #include "elevator.h"
 #include "club1127.h"
 #include "survival_complex.h"
+#include "jukebox.h"
 #include "perfshop.h"
 #include "valley.h"
 #include "cliffs.h"
@@ -998,6 +999,11 @@ int dispatchTests(const TestFlags& tf) {
                     "danny/amara/emma chat trees parse + full-reachability validate; "
                     "E-to-talk resolves each; hub trees start + reach their menu)...");
         return x3::game::runClubNpcsSelfTest() ? 0 : 1;
+    }
+    if (tf.testJukebox) {
+        x3::logInfo("running Club Jukebox self-test "
+                    "(folder scan / sidecar bpm / beat-grid retune / empty-folder fallback / corrupt skip)...");
+        return x3::game::runJukeboxSelfTest() ? 0 : 1;
     }
     if (tf.testPerfshop) {
         x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "
