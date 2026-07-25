@@ -108,7 +108,7 @@ constexpr float kLightningRerollPeriod = 0.065f;
 // kLightningDecay: displacement multiplier per level. THIS IS THE NATURALNESS KNOB
 //   (the fractal dimension): 0.5 = each halving of length halves the wobble.
 constexpr int   kLightningFractalDepth = 6;      // 64 segments on the trunk
-constexpr float kLightningDisplaceFrac = 0.16f;  // first midpoint kick ~16% of length
+constexpr float kLightningDisplaceFrac = 0.11f;  // first midpoint kick ~11% of length (was 0.16 — owner "quite wide": tighten the lateral splay so the bolt hugs the aim line; jaggedness/decay unchanged)
 constexpr float kLightningDecay        = 0.55f;  // per-level displacement falloff
 
 // ---- BRANCHING ----
