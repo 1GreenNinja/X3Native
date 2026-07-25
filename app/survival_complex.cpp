@@ -58,8 +58,8 @@ const float kEmOrange[4]  = { 1.00f, 0.45f, 0.10f, 1.30f }; // power/generator i
 const float kEmScreen[4]  = { 0.35f, 0.45f, 0.85f, 1.55f }; // workstation / rec screen (was 2.4)
 const float kEmGreenLED[4]= { 0.10f, 1.00f, 0.20f, 1.70f }; // status LED / keypad green (was 2.6)
 const float kEmRedLED[4]  = { 1.00f, 0.10f, 0.08f, 1.55f }; // alarm / breaker red (was 2.4)
-const float kEmGrow[4]    = { 0.95f, 0.30f, 1.00f, 1.25f }; // hydroponics grow magenta (was 1.9)
-const float kEmGrowW[4]   = { 0.80f, 0.95f, 0.75f, 1.05f }; // grow-light white-green wash (was 1.6)
+const float kEmGrow[4]    = { 0.95f, 0.30f, 1.00f, 0.55f }; // hydroponics grow magenta (1.9 -> 1.25 -> 0.80 -> 0.55)
+const float kEmGrowW[4]   = { 0.80f, 0.95f, 0.75f, 0.25f }; // grow-light white-green bar (1.6 -> 1.05 -> 0.60 -> 0.25: this bar was the large near-white band washing L7; emissive rides the unnormalized path so it needs a deep cut)
 const float kEmLeaf[4]    = { 0.10f, 0.36f, 0.08f, 0.38f }; // faint foliage glow (was 0.7, -45%)
 const float kEmWater[4]   = { 0.20f, 0.55f, 0.70f, 0.65f }; // faint water sheen (was 1.2, -45%)
 // NPC spawn-marker beacons (Danny built it all; Amara + Emma have sessions in L1).
@@ -314,7 +314,7 @@ const SurvivalComplex::Stats& SurvivalComplex::build(Scene& scene, x3::rhi::IRen
                 // 3-tier rack + trays of lush plants on each tier.
                 for (int tier = 0; tier < 3; ++tier) {
                     const float ty = fy + 0.55f + (float)tier * 0.85f;
-                    box(rx, ty, 0, 0.30f, 0.04f, (maxZ - minZ) / 2 - 1.0f, kSteel, kOff, true);    // NFT channel/tray
+                    box(rx, ty, 0, 0.30f, 0.04f, (maxZ - minZ) / 2 - 1.0f, kSteelD, kOff, true);   // NFT channel/tray (gamma: kSteel->kSteelD; bright steel trays were catching the grow-cast+practical into large near-white bands)
                     // Foliage clumps along the tray (faint chlorophyll glow = lush).
                     for (int p = 0; p < 5; ++p)
                         box(rx, ty + 0.19f, -3.8f + (float)p * 1.9f, 0.25f, 0.17f, 0.55f, kGreenPlant, kEmLeaf, false);
@@ -327,7 +327,7 @@ const SurvivalComplex::Stats& SurvivalComplex::build(Scene& scene, x3::rhi::IRen
                 }
                 // One grow cast-light per rack (mid height) — magenta wash + a soft
                 // green fill so the foliage reads lush without blowing the budget.
-                addLight(m_lights, rx, oy + fy + 1.4f, 0, kEmGrow[0] * 0.55f, kEmGrow[1] * 0.55f, kEmGrow[2] * 0.55f, 4.5f); // gamma walk-back (was *0.8)
+                addLight(m_lights, rx, oy + fy + 1.4f, 0, kEmGrow[0] * 0.42f, kEmGrow[1] * 0.42f, kEmGrow[2] * 0.42f, 4.5f); // gamma walk-back 2nd pass (0.8 -> 0.55 -> 0.42)
                 m_growLightIdx.push_back(m_lights.size() - 1);
                 addLight(m_lights, rx, oy + fy + 1.0f, 0, 0.17f, 0.52f, 0.14f, 3.5f);   // green foliage fill (gamma walk-back, was 0.25/0.75/0.20)
             }

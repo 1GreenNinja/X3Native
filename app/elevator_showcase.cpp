@@ -917,7 +917,7 @@ void ElevatorShowcase::buildMusicVideoGlass(Scene& scene, x3::rhi::IRenderDevice
         e.mrTex = m_mrPanel;
         e.emissiveTex = m_mvFrame[0];
         e.baseColor[0] = 0.05f; e.baseColor[1] = 0.05f; e.baseColor[2] = 0.07f; e.baseColor[3] = 0.82f;
-        e.emissive[0] = 1.0f; e.emissive[1] = 1.0f; e.emissive[2] = 1.0f; e.emissive[3] = 1.5f; // gamma walk-back (was 2.2)
+        e.emissive[0] = 1.0f; e.emissive[1] = 1.0f; e.emissive[2] = 1.0f; e.emissive[3] = 1.05f; // gamma walk-back 2nd pass (2.2 -> 1.5 -> 1.05)
         e.alphaBlend = true;                         // see-through holo glass (blend tail, no depth trap)
         e.tag = (uint32_t)Tag::Prop; e.body.id = 0;
         uint32_t id = scene.add(e); ++m_stats.entities;
@@ -1051,7 +1051,7 @@ void ElevatorShowcase::animateShow(float dt, Scene& scene) {
         e.emissive[0] = (rA + (rB-rA)*blend) + floorGlow;
         e.emissive[1] = (gA + (gB-gA)*blend) + floorGlow;
         e.emissive[2] = (bA + (bB-bA)*blend) + floorGlow;
-        e.emissive[3] = (0.70f + 0.75f * boost);              // gamma walk-back (was 1.0+1.1*boost) — enveloping but no white-clip
+        e.emissive[3] = (0.42f + 0.42f * boost);              // gamma walk-back 2nd pass (1.0+1.1 -> 0.70+0.75 -> 0.42+0.42): the facets were desaturating to milky pastel at full disco; lower so they read SATURATED colored light like the club beams
     }
 
     // ---- 2. MUSIC-VIDEO GLASS: cut frames on the beat. Mostly the 4 dancer poses on the
@@ -1073,7 +1073,7 @@ void ElevatorShowcase::animateShow(float dt, Scene& scene) {
     }
     for (uint32_t id : m_eMvPanel)                            // beat-swell the glow
         if (id != kNoLink && id < scene.size())
-            scene.get(id).emissive[3] = (1.30f + 0.55f * thump) * (0.7f + 0.6f * boost); // gamma walk-back (was 1.9+0.8*thump)
+            scene.get(id).emissive[3] = (0.85f + 0.35f * thump) * (0.7f + 0.6f * boost); // gamma walk-back 2nd pass (1.9+0.8 -> 1.30+0.55 -> 0.85+0.35): panes were washing pale; keep the MV readable + saturated
 
     // ---- 3. CONCERT PA: strobe the driver lenses on the beat; the sub cones pump via the
     //         ride-along loop (it scales each RideEnt pump by m_showPump below). ----
