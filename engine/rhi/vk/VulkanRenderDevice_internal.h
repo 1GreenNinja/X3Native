@@ -1214,7 +1214,11 @@ private:
     bool createFullscreenPipeline(const char* vsPath, const char* fsPath,
                                   VkPipelineLayout layout, VkFormat colorFmt,
                                   bool additiveBlend, VkPipeline& outPipe,
-                                  bool alphaBlend = false);
+                                  bool alphaBlend = false,
+                                  // PREMULTIPLIED over-blend (ONE, ONE_MINUS_SRC_ALPHA) —
+                                  // the volumetric pass emits fogColor*f + inscatter with
+                                  // f in alpha, so it both extinguishes and ADDS light.
+                                  bool premultipliedBlend = false);
 
     // (Re)write the post descriptor sets to point at the current HDR + bloom mip
     // image views. Called after createBloomTargets() at init + every resize. The
@@ -2319,6 +2323,14 @@ private:
                          };
     // Depth-fog fullscreen pass (ART_BIBLE §5). Push mirrors shaders/fog.frag.
     struct FogPush { glm::mat4 invProj; glm::vec4 colorDensity; glm::vec4 startMax; };
+    // Volumetric light-scattering variant of the same pass (shaders/volumetric.frag).
+    // Separate push (and separate pipeline/layout) so the FLAT fog path above is
+    // never touched: FogParams::volumetric == false records the original pipeline
+    // with the original push, byte-identical to the pre-volumetric build.
+    // Exactly 128 bytes = the Vulkan-guaranteed minimum maxPushConstantsSize.
+    struct VolPush { glm::mat4 invViewProj; glm::vec4 colorDensity; glm::vec4 startMax;
+                     glm::vec4 vol0; glm::vec4 vol1; };
+    static_assert(sizeof(VolPush) == 128, "VolPush must fit the guaranteed 128-byte push range");
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
 
@@ -2995,6 +3007,15 @@ private:
     VkPipelineLayout        m_fogLayout = VK_NULL_HANDLE;
     VkPipeline              m_fogPipe   = VK_NULL_HANDLE;
     VkDescriptorSet         m_setFog    = VK_NULL_HANDLE;   // b0 = main depth (TAA depth sampler)
+    // ---- Volumetric scattering variant of the fog pass ---------------------
+    // set0 = m_setFog (depth), set1 = the frame's objSet (Camera UBO b1 -> sun +
+    // lightViewProj + the 64 point lights), set2 = m_shadowSet (sampler2DShadow).
+    // Reuses the EXISTING sets/layouts so nothing new is allocated or written.
+    glm::mat4               m_volInvViewProjCPU{ 1.0f };  // jittered clip -> world
+    float                   m_volFrameSeed = 0.0f;        // dither rotation (TAA-friendly)
+    bool                    m_volActive = false;          // this frame's fog pass took the raymarch branch
+    VkPipelineLayout        m_volLayout = VK_NULL_HANDLE;
+    VkPipeline              m_volPipe   = VK_NULL_HANDLE;
     VkRenderingAttachmentInfo m_fogAttach{};
     VkRenderingInfo         m_fogRenderInfo{};
     // CPU per-object frustum cull (r_frustumcull). Default ON. m_frameFrustum is the

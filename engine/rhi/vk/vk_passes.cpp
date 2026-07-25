@@ -1498,6 +1498,14 @@ void VulkanRenderDevice::prepareFrameData() {
             // Depth-fog pass (ART_BIBLE §5): the SAME jitter-inclusive inverse
             // projection SSAO reconstructs with, captured for fog.frag's push.
             m_fogInvProjCPU = su.invProj;
+            // VOLUMETRIC variant: the same jittered camera, inverted all the way to
+            // WORLD space (volumetric.frag marches in world so it can project each
+            // sample into the sun's lightViewProj and attenuate against world-space
+            // point lights). Same matrix the depth buffer was rasterized with.
+            m_volInvViewProjCPU = glm::inverse(ubo.viewProj);
+            // Dither rotation: the TAA frame counter, so successive frames offset the
+            // raymarch start differently and the resolve integrates the noise out.
+            m_volFrameSeed = (float)(m_taaFrameNum & 63u);
             su.params0 = glm::vec4(m_ssao.radius, m_ssao.bias, m_ssao.intensity, m_ssao.power);
             su.params1 = glm::vec4((float)m_extent.width, (float)m_extent.height,
                                    (float)m_extent.width / 4.0f, (float)m_extent.height / 4.0f);

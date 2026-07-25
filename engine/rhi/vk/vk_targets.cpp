@@ -744,6 +744,34 @@ bool VulkanRenderDevice::createPost() {
                                           /*alphaBlend=*/true))
                 return false;
         }
+        // VOLUMETRIC LIGHT SCATTERING: the same fullscreen slot, raymarched. Needs
+        // three sets the flat shader doesn't: set0 = the depth sampler (identical),
+        // set1 = the shared per-frame object/camera set (Camera UBO at binding 1 =
+        // lightViewProj + sunDir + the point-light array), set2 = the sun shadow map.
+        // Binding the EXISTING layouts/sets means zero new descriptor allocations.
+        // Created after createGraphics/createShadowImage (both run before createPost),
+        // so those layouts are live. NON-FATAL: if it fails, the flat pipeline still
+        // runs and FogParams::volumetric is silently ignored.
+        if (m_objSetLayout && m_shadowSetLayout) {
+            VkPushConstantRange pcVol{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(VolPush) };
+            VkDescriptorSetLayout volSets[3] = { m_postSetLayout1, m_objSetLayout, m_shadowSetLayout };
+            VkPipelineLayoutCreateInfo vl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            vl.setLayoutCount = 3; vl.pSetLayouts = volSets;
+            vl.pushConstantRangeCount = 1; vl.pPushConstantRanges = &pcVol;
+            if (vkCreatePipelineLayout(m_dev.device, &vl, nullptr, &m_volLayout) != VK_SUCCESS) {
+                logError("[rhi] volumetric pipeline layout failed"); return false;
+            }
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\volumetric.frag.spv",
+                                          m_volLayout, kHdrFormat, /*additiveBlend=*/false, m_volPipe,
+                                          /*alphaBlend=*/false, /*premultipliedBlend=*/true)) {
+                logWarn("[rhi] volumetric scattering pipeline unavailable — flat fog only");
+                vkDestroyPipelineLayout(m_dev.device, m_volLayout, nullptr);
+                m_volLayout = VK_NULL_HANDLE;
+                m_volPipe   = VK_NULL_HANDLE;
+            } else {
+                logInfo("[rhi] volumetric light scattering pipeline ready (sun shafts + point-light haze)");
+            }
+        }
 
         // TAA resolve: full-screen pass writing the HDR-format TAA output. All
         // parameters ride in the per-frame UBO -> no push constants.
@@ -766,7 +794,7 @@ bool VulkanRenderDevice::createPost() {
 bool VulkanRenderDevice::createFullscreenPipeline(const char* vsPath, const char* fsPath,
                               VkPipelineLayout layout, VkFormat colorFmt,
                               bool additiveBlend, VkPipeline& outPipe,
-                              bool alphaBlend) {
+                              bool alphaBlend, bool premultipliedBlend) {
         VkShaderModule vs = loadShaderModule(vsPath);
         VkShaderModule fs = loadShaderModule(fsPath);
         if (!vs || !fs) return false;
@@ -798,6 +826,17 @@ bool VulkanRenderDevice::createFullscreenPipeline(const char* vsPath, const char
             cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
             cba.colorBlendOp = VK_BLEND_OP_ADD;
             cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        } else if (premultipliedBlend) {
+            // PREMULTIPLIED over-blend (the volumetric pass): out = src.rgb + dst*(1-src.a).
+            // Writing src.rgb = fogColor*f reproduces the flat mix(scene, fogColor, f)
+            // exactly; anything ADDED to src.rgb (the in-scattered radiance) survives
+            // the extinction as real emitted light.
+            cba.blendEnable = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cba.colorBlendOp = VK_BLEND_OP_ADD;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
             cba.alphaBlendOp = VK_BLEND_OP_ADD;
         } else if (alphaBlend) {
             // Classic over-blend (the fog pass: out = mix(scene, fogColor, f)).
@@ -961,6 +1000,8 @@ void VulkanRenderDevice::destroyPost() {
         if (m_compositePipe)  { vkDestroyPipeline(m_dev.device, m_compositePipe, nullptr); m_compositePipe = VK_NULL_HANDLE; }
         if (m_fogPipe)        { vkDestroyPipeline(m_dev.device, m_fogPipe, nullptr); m_fogPipe = VK_NULL_HANDLE; }
         if (m_fogLayout)      { vkDestroyPipelineLayout(m_dev.device, m_fogLayout, nullptr); m_fogLayout = VK_NULL_HANDLE; }
+        if (m_volPipe)        { vkDestroyPipeline(m_dev.device, m_volPipe, nullptr); m_volPipe = VK_NULL_HANDLE; }
+        if (m_volLayout)      { vkDestroyPipelineLayout(m_dev.device, m_volLayout, nullptr); m_volLayout = VK_NULL_HANDLE; }
         if (m_bloomUpPipe)    { vkDestroyPipeline(m_dev.device, m_bloomUpPipe, nullptr); m_bloomUpPipe = VK_NULL_HANDLE; }
         if (m_bloomDownPipe)  { vkDestroyPipeline(m_dev.device, m_bloomDownPipe, nullptr); m_bloomDownPipe = VK_NULL_HANDLE; }
         if (m_compositeLayout){ vkDestroyPipelineLayout(m_dev.device, m_compositeLayout, nullptr); m_compositeLayout = VK_NULL_HANDLE; }

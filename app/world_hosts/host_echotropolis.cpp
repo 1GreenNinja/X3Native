@@ -365,6 +365,9 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     const float dayness = clamp01((s.sunElevation + 0.06f) / 0.30f);
     // low: golden-hour weight — sun up but near the horizon (peaks at elev 0).
     const float low = (s.sunElevation > 0.0f) ? clamp01(1.0f - s.sunElevation / 0.35f) : 0.0f;
+    // night: 1 at deep night, 0 by full day (hoisted — the volumetric block below
+    // and the HDR-post block further down both scale by it).
+    const float night = 1.0f - dayness;
 
     // ---- 1. AERIAL PERSPECTIVE -------------------------------------------------
     // Beer-Lambert depth fog whose COLOR matches the sky the island melts into:
@@ -392,6 +395,41 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     fog.start      = 380.0f;                                   // depth begins just past the near towers
     fog.density    = 0.00019f + 0.00004f * low;               // clear aerial perspective across the city
     fog.maxOpacity = 0.70f + 0.06f * low;                     // far island hazes but never fully dissolves
+
+    // ---- 1b. VOLUMETRIC LIGHT SCATTERING (the CP2077/Witcher signature) --------
+    // Upgrades the flat extinction above into a raymarched medium: the sun shadow
+    // map is sampled along the view ray (god rays through gaps in the skyline) and
+    // every street lamp / neon sign in the frame's point-light set scatters a real
+    // halo of haze around itself. All of the params above still drive extinction —
+    // this only ADDS in-scattering, so the aerial-perspective tuning is untouched.
+    //
+    // TIME-OF-DAY SCALING (this is an atmosphere, not a constant): the air is
+    // busiest at night (light pollution + damp harbour air, and it is the only time
+    // the neon reads) and at golden hour (long shadow-ray paths through low sun).
+    // Flat midday gets the least — high sun through clean air is the one case where
+    // heavy shafts look like a bug, and it would wash the noon city out.
+    // ECHO_VOL=0 forces the flat path back on (A/B harness, same env-var convention
+    // as ECHO_TOD). With it set, this world renders byte-identical to the pre-
+    // volumetric build — that is the test that keeps the opt-in discipline honest.
+    static const bool kVolEnv = [] {
+        const char* e = std::getenv("ECHO_VOL");
+        return !(e && (e[0] == '0'));
+    }();
+    fog.volumetric      = kVolEnv;
+    fog.anisotropy      = 0.76f;    // strongly forward — looking toward a light blooms
+    fog.steps           = 48;       // power-distributed; near-camera density where the lamps are
+    fog.maxDistance     = 900.0f;   // beyond this the flat aerial term carries the depth
+    // Scattering coefficient. Night carries the effect; golden hour adds a lift; a
+    // clear high sun keeps only a whisper so noon does not go milky.
+    fog.scatterStrength = 0.0020f + 0.0100f * night + 0.0060f * low;
+    // Sun shafts need the sun ABOVE the horizon; weight them toward golden hour
+    // when the rays rake sideways through the towers instead of straight down.
+    // The small coefficient is deliberate: the sun's ray path is the WHOLE march
+    // (hundreds of metres) where a lamp's is ~15 m, so equal weights would bury
+    // the city under a uniform sun wash.
+    fog.sunScatter      = dayness * (0.022f + 0.065f * low);
+    // Lamp/neon haze is the money shot in the dark and pointless in daylight.
+    fog.lightScatter    = 3.0f + 33.0f * night;
     device->setFog(fog);
 
     // ---- 2. FILMIC + VIVID GRADE (NMS/storybook: colors you can taste) ---------
@@ -411,7 +449,7 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // ACES tonemap, a low bright-pass knee so the sun disc + water glint + lantern
     // bloom (not a washout), and a touch of positive exposure at golden hour to
     // make the low sun GLOW. Auto-exposure stays on (bias, not absolute).
-    const float night = 1.0f - dayness;        // 1 at deep night, 0 by full day
+    // (`night` is hoisted to the top of this function — the volumetric block uses it too.)
     x3::rhi::IRenderDevice::PostFXParams px;   // defaults: ACES, autoexposure, TAA on
     px.bloomThreshold = 1.08f;                 // sun-glint blooms; not the whole water sheet
     px.bloomIntensity = 0.14f + 0.06f * low + 0.10f * night;  // neon glow at night
