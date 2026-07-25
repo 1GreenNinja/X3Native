@@ -154,14 +154,24 @@ void setIntroCockpitLook(x3::rhi::IRenderDevice& device) {
       // under the 1.0 default (a windowless-cell sun). 3.2 gives the hard, sharp
       // single-key modeling that IS the Trek hull look; selfLight fills the dark
       // side (drawIntroShip) so the ship reads bright + dimensional, never gray mush.
-      sp.sunLight = 3.2f;
+      // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): owner verdict on the post-gamma
+      // dogfight, verbatim: "Too bright.. Reduced brightness on all ship models..
+      // Darker night sky! but NOT TOO dark." These values were tuned on the BENT
+      // curve (5951890b). The white-washed hull was mesh.frag's no-IBL fallback
+      // ambient term (ambient x 3.4, albedo-independent): 0.11 x 3.4 = 0.37 flat,
+      // which the honest curve now displays at ~65% grey painted over every hull.
+      // Ambient drops to a real starlight fill; the sun key comes down until hulls
+      // read as lit metal with shadow sides (NOT silhouettes — selfLight + the
+      // emissive window/running-light canon stay); the void goes deep navy-black
+      // but keeps a faint floor so the starfield still carries the frame.
+      sp.sunLight = 2.4f;
       sp.haze = 0.0f;                          // haze 0 == deep space, stars on the full sphere
       sp.exposure = 1.0f;
-      sp.zenith[0]  = 0.003f; sp.zenith[1]  = 0.003f; sp.zenith[2]  = 0.008f;
-      sp.horizon[0] = 0.004f; sp.horizon[1] = 0.005f; sp.horizon[2] = 0.011f;
+      sp.zenith[0]  = 0.0012f; sp.zenith[1]  = 0.0012f; sp.zenith[2]  = 0.0035f;
+      sp.horizon[0] = 0.0018f; sp.horizon[1] = 0.0022f; sp.horizon[2] = 0.0050f;
       device.setSkyParams(sp);
       device.setSkyTime(10.0f);
-      device.setAmbient(0.11f, 0.12f, 0.16f); }
+      device.setAmbient(0.028f, 0.030f, 0.042f); }
     // SSAO/SSGI raster black against an empty space backdrop on the no-RT path
     // (memory-bank finding) — off for the showcase, same as host_space.
     { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; device.setSsaoParams(ap); }
@@ -238,7 +248,11 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
     // near-black hull paint stays dark) + the shaped selfLight rim so the unlit
     // side reads as a hull, never a cutout. fallbackMr routes MR-less drawables
     // onto the PBR branch so the star has a specular lobe to shape them.
-    constexpr float kIntroShipSelfLight = 0.50f;   // Trek fill (0.35 read dull gray)
+    constexpr float kIntroShipSelfLight = 0.30f;   // Trek fill — GAMMA-RECAL: 0.50 was
+                                                   // tuned on the bent curve (0.35 'read
+                                                   // dull gray' THERE); the honest curve
+                                                   // shows shadow detail at 0.30 without
+                                                   // the washed look the owner flagged
     for (const auto& dr : draws) {
         if (!dr.meshId) continue;
         float fin[16];

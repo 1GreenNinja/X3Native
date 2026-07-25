@@ -2515,13 +2515,15 @@ int runDefaultHost(HostContext& hc) {
                 sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.22f; sp.sunDir[2] = 0.80f;   // toward the local star
                 sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.90f;
                 sp.sunIntensity = 0.05f;      // sky DISK only (higher greys the dome)
-                sp.sunLight = 2.6f;           // the real key on the hulls
+                // GAMMA-RECAL: bent-curve values read as a bright navy dome + washed
+                // plate under the honest encode (owner: "Too bright" on space).
+                sp.sunLight = 2.0f;           // the real key on the hulls
                 sp.haze = 0.0f; sp.exposure = 1.0f;
-                sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.012f;
-                sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.022f;
+                sp.zenith[0]  = 0.0015f; sp.zenith[1]  = 0.0015f; sp.zenith[2]  = 0.0045f;
+                sp.horizon[0] = 0.0030f; sp.horizon[1] = 0.0035f; sp.horizon[2] = 0.0080f;
                 device->setSkyParams(sp);
-                device->setAmbient(0.030f, 0.034f, 0.050f);   // starlight + planetshine only
-                device->setBloom(0.28f);                       // let the emissive cores/gate bloom
+                device->setAmbient(0.010f, 0.011f, 0.017f);   // starlight + planetshine only
+                device->setBloom(0.18f);   // GAMMA-RECAL: 0.28 flooded the deck from the sun disk                       // let the emissive cores/gate bloom
                 int nTexFail = 0;
                 spacePlanets = loadNightSkyPlanets(device, spacePlanetMesh, nTexFail,
                                                    "[spacestation]", &spacePlanetRingMesh);
