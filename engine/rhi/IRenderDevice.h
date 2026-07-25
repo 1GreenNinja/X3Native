@@ -175,6 +175,12 @@ public:
     // forward = (cos(pitch)*cos(yaw), sin(pitch), cos(pitch)*sin(yaw)).
     virtual void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) = 0;
 
+    // Camera ROLL about the view-forward axis (radians; 0 = upright, positive
+    // rolls the horizon clockwise on screen). Same per-frame latch semantics as
+    // setCamera. Additive: default is a no-op so headless/test devices and hosts
+    // that never roll are byte-identical.
+    virtual void setCameraRoll(float rollRadians) { (void)rollRadians; }
+
     // W8-3: camera FAR-PLANE override (meters). Default 200 m (the historic
     // hardcode — every existing host is pixel-identical without calling this).
     // Open-world vista hosts (surface start / terrain + city screenshot hosts /

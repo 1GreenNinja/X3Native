@@ -1297,7 +1297,16 @@ void VulkanRenderDevice::prepareFrameData() {
         const glm::vec3 fwd(std::cos(m_camPitch) * std::cos(m_camYaw),
                             std::sin(m_camPitch),
                             std::cos(m_camPitch) * std::sin(m_camYaw));
-        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
+        // Camera roll: tilt the lookAt up-vector about the view axis. Roll 0 takes
+        // the historic (0,1,0) path exactly; the sky/water/vol passes all derive
+        // from this viewProj (or its inverse), so they bank with the horizon free.
+        glm::vec3 camUpWorld(0.0f, 1.0f, 0.0f);
+        if (m_camRoll != 0.0f) {
+            const glm::vec3 rightFlat = glm::normalize(glm::cross(fwd, camUpWorld));
+            const glm::vec3 upOrtho   = glm::cross(rightFlat, fwd);
+            camUpWorld = upOrtho * std::cos(m_camRoll) + rightFlat * std::sin(m_camRoll);
+        }
+        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, camUpWorld);
         glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, m_camFar);
         proj[1][1] *= -1.0f;
 
@@ -1690,8 +1699,14 @@ void VulkanRenderDevice::prepareFrameData() {
             // Camera basis (device convention; matches fwd above). right is the XZ
             // perpendicular; up = right x forward (orthonormal, screen-aligned).
             const float cy = std::cos(m_camYaw),   sy = std::sin(m_camYaw);
-            const glm::vec3 camRight(-sy, 0.0f, cy);
-            const glm::vec3 camUp = glm::normalize(glm::cross(camRight, fwd));
+            glm::vec3 camRight(-sy, 0.0f, cy);
+            glm::vec3 camUp = glm::normalize(glm::cross(camRight, fwd));
+            if (m_camRoll != 0.0f) {   // keep billboards screen-aligned while banked
+                const float cr = std::cos(m_camRoll), sr = std::sin(m_camRoll);
+                const glm::vec3 r0 = camRight, u0 = camUp;
+                camRight = r0 * cr - u0 * sr;
+                camUp    = u0 * cr + r0 * sr;
+            }
             const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
             const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
 

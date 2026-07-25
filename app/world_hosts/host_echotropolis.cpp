@@ -40,12 +40,15 @@
 #include "engine/audio/IAudioSystem.h" // CYBERPUNK AUDIO: rainy-city bed + positional hums + UI SFX
 #include "engine/llm/ILlmSystem.h"     // CITIZEN TALK: local LLM conversations with residents
 #include "../street_lights.h"          // DISTRICT NIGHT: warm lamp rows through the pack districts
+#include "../hud.h"                    // ENGINE CONSOLE: D6 IConsole + Hud drop-down front-end
+#include "engine/core/IConsole.h"
 #include <string>
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
 #include <cstdio>        // sscanf (district .layout parsing)
 #include <cstdlib>       // getenv (ECHO_* switches)
 #include <cctype>        // tolower (persona prompt)
+#include <sstream>       // console command parsing
 #include <algorithm>     // clamp/max (bubble layout)
 #include <filesystem>    // .gguf model resolution
 #include <fstream>
@@ -141,6 +144,17 @@ struct Heightfield {
 // scroll is event-driven, so we sum deltas here and drain them once per frame.
 double g_scrollY = 0.0;
 void scrollCB(GLFWwindow*, double /*xoff*/, double yoff) { g_scrollY += yoff; }
+
+// ===== CONSOLE (` key) — the ENGINE console (D6 IConsole + app/hud.cpp
+// front-end, same as EFLZ), not a host-local reimplementation. The host
+// registers its world commands on it; these overrides are what those commands
+// poke (-1/negative = keep the env-var default behaviour).
+x3::game::Hud* g_hud = nullptr;          // char-callback target while console open
+int   g_volOverride = -1;    // console `vol on|off|auto`: -1 env default, else 0/1
+float g_sunOverride = -1.0f; // console `sun <scale>|auto`: <0 = auto ramp
+void charCB(GLFWwindow*, unsigned int c) {
+    if (g_hud && g_hud->consoleOpen()) g_hud->onChar(c);
+}
 
 // The F1 camera-settings scaffold: one tunable block every controller reads
 // (D1/D3 doctrine). F2 hangs a settings UI + remap table on these fields.
@@ -310,7 +324,8 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
         // 3.20 was compensation for the WRONG diagnosis (the real fix was sun
         // ELEVATION, a5a56a6e) — at 3.3x everything washed out to cream (Tim's
         // report). Modest ramp; elevation does the work now.
-        sky.sunLight = (sunEnv >= 0.0f) ? sunEnv : (0.10f + 1.05f * dayness);
+        sky.sunLight = (g_sunOverride >= 0.0f) ? g_sunOverride
+                     : (sunEnv >= 0.0f) ? sunEnv : (0.10f + 1.05f * dayness);
     }
     device->setSkyParams(sky);
     // Night ambient FLOOR: the pure-black sky kills the IBL contribution, so at
@@ -453,7 +468,7 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
         const char* e = std::getenv("ECHO_VOL");
         return e && e[0] == '1';
     }();
-    fog.volumetric      = kVolEnv;
+    fog.volumetric      = (g_volOverride >= 0) ? (g_volOverride != 0) : kVolEnv;
     fog.anisotropy      = 0.76f;    // strongly forward — looking toward a light blooms
     fog.steps           = 48;       // power-distributed; near-camera density where the lamps are
     fog.maxDistance     = 900.0f;   // beyond this the flat aerial term carries the depth
@@ -676,6 +691,18 @@ std::string talkPersonaPrompt(const x3::game::NpcAgent& a) {
     if (det && det[0]) { s += " "; s += det; s += "."; }
     if (voc && voc[0]) { s += " You talk like this: \""; s += voc; s += "\""; }
     s += " Answer in ONE short sentence, in character. No narration, no quotes, no lists.";
+    return s;
+}
+
+// Tidy a raw model reply for display: strip surrounding whitespace plus the quote
+// marks small models like to wrap dialogue in despite being told not to.
+std::string talkTidy(const std::string& raw) {
+    const size_t b = raw.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return std::string();
+    const size_t e = raw.find_last_not_of(" \t\r\n");
+    std::string s = raw.substr(b, e - b + 1);
+    while (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') && s.back() == s.front())
+        s = s.substr(1, s.size() - 2);
     return s;
 }
 
@@ -2509,9 +2536,7 @@ int hostEchotropolis(HostContext& hc) {
                 const auto& a = sNpc.agent((uint32_t)demoAgent);
                 float sx = 0.0f, sy = 0.0f;
                 if (device->worldToScreen(a.pos.x, a.pos.y + 2.2f, a.pos.z, sx, sy)) {
-                    std::string body = demoReply;
-                    size_t b0 = body.find_first_not_of(" \t\r\n");
-                    body = (b0 == std::string::npos) ? std::string() : body.substr(b0);
+                    std::string body = talkTidy(demoReply);
                     if (body.empty()) body = demoPending ? "..." : "(silence)";
                     else if (demoPending) body += " ...";
                     std::vector<std::string> wrapped;
@@ -2536,6 +2561,7 @@ int hostEchotropolis(HostContext& hc) {
 
     // ===================== Windowed interactive orbit ===================
     glfwSetScrollCallback(window, scrollCB);
+    glfwSetCharCallback(window, charCB);   // console text input (inert while closed)
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
     float  waterTime = 0.0f;
@@ -2575,6 +2601,14 @@ int hostEchotropolis(HostContext& hc) {
     // ESC opens a PAUSE MENU (it never quits the app — Tim's rule 2026-07-11). Only the
     // menu's QUIT item (click, or press Q) exits. Edge-detected so a held key toggles once.
     bool menuOpen = false, prevEsc = false, prevQ = false, prevEnter = false, prevLmb = false;
+    // ENGINE CONSOLE: the D6 backend + the shared Hud front-end (same as EFLZ).
+    std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
+    x3::game::Hud hud;
+    bool conQuit = false;
+    hud.init(*console, &conQuit);
+    g_hud = &hud;
+    bool prevGrave = false, prevConBk = false, prevConEnter = false,
+         prevConUp = false, prevConDown = false, prevConTab = false;
     bool wantQuit = false;
 
     // ===================== WALK MODE (Phase A) ==========================
@@ -2760,6 +2794,13 @@ int hostEchotropolis(HostContext& hc) {
         };
     };
     bool walkMode = false, prevG = false;
+    // ===================== FLY MODE (the default camera) =====================
+    // Tim's spec: mouselook + WASD (A/D strafe), Q/E roll, SPACE up, C down,
+    // arrow keys = forward/back + TURN left/right (not strafe). V toggles
+    // fly <-> orbit; G (walk) exits it. Starts ON.
+    bool flyMode = true, prevV = false, flySeeded = false;
+    float flyX = 0.0f, flyY = 0.0f, flyZ = 0.0f;
+    float flyYaw = 0.0f, flyPitch = 0.0f, flyRoll = 0.0f;
     bool cityPanelOpen = false, prevTab = false;   // CITY PANEL (TAB toggles)
     int  followIdx = -1, lastPickedIdx = -1; bool prevF = false;   // RIDE-ALONG (F)
     bool playAs = false, prevE = false; float driveYaw = 0.0f;     // PLAY-AS vs SPECTATE (E)
@@ -2944,13 +2985,88 @@ int hostEchotropolis(HostContext& hc) {
         }
     };
 
+    // ===== CONSOLE world commands (modeled on the Babylon X3Console catalog:
+    // tod / tp / pos / camera modes / render toggles; the RPG-side commands
+    // come with their systems). help/clear/quit/fps/stats + CVars are already
+    // registered by hud.init / the D6 backend. =====
+    console->registerCommand("tod", [&](const std::vector<std::string>& a) {
+        float f = -1.0f;
+        const std::string arg = a.empty() ? "" : a[0];
+        if      (arg == "noon")   f = kTodNoon;
+        else if (arg == "golden") f = kTodGolden;
+        else if (arg == "dusk")   f = kTodDusk;
+        else if (arg == "night")  f = kTodNight;
+        else if (!arg.empty()) { std::istringstream fs(arg); fs >> f; if (fs.fail()) f = -1.0f; }
+        if (f >= 0.0f && f <= 1.0f) { tod.setDayFraction(f); console->print("tod -> " + arg); }
+        else console->print("tod noon|golden|dusk|night|<0..1>");
+    }, "set time of day");
+    console->registerCommand("todpause", [&](const std::vector<std::string>&) {
+        todPaused = !todPaused;
+        console->print(todPaused ? "day clock PAUSED" : "day clock running");
+    }, "toggle the day clock");
+    console->registerCommand("fly", [&](const std::vector<std::string>&) {
+        flyMode = true; walkMode = false; buildMode = false;
+        followIdx = -1; playAs = false;
+        if (npcLifeBuilt) npcLife.setControlled(-1);
+        console->print("fly mode");
+    }, "free camera (WASD+mouse, Q/E roll, SPACE/C up-down)");
+    console->registerCommand("orbit", [&](const std::vector<std::string>&) {
+        flyMode = false; walkMode = false; console->print("orbit mode");
+    }, "strategic orbit camera");
+    console->registerCommand("walk", [&](const std::vector<std::string>&) {
+        if (physOk) { flyMode = false; walkMode = true; console->print("walk mode"); }
+        else console->print("walk: physics unavailable");
+    }, "first-person on the streets");
+    console->registerCommand("tp", [&](const std::vector<std::string>& a) {
+        if (a.size() >= 3) {
+            flyMode = true; walkMode = false; flySeeded = true;
+            flyX = (float)std::atof(a[0].c_str());
+            flyY = (float)std::atof(a[1].c_str());
+            flyZ = (float)std::atof(a[2].c_str());
+            console->print("tp -> fly cam");
+        } else console->print("tp <x> <y> <z>");
+    }, "teleport the fly camera");
+    console->registerCommand("pos", [&](const std::vector<std::string>&) {
+        char b[128];
+        if (flyMode) std::snprintf(b, sizeof(b), "fly  %.1f %.1f %.1f  yaw %.2f pitch %.2f",
+                                   flyX, flyY, flyZ, flyYaw, flyPitch);
+        else if (walkMode && physOk) { float x,y,z,yw,pt; player.camera(x,y,z,yw,pt);
+            std::snprintf(b, sizeof(b), "walk %.1f %.1f %.1f  yaw %.2f", x, y, z, yw); }
+        else std::snprintf(b, sizeof(b), "orbit focus %.1f %.1f  radius %.0f",
+                           rig.focusX, rig.focusZ, rig.radius);
+        console->print(b);
+    }, "camera position");
+    console->registerCommand("vol", [&](const std::vector<std::string>& a) {
+        const std::string arg = a.empty() ? "auto" : a[0];
+        g_volOverride = (arg == "on") ? 1 : (arg == "off") ? 0 : -1;
+        console->print("volumetrics " + arg + (arg == "on" ? "  (COSTLY: ~100ms/frame)" : ""));
+    }, "volumetric god rays on|off|auto");
+    console->registerCommand("sun", [&](const std::vector<std::string>& a) {
+        if (a.empty() || a[0] == "auto") { g_sunOverride = -1.0f; console->print("sun auto"); }
+        else { const float f = (float)std::atof(a[0].c_str());
+               if (f >= 0.0f) { g_sunOverride = f; console->print("sun " + a[0]); }
+               else console->print("sun <scale>|auto"); }
+    }, "sun intensity override");
+    console->registerCommand("vsync", [&](const std::vector<std::string>& a) {
+        const bool on = !a.empty() && a[0] == "on";
+        device->setVsync(on); console->print(on ? "vsync on" : "vsync off");
+    }, "vsync on|off");
+
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
         glfwPollEvents();
         {
             const bool esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-            if (esc && !prevEsc) menuOpen = !menuOpen;   // toggle, never break
+            if (esc && !prevEsc) {
+                if (hud.consoleOpen()) hud.closeConsole();   // ESC closes console first
+                else menuOpen = !menuOpen;   // toggle, never break
+            }
             prevEsc = esc;
+            // CONSOLE toggle (` / ~): quake-style drop-down (engine Hud front-end).
+            const bool gr = glfwGetKey(window, GLFW_KEY_GRAVE_ACCENT) == GLFW_PRESS;
+            if (gr && !prevGrave) hud.toggleConsole();
+            prevGrave = gr;
+            if (conQuit) wantQuit = true;   // console `quit`
         }
 
         double now = glfwGetTime();
@@ -2965,11 +3081,68 @@ int hostEchotropolis(HostContext& hc) {
         auto kd  = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
         auto mbd = [&](int b) { return glfwGetMouseButton(window, b) == GLFW_PRESS; };
 
+        // ===== CONSOLE (`): the engine drop-down over a frozen frame, like the
+        // pause menu. MUST run before every game key handler — letters you type
+        // (g, v, b...) are console text (fed via charCB), never mode toggles.
+        // Commands apply instantly; the world resumes the moment it closes. =====
+        if (hud.consoleOpen()) {
+            if (glfwGetInputMode(window, GLFW_CURSOR) != GLFW_CURSOR_NORMAL)
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            { const bool bk = kd(GLFW_KEY_BACKSPACE);
+              if (bk && !prevConBk) hud.onBackspace();
+              prevConBk = bk; }
+            { const bool en = kd(GLFW_KEY_ENTER) || kd(GLFW_KEY_KP_ENTER);
+              if (en && !prevConEnter) hud.onEnter(*console);
+              prevConEnter = en; }
+            { const bool up = kd(GLFW_KEY_UP);
+              if (up && !prevConUp) hud.historyPrev();
+              prevConUp = up; }
+            { const bool dn = kd(GLFW_KEY_DOWN);
+              if (dn && !prevConDown) hud.historyNext();
+              prevConDown = dn; }
+            { const bool tb = kd(GLFW_KEY_TAB);
+              if (tb && !prevConTab) hud.complete(*console);
+              prevConTab = tb; }
+            if (kd(GLFW_KEY_PAGE_UP))   hud.consoleScroll(+1);
+            if (kd(GLFW_KEY_PAGE_DOWN)) hud.consoleScroll(-1);
+            if (g_scrollY != 0.0) { hud.consoleScroll((int)(g_scrollY * 3.0)); g_scrollY = 0.0; }
+            auto frame = device->beginFrame();
+            island.draw(*device, frame);
+            props.draw(*device, frame);
+            hud.drawConsole(*device, frame, *console, dt);
+            device->endFrame(frame);
+            fpsAccum += dt; ++fpsFrames;
+            if (fpsAccum >= 1.0) { fpsAccum = 0.0; fpsFrames = 0; }
+            continue;   // world (and its key handlers) frozen while typing
+        }
+
         // ---- WALK MODE toggle (G) + first-person character step -------------
-        { const bool g = kd(GLFW_KEY_G); if (g && !prevG && physOk) walkMode = !walkMode; prevG = g; }
+        { const bool g = kd(GLFW_KEY_G);
+          if (g && !prevG && physOk) { walkMode = !walkMode; if (walkMode) flyMode = false; }
+          prevG = g; }
+        // FLY MODE toggle (V): fly <-> orbit. Entering fly drops walk/ride/build.
+        { const bool v = kd(GLFW_KEY_V);
+          if (v && !prevV) {
+              flyMode = !flyMode;
+              if (flyMode) {
+                  walkMode = false; buildMode = false;
+                  followIdx = -1; playAs = false;
+                  if (npcLifeBuilt) npcLife.setControlled(-1);
+              }
+              uiSfx(sfxConfirm, 0.6f);
+          }
+          prevV = v; }
+        // FLY MODE captures the cursor for free mouselook; every other mode shows it.
+        { const int wantCursor = (flyMode && !menuOpen) ? GLFW_CURSOR_DISABLED
+                                                        : GLFW_CURSOR_NORMAL;
+          if (glfwGetInputMode(window, GLFW_CURSOR) != wantCursor) {
+              glfwSetInputMode(window, GLFW_CURSOR, wantCursor);
+              glfwGetCursorPos(window, &mx, &my);   // re-baseline: no look snap
+              lastMX = mx; lastMY = my; ddx = 0.0f; ddy = 0.0f;
+          } }
         { const bool tb = kd(GLFW_KEY_TAB); if (tb && !prevTab) { cityPanelOpen = !cityPanelOpen; uiSfx(sfxConfirm, 0.75f); } prevTab = tb; }
         // BUILD MODE (B): orbit-only; entering walk mode drops it.
-        { const bool b = kd(GLFW_KEY_B); if (b && !prevB && !walkMode) { buildMode = !buildMode; uiSfx(sfxConfirm, 0.6f); } prevB = b; }
+        { const bool b = kd(GLFW_KEY_B); if (b && !prevB && !walkMode && !flyMode) { buildMode = !buildMode; uiSfx(sfxConfirm, 0.6f); } prevB = b; }
         if (walkMode) buildMode = false;
         // RIDE-ALONG (F): attach the camera to the citizen you're inspecting; F again releases.
         { const bool f = kd(GLFW_KEY_F);
@@ -2998,7 +3171,7 @@ int hostEchotropolis(HostContext& hc) {
         // ECHO_TALKDEMO (windowed): force walk mode + talk to the nearest citizen.
         if (talkDemoWin && talkLlm && npcLifeBuilt && physOk &&
             (!talkDemoFired || (talkDemoLoop && !talk.pending && talk.endAt > 0.0))) {
-            walkMode = true;
+            walkMode = true; flyMode = false;
             float ex, ey, ez, eyw, ept; player.camera(ex, ey, ez, eyw, ept);
             int best = -1; float bd2 = 1e30f;
             for (uint32_t i = 0; i < npcLife.agentCount(); ++i) {
@@ -3062,6 +3235,39 @@ int hostEchotropolis(HostContext& hc) {
             in.lookDX = ddx; in.lookDY = ddy;
             player.update(in, dt, *phys);
             phys->step(dt);
+        }
+        // ---- FLY MODE step: free camera over the city (Tim's spec) ----------
+        if (flyMode) {
+            if (!flySeeded) {   // first entry: aerial approach vantage on the city
+                flyX = -900.0f; flyY = 320.0f; flyZ = 1400.0f;
+                flyYaw = std::atan2(-flyZ, -flyX);   // look at the island centre
+                flyPitch = -0.12f; flyRoll = 0.0f;
+                flySeeded = true;
+            }
+            flyYaw   += ddx * 0.0028f;               // mouselook
+            flyPitch -= ddy * 0.0028f;
+            // Arrow LEFT/RIGHT turn ("not strafing like A and D do").
+            const float turnK = (kd(GLFW_KEY_RIGHT) ? 1.0f : 0.0f) - (kd(GLFW_KEY_LEFT) ? 1.0f : 0.0f);
+            flyYaw += turnK * 1.6f * dt;
+            // Q/E roll; gently self-rights while neither key is held.
+            const float rollK = (kd(GLFW_KEY_E) ? 1.0f : 0.0f) - (kd(GLFW_KEY_Q) ? 1.0f : 0.0f);
+            if (rollK != 0.0f) flyRoll += rollK * 1.2f * dt;
+            else               flyRoll *= std::exp(-dt / 2.5f);
+            flyPitch = clampf(flyPitch, -1.45f, 1.45f);
+            flyRoll  = clampf(flyRoll,  -2.8f,  2.8f);
+            // Move basis: full-3D forward (fly where you look), flat strafe right.
+            const float cp = std::cos(flyPitch), sp = std::sin(flyPitch);
+            const float cyw = std::cos(flyYaw),  syw = std::sin(flyYaw);
+            const float mvF = (kd(GLFW_KEY_W)  ? 1.0f : 0.0f) - (kd(GLFW_KEY_S)    ? 1.0f : 0.0f)
+                            + (kd(GLFW_KEY_UP) ? 1.0f : 0.0f) - (kd(GLFW_KEY_DOWN) ? 1.0f : 0.0f);
+            const float mvR = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
+            const float mvU = (kd(GLFW_KEY_SPACE) ? 1.0f : 0.0f) - (kd(GLFW_KEY_C) ? 1.0f : 0.0f);
+            const float spd = kd(GLFW_KEY_LEFT_SHIFT) ? 240.0f : 60.0f;   // m/s (km-scale city)
+            flyX += (cp * cyw * mvF - syw * mvR) * spd * dt;
+            flyZ += (cp * syw * mvF + cyw * mvR) * spd * dt;
+            flyY += (sp * mvF + mvU) * spd * dt;
+            if (hf.ok()) flyY = std::max(flyY, hf.heightAt(flyX, flyZ) + 1.5f);  // stay out of the dirt
+            flyY = clampf(flyY, 1.5f, 4000.0f);
         }
 
         // ===== PAUSE MENU: world + camera frozen, menu drawn, only QUIT exits =====
@@ -3313,7 +3519,12 @@ int hostEchotropolis(HostContext& hc) {
         // Ocean + camera + render. WALK MODE poses the first-person eye camera from
         // the physics character; ORBIT MODE keeps the strategic vista camera.
         waterTime += dt; applyOcean(device, waterTime, todS);
-        if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
+        // Roll is per-frame device state like setCamera: latch it every frame so
+        // leaving fly mode always returns an upright horizon.
+        device->setCameraRoll(flyMode ? flyRoll : 0.0f);
+        if (flyMode) {
+            device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, opt.fovDeg);
+        } else if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
             // RIDE-ALONG: trail the citizen third-person, looking at their head as they
             // walk their scheduled day. Camera sits back+up along their facing.
             const auto& a = npcLife.agent((uint32_t)followIdx);
@@ -3338,6 +3549,8 @@ int hostEchotropolis(HostContext& hc) {
             if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
                 const auto& a = npcLife.agent((uint32_t)followIdx);
                 lx=a.pos.x; ly=a.pos.y+2.0f; lz=a.pos.z; lyaw=a.yaw; lpit=0.0f;
+            } else if (flyMode) {
+                lx=flyX; ly=flyY; lz=flyZ; lyaw=flyYaw; lpit=flyPitch;
             } else if (walkMode && physOk) {
                 player.camera(lx, ly, lz, lyaw, lpit);
             } else {
@@ -3352,7 +3565,8 @@ int hostEchotropolis(HostContext& hc) {
         streetLamps.update(dt, lampScene);                   // flicker machines
         {
             float lx = rig.sFocusX, ly = rig.sPivotY + 20.0f, lz = rig.sFocusZ;
-            if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
+            if (flyMode) { lx = flyX; ly = flyY; lz = flyZ; }
+            else if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
             std::vector<x3::rhi::PointLight> pls;
             streetLamps.selectLights(lx, ly, lz, pls, 8);
             appendDistrictLights(lx, lz, pls);
@@ -3454,6 +3668,12 @@ int hostEchotropolis(HostContext& hc) {
             const float gold[4] = { 1.0f, 0.82f, 0.42f, 1.0f };
             device->drawHudQuad(frame, 12.0f, 12.0f, barW, barH, bg);
             device->drawHudText(frame, bar, 12.0f + pad, 12.0f + (barH - glyph) * 0.5f, glyph, gold);
+            if (flyMode) {   // key hints for the default free camera
+                const float dim[4] = { 0.62f, 0.68f, 0.78f, 0.85f };
+                device->drawHudText(frame,
+                    "FLY   WASD + mouse   Q/E roll   SPACE/C up-down   ARROWS fwd + turn   SHIFT fast   V orbit   G walk",
+                    12.0f + pad, 12.0f + barH + 20.0f, 12.0f, dim);
+            }
 
             // CITY PANEL (TAB): the web-parity dashboard, fed by the live counts.
             if (cityPanelOpen) {
@@ -3541,9 +3761,7 @@ int hostEchotropolis(HostContext& hc) {
                             alpha = std::clamp((float)left / kBubbleFadeSec, 0.0f, 1.0f);
                     }
                     // Trim the model's leading whitespace so the first line sits flush.
-                    std::string body = talk.reply;
-                    size_t b0 = body.find_first_not_of(" \t\r\n");
-                    body = (b0 == std::string::npos) ? std::string() : body.substr(b0);
+                    std::string body = talkTidy(talk.reply);
                     if (body.empty()) body = talk.pending ? "..." : "(silence)";
                     else if (talk.pending) body += " ...";   // streaming/thinking indicator
                     std::vector<std::string> wrapped;
@@ -3561,9 +3779,7 @@ int hostEchotropolis(HostContext& hc) {
                     const double now2 = glfwGetTime();
                     const double left = amb.endAt - now2;
                     const float alpha = 0.8f * std::clamp((float)left / kBubbleFadeSec, 0.0f, 1.0f);
-                    std::string body = amb.line;
-                    size_t b0 = body.find_first_not_of(" \t\r\n");
-                    body = (b0 == std::string::npos) ? std::string() : body.substr(b0);
+                    std::string body = talkTidy(amb.line);
                     // HUMAN SPEECH PACING (Tim: instant lines read as machine-gun).
                     // Reveal ~22 chars/sec from when the bubble opened.
                     const double talking = now2 - (amb.endAt - (double)kAmbientHoldSec);
@@ -3656,6 +3872,7 @@ int hostEchotropolis(HostContext& hc) {
         x3::logInfo(buf);
     }
 
+    g_hud = nullptr;   // charCB must never touch the dying Hud
     if (audioOn) { for (auto l : audioLoops) eaudio->stopLoop(l); eaudio->shutdown(); }
     device->shutdown();
     if (window) glfwDestroyWindow(window);
