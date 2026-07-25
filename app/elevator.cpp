@@ -343,6 +343,12 @@ void ElevatorSystem::unlockRift() {
     x3::logInfo("[elevator] sub-level R1 (RIFT) is now a selectable floor on this cab");
 }
 
+void ElevatorSystem::unlockSecret() {
+    if (m_secretUnlocked || m_secretStop < 0) return;
+    m_secretUnlocked = true;
+    x3::logInfo("[elevator] level 4.5 is now a selectable floor on this cab");
+}
+
 std::string ElevatorSystem::floorLabel(int stopIndex) const {
     if (stopIndex >= 0 && stopIndex < (int)m_floorLabels.size() &&
         !m_floorLabels[stopIndex].empty())
@@ -770,6 +776,21 @@ bool ElevatorSystem::keypadDigit(int digit) {
                         ". Descending to the RIFT stop at Y=" +
                         std::to_string(stopY(m_riftStop)));
             startTravelTo(m_riftStop);
+            return true;
+        }
+        // ---- 4455 — LEVEL 4.5 (fix/spire-hollow-core, owner canon 2026-07-25). The
+        // hidden floor between F4 and F5; the elevator is its ONLY access. Same
+        // one-way unlock as the RIFT stop. PLACEHOLDER code until a real in-world
+        // clue exists (secured-room-door policy).
+        if (tail == kNexusAccessCode && m_secretStop >= 0) {
+            m_codeBuf.clear();
+            const bool first = !m_secretUnlocked;
+            unlockSecret();
+            playOneShot(m_snd.ding, 1.0f, 1.25f);   // access granted
+            x3::logInfo(std::string("[elevator] LEVEL 4.5 ACCESS — code accepted") +
+                        (first ? "; the hidden floor is on the panel now" : "") +
+                        ". Travelling to Y=" + std::to_string(stopY(m_secretStop)));
+            startTravelTo(m_secretStop);
             return true;
         }
         const bool ok = (tail == kDiscoCode);

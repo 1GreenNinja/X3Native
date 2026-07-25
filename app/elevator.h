@@ -263,10 +263,25 @@ public:
     int  riftStop() const { return m_riftStop; }
     void unlockRift();
     bool riftUnlocked() const { return m_riftUnlocked; }
-    // True iff `stopIndex` is the rift stop AND it is still locked (the OLED
+
+    // ===== THE HIDDEN 4.5 STOP (fix/spire-hollow-core, owner canon 2026-07-25:
+    // "Spire is on level 4.5 — HIDDEN from the other levels; only accessible via
+    // Elevator. No stairways get to it.") ======================================
+    // Same machinery as the RIFT stop: one more entry in the stop list, dark on the
+    // directory, skipped by callTo()/callNext() until its access code is entered on
+    // the cabin keypad. PLACEHOLDER CODE until a real in-world clue exists (same
+    // policy as the secured-room door codes).
+    static constexpr const char* kNexusAccessCode = "4455";
+    void setSecretStop(int stopIndex) { m_secretStop = stopIndex; }
+    int  secretStop() const { return m_secretStop; }
+    void unlockSecret();
+    bool secretUnlocked() const { return m_secretUnlocked; }
+
+    // True iff `stopIndex` is a code-locked stop (rift / 4.5) still locked (the OLED
     // directory shows it as a dead row; the HUD refuses to offer it).
     bool stopLocked(int stopIndex) const {
-        return m_riftStop >= 0 && stopIndex == m_riftStop && !m_riftUnlocked;
+        return (m_riftStop >= 0 && stopIndex == m_riftStop && !m_riftUnlocked) ||
+               (m_secretStop >= 0 && stopIndex == m_secretStop && !m_secretUnlocked);
     }
 
     // ----- Keypad (terminal code entry; 1127 = DISCO + descend to the club,
@@ -337,6 +352,10 @@ private:
     // ---- The rift stop (W-RIFT) ----
     int         m_riftStop     = -1;      // stop index of the RIFT level (-1 = none on this cab)
     bool        m_riftUnlocked = false;   // code 4790 accepted (or a story beat opened it)
+
+    // ---- The hidden 4.5 stop (fix/spire-hollow-core) ----
+    int         m_secretStop     = -1;    // stop index of level 4.5 (-1 = none on this cab)
+    bool        m_secretUnlocked = false; // code 4455 accepted (or a story beat opened it)
 
     // ---- Disco / keypad ----
     bool        m_disco = false;

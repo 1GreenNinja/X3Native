@@ -75,17 +75,59 @@ void vein(BrushCtx& c, float hx, float hy, float hz, float cx, float cy, float c
 
 } // namespace
 
+namespace {
+// Shared envelope derivation (build() + floorPlaneY() + the lint gate must agree).
+// Returns false when the tower has no Nexus (no platforms / no access room).
+bool nexusEnvelope(const CanonFloor& floor, uint32_t& accessOut,
+                   std::vector<uint32_t>& platsOut,
+                   float& x0, float& x1, float& z0, float& z1, float& top) {
+    accessOut = kNoRoom;
+    platsOut.clear();
+    for (uint32_t i = 0; i < floor.rooms.size(); ++i) {
+        if (floor.rooms[i].platform) platsOut.push_back(i);
+        if (floor.rooms[i].name.find("Nexus Chamber Access") != std::string::npos)
+            accessOut = i;
+    }
+    if (platsOut.empty() || accessOut == kNoRoom) return false;
+    const CanonRoom& A = floor.rooms[accessOut];
+    x0 = A.x0(); x1 = A.x1(); z0 = A.z0(); z1 = A.z1();
+    top = A.y1();
+    for (uint32_t p : platsOut) {
+        const CanonRoom& r = floor.rooms[p];
+        x0 = std::min(x0, r.x0()); x1 = std::max(x1, r.x1());
+        z0 = std::min(z0, r.z0()); z1 = std::max(z1, r.z1());
+        top = std::max(top, r.y1());
+    }
+    x0 -= 2.0f; x1 += 2.0f; z0 -= 2.0f; z1 += 2.0f;
+    return true;
+}
+} // namespace
+
+float Canon45::floorPlaneY(const CanonFloor& floor) {
+    uint32_t access; std::vector<uint32_t> plats;
+    float x0, x1, z0, z1, top;
+    if (!nexusEnvelope(floor, access, plats, x0, x1, z0, z1, top)) return -1e9f;
+    // The cavern floor plane sits just above the tallest NORMAL room roof inside the
+    // envelope (the F4 boss arena pokes into the old cavern volume) — slab bottom
+    // clears every roof, so the slab seals all vertical sightlines and clips nothing.
+    float maxTop = floor.rooms[access].y1();
+    for (const CanonRoom& r : floor.rooms) {
+        if (r.platform) continue;
+        if (r.y1() > 45.0f || r.y1() < 20.0f) continue;      // only the F4-story band
+        if (r.x1() <= x0 || r.x0() >= x1 || r.z1() <= z0 || r.z0() >= z1) continue;
+        maxTop = std::max(maxTop, r.y1());
+    }
+    return maxTop + 0.55f;    // 0.5 slab + 5 cm clearance under it
+}
+
 void Canon45::build(CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& device,
                     x3::phys::IPhysicsWorld& physics, std::string_view riggedModelDir,
                     const std::string& surfaceLibRoot, std::vector<CanonLight>& canonLights) {
     // ---- Find the authored pieces. ----
     uint32_t access = kNoRoom;
     std::vector<uint32_t> plats;
-    for (uint32_t i = 0; i < floor.rooms.size(); ++i) {
-        if (floor.rooms[i].platform) plats.push_back(i);
-        if (floor.rooms[i].openCeiling) access = i;
-    }
-    if (plats.empty() || access == kNoRoom) {
+    float ex0, ex1, ez0, ez1, etop;
+    if (!nexusEnvelope(floor, access, plats, ex0, ex1, ez0, ez1, etop)) {
         x3::logInfo("[canon45] no Nexus platforms/access in this floor — skipped");
         return;
     }
@@ -94,7 +136,7 @@ void Canon45::build(CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& dev
             if (floor.rooms[p].name.find(s) != std::string::npos) return &floor.rooms[p];
         return nullptr;
     };
-    const CanonRoom& A  = floor.rooms[access];
+    (void)access;   // the Access room is SEALED (W5-1b) — geometry no longer touches it
     const CanonRoom* t1 = byName("Tier 1"); const CanonRoom* t2 = byName("Tier 2");
     const CanonRoom* t3 = byName("Tier 3"); const CanonRoom* t4 = byName("Tier 4");
     const CanonRoom* t5 = byName("Tier 5"); const CanonRoom* ep = byName("Entry Platform");
@@ -103,18 +145,18 @@ void Canon45::build(CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& dev
         return;
     }
 
-    // ---- Cavern envelope: platforms + access + margin. ----
-    float x0 = A.x0(), x1 = A.x1(), z0 = A.z0(), z1 = A.z1();
-    float top = A.y1();
-    for (uint32_t p : plats) {
-        const CanonRoom& r = floor.rooms[p];
-        x0 = std::min(x0, r.x0()); x1 = std::max(x1, r.x1());
-        z0 = std::min(z0, r.z0()); z1 = std::max(z1, r.z1());
-        top = std::max(top, r.y1());
-    }
-    x0 -= 2.0f; x1 += 2.0f; z0 -= 2.0f; z1 += 2.0f;
-    const float fy = A.y0();          // cavern floor plane = access floor (flush)
-    const float cy = top + 5.0f;      // rock ceiling: 5 m of dark above the apex
+    // ---- Cavern envelope: platforms + access + margin (nexusEnvelope). ----
+    const float x0 = ex0, x1 = ex1, z0 = ez0, z1 = ez1, top = etop;
+    // W5-1b (fix/spire-hollow-core): the cavern floor is a FULL slab whose plane sits
+    // just ABOVE the tallest F4 roof inside the envelope (floorPlaneY) — the old
+    // annulus at the Access room's floor level left the F4 boss arena poking into the
+    // cavern with an invisible (PVS-culled) roof: from the 4.5 catwalks the tower's
+    // center read as a VOID dropping into a fog-washed pit. The slab is the hidden
+    // level's REAL BOTTOM: it seals every sightline between 4.5 and the normal
+    // floors, and a player who falls from a tier lands on rock with a way back (the
+    // scaffold climb starts on this floor).
+    const float fy = floorPlaneY(floor);           // top of the cavern floor slab
+    const float cy = top + 5.0f;                   // rock ceiling: 5 m of dark above the apex
     m_x0 = x0; m_x1 = x1; m_y0 = fy; m_y1 = cy; m_z0 = z0; m_z1 = z1;
     m_whisperX = t1->cx; m_whisperY = t1->y1(); m_whisperZ = t1->cz;
     m_apexX = t5->cx; m_apexY = t5->y1(); m_apexZ = t5->cz;
@@ -123,49 +165,105 @@ void Canon45::build(CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& dev
     m_lib.mount(surfaceLibRoot);
     const SurfaceSet& rock  = m_lib.get(device, "sr_concrete_01");
     const SurfaceSet& steel = m_lib.get(device, "mw_metal_grate");
+    // Vis tag: ALWAYS-DRAWN (kNoRoom). The cavern hangs outside the doorway graph,
+    // so the portal flood can never resolve it — room-tagged shell/scaffold brushes
+    // culled themselves whenever the eye stood anywhere else in 4.5 (the tiers'
+    // mutual-void defect). Sealed rock; frustum + HZB own the draw cost.
     BrushCtx c{ &scene, &device, &physics,
                 rock.ok ? rock.albedo : x3::rhi::TextureHandle{},
                 steel.ok ? steel.albedo : x3::rhi::TextureHandle{},
                 rock.ok ? rock.normal : x3::rhi::TextureHandle{},
-                access };
+                kNoRoom };
     const float rockCol[4]  = { 0.34f, 0.31f, 0.27f, 1.0f };   // black-brown organic base
     const float darkCol[4]  = { 0.22f, 0.21f, 0.19f, 1.0f };
     const float steelCol[4] = { 0.38f, 0.40f, 0.42f, 1.0f };   // scaffold
 
-    // ---- SHELL: rock floor annulus around the access footprint, walls, ceiling. ----
-    // Floor strips (top flush with fy, 0.5 thick), skipping the access room's own slab.
-    auto strip = [&](float sx0, float sx1, float sz0, float sz1) {
-        if (sx1 - sx0 < 0.05f || sz1 - sz0 < 0.05f) return;
-        brush(c, (sx1 - sx0) * 0.5f, 0.25f, (sz1 - sz0) * 0.5f,
-              (sx0 + sx1) * 0.5f, fy - 0.25f, (sz0 + sz1) * 0.5f, c.rockTex, rockCol);
-    };
-    strip(x0, A.x0(), z0, z1);                 // west of access
-    strip(A.x1(), x1, z0, z1);                 // east
-    strip(A.x0(), A.x1(), z0, A.z0());         // south band
-    strip(A.x0(), A.x1(), A.z1(), z1);         // north band
-    // Walls (fy -> cy) + ceiling. Dark rock — the void should swallow light.
-    const float wh = cy - fy;
-    brush(c, 0.4f, wh * 0.5f, (z1 - z0) * 0.5f, x0 - 0.4f, fy + wh * 0.5f, (z0 + z1) * 0.5f, c.rockTex, darkCol);
-    brush(c, 0.4f, wh * 0.5f, (z1 - z0) * 0.5f, x1 + 0.4f, fy + wh * 0.5f, (z0 + z1) * 0.5f, c.rockTex, darkCol);
-    brush(c, (x1 - x0) * 0.5f + 0.8f, wh * 0.5f, 0.4f, (x0 + x1) * 0.5f, fy + wh * 0.5f, z0 - 0.4f, c.rockTex, darkCol);
-    brush(c, (x1 - x0) * 0.5f + 0.8f, wh * 0.5f, 0.4f, (x0 + x1) * 0.5f, fy + wh * 0.5f, z1 + 0.4f, c.rockTex, darkCol);
+    // ---- SHELL: FULL rock floor slab (the hidden level's real bottom), walls,
+    // ceiling. The slab is laid as a grid of ~6 m panels so the rock texture tiles at
+    // a sane density instead of stretching one UV square over 30 m. ----
+    {
+        const int nx = std::max(1, (int)std::ceil((x1 - x0) / 6.0f));
+        const int nz = std::max(1, (int)std::ceil((z1 - z0) / 6.0f));
+        const float pw = (x1 - x0) / (float)nx, pd = (z1 - z0) / (float)nz;
+        for (int ix = 0; ix < nx; ++ix)
+            for (int iz = 0; iz < nz; ++iz)
+                brush(c, pw * 0.5f, 0.25f, pd * 0.5f,
+                      x0 + (ix + 0.5f) * pw, fy - 0.25f, z0 + (iz + 0.5f) * pd,
+                      c.rockTex, rockCol);
+    }
+    // Walls (slab bottom -> cy) + ceiling. Dark rock — the void should swallow light.
+    const float wb = fy - 0.5f;            // wall base = slab bottom (no gap under walls)
+    const float wh = cy - wb;
+    brush(c, 0.4f, wh * 0.5f, (z1 - z0) * 0.5f, x0 - 0.4f, wb + wh * 0.5f, (z0 + z1) * 0.5f, c.rockTex, darkCol);
+    brush(c, 0.4f, wh * 0.5f, (z1 - z0) * 0.5f, x1 + 0.4f, wb + wh * 0.5f, (z0 + z1) * 0.5f, c.rockTex, darkCol);
+    // -Z wall carries the ARRIVAL MOUTH: the elevator tunnel seals onto a doorway cut
+    // (four pieces around the opening — LAW 1, an opening in a shared plane).
+    {
+        uint32_t lobby5 = kNoRoom;
+        for (uint32_t i = 0; i < floor.rooms.size(); ++i)
+            if (floor.rooms[i].type == "Elevator Lobby" &&
+                i < floor.roomFloorNum.size() && floor.roomFloorNum[i] == 5) {
+                lobby5 = i; break;
+            }
+        // Tunnel/mouth X center: the spine shaft's X (fall back to Tier 1's X so the
+        // mouth still cuts sanely on a dataset with no F5 lobby).
+        const float tx = (lobby5 != kNoRoom) ? floor.rooms[lobby5].cx : t1->cx;
+        const float mx0 = tx - kMouthHalf, mx1 = tx + kMouthHalf;
+        const float my0 = fy, my1 = fy + kMouthH;
+        const float wallCx = (x0 + x1) * 0.5f, wallHx = (x1 - x0) * 0.5f + 0.8f;
+        auto zPiece = [&](float px0, float px1, float py0, float py1) {
+            if (px1 - px0 < 0.02f || py1 - py0 < 0.02f) return;
+            brush(c, (px1 - px0) * 0.5f, (py1 - py0) * 0.5f, 0.4f,
+                  (px0 + px1) * 0.5f, (py0 + py1) * 0.5f, z0 - 0.4f, c.rockTex, darkCol);
+        };
+        zPiece(wallCx - wallHx, wallCx + wallHx, wb, my0);     // below the mouth (slab band)
+        zPiece(wallCx - wallHx, wallCx + wallHx, my1, cy);     // above the mouth
+        zPiece(wallCx - wallHx, mx0, my0, my1);                // -X side
+        zPiece(mx1, wallCx + wallHx, my0, my1);                // +X side
+
+        // ---- THE ARRIVAL TUNNEL: elevator spine shaft -> cavern. Floor flush with
+        // the cavern slab (and with the cab platform at the 4.5 stop), steel walls +
+        // lid, sealing the spine tube's +Z mouth (cut by the loader, CanonBuildOpts::
+        // spineMouth*) to the cavern's -Z mouth (cut above). ----
+        const float tubeZ = (lobby5 != kNoRoom) ? floor.rooms[lobby5].cz + 1.5f : z0;
+        const float tz0 = tubeZ, tz1 = z0;                     // tunnel span in Z
+        if (lobby5 != kNoRoom && tz1 > tz0 + 1.0f) {
+            const float ix0 = tx - kMouthHalf - 0.2f, ix1 = tx + kMouthHalf + 0.2f; // interior
+            // Floor (top at fy) + lid (bottom at fy + kMouthH).
+            brush(c, (ix1 - ix0) * 0.5f + 0.25f, 0.25f, (tz1 - tz0) * 0.5f,
+                  tx, fy - 0.25f, (tz0 + tz1) * 0.5f, c.rockTex, rockCol);
+            brush(c, (ix1 - ix0) * 0.5f + 0.25f, 0.25f, (tz1 - tz0) * 0.5f,
+                  tx, fy + kMouthH + 0.25f, (tz0 + tz1) * 0.5f, c.rockTex, darkCol);
+            // Side walls (full tunnel height).
+            brush(c, 0.25f, kMouthH * 0.5f, (tz1 - tz0) * 0.5f,
+                  ix0 - 0.25f, fy + kMouthH * 0.5f, (tz0 + tz1) * 0.5f, c.rockTex, darkCol);
+            brush(c, 0.25f, kMouthH * 0.5f, (tz1 - tz0) * 0.5f,
+                  ix1 + 0.25f, fy + kMouthH * 0.5f, (tz0 + tz1) * 0.5f, c.rockTex, darkCol);
+            x3::logInfo("[canon45] arrival tunnel: shaft z=" + std::to_string(tubeZ) +
+                        " -> cavern z=" + std::to_string(z0) + " at floor y=" +
+                        std::to_string(fy));
+        }
+    }
+    brush(c, (x1 - x0) * 0.5f + 0.8f, wh * 0.5f, 0.4f, (x0 + x1) * 0.5f, wb + wh * 0.5f, z1 + 0.4f, c.rockTex, darkCol);
     brush(c, (x1 - x0) * 0.5f + 0.8f, 0.4f, (z1 - z0) * 0.5f + 0.8f, (x0 + x1) * 0.5f, cy + 0.4f, (z0 + z1) * 0.5f, c.rockTex, darkCol);
 
-    // ---- THE CLIMB. Scaffold tower inside the access room's NE corner rising over its
-    // open ceiling to Tier 1, then L-stairs tier to tier, catwalk to the Entry Platform.
+    // ---- THE CLIMB. Scaffold rising from the cavern floor near the arrival mouth to
+    // Tier 1, then L-stairs tier to tier, catwalk to the Entry Platform. (The old
+    // climb rose out of the Access room's open ceiling — that room is SEALED now; the
+    // hidden level starts at the elevator, owner canon 2026-07-25.) ----
     float px, pz, py;
-    // Tower: 3 straight flights zig-zagging in the corner (each ~1/3 of the rise), with
-    // small decks. Access interior corner near (x1-2.5, z1-1.5).
     const float towerRise = (t1->y1() - fy);
-    const float seg = towerRise / 3.0f;
-    float sx = A.x1() - 6.0f, sz = A.z1() - 1.2f, sy = fy;
-    flight(c, sx, sz, sy, 0, +1.0f, seg, steelCol, &px, &pz, &py);          // east
+    const float seg2 = towerRise * 0.5f;
+    // Flight 1: from just inside the mouth, east along +X. Flight 2: north along +Z to
+    // Tier 1's -Z edge; arrival catwalk bridges onto the platform (2 cm lip).
+    flight(c, t1->cx + 0.6f, z0 + 1.6f, fy, 0, +1.0f, seg2, steelCol, &px, &pz, &py);
     deck(c, px, px + 1.7f, pz - 0.9f, pz + 0.9f, py, steelCol);
-    flight(c, px + 0.4f, pz - 0.8f, py, 1, -1.0f, seg, steelCol, &px, &pz, &py);  // south, clears the +X wall
-    deck(c, px - 0.9f, px + 0.9f, pz - 1.7f, pz, py, steelCol);
-    flight(c, px - 0.8f, pz - 0.9f, py, 0, -1.0f, towerRise - 2.0f * seg, steelCol, &px, &pz, &py); // west
-    // Bridge walkway across to Tier 1's -Z edge (long deck; 2 cm lip kills coplanar tops).
-    deck(c, px - 0.9f, px + 0.9f, pz - 0.9f, t1->z0() + 1.0f, t1->y1() + 0.02f, steelCol);
+    flight(c, px + 0.85f, pz + 0.8f, py, 1, +1.0f, towerRise - seg2, steelCol, &px, &pz, &py);
+    deck(c, px - 0.9f, px + 0.9f, pz - 0.9f, std::max(pz + 0.9f, t1->z0() + 1.0f),
+         t1->y1() + 0.02f, steelCol);
+    // Connector deck from the flight-2 arrival across to the platform edge.
+    deck(c, std::min(px - 0.9f, t1->x1() - 1.8f), px + 0.9f,
+         t1->z0() - 0.6f, t1->z0() + 1.0f, t1->y1() + 0.02f, steelCol);
 
     // Tier links: L-stairs (out along Z, then along X) + arrival deck. Helper.
     auto link = [&](const CanonRoom& lo, const CanonRoom& hi) {
@@ -220,7 +318,7 @@ void Canon45::build(CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& dev
         Entity& e = scene.get(id);
         e.emissive[0] = 1.0f; e.emissive[1] = 0.82f; e.emissive[2] = 0.55f; e.emissive[3] = 1.4f;
     };
-    workLight(A.cx - 3.0f, fy + 1.1f, A.cz);
+    workLight(t1->cx, fy + 1.1f, z0 + 1.0f);            // arrival-mouth work light
     workLight(t3->cx, t3->y1() + 0.6f, t3->cz);
     workLight(t5->x0() + 1.2f, t5->y1() + 0.6f, t5->z0() + 1.2f);
 
@@ -228,13 +326,14 @@ void Canon45::build(CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& dev
     // is the point. One warm pool per work light, a dim green wash at the whisper tier,
     // a red-leaning dim at the apex. ----
     auto addL = [&](float lx, float ly, float lz, float range, float r, float g, float b) {
-        CanonLight cl; cl.room = access;
+        CanonLight cl; cl.room = kNoRoom;   // un-roomed: range-gated by the light feed
         cl.light.pos[0] = lx; cl.light.pos[1] = ly; cl.light.pos[2] = lz;
         cl.light.range = range;
         cl.light.color[0] = r; cl.light.color[1] = g; cl.light.color[2] = b;
         canonLights.push_back(cl);
     };
-    addL(A.cx - 3.0f, fy + 1.6f, A.cz, 5.0f, 1.5f, 1.2f, 0.8f);            // access work light
+    addL(t1->cx, fy + 1.8f, z0 + 1.4f, 6.0f, 1.5f, 1.2f, 0.8f);            // arrival-mouth pool
+    addL(t1->cx, fy + kMouthH - 0.4f, z0 - 6.0f, 5.0f, 1.1f, 0.95f, 0.7f); // tunnel practical
     addL(t1->cx, t1->y1() + 1.2f, t1->cz, 6.0f, 0.22f, 0.75f, 0.35f);      // whisper green
     addL(t3->cx, t3->y1() + 1.3f, t3->cz, 5.0f, 1.2f, 1.0f, 0.7f);         // mid work light
     addL(t5->cx, t5->y1() + 1.6f, t5->cz, 7.0f, 1.1f, 0.22f, 0.16f);       // apex blood-red

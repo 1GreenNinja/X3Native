@@ -64,6 +64,12 @@ struct CanonRoom {
     // A room whose ceiling is deliberately ABSENT (the Nexus Chamber Access — the
     // cavern void opens directly above it). Walls and floor build normally.
     bool openCeiling = false;
+    // W5-1b (fix/spire-hollow-core, owner canon 2026-07-25: "4.5 is HIDDEN — only the
+    // elevator reaches it"): this room's ceiling lid RENDERS (not collision-only).
+    // Set for rooms whose roof is exposed to a legitimate player vantage ABOVE them
+    // (the ex-open-ceiling Nexus Access room under the 4.5 cavern) — an invisible lid
+    // there is a one-way hole in the world (the D3/D4 defect class).
+    bool solidLid = false;
 };
 
 // How a door pair was RESOLVED by the doorway resolver (diagnostics + the self-test).
@@ -314,6 +320,23 @@ struct CanonBuildOpts {
     uint32_t breachRoom = kNoRoom;
     int   breachFace = 3;
     float breachCenter = 0.0f, breachHalf = 1.5f;
+    // FACILITY STAIRWELL (fix/spire-hollow-core): additional doorway-style cuts, one
+    // per floor, where the stairwell's per-floor connector meets its target room's
+    // wall. Same cut machinery as the single breach above (gap + lintel through the
+    // wall builders); the stairwell module builds the connector + shaft geometry that
+    // seals onto each cut (seam law: shared plane, zero gap). Empty by default.
+    struct ExtraBreach {
+        uint32_t room = kNoRoom;
+        int      face = 0;              // 0=-X 1=+X 2=-Z 3=+Z
+        float    center = 0.0f;         // run coordinate along the wall
+        float    half = 1.1f;           // cut half-width
+    };
+    std::vector<ExtraBreach> extraBreaches;
+    // W5-1b (fix/spire-hollow-core): the 4.5 ARRIVAL MOUTH — a doorway-style opening
+    // cut in the vertical elevator-spine tube's +Z wall where the hidden level's
+    // arrival tunnel joins the shaft. Applied to the ONE spine CrossLevel segment
+    // whose Y span contains [spineMouthY0, spineMouthY1]. half <= 0 disables.
+    float spineMouthY0 = 0.0f, spineMouthY1 = 0.0f, spineMouthHalf = 0.0f;
 };
 // NOTE: `floor` is taken by NON-const reference because the builder records each cut
 // doorway's DoorSystem slab index back into floor.doorways[].doorIndex (so the portal

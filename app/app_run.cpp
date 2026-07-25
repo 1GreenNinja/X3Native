@@ -1809,6 +1809,17 @@ int runDefaultHost(HostContext& hc) {
         canonFloor = x3::game::loadCanonTower(x3::game::canonProjectJsonPath());
         if (canonFloor.valid()) {
             x3::game::CanonBuildOpts copts; copts.doors = &canonDoors; copts.lockSecuredRooms = true;
+            // W5-1b (fix/spire-hollow-core): the hidden level 4.5 ARRIVAL MOUTH — cut
+            // a doorway in the elevator-spine tube's +Z wall at the cavern floor
+            // plane; Canon45 builds the arrival tunnel that seals onto it, and the
+            // elevator gets a code-locked "4.5" stop at the same Y (owner canon
+            // 2026-07-25: the elevator is the hidden floor's ONLY access).
+            const float nexusFloorY = x3::game::Canon45::floorPlaneY(canonFloor);
+            if (nexusFloorY > -1e8f) {
+                copts.spineMouthY0   = nexusFloorY;
+                copts.spineMouthY1   = nexusFloorY + x3::game::Canon45::kMouthH;
+                copts.spineMouthHalf = x3::game::Canon45::kMouthHalf;
+            }
             // TRAPDOOR CARVE — the canon-cell SECRET-ROOM PORT (Tim's code-locked
             // trapdoor was legacy-tower-only until now). Pick a hatch spot inside
             // Jake's Cell clear of the dressing (bunk in the -X/-Z corner, debris in
@@ -2142,9 +2153,28 @@ int runDefaultHost(HostContext& hc) {
                         stops.push_back(canonFloor.rooms[lobbyRooms[li]].y0() + cabHY);
                         labels.emplace_back("F" + std::to_string(li + 1));
                     }
+                    // ---- LEVEL 4.5 (fix/spire-hollow-core, owner canon 2026-07-25):
+                    // the hidden floor's stop, inserted in Y order between F4 and F5.
+                    // Locked exactly like the RIFT row (code 4455 on the cab keypad,
+                    // placeholder until an in-world clue exists) — the directory
+                    // shows a dead row; callTo()/callNext() skip it while locked.
+                    int nexusStopIdx = -1;
+                    {
+                        const float nexusY45 = x3::game::Canon45::floorPlaneY(canonFloor);
+                        if (nexusY45 > -1e8f) {
+                            const float stopY45 = nexusY45 + cabHY;
+                            size_t ins = stops.size();
+                            for (size_t si = 0; si < stops.size(); ++si)
+                                if (stops[si] > stopY45) { ins = si; break; }
+                            stops.insert(stops.begin() + ins, stopY45);
+                            labels.insert(labels.begin() + ins, "4.5");
+                            nexusStopIdx = (int)ins;
+                        }
+                    }
                     elevator.build(scene, *device, *physics, L0.cx, L0.cz,
                                    1.4f, cabHY, 1.4f, stops, /*startStop*/1);   // boot on F1
                     elevator.setRiftStop(0);
+                    if (nexusStopIdx >= 0) elevator.setSecretStop(nexusStopIdx);
 
                     // ---- SUB-LEVEL R1: the hub + the way in ------------------------------
                     // The hub is the SAME module `--world rifthub` builds — one build path,

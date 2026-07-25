@@ -959,10 +959,19 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
     // ---- W5-1: LEVEL 4.5 — THE NEXUS CHAMBER. The data authors the F4.5 tiers as
     // thin slab rooms (h <= 1 m) hanging in the F4-F5 void above the "Nexus Chamber
     // Access" room. Mark them OPEN PLATFORMS (floor-slab-only build, no walls/lid/
-    // minted light), open the Access room's ceiling (the cavern void IS its ceiling),
-    // strip every resolver doorway that touched a platform (tier "descent tubes" were
-    // nonsense doors through open air — canon_45's scaffold stairs are the climb), and
-    // union the cavern's PVS so the Access room and every platform see each other. ----
+    // minted light) and strip every resolver doorway that touched a platform (tier
+    // "descent tubes" were nonsense doors through open air).
+    //
+    // W5-1b (fix/spire-hollow-core, owner canon 2026-07-25): level 4.5 is HIDDEN from
+    // the normal floors — no stairway, no sightline; the ELEVATOR is its only access.
+    // The Access room's open ceiling was both a stairway (canon_45's old scaffold
+    // climbed out of it) and a sightline (F4 <-> 4.5); from the 4.5 catwalks the
+    // tower's center read as a VOID dropping into a fog-washed pit (the owner's
+    // "the center of the building is missing" screenshot). The Access room is now a
+    // NORMAL sealed F4 room: lid present and RENDERED (solidLid — its roof sits under
+    // the cavern, and an invisible lid is a one-way hole from above). Canon45 lays a
+    // full cavern floor slab above the F4 roofline; the cavern PVS is unioned with the
+    // F4/F5 spine lobbies so the elevator arrival tunnel renders the cavern. ----
     {
         uint32_t accessId = kNoRoom;
         std::vector<uint32_t> plats;
@@ -972,7 +981,7 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
             if (r.h <= 1.0f && r.name.find("Tier") != std::string::npos)      r.platform = true;
             if (r.h <= 1.0f && r.name.find("F4.5") != std::string::npos)      r.platform = true;
             if (r.name.find("Nexus Chamber Access") != std::string::npos) {
-                r.openCeiling = true;
+                r.solidLid = true;   // sealed + rendered lid (was openCeiling — see above)
                 accessId = i;
             }
             if (r.platform) plats.push_back(i);
@@ -984,19 +993,28 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
                         return tower.rooms[dw.a].platform || tower.rooms[dw.b].platform;
                     }),
                 tower.doorways.end());
-            // Cavern vis unit: access <-> every platform, platforms <-> each other.
+            // Cavern vis unit: platforms <-> each other, and platforms <-> the F4/F5
+            // spine lobbies (the elevator arrival tunnel hangs between the shaft and
+            // the cavern; the vis flood's nearest-room fallback resolves a tunnel
+            // camera to a lobby, so the lobbies must SEE the cavern or the hidden
+            // level would render as void from its own doorstep).
             auto link = [&](uint32_t a, uint32_t b) {
                 if (a == b) return;
                 auto& pa = tower.pvs[a];
                 if (std::find(pa.begin(), pa.end(), b) == pa.end()) pa.push_back(b);
             };
+            std::vector<uint32_t> spineLobbies;
+            for (uint32_t i = 0; i < tower.rooms.size(); ++i)
+                if (tower.rooms[i].type == "Elevator Lobby" &&
+                    (tower.roomFloorNum[i] == 4 || tower.roomFloorNum[i] == 5))
+                    spineLobbies.push_back(i);
             for (uint32_t p : plats) {
-                if (accessId != kNoRoom) { link(p, accessId); link(accessId, p); }
+                for (uint32_t lb : spineLobbies) { link(p, lb); link(lb, p); }
                 for (uint32_t q : plats) link(p, q);
             }
             x3::logInfo("loadCanonTower: NEXUS CHAMBER — " + std::to_string(plats.size()) +
-                        " open platforms marked, cavern PVS unioned" +
-                        (accessId != kNoRoom ? " (access ceiling opened)" : ""));
+                        " open platforms marked, cavern PVS unioned with F4/F5 lobbies" +
+                        (accessId != kNoRoom ? " (access room SEALED, lid rendered)" : ""));
         }
     }
 
@@ -1136,11 +1154,21 @@ uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
     std::vector<Cand> cands;
     cands.reserve(all.size());
     for (const CanonLight& cl : all) {
-        if (!visible(cl.room)) continue;
         const float dx = cl.light.pos[0] - eyeX;
         const float dy = cl.light.pos[1] - eyeY;
         const float dz = cl.light.pos[2] - eyeZ;
-        cands.push_back({ &cl, dx * dx + dy * dy + dz * dz });
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (cl.room == kNoRoom) {
+            // W5-1b: an UN-ROOMED light (the 4.5 cavern/tunnel practicals — their
+            // space is outside the doorway flood) feeds by RANGE instead of room
+            // membership: candidate iff the eye is within ~2x its range. The
+            // nearest-to-eye cap below still holds the budget.
+            const float reach = cl.light.range * 2.0f;
+            if (d2 > reach * reach) continue;
+        } else if (!visible(cl.room)) {
+            continue;
+        }
+        cands.push_back({ &cl, d2 });
     }
     if (cands.size() > maxLights) {
         std::nth_element(cands.begin(), cands.begin() + maxLights, cands.end(),
@@ -1324,6 +1352,24 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                     std::to_string(opts.breachHalf) + ")");
     }
 
+    // ---- FACILITY STAIRWELL (fix/spire-hollow-core): per-floor connector cuts.
+    // Same doorway-style cut machinery as the single breach above; the stairwell
+    // module builds the connector corridors + shaft that seal onto these openings.
+    for (const CanonBuildOpts::ExtraBreach& eb : opts.extraBreaches) {
+        if (eb.room == kNoRoom || eb.room >= nRooms) continue;
+        const CanonRoom& br = floor.rooms[eb.room];
+        const Gap g{ eb.center, br.y0() + kLintel, eb.half };
+        switch (eb.face) {
+            case 0:  gapXneg[eb.room].push_back(g); break;
+            case 1:  gapXpos[eb.room].push_back(g); break;
+            case 2:  gapZneg[eb.room].push_back(g); break;
+            default: gapZpos[eb.room].push_back(g); break;
+        }
+        x3::logInfo("buildCanonFloor: STAIRWELL breach cut in '" + br.name +
+                    "' face " + std::to_string(eb.face) + " at " +
+                    std::to_string(eb.center) + " (half " + std::to_string(eb.half) + ")");
+    }
+
     // CELL OBSERVATION WINDOW (feat/cell-real-glass): punch a see-through armored viewport
     // in the detention cell's +Z (Main-Hall-facing) graybox so Jake can look OUT into the
     // hall. Full room height (clearTop = ceiling -> lintelX no-ops, no header slab); the
@@ -1458,8 +1504,13 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         // dressing owns its look; this keeps the graybox read consistent if art off).
         if (r.platform) {
             const float platTint[4] = { 0.30f, 0.30f, 0.27f, 1.0f };
+            // W5-1b (fix/spire-hollow-core): platform slabs are ALWAYS-DRAWN
+            // (kNoRoom). Platforms carry no doorways, so the portal flood can never
+            // reach them — room-tagged tiers culled EACH OTHER and the whole hidden
+            // level read as scattered slabs in a black void from its own catwalks.
+            // The cavern is sealed rock; frustum + HZB own the cost.
             addBox(scene, device, physics, r.w * 0.5f, r.h * 0.5f, r.d * 0.5f,
-                   r.cx, r.cy, r.cz, floorTex, platTint, ri, true, floorVis);
+                   r.cx, r.cy, r.cz, floorTex, platTint, kNoRoom, true, floorVis);
             continue;
         }
 
@@ -1501,7 +1552,9 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         // strata band's violet slabs from the Sub-Level, the open SKY from the cave
         // at y=-178 (docs/QA_MAINLEVEL_SWEEP.md D3/D4). Their lid renders.
         if (!r.openCeiling) {
-            const bool deepLid = r.cy < -50.0f;
+            // W5-1b: solidLid rooms (the sealed Nexus Access under the 4.5 cavern)
+            // render their lid too — their roof is exposed to a vantage above.
+            const bool deepLid = r.cy < -50.0f || r.solidLid;
             addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
                    r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true,
                    /*visible*/deepLid);
@@ -1712,7 +1765,31 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const float thx = 1.5f, thz = 1.5f;               // 3 m square tube
         // 4 thin walls of the tube (open top/bottom).
         addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz - thz, wallTexA, tubeTint, dw.a, true, wallVis);
-        addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz + thz, wallTexA, tubeTint, dw.a, true, wallVis);
+        // W5-1b (fix/spire-hollow-core): the 4.5 ARRIVAL MOUTH — when this spine
+        // segment's Y span contains the requested mouth band, build the +Z wall as
+        // four pieces around a doorway-sized opening (below / above / two side
+        // fillers) instead of one solid box, so the hidden level's arrival tunnel
+        // joins the shaft through a real cut (LAW 1: an opening in a shared plane).
+        const bool hasMouth = opts.spineMouthHalf > 0.0f &&
+                              yLo < opts.spineMouthY0 - 0.1f &&
+                              (yLo + th) > opts.spineMouthY1 + 0.1f;
+        if (hasMouth) {
+            const float mY0 = opts.spineMouthY0, mY1 = opts.spineMouthY1;
+            const float mH  = std::min(opts.spineMouthHalf, thx - 0.1f);
+            const float zW  = tz + thz;
+            auto piece = [&](float px0, float px1, float py0, float py1) {
+                if (px1 - px0 < 0.02f || py1 - py0 < 0.02f) return;
+                addBox(scene, device, physics, (px1 - px0) * 0.5f, (py1 - py0) * 0.5f,
+                       kWallT * 0.5f, (px0 + px1) * 0.5f, (py0 + py1) * 0.5f, zW,
+                       wallTexA, tubeTint, dw.a, true, wallVis);
+            };
+            piece(tx - thx, tx + thx, yLo, mY0);                  // below the mouth
+            piece(tx - thx, tx + thx, mY1, yLo + th);             // above the mouth
+            piece(tx - thx, tx - mH,  mY0, mY1);                  // -X side filler
+            piece(tx + mH,  tx + thx, mY0, mY1);                  // +X side filler
+        } else {
+            addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz + thz, wallTexA, tubeTint, dw.a, true, wallVis);
+        }
         addBox(scene, device, physics, kWallT * 0.5f, th * 0.5f, thz, tx - thx, yLo + th * 0.5f, tz, wallTexA, tubeTint, dw.a, true, wallVis);
         addBox(scene, device, physics, kWallT * 0.5f, th * 0.5f, thz, tx + thx, yLo + th * 0.5f, tz, wallTexA, tubeTint, dw.a, true, wallVis);
     }

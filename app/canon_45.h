@@ -25,6 +25,20 @@ namespace x3::game {
 
 class Canon45 {
 public:
+    // W5-1b (fix/spire-hollow-core, owner canon 2026-07-25): the hidden level's
+    // ARRIVAL MOUTH — a doorway-sized opening joining the elevator spine shaft to the
+    // 4.5 arrival tunnel. The host feeds these to CanonBuildOpts (spineMouth*) so the
+    // tube wall is cut where the tunnel Canon45 builds seals onto it.
+    static constexpr float kMouthH    = 3.0f;   // opening height above the cavern floor
+    static constexpr float kMouthHalf = 1.2f;   // opening half-width (X)
+
+    // The 4.5 cavern FLOOR PLANE (top-of-slab Y), derived purely from the loaded
+    // tower data: just above the tallest normal-floor roof inside the cavern
+    // envelope (the F4 boss arena), so the slab seals every downward sightline and
+    // interpenetrates nothing. Returns a large negative value when the tower
+    // carries no Nexus platforms (callers treat that as "no hidden level").
+    static float floorPlaneY(const CanonFloor& floor);
+
     // Build the cavern (shell/climb/dressing/spawns) from the loaded tower. Appends its
     // motivated lights into `canonLights` (same per-room-gated feed the tower uses).
     // No-op (built()==false) if the tower carries no Nexus platforms.
@@ -33,6 +47,8 @@ public:
                const std::string& surfaceLibRoot, std::vector<CanonLight>& canonLights);
 
     bool built() const { return m_built; }
+    // The cavern floor plane the build actually used (== floorPlaneY of its floor).
+    float cavernFloorY() const { return m_y0; }
 
     // Combat sinks (same fan-out contract as CanonPlay's managers).
     void setCueSink(const GameCueFn& sink)      { m_creatures.setCueSink(sink); }
