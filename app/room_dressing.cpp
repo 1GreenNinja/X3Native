@@ -123,9 +123,16 @@ x3::rhi::IRenderDevice::FogParams fogOf(float r, float g, float b, float d,
 // "ghost-gate" failure the rifthub root-caused).
 struct ZoneAir { float amb[3]; float ibl; };
 const ZoneAir& airFor(uint8_t z) {
-    static const ZoneAir kDark   { { 0.030f, 0.032f, 0.038f }, 0.20f };  // detention
-    static const ZoneAir kMid    { { 0.150f, 0.158f, 0.175f }, 0.35f };  // built interiors
-    static const ZoneAir kOrganic{ { 0.020f, 0.026f, 0.022f }, 0.18f };  // cave / monster space
+    // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): these airs were tuned against the BENT
+    // output curve (the swapchain never sRGB-encoded — 5951890b). kMid 0.150 displayed as
+    // ~15% grey then; under the honest curve the same value displays at ~44% — a flat wash
+    // that made every built interior read washed and contrast-less ("ambient is not
+    // light"). Brought DOWN to the honest floor the rifthub/cell discipline already
+    // proved (~0.03 band); the zone KEYS light the rooms now. This is a VALUE retune from
+    // the corrected baseline, not a re-crush: no exposure or encode compensation anywhere.
+    static const ZoneAir kDark   { { 0.014f, 0.015f, 0.018f }, 0.14f };  // detention
+    static const ZoneAir kMid    { { 0.033f, 0.035f, 0.040f }, 0.22f };  // built interiors
+    static const ZoneAir kOrganic{ { 0.010f, 0.013f, 0.011f }, 0.12f };  // cave / monster space
     switch (z) {
         case ZWard:    return kDark;
         case ZCave:
@@ -159,12 +166,22 @@ const Recipe& recipeFor(uint8_t z) {
         // the facility already proved. It pairs with the ceiling VALUE clamp in
         // surface_library.h (albedo band [0.08, 0.40]); the two MUST ship together — the clamp
         // alone measurably darkened every corridor (see the note there).
+        // GAMMA-RECAL (fix/gamma-recal): the hall/corridor keys were COOL blue-white and
+        // their fog a pale cyan — under the bent curve that photographed as black falloff
+        // with the WARM torch pooling on the near walls, and THAT read is the owner's
+        // locked acceptance target ("the hall as it used to look WITH the flashlight —
+        // without it"). So the corridor rhythm keys now ARE the old torch: the exact
+        // warm-white the flashlight carried (3.30/3.10/2.75), one pool every ~8 m, and
+        // the fog drops to a near-black warm-neutral so the run between pools falls into
+        // darkness instead of a milky cyan wash (the honest curve lifted the old 0.03-0.046
+        // fog colours ~5x on screen). Matched against the 5951890b^ reference frames in
+        // docs/screenshots/gamma_recal/ (hall_cam{A,B,C}).
         /*ZHall*/     { "mw_metal_trim_b", 2.8f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        2.87f, 3.15f, 3.52f, 6.0f,   0.14f, 0.75f, 0.85f, 2.6f,
-                        fogOf(0.030f, 0.040f, 0.046f, 0.0045f, 1.5f, 0.65f) },
+                        3.40f, 3.19f, 2.83f, 9.0f,   0.14f, 0.75f, 0.85f, 2.6f,
+                        fogOf(0.008f, 0.0075f, 0.007f, 0.030f, 1.5f, 0.85f) },
         /*ZCorridor*/ { "mw_concrete_panels_a", 2.6f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        2.80f, 3.05f, 3.40f, 5.0f,   0.14f, 0.75f, 0.85f, 2.4f,
-                        fogOf(0.030f, 0.040f, 0.046f, 0.0045f, 1.5f, 0.65f) },
+                        3.40f, 3.19f, 2.83f, 9.0f,   0.14f, 0.75f, 0.85f, 2.4f,
+                        fogOf(0.008f, 0.0075f, 0.007f, 0.030f, 1.5f, 0.85f) },
         // W2-A DETENTION = hazard AMBER (bible/audit). The accent was already amber;
         // warm the fog tint from near-neutral to a clear amber wash and widen the
         // accent so every ward cell reads amber, not cold (audit fix: "detention
@@ -743,7 +760,13 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
         // first, THEN measure the drop, or a 12 m wing room would buy 12 m of range for a
         // lamp that is only 4.6 m up.
         const float keyY     = std::min(cY - 0.5f,  fY + 4.6f);   // pendant (rooms/labs)
-        const float rowY     = std::min(cY - 0.35f, fY + 4.75f);  // corridor/hall light rows
+        // GAMMA-RECAL: the rows used to hug the ceiling (cY - 0.35). Under the honest
+        // curve that painted a HOT patch on the ceiling right over every lamp (p95 ~110
+        // vs the reference's 72 in the hall match) while the eye-level walls stayed
+        // dark. Hang them as dropped pendants — 1.5 m of cable — so the pool lands on
+        // the walls and floor the player actually looks at, and the ceiling above falls
+        // toward the reference's darkness. Rooms keep their own keyY (unchanged).
+        const float rowY     = std::min(cY - 1.50f, fY + 3.50f);  // corridor/hall light rows
         const float keyReach = std::max(rec.keyRange, (keyY - fY) + 4.0f);
         const float rowReach = std::max(rec.keyRange, (rowY - fY) + 4.0f);
         if (z == ZHall || z == ZCorridor) {
