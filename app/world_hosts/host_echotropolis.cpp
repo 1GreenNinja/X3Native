@@ -1984,6 +1984,13 @@ int hostEchotropolis(HostContext& hc) {
             // it only reaches draws issued after the call — the district walls
             // (drawn first) got zero lamp light while the lamp posts themselves
             // lit up. Debug view 2 caught it: only the fixtures glowed.
+            // Per-frame STATE (lights/camera/sky/fog/...) is read ONCE inside
+            // endFrame -> prepareFrameData and blitted to one frame-global UBO
+            // that every draw samples, so its position relative to beginFrame and
+            // to the draws is a NO-OP (verified by byte-comparing captures).
+            // Placed here purely for readability.
+            // ⚠ The INVERSE is a real bug: draw/submit calls (drawMesh*, drawHud*,
+            // submitParticles/Decals) are CLEARED by beginFrame — never hoist one.
             streetLamps.update(dt, lampScene);                   // flicker machines
             {
                 std::vector<x3::rhi::PointLight> pls;
@@ -2725,9 +2732,8 @@ int hostEchotropolis(HostContext& hc) {
             eaudio->update(dt);
         }
 
-        // LIGHTS BEFORE THE FRAME (see the headless path): setPointLights only
-        // reaches draws issued AFTER it, so it must precede beginFrame or the
-        // world renders unlit while the lamp fixtures alone glow.
+        // Per-frame state — read once at endFrame (see the headless path note);
+        // position vs beginFrame/draws is a no-op. Draw/submit calls are NOT.
         streetLamps.update(dt, lampScene);                   // flicker machines
         {
             float lx = rig.sFocusX, ly = rig.sPivotY + 20.0f, lz = rig.sFocusZ;

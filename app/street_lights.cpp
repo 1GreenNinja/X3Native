@@ -443,9 +443,14 @@ void StreetLights::buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& devi
     // (range 17 m, intensity 8) — in a district street flanked by 40 m towers
     // that falloff dies before it touches a wall. Widen the pooled light for the
     // lamps this call created only (host lamps in other worlds keep their tune).
+    // PROVEN CAUSE of the "posts glow, street black" night bug (A/B captured):
+    // 17 m from a lamp hung ~8 m up is a ~9 m ground pool — it dies long before
+    // a facade. Env-tunable so the falloff can be A/B'd without a rebuild.
+    const float rMul = [](){ const char* e = std::getenv("ECHO_LAMP_RANGE_MUL"); return e ? (float)std::atof(e) : 3.2f; }();
+    const float iMul = [](){ const char* e = std::getenv("ECHO_LAMP_INT_MUL");   return e ? (float)std::atof(e) : 2.2f; }();
     for (size_t i = first; i < m_lamps.size(); ++i) {
-        m_lamps[i].range     *= 3.2f;   // ~17 -> ~54 m: reaches the facades
-        m_lamps[i].intensity *= 2.2f;   // carry the extra distance
+        m_lamps[i].range     *= rMul;   // ~17 -> ~54 m: reaches the facades
+        m_lamps[i].intensity *= iMul;   // carry the extra distance
     }
     logBuild("district rows", first);
 }
