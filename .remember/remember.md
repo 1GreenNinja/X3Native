@@ -1,29 +1,27 @@
 # Handoff
 
 ## State
-Playability wave committed (`ee16657`) but NOT YET BUILT — Tim's running exe locks the link;
-build+verify the moment his game closes (5x retry loop). Fixes in it: volumetrics default-OFF
-(100ms/frame, ECHO_VOL=1 opts in), npcLife LLM disabled (23 boot generations ground the CPU;
-10->30 FPS measured), llama threads 16->6, sunLight washout 3.2->1.05, chat feed at human pace
-(20s cadence, 22 chars/s reveal, bottom-right CITY FEED), FPS in HUD bar, play-as A/D flipped.
-Meshy: Tim topped up to ~3000 credits after the double-spend (~$20, forgiven once). 7 finished
-assets in assets/meshy/ (2 rigged chars w/ 6 clips, articulated turret, cruiser, van, kiosk,
-terminal) + paid-but-unrefined preview task IDs in scratchpad/eh_meshy/meshy_state.json — THEY
-EXPIRE ~3 DAYS (download free). Gamma fix (00fea56) + sun elevation fix (a5a56a6e) both landed.
+Branch echotropolis @ `359d3142` — big day, all committed + built (exe current):
+FLY MODE default (V orbit, G ground<->flight w/ land+takeoff), ENGINE console wired
+(` toggle; tod/todpause/fly/orbit/walk/tp/pos/vol/sun/amb/haze/vsync/cull/screenshot),
+NpcSkin rigged named citizens (Meshy cop/vendor + roster, 23/23), and TWO root-cause
+fixes for "model visible only in narrow arc": (1) glTF skinned-node transform ignored
+per spec in ModelLoader makeDrawables (Meshy rigs rendered displaced — fleet notified),
+(2) ride-along boom now cranes over terrain (LOS raycast). Proof captures in captures/
+playas_*.png show the Meshy vendor center-frame through a full 360.
 
 ## Next
-1. Build + verify ee16657 in-game (FPS, washout, chat pacing). Then remaining ~33ms = draw-record
-   volume from districts/woodlands — culling/instancing pass.
-2. PLAY-AS BUG (Tim live report): character model visible only through a narrow yaw arc —
-   culling or skinned-pose bug. Also wanted: default FLY mode (WASD+mouselook, QE roll, Space/C
-   up/down, arrows turn — note setCamera has no roll param) and a console for this world.
-3. Integrate Meshy assets (scale multipliers in the lane report / meshy_state.json) + finish
-   expiring previews with the new credits — ONE lane only.
+1. Tim to relaunch + verify: rigged citizens, play-as visibility, G toggle, console.
+   His tuning knobs: `sun <x>`, `amb <x>`, `haze <x>` — bake whatever numbers he likes.
+2. UFO "narrow arc" report — may be fixed by the skinned-node fix if the UFO GLB is
+   animated; if still arcing, have Tim run `cull off` and report (isolates frustum cull).
+3. Grass texture reads as green blur close-up (visible in captures) — terrain detail
+   texture/tiling pass. Also FPS ~17-27 in dense views: draw-record culling pass next.
+4. Meshy previews expire ~2 days (scratchpad/eh_meshy/meshy_state.json), 3000 credits,
+   ONE lane only. Babylon console (Q3Engine x3-console.js, ~180 cmds) = mine for wave 3.
 
 ## Context
-- ⚠ RULE (cost $20): NEVER run two agent lanes against one paid API balance. One asset lane at a
-  time, with an explicit budget, and check for in-flight lanes first.
-- Exe locked = LNK1104: Tim playing blocks builds. Ask/check before building.
-- The talk system works (bubbles + persona chats, seen in Tim's screenshots). Smallest-gguf
-  auto-selection + ECHO_LLM_MODEL override are in. Feed at bottom-right; resident card bottom-left.
-- docs/HANDOFF_2026-07-24.md §8-11 = engine roadmap (DDGI never enabled = biggest visual win).
+- Harness: ECHO_PLAYAS_DEMO=1 (+_SPIN=0 static, +_FLYCAM=1 inspect) writes
+  captures/playas_*.png; needs ~50s run (captureFrame after endFrame finalizes).
+- Don't launch test instances while Tim plays (GPU contention + he sees the windows).
+- hud.h Hud + IConsole are the engine console — never hand-roll one again.
