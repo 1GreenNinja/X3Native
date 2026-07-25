@@ -1980,6 +1980,17 @@ int hostEchotropolis(HostContext& hc) {
             } else {
                 applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
             }
+            // LIGHTS BEFORE THE FRAME: setPointLights must precede beginFrame or
+            // it only reaches draws issued after the call — the district walls
+            // (drawn first) got zero lamp light while the lamp posts themselves
+            // lit up. Debug view 2 caught it: only the fixtures glowed.
+            streetLamps.update(dt, lampScene);                   // flicker machines
+            {
+                std::vector<x3::rhi::PointLight> pls;
+                streetLamps.selectLights(shotCam[0], shotCam[1], shotCam[2], pls, 8);
+                appendDistrictLights(shotCam[0], shotCam[2], pls);
+                device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
+            }
             if (i == kSettle - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
             island.draw(*device, frame);   // the island (sky + water are device-internal)
@@ -1993,13 +2004,6 @@ int hostEchotropolis(HostContext& hc) {
             for (auto& h : hackProps) h->draw(*device, frame);   // ctOS hackable props
             if (hackDrone) { poseHackDrone((float)i * dt); hackDrone->draw(*device, frame); }
             if (vtolPolice) { poseVtol((float)i * dt); vtolPolice->draw(*device, frame); }
-            streetLamps.update(dt, lampScene);                   // flicker machines
-            {   // nearest district lamps light the walls around the shot camera
-                std::vector<x3::rhi::PointLight> pls;
-                streetLamps.selectLights(shotCam[0], shotCam[1], shotCam[2], pls, 8);
-                appendDistrictLights(shotCam[0], shotCam[2], pls);
-                device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
-            }
             lampScene.render(*device, frame);                    // posts + cones + pools
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
         woodlands.draw(*device, frame);                      // island-wide pine woodland belts
@@ -2721,6 +2725,19 @@ int hostEchotropolis(HostContext& hc) {
             eaudio->update(dt);
         }
 
+        // LIGHTS BEFORE THE FRAME (see the headless path): setPointLights only
+        // reaches draws issued AFTER it, so it must precede beginFrame or the
+        // world renders unlit while the lamp fixtures alone glow.
+        streetLamps.update(dt, lampScene);                   // flicker machines
+        {
+            float lx = rig.sFocusX, ly = rig.sPivotY + 20.0f, lz = rig.sFocusZ;
+            if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
+            std::vector<x3::rhi::PointLight> pls;
+            streetLamps.selectLights(lx, ly, lz, pls, 8);
+            appendDistrictLights(lx, lz, pls);
+            device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
+        }
+
         auto frame = device->beginFrame();
         island.draw(*device, frame);
         props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
@@ -2733,15 +2750,6 @@ int hostEchotropolis(HostContext& hc) {
         for (auto& h : hackProps) h->draw(*device, frame);   // ctOS hackable props
         if (hackDrone) { poseHackDrone(waterTime); hackDrone->draw(*device, frame); }
         if (vtolPolice) { poseVtol(waterTime); vtolPolice->draw(*device, frame); }
-        streetLamps.update(dt, lampScene);                   // flicker machines
-        {   // nearest district lamps light the walls around the active camera
-            float lx = rig.sFocusX, ly = rig.sPivotY + 20.0f, lz = rig.sFocusZ;
-            if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
-            std::vector<x3::rhi::PointLight> pls;
-            streetLamps.selectLights(lx, ly, lz, pls, 8);
-            appendDistrictLights(lx, lz, pls);
-            device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
-        }
         lampScene.render(*device, frame);                    // posts + cones + pools
         for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
         woodlands.draw(*device, frame);                      // island-wide pine woodland belts

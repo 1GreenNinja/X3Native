@@ -439,6 +439,14 @@ void StreetLights::buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& devi
                     -px*side, -pz*side, Zone::Approach, false, false);
         }
     }
+    // CITY SCALE: the Approach look was calibrated for a facility service road
+    // (range 17 m, intensity 8) — in a district street flanked by 40 m towers
+    // that falloff dies before it touches a wall. Widen the pooled light for the
+    // lamps this call created only (host lamps in other worlds keep their tune).
+    for (size_t i = first; i < m_lamps.size(); ++i) {
+        m_lamps[i].range     *= 3.2f;   // ~17 -> ~54 m: reaches the facades
+        m_lamps[i].intensity *= 2.2f;   // carry the extra distance
+    }
     logBuild("district rows", first);
 }
 
