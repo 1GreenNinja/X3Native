@@ -305,7 +305,10 @@ private:
                 // cores), capped at 16 — past that, CPU GEMM stops scaling and
                 // the engine's frame/job threads start losing cores.
                 threads = (int)std::thread::hardware_concurrency() / 2;
-                if (threads > 16) threads = 16;
+                // 6 (was 16): measured in-game — 16 llama threads on the 14900K
+                // starved the render thread (~33ms/frame lost with the model merely
+                // LOADED). Short NPC lines don't need GEMM scaling; frames do.
+                if (threads > 6) threads = 6;
                 if (threads < 1)  threads = 1;
             }
             cp.n_threads       = threads;

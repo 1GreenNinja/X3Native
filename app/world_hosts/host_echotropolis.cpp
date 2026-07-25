@@ -38,11 +38,16 @@
 #include "../asset_root.h"            // riggedGlbRoot()
 #include "../holo_terminal.h"         // CONTROL ROOM: in-world ops dashboard screen
 #include "engine/audio/IAudioSystem.h" // CYBERPUNK AUDIO: rainy-city bed + positional hums + UI SFX
+#include "engine/llm/ILlmSystem.h"     // CITIZEN TALK: local LLM conversations with residents
 #include "../street_lights.h"          // DISTRICT NIGHT: warm lamp rows through the pack districts
 #include <string>
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
 #include <cstdio>        // sscanf (district .layout parsing)
+#include <cstdlib>       // getenv (ECHO_* switches)
+#include <cctype>        // tolower (persona prompt)
+#include <algorithm>     // clamp/max (bubble layout)
+#include <filesystem>    // .gguf model resolution
 #include <fstream>
 #include <vector>
 #include <memory>
@@ -302,7 +307,10 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     {
         const float sunEnv = [](){ const char* e = std::getenv("ECHO_SUNLIGHT");
                                    return e ? (float)std::atof(e) : -1.0f; }();
-        sky.sunLight = (sunEnv >= 0.0f) ? sunEnv : (0.10f + 3.20f * dayness);
+        // 3.20 was compensation for the WRONG diagnosis (the real fix was sun
+        // ELEVATION, a5a56a6e) — at 3.3x everything washed out to cream (Tim's
+        // report). Modest ramp; elevation does the work now.
+        sky.sunLight = (sunEnv >= 0.0f) ? sunEnv : (0.10f + 1.05f * dayness);
     }
     device->setSkyParams(sky);
     // Night ambient FLOOR: the pure-black sky kills the IBL contribution, so at
@@ -437,9 +445,13 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // ECHO_VOL=0 forces the flat path back on (A/B harness, same env-var convention
     // as ECHO_TOD). With it set, this world renders byte-identical to the pre-
     // volumetric build — that is the test that keeps the opt-in discipline honest.
+    // ⚠ PERF: volumetrics shipped UNPROFILED and cost 100ms/frame (10 FPS measured
+    // windowed — Tim got a slideshow). 48 steps x <=24 lights per pixel at full res
+    // is the bill. DEFAULT OFF until the pass runs at half-res / fewer steps;
+    // ECHO_VOL=1 opts in (captures still use it explicitly).
     static const bool kVolEnv = [] {
         const char* e = std::getenv("ECHO_VOL");
-        return !(e && (e[0] == '0'));
+        return e && e[0] == '1';
     }();
     fog.volumetric      = kVolEnv;
     fog.anisotropy      = 0.76f;    // strongly forward — looking toward a light blooms
@@ -584,6 +596,164 @@ void applyRayTracing(x3::rhi::IRenderDevice* device) {
                 "reflections left to water lane");
 }
 // ============================ END RAY TRACING ================================
+
+// =============================================================================
+// CITIZEN TALK — walk up to a resident, press T, and have a real conversation
+// driven by the LOCAL LLM (engine/llm, llama.cpp CPU inference). The reply
+// streams into a CHAT BUBBLE floating over that NPC's head.
+//
+// LATENCY BEATS ELOQUENCE. A street exchange is one or two sentences; a citizen
+// who answers in under a second feels ALIVE, one that composes a paragraph over
+// four seconds feels broken. So: prefer the SMALLEST .gguf in assets/models/llm
+// (0.5B over 3B), keep the persona prompt SHORT (prefill is paid on every chat),
+// cap output hard (~48 tokens), and stream tokens into the bubble so the first
+// words land almost immediately instead of after the whole reply.
+//
+// FRAME SAFETY: nothing here ever blocks. startChat/submit enqueue onto the LLM's
+// own inference thread; the frame thread only poll()s (non-blocking) and appends.
+// The world stays fully playable while a reply generates.
+// =============================================================================
+
+// Resolve the .gguf to load. ECHO_LLM_MODEL=<path> wins (A/B model sizes with no
+// rebuild); otherwise scan assets/models/llm and take the SMALLEST .gguf — model-
+// agnostic (drop any instruct .gguf in and it just works) and speed-first.
+std::string resolveTalkModelPath() {
+    if (const char* env = std::getenv("ECHO_LLM_MODEL"); env && env[0]) {
+        std::error_code ec;
+        if (std::filesystem::exists(env, ec)) return std::string(env);
+        x3::logWarn(std::string("[talk] ECHO_LLM_MODEL=") + env + " does not exist — falling back to the model dir");
+    }
+    const std::string dir = x3::game::assetRoot() + "/models/llm";
+    std::string best; std::uintmax_t bestSz = 0;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        if (e.path().extension() != ".gguf") continue;
+        std::error_code fec;
+        const std::uintmax_t sz = std::filesystem::file_size(e.path(), fec);
+        if (fec) continue;
+        if (best.empty() || sz < bestSz) { best = e.path().string(); bestSz = sz; }
+    }
+    return best;   // "" when the dir is empty/absent — the modelless path
+}
+
+// The canned player lines (T sends the selected one, [ / ] cycle). Free-text entry
+// would need a GLFW char callback + an edit caret; these keep the street exchange
+// snappy and never fight the existing key map.
+const char* const kTalkPrompts[] = {
+    "Who are you?",
+    "What's going on around here?",
+    "Any trouble lately?",
+    "How's the work treating you?",
+    "What do you make of Echo Harbor?",
+};
+constexpr int kTalkPromptCount = (int)(sizeof(kTalkPrompts) / sizeof(kTalkPrompts[0]));
+
+// A natural-language phrase for the NPC's current scheduled activity, so the
+// persona prompt says "on your way to work" rather than "ToWork".
+const char* talkActivityPhrase(x3::game::NpcActivity a) {
+    switch (a) {
+        case x3::game::NpcActivity::AtHome:    return "at home";
+        case x3::game::NpcActivity::ToWork:    return "on your way to work";
+        case x3::game::NpcActivity::AtWork:    return "in the middle of your shift";
+        case x3::game::NpcActivity::ToLeisure: return "heading out to unwind";
+        case x3::game::NpcActivity::AtLeisure: return "off the clock, killing time";
+        case x3::game::NpcActivity::ToHome:    return "walking home";
+        default:                               return "out on the street";
+    }
+}
+
+// Build the persona system prompt from the agent's REAL data. Deliberately TERSE:
+// every token here is prefill cost paid on the first reply of every conversation.
+std::string talkPersonaPrompt(const x3::game::NpcAgent& a) {
+    const auto& pr = x3::game::persona(a.arch);
+    const char* det = (a.detailIdx >= 0 && (uint32_t)a.detailIdx < pr.detailCount)
+                    ? pr.detail[a.detailIdx] : (pr.detailCount ? pr.detail[0] : "");
+    const char* voc = pr.voiceCount ? pr.voice[a.seed % pr.voiceCount] : "";
+    std::string role = x3::game::archetypeName(a.arch);
+    for (char& c : role) c = (char)std::tolower((unsigned char)c);
+    std::string s = "You are " + a.name + ", a " + role +
+                    " in Echo Harbor, 2038. You are " + talkActivityPhrase(a.activity) + ".";
+    if (det && det[0]) { s += " "; s += det; s += "."; }
+    if (voc && voc[0]) { s += " You talk like this: \""; s += voc; s += "\""; }
+    s += " Answer in ONE short sentence, in character. No narration, no quotes, no lists.";
+    return s;
+}
+
+// Word-wrap `text` to at most `maxPx` of rendered width per line (measured with the
+// REAL font advance, not a character guess) and at most `maxLines` lines.
+void talkWrap(const x3::rhi::IRenderDevice& device, const std::string& text,
+              float px, float maxPx, int maxLines, std::vector<std::string>& out) {
+    out.clear();
+    std::string line, word;
+    auto flush = [&]() {
+        if (!line.empty() && (int)out.size() < maxLines) out.push_back(line);
+        line.clear();
+    };
+    auto pushWord = [&](const std::string& w) {
+        if (w.empty()) return;
+        const std::string cand = line.empty() ? w : line + " " + w;
+        if (!line.empty() && device.textAdvance(x3::rhi::FontRole::Menu, cand.c_str(), px) > maxPx)
+            flush();
+        line = line.empty() ? w : line + " " + w;
+    };
+    for (char c : text) {
+        if (c == '\n' || c == '\r') { pushWord(word); word.clear(); flush(); continue; }
+        if (c == ' ' || c == '\t')  { pushWord(word); word.clear(); continue; }
+        word.push_back(c);
+    }
+    pushWord(word);
+    // Anything past maxLines is dropped by flush() — mark the overflow so a long
+    // reply reads as clipped rather than as a sentence that just stops.
+    const bool overflow = !line.empty() && (int)out.size() >= maxLines;
+    flush();
+    if (overflow && !out.empty()) out.back() += " ...";
+    if (out.empty()) out.push_back("");
+}
+
+// Draw the chat bubble at screen pixel (sx,sy) — the crowd_chatter treatment
+// (rounded dark slab from overlapping quads + rim + tail) grown to multi-line.
+// `alpha` fades it; `speaker` is drawn as a small gold caption line.
+void drawTalkBubble(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                    float sx, float sy, const char* speaker,
+                    const std::vector<std::string>& lines, float alpha) {
+    if (alpha <= 0.02f) return;
+    uint32_t hw = 0, hh = 0; device.hudSize(hw, hh);
+    const float px = 15.0f, lineH = 20.0f, pad = 11.0f, capPx = 11.0f;
+    float tw = device.textAdvance(x3::rhi::FontRole::Menu, speaker ? speaker : "", capPx);
+    for (const auto& l : lines)
+        tw = std::max(tw, device.textAdvance(x3::rhi::FontRole::Menu, l.c_str(), px));
+    const float w = tw + 2.0f * pad;
+    const float h = 2.0f * pad + capPx + 6.0f + lineH * (float)lines.size();
+    float x0 = sx - w * 0.5f;
+    float y0 = sy - h - 14.0f;                     // slab sits ABOVE the head anchor
+    if (x0 < 4.0f) x0 = 4.0f;
+    if (hw > 8 && x0 + w > (float)hw - 4.0f) x0 = (float)hw - 4.0f - w;
+    if (y0 < 4.0f) y0 = 4.0f;
+    if (hh > 44 && y0 > (float)hh - 44.0f) y0 = (float)hh - 44.0f;
+    const float a = alpha;
+    const float rim[4]   = { 0.55f, 0.62f, 0.72f, 0.55f * a };
+    const float panel[4] = { 0.045f, 0.055f, 0.085f, 0.90f * a };
+    device.drawHudQuad(frame, x0 - 1.5f, y0 + 1.5f, w + 3.0f, h - 3.0f, rim);
+    device.drawHudQuad(frame, x0 + 1.5f, y0 - 1.5f, w - 3.0f, h + 3.0f, rim);
+    device.drawHudQuad(frame, x0, y0 + 4.0f, w, h - 8.0f, panel);
+    device.drawHudQuad(frame, x0 + 4.0f, y0, w - 8.0f, h, panel);
+    // Tail stepping down toward the head.
+    const float tailX = std::clamp(sx, x0 + 8.0f, x0 + w - 8.0f);
+    device.drawHudQuad(frame, tailX - 6.0f, y0 + h, 12.0f, 5.0f, panel);
+    device.drawHudQuad(frame, tailX - 3.0f, y0 + h + 5.0f, 6.0f, 4.0f, panel);
+    // Speaker caption (gold) then the wrapped reply (near-white over a shadow).
+    const float gold[4]   = { 1.0f, 0.82f, 0.42f, 0.95f * a };
+    const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.75f * a };
+    const float ink[4]    = { 0.93f, 0.96f, 1.00f, a };
+    if (speaker && speaker[0])
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, speaker, x0 + pad, y0 + pad - 3.0f, capPx, gold);
+    float ty = y0 + pad + capPx + 4.0f;
+    for (const auto& l : lines) {
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, l.c_str(), x0 + pad + 1.2f, ty + 1.2f, px, shadow);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, l.c_str(), x0 + pad, ty, px, ink);
+        ty += lineH;
+    }
+}
 
 } // namespace
 
@@ -1974,6 +2144,85 @@ int hostEchotropolis(HostContext& hc) {
         }
     };
 
+    // ================= CITIZEN TALK: the local LLM brain =====================
+    // Created BEFORE the NpcLife build so the living-city layer gets it too (it
+    // uses the same system for per-instance detail flavor). MODELLESS-SAFE: if no
+    // .gguf is present (or ECHO_TALK=0), `talkLlm` stays null and EVERY other
+    // feature in this host — walk mode, ride-along, the resident card, build mode
+    // — behaves exactly as before; only the conversation is unavailable.
+    std::unique_ptr<x3::llm::ILlmSystem> talkLlm;
+    {
+        const bool talkOff = [](){ const char* e = std::getenv("ECHO_TALK"); return e && e[0]=='0'; }();
+        const std::string mp = talkOff ? std::string() : resolveTalkModelPath();
+        if (mp.empty()) {
+            x3::logInfo(std::string("--world echotropolis: [talk] LLM OFF — ") +
+                        (talkOff ? "ECHO_TALK=0"
+                                 : "no .gguf in " + x3::game::assetRoot() +
+                                   "/models/llm (see assets/models/llm/README.md)") +
+                        "; residents stay silent, everything else unchanged");
+        } else {
+            // SPEED-FIRST generation opts. 48 output tokens is ~1-2 sentences —
+            // exactly the length a street exchange wants — and it hard-bounds the
+            // worst-case reply time. 1024 ctx is plenty for a short persona + a
+            // handful of turns and keeps the per-chat KV allocation small.
+            x3::llm::ModelOpts lo;
+            lo.contextTokens   = 1024;
+            lo.maxOutputTokens = 48;
+            lo.temperature     = 0.85f;
+            if (const char* mt = std::getenv("ECHO_TALK_MAXTOK"); mt && mt[0])
+                lo.maxOutputTokens = std::max(8, std::atoi(mt));
+            const double t0 = glfwGetTime();
+            talkLlm = x3::llm::createLlmSystem();
+            if (!talkLlm->loadModel(mp, lo)) {
+                talkLlm.reset();
+                x3::logWarn("--world echotropolis: [talk] model load FAILED (" + mp + ") — residents stay silent");
+            } else {
+                x3::logInfo("--world echotropolis: [talk] LLM READY  model=" + mp +
+                            "  load=" + std::to_string((int)((glfwGetTime() - t0) * 1000.0)) + "ms" +
+                            "  maxtok=" + std::to_string(lo.maxOutputTokens) +
+                            "  backend=" + talkLlm->backendName());
+            }
+        }
+    }
+
+    // Live conversation state (ONE chat at a time — the concurrency cap).
+    struct TalkState {
+        int         agent   = -1;      // NpcLife agent index we're talking to
+        uint32_t    chat    = 0;       // x3::llm::ChatId (0 == none)
+        std::string question;          // what we last asked
+        std::string reply;             // streamed reply so far
+        bool        pending = false;   // generation in flight
+        double      askedAt = 0.0;     // submit timestamp (for TTFT / total)
+        double      firstAt = 0.0;     // first-token timestamp (0 == none yet)
+        double      endAt   = 0.0;     // when the bubble should start fading out
+        int         tokens  = 0;
+        int         polls   = 0;   // token-bearing polls (streaming granularity)
+    } talk;
+    int  talkPromptIdx = 0;
+    // AMBIENT CHATTER (ECHO_TALK_AMBIENT=1, default OFF): every so often an idle
+    // citizen near you mutters one unprompted line. Default-off on purpose — this
+    // is CPU inference sharing the box with the renderer, and the PLAYER's
+    // conversation always gets priority (an in-flight ambient line is cancelled the
+    // moment you press T).
+    const bool ambientOn = [](){ const char* e = std::getenv("ECHO_TALK_AMBIENT"); return e && e[0]=='1'; }();
+    struct AmbientState {
+        int         agent   = -1;
+        uint32_t    chat    = 0;
+        std::string line;
+        bool        pending = false;
+        double      nextAt  = 0.0;   // next spawn attempt
+        double      endAt   = 0.0;
+    } amb;
+    constexpr float kAmbientHoldSec  = 8.0f;
+    // Tim: "let them talk — in a FEED — at human texting/speech speed." A mutter
+    // every ~20s, revealed at ~22 chars/sec, every line archived to the feed.
+    constexpr float kAmbientEverySec = 20.0f;
+    std::vector<std::string> talkFeed;          // rolling city-voices feed (last 6)
+    int fedAmbAgent = -1; std::string fedAmbLine;
+    constexpr float kBubbleHoldSec = 14.0f;   // max on-screen duration after `done`
+    constexpr float kBubbleFadeSec = 0.8f;
+    constexpr float kTalkDropRange = 70.0f;   // walk this far away and the chat closes
+
     // ===================== Headless screenshot path =====================
     // Pose the default orbit (17deg, radius 70), settle the waves a few frames so
     // the Gerstner surface isn't flat, then arm+grab. Mirrors host_valley's grab.
@@ -2043,7 +2292,7 @@ int hostEchotropolis(HostContext& hc) {
                 lc.centerX = -20.0f; lc.centerZ = 760.0f;
                 lc.groundY = hf.heightAt(-20.0f, 760.0f);
                 lc.freewayMovers = 0;            // no freeway in the crown
-                sNpc.build(lc, sScene, *device);
+                sNpc.build(lc, sScene, *device, nullptr, talkLlm.get());
                 sNpcBuilt = sNpc.built();
                 x3::logInfo(std::string("--world echotropolis: SHOT NpcLife ") +
                             (sNpcBuilt ? "built (living-city archetypes)" : "FAILED"));
@@ -2051,7 +2300,42 @@ int hostEchotropolis(HostContext& hc) {
                             (sResBuilt ? "built" : "FAILED"));
             }
         }
-        const int kSettle = shotResidents ? 90 : 24;   // drain skin spawns
+        // ---- ECHO_TALKDEMO=1: prove the CHAT BUBBLE in a headless capture -------
+        // A --shot-cam capture cannot press T, so this force-opens a conversation
+        // with a citizen at startup, frames the camera on them, streams the reply
+        // through the settle loop and draws the real bubble into the grabbed frame.
+        const bool talkDemo = [](){ const char* e = std::getenv("ECHO_TALKDEMO"); return e && e[0]=='1'; }();
+        int      demoAgent = -1;
+        uint32_t demoChat  = 0;
+        std::string demoReply, demoQuestion;
+        bool     demoPending = false;
+        double   demoAsked = 0.0, demoFirst = 0.0;
+        int      demoTokens = 0;
+        if (talkDemo && talkLlm && sNpcBuilt && sNpc.agentCount() > 0) {
+            // Pick the citizen closest to the district centre (a reliable, lit spot).
+            float bd2 = 1e30f;
+            for (uint32_t i = 0; i < sNpc.agentCount(); ++i) {
+                const auto& a = sNpc.agent(i);
+                const float dx = a.pos.x + 20.0f, dz = a.pos.z - 760.0f;
+                const float d2 = dx*dx + dz*dz;
+                if (d2 < bd2) { bd2 = d2; demoAgent = (int)i; }
+            }
+            if (demoAgent >= 0) {
+                const auto& a = sNpc.agent((uint32_t)demoAgent);
+                demoChat = talkLlm->startChat(talkPersonaPrompt(a));
+                demoQuestion = kTalkPrompts[0];
+                if (demoChat != x3::llm::kInvalidChat && talkLlm->submit(demoChat, demoQuestion)) {
+                    demoPending = true; demoAsked = glfwGetTime();
+                    x3::logInfo("[talk] TALKDEMO ask " + a.name + " (" +
+                                x3::game::archetypeName(a.arch) + "): \"" + demoQuestion + "\"");
+                } else demoAgent = -1;
+            }
+        } else if (talkDemo) {
+            x3::logWarn("[talk] TALKDEMO requested but the LLM/NpcLife is unavailable "
+                        "(needs ECHO_RESIDENTS=1 and a .gguf in assets/models/llm)");
+        }
+        int kSettle = shotResidents ? 90 : 24;   // drain skin spawns
+        const int kSettleMax = talkDemo ? 4000 : kSettle;   // TALKDEMO waits out the reply
         const float dt = 1.0f / 60.0f;
         const x3::game::TodSample shotTod = tod.sample();   // frozen at ECHO_TOD
         for (int i = 0; i < kSettle; ++i) {
@@ -2063,6 +2347,30 @@ int hostEchotropolis(HostContext& hc) {
             if (sMinersBuilt) { sMiners.update(dt, sScene); sMinersSkin.update(dt, sMiners, sScene, *device, *sphys); }
             if (sOh1Built) { flyOh1(sOh1, (float)i * dt); sOh1.update(dt, sScene, *sphys, sOh1.pos()); }
             if (sNpcBuilt) sNpc.update(dt, sScene);   // living-city schedules advance
+            // TALKDEMO: drain streamed tokens + hold the settle loop open until the
+            // reply lands (then a few more frames so the bubble is fully composed).
+            if (demoAgent >= 0 && talkLlm && demoPending) {
+                const x3::llm::PollResult pr = talkLlm->poll(demoChat);
+                if (!pr.newTokens.empty()) {
+                    if (demoFirst == 0.0) {
+                        demoFirst = glfwGetTime();
+                        x3::logInfo("[talk] TALKDEMO first token in " +
+                                    std::to_string((int)((demoFirst - demoAsked) * 1000.0)) + " ms");
+                    }
+                    demoReply += pr.newTokens; demoTokens += pr.newTokenCount;
+                }
+                if (pr.done) {
+                    demoPending = false;
+                    const double tot = glfwGetTime() - demoAsked;
+                    x3::logInfo("[talk] TALKDEMO reply: " + std::to_string(demoTokens) +
+                                " tok in " + std::to_string((int)(tot * 1000.0)) + " ms (" +
+                                std::to_string((int)(tot > 0.0 ? (double)demoTokens / tot : 0.0)) +
+                                " tok/s)" + (pr.failed ? " [FAILED]" : "") + "  \"" + demoReply + "\"");
+                    if (i + 4 > kSettle - 1) kSettle = i + 5;   // a few frames to compose
+                } else if (i >= kSettle - 2 && kSettle < kSettleMax) {
+                    kSettle = i + 3;                            // keep waiting
+                }
+            }
             if (sOpsBuilt) {
                 sOps.setLines({
                     "ECHO HARBOR   //   CITY OPS", "",
@@ -2077,7 +2385,19 @@ int hostEchotropolis(HostContext& hc) {
                 });
                 sOps.update(dt);
             }
-            if (shotCamOverride) {
+            if (demoAgent >= 0) {
+                // TALKDEMO frames the citizen head-on at conversation distance so the
+                // bubble is guaranteed on screen (they walk their schedule, so re-aim).
+                const auto& a = sNpc.agent((uint32_t)demoAgent);
+                const float cx = a.pos.x + std::cos(a.yaw) * 4.2f;
+                const float cz = a.pos.z + std::sin(a.yaw) * 4.2f;
+                const float cy = a.pos.y + 1.75f;
+                const float tx = a.pos.x, ty = a.pos.y + 1.55f, tz = a.pos.z;
+                const float dx = tx - cx, dy = ty - cy, dz = tz - cz;
+                const float len = std::sqrt(dx*dx + dy*dy + dz*dz);
+                device->setCamera(cx, cy, cz, std::atan2(dz, dx),
+                                  len > 1e-4f ? std::asin(dy / len) : 0.0f, opt.fovDeg);
+            } else if (shotCamOverride) {
                 device->setCamera(shotCam[0], shotCam[1], shotCam[2], shotCam[3], shotCam[4], opt.fovDeg);
             } else {
                 applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
@@ -2184,6 +2504,24 @@ int hostEchotropolis(HostContext& hc) {
                     device->drawHudText(frame,tz,px+pad,ty,12.0f,hcol);
                 }
             }
+            // TALKDEMO: the real chat bubble over the real citizen's head.
+            if (demoAgent >= 0) {
+                const auto& a = sNpc.agent((uint32_t)demoAgent);
+                float sx = 0.0f, sy = 0.0f;
+                if (device->worldToScreen(a.pos.x, a.pos.y + 2.2f, a.pos.z, sx, sy)) {
+                    std::string body = demoReply;
+                    size_t b0 = body.find_first_not_of(" \t\r\n");
+                    body = (b0 == std::string::npos) ? std::string() : body.substr(b0);
+                    if (body.empty()) body = demoPending ? "..." : "(silence)";
+                    else if (demoPending) body += " ...";
+                    std::vector<std::string> wrapped;
+                    talkWrap(*device, body, 15.0f, 340.0f, 5, wrapped);
+                    drawTalkBubble(*device, frame, sx, sy, a.name.c_str(), wrapped, 1.0f);
+                } else if (i == kSettle - 1) {
+                    x3::logWarn("[talk] TALKDEMO: worldToScreen rejected the head anchor "
+                                "(citizen off-screen/behind camera) — no bubble in this frame");
+                }
+            }
             device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
@@ -2204,6 +2542,7 @@ int hostEchotropolis(HostContext& hc) {
 
     // FPS accounting (log once per second — there is no HUD text API in this host).
     double fpsAccum = 0.0; int fpsFrames = 0;
+    double hudFps = 0.0;   // last measured FPS, shown in the top HUD bar (Tim's ask)
     // Optional auto-exit for CI / FPS capture: `ECHO_AUTOEXIT_SEC=<n>` env var.
     double autoExitSec = 0.0;
     if (const char* e = std::getenv("ECHO_AUTOEXIT_SEC")) autoExitSec = std::atof(e);
@@ -2333,7 +2672,11 @@ int hostEchotropolis(HostContext& hc) {
             lc.centerX = kWalkX; lc.centerZ = kWalkZ;
             lc.groundY = kWalkGroundY;
             lc.freewayMovers = 0;
-            npcLife.build(lc, walkScene, *device);
+            // NO LLM here (Tim's call): passing it queued a background generation
+            // for EVERY citizen at build time — 23 inferences grinding the CPU
+            // under the game. Authored persona details are plenty; the LLM is
+            // reserved for the player-facing TALK system (visible NPC, on demand).
+            npcLife.build(lc, walkScene, *device, nullptr, nullptr);
             npcLifeBuilt = npcLife.built();
             x3::logInfo(std::string("--world echotropolis: living-city NpcLife ") +
                         (npcLifeBuilt ? "built" : "off"));
@@ -2420,6 +2763,7 @@ int hostEchotropolis(HostContext& hc) {
     bool cityPanelOpen = false, prevTab = false;   // CITY PANEL (TAB toggles)
     int  followIdx = -1, lastPickedIdx = -1; bool prevF = false;   // RIDE-ALONG (F)
     bool playAs = false, prevE = false; float driveYaw = 0.0f;     // PLAY-AS vs SPECTATE (E)
+    bool prevTalkLB = false, prevTalkRB = false;                   // CITIZEN TALK prompt cycle ([ / ])
 
     // ===================== BUILD MENU (B) =====================
     // Place real textured buildings on the island at the orbit cursor (screen-centre
@@ -2485,6 +2829,121 @@ int hostEchotropolis(HostContext& hc) {
     }
     auto uiSfx = [&](x3::audio::SoundHandle s, float v){ if (audioOn && s.valid()) eaudio->playSound2D(s, v, 1.0f); };
 
+    // ================= CITIZEN TALK actions (npcLife + audio exist by now) ======
+    // NOTHING here blocks: talkAsk() enqueues onto the LLM's inference thread and
+    // returns; talkPoll() drains whatever tokens landed since the last frame.
+    auto talkClose = [&]() {
+        if (talk.chat && talkLlm) { talkLlm->cancel(talk.chat); talkLlm->endChat(talk.chat); }
+        talk = TalkState{};
+    };
+    auto ambientClose = [&]() {
+        if (amb.chat && talkLlm) { talkLlm->cancel(amb.chat); talkLlm->endChat(amb.chat); }
+        amb = AmbientState{};
+    };
+    auto talkAsk = [&](int idx) {
+        if (!talkLlm || !npcLifeBuilt || idx < 0 || (uint32_t)idx >= npcLife.agentCount()) return;
+        // The PLAYER always wins the single inference worker: drop any ambient
+        // mutter that is still generating so this reply starts immediately.
+        if (amb.pending) ambientClose();
+        const auto& a = npcLife.agent((uint32_t)idx);
+        if (talk.agent != idx) {              // a different citizen -> a fresh conversation
+            talkClose();
+            talk.agent = idx;
+            talk.chat  = talkLlm->startChat(talkPersonaPrompt(a));
+            if (talk.chat == x3::llm::kInvalidChat) { talk.agent = -1; return; }
+        }
+        if (talk.pending) return;             // ONE reply in flight at a time (the cap)
+        talk.question = kTalkPrompts[talkPromptIdx];
+        if (!talkLlm->submit(talk.chat, talk.question)) return;
+        talk.reply.clear(); talk.pending = true; talk.tokens = 0; talk.polls = 0;
+        talk.askedAt = glfwGetTime(); talk.firstAt = 0.0; talk.endAt = 0.0;
+        x3::logInfo("[talk] ask " + a.name + " (" + x3::game::archetypeName(a.arch) +
+                    "): \"" + talk.question + "\"");
+        uiSfx(sfxConfirm, 0.6f);
+    };
+    // AMBIENT CHATTER: pick an idle citizen near the player and have them mutter one
+    // unprompted line. Never runs while the player's own exchange is generating.
+    auto ambientTick = [&](float /*dt*/) {
+        if (!ambientOn || !talkLlm || !npcLifeBuilt) return;
+        if (!walkMode || !physOk) { if (amb.agent >= 0) ambientClose(); return; }
+        const double now = glfwGetTime();
+        // Retire a finished mutter once its bubble has had its time.
+        if (!amb.pending && amb.agent >= 0 && amb.endAt > 0.0 && now > amb.endAt) ambientClose();
+        if (amb.pending || amb.agent >= 0) return;
+        if (now < amb.nextAt) return;
+        if (talk.pending) { amb.nextAt = now + 2.0; return; }   // player has the worker
+        amb.nextAt = now + (double)kAmbientEverySec;
+        float ex, ey, ez, eyw, ept; player.camera(ex, ey, ez, eyw, ept);
+        // Candidates: 6..34 m out, idle-ish, and not the citizen you're talking to.
+        int cand[16]; int nc = 0;
+        for (uint32_t i = 0; i < npcLife.agentCount() && nc < 16; ++i) {
+            if ((int)i == talk.agent) continue;
+            const auto& a = npcLife.agent(i);
+            const float dx = a.pos.x - ex, dz = a.pos.z - ez;
+            const float d2 = dx*dx + dz*dz;
+            if (d2 < 6.0f*6.0f || d2 > 34.0f*34.0f) continue;
+            cand[nc++] = (int)i;
+        }
+        if (nc == 0) return;
+        const int idx = cand[(int)((uint32_t)(now * 977.0) % (uint32_t)nc)];
+        const auto& a = npcLife.agent((uint32_t)idx);
+        amb.chat = talkLlm->startChat(talkPersonaPrompt(a));
+        if (amb.chat == x3::llm::kInvalidChat) { amb = AmbientState{}; return; }
+        if (!talkLlm->submit(amb.chat, "Mutter one short thing out loud to nobody in particular.")) {
+            ambientClose(); return;
+        }
+        amb.agent = idx; amb.pending = true; amb.line.clear(); amb.endAt = 0.0;
+    };
+    auto ambientPoll = [&]() {
+        if (!talkLlm || amb.chat == x3::llm::kInvalidChat || !amb.pending) return;
+        const x3::llm::PollResult pr = talkLlm->poll(amb.chat);
+        amb.line += pr.newTokens;
+        if (pr.done) {
+            amb.pending = false;
+            amb.endAt   = glfwGetTime() + (double)kAmbientHoldSec;
+            const bool empty = amb.line.find_first_not_of(" \t\r\n") == std::string::npos;
+            if (!pr.failed && !empty && npcLifeBuilt && (uint32_t)amb.agent < npcLife.agentCount())
+                x3::logInfo("[talk] ambient " + npcLife.agent((uint32_t)amb.agent).name +
+                            ": \"" + amb.line + "\"");
+            if (pr.failed || empty) ambientClose();
+        }
+    };
+    // ECHO_TALKDEMO=1 in the WINDOWED loop: drop straight into walk mode and open a
+    // conversation with the nearest citizen (a --shot-cam capture cannot press T, and
+    // neither can an automated smoke run — this is the same code path the T key drives).
+    const bool talkDemoWin = [](){ const char* e = std::getenv("ECHO_TALKDEMO"); return e && e[0]=='1'; }();
+    bool talkDemoFired = false, talkDemoLoop = false;
+    if (talkDemoWin) {
+        if (const char* e = std::getenv("ECHO_TALKDEMO_LOOP"); e && e[0]=='1') talkDemoLoop = true;
+    }
+    auto talkPoll = [&]() {
+        if (!talkLlm || talk.chat == x3::llm::kInvalidChat || !talk.pending) return;
+        const x3::llm::PollResult pr = talkLlm->poll(talk.chat);
+        if (!pr.newTokens.empty()) {
+            if (talk.firstAt == 0.0) {        // TIME TO FIRST TOKEN — the metric that matters
+                talk.firstAt = glfwGetTime();
+                x3::logInfo("[talk] first token in " +
+                            std::to_string((int)((talk.firstAt - talk.askedAt) * 1000.0)) + " ms");
+            }
+            talk.reply  += pr.newTokens;
+            talk.tokens += pr.newTokenCount;
+            ++talk.polls;
+            if (const char* d = std::getenv("ECHO_TALK_DEBUG"); d && d[0]=='1')
+                x3::logInfo("[talk]   +" + std::to_string(pr.newTokenCount) + " tok @ " +
+                            std::to_string((int)((glfwGetTime() - talk.askedAt) * 1000.0)) + " ms");
+        }
+        if (pr.done) {
+            talk.pending = false;
+            const double now = glfwGetTime();
+            talk.endAt = now + (double)kBubbleHoldSec;
+            const double tot = now - talk.askedAt;
+            x3::logInfo("[talk] reply done: " + std::to_string(talk.tokens) + " tok in " +
+                        std::to_string((int)(tot * 1000.0)) + " ms (" +
+                        std::to_string((int)(tot > 0.0 ? (double)talk.tokens / tot : 0.0)) +
+                        " tok/s, " + std::to_string(talk.polls) + " streamed chunks)" + (pr.failed ? " [FAILED]" : "") + "  \"" + talk.reply + "\"");
+        }
+    };
+
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
         glfwPollEvents();
@@ -2536,10 +2995,54 @@ int hostEchotropolis(HostContext& hc) {
               uiSfx(sfxAccept, 0.7f);
           }
           prevE = e; }
+        // ECHO_TALKDEMO (windowed): force walk mode + talk to the nearest citizen.
+        if (talkDemoWin && talkLlm && npcLifeBuilt && physOk &&
+            (!talkDemoFired || (talkDemoLoop && !talk.pending && talk.endAt > 0.0))) {
+            walkMode = true;
+            float ex, ey, ez, eyw, ept; player.camera(ex, ey, ez, eyw, ept);
+            int best = -1; float bd2 = 1e30f;
+            for (uint32_t i = 0; i < npcLife.agentCount(); ++i) {
+                const auto& a = npcLife.agent(i);
+                const float dx = a.pos.x - ex, dz = a.pos.z - ez;
+                const float d2 = dx*dx + dz*dz;
+                if (d2 < bd2) { bd2 = d2; best = (int)i; }
+            }
+            if (best >= 0 && bd2 < kTalkDropRange * kTalkDropRange) {
+                if (talkDemoFired) talkPromptIdx = (talkPromptIdx + 1) % kTalkPromptCount;
+                talkAsk(best);
+                talkDemoFired = true;
+            }
+        }
+        // CITIZEN TALK prompt select ([ / ]) — walk mode only, where build mode (which
+        // owns these two keys) is forced off, so the existing binding never collides.
+        if (walkMode && talkLlm) {
+            { const bool lb = kd(GLFW_KEY_LEFT_BRACKET);
+              if (lb && !prevTalkLB) talkPromptIdx = (talkPromptIdx + kTalkPromptCount - 1) % kTalkPromptCount;
+              prevTalkLB = lb; }
+            { const bool rb = kd(GLFW_KEY_RIGHT_BRACKET);
+              if (rb && !prevTalkRB) talkPromptIdx = (talkPromptIdx + 1) % kTalkPromptCount;
+              prevTalkRB = rb; }
+        }
+        // Drop the conversation when you leave walk mode or walk away from the citizen.
+        if (talk.agent >= 0) {
+            bool drop = !walkMode || !npcLifeBuilt || (uint32_t)talk.agent >= npcLife.agentCount();
+            if (!drop && physOk) {
+                float ex, ey, ez, eyw, ept; player.camera(ex, ey, ez, eyw, ept);
+                const auto& ta = npcLife.agent((uint32_t)talk.agent);
+                const float dx = ta.pos.x - ex, dz = ta.pos.z - ez;
+                if (dx*dx + dz*dz > kTalkDropRange * kTalkDropRange) drop = true;
+            }
+            // Bubble expiry: a finished reply lingers kBubbleHoldSec then closes out.
+            if (!drop && !talk.pending && talk.endAt > 0.0 &&
+                glfwGetTime() > talk.endAt + (double)kBubbleFadeSec) drop = true;
+            if (drop) talkClose();
+        }
         // PLAY-AS drive: tank-style third-person steering (A/D turn, W/S move, Shift run).
         if (followIdx >= 0 && playAs && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
             const auto& a = npcLife.agent((uint32_t)followIdx);
-            const float turn = (kd(GLFW_KEY_A) ? 1.0f : 0.0f) - (kd(GLFW_KEY_D) ? 1.0f : 0.0f);
+            // Tim (live play test): A/D were REVERSED — from the trailing camera,
+            // +yaw (world CCW) reads as a RIGHT turn, so D gets the +.
+            const float turn = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
             driveYaw += turn * 2.2f * dt;
             const float mv  = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 0.6f : 0.0f);
             const float spd = kd(GLFW_KEY_LEFT_SHIFT) ? 7.0f : 3.6f;
@@ -2752,8 +3255,15 @@ int hostEchotropolis(HostContext& hc) {
 
         // ---- P3: advance the day (pause with T; 1-4 jump to the canon times) ----
         {
+            // T is CONTEXT-SENSITIVE: in walk mode with a citizen under the crosshair
+            // and a live LLM it TALKS to them; otherwise it keeps its original job of
+            // pausing the day clock (orbit mode / no pick / modelless are unchanged).
             const bool tNow = kd(GLFW_KEY_T);
-            if (tNow && !prevT) todPaused = !todPaused;
+            if (tNow && !prevT) {
+                const bool canTalk = walkMode && npcLifeBuilt && talkLlm && lastPickedIdx >= 0;
+                if (canTalk) talkAsk(lastPickedIdx);
+                else         todPaused = !todPaused;
+            }
             prevT = tNow;
             if (kd(GLFW_KEY_1)) tod.setDayFraction(kTodGolden);
             if (kd(GLFW_KEY_2)) tod.setDayFraction(kTodDusk);
@@ -2787,6 +3297,9 @@ int hostEchotropolis(HostContext& hc) {
             if (npcLifeBuilt) npcLife.update(dt, walkScene);   // living-city schedules advance
             residentsSkin.update(dt, residents, walkScene, *device, *phys);
         }
+        talkPoll();       // CITIZEN TALK: drain streamed reply tokens (non-blocking, every frame)
+        ambientTick(dt);  // AMBIENT CHATTER: occasionally an idle citizen mutters (opt-in)
+        ambientPoll();
         if (minersBuilt) {                 // GOLD-MINE crew lives + hauls every frame
             miners.update(dt, walkScene);
             minersSkin.update(dt, miners, walkScene, *device, *phys);
@@ -2932,8 +3445,9 @@ int hostEchotropolis(HostContext& hc) {
             const int minute = (int)(simClock * 24.0f * 60.0f) % 60;
             char bar[224];
             std::snprintf(bar, sizeof(bar),
-                "%d  %s DAY %d    %02d:%02d    POP %u    MINERS %u    GOLD %0.0f oz    $%0.0f",
-                simYear, kDow[(simDay - 1) % 7], simDay, hour, minute, pop, miners, goldOz, treasury);
+                "%d  %s DAY %d    %02d:%02d    POP %u    MINERS %u    GOLD %0.0f oz    $%0.0f    %d FPS",
+                simYear, kDow[(simDay - 1) % 7], simDay, hour, minute, pop, miners, goldOz, treasury,
+                (int)(hudFps + 0.5));
             const float pad = 14.0f, glyph = 14.0f, barH = 34.0f;
             const float barW = std::min((float)hw - 24.0f, 1120.0f);
             const float bg[4]   = { 0.04f, 0.06f, 0.10f, 0.82f };
@@ -2995,11 +3509,94 @@ int hostEchotropolis(HostContext& hc) {
                 device->drawHudQuad(frame, hw*0.5f - 1.0f, hh*0.5f - 7.0f, 2.0f, 14.0f, rc);
                 if (best >= 0) {
                     cardFor((uint32_t)best, bestDist);
-                    device->drawHudText(frame, "F  ride along  /  play as",
-                                        24.0f + 18.0f, (float)hh - 176.0f - 22.0f, 12.0f, rc);
+                    if (talkLlm) {
+                        // CITIZEN TALK affordance: the line you'll send + the cycle keys.
+                        char th[192];
+                        std::snprintf(th, sizeof th, "F  ride along   |   T  say: \"%s\"   [ ] change",
+                                      kTalkPrompts[talkPromptIdx]);
+                        device->drawHudText(frame, th, 24.0f + 18.0f,
+                                            (float)hh - 176.0f - 22.0f, 12.0f, rc);
+                    } else {
+                        device->drawHudText(frame, "F  ride along  /  play as",
+                                            24.0f + 18.0f, (float)hh - 176.0f - 22.0f, 12.0f, rc);
+                    }
                 }
             } else {
                 lastPickedIdx = -1;
+            }
+
+            // ---------------- CITIZEN TALK: the floating chat bubble ----------------
+            // Anchored 2.2 m over the agent's feet and projected with worldToScreen
+            // (one frame stale by design — imperceptible for a bubble). Hidden when
+            // the citizen is behind the camera / off-screen (projection fails).
+            if (talk.agent >= 0 && npcLifeBuilt && (uint32_t)talk.agent < npcLife.agentCount()) {
+                const auto& ta = npcLife.agent((uint32_t)talk.agent);
+                float sx = 0.0f, sy = 0.0f;
+                if (device->worldToScreen(ta.pos.x, ta.pos.y + 2.2f, ta.pos.z, sx, sy)) {
+                    // Fade in on open, out at the end of the hold window.
+                    float alpha = 1.0f;
+                    if (!talk.pending && talk.endAt > 0.0) {
+                        const double left = talk.endAt - glfwGetTime();
+                        if (left < (double)kBubbleFadeSec)
+                            alpha = std::clamp((float)left / kBubbleFadeSec, 0.0f, 1.0f);
+                    }
+                    // Trim the model's leading whitespace so the first line sits flush.
+                    std::string body = talk.reply;
+                    size_t b0 = body.find_first_not_of(" \t\r\n");
+                    body = (b0 == std::string::npos) ? std::string() : body.substr(b0);
+                    if (body.empty()) body = talk.pending ? "..." : "(silence)";
+                    else if (talk.pending) body += " ...";   // streaming/thinking indicator
+                    std::vector<std::string> wrapped;
+                    talkWrap(*device, body, 15.0f, 340.0f, 5, wrapped);
+                    drawTalkBubble(*device, frame, sx, sy, ta.name.c_str(), wrapped, alpha);
+                }
+            }
+            // AMBIENT CHATTER bubble — dimmer than the player's conversation so the
+            // one you are actually having always reads as the primary.
+            if (amb.agent >= 0 && !amb.pending && npcLifeBuilt &&
+                (uint32_t)amb.agent < npcLife.agentCount()) {
+                const auto& aa = npcLife.agent((uint32_t)amb.agent);
+                float sx = 0.0f, sy = 0.0f;
+                if (device->worldToScreen(aa.pos.x, aa.pos.y + 2.2f, aa.pos.z, sx, sy)) {
+                    const double now2 = glfwGetTime();
+                    const double left = amb.endAt - now2;
+                    const float alpha = 0.8f * std::clamp((float)left / kBubbleFadeSec, 0.0f, 1.0f);
+                    std::string body = amb.line;
+                    size_t b0 = body.find_first_not_of(" \t\r\n");
+                    body = (b0 == std::string::npos) ? std::string() : body.substr(b0);
+                    // HUMAN SPEECH PACING (Tim: instant lines read as machine-gun).
+                    // Reveal ~22 chars/sec from when the bubble opened.
+                    const double talking = now2 - (amb.endAt - (double)kAmbientHoldSec);
+                    const size_t reveal = (size_t)std::max(0.0, talking * 22.0);
+                    if (reveal < body.size()) body = body.substr(0, reveal) + "...";
+                    if (!body.empty()) {
+                        std::vector<std::string> wrapped;
+                        talkWrap(*device, body, 15.0f, 300.0f, 3, wrapped);
+                        drawTalkBubble(*device, frame, sx, sy, aa.name.c_str(), wrapped, alpha);
+                    }
+                }
+                // CITY FEED (Tim's ask): every finished line joins a rolling feed.
+                if (amb.agent != fedAmbAgent || amb.line != fedAmbLine) {
+                    fedAmbAgent = amb.agent; fedAmbLine = amb.line;
+                    std::string ln = aa.name + ": " + amb.line;
+                    if (ln.size() > 88) ln = ln.substr(0, 85) + "...";
+                    talkFeed.push_back(ln);
+                    if (talkFeed.size() > 6) talkFeed.erase(talkFeed.begin());
+                }
+            }
+            // THE FEED — bottom-right, last 6 city voices, dim console style.
+            if (!talkFeed.empty()) {
+                const float fw = 470.0f, lh = 18.0f;
+                const float fx = (float)hw - fw - 20.0f;
+                float fy = (float)hh - 30.0f - lh * (float)talkFeed.size();
+                const float fbg[4] = { 0.03f, 0.05f, 0.09f, 0.55f };
+                const float ftx[4] = { 0.75f, 0.85f, 0.95f, 0.85f };
+                device->drawHudQuad(frame, fx - 10.0f, fy - 8.0f, fw + 20.0f,
+                                    lh * (float)talkFeed.size() + 16.0f, fbg);
+                for (const std::string& ln : talkFeed) {
+                    device->drawHudText(frame, ln.c_str(), fx, fy, 11.0f, ftx);
+                    fy += lh;
+                }
             }
 
             // BUILD MENU palette (left panel) — the web "place a building" tool.
@@ -3040,6 +3637,7 @@ int hostEchotropolis(HostContext& hc) {
         fpsAccum += dt; ++fpsFrames;
         if (fpsAccum >= 1.0) {
             const double fps = fpsFrames / fpsAccum;
+            hudFps = fps;
             char buf[96];
             std::snprintf(buf, sizeof(buf), "--world echotropolis: FPS %.1f (%.2f ms/frame)",
                           fps, 1000.0 * fpsAccum / fpsFrames);
