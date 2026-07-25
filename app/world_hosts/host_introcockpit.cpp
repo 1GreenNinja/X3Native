@@ -58,7 +58,10 @@ bool buildIntroCockpitRig(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device,
     // Shared 1x1 metallic-roughness map (satin: rough 0.55, metal 0.25). Assigning
     // it forces the PBR route on entities whose material has no MR texture — which
     // is what makes Entity.emissiveTex honored (scene.cpp routes on mrTex.valid()).
-    const uint8_t mrPx[4] = { 255, 140, 64, 255 };   // R=AO(1), G=rough, B=metal
+    const uint8_t mrPx[4] = { 255, 92, 64, 255 };    // R=AO(1), G=rough 0.36, B=metal 0.25
+                                                     // GAMMA-RECAL round 2: rough 0.55 -> 0.36
+                                                     // (owner: speculars carry the hull — tight
+                                                     // glints, panel sparkle as ships rotate)
     rig.mrShared = device.createTexture(mrPx, 1, 1, /*srgb*/false);
     const uint8_t mrGl[4] = { 255, 18, 10, 255 };    // polished near-dielectric (panes)
     rig.mrGlassy = device.createTexture(mrGl, 1, 1, /*srgb*/false);
@@ -248,11 +251,12 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
     // near-black hull paint stays dark) + the shaped selfLight rim so the unlit
     // side reads as a hull, never a cutout. fallbackMr routes MR-less drawables
     // onto the PBR branch so the star has a specular lobe to shape them.
-    constexpr float kIntroShipSelfLight = 0.30f;   // Trek fill — GAMMA-RECAL: 0.50 was
-                                                   // tuned on the bent curve (0.35 'read
-                                                   // dull gray' THERE); the honest curve
-                                                   // shows shadow detail at 0.30 without
-                                                   // the washed look the owner flagged
+    // GAMMA-RECAL round 2 — owner's material strategy, verbatim: "darken the
+    // lighting... more SPECULAR HIGHLIGHTS and INTERIOR LIGHTING instead of an
+    // overall glow on all ships." The dark side should be DARK (not void): the
+    // silhouette rule is satisfied by windows + engines + the terminator rim,
+    // never by blanket glow. selfLight into his 0.12-0.18 band.
+    constexpr float kIntroShipSelfLight = 0.15f;
     for (const auto& dr : draws) {
         if (!dr.meshId) continue;
         float fin[16];
@@ -267,7 +271,11 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             emisTex = x3::rhi::TextureHandle{ dr.emissiveTexId ? dr.emissiveTexId
                                                                : dr.baseColorTexId };
         } else {
-            emis[0] = 0.85f; emis[1] = 0.95f; emis[2] = 1.10f; emis[3] = 1.0f;   // Trek window rows: bright, crisp
+            // GAMMA-RECAL round 2: 0.85/0.95/1.10 made the whole light-grey hull
+            // GLOW through the base-color gate (the owner's 'overall glow'). At
+            // 0.30-band only the genuinely bright texels (window rows, strips,
+            // nav markings) read as lit-from-inside; grey hull paint stays paint.
+            emis[0] = 0.30f; emis[1] = 0.34f; emis[2] = 0.40f; emis[3] = 1.0f;   // Trek window rows: crisp, not blanket
             emisTex = x3::rhi::TextureHandle{ dr.baseColorTexId };
         }
         const x3::rhi::TextureHandle mr =

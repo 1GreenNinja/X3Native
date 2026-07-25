@@ -278,7 +278,9 @@ public:
         // LOW: this is painted plate (a dielectric coat); a metallic black albedo
         // would give a black F0 and land right back on black.
         if (!m_hullMr.valid()) {
-            const uint8_t px[4] = { 0, (uint8_t)(0.58f * 255.0f), (uint8_t)(0.15f * 255.0f), 255 };
+            const uint8_t px[4] = { 0, (uint8_t)(0.38f * 255.0f), (uint8_t)(0.20f * 255.0f), 255 };
+            // GAMMA-RECAL round 2: rough 0.58 -> 0.38, metal 0.15 -> 0.20 — the owner's
+            // ship strategy (speculars carry the hull; painted-plate doctrine stands).
             m_hullMr = device.createTexture(px, 1, 1, /*srgb=*/false);   // DATA, linear
         }
         // ---- FILMIC POST (feat/filmic-post): the FILM LOOK for cutscene playback.
@@ -448,7 +450,7 @@ public:
                                        // honestly from the sun; it just never dies to a black
                                        // cutout when the camera cuts to its dark side.
                                        /*clearcoat=*/0.0f, /*clearcoatRough=*/0.05f,
-                                       /*selfLight=*/0.22f);   // GAMMA-RECAL: was 0.35 (bent-curve tune)
+                                       /*selfLight=*/0.15f);   // GAMMA-RECAL r2: owner's 0.12-0.18 band (was 0.35 bent-curve)
                 }
             }
         }
