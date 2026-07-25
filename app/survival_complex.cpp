@@ -43,23 +43,29 @@ const float kTankM[4]    = { 0.200f, 0.230f, 0.260f, 1.0f };  // water/air tank
 const float kRail[4]     = { 0.260f, 0.262f, 0.290f, 1.0f };  // railing
 
 // ---- Emissive helpers { r, g, b, strength }. strength > 1 => HDR bloom. -----
+// GAMMA WALK-BACK (integration/gamma-fold, 2026-07-25): every strength below was
+// tuned on the pre-sRGB 2x-dark engine to punch fixtures through the crushed curve.
+// The LINEAR-vs-GAMMA fix (5951890b) now lifts those emitters ~2.4x for free, so the
+// dark-era strengths bloom hot. Walked back like the club's blacklight tubes:
+// bright fixture emitters ~-33%, the FAINT structural self-glows (leaf/water — they
+// only lifted a silhouette out of black) ~-45%, NPC marker beacons 3.0->2.0.
 const float kOff[4]       = { 0.0f, 0.0f, 0.0f, 0.0f };
-const float kEmAmber[4]   = { 1.00f, 0.62f, 0.26f, 1.7f };  // warm amber strip (utilitarian)
-const float kEmAmberDim[4]= { 1.00f, 0.60f, 0.25f, 1.1f };  // dim storage amber
-const float kEmWhite[4]   = { 0.90f, 0.94f, 1.00f, 2.2f };  // clinical medical white
-const float kEmCyan[4]    = { 0.30f, 0.80f, 1.00f, 1.8f };  // water / air life-support
-const float kEmOrange[4]  = { 1.00f, 0.45f, 0.10f, 2.0f };  // power/generator industrial
-const float kEmScreen[4]  = { 0.35f, 0.45f, 0.85f, 2.4f };  // workstation / rec screen
-const float kEmGreenLED[4]= { 0.10f, 1.00f, 0.20f, 2.6f };  // status LED / keypad green
-const float kEmRedLED[4]  = { 1.00f, 0.10f, 0.08f, 2.4f };  // alarm / breaker red
-const float kEmGrow[4]    = { 0.95f, 0.30f, 1.00f, 1.9f };  // hydroponics grow-light magenta
-const float kEmGrowW[4]   = { 0.80f, 0.95f, 0.75f, 1.6f };  // grow-light white-green wash
-const float kEmLeaf[4]    = { 0.10f, 0.36f, 0.08f, 0.7f };  // faint foliage chlorophyll glow
-const float kEmWater[4]   = { 0.20f, 0.55f, 0.70f, 1.2f };  // faint water sheen
+const float kEmAmber[4]   = { 1.00f, 0.62f, 0.26f, 1.15f }; // warm amber strip (was 1.7)
+const float kEmAmberDim[4]= { 1.00f, 0.60f, 0.25f, 0.72f }; // dim storage amber (was 1.1)
+const float kEmWhite[4]   = { 0.90f, 0.94f, 1.00f, 1.45f }; // clinical medical white (was 2.2)
+const float kEmCyan[4]    = { 0.30f, 0.80f, 1.00f, 1.20f }; // water / air life-support (was 1.8)
+const float kEmOrange[4]  = { 1.00f, 0.45f, 0.10f, 1.30f }; // power/generator industrial (was 2.0)
+const float kEmScreen[4]  = { 0.35f, 0.45f, 0.85f, 1.55f }; // workstation / rec screen (was 2.4)
+const float kEmGreenLED[4]= { 0.10f, 1.00f, 0.20f, 1.70f }; // status LED / keypad green (was 2.6)
+const float kEmRedLED[4]  = { 1.00f, 0.10f, 0.08f, 1.55f }; // alarm / breaker red (was 2.4)
+const float kEmGrow[4]    = { 0.95f, 0.30f, 1.00f, 1.25f }; // hydroponics grow magenta (was 1.9)
+const float kEmGrowW[4]   = { 0.80f, 0.95f, 0.75f, 1.05f }; // grow-light white-green wash (was 1.6)
+const float kEmLeaf[4]    = { 0.10f, 0.36f, 0.08f, 0.38f }; // faint foliage glow (was 0.7, -45%)
+const float kEmWater[4]   = { 0.20f, 0.55f, 0.70f, 0.65f }; // faint water sheen (was 1.2, -45%)
 // NPC spawn-marker beacons (Danny built it all; Amara + Emma have sessions in L1).
-const float kMarkAmara[4] = { 0.10f, 0.90f, 0.85f, 3.0f };  // teal  — Amara O'Neill
-const float kMarkEmma[4]  = { 1.00f, 0.75f, 0.20f, 3.0f };  // amber — Emma Hartwell
-const float kMarkDanny[4] = { 0.20f, 1.00f, 0.35f, 3.0f };  // green — Danny Kowalski
+const float kMarkAmara[4] = { 0.10f, 0.90f, 0.85f, 2.0f };  // teal  — Amara O'Neill (was 3.0)
+const float kMarkEmma[4]  = { 1.00f, 0.75f, 0.20f, 2.0f };  // amber — Emma Hartwell (was 3.0)
+const float kMarkDanny[4] = { 0.20f, 1.00f, 0.35f, 2.0f };  // green — Danny Kowalski (was 3.0)
 
 void addLight(std::vector<x3::rhi::PointLight>& v, float x, float y, float z,
               float r, float g, float b, float range) {
@@ -200,15 +206,19 @@ const SurvivalComplex::Stats& SurvivalComplex::build(Scene& scene, x3::rhi::IRen
         box(roomMinX + 0.06f, fy + 1.5f, 0, 0.02f, 0.9f, 0.05f, kMetal, kEmAmberDim, false);   // wall strip
         // Primary practical light: warm-white (cooler for medical/water) so the
         // themed contents actually read; deeper levels a touch dimmer/industrial.
-        float pr = 2.30f, pg = 2.15f, pb = 1.85f;                 // warm-white bunker practical
-        if (l == 3) { pr = 2.05f; pg = 2.15f; pb = 2.25f; }        // medical: clean cool-white
-        if (l == 5) { pr = 1.65f; pg = 2.00f; pb = 2.30f; }        // life-support: cool
-        if (l == 6) { pr = 2.30f; pg = 1.80f; pb = 1.30f; }        // power: warm industrial
+        // GAMMA WALK-BACK (integration/gamma-fold): the warm-white bunker practicals
+        // were cranked to ~2.3 to punch through the 2x-dark curve — under the sRGB fix
+        // that flat-washes the corridor. Cut the casts ~35% so they light the themed
+        // contents without over-exposing (real dark-era compensation).
+        float pr = 1.50f, pg = 1.40f, pb = 1.20f;                 // warm-white bunker practical (was 2.30/2.15/1.85)
+        if (l == 3) { pr = 1.35f; pg = 1.40f; pb = 1.47f; }        // medical: clean cool-white (was 2.05/2.15/2.25)
+        if (l == 5) { pr = 1.08f; pg = 1.30f; pb = 1.50f; }        // life-support: cool (was 1.65/2.00/2.30)
+        if (l == 6) { pr = 1.50f; pg = 1.18f; pb = 0.85f; }        // power: warm industrial (was 2.30/1.80/1.30)
         const float pk = (l == 7) ? 0.60f : 1.0f;                  // L7 lit mainly by grow-lights
         addLight(m_lights, roomCX,        oy + fy + kRoomH - 0.3f, -1.5f, pr * pk, pg * pk, pb * pk, 11.0f);
         addLight(m_lights, roomCX + 0.6f, oy + fy + kRoomH - 0.4f,  2.5f, pr * 0.85f * pk, pg * 0.85f * pk, pb * 0.85f * pk, 10.0f);
         // Themed colour accent (low, sets the mood without washing the room out).
-        addLight(m_lights, roomCX - 1.0f, oy + fy + 1.7f, -cz * 0.35f, em[0] * 0.6f, em[1] * 0.6f, em[2] * 0.6f, 6.0f);
+        addLight(m_lights, roomCX - 1.0f, oy + fy + 1.7f, -cz * 0.35f, em[0] * 0.42f, em[1] * 0.42f, em[2] * 0.42f, 6.0f);
 
         m_stats.levelHasRoom[l] = true;
         m_stats.levelsBuilt++;
@@ -265,8 +275,8 @@ const SurvivalComplex::Stats& SurvivalComplex::build(Scene& scene, x3::rhi::IRen
             for (int a = 0; a < 2; ++a)
                 box(roomMaxX - 0.4f, fy + 1.0f, -2.0f + (float)a * 4.0f, 0.22f, 1.0f, 0.5f, kSteelD, kEmGreenLED, false); // weapon lockers
             // A couple of aisle-floor practicals so the racks + central aisle read.
-            addLight(m_lights, roomCX, oy + fy + 1.6f, 0.0f, 1.8f, 1.7f, 1.5f, 8.0f);
-            addLight(m_lights, roomCX, oy + fy + 1.6f, 4.0f, 1.7f, 1.6f, 1.4f, 7.0f);
+            addLight(m_lights, roomCX, oy + fy + 1.6f, 0.0f, 1.25f, 1.18f, 1.05f, 8.0f); // gamma walk-back (was 1.8/1.7/1.5)
+            addLight(m_lights, roomCX, oy + fy + 1.6f, 4.0f, 1.18f, 1.10f, 0.98f, 7.0f); // gamma walk-back (was 1.7/1.6/1.4)
             m_stats.hasArmory = true;
         } else if (l == 5) {
             // WATER RESERVOIR + AIR / LIFE-SUPPORT PLANT [INVENT]. Tall sealed
@@ -317,9 +327,9 @@ const SurvivalComplex::Stats& SurvivalComplex::build(Scene& scene, x3::rhi::IRen
                 }
                 // One grow cast-light per rack (mid height) — magenta wash + a soft
                 // green fill so the foliage reads lush without blowing the budget.
-                addLight(m_lights, rx, oy + fy + 1.4f, 0, kEmGrow[0] * 0.8f, kEmGrow[1] * 0.8f, kEmGrow[2] * 0.8f, 4.5f);
+                addLight(m_lights, rx, oy + fy + 1.4f, 0, kEmGrow[0] * 0.55f, kEmGrow[1] * 0.55f, kEmGrow[2] * 0.55f, 4.5f); // gamma walk-back (was *0.8)
                 m_growLightIdx.push_back(m_lights.size() - 1);
-                addLight(m_lights, rx, oy + fy + 1.0f, 0, 0.25f, 0.75f, 0.20f, 3.5f);   // green foliage fill
+                addLight(m_lights, rx, oy + fy + 1.0f, 0, 0.17f, 0.52f, 0.14f, 3.5f);   // green foliage fill (gamma walk-back, was 0.25/0.75/0.20)
             }
             // Nutrient / water reservoir + a humidity-misting glow.
             box(roomMaxX - 0.5f, fy + 0.4f, 4.5f, 0.4f, 0.4f, 1.2f, kTankM, kEmWater, true);
@@ -354,7 +364,7 @@ const SurvivalComplex::Stats& SurvivalComplex::build(Scene& scene, x3::rhi::IRen
     // Amber strip lights down the stairwell spine (one per level — utilitarian).
     for (int l = 1; l <= kLevels; ++l) {
         box(bayMaxX - 0.06f, floorY(l) + 1.5f, landZ(l), 0.02f, 0.9f, 0.05f, kMetal, kEmAmber, false);
-        addLight(m_lights, bayCX, oy + floorY(l) + 1.6f, landZ(l), 1.0f, 0.62f, 0.26f, 6.0f);
+        addLight(m_lights, bayCX, oy + floorY(l) + 1.6f, landZ(l), 0.70f, 0.43f, 0.18f, 6.0f);
     }
     // Route-A CONNECTION: the top of the stairwell reaches L1. The L1 hatch (from
     // club1127.cpp) sits at (hallX=-17.64, Z~+5.35) — inside the bay X range and
@@ -369,7 +379,7 @@ const SurvivalComplex::Stats& SurvivalComplex::build(Scene& scene, x3::rhi::IRen
         m_stats.hasRouteAConnect = inBayX && nearLandZ;
     }
     box(bayCX, floorY(1) + 1.6f, landZ(1), 0.02f, 0.9f, 0.05f, kMetal, kEmAmber, false);
-    addLight(m_lights, bayCX, oy + floorY(1) + 1.7f, landZ(1), 1.0f, 0.62f, 0.26f, 6.0f);
+    addLight(m_lights, bayCX, oy + floorY(1) + 1.7f, landZ(1), 0.70f, 0.43f, 0.18f, 6.0f);
 
     // ================================================================
     // DANNY'S 4-PERSON ELEVATOR — a separate steel car + shaft in the NW corner
@@ -418,14 +428,14 @@ const SurvivalComplex::Stats& SurvivalComplex::build(Scene& scene, x3::rhi::IRen
         box(hcx, hallY + 0.10f, hallZ - hallW / 2 + 0.05f, hlen / 2 - 0.3f, 0.01f, 0.04f, kMetal, kEmAmber, false);
         for (int s = 0; s < 5; ++s) {
             const float lx = hWest + (float)(s + 1) * hlen / 6.0f;
-            addLight(m_lights, lx, oy + hallY + hallH - 0.3f, hallZ, 1.0f, 0.62f, 0.26f, 6.5f);
+            addLight(m_lights, lx, oy + hallY + hallH - 0.3f, hallZ, 0.70f, 0.43f, 0.18f, 6.5f);
         }
         // L7 east doorway: open the L7 shell east wall would block the hall; cut a
         // doorway marker + opening into L7 at the hall's west end.
         box(maxX, hallY + hallH - 0.2f, hallZ, T, 0.2f, hallW / 2, kConcreteD, kOff, false);        // lintel
         // GREEN MARKED HOOK — club-elevator delivery point at the east end.
         box(hEast - 0.1f, hallY + 1.1f, hallZ, 0.03f, 0.8f, hallW / 2 - 0.1f, kSteelD, kEmGreenLED, false);
-        addLight(m_lights, hEast - 0.5f, oy + hallY + 1.6f, hallZ, 0.2f, 1.0f, 0.35f, 5.0f);
+        addLight(m_lights, hEast - 0.5f, oy + hallY + 1.6f, hallZ, 0.14f, 0.70f, 0.25f, 5.0f); // gamma walk-back (was 0.2/1.0/0.35)
         m_stats.hasRouteBHall = true;
         m_stats.hallEastX = hEast; m_stats.hallWestX = hWest;
         m_stats.hallY = oy + hallY;

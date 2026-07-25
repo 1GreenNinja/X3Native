@@ -58,12 +58,19 @@ int hostComplex(HostContext& hc) {
     // surfaces the point lights don't hit still read, not dead-black).
     { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
     device->setIblProbe(true);
-    device->setIblIntensity(0.52f);               // colored ambient fill — readable bunker
+    // GAMMA WALK-BACK (integration/gamma-fold, 2026-07-25): the survival-complex was
+    // lit on the pre-sRGB (2x-dark) engine — its IBL fill / ambient / bloom were all
+    // propping the bunker up out of the crushed void. The LINEAR-vs-GAMMA fix (5951890b)
+    // now lifts those darks ~2.4x on its own; at the old values the corridors read flat
+    // and over-bright (measured mean-luma ~90-143 vs the correctly-lit club's ~20-77).
+    // Pull the fill/ambient/bloom back the same way the club was (IBL 0.52->0.22,
+    // ambient ~halved, bloom 0.20->0.13) so real practical light does the work.
+    device->setIblIntensity(0.22f);               // colored ambient fill — readable bunker (was 0.52 pre-gamma)
     device->setIblSpecular(1.0f);
     device->setMetalAmbient(1.0f);
-    device->setAmbient(0.075f, 0.070f, 0.062f);   // warm bunker floor (concrete, not gray)
+    device->setAmbient(0.036f, 0.034f, 0.030f);   // warm bunker floor (concrete, not gray) — halved post-gamma
     device->setExposure(1.0f);
-    device->setBloom(0.20f);                       // let emissives bloom, but not blow out
+    device->setBloom(0.13f);                       // let emissives bloom without blowing milky (was 0.20)
 
     const x3::phys::Vec3 spawn = complex.spawn();
 
