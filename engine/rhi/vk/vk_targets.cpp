@@ -6,7 +6,14 @@
 namespace x3::rhi {
 bool VulkanRenderDevice::createSwapchain(uint32_t w, uint32_t h) {
         vkb::SwapchainBuilder scb{ m_dev };
-        scb.set_desired_format(VkSurfaceFormatKHR{ VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
+        // LINEAR vs GAMMA (root cause, confirmed 2026-07-25 — see docs/HANDOFF §11):
+        // this was *_UNORM paired with SRGB_NONLINEAR, i.e. the display expects sRGB
+        // but nothing ever encoded — composite.frag writes LINEAR straight out (no
+        // pow(1/2.2) anywhere). Linear 0.5 then displays as ~0.22: mid-tones crushed,
+        // highlights kept — "dark too dark AND light too light" in the same frame.
+        // *_SRGB makes the GPU encode on write, exactly once. Do NOT also add a
+        // manual gamma in composite — double-encoding washes everything out.
+        scb.set_desired_format(VkSurfaceFormatKHR{ VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
            .set_desired_present_mode(m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR)
            .set_desired_extent(w, h)
            // TRANSFER_SRC so captureFrame() can vkCmdCopyImageToBuffer the
@@ -125,7 +132,10 @@ bool VulkanRenderDevice::createOffscreenTarget(uint32_t w, uint32_t h) {
         destroyOffscreenTarget();
 
         m_extent = { w, h };
-        m_format = VK_FORMAT_B8G8R8A8_UNORM;   // match the windowed swapchain format
+        // Must track the windowed swapchain format (now *_SRGB — see createSwapchain):
+        // headless captures otherwise skip the sRGB encode and every screenshot comes
+        // out darker than the game, which would make capture-based review meaningless.
+        m_format = VK_FORMAT_B8G8R8A8_SRGB;
 
         // Offscreen color image: COLOR_ATTACHMENT (graph target) + TRANSFER_SRC
         // (vkCmdCopyImageToBuffer for --screenshot), single sample, optimal tiling.

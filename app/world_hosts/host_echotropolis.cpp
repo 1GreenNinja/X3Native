@@ -291,12 +291,16 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     // Night ambient FLOOR: the pure-black sky kills the IBL contribution, so at
     // night the terrain is lit by ambient alone — hold a moonlight minimum so the
     // island stays readable while the sky dome itself stays black.
-    constexpr float kNightAmbFloor[3] = { 0.22f, 0.24f, 0.34f };   // night lane: brighter cool moonlight so district walls read (was 0.16, too dark for dense low-rise)
-    // DAY sky-fill floor (AAA-eye pass, 2026-07-22): the old day ambient was tuned
-    // for open sunlit terrain (~0), which crushed every sun-shadowed CITY wall to
-    // black — at noon vertical walls receive almost no direct sun and live on this
-    // fill. Cool sky-blue, full strength in day, fading with dayness.
-    constexpr float kDayAmbFloor[3] = { 0.34f, 0.38f, 0.46f };
+    // ⚠ GAMMA UNWIND (2026-07-25, docs/HANDOFF §11): 0.11 -> 0.16 -> 0.22 was an
+    // ESCALATING COMPENSATION for the un-encoded swapchain (linear written to an sRGB
+    // display crushes mid-tones). With *_SRGB encoding restored in vk_targets.cpp,
+    // this is back to its ORIGINAL calibrated value. Re-tune from HERE, not from the
+    // compensated numbers.
+    constexpr float kNightAmbFloor[3] = { 0.11f, 0.12f, 0.17f };
+    // DAY sky-fill floor: sun-shadowed city walls get almost no direct sun at noon and
+    // live on this fill. Halved from the 0.34/0.38/0.46 compensation (same gamma
+    // unwind) — a real value is still needed here, the city is not open terrain.
+    constexpr float kDayAmbFloor[3] = { 0.17f, 0.19f, 0.23f };
     float amb[3];
     for (int i = 0; i < 3; ++i) {
         amb[i] = s.ambient[i] + s.auroraTint[i];
@@ -453,10 +457,13 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     x3::rhi::IRenderDevice::PostFXParams px;   // defaults: ACES, autoexposure, TAA on
     px.bloomThreshold = 1.08f;                 // sun-glint blooms; not the whole water sheet
     px.bloomIntensity = 0.14f + 0.06f * low + 0.10f * night;  // neon glow at night
-    px.aeMax          = 2.20f + 0.30f * low + 1.6f * night;   // NIGHT: let AE lift the moonlit city (was capped 2.2 -> mostly-black frames)
+    // ⚠ GAMMA UNWIND: the +1.6 aeMax and +0.35 exposure night lifts were fighting the
+    // un-encoded swapchain, not real darkness. Halved now that *_SRGB encodes properly;
+    // re-tune from here against fresh captures.
+    px.aeMax          = 2.20f + 0.30f * low + 0.8f * night;
     device->setPostFX(px);
     device->setBloom(0.12f + 0.06f * low + 0.10f * night);    // more composite bloom at night
-    device->setExposure(1.0f + 0.16f * low + 0.35f * night);  // NIGHT exposure lift: walls read, not a black void
+    device->setExposure(1.0f + 0.16f * low + 0.15f * night);
 
     // ---- 5. SHADOWS: focus the single shadow map on the CROWN so it RESOLVES -----
     // Was a 4.4km box centred at origin — one shadow map over 4.4km ~= 2m/texel, so
