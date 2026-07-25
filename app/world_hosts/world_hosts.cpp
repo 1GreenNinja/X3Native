@@ -15,6 +15,7 @@ int dispatchWorldHost(HostContext& hc) {
     if (hc.worldMode == "drive" || hc.worldMode == "boat" || hc.worldMode == "fly")
                                                         return hostDrive(hc);
     if (hc.worldMode == "club")                         return hostClub(hc);
+    if (hc.worldMode == "complex")                      return hostComplex(hc);
     if (hc.worldMode == "showroom")                     return hostShowroom(hc);
     if (hc.worldMode == "valley")                       return hostValley(hc);
     if (hc.worldMode == "cliffs")                       return hostCliffs(hc);

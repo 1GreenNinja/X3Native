@@ -89,6 +89,7 @@ struct TestFlags {
     bool testSealife = false;    // --test-sealife (great white hunt, bite-once, zap, abyss)
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
+    bool testComplex = false;
     bool testPerfshop = false;
     bool testGamma = false;    // --test-gamma (LINEAR-vs-GAMMA acceptance-gate byte measurement)
     // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF

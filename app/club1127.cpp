@@ -2292,7 +2292,13 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         const float hallW = 5.0f * 0.3048f, eastD = 3.0f, westD = 3.0f;
         const float hallX = -HL - 2.4f;
         const float pzN = -HW, pzS = HW, pLen = pzS - pzN;
-        box(hallX, pY + 0.05f, 0, hallW / 2, 0.08f, pLen / 2, kStrata, kEmitOff, true);
+        // L1 floor with a HATCH OPENING at the south end (Z ~ +5.35) where the
+        // survival-Complex stairwell descends (feat/survival-complex, Route A):
+        // the green marker below frames this hole. Split the slab to leave the gap
+        // so the descent from L1 -> L2..L7 is physically walkable.
+        const float hzLo = pzS - 1.9f, hzHi = pzS - 0.5f;   // hatch Z span [4.65, 6.05]
+        box(hallX, pY + 0.05f, (pzN + hzLo) / 2, hallW / 2, 0.08f, (hzLo - pzN) / 2, kStrata, kEmitOff, true); // main floor
+        box(hallX, pY + 0.05f, (hzHi + pzS) / 2, hallW / 2, 0.08f, (pzS - hzHi) / 2, kStrata, kEmitOff, true); // far strip past the hatch
         box(hallX, pY + pH, 0, hallW / 2, 0.08f, pLen / 2, kCeil, kEmitOff, false);
         box(hallX, pY + pH / 2, pzN, hallW / 2, pH / 2, T / 2, kBunker, kEmitOff, true);
         box(hallX, pY + pH / 2, pzS, hallW / 2, pH / 2, T / 2, kBunker, kEmitOff, true);

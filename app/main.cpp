@@ -386,6 +386,7 @@ int main(int argc, char** argv) {
         _tf.testValley = o.testValley;
         _tf.testCliffs = o.testCliffs;
         _tf.testClub = o.testClub;
+        _tf.testComplex = o.testComplex;
         _tf.testPerfshop = o.testPerfshop;
         _tf.testGamma = o.testGamma;
         _tf.testSpace = o.testSpace;
@@ -746,6 +747,7 @@ int main(int argc, char** argv) {
         _hc.perfshopShot     = o.perfshopShot;     _hc.perfshopShotDir  = o.perfshopShotDir;
         _hc.ecologyShot      = o.ecologyShot;      _hc.ecologyShotPath  = o.ecologyShotPath;
         _hc.crowdShot        = o.crowdShot;        _hc.crowdShotPath    = o.crowdShotPath;
+        _hc.complexShot      = o.complexShot;      _hc.complexShotDir   = o.complexShotDir;
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;

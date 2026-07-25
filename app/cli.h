@@ -187,6 +187,15 @@ struct CliOptions {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+    // --test-complex (the 7-LEVEL SURVIVAL COMPLEX west of the club): build
+    // headless + assert all 7 levels stand up, the stairwell connects them
+    // top-to-bottom, both entrances (Route-A hatch + Route-B under-club hall)
+    // reach the structure, L7 is a hydroponics bay, NPC markers, budget + leak.
+    bool        testComplex = false;
+    // --screenshot-complex <dir>: capture per-level beauty shots of the Complex
+    // (L2 rec, L3-L6 themed floors, L7 hydroponics, the stairwell, the L7 hall).
+    bool        complexShot = false;
+    std::string complexShotDir = "docs/screenshots/complex";
 
     // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
     // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp

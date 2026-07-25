@@ -136,6 +136,8 @@ add_executable(X3Engine WIN32
     env_art.cpp
     club1127.cpp
     gamma_probe.cpp
+    survival_complex.cpp
+    world_hosts/host_complex.cpp
     cues.cpp
     valley.cpp
     cliffs.cpp
