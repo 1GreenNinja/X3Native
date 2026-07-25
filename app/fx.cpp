@@ -854,7 +854,7 @@ void CombatFx::boltSubdivide(x3::rhi::IRenderDevice& device, const x3::rhi::Fram
                   coreThick, brightness, tm, t1);
 
     // ---- BRANCH: a recursive CHILD bolt hung off this midpoint ----------------
-    // It inherits the parent's direction rotated 15-40 deg off-axis, takes a fraction of
+    // It inherits the parent's direction rotated 8-22 deg off-axis, takes a fraction of
     // the remaining parent length, subdivides with its OWN fractal detail (so branches
     // branch), and inherits REDUCED brightness + thickness. It ends in open air — only
     // the trunk is required to terminate on the hit point.
@@ -865,8 +865,10 @@ void CombatFx::boltSubdivide(x3::rhi::IRenderDevice& device, const x3::rhi::Fram
     // fuzz, not structure.
     if (depth < 2 || rng() >= chance) return;
 
-    // Rotate the parent's direction 15-40 deg off-axis about a random perpendicular.
-    const float ang = (15.0f + rng() * 25.0f) * 3.14159265f / 180.0f;
+    // Rotate the parent's direction 8-22 deg off-axis about a random perpendicular.
+    // (was 15-40 deg — owner "STILL goes quite wide": tighter fork angle so branches
+    // hug the trunk instead of fanning the beam out into a wide web.)
+    const float ang = (8.0f + rng() * 14.0f) * 3.14159265f / 180.0f;
     const float ba  = rng() * 6.2831853f;
     const x3::phys::Vec3 perp{ u.x * std::cos(ba) + v.x * std::sin(ba),
                                u.y * std::cos(ba) + v.y * std::sin(ba),

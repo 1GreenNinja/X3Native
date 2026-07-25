@@ -123,10 +123,26 @@ x3::rhi::IRenderDevice::FogParams fogOf(float r, float g, float b, float d,
 // "ghost-gate" failure the rifthub root-caused).
 struct ZoneAir { float amb[3]; float ibl; };
 const ZoneAir& airFor(uint8_t z) {
-    static const ZoneAir kDark   { { 0.030f, 0.032f, 0.038f }, 0.20f };  // detention
-    static const ZoneAir kMid    { { 0.150f, 0.158f, 0.175f }, 0.35f };  // built interiors
-    static const ZoneAir kOrganic{ { 0.020f, 0.026f, 0.022f }, 0.18f };  // cave / monster space
+    // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): these airs were tuned against the BENT
+    // output curve (the swapchain never sRGB-encoded — 5951890b), so they all read
+    // brighter now. TWO calibration sources, two postures:
+    //   * HALLS/CORRIDORS (kHall, NEW) — anchored to the owner's locked acceptance
+    //     target ("the hall outside the cell as it used to look WITH the flashlight —
+    //     without it", reference frames in docs/screenshots/gamma_recal/). That look
+    //     needs a genuinely dark air (~0.024) so the warm pendant pools + near-black
+    //     fog own the read. Precision-matched, not guessed.
+    //   * EVERY OTHER INTERIOR (kMid/kDark/kOrganic) — the owner PLAYED the post-gamma
+    //     build live (2026-07-25) and called the facility "OK, a bit too bright —
+    //     needs to be turned down a HAIR." So these take a GENTLE trim (~20-25%) from
+    //     their pre-fix values, no restructure. Do not overcorrect rooms into gloom.
+    // Both are VALUE retunes from the corrected baseline — no exposure/encode hacks.
+    static const ZoneAir kHall   { { 0.024f, 0.025f, 0.029f }, 0.20f };  // halls/corridors (anchor-matched)
+    static const ZoneAir kDark   { { 0.024f, 0.026f, 0.030f }, 0.17f };  // detention (hair trim)
+    static const ZoneAir kMid    { { 0.115f, 0.121f, 0.134f }, 0.30f };  // built interiors (hair trim)
+    static const ZoneAir kOrganic{ { 0.016f, 0.021f, 0.018f }, 0.15f };  // cave / monster space (hair trim)
     switch (z) {
+        case ZHall:
+        case ZCorridor: return kHall;
         case ZWard:    return kDark;
         case ZCave:
         case ZOrganic: return kOrganic;
@@ -142,6 +158,15 @@ constexpr float kExteriorIbl        = 0.50f;   // app_run sets this for the SEAM
 const Recipe& recipeFor(uint8_t z) {
     static const Recipe kRecipes[ZCount] = {
         /*ZNone*/     {},
+        // ===== GAMMA-RECAL (fix/gamma-recal, 2026-07-25): the whole table was tuned
+        // against the BENT curve (5951890b). The owner PLAYED the corrected build and
+        // called the facility 'OK, a bit too bright — turn it down a HAIR', so every
+        // non-corridor zone takes a GENTLE hue-preserving trim: keys+accents x0.85,
+        // fog colours x0.8 (density/reach untouched). ZWard alone takes x0.72+fog x0.7
+        // — measured blown (WR-1 mean 74-76, p50 ~60, p95 175-192, cream-washed walls;
+        // frames in docs/screenshots/gamma_recal/zones_*). ZHall/ZCorridor are NOT in
+        // this scheme: they are precision-anchored to the owner's hall reference
+        // (see their own comment). =====
         // ===== KEY LEVELS — THE WHOLE TABLE WAS HALF-LIT (2026-07-12 facility audit) =====
         // Every zone key in this table was authored at a mean of 0.7-2.4 while EVERY practical
         // that actually WORKS in this building runs 3.2-3.3: the cell's fluorescent tube is
@@ -159,12 +184,22 @@ const Recipe& recipeFor(uint8_t z) {
         // the facility already proved. It pairs with the ceiling VALUE clamp in
         // surface_library.h (albedo band [0.08, 0.40]); the two MUST ship together — the clamp
         // alone measurably darkened every corridor (see the note there).
+        // GAMMA-RECAL (fix/gamma-recal): the hall/corridor keys were COOL blue-white and
+        // their fog a pale cyan — under the bent curve that photographed as black falloff
+        // with the WARM torch pooling on the near walls, and THAT read is the owner's
+        // locked acceptance target ("the hall as it used to look WITH the flashlight —
+        // without it"). So the corridor rhythm keys now ARE the old torch: the exact
+        // warm-white the flashlight carried (3.30/3.10/2.75), one pool every ~8 m, and
+        // the fog drops to a near-black warm-neutral so the run between pools falls into
+        // darkness instead of a milky cyan wash (the honest curve lifted the old 0.03-0.046
+        // fog colours ~5x on screen). Matched against the 5951890b^ reference frames in
+        // docs/screenshots/gamma_recal/ (hall_cam{A,B,C}).
         /*ZHall*/     { "mw_metal_trim_b", 2.8f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        2.87f, 3.15f, 3.52f, 6.0f,   0.14f, 0.75f, 0.85f, 2.6f,
-                        fogOf(0.030f, 0.040f, 0.046f, 0.0045f, 1.5f, 0.65f) },
+                        1.90f, 1.79f, 1.58f, 5.5f,   0.14f, 0.75f, 0.85f, 2.6f,
+                        fogOf(0.002f, 0.002f, 0.0018f, 0.100f, 2.5f, 0.97f) },
         /*ZCorridor*/ { "mw_concrete_panels_a", 2.6f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        2.80f, 3.05f, 3.40f, 5.0f,   0.14f, 0.75f, 0.85f, 2.4f,
-                        fogOf(0.030f, 0.040f, 0.046f, 0.0045f, 1.5f, 0.65f) },
+                        1.90f, 1.79f, 1.58f, 5.5f,   0.14f, 0.75f, 0.85f, 2.4f,
+                        fogOf(0.002f, 0.002f, 0.0018f, 0.100f, 2.5f, 0.97f) },
         // W2-A DETENTION = hazard AMBER (bible/audit). The accent was already amber;
         // warm the fog tint from near-neutral to a clear amber wash and widen the
         // accent so every ward cell reads amber, not cold (audit fix: "detention
@@ -177,34 +212,34 @@ const Recipe& recipeFor(uint8_t z) {
         // old key was tuned while applyCabAtmosphere washed 0.42 ambient over the whole game
         // (B1) — with the wash gone it under-lights by ~2x. Hue is unchanged (both keys are
         // 1 : 0.77 : 0.47 warm); only the level moves.
-                        4.27f, 3.30f, 2.04f, 3.6f,   1.72f, 0.96f, 0.22f, 2.9f,
-                        fogOf(0.058f, 0.041f, 0.023f, 0.0042f, 1.2f, 0.62f) },
+                        3.07f, 2.38f, 1.47f, 3.6f,   1.24f, 0.69f, 0.16f, 2.9f,
+                        fogOf(0.041f, 0.029f, 0.016f, 0.0042f, 1.2f, 0.62f) },
         /*ZSecurity*/ { "mw_concrete_panels_a", 2.4f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
-                        3.14f, 3.14f, 3.30f, 3.2f,   1.40f, 0.07f, 0.05f, 2.2f,
-                        fogOf(0.020f, 0.022f, 0.026f, 0.0030f, 1.2f, 0.55f) },
+                        2.67f, 2.67f, 2.81f, 3.2f,   1.19f, 0.06f, 0.04f, 2.2f,
+                        fogOf(0.016f, 0.018f, 0.021f, 0.0030f, 1.2f, 0.55f) },
         /*ZLab*/      { "mw_plaster_painted", 2.6f, "sr_rubberfloor", 2.2f, "hh_ceiling_01a", 2.8f,
-                        3.11f, 3.38f, 3.11f, 6.5f,   0.25f, 1.10f, 0.35f, 2.6f,
-                        fogOf(0.038f, 0.046f, 0.040f, 0.0030f, 1.5f, 0.55f) },
+                        2.64f, 2.87f, 2.64f, 6.5f,   0.21f, 0.94f, 0.30f, 2.6f,
+                        fogOf(0.030f, 0.037f, 0.032f, 0.0030f, 1.5f, 0.55f) },
         /*ZBoss*/     { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "mw_metal_panels_a", 3.2f,
-                        4.25f, 3.32f, 2.03f, 6.0f,   1.50f, 0.95f, 0.25f, 2.6f,
-                        fogOf(0.045f, 0.040f, 0.034f, 0.0040f, 1.4f, 0.62f) },
+                        3.61f, 2.82f, 1.73f, 6.0f,   1.28f, 0.81f, 0.21f, 2.6f,
+                        fogOf(0.036f, 0.032f, 0.027f, 0.0040f, 1.4f, 0.62f) },
         /*ZLobby*/    { "mw_metal_trim_a", 2.8f, "sr_rubberfloor", 2.2f, "mw_metal_panels_a", 3.0f,
-                        2.94f, 3.17f, 3.49f, 4.6f,   0.14f, 0.75f, 0.85f, 2.4f,
-                        fogOf(0.030f, 0.040f, 0.046f, 0.0040f, 1.5f, 0.60f) },
+                        2.50f, 2.69f, 2.97f, 4.6f,   0.12f, 0.64f, 0.72f, 2.4f,
+                        fogOf(0.024f, 0.032f, 0.037f, 0.0040f, 1.5f, 0.60f) },
         /*ZStorage*/  { "mw_concrete_panels_b", 2.6f, "sr_concrete_a", 2.4f, "mw_metal_panels_a", 3.0f,
-                        2.97f, 2.53f, 1.87f, 4.2f,   1.50f, 0.95f, 0.25f, 2.2f,
-                        fogOf(0.045f, 0.040f, 0.034f, 0.0035f, 1.2f, 0.60f) },
+                        2.52f, 2.15f, 1.59f, 4.2f,   1.28f, 0.81f, 0.21f, 2.2f,
+                        fogOf(0.036f, 0.032f, 0.027f, 0.0035f, 1.2f, 0.60f) },
         // ---- W3-2 tower floors. Sets include AD-3's four previously-unused curated
         // survivors (cc_porous_cement, mw_thermal_padding, sr_metal_b, mw_metal_grate). ----
         /*ZMedical*/  { "hh_wall_01a", 3.0f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        3.10f, 3.40f, 3.10f, 5.5f,   0.30f, 1.05f, 0.35f, 2.6f,
-                        fogOf(0.040f, 0.048f, 0.040f, 0.0032f, 1.4f, 0.55f) },
+                        2.64f, 2.89f, 2.64f, 5.5f,   0.26f, 0.89f, 0.30f, 2.6f,
+                        fogOf(0.032f, 0.038f, 0.032f, 0.0032f, 1.4f, 0.55f) },
         /*ZGenetics*/ { "mw_plaster_painted", 2.6f, "hh_floor_01a", 2.4f, "hh_ceiling_01a", 2.8f,
-                        2.97f, 3.59f, 3.04f, 5.5f,   0.20f, 1.20f, 0.30f, 2.8f,
-                        fogOf(0.034f, 0.052f, 0.036f, 0.0042f, 1.4f, 0.60f) },
+                        2.52f, 3.05f, 2.58f, 5.5f,   0.17f, 1.02f, 0.26f, 2.8f,
+                        fogOf(0.027f, 0.042f, 0.029f, 0.0042f, 1.4f, 0.60f) },
         /*ZCyber*/    { "sr_metal_b", 2.6f, "mw_metal_grate", 2.0f, "mw_metal_panels_a", 3.0f,
-                        2.84f, 3.13f, 3.62f, 5.0f,   0.16f, 0.85f, 1.05f, 2.6f,
-                        fogOf(0.024f, 0.032f, 0.040f, 0.0038f, 1.4f, 0.60f) },
+                        2.41f, 2.66f, 3.08f, 5.0f,   0.14f, 0.72f, 0.89f, 2.6f,
+                        fogOf(0.019f, 0.026f, 0.032f, 0.0038f, 1.4f, 0.60f) },
         // W8-1 floor identity: the drone station stands on HAZARD-STRIPED deck plate
         // (sr_floorstripes — a curated set no zone used yet), not the same grate as F4.
         // W2-A F5 floor scale fix (report §1.2): sr_floorstripes at 2.4 m/repeat read as
@@ -212,27 +247,27 @@ const Recipe& recipeFor(uint8_t z) {
         // so the deck reads as HANGAR LANES (a code dial, not a reforge).
         // LAND-LIGHTING: 6.0 m floor scale KEPT; key takes the audit's honest value (1.75 -> 3.46).
         /*ZDroneBay*/ { "mw_thermal_padding", 2.8f, "sr_floorstripes", 6.0f, "mw_metal_panels_a", 3.2f,
-                        3.46f, 3.27f, 2.87f, 6.5f,   1.55f, 0.95f, 0.25f, 2.8f,
-                        fogOf(0.035f, 0.035f, 0.032f, 0.0035f, 1.5f, 0.60f) },
+                        2.94f, 2.78f, 2.44f, 6.5f,   1.32f, 0.81f, 0.21f, 2.8f,
+                        fogOf(0.028f, 0.028f, 0.026f, 0.0035f, 1.5f, 0.60f) },
         /*ZSalvari*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_concrete_01", 3.2f,
-                        2.42f, 2.02f, 1.36f, 4.5f,   0.25f, 1.10f, 0.45f, 2.8f,
-                        fogOf(0.018f, 0.026f, 0.021f, 0.0060f, 1.2f, 0.72f) },
+                        2.06f, 1.72f, 1.16f, 4.5f,   0.21f, 0.94f, 0.38f, 2.8f,
+                        fogOf(0.014f, 0.021f, 0.017f, 0.0060f, 1.2f, 0.72f) },
         // LAND-LIGHTING: cc_exec_floor (the curated exec carpet) KEPT from main; the key takes
         // the audit's honest value (2.00 -> 3.62).
         /*ZExec*/     { "cc_porous_cement", 3.2f, "cc_exec_floor", 2.6f, "mw_metal_panels_a", 3.2f,
-                        3.62f, 3.26f, 2.72f, 5.5f,   1.60f, 1.15f, 0.45f, 2.6f,
-                        fogOf(0.040f, 0.036f, 0.030f, 0.0025f, 1.6f, 0.50f) },
+                        3.08f, 2.77f, 2.31f, 5.5f,   1.36f, 0.98f, 0.38f, 2.6f,
+                        fogOf(0.032f, 0.029f, 0.024f, 0.0025f, 1.6f, 0.50f) },
         // W5-1: the Nexus Chamber — no surfaces/lights (canon_45 owns the look);
         // the fog IS the recipe: near-black, heavy, silhouettes-over-detail.
         /*ZCave*/     { nullptr, 0, nullptr, 0, nullptr, 0,
                         0, 0, 0, 0,   0, 0, 0, 0,
-                        fogOf(0.010f, 0.014f, 0.010f, 0.0140f, 0.8f, 0.88f) },
+                        fogOf(0.008f, 0.011f, 0.008f, 0.0140f, 0.8f, 0.88f) },
         // W8-1: organic story rooms — dark concrete base under a lattice lid, one dim
         // warm practical, BIOLUME GREEN accent, heavy green-black fog (§3 monster spaces;
         // the blood-red half of the two-accent exception is painted per-room, not here).
         /*ZOrganic*/  { "sr_concrete_01", 2.8f, "sr_concrete_a", 2.6f, "sr_metal_lattice", 3.0f,
-                        2.09f, 1.58f, 1.10f, 4.2f,   0.28f, 1.15f, 0.45f, 3.0f,
-                        fogOf(0.012f, 0.022f, 0.015f, 0.0085f, 1.0f, 0.78f) },
+                        1.78f, 1.34f, 0.94f, 4.2f,   0.24f, 0.98f, 0.38f, 3.0f,
+                        fogOf(0.010f, 0.018f, 0.012f, 0.0085f, 1.0f, 0.78f) },
     };
     return kRecipes[z < ZCount ? z : ZNone];
 }
@@ -743,13 +778,27 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
         // first, THEN measure the drop, or a 12 m wing room would buy 12 m of range for a
         // lamp that is only 4.6 m up.
         const float keyY     = std::min(cY - 0.5f,  fY + 4.6f);   // pendant (rooms/labs)
-        const float rowY     = std::min(cY - 0.35f, fY + 4.75f);  // corridor/hall light rows
+        // GAMMA-RECAL: the rows used to hug the ceiling (cY - 0.35). Under the honest
+        // curve that painted a HOT patch on the ceiling right over every lamp (p95 ~110
+        // vs the reference's 72 in the hall match) while the eye-level walls stayed
+        // dark. Hang them as dropped pendants — 1.5 m of cable — so the pool lands on
+        // the walls and floor the player actually looks at, and the ceiling above falls
+        // toward the reference's darkness. Rooms keep their own keyY (unchanged).
+        const float rowY     = std::min(cY - 1.50f, fY + 3.50f);  // corridor/hall light rows
         const float keyReach = std::max(rec.keyRange, (keyY - fY) + 4.0f);
         const float rowReach = std::max(rec.keyRange, (rowY - fY) + 4.0f);
         if (z == ZHall || z == ZCorridor) {
-            // Rhythm of cool keys along the long axis (the corridor's ONE statement).
+            // GAMMA-RECAL rhythm: DENSE dim warm pendants (4 m pitch, short reach)
+            // instead of the old sparse 8 m rhythm. The reference read (old torch on
+            // the bent curve) is bright IMMEDIATE walls falling fast into darkness —
+            // and the spatial diff of the sparse rig showed exactly the inverse
+            // (dark frame-edge walls beside the camera, bright 5-15 m band where the
+            // pools landed). A 4 m pitch keeps every wall section within ~2 m of a
+            // lamp, so the near field reads warm-lit from ANY standpoint, and the
+            // heavy near-black zone fog owns everything beyond — the same
+            // camera-centric falloff the torch gave, built from real fixtures.
             const float len = longX ? r.w : r.d;
-            const int nKeys = std::max(1, (int)(len / 8.0f));
+            const int nKeys = std::max(1, (int)(len / 4.0f));
             for (int i = 0; i < nKeys; ++i) {
                 const float t = (i + 0.5f) / nKeys - 0.5f;
                 addLight(r.cx + (longX ? t * len : 0), rowY,

@@ -165,18 +165,28 @@ def _assign_first_slot(arm, act):
         log("  slot assign warn:", e)
 
 
-def src_world_hips_height(src):
-    b = src.data.bones.get(BONE_MAP[ROOT_BONE])
+def _armature_relative_hips_height(arm_obj, bone_name):
+    # HEIGHT MUST BE ARMATURE-RELATIVE, NOT WORLD. Jake_22_actions.glb ships its
+    # Armature OBJECT with a baked world offset (T.y = -0.94875): measuring the
+    # hips through matrix_world folded that offset into the height (0.194 m
+    # instead of 1.142 m), blowing loc_scale up 5.9x and baking Walk/Run hips
+    # THROUGH the floor (the "buried half-way + bouncing" bug; the shipped
+    # AnnaCasual_anim.glb was repaired by tools/fix_root_y_glb.py). Use only the
+    # armature's ROTATION/SCALE (keeps the up-axis mapping) and drop its object
+    # translation entirely: feet sit at the armature origin in these rigs, so
+    # hips height above the feet == |(R*S) @ head_local|.z.
+    b = arm_obj.data.bones.get(bone_name)
     if not b:
         return 1.0
-    return abs((src.matrix_world @ b.head_local).z)
+    return abs((arm_obj.matrix_world.to_3x3() @ b.head_local).z)
+
+
+def src_world_hips_height(src):
+    return _armature_relative_hips_height(src, BONE_MAP[ROOT_BONE])
 
 
 def tgt_world_hips_height(tgt):
-    b = tgt.data.bones.get(ROOT_BONE)
-    if not b:
-        return 1.0
-    return abs((tgt.matrix_world @ b.head_local).z)
+    return _armature_relative_hips_height(tgt, ROOT_BONE)
 
 
 def find_jake_action(name):

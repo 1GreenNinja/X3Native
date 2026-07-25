@@ -307,9 +307,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/AnnaCasual_anim.glb",
-      "sha256": "b4d54a058c0b4fac09e63fa5671d2df0be9b570784bf767418697d1109d1b09c",
-      "size": 13215620,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "5d2d1615e414152beb98cd3046b567127381a098b149159496fbacb7cf6792e7",
+      "size": 12284388,
+      "source_note": "anim-enrichment gestures + root-Y repair of Walk/Run (fix_root_y_glb.py; Jake armature -0.9488 loc_scale bug)"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaTactical.glb",
