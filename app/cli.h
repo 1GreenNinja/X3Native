@@ -202,6 +202,11 @@ struct CliOptions {
     // of known LINEAR values and reads back the stored byte — linear 0.5 MUST land
     // on ~188 (127 = still UNORM/unfixed). Self-contained headless Vulkan. Additive.
     bool        testGamma = false;
+    // --test-clubnpcs (feat/club-npcs): the three canon dialogue NPCs (Danny at the
+    // U-bar, Amara + Emma in the Private Lounge) place with valid talk anchors; their
+    // three chat trees parse + FULL-reachability validate; E-to-talk resolves each;
+    // each `hub` tree starts + reaches its menu. Additive flag.
+    bool        testClubNpcs = false;
 
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark

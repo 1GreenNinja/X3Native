@@ -984,12 +984,20 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running LINEAR-vs-GAMMA acceptance-gate byte measurement "
                     "(clear B8G8R8A8_SRGB to a linear ramp, read stored byte; linear 0.5 must be ~188)...");
         return x3::game::runGammaProbe();
+    }
     if (tf.testComplex) {
         x3::logInfo("running SURVIVAL COMPLEX self-test "
                     "(7-level dungeon west of the club: L2-L7 build, stairwell connects "
                     "top-to-bottom, both entrances reach it, L7 hydroponics, NPC markers, "
                     "light budget, leak-clean)...");
         return x3::game::runComplexSelfTest() ? 0 : 1;
+    }
+    if (tf.testClubNpcs) {
+        x3::logInfo("running Club 1127 CANON NPCs self-test (feat/club-npcs) "
+                    "(Danny @ U-bar + Amara/Emma @ Private Lounge place with talk anchors; "
+                    "danny/amara/emma chat trees parse + full-reachability validate; "
+                    "E-to-talk resolves each; hub trees start + reach their menu)...");
+        return x3::game::runClubNpcsSelfTest() ? 0 : 1;
     }
     if (tf.testPerfshop) {
         x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "

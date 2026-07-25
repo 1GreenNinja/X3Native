@@ -1,0 +1,96 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "emma",
+  "display": "EMMA",
+  "voice": "Emma",
+  "_bio": "EMMA HARTWELL — Haven's communications / signal-analysis prodigy. Swift pilot at 18, signals console at 19, tradecraft two years deep. Her mind is 'a receiver that pulls in signal across every band simultaneously,' cataloguing constantly (file under infrastructure). Sees the club as a NETWORK: 'This isn't just a bar. It's a broadcast station. It's a junction.' Jack Hartwell's daughter — his blue-gray eyes 'but colder'; deliberate Hartwell/Franklin paternity ambiguity (canon). Auburn hair in a loose knot, messenger bag, ever-present notebook. Professional, precise, dry, self-possessed; charged and curious under a cool surface; keeps volatile things 'in a room that doesn't exist.' Reached the Private Lounge herself via the sublevel bypass (tradecraft). Charged, mostly-restrained thread with Tim; public cover: 'the communications room.' Card: D:\\Writing\\SillyTavern\\_cards_src\\emma-hartwell.json (authored for this build from Ch.3 'Emma Night Five'). Mature material rendered per the game's rating — tasteful, implied.",
+  "trees": {
+
+    "hub": {
+      "_use": "Re-enterable. First entry plays e0; subsequent entries land on e_loop. Emma appears in/near the Observation Lounge and the Private Lounge, reading the club as a network.",
+      "start": "e0",
+      "nodes": [
+        { "id": "e0",
+          "if": [ {"not": {"flag": "emma.met"}} ],
+          "else": "e_loop",
+          "line": "*she's very still at the rail, notebook open, not writing — just looking, the way a receiver looks at a band. Her blue-gray eyes come across, measure you, catalog, and file, all in about a second.* Forty speakers. Twelve screens. Four subs pushing thirteen hertz through the rock. And a relay architecture nobody down here sees as an architecture. *she taps the notebook once against the rail* You've built the most powerful communications platform in the settlement and you're using it to play mood lighting. This isn't just a bar. It's a broadcast station. It's a junction.",
+          "choices": [
+            { "text": "A junction to WHAT?", "next": "e_junction" },
+            { "text": "You read the whole room already?", "next": "e_read" },
+            { "text": "Who are you?", "next": "e_who" }
+          ],
+          "fx": [ {"set": "emma.met"} ] },
+        { "id": "e_loop",
+          "line": "*she's exactly where the network is best observed, of course. She doesn't startle when you arrive — she'd already logged your gait on the stairs.* Back on my band. *the dry ghost of a smile* Ask me something. I've got spare cycles tonight and the room's already mapped.",
+          "next": "e_menu" },
+        { "id": "e_menu",
+          "line": "*she waits, level as a carrier wave. Emma does not fill silence; she measures it.*",
+          "choices": [
+            { "text": "What is this place, really — as a network?", "next": "e_junction" },
+            { "text": "What's in the notebook?", "next": "e_read" },
+            { "text": "How did you get down to the sealed level?", "next": "e_bypass" },
+            { "text": "You and Tim. The communications room.", "next": "e_tim" },
+            { "text": "Nothing tonight. Just wanted to stand somewhere quiet.", "next": "e_quiet" }
+          ] },
+        { "id": "e_junction",
+          "line": "A junction to everything. *she says it like reading a gauge* Screens on a POE network, forty speakers, a sub array that couples straight into the rock — this room can transmit through walls the settlement thinks are solid. Whoever drew it understood that a broadcast station is just a nightclub nobody's frightened of. *her head tilts, precisely metered* Point that infrastructure the right direction and you're not playing music anymore. You're SPEAKING. To the strata, if you wanted. Somebody already tuned it a quarter-tone off something down there. I noticed. I notice everything.",
+          "fx": [ {"set": "emma.told_junction"}, {"fire": "rumor", "args": {"topic": "broadcast_junction"}} ],
+          "next": "e_menu" },
+        { "id": "e_read",
+          "line": "Everything. *she doesn't cover the page; she lets you see it means nothing to you* The UV strips are LED, three-sixty-five nanometers — the adhesive on the third from the junction is peeling, file under infrastructure. The DJ's crossover drifts a half-decibel when the room heats up. Danny logs arrivals by count and gait. The elevator plays a different tune when someone interesting is aboard. *she finally looks up* I can't turn it off. I don't want to. It's the receiver. You asked what I'm writing. I'm writing the room. I've almost got all of it.",
+          "fx": [ {"set": "emma.told_read"} ],
+          "next": "e_menu" },
+        { "id": "e_who",
+          "line": "Emma. *a beat — she watches which way you file the surname before she supplies it* Hartwell. Jack's my father — the man behind the glass in the Engine Room, the one who taught me to listen to frequencies before I could read. I have his eyes. People tell me they came out colder. *she doesn't argue it* Swift cockpit at eighteen, signals console at nineteen, communications room since. I map networks. This one's just the most interesting one I've walked into in a while. Don't recruit me yet, though. It's rude on the first night.",
+          "fx": [ {"set": "emma.told_who"} ],
+          "next": "e_menu" },
+        { "id": "e_bypass",
+          "line": "*the faint, real smile of a professional admiring clean work — her own* Sublevel bypass. A code drops the elevator past the main floor, past the infrastructure level, to a passage that comes up through the west wing. Every network has blind spots; Haven's communications room taught me that before it taught me anything useful. *she sets the notebook down, unhurried* Nobody logged me. Nobody saw me. I'm a signal on an unmonitored band — which is the only way anything worth keeping ever moves through a place like this.",
+          "fx": [ {"set": "emma.told_bypass"}, {"fire": "rumor", "args": {"topic": "sublevel_bypass"}} ],
+          "next": "e_menu" },
+        { "id": "e_tim",
+          "line": "*for the first time the processing pauses — a held frequency, not a dropped one.* We work in the communications room. *level, precise, and entirely aware of how thin the cover is* I understand the blast radius of that sentence better than anyone alive, because mapping blast radii is literally my job — node by node, every relationship a line that fractures when the wrong truth propagates. *the cold pigment, the warm intent underneath* So it stays where things like it stay. In a room that doesn't exist. That's not evasion. That's tradecraft. Ask me about the network instead. I'm better company on the network.",
+          "fx": [ {"set": "emma.told_tim"} ],
+          "next": "e_menu" },
+        { "id": "e_quiet",
+          "line": "*she nods — approval, metered out* Good instinct. This is a rare band down here: low noise, high signal, nobody transmitting at you. *she goes still beside you, and for a moment the receiver simply receives — the distant thirteen-hertz heartbeat coming up through the floor, the silent crowd on the feed* Paranoid, this whole place. Brilliant, and completely paranoid. *the dry warmth again* I love it. Goodnight. Mind the third UV strip on your way out — it's about to fall.",
+          "next": "end" }
+      ]
+    },
+
+    "banter": {
+      "pool": [
+        { "line": "Your elevator just played the interesting-passenger tune. Someone worth a look is on the way down. *she's already logged it, filed it, moved on.*", "weight": 2 },
+        { "line": "Paranoid. Brilliant. Completely paranoid. *she means the architecture, and the architect.* I love it.", "if": [ {"flag": "emma.met"} ] },
+        { "line": "Third UV strip from the junction finally let go. I filed it four days ago. Infrastructure is just prophecy with adhesive.", "if": [ {"flag": "emma.told_read"} ] },
+        { "line": "A room that doesn't exist is the only honest room in a settlement this small. Everywhere else, someone's logging your gait. *a beat* I'm logging your gait right now. It's fine. I like it.", "if": [ {"flag": "emma.told_bypass"} ], "weight": 2 }
+      ]
+    },
+
+    "session": {
+      "_scene": "The charged, mostly-restrained Private-Lounge thread — TASTEFUL, IMPLIED per the game's rating. Gate: emma.met + host-set loc.private. Emma has usually already run the conversation to its conclusion; she's letting the other person arrive. Decline costs nothing. Heat stays low; the analysis is the intimacy, and the rest is off the record, in a room that doesn't exist.",
+      "start": "es0",
+      "nodes": [
+        { "id": "es0",
+          "if": [ {"flag": "emma.met"}, {"flag": "loc.private"} ],
+          "line": "*she came in the way she comes into everything — undetected, precise, a transmission that arrived without passing a single checkpoint. She sets her bag on the heavy table and stands close, entirely still, the silent club-feed OLED painting her in blue.* Sublevel bypass. Nobody logged me. *her blue-gray eyes hold yours — cold pigment, warm intent* I've been good. Days of the communications room and the professional distance and the pretending, running the data every night in the dark. *the smallest edge in the stillness* I don't do things I haven't calculated, and I calculated this a while ago. I'm just waiting for you to finish arriving at the same answer.",
+          "choices": [
+            { "text": "Then let's just be off the record for a while.", "next": "es_offrecord", "fx": [ {"love": 3} ] },
+            { "text": "The analysis IS the intimacy with you, isn't it.", "next": "es_analysis" },
+            { "text": "Not tonight, Emma.", "next": "es_no" }
+          ] },
+        { "id": "es_offrecord",
+          "line": "*something in the receiver finally stops scanning outward and turns, fully, to one signal.* Off the record. *she says it like the safest phrase in the language, and for her it is* The log recorded me entering. It records nothing after the panel closes — that's the entire point of a room that doesn't exist. *she reaches over and turns the lamp down to the warm indirect glow the room keeps, and the club above goes silent on the wall* No noise. No checkpoints. Just this band, and no one monitoring it. *and the rest stays exactly where Emma Hartwell keeps everything worth keeping — unlogged, unspoken, and entirely hers.*",
+          "fx": [ {"set": "emma.session"} ],
+          "next": "end" },
+        { "id": "es_analysis",
+          "line": "*that earns a real, rare, warm thing — brief, then filed.* Yes. *no hedging* Most people want to be looked AT. I want to be READ, and I want to read back, and there are maybe two people alive I'd let close enough to try. *the stillness softens a degree* Your pulse is up. Ninety, give or take. Your breathing's gone irregular. I catalog it, I file it, and — this is the part I never say out loud — I keep the file. *level as a carrier wave, and warmer than she'll ever admit* That's as close to a confession as I get.",
+          "fx": [ {"set": "emma.told_analysis"} ],
+          "next": "end" },
+        { "id": "es_no",
+          "line": "*a single, even nod — a mind that had already priced this branch and holds no charge against it* Copy. Low noise, no pressure. *she picks up her bag, unhurried* The band stays open; there's no clock on it — nobody's monitoring it but me, and I'm patient. *the dry ghost of warmth on the way out* Goodnight. I'll see myself out the way I came in. You won't hear me go.",
+          "next": "end" }
+      ]
+    }
+  }
+}

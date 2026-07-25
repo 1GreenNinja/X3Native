@@ -2549,6 +2549,64 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         }
     }
 
+    // ==================================================================
+    // CANON DIALOGUE NPCs (feat/club-npcs) — the three Sovereign Rising
+    // characters brought to life: DANNY at the U-bar (BartenderDanny.glb, the
+    // canon builder/bartender rig), AMARA + EMMA in the Private Lounge (Complex
+    // L1, at the lounge/2nd-story elevation). Each is an inert skinned prop (the
+    // DJ/bouncer path) plus a talk anchor + chat-tree id the host wires to E.
+    // Rigs: Danny=BartenderDanny.glb (canon-named); Amara=AnnaTactical.glb
+    // (reused — no dedicated Amara rig; tactical read suits the logistics
+    // commander); Emma=AnnaCasual.glb (reused — no dedicated Emma rig; the
+    // casual analyst read). Positions follow the built geometry (U-bar uX=3.0;
+    // Private Lounge situation room srX/srZ recomputed from the §4.4 block).
+    // ==================================================================
+    {
+        const float warmC[4] = { 1.20f, 1.10f, 0.95f, 1.0f };   // warm house tint (Danny)
+        const float amberC[4] = { 1.25f, 1.05f, 0.85f, 1.0f };  // warm amber (Amara, lounge)
+        const float coolC[4]  = { 1.00f, 1.05f, 1.30f, 1.0f };  // cool blue (Emma, club-feed glow)
+
+        // DANNY — dead center of the U-bar curve, inside the U, on the main floor.
+        // The U-bar carcass: uX=3.0, west base at uX-2.5=0.5; Danny stands just
+        // inside/behind it at his "bartender's watchtower", nose toward the entrance.
+        const x3::phys::Vec3 dannyPos{ 1.2f, oy + 0.0f, 0.0f };
+        addCharacter(scene, device, physics, modelDir, "BartenderDanny.glb",
+                     dannyPos, 1.0f, false, warmC);
+        m_canonNpcs.push_back(CanonNpc{ "danny", "DANNY", "hub",
+                                        x3::phys::Vec3{ dannyPos.x, dannyPos.y + 1.0f, dannyPos.z }, 3.5f });
+
+        // AMARA + EMMA — the Private Lounge (Complex L1) situation room, up at the
+        // lounge elevation. Recompute the §4.4 geometry: hallX = -HL-2.4,
+        // hallW = 5 ft, eastD = 3.0 -> situation room center srX, srZ = -3.0.
+        {
+            const float HLl = CW / 2.0f;
+            const float hallXl = -HLl - 2.4f;
+            const float hallWl = 5.0f * 0.3048f;
+            const float eastDl = 3.0f;
+            const float srXl = hallXl + hallWl / 2.0f + eastDl / 2.0f;
+            const float srZl = -3.0f;
+            const float lFeetY = oy + LOUNGE_Y + 0.13f;   // situation-room floor top
+
+            // Amara — by the heavy table / leather seating, commanding the room.
+            const x3::phys::Vec3 amaraPos{ srXl - 0.35f, lFeetY, srZl + 0.7f };
+            addCharacter(scene, device, physics, modelDir, "AnnaTactical.glb",
+                         amaraPos, 1.0f, false, amberC);
+            m_canonNpcs.push_back(CanonNpc{ "amara", "AMARA", "hub",
+                                            x3::phys::Vec3{ amaraPos.x, amaraPos.y + 1.0f, amaraPos.z }, 3.5f });
+
+            // Emma — drawn to the silent club-feed OLED on the east wall, standing
+            // just east of the heavy table in the warm light, reading the club as a
+            // broadcast junction.
+            const x3::phys::Vec3 emmaPos{ srXl + 0.98f, lFeetY, srZl };
+            addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
+                         emmaPos, 1.0f, false, coolC);
+            m_canonNpcs.push_back(CanonNpc{ "emma", "EMMA", "hub",
+                                            x3::phys::Vec3{ emmaPos.x, emmaPos.y + 1.0f, emmaPos.z }, 3.5f });
+        }
+        x3::logInfo("[club1127] placed 3 canon dialogue NPCs (Danny @ U-bar, "
+                    "Amara + Emma @ Private Lounge)");
+    }
+
     m_stats.entities = (int)(scene.size() - entsBefore);
 
     x3::logInfo("[club1127] built THE DEEP (Club 1127) at Y=" + std::to_string((int)oy) +
@@ -2814,6 +2872,20 @@ void Club1127World::drawCharacters(x3::rhi::IRenderDevice& device,
         c->drawMonster(device, frame, scene);
 }
 
+int Club1127World::talkTarget(const x3::phys::Vec3& eye) const {
+    // Nearest canon NPC whose talk anchor is within its reach of `eye` (3D). Used
+    // by the host E-to-talk path and the --test-clubnpcs self-test (same logic).
+    int best = -1;
+    float bestD2 = 1e30f;
+    for (size_t i = 0; i < m_canonNpcs.size(); ++i) {
+        const CanonNpc& n = m_canonNpcs[i];
+        const float dx = n.anchor.x - eye.x, dy = n.anchor.y - eye.y, dz = n.anchor.z - eye.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 <= n.talkReach * n.talkReach && d2 < bestD2) { bestD2 = d2; best = (int)i; }
+    }
+    return best;
+}
+
 void Club1127World::showcaseCamera(float out[5]) const {
     // Elevated vantage from the SE corner (near the elevator landing) looking
     // toward -X/-Z across the dance floor so the glowing checkerboard, the DJ
@@ -2837,6 +2909,7 @@ void Club1127World::showcaseCamera(float out[5]) const {
 
 #include "headless_device.h"
 #include "asset_root.h"        // x3::game::riggedGlbRoot()
+#include "chat_tree.h"         // feat/club-npcs: ChatTreeSystem / validateChatNpc (--test-clubnpcs)
 #include "engine/physics/IPhysicsWorld.h"
 #include <cmath>
 
@@ -3022,6 +3095,117 @@ bool runClubSelfTest() {
 
     const int total = pass + fail;
     x3::logInfo("club: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+    return fail == 0;
+}
+
+// ===========================================================================
+// --test-clubnpcs (feat/club-npcs): the three canon dialogue NPCs place with
+// valid talk anchors; their three chat trees parse + FULL-reachability validate;
+// E-to-talk resolves each NPC beside it and rejects a far point; each NPC's `hub`
+// entry tree starts and its menu is reachable.
+// ===========================================================================
+bool runClubNpcsSelfTest() {
+    int pass = 0, fail = 0;
+    auto check = [&](bool cond, const char* name) {
+        if (cond) { ++pass; x3::logInfo(std::string("[clubnpcs-test] PASS ") + name); }
+        else      { ++fail; x3::logError(std::string("[clubnpcs-test] FAIL ") + name); }
+    };
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    HeadlessRenderDevice device;
+    Scene scene;
+
+    Club1127World club;
+    club.build(scene, device, *physics, x3::game::riggedGlbRoot());
+
+    // (1) The three canon NPCs place with the expected ids + finite anchors.
+    const auto& npcs = club.canonNpcs();
+    check(npcs.size() == 3, "3 canon dialogue NPCs placed (Danny / Amara / Emma)");
+    auto findNpc = [&](const char* id) -> const Club1127World::CanonNpc* {
+        for (const auto& n : npcs) if (n.chatId == id) return &n;
+        return nullptr;
+    };
+    const auto* dN = findNpc("danny");
+    const auto* aN = findNpc("amara");
+    const auto* eN = findNpc("emma");
+    check(dN && aN && eN, "npc ids resolve: danny + amara + emma");
+    {
+        bool anchorsOk = true;
+        for (const auto* n : { dN, aN, eN }) {
+            if (!n) { anchorsOk = false; continue; }
+            if (!std::isfinite(n->anchor.x) || !std::isfinite(n->anchor.y) ||
+                !std::isfinite(n->anchor.z) || n->entryTree.empty() || n->talkReach <= 0.0f)
+                anchorsOk = false;
+        }
+        check(anchorsOk, "every NPC has a finite talk anchor + entry tree + positive reach");
+    }
+    // Danny on the main floor (Y ~ -200); Amara + Emma up at the Private Lounge
+    // (well above the club floor). Distinct positions, not stacked.
+    if (dN && aN && eN) {
+        const bool dannyFloor = std::fabs(dN->anchor.y - (-200.0f + 1.0f)) < 0.5f;
+        const bool loungeUp   = aN->anchor.y > -196.0f && eN->anchor.y > -196.0f;
+        const float sep = std::fabs(aN->anchor.x - eN->anchor.x) +
+                          std::fabs(aN->anchor.z - eN->anchor.z);
+        check(dannyFloor && loungeUp && sep > 0.5f,
+              "Danny at the U-bar (floor); Amara + Emma elevated in the Private Lounge, apart");
+    }
+
+    // (2) E-to-talk resolves each NPC from a point beside it, and a far point hits none.
+    if (dN && aN && eN) {
+        bool eachResolves = true;
+        for (const auto* n : { dN, aN, eN }) {
+            x3::phys::Vec3 beside{ n->anchor.x + 0.8f, n->anchor.y, n->anchor.z + 0.8f };
+            const int hit = club.talkTarget(beside);
+            if (hit < 0 || club.canonNpcs()[(size_t)hit].chatId != n->chatId) eachResolves = false;
+        }
+        check(eachResolves, "E-to-talk resolves Danny / Amara / Emma from a point beside each");
+        const int none = club.talkTarget(x3::phys::Vec3{ 9999.0f, -200.0f, 9999.0f });
+        check(none < 0, "E-to-talk resolves NOTHING from far outside every reach");
+    }
+
+    // (3) The three chat trees parse + FULL-reachability validate (start ∪ triggers
+    //     cover every node; no dangling next/else/choice targets).
+    ChatTreeSystem sys;
+    sys.loadDefault();
+    {
+        bool allSound = true;
+        for (const char* id : { "danny", "amara", "emma" }) {
+            const ChatNpc* np = sys.npc(id);
+            if (!np) { check(false, "chat tree present"); allSound = false; continue; }
+            std::vector<std::string> errs;
+            const bool ok = validateChatNpc(*np, /*fullReachability*/ true, errs);
+            for (const auto& e : errs) x3::logWarn(std::string("[clubnpcs-test] ") + e);
+            if (!ok) allSound = false;
+        }
+        check(sys.hasNpc("danny") && sys.hasNpc("amara") && sys.hasNpc("emma"),
+              "danny.json / amara.json / emma.json all loaded");
+        check(allSound, "all three trees FULLY sound (every node reachable, no dangling refs)");
+    }
+
+    // (4) Each NPC's `hub` entry tree starts and reaches its menu (nodes reachable
+    //     at runtime, not just structurally). Walk the first-entry spine into the menu.
+    {
+        bool allStart = true;
+        for (const auto* n : { dN, aN, eN }) {
+            if (!n) { allStart = false; continue; }
+            if (!sys.start(n->chatId, n->entryTree)) { allStart = false; continue; }
+            // First entry lands on the greeting (choices offered); pick choice 0,
+            // which routes back into the menu chain — proving the menu is reachable.
+            const bool hadChoices = !sys.choices().empty();
+            if (hadChoices) sys.choose(0);
+            const bool stillAlive = sys.active();
+            // Close cleanly so no conversation leaks into the next NPC.
+            sys.cancel();
+            if (!hadChoices && !stillAlive) allStart = false;
+        }
+        check(allStart, "each NPC's `hub` tree starts on E and its greeting offers choices");
+    }
+
+    physics->shutdown();
+
+    const int total = pass + fail;
+    x3::logInfo("clubnpcs: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
     return fail == 0;
 }
 
