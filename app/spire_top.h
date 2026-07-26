@@ -58,6 +58,7 @@
 #include "trigger.h"
 #include "door.h"
 #include "level1.h"
+#include "clone_boss.h"   // THE CLONE — the F7 Act-1 finale 3-phase boss + neural collar
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -180,9 +181,33 @@ public:
     const MonsterManager& overseerBoss() const { return m_overseer; }
     MonsterManager&       overseerBoss()       { return m_overseer; }
 
-    // The F7 Clone boss manager (read to assert a Boss-type leader is present + alive).
-    const MonsterManager& boss() const { return m_boss; }
-    MonsterManager&       boss()       { return m_boss; }
+    // The F7 Clone boss manager (read to assert a Boss-type leader is present +
+    // alive). This is the CloneBossFight's own manager, so every existing reader
+    // (the descent gate's `boss().aliveCount() == 0`, the self-test) is unchanged.
+    const MonsterManager& boss() const { return m_clone.boss(); }
+    MonsterManager&       boss()       { return m_clone.boss(); }
+
+    // ---- THE CLONE (Act-1 finale, F7) -------------------------------------
+    // The full 3-phase fight: SEPARATION -> NEURAL COLLAR -> MUTATED HYBRID, the
+    // collar destroy minigame, and the two integration events. The host reads this
+    // for the boss HP/phase HUD and forwards its E-key + fire.
+    CloneBossFight&       cloneFight()       { return m_clone; }
+    const CloneBossFight& cloneFight() const { return m_clone; }
+    // The DESCENT-GATE input: latched true the frame the Clone falls.
+    bool cloneDead() const { return m_clone.cloneDead(); }
+    // Latched true the frame Sarah's neural collar is destroyed (P2 success). The
+    // host mirrors this into its Sarah-saved latch; the companion-combat lane hooks
+    // CloneBossFight::setOnSarahFreed for the wake.
+    bool sarahFreed() const { return m_clone.sarahFreed(); }
+    // E-key hook (insert in the host's else-chain, BEFORE the generic rescue branch):
+    // land one destroy strike on the ACTIVE neural collar. Returns true iff consumed.
+    bool onCollarStrike(const x3::phys::Vec3& playerPos) {
+        return m_clone.strikeCollar(playerPos);
+    }
+    // "[E] ..." collar prompt for the HUD ("" when not near / not active).
+    std::string collarPrompt(const x3::phys::Vec3& playerPos) const {
+        return m_clone.collarPrompt(playerPos);
+    }
 
     // The F7 rescue victim (read to assert it is present but NOT active at load).
     bool   victimPresent() const { return m_victim != nullptr; }
@@ -211,7 +236,7 @@ private:
     SpireTopPlan   m_plan[(uint32_t)SpireTopFloor::Count];
     MonsterManager m_enemies[(uint32_t)SpireTopFloor::Count];
     MonsterManager m_overseer;         // the F6 "Alien Overseer" Boss-type leader (its own group)
-    MonsterManager m_boss;             // the F7 "Clone" Boss-type leader (its own group)
+    CloneBossFight m_clone;            // the F7 "Clone" Act-1 finale 3-phase boss + collar
     DoorSystem     m_doors;            // the per-floor keypad doors (F6 x2, F7 x1)
 
     // F7 rescue captive (Sarah, gated on the F7 hub). Owned here; drawn via

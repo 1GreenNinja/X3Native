@@ -59,6 +59,7 @@
 #include "canon_play.h"
 #include "desc_mechanics.h"   // W9-1: runDescMechSelfTest (--test-descmech)
 #include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
+#include "clone_boss.h"                      // THE CLONE — Act-1 finale 3-phase boss + neural collar — --test-clone
 #include "intro_coldopen.h"
 #include "intro_orchestrator.h"   // x3::intro::runIntroOrchestratorSelfTest (--test-introorch)
 #include "world_hosts.h"          // x3::apphost::runSurfaceStartSelfTest (--test-surfacestart)
@@ -679,6 +680,10 @@ int dispatchTests(const TestFlags& tf) {
                     "Saurian Soldier/Warlord, Grey Tasked, Nordic Steward, Mantis Arbiter) "
                     "self-test...");
         return x3::game::runCanonAliensSelfTest() ? 0 : 1;
+    }
+    if (tf.testClone) {
+        x3::logInfo("running THE CLONE Act-1 finale boss self-test (3-phase HP-gated machine: SEPARATION -> NEURAL COLLAR -> MUTATED HYBRID, the collar destroy minigame, and the \"Sarah freed\" / \"Clone dead\" integration events)...");
+        return x3::game::runCloneBossSelfTest() ? 0 : 1;
     }
     if (tf.testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "

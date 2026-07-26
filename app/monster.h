@@ -734,6 +734,23 @@ public:
     }
     bool calmLoopActive() const { return m_calmLoopClip >= 0; }
 
+    // ---- CLIP-SLOT OVERRIDE (Clone boss). The locomotion/combat clip slots are
+    // resolved at build time from a fixed set of fuzzy keys ("attack"/"strike"/
+    // "swing"/..., "death"/"die", ...). A rig whose clips are named outside that
+    // vocabulary — e.g. the JakeClone_player rig's "Backflip_Sweep_Kick",
+    // "Gunshot_Reaction", "Dead" — leaves those slots EMPTY and the character has no
+    // attack/death animation. This lets the spawning content module name the clip
+    // explicitly, by the SAME fuzzy-resolve rule setCalmLoop uses.
+    // ADDITIVE + INERT: nothing calls it unless a content module opts in, and an
+    // unresolved name leaves the existing slot untouched — so every existing enemy,
+    // roster row and self-test is bit-identical. Call AFTER buildMonsterTuned().
+    enum class ClipSlot : uint32_t {
+        Idle = 0, Walk = 1, Run = 2, Attack = 3, Attack2 = 4, HitReact = 5, Death = 6
+    };
+    void overrideClip(ClipSlot slot, const char* fuzzyName);
+    // Read a slot's resolved clip index (-1 = unresolved). Diagnostics/self-test.
+    int clipIndex(ClipSlot slot) const;
+
     // ---- W9-1: desc-mechanics hooks (docs/DESC_MECHANICS_TODO.md Tier A) ----
     // STUN (EMP): freeze the AI in place for `secs` — no movement, no attack,
     // any wind-up cancelled; death/corpse flow and fire() damage are untouched

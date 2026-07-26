@@ -8222,6 +8222,17 @@ int runDefaultHost(HostContext& hc) {
                 // desc-mechanics interact handled inside the lambda
             } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
+            } else if (topFloors.onCollarStrike(eye)) {
+                // F7 THE CLONE, phase 2: strike Sarah's NEURAL COLLAR. Active only
+                // while the Clone is staggered/shielded; the third strike destroys it,
+                // frees Sarah and mutates the Clone into its final form.
+                const auto& col = topFloors.cloneFight().collar();
+                npcBarkText = col.destroyed
+                    ? std::string("NEURAL COLLAR DESTROYED — SARAH IS FREE")
+                    : std::string("COLLAR CRACKING... ") + std::to_string(col.strikesLeft) + " LEFT";
+                npcBarkTimer = 3.0f;
+                x3::logInfo("use: F7 neural collar struck — strikes left " +
+                            std::to_string(col.strikesLeft));
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
                 x3::logInfo("use: F5 captive rescued — now a companion");
             } else if (topFloors.onRescue(eye)) {  // F7 rooftop captive (Sarah) rescue
@@ -9781,9 +9792,15 @@ int runDefaultHost(HostContext& hc) {
             // one-way no-op until BOTH hold; reading spire_top here is READ-ONLY. Once the
             // descent opens, dispatch its triggers (hidden lift + per-sub-level hubs, the
             // SL3 hub starts Chen's clock) and tick the sub-level encounters + hazard.
+            // THE CLONE's own latch is the authoritative "Clone dead" signal now
+            // (CloneBossFight fires it the frame the boss falls); the aliveCount()
+            // test is kept as the belt-and-braces equivalent it always was.
             const bool cloneFallen =
                 topFloors.plan(x3::game::SpireTopFloor::F7).hasBoss &&
-                topFloors.boss().aliveCount() == 0;
+                (topFloors.cloneDead() || topFloors.boss().aliveCount() == 0);
+            // Breaking Sarah's neural collar (the Clone fight's phase-2 gate) frees
+            // her — the SECOND descent-gate input, alongside the manual E rescue.
+            if (topFloors.sarahFreed()) sarahSaved = true;
             subLevels.openDescent(cloneFallen, sarahSaved);
             for (uint32_t tid : subTriggers.update(camPos)) subLevels.onTrigger(tid);
             subLevels.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
@@ -11043,6 +11060,42 @@ int runDefaultHost(HostContext& hc) {
                     const float py = (hh > 0) ? (hh * 0.22f) : 120.0f;
                     const float red[4] = { 1.0f, 0.25f, 0.2f, 1.0f };
                     device->drawHudText(frame, game.phaseBanner().c_str(), px, py, scale, red);
+                }
+                // F7 THE CLONE (Act-1 finale): the same banner treatment as the
+                // Martinez phase flash, plus a persistent boss HP/phase line while the
+                // fight is live. Reuses the Martinez boss-phase HUD path verbatim.
+                if (!terrainWorld && topFloors.built()) {
+                    const auto& cf = topFloors.cloneFight();
+                    uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                    if (cf.bannerTime() > 0.0f && !cf.banner().empty()) {
+                        const float scale = 28.0f;
+                        const float bw = cf.banner().size() * scale * 0.6f;
+                        const float px = (hw > 0) ? (hw * 0.5f - bw * 0.5f) : 420.0f;
+                        const float py = (hh > 0) ? (hh * 0.28f) : 160.0f;
+                        const float hot[4] = { 0.55f, 0.95f, 1.0f, 1.0f };   // clone-cyan
+                        device->drawHudText(frame, cf.banner().c_str(), px, py, scale, hot);
+                    }
+                    // Live boss line while the Clone is up AND the player is on its floor
+                    // (the fight only reads once it has been engaged — HP < full).
+                    if (cf.bossAlive() && cf.bossHpFrac() < 0.999f) {
+                        const std::string line = cf.hudLabel();
+                        const float scale = 3.0f;
+                        const float bw = line.size() * scale * 6.0f;
+                        const float px = (hw > 0) ? (hw * 0.5f - bw * 0.5f) : 420.0f;
+                        const float py = (hh > 0) ? (hh * 0.08f) : 60.0f;
+                        const float col[4] = { 0.62f, 0.90f, 1.0f, 1.0f };
+                        device->drawHudText(frame, line.c_str(), px, py, scale, col);
+                    }
+                    // "[E] BREAK SARAH'S NEURAL COLLAR" prompt while in reach.
+                    const std::string cp = topFloors.collarPrompt(camPos);
+                    if (!cp.empty()) {
+                        const float scale = 3.0f;
+                        const float bw = cp.size() * scale * 6.0f;
+                        const float px = (hw > 0) ? (hw * 0.5f - bw * 0.5f) : 420.0f;
+                        const float py = (hh > 0) ? (hh * 0.62f) : 380.0f;
+                        const float warn[4] = { 1.0f, 0.45f, 0.35f, 1.0f };
+                        device->drawHudText(frame, cp.c_str(), px, py, scale, warn);
+                    }
                 }
                 // F2 rescue timers (spec §5): stacked, below the objective line.
                 if (!terrainWorld) {
