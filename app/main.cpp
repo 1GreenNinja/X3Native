@@ -357,6 +357,7 @@ int main(int argc, char** argv) {
         _tf.testNetInterp = o.testNetInterp;
         _tf.testNetPredict = o.testNetPredict;
         _tf.testRescue = o.testRescue;
+        _tf.testCompanionCombat = o.testCompanionCombat;
         _tf.testThirdPerson = o.testThirdPerson;
         _tf.testNpcTalk = o.testNpcTalk;
         _tf.testChatTree = o.testChatTree;

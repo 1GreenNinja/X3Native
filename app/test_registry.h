@@ -81,6 +81,7 @@ struct TestFlags {
     bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
+    bool testCompanionCombat = false;   // --test-companion-combat (Sarah ally combat, Lane B)
     bool testMission = false, testDestruction = false, testDebris = false, testGpuSkin = false;
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)

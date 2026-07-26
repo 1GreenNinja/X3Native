@@ -27,7 +27,7 @@ struct CliOptions {
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testWorldStream = false, testWorldMap = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
-         testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
+         testTerrainPlace = false, testNet = false, testRescue = false, testCompanionCombat = false, testDestruction = false,
          testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false,
          testFootIk = false,
          testScript = false,

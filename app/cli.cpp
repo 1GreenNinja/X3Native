@@ -147,6 +147,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-netinterp") o.testNetInterp = true;
         else if (a == "--test-netpredict") o.testNetPredict = true;
         else if (a == "--test-rescue") o.testRescue = true;
+        else if (a == "--test-companion-combat") o.testCompanionCombat = true;
         else if (a == "--test-thirdperson") o.testThirdPerson = true;
         else if (a == "--test-npctalk") o.testNpcTalk = true;
         else if (a == "--test-chattree") o.testChatTree = true;

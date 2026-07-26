@@ -105,8 +105,23 @@ BONE_MAP_STARTER = {
 }
 # identity: source is already on the .L/.R target rig.
 BONE_MAP_LR = {k: k for k in BONE_MAP_STARTER.keys()}
+# identity on the MESHY auto-rig: BOTH source and target are Meshy 24-joint standard
+# humanoids, whose bones are "Hips"/"LeftUpLeg"/"RightHand"/"Head" - NOT mixamorig* and
+# NOT the ".L/.R" convention. Same names on both sides, but each character's REST POSE
+# differs (Meshy fits the skeleton to the mesh: on Sarah vs JakeClone the leg/shoulder
+# rest rotations differ a lot), so this still goes through the rest-relative orientation
+# transfer below. A raw glTF channel copy would look wrong. Leaf helpers (head_end,
+# headfront) are deliberately left out - nothing skins to them.
+BONE_MAP_MESHY = {k: k for k in (
+    "Hips", "Spine", "Spine01", "Spine02", "neck", "Head",
+    "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand",
+    "RightShoulder", "RightArm", "RightForeArm", "RightHand",
+    "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase",
+    "RightUpLeg", "RightLeg", "RightFoot", "RightToeBase",
+)}
 
-RIG_MAPS = {"mixamo": BONE_MAP_MIXAMO, "starter": BONE_MAP_STARTER, "lr": BONE_MAP_LR}
+RIG_MAPS = {"mixamo": BONE_MAP_MIXAMO, "starter": BONE_MAP_STARTER, "lr": BONE_MAP_LR,
+            "meshy": BONE_MAP_MESHY}
 
 
 def reset():

@@ -1,0 +1,42 @@
+{
+  "_status": [
+    "*** DOES NOT PRODUCE A SHIPPABLE BAKE YET - DO NOT WIRE THE OUTPUT IN. ***",
+    "Run 2026-07-25 retargeted all 6 clips without error (22/24 joints mapped) and the",
+    "engine loaded them fine, but the GROUNDED render shows the DEFORMATION is mangled:",
+    "the arms collapse/fuse into the torso and the pelvis geometry explodes into a fan.",
+    "Evidence, floor + level-cam, in docs/screenshots/sarah/:",
+    "  RETARGET_BROKEN_Idle_f12.png, RETARGET_BROKEN_Aim_Fire_f40.png  <- this bake",
+    "  STOCK_OK_clip0_f12.png                                          <- stock Sarah.glb",
+    "The stock rig renders CORRECTLY (feet planted, lowestZ 0.0000), so the mesh/skin is",
+    "fine - the fault is the 'meshy' transfer path, not the asset. Prime suspect: the two",
+    "rigs' REST poses diverge far more than the .L/.R rigs this tool was written for -",
+    "per-joint rest-rotation deltas reach ~1.97 on LeftUpLeg/RightUpLeg and ~0.45 on the",
+    "arms (tools/dump_rest.py). The rest-relative orientation transfer in retarget_one()",
+    "does not survive that. FOLLOW-ON: fix the transfer (or bake through a neutral A-pose",
+    "intermediate) and re-verify with tools/pose_render_grounded.py BEFORE committing a",
+    "Sarah_anim.glb. app/sarah.cpp already PREFERS Sarah_anim.glb when present, so a good",
+    "bake drops in with no code change; until then she runs on stock Sarah.glb's one clip.",
+    "Judge the result floor+level-cam ONLY - no-floor close-ups lie about float/pitch."
+  ],
+  "_comment": [
+    "Sarah companion (LANE B) clip library. Sarah.glb ships with ONE unnamed clip",
+    "('Armature|clip0|baselayer'), so she had no idle/walk/run/aim/death and the",
+    "runtime's findClip() fuzzy lookups all missed. JakeClone_player.glb is the SAME",
+    "Meshy 24-joint standard humanoid skeleton (identical bone names), so its 20 clips",
+    "retarget onto her rest pose via rig type 'meshy'.",
+    "Clip NAMES here are chosen to hit app/anim.cpp Skinner::findClip's keys:",
+    "  Idle -> {idle,stand,breath,loop}   Walking -> {walk}   Running -> {run,...}",
+    "  Aim_Fire -> {aim,fire,shoot,...}   Death -> {death,...}",
+    "keep_existing:false drops Sarah's own unnamed clip0 (it matched nothing anyway).",
+    "Build:  powershell -File tools\\sarah_anim_build.ps1"
+  ],
+  "keep_existing": false,
+  "clips": [
+    { "name": "Idle",         "src": "assets/rigged_glb/JakeClone_player.glb", "rig": "meshy", "action": "Idle_11",           "loop": true  },
+    { "name": "Walking",      "src": "assets/rigged_glb/JakeClone_player.glb", "rig": "meshy", "action": "Walking",           "loop": true  },
+    { "name": "Running",      "src": "assets/rigged_glb/JakeClone_player.glb", "rig": "meshy", "action": "Running",           "loop": true  },
+    { "name": "Aim_Fire",     "src": "assets/rigged_glb/JakeClone_player.glb", "rig": "meshy", "action": "Alert",             "loop": false },
+    { "name": "Death",        "src": "assets/rigged_glb/JakeClone_player.glb", "rig": "meshy", "action": "Dead",              "loop": false },
+    { "name": "Hitreaction",  "src": "assets/rigged_glb/JakeClone_player.glb", "rig": "meshy", "action": "Gunshot_Reaction",  "loop": false }
+  ]
+}
