@@ -780,9 +780,13 @@ bool ElevatorSystem::keypadDigit(int digit) {
         }
         // ---- 4455 — LEVEL 4.5 (fix/spire-hollow-core, owner canon 2026-07-25). The
         // hidden floor between F4 and F5; the elevator is its ONLY access. Same
-        // one-way unlock as the RIFT stop. PLACEHOLDER code until a real in-world
-        // clue exists (secured-room-door policy).
-        if (tail == kNexusAccessCode && m_secretStop >= 0) {
+        // one-way unlock as the RIFT stop. Taught in-world (feat/secret-code-clues)
+        // by the chief engineer's log on F4 — "double the four, double the five"
+        // (Ch. Eng. Vasquez); the stairwell's unnumbered door sends you to it.
+        // 7762 (kMasterBackupCode) is the owner's undocumented master key — it
+        // opens this lock too, and is taught NOWHERE in-world by design.
+        if ((tail == kNexusAccessCode || tail == kMasterBackupCode) &&
+            m_secretStop >= 0) {
             m_codeBuf.clear();
             const bool first = !m_secretUnlocked;
             unlockSecret();
@@ -1600,6 +1604,51 @@ bool runElevatorFsmSelfTest() {
             e2.update(kDt, scene, *physics);
         fcheck(std::fabs(e2.cabCenter().y - (ElevatorSystem::kDefaultClubFloorY + cabHY)) < 0.1f,
                "F4d cab descends all the way to the Club 1127 stop (Y=-200)");
+    }
+
+    // ---- F4.5: the 4455 code (taught by the chief engineer's log on F4) unlocks
+    // the hidden half-floor stop + rides the cab to it; a wrong code does neither.
+    {
+        const float midY = cabHY + 30.0f;   // the hidden stop, mid-shaft
+        ElevatorSystem e45;
+        e45.build(scene, device, *physics, 30.0f, 30.0f, 1.4f, cabHY, 1.4f,
+                  std::vector<float>{ groundY, midY, topY }, 0);   // start at ground
+        e45.enableFsm(true);
+        e45.setSecretStop(1);
+        fcheck(e45.stopLocked(1) && !e45.secretUnlocked(),
+               "F4.5a hidden stop starts LOCKED (dead directory row)");
+        // NEGATIVE CONTROL: 4454 must not unlock, must not move the cab.
+        e45.keypadDigit(4); e45.keypadDigit(4); e45.keypadDigit(5);
+        bool wrongDone = e45.keypadDigit(4);
+        fcheck(!wrongDone && !e45.secretUnlocked() && e45.stopLocked(1) &&
+               e45.state() == ElevState::Idle,
+               "F4.5b wrong code 4454 does NOT unlock the hidden stop");
+        // The real code: 4-4-5-5 — "double the four, double the five".
+        e45.keypadDigit(4); e45.keypadDigit(4); e45.keypadDigit(5);
+        bool rightDone = e45.keypadDigit(5);
+        fcheck(rightDone && e45.secretUnlocked() && !e45.stopLocked(1),
+               "F4.5c code 4455 unlocks the hidden stop (one-way, on the panel now)");
+        for (int i = 0; i < 20000 && e45.state() != ElevState::DoorsOpen &&
+                        !(e45.state() == ElevState::Idle && i > 10); ++i)
+            e45.update(kDt, scene, *physics);
+        fcheck(std::fabs(e45.cabCenter().y - midY) < 0.1f,
+               "F4.5d cab rides to the 4.5 stop after the code");
+
+        // The owner's MASTER BACKUP (7762) also unlocks the 4.5 stop; the
+        // off-by-one 7761 does not (negative control).
+        ElevatorSystem eMk;
+        eMk.build(scene, device, *physics, 40.0f, 40.0f, 1.4f, cabHY, 1.4f,
+                  std::vector<float>{ groundY, midY, topY }, 0);
+        eMk.enableFsm(true);
+        eMk.setSecretStop(1);
+        eMk.keypadDigit(7); eMk.keypadDigit(7); eMk.keypadDigit(6);
+        bool nearMiss = eMk.keypadDigit(1);
+        fcheck(!nearMiss && !eMk.secretUnlocked() && eMk.stopLocked(1),
+               "F4.5e wrong code 7761 does NOT unlock the hidden stop");
+        eMk.keypadDigit(7); eMk.keypadDigit(7); eMk.keypadDigit(6);
+        bool masterDone = eMk.keypadDigit(2);
+        fcheck(masterDone && eMk.secretUnlocked() && !eMk.stopLocked(1),
+               "F4.5f master backup 7762 unlocks the hidden stop (owner key)");
     }
 
     // ---- F5: FREEFALL is reachable + drops the cab.

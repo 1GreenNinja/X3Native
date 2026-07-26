@@ -269,9 +269,17 @@ public:
     // Elevator. No stairways get to it.") ======================================
     // Same machinery as the RIFT stop: one more entry in the stop list, dark on the
     // directory, skipped by callTo()/callNext() until its access code is entered on
-    // the cabin keypad. PLACEHOLDER CODE until a real in-world clue exists (same
-    // policy as the secured-room door codes).
+    // the cabin keypad. TAUGHT IN-WORLD (feat/secret-code-clues): the chief
+    // engineer's log on the F4 holo-terminal — "double the four, double the five"
+    // (Ch. Eng. Vasquez). The stairwell's unnumbered service-void door points the
+    // player there ("SUBLEVEL ACCESS VIA PRIMARY LIFT ONLY - SEE CHIEF ENGINEER").
     static constexpr const char* kNexusAccessCode = "4455";
+    // THE OWNER'S MASTER BACKUP (owner order 2026-07-25: "backup code 7762 opens
+    // the door for me"): also unlocks the 4.5 stop — a master key masters both
+    // locks (this cab stop AND the stairwell's unnumbered master door, which
+    // carries the same code). Deliberately UNDOCUMENTED IN-WORLD: no terminal,
+    // no chatter, no graffiti — do not teach it anywhere.
+    static constexpr const char* kMasterBackupCode = "7762";
     void setSecretStop(int stopIndex) { m_secretStop = stopIndex; }
     int  secretStop() const { return m_secretStop; }
     void unlockSecret();

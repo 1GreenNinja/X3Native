@@ -42,6 +42,7 @@ constexpr const char* kFacilityWhisper[] = {
     "Rations again tonight.",
     "Don't look at the drones.",
     "Seven-Alpha is loose, they say.",
+    "Maintenance re-keyed the stairwell after the incident.",
 };
 // Workers — grumbles over the crates / consoles / sweep lines (both venues).
 constexpr const char* kWorkerGrumble[] = {

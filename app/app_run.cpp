@@ -1433,6 +1433,16 @@ int runDefaultHost(HostContext& hc) {
     // terminal's 1278 follows (the loading-screen tips spoil that one; this one is
     // only in the world).
     x3::game::HoloTerminal   riftLore;
+    // ---- THE SECRET-CODE QUEST CHAIN (feat/secret-code-clues) ----------------------
+    // CLUE 1: Okafor's maintenance work order by the F1 stairwell entrance (Bottom
+    // Hall) — teaches the stairwell service code 4545 ("re-keyed 45-45 after the
+    // incident"). CLUE 2: the chief engineer's log on F4 near the elevator lobby —
+    // teaches the 4.5 cab code 4455 by riddle ("double the four, double the five").
+    // Both are HoloTerminals on the HoloPanel platform, the riftLore 4790 pattern:
+    // the code is FOUND, never handed over. (The owner's 7762 master backup is
+    // deliberately taught NOWHERE, by order.)
+    x3::game::HoloTerminal   stairLore;
+    x3::game::HoloTerminal   liftLore;
     bool  riftBuilt    = false;
     bool  riftZonePrev = false;      // edge: restore the room-recipe atmosphere on exit
     float riftTeleCool = 0.0f;       // seconds before a rift may take you again
@@ -1593,6 +1603,8 @@ int runDefaultHost(HostContext& hc) {
         if (rifthub.built())    rifthub.shutdown(*device);
         if (riftDepths.built()) riftDepths.shutdown(*device);
         if (riftLore.built())   riftLore.shutdown(*device);
+        if (stairLore.built())  stairLore.shutdown(*device);   // clue 1: Okafor work order
+        if (liftLore.built())   liftLore.shutdown(*device);    // clue 2: Vasquez log
         // KNOWN_BUGS L4: Scene lazily creates ONE 1x1 matte-MR texel (the fallback that
         // lets an emissive-mapped entity keep its emissive map). It is the only GPU
         // resource Scene owns, and the smoketest gates on allocationCount == 0.
@@ -2008,6 +2020,82 @@ int runDefaultHost(HostContext& hc) {
                             &canonDoors, x3::game::assetRoot() + "/surface_library",
                             canonLights);
             if (bootProf) bootProfMs("stairwell");
+            // ---- THE SECRET-CODE QUEST CHAIN, CLUES 1 + 2 (feat/secret-code-clues).
+            // Two lore HoloTerminals on the platform, the riftLore 4790 pattern.
+            // CLUE 1 — Okafor's work order, Bottom Hall west wall beside the
+            // stairwell entrance: teaches 4545 ("re-keyed 45-45"). CLUE 2 — the
+            // chief engineer's log on F4 by the elevator lobby: teaches 4455 by
+            // riddle ("double the four, double the five"). Placement is derived
+            // from the loaded rooms (real walls, reading height, ceiling arm to
+            // the room's own lid); both panes are room-stamped for the PVS.
+            {
+                uint32_t hallRm = x3::game::kNoRoom, corrRm = x3::game::kNoRoom;
+                for (uint32_t i = 0; i < (uint32_t)canonFloor.rooms.size(); ++i) {
+                    const x3::game::CanonRoom& r = canonFloor.rooms[i];
+                    if (r.name == "Bottom Hall") hallRm = i;
+                    if (r.name.find("F4: Augmentation Corridor") != std::string::npos)
+                        corrRm = i;
+                }
+                if (hallRm != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& rm = canonFloor.rooms[hallRm];
+                    const uint32_t e0 = scene.size();
+                    // West wall (x0) is the stairwell-entrance wall; the breach cut
+                    // is at z=0, so the glass hangs on the wall span north of it.
+                    stairLore.build(scene, *device,
+                                    x3::phys::Vec3{ rm.x0() + 0.45f, rm.y0() + 2.05f,
+                                                    rm.z1() - 1.1f },
+                                    /*yaw*/1.5708f, /*w*/1.5f, /*h*/0.95f,
+                                    /*ceilingY*/rm.y1() - 0.16f);
+                    stairLore.setLayout(x3::game::HoloTerminal::Layout::Readout);
+                    stairLore.setTextColor(1.0f, 0.72f, 0.30f, 1.0f);   // maintenance amber
+                    stairLore.setLines({
+                        "FACILITY MAINTENANCE - WORK ORDER 217",
+                        "STAIRWELL SERVICE VOIDS",
+                        "",
+                        "ALL VOID DOORS RE-KEYED 45-45 AFTER THE",
+                        "INCIDENT. STANDING ORDER: VOIDS STAY",
+                        "SEALED. ATMO CERT REQUIRED FOR ENTRY.",
+                        "THERE IS NOTHING TO RETRIEVE.",
+                        "",
+                        "DO NOT COUNT THE LANDINGS.",
+                        "- MAINT. CHIEF OKAFOR",
+                    });
+                    for (uint32_t ei = e0; ei < scene.size(); ++ei)
+                        scene.get(ei).roomId = hallRm;
+                    x3::logInfo("--world canonlevel: CLUE 1 (service code 45-45, Okafor "
+                                "work order) on the glass in 'Bottom Hall'");
+                }
+                if (corrRm != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& rm = canonFloor.rooms[corrRm];
+                    const uint32_t e0 = scene.size();
+                    // West wall, lobby end of the corridor (the walk from the cab
+                    // passes it) — the machine flank of F4.
+                    liftLore.build(scene, *device,
+                                   x3::phys::Vec3{ rm.x0() + 0.45f, rm.y0() + 2.05f,
+                                                   rm.z0() + 2.5f },
+                                   /*yaw*/1.5708f, /*w*/1.5f, /*h*/0.95f,
+                                   /*ceilingY*/rm.y1() - 0.16f);
+                    liftLore.setLayout(x3::game::HoloTerminal::Layout::Readout);
+                    liftLore.setTextColor(0.42f, 0.66f, 1.60f, 1.0f);   // engineering blue
+                    liftLore.setLines({
+                        "LIFT MAINTENANCE - CHIEF ENGINEER'S LOG",
+                        "ENTRY 88 - CH. ENG. VASQUEZ",
+                        "",
+                        "RE-ENABLED THE HALF-FLOOR STOP FOR THE",
+                        "CHORUS SURVEY. IT IS NOT ON THE PANEL.",
+                        "IT WILL STAY THAT WAY.",
+                        "",
+                        "NEW CODE PER PROTOCOL:",
+                        "DOUBLE THE FOUR, DOUBLE THE FIVE.",
+                        "",
+                        "GOD HELP WHOEVER RIDES IT.",
+                    });
+                    for (uint32_t ei = e0; ei < scene.size(); ++ei)
+                        scene.get(ei).roomId = corrRm;
+                    x3::logInfo("--world canonlevel: CLUE 2 (lift code riddle, Vasquez "
+                                "log) on the glass in '" + rm.name + "'");
+                }
+            }
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the
@@ -2182,8 +2270,10 @@ int runDefaultHost(HostContext& hc) {
                     // ---- LEVEL 4.5 (fix/spire-hollow-core, owner canon 2026-07-25):
                     // the hidden floor's stop, inserted in Y order between F4 and F5.
                     // Locked exactly like the RIFT row (code 4455 on the cab keypad,
-                    // placeholder until an in-world clue exists) — the directory
-                    // shows a dead row; callTo()/callNext() skip it while locked.
+                    // taught by the chief engineer's log on F4 — "double the four,
+                    // double the five"; 7762 is the owner's undocumented master
+                    // backup) — the directory shows a dead row; callTo()/callNext()
+                    // skip it while locked.
                     int nexusStopIdx = -1;
                     {
                         const float nexusY45 = x3::game::Canon45::floorPlaneY(canonFloor);
@@ -2328,6 +2418,15 @@ int runDefaultHost(HostContext& hc) {
                             { dr.x1() + 1.0f, dr.y1() + 1.0f, dr.z1() + 1.0f });
                     }
                     soupUpElevator(L0.cx, L0.cz, labels);
+                    // CAPTURE HOOK (headless): X3_45_OPEN=1 feeds 4455 to the cab
+                    // keypad — the 4.5 row unlocks + the cab rides to it, so a
+                    // still can show the panel accepting the taught code.
+                    if (std::getenv("X3_45_OPEN") && nexusStopIdx >= 0) {
+                        elevator.keypadDigit(4); elevator.keypadDigit(4);
+                        elevator.keypadDigit(5); elevator.keypadDigit(5);
+                        x3::logInfo("X3_45_OPEN=1: code 4455 fed to the cab keypad "
+                                    "(4.5 row unlocked, cab riding to it — capture)");
+                    }
                     x3::logInfo("--world canonlevel: THE REAL ELEVATOR live in the lobby spine at (" +
                                 std::to_string(L0.cx) + ", " + std::to_string(L0.cz) + ") — " +
                                 std::to_string(stops.size()) + " stops, RIFT + F1-F" +
@@ -5689,6 +5788,8 @@ int runDefaultHost(HostContext& hc) {
                 // (gate cores + keys + the hall) and the approach's failing strips —
                 // the same takeover the live loop does, or every rift shot is black.
                 if (riftLore.built()) riftLore.update(dt);   // bake the log for the still
+                if (stairLore.built()) stairLore.update(dt); // clue 1 bake (capture path)
+                if (liftLore.built())  liftLore.update(dt);  // clue 2 bake (capture path)
                 if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z)) {
                     rifthub.tick(dt, scene);      // the membranes must be ALIVE in a still
                     riftDepths.tick(dt);
@@ -7194,6 +7295,20 @@ int runDefaultHost(HostContext& hc) {
     x3::game::NpcDialog npcDialog;
     float     npcBarkTimer = 0.0f;   // >0 while her companion one-liner is shown
     std::string npcBarkText;
+    // CAPTURE HOOK (headless stills): X3_STAIR_DEMO=1|2 stages a phantom keypad
+    // mid-4545-response — 1 = a numbered service void (amber pad + denial bark),
+    // 2 = the unnumbered door (the sublevel tell). Mirrors the X3_RIFT_OPEN idiom.
+    if (const char* sdEnv = std::getenv("X3_STAIR_DEMO"); sdEnv && stairwell.built()) {
+        using CR = x3::game::FacilityStairwell::CodeResponse;
+        const CR sdr = stairwell.demoSubmit(sdEnv[0] == '2', scene);
+        if (sdr != CR::NotHandled) {
+            npcBarkText = (sdr == CR::SublevelTell)
+                ? "SUBLEVEL ACCESS VIA PRIMARY LIFT ONLY - SEE CHIEF ENGINEER"
+                : "SERVICE VOID - NO ATMOSPHERE - ENTRY DENIED";
+            npcBarkTimer = 9999.0f;
+            x3::logInfo("X3_STAIR_DEMO: staged phantom-door 4545 response for capture");
+        }
+    }
     // W5-3: the WIN card (Sarah extracted at the Helipad). Timer > 0 draws the
     // centered end-card over the live scene; winLine2 carries the rescue tally.
     float       winTimer = 0.0f;
@@ -8198,6 +8313,18 @@ int runDefaultHost(HostContext& hc) {
                            x3::game::Door* d = x3::game::pickAimedDoor(eye, dir, 3.0f, scene, canonDoors, *physics);
                            if (!d) return false;                       // not aiming at a door -> fall through
                            if (!d->locked) { canonDoors.toggle(*d); x3::logInfo("use: canon door toggled"); return true; }
+                           // STAIRWELL PHANTOM DOORS (feat/secret-code-clues): open the
+                           // keypad with the service-void bark — NEVER the generic
+                           // "enter code N" prompt, which would print the code on the
+                           // HUD. What a code does here is the stairwell's business
+                           // (4545 answers, the master door alone opens on its own key).
+                           if (stairwell.built() && stairwell.isPhantomDoorEntity(d->entity)) {
+                               codeMode = true; keypad.clear();
+                               npcBarkText = "SERVICE VOID - AUTHORIZED MAINTENANCE ONLY";
+                               npcBarkTimer = 4.0f;
+                               x3::logInfo("use: stairwell service-void keypad — type the code, Enter to submit");
+                               return true;
+                           }
                            auto cardName = [](int id){ return id == x3::game::kKeycardSecurity ? "Security" : "access"; };
                            const bool needCard = d->keycard != 0;
                            const bool hasCard  = needCard && (keycardMask & (1u << (uint32_t)d->keycard));
@@ -8445,6 +8572,29 @@ int runDefaultHost(HostContext& hc) {
                         club1127Handoff = false;
                         x3::logInfo("CLUB 1127 awakens at The Deep (Y=-200) — ride it down");
                     }
+                } else if (stairwell.built() &&
+                           [&]() -> bool {
+                               // STAIRWELL SERVICE CODE 4545 (feat/secret-code-clues):
+                               // the phantom-door keypads ANSWER the taught code — as a
+                               // denial. GREEN then AMBER on the pad; the door stays
+                               // shut (the voids are sealed; the 4.5 seal is absolute).
+                               // The unnumbered door answers differently: the chain
+                               // link to the elevator + the chief engineer. Any other
+                               // code falls through to the door machinery below (the
+                               // owner's 7762 master key lives THERE, on one door only).
+                               using CR = x3::game::FacilityStairwell::CodeResponse;
+                               const CR r = stairwell.submitCode(
+                                   x3::phys::Vec3{ pex, pey, pez },
+                                   (int)keypad.value(), scene);
+                               if (r == CR::NotHandled) return false;
+                               npcBarkText = (r == CR::SublevelTell)
+                                   ? "SUBLEVEL ACCESS VIA PRIMARY LIFT ONLY - SEE CHIEF ENGINEER"
+                                   : "SERVICE VOID - NO ATMOSPHERE - ENTRY DENIED";
+                               npcBarkTimer = 4.5f;
+                               codeMode = false; keypad.clear();
+                               return true;
+                           }()) {
+                    // stairwell keypad answered (lore beat; nothing opened)
                 } else if (canonDoors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
@@ -9635,6 +9785,10 @@ int runDefaultHost(HostContext& hc) {
             // open-the-door beat entirely. Removed so E is the sole driver.)
             if (canonWorld && canonFloor.valid()) {
                 canonDoors.update(dt, scene, *physics);
+                // Stairwell keypad flash sequencing + the master door's
+                // auto-close/re-lock (4.5 never sits propped open).
+                if (stairwell.built())
+                    stairwell.update(dt, scene, &canonDoors, camPos);
                 // SECURITY KEYCARD: grab it by walking up to it (proximity, XZ).
                 if (!canonKeycardTaken && canonKeycardEnt != x3::game::kNoLink) {
                     const float kdx = camPos.x - canonKeycardX, kdz = camPos.z - canonKeycardZ;
@@ -10373,6 +10527,8 @@ int runDefaultHost(HostContext& hc) {
         if (!simFrozen) combatFx.update(dt);
         if (riftHudTimer > 0.0f) riftHudTimer -= dt;   // W-RIFT: the traversal banner ages out
         if (riftLore.built()) riftLore.update(dt);     // bakes the maintenance log onto the glass
+        if (stairLore.built()) stairLore.update(dt);   // clue 1: Okafor work order (45-45)
+        if (liftLore.built())  liftLore.update(dt);    // clue 2: Vasquez riddle (4455)
         // M9: tick the audio system (reaps finished one-shot voices). Always ticked
         // so audio voices don't pile up while paused.
         audio->update(dt);

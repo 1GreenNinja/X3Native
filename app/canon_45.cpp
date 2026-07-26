@@ -5,6 +5,8 @@
 // scaffold layout, which is authored relative to the platforms it serves.
 #include "canon_45.h"
 
+#include "stairwell.h"   // MasterAccess plan — the sanctioned 7762 service mouth
+
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -225,10 +227,35 @@ void Canon45::build(CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& dev
             brush(c, (px1 - px0) * 0.5f, (py1 - py0) * 0.5f, 0.4f,
                   (px0 + px1) * 0.5f, (py0 + py1) * 0.5f, z0 - 0.4f, c.rockTex, darkCol);
         };
-        zPiece(wallCx - wallHx, wallCx + wallHx, wb, my0);     // below the mouth (slab band)
-        zPiece(wallCx - wallHx, wallCx + wallHx, my1, cy);     // above the mouth
-        zPiece(wallCx - wallHx, mx0, my0, my1);                // -X side
-        zPiece(mx1, wallCx + wallHx, my0, my1);                // +X side
+        // ---- THE SANCTIONED SERVICE MOUTH (feat/secret-code-clues, owner order:
+        // backup code 7762). The stairwell's master L-connector seals onto this
+        // wall's outer face; its mouth is cut here from the SAME MasterAccess plan
+        // (stairwellLayout) the builder and the lint gate read — one plan, one
+        // opening. Absent (sx1 <= sx0) when the tower has no master access.
+        float sx0 = 0.0f, sx1 = -1.0f, sy1 = my0;
+        {
+            const StairwellLayout sl = stairwellLayout(floor);
+            if (sl.valid && sl.master.present) {
+                sx0 = sl.master.mouthX0; sx1 = sl.master.mouthX1;
+                sy1 = fy + StairwellLayout::kMasterH;
+            }
+        }
+        zPiece(wallCx - wallHx, wallCx + wallHx, wb, my0);     // below the mouths (slab band)
+        zPiece(wallCx - wallHx, wallCx + wallHx, my1, cy);     // above both mouths
+        if (sx1 > sx0) {
+            // Two openings in the band [my0, my1]: strips outside/between them +
+            // a header over the (shorter) service mouth. LAW 1 — openings live in
+            // a shared plane, cut as pieces, never overlapped.
+            zPiece(wallCx - wallHx, sx0, my0, my1);            // west of the service mouth
+            zPiece(sx1, mx0, my0, my1);                        // between the mouths
+            zPiece(mx1, wallCx + wallHx, my0, my1);            // east of the arrival mouth
+            zPiece(sx0, sx1, sy1, my1);                        // service-mouth header
+            x3::logInfo("[canon45] service mouth cut at x[" + std::to_string(sx0) +
+                        ".." + std::to_string(sx1) + "] (master access, code-locked)");
+        } else {
+            zPiece(wallCx - wallHx, mx0, my0, my1);            // -X side
+            zPiece(mx1, wallCx + wallHx, my0, my1);            // +X side
+        }
 
         // ---- THE ARRIVAL TUNNEL: elevator spine shaft -> cavern. Floor flush with
         // the cavern slab (and with the cab platform at the 4.5 stop), steel walls +

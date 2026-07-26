@@ -9,6 +9,7 @@
 #include "door.h"        // DoorSystem + buildLevelDoor (locked phantom-landing doors)
 #include "keypad.h"      // realistic wall keypad beside each locked door
 #include "holo_panel.h"  // holo::drawText — painted floor numbers
+#include "canon_45.h"    // floorPlaneY — marks the UNNUMBERED (4.5-height) door
 
 #include "engine/core/x3_log.h"
 
@@ -181,6 +182,41 @@ StairwellLayout stairwellLayout(const CanonFloor& floor) {
         L.north.push_back({ yB, L.floors[s + 1].floorNum });
     }
     L.valid = true;
+
+    // ---- THE MASTER ACCESS PLAN (owner order: backup code 7762 opens the
+    // unnumbered door). Derived purely from the tower data so builder, Canon45's
+    // wall cut and the lint gate agree. Route: leg A east from the unnumbered
+    // landing's door cut, leg B north along the cavern's west flank, sealing onto
+    // the cavern -Z rock wall's OUTER face where Canon45 cuts the mouth.
+    {
+        float env[6];
+        if (Canon45::envelope(floor, env)) {
+            const float y45 = env[4];
+            int   best = -1; float bestD = 3.0f;   // within a story of the 4.5 plane
+            for (int i = 0; i < (int)L.north.size(); ++i) {
+                if (L.north[(size_t)i].floorNum > 0) continue;      // phantoms only
+                const float d = std::fabs(L.north[(size_t)i].y - y45);
+                if (d < bestD) { bestD = d; best = i; }
+            }
+            if (best >= 0) {
+                StairwellLayout::MasterAccess& M = L.master;
+                M.present  = true;
+                M.landingY = L.north[(size_t)best].y;
+                M.floorY   = y45;
+                M.envZ0    = env[2];
+                M.mouthX0  = env[0] + 0.3f;
+                M.mouthX1  = M.mouthX0 + 1.8f;
+                M.aZ0 = kDoorZ - (kDoorHalfW + 0.125f);
+                M.aZ1 = kDoorZ + (kDoorHalfW + 0.125f);
+                M.aX0 = L.sx1;
+                M.aX1 = M.mouthX1;
+                M.bX0 = M.mouthX0;
+                M.bX1 = M.mouthX1;
+                M.bZ0 = M.aZ1;
+                M.bZ1 = env[2] - 0.8f;   // the cavern -Z wall's OUTER face
+            }
+        }
+    }
     return L;
 }
 
@@ -196,6 +232,8 @@ void FacilityStairwell::build(const StairwellLayout& lay, CanonFloor& floor, Sce
         x3::logInfo("[stairwell] layout invalid — skipped");
         return;
     }
+    m_phantoms.clear();
+    m_flashIdx = -1;
     m_lib.mount(surfaceLibRoot);
     const SurfaceSet& deck  = m_lib.get(device, "hh_floor_01a");
     const SurfaceSet& wallS = m_lib.get(device, "hh_wall_01a");
@@ -393,9 +431,15 @@ void FacilityStairwell::build(const StairwellLayout& lay, CanonFloor& floor, Sce
             }
             continue;                                       // real floors: open mouth
         }
-        // PHANTOM landing: locked SM_Door_A slab in the opening + a keypad that
-        // rejects you. Sealed backing box behind the wall plane — nothing exists
-        // there (the 4.5-height door among these is the hidden floor's tell).
+        // PHANTOM landing: locked SM_Door_A slab in the opening + a keypad. The
+        // service code 4545 (taught by Okafor's work order at the F1 entrance) is
+        // handled by THIS module (submitCode): the keypad answers, the door stays
+        // shut. The UNNUMBERED landing at 4.5's height is the MASTER DOOR: coded
+        // 7762 (the owner's undocumented backup — it really opens), with the
+        // master L-connector behind it instead of a sealed backing box.
+        const bool isTell = lay.master.present &&
+                            std::fabs(nl.y - lay.master.landingY) < 0.01f;
+        PhantomDoor pd;
         if (doors) {
             DoorSpec spec;
             spec.doorwayCenter = x3::phys::Vec3{ doorPlaneX, nl.y, kDoorZ };
@@ -404,20 +448,105 @@ void FacilityStairwell::build(const StairwellLayout& lay, CanonFloor& floor, Sce
             spec.height      = kDoorH - 0.2f;
             spec.withButton  = false;
             spec.locked      = true;
-            spec.code        = 4545;   // UNASSIGNED placeholder — no in-world clue
-                                       // exists; flag for the owner (zero-rework hook)
+            // Ordinary phantoms carry a NEGATIVE sentinel, deliberately: nonzero
+            // => the E-aim path still offers the keypad, but NO 4-digit entry
+            // (0..9999) can ever match in DoorSystem::tryDoorCode — those slabs
+            // are unopenable by code, period (their voids are real voids). 4545
+            // never reaches DoorSystem: the host offers it to submitCode() first,
+            // which answers WITHOUT opening. The MASTER DOOR alone carries 7762
+            // and opens through the standard door machinery.
+            spec.code        = isTell ? kMasterCode : -kServiceCode;
             spec.tint[0] = 0.35f; spec.tint[1] = 0.37f; spec.tint[2] = 0.40f;
             const uint32_t di = buildLevelDoor(scene, *doors, device, physics, spec);
             const uint32_t ent = doors->at(di).entity;
             if (ent != kNoLink && ent < scene.size())
                 scene.get(ent).roomId = kNoRoom;            // always-visible
+            pd.doorIndex = di;
+            pd.entity    = ent;
+            pd.center    = spec.doorwayCenter;
+            pd.sublevelTell = isTell;
             ++lockedDoors;
         }
-        // Sealed backing (dark) just outside the wall plane.
-        sbrush(c, c.wall, wallTint, 0.125f, (kDoorH + 0.2f) * 0.5f, kDoorHalfW + 0.15f,
-               kSX1 + 0.125f, nl.y + kDoorH * 0.5f, kDoorZ);
-        buildKeypad(scene, device, kIX1, nl.y + 1.40f, kDoorZ - kDoorHalfW - 0.28f,
-                    KeypadFacing::MinusX, KeypadStatus::Locked, kNoRoom);
+        if (!isTell) {
+            // Sealed backing (dark) just outside the wall plane — nothing exists there.
+            sbrush(c, c.wall, wallTint, 0.125f, (kDoorH + 0.2f) * 0.5f, kDoorHalfW + 0.15f,
+                   kSX1 + 0.125f, nl.y + kDoorH * 0.5f, kDoorZ);
+        }
+        pd.keypad = buildKeypad(scene, device, kIX1, nl.y + 1.40f,
+                                kDoorZ - kDoorHalfW - 0.28f,
+                                KeypadFacing::MinusX, KeypadStatus::Locked, kNoRoom);
+        if (doors) m_phantoms.push_back(pd);
+    }
+
+    // ---- THE MASTER CONNECTOR (owner order: 7762 opens the unnumbered door).
+    // An L-shaped service tunnel from the master door east along the door cut,
+    // then north along the cavern's west flank, sealing flush onto the 4.5
+    // cavern's -Z rock wall OUTER face (Canon45 cuts the sanctioned mouth there
+    // from the same MasterAccess plan). Dressed like the 4.5 arrival tunnel:
+    // dark concrete, one dim practical, ominous. Floor top rides the cavern
+    // floor plane (the sill from the landing is a small auto-step; the lint
+    // gate bounds it at 0.35 m).
+    if (lay.master.present && doors) {
+        const StairwellLayout::MasterAccess& M = lay.master;
+        const float fy = M.floorY, ly = M.landingY;
+        const float topY = std::max(fy, ly) + StairwellLayout::kMasterH;  // one lid plane
+        const float darkTint[4] = { 0.24f, 0.23f, 0.22f, 1.0f };   // swallowed light
+        auto seg = [&](float x0, float x1, float y0, float y1, float z0, float z1) {
+            if (x1 - x0 < 0.02f || y1 - y0 < 0.02f || z1 - z0 < 0.02f) return;
+            sbrush(c, c.step, darkTint, (x1 - x0) * 0.5f, (y1 - y0) * 0.5f,
+                   (z1 - z0) * 0.5f, (x0 + x1) * 0.5f, (y0 + y1) * 0.5f,
+                   (z0 + z1) * 0.5f);
+        };
+        // ---- Floor profile in leg A: a pad at the door sill (landing y), then a
+        // doctrine flight (risers <= 0.2, LAW 3) down/up to the cavern floor
+        // plane, then flat to the corner. On this dataset the landing sits ~1.4 m
+        // ABOVE the 4.5 floor — the descent into the dark is the arrival beat.
+        const float drop = ly - fy;                 // + = steps descend going east
+        float lowX0 = M.aX0 + 1.2f;                 // where the flat-at-fy floor starts
+        if (std::fabs(drop) > 0.05f) {
+            const int   nR    = std::max(1, (int)std::ceil(std::fabs(drop) / 0.2f));
+            const float rise  = drop / (float)nR;   // signed per-step drop
+            const float tread = 0.31f;
+            // Entry pad at the sill.
+            seg(M.aX0, lowX0, ly - 0.3f, ly, M.aZ0, M.aZ1);
+            // Treads 1..nR-1 (the base floor at fy IS the final step — building
+            // tread nR would lay a second top face coplanar with it).
+            for (int i = 1; i < nR; ++i) {
+                const float tx0 = lowX0 + (float)(i - 1) * tread;
+                const float top = ly - rise * (float)i;
+                seg(tx0, tx0 + tread, top - 0.35f, top, M.aZ0, M.aZ1);
+            }
+            lowX0 += (float)nR * tread;
+        } else {
+            lowX0 = M.aX0;                          // flush enough: one flat floor
+        }
+        // Flat floor at fy: the FULL leg A span (it also seals the tube's underside
+        // beneath the entry pad + treads — no open face into the structural void)
+        // + all of leg B.
+        seg(M.aX0, M.aX1, fy - 0.3f, fy, M.aZ0, M.aZ1);
+        seg(M.bX0, M.bX1, fy - 0.3f, fy, M.aZ1, M.bZ1);
+        (void)lowX0;
+        // Lids (bottom at topY — tall over the low section: an honest service duct).
+        seg(M.aX0 - 0.25f, M.aX1 + 0.25f, topY, topY + 0.25f, M.aZ0 - 0.25f, M.aZ1 + 0.25f);
+        seg(M.bX0 - 0.25f, M.bX1 + 0.25f, topY, topY + 0.25f, M.aZ1, M.bZ1);
+        // Walls (fy up to the lid — they cover both floor levels).
+        // South wall of the L (leg A, z = aZ0 plane).
+        seg(M.aX0, M.aX1 + 0.25f, fy, topY, M.aZ0 - 0.25f, M.aZ0);
+        // North wall of leg A up to leg B's west side (east of that leg B opens).
+        seg(M.aX0, M.bX0, fy, topY, M.aZ1, M.aZ1 + 0.25f);
+        // East wall of the L (x = aX1 == bX1 plane), full run to the cavern wall.
+        seg(M.aX1, M.aX1 + 0.25f, fy, topY, M.aZ0 - 0.25f, M.bZ1);
+        // West wall of leg B (x = bX0 plane), north of leg A.
+        seg(M.bX0 - 0.25f, M.bX0, fy, topY, M.aZ1 + 0.25f, M.bZ1);
+        // One dim practical mid leg B — enough to find the turn, not enough to
+        // feel safe (honest housing + un-roomed ranged light, stairwell pattern).
+        lightHousing((M.bX0 + M.bX1) * 0.5f, topY - 0.10f, (M.bZ0 + M.bZ1) * 0.5f);
+        addLight((M.bX0 + M.bX1) * 0.5f, topY - 0.35f, (M.bZ0 + M.bZ1) * 0.5f,
+                 4.0f, 0.85f, 0.70f, 0.50f);
+        x3::logInfo("[stairwell] MASTER CONNECTOR built: door y=" +
+                    std::to_string(M.landingY) + " -> cavern mouth x[" +
+                    std::to_string(M.mouthX0) + ".." + std::to_string(M.mouthX1) +
+                    "] at z=" + std::to_string(M.envZ0) + " (code-locked, owner key)");
     }
 
     // ---- Per-floor CONNECTORS (east, straight) + the F1 L-connector. ----
@@ -468,13 +597,110 @@ void FacilityStairwell::build(const StairwellLayout& lay, CanonFloor& floor, Sce
     }
 
     m_built = true;
+    int tells = 0;
+    for (const PhantomDoor& pd : m_phantoms) if (pd.sublevelTell) ++tells;
     x3::logInfo("[stairwell] built: " + std::to_string(lay.floors.size()) +
                 " floor landings, " + std::to_string(lay.north.size()) +
                 " north landings (" + std::to_string(lockedDoors) +
-                " locked keypad doors), " + std::to_string(nFlights) +
+                " locked keypad doors, " + std::to_string(tells) +
+                " unnumbered 4.5-height tell), " + std::to_string(nFlights) +
                 " flights, base y=" + std::to_string(lay.baseY) +
                 " top y=" + std::to_string(lay.topY));
     (void)floor;
+}
+
+// =====================================================================================
+// THE SERVICE-VOID CODE (feat/secret-code-clues) — 4545 answers; nothing opens.
+// =====================================================================================
+bool FacilityStairwell::isPhantomDoorEntity(uint32_t entity) const {
+    if (entity == kNoLink) return false;
+    for (const PhantomDoor& pd : m_phantoms)
+        if (pd.entity == entity) return true;
+    return false;
+}
+
+void FacilityStairwell::startFlash(int idx, Scene& scene) {
+    // A previous flash mid-sequence snaps back to red first (one keypad answers
+    // at a time; the sequencer owns exactly one screen).
+    if (m_flashIdx >= 0 && m_flashIdx != idx &&
+        m_flashIdx < (int)m_phantoms.size())
+        setKeypadStatus(scene, m_phantoms[(size_t)m_flashIdx].keypad,
+                        KeypadStatus::Locked);
+    m_flashIdx = idx;
+    m_flashT   = 0.0f;
+    setKeypadStatus(scene, m_phantoms[(size_t)idx].keypad, KeypadStatus::Unlocked);
+}
+
+FacilityStairwell::CodeResponse FacilityStairwell::submitCode(
+        const x3::phys::Vec3& eye, int code, Scene& scene, float range) {
+    if (!m_built || m_phantoms.empty()) return CodeResponse::NotHandled;
+    // Nearest phantom door within range (full 3D distance: landings stack
+    // vertically every ~2.2 m, so an XZ-only match would grab the whole column).
+    int best = -1; float bestD2 = range * range;
+    for (int i = 0; i < (int)m_phantoms.size(); ++i) {
+        const x3::phys::Vec3& p = m_phantoms[(size_t)i].center;
+        const float dx = eye.x - p.x, dy = eye.y - (p.y + 1.4f), dz = eye.z - p.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; best = i; }
+    }
+    if (best < 0) return CodeResponse::NotHandled;
+    const CodeResponse r = classifyCode(code, m_phantoms[(size_t)best].sublevelTell);
+    if (r == CodeResponse::NotHandled) return r;     // wrong code: host red-reject path
+    startFlash(best, scene);                          // GREEN -> AMBER -> red; door stays shut
+    x3::logInfo(std::string("[stairwell] service code 4545 accepted at ") +
+                (r == CodeResponse::SublevelTell ? "the UNNUMBERED door — "
+                 "SUBLEVEL ACCESS VIA PRIMARY LIFT ONLY - SEE CHIEF ENGINEER"
+                 : "a service-void door — "
+                 "SERVICE VOID - NO ATMOSPHERE - ENTRY DENIED") +
+                " (door stays sealed)");
+    return r;
+}
+
+void FacilityStairwell::update(float dt, Scene& scene, DoorSystem* doors,
+                               const x3::phys::Vec3& playerPos) {
+    // ---- Keypad flash sequencing (GREEN 0.7 s -> AMBER 3 s -> red). ----
+    if (m_flashIdx >= 0) {
+        if (m_flashIdx >= (int)m_phantoms.size()) { m_flashIdx = -1; return; }
+        m_flashT += dt;
+        const PhantomDoor& pd = m_phantoms[(size_t)m_flashIdx];
+        if (m_flashT >= 3.7f) {                       // sequence over: back to red
+            setKeypadStatus(scene, pd.keypad, KeypadStatus::Locked);
+            m_flashIdx = -1;
+        } else if (m_flashT >= 0.7f) {                // green beat over: amber denial
+            setKeypadStatus(scene, pd.keypad, KeypadStatus::Denied);
+        }
+    }
+    // ---- MASTER DOOR auto-close + re-lock: once the rider is > 6 m from the
+    // unnumbered door it slides shut and re-arms — 4.5 is never propped open.
+    // (7762 works from EITHER side of the slab, so closing behind a rider inside
+    // the connector strands nobody: E + the code reopens it.) ----
+    if (!doors) return;
+    for (const PhantomDoor& pd : m_phantoms) {
+        if (!pd.sublevelTell || pd.doorIndex >= doors->count()) continue;
+        Door& d = doors->at(pd.doorIndex);
+        if (d.state == DoorState::Open) {
+            const float dx = playerPos.x - pd.center.x, dy = playerPos.y - pd.center.y,
+                        dz = playerPos.z - pd.center.z;
+            if (dx * dx + dy * dy + dz * dz > 36.0f) {
+                doors->toggle(d);                     // Open -> Closing
+                x3::logInfo("[stairwell] master door auto-closing (rider clear)");
+            }
+        } else if (d.state == DoorState::Closed && !d.locked) {
+            d.locked = true;                          // re-armed: code required again
+        }
+    }
+}
+
+FacilityStairwell::CodeResponse FacilityStairwell::demoSubmit(bool tell, Scene& scene) {
+    if (!m_built) return CodeResponse::NotHandled;
+    for (int i = 0; i < (int)m_phantoms.size(); ++i) {
+        if (m_phantoms[(size_t)i].sublevelTell != tell) continue;
+        // Capture staging: hold the AMBER denial steady (no sequencer — a still
+        // needs a stable frame, not a 0.7 s green beat that decays mid-settle).
+        setKeypadStatus(scene, m_phantoms[(size_t)i].keypad, KeypadStatus::Denied);
+        return tell ? CodeResponse::SublevelTell : CodeResponse::ServiceVoid;
+    }
+    return CodeResponse::NotHandled;
 }
 
 } // namespace x3::game

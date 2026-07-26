@@ -213,8 +213,12 @@ bool runLevelLintSelfTest() {
                     (ctrlCaught ? "red-capable" : "BROKEN"));
     }
     // ---- HIDDEN-4.5 SEAL gate (fix/spire-hollow-core, owner canon 2026-07-25:
-    // level 4.5 is HIDDEN — elevator-only, no stairway, no sightline). Asserts the
-    // M1 seal can never silently regress:
+    // level 4.5 is HIDDEN — elevator-only, no stairway, no sightline; AMENDED by
+    // the owner's 7762 master order: ONE sanctioned code-locked opening exists —
+    // the stairwell master door + its connector, asserted by the STAIR-M block
+    // below; it is not a CanonDoorway and defaults locked, so every probe here
+    // still holds with the door closed). Asserts the M1 seal can never silently
+    // regress:
     //   1. NO room ships an open ceiling (the old Access reveal was an F4<->4.5
     //      sightline + stairway).
     //   2. NO doorway touches a platform (4.5) room — a platform doorway is an
@@ -317,6 +321,83 @@ bool runLevelLintSelfTest() {
                     r.z1() > lay.sz0 + kEps && r.z0() < lay.sz1 - kEps &&
                     r.y1() > lay.baseY + kEps && r.y0() < lay.topY - kEps)
                     rep.violations.push_back(fmt("STAIR     room '%s' intersects the stairwell shaft box", r.name.c_str()));
+            }
+            // ---- MASTER ACCESS gate (owner order 2026-07-25: backup code 7762
+            // opens the unnumbered door). The 4.5 seal is amended, not broken:
+            // there is EXACTLY ONE sanctioned opening — the code-locked master
+            // door + its L-connector, per the MasterAccess plan the builder and
+            // Canon45's wall cut share. Assert the plan's invariants:
+            //   M1. A tower with a 4.5 envelope HAS a master plan, seated on a
+            //       PHANTOM (unnumbered) landing within a story of the 4.5 plane
+            //       — the nearest one (the door the 4545 tell already marks).
+            //   M2. The master code is a real 4-digit code, distinct from the
+            //       service code (4545 answers; it must never open anything).
+            //   M3. Neither connector leg PENETRATES the cavern envelope: the
+            //       route stops at the wall's outer face; the only way through is
+            //       the sanctioned mouth, whose span lies inside the envelope's
+            //       X range and clear of the elevator arrival mouth.
+            //   M4. The door-sill step (landing -> connector floor) is a legal
+            //       auto-step (<= 0.35 m) — a dataset shift cannot silently ship
+            //       a jump or a hidden drop behind the master door.
+            if (hasEnv) {
+                if (!lay.master.present) {
+                    rep.violations.push_back("STAIR-M   tower has a 4.5 envelope but no master-access plan resolved");
+                } else {
+                    const auto& M = lay.master;
+                    // M1: on the nearest phantom landing to the 4.5 floor plane.
+                    float bestD = 1e9f; float tellD = 1e9f; bool onPhantom = false;
+                    for (const StairwellLayout::NorthLanding& nl : lay.north) {
+                        if (nl.floorNum > 0) continue;
+                        const float d = std::fabs(nl.y - env[4]);
+                        bestD = (d < bestD) ? d : bestD;
+                        if (std::fabs(nl.y - M.landingY) < 0.01f) { tellD = d; onPhantom = true; }
+                    }
+                    if (!onPhantom || tellD > bestD + 1e-3f || tellD > 3.0f)
+                        rep.violations.push_back("STAIR-M   master door is not the unnumbered landing nearest the 4.5 plane");
+                    // M2: code sanity.
+                    if (FacilityStairwell::kMasterCode < 1000 ||
+                        FacilityStairwell::kMasterCode > 9999 ||
+                        FacilityStairwell::kMasterCode == FacilityStairwell::kServiceCode)
+                        rep.violations.push_back("STAIR-M   master code is not a distinct 4-digit code");
+                    // M3: legs stop OUTSIDE the envelope; the mouth is the only way in.
+                    const float fy = M.floorY, fh = fy + StairwellLayout::kMasterH;
+                    if (boxHitsEnv(M.aX0, M.aX1, M.aZ0, M.aZ1, fy, fh) ||
+                        boxHitsEnv(M.bX0, M.bX1, M.bZ0, M.bZ1, fy, fh))
+                        rep.violations.push_back("STAIR-M   master connector penetrates the 4.5 envelope (route must stop at the wall)");
+                    if (M.bZ1 > env[2] - 0.8f + kEps)
+                        rep.violations.push_back("STAIR-M   leg B overruns the cavern wall's outer face");
+                    if (M.mouthX0 < env[0] - kEps || M.mouthX1 > env[1] + kEps)
+                        rep.violations.push_back("STAIR-M   mouth span outside the envelope X range");
+                    // The elevator arrival mouth (F5 lobby X +- 1.2) must not collide.
+                    for (uint32_t i = 0; i < (uint32_t)floor.rooms.size(); ++i)
+                        if (floor.rooms[i].type == "Elevator Lobby" &&
+                            i < floor.roomFloorNum.size() && floor.roomFloorNum[i] == 5 &&
+                            M.mouthX1 > floor.rooms[i].cx - 1.7f &&
+                            M.mouthX0 < floor.rooms[i].cx + 1.7f)
+                            rep.violations.push_back("STAIR-M   service mouth collides with the elevator arrival mouth");
+                    // M4: the landing -> cavern-floor height change must be
+                    // walkable. Small (<= 0.35 m) is an auto-step; bigger gets a
+                    // doctrine flight (risers <= 0.2, treads 0.31) inside leg A —
+                    // assert the flight actually FITS (entry pad + run + arrival
+                    // margin), and that the drop stays within the marking window
+                    // (a dataset shift cannot ship a jump behind the master door).
+                    {
+                        const float dropM = std::fabs(M.landingY - M.floorY);
+                        if (dropM > 0.35f) {
+                            const int   nR  = (int)std::ceil(dropM / 0.2f);
+                            const float run = 1.2f + (float)nR * 0.31f + 0.6f;
+                            if (M.aX0 + run > M.aX1 + kEps)
+                                rep.violations.push_back(fmt("STAIR-M   %.2f m connector flight (%d risers) does not fit leg A",
+                                                             dropM, nR));
+                        }
+                        if (dropM > 3.0f)
+                            rep.violations.push_back(fmt("STAIR-M   door-to-floor drop %.2f m exceeds the marking window", dropM));
+                    }
+                    // NEGATIVE CONTROL: a doctored leg B pushed through the wall
+                    // into the cavern interior MUST trip the M3 probe.
+                    if (!boxHitsEnv(M.bX0, M.bX1, M.bZ0, M.bZ1 + 3.0f, fy, fh))
+                        rep.violations.push_back("STAIR-M   NEGATIVE CONTROL FAILED: doctored through-wall leg not detected");
+                }
             }
             // Negative control: a doctored connector aimed at a platform room + a box
             // probe inside the envelope must both trip.
