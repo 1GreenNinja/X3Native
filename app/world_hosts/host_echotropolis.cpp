@@ -156,6 +156,11 @@ std::string g_playasCapPath; // PLAYAS_DEMO: armed capture to finalize post-endF
 std::string g_shotPath;      // console `screenshot`: armed capture to finalize post-endFrame
 float g_ambScale = 1.0f;     // console `amb <scale>`: city ambient multiplier (Tim's glare knob)
 float g_hazeScale = 1.0f;    // console `haze <scale>`: aerial-fog multiplier (distance washout knob)
+float g_todSpeed = 1.0f;     // console `todspeed <mult>`: day-clock rate
+float g_expMul   = 1.0f;     // console `exposure <mult>`: post exposure multiplier
+float g_bloomMul = 1.0f;     // console `bloom <mult>`: bloom intensity multiplier
+float g_flySpeedMul = 1.0f;  // console `speed <mult>`: fly-mode speed multiplier
+float g_sensMul  = 1.0f;     // console `sens <mult>`: mouselook sensitivity multiplier
 float g_sunOverride = -1.0f; // console `sun <scale>|auto`: <0 = auto ramp
 void charCB(GLFWwindow*, unsigned int c) {
     if (g_hud && g_hud->consoleOpen()) g_hud->onChar(c);
@@ -525,8 +530,8 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
                        if (gLegacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; } }
     if (gNoTaa) px.taa = false;
     device->setPostFX(px);
-    device->setBloom(0.12f + 0.06f * low + 0.10f * night);    // more composite bloom at night
-    device->setExposure(1.0f + 0.16f * low + 0.15f * night);
+    device->setBloom((0.12f + 0.06f * low + 0.10f * night) * g_bloomMul);
+    device->setExposure((1.0f + 0.16f * low + 0.15f * night) * g_expMul);
 
     // ---- 5. SHADOWS: focus the single shadow map on the CROWN so it RESOLVES -----
     // Was a 4.4km box centred at origin — one shadow map over 4.4km ~= 2m/texel, so
@@ -2840,6 +2845,10 @@ int hostEchotropolis(HostContext& hc) {
     bool buildMode = false, prevB = false, prevLB = false, prevRB = false,
          prevRk = false, prevBk = false, prevPlace = false;
     int  buildSel = 0; float buildYaw = 0.0f;
+    // REAL STREET PROPS (Tim: the blockout cart "doesnt look good or realistic"):
+    // textured Meshy props placed at the vendors' posts; the glowing yellow
+    // blockout cart entity is hidden only when the real cart actually loads.
+    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> streetProps;
     // HouseForge/mine transform (col-major): yaw about Y, uniform scale, terrain-lift.
     auto buildXf = [&](float x, float z, float yaw, float s, float lift, float T[16]){
         const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
@@ -2847,6 +2856,32 @@ int hostEchotropolis(HostContext& hc) {
         T[0]=c*s; T[1]=0; T[2]=-sn*s; T[3]=0;  T[4]=0; T[5]=s; T[6]=0; T[7]=0;
         T[8]=sn*s; T[9]=0; T[10]=c*s; T[11]=0; T[12]=x; T[13]=gy+lift; T[14]=z; T[15]=1;
     };
+
+    // Place the REAL hot-dog cart (Meshy prop) at each vendor's post. Meshy
+    // unrigged outputs are normalized to a 1.9 m cube centered at origin (bbox
+    // meaningless): scale 1.3 reads street-furniture right, lift seats the
+    // normalized bottom (-0.95 * scale) on the terrain.
+    if (npcLifeBuilt) {
+        for (uint32_t vi = 0; vi < npcLife.agentCount(); ++vi) {
+            const auto& va = npcLife.agent(vi);
+            if (va.arch != x3::game::Archetype::HotDogVendor) continue;
+            float T[16];
+            buildXf(va.pos.x + 1.1f, va.pos.z, va.yaw, 1.3f, 1.25f, T);
+            auto cart = std::make_unique<x3::game::EnvArtSystem>();
+            if (cart->buildFromGlbAt(*device, x3::game::assetRoot() + "/meshy/props",
+                                     "hotdog_cart.glb", T)) {
+                if (va.propEntity != x3::game::kNoLink && va.propEntity < walkScene.size())
+                    walkScene.get(va.propEntity).visible = false;   // bye, yellow box
+                streetProps.push_back(std::move(cart));
+            } else {
+                x3::logWarn("[cart] hotdog_cart.glb unavailable — blockout cart kept");
+                break;
+            }
+        }
+        if (!streetProps.empty())
+            x3::logInfo("[cart] " + std::to_string(streetProps.size()) +
+                        " real hot-dog cart(s) placed");
+    }
 
     // ===================== CYBERPUNK AUDIO (Cyberpunk Game SFX kit) ==========
     // Echo Harbor was dead silent. Wire a layered soundscape from the 1067-sound
@@ -3106,6 +3141,127 @@ int hostEchotropolis(HostContext& hc) {
         console->print(std::string("capturing -> ") + p);
         hud.closeConsole();   // the shot is of the world, not the console
     }, "save a screenshot to captures/");
+    // ---- console wave 3: the Babylon X3Console catalog, every applicable
+    // category with REAL wiring (Tim: "the console HAD hundreds of commands!").
+    auto argF = [](const std::vector<std::string>& a, float def) {
+        return a.empty() ? def : (float)std::atof(a[0].c_str());
+    };
+    auto mulCmd = [&](float& target, const std::vector<std::string>& a,
+                      const char* name, float lo, float hi) {
+        if (a.empty() || a[0] == "auto") { target = 1.0f; console->print(std::string(name) + " auto"); }
+        else { const float f = argF(a, 1.0f);
+               if (f >= lo && f <= hi) { target = f; console->print(std::string(name) + " x " + a[0]); }
+               else console->print(std::string(name) + " <" + std::to_string(lo) + ".." + std::to_string(hi) + ">|auto"); }
+    };
+    console->registerCommand("todspeed", [&, mulCmd](const std::vector<std::string>& a) {
+        mulCmd(g_todSpeed, a, "todspeed", 0.0f, 100.0f);
+    }, "day-clock rate (0 = frozen, 10 = timelapse)");
+    console->registerCommand("exposure", [&, mulCmd](const std::vector<std::string>& a) {
+        mulCmd(g_expMul, a, "exposure", 0.2f, 3.0f);
+    }, "post exposure multiplier");
+    console->registerCommand("bloom", [&, mulCmd](const std::vector<std::string>& a) {
+        mulCmd(g_bloomMul, a, "bloom", 0.0f, 4.0f);
+    }, "bloom intensity multiplier");
+    console->registerCommand("speed", [&, mulCmd](const std::vector<std::string>& a) {
+        mulCmd(g_flySpeedMul, a, "fly speed", 0.05f, 20.0f);
+    }, "fly-mode speed multiplier");
+    console->registerCommand("sens", [&, mulCmd](const std::vector<std::string>& a) {
+        mulCmd(g_sensMul, a, "sensitivity", 0.1f, 5.0f);
+    }, "mouselook sensitivity multiplier");
+    console->registerCommand("fov", [&, argF](const std::vector<std::string>& a) {
+        const float f = argF(a, 0.0f);
+        if (f >= 40.0f && f <= 110.0f) { opt.fovDeg = f; console->print("fov " + a[0]); }
+        else console->print("fov <40..110>   (current " + std::to_string((int)opt.fovDeg) + ")");
+    }, "camera field of view (degrees)");
+    console->registerCommand("ssr", [&](const std::vector<std::string>& a) {
+        x3::rhi::IRenderDevice::ReflectionParams rf{};
+        rf.ssr = a.empty() || a[0] != "off";
+        device->setReflectionParams(rf);
+        console->print(rf.ssr ? "SSR reflections ON" : "SSR reflections OFF");
+    }, "screen-space reflections on|off");
+    console->registerCommand("rt", [&](const std::vector<std::string>& a) {
+        x3::rhi::IRenderDevice::RtShadowParams rs{};
+        const bool on = !a.empty() && a[0] == "on";
+        if (on) { rs.tier = 1; rs.sunSizeDeg = 0.6f; }
+        device->setRtShadowParams(rs);
+        console->print(on ? "RT sun shadows ON (known: district coplanar self-shadow)"
+                          : "RT shadows off (CSM only)");
+    }, "ray-traced sun shadows on|off");
+    console->registerCommand("go", [&](const std::vector<std::string>& a) {
+        struct Spot { const char* name; float x, y, z, yaw, pitch; };
+        static const Spot kSpots[] = {
+            { "postcard", -450.0f, 620.0f,  900.0f, -1.02f, -0.28f },
+            { "crown",     -20.0f, 260.0f,  760.0f,  1.57f, -0.35f },
+            { "drag",      -30.0f, 205.0f,  740.0f,  1.40f, -0.15f },
+            { "fissure",   331.0f, 420.0f,  459.0f,  2.40f, -0.30f },
+            { "mine",     -480.0f, 260.0f,  850.0f,  0.00f, -0.35f },
+            { "harbor",    140.0f,  90.0f,  980.0f,  1.57f, -0.20f },
+            { "sea",       -60.0f, 350.0f, 4200.0f, -1.57f, -0.05f },
+        };
+        const std::string want = a.empty() ? "" : a[0];
+        for (const Spot& s : kSpots) {
+            if (want == s.name) {
+                flyMode = true; walkMode = false; flySeeded = true;
+                followIdx = -1; playAs = false;
+                if (npcLifeBuilt) npcLife.setControlled(-1);
+                flyX = s.x; flyY = s.y; flyZ = s.z;
+                flyYaw = s.yaw; flyPitch = s.pitch; flyRoll = 0.0f;
+                console->print(std::string("-> ") + s.name);
+                hud.closeConsole();
+                return;
+            }
+        }
+        std::string names = "go";
+        for (const Spot& s : kSpots) { names += " "; names += s.name; }
+        console->print(names);
+    }, "fly to a landmark (go with no arg lists them)");
+    console->registerCommand("npcs", [&](const std::vector<std::string>&) {
+        if (!npcLifeBuilt) { console->print("npc life not built"); return; }
+        for (uint32_t i = 0; i < npcLife.agentCount(); ++i) {
+            const auto& a2 = npcLife.agent(i);
+            if (a2.onFreeway) continue;
+            char l[160];
+            std::snprintf(l, sizeof(l), "%2u  %-18s %-18s %-10s (%.0f, %.0f)",
+                          i, a2.name.c_str(), x3::game::archetypeName(a2.arch),
+                          x3::game::npcActivityName(a2.activity), a2.pos.x, a2.pos.z);
+            console->print(l);
+        }
+    }, "list the named citizens");
+    console->registerCommand("find", [&](const std::vector<std::string>& a) {
+        if (!npcLifeBuilt || a.empty()) { console->print("find <name-or-role fragment>"); return; }
+        std::string want = a[0];
+        for (auto& ch : want) ch = (char)std::tolower((unsigned char)ch);
+        for (uint32_t i = 0; i < npcLife.agentCount(); ++i) {
+            const auto& a2 = npcLife.agent(i);
+            std::string hay = a2.name + " " + x3::game::archetypeName(a2.arch);
+            for (auto& ch : hay) ch = (char)std::tolower((unsigned char)ch);
+            if (hay.find(want) == std::string::npos) continue;
+            flyMode = true; walkMode = false; flySeeded = true;
+            flyX = a2.pos.x + 5.0f; flyY = a2.pos.y + 1.8f; flyZ = a2.pos.z + 5.0f;
+            flyYaw = std::atan2(a2.pos.z - flyZ, a2.pos.x - flyX); flyPitch = -0.1f; flyRoll = 0.0f;
+            console->print("-> " + a2.name + " (" + x3::game::archetypeName(a2.arch) + ")");
+            hud.closeConsole();
+            return;
+        }
+        console->print("no citizen matches '" + a[0] + "'");
+    }, "fly to a citizen by name or role");
+    console->registerCommand("money", [&, argF](const std::vector<std::string>& a) {
+        treasury += (double)argF(a, 10000.0f);
+        console->print("treasury -> $" + std::to_string((long long)treasury));
+    }, "money [amount] — add to the treasury (cheat)");
+    console->registerCommand("gold", [&, argF](const std::vector<std::string>& a) {
+        goldOz += (double)argF(a, 100.0f);
+        console->print("gold -> " + std::to_string((long long)goldOz) + " oz");
+    }, "gold [oz] — add mined gold (cheat)");
+    console->registerCommand("version", [&](const std::vector<std::string>&) {
+        console->print("X3Native — ECHOTROPOLIS  |  Vulkan GPU-driven  |  DDGI + volumetrics + llama.cpp citizens");
+        console->print(std::string("RT hardware: ") + (device->rayTracingSupported() ? "YES" : "no"));
+    }, "build/engine info");
+    console->registerCommand("echo", [&](const std::vector<std::string>& a) {
+        std::string s;
+        for (const auto& w : a) { if (!s.empty()) s += " "; s += w; }
+        console->print(s);
+    }, "echo <text>");
     console->registerCommand("gi", [&](const std::vector<std::string>& a) {
         const std::string arg = a.empty() ? "" : a[0];
         if      (arg == "off")   ddgiP.enabled = false;
@@ -3392,8 +3548,8 @@ int hostEchotropolis(HostContext& hc) {
                 flyPitch = -0.12f; flyRoll = 0.0f;
                 flySeeded = true;
             }
-            flyYaw   += ddx * 0.0028f;               // mouselook
-            flyPitch -= ddy * 0.0028f;
+            flyYaw   += ddx * 0.0028f * g_sensMul;   // mouselook
+            flyPitch -= ddy * 0.0028f * g_sensMul;
             // Arrow LEFT/RIGHT turn ("not strafing like A and D do").
             const float turnK = (kd(GLFW_KEY_RIGHT) ? 1.0f : 0.0f) - (kd(GLFW_KEY_LEFT) ? 1.0f : 0.0f);
             flyYaw += turnK * 1.6f * dt;
@@ -3410,7 +3566,7 @@ int hostEchotropolis(HostContext& hc) {
                             + (kd(GLFW_KEY_UP) ? 1.0f : 0.0f) - (kd(GLFW_KEY_DOWN) ? 1.0f : 0.0f);
             const float mvR = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
             const float mvU = (kd(GLFW_KEY_SPACE) ? 1.0f : 0.0f) - (kd(GLFW_KEY_C) ? 1.0f : 0.0f);
-            const float spd = kd(GLFW_KEY_LEFT_SHIFT) ? 240.0f : 60.0f;   // m/s (km-scale city)
+            const float spd = (kd(GLFW_KEY_LEFT_SHIFT) ? 240.0f : 60.0f) * g_flySpeedMul;
             flyX += (cp * cyw * mvF - syw * mvR) * spd * dt;
             flyZ += (cp * syw * mvF + cyw * mvR) * spd * dt;
             flyY += (sp * mvF + mvU) * spd * dt;
@@ -3633,7 +3789,7 @@ int hostEchotropolis(HostContext& hc) {
             if (kd(GLFW_KEY_6)) bookmark( 412.0f, -106.0f,  3.93f, 0.60f,  950.0f); // crown promenade
             if (kd(GLFW_KEY_7)) bookmark( 331.0f,  459.0f,  2.40f, 0.35f,  750.0f); // fissure rim
             if (kd(GLFW_KEY_8)) bookmark(   0.0f,    0.0f,  5.50f, 0.10f, 4400.0f); // sea approach
-            if (!todPaused) tod.advance(dt);
+            if (!todPaused) tod.advance(dt * g_todSpeed);
             if (tod.phase() != prevPhase) {
                 prevPhase = tod.phase();
                 x3::logInfo(std::string("--world echotropolis: ") +
@@ -3794,6 +3950,7 @@ int hostEchotropolis(HostContext& hc) {
             walkScene.render(*device, frame);
         }
         if (npcLifeBuilt) npcSkin.draw(*device, frame, walkScene);   // named-citizen rigs
+        for (auto& sp : streetProps) sp->draw(*device, frame);       // real vendor carts
         if (minersBuilt) minersSkin.draw(*device, frame, walkScene);   // GOLD-MINE crew skins
         if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
             poseBeam(waterTime * kBeamRate);
