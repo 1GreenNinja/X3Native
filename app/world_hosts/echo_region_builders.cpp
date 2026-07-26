@@ -523,8 +523,18 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
     // `addLights()` slice / EchoRegionSet::appendNearLights contract (§3).
     // Not wired here; WP-0/WP-1 must decide how street-lamp light selection
     // joins the new per-frame light-aggregation path.
-    auto* lampScenePtr = new Scene();
-    auto* streetLampsPtr = new StreetLights();
+    // M-A DEVIATION (WP-0): street lamps + lampScene STAY HOST-SIDE for
+    // milestone A — the per-frame streetLamps.selectLights() nearest-K query
+    // feeding device->setPointLights has no home in the static addLights()
+    // contract (the INTEGRATOR note above), and building a SECOND lamp set
+    // here would draw the lamps twice. The host keeps its streetLamps/
+    // lampScene/selectLights machinery untouched. Revisit at M-B alongside
+    // the light-selection redesign.
+    Scene*        lampScenePtr   = nullptr;   // kept null — see M-A deviation
+    StreetLights* streetLampsPtr = nullptr;
+#if 0   // M-A: lamps stay host-side — see deviation note
+    lampScenePtr = new Scene();
+    streetLampsPtr = new StreetLights();
     {
         auto seatOf = [&](float cx, float cz){
             float gy = ctx.hf.ok() ? ctx.hf.heightAt(cx, cz) : 190.0f;
@@ -548,6 +558,7 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
         streetLampsPtr->buildDistrictLamps(*lampScenePtr, ctx.device, rows, 5);
     }
     region.setScene(lampScenePtr);
+#endif
 
     // ===================== SKY DRONES ===== (host ~2020-2053)
     struct DronePose { EnvArtSystem* body; float cx,cz,r,y,w,phase; };
@@ -786,6 +797,14 @@ void buildWestShoulder(EchoRegion& region, EchoRegionCtx& ctx) {
     //   EchoRegionCtx per frame and give EchoRegion a conditional-draw hook,
     //   or (b) gate this specific draw outside EchoRegionSet::drawAll as a
     //   stop-gap, or (c) pick capture cams/TODs that don't exercise it yet.
+    // M-A DEVIATION (WP-0): the beam block above the INTEGRATOR note is NOT
+    // compiled — the beam + its cityLightsOn night-gate STAY HOST-SIDE
+    // (host_echotropolis.cpp keeps beam/poseBeam/fissure + the gated draws)
+    // precisely because this port cannot reproduce the gate and would break
+    // the milestone-A byte-compare (golden TOD draws NO beam in the host).
+    // Revisit at M-B by threading a per-frame cityLightsOn into the region
+    // update/draw path.
+#if 0   // M-A: beam stays host-side — see deviation note
     {
         constexpr float kLightX = -493.24f, kLightY = -0.156f, kLightZ = 789.39f;
         constexpr float kLanternY = 25.75f;     // beam pivot above the props tower base
@@ -807,6 +826,7 @@ void buildWestShoulder(EchoRegion& region, EchoRegionCtx& ctx) {
             });
         }
     }
+#endif
 
     // Miners crew re-attach on west_shoulder build/teardown (plan §2:
     // `minersSkin.deactivate(walkScene)` + stop `miners.update` on evict,

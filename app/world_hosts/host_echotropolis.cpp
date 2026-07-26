@@ -27,6 +27,10 @@
 //   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
 #include "world_host_common.h"
 #include "echo_heightfield.h"         // TIER-2: shared island terrain sampler (hoisted from this file)
+#include "echo_regions.h"             // TIER-2: EchoRegion containers + WorldStreamer bridge (WP-1)
+#include "echo_region_builders.h"     // TIER-2: crown/mine/district/harbor builders (WP-2)
+#include "echo_woodlands.h"           // TIER-2: 9-cell woodlands + slice self-test (WP-3)
+#include "../world_stream.h"          // TIER-2: the residency engine (graph + streamer)
 #include "../tod.h"
 #include "../env_art.h"
 #include "../mine_fx.h"               // GOLD MINE: authentic EoS arch mouth-glow (ported render FX)
@@ -909,109 +913,83 @@ int hostEchotropolis(HostContext& hc) {
     }
     // ================= END P4 COAST DRESSING ======================================
 
-    // ===================== REAL BUILDINGS (Phase B) =====================
-    // The first REAL textured GLB buildings in Echo Harbor. The Unity packs ship
-    // Draco-compressed (KHR_draco_mesh_compression) — the engine loader now DECODES
-    // Draco natively (fleet's feature/draco-decode, 2db0ebb, merged into main), so we
-    // load the RAW packs directly. Unity cm → scale 0.01; each house lifted by its own
-    // base offset so it sits on the terrain.
-    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> houses;
+    // ===================== TIER-2 REGIONS (WP-0 milestone A) ==============
+    // The former host build blocks — houses/towers/streets+metro+subway/condos/
+    // hackables/sky-drones (crown), mine site/forest/glow (west_shoulder), the
+    // 3 METROPOLIS districts, the harbor boats, and the woodlands (now 9 cells)
+    // — live in EchoRegion containers (echo_region_builders.cpp /
+    // echo_woodlands.cpp), built here through EchoRegionSet at the SAME point
+    // in boot the old blocks ran. MILESTONE A: every region force-built, the
+    // streamer wired but NEVER ticked — residency gating is M-B. The 6-cam
+    // byte-compare (scripts/echo_stream_ab.ps1) is the gate on this refactor.
+    // M-A DEVIATIONS (kept host-side, marked at their builder sites): the
+    // lighthouse beam + cityLightsOn gate, streetLamps/lampScene + the
+    // per-frame selectLights query, and the vendor carts (need npcLife).
+    // ECHO_STREAM=0 is the rollback lever: at M-A both paths are identical
+    // (same force-build, streamer inert either way) — it is logged so later
+    // milestones can hard-gate on it.
+    x3::game::Scene walkScene;   // hoisted (was declared just before the crowd builds):
+                                 // EchoRegionCtx binds it; population is unchanged below.
+    x3::game::EchoRegionCtx regionCtx{
+        *device, hf, walkScene,
+        /*modelsDir*/     "D:/GameDev/SimCityLLM2/refs/models",
+        /*districtsTxt*/  "assets/districts/districts.txt",
+        /*vegDir*/        "D:/GameDev/EchoHarbor/assets/veg",
+        /*houseForgeDir*/ "D:/Assets/_glb/prefab_buildings/HouseForge",
+        /*cityDir*/       "" };
+    x3::game::WorldRegionGraph regionGraph;
+    x3::game::WorldStreamer    regionStreamer;   // wired at M-A, first ticked at M-B
+    x3::game::EchoRegionSet    regionSet;
     {
-        const std::string hdir = "D:/Assets/_glb/prefab_buildings/HouseForge";
-        auto addHouse = [&](const char* glb, float x, float z, float yaw, float lift) {
-            const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
-            const float s = 0.01f, c = std::cos(yaw), sn = std::sin(yaw);
-            const float T[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
-                                  sn*s, 0.0f,  c*s, 0.0f,   x, gy + lift, z, 1.0f };
-            auto h = std::make_unique<x3::game::EnvArtSystem>();
-            if (h->buildFromGlbAt(*device, hdir, glb, T)) houses.push_back(std::move(h));
-        };
-        // Five hero houses (hand-placed on the crown foothills).
-        addHouse("PF_MetalHouse01.glb",      60.0f, 700.0f, 0.4f, 11.73f);
-        addHouse("PF_MetalHouse02.glb",     125.0f, 745.0f, 2.1f,  2.13f);
-        addHouse("PF_PrimitiveHouse01.glb",  10.0f, 675.0f, 3.6f,  3.17f);
-        addHouse("PF_PrimitiveHouse02.glb", 150.0f, 690.0f, 5.0f,  1.00f);
-        addHouse("PF_PrimitiveHouse03.glb",  85.0f, 640.0f, 1.2f,  8.59f);
-
-        // NEIGHBOURHOOD DRAPE: multiply the proven, correctly-scaled HouseForge
-        // GLBs into concentric rings around the crown so the island reads as a
-        // lived-in town from the RTS vista. Each GLB carries its own base lift.
-        // Deterministic hash jitter (no rand → identical every launch/capture).
-        // Houses whose ground sample is at/near the shoreline are skipped so none
-        // land in the water.
-        struct HouseDef { const char* glb; float lift; };
-        static const HouseDef kCat[5] = {
-            {"PF_MetalHouse01.glb", 11.73f}, {"PF_MetalHouse02.glb", 2.13f},
-            {"PF_PrimitiveHouse01.glb", 3.17f}, {"PF_PrimitiveHouse02.glb", 1.00f},
-            {"PF_PrimitiveHouse03.glb", 8.59f},
-        };
-        auto h01 = [](uint32_t n) {
-            n = (n ^ 61u) ^ (n >> 16); n *= 9u; n ^= n >> 4; n *= 0x27d4eb2du;
-            n ^= n >> 15; return (float)(n & 0xffffffu) / (float)0x1000000;
-        };
-        const float ringR[4] = { 135.0f, 215.0f, 300.0f, 395.0f };
-        int neigh = 0;
-        for (int r = 0; r < 4; ++r) {
-            const int cnt = 7 + r * 3;                     // fuller outer rings
-            for (int k = 0; k < cnt; ++k) {
-                const uint32_t seed = (uint32_t)(r * 101 + k);
-                const float ang = ((float)k + h01(seed) * 0.7f) * (6.2831853f / cnt);
-                const float rr  = ringR[r] + (h01(seed * 7u + 3u) - 0.5f) * 46.0f;
-                const float x = -20.0f + std::cos(ang) * rr;
-                const float z = 760.0f + std::sin(ang) * rr;
-                const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
-                if (gy < 34.0f) continue;                  // shoreline / water → skip
-                const HouseDef& hd = kCat[(uint32_t)(r + k * 2) % 5u];
-                const float yaw = ang + 1.5708f + (h01(seed * 13u + 5u) - 0.5f) * 1.2f;
-                addHouse(hd.glb, x, z, yaw, hd.lift);
-                ++neigh;
-            }
+        const char* se = std::getenv("ECHO_STREAM");
+        const bool streamOff = (se && se[0] == '0');
+        std::vector<std::string> gerrs;
+        if (!regionGraph.load("assets/world/regions.echotropolis.json", gerrs)) {
+            for (const auto& e : gerrs) x3::logError("[echoregions] " + e);
+            x3::logError("[echoregions] region graph FAILED to load — region content will be MISSING");
         }
-        x3::logInfo("--world echotropolis: REAL BUILDINGS — " +
-                    std::to_string(houses.size()) + " textured HouseForge houses (" +
-                    std::to_string(neigh) + " draped into neighbourhoods)");
+        // ECHO_SKIP_REGIONS=id1,id2 — forensic knob: listed regions register NO
+        // builder (they build empty). Used to bisect visual deltas per region.
+        const std::string skipList = [](){ const char* e = std::getenv("ECHO_SKIP_REGIONS");
+                                           return std::string(e ? e : ""); }();
+        auto skipped = [&](const char* id){ return skipList.find(id) != std::string::npos; };
+        auto reg = [&](const char* id, x3::game::EchoRegionSet::RegionBuilderFn fn) {
+            if (skipped(id)) { x3::logWarn(std::string("[echoregions] SKIPPED (env): ") + id); return; }
+            regionSet.registerBuilder(id, std::move(fn));
+        };
+        reg("crown",             x3::game::buildCrown);
+        reg("west_shoulder",     x3::game::buildWestShoulder);
+        reg("district_urban",    x3::game::buildDistrictUrban);
+        reg("district_recife",   x3::game::buildDistrictRecife);
+        reg("district_hivemind", x3::game::buildDistrictHivemind);
+        reg("harbor_bay",        x3::game::buildHarborBay);
+        // Woodlands cells: JSON ids <-> (cellIx 0=west..2=east, cellIz 0=south..2=north),
+        // the convention echo_woodlands.cpp documents at woodlandsCellRect().
+        struct CellId { const char* id; int ix, iz; };
+        static const CellId kCells[] = {
+            {"woodlands_NW",0,2},{"woodlands_N",1,2},{"woodlands_NE",2,2},
+            {"woodlands_W", 0,1},{"woodlands_C",1,1},{"woodlands_E", 2,1},
+            {"woodlands_SW",0,0},{"woodlands_S",1,0},{"woodlands_SE",2,0},
+        };
+        for (const auto& cid : kCells)
+            reg(cid.id,
+                [ix = cid.ix, iz = cid.iz](x3::game::EchoRegion& r, x3::game::EchoRegionCtx& c) {
+                    x3::game::buildWoodlandsCell(ix, iz, r, c);
+                });
+        regionStreamer.init(regionGraph, nullptr);          // no job pool until M-B ticks it
+        regionSet.init(regionCtx, regionStreamer, regionGraph);
+        // WP-3's slice proof: the 9-cell union must be bit-identical to the old
+        // single woodlands scatter — proven in pure math before any cell builds.
+        if (hf.ok())
+            x3::logInfo(std::string("[echoregions] woodlands slice self-test: ") +
+                        (x3::game::echoWoodlandsSliceSelfTest(hf) ? "PASS" : "FAIL"));
+        regionSet.forceAllResident(regionCtx);              // MILESTONE A: everything boot-built
+        x3::logInfo(std::string("[echoregions] M-A force-resident boot, ") +
+                    std::to_string(regionSet.regionCount()) + " regions (ECHO_STREAM=" +
+                    (streamOff ? "0/rollback-identical" : "on/wired-not-ticking") + ")");
     }
 
-    // ===================== DOWNTOWN SKYLINE (Urban Night City) =============
-    // The 37 "Urban Night City - Open World" building GLBs each bake their ORIGINAL
-    // scene position in their node translation (base at world Y=0) — so drawing every
-    // building through ONE shared transform reconstructs the artist-designed downtown
-    // as a single unit. We scale that whole layout and drop it centred on the crown
-    // so Echo Harbor gets a real textured skyline behind the procedural towers.
-    // Scene footprint ~1941×1204 (centre 120,175); heights 44–792 m at the baked
-    // 0.01 node scale. ECHO_TOWER_* env-tunable (scale/lift/centre) → recompose live.
-    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> towers;
-    {
-        const std::string cdir =
-            "D:/Assets/_glb/tech/Urban Night City - Open World/Assets/GeeZyyGames/buildings/FBX";
-        const float ts = [](){ const char* e=std::getenv("ECHO_TOWER_SCALE"); return e?(float)std::atof(e):0.34f; }();
-        const float tlift = [](){ const char* e=std::getenv("ECHO_TOWER_LIFT"); return e?(float)std::atof(e):0.0f; }();
-        const float tcx = [](){ const char* e=std::getenv("ECHO_TOWER_X"); return e?(float)std::atof(e):-20.0f; }();
-        const float tcz = [](){ const char* e=std::getenv("ECHO_TOWER_Z"); return e?(float)std::atof(e):760.0f; }();
-        const float sceneCX = 120.5f, sceneCZ = 174.9f;      // baked layout centre
-        const float gy = hf.ok() ? hf.heightAt(tcx, tcz) : 190.0f;
-        // Uniform scale + translate so the layout centre lands on (tcx,tcz) at ground.
-        const float Tx = tcx - ts * sceneCX;
-        const float Tz = tcz - ts * sceneCZ;
-        const float M[16] = { ts,0,0,0,  0,ts,0,0,  0,0,ts,0,  Tx, gy + tlift, Tz, 1 };
-        static const char* kBld[] = {
-            "Building 01","Building 02","Building 03","Building 04","Building 05",
-            "Building 06","Building 07","Building 08","Building 09","Building 10",
-            "Building 11","Building 12","Building 14","Building 15","Building 16",
-            "Building 17","Building 19","Building 20","Building 21","Building 22",
-            "Building 23","Building 24","Building 25","Building 26","Building 27",
-            "Building 28","Building 29","Building 33","Building 34","Building 35",
-            "Building 36","Building 38","Building 39","Building 40","Building 41",
-            "Building 43",
-        };
-        for (const char* b : kBld) {
-            auto t = std::make_unique<x3::game::EnvArtSystem>();
-            if (t->buildFromGlbAt(*device, cdir, std::string(b) + ".glb", M))
-                towers.push_back(std::move(t));
-        }
-        x3::logInfo("--world echotropolis: DOWNTOWN SKYLINE — " +
-                    std::to_string(towers.size()) + " Urban Night City towers on the crown");
-    }
+    // (TIER-2 M-A: DOWNTOWN SKYLINE moved to buildCrown — echo_region_builders.cpp.)
 
     // ===================== GOLD MINE + TRUCK LOT (the 2038 gold rush) =====
     // The physical gold mine SITE — purpose-built in Blender (assets/mine/mine_site.glb):
@@ -1021,221 +999,18 @@ int hostEchotropolis(HostContext& hc) {
     // are their OWN dedicated crew (built with the residents below) so they stand on the
     // mine's real terrain plane and walk truck-lot <-> seam. Scales are ECHO_*-tunable.
     // Base is at Y=0, ~15x17 m at scale 1 → ECHO_MINE_SCALE defaults ~1.6 (NOT 11).
+    // (TIER-2 M-A: mine site + truck lot moved to buildWestShoulder. The kMine*
+    // constants STAY — the miners crew build + ops dashboard below read them.)
     const float kMineX = -480.0f, kMineZ = 850.0f;   // mine mouth (Carry point B) — open west shoulder, clear of towers
     const float kLotX  = -556.0f, kLotZ  = 814.0f;   // truck lot   (Carry point A) — short trek SW
     const float kMineGy = hf.ok() ? hf.heightAt(kMineX, kMineZ) : 190.0f;  // real terrain; miners share this plane
-    const float kMineScale  = [](){ const char* e=std::getenv("ECHO_MINE_SCALE");  return e?(float)std::atof(e):3.2f; }();
-    const float kMineYaw    = [](){ const char* e=std::getenv("ECHO_MINE_YAW");    return e?(float)std::atof(e):2.35f; }();
-    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> mineProps;
-    {
-        const float kTruckScale = [](){ const char* e=std::getenv("ECHO_TRUCK_SCALE"); return e?(float)std::atof(e):1.0f;  }();
-        const float kMineLift   = [](){ const char* e=std::getenv("ECHO_MINE_LIFT");   return e?(float)std::atof(e):0.0f;  }();
-        auto place = [&](const std::string& dir, const char* glb, float x, float z,
-                         float yaw, float s, float lift) {
-            const float gy = kMineGy;
-            const float c = std::cos(yaw), sn = std::sin(yaw);
-            const float T[16] = { c*s, 0, -sn*s, 0,  0, s, 0, 0,  sn*s, 0, c*s, 0,
-                                  x, gy + lift, z, 1 };
-            auto e = std::make_unique<x3::game::EnvArtSystem>();
-            if (e->buildFromGlbAt(*device, dir, glb, T)) mineProps.push_back(std::move(e));
-        };
-        place("D:/GameDev/EchoHarbor/assets/mine", "mine_site.glb",
-              kMineX, kMineZ, kMineYaw, kMineScale, kMineLift);
-        place("D:/Assets/_glb/tech/Industrial Small Truck Free/Assets/IndustrialSmallTruck/Art/fbx",
-              "SmallTruck_1.glb", kLotX, kLotZ, 1.2f, kTruckScale, 0.0f);
-        place("D:/Assets/_glb/tech/Mini Cargo Truck/Assets/MiniCargoTruck/FBX",
-              "Truck1.glb", kLotX - 9.0f, kLotZ + 7.0f, 2.4f, kTruckScale, 0.0f);
-        x3::logInfo("--world echotropolis: GOLD MINE site + truck lot — " +
-                    std::to_string(mineProps.size()) + " props");
-    }
 
-    // ===================== MINE FOREST (thick woods around the pit) =========
-    // Tim wants the gold mine nestled DEEP in the trees. Scatter Quaternius pines
-    // (assets/veg, CC0 — woodBarkDark/leafsDark, base at Y=0) into a dense stand
-    // ringing the mine — THICKEST behind it (away from the city) — pinned to real
-    // terrain, jittered in place/scale/species. A clear inner pad keeps the headframe
-    // + glowing seam readable; the approach wedge toward the city stays thinner so the
-    // glow still reads from the vista. Each pine is one cached EnvArtSystem instance.
-    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> mineForest;
-    {
-        static const char* kPines[] = {
-            "tree_pineTallA.glb", "tree_pineTallB.glb", "tree_pineTallC.glb",
-            "tree_pineDefaultA.glb", "tree_pineDefaultB.glb", "tree_pineRoundB.glb",
-        };
-        auto hh = [](uint32_t n){ n=(n^61u)^(n>>16); n*=9u; n^=n>>4; n*=0x27d4eb2du; n^=n>>15;
-                                  return (n & 0xffffffu) / (float)0x1000000; };
-        const std::string vdir = "D:/GameDev/EchoHarbor/assets/veg";
-        const float cx = kMineX, cz = kMineZ;
-        const float behind = std::atan2(cz - 760.0f, cx - (-20.0f));   // WNW, away from city
-        const float toCity = std::atan2(760.0f - cz, -20.0f - cx);     // approach wedge centre
-        auto plant = [&](float x, float z, float sc, float yaw, int variant){
-            const float gy = hf.ok() ? hf.heightAt(x, z) : kMineGy;        // match mine plane when no heightfield
-            if (hf.ok() && gy < 4.0f) return;                              // skip the sea only with real terrain
-            const float dxm=x-cx, dzm=z-cz; if (dxm*dxm+dzm*dzm < 13.0f*13.0f) return;   // clear pad
-            const float dxl=x-kLotX, dzl=z-kLotZ; if (dxl*dxl+dzl*dzl < 11.0f*11.0f) return; // clear lot
-            const float c=std::cos(yaw), s=std::sin(yaw);
-            const float T[16] = { c*sc,0,-s*sc,0, 0,sc,0,0, s*sc,0,c*sc,0, x, gy, z, 1 };
-            auto e = std::make_unique<x3::game::EnvArtSystem>();
-            if (e->buildFromGlbAt(*device, vdir, kPines[variant % 6], T)) {
-                e->setFoliage(1.0f);                       // canopy wrap + back-translucency
-                mineForest.push_back(std::move(e));
-            }
-        };
-        uint32_t seed = 0;
-        auto emit = [&](int count, float aCenter, float aSpread, float rMin, float rMax){
-            for (int i=0;i<count;++i,++seed){
-                float a = aCenter + (hh(seed*3u+1u)*2.0f-1.0f)*aSpread;
-                float r = rMin + hh(seed*3u+2u)*(rMax-rMin);
-                float x = cx + r*std::cos(a), z = cz + r*std::sin(a);
-                float da = std::fabs(std::atan2(std::sin(a-toCity), std::cos(a-toCity)));
-                if (da < 0.55f && r < 55.0f && hh(seed*3u+7u) < 0.7f) continue;  // thin the city-side approach
-                float sc  = 10.0f + hh(seed*7u+5u)*16.0f;                        // 10-26 m: wider spread breaks the picket-fence silhouette
-                float yaw = hh(seed*7u+3u)*6.2831853f;
-                plant(x, z, sc, yaw, (int)(hh(seed*7u+9u)*6.0f));
-            }
-        };
-        emit(74, 0.0f,   3.15159f, 15.0f,  80.0f);   // all-around inner ring (full circle)
-        emit(64, behind, 1.9f,     20.0f, 125.0f);   // THICK behind (away from the city)
-        emit(44, 0.0f,   3.15159f, 78.0f, 150.0f);   // outer belt, full circle
-        x3::logInfo("--world echotropolis: MINE FOREST — " +
-                    std::to_string(mineForest.size()) + " pines ringing the pit");
-    }
+    // (TIER-2 M-A: MINE FOREST moved to buildWestShoulder — echo_region_builders.cpp.)
 
-    // ===================== WOODLANDS (island-wide conifer belts) ============
-    // Replaces the OLD baked "spike-cone" procedural conifers (echotropolis_props.glb's
-    // flora_conifer_0/1/2 + flora_trunk primitives — ~13k stacked-cone silhouettes baked
-    // by SimCityLLM2/tools/make_flora_glb.py's _conifer()/_scatter(); the flora_grass_0..3
-    // "ground tuft" dark-chip primitives are dropped alongside them — see props.setNodeSkip()
-    // above) with a real scatter of the 6 textured Quaternius pine GLBs in assets/veg — the
-    // SAME catalog MINE FOREST above uses. Unlike MINE FOREST (one EnvArtSystem PER TREE,
-    // fine for a few hundred), this is ONE EnvArtSystem for the whole island: beginFromDir
-    // mounts assets/veg once, addGlbInstance loads each of the 6 GLBs ONCE (path-cached) and
-    // instances it per placement — the district-loader pattern, built for thousands of
-    // instances. Deterministic hash grid (NO rand() — same hh() mix as MINE FOREST's, so the
-    // scatter is bit-identical every launch/capture) over the whole island, gated to gentle
-    // mid-elevation ground and kept clear of every district pad, the downtown crown, the mine
-    // (MINE FOREST owns that circle), the freeway loop, and the metro line; 3x density inside
-    // three woodland "belt" rects so the horizon reads as real forest, not scattered park trees.
-    x3::game::EnvArtSystem woodlands;
-    {
-        static const char* kPines[] = {
-            "tree_pineTallA.glb", "tree_pineTallB.glb", "tree_pineTallC.glb",
-            "tree_pineDefaultA.glb", "tree_pineDefaultB.glb", "tree_pineRoundB.glb",
-        };
-        auto hh = [](uint32_t n){ n=(n^61u)^(n>>16); n*=9u; n^=n>>4; n*=0x27d4eb2du; n^=n>>15;
-                                  return (n & 0xffffffu) / (float)0x1000000; };
-        const std::string vdir = "D:/GameDev/EchoHarbor/assets/veg";
-        if (!woodlands.beginFromDir(*device, vdir)) {
-            x3::logWarn("--world echotropolis: WOODLANDS — veg dir mount failed (" + vdir + "), no trees");
-        } else {
-            // KEEP-OUT rects/circles (district pads carry a ~25 m margin baked in below).
-            struct Rect { float x0,x1,z0,z1; };
-            static const Rect kKeepOut[] = {
-                { 935.0f-25.0f, 1110.0f+25.0f, 1180.0f-25.0f, 1290.0f+25.0f },  // Recife 2050 pad
-                { 540.0f-25.0f,  860.0f+25.0f,  190.0f-25.0f,  510.0f+25.0f },  // Urban District pad
-                { 1210.0f-25.0f,1470.0f+25.0f,  870.0f-25.0f, 1130.0f+25.0f },  // HIVEMIND Cybercity pad
-            };
-            const float kCrownCX = -20.0f, kCrownCZ = 760.0f, kCrownR = 470.0f;   // downtown crown (streets/roads)
-            const float kMineCX  = -480.0f, kMineCZ = 850.0f, kMineR = 175.0f;    // MINE FOREST owns this circle
-            const float kMetroX0 = -75.0f, kMetroX1 = -45.0f, kMetroZ0 = 520.0f, kMetroZ1 = 1000.0f;
-            // Mirrors the FREEWAY NETWORK kRoute[] waypoint loop below — kept in sync by hand
-            // (both are baked-deterministic; if the freeway route ever moves, update both).
-            struct Wp { float x, z; };
-            static const Wp kFreeway[] = {
-                { -160.0f,  720.0f }, {  120.0f,  720.0f }, {  480.0f,  900.0f },
-                {  820.0f, 1120.0f }, { 1060.0f,  900.0f }, {  980.0f,  560.0f },
-                {  700.0f,  420.0f }, {  300.0f,  430.0f }, {  -60.0f,  560.0f },
-                { -160.0f,  700.0f },
-            };
-            const int nFwWp = (int)(sizeof(kFreeway)/sizeof(kFreeway[0]));
-            struct Belt { float x0,x1,z0,z1; };
-            static const Belt kBelts[] = {
-                { 150.0f, 900.0f,  950.0f, 1250.0f },    // belt1
-                { 300.0f,1200.0f,  540.0f,  880.0f },    // belt2
-                {-900.0f,-150.0f, 1000.0f, 1550.0f },    // belt3
-            };
-            auto distToSeg = [](float px, float pz, float ax, float az, float bx, float bz){
-                const float dx=bx-ax, dz=bz-az, l2=dx*dx+dz*dz;
-                float t = l2>1e-6f ? ((px-ax)*dx+(pz-az)*dz)/l2 : 0.0f;
-                t = std::max(0.0f, std::min(1.0f, t));
-                const float sx=ax+t*dx, sz=az+t*dz, ex=px-sx, ez=pz-sz;
-                return std::sqrt(ex*ex+ez*ez);
-            };
-            // Base keep-probability tuned (offline Python density survey against the SAME
-            // island_height_20260530.png the C++ Heightfield samples) so TOTAL lands ~9000-
-            // 12000 instances given this gate + these keep-outs + the 3x belt bonus.
-            const float kBaseKeep = 0.46f;
-            uint32_t seed = 0, planted = 0, sampled = 0;
-            for (float x = -1900.0f; x <= 1900.0f; x += 13.0f) {
-                for (float z = -1900.0f; z <= 1900.0f; z += 13.0f, ++seed) {
-                    const float jx = x + (hh(seed*5u+1u)*2.0f-1.0f)*6.0f;
-                    const float jz = z + (hh(seed*5u+2u)*2.0f-1.0f)*6.0f;
-                    if (!hf.ok()) continue;
-                    ++sampled;
-                    const float h0 = hf.heightAt(jx, jz);
-                    if (h0 < 24.0f || h0 > 172.0f) continue;
-                    const float hX = hf.heightAt(jx+9.0f, jz), hZ = hf.heightAt(jx, jz+9.0f);
-                    if (std::fabs(hX-h0) >= 7.0f || std::fabs(hZ-h0) >= 7.0f) continue;
+    // (TIER-2 M-A: WOODLANDS moved to the 9 woodlands_* cell regions — echo_woodlands.cpp;
+    //  the 9-cell union is proven bit-identical by echoWoodlandsSliceSelfTest at boot.)
 
-                    bool blocked = false;
-                    for (const Rect& r : kKeepOut)
-                        if (jx>=r.x0 && jx<=r.x1 && jz>=r.z0 && jz<=r.z1) { blocked = true; break; }
-                    if (!blocked) {
-                        const float dcx=jx-kCrownCX, dcz=jz-kCrownCZ;
-                        if (dcx*dcx+dcz*dcz < kCrownR*kCrownR) blocked = true;
-                    }
-                    if (!blocked) {
-                        const float dmx=jx-kMineCX, dmz=jz-kMineCZ;
-                        if (dmx*dmx+dmz*dmz < kMineR*kMineR) blocked = true;
-                    }
-                    if (!blocked && jx>=kMetroX0 && jx<=kMetroX1 && jz>=kMetroZ0 && jz<=kMetroZ1) blocked = true;
-                    if (!blocked)
-                        for (int w = 0; w+1 < nFwWp; ++w)
-                            if (distToSeg(jx, jz, kFreeway[w].x, kFreeway[w].z,
-                                          kFreeway[w+1].x, kFreeway[w+1].z) < 30.0f) { blocked = true; break; }
-                    if (blocked) continue;
-
-                    float density = kBaseKeep;
-                    for (const Belt& b : kBelts)
-                        if (jx>=b.x0 && jx<=b.x1 && jz>=b.z0 && jz<=b.z1) { density *= 3.0f; break; }
-                    if (hh(seed*11u+13u) >= density) continue;
-
-                    const float sc  = 10.0f + hh(seed*7u+5u)*16.0f;     // 10-26 m
-                    const float yaw = hh(seed*7u+3u)*6.2831853f;
-                    const int variant = (int)(hh(seed*7u+9u)*6.0f);
-                    const float c=std::cos(yaw), s=std::sin(yaw);
-                    const float T[16] = { c*sc,0,-s*sc,0, 0,sc,0,0, s*sc,0,c*sc,0, jx, h0, jz, 1 };
-                    if (woodlands.addGlbInstance(kPines[variant % 6], T)) ++planted;
-                }
-            }
-            woodlands.setFoliage(1.0f);
-            x3::logInfo("--world echotropolis: WOODLANDS — " + std::to_string(planted) +
-                        " pines scattered (" + std::to_string(sampled) + " grid cells sampled)");
-        }
-    }
-
-    // ===================== MINE MOUTH GLOW (authentic EoS arch) ============
-    // Graft Empires of Shadow's real arch-SDF mouth glow (ported render FX in
-    // mine_fx.cpp — "light licking the tunnel walls around a dark throat", gold
-    // [1.0,0.80,0.16]) onto mine_site.glb's adit. A gold emissiveTex quad seated
-    // at the mine mouth via the mine's OWN place() transform (so it tracks the
-    // ECHO_MINE_* pose); all seat offsets are ECHO_GLOW_* tunable.
-    x3::game::Scene mineGlowScene;
-    x3::game::GoldMineWorld mineGlow;
-    {
-        auto envf = [](const char* k, float d){ const char* e=std::getenv(k); return e?(float)std::atof(e):d; };
-        const float lY  = envf("ECHO_GLOW_LY", 1.70f);    // mouth-centre height (GLB units)
-        const float lZ  = envf("ECHO_GLOW_LZ", 0.90f);    // mouth depth (front of the adit = +Z local)
-        const float lHW = envf("ECHO_GLOW_HW", 1.30f);    // half width  (GLB units)
-        const float lHH = envf("ECHO_GLOW_HH", 1.55f);    // half height (GLB units)
-        const float c = std::cos(kMineYaw), sn = std::sin(kMineYaw), s = kMineScale;
-        const float gx = kMineX + s * (sn * lZ);          // same rotation as the mine place() transform
-        const float gy = kMineGy + s * lY;
-        const float gz = kMineZ + s * (c * lZ);
-        const float gYaw = envf("ECHO_GLOW_YAW", kMineYaw);   // face outward along the mouth (+Z local)
-        mineGlow.buildMouthGlow(mineGlowScene, *device, gx, gy, gz, s * lHW, s * lHH, gYaw);
-        x3::logInfo("--world echotropolis: MINE MOUTH GLOW (EoS arch) seated at mouth");
-    }
+    // (TIER-2 M-A: MINE MOUTH GLOW moved to buildWestShoulder — its Scene is region-owned.)
 
     // ===================== THE UFO (Tim's Grok→Rodin saucer) ============
     // A mothership DRIFTING on a slow circular patrol high over the crown, spinning
@@ -1482,9 +1257,7 @@ int hostEchotropolis(HostContext& hc) {
     // the layers read as real infrastructure from the vista. Flat plane GLBs (assets/
     // infra) scaled per segment; the pillar is a unit cube stretched to the ground.
     std::vector<std::unique_ptr<x3::game::EnvArtSystem>> infra;
-    std::unique_ptr<x3::game::EnvArtSystem> subwayTrain;
-    bool subwayBuilt = false;
-    struct SubwayLine { float x, y, z0, z1, scale; } subwayLine{};
+    // (TIER-2 M-A: subwayTrain/subwayBuilt/subwayLine moved into buildCrown.)
     const std::string infradir = "D:/GameDev/EchoHarbor/assets/infra";
     // Place a flat plane GLB (local 1x1 in X/Z, +Y up) as a road/deck: centre (cx,cz),
     // height y, oriented yaw=atan2(dir.x,dir.z), scaled width(X) x length(Z).
@@ -1519,17 +1292,7 @@ int hostEchotropolis(HostContext& hc) {
         if (e->buildFromGlbAt(*device, infradir, "pillar.glb", T)) infra.push_back(std::move(e));
     };
     {
-        // STREETS: asphalt + neon curbs down each of the 5 car lanes.
-        const struct { float sx,sz,dx,dz,len; } rlanes[] = {
-            {-330,702,1,0,620},{290,742,-1,0,620},{-330,818,1,0,620},{2,560,0,1,400},{-150,960,0,-1,400},
-        };
-        for (auto& L : rlanes) {
-            const float yaw = std::atan2(L.dx, L.dz);
-            const float mx = L.sx + L.dx*L.len*0.5f, mz = L.sz + L.dz*L.len*0.5f;
-            const float ry = kCarY + 0.06f;
-            placeDeck("road_asphalt.glb", mx, mz, ry,        yaw, 15.0f, L.len);
-            placeDeck("road_curbs.glb",   mx, mz, ry + 0.02f, yaw, 15.0f, L.len);
-        }
+        // (TIER-2 M-A: crown STREETS moved to buildCrown — echo_region_builders.cpp.)
         // FREEWAY NETWORK: an elevated interstate stitching the METROPOLIS —
         // downtown crown -> Recife 2050 (east flats) -> south -> Urban District
         // (the bay) -> back up the west shore to the crown. Polyline waypoints;
@@ -1583,312 +1346,20 @@ int hostEchotropolis(HostContext& hc) {
             x3::logInfo("--world echotropolis: FREEWAY NETWORK — " +
                         std::to_string(fseg) + " deck segments looping the metropolis");
         }
-        // METRO: elevated N-S rail line crossing the crown at +11m (over the freeway).
-        const float mgx=-60.0f, mz0=540.0f, mz1=980.0f, mlen=mz1-mz0, mmz=(mz0+mz1)*0.5f;
-        const float mgy = hf.ok()?hf.heightAt(mgx,mmz):kCarY;
-        const float my  = mgy + 11.0f;
-        placeDeck("rail_deck.glb", mgx, mmz, my, 0.0f, 6.0f, mlen);
-        for (float z=mz0+16.0f; z<mz1; z+=40.0f) placePillar(mgx, z, my-0.3f, 2.2f);
-        // A short elevated platform beside the line (station deck).
-        placeDeck("freeway_deck.glb", mgx+7.0f, 760.0f, my+0.05f, 0.0f, 8.0f, 60.0f);
-        x3::logInfo("--world echotropolis: INFRASTRUCTURE — " + std::to_string(infra.size()) +
-                    " road/deck/pillar pieces");
-
-        // SUBWAY TRAIN: the metro car sliding the elevated line (poseTrain each frame).
-        const float kSubScale = [](){ const char* e=std::getenv("ECHO_SUBWAY_SCALE"); return e?(float)std::atof(e):1.0f; }();
-        subwayTrain = std::make_unique<x3::game::EnvArtSystem>();
-        const float sI[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, mgx, my+0.4f, mmz, 1 };
-        if (subwayTrain->buildFromGlbAt(*device,
-                "D:/Assets/_glb/tech/Subway Train/Assets/SubwayTrain", "SubwayTrain.glb", sI)) {
-            subwayBuilt = true;
-            subwayLine = { mgx, my + 0.4f, mz0, mz1, kSubScale };
-        } else { subwayTrain.reset(); }
-    }
-    auto poseTrain = [&](float t){
-        if (!subwayBuilt) return;
-        const float len = subwayLine.z1 - subwayLine.z0;
-        // Ping-pong along the line so it shuttles like a metro.
-        float u = std::fmod(t * 22.0f, 2.0f * len);
-        float d = (u < len) ? u : (2.0f*len - u);
-        const float dir = (u < len) ? 1.0f : -1.0f;
-        const float yaw = std::atan2(0.0f, dir);       // faces travel dir along +Z
-        const float s = subwayLine.scale, c=std::cos(yaw), sn=std::sin(yaw);
-        const float z = subwayLine.z0 + d;
-        const float M[16] = { c*s,0,-sn*s,0, 0,s,0,0, sn*s,0,c*s,0, subwayLine.x, subwayLine.y, z, 1 };
-        subwayTrain->setInstanceTransform(0, M);
-    };
-
-    // ===================== LIVING CONDOS (visitable interiors) ==============
-    // Cutaway condo towers: stacks of open-fronted room dioramas so you can SEE
-    // citizens living their lives — watching TV (blue flicker), cooking dinner,
-    // romancing, raising kids, a novelist at a glowing laptop... and one hidden
-    // green 'lab' cooking questionable materials. Visible up close (walk / ride-
-    // along) and their characteristic light reads from the street at night.
-    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> condos;
-    const std::string condodir = "D:/GameDev/EchoHarbor/assets/interiors";
-    {
-        static const char* kRooms[] = { "cond_tv.glb", "cond_kitchen.glb", "cond_romance.glb",
-                                        "cond_kids.glb", "cond_novelist.glb" };   // domestic (lab is hidden)
-        auto hashi = [](uint32_t n){ n=(n^61u)^(n>>16); n*=9u; n^=n>>4; n*=0x27d4eb2du; n^=n>>15; return n; };
-        auto room = [&](const char* glb, float x, float y, float z, float yaw, float s){
-            const float c=std::cos(yaw), sn=std::sin(yaw);
-            const float T[16] = { c*s,0,-sn*s,0, 0,s,0,0, sn*s,0,c*s,0, x, y, z, 1 };
-            auto e = std::make_unique<x3::game::EnvArtSystem>();
-            if (e->buildFromGlbAt(*device, condodir, glb, T)) condos.push_back(std::move(e));
-        };
-        // A condo = cols x floors grid of rooms; the facade runs along local X and the
-        // open front (+Z local) is rotated by yaw to face the street.
-        auto condo = [&](float wx, float wz, float yaw, int cols, int floors, float s,
-                         uint32_t seed, bool hasLab){
-            const float gy = hf.ok()?hf.heightAt(wx,wz):190.0f;
-            const float rw = 3.75f*s, rh = 3.25f*s, c=std::cos(yaw), sn=std::sin(yaw);
-            for (int f=0; f<floors; ++f)
-              for (int j=0; j<cols; ++j) {
-                const float lx = (j - (cols-1)*0.5f) * rw;
-                const float x = wx + c*lx, z = wz - sn*lx, y = gy + f*rh;
-                const char* g = kRooms[hashi(seed + f*7u + j*13u) % 5];
-                if (hasLab && f==floors-1 && j==cols-1) g = "cond_lab.glb";   // the hidden lab, top corner
-                room(g, x, y, z, yaw, s);
-              }
-        };
-        // STREET-FRONT HIGH-RISES: lining the north avenue (the z=818 car lane) on
-        // its north side, open fronts facing the street — so walking/driving that
-        // road you look straight into the lit lives, Watch-Dogs style. The road
-        // corridor is guaranteed clear (traffic drives it), so the facades read.
-        condo(-100.0f, 842.0f, 3.14159f, 3, 5, 2.0f, 11u, false);
-        condo( -20.0f, 842.0f, 3.14159f, 3, 6, 2.0f, 29u, true);   // the block WITH the hidden lab
-        condo(  60.0f, 842.0f, 3.14159f, 3, 5, 2.0f, 47u, false);
-        x3::logInfo("--world echotropolis: LIVING CONDOS — " + std::to_string(condos.size()) +
-                    " lit rooms (TV/kitchen/romance/kids/novelist + 1 hidden lab)");
+        // (TIER-2 M-A: METRO deck/pillars/platform + SUBWAY TRAIN + poseTrain moved to
+        //  buildCrown — the region's setUpdate drives the train each frame.)
+        x3::logInfo("--world echotropolis: INFRASTRUCTURE (freeway) — " +
+                    std::to_string(infra.size()) + " deck/pillar pieces");
     }
 
-    // ===================== METROPOLIS DISTRICTS (designer layouts) ==========
-    // Real city packs rebuilt EXACTLY as their artists arranged them. Offline,
-    // tools/unity_scene_to_layout.py parses a pack's Unity demo scene + guid map
-    // into a .layout file (one line per prefab: glb + engine-frame TRS — the
-    // Unity left-handed mirror is ALREADY applied there; see docs/COORDINATES.md).
-    // Here each district = ONE EnvArtSystem: the GLB library is mounted once,
-    // every prefab GLB loads once (path-cached) and is instanced at the designer's
-    // transform, seated on an open pad of the island.
-    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> districts;
-    // NIGHT LIGHT TRANSPORT: the districts place ~60 neon/lamp/holo sources each, but
-    // they were EMISSIVE-ONLY (self-glow, illuminating nothing). Harvest each as a real
-    // PointLight so the walls around it catch colored light — the crown reads AAA at
-    // night precisely because its street lamps feed point lights; the districts didn't.
-    std::vector<x3::rhi::PointLight> districtLights;
-    // meshFix: constant mesh-local rotation applied to every prefab — "x-90",
-    // "y90", "z180", or "0" for none. Corrects the FBX->GLB baked-node convention
-    // mismatch vs Unity's importer (the armory bakes quat [0.5,-0.5,0.5,0.5], an
-    // axis PERMUTATION — off from Unity's plain -90X by a yaw; docs/COORDINATES.md).
-    auto loadDistrict = [&](const char* layoutPath, const char* glbDir,
-                            float padX, float padZ, float padYaw, float padScale,
-                            const char* meshFix, float padYOff, const char* tag){
-        std::ifstream lf(layoutPath);
-        if (!lf) { x3::logWarn(std::string("--world echotropolis: district layout missing: ") + layoutPath); return; }
-        auto d = std::make_unique<x3::game::EnvArtSystem>();
-        if (!d->beginFromDir(*device, glbDir)) return;
-        d->setMetallicClamp(0.22f);   // BLACK-PROP fix: packed MRAOH maps bake metallic~1
-        // PAD transform (engine frame, docs/COORDINATES.md): world = T(pad) * RotY(yaw) * S.
-        // SEAT at the footprint's MAX terrain height (5-point sample): seating at the
-        // centre height buried the district's edges when the flats bowl (only roofs
-        // showed). A ground SLAB under the pad hides the terrain mismatch beneath.
-        // Read every line FIRST so the slab + seat can be sized from the layout's
-        // REAL content bounds (a fixed 640x420 slab dwarfed the Leartes diorama and
-        // read as a dead parking lot).
-        struct Piece { std::string glb; float px,py,pz,qx,qy,qz,qw,sx,sy,sz; };
-        std::vector<Piece> pieces; pieces.reserve(4096);
-        float lminx = 1e9f, lmaxx = -1e9f, lminz = 1e9f, lmaxz = -1e9f;
-        {
-            std::string line; char name[256]; Piece pp;
-            while (std::getline(lf, line)) {
-                if (line.empty() || line[0] == '#') continue;
-                if (std::sscanf(line.c_str(), "%255s %f %f %f %f %f %f %f %f %f %f",
-                                name,&pp.px,&pp.py,&pp.pz,&pp.qx,&pp.qy,&pp.qz,&pp.qw,&pp.sx,&pp.sy,&pp.sz) != 11) continue;
-                pp.glb = name; pieces.push_back(pp);
-                lminx = std::min(lminx, pp.px); lmaxx = std::max(lmaxx, pp.px);
-                lminz = std::min(lminz, pp.pz); lmaxz = std::max(lmaxz, pp.pz);
-            }
-        }
-        if (pieces.empty()) return;
-        const float cw = (lmaxx - lminx) * padScale + 40.0f;   // slab = content + 20m margin
-        const float cl = (lmaxz - lminz) * padScale + 40.0f;
-        const float ccx = padX + (lminx + lmaxx) * 0.5f * padScale;   // content centre (padYaw=0 pads)
-        const float ccz = padZ + (lminz + lmaxz) * 0.5f * padScale;
-        // Seat at the max terrain height over the CONTENT extent: any ridge above
-        // pad level pokes through the slab and buries the district behind grass.
-        float gy = hf.ok() ? hf.heightAt(ccx, ccz) : 190.0f;
-        if (hf.ok()) {
-            for (float ox = -cw*0.5f; ox <= cw*0.5f; ox += 20.0f)
-                for (float oz = -cl*0.5f; oz <= cl*0.5f; oz += 20.0f)
-                    gy = std::max(gy, hf.heightAt(ccx + ox, ccz + oz));
-            gy += 1.0f;   // safety: heightfield bumps narrower than the stride
-        }
-        placeDeck("road_asphalt.glb", ccx, ccz, gy - 0.05f, 0.0f, cw, cl);
-        const float S = padScale, pc = std::cos(padYaw) * S, ps = std::sin(padYaw) * S;
-        // Column-major 3x3 pad basis: col0=(c,0,-s), col1=(0,1,0), col2=(s,0,c), all *S.
-        const float P[9] = { pc, 0.0f, -ps,   0.0f, S, 0.0f,   ps, 0.0f, pc };
-        int placed = 0;
-        for (const Piece& pcs : pieces) {
-            const char* name = pcs.glb.c_str();
-            const float px=pcs.px, py=pcs.py, pz=pcs.pz, qx=pcs.qx, qy=pcs.qy, qz=pcs.qz, qw=pcs.qw,
-                        sx=pcs.sx, sy=pcs.sy, sz=pcs.sz;
-            // Line quat+scale -> column-major 3x3 L (cols scaled by sx/sy/sz).
-            float L0[9] = {
-                (1-2*(qy*qy+qz*qz))*sx, (2*(qx*qy+qz*qw))*sx, (2*(qx*qz-qy*qw))*sx,   // col0
-                (2*(qx*qy-qz*qw))*sy,   (1-2*(qx*qx+qz*qz))*sy, (2*(qy*qz+qx*qw))*sy, // col1
-                (2*(qx*qz+qy*qw))*sz,   (2*(qy*qz-qx*qw))*sz,  (1-2*(qx*qx+qy*qy))*sz };
-            // Mesh-local fix: L = L0 * Rot<axis>(deg) (applied before the piece pose).
-            float L[9];
-            {
-                const char ax = (meshFix && (*meshFix=='x'||*meshFix=='y'||*meshFix=='z')) ? *meshFix : 'x';
-                const float deg = (meshFix && *meshFix) ?
-                    (float)std::atof((*meshFix=='x'||*meshFix=='y'||*meshFix=='z') ? meshFix+1 : meshFix) : 0.0f;
-                const float a = deg * 0.01745329252f;
-                const float ca = std::cos(a), sa = std::sin(a);
-                float F[9];
-                if      (ax=='y') { const float G[9]={ca,0,-sa, 0,1,0, sa,0,ca}; std::copy(G,G+9,F); }
-                else if (ax=='z') { const float G[9]={ca,sa,0, -sa,ca,0, 0,0,1}; std::copy(G,G+9,F); }
-                else              { const float G[9]={1,0,0, 0,ca,sa, 0,-sa,ca}; std::copy(G,G+9,F); }
-                for (int j = 0; j < 3; ++j)
-                    for (int r = 0; r < 3; ++r)
-                        L[j*3+r] = L0[0*3+r]*F[j*3+0] + L0[1*3+r]*F[j*3+1] + L0[2*3+r]*F[j*3+2];
-            }
-            float W[9];  // W = P * L (column-major multiply)
-            for (int j = 0; j < 3; ++j)
-                for (int r = 0; r < 3; ++r)
-                    W[j*3+r] = P[0*3+r]*L[j*3+0] + P[1*3+r]*L[j*3+1] + P[2*3+r]*L[j*3+2];
-            const float tx = padX + P[0]*px + P[3]*py + P[6]*pz;
-            const float ty = gy + padYOff + P[1]*px + P[4]*py + P[7]*pz;
-            const float tz = padZ + P[2]*px + P[5]*py + P[8]*pz;
-            const float T[16] = { W[0],W[1],W[2],0, W[3],W[4],W[5],0, W[6],W[7],W[8],0, tx,ty,tz,1 };
-            if (d->addGlbInstance(name, T)) ++placed;
-            // Harvest emissive light sources as point lights (name-classified colour).
-            {
-                auto has = [&](const char* k){ std::string n(name); for(auto&c:n)c=(char)std::tolower((unsigned char)c);
-                                               return n.find(k)!=std::string::npos; };
-                // ONLY harvest LAMPS + small neon signs as casters. Big flat glowing
-                // surfaces (screens/holograms) are EMISSIVE-ONLY — a point light placed
-                // at one blows out its own white billboard face (the pure-white slop).
-                x3::rhi::PointLight pl; bool isLight = true; float lift = 1.6f;
-                if      (has("streetlamp")||has("lampwall")||has("poste")||has("lamp")) {
-                    pl.color[0]=2.4f; pl.color[1]=1.7f; pl.color[2]=0.9f; pl.range=15.0f; lift=3.2f; } // warm sodium, high
-                else if (has("letreiro")||has("luminoso")||(has("neon")&&!has("screen"))) {
-                    pl.color[0]=2.4f; pl.color[1]=0.7f; pl.color[2]=1.9f; pl.range=9.0f; }   // magenta neon (small)
-                else isLight = false;   // screens/holograms glow via emissive, cast nothing
-                if (isLight) {
-                    pl.pos[0]=tx; pl.pos[1]=ty+lift; pl.pos[2]=tz;
-                    districtLights.push_back(pl);
-                }
-            }
-        }
-        float mn[3], mx[3]; d->worldBounds(mn, mx);
-        x3::logInfo(std::string("--world echotropolis: DISTRICT ") + tag + " — " +
-                    std::to_string(placed) + " prefabs placed at (" +
-                    std::to_string((int)padX) + "," + std::to_string((int)padZ) + "), world bounds X[" +
-                    std::to_string((int)mn[0]) + "," + std::to_string((int)mx[0]) + "] Y[" +
-                    std::to_string((int)mn[1]) + "," + std::to_string((int)mx[1]) + "] Z[" +
-                    std::to_string((int)mn[2]) + "," + std::to_string((int)mx[2]) + "]");
-        if (placed > 0) districts.push_back(std::move(d));
-    };
-    // Districts are DATA-DRIVEN: assets/districts/districts.txt lists one district
-    // per line — `tag|layout|glbDir|padX|padZ|padYaw|padScale` — so adding/moving
-    // a district needs no rebuild. Pads live on the open EAST flats
-    // (docs/COORDINATES.md: big open land x +300..+1800; west ends in sea cliffs).
-    {
-        std::ifstream mf("assets/districts/districts.txt");
-        std::string line;
-        while (mf && std::getline(mf, line)) {
-            if (line.empty() || line[0] == '#') continue;
-            char tag[96], lay[512], dir[512], fix[16] = "0"; float x, z, yaw, sc, yoff = 0.0f;
-            const int got = std::sscanf(line.c_str(), "%95[^|]|%511[^|]|%511[^|]|%f|%f|%f|%f|%15[^|]|%f",
-                                        tag, lay, dir, &x, &z, &yaw, &sc, fix, &yoff);
-            if (got >= 7)
-                loadDistrict(lay, dir, x, z, yaw, sc, (got >= 8 ? fix : "0"),
-                             (got >= 9 ? yoff : 0.0f), tag);
-        }
-        x3::logInfo("--world echotropolis: DISTRICT LIGHTS harvested — " +
-                    std::to_string(districtLights.size()) + " neon/lamp point lights");
-    }
-    // Append the nearest district neon point lights to `out` (already holding the
-    // street-lamp selection), up to the GPU's 64-light budget. Cheap O(N) nearest —
-    // districts have a few hundred lights total, run once per frame.
-    auto appendDistrictLights = [&](float ex, float ez, std::vector<x3::rhi::PointLight>& out){
-        const uint32_t kBudget = 64;
-        if (out.size() >= kBudget || districtLights.empty()) return;
-        std::vector<std::pair<float,uint32_t>> ord; ord.reserve(districtLights.size());
-        for (uint32_t i = 0; i < districtLights.size(); ++i) {
-            const float dx = districtLights[i].pos[0]-ex, dz = districtLights[i].pos[2]-ez;
-            ord.emplace_back(dx*dx+dz*dz, i);
-        }
-        const uint32_t want = std::min<uint32_t>(kBudget - (uint32_t)out.size(), (uint32_t)ord.size());
-        std::partial_sort(ord.begin(), ord.begin()+want, ord.end(),
-                          [](auto&a,auto&b){ return a.first<b.first; });
-        for (uint32_t i = 0; i < want; ++i) out.push_back(districtLights[ord[i].second]);
-    };
+    // (TIER-2 M-A: LIVING CONDOS moved to buildCrown — echo_region_builders.cpp.)
 
-    // ===================== HACKABLES (Meshy-generated ctOS props) ===========
-    // The Watch-Dogs layer's physical targets, generated via the Meshy premium
-    // pipeline (tools/meshy_gen.py): retractable bollards at the avenue mouth,
-    // junction boxes + wall cameras on the condo street, and a police drone on
-    // patrol. Static props now; the hacking system wires them next.
-    std::vector<std::unique_ptr<x3::game::EnvArtSystem>> hackProps;
-    std::unique_ptr<x3::game::EnvArtSystem> hackDrone, vtolPolice;
-    {
-        const std::string hdir = "D:/GameDev/EchoHarbor/assets/hackables";
-        auto envf2 = [](const char* k, float d){ const char* e = std::getenv(k); return e ? (float)std::atof(e) : d; };
-        const float sB = envf2("ECHO_BOLLARD_SCALE", 1.0f);
-        const float sJ = envf2("ECHO_JBOX_SCALE", 1.0f);
-        const float sC = envf2("ECHO_CAM_SCALE", 1.0f);
-        auto place2 = [&](const char* glb, float x, float z, float yaw, float s, float lift){
-            const float gy = hf.ok() ? hf.heightAt(x, z) : 190.0f;
-            const float c = std::cos(yaw), sn = std::sin(yaw);
-            const float T[16] = { c*s,0,-sn*s,0, 0,s,0,0, sn*s,0,c*s,0, x, gy + lift, z, 1 };
-            auto e = std::make_unique<x3::game::EnvArtSystem>();
-            if (e->buildFromGlbAt(*device, hdir, glb, T)) hackProps.push_back(std::move(e));
-        };
-        for (int i = 0; i < 4; ++i)                       // bollard line across the avenue mouth
-            place2("bollard.glb", -44.0f + i * 5.0f, 806.0f, 0.0f, sB, 0.0f);
-        // WALL PROPS MUST BE ON AN ACTUAL WALL. The condo blocks are centred at
-        // x = -100 / -20 / +60 and are 3 cols * 3.75m * 2.0 scale = 22.5m wide, so the
-        // only real facade spans are x -111..-89, -31..-9, +49..+71. The previous
-        // x = -136 / -58 / +18 / +24 all sat in the GAPS BETWEEN BLOCKS — an AAA review
-        // flagged them as "floating in mid-air with no wall", correctly.
-        place2("junction_box.glb", -104.0f, 841.2f, 3.14159f, sJ, 0.6f);   // block A facade
-        place2("junction_box.glb",   64.0f, 841.2f, 3.14159f, sJ, 0.6f);   // block C facade
-        place2("cam_wall.glb",  -14.0f, 841.5f, 3.14159f, sC, 7.5f);       // block B, high corner
-        place2("cam_wall.glb",   54.0f, 841.5f, 3.14159f, sC, 7.5f);       // block C, high corner
-        hackDrone = std::make_unique<x3::game::EnvArtSystem>();
-        const float I2[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, -20, 230, 760, 1 };
-        if (!hackDrone->buildFromGlbAt(*device, hdir, "drone_police.glb", I2)) hackDrone.reset();
-        // POLICE VTOL (Meshy, 30k tris, 2048 PBR + POLICE livery): the AAA-quality
-        // patrol craft — wide counter-rotating sweep over the whole crown.
-        vtolPolice = std::make_unique<x3::game::EnvArtSystem>();
-        if (!vtolPolice->buildFromGlbAt(*device, hdir, "vtol_police.glb", I2)) vtolPolice.reset();
-        x3::logInfo("--world echotropolis: HACKABLES — " + std::to_string(hackProps.size()) +
-                    " props (bollards/jboxes/cams) + " + (hackDrone ? "police drone" : "NO drone"));
-    }
-    auto poseHackDrone = [&](float t){
-        if (!hackDrone) return;
-        const float w = t * 0.12f, r = 130.0f;
-        const float x = -20.0f + r * std::cos(w), z = 760.0f + r * std::sin(w);
-        const float y = 228.0f + std::sin(t * 0.7f) * 3.0f;
-        const float yaw = w + 1.5708f, c = std::cos(yaw), sn = std::sin(yaw);
-        const float sD = [](){ const char* e = std::getenv("ECHO_DRONE2_SCALE"); return e ? (float)std::atof(e) : 1.2f; }();
-        const float M[16] = { c*sD,0,-sn*sD,0, 0,sD,0,0, sn*sD,0,c*sD,0, x, y, z, 1 };
-        hackDrone->setInstanceTransform(0, M);
-    };
-    auto poseVtol = [&](float t){
-        if (!vtolPolice) return;
-        // Counter-rotating wide sweep, higher than the drone (the beat cop's bird).
-        const float w = -t * 0.07f + 2.6f, r = 300.0f;
-        const float x = -20.0f + r * std::cos(w), z = 760.0f + r * std::sin(w);
-        const float y = 262.0f + std::sin(t * 0.5f) * 4.0f;
-        // Nose along the tangent (counter-clockwise orbit -> tangent = w - pi/2).
-        const float yaw = w - 1.5708f, c = std::cos(yaw), sn = std::sin(yaw);
-        const float sV = [](){ const char* e = std::getenv("ECHO_VTOL_SCALE"); return e ? (float)std::atof(e) : 3.2f; }();
-        const float M[16] = { c*sV,0,-sn*sV,0, 0,sV,0,0, sn*sV,0,c*sV,0, x, y, z, 1 };
-        vtolPolice->setInstanceTransform(0, M);
-    };
+    // (TIER-2 M-A: METROPOLIS DISTRICTS + districtLights + appendDistrictLights
+    //  moved to the 3 district_* regions — echo_region_builders.cpp mesh pass +
+    //  echo_woodlands.cpp light harvest; per-frame selection is now
+    //  regionSet.appendNearLights (same nearest-first partial_sort + 64 budget).)
+
+    // (TIER-2 M-A: HACKABLES props/drone/VTOL + their poses moved to buildCrown.)
 
     // ===================== DISTRICT STREET LAMPS (night readability) ========
     // The pack districts carry only sparse baked neon — at night they read as
@@ -1920,104 +1391,9 @@ int hostEchotropolis(HostContext& hc) {
         streetLamps.buildDistrictLamps(lampScene, *device, rows, 5);
     }
 
-    // ===================== HARBOR BOATS ==================================
-    // Low-poly boats (Boats Pack, Draco GLBs) cruising straight lanes on the open
-    // SEA at water level (y~0), wrapping their lane with a gentle bob. Only visible
-    // over real water (a boat over land is buried underground) — lanes sit off the
-    // island's coast. +Z-forward hull; heading = atan2(dx,dz).
-    // NICER FLEET (Tim's ask): a mixed textured armada from across the armory —
-    // a tall-ship hero, a Dutch full-rigger, a fishing trawler w/ net, a wooden
-    // rowboat, a HIVEMIND sci-fi hover skiff, and a jolly-boat tender. Per-boat
-    // dir/scale (packs mix meters vs centimetres; see recon 2026-07-20).
-    const float kBoatYaw   = [](){ const char* e=std::getenv("ECHO_BOAT_YAW");   return e?(float)std::atof(e):0.0f; }();
-    const float kBoatY     = [](){ const char* e=std::getenv("ECHO_BOAT_Y");     return e?(float)std::atof(e):0.6f; }();
-    struct FleetDef { const char* dir; const char* glb; float scale; float speedMul; };
-    static const FleetDef kFleet[] = {
-        { "D:/Assets/_glb/tech/Medieval Ship/Assets/MedievalShip/MedievalShip 3D_Model",
-          "MedievalShip_.glb", 1.0f, 0.55f },                                   // hero tall ship (~43m)
-        { "D:/Assets/_glb/tech/Oceanis 2024 Pro URP Water Framework/ARTnGAME/Oceanis/Oceanis URP/DEMO ASSETS/SHIPS/dutch_ship_large_02",
-          "dutch_ship_large_02_2k.glb", 1.0f, 0.6f },                           // Dutch full-rigger (~34m)
-        { "D:/Assets/_glb/tech/Asian Fishing Village Environment/Assets/LeartesStudios/Asian_Fishing_Village/HDRP/Art/Meshes",
-          "SM_Boat_1_net_01.glb", 2.0f, 0.9f },                                 // fishing trawler w/ net
-        { "D:/Assets/_glb/tech/Old Rowboat/Assets/Boats/Legacy_Content/Imports",
-          "RowBoat.glb", 1.0f, 0.8f },                                          // detailed wooden rowboat
-        { "D:/Assets/_glb/tech/Cyberpunk City Cyberpunk Cyberpunk City Sci-Fi City/HIVEMIND/CyberpunkCity/HDRP(Default)/Art/Meshes/Props",
-          "SM_Boat_B.glb", 0.02f, 1.2f },                                       // sci-fi hover skiff (cm pack)
-        { "D:/Assets/_glb/ancients/Pirate Island/Assets/Hivemind/PirateIsland/HDRP(Default)/Art/Meshes/Props/JollyBoat",
-          "SM_JollyBoat_01.glb", 1.5f, 0.9f },                                  // jolly-boat tender
-    };
-    struct Boat { std::unique_ptr<x3::game::EnvArtSystem> body; float sx,sz,dx,dz,len,speed,off,scale; };
-    std::vector<Boat> boats;
-    auto addBoat = [&](const FleetDef& fd, float sx, float sz, float dx, float dz,
-                       float len, float speed, float off){
-        const float L = std::sqrt(dx*dx + dz*dz); dx/=L; dz/=L;
-        Boat b; b.body = std::make_unique<x3::game::EnvArtSystem>();
-        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, sx, kBoatY, sz, 1 };
-        if (b.body->buildFromGlbAt(*device, fd.dir, fd.glb, I)) {
-            b.sx=sx; b.sz=sz; b.dx=dx; b.dz=dz; b.len=len;
-            b.speed=speed*fd.speedMul; b.off=off; b.scale=fd.scale;
-            boats.push_back(std::move(b));
-        }
-    };
-    {
-        struct BL { float sx,sz,dx,dz,len,speed; int n; };
-        const BL bl[] = {
-            { -400.0f,  330.0f,  1.0f,  0.0f, 760.0f, 15.0f, 3 },   // south bay, eastbound
-            {  340.0f,  240.0f, -1.0f,  0.0f, 760.0f, 13.0f, 3 },   // south bay, westbound
-            { -560.0f,  260.0f,  0.0f,  1.0f, 420.0f, 12.0f, 3 },   // SW inlet, northbound
-        };
-        int vi = 0;
-        for (const BL& l : bl)
-            for (int k = 0; k < l.n; ++k) {
-                addBoat(kFleet[vi % 6], l.sx, l.sz, l.dx, l.dz, l.len, l.speed, l.len * (float)k / (float)l.n);
-                ++vi;
-            }
-        x3::logInfo("--world echotropolis: HARBOR FLEET — " + std::to_string(boats.size()) + " vessels");
-    }
-    auto poseBoat = [&](Boat& b, float t){
-        const float d = std::fmod(b.off + t * b.speed, b.len);
-        const float x = b.sx + b.dx * d, z = b.sz + b.dz * d;
-        const float y = kBoatY + std::sin(t * 0.7f + b.off) * 0.35f;   // gentle bob
-        const float heading = std::atan2(b.dx, b.dz) + kBoatYaw;
-        const float s = b.scale, ch = std::cos(heading), sh = std::sin(heading);
-        const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, y, z, 1 };
-        b.body->setInstanceTransform(0, M);
-    };
+    // (TIER-2 M-A: HARBOR BOATS + poseBoat moved to buildHarborBay.)
 
-    // ===================== SKY DRONES (cyberpunk patrol/delivery) =========
-    // Small sci-fi drones (Draco GLBs) weaving slow patrol circles over the crown at
-    // varied mid-altitudes — vertical life between the towers. Bob + face tangent.
-    const std::string dronedirA = "D:/Assets/_glb/tech/Sci-Fi-Drone/Assets/scifi-drone/mesh";
-    const std::string dronedirB = "D:/Assets/_glb/tech/Sci fi Drones/Assets/Sci_fi_Drones/Models";
-    const float kDroneScale = [](){ const char* e=std::getenv("ECHO_DRONE_SCALE"); return e?(float)std::atof(e):7.0f; }();
-    struct Drone { std::unique_ptr<x3::game::EnvArtSystem> body; float cx,cz,r,y,w,phase; };
-    std::vector<Drone> drones;
-    auto addDrone = [&](const std::string& dir, const char* glb, float cx, float cz,
-                        float r, float y, float w, float phase){
-        Drone d; d.body = std::make_unique<x3::game::EnvArtSystem>();
-        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, cx, y, cz, 1 };
-        if (d.body->buildFromGlbAt(*device, dir, glb, I)) {
-            d.cx=cx; d.cz=cz; d.r=r; d.y=y; d.w=w; d.phase=phase;
-            drones.push_back(std::move(d));
-        }
-    };
-    addDrone(dronedirA, "drone.glb",                    -20.0f,  760.0f, 150.0f, 210.0f,  0.26f, 0.0f);
-    addDrone(dronedirA, "drone.glb",                    110.0f,  660.0f, 120.0f, 250.0f, -0.32f, 1.7f);
-    addDrone(dronedirB, "Robot_Scout_HyperX_Unity.glb", -160.0f, 840.0f, 180.0f, 190.0f,  0.22f, 3.1f);
-    addDrone(dronedirA, "drone.glb",                    -60.0f,  900.0f, 130.0f, 285.0f,  0.30f, 4.4f);
-    addDrone(dronedirB, "Robot_Scout_HyperX_Unity.glb",  60.0f,  800.0f, 200.0f, 165.0f, -0.24f, 5.5f);
-    addDrone(dronedirA, "drone.glb",                    -220.0f, 700.0f, 110.0f, 300.0f, -0.28f, 2.3f);
-    x3::logInfo("--world echotropolis: SKY DRONES — " + std::to_string(drones.size()) + " drones");
-    auto poseDrone = [&](Drone& d, float t){
-        const float a = d.phase + t * d.w;
-        const float x = d.cx + std::cos(a) * d.r;
-        const float z = d.cz + std::sin(a) * d.r;
-        const float y = d.y + std::sin(t * 1.3f + d.phase) * 6.0f;   // hover bob
-        const float heading = a + (d.w > 0.0f ? 1.5708f : -1.5708f);
-        const float s = kDroneScale, ch = std::cos(heading), sh = std::sin(heading);
-        const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, y, z, 1 };
-        d.body->setInstanceTransform(0, M);
-    };
+    // (TIER-2 M-A: SKY DRONES + poseDrone moved to buildCrown.)
 
     // ===================== OH1 HERO HELICOPTER (rigged, bone-driven rotor) ==
     // The hero bird: the rigged OH1.glb flown as an INERT MonsterSystem prop — the
@@ -2448,26 +1824,20 @@ int hostEchotropolis(HostContext& hc) {
             {
                 std::vector<x3::rhi::PointLight> pls;
                 streetLamps.selectLights(shotCam[0], shotCam[1], shotCam[2], pls, 8);
-                appendDistrictLights(shotCam[0], shotCam[2], pls);
+                regionSet.appendNearLights(shotCam[0], shotCam[2], pls, 64);   // TIER-2: was appendDistrictLights
                 device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
             }
             if (i == kSettle - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
             island.draw(*device, frame);   // the island (sky + water are device-internal)
             props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
-            for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
-            for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
-            for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
-            for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
-            for (auto& r : condos) r->draw(*device, frame);      // living cutaway condo interiors
-            for (auto& d : districts) d->draw(*device, frame);   // METROPOLIS pack districts
-            for (auto& h : hackProps) h->draw(*device, frame);   // ctOS hackable props
-            if (hackDrone) { poseHackDrone((float)i * dt); hackDrone->draw(*device, frame); }
-            if (vtolPolice) { poseVtol((float)i * dt); vtolPolice->draw(*device, frame); }
+            // TIER-2 M-A: houses/towers/mine/streets+metro/condos/districts/hackables/
+            // mineForest/woodlands/mineGlow/subway/boats/drones draw via the regions.
+            // updateAll uses the settle-loop clock EXACTLY like the old pose calls.
+            regionSet.updateAll(dt, (float)i * dt);
+            regionSet.drawAll(*device, frame);
+            for (auto& r : infra) r->draw(*device, frame);       // freeway decks (host-persistent)
             lampScene.render(*device, frame);                    // posts + cones + pools
-        for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
-        woodlands.draw(*device, frame);                      // island-wide pine woodland belts
-            mineGlowScene.render(*device, frame);            // authentic EoS arch mouth-glow
             if (ufoBuilt) { poseUfo((float)i * dt); ufo.draw(*device, frame);
                             if (ufoFxBuilt) ufoFx.draw(*device, frame); }   // saucer + glow + beam
             for (auto& h : helis) { poseHeli(h, (float)i * dt);
@@ -2478,9 +1848,6 @@ int hostEchotropolis(HostContext& hc) {
                                     if (shotTod.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
                                         if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
             for (auto& c : cars) { poseCar(c, (float)i * dt); c.body->draw(*device, frame); }  // street traffic
-            if (subwayBuilt) { poseTrain((float)i * dt); subwayTrain->draw(*device, frame); }  // metro
-            for (auto& b : boats) { poseBoat(b, (float)i * dt); b.body->draw(*device, frame); }  // harbor boats
-            for (auto& d : drones) { poseDrone(d, (float)i * dt); d.body->draw(*device, frame); }  // sky drones
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             else if (sMinersBuilt) sScene.render(*device, frame);
             if (sMinersBuilt) sMinersSkin.draw(*device, frame, sScene);
@@ -2663,8 +2030,9 @@ int hostEchotropolis(HostContext& hc) {
     // A crowd of citizens wandering the crown, rendered as the REAL rigged-GLB
     // characters (66 in riggedGlbRoot()) via CrowdSkin over the blockout agents.
     // Visible from the orbit vista (watch them move) AND up close in walk mode.
-    // These are the lives you will step into (possess) in a later phase.
-    x3::game::Scene walkScene;
+    // These are the lives you will step into (play-as) in a later phase.
+    // (TIER-2 M-A: walkScene decl HOISTED to the region boot block —
+    //  EchoRegionCtx binds it; everything below populates it unchanged.)
     x3::game::CrowdSystem residents;
     x3::game::CrowdSkin residentsSkin;
     bool residentsBuilt = false;
@@ -4023,27 +3391,21 @@ int hostEchotropolis(HostContext& hc) {
             else if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
             std::vector<x3::rhi::PointLight> pls;
             streetLamps.selectLights(lx, ly, lz, pls, 8);
-            appendDistrictLights(lx, lz, pls);
+            regionSet.appendNearLights(lx, lz, pls, 64);   // TIER-2: was appendDistrictLights
             device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
         }
 
         auto frame = device->beginFrame();
         island.draw(*device, frame);
         props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
-        for (auto& h : houses) h->draw(*device, frame);   // real textured buildings (decoded)
-        for (auto& t : towers) t->draw(*device, frame);   // Urban Night City downtown skyline
-        for (auto& m : mineProps) m->draw(*device, frame);   // gold mine + truck lot
-        for (auto& r : infra) r->draw(*device, frame);       // roads / freeway / metro decks
-        for (auto& r : condos) r->draw(*device, frame);      // living cutaway condo interiors
-        for (auto& d : districts) d->draw(*device, frame);   // METROPOLIS pack districts
-        for (auto& h : hackProps) h->draw(*device, frame);   // ctOS hackable props
-        if (hackDrone) { poseHackDrone(waterTime); hackDrone->draw(*device, frame); }
-        if (vtolPolice) { poseVtol(waterTime); vtolPolice->draw(*device, frame); }
+        // TIER-2 M-A: houses/towers/mine/streets+metro/condos/districts/hackables/
+        // mineForest/woodlands/mineGlow/subway/boats/drones draw via the regions.
+        // updateAll(waterTime) == the old pose*(waterTime) calls verbatim.
+        regionSet.updateAll(dt, waterTime);
+        regionSet.drawAll(*device, frame);
+        for (auto& r : infra) r->draw(*device, frame);       // freeway decks (host-persistent)
         lampScene.render(*device, frame);                    // posts + cones + pools
-        for (auto& t : mineForest) t->draw(*device, frame);  // thick pines ringing the mine
-        woodlands.draw(*device, frame);                      // island-wide pine woodland belts
         for (auto& p : placed) p->draw(*device, frame);      // BUILD MENU: player-placed lots
-        mineGlowScene.render(*device, frame);                // authentic EoS arch mouth-glow
         // BUILD GHOST: the selected building previewed at the cursor (lazily loaded).
         if (buildMode) {
             if (!buildPreview[buildSel]) {
@@ -4069,9 +3431,6 @@ int hostEchotropolis(HostContext& hc) {
                                 if (todS.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
                                     if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
         for (auto& c : cars) { poseCar(c, waterTime); c.body->draw(*device, frame); }  // street traffic
-        if (subwayBuilt) { poseTrain(waterTime); subwayTrain->draw(*device, frame); }  // metro train
-        for (auto& b : boats) { poseBoat(b, waterTime); b.body->draw(*device, frame); }  // harbor boats
-        for (auto& d : drones) { poseDrone(d, waterTime); d.body->draw(*device, frame); }  // sky drones
         if (oh1Built) oh1.drawMonster(*device, frame, walkScene);   // OH1 hero heli
         if (residentsBuilt) {          // the citizens (blockout agents + rigged skins)
             walkScene.render(*device, frame);

@@ -1810,7 +1810,16 @@ void VulkanRenderDevice::prepareFrameData() {
             if (mit == m_meshes.end()) return;
             const std::vector<uint32_t>& list = m_groups[mid];
             if (list.empty()) return;
-            if (cmdCount >= kMaxDrawMeshes) return;
+            if (cmdCount >= kMaxDrawMeshes) {
+                // NEVER truncate silently (Tier-2 M-A forensics: this cap was
+                // eating whole systems by submission order — "missing content"
+                // class bugs). Log once per second-ish via a simple counter.
+                static uint32_t sCapDropLogged = 0;
+                if ((sCapDropLogged++ % 300u) == 0u)
+                    logError("[rhi] kMaxDrawMeshes CAP HIT — mesh groups beyond " +
+                             std::to_string(kMaxDrawMeshes) + " DROPPED this frame (submission-order tail)");
+                return;
+            }
             const uint32_t baseRow = row;
             const glm::vec3 meshC = mit->second.boundsCenter;
             const float     meshR = mit->second.boundsRadius;
