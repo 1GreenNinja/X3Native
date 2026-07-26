@@ -14,6 +14,13 @@ bool VulkanRenderDevice::createSwapchain(uint32_t w, uint32_t h) {
         // *_SRGB makes the GPU encode on write, exactly once. Do NOT also add a
         // manual gamma in composite — double-encoding washes everything out.
         scb.set_desired_format(VkSurfaceFormatKHR{ VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
+           // TRANSPARENT WINDOW (Tim spotted his BROWSER ghosting through the game,
+           // 2026-07-26): with composite alpha unspecified the driver picked an
+           // alpha-honoring mode, and any pass leaving backbuffer alpha < 1 (sky/
+           // haze/HUD blends) let DWM composite the desktop through the frame —
+           // a silent contributor to every "washed out" report. OPAQUE = the
+           // window is a window, never a pane of glass.
+           .set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
            .set_desired_present_mode(m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR)
            .set_desired_extent(w, h)
            // TRANSFER_SRC so captureFrame() can vkCmdCopyImageToBuffer the

@@ -27,6 +27,7 @@
 //   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
 #include "world_host_common.h"
 #include "echo_heightfield.h"         // TIER-2: shared island terrain sampler (hoisted from this file)
+#include "echo_roads.h"               // ROADS: curved banked freeway + boulevard + fanned harbor grids
 #include "echo_regions.h"             // TIER-2: EchoRegion containers + WorldStreamer bridge (WP-1)
 #include "echo_region_builders.h"     // TIER-2: crown/mine/district/harbor builders (WP-2)
 #include "echo_woodlands.h"           // TIER-2: 9-cell woodlands + slice self-test (WP-3)
@@ -1257,6 +1258,7 @@ int hostEchotropolis(HostContext& hc) {
     // the layers read as real infrastructure from the vista. Flat plane GLBs (assets/
     // infra) scaled per segment; the pillar is a unit cube stretched to the ground.
     std::vector<std::unique_ptr<x3::game::EnvArtSystem>> infra;
+    std::unique_ptr<x3::game::EchoRoads> roads;   // the curved network (replaces the old ribbons)
     // (TIER-2 M-A: subwayTrain/subwayBuilt/subwayLine moved into buildCrown.)
     const std::string infradir = "D:/GameDev/EchoHarbor/assets/infra";
     // Place a flat plane GLB (local 1x1 in X/Z, +Y up) as a road/deck: centre (cx,cz),
@@ -1293,63 +1295,22 @@ int hostEchotropolis(HostContext& hc) {
     };
     {
         // (TIER-2 M-A: crown STREETS moved to buildCrown — echo_region_builders.cpp.)
-        // FREEWAY NETWORK: an elevated interstate stitching the METROPOLIS —
-        // downtown crown -> Recife 2050 (east flats) -> south -> Urban District
-        // (the bay) -> back up the west shore to the crown. Polyline waypoints;
-        // each leg is deck segments + twin pillar rows. Deck height per waypoint =
-        // max terrain near it + clearance, linearly graded along the leg (real
-        // interstates cut across terrain on pillars — that's the look we want).
-        {
-            struct Wp { float x, z; };
-            static const Wp kRoute[] = {
-                { -160.0f,  720.0f },   // crown west (the original stub's start)
-                {  120.0f,  720.0f },   // crown east edge
-                {  480.0f,  900.0f },   // descend the east slope
-                {  820.0f, 1120.0f },   // Recife 2050 south-west gate
-                { 1060.0f,  900.0f },   // turn south along the flats
-                {  980.0f,  560.0f },   // down the coast
-                {  700.0f,  420.0f },   // Urban District north gate (the bay)
-                {  300.0f,  430.0f },   // west along the shore
-                {  -60.0f,  560.0f },   // climb back toward the crown
-                { -160.0f,  700.0f },   // close the loop
-            };
-            const int nWp = (int)(sizeof(kRoute)/sizeof(kRoute[0]));
-            auto deckH = [&](float x, float z){
-                float g = hf.ok()?hf.heightAt(x,z):kCarY;
-                if (hf.ok())     // clear nearby ridges so the deck never dips underground
-                    for (int s = 0; s < 4; ++s)
-                        g = std::max(g, hf.heightAt(x + (s%2?38.0f:-38.0f), z + (s<2?38.0f:-38.0f)));
-                return std::max(g, 2.0f) + 11.0f;   // over water too (min deck ~13m)
-            };
-            int fseg = 0;
-            for (int w = 0; w + 1 < nWp; ++w) {
-                const float ax=kRoute[w].x, az=kRoute[w].z, bx=kRoute[w+1].x, bz=kRoute[w+1].z;
-                const float dx=bx-ax, dz=bz-az, len=std::sqrt(dx*dx+dz*dz);
-                const float ya=deckH(ax,az), yb=deckH(bx,bz);
-                const float yaw = std::atan2(dx, dz);
-                const float step = 40.0f;
-                for (float d = 0.0f; d < len; d += step, ++fseg) {
-                    const float seg = std::min(step, len - d) + 1.5f;   // overlap seam
-                    const float mx = ax + dx*(d+seg*0.5f)/len, mz = az + dz*(d+seg*0.5f)/len;
-                    const float my = ya + (yb-ya)*(d+seg*0.5f)/len;
-                    placeDeckP("freeway_deck.glb", mx, mz, my, yaw, 18.0f, seg,
-                               (yb - ya) * (seg / len));   // follow the grade — no stair risers
-                    if (((int)(d/step)) % 1 == 0) {                     // pillars every span
-                        const float px_ = ax + dx*d/len, pz_ = az + dz*d/len;
-                        const float py_ = ya + (yb-ya)*d/len;
-                        const float rx = std::cos(yaw)*5.5f, rz = -std::sin(yaw)*5.5f;
-                        placePillar(px_ + rx, pz_ + rz, py_ - 0.3f, 2.6f);
-                        placePillar(px_ - rx, pz_ - rz, py_ - 0.3f, 2.6f);
-                    }
-                }
-            }
-            x3::logInfo("--world echotropolis: FREEWAY NETWORK — " +
-                        std::to_string(fseg) + " deck segments looping the metropolis");
+        // RETIRED (Tim: "Roads are still 3rd grade... they curve, they connect,
+        // they transition"): the straight-segment FREEWAY NETWORK (placeDeckP
+        // loop over kRoute + twin pillar rows) is replaced by the EchoRoads
+        // module — a Catmull-Rom banked 2+2 deck over the SAME ten waypoints,
+        // with jersey barriers, real lane paint, trumpet interchanges, avenues,
+        // the shore-probed Harbor Boulevard, and five fanned harbor grid blocks
+        // (Tim's sketch). placeDeckP/placePillar stay for future one-off decks.
+        (void)placeDeckP; (void)placePillar;
+        roads = std::make_unique<x3::game::EchoRoads>();
+        if (roads->build(*device, hf)) {
+            x3::logInfo("--world echotropolis: ECHO ROADS — curved network live "
+                        "(old freeway ribbons retired)");
+        } else {
+            roads.reset();
+            x3::logWarn("--world echotropolis: EchoRoads build FAILED — no freeway this boot");
         }
-        // (TIER-2 M-A: METRO deck/pillars/platform + SUBWAY TRAIN + poseTrain moved to
-        //  buildCrown — the region's setUpdate drives the train each frame.)
-        x3::logInfo("--world echotropolis: INFRASTRUCTURE (freeway) — " +
-                    std::to_string(infra.size()) + " deck/pillar pieces");
     }
 
     // (TIER-2 M-A: LIVING CONDOS moved to buildCrown — echo_region_builders.cpp.)
@@ -1848,6 +1809,7 @@ int hostEchotropolis(HostContext& hc) {
                                     if (shotTod.cityLightsOn) { if(p.navR)p.navR->draw(*device,frame);
                                         if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
             for (auto& c : cars) { poseCar(c, (float)i * dt); c.body->draw(*device, frame); }  // street traffic
+            if (roads) roads->draw(*device, frame);   // ECHO ROADS (headless parity)
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             else if (sMinersBuilt) sScene.render(*device, frame);
             if (sMinersBuilt) sMinersSkin.draw(*device, frame, sScene);
@@ -3392,6 +3354,24 @@ int hostEchotropolis(HostContext& hc) {
             std::vector<x3::rhi::PointLight> pls;
             streetLamps.selectLights(lx, ly, lz, pls, 8);
             regionSet.appendNearLights(lx, lz, pls, 64);   // TIER-2: was appendDistrictLights
+            // ECHO ROADS lamps: nearest-first from the static slice, ONLY at night
+            // (the module bakes no emissive by design — the day/night gate lives
+            // here, same as the street lamps; 64-light device cap respected).
+            if (roads && tod.sample().cityLightsOn && pls.size() < 64) {
+                const auto& rl = roads->lights();
+                std::vector<std::pair<float,const x3::rhi::PointLight*>> near2;
+                near2.reserve(rl.size());
+                for (const auto& L2 : rl) {
+                    const float dx2 = L2.pos[0] - lx, dz2 = L2.pos[2] - lz;
+                    near2.push_back({ dx2*dx2 + dz2*dz2, &L2 });
+                }
+                std::sort(near2.begin(), near2.end(),
+                          [](const auto& a2, const auto& b2){ return a2.first < b2.first; });
+                for (const auto& pr2 : near2) {
+                    if (pls.size() >= 64) break;
+                    pls.push_back(*pr2.second);
+                }
+            }
             device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
         }
 
@@ -3440,6 +3420,7 @@ int hostEchotropolis(HostContext& hc) {
         }
         if (npcLifeBuilt) npcSkin.draw(*device, frame, walkScene);   // named-citizen rigs
         for (auto& sp : streetProps) sp->draw(*device, frame);       // real vendor carts
+        if (roads) roads->draw(*device, frame);                      // ECHO ROADS curved network
         if (minersBuilt) minersSkin.draw(*device, frame, walkScene);   // GOLD-MINE crew skins
         if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
             poseBeam(waterTime * kBeamRate);

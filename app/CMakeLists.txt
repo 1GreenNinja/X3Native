@@ -156,6 +156,7 @@ add_executable(X3Engine WIN32
     world_hosts/echo_regions.cpp
     world_hosts/echo_region_builders.cpp
     world_hosts/echo_woodlands.cpp
+    world_hosts/echo_roads.cpp
     hackables.cpp
     alert.cpp
     fx.cpp

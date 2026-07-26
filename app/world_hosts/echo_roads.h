@@ -32,6 +32,11 @@
 //     (RoadGraph is built for exactly those consumers — see below).
 //  6. Do NOT wire before milestone A's byte-compare is banked: this module
 //     intentionally CHANGES pixels (it replaces the old freeway).
+//  7. FIRST-RUN CHECK (v2 harbor): the boulevard/blocks find the shore by
+//     probing the heightfield at build() — grep the boot log for "[roads]"
+//     lines: "nudged inland" is normal near coves; "skipped"/"no waterline"
+//     means a shore seed or the land threshold needs a second look before
+//     shipping the capture set.
 // =======================================================================
 //
 // Deterministic by construction: no rand — the same hash discipline as the

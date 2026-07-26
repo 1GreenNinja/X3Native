@@ -13,9 +13,14 @@
 //      grading deck -> ground under 7%.
 //   3. AVENUES: gate connectors to the Recife/Urban pads, the Hivemind spur
 //      (east, off-ring), the crown drag spur (mesa top).
-//   4. HARBOR GRID: three street-grid sections along the south bay shore,
-//      each rotated to its shoreline tangent ("nicely angled", never
-//      axis-aligned), streets truncated at the waterline via hf.
+//   4. HARBOR BOULEVARD + FANNED BLOCKS (v2, Tim's sketch): one continuous
+//      curving boulevard hugging the inner basin's NE shore arc on the land
+//      side — the shore is FOUND at build time by marching/bisecting the
+//      heightfield waterline from authored seeds — with 5 rectangular grid
+//      blocks fanned along it ("beads on the string"), each rotated to the
+//      boulevard's local tangent and land-verified with auto inland nudging;
+//      cross streets run shoreward and truncate at the actual waterline.
+//      East end ties into the Urban gate avenue.
 //   5. GEOMETRY: everything batches into 4 material buckets (asphalt / paint /
 //      concrete / sidewalk) -> 4 meshes -> 4 draws. Flat PBR colors v1; UVs
 //      are road-metric (u across, v = meters/10) so a texture atlas is a
@@ -609,50 +614,201 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         groundEdge(RoadClass::Avenue, kAvenueWidth, 1, av, true, true);
     }
 
-    // ---- 4. HARBOR GRIDS --------------------------------------------------
-    // Three sections along the south bay shore, each rotated to its shoreline
-    // tangent. A street is generated in section-local space, transformed,
-    // then TRUNCATED at the waterline (first sample whose ground is water).
-    struct GridSec { float ax, az;      // section anchor (shore side)
-                     float angDeg;      // rotation (shoreline tangent)
-                     int nLong, nCross; };
-    const GridSec kSecs[3] = {
-        {  40.0f, 300.0f,  12.0f, 3, 4 },
-        { 430.0f, 318.0f, -16.0f, 3, 4 },
-        { 780.0f, 350.0f, -40.0f, 2, 3 },
+    // ---- 4. HARBOR BOULEVARD + FANNED GRID BLOCKS (Tim's sketch, v2) ------
+    // The v1 grids were authored from screenshots and landed IN the bay (the
+    // inner basin spans roughly x -500..1000 / z -600..570; its NE shore arc
+    // runs (-100,430) -> (300,430) -> (820,250)). v2 lets the HEIGHTFIELD
+    // decide instead: authored points only SEED a shore probe.
+    //
+    //   * ONE CONTINUOUS HARBOR BOULEVARD hugs the basin's NE shore arc on
+    //     the land side: for each seed, march along the local shore normal to
+    //     bracket the waterline, bisect it to ~1 m, then set the boulevard
+    //     sample kBlvdSetback inland of the ACTUAL waterline. If a probed
+    //     point is still wet (cove), it keeps nudging inland and logs.
+    //   * 4-6 RECTANGULAR GRID BLOCKS fan along the boulevard on the LAND
+    //     side — "the boulevard is the string, the blocks are beads": each
+    //     block anchors at a boulevard sample, rotates to the LOCAL tangent,
+    //     and is land-verified (anchor + far corners probed; whole block
+    //     nudges inland in 12 m steps if wet, logged; skipped if hopeless).
+    //   * Cross streets run SHOREWARD across the boulevard corridor and still
+    //     waterline-truncate (v1's one correct harbor behavior, kept).
+    //   * Joins are POSITIONAL (module doctrine): the shore-side long street
+    //     tees into the boulevard corridor; junction surface is overlap-paint
+    //     v1, shared junction geometry is v2.
+    constexpr float kBlvdWidth    = 12.5f;   // 2+2 harbor boulevard
+    constexpr float kBlvdSetback  = 42.0f;   // boulevard centerline inland of waterline
+    constexpr float kBlockGap     = 14.0f;   // first long street inland of blvd center
+    constexpr float kCell         = 42.0f;   // pitch between long streets
+    constexpr float kCrossPitch   = 52.0f;   // pitch between cross streets
+    constexpr float kLandSafe     = 2.5f;    // anchors need this much elevation
+    constexpr float kNudgeStep    = 12.0f;   // inland nudge per retry
+    constexpr int   kNudgeMax     = 5;
+
+    // Shore-arc SEEDS (west -> east along the basin's NE lip; water to the
+    // SOUTH of the arc). Only starting guesses — the probe finds the truth.
+    static const Wp kShoreSeed[] = {
+        { -140.0f, 470.0f }, { -40.0f, 455.0f }, {  90.0f, 450.0f },
+        {  230.0f, 452.0f }, { 370.0f, 440.0f }, {  510.0f, 408.0f },
+        {  650.0f, 356.0f }, { 780.0f, 300.0f }, {  860.0f, 268.0f },
     };
-    constexpr float kCell = 42.0f;          // block pitch between long streets
-    constexpr float kCrossPitch = 52.0f;    // pitch between cross streets
-    for (int si = 0; si < 3; ++si) {
-        const GridSec& sec = kSecs[si];
-        const float ca = std::cos(sec.angDeg * 3.1415926f / 180.0f);
-        const float sa = std::sin(sec.angDeg * 3.1415926f / 180.0f);
-        auto toWorld = [&](float lx, float lz, float& wx, float& wz) {
-            wx = sec.ax + lx * ca - lz * sa;
-            wz = sec.az + lx * sa + lz * ca;
-        };
-        auto emitStreet = [&](float x0, float z0, float x1, float z1) {
+    const int nSeed = (int)(sizeof(kShoreSeed) / sizeof(kShoreSeed[0]));
+
+    // March + bisect the waterline along a direction from a start point.
+    auto waterlineFrom = [&](float sx, float sz, float dx, float dz,
+                             float& wx, float& wz) -> bool {
+        // Bracket: walk up to 400 m in `d` looking for a land/water flip.
+        const bool startWet = hf.heightAt(sx, sz) < kWaterMinLand;
+        float lo = 0.0f, hi = -1.0f;
+        for (float m = 8.0f; m <= 400.0f; m += 8.0f) {
+            const bool wet = hf.heightAt(sx + dx*m, sz + dz*m) < kWaterMinLand;
+            if (wet != startWet) { hi = m; break; }
+            lo = m;
+        }
+        if (hi < 0.0f) return false;
+        for (int it = 0; it < 8; ++it) {                 // bisect to ~1 m
+            const float mid = (lo + hi) * 0.5f;
+            const bool wet = hf.heightAt(sx + dx*mid, sz + dz*mid) < kWaterMinLand;
+            if (wet != startWet) hi = mid; else lo = mid;
+        }
+        wx = sx + dx * hi; wz = sz + dz * hi;
+        return true;
+    };
+
+    // Probe every seed into a land-side boulevard centerline point. (Block
+    // inland directions are re-derived at their attachment samples below —
+    // fresher than carrying per-seed dirs through the smoothing.)
+    std::vector<RoadSample> blvdPts;                 // probed centerline points
+    for (int i = 0; i < nSeed; ++i) {
+        // Local arc tangent from seed neighbors; inland = the DRIER perp side.
+        const Wp& s0 = kShoreSeed[i > 0 ? i - 1 : 0];
+        const Wp& s1 = kShoreSeed[i + 1 < nSeed ? i + 1 : nSeed - 1];
+        float tx = s1.x - s0.x, tz = s1.z - s0.z;
+        const float tl = std::sqrt(tx*tx + tz*tz);
+        if (tl > 1e-4f) { tx /= tl; tz /= tl; }
+        float px, pz; rperp(tx, tz, px, pz);
+        const float hR = hf.heightAt(kShoreSeed[i].x + px*60.0f, kShoreSeed[i].z + pz*60.0f);
+        const float hL = hf.heightAt(kShoreSeed[i].x - px*60.0f, kShoreSeed[i].z - pz*60.0f);
+        const float ix = (hR >= hL) ? px : -px, iz = (hR >= hL) ? pz : -pz;
+        // Find the true waterline: march SEAWARD (-inland) from the seed if it
+        // is dry, inland if it is wet; either way the bisect lands on the lip.
+        float wx, wz;
+        bool ok;
+        if (hf.heightAt(kShoreSeed[i].x, kShoreSeed[i].z) < kWaterMinLand)
+            ok = waterlineFrom(kShoreSeed[i].x, kShoreSeed[i].z,  ix,  iz, wx, wz);
+        else
+            ok = waterlineFrom(kShoreSeed[i].x, kShoreSeed[i].z, -ix, -iz, wx, wz);
+        if (!ok) { x3::logWarn("[roads] shore seed " + std::to_string(i) +
+                               " found no waterline within 400m — skipped"); continue; }
+        RoadSample p; p.x = wx + ix * kBlvdSetback; p.z = wz + iz * kBlvdSetback;
+        for (int n2 = 0; n2 < kNudgeMax &&
+             hf.heightAt(p.x, p.z) < kLandSafe; ++n2) {  // cove guard
+            p.x += ix * kNudgeStep; p.z += iz * kNudgeStep;
+            x3::logInfo("[roads] boulevard point " + std::to_string(i) +
+                        " nudged inland (cove)");
+        }
+        blvdPts.push_back(p);
+    }
+    if (blvdPts.size() >= 3) {
+        // Position smooth (2 passes) — the probe follows every shore nick;
+        // a boulevard should sweep. Then resample + keep a copy for blocks.
+        for (int pass = 0; pass < 2; ++pass)
+            for (size_t i = 1; i + 1 < blvdPts.size(); ++i) {
+                blvdPts[i].x = (blvdPts[i-1].x + blvdPts[i].x + blvdPts[i+1].x) / 3.0f;
+                blvdPts[i].z = (blvdPts[i-1].z + blvdPts[i].z + blvdPts[i+1].z) / 3.0f;
+            }
+        std::vector<RoadSample> blvd;
+        resample(blvdPts, kSampleStep, blvd);
+        const std::vector<RoadSample> blvdC = blvd;      // survives the move below
+        {   // the boulevard itself (2+2, curbs, sidewalks, lamps)
+            std::vector<RoadSample> tmp = blvd;
+            groundEdge(RoadClass::Avenue, kBlvdWidth, 2, tmp, true, true);
+        }
+        {   // east tie-in: boulevard end -> the Urban gate avenue node
+            const RoadSample& e = blvdC.back();
             std::vector<RoadSample> d2;
             for (float t = 0.0f; t <= 1.0f; t += 0.04f) {
                 RoadSample s;
-                float wx, wz; toWorld(x0 + (x1-x0)*t, z0 + (z1-z0)*t, wx, wz);
-                s.x = wx; s.z = wz;
+                hermite(e.x, e.z, e.tx * 120.0f, e.tz * 120.0f,
+                        700.0f, 452.0f, 0.0f, 90.0f, t, s.x, s.z);
                 d2.push_back(s);
             }
-            std::vector<RoadSample> st; resample(d2, kSampleStep, st);
-            size_t keep = st.size();                     // waterline truncation
-            for (size_t i = 0; i < st.size(); ++i)
-                if (hf.heightAt(st[i].x, st[i].z) < kWaterMinLand) { keep = i; break; }
-            if (keep < 2) return;
-            st.resize(keep);
-            groundEdge(RoadClass::HarborStreet, kStreetWidth, 1, st, true, true);
+            std::vector<RoadSample> av; resample(d2, kSampleStep, av);
+            groundEdge(RoadClass::Avenue, kAvenueWidth, 1, av, true, true);
+        }
+        // Fan the grid blocks along the boulevard ("beads on the string").
+        struct Block { float att; int nLong, nCross; };
+        static const Block kBlocks[] = {
+            { 0.10f, 3, 4 }, { 0.28f, 2, 3 }, { 0.46f, 3, 4 },
+            { 0.64f, 2, 3 }, { 0.82f, 3, 4 },
         };
-        const float longLen = (float)(sec.nCross - 1) * kCrossPitch;
-        for (int L = 0; L < sec.nLong; ++L)              // long streets (shore-parallel)
-            emitStreet(0.0f, (float)L * kCell, longLen, (float)L * kCell);
-        const float crossLen = (float)(sec.nLong - 1) * kCell;
-        for (int Cx = 0; Cx < sec.nCross; ++Cx)          // cross streets (to the water)
-            emitStreet((float)Cx * kCrossPitch, 0.0f, (float)Cx * kCrossPitch, crossLen);
+        for (int b = 0; b < (int)(sizeof(kBlocks)/sizeof(kBlocks[0])); ++b) {
+            const Block& blk = kBlocks[b];
+            const size_t ai = std::min(blvdC.size() - 1,
+                                       (size_t)(blk.att * (float)blvdC.size()));
+            const RoadSample& at = blvdC[ai];
+            // Inland side at the attachment: drier perp of the LOCAL tangent.
+            float px, pz; rperp(at.tx, at.tz, px, pz);
+            const float hR = hf.heightAt(at.x + px*60.0f, at.z + pz*60.0f);
+            const float hL = hf.heightAt(at.x - px*60.0f, at.z - pz*60.0f);
+            const float ix = (hR >= hL) ? px : -px, iz = (hR >= hL) ? pz : -pz;
+            // Land-verify anchor + the two far corners; nudge the whole block
+            // inland until they all sit dry (or give up, logged).
+            float ax = at.x + ix * kBlockGap, az = at.z + iz * kBlockGap;
+            const float longLen = (float)(blk.nCross - 1) * kCrossPitch;
+            const float depth   = (float)(blk.nLong - 1) * kCell;
+            int n2 = 0;
+            for (; n2 <= kNudgeMax; ++n2) {
+                const float c1x = ax + ix*depth + at.tx*longLen*0.5f;
+                const float c1z = az + iz*depth + at.tz*longLen*0.5f;
+                const float c2x = ax + ix*depth - at.tx*longLen*0.5f;
+                const float c2z = az + iz*depth - at.tz*longLen*0.5f;
+                if (hf.heightAt(ax, az) >= kLandSafe &&
+                    hf.heightAt(c1x, c1z) >= kLandSafe &&
+                    hf.heightAt(c2x, c2z) >= kLandSafe) break;
+                ax += ix * kNudgeStep; az += iz * kNudgeStep;
+            }
+            if (n2 > kNudgeMax) {
+                x3::logWarn("[roads] harbor block " + std::to_string(b) +
+                            " could not find dry land — skipped");
+                continue;
+            }
+            if (n2 > 0)
+                x3::logInfo("[roads] harbor block " + std::to_string(b) +
+                            " nudged " + std::to_string((int)(n2 * kNudgeStep)) +
+                            " m inland");
+            auto emitStreet = [&](float lx0, float ld0, float lx1, float ld1) {
+                // Block-local frame: `lx` along the boulevard tangent (centered
+                // on the attachment), `ld` inland depth from the block anchor.
+                std::vector<RoadSample> d2;
+                for (float t = 0.0f; t <= 1.0f; t += 0.04f) {
+                    const float lx = lx0 + (lx1 - lx0) * t;
+                    const float ld = ld0 + (ld1 - ld0) * t;
+                    RoadSample s;
+                    s.x = ax + at.tx * lx + ix * ld;
+                    s.z = az + at.tz * lx + iz * ld;
+                    d2.push_back(s);
+                }
+                std::vector<RoadSample> st; resample(d2, kSampleStep, st);
+                size_t keep = st.size();                 // waterline truncation
+                for (size_t i2 = 0; i2 < st.size(); ++i2)
+                    if (hf.heightAt(st[i2].x, st[i2].z) < kWaterMinLand) { keep = i2; break; }
+                if (keep < 2) return;
+                st.resize(keep);
+                groundEdge(RoadClass::HarborStreet, kStreetWidth, 1, st, true, true);
+            };
+            for (int L = 0; L < blk.nLong; ++L)          // long streets (blvd-parallel)
+                emitStreet(-longLen*0.5f, (float)L * kCell,
+                            longLen*0.5f, (float)L * kCell);
+            for (int Cx = 0; Cx < blk.nCross; ++Cx) {    // cross streets: run SHOREWARD
+                const float lx = -longLen*0.5f + (float)Cx * kCrossPitch;
+                // From the block's inland edge, across every long street AND the
+                // boulevard corridor, toward the water (truncated at the lip).
+                emitStreet(lx, depth + 6.0f, lx, -(kBlockGap + kBlvdWidth*0.5f + 24.0f));
+            }
+        }
+    } else {
+        x3::logWarn("[roads] harbor boulevard probe yielded <3 land points — "
+                    "harbor district skipped (check shore seeds vs terrain)");
     }
 
     // ---- 5. UPLOAD --------------------------------------------------------
