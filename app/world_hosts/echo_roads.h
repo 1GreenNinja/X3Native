@@ -49,6 +49,20 @@
 //  9. JUNCTIONS (v3): build logs "[roads] junctions: N patches". Zero patches
 //     on a real build = the detector regressed; eyeball a harbor-grid
 //     crossing + a gate tee in the first capture set.
+// 10. V4.1 TOPOLOGY (the reroute): the ring is now a MESA-RIM + FLATS loop —
+//     fixed NE/E arc (crown crossing -> gentle NE slope -> Recife gate ->
+//     flats sweep) plus RADIALLY PROBED rim waypoints (bearings 320 -> 140
+//     deg from the crown center; rim = LAST outward sample at 80% of crown
+//     elevation, waypoint 45 m inset; degenerate bearings + backtrack
+//     pockets dropped with logs — grep "[roads] V4.1 rim route: K/N").
+//     The old shore-bowl legs are GONE — the shanty shore belongs to the
+//     ground-level Harbor Boulevard; the freeway overlooks it from the rim.
+//     Consequences for consumers: the woodlands keep-out corridor and any
+//     car-AI route MUST come from graph() (the probed route is not knowable
+//     statically); the Urban gate trumpet auto-reattaches to the new nearest
+//     deck leg (east approach). Acceptance: "[roads] deck profile: max pier
+//     height N m" <= 45 on a real heightfield; taller means a rim probe
+//     regressed (check the rim-seed skip logs first).
 // =======================================================================
 //
 // Deterministic by construction: no rand — the same hash discipline as the

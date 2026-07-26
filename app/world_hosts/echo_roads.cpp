@@ -4,10 +4,10 @@
 // join each other. This is NOT how roads look."):
 //   PHASE 1  COLLECT   every edge's centerline (ring / trumpet ramps / gate
 //                      avenues / spurs / harbor boulevard / fanned grid
-//                      blocks) into Pending records — NO geometry yet. The
-//                      authoring math is v2's, unchanged (ring shadows the
-//                      host's ten kRoute waypoints; harbor probes the real
-//                      waterline from seeds).
+//                      blocks) into Pending records — NO geometry yet. V4:
+//                      the ring is a mesa-rim + flats loop (fixed NE/E arc +
+//                      probed SW rim waypoints — see the kRingFixed comment);
+//                      the harbor probes the real waterline from seeds.
 //   PHASE 2  JUNCTIONS detect where edges meet:
 //                        a) ENDPOINT CAPTURES — an edge end inside another
 //                           ground edge's corridor (tee / ramp foot / gate).
@@ -65,7 +65,12 @@ constexpr float kMaxGrade       = 0.06f;   // (legacy reference; ramps use their
 // across the whole shore bowl (ranks of ~200 m piers — Tim's capture). 14%
 // is steeper than a real interstate but matches the legacy per-leg look and
 // lets the deck hug terrain down the mesa flank; piers return to real scale.
-constexpr float kDeckMaxGrade   = 0.60f;
+// V4: 22%. The rim route removed the cliff descents that drove this to
+// absurd values during v3.1 tuning (0.60 still logged ~172 m piers — proof
+// the ROUTE was the bug, not the grade). What remains is one flats->rim
+// flank climb on the south-east, which 22% covers while the deck hugs the
+// probed terrain; everywhere else the profile rides ground+clearance.
+constexpr float kDeckMaxGrade   = 0.22f;
 constexpr float kRampMaxGrade   = 0.07f;
 constexpr float kBankPerKappa   = 55.0f;
 constexpr float kBankMax        = 0.10f;
@@ -104,14 +109,49 @@ constexpr float kPatchTuck      = 1.2f;    // ribbons trim to r - tuck (no crack
 constexpr float kStopBarW       = 0.5f;    // stop-line thickness (along tangent)
 constexpr int   kPatchSides     = 12;      // junction polygon fan
 
-// The ring shadows the host's kRoute EXACTLY (host_echotropolis.cpp ~1541).
+// V4 REROUTE (the real fix behind the pier-forest saga): the legacy route's
+// west/south legs ((700,420)->(300,430)->(-60,560)) crossed the SHORE BOWL at
+// mesa-approach height — no grade can descend a 195 m cliff without either a
+// 172 m pier forest through the shanty village (v3.1's honest log proved it)
+// or a wall of earthworks. V4 splits responsibilities the way real coastal
+// cities do:
+//   * the FREEWAY stays HIGH: the fixed NE/E arc (crown crossing + the gentle
+//     north-east slope descent + the flats sweep) is kept verbatim, and the
+//     west/south side is replaced by RADIALLY PROBED MESA-RIM waypoints
+//     (V4.1) — per bearing from the crown center, an outward march finds the
+//     LAST point at ~80% of crown elevation (the true cliff lip, whatever the
+//     arc's shape), and the waypoint sits 45 m inside it. The deck rides the
+//     rim (piers ~11-18 m; short viaducts over draws only). Degenerate
+//     bearings and backtrack pockets drop out with logs (convexify pass).
+//   * the SHORE belongs to the ground-level Harbor Boulevard (v2), which
+//     already serves the shanty arc the old freeway overflew.
+//   * the URBAN GATE needs NO code change: nearestRingSample() re-finds the
+//     closest deck point on the new route (the flats/flank leg) and the
+//     trumpet lead auto-lengthens via kRampMaxGrade — judgment call: keep the
+//     gate at (700,452) fed from the EAST approach (gentle terrain), exactly
+//     what the reroute order suggested.
 struct Wp { float x, z; };
-constexpr Wp kRing[] = {
+constexpr Wp kRingFixed[] = {          // crown crossing + NE descent + flats
     { -160.0f,  720.0f }, {  120.0f,  720.0f }, {  480.0f,  900.0f },
     {  820.0f, 1120.0f }, { 1060.0f,  900.0f }, {  980.0f,  560.0f },
-    {  700.0f,  420.0f }, {  300.0f,  430.0f }, {  -60.0f,  560.0f },
 };
-constexpr int kRingN = (int)(sizeof(kRing) / sizeof(kRing[0]));
+constexpr int kRingFixedN = (int)(sizeof(kRingFixed) / sizeof(kRingFixed[0]));
+// V4.1: RADIAL rim probe. The fixed-x march FAILED in the field (4/6 seeds
+// skipped, ring still spanned the bowl, 183 m piers): the mesa is the
+// NORTHWEST quadrant — its cliff arc curves from ~(250,450) around the west
+// to ~(-500,1100) — so due-north lines at eastern x never touch mesa.
+// Probing radially FROM THE CROWN traces the ACTUAL cliff arc whatever its
+// shape: walk OUTWARD per bearing; the rim is the LAST sample still at rim
+// elevation (inner dips don't fool it); waypoint sits kRimInset INSIDE it.
+constexpr float kCrownX      = -20.0f, kCrownZ = 760.0f;  // probe origin (mesa datum)
+constexpr float kRimFrac     = 0.80f;    // "rim" = this * crown elevation
+constexpr float kRimInset    = 45.0f;    // waypoint this far inside the lip
+constexpr float kRimBearing0 = 140.0f;   // NW ...
+constexpr float kRimBearing1 = 320.0f;   // ... to SE (0 deg = +x east, CCW, +z north)
+constexpr float kRimBearingStep = 20.0f;
+constexpr float kRimMaxR     = 700.0f;   // outward march limit (8 m steps)
+constexpr float kRimMinR     = 120.0f;   // rim closer than this = degenerate bearing
+constexpr float kRimTurnDrop = -0.17f;   // convexify: drop waypoint when turn dot < this (~>100 deg)
 
 inline float h01(uint32_t n) {
     n = (n ^ 61u) ^ (n >> 16); n *= 9u; n ^= n >> 4; n *= 0x27d4eb2du;
@@ -361,13 +401,80 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         P.push_back(std::move(pe));
     };
 
-    // ---- 1a. THE RING (v2 math verbatim) ---------------------------------
+    // ---- 1a. THE RING (V4.1: fixed NE/E arc + RADIALLY probed rim) -------
+    // Splice order: the fixed arc ends at the flats' south corner (980,560),
+    // bearing ~349 deg from the crown; the loop closes back into the arc's
+    // start (-160,720), bearing ~196 deg. Appending rim waypoints in
+    // DECREASING bearing (320 -> 140) therefore continues the loop SE -> S ->
+    // SW -> W -> NW and hands off cleanly to the closing Catmull leg. A
+    // convexify pass drops any waypoint whose insertion turns the path back
+    // on itself (concave rim pockets), per the field order.
+    std::vector<Wp> ringWp(kRingFixed, kRingFixed + kRingFixedN);
+    {
+        const float crownRef = hf.heightAt(kCrownX, kCrownZ);   // mesa datum
+        const float rimElev  = crownRef * kRimFrac;
+        std::vector<Wp> rim;
+        int probed = 0, degenerate = 0;
+        for (float deg = kRimBearing1; deg >= kRimBearing0 - 0.5f;
+             deg -= kRimBearingStep) {                     // decreasing bearing
+            ++probed;
+            const float th = deg * 3.1415926f / 180.0f;
+            const float dx = std::cos(th), dz = std::sin(th);
+            float rimR = -1.0f;
+            for (float r = kRimMinR; r <= kRimMaxR; r += 8.0f)   // outward march
+                if (hf.heightAt(kCrownX + dx * r, kCrownZ + dz * r) >= rimElev)
+                    rimR = r;                              // LAST at rim elevation
+            if (rimR < kRimMinR) {
+                ++degenerate;
+                x3::logInfo("[roads] rim bearing " + std::to_string((int)deg) +
+                            " deg degenerate (rim < " + std::to_string((int)kRimMinR) +
+                            " m) — skipped");
+                continue;
+            }
+            const float wr = rimR - kRimInset;
+            rim.push_back({ kCrownX + dx * wr, kCrownZ + dz * wr });
+        }
+        // Convexify by skipping: walking [arcEnd, rim..., arcStart], drop any
+        // rim waypoint whose turn exceeds ~100 deg (backtrack pocket).
+        const Wp arcEnd   = kRingFixed[kRingFixedN - 1];   // (980,560)
+        const Wp arcStart = kRingFixed[0];                 // (-160,720)
+        bool dropped = true;
+        while (dropped && !rim.empty()) {
+            dropped = false;
+            for (size_t i = 0; i < rim.size(); ++i) {
+                const Wp& p = (i == 0) ? arcEnd : rim[i - 1];
+                const Wp& q = rim[i];
+                const Wp& r = (i + 1 == rim.size()) ? arcStart : rim[i + 1];
+                float ax = q.x - p.x, az = q.z - p.z;
+                float bx = r.x - q.x, bz = r.z - q.z;
+                const float la = std::sqrt(ax*ax + az*az), lb = std::sqrt(bx*bx + bz*bz);
+                if (la < 1e-3f || lb < 1e-3f) { rim.erase(rim.begin() + i); dropped = true; break; }
+                const float dot = (ax*bx + az*bz) / (la * lb);
+                if (dot < kRimTurnDrop) {
+                    x3::logInfo("[roads] rim waypoint (" + std::to_string((int)q.x) +
+                                "," + std::to_string((int)q.z) +
+                                ") dropped — backtrack pocket (convexify)");
+                    rim.erase(rim.begin() + i);
+                    dropped = true;
+                    break;
+                }
+            }
+        }
+        for (const Wp& w : rim) ringWp.push_back(w);
+        x3::logInfo("[roads] V4.1 rim route: " + std::to_string(rim.size()) + "/" +
+                    std::to_string(probed) + " radial rim waypoints kept (" +
+                    std::to_string(degenerate) + " degenerate; crown datum " +
+                    std::to_string((int)crownRef) + " m)");
+        // With zero kept rim points (pathological terrain) the fixed arc still
+        // closes into a valid — if east-heavy — loop; the log above flags it.
+    }
     {
         std::vector<RoadSample> dense;
         dense.reserve(4096);
-        for (int i = 0; i < kRingN; ++i)
+        const int nWp = (int)ringWp.size();
+        for (int i = 0; i < nWp; ++i)
             for (float t = 0.0f; t < 1.0f; t += 0.02f) {
-                RoadSample s; catmull(kRing, kRingN, i, t, s.x, s.z);
+                RoadSample s; catmull(ringWp.data(), nWp, i, t, s.x, s.z);
                 dense.push_back(s);
             }
         dense.push_back(dense.front());
