@@ -12,8 +12,10 @@
 #include "engine/core/x3_log.h"
 
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace x3::game {
@@ -57,9 +59,28 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // Warm friendly tint so she reads distinct from the magenta/red hostiles.
     m_tint[0] = 0.85f; m_tint[1] = 0.95f; m_tint[2] = 1.0f; m_tint[3] = 1.0f;
 
-    // ---- Load the AnnaTactical rig via a mounted loose-dir asset source (same path
-    // as RescueVictim::build). Rigged humanoids are Y-up. Box fallback on failure. ----
-    const std::string file = "AnnaTactical.glb";
+    // ---- Load the REAL Sarah rig (Meshy auto-rig, 24-joint standard humanoid —
+    // bones are Hips/LeftUpLeg/RightHand/Head, NOT mixamorig*) via a mounted loose-dir
+    // asset source (same path as RescueVictim::build). Y-up. Box fallback on failure.
+    //
+    // PREFER the multi-clip bake "Sarah_anim.glb" when it is on disk (the same
+    // convention canon_aliens.cpp uses for "<stem>_anim.glb"). Stock Sarah.glb ships
+    // ONE unnamed clip ("Armature|clip0|baselayer"), so the idle/walk/run/aim/death
+    // lookups below all MISS and she runs as a one-pose (but correctly posed) figure.
+    //
+    // STATUS 2026-07-25: NO Sarah_anim.glb is committed — the first retarget attempt
+    // (tools/sarah_anim_build.ps1 + sarah_clips.manifest.json, borrowing clips off
+    // JakeClone_player.glb's identical Meshy skeleton) baked without error but DEFORMS
+    // her badly; see the manifest's "_status" block and docs/screenshots/sarah/. So
+    // this resolves to stock Sarah.glb today. The preference is left wired on purpose:
+    // when a good bake lands it is picked up with ZERO code change. ----
+    std::string file = "Sarah.glb";
+    {
+        std::error_code ec;
+        const std::filesystem::path animPath =
+            std::filesystem::path(std::string(modelDir)) / "Sarah_anim.glb";
+        if (std::filesystem::exists(animPath, ec)) file = "Sarah_anim.glb";
+    }
     m_assets.reset(x3::asset::createAssetSource());
     if (m_assets->mountDir(std::string(modelDir), 0)) {
         m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
@@ -160,10 +181,16 @@ void SarahCompanion::bakeTransform(Scene& scene) {
 
 void SarahCompanion::driveAnim(float dt, float planarSpeed) {
     if (!m_animActive || !m_device) return;
-    // Downed: hold the death/collapse pose (frozen at its end); else idle frozen.
+    // Downed: play the death/collapse clip ONCE, then HOLD its last pose. Skinner::apply
+    // WRAPS timeSec over the clip duration, so an unbounded m_animTime would loop her
+    // through dying over and over — clamp just shy of the end so she collapses and stays
+    // collapsed (she is incapacitated, not deleted; this is the pose the owner sees).
     if (m_state == SarahState::Incapacitated) {
         const int clip = (m_deathClip >= 0) ? m_deathClip : m_idleClip;
-        m_skinner.apply(m_model, *m_device, (uint32_t)clip, m_animTime);
+        float t = m_animTime;
+        const float dur = m_skinner.clipDuration((uint32_t)clip);
+        if (dur > 1e-3f && t > dur - 1e-3f) t = dur - 1e-3f;
+        m_skinner.apply(m_model, *m_device, (uint32_t)clip, t);
         return;
     }
     // Firing: the aim/fire pose preempts locomotion so the shot reads (grounded-anim:
@@ -237,7 +264,8 @@ MonsterSystem* SarahCompanion::acquireNearest(const std::vector<MonsterSystem*>&
     return best;
 }
 
-bool SarahCompanion::losClear(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& p) const {
+bool SarahCompanion::losClear(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& p,
+                              const std::vector<MonsterSystem*>& hostiles) const {
     // Muzzle just above her center; skip her own half-extent so the ray doesn't self-hit
     // her Enemy box (same trick the drone ranged path uses).
     const x3::phys::Vec3 muzzle{ m_pos.x, m_pos.y + 0.5f, m_pos.z };
@@ -248,8 +276,14 @@ bool SarahCompanion::losClear(x3::phys::IPhysicsWorld& physics, const x3::phys::
     const float skip = kSarahHalf.x + 0.15f;
     const x3::phys::Vec3 from{ muzzle.x + nd.x*skip, muzzle.y + nd.y*skip, muzzle.z + nd.z*skip };
     float losLen = dl - skip; if (losLen < 1e-3f) return true;
-    x3::phys::RayHit wall = physics.rayCast(from, nd, losLen, x3::phys::Layer::Static);
-    return !wall.hit;
+    const x3::phys::RayHit wall = physics.rayCast(from, nd, losLen, x3::phys::Layer::Static);
+    if (!wall.hit) return true;
+    // A Layer::Static ray ALSO reports Enemy/Player/Dynamic bodies (see the header
+    // note) — so the "blocker" is usually a hostile, not a wall. Any hit on a body
+    // belonging to a live hostile is shoot-through: that IS what she's firing at.
+    for (const MonsterSystem* m : hostiles)
+        if (m && m->body().valid() && m->body().id == wall.body.id) return true;
+    return false;   // a real wall (or Jake) — hold fire
 }
 
 void SarahCompanion::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -310,11 +344,6 @@ void SarahCompanion::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
     // ---- ACQUIRE the nearest hostile + FIRE on cooldown (LOS-gated). ----
     m_target = acquireNearest(hostiles);
     if (m_fireCooldown > 0.0f) m_fireCooldown -= dt;
-    // Advance / clear the aim-pose timer.
-    if (m_fireAnimT >= 0.0f) {
-        m_fireAnimT += dt;
-        if (m_fireAnimT > kSarahAimTime + 0.35f) m_fireAnimT = -1.0f;   // pose released
-    }
 
     if (m_target) {
         const x3::phys::Vec3 tp = m_target->pos();
@@ -322,9 +351,17 @@ void SarahCompanion::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
         const float dist = std::sqrt(dx * dx + dz * dz);
         // FACE the target while engaging (overrides the follow-facing).
         m_yaw = headingToFace(dx, dz);
-        if (dist <= kSarahFireRange && m_fireCooldown <= 0.0f && losClear(physics, tp)) {
-            // Enter the aim pose, then land the hitscan on the acquired hostile.
+        // HOLD the aim/weapon-up pose for as long as a hostile is in fire range —
+        // NOT just for a beat after each shot. The cooldown (0.9 s) is longer than any
+        // sane pose window, so a per-shot pose would snap her back to idle between
+        // rounds and read as a twitch. Engaged => weapon up, continuously.
+        if (dist <= kSarahFireRange) {
             if (m_fireAnimT < 0.0f) m_fireAnimT = 0.0f;
+            m_fireAnimT += dt;
+        } else {
+            m_fireAnimT = -1.0f;   // target out of range: back to locomotion
+        }
+        if (dist <= kSarahFireRange && m_fireCooldown <= 0.0f && losClear(physics, tp, hostiles)) {
             m_fireCooldown = kSarahFireCooldown;
             const x3::phys::Vec3 muzzle{ m_pos.x, m_pos.y + 0.5f, m_pos.z };
             if (m_fx) m_fx(muzzle, x3::phys::Vec3{ tp.x, tp.y + 0.4f, tp.z });
@@ -337,7 +374,8 @@ void SarahCompanion::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
             }
         }
     } else {
-        // No hostile: face where we're heading (toward Jake).
+        // No hostile: drop the weapon-up pose and face where we're heading (toward Jake).
+        m_fireAnimT = -1.0f;
         const float fdx = playerPos.x - m_pos.x, fdz = playerPos.z - m_pos.z;
         if (fdx*fdx + fdz*fdz > 1e-4f) m_yaw = headingToFace(fdx, fdz);
     }
@@ -396,15 +434,25 @@ using HeadlessDevice = x3::game::HeadlessRenderDevice;
 bool runCompanionCombatSelfTest() {
     g_cpass = g_cfail = 0;
 
-    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
-    physics->init();
     HeadlessDevice device;
+
+    // EVERY case gets a FRESH physics world. Sharing one leaks each case's bodies into
+    // the next (nothing removes a Sarah/monster box), and a stale monster box sitting
+    // exactly where the next case puts its hostile BLOCKS the new Sarah's line-of-sight
+    // — which silently made the fire cases look broken. Hermetic worlds, hermetic gate.
+    struct World {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w;
+        World() : w(x3::phys::createPhysicsWorld()) { w->init(); }
+        ~World() { w->shutdown(); }
+        x3::phys::IPhysicsWorld& operator*() const { return *w; }
+    };
 
     const x3::phys::Vec3 sarahPos{ 0.0f, 0.4f, 0.0f };
     const x3::phys::Vec3 hostilePos{ 6.0f, 0.4f, 0.0f };   // 6 m away, in engage+fire range
 
     // ---- C1: RESTRAINED at spawn — no follow, no fire even with a hostile present. ----
     {
+        World physics;
         Scene scene;
         SarahCompanion sarah;
         sarah.build(scene, device, *physics, riggedGlbRoot(), sarahPos);
@@ -425,6 +473,7 @@ bool runCompanionCombatSelfTest() {
 
     // ---- C2: onFreed() WAKES her (Awake + freed), idempotent. ----
     {
+        World physics;
         Scene scene;
         SarahCompanion sarah;
         sarah.build(scene, device, *physics, riggedGlbRoot(), sarahPos);
@@ -437,6 +486,7 @@ bool runCompanionCombatSelfTest() {
 
     // ---- C3: freed, she ACQUIRES the nearest hostile and FIRES (its HP drops). ----
     {
+        World physics;
         Scene scene;
         SarahCompanion sarah;
         sarah.build(scene, device, *physics, riggedGlbRoot(), sarahPos);
@@ -462,6 +512,7 @@ bool runCompanionCombatSelfTest() {
 
     // ---- C4: freed, she FOLLOWS the player toward the standoff ring. ----
     {
+        World physics;
         Scene scene;
         SarahCompanion sarah;
         sarah.build(scene, device, *physics, riggedGlbRoot(), sarahPos);
@@ -478,6 +529,7 @@ bool runCompanionCombatSelfTest() {
 
     // ---- C5: SEPARATION — spawned ON the player, she is pushed OUT (no stacking). ----
     {
+        World physics;
         Scene scene;
         SarahCompanion sarah;
         sarah.build(scene, device, *physics, riggedGlbRoot(), x3::phys::Vec3{ 5.0f, 0.4f, 5.0f });
@@ -492,6 +544,7 @@ bool runCompanionCombatSelfTest() {
 
     // ---- C6: takeDamage to 0 => INCAPACITATED, NOT deleted; stops fighting/following. ----
     {
+        World physics;
         Scene scene;
         SarahCompanion sarah;
         sarah.build(scene, device, *physics, riggedGlbRoot(), sarahPos);
@@ -512,9 +565,10 @@ bool runCompanionCombatSelfTest() {
         mm.spawn(scene, device, *physics, riggedGlbRoot(), hostilePos, gt);
         std::vector<MonsterSystem*> hostiles{ &mm.at(0) };
         const int hpBefore = mm.at(0).hp();
-        const x3::phys::Vec3 far{ 40.0f, 0.4f, 0.0f };
+        // NOTE: not named `far` — that is a legacy MSVC keyword macro (windows.h).
+        const x3::phys::Vec3 wayOff{ 40.0f, 0.4f, 0.0f };
         const x3::phys::Vec3 downedAt = sarah.pos();
-        for (int i = 0; i < 120; ++i) sarah.tick(1.0f/60.0f, scene, *physics, far, hostiles);
+        for (int i = 0; i < 120; ++i) sarah.tick(1.0f/60.0f, scene, *physics, wayOff, hostiles);
         const bool frozen = std::abs(sarah.pos().x - downedAt.x) < 1e-3f;
         ccheck(frozen && mm.at(0).hp() == hpBefore && !sarah.hasTarget(),
                "C6c downed: no follow, no fire");
@@ -523,7 +577,50 @@ bool runCompanionCombatSelfTest() {
         mm.shutdown();
     }
 
-    physics->shutdown();
+    // ---- C7: ANIMATION wiring — she is not a one-pose mannequin. Guards the rig
+    // contract the whole lane rests on: the Sarah_anim.glb bake resolves an idle /
+    // walk / aim-fire / death clip by NAME, and each of those poses her DIFFERENTLY
+    // from idle. (Stock Sarah.glb has one unnamed clip and every lookup misses, which
+    // is exactly the regression this catches.) Skipped if the generated bake is
+    // absent from the checkout — a clean clone still passes the gate. ----
+    {
+        World physics;
+        Scene scene;
+        SarahCompanion sarah;
+        sarah.build(scene, device, *physics, riggedGlbRoot(), sarahPos);
+        const bool haveBake = std::filesystem::exists(
+            std::filesystem::path(riggedGlbRoot()) / "Sarah_anim.glb");
+        if (!haveBake || !sarah.animActive()) {
+            x3::logInfo("[sarah-test] (Sarah_anim.glb absent — skipping C7 clip checks; "
+                        "run tools/sarah_anim_build.ps1 to bake it)");
+        } else {
+            const x3::anim::Skinner& sk = sarah.skinner();
+            const x3::asset::Model&  md = sarah.model();
+            const int idle  = sk.findClip({ "idle", "stand", "breath", "loop" });
+            const int walk  = sk.findClip({ "walk" });
+            const int aim   = sk.findClip({ "aim", "fire", "shoot", "rifle", "shot", "attack" });
+            const int death = sk.findClip({ "death", "die", "collapse", "down", "fall" });
+            ccheck(idle >= 0 && walk >= 0 && aim >= 0 && death >= 0,
+                   "C7a idle/walk/aim/death clips all resolve by name");
+            // Palette-differs check (same method as --test-anim's T6): a clip that
+            // poses her identically to idle is a silently-failed retarget.
+            auto posesDifferently = [&](int clip) {
+                if (clip < 0 || idle < 0) return false;
+                std::vector<float> pi, pc;
+                const float mid = 0.5f * sk.clipDuration((uint32_t)clip);
+                const uint32_t ni = sk.computePalette(md, (uint32_t)idle, 0.0f, pi);
+                const uint32_t nc = sk.computePalette(md, (uint32_t)clip, mid,  pc);
+                if (ni == 0 || ni != nc || pi.size() != pc.size()) return false;
+                double d = 0.0;
+                for (size_t k = 0; k < pi.size(); ++k) d += std::fabs(pi[k] - pc[k]);
+                return d > 1e-3;
+            };
+            ccheck(posesDifferently(walk),  "C7b walk pose differs from idle");
+            ccheck(posesDifferently(aim),   "C7c aim/fire pose differs from idle");
+            ccheck(posesDifferently(death), "C7d death/downed pose differs from idle");
+        }
+    }
+
     x3::logInfo("[sarah-test] " + std::to_string(g_cpass) + " passed, " +
                 std::to_string(g_cfail) + " failed");
     return g_cfail == 0;

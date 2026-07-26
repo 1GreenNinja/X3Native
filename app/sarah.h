@@ -60,7 +60,9 @@ constexpr int   kSarahShotDamage    = 8;     // per hitscan (Jake's rifle ~34) �
 constexpr float kSarahFireCooldown  = 0.9f;  // seconds between shots (~9 DPS)
 constexpr float kSarahEngageRange    = 28.0f;// acquire a hostile within this (m)
 constexpr float kSarahFireRange      = 24.0f;// only fire when the target is within this (m)
-constexpr float kSarahAimTime        = 0.20f;// aim-pose lead before the shot reads (s)
+// NOTE: there is no separate "aim-pose duration" — she HOLDS the weapon-up pose for as
+// long as a hostile is inside kSarahFireRange (a per-shot pose would snap back to idle
+// during the 0.9 s cooldown and read as a twitch). See SarahCompanion::tick.
 // Follow (mirrors the rescue companion, but a beat wider so she flanks, not crowds).
 constexpr float kSarahFollowSpeed   = 4.2f;  // m/s toward the player
 constexpr float kSarahFollowStop    = 2.6f;  // hold this far from Jake (standoff ring)
@@ -158,8 +160,15 @@ private:
     // Acquire the nearest live, non-allied hostile within engage range (LOS not required
     // for acquisition — LOS is re-checked at the shot). Returns nullptr if none.
     MonsterSystem* acquireNearest(const std::vector<MonsterSystem*>& hostiles) const;
-    // Clear line-of-sight from Sarah's muzzle to `p` (no Static wall between)?
-    bool losClear(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& p) const;
+    // Clear line-of-sight from Sarah's muzzle to `p` — i.e. no WALL between.
+    // GOTCHA (engine physics): rayCast's `mask` is not an exclusive layer filter —
+    // queryHitsLayer() falls through to objectLayersCollide(), and Static collides
+    // with Dynamic/Player/Enemy, so a Layer::Static ray ALSO hits enemy bodies. A
+    // naive "no Static hit" test therefore always reports blocked: the first thing
+    // the ray hits is the very hostile she is aiming at. So the hit is reconciled
+    // against `hostiles` — a hit on any hostile's own body is NOT a wall.
+    bool losClear(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& p,
+                  const std::vector<MonsterSystem*>& hostiles) const;
     void bark(const std::string& line);
 
     // ---- Model + skin (mirrors RescueVictim) ------------------------------
