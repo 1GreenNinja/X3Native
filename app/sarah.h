@@ -2,7 +2,7 @@
 // SARAH COMPANION COMBAT (LANE B — docs/design/THE_CLONE_BOSS_PLAN.md).
 //
 // Game/slice code only — engine/ stays pure. Sarah is the Act-1 finale ally: she
-// spawns on F7 RESTRAINED (collared, non-combat, idling on the AnnaTactical rig),
+// spawns on F7 RESTRAINED (collared, non-combat, idling on her own Sarah.glb rig),
 // and when Lane A's "Sarah freed" event fires she WAKES and FIGHTS BESIDE JAKE —
 // she follows him, acquires the nearest hostile, and fires a hitscan on a cooldown
 // with an aim/fire pose, until she is downed or the fight ends.
@@ -80,7 +80,8 @@ using SarahBarkFn = std::function<void(const std::string& line)>;
 // to wake her, takeDamage() to down her. Mirrors RescueVictim's shape.
 class SarahCompanion {
 public:
-    // Spawn Sarah RESTRAINED at `pos` on the AnnaTactical rig (loaded from `modelDir`;
+    // Spawn Sarah RESTRAINED at `pos` on the Sarah.glb rig (loaded from `modelDir`,
+    // preferring a Sarah_anim.glb bake when one is present;
     // a procedural box stands in on load failure so the level never breaks). She idles
     // but does not follow or fight until onFreed(). Call once.
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
