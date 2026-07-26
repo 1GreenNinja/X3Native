@@ -941,9 +941,10 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::WorldRegionGraph regionGraph;
     x3::game::WorldStreamer    regionStreamer;   // wired at M-A, first ticked at M-B
     x3::game::EchoRegionSet    regionSet;
+    const bool kStreamOff = [](){ const char* se = std::getenv("ECHO_STREAM");
+                                  return se && se[0] == '0'; }();
     {
-        const char* se = std::getenv("ECHO_STREAM");
-        const bool streamOff = (se && se[0] == '0');
+        const bool streamOff = kStreamOff;
         std::vector<std::string> gerrs;
         if (!regionGraph.load("assets/world/regions.echotropolis.json", gerrs)) {
             for (const auto& e : gerrs) x3::logError("[echoregions] " + e);
@@ -984,7 +985,8 @@ int hostEchotropolis(HostContext& hc) {
         if (hf.ok())
             x3::logInfo(std::string("[echoregions] woodlands slice self-test: ") +
                         (x3::game::echoWoodlandsSliceSelfTest(hf) ? "PASS" : "FAIL"));
-        regionSet.forceAllResident(regionCtx);              // MILESTONE A: everything boot-built
+        regionSet.forceAllResident(regionCtx);              // boot-build everything (M-B keeps this)
+        regionSet.bindStreamerForDrawGate(&regionStreamer); // M-B: streamer view gates the draws
         x3::logInfo(std::string("[echoregions] M-A force-resident boot, ") +
                     std::to_string(regionSet.regionCount()) + " regions (ECHO_STREAM=" +
                     (streamOff ? "0/rollback-identical" : "on/wired-not-ticking") + ")");
@@ -2419,6 +2421,7 @@ int hostEchotropolis(HostContext& hc) {
     // Type `r_maxfps 120`, `r_ddgi 0`, `r_taa 0`, etc. Synced to the device
     // every frame below; applyAtmosphere stays the single setPostFX writer.
     console->registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    console->registerCVar("ws_budget", "2.0", "world-streaming main-thread budget per frame (ms)");
     console->registerCVar("r_exposure", "1.0", "whole-scene brightness (pre-tonemap exposure multiplier; live)");
     console->registerCVar("r_tonemap",        "1",    "tonemap operator: 1 = ACES filmic (default), 0 = passthrough clamp (debug A/B)");
     console->registerCVar("r_bloom",          "1",    "bloom on/off (0 skips the whole downsample/upsample chain)");
@@ -3311,6 +3314,45 @@ int hostEchotropolis(HostContext& hc) {
                             x3::game::todPhaseName(prevPhase));
             }
         }
+        // ===== TIER-2 MILESTONE B: the streamer TICKS ========================
+        // Wants come from the ACTIVE CAMERA (plan 6.1: in this world the camera
+        // IS the player), with the VISTA RULE keeping the whole island resident
+        // whenever the view could see it all: high above ground, wide orbit, or
+        // console-boosted speed. 5s hysteresis on leaving vista so dips don't
+        // thrash. ECHO_STREAM=0 = the rollback lever (never ticks; M-A behavior).
+        if (!kStreamOff && physOk) {
+            float scx, scy, scz;
+            if (flyMode) { scx = flyX; scy = flyY; scz = flyZ; }
+            else if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
+                const auto& sa = npcLife.agent((uint32_t)followIdx);
+                scx = sa.pos.x; scy = sa.pos.y + 2.0f; scz = sa.pos.z;
+            } else if (walkMode) {
+                float yw2, pt2; player.camera(scx, scy, scz, yw2, pt2);
+            } else {
+                scx = rig.sFocusX; scz = rig.sFocusZ;
+                scy = rig.sPivotY + rig.sRadius * std::sin(rig.sPitch);
+            }
+            static float spx = 0, spy = 0, spz = 0; static bool sSeed = false;
+            float svx = 0, svy = 0, svz = 0;
+            if (sSeed && dt > 1e-5f) { svx = (scx-spx)/dt; svy = (scy-spy)/dt; svz = (scz-spz)/dt; }
+            spx = scx; spy = scy; spz = scz; sSeed = true;
+            const float sGround = hf.ok() ? hf.heightAt(scx, scz) : 0.0f;
+            const float sSpeed  = std::sqrt(svx*svx + svy*svy + svz*svz);
+            const bool orbitNow = !flyMode && !walkMode && followIdx < 0;
+            const bool wantVista = (scy - sGround > 250.0f) ||
+                                   (orbitNow && rig.sRadius > 900.0f) ||
+                                   (sSpeed > 600.0f);
+            static double vistaUntil = -1e18;  // no pending vista; boot's aerial spawn earns it naturally
+            if (wantVista) vistaUntil = now + 5.0;
+            const bool vista = wantVista || now < vistaUntil;
+            regionSet.setVistaMode(vista);
+            if (!vista) {
+                const float wsB = std::max(0.25f, console->getFloat("ws_budget"));
+                regionStreamer.update(walkScene, *device, *phys,
+                                      scx, scy, scz, svx, svy, svz, (double)wsB);
+            }
+        }
+
         syncCVars();   // r_* console cvars -> device (before the atmosphere writes post)
         const x3::game::TodSample todS = tod.sample();
         applyTodSample(device, todS);

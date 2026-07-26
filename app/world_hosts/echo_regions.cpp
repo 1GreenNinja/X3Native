@@ -233,6 +233,14 @@ void EchoRegionSet::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
     for (const std::string& id : m_orderedIds) {
         auto rit = m_regions.find(id);
         if (rit == m_regions.end()) continue;
+        // M-B DRAW GATE: outside vista, only regions the STREAMER holds Resident
+        // submit draw records (see bindStreamerForDrawGate's header doc). The
+        // container's own residency (content/VRAM) is untouched.
+        if (!m_vistaMode && m_gateStreamer) {
+            const int si = m_gateStreamer->indexOf(id);
+            if (si >= 0 && m_gateStreamer->state((uint32_t)si) != RegionState::Resident)
+                continue;
+        }
         // `gate` = ctx.walkScene, cached from init() — see EchoRegion::draw's
         // header doc for why (drawAll carries no Scene/ctx parameter of its
         // own per plan §3's verbatim signature, so this is the only
@@ -245,6 +253,11 @@ void EchoRegionSet::updateAll(float dt, float t) {
     for (const std::string& id : m_orderedIds) {
         auto rit = m_regions.find(id);
         if (rit == m_regions.end()) continue;
+        if (!m_vistaMode && m_gateStreamer) {   // M-B: skip pose work for gated-out regions
+            const int si = m_gateStreamer->indexOf(id);
+            if (si >= 0 && m_gateStreamer->state((uint32_t)si) != RegionState::Resident)
+                continue;
+        }
         rit->second.update(dt, t);
     }
 }

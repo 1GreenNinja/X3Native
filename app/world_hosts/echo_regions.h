@@ -232,6 +232,15 @@ public:
     // (plan §2 risk #4 — slices don't leak across evictions).
     void appendNearLights(float ex, float ez, std::vector<x3::rhi::PointLight>& out,
                           uint32_t budget);
+    // M-B DRAW GATE (integrator, WP-0): when bound and vista is OFF, drawAll/
+    // updateAll follow the STREAMER's residency view (state()==Resident) instead
+    // of the containers' own flags — the containers keep their content (VRAM
+    // retained, the M-A..C contract), the streamer decides what SUBMITS. This
+    // resolves the two-owners mismatch: M-A boot-builds everything container-
+    // side, which the streamer cannot see (its states start Unloaded), so
+    // without this gate nothing would ever stop drawing at street level.
+    void bindStreamerForDrawGate(const WorldStreamer* ws) { m_gateStreamer = ws; }
+
     // Vista rule (plan §5 decision 1): true => every region is force-built (if
     // not already) so draw()'s own residency gate naturally passes for all of
     // them, AND the teardown bridge suppresses eviction entirely for as long as
@@ -249,6 +258,7 @@ private:
     std::vector<std::string>                         m_orderedIds;  // graph order, for deterministic iteration
     std::unordered_map<std::string, RegionBuilderFn>  m_builders;
     EchoRegionCtx* m_ctx = nullptr;   // not owned; must outlive this set (see init())
+    const WorldStreamer* m_gateStreamer = nullptr;   // M-B draw gate (see bindStreamerForDrawGate)
     bool m_vistaMode        = false;
     bool m_teardownDestroys = false;  // see setTeardownDestroys()
 };
