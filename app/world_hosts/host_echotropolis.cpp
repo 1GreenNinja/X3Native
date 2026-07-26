@@ -1208,6 +1208,8 @@ int hostEchotropolis(HostContext& hc) {
     const float kCarScale = [](){ const char* e=std::getenv("ECHO_CAR_SCALE"); return e?(float)std::atof(e):1.4f; }();
     const float kCarYaw   = [](){ const char* e=std::getenv("ECHO_CAR_YAW");   return e?(float)std::atof(e):0.0f; }();
     const float kCarY = hf.ok() ? hf.heightAt(-20.0f, 760.0f) : 190.0f;   // crown ground (= tower bases)
+    // Declared ahead of the Car lambdas: poseCar drives the graph (see below).
+    std::unique_ptr<x3::game::EchoRoads> roads;   // the curved network (replaces the old ribbons)
     struct Car { std::unique_ptr<x3::game::EnvArtSystem> body;
                  float sx, sz, dx, dz, len, speed, off; };
     std::vector<Car> cars;
@@ -1242,6 +1244,43 @@ int hostEchotropolis(HostContext& hc) {
         x3::logInfo("--world echotropolis: STREET TRAFFIC — " + std::to_string(cars.size()) + " cars");
     }
     auto poseCar = [&](Car& c, float t){
+        // TIM ("pick up trucks floating in the sky by the mine"): the old
+        // straight lanes died with the ribbon freeway, but the cars kept
+        // driving them at deck altitude. Traffic now drives the REAL road
+        // graph — the EchoRoads freeway ring's centerline samples, exactly
+        // the consumer RoadGraph::laneCenterOffset was designed for (first
+        // taste of the car-AI pillar). Lane + direction derive from the
+        // car's own phase constant, so assignment is deterministic.
+        const x3::game::RoadEdge* fe = nullptr;
+        if (roads) {
+            for (const auto& e : roads->graph().edges)
+                if (e.cls == x3::game::RoadClass::Freeway && e.center.size() > 2) { fe = &e; break; }
+        }
+        if (fe) {
+            const bool  rev  = ((int)(c.off * 100.0f) & 1) != 0;
+            const int   lane = ((int)(c.off * 10.0f)  & 1);
+            float d = std::fmod(c.off + t * c.speed, fe->length);
+            if (rev) d = fe->length - d;
+            const size_t n  = fe->center.size();
+            const float  fi = (d / fe->length) * (float)(n - 1);
+            const size_t i0 = std::min((size_t)fi, n - 2);
+            const float  ft = fi - (float)i0;
+            const auto&  s0 = fe->center[i0];
+            const auto&  s1 = fe->center[i0 + 1];
+            const float  x0 = s0.x + (s1.x - s0.x) * ft;
+            const float  y0 = s0.y + (s1.y - s0.y) * ft + 0.35f;
+            const float  z0 = s0.z + (s1.z - s0.z) * ft;
+            float tx = s0.tx + (s1.tx - s0.tx) * ft, tz = s0.tz + (s1.tz - s0.tz) * ft;
+            const float tl = std::sqrt(tx*tx + tz*tz); if (tl > 1e-5f) { tx /= tl; tz /= tl; }
+            const float lat = roads->graph().laneCenterOffset(*fe, lane, !rev);
+            const float x = x0 + tz * lat, z = z0 - tx * lat;   // right-perp = (tz,-tx)
+            const float heading = std::atan2(rev ? -tx : tx, rev ? -tz : tz) + kCarYaw;
+            const float sc = kCarScale, ch = std::cos(heading), sh = std::sin(heading);
+            const float M[16] = { ch*sc,0,-sh*sc,0, 0,sc,0,0, sh*sc,0,ch*sc,0, x, y0, z, 1 };
+            c.body->setInstanceTransform(0, M);
+            return;
+        }
+        // Fallback (roads failed to build): the legacy straight lane at crown height.
         const float d = std::fmod(c.off + t * c.speed, c.len);
         const float x = c.sx + c.dx * d;
         const float z = c.sz + c.dz * d;
@@ -1258,7 +1297,6 @@ int hostEchotropolis(HostContext& hc) {
     // the layers read as real infrastructure from the vista. Flat plane GLBs (assets/
     // infra) scaled per segment; the pillar is a unit cube stretched to the ground.
     std::vector<std::unique_ptr<x3::game::EnvArtSystem>> infra;
-    std::unique_ptr<x3::game::EchoRoads> roads;   // the curved network (replaces the old ribbons)
     // (TIER-2 M-A: subwayTrain/subwayBuilt/subwayLine moved into buildCrown.)
     const std::string infradir = "D:/GameDev/EchoHarbor/assets/infra";
     // Place a flat plane GLB (local 1x1 in X/Z, +Y up) as a road/deck: centre (cx,cz),
@@ -1928,7 +1966,11 @@ int hostEchotropolis(HostContext& hc) {
                 "3=night 4=noon, T pauses the cycle; Esc to quit");
     // Start with the day-night cycle PAUSED so the launch HOLDS its ECHO_TOD light
     // (golden by default) instead of sprinting into night in ~20s — press T to run time.
-    bool todPaused = true, prevT = false;
+    // Tim ("sun not moving across the sky"): the sky clock now RUNS by default in
+    // interactive play; it boots frozen only when a fixed TOD was requested via
+    // ECHO_TOD (the capture/byte-compare harnesses depend on that stillness).
+    // T still toggles either way.
+    bool todPaused = (std::getenv("ECHO_TOD") != nullptr), prevT = false;
     x3::game::TodPhase prevPhase = tod.phase();
 
     // ESC opens a PAUSE MENU (it never quits the app — Tim's rule 2026-07-11). Only the
