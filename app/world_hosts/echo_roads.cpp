@@ -1,38 +1,34 @@
 // ECHO ROADS implementation — see echo_roads.h for the stance + INTEGRATION.
 //
-// Shape of the build:
-//   1. RING: closed Catmull-Rom through the SAME ten waypoints as the host's
-//      kRoute freeway (gates/corridors stay put), arc-length resampled to 4 m,
-//      elevation = ridge-clearing profile (raise-only grade limiter + smooth),
-//      superelevation (banking) from curvature.
-//   2. INTERCHANGES (x2, trumpet): Recife gate (820,1120) and Urban gate
-//      (700,420) — the two waypoints the original route itself names as
-//      district gates. A trumpet is the standard compact interchange where a
-//      single trunk road tees into a freeway: one 250° loop ramp + one
-//      directional ramp each (v1 half-trumpet; the mirrored pair is v2), both
-//      grading deck -> ground under 7%.
-//   3. AVENUES: gate connectors to the Recife/Urban pads, the Hivemind spur
-//      (east, off-ring), the crown drag spur (mesa top).
-//   4. HARBOR BOULEVARD + FANNED BLOCKS (v2, Tim's sketch): one continuous
-//      curving boulevard hugging the inner basin's NE shore arc on the land
-//      side — the shore is FOUND at build time by marching/bisecting the
-//      heightfield waterline from authored seeds — with 5 rectangular grid
-//      blocks fanned along it ("beads on the string"), each rotated to the
-//      boulevard's local tangent and land-verified with auto inland nudging;
-//      cross streets run shoreward and truncate at the actual waterline.
-//      East end ties into the Urban gate avenue.
-//   5. GEOMETRY: everything batches into 4 material buckets (asphalt / paint /
-//      concrete / sidewalk) -> 4 meshes -> 4 draws. Flat PBR colors v1; UVs
-//      are road-metric (u across, v = meters/10) so a texture atlas is a
-//      drop-in v2. Quads are emitted DOUBLE-SIDED (index-only cost): the deck
-//      is seen from below, and this module cannot verify the device's cull
-//      winding from here — robustness beats 12 extra bytes a quad.
-//   6. LIGHTS: lamp PointLights along freeway + streets, returned via
-//      lights() — the HOST gates them by cityLightsOn (never baked emissive;
-//      that is the exact bug class Tim flagged on the old glow ribbon).
+// V3 ARCHITECTURE (Tim: "the roads near the end of the bridge do not even
+// join each other. This is NOT how roads look."):
+//   PHASE 1  COLLECT   every edge's centerline (ring / trumpet ramps / gate
+//                      avenues / spurs / harbor boulevard / fanned grid
+//                      blocks) into Pending records — NO geometry yet. The
+//                      authoring math is v2's, unchanged (ring shadows the
+//                      host's ten kRoute waypoints; harbor probes the real
+//                      waterline from seeds).
+//   PHASE 2  JUNCTIONS detect where edges meet:
+//                        a) ENDPOINT CAPTURES — an edge end inside another
+//                           ground edge's corridor (tee / ramp foot / gate).
+//                           Stop-short ends are EXTENDED straight into the
+//                           target corridor first (the "bridge end" fix).
+//                        b) INTERIOR CROSSINGS — per ground-edge pair, the
+//                           global closest-approach under the corridor sum
+//                           (grid street X, street x boulevard).
+//                      Candidates cluster (14 m) into junctions; the freeway
+//                      ring is grade-separated and never patched (ramp deck
+//                      merges stay tangential overlap by design).
+//   PHASE 3  EMIT      per-edge ribbons with per-sample SUPPRESSION inside
+//                      junction patches (asphalt/paint/curbs/sidewalks all
+//                      trim; lane paint BREAKS; stop bars at every entry),
+//                      then the filled 12-gon junction patches, lamp poles +
+//                      arms under every light, pillars, barriers.
+//   COLLISION          the asphalt top surface (decks/ramps/streets/patches)
+//                      accumulates into RoadCollisionMesh for the integrator
+//                      to feed phys->addStaticMesh (the fall-through fix).
 //
-// Determinism: pure math over authored constants + h01() hash jitter — no
-// rand, no time. Rebuilding on the same heightfield yields identical meshes.
+// Determinism: pure math over authored constants + h01() hash — no rand.
 
 #include "echo_roads.h"
 
@@ -48,60 +44,81 @@ namespace x3::game {
 namespace {
 
 // ---- tunables (all of them; nothing magic inline) --------------------------
-constexpr float kSampleStep     = 4.0f;    // m between centerline samples (2 on ramps)
+constexpr float kSampleStep     = 4.0f;
 constexpr float kRampStep       = 2.0f;
-constexpr float kFreewayWidth   = 14.0f;   // 2+2 lanes + shoulders
+constexpr float kFreewayWidth   = 14.0f;
 constexpr float kRampWidth      = 7.0f;
 constexpr float kAvenueWidth    = 9.0f;
 constexpr float kStreetWidth    = 9.0f;
-constexpr float kLaneWidth      = 3.4f;    // graph laneCenterOffset unit
-constexpr float kDeckClearance  = 11.0f;   // above cleared terrain (old deckH kept)
-constexpr float kDeckMinY       = 13.0f;   // over water (max(g,2)+11 in old code)
-constexpr float kRidgeProbe     = 38.0f;   // diamond probe radius for ridge clearing
-constexpr float kMaxGrade       = 0.06f;   // 6% freeway; ramps allow 0.07
+constexpr float kLaneWidth      = 3.4f;
+constexpr float kDeckClearance  = 11.0f;
+constexpr float kDeckMinY       = 13.0f;
+// V3.2 (integrator): was 38.0 — wide enough to catch the MESA CLIFF on legs
+// running PARALLEL to it (west shanty shore), inheriting 195m of floor the
+// road never crosses -> the sky-pier forest. Probe only what the DECK ITSELF
+// spans: half deck width + shoulder. Legs that genuinely cross a ridge still
+// catch it dead-ahead along the centerline samples.
+constexpr float kRidgeProbe     = 9.0f;
+constexpr float kMaxGrade       = 0.06f;   // (legacy reference; ramps use their own)
+// V3.1: the PROFILE grade. 6% could not descend the ~200 m crown within the
+// available run, so the raise-only relaxation held the deck at ridge height
+// across the whole shore bowl (ranks of ~200 m piers — Tim's capture). 14%
+// is steeper than a real interstate but matches the legacy per-leg look and
+// lets the deck hug terrain down the mesa flank; piers return to real scale.
+constexpr float kDeckMaxGrade   = 0.60f;
 constexpr float kRampMaxGrade   = 0.07f;
-constexpr float kBankPerKappa   = 55.0f;   // bank(rad) = clamp(kappa * this, +-kBankMax)
-constexpr float kBankMax        = 0.10f;   // ~5.7 deg superelevation cap
-constexpr int   kSmoothWin      = 7;       // profile box-smooth half-window (samples)
-constexpr float kBarrierInset   = 0.35f;   // barrier centerline from deck edge
+constexpr float kBankPerKappa   = 55.0f;
+constexpr float kBankMax        = 0.10f;
+// (kSmoothWin retired in V3.1 — the profile's grade bound IS the smoothness;
+//  box smoothing was re-inflating valleys back toward summit height.)
+constexpr float kBarrierInset   = 0.35f;
 constexpr float kBarrierW       = 0.35f;
 constexpr float kBarrierH       = 1.00f;
-constexpr float kEdgeLineInset  = 0.90f;   // solid edge line from deck edge
+constexpr float kEdgeLineInset  = 0.90f;
 constexpr float kPaintW         = 0.16f;
-constexpr float kPaintLift      = 0.03f;   // paint floats above deck (no z-fight)
-constexpr float kDashOn         = 3.0f, kDashOff = 9.0f;    // freeway lane dashes
+constexpr float kPaintLift      = 0.03f;
+constexpr float kDashOn         = 3.0f, kDashOff = 9.0f;
 constexpr float kStreetDashOn   = 2.0f, kStreetDashOff = 6.0f;
-constexpr float kPillarEvery    = 35.0f;   // m of arc between pillar pairs
-constexpr float kPillarHalf     = 1.30f;   // square pier half-extent
-constexpr float kPillarMinAir   = 3.0f;    // no pillar if deck hugs ground closer
+constexpr float kPillarEvery    = 35.0f;
+constexpr float kPillarHalf     = 1.30f;
+constexpr float kPillarMinAir   = 3.0f;
 constexpr float kCurbW          = 0.35f, kCurbLift = 0.13f;
 constexpr float kWalkW          = 1.80f, kWalkLift = 0.12f;
-constexpr float kGroundLift     = 0.15f;   // tarmac above terrain
-constexpr float kLampEveryFwy   = 34.0f;   // m between freeway poles (alternating)
+constexpr float kGroundLift     = 0.15f;
+constexpr float kLampEveryFwy   = 34.0f;
 constexpr float kLampEveryStr   = 26.0f;
-constexpr float kWaterMinLand   = 1.5f;    // hf below this = water, truncate street
-// Loop-ramp arc: radius + sweep of the trumpet curl.
+constexpr float kLampHFwy       = 6.0f;
+constexpr float kLampHStr       = 4.2f;
+constexpr float kPoleHalf       = 0.10f;   // lamp pole shaft half-extent
+constexpr float kArmLen         = 0.9f;    // lamp arm reach toward the road
+constexpr float kWaterMinLand   = 1.5f;
 constexpr float kLoopR          = 30.0f;
 constexpr float kLoopSweepDeg   = 250.0f;
+// V3 junctions:
+constexpr float kJuncCapture    = 0.70f;   // endpoint capture: d < this*(wA+wB)/2
+constexpr float kJuncCross      = 0.55f;   // crossing: minDist < this*(wA+wB)/2
+constexpr float kJuncCluster    = 14.0f;   // candidates within this merge
+constexpr float kPatchApron     = 3.0f;    // patch radius = max halfwidth + this
+constexpr float kPatchMinR      = 7.0f;
+constexpr float kPatchTuck      = 1.2f;    // ribbons trim to r - tuck (no crack)
+constexpr float kStopBarW       = 0.5f;    // stop-line thickness (along tangent)
+constexpr int   kPatchSides     = 12;      // junction polygon fan
 
-// The ring shadows the host's kRoute EXACTLY (host_echotropolis.cpp ~1541) so
-// district gates / woodlands corridor / car AI handoff keep their geography.
+// The ring shadows the host's kRoute EXACTLY (host_echotropolis.cpp ~1541).
 struct Wp { float x, z; };
 constexpr Wp kRing[] = {
     { -160.0f,  720.0f }, {  120.0f,  720.0f }, {  480.0f,  900.0f },
     {  820.0f, 1120.0f }, { 1060.0f,  900.0f }, {  980.0f,  560.0f },
     {  700.0f,  420.0f }, {  300.0f,  430.0f }, {  -60.0f,  560.0f },
-};  // closed: last->first wraps (the old list's tenth point duplicated its first)
+};
 constexpr int kRingN = (int)(sizeof(kRing) / sizeof(kRing[0]));
 
-// Woodlands-style deterministic hash -> [0,1) (same recipe as the scatter).
 inline float h01(uint32_t n) {
     n = (n ^ 61u) ^ (n >> 16); n *= 9u; n ^= n >> 4; n *= 0x27d4eb2du;
     n ^= n >> 15; return (float)(n & 0xffffffu) / (float)0x1000000;
 }
 inline float clampf2(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-// Closed-loop Catmull-Rom position at (segment i, t in [0,1)).
 inline void catmull(const Wp* p, int n, int i, float t, float& ox, float& oz) {
     const Wp& p0 = p[(i - 1 + n) % n]; const Wp& p1 = p[i];
     const Wp& p2 = p[(i + 1) % n];     const Wp& p3 = p[(i + 2) % n];
@@ -112,7 +129,6 @@ inline void catmull(const Wp* p, int n, int i, float t, float& ox, float& oz) {
                  + (-p0.z + 3*p1.z - 3*p2.z + p3.z)*t3);
 }
 
-// XZ cubic Hermite (ramps/connectors): endpoints + scaled tangents.
 inline void hermite(float ax, float az, float atx, float atz,
                     float bx, float bz, float btx, float btz,
                     float t, float& ox, float& oz) {
@@ -123,11 +139,8 @@ inline void hermite(float ax, float az, float atx, float atz,
     oz = h00*az + h10*atz + h01_*bz + h11*btz;
 }
 
-// Right-perp of a unit XZ tangent (right-hand-traffic side). Convention used
-// EVERYWHERE here and exported through RoadGraph::laneCenterOffset.
 inline void rperp(float tx, float tz, float& px, float& pz) { px = tz; pz = -tx; }
 
-// Ridge-clearing minimum deck height (the old deckH, verbatim probe pattern).
 inline float deckFloor(const Heightfield& hf, float x, float z) {
     float g = hf.heightAt(x, z);
     for (int s = 0; s < 4; ++s)
@@ -136,7 +149,6 @@ inline float deckFloor(const Heightfield& hf, float x, float z) {
     return std::max(g, 2.0f) + kDeckClearance;
 }
 
-// Arc-length resample of a dense polyline to a fixed step. Fills tangents.
 void resample(const std::vector<RoadSample>& dense, float step,
               std::vector<RoadSample>& out) {
     out.clear();
@@ -160,7 +172,6 @@ void resample(const std::vector<RoadSample>& dense, float step,
         }
         carry += len;
     }
-    // Tangents from neighbors (ends one-sided).
     const size_t n = out.size();
     for (size_t i = 0; i < n; ++i) {
         const RoadSample& p = out[i > 0 ? i - 1 : 0];
@@ -172,26 +183,14 @@ void resample(const std::vector<RoadSample>& dense, float step,
     }
 }
 
-} // namespace
-
-// ---------------------------------------------------------------------------
-float RoadGraph::laneCenterOffset(const RoadEdge& e, int lane, bool forward) {
-    (void)e;   // v2: clamp `lane` to e.lanesF/lanesB; v1 trusts the caller
-    const float off = ((float)lane + 0.5f) * kLaneWidth;
-    return forward ? off : -off;   // along rperp(tangent): + is the right side
-}
-
 // ============================ geometry emitters ============================
-// Small private helpers need bucket access — implemented as member-free
-// statics taking the vertex/index vectors directly (keeps the header slim).
-namespace {
-
 struct Buck { std::vector<x3::rhi::MeshVertex>* v; std::vector<uint32_t>* i; };
 
-// One DOUBLE-SIDED quad A->B->C->D (A/B = near left/right, D/C = far left/right).
+// One DOUBLE-SIDED visual quad; optionally also a SINGLE-SIDED collision quad.
 inline void quad(Buck& bk, const float A[3], const float B[3],
                  const float C[3], const float D[3],
-                 const float n[3], float v0, float v1) {
+                 const float n[3], float v0, float v1,
+                 RoadCollisionMesh* col = nullptr) {
     const uint32_t base = (uint32_t)bk.v->size();
     auto push = [&](const float p[3], float u, float vv) {
         x3::rhi::MeshVertex mv;
@@ -201,15 +200,24 @@ inline void quad(Buck& bk, const float A[3], const float B[3],
         bk.v->push_back(mv);
     };
     push(A, 0.0f, v0); push(B, 1.0f, v0); push(C, 1.0f, v1); push(D, 0.0f, v1);
-    const uint32_t q[12] = { base,base+1,base+2, base,base+2,base+3,     // front
-                             base,base+2,base+1, base,base+3,base+2 };   // back
+    const uint32_t q[12] = { base,base+1,base+2, base,base+2,base+3,
+                             base,base+2,base+1, base,base+3,base+2 };
     bk.i->insert(bk.i->end(), q, q + 12);
+    if (col) {
+        const uint32_t cb = (uint32_t)(col->verts.size() / 3);
+        const float* ps[4] = { A, B, C, D };
+        for (int k = 0; k < 4; ++k) {
+            col->verts.push_back(ps[k][0]);
+            col->verts.push_back(ps[k][1]);
+            col->verts.push_back(ps[k][2]);
+        }
+        const uint32_t ct[6] = { cb, cb+1, cb+2, cb, cb+2, cb+3 };
+        col->indices.insert(col->indices.end(), ct, ct + 6);
+    }
 }
 
-// Ribbon along samples at lateral [off - w/2, off + w/2], lifted by `lift`,
-// banked (the lateral ends tilt by sample.bank). Normal up. v = arc/10.
 void ribbon(Buck bk, const std::vector<RoadSample>& s, float off, float w,
-            float lift, bool applyBank = true) {
+            float lift, bool applyBank = true, RoadCollisionMesh* col = nullptr) {
     if (s.size() < 2) return;
     const float n[3] = { 0, 1, 0 };
     float arc = 0.0f;
@@ -224,12 +232,11 @@ void ribbon(Buck bk, const std::vector<RoadSample>& s, float off, float w,
         const float seg = std::sqrt(dx*dx + dz*dz);
         const float C[3] = { b.x + bpx*aR, b.y + lift + std::sin(bankB)*aR, b.z + bpz*aR };
         const float D[3] = { b.x + bpx*aL, b.y + lift + std::sin(bankB)*aL, b.z + bpz*aL };
-        quad(bk, A, B, C, D, n, arc / 10.0f, (arc + seg) / 10.0f);
+        quad(bk, A, B, C, D, n, arc / 10.0f, (arc + seg) / 10.0f, col);
         arc += seg;
     }
 }
 
-// Dashed ribbon: same as ribbon but only emits quads inside the ON phase.
 void dashes(Buck bk, const std::vector<RoadSample>& s, float off, float w,
             float lift, float onLen, float offLen) {
     if (s.size() < 2) return;
@@ -254,7 +261,6 @@ void dashes(Buck bk, const std::vector<RoadSample>& s, float off, float w,
     }
 }
 
-// Barrier: an upright box run (outer face + top + inner face) at lateral `off`.
 void barrier(Buck bk, const std::vector<RoadSample>& s, float off) {
     if (s.size() < 2) return;
     for (size_t i = 0; i + 1 < s.size(); ++i) {
@@ -272,18 +278,16 @@ void barrier(Buck bk, const std::vector<RoadSample>& s, float off) {
         P(b, bpx, bpz, off + hw, 0, bOL);  P(b, bpx, bpz, off + hw, kBarrierH, bOH);
         P(b, bpx, bpz, off - hw, 0, bIL);  P(b, bpx, bpz, off - hw, kBarrierH, bIH);
         const float nSide[3] = { apx, 0, apz }, nUp[3] = { 0, 1, 0 };
-        quad(bk, aOL, aOH, bOH, bOL, nSide, 0.0f, 0.4f);   // outer face
-        quad(bk, aIH, aIL, bIL, bIH, nSide, 0.0f, 0.4f);   // inner face
-        quad(bk, aIH, aOH, bOH, bIH, nUp,   0.0f, 0.4f);   // cap
+        quad(bk, aOL, aOH, bOH, bOL, nSide, 0.0f, 0.4f);
+        quad(bk, aIH, aIL, bIL, bIH, nSide, 0.0f, 0.4f);
+        quad(bk, aIH, aOH, bOH, bIH, nUp,   0.0f, 0.4f);
     }
 }
 
-// Square pier from ground into the deck underside.
-void pillar(Buck bk, float x, float z, float yTop, float yGround) {
-    const float h = kPillarHalf;
-    const float y0 = yGround - 1.5f, y1 = yTop - 0.5f;
+// Square shaft between two heights (piers AND lamp poles share this).
+void box4(Buck bk, float x, float z, float y0, float y1, float half) {
     if (y1 <= y0) return;
-    const float c[4][2] = { {-h,-h}, {h,-h}, {h,h}, {-h,h} };
+    const float c[4][2] = { {-half,-half}, {half,-half}, {half,half}, {-half,half} };
     for (int f = 0; f < 4; ++f) {
         const int g = (f + 1) % 4;
         const float A[3] = { x + c[f][0], y0, z + c[f][1] };
@@ -295,7 +299,28 @@ void pillar(Buck bk, float x, float z, float yTop, float yGround) {
     }
 }
 
+void pillar(Buck bk, float x, float z, float yTop, float yGround) {
+    // V3.1 polish: tall piers read slab-like at height — split anything over
+    // 20 m into a wider base section + a standard upper shaft (still one
+    // bucket, ~4 extra quads). Short piers keep the single shaft.
+    const float h = yTop - yGround;
+    if (h > 20.0f) {
+        const float mid = yGround + h * 0.5f;
+        box4(bk, x, z, yGround - 1.5f, mid,        kPillarHalf * 1.4f);
+        box4(bk, x, z, mid - 0.5f,     yTop - 0.5f, kPillarHalf);
+    } else {
+        box4(bk, x, z, yGround - 1.5f, yTop - 0.5f, kPillarHalf);
+    }
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+float RoadGraph::laneCenterOffset(const RoadEdge& e, int lane, bool forward) {
+    (void)e;   // v2+: clamp `lane` to e.lanesF/lanesB; v1 trusts the caller
+    const float off = ((float)lane + 0.5f) * kLaneWidth;
+    return forward ? off : -off;
+}
 
 // ================================ build ====================================
 bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
@@ -305,126 +330,111 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         return false;
     }
 
-    Buck asphalt { &m_buckets[kBucketAsphalt].v,  &m_buckets[kBucketAsphalt].i };
-    Buck paint   { &m_buckets[kBucketPaint].v,    &m_buckets[kBucketPaint].i };
-    Buck conc    { &m_buckets[kBucketConcrete].v, &m_buckets[kBucketConcrete].i };
-    Buck walk    { &m_buckets[kBucketSidewalk].v, &m_buckets[kBucketSidewalk].i };
-    // Material palette (flat PBR factors; texture atlas is the v2 swap).
-    const float cAsphalt[4]  = { 0.085f, 0.088f, 0.095f, 1.0f };
-    const float cPaint[4]    = { 0.80f,  0.82f,  0.85f,  1.0f };
-    const float cConcrete[4] = { 0.42f,  0.41f,  0.39f,  1.0f };
-    const float cWalk[4]     = { 0.295f, 0.30f,  0.31f,  1.0f };
-    std::copy(cAsphalt,  cAsphalt + 4,  m_buckets[kBucketAsphalt].color);
-    std::copy(cPaint,    cPaint + 4,    m_buckets[kBucketPaint].color);
-    std::copy(cConcrete, cConcrete + 4, m_buckets[kBucketConcrete].color);
-    std::copy(cWalk,     cWalk + 4,     m_buckets[kBucketSidewalk].color);
+    // ======================= PHASE 1 — COLLECT ============================
+    // Pending: an edge's centerline + emission recipe, geometry deferred.
+    struct Pending {
+        RoadClass cls = RoadClass::Avenue;
+        float width = kAvenueWidth;
+        int lanesF = 1, lanesB = 1;
+        bool banked = false, barriers = false, medianPaint = false,
+             edgeLines = false, laneDash = false, streetDash = false,
+             curbs = false, lamps = false, pillarPair = false,
+             pillarSingle = false, closedLoop = false;
+        float lampEvery = kLampEveryStr, lampH = kLampHStr;
+        std::vector<RoadSample> s;
+    };
+    std::vector<Pending> P;
 
-    // ---- 1. THE RING ------------------------------------------------------
-    // Dense param sweep of the closed Catmull-Rom, then arc-length resample.
-    std::vector<RoadSample> dense;
-    dense.reserve(4096);
-    for (int i = 0; i < kRingN; ++i)
-        for (float t = 0.0f; t < 1.0f; t += 0.02f) {
-            RoadSample s; catmull(kRing, kRingN, i, t, s.x, s.z);
-            dense.push_back(s);
-        }
-    dense.push_back(dense.front());   // close the loop for resampling
-    std::vector<RoadSample> ring;
-    resample(dense, kSampleStep, ring);
+    auto collectGround = [&](RoadClass cls, float width, int lanes,
+                             std::vector<RoadSample>& s) {
+        if (s.size() < 2) return;
+        for (auto& p : s) p.y = hf.heightAt(p.x, p.z) + kGroundLift;
+        for (int pass = 0; pass < 2; ++pass)
+            for (size_t i = 1; i + 1 < s.size(); ++i)
+                s[i].y = (s[i-1].y + s[i].y + s[i+1].y) / 3.0f;
+        for (auto& p : s) p.bank = 0.0f;
+        Pending pe;
+        pe.cls = cls; pe.width = width; pe.lanesF = lanes; pe.lanesB = lanes;
+        pe.streetDash = true; pe.curbs = true; pe.lamps = true;
+        pe.lampEvery = kLampEveryStr; pe.lampH = kLampHStr;
+        pe.s = std::move(s);
+        P.push_back(std::move(pe));
+    };
 
-    // Elevation: ridge-clearing floor, then a RAISE-ONLY grade limiter (the
-    // approach climbs early instead of the deck ever dipping below its floor),
-    // then a box smooth, then one re-clamp to the floor.
-    std::vector<float> floorY(ring.size());
-    for (size_t i = 0; i < ring.size(); ++i) {
-        floorY[i] = std::max(deckFloor(hf, ring[i].x, ring[i].z), kDeckMinY);
-        ring[i].y = floorY[i];
-    }
-    const float maxStep = kMaxGrade * kSampleStep;
-    for (int pass = 0; pass < 3; ++pass) {
-        for (size_t i = 1; i < ring.size(); ++i)                       // forward
-            ring[i].y = std::max(ring[i].y, ring[i-1].y - maxStep);
-        for (size_t i = ring.size() - 1; i-- > 0; )                    // backward
-            ring[i].y = std::max(ring[i].y, ring[i+1].y - maxStep);
-    }
-    {   // box smooth + floor re-clamp
-        std::vector<float> sm(ring.size());
-        const int W = kSmoothWin;
-        for (int i = 0; i < (int)ring.size(); ++i) {
-            float acc = 0; int cnt = 0;
-            for (int k = -W; k <= W; ++k) {
-                const int j = i + k;
-                if (j < 0 || j >= (int)ring.size()) continue;
-                acc += ring[j].y; ++cnt;
+    // ---- 1a. THE RING (v2 math verbatim) ---------------------------------
+    {
+        std::vector<RoadSample> dense;
+        dense.reserve(4096);
+        for (int i = 0; i < kRingN; ++i)
+            for (float t = 0.0f; t < 1.0f; t += 0.02f) {
+                RoadSample s; catmull(kRing, kRingN, i, t, s.x, s.z);
+                dense.push_back(s);
             }
-            sm[i] = acc / (float)cnt;
+        dense.push_back(dense.front());
+        std::vector<RoadSample> ring;
+        resample(dense, kSampleStep, ring);
+        std::vector<float> floorY(ring.size());
+        for (size_t i = 0; i < ring.size(); ++i) {
+            floorY[i] = std::max(deckFloor(hf, ring[i].x, ring[i].z), kDeckMinY);
+            ring[i].y = floorY[i];
         }
-        for (size_t i = 0; i < ring.size(); ++i)
-            ring[i].y = std::max(sm[i], floorY[i]);
-    }
-    // Banking from signed curvature (tangent swing per meter), smoothed.
-    for (size_t i = 0; i < ring.size(); ++i) {
-        const RoadSample& p = ring[i > 0 ? i - 1 : ring.size() - 1];
-        const RoadSample& q = ring[(i + 1) % ring.size()];
-        const float cross = p.tx * q.tz - p.tz * q.tx;   // + = turning right
-        const float kappa = cross / (2.0f * kSampleStep);
-        ring[i].bank = clampf2(kappa * kBankPerKappa, -kBankMax, kBankMax);
-    }
-    for (int pass = 0; pass < 2; ++pass)
-        for (size_t i = 1; i + 1 < ring.size(); ++i)
-            ring[i].bank = (ring[i-1].bank + ring[i].bank + ring[i+1].bank) / 3.0f;
-
-    // Ring geometry: deck, barriers, paint, pillars, lamps.
-    ribbon(asphalt, ring, 0.0f, kFreewayWidth, 0.0f);
-    barrier(conc, ring,  (kFreewayWidth * 0.5f - kBarrierInset));
-    barrier(conc, ring, -(kFreewayWidth * 0.5f - kBarrierInset));
-    ribbon(paint, ring,  (kFreewayWidth * 0.5f - kEdgeLineInset), kPaintW, kPaintLift);
-    ribbon(paint, ring, -(kFreewayWidth * 0.5f - kEdgeLineInset), kPaintW, kPaintLift);
-    ribbon(paint, ring,  0.30f, kPaintW, kPaintLift);   // median double solid
-    ribbon(paint, ring, -0.30f, kPaintW, kPaintLift);
-    dashes(paint, ring,  kLaneWidth, kPaintW, kPaintLift, kDashOn, kDashOff);
-    dashes(paint, ring, -kLaneWidth, kPaintW, kPaintLift, kDashOn, kDashOff);
-    {   // pillars + lamps along the ring
-        float sinceP = kPillarEvery, sinceL = kLampEveryFwy * 0.5f;
-        int lampSide = 1;
-        for (size_t i = 0; i + 1 < ring.size(); ++i) {
-            sinceP += kSampleStep; sinceL += kSampleStep;
-            const RoadSample& s = ring[i];
-            if (sinceP >= kPillarEvery) {
-                sinceP = 0;
-                const float g = hf.heightAt(s.x, s.z);
-                if (s.y - g > kPillarMinAir) {
-                    float px, pz; rperp(s.tx, s.tz, px, pz);
-                    pillar(conc, s.x + px * 4.8f, s.z + pz * 4.8f, s.y, g);
-                    pillar(conc, s.x - px * 4.8f, s.z - pz * 4.8f, s.y, g);
-                }
+        // V3.1 PROFILE (the "200 m pier ranks" hotfix): a BIDIRECTIONAL
+        // grade-limited relaxation toward the LOCAL floor — the rubber band
+        // under tension. Forward sweep caps every DESCENT at kDeckMaxGrade
+        // (after each summit the deck drops toward local clearance as fast as
+        // grade allows, instead of the old raise-only plateau that carried
+        // ridge height across the whole shore bowl); backward sweep caps every
+        // ASCENT (approaches climb early). No box smoothing — it re-inflated
+        // the valleys; profile smoothness comes from the grade bound itself.
+        // Both sweeps only ever raise ABOVE floorY, so the never-below-
+        // clearance floor holds by construction. The ring is CLOSED: each
+        // sweep runs two wraps so the result is start-sample independent.
+        {
+            const float maxStep = kDeckMaxGrade * kSampleStep;
+            const size_t n = ring.size();
+            for (size_t k = 1; k < 2 * n; ++k) {           // forward (descent cap)
+                const size_t i = k % n, p = (k - 1) % n;
+                ring[i].y = std::max(floorY[i],
+                                     std::max(ring[i].y, ring[p].y - maxStep));
             }
-            if (sinceL >= kLampEveryFwy) {
-                sinceL = 0; lampSide = -lampSide;
-                float px, pz; rperp(s.tx, s.tz, px, pz);
-                x3::rhi::PointLight L;
-                const float lat = lampSide * (kFreewayWidth * 0.5f + 0.6f);
-                L.pos[0] = s.x + px * lat; L.pos[1] = s.y + 6.0f; L.pos[2] = s.z + pz * lat;
-                L.range = 26.0f;
-                L.color[0] = 2.2f; L.color[1] = 1.35f; L.color[2] = 0.62f;   // sodium
-                m_lights.push_back(L);
+            for (size_t k = 2 * n; k-- > 1; ) {            // backward (ascent cap)
+                const size_t i = (k - 1) % n, q = k % n;
+                ring[i].y = std::max(ring[i].y, ring[q].y - maxStep);
             }
         }
-    }
-    RoadEdge ringEdge;
-    ringEdge.cls = RoadClass::Freeway; ringEdge.width = kFreewayWidth;
-    ringEdge.lanesF = 2; ringEdge.lanesB = 2;
-    m_graph.nodes.push_back({ ring.front().x, ring.front().z });
-    ringEdge.a = ringEdge.b = 0;
-    ringEdge.length = kSampleStep * (float)ring.size();
-    m_pavedMeters += ringEdge.length;
-    ringEdge.center = ring;   // copied AFTER geometry so the edge carries final y/bank
-    m_graph.edges.push_back(std::move(ringEdge));
-    // NOTE: keep reading from the LOCAL `ring` below — a reference into
-    // m_graph.edges[0].center would dangle when later push_backs reallocate.
-    const std::vector<RoadSample>& ringC = ring;
+        {   // diagnostics (v3.1 acceptance): tallest pier this profile makes
+            float maxPier = 0.0f;
+            for (const RoadSample& s : ring)
+                maxPier = std::max(maxPier, s.y - hf.heightAt(s.x, s.z));
+            x3::logInfo("[roads] deck profile: max pier height " +
+                        std::to_string((int)maxPier) + " m (grade cap " +
+                        std::to_string((int)(kDeckMaxGrade * 100.0f)) + "%)");
+        }
+        for (size_t i = 0; i < ring.size(); ++i) {
+            const RoadSample& p = ring[i > 0 ? i - 1 : ring.size() - 1];
+            const RoadSample& q = ring[(i + 1) % ring.size()];
+            const float cross = p.tx * q.tz - p.tz * q.tx;
+            const float kappa = cross / (2.0f * kSampleStep);
+            ring[i].bank = clampf2(kappa * kBankPerKappa, -kBankMax, kBankMax);
+        }
+        for (int pass = 0; pass < 2; ++pass)
+            for (size_t i = 1; i + 1 < ring.size(); ++i)
+                ring[i].bank = (ring[i-1].bank + ring[i].bank + ring[i+1].bank) / 3.0f;
 
-    // ---- shared: ground-conforming edge builder --------------------------
+        Pending pe;
+        pe.cls = RoadClass::Freeway; pe.width = kFreewayWidth;
+        pe.lanesF = 2; pe.lanesB = 2;
+        pe.banked = true; pe.barriers = true; pe.medianPaint = true;
+        pe.edgeLines = true; pe.laneDash = true; pe.lamps = true;
+        pe.pillarPair = true; pe.closedLoop = true;
+        pe.lampEvery = kLampEveryFwy; pe.lampH = kLampHFwy;
+        pe.s = std::move(ring);
+        P.push_back(std::move(pe));
+    }
+    // P[0] is the ring and P NEVER reorders; but it DOES grow — take a copy
+    // of the ring samples for gate math instead of holding a reference into
+    // the vector (reallocation safety, the same class of bug v1 fixed once).
+    const std::vector<RoadSample> ringC = P[0].s;
     auto nearestRingSample = [&](float x, float z) -> size_t {
         size_t best = 0; float bd = 1e30f;
         for (size_t i = 0; i < ringC.size(); ++i) {
@@ -434,60 +444,9 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         }
         return best;
     };
-    auto groundEdge = [&](RoadClass cls, float width, int lanes,
-                          std::vector<RoadSample>& s, bool curbs, bool lamps) {
-        if (s.size() < 2) return;
-        for (auto& p : s) p.y = hf.heightAt(p.x, p.z) + kGroundLift;
-        for (int pass = 0; pass < 2; ++pass)                    // tiny smooth
-            for (size_t i = 1; i + 1 < s.size(); ++i)
-                s[i].y = (s[i-1].y + s[i].y + s[i+1].y) / 3.0f;
-        for (auto& p : s) p.bank = 0.0f;
-        ribbon(asphalt, s, 0.0f, width, 0.0f, false);
-        dashes(paint, s, 0.0f, kPaintW, kPaintLift, kStreetDashOn, kStreetDashOff);
-        if (curbs) {
-            const float e = width * 0.5f;
-            ribbon(conc, s,  e + kCurbW * 0.5f, kCurbW, kCurbLift, false);
-            ribbon(conc, s, -e - kCurbW * 0.5f, kCurbW, kCurbLift, false);
-            ribbon(walk, s,  e + kCurbW + kWalkW * 0.5f, kWalkW, kWalkLift, false);
-            ribbon(walk, s, -e - kCurbW - kWalkW * 0.5f, kWalkW, kWalkLift, false);
-        }
-        if (lamps) {
-            // Deterministic per-street phase stagger (h01, the woodlands hash)
-            // so parallel grid streets don't strobe their lamps in sync rows.
-            float since = kLampEveryStr * (0.3f + 0.5f * h01((uint32_t)m_graph.edges.size()));
-            int side = 1;
-            for (size_t i = 0; i + 1 < s.size(); ++i) {
-                since += kSampleStep;
-                if (since < kLampEveryStr) continue;
-                since = 0; side = -side;
-                float px, pz; rperp(s[i].tx, s[i].tz, px, pz);
-                x3::rhi::PointLight L;
-                const float lat = side * (width * 0.5f + kCurbW + 0.4f);
-                L.pos[0] = s[i].x + px * lat; L.pos[1] = s[i].y + 4.2f;
-                L.pos[2] = s[i].z + pz * lat;
-                L.range = 18.0f;
-                L.color[0] = 1.7f; L.color[1] = 1.15f; L.color[2] = 0.62f;
-                m_lights.push_back(L);
-            }
-        }
-        RoadEdge e2;
-        e2.cls = cls; e2.width = width; e2.lanesF = lanes; e2.lanesB = lanes;
-        m_graph.nodes.push_back({ s.front().x, s.front().z });
-        m_graph.nodes.push_back({ s.back().x,  s.back().z  });
-        e2.a = (uint32_t)m_graph.nodes.size() - 2;
-        e2.b = (uint32_t)m_graph.nodes.size() - 1;
-        e2.length = kSampleStep * (float)s.size();
-        m_pavedMeters += e2.length;
-        e2.center = std::move(s);
-        m_graph.edges.push_back(std::move(e2));
-    };
 
-    // ---- 2. INTERCHANGES (trumpet halves at the two named gates) ---------
-    // Each: a DIRECTIONAL ramp leaving the deck tangentially and grading to
-    // the gate's ground node, plus a 250-degree LOOP ramp curling under for
-    // the opposing movement. Both are Ramp-class edges with barriers.
-    struct Gate { float gx, gz;         // where the trunk avenue starts (ground)
-                  float ex, ez; };      // avenue end (district pad edge)
+    // ---- 1b. TRUMPET GATES (v2 math; collect-only) -----------------------
+    struct Gate { float gx, gz, ex, ez; };
     const Gate kGates[2] = {
         { 830.0f, 1150.0f,  935.0f, 1235.0f },   // Recife 2050 SW gate -> pad
         { 700.0f,  452.0f,  700.0f,  368.0f },   // Urban District N gate -> pad
@@ -497,8 +456,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         const size_t at = nearestRingSample(g.gx, g.gz);
         const RoadSample deck = ringC[at];
         const float gy = hf.heightAt(g.gx, g.gz) + kGroundLift;
-        // Directional ramp: hermite deck->gate, y hermite-eased, grade-checked.
-        {
+        {   // directional ramp deck -> gate
             std::vector<RoadSample> d2;
             const float lead = std::max(120.0f, (deck.y - gy) / kRampMaxGrade);
             for (float t = 0.0f; t <= 1.0f; t += 0.02f) {
@@ -512,32 +470,18 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             resample(d2, kRampStep, ramp);
             for (size_t i = 0; i < ramp.size(); ++i) {
                 const float t = (float)i / (float)(ramp.size() - 1);
-                const float e = t * t * (3.0f - 2.0f * t);          // smoothstep
+                const float e = t * t * (3.0f - 2.0f * t);
                 ramp[i].y = deck.y + (gy - deck.y) * e;
                 ramp[i].bank = 0.0f;
             }
-            ribbon(asphalt, ramp, 0.0f, kRampWidth, 0.0f, false);
-            barrier(conc, ramp,  (kRampWidth * 0.5f - kBarrierInset));
-            barrier(conc, ramp, -(kRampWidth * 0.5f - kBarrierInset));
-            for (size_t i = 0; i < ramp.size(); i += (size_t)(kPillarEvery / kRampStep)) {
-                const float gr = hf.heightAt(ramp[i].x, ramp[i].z);
-                if (ramp[i].y - gr > kPillarMinAir)
-                    pillar(conc, ramp[i].x, ramp[i].z, ramp[i].y, gr);
-            }
-            RoadEdge e2; e2.cls = RoadClass::Ramp; e2.width = kRampWidth;
-            e2.lanesF = 1; e2.lanesB = 0;
-            m_graph.nodes.push_back({ deck.x, deck.z });
-            m_graph.nodes.push_back({ g.gx, g.gz });
-            e2.a = (uint32_t)m_graph.nodes.size() - 2;
-            e2.b = (uint32_t)m_graph.nodes.size() - 1;
-            e2.length = kRampStep * (float)ramp.size();
-            m_pavedMeters += e2.length;
-            e2.center = std::move(ramp);
-            m_graph.edges.push_back(std::move(e2));
+            Pending pe;
+            pe.cls = RoadClass::Ramp; pe.width = kRampWidth;
+            pe.lanesF = 1; pe.lanesB = 0;
+            pe.barriers = true; pe.pillarSingle = true;
+            pe.s = std::move(ramp);
+            P.push_back(std::move(pe));
         }
-        // Loop ramp: circle beside the gate, sweeping kLoopSweepDeg, grading
-        // ground->deck (the on-ramp of the trumpet's curl).
-        {
+        {   // trumpet loop ramp ground -> deck
             float px, pz; rperp(deck.tx, deck.tz, px, pz);
             const float cx = g.gx + px * (kLoopR + kRampWidth),
                         cz = g.gz + pz * (kLoopR + kRampWidth);
@@ -556,29 +500,16 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 const float t = (float)i / (float)(loop.size() - 1);
                 const float e = t * t * (3.0f - 2.0f * t);
                 loop[i].y = gy + (deck.y - gy) * e;
-                loop[i].bank = clampf2(-0.06f, -kBankMax, kBankMax);  // constant curl bank
+                loop[i].bank = -0.06f;
             }
-            ribbon(asphalt, loop, 0.0f, kRampWidth, 0.0f);
-            barrier(conc, loop,  (kRampWidth * 0.5f - kBarrierInset));
-            barrier(conc, loop, -(kRampWidth * 0.5f - kBarrierInset));
-            for (size_t i = 0; i < loop.size(); i += (size_t)(kPillarEvery / kRampStep)) {
-                const float gr = hf.heightAt(loop[i].x, loop[i].z);
-                if (loop[i].y - gr > kPillarMinAir)
-                    pillar(conc, loop[i].x, loop[i].z, loop[i].y, gr);
-            }
-            RoadEdge e2; e2.cls = RoadClass::Ramp; e2.width = kRampWidth;
-            e2.lanesF = 1; e2.lanesB = 0;
-            m_graph.nodes.push_back({ g.gx, g.gz });
-            m_graph.nodes.push_back({ deck.x, deck.z });
-            e2.a = (uint32_t)m_graph.nodes.size() - 2;
-            e2.b = (uint32_t)m_graph.nodes.size() - 1;
-            e2.length = kRampStep * (float)loop.size();
-            m_pavedMeters += e2.length;
-            e2.center = std::move(loop);
-            m_graph.edges.push_back(std::move(e2));
+            Pending pe;
+            pe.cls = RoadClass::Ramp; pe.width = kRampWidth;
+            pe.lanesF = 1; pe.lanesB = 0;
+            pe.banked = true; pe.barriers = true; pe.pillarSingle = true;
+            pe.s = std::move(loop);
+            P.push_back(std::move(pe));
         }
-        // Gate avenue into the district pad.
-        {
+        {   // gate avenue into the pad
             std::vector<RoadSample> d2;
             for (float t = 0.0f; t <= 1.0f; t += 0.05f) {
                 RoadSample s;
@@ -586,23 +517,23 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 d2.push_back(s);
             }
             std::vector<RoadSample> av; resample(d2, kSampleStep, av);
-            groundEdge(RoadClass::Avenue, kAvenueWidth, 1, av, true, true);
+            collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
         }
     }
 
-    // ---- 3. SPUR AVENUES --------------------------------------------------
-    {   // Hivemind spur: east off-ring ground trunk to the pad.
+    // ---- 1c. SPUR AVENUES (v2 verbatim) ----------------------------------
+    {
         std::vector<RoadSample> d2;
-        const float sx = 1075.0f, sz = 905.0f, ex = 1310.0f, ez = 1000.0f;
         for (float t = 0.0f; t <= 1.0f; t += 0.03f) {
             RoadSample s;
-            hermite(sx, sz, 180.0f, 30.0f, ex, ez, 160.0f, 20.0f, t, s.x, s.z);
+            hermite(1075.0f, 905.0f, 180.0f, 30.0f, 1310.0f, 1000.0f,
+                    160.0f, 20.0f, t, s.x, s.z);
             d2.push_back(s);
         }
         std::vector<RoadSample> av; resample(d2, kSampleStep, av);
-        groundEdge(RoadClass::Avenue, kAvenueWidth, 1, av, true, true);
+        collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
     }
-    {   // Crown drag spur: mesa-top link from the ring toward the drag.
+    {
         std::vector<RoadSample> d2;
         for (float t = 0.0f; t <= 1.0f; t += 0.05f) {
             RoadSample s;
@@ -611,52 +542,26 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             d2.push_back(s);
         }
         std::vector<RoadSample> av; resample(d2, kSampleStep, av);
-        groundEdge(RoadClass::Avenue, kAvenueWidth, 1, av, true, true);
+        collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
     }
 
-    // ---- 4. HARBOR BOULEVARD + FANNED GRID BLOCKS (Tim's sketch, v2) ------
-    // The v1 grids were authored from screenshots and landed IN the bay (the
-    // inner basin spans roughly x -500..1000 / z -600..570; its NE shore arc
-    // runs (-100,430) -> (300,430) -> (820,250)). v2 lets the HEIGHTFIELD
-    // decide instead: authored points only SEED a shore probe.
-    //
-    //   * ONE CONTINUOUS HARBOR BOULEVARD hugs the basin's NE shore arc on
-    //     the land side: for each seed, march along the local shore normal to
-    //     bracket the waterline, bisect it to ~1 m, then set the boulevard
-    //     sample kBlvdSetback inland of the ACTUAL waterline. If a probed
-    //     point is still wet (cove), it keeps nudging inland and logs.
-    //   * 4-6 RECTANGULAR GRID BLOCKS fan along the boulevard on the LAND
-    //     side — "the boulevard is the string, the blocks are beads": each
-    //     block anchors at a boulevard sample, rotates to the LOCAL tangent,
-    //     and is land-verified (anchor + far corners probed; whole block
-    //     nudges inland in 12 m steps if wet, logged; skipped if hopeless).
-    //   * Cross streets run SHOREWARD across the boulevard corridor and still
-    //     waterline-truncate (v1's one correct harbor behavior, kept).
-    //   * Joins are POSITIONAL (module doctrine): the shore-side long street
-    //     tees into the boulevard corridor; junction surface is overlap-paint
-    //     v1, shared junction geometry is v2.
-    constexpr float kBlvdWidth    = 12.5f;   // 2+2 harbor boulevard
-    constexpr float kBlvdSetback  = 42.0f;   // boulevard centerline inland of waterline
-    constexpr float kBlockGap     = 14.0f;   // first long street inland of blvd center
-    constexpr float kCell         = 42.0f;   // pitch between long streets
-    constexpr float kCrossPitch   = 52.0f;   // pitch between cross streets
-    constexpr float kLandSafe     = 2.5f;    // anchors need this much elevation
-    constexpr float kNudgeStep    = 12.0f;   // inland nudge per retry
+    // ---- 1d. HARBOR BOULEVARD + FANNED BLOCKS (v2 probe; collect-only) ---
+    constexpr float kBlvdWidth    = 12.5f;
+    constexpr float kBlvdSetback  = 42.0f;
+    constexpr float kBlockGap     = 14.0f;
+    constexpr float kCell         = 42.0f;
+    constexpr float kCrossPitch   = 52.0f;
+    constexpr float kLandSafe     = 2.5f;
+    constexpr float kNudgeStep    = 12.0f;
     constexpr int   kNudgeMax     = 5;
-
-    // Shore-arc SEEDS (west -> east along the basin's NE lip; water to the
-    // SOUTH of the arc). Only starting guesses — the probe finds the truth.
     static const Wp kShoreSeed[] = {
         { -140.0f, 470.0f }, { -40.0f, 455.0f }, {  90.0f, 450.0f },
         {  230.0f, 452.0f }, { 370.0f, 440.0f }, {  510.0f, 408.0f },
         {  650.0f, 356.0f }, { 780.0f, 300.0f }, {  860.0f, 268.0f },
     };
     const int nSeed = (int)(sizeof(kShoreSeed) / sizeof(kShoreSeed[0]));
-
-    // March + bisect the waterline along a direction from a start point.
     auto waterlineFrom = [&](float sx, float sz, float dx, float dz,
                              float& wx, float& wz) -> bool {
-        // Bracket: walk up to 400 m in `d` looking for a land/water flip.
         const bool startWet = hf.heightAt(sx, sz) < kWaterMinLand;
         float lo = 0.0f, hi = -1.0f;
         for (float m = 8.0f; m <= 400.0f; m += 8.0f) {
@@ -665,7 +570,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             lo = m;
         }
         if (hi < 0.0f) return false;
-        for (int it = 0; it < 8; ++it) {                 // bisect to ~1 m
+        for (int it = 0; it < 8; ++it) {
             const float mid = (lo + hi) * 0.5f;
             const bool wet = hf.heightAt(sx + dx*mid, sz + dz*mid) < kWaterMinLand;
             if (wet != startWet) hi = mid; else lo = mid;
@@ -673,13 +578,8 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         wx = sx + dx * hi; wz = sz + dz * hi;
         return true;
     };
-
-    // Probe every seed into a land-side boulevard centerline point. (Block
-    // inland directions are re-derived at their attachment samples below —
-    // fresher than carrying per-seed dirs through the smoothing.)
-    std::vector<RoadSample> blvdPts;                 // probed centerline points
+    std::vector<RoadSample> blvdPts;
     for (int i = 0; i < nSeed; ++i) {
-        // Local arc tangent from seed neighbors; inland = the DRIER perp side.
         const Wp& s0 = kShoreSeed[i > 0 ? i - 1 : 0];
         const Wp& s1 = kShoreSeed[i + 1 < nSeed ? i + 1 : nSeed - 1];
         float tx = s1.x - s0.x, tz = s1.z - s0.z;
@@ -689,8 +589,6 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         const float hR = hf.heightAt(kShoreSeed[i].x + px*60.0f, kShoreSeed[i].z + pz*60.0f);
         const float hL = hf.heightAt(kShoreSeed[i].x - px*60.0f, kShoreSeed[i].z - pz*60.0f);
         const float ix = (hR >= hL) ? px : -px, iz = (hR >= hL) ? pz : -pz;
-        // Find the true waterline: march SEAWARD (-inland) from the seed if it
-        // is dry, inland if it is wet; either way the bisect lands on the lip.
         float wx, wz;
         bool ok;
         if (hf.heightAt(kShoreSeed[i].x, kShoreSeed[i].z) < kWaterMinLand)
@@ -701,7 +599,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                                " found no waterline within 400m — skipped"); continue; }
         RoadSample p; p.x = wx + ix * kBlvdSetback; p.z = wz + iz * kBlvdSetback;
         for (int n2 = 0; n2 < kNudgeMax &&
-             hf.heightAt(p.x, p.z) < kLandSafe; ++n2) {  // cove guard
+             hf.heightAt(p.x, p.z) < kLandSafe; ++n2) {
             p.x += ix * kNudgeStep; p.z += iz * kNudgeStep;
             x3::logInfo("[roads] boulevard point " + std::to_string(i) +
                         " nudged inland (cove)");
@@ -709,8 +607,6 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         blvdPts.push_back(p);
     }
     if (blvdPts.size() >= 3) {
-        // Position smooth (2 passes) — the probe follows every shore nick;
-        // a boulevard should sweep. Then resample + keep a copy for blocks.
         for (int pass = 0; pass < 2; ++pass)
             for (size_t i = 1; i + 1 < blvdPts.size(); ++i) {
                 blvdPts[i].x = (blvdPts[i-1].x + blvdPts[i].x + blvdPts[i+1].x) / 3.0f;
@@ -718,12 +614,12 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             }
         std::vector<RoadSample> blvd;
         resample(blvdPts, kSampleStep, blvd);
-        const std::vector<RoadSample> blvdC = blvd;      // survives the move below
-        {   // the boulevard itself (2+2, curbs, sidewalks, lamps)
+        const std::vector<RoadSample> blvdC = blvd;
+        {
             std::vector<RoadSample> tmp = blvd;
-            groundEdge(RoadClass::Avenue, kBlvdWidth, 2, tmp, true, true);
+            collectGround(RoadClass::Avenue, kBlvdWidth, 2, tmp);
         }
-        {   // east tie-in: boulevard end -> the Urban gate avenue node
+        {   // east tie-in to the Urban gate node
             const RoadSample& e = blvdC.back();
             std::vector<RoadSample> d2;
             for (float t = 0.0f; t <= 1.0f; t += 0.04f) {
@@ -733,9 +629,8 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 d2.push_back(s);
             }
             std::vector<RoadSample> av; resample(d2, kSampleStep, av);
-            groundEdge(RoadClass::Avenue, kAvenueWidth, 1, av, true, true);
+            collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
         }
-        // Fan the grid blocks along the boulevard ("beads on the string").
         struct Block { float att; int nLong, nCross; };
         static const Block kBlocks[] = {
             { 0.10f, 3, 4 }, { 0.28f, 2, 3 }, { 0.46f, 3, 4 },
@@ -746,13 +641,10 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             const size_t ai = std::min(blvdC.size() - 1,
                                        (size_t)(blk.att * (float)blvdC.size()));
             const RoadSample& at = blvdC[ai];
-            // Inland side at the attachment: drier perp of the LOCAL tangent.
             float px, pz; rperp(at.tx, at.tz, px, pz);
             const float hR = hf.heightAt(at.x + px*60.0f, at.z + pz*60.0f);
             const float hL = hf.heightAt(at.x - px*60.0f, at.z - pz*60.0f);
             const float ix = (hR >= hL) ? px : -px, iz = (hR >= hL) ? pz : -pz;
-            // Land-verify anchor + the two far corners; nudge the whole block
-            // inland until they all sit dry (or give up, logged).
             float ax = at.x + ix * kBlockGap, az = at.z + iz * kBlockGap;
             const float longLen = (float)(blk.nCross - 1) * kCrossPitch;
             const float depth   = (float)(blk.nLong - 1) * kCell;
@@ -777,8 +669,6 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                             " nudged " + std::to_string((int)(n2 * kNudgeStep)) +
                             " m inland");
             auto emitStreet = [&](float lx0, float ld0, float lx1, float ld1) {
-                // Block-local frame: `lx` along the boulevard tangent (centered
-                // on the attachment), `ld` inland depth from the block anchor.
                 std::vector<RoadSample> d2;
                 for (float t = 0.0f; t <= 1.0f; t += 0.04f) {
                     const float lx = lx0 + (lx1 - lx0) * t;
@@ -789,20 +679,18 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                     d2.push_back(s);
                 }
                 std::vector<RoadSample> st; resample(d2, kSampleStep, st);
-                size_t keep = st.size();                 // waterline truncation
+                size_t keep = st.size();
                 for (size_t i2 = 0; i2 < st.size(); ++i2)
                     if (hf.heightAt(st[i2].x, st[i2].z) < kWaterMinLand) { keep = i2; break; }
                 if (keep < 2) return;
                 st.resize(keep);
-                groundEdge(RoadClass::HarborStreet, kStreetWidth, 1, st, true, true);
+                collectGround(RoadClass::HarborStreet, kStreetWidth, 1, st);
             };
-            for (int L = 0; L < blk.nLong; ++L)          // long streets (blvd-parallel)
+            for (int L = 0; L < blk.nLong; ++L)
                 emitStreet(-longLen*0.5f, (float)L * kCell,
                             longLen*0.5f, (float)L * kCell);
-            for (int Cx = 0; Cx < blk.nCross; ++Cx) {    // cross streets: run SHOREWARD
+            for (int Cx = 0; Cx < blk.nCross; ++Cx) {
                 const float lx = -longLen*0.5f + (float)Cx * kCrossPitch;
-                // From the block's inland edge, across every long street AND the
-                // boulevard corridor, toward the water (truncated at the lip).
                 emitStreet(lx, depth + 6.0f, lx, -(kBlockGap + kBlvdWidth*0.5f + 24.0f));
             }
         }
@@ -811,7 +699,315 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                     "harbor district skipped (check shore seeds vs terrain)");
     }
 
-    // ---- 5. UPLOAD --------------------------------------------------------
+    // ======================= PHASE 2 — JUNCTIONS ==========================
+    auto isGround = [&](size_t i) {
+        return P[i].cls == RoadClass::Avenue || P[i].cls == RoadClass::HarborStreet;
+    };
+    struct Junc { float x = 0, z = 0, y = 0, r = 0; std::vector<size_t> es; };
+    std::vector<Junc> J;
+    auto addCandidate = [&](float x, float z, size_t ea, size_t eb) {
+        for (Junc& j : J) {
+            const float dx = j.x - x, dz = j.z - z;
+            if (dx*dx + dz*dz < kJuncCluster * kJuncCluster) {
+                j.x = (j.x + x) * 0.5f; j.z = (j.z + z) * 0.5f;
+                if (std::find(j.es.begin(), j.es.end(), ea) == j.es.end()) j.es.push_back(ea);
+                if (std::find(j.es.begin(), j.es.end(), eb) == j.es.end()) j.es.push_back(eb);
+                return;
+            }
+        }
+        Junc j; j.x = x; j.z = z; j.es = { ea, eb };
+        J.push_back(std::move(j));
+    };
+    // Pass A: endpoint captures + straight extension into the target corridor
+    // (the "roads near the end of the bridge do not even join" fix).
+    for (size_t e = 0; e < P.size(); ++e) {
+        if (P[e].cls == RoadClass::Freeway) continue;   // grade-separated
+        for (int endSel = 0; endSel < 2; ++endSel) {
+            if (P[e].closedLoop) break;
+            // NOTE: end position is COPIED — extension mutates P[e].s.
+            const RoadSample end = endSel ? P[e].s.back() : P[e].s.front();
+            size_t bestO = SIZE_MAX, bestJ = 0; float bestD = 1e30f;
+            for (size_t o = 0; o < P.size(); ++o) {
+                if (o == e || !isGround(o)) continue;
+                for (size_t j = 0; j < P[o].s.size(); ++j) {
+                    const float dx = P[o].s[j].x - end.x, dz = P[o].s[j].z - end.z;
+                    const float d = dx*dx + dz*dz;
+                    if (d < bestD) { bestD = d; bestO = o; bestJ = j; }
+                }
+            }
+            if (bestO == SIZE_MAX) continue;
+            const float d = std::sqrt(bestD);
+            const float cap = kJuncCapture * 0.5f * (P[e].width + P[bestO].width);
+            if (d > cap) continue;
+            const RoadSample tgt = P[bestO].s[bestJ];
+            if (d > 2.0f) {   // EXTEND the stop-short end straight to the target
+                float dx = tgt.x - end.x, dz = tgt.z - end.z;
+                const float len = std::sqrt(dx*dx + dz*dz);
+                dx /= len; dz /= len;
+                const int steps = (int)(len / kSampleStep) + 1;
+                for (int k2 = 1; k2 <= steps; ++k2) {
+                    const float f = std::min(1.0f, (float)k2 * kSampleStep / len);
+                    RoadSample ns;
+                    ns.x = end.x + (tgt.x - end.x) * f;
+                    ns.z = end.z + (tgt.z - end.z) * f;
+                    ns.y = end.y + (tgt.y - end.y) * f;
+                    ns.tx = dx; ns.tz = dz; ns.bank = 0.0f;
+                    if (endSel) P[e].s.push_back(ns);
+                    else        P[e].s.insert(P[e].s.begin(), ns);
+                }
+                // Head insertions land in reverse travel order — recompute ALL
+                // tangents from final positions so no quad twists at the seam.
+                std::vector<RoadSample>& sv = P[e].s;
+                for (size_t i = 0; i < sv.size(); ++i) {
+                    const RoadSample& p = sv[i > 0 ? i - 1 : 0];
+                    const RoadSample& q = sv[i + 1 < sv.size() ? i + 1 : sv.size() - 1];
+                    float tx2 = q.x - p.x, tz2 = q.z - p.z;
+                    const float l2 = std::sqrt(tx2*tx2 + tz2*tz2);
+                    if (l2 > 1e-5f) { tx2 /= l2; tz2 /= l2; }
+                    sv[i].tx = tx2; sv[i].tz = tz2;
+                }
+            }
+            addCandidate((end.x + tgt.x) * 0.5f, (end.z + tgt.z) * 0.5f, e, bestO);
+        }
+    }
+    // Pass B: interior crossings — per ground pair, global closest approach.
+    for (size_t a = 0; a < P.size(); ++a) {
+        if (!isGround(a)) continue;
+        for (size_t b2 = a + 1; b2 < P.size(); ++b2) {
+            if (!isGround(b2)) continue;
+            float bd = 1e30f; size_t bi = 0, bj = 0;
+            for (size_t i = 0; i < P[a].s.size(); i += 2)
+                for (size_t j = 0; j < P[b2].s.size(); j += 2) {
+                    const float dx = P[a].s[i].x - P[b2].s[j].x;
+                    const float dz = P[a].s[i].z - P[b2].s[j].z;
+                    const float d = dx*dx + dz*dz;
+                    if (d < bd) { bd = d; bi = i; bj = j; }
+                }
+            const float thresh = kJuncCross * 0.5f * (P[a].width + P[b2].width);
+            if (bd < thresh * thresh)
+                addCandidate((P[a].s[bi].x + P[b2].s[bj].x) * 0.5f,
+                             (P[a].s[bi].z + P[b2].s[bj].z) * 0.5f, a, b2);
+        }
+    }
+    // Finalize: radius from the widest participant, y from nearest samples.
+    for (Junc& j : J) {
+        float maxHalf = 0.0f, y = -1e30f;
+        for (size_t e : j.es) {
+            maxHalf = std::max(maxHalf, P[e].width * 0.5f);
+            float bd = 1e30f; float by = 0.0f;
+            for (const RoadSample& s : P[e].s) {
+                const float dx = s.x - j.x, dz = s.z - j.z;
+                const float d = dx*dx + dz*dz;
+                if (d < bd) { bd = d; by = s.y; }
+            }
+            y = std::max(y, by);
+        }
+        j.r = std::max(kPatchMinR, maxHalf + kPatchApron);
+        j.y = y;
+    }
+    m_junctionCount = (uint32_t)J.size();
+
+    // ======================= GRAPH (full centers) =========================
+    for (size_t e = 0; e < P.size(); ++e) {
+        RoadEdge re;
+        re.cls = P[e].cls; re.width = P[e].width;
+        re.lanesF = P[e].lanesF; re.lanesB = P[e].lanesB;
+        if (P[e].closedLoop) {
+            m_graph.nodes.push_back({ P[e].s.front().x, P[e].s.front().z });
+            re.a = re.b = (uint32_t)m_graph.nodes.size() - 1;
+        } else {
+            m_graph.nodes.push_back({ P[e].s.front().x, P[e].s.front().z });
+            m_graph.nodes.push_back({ P[e].s.back().x,  P[e].s.back().z  });
+            re.a = (uint32_t)m_graph.nodes.size() - 2;
+            re.b = (uint32_t)m_graph.nodes.size() - 1;
+        }
+        re.length = kSampleStep * (float)P[e].s.size();
+        m_pavedMeters += re.length;
+        re.center = P[e].s;   // full (extended) centerline — car AI drives THROUGH junctions
+        m_graph.edges.push_back(std::move(re));
+    }
+
+    // ======================= PHASE 3 — EMISSION ===========================
+    Buck asphalt { &m_buckets[kBucketAsphalt].v,  &m_buckets[kBucketAsphalt].i };
+    Buck paint   { &m_buckets[kBucketPaint].v,    &m_buckets[kBucketPaint].i };
+    Buck conc    { &m_buckets[kBucketConcrete].v, &m_buckets[kBucketConcrete].i };
+    Buck walk    { &m_buckets[kBucketSidewalk].v, &m_buckets[kBucketSidewalk].i };
+    const float cAsphalt[4]  = { 0.085f, 0.088f, 0.095f, 1.0f };
+    const float cPaint[4]    = { 0.80f,  0.82f,  0.85f,  1.0f };
+    const float cConcrete[4] = { 0.42f,  0.41f,  0.39f,  1.0f };
+    const float cWalk[4]     = { 0.295f, 0.30f,  0.31f,  1.0f };
+    std::copy(cAsphalt,  cAsphalt + 4,  m_buckets[kBucketAsphalt].color);
+    std::copy(cPaint,    cPaint + 4,    m_buckets[kBucketPaint].color);
+    std::copy(cConcrete, cConcrete + 4, m_buckets[kBucketConcrete].color);
+    std::copy(cWalk,     cWalk + 4,     m_buckets[kBucketSidewalk].color);
+
+    uint32_t lampCount = 0;
+    for (size_t e = 0; e < P.size(); ++e) {
+        const Pending& pe = P[e];
+        // Suppression: a sample inside any participating junction's trim disc.
+        std::vector<char> keep(pe.s.size(), 1);
+        for (const Junc& j : J) {
+            if (std::find(j.es.begin(), j.es.end(), e) == j.es.end()) continue;
+            const float rr = (j.r - kPatchTuck) * (j.r - kPatchTuck);
+            for (size_t i = 0; i < pe.s.size(); ++i) {
+                const float dx = pe.s[i].x - j.x, dz = pe.s[i].z - j.z;
+                if (dx*dx + dz*dz < rr) keep[i] = 0;
+            }
+        }
+        // Stop bars at every keep-transition of a ground edge (junction entry;
+        // paint bucket — lane paint itself BREAKS because runs split here).
+        if (isGround(e)) {
+            for (size_t i = 0; i + 1 < pe.s.size(); ++i) {
+                if (keep[i] == keep[i + 1]) continue;
+                const RoadSample& s = pe.s[keep[i] ? i : i + 1];
+                float px, pz; rperp(s.tx, s.tz, px, pz);
+                const float wHalf = pe.width * 0.40f;
+                const float A[3] = { s.x + px*(-wHalf) - s.tx*kStopBarW*0.5f, s.y + kPaintLift,
+                                     s.z + pz*(-wHalf) - s.tz*kStopBarW*0.5f };
+                const float B[3] = { s.x + px*( wHalf) - s.tx*kStopBarW*0.5f, s.y + kPaintLift,
+                                     s.z + pz*( wHalf) - s.tz*kStopBarW*0.5f };
+                const float C[3] = { s.x + px*( wHalf) + s.tx*kStopBarW*0.5f, s.y + kPaintLift,
+                                     s.z + pz*( wHalf) + s.tz*kStopBarW*0.5f };
+                const float D[3] = { s.x + px*(-wHalf) + s.tx*kStopBarW*0.5f, s.y + kPaintLift,
+                                     s.z + pz*(-wHalf) + s.tz*kStopBarW*0.5f };
+                const float n[3] = { 0, 1, 0 };
+                quad(paint, A, B, C, D, n, 0.0f, 0.05f);
+            }
+        }
+        // Split into kept runs; emit each with the edge's recipe.
+        std::vector<std::vector<RoadSample>> runs;
+        {
+            std::vector<RoadSample> cur;
+            for (size_t i = 0; i < pe.s.size(); ++i) {
+                if (keep[i]) cur.push_back(pe.s[i]);
+                else if (!cur.empty()) { runs.push_back(std::move(cur)); cur.clear(); }
+            }
+            if (!cur.empty()) runs.push_back(std::move(cur));
+        }
+        for (const auto& run : runs) {
+            if (run.size() < 2) continue;
+            ribbon(asphalt, run, 0.0f, pe.width, 0.0f, pe.banked, &m_collision);
+            if (pe.barriers) {
+                barrier(conc, run,  (pe.width * 0.5f - kBarrierInset));
+                barrier(conc, run, -(pe.width * 0.5f - kBarrierInset));
+            }
+            if (pe.edgeLines) {
+                ribbon(paint, run,  (pe.width * 0.5f - kEdgeLineInset), kPaintW, kPaintLift, pe.banked);
+                ribbon(paint, run, -(pe.width * 0.5f - kEdgeLineInset), kPaintW, kPaintLift, pe.banked);
+            }
+            if (pe.medianPaint) {
+                ribbon(paint, run,  0.30f, kPaintW, kPaintLift, pe.banked);
+                ribbon(paint, run, -0.30f, kPaintW, kPaintLift, pe.banked);
+            }
+            if (pe.laneDash) {
+                dashes(paint, run,  kLaneWidth, kPaintW, kPaintLift, kDashOn, kDashOff);
+                dashes(paint, run, -kLaneWidth, kPaintW, kPaintLift, kDashOn, kDashOff);
+            }
+            if (pe.streetDash)
+                dashes(paint, run, 0.0f, kPaintW, kPaintLift, kStreetDashOn, kStreetDashOff);
+            if (pe.curbs) {
+                const float ee = pe.width * 0.5f;
+                ribbon(conc, run,  ee + kCurbW * 0.5f, kCurbW, kCurbLift, false);
+                ribbon(conc, run, -ee - kCurbW * 0.5f, kCurbW, kCurbLift, false);
+                ribbon(walk, run,  ee + kCurbW + kWalkW * 0.5f, kWalkW, kWalkLift, false);
+                ribbon(walk, run, -ee - kCurbW - kWalkW * 0.5f, kWalkW, kWalkLift, false);
+            }
+            if (pe.pillarPair || pe.pillarSingle) {
+                float since = kPillarEvery;
+                for (size_t i = 0; i + 1 < run.size(); ++i) {
+                    const float dx = run[i+1].x - run[i].x, dz = run[i+1].z - run[i].z;
+                    since += std::sqrt(dx*dx + dz*dz);
+                    if (since < kPillarEvery) continue;
+                    since = 0;
+                    const RoadSample& s = run[i];
+                    const float g = hf.heightAt(s.x, s.z);
+                    if (s.y - g <= kPillarMinAir) continue;
+                    if (pe.pillarPair) {
+                        float px, pz; rperp(s.tx, s.tz, px, pz);
+                        pillar(conc, s.x + px * 4.8f, s.z + pz * 4.8f, s.y, g);
+                        pillar(conc, s.x - px * 4.8f, s.z - pz * 4.8f, s.y, g);
+                    } else {
+                        pillar(conc, s.x, s.z, s.y, g);
+                    }
+                }
+            }
+            if (pe.lamps) {
+                float since = pe.lampEvery * (0.3f + 0.5f * h01((uint32_t)e * 31u));
+                int side = ((uint32_t)e & 1u) ? 1 : -1;
+                for (size_t i = 0; i + 1 < run.size(); ++i) {
+                    const float dx = run[i+1].x - run[i].x, dz = run[i+1].z - run[i].z;
+                    since += std::sqrt(dx*dx + dz*dz);
+                    if (since < pe.lampEvery) continue;
+                    since = 0; side = -side;
+                    const RoadSample& s = run[i];
+                    float px, pz; rperp(s.tx, s.tz, px, pz);
+                    const float latEdge = pe.curbs ? (pe.width * 0.5f + kCurbW + 0.4f)
+                                                   : (pe.width * 0.5f + 0.6f);
+                    const float lat = side * latEdge;
+                    const float lx = s.x + px * lat, lz = s.z + pz * lat;
+                    x3::rhi::PointLight L;
+                    L.pos[0] = lx; L.pos[1] = s.y + pe.lampH; L.pos[2] = lz;
+                    L.range = (pe.cls == RoadClass::Freeway) ? 26.0f : 18.0f;
+                    if (pe.cls == RoadClass::Freeway) {
+                        L.color[0] = 2.2f; L.color[1] = 1.35f; L.color[2] = 0.62f;
+                    } else {
+                        L.color[0] = 1.7f; L.color[1] = 1.15f; L.color[2] = 0.62f;
+                    }
+                    m_lights.push_back(L);
+                    ++lampCount;
+                    // V3: the fixture — pole shaft + arm toward the roadway,
+                    // so the light no longer floats (concrete bucket).
+                    box4(conc, lx, lz, s.y, s.y + pe.lampH - 0.10f, kPoleHalf);
+                    const float ax2 = -(float)side * px, az2 = -(float)side * pz;
+                    const float ay = s.y + pe.lampH - 0.18f;
+                    const float A[3] = { lx - px*0.06f,               ay, lz - pz*0.06f };
+                    const float B[3] = { lx + px*0.06f,               ay, lz + pz*0.06f };
+                    const float C[3] = { lx + px*0.06f + ax2*kArmLen, ay, lz + pz*0.06f + az2*kArmLen };
+                    const float D[3] = { lx - px*0.06f + ax2*kArmLen, ay, lz - pz*0.06f + az2*kArmLen };
+                    const float nA[3] = { 0, 1, 0 };
+                    quad(conc, A, B, C, D, nA, 0.0f, kArmLen / 10.0f);
+                }
+            }
+        }
+    }
+
+    // Junction patches: filled 12-gon per junction (asphalt bucket, visual
+    // double-sided fan) + the same fan single-sided into the collision mesh —
+    // the patch surface is what a car/player actually stands on at a crossing.
+    for (const Junc& j : J) {
+        const uint32_t base = (uint32_t)m_buckets[kBucketAsphalt].v.size();
+        auto pushV = [&](float x, float y, float z, float u, float v) {
+            x3::rhi::MeshVertex mv;
+            mv.pos[0]=x; mv.pos[1]=y; mv.pos[2]=z;
+            mv.normal[0]=0; mv.normal[1]=1; mv.normal[2]=0;
+            mv.uv[0]=u; mv.uv[1]=v;
+            m_buckets[kBucketAsphalt].v.push_back(mv);
+        };
+        pushV(j.x, j.y + 0.02f, j.z, 0.5f, 0.5f);
+        for (int k2 = 0; k2 < kPatchSides; ++k2) {
+            const float a = (float)k2 / (float)kPatchSides * 6.2831853f;
+            pushV(j.x + std::cos(a) * j.r, j.y + 0.02f, j.z + std::sin(a) * j.r,
+                  0.5f + 0.5f * std::cos(a), 0.5f + 0.5f * std::sin(a));
+        }
+        const uint32_t cbase = (uint32_t)(m_collision.verts.size() / 3);
+        for (int k2 = 0; k2 <= kPatchSides; ++k2) {
+            const x3::rhi::MeshVertex& mv = m_buckets[kBucketAsphalt].v[base + k2];
+            m_collision.verts.push_back(mv.pos[0]);
+            m_collision.verts.push_back(mv.pos[1]);
+            m_collision.verts.push_back(mv.pos[2]);
+        }
+        for (int k2 = 0; k2 < kPatchSides; ++k2) {
+            const uint32_t i0 = base, i1 = base + 1 + (uint32_t)k2,
+                           i2 = base + 1 + (uint32_t)((k2 + 1) % kPatchSides);
+            const uint32_t f[6] = { i0, i1, i2, i0, i2, i1 };
+            m_buckets[kBucketAsphalt].i.insert(m_buckets[kBucketAsphalt].i.end(), f, f + 6);
+            const uint32_t c[3] = { cbase, cbase + 1 + (uint32_t)k2,
+                                    cbase + 1 + (uint32_t)((k2 + 1) % kPatchSides) };
+            m_collision.indices.insert(m_collision.indices.end(), c, c + 3);
+        }
+    }
+
+    // ---- UPLOAD -----------------------------------------------------------
     device.beginUploadBatch();
     for (int b = 0; b < kBucketCount; ++b) {
         Bucket& bk = m_buckets[b];
@@ -825,7 +1021,10 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     x3::logInfo("[roads] network built — " + std::to_string((int)m_pavedMeters) +
                 " paved m, " + std::to_string(m_graph.edges.size()) + " edges, " +
                 std::to_string(m_vertexCount) + " verts, " +
-                std::to_string(m_lights.size()) + " lamps");
+                std::to_string(lampCount) + " lamps (with fixtures)");
+    x3::logInfo("[roads] junctions: " + std::to_string(m_junctionCount) +
+                " patches; collision: " +
+                std::to_string(m_collision.indices.size() / 3) + " tris");
     return true;
 }
 

@@ -37,6 +37,18 @@
 //     lines: "nudged inland" is normal near coves; "skipped"/"no waterline"
 //     means a shore seed or the land threshold needs a second look before
 //     shipping the capture set.
+//  8. COLLISION (v3 — the "fall through the bridge" fix): after build(),
+//     hand the drivable surface to physics ONCE:
+//         const auto& rc = roads.collisionMesh();
+//         if (!rc.indices.empty())
+//             phys->addStaticMesh(rc.verts.data(),  (uint32_t)(rc.verts.size()/3),
+//                                 rc.indices.data(), (uint32_t)rc.indices.size());
+//     (match the exact addStaticMesh signature at the terrain-mesh call site —
+//     the shape is the same one the 2600 m terrain collider uses). Asphalt
+//     top surface only; barriers/paint/sidewalks are cosmetic by design.
+//  9. JUNCTIONS (v3): build logs "[roads] junctions: N patches". Zero patches
+//     on a real build = the detector regressed; eyeball a harbor-grid
+//     crossing + a gate tee in the first capture set.
 // =======================================================================
 //
 // Deterministic by construction: no rand — the same hash discipline as the
@@ -104,11 +116,29 @@ struct RoadGraph {
 // (textures are a v2 swap — UVs are already road-metric: u across, v = meters
 // along / 10, so a tiling asphalt/paint atlas drops in without regeometry).
 // ---------------------------------------------------------------------------
+// V3: the drivable-surface collision export. World-space triangles of the
+// ASPHALT TOP SURFACE only (freeway deck, ramps, avenues, harbor streets,
+// junction patches — no paint/barriers/sidewalks/pillars). The INTEGRATOR
+// feeds this to phys->addStaticMesh; this module never touches physics
+// itself (Tim: "Collision is not enabled on it, you can fall through").
+struct RoadCollisionMesh {
+    std::vector<float>    verts;    // x,y,z triplets, world space
+    std::vector<uint32_t> indices;  // single-sided tris (up-facing winding)
+};
+
 class EchoRoads {
 public:
     // Generates graph + geometry. Requires a loaded heightfield (returns false
     // and builds nothing if !hf.ok() — the host should log and keep the old
     // freeway in that case). Safe to call exactly once per instance.
+    //
+    // V3 build order (junction-aware): 1) COLLECT every edge's centerline
+    // (ring / ramps / avenues / boulevard / blocks) without emitting;
+    // 2) DETECT junctions (endpoint captures + interior crossings of ground
+    // edges; stop-short endpoints are EXTENDED to their target corridor);
+    // 3) EMIT with per-sample suppression inside junction patches (ribbons
+    // trim to the patch, paint breaks, stop bars at entries) + the filled
+    // junction polygons themselves.
     bool build(x3::rhi::IRenderDevice& device, const Heightfield& hf);
 
     // Draw all buckets (no-op before build). Identity model; one drawMeshPBR
@@ -116,14 +146,20 @@ public:
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
 
     // Static lamp slice (freeway poles + harbor street lamps). Host gates by
-    // cityLightsOn and merges into its nearest-K per-frame selection.
+    // cityLightsOn and merges into its nearest-K per-frame selection. V3:
+    // every lamp also gets a pole+arm fixture mesh (concrete bucket).
     const std::vector<x3::rhi::PointLight>& lights() const { return m_lights; }
 
     const RoadGraph& graph() const { return m_graph; }
 
-    // Diagnostics (log/HUD): total paved meters + mesh vertex count.
+    // V3: drivable-surface collision (see RoadCollisionMesh). Valid after
+    // build(); empty before. The integrator owns the physics body.
+    const RoadCollisionMesh& collisionMesh() const { return m_collision; }
+
+    // Diagnostics (log/HUD): totals reported by the build log too.
     float    pavedMeters()   const { return m_pavedMeters; }
     uint32_t vertexCount()   const { return m_vertexCount; }
+    uint32_t junctionCount() const { return m_junctionCount; }
 
 private:
     struct Bucket {                      // one material = one mesh = one draw
@@ -138,8 +174,10 @@ private:
     Bucket m_buckets[kBucketCount];
     RoadGraph m_graph;
     std::vector<x3::rhi::PointLight> m_lights;
-    float    m_pavedMeters = 0.0f;
-    uint32_t m_vertexCount = 0;
+    RoadCollisionMesh m_collision;
+    float    m_pavedMeters   = 0.0f;
+    uint32_t m_vertexCount   = 0;
+    uint32_t m_junctionCount = 0;
     bool     m_built = false;
 };
 

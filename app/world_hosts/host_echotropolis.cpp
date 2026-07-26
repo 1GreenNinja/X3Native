@@ -1978,6 +1978,20 @@ int hostEchotropolis(HostContext& hc) {
         x3::logInfo("--world echotropolis: terrain collision mesh built (" +
                     std::to_string(idx.size() / 3) + " tris)");
 
+        // v3 ROAD COLLISION (Tim: "you can fall through" the bridge): the roads
+        // module exports its asphalt top surface; the body is OURS to create
+        // (module INTEGRATION §8) — same static-mesh path as the terrain above.
+        // Runs here (not at roads->build) because phys is born in this block.
+        if (roads) {
+            const auto& rc = roads->collisionMesh();
+            if (!rc.verts.empty() && !rc.indices.empty()) {
+                phys->addStaticMesh(rc.verts.data(), (uint32_t)(rc.verts.size() / 3),
+                                    rc.indices.data(), (uint32_t)rc.indices.size());
+                x3::logInfo("--world echotropolis: road collision mesh built (" +
+                            std::to_string(rc.indices.size() / 3) + " tris)");
+            }
+        }
+
         // SWIM: sea + basin surface sits at y=0; anywhere the terrain is below the
         // waterline the player can wade in and swim (Player runs its swim state off
         // this feed). Deeply-negative elsewhere = dry land (never swims on land).
