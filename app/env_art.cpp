@@ -704,6 +704,17 @@ uint32_t EnvArtSystem::namedBounds(const std::vector<std::string>& subs,
 
 uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                             uint32_t maxDrawables, const float* cullMin, const float* cullMax) const {
+    // TIER-2 STREAMING (WP-4): a destroyed system has released its GPU handles —
+    // drawing it is a caller bug (some fan still calling ->draw() on a torn-down
+    // container). Never crash: log it once, then no-op forever after.
+    if (m_destroyed) {
+        if (!m_drawAfterDestroyLogged) {
+            x3::logError("[env-art] draw() called AFTER destroy() — no-op (caller bug: "
+                         "a destroyed EnvArtSystem is still in a draw fan)");
+            m_drawAfterDestroyLogged = true;
+        }
+        return 0;
+    }
     uint32_t drawn = 0;
     for (const EnvInstance& inst : m_instances) {
         const EnvAsset& a = m_assetTable[inst.asset];
@@ -748,6 +759,102 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
 
 uint32_t EnvArtSystem::assetsLoaded() const {
     uint32_t n=0; for (const auto& a : m_assetTable) if (a.ok) ++n; return n;
+}
+
+// ===========================================================================
+// TIER-2 STREAMING (WP-4): EnvArtSystem::destroy() — see env_art.h for the
+// contract. Design notes (why this is NOT "loop m_instances/drawables and call
+// device.destroyMesh/destroyTexture on their ids"):
+//
+//   HANDLE TRACKING: every GPU handle this system ever minted already lives in
+//   m_assetTable[i].model (Model::primitives[].vertexBuffer/indexBuffer,
+//   Model::materials[].baseColorTex/normalTex/mrTex/emissiveTex/occlusionTex —
+//   see engine/asset/IModelLoader.h). loadAsset() never discards a Model after
+//   loading it, so no NEW tracking vectors are needed at the creation sites —
+//   the existing m_assetTable IS the handle table. What was missing was simply
+//   a call to release it.
+//
+//   WHY unload(), NOT raw device.destroy*(): engine/asset/ModelLoader.cpp shows
+//   two very different lifetimes for the two handle kinds:
+//     * MESHES are never shared — GpuUploader mints a fresh createMesh() per
+//       primitive on every load() call (ModelLoader.cpp ~L189), even for a
+//       process-wide MODEL CACHE hit (the cached CPU template's prim data is
+//       RE-uploaded, not its old handle reused; see "BOOT-TIME model cache"
+//       ~L137-160). A direct destroyMesh() per drawable would be safe in
+//       isolation for meshes alone.
+//     * TEXTURES are process-wide REFCOUNTED (g_texCacheByKey / g_texKeyByHandle,
+//       ModelLoader.cpp ~L93-135, decremented in GpuUploader::free() ~L266-290,
+//       only physically destroyed when the refcount hits 0). The SAME converted
+//       kit piece (e.g. SM_Wall_A.glb, or a district's shared prefab) is loaded
+//       by MANY separate EnvArtSystem instances across Echotropolis (towers,
+//       houses, condos, mine props, each district — loadAsset()'s path-cache is
+//       only PER-INSTANCE, see env_art.cpp's loadAsset()), and the BOOT-TIME
+//       MODEL CACHE itself holds a PERMANENT extra ref on every texture it has
+//       ever cached (preloadModels()'s comment: "meshes freed; the caches keep
+//       their own refs"). Calling device.destroyTexture() straight off a
+//       ModelDrawable's baseColorTexId/normalTexId/mrTexId/emissiveTexId would
+//       physically free a texture some OTHER live EnvArtSystem (or the process
+//       cache) still points at — exactly the double-free this WP must not
+//       introduce. ModelDrawable ids are also untagged uint32_t copies (see
+//       IModelLoader.h's meshIdOf()/ModelDrawable comment) — they carry no
+//       information the refcount code could use even if we wanted to reuse it.
+//
+//   IModelLoader::unload(Model&) (ModelLoader.cpp ~L516-534) already does this
+//   exactly right: unconditionally releases every primitive's mesh, and routes
+//   every material texture through the SAME acquire/release refcount the loader
+//   used when it loaded them — physically destroying only on the last release.
+//   So: destroy() simply hands every OK'd asset's Model to the loader that
+//   loaded it. That IS the "handle tracking" this WP needs; a second, parallel
+//   vector of raw ids would be redundant and (per the above) actively unsafe if
+//   ever used to free textures directly instead of asking the loader.
+//
+//   PARKED-CARS DOCTRINE — what destroy() intentionally does NOT free, and why:
+//     * The process-wide MODEL TEMPLATE cache (g_modelCache) and its own
+//       permanent texture refs. That cache is the engine's boot-time warm
+//       cache, shared by every loader (EnvArtSystem, MonsterSystem, CrowdSkin,
+//       NpcSkin...) in the process, and nothing in the engine ever clears it.
+//       Leaking that shared cache entry is CORRECT: it isn't this instance's to
+//       free, and freeing it would corrupt every other live loader of the same
+//       GLB. (This is the one deliberate leak in this design — acceptable per
+//       the WP-4 brief: "leaking a shared texture is acceptable; double-freeing
+//       is not.")
+//     * Any texture still referenced by a SIBLING EnvArtSystem's Model — the
+//       refcount above simply won't reach 0 yet for those; unload() already
+//       handles this correctly per-model, so destroy() does not second-guess it
+//       with its own bookkeeping.
+//     * m_lightFixtures hold no GPU handles (plain PointLight pos/color/range
+//       structs) — cleared below purely because a destroyed system's fixtures
+//       are meaningless (its geometry is gone), not because there's anything to
+//       release.
+//
+//   IDEMPOTENCY: m_destroyed guards a second call (logged once, no-op) so an
+//   integrator's teardown hook can be called defensively without risk.
+// ===========================================================================
+void EnvArtSystem::destroy(x3::rhi::IRenderDevice& device) {
+    (void)device; // must be the SAME device m_loader was created against (build()/
+                  // buildFromGlb()/buildFromGlbAt()/beginFromDir() all bind m_loader
+                  // to a device pointer at construction time); the parameter exists
+                  // so the call site reads the same way as every other device-owning
+                  // teardown (EchoRegion::destroy) and so a future loader-less path
+                  // (e.g. a headless variant) still has a device to hand assets to.
+    if (m_destroyed) {
+        x3::logWarn("[env-art] destroy() called again — ignoring (already destroyed)");
+        return;
+    }
+    if (m_loader) {
+        for (EnvAsset& a : m_assetTable) {
+            if (a.ok) m_loader->unload(a.model);   // frees meshes; refcount-releases textures
+            a.ok = false;
+        }
+    }
+    m_assetTable.clear();
+    m_assetPaths.clear();
+    m_instances.clear();     // draw() is instance-driven -> now a hard no-op even without the guard
+    m_lightFixtures.clear();
+    m_loader.reset();
+    m_assets.reset();
+    m_destroyed = true;
+    x3::logInfo("[env-art] destroy(): GPU resources released");
 }
 
 } // namespace x3::game

@@ -150,6 +150,23 @@ public:
     // IRenderDevice::setPointLights so the corridor reads as a lit interior.
     const std::vector<x3::rhi::PointLight>& lightFixtures() const { return m_lightFixtures; }
 
+    // TIER-2 STREAMING (WP-4): release every GPU resource this system created
+    // (meshes + textures for every asset loaded via build()/buildFromGlb()/
+    // buildFromGlbAt()/beginFromDir()+addGlbInstance()), then clear the instance
+    // list so draw() becomes a hard no-op. Routes through the SAME IModelLoader
+    // that loaded the assets (see env_art.cpp for why a naive direct
+    // device.destroyMesh/destroyTexture over ModelDrawable ids would be UNSAFE —
+    // textures are process-wide refcounted and shared across EnvArtSystem
+    // instances). Idempotent: a second call is a harmless no-op (warned once).
+    // TERMINAL: this system is not designed to be rebuilt after destroy() — call
+    // it only when the instance itself is going away. `device` must be the SAME
+    // IRenderDevice this system was built/loaded against.
+    //
+    // Post-destroy draw() call = a caller bug (something still fanning ->draw()
+    // over a destroyed container). It is logged ONCE as an error and otherwise a
+    // silent no-op — never a crash.
+    void destroy(x3::rhi::IRenderDevice& device);
+
 private:
     // Load one GLB by relative path under the mounted dir; returns the asset index
     // (always valid — a failed load yields an EnvAsset with ok=false that draws
@@ -173,6 +190,10 @@ private:
     float                                    m_foliage = 0.0f; // >0 = vegetation shading
     float                                    m_metalClamp = 1.0f; // <1 = BLACK-PROP fix
     std::vector<std::string>                 m_nodeSkip; // lowercased node/material-name skip substrings
+
+    // TIER-2 STREAMING (WP-4): terminal-teardown bookkeeping. See destroy().
+    bool         m_destroyed = false;             // destroy() has run — teardown is done+terminal
+    mutable bool m_drawAfterDestroyLogged = false; // log-once guard for a post-destroy draw()
 };
 
 } // namespace x3::game

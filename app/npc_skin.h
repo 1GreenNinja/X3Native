@@ -50,6 +50,23 @@ public:
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
               const Scene& scene) const;
 
+    // TIER-2 STREAMING (WP-4): region eviction (call BEFORE the region ledger
+    // that owns this world's persistent walkScene changes anything). Mirrors
+    // CrowdSkin::deactivate()'s contract (app/crowd_skin.h/.cpp) exactly, with
+    // one deliberate difference: CrowdSkin never touches its agents' blockout
+    // entities in deactivate() because those entities are REGION-LEDGER-OWNED
+    // and get destroyed/recreated by the ledger itself on the next build(). Here
+    // npcLife/npcSkin are Lane C — PERSISTENT, never torn down (see
+    // TIER2_STREAMING_PLAN.md §2) — so nothing else will ever restore the
+    // blockout's visibility; deactivate() must do it itself. So: hide every
+    // skinned character entity, RESTORE the matching blockout entity's
+    // visibility (recorded per-slot at spawn time — no NpcLife reference
+    // needed), and reset attach/pose state. The pool (loaded MonsterSystem
+    // rigs) is untouched and SURVIVES — the next build() + update() cycle
+    // re-attaches the SAME characters with zero reloads (skinnedCount()/rig
+    // choice/tint are unchanged; only the swap-and-pose step re-runs).
+    void deactivate(Scene& scene);
+
     bool     active() const { return m_active; }
     uint32_t skinnedCount() const;
     bool     agentSkinned(uint32_t i) const {
@@ -64,14 +81,25 @@ private:
         std::unique_ptr<MonsterSystem> sys;
         bool  skinned  = false;
         bool  failed   = false;   // load failed / freeway rider — blockout keeps it
+        bool  attached = false;   // swapped in over the CURRENT agent (mirrors CrowdSkin::Slot)
         bool  talking  = false;   // Talk calm-loop engaged (mid-conversation)
         float lastSpeed = 0.0f;
         x3::phys::Vec3 lastPos{};
         bool  hasLastPos = false;
+        // The npc-life blockout entity this slot swapped out at spawn time.
+        // Recorded here (not re-looked-up via NpcLife) so deactivate(Scene&) can
+        // restore its visibility with ONLY a Scene reference, matching
+        // CrowdSkin::deactivate()'s signature exactly.
+        uint32_t blockoutEntity = kNoLink;
     };
 
     void spawnOne(uint32_t i, const NpcLife& life, Scene& scene,
                   x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
+    // Swap: hide the blockout, show the character, snap the pose to the agent.
+    // Split out of spawnOne so a re-build() after deactivate() can re-run just
+    // this step over the ALREADY-spawned MonsterSystem (mirrors
+    // CrowdSkin::attach()) — no reload, no re-creation.
+    void attach(uint32_t i, const NpcLife& life, Scene& scene);
 
     NpcSkinConfig     m_cfg;
     std::vector<Slot> m_slots;

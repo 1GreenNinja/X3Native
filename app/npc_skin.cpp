@@ -37,6 +37,18 @@ void NpcSkin::build(const NpcSkinConfig& cfg, const NpcLife& life) {
         m_slots.resize(life.agentCount());
         m_nextSpawn = 0;
     }
+    // TIER-2 STREAMING (WP-4) — (Re)attach contract, mirrors CrowdSkin::build()
+    // exactly: every slot is marked "needs attach" so update()'s pose-follow
+    // loop re-swaps it in. On the VERY FIRST build() this is a no-op (the slots
+    // above were just default-constructed/resized, already false) — it only
+    // does real work on the deactivate() -> build() re-build cycle, where it
+    // flips already-skinned slots back so the SAME MonsterSystem pool
+    // re-attaches with zero reloads.
+    for (Slot& s : m_slots) {
+        s.attached = false;
+        s.hasLastPos = false;
+        s.talking = false;
+    }
     m_active = true;
 }
 
@@ -91,9 +103,22 @@ void NpcSkin::spawnOne(uint32_t i, const NpcLife& life, Scene& scene,
         return;
     }
     s.skinned = true;
-    // Swap: hide the blockout body, stamp the room on the character.
-    if (a.entity != kNoLink && a.entity < scene.size())
-        scene.get(a.entity).visible = false;
+    s.blockoutEntity = a.entity;   // recorded so deactivate() can restore it later
+    attach(i, life, scene);        // swap: hide blockout, show character, snap pose
+    x3::logInfo("[npc-skin] " + m_cfg.site + ": agent " + std::to_string(i) +
+                " (" + archetypeName(a.arch) + ") -> " + rig + " (" +
+                std::to_string(ms) + " ms, total " + std::to_string(m_totalSpawnMs) + " ms)");
+}
+
+void NpcSkin::attach(uint32_t i, const NpcLife& life, Scene& scene) {
+    Slot& s = m_slots[i];
+    const NpcAgent& a = life.agent(i);
+    // Swap: hide the blockout body, show the character, stamp the room, snap the
+    // pose. Uses s.blockoutEntity (recorded at spawn) rather than a.entity so
+    // this also works correctly on the deactivate()->build() re-attach cycle,
+    // matching CrowdSkin::attach()'s split of "create" vs "swap".
+    if (s.blockoutEntity != kNoLink && s.blockoutEntity < scene.size())
+        scene.get(s.blockoutEntity).visible = false;
     const uint32_t ent = s.sys->entity();
     if (ent != kNoLink && ent < scene.size()) {
         Entity& e = scene.get(ent);
@@ -102,9 +127,8 @@ void NpcSkin::spawnOne(uint32_t i, const NpcLife& life, Scene& scene,
     }
     s.sys->setPropPose(a.pos, a.yaw);
     s.sys->setPropMotion(0.0f, 0.0f);
-    x3::logInfo("[npc-skin] " + m_cfg.site + ": agent " + std::to_string(i) +
-                " (" + archetypeName(a.arch) + ") -> " + rig + " (" +
-                std::to_string(ms) + " ms, total " + std::to_string(m_totalSpawnMs) + " ms)");
+    s.hasLastPos = false;
+    s.attached = true;
 }
 
 void NpcSkin::update(float dt, const NpcLife& life, Scene& scene,
@@ -131,6 +155,12 @@ void NpcSkin::update(float dt, const NpcLife& life, Scene& scene,
     for (uint32_t i = 0; i < n; ++i) {
         Slot& s = m_slots[i];
         if (!s.skinned || !s.sys) continue;
+        // TIER-2 STREAMING (WP-4): a slot coming back from deactivate() has
+        // s.sys/s.skinned still set but s.attached was reset to false by
+        // build() — re-run the swap over the SAME MonsterSystem (mirrors
+        // CrowdSkin::update()'s `if (!s.attached) attach(...)`). No-op on the
+        // normal first-spawn path (spawnOne() already attached it inline).
+        if (!s.attached) attach(i, life, scene);
         const NpcAgent& a = life.agent(i);
 
         float speed = 0.0f;
@@ -161,6 +191,32 @@ void NpcSkin::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
     if (!scene.roomVisible(m_cfg.roomId)) return;
     for (const Slot& s : m_slots)
         if (s.skinned && s.sys) s.sys->drawMonster(device, frame, scene);
+}
+
+void NpcSkin::deactivate(Scene& scene) {
+    // TIER-2 STREAMING (WP-4): mirrors CrowdSkin::deactivate() with one
+    // deliberate difference — see npc_skin.h's doc comment on this method.
+    // npcLife/npcSkin are Lane C PERSISTENT (never torn down by any region
+    // ledger — TIER2_STREAMING_PLAN.md §2), so unlike CrowdSkin's blockouts
+    // (region-ledger-owned, destroyed/recreated for us), nothing else will ever
+    // restore an npc-life blockout's visibility once this layer hides it. So:
+    // hide every skinned character, explicitly restore its recorded blockout's
+    // visibility, and reset attach/pose state. The pool (s.sys/s.skinned/
+    // s.failed, i.e. every loaded MonsterSystem + its rig choice) is left
+    // completely untouched — the next build()+update() cycle re-attaches the
+    // SAME pool with zero reloads (the stream-cycle contract).
+    for (Slot& s : m_slots) {
+        if (s.sys) {
+            const uint32_t ent = s.sys->entity();
+            if (ent != kNoLink && ent < scene.size()) scene.get(ent).visible = false;
+        }
+        if (s.blockoutEntity != kNoLink && s.blockoutEntity < scene.size())
+            scene.get(s.blockoutEntity).visible = true;
+        s.attached = false;
+        s.hasLastPos = false;
+        s.talking = false;
+    }
+    m_active = false;
 }
 
 uint32_t NpcSkin::skinnedCount() const {

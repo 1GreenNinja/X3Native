@@ -26,6 +26,7 @@
 //     way, velocity-based (tau=0.11s accel/glide), radius-scaled, off while dragging;
 //   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
 #include "world_host_common.h"
+#include "echo_heightfield.h"         // TIER-2: shared island terrain sampler (hoisted from this file)
 #include "../tod.h"
 #include "../env_art.h"
 #include "../mine_fx.h"               // GOLD MINE: authentic EoS arch mouth-glow (ported render FX)
@@ -103,45 +104,11 @@ inline float groundPerPixel(float radius, float fovDeg, int screenH) {
 // sweeps past. Optional: if the PNG is absent heightAt() returns 0 and the pivot
 // falls back to the water plane. The world mapping mirrors island_to_glb.py exactly
 // (extent 4096 m, HEIGHT_SCALE 320, sea level = normalized 0.20 -> world y 0).
-struct Heightfield {
-    int w = 0, h = 0;
-    std::vector<uint16_t> px;                     // 16-bit grayscale, row-major
-    static constexpr float kMeters  = 4096.0f;    // world extent (island frame)
-    static constexpr float kScale   = 320.0f;     // HEIGHT_SCALE
-    static constexpr float kSeaNorm = 0.20f;      // normalized sea level
-
-    bool load(const std::string& path) {
-        // The engine's stb build is STBI_NO_STDIO (memory loaders only), so slurp
-        // the file ourselves and decode from memory.
-        std::ifstream f(path, std::ios::binary);
-        if (!f) { w = h = 0; return false; }
-        std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(f)),
-                                          std::istreambuf_iterator<char>());
-        if (bytes.empty()) { w = h = 0; return false; }
-        int comp = 0;
-        uint16_t* d = stbi_load_16_from_memory(bytes.data(), (int)bytes.size(), &w, &h, &comp, 1);
-        if (!d || w < 2 || h < 2) { if (d) stbi_image_free(d); w = h = 0; return false; }
-        px.assign(d, d + (size_t)w * h);
-        stbi_image_free(d);
-        return true;
-    }
-    bool ok() const { return w >= 2 && h >= 2; }
-
-    // Bilinear world height (metres) at world (x,z). Off-grid clamps to the edge.
-    float heightAt(float x, float z) const {
-        if (!ok()) return 0.0f;
-        float u = clampf((x / kMeters + 0.5f) * (float)(w - 1), 0.0f, (float)(w - 1));
-        float v = clampf((z / kMeters + 0.5f) * (float)(h - 1), 0.0f, (float)(h - 1));
-        const int x0 = (int)u, z0 = (int)v;
-        const int x1 = x0 < w - 1 ? x0 + 1 : x0;
-        const int z1 = z0 < h - 1 ? z0 + 1 : z0;
-        const float fx = u - (float)x0, fz = v - (float)z0;
-        auto S = [&](int cx, int cz) { return (float)px[(size_t)cz * w + cx] / 65535.0f; };
-        const float a = S(x0, z0), b = S(x1, z0), c = S(x0, z1), d2 = S(x1, z1);
-        const float hn = a + (b - a) * fx + (c - a) * fz + (a - b - c + d2) * fx * fz;
-        return (hn - kSeaNorm) * kScale;
-    }
-};
+// TIER-2 STREAMING (WP-0): Heightfield HOISTED verbatim to
+// app/world_hosts/echo_heightfield.h (x3::game::Heightfield) so the region
+// packages share the exact type. The alias keeps every host call site
+// (`Heightfield hf;`, `hf.heightAt(...)`) reading unchanged.
+using Heightfield = x3::game::Heightfield;
 
 // TU-local scroll accumulator (only one --world host ever runs at a time). GLFW
 // scroll is event-driven, so we sum deltas here and drain them once per frame.
@@ -3694,40 +3661,82 @@ int hostEchotropolis(HostContext& hc) {
             flyY = clampf(flyY, 1.5f, 4000.0f);
         }
 
-        // ===== PAUSE MENU: world + camera frozen, menu drawn, only QUIT exits =====
+        // ===== PAUSE MENU: world + camera frozen, menu drawn, only QUIT exits.
+        // Styled panel (Tim: "Menu is text based ugly") built from the same two
+        // HUD primitives everything else uses — quads fake the panel/accents,
+        // hover states light the buttons. Same keys as before: ESC/ENTER resume,
+        // Q or click quits. =====
         if (menuOpen) {
             uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
             const float cx = hw * 0.5f, cy = hh * 0.5f;
-            // Quit button rect (centered). Q key or a click inside it quits.
-            const float bw = 260.0f, bh = 56.0f;
-            const float bx = cx - bw * 0.5f, by = cy + 40.0f;
-            const bool overQuit = (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh);
+            // Panel geometry: a centered card with two full-width buttons.
+            const float pw = 520.0f, ph = 430.0f;
+            const float px2 = cx - pw * 0.5f, py2 = cy - ph * 0.5f;
+            const float bw = pw - 96.0f, bh = 54.0f;
+            const float bx = cx - bw * 0.5f;
+            const float byResume = py2 + 178.0f;
+            const float byQuit   = byResume + bh + 18.0f;
+            const bool overResume = (mx >= bx && mx <= bx + bw && my >= byResume && my <= byResume + bh);
+            const bool overQuit   = (mx >= bx && mx <= bx + bw && my >= byQuit   && my <= byQuit   + bh);
             const bool lmb = mbd(GLFW_MOUSE_BUTTON_LEFT);
             const bool qkey = kd(GLFW_KEY_Q);
             if ((lmb && !prevLmb && overQuit) || (qkey && !prevQ)) wantQuit = true;
             const bool ent = kd(GLFW_KEY_ENTER);
-            if (ent && !prevEnter) menuOpen = false;   // Enter also resumes
+            if ((ent && !prevEnter) || (lmb && !prevLmb && overResume)) menuOpen = false;
             prevLmb = lmb; prevQ = qkey; prevEnter = ent;
 
             auto frame = device->beginFrame();
             island.draw(*device, frame);
             props.draw(*device, frame);
             if (tod.sample().cityLightsOn) { beam.draw(*device, frame); fissure.draw(*device, frame); }
-            const float dim[4]   = { 0.02f, 0.03f, 0.05f, 0.66f };
+
+            // Palette (the HUD's own language: navy glass, gold title, cyan accents).
+            const float dim[4]    = { 0.01f, 0.02f, 0.04f, 0.72f };   // world dim
+            const float glow[4]   = { 0.10f, 0.55f, 0.70f, 0.10f };   // panel halo
+            const float panel[4]  = { 0.045f, 0.065f, 0.105f, 0.96f };
+            const float edge[4]   = { 0.16f, 0.60f, 0.74f, 0.85f };   // cyan accent
+            const float gold[4]   = { 1.0f, 0.82f, 0.45f, 1.0f };
+            const float white[4]  = { 0.92f, 0.95f, 1.0f, 1.0f };
+            const float dimtxt[4] = { 0.55f, 0.61f, 0.72f, 1.0f };
+            const float faint[4]  = { 0.10f, 0.14f, 0.20f, 1.0f };    // divider
+
             device->drawHudQuad(frame, 0, 0, (float)hw, (float)hh, dim);
-            const float gold[4]  = { 1.0f, 0.82f, 0.45f, 1.0f };
-            const float white[4] = { 0.90f, 0.93f, 1.0f, 1.0f };
-            const float dimtxt[4]= { 0.62f, 0.66f, 0.76f, 1.0f };
-            device->drawHudText(frame, "ECHO  HARBOR", cx - 11 * 19.0f, cy - 150.0f, 38.0f, gold);
-            device->drawHudText(frame, "PAUSED", cx - 6 * 11.0f, cy - 96.0f, 22.0f, dimtxt);
-            const float qcol[4] = { overQuit ? 0.35f : 0.18f, overQuit ? 0.10f : 0.06f,
-                                    overQuit ? 0.12f : 0.07f, 1.0f };
-            device->drawHudQuad(frame, bx, by, bw, bh, qcol);
-            device->drawHudText(frame, "QUIT  TO  DESKTOP", bx + 22.0f, by + 18.0f, 17.0f, white);
-            device->drawHudText(frame,
-                "ESC / ENTER  resume        1-4 time of day    5-8 camera views\n"
-                "WASD / drag  pan           wheel  zoom         Q  quit         T  run clock",
-                cx - 34 * 8.5f, cy + 120.0f, 15.0f, dimtxt);
+            // Halo -> panel -> top accent bar -> bottom hairline.
+            device->drawHudQuad(frame, px2 - 10.0f, py2 - 10.0f, pw + 20.0f, ph + 20.0f, glow);
+            device->drawHudQuad(frame, px2, py2, pw, ph, panel);
+            device->drawHudQuad(frame, px2, py2, pw, 4.0f, edge);
+            device->drawHudQuad(frame, px2, py2 + ph - 2.0f, pw, 2.0f, faint);
+
+            // Title block: ECHO HARBOR / ECHOTROPOLIS 2038 / PAUSED chip.
+            device->drawHudText(frame, "ECHO  HARBOR", cx - 11 * 16.0f, py2 + 34.0f, 32.0f, gold);
+            device->drawHudText(frame, "E C H O T R O P O L I S   //   2 0 3 8",
+                                cx - 19 * 8.2f, py2 + 78.0f, 13.0f, dimtxt);
+            { const float chip[4] = { 0.12f, 0.16f, 0.24f, 1.0f };
+              device->drawHudQuad(frame, cx - 52.0f, py2 + 106.0f, 104.0f, 26.0f, chip);
+              device->drawHudText(frame, "PAUSED", cx - 6 * 7.0f, py2 + 112.0f, 14.0f, white); }
+            device->drawHudQuad(frame, px2 + 48.0f, py2 + 152.0f, pw - 96.0f, 1.0f, faint);
+
+            // Buttons: hover fills + a left accent tick on the hot one.
+            const float dangerEdge[4] = { 1.0f, 0.45f, 0.35f, 1.0f };
+            auto button = [&](float byB, const char* label, bool hot, bool danger){
+                const float base[4] = { danger ? 0.16f : 0.07f, danger ? 0.05f : 0.11f,
+                                        danger ? 0.06f : 0.16f, 1.0f };
+                const float hotc[4] = { danger ? 0.34f : 0.10f, danger ? 0.09f : 0.34f,
+                                        danger ? 0.10f : 0.42f, 1.0f };
+                device->drawHudQuad(frame, bx, byB, bw, bh, hot ? hotc : base);
+                if (hot) device->drawHudQuad(frame, bx, byB, 4.0f, bh, danger ? dangerEdge : edge);
+                device->drawHudText(frame, label, bx + 26.0f, byB + 18.0f, 16.0f,
+                                    hot ? white : dimtxt);
+            };
+            button(byResume, "RESUME                                    ENTER", overResume, false);
+            button(byQuit,   "QUIT  TO  DESKTOP                             Q", overQuit,   true);
+
+            // Key hints: two aligned columns under the buttons.
+            const float hintsY = byQuit + bh + 26.0f;
+            device->drawHudText(frame, "1-4  time of day\n5-8  camera views\nT    run clock",
+                                px2 + 64.0f, hintsY, 13.0f, dimtxt);
+            device->drawHudText(frame, "WASD / drag  pan\nwheel  zoom\n`    console",
+                                cx + 30.0f, hintsY, 13.0f, dimtxt);
             device->endFrame(frame);
 
             fpsAccum += dt; ++fpsFrames;
