@@ -509,6 +509,73 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 ring[i].y = std::max(ring[i].y, ring[q].y - maxStep);
             }
         }
+        // V5 RIM-EDGE INSET (the "pier colonnade down the cliff face" fix):
+        // between rim waypoints the Catmull chord cuts across concave rim
+        // pockets and hangs OUTBOARD of the lip — piers then drop the whole
+        // cliff to the district below. Per-sample clamp, RIM ZONE ONLY (the
+        // NE-slope and flats legs are legitimate viaduct and must not be
+        // dragged sideways): if the terrain directly under a sample sits more
+        // than kInsetMaxDrop below the deck, migrate the sample INBOARD along
+        // its perp-toward-the-crown in kInsetStep hops (max kInsetMaxMove)
+        // until ground is back within reach. Then re-derive tangents, reset
+        // the elevation to the NEW local floors, and rerun the relaxation —
+        // the migrated deck now follows the lip's actual curve with its piers
+        // landing on mesa.
+        {
+            constexpr float kInsetMaxDrop = 25.0f;   // deck-to-ground trigger
+            constexpr float kInsetStep    = 6.0f;    // inboard hop
+            constexpr float kInsetMaxMove = 120.0f;  // migration cap per sample
+            constexpr float kInsetZone    = 620.0f;  // rim zone: within this of the crown
+            int migrated = 0;
+            for (RoadSample& s : ring) {
+                const float cdx = kCrownX - s.x, cdz = kCrownZ - s.z;
+                if (cdx*cdx + cdz*cdz > kInsetZone * kInsetZone) continue;
+                float moved = 0.0f;
+                bool did = false;
+                while (moved < kInsetMaxMove) {
+                    const float g = hf.heightAt(s.x, s.z);
+                    if (s.y - g <= kInsetMaxDrop) break;
+                    float px, pz; rperp(s.tx, s.tz, px, pz);
+                    if (px * (kCrownX - s.x) + pz * (kCrownZ - s.z) < 0.0f) {
+                        px = -px; pz = -pz;               // point inboard
+                    }
+                    s.x += px * kInsetStep; s.z += pz * kInsetStep;
+                    moved += kInsetStep; did = true;
+                }
+                if (did) ++migrated;
+            }
+            if (migrated > 0) {
+                // Tangents from the migrated positions (wrap-aware).
+                const size_t n = ring.size();
+                for (size_t i = 0; i < n; ++i) {
+                    const RoadSample& p = ring[(i + n - 1) % n];
+                    const RoadSample& q = ring[(i + 1) % n];
+                    float tx = q.x - p.x, tz = q.z - p.z;
+                    const float l = std::sqrt(tx*tx + tz*tz);
+                    if (l > 1e-5f) { tx /= l; tz /= l; }
+                    ring[i].tx = tx; ring[i].tz = tz;
+                }
+                // Fresh floors at the new positions + full re-relaxation (the
+                // migrated deck should DROP to mesa clearance, and only a
+                // reset-then-relax lets it come down — the sweeps only raise).
+                for (size_t i = 0; i < n; ++i) {
+                    floorY[i] = std::max(deckFloor(hf, ring[i].x, ring[i].z), kDeckMinY);
+                    ring[i].y = floorY[i];
+                }
+                const float maxStep = kDeckMaxGrade * kSampleStep;
+                for (size_t k = 1; k < 2 * n; ++k) {
+                    const size_t i = k % n, p = (k - 1) % n;
+                    ring[i].y = std::max(floorY[i],
+                                         std::max(ring[i].y, ring[p].y - maxStep));
+                }
+                for (size_t k = 2 * n; k-- > 1; ) {
+                    const size_t i = (k - 1) % n, q = k % n;
+                    ring[i].y = std::max(ring[i].y, ring[q].y - maxStep);
+                }
+            }
+            x3::logInfo("[roads] V5 rim inset: " + std::to_string(migrated) +
+                        " deck samples migrated inboard");
+        }
         {   // diagnostics (v3.1 acceptance): tallest pier this profile makes
             float maxPier = 0.0f;
             for (const RoadSample& s : ring)
@@ -650,6 +717,94 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         }
         std::vector<RoadSample> av; resample(d2, kSampleStep, av);
         collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
+    }
+
+    // ---- 1e. MINE SPUR (V5 — Tim at the west shoulder: "No COHESIVE
+    // ROADS"): rim highway -> gold-mine truck lot (-556,814). Three pieces,
+    // all riding the existing machinery:
+    //   (a) a MINI-RAMP off the nearest rim-deck sample (the rim deck rides
+    //       ~11 m of clearance even on mesa, so a short graded descent is the
+    //       honest tee — the ramp FOOT then endpoint-captures into (b) and
+    //       the junction system builds the tee patch);
+    //   (b) a terrain-conformed AVENUE foot -> lot (mesa top, gentle — no
+    //       viaduct, collectGround handles it);
+    //   (c) a CUL-DE-SAC loop at the lot (300-degree circle, both endpoints
+    //       capture into (b)'s end -> one junction patch = the turnaround).
+    {
+        constexpr float kLotX = -556.0f, kLotZ = 814.0f;
+        constexpr float kLoopCulR = 14.0f;
+        const size_t at = nearestRingSample(kLotX, kLotZ);
+        const RoadSample deck = ringC[at];
+        float dirX = kLotX - deck.x, dirZ = kLotZ - deck.z;
+        const float dLen = std::sqrt(dirX*dirX + dirZ*dirZ);
+        if (dLen > 40.0f) {          // degenerate only if the rim IS the lot
+            dirX /= dLen; dirZ /= dLen;
+            // (a) mini-ramp: deck -> foot (~35% of the way, min 90 m lead).
+            const float footD = std::max(90.0f, dLen * 0.35f);
+            const float footX = deck.x + dirX * footD, footZ = deck.z + dirZ * footD;
+            const float footY = hf.heightAt(footX, footZ) + kGroundLift;
+            {
+                std::vector<RoadSample> d2;
+                const float lead = std::max(90.0f, (deck.y - footY) / kRampMaxGrade);
+                for (float t = 0.0f; t <= 1.0f; t += 0.02f) {
+                    RoadSample s;
+                    hermite(deck.x, deck.z, deck.tx * lead, deck.tz * lead,
+                            footX, footZ, dirX * lead * 0.4f, dirZ * lead * 0.4f,
+                            t, s.x, s.z);
+                    d2.push_back(s);
+                }
+                std::vector<RoadSample> ramp; resample(d2, kRampStep, ramp);
+                for (size_t i = 0; i < ramp.size(); ++i) {
+                    const float t = (float)i / (float)(ramp.size() - 1);
+                    const float e = t * t * (3.0f - 2.0f * t);
+                    ramp[i].y = deck.y + (footY - deck.y) * e;
+                    ramp[i].bank = 0.0f;
+                }
+                Pending pe;
+                pe.cls = RoadClass::Ramp; pe.width = kRampWidth;
+                pe.lanesF = 1; pe.lanesB = 1;   // two-way spur ramp
+                pe.barriers = true; pe.pillarSingle = true;
+                pe.s = std::move(ramp);
+                P.push_back(std::move(pe));
+            }
+            // (b) avenue foot -> lot, terrain-conformed.
+            {
+                std::vector<RoadSample> d2;
+                for (float t = 0.0f; t <= 1.0f; t += 0.04f) {
+                    RoadSample s;
+                    s.x = footX + (kLotX - footX) * t;
+                    s.z = footZ + (kLotZ - footZ) * t;
+                    d2.push_back(s);
+                }
+                std::vector<RoadSample> av; resample(d2, kSampleStep, av);
+                collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
+            }
+            // (c) cul-de-sac: 300-degree loop past the lot; both endpoints sit
+            // at the lot so they capture into (b) -> the turnaround patch.
+            {
+                const float cx = kLotX + dirX * kLoopCulR,
+                            cz = kLotZ + dirZ * kLoopCulR;
+                const float a0 = std::atan2(kLotZ - cz, kLotX - cx);
+                const float sweep = 300.0f * 3.1415926f / 180.0f;
+                std::vector<RoadSample> d2;
+                for (float a = 0.0f; a <= sweep; a += 0.08f) {
+                    RoadSample s;
+                    s.x = cx + std::cos(a0 + a) * kLoopCulR;
+                    s.z = cz + std::sin(a0 + a) * kLoopCulR;
+                    d2.push_back(s);
+                }
+                std::vector<RoadSample> cul; resample(d2, kSampleStep, cul);
+                collectGround(RoadClass::HarborStreet, kStreetWidth, 1, cul);
+            }
+            x3::logInfo("[roads] V5 mine spur: rim deck (" +
+                        std::to_string((int)deck.x) + "," + std::to_string((int)deck.z) +
+                        ") -> lot (" + std::to_string((int)kLotX) + "," +
+                        std::to_string((int)kLotZ) + "), " + std::to_string((int)dLen) +
+                        " m with tee ramp + cul-de-sac");
+        } else {
+            x3::logWarn("[roads] V5 mine spur skipped — rim deck already at the lot (" +
+                        std::to_string((int)dLen) + " m)");
+        }
     }
 
     // ---- 1d. HARBOR BOULEVARD + FANNED BLOCKS (v2 probe; collect-only) ---

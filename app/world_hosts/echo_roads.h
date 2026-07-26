@@ -63,6 +63,13 @@
 //     deck leg (east approach). Acceptance: "[roads] deck profile: max pier
 //     height N m" <= 45 on a real heightfield; taller means a rim probe
 //     regressed (check the rim-seed skip logs first).
+// 11. V5: (a) MINE SPUR — rim deck -> mini tee-ramp -> terrain-conformed
+//     avenue -> truck-lot cul-de-sac (log "[roads] V5 mine spur: ...");
+//     (b) RIM-EDGE INSET — deck samples hanging >25 m over air inside the
+//     rim zone migrate inboard until they sit over mesa again (log
+//     "[roads] V5 rim inset: N deck samples migrated inboard"). Expect the
+//     pier colonnade below the west cliff to be GONE in captures; the
+//     max-pier log remains the acceptance gate.
 // =======================================================================
 //
 // Deterministic by construction: no rand — the same hash discipline as the
