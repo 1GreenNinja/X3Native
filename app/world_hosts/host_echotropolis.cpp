@@ -2999,6 +2999,27 @@ int hostEchotropolis(HostContext& hc) {
         }
     };
 
+    // ===== DDGI (Tim: "Turn On DDGI!") — probe-grid GI over the city core =====
+    // Replaces the flat ambient-diffuse term with a live probe light field: sun
+    // bounce off facades, neon spill onto streets, sky light in alleys. Explicit
+    // volume (auto-fit clamps to 240 m — useless on a 4 km island): an AABB over
+    // the crown city + drag + districts, harbor level up over the towers.
+    // Tier-gated in the device (ray query + position fetch; the 5090 qualifies,
+    // anything else stores it as a no-op). ECHO_DDGI=0 opts out; `gi` flips live.
+    x3::rhi::IRenderDevice::DdgiParams ddgiP{};
+    {
+        const char* e = std::getenv("ECHO_DDGI");
+        ddgiP.enabled = !(e && e[0] == '0');
+        ddgiP.originX = -740.0f; ddgiP.originY = 0.0f; ddgiP.originZ = 70.0f;
+        ddgiP.sizeX   = 1600.0f; ddgiP.sizeY  = 400.0f; ddgiP.sizeZ  = 1600.0f;
+        ddgiP.countX  = 24; ddgiP.countY = 8; ddgiP.countZ = 24;
+        ddgiP.raysPerProbe = 96;
+        device->setDdgiParams(ddgiP);
+        x3::logInfo(std::string("--world echotropolis: DDGI ") +
+                    (ddgiP.enabled ? "ON" : "off (ECHO_DDGI=0)") +
+                    (device->rayTracingSupported() ? " [RT hardware]" : " [no RT — inert]"));
+    }
+
     // ===== CONSOLE world commands (modeled on the Babylon X3Console catalog:
     // tod / tp / pos / camera modes / render toggles; the RPG-side commands
     // come with their systems). help/clear/quit/fps/stats + CVars are already
@@ -3085,6 +3106,16 @@ int hostEchotropolis(HostContext& hc) {
         console->print(std::string("capturing -> ") + p);
         hud.closeConsole();   // the shot is of the world, not the console
     }, "save a screenshot to captures/");
+    console->registerCommand("gi", [&](const std::vector<std::string>& a) {
+        const std::string arg = a.empty() ? "" : a[0];
+        if      (arg == "off")   ddgiP.enabled = false;
+        else if (arg == "debug") { ddgiP.enabled = true; ddgiP.debug = (ddgiP.debug + 1) % 3; }
+        else                     { ddgiP.enabled = true; ddgiP.debug = 0; }
+        device->setDdgiParams(ddgiP);
+        console->print(std::string("DDGI ") + (ddgiP.enabled ? "ON" : "off") +
+                       (ddgiP.debug ? (ddgiP.debug == 1 ? " [debug: irradiance]" : " [debug: confidence]") : "") +
+                       (device->rayTracingSupported() ? "" : "  (no RT hardware — inert)"));
+    }, "probe-grid GI on|off|debug (converges ~2s)");
     console->registerCommand("cull", [&](const std::vector<std::string>& a) {
         const bool on = a.empty() || a[0] != "off";
         device->setFrustumCullEnabled(on);
