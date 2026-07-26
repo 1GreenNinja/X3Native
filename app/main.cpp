@@ -331,6 +331,7 @@ int main(int argc, char** argv) {
         _tf.testAdaptiveHide = o.testAdaptiveHide;
         _tf.testAct2Bosses = o.testAct2Bosses;
         _tf.testCanonAliens = o.testCanonAliens;
+        _tf.testClone = o.testClone;
         _tf.testSpireMid = o.testSpireMid;
         _tf.testNexus = o.testNexus;
         _tf.testSpireTop = o.testSpireTop;

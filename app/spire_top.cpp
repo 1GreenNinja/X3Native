@@ -30,30 +30,10 @@ constexpr float kEnemyYOff = 0.4f;
 // needs the rigged dir (passed in as modelDir).
 const std::string& convertedDir() { static const std::string d = convertedGlbRoot(); return d; }
 
-// ---- The F7 ACT-1 FINALE boss: "The Clone" (Jake's duplicate, master plan L7). A
-// Boss-type so it runs the SAME phase machine as Chief Martinez / the rescue bosses
-// (enrage at 66% HP, desperate summon at 33%). Tougher than the F5 mid-boss and the
-// standard floor enemies — this is the climax of Act 1. Reuses the chief_martinez.glb
-// humanoid rigged mesh (an existing asset); falls back to a tinted box if absent (the
-// level never breaks). Tinted clone-cyan so it reads as Jake's mirror, not Martinez.
-MonsterSystem::Tuning cloneBossTuning(std::string_view modelDir) {
-    MonsterSystem::Tuning bt;
-    bt.type           = MonsterType::Boss;
-    bt.hp             = 620;          // Act-1 finale boss: tougher than the F5 mid-boss (460) + Martinez (340)
-    bt.chaseSpeed     = 3.4f;
-    bt.damage         = 14;           // within the melee band scaling; phase muls ramp it
-    bt.attackRange    = 2.4f;
-    bt.attackCooldown = 1.05f;
-    bt.attackWindup   = 0.30f;
-    bt.ranged         = false;
-    bt.tint[0] = 0.55f; bt.tint[1] = 0.85f; bt.tint[2] = 1.0f; bt.tint[3] = 1.0f; // clone-cyan
-    bt.modelFile        = "chief_martinez.glb";   // humanoid rigged boss mesh (existing asset)
-    bt.modelDirOverride = std::string(modelDir);
-    bt.standUpZtoY      = false;      // rigged boss authored Y-up
-    bt.modelScale       = 1.45f;
-    bt.phase3SummonCount = 2;         // desperate: summon adds (the bible "summons" beat)
-    return bt;
-}
+// The F7 ACT-1 FINALE boss "The Clone" now lives in clone_boss.* — cloneBossTuning()
+// (Jake's own clone rig + the tint) plus CloneBossFight, the 3-phase machine
+// (SEPARATION -> NEURAL COLLAR -> MUTATED HYBRID) and the neural-collar minigame.
+// This module just PLACES it on F7 and forwards tick/fire/draw/E to it.
 
 // The mini-boss Sarah transforms into if her rescue timer expires (canon: the unsaved
 // captive becomes a boss). A Boss-type running the same phase machine. Reuses the
@@ -193,9 +173,15 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.baseY    = layout.floorBaseY[(uint32_t)f];
         p.arrival  = at(f, 17.5f, 0.05f, 0.0f);
 
-        // ---- The Clone boss anchors the exec-lab center (off the shaft spine). ----
-        m_boss.spawn(scene, device, physics, m_modelDir,
-                     at(f, 8.0f, kEnemyYOff, 0.0f), cloneBossTuning(m_modelDir));
+        // ---- THE CLONE anchors the exec-lab center (off the shaft spine), running
+        // its full 3-phase fight. Sarah is held in the -Z holding-cell corner and her
+        // NEURAL COLLAR (the Phase-2 gate) sits at her neck. We do NOT spawn the
+        // fight's own Sarah placeholder here: this floor already owns her body (the
+        // RescueVictim below), so the collar simply rides that. ----
+        const x3::phys::Vec3 sarahPos = at(f, 3.0f, kEnemyYOff, -5.5f);  // -Z holding-cell corner
+        const x3::phys::Vec3 collarPos{ sarahPos.x, sarahPos.y + 1.45f, sarahPos.z };
+        m_clone.build(scene, device, physics, m_modelDir,
+                      at(f, 8.0f, kEnemyYOff, 0.0f), collarPos);
         p.bossCount = 1;
 
         // ---- The honor guard + outer ring (the boss's escort), 8 strong. 2 Illuminated
@@ -246,12 +232,24 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // first frame (the playtest bug spire_mid fixed). The host registers the F7Hub
         // trigger below; entering it (onTrigger) flips m_f7HubReached and the clock
         // starts. Distinct mesh (AnnaCasual) from the F5 captive 'Lena' (AnnaTactical).
-        const x3::phys::Vec3 sarahPos = at(f, 3.0f, kEnemyYOff, -5.5f);  // -Z holding-cell corner
         m_victim = std::make_unique<RescueVictim>();
         m_victim->build(scene, device, physics, m_modelDir, sarahPos,
                         VictimId::Aria, "Sarah", "AnnaCasual.glb",
                         kRescueTimer, sarahVictimBossTuning(m_modelDir));
         p.hasVictim = true;
+
+        // ---- INTEGRATION SEAM: breaking the neural collar (Clone fight Phase 2)
+        // FREES Sarah. Here that means flipping the F7 RescueVictim from Captive to
+        // Companion (stops her 5-min clock, so the mini-boss transform can no longer
+        // fire) — the canon "Sarah wakes" beat. The companion-COMBAT lane hooks the
+        // same CloneBossFight::setOnSarahFreed event for what she does next; this
+        // callback only owns the captive-lifecycle half. Reach is trivially satisfied
+        // (we free her at her own position). ----
+        m_clone.setOnSarahFreed([this]() {
+            if (m_victim && m_victim->tryRescue(m_victim->pos(), 2.0f))
+                x3::logInfo("[spiretop] SARAH FREED — neural collar destroyed; the F7 "
+                            "captive is released (rescue clock stopped)");
+        });
 
         triggers.add(x3::phys::Vec3{ tbl[(uint32_t)f].x1 - 8.0f, p.baseY,        -6.0f },
                      x3::phys::Vec3{ tbl[(uint32_t)f].x1,        p.baseY + 3.0f,  6.0f },
@@ -283,7 +281,9 @@ void SpireTopFloors::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
     for (uint32_t i = 0; i < (uint32_t)SpireTopFloor::Count; ++i)
         m_enemies[i].update(dt, scene, physics, eye, atkTarget, attackFx);
     m_overseer.update(dt, scene, physics, eye, atkTarget, attackFx);  // F6 Alien Overseer
-    m_boss.update(dt, scene, physics, eye, atkTarget, attackFx);      // F7 Clone
+    // F7 THE CLONE: its own 3-phase machine + the neural-collar gate + the two
+    // integration events (Sarah freed / Clone dead).
+    m_clone.tick(dt, scene, physics, eye, playerPos, player, attackFx);
 
     // F7 rescue victim (Sarah): tick the timer (gated on m_f7HubReached) + companion
     // follow, and spawn the mini-boss the FRAME the timer expires (mirrors the F5
@@ -307,7 +307,7 @@ void SpireTopFloors::shutdown() {
     // enemy manager BEFORE the physics world dies. Idempotent (see MonsterManager).
     for (auto& m : m_enemies) m.shutdown();
     m_overseer.shutdown();
-    m_boss.shutdown();
+    m_clone.shutdown();
     m_victimBoss.shutdown();
 }
 
@@ -350,8 +350,8 @@ FireResult SpireTopFloors::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec
     FireResult rovr = m_overseer.fire(eye, dir, scene, physics, damage, type);
     if (rovr.hitMonster) return rovr;
     if (!r.hit && rovr.hit) r = rovr;
-    // The F7 Clone boss.
-    FireResult rboss = m_boss.fire(eye, dir, scene, physics, damage, type);
+    // The F7 Clone boss (its onFire re-asserts the Phase-2 collar shield).
+    FireResult rboss = m_clone.onFire(eye, dir, scene, physics, damage, type);
     if (rboss.hitMonster) return rboss;
     if (!r.hit && rboss.hit) r = rboss;
     // The transformed mini-boss, if any.
@@ -366,7 +366,7 @@ void SpireTopFloors::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCo
     for (uint32_t i = 0; i < (uint32_t)SpireTopFloor::Count; ++i)
         m_enemies[i].drawAll(device, frame, scene);
     m_overseer.drawAll(device, frame, scene);   // F6 Alien Overseer
-    m_boss.drawAll(device, frame, scene);       // F7 Clone
+    m_clone.draw(device, frame, scene);         // F7 Clone (+ any placeholder)
     if (m_victim) m_victim->draw(device, frame, scene);
     m_victimBoss.drawAll(device, frame, scene);
 }
@@ -519,6 +519,25 @@ bool runSpireTopSelfTest() {
                        top.boss().at(0).alive() &&
                        top.boss().aliveCount() == 1;
         check(hasBoss, "S3 F7 finale Clone is a live Boss-type leader");
+    }
+
+    // ---- The F7 Clone is the FULL 3-phase fight, staged and not yet fired: it opens
+    // in SEPARATION, its neural collar is placed on Sarah but INERT (phase-2 gated),
+    // and neither integration event (Sarah freed / Clone dead) has fired at load. This
+    // is the seam the descent gate + the companion-combat lane read. ----
+    {
+        const CloneBossFight& cf = top.cloneFight();
+        const bool staged = cf.built() &&
+                            cf.phase() == ClonePhase::Separation &&
+                            !cf.collarActive() && !cf.collar().destroyed &&
+                            cf.collar().strikesLeft == NeuralCollar::kStrikes;
+        const bool quiet = !cf.sarahFreed() && !top.sarahFreed() &&
+                           !cf.cloneDead() && !top.cloneDead();
+        // The collar prompt is reach-gated: nothing from across the floor.
+        const bool reachGated = top.collarPrompt(x3::phys::Vec3{ 999.0f, 999.0f, 999.0f }).empty();
+        check(staged && quiet && reachGated,
+              "S3b F7 Clone runs the 3-phase fight: opens in SEPARATION, collar staged "
+              "but INERT, no Sarah-freed / Clone-dead event fired at load");
     }
 
     // ---- Difficulty escalates F5 < F6 < F7 (TOTAL combatant counts incl. each floor

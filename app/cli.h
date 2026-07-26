@@ -152,6 +152,14 @@ struct CliOptions {
     // MantisArbiter) on a HeadlessDevice + Jolt world; asserts the roster is
     // complete + ordered, each row builds, and per-species stat invariants hold.
     bool        testCanonAliens = false;
+    // --test-clone (THE CLONE — Act-1 finale boss on F7). Builds the 3-phase
+    // Clone + the neural-collar minigame on a HeadlessDevice + Jolt world and
+    // asserts: SEPARATION spawn (+ restrained non-combat Sarah placeholder), the
+    // HP-gated P1->P2 transition arming the collar, the P2 shield (the Clone
+    // cannot be killed before the collar breaks), the collar destroy firing
+    // "Sarah freed" once + mutating into P3, and the kill firing "Clone dead"
+    // once (the descent-gate flag). Headless. Additive flag.
+    bool        testClone = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
     // --test-loading (loading-screen pass, Task #49): asserts progress is monotonic

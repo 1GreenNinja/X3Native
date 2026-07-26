@@ -650,6 +650,41 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
 }
 
 // ---------------------------------------------------------------------------
+// CLIP-SLOT OVERRIDE (Clone boss). Re-resolve ONE animation slot by an explicit
+// fuzzy name, using the identical Skinner::findClip rule the build-time resolve
+// (and setCalmLoop) uses. Inert unless a content module opts in: an unskinned
+// model or an unresolved name leaves the slot exactly as built, so every existing
+// enemy/roster row/self-test is unchanged. See MonsterSystem::ClipSlot.
+// ---------------------------------------------------------------------------
+void MonsterSystem::overrideClip(ClipSlot slot, const char* fuzzyName) {
+    if (!m_animActive || fuzzyName == nullptr || fuzzyName[0] == '\0') return;
+    const int c = m_skinner.findClip({ fuzzyName });
+    if (c < 0) return;                       // absent on this rig -> keep what we had
+    switch (slot) {
+        case ClipSlot::Idle:     m_idleClip      = c; break;
+        case ClipSlot::Walk:     m_walkClip      = c; break;
+        case ClipSlot::Run:      m_runClip       = c; break;
+        case ClipSlot::Attack:   m_attackClip    = c; break;
+        case ClipSlot::Attack2:  m_attackClip2   = c; break;
+        case ClipSlot::HitReact: m_hitReactClip  = c; break;
+        case ClipSlot::Death:    m_deathClip     = c; break;
+    }
+}
+
+int MonsterSystem::clipIndex(ClipSlot slot) const {
+    switch (slot) {
+        case ClipSlot::Idle:     return m_idleClip;
+        case ClipSlot::Walk:     return m_walkClip;
+        case ClipSlot::Run:      return m_runClip;
+        case ClipSlot::Attack:   return m_attackClip;
+        case ClipSlot::Attack2:  return m_attackClip2;
+        case ClipSlot::HitReact: return m_hitReactClip;
+        case ClipSlot::Death:    return m_deathClip;
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
 // Super-strength melee (Phase 2b): apply heavy damage + start the hit-flash, and
 // kill (hide + remove body + death-pop) on HP<=0 — the same death path fire()
 // uses. The caller has already resolved that this monster is inside the punch arc.
