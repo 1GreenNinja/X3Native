@@ -142,6 +142,19 @@ public:
     // generic "enter code N" prompt — which would leak the code on the HUD).
     bool isPhantomDoorEntity(uint32_t entity) const;
 
+    // The MASTER DOOR's index in the host DoorSystem (the unnumbered 7762 slab),
+    // or kNoLink when absent.
+    uint32_t masterDoorIndex() const {
+        for (const PhantomDoor& pd : m_phantoms)
+            if (pd.sublevelTell) return pd.doorIndex;
+        return kNoLink;
+    }
+
+    // Capture staging (X3_STAIR_DEMO=3): unlock + open the master door and flip
+    // its keypad GREEN — the state a live 7762 entry produces. Returns false when
+    // there is no master door.
+    bool stageMasterOpen(Scene& scene, DoorSystem& doors);
+
     // Host hook for a submitted keypad code near the stairwell. Finds the nearest
     // phantom door within `range` of `eye`; on 4545 starts the keypad flash
     // sequence (GREEN 0.7 s -> AMBER 3 s -> red) and returns the response — the

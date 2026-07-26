@@ -662,7 +662,13 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
         std::vector<OledLine> R;
         R.push_back({ "FLOOR DIRECTORY", 0.55f, 0.35f, 0.80f, 13.0f });
         const int n = (int)m_stopsY.size();
-        for (int i = n - 1; i >= 0 && (int)R.size() < 10; --i) {
+        // 9+ stops (RIFT + F1..F7 + the hidden 4.5 row) overflow the 168 px canvas
+        // at the 13/15 px row sizes (10 lines ~ 180 px): the BOTTOM row — RIFT —
+        // baked half off the texture. Compact the rows when the list is long; the
+        // 8-stop bake is pixel-identical to before.
+        const float rowPx = (n >= 9) ? 11.0f : 13.0f;
+        const float curPx = (n >= 9) ? 13.0f : 15.0f;
+        for (int i = n - 1; i >= 0 && (int)R.size() < 11; --i) {
             const char mark = (i == m_curStop) ? '>' : (i == m_target && m_state != ElevState::Idle ? '*' : ' ');
             // W-RIFT: the buried floor reads as a DEAD ROW on the directory until the
             // access code opens it — the panel admits the level exists and nothing more.
@@ -670,9 +676,9 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             if (lockedRow) std::snprintf(buf, sizeof(buf), "%c ---- [LOCKED]", mark);
             else           std::snprintf(buf, sizeof(buf), "%c %s", mark, floorLabel(i).c_str());
             const bool cur = (i == m_curStop);
-            if (lockedRow) R.push_back({ buf, 0.32f, 0.30f, 0.34f, 13.0f });
+            if (lockedRow) R.push_back({ buf, 0.32f, 0.30f, 0.34f, rowPx });
             else R.push_back({ buf, cur ? 0.95f : 0.40f, cur ? 0.95f : 0.42f, cur ? 1.0f : 0.55f,
-                               cur ? 15.0f : 13.0f });
+                               cur ? curPx : rowPx });
         }
         if (m_disco)
             R.push_back({ "** DISCO MODE **", 1.0f, 0.20f, 0.90f, 13.0f });

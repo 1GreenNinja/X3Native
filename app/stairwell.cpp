@@ -538,8 +538,12 @@ void FacilityStairwell::build(const StairwellLayout& lay, CanonFloor& floor, Sce
         seg(M.aX1, M.aX1 + 0.25f, fy, topY, M.aZ0 - 0.25f, M.bZ1);
         // West wall of leg B (x = bX0 plane), north of leg A.
         seg(M.bX0 - 0.25f, M.bX0, fy, topY, M.aZ1 + 0.25f, M.bZ1);
-        // One dim practical mid leg B — enough to find the turn, not enough to
-        // feel safe (honest housing + un-roomed ranged light, stairwell pattern).
+        // Two dim practicals — one over the entry flight (the door reveal must
+        // read as a REAL PLACE, not a void), one mid leg B to find the turn.
+        // Enough to walk by, not enough to feel safe (honest housings +
+        // un-roomed ranged lights, the stairwell pattern).
+        lightHousing(M.aX0 + 2.0f, topY - 0.10f, kDoorZ);
+        addLight(M.aX0 + 2.0f, topY - 0.35f, kDoorZ, 4.5f, 0.90f, 0.74f, 0.52f);
         lightHousing((M.bX0 + M.bX1) * 0.5f, topY - 0.10f, (M.bZ0 + M.bZ1) * 0.5f);
         addLight((M.bX0 + M.bX1) * 0.5f, topY - 0.35f, (M.bZ0 + M.bZ1) * 0.5f,
                  4.0f, 0.85f, 0.70f, 0.50f);
@@ -678,7 +682,12 @@ void FacilityStairwell::update(float dt, Scene& scene, DoorSystem* doors,
     for (const PhantomDoor& pd : m_phantoms) {
         if (!pd.sublevelTell || pd.doorIndex >= doors->count()) continue;
         Door& d = doors->at(pd.doorIndex);
+        // The pad tracks the master lock (GREEN while 7762 holds it open) unless
+        // the 4545 flash sequencer currently owns the screen.
+        const bool flashOwns = (m_flashIdx >= 0 &&
+                                &m_phantoms[(size_t)m_flashIdx] == &pd);
         if (d.state == DoorState::Open) {
+            if (!flashOwns) setKeypadStatus(scene, pd.keypad, KeypadStatus::Unlocked);
             const float dx = playerPos.x - pd.center.x, dy = playerPos.y - pd.center.y,
                         dz = playerPos.z - pd.center.z;
             if (dx * dx + dy * dy + dz * dz > 36.0f) {
@@ -687,8 +696,19 @@ void FacilityStairwell::update(float dt, Scene& scene, DoorSystem* doors,
             }
         } else if (d.state == DoorState::Closed && !d.locked) {
             d.locked = true;                          // re-armed: code required again
+            if (!flashOwns) setKeypadStatus(scene, pd.keypad, KeypadStatus::Locked);
         }
     }
+}
+
+bool FacilityStairwell::stageMasterOpen(Scene& scene, DoorSystem& doors) {
+    for (const PhantomDoor& pd : m_phantoms) {
+        if (!pd.sublevelTell || pd.doorIndex >= doors.count()) continue;
+        doors.unlockAndOpen(doors.at(pd.doorIndex));
+        setKeypadStatus(scene, pd.keypad, KeypadStatus::Unlocked);
+        return true;
+    }
+    return false;
 }
 
 FacilityStairwell::CodeResponse FacilityStairwell::demoSubmit(bool tell, Scene& scene) {

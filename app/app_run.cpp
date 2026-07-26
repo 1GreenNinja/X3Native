@@ -1443,6 +1443,9 @@ int runDefaultHost(HostContext& hc) {
     // deliberately taught NOWHERE, by order.)
     x3::game::HoloTerminal   stairLore;
     x3::game::HoloTerminal   liftLore;
+    // X3_STAIR_DEMO capture staging: the phantom keypad's 4545 response line for
+    // the still's HUD (set at build; drawn by the capture HUD block).
+    std::string              stairDemoBark;
     bool  riftBuilt    = false;
     bool  riftZonePrev = false;      // edge: restore the room-recipe atmosphere on exit
     float riftTeleCool = 0.0f;       // seconds before a rift may take you again
@@ -2044,7 +2047,7 @@ int runDefaultHost(HostContext& hc) {
                     stairLore.build(scene, *device,
                                     x3::phys::Vec3{ rm.x0() + 0.45f, rm.y0() + 2.05f,
                                                     rm.z1() - 1.1f },
-                                    /*yaw*/1.5708f, /*w*/1.5f, /*h*/0.95f,
+                                    /*yaw*/-1.5708f, /*w*/1.5f, /*h*/0.95f,
                                     /*ceilingY*/rm.y1() - 0.16f);
                     stairLore.setLayout(x3::game::HoloTerminal::Layout::Readout);
                     stairLore.setTextColor(1.0f, 0.72f, 0.30f, 1.0f);   // maintenance amber
@@ -2052,9 +2055,10 @@ int runDefaultHost(HostContext& hc) {
                         "FACILITY MAINTENANCE - WORK ORDER 217",
                         "STAIRWELL SERVICE VOIDS",
                         "",
-                        "ALL VOID DOORS RE-KEYED 45-45 AFTER THE",
-                        "INCIDENT. STANDING ORDER: VOIDS STAY",
-                        "SEALED. ATMO CERT REQUIRED FOR ENTRY.",
+                        "ALL VOID DOORS RE-KEYED 45-45",
+                        "AFTER THE INCIDENT.",
+                        "STANDING ORDER: VOIDS STAY",
+                        "SEALED. ATMO CERT REQUIRED.",
                         "THERE IS NOTHING TO RETRIEVE.",
                         "",
                         "DO NOT COUNT THE LANDINGS.",
@@ -2073,20 +2077,22 @@ int runDefaultHost(HostContext& hc) {
                     liftLore.build(scene, *device,
                                    x3::phys::Vec3{ rm.x0() + 0.45f, rm.y0() + 2.05f,
                                                    rm.z0() + 2.5f },
-                                   /*yaw*/1.5708f, /*w*/1.5f, /*h*/0.95f,
+                                   /*yaw*/-1.5708f, /*w*/1.5f, /*h*/0.95f,
                                    /*ceilingY*/rm.y1() - 0.16f);
                     liftLore.setLayout(x3::game::HoloTerminal::Layout::Readout);
                     liftLore.setTextColor(0.42f, 0.66f, 1.60f, 1.0f);   // engineering blue
                     liftLore.setLines({
-                        "LIFT MAINTENANCE - CHIEF ENGINEER'S LOG",
-                        "ENTRY 88 - CH. ENG. VASQUEZ",
+                        "LIFT MAINTENANCE - ENGINEER'S LOG 88",
+                        "CH. ENG. VASQUEZ",
                         "",
-                        "RE-ENABLED THE HALF-FLOOR STOP FOR THE",
-                        "CHORUS SURVEY. IT IS NOT ON THE PANEL.",
+                        "RE-ENABLED THE HALF-FLOOR",
+                        "STOP FOR THE CHORUS SURVEY.",
+                        "IT IS NOT ON THE PANEL.",
                         "IT WILL STAY THAT WAY.",
                         "",
                         "NEW CODE PER PROTOCOL:",
-                        "DOUBLE THE FOUR, DOUBLE THE FIVE.",
+                        "DOUBLE THE FOUR,",
+                        "DOUBLE THE FIVE.",
                         "",
                         "GOD HELP WHOEVER RIDES IT.",
                     });
@@ -2094,6 +2100,27 @@ int runDefaultHost(HostContext& hc) {
                         scene.get(ei).roomId = corrRm;
                     x3::logInfo("--world canonlevel: CLUE 2 (lift code riddle, Vasquez "
                                 "log) on the glass in '" + rm.name + "'");
+                }
+            }
+            // CAPTURE HOOK (headless stills): X3_STAIR_DEMO=1|2 stages a phantom
+            // keypad mid-4545-response — 1 = a numbered service void (amber pad +
+            // denial line), 2 = the unnumbered door (the sublevel tell). Mirrors
+            // the X3_RIFT_OPEN idiom; the capture HUD draws stairDemoBark.
+            if (const char* sdEnv = std::getenv("X3_STAIR_DEMO"); sdEnv && stairwell.built()) {
+                if (sdEnv[0] == '3') {
+                    // 3 = the OWNER'S 7762 path: the master door OPEN + pad green
+                    // (capture ticks canonDoors so the slab actually slides).
+                    if (stairwell.stageMasterOpen(scene, canonDoors))
+                        x3::logInfo("X3_STAIR_DEMO=3: master door staged OPEN (7762 path) for capture");
+                } else {
+                    using CR = x3::game::FacilityStairwell::CodeResponse;
+                    const CR sdr = stairwell.demoSubmit(sdEnv[0] == '2', scene);
+                    if (sdr != CR::NotHandled) {
+                        stairDemoBark = (sdr == CR::SublevelTell)
+                            ? "SUBLEVEL ACCESS VIA PRIMARY LIFT ONLY - SEE CHIEF ENGINEER"
+                            : "SERVICE VOID - NO ATMOSPHERE - ENTRY DENIED";
+                        x3::logInfo("X3_STAIR_DEMO: staged phantom-door 4545 response for capture");
+                    }
                 }
             }
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
@@ -5891,6 +5918,10 @@ int runDefaultHost(HostContext& hc) {
                 // floor directory (which is where the RIFT stop appears) photographs blank.
                 elevator.update(dt, scene, *physics);
             }
+            // Canon doors must tick too, or a door staged open for a capture
+            // (X3_STAIR_DEMO=3: the 7762 master door) photographs shut.
+            if (canonWorld && canonFloor.valid())
+                canonDoors.update(dt, scene, *physics);
             // WORLD CARS staging: the capture camera FOLLOWS the driven car
             // (the drive host's chase framing around the shot-cam look angles).
             if (shotDriving) {
@@ -6191,6 +6222,21 @@ int runDefaultHost(HostContext& hc) {
                     addShotRoom(slay.arenaCenter, slay.arenaHalf);
                 }
                 shotHud.draw(shotUi, shm, dt);
+                // X3_STAIR_DEMO: the phantom keypad's 4545 response line, drawn
+                // exactly where the live loop's bark sits (center, 62% down).
+                if (!stairDemoBark.empty()) {
+                    const float sdPx = 22.0f;
+                    const float sdW  = device->textAdvance(x3::rhi::FontRole::Menu,
+                                                           stairDemoBark.c_str(), sdPx);
+                    const float sdX  = 640.0f - sdW * 0.5f;
+                    const float sdY  = 720.0f * 0.62f;
+                    const float sdSh[4]  = { 0.0f, 0.0f, 0.0f, 0.7f };
+                    const float sdCol[4] = { 1.34f, 0.80f, 0.22f, 1.0f };   // amber
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu,
+                                         stairDemoBark.c_str(), sdX + 1.5f, sdY + 1.5f, sdPx, sdSh);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu,
+                                         stairDemoBark.c_str(), sdX, sdY, sdPx, sdCol);
+                }
                 // W-MENU (X3_WORLD_MENU=1): the world/place directory over the still,
                 // fed by the SAME reachability resolver the live menu uses — so what the
                 // photograph says about each place is what the game says.
@@ -7295,20 +7341,6 @@ int runDefaultHost(HostContext& hc) {
     x3::game::NpcDialog npcDialog;
     float     npcBarkTimer = 0.0f;   // >0 while her companion one-liner is shown
     std::string npcBarkText;
-    // CAPTURE HOOK (headless stills): X3_STAIR_DEMO=1|2 stages a phantom keypad
-    // mid-4545-response — 1 = a numbered service void (amber pad + denial bark),
-    // 2 = the unnumbered door (the sublevel tell). Mirrors the X3_RIFT_OPEN idiom.
-    if (const char* sdEnv = std::getenv("X3_STAIR_DEMO"); sdEnv && stairwell.built()) {
-        using CR = x3::game::FacilityStairwell::CodeResponse;
-        const CR sdr = stairwell.demoSubmit(sdEnv[0] == '2', scene);
-        if (sdr != CR::NotHandled) {
-            npcBarkText = (sdr == CR::SublevelTell)
-                ? "SUBLEVEL ACCESS VIA PRIMARY LIFT ONLY - SEE CHIEF ENGINEER"
-                : "SERVICE VOID - NO ATMOSPHERE - ENTRY DENIED";
-            npcBarkTimer = 9999.0f;
-            x3::logInfo("X3_STAIR_DEMO: staged phantom-door 4545 response for capture");
-        }
-    }
     // W5-3: the WIN card (Sarah extracted at the Helipad). Timer > 0 draws the
     // centered end-card over the live scene; winLine2 carries the rescue tally.
     float       winTimer = 0.0f;
