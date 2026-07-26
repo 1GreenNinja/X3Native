@@ -50,6 +50,8 @@
 #include <cstdlib>       // getenv (ECHO_* switches)
 #include <cctype>        // tolower (persona prompt)
 #include <sstream>       // console command parsing
+#include <thread>        // r_maxfps frame limiter (sleep_for)
+#include <chrono>
 #include <algorithm>     // clamp/max (bubble layout)
 #include <filesystem>    // .gguf model resolution
 #include <fstream>
@@ -157,10 +159,21 @@ std::string g_shotPath;      // console `screenshot`: armed capture to finalize 
 float g_ambScale = 1.0f;     // console `amb <scale>`: city ambient multiplier (Tim's glare knob)
 float g_hazeScale = 1.0f;    // console `haze <scale>`: aerial-fog multiplier (distance washout knob)
 float g_todSpeed = 1.0f;     // console `todspeed <mult>`: day-clock rate
-float g_expMul   = 1.0f;     // console `exposure <mult>`: post exposure multiplier
+float g_expMul   = 1.0f;     // r_exposure: post exposure multiplier
 float g_bloomMul = 1.0f;     // console `bloom <mult>`: bloom intensity multiplier
 float g_flySpeedMul = 1.0f;  // console `speed <mult>`: fly-mode speed multiplier
 float g_sensMul  = 1.0f;     // console `sens <mult>`: mouselook sensitivity multiplier
+
+// r_* POST-STACK cvars (the full X3Native family, per Tim: "Should have
+// everything X3native has"). applyAtmosphere is the SINGLE setPostFX writer;
+// it reads these each frame. Negative float = keep this world's scene-tuned
+// dynamic value (the -1 sentinel convention from PostFXParams).
+struct EchoPostCv {
+    int   tonemap = 1, bloomOn = 1, ae = 1, taa = 1, velocity = 0;
+    float bloomIntensity = -1.0f, bloomThreshold = -1.0f;
+    float aeSpeed = -1.0f, aeMin = -1.0f, aeMax = -1.0f, aeKey = -1.0f;
+    float taaSharpen = -1.0f;
+} g_postCv;
 float g_sunOverride = -1.0f; // console `sun <scale>|auto`: <0 = auto ramp
 void charCB(GLFWwindow*, unsigned int c) {
     if (g_hud && g_hud->consoleOpen()) g_hud->onChar(c);
@@ -520,6 +533,20 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // un-encoded swapchain, not real darkness. Halved now that *_SRGB encodes properly;
     // re-tune from here against fresh captures.
     px.aeMax          = 2.20f + 0.30f * low + 0.8f * night;
+    // r_* cvar overrides (single-writer rule: only THIS call touches setPostFX;
+    // the per-frame cvar sync fills g_postCv; -1 float = keep the scene value).
+    px.tonemapMode  = g_postCv.tonemap;
+    px.bloomEnabled = g_postCv.bloomOn != 0;
+    if (g_postCv.bloomIntensity >= 0.0f) px.bloomIntensity = g_postCv.bloomIntensity;
+    if (g_postCv.bloomThreshold >= 0.0f) px.bloomThreshold = g_postCv.bloomThreshold;
+    if (!g_postCv.ae) px.autoExposure = false;
+    if (g_postCv.aeSpeed >= 0.0f) px.aeSpeed = g_postCv.aeSpeed;
+    if (g_postCv.aeMin   >= 0.0f) px.aeMin   = g_postCv.aeMin;
+    if (g_postCv.aeMax   >= 0.0f) px.aeMax   = g_postCv.aeMax;
+    if (g_postCv.aeKey   >= 0.0f) px.aeKey   = g_postCv.aeKey;
+    if (!g_postCv.taa) px.taa = false;
+    if (g_postCv.taaSharpen >= 0.0f) px.taaSharpen = g_postCv.taaSharpen;
+    px.velocity = g_postCv.velocity != 0;
     // ⚠ This setPostFX runs EVERY FRAME with a DEFAULT-CONSTRUCTED px (autoExposure
     // and taa both true), so it silently overrode main.cpp's --legacypost / --notaa
     // A/B levers: eye adaptation could not be turned off in this world. That is not
@@ -3034,17 +3061,62 @@ int hostEchotropolis(HostContext& hc) {
         }
     };
 
+    // CVars — the FULL X3Native r_* family (Tim: "Should have everything
+    // X3native has"), same names + docs as app_run so muscle memory transfers.
+    // Type `r_maxfps 120`, `r_ddgi 0`, `r_taa 0`, etc. Synced to the device
+    // every frame below; applyAtmosphere stays the single setPostFX writer.
+    console->registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    console->registerCVar("r_exposure", "1.0", "whole-scene brightness (pre-tonemap exposure multiplier; live)");
+    console->registerCVar("r_tonemap",        "1",    "tonemap operator: 1 = ACES filmic (default), 0 = passthrough clamp (debug A/B)");
+    console->registerCVar("r_bloom",          "1",    "bloom on/off (0 skips the whole downsample/upsample chain)");
+    console->registerCVar("r_bloomintensity", "-1",   "bloom strength override; <0 = keep the scene-tuned value (default)");
+    console->registerCVar("r_bloomthreshold", "-1",   "bloom bright-pass threshold; <0 = keep the scene-tuned value");
+    console->registerCVar("r_autoexposure",   "1",    "auto-exposure (eye adaptation): scene log-luminance drives exposure; r_exposure becomes a bias");
+    console->registerCVar("r_aespeed",        "-1",   "auto-exposure adaptation speed (1/s); <0 = engine default");
+    console->registerCVar("r_aemin",          "-1",   "auto-exposure clamp floor; <0 = engine default");
+    console->registerCVar("r_aemax",          "-1",   "auto-exposure clamp ceiling; <0 = keep the scene-tuned night ramp");
+    console->registerCVar("r_aekey",          "-1",   "auto-exposure target middle-grey key; <0 = engine default");
+    console->registerCVar("r_taa",        "1",    "temporal AA: 1 = jitter + history resolve (default), 0 = off");
+    console->registerCVar("r_taasharpen", "-1",   "post-TAA RCAS-style sharpen; <0 = engine default");
+    console->registerCVar("r_velocity",   "0",    "per-object motion vectors for TAA/DLSS (0 = camera-only reproj)");
+    console->registerCVar("r_rtao",          "0",    "hardware RT ambient occlusion (ray query); 0 = off (raster/SSAO)");
+    console->registerCVar("r_rtao_radius",   "2.0",  "RT AO ray length (meters)");
+    console->registerCVar("r_rtao_rays",     "8",    "RT AO hemisphere rays per pixel (1..32)");
+    console->registerCVar("r_rtao_strength", "0.85", "RT AO applied darkening (1 = full, 0 = off)");
+    console->registerCVar("r_ssr",           "0", "screen-space reflections (needs r_taa 1); 0 = off");
+    console->registerCVar("r_rtreflections", "0", "ray-query reflection fallback where SSR misses (RT hardware only)");
+    console->registerCVar("r_reflquality",   "0", "reflection buffer resolution: 0 = half-res (default), 1 = full-res");
+    console->registerCVar("r_reflintensity", "1", "reflection blend weight scale [0..1] on the IBL-specular replace");
+    console->registerCVar("r_ddgi",           "1",    "DDGI probe-grid GI (this world defaults ON; 0 = flat/IBL ambient)");
+    console->registerCVar("r_ddgi_debug",     "0",    "DDGI debug view: 0 = off, 1 = irradiance field, 2 = grid confidence");
+    console->registerCVar("r_ddgi_rays",      "96",   "DDGI rays per probe per frame (16..128)");
+    console->registerCVar("r_ddgi_intensity", "1.0",  "DDGI applied GI scale on the replaced ambient diffuse");
+    console->registerCVar("r_rtshadows",    "0",    "RT soft shadows: 0 = CSM-only, 1 = sun RT, 2 = sun + point lights (district self-shadow known)");
+    console->registerCVar("r_rtsun_size",   "0.6",  "RT sun angular radius (degrees) — penumbra width");
+    console->registerCVar("r_rtpoint_max",  "4",    "RT point-light shadow rays per pixel budget");
+    console->registerCVar("r_rtpoint_size", "0.15", "RT point-light source radius (meters) — penumbra softness");
+    console->registerCVar("r_frustumcull", "1", "CPU per-object frustum cull (0 = draw every instance, no cull)");
+    console->registerCVar("r_cullpath", "0", "GPU cull path: -1 auto, 0 CPU, 1 tier0 gfx-queue, 2 tier1 async, 3 tier2 meshlets");
+    console->registerCVar("r_hzb", "0", "HZB occlusion cull on the GPU path (0 = frustum only)");
+    console->registerCVar("r_skinnedrt", "1", "add visible skinned characters to the RT scene TLAS (0 = static-only TLAS)");
+    // ECHO_RT=1 (the legacy env opt-in for RT sun shadows + RT AO) seeds the cvars.
+    { const char* e = std::getenv("ECHO_RT");
+      if (e && e[0] == '1') { console->set("r_rtshadows", "1"); console->set("r_rtao", "1"); } }
+    double frameCapPrev = glfwGetTime();
+
     // ===== DDGI (Tim: "Turn On DDGI!") — probe-grid GI over the city core =====
     // Replaces the flat ambient-diffuse term with a live probe light field: sun
     // bounce off facades, neon spill onto streets, sky light in alleys. Explicit
     // volume (auto-fit clamps to 240 m — useless on a 4 km island): an AABB over
     // the crown city + drag + districts, harbor level up over the towers.
     // Tier-gated in the device (ray query + position fetch; the 5090 qualifies,
-    // anything else stores it as a no-op). ECHO_DDGI=0 opts out; `gi` flips live.
+    // anything else stores it as a no-op). ECHO_DDGI=0 seeds r_ddgi 0; the
+    // enabled/debug/rays/intensity lanes live in the r_ddgi* cvars (synced below).
     x3::rhi::IRenderDevice::DdgiParams ddgiP{};
     {
         const char* e = std::getenv("ECHO_DDGI");
-        ddgiP.enabled = !(e && e[0] == '0');
+        if (e && e[0] == '0') console->set("r_ddgi", "0");
+        ddgiP.enabled = console->getInt("r_ddgi") != 0;
         ddgiP.originX = -740.0f; ddgiP.originY = 0.0f; ddgiP.originZ = 70.0f;
         ddgiP.sizeX   = 1600.0f; ddgiP.sizeY  = 400.0f; ddgiP.sizeZ  = 1600.0f;
         ddgiP.countX  = 24; ddgiP.countY = 8; ddgiP.countZ = 24;
@@ -3054,6 +3126,54 @@ int hostEchotropolis(HostContext& hc) {
                     (ddgiP.enabled ? "ON" : "off (ECHO_DDGI=0)") +
                     (device->rayTracingSupported() ? " [RT hardware]" : " [no RT — inert]"));
     }
+
+    // Per-frame cvar -> device sync (the app_run applyRtaoCVars pattern). Cheap:
+    // string lookups on ~20 cvars; every setter is a cached-store no-op when
+    // unchanged. Runs at the top of the frame so console edits apply same-frame.
+    auto syncCVars = [&]() {
+        auto cf = [&](const char* n) { return console->getFloat(n); };
+        auto ci = [&](const char* n) { return console->getInt(n); };
+        g_expMul = std::max(0.05f, cf("r_exposure"));
+        g_postCv.tonemap        = ci("r_tonemap");
+        g_postCv.bloomOn        = ci("r_bloom");
+        g_postCv.bloomIntensity = cf("r_bloomintensity");
+        g_postCv.bloomThreshold = cf("r_bloomthreshold");
+        g_postCv.ae             = ci("r_autoexposure");
+        g_postCv.aeSpeed        = cf("r_aespeed");
+        g_postCv.aeMin          = cf("r_aemin");
+        g_postCv.aeMax          = cf("r_aemax");
+        g_postCv.aeKey          = cf("r_aekey");
+        g_postCv.taa            = ci("r_taa");
+        g_postCv.taaSharpen     = cf("r_taasharpen");
+        g_postCv.velocity       = ci("r_velocity");
+        x3::rhi::IRenderDevice::RtaoParams ao{};
+        ao.enabled  = ci("r_rtao") != 0;
+        ao.radius   = cf("r_rtao_radius");
+        ao.rays     = std::clamp(ci("r_rtao_rays"), 1, 32);
+        ao.strength = cf("r_rtao_strength");
+        device->setRtaoParams(ao);
+        x3::rhi::IRenderDevice::ReflectionParams rf{};
+        rf.ssr        = ci("r_ssr") != 0;
+        rf.rtFallback = ci("r_rtreflections") != 0;
+        rf.fullRes    = ci("r_reflquality") != 0;
+        rf.intensity  = cf("r_reflintensity");
+        device->setReflectionParams(rf);
+        ddgiP.enabled      = ci("r_ddgi") != 0;
+        ddgiP.debug        = ci("r_ddgi_debug");
+        ddgiP.raysPerProbe = std::clamp(ci("r_ddgi_rays"), 16, 128);
+        ddgiP.intensity    = cf("r_ddgi_intensity");
+        device->setDdgiParams(ddgiP);
+        x3::rhi::IRenderDevice::RtShadowParams rs{};
+        rs.tier        = ci("r_rtshadows");
+        rs.sunSizeDeg  = cf("r_rtsun_size");
+        rs.pointMax    = ci("r_rtpoint_max");
+        rs.pointRadius = cf("r_rtpoint_size");
+        device->setRtShadowParams(rs);
+        device->setFrustumCullEnabled(ci("r_frustumcull") != 0);
+        device->setCullPath(ci("r_cullpath"));
+        device->setHzbEnabled(ci("r_hzb") != 0);
+        device->setSkinnedRtEnabled(ci("r_skinnedrt") != 0);
+    };
 
     // ===== CONSOLE world commands (modeled on the Babylon X3Console catalog:
     // tod / tp / pos / camera modes / render toggles; the RPG-side commands
@@ -3156,9 +3276,10 @@ int hostEchotropolis(HostContext& hc) {
     console->registerCommand("todspeed", [&, mulCmd](const std::vector<std::string>& a) {
         mulCmd(g_todSpeed, a, "todspeed", 0.0f, 100.0f);
     }, "day-clock rate (0 = frozen, 10 = timelapse)");
-    console->registerCommand("exposure", [&, mulCmd](const std::vector<std::string>& a) {
-        mulCmd(g_expMul, a, "exposure", 0.2f, 3.0f);
-    }, "post exposure multiplier");
+    console->registerCommand("exposure", [&](const std::vector<std::string>& a) {
+        console->set("r_exposure", a.empty() ? "1.0" : a[0]);
+        console->print("exposure " + (a.empty() ? std::string("auto") : a[0]) + "   (alias of r_exposure)");
+    }, "post exposure multiplier (alias of r_exposure)");
     console->registerCommand("bloom", [&, mulCmd](const std::vector<std::string>& a) {
         mulCmd(g_bloomMul, a, "bloom", 0.0f, 4.0f);
     }, "bloom intensity multiplier");
@@ -3174,19 +3295,16 @@ int hostEchotropolis(HostContext& hc) {
         else console->print("fov <40..110>   (current " + std::to_string((int)opt.fovDeg) + ")");
     }, "camera field of view (degrees)");
     console->registerCommand("ssr", [&](const std::vector<std::string>& a) {
-        x3::rhi::IRenderDevice::ReflectionParams rf{};
-        rf.ssr = a.empty() || a[0] != "off";
-        device->setReflectionParams(rf);
-        console->print(rf.ssr ? "SSR reflections ON" : "SSR reflections OFF");
-    }, "screen-space reflections on|off");
+        const bool on = a.empty() || a[0] != "off";
+        console->set("r_ssr", on ? "1" : "0");
+        console->print(on ? "SSR reflections ON  (r_ssr 1)" : "SSR reflections OFF  (r_ssr 0)");
+    }, "screen-space reflections on|off (alias of r_ssr)");
     console->registerCommand("rt", [&](const std::vector<std::string>& a) {
-        x3::rhi::IRenderDevice::RtShadowParams rs{};
         const bool on = !a.empty() && a[0] == "on";
-        if (on) { rs.tier = 1; rs.sunSizeDeg = 0.6f; }
-        device->setRtShadowParams(rs);
+        console->set("r_rtshadows", on ? "1" : "0");
         console->print(on ? "RT sun shadows ON (known: district coplanar self-shadow)"
                           : "RT shadows off (CSM only)");
-    }, "ray-traced sun shadows on|off");
+    }, "ray-traced sun shadows on|off (alias of r_rtshadows)");
     console->registerCommand("go", [&](const std::vector<std::string>& a) {
         struct Spot { const char* name; float x, y, z, yaw, pitch; };
         static const Spot kSpots[] = {
@@ -3264,19 +3382,21 @@ int hostEchotropolis(HostContext& hc) {
     }, "echo <text>");
     console->registerCommand("gi", [&](const std::vector<std::string>& a) {
         const std::string arg = a.empty() ? "" : a[0];
-        if      (arg == "off")   ddgiP.enabled = false;
-        else if (arg == "debug") { ddgiP.enabled = true; ddgiP.debug = (ddgiP.debug + 1) % 3; }
-        else                     { ddgiP.enabled = true; ddgiP.debug = 0; }
-        device->setDdgiParams(ddgiP);
-        console->print(std::string("DDGI ") + (ddgiP.enabled ? "ON" : "off") +
-                       (ddgiP.debug ? (ddgiP.debug == 1 ? " [debug: irradiance]" : " [debug: confidence]") : "") +
+        if      (arg == "off")   console->set("r_ddgi", "0");
+        else if (arg == "debug") { console->set("r_ddgi", "1");
+                                   console->set("r_ddgi_debug",
+                                       std::to_string((console->getInt("r_ddgi_debug") + 1) % 3)); }
+        else                     { console->set("r_ddgi", "1"); console->set("r_ddgi_debug", "0"); }
+        const int dbg = console->getInt("r_ddgi_debug");
+        console->print(std::string("DDGI ") + (console->getInt("r_ddgi") ? "ON" : "off") +
+                       (dbg ? (dbg == 1 ? " [debug: irradiance]" : " [debug: confidence]") : "") +
                        (device->rayTracingSupported() ? "" : "  (no RT hardware — inert)"));
-    }, "probe-grid GI on|off|debug (converges ~2s)");
+    }, "probe-grid GI on|off|debug (alias of r_ddgi*)");
     console->registerCommand("cull", [&](const std::vector<std::string>& a) {
         const bool on = a.empty() || a[0] != "off";
-        device->setFrustumCullEnabled(on);
+        console->set("r_frustumcull", on ? "1" : "0");
         console->print(on ? "frustum cull ON" : "frustum cull OFF (diagnostic)");
-    }, "frustum culling on|off (narrow-arc diagnostic)");
+    }, "frustum culling on|off (alias of r_frustumcull)");
 
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
@@ -3796,6 +3916,7 @@ int hostEchotropolis(HostContext& hc) {
                             x3::game::todPhaseName(prevPhase));
             }
         }
+        syncCVars();   // r_* console cvars -> device (before the atmosphere writes post)
         const x3::game::TodSample todS = tod.sample();
         applyTodSample(device, todS);
         applyAtmosphere(device, todS);   // ATMOSPHERE: aerial haze + grade + bloom
@@ -4185,6 +4306,24 @@ int hostEchotropolis(HostContext& hc) {
         if (!g_shotPath.empty()) {        // console `screenshot`: same finalize
             device->captureFrame(g_shotPath.c_str());
             g_shotPath.clear();
+        }
+
+        // ---- Frame cap (r_maxfps, app_run pattern): sleep out the remainder of
+        // the frame budget so vsync-off doesn't churn the GPU on invisible
+        // frames. Sleep most of the wait, spin the last ~1 ms for accuracy. ----
+        {
+            const float maxfps = (float)std::atof(console->getString("r_maxfps").c_str());
+            if (maxfps > 0.0f) {
+                const double target = frameCapPrev + 1.0 / (double)maxfps;
+                double nowc = glfwGetTime();
+                if (nowc < target) {
+                    const double remain = target - nowc;
+                    if (remain > 0.002)
+                        std::this_thread::sleep_for(std::chrono::duration<double>(remain - 0.001));
+                    while (glfwGetTime() < target) { /* short spin to the deadline */ }
+                }
+            }
+            frameCapPrev = glfwGetTime();
         }
 
         // FPS: log once per second.
