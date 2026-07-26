@@ -80,6 +80,7 @@ struct TestFlags {
     bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
+    bool testVigil = false;
     bool testMission = false, testDestruction = false, testDebris = false, testGpuSkin = false;
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
@@ -93,7 +94,12 @@ struct TestFlags {
     bool testSealife = false;    // --test-sealife (great white hunt, bite-once, zap, abyss)
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
+    bool testComplex = false;
+    bool testClubNpcs = false;   // --test-clubnpcs (feat/club-npcs: 3 canon NPCs + trees)
+    bool testJukebox = false;   // --test-jukebox (Club Jukebox pipeline)
+    bool testListen = false;   // --test-listen (CLUB LISTEN MODE beat-detector self-test)
     bool testPerfshop = false;
+    bool testGamma = false;    // --test-gamma (LINEAR-vs-GAMMA acceptance-gate byte measurement)
     // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF
     // space pilot (--test-space) + enemy ship-AI (--test-ship-ai) + targeting/
     // radar/lock (--test-targeting) + ship-damage model (--test-ship-damage) +

@@ -387,7 +387,8 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
             x3::logInfo("[secret] override code accepted — cell trapdoor opening");
         return opened;
     });
-    // Add a clear hint line to the readout (the code is the lore code 1127).
+    // Add a clear hint line to the readout (the cell-hatch code is kSecretRoomCode
+    // = 1278; 1127 is the distinct Club/elevator code — do not conflate them).
     m_terminal.addLine("** MAINTENANCE: floor hatch override available **");
 
     m_built = true;
@@ -535,7 +536,7 @@ bool runSecretRoomSelfTest() {
         const Door& h = doors.at(secret.hatchDoorIndex());
         bool opening = (h.state == DoorState::Opening || h.state == DoorState::Open);
         check(accepted && !h.locked && opening,
-              "S3 correct code (1127) unlocks + opens the hatch");
+              "S3 correct code (1278) unlocks + opens the hatch");
     }
 
     // ---- S4: the secret room exists BELOW the cell (floor at negative Y). ----

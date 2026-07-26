@@ -33,6 +33,7 @@ struct CliOptions {
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
+         testVigil = false,      // --test-vigil: VIGIL bark system (trigger/cooldown/no-repeat/gate/idle)
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
          testPropClip = false,    // --test-propclip: dressing-layer prop AABB vs room bounds (GATE A ext)
@@ -189,6 +190,35 @@ struct CliOptions {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+    // --test-complex (the 7-LEVEL SURVIVAL COMPLEX west of the club): build
+    // headless + assert all 7 levels stand up, the stairwell connects them
+    // top-to-bottom, both entrances (Route-A hatch + Route-B under-club hall)
+    // reach the structure, L7 is a hydroponics bay, NPC markers, budget + leak.
+    bool        testComplex = false;
+    // --screenshot-complex <dir>: capture per-level beauty shots of the Complex
+    // (L2 rec, L3-L6 themed floors, L7 hydroponics, the stairwell, the L7 hall).
+    bool        complexShot = false;
+    std::string complexShotDir = "docs/screenshots/complex";
+
+    // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
+    // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp
+    // of known LINEAR values and reads back the stored byte — linear 0.5 MUST land
+    // on ~188 (127 = still UNORM/unfixed). Self-contained headless Vulkan. Additive.
+    bool        testGamma = false;
+    // --test-clubnpcs (feat/club-npcs): the three canon dialogue NPCs (Danny at the
+    // U-bar, Amara + Emma in the Private Lounge) place with valid talk anchors; their
+    // three chat trees parse + FULL-reachability validate; E-to-talk resolves each;
+    // each `hub` tree starts + reaches its menu. Additive flag.
+    bool        testClubNpcs = false;
+
+    // --test-jukebox (Club Jukebox): headless folder scan / sidecar parse / BPM
+    // retune / empty-folder fallback / corrupt-skip on tiny generated WAVs.
+    bool        testJukebox = false;
+
+    // --test-listen (CLUB LISTEN MODE): deterministic beat-detector self-test —
+    // feed a synthetic click-track at a known BPM through the detector (NO real
+    // audio device) and assert it recovers the onsets + tempo + fires the pulse.
+    bool        testListen = false;
 
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark

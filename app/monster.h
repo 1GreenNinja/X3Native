@@ -785,6 +785,20 @@ public:
     // between attack start and the hit landing). Read by the fresh-LOS self-test.
     bool    winding() const { return m_winding; }
 
+    // PACK ALERT: a squadmate that CAN see the player calls this on nearby allies so
+    // the pack reacts together — an enemy with no LOS of its own still turns and
+    // moves to investigate (a Search toward the shared last-known spot) instead of
+    // idling until it personally rounds the corner. Data-light: seeds the same
+    // last-known / search fields a real sighting would. Does NOT wake a DORMANT
+    // (opening-flow-gated) spawn — those stay gated until their own trigger/damage.
+    void notifyPackAlert(const x3::phys::Vec3& playerPos) {
+        if (!m_alive || m_dormant || m_dmg <= 0) return;   // combat, ungated only
+        if (m_hasLos) return;                              // already sees for itself
+        m_everSawPlayer = true;
+        m_lastKnown     = playerPos;
+        if (m_searchTimer <= 0.0f) m_searchTimer = kAiSearchTime;
+    }
+
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
     // invalid render mesh so Scene::render skips it; this is the single source of
@@ -969,6 +983,17 @@ private:
     // the skinned vertices. Unskinned models leave m_skinner invalid -> static draw. ----
     x3::anim::Skinner        m_skinner;
     x3::rhi::IRenderDevice*  m_device = nullptr;
+
+    // Kick the flinch/hit-react on a surviving hit: plays the BAKED Hit clip one-shot
+    // if the rig has one; ALWAYS raises the procedural stagger floor so a shot ALWAYS
+    // produces a visible recoil (never a silent no-react), regardless of asset state.
+    // Suppressed while a death or attack one-shot owns the pose (don't stomp them).
+    inline void kickHitReact() {
+        if (m_dying) return;
+        m_procStagger = 1.0f;                       // guaranteed visible recoil floor
+        if (m_animActive && m_hitClip >= 0 && m_attackAnimT < 0.0f)
+            m_hitAnimT = 0.0f;                       // preferred: real baked clip
+    }
     // Game-feel cue sink (footstep / impact). Empty => throttled-log stub.
     GameCueFn                m_cueSink;
     // Death FX sink (gib burst). Empty => no extra FX. Fired once at the kill moment.
@@ -995,9 +1020,17 @@ private:
     float                    m_hitReactAnimT = -1.0f; // >=0 while the flinch plays
     int                      m_attackActiveClip = -1; // the variant chosen for the CURRENT swing
     bool                     m_attackAlt = false;     // toggles Attack <-> Attack2
+    // opening-enemies-rigged: a second baked flinch handle used by the drone/procedural
+    // fallback path (union-kept alongside m_hitReactClip; both are referenced in .cpp).
+    int                      m_hitClip    = -1;      // one-shot flinch/hit-react (baked)
     float                    m_attackAnimT = -1.0f;  // >=0 while the attack one-shot plays
     float                    m_deathAnimT  = -1.0f;  // >=0 while the death clip plays
+    float                    m_hitAnimT    = -1.0f;  // >=0 while the hit-react one-shot plays
     bool                     m_deathClipDone = false; // clip finished -> freeze final pose
+    // Procedural STAGGER TELL (visual-only floor): a short recoil offset applied to the
+    // DRAW transform when the monster is shot, guaranteeing a visible flinch even on a
+    // rig with no baked Hit clip. Decays back to 0. Never touches the physics body.
+    float                    m_procStagger  = 0.0f;  // 0..1 recoil intensity (decays)
     // Procedural attack TELL (visual-only): a rear-back + lunge offset applied to the
     // DRAW transform during the melee wind-up so attacks read at gameplay distance
     // even on rigs with no authored Attack clip. Never touches the physics body.
@@ -1006,6 +1039,12 @@ private:
     bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found
+    // GUARANTEED PROCEDURAL MOTION FLOOR (Tim's "anim keeps getting lost" fix): when
+    // NO skeletal clip drives an enemy (the rig-less Drone, a legacy static mesh, or
+    // the box fallback for a missing/stub GLB) this clock advances so update() can
+    // add a hover/idle bob + yaw sway + tilt + attack dive purely in the DRAW
+    // transform — so a rig-less enemy is NEVER a frozen prop. Unused when m_animActive.
+    float                    m_procTime = 0.0f;
     // Footstep cue tracking: the last sampled locomotion phase, so update() can
     // detect a phase crossing (foot plant) between frames and emit a Footstep cue.
     float                    m_lastFootPhase = 0.0f;

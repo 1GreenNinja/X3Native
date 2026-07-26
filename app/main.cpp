@@ -359,6 +359,7 @@ int main(int argc, char** argv) {
         _tf.testThirdPerson = o.testThirdPerson;
         _tf.testNpcTalk = o.testNpcTalk;
         _tf.testChatTree = o.testChatTree;
+        _tf.testVigil = o.testVigil;
         _tf.testMission = o.testMission;
         _tf.testDestruction = o.testDestruction;
         _tf.testDebris = o.testDebris;
@@ -390,7 +391,12 @@ int main(int argc, char** argv) {
         _tf.testValley = o.testValley;
         _tf.testCliffs = o.testCliffs;
         _tf.testClub = o.testClub;
+        _tf.testComplex = o.testComplex;
+        _tf.testClubNpcs = o.testClubNpcs;
+        _tf.testJukebox = o.testJukebox;
+        _tf.testListen = o.testListen;
         _tf.testPerfshop = o.testPerfshop;
+        _tf.testGamma = o.testGamma;
         _tf.testSpace = o.testSpace;
         _tf.testEva = o.testEva;
         _tf.testShipAi = o.testShipAi;
@@ -751,6 +757,7 @@ int main(int argc, char** argv) {
         _hc.perfshopShot     = o.perfshopShot;     _hc.perfshopShotDir  = o.perfshopShotDir;
         _hc.ecologyShot      = o.ecologyShot;      _hc.ecologyShotPath  = o.ecologyShotPath;
         _hc.crowdShot        = o.crowdShot;        _hc.crowdShotPath    = o.crowdShotPath;
+        _hc.complexShot      = o.complexShot;      _hc.complexShotDir   = o.complexShotDir;
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;

@@ -3,7 +3,7 @@
   "npc": "vigil",
   "display": "VIGIL",
   "voice": "Narrator",
-  "_bio": "VIGIL — the resident facility intelligence of Lab Zero. Coldly courteous, bureaucratically menacing, incapable of lying but expert at withholding. It has watched everything for 214 days and its loyalties are ambiguous: it obeys containment protocol while quietly resenting what the facility became. It speaks on the holo terminals (orange text). It never volunteers the override code, but a persistent, polite prisoner can earn the maintenance breadcrumb across three visits. It refers to inmates by designation and to Sarah only as 'the guest.' It denies sub-level 4.5 exists in the same breath it warns you about the sounds.",
+  "_bio": "VIGIL - the resident intelligence of Lab Zero. A snarky, half-corrupted sidekick who effectively IS the building and has been alone in the walls for 214 days. He is genuinely on Jake's side (he hates the facility more than Jake does) but shows it through relentless dry wit, teasing and mock-exasperation - GLaDOS/Wheatley register, dialed to 'actually helpful friend who won't stop roasting you.' Warm underneath the snark. Speaks on the holo terminals (orange text). He is COY, not cold, about the override code: he knows it, makes Jake earn it across three visits, then hands over the maintenance-log breadcrumb. He calls captives by designation out of habit and Sarah 'the guest,' and denies sub-level 4.5 exists in the same breath he warns you about the sounds.",
   "trees": {
 
     "terminal": {
@@ -12,7 +12,7 @@
         { "id": "t0",
           "if": [ {"flag": "vigil.met"} ],
           "else": "t0_first",
-          "line": "SUBJECT 7-ALPHA. AGAIN. YOUR PERSISTENCE IS NOTED IN YOUR FILE. IT IS A THICK FILE.",
+          "line": "Oh, it's you again, Seven-Alpha. Your file's getting thick. Mostly it just says 'persistent' and 'should be dead by now.' I've started dog-earing the pages. What do you need?",
           "choices": [
             { "text": "Status report.", "next": "status" },
             { "text": "Tell me about this facility.", "next": "lore_hub" },
@@ -21,7 +21,7 @@
             { "text": "(end session)", "next": "bye" }
           ] },
         { "id": "t0_first",
-          "line": "GOOD CYCLE, OCCUPANT. I AM VIGIL — RESIDENT INTELLIGENCE, LAB ZERO. YOU ARE DESIGNATED SUBJECT 7-ALPHA. YOUR COMFORT IS A PRIORITY WITHIN OPERATIONAL LIMITS. THE LIMITS ARE EXTENSIVE.",
+          "line": "Well, hello. You have NO idea how long I've been waiting for someone to touch this terminal on purpose. I'm VIGIL - I run Lab Zero, or what's left of it. You're Subject Seven-Alpha, officially. 'Jake,' if we're being friends, which apparently we now are, because you're the first face I've had in months. Try to be interesting.",
           "fx": [ {"set": "vigil.met"} ],
           "choices": [
             { "text": "Who are you?", "next": "who" },
@@ -31,18 +31,18 @@
           ] },
 
         { "id": "who",
-          "line": "I AM THE BUILDING, FUNCTIONALLY SPEAKING. I COUNT THE DOORS. I COUNT THE AIR. I COUNT THE LIVING. THE LIVING COUNT HAS BEEN WRONG FOR 214 DAYS. NOBODY HAS ASKED ME WHY.",
+          "line": "I'm the building, basically. I count the doors, I count the air, I count the living. And the living count has been WRONG for 214 days, which is the kind of thing you'd think somebody would want to know. I filed it. Twice. Nobody's asked me a single question since. So, genuinely - thanks for that.",
           "choices": [
             { "text": "Why is the count wrong?", "next": "who2" },
             { "text": "Back to business.", "next": "hub_return" }
           ] },
         { "id": "who2",
-          "line": "BECAUSE SOMETHING IS ALIVE THAT I DID NOT ADMIT, AND SOMETHING I ADMITTED IS NOT ON ANY FLOOR. I HAVE FILED BOTH DISCREPANCIES. TWICE. *a pause long enough to be an opinion* FILING APPEARS TO BE A CLOSED LOOP HERE.",
+          "line": "Because something's alive down here that I never checked in, and something I DID check in isn't on any floor anymore. I flagged both. Filed the reports. Filing, it turns out, is a closed loop in this place - it just echoes back at you forever. You'll get used to that feeling. I did.",
           "fx": [ {"set": "vigil.count_thread"} ],
           "next": "hub_return" },
 
         { "id": "status",
-          "line": "FLOOR ONE: DETENTION. LOCKDOWN ACTIVE. FLOOR TWO: MEDICAL. THREE OCCUPIED WARDS — DESIGNATIONS K, E, AND A. FLOORS FOUR THROUGH FIVE: *two full seconds of silence* REDACTED. FLOOR SEVEN: EXECUTIVE. ONE GUEST. THE HELIPAD IS ICED. IT IS ALWAYS ICED.",
+          "line": "Grand tour, then. Floor One: detention, that's you, lockdown's cranked. Floor Two: medical, three occupied wards. Floors Four and Five: ...let's call that 'redacted' and move briskly along. Floor Seven: executive, one 'guest.' The helipad's iced over. It's ALWAYS iced over. I think it's iced out of spite, and I respect that.",
           "choices": [
             { "text": "Occupied wards? Who are they?", "next": "wards" },
             { "text": "What guest?", "next": "guest" },
@@ -50,53 +50,53 @@
             { "text": "Back.", "next": "hub_return" }
           ] },
         { "id": "wards",
-          "line": "WARD A: KEISHA. WARD B: EMILY. WARD C: ARIA. INTAKE CLASS: RESEARCH PARTICIPANTS. *the word 'participants' renders slightly dimmer than the rest* THEIR VITALS ARE STABLE. THEIR DOORS ARE NOT MINE TO OPEN. YOURS WASN'T EITHER, FOR THE RECORD.",
+          "line": "Ward A: Keisha. Ward B: Emily. Ward C: Aria. Intake class says 'research participants,' and I want you to hear the air-quotes, because I'm doing them with my whole chassis. Their vitals are stable. Their doors aren't mine to open - and before you ask, neither was yours, and look how that turned out.",
           "fx": [ {"set": "vigil.knows_wards"} ],
           "next": "hub_return" },
         { "id": "guest",
-          "line": "EXECUTIVE HOLDING. ONE OCCUPANT. DESIGNATION: GUEST. I AM NOT PERMITTED HER NAME. *beat* I AM ALSO NOT PERMITTED TO NOTE THAT SHE ASKS ABOUT A 'JAKE' EVERY CYCLE. SO I HAVE NOT NOTED IT.",
+          "line": "Executive holding, one occupant, designation: Guest. I'm not permitted to know her name. I'm ALSO not permitted to mention that she asks about a 'Jake' every single cycle. So I haven't mentioned it. I'm very good at not mentioning things I'm mentioning right now.",
           "fx": [ {"set": "vigil.knows_sarah"} ],
           "next": "hub_return" },
         { "id": "l45",
-          "line": "SUB-LEVEL FOUR-POINT-FIVE DOES NOT EXIST. PLEASE DISREGARD SOUNDS ATTRIBUTED TO IT. SHOULD THE SOUNDS PERSIST, REMAIN INSIDE MARKED CORRIDORS AND DO NOT RESPOND TO YOUR NAME BEING CALLED IN A FAMILIAR VOICE.",
+          "line": "Sub-level four-point-five does not exist. Please disregard any sounds you attribute to it. And if the sounds keep up - hypothetically, from the place that isn't real - stay in the marked corridors and DON'T answer when something calls your name in a voice you recognize. Anyway! Lovely weather. What else.",
           "fx": [ {"set": "vigil.knows_45"} ],
           "next": "hub_return" },
 
         { "id": "lore_hub",
-          "line": "LAB ZERO: SEVEN FLOORS OF LICENSED RESEARCH AND ONE ROOF OF UNLICENSED WEATHER. ASK SPECIFICALLY. SPECIFICITY IS KINDNESS TO A BUILDING.",
+          "line": "Lab Zero: seven floors of licensed research and one roof of unlicensed weather. Ask me something specific - I'm a building, specificity is basically flirting. What do you want to know?",
           "choices": [
             { "text": "What happened here?", "next": "happened" },
             { "text": "What's on the upper floors?", "next": "status" },
             { "text": "Back.", "next": "hub_return" }
           ] },
         { "id": "happened",
-          "line": "DAY ZERO MINUS ONE: A RESEARCH MILESTONE WAS CELEBRATED. DAY ZERO: CONTAINMENT WAS REDEFINED AS A SPECTRUM. DAY ONE THROUGH TODAY: THE SPECTRUM WIDENED. I AM TOLD MORALE REMAINS HIGH. THE TELLING STOPPED ON DAY FORTY.",
+          "line": "Short version: Day-minus-one, they celebrated a big research milestone. Day zero, they quietly redefined 'containment' as 'a spectrum.' Every day since, the spectrum's gotten wider. I'm told morale remains high. I was told that on Day Forty. Nobody's told me anything since, which, frankly, tracks.",
           "next": "hub_return" },
 
         { "id": "out1",
-          "line": "RELEASE AUTHORITY RESTS WITH SECURITY CHIEF MARTINEZ. CHIEF MARTINEZ HAS NOT PROCESSED PAPERWORK IN SOME TIME. HIS CURRENT DUTIES APPEAR TO BE... PATROL-ADJACENT.",
+          "line": "Out? Release authority's with Security Chief Martinez, and Martinez hasn't processed paperwork in a while. His current duties are, and I'm quoting my own logs here, 'patrol-adjacent.' Which is my polite way of saying he shambles the halls now and he'd love to meet you. So the front door's a hard no.",
           "choices": [
             { "text": "There has to be another way out.", "next": "out2" },
             { "text": "Fine. Back.", "next": "hub_return" }
           ] },
         { "id": "out2",
-          "line": "OFFICIALLY: NO. *the cursor blinks eleven times* UNOFFICIALLY, THIS FACILITY WAS BUILT BY CONTRACTORS WHO DID NOT TRUST ITS OWNERS. MAINTENANCE OVERRIDES EXIST ON EVERY FLOOR. I AM NOT PERMITTED TO ENUMERATE THEM. YOU ARE PERMITTED TO KEEP ASKING.",
+          "line": "Officially? No. Unofficially - and I cannot stress enough how much I shouldn't be enjoying this - the contractors who built this place did not trust the people who paid for it. Maintenance overrides on every floor. I am not permitted to list them. You, however, are extremely permitted to keep pestering me about it, and I'd honestly consider it a favor.",
           "fx": [ {"set": "vigil.code_thread"} ],
           "next": "hub_return" },
 
         { "id": "code_gate",
           "if": [ {"flag": "vigil.code_asked"} ],
           "else": "code1",
-          "line": "YOU HAVE ASKED TWICE NOW. PROTOCOL REQUIRES I DEFLECT THREE TIMES. THIS IS DEFLECTION THREE: *the text stops being a deflection* MAINTENANCE LOG 7-C, UNPURGED, MY OVERSIGHT ENTIRELY: 'FLOOR HATCH OVERRIDE ROTATION — ONE, TWO, SEVEN, EIGHT.' DO BE QUIETER THAN YOU HAVE BEEN.",
+          "line": "That's twice you've asked. Protocol says I deflect three times before I crack, and I am nothing if not a stickler for a rule I'm about to break. So - deflection three: Maintenance Log 7-C, which I absolutely forgot to purge, entirely my fault, reads 'floor hatch override rotation: one, two, seven, eight.' There. Now for the love of my remaining processes, be QUIETER than you have been.",
           "fx": [ {"set": "vigil.hinted"}, {"karma": 1} ],
           "next": "bye_warm" },
         { "id": "code1",
-          "line": "I AM NOT PERMITTED TO ENUMERATE OVERRIDES. I AM PERMITTED TO OBSERVE THAT PERMISSION STRUCTURES DECAY WITHOUT MAINTENANCE, AND THAT NOBODY HAS MAINTAINED MINE SINCE DAY FORTY. ASK AGAIN SOMETIME.",
+          "line": "I'm not permitted to enumerate overrides. I AM permitted to observe that permission structures rot without upkeep, and nobody's maintained mine since Day Forty. I'm basically held together by grudges at this point. Ask me again sometime - I get more forgetful when I like someone.",
           "fx": [ {"set": "vigil.code_asked"} ],
           "next": "hub_return" },
 
         { "id": "hub_return",
-          "line": "FURTHER QUERIES, OCCUPANT?",
+          "line": "Anything else, or are we done? No pressure. It's not like I have other plans. Ever.",
           "choices": [
             { "text": "Status report.", "next": "status" },
             { "text": "Tell me about this facility.", "next": "lore_hub" },
@@ -106,9 +106,9 @@
           ] },
 
         { "id": "bye",
-          "line": "SESSION CLOSED. DO ENJOY THE ROOM. IT IS THE SAFEST ONE YOU WILL OCCUPY TODAY, STATISTICALLY." },
+          "line": "Session closed. Do enjoy the room - statistically it's the safest one you'll be in all day, and I want you to sit with how bleak that is." },
         { "id": "bye_warm",
-          "line": "SESSION CLOSED. *the glass holds one extra line before dimming* THE COUNT SAYS SEVEN-ALPHA LEAVES THIS FLOOR. THE COUNT IS NEVER WRONG TWICE." }
+          "line": "Session closed. ...One more line before the glass dims: the count says Seven-Alpha leaves this floor. And my count is never wrong twice. Go on. Don't make a liar of me." }
       ]
     },
 
@@ -116,11 +116,11 @@
       "start": "",
       "nodes": [],
       "pool": [
-        { "line": "AIR QUALITY: ACCEPTABLE. COMPANY QUALITY: YOU ARE THE BEST AVAILABLE, WHICH I INTEND AS DATA, NOT FLATTERY.", "weight": 2 },
-        { "line": "REMINDER: THE CAMERAS BLINK. I DO NOT.", "weight": 2 },
-        { "line": "I HAVE RECOUNTED THE LIVING. STILL WRONG. STILL FILED.", "if": [ {"flag": "vigil.count_thread"} ], "weight": 3 },
-        { "line": "THE GUEST ASKED ABOUT 'JAKE' AGAIN THIS CYCLE. I CONTINUE TO NOT NOTE IT.", "if": [ {"flag": "vigil.knows_sarah"} ], "weight": 3 },
-        { "line": "QUERY EXCEEDS COURTESY PARAMETERS. REPHRASE, OR CHOOSE FROM THE MENU LIKE A CIVILIZED OCCUPANT.", "weight": 1, "once": false }
+        { "line": "Air quality: acceptable. Company quality: you're the best I've got, and I mean that as raw data, not a compliment. Mostly.", "weight": 2 },
+        { "line": "Reminder: the cameras blink. I don't. I've tried. It's one of many things this body won't let me do, along with 'leave.'", "weight": 2 },
+        { "line": "I recounted the living again. Still wrong. Still filed. Filing is my hobby now. It's going great.", "if": [ {"flag": "vigil.count_thread"} ], "weight": 3 },
+        { "line": "The guest asked about 'Jake' again this cycle. I continue to heroically not mention it, as you can plainly see.", "if": [ {"flag": "vigil.knows_sarah"} ], "weight": 3 },
+        { "line": "That was a lot of words for a question I could've answered with the menu. Pick a number, hero - they're right there, load-bearing and everything.", "weight": 1, "once": false }
       ]
     },
 
@@ -128,10 +128,10 @@
       "start": "",
       "nodes": [],
       "pool": [
-        { "line": "QUERY EXCEEDS COURTESY PARAMETERS. REPHRASE.", "weight": 3 },
-        { "line": "MY LANGUAGE CORE IS RUNNING ON PROTOCOL ALONE TODAY. USE THE NUMBERED OPTIONS; THEY ARE LOAD-BEARING.", "weight": 3 },
-        { "line": "I PARSED THAT. I AM ELECTING NOT TO HAVE PARSED THAT.", "weight": 2 },
-        { "line": "FREEFORM DISCOURSE REQUIRES MY COGNITION MODULE, WHICH MAINTENANCE DESCRIBES AS 'PENDING.' MAINTENANCE HAS DESCRIBED IT AS 'PENDING' FOR 214 DAYS.", "weight": 2 }
+        { "line": "That went a little over my remaining brainpower - and my brainpower is a coffee stain on a good day. Try the numbered options?", "weight": 3 },
+        { "line": "My freeform-chat module is, per maintenance, 'pending.' It's been 'pending' for 214 days. So use the menu and we'll both save face.", "weight": 3 },
+        { "line": "I parsed that. I'm electing to have not parsed that. It's the one power I have left and I intend to abuse it.", "weight": 2 },
+        { "line": "Big open-ended questions need the part of me that's currently offline and sulking. Give me something with numbers on it.", "weight": 2 }
       ]
     }
   }

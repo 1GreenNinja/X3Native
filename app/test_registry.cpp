@@ -16,6 +16,7 @@
 #include "engine/core/x3_log.h"
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
+#include "club_listen.h"   // CLUB LISTEN MODE self-test (--test-listen)
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/rhi/FrustumCull.h"
 #include "engine/rhi/GpuCull.h"
@@ -66,6 +67,7 @@
 #include "cutscene.h"
 #include "npc_dialog.h"
 #include "chat_tree.h"
+#include "vigil_barks.h"
 #include "mission.h"
 #include "physprops.h"
 #include "ragdoll.h"
@@ -102,6 +104,8 @@
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
+#include "survival_complex.h"
+#include "jukebox.h"
 #include "perfshop.h"
 #include "valley.h"
 #include "cliffs.h"
@@ -865,6 +869,11 @@ int dispatchTests(const TestFlags& tf) {
                     "the lena walk: gates/fx/follow/1278/banter/flags round-trip)...");
         return x3::game::runChatTreeSelfTest() ? 0 : 1;
     }
+    if (tf.testVigil) {
+        x3::logInfo("running VIGIL bark self-test (trigger->line, cooldown, no-repeat, "
+                    "chatter levels, vigilLink master gate, idle firing; V0-V8)...");
+        return x3::game::runVigilBarkSelfTest() ? 0 : 1;
+    }
     if (tf.testMission) {
         x3::logInfo("running x3.mission/1 mission-runner self-test (doc parse/validate + "
                     "stage advance via flag/trigger/kill bridges + branch/fail/resume + "
@@ -1114,6 +1123,35 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
+    }
+    if (tf.testGamma) {
+        x3::logInfo("running LINEAR-vs-GAMMA acceptance-gate byte measurement "
+                    "(clear B8G8R8A8_SRGB to a linear ramp, read stored byte; linear 0.5 must be ~188)...");
+        return x3::game::runGammaProbe();
+    }
+    if (tf.testComplex) {
+        x3::logInfo("running SURVIVAL COMPLEX self-test "
+                    "(7-level dungeon west of the club: L2-L7 build, stairwell connects "
+                    "top-to-bottom, both entrances reach it, L7 hydroponics, NPC markers, "
+                    "light budget, leak-clean)...");
+        return x3::game::runComplexSelfTest() ? 0 : 1;
+    }
+    if (tf.testClubNpcs) {
+        x3::logInfo("running Club 1127 CANON NPCs self-test (feat/club-npcs) "
+                    "(Danny @ U-bar + Amara/Emma @ Private Lounge place with talk anchors; "
+                    "danny/amara/emma chat trees parse + full-reachability validate; "
+                    "E-to-talk resolves each; hub trees start + reach their menu)...");
+        return x3::game::runClubNpcsSelfTest() ? 0 : 1;
+    }
+    if (tf.testJukebox) {
+        x3::logInfo("running Club Jukebox self-test "
+                    "(folder scan / sidecar bpm / beat-grid retune / empty-folder fallback / corrupt skip)...");
+        return x3::game::runJukeboxSelfTest() ? 0 : 1;
+    }
+    if (tf.testListen) {
+        x3::logInfo("running CLUB LISTEN MODE beat-detector self-test "
+                    "(synthetic click-track -> onset/tempo recovery; no audio device)...");
+        return x3::club_listen::runListenSelfTest() ? 0 : 1;
     }
     if (tf.testPerfshop) {
         x3::logInfo("running LATE NIGHT SPEED perf-shop self-test "
