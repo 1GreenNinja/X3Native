@@ -2097,14 +2097,46 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         // Subs punch hard (posAmp ~0.035, emAmp ~2.0); mids ripple (posAmp ~0.010);
         // tweeters barely move. The geometry is baked at rest in WORLD space with an
         // identity transform, so a translation in the transform IS the cone travel.
-        for (const auto& d : m_driverCones) {
+        // REALISM: a driver is a MASS on a suspension inside a damped box, i.e. a
+        // second-order system — not a value that tracks an envelope. Driving one:
+        //
+        //     x'' + 2·ζ·w0·x' + w0²·x = w0²·(posAmp · thump)
+        //
+        // buys three things the old `disp = posAmp * thump` could not:
+        //   * INERTIA  — the cone lags the kick instead of snapping to it
+        //   * OVERSHOOT— it punches PAST the drive level, as a real cone does
+        //   * RING-OUT — and oscillates back through rest (x goes NEGATIVE, so the
+        //                cone travels inward too) before settling
+        // ζ = 0.70 is the classic sealed-box Qtc≈0.7 Butterworth alignment ("tight"
+        // bass). w0 = 2π·Fs, and Fs falls with cone size, so we infer it from the
+        // authored travel: a big-excursion sub resonates low and flutters visibly,
+        // a mid sits higher and barely stirs, a compression driver never moves.
+        //
+        // Explicit Euler goes unstable once w0·dt approaches 2 (at 60 Hz with a
+        // 30 Hz driver, w0·dt ≈ 3.1), so we substep to keep ~8 steps per cycle.
+        constexpr float kZeta = 0.70f;
+        for (auto& d : m_driverCones) {
             if (d.ent >= scene.size()) continue;
+            const float fs   = (d.posAmp >= 0.020f) ? 30.0f     // 18" sub
+                             : (d.posAmp >= 0.006f) ? 55.0f     // 15" mid
+                                                    : 90.0f;    // small / horn
+            const float w0   = 6.2831853f * fs;
+            const float drive = d.posAmp * thump;
+            int   steps = (int)std::ceil(dt * fs * 8.0f);
+            if (steps < 1)  steps = 1;
+            if (steps > 16) steps = 16;                 // bounded: never spiral on a hitch
+            const float h = dt / (float)steps;
+            for (int s = 0; s < steps; ++s) {
+                const float acc = w0 * w0 * (drive - d.x) - 2.0f * kZeta * w0 * d.v;
+                d.v += acc * h;                          // semi-implicit: v then x
+                d.x += d.v * h;
+            }
             Entity& e = scene.get(d.ent);
-            const float disp = d.posAmp * thump;      // out on the kick, settle after
-            e.transform[12] = d.nx * disp;
-            e.transform[13] = d.ny * disp;
-            e.transform[14] = d.nz * disp;
-            e.emissive[3] = d.emBase + d.emAmp * thump;
+            e.transform[12] = d.nx * d.x;
+            e.transform[13] = d.ny * d.x;
+            e.transform[14] = d.nz * d.x;
+            e.emissive[3] = d.emBase + d.emAmp * thump;  // the GLOW still tracks the
+                                                         // signal; only the MASS lags
         }
         // Corner sub pulse lights breathe with the same clock.
         for (const size_t li : m_subLightIdx) {

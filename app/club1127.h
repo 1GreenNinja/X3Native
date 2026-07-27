@@ -249,6 +249,12 @@ private:
         float    nx = 0.0f, ny = 0.0f, nz = 1.0f; // outward face normal (pump axis)
         float    posAmp = 0.0f;                  // cone travel (m) on the kick
         float    emBase = 0.0f, emAmp = 0.0f;    // emissive floor + beat surge
+        // Damped-oscillator state (see update()). A driver is a MASS on a
+        // suspension in a damped box, so its cone lags the signal, overshoots it,
+        // and rings out — it does not track an envelope instantly. x is signed:
+        // the cone travels BOTH ways through rest, like the real thing.
+        float    x = 0.0f;                       // current displacement (m, signed)
+        float    v = 0.0f;                       // current velocity (m/s)
     };
     std::vector<DriverCone>                       m_driverCones;
     // POLISH: mirror-ball SPARKLE lights — a cluster of small colored point lights
