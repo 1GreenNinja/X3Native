@@ -103,6 +103,11 @@ public:
     void next(x3::audio::IAudioSystem& audio, Club1127World& club);
     void prev(x3::audio::IAudioSystem& audio, Club1127World& club);
 
+    // Stop the jukebox: silence the music voice and hand the beat grid back to the
+    // club's built-in tempo/phase. Called on club exit so a later re-entry does not
+    // inherit the last user track's BPM. Safe when nothing is playing.
+    void stopPlayback(x3::audio::IAudioSystem& audio, Club1127World& club);
+
     // --- Queries --------------------------------------------------------------
     bool        hasTracks()   const { return !m_tracks.empty(); }
     size_t      count()       const { return m_tracks.size(); }

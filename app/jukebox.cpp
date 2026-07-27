@@ -331,6 +331,14 @@ void Jukebox::prev(x3::audio::IAudioSystem& audio, Club1127World& club) {
     playCurrent(audio, club);
 }
 
+void Jukebox::stopPlayback(x3::audio::IAudioSystem& audio, Club1127World& club) {
+    audio.stopMusic();
+    club.setBeatGrid(Club1127World::kDefaultBpm, 0.0f);   // back to club_descent
+    m_toast = 0.0f;
+    m_toastText.clear();
+    x3::logInfo("[jukebox] stopped — club back to its house tempo");
+}
+
 void Jukebox::update(float dt, x3::audio::IAudioSystem& audio, Club1127World& club) {
     if (m_toast > 0.0f) m_toast -= dt;
     if (!hasTracks() || m_tracks.size() == 1) return;   // lone track loops; nothing to advance
@@ -618,6 +626,23 @@ bool runJukeboxSelfTest() {
         const bool landedOk = jb.currentName() == "bbb_good" || jb.currentName() == "aaa_bad";
         check(jb.hasTracks() && landedOk,
               "corrupt track is probed and skipped (or tolerated in silent mode)");
+    }
+
+    // (T8) stopPlayback restores the club's house tempo AND clears the phase, so a
+    //      later re-entry does not inherit the last user track's beat grid.
+    {
+        std::unique_ptr<x3::audio::IAudioSystem> audio(x3::audio::createAudioSystem());
+        audio->init();
+        Club1127World club;
+        Jukebox jb;
+        jb.configure({ tmp.string() }, 120.0f, false, 0.75f, true);
+        jb.begin(*audio, club);                       // retunes away from kDefaultBpm
+        const bool moved = std::fabs(club.bpm() - Club1127World::kDefaultBpm) > 0.01f;
+        jb.stopPlayback(*audio, club);
+        const bool restored = std::fabs(club.bpm() - Club1127World::kDefaultBpm) < 0.01f &&
+                              std::fabs(club.beatOffsetS()) < 0.0001f;
+        check(moved && restored,
+              "stopPlayback restores the house tempo and zeroes the beat phase");
     }
 
     fs::remove_all(tmp, ec);

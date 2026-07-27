@@ -330,6 +330,11 @@ int hostClub(HostContext& hc) {
             device->endFrame(frame);
         }
 
+        // Hand the beat grid back to the club's built-in track on the way out, so a
+        // later re-entry does not inherit the last user track's tempo/phase. Done
+        // BEFORE the device/physics teardown, while caudio and club are both alive.
+        if (caudio && jukebox.hasTracks()) jukebox.stopPlayback(*caudio, club);
+
         cphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
