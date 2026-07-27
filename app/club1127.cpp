@@ -3113,17 +3113,23 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         for (int i = 0; i < 4; ++i) {
             auto& mh = m_movingHeads[i];
             const float* gel = kSpotGels[(i + phrase) & 3];
-            // POOL PATH: a WIDE figure-8 under the fixture, its whole pattern slowly
-            // ROTATED (staggered per fixture) so the beams sweep/pan across the room —
-            // not four beams bobbing in place. Amplitude ~2.6 x 1.9 m => a strong pan/
-            // tilt (was 1.7 x 1.1 — barely a wobble). Steps on the eighth-note grid.
-            const float p2 = sweep + i * (kPi / 2.0f);
-            const float dx = 2.6f * std::sin(p2);
-            const float dz = 1.9f * std::sin(2.0f * p2);
-            const float th = beatCount * 0.20f + (float)i * 1.7f;   // slow per-fixture room pan
-            const float ct = std::cos(th), st = std::sin(th);
-            const float px = mh.fx + dx * ct - dz * st;
-            const float pz = mh.fz + dx * st + dz * ct;
+            // POOL PATH — CLEAN AXIS SWEEP (feat/club-lasers-axis, Tim: "move ON AN AXIS
+            // like real DJ moving heads"). Each head PANS about its vertical yoke axis +
+            // TILTS, so the beam pool traces a clean CIRCULAR/ARC path around the room —
+            // NOT the old figure-8 wobble-in-place. The pan is BEAT-STEPPED (rides the
+            // eased eighth-note staircase `step` so it JERKS forward on each beat like a
+            // real fixture) plus a slow continuous drift; rate + direction + phase are
+            // STAGGERED per head so the 4 beams sweep at different speeds and CROSS.
+            static const float kPanRate[4]  = {  0.42f, -0.30f,  0.55f, -0.38f };  // rad per eighth-step (beat jerk)
+            static const float kPanPhase[4] = {  0.0f, kPi * 0.5f, kPi, kPi * 1.5f }; // start bearings (fan them out)
+            static const float kPanDrift[4] = {  0.11f, -0.08f,  0.14f, -0.10f };  // rad/beat continuous drift
+            const float pan = kPanPhase[i] + kPanRate[i] * step + kPanDrift[i] * beatCount;
+            // TILT: the pool RADIUS from directly under the fixture breathes on its own
+            // slow clock, so the clean circle becomes a sweeping ARC (the head raising +
+            // lowering its aim = a visible tilt), phase-offset per head.
+            const float tilt = 2.2f + 1.0f * std::sin(beatCount * 0.33f + (float)i * 1.3f);
+            const float px = mh.fx + tilt * std::cos(pan);
+            const float pz = mh.fz + tilt * std::sin(pan);
             auto& L = m_lights[m_staticLightCount + i];
             L.pos[0] = px; L.pos[2] = pz;                  // Y stays at 1.15 m
             L.color[0] = gel[0] * breathe; L.color[1] = gel[1] * breathe; L.color[2] = gel[2] * breathe;
