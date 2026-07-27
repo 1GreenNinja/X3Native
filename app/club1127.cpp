@@ -268,21 +268,62 @@ void makeBeamConeMesh(float radius, float drop,
         }
 }
 
-// Axial gradient for the beam cone (bright at the lens apex, dissolving in the air
-// BEFORE the base rim so the shaft has no hard visible end). LINEAR (srgb=false).
-// Mirrors the proven street-light coneGrad bake (row-flip so v=0/apex is the bright
-// end). RGBA8, W x H.
-std::vector<uint8_t> makeBeamGradRGBA(int W, int H) {
+// DUSTY VOLUMETRIC BEAM texture (fix/club-beams-volumetric). U (x) runs AROUND the
+// cone circumference, V (y) runs ALONG the axis: v=0 is the LENS/apex, v=1 the floor
+// POOL (matches makeBeamConeMesh's uv.y=t). A real theatrical beam in haze is HOTTEST
+// at the lens and scatters into softer haze as it falls — so brightness is high at the
+// lens and eases down, never to zero (the shaft stays visible its whole length and the
+// base ring reads as the colored floor pool). This REPLACES the old bake, which was
+// inverted (bright + fat at the FLOOR, fading to a faint point at the ceiling — the
+// "cheap solid plastic cone" tell) and flat across the width (no haze structure).
+//
+// DUST: two octaves of value-noise + faint vertical striations so the shaft reads as
+// light scattering through drifting haze/dust rather than a translucent solid. Dust
+// structure is DENSER near the lens (where a real beam's scatter is brightest). LINEAR
+// (srgb=false). RGBA8, W x H. `core=true` bakes the tight HOT-CORE variant: near-white,
+// spiking at the lens and dissolving by mid-shaft (the bright inner spike + lens flare).
+uint32_t clubHash(uint32_t x);   // fwd decl (defined in the MAX-OUT texture section below)
+std::vector<uint8_t> makeBeamGradRGBA(int W, int H, bool core = false) {
+    // Wrapped 2D value noise (seamless around the circumference at integer periods).
+    auto hashf = [](int xi, int yi) -> float {
+        uint32_t h = clubHash((uint32_t)(xi * 73856093) ^ clubHash((uint32_t)(yi * 19349663) + 1u));
+        return (float)(h & 0xffffu) / 65535.0f;
+    };
+    auto vnoise = [&](float x, float y, int period) -> float {
+        int x0 = (int)std::floor(x), y0 = (int)std::floor(y);
+        const float fx = x - x0, fy = y - y0;
+        auto wr = [&](int xi) { return ((xi % period) + period) % period; };   // seam-free in u
+        const float a = hashf(wr(x0),   y0),   b = hashf(wr(x0 + 1), y0);
+        const float c = hashf(wr(x0),   y0+1), d = hashf(wr(x0 + 1), y0+1);
+        const float sx = fx * fx * (3.0f - 2.0f * fx), sy = fy * fy * (3.0f - 2.0f * fy);
+        return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+    };
     std::vector<uint8_t> px((size_t)W * H * 4);
     for (int y = 0; y < H; ++y) {
-        const float v = (float)(H - 1 - y) / (float)(H - 1);      // apex end is bright
-        const float s = std::clamp((v - 0.0f) / 0.82f, 0.0f, 1.0f);
-        const float sm = s * s * (3.0f - 2.0f * s);               // smoothstep(0,0.82,v)
-        const float f = std::pow(1.0f - sm, 2.1f);
-        const uint8_t b = (uint8_t)std::lround(255.0f * f);
+        const float v = (float)y / (float)(H - 1);               // 0 lens .. 1 pool
+        float axial, dustAmt;
+        if (core) {
+            // Tight hot core: white spike at the lens, gone by ~55% down.
+            axial   = std::pow(std::max(0.0f, 1.0f - v / 0.58f), 1.7f);
+            axial  += 0.6f * std::pow(std::max(0.0f, 1.0f - v / 0.10f), 2.0f);   // lens flare
+            dustAmt = 0.20f;
+        } else {
+            // Main shaft: hot at the lens, easing to a soft floor pool (never 0).
+            axial   = 0.30f + 0.70f * std::pow(1.0f - v, 0.62f);
+            axial  += 0.45f * std::pow(std::max(0.0f, 1.0f - v / 0.13f), 2.0f);  // hot lens lift
+            dustAmt = 0.50f + 0.42f * std::pow(1.0f - v, 1.1f);                  // denser near lens
+        }
         for (int x = 0; x < W; ++x) {
+            const float u = (float)x / (float)(W - 1);
+            float dust = 0.40f
+                       + 0.36f * vnoise(u * 6.0f, v * 9.0f, 6)
+                       + 0.24f * vnoise(u * 17.0f, v * 24.0f, 17);
+            dust *= 0.86f + 0.14f * std::sin(u * 2.0f * kPi * 5.0f);             // faint striations
+            float b = axial * ((1.0f - dustAmt) + dustAmt * dust);
+            b = std::clamp(b, 0.0f, 1.0f);
+            const uint8_t bb = (uint8_t)std::lround(255.0f * b);
             uint8_t* p = &px[((size_t)y * W + x) * 4];
-            p[0] = p[1] = p[2] = b; p[3] = 255;
+            p[0] = p[1] = p[2] = bb; p[3] = 255;
         }
     }
     return px;
@@ -2421,8 +2462,20 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             beamMesh = device.createMesh(bv.data(), (uint32_t)bv.size(),
                                          bi.data(), (uint32_t)bi.size());
         }
-        auto bgpx = makeBeamGradRGBA(8, 64);
-        const x3::rhi::TextureHandle beamGrad = device.createTexture(bgpx.data(), 8, 64, false);
+        // HOT CORE: a slim brighter shaft down the beam's centre (whiter, sharper) so
+        // the beam has a hot lens spike that blooms, fading out by mid-shaft.
+        x3::rhi::MeshHandle coreMesh;
+        {
+            std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;
+            makeBeamConeMesh(kBeamPoolR * 0.34f, kBeamDrop, cv, ci);
+            coreMesh = device.createMesh(cv.data(), (uint32_t)cv.size(),
+                                         ci.data(), (uint32_t)ci.size());
+        }
+        // Dusty volumetric bake (hot at the lens, haze structure) + a hotter core bake.
+        auto bgpx = makeBeamGradRGBA(48, 192, false);
+        const x3::rhi::TextureHandle beamGrad = device.createTexture(bgpx.data(), 48, 192, false);
+        auto cgpx = makeBeamGradRGBA(24, 192, true);
+        const x3::rhi::TextureHandle coreGrad = device.createTexture(cgpx.data(), 24, 192, false);
         for (int i = 0; i < 4; ++i) {
             const float a = (i + 0.5f) / 4.0f * 2.0f * kPi;   // 45/135/225/315° — clear of THE ORB
             MovingHead mh;
@@ -2456,10 +2509,34 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 be.glass.refraction = 0.0f;
                 be.glass.roughness = 0.0f;
                 be.glass.specular = 0.0f;
-                be.glass.additive = 2.6f;     // soft cone-silhouette rim fade (dot(N,V)^2.6)
+                be.glass.additive = 3.0f;     // soft cone-silhouette rim fade (dot(N,V)^3.0)
                 be.tag = (uint32_t)Tag::Static;
                 poseCone(be, mh.fx, oy + CH - 0.63f, mh.fz, mh.fx, oy + 0.05f, mh.fz);
                 mh.beamEnt = scene.add(be);
+            }
+            // HOT CORE cone: a slim, whiter, sharper inner shaft that spikes at the
+            // lens (bloom) and dissolves by mid-shaft. Re-aimed lens -> pool with the
+            // beam in update(). Whiter than the gel so the lens reads as a hot source.
+            {
+                const float* gel = kSpotGels[i & 3];
+                Entity ce;
+                ce.mesh = coreMesh;
+                ce.tex  = coreGrad;
+                ce.baseColor[0] = 1.0f; ce.baseColor[1] = 1.0f; ce.baseColor[2] = 1.0f; ce.baseColor[3] = 1.0f;
+                // Lift toward white so the core is a hot lamp, not just a brighter gel.
+                ce.emissive[0] = 0.45f * gel[0] + 0.85f;
+                ce.emissive[1] = 0.45f * gel[1] + 0.85f;
+                ce.emissive[2] = 0.45f * gel[2] + 0.85f;
+                ce.emissive[3] = 2.4f;
+                ce.transparent = true;
+                ce.glass.opacity = 0.0f;
+                ce.glass.refraction = 0.0f;
+                ce.glass.roughness = 0.0f;
+                ce.glass.specular = 0.0f;
+                ce.glass.additive = 4.5f;     // tight core silhouette (dot(N,V)^4.5)
+                ce.tag = (uint32_t)Tag::Static;
+                poseCone(ce, mh.fx, oy + CH - 0.63f, mh.fz, mh.fx, oy + 0.05f, mh.fz);
+                mh.coreEnt = scene.add(ce);
             }
             m_movingHeads.push_back(mh);
         }
@@ -2759,8 +2836,17 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
             if (mh.beamEnt < scene.size()) {               // volumetric beam cone re-aimed lens -> pool
                 Entity& be = scene.get(mh.beamEnt);
                 be.emissive[0] = gel[0]; be.emissive[1] = gel[1]; be.emissive[2] = gel[2];
-                be.emissive[3] = 1.7f + 1.3f * thump;     // soft cone breathing with the beat
+                be.emissive[3] = 1.15f + 1.05f * thump;   // dimmer shaft so the dusty haze reads; breathes on the beat
                 poseCone(be, mh.fx, kClubY + kCH - 0.63f, mh.fz, px, kClubY + 0.05f, pz);
+            }
+            if (mh.coreEnt < scene.size()) {               // hot inner core (whiter, sharper) tracks the beam
+                Entity& ce = scene.get(mh.coreEnt);
+                // Whiter than the gel; punches harder on the kick so the lens flares on the beat.
+                ce.emissive[0] = 0.45f * gel[0] + 0.85f;
+                ce.emissive[1] = 0.45f * gel[1] + 0.85f;
+                ce.emissive[2] = 0.45f * gel[2] + 0.85f;
+                ce.emissive[3] = 2.0f + 2.4f * thump;
+                poseCone(ce, mh.fx, kClubY + kCH - 0.63f, mh.fz, px, kClubY + 0.05f, pz);
             }
         }
         for (int i = 0; i < 4; ++i) {     // ring lights: half-rate counter-sweep
