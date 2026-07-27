@@ -601,6 +601,12 @@ void VulkanRenderDevice::setExposure(float e) { m_exposure = (e > 0.0f) ? e : 1.
 // outside PostFXParams so the live cvar loop (setPostFX) never clobbers them.
 void VulkanRenderDevice::setFog(const FogParams& f)     { m_fogParams = f; }
 void VulkanRenderDevice::setGrade(const GradeParams& g) { m_gradeParams = g; }
+// Cinematic filmic post: cached like the grade, folded into the composite push
+// constants per frame (vk_graph.cpp). Cutscene-owned; cleared on restoreLook.
+void VulkanRenderDevice::setFilmic(const FilmicParams& f) { m_filmic = f; }
+// Underwater caustics: cached like fog, written into the per-frame mesh
+// control UBO (SsaoControl caustics lane) by prepareFrameData.
+void VulkanRenderDevice::setCaustics(const CausticsParams& c) { m_caustics = c; }
 
 void VulkanRenderDevice::setMetalAmbient(float s) { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
 

@@ -4,6 +4,8 @@ add_executable(X3Engine WIN32
     self_tests.cpp
     test_registry.cpp
     cinematic.cpp
+    # x3.starsys/1 — named star-systems registry (data + validator + self-test)
+    star_systems.cpp
     # #28 deep monolith split — CLI parse (arg loop -> CliOptions)
     cli.cpp
     # #28 deep monolith split — default host (interactive render loop)
@@ -52,6 +54,7 @@ add_executable(X3Engine WIN32
     level.cpp
     level1.cpp
     level_lint.cpp
+    qa_propclip.cpp
     level_loader.cpp
     leveldoc_world.cpp
     player.cpp
@@ -89,6 +92,9 @@ add_executable(X3Engine WIN32
     editor/editor_host.cpp
     elevator.cpp
     elevator_showcase.cpp
+    # CLUB LISTEN MODE — WASAPI-loopback live-beat detector that drives the club
+    # light show from whatever audio is playing on the PC.
+    club_listen.cpp
     strata.cpp
     weapon.cpp
     monster.cpp
@@ -101,12 +107,14 @@ add_executable(X3Engine WIN32
     npc_dialog.cpp
     story_ops.cpp
     chat_tree.cpp
+    vigil_barks.cpp
     mission.cpp
     level1_game.cpp
     canon_play.cpp
     interactables.cpp
     desc_mechanics.cpp
     canon_45.cpp
+    stairwell.cpp
     cell_dressing.cpp
     room_dressing.cpp
     wing_dressing.cpp
@@ -135,6 +143,9 @@ add_executable(X3Engine WIN32
     dialog.cpp
     env_art.cpp
     club1127.cpp
+    gamma_probe.cpp
+    survival_complex.cpp
+    world_hosts/host_complex.cpp
     jukebox.cpp
     cues.cpp
     valley.cpp
@@ -149,6 +160,7 @@ add_executable(X3Engine WIN32
     fish.cpp
     waterzap.cpp
     sealife.cpp
+    god_rays.cpp
     crowd.cpp
     crowd_skin.cpp
     crowd_chatter.cpp
@@ -166,7 +178,7 @@ add_executable(X3Engine WIN32
     rpg_ui.cpp
     ui.cpp)
 
-target_link_libraries(X3Engine PRIVATE x3engine glfw)
+target_link_libraries(X3Engine PRIVATE x3core glfw)
 
 # Dear ImGui (docking) — EDITOR-ONLY. The Level Architect host (app/editor/
 # editor_host.cpp) submits its panels with the CORE ImGui widget API directly; the
@@ -181,6 +193,14 @@ target_link_libraries(X3Engine PRIVATE imgui::imgui)
 # header on its include path (declarations, no STB_TRUETYPE_IMPLEMENTATION here).
 find_package(Stb REQUIRED)
 target_include_directories(X3Engine PRIVATE ${Stb_INCLUDE_DIR})
+
+# CLUB LISTEN MODE (club_listen.cpp) includes <miniaudio.h> for DECLARATIONS ONLY
+# (no MINIAUDIO_IMPLEMENTATION — the impl + full WASAPI/loopback backend lives in
+# engine/audio/MiniaudioSystem.cpp and links in). The vcpkg port installs just the
+# header, so locate it and put it on the app's private include path (same pattern
+# as Stb above).
+find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
+target_include_directories(X3Engine PRIVATE ${MINIAUDIO_INCLUDE_DIRS})
 
 # WIN32 subsystem but we want a console for logs during dev:
 if(MSVC)

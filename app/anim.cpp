@@ -300,6 +300,40 @@ bool Skinner::bind(const x3::asset::Model& model) {
     m_pelvisDropSmoothed = 0.0f;
     resolveFootIkBones(model);
 
+    // ---- Root-Y lock: resolve the root translation-carrying node once. Prefer
+    // the pelvis by NAME ("hips"/"pelvis" — the node broken retargets bury); fall
+    // back to the topmost skin joint (a joint whose parent is not itself a skin
+    // joint). The lock FLAG resets on re-bind (per-character opt-in via
+    // setRootYLock after bind). ----
+    m_rootYLock = false;
+    m_rootYLockNode = -1;
+    m_rootYLockRestY = 0.0f;
+    {
+        const x3::asset::Skin& skin = model.skins[0];
+        for (int j : skin.joints) {
+            if (j < 0 || (uint32_t)j >= m_nodeCount) continue;
+            const std::string& nm = model.nodes[j].name;
+            if (icontains(nm, "hips") || icontains(nm, "pelvis")) { m_rootYLockNode = j; break; }
+        }
+        if (m_rootYLockNode < 0) {
+            // Topmost joint: parent is -1 or not itself a skin joint.
+            auto isJoint = [&](int n) {
+                for (int j : skin.joints) if (j == n) return true;
+                return false;
+            };
+            for (int j : skin.joints) {
+                if (j < 0 || (uint32_t)j >= m_nodeCount) continue;
+                const int parent = model.nodes[j].parent;
+                if (parent < 0 || !isJoint(parent)) { m_rootYLockNode = j; break; }
+            }
+        }
+        if (m_rootYLockNode >= 0) {
+            float T[3], R[4], S[3];
+            decompose(model.nodes[m_rootYLockNode].localTransform, T, R, S);
+            m_rootYLockRestY = T[1];
+        }
+    }
+
     // Ragdoll-blend: a re-bind drops any prior external-bone resolution.
     m_extToJoint.clear();
     m_extResolvedCount = 0;
@@ -453,6 +487,10 @@ void Skinner::computeGlobals(const x3::asset::Model& m, uint32_t clip, float t,
         for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
             int n = *it;
             sampleNodeLocal(m, clip, n, t, local.data());
+            // ROOT-Y LOCK: replace the root node's animated local Y translation
+            // with its rest-pose Y (clips with a broken baked root Y — see anim.h
+            // setRootYLock — must not move a physics-owned character vertically).
+            if (m_rootYLock && n == m_rootYLockNode) local[13] = m_rootYLockRestY;
             int parent = m.nodes[n].parent;
             if (parent >= 0 && (uint32_t)parent < m_nodeCount && done[parent]) {
                 mat4Mul(&globals[(size_t)parent*16], local.data(), &globals[(size_t)n*16]);
@@ -909,6 +947,13 @@ bool Skinner::advanceBlend(const x3::asset::Model& model, float dt) {
             lerp3(&m_poseAS[i3], &m_poseBS[i3], bu, &m_blendS[i3]);
         }
     }
+
+    // ROOT-Y LOCK on the locomotion blend: clamp the root's blended local Y to
+    // rest BEFORE the crossfade mix below, so a broken baked root Y in Idle/Walk/
+    // Run can never bury a physics-owned character — while an authored discrete
+    // crossfade target (Sit / Jump via triggerClip) keeps its intentional root Y.
+    if (m_rootYLock && m_rootYLockNode >= 0 && (uint32_t)m_rootYLockNode < m_nodeCount)
+        m_blendT[(size_t)m_rootYLockNode * 3 + 1] = m_rootYLockRestY;
 
     // ---- 5) Crossfade / inertialization toward a discrete clip (e.g. Jump). ----
     // Ramp m_xfadeW with smoothstep over m_xfadeDur. The target clip plays at its
@@ -1746,6 +1791,66 @@ bool runAnimSelfTest() {
         }
     }
 
+    // ---- T6 ANIM-ENRICH: the combat/gesture clips baked this wave are PRESENT and
+    // PLAY (a distinct pose vs Idle). Asserts on both a humanoid enemy (chief:
+    // Hitreaction + Attack2) and a canon alien (grey: Attack + Death + Hitreaction).
+    // A clip "plays" when its joint palette at mid-time differs from the Idle pose.
+    // Present-asset only (skipped, still PASS, on a clean checkout without the GLBs).
+    {
+        auto clipPlays = [](Skinner& sk, const x3::asset::Model& m, int idle, int clip) -> bool {
+            if (clip < 0 || idle < 0) return false;
+            std::vector<float> pi, pc;
+            const float mid = 0.5f * sk.clipDuration((uint32_t)clip);
+            uint32_t ni = sk.computePalette(m, (uint32_t)idle, 0.0f, pi);
+            uint32_t nc = sk.computePalette(m, (uint32_t)clip, mid,  pc);
+            if (ni == 0 || ni != nc || pi.size() != pc.size()) return false;
+            double d = 0.0;
+            for (size_t k = 0; k < pi.size(); ++k) d += std::fabs(pi[k] - pc[k]);
+            return d > 1e-3;   // palette meaningfully differs from Idle
+        };
+        const std::string chiefGlb = x3::game::riggedGlbRoot() + "/chief_martinez_anim.glb";
+        if (fs::exists(chiefGlb)) {
+            fs::path p(chiefGlb);
+            std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+            src->mountDir(p.parent_path().string(), 0);
+            std::unique_ptr<x3::asset::IModelLoader> ld(x3::asset::createModelLoader(nullptr, src.get()));
+            x3::asset::Model m = ld->load(p.filename().string());
+            Skinner sk; bool b = sk.bind(m);
+            int idle = sk.findClip({ "idle", "stand" });
+            int hit  = sk.findClip({ "hitreact", "hit", "flinch", "stagger" });
+            int atk2 = sk.findClip({ "attack2" });
+            check(b && hit >= 0 && clipPlays(sk, m, idle, hit),
+                  "T6 chief Hitreaction present + plays (palette != idle)");
+            check(atk2 >= 0 && clipPlays(sk, m, idle, atk2),
+                  "T6 chief Attack2 present + plays (palette != idle)");
+            ld->unload(m);
+        } else {
+            x3::logInfo("[anim-test] (chief GLB absent — skipping T6 combat-clip checks)");
+        }
+        const std::string alienGlb = x3::game::riggedGlbRoot() + "/canon_grey_anim.glb";
+        if (fs::exists(alienGlb)) {
+            fs::path p(alienGlb);
+            std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+            src->mountDir(p.parent_path().string(), 0);
+            std::unique_ptr<x3::asset::IModelLoader> ld(x3::asset::createModelLoader(nullptr, src.get()));
+            x3::asset::Model m = ld->load(p.filename().string());
+            Skinner sk; bool b = sk.bind(m);
+            int idle = sk.findClip({ "idle", "stand" });
+            int atk  = sk.findClip({ "attack", "strike", "bite", "swipe" });
+            int dth  = sk.findClip({ "death", "die", "collapse" });
+            int hit  = sk.findClip({ "hitreact", "hit", "flinch", "stagger" });
+            check(b && atk >= 0 && clipPlays(sk, m, idle, atk),
+                  "T6 alien(grey) Attack present + plays (was clip-less)");
+            check(dth >= 0 && clipPlays(sk, m, idle, dth),
+                  "T6 alien(grey) Death present + plays");
+            check(hit >= 0 && clipPlays(sk, m, idle, hit),
+                  "T6 alien(grey) Hitreaction present + plays");
+            ld->unload(m);
+        } else {
+            x3::logInfo("[anim-test] (canon_grey GLB absent — skipping T6 alien combat-clip checks)");
+        }
+    }
+
     x3::logInfo("[anim-test] " + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
@@ -1864,14 +1969,66 @@ bool runLocomotionSelfTest(const std::string& glbPath) {
         lcheck(runDom, "L4 high speed is Run-dominant");
     }
 
-    // L5: the blend tracks the param — idle->run differs more than idle->mid.
+    // L5: the blend tracks the speed param. REDESIGNED (guard-loco fix): the old
+    // single-pose "idle->run differs more than idle->mid" comparison was doubly
+    // unsound — (a) phase-sensitive (poses were sampled at whatever phase the
+    // settle loop drifted to), and (b) content-dependent (a rifle-run's
+    // cycle-averaged distance from idle is legitimately ~equal to a walk's, so
+    // the ordering could flip on healthy clips). What "tracks the param" really
+    // means, robustly:
+    //   L5a  within the idle->walk bracket the pose leaves idle MONOTONICALLY:
+    //        cycle-averaged distance from idle at param 0.25 sits strictly
+    //        between idle (~0) and param 0.5, with a magnitude floor so dead
+    //        (2-key static) locomotion content still fails.
+    //   L5b  within the walk->run bracket the shared gait PHASE RATE rises
+    //        toward the run clip's rate (durations differ), so the param
+    //        audibly/visibly quickens the stride — content-independent.
     {
-        float dIdleToMid  = paletteDist(palLow, palMid);
-        float dIdleToHigh = paletteDist(palLow, palHigh);
-        bool tracks = dIdleToHigh > dIdleToMid && dIdleToMid > 1e-2f;
-        x3::logInfo("[loco-test] L5 dIdle->mid=" + std::to_string(dIdleToMid) +
-                    " dIdle->high=" + std::to_string(dIdleToHigh));
-        lcheck(tracks, "L5 blended palette tracks the speed param (sweep monotone)");
+        std::vector<float> cur;
+        auto avgDistFromIdle = [&](float loco01) {
+            sk.setLocomotion01(loco01);
+            for (int i = 0; i < 90; ++i) sk.advanceAndComputePalette(model, dt, cur);
+            float acc = 0.0f; const int kN = 120;   // ~2 s: > one walk/run cycle
+            for (int i = 0; i < kN; ++i) {
+                sk.advanceAndComputePalette(model, dt, cur);
+                acc += paletteDist(cur, palIdle);
+            }
+            return acc / (float)kN;
+        };
+        const float dQuarter = avgDistFromIdle(0.25f);
+        const float dMid     = avgDistFromIdle(0.5f);
+        const bool leaves = dQuarter > 1e-2f && dMid > dQuarter;
+        x3::logInfo("[loco-test] L5a avg dIdle@0.25=" + std::to_string(dQuarter) +
+                    " dIdle@0.5=" + std::to_string(dMid));
+        lcheck(leaves, "L5a idle->walk bracket leaves idle monotonically (cycle-averaged)");
+
+        auto phaseRate = [&](float loco01) {
+            sk.setLocomotion01(loco01);
+            for (int i = 0; i < 90; ++i) sk.advanceAndComputePalette(model, dt, cur);
+            float p0 = sk.locomotionPhase(), unwrapped = 0.0f, prevP = p0;
+            const int kN = 120;
+            for (int i = 0; i < kN; ++i) {
+                sk.advanceAndComputePalette(model, dt, cur);
+                float p = sk.locomotionPhase();
+                float d = p - prevP; if (d < 0.0f) d += 1.0f;   // wrap
+                unwrapped += d; prevP = p;
+            }
+            return unwrapped / (kN * dt);            // cycles per second
+        };
+        const float durWalk = sk.clipDuration((uint32_t)walk);
+        const float durRun  = sk.clipDuration((uint32_t)run);
+        if (std::fabs(durWalk - durRun) > 0.05f * std::max(durWalk, durRun)) {
+            const float rWalk = phaseRate(0.5f);
+            const float rRun  = phaseRate(1.0f);
+            const bool quickens = (durRun < durWalk) ? (rRun > rWalk * 1.02f)
+                                                     : (rRun < rWalk * 0.98f);
+            x3::logInfo("[loco-test] L5b phase rate walk=" + std::to_string(rWalk) +
+                        " run=" + std::to_string(rRun) + " (durW=" + std::to_string(durWalk) +
+                        " durR=" + std::to_string(durRun) + ")");
+            lcheck(quickens, "L5b walk->run bracket tracks the run clip's stride rate");
+        } else {
+            x3::logInfo("[loco-test] (walk/run durations ~equal — L5b rate check n/a)");
+        }
     }
 
     // L6: a Jump crossfade is pop-free. Walk steadily, trigger Jump, and verify no
@@ -1888,21 +2045,31 @@ bool runLocomotionSelfTest(const std::string& glbPath) {
             prev.swap(cur);
         }
         // Now trigger the Jump crossfade and watch the per-frame delta. A SNAP
-        // (no crossfade) would show a delta many times the natural walk step.
+        // (no crossfade) would show a delta many times the natural motion step.
+        // MOTION-SCALE-HONEST (guard-loco fix): the old bound used only the WALK
+        // clip's natural step as the scale, but the transition's rightful motion
+        // scale is the larger of the two clips being mixed — a real Jump clip is
+        // far more dynamic than a walk, so a clean 0.2 s smoothstep ramp into it
+        // legitimately exceeds 6x the walk step. Split the watch window: the ramp
+        // frames are judged against max(walk, steady-jump) natural step x6; a
+        // true snap (the whole pose gap in one frame) is still ~an order of
+        // magnitude above that.
         sk.triggerClip(jump, 0.2f, /*loop=*/false);
-        float xfadeMaxStep = 0.0f;
+        float rampMaxStep = 0.0f, steadyJumpMaxStep = 0.0f;
+        const int kRampFrames = 30;                  // 0.2 s fade + margin
         for (int i = 0; i < 150; ++i) {              // ~2.5 s covers fade-in/out
             sk.advanceAndComputePalette(model, dt, cur);
-            xfadeMaxStep = std::max(xfadeMaxStep, paletteDist(prev, cur));
+            const float step = paletteDist(prev, cur);
+            if (i < kRampFrames) rampMaxStep = std::max(rampMaxStep, step);
+            else                 steadyJumpMaxStep = std::max(steadyJumpMaxStep, step);
             prev.swap(cur);
         }
-        // Continuous: the worst transition frame stays within a modest multiple of
-        // the natural walk step (no pop). Allowance is generous (Jump moves a lot)
-        // but a true snap would be an order of magnitude larger.
-        float popBound = std::max(walkMaxStep * 6.0f, 0.5f);
-        bool continuous = xfadeMaxStep < popBound;
+        const float naturalStep = std::max(walkMaxStep, steadyJumpMaxStep);
+        float popBound = std::max(naturalStep * 6.0f, 0.5f);
+        bool continuous = rampMaxStep < popBound;
         x3::logInfo("[loco-test] L6 walkStep=" + std::to_string(walkMaxStep) +
-                    " xfadeMaxStep=" + std::to_string(xfadeMaxStep) +
+                    " steadyJumpStep=" + std::to_string(steadyJumpMaxStep) +
+                    " rampMaxStep=" + std::to_string(rampMaxStep) +
                     " bound=" + std::to_string(popBound));
         lcheck(continuous, "L6 Jump crossfade is continuous (no pop)");
     } else {

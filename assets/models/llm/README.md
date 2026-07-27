@@ -31,3 +31,22 @@ resolves `<assetRoot>/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf`.)
   only** for v1 (`GGML_VULKAN OFF` — never touches the engine's Vulkan device).
 - Cvars: `ai_npc` (0/1), `ai_ctx` (2048), `ai_maxtokens` (256), `ai_temp` (0.7).
 - Verify: `X3Engine.exe --test-llm` (runs a real prompt when the file exists).
+
+## VIGIL — the facility AI companion
+
+VIGIL talks two ways, and BOTH work with no model file (rich canned personality):
+
+1. **Terminal chat** — walk up to a cell HoloTerminal, press `E`, type `VIGIL`.
+   Scripted tree always works; freeform typing routes to the model when loaded, else
+   a snarky in-character deflect. Warm/sardonic sidekick persona (see `kVigilPersona`
+   in `app/app_run.cpp`).
+2. **Ambient in-ear barks** — proactive one-liners during play (alert changes, first
+   combat, low HP, elevator/club entry, idle...). CANON-GATED behind the NEURAL LINK:
+   set the `vigilLink` StoryFlag (console: `vigil_link`) — barks are silent until then.
+   Tune with `vigil_chatter` (0 off / 1 occasional / 2 chatty) and `vigil_cooldown`.
+   Verify: `X3Engine.exe --test-vigil`.
+
+**To give VIGIL the real brain on Tim's build: run the single `curl` command above**
+(drops `qwen2.5-3b-instruct-q4_k_m.gguf` into this folder). On next launch `ai_npc`
+auto-enables and his freeform terminal answers become live-generated. Nothing else to
+configure.

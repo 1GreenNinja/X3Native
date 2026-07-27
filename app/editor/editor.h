@@ -49,6 +49,12 @@ struct EditorEntity {
     // Trigger ZONE full extents in metres (type "trigger" only; {0,0,0} = unset,
     // the loader falls back to `scale` as a uniform extent). Round-trips in JSON.
     float size[3] = { 0, 0, 0 };
+    // Optional per-entity SELF-LIT emissive term { r, g, b, strength } (canon:
+    // "emissive where it glows"). For a "model" entity the loader forwards it to
+    // every drawable's Scene::Entity.emissive so the prop glows independent of
+    // light (a fusion core, a solar cell face, a neon strip). Default {0,0,0,0}
+    // == no glow, so every existing entity round-trips + renders unchanged.
+    float emissive[4] = { 0, 0, 0, 0 };
     // Live link to the Scene entity id while editing (not serialized). kNoLink-ish
     // sentinel = not spawned in the live scene.
     uint32_t sceneEntity = 0xFFFFFFFFu;

@@ -4,6 +4,7 @@
 // IPhysicsWorld + Scene interfaces only. No purchased C# copied; no id Tech /
 // RBDOOM source consulted.
 #include "monster.h"
+#include "combat_log.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
 #include "asset_root.h"
@@ -117,6 +118,15 @@ float slewAngle(float cur, float target, float rate, float dt) {
 float rng01(uint32_t& s) {
     s = s * 1664525u + 1013904223u;
     return (float)(s >> 8) * (1.0f / 16777216.0f);
+}
+
+// [P2-5] Normalize a fire() aim direction (guarding the near-zero case) so the
+// miss-tracer end point (eye + dir*range) sits at the true max range regardless
+// of the caller's dir magnitude. Shared by fire() and applyFireHit().
+x3::phys::Vec3 fireDirNormalized(const x3::phys::Vec3& dir) {
+    float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dl < 1e-6f) dl = 1e-6f;
+    return x3::phys::Vec3{ dir.x / dl, dir.y / dl, dir.z / dl };
 }
 
 } // namespace
@@ -312,6 +322,9 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // leave the skinner invalid -> static draw. ----
     if (prof) profT0 = profclock::now();
     if (m_model.ok && m_skinner.bind(m_model)) {
+        // ROOT-Y LOCK opt-in (Tuning::lockRootY — crowd citizens whose world Y the
+        // feeder owns): a broken baked clip root Y must never bury/bob them.
+        if (tuning.lockRootY) m_skinner.setRootYLock(true);
         // GPU SKINNING OF MODELS: register this character's skinned primitives with
         // the device's compute-skinning path. When supported, apply/applyLocomotion
         // upload the joint palette + the GPU skins (no per-frame CPU LBS + full vertex
@@ -330,8 +343,13 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         // W2-D: one-shot combat clips. Absent on today's retargeted rigs (Idle/Walk/
         // Run[/Jump] only) — the attack_death_bake.py pipeline appends them; lookup
         // degrades to -1 gracefully so this wiring is drop-in either way.
-        m_attackClip = m_skinner.findClip({ "attack", "strike", "swing", "punch", "bite", "swipe", "slash" });
+        m_attackClip = m_skinner.findClip({ "attack", "strike", "swing", "punch", "bite", "swipe", "slash", "melee" });
+        // ANIM-ENRICH: a 2nd attack variant (alternated per swing) + a hit-reaction
+        // flinch. Both degrade to -1 on rigs lacking them (wiring stays drop-in).
+        m_attackClip2  = m_skinner.findClip({ "attack2", "strike2", "swing2" });
+        m_hitReactClip = m_skinner.findClip({ "hitreact", "hit", "react", "flinch", "stagger" });
         m_deathClip  = m_skinner.findClip({ "death", "die", "collapse" });
+        m_hitClip    = m_skinner.findClip({ "hit", "hurt", "flinch", "stagger", "react", "impact", "damage" });
         if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
         if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
         m_animActive = (m_idleClip >= 0);
@@ -354,8 +372,35 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                     " run=" + std::to_string(m_runClip) +
                     " jump=" + std::to_string(m_jumpClip) +
                     " attack=" + std::to_string(m_attackClip) +
+                    " attack2=" + std::to_string(m_attackClip2) +
+                    " hitreact=" + std::to_string(m_hitReactClip) +
                     " death=" + std::to_string(m_deathClip) +
+                    " hit=" + std::to_string(m_hitClip) +
                     " locoBlend=" + (m_useLocoBlend ? "1" : "0"));
+        // ---- PER-RIG ANIMATION AUDIT (Tim's #1 ask): one glance tells you, per
+        // state, whether a REAL baked clip drives it or the never-broken PROCEDURAL
+        // floor does. If any combat state reads PROCEDURAL on a humanoid enemy, the
+        // rig is missing baked clips (run tools/attack_death_bake.py). No state ever
+        // collapses to a static/idle pose — every row resolves to a clip OR proc. ----
+        {
+            auto row = [&](const char* state, int clip) -> std::string {
+                if (clip >= 0)
+                    return std::string(state) + "=BAKED'" +
+                           std::string(m_skinner.clipName((uint32_t)clip)) + "'";
+                return std::string(state) + "=PROCEDURAL";
+            };
+            // Locomotion is BAKED if a real walk/run set drives the blend; else the
+            // legacy idle-pump/procedural stride carries it.
+            const std::string loco = m_useLocoBlend
+                ? std::string("WALK/RUN=BAKED'") +
+                  std::string(m_skinner.clipName((uint32_t)m_walkClip)) + "'"
+                : std::string("WALK/RUN=PROCEDURAL(idle-pump)");
+            x3::logInfo("[monster-anim] " + modelFile + " STATE AUDIT: " +
+                        row("IDLE",  m_idleClip)   + " " + loco + " " +
+                        row("ATTACK", m_attackClip) + " " +
+                        row("HIT",    m_hitClip)    + " " +
+                        row("DEATH",  m_deathClip));
+        }
         // Pose the bind-pose mesh into the idle pose at t=0 once up front so the
         // very first rendered frame already shows the animated pose (not bind pose).
         if (m_animActive && m_device) {
@@ -423,6 +468,48 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // bigger than a basic enemy while reusing the same crawler GLB.
     if (tuning.modelScale > 0.0f) m_modelScale = tuning.modelScale;
 
+    // ---- STEP 3: SKELETON-FIT SCALE CHECK (Tim playtest: enemies rendered ~2x
+    // player height because monster.cpp lacked the toe->head fit thirdperson.cpp
+    // does at ~line 191). Read the posed bone span (naming-AGNOSTIC: min..max over
+    // ALL joints along the up axis — Z for Z-up-converted GLBs, else Y) and compute
+    // the height this enemy WOULD render at. If a NON-authored (auto-scaled) enemy
+    // would render pathologically giant/tiny (the bug), CORRECT it to ~human 1.8 m;
+    // otherwise leave the scale exactly as-is. Enemies with an explicit
+    // tuning.modelScale (bosses, deliberate sizing) are NEVER touched — so this is a
+    // pure safety guard that fixes the giant bug without regressing correct models
+    // or fighting per-enemy tuning (incl. the parallel humanoid-rig session). ----
+    if (m_animActive && m_skinner.valid() && m_skinner.nodeCount() > 0) {
+        const int upIdx = tuning.standUpZtoY ? 14 : 13;   // col-major translation Z/Y
+        float lo = 1e30f, hi = -1e30f;
+        for (uint32_t n = 0; n < m_skinner.nodeCount(); ++n) {
+            float bm[16];
+            if (m_skinner.boneGlobal(n, bm)) {
+                const float v = bm[upIdx];
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+        }
+        const float span = hi - lo;
+        if (span > 0.2f) {
+            const float renderedH = span * m_modelScale;
+            const bool  authored  = (tuning.modelScale > 0.0f);
+            if (!authored && (renderedH < 1.0f || renderedH > 2.8f)) {
+                const float fit = 1.8f / span;
+                x3::logWarn("[monster] skeleton-fit CORRECTED " + modelFile +
+                            ": bone span=" + std::to_string(span) +
+                            "m rendered=" + std::to_string(renderedH) +
+                            "m (giant/tiny) -> scale " + std::to_string(m_modelScale) +
+                            " => " + std::to_string(fit) + " (target 1.8m)");
+                m_modelScale = fit;
+            } else {
+                x3::logInfo("[monster] skeleton-fit OK " + modelFile +
+                            ": bone span=" + std::to_string(span) +
+                            "m rendered=" + std::to_string(renderedH) + "m" +
+                            (authored ? " (authored scale kept)" : " (within human band)"));
+            }
+        }
+    }
+
     // ---- Enemy-layer collision body for the shoot raycast. mass 0 -> Static
     // motion type but keeps the Enemy ObjectLayer, so it stays put under gravity
     // yet is hittable by a rayCast(Layer::Enemy) and movable by setBodyPosition
@@ -480,6 +567,30 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                 std::to_string(pos.y) + ", " + std::to_string(pos.z) + ")" +
                 " HP=" + std::to_string(m_hp) +
                 (m_usingReal ? " [real GLB]" : " [fallback box]"));
+
+    // ---- STEP 4: STARTUP ANIM AUDIT (Tim's #1 ask). One line per spawned enemy at
+    // load proving its MOTION SOURCE at a glance — so a headless boot shows the whole
+    // opening is animated with NO silent static fallbacks. Three outcomes:
+    //   RIGGED+ANIMATED('clip') — a real skeletal clip drives idle/loco.
+    //   PROCEDURAL(...)        — no rig: the guaranteed motion floor drives it
+    //                            (drone hover+sway+dive, or grounded idle-bob+lunge).
+    //   STATIC                 — should NEVER appear now; if it does, motion is lost.
+    {
+        std::string motion;
+        if (m_animActive) {
+            const std::string idleName = (m_idleClip >= 0)
+                ? std::string(m_skinner.clipName((uint32_t)m_idleClip)) : std::string("?");
+            motion = "RIGGED+ANIMATED('" + idleName + "')" +
+                     std::string(m_useLocoBlend ? " +walk/run blend" : "");
+        } else if (m_flyer || m_type == MonsterType::Drone) {
+            motion = "PROCEDURAL(drone hover+sway+tilt, dive-on-attack — no rig)";
+        } else {
+            motion = "PROCEDURAL(idle-bob + lunge-tell — no rig)";
+        }
+        x3::logInfo("[enemy-audit] type=" + std::to_string((int)m_type) +
+                    " model=" + modelFile + "  ->  " + motion +
+                    (m_usingReal ? "  [real GLB]" : "  [box fallback]"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,14 +599,40 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
 FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                                Scene& scene, x3::phys::IPhysicsWorld& physics,
                                int damage, x3::DamageType type) {
+    // [P2-5] fire() = ONE Enemy-layer cast + applyFireHit() on the result. The
+    // single-monster behaviour is byte-identical to the pre-split code; the split
+    // exists so MonsterManager / MultiPodBoss can cast once and fan the same hit.
+    if (!m_alive) {
+        // Already dead: nothing to hit (and no cast — same as before the split).
+        FireResult r;
+        r.hpAfter  = m_hp;
+        const x3::phys::Vec3 nd = fireDirNormalized(dir);
+        r.endPoint = x3::phys::Vec3{ eye.x + nd.x * kFireMaxDist,
+                                     eye.y + nd.y * kFireMaxDist,
+                                     eye.z + nd.z * kFireMaxDist };
+        return r;
+    }
+    const x3::phys::RayHit hit =
+        physics.rayCast(eye, fireDirNormalized(dir), kFireMaxDist, x3::phys::Layer::Enemy);
+    return applyFireHit(hit, eye, dir, scene, physics, damage, type);
+}
+
+// ---------------------------------------------------------------------------
+// [P2-5] Resolve a precomputed Enemy-layer ray hit against THIS monster. This is
+// the entire former body of fire() after its rayCast: tracer bookkeeping, "is the
+// hit body mine?" resolution, damage (headshot / adaptive-hide / memory-flash),
+// and the death path. See specs/MONSTER_FIRE_SINGLE_RAY.spec.md.
+// ---------------------------------------------------------------------------
+FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
+                                       const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                                       Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                       int damage, x3::DamageType type) {
     FireResult r;
     r.hpAfter = m_hp;
 
     // Normalize the look dir so the FX tracer "miss" end point (eye + dir*range)
     // is at the true max range regardless of the caller's dir magnitude.
-    float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dl < 1e-6f) dl = 1e-6f;
-    const x3::phys::Vec3 ndir{ dir.x / dl, dir.y / dl, dir.z / dl };
+    const x3::phys::Vec3 ndir = fireDirNormalized(dir);
     // Default tracer end on a miss: straight out to max range.
     r.endPoint = x3::phys::Vec3{ eye.x + ndir.x * kFireMaxDist,
                                  eye.y + ndir.y * kFireMaxDist,
@@ -503,7 +640,6 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
 
     if (!m_alive) return r;                       // already dead: nothing to hit
 
-    x3::phys::RayHit hit = physics.rayCast(eye, ndir, kFireMaxDist, x3::phys::Layer::Enemy);
     if (hit.hit && hit.body.valid()) {
         r.hit      = true;
         r.hitPoint = hit.point;
@@ -543,7 +679,8 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     // on The Collective once the F4 console is used; 1.0 for everything else).
     const int shotDmg = (int)(baseDmg * incomingDamageMul() * resistMul *
                               m_damageTakenMul + 0.5f);
-    if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
+    if (headshot && combatLogEnabled())                     // [P3-5] combat_log
+        x3::logInfo("[monster] HEADSHOT! 3x damage");
     bool dead = applyDamage(&m_hp, shotDmg);
     // Latch the new type + reset the resist window AFTER applying damage. Only
     // bookkeep when the row has opted in (avoids touching state for normal rows).
@@ -556,6 +693,7 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     // D-ai: remember recent damage so the state machine can flinch/retreat.
     m_dmgMemory   = kAiDamageMemory;
     m_dmgWindowHp += shotDmg;
+    m_dormant     = false;   // taking fire WAKES a gated spawn (it fights back)
 
     if (dead) {
         // ---- Death: remove the physics body IMMEDIATELY (so subsequent rays
@@ -573,7 +711,8 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
         }
         if (m_body.valid()) physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
-        x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
         // TASK#12: try the SKINNED DEATH RAGDOLL — a rigged enemy physically flops
         // with its model (the shot direction carries the topple shove). No-op on an
         // unrigged model -> the legacy rigid topple draws instead. Spawn AFTER the
@@ -590,12 +729,19 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
     } else {
-        x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
-                    " — HP now " + std::to_string(m_hp));
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
+                        " — HP now " + std::to_string(m_hp));
         // Enemy-SFX: a TAKE-HIT grunt when it survives the shot (host -> creature-pain).
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
+        // VISIBLE FLINCH (union): guaranteed procedural stagger + baked Hit clip
+        // (opening-enemies-rigged, never a silent no-react), PLUS the richer
+        // ANIM-ENRICH hit-react clip when the rig has one (playable-build). Both
+        // suppressed mid-swing so a wind-up attack isn't clipped.
+        kickHitReact();
+        if (m_hitReactClip >= 0 && m_attackAnimT < 0.0f) m_hitReactAnimT = 0.0f;
     }
     return r;
 }
@@ -631,6 +777,7 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
     // D-ai: heavy melee is a strong flinch trigger.
     m_dmgMemory   = kAiDamageMemory;
     m_dmgWindowHp += dmg;
+    m_dormant     = false;   // taking damage WAKES a gated spawn (it fights back)
     if (dead) {
         m_alive    = false;
         m_dying    = true;
@@ -639,7 +786,8 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
             scene.get(m_entity).body = x3::phys::BodyId{};
         if (m_body.valid()) physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
-        x3::logInfo("[monster] melee-killed (HP 0) — body removed, death-pop started");
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[monster] melee-killed (HP 0) — body removed, death-pop started");
         // TASK#12: skinned death ragdoll (melee). No explicit shot dir here — pass a
         // zero shove so spawnDeathRagdoll topples it along its facing (the caller owns
         // the separate rigid-body knockback; the body is already gone). No-op unrigged.
@@ -654,12 +802,18 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
     } else {
-        x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
-                    " — HP now " + std::to_string(m_hp));
+        if (combatLogEnabled())                             // [P3-5] combat_log
+            x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
+                        " — HP now " + std::to_string(m_hp));
         // Enemy-SFX: take-hit grunt on a surviving melee hit.
         emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
             x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f,
             (uint32_t)m_species });
+        // VISIBLE FLINCH (union): guaranteed procedural stagger + baked Hit clip
+        // (opening-enemies-rigged) PLUS the richer ANIM-ENRICH hit-react clip when
+        // the rig has one (playable-build). Both suppressed mid-swing.
+        kickHitReact();
+        if (m_hitReactClip >= 0 && m_attackAnimT < 0.0f) m_hitReactAnimT = 0.0f;
     }
     return dead;
 }
@@ -708,6 +862,31 @@ int MonsterSystem::effectiveDamage() const {
 }
 
 // ---------------------------------------------------------------------------
+// [P2-6] One LOS probe (extracted from the decision-cadence block so the attack
+// path can re-run it FRESH). Ray from our center toward the player's eye; clear
+// if no Static wall blocks it before the player. Skip past our own collision
+// box first (the Static mask also matches Enemy bodies, so a center-origin ray
+// self-hits). See docs/design/SUBSYSTEM_HARDENING_PLAN.md AI-2.
+// ---------------------------------------------------------------------------
+bool MonsterSystem::probeLos(x3::phys::IPhysicsWorld& physics,
+                             const x3::phys::Vec3& playerEye) const {
+    const x3::phys::Vec3 from0{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
+    x3::phys::Vec3 d{ playerEye.x - from0.x, playerEye.y - from0.y,
+                      playerEye.z - from0.z };
+    float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+    if (dl < 1e-4f) dl = 1e-4f;
+    const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
+    const float skip = kMonsterHalf.x + 0.15f;
+    const x3::phys::Vec3 from{ from0.x + nd.x*skip, from0.y + nd.y*skip,
+                               from0.z + nd.z*skip };
+    float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
+    x3::phys::RayHit wall = (losLen > 1e-3f)
+        ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
+        : x3::phys::RayHit{};
+    return !wall.hit;
+}
+
+// ---------------------------------------------------------------------------
 // Per-frame: decay hit-flash; run the death pop; else face + chase the player.
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -739,6 +918,12 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                            IDamageSink* target, const AttackFxFn& fx,
                            const BossPhaseFn& onPhase, const AllyQueryFn& allies) {
     if (dt <= 0.0f) return;
+
+    // SPAWN GATING (opening flow): a DORMANT monster runs the exact "no target"
+    // AI path — Idle/Patrol/calm loops keep animating, but it neither perceives
+    // nor engages the player (no LOS, no chase, no attack, no alert feed) until
+    // the host wakes it (region/progression gating — see CanonPlay::tick).
+    if (m_dormant) { target = nullptr; m_hasLos = false; }
 
     // ---- Boss phase machine (Phase 2b). Monotone HP-fraction latch: only ever
     // advances Phase1 -> Phase2 -> Phase3. On a transition, fold in that phase's
@@ -898,27 +1083,9 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                           kAiDecisionJitter * (2.0f * rng01(m_rng) - 1.0f);
 
         // LOS: ray from our center toward the player's eye; clear if no Static wall
-        // blocks it before the player. Skip past our own collision box first (the
-        // Static mask also matches Enemy bodies, so a center-origin ray self-hits).
-        bool los = true;
-        if (target) {
-            const x3::phys::Vec3 from0{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
-            x3::phys::Vec3 d{ playerEye.x - from0.x, playerEye.y - from0.y,
-                              playerEye.z - from0.z };
-            float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
-            if (dl < 1e-4f) dl = 1e-4f;
-            const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
-            const float skip = kMonsterHalf.x + 0.15f;
-            const x3::phys::Vec3 from{ from0.x + nd.x*skip, from0.y + nd.y*skip,
-                                       from0.z + nd.z*skip };
-            float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
-            x3::phys::RayHit wall = (losLen > 1e-3f)
-                ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
-                : x3::phys::RayHit{};
-            los = !wall.hit;
-        } else {
-            los = false;   // no target -> nothing to see -> Search/Idle
-        }
+        // blocks it before the player (probeLos, shared with the [P2-6] fresh
+        // attack-time re-check below). No target -> nothing to see -> Search/Idle.
+        const bool los = target ? probeLos(physics, playerEye) : false;
         m_hasLos = los;
         if (los) { m_lastKnown = playerPos; m_everSawPlayer = true; }
 
@@ -1010,11 +1177,27 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 want = AiState::Regroup;   // hold regroup its min dwell
             }
             if (want != m_ai) {
-                x3::logInfo(std::string("[ai] entity ") + std::to_string(m_entity) +
-                            " " + aiStateName(m_ai) + " -> " + aiStateName(want) +
-                            " (hp=" + std::to_string(m_hp) + "/" + std::to_string(m_maxHp) +
-                            " los=" + (los ? "1" : "0") +
-                            " d=" + std::to_string((int)horiz) + "m)");
+                if (aiLogEnabled())                         // [P3-5] ai_log
+                    x3::logInfo(std::string("[ai] entity ") + std::to_string(m_entity) +
+                                " " + aiStateName(m_ai) + " -> " + aiStateName(want) +
+                                " (hp=" + std::to_string(m_hp) + "/" + std::to_string(m_maxHp) +
+                                " los=" + (los ? "1" : "0") +
+                                " d=" + std::to_string((int)horiz) + "m)");
+                // ALERT BARK / TELEGRAPH: transitioning from a non-engaged state
+                // (Idle/Search/Patrol) INTO an engage state == the enemy just SPOTTED
+                // the player. Fire a punchy full-intensity growl so the player HEARS
+                // the aggro land before the first swing (readability). One-shot; the
+                // ongoing harass taunt takes over from here.
+                auto engaged = [](AiState s) {
+                    return s == AiState::Advance || s == AiState::Attack ||
+                           s == AiState::Strafe;
+                };
+                if (m_dmg > 0 && !engaged(m_ai) && engaged(want)) {
+                    emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyTaunt,
+                        x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 1.0f,
+                        (uint32_t)m_species });
+                    m_tauntTimer = 1.2f;   // don't double-bark immediately after
+                }
                 m_ai = want;
                 m_stateTime = 0.0f;
                 if (m_ai == AiState::Search)  m_searchTimer = kAiSearchTime;
@@ -1359,6 +1542,21 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // test at all (only the ranged path did). This closes both: no LOS or too much
     // vertical separation => no wind-up, no hit. The ranged path keeps its own
     // muzzle->player wall ray as a second, finer check at the moment of the shot.
+    //
+    // [P2-6] FRESH attack-time LOS (SUBSYSTEM_HARDENING_PLAN AI-2): the decision
+    // cadence is jittered ~0.15-0.45 s, so between ticks m_hasLos is STALE — an
+    // enemy kept shooting/swinging at where the player WAS (through the corner or
+    // doorframe just vacated), and refused fair shots for up to half a second
+    // after the player stepped into view. Whenever an attack is even plausible
+    // (live target, armed, permitted, and in range or already winding), re-run
+    // the SAME LOS probe THIS frame and overwrite m_hasLos, so both the wind-up
+    // gate and the melee land use the current world, not the stale snapshot. One
+    // extra Static ray per frame, only for enemies actually in attack range.
+    if (target && target->isAlive() && m_dmg > 0 && mayAttack &&
+        (m_winding || horiz <= m_attackRange)) {
+        m_hasLos = probeLos(physics, playerEye);
+        if (m_hasLos) { m_lastKnown = playerPos; m_everSawPlayer = true; }
+    }
     const float vsep = std::fabs(playerPos.y - m_pos.y);
     const bool attackClear = m_hasLos && vsep <= kAttackMaxVertical;
     if (target && target->isAlive() && m_dmg > 0 && horiz <= m_attackRange &&
@@ -1369,7 +1567,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             m_windupTimer = m_attackWindup;
             // W2-D: kick the one-shot ATTACK clip (if the rig has one). The anim
             // block below plays it to completion, preempting locomotion.
-            if (m_animActive && m_attackClip >= 0) m_attackAnimT = 0.0f;
+            // ANIM-ENRICH: alternate Attack <-> Attack2 for variety when a 2nd
+            // variant exists; the play gate uses m_attackActiveClip.
+            if (m_animActive && m_attackClip >= 0) {
+                m_attackActiveClip = (m_attackAlt && m_attackClip2 >= 0)
+                                   ? m_attackClip2 : m_attackClip;
+                m_attackAlt = !m_attackAlt;
+                m_attackAnimT = 0.0f;
+                // A fresh attack overrides any in-progress flinch.
+                m_hitReactAnimT = -1.0f;
+            }
             // Telegraph FX up front (a beam toward the player) so the attack reads.
             if (fx) {
                 x3::phys::Vec3 tp = target->damageTargetPos();
@@ -1424,9 +1631,10 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                     const int dmg = effectiveDamage();
                     bool hit = target->takeDamage(dmg);
                     if (hit) {
-                        x3::logInfo(std::string("[monster] ") +
-                                    (m_ranged ? "drone ranged" : "melee") +
-                                    " hit player for " + std::to_string(dmg));
+                        if (combatLogEnabled())             // [P3-5] combat_log
+                            x3::logInfo(std::string("[monster] ") +
+                                        (m_ranged ? "drone ranged" : "melee") +
+                                        " hit player for " + std::to_string(dmg));
                         // Impact cue at the player so audio/FX can land a hit sound.
                         emitCueOrLog(m_cueSink, GameCue{
                             m_ranged ? CueKind::BulletImpact : CueKind::MeleeImpact,
@@ -1448,16 +1656,34 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // carries the read). Decays smoothly back to 0 after the strike. ----
     {
         float wantLunge = 0.0f, wantDip = 0.0f;
-        if (m_winding && !m_ranged && m_attackClip < 0 && m_attackWindup > 1e-4f) {
+        if (m_winding && m_attackWindup > 1e-4f) {
             const float t = 1.0f - (m_windupTimer / m_attackWindup);   // 0..1 through wind-up
-            if (t < 0.7f) { const float k = t / 0.7f;        wantLunge = -0.16f * k; wantDip = 0.07f * k; }
-            else          { const float k = (t - 0.7f) / 0.3f; wantLunge = -0.16f + 0.62f * k; wantDip = 0.07f * (1.0f - k); }
+            if (!m_ranged && m_attackClip < 0) {
+                // MELEE with no baked Attack clip: rear back through 70% then LUNGE.
+                if (t < 0.7f) { const float k = t / 0.7f;        wantLunge = -0.16f * k; wantDip = 0.07f * k; }
+                else          { const float k = (t - 0.7f) / 0.3f; wantLunge = -0.16f + 0.62f * k; wantDip = 0.07f * (1.0f - k); }
+            } else if (m_ranged && (m_flyer || m_type == MonsterType::Drone) && !m_animActive) {
+                // DRONE FIRE-DIVE (no rig): nose-dip + a short dive TOWARD the target
+                // across the shot tell, recovering after — sold through the draw
+                // transform only (the physics/hitscan timing is untouched). Positive
+                // lunge = along facing = toward the player the drone is aiming at.
+                if (t < 0.6f) { const float k = t / 0.6f;        wantLunge = 0.22f * k;        wantDip = 0.10f * k; }
+                else          { const float k = (t - 0.6f) / 0.4f; wantLunge = 0.22f * (1.0f - k); wantDip = 0.10f * (1.0f - k); }
+            }
         }
         // Snap toward the wind-up profile fast (it IS the motion), relax slower.
         const float rate = (m_winding ? 30.0f : 8.0f) * dt;
         const float k = std::min(1.0f, rate);
         m_lunge    += (wantLunge - m_lunge) * k;
         m_lungeDip += (wantDip  - m_lungeDip) * k;
+    }
+    // ---- Procedural STAGGER decay (visual floor). kickHitReact() sets m_procStagger
+    // to 1 on a surviving hit; it decays here so the body recoils then recovers. When
+    // a baked Hit clip drives the recoil the offset is small (the clip carries it);
+    // with no clip it is the whole read. Folded into drawPos below. ----
+    if (m_procStagger > 0.0f) {
+        m_procStagger -= dt * 3.0f;               // ~0.33 s recoil
+        if (m_procStagger < 0.0f) m_procStagger = 0.0f;
     }
 
     // ---- Bake the facing yaw into the render transform's upper-left 3x3, keeping
@@ -1470,7 +1696,33 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // facing +Z, but facingDir()/AI assume local -Z forward (CONVENTIONS) — so the
         // MESH renders with its BACK to the player. Flip the VISUAL yaw 180deg here
         // ONLY (m_yaw / facingDir() / aim / --test-ai are unchanged, so AI stays right).
-        const float ry = m_yaw + 3.14159265358979323846f;
+        // ---- GUARANTEED PROCEDURAL MOTION FLOOR (Tim's "anim keeps getting lost"
+        // fix): any enemy with NO live skeletal clip (the rig-less Drone, a legacy
+        // static mesh, or the box fallback for a missing/stub GLB) still MOVES so it
+        // is never a frozen prop. Skinned enemies (m_animActive) skip this entirely —
+        // their baked clips own the pose, and m_propLean keeps the crowd lean read. --
+        float procBobY = 0.0f;                 // vertical hover/breathing bob (m)
+        float swayYaw  = 0.0f;                 // idle yaw sway folded into the heading
+        float lean     = m_propLean;           // default: caller-fed crowd torso lean
+        if (!m_animActive) {
+            m_procTime += dt;
+            const float t = m_procTime;
+            if (m_flyer || m_type == MonsterType::Drone) {
+                // DRONE: floaty hover bob + slow yaw sway + a gentle nose tilt. The
+                // dive-on-attack is carried by the lunge/dip fold above. A drone must
+                // never read as a frozen box — this keeps it alive in the air.
+                procBobY = 0.12f * std::sin(t * 2.3f);          // hover bob  (+/-12 cm)
+                swayYaw  = 0.10f * std::sin(t * 0.9f);          // lazy yaw sway (+/-0.1 rad)
+                lean     = 0.06f * std::sin(t * 1.3f + 0.7f);   // gentle nose tilt (pitch)
+            } else {
+                // GROUNDED unrigged enemy: a subtle breathing bob so it reads alive,
+                // not a statue (its melee lunge-tell above still carries the attack).
+                procBobY = 0.035f * std::sin(t * 1.8f);
+            }
+        }
+        // FACING FIX (recovered from wave3): the rigged character GLBs are authored
+        // facing +Z ... (the +pi visual flip). swayYaw adds the drone's idle sway.
+        const float ry = m_yaw + 3.14159265358979323846f + swayYaw;
         const float c = std::cos(ry), s = std::sin(ry);
         // Yaw about +Y: local +X -> (c,0,-s), +Z -> (s,0,c). The phase scale
         // multiplier up-scales the boss as it enrages (graybox phase feedback).
@@ -1485,15 +1737,27 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             drawPos.z += -fc * m_lunge;
             drawPos.y -= m_lungeDip;
         }
+        // Procedural stagger: shove the DRAW position AWAY from the player (backward
+        // along facing) with a small dip, scaled by the decaying intensity — a shot
+        // ALWAYS knocks the body back visibly even on a rig with no baked Hit clip.
+        if (m_procStagger > 0.0f) {
+            const float fs = std::sin(m_yaw), fc = std::cos(m_yaw);
+            const float amp = 0.18f * m_procStagger;   // metres of recoil
+            drawPos.x += fs * amp;                      // +facing-back = away from target
+            drawPos.z += fc * amp;
+            drawPos.y -= 0.05f * m_procStagger;         // brief crouch dip
+        }
+        // Procedural hover/breathing bob (rig-less enemies only; 0 for skinned).
+        drawPos.y += procBobY;
         Entity& me = scene.get(m_entity);
-        if (m_propLean != 0.0f) {
-            // SKINNED CITIZENS: fold the caller-fed torso lean (setPropMotion) into
-            // the bake as R = Ry(ry) * Rx(lean-toward-facing). In the render frame
-            // the model's front is local +Z (the +pi visual flip above), so a
-            // positive lean pitches the body toward whatever it faces — the crowd's
-            // carry/console/converse lean read. lean == 0 (every existing monster)
-            // takes the identical branch below.
-            const float sa = std::sin(m_propLean), ca = std::cos(m_propLean);
+        if (lean != 0.0f) {
+            // SKINNED CITIZENS fold the caller-fed torso lean (setPropMotion), and the
+            // rig-less DRONE folds its idle nose tilt, into the bake as
+            // R = Ry(ry) * Rx(lean-toward-facing). In the render frame the model's
+            // front is local +Z (the +pi visual flip above), so a positive lean
+            // pitches the body toward whatever it faces. lean == 0 (every existing
+            // grounded monster) takes the identical branch below.
+            const float sa = std::sin(lean), ca = std::cos(lean);
             composeTRS(me.transform,
                        x3::phys::Vec3{ c, 0.0f, -s },
                        x3::phys::Vec3{ sa * s, ca, sa * c },
@@ -1532,16 +1796,53 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // W2-D: the one-shot ATTACK clip preempts locomotion while it plays (kicked
         // at wind-up start). Hard-cut in/out — consistent with the engine's existing
         // clip switching; returns to the locomotion blend the frame after it ends.
-        if (m_attackAnimT >= 0.0f && m_attackClip >= 0) {
+        if (m_attackAnimT >= 0.0f && m_attackActiveClip >= 0) {
+            // PROOF (Tim's #1 ask): log once at the START of each swing that a REAL
+            // non-idle Attack clip is now driving the pose — so a headless run shows
+            // attacks animate, not idle-during-swing. Fires on the first frame only.
+            if (m_attackAnimT == 0.0f)
+                x3::logInfo("[monster-anim] ATTACK clip '" +
+                            std::string(m_skinner.clipName((uint32_t)m_attackActiveClip)) +
+                            "' now driving pose (entity " + std::to_string(m_entity) +
+                            ", not idle) — swing animating");
             m_attackAnimT += dt;
-            const float dur = m_skinner.clipDuration((uint32_t)m_attackClip);
+            const float dur = m_skinner.clipDuration((uint32_t)m_attackActiveClip);
             if (m_attackAnimT < dur && dur > 1e-4f) {
-                m_skinner.apply(m_model, *m_device, (uint32_t)m_attackClip, m_attackAnimT);
+                m_skinner.apply(m_model, *m_device, (uint32_t)m_attackActiveClip, m_attackAnimT);
                 // (m_lastFootPhase untouched: locomotion phase is frozen during the
                 // swing, so no footstep-mark jump on resume.)
                 return;                    // locomotion resumes next frame after the swing
             }
             m_attackAnimT = -1.0f;         // finished -> fall through to locomotion
+        }
+        // ANIM-ENRICH: one-shot HIT-REACTION flinch — plays once when the enemy
+        // survived a shot/melee (m_hitReactAnimT reset to 0 on the survive path),
+        // preempting locomotion for its short duration, then hard-cuts back. Yields
+        // to the attack gate above (a mid-swing hit doesn't interrupt the swing).
+        // UNION: the richer playable-build hit-react clip takes priority; the
+        // opening-enemies m_hitClip handler below is the fallback for rigs whose
+        // fuzzy match landed there instead (both members are union-kept).
+        if (m_hitReactAnimT >= 0.0f && m_hitReactClip >= 0) {
+            m_hitReactAnimT += dt;
+            const float dur = m_skinner.clipDuration((uint32_t)m_hitReactClip);
+            if (m_hitReactAnimT < dur && dur > 1e-4f) {
+                m_skinner.apply(m_model, *m_device, (uint32_t)m_hitReactClip, m_hitReactAnimT);
+                return;                    // locomotion resumes the frame after the flinch
+            }
+            m_hitReactAnimT = -1.0f;       // finished -> fall through to locomotion
+        }
+        // HIT-REACT (opening-enemies fallback): the one-shot flinch clip preempts
+        // locomotion while it plays (kicked by kickHitReact on a surviving hit).
+        // Attack outranks it (checked first + kickHitReact won't fire mid-attack);
+        // a fresh hit during the flinch just restarts m_hitAnimT.
+        if (m_hitAnimT >= 0.0f && m_hitClip >= 0) {
+            m_hitAnimT += dt;
+            const float dur = m_skinner.clipDuration((uint32_t)m_hitClip);
+            if (m_hitAnimT < dur && dur > 1e-4f) {
+                m_skinner.apply(m_model, *m_device, (uint32_t)m_hitClip, m_hitAnimT);
+                return;                    // locomotion resumes next frame after the flinch
+            }
+            m_hitAnimT = -1.0f;           // finished -> fall through to locomotion
         }
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         // SKINNED CITIZENS: a prop posed via setPropPose already moved BEFORE this
@@ -2064,6 +2365,29 @@ void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phy
         }
     }
 
+    // ---- PACK ALERT (spotted-signal spread). If ANY squadmate currently has LOS to
+    // the player, wake the rest of the pack within kPackAlertRadius: allies with no
+    // sight of their own turn and Search toward the shared position instead of idling
+    // until they personally round the corner — the squad reacts as a unit. Cheap
+    // O(N^2) over the small live roster; skips dormant/inert/already-seeing enemies. -
+    {
+        constexpr float kPackAlertRadius = 14.0f;
+        const float r2 = kPackAlertRadius * kPackAlertRadius;
+        const MonsterSystem* spotter = nullptr;
+        for (const auto& m : m_monsters) {
+            if (m->alive() && m->hasLineOfSight() && !m->dormant() &&
+                m->attackDamage() > 0) { spotter = m.get(); break; }
+        }
+        if (spotter) {
+            for (auto& m : m_monsters) {
+                if (m.get() == spotter || !m->alive()) continue;
+                const x3::phys::Vec3 p = m->pos();
+                const float ddx = p.x - spotter->pos().x, ddz = p.z - spotter->pos().z;
+                if (ddx*ddx + ddz*ddz <= r2) m->notifyPackAlert(playerPos);
+            }
+        }
+    }
+
     for (auto& m : m_monsters)
         m->update(dt, scene, physics, playerPos, eye, target, fx, onPhase, allies);
 }
@@ -2078,15 +2402,21 @@ void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
 FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                                 Scene& scene, x3::phys::IPhysicsWorld& physics,
                                 int damage, x3::DamageType type) {
-    // Each MonsterSystem::fire() casts an Enemy-layer ray that returns the NEAREST
-    // enemy body, but only applies damage if that body is its own. So the first
-    // monster whose fire() reports a real monster hit is the one the ray actually
-    // struck (the nearest); the others see the same nearest body, recognise it as
-    // "not me", and no-op. We therefore take the first hitMonster result. We also
-    // keep the best non-monster result (a wall/miss tracer end) for FX.
+    // [P2-5] ONE Enemy-layer rayCast per shot (specs/MONSTER_FIRE_SINGLE_RAY.spec.md).
+    // The single cast returns the NEAREST enemy body along the ray; each monster
+    // then merely checks "is that my body?" against the SAME precomputed hit (a
+    // map lookup, no ray). Previously every MonsterSystem::fire() re-cast the
+    // identical ray — O(N monsters) physics rays per shot. Nearest-hit semantics
+    // are unchanged (the cast itself is nearest-wins, independent of vector
+    // order); at most one monster is damaged per call; a hit on an Enemy-layer
+    // body that is NOT one of ours is kept as a geometry hit for the tracer,
+    // exactly as before. Zero monsters => no cast, default miss (as before).
     FireResult best;
+    if (m_monsters.empty()) return best;
+    const x3::phys::RayHit hit =
+        physics.rayCast(eye, fireDirNormalized(dir), kFireMaxDist, x3::phys::Layer::Enemy);
     for (auto& m : m_monsters) {
-        FireResult r = m->fire(eye, dir, scene, physics, damage, type);
+        FireResult r = m->applyFireHit(hit, eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;       // the nearest monster took the shot
         if (r.hit && !best.hit) best = r; // remember a geometry hit for the tracer
     }
@@ -2133,6 +2463,82 @@ x3::phys::BodyId combatGround(x3::phys::IPhysicsWorld& w, float half) {
     uint32_t idx[] = { 0,2,1, 0,3,2 };
     return w.addStaticMesh(v, 4, idx, 6);
 }
+
+// [P2-5] Counting physics world: a transparent forwarding wrapper over a real
+// IPhysicsWorld that COUNTS rayCast() invocations. This is the spec's F5 probe:
+// it observes real physics-interface traffic (not a self-reported counter inside
+// the code under test), so "fire() performs exactly ONE world raycast" is proven
+// at the boundary. Everything else forwards 1:1.
+class CountingPhysicsWorld final : public x3::phys::IPhysicsWorld {
+public:
+    explicit CountingPhysicsWorld(x3::phys::IPhysicsWorld& inner) : m_w(inner) {}
+    uint32_t rayCasts = 0;
+
+    x3::phys::RayHit rayCast(x3::phys::Vec3 o, x3::phys::Vec3 d, float maxDist,
+                             x3::phys::Layer mask) override {
+        ++rayCasts;
+        return m_w.rayCast(o, d, maxDist, mask);
+    }
+
+    // ---- pure forwarding below ----
+    bool init() override { return m_w.init(); }
+    void shutdown() override { m_w.shutdown(); }
+    void step(float dt) override { m_w.step(dt); }
+    x3::phys::BodyId addStaticMesh(const float* v, uint32_t vc,
+                                   const uint32_t* i, uint32_t ic) override {
+        return m_w.addStaticMesh(v, vc, i, ic);
+    }
+    x3::phys::BodyId addBox(x3::phys::Vec3 h, x3::phys::Vec3 p, float m,
+                            x3::phys::Layer l) override { return m_w.addBox(h, p, m, l); }
+    x3::phys::BodyId addSphere(float r, x3::phys::Vec3 p, float m,
+                               x3::phys::Layer l) override { return m_w.addSphere(r, p, m, l); }
+    void removeBody(x3::phys::BodyId b) override { m_w.removeBody(b); }
+    void setBodyPosition(x3::phys::BodyId b, x3::phys::Vec3 p) override { m_w.setBodyPosition(b, p); }
+    x3::phys::Vec3 getBodyPosition(x3::phys::BodyId b) const override { return m_w.getBodyPosition(b); }
+    void applyImpulse(x3::phys::BodyId b, x3::phys::Vec3 i) override { m_w.applyImpulse(b, i); }
+    void getBodyRotation(x3::phys::BodyId b, float q[4]) const override { m_w.getBodyRotation(b, q); }
+    void setBodyRotation(x3::phys::BodyId b, const float q[4]) override { m_w.setBodyRotation(b, q); }
+    void setBodyLinearVelocity(x3::phys::BodyId b, const float v[3]) override { m_w.setBodyLinearVelocity(b, v); }
+    void getBodyLinearVelocity(x3::phys::BodyId b, float v[3]) const override { m_w.getBodyLinearVelocity(b, v); }
+    void setBodyAngularVelocity(x3::phys::BodyId b, const float v[3]) override { m_w.setBodyAngularVelocity(b, v); }
+    void getBodyAngularVelocity(x3::phys::BodyId b, float v[3]) const override { m_w.getBodyAngularVelocity(b, v); }
+    x3::phys::ConstraintId addPointConstraint(x3::phys::BodyId a, x3::phys::BodyId b,
+                                              x3::phys::Vec3 anchor) override {
+        return m_w.addPointConstraint(a, b, anchor);
+    }
+    void setBodyUserData(x3::phys::BodyId b, uint64_t u) override { m_w.setBodyUserData(b, u); }
+    uint64_t getBodyUserData(x3::phys::BodyId b) const override { return m_w.getBodyUserData(b); }
+    x3::phys::BodyId createCharacter(float r, float h, x3::phys::Vec3 p) override {
+        return m_w.createCharacter(r, h, p);
+    }
+    void moveCharacter(x3::phys::BodyId b, x3::phys::Vec3 v, float dt) override { m_w.moveCharacter(b, v, dt); }
+    bool characterGrounded(x3::phys::BodyId b) const override { return m_w.characterGrounded(b); }
+    bool setCharacterHeight(x3::phys::BodyId b, float h) override { return m_w.setCharacterHeight(b, h); }
+    void setCharacterSwim(x3::phys::BodyId b, bool e) override { m_w.setCharacterSwim(b, e); }
+    void setTriggerCallback(TriggerFn f, void* u) override { m_w.setTriggerCallback(f, u); }
+    x3::phys::ShapeId addConvexHull(const float* pts, uint32_t n) override { return m_w.addConvexHull(pts, n); }
+    x3::phys::ShapeId addCompound(const x3::phys::ShapeId* parts, const float* xf,
+                                  uint32_t n) override { return m_w.addCompound(parts, xf, n); }
+    x3::phys::BodyId addBodyFromShape(x3::phys::ShapeId s, x3::phys::Vec3 p, float m,
+                                      x3::phys::Layer l) override { return m_w.addBodyFromShape(s, p, m, l); }
+    void setContactCallback(ContactFn f, void* u) override { m_w.setContactCallback(f, u); }
+    void optimizeBroadphase() override { m_w.optimizeBroadphase(); }
+    x3::phys::ConstraintId addPointConstraint(x3::phys::BodyId b, x3::phys::Vec3 a,
+                                              x3::phys::Vec3 att) override {
+        return m_w.addPointConstraint(b, a, att);
+    }
+    x3::phys::ConstraintId addDistanceConstraint(x3::phys::BodyId b, x3::phys::Vec3 a,
+                                                 x3::phys::Vec3 att, float mn, float mx) override {
+        return m_w.addDistanceConstraint(b, a, att, mn, mx);
+    }
+    void removeConstraint(x3::phys::ConstraintId c) override { m_w.removeConstraint(c); }
+    void setBodyDamping(x3::phys::BodyId b, float l, float a) override { m_w.setBodyDamping(b, l, a); }
+    void* nativeSystem() override { return m_w.nativeSystem(); }
+    void* nativeBody(x3::phys::BodyId b) override { return m_w.nativeBody(b); }
+
+private:
+    x3::phys::IPhysicsWorld& m_w;
+};
 
 } // namespace
 
@@ -2312,6 +2718,82 @@ bool runCombatSelfTest() {
         check(capRespected && capActive && hitsBounded,
               "T6 dogpile cap: at most kMaxMeleeAttackers melee enemies swing at once");
         w->shutdown();
+    }
+
+    // =======================================================================
+    // [P2-5] Single-raycast fire (specs/MONSTER_FIRE_SINGLE_RAY.spec.md).
+    // T7: with TWO monsters on the same ray, one MonsterManager::fire() performs
+    //     EXACTLY ONE world raycast (spec F5, counted at the physics interface),
+    //     the NEARER monster takes the damage and the farther is untouched (F2),
+    //     a miss damages nobody and still costs one cast (F4) — plus a negative
+    //     control proving the ray counter actually counts.
+    // T8: spawn order reversed -> the same NEARER monster is the victim (F3).
+    // =======================================================================
+
+    // ---- T7: exactly one raycast per shot; nearest wins; miss is clean. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> inner(x3::phys::createPhysicsWorld());
+        inner->init();
+        CountingPhysicsWorld w(*inner);
+        Scene scene7; MonsterManager mm;
+        MonsterSystem::Tuning tn;               // NEAR: modest HP
+        tn.hp = 40;  tn.chaseSpeed = 0.0f;
+        MonsterSystem::Tuning tf = tn;          // FAR: more HP (spec F2)
+        tf.hp = 400;
+        // Both centered on x=0 so a -Z -> +Z ray runs through both hitboxes.
+        mm.spawn(scene7, device, w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, tn);
+        mm.spawn(scene7, device, w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, 3.0f }, tf);
+        const x3::phys::Vec3 eye7{ 0.0f, 0.4f, -3.0f };
+        const x3::phys::Vec3 aimZ{ 0.0f, 0.0f, 1.0f };   // through near, then far
+        const x3::phys::Vec3 away{ 0.0f, 0.0f, -1.0f };  // empty space behind the eye
+
+        // Negative control FIRST: the counter must see direct rayCast traffic.
+        w.rayCasts = 0;
+        (void)w.rayCast(eye7, aimZ, 1.0f, x3::phys::Layer::Enemy);
+        (void)w.rayCast(eye7, aimZ, 1.0f, x3::phys::Layer::Enemy);
+        const bool probeWorks = (w.rayCasts == 2);
+        check(probeWorks, "T7a ray-count probe counts direct casts (negative control)");
+
+        // One shot at both monsters: ONE cast, nearest damaged, farther untouched.
+        w.rayCasts = 0;
+        FireResult r = mm.fire(eye7, aimZ, scene7, w);
+        const uint32_t castsPerShot = w.rayCasts;
+        const bool oneCast   = (castsPerShot == 1);                       // F5
+        const bool nearHit   = r.hitMonster && mm.at(0).hp() == 40 - kDamagePerShot;
+        const bool farUntouched = mm.at(1).hp() == 400;                   // F2
+        x3::logInfo(std::string("[combat-test] T7 rayCasts/shot=") +
+                    std::to_string(castsPerShot) + " (monsters=" +
+                    std::to_string(mm.count()) + ")");
+        check(oneCast, "T7b fire() performs exactly ONE world raycast (was one per monster)");
+        check(nearHit && farUntouched, "T7c nearest monster takes the shot; farther untouched");
+
+        // Miss: aim at empty space — no HP change anywhere, still a single cast.
+        w.rayCasts = 0;
+        FireResult rm = mm.fire(eye7, away, scene7, w);
+        const bool missClean = !rm.hitMonster && mm.at(0).hp() == 40 - kDamagePerShot &&
+                               mm.at(1).hp() == 400 && w.rayCasts == 1;   // F4 + F5
+        check(missClean, "T7d miss damages nobody (single cast)");
+        w.shutdown();
+    }
+
+    // ---- T8: ORDER INDEPENDENCE (F3) — reversed spawn order, same victim. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> inner(x3::phys::createPhysicsWorld());
+        inner->init();
+        CountingPhysicsWorld w(*inner);
+        Scene scene8; MonsterManager mm;
+        MonsterSystem::Tuning tn; tn.hp = 40;  tn.chaseSpeed = 0.0f;
+        MonsterSystem::Tuning tf; tf.hp = 400; tf.chaseSpeed = 0.0f;
+        // FAR spawned FIRST this time (index 0), NEAR second (index 1).
+        mm.spawn(scene8, device, w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, 3.0f }, tf);
+        mm.spawn(scene8, device, w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, tn);
+        const x3::phys::Vec3 eye8{ 0.0f, 0.4f, -3.0f };
+        w.rayCasts = 0;
+        FireResult r = mm.fire(eye8, x3::phys::Vec3{ 0.0f, 0.0f, 1.0f }, scene8, w);
+        const bool nearVictim = r.hitMonster && mm.at(1).hp() == 40 - kDamagePerShot &&
+                                mm.at(0).hp() == 400 && w.rayCasts == 1;
+        check(nearVictim, "T8 vector order reversed: same (nearer) victim, one cast");
+        w.shutdown();
     }
 
     x3::logInfo(std::string("[combat-test] ") + std::to_string(g_pass) + " passed, " +
@@ -3042,6 +3524,117 @@ bool runAiSelfTest() {
         w->shutdown();
     }
 
+    // ---- (h) [P2-6] FRESH attack LOS (SUBSYSTEM_HARDENING_PLAN AI-2): corner/
+    // door fairness. The decision cadence is jittered ~0.15-0.45 s, so m_hasLos
+    // alone is a stale snapshot at attack time. Two directions:
+    //   Th1: a wall raised MID-WIND-UP (player ducks behind the doorframe) must
+    //        cancel the melee — no hit lands through the just-raised wall.
+    //   Th2: with the wall REMOVED (player steps into view inside melee range),
+    //        the attack must begin within a few frames — not after waiting out
+    //        the rest of the decision period — and the fair hit then lands.
+    // Both are deterministic under the per-frame refresh (the fresh probe runs
+    // every frame an attack is plausible); pre-fix they depended on where the
+    // jittered decision tick happened to fall. ----
+    {
+        // Th1: cancel mid-wind-up when a wall appears.
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; CountingSink sink;
+        MonsterSystem::Tuning t;
+        t.type = MonsterType::Guard;
+        t.hp = 100; t.chaseSpeed = 0.0f;          // stationary: geometry stays fixed
+        t.damage = 8; t.attackRange = 2.5f;
+        // NOTE: buildMonsterTuned seeds m_atkTimer = attackCooldown (an initial
+        // stagger), so the FIRST wind-up begins one full cooldown after build.
+        t.attackCooldown = 0.8f;                   // first wind-up at ~48 frames
+        t.attackWindup = 0.30f;                    // a real telegraph window
+        t.ranged = false;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+        sink.eye = x3::phys::Vec3{ 0.0f, 1.6f, -2.0f };   // inside melee range
+        bool wound = false;
+        for (int i = 0; i < 120 && !wound; ++i) {
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            wound = m.winding();
+        }
+        // The player "ducks behind the corner": raise a tall double-sided wall
+        // between enemy (z=0) and player (z=-2) while the wind-up is in flight.
+        {
+            float wx0=-10, wx1=10, wy0=0, wy1=5, wz=-1.0f;
+            float v[] = { wx0,wy0,wz, wx1,wy0,wz, wx1,wy1,wz, wx0,wy1,wz };
+            uint32_t idx[] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 }; // double-sided
+            w->addStaticMesh(v, 4, idx, 12);
+        }
+        for (int i = 0; i < 30; ++i) {             // ride out the full wind-up
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        x3::logInfo(std::string("[ai-test] (h1) wound=") + (wound?"1":"0") +
+                    " hitsThroughWall=" + std::to_string(sink.hits));
+        aicheck(wound && sink.hits == 0,
+                "Th1 fresh LOS cancels a mid-wind-up melee when a wall appears");
+        w->shutdown();
+    }
+    {
+        // Th2: attack begins promptly once the wall is gone (no stale refusal).
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; CountingSink sink;
+        MonsterSystem::Tuning t;
+        t.type = MonsterType::Guard;
+        t.hp = 100; t.chaseSpeed = 0.0f;
+        t.damage = 8; t.attackRange = 2.5f;
+        t.attackCooldown = 0.8f;                   // initial stagger = one cooldown
+        t.attackWindup = 0.30f;
+        t.ranged = false;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+        sink.eye = x3::phys::Vec3{ 0.0f, 1.6f, -2.0f };
+        x3::phys::BodyId wall;
+        {
+            float wx0=-10, wx1=10, wy0=0, wy1=5, wz=-1.0f;
+            float v[] = { wx0,wy0,wz, wx1,wy0,wz, wx1,wy1,wz, wx0,wy1,wz };
+            uint32_t idx[] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 };
+            wall = w->addStaticMesh(v, 4, idx, 12);
+        }
+        // Blocked: 1.5 s in melee range with a wall between -> no attack. (Also
+        // long enough for the initial-cooldown stagger to fully elapse, so the
+        // prompt-wind-up probe below measures the LOS path, not the cooldown.)
+        for (int i = 0; i < 90; ++i) {
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        const bool noBlindHits = (sink.hits == 0) && !m.winding();
+        // The wall drops (player steps through the door): the wind-up must begin
+        // within a FEW frames (fresh per-frame probe), not after the remainder of
+        // the ~0.15-0.45 s decision period.
+        w->removeBody(wall);
+        int framesToWindup = -1;
+        for (int i = 0; i < 10; ++i) {
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            if (m.winding()) { framesToWindup = i + 1; break; }
+        }
+        const bool prompt = (framesToWindup > 0 && framesToWindup <= 3);
+        // And the fair hit then actually lands once the wind-up elapses.
+        for (int i = 0; i < 30; ++i) {
+            m.update(kAiDt, scene, *w, sink.eye, sink.eye, &sink, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        x3::logInfo(std::string("[ai-test] (h2) noBlindHits=") + (noBlindHits?"1":"0") +
+                    " framesToWindup=" + std::to_string(framesToWindup) +
+                    " fairHits=" + std::to_string(sink.hits));
+        aicheck(noBlindHits && prompt && sink.hits >= 1,
+                "Th2 fresh LOS grants a fair attack promptly after cover breaks");
+        w->shutdown();
+    }
+
     x3::logInfo(std::string("[ai-test] ") + std::to_string(ai_pass) + " passed, " +
                 std::to_string(ai_fail) + " failed");
     return ai_fail == 0;
@@ -3434,9 +4027,15 @@ void MultiPodBoss::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameC
 FireResult MultiPodBoss::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics,
                               int damage, x3::DamageType type) {
+    // [P2-5] ONE Enemy-layer rayCast per shot, fanned across the pods — same
+    // single-cast pattern as MonsterManager::fire (see the comment there and
+    // specs/MONSTER_FIRE_SINGLE_RAY.spec.md). Previously one cast PER POD.
     FireResult best;
+    if (m_pods.empty()) return best;
+    const x3::phys::RayHit hit =
+        physics.rayCast(eye, fireDirNormalized(dir), kFireMaxDist, x3::phys::Layer::Enemy);
     for (auto& p : m_pods) {
-        FireResult r = p->fire(eye, dir, scene, physics, damage, type);
+        FireResult r = p->applyFireHit(hit, eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;   // a pod took the shot; at most one per call
         if (r.hit && !best.hit) best = r;  // remember a wall hit for the tracer
     }
@@ -4284,8 +4883,8 @@ std::vector<Act2BossDef> buildAct2BossDefs() {
         t.phase2SpeedMul = 1.30f; t.phase2DamageMul = 1.35f;
         t.phase3SpeedMul = 1.55f; t.phase3DamageMul = 1.60f;
         t.phase3SummonCount = 5;                            // SUMMONS — the spec's headline beat
-        // Existing BossBreederQueen.glb is in rigged_glb (Y-up); use directly.
-        t.modelFile        = "BossBreederQueen.glb";
+        // Animated BossBreederQueen_anim.glb (Y-up; Idle/Walk/Run/Attack/Hitreaction/Death).
+        t.modelFile        = "BossBreederQueen_anim.glb";
         t.modelDirOverride = riggedGlbRoot();
         t.standUpZtoY      = false;
         t.modelScale       = 1.55f;                         // 12ft frame reads tall

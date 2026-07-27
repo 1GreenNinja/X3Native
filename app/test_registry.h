@@ -40,8 +40,11 @@ struct TestFlags {
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testKeypad = false;      // --test-keypad (realistic high-poly access keypad, KP1-KP6)
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
+    bool testPropClip = false;    // --test-propclip (GATE A ext: dressing prop AABB vs room bounds)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
+    bool testFilmic = false;      // --test-filmic (composite filmic block: CPU-mirror identity probe)
     bool testGoldenPath = false;
+    bool testOpening = false;     // --test-opening (opening-flow: the wake-in-cell contract)
     bool testDescMech = false;    // --test-descmech (W9-1: desc-field Tier-A mechanics)
     bool testInventory = false;    // W9-3 RPG: backpack/item-db (--test-inventory)
     bool testProgression = false;  // W9-3 RPG: XP/levels (--test-progression)
@@ -51,6 +54,7 @@ struct TestFlags {
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
     bool testIntroCockpit = false;// --test-introcockpit (intro cockpit Scene-entity rig)
+    bool testStarsystems = false; // --test-starsystems (x3.starsys/1 registry integrity)
     bool testShipInterior = false;// --test-shipinterior (S5 walkable interior, headless)
     bool testShipWindows  = false;// --test-shipwindows (S6 true-portal windows, headless)
     // Space-combat feast fold (14900K lanes, headless):
@@ -76,6 +80,7 @@ struct TestFlags {
     bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
+    bool testVigil = false;
     bool testMission = false, testDestruction = false, testDebris = false, testGpuSkin = false;
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
@@ -89,8 +94,12 @@ struct TestFlags {
     bool testSealife = false;    // --test-sealife (great white hunt, bite-once, zap, abyss)
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
+    bool testComplex = false;
+    bool testClubNpcs = false;   // --test-clubnpcs (feat/club-npcs: 3 canon NPCs + trees)
     bool testJukebox = false;   // --test-jukebox (Club Jukebox pipeline)
+    bool testListen = false;   // --test-listen (CLUB LISTEN MODE beat-detector self-test)
     bool testPerfshop = false;
+    bool testGamma = false;    // --test-gamma (LINEAR-vs-GAMMA acceptance-gate byte measurement)
     // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF
     // space pilot (--test-space) + enemy ship-AI (--test-ship-ai) + targeting/
     // radar/lock (--test-targeting) + ship-damage model (--test-ship-damage) +

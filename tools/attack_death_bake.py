@@ -31,9 +31,15 @@ import bpy, sys, os, math
 
 ARGV = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 if len(ARGV) < 2:
-    raise SystemExit("Usage: ... -- <name_anim.glb> <out.glb> [style]")
+    raise SystemExit("Usage: ... -- <name_anim.glb> <out.glb> [style] [clips]")
 TARGET, OUT = ARGV[0], ARGV[1]
 STYLE = ARGV[2].lower() if len(ARGV) > 2 else "auto"
+# Which one-shots to bake (comma-separated). Default keeps the original behaviour.
+# Recognised: attack, death, hitreact, attack2. Enemies that already carry
+# Attack/Death (chief/marcus) pass "hitreact,attack2"; the aliens (no combat
+# clips) pass "attack,death,hitreact".
+CLIPS = [c.strip().lower() for c in
+         (ARGV[3] if len(ARGV) > 3 else "attack,death").split(",") if c.strip()]
 
 LOG_PATH  = OUT + ".log"
 DONE_PATH = OUT + ".done"
@@ -81,6 +87,7 @@ def classify(bones):
     exact = [b.name for b in bones if b.name.lower().endswith("rightarm") or b.name.lower().endswith("arm.r")]
     if exact: g["armR"] = exact[0]
     g["foreR"]  = find_bone(bones, "forearm", side="R") or find_bone(bones, "lowerarm", side="R")
+    g["foreL"]  = find_bone(bones, "forearm", side="L") or find_bone(bones, "lowerarm", side="L")
     g["armL"]   = ([b.name for b in bones if b.name.lower().endswith("leftarm") or b.name.lower().endswith("arm.l")] or
                    [find_bone(bones, "arm", side="L")])[0]
     g["spine"]  = [b.name for b in bones if "spine" in b.name.lower() or "chest" in b.name.lower()]
@@ -136,6 +143,13 @@ def zero_pose(arm):
 def new_action(arm, name):
     if not arm.animation_data:
         arm.animation_data_create()
+    # Idempotent RE-BAKE: if a clip of this exact name already exists (e.g. we are
+    # re-baking Hitreaction/Attack onto an already-enriched GLB), drop the old one
+    # first so Blender doesn't dedup us to "Hitreaction.001" and break the wired
+    # fuzzy-find. Actions we are NOT re-baking are left untouched.
+    for old in [a for a in bpy.data.actions if a.name == name]:
+        old.use_fake_user = False
+        bpy.data.actions.remove(old)
     act = bpy.data.actions.new(name)
     act.use_fake_user = True
     arm.animation_data.action = act
@@ -206,9 +220,12 @@ def bake_attack_core(arm, g, frames=20):
     for i in range(frames):
         f = i + 1
         t = i / (frames - 1.0)
-        if t < 0.4:   k = ease(t / 0.4);        rx, z = -D(18) * k, 0.03 * k
-        elif t < 0.7: k = ease((t - 0.4) / 0.3); rx, z = -D(18) + D(46) * k, 0.03 - 0.08 * k
-        else:         k = ease((t - 0.7) / 0.3); rx, z = D(28) * (1 - k), -0.05 * (1 - k)
+        # POLISH: the prior bake peaked at only +28 deg -> a weak forward bow. Now a
+        # COMMITTED lunge: coil back, then whip the whole body forward ~46 deg with
+        # a downward drop (weight behind the strike), then settle back to rest.
+        if t < 0.35:   k = ease(t / 0.35);        rx, z = -D(24) * k, 0.05 * k              # coil back + rise
+        elif t < 0.60: k = ease((t - 0.35) / 0.25); rx, z = -D(24) + D(64) * k, 0.05 - 0.12 * k  # LUNGE fwd + drop
+        else:          k = ease((t - 0.60) / 0.40); rx, z = D(40) * (1 - k), -0.07 * (1 - k)      # settle back
         key_euler(arm, drv, f, rx=rx)
         key_loc(arm, drv, f, z=z)
     return act
@@ -253,6 +270,120 @@ def bake_death_core(arm, g, frames=29):
     return act
 
 # ---------------------------------------------------------------------------
+# HITREACTION (~0.4 s @24fps = 10 frames): a SHARP, CONTAINED flinch that RETURNS
+# to neutral so the runtime can hard-cut back to locomotion with no pop. Authored
+# in the target's own bone space (rest-relative euler), so it is orientation-safe
+# on Z-up-authored rigs (no full-body pitch like a mocap knockback would give).
+# The single half-sine pulse: snap back on impact (~35%), settle back to rest.
+# ---------------------------------------------------------------------------
+def bake_hitreact_biped(arm, g, frames=10):
+    act = new_action(arm, "Hitreaction")
+    zero_pose(arm)
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        # POLISH v2: the previous retune (~20 deg) read too POLITE ("standing
+        # alert", not "took a bullet"). Punch the recoil to ~34 deg cumulative
+        # head+upper-spine WITHOUT going back to the chin-to-sky backbend, and
+        # settle to neutral EARLY (by ~t=0.7) so the runtime hard-cuts clean.
+        #   * peak near t=0.22 (frame ~3 of 10), fast attack (sin ease-in);
+        #   * decays to 0 across t=0.22..0.7 (cos ease-out), then HELD at rest.
+        tp, settle_end = 0.22, 0.70
+        if t < tp:
+            k = math.sin(t / tp * math.pi * 0.5)          # fast snap in
+        elif t < settle_end:
+            k = math.cos((t - tp) / (settle_end - tp) * math.pi * 0.5)  # ease back
+        else:
+            k = 0.0                                        # neutral, held to clip end
+        # ~34 deg cumulative recoil: upper spine + head jerk back (12+8+14). A firm
+        # TWIST (spine ry / head rz) rotates the impact off-axis so the pose reads as
+        # "spun by a frontal hit" rather than "calmly looking up" (a pure symmetric
+        # back-pitch is ambiguous as a still; the twist sells the impact direction).
+        if g["spine"]:
+            key_euler(arm, g["spine"][0], f, rx=-D(12) * k, ry=D(12) * k)  # torso jerks back+twist
+            if len(g["spine"]) > 1:
+                key_euler(arm, g["spine"][1], f, rx=-D(8) * k, ry=D(6) * k)
+        key_euler(arm, g.get("head"), f, rx=-D(14) * k, rz=D(12) * k)     # head snaps back+aside
+        # SHOULDER HITCH: upper arms + forearms jerk up/in (a flinch guard).
+        key_euler(arm, g.get("armR"), f, rx=-D(24) * k, rz=-D(20) * k)
+        key_euler(arm, g.get("armL"), f, rx=-D(22) * k, rz=D(22) * k)
+        key_euler(arm, g.get("foreR"), f, rx=-D(42) * k)
+        key_euler(arm, g.get("foreL"), f, rx=-D(40) * k)
+        # WEIGHT-SHIFT / BRACE: a small downward hip drop (absorb the hit). DOWN
+        # presses the feet INTO the floor -> never airborne (the QA failure mode
+        # is levitation, and a drop can't cause it); reads as rocking under the
+        # impact, feet staying in contact. Returns to rest with the recoil.
+        key_loc(arm, g.get("hips"), f, z=-0.03 * k)
+    return act
+
+def bake_hitreact_core(arm, g, frames=10):
+    act = new_action(arm, "Hitreaction")
+    zero_pose(arm)
+    drv = g.get("root") or g.get("hips") or (arm.pose.bones[0].name if len(arm.pose.bones) else None)
+    if not drv: return act
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        # POLISH: the prior bake (rx-16, z+0.02) was near-invisible vs Idle. A
+        # single-bone rig can ONLY move the whole body, so PUNCH IT: a sharp fast
+        # snap straight back (big base-pivot tip throws the whole body rearward) +
+        # a clear upward hitch, peaking early (~frame 2) then settling to rest.
+        tp = 0.2
+        k = math.sin(min(t / tp, 1.0) * math.pi * 0.5) if t < tp \
+            else math.cos((t - tp) / (1.0 - tp) * math.pi * 0.5)
+        key_euler(arm, drv, f, rx=-D(30) * k, rz=D(14) * k)   # hard recoil back + side flick
+        key_loc(arm, drv, f, z=0.10 * k)                      # upward jolt/hitch
+    return act
+
+# ---------------------------------------------------------------------------
+# ATTACK2 (~0.75 s): a distinct SECOND attack so successive strikes vary. Biped:
+# a LEFT-hand cross/hook (mirrors the right-hand haymaker of Attack) with a
+# forward step-in. Core: a low double-jab lunge (two quick forward pulses).
+# ---------------------------------------------------------------------------
+def bake_attack2_biped(arm, g, frames=19):
+    act = new_action(arm, "Attack2")
+    zero_pose(arm)
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        if t < 0.35:                        # WIND-UP: left arm back, spine coils
+            k = ease(t / 0.35)
+            armLx, armLz = -D(60) * k, -D(28) * k
+            foreLx = -D(45) * k
+            spineY = -D(16) * k
+        elif t < 0.65:                      # HOOK through
+            k = ease((t - 0.35) / 0.3)
+            armLx, armLz = -D(60) + D(120) * k, -D(28) + D(50) * k
+            foreLx = -D(45) + D(40) * k
+            spineY = -D(16) + D(30) * k
+        else:                               # RECOVER
+            k = ease((t - 0.65) / 0.35)
+            armLx, armLz = D(60) * (1 - k), D(22) * (1 - k)
+            foreLx = -D(5) * (1 - k)
+            spineY = D(14) * (1 - k)
+        key_euler(arm, g.get("armL"), f, rx=armLx, rz=armLz)
+        key_euler(arm, g.get("foreL") or g.get("foreR"), f, rx=foreLx)
+        if g["spine"]: key_euler(arm, g["spine"][0], f, ry=spineY, rx=D(5) * math.sin(t * math.pi))
+        key_euler(arm, g.get("armR"), f, rx=-armLx * 0.22)     # counter-balance
+        key_loc(arm, g.get("hips"), f, z=0.05 * math.sin(t * math.pi))  # step-in bob
+    return act
+
+def bake_attack2_core(arm, g, frames=19):
+    act = new_action(arm, "Attack2")
+    zero_pose(arm)
+    drv = g.get("root") or g.get("hips") or (arm.pose.bones[0].name if len(arm.pose.bones) else None)
+    if not drv: return act
+    for i in range(frames):
+        f = i + 1
+        t = i / (frames - 1.0)
+        # Two quick forward jabs (a 2 Hz lunge pulse) that decay back to rest.
+        env = (1.0 - t)
+        pulse = max(0.0, math.sin(t * 2.0 * math.tau))
+        key_euler(arm, drv, f, rx=D(30) * pulse * env)
+        key_loc(arm, drv, f, z=-0.05 * pulse * env)
+    return act
+
+# ---------------------------------------------------------------------------
 def main():
     arm = import_target()
     before = [a.name for a in bpy.data.actions]
@@ -263,12 +394,19 @@ def main():
         "spine:", g["spine"][:3])
     log("existing actions (kept):", before)
 
-    if style == "biped":
-        bake_attack_biped(arm, g)
-        bake_death_biped(arm, g)
-    else:
-        bake_attack_core(arm, g)
-        bake_death_core(arm, g)
+    biped = (style == "biped")
+    BAKERS = {
+        "attack":   bake_attack_biped   if biped else bake_attack_core,
+        "death":    bake_death_biped    if biped else bake_death_core,
+        "hitreact": bake_hitreact_biped if biped else bake_hitreact_core,
+        "attack2":  bake_attack2_biped  if biped else bake_attack2_core,
+    }
+    log("baking clips:", CLIPS)
+    for c in CLIPS:
+        fn = BAKERS.get(c)
+        if fn is None:
+            log("  unknown clip requested, skipping:", c); continue
+        fn(arm, g)
     arm.animation_data.action = None
     log("actions now:", [a.name for a in bpy.data.actions])
 

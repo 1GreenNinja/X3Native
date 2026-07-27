@@ -206,6 +206,11 @@ void LevelDocWorld::spawnEntity(uint32_t entityIdx, const x3::editor::EditorEnti
                 se.mesh = x3::rhi::MeshHandle{ d.meshId };
                 se.tex  = x3::rhi::TextureHandle{ d.baseColorTexId };
                 for (int i = 0; i < 4; ++i) se.baseColor[i] = d.baseColorFactor[i];
+                // Canon SELF-LIT glow: forward the leveldoc entity's optional
+                // emissive { r,g,b,strength } onto every drawable so a fusion
+                // core / solar cell face / neon strip glows independent of light
+                // (default {0,0,0,0} == no glow, unchanged for existing props).
+                for (int i = 0; i < 4; ++i) se.emissive[i] = e.emissive[i];
                 se.tag = (uint32_t)Tag::Prop;
                 x3::asset::mulMat4(obj, d.nodeTransform, se.transform);
                 Built rec; rec.slot = claimSlot(scene, se);

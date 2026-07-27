@@ -410,6 +410,14 @@ public:
         uint32_t meshId;
         uint32_t customIndex = 0;   // 24-bit instanceCustomIndex: the instance's
                                     // ObjectData SSBO row (DDGI hit-shading lookup)
+        // 8-bit instance visibility mask (rayQuery cullMask & mask != 0 -> hit).
+        // 0xFF = every ray sees it (the default, all prior behaviour). GLASS
+        // instances carry 0x7F (bit 7 clear) so the RT SHADOW rays — which trace
+        // with cullMask 0x80 — pass through glass (sun through the water/panes,
+        // matching the raster CSM that draws only the opaque range), while
+        // AO / reflections / DDGI / acoustics (cullMask 0xFF) still see glass
+        // exactly as before.
+        uint8_t  mask = 0xFF;
         float    model[16];   // column-major 4x4 (the renderer's ObjectData::model)
     };
 
@@ -457,7 +465,7 @@ public:
                 for (int c = 0; c < 4; ++c)
                     row.transform.matrix[r][c] = in.model[c * 4 + r];
             row.instanceCustomIndex = in.customIndex & 0xFFFFFFu;
-            row.mask = 0xFF;
+            row.mask = in.mask;
             row.instanceShaderBindingTableRecordOffset = 0;
             row.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
             row.accelerationStructureReference = blasAddr;

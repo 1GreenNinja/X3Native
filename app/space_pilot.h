@@ -88,6 +88,13 @@ public:
         float shieldRegenDelay  = 4.0f; // sec after a hit before shield ticks again
         float maxEnergy        = 100.0f;
         float energyRegenPerSec = 12.0f;
+        // Per-shot laser energy cost. Default 8 = the historical kLaserEnergy
+        // constant (every existing caller + --test-space T7 unchanged). The
+        // dogfight beats LOWER it + raise regen so the pool reads as a
+        // REGENERATING weapon-energy bank: a long sustained burst (~9 s), a
+        // fast recovery (~5 s), never a long dry lockout (owner: "it runs out
+        // after a short time!") — the charge-pool model, not an ammo clip.
+        float laserEnergyCost  = 8.0f;
         bool  defaultThirdPerson = true;
         float chaseDistance    = 12.0f; // 3P chase camera distance behind ship
         float chaseHeight      = 4.0f;  // 3P chase camera height above ship
@@ -169,6 +176,32 @@ public:
     // 1P sits at the nose; 3P chases behind + above, both rolling with the hull.
     void cameraBasis(float outPos[3], float outFwd[3], float outUp[3]) const;
 
+    // FORCE FIELD: if the ship is inside the sphere (center, radius), project it
+    // back to the surface and cancel the inward velocity component — a shield
+    // BOUNCE, not a wall glitch. Host calls this per frame against capital-ship /
+    // hazard bubbles ("I fly right thru the enemy ship ... we SERIOUSLY NEED the
+    // force field"). Returns true if it pushed (host can flash HUD / play a zap).
+    bool pushOut(const float center[3], float radius);
+
+    // TARGET-KEEPING LOOK (owner: "be able to look around and keep the enemy ship
+    // in sight"): the host feeds the world-space direction to the locked target
+    // each frame; the 3P camera's gaze BLENDS toward it (capped, eased) while the
+    // ship keeps flying its own heading — you maneuver one way, the camera keeps
+    // the fight in frame. amount 0 releases (eased back to pure ship-forward).
+    void setCameraLookBias(const float dirWorld[3], float amount);
+
+    // WING-MOUNTED GUNS (owner: "the fire needs to COme from weapons MOUNTED ON
+    // THE Ship"): world-space muzzle position + bore direction for the left
+    // (side=-1) / right (side=+1) wing hardpoint of the ~10 m fighter hull.
+    void wingMuzzle(int side, float outPos[3], float outDir[3]) const;
+
+    // HOLD-TO-FREELOOK (owner: "the player will be ABLE to keep the enemy ship in
+    // sight by looking around while zipping around"): while the host routes mouse
+    // deltas here (ALT held), the 3P camera ORBITS the ship — flight keeps its
+    // heading, momentum carries. Released (no feed), the offsets ease back to
+    // dead-astern. Clamped so you can look almost fully behind + well up/down.
+    void addFreeLook(float dx, float dy);
+
     // 1P / 3P toggle (showcase binds it to V).
     void toggleCameraMode();
     bool isThirdPerson() const { return m_thirdPerson; }
@@ -199,7 +232,7 @@ public:
     bool isAlive() const   { return m_hull > 0; }
 
     // Fire a laser bolt. Returns true iff the shot actually fired (off cooldown,
-    // enough energy). When true, drains kLaserEnergy and starts the cooldown.
+    // enough energy). When true, drains Tuning.laserEnergyCost and starts the cooldown.
     // The showcase / host wires this up to call combatFx.addTracer(muzzle, hit)
     // on the returned true. `dt` advances the per-frame cooldown timer.
     bool fireLaser(float dt);
@@ -232,6 +265,20 @@ private:
     // accumulate roll cleanly without gimbal-locking. We also keep Euler
     // (yaw/pitch/roll) updated from input for HUD readback + camera basis.
     float m_quat[4] = { 0, 0, 0, 1 };  // identity
+    // Elastic 3P chase camera (owner: "we need to visibly ZOOM left, right,
+    // forward, back"): the cam position SPRINGS toward its ideal chase point
+    // instead of welding to the hull, so thrust/strafe/boost visibly displace the
+    // ship in frame. Updated in update(dt); consumed by cameraBasis().
+    float m_chaseSm[3] = { 0, 0, 0 };
+    bool  m_chaseSmValid = false;
+    // Target-keeping look bias (world dir + eased amount).
+    float m_lookBiasDir[3] = { 1, 0, 0 };
+    float m_lookBiasAmt    = 0.0f;   // eased actual
+    float m_lookBiasTgt    = 0.0f;   // host-requested
+    // Hold-to-freelook orbit offsets (radians; ease to 0 when not fed).
+    float m_freeYaw   = 0.0f;
+    float m_freePitch = 0.0f;
+    bool  m_freeFed   = false;   // fed this frame? (else update() eases home)
     float m_angVel[3] = { 0, 0, 0 };   // body-local angular velocity (rad/s)
     float m_yaw   = 0;                 // around world +Y (smoothed / applied)
     float m_pitch = 0;                 // around ship local +Z (after yaw)
@@ -283,8 +330,9 @@ private:
 // asserts (1) spawn, (2) W/S accelerates along forward, (3) mouse-Y rotates
 // pitch, (4) Q/E rolls, (5) speed cap holds, (6) takeDamage shield→hull order,
 // (7) energy drain on fireLaser + refuse at 0 energy, (8) toggleCameraMode
-// 1P↔3P, (9) setMode swaps the feel tuning (health preserved). Logs PASS/FAIL
-// T#, returns true iff all pass.
+// 1P↔3P, (9) setMode swaps the feel tuning (health preserved), (10) vertical
+// thrust — Space rises / C drops along the ship up axis, boost-scaled. Logs
+// PASS/FAIL T#, returns true iff all pass.
 bool runSpaceSelfTest();
 
 } // namespace x3::game

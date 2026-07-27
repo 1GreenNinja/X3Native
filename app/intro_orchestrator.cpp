@@ -38,6 +38,7 @@
 #include "cutscene.h"         // x3::cut::CutscenePlayer + the cold-open asset
 #include "cinematic.h"        // runCutsceneWindowed (public cinematic driver)
 #include "asset_root.h"
+#include "audio_root.h"       // resolveAudio(...) — dogfight combat SFX (repo-local first)
 #include "engine/asset/IAssetSource.h"   // player fighter model for the 3P view
 #include "engine/asset/IModelLoader.h"
 #include "space_pilot.h"
@@ -206,6 +207,12 @@ void clearInputState(GLFWwindow* window) {
 // Play one cinematic clip span (blocking, K-skip). With a window this drives the
 // real CutscenePlayer via runCutsceneWindowed seeked to clipStart; headless it is
 // a deterministic no-op (the cutscene player is exercised by --test-cutscene).
+// ---- F9 skip-all latch (see intro_orchestrator.h). The flag lives here (file
+// scope) so the anon-namespace beat helpers can read it; the PUBLIC accessors are
+// defined after the anon namespace closes — inside it they'd get internal linkage
+// and cinematic.obj's reference would not resolve (LNK2019, been there).
+static bool s_skipAllIntro = false;
+
 void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
                        const x3::cut::Cutscene* cs) {
     x3::logInfo("[intro] beat '" + beat.id + "' (cinematic clip [" +
@@ -246,14 +253,32 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // The stock cinematic-arcade defaults read sluggish from inside the cockpit;
     // a fighter wants violent thrust + hard strafe so dodging feels like flying.
     x3::game::SpacePilotController::Tuning tun{};
-    tun.maxLinearAccel = 70.0f;   // was 25 — throws you back in the seat
+    tun.maxLinearAccel = 130.0f;  // owner, live: "W and S do not provide enough
+                                  // acceleration" (was 70; boosted strafe outran it)
     tun.maxStrafeAccel = 44.0f;   // A/D strafe: hard left/right dodge authority
+                                  // (x5 under Shift — the escape move)
     tun.boostMul       = 5.0f;    // SHIFT = ANTIMATTER BOOST (owner ask) — dramatic,
                                   // you feel it slam the ship forward, not a nudge.
     tun.maxSpeed       = 360.0f;  // raised so the boost has real top-end to reach for
+    // COMMERCIAL CHASE FRAMING (owner: "match commercial flight space games — a
+    // chase cam always behind a SMALLER ship which can dart wherever"): pull the
+    // cam back + up so the ~10 m hull reads Everspace-small (roughly 15% of frame
+    // height, low-center) with sky all around it for the dart room.
+    tun.chaseDistance  = 22.0f;   // was 12 — the hull filled the frame
+    tun.chaseHeight    = 5.0f;
     tun.maxShield      = 5000;    // owner ask: fat shield pool — survive the salvos and
     tun.maxHull        = 2000;    // fly around freely instead of dying in the first pass
     tun.shieldRegenPerSec = 120.0f;   // and it recharges fast, so a hit is not the end
+    // WEAPON ENERGY = a REGENERATING pool (owner: "It also runs out after a
+    // short time!"). Default cost 8 / regen 12 emptied the bank in ~2 s of held
+    // fire and then sputtered at regen pace forever. Tuned so a held trigger
+    // sustains ~10-12 s of continuous fire, the pool refills in ~5 s of cease-
+    // fire, and depletion is a brief sputter — never a dry lockout. (The flight
+    // loop calls update(dt) + fireLaser(dt), both of which tick the cooldown —
+    // the effective rate is ~10 shots/s; the numbers below are tuned against
+    // THAT measured cadence. Asserted by --test-space T11.)
+    tun.energyRegenPerSec = 20.0f;
+    tun.laserEnergyCost   = 2.8f;
     tun.noseFollow     = 2.8f;    // arcade steering: the ship GOES where the nose
                                   // points (Newtonian drift read as "axes wrong")
     // FIRST person: the beats render from inside the cockpit rig. The default
@@ -283,15 +308,41 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // A PLANET BACKDROP so space reads as SPACE, not a black void (owner: "I can NEVER
     // SEE THE PLANETS"). Eye-anchored bodies hung in the sky by loadNightSkyPlanets;
     // the same helper the showroom + cutscenes use, so no new asset path.
+    // ---- Live / capture routing (used from the planet load down) -----------
+    // interactive = a real window: GLFW input + real-time pacing.
+    // captureMode = X3_INTRO_CAPTURE with NO window (headless --world intro
+    //   --smoketest): render the beat OFFSCREEN with a scripted pilot + staged
+    //   enemy damage so the combat-readability evidence PNGs come from the real
+    //   flight beat with zero windowed pops. Bounded (maxSteps + the s960 stop).
+    // live = anything that RENDERS (either of the above). The pure headless
+    //   self-test path (no env) is byte-identical to before: live == false.
+    const bool interactive = (hc.window != nullptr && hc.device != nullptr);
+    const char* evDir = std::getenv("X3_INTRO_CAPTURE");
+    const bool captureMode = !interactive && hc.device != nullptr &&
+                             evDir != nullptr && *evDir != '\0';
+    const bool live = interactive || captureMode;
+
     x3::rhi::MeshHandle planetMesh{}, ringMesh{};
     std::vector<x3::apphost::NightSkyPlanet> planets;
-    if (hc.window != nullptr && hc.device != nullptr) {   // live (declared below as `live`)
+    // THE DOGFIGHT IS IN A NAMED SYSTEM, FAR FROM SOL (owner: "far from earth").
+    // Kethzar Prime (x3.starsys/1): an amber-hypergiant sky, a huge hero LAVA world,
+    // a ringed gas giant, an ice world — the most dramatic sky in the registry. Its
+    // body set drives the far-distance backdrop AND the HUD minimap below; a faint
+    // labelled SOL is appended so "far from Earth" is a findable point, not implied.
+    const x3::starsys::StarSystem& dfSystem = x3::starsys::dogfightSystem();
+    if (live) {   // window OR headless capture: the sky must be in the PNGs too
         int planetTexFail = 0;
-        planets = x3::apphost::loadNightSkyPlanets(hc.device, planetMesh, planetTexFail,
-                                                   "[intro]", &ringMesh);
+        std::vector<x3::apphost::NightSkyPlanet> templates =
+            x3::apphost::loadNightSkyPlanets(hc.device, planetMesh, planetTexFail,
+                                             "[intro]", &ringMesh);
         if (planetTexFail > 0)
             x3::logWarn("[intro] " + std::to_string(planetTexFail) +
                         " planet texture(s) missing — some bodies flat");
+        // Re-hang the loaded texture templates as THIS system's sky (+ faint SOL).
+        planets = x3::apphost::buildSystemSky(templates, dfSystem, /*includeSolPinpoint*/ true);
+        x3::logInfo("[intro] dogfight sky = " + std::string(dfSystem.name) + " (" +
+                    std::to_string((int)dfSystem.distanceLy) + " ly from Sol), " +
+                    std::to_string(planets.size()) + " bodies + SOL pinpoint");
     }
 
     x3::space::TargetingSystem targeting;
@@ -318,13 +369,112 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     float crippleTime = 0.0f;
     bool  crippled = false;
 
-    const bool live = (hc.window != nullptr && hc.device != nullptr);
-
     // Combat FX (tracers, muzzle flashes, crosshair) — live only. Heap-allocated:
     // CombatFx carries ~256 KB of scratch (the host_space convention).
     std::unique_ptr<x3::game::CombatFx> fxPtr;
     const bool fxOn = live && cockpit != nullptr;
     if (fxOn) { fxPtr = std::make_unique<x3::game::CombatFx>(); fxPtr->init(*hc.device); }
+
+    // ---- COMBAT SFX (dogfight-feel): every combat event now SOUNDS. ---------
+    // Cues are COMMITTED under assets/audio/space/dogfight/ (resolveAudio tries
+    // the repo-local mirror first — see AUDIO_MANIFEST.md for pack provenance),
+    // so a fresh clone gets the full mix with no external library. Load failure
+    // is non-fatal (IAudioSystem::load logs once, returns an invalid handle,
+    // every play on it no-ops) and hc.audio == nullptr (headless) degrades to
+    // LOG-ONLY triggers — which is exactly what the headless SFX probe
+    // (X3_INTRO_SFXPROBE=1) captures as evidence that the hooks are live.
+    x3::audio::IAudioSystem* sfx = hc.audio;
+    auto loadCue = [&](const char* rel) {
+        return sfx ? sfx->load(x3::game::resolveAudio(rel)) : x3::audio::SoundHandle{};
+    };
+    const x3::audio::SoundHandle sndPlayerLaser  = loadCue("space/dogfight/player_laser.wav");
+    const x3::audio::SoundHandle sndEnemyLaser   = loadCue("space/dogfight/enemy_laser.wav");
+    const x3::audio::SoundHandle sndImpactShield = loadCue("space/dogfight/impact_shield.wav");
+    const x3::audio::SoundHandle sndImpactHull   = loadCue("space/dogfight/impact_hull.wav");
+    const x3::audio::SoundHandle sndExplosion    = loadCue("space/dogfight/explosion_fighter.wav");
+    const x3::audio::SoundHandle sndBoost        = loadCue("space/dogfight/boost_antimatter.wav");
+    const x3::audio::SoundHandle sndZap          = loadCue("space/dogfight/forcefield_zap.wav");
+    const x3::audio::SoundHandle sndLock         = loadCue("space/dogfight/lock_chirp.wav");
+    const x3::audio::SoundHandle sndHum          = loadCue("space/engine_hum.wav");
+    const x3::audio::SoundHandle sndThrust       = loadCue("space/engine_thrust.wav");
+    // ENGINE BED: reactor hum + thruster whoosh, both at FIXED pitch and ridden
+    // by VOLUME only (the --world space ruling — a pitch sweep reads as a car
+    // shifting gears). Hum tracks speed; thrust tracks throttle and swells on
+    // the antimatter boost. The music bus is untouched.
+    x3::audio::LoopHandle humLoop{}, thrustLoop{};
+    if (sfx && sndHum.valid())    humLoop    = sfx->startLoop(sndHum, 0.22f, 1.0f);
+    if (sfx && sndThrust.valid()) thrustLoop = sfx->startLoop(sndThrust, 0.0f, 1.0f);
+    // One log line per event TYPE on its first trigger — headless-verifiable
+    // evidence that each hook fires, audio device or not.
+    enum { kSfxPlayerLaser = 0, kSfxEnemyLaser, kSfxImpactShield, kSfxImpactHull,
+           kSfxExplosion, kSfxBoost, kSfxZap, kSfxLock, kSfxCount };
+    bool sfxLogged[kSfxCount] = {};
+    auto sfxMark = [&](int type, const char* name) {
+        if (!sfxLogged[type]) {
+            sfxLogged[type] = true;
+            x3::logInfo(std::string("[intro-sfx] first trigger: ") + name +
+                        (sfx ? "" : " (no audio system — log only)"));
+        }
+    };
+    auto play2D = [&](int type, const char* name, x3::audio::SoundHandle h,
+                      float vol, float pitch) {
+        sfxMark(type, name);
+        if (sfx && h.valid()) sfx->playSound2D(h, vol, pitch);
+    };
+    auto play3D = [&](int type, const char* name, x3::audio::SoundHandle h,
+                      const float p[3], float vol, float pitch) {
+        sfxMark(type, name);
+        if (sfx && h.valid()) sfx->playSound3D(h, p[0], p[1], p[2], vol, pitch);
+    };
+    // A hit on the PLAYER: distinct voices — energy shield-splash while the
+    // shield holds, metal-on-metal armor crunch once it's down. One path for the
+    // real salvo branch AND the headless probe, so the probe exercises the same
+    // code the live fight runs.
+    auto playerHitSfx = [&](int dmg) {
+        const bool shielded = pilot.shield() > 0;
+        pilot.takeDamage(dmg);
+        if (shielded)
+            play2D(kSfxImpactShield, "impact_shield (hit, shields up)",
+                   sndImpactShield, 0.9f, 1.0f);
+        else
+            play2D(kSfxImpactHull, "impact_hull (hit, shields DOWN)",
+                   sndImpactHull, 0.95f, 1.0f);
+    };
+    // A fighter kill: the 3D explosion + the death/smoke FX burst, in one place —
+    // deaths are detected AT THE DAMAGE SITE (EnemyShipManager swap-removes a
+    // dead ship immediately, so a post-update hull scan can never see one; the
+    // old prevHull compare below was dead code).
+    auto fighterKillFx = [&](const float p[3]) {
+        play3D(kSfxExplosion, "explosion_fighter (3D, fighter kill)", sndExplosion,
+               p, 1.0f, 1.0f);
+        if (fxOn) {
+            fxPtr->spawnDeath({ p[0], p[1], p[2] });
+            fxPtr->spawnSmoke({ p[0], p[1], p[2] });
+        }
+    };
+    float zapCooldown = 0.0f;   // one zap per bounce, not per frame on the bubble
+    float zapFlashT   = 0.0f;   // HUD border cyan flash timer
+    bool  prevSprint  = false, prevLock = false;
+    // ---- Reticle state (combat readability) --------------------------------
+    // Lock STAGING: a fresh lock target runs an ACQUIRING sweep (amber ring
+    // closing onto the bracket) for kAcquireSec, then reads LOCKED (red). The
+    // age resets whenever lockNearest switches targets, so swinging the nose
+    // across the wing re-sweeps per target — no popping.
+    constexpr float kAcquireSec = 1.4f;
+    uint32_t lockPrevId = 0; bool lockHad = false; float lockAge = 0.0f;
+    float hitConfirmT = 0.0f;   // reticle hit-confirm flicker (shot landed)
+    // Effective projectile speed for the LEAD PIP. The player laser RESOLVES as
+    // hitscan (instant ray), so the mathematically honest lead is ~zero; the
+    // pip is computed at the bolt's VISUAL travel speed (600 m aim range /
+    // kTracerTime) so it marks the precise aim point with a small, honest-to-
+    // the-eye lead on crossing targets — and the plumbing is ready for true
+    // projectile weapons. At this speed the pip never lies farther than ~2 m
+    // off the instant-ray solution inside laser range (< the hit radius).
+    constexpr float kLeadProjSpeed = 4800.0f;
+    const bool sfxProbe = [] {
+        const char* e = std::getenv("X3_INTRO_SFXPROBE");
+        return e && *e && *e != '0';
+    }();
 
     // ---- Player fighter model: drawn in 3P so you SEE your own ship, AHEAD of the
     //      chase camera (owner: "Draw my ship in 3rd person ... in FRONT of the
@@ -352,9 +502,27 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // cursor is restored to NORMAL on every exit path below (the cinematic beats
     // + the cutscene player expect a visible cursor).
     double lastMX = 0.0, lastMY = 0.0;
-    if (live) {
+    if (interactive) {
         glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         glfwGetCursorPos(hc.window, &lastMX, &lastMY);
+    }
+    if (live) {
+        // FRUSTUM CULL OFF for the space beat (owner: "get even half a screen away
+        // from that capital ship and it goes invis ... should NEVER lose sight of a
+        // ship that is IN VIEW"). The cull sphere mis-bounds these direct-drawn
+        // scaled ships and eats them at frame edges; space draws ~12 objects, so
+        // culling buys nothing here. Restored at beat exit. (The noCull /
+        // ALWAYS_VISIBLE flag exists in the cull design but nothing ever wired a
+        // setter — when that API lands, flag the ships instead.)
+        hc.device->setFrustumCullEnabled(false);
+        // FAR PLANE 15 km (landmine L7, THIRD appearance — owner: "it has never
+        // changed: as soon as you back up a TINY BIT the ship is visibly taken off
+        // screen"). The interactive beat never set the far plane, so it ran the
+        // 200 m ENGINE DEFAULT — and the capital SPAWNS at 200 m: one tap of
+        // reverse clipped it out of the universe (his screenshot showed its
+        // far-plane CROSS-SECTION as a floating box, and enemy brackets around
+        // clipped-away fighters). Paired with the 10.5 km planet anchor below.
+        hc.device->setCameraFar(15000.0f);
     }
     // Re-apply the deep-space look EVERY beat: the one-time set at intro start
     // was getting undone before the first interactive window (live evidence:
@@ -369,7 +537,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // capital + clear the wing, when you die, or when you press Esc — never on a clock.
     // Headless (deterministic tests / boot-time / captures) STILL stops at maxSteps, or
     // it would loop forever with no player to end it.
-    for (int step = 0; live || step < maxSteps; ++step) {
+    for (int step = 0; interactive || step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
         // ---- Input: live reads GLFW; headless uses a deterministic synthetic
@@ -377,7 +545,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         x3::game::PlayerInput in{};
         float rollAxis = 0.0f;
         bool fire = false;
-        if (live) {
+        if (interactive) {
             // Poll EVERY frame — without this GLFW's key/button/cursor state is
             // frozen at the beat-entry snapshot and the ship ignores the player
             // entirely (owner playtest: "I tried to shoot", acc 0/0, "clunky").
@@ -392,46 +560,150 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (f2 && !f2Prev) pilot.toggleCameraMode();
                 f2Prev = f2;
             }
+            // F9: skip the ENTIRE intro (owner dev shortcut) — latch + bail this
+            // beat; the orchestrator returns canon ShotDown at the next boundary.
+            if (glfwGetKey(hc.window, GLFW_KEY_F9) == GLFW_PRESS) {
+                requestSkipAllIntro();
+                break;
+            }
             auto kd = [&](int k){ return glfwGetKey(hc.window, k) == GLFW_PRESS; };
             in.moveFwd    = (kd(GLFW_KEY_W)?1.f:0.f) + (kd(GLFW_KEY_S)?-1.f:0.f);
             in.moveStrafe = (kd(GLFW_KEY_D)?1.f:0.f) + (kd(GLFW_KEY_A)?-1.f:0.f);
             in.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
+            // Vertical thrust (owner: "Add Space to rise UP and C to drop DOWN
+            // with the ship!!!!") — held axes, boost-scaled in the pilot.
+            in.jumpPressed = kd(GLFW_KEY_SPACE);   // rise
+            in.diveHeld    = kd(GLFW_KEY_C);       // drop
             rollAxis      = (kd(GLFW_KEY_Q)?-1.f:0.f) + (kd(GLFW_KEY_E)?1.f:0.f);
             double mx, my; glfwGetCursorPos(hc.window, &mx, &my);
-            in.lookDX = (float)(mx - lastMX);   // mouse-look: yaw/pitch the ship
-            in.lookDY = (float)(my - lastMY);
+            // HOLD-ALT FREELOOK (owner: "the player will be ABLE to keep the enemy
+            // ship in sight by looking around while zipping around"): while ALT is
+            // held the mouse ORBITS the camera around the ship (flight keeps its
+            // heading, momentum carries); release eases the view back dead-astern.
+            const bool freeLookHeld = kd(GLFW_KEY_LEFT_ALT) || kd(GLFW_KEY_RIGHT_ALT);
+            if (freeLookHeld) {
+                pilot.addFreeLook((float)(mx - lastMX), (float)(my - lastMY));
+                in.lookDX = 0.0f;               // the ship holds its heading
+                in.lookDY = 0.0f;
+            } else {
+                in.lookDX = (float)(mx - lastMX);   // mouse-look: yaw/pitch the ship
+                in.lookDY = (float)(my - lastMY);
+            }
             lastMX = mx; lastMY = my;
             fire = glfwGetMouseButton(hc.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         } else {
             in.moveFwd = 1.0f;                  // close the distance
             fire = (step % 12) == 0;            // a measured firing cadence
+            // SFX PROBE (X3_INTRO_SFXPROBE=1): a scripted headless flight that
+            // exercises the remaining combat cues so the [intro-sfx] first-trigger
+            // log lines prove every hook fires. Boost window ~2-5 s; a forced
+            // fighter kill at ~7 s (through the same fighterKillFx path the live
+            // ray-kill uses). The straight-ahead flight crosses the capital's
+            // 110 m bubble on its own, so the force-field zap triggers naturally.
+            // Env-gated: the default headless runs (self-tests) are untouched.
+            if (sfxProbe) {
+                in.sprint = (step >= 120 && step < 300);
+                if (step == 420 && enemies.count() > 0) {
+                    const auto& es0 = enemies.ship(0);
+                    const float hp[3] = { es0.pos[0], es0.pos[1], es0.pos[2] };
+                    fighterKillFx(hp);
+                    enemies.damageShip(0, 100000);
+                }
+                // Scripted hits through the SAME playerHitSfx path the live salvo
+                // branch uses: shields-up splash at 8 s, then a shield-draining
+                // slam so the 8.7 s hit lands on bare hull (distinct crunch).
+                if (step == 480) playerHitSfx(x3::space::shipai::kLaserDamage);
+                if (step == 500) playerHitSfx(pilot.shield() + 100);   // drain shield
+                if (step == 520) playerHitSfx(x3::space::shipai::kLaserDamage);
+            }
+            // ---- CAPTURE SCRIPT (X3_INTRO_CAPTURE, headless render run) ----
+            // Overrides the generic synthetic profile with the staged combat-
+            // readability evidence scenario: hold station so the framing is
+            // stable, stage two wing ships into the damage bands early (smoke
+            // trail + heavy burn build up over the run), land a scripted hit
+            // just before the s420 shot (hull hit-flash + sparks + confirm),
+            // and hold the trigger through 630-900 so the energy pool visibly
+            // drains under sustained fire. Env-gated: normal headless untouched.
+            if (captureMode) {
+                in.moveFwd = 0.0f;
+                fire = (step >= 402 && step < 424) ||
+                       (step >= 630 && step < 900);
+                if (step == 30 && enemies.count() >= 3) {
+                    enemies.damageShip(1, 34);   // -> ~43% hull: sparks + smoke trail
+                    enemies.damageShip(2, 48);   // -> 20% hull: heavy smoke + embers
+                }
+                if (step == 416 && enemies.count() >= 1) {
+                    enemies.damageShip(0, 6);    // registered hit: flash for s420
+                    if (fxOn) {
+                        const auto& e0 = enemies.ship(0);
+                        fxPtr->spawnImpact({ e0.pos[0], e0.pos[1], e0.pos[2] },
+                                           { -e0.fwd[0], -e0.fwd[1], -e0.fwd[2] });
+                    }
+                    hitConfirmT = 0.15f;         // the reticle confirm flicker
+                }
+                // THE MONEY SHOT (owner: "fire ... comes from anywhere BUT the
+                // ship"): dead-astern the wing bolts are foreshortened behind
+                // the player's own hull. Swing the FREELOOK camera ~40 deg off-
+                // axis through the s420 fire window so the frame shows the bolt
+                // LEAVING the wingtip. Held by re-feeding (0,0); released after
+                // 460 so the later shots return to the flight framing.
+                if (step == 396) pilot.addFreeLook(150.0f, -30.0f);
+                else if (step > 396 && step < 460) pilot.addFreeLook(0.0f, 0.0f);
+            }
         }
+        // ANTIMATTER BOOST: one whoosh per Shift ENGAGE (edge-detected — the
+        // sustained roar is the thrust bed swelling below, not a retrigger).
+        if (in.sprint && !prevSprint)
+            play2D(kSfxBoost, "boost_antimatter (Shift engage)", sndBoost, 0.9f, 1.0f);
+        prevSprint = in.sprint;
         pilot.setRollInput(rollAxis);
         pilot.update(in, dt, *phys);
+
+        // ---- FORCE FIELDS (owner: "I fly right thru the enemy ship"). The player
+        //      bounces off the capital's shield bubble and off each fighter's hull
+        //      bubble — a shield BOUNCE (pushOut cancels+reflects inward velocity).
+        {
+            const float capC[3] = { 200.0f, 0.0f, 0.0f };
+            bool zapped = pilot.pushOut(capC, 110.0f);      // capital shield bubble
+            for (uint32_t i = 0; i < enemies.count(); ++i) {
+                const auto& es = enemies.ship(i);
+                if (es.hull <= 0) continue;
+                zapped = pilot.pushOut(es.pos, 16.0f) || zapped;   // fighter hull bubble
+            }
+            // pushOut returns true exactly for this: the field ZAPS (2D — it is
+            // the player's own hull on the bubble) and the HUD border flashes
+            // cyan. Cooldown so sliding along a bubble reads as one bounce, not
+            // a 60 Hz machine-gun.
+            if (zapped && zapCooldown <= 0.0f) {
+                play2D(kSfxZap, "forcefield_zap (pushOut bounce)", sndZap, 0.85f, 1.0f);
+                zapCooldown = 0.4f;
+                zapFlashT   = 0.15f;
+            }
+        }
+        if (zapCooldown > 0.0f) zapCooldown -= dt;
+        if (zapFlashT   > 0.0f) zapFlashT   -= dt;
+        if (hitConfirmT > 0.0f) hitConfirmT -= dt;
 
         // ---- Enemy AI tick + salvo accounting (dodge metric). ----
         const x3::phys::Vec3 pp = pilot.pos();
         const x3::phys::Vec3 pv = pilot.velocity();
         const float ppos[3] = { pp.x, pp.y, pp.z };
         const float pvel[3] = { pv.x, pv.y, pv.z };
-        std::vector<int> prevHull(enemies.count());
-        for (uint32_t i = 0; i < enemies.count(); ++i) prevHull[i] = enemies.ship(i).hull;
         enemies.update(dt, ppos, pvel);
-        if (fxOn) {
-            for (uint32_t i = 0; i < enemies.count() && i < prevHull.size(); ++i) {
-                const auto& e = enemies.ship(i);
-                if (prevHull[i] > 0 && e.hull <= 0) {   // died this tick
-                    fxPtr->spawnDeath({ e.pos[0], e.pos[1], e.pos[2] });
-                    fxPtr->spawnSmoke({ e.pos[0], e.pos[1], e.pos[2] });
-                }
-            }
-        }
+        // (Death FX/SFX are triggered at the DAMAGE SITES via fighterKillFx —
+        //  the old post-update prevHull scan here could never fire, because the
+        //  manager swap-removes a dead ship the instant its hull hits zero.)
         bool playerFiredThisStep = false;
         for (const auto& fe : enemies.fireEvents()) {
+            play3D(kSfxEnemyLaser, "enemy_laser (3D at muzzle)", sndEnemyLaser,
+                   fe.from, 0.8f, 1.0f);
             if (fxOn) {
+                // SHIP-SCALE bolt + muzzle (the on-foot 0.035 m tracer and
+                // 0.05 m flash are sub-pixel at dogfight range).
                 fxPtr->addTracer({ fe.from[0], fe.from[1], fe.from[2] },
-                             { fe.to[0],   fe.to[1],   fe.to[2] });
-                fxPtr->spawnMuzzleFlash({ fe.from[0], fe.from[1], fe.from[2] },
+                             { fe.to[0],   fe.to[1],   fe.to[2] },
+                             x3::game::WeaponFxKind::Default, /*width*/ 0.55f);
+                fxPtr->spawnShipMuzzle({ fe.from[0], fe.from[1], fe.from[2] },
                                     { fe.to[0] - fe.from[0], fe.to[1] - fe.from[1],
                                       fe.to[2] - fe.from[2] });
             }
@@ -443,7 +715,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float dz = fe.to[2] - ppos[2];
             const float d2 = dx*dx + dy*dy + dz*dz;
             if (d2 < 30.0f * 30.0f) {
-                pilot.takeDamage(x3::space::shipai::kLaserDamage);
+                playerHitSfx(x3::space::shipai::kLaserDamage);
                 if (fxOn) fxPtr->spawnImpact({ fe.to[0], fe.to[1], fe.to[2] },
                                              { -dx, -dy, -dz });
             } else {
@@ -466,13 +738,149 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float pfw[3] = { std::cos(pilot.pitch()) * std::cos(pilot.yaw()),
                                    std::sin(pilot.pitch()),
                                    std::cos(pilot.pitch()) * std::sin(pilot.yaw()) };
-            targeting.lockNearest(ppos, pfw);
+            // Capture script: the capital sits dead ahead and wins the boresight
+            // cone every frame — cycle onto a FIGHTER at s120 and hold it, so
+            // the evidence shows the fighter lock (hull bar + lead pip on a
+            // MOVING target). Interactive play keeps the per-frame cone pick.
+            if (captureMode && step >= 120) {
+                if (step == 120 || !targeting.hasLock() || targeting.lockedId() == 1000u)
+                    targeting.cycleTarget(+1);
+                // Late in the run, shift the lock onto the BURNING ship (hostile
+                // list: cap, f0, f1, f2, ...) so the look-bias frames it and the
+                // s900 shot shows its low hull bar + lead pip on a wounded target.
+                if (step == 600) { targeting.cycleTarget(+1); targeting.cycleTarget(+1); }
+            } else {
+                targeting.lockNearest(ppos, pfw);
+            }
+            // TARGET-KEEPING LOOK: pull the 3P gaze gently toward the locked
+            // contact (capped in the pilot at 0.6) so the fight tends to stay in
+            // frame while you maneuver. Releases (amount 0) when nothing's locked.
+            bool fedBias = false;
+            if (targeting.hasLock()) {
+                const uint32_t lid = targeting.lockedId();
+                for (uint32_t ci = 0; ci < nc; ++ci) {
+                    if (contacts[ci].id != lid) continue;
+                    float dirT[3] = { contacts[ci].pos[0] - ppos[0],
+                                      contacts[ci].pos[1] - ppos[1],
+                                      contacts[ci].pos[2] - ppos[2] };
+                    const float dl = std::sqrt(dirT[0]*dirT[0] + dirT[1]*dirT[1] + dirT[2]*dirT[2]);
+                    if (dl > 1.0f) {
+                        dirT[0] /= dl; dirT[1] /= dl; dirT[2] /= dl;
+                        // Capture runs bias harder so the locked target is IN
+                        // the evidence frame; live play keeps the gentle pull.
+                        pilot.setCameraLookBias(dirT, captureMode ? 0.55f : 0.30f);
+                        fedBias = true;
+                    }
+                    break;
+                }
+            }
+            if (!fedBias) { const float z[3] = { 1, 0, 0 }; pilot.setCameraLookBias(z, 0.0f); }
+        }
+        // LOCK STAGING (reticle): age the current lock; a target switch restarts
+        // the ACQUIRING sweep. lockAge >= kAcquireSec == LOCKED (red bracket).
+        if (targeting.hasLock()) {
+            if (!lockHad || targeting.lockedId() != lockPrevId) {
+                lockAge = 0.0f; lockPrevId = targeting.lockedId(); lockHad = true;
+            } else {
+                lockAge += dt;
+            }
+        } else { lockHad = false; lockAge = 0.0f; }
+        // LOCK-ACQUIRED chirp — now on the STAGED lock completing (the moment
+        // the bracket goes red), not on the raw contact pick (which is instant
+        // + retriggers every target sweep).
+        {
+            const bool lockNow = lockHad && lockAge >= kAcquireSec;
+            if (lockNow && !prevLock)
+                play2D(kSfxLock, "lock_chirp (lock acquired)", sndLock, 0.6f, 1.0f);
+            prevLock = lockNow;
         }
 
-        // ---- Player fire -> resolve onto the capital's subsystems. ----
+        // ---- Audio frame: listener rides the pilot camera; the engine bed is
+        //      volume-ridden at fixed pitch (hum <- speed, thrust <- throttle +
+        //      antimatter boost swell). Music bus untouched.
+        if (sfx) {
+            float lx, ly, lz, lyaw, lpit;
+            pilot.camera(lx, ly, lz, lyaw, lpit);
+            sfx->setListener(lx, ly, lz, lyaw, lpit);
+            const x3::phys::Vec3 v3 = pilot.velocity();
+            const float spd = std::sqrt(v3.x*v3.x + v3.y*v3.y + v3.z*v3.z);
+            const float spdFrac = std::min(1.0f, spd / std::max(1.0f, tun.maxSpeed));
+            const float throttle = std::min(1.0f, std::fabs(in.moveFwd) +
+                                                  0.6f * std::fabs(in.moveStrafe));
+            const float boostSwell = in.sprint ? 0.35f : 0.0f;
+            if (humLoop.valid())
+                sfx->setLoopParams(humLoop, 0.18f + 0.30f * spdFrac, 1.0f);
+            if (thrustLoop.valid())
+                sfx->setLoopParams(thrustLoop,
+                    std::min(1.0f, 0.55f * throttle + boostSwell + 0.10f * spdFrac), 1.0f);
+            sfx->update(dt);
+        }
+
+        // ---- Player fire -> fighters first (live ray), else the capital. ----
         if (fire && pilot.fireLaser(dt)) {
             playerFiredThisStep = true;
             ++localShotsFired;
+            play2D(kSfxPlayerLaser, "player_laser (per shot)", sndPlayerLaser,
+                   0.7f, 0.96f + 0.04f * (float)(step % 3));   // tiny pitch jitter
+            // LIVE FIGHTER KILLS: a ray-sphere test along the aim so the laser
+            // can actually down the wing (before this, player shots ONLY damaged
+            // the capital — the "all enemies down" exit was unreachable and no
+            // fighter ever exploded). Headless keeps the pure capital model so
+            // the deterministic metrics/tests are byte-identical.
+            bool hitFighter = false;
+            // (captureMode: the scripted fire is for the TRACER/energy imagery;
+            //  ray kills are disabled so the staged damage-state ships survive
+            //  to their capture frames. The scripted s416 hit covers the
+            //  registered-hit path.)
+            if (live && !captureMode) {
+                const float fhp = std::cos(pilot.pitch());
+                const float fw[3] = { fhp * std::cos(pilot.yaw()), std::sin(pilot.pitch()),
+                                      fhp * std::sin(pilot.yaw()) };
+                int best = -1; float bestT = 1e9f;
+                for (uint32_t i = 0; i < enemies.count(); ++i) {
+                    const auto& es = enemies.ship(i);
+                    const float oc[3] = { es.pos[0] - ppos[0], es.pos[1] - ppos[1],
+                                          es.pos[2] - ppos[2] };
+                    const float tca = oc[0]*fw[0] + oc[1]*fw[1] + oc[2]*fw[2];
+                    if (tca < 0.0f || tca > 700.0f) continue;
+                    const float d2c = oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - tca*tca;
+                    // HIT RADIUS TRACKS THE DRAWN SILHOUETTE (owner: "allow me
+                    // to hit the tiny enemy ships too!"): the draw grows distant
+                    // ships by visCompFactor so they stay aimable — the player
+                    // aims at what he SEES, so the acceptance radius scales by
+                    // the SAME factor (shared formula, ship_ai.h; --test-ship-ai
+                    // T12 proves a visual-edge shot at 500 m registers).
+                    const float hitR = x3::space::shipai::kHitBaseRadius *
+                                       x3::space::shipai::visCompFactor(tca);
+                    if (d2c <= hitR * hitR && tca < bestT) { bestT = tca; best = (int)i; }
+                }
+                if (best >= 0) {
+                    hitFighter = true;
+                    ++localShotsHit;
+                    hitConfirmT = 0.15f;   // reticle confirm: the shot LANDED
+                    constexpr int kPlayerLaserDamage = 20;      // 3 hits downs a fighter
+                    const auto& es = enemies.ship((uint32_t)best);
+                    const float hp[3] = { es.pos[0], es.pos[1], es.pos[2] };
+                    const bool willDie = es.hull <= kPlayerLaserDamage;
+                    if (fxOn) fxPtr->spawnImpact({ hp[0], hp[1], hp[2] },
+                                                 { -fw[0], -fw[1], -fw[2] });
+                    enemies.damageShip((uint32_t)best, kPlayerLaserDamage);
+                    if (willDie) fighterKillFx(hp);
+                }
+                // Reticle hit-confirm for the CAPITAL: only when the nose ray
+                // actually crosses the capital's bulk (the metric routing below
+                // credits a capital hit on EVERY non-fighter shot — the honest
+                // confirm must not flicker on true whiffs into empty space).
+                if (!hitFighter) {
+                    const float occ[3] = { 200.0f - ppos[0], -ppos[1], -ppos[2] };
+                    const float tcc = occ[0]*fw[0] + occ[1]*fw[1] + occ[2]*fw[2];
+                    if (tcc > 0.0f) {
+                        const float d2cc = occ[0]*occ[0] + occ[1]*occ[1] + occ[2]*occ[2] - tcc*tcc;
+                        if (d2cc <= 60.0f * 60.0f) hitConfirmT = 0.15f;
+                    }
+                }
+            }
+            if (!hitFighter) {
             // Deterministic "competent" hit model: when crippling is still
             // possible, route a hit to a subsystem (shields down first), counting
             // a hit. (Live aim quality will replace this with a real raycast in a
@@ -491,6 +899,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             if (x3::space::ShipDamage::subsystemDown(capital,
                     (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
                 ++localSubsDestroyed;
+            }   // !hitFighter (capital routing)
         }
         x3::space::ShipDamage::tick(capital, dt);
 
@@ -508,10 +917,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // ROLL-CAPABLE view: feed the ship's full orientation basis so the
             // horizon banks and the fighter can loop (owner: "add a roll capable
             // camera"). Replaces the roll-less setCamera that pinwheeled past vertical.
+            float camF[3] = { 1, 0, 0 }, camU[3] = { 0, 1, 0 };   // ACTUAL view basis
             {
-                float cpos[3], cfwd[3], cup[3];
-                pilot.cameraBasis(cpos, cfwd, cup);
-                hc.device->setCameraBasis(cpos[0], cpos[1], cpos[2], cfwd, cup, 65.0f);
+                float cpos[3];
+                pilot.cameraBasis(cpos, camF, camU);
+                hc.device->setCameraBasis(cpos[0], cpos[1], cpos[2], camF, camU, 65.0f);
                 cx = cpos[0]; cy = cpos[1]; cz = cpos[2];
             }
             // THE VISIBLE LAYER (feat/intro-cockpit): the player flies the beat
@@ -526,54 +936,151 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
             }
             if (fxOn && playerFiredThisStep) {
-                const float fh = std::cos(cpit);
-                const float fwx = fh * std::cos(cyaw);
-                const float fwy = std::sin(cpit);
-                const float fwz = fh * std::sin(cyaw);
-                fxPtr->addTracer({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f, cz + fwz * 2.0f },
-                             { cx + fwx * 600.0f, cy + fwy * 600.0f, cz + fwz * 600.0f });
-                fxPtr->spawnMuzzleFlash({ cx + fwx * 2.0f, cy + fwy * 2.0f - 0.5f,
-                                          cz + fwz * 2.0f }, { fwx, fwy, fwz });
+                // WING-MOUNTED FIRE (owner: "the fire needs to COme from weapons
+                // MOUNTED ON THE Ship"): bolts leave alternating wingtip hardpoints
+                // and CONVERGE on the aim point 600 m down the player's look ray —
+                // hit detection stays on the crosshair; the muzzle is on the hull.
+                static int wingSide = 1;
+                wingSide = -wingSide;
+                float wm[3], wd[3];
+                pilot.wingMuzzle(wingSide, wm, wd);
+                const float fh2 = std::cos(pilot.pitch());
+                const x3::phys::Vec3 pj = pilot.pos();
+                const float aim[3] = {
+                    pj.x + fh2 * std::cos(pilot.yaw()) * 600.0f,
+                    pj.y + std::sin(pilot.pitch()) * 600.0f,
+                    pj.z + fh2 * std::sin(pilot.yaw()) * 600.0f };
+                // SHIP-SCALE bolt + wingtip muzzle flash: wide enough to read
+                // from the chase camera (0.035 m rifle tracer is sub-pixel).
+                fxPtr->addTracer({ wm[0], wm[1], wm[2] }, { aim[0], aim[1], aim[2] },
+                                 x3::game::WeaponFxKind::Default, /*width*/ 0.50f);
+                fxPtr->spawnShipMuzzle({ wm[0], wm[1], wm[2] }, { wd[0], wd[1], wd[2] });
+            }
+            // DAMAGE READS ON THE HULL (owner: "we should see some representation
+            // of the damage on the enemy ship"): staged persistent FX keyed to
+            // hull fraction via the PURE shipai::damageFxProfile (asserted by
+            // --test-ship-ai T11 — full hull emits NOTHING):
+            //   < 75%: intermittent spark bursts;
+            //   < 50%: + a continuous thin grey smoke trail streaming aft;
+            //   < 25%: + heavy black smoke + ember/fire glow — visibly BURNING.
+            // Emitters ride the tail of the hull (aft along -fwd) so the trail
+            // reads as pouring off the engines, and the ship's velocity is fed
+            // into the puffs so the trail follows the flight path.
+            if (fxOn) {
+                for (uint32_t i = 0; i < enemies.count(); ++i) {
+                    const auto& e = enemies.ship(i);
+                    if (e.hull <= 0) continue;
+                    const float frac = e.maxHull > 0
+                        ? (float)e.hull / (float)e.maxHull : 1.0f;
+                    const auto prof = x3::space::shipai::damageFxProfile(frac);
+                    const int phase = step + (int)(e.seed * 7u);
+                    const x3::phys::Vec3 tail{ e.pos[0] - e.fwd[0] * 3.5f,
+                                               e.pos[1] - e.fwd[1] * 3.5f,
+                                               e.pos[2] - e.fwd[2] * 3.5f };
+                    const x3::phys::Vec3 evel{ e.vel[0], e.vel[1], e.vel[2] };
+                    if (prof.sparkPeriod > 0 && phase % prof.sparkPeriod == 0)
+                        fxPtr->spawnShipSparks(tail);
+                    if (prof.smokePeriod > 0 && phase % prof.smokePeriod == 0)
+                        fxPtr->spawnShipSmoke(tail, evel, frac < 0.25f ? 1.0f : 0.30f);
+                    if (prof.emberPeriod > 0 && phase % prof.emberPeriod == 0)
+                        fxPtr->spawnShipEmber({ e.pos[0], e.pos[1], e.pos[2] }, evel);
+                }
             }
             if (fxOn) fxPtr->update(dt);
             // DEV evidence capture: X3_INTRO_CAPTURE=<dir> dumps the presented
-            // frame once per interactive beat (step 180 ~= 3 s in) — the tool that
-            // root-caused the milky-canopy bug. Off (empty env) in normal play.
-            static const char* evDir = std::getenv("X3_INTRO_CAPTURE");
-            const bool evShot = evDir && *evDir && (step == 180);
+            // frame at steps 60/180/420/660/900 (~1/3/7/11/15 s) per interactive
+            // beat — s60 catches the lock ACQUIRING sweep mid-close, the rest is
+            // the bearing-over-time series that shows the wing CIRCLING (the tool
+            // that root-caused the milky-canopy bug, extended for the orbit AI +
+            // the combat-readability staged scenario). Off (empty env) in play.
+            const bool evShot = evDir && *evDir &&
+                (step == 60 || step == 180 || step == 420 || step == 660 || step == 900);
             if (evShot)
-                hc.device->armCapture((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
+                hc.device->armCapture((std::string(evDir) + "/live_" + beat.id +
+                                       "_s" + std::to_string(step) + ".png").c_str());
             auto frame = hc.device->beginFrame();
             if (frame.valid && cockpit) {
+                // HUD-space size: the real window when there is one, the fixed
+                // 1280x720 headless framebuffer in a capture run.
+                int winW = (int)hc.W, winH = (int)hc.H;
+                if (hc.window) glfwGetWindowSize(hc.window, &winW, &winH);
                 cockpit->scene.render(*hc.device, frame);
                 // The planet backdrop first (eye-anchored; depth-occluded by everything
                 // drawn after). Space now has a WORLD behind the fight.
+                // ANCHOR 10.5 km — THE PAIR RULE (landmine L7): the far plane below is
+                // 15 km, so the planet shell must sit INSIDE it but BEYOND every ship,
+                // or the discs punch holes in hulls (the original B10 bug). 140 m
+                // (the default) + 15 km far = planets carving ships again. Never
+                // move one of these numbers without the other.
                 if (!planets.empty())
                     x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh, planets,
-                                                     beatT, cx, cy, cz, ringMesh);
+                                                     beatT, cx, cy, cz, ringMesh, 10500.0f);
                 // YOUR fighter, in 3P — at the ship's own position + facing, so it sits
                 // AHEAD of the chase camera. Skipped in 1P (you're inside it).
                 if (pilot.isThirdPerson() && !playerDraw.empty()) {
                     const x3::phys::Vec3 pp3 = pilot.pos();
                     const x3::phys::Vec3 pf3 = pilot.forward();
+                    const x3::phys::Vec3 pu3 = pilot.up();
                     const float sp[3] = { pp3.x, pp3.y, pp3.z };
                     const float sf[3] = { pf3.x, pf3.y, pf3.z };
-                    x3::apphost::drawIntroShip(*hc.device, frame, playerDraw, sp, sf, 4.0f);
+                    const float su[3] = { pu3.x, pu3.y, pu3.z };
+                    // Scale 1.0, NOT 4.0: JakeFighterShip_textured.glb is ALREADY a
+                    // ~10 m hull at native scale (measured 7.1 x 2.6 x 10.1 m). At 4x
+                    // it was a 40 m building wrapped around the chase camera — the
+                    // owner's whole screen was his own unlit hull, every enemy hidden
+                    // behind it ("I cannot see the enemy ship at ALL in combat").
+                    // FULL-BASIS draw (the muzzle fix): the hull now pitches + BANKS
+                    // with the physics quat — the same basis wingMuzzle() computes
+                    // its hardpoints from, so weapon fire visibly leaves the wings
+                    // (the yaw-only draw left the hull level while the muzzles
+                    // pitched with the ship: bolts materialized in mid-air —
+                    // owner: "it comes from anywhere BUT the ship").
+                    x3::apphost::drawIntroShipBasis(*hc.device, frame, playerDraw,
+                                  sp, sf, su, 1.0f, cockpit->mrShared);
                 }
                 for (uint32_t i = 0; i < enemies.count(); ++i) {
                     const auto& e = enemies.ship(i);
                     if (e.hull <= 0) continue;
-                    // Drawn at 6 m (was 2.5): a fighter you can actually SEE and read the
-                    // facing of at dogfight range, not a dot.
-                    x3::apphost::drawIntroShip(*hc.device, frame, cockpit->enemyDraw,
-                                  e.pos, e.fwd, 6.0f);
+                    // DISTANCE-COMPENSATED scale (owner: "I cannot SEE the enemy
+                    // ship after I get even a TINY bit away — it just disappears").
+                    // Base 6 m reads at dogfight range; past 150 m the draw grows
+                    // linearly (capped 4x at 600 m+) so a contact NEVER falls below
+                    // a readable on-screen size. The arcade trick every space game
+                    // uses — physical honesty loses to gameplay legibility here.
+                    // SHARED formula (ship_ai.h): the hit test scales its radius
+                    // by the SAME factor so the player can hit what he sees.
+                    const float dxE = e.pos[0]-cx, dyE = e.pos[1]-cy, dzE = e.pos[2]-cz;
+                    const float dE = std::sqrt(dxE*dxE + dyE*dyE + dzE*dzE);
+                    const float visScale = x3::space::shipai::kVisBaseScale *
+                                           x3::space::shipai::visCompFactor(dE);
+                    // Full-basis draw: the hull pitches into climbs/dives (fwd is
+                    // 3D) instead of staying level, + the warm HIT-FLASH tint
+                    // while e.hitFlash runs so a registered hit reads instantly.
+                    const float upW[3] = { 0.0f, 1.0f, 0.0f };
+                    x3::apphost::drawIntroShipBasis(*hc.device, frame, cockpit->enemyDraw,
+                                  e.pos, e.fwd, upW, visScale, cockpit->mrShared,
+                                  e.hitFlash / x3::space::shipai::kHitFlashSec);
                 }
                 const float capPos[3] = { 200.0f, 0.0f, 0.0f };   // was 280 — loom bigger
                 const float capFwd[3] = { -1.0f, 0.0f, 0.0f };
-                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 34.0f);
+                x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capPos, capFwd, 34.0f, cockpit->mrShared);
                 if (fxOn) {
                     fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
                     fxPtr->submit(*hc.device, frame);
+                }
+                // FORCE-FIELD FLASH: a one-blink cyan border while the zap timer
+                // runs (pushOut bounced us this instant) — cheap: four hud quads.
+                if (zapFlashT > 0.0f) {
+                    const int fw2 = winW, fh2 = winH;
+                    if (fw2 > 0 && fh2 > 0) {
+                        const float a = std::min(1.0f, zapFlashT / 0.15f);
+                        const float cyan4[4] = { 0.45f, 0.90f, 1.0f, 0.55f * a };
+                        const float th = 6.0f;
+                        hc.device->drawHudQuad(frame, 0.0f, 0.0f, (float)fw2, th, cyan4);
+                        hc.device->drawHudQuad(frame, 0.0f, (float)fh2 - th, (float)fw2, th, cyan4);
+                        hc.device->drawHudQuad(frame, 0.0f, 0.0f, th, (float)fh2, cyan4);
+                        hc.device->drawHudQuad(frame, (float)fw2 - th, 0.0f, th, (float)fh2, cyan4);
+                    }
                 }
                 // ---- HUD readout: hull/shield, contacts, lock state ----
                 {
@@ -595,82 +1102,455 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
                                                 ">> ANTIMATTER BOOST <<", 24.0f, 68.0f, 20.0f, amber);
                     }
-                    if (targeting.hasLock()) {
-                        const float redHud[4] = { 1.0f, 0.35f, 0.25f, 0.95f };
-                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                                                "LOCK", 24.0f, 48.0f, 20.0f, redHud);
-                    }
+                    // (The old top-left "LOCK" banner moved onto the target
+                    //  bracket itself — see the reticle block below.)
                 }
-                // ---- Target indicators (owner playtest: "can't find the enemy
-                // ship"): a bracket over every on-screen hostile, an edge arrow
-                // toward off-screen ones. Manual perspective projection from the
-                // camera basis (fovY matches the setCamera(65) above). ----
-                {
-                    int winW = 0, winH = 0;
-                    glfwGetWindowSize(hc.window, &winW, &winH);
-                    if (winW > 0 && winH > 0) {
-                        const float tanHalfY = std::tan(65.0f * 0.5f * 3.14159265f / 180.0f);
-                        const float tanHalfX = tanHalfY * (float)winW / (float)winH;
-                        const float fh2 = std::cos(cpit);
-                        const float fw[3] = { fh2 * std::cos(cyaw), std::sin(cpit),
-                                              fh2 * std::sin(cyaw) };
-                        const float rt[3] = { -std::sin(cyaw), 0.0f, std::cos(cyaw) };
-                        const float up[3] = { fw[1]*rt[2] - fw[2]*rt[1],
-                                              fw[2]*rt[0] - fw[0]*rt[2],
-                                              fw[0]*rt[1] - fw[1]*rt[0] };
-                        auto marker = [&](const float p[3], const char* onScr,
-                                          const float col[4], float px) {
-                            const float d[3] = { p[0]-cx, p[1]-cy, p[2]-cz };
-                            const float zf = d[0]*fw[0] + d[1]*fw[1] + d[2]*fw[2];
-                            const float xr = d[0]*rt[0] + d[1]*rt[1] + d[2]*rt[2];
-                            const float yu = d[0]*up[0] + d[1]*up[1] + d[2]*up[2];
-                            if (zf > 1.0f) {
-                                const float nx = (xr / zf) / tanHalfX;    // -1..1
-                                const float ny = (yu / zf) / tanHalfY;
-                                if (nx > -1.f && nx < 1.f && ny > -1.f && ny < 1.f) {
-                                    hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono,
-                                        onScr, (nx*0.5f + 0.5f) * winW - px * 0.9f,
-                                        (0.5f - ny*0.5f) * winH - px * 0.5f, px, col);
-                                    return;
+                // ---- FIGHTER RETICLE + TARGET INDICATORS (combat readability;
+                // owner: "Better targeting reticle!!!"). Everything is built
+                // from drawHudQuad rects + small font glyphs — no new renderer.
+                //   * every on-screen hostile: thin NEUTRAL corner bracket that
+                //     scales with the target's projected size;
+                //   * the lock target: color-STAGED bracket (amber ACQUIRING ->
+                //     red LOCKED, smooth), a dotted lock ring that sweeps closed
+                //     onto the bracket while acquiring, a compact warm-dim HULL
+                //     bar + range tag once locked, and a LEAD PIP (computeLead)
+                //     marking where to put the nose;
+                //   * off-screen contacts: small edge chevrons, amber (red for
+                //     the locked target's direction);
+                //   * the gun boresight: a quad-built crosshair on the nose ray
+                //     (the exact ray hits use) with a HIT-CONFIRM flicker.
+                // Projection is from the ACTUAL camera basis (camF/camU), not
+                // the ship's Euler — with lock-bias / ALT-freelook the view is
+                // not the nose, and Euler markers drift off their ships.
+                if (winW > 0 && winH > 0) {
+                    const float tanHalfY = std::tan(65.0f * 0.5f * 3.14159265f / 180.0f);
+                    const float tanHalfX = tanHalfY * (float)winW / (float)winH;
+                    const float fw[3] = { camF[0], camF[1], camF[2] };
+                    const float rt[3] = { fw[1]*camU[2] - fw[2]*camU[1],
+                                          fw[2]*camU[0] - fw[0]*camU[2],
+                                          fw[0]*camU[1] - fw[1]*camU[0] };
+                    const float up[3] = { fw[1]*rt[2] - fw[2]*rt[1],
+                                          fw[2]*rt[0] - fw[0]*rt[2],
+                                          fw[0]*rt[1] - fw[1]*rt[0] };
+                    struct Proj {
+                        bool  vis;          // on screen, in front
+                        float sx, sy;       // screen px
+                        float zf;           // camera-forward depth (m)
+                        float pxPerM;       // screen px per world metre at zf
+                        float ex, ey;       // unit-square edge dir (off-screen)
+                    };
+                    auto project = [&](const float p[3]) {
+                        Proj o{}; o.vis = false; o.ex = o.ey = 0.0f;
+                        const float d[3] = { p[0]-cx, p[1]-cy, p[2]-cz };
+                        const float zf = d[0]*fw[0] + d[1]*fw[1] + d[2]*fw[2];
+                        const float xr = d[0]*rt[0] + d[1]*rt[1] + d[2]*rt[2];
+                        const float yu = d[0]*up[0] + d[1]*up[1] + d[2]*up[2];
+                        o.zf = zf;
+                        if (zf > 1.0f) {
+                            const float nx = (xr / zf) / tanHalfX;
+                            const float ny = (yu / zf) / tanHalfY;
+                            if (nx > -1.f && nx < 1.f && ny > -1.f && ny < 1.f) {
+                                o.vis = true;
+                                o.sx = (nx * 0.5f + 0.5f) * (float)winW;
+                                o.sy = (0.5f - ny * 0.5f) * (float)winH;
+                                o.pxPerM = (float)winH / (2.0f * zf * tanHalfY);
+                                return o;
+                            }
+                        }
+                        float ex = xr, ey = yu;
+                        if (zf > 0.0f) { ex = xr / std::max(zf, 1.0f); ey = yu / std::max(zf, 1.0f); }
+                        const float m = std::max(std::fabs(ex), std::fabs(ey));
+                        if (m > 1e-4f) { o.ex = ex / m; o.ey = ey / m; }
+                        return o;
+                    };
+                    auto quad = [&](float x, float y, float w, float h, const float col[4]) {
+                        hc.device->drawHudQuad(frame, x, y, w, h, col);
+                    };
+                    // Corner bracket: 4 corners x 2 arms, arm length 45% of the side.
+                    auto bracket = [&](float bx, float by, float half, float th,
+                                       const float col[4]) {
+                        const float L = std::max(5.0f, half * 0.45f);
+                        const float x0 = bx - half, x1 = bx + half - th;
+                        const float y0 = by - half, y1 = by + half - th;
+                        quad(x0, y0, L, th, col);  quad(x0, y0, th, L, col);          // TL
+                        quad(bx + half - L, y0, L, th, col); quad(x1, y0, th, L, col);// TR
+                        quad(x0, y1, L, th, col);  quad(x0, by + half - L, th, L, col);// BL
+                        quad(bx + half - L, y1, L, th, col); quad(x1, by + half - L, th, L, col);// BR
+                    };
+                    // Dotted ring: n square dots on a circle; fillFrac sweeps it
+                    // closed clockwise from 12 o'clock (the acquiring animation).
+                    auto ringDots = [&](float bx, float by, float radius, int n,
+                                        float dotSz, const float col[4], float fillFrac) {
+                        for (int i = 0; i < n; ++i) {
+                            if ((float)i / (float)n > fillFrac) break;
+                            const float a = -1.5707963f + 6.2831853f * (float)i / (float)n;
+                            quad(bx + std::cos(a) * radius - dotSz * 0.5f,
+                                 by + std::sin(a) * radius - dotSz * 0.5f,
+                                 dotSz, dotSz, col);
+                        }
+                    };
+                    auto chevron = [&](const Proj& pr, const float col[4], float px) {
+                        if (std::fabs(pr.ex) < 1e-4f && std::fabs(pr.ey) < 1e-4f) return;
+                        const char* arrow = (std::fabs(pr.ex) > std::fabs(pr.ey))
+                                            ? (pr.ex > 0 ? ">" : "<")
+                                            : (pr.ey > 0 ? "^" : "v");
+                        const float sx2 = (pr.ex * 0.92f * 0.5f + 0.5f) * (float)winW;
+                        const float sy2 = (0.5f - pr.ey * 0.88f * 0.5f) * (float)winH;
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                                arrow, sx2, sy2, px, col);
+                    };
+                    // Warm-dim hull bar (the ground-enemy healthbar language):
+                    // near-black warm backing, warm amber fill shading to red as
+                    // the hull drops.
+                    auto hullBar = [&](float bx, float byTop, float w, float frac01) {
+                        const float f = frac01 < 0.0f ? 0.0f : (frac01 > 1.0f ? 1.0f : frac01);
+                        const float back[4] = { 0.06f, 0.035f, 0.02f, 0.70f };
+                        const float fill[4] = { 0.95f, 0.30f + 0.42f * f, 0.16f, 0.92f };
+                        quad(bx - w * 0.5f - 1.0f, byTop - 1.0f, w + 2.0f, 6.0f, back);
+                        quad(bx - w * 0.5f, byTop, w * f, 4.0f, fill);
+                    };
+                    const float neutral[4] = { 0.85f, 0.88f, 0.92f, 0.50f };
+                    const float amberM[4]  = { 1.0f, 0.72f, 0.20f, 0.95f };
+                    const float redM[4]    = { 1.0f, 0.30f, 0.22f, 0.95f };
+                    // Lock staging for this frame.
+                    const float lockProg = lockHad
+                        ? std::min(1.0f, lockAge / kAcquireSec) : 0.0f;
+                    const bool  lockedNow = lockHad && lockProg >= 1.0f;
+                    const uint32_t lockId = lockHad ? targeting.lockedId() : 0u;
+                    // Staged bracket colour: amber -> red across the acquire.
+                    float staged[4];
+                    for (int k = 0; k < 4; ++k)
+                        staged[k] = amberM[k] + (redM[k] - amberM[k]) * lockProg;
+
+                    // ---- Enemy fighters ---------------------------------------
+                    for (uint32_t i = 0; i < enemies.count(); ++i) {
+                        const auto& e = enemies.ship(i);
+                        if (e.hull <= 0) continue;
+                        const bool isTgt = lockHad && lockId == 1u + i;
+                        const Proj pr = project(e.pos);
+                        if (!pr.vis) {
+                            chevron(pr, isTgt ? redM : amberM, isTgt ? 20.0f : 16.0f);
+                            continue;
+                        }
+                        // Bracket half-size = the DRAWN silhouette radius (the
+                        // same vis-comp factor as the draw + hit test) projected
+                        // to px, clamped legible.
+                        const float worldR = 0.85f * x3::space::shipai::kVisBaseScale *
+                                             x3::space::shipai::visCompFactor(pr.zf);
+                        const float halfPx = std::min(120.0f,
+                            std::max(16.0f, worldR * pr.pxPerM)) + 6.0f;
+                        if (!isTgt) {
+                            bracket(pr.sx, pr.sy, halfPx, 1.0f, neutral);
+                            continue;
+                        }
+                        // The LOCK TARGET: staged bracket closing from 1.6x ->
+                        // 1.0x as the acquire completes (no popping).
+                        const float halfT = halfPx * (1.6f - 0.6f * lockProg);
+                        bracket(pr.sx, pr.sy, halfT, 2.0f, staged);
+                        if (!lockedNow) {
+                            // ACQUIRING: dotted ring sweeping closed + shrinking
+                            // onto the bracket.
+                            ringDots(pr.sx, pr.sy, halfT * (2.0f - 0.8f * lockProg),
+                                     20, 3.0f, staged, 0.15f + 0.85f * lockProg);
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                "ACQ", pr.sx - halfT, pr.sy - halfT - 16.0f, 12.0f, staged);
+                        } else {
+                            // LOCKED: a brief solid ring flourish that fades out
+                            // right after the snap, the warm-dim hull bar above
+                            // the bracket, and a compact LOCK + range tag.
+                            const float since = lockAge - kAcquireSec;
+                            if (since < 0.35f) {
+                                float ringCol[4] = { redM[0], redM[1], redM[2],
+                                                     0.95f * (1.0f - since / 0.35f) };
+                                ringDots(pr.sx, pr.sy, halfT * 1.18f, 24, 3.0f, ringCol, 1.0f);
+                            }
+                            hullBar(pr.sx, pr.sy - halfT - 10.0f, halfT * 2.0f,
+                                    e.maxHull > 0 ? (float)e.hull / (float)e.maxHull : 0.0f);
+                            char tag[24];
+                            std::snprintf(tag, sizeof(tag), "LOCK %dm", (int)pr.zf);
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                tag, pr.sx - halfT, pr.sy + halfT + 6.0f, 12.0f, redM);
+                        }
+                    }
+
+                    // ---- Capital ship -----------------------------------------
+                    {
+                        const bool isTgt = lockHad && lockId == 1000u;
+                        const Proj pr = project(capPos);
+                        if (pr.vis) {
+                            const float halfPx = std::min(170.0f,
+                                std::max(30.0f, 55.0f * pr.pxPerM)) + 6.0f;
+                            const float* col = isTgt ? staged : amberM;
+                            bracket(pr.sx, pr.sy, halfPx, isTgt ? 2.0f : 1.0f, col);
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                isTgt && !lockedNow ? "CAP ACQ" : "CAP",
+                                pr.sx - halfPx, pr.sy - halfPx - 16.0f, 12.0f, col);
+                            if (isTgt && lockedNow) {
+                                // Compact capital readout: shield + hull bars and
+                                // one pip per subsystem (lit = up, dark = down).
+                                const float sf2 = x3::space::ShipDamage::shieldFrac(capital);
+                                const float hf2 = x3::space::ShipDamage::hullFrac(capital);
+                                const float shCol[4]  = { 0.40f, 0.80f, 1.0f, 0.90f };
+                                const float shBack[4] = { 0.02f, 0.05f, 0.08f, 0.70f };
+                                const float w2 = halfPx * 2.0f;
+                                quad(pr.sx - w2*0.5f - 1.0f, pr.sy - halfPx - 20.0f, w2 + 2.0f, 5.0f, shBack);
+                                quad(pr.sx - w2*0.5f, pr.sy - halfPx - 19.0f, w2 * sf2, 3.0f, shCol);
+                                hullBar(pr.sx, pr.sy - halfPx - 12.0f, w2, hf2);
+                                for (int sIdx = 0; sIdx < (int)x3::space::Subsystem::Count; ++sIdx) {
+                                    const bool down = x3::space::ShipDamage::subsystemDown(
+                                        capital, (x3::space::Subsystem)sIdx);
+                                    const float pipUp[4]   = { 1.0f, 0.72f, 0.20f, 0.95f };
+                                    const float pipDown[4] = { 0.25f, 0.12f, 0.08f, 0.80f };
+                                    quad(pr.sx - 22.0f + 12.0f * (float)sIdx,
+                                         pr.sy + halfPx + 8.0f, 7.0f, 7.0f,
+                                         down ? pipDown : pipUp);
                                 }
                             }
-                            // Off-screen: clamp the bearing to the screen edge.
-                            float ex = xr, ey = yu;
-                            if (zf > 0.0f) { ex = xr / std::max(zf, 1.0f); ey = yu / std::max(zf, 1.0f); }
-                            const float m = std::max(std::fabs(ex), std::fabs(ey));
-                            if (m < 1e-4f) return;
-                            ex /= m; ey /= m;      // unit square edge
-                            const char* arrow = (std::fabs(ex) > std::fabs(ey))
-                                                ? (ex > 0 ? ">" : "<")
-                                                : (ey > 0 ? "^" : "v");
-                            const float sx2 = (ex * 0.92f * 0.5f + 0.5f) * winW;
-                            const float sy2 = (0.5f - ey * 0.88f * 0.5f) * winH;
-                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                                                    arrow, sx2, sy2, px * 1.2f, col);
+                        } else {
+                            chevron(pr, isTgt ? redM : amberM, 18.0f);
+                        }
+                    }
+
+                    // ---- LEAD PIP (the gameplay win): where to PUT THE NOSE so
+                    // the shot lands on the moving target. computeLead solves the
+                    // intercept at the bolt's visual speed; drawn as a fine pip
+                    // (dot + 4 ticks) in hot yellow. Hidden when it overlaps the
+                    // target centre (nothing to lead) or there is no lock.
+                    if (lockedNow) {
+                        const auto lead = targeting.computeLead(ppos, kLeadProjSpeed);
+                        if (lead.valid) {
+                            const Proj pr = project(lead.aimPoint);
+                            if (pr.vis) {
+                                const float pipCol[4] = { 1.0f, 0.93f, 0.45f, 0.95f };
+                                quad(pr.sx - 1.5f, pr.sy - 1.5f, 3.0f, 3.0f, pipCol);
+                                quad(pr.sx - 7.0f, pr.sy - 0.5f, 4.0f, 1.0f, pipCol);
+                                quad(pr.sx + 3.0f, pr.sy - 0.5f, 4.0f, 1.0f, pipCol);
+                                quad(pr.sx - 0.5f, pr.sy - 7.0f, 1.0f, 4.0f, pipCol);
+                                quad(pr.sx - 0.5f, pr.sy + 3.0f, 1.0f, 4.0f, pipCol);
+                            }
+                        }
+                    }
+
+                    // ---- GUN BORESIGHT — the reticle that CANNOT lie: on the
+                    // nose ray (the exact ray hits use; with lock-bias/freelook
+                    // screen-centre stops being the aim). Quad-built crosshair:
+                    // four arms + centre dot, with a HIT-CONFIRM flicker (an X
+                    // of dots snapping outward) the instant a shot LANDS.
+                    {
+                        const float fhN = std::cos(pilot.pitch());
+                        const x3::phys::Vec3 pN = pilot.pos();
+                        const float aimP[3] = {
+                            pN.x + fhN * std::cos(pilot.yaw()) * 600.0f,
+                            pN.y + std::sin(pilot.pitch()) * 600.0f,
+                            pN.z + fhN * std::sin(pilot.yaw()) * 600.0f };
+                        const Proj pr = project(aimP);
+                        if (pr.vis) {
+                            const float cyanB[4] = { 0.45f, 0.95f, 1.0f, 0.95f };
+                            quad(pr.sx - 14.0f, pr.sy - 1.0f, 8.0f, 2.0f, cyanB);
+                            quad(pr.sx +  6.0f, pr.sy - 1.0f, 8.0f, 2.0f, cyanB);
+                            quad(pr.sx - 1.0f, pr.sy - 14.0f, 2.0f, 8.0f, cyanB);
+                            quad(pr.sx - 1.0f, pr.sy +  6.0f, 2.0f, 8.0f, cyanB);
+                            quad(pr.sx - 1.5f, pr.sy - 1.5f, 3.0f, 3.0f, cyanB);
+                            if (hitConfirmT > 0.0f) {
+                                const float t01 = hitConfirmT / 0.15f;      // 1 -> 0
+                                const float o = 8.0f + 10.0f * (1.0f - t01); // snap out
+                                const float hitCol[4] = { 1.0f, 0.55f, 0.30f, 0.95f * t01 };
+                                for (int sx2 = -1; sx2 <= 1; sx2 += 2)
+                                    for (int sy2 = -1; sy2 <= 1; sy2 += 2) {
+                                        quad(pr.sx + (float)sx2 * o - 1.5f,
+                                             pr.sy + (float)sy2 * o - 1.5f, 3.0f, 3.0f, hitCol);
+                                        quad(pr.sx + (float)sx2 * o * 0.6f - 1.0f,
+                                             pr.sy + (float)sy2 * o * 0.6f - 1.0f, 2.0f, 2.0f, hitCol);
+                                    }
+                            }
+                        }
+                        // WEAPON ENERGY (the regenerating pool, Job: "it runs
+                        // out") — a thin bar riding under the boresight so the
+                        // state lives with the aim: cyan; amber under 35%; red
+                        // pulse when too low to fire. NEVER lies: reads the
+                        // live pilot pool the fire path drains.
+                        {
+                            const float eFrac = pilot.maxEnergy() > 0.0f
+                                ? pilot.energy() / pilot.maxEnergy() : 0.0f;
+                            const float bw = 90.0f, bh = 4.0f;
+                            const float bx = pr.vis ? pr.sx : (float)winW * 0.5f;
+                            const float by = (pr.vis ? pr.sy : (float)winH * 0.5f) + 26.0f;
+                            const float back[4] = { 0.02f, 0.04f, 0.06f, 0.65f };
+                            float fill[4] = { 0.45f, 0.90f, 1.0f, 0.85f };
+                            if (pilot.energy() < 2.8f) {          // can't fire: red pulse
+                                fill[0] = 1.0f; fill[1] = 0.25f; fill[2] = 0.18f;
+                                fill[3] = 0.55f + 0.40f * std::sin(beatT * 18.0f);
+                            } else if (eFrac < 0.35f) {
+                                fill[0] = 1.0f; fill[1] = 0.72f; fill[2] = 0.20f;
+                            }
+                            quad(bx - bw * 0.5f - 1.0f, by - 1.0f, bw + 2.0f, bh + 2.0f, back);
+                            quad(bx - bw * 0.5f, by, bw * std::max(0.0f, std::min(1.0f, eFrac)), bh, fill);
+                            const float lbl[4] = { fill[0], fill[1], fill[2], 0.80f };
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono,
+                                "PWR", bx - bw * 0.5f - 34.0f, by - 4.0f, 11.0f, lbl);
+                        }
+                    }
+
+                    // FAR-FROM-EARTH TELL: label the faint SOL pinpoint so the
+                    // player can FIND home — on-screen text when in view, an
+                    // edge chevron toward it otherwise.
+                    {
+                        constexpr float kD2R = 3.14159265f / 180.0f;
+                        const float sAz = x3::starsys::kSolPinpointAzDeg * kD2R;
+                        const float sEl = x3::starsys::kSolPinpointElDeg * kD2R;
+                        const float sCe = std::cos(sEl);
+                        const float solP[3] = {
+                            cx + std::sin(sAz) * sCe * 10500.0f,
+                            cy + std::sin(sEl)        * 10500.0f,
+                            cz - std::cos(sAz) * sCe * 10500.0f };
+                        const float solCol[4] = { 0.92f, 0.95f, 1.0f, 0.95f };
+                        const Proj pr = project(solP);
+                        if (pr.vis)
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono,
+                                "SOL", pr.sx - 13.0f, pr.sy - 7.0f, 15.0f, solCol);
+                        else
+                            chevron(pr, solCol, 14.0f);
+                    }
+                }
+                // ---- SYSTEM MINIMAP (owner: "visible on a minimap") — top-right box.
+                // A north-up SYSTEM MAP, not just a contacts radar: the outer compass
+                // ring carries the star + planets (+ faint SOL) at their sky bearing,
+                // so the player reads the whole system layout at a glance; the inner
+                // disc is the tactical radar (player at centre + heading tick, hostile
+                // blips, the capital) scaled by range. Built from drawHudQuad/Text.
+                {
+                    const int mw = winW, mh = winH;
+                    if (mw > 0 && mh > 0) {
+                        constexpr float kD2R = 3.14159265f / 180.0f;
+                        const float box  = 196.0f;                 // map box (px)
+                        const float pad  = 18.0f;
+                        const float x0   = (float)mw - box - pad;
+                        const float titleH = 20.0f;
+                        const float y0   = pad + titleH;
+                        const float cxm  = x0 + box * 0.5f;
+                        const float cym  = y0 + box * 0.5f;
+                        const float Rrim = box * 0.42f;            // compass ring (bodies)
+                        const float Rin  = box * 0.34f;            // tactical disc (contacts)
+                        // Backing + frame.
+                        const float bg[4]   = { 0.02f, 0.04f, 0.06f, 0.62f };
+                        const float frame4[4]= { 0.40f, 0.80f, 1.0f, 0.55f };
+                        hc.device->drawHudQuad(frame, x0 - 4.0f, y0 - 4.0f, box + 8.0f, box + 8.0f, bg);
+                        const float bt = 2.0f;
+                        hc.device->drawHudQuad(frame, x0 - 4.0f, y0 - 4.0f, box + 8.0f, bt, frame4);
+                        hc.device->drawHudQuad(frame, x0 - 4.0f, y0 + box + 4.0f - bt, box + 8.0f, bt, frame4);
+                        hc.device->drawHudQuad(frame, x0 - 4.0f, y0 - 4.0f, bt, box + 8.0f, frame4);
+                        hc.device->drawHudQuad(frame, x0 + box + 4.0f - bt, y0 - 4.0f, bt, box + 8.0f, frame4);
+                        // Title = the system name (owner: this reads a DIFFERENT system).
+                        const float titleCol[4] = { dfSystem.starColor[0], dfSystem.starColor[1],
+                                                    dfSystem.starColor[2], 0.95f };
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy, dfSystem.name,
+                                                x0 - 4.0f, pad - 2.0f, 15.0f, titleCol);
+                        // A faint centre crosshair for the tactical disc.
+                        const float grid[4] = { 0.30f, 0.55f, 0.70f, 0.30f };
+                        hc.device->drawHudQuad(frame, x0, cym - 0.5f, box, 1.0f, grid);
+                        hc.device->drawHudQuad(frame, cxm - 0.5f, y0, 1.0f, box, grid);
+                        auto dot = [&](float px, float py, float s, const float col[4]) {
+                            hc.device->drawHudQuad(frame, px - s * 0.5f, py - s * 0.5f, s, s, col);
                         };
-                        const float redM[4]   = { 1.0f, 0.30f, 0.22f, 0.95f };
-                        const float amberM[4] = { 1.0f, 0.72f, 0.20f, 0.95f };
+                        // Colour per body type (star = amber; worlds by kind).
+                        auto bodyColor = [](x3::starsys::BodyType t, float out[4]) {
+                            switch (t) {
+                                case x3::starsys::BodyType::Sun:  out[0]=1.0f;  out[1]=0.72f; out[2]=0.22f; break;
+                                case x3::starsys::BodyType::Lava: out[0]=1.0f;  out[1]=0.40f; out[2]=0.16f; break;
+                                case x3::starsys::BodyType::Ice:  out[0]=0.62f; out[1]=0.86f; out[2]=1.0f;  break;
+                                case x3::starsys::BodyType::Gas:  out[0]=0.82f; out[1]=0.70f; out[2]=0.48f; break;
+                                case x3::starsys::BodyType::Terrestrial: out[0]=0.34f; out[1]=0.78f; out[2]=0.62f; break;
+                                default:                          out[0]=0.72f; out[1]=0.72f; out[2]=0.74f; break; // Moon
+                            }
+                            out[3] = 0.95f;
+                        };
+                        // Compact map tag from a body label: drop a trailing " (...)"
+                        // qualifier, keep the last whitespace token (so "Kethzar II" ->
+                        // "II", "Ashk (moon)" -> "Ashk"), <= 7 chars. Keeps distinct
+                        // worlds distinct (full names all begin "Kethzar" + truncate same).
+                        auto shortTag = [](const char* full, char* out, size_t n) {
+                            std::string s = full ? full : "";
+                            size_t par = s.find(" (");
+                            if (par != std::string::npos) s = s.substr(0, par);
+                            size_t sp = s.find_last_of(' ');
+                            std::string tok = (sp == std::string::npos) ? s : s.substr(sp + 1);
+                            std::snprintf(out, n, "%.7s", tok.c_str());
+                        };
+                        // Draw an icon + a SIDE-AWARE label (kept inside the box: labels
+                        // on the right half sit to the LEFT of the icon).
+                        auto labelIcon = [&](float bx, float by, const char* tag, const float col[4]) {
+                            const float glyph = 10.0f;
+                            const float w = (float)std::strlen(tag) * glyph * 0.62f;
+                            const float lx = (bx > cxm) ? (bx - 6.0f - w) : (bx + 6.0f);
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono, tag,
+                                                    lx, by - 5.0f, glyph, col);
+                        };
+                        // -- Outer compass ring: the system's bodies at their sky bearing.
+                        for (const x3::starsys::SystemBody& b : dfSystem.bodies) {
+                            const float az = b.azimuthDeg * kD2R;
+                            const float bx = cxm + std::sin(az) * Rrim;
+                            const float by = cym - std::cos(az) * Rrim;
+                            float col[4]; bodyColor(b.type, col);
+                            // Star bigger; gas giant medium; rest small.
+                            const float s = (b.type == x3::starsys::BodyType::Sun) ? 12.0f
+                                          : (b.type == x3::starsys::BodyType::Gas) ? 9.0f : 7.0f;
+                            dot(bx, by, s, col);
+                            char tag[10]; shortTag(b.label, tag, sizeof(tag));
+                            labelIcon(bx, by, tag, col);
+                        }
+                        // Faint SOL on the ring (the far-from-Earth marker on the map).
+                        {
+                            const float az = x3::starsys::kSolPinpointAzDeg * kD2R;
+                            const float bx = cxm + std::sin(az) * Rrim;
+                            const float by = cym - std::cos(az) * Rrim;
+                            const float solC[4] = { 0.95f, 0.97f, 1.0f, 0.95f };
+                            dot(bx, by, 5.0f, solC);
+                            labelIcon(bx, by, "SOL", solC);
+                        }
+                        // -- Inner tactical disc: player, heading, hostiles, capital.
+                        auto plotContact = [&](const float p[3], float range, const float col[4], float s) {
+                            const float dx = p[0] - cx, dz = p[2] - cz;
+                            const float dist = std::sqrt(dx*dx + dz*dz);
+                            const float az = std::atan2(dx, -dz);          // world bearing
+                            const float rr = Rin * std::min(1.0f, dist / range);
+                            dot(cxm + std::sin(az) * rr, cym - std::cos(az) * rr, s, col);
+                        };
+                        const float redBlip[4]   = { 1.0f, 0.32f, 0.24f, 0.95f };
+                        const float amberBlip[4] = { 1.0f, 0.72f, 0.20f, 0.95f };
                         for (uint32_t i = 0; i < enemies.count(); ++i) {
                             const auto& e = enemies.ship(i);
                             if (e.hull <= 0) continue;
-                            marker(e.pos, "[ ]", redM, 26.0f);
+                            plotContact(e.pos, 400.0f, redBlip, 5.0f);
                         }
-                        marker(capPos, "[CAP]", amberM, 22.0f);
+                        plotContact(capPos, 400.0f, amberBlip, 8.0f);
+                        // Player at centre + a heading tick (sky bearing = yaw + 90 deg).
+                        const float pcol[4] = { 0.45f, 0.95f, 1.0f, 1.0f };
+                        const float haz = (float)pilot.yaw() + 1.5707963f;
+                        for (float t = 4.0f; t <= 16.0f; t += 4.0f)
+                            dot(cxm + std::sin(haz) * t, cym - std::cos(haz) * t, 3.0f, pcol);
+                        dot(cxm, cym, 7.0f, pcol);
                     }
                 }
             }
             hc.device->endFrame(frame);
             if (evShot)
-                hc.device->captureFrame((std::string(evDir) + "/live_" + beat.id + ".png").c_str());
+                hc.device->captureFrame((std::string(evDir) + "/live_" + beat.id +
+                                         "_s" + std::to_string(step) + ".png").c_str());
+            // Evidence runs are BOUNDED (nobody is at the controls to cripple the
+            // capital or press Esc): end the beat just past the last capture.
+            if (evDir && *evDir && step >= 960) break;
 
             // Hold this step until real time catches up to where the sim thinks it is
             // (see tStart). target = when step (step+1) SHOULD begin, in wall seconds.
             // Only ever waits; a slow frame that is already behind falls straight through.
-            const double target  = (double)(step + 1) * (double)dt;
-            const double elapsed = std::chrono::duration<double>(
-                                       std::chrono::steady_clock::now() - tStart).count();
-            if (elapsed < target)
-                std::this_thread::sleep_for(std::chrono::duration<double>(target - elapsed));
+            // Capture runs are UNPACED (nobody is watching the offscreen frames).
+            if (interactive) {
+                const double target  = (double)(step + 1) * (double)dt;
+                const double elapsed = std::chrono::duration<double>(
+                                           std::chrono::steady_clock::now() - tStart).count();
+                if (elapsed < target)
+                    std::this_thread::sleep_for(std::chrono::duration<double>(target - elapsed));
+            }
         }
 
         // ---- Exit conditions: all enemies down + ship crippled, or pilot dead. ----
@@ -678,8 +1558,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (crippled && enemies.aliveCount() == 0) break;
     }
 
-    if (live) glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    if (interactive) glfwSetInputMode(hc.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    if (live) hc.device->setFrustumCullEnabled(true);   // restore (beat-scoped off)
+    if (live) hc.device->setCameraFar(200.0f);          // restore engine default (L7 pair)
     if (fxOn) fxPtr->shutdown(*hc.device);
+    // Stop the engine bed (loops would otherwise drone under the next cinematic
+    // beat). stopLoop on an invalid handle is a safe no-op.
+    if (sfx) { sfx->stopLoop(humLoop); sfx->stopLoop(thrustLoop); }
 
     // Fold this window's metrics into the running totals. The CLIMAX window owns
     // the hull/time-to-cripple snapshot (the roll inputs); both windows contribute
@@ -888,8 +1773,14 @@ uint32_t deriveSaveSeed(const x3::game::StoryFlags& flags) {
 
 } // namespace
 
+// F9 skip-all accessors — EXTERNAL linkage (cinematic.cpp's film loop calls
+// requestSkipAllIntro on F9). The latch itself is the file-scope static above.
+void requestSkipAllIntro()      { s_skipAllIntro = true; }
+bool skipAllIntroRequested()    { return s_skipAllIntro; }
+
 IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     x3::logInfo("[intro] runInteractiveIntro: beat sequence start");
+    s_skipAllIntro = false;   // F9 latch: fresh per run
 
     // Load the cold-open cutscene for the cinematic clips (best-effort; the live
     // cinematic beats no-op if it fails to load — the combat/outcome core still runs).
@@ -909,10 +1800,13 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     metrics.finalHullFrac = 1.0f;   // assume intact until the climax measures it
 
     // The cockpit rig — the interactive windows' visible layer (feat/intro-cockpit).
-    // Live-only (window + device); the headless self-test path stays render-free
-    // and deterministic. A missing GLB degrades gracefully to the empty frame.
+    // Live-only (window + device) — PLUS the headless X3_INTRO_CAPTURE evidence
+    // run, which renders the beats offscreen and needs the same art. The plain
+    // headless self-test path (no env) stays render-free and deterministic. A
+    // missing GLB degrades gracefully to the empty frame.
     std::unique_ptr<x3::apphost::IntroCockpitRig> cockpit;
-    if (hc.window && hc.device) {
+    const char* evCap = std::getenv("X3_INTRO_CAPTURE");
+    if (hc.device && (hc.window || (evCap && *evCap))) {
         cockpit = std::make_unique<x3::apphost::IntroCockpitRig>();
         if (x3::apphost::buildIntroCockpitRig(*cockpit, *hc.device, /*includeBackdrop*/ false)) {
             x3::apphost::setIntroCockpitLook(*hc.device);
@@ -928,6 +1822,7 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     // FIRST, then play the matching stinger (below).
     Beat outcomeBeat{}; bool haveOutcomeBeat = false;
     for (const Beat& beat : beats) {
+        if (s_skipAllIntro) break;   // F9: bail at the beat boundary
         if (beat.kind == BeatKind::CutsceneClip && beat.id == "cine.outcome") {
             outcomeBeat = beat; haveOutcomeBeat = true; continue;
         }
@@ -963,6 +1858,16 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     x3::game::StoryFlags flags;
     const std::string flagsPath = defaultGameStoryFlagsPath();
     flags.loadFile(flagsPath);   // false + untouched on a fresh save — fine
+
+    // F9 SKIP-ALL: no roll, no stinger, no descent — the canon ShotDown outcome,
+    // written exactly like the real path, straight to waking in the cell.
+    if (s_skipAllIntro) {
+        x3::logInfo("[intro] F9 — SKIP ALL: intro aborted by the owner, canon ShotDown");
+        writeOutcomeFlag(flags, IntroOutcome::ShotDown);
+        flags.clear(kIntroLandedFlag);
+        flags.saveFile(flagsPath);
+        return IntroOutcome::ShotDown;
+    }
 
     const float skill = skillScore(metrics);
     const float p = outcomeProbability(skill);

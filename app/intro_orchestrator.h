@@ -152,6 +152,14 @@ std::string defaultGameStoryFlagsPath();
 // ---------------------------------------------------------------------------
 IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc);
 
+// F9 — SKIP THE WHOLE SPACE INTRO (owner dev shortcut: "make a key to skip the
+// space intro.. f9"). Any intro surface (film clip or interactive beat) that sees
+// F9 calls requestSkipAllIntro(); the orchestrator's beat loop bails at the next
+// boundary, skips the roll + stinger, and returns the canon ShotDown outcome —
+// straight to waking in the cell. Reset at each runInteractiveIntro entry.
+void requestSkipAllIntro();
+bool skipAllIntroRequested();
+
 // --test-introorch self-test (headless, deterministic, no window/Vulkan): asserts
 // beat sequencing order; deterministic outcome for a fixed (seed, skill); the
 // skill->p mapping bounds (skill 0 -> p=0.07, skill 1 -> p=0.40, monotonic); the

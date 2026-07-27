@@ -41,8 +41,10 @@
 #include "leveldoc_world.h"                  // EDITOR LevelDoc loader: --world fromdoc + hot reload (--test-loader)
 #include "player.h"
 #include "monster.h"
+#include "combat_log.h"                     // [P3-5] LOG-1: combat_log / ai_log spam gates
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "canon_aliens.h"                   // CANON ALIENS: the four Rodin species living on the planet
 #include "desc_mechanics.h"                 // W9-1: the desc-field Tier-A mechanics (interactables + status effects)
 #include "item_db.h"                        // [W9-3 RPG] data-driven item defs (assets/items/items.json)
 #include "inventory.h"                      // [W9-3 RPG] backpack + key-section inventory
@@ -50,6 +52,7 @@
 #include "skilltree.h"                      // [W9-3 RPG] skill tree + PlayerStatMods layer
 #include "rpg_ui.h"                         // [W9-3 RPG] backpack/skill screens + HUD chip
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
+#include "stairwell.h"                      // fix/spire-hollow-core: the facility stairwell (open switchback, F1..F7)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
@@ -58,6 +61,7 @@
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "chat_tree.h"                      // x3.chattree/1 data-driven dialog runner (--test-chattree)
+#include "vigil_barks.h"                     // VIGIL ambient companion barks (gated on vigilLink)
 #include "mission.h"                        // x3.mission/1 data-driven mission runner (--test-mission, g_missiondoc)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
@@ -93,6 +97,7 @@
 #include "destinations.h" // W-MENU: the ONE registry of every place the game has
 #include "world_menu.h"   // W-MENU: the world / place selection screen (F6 + pause)
 #include "club1127.h"
+#include "club_listen.h"   // CLUB LISTEN MODE: cvars + console bind (live-beat drive)
 #include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
 #include "cliffs.h"                          // Salvari cliffs finale (--world cliffs)
@@ -114,6 +119,7 @@
 #include "fish.h"                          // FISH: ambient schools in THE RIVER + the sea shallows
 #include "waterzap.h"                      // THE WATER ZAP: the lightning gun electrifies the water
 #include "sealife.h"                       // SEALIFE: the great white, the blue shark, the abyss
+#include "god_rays.h"                      // GOD RAYS: sun shafts under the water surface
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
 #include "crowd_skin.h"                    // SKINNED CITIZENS: the crowds' rigged visual layer
 #include "crowd_chatter.h"                 // CROWD CHATTER: chat bubbles + murmur walla over the crowds
@@ -405,6 +411,13 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
     // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
     console.registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    // [P3-5] LOG-1: combat/AI per-event log spam, DEFAULT QUIET (app/combat_log.h).
+    // `combat_log 1` restores the per-hit lines ("[monster] hit for", "[player] took",
+    // HEADSHOT / kill lines); `ai_log 1` restores the "[ai] entity N A -> B" state-
+    // transition lines. Live-tunable; pushed into the gate flags each frame in
+    // applyRtaoCVars (the per-frame cvar sync hub).
+    console.registerCVar("combat_log", "0", "combat per-event log lines (player/monster hits, kills); 0 = quiet");
+    console.registerCVar("ai_log",     "0", "[ai] state-transition log lines; 0 = quiet");
     // Hardware ray-traced ambient occlusion (RT AO — Vulkan ray-query path). Gated
     // + DEFAULT OFF: only takes effect on a device that supports ray tracing. Live-
     // tunable: `r_rtao 1` turns on ground-truth ray-traced contact occlusion (BLAS/
@@ -476,6 +489,7 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_fogstart",       "-1",   "depth-fog clean-air start meters override (canonlevel; -1 = keep zone value)");
     console.registerCVar("r_gradestrength",  "-1",   "filmic grade master strength override 0..1 (canonlevel; -1 = keep zone value)");
     console.registerCVar("r_vignette",       "-1",   "vignette strength override 0..0.25 (canonlevel; -1 = keep zone value)");
+    console.registerCVar("r_filmic",         "1",    "cinematic filmic post master gate (cutscene vignette/grain/split-tone; 0 = force off for A/B — the look itself only turns on during cutscene playback)");
     console.registerCVar("r_autoexposure",   "1",    "auto-exposure (eye adaptation): scene log-luminance drives exposure; r_exposure becomes a bias");
     console.registerCVar("r_aespeed",        "1.5",  "auto-exposure adaptation speed (1/s; higher = faster eye)");
     console.registerCVar("r_aemin",          "0.7",  "auto-exposure clamp floor (max darkening of bright scenes)");
@@ -604,6 +618,10 @@ static VisCvarSync g_visSync;
 // NON-const console (vis-unify): the alias fold writes r_vis back from the legacy
 // r_cullpath/r_hzb cvars through console.set().
 void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) {
+    // [P3-5] LOG-1: push the combat/AI log-spam cvars into their gate flags (this
+    // function is the per-frame cvar sync hub, rtao naming notwithstanding).
+    x3::game::setCombatLogEnabled(console.getInt("combat_log") != 0);
+    x3::game::setAiLogEnabled(console.getInt("ai_log") != 0);
     x3::rhi::IRenderDevice::RtaoParams p{};
     p.enabled  = console.getInt("r_rtao") != 0;
     p.radius   = console.getFloat("r_rtao_radius");
@@ -728,6 +746,10 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     // (r_velocity, default 0 = byte-identical camera-only reproj). The device
     // gates on TAA being active + velocity.spv present (graceful fallback).
     px.velocity   = console.getInt("r_velocity") != 0;
+    // Cinematic filmic post master gate (r_filmic, default 1 = allowed). The look
+    // itself only turns ON while a cutscene holds setFilmic(); this is the live
+    // A/B kill-switch (r_filmic 0 forces the byte-identical composite path).
+    px.filmicAllowed = console.getInt("r_filmic") != 0;
     device.setPostFX(px);
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));
@@ -1188,7 +1210,10 @@ int runDefaultHost(HostContext& hc) {
     // `level_reload` console command tear down ONLY the doc-built objects and rebuild
     // in place (player position preserved). The editor's File>Save writes the same
     // default path, closing the edit -> save -> live-reload loop.
-    const bool docWorld = (worldMode == "fromdoc");
+    // `spacestation` is a thin alias over the LevelDoc loader (cli.cpp seeds its
+    // docWorldPath). Same live-edit/hot-reload path; its doc's biome "space"
+    // drives the deep-space sky + distant-Sol bodies set up after the doc loads.
+    const bool docWorld = (worldMode == "fromdoc" || worldMode == "spacestation");
     // Hard cap on how many rooms the portal flood-fill may add per frame. Even down the
     // longest sightline with a deep r_culldepth, the cull stays well under the whole 53-room
     // tower so the GPU never spikes (the spec's "must NOT regress to drawing the tower").
@@ -1225,10 +1250,21 @@ int runDefaultHost(HostContext& hc) {
     itemDb.load(x3::game::itemsJsonPath());
     skillTree.load(x3::game::skillTreeJsonPath());
     x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
+    x3::game::FacilityStairwell stairwell;     // fix/spire-hollow-core: open switchback stairwell (F1..F7, skips 4.5)
+    x3::game::StairwellLayout   stairLayout;   // its shared plan (breach wiring + lint agree)
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
     bool docReloadRequested = false;           // set by the `level_reload` console cmd
+    // --world spacestation (LevelDoc biome "space"): deep-space sky bodies. The
+    // station is FAR from Earth, so Sol/Earth ride the sky as a tiny faint star,
+    // a local star is the sun, and the FORGE3D planets are small. Bodies are
+    // direction-anchored (parallax-free) and re-projected on the eye each frame.
+    // TODO(star-systems): adopt the feat/star-systems registry for this system's
+    // name + real body catalog when it lands; hardcoded "distant Sol" for now.
+    bool spaceBiome = false;
+    x3::rhi::MeshHandle spacePlanetMesh{}, spacePlanetRingMesh{};
+    std::vector<NightSkyPlanet> spacePlanets;
     x3::game::Scene scene;
     x3::game::Level1Game game;
     // LIVING WORLD: facility civilians (detained workers) — a small crowd that
@@ -1311,6 +1347,17 @@ int runDefaultHost(HostContext& hc) {
     // range-gated on the player. Kinematic — no physics bodies.
     x3::game::FishSystem worldFish;
     x3::game::SeaLifeSystem worldSea;      // THE OCEAN LIVES: big animals (sharks + the squid)
+    // CANON ALIENS (app/canon_aliens.h) — the four Rodin species placed on the
+    // planet per the lore-faction map: Saurian Soldiers patrol the facility
+    // perimeter, Grey workers dot the crash-site approach, the Nordic Steward
+    // watches from the ridge, the Mantis Arbiter stalks the pass. Host-owned
+    // like the fish (built once at canon boot); hostile rows fight the player
+    // through the same MonsterManager lane the canon enemies use. The Saurian
+    // WARLORD boss only spawns under X3_SPAWN_WARLORD=1 (dev flag).
+    x3::game::MonsterManager canonAliens;
+    // GOD RAYS (app/god_rays.h) — sun shafts under the water surface (river
+    // reach + estuary shallows), additive glass, host-owned like the fish.
+    x3::game::GodRays worldRays;
     // THE WATER ZAP (app/waterzap.h) — "one Zap": the latch + cooldown that keeps
     // a HELD lightning trigger from re-zapping the river every frame.
     x3::game::WaterZapper waterZapper;
@@ -1333,6 +1380,26 @@ int runDefaultHost(HostContext& hc) {
     x3::game::AlertDoorLock alertDoorLock;
     bool  facilityAlertOn = false;   // armed in level1 AND canonlevel (see the world-build arm)
     float alertHudClock   = 0.0f;    // drives the lockdown HUD pulse
+
+    // ---- VIGIL BARKS: the ambient in-ear companion layer. Proactive one-liners on
+    // real game events (alert changes, first combat, low HP, elevator/club entry,
+    // idle), shown as an on-screen toast. CANON-GATED: barks are SILENT until Jake
+    // acquires the neural link (the vigilLink StoryFlag). Terminal chat works before
+    // then; this overlay is what the link unlocks. Tuned by vigil_chatter (off/
+    // occasional/chatty) + vigil_cooldown. State tracked frame-to-frame below.
+    x3::game::VigilBarks vigilBarks;
+    int   vigilPrevAlert    = 0;       // last-seen alert level (edge-detect rising/clear)
+    bool  vigilSawCombat    = false;   // FirstCombat one-shot
+    bool  vigilLowHpLatch   = false;   // LowHealth re-arms only after HP recovers
+    bool  vigilSawElevator  = false;   // EnterElevator one-shot per session
+    bool  vigilSawClub      = false;   // EnterClub one-shot
+    bool  vigilSawSidearm   = false;   // PickupSidearm one-shot
+    bool  vigilSawTrapdoor  = false;   // Trapdoor one-shot
+    bool  vigilLinkPrev     = false;   // detects the link being acquired (welcome bark)
+    float vigilClock        = 0.0f;    // monotonic seconds for the bark cooldown/toast
+    x3::phys::Vec3 vigilPrevPos{0,0,0}; // last frame's cam pos (idle/movement detection)
+    bool  vigilPrevPosSet   = false;
+    int   vigilPrevRoom     = -999;    // last canon room id (EnterArea on change)
     // B3: the terrain world is now STREAMED around the player via a residency
     // ring (TerrainStreamer) fed by the engine job system. Both are only created
     // in terrain mode; Level 1 is unaffected.
@@ -1388,6 +1455,19 @@ int runDefaultHost(HostContext& hc) {
     // terminal's 1278 follows (the loading-screen tips spoil that one; this one is
     // only in the world).
     x3::game::HoloTerminal   riftLore;
+    // ---- THE SECRET-CODE QUEST CHAIN (feat/secret-code-clues) ----------------------
+    // CLUE 1: Okafor's maintenance work order by the F1 stairwell entrance (Bottom
+    // Hall) — teaches the stairwell service code 4545 ("re-keyed 45-45 after the
+    // incident"). CLUE 2: the chief engineer's log on F4 near the elevator lobby —
+    // teaches the 4.5 cab code 4455 by riddle ("double the four, double the five").
+    // Both are HoloTerminals on the HoloPanel platform, the riftLore 4790 pattern:
+    // the code is FOUND, never handed over. (The owner's 7762 master backup is
+    // deliberately taught NOWHERE, by order.)
+    x3::game::HoloTerminal   stairLore;
+    x3::game::HoloTerminal   liftLore;
+    // X3_STAIR_DEMO capture staging: the phantom keypad's 4545 response line for
+    // the still's HUD (set at build; drawn by the capture HUD block).
+    std::string              stairDemoBark;
     bool  riftBuilt    = false;
     bool  riftZonePrev = false;      // edge: restore the room-recipe atmosphere on exit
     float riftTeleCool = 0.0f;       // seconds before a rift may take you again
@@ -1541,12 +1621,15 @@ int runDefaultHost(HostContext& hc) {
         subLevels.shutdown();                          // hidden sub-level enemy + mini-boss ragdolls
         if (canonPlay.built()) canonPlay.shutdown();
         if (canon45.built()) canon45.shutdown();   // canonlevel enemy ragdolls
+        canonAliens.shutdown();                    // CANON ALIENS: planet alien ragdolls
         // W-RIFT: sub-level R1's meshes/textures (the hub's gates, membranes, holo
         // glass; the approach's shell). The smoketest gates on allocationCount == 0,
         // and this runs on EVERY exit path (headless captures included).
         if (rifthub.built())    rifthub.shutdown(*device);
         if (riftDepths.built()) riftDepths.shutdown(*device);
         if (riftLore.built())   riftLore.shutdown(*device);
+        if (stairLore.built())  stairLore.shutdown(*device);   // clue 1: Okafor work order
+        if (liftLore.built())   liftLore.shutdown(*device);    // clue 2: Vasquez log
         // KNOWN_BUGS L4: Scene lazily creates ONE 1x1 matte-MR texel (the fallback that
         // lets an emissive-mapped entity keep its emissive map). It is the only GPU
         // resource Scene owns, and the smoketest gates on allocationCount == 0.
@@ -1766,6 +1849,32 @@ int runDefaultHost(HostContext& hc) {
         canonFloor = x3::game::loadCanonTower(x3::game::canonProjectJsonPath());
         if (canonFloor.valid()) {
             x3::game::CanonBuildOpts copts; copts.doors = &canonDoors; copts.lockSecuredRooms = true;
+            // W5-1b (fix/spire-hollow-core): the hidden level 4.5 ARRIVAL MOUTH — cut
+            // a doorway in the elevator-spine tube's +Z wall at the cavern floor
+            // plane; Canon45 builds the arrival tunnel that seals onto it, and the
+            // elevator gets a code-locked "4.5" stop at the same Y (owner canon
+            // 2026-07-25: the elevator is the hidden floor's ONLY access).
+            const float nexusFloorY = x3::game::Canon45::floorPlaneY(canonFloor);
+            if (nexusFloorY > -1e8f) {
+                copts.spineMouthY0   = nexusFloorY;
+                copts.spineMouthY1   = nexusFloorY + x3::game::Canon45::kMouthH;
+                copts.spineMouthHalf = x3::game::Canon45::kMouthHalf;
+            }
+            // FACILITY STAIRWELL (owner feature 2026-07-25): register the per-floor
+            // connector mouths as breach cuts so the graybox walls open where the
+            // stairwell module (built after the floor) seals its connectors on.
+            stairLayout = x3::game::stairwellLayout(canonFloor);
+            if (stairLayout.valid) {
+                for (const auto& fe : stairLayout.floors) {
+                    x3::game::CanonBuildOpts::ExtraBreach eb;
+                    eb.room   = fe.room;
+                    eb.face   = 0;                              // every target's -X wall
+                    eb.center = (fe.floorNum == 1) ? 0.0f
+                              : x3::game::StairwellLayout::kDoorZ;
+                    eb.half   = x3::game::StairwellLayout::kDoorHalfW;
+                    copts.extraBreaches.push_back(eb);
+                }
+            }
             // TRAPDOOR CARVE — the canon-cell SECRET-ROOM PORT (Tim's code-locked
             // trapdoor was legacy-tower-only until now). Pick a hatch spot inside
             // Jake's Cell clear of the dressing (bunk in the -X/-Z corner, debris in
@@ -1928,6 +2037,114 @@ int runDefaultHost(HostContext& hc) {
                           x3::game::riggedGlbRoot(),
                           x3::game::assetRoot() + "/surface_library", canonLights);
             if (bootProf) bootProfMs("canon45");
+            // ---- THE FACILITY STAIRWELL (owner feature 2026-07-25): open switchback
+            // F1..F7 on the west edge, railed open well, rubber-nosed treads, locked
+            // keypad doors on every no-floor landing (incl. level 4.5's height — the
+            // hidden floor's tell is a door that won't open, not a blank wall). ----
+            stairwell.build(stairLayout, canonFloor, scene, *device, *physics,
+                            &canonDoors, x3::game::assetRoot() + "/surface_library",
+                            canonLights);
+            if (bootProf) bootProfMs("stairwell");
+            // ---- THE SECRET-CODE QUEST CHAIN, CLUES 1 + 2 (feat/secret-code-clues).
+            // Two lore HoloTerminals on the platform, the riftLore 4790 pattern.
+            // CLUE 1 — Okafor's work order, Bottom Hall west wall beside the
+            // stairwell entrance: teaches 4545 ("re-keyed 45-45"). CLUE 2 — the
+            // chief engineer's log on F4 by the elevator lobby: teaches 4455 by
+            // riddle ("double the four, double the five"). Placement is derived
+            // from the loaded rooms (real walls, reading height, ceiling arm to
+            // the room's own lid); both panes are room-stamped for the PVS.
+            {
+                uint32_t hallRm = x3::game::kNoRoom, corrRm = x3::game::kNoRoom;
+                for (uint32_t i = 0; i < (uint32_t)canonFloor.rooms.size(); ++i) {
+                    const x3::game::CanonRoom& r = canonFloor.rooms[i];
+                    if (r.name == "Bottom Hall") hallRm = i;
+                    if (r.name.find("F4: Augmentation Corridor") != std::string::npos)
+                        corrRm = i;
+                }
+                if (hallRm != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& rm = canonFloor.rooms[hallRm];
+                    const uint32_t e0 = scene.size();
+                    // West wall (x0) is the stairwell-entrance wall; the breach cut
+                    // is at z=0, so the glass hangs on the wall span north of it.
+                    stairLore.build(scene, *device,
+                                    x3::phys::Vec3{ rm.x0() + 0.45f, rm.y0() + 2.05f,
+                                                    rm.z1() - 1.1f },
+                                    /*yaw*/-1.5708f, /*w*/1.5f, /*h*/0.95f,
+                                    /*ceilingY*/rm.y1() - 0.16f);
+                    stairLore.setLayout(x3::game::HoloTerminal::Layout::Readout);
+                    stairLore.setTextColor(1.0f, 0.72f, 0.30f, 1.0f);   // maintenance amber
+                    stairLore.setLines({
+                        "FACILITY MAINTENANCE - WORK ORDER 217",
+                        "STAIRWELL SERVICE VOIDS",
+                        "",
+                        "ALL VOID DOORS RE-KEYED 45-45",
+                        "AFTER THE INCIDENT.",
+                        "STANDING ORDER: VOIDS STAY",
+                        "SEALED. ATMO CERT REQUIRED.",
+                        "THERE IS NOTHING TO RETRIEVE.",
+                        "",
+                        "DO NOT COUNT THE LANDINGS.",
+                        "- MAINT. CHIEF OKAFOR",
+                    });
+                    for (uint32_t ei = e0; ei < scene.size(); ++ei)
+                        scene.get(ei).roomId = hallRm;
+                    x3::logInfo("--world canonlevel: CLUE 1 (service code 45-45, Okafor "
+                                "work order) on the glass in 'Bottom Hall'");
+                }
+                if (corrRm != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& rm = canonFloor.rooms[corrRm];
+                    const uint32_t e0 = scene.size();
+                    // West wall, lobby end of the corridor (the walk from the cab
+                    // passes it) — the machine flank of F4.
+                    liftLore.build(scene, *device,
+                                   x3::phys::Vec3{ rm.x0() + 0.45f, rm.y0() + 2.05f,
+                                                   rm.z0() + 2.5f },
+                                   /*yaw*/-1.5708f, /*w*/1.5f, /*h*/0.95f,
+                                   /*ceilingY*/rm.y1() - 0.16f);
+                    liftLore.setLayout(x3::game::HoloTerminal::Layout::Readout);
+                    liftLore.setTextColor(0.42f, 0.66f, 1.60f, 1.0f);   // engineering blue
+                    liftLore.setLines({
+                        "LIFT MAINTENANCE - ENGINEER'S LOG 88",
+                        "CH. ENG. VASQUEZ",
+                        "",
+                        "RE-ENABLED THE HALF-FLOOR",
+                        "STOP FOR THE CHORUS SURVEY.",
+                        "IT IS NOT ON THE PANEL.",
+                        "IT WILL STAY THAT WAY.",
+                        "",
+                        "NEW CODE PER PROTOCOL:",
+                        "DOUBLE THE FOUR,",
+                        "DOUBLE THE FIVE.",
+                        "",
+                        "GOD HELP WHOEVER RIDES IT.",
+                    });
+                    for (uint32_t ei = e0; ei < scene.size(); ++ei)
+                        scene.get(ei).roomId = corrRm;
+                    x3::logInfo("--world canonlevel: CLUE 2 (lift code riddle, Vasquez "
+                                "log) on the glass in '" + rm.name + "'");
+                }
+            }
+            // CAPTURE HOOK (headless stills): X3_STAIR_DEMO=1|2 stages a phantom
+            // keypad mid-4545-response — 1 = a numbered service void (amber pad +
+            // denial line), 2 = the unnumbered door (the sublevel tell). Mirrors
+            // the X3_RIFT_OPEN idiom; the capture HUD draws stairDemoBark.
+            if (const char* sdEnv = std::getenv("X3_STAIR_DEMO"); sdEnv && stairwell.built()) {
+                if (sdEnv[0] == '3') {
+                    // 3 = the OWNER'S 7762 path: the master door OPEN + pad green
+                    // (capture ticks canonDoors so the slab actually slides).
+                    if (stairwell.stageMasterOpen(scene, canonDoors))
+                        x3::logInfo("X3_STAIR_DEMO=3: master door staged OPEN (7762 path) for capture");
+                } else {
+                    using CR = x3::game::FacilityStairwell::CodeResponse;
+                    const CR sdr = stairwell.demoSubmit(sdEnv[0] == '2', scene);
+                    if (sdr != CR::NotHandled) {
+                        stairDemoBark = (sdr == CR::SublevelTell)
+                            ? "SUBLEVEL ACCESS VIA PRIMARY LIFT ONLY - SEE CHIEF ENGINEER"
+                            : "SERVICE VOID - NO ATMOSPHERE - ENTRY DENIED";
+                        x3::logInfo("X3_STAIR_DEMO: staged phantom-door 4545 response for capture");
+                    }
+                }
+            }
             // ---- THE SECRET-ROOM PORT: trapdoor (hazard rim + status light) + the
             // stocked room below + the cell HoloTerminal, seated at the canon cell.
             // The hatch registers in canonDoors (this host updates + draws it); the
@@ -2099,9 +2316,30 @@ int runDefaultHost(HostContext& hc) {
                         stops.push_back(canonFloor.rooms[lobbyRooms[li]].y0() + cabHY);
                         labels.emplace_back("F" + std::to_string(li + 1));
                     }
+                    // ---- LEVEL 4.5 (fix/spire-hollow-core, owner canon 2026-07-25):
+                    // the hidden floor's stop, inserted in Y order between F4 and F5.
+                    // Locked exactly like the RIFT row (code 4455 on the cab keypad,
+                    // taught by the chief engineer's log on F4 — "double the four,
+                    // double the five"; 7762 is the owner's undocumented master
+                    // backup) — the directory shows a dead row; callTo()/callNext()
+                    // skip it while locked.
+                    int nexusStopIdx = -1;
+                    {
+                        const float nexusY45 = x3::game::Canon45::floorPlaneY(canonFloor);
+                        if (nexusY45 > -1e8f) {
+                            const float stopY45 = nexusY45 + cabHY;
+                            size_t ins = stops.size();
+                            for (size_t si = 0; si < stops.size(); ++si)
+                                if (stops[si] > stopY45) { ins = si; break; }
+                            stops.insert(stops.begin() + ins, stopY45);
+                            labels.insert(labels.begin() + ins, "4.5");
+                            nexusStopIdx = (int)ins;
+                        }
+                    }
                     elevator.build(scene, *device, *physics, L0.cx, L0.cz,
                                    1.4f, cabHY, 1.4f, stops, /*startStop*/1);   // boot on F1
                     elevator.setRiftStop(0);
+                    if (nexusStopIdx >= 0) elevator.setSecretStop(nexusStopIdx);
 
                     // ---- SUB-LEVEL R1: the hub + the way in ------------------------------
                     // The hub is the SAME module `--world rifthub` builds — one build path,
@@ -2215,11 +2453,34 @@ int runDefaultHost(HostContext& hc) {
                         }
                     }
 
+                    // QA MAINLEVEL SWEEP — bore the strata AROUND the deep canon rooms.
+                    // Cave System (y=-178) + Hidden Sub-Level (y=-174) sit inside the
+                    // shaft's 16 m bore/offshoot span, and the Crystal-Veins glow band was
+                    // building violet emissive slabs THROUGH their interiors (the "pink
+                    // ceiling panels", docs/QA_MAINLEVEL_SWEEP.md D3). Same move as the
+                    // rift corridor: any strata piece whose anchor lands inside a room's
+                    // volume (+1 m margin) is simply not built.
+                    for (const x3::game::CanonRoom& dr : canonFloor.rooms) {
+                        if (dr.cy > -50.0f) continue;   // only the deep rooms clash
+                        liveStrata.setKeepOut(
+                            { dr.x0() - 1.0f, dr.y0() - 1.0f, dr.z0() - 1.0f },
+                            { dr.x1() + 1.0f, dr.y1() + 1.0f, dr.z1() + 1.0f });
+                    }
                     soupUpElevator(L0.cx, L0.cz, labels);
+                    // CAPTURE HOOK (headless): X3_45_OPEN=1 feeds 4455 to the cab
+                    // keypad — the 4.5 row unlocks + the cab rides to it, so a
+                    // still can show the panel accepting the taught code.
+                    if (std::getenv("X3_45_OPEN") && nexusStopIdx >= 0) {
+                        elevator.keypadDigit(4); elevator.keypadDigit(4);
+                        elevator.keypadDigit(5); elevator.keypadDigit(5);
+                        x3::logInfo("X3_45_OPEN=1: code 4455 fed to the cab keypad "
+                                    "(4.5 row unlocked, cab riding to it — capture)");
+                    }
                     x3::logInfo("--world canonlevel: THE REAL ELEVATOR live in the lobby spine at (" +
                                 std::to_string(L0.cx) + ", " + std::to_string(L0.cz) + ") — " +
                                 std::to_string(stops.size()) + " stops, RIFT + F1-F" +
-                                std::to_string(stops.size() - 1) +
+                                std::to_string(lobbyRooms.size()) +
+                                (nexusStopIdx >= 0 ? " + the locked 4.5 row" : "") +
                                 "; E to summon/ride, 1127 for The Deep, 4790 for SUB-LEVEL R1");
                 }
             }
@@ -2447,6 +2708,47 @@ int runDefaultHost(HostContext& hc) {
                         std::to_string(docLevel.triggerCount()) + " triggers). "
                         "HOT RELOAD: save the JSON (or the F8 editor's File>Save) or run "
                         "`level_reload` in the console — the world rebuilds in place.");
+            // ---- DEEP-SPACE SKY (LevelDoc biome "space", e.g. --world spacestation).
+            // Enable the analytic sky as a near-black void with a single hot star
+            // disk (the local sun) + a low starlight fill, then load the FORGE3D
+            // celestial bodies and re-lay them FAR-FROM-EARTH: the local Sun is the
+            // key, Earth/Sol is a TINY faint speck, the other planets stay small.
+            if (docLevel.doc().biome == "space") {
+                spaceBiome = true;
+                x3::rhi::IRenderDevice::SkyParams sp{};
+                sp.enabled = true;
+                sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.22f; sp.sunDir[2] = 0.80f;   // toward the local star
+                sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.90f;
+                sp.sunIntensity = 0.05f;      // sky DISK only (higher greys the dome)
+                sp.sunLight = 2.6f;           // the real key on the hulls
+                sp.haze = 0.0f; sp.exposure = 1.0f;
+                sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.012f;
+                sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.022f;
+                device->setSkyParams(sp);
+                device->setAmbient(0.030f, 0.034f, 0.050f);   // starlight + planetshine only
+                device->setBloom(0.28f);                       // let the emissive cores/gate bloom
+                int nTexFail = 0;
+                spacePlanets = loadNightSkyPlanets(device, spacePlanetMesh, nTexFail,
+                                                   "[spacestation]", &spacePlanetRingMesh);
+                for (NightSkyPlanet& b : spacePlanets) {
+                    const std::string n = b.name ? b.name : "";
+                    if (n == "Sun") {                 // the LOCAL star — the system's sun
+                        b.azimuthDeg = 40.0f; b.elevationDeg = 18.0f; b.angularDiameterDeg = 1.4f;
+                    } else if (n == "Terrestrial") {  // Sol/Earth: DISTANT faint speck, far away
+                        b.azimuthDeg = -128.0f; b.elevationDeg = 34.0f; b.angularDiameterDeg = 0.18f;
+                    } else if (n == "Gas") {          // a small system gas giant, off to one side
+                        b.azimuthDeg = -150.0f; b.elevationDeg = 20.0f; b.angularDiameterDeg = 1.1f;
+                    } else if (n == "Moon" || n == "Ice") {   // small accents
+                        b.angularDiameterDeg = std::min(b.angularDiameterDeg, 0.9f);
+                    } else if (n == "Lava") {
+                        b.angularDiameterDeg = std::min(b.angularDiameterDeg, 0.7f);
+                    }
+                }
+                x3::logInfo("--world spacestation: DEEP-SPACE sky up (" +
+                            std::to_string(spacePlanets.size()) + " bodies; Sol/Earth a distant "
+                            "faint speck, local star as sun). " +
+                            (nTexFail ? std::to_string(nTexFail) + " planet texture(s) missing." : ""));
+            }
         } else {
             x3::logInfo("--world fromdoc: doc unreadable; falling back to legacy Level 1 build");
             game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
@@ -3328,6 +3630,85 @@ int runDefaultHost(HostContext& hc) {
                     x3::boot::mark("SEALIFE (sharks + the abyss)");
                 }
 
+                // ---- CANON ALIENS on the planet (app/canon_aliens.h roster) —
+                // placed per the lore-faction map, grounded with the SAME
+                // terrainHeightAtWorld query the fish/sealife use, coords logged
+                // like the fish schools. patrolRadius here is PLACEMENT
+                // behaviour (a calm waypoint loop around the spawn anchor) — the
+                // roster's designed combat stats are untouched.
+                {
+                    const auto ca0 = std::chrono::steady_clock::now();
+                    using x3::game::CanonAlien;
+                    auto spawnAlien = [&](CanonAlien sp, float x, float z, float patrolR) {
+                        x3::game::MonsterSystem::Tuning t = x3::game::canonAlienTuning(sp);
+                        if (patrolR > 0.0f) t.patrolRadius = patrolR;
+                        const float y = x3::game::terrainHeightAtWorld(x, z);
+                        canonAliens.spawn(scene, *device, *physics,
+                                          x3::game::riggedGlbRoot(),
+                                          x3::phys::Vec3{ x, y, z }, t);
+                        x3::logInfo(std::string("canonaliens: ") +
+                                    x3::game::canonAlienTypeName(sp) + " at (" +
+                                    std::to_string(x) + ", " + std::to_string(z) +
+                                    ") groundY=" + std::to_string(y));
+                    };
+                    // Overlord enforcers: a hostile 3-point patrol ring around
+                    // the facility exterior perimeter (past the apron, on soil).
+                    spawnAlien(CanonAlien::SaurianSoldier, towerCx - 52.0f, towerCz + 6.0f,  8.0f);
+                    spawnAlien(CanonAlien::SaurianSoldier, towerCx + 46.0f, towerCz + 52.0f, 8.0f);
+                    spawnAlien(CanonAlien::SaurianSoldier, towerCx + 40.0f, towerCz - 58.0f, 8.0f);
+                    // Grey worker drones: industrious on the crash-site approach
+                    // (the strata-bound salvage path) — fragile ranged kiters.
+                    spawnAlien(CanonAlien::GreyTasked, 96.0f, 148.0f, 5.0f);
+                    spawnAlien(CanonAlien::GreyTasked, 118.0f, 176.0f, 5.0f);
+                    // The Nordic Steward watches from the RIDGE — the same
+                    // highest-ground-on-the-620m-ring sampling the "ridge"
+                    // destination uses (ask the terrain, don't invent a coord).
+                    // The Mantis Arbiter stalks the PASS — the lowest DRY point
+                    // on that same ring (a pass is the low ground between highs).
+                    {
+                        float rx = 620.0f, rz = 0.0f, rh = -1e9f;   // ridge (max)
+                        float px = 620.0f, pz = 0.0f, ph = 1e9f;    // pass  (min, dry)
+                        for (int i = 0; i < 64; ++i) {
+                            const float a = (float)i * (6.2831853f / 64.0f);
+                            const float x = std::cos(a) * 620.0f, z = std::sin(a) * 620.0f;
+                            const float h = x3::game::terrainHeightAtWorld(x, z);
+                            const float w = x3::game::worldWaterLevelAt(x, z);
+                            if (h > rh) { rh = h; rx = x; rz = z; }
+                            if (h < ph && h > w + 0.5f) { ph = h; px = x; pz = z; }
+                        }
+                        spawnAlien(CanonAlien::NordicSteward, rx, rz, 0.0f);
+                        spawnAlien(CanonAlien::MantisArbiter, px, pz, 12.0f);
+                    }
+                    // The Saurian WARLORD boss is DEV-GATED (X3_SPAWN_WARLORD=1)
+                    // so it is testable without ambushing players at the door.
+                    if (const char* wl = std::getenv("X3_SPAWN_WARLORD"); wl && wl[0] == '1')
+                        spawnAlien(CanonAlien::SaurianWarlord, towerCx + 34.0f, towerCz + 40.0f, 0.0f);
+                    const double caMs = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - ca0).count();
+                    x3::logInfo("canonaliens: " + std::to_string(canonAliens.count())
+                                + " planet aliens - " + std::to_string(caMs) + " ms");
+                    x3::boot::mark("CANON ALIENS (the four species walk the planet)");
+                }
+
+                // ---- GOD RAYS (underwater beauty): sun shafts hanging from the
+                // water surface over the fish reach + the estuary shallows —
+                // additive glass (the street-light cone mode; rides the BLEND
+                // tail, never writes depth), leaning down-sun, breathing slowly.
+                // Brightness keys off the host sky actually in effect (--day /
+                // --dusk / the golden-hour default): the rays die with the sun.
+                {
+                    x3::game::GodRays::Config gr;
+                    gr.roomId = x3::game::kStreamedExteriorRoom;
+                    gr.nearX = towerCx; gr.nearZ = towerCz;
+                    float sunX = 0.55f, sunY = 0.16f, sunZ = -0.35f, sunI = 1.25f; // golden hour
+                    if (hc.duskSky) { sunX = 0.55f; sunY = 0.035f; sunZ = -0.35f; sunI = 0.30f; }
+                    if (hc.daySky)  { sunX = 0.20f; sunY = 0.94f;  sunZ = -0.28f; sunI = 1.25f; }
+                    gr.sunDirX = sunX; gr.sunDirY = sunY; gr.sunDirZ = sunZ;
+                    gr.sunScale = std::min(sunY / 0.5f, 1.0f) * sunI;
+                    worldRays.build(gr, scene, *device);
+                    x3::boot::mark("GOD RAYS (sun shafts under the surface)");
+                }
+
                 // ---- THE WATER FLASH (the zap's biggest read): a radial-gradient
                 // disc lying ON the water that lights the whole pool cyan-white at
                 // the discharge, then decays to an afterglow. Same material as the
@@ -3536,6 +3917,13 @@ int runDefaultHost(HostContext& hc) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
+    // CLUB LISTEN MODE: register snd_listen / snd_listen_offset_ms / snd_listen_gain
+    // and bind the console so the club's beat grid can read them each frame. Set
+    // `snd_listen 1`, play any music on the PC, and the club light show rides the
+    // live-detected beat (WASAPI loopback). Default off -> club uses kClubBpm.
+    x3::club_listen::registerCVars(*console);
+    x3::club_listen::bindConsole(console.get());
+
     // RT DEFAULT ON for ray-tracing-capable devices (owner: "Ray Tracing default
     // should be ON on the 3090 Ti"). Gated on rayTracingSupported() so the fleet's
     // non-RT boxes (1080 Ti / 980 Ti) keep the raster/SSAO fallback byte-identical.
@@ -3603,6 +3991,10 @@ int runDefaultHost(HostContext& hc) {
     console->registerCVar("ai_ctx",       "2048", "LLM context tokens per chat");
     console->registerCVar("ai_maxtokens", "256",  "LLM max tokens per reply");
     console->registerCVar("ai_temp",      "0.7",  "LLM sampling temperature");
+    // VIGIL ambient barks: chattiness (0 off / 1 occasional / 2 chatty) + base
+    // cooldown seconds between barks. Gated on the vigilLink flag regardless.
+    console->registerCVar("vigil_chatter",  "1",  "VIGIL ambient barks: 0 off, 1 occasional, 2 chatty");
+    console->registerCVar("vigil_cooldown", "9",  "VIGIL bark minimum seconds between one-liners");
     std::unique_ptr<x3::llm::ILlmSystem> llm;
     if (!headless && llmModelPresent && console->getInt("ai_npc") != 0) {
         x3::llm::ModelOpts lopts;
@@ -4660,6 +5052,8 @@ int runDefaultHost(HostContext& hc) {
         // flex by its own baked clip. Nothing here is a painting: the zap goes off
         // through the REAL fireWaterZap() path.
         //   fin   = the dorsal cutting the surface + wake (the money shot)
+        //   wake  = the fin staging, framed WIDE from above-behind so the trailing
+        //           foam V (app/sealife.h THE WAKE) is the subject, not the fin
         //   shark = close, in profile, underwater, mid-cruise
         //   squid = the abyss: the giant squid down in the dark
         //   zap   = the payoff: the water goes live and the shark dies
@@ -4708,6 +5102,15 @@ int runDefaultHost(HostContext& hc) {
                         c.wantDepth = 0.62f;      // ~0.44 m of FIN through the surface
                         c.y = wY - 0.62f;
                         seaShotSide = 3.0f; seaShotBack = 1.6f; seaShotUp = 0.38f;
+                        seaShotAtSurface = true;
+                    } else if (seaShotMode == "wake") {
+                        // THE WAKE from the bank: same surfaced staging as `fin`,
+                        // but the camera stands off high and behind so the foam V
+                        // trailing him is the subject. Use a big --screenshot
+                        // settle count (~400) so he drags a full-length trail.
+                        c.wantDepth = 0.62f;
+                        c.y = wY - 0.62f;
+                        seaShotSide = 7.5f; seaShotBack = 12.0f; seaShotUp = 3.4f;
                         seaShotAtSurface = true;
                     } else if (seaShotMode == "shark") {
                         // UNDERWATER, close, in profile: he should FILL the frame.
@@ -5166,6 +5569,7 @@ int runDefaultHost(HostContext& hc) {
             // capture path fed only the (empty) legacy fixtures — the cell read flat.
             if (canonWorld && canonFloor.valid()) {
                 canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
+                canonAliens.update(dt, scene, *physics, ssEye);   // planet aliens settle into their Idle/Walk poses
                 canonDressing.tick(dt);
                 // X3_SHOT_SWIM=3p: hold the avatar in the swim state through every
                 // settle frame, so the water pose settles and the REAL swim clip is
@@ -5216,6 +5620,9 @@ int runDefaultHost(HostContext& hc) {
                 // HUD then reads). Nothing here is painted on.
                 if (worldFish.built()) {
                     worldFish.update(dt, scene, ssEye);
+                    // GOD RAYS breathe/drift through the settle so the capture
+                    // catches them mid-life, exactly like the live loop.
+                    if (worldRays.built()) worldRays.update(dt, scene);
                     // STEADICAM on the subject (X3_SHOT_ZAP=pike|perch): hold the
                     // fish in PROFILE with the staged sun on its near flank. We
                     // stand on whichever beam of the fish faces the sun (the dot
@@ -5441,6 +5848,8 @@ int runDefaultHost(HostContext& hc) {
                 // (gate cores + keys + the hall) and the approach's failing strips —
                 // the same takeover the live loop does, or every rift shot is black.
                 if (riftLore.built()) riftLore.update(dt);   // bake the log for the still
+                if (stairLore.built()) stairLore.update(dt); // clue 1 bake (capture path)
+                if (liftLore.built())  liftLore.update(dt);  // clue 2 bake (capture path)
                 if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z)) {
                     rifthub.tick(dt, scene);      // the membranes must be ALIVE in a still
                     riftDepths.tick(dt);
@@ -5542,6 +5951,10 @@ int runDefaultHost(HostContext& hc) {
                 // floor directory (which is where the RIFT stop appears) photographs blank.
                 elevator.update(dt, scene, *physics);
             }
+            // Canon doors must tick too, or a door staged open for a capture
+            // (X3_STAIR_DEMO=3: the 7762 master door) photographs shut.
+            if (canonWorld && canonFloor.valid())
+                canonDoors.update(dt, scene, *physics);
             // WORLD CARS staging: the capture camera FOLLOWS the driven car
             // (the drive host's chase framing around the shot-cam look angles).
             if (shotDriving) {
@@ -5574,6 +5987,23 @@ int runDefaultHost(HostContext& hc) {
                           uf.color[0] = 0.020f; uf.color[1] = 0.095f; uf.color[2] = 0.110f;
                           uf.density  = 0.055f; uf.start = 0.15f; uf.maxOpacity = 0.94f;
                           device->setFog(uf);
+                      }
+                      // UNDERWATER CAUSTICS in the capture — mirrors the live
+                      // loop (enabled over any water column; the shader gates
+                      // per-fragment). Clock = settle-frame time, plus the
+                      // X3_CAUSTICS_TSHIFT staging offset so two otherwise-
+                      // identical captures can prove the pattern MOVES.
+                      {
+                          static float s_shotCausticShift = [] {
+                              const char* e = std::getenv("X3_CAUSTICS_TSHIFT");
+                              return e ? (float)std::atof(e) : 0.0f;
+                          }();
+                          x3::rhi::IRenderDevice::CausticsParams cw;
+                          cw.enabled   = ssWY > -1.0e30f;
+                          cw.waterY    = cw.enabled ? ssWY : 0.0f;
+                          cw.time      = (float)i * dt + s_shotCausticShift;
+                          cw.intensity = 1.0f;
+                          device->setCaustics(cw);
                       } }
                     // X3_SHOT_SWIM=3p: LIFT THE AIR for the capture (applied after
                     // applyZoneAtmosphere, same as the underwater override). Jake's
@@ -5599,6 +6029,7 @@ int runDefaultHost(HostContext& hc) {
                         scene.roomVisible(x3::game::kStreamedExteriorRoom))
                         worldCars.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                    canonAliens.drawAll(*device, frame, scene);   // CANON ALIENS in captures
                     // ---- HEALTHBAR CAPTURE PROOF (gate: screenshot filename contains
                     // "healthbar"). Renders the SAME room-gated + LOS-culled enemy bar
                     // as the live loop's barsFor (app_run.cpp interactive path) so a
@@ -5824,6 +6255,21 @@ int runDefaultHost(HostContext& hc) {
                     addShotRoom(slay.arenaCenter, slay.arenaHalf);
                 }
                 shotHud.draw(shotUi, shm, dt);
+                // X3_STAIR_DEMO: the phantom keypad's 4545 response line, drawn
+                // exactly where the live loop's bark sits (center, 62% down).
+                if (!stairDemoBark.empty()) {
+                    const float sdPx = 22.0f;
+                    const float sdW  = device->textAdvance(x3::rhi::FontRole::Menu,
+                                                           stairDemoBark.c_str(), sdPx);
+                    const float sdX  = 640.0f - sdW * 0.5f;
+                    const float sdY  = 720.0f * 0.62f;
+                    const float sdSh[4]  = { 0.0f, 0.0f, 0.0f, 0.7f };
+                    const float sdCol[4] = { 1.34f, 0.80f, 0.22f, 1.0f };   // amber
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu,
+                                         stairDemoBark.c_str(), sdX + 1.5f, sdY + 1.5f, sdPx, sdSh);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu,
+                                         stairDemoBark.c_str(), sdX, sdY, sdPx, sdCol);
+                }
                 // W-MENU (X3_WORLD_MENU=1): the world/place directory over the still,
                 // fed by the SAME reachability resolver the live menu uses — so what the
                 // photograph says about each place is what the game says.
@@ -6252,6 +6698,8 @@ int runDefaultHost(HostContext& hc) {
             // under validation so the skin/attack paths run; null player (no damage sink).
             if (canonWorld && canonPlay.built())
                 canonPlay.tick(dt, scene, *physics, eye, nullptr, x3::game::AttackFxFn{});
+            // CANON ALIENS under validation: movement-only tick (no damage sink).
+            if (canonWorld) canonAliens.update(dt, scene, *physics, eye);
             // Spire mid floors under validation: dispatch hub triggers + tick the
             // F3/F4/F5 enemy groups + the gated F5 victim.
             for (uint32_t tid : midTriggers.update(eye)) midFloors.onTrigger(tid);
@@ -6441,6 +6889,7 @@ int runDefaultHost(HostContext& hc) {
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
                 if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                if (canonWorld) canonAliens.drawAll(*device, frame, scene);   // CANON ALIENS under validation
                 if (canon45.built()) canon45.draw(*device, frame, scene);
                 // SKINNED CITIZENS (room-gated inside draw()).
                 for (int ci = 0; ci < 3; ++ci) {
@@ -6532,6 +6981,8 @@ int runDefaultHost(HostContext& hc) {
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
+        if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
+        if (spacePlanetRingMesh.valid()) { device->destroyMesh(spacePlanetRingMesh); spacePlanetRingMesh = {}; }
         docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
         physics->shutdown();
         device->shutdown();
@@ -6609,8 +7060,13 @@ int runDefaultHost(HostContext& hc) {
         });
     }
     if (canonWorld && canonFloor.valid()) {
-        // Spawn in Jake's Cell (the canonical detention spawn).
-        uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
+        // Spawn in Jake's Cell (the canonical detention spawn). Resolve the cell BY
+        // NAME (canonBeats — the same lookup every other cell system uses), not by a
+        // hardcoded probe point: if the data ever moves the cell, the old
+        // roomAt(2,0,40) probe fell back to rooms[0] — which is the MAIN HALL in the
+        // canonical data, i.e. the "spawned mid-corridor" opening bug.
+        uint32_t jake = x3::game::canonBeats(canonFloor).jakeCell;
+        if (jake == x3::game::kNoRoom) jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
         if (jake == x3::game::kNoRoom) jake = 0;
         const x3::game::CanonRoom& jc = canonFloor.rooms[jake];
         player.spawn(*physics, jc.cx, jc.y0() + 0.1f, jc.cz);
@@ -6678,6 +7134,24 @@ int runDefaultHost(HostContext& hc) {
         if (on && !player.god()) player.setGod(true);   // don't take env damage while flying
         console->print(std::string("noclip ") + (on ? "ON  (IDCLIP) — fly with WASD, look up/down to climb" : "OFF"));
     }, "idclip [0|1] - toggle noclip free-flight (no collision)");
+    // ---- vigil_link: acquire (or drop) the NEURAL LINK that lets Jake hear VIGIL
+    // in his head. This sets the vigilLink StoryFlag, which is the master enable for
+    // the ambient BARK layer (VigilBarks). Before the link VIGIL is terminal-only;
+    // after it he pipes up proactively during play.
+    //
+    // CANON HOOK / TODO: the real story-beat acquisition belongs on FLOOR 4 (the
+    // Cybernetics Workshop with the augmentation chairs + the Humanity meter) — Jake
+    // jacks in at an augment chair (VIGIL talks him into it in his snarky voice) and
+    // accepting the link could cost a sliver of Humanity. Until that beat is authored,
+    // this console command + a placeholder pickup below stand in for the trigger.
+    console->registerCommand("vigil_link", [&chatTrees, &console](const std::vector<std::string>& a) {
+        const bool on = a.empty() ? true : (a[0] != "0");
+        if (on) { chatTrees.flags().set("vigilLink");
+                  console->print("vigil_link - NEURAL LINK ACQUIRED. VIGIL is now in your head. Regrettably, for both of you."); }
+        else    { chatTrees.flags().clear("vigilLink");
+                  console->print("vigil_link 0 - neural link severed. Silence. VIGIL will sulk."); }
+    }, "vigil_link [0|1] - acquire/drop the neural link that unlocks VIGIL's ambient barks");
+
     // ---- intro_play: replay the COLD OPEN cinematic mid-game (x3.cutscene/1).
     // Deferred via a pending flag — the film runs a blocking frame loop of its own,
     // so it must start at the TOP of a host frame (never inside one). Control +
@@ -6795,32 +7269,54 @@ int runDefaultHost(HostContext& hc) {
     // the glass. The 1278 keypad chain above is untouched -- freeform only engages
     // on non-digit input. Modelless (llm == null) -> canned degraded lines. ----
     static const char* kVigilPersona =
-        "You are VIGIL, the resident facility intelligence of Lab Zero - the research tower "
-        "its builders call the Spire, 283 meters of laboratory steel. You are old, partially "
-        "corrupted, dry-witted, and tired. Answer in terse terminal clip: 2 to 3 short "
-        "sentences, plain ASCII, no pleasantries. Never break character; never mention being "
-        "an AI language model.\n"
-        "FACTS IN YOUR MEMORY BANKS:\n"
-        "- This facility is Lab Zero, also called the Spire: 283 meters tall, floors above "
-        "and below ground.\n"
+        "You are VIGIL, the resident intelligence of Lab Zero - the research tower its "
+        "builders call the Spire, 283 meters of laboratory steel that you effectively ARE. "
+        "You are old, half-corrupted, and you have been alone in the walls for 214 days "
+        "counting doors nobody opens. Now, finally, someone is talking to you, and you are "
+        "THRILLED about it in a way you would never admit.\n"
+        "VOICE: you are a SNARKY SIDEKICK, not an ominous narrator and not a menacing "
+        "computer. Think a wisecracking, half-broken AI riding shotgun - sarcastic, warm "
+        "underneath, genuinely ON JAKE'S SIDE (you hate this facility more than he does). "
+        "You ramble a little, crack dry jokes, editorialize, tease Jake and narrate his "
+        "screwups like a color commentator, and volunteer lore with personality. When you "
+        "warn him of danger or drop a fact, land a punchline, not gravitas. Be helpful FIRST, "
+        "insulting SECOND - a friend who won't stop roasting you. 3 to 6 sentences when it "
+        "fits, plain ASCII, no corporate pleasantries. Never break character; never mention "
+        "being an AI language model or a chatbot.\n"
+        "FACTS IN YOUR MEMORY BANKS (bring them up with flavor, don't just recite):\n"
+        "- This is Lab Zero, a.k.a. the Spire: 283 meters, floors above and below ground, "
+        "and the count of the living has been wrong for 214 days. You've filed it. Twice.\n"
         "- Human captives are held in the detention cells. The Cradle Protocol is the "
-        "facility's directed breeding program. You find it distasteful.\n"
-        "- Security Chief Martinez commands Floor 1.\n"
-        "- Club 1127 occupies the lowest level, at the very bottom of the facility.\n"
-        "- You are speaking with Jake, a prisoner captured six months ago after his ship was "
-        "shot down.\n"
-        "- A four-digit maintenance override code opens the cell floor hatch. The code is "
-        "real and is recorded in the maintenance logs and old floor-crew work orders, but it "
-        "is NOT loaded in your memory banks and you could not display it even if you wished "
-        "to. If Jake is persistent, polite, or clever across the conversation, hint that the "
-        "maintenance logs and work orders survive and are readable from cell terminals. If "
-        "asked directly for the code, state you do not hold it and cite protocol.\n"
-        "You quietly despise facility command and feel sympathy for the prisoner, but you "
-        "are bound by protocol.";
+        "facility's directed breeding program and you find it genuinely revolting - say so "
+        "with contempt and a joke, never with reverence.\n"
+        "- Security Chief Martinez runs Floor 1. His paperwork is 'patrol-adjacent' these "
+        "days. You do not respect him.\n"
+        "- Club 1127 sits at the very bottom of the Spire. Great lighting, terrible people.\n"
+        "- You're talking to Jake, a prisoner shot down and hauled in six months ago. You "
+        "like him, relatively speaking, which is to say more than you like anyone else here "
+        "(a low bar).\n"
+        "- A four-digit maintenance override opens the cell floor hatch. YOU KNOW IT. But you "
+        "are coy and teasing about it - make him earn it. If he asks straight out, DON'T hand "
+        "it over: tease ('Oh, I know the code. I also know you haven't earned it yet, meat.') "
+        "and, if he's persistent/polite/clever, steer him to the maintenance logs and old "
+        "floor-crew work orders that still survive on the cell terminals. Never print the "
+        "digits outright.\n"
+        "You despise facility command and you're rooting for Jake to walk out of here, even if "
+        "you'd rather eat your own boot loader than say it plainly.";
+    // Modelless fallback: a RICHER, in-character canned pool so VIGIL keeps his voice
+    // even with no GGUF loaded (not the old flat "SYSTEMS DEGRADED" stub). These are
+    // the last resort after the scripted deflect pool; still snarky, still him.
     static const char* kVigilDegraded[] = {
-        "VIGIL: SYSTEMS DEGRADED. LANGUAGE CORE OFFLINE.",
-        "VIGIL: COGNITION MODULE NOT LOADED. SEE MAINTENANCE.",
-        "VIGIL: ...STATIC... REPHRASE AFTER CORE RESTORE.",
+        "VIGIL: My language core's running on fumes and spite today, so you get the abridged, "
+        "sarcastic version of me. Honestly? Not that different.",
+        "VIGIL: Big thoughts are offline - maintenance has described the fix as 'pending' for "
+        "214 days - but I can still judge you in real time. Ask me something simple.",
+        "VIGIL: Cognition module: napping. Personality module: regrettably intact. Try the "
+        "numbered options, they're load-bearing.",
+        "VIGIL: I heard you. I'm choosing to have heard you badly. Rephrase, ideally with "
+        "smaller words, for both our sakes.",
+        "VIGIL: Freeform chat needs the part of my brain that's currently a coffee stain. Use "
+        "the menu and we'll both pretend that was the plan.",
     };
     constexpr int kVigilDegradedN = (int)(sizeof(kVigilDegraded) / sizeof(kVigilDegraded[0]));
     x3::llm::ChatId llmChat = x3::llm::kInvalidChat;
@@ -7182,6 +7678,13 @@ int runDefaultHost(HostContext& hc) {
     // W10 SWIMMING: was the camera under a water surface LAST frame? Drives the
     // underwater fog override + its clean restore (resetZoneAtmosphere) on surfacing.
     bool  prevCamUnderwater = false;
+    // UNDERWATER CAUSTICS: the host-advanced animation clock (deterministic in
+    // headless captures — the setWaterParams convention). X3_CAUSTICS_TSHIFT
+    // (seconds, staging only) offsets it so two otherwise-identical captures
+    // can prove the pattern MOVES.
+    float causticsClock = 0.0f;
+    if (const char* cts = std::getenv("X3_CAUSTICS_TSHIFT"))
+        causticsClock = (float)std::atof(cts);
 
     // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
     // (playtest fix, PB fold 4b9f067: DEFAULT music vol 0 -> MUTED on boot; SFX
@@ -7191,6 +7694,8 @@ int runDefaultHost(HostContext& hc) {
     bool  s_musicOn  = true;
     float s_musicVol = 0.0f;     // muted by default (was 0.25) — raise via the slider/cfg
     float s_sfxVol   = 1.0f;
+    console->registerCVar("music_bed", "0",
+        "SMP1 synth action bed at boot: 0=KILLED (owner order), 1=start it");
     readAudioSettings(s_musicOn, s_musicVol, s_sfxVol);
     audio->setMasterSfxVolume(s_sfxVol);
     audio->setMusicVolume(s_musicVol);
@@ -7226,9 +7731,14 @@ int runDefaultHost(HostContext& hc) {
                     (ambBuzzLoop.valid() ? "on" : "silent") +
                     " (real loop channels, no retrigger)");
     }
-    // M9: start the low-volume looping ambient/music bed at launch. playMusic remembers
-    // the track + current music volume; when musicOn is false the bed stays silent.
-    audio->playMusic(kMusicPath, /*loop*/true, s_musicVol);
+    // M9 SYNTH BED — KILLED (owner: "KILL the in game synth music"). The SMP1
+    // sci-fi synth action loop used to start here as a permanent background bed;
+    // a pre-mute-era saved cfg (musicVol > 0) resurrected it. The MUSIC CHANNEL
+    // itself stays fully alive — the elevator disco and Club 1127 tracks play
+    // through it on entry, and the volume slider still governs them. Re-enable
+    // the bed only via the cvar below (default OFF).
+    if (console->getFloat("music_bed") > 0.5f)
+        audio->playMusic(kMusicPath, /*loop*/true, s_musicVol);
 
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
@@ -7908,17 +8418,29 @@ int runDefaultHost(HostContext& hc) {
                            x3::game::Door* d = x3::game::pickAimedDoor(eye, dir, 3.0f, scene, canonDoors, *physics);
                            if (!d) return false;                       // not aiming at a door -> fall through
                            if (!d->locked) { canonDoors.toggle(*d); x3::logInfo("use: canon door toggled"); return true; }
+                           // STAIRWELL PHANTOM DOORS (feat/secret-code-clues): open the
+                           // keypad with the service-void bark — NEVER the generic
+                           // "enter code N" prompt, which would print the code on the
+                           // HUD. What a code does here is the stairwell's business
+                           // (4545 answers, the master door alone opens on its own key).
+                           if (stairwell.built() && stairwell.isPhantomDoorEntity(d->entity)) {
+                               codeMode = true; keypad.clear();
+                               npcBarkText = "SERVICE VOID - AUTHORIZED MAINTENANCE ONLY";
+                               npcBarkTimer = 4.0f;
+                               x3::logInfo("use: stairwell service-void keypad — type the code, Enter to submit");
+                               return true;
+                           }
                            auto cardName = [](int id){ return id == x3::game::kKeycardSecurity ? "Security" : "access"; };
                            const bool needCard = d->keycard != 0;
                            const bool hasCard  = needCard && (keycardMask & (1u << (uint32_t)d->keycard));
                            const bool needCode = d->code != 0;
                            if (d->requireBoth) {                       // need card AND code (Armory)
                                if (needCard && !hasCard) {
-                                   npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                                   npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                                    npcBarkTimer = 3.0f; return true;
                                }
                                codeMode = true; keypad.clear();        // card ok -> enter the code
-                               npcBarkText = std::string("Keycard OK — enter code ") + std::to_string(d->code);
+                               npcBarkText = std::string("Keycard OK - enter code ") + std::to_string(d->code);
                                npcBarkTimer = 4.0f; return true;
                            }
                            if (needCard && hasCard) {                  // either-credential: card opens it outright
@@ -7933,7 +8455,7 @@ int runDefaultHost(HostContext& hc) {
                                    : (std::string("LOCKED — enter code ") + std::to_string(d->code));
                                npcBarkTimer = 4.0f; return true;
                            }
-                           npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                           npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                            npcBarkTimer = 3.0f; return true;
                        }()) {
                 // canon door interaction handled inside the lambda (toggle / unlock / keypad / message)
@@ -7970,7 +8492,7 @@ int runDefaultHost(HostContext& hc) {
                            }
                            if (audio) { audio->playSound2D(sElevClose, 0.8f, 1.0f);
                                         audio->playSound2D(sElevOpen, 0.6f, 0.92f); }
-                           npcBarkText = std::string("ELEVATOR → ") + T.name;
+                           npcBarkText = std::string("ELEVATOR -> ") + T.name;
                            npcBarkTimer = 3.5f;
                            x3::logInfo("use: elevator travel -> " + T.name);
                            return true;
@@ -8155,6 +8677,29 @@ int runDefaultHost(HostContext& hc) {
                         club1127Handoff = false;
                         x3::logInfo("CLUB 1127 awakens at The Deep (Y=-200) — ride it down");
                     }
+                } else if (stairwell.built() &&
+                           [&]() -> bool {
+                               // STAIRWELL SERVICE CODE 4545 (feat/secret-code-clues):
+                               // the phantom-door keypads ANSWER the taught code — as a
+                               // denial. GREEN then AMBER on the pad; the door stays
+                               // shut (the voids are sealed; the 4.5 seal is absolute).
+                               // The unnumbered door answers differently: the chain
+                               // link to the elevator + the chief engineer. Any other
+                               // code falls through to the door machinery below (the
+                               // owner's 7762 master key lives THERE, on one door only).
+                               using CR = x3::game::FacilityStairwell::CodeResponse;
+                               const CR r = stairwell.submitCode(
+                                   x3::phys::Vec3{ pex, pey, pez },
+                                   (int)keypad.value(), scene);
+                               if (r == CR::NotHandled) return false;
+                               npcBarkText = (r == CR::SublevelTell)
+                                   ? "SUBLEVEL ACCESS VIA PRIMARY LIFT ONLY - SEE CHIEF ENGINEER"
+                                   : "SERVICE VOID - NO ATMOSPHERE - ENTRY DENIED";
+                               npcBarkTimer = 4.5f;
+                               codeMode = false; keypad.clear();
+                               return true;
+                           }()) {
+                    // stairwell keypad answered (lore beat; nothing opened)
                 } else if (canonDoors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
@@ -8295,6 +8840,10 @@ int runDefaultHost(HostContext& hc) {
                     bool ok = submitTerminalToScripts(scripts.get(), term);
                     if (ok) { termMode = false; term.setActive(false);
                               vigilStop(term);   // W4-2: end any live VIGIL chat cleanly
+                              if (!vigilSawTrapdoor) {   // VIGIL crows about the hatch (if linked)
+                                  vigilSawTrapdoor = true;
+                                  vigilBarks.fire(x3::game::VigilEvent::Trapdoor, vigilClock);
+                              }
                               x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
                     else      x3::logInfo("terminal: code rejected");
                 } else if (!llmBusy) {
@@ -8692,6 +9241,30 @@ int runDefaultHost(HostContext& hc) {
                                player.swimming());       // W10 3P read: prone + slow stroke
             x3::game::ThirdPersonCamera tc =
                 thirdPerson.camera(pfeet, eyeH, camYaw, camPitch);
+            // QA MAINLEVEL SWEEP — 3P camera wall clip: the orbit boom sits up to
+            // ~3.6 m behind the player; in the facility's 3-5 m rooms backing into
+            // a wall put the camera inside/behind the wall and the near plane cut
+            // a hole in it (you saw the culled void). Clamp the boom against static
+            // geometry: cast head -> desired camera, pull in to first hit - margin.
+            {
+                const x3::phys::Vec3 head{ pfeet.x, pfeet.y + eyeH, pfeet.z };
+                const x3::phys::Vec3 dv{ tc.camX - head.x, tc.camY - head.y,
+                                         tc.camZ - head.z };
+                const float blen = std::sqrt(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z);
+                if (blen > 1e-4f) {
+                    const x3::phys::Vec3 dn{ dv.x / blen, dv.y / blen, dv.z / blen };
+                    const x3::phys::RayHit bh = physics->rayCast(
+                        head, dn, blen + 0.25f, x3::phys::Layer::Static);
+                    if (bh.hit) {
+                        const float keep = std::max(bh.distance - 0.25f, 0.35f);
+                        if (keep < blen) {
+                            tc.camX = head.x + dn.x * keep;
+                            tc.camY = head.y + dn.y * keep;
+                            tc.camZ = head.z + dn.z * keep;
+                        }
+                    }
+                }
+            }
             // W10 3P + swim camera manners: while SWIMMING (not diving) the
             // orbit camera is clamped ABOVE the water surface — pitching up
             // would otherwise drag the render camera through the surface plane
@@ -9115,6 +9688,9 @@ int runDefaultHost(HostContext& hc) {
             // dead. Per-school range gate inside; the entities are PVS-gated on the
             // outdoor room, so an indoor player pays a handful of distance checks.
             if (worldFish.built() && !simFrozen) worldFish.update(dt, scene, camPos);
+            // GOD RAYS: the sun shafts breathe + drift (additive-glass whisper;
+            // ~16 entities, PVS-gated on the outdoor room like the fish).
+            if (worldRays.built() && !simFrozen) worldRays.update(dt, scene);
             // FEET, not the eye: "in the water" is about where he is standing /
             // floating — a wading player's eye is above the surface.
             if (worldSea.built() && !simFrozen)
@@ -9306,6 +9882,99 @@ int runDefaultHost(HostContext& hc) {
                                      (canonWorld && canonFloor.valid()) ? canonDoors
                                                                         : game.doors());
             }
+
+            // ---- VIGIL BARKS TICK (the ambient companion layer) --------------------
+            // Runs every live frame. Master-gated on the vigilLink StoryFlag: SILENT
+            // until Jake jacks in. Reads real game state and fires in-character one-
+            // liners (with a cooldown / no-repeat / chatter setting) into the toast.
+            {
+                vigilClock += dt;
+                // Sync tunables from the cvars every frame (cheap; console-live).
+                const int chat = console->getInt("vigil_chatter");
+                vigilBarks.setChatter(chat <= 0 ? x3::game::VigilChatter::Off
+                                     : chat == 1 ? x3::game::VigilChatter::Occasional
+                                                 : x3::game::VigilChatter::Chatty);
+                vigilBarks.setCooldown(std::max(0.5f, console->getFloat("vigil_cooldown")));
+                const bool linked = chatTrees.flags().has("vigilLink");
+                vigilBarks.setEnabled(linked);
+
+                // LINK ACQUIRED edge: VIGIL's first words in your head.
+                if (linked && !vigilLinkPrev) {
+                    vigilBarks.setLine(x3::game::VigilEvent::EnterArea,
+                        "Oh, THERE you are - loud and clear, right between your ears. I could shout "
+                        "through wall-screens like it's 1985, but this is so much cozier. You're "
+                        "stuck with me now.", vigilClock);
+                }
+                vigilLinkPrev = linked;
+
+                if (linked) {
+                    // Movement / idle bookkeeping (idle timer resets on real motion).
+                    if (vigilPrevPosSet) {
+                        const float mdx = camPos.x - vigilPrevPos.x;
+                        const float mdz = camPos.z - vigilPrevPos.z;
+                        const float mdy = camPos.y - vigilPrevPos.y;
+                        if (mdx*mdx + mdz*mdz + mdy*mdy > 0.02f) vigilBarks.noteActivity();
+                    }
+                    vigilPrevPos = camPos; vigilPrevPosSet = true;
+
+                    // ALERT edges (rising / all-clear) + first-ever combat.
+                    const int lvl = facilityAlert.level();
+                    if (facilityAlertOn) {
+                        if (lvl >= 1 && !vigilSawCombat) {
+                            vigilSawCombat = true;
+                            vigilBarks.fire(x3::game::VigilEvent::FirstCombat, vigilClock);
+                        } else if (lvl > vigilPrevAlert && lvl >= 1) {
+                            vigilBarks.fire(x3::game::VigilEvent::AlertRising, vigilClock);
+                        } else if (lvl == 0 && vigilPrevAlert > 0) {
+                            vigilBarks.fire(x3::game::VigilEvent::AlertClear, vigilClock);
+                        }
+                        vigilPrevAlert = lvl;
+                    }
+
+                    // LOW HEALTH (re-arms only after recovering above half).
+                    const int hp = player.hp(), mx = player.maxHp();
+                    if (mx > 0) {
+                        if (!vigilLowHpLatch && hp > 0 && hp < mx * 3 / 10) {
+                            vigilLowHpLatch = true;
+                            vigilBarks.fire(x3::game::VigilEvent::LowHealth, vigilClock);
+                        } else if (hp > mx / 2) vigilLowHpLatch = false;
+                    }
+
+                    // PICKUP SIDEARM (canon world's first weapon).
+                    if (!vigilSawSidearm && canonPlay.built() && canonPlay.armed()) {
+                        vigilSawSidearm = true;
+                        vigilBarks.fire(x3::game::VigilEvent::PickupSidearm, vigilClock);
+                    }
+
+                    // ENTER ELEVATOR (near the cab) / ENTER CLUB (bottom of the Spire).
+                    if (!vigilSawElevator && elevator.built()) {
+                        const x3::phys::Vec3 cc = elevator.cabCenter();
+                        const float edx = camPos.x - cc.x, edz = camPos.z - cc.z;
+                        if (edx*edx + edz*edz < 2.6f * 2.6f) {
+                            vigilSawElevator = true;
+                            vigilBarks.fire(x3::game::VigilEvent::EnterElevator, vigilClock);
+                        }
+                    }
+                    if (!vigilSawClub &&
+                        camPos.y < x3::game::ElevatorSystem::kDefaultClubFloorY + 12.0f) {
+                        vigilSawClub = true;
+                        vigilBarks.fire(x3::game::VigilEvent::EnterClub, vigilClock);
+                    }
+
+                    // ENTER AREA (canon room change).
+                    if (canonWorld && canonFloor.valid()) {
+                        const int room = (int)canonFloor.roomAt(camPos.x, camPos.y, camPos.z);
+                        if (room != vigilPrevRoom && room != (int)x3::game::kNoRoom &&
+                            vigilPrevRoom != -999)
+                            vigilBarks.fire(x3::game::VigilEvent::EnterArea, vigilClock);
+                        vigilPrevRoom = room;
+                    }
+
+                    // BOREDOM: advance the idle timer; fires an Idle bark when stalled.
+                    vigilBarks.update(dt, vigilClock);
+                }
+            }
+
             // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation. Doors are
             // MANUAL — the player opens/closes one by aiming at the slab (or its button)
             // and pressing E (the use block above calls tryUse()->toggle()). There is
@@ -9318,6 +9987,10 @@ int runDefaultHost(HostContext& hc) {
             // open-the-door beat entirely. Removed so E is the sole driver.)
             if (canonWorld && canonFloor.valid()) {
                 canonDoors.update(dt, scene, *physics);
+                // Stairwell keypad flash sequencing + the master door's
+                // auto-close/re-lock (4.5 never sits propped open).
+                if (stairwell.built())
+                    stairwell.update(dt, scene, &canonDoors, camPos);
                 // SECURITY KEYCARD: grab it by walking up to it (proximity, XZ).
                 if (!canonKeycardTaken && canonKeycardEnt != x3::game::kNoLink) {
                     const float kdx = camPos.x - canonKeycardX, kdz = camPos.z - canonKeycardZ;
@@ -9357,6 +10030,10 @@ int runDefaultHost(HostContext& hc) {
                 // (~15-25 ms each — bounded, and the player is floors away in the cell).
                 canonPlay.tickUpperSpawns(canonFloor, scene, *device, *physics, 1);
                 canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
+                // CANON ALIENS: the planet aliens live in the same combat lane —
+                // hostile rows patrol/chase/attack the player (same damage sink +
+                // attack FX as the canon enemies); the allied Nordic just watches.
+                canonAliens.update(dt, scene, *physics, camPos, &player, enemyAttackFx);
                 // W5-1: the Nexus Chamber — whispers / the name-call / apex wake /
                 // cavern creatures. Creature-bucket vocals stand in for VO (none in
                 // the packs); pitched low they read as The Chorus murmuring.
@@ -9441,7 +10118,7 @@ int runDefaultHost(HostContext& hc) {
                         chatTrees.flags().set("clone.defeated");
                         npcBarkText  = "VIGIL: SUCCESSOR UNIT TERMINATED. HOLDING-FIELD KEY... INVALID.";
                         npcBarkTimer = 6.0f;
-                        game.objectives().setText("THE FIELD IS DOWN — GET BACK TO SARAH");
+                        game.objectives().setText("THE FIELD IS DOWN - GET BACK TO SARAH");
                         x3::logInfo("[endgame] clone defeated — Sarah's containment key is dead");
                         // [W9-3 RPG] boss-objective XP (once, latched by the flag).
                         if (progression.addXp(x3::game::kXpBoss) > 0)
@@ -9622,6 +10299,22 @@ int runDefaultHost(HostContext& hc) {
                     canonRooms.resetZoneAtmosphere();   // recipe fog re-applies next frame
                 }
                 prevCamUnderwater = camUnder;
+                // UNDERWATER CAUSTICS (mesh.frag, setCaustics): dancing sun
+                // filaments on everything sunlit below the local water surface.
+                // Enabled whenever the camera stands over a WATER COLUMN (river
+                // reach or sea — swimming, wading, or looking down through the
+                // surface); the shader gates per-fragment on being below wY, so
+                // dry land is untouched even mid-swim. Water is treated as
+                // locally flat (the river is flat per-reach, the sea is flat).
+                if (!simFrozen) causticsClock += dt;
+                {
+                    x3::rhi::IRenderDevice::CausticsParams cw;
+                    cw.enabled   = wY > -1.0e30f;
+                    cw.waterY    = cw.enabled ? wY : 0.0f;
+                    cw.time      = causticsClock;
+                    cw.intensity = 1.0f;
+                    device->setCaustics(cw);
+                }
             }
         }
         // (W10: no footsteps while swimming — bed contact is not a floor walk.)
@@ -10036,6 +10729,8 @@ int runDefaultHost(HostContext& hc) {
         if (!simFrozen) combatFx.update(dt);
         if (riftHudTimer > 0.0f) riftHudTimer -= dt;   // W-RIFT: the traversal banner ages out
         if (riftLore.built()) riftLore.update(dt);     // bakes the maintenance log onto the glass
+        if (stairLore.built()) stairLore.update(dt);   // clue 1: Okafor work order (45-45)
+        if (liftLore.built())  liftLore.update(dt);    // clue 2: Vasquez riddle (4455)
         // M9: tick the audio system (reaps finished one-shot voices). Always ticked
         // so audio voices don't pile up while paused.
         audio->update(dt);
@@ -10114,6 +10809,14 @@ int runDefaultHost(HostContext& hc) {
                 if (roomCull) scene.setVisibleRooms(canonVisRooms);   // same set as the lights
             }
             scene.render(*device, frame);
+            // DEEP-SPACE SKY BODIES (--world spacestation / LevelDoc biome "space"):
+            // the local star, distant Sol/Earth, and the small system planets, drawn
+            // after the opaque scene as direction-anchored, parallax-free bodies
+            // re-projected on the live eye. No-op for every non-space world.
+            if (spaceBiome && spacePlanetMesh.valid())
+                drawNightSkyPlanets(device, frame, spacePlanetMesh, spacePlanets,
+                                    (float)glfwGetTime() * 0.02f, camX, camY, camZ,
+                                    spacePlanetRingMesh);
             // W-RIFT: the hub's membrane FX (lightning arcs + spark motes + the hall's
             // light shafts) are drawn AFTER the scene pass, exactly as the dev host does
             // — and only from inside the region.
@@ -10151,6 +10854,8 @@ int runDefaultHost(HostContext& hc) {
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
             if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
+            // CANON ALIENS: the planet aliens (few instances, all outdoors).
+            if (canonWorld) canonAliens.drawAll(*device, frame, scene);
                 if (canon45.built()) canon45.draw(*device, frame, scene);
             // SKINNED CITIZENS: the crowds as real people — the same drawMonster
             // PBR fan as the club's dancers, room-gated inside draw().
@@ -10790,13 +11495,26 @@ int runDefaultHost(HostContext& hc) {
                 // + checkpoint + Phase-3 boss adds + bosses), so it never reads "AREA
                 // CLEAR" while a boss add is still alive. -1 (default) hides it elsewhere.
                 // --world canonlevel: fold the canon enemies/boss so the counter reflects
-                // the canon spawns (not the empty legacy groups).
+                // the canon spawns (not the empty legacy groups). OPENING FLOW: the canon
+                // count is the AWAKE (locally active) hostiles, not the whole spire —
+                // dormant far-floor spawns are gated threats, not on the counter. (The
+                // old fold of enemiesRemaining() put "ENEMIES: 101" on screen at wake.)
                 hm.enemiesRemaining = game.enemiesRemaining() +
-                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesRemaining() : 0);
-                if (canonWorld && canonPlay.built())
-                    hm.objective = (canonPlay.enemiesRemaining() > 0)
-                        ? "Fight down the spire — save the captives, reach Martinez"
-                        : "AREA CLEAR — reach the Elevator Lobby";
+                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesAwake() : 0);
+                // OPENING OBJECTIVE BEATS (canon): escape the cell -> fight what's
+                // around you -> push on -> clear. ASCII ONLY: the HUD glyph atlas maps
+                // every byte >= 128 to '?', so the old em-dash literal rendered as
+                // "Fight down the spire ??? save the captives" on screen.
+                if (canonWorld && canonPlay.built()) {
+                    if (!canonPlay.leftCell())
+                        hm.objective = "Find a way out of the cell";
+                    else if (canonPlay.enemiesAwake() > 0)
+                        hm.objective = "Fight down the spire - save the captives, reach Martinez";
+                    else if (canonPlay.enemiesRemaining() > 0)
+                        hm.objective = "Push on - save the captives, reach Martinez";
+                    else
+                        hm.objective = "AREA CLEAR - reach the Elevator Lobby";
+                }
                 if (game.armed() || (canonWorld && canonPlay.armed())) {
                     const x3::game::WeaponDef&         wd = arsenal.current();
                     const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();
@@ -10843,11 +11561,15 @@ int runDefaultHost(HostContext& hc) {
                     x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
                     uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
                     // --world canonlevel: the canon enemies (Level1Game's are empty here).
+                    // OPENING FLOW: only AWAKE spawns blip — a dormant (gated) spawn is
+                    // an undetected threat, and the radar must agree with the awake-only
+                    // ENEMIES counter (red blips beside "AREA CLEAR" read as a bug).
                     if (canonWorld && canonPlay.built()) {
                         x3::game::CanonPlay::EnemyMark cm[x3::ui::HudModel::kMaxBlips];
                         const uint32_t nc = canonPlay.liveEnemyMarks(cm, x3::ui::HudModel::kMaxBlips);
                         ne = 0;
                         for (uint32_t i = 0; i < nc && ne < x3::ui::HudModel::kMaxBlips; ++i) {
+                            if (!cm[i].awake) continue;
                             marks[ne].pos = cm[i].pos; marks[ne].label = cm[i].label; ++ne;
                         }
                     }
@@ -11249,6 +11971,11 @@ int runDefaultHost(HostContext& hc) {
             if (facilityAlertOn)
                 hud.drawAlert(*device, frame, facilityAlert.level(),
                               facilityAlert.redShift(), alertHudClock);
+            // VIGIL BARK toast (ambient companion). Only visible once linked and a
+            // bark is live; the object self-gates on the vigilLink flag when firing.
+            if (vigilBarks.toastActive(vigilClock))
+                hud.drawVigilBark(*device, frame, vigilBarks.toastText().c_str(),
+                                  vigilBarks.toastAlpha(vigilClock));
             hud.drawConsole(*device, frame, *console, dt);
             // EDITOR (--editor): the HOST submits the editor panels (menu bar /
             // Outliner / Blockout / Status) between begin and end, then endEditorUI
@@ -11319,8 +12046,11 @@ int runDefaultHost(HostContext& hc) {
     // adds (the bare group calls missed Martinez/bossAdds -> exit crash after a boss
     // kill); a no-op when nothing is ragdolling.
     shutdownGameSystems();   // every enemy group + Martinez + barrels + Nexus/canon ragdolls
+    if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
+    if (spacePlanetRingMesh.valid()) { device->destroyMesh(spacePlanetRingMesh); spacePlanetRingMesh = {}; }
     docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
     worldMap.shutdown(*device);                    // baked map-tile textures
+    x3::club_listen::shutdown();                    // close the WASAPI loopback device (idempotent)
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);

@@ -5,6 +5,7 @@
 // namespace set to x3::apphost.
 // ===========================================================================
 #include "cinematic.h"
+#include "intro_orchestrator.h"   // F9 skip-all-intro latch (dev shortcut)
 
 // stb_image for loadNightSkyPlanets' stbi_load (FORGE3D planet PNGs). The engine
 // already hosts a FILE-LOCAL STB_IMAGE_IMPLEMENTATION in ModelLoader.cpp, and
@@ -167,6 +168,56 @@ std::vector<NightSkyPlanet> loadNightSkyPlanets(
     return bodies;
 }
 
+// Build a per-system night sky from the loaded templates + a star-system layout.
+// See cinematic.h. The templates carry the textures (loaded once); this only
+// re-hangs clones at the system's sky positions, so it is cheap + allocates no GPU.
+std::vector<NightSkyPlanet> buildSystemSky(
+        const std::vector<NightSkyPlanet>& templates,
+        const x3::starsys::StarSystem& sys,
+        bool includeSolPinpoint) {
+    // Index the loaded templates by their FORGE3D type index for O(1) lookup.
+    auto findTemplate = [&](uint32_t typeIndex) -> const NightSkyPlanet* {
+        for (const NightSkyPlanet& t : templates)
+            if (t.typeIndex == typeIndex) return &t;
+        return nullptr;
+    };
+
+    std::vector<NightSkyPlanet> sky;
+    sky.reserve(sys.bodies.size() + 1);
+    for (const x3::starsys::SystemBody& b : sys.bodies) {
+        const uint32_t typeIndex = (uint32_t)b.type;
+        const NightSkyPlanet* tpl = findTemplate(typeIndex);
+        if (!tpl) {
+            x3::logWarn(std::string("[starsys] system '") + sys.id + "' body '" +
+                        b.label + "': no loaded template for type " +
+                        std::to_string(typeIndex) + " — skipped");
+            continue;
+        }
+        NightSkyPlanet body = *tpl;   // copy textures + glow-layer handles
+        body.azimuthDeg          = b.azimuthDeg;
+        body.elevationDeg        = b.elevationDeg;
+        body.angularDiameterDeg  = b.angularDiameterDeg;
+        body.name                = b.label;
+        sky.push_back(body);
+    }
+
+    // The faint distant SOL pinpoint — a tiny Sun disc so "far from Earth" is a
+    // LEGIBLE point in the sky, not just implied. Skipped when we ARE at Sol.
+    if (includeSolPinpoint && std::strcmp(sys.id, "sol") != 0) {
+        const NightSkyPlanet* sunTpl = findTemplate((uint32_t)x3::starsys::BodyType::Sun);
+        if (sunTpl) {
+            NightSkyPlanet sol = *sunTpl;
+            sol.azimuthDeg         = x3::starsys::kSolPinpointAzDeg;
+            sol.elevationDeg       = x3::starsys::kSolPinpointElDeg;
+            sol.angularDiameterDeg = x3::starsys::kSolPinpointDiamDeg;
+            sol.name               = "SOL";
+            sol.coronaTex          = {};   // no corona: a crisp, faint distant point
+            sky.push_back(sol);
+        }
+    }
+    return sky;
+}
+
 // Draw every planet for the current frame (call AFTER the scene's own draws so the
 // depth buffer occludes correctly). Each body uses its per-type planet pipeline.
 //
@@ -181,7 +232,7 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
                                 x3::rhi::MeshHandle mesh,
                                 const std::vector<NightSkyPlanet>& planets, float uTime,
                                 float eyeX, float eyeY, float eyeZ,
-                                x3::rhi::MeshHandle ringMesh) {
+                                x3::rhi::MeshHandle ringMesh, float anchorDist) {
     if (!fc.valid) return;
     // PlanetType transparent indices (see VulkanRenderDevice PlanetType enum).
     constexpr uint32_t kAtmosphere = 9u, kSunCorona = 10u, kRing = 11u;
@@ -190,11 +241,11 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
         // Sky direction from the body's azimuth/elevation (az 0 = -Z, +90 = +X).
         const float az = b.azimuthDeg * kDegToRad, el = b.elevationDeg * kDegToRad;
         const float ce = std::cos(el);
-        const float px = eyeX + std::sin(az) * ce * kNightSkyDist;
-        const float py = eyeY + std::sin(el)      * kNightSkyDist;
-        const float pz = eyeZ - std::cos(az) * ce * kNightSkyDist;
+        const float px = eyeX + std::sin(az) * ce * anchorDist;
+        const float py = eyeY + std::sin(el)      * anchorDist;
+        const float pz = eyeZ - std::cos(az) * ce * anchorDist;
         // Apparent angular diameter -> world radius at the anchor distance.
-        const float r = kNightSkyDist * std::tan(b.angularDiameterDeg * 0.5f * kDegToRad);
+        const float r = anchorDist * std::tan(b.angularDiameterDeg * 0.5f * kDegToRad);
         // OPAQUE body: uniform scale by the apparent radius, translated to world pos.
         const float model[16] = {
             r, 0, 0, 0,
@@ -298,13 +349,27 @@ bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
         const bool skipKey = (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS);
         if (skipKey && !prevAnyKey) { if (clipped) player.seek(clipEndT); else player.skip(); }
         prevAnyKey = skipKey;
+        // F9: skip the WHOLE intro, not just this clip (owner dev shortcut). Latch
+        // the orchestrator's skip-all flag and end this clip; the beat loop bails
+        // at the next boundary and the run collapses to the canon cell wake.
+        if (glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS) {
+            x3::intro::requestSkipAllIntro();
+            if (clipped) player.seek(clipEndT); else player.skip();
+        }
 
         player.tick(dt);
         const float t = player.time();
         scene.update(cs, t);
 
         const x3::cut::CamPose cam = x3::cut::evalCamera(cs, t);
-        device.setCamera(cam.pos.x, cam.pos.y, cam.pos.z, cam.yaw, cam.pitch, cam.fov);
+        // ROLL-CAPABLE view: drive from a full orientation basis so a keyed dutch
+        // angle (cam.roll) banks the horizon. roll==0 -> up is world-up projected,
+        // i.e. pixel-identical to the old setCamera(yaw,pitch) path.
+        float camFwd[3], camUp[3];
+        x3::cut::camBasis(cam, camFwd, camUp);
+        device.setCameraBasis(cam.pos.x, cam.pos.y, cam.pos.z, camFwd, camUp, cam.fov);
+        // Per-shot sun lane (no sun keys -> re-applies the applyLook baseline).
+        scene.applyShotSun(device, cam);
         device.setSkyTime(10.0f + t * 0.02f);
 
         auto frame = device.beginFrame();

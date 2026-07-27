@@ -25,6 +25,7 @@ int hostPhysJoint(HostContext& hc);   // --world physjoint
 int hostRagdoll  (HostContext& hc);   // --world ragdoll
 int hostDrive    (HostContext& hc);   // --world drive | boat | fly (+ perfshop)
 int hostClub     (HostContext& hc);   // --world club      (+ crowd proof)
+int hostComplex  (HostContext& hc);   // --world complex   (7-level survival complex + --screenshot-complex)
 int hostShowroom (HostContext& hc);   // --world showroom  (+ showroom-* proofs)
 int hostValley   (HostContext& hc);   // --world valley    (+ ecology proof)
 int hostCliffs   (HostContext& hc);   // --world cliffs
@@ -46,6 +47,14 @@ int hostEchotropolis(HostContext& hc); // --world echotropolis (Echo Harbor: isl
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);
+
+// [P0-2] THE flags dispatchWorldHost() matches, straight from the SAME route
+// table the dispatcher walks — so this list CANNOT drift from the dispatch.
+// Consumed by the destination-registry self-test (app/destinations.cpp), which
+// asserts every one of these is either a registry row or an explicit,
+// reasoned exclusion. Add a host route without updating the registry and the
+// gate goes RED — that is the point.
+const char* const* dispatchedWorldModes(unsigned& count);
 
 // --test-surfacestart (Phase 7): headless self-test of the ESCAPED-branch surface
 // start — the cell-vs-surface branch selection (escaped -> surface, shot_down ->

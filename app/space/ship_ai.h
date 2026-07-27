@@ -32,11 +32,20 @@ namespace x3::space {
 //   * Patrol — no target in detect range: drift on the current velocity (idle).
 //   * Engage — player within detect range, but not yet lined up for a shot:
 //              steer toward a LEAD point ahead of the player and close distance.
-//   * Strafe — player inside firing range AND within the forward firing cone:
-//              hold the bead + fire on the cooldown (the attack state).
-//   * Evade  — own hull low, or the ship overshot the target (player is behind
-//              it): peel away to reset the pass, then re-Engage.
-enum class ShipAIState { Patrol, Engage, Evade, Strafe };
+//   * Strafe — the ATTACK RUN: steer at the lead point + fire on the cooldown.
+//              Entered from long range when lined up (the classic approach) or
+//              from Orbit when the per-ship attack timer expires (the pass).
+//   * Evade  — own hull low, the ship overshot the target (player is behind
+//              it), or the peel-off leg after an attack run: arc away to reset.
+//   * Orbit  — DOGFIGHT CIRCLING (owner: "it hovers on top of me! it should be
+//              circling!"): inside kOrbitEnterDist the ship steers TANGENTIALLY
+//              around the player, holding an orbit band around kOrbitRadius, so
+//              it carves arcs around you instead of parking on your canopy. A
+//              seeded per-ship timer periodically breaks orbit into a Strafe
+//              attack run, then a short Evade peel, then back to Orbit — and the
+//              seeding staggers the ships so a wing never synchronizes into a
+//              carousel.
+enum class ShipAIState { Patrol, Engage, Evade, Strafe, Orbit };
 
 // Human-readable state name (logs / --test-ship-ai trace).
 const char* shipAIStateName(ShipAIState s);
@@ -51,6 +60,18 @@ struct EnemyShip {
     int   maxHull;       // starting hull
     ShipAIState state;   // current AI behaviour state
     float fireCooldown;  // seconds remaining until the ship may fire again
+    float hitFlash;      // seconds of hull hit-flash remaining (combat readability:
+                         // damageShip sets it, tickShip decays it; the host tints
+                         // the ship's draw brighter/warm while > 0 so a registered
+                         // hit READS instantly at dogfight range)
+
+    // ---- Orbit / attack-run bookkeeping (dogfight circling) ----------------
+    uint32_t seed;        // per-ship spawn-order seed (staggers timers per ship)
+    int      orbitSign;   // +1 / -1: clockwise vs counter-clockwise orbit
+    float    orbitPhase;  // seeded per-ship clock for the vertical weave
+    float    attackTimer; // orbit time left until the next attack run
+    float    modeTimer;   // time left in the current run/peel leg
+    uint8_t  runMode;     // 0 = orbiting, 1 = attack run (Strafe), 2 = peel (Evade)
 };
 
 // A single laser-fire event emitted by update() when a ship fires. The host draws
@@ -74,11 +95,85 @@ constexpr float kFireConeCos    = 0.92f;   // cos of the half firing cone (~23 d
 constexpr float kFireCooldown   = 0.7f;    // seconds between an enemy's shots
 constexpr float kMaxSpeed       = 90.0f;   // hard speed cap (m/s)
 constexpr float kAccel          = 60.0f;   // steering accel toward desired dir (m/s^2)
-constexpr float kEvadeHullFrac  = 0.30f;   // hull at/below this fraction -> Evade
+constexpr float kEvadeHullFrac  = 0.18f;   // hull at/below this fraction -> Evade.
+                                           // BELOW the <25% burning-FX band
+                                           // (combat readability): at the old
+                                           // 0.30 every ship that reached the
+                                           // ember/heavy-smoke stage instantly
+                                           // fled the fight forever — the player
+                                           // never SAW the burn he had earned.
+                                           // 25%..18% is the visible last-stand
+                                           // window; under 18% it still flees.
 constexpr float kLeadFactor     = 1.0f;    // how strongly to lead the moving target
 constexpr float kLaserRange     = 400.0f;  // tracer length / fire-line endpoint dist
 constexpr int   kDefaultHull    = 60;      // starting hull for a spawned ship
 constexpr int   kLaserDamage    = 12;      // damage a hit would deal (host resolves)
+
+// ---- Dogfight circling (Orbit state) tuning --------------------------------
+// The player's shield standoff (60 m, EnemyShipManager::update) stays the hard
+// floor; the orbit band sits ABOVE it so the standoff is nearly unreachable in
+// normal play — the ship holds a readable circling range instead of grinding on
+// the bubble.
+constexpr float kOrbitEnterDist = 130.0f;  // inside this (not on a run) -> Orbit
+constexpr float kOrbitRadius    = 90.0f;   // target orbit range (band ~60..120)
+constexpr float kOrbitBandHalf  = 30.0f;   // radial error normalizer (band half-width)
+constexpr float kOrbitRadialGain= 0.85f;   // inward/outward blend to hold the band
+constexpr float kOrbitRadialBleed = 1.5f;  // 1/s radial-velocity damp while circling
+                                           // (peel momentum -> circulation, not lunges)
+constexpr float kOrbitWeave     = 0.30f;   // vertical weave amplitude (3D, not a disc)
+constexpr float kAttackRunSec   = 2.2f;    // length of a strafing pass off orbit
+                                           // (long enough for 2 shots, short enough
+                                           // not to grind on the shield standoff)
+constexpr float kRunTurnBleed   = 2.5f;    // 1/s cross-track velocity bleed on a pass
+                                           // (pulls the nose onto the firing line)
+constexpr float kPeelSec        = 1.4f;    // Evade peel after the pass, then re-orbit
+// Per-ship attack cadence (seeded, so 3 ships never synchronize): the FIRST run
+// comes quickly (the fight starts hot), later runs are spaced wider.
+constexpr float kFirstRunDelay  = 0.6f;    // + 0.45 * (seed % 6) — staggered
+constexpr float kNextRunDelay   = 3.5f;    // + 0.5  * (hash % 6) — staggered; wide
+                                           // enough that CIRCLING dominates the fight
+
+// ---- Hull hit-flash (combat readability) -----------------------------------
+constexpr float kHitFlashSec    = 0.10f;   // warm hull flash length after a hit
+
+// ---- DISTANCE-COMPENSATED visual scale — ONE formula, TWO consumers ---------
+// The intro flight beats draw an enemy fighter at kVisBaseScale, growing
+// linearly past kVisCompStart (capped kVisCompMax at 600 m+) so a contact never
+// falls below a readable on-screen size (owner: "I cannot SEE the enemy ship").
+// The player therefore aims at what he SEES — so the HIT TEST's acceptance
+// radius must scale by the SAME factor (owner: "allow me to hit the tiny enemy
+// ships too!"). A shot whose ray passes within the DRAWN silhouette's radius at
+// the target's distance is a hit. Do NOT fork this formula: draw + hit share it.
+constexpr float kVisBaseScale   = 6.0f;    // base draw scale (close range)
+constexpr float kVisCompStart   = 150.0f;  // beyond this the draw grows linearly
+constexpr float kVisCompMax     = 4.0f;    // growth cap (reached at 600 m+)
+constexpr float kHitBaseRadius  = 9.0f;    // acceptance radius at factor 1
+                                           // (generous vs the 6 m draw scale)
+inline float visCompFactor(float dist) {
+    const float f = dist / kVisCompStart;
+    return f < 1.0f ? 1.0f : (f > kVisCompMax ? kVisCompMax : f);
+}
+
+// ---- Damage-state FX staging (combat readability) ---------------------------
+// Emission periods (in 60 Hz frames; 0 = OFF) for the persistent hull-damage FX
+// a wounded fighter trails, keyed to hull fraction:
+//   >= 0.75          : pristine — NO damage FX (the negative control).
+//   <  0.75          : intermittent spark bursts.
+//   <  0.50          : + continuous thin grey smoke trail.
+//   <  0.25          : + heavy smoke + ember/fire glow at the hull.
+// Pure + inline so the live emitters and the --test-ship-ai assertions run the
+// exact same staging.
+struct DamageFxProfile {
+    int sparkPeriod;   // frames between spark bursts (0 = none)
+    int smokePeriod;   // frames between smoke puffs  (0 = none)
+    int emberPeriod;   // frames between fire embers  (0 = none)
+};
+inline DamageFxProfile damageFxProfile(float hullFrac) {
+    if (hullFrac >= 0.75f) return { 0, 0, 0 };
+    if (hullFrac >= 0.50f) return { 22, 0, 0 };
+    if (hullFrac >= 0.25f) return { 14, 3, 0 };
+    return { 8, 2, 3 };
+}
 }
 
 // Dense-array, data-driven manager (MonsterManager-style). Owns the per-instance
@@ -125,6 +220,7 @@ public:
 private:
     std::vector<EnemyShip>      ships_;
     std::vector<ShipFireEvent>  fireEvents_;
+    uint32_t                    spawnSeq_ = 0;   // per-spawn seed (orbit stagger)
 
     // Advance one ship's state machine + steering for this tick. Appends a fire
     // event to fireEvents_ if it fires. `i` is the dense index (for the event).
@@ -139,7 +235,11 @@ private:
 // Patrol; (5) a lined-up ship in fire range fires (a fire event is produced);
 // (6) the fire cooldown gates firing (no second shot before the cooldown elapses);
 // (7) damageShip to 0 removes the ship from aliveCount(); (8) speed stays clamped
-// to kMaxSpeed. Deterministic, no GPU. Logs PASS/FAIL; returns true iff all pass.
+// to kMaxSpeed; (9) an in-band enemy ORBITS the player — its bearing angle around
+// the player ADVANCES over time instead of converging onto the player's
+// coordinates — with a negative control proving the bearing metric reads ~zero
+// for a converge-and-hover trajectory. Deterministic, no GPU. Logs PASS/FAIL;
+// returns true iff all pass.
 bool runShipAiSelfTest();
 
 } // namespace x3::space

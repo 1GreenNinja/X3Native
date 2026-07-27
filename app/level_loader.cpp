@@ -6,6 +6,7 @@
 #include "level_loader.h"
 #include "mesh_prims.h"
 #include "asset_root.h"
+#include "surface_library.h"  // D10: ramps wear the dressing deck set
 #include "keypad.h"    // PB fold: realistic high-poly keypad beside each secured-room lock
 
 #include "engine/core/x3_log.h"
@@ -302,7 +303,9 @@ void lintelZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
 // axis (-1 if the lower room's center is on the −axis side of the plane, +1 if +).
 void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
                  float cx, float cz, float yLo, float yHi, uint32_t axis, float sideSign,
-                 x3::rhi::TextureHandle tex, const float color[4], uint32_t room, bool vis) {
+                 x3::rhi::TextureHandle tex, x3::rhi::TextureHandle mrTex,
+                 x3::rhi::TextureHandle normalTex,
+                 const float color[4], uint32_t room, bool vis) {
     const float rise = yHi - yLo;
     if (rise <= 0.02f) return;                       // flat: no ramp needed
     // Run keeps the slope ≤ ~35° (tan 35° ≈ 0.70); never shorter than the wall so
@@ -323,6 +326,16 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
         e.mesh = d.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                               geo.index.data(), (uint32_t)geo.index.size());
     e.tex = tex;
+    // QA MAINLEVEL SWEEP (D10): with no MR texel the ramp rode the unnormalized
+    // Lambert prim path (~pi x brighter than every PBR surface around it — R1) and
+    // read as a BLOWN flat wedge at every stepped doorway. The MR texel alone was
+    // not enough: every room/hall FLOOR the player actually sees is the dressing's
+    // surface-library deck (hh_floor_01a @ tint 0.40), so a graybox-textured ramp
+    // still read as the one bright untextured wedge in a dressed scene. The call
+    // site now passes the SAME deck set (albedo+normal+mr, same 2 m tile density —
+    // makeRamp uvScale 0.5 == makePanel tileMeters 2.0) with the deck tint.
+    e.mrTex = mrTex;
+    e.normalTex = normalTex;
     for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
     for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
     e.tag = (uint32_t)Tag::Static;
@@ -946,10 +959,19 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
     // ---- W5-1: LEVEL 4.5 — THE NEXUS CHAMBER. The data authors the F4.5 tiers as
     // thin slab rooms (h <= 1 m) hanging in the F4-F5 void above the "Nexus Chamber
     // Access" room. Mark them OPEN PLATFORMS (floor-slab-only build, no walls/lid/
-    // minted light), open the Access room's ceiling (the cavern void IS its ceiling),
-    // strip every resolver doorway that touched a platform (tier "descent tubes" were
-    // nonsense doors through open air — canon_45's scaffold stairs are the climb), and
-    // union the cavern's PVS so the Access room and every platform see each other. ----
+    // minted light) and strip every resolver doorway that touched a platform (tier
+    // "descent tubes" were nonsense doors through open air).
+    //
+    // W5-1b (fix/spire-hollow-core, owner canon 2026-07-25): level 4.5 is HIDDEN from
+    // the normal floors — no stairway, no sightline; the ELEVATOR is its only access.
+    // The Access room's open ceiling was both a stairway (canon_45's old scaffold
+    // climbed out of it) and a sightline (F4 <-> 4.5); from the 4.5 catwalks the
+    // tower's center read as a VOID dropping into a fog-washed pit (the owner's
+    // "the center of the building is missing" screenshot). The Access room is now a
+    // NORMAL sealed F4 room: lid present and RENDERED (solidLid — its roof sits under
+    // the cavern, and an invisible lid is a one-way hole from above). Canon45 lays a
+    // full cavern floor slab above the F4 roofline; the cavern PVS is unioned with the
+    // F4/F5 spine lobbies so the elevator arrival tunnel renders the cavern. ----
     {
         uint32_t accessId = kNoRoom;
         std::vector<uint32_t> plats;
@@ -959,7 +981,7 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
             if (r.h <= 1.0f && r.name.find("Tier") != std::string::npos)      r.platform = true;
             if (r.h <= 1.0f && r.name.find("F4.5") != std::string::npos)      r.platform = true;
             if (r.name.find("Nexus Chamber Access") != std::string::npos) {
-                r.openCeiling = true;
+                r.solidLid = true;   // sealed + rendered lid (was openCeiling — see above)
                 accessId = i;
             }
             if (r.platform) plats.push_back(i);
@@ -971,19 +993,28 @@ CanonFloor loadCanonTower(std::string_view jsonPath, int maxFloors) {
                         return tower.rooms[dw.a].platform || tower.rooms[dw.b].platform;
                     }),
                 tower.doorways.end());
-            // Cavern vis unit: access <-> every platform, platforms <-> each other.
+            // Cavern vis unit: platforms <-> each other, and platforms <-> the F4/F5
+            // spine lobbies (the elevator arrival tunnel hangs between the shaft and
+            // the cavern; the vis flood's nearest-room fallback resolves a tunnel
+            // camera to a lobby, so the lobbies must SEE the cavern or the hidden
+            // level would render as void from its own doorstep).
             auto link = [&](uint32_t a, uint32_t b) {
                 if (a == b) return;
                 auto& pa = tower.pvs[a];
                 if (std::find(pa.begin(), pa.end(), b) == pa.end()) pa.push_back(b);
             };
+            std::vector<uint32_t> spineLobbies;
+            for (uint32_t i = 0; i < tower.rooms.size(); ++i)
+                if (tower.rooms[i].type == "Elevator Lobby" &&
+                    (tower.roomFloorNum[i] == 4 || tower.roomFloorNum[i] == 5))
+                    spineLobbies.push_back(i);
             for (uint32_t p : plats) {
-                if (accessId != kNoRoom) { link(p, accessId); link(accessId, p); }
+                for (uint32_t lb : spineLobbies) { link(p, lb); link(lb, p); }
                 for (uint32_t q : plats) link(p, q);
             }
             x3::logInfo("loadCanonTower: NEXUS CHAMBER — " + std::to_string(plats.size()) +
-                        " open platforms marked, cavern PVS unioned" +
-                        (accessId != kNoRoom ? " (access ceiling opened)" : ""));
+                        " open platforms marked, cavern PVS unioned with F4/F5 lobbies" +
+                        (accessId != kNoRoom ? " (access room SEALED, lid rendered)" : ""));
         }
     }
 
@@ -1123,11 +1154,21 @@ uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
     std::vector<Cand> cands;
     cands.reserve(all.size());
     for (const CanonLight& cl : all) {
-        if (!visible(cl.room)) continue;
         const float dx = cl.light.pos[0] - eyeX;
         const float dy = cl.light.pos[1] - eyeY;
         const float dz = cl.light.pos[2] - eyeZ;
-        cands.push_back({ &cl, dx * dx + dy * dy + dz * dz });
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (cl.room == kNoRoom) {
+            // W5-1b: an UN-ROOMED light (the 4.5 cavern/tunnel practicals — their
+            // space is outside the doorway flood) feeds by RANGE instead of room
+            // membership: candidate iff the eye is within ~2x its range. The
+            // nearest-to-eye cap below still holds the budget.
+            const float reach = cl.light.range * 2.0f;
+            if (d2 > reach * reach) continue;
+        } else if (!visible(cl.room)) {
+            continue;
+        }
+        cands.push_back({ &cl, d2 });
     }
     if (cands.size() > maxLights) {
         std::nth_element(cands.begin(), cands.begin() + maxLights, cands.end(),
@@ -1305,10 +1346,33 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             case 2:  gapZneg[opts.breachRoom].push_back(g); break;
             default: gapZpos[opts.breachRoom].push_back(g); break;
         }
+        floor.breachCuts.push_back({ opts.breachRoom, opts.breachFace,
+                                     opts.breachCenter - opts.breachHalf,
+                                     opts.breachCenter + opts.breachHalf });
         x3::logInfo("buildCanonFloor: SEAM-2 exterior breach cut in '" + br.name +
                     "' face " + std::to_string(opts.breachFace) + " at " +
                     std::to_string(opts.breachCenter) + " (half " +
                     std::to_string(opts.breachHalf) + ")");
+    }
+
+    // ---- FACILITY STAIRWELL (fix/spire-hollow-core): per-floor connector cuts.
+    // Same doorway-style cut machinery as the single breach above; the stairwell
+    // module builds the connector corridors + shaft that seal onto these openings.
+    for (const CanonBuildOpts::ExtraBreach& eb : opts.extraBreaches) {
+        if (eb.room == kNoRoom || eb.room >= nRooms) continue;
+        const CanonRoom& br = floor.rooms[eb.room];
+        const Gap g{ eb.center, br.y0() + kLintel, eb.half };
+        switch (eb.face) {
+            case 0:  gapXneg[eb.room].push_back(g); break;
+            case 1:  gapXpos[eb.room].push_back(g); break;
+            case 2:  gapZneg[eb.room].push_back(g); break;
+            default: gapZpos[eb.room].push_back(g); break;
+        }
+        floor.breachCuts.push_back({ eb.room, eb.face,
+                                     eb.center - eb.half, eb.center + eb.half });
+        x3::logInfo("buildCanonFloor: STAIRWELL breach cut in '" + br.name +
+                    "' face " + std::to_string(eb.face) + " at " +
+                    std::to_string(eb.center) + " (half " + std::to_string(eb.half) + ")");
     }
 
     // CELL OBSERVATION WINDOW (feat/cell-real-glass): punch a see-through armored viewport
@@ -1445,8 +1509,13 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         // dressing owns its look; this keeps the graybox read consistent if art off).
         if (r.platform) {
             const float platTint[4] = { 0.30f, 0.30f, 0.27f, 1.0f };
+            // W5-1b (fix/spire-hollow-core): platform slabs are ALWAYS-DRAWN
+            // (kNoRoom). Platforms carry no doorways, so the portal flood can never
+            // reach them — room-tagged tiers culled EACH OTHER and the whole hidden
+            // level read as scattered slabs in a black void from its own catwalks.
+            // The cavern is sealed rock; frustum + HZB own the cost.
             addBox(scene, device, physics, r.w * 0.5f, r.h * 0.5f, r.d * 0.5f,
-                   r.cx, r.cy, r.cz, floorTex, platTint, ri, true, floorVis);
+                   r.cx, r.cy, r.cz, floorTex, platTint, kNoRoom, true, floorVis);
             continue;
         }
 
@@ -1482,9 +1551,19 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         // Ceiling lid (collision-only, invisible — GLB ceiling drapes over).
         // W5-1: openCeiling rooms (Nexus Access) get NO lid — the cavern void above
         // is the ceiling; canon_45's shell seals the outer envelope.
-        if (!r.openCeiling)
+        // QA MAINLEVEL SWEEP: the DEEP rooms (Cave System / Hidden Sub-Level, cy<-50)
+        // get NO dressing (RoomDressing classifies them ZNone), so an invisible lid
+        // left them staring straight up into raw shaft scenery: the Crystal-Veins
+        // strata band's violet slabs from the Sub-Level, the open SKY from the cave
+        // at y=-178 (docs/QA_MAINLEVEL_SWEEP.md D3/D4). Their lid renders.
+        if (!r.openCeiling) {
+            // W5-1b: solidLid rooms (the sealed Nexus Access under the 4.5 cavern)
+            // render their lid too — their roof is exposed to a vantage above.
+            const bool deepLid = r.cy < -50.0f || r.solidLid;
             addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
-                   r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);
+                   r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true,
+                   /*visible*/deepLid);
+        }
 
         // 4 walls with doorway gaps where the resolver produced them.
         // W2-E: consult the doorway wall dedup (it was computed above but never USED —
@@ -1503,7 +1582,36 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // can't get through" bug — it was a threshold step, not the opening size). Drop a
     // walkable wedge ramp into the lower room at each such opening so the player walks
     // up/down through it. (Gap-bridges + cross-level tubes are handled separately.) ----
-    const float rampTint[4] = { 0.46f, 0.50f, 0.58f, 1.0f };
+    // D10: ramps wear the SAME surface-library deck the cell/room dressing lays over
+    // every floor the player sees (hh_floor_01a, deck tint 0.40 — cell_dressing.cpp's
+    // judged value), so a threshold reads as floor, not as a bright graybox wedge.
+    // Fallback (set missing, e.g. assets not fetched): old graybox tex + a matte
+    // dielectric MR texel (glTF MR: G=rough 0.85, B=metal 0) so the ramp at least
+    // stays on the normalized PBR route instead of the blown Lambert prim path.
+    float rampTint[4] = { 0.46f, 0.50f, 0.58f, 1.0f };
+    x3::rhi::TextureHandle rampAlbedo = floorTex, rampMr{}, rampNormal{};
+    x3::rhi::TextureHandle bridgeWallAlbedo{}, bridgeWallMr{}, bridgeWallNormal{};
+    {
+        static SurfaceLibrary rampSurf;                    // texture cache lives for the device
+        if (!rampSurf.mounted()) rampSurf.mount(assetRoot() + "/surface_library");
+        const SurfaceSet& deck = rampSurf.get(device, "hh_floor_01a");
+        if (deck.ok) {
+            rampAlbedo = deck.albedo; rampMr = deck.mr; rampNormal = deck.normal;
+            rampTint[0] = 0.40f; rampTint[1] = 0.41f; rampTint[2] = 0.40f;
+        } else {
+            const uint8_t mr[4] = { 0, 217, 0, 255 };
+            rampMr = device.createTexture(mr, 1, 1, false);
+        }
+        // D15 (same Lambert-brightness family): the GAP-BRIDGE corridor interiors are
+        // the one graybox shell the player LOOKS INTO from dressed rooms (the secured
+        // rooms' mouths read as glowing cream boxes). Dress their walls with the same
+        // authored wall set the cell dressing uses.
+        const SurfaceSet& wallSet = rampSurf.get(device, "hh_wall_01a");
+        if (wallSet.ok) {
+            bridgeWallAlbedo = wallSet.albedo; bridgeWallMr = wallSet.mr;
+            bridgeWallNormal = wallSet.normal;
+        }
+    }
     for (const CanonDoorway& dw : floor.doorways) {
         if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
             dw.kind != DoorwayKind::Overlap)
@@ -1518,11 +1626,11 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         if (dw.axis == 1) {
             // AdjacentZ/overlap on a Z-plane: ramp runs along Z into the lower room.
             float sideSign = (lower.cz < dw.cz) ? -1.0f : +1.0f;
-            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, floorTex, rampTint, lowerId, floorVis);
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis);
         } else {
             // AdjacentX/overlap on an X-plane: ramp runs along X into the lower room.
             float sideSign = (lower.cx < dw.cx) ? -1.0f : +1.0f;
-            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, floorTex, rampTint, lowerId, floorVis);
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis);
         }
     }
 
@@ -1559,8 +1667,13 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (yCeil > clearTop)                     // header above the clear opening
                 addBox(scene, device, physics, dH, (yCeil - clearTop) * 0.5f, half,
                        dC, (clearTop + yCeil) * 0.5f, cut, wallTexA, rvTint, dw.a, true, wallVis);
-            addBox(scene, device, physics, dH, 0.05f, half,                       // floor strip
-                   dC, yFloor - 0.05f, cut, wallTexA, rvTint, dw.a, true, wallVis);
+            {   // floor strip — the throat floor the player crosses at an open door.
+                // D10 family: on the Lambert route it glowed vs the dressed decks;
+                // give it the SAME deck set + tint the ramps/dressing wear.
+                const uint32_t ei = addBox(scene, device, physics, dH, 0.05f, half,
+                       dC, yFloor - 0.05f, cut, rampAlbedo, rampTint, dw.a, true, wallVis);
+                scene.get(ei).mrTex = rampMr; scene.get(ei).normalTex = rampNormal;
+            }
         } else {
             addBox(scene, device, physics, jamT * 0.5f, (yCeil - yFloor) * 0.5f, dH,
                    cut - half - jamT * 0.5f, (yFloor + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
@@ -1569,8 +1682,11 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (yCeil > clearTop)
                 addBox(scene, device, physics, half, (yCeil - clearTop) * 0.5f, dH,
                        cut, (clearTop + yCeil) * 0.5f, dC, wallTexA, rvTint, dw.a, true, wallVis);
-            addBox(scene, device, physics, half, 0.05f, dH,
-                   cut, yFloor - 0.05f, dC, wallTexA, rvTint, dw.a, true, wallVis);
+            {   // floor strip (see the planeIsX branch note — deck-matched)
+                const uint32_t ei = addBox(scene, device, physics, half, 0.05f, dH,
+                       cut, yFloor - 0.05f, dC, rampAlbedo, rampTint, dw.a, true, wallVis);
+                scene.get(ei).mrTex = rampMr; scene.get(ei).normalTex = rampNormal;
+            }
         }
     }
 
@@ -1579,7 +1695,6 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // floor-to-a-low-ceiling. Tagged to room `a` so it culls with that room's PVS (a is
     // also in b's PVS, so it shows from either side). The bridge punches the connection;
     // we also cut a doorway in each room's facing wall at the bridge mouth. ----
-    const float bridgeTint[4] = { 0.52f, 0.56f, 0.66f, 1.0f };
     for (const CanonDoorway& dw : floor.doorways) {
         if (dw.kind != DoorwayKind::GapBridge) continue;
         const CanonRoom& a = floor.rooms[dw.a];
@@ -1593,10 +1708,22 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (xhi < xlo) std::swap(xlo, xhi);
             const float zc = dw.cz;
             // Two side walls of the corridor at z = zc ± kDoorHalf, floor slab + ceiling.
-            addBox(scene, device, physics, (xhi - xlo) * 0.5f, 0.05f, kDoorHalf,
-                   (xlo + xhi) * 0.5f, floorY - 0.05f, zc, floorTex, bridgeTint, dw.a, true, floorVis);
-            wallX(scene, device, physics, xlo, xhi, zc - kDoorHalf - kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
-            wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            {   // D10/D15 family: bridge floor wears the deck set, walls the wall set,
+                // so the corridor interior reads as construction, not glowing graybox.
+                const uint32_t e0 = scene.size();
+                addBox(scene, device, physics, (xhi - xlo) * 0.5f, 0.05f, kDoorHalf,
+                       (xlo + xhi) * 0.5f, floorY - 0.05f, zc, rampAlbedo, rampTint, dw.a, true, floorVis);
+                scene.get(e0).mrTex = rampMr; scene.get(e0).normalTex = rampNormal;
+                const uint32_t w0 = scene.size();
+                wallX(scene, device, physics, xlo, xhi, zc - kDoorHalf - kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                if (bridgeWallMr.valid())
+                    for (uint32_t ei = w0; ei < scene.size(); ++ei) {
+                        scene.get(ei).mrTex = bridgeWallMr; scene.get(ei).normalTex = bridgeWallNormal;
+                    }
+            }
             addBox(scene, device, physics, (xhi - xlo) * 0.5f, kCeilT * 0.5f, kDoorHalf + kWallT,
                    (xlo + xhi) * 0.5f, floorY + h + kCeilT * 0.5f, zc, ceilTex, ceilWhite, dw.a, true, false);
         } else {
@@ -1605,10 +1732,21 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             if (a.cz < b.cz) { zlo = a.z1(); zhi = b.z0(); } else { zlo = b.z1(); zhi = a.z0(); }
             if (zhi < zlo) std::swap(zlo, zhi);
             const float xc = dw.cx;
-            addBox(scene, device, physics, kDoorHalf, 0.05f, (zhi - zlo) * 0.5f,
-                   xc, floorY - 0.05f, (zlo + zhi) * 0.5f, floorTex, bridgeTint, dw.a, true, floorVis);
-            wallZ(scene, device, physics, zlo, zhi, xc - kDoorHalf - kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
-            wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            {   // (mirror of the X branch — see its D10/D15 note)
+                const uint32_t e0 = scene.size();
+                addBox(scene, device, physics, kDoorHalf, 0.05f, (zhi - zlo) * 0.5f,
+                       xc, floorY - 0.05f, (zlo + zhi) * 0.5f, rampAlbedo, rampTint, dw.a, true, floorVis);
+                scene.get(e0).mrTex = rampMr; scene.get(e0).normalTex = rampNormal;
+                const uint32_t w0 = scene.size();
+                wallZ(scene, device, physics, zlo, zhi, xc - kDoorHalf - kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h,
+                      bridgeWallAlbedo.valid() ? bridgeWallAlbedo : wallTexA, rampTint, dw.a, wallVis);
+                if (bridgeWallMr.valid())
+                    for (uint32_t ei = w0; ei < scene.size(); ++ei) {
+                        scene.get(ei).mrTex = bridgeWallMr; scene.get(ei).normalTex = bridgeWallNormal;
+                    }
+            }
             addBox(scene, device, physics, kDoorHalf + kWallT, kCeilT * 0.5f, (zhi - zlo) * 0.5f,
                    xc, floorY + h + kCeilT * 0.5f, (zlo + zhi) * 0.5f, ceilTex, ceilWhite, dw.a, true, false);
         }
@@ -1632,7 +1770,31 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const float thx = 1.5f, thz = 1.5f;               // 3 m square tube
         // 4 thin walls of the tube (open top/bottom).
         addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz - thz, wallTexA, tubeTint, dw.a, true, wallVis);
-        addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz + thz, wallTexA, tubeTint, dw.a, true, wallVis);
+        // W5-1b (fix/spire-hollow-core): the 4.5 ARRIVAL MOUTH — when this spine
+        // segment's Y span contains the requested mouth band, build the +Z wall as
+        // four pieces around a doorway-sized opening (below / above / two side
+        // fillers) instead of one solid box, so the hidden level's arrival tunnel
+        // joins the shaft through a real cut (LAW 1: an opening in a shared plane).
+        const bool hasMouth = opts.spineMouthHalf > 0.0f &&
+                              yLo < opts.spineMouthY0 - 0.1f &&
+                              (yLo + th) > opts.spineMouthY1 + 0.1f;
+        if (hasMouth) {
+            const float mY0 = opts.spineMouthY0, mY1 = opts.spineMouthY1;
+            const float mH  = std::min(opts.spineMouthHalf, thx - 0.1f);
+            const float zW  = tz + thz;
+            auto piece = [&](float px0, float px1, float py0, float py1) {
+                if (px1 - px0 < 0.02f || py1 - py0 < 0.02f) return;
+                addBox(scene, device, physics, (px1 - px0) * 0.5f, (py1 - py0) * 0.5f,
+                       kWallT * 0.5f, (px0 + px1) * 0.5f, (py0 + py1) * 0.5f, zW,
+                       wallTexA, tubeTint, dw.a, true, wallVis);
+            };
+            piece(tx - thx, tx + thx, yLo, mY0);                  // below the mouth
+            piece(tx - thx, tx + thx, mY1, yLo + th);             // above the mouth
+            piece(tx - thx, tx - mH,  mY0, mY1);                  // -X side filler
+            piece(tx + mH,  tx + thx, mY0, mY1);                  // +X side filler
+        } else {
+            addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz + thz, wallTexA, tubeTint, dw.a, true, wallVis);
+        }
         addBox(scene, device, physics, kWallT * 0.5f, th * 0.5f, thz, tx - thx, yLo + th * 0.5f, tz, wallTexA, tubeTint, dw.a, true, wallVis);
         addBox(scene, device, physics, kWallT * 0.5f, th * 0.5f, thz, tx + thx, yLo + th * 0.5f, tz, wallTexA, tubeTint, dw.a, true, wallVis);
     }

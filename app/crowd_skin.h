@@ -43,6 +43,9 @@
 #include "crowd.h"
 #include "monster.h"
 
+#include "engine/asset/IModelLoader.h"   // seat prop = a real textured crate GLB
+#include "engine/asset/IAssetSource.h"
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -117,16 +120,28 @@ private:
         bool  skinned  = false;   // real rig bound + skinnable
         bool  failed   = false;   // load failed once — blockout keeps this agent
         bool  attached = false;   // swapped in over the CURRENT crowd's blockout
-        bool  talking  = false;   // Talk calm-loop currently engaged
+        // ANIM-ENRICH: the civilian-gesture calm-loop key currently engaged
+        // (nullptr = none). Was a bool `talking`; generalized to converse/work/sit
+        // so the crowd's states drive the authored gesture clips.
+        const char* gesture = nullptr;
         bool  ragdolled = false;  // shot dead — the death ragdoll drives the skin now
         float lastSpeed = 0.0f;
         x3::phys::Vec3 lastPos{};
         bool  hasLastPos = false;
+        // ANIM-ENRICH POLISH: a seat prop under a SEATED agent (the Sit gesture is a
+        // knees-bent perch that reads as "sitting on air" with nothing under it).
+        // Lazily created the first time this agent sits; a plain host-owned Scene
+        // prop (no physics body), shown only while seated, hidden otherwise.
+        uint32_t seatEnt = kNoLink;
     };
 
     void spawnOne(uint32_t i, const CrowdSystem& crowd, Scene& scene,
                   x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
     void attach(uint32_t i, const CrowdSystem& crowd, Scene& scene);
+    // Show/hide + place agent `i`'s seat prop for this frame (lazy-creates the prop
+    // and the shared crate mesh on first need). `seated` drives visibility.
+    void updateSeat(Slot& s, const CrowdAgent& a, bool seated,
+                    Scene& scene, x3::rhi::IRenderDevice& device);
 
     CrowdSkinConfig  m_cfg;
     std::vector<Slot> m_slots;
@@ -134,6 +149,22 @@ private:
     uint32_t m_roomId = kNoRoom;   // deployment PVS room (from the crowd config)
     bool     m_active = false;
     double   m_totalSpawnMs = 0.0;
+    // Shared seat prop under seated agents (one load, instanced across every seated
+    // agent; host-owned + persistent). Lazily built on the first seated agent. The
+    // ideal is a REAL textured warehouse crate GLB (m_seatIsProp); if that can't
+    // load (e.g. the headless self-test device, which yields no drawables) we fall
+    // back to the original procedural tan box so the world never breaks.
+    x3::rhi::MeshHandle m_seatMesh{};
+    bool                m_seatMeshBuilt = false;
+    bool                m_seatIsProp    = false;   // true => real crate drawable bound
+    std::unique_ptr<x3::asset::IAssetSource> m_seatAssets;
+    std::unique_ptr<x3::asset::IModelLoader> m_seatLoader;
+    x3::asset::Model    m_seatModel;               // keeps the crate's GPU handles alive
+    x3::rhi::TextureHandle m_seatTex{};            // crate albedo
+    x3::rhi::TextureHandle m_seatMrTex{};          // crate metallic-roughness
+    x3::rhi::TextureHandle m_seatNormalTex{};      // crate normal
+    float m_seatNode[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // crate node world xform
+    float m_seatBaseColor[4] = {1,1,1,1};          // crate baseColorFactor (tints texel)
 };
 
 // Headless self-test section for --test-crowd (called from runCrowdSelfTest):

@@ -258,6 +258,26 @@ public:
         float maxOpacity = 0.85f;                // far-wall cap (no milky wash law)
     };
     virtual void setFog(const FogParams& f) {}
+    // UNDERWATER CAUSTICS (mesh.frag): dancing refracted-sun filaments on any
+    // sunlit surface BELOW the local water plane — the riverbed, the fish, the
+    // swimmer. Purely procedural in the fragment stage (no textures, no extra
+    // pass): the params ride the per-frame mesh control UBO and the shader
+    // modulates the DIRECT SUN term only, so shadowed water stays dark and
+    // ambient / point lights are untouched; the effect fades with depth so the
+    // shallows dance while the deep stays moody. `waterY` is the CAMERA-LOCAL
+    // water surface height — the host queries its own water (river reach or
+    // sea) and treats it as locally flat; the shader never evaluates a spline.
+    // `time` is host-advanced (deterministic captures — the setWaterParams
+    // convention). enabled=false (the default) is byte-identical: the whole
+    // shader path is gated on a uniform flag, so worlds without water never
+    // spend a single extra ALU.
+    struct CausticsParams {
+        bool  enabled   = false;
+        float waterY    = 0.0f;   // world Y of the local water surface
+        float time      = 0.0f;   // animation clock (seconds, host-advanced)
+        float intensity = 1.0f;   // 0..1 master scale (1 = calibrated look)
+    };
+    virtual void setCaustics(const CausticsParams&) {}
     // Filmic grade + split-tone + vignette in the composite pass, master-lerped by
     // `strength` (0 = bit-identical passthrough — the shader never enters the block).
     struct GradeParams {
@@ -268,6 +288,26 @@ public:
         float vignette   = 0.0f;                        // 0..~0.12 per the bible
     };
     virtual void setGrade(const GradeParams& g) {}
+    // CINEMATIC FILMIC POST (feat/filmic-post): the cutscene FILM LOOK — vignette
+    // + animated luma-weighted film grain + split-tone grade + saturation, applied
+    // in the composite pass AFTER tonemap and AFTER the zone grade (the last word
+    // on the frame). Owned by cinematic playback (CinematicScene::applyLook sets
+    // it, restoreLook clears it — the look never leaks into gameplay). Defaults
+    // are OFF and mathematically identity: enabled=false never enters the shader
+    // block (byte-identical output), and enabled-with-defaults is exact identity
+    // too (every sub-op self-gates; see --test-filmic). PostFXParams.filmicAllowed
+    // (r_filmic) is the live kill-switch for A/B.
+    struct FilmicParams {
+        bool  enabled   = false;
+        float vignette  = 0.0f;   // 0..~0.35 corner darkening (film: felt, not seen)
+        float grain     = 0.0f;   // 0..~0.15 grain amplitude (luma-weighted in-shader)
+        float grainSeed = 0.0f;   // seed OFFSET; the device advances a per-frame
+                                  // counter on top so the grain always crawls
+        float shadowTint[3]    = { 1.0f, 1.0f, 1.0f };  // shadows pulled toward (teal)
+        float highlightTint[3] = { 1.0f, 1.0f, 1.0f };  // highlights pulled toward (warm)
+        float saturation = 1.0f;                        // 1 = unchanged
+    };
+    virtual void setFilmic(const FilmicParams&) {}
 
     // CPU per-object frustum cull toggle (live r_frustumcull cvar; default ON). When
     // disabled the draw path is byte-identical to before the cull existed
@@ -347,6 +387,12 @@ public:
                                        // camera-only reprojection (pre-velocity
                                        // behavior). No-op when taa is off or
                                        // velocity.spv is absent (graceful fallback).
+        bool  filmicAllowed  = true;   // r_filmic: master gate on the cinematic
+                                       // filmic post (setFilmic). Default TRUE so
+                                       // headless/screenshot paths that never call
+                                       // setPostFX still honor a host's setFilmic;
+                                       // the look itself stays OFF until a host
+                                       // enables it, so worlds are byte-identical.
     };
     virtual void setPostFX(const PostFXParams&) {}
 

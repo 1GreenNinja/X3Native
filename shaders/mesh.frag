@@ -89,6 +89,8 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     // ---- RT soft shadows (r_rtshadows; read ONLY by the RT_SHADOWS variant) ----
     vec4 rtsh0;       // x = tier (0=off,1=sun,2=sun+points), y = tan(sun angular radius), z = max point shadow rays K, w = point light source radius (m)
     vec4 rtsh1;       // x = frame seed (per-frame jitter rotation; 0 when TAA is off), yzw = reserved
+    // ---- Underwater caustics (setCaustics; all zero when no host opted in) ----
+    vec4 caustics;    // x = enabled (0/1), y = local water surface Y, z = time (s), w = intensity
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -350,11 +352,16 @@ void rtshBasis(vec3 N, out vec3 T, out vec3 B) {
 
 // Binary visibility: 1 = the segment origin->origin+dir*tMax is unobstructed.
 // Opaque-only + terminate-on-first-hit: one proceed resolves it (rtao pattern).
+// cullMask 0x80: GLASS TLAS instances carry mask 0x7F (bit 7 clear — see the
+// TLAS build), so shadow rays pass through glass — the sun reaches the world
+// under the WATER surface (the underwater direct term / caustics) and through
+// panes, exactly like the raster CSM (which draws only the opaque range).
+// Every other RT consumer (AO/reflections/DDGI) keeps cullMask 0xFF.
 float rtshVisibility(vec3 origin, vec3 dir, float tMax) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, rtShadowTlas,
         gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-        0xFF, origin, 0.01, dir, tMax);
+        0x80, origin, 0.01, dir, tMax);
     rayQueryProceedEXT(rq);
     return (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
         ? 1.0 : 0.0;
@@ -710,6 +717,55 @@ vec3 brdf(vec3 N, vec3 V, float NoV, vec3 L, vec3 F0, vec3 diff, float a, float 
     vec3 spec = D_GGX(NoH, a) * V_SmithGGX(NoV, NoL, a) * F;
     return ((vec3(1.0) - F) * diff * dw + spec) * NoL;
 }
+// ===========================================================================
+// UNDERWATER CAUSTICS (ssao.caustics: x = enabled, y = local water surface Y,
+// z = time, w = intensity). Purely procedural — no textures, no extra pass.
+//
+// THE TRICK (the classic two-layer min): build two INDEPENDENT interference
+// webs — each a ridge field over three non-axis-aligned directional sine waves
+// (ridges where the summed wave crosses zero, i.e. a travelling cellular web) —
+// at different world scales, drifting in different directions and evolving at
+// different rates; min() keeps light only where BOTH webs are ridged, which is
+// exactly the sharp branching FILAMENT topology real caustics have, and a
+// power curve then sharpens the filaments so they read as focused light, not
+// as a projected texture. Sampled at worldPos.xz: caustics are cast straight
+// down through a locally-flat surface (the host passes the CAMERA-LOCAL water
+// level — the river is flat per-reach and the sea is flat, so no spline math
+// ever runs here).
+//
+// PHYSICS KEPT HONEST: the factor multiplies the DIRECT SUN RADIANCE only —
+// shadowed water gets none (a caustic is refracted sunlight), ambient/IBL and
+// point lights (the diver's lamp) are untouched — and it fades exponentially
+// with depth below the surface, so the shallows dance while the deep stays
+// moody. Fragments at/above the waterline return exactly 1.0, and the whole
+// path is gated on the uniform flag, so dry land is byte-identical.
+// ===========================================================================
+float causticWeb(vec2 p, float t) {
+    // Three interfering directional waves; the ridge field peaks (1.0) where
+    // the sum crosses zero — a slowly-boiling cellular web, no texture fetch.
+    float s = sin(dot(p, vec2( 1.00,  0.31)) + t * 1.07)
+            + sin(dot(p, vec2(-0.44,  0.87)) * 1.31 - t * 1.31)
+            + sin(dot(p, vec2( 0.53, -0.85)) * 1.73 + t * 0.83);
+    return 1.0 - abs(s) * (1.0 / 3.0);
+}
+float causticMod(vec3 wp) {
+    float depth = ssao.caustics.y - wp.y;      // meters below the local surface
+    if (depth <= 0.0) return 1.0;              // dry / above the waterline
+    float t = ssao.caustics.z;
+    // Layer A coarse + layer B finer (~2.4 m / ~0.9 m cells), drifting in
+    // different directions at different speeds. min() -> filaments.
+    float a = causticWeb(wp.xz * 2.6 + vec2( t * 0.13, t * 0.06), t);
+    float b = causticWeb(wp.xz * 4.3 + vec2(-t * 0.09, t * 0.11), t * 1.23 + 4.2);
+    float fil = pow(clamp(min(a, b), 0.0, 1.0), 3.0);
+    // Strongest just under the surface, gone by ~12-15 m: physically right
+    // (the wave-lens focus lives in the shallows) and it keeps the deep moody.
+    float fade = exp2(-depth * 0.30) * clamp(ssao.caustics.w, 0.0, 1.0);
+    // 0.55 trough / 2.95 crest around unity: bright dancing filaments over a
+    // gently dimmed floor, mean close enough to 1 that the bed's overall
+    // exposure doesn't jump when the effect engages.
+    return mix(1.0, 0.55 + 2.4 * fil, fade);
+}
+
 // Perturb the geometry normal by a tangent-space normal map via a derivative TBN
 // (no vertex tangents needed). idx = bindless normal-map index.
 vec3 perturbNormal(vec3 N, vec3 wp, vec2 uv, uint idx) {
@@ -771,6 +827,11 @@ void main() {
     // every world that never sets it -> byte-identical to the old hardcoded sun.
     // Deep space raises it: a star is the only light out there.
     vec3  sunRad  = kSunColor * max(cam.sunDir.w, 0.0);
+    // UNDERWATER CAUSTICS: modulate the direct sun on submerged fragments (the
+    // riverbed, the fish, the swimmer). Uniform-flag gate — dry worlds never
+    // enter; enabled worlds return exactly 1.0 for fragments above the water.
+    if (ssao.caustics.x > 0.5)
+        sunRad *= causticMod(vWorldPos);
     float ndl    = max(dot(N, kSunDir), 0.0);
     float shadow = sampleShadow(vWorldPos, ndl);
 #ifdef RT_SHADOWS

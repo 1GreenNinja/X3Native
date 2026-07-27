@@ -1,4 +1,4 @@
-add_library(x3engine STATIC
+add_library(x3core STATIC
     core/x3_log.cpp
     core/x3_boot.cpp
     core/Console.cpp
@@ -92,16 +92,16 @@ endif()
 
 # Repo root on the include path so consumers use the namespaced prefix,
 # e.g. #include "engine/rhi/IRenderDevice.h"
-target_include_directories(x3engine PUBLIC ${CMAKE_SOURCE_DIR})
+target_include_directories(x3core PUBLIC ${CMAKE_SOURCE_DIR})
 
 # cgltf + stb live only inside ModelLoader.cpp (Pimpl) and miniaudio lives only
 # inside MiniaudioSystem.cpp — all header-only, so they're PRIVATE include dirs
 # and never leak to engine consumers (the audio header exposes no ma_* types).
-target_include_directories(x3engine PRIVATE
+target_include_directories(x3core PRIVATE
     ${CGLTF_INCLUDE_DIRS} ${Stb_INCLUDE_DIR} ${MINIAUDIO_INCLUDE_DIRS}
     ${LUA_INCLUDE_DIR})
 
-target_link_libraries(x3engine
+target_link_libraries(x3core
     PUBLIC
         Vulkan::Vulkan
     PRIVATE
@@ -128,7 +128,7 @@ target_link_libraries(x3engine
         draco::draco
 )
 
-target_compile_features(x3engine PUBLIC cxx_std_20)
+target_compile_features(x3core PUBLIC cxx_std_20)
 
 # ---- VELOCITY pre-pass shaders (#4: velocity buffer + DLSS) ----------------
 # Compiled HERE (engine-owned, the velocity pass is an engine/rhi feature) into
@@ -152,4 +152,4 @@ foreach(vsrc velocity.vert velocity.frag)
     list(APPEND X3_VELOCITY_SPV ${vout})
 endforeach()
 add_custom_target(x3velocityshaders DEPENDS ${X3_VELOCITY_SPV})
-add_dependencies(x3engine x3velocityshaders)
+add_dependencies(x3core x3velocityshaders)

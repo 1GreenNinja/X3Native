@@ -566,10 +566,18 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             // its inner face is at -0.10 — 0.14 keeps the panel underside past it (no
             // coplanar z-fight), same inset law the wall panels use.
             const float cInset = 0.14f;
+            // QA MAINLEVEL SWEEP (propclip lint): the old 2x2 grid of RAW 4x3 m panels
+            // (x0+2 + 4*ix) spanned 8 m over a 7 m cell — the east tile overhung Jake's
+            // Cell by 1 m and hung VISIBLY inside the West Cell Hall's airspace (0.5 m
+            // below the hall ceiling, over the throat). Scale 0.875 makes the X span
+            // exactly 7 m (2 x 3.5); Z becomes 2 x 2.625 = 5.25 over the 6 m cell, the
+            // 0.375 m end borders reading as honest shadow gaps at the wall junctions.
+            const float cs = 0.875f;
             for (int ix = 0; ix < 2; ++ix)
                 for (int iz = 0; iz < 2; ++iz)
-                    place(aCeil, 0.0f, 1.0f, cx(kCeilAabb), kCeilAabb.miny, cz(kCeilAabb),
-                          x0 + 2.0f + 4.0f * ix, ceilY - cInset, z0 + 1.5f + 3.0f * iz,
+                    place(aCeil, 0.0f, cs, cx(kCeilAabb), kCeilAabb.miny, cz(kCeilAabb),
+                          x0 + 1.75f + 3.5f * ix, ceilY - cInset,
+                          z0 + 1.6875f + 2.625f * iz,
                           nullptr, tCeil);
         }
     }
@@ -925,9 +933,15 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // lamp, hung right and fed properly, not a new one. No ambient was raised. No
         // albedo went over unity. The flicker beat is untouched (depth 0.55) and now has a
         // real room to take down with it.
+        // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): x0.80 trim from 9.01/9.34/10.10.
+        // The flux above was tuned against the BENT output curve (5951890b); under the
+        // honest curve the cell measured mean 58-63 / p50 53-61 at four eye cameras,
+        // flashlight OFF — above the room's own locked criteria band (dim, moody,
+        // mean ~35-54, zero clipping; docs/screenshots/cell/). Cool-white ratio
+        // preserved EXACTLY; hang height, reach and flicker untouched.
         const uint32_t li = (uint32_t)m_lights.size();
-        addLight(bt.jakeCell, lx, ceilY - 1.10f, lz, 9.0f, 9.01f, 9.34f, 10.10f);
-        m_flickers.push_back({ li, 9.01f, 9.34f, 10.10f, 0.0f, 9.0f, 0.55f });
+        addLight(bt.jakeCell, lx, ceilY - 1.10f, lz, 9.0f, 7.21f, 7.47f, 8.08f);
+        m_flickers.push_back({ li, 7.21f, 7.47f, 8.08f, 0.0f, 9.0f, 0.55f });
         (void)aLight; (void)aHLight;   // loaded (hall may reuse); no cell placement
     }
 
@@ -992,16 +1006,51 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // explodable barrel when the host wires the sink (canon loop -> BarrelSystem). The
         // BarrelSystem owns the intact Barrel.glb + fracture + blast, so we DON'T also draw
         // a static barrel over it. No sink (tests) -> the static rusted drum, as before.
+        // QA MAINLEVEL SWEEP (propclip lint): hz + 3.2 put the drum at z=47.7 — THROUGH
+        // the hall's +Z wall (z1 = 47, the hall is only 5 m deep) and 0.6 m INTO the
+        // Entrance room's corner. hz + 1.1 keeps it against the -X end wall beside the
+        // crate stack, fully inside the hall (barrel radius 0.44 -> z 45.16..46.04).
         if (m_barrelSink) {
-            m_barrelSink(hx0 + 0.9f, hfY, hz + 3.2f);
+            m_barrelSink(hx0 + 0.9f, hfY, hz + 1.1f);
         } else {
             place(aBarrel, 0.0f, 1.0f, cx(kBarrelAabb), kBarrelAabb.miny, cz(kBarrelAabb),
-                  hx0 + 0.9f, hfY + 0.02f, hz + 3.2f, nullptr, tBarrel);
+                  hx0 + 0.9f, hfY + 0.02f, hz + 1.1f, nullptr, tBarrel);
         }
         // A red running light at the hall mouth (guard-corridor mood). R11 (playable-build):
         // 2.4 -> 1.10, the /PI cut — it was tuned against GLB props that shaded at 1/PI.
         // The BARREL above stays the explodable one (e7a2986); only the LIGHT takes the cut.
         addLight(bt.mainHall, hx0 + 1.2f, hCeil - 0.4f, hz, 5.0f, 1.10f, 0.055f, 0.03f);
+
+        // ================= OPENING-ROUTE SCONCE RUN (corridor readability) =========
+        // OBSERVED (live playtest + docs/screenshots/opening_flow baseline): the Main
+        // Hall read as a BLACK TUBE — the recipe's ceiling row shows as a line of
+        // bright dots down the lid, but their pools die before the walls/floor, and
+        // the only other cue was the red mouth light ("red ceiling dots" corridor).
+        // Doctrine fix (motivated lighting, NOT an ambient boost): a run of REAL wall
+        // sconces down BOTH long walls of the hall — the same SciFi_Warehouse_Kit
+        // fixture + warm pool the cell's door sconce proved, alternating sides every
+        // ~6.5 m at head height, each carrying a local pool that overlaps the next.
+        // Visible sources, pools of light, navigable without the flashlight; the
+        // in-between stays moody. OPENING ROUTE ONLY: this dresses bt.mainHall (the
+        // first corridor past the cell) — no other room's statement is touched.
+        {
+            const float hx1 = H.x1();
+            const float emSconce[4] = { 1.0f, 0.86f, 0.62f, 1.0f };   // lit lens
+            const float sconceY = hfY + 2.2f;                          // head height
+            int side = 0;
+            for (float sx = hx0 + 3.0f; sx <= hx1 - 3.0f; sx += 6.5f, ++side) {
+                const bool onMinZ = (side % 2) == 0;                  // alternate walls
+                // Screen = local -Z -> world (sin yaw, 0, -cos yaw): face INTO the hall.
+                const float yaw = onMinZ ? kPi : 0.0f;
+                const float wz  = onMinZ ? (H.z0() + 0.10f) : (H.z1() - 0.10f);
+                place(aWLight, yaw, 1.0f, cx(kWLightAabb), cy(kWLightAabb), kWLightAabb.maxz,
+                      sx, sconceY, wz, emSconce, tSteel);
+                // Its pool: warm tungsten, ranged so neighbouring pools OVERLAP on the
+                // walls (6.5 m pitch / 6.5 m range) — a rhythm of pools, not a wash.
+                const float lz = onMinZ ? (H.z0() + 0.55f) : (H.z1() - 0.55f);
+                addLight(bt.mainHall, sx, sconceY, lz, 6.5f, 2.60f, 2.17f, 1.51f);
+            }
+        }
     }
 
     m_built = propsLoaded() > 0;
@@ -1142,6 +1191,18 @@ void CellDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
 
 uint32_t CellDressing::propsLoaded() const {
     uint32_t n = 0; for (const auto& a : m_assetTable) if (a.ok) ++n; return n;
+}
+
+void CellDressing::forEachPropInstance(
+    const std::function<void(uint32_t, const std::string&,
+                             const std::vector<x3::asset::ModelDrawable>&,
+                             const float*)>& fn) const {
+    for (const Instance& in : m_instances) {
+        if (in.asset >= m_assetTable.size()) continue;
+        const Asset& a = m_assetTable[in.asset];
+        if (!a.ok) continue;
+        fn(kNoRoom, m_assetPaths[in.asset], a.drawables, in.transform);
+    }
 }
 
 } // namespace x3::game

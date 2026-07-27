@@ -4,6 +4,9 @@
 #include "crowd_skin.h"
 #include "asset_root.h"
 #include "headless_device.h"
+#include "mesh_prims.h"          // x3::prims::makeBox — the seat-prop fallback mesh
+#include "engine/asset/IModelLoader.h"  // load the real crate GLB + makeDrawables/mulMat4
+#include "engine/asset/IAssetSource.h"
 
 #include "engine/core/x3_log.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -11,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <string>
 
 namespace x3::game {
@@ -59,7 +63,7 @@ void CrowdSkin::build(const CrowdSkinConfig& cfg, const CrowdSystem& crowd) {
     for (Slot& s : m_slots) {
         s.attached = false;
         s.hasLastPos = false;
-        s.talking = false;
+        s.gesture = nullptr;
     }
     m_roomId = crowd.config().roomId;
     m_active = true;
@@ -78,6 +82,10 @@ void CrowdSkin::spawnOne(uint32_t i, const CrowdSystem& crowd, Scene& scene,
     t.damage     = 0;                  // never attacks
     t.ranged     = false;
     t.noBody     = true;               // pure visual — no Enemy hitbox for rays to eat
+    t.lockRootY  = true;               // crowd Y is BRAIN-owned: a broken baked clip
+                                       // root Y (AnnaCasual_anim Walk/Run bake bug)
+                                       // must never bury/bob a citizen (Sit still
+                                       // lowers the hips — it rides the crossfade)
     t.modelFile  = rig;
     t.modelDirOverride = m_cfg.modelDir;
     t.standUpZtoY = false;             // roster rigs are Y-up (canon-play precedent)
@@ -138,6 +146,105 @@ void CrowdSkin::attach(uint32_t i, const CrowdSystem& crowd, Scene& scene) {
     s.hasLastPos = false;
     s.attached = true;
     s.ragdolled = false;   // a fresh agent stands (any prior corpse is forgotten)
+}
+
+void CrowdSkin::updateSeat(Slot& s, const CrowdAgent& a, bool seated,
+                           Scene& scene, x3::rhi::IRenderDevice& device) {
+    // Seat height: the Sit clip is a knees-bent perch whose hips rest ~0.44 m above
+    // the feet (grounded-verified in Blender against AnnaCasual's Sit pose). Whatever
+    // prop we drop under the agent must present its SEAT SURFACE at ~0.44 m so the
+    // citizen sits ON something instead of squatting on air; feet stay on the floor
+    // (a.pos.y), the prop rests on the same floor, centred under the agent.
+    constexpr float kSeatTop  = 0.44f;   // target seat-surface height above the feet
+    constexpr float kSeatHalf = 0.22f;   // fallback box half-extent (top = 2*half = 0.44)
+    // Real crate prop (SciFi_Warehouse_Kit/Crate Short.glb) measured in Blender
+    // (engineY == Blender Z): height 0.600 m, footprint centred at engine
+    // (X=-0.334, Z=+0.3355), base at Y=0. We uniformly scale it so its top lands on
+    // kSeatTop and offset it so its footprint centres under the agent, feet on floor.
+    constexpr float kCrateH   = 0.600f;  // crate height in its own space
+    constexpr float kCrateCx  = -0.334f; // engine-X centre of the crate footprint
+    constexpr float kCrateCz  =  0.3355f;// engine-Z centre of the crate footprint
+    constexpr const char* kSeatCrateRel = "SciFi_Warehouse_Kit/Crate Short.glb";
+    if (!seated) {
+        if (s.seatEnt != kNoLink && s.seatEnt < scene.size())
+            scene.get(s.seatEnt).visible = false;
+        return;
+    }
+    const float scl = (m_cfg.scale > 0.01f) ? m_cfg.scale : 1.0f;
+    // Lazy-build the shared seat prop once (one load, instanced across all seats).
+    if (!m_seatMeshBuilt) {
+        m_seatMeshBuilt = true;   // attempt exactly once; box fallback on any failure
+        // Prefer the REAL textured crate. On a real device makeDrawables yields the
+        // crate's mesh + material handles; on the headless self-test device it yields
+        // nothing, so we fall through to the procedural box below.
+        m_seatAssets.reset(x3::asset::createAssetSource());
+        if (m_seatAssets && m_seatAssets->mountDir(convertedGlbRoot(), 0)) {
+            m_seatLoader.reset(x3::asset::createModelLoader(&device, m_seatAssets.get()));
+            if (m_seatLoader) {
+                m_seatModel = m_seatLoader->load(kSeatCrateRel);
+                if (m_seatModel.ok) {
+                    std::vector<x3::asset::ModelDrawable> dr = x3::asset::makeDrawables(m_seatModel);
+                    if (!dr.empty()) {
+                        const x3::asset::ModelDrawable& d = dr[0];   // crate is a single mesh
+                        m_seatMesh      = x3::rhi::MeshHandle{ d.meshId };
+                        m_seatTex       = x3::rhi::TextureHandle{ d.baseColorTexId };
+                        m_seatMrTex     = x3::rhi::TextureHandle{ d.mrTexId };
+                        m_seatNormalTex = x3::rhi::TextureHandle{ d.normalTexId };
+                        for (int k = 0; k < 16; ++k) m_seatNode[k]      = d.nodeTransform[k];
+                        for (int k = 0; k < 4;  ++k) m_seatBaseColor[k] = d.baseColorFactor[k];
+                        m_seatIsProp = true;
+                        x3::logInfo("[crowd-skin] " + m_cfg.site + ": seat prop = " +
+                                    std::string(kSeatCrateRel));
+                    }
+                }
+            }
+        }
+        if (!m_seatIsProp) {
+            x3::prims::PrimMesh m = x3::prims::makeBox(kSeatHalf, kSeatHalf, kSeatHalf, 0, 0, 0, 1.0f);
+            m_seatMesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                           m.index.data(), (uint32_t)m.index.size());
+            x3::logInfo("[crowd-skin] " + m_cfg.site + ": seat prop = procedural box (crate GLB unavailable)");
+        }
+    }
+    if (s.seatEnt == kNoLink) {
+        Entity e;
+        e.mesh = m_seatMesh;
+        if (m_seatIsProp) {
+            e.tex = m_seatTex; e.mrTex = m_seatMrTex; e.normalTex = m_seatNormalTex;
+            for (int k = 0; k < 4; ++k) e.baseColor[k] = m_seatBaseColor[k];
+        } else {
+            e.baseColor[0] = 0.28f; e.baseColor[1] = 0.20f; e.baseColor[2] = 0.13f; e.baseColor[3] = 1.0f; // crate wood
+        }
+        e.tag     = (uint32_t)Tag::Prop;
+        e.roomId  = m_roomId;    // Scene::render PVS-culls with the crowd's room
+        e.visible = false;
+        s.seatEnt = scene.add(e);
+    }
+    if (s.seatEnt >= scene.size()) return;
+    Entity& e = scene.get(s.seatEnt);
+    if (m_seatIsProp) {
+        // Uniform scale so the crate's 0.600 m height maps to kSeatTop*scl, base on the
+        // floor (crate base Y==0), footprint centred under the agent; then bake the
+        // crate's node transform: model = object(scale+translate) * nodeTransform.
+        const float fit = (kSeatTop * scl) / kCrateH;
+        float obj[16] = {0};
+        obj[0] = obj[5] = obj[10] = fit; obj[15] = 1.0f;
+        obj[12] = a.pos.x - fit * kCrateCx;
+        obj[13] = a.pos.y;                       // crate base is at its own Y=0
+        obj[14] = a.pos.z - fit * kCrateCz;
+        x3::asset::mulMat4(obj, m_seatNode, e.transform);
+    } else {
+        // Fallback box: uniform scale + translation; centre one half-height up so
+        // top = floor + 0.44*scl.
+        for (int k = 0; k < 16; ++k) e.transform[k] = 0.0f;
+        e.transform[0] = e.transform[5] = e.transform[10] = scl;
+        e.transform[15] = 1.0f;
+        e.transform[12] = a.pos.x;
+        e.transform[13] = a.pos.y + kSeatHalf * scl;
+        e.transform[14] = a.pos.z;
+    }
+    e.roomId  = m_roomId;
+    e.visible = true;
 }
 
 bool CrowdSkin::triggerRagdoll(uint32_t i, Scene& scene,
@@ -211,11 +318,39 @@ void CrowdSkin::update(float dt, const CrowdSystem& crowd, Scene& scene,
             x3::phys::Vec3{ a.pos.x, a.pos.y + a.visBob - dip, a.pos.z }, a.yaw);
         s.sys->setPropMotion(speed, lean);
 
-        // Conversations: rigs with a Talk clip play it while mid-chat and
-        // stationary (the calm-loop hook); everyone else keeps the nod/lean.
-        const bool wantTalk = (a.state == CrowdState::Converse) && speed < 0.15f;
-        if (wantTalk && !s.talking) { s.sys->setCalmLoop("talk"); s.talking = true; }
-        else if (!wantTalk && s.talking) { s.sys->clearCalmLoop(); s.talking = false; }
+        // ANIM-ENRICH: living-world GESTURES. Map the agent's STATE (while roughly
+        // stationary) to an authored calm-loop clip: Converse->talk gesture,
+        // Work->task loop, Play(seated knot)->sit. IDLE citizens get living-world
+        // VARIETY -- a stable per-agent pick of look-around / check-a-handheld /
+        // carry-something (one in four just stands) so a settled crowd reads as
+        // people living life, not a rank of identical idlers. setCalmLoop
+        // fuzzy-finds the clip; rigs lacking it keep the procedural nod/lean
+        // fallback (calm-loop stays -1). Only re-issue when the desired key CHANGES
+        // (the pick is stable per agent, so no per-frame findClip churn).
+        static const char* const kIdleGestures[4] = {
+            "lookaround", "checkdevice", "carryidle", nullptr /* plain idle */ };
+        const char* want = nullptr;
+        if (speed < 0.15f) {
+            switch (a.state) {
+                case CrowdState::Converse: want = "converse"; break;
+                case CrowdState::Work:     want = "work";     break;
+                case CrowdState::Play:     want = "sit";      break;  // seated hangout knot
+                case CrowdState::Idle:     want = kIdleGestures[(i + m_cfg.seed) & 3]; break;
+                default: break;
+            }
+        }
+        if (want != s.gesture) {
+            if (want) s.sys->setCalmLoop(want);
+            else      s.sys->clearCalmLoop();
+            s.gesture = want;
+        }
+
+        // Seat prop: show a crate under the agent ONLY when it is actually seated —
+        // i.e. the Sit gesture is engaged AND this rig owns a Sit clip (calmLoopActive
+        // is false on rigs that lack it, so those keep the procedural huddle with no
+        // stray crate). Placed/hidden every frame; Scene::render PVS-culls it.
+        const bool seated = want && std::strcmp(want, "sit") == 0 && s.sys->calmLoopActive();
+        updateSeat(s, a, seated, scene, device);
 
         // Tick the inert character (skinning + clip playback; chaseSpeed 0 and
         // playerPos = self => the AI never fights the fed pose).
@@ -241,9 +376,12 @@ void CrowdSkin::deactivate(Scene& scene) {
             const uint32_t ent = s.sys->entity();
             if (ent != kNoLink && ent < scene.size()) scene.get(ent).visible = false;
         }
+        // Hide the seat prop too (host-owned, survives for the next build()).
+        if (s.seatEnt != kNoLink && s.seatEnt < scene.size())
+            scene.get(s.seatEnt).visible = false;
         s.attached = false;
         s.hasLastPos = false;
-        s.talking = false;
+        s.gesture = nullptr;
         s.ragdolled = false;
     }
     m_active = false;

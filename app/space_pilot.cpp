@@ -31,7 +31,7 @@ constexpr float kPxToRad     = 0.00132f;   // matches Player/SwimController feel
 constexpr float kBodyRadius  = 1.2f;
 // Laser tuning (showcase + test): cost + cooldown + bolt range.
 constexpr float kLaserCdSec   = 0.18f;
-constexpr float kLaserEnergy  = 8.0f;
+// (kLaserEnergy retired: the per-shot cost is now Tuning.laserEnergyCost, default 8.)
 constexpr float kLaserRange   = 400.0f;
 // Antimatter-boost overspeed bleed-off rate (1/s) once Shift releases. The
 // speed cap eases from the boosted ceiling back toward maxSpeed as
@@ -356,14 +356,21 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // Forward / back (W/S).
     for (int k = 0; k < 3; ++k)
         accel[k] += fwdW[k] * in.moveFwd * m_tuning.maxLinearAccel * boost;
-    // Strafe (A/D).
+    // Strafe (A/D). BOOSTED like forward thrust — Shift + A/D is the ESCAPE move
+    // (owner, live: "I need MASSIVE acceleration to get AWAY ... STRAFE needs to
+    // work"). Before, boost only multiplied W/S, so a boosted dodge was 5x weaker
+    // than a boosted charge and escaping a close contact felt impossible.
     for (int k = 0; k < 3; ++k)
-        accel[k] += rightW[k] * in.moveStrafe * m_tuning.maxStrafeAccel;
-    // Up impulse (Space mapped to jumpPressed; we re-use the bool as a held
-    // axis here — the showcase wraps the polling so press = +1, release = 0).
-    if (in.jumpPressed) {
+        accel[k] += rightW[k] * in.moveStrafe * m_tuning.maxStrafeAccel * boost;
+    // Vertical thrust (owner: "Add Space to rise UP and C to drop DOWN with the
+    // ship!!!!"): Space (jumpPressed, host polls it HELD) = +up along the SHIP'S
+    // up axis; C (diveHeld — the existing swim-dive channel reused, no new
+    // PlayerInput field) = -up. Boost-scaled exactly like strafe: Shift+Space /
+    // Shift+C are the vertical dodge moves.
+    const float vertAxis = (in.jumpPressed ? 1.0f : 0.0f) - (in.diveHeld ? 1.0f : 0.0f);
+    if (vertAxis != 0.0f) {
         for (int k = 0; k < 3; ++k)
-            accel[k] += upW[k] * m_tuning.maxStrafeAccel;
+            accel[k] += upW[k] * vertAxis * m_tuning.maxStrafeAccel * boost;
     }
 
     // ---- Integrate linear velocity + drag ----------------------------------
@@ -396,7 +403,7 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
             for (int k = 0; k < 3; ++k)
                 steer[k] = fwdW[k] * std::max(in.moveFwd, 0.0f)
                          + rightW[k] * in.moveStrafe
-                         + upW[k] * (in.jumpPressed ? 1.0f : 0.0f);
+                         + upW[k] * vertAxis;   // Space climb / C drop persist
             float sl = length3(steer);
             if (sl < 1e-3f) { steer[0] = fwdW[0]; steer[1] = fwdW[1]; steer[2] = fwdW[2]; sl = 1.0f; }
             else            { steer[0] /= sl; steer[1] /= sl; steer[2] /= sl; }
@@ -516,6 +523,86 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
                             m_energy + m_tuning.energyRegenPerSec * dt);
     }
     tickCooldowns(dt);
+
+    // ---- ELASTIC CHASE CAM (owner: "we need to visibly ZOOM left, right,
+    // forward, back"). The ideal chase point rides the hull; the ACTUAL camera
+    // springs toward it, so thrust/strafe/boost visibly displace the ship in
+    // frame instead of the camera moving in lockstep. Boost also stretches the
+    // arm with speed — the hull pulls away from the lens when you punch it.
+    {
+        const float fwdLocal[3] = { 1, 0, 0 };
+        const float upLocal[3]  = { 0, 1, 0 };
+        float fwdW[3], upW[3];
+        quatRotate(m_quat, fwdLocal, fwdW);
+        quatRotate(m_quat, upLocal,  upW);
+        const float spd = length3(m_vel);
+        const float stretch = 1.0f + 0.35f * std::min(1.0f, spd / std::max(1.0f, m_tuning.maxSpeed));
+        const float dist = m_tuning.chaseDistance * stretch;
+        float ideal[3];
+        for (int k = 0; k < 3; ++k)
+            ideal[k] = m_pos[k] - fwdW[k] * dist + upW[k] * m_tuning.chaseHeight;
+        if (!m_chaseSmValid) {
+            for (int k = 0; k < 3; ++k) m_chaseSm[k] = ideal[k];
+            m_chaseSmValid = true;
+        } else {
+            const float kLag = std::min(1.0f, 7.5f * dt);   // spring stiffness
+            for (int k = 0; k < 3; ++k) m_chaseSm[k] += (ideal[k] - m_chaseSm[k]) * kLag;
+            // CLAMP the lag so the ship DARTS in frame but can never leave it
+            // (owner screenshot: a hard maneuver swung the hull to the frame
+            // edge). 5 m of displacement on a 22 m arm reads as violent zip while
+            // keeping the ship comfortably on screen.
+            float off[3] = { m_chaseSm[0]-ideal[0], m_chaseSm[1]-ideal[1], m_chaseSm[2]-ideal[2] };
+            const float od = length3(off);
+            constexpr float kMaxLag = 5.0f;
+            if (od > kMaxLag) {
+                const float sc = kMaxLag / od;
+                for (int k = 0; k < 3; ++k) m_chaseSm[k] = ideal[k] + off[k] * sc;
+            }
+        }
+    }
+    // Target-keeping look bias: ease the amount toward the host's request.
+    m_lookBiasAmt += (m_lookBiasTgt - m_lookBiasAmt) * std::min(1.0f, 5.0f * dt);
+    // Freelook: if the host fed no deltas this frame (ALT released), ease home.
+    if (!m_freeFed) {
+        const float kHome = std::min(1.0f, 4.0f * dt);
+        m_freeYaw   -= m_freeYaw   * kHome;
+        m_freePitch -= m_freePitch * kHome;
+    }
+    m_freeFed = false;   // consumed; host re-arms it next frame while ALT is held
+}
+
+void SpacePilotController::setCameraLookBias(const float dirWorld[3], float amount) {
+    if (amount > 0.001f) {
+        m_lookBiasDir[0] = dirWorld[0]; m_lookBiasDir[1] = dirWorld[1];
+        m_lookBiasDir[2] = dirWorld[2];
+        { const float n = length3(m_lookBiasDir); if (n > 1e-6f) { m_lookBiasDir[0]/=n; m_lookBiasDir[1]/=n; m_lookBiasDir[2]/=n; } }
+    }
+    m_lookBiasTgt = clampf(amount, 0.0f, 0.6f);   // cap: never fully hijack the view
+}
+
+void SpacePilotController::addFreeLook(float dx, float dy) {
+    m_freeYaw   += dx * kMouseSens * kPxToRad;
+    m_freePitch -= dy * kMouseSens * kPxToRad;
+    m_freeYaw   = clampf(m_freeYaw,   -2.7f, 2.7f);   // almost fully astern
+    m_freePitch = clampf(m_freePitch, -1.15f, 1.15f);
+    m_freeFed = true;
+}
+
+void SpacePilotController::wingMuzzle(int side, float outPos[3], float outDir[3]) const {
+    const float fwdLocal[3]   = { 1, 0, 0 };
+    const float upLocal[3]    = { 0, 1, 0 };
+    const float rightLocal[3] = { 0, 0, 1 };
+    float fwdW[3], upW[3], rightW[3];
+    quatRotate(m_quat, fwdLocal,   fwdW);
+    quatRotate(m_quat, upLocal,    upW);
+    quatRotate(m_quat, rightLocal, rightW);
+    const float s = (side < 0) ? -1.0f : 1.0f;
+    // Hardpoints on the ~10 m hull (measured 7.1 wide): wingtips, slightly below
+    // the centerline, ahead of the wing's leading edge.
+    for (int k = 0; k < 3; ++k) {
+        outPos[k] = m_pos[k] + rightW[k] * (s * 3.1f) + upW[k] * (-0.15f) + fwdW[k] * 2.2f;
+        outDir[k] = fwdW[k];
+    }
 }
 
 void SpacePilotController::tickCooldowns(float dt) {
@@ -590,23 +677,69 @@ float SpacePilotController::fov() const {
 void SpacePilotController::cameraBasis(float outPos[3], float outFwd[3], float outUp[3]) const {
     // Full basis from the ship quaternion — fwd/up BOTH bank + loop with the hull,
     // so the horizon rolls correctly and there is no gimbal wall or pinwheel.
-    const float fwdLocal[3] = { 1, 0, 0 };
-    const float upLocal[3]  = { 0, 1, 0 };
-    float fwdW[3], upW[3];
-    quatRotate(m_quat, fwdLocal, fwdW);
-    quatRotate(m_quat, upLocal,  upW);
-    outFwd[0] = fwdW[0]; outFwd[1] = fwdW[1]; outFwd[2] = fwdW[2];
+    const float fwdLocal[3]   = { 1, 0, 0 };
+    const float upLocal[3]    = { 0, 1, 0 };
+    const float rightLocal[3] = { 0, 0, 1 };
+    float fwdW[3], upW[3], rightW[3];
+    quatRotate(m_quat, fwdLocal,   fwdW);
+    quatRotate(m_quat, upLocal,    upW);
+    quatRotate(m_quat, rightLocal, rightW);
+    // ---- GAZE: ship-forward, orbited by hold-to-freelook, pulled by the
+    //      target-keeping bias. Rodrigues about upW (freeYaw) then rightW
+    //      (freePitch); both zero in plain flight -> gaze == fwdW exactly.
+    float gaze[3] = { fwdW[0], fwdW[1], fwdW[2] };
+    auto rotAxis = [](float v[3], const float ax[3], float ang) {
+        if (std::fabs(ang) < 1e-5f) return;
+        const float c = std::cos(ang), s = std::sin(ang);
+        const float d = ax[0]*v[0] + ax[1]*v[1] + ax[2]*v[2];
+        float cr[3] = { ax[1]*v[2]-ax[2]*v[1], ax[2]*v[0]-ax[0]*v[2], ax[0]*v[1]-ax[1]*v[0] };
+        for (int k = 0; k < 3; ++k)
+            v[k] = v[k]*c + cr[k]*s + ax[k]*d*(1.0f - c);
+    };
+    rotAxis(gaze, upW,    m_freeYaw);
+    rotAxis(gaze, rightW, m_freePitch);
+    if (m_lookBiasAmt > 0.001f) {
+        for (int k = 0; k < 3; ++k)
+            gaze[k] = gaze[k] * (1.0f - m_lookBiasAmt) + m_lookBiasDir[k] * m_lookBiasAmt;
+    }
+    { const float n = length3(gaze); if (n > 1e-6f) { gaze[0]/=n; gaze[1]/=n; gaze[2]/=n; } }
+    outFwd[0] = gaze[0]; outFwd[1] = gaze[1]; outFwd[2] = gaze[2];
     outUp[0]  = upW[0];  outUp[1]  = upW[1];  outUp[2]  = upW[2];
     if (m_thirdPerson) {
-        // Chase behind (-fwd) + above (+up), rolling with the ship.
-        outPos[0] = m_pos[0] - fwdW[0] * m_tuning.chaseDistance + upW[0] * m_tuning.chaseHeight;
-        outPos[1] = m_pos[1] - fwdW[1] * m_tuning.chaseDistance + upW[1] * m_tuning.chaseHeight;
-        outPos[2] = m_pos[2] - fwdW[2] * m_tuning.chaseDistance + upW[2] * m_tuning.chaseHeight;
+        // Camera position: the ELASTIC spring point in plain flight (visible
+        // zip/zoom), cross-faded to a rigid ORBIT arm along the gaze while
+        // freelooking (crisp look-around that keeps the ship centered).
+        const float spd = length3(m_vel);
+        const float stretch = 1.0f + 0.35f * std::min(1.0f, spd / std::max(1.0f, m_tuning.maxSpeed));
+        const float dist = m_tuning.chaseDistance * stretch;
+        float orbitPos[3];
+        for (int k = 0; k < 3; ++k)
+            orbitPos[k] = m_pos[k] - gaze[k] * dist + upW[k] * m_tuning.chaseHeight;
+        const float t = std::min(1.0f, (std::fabs(m_freeYaw) + std::fabs(m_freePitch)) / 0.15f);
+        for (int k = 0; k < 3; ++k) {
+            const float springP = m_chaseSmValid ? m_chaseSm[k] : orbitPos[k];
+            outPos[k] = springP * (1.0f - t) + orbitPos[k] * t;
+        }
     } else {
         outPos[0] = m_pos[0] + fwdW[0] * 0.4f;
         outPos[1] = m_pos[1] + fwdW[1] * 0.4f;
         outPos[2] = m_pos[2] + fwdW[2] * 0.4f;
     }
+}
+
+bool SpacePilotController::pushOut(const float center[3], float radius) {
+    float to[3] = { m_pos[0] - center[0], m_pos[1] - center[1], m_pos[2] - center[2] };
+    const float d = length3(to);
+    if (d >= radius || d < 1e-3f) return false;
+    const float inv = 1.0f / d;
+    for (int k = 0; k < 3; ++k) to[k] *= inv;              // outward normal
+    for (int k = 0; k < 3; ++k) m_pos[k] = center[k] + to[k] * radius;
+    // Cancel the inward velocity component (elastic-ish: reflect a little so the
+    // field reads as a BOUNCE, not molasses).
+    const float vin = m_vel[0]*to[0] + m_vel[1]*to[1] + m_vel[2]*to[2];
+    if (vin < 0.0f)
+        for (int k = 0; k < 3; ++k) m_vel[k] -= 1.35f * vin * to[k];
+    return true;
 }
 
 void SpacePilotController::toggleCameraMode() {
@@ -669,12 +802,13 @@ void SpacePilotController::takeDamage(int amount) {
 
 bool SpacePilotController::fireLaser(float dt) {
     tickCooldowns(dt);
+    const float cost = m_tuning.laserEnergyCost;   // default 8 == old kLaserEnergy
     if (m_laserCd > 0.0f)              return false;   // on cooldown
-    if (m_energy < kLaserEnergy)        return false;   // not enough juice
+    if (m_energy < cost)                return false;   // not enough juice
     if (m_hull <= 0)                    return false;   // dead ship
 
     m_laserCd = kLaserCdSec;
-    m_energy -= kLaserEnergy;
+    m_energy -= cost;
     if (m_energy < 0.0f) m_energy = 0.0f;
     return true;
 }
@@ -905,6 +1039,117 @@ bool runSpaceSelfTest() {
               "T9 setMode swaps feel tuning (health preserved)");
         // Restore the shared latch so an ordering-sensitive host isn't surprised.
         setRequestedFlightMode(FlightMode::Arcade);
+        w->shutdown();
+    }
+
+    // T10 — VERTICAL THRUST (owner: "Space to rise UP and C to drop DOWN"):
+    //       Space (jumpPressed held) climbs, C (diveHeld) drops, symmetric signs
+    //       along the ship's up axis (level spawn -> world +Y). Boost scales both.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t;
+        t.noseFollow = 0.0f;      // isolate the raw thrust axes
+        t.linearDrag = 0.0f;
+        s.spawn(*w, 0.0f, 0.0f, 0.0f, t);
+        PlayerInput up{}; up.jumpPressed = true;                 // Space held
+        for (int i = 0; i < 60; ++i) { s.update(up, kDt, *w); w->step(kDt); }
+        const float vUp = s.velocity().y;
+        bool rises = vUp > 1.0f;
+        PlayerInput dn{}; dn.diveHeld = true;                    // C held
+        for (int i = 0; i < 120; ++i) { s.update(dn, kDt, *w); w->step(kDt); }
+        const float vDn = s.velocity().y;
+        bool drops = vDn < -1.0f;                                // reversed past zero
+        // Boost (Shift) must scale the vertical dodge like strafe: a boosted
+        // climb from rest out-accelerates the unboosted one over the same time.
+        SpacePilotController s2;
+        s2.spawn(*w, 0.0f, 0.0f, 0.0f, t);
+        PlayerInput upB{}; upB.jumpPressed = true; upB.sprint = true;
+        for (int i = 0; i < 60; ++i) { s2.update(upB, kDt, *w); w->step(kDt); }
+        bool boosted = s2.velocity().y > vUp * 1.5f;
+        check(rises && drops && boosted, "T10 Space rises / C drops (boost-scaled)");
+        w->shutdown();
+    }
+
+    // T11 — WEAPON-ENERGY SUSTAIN (owner: "It also runs out after a short
+    //       time!"): with the dogfight-beat energy tuning (regenerating pool),
+    //       holding fire sustains a LONG burst (>= 8 s), the pool recovers to
+    //       full FAST (<= 6.5 s), and a depleted pool never dry-locks longer
+    //       than a beat (the next shot comes within ~1 s of refusal). The sim
+    //       mirrors the flight loop's exact call pattern: update(dt) then
+    //       fireLaser(dt) while the trigger is held (both tick the cooldown —
+    //       the effective fire rate the owner experiences).
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t;
+        t.maxEnergy = 100.0f; t.energyRegenPerSec = 20.0f; t.laserEnergyCost = 2.8f;
+        s.spawn(*w, 0.0f, 0.0f, 0.0f, t);
+        PlayerInput idle{};
+        float sustain = -1.0f;
+        for (int i = 0; i < 60 * 30; ++i) {          // hold fire up to 30 s
+            s.update(idle, kDt, *w); w->step(kDt);
+            if (!s.fireLaser(kDt) && s.energy() < t.laserEnergyCost) {
+                sustain = (float)i * kDt;            // first ENERGY refusal
+                break;
+            }
+        }
+        bool longBurst = sustain >= 8.0f && sustain <= 16.0f;
+        // Sputter, not lockout: the next successful shot comes within ~1 s.
+        float relock = -1.0f;
+        for (int i = 0; i < 240; ++i) {
+            s.update(idle, kDt, *w); w->step(kDt);
+            if (s.fireLaser(kDt)) { relock = (float)i * kDt; break; }
+        }
+        bool noDryLockout = relock >= 0.0f && relock <= 1.0f;
+        // Cease fire: full recovery within 6.5 s.
+        float recover = -1.0f;
+        for (int i = 0; i < 60 * 10; ++i) {
+            s.update(idle, kDt, *w); w->step(kDt);
+            if (s.energy() >= t.maxEnergy - 0.01f) { recover = (float)i * kDt; break; }
+        }
+        bool fastRecover = recover >= 0.0f && recover <= 6.5f;
+        check(longBurst && noDryLockout && fastRecover,
+              "T11 energy pool sustains a long burst + recovers fast (no dry lockout)");
+        if (!longBurst || !fastRecover)
+            x3::logInfo("  [info] T11 sustain=" + std::to_string(sustain) +
+                        "s recover=" + std::to_string(recover) + "s");
+        w->shutdown();
+    }
+
+    // T12 — MUZZLE ON THE HULL (owner: "weapons fire ... looks like it comes
+    //       from anywhere BUT the ship"): the wing muzzles must sit ON the
+    //       ~10 m fighter hull (within 6 m of the ship's center, ahead of
+    //       amidships), and — NEGATIVE CONTROL — far from the 3P chase camera
+    //       the old camera-origin spawn math hung the bolts off of.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t;
+        t.chaseDistance = 22.0f; t.chaseHeight = 5.0f;   // the dogfight chase rig
+        t.defaultThirdPerson = true;
+        s.spawn(*w, 0.0f, 0.0f, 0.0f, t);
+        PlayerInput idle{};
+        for (int i = 0; i < 10; ++i) { s.update(idle, kDt, *w); w->step(kDt); }
+        bool onHull = true, aheadOk = true, offCamera = true;
+        float camP[3], camF[3], camU[3];
+        s.cameraBasis(camP, camF, camU);
+        const x3::phys::Vec3 sp = s.pos();
+        const x3::phys::Vec3 sf = s.forward();
+        for (int side = -1; side <= 1; side += 2) {
+            float mp[3], md[3];
+            s.wingMuzzle(side, mp, md);
+            const float dHull[3] = { mp[0]-sp.x, mp[1]-sp.y, mp[2]-sp.z };
+            const float distHull = std::sqrt(dHull[0]*dHull[0] + dHull[1]*dHull[1] + dHull[2]*dHull[2]);
+            if (distHull > 6.0f) onHull = false;                     // off the hull
+            if (dHull[0]*sf.x + dHull[1]*sf.y + dHull[2]*sf.z <= 0.0f)
+                aheadOk = false;                                      // behind amidships
+            const float dCam[3] = { mp[0]-camP[0], mp[1]-camP[1], mp[2]-camP[2] };
+            if (std::sqrt(dCam[0]*dCam[0] + dCam[1]*dCam[1] + dCam[2]*dCam[2]) < 10.0f)
+                offCamera = false;   // negative control: camera-origin spawn = old bug
+        }
+        check(onHull && aheadOk && offCamera,
+              "T12 wing muzzles sit ON the hull, ahead of amidships, far from the chase cam");
         w->shutdown();
     }
 

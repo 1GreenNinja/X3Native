@@ -33,9 +33,11 @@ namespace x3::game {
 //   MinusZ : front faces -Z
 enum class KeypadFacing : uint32_t { PlusX = 0, MinusX = 1, PlusZ = 2, MinusZ = 3 };
 
-// Status colour of the keypad screen + LED: Locked (red) or Unlocked/granted
-// (green). Drives the emissive tint only (geometry is identical).
-enum class KeypadStatus : uint32_t { Locked = 0, Unlocked = 1 };
+// Status colour of the keypad screen + LED: Locked (red), Unlocked/granted
+// (green), or Denied (amber — the code was VALID but entry is still refused:
+// the stairwell service-void doors' "SERVICE VOID - NO ATMOSPHERE" lore beat).
+// Drives the emissive tint only (geometry is identical).
+enum class KeypadStatus : uint32_t { Locked = 0, Unlocked = 1, Denied = 2 };
 
 // Build ONE realistic keypad at wall position (x,y,z) facing `facing`, and add it
 // to `scene`. `roomId` tags both entities for the per-room cull (pass the door's

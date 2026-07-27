@@ -33,10 +33,13 @@ struct CliOptions {
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
+         testVigil = false,      // --test-vigil: VIGIL bark system (trigger/cooldown/no-repeat/gate/idle)
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
+         testPropClip = false,    // --test-propclip: dressing-layer prop AABB vs room bounds (GATE A ext)
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
+         testOpening = false,      // --test-opening: opening-flow wake-in-cell contract (O1-O5)
          testDescMech = false,      // --test-descmech: W9-1 desc-field mechanics (Tier A verbs)
          testInventory = false,    // --test-inventory: W9-3 RPG backpack (add/stack/consume/cap + keycard door)
          testProgression = false,  // --test-progression: W9-3 XP -> level -> skill points + save round-trip
@@ -187,10 +190,35 @@ struct CliOptions {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+    // --test-complex (the 7-LEVEL SURVIVAL COMPLEX west of the club): build
+    // headless + assert all 7 levels stand up, the stairwell connects them
+    // top-to-bottom, both entrances (Route-A hatch + Route-B under-club hall)
+    // reach the structure, L7 is a hydroponics bay, NPC markers, budget + leak.
+    bool        testComplex = false;
+    // --screenshot-complex <dir>: capture per-level beauty shots of the Complex
+    // (L2 rec, L3-L6 themed floors, L7 hydroponics, the stairwell, the L7 hall).
+    bool        complexShot = false;
+    std::string complexShotDir = "docs/screenshots/complex";
+
+    // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
+    // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp
+    // of known LINEAR values and reads back the stored byte — linear 0.5 MUST land
+    // on ~188 (127 = still UNORM/unfixed). Self-contained headless Vulkan. Additive.
+    bool        testGamma = false;
+    // --test-clubnpcs (feat/club-npcs): the three canon dialogue NPCs (Danny at the
+    // U-bar, Amara + Emma in the Private Lounge) place with valid talk anchors; their
+    // three chat trees parse + FULL-reachability validate; E-to-talk resolves each;
+    // each `hub` tree starts + reaches its menu. Additive flag.
+    bool        testClubNpcs = false;
 
     // --test-jukebox (Club Jukebox): headless folder scan / sidecar parse / BPM
     // retune / empty-folder fallback / corrupt-skip on tiny generated WAVs.
     bool        testJukebox = false;
+
+    // --test-listen (CLUB LISTEN MODE): deterministic beat-detector self-test —
+    // feed a synthetic click-track at a known BPM through the detector (NO real
+    // audio device) and assert it recovers the onsets + tempo + fires the pulse.
+    bool        testListen = false;
 
     // --test-perfshop (LATE NIGHT SPEED): build the shop headless + assert its SCREENS
     // are displays — textured glass on the per-texel emissive path, real ink on a dark
@@ -342,6 +370,10 @@ struct CliOptions {
     // cell-vs-surface branch selection + the surface scene standing up headlessly
     // (glass facility, player outside + armed, Sarah rescue target). No window/Vulkan.
     bool        testSurfaceStart = false;
+    // --test-starsystems (x3.starsys/1): the named-star-system registry integrity
+    // gate — every system has a valid star + bodies, lookup by id/name round-trips,
+    // a negative control, the dogfight system is far from Sol. No window/Vulkan.
+    bool        testStarsystems = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -512,7 +544,15 @@ struct CliOptions {
     // --cuetime <s>            : start the played cutscene scrubbed to s seconds.
     // --cutscene-shot [path]   : HEADLESS film still — build the cinematic scene,
     //                            seek to --cuetime, capture one frame, exit. 4x SSAA.
+    // --nofilmic               : disable the cinematic FILMIC POST (vignette/grain/
+    //                            split-tone) for this run's cutscene playback/stills
+    //                            — the A/B lever for the film-strip pipeline.
+    // --test-filmic            : headless CPU-mirror self-test of the composite
+    //                            filmic block (defaults == identity + negative
+    //                            controls proving the probe can fail).
     bool        testCutscene = false;
+    bool        testFilmic   = false;
+    bool        noFilmic     = false;
     bool        skipIntro    = false;
     // --intro-force <shot_down|escaped> : DEV override for the interactive intro's
     // outcome (QA/tests). -1 = none (roll the skill-biased {chance}); 0 = force the
@@ -611,13 +651,18 @@ struct CliOptions {
     // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
     bool        captureAi    = false;
     std::string captureAiDir = "G:/X3Native/ai_action";
-    // Walk-capture mode (--capture-walk [outPath]): build ONE close-up animated
-    // guard (the multi-clip *_anim.glb when present), drive the T1 locomotion blend
-    // toward a steady WALK, settle the blend a fraction of a second, then capture a
-    // single PNG at a clearly mid-stride moment. Verifies the locomotion blend
-    // visibly in-engine. Headless / offscreen. Default outPath: build/walk_pose.png.
+    // Walk-capture mode (--capture-walk [outPath] [rigGlb]): build ONE close-up
+    // animated guard (the multi-clip *_anim.glb when present), drive the T1
+    // locomotion blend toward a steady WALK, settle the blend a fraction of a
+    // second, then capture a PNG at a clearly mid-stride moment PLUS a second
+    // frame 0.5 s later (<out>_t2.png) so vertical root-Y sink/bounce is
+    // eye-checkable across two clip times (grounded-anim QA: floor in frame,
+    // eye-height cam). Optional 2nd arg picks the rig (default marcus_webb.glb;
+    // e.g. AnnaCasual.glb proofs the crowd girl's Walk grounding). Headless /
+    // offscreen. Default outPath: build/walk_pose.png.
     bool        captureWalk     = false;
     std::string captureWalkPath = "G:/X3Native-wt-animt1/build/walk_pose.png";
+    std::string captureWalkRig  = "marcus_webb.glb";
     // Foot-IK capture (--screenshot-footik [outPath]): build ONE animated character
     // standing on a SLOPED + STEPPED surface with foot-IK ON, drive a slow idle/walk
     // blend, plant the feet on the surface (raycast down via the local physics world),

@@ -175,6 +175,12 @@ public:
     // cvars live and must not clobber a zone's atmosphere).
     void setFog(const FogParams& f) override;
     void setGrade(const GradeParams& g) override;
+    // Cinematic filmic post (vignette/grain/split-tone in the composite pass,
+    // post-tonemap). Cutscene-owned; enabled=false (the default) never enters
+    // the shader block -> byte-identical composite.
+    void setFilmic(const FilmicParams& f) override;
+    // Underwater caustics (mesh.frag; rides the SsaoControl caustics lane).
+    void setCaustics(const CausticsParams& c) override;
 
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
@@ -2312,6 +2318,12 @@ private:
                            // vec4-aligned tails (GLSL push layout): rgb tint + packed extra.
                            float shadowTint[4];      // rgb = shadow tint, w = saturation
                            float highlightTint[4];   // rgb = highlight tint, w = vignette
+                           // Cinematic filmic post (feat/filmic-post) — mirrors the
+                           // pc.filmic* vec4s in composite.frag. 112 B total, under
+                           // the 128 B push-constant guarantee.
+                           float filmic[4];          // x=enabled y=vignette z=grain w=seed
+                           float filmicShadow[4];    // rgb = shadow tint, w = saturation
+                           float filmicHighlight[4]; // rgb = highlight tint, w = grain px scale
                          };
     // Depth-fog fullscreen pass (ART_BIBLE §5). Push mirrors shaders/fog.frag.
     struct FogPush { glm::mat4 invProj; glm::vec4 colorDensity; glm::vec4 startMax; };
@@ -2491,6 +2503,9 @@ private:
         // all zero when inactive (the plain variant never references them).
         glm::vec4 rtsh0;        // x = tier, y = tan(sun angular radius), z = point ray budget K, w = light source radius (m)
         glm::vec4 rtsh1;        // x = frame seed (0 when TAA is off -> static dither)
+        // Underwater caustics (setCaustics): all zero when no host opted in ->
+        // the mesh.frag gate never opens (dry worlds byte-identical).
+        glm::vec4 caustics;     // x = enabled, y = water surface Y, z = time (s), w = intensity
     };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
@@ -2998,7 +3013,10 @@ private:
     float                   m_exposure = 1.0f;   // whole-scene brightness (composite pre-tonemap)
     // ---- Painterly levers (ART_BIBLE §5): host-opted zone atmosphere + grade ----
     FogParams               m_fogParams{};       // enabled=false -> fog pass never recorded
+    CausticsParams          m_caustics{};        // enabled=false -> mesh.frag caustics gate stays shut
     GradeParams             m_gradeParams{};     // strength=0 -> composite grade block inert
+    FilmicParams            m_filmic{};          // enabled=false -> composite filmic block inert
+    uint32_t                m_filmicFrame = 0;   // per-frame grain-seed advance (the crawl)
     glm::mat4               m_fogInvProjCPU{ 1.0f };  // frame inverse-projection for fog.frag
     VkPipelineLayout        m_fogLayout = VK_NULL_HANDLE;
     VkPipeline              m_fogPipe   = VK_NULL_HANDLE;

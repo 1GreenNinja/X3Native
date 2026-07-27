@@ -139,6 +139,27 @@ public:
     // the camera/character here (the elevator's disco descent drops the player in).
     x3::phys::Vec3 spawn() const { return m_spawn; }
 
+    // ---- CANON DIALOGUE NPCs (feat/club-npcs) --------------------------------
+    // The three Sovereign Rising characters brought to life in the club: Danny at
+    // the U-bar, Amara + Emma in the Private Lounge (Complex L1). Each is placed as
+    // an inert skinned character prop (same MonsterSystem path as the DJ/bouncer)
+    // and carries a talk anchor + a chat-tree id (docs/design/narrative/chat_trees/
+    // <id>.json). The host resolves E-to-talk against these anchors and starts the
+    // named entry tree on its ChatTreeSystem. Populated by build().
+    struct CanonNpc {
+        std::string   chatId;    // chat-tree npc id ("danny"/"amara"/"emma")
+        std::string   display;   // HUD label ("DANNY")
+        std::string   entryTree; // tree to start on E ("hub")
+        x3::phys::Vec3 anchor{}; // world talk anchor (feet position)
+        float         talkReach = 3.5f;   // E-to-talk radius (m)
+    };
+    const std::vector<CanonNpc>& canonNpcs() const { return m_canonNpcs; }
+
+    // Resolve the nearest canon NPC within its talk reach of `eye` (returns its
+    // index, or -1 for none). Shared by the host E-to-talk path and the
+    // --test-clubnpcs self-test so both exercise the SAME proximity logic.
+    int talkTarget(const x3::phys::Vec3& eye) const;
+
     // A good fixed showcase camera pose for the headless screenshot: an elevated
     // vantage over the dance floor that frames the DJ booth + the ORB + the bars.
     // Fills the 5 floats (x,y,z,yaw,pitch).
@@ -298,6 +319,28 @@ private:
     float                                         m_beatOffsetS = 0.0f;
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).
     std::vector<std::unique_ptr<MonsterSystem>>   m_chars;
+    // LNS GARAGE: the hero CAR on the two-post lift is a real GLB (Vehicles/CTR.glb)
+    // loaded as an inert prop in m_chars (index m_carCharIdx, -1 = not loaded).
+    // update() freezes it to (m_carPos, m_carYaw) each frame so it never drifts.
+    int                                           m_carCharIdx = -1;
+    x3::phys::Vec3                                m_carPos{};
+    float                                         m_carYaw = 0.0f;
+    // LNS GARAGE: DIY dome/starburst PARTY-PROJECTOR pattern discs (additive emissive
+    // geometry, NOT point lights — the budget is maxed). Authored centered at local
+    // origin; update() SPINS each about its own axis (transform 3x3) on the beat clock
+    // and breathes its emissive, throwing the signature spinning colored dots across
+    // the floor/ceiling. Reuses the beat grid; alongside (not replacing) the moving heads.
+    struct Projector {
+        uint32_t ent  = 0xFFFFFFFFu;   // the pattern disc entity
+        float    cx = 0, cy = 0, cz = 0;  // world center (transform translation)
+        float    spin = 0.5f;          // rad/s (sign = direction)
+        float    axis = 1.0f;          // +1 = spin about Y (floor/ceiling disc)
+        float    emBase = 2.0f, emAmp = 1.2f;
+        float    phase = 0.0f;         // spin phase offset
+    };
+    std::vector<Projector>                        m_projectors;
+    // Canon dialogue NPCs (Danny/Amara/Emma) — talk anchors + chat-tree ids.
+    std::vector<CanonNpc>                         m_canonNpcs;
 };
 
 // OLED SCREEN-CONTRAST PROBE (the regression guard for the washed-out-slab bug).
@@ -326,5 +369,19 @@ float clubOledEmissiveContrast(int hue, float emissiveMap, const float emissive[
 // the room footprint + Y=-200), tick a few frames, and confirm it is leak-clean.
 // Logs "club: X/Y passed" and returns true iff all pass. Lives in club1127.cpp.
 bool runClubSelfTest();
+
+// --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT (app/gamma_probe.cpp).
+// Clears a VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a
+// ramp of known LINEAR values and reads the stored byte back; linear 0.5 MUST land
+// on ~188 (127 = still UNORM/unfixed). Returns 0 on PASS, 1 on failure/gate miss.
+int runGammaProbe();
+// Headless self-test for `--test-clubnpcs` (feat/club-npcs): build the club at
+// Y=-200, assert the three canon dialogue NPCs (Danny at the U-bar, Amara + Emma
+// in the Private Lounge) place with valid talk anchors; load + FULL-reachability
+// validate their three chat trees (docs/design/narrative/chat_trees/danny|amara|
+// emma.json); confirm E-to-talk resolves each NPC from a point beside it (and
+// rejects a far point); and walk each NPC's `hub` entry tree so its start node +
+// menu are reachable. Logs "clubnpcs: X/Y passed" and returns true iff all pass.
+bool runClubNpcsSelfTest();
 
 } // namespace x3::game

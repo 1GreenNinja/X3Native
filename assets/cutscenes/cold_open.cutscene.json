@@ -7,27 +7,40 @@
 
   "comment": "PHASE 5 CLIP-SPLIT. The Intro Orchestrator (app/intro_orchestrator.cpp defaultIntroBeats) carves this single timeline into NAMED CLIP BEATS, with bounded interactive space-combat windows occupying the GAPS between them: cine.flight [0..20] -> play.dodge -> cine.reveal [20..30] -> cine.charge [30..36] -> play.dogfight (climax) -> cine.outcome. The outcome beat is OUTCOME-SELECTED: SHOT_DOWN plays [36..66] (the kill -> smash-to-black -> ESCAPE FROM LAB ZERO + SIX MONTHS LATER); ESCAPED plays [66..80] (you slip the kill-box, a glancing hit drains the antimatter, the ion-pulse drive ignites -> hands off to the Phase-6 atmo descent). Every authored span reads as a self-contained beat (camera framing, FX, titles). The capital ship resolves blob->detailed via a scale/distance ramp + an emissive ramp (emissiveFrom -> emissive) so it emerges as a lit, menacing hull instead of popping from a flat blob.",
 
+  "comment-dp": "CINEMATOGRAPHY RE-BLOCK (movie-grade pass). Beat boundaries UNCHANGED (cuts at 20/30/36/45/66, smash at 52.5). S1 cruise: low rear-quarter tracking cam, ship on the right third, home-planet limb anchoring the lower frame, slow push-in. S2 reveal: LOCKED-OFF camera on Jake's flight lane — Jake races away out of the foreground while the capital grows from a shape to edge-to-edge loom (subject exchange in one shot), BACKLIT via the per-shot sun lane. S3 charge: under the bow, panning off the hull down to the fleeing fighter (leading line down the hull). S4 hunted: camera AHEAD of Jake, he flies into the lens with the capital + charging gun behind him; near-miss tracers cross the frame. S5 kill: close side-cam inside the bolt lane — attacker top-frame, bolts travel INTO the shot, dutch roll kept (0/4/10/7); the tumble falls INTO SHADOW via a keyed sunLight drop. sunDir/sunLight keys ease per shot span and never cross a cut; spans without sun keys keep the baseline look.",
+
   "camera": {
     "keys": [
-      { "t": 0.0,  "pos": [0, 5, 18],       "look": [0, 1, -40],      "fov": 58 },
-      { "t": 6.0,  "pos": [4, 6, -60],      "look": [3, 2, -110],     "fov": 55 },
-      { "t": 12.0, "pos": [8, 6, -150],     "look": [6, 3, -200],     "fov": 52 },
-      { "t": 20.0, "pos": [10, 6, -250],    "look": [8, 3, -300],     "fov": 50 },
+      { "t": 0.0,  "pos": [12, -7.5, 26],   "look": [-6, 0.5, -30],   "fov": 48 },
+      { "t": 6.0,  "pos": [16, -6, -61],    "look": [-3, 2.2, -115],  "fov": 47 },
+      { "t": 12.0, "pos": [18, -5, -149],   "look": [0, 3.2, -200],   "fov": 46, "roll": 0.5 },
+      { "t": 20.0, "pos": [17.7, -4, -268], "look": [2.7, 2.5, -330], "fov": 44, "roll": 1.5 },
 
-      { "t": 20.0, "pos": [-10, 10, -180],  "look": [20, 38, -560],   "fov": 46, "cut": true },
-      { "t": 26.0, "pos": [-8, 12, -230],   "look": [19, 36, -420],   "fov": 44 },
-      { "t": 30.0, "pos": [-4, 14, -250],   "look": [18, 33, -320],   "fov": 46 },
+      { "t": 20.0, "pos": [-2, -6, -262],   "look": [10, 22, -600],   "fov": 50, "cut": true,
+        "sunDir": [-0.62, 0.55, -0.55], "sunLight": 5.5 },
+      { "t": 25.0, "pos": [-1, -5, -280],   "look": [17, 33, -500],   "fov": 47, "roll": -1 },
+      { "t": 30.0, "pos": [0, -4, -300],    "look": [18, 32, -322],   "fov": 45, "roll": -2,
+        "sunDir": [-0.65, 0.52, -0.55], "sunLight": 5.5 },
 
-      { "t": 30.0, "pos": [22, 8, -385],    "look": [10, 12, -340],   "fov": 45, "cut": true },
-      { "t": 36.0, "pos": [16, 6, -480],    "look": [8, 12, -445],    "fov": 42 },
+      { "t": 30.0, "pos": [16, 10, -372],   "look": [12, 28, -300],   "fov": 46, "cut": true,
+        "sunDir": [-0.92, -0.05, -0.39], "sunLight": 5.0 },
+      { "t": 33.0, "pos": [14, 8, -390],    "look": [10, 14, -380],   "fov": 44, "roll": 1.5 },
+      { "t": 36.0, "pos": [12, 6, -408],    "look": [8, 2, -495],     "fov": 42, "roll": 3,
+        "sunDir": [-0.95, -0.10, -0.30], "sunLight": 4.5 },
 
-      { "t": 36.0, "pos": [0, -8, -560],    "look": [10, 22, -430],   "fov": 50, "cut": true },
-      { "t": 45.0, "pos": [-4, -6, -700],   "look": [6, 12, -520],    "fov": 52 },
+      { "t": 36.0, "pos": [-2, -4, -585],   "look": [10, 16, -470],   "fov": 46, "cut": true,
+        "sunDir": [-0.95, 0.25, -0.15], "sunLight": 4.4 },
+      { "t": 41.0, "pos": [-3, -3, -608],   "look": [7, 12, -500],    "fov": 47, "roll": -1 },
+      { "t": 45.0, "pos": [-4, -2, -648],   "look": [5, 8, -530],     "fov": 48, "roll": -2,
+        "sunDir": [-0.95, 0.10, -0.20], "sunLight": 5.0 },
 
-      { "t": 45.0, "pos": [24, 10, -600],   "look": [4, 0, -640],     "fov": 55, "cut": true },
-      { "t": 47.2, "pos": [20, 7, -625],    "look": [2, -2, -662],    "fov": 58 },
-      { "t": 49.8, "pos": [8, -2, -650],    "look": [-6, -22, -700],  "fov": 64 },
-      { "t": 52.5, "pos": [-2, -28, -690],  "look": [-25, -90, -760], "fov": 70 },
+      { "t": 45.0, "pos": [-16, -9, -655],  "look": [8, 12, -528],    "fov": 46, "roll": 0,  "cut": true,
+        "sunDir": [-0.95, 0.10, -0.25], "sunLight": 5.0 },
+      { "t": 47.2, "pos": [-10, -6, -644],  "look": [2, -2, -660],    "fov": 50, "roll": 4 },
+      { "t": 49.8, "pos": [-22, -19, -688], "look": [-8, -29, -706],  "fov": 56, "roll": 10,
+        "sunDir": [-0.90, 0.00, -0.30], "sunLight": 4.0 },
+      { "t": 52.5, "pos": [-20, -70, -724], "look": [-26, -92, -762], "fov": 64, "roll": 7,
+        "sunDir": [-0.85, -0.15, -0.35], "sunLight": 1.0 },
 
       { "t": 66.0, "pos": [14, 4, -560],    "look": [2, 2, -620],     "fov": 56, "cut": true },
       { "t": 70.0, "pos": [10, 2, -640],    "look": [-2, 0, -700],    "fov": 54 },
@@ -132,9 +145,37 @@
       "showAt": 43.0,
       "hideAt": 47.3,
       "keys": [
-        { "t": 43.0, "pos": [7, 13, -448], "scale": 1.5 },
-        { "t": 45.0, "pos": [6, 13, -495], "scale": 4.0 },
-        { "t": 47.3, "pos": [5, 12, -520], "scale": 5.5 }
+        { "t": 43.0, "pos": [7, 13, -448], "scale": 3.0 },
+        { "t": 45.0, "pos": [6, 13, -495], "scale": 8.0 },
+        { "t": 47.3, "pos": [5, 12, -520], "scale": 12.0 }
+      ]
+    },
+    {
+      "id": "bolt_m1",
+      "model": "builtin:beam",
+      "stretch": [0.5, 0.5, 45.0],
+      "color": [1.0, 0.4, 0.25, 1.0],
+      "emissive": [7.0, 1.8, 0.8, 7.0],
+      "comment": "NEAR-MISS tracer #1 (hunted beat): ranging fire that streaks past Jake's starboard side while he flies into the lens — the attacker is IN the story before the kill shot lands.",
+      "showAt": 40.6,
+      "hideAt": 41.15,
+      "keys": [
+        { "t": 40.6,  "pos": [10, 20, -430], "rotDeg": [1, -7, 0], "scale": 1.0 },
+        { "t": 41.15, "pos": [14, -6, -640], "rotDeg": [1, -7, 0], "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "bolt_m2",
+      "model": "builtin:beam",
+      "stretch": [0.5, 0.5, 45.0],
+      "color": [1.0, 0.4, 0.25, 1.0],
+      "emissive": [7.0, 1.8, 0.8, 7.0],
+      "comment": "NEAR-MISS tracer #2: crosses the frame port-side, closer to the camera — the ranging bracket tightens.",
+      "showAt": 42.6,
+      "hideAt": 43.1,
+      "keys": [
+        { "t": 42.6, "pos": [8, 18, -450],   "rotDeg": [-5, -5.5, 0], "scale": 1.0 },
+        { "t": 43.1, "pos": [-10, -2, -655], "rotDeg": [-5, -5.5, 0], "scale": 1.0 }
       ]
     },
     {
@@ -195,11 +236,11 @@
       "color": [1.0, 0.6, 0.3, 1.0],
       "emissive": [8.0, 4.0, 1.6, 9.0],
       "showAt": 49.7,
-      "hideAt": 50.8,
+      "hideAt": 50.6,
       "keys": [
         { "t": 49.7, "pos": [-5, -20, -698], "scale": 1.0 },
-        { "t": 50.0, "pos": [-6, -23, -702], "scale": 8.0 },
-        { "t": 50.8, "pos": [-9, -32, -712], "scale": 2.5 }
+        { "t": 50.0, "pos": [-6, -23, -702], "scale": 7.0 },
+        { "t": 50.6, "pos": [-8, -29, -709], "scale": 1.5 }
       ]
     },
     {

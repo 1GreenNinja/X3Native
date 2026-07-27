@@ -1,0 +1,3192 @@
+{
+ "name": "space_station",
+ "biome": "space",
+ "playerStart": [
+  0.0,
+  3.7,
+  -20.0
+ ],
+ "entities": [
+  {
+   "name": "hangar_deck_0_0",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_0_1",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_0_2",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_0_3",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_1_0",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_1_1",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_1_2",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_1_3",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_2_0",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_2_1",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_2_2",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_2_3",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_3_0",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_3_1",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_3_2",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_deck_3_3",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_edge_w_0",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_edge_w_1",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_edge_w_2",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_edge_w_3",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_corner_sw",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -30.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Angle_05.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_corner_nw",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Angle_05.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_fence_w_0",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -24.134
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Room_Fence_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_fence_w_1",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -18.134
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Room_Fence_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_fence_w_2",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -12.134
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Room_Fence_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_fence_w_3",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -6.1339999999999995
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Room_Fence_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_wall_back_0",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -30.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_wall_back_1",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -30.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_wall_back_2",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -30.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_wall_back_3",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -30.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_wall_west_0",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_wall_east_0",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -30.0
+   ],
+   "yaw": -1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_wall_west_1",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_wall_east_1",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": -1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_0_0",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_0_1",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_0_2",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_0_3",
+   "type": "model",
+   "pos": [
+    -6.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_1_0",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_1_1",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_1_2",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_1_3",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_2_0",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_2_1",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_2_2",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_2_3",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_3_0",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_3_1",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_3_2",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -12.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_roof_3_3",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Roof_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_pylon_w",
+   "type": "model",
+   "pos": [
+    -16.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Wall_Big_Simple_02.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_pylon_w_cap",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    -6.0
+   ],
+   "yaw": 0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Wall_Big_Angle_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_pylon_e",
+   "type": "model",
+   "pos": [
+    16.0,
+    2.0,
+    -18.0
+   ],
+   "yaw": -1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Wall_Big_Simple_02.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_pylon_e_cap",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    -10.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Wall_Big_Angle_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_gear_a",
+   "type": "model",
+   "pos": [
+    -3.0,
+    2.0,
+    -21.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Landing_Gear_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_gear_b",
+   "type": "model",
+   "pos": [
+    3.0,
+    2.0,
+    -21.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Landing_Gear_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_radar_base",
+   "type": "model",
+   "pos": [
+    -9.0,
+    2.0,
+    -27.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Radar_Base_01.glb",
+   "script": ""
+  },
+  {
+   "name": "hangar_radar_dish",
+   "type": "model",
+   "pos": [
+    -9.0,
+    6.4,
+    -27.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Radar_Part_02.glb",
+   "script": ""
+  },
+  {
+   "name": "corridor_seg_0",
+   "type": "model",
+   "pos": [
+    -4.0,
+    2.0,
+    2.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Corridor_Coin_Big_01.glb",
+   "script": ""
+  },
+  {
+   "name": "corridor_floor_0",
+   "type": "model",
+   "pos": [
+    -4.0,
+    2.0,
+    2.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Corridor_Coin_Big_Bottom_01.glb",
+   "script": ""
+  },
+  {
+   "name": "corridor_seg_1",
+   "type": "model",
+   "pos": [
+    -4.0,
+    2.0,
+    10.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Corridor_Coin_Big_01.glb",
+   "script": ""
+  },
+  {
+   "name": "corridor_floor_1",
+   "type": "model",
+   "pos": [
+    -4.0,
+    2.0,
+    10.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Corridor_Coin_Big_Bottom_01.glb",
+   "script": ""
+  },
+  {
+   "name": "corridor_seg_2",
+   "type": "model",
+   "pos": [
+    -4.0,
+    2.0,
+    18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Corridor_Coin_Big_01.glb",
+   "script": ""
+  },
+  {
+   "name": "corridor_floor_2",
+   "type": "model",
+   "pos": [
+    -4.0,
+    2.0,
+    18.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Corridor_Coin_Big_Bottom_01.glb",
+   "script": ""
+  },
+  {
+   "name": "stargate_pad_core",
+   "type": "model",
+   "pos": [
+    0.0,
+    14.11414541103938,
+    30.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Platerform_Metal_02.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_connector_0_0",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_connector_0_1",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    30.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_connector_1_0",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_connector_1_1",
+   "type": "model",
+   "pos": [
+    6.0,
+    2.0,
+    30.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_edge_0",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    24.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_edge_1",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    30.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_edge_2",
+   "type": "model",
+   "pos": [
+    -12.0,
+    2.0,
+    36.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_edge_3",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    18.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_edge_4",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    24.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_edge_5",
+   "type": "model",
+   "pos": [
+    12.0,
+    2.0,
+    30.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Line_05.glb",
+   "script": ""
+  },
+  {
+   "name": "stargate_warp_01",
+   "type": "model",
+   "pos": [
+    0.0,
+    22.55087127685547,
+    36.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 0.05,
+   "tint": [
+    0.55,
+    0.85,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Stargate_Warp_01.glb",
+   "script": "",
+   "emissive": [
+    0.3,
+    0.7,
+    1.0,
+    2.2
+   ]
+  },
+  {
+   "name": "stargate_part_a",
+   "type": "model",
+   "pos": [
+    0.0,
+    22.55087127685547,
+    36.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 0.05,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Stargate_Part_A.glb",
+   "script": ""
+  },
+  {
+   "name": "stargate_part_b",
+   "type": "model",
+   "pos": [
+    0.0,
+    22.55087127685547,
+    36.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 0.05,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Stargate_Part_B.glb",
+   "script": ""
+  },
+  {
+   "name": "stargate_part_c",
+   "type": "model",
+   "pos": [
+    0.0,
+    22.55087127685547,
+    36.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 0.05,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Stargate_Part_C.glb",
+   "script": ""
+  },
+  {
+   "name": "mountain_base",
+   "type": "model",
+   "pos": [
+    0.0,
+    2.0,
+    42.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 0.075,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Space_Base_Module_01.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_light_a",
+   "type": "model",
+   "pos": [
+    -10.0,
+    2.0,
+    40.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Light_Exterior_01.glb",
+   "script": ""
+  },
+  {
+   "name": "pad2_light_b",
+   "type": "model",
+   "pos": [
+    9.0,
+    2.0,
+    40.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Light_Exterior_01.glb",
+   "script": ""
+  },
+  {
+   "name": "antenna_a",
+   "type": "model",
+   "pos": [
+    -10.0,
+    2.0,
+    36.0
+   ],
+   "yaw": 0.0,
+   "scale": 0.3,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Antena_03.glb",
+   "script": ""
+  },
+  {
+   "name": "airgrid_a",
+   "type": "model",
+   "pos": [
+    4.0,
+    2.0,
+    22.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Air_Grid_01.glb",
+   "script": ""
+  },
+  {
+   "name": "airgrid_b",
+   "type": "model",
+   "pos": [
+    -4.0,
+    2.0,
+    22.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Air_Grid_02.glb",
+   "script": ""
+  },
+  {
+   "name": "corridor_light_0",
+   "type": "light",
+   "pos": [
+    0.0,
+    5.0,
+    -2.0
+   ],
+   "yaw": 0,
+   "scale": 1.6,
+   "tint": [
+    0.55,
+    0.8,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "corridor_light_1",
+   "type": "light",
+   "pos": [
+    0.0,
+    5.0,
+    6.0
+   ],
+   "yaw": 0,
+   "scale": 1.6,
+   "tint": [
+    0.55,
+    0.8,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "corridor_light_2",
+   "type": "light",
+   "pos": [
+    0.0,
+    5.0,
+    14.0
+   ],
+   "yaw": 0,
+   "scale": 1.6,
+   "tint": [
+    0.55,
+    0.8,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "solar_east_mast_a",
+   "type": "model",
+   "pos": [
+    14.0,
+    2.0,
+    -15.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+   "script": ""
+  },
+  {
+   "name": "solar_east_mast_b",
+   "type": "model",
+   "pos": [
+    14.0,
+    7.0,
+    -15.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+   "script": ""
+  },
+  {
+   "name": "solar_east_cell_0_0",
+   "type": "model",
+   "pos": [
+    18.6,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_0_1",
+   "type": "model",
+   "pos": [
+    18.6,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_1_0",
+   "type": "model",
+   "pos": [
+    20.9,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_1_1",
+   "type": "model",
+   "pos": [
+    20.9,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_2_0",
+   "type": "model",
+   "pos": [
+    23.2,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_2_1",
+   "type": "model",
+   "pos": [
+    23.2,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_3_0",
+   "type": "model",
+   "pos": [
+    25.5,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_cell_3_1",
+   "type": "model",
+   "pos": [
+    25.5,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_mast_a",
+   "type": "model",
+   "pos": [
+    -14.0,
+    2.0,
+    -15.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+   "script": ""
+  },
+  {
+   "name": "solar_west_mast_b",
+   "type": "model",
+   "pos": [
+    -14.0,
+    7.0,
+    -15.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Pipe_Tube_02.glb",
+   "script": ""
+  },
+  {
+   "name": "solar_west_cell_0_0",
+   "type": "model",
+   "pos": [
+    -18.6,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_0_1",
+   "type": "model",
+   "pos": [
+    -18.6,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_1_0",
+   "type": "model",
+   "pos": [
+    -20.9,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_1_1",
+   "type": "model",
+   "pos": [
+    -20.9,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_2_0",
+   "type": "model",
+   "pos": [
+    -23.2,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_2_1",
+   "type": "model",
+   "pos": [
+    -23.2,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_3_0",
+   "type": "model",
+   "pos": [
+    -25.5,
+    13.0,
+    -18.05
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_west_cell_3_1",
+   "type": "model",
+   "pos": [
+    -25.5,
+    13.0,
+    -11.95
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Solar_Panel_04.glb",
+   "script": "",
+   "emissive": [
+    0.1,
+    0.3,
+    0.85,
+    1.15
+   ]
+  },
+  {
+   "name": "solar_east_glow",
+   "type": "light",
+   "pos": [
+    22.0,
+    12.0,
+    -15.0
+   ],
+   "yaw": 0,
+   "scale": 1.4,
+   "tint": [
+    0.25,
+    0.5,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "solar_west_glow",
+   "type": "light",
+   "pos": [
+    -22.0,
+    12.0,
+    -15.0
+   ],
+   "yaw": 0,
+   "scale": 1.4,
+   "tint": [
+    0.25,
+    0.5,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "reactor_pad",
+   "type": "model",
+   "pos": [
+    -28.0,
+    11.691316328831505,
+    6.0
+   ],
+   "yaw": 0.0,
+   "scale": 0.8,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Platerform_Metal_02.glb",
+   "script": ""
+  },
+  {
+   "name": "reactor_bridge_0",
+   "type": "model",
+   "pos": [
+    -10.0,
+    2.0,
+    9.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "reactor_bridge_1",
+   "type": "model",
+   "pos": [
+    -16.0,
+    2.0,
+    9.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol2Decoded/Plateform_Center_01.glb",
+   "script": ""
+  },
+  {
+   "name": "fusion_core",
+   "type": "model",
+   "pos": [
+    -28.0,
+    5.000034664886677,
+    6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Reactor_ColdFusion_01.glb",
+   "script": "",
+   "emissive": [
+    0.55,
+    0.88,
+    1.0,
+    3.2
+   ]
+  },
+  {
+   "name": "fusion_torus",
+   "type": "model",
+   "pos": [
+    -28.0,
+    6.880972551712137,
+    6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.6,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Light_Ring_01.glb",
+   "script": "",
+   "emissive": [
+    0.35,
+    0.8,
+    1.0,
+    2.6
+   ]
+  },
+  {
+   "name": "fusion_torus_up",
+   "type": "model",
+   "pos": [
+    -28.0,
+    10.080972551712136,
+    6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 1.2,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Light_Ring_01.glb",
+   "script": "",
+   "emissive": [
+    0.35,
+    0.8,
+    1.0,
+    2.2
+   ]
+  },
+  {
+   "name": "fusion_strut_a",
+   "type": "model",
+   "pos": [
+    -28.0,
+    2.0,
+    0.0
+   ],
+   "yaw": 0.0,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Reactor_Support_01.glb",
+   "script": ""
+  },
+  {
+   "name": "fusion_strut_b",
+   "type": "model",
+   "pos": [
+    -28.0,
+    2.0,
+    12.0
+   ],
+   "yaw": 3.141592653589793,
+   "scale": 1.0,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Reactor_Support_01.glb",
+   "script": ""
+  },
+  {
+   "name": "fusion_bank",
+   "type": "model",
+   "pos": [
+    -33.0,
+    5.0,
+    6.0
+   ],
+   "yaw": 1.5707963267948966,
+   "scale": 0.7,
+   "tint": [
+    1,
+    1,
+    1
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "ScifiKitVol3Decoded/Cruiser_Reactor_01.glb",
+   "script": "",
+   "emissive": [
+    0.3,
+    0.75,
+    1.0,
+    2.4
+   ]
+  },
+  {
+   "name": "fusion_key",
+   "type": "light",
+   "pos": [
+    -25.0,
+    6.880972551712137,
+    6.0
+   ],
+   "yaw": 0,
+   "scale": 3.2,
+   "tint": [
+    0.5,
+    0.85,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "fusion_fill",
+   "type": "light",
+   "pos": [
+    -28.0,
+    8.880972551712137,
+    6.0
+   ],
+   "yaw": 0,
+   "scale": 2.6,
+   "tint": [
+    0.45,
+    0.9,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "fusion_corridor",
+   "type": "light",
+   "pos": [
+    -6.0,
+    5.0,
+    6.0
+   ],
+   "yaw": 0,
+   "scale": 2.0,
+   "tint": [
+    0.4,
+    0.8,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "hangar_key",
+   "type": "light",
+   "pos": [
+    0.0,
+    10.5,
+    -18.0
+   ],
+   "yaw": 0,
+   "scale": 2.4,
+   "tint": [
+    1.0,
+    0.93,
+    0.8
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "hangar_mouth",
+   "type": "light",
+   "pos": [
+    0.0,
+    8.0,
+    -8.0
+   ],
+   "yaw": 0,
+   "scale": 1.8,
+   "tint": [
+    1.0,
+    0.95,
+    0.85
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "gate_wash_a",
+   "type": "light",
+   "pos": [
+    -8.0,
+    22.55087127685547,
+    36.0
+   ],
+   "yaw": 0,
+   "scale": 2.6,
+   "tint": [
+    0.4,
+    0.75,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "gate_wash_b",
+   "type": "light",
+   "pos": [
+    8.0,
+    22.55087127685547,
+    36.0
+   ],
+   "yaw": 0,
+   "scale": 2.6,
+   "tint": [
+    0.4,
+    0.75,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  },
+  {
+   "name": "gate_core",
+   "type": "light",
+   "pos": [
+    0.0,
+    22.55087127685547,
+    38.0
+   ],
+   "yaw": 0,
+   "scale": 3.0,
+   "tint": [
+    0.6,
+    0.9,
+    1.0
+   ],
+   "size": [
+    0,
+    0,
+    0
+   ],
+   "model": "",
+   "script": ""
+  }
+ ],
+ "brushes": [
+  {
+   "name": "floor_reactor_pad",
+   "type": 0,
+   "pos": [
+    -28.0,
+    1.85,
+    6.0
+   ],
+   "size": [
+    18.0,
+    0.3,
+    18.0
+   ],
+   "yaw": 0.0,
+   "tint": [
+    0.3,
+    0.3,
+    0.34
+   ],
+   "material": "floor",
+   "collide": 1
+  },
+  {
+   "name": "floor_reactor_bridge",
+   "type": 0,
+   "pos": [
+    -14.0,
+    1.85,
+    9.0
+   ],
+   "size": [
+    20.0,
+    0.3,
+    6.0
+   ],
+   "yaw": 0.0,
+   "tint": [
+    0.3,
+    0.3,
+    0.34
+   ],
+   "material": "floor",
+   "collide": 1
+  },
+  {
+   "name": "floor_hangar",
+   "type": 0,
+   "pos": [
+    0.0,
+    1.85,
+    -18.0
+   ],
+   "size": [
+    24.0,
+    0.3,
+    24.0
+   ],
+   "yaw": 0.0,
+   "tint": [
+    0.3,
+    0.3,
+    0.34
+   ],
+   "material": "floor",
+   "collide": 1
+  },
+  {
+   "name": "floor_corridor",
+   "type": 0,
+   "pos": [
+    0.0,
+    1.85,
+    6.0
+   ],
+   "size": [
+    8.0,
+    0.3,
+    24.0
+   ],
+   "yaw": 0.0,
+   "tint": [
+    0.3,
+    0.3,
+    0.34
+   ],
+   "material": "floor",
+   "collide": 1
+  },
+  {
+   "name": "floor_pad2",
+   "type": 0,
+   "pos": [
+    0.0,
+    1.85,
+    30.0
+   ],
+   "size": [
+    24.0,
+    0.3,
+    24.0
+   ],
+   "yaw": 0.0,
+   "tint": [
+    0.3,
+    0.3,
+    0.34
+   ],
+   "material": "floor",
+   "collide": 1
+  },
+  {
+   "name": "void_floor",
+   "type": 0,
+   "pos": [
+    0.0,
+    -38.0,
+    6.0
+   ],
+   "size": [
+    400.0,
+    0.5,
+    400.0
+   ],
+   "yaw": 0.0,
+   "tint": [
+    0.05,
+    0.05,
+    0.08
+   ],
+   "material": "solid",
+   "collide": 0
+  }
+ ]
+}

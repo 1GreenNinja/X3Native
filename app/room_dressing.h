@@ -96,6 +96,15 @@ public:
 
     uint32_t roomsDressed() const { return m_roomsDressed; }
 
+    // QA PROP-CLIP LINT (GATE A extension, app/qa_propclip.cpp): enumerate every
+    // placed kit-prop instance — containing room, source asset path, its loaded
+    // drawables (meshId + nodeTransform), and the instance world transform — so
+    // the headless audit can compute world AABBs. Read-only; keeps internals private.
+    void forEachPropInstance(
+        const std::function<void(uint32_t room, const std::string& assetPath,
+                                 const std::vector<x3::asset::ModelDrawable>& drawables,
+                                 const float* transform)>& fn) const;
+
     // F2 rescue-wing capture proof (--test-wingdressing W5): how many rescue beds +
     // restrained captives the "Rescue Room" recipe branch actually placed (3 expected —
     // Aria / Keisha / Emily). captivesPlaced counts a real loaded character GLB on a bed.

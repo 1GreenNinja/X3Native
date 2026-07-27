@@ -90,8 +90,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-canonlevel") o.testCanonLevel = true;
         else if (a == "--test-keypad") o.testKeypad = true;   // realistic keypad geometry (KP1-KP6)
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
+        else if (a == "--test-propclip") o.testPropClip = true;     // GATE A ext: dressing prop clip audit
         else if (a == "--test-canonplay") o.testCanonPlay = true;
         else if (a == "--test-goldenpath") o.testGoldenPath = true;
+        else if (a == "--test-opening") o.testOpening = true;   // opening-flow wake-in-cell contract
         else if (a == "--test-descmech") o.testDescMech = true;   // W9-1 desc-field mechanics (Tier A)
         else if (a == "--test-inventory") o.testInventory = true;       // W9-3 RPG backpack
         else if (a == "--test-progression") o.testProgression = true;   // W9-3 XP/levels
@@ -147,6 +149,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-thirdperson") o.testThirdPerson = true;
         else if (a == "--test-npctalk") o.testNpcTalk = true;
         else if (a == "--test-chattree") o.testChatTree = true;
+        else if (a == "--test-vigil") o.testVigil = true;
         else if (a == "--test-mission") o.testMission = true;
         else if (a == "--test-destruction") o.testDestruction = true;
         else if (a == "--test-debris") o.testDebris = true;
@@ -222,7 +225,15 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-valley") o.testValley = true;
         else if (a == "--test-cliffs") o.testCliffs = true;
         else if (a == "--test-club") o.testClub = true;
+        else if (a == "--test-gamma") o.testGamma = true;
+        else if (a == "--test-complex") o.testComplex = true;
+        else if (a == "--screenshot-complex") {                                   // 7-level Complex beauty set
+            o.complexShot = true; o.worldMode = "complex"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.complexShotDir = argv[++i];
+        }
+        else if (a == "--test-clubnpcs") o.testClubNpcs = true;
         else if (a == "--test-jukebox") o.testJukebox = true;
+        else if (a == "--test-listen") o.testListen = true;
         else if (a == "--test-perfshop") o.testPerfshop = true;
         else if (a == "--test-space") o.testSpace = true;
         else if (a == "--test-eva") o.testEva = true;
@@ -241,6 +252,14 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // the LevelDoc to boot (default = the editor's File>Save target).
             if (o.worldMode == "fromdoc" && i + 1 < argc && argv[i + 1][0] != '-')
                 o.docWorldPath = argv[++i];
+            // `--world spacestation`: the rescued deep-space station scene. A thin
+            // alias over the LevelDoc loader — it boots the committed station doc
+            // (whose biome "space" drives the deep-space sky + distant-Sol bodies)
+            // unless an explicit doc path is given after it.
+            if (o.worldMode == "spacestation") {
+                if (i + 1 < argc && argv[i + 1][0] != '-') o.docWorldPath = argv[++i];
+                else o.docWorldPath = "assets/levels/space_station.leveldoc.json";
+            }
         }
         else if (a == "--stress") {
             if (i + 1 < argc) { o.stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
@@ -411,6 +430,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // else-if ladder above — MSVC C1061 nesting limit). Disjoint exact matches,
         // so re-starting the chain is behavior-identical.
         if (a == "--test-cutscene") o.testCutscene = true;
+        else if (a == "--test-filmic") o.testFilmic = true;
+        else if (a == "--nofilmic") o.noFilmic = true;
         else if (a == "--skipintro") o.skipIntro = true;
         else if (a == "--cutscene") {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.cutsceneFile = argv[++i];
@@ -465,6 +486,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--capture-walk") {
             o.captureWalk = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWalkPath = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWalkRig  = argv[++i];
         }
         else if (a == "--screenshot-footik") {
             o.captureFootIk = true;
@@ -500,6 +522,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
+        else if (a == "--test-starsystems") o.testStarsystems = true;
         else if (a == "--intro-force") {
             // DEV: force the interactive-intro outcome branch.
             if (i + 1 < argc && argv[i + 1][0] != '-') {

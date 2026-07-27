@@ -42,14 +42,14 @@ constexpr float kStepFrac[(int)LoadStep::Count] = {
 // every kTipPeriod seconds so the wait teaches the controls + the stakes.
 const char* const kTips[] = {
     "F1 / F2 toggle first- and third-person view.",
-    "Press E at a terminal — code 1278 unlocks your cell.",
+    "Press E at a terminal - code 1278 unlocks your cell.",
     "Save the captives before the impregnation timer runs out.",
     "Cycle weapons with the number keys or the mouse wheel.",
-    "L toggles your flashlight — the labs run dark.",
+    "L toggles your flashlight - the labs run dark.",
     "Some cell floors hide a trapdoor. Listen for the hollow tile.",
     "Interrupt a breeder mid-impregnation to save the girl.",
     "Esc pauses. The clock does not.",
-    "Reload often — empty mags get you killed in the wards.",
+    "Reload often - empty mags get you killed in the wards.",
     "Martinez guards the arena. Bring the elevator down behind him.",
 };
 constexpr int kTipCount = (int)(sizeof(kTips) / sizeof(kTips[0]));

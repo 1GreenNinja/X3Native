@@ -193,6 +193,19 @@ private:
     x3::asset::Model                         m_doorModel;
     std::vector<x3::asset::ModelDrawable>    m_doorDrawables;
     bool m_meshOk = false;
+
+    // QA MAINLEVEL SWEEP (LAW 1 seal) — SM_Door_A is a SINGLE PENTAGON LEAF: its
+    // authored silhouette covers only ~72% of its bounding rect (the top-right
+    // triangle is open air), and the height-fit scale leaves ~10 cm side margins
+    // against the 1.6 m wall cut. A CLOSED door therefore leaked a sightline into
+    // the PVS-culled neighbour room, which rendered as an amber fog VOID (the
+    // "tan slabs" seen through every cell doorway). This slim opaque BACKING SLAB
+    // is sized to the full opening + bezel and slides with the leaf: it hides
+    // INSIDE the leaf's 0.13 m thickness wherever the leaf exists (faces ~45 mm
+    // apart — no z-fight) and reads as the door's dark back-plate through the
+    // notch. Created in loadDoorMesh(); drawn per-door in drawMeshes().
+    x3::rhi::MeshHandle m_fillMesh{};   // unit cube, half-extents 0.5, origin-centred
+    x3::rhi::TextureHandle m_fillMr{};  // 1x1 matte dielectric MR texel (rough 0.85, metal 0)
 };
 
 // Resolve which door (if any) a use-ray is aiming at: raycast from `eye` along

@@ -47,6 +47,7 @@ const char* shipAIStateName(ShipAIState s) {
         case ShipAIState::Engage: return "Engage";
         case ShipAIState::Evade:  return "Evade";
         case ShipAIState::Strafe: return "Strafe";
+        case ShipAIState::Orbit:  return "Orbit";
     }
     return "?";
 }
@@ -60,6 +61,7 @@ void EnemyShipManager::init(uint32_t count) {
     ships_.reserve(count);
     fireEvents_.clear();
     fireEvents_.reserve(count);
+    spawnSeq_ = 0;
 }
 
 void EnemyShipManager::spawn(const float pos[3]) {
@@ -74,6 +76,16 @@ void EnemyShipManager::spawn(const float pos[3]) {
     s.maxHull = shipai::kDefaultHull;
     s.state = ShipAIState::Patrol;
     s.fireCooldown = 0.0f;
+    s.hitFlash = 0.0f;
+    // Orbit bookkeeping: seed by SPAWN ORDER so every ship in a wing gets its own
+    // orbit direction, weave phase, and attack cadence — three fighters circle as
+    // individuals, never a synchronized carousel.
+    s.seed        = spawnSeq_++;
+    s.orbitSign   = (s.seed & 1u) ? -1 : +1;
+    s.orbitPhase  = (float)s.seed * 1.7f;
+    s.attackTimer = shipai::kFirstRunDelay + 0.45f * (float)(s.seed % 6u);
+    s.modeTimer   = 0.0f;
+    s.runMode     = 0;
     ships_.push_back(s);
 }
 
@@ -86,6 +98,7 @@ void EnemyShipManager::damageShip(uint32_t i, int amount) {
     if (amount <= 0 || i >= ships_.size()) return;
     EnemyShip& s = ships_[i];
     s.hull -= amount;
+    s.hitFlash = shipai::kHitFlashSec;   // instant hit feedback (host tints the draw)
     if (s.hull <= 0) {
         s.hull = 0;
         // Swap-remove: keep the live array packed (MonsterManager pattern).
@@ -105,7 +118,11 @@ void EnemyShipManager::update(float dt, const float playerPos[3], const float pl
     //      coordinates and flying ON TOP OF the camera. The player's shield bubble
     //      repels any enemy that penetrates it back out to kShieldStandoff, so a
     //      contact is always at a readable range instead of clipping through you.
-    constexpr float kShieldStandoff = 500.0f;
+    // 60 m, NOT 500: at 500 every fighter lived beyond visual range (a 10 m ship
+    // subtends ~15 px at 500 m) — "the enemy just disappears!". 60 m keeps the
+    // dogfight CLOSE and readable while still refusing hull overlap ("I fly right
+    // thru the enemy ship").
+    constexpr float kShieldStandoff = 60.0f;
     for (auto& s : ships_) {
         float to[3] = { s.pos[0] - playerPos[0], s.pos[1] - playerPos[1], s.pos[2] - playerPos[2] };
         const float d = len3(to);
@@ -126,6 +143,10 @@ void EnemyShipManager::tickShip(uint32_t i, float dt,
         s.fireCooldown -= dt;
         if (s.fireCooldown < 0.0f) s.fireCooldown = 0.0f;
     }
+    if (s.hitFlash > 0.0f) {
+        s.hitFlash -= dt;
+        if (s.hitFlash < 0.0f) s.hitFlash = 0.0f;
+    }
 
     // ---- Geometry vs. the player target ------------------------------------
     float toPlayer[3];
@@ -143,15 +164,56 @@ void EnemyShipManager::tickShip(uint32_t i, float dt,
     const float hullFrac = s.maxHull > 0 ? (float)s.hull / (float)s.maxHull : 0.0f;
     const bool  lowHull  = hullFrac <= shipai::kEvadeHullFrac;
 
+    // ---- Orbit / attack-run timers -----------------------------------------
+    if (s.modeTimer > 0.0f)   { s.modeTimer -= dt;   if (s.modeTimer < 0.0f)   s.modeTimer = 0.0f; }
+    if (s.runMode == 0 && s.attackTimer > 0.0f && inDetect)
+        s.attackTimer -= dt;                    // the next pass only cooks while engaged
+    s.orbitPhase += dt * (0.7f + 0.13f * (float)(s.seed % 5u));   // per-ship weave clock
+
     // ---- State decision ----------------------------------------------------
+    // The orbit/run/peel cycle (owner: "it hovers on top of me! it should be
+    // circling! I need to zip and zoom around it"): inside kOrbitEnterDist the
+    // ship CIRCLES the player (Orbit) until its seeded attack timer expires, then
+    // breaks into a straight strafing pass (Strafe, kAttackRunSec), peels off
+    // (Evade, kPeelSec), and re-enters orbit with a fresh staggered timer. The
+    // long-range states (Patrol/Engage + the classic lined-up Strafe) keep their
+    // pre-orbit shape.
     if (!inDetect) {
         s.state = ShipAIState::Patrol;
+        s.runMode = 0; s.modeTimer = 0.0f;
     } else if (lowHull) {
         s.state = ShipAIState::Evade;          // peel off + reset the pass
+        s.runMode = 0; s.modeTimer = 0.0f;
+    } else if (s.runMode == 1) {
+        // ATTACK RUN: hold the pass until the leg expires or the ship TRULY
+        // overshoots (aim well negative — the nose starts ~tangential coming out
+        // of orbit, so a plain `behind` (aim < 0) would abort the run on tick 1).
+        s.state = ShipAIState::Strafe;
+        if (s.modeTimer <= 0.0f || aim < -0.35f) { s.runMode = 2; s.modeTimer = shipai::kPeelSec; }
+    } else if (s.runMode == 2) {
+        // PEEL: arc away, then re-orbit with a fresh (seeded, varied) cadence.
+        s.state = ShipAIState::Evade;
+        if (s.modeTimer <= 0.0f) {
+            s.runMode = 0;
+            s.attackTimer = shipai::kNextRunDelay +
+                            0.5f * (float)((s.seed * 7u + (uint32_t)(s.orbitPhase * 13.7f)) % 6u);
+        }
+    } else if (dist < shipai::kOrbitEnterDist) {
+        // CLOSE: circle the player; break into a pass when the timer expires.
+        if (s.attackTimer <= 0.0f) {
+            s.runMode = 1; s.modeTimer = shipai::kAttackRunSec;
+            s.state = ShipAIState::Strafe;
+        } else {
+            s.state = ShipAIState::Orbit;
+        }
     } else if (inRange && inCone) {
-        s.state = ShipAIState::Strafe;         // lined up -> attack
-    } else if (inRange && behind) {
-        s.state = ShipAIState::Evade;          // overshot the target, swing around
+        s.state = ShipAIState::Strafe;         // lined up -> attack (long-range pass)
+    } else if (inRange && behind && dist < shipai::kOrbitEnterDist) {
+        // Overshot AT CLOSE RANGE: swing around. Farther out, Engage turns the
+        // ship back toward the fight instead — the unconditional inRange+behind
+        // Evade used to chain with the peel and run the ship 300+ m off the
+        // fight before it ever turned around.
+        s.state = ShipAIState::Evade;
     } else {
         s.state = ShipAIState::Engage;         // close + line up
     }
@@ -179,17 +241,75 @@ void EnemyShipManager::tickShip(uint32_t i, float dt,
             break;
         }
         case ShipAIState::Evade: {
-            // Peel AWAY from the player (steer along the reverse of the approach),
-            // with a lateral component so it arcs out instead of braking dead.
-            desired[0] = -dirToPlayer[0] + s.fwd[1];
-            desired[1] = -dirToPlayer[1] + s.fwd[2];
-            desired[2] = -dirToPlayer[2] + s.fwd[0];
+            if (s.runMode == 2) {
+                // POST-PASS PEEL: arc out ALONG the ship's own orbit direction so
+                // the peel flows straight back into the same circulation — peeling
+                // against it reversed the accumulated sweep and read as aimless
+                // wandering instead of a fighter's racetrack pattern.
+                float tang[3] = { dirToPlayer[2] * (float)s.orbitSign, 0.0f,
+                                  -dirToPlayer[0] * (float)s.orbitSign };
+                if (len3(tang) < 1e-4f) { tang[0] = (float)s.orbitSign; tang[2] = 0.0f; }
+                normalize3(tang);
+                desired[0] = -dirToPlayer[0] + 0.9f * tang[0];
+                desired[1] = -dirToPlayer[1] + 0.9f * tang[1];
+                desired[2] = -dirToPlayer[2] + 0.9f * tang[2];
+            } else {
+                // Damage/overshoot evade: peel along the reverse of the approach,
+                // with a lateral component so it arcs out instead of braking dead.
+                desired[0] = -dirToPlayer[0] + s.fwd[1];
+                desired[1] = -dirToPlayer[1] + s.fwd[2];
+                desired[2] = -dirToPlayer[2] + s.fwd[0];
+            }
+            normalize3(desired);
+            break;
+        }
+        case ShipAIState::Orbit: {
+            // CIRCLE the player: steer along the TANGENT of the circle around the
+            // player (cross(worldUp, dirToPlayer), signed per ship), blended with
+            // an inward/outward radial term that holds the orbit band around
+            // kOrbitRadius, plus a small seeded vertical weave so the pass reads
+            // as a 3D fighter arc, not a flat carousel disc.
+            float tang[3] = { dirToPlayer[2] * (float)s.orbitSign, 0.0f,
+                              -dirToPlayer[0] * (float)s.orbitSign };
+            if (len3(tang) < 1e-4f) {           // player dead above/below: degenerate
+                tang[0] = (float)s.orbitSign; tang[1] = 0.0f; tang[2] = 0.0f;
+            }
+            normalize3(tang);
+            // radialErr > 0 -> too far out -> blend TOWARD the player (inward).
+            const float radialErr = clampf((dist - shipai::kOrbitRadius) /
+                                           shipai::kOrbitBandHalf, -1.0f, 1.0f);
+            desired[0] = tang[0] + dirToPlayer[0] * radialErr * shipai::kOrbitRadialGain;
+            desired[1] = tang[1] + dirToPlayer[1] * radialErr * shipai::kOrbitRadialGain
+                         + shipai::kOrbitWeave * std::sin(s.orbitPhase);
+            desired[2] = tang[2] + dirToPlayer[2] * radialErr * shipai::kOrbitRadialGain;
             normalize3(desired);
             break;
         }
     }
 
     // ---- Steer velocity toward `desired`, integrate, clamp -----------------
+    // ATTACK-RUN NOSE PULL: on a strafing pass the ship BLEEDS its cross-track
+    // velocity (the tangential speed it carried out of orbit) so the nose comes
+    // around onto the firing line fast — without this the orbit's sideways
+    // momentum keeps the target outside the fire cone for most of the pass.
+    if (s.state == ShipAIState::Strafe) {
+        const float vAlong = dot3(s.vel, desired);
+        const float keep = std::max(0.0f, 1.0f - shipai::kRunTurnBleed * dt);
+        for (int k = 0; k < 3; ++k) {
+            const float cross = s.vel[k] - desired[k] * vAlong;
+            s.vel[k] = desired[k] * vAlong + cross * keep;
+        }
+    }
+    // ORBIT RADIAL SETTLE: bleed the velocity component along the player axis
+    // while circling, so the peel's outward momentum converts into circulation
+    // instead of porpoising the ship across the band (60 <-> 130 in/out swings
+    // that read as lunging, not circling).
+    if (s.state == ShipAIState::Orbit) {
+        const float vRad = dot3(s.vel, dirToPlayer);   // +ve = closing on player
+        const float bleed = std::min(1.0f, shipai::kOrbitRadialBleed * dt);
+        for (int k = 0; k < 3; ++k)
+            s.vel[k] -= dirToPlayer[k] * vRad * bleed;
+    }
     for (int k = 0; k < 3; ++k)
         s.vel[k] += desired[k] * shipai::kAccel * dt;
 
@@ -384,6 +504,149 @@ bool runShipAiSelfTest() {
         }
         check(maxObserved <= shipai::kMaxSpeed + 0.5f && maxObserved > 1.0f,
               "T8 speed clamped to kMaxSpeed");
+    }
+
+    // T9 — an in-range enemy ORBITS the player: its bearing angle around the
+    //      player ADVANCES over time (it carves circles/arcs) instead of
+    //      converging onto the player's coordinates and hovering. -------------
+    {
+        EnemyShipManager m; m.init(4);
+        const float sp[3] = { 100.0f, 0.0f, 0.0f };   // inside the orbit band
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        // Accumulate the UNWRAPPED bearing (atan2 around the player in the XZ
+        // plane) so full revolutions keep counting instead of wrapping to zero.
+        auto bearing = [&]() {
+            const auto& s = m.ship(0);
+            return std::atan2(s.pos[2] - pp[2], s.pos[0] - pp[0]);
+        };
+        float prevB = bearing();
+        double cumAngle = 0.0;          // signed, unwrapped
+        float  minDist = 1e9f, maxDist = 0.0f;
+        bool   sawOrbitState = false;
+        const float kPi = 3.14159265358979f;
+        for (int i = 0; i < 1200; ++i) {            // 20 s of flight
+            m.update(dt, pp, pv);
+            float b = bearing();
+            float db = b - prevB;
+            if (db >  kPi) db -= 2.0f * kPi;        // unwrap the seam
+            if (db < -kPi) db += 2.0f * kPi;
+            cumAngle += db;
+            prevB = b;
+            const auto& s = m.ship(0);
+            const float d = std::sqrt(s.pos[0]*s.pos[0] + s.pos[1]*s.pos[1] +
+                                      s.pos[2]*s.pos[2]);
+            if (d < minDist) minDist = d;
+            if (d > maxDist) maxDist = d;
+            if (s.state == ShipAIState::Orbit) sawOrbitState = true;
+        }
+        // Over 20 s the ship must sweep well past a half revolution in total
+        // bearing (attack runs interrupt the circle, so demand > ~pi, not 2*pi).
+        check(std::fabs(cumAngle) > 3.0, "T9 in-range enemy's bearing ADVANCES (orbits)");
+        check(sawOrbitState, "T9b Orbit state was entered while in the band");
+        // It never converges onto the player (the standoff is 60; assert with
+        // slack) and never wanders out of the fight either.
+        check(minDist > 40.0f && maxDist < 400.0f,
+              "T9c orbiting enemy holds a band (no convergence, no fly-away)");
+        x3::logInfo("  [info] T9 cumBearing=" + std::to_string(cumAngle) +
+                    " rad over 20 s, dist band [" + std::to_string(minDist) +
+                    ", " + std::to_string(maxDist) + "] m");
+    }
+
+    // T10 — NEGATIVE CONTROL for the bearing metric: a converge-and-hover
+    //       trajectory (the OLD behaviour: close on the player, park on the
+    //       standoff sphere) accumulates ~zero bearing. Proves T9's assertion
+    //       actually discriminates orbiting from hovering. -------------------
+    {
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        float pos[3] = { 100.0f, 0.0f, 0.0f };
+        float prevB = std::atan2(pos[2], pos[0]);
+        double cumAngle = 0.0;
+        const float kPi = 3.14159265358979f;
+        for (int i = 0; i < 1200; ++i) {
+            // Straight-line converge at 60 m/s until the 60 m standoff, then park.
+            const float d = std::sqrt(pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2]);
+            if (d > 60.0f) {
+                const float step = 60.0f * dt / d;
+                pos[0] -= pos[0] * step; pos[1] -= pos[1] * step; pos[2] -= pos[2] * step;
+            }
+            float b = std::atan2(pos[2], pos[0]);
+            float db = b - prevB;
+            if (db >  kPi) db -= 2.0f * kPi;
+            if (db < -kPi) db += 2.0f * kPi;
+            cumAngle += db;
+            prevB = b;
+        }
+        check(std::fabs(cumAngle) < 0.3,
+              "T10 negative control: converge-and-hover reads ~zero bearing sweep");
+    }
+
+    // T11 — DAMAGE-STATE FX staging keyed to hull fraction. NEGATIVE CONTROL:
+    //       a full-hull ship gets ZERO damage emitters; staging is monotonic
+    //       (more damage never emits LESS) and each stage adds its layer.
+    {
+        const auto full  = shipai::damageFxProfile(1.0f);
+        const auto s60   = shipai::damageFxProfile(0.60f);   // < 75%: sparks
+        const auto s40   = shipai::damageFxProfile(0.40f);   // < 50%: + smoke
+        const auto s10   = shipai::damageFxProfile(0.10f);   // < 25%: + embers
+        bool noneAtFull  = full.sparkPeriod == 0 && full.smokePeriod == 0 &&
+                           full.emberPeriod == 0;
+        bool sparksAt60  = s60.sparkPeriod > 0 && s60.smokePeriod == 0 &&
+                           s60.emberPeriod == 0;
+        bool smokeAt40   = s40.sparkPeriod > 0 && s40.smokePeriod > 0 &&
+                           s40.emberPeriod == 0;
+        bool burnAt10    = s10.sparkPeriod > 0 && s10.smokePeriod > 0 &&
+                           s10.emberPeriod > 0;
+        // Monotonic: a period never LENGTHENS (0 = off counts as +inf) as hull drops.
+        auto denser = [](int hi, int lo) { return lo != 0 && (hi == 0 || lo <= hi); };
+        bool monotonic = denser(s60.sparkPeriod, s40.sparkPeriod) &&
+                         denser(s40.sparkPeriod, s10.sparkPeriod) &&
+                         denser(s40.smokePeriod, s10.smokePeriod);
+        check(noneAtFull && sparksAt60 && smokeAt40 && burnAt10 && monotonic,
+              "T11 damage FX staged by hull fraction (full hull = ZERO emitters)");
+    }
+
+    // T12 — VIS-COMPENSATED HIT RADIUS (owner: "allow me to hit the tiny enemy
+    //       ships too!"): the draw grows distant ships by visCompFactor, so the
+    //       hit test's acceptance radius must grow by the SAME factor. A shot at
+    //       a 500 m enemy aimed at its VISUAL edge registers; NEGATIVE CONTROL:
+    //       the same shot against the old fixed base radius misses.
+    {
+        const float dist = 500.0f;
+        const float comp = shipai::visCompFactor(dist);
+        // Aim at the drawn silhouette's edge (95% out — inside what the player sees).
+        const float aimOff = shipai::kHitBaseRadius * comp * 0.95f;
+        // Ray from origin toward the enemy at (500, 0, aimOff-off-axis).
+        const float oc[3] = { dist, 0.0f, 0.0f };            // enemy true position
+        float rd[3] = { dist, 0.0f, aimOff };                // aim point on the visual edge
+        const float rl = std::sqrt(rd[0]*rd[0] + rd[2]*rd[2]);
+        rd[0] /= rl; rd[1] = 0.0f; rd[2] /= rl;
+        const float tca = oc[0]*rd[0] + oc[1]*rd[1] + oc[2]*rd[2];
+        const float d2c = oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - tca*tca;
+        const float scaledR = shipai::kHitBaseRadius * shipai::visCompFactor(tca);
+        bool hitsScaled  = d2c <= scaledR * scaledR;                       // NEW: registers
+        bool missesFixed = d2c > shipai::kHitBaseRadius * shipai::kHitBaseRadius; // OLD: missed
+        bool closeUnchanged = shipai::visCompFactor(100.0f) == 1.0f;       // no assist up close
+        check(hitsScaled && missesFixed && closeUnchanged,
+              "T12 hit radius tracks the DRAWN silhouette at range (old fixed radius misses)");
+    }
+
+    // T13 — HULL HIT-FLASH: damageShip arms the flash on a surviving ship; it
+    //       decays back to zero over update() ticks (instant feedback, no latch).
+    {
+        EnemyShipManager m; m.init(2);
+        const float sp[3] = { 100.0f, 0.0f, 0.0f };
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        bool clean = m.ship(0).hitFlash == 0.0f;
+        m.damageShip(0, 5);
+        bool armed = m.ship(0).hitFlash > 0.0f;
+        const int decayTicks = (int)(shipai::kHitFlashSec / dt) + 2;
+        for (int i = 0; i < decayTicks; ++i) m.update(dt, pp, pv);
+        bool decayed = m.ship(0).hitFlash == 0.0f;
+        check(clean && armed && decayed, "T13 hit-flash arms on damage + decays");
     }
 
     x3::logInfo(std::string("[shipai-test] ") + std::to_string(g_pass) + " passed, " +

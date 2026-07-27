@@ -35,11 +35,13 @@
 #include "club1127.h"
 #include "mesh_prims.h"
 #include "asset_root.h"
+#include "club_listen.h"   // CLUB LISTEN MODE: live-detected beat drive (external input)
 
 #include "engine/core/x3_log.h"
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 namespace x3::game {
@@ -55,7 +57,7 @@ constexpr float kPi = 3.14159265358979f;
 
 // ---- Tints (linear-ish; the device tonemaps) ------------------------------
 // Ported from the JS StandardMaterial diffuse colors (hex -> 0..1 RGB).
-const float kWall[4]   = { 0.26f, 0.26f, 0.34f, 1.0f };    // club wall TINT (multiplies the
+const float kWall[4]   = { 0.36f, 0.36f, 0.42f, 1.0f };    // painted-CMU wall TINT (multiplies the
                                                            // sWall concrete texel). Was 0x0a0a12
                                                            // (~0.04) from the untextured era —
                                                            // that crushed effective albedo to
@@ -89,8 +91,27 @@ const float kOrb[4]    = { 0.700f, 0.700f, 0.800f, 1.0f }; // mirror ball facets
 // catches the blue-UV beams. Used for the U-bar countertop + the Lair reading
 // shelf (one consistent stone across Tim's spaces). Paired with mrGlass (low
 // roughness / near-mirror) so it gleams. baseColor ~ #0E2114.
-const float kGranite[4]    = { 0.055f, 0.130f, 0.075f, 1.0f };
-const float kGraniteEm[4]  = { 0.010f, 0.040f, 0.020f, 0.35f }; // faint deep-green sheen
+// POLISH (feat/club-polish-stage15, Tim 2026-07-18): the emerald read near-black
+// and the colored moving-head beams washed it magenta. Green channel raised
+// 0.130 -> 0.190 (red/blue held low to keep it SATURATED + dark/polished) so it
+// resolves to visible deep green under the new neutral bar/shelf keys, and the
+// green-tinted sheen emissive is bumped (0.040->0.085 g, str 0.35->0.55) so the
+// stone LEANS emerald even when a magenta gel rakes it — never fully black.
+// RE-TUNE (feat/club-lns-polish, Tim 2026-07-19): stage15 overshot — the emerald
+// read too BRIGHT/saturated ("glowing felt") because the base green was pushed to
+// 0.225 AND the sheen emissive to 0.160@0.70 (effective self-glow ~0.112, a lamp).
+// Dialed to BELIEVABLE dark Verde-Ubatuba: base green 0.225 -> 0.140 (still clearly
+// green-dominant + dark, a rich polished stone value), and the sheen emissive cut to
+// 0.050@0.30 (effective ~0.015 — a faint emerald floor, NOT a glow). The mrGlass
+// near-mirror reflectivity + the warm bar keys now LIGHT the stone; it no longer
+// lights itself. Reads as deep emerald-black granite, never neon.
+const float kGranite[4]    = { 0.050f, 0.140f, 0.078f, 1.0f };
+// GAMMA WALK-BACK (feat/club-gamma-fix, 2026-07-25): the sRGB fix brightened darks,
+// so the emerald SELF-GLOW that kept the stone off pure-black is now redundant and
+// reads as a lit lamp. Push it to near-zero (str 0.30 -> 0.08, effective green
+// ~0.004) — real stone is lit by the mrGlass near-mirror reflections + the warm bar
+// keys, never by self-emission.
+const float kGraniteEm[4]  = { 0.010f, 0.050f, 0.026f, 0.08f }; // near-zero emerald sheen (reflections/keys light it)
 // White-oak (1897 barn-wood) U-bar base — warm aged oak.
 const float kOak[4]    = { 0.230f, 0.150f, 0.090f, 1.0f };
 // THE LAIR (NE corner, upstairs) — charcoal light-absorbing walls + warm dens.
@@ -103,6 +124,15 @@ const float kBunker[4]   = { 0.095f, 0.085f, 0.070f, 1.0f }; // private-lounge w
 const float kWood[4]     = { 0.110f, 0.070f, 0.045f, 1.0f }; // dark wood panelling
 const float kEmitAmberLo[4] = { 1.0f, 0.62f, 0.26f, 1.6f };  // warm amber strip/lantern
 const float kCatwalk[4]  = { 0.100f, 0.100f, 0.130f, 1.0f }; // steel-grate catwalk
+
+// ★ LAIR OVERLOOK WINDOW (POLISH stage15) — a REAL see-through cut in the club's
+// east (+X) wall, filled with the smoked dark glass. Shared by the east-wall
+// framing AND the Lair overlook glass so the hole and the pane line up exactly.
+// Local (pre-oy) coords: sill sits just above the Lair floor (22 ft = 6.71 m).
+const float kOvCz = 0.6f;    // window center Z (clear of the SE elevator gap @ z>2.05)
+const float kOvHz = 1.1f;    // window half-width (Z)
+const float kOvCy = 7.70f;   // window center Y (local)
+const float kOvHy = 0.95f;   // window half-height  -> y in [6.75, 8.65]
 
 // ---- Emissive helpers: { r, g, b, strength }. strength > 1 => HDR bloom. -----
 const float kEmitOff[4]     = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -131,7 +161,10 @@ const float kEmitAbTop[4]   = { 0.353f, 0.353f, 0.416f, 1.2f };// aerial-bar pol
 // A real blacklight is deep blue-violet — almost pure blue with a whisper of violet.
 // Red dropped 0.45 -> 0.10 (near-zero, just a whisper), blue held at 1.0, green 0.
 const float kBlacklightR = 0.10f, kBlacklightG = 0.0f, kBlacklightB = 1.0f;
-const float kBlacklightEmit = 1.35f;   // dim UV tube bloom (was 4.0 — a magenta bar)
+// GAMMA WALK-BACK (feat/club-gamma-fix): the HDR tube emissive bloomed harder once
+// the sRGB fix stopped crushing it — 1.35 -> 0.95 so the tubes read as deep dim
+// blue-violet bars again, not blown rods (the cast point light below still washes wall).
+const float kBlacklightEmit = 0.95f;   // dim UV tube bloom (4.0 -> 1.35 -> 0.95 post-gamma)
 // Companion CAST color for each tube's point light (fix/club-blacklights): the
 // tubes were emissive-only geometry — they glowed as thin bars but cast NOTHING,
 // so the wall behind them stayed dead-black. Each tube carries a violet point light;
@@ -412,6 +445,67 @@ void makeDriverInto(x3::prims::PrimMesh& m, float cx, float cy,
         }
 }
 
+// DIY DOME-PROJECTOR dot field (LNS GARAGE): a black disc scattered with ~48 small
+// soft RGB dots at hashed radii/angles (the cheap mushroom/dome party light's spinning
+// spirograph field). BLACK background so an ADDITIVE disc shows only the dots — the
+// glossy floor + checkerboard read through the gaps. Spun in update() so the dots sweep.
+std::vector<uint8_t> makeDotFieldRGBA(uint32_t n, uint32_t seed) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    for (size_t i = 0; i < (size_t)n * n; ++i) px[i*4+3] = 255;   // opaque; additive uses rgb
+    const float cxN = n * 0.5f;
+    const float palette[6][3] = {
+        {1.0f,0.12f,0.20f}, {0.15f,0.45f,1.0f}, {0.15f,1.0f,0.35f},
+        {1.0f,0.85f,0.10f}, {1.0f,0.20f,0.90f}, {0.20f,0.95f,0.95f},
+    };
+    const int kDots = 52;
+    for (int d = 0; d < kDots; ++d) {
+        const uint32_t h = clubHash(seed * 2654435761u + (uint32_t)d * 40503u);
+        const float ang = (h % 3600) / 3600.0f * 2.0f * kPi;
+        const float rad = (0.10f + 0.86f * ((clubHash(h) % 1000) / 1000.0f)) * (n * 0.48f);
+        const float dr  = (0.010f + 0.028f * ((clubHash(h * 7u) % 1000) / 1000.0f)) * n;
+        const float dcx = cxN + std::cos(ang) * rad, dcy = cxN + std::sin(ang) * rad;
+        const float* col = palette[h % 6];
+        const int x0 = std::max(0,(int)(dcx-dr)), x1 = std::min((int)n-1,(int)(dcx+dr));
+        const int y0 = std::max(0,(int)(dcy-dr)), y1 = std::min((int)n-1,(int)(dcy+dr));
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const float dd = std::sqrt((x-dcx)*(x-dcx)+(y-dcy)*(y-dcy)) / dr;
+                if (dd > 1.0f) continue;
+                const float f = (1.0f - dd) * (1.0f - dd);        // soft falloff
+                uint8_t* p = &px[((size_t)y*n+x)*4];
+                p[0] = (uint8_t)std::min(255.0f, p[0] + col[0]*f*255);
+                p[1] = (uint8_t)std::min(255.0f, p[1] + col[1]*f*255);
+                p[2] = (uint8_t)std::min(255.0f, p[2] + col[2]*f*255);
+            }
+    }
+    return px;
+}
+
+// CEILING STARBURST projector (LNS GARAGE): a red radial burst — many thin spokes
+// from a hot center. BLACK bg (additive). Spun in update() so the rays rotate.
+std::vector<uint8_t> makeStarburstRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    for (size_t i = 0; i < (size_t)n * n; ++i) px[i*4+3] = 255;
+    const float c = n * 0.5f;
+    const int spokes = 16;
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            const float dx = x - c, dy = y - c;
+            const float r = std::sqrt(dx*dx + dy*dy) / (n * 0.5f);
+            if (r > 1.0f) continue;
+            const float a = std::atan2(dy, dx);
+            const float spoke = 0.5f + 0.5f * std::cos(a * spokes);   // 0..1 ray mask
+            const float ray = std::pow(spoke, 6.0f) * (1.0f - r);     // thin rays, fade out
+            const float core = std::max(0.0f, 1.0f - r * 6.0f);       // hot center
+            const float v = std::min(1.0f, ray + core);
+            uint8_t* p = &px[((size_t)y*n+x)*4];
+            p[0] = (uint8_t)(v * 255);
+            p[1] = (uint8_t)(v * 0.10f * 255);
+            p[2] = (uint8_t)(v * 0.10f * 255);
+        }
+    return px;
+}
+
 // Mirror-ball facets: silver tile grid with per-tile hashed brightness (sparkle)
 // and dark grout — reads as hundreds of tiny mirrors under the moving lights.
 std::vector<uint8_t> makeFacetRGBA(uint32_t n) {
@@ -435,6 +529,130 @@ std::vector<uint8_t> makeFacetRGBA(uint32_t n) {
 // 1x1 metallic-roughness texel (glTF packing: G=roughness, B=metallic).
 std::vector<uint8_t> makeMr1x1(uint8_t rough, uint8_t metal) {
     return { 255, rough, metal, 255 };
+}
+
+// PAINTED CMU BLOCK wall (LNS GARAGE, Tim 2026-07-18): the real Late Night Speed
+// walls are painted concrete-block — gritty industrial white/grey. Running-bond
+// courses (16x8 in / 0.4x0.2 m units), recessed darker mortar joints, faint
+// per-block value variation + fine paint grit. Albedo only (tinted club-grey by
+// kWall); a matching flat-ish normal/rough gives it relief under the club beams.
+std::vector<uint8_t> makeCmuBlockRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    const uint32_t courseH = n / 8;          // 8 courses
+    const uint32_t blockW  = n / 4;          // 4 blocks per row
+    const uint32_t mortar  = std::max(2u, n / 128);   // joint thickness (px)
+    for (uint32_t y = 0; y < n; ++y) {
+        const uint32_t course = y / courseH;
+        const uint32_t offset = (course & 1) ? blockW / 2 : 0;   // running bond
+        for (uint32_t x = 0; x < n; ++x) {
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            const uint32_t bx = (x + offset) / blockW;
+            // Per-block painted value (hashed) — painted CMU is fairly uniform pale grey.
+            float v = 0.58f + 0.10f * ((clubHash(bx * 71 + course * 263) % 1000) / 1000.0f - 0.5f);
+            // Mortar joints: horizontal (between courses) + vertical (between blocks).
+            const bool hJoint = (y % courseH) < mortar;
+            const bool vJoint = ((x + offset) % blockW) < mortar;
+            if (hJoint || vJoint) v *= 0.52f;                    // recessed dark joint
+            // Fine paint grit / porosity speckle.
+            v += 0.03f * ((clubHash(x * 911 + y * 379) % 100) / 100.0f - 0.5f);
+            // Slight cool tint (painted white-grey reads a touch blue under UV).
+            const float r = v * 0.98f, g = v * 0.99f, b = v * 1.03f;
+            p[0] = (uint8_t)(std::max(0.0f, std::min(1.0f, r)) * 255);
+            p[1] = (uint8_t)(std::max(0.0f, std::min(1.0f, g)) * 255);
+            p[2] = (uint8_t)(std::max(0.0f, std::min(1.0f, b)) * 255);
+            p[3] = 255;
+        }
+    }
+    return px;
+}
+
+// LATE NIGHT SPEED neon SIGN (LNS GARAGE, Tim 2026-07-18): the shop branding on the
+// wall. A compact 5x7 uppercase bitmap font bakes the words onto a dark panel as a
+// hot red/white neon glow (letters + a soft 1-cell halo). Only the glyphs the sign
+// needs are defined. `line` is centred; empty cells stay near-black.
+std::vector<uint8_t> makeSignRGBA(uint32_t w, uint32_t h, const char* line,
+                                  float rr, float rg, float rb) {
+    // 5x7 glyphs (7 rows, each a 5-bit mask, MSB = left).
+    auto glyph = [](char c, uint8_t rows[7]) -> bool {
+        auto set = [&](uint8_t a,uint8_t b,uint8_t d,uint8_t e,uint8_t f,uint8_t g,uint8_t i){
+            rows[0]=a;rows[1]=b;rows[2]=d;rows[3]=e;rows[4]=f;rows[5]=g;rows[6]=i; };
+        switch (c) {
+            case 'L': set(0x10,0x10,0x10,0x10,0x10,0x10,0x1F); return true;
+            case 'A': set(0x0E,0x11,0x11,0x1F,0x11,0x11,0x11); return true;
+            case 'T': set(0x1F,0x04,0x04,0x04,0x04,0x04,0x04); return true;
+            case 'E': set(0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F); return true;
+            case 'N': set(0x11,0x19,0x15,0x13,0x11,0x11,0x11); return true;
+            case 'I': set(0x1F,0x04,0x04,0x04,0x04,0x04,0x1F); return true;
+            case 'G': set(0x0E,0x11,0x10,0x17,0x11,0x11,0x0E); return true;
+            case 'H': set(0x11,0x11,0x11,0x1F,0x11,0x11,0x11); return true;
+            case 'S': set(0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E); return true;
+            case 'P': set(0x1E,0x11,0x11,0x1E,0x10,0x10,0x10); return true;
+            case 'D': set(0x1E,0x11,0x11,0x11,0x11,0x11,0x1E); return true;
+            default:  set(0,0,0,0,0,0,0); return false;   // space / unknown
+        }
+    };
+    std::vector<uint8_t> px((size_t)w * h * 4);
+    for (size_t i = 0; i < (size_t)w * h; ++i) {   // dark panel bg
+        px[i*4+0] = 6; px[i*4+1] = 5; px[i*4+2] = 9; px[i*4+3] = 255;
+    }
+    const uint32_t n = (uint32_t)std::strlen(line);
+    if (n == 0) return px;
+    const uint32_t cellW = 6, cellH = 7;                    // 5+1 spacing
+    const uint32_t textWcells = n * cellW;
+    // Scale each font-cell to fill ~80% of the panel width.
+    const uint32_t scale = std::max(1u, (uint32_t)((w * 0.86f) / textWcells));
+    const uint32_t textPxW = textWcells * scale, textPxH = cellH * scale;
+    const uint32_t ox = (w > textPxW) ? (w - textPxW) / 2 : 0;
+    const uint32_t oy2 = (h > textPxH) ? (h - textPxH) / 2 : 0;
+    // Render lit cells + a soft halo.
+    auto lit = [&](int cx, int cy) -> bool {
+        if (cx < 0 || cy < 0) return false;
+        const uint32_t ci = (uint32_t)cx / cellW;
+        if (ci >= n) return false;
+        const uint32_t gx = (uint32_t)cx % cellW, gy = (uint32_t)cy;
+        if (gx >= 5 || gy >= 7) return false;
+        uint8_t rows[7]; glyph(line[ci], rows);
+        return (rows[gy] >> (4 - gx)) & 1;
+    };
+    for (uint32_t y = 0; y < textPxH; ++y)
+        for (uint32_t x = 0; x < textPxW; ++x) {
+            const int cx = (int)(x / scale), cy = (int)(y / scale);
+            float glow = 0.0f;
+            if (lit(cx, cy)) glow = 1.0f;
+            else if (lit(cx-1,cy)||lit(cx+1,cy)||lit(cx,cy-1)||lit(cx,cy+1)) glow = 0.35f; // halo
+            if (glow <= 0.0f) continue;
+            uint8_t* p = &px[((size_t)(oy2 + y) * w + (ox + x)) * 4];
+            const float br = glow;
+            p[0] = (uint8_t)(std::min(1.0f, rr * br + (glow>0.9f?0.35f:0.0f)) * 255);
+            p[1] = (uint8_t)(std::min(1.0f, rg * br + (glow>0.9f?0.30f:0.0f)) * 255);
+            p[2] = (uint8_t)(std::min(1.0f, rb * br + (glow>0.9f?0.30f:0.0f)) * 255);
+        }
+    return px;
+}
+
+// Companion normal map for the CMU block: mortar joints push IN (a soft groove),
+// block faces stay flat — so raking club beams catch the coursing.
+std::vector<uint8_t> makeCmuNormalRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    const uint32_t courseH = n / 8, blockW = n / 4, mortar = std::max(2u, n / 128);
+    for (uint32_t y = 0; y < n; ++y) {
+        const uint32_t course = y / courseH;
+        const uint32_t offset = (course & 1) ? blockW / 2 : 0;
+        for (uint32_t x = 0; x < n; ++x) {
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            float nx = 0.0f, ny = 0.0f;
+            const uint32_t yin = y % courseH, xin = (x + offset) % blockW;
+            if (yin < mortar)            ny = -0.6f; else if (yin < mortar * 2) ny = 0.6f;
+            if (xin < mortar)            nx = -0.6f; else if (xin < mortar * 2) nx = 0.6f;
+            const float nz = 1.0f;
+            const float l = std::sqrt(nx*nx + ny*ny + nz*nz);
+            p[0] = (uint8_t)((nx / l * 0.5f + 0.5f) * 255);
+            p[1] = (uint8_t)((ny / l * 0.5f + 0.5f) * 255);
+            p[2] = (uint8_t)((nz / l * 0.5f + 0.5f) * 255);
+            p[3] = 255;
+        }
+    }
+    return px;
 }
 
 // POLISH (fix/club-polish): a FACETED unit mirror ball — a LOW-poly UV sphere with
@@ -605,7 +823,21 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     SurfaceLibrary surf;
     surf.mount(assetRoot() + "/surface_library");
     auto set = [&](const char* name) -> const SurfaceSet& { return surf.get(device, name); };
-    const SurfaceSet& sWall  = set("mw_concrete_panels_a"); // dark venue walls
+    // ★ PAINTED CMU BLOCK walls (LNS GARAGE) — the whole shop is painted concrete
+    // block, so the club shell / engine room / booth walls all carry it (running-bond
+    // masonry albedo + mortar-groove normal + matte-rough MR). Built procedurally so
+    // it needs no pack asset; tinted club-grey by kWall at the box() call site.
+    SurfaceSet sWall;
+    {
+        auto cpx = makeCmuBlockRGBA(256);
+        auto cnx = makeCmuNormalRGBA(256);
+        auto cmrPx = makeMr1x1(/*rough*/ 205, /*metal*/ 0);   // matte painted block
+        sWall.albedo   = device.createTexture(cpx.data(), 256, 256, true);
+        sWall.normal   = device.createTexture(cnx.data(), 256, 256, false);
+        sWall.mr       = device.createTexture(cmrPx.data(), 1, 1, false);
+        sWall.albedoLin = 0.30f;   // measured-ish mean so valueTint leaves it be
+        sWall.ok       = true;
+    }
     const SurfaceSet& sFloor = set("sr_rubberfloor");        // dance/club floor
     const SurfaceSet& sMetal = set("mw_metal_trim_b");       // stage/booth platforms
     const SurfaceSet& sBar   = set("mw_wall_plastic");       // bar body laminate
@@ -636,6 +868,13 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     auto mrGlassPx  = makeMr1x1(/*rough*/ 15, /*metal*/ 40);
     const x3::rhi::TextureHandle mrChrome = device.createTexture(mrChromePx.data(), 1, 1, false);
     const x3::rhi::TextureHandle mrGlass  = device.createTexture(mrGlassPx.data(), 1, 1, false);
+    // LNS GARAGE FLOOR (Tim 2026-07-18): the real Late Night Speed floor is a GLOSSY
+    // checkerboard on sheened shop concrete — SHINY + DIMMER. A wetter-than-chrome MR
+    // (rough 8, metal 255) so the DIY party-dot projections + moving-head beams POOL
+    // and shimmer in the surface exactly like the photos. Tile self-glow is dropped
+    // way down elsewhere (kEmitTileGarage) so the floor is a moody mirror, not a lightbox.
+    auto mrWetPx = makeMr1x1(/*rough*/ 8, /*metal*/ 255);
+    const x3::rhi::TextureHandle mrWet = device.createTexture(mrWetPx.data(), 1, 1, false);
 
     // OLED-GLASS: a screen entity becomes a REAL glass pane carrying its EQ
     // frame as the pane texture — the transparent pass adds the fresnel grazing
@@ -773,8 +1012,21 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     {
         const float entrW = 3.5f;                      // elevator opening width
         const float entrZ = CL / 2 - entrW / 2 - 1.0f; // near the SE corner
-        const float northLen = CL / 2 + (entrZ - entrW / 2);
-        box(CW / 2, CH / 2, -CL / 2 + northLen / 2, T / 2, CH / 2, northLen / 2, kWall, kEmitOff, true, 0.5f, &sWall);
+        const float nEnd = entrZ - entrW / 2;          // south end of the north wall run
+        // The north run carries the ★ LAIR OVERLOOK WINDOW: frame it (jambs N+S, sill,
+        // lintel) so the opening is a REAL hole — from the Lair you SEE THROUGH the
+        // dark glass down onto the dance floor (was: solid wall behind a painted panel).
+        const float wzN = kOvCz - kOvHz, wzS = kOvCz + kOvHz;   // window z-span [-0.5, 1.7]
+        const float wyB = kOvCy - kOvHy, wyT = kOvCy + kOvHy;   // window y-span [6.75, 8.65]
+        // (1) wall N of the window (full height).
+        { const float z0 = -CL / 2, z1 = wzN, len = z1 - z0;
+          box(CW / 2, CH / 2, z0 + len / 2, T / 2, CH / 2, len / 2, kWall, kEmitOff, true, 0.5f, &sWall); }
+        // (2) narrow jamb S of the window (full height, up to the elevator gap).
+        { const float z0 = wzS, z1 = nEnd, len = z1 - z0;
+          if (len > 0.02f) box(CW / 2, CH / 2, z0 + len / 2, T / 2, CH / 2, len / 2, kWall, kEmitOff, true, 0.5f, &sWall); }
+        // (3) sill below the window + (4) lintel above it (spanning the window z-width).
+        box(CW / 2, wyB / 2, kOvCz, T / 2, wyB / 2, kOvHz, kWall, kEmitOff, true, 0.5f, &sWall);
+        box(CW / 2, (wyT + CH) / 2, kOvCz, T / 2, (CH - wyT) / 2, kOvHz, kWall, kEmitOff, true, 0.5f, &sWall);
         const float southLen = CL / 2 - (entrZ + entrW / 2);
         if (southLen > 0.1f)
             box(CW / 2, CH / 2, CL / 2 - southLen / 2, T / 2, CH / 2, southLen / 2, kWall, kEmitOff, true, 0.5f, &sWall);
@@ -783,6 +1035,67 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // Player spawn: just inside the elevator opening on the floor, facing -X
         // (into the club toward the dance floor + DJ booth).
         m_spawn = x3::phys::Vec3{ CW / 2 - 1.6f, oy + 0.15f, entrZ };
+    }
+
+    // ==================================================================
+    // ★ INDUSTRIAL CEILING (LNS GARAGE, Tim 2026-07-18) — the working-shop bones.
+    // Club 1127 IS the Late Night Speed auto shop: exposed STEEL TRUSSES on 3 m
+    // centres (also HARD CANON §1.1: "steel I-beams on three-metre centres"),
+    // longitudinal purlins, CONDUIT runs, and HVAC DUCTS slung under the dark
+    // concrete deck. All up high (chords at ~8.6-8.98 m) — ABOVE the moving-head
+    // fixtures (heads at CH-0.42) and clear of THE ORB / catwalk (22 ft) — so the
+    // beams drop cleanly below. Decorative (collide=false); the deck slab collides.
+    // ==================================================================
+    {
+        const float kSteel[4]  = { 0.085f, 0.088f, 0.100f, 1.0f };  // dark shop steel
+        const float kSteelHi[4]= { 0.140f, 0.145f, 0.165f, 1.0f };  // lighter web/purlin
+        const float kDuct[4]   = { 0.300f, 0.310f, 0.340f, 1.0f };  // galvanised HVAC
+        const float kConduit[4]= { 0.110f, 0.095f, 0.075f, 1.0f };  // EMT conduit (grey-tan)
+        // ★ CEILING READ (feat/club-lns-polish, Tim 2026-07-19). The industrial
+        // ceiling had NO dedicated light (the 64-light cap is maxed) so the trusses/
+        // ducts/conduit sank into a black void — the shop bones couldn't be seen as a
+        // feature. Give the structure a SUBTLE emissive self-read (no new lights — the
+        // budget-safe fix): a faint cool floor on the steel, a galvanised sheen on the
+        // ducts, a warm sheen on the conduit. Effective add (rgb*str): steel ~0.078,
+        // duct ~0.077, conduit ~0.036 — enough to lift the silhouette out of black so
+        // the exposed-truss ceiling READS, low enough that it grazes as lit metal (not
+        // a neon lightbox). The geometry's own form + the room bounce still shade it.
+        // GAMMA WALK-BACK (feat/club-gamma-fix, 2026-07-25): this emissive self-read
+        // existed ONLY to lift the truss/duct/conduit silhouette out of the crushed
+        // black void. The sRGB fix already lifts those darks, so the self-read is now
+        // double-lighting the ceiling into a lit grid. Strengths ~halved (0.60/0.45/
+        // 0.40 -> 0.26/0.20/0.18) so the bones still READ as grazed metal, not a lightbox.
+        const float kSteelEm[4]  = { 0.130f, 0.140f, 0.170f, 0.26f }; // faint cool steel self-read (halved)
+        const float kDuctEm[4]   = { 0.170f, 0.180f, 0.200f, 0.20f }; // galvanised duct sheen (halved)
+        const float kCondEm[4]   = { 0.115f, 0.100f, 0.078f, 0.18f }; // warm conduit sheen (halved)
+        const float yBot = 8.60f, yTop = 8.98f, yMid = (yBot + yTop) / 2;
+        const float zHalf = CL / 2 - 0.20f;
+        // Transverse trusses (span the 43 ft N-S short axis), 3 m centres, offset
+        // from the moving-head ring (fixtures at x≈±2.83) so nothing clips a head.
+        const float txs[10] = { -13.5f,-10.5f,-7.5f,-4.5f,-1.5f, 1.5f,4.5f,7.5f,10.5f,13.5f };
+        for (float tx : txs) {
+            box(tx, yBot, 0, 0.05f, 0.05f, zHalf, kSteel, kSteelEm, false);   // bottom chord
+            box(tx, yTop, 0, 0.05f, 0.05f, zHalf, kSteel, kSteelEm, false);   // top chord
+            for (int w = 0; w < 7; ++w) {                                     // vertical webs (Vierendeel)
+                const float wz = -zHalf + 0.3f + w * (2.0f * zHalf - 0.6f) / 6.0f;
+                box(tx, yMid, wz, 0.035f, (yTop - yBot) / 2, 0.035f, kSteelHi, kSteelEm, false);
+            }
+        }
+        // Longitudinal purlins (E-W) tying the truss tops.
+        for (float pz : { -4.6f, -1.5f, 1.5f, 4.6f })
+            box(0, yTop + 0.03f, pz, CW / 2 - 0.3f, 0.03f, 0.03f, kSteelHi, kSteelEm, false);
+        // EMT CONDUIT runs slung under the deck along both long walls + two branch drops.
+        for (float cz : { -zHalf + 0.15f, zHalf - 0.15f }) {
+            box(0, yBot - 0.12f, cz, CW / 2 - 0.6f, 0.028f, 0.028f, kConduit, kCondEm, false);
+            box(0, yBot - 0.20f, cz, CW / 2 - 0.6f, 0.022f, 0.022f, kConduit, kCondEm, false);
+        }
+        // HVAC DUCT: a big galvanised trunk running E-W along the south side, with a
+        // branch elbow crossing north — the unmistakable shop-ceiling silhouette.
+        box(-2.0f, 8.30f, zHalf - 0.9f, CW / 2 - 4.0f, 0.28f, 0.24f, kDuct, kDuctEm, false); // south trunk
+        box(-CW / 2 + 5.0f, 8.30f, 0.5f, 0.24f, 0.26f, zHalf - 1.2f, kDuct, kDuctEm, false); // N-S branch
+        box(-CW / 2 + 5.0f, 8.30f, zHalf - 0.9f, 0.30f, 0.30f, 0.30f, kDuct, kDuctEm, false); // elbow box
+        // A short return-air duct near the east/entrance side.
+        box(9.5f, 8.35f, -zHalf + 1.1f, 2.4f, 0.22f, 0.20f, kDuct, kDuctEm, false);
     }
 
     // ==================================================================
@@ -1162,16 +1475,23 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 // alternates carry a FAINT violet under-glow breathing on the beat;
                 // the blacklights own the color now, not the tiles.
                 const bool lit = ((gx + gz) % 2 == 0);
-                // BLUE-UV (fix/blacklight-blue): red 0.32 -> 0.08 so the floor
-                // under-glow reads deep BLUE-violet, not pink/magenta — matches the
-                // blacklight tubes so the whole room's UV wash reads blue.
-                const float emTileA[4] = { 0.08f, 0.05f, 0.60f, 0.55f };
-                const float tileCol[4] = { lit ? 0.055f : 0.035f, lit ? 0.055f : 0.035f,
-                                           lit ? 0.075f : 0.05f, 1.0f };
+                // LNS GARAGE FLOOR (Tim 2026-07-18): "BOTH — checkerboard AND projected
+                // party light, but SHINY + DIMMER." The old tiles self-lit at 0.55 blue
+                // (a lightbox). Dropped WAY down to a whisper (0.10) so the floor reads as
+                // a dim glossy checkerboard — the LIGHT SHOW (dome dots + moving beams)
+                // dances AND reflects in it, instead of the tiles blasting their own blue.
+                // Glossier albedo split (bright vs dark squares) carries the checker; the
+                // wet MR (mrWet, rough 8) makes the beams POOL and shimmer in the surface.
+                // GAMMA WALK-BACK (feat/club-gamma-fix): under the corrected curve the
+                // whisper under-glow reads brighter; trim 0.10 -> 0.055 so the floor stays
+                // a DIM glossy checkerboard the light show reflects in (not a lit tile).
+                const float emTileA[4] = { 0.06f, 0.04f, 0.42f, 0.055f };
+                const float tileCol[4] = { lit ? 0.090f : 0.020f, lit ? 0.092f : 0.020f,
+                                           lit ? 0.105f : 0.028f, 1.0f };
                 const uint32_t tid = box(tx, 0.12f, tz, (tw - 0.02f) / 2, 0.015f, (td - 0.02f) / 2,
                                          tileCol, lit ? emTileA : kEmitOff, false, 1.0f, nullptr);
                 Entity& te = scene.get(tid);
-                te.mrTex = mrChrome;              // the silvery reflective finish
+                te.mrTex = mrWet;                // wet-look shop-floor reflectivity
                 if (lit) m_tilePulseEnts.push_back(tid);
             }
         m_stats.hasDanceFloor = true;
@@ -1207,11 +1527,10 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // explicitly by update() via m_sparkleLightIdx, so the moving-head loop — which
         // only touches indices >= m_staticLightCount — never clobbers them).
         {
-            const float sparkleHue[4][3] = {   // 4 (was 6) — reserve budget for the underground
+            const float sparkleHue[3][3] = {   // 3 (was 4) — reclaimed ONE for the garage
                 { 2.4f, 0.6f, 2.4f }, { 0.5f, 1.8f, 2.6f }, { 2.6f, 1.6f, 0.4f },
-                { 0.6f, 2.6f, 1.2f },
-            };
-            for (int i = 0; i < 4; ++i) {
+            };                                 // shop worklight (point-light cap = 64)
+            for (int i = 0; i < 3; ++i) {
                 m_sparkleLightIdx.push_back(m_lights.size());
                 addLight(m_lights, 0.0f, oy + 5.0f, 0.0f,
                          sparkleHue[i][0], sparkleHue[i][1], sparkleHue[i][2], 3.2f);
@@ -1220,178 +1539,391 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
-    // U-SHAPED BAR — Danny's station, centre of the room, NOSE → EAST toward the
-    // elevator entrance. DARK GREEN GRANITE top on a white-oak (1897 barn-wood)
-    // base (spec §1.2 / §1.10). Arms run E-W (X); base runs N-S (Z) on the west
-    // side. bH 1.1 m, arm 5 m, base 4 m (Tim's blockout dims).
+    // ★ THE GARAGE — SPORTS CAR UP ON A TWO-POST LIFT (LNS GARAGE, Tim 2026-07-18).
+    // Club 1127 IS the Late Night Speed shop: a real sports car (CTR.glb) hoisted on a
+    // symmetric two-post lift is the centrepiece. Parked off to the SOUTH-EAST, clear
+    // of the dance floor. The lift = 2 columns + base plates + overhead beam + 4 swing
+    // arms & pads; the CAR is a static GLB instance raised ~1.85 m so you can stand
+    // under it. (The GLB sits on y=0, +Z=nose, scale 1 — same as --screenshot-car.)
     // ==================================================================
     {
-        const float uX = 3.0f, bH2 = 1.1f, bArm = 5.0f, bBase = 4.0f;
-        // Oak base carcass (the U): north arm, south arm, west base.
-        box(uX,           bH2 / 2,  bBase / 2, bArm / 2, bH2 / 2, 0.075f, kOak, kEmitOff, true);
-        box(uX,           bH2 / 2, -bBase / 2, bArm / 2, bH2 / 2, 0.075f, kOak, kEmitOff, true);
-        box(uX - bArm / 2, bH2 / 2, 0,         0.075f,   bH2 / 2, bBase / 2, kOak, kEmitOff, true);
-        // DARK GREEN GRANITE tops (§1.10) — polished, gleaming (mrGlass near-mirror).
+        const float lx = 9.2f, lz = 4.4f;      // lift XZ (SE, near the south wall)
+        const float liftH = 1.85f;             // wheels/car raised this high
+        const float armY  = liftH;             // swing-arm/pad plane
+        const float postHalfZ = 1.55f;         // posts sit fore/aft of the car (along Z=car length)
+        const float kLiftRed[4]   = { 0.42f, 0.045f, 0.045f, 1.0f };  // shop-equipment red
+        const float kLiftSteel[4] = { 0.22f, 0.22f, 0.25f, 1.0f };
+        // Two columns (fore & aft of the car, straddling its length along Z).
+        for (int s = -1; s <= 1; s += 2) {
+            const float pz = lz + s * postHalfZ;
+            box(lx, 1.35f, pz, 0.14f, 1.35f, 0.16f, kLiftRed, kEmitOff, true);   // column
+            box(lx, 0.04f, pz, 0.55f, 0.04f, 0.34f, kLiftSteel, kEmitOff, true); // base plate
+            // Two swing arms + lift pads reaching UNDER the car from this column.
+            for (int a = -1; a <= 1; a += 2) {
+                box(lx + a * 0.55f, armY, pz + (s > 0 ? -0.45f : 0.45f), 0.45f, 0.05f, 0.06f, kLiftSteel, kEmitOff, false); // arm
+                box(lx + a * 0.55f, armY + 0.05f, pz + (s > 0 ? -0.75f : 0.75f), 0.10f, 0.06f, 0.10f, kLiftRed, kEmitOff, false); // rubber pad
+            }
+        }
+        // Overhead equaliser beam tying the two column tops (symmetric two-post look).
+        box(lx, 2.78f, lz, 0.12f, 0.10f, postHalfZ + 0.16f, kLiftRed, kEmitOff, false);
+        // Caged SHOP WORKLIGHT clamped to the overhead beam (the one warm work-lamp that
+        // lights the hoist — reclaimed from an ORB sparkle so the point-light cap holds).
+        {
+            const float emWork[4] = { 1.0f, 0.86f, 0.55f, 3.4f };
+            box(lx - 0.7f, 2.55f, lz - 0.4f, 0.09f, 0.06f, 0.09f, kMetal, emWork, false); // lamp head (room side)
+            box(lx - 0.7f, 2.70f, lz - 0.4f, 0.012f, 0.12f, 0.012f, kChrome, kEmitOff, false); // hook wire
+            // Warm shop key raking the WEST/nose flank that faces the dance floor.
+            addLight(m_lights, lx - 1.3f, oy + 2.5f, lz - 0.6f, 1.75f, 1.35f, 0.80f, 8.0f);
+        }
+        // THE SPORTS CAR — the REAL hero-car GLB (Vehicles/CTR.glb: clearcoat paint +
+        // emissive lights, the same asset --screenshot-car poses) hoisted on the pads.
+        // LOADED AS AN INERT CHARACTER PROP via addCharacter() — the SAME include-safe
+        // MonsterSystem rig/mesh-load path the dancers use, so this needs NO env_art.h
+        // (the prior agent's build fault: env_art.h drags fx.h + reorders x3::phys into
+        // a cascade — sidestepped entirely by never including it here). A static (un-
+        // skinned) GLB just draws statically through the monster path; if it fails to
+        // load it falls back to a box, so the hoist is never empty. update() FREEZES it
+        // each frame via setPropPose so the Idle-AI yaw sway never drifts the car.
+        {
+            const float carY = oy + armY + 0.10f;   // wheels rest on the rubber pads (~1.95 m up)
+            const float kPaint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };  // white = preserve the GLB's own paint
+            const x3::phys::Vec3 carPos{ lx, carY, lz };
+            addCharacter(scene, device, physics, x3::game::convertedGlbRoot(),
+                         "Vehicles/CTR.glb", carPos, /*scale*/ 1.0f, /*standUpZtoY*/ false, kPaint);
+            m_carCharIdx = (int)m_chars.size() - 1;   // freeze target for update()
+            m_carPos     = carPos;
+            m_carYaw     = 0.0f;   // length along Z between the posts (drawMonster adds R(yaw+pi))
+        }
+    }
+
+    // ==================================================================
+    // ★ SHOP PROPS + LATE NIGHT SPEED BRANDING (LNS GARAGE, Tim 2026-07-18).
+    // Tim's REAL MATCO tool storage (feat/club-lns-polish 2026-07-19: NOT red, NOT
+    // Snap-on) + a WORKBENCH (vise + pegboard) + a push BROOM, along the SOUTH wall
+    // by the car; and the emissive "LATE NIGHT SPEED" neon sign — the club IS the shop.
+    //
+    // THE MATCO LINEUP (all one dark wrinkle/silver-vein GREY powdercoat family):
+    //   * 1× MATCO 6S 3-BAY roll cab — the HERO: wide 3-bay box, BLUE drawer faces,
+    //     chrome pulls, stainless top edge (grey body).
+    //   * 1× MATCO 4S roll cab — smaller, GREY drawer faces (no blue), chrome pulls.
+    //   * 3× MATCO MSC4 carts — small 2-drawer rolling utility carts on casters.
+    // ==================================================================
+    {
+        const float southZ = CL / 2 - 0.55f;    // just off the south wall (+Z)
+        const float kToolRed[4]  = { 0.46f, 0.05f, 0.055f, 1.0f };  // red bench-vise accent (kept)
+        const float kChromeD[4]  = { 0.62f, 0.63f, 0.70f, 1.0f };   // chrome pulls / stainless top
+        const float kBenchTop[4] = { 0.20f, 0.21f, 0.24f, 1.0f };   // steel bench top
+        const float kBlackR[4]   = { 0.05f, 0.05f, 0.06f, 1.0f };
+        // MATCO powdercoat palette. The whole lineup shares kMatcoGrey (dark grey
+        // metallic with a subtle silver-vein/wrinkle read); the 6S is the hero with
+        // kMatcoBlue faces; the 4S + carts use kMatcoGreyFace (a notch lighter than
+        // the body so the drawers read as drawers, not a solid slab).
+        const float kMatcoGrey[4]     = { 0.090f, 0.093f, 0.104f, 1.0f };  // wrinkled grey body
+        const float kMatcoBlue[4]     = { 0.055f, 0.135f, 0.440f, 1.0f };  // Matco blue drawer faces (6S)
+        const float kMatcoGreyFace[4] = { 0.150f, 0.155f, 0.170f, 1.0f };  // grey drawer faces (4S/carts)
+        // --- ROLL CAB helper (6S / 4S): grey body + stainless top edge + a grid of
+        // drawer faces (nBay wide × nDr tall) with a chrome pull per drawer + casters. --
+        auto rollCab = [&](float cx, float halfW, float bodyHalfH,
+                           const float* faceCol, int nBay, int nDr) {
+            const float dZ = 0.30f;                 // half depth (0.6 m box)
+            const float frontZ = southZ - dZ;       // room-facing (-Z) face plane
+            box(cx, bodyHalfH, southZ, halfW, bodyHalfH, dZ, kMatcoGrey, kEmitOff, true);          // body
+            box(cx, bodyHalfH * 2 + 0.03f, southZ, halfW + 0.02f, 0.03f, dZ + 0.02f,
+                kChromeD, kEmitOff, true);                                                          // stainless top edge
+            const float bayW = (2 * halfW - 0.06f) / (float)nBay;
+            const float drH  = (2 * bodyHalfH - 0.08f) / (float)nDr;
+            for (int b = 0; b < nBay; ++b) {
+                const float bcx = cx - halfW + 0.03f + bayW * (b + 0.5f);
+                for (int d = 0; d < nDr; ++d) {
+                    const float dy = 0.05f + drH * (d + 0.5f);
+                    box(bcx, dy, frontZ - 0.012f, bayW / 2 - 0.015f, drH / 2 - 0.012f, 0.012f,
+                        faceCol, kEmitOff, false);                                                  // drawer face
+                    box(bcx, dy, frontZ - 0.03f, bayW / 2 - 0.05f, 0.012f, 0.012f,
+                        kChromeD, kEmitOff, false);                                                 // chrome pull
+                }
+            }
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    box(cx + sx * (halfW - 0.06f), 0.04f, southZ + sz * (dZ - 0.06f),
+                        0.05f, 0.04f, 0.05f, kBlackR, kEmitOff, false);                             // casters
+        };
+        // --- MSC4 CART helper: small grey utility cart, 2 grey drawers + chrome tray
+        // edge + a chrome push handle on the side + casters. --
+        auto msc4Cart = [&](float cx) {
+            const float halfW = 0.28f, dZ = 0.22f, topY = 0.86f;
+            const float frontZ = southZ - dZ;
+            box(cx, 0.44f, southZ, halfW, 0.44f, dZ, kMatcoGrey, kEmitOff, true);                   // body
+            box(cx, topY, southZ, halfW + 0.02f, 0.02f, dZ + 0.02f, kChromeD, kEmitOff, false);     // chrome tray edge
+            for (int d = 0; d < 2; ++d) {
+                const float dy = 0.30f + d * 0.28f;
+                box(cx, dy, frontZ - 0.012f, halfW - 0.03f, 0.11f, 0.012f, kMatcoGreyFace, kEmitOff, false); // drawer face
+                box(cx, dy, frontZ - 0.03f, halfW - 0.08f, 0.012f, 0.012f, kChromeD, kEmitOff, false);       // pull
+            }
+            box(cx - halfW - 0.03f, topY - 0.06f, southZ, 0.02f, 0.20f, 0.02f, kChromeD, kEmitOff, false);   // push handle
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    box(cx + sx * (halfW - 0.04f), 0.05f, southZ + sz * (dZ - 0.04f),
+                        0.04f, 0.05f, 0.04f, kBlackR, kEmitOff, false);                             // casters
+        };
+        rollCab(-3.2f, 0.95f, 0.52f, kMatcoBlue,     3, 5);   // ★ MATCO 6S 3-BAY (hero, blue faces)
+        rollCab(-1.1f, 0.45f, 0.50f, kMatcoGreyFace, 1, 5);   // MATCO 4S (grey faces)
+        msc4Cart(0.2f);                                        // ┐
+        msc4Cart(1.0f);                                        // ├ 3× MATCO MSC4 carts
+        msc4Cart(1.8f);                                        // ┘
+        // --- WORKBENCH (steel top on legs) with a red bench VISE + a wall PEGBOARD. ---
+        {
+            const float bx = 4.2f, bTopY = 0.92f;
+            box(bx, bTopY, southZ, 0.9f, 0.04f, 0.32f, kBenchTop, kEmitOff, true);   // top
+            for (int s = -1; s <= 1; s += 2)                                          // legs
+                for (int t = -1; t <= 1; t += 2)
+                    box(bx + s * 0.8f, bTopY / 2, southZ + t * 0.24f, 0.04f, bTopY / 2, 0.04f, kBlackR, kEmitOff, true);
+            box(bx - 0.55f, bTopY + 0.12f, southZ, 0.10f, 0.08f, 0.10f, kToolRed, kEmitOff, false); // vise
+            box(bx - 0.55f, bTopY + 0.12f, southZ - 0.12f, 0.02f, 0.06f, 0.06f, kChromeD, kEmitOff, false); // vise screw
+            // Pegboard on the wall behind the bench (a panel + a few hung tool silhouettes).
+            box(bx, 2.0f, CL / 2 - 0.16f, 0.9f, 0.55f, 0.02f, kBlackR, kEmitOff, false);
+            for (int p = -2; p <= 2; ++p)
+                box(bx + p * 0.3f, 2.05f, CL / 2 - 0.19f, 0.03f, 0.18f, 0.015f, kChromeD, kEmitOff, false);
+        }
+        // --- Push BROOM leaning against the last tool chest (near-vertical handle + head). ---
+        {
+            const float brX = 2.5f, brZ = southZ - 0.5f;
+            box(brX, 0.9f, brZ, 0.015f, 0.9f, 0.015f, kWood, kEmitOff, false);        // handle
+            box(brX, 0.04f, brZ + 0.06f, 0.16f, 0.04f, 0.05f, kBlackR, kEmitOff, false); // bristle head
+        }
+        // --- ★ "LATE NIGHT SPEED" neon SIGN, high on the south wall (faces the floor). ---
+        {
+            const uint32_t sw = 512, sh = 96;
+            auto sgpx = makeSignRGBA(sw, sh, "LATE NIGHT SPEED", 1.0f, 0.10f, 0.10f);   // hot red neon
+            const x3::rhi::TextureHandle sgTex = device.createTexture(sgpx.data(), sw, sh, true);
+            const float sX = 1.5f, sY = 5.4f, sZ = CL / 2 - 0.42f;   // clear of the wall inner face (~-0.15)
+            const float sHW = 3.6f, sHH = sHW * (float)sh / (float)sw;   // keep aspect
+            const float wy = oy + sY;
+            // A single front-facing QUAD with explicit 0..1 UVs (makeBox tiles a wide
+            // decal — a quad maps the sign texture exactly ONCE). Normal faces -Z (into
+            // the room). Winding CCW when viewed from -Z.
+            x3::prims::PrimMesh sg;
+            const float nZ = -1.0f;
+            // U flipped (viewer at -Z looking +Z sees +X on the left): U=1 at -X, U=0 at +X
+            // so "LATE NIGHT SPEED" reads left-to-right, not mirrored.
+            sg.verts.push_back({{sX-sHW, wy+sHH, sZ}, {0,0,nZ}, {1,0}});   // TL
+            sg.verts.push_back({{sX-sHW, wy-sHH, sZ}, {0,0,nZ}, {1,1}});   // BL
+            sg.verts.push_back({{sX+sHW, wy-sHH, sZ}, {0,0,nZ}, {0,1}});   // BR
+            sg.verts.push_back({{sX+sHW, wy+sHH, sZ}, {0,0,nZ}, {0,0}});   // TR
+            sg.index = { 0, 1, 3, 1, 2, 3,   0, 3, 1, 1, 3, 2 };   // double-sided (cull-proof)
+            const float signCol[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+            const uint32_t sid = prim(std::move(sg), signCol, kEmitOff, sgTex, x3::rhi::TextureHandle{}, false);
+            // Use the PROVEN OLED-glass per-texel emissive path (the EQ screens glow this
+            // way): the letters emit, the dark panel emits nothing.
+            oledGlass(sid, sgTex);
+            Entity& se = scene.get(sid);
+            se.emissive[3] = 3.2f;             // brighter than a screen — it's a neon sign
+            se.glass.opacity = 1.0f;           // solid panel (no see-through)
+        }
+    }
+
+    // ==================================================================
+    // ★ DIY DOME PARTY-PROJECTORS + CEILING STARBURST (LNS GARAGE, Tim 2026-07-18).
+    // The REAL Late Night Speed light signature: cheap RGB dome/mushroom projectors +
+    // a red ceiling starburst throwing SPINNING colored dots + spirograph patterns
+    // across the floor & ceiling. Built as ADDITIVE emissive pattern DISCS (NOT point
+    // lights — the 64 cap is maxed): black bg adds nothing, the dots add their colour
+    // over the glossy floor and pool in its reflection. update() spins them on the beat
+    // clock. Alongside (not replacing) the moving-head beams. Plus visible dome fixtures.
+    // ==================================================================
+    {
+        const uint32_t kDotN = 256;
+        auto d0 = makeDotFieldRGBA(kDotN, 11u);
+        auto d1 = makeDotFieldRGBA(kDotN, 47u);
+        auto stx = makeStarburstRGBA(kDotN);
+        const x3::rhi::TextureHandle dotTex0 = device.createTexture(d0.data(), kDotN, kDotN, true);
+        const x3::rhi::TextureHandle dotTex1 = device.createTexture(d1.data(), kDotN, kDotN, true);
+        const x3::rhi::TextureHandle starTex = device.createTexture(stx.data(), kDotN, kDotN, true);
+        // Build a flat disc mesh centred at LOCAL origin in the XZ plane, facing `up`
+        // (+1 = up for a floor pattern, -1 = down for a ceiling pattern), UV planar 0..1.
+        auto makeDisc = [](float R, float up) {
+            x3::prims::PrimMesh m;
+            const int seg = 48;
+            m.verts.push_back({{0,0,0}, {0,up,0}, {0.5f,0.5f}});   // center
+            for (int i = 0; i <= seg; ++i) {
+                const float a = (float)i / seg * 2.0f * kPi;
+                const float cx = std::cos(a), sz = std::sin(a);
+                m.verts.push_back({{cx*R, 0.0f, sz*R}, {0,up,0}, {0.5f+0.5f*cx, 0.5f+0.5f*sz}});
+            }
+            for (int i = 1; i <= seg; ++i) {
+                if (up > 0) m.index.insert(m.index.end(), { 0, (uint32_t)i, (uint32_t)(i+1) });
+                else        m.index.insert(m.index.end(), { 0, (uint32_t)(i+1), (uint32_t)i });
+            }
+            return m;
+        };
+        // Place a spinning ADDITIVE pattern disc at a world centre; returns nothing but
+        // records it for update()'s spin. `up`>0 lies on the floor, <0 hugs the ceiling.
+        auto addProjectorDisc = [&](float R, float wx, float wy, float wz, float up,
+                                    x3::rhi::TextureHandle tex, float spin, float emBase,
+                                    float emAmp, float phase) {
+            x3::prims::PrimMesh g = makeDisc(R, up);
+            Entity e;
+            e.mesh = device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                       g.index.data(), (uint32_t)g.index.size());
+            e.tex = tex; e.emissiveTex = tex;
+            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+            e.emissive[0] = 1.0f; e.emissive[1] = 1.0f; e.emissive[2] = 1.0f; e.emissive[3] = emBase;
+            e.transparent = true;
+            e.glass.opacity = 0.0f;        // pure additive — black bg contributes nothing
+            e.glass.refraction = 0.0f;
+            e.glass.roughness = 0.0f;
+            e.glass.specular = 0.0f;
+            e.glass.additive = 1.0f;
+            e.transform[12] = wx; e.transform[13] = wy; e.transform[14] = wz;   // world place
+            e.tag = (uint32_t)Tag::Static;
+            const uint32_t id = scene.add(e);
+            m_projectors.push_back(Projector{ id, wx, wy, wz, spin, up, emBase, emAmp, phase });
+        };
+        // TWO floor dot-fields spinning opposite ways over the dance floor (spirograph
+        // sweep), lifted just above the tiles so they pool + reflect in the wet floor.
+        addProjectorDisc(6.0f, -6.0f, oy + 0.16f, -1.5f,  1.0f, dotTex0,  0.6f, 2.4f, 1.4f, 0.0f);
+        addProjectorDisc(4.6f,  1.5f, oy + 0.17f,  2.0f,  1.0f, dotTex1, -0.9f, 2.2f, 1.3f, 1.7f);
+        // Red CEILING STARBURST just under the deck, spinning (seen looking up + it
+        // rakes the trusses). Hugs the ceiling, faces DOWN.
+        addProjectorDisc(4.0f,  0.0f, oy + CH - 0.30f, -2.0f, -1.0f, starTex, 1.1f, 2.6f, 1.2f, 0.0f);
+        // A third dot-field high on the SOUTH wall region (dots on the wall at eye height),
+        // tilted flat but placed near the wall so its dots read on the CMU block.
+        addProjectorDisc(3.4f, -10.0f, oy + 0.16f, 3.5f, 1.0f, dotTex0, 0.75f, 2.0f, 1.2f, 3.1f);
+
+        // Visible DOME/MUSHROOM PROJECTOR FIXTURES on the ceiling (the cheap party
+        // lights themselves): a stem + a multi-faceted emissive dome throwing colour.
+        auto domeFixture = [&](float fx, float fz, const float* domeEm) {
+            box(fx, CH - 0.18f, fz, 0.05f, 0.12f, 0.05f, kMetal, kEmitOff, false);   // stem
+            box(fx, CH - 0.30f, fz, 0.13f, 0.06f, 0.13f, kSpk, domeEm, false);        // dome base (emissive)
+            box(fx, CH - 0.37f, fz, 0.08f, 0.05f, 0.08f, kTvFrame, domeEm, false);    // lens cap
+        };
+        { const float emR[4] = { 1.4f, 0.3f, 1.4f, 2.4f }; domeFixture(-6.0f, -1.5f, emR); }
+        { const float emB[4] = { 0.3f, 0.8f, 1.6f, 2.4f }; domeFixture( 1.5f,  2.0f, emB); }
+        { const float emG[4] = { 0.3f, 1.5f, 0.6f, 2.4f }; domeFixture(-10.0f, 3.5f, emG); }
+    }
+
+    // ==================================================================
+    // ★ THE L-WRAPAROUND BAR (LNS GARAGE, Tim 2026-07-18) — SUPERSEDES the U-bar.
+    // The REAL Late Night Speed bar: DARK GREEN GRANITE, L-shaped, running the FULL
+    // WEST WALL (N-S) then CURVING EAST around the NW corner and along the NORTH WALL
+    // to the EDGE OF THE LOUNGE (the engine room / observation lounge is north-centre,
+    // so the north run stops at the ER west edge). Backbar bottle walls behind both
+    // legs; a big SVS PB16-Ultra SUB cabinet under a west-leg section (granite-over-SVS);
+    // Snap-on stools (red seat, chrome pedestal); Danny the bartender behind it.
+    // ==================================================================
+    {
+        const float bH2 = 1.1f;                        // bar height
+        const float wX  = -CW / 2 + 1.0f;              // west-leg counter centre X (0.72 m lane behind)
+        const float wZ0 = -CL / 2 + 0.3f, wZ1 = CL / 2 - 0.3f;   // west leg Z span (full wall)
+        const float nZ  = -CL / 2 + 1.0f;              // north-leg counter centre Z
+        const float erWest = -ER_W / 2 - 0.3f;         // north run stops just west of the lounge/ER
+        const float nX0 = wX - 0.28f;                  // north leg X span: NW corner ...
+        const float nX1 = erWest;                      //           ... to the lounge edge
+        const float dHalf = 0.28f;                     // counter half-depth
+        // DARK GREEN GRANITE top helper (§1.10) — polished, gleaming.
         auto graniteTop = [&](float cx, float cy, float cz, float hx, float hy, float hz) {
             x3::prims::PrimMesh g = x3::prims::makeBox(hx, hy, hz, cx, oy + cy, cz, 1.0f);
             prim(std::move(g), kGranite, kGraniteEm, x3::rhi::TextureHandle{}, mrGlass, true);
         };
-        graniteTop(uX,            bH2 + 0.03f,  bBase / 2, bArm / 2, 0.03f, 0.325f);
-        graniteTop(uX,            bH2 + 0.03f, -bBase / 2, bArm / 2, 0.03f, 0.325f);
-        graniteTop(uX - bArm / 2, bH2 + 0.03f, 0,         0.325f,   0.03f, bBase / 2 + 0.325f);
-        // Amber LED under-strips along the top edges.
-        box(uX, bH2 - 0.04f,  bBase / 2 + 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitAmberLo, false);
-        box(uX, bH2 - 0.04f, -bBase / 2 - 0.28f, (bArm - 0.5f) / 2, 0.01f, 0.015f, kWall, kEmitAmberLo, false);
-        box(uX - bArm / 2 - 0.28f, bH2 - 0.04f, 0, 0.015f, 0.01f, (bBase + 0.3f) / 2, kWall, kEmitAmberLo, false);
-        // Warm bar glow.
-        addLight(m_lights, uX - bArm / 4, oy + bH2 - 0.3f, 0, 1.0f, 0.7f, 0.2f, 8.0f);
-        // Back-bar shelf + 12 jewel-tone bottles inside the U (over the west base).
-        for (int i = 0; i < 12; ++i) {
-            const float bxp = uX - bArm / 2 + 0.8f + i * 0.35f;
-            const float hue[6][3] = { {0.53f,0.13f,0.0f}, {0.0f,0.4f,0.2f}, {0.8f,0.66f,0.0f},
-                                      {0.27f,0.0f,0.13f}, {0.13f,0.27f,0.53f}, {0.53f,0.27f,0.0f} };
-            const float* h = hue[i % 6];
-            const float bem[4]  = { h[0] + 0.2f, h[1] + 0.2f, h[2] + 0.2f, 1.2f };
-            const float bcol[4] = { h[0], h[1], h[2], 1.0f };
-            x3::prims::PrimMesh bt = x3::prims::makeBox(0.04f, 0.15f, 0.04f, bxp, oy + bH2 + 0.65f, 0, 1.0f);
-            prim(std::move(bt), bcol, bem, x3::rhi::TextureHandle{}, mrGlass, false);
-        }
-        // Stools along both arms (5 pairs, dark leather seats).
-        for (int i = 0; i < 5; ++i) {
-            const float sx = uX - bArm / 2 + 0.8f + i * (bArm - 1.0f) / 4.0f;
-            for (int j = 0; j < 2; ++j) {
-                const float sz = (j == 0 ? bBase / 2 + 0.65f : -bBase / 2 - 0.65f);
-                box(sx, 0.78f, sz, 0.19f, 0.025f, 0.19f, kLeather,  kEmitOff, false);
-                box(sx, 0.39f, sz, 0.025f, 0.39f, 0.025f, kStoolLeg, kEmitOff, false);
-            }
-        }
-        // Signature epoxy-filled crack on the 3rd oak panel — "you don't hide what
-        // went wrong" (§1.2): a thin dark filled diagonal left showing.
-        box(uX - bArm / 2 + 1.6f, bH2 / 2, bBase / 2 + 0.08f, 0.006f, bH2 / 2 - 0.12f, 0.006f,
-            kCeil, kEmitOff, false);
-    }
-
-    // ==================================================================
-    // GROUND BAR + 7 STOOLS (west side).
-    // ==================================================================
-    {
-        // Tim: 'the bar needs walk-around capability' — counter pulled off the
-        // wall so the lane behind is player-walkable (~1.2 m) with open ends.
-        const float bx = -CW / 2 + 1.9f, bz = CL / 4;
-        box(bx, 0.55f, bz, 0.4f, 0.55f, 2.5f, kBar, kEmitOff, true, 1.0f, &sBar);     // bar body
-        // MAX-OUT: GLEAMING GLASSY COUNTERTOP — a near-black glass slab on the
-        // mirror-gloss MR route (tight specular hot-spots from the bar pendants =
-        // the gleam), edge-lit by a cyan under-lip strip, over a warm kick LED.
+        const float kBarBase[4] = { 0.10f, 0.09f, 0.08f, 1.0f };   // dark cabinet base
+        // ---- WEST LEG (full N-S along the west wall) ----
         {
-            x3::prims::PrimMesh top = x3::prims::makeBox(0.50f, 0.035f, 2.6f, bx, oy + 1.13f, bz, 1.0f);
-            const float glassCol[4] = { 0.05f, 0.065f, 0.085f, 1.0f };
-            const float glassEm[4]  = { 0.02f, 0.10f, 0.13f, 0.5f };
-            prim(std::move(top), glassCol, glassEm, x3::rhi::TextureHandle{}, mrGlass, false);
+            const float lenZ = wZ1 - wZ0, cz = (wZ0 + wZ1) / 2;
+            box(wX, bH2 / 2, cz, dHalf, bH2 / 2, lenZ / 2, kBarBase, kEmitOff, true, 1.0f, &sBar); // base cabinet
+            graniteTop(wX, bH2 + 0.03f, cz, dHalf + 0.05f, 0.03f, lenZ / 2 + 0.05f);
+            box(wX + dHalf + 0.02f, bH2 - 0.04f, cz, 0.012f, 0.012f, lenZ / 2, kWall, kEmitAmberLo, false); // amber under-lip
         }
-        const float emCyanStrip[4] = { 0.05f, 0.85f, 1.0f, 2.6f };
-        box(bx + 0.48f, 1.10f, bz, 0.012f, 0.012f, 2.58f, kWall, emCyanStrip, false);   // under-lip strip (guest side)
-        const float emWarmKick[4] = { 1.0f, 0.55f, 0.15f, 1.6f };
-        box(bx + 0.40f, 0.06f, bz, 0.012f, 0.012f, 2.5f, kWall, emWarmKick, false);     // kick-panel LED
-        m_stats.hasGroundBar = true;
-        // THREE warm pendant pools raking the glass top (the specular gleam).
-        // (relight: 1.15/0.85/0.45 -> 1.6/1.15/0.55 so the bar reads as a glowing hub.)
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz - 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz,        1.60f, 1.15f, 0.55f, 4.0f);
-        addLight(m_lights, bx + 0.3f, oy + 2.3f, bz + 1.6f, 1.60f, 1.15f, 0.55f, 4.0f);
-        // Pendant fixtures (small chrome cones -> boxes + glowing bulbs).
-        for (int pnd = -1; pnd <= 1; ++pnd) {
-            const float pz = bz + pnd * 1.6f;
-            box(bx + 0.3f, 2.75f, pz, 0.015f, 0.35f, 0.015f, kChrome, kEmitOff, false);   // drop rod
-            box(bx + 0.3f, 2.35f, pz, 0.06f, 0.045f, 0.06f, kSpk, kEmitOff, false);       // shade (near-black)
-            const float emBulb[4] = { 1.0f, 0.78f, 0.45f, 2.8f };
-            box(bx + 0.3f, 2.27f, pz, 0.035f, 0.025f, 0.035f, kBarTop, emBulb, false);    // bulb
+        // ---- NORTH LEG (NW corner east to the lounge edge) ----
+        {
+            const float lenX = nX1 - nX0, cx = (nX0 + nX1) / 2;
+            box(cx, bH2 / 2, nZ, lenX / 2, bH2 / 2, dHalf, kBarBase, kEmitOff, true, 1.0f, &sBar);
+            graniteTop(cx, bH2 + 0.03f, nZ, lenX / 2 + 0.05f, 0.03f, dHalf + 0.05f);
+            box(cx, bH2 - 0.04f, nZ + dHalf + 0.02f, lenX / 2, 0.012f, 0.012f, kWall, kEmitAmberLo, false);
         }
-        for (int i = 0; i < 7; ++i) {
-            const float sz = CL / 4 - 2.5f + 0.5f + i * 5.0f / 7.0f;
-            box(-CW / 2 + 2.7f, 0.75f, sz, 0.2f, 0.035f, 0.2f, kLeather, kEmitOff, false);       // seat (dark leather)
-            box(-CW / 2 + 2.7f, 0.36f, sz, 0.03f, 0.36f, 0.03f, kStoolLeg, kEmitOff, false);     // leg
+        // ---- NW CORNER curve (a 45° chamfer block tying the two legs) ----
+        graniteTop(wX + 0.15f, bH2 + 0.03f, nZ + 0.15f, dHalf + 0.2f, 0.03f, dHalf + 0.2f);
+        box(wX, bH2 / 2, nZ, dHalf + 0.15f, bH2 / 2, dHalf + 0.15f, kBarBase, kEmitOff, true);
+        // ---- ★ SVS PB16-Ultra SUB cabinet under a west-leg section (granite over SVS) ----
+        {
+            const float sX = wX, sZ = 2.6f;
+            box(sX, 0.42f, sZ, dHalf + 0.02f, 0.42f, 0.34f, kSub, kEmitOff, true);   // big black sub box
+            box(sX + dHalf, 0.42f, sZ, 0.01f, 0.28f, 0.24f, kSpk, kEmitOff, false);  // driver face (front)
+            const float emSubLed[4] = { 0.10f, 1.0f, 0.30f, 2.0f };
+            box(sX + dHalf + 0.005f, 0.68f, sZ, 0.006f, 0.01f, 0.02f, kWall, emSubLed, false); // status LED
+        }
+        // ---- SNAP-ON STOOLS (red round seat, chrome pedestal + footring + base) ----
+        auto snapStool = [&](float sx, float sz) {
+            const float kSnapRed[4] = { 0.55f, 0.05f, 0.06f, 1.0f };
+            box(sx, 0.76f, sz, 0.20f, 0.05f, 0.20f, kSnapRed, kEmitOff, false);   // red seat
+            box(sx, 0.38f, sz, 0.035f, 0.38f, 0.035f, kChrome, kEmitOff, false);  // chrome pedestal
+            box(sx, 0.30f, sz, 0.14f, 0.012f, 0.14f, kChrome, kEmitOff, false);   // chrome footring
+            box(sx, 0.02f, sz, 0.19f, 0.02f, 0.19f, kChrome, kEmitOff, false);    // chrome base disc
             ++m_stats.barStools;
-        }
-
-        // MAX-OUT: BACK-BAR — a lit bottle wall on the west wall behind the bar:
-        // backlit panel, three polished glass shelves, 18 glowing bottles in five
-        // liquor hues, chrome shelf brackets, and a wide OLED band above (the
-        // "now mixing" display). This is what a camera at the bar SEES.
+        };
+        // 6 along the west leg (room side, +X), 4 along the north leg (room side, +Z).
+        for (int i = 0; i < 6; ++i)
+            snapStool(wX + dHalf + 0.55f, wZ0 + 1.2f + i * (wZ1 - wZ0 - 2.4f) / 5.0f);
+        for (int i = 0; i < 4; ++i)
+            snapStool(nX0 + 1.4f + i * (nX1 - nX0 - 2.0f) / 3.0f, nZ + dHalf + 0.55f);
+        // ---- BACKBAR bottle walls behind BOTH legs (west wall + north wall) ----
+        const float bottleHue[5][3] = {
+            { 1.0f, 0.55f, 0.10f }, { 0.15f, 1.0f, 0.45f }, { 0.10f, 0.75f, 1.0f },
+            { 0.80f, 0.20f, 1.0f }, { 1.0f, 0.25f, 0.35f },
+        };
+        // West-wall backbar: 3 shelves of glowing bottles + violet edge strips.
         {
-            const float wallX = -CW / 2 + 0.35f;
-            // DARK GLASS CRYSTAL panel (Tim) — a real transparent pane, near-black
-            // with a deep violet-blue tint + full fresnel: the rack reads as smoked
-            // crystal and the glowing bottles pop against it.
-            {
-                x3::prims::PrimMesh pg = x3::prims::makeBox(0.015f, 1.05f, 2.4f, wallX, oy + 1.75f, bz, 1.0f);
-                Entity pe;
-                pe.mesh = device.createMesh(pg.verts.data(), (uint32_t)pg.verts.size(),
-                                            pg.index.data(), (uint32_t)pg.index.size());
-                pe.baseColor[0] = 0.04f; pe.baseColor[1] = 0.03f; pe.baseColor[2] = 0.07f; pe.baseColor[3] = 1.0f;
-                pe.emissive[0] = 0.18f; pe.emissive[1] = 0.06f; pe.emissive[2] = 0.35f; pe.emissive[3] = 0.30f;
-                pe.transparent = true;
-                pe.glass.opacity = 0.55f;
-                pe.glass.refraction = 0.0f;
-                pe.glass.roughness = 0.04f;
-                pe.glass.specular = 1.0f;
-                pe.glass.tint[0] = 0.35f; pe.glass.tint[1] = 0.25f; pe.glass.tint[2] = 0.60f;
-                pe.tag = (uint32_t)Tag::Static;
-                scene.add(pe);
-            }
-            // Violet edge-light strips framing the crystal panel.
-            const float emViolet[4] = { 0.55f, 0.10f, 1.0f, 2.2f };
-            box(wallX + 0.01f, 2.82f, bz, 0.008f, 0.010f, 2.42f, kWall, emViolet, false);
-            box(wallX + 0.01f, 0.68f, bz, 0.008f, 0.010f, 2.42f, kWall, emViolet, false);
-            const float bottleHue[5][3] = {
-                { 1.0f, 0.55f, 0.10f },   // bourbon amber
-                { 0.15f, 1.0f, 0.45f },   // absinthe emerald
-                { 0.10f, 0.75f, 1.0f },   // curacao cyan
-                { 0.80f, 0.20f, 1.0f },   // violet
-                { 1.0f, 0.25f, 0.35f },   // campari rose
-            };
+            const float wallX = -CW / 2 + 0.35f, cz = 0.0f, run = (wZ1 - wZ0) - 1.5f;
+            const float emViolet[4] = { 0.55f, 0.10f, 1.0f, 2.0f };
+            box(wallX + 0.02f, 2.7f, cz, 0.008f, 0.010f, run / 2, kWall, emViolet, false);
             for (int shelf = 0; shelf < 3; ++shelf) {
-                const float shY = 1.15f + shelf * 0.55f;
-                // Polished glass shelf (mirror-gloss slab) + chrome brackets.
-                x3::prims::PrimMesh sh = x3::prims::makeBox(0.16f, 0.014f, 2.3f, wallX + 0.18f, oy + shY, bz, 1.0f);
-                Entity she;
-                she.mesh = device.createMesh(sh.verts.data(), (uint32_t)sh.verts.size(),
-                                             sh.index.data(), (uint32_t)sh.index.size());
-                she.baseColor[0] = 0.06f; she.baseColor[1] = 0.07f; she.baseColor[2] = 0.10f; she.baseColor[3] = 1.0f;
-                she.transparent = true;
-                she.glass.opacity = 0.35f;      // crystal shelf — see the bottles through it
-                she.glass.refraction = 0.0f;
-                she.glass.roughness = 0.05f;
-                she.glass.specular = 1.0f;
-                she.glass.tint[0] = 0.55f; she.glass.tint[1] = 0.60f; she.glass.tint[2] = 0.85f;
-                she.tag = (uint32_t)Tag::Static;
-                scene.add(she);
-                for (int br = -1; br <= 1; ++br)
-                    box(wallX + 0.18f, shY - 0.05f, bz + br * 1.05f, 0.02f, 0.05f, 0.02f, kChrome, kEmitOff, false);
-                // Six bottles per shelf, varied hue/height, backlit glow.
-                for (int bt = 0; bt < 6; ++bt) {
-                    const float btZ = bz - 1.0f + bt * 0.4f + ((shelf * 7 + bt) % 3) * 0.05f;
-                    const float btH = 0.13f + ((clubHash(shelf * 61 + bt * 17) % 100) / 100.0f) * 0.07f;
-                    const float* hue = bottleHue[(shelf * 6 + bt) % 5];
-                    const float btEm[4] = { hue[0], hue[1], hue[2], 1.7f };
-                    const float btCol[4] = { hue[0] * 0.3f, hue[1] * 0.3f, hue[2] * 0.3f, 1.0f };
-                    x3::prims::PrimMesh btm = x3::prims::makeBox(0.035f, btH, 0.035f,
-                                                                 wallX + 0.18f, oy + shY + 0.014f + btH, btZ, 1.0f);
+                const float shY = 1.35f + shelf * 0.55f;
+                box(wallX + 0.16f, shY - 0.03f, cz, 0.14f, 0.012f, run / 2, kChrome, kEmitOff, false); // shelf
+                const int nb = (int)(run / 0.42f);
+                for (int bt = 0; bt < nb; ++bt) {
+                    const float btZ = cz - run / 2 + 0.3f + bt * 0.42f;
+                    const float btH = 0.12f + ((clubHash(shelf * 61 + bt * 17) % 100) / 100.0f) * 0.06f;
+                    const float* hue = bottleHue[(shelf * 3 + bt) % 5];
+                    const float btEm[4] = { hue[0], hue[1], hue[2], 1.6f };
+                    const float btCol[4] = { hue[0]*0.3f, hue[1]*0.3f, hue[2]*0.3f, 1.0f };
+                    x3::prims::PrimMesh btm = x3::prims::makeBox(0.032f, btH, 0.032f, wallX + 0.16f, oy + shY + btH, btZ, 1.0f);
                     prim(std::move(btm), btCol, btEm, x3::rhi::TextureHandle{}, mrGlass, false);
-                    // Neck.
-                    box(wallX + 0.18f, shY + 0.014f + btH * 2.0f + 0.035f, btZ, 0.012f, 0.035f, 0.012f,
-                        kChrome, kEmitOff, false);
                 }
             }
-            // Wide OLED band above the back-bar (registered for the live shimmer).
+            // Wide OLED "now mixing" band above the west backbar (live shimmer).
             const float emScr[4] = { 1.0f, 1.0f, 1.0f, 1.9f };
-            const uint32_t bandId = box(wallX + 0.05f, 3.25f, bz, 0.015f, 0.42f, 2.35f, kTvFrame, emScr, false);
+            const uint32_t bandId = box(wallX + 0.05f, 3.15f, cz, 0.015f, 0.40f, run / 2, kTvFrame, emScr, false);
             oledGlass(bandId, texEq[1]);
             m_oledEnts.push_back(bandId);
-            // Bartender behind the counter, facing the room (+X).
-            addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
-                         x3::phys::Vec3{ bx - 0.75f, oy + 0.0f, bz }, 1.0f, false, nullptr);
         }
+        // North-wall backbar: 2 shelves of bottles along the north run.
+        {
+            const float wallZ = -CL / 2 + 0.35f, cx = (nX0 + nX1) / 2, run = (nX1 - nX0) - 1.2f;
+            for (int shelf = 0; shelf < 2; ++shelf) {
+                const float shY = 1.45f + shelf * 0.55f;
+                box(cx, shY - 0.03f, wallZ + 0.16f, run / 2, 0.012f, 0.14f, kChrome, kEmitOff, false);
+                const int nb = (int)(run / 0.42f);
+                for (int bt = 0; bt < nb; ++bt) {
+                    const float btX = cx - run / 2 + 0.3f + bt * 0.42f;
+                    const float btH = 0.12f + ((clubHash(shelf * 41 + bt * 23) % 100) / 100.0f) * 0.06f;
+                    const float* hue = bottleHue[(shelf * 4 + bt) % 5];
+                    const float btEm[4] = { hue[0], hue[1], hue[2], 1.6f };
+                    const float btCol[4] = { hue[0]*0.3f, hue[1]*0.3f, hue[2]*0.3f, 1.0f };
+                    x3::prims::PrimMesh btm = x3::prims::makeBox(0.032f, btH, 0.032f, btX, oy + shY + btH, wallZ + 0.16f, 1.0f);
+                    prim(std::move(btm), btCol, btEm, x3::rhi::TextureHandle{}, mrGlass, false);
+                }
+            }
+        }
+        // ---- NEUTRAL WARM KEYS over the granite (so the emerald reads, not only gels).
+        // (Reclaimed from the removed U-bar key + ground-bar pendants — net light-neutral.)
+        addLight(m_lights, wX + 0.3f, oy + bH2 + 1.6f, -2.5f, 1.70f, 1.55f, 1.35f, 5.5f);
+        addLight(m_lights, wX + 0.3f, oy + bH2 + 1.6f,  2.5f, 1.70f, 1.55f, 1.35f, 5.5f);
+        addLight(m_lights, -10.0f,    oy + bH2 + 1.6f, nZ + 0.3f, 1.70f, 1.55f, 1.35f, 5.5f);
+        addLight(m_lights, -5.5f,     oy + bH2 + 1.6f, nZ + 0.3f, 1.70f, 1.55f, 1.35f, 5.5f);
+        m_stats.hasGroundBar = true;
+        // ---- DANNY the bartender, behind the L (in the service lane), facing the room.
+        addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
+                     x3::phys::Vec3{ wX - 0.55f, oy + 0.0f, -1.5f }, 1.0f, false, nullptr);
     }
+
 
     // ==================================================================
     // BLACK COUCHES + END TABLE (SE corner) + VIP COUCH (SW corner).
@@ -1503,7 +2035,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             m_oledEnts.push_back(lsId);
         }
         // A patron enjoying the lounge (inert idle prop, like the DJ/bouncer).
-        addCharacter(scene, device, physics, modelDir, "AnnaBodySuit.glb",
+        addCharacter(scene, device, physics, modelDir, "AnnaBodySuit_anim.glb",
                      x3::phys::Vec3{ 0.9f, oy + ly, lz - 0.2f }, 1.0f, false, nullptr);
     }
 
@@ -1534,30 +2066,90 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         rail(-HL + ckW, 0, 0.03f, (CL - 2 * ckW) / 2);                 // west
         rail(-(egH / 2 + nSeg / 2), -(HW - ckW), nSeg / 2, 0.03f);     // north (two segments)
         rail( (egH / 2 + nSeg / 2), -(HW - ckW), nSeg / 2, 0.03f);
-        // ROUND HALF-MOON private pods (curved baluster arc = the half-moon read).
-        // dir = +1 pod bulges toward +Z, -1 toward -Z (into the room).
-        auto pod = [&](float cx, float cz, float dir) {
-            const float r = 0.95f, yb = LYc;
-            box(cx, yb - 0.02f, cz - dir * r * 0.35f, r * 0.8f, 0.03f, r * 0.42f, kCatwalk, kEmitOff, true); // pad
-            for (int a = 0; a <= 8; ++a) {                    // curved rail (semicircle)
-                const float th = kPi * a / 8.0f;
-                const float px = cx + r * std::cos(th);
-                const float pz = cz - dir * r * std::sin(th);
-                box(px, yb + 0.45f, pz, 0.03f, 0.45f, 0.03f, kRail, kEmitOff, false);
-                box(px, yb + 0.90f, pz, 0.05f, 0.02f, 0.05f, kWall, kEmitAmberLo, false);
+        // ROUND HALF-MOON private pods — REAL HALF-DISC BOOTHS (POLISH stage15).
+        // Was: a curved baluster ARC over a flat rectangular pad — from below it read
+        // as a fence, not a booth. Now each pod is a proper SEMICIRCULAR FLOOR PLATE
+        // (a real half-disc) cantilevering off the catwalk inner edge INTO the room,
+        // ringed by a curved rail, with a CURVED bench following the arc and a small
+        // center table. Reads as a round half-moon booth from the floor below AND the
+        // catwalk above.
+        //   C=(cx,cz) sits on the catwalk INNER edge; (bdx,bdz)=unit bulge INTO room;
+        //   perp=(-bdz,bdx) runs the flat diameter along the catwalk.
+        auto halfDiscFloor = [&](float cx, float cy, float cz, float r, float hy,
+                                 float bdx, float bdz) {
+            const float px = -bdz, pz = bdx;              // diameter (flat-edge) axis
+            const int N = 18;
+            float ax[N + 1], az[N + 1];
+            for (int i = 0; i <= N; ++i) {
+                const float th = kPi * i / N, c = std::cos(th), s = std::sin(th);
+                ax[i] = cx + px * (r * c) + bdx * (r * s);
+                az[i] = cz + pz * (r * c) + bdz * (r * s);
             }
-            box(cx, yb + 0.6f, cz - dir * r * 0.25f, 0.06f, 0.08f, 0.06f, kBarTop, kEmitAmberLo, false); // lantern
-            box(cx, yb + 0.2f, cz - dir * r * 0.22f, r * 0.55f, 0.06f, 0.14f, kLeather, kEmitOff, false); // bench
+            x3::prims::PrimMesh m;
+            auto pushTri = [&](float Ax, float Ay, float Az, float Bx, float By, float Bz,
+                               float Cx, float Cy, float Cz, float wx, float wy, float wz) {
+                float ux = Bx - Ax, uy = By - Ay, uz = Bz - Az;
+                float vx = Cx - Ax, vy = Cy - Ay, vz = Cz - Az;
+                float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+                if (nx * wx + ny * wy + nz * wz < 0.0f) {   // orient front face toward `want`
+                    float tx = Bx, ty = By, tz = Bz; Bx = Cx; By = Cy; Bz = Cz; Cx = tx; Cy = ty; Cz = tz;
+                }
+                const uint32_t b = (uint32_t)m.verts.size();
+                m.verts.push_back({ { Ax, Ay, Az }, { wx, wy, wz }, { 0, 0 } });
+                m.verts.push_back({ { Bx, By, Bz }, { wx, wy, wz }, { 1, 0 } });
+                m.verts.push_back({ { Cx, Cy, Cz }, { wx, wy, wz }, { 0.5f, 1 } });
+                m.index.insert(m.index.end(), { b, b + 1, b + 2 });
+            };
+            for (int i = 0; i < N; ++i) {                 // top + bottom fans
+                pushTri(cx, cy + hy, cz, ax[i], cy + hy, az[i], ax[i + 1], cy + hy, az[i + 1], 0, 1, 0);
+                pushTri(cx, cy - hy, cz, ax[i], cy - hy, az[i], ax[i + 1], cy - hy, az[i + 1], 0, -1, 0);
+            }
+            for (int i = 0; i < N; ++i) {                 // curved rim
+                float nx0 = ax[i] - cx, nz0 = az[i] - cz;
+                float l = std::sqrt(nx0 * nx0 + nz0 * nz0); if (l < 1e-5f) l = 1.0f; nx0 /= l; nz0 /= l;
+                pushTri(ax[i], cy + hy, az[i], ax[i + 1], cy + hy, az[i + 1], ax[i + 1], cy - hy, az[i + 1], nx0, 0, nz0);
+                pushTri(ax[i], cy + hy, az[i], ax[i + 1], cy - hy, az[i + 1], ax[i], cy - hy, az[i], nx0, 0, nz0);
+            }
+            // straight EDGE face (the diameter, along the catwalk).
+            pushTri(ax[0], cy + hy, az[0], ax[N], cy + hy, az[N], ax[N], cy - hy, az[N], -bdx, 0, -bdz);
+            pushTri(ax[0], cy + hy, az[0], ax[N], cy - hy, az[N], ax[0], cy - hy, az[0], -bdx, 0, -bdz);
+            m.cverts.reserve(m.verts.size() * 3);         // walkable pod floor
+            for (const auto& vt : m.verts) { m.cverts.push_back(vt.pos[0]); m.cverts.push_back(vt.pos[1]); m.cverts.push_back(vt.pos[2]); }
+            m.cindex = m.index;
+            prim(std::move(m), kCatwalk, kEmitOff, x3::rhi::TextureHandle{}, mrChrome, true);
         };
-        const float podZS =  (HW - ckW - 0.15f);     // just inside the south catwalk
-        const float podZN = -(HW - ckW - 0.15f);     // north
-        for (int k = 0; k < 5; ++k) {                 // 5 pods on the south wall (~20 ft)
+        auto pod = [&](float cx, float cz, float bdx, float bdz) {
+            const float r = 0.95f, yb = LYc;
+            const float px = -bdz, pz = bdx;              // diameter axis
+            halfDiscFloor(cx, yb - 0.02f, cz, r, 0.04f, bdx, bdz);     // REAL half-disc floor plate
+            for (int a = 0; a <= 8; ++a) {                // curved rail around the arc
+                const float th = kPi * a / 8.0f, c = std::cos(th), s = std::sin(th);
+                const float rx = cx + px * (r * c) + bdx * (r * s);
+                const float rz = cz + pz * (r * c) + bdz * (r * s);
+                box(rx, yb + 0.45f, rz, 0.03f, 0.45f, 0.03f, kRail, kEmitOff, false);      // baluster
+                box(rx, yb + 0.90f, rz, 0.05f, 0.02f, 0.05f, kWall, kEmitAmberLo, false);  // amber cap
+            }
+            for (int a = 1; a < 8; ++a) {                 // CURVED bench following the arc
+                const float th = kPi * a / 8.0f, c = std::cos(th), s = std::sin(th);
+                const float rb = r * 0.62f;
+                const float bx = cx + px * (rb * c) + bdx * (rb * s);
+                const float bz = cz + pz * (rb * c) + bdz * (rb * s);
+                box(bx, yb + 0.22f, bz, 0.11f, 0.06f, 0.11f, kLeather, kEmitOff, false);   // seat pad
+                box(bx, yb + 0.11f, bz, 0.05f, 0.11f, 0.05f, kRail,    kEmitOff, false);   // seat leg
+            }
+            box(cx + bdx * r * 0.34f, yb + 0.25f, cz + bdz * r * 0.34f, 0.16f, 0.02f, 0.16f, kBarTop, kEmitAmberLo, false); // table top
+            box(cx + bdx * r * 0.34f, yb + 0.12f, cz + bdz * r * 0.34f, 0.03f, 0.13f, 0.03f, kChrome, kEmitOff, false);      // table stem
+            box(cx + bdx * r * 0.9f, yb + 0.75f, cz + bdz * r * 0.9f, 0.05f, 0.07f, 0.05f, kBarTop, kEmitAmberLo, false);    // lantern
+        };
+        const float podZS =  (HW - ckW);              // south catwalk inner edge (into room = -Z)
+        const float podZN = -(HW - ckW);              // north inner edge (into room = +Z)
+        for (int k = 0; k < 5; ++k) {                 // 5 pods on the south catwalk (~20 ft)
             const float cx = -HL + (k + 0.5f) * (CW / 5.0f);
-            pod(cx, podZS, -1.0f);
-            if (std::fabs(cx) > egH / 2 + 1.2f) pod(cx, podZN, +1.0f);   // north, skip ER gap
+            pod(cx, podZS, 0.0f, -1.0f);
+            if (std::fabs(cx) > egH / 2 + 1.2f) pod(cx, podZN, 0.0f, +1.0f);   // north, skip ER gap
         }
-        pod(HL - ckW - 0.4f, -2.5f, 0.0f);            // 1 east-wall pod (dir 0 = flat bench)
-        pod(-HL + ckW + 0.4f, 2.5f, 0.0f);            // 1 west-wall pod
+        pod(HL - ckW, -2.5f, -1.0f, 0.0f);            // 1 east-wall pod (bulges -X into room)
+        pod(-HL + ckW, 2.5f, +1.0f, 0.0f);           // 1 west-wall pod (bulges +X into room)
     }
 
     // ==================================================================
@@ -1595,8 +2187,22 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         box(exW, LYl + lrH / 2, lzc, T / 2, lrH / 2, lzHalf, kCharcoal, kEmitOff, true);
         // ===== DEN ZONE (north half) =====
         const float denZ = (lzN + 0.0f) / 2;
-        { const float emTV[4] = { 0.35f, 0.42f, 0.85f, 2.2f };                   // 77" LG C1 OLED
-          box(lxc, LYl + 1.3f, lzN + 0.06f, 0.87f, 0.50f, 0.02f, kTvFrame, emTV, false); }
+        // 77" LG C1 OLED — was a dim flat-emissive slab ({.35,.42,.85}@2.2) that read
+        // near-black in the charcoal den. POLISH stage15: make it a REAL per-texel
+        // OLED-glass screen showing content (the same path as the club's wall OLEDs),
+        // and push its emissive HOTTER than the club panels (kOledEmit 1.80 -> 3.4) so
+        // it reads as a big BRIGHT wall TV in the dim Lair. NOT registered in
+        // m_oledEnts (keeps the "20 OLED" gate exact + leaves it a steady bright glow).
+        {
+            // z = lzN + 0.18 lifts the pane's FRONT clear of the 0.30 m charcoal wall's
+            // inner face (lzN + T/2 = lzN + 0.15) — at the old lzN + 0.06 the pane was
+            // BURIED inside the wall and the opaque wall occluded it (that, not just the
+            // emissive, is why it read black/dim).
+            const uint32_t tvId = box(lxc, LYl + 1.3f, lzN + 0.18f, 0.87f, 0.50f, 0.02f,
+                                      kTvFrame, kEmitOff, false);
+            oledGlass(tvId, texEq[2]);
+            scene.get(tvId).emissive[3] = 3.4f;   // brighter than the club OLEDs (den is dark)
+        }
         box(lxc - 1.0f, LYl + 0.5f, lzN + 0.2f, 0.12f, 0.5f, 0.12f, kSpk, kEmitOff, false); // JBL towers
         box(lxc + 1.0f, LYl + 0.5f, lzN + 0.2f, 0.12f, 0.5f, 0.12f, kSpk, kEmitOff, false);
         box(lxc, LYl + 0.25f, lzN + 0.25f, 0.2f, 0.25f, 0.2f, kSub, kEmitOff, false);       // Velodyne sub
@@ -1611,26 +2217,37 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             const float cupCol[4] = { 0.6f, 0.6f, 0.62f, 1.0f };
             box(shX - 0.03f, shY + 0.06f, shZ + 0.12f, 0.04f, 0.05f, 0.04f, cupCol, kEmitOff, false); // the cup
             addLight(m_lights, shX - 0.35f, oy + shY - 0.15f, shZ, 0.11f, 0.05f, 1.10f, 2.6f);  // UV reading glow
+            // DEDICATED NEUTRAL SHELF KEY (POLISH stage15): the blue UV wash above
+            // rendered the emerald granite blue-black. A soft warm-WHITE key just over
+            // the shelf lights the stone with NEUTRAL light so its DARK GREEN reads (the
+            // UV glow stays as the §3.5 mood accent). Tight range = shelf-local. (+1 to
+            // the point-light set — see the report; total stays under the 64 cap.)
+            addLight(m_lights, shX - 0.3f, oy + shY + 0.55f, shZ, 1.65f, 1.54f, 1.38f, 2.4f);
         }
         box(lxc, LYl + 0.25f, -0.3f, 0.9f, 0.2f, 0.55f, kLeatherHi, kEmitOff, true);        // queen bed
         addLight(m_lights, lxc, oy + LYl + lrH - 0.3f, denZ, 1.6f, 1.2f, 0.8f, 6.5f);       // warm den light
         // ===== ADDITION ZONE (south half) — kitchen, living room, overlook =====
         box(exW - 0.4f, LYl + 0.45f, 1.2f, 0.35f, 0.45f, 0.8f, kMetal, kEmitOff, true);     // kitchen counter
         box(lxc - 0.2f, LYl + 0.3f, lzS - 0.4f, 0.7f, 0.3f, 0.35f, kLeather, kEmitOff, true); // living couch
-        // ★ DARK ONE-WAY GLASS OVERLOOK — wall-scale smoked blue-UV panel on the west
-        // (club) wall of the living room, looking DOWN over the dance floor.
+        // ★ DARK GLASS OVERLOOK — a REAL SEE-THROUGH cut (POLISH stage15). The club's
+        // east wall now has an actual window opening here (framed by the sill/lintel/
+        // jambs above); this pane FILLS that hole with the smoked dark glass, so from
+        // the Lair living room you look THROUGH it and down onto the dance floor, and
+        // from the floor it reads as dark glass. Was: a flat opaque-ish panel bolted to
+        // a solid wall (nothing behind it). Geometry matches the east-wall cut exactly.
         {
-            x3::prims::PrimMesh pg = x3::prims::makeBox(0.02f, lrH * 0.42f, 1.2f,
-                                                        HL - 0.04f, oy + LYl + lrH * 0.5f, 1.4f, 1.0f);
+            x3::prims::PrimMesh pg = x3::prims::makeBox(0.015f, kOvHy, kOvHz,
+                                                        HL, oy + kOvCy, kOvCz, 1.0f);
             Entity pe;
             pe.mesh = device.createMesh(pg.verts.data(), (uint32_t)pg.verts.size(),
                                         pg.index.data(), (uint32_t)pg.index.size());
             pe.baseColor[0] = 0.03f; pe.baseColor[1] = 0.04f; pe.baseColor[2] = 0.08f; pe.baseColor[3] = 1.0f;
-            pe.emissive[0] = 0.04f; pe.emissive[1] = 0.05f; pe.emissive[2] = 0.14f; pe.emissive[3] = 0.25f;
+            pe.emissive[0] = 0.03f; pe.emissive[1] = 0.04f; pe.emissive[2] = 0.11f; pe.emissive[3] = 0.18f;
             pe.transparent = true;
-            pe.glass.opacity = 0.55f; pe.glass.refraction = 0.0f; pe.glass.roughness = 0.05f;
+            pe.glass.opacity = 0.42f;     // SEE-THROUGH (was 0.55) — the floor reads through it
+            pe.glass.refraction = 0.0f; pe.glass.roughness = 0.04f;
             pe.glass.specular = 1.0f;
-            pe.glass.tint[0] = 0.20f; pe.glass.tint[1] = 0.30f; pe.glass.tint[2] = 0.55f;
+            pe.glass.tint[0] = 0.18f; pe.glass.tint[1] = 0.26f; pe.glass.tint[2] = 0.52f;
             pe.tag = (uint32_t)Tag::Static;
             scene.add(pe);
         }
@@ -1678,7 +2295,13 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         const float hallW = 5.0f * 0.3048f, eastD = 3.0f, westD = 3.0f;
         const float hallX = -HL - 2.4f;
         const float pzN = -HW, pzS = HW, pLen = pzS - pzN;
-        box(hallX, pY + 0.05f, 0, hallW / 2, 0.08f, pLen / 2, kStrata, kEmitOff, true);
+        // L1 floor with a HATCH OPENING at the south end (Z ~ +5.35) where the
+        // survival-Complex stairwell descends (feat/survival-complex, Route A):
+        // the green marker below frames this hole. Split the slab to leave the gap
+        // so the descent from L1 -> L2..L7 is physically walkable.
+        const float hzLo = pzS - 1.9f, hzHi = pzS - 0.5f;   // hatch Z span [4.65, 6.05]
+        box(hallX, pY + 0.05f, (pzN + hzLo) / 2, hallW / 2, 0.08f, (hzLo - pzN) / 2, kStrata, kEmitOff, true); // main floor
+        box(hallX, pY + 0.05f, (hzHi + pzS) / 2, hallW / 2, 0.08f, (pzS - hzHi) / 2, kStrata, kEmitOff, true); // far strip past the hatch
         box(hallX, pY + pH, 0, hallW / 2, 0.08f, pLen / 2, kCeil, kEmitOff, false);
         box(hallX, pY + pH / 2, pzN, hallW / 2, pH / 2, T / 2, kBunker, kEmitOff, true);
         box(hallX, pY + pH / 2, pzS, hallW / 2, pH / 2, T / 2, kBunker, kEmitOff, true);
@@ -1719,12 +2342,14 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // club washes: violet overhead, magenta over the bar side, UV-violet on the
     // mirror floor. They set the room's colored mood; the orbiters + fixtures pop
     // on top.)
-    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.22f, 0.30f, 1.55f, 25.0f);       // central overhead BLUE-UV wash
-                                                // (BLUE-UV: red 1.05 -> 0.22 so the overhead UV reads blue,
-                                                //  not pink; blue held at 1.55 so the room stays lit)
-    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.70f, 0.20f, 1.10f, 10.0f); // ground-bar MAGENTA wash (bar-side accent, kept)
-    addLight(m_lights, 0, oy + 2.0f, 0, 0.20f, 0.16f, 1.75f, 18.0f);            // BLUE-UV wash (mirror floor)
-                                                // (BLUE-UV: red 0.72 -> 0.20, blue held at 1.75 — no pink)
+    // GAMMA WALK-BACK (feat/club-gamma-fix, 2026-07-25): these three ROOM-WIDE washes
+    // were cranked to HDR to fight the crushed-dark curve. The sRGB fix lifts the darks
+    // for free, so at full strength they now blow the walls into a bright purple rave
+    // wash. Intensities cut ~35% (blue 1.55->1.00, 1.75->1.10; magenta 1.10->0.72) so
+    // they set a MOODY colored mood the neon/beams pop on top of — not a flat blowout.
+    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.14f, 0.20f, 1.00f, 25.0f);       // central overhead BLUE-UV wash
+    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.46f, 0.13f, 0.72f, 10.0f); // ground-bar MAGENTA wash (bar-side accent)
+    addLight(m_lights, 0, oy + 2.0f, 0, 0.13f, 0.10f, 1.10f, 18.0f);            // BLUE-UV wash (mirror floor)
 
     // DANCE-FLOOR KEY (fix/club-blacklights): the dancers rendered as SOLID BLACK
     // silhouettes — the orbiters sat at ceiling height so their pools hit the
@@ -1733,12 +2358,15 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // centroid (the dancer spots cluster around z ≈ -2) puts actual light on
     // faces/torsos. Deliberately gentle — way under the gel colors — so the room
     // stays a moody club, not a showroom.
-    addLight(m_lights, -6.0f, oy + 4.6f, 0.0f, 1.50f, 1.35f, 1.85f, 14.0f);
+    // GAMMA WALK-BACK: the crowd key was hot to punch through the dark curve; cut
+    // ~30% (1.50/1.35/1.85 -> 1.05/0.95/1.30) so it lights faces without over-exposing.
+    addLight(m_lights, -6.0f, oy + 4.6f, 0.0f, 1.05f, 0.95f, 1.30f, 14.0f);
     // ...plus two soft lavender PERIMETER FILLS at head height flanking the dance
     // floor (dfX≈-6): the dark-albedo outfits need N·L from the SIDE to read at all.
     // (Reduced 4->2 to reserve point-light budget for the Lair / tunnel / Complex.)
+    // GAMMA WALK-BACK: fill trimmed ~30% (1.00/0.88/1.25 -> 0.70/0.62/0.88).
     {
-        const float fillC[3] = { 1.00f, 0.88f, 1.25f };
+        const float fillC[3] = { 0.70f, 0.62f, 0.88f };
         const float fillPts[2][3] = {
             { -9.5f, 1.7f, -3.0f }, { -3.0f, 1.7f, 3.0f },
         };
@@ -1866,8 +2494,8 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         addCharacter(scene, device, physics, modelDir, "marcus_webb.glb",
                      x3::phys::Vec3{ 0.0f, oy + djY, djZ }, 1.0f, false, warm);
         // Bouncer near the elevator landing.
-        addCharacter(scene, device, physics, modelDir, "RexBouncer.glb",
-                     x3::phys::Vec3{ CW / 2 - 2.0f, oy + 0.0f, CL / 2 - 4.0f }, 1.0f, true, cool);
+        addCharacter(scene, device, physics, modelDir, "RexBouncer_anim.glb",
+                     x3::phys::Vec3{ CW / 2 - 2.0f, oy + 0.0f, CL / 2 - 4.0f }, 1.0f, false, cool);
 
         // ==============================================================
         // DANCERS — ten real skinned characters on the floor (was: pastel
@@ -1924,6 +2552,64 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         }
     }
 
+    // ==================================================================
+    // CANON DIALOGUE NPCs (feat/club-npcs) — the three Sovereign Rising
+    // characters brought to life: DANNY at the U-bar (BartenderDanny.glb, the
+    // canon builder/bartender rig), AMARA + EMMA in the Private Lounge (Complex
+    // L1, at the lounge/2nd-story elevation). Each is an inert skinned prop (the
+    // DJ/bouncer path) plus a talk anchor + chat-tree id the host wires to E.
+    // Rigs: Danny=BartenderDanny.glb (canon-named); Amara=AnnaTactical.glb
+    // (reused — no dedicated Amara rig; tactical read suits the logistics
+    // commander); Emma=AnnaCasual.glb (reused — no dedicated Emma rig; the
+    // casual analyst read). Positions follow the built geometry (U-bar uX=3.0;
+    // Private Lounge situation room srX/srZ recomputed from the §4.4 block).
+    // ==================================================================
+    {
+        const float warmC[4] = { 1.20f, 1.10f, 0.95f, 1.0f };   // warm house tint (Danny)
+        const float amberC[4] = { 1.25f, 1.05f, 0.85f, 1.0f };  // warm amber (Amara, lounge)
+        const float coolC[4]  = { 1.00f, 1.05f, 1.30f, 1.0f };  // cool blue (Emma, club-feed glow)
+
+        // DANNY — dead center of the U-bar curve, inside the U, on the main floor.
+        // The U-bar carcass: uX=3.0, west base at uX-2.5=0.5; Danny stands just
+        // inside/behind it at his "bartender's watchtower", nose toward the entrance.
+        const x3::phys::Vec3 dannyPos{ 1.2f, oy + 0.0f, 0.0f };
+        addCharacter(scene, device, physics, modelDir, "BartenderDanny.glb",
+                     dannyPos, 1.0f, false, warmC);
+        m_canonNpcs.push_back(CanonNpc{ "danny", "DANNY", "hub",
+                                        x3::phys::Vec3{ dannyPos.x, dannyPos.y + 1.0f, dannyPos.z }, 3.5f });
+
+        // AMARA + EMMA — the Private Lounge (Complex L1) situation room, up at the
+        // lounge elevation. Recompute the §4.4 geometry: hallX = -HL-2.4,
+        // hallW = 5 ft, eastD = 3.0 -> situation room center srX, srZ = -3.0.
+        {
+            const float HLl = CW / 2.0f;
+            const float hallXl = -HLl - 2.4f;
+            const float hallWl = 5.0f * 0.3048f;
+            const float eastDl = 3.0f;
+            const float srXl = hallXl + hallWl / 2.0f + eastDl / 2.0f;
+            const float srZl = -3.0f;
+            const float lFeetY = oy + LOUNGE_Y + 0.13f;   // situation-room floor top
+
+            // Amara — by the heavy table / leather seating, commanding the room.
+            const x3::phys::Vec3 amaraPos{ srXl - 0.35f, lFeetY, srZl + 0.7f };
+            addCharacter(scene, device, physics, modelDir, "AnnaTactical.glb",
+                         amaraPos, 1.0f, false, amberC);
+            m_canonNpcs.push_back(CanonNpc{ "amara", "AMARA", "hub",
+                                            x3::phys::Vec3{ amaraPos.x, amaraPos.y + 1.0f, amaraPos.z }, 3.5f });
+
+            // Emma — drawn to the silent club-feed OLED on the east wall, standing
+            // just east of the heavy table in the warm light, reading the club as a
+            // broadcast junction.
+            const x3::phys::Vec3 emmaPos{ srXl + 0.98f, lFeetY, srZl };
+            addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
+                         emmaPos, 1.0f, false, coolC);
+            m_canonNpcs.push_back(CanonNpc{ "emma", "EMMA", "hub",
+                                            x3::phys::Vec3{ emmaPos.x, emmaPos.y + 1.0f, emmaPos.z }, 3.5f });
+        }
+        x3::logInfo("[club1127] placed 3 canon dialogue NPCs (Danny @ U-bar, "
+                    "Amara + Emma @ Private Lounge)");
+    }
+
     m_stats.entities = (int)(scene.size() - entsBefore);
 
     x3::logInfo("[club1127] built THE DEEP (Club 1127) at Y=" + std::to_string((int)oy) +
@@ -1945,12 +2631,34 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     // too"). ONE clock: the same tempo envelope the subs/tiles/dancers already
     // rode, hoisted here so the LIGHTS share it instead of free-running on their
     // own arbitrary rates. Everything music-reactive below derives from these.
-    // m_bpm is runtime-configurable (Club Jukebox retunes it per user track). ----
-    const float beatHz    = m_bpm / 60.0f;
+    // m_bpm is runtime-configurable (Club Jukebox retunes it per user track). Kept
+    // NON-const so CLUB LISTEN MODE below can phase-lock them to a live signal. ----
+    float beatHz    = m_bpm / 60.0f;
     // Phase-shifted by the current track's downbeat offset (Club Jukebox sidecar
-    // "offset_s"), so beat 0 lands on the music's first downbeat, not on t=0.
-    const float beatCount = (t - m_beatOffsetS) * beatHz;  // absolute beat position
-    const float thump     = std::pow(std::max(0.0f, std::sin(beatCount * kPi)), 6.0f);
+    // "offset_s"), so beat 0 lands on the music's first downbeat, not on t=0. This
+    // is the OPEN-LOOP clock: correct tempo AND phase for a tagged local file.
+    float beatCount = (t - m_beatOffsetS) * beatHz;        // absolute beat position
+    float thump     = std::pow(std::max(0.0f, std::sin(beatCount * kPi)), 6.0f);
+
+    // ---- CLUB LISTEN MODE (external drive input) ----------------------------
+    // When snd_listen is ON and a live signal is captured from the PC's audio
+    // (WASAPI loopback), the club rides the LIVE detected beat instead of the
+    // fixed house tempo: `beatCount` becomes the phase-locked live beat position
+    // (moving heads step on real onsets), `beatHz` the live tempo (dancers), and
+    // `thump` the live kick/bass envelope (subs/cones/tiles pump on the music).
+    // Off / silent -> this is a no-op and the jukebox/house m_bpm clock stands.
+    // A live signal supersedes the open-loop clock entirely — it carries its own
+    // measured phase, so the sidecar's offset_s is neither needed nor applied here.
+    // The two cover different cases: offset_s phase-locks a TAGGED LOCAL FILE the
+    // jukebox is playing itself; listen mode phase-locks ANYTHING coming out of the
+    // PC (Spotify, YouTube, a set played off the desk) where we have no metadata.
+    x3::club_listen::BeatFrame lbf;
+    if (x3::club_listen::sample(dt, lbf) && lbf.active) {
+        beatHz    = lbf.bpm / 60.0f;
+        beatCount = lbf.beatCount;
+        thump     = lbf.thump;
+    }
+
     const float breathe   = 0.72f + 0.48f * thump;         // gel beat envelope (floor
                                                            // 0.72: the crowd never drops
                                                            // back to silhouettes mid-beat)
@@ -1971,6 +2679,20 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         // POLISH: the ball is REFLECTIVE, not a lamp — keep its self-glow a faint
         // floor (a touch of facet glint on the beat), NOT a blown-out white bulb.
         e.emissive[3] = 0.14f + 0.14f * thump;
+    }
+
+    // --- SPIN the DIY dome/starburst PROJECTOR discs (transform 3x3 = Y-rotation about
+    // their own centre; translation kept) + breathe their emissive on the beat. This
+    // throws the signature spinning colored dots across the floor/ceiling. ---
+    for (const auto& pj : m_projectors) {
+        if (pj.ent >= scene.size()) continue;
+        const float ang = t * pj.spin + pj.phase;
+        const float c = std::cos(ang), s = std::sin(ang);
+        Entity& e = scene.get(pj.ent);
+        // Y-rotation in the upper 3x3 (disc lies in XZ), translation columns untouched.
+        e.transform[0] = c;  e.transform[2] = -s;
+        e.transform[8] = s;  e.transform[10] = c;
+        e.emissive[3] = pj.emBase + pj.emAmp * thump;   // dots pulse to the track
     }
 
     // --- POLISH: MIRROR-BALL SPARKLE DOTS. The cluster of colored point lights orbits
@@ -2151,12 +2873,12 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
             m_lights[li].color[1] = 0.65f * k;
             m_lights[li].color[2] = 0.15f * k;
         }
-        // Bright dance tiles: a soft breathe (never dark — the floor is the star).
+        // Dim glossy checker tiles (LNS garage floor): only a WHISPER of self-glow on
+        // the beat — the floor is a moody mirror for the projected dots + beams now, not
+        // a lightbox. (Tim 2026-07-18: shiny + dimmer. Was 0.28+0.38*thump, a blue slab.)
         for (const uint32_t id : m_tilePulseEnts) {
             if (id >= scene.size()) continue;
-            scene.get(id).emissive[3] = 0.28f + 0.38f * thump;   // faint violet breath
-                                        // (blacklights pass: trimmed with kEmitTile1
-                                        // so the floor stops owning the exposure)
+            scene.get(id).emissive[3] = 0.07f + 0.10f * thump;   // faint violet breath, dim
         }
         // OLED shimmer: each screen's brightness wanders on its own phase, so the
         // baked equalizer frames read as LIVE video from across the room. This rides
@@ -2186,11 +2908,15 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         for (const Dancer& dn : m_dancers) {
             if (dn.charIdx >= m_chars.size()) continue;
             const float tp = t + dn.phase;
-            const float lobe = std::sin(tp * beatHz * kPi);
+            // Beat-locked bounce/sway ride the SHARED beat grid (beatCount), so in
+            // Listen Mode the knee-pop lands on the LIVE onset. Identical to the old
+            // tp*beatHz form when the internal clock is running (beatCount = t*beatHz).
+            const float dbeat = beatCount + dn.phase * beatHz;
+            const float lobe = std::sin(dbeat * kPi);
             // The baked clips carry the bounce/arms now — the procedural layer is
             // just a gentle weight-shift + facing drift so no two dancers match.
             const float bounce = std::pow(std::max(0.0f, lobe), 4.0f) * 0.025f * dn.energy;
-            const float sway = std::sin(tp * beatHz * kPi * 0.5f) * 0.22f * dn.energy;
+            const float sway = std::sin(dbeat * kPi * 0.5f) * 0.22f * dn.energy;
             const float sx = dn.bx + std::sin(tp * 0.31f) * 0.30f;
             const float sz = dn.bz + std::cos(tp * 0.23f) * 0.28f;
             m_chars[dn.charIdx]->setPropPose(
@@ -2201,12 +2927,32 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     // Tick the inert character props (idle clips; chaseSpeed 0 => no movement).
     for (auto& c : m_chars)
         c->update(dt, scene, physics, c->pos());
+
+    // Freeze the hero CAR on the two-post lift AFTER the tick, so the drawn transform
+    // is exactly the parked pose (the generic Idle AI adds a tiny yaw sway that would
+    // otherwise slowly rock the car). No-op if the GLB never loaded (m_carCharIdx<0).
+    if (m_carCharIdx >= 0 && (size_t)m_carCharIdx < m_chars.size())
+        m_chars[m_carCharIdx]->setPropPose(m_carPos, m_carYaw);
 }
 
 void Club1127World::drawCharacters(x3::rhi::IRenderDevice& device,
                                    const x3::rhi::FrameContext& frame, const Scene& scene) const {
     for (const auto& c : m_chars)
         c->drawMonster(device, frame, scene);
+}
+
+int Club1127World::talkTarget(const x3::phys::Vec3& eye) const {
+    // Nearest canon NPC whose talk anchor is within its reach of `eye` (3D). Used
+    // by the host E-to-talk path and the --test-clubnpcs self-test (same logic).
+    int best = -1;
+    float bestD2 = 1e30f;
+    for (size_t i = 0; i < m_canonNpcs.size(); ++i) {
+        const CanonNpc& n = m_canonNpcs[i];
+        const float dx = n.anchor.x - eye.x, dy = n.anchor.y - eye.y, dz = n.anchor.z - eye.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 <= n.talkReach * n.talkReach && d2 < bestD2) { bestD2 = d2; best = (int)i; }
+    }
+    return best;
 }
 
 void Club1127World::showcaseCamera(float out[5]) const {
@@ -2232,6 +2978,7 @@ void Club1127World::showcaseCamera(float out[5]) const {
 
 #include "headless_device.h"
 #include "asset_root.h"        // x3::game::riggedGlbRoot()
+#include "chat_tree.h"         // feat/club-npcs: ChatTreeSystem / validateChatNpc (--test-clubnpcs)
 #include "engine/physics/IPhysicsWorld.h"
 #include <cmath>
 
@@ -2288,8 +3035,8 @@ bool runClubSelfTest() {
     check(s.hasOrb, "THE ORB (mirror ball) exists");
 
     // (4) Aerial bar + ground bar with exactly 7 stools.
-    check(s.hasAerialBar && s.hasGroundBar && s.barStools == 7,
-          "aerial bar + ground bar with 7 stools");
+    check(s.hasAerialBar && s.hasGroundBar && s.barStools == 10,
+          "aerial bar + L-wraparound bar with 10 Snap-on stools");
 
     // (5) Engine-room/lounge with a 12-step stair.
     check(s.hasLoungeFloor && s.stairSteps == 12,
@@ -2417,6 +3164,117 @@ bool runClubSelfTest() {
 
     const int total = pass + fail;
     x3::logInfo("club: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+    return fail == 0;
+}
+
+// ===========================================================================
+// --test-clubnpcs (feat/club-npcs): the three canon dialogue NPCs place with
+// valid talk anchors; their three chat trees parse + FULL-reachability validate;
+// E-to-talk resolves each NPC beside it and rejects a far point; each NPC's `hub`
+// entry tree starts and its menu is reachable.
+// ===========================================================================
+bool runClubNpcsSelfTest() {
+    int pass = 0, fail = 0;
+    auto check = [&](bool cond, const char* name) {
+        if (cond) { ++pass; x3::logInfo(std::string("[clubnpcs-test] PASS ") + name); }
+        else      { ++fail; x3::logError(std::string("[clubnpcs-test] FAIL ") + name); }
+    };
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    HeadlessRenderDevice device;
+    Scene scene;
+
+    Club1127World club;
+    club.build(scene, device, *physics, x3::game::riggedGlbRoot());
+
+    // (1) The three canon NPCs place with the expected ids + finite anchors.
+    const auto& npcs = club.canonNpcs();
+    check(npcs.size() == 3, "3 canon dialogue NPCs placed (Danny / Amara / Emma)");
+    auto findNpc = [&](const char* id) -> const Club1127World::CanonNpc* {
+        for (const auto& n : npcs) if (n.chatId == id) return &n;
+        return nullptr;
+    };
+    const auto* dN = findNpc("danny");
+    const auto* aN = findNpc("amara");
+    const auto* eN = findNpc("emma");
+    check(dN && aN && eN, "npc ids resolve: danny + amara + emma");
+    {
+        bool anchorsOk = true;
+        for (const auto* n : { dN, aN, eN }) {
+            if (!n) { anchorsOk = false; continue; }
+            if (!std::isfinite(n->anchor.x) || !std::isfinite(n->anchor.y) ||
+                !std::isfinite(n->anchor.z) || n->entryTree.empty() || n->talkReach <= 0.0f)
+                anchorsOk = false;
+        }
+        check(anchorsOk, "every NPC has a finite talk anchor + entry tree + positive reach");
+    }
+    // Danny on the main floor (Y ~ -200); Amara + Emma up at the Private Lounge
+    // (well above the club floor). Distinct positions, not stacked.
+    if (dN && aN && eN) {
+        const bool dannyFloor = std::fabs(dN->anchor.y - (-200.0f + 1.0f)) < 0.5f;
+        const bool loungeUp   = aN->anchor.y > -196.0f && eN->anchor.y > -196.0f;
+        const float sep = std::fabs(aN->anchor.x - eN->anchor.x) +
+                          std::fabs(aN->anchor.z - eN->anchor.z);
+        check(dannyFloor && loungeUp && sep > 0.5f,
+              "Danny at the U-bar (floor); Amara + Emma elevated in the Private Lounge, apart");
+    }
+
+    // (2) E-to-talk resolves each NPC from a point beside it, and a far point hits none.
+    if (dN && aN && eN) {
+        bool eachResolves = true;
+        for (const auto* n : { dN, aN, eN }) {
+            x3::phys::Vec3 beside{ n->anchor.x + 0.8f, n->anchor.y, n->anchor.z + 0.8f };
+            const int hit = club.talkTarget(beside);
+            if (hit < 0 || club.canonNpcs()[(size_t)hit].chatId != n->chatId) eachResolves = false;
+        }
+        check(eachResolves, "E-to-talk resolves Danny / Amara / Emma from a point beside each");
+        const int none = club.talkTarget(x3::phys::Vec3{ 9999.0f, -200.0f, 9999.0f });
+        check(none < 0, "E-to-talk resolves NOTHING from far outside every reach");
+    }
+
+    // (3) The three chat trees parse + FULL-reachability validate (start ∪ triggers
+    //     cover every node; no dangling next/else/choice targets).
+    ChatTreeSystem sys;
+    sys.loadDefault();
+    {
+        bool allSound = true;
+        for (const char* id : { "danny", "amara", "emma" }) {
+            const ChatNpc* np = sys.npc(id);
+            if (!np) { check(false, "chat tree present"); allSound = false; continue; }
+            std::vector<std::string> errs;
+            const bool ok = validateChatNpc(*np, /*fullReachability*/ true, errs);
+            for (const auto& e : errs) x3::logWarn(std::string("[clubnpcs-test] ") + e);
+            if (!ok) allSound = false;
+        }
+        check(sys.hasNpc("danny") && sys.hasNpc("amara") && sys.hasNpc("emma"),
+              "danny.json / amara.json / emma.json all loaded");
+        check(allSound, "all three trees FULLY sound (every node reachable, no dangling refs)");
+    }
+
+    // (4) Each NPC's `hub` entry tree starts and reaches its menu (nodes reachable
+    //     at runtime, not just structurally). Walk the first-entry spine into the menu.
+    {
+        bool allStart = true;
+        for (const auto* n : { dN, aN, eN }) {
+            if (!n) { allStart = false; continue; }
+            if (!sys.start(n->chatId, n->entryTree)) { allStart = false; continue; }
+            // First entry lands on the greeting (choices offered); pick choice 0,
+            // which routes back into the menu chain — proving the menu is reachable.
+            const bool hadChoices = !sys.choices().empty();
+            if (hadChoices) sys.choose(0);
+            const bool stillAlive = sys.active();
+            // Close cleanly so no conversation leaks into the next NPC.
+            sys.cancel();
+            if (!hadChoices && !stillAlive) allStart = false;
+        }
+        check(allStart, "each NPC's `hub` tree starts on E and its greeting offers choices");
+    }
+
+    physics->shutdown();
+
+    const int total = pass + fail;
+    x3::logInfo("clubnpcs: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
     return fail == 0;
 }
 

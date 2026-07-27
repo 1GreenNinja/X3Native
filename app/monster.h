@@ -440,6 +440,15 @@ public:
         // is ALSO used by ground elites (e.g. Illuminated). Drives hover + hitbox.
         bool  flyer               = false;
 
+        // ROOT-Y LOCK (Skinner::setRootYLock, see anim.h): clamp the clip-animated
+        // root (pelvis) local Y to its rest-pose Y so a clip with a BROKEN baked
+        // root Y (the retarget "buried half-way + bouncing" family) can never
+        // sink/bob the character through the floor. For characters whose world Y
+        // is OWNED by the feeder (crowd citizens fed via setPropPose). Off by
+        // default — combat enemies keep their authored root bob. Authored
+        // triggerClip crossfades (Sit/Jump) still move their root.
+        bool  lockRootY           = false;
+
         // ---- Data-driven AI weighting (bestiary pass) ---------------------
         // Per-instance strafe/flank bias in [0,1]: the probability, at mid-range,
         // that the enemy STRAFES (orbits/flanks) instead of straight-Advancing. A
@@ -577,6 +586,23 @@ public:
                     Scene& scene, x3::phys::IPhysicsWorld& physics,
                     int damage = kDamagePerShot,
                     x3::DamageType type = x3::DamageType::Kinetic);
+
+    // [P2-5] Single-raycast fire path (specs/MONSTER_FIRE_SINGLE_RAY.spec.md).
+    // Resolve a PRECOMPUTED Enemy-layer ray hit against THIS monster: if the hit
+    // body is this live monster's, apply the full fire() damage path (headshot /
+    // adaptive-hide / memory-flash / death) and return the same FireResult fire()
+    // would. If the hit is some other body (or a miss), report the geometry
+    // hit/miss for the tracer and no-op on this instance. This lets a container
+    // (MonsterManager / MultiPodBoss) cast ONE ray per shot and fan the SAME hit
+    // across all instances instead of one rayCast per monster. fire() itself is
+    // now cast-one-ray + applyFireHit(), so single-monster behaviour is unchanged.
+    // `eye`/`dir` are the original shot ray (used only for the miss-tracer end
+    // point and the death-ragdoll shove direction).
+    FireResult applyFireHit(const x3::phys::RayHit& hit,
+                            const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                            Scene& scene, x3::phys::IPhysicsWorld& physics,
+                            int damage = kDamagePerShot,
+                            x3::DamageType type = x3::DamageType::Kinetic);
 
     // Advance one frame: decay the hit-flash timer and, if chaseSpeed > 0 and the
     // monster is alive, move it relative to `playerPos` (chase for melee, hold a
@@ -727,6 +753,15 @@ public:
     // attacks again; killing it afterwards still counts (fire() path untouched).
     void  setDocile(bool d) { m_docile = d; }
     bool  docile() const { return m_docile; }
+    // DORMANT (opening-flow spawn gating): the monster idles/patrols its beat but
+    // neither perceives nor engages the player — no LOS, no chase, no attack, no
+    // alert feed — until the host wakes it (region/progression gating, CanonPlay).
+    // Implemented by substituting a null target in update(), i.e. the exact
+    // "no target" AI path, so animation/calm loops/presence stay fully live.
+    // Unlike stun it is not a combat state (no timer); unlike docile it is
+    // reversible and is the NORMAL pre-activation state of far-away spawns.
+    void  setDormant(bool d) { m_dormant = d; }
+    bool  dormant() const { return m_dormant; }
     // Damage-taken multiplier (coolant sabotage: The Collective x1.5). Applied
     // at damage application in fire()/takeMeleeDamage(), stacking with the
     // memory-flash incomingDamageMul (both are >1 vulnerability windows).
@@ -746,6 +781,23 @@ public:
     // Player position last seen with LOS (the Search target). Valid once LOS held.
     x3::phys::Vec3 lastKnownPlayerPos() const { return m_lastKnown; }
     bool    hasLineOfSight() const { return m_hasLos; }
+    // [P2-6] True while an attack wind-up is in flight (the telegraph window
+    // between attack start and the hit landing). Read by the fresh-LOS self-test.
+    bool    winding() const { return m_winding; }
+
+    // PACK ALERT: a squadmate that CAN see the player calls this on nearby allies so
+    // the pack reacts together — an enemy with no LOS of its own still turns and
+    // moves to investigate (a Search toward the shared last-known spot) instead of
+    // idling until it personally rounds the corner. Data-light: seeds the same
+    // last-known / search fields a real sighting would. Does NOT wake a DORMANT
+    // (opening-flow-gated) spawn — those stay gated until their own trigger/damage.
+    void notifyPackAlert(const x3::phys::Vec3& playerPos) {
+        if (!m_alive || m_dormant || m_dmg <= 0) return;   // combat, ungated only
+        if (m_hasLos) return;                              // already sees for itself
+        m_everSawPlayer = true;
+        m_lastKnown     = playerPos;
+        if (m_searchTimer <= 0.0f) m_searchTimer = kAiSearchTime;
+    }
 
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
@@ -886,6 +938,15 @@ private:
     void drawMonsterAt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                        const float model[16], const float tint[4]) const;
 
+    // [P2-6] One line-of-sight probe: ray from our body center (+0.3 m, stepped
+    // past our own collision box) toward `playerEye` against Layer::Static; clear
+    // iff no wall blocks it before the player. Extracted from the decision-cadence
+    // block so the ATTACK path can re-run it FRESH (every frame while in attack
+    // range / winding) instead of trusting the ~0.3 s-stale decision snapshot.
+    // See docs/design/SUBSYSTEM_HARDENING_PLAN.md AI-2.
+    bool probeLos(x3::phys::IPhysicsWorld& physics,
+                  const x3::phys::Vec3& playerEye) const;
+
     // ---- SKINNED DEATH RAGDOLL helpers (TASK#12) --------------------------
     // Try to spawn the physics ragdoll at the kill moment (rigged models only). On
     // success m_deathRagdoll is built+added to `physics` with a death impulse and
@@ -922,6 +983,17 @@ private:
     // the skinned vertices. Unskinned models leave m_skinner invalid -> static draw. ----
     x3::anim::Skinner        m_skinner;
     x3::rhi::IRenderDevice*  m_device = nullptr;
+
+    // Kick the flinch/hit-react on a surviving hit: plays the BAKED Hit clip one-shot
+    // if the rig has one; ALWAYS raises the procedural stagger floor so a shot ALWAYS
+    // produces a visible recoil (never a silent no-react), regardless of asset state.
+    // Suppressed while a death or attack one-shot owns the pose (don't stomp them).
+    inline void kickHitReact() {
+        if (m_dying) return;
+        m_procStagger = 1.0f;                       // guaranteed visible recoil floor
+        if (m_animActive && m_hitClip >= 0 && m_attackAnimT < 0.0f)
+            m_hitAnimT = 0.0f;                       // preferred: real baked clip
+    }
     // Game-feel cue sink (footstep / impact). Empty => throttled-log stub.
     GameCueFn                m_cueSink;
     // Death FX sink (gib burst). Empty => no extra FX. Fired once at the kill moment.
@@ -939,10 +1011,26 @@ private:
     // W2-D: one-shot combat clips (fuzzy-found at bind; -1 = rig has none — the
     // procedural lunge tell below carries the attack read instead).
     int                      m_attackClip = -1;
+    int                      m_attackClip2 = -1;     // 2nd attack variant (alternated for variety)
     int                      m_deathClip  = -1;
+    // ANIM-ENRICH: one-shot HIT-REACTION flinch — fuzzy-found ("hit/react/flinch/
+    // stagger"); played once when the enemy SURVIVES a shot/melee (not while
+    // attacking or dying) so it visibly reacts. -1 on rigs that ship no flinch.
+    int                      m_hitReactClip = -1;
+    float                    m_hitReactAnimT = -1.0f; // >=0 while the flinch plays
+    int                      m_attackActiveClip = -1; // the variant chosen for the CURRENT swing
+    bool                     m_attackAlt = false;     // toggles Attack <-> Attack2
+    // opening-enemies-rigged: a second baked flinch handle used by the drone/procedural
+    // fallback path (union-kept alongside m_hitReactClip; both are referenced in .cpp).
+    int                      m_hitClip    = -1;      // one-shot flinch/hit-react (baked)
     float                    m_attackAnimT = -1.0f;  // >=0 while the attack one-shot plays
     float                    m_deathAnimT  = -1.0f;  // >=0 while the death clip plays
+    float                    m_hitAnimT    = -1.0f;  // >=0 while the hit-react one-shot plays
     bool                     m_deathClipDone = false; // clip finished -> freeze final pose
+    // Procedural STAGGER TELL (visual-only floor): a short recoil offset applied to the
+    // DRAW transform when the monster is shot, guaranteeing a visible flinch even on a
+    // rig with no baked Hit clip. Decays back to 0. Never touches the physics body.
+    float                    m_procStagger  = 0.0f;  // 0..1 recoil intensity (decays)
     // Procedural attack TELL (visual-only): a rear-back + lunge offset applied to the
     // DRAW transform during the melee wind-up so attacks read at gameplay distance
     // even on rigs with no authored Attack clip. Never touches the physics body.
@@ -951,6 +1039,12 @@ private:
     bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found
+    // GUARANTEED PROCEDURAL MOTION FLOOR (Tim's "anim keeps getting lost" fix): when
+    // NO skeletal clip drives an enemy (the rig-less Drone, a legacy static mesh, or
+    // the box fallback for a missing/stub GLB) this clock advances so update() can
+    // add a hover/idle bob + yaw sway + tilt + attack dive purely in the DRAW
+    // transform — so a rig-less enemy is NEVER a frozen prop. Unused when m_animActive.
+    float                    m_procTime = 0.0f;
     // Footstep cue tracking: the last sampled locomotion phase, so update() can
     // detect a phase crossing (foot plant) between frames and emit a Footstep cue.
     float                    m_lastFootPhase = 0.0f;
@@ -1112,6 +1206,7 @@ private:
     // ---- W9-1 desc-mechanics state ------------------------------------------
     float    m_stunTimer      = 0.0f;        // EMP stun: frozen while > 0
     bool     m_docile         = false;       // master-hack power-down (permanent)
+    bool     m_dormant        = false;       // opening-flow spawn gating (see setDormant)
     float    m_damageTakenMul = 1.0f;        // coolant-sabotage vulnerability
 
     // ---- Guard-life (W4-3): species + patrol state -------------------------

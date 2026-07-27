@@ -7,6 +7,8 @@
 #include "../player.h"
 #include "../asset_root.h"
 #include "../audio_root.h"                 // resolveAudio (the committed club track)
+#include "../chat_tree.h"                   // feat/club-npcs: ChatTreeSystem + drawChatTreeUi
+#include "../timeline.h"                    // globalTimeline() (chat-tree axis fx context)
 #include "../settings_io.h"                // readAudioSettings (respect music vol/on)
 #include <cstdlib>                          // getenv (X3_CLUB_SEQ clip capture)
 #include <cstdio>                           // snprintf (clip frame paths)
@@ -107,16 +109,18 @@ int hostClub(HostContext& hc) {
         //     lights actually BLOOM through the ACES post stack.
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
         device->setIblProbe(true);          // bake the neon room into the env cube
-        device->setIblIntensity(0.46f);     // colored ambient fill — moody but readable
-                                            // (fix/club-blacklights: 0.40 -> 0.46, one
-                                            // notch so dancer faces/torsos catch fill)
-        device->setIblSpecular(1.30f);      // mirror ball / chrome / glass bar shine
+        // GAMMA WALK-BACK (feat/club-gamma-fix, 2026-07-25): the sRGB-encode fix
+        // brightened crushed darks the most (~2.4x in the midtones, more in shadow),
+        // so the colored ambient FILL that was propping up the black void is now
+        // double-counting — the walls lifted into a glowing-purple rave wash. Cut the
+        // fill/ambient/bloom back HARD and let the real neon/UV lights + reflections
+        // do the work (0.46 -> 0.20 ibl, ambient ~halved, bloom 0.28 -> 0.16).
+        device->setIblIntensity(0.20f);     // colored ambient fill — moody, no longer a wash
+        device->setIblSpecular(1.30f);      // mirror ball / chrome / glass bar shine (reflections = intent, kept)
         device->setMetalAmbient(1.0f);      // metals keep an F0 response (never black)
-        device->setAmbient(0.060f, 0.048f, 0.095f);  // low VIOLET floor (club-purple, not gray)
-                                            // (fix/club-blacklights: lifted a notch —
-                                            // the dancers read as SOLID BLACK cutouts)
+        device->setAmbient(0.024f, 0.019f, 0.040f);  // low VIOLET floor (club-purple, not gray) — halved
         device->setExposure(1.0f);
-        device->setBloom(0.28f);            // let the neon/blacklight/OLED sing
+        device->setBloom(0.16f);            // let the neon/blacklight/OLED sing WITHOUT blowing the beams milky
 
         const x3::phys::Vec3 spawn = club.spawn();
 
@@ -127,6 +131,10 @@ int hostClub(HostContext& hc) {
             // capturing the caves/boss arena from a custom vantage during verify).
             if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
             device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+            // X3_CLUB_EXPOSURE=<f> (feat/club-npcs): screenshot-only exposure lift so
+            // the deliberately-dim Private Lounge NPC shots read (the warm indirect
+            // lounge is canon-dark; the live club keeps its 1.0 exposure). Shot path only.
+            if (const char* ex = std::getenv("X3_CLUB_EXPOSURE")) device->setExposure((float)std::atof(ex));
             // The CROWD proof needs a longer settle so the dancers desync + drift
             // into readable knots before the capture.
             const int kSettle = ddgiForce ? 120 : (crowdShot ? 150 : 24);
@@ -146,6 +154,33 @@ int hostClub(HostContext& hc) {
             // assembled offline into a GIF/MP4. 0/unset = the single still as before.
             int seqFrames = 0;
             if (const char* sq = std::getenv("X3_CLUB_SEQ")) seqFrames = std::atoi(sq);
+
+            // X3_CLUB_DIALOG=<npc>[:choice] (feat/club-npcs): overlay a canon NPC's
+            // chat-tree HUD on the capture — the dialogue-exchange proof shot. Starts
+            // <npc>'s `hub` tree; an optional ":N" picks choice N so the shot shows a
+            // player answer + the reply. (Headless: no window, drawChatTreeUi runs on
+            // the same HUD path the live club loop uses.)
+            x3::game::ChatTreeSystem shotChat;
+            bool dialogOverlay = false;
+            if (const char* dq = std::getenv("X3_CLUB_DIALOG")) {
+                shotChat.loadDefault();
+                shotChat.ctx().timeline = &x3::game::globalTimeline();
+                std::string spec(dq);
+                std::string npcId = spec; int pick = -1;
+                if (auto c = spec.find(':'); c != std::string::npos) {
+                    npcId = spec.substr(0, c); pick = std::atoi(spec.c_str() + c + 1);
+                }
+                if (shotChat.start(npcId, "hub")) {
+                    dialogOverlay = true;
+                    if (pick >= 0 && (uint32_t)pick < shotChat.choices().size())
+                        shotChat.choose((uint32_t)pick);
+                    x3::logInfo("--world club: X3_CLUB_DIALOG overlay — [" +
+                                shotChat.currentSpeaker() + "] " + shotChat.currentLine());
+                } else {
+                    x3::logWarn("--world club: X3_CLUB_DIALOG npc '" + npcId + "' hub failed to start");
+                }
+            }
+
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
@@ -159,6 +194,7 @@ int hostClub(HostContext& hc) {
                 if (frame.valid) {
                     cscene.render(*device, frame);
                     club.drawCharacters(*device, frame, cscene);
+                    if (dialogOverlay) x3::game::drawChatTreeUi(*device, frame, shotChat);
                 }
                 device->endFrame(frame);
             }
@@ -220,6 +256,18 @@ int hostClub(HostContext& hc) {
         bool prevNC = false;   // N-key edge for jukebox next/prev
         x3::game::Player cplayer;
         cplayer.spawn(*cphys, spawn.x, spawn.y, spawn.z);
+
+        // ---- CANON DIALOGUE NPCs (feat/club-npcs) — Danny at the U-bar, Amara +
+        // Emma in the Private Lounge. Their x3.chattree/1 trees drive E-to-talk.
+        // Axis fx (love, etc.) route through the global TimelineState; flag/fire
+        // effects ride the runner's own StoryFlags + (absent here) the script sink.
+        x3::game::ChatTreeSystem clubChat;
+        clubChat.loadDefault();
+        clubChat.ctx().timeline = &x3::game::globalTimeline();
+        bool prevEc = false;
+        bool chatNumPrevC[4] = { false, false, false, false };
+        x3::logInfo("--world club: 3 canon NPCs live (Danny @ U-bar, Amara + Emma @ "
+                    "Private Lounge) — walk up + E to talk, 1-4 to answer");
 
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
@@ -305,6 +353,47 @@ int hostClub(HostContext& hc) {
             }
             prevSpaceC = spaceNow;
 
+            // ---- CANON NPC DIALOGUE (feat/club-npcs). While a conversation is up,
+            // 1-4 answer the filtered choices; E advances a no-choice line. Otherwise
+            // E near an NPC (within its talk reach of the eye) starts its entry tree.
+            {
+                const x3::phys::Vec3 eye{ camX, camY, camZ };
+                if (clubChat.active()) {
+                    const uint32_t nch = (uint32_t)clubChat.choices().size();
+                    for (int ci = 0; ci < 4; ++ci) {
+                        const bool dn = kd(GLFW_KEY_1 + ci) || kd(GLFW_KEY_KP_1 + ci);
+                        if (dn && !chatNumPrevC[ci] && (uint32_t)ci < nch) {
+                            if (clubChat.choose((uint32_t)ci))
+                                x3::logInfo("chat: [" + clubChat.currentSpeaker() + "] " +
+                                            clubChat.currentLine());
+                        }
+                        chatNumPrevC[ci] = dn;
+                    }
+                } else {
+                    chatNumPrevC[0] = chatNumPrevC[1] = chatNumPrevC[2] = chatNumPrevC[3] = false;
+                }
+
+                const bool eNow = kd(GLFW_KEY_E);
+                if (eNow && !prevEc) {
+                    if (clubChat.active()) {
+                        if (clubChat.choices().empty()) {   // E advances no-choice lines
+                            if (clubChat.advance())
+                                x3::logInfo("chat: [" + clubChat.currentSpeaker() + "] " +
+                                            clubChat.currentLine());
+                        }
+                    } else {
+                        const int who = club.talkTarget(eye);
+                        if (who >= 0) {
+                            const auto& n = club.canonNpcs()[(size_t)who];
+                            if (clubChat.start(n.chatId, n.entryTree))
+                                x3::logInfo("chat: talking to " + n.display + " — [" +
+                                            clubChat.currentSpeaker() + "] " + clubChat.currentLine());
+                        }
+                    }
+                }
+                prevEc = eNow;
+            }
+
             int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
             if (cw != lastWc || ch != lastHc) { lastWc = cw; lastHc = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
 
@@ -313,6 +402,7 @@ int hostClub(HostContext& hc) {
             if (frame.valid) {
                 cscene.render(*device, frame);
                 club.drawCharacters(*device, frame, cscene);
+                x3::game::drawChatTreeUi(*device, frame, clubChat);   // NPC dialog HUD
                 // JUKEBOX "Now Playing" toast (HUD) — a few seconds after each
                 // track change (N/Shift+N or auto-advance). Cyan-tinted mono text,
                 // low-left, with a dim backing plate for legibility over the floor.
