@@ -467,7 +467,11 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // Whole-scene brightness dial (live). Multiplies the composite pre-tonemap exposure;
     // 1.0 = unchanged. The in-game "showroom brightness" knob: `r_exposure 1.5` brightens,
     // `r_exposure 0.7` dims. Type it in the console (~) and the scene updates immediately.
-    console.registerCVar("r_exposure", "1.0", "whole-scene brightness (pre-tonemap exposure multiplier; live)");
+    // PLAYTEST TRIM (Tim, 2026-07-19): the facility interior read "a HAIR too hot/bright"
+    // under the corrected sRGB baseline (5951890b). Default nudged 1.0 -> 0.88 (a ~12%
+    // whole-scene trim) — a clean post-tonemap multiply that auto-exposure never
+    // compensates (unlike lowering the lights). Subtle; NOT a darkening. Live/overridable.
+    console.registerCVar("r_exposure", "0.88", "whole-scene brightness (pre-tonemap exposure multiplier; live; 0.88 = 12% playtest trim)");
     // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
