@@ -142,14 +142,26 @@ bool parseBpmSidecar(const std::string& audioPath, float& outBpm, float& outOffs
 
 // ---------------------------------------------------------------------------
 
+void Jukebox::configure(const Config& cfg) {
+    m_dirs        = cfg.dirs;
+    m_defaultBpm  = (cfg.defaultBpm > 20.0f && cfg.defaultBpm < 400.0f) ? cfg.defaultBpm : 120.0f;
+    m_shuffle     = cfg.shuffle;
+    m_vol         = (cfg.volume < 0.0f) ? 0.0f : (cfg.volume > 1.0f ? 1.0f : cfg.volume);
+    m_musicOn     = cfg.musicOn;
+    m_shuffleSeed = cfg.shuffleSeed;
+    scan();
+}
+
 void Jukebox::configure(const std::vector<std::string>& dirs, float defaultBpm,
                         bool shuffle, float vol, bool musicOn) {
-    m_dirs       = dirs;
-    m_defaultBpm = (defaultBpm > 20.0f && defaultBpm < 400.0f) ? defaultBpm : 120.0f;
-    m_shuffle    = shuffle;
-    m_vol        = (vol < 0.0f) ? 0.0f : (vol > 1.0f ? 1.0f : vol);
-    m_musicOn    = musicOn;
-    scan();
+    Config cfg;
+    cfg.dirs        = dirs;
+    cfg.defaultBpm  = defaultBpm;
+    cfg.shuffle     = shuffle;
+    cfg.volume      = vol;
+    cfg.musicOn     = musicOn;
+    cfg.shuffleSeed = 0;          // clock-seeded: a fresh order every launch
+    configure(cfg);
 }
 
 void Jukebox::rescan(float vol, bool musicOn) {
@@ -215,7 +227,13 @@ void Jukebox::scan() {
     }
 
     if (m_shuffle) {
-        std::mt19937 rng{ std::random_device{}() };
+        // Sort FIRST so the shuffle input is deterministic too — otherwise the
+        // filesystem's directory order would leak into a "seeded" result and the
+        // same seed could produce different orders on different machines.
+        std::sort(m_tracks.begin(), m_tracks.end(),
+                  [](const Track& a, const Track& b) { return a.sortKey < b.sortKey; });
+        std::mt19937 rng{ m_shuffleSeed ? m_shuffleSeed
+                                        : (uint32_t)std::random_device{}() };
         std::shuffle(m_tracks.begin(), m_tracks.end(), rng);
     } else {
         std::sort(m_tracks.begin(), m_tracks.end(),
@@ -532,6 +550,35 @@ bool runJukeboxSelfTest() {
         }
         check(tr.size() == 2 && sharedFromR1 && hasOnly2,
               "scan unions roots and resolves duplicate basenames to the EARLIER root");
+    }
+
+    // (T5b) Deterministic shuffle: the same seed reproduces the same order; a
+    //       different seed produces a different one (8 tracks => collision unlikely).
+    {
+        const fs::path sd = tmp / "shuffle";
+        fs::create_directories(sd, ec);
+        for (const char* n : { "a","b","c","d","e","f","g","h" })
+            writeTinyWav(sd / (std::string(n) + ".wav"), 20);
+
+        auto orderWithSeed = [&](uint32_t seed) {
+            Jukebox::Config cfg;
+            cfg.dirs        = { sd.string() };
+            cfg.defaultBpm  = 120.0f;
+            cfg.shuffle     = true;
+            cfg.volume      = 0.75f;
+            cfg.musicOn     = true;
+            cfg.shuffleSeed = seed;
+            Jukebox jb;
+            jb.configure(cfg);
+            std::string s;
+            for (const auto& t : jb.tracks()) s += t.name;
+            return s;
+        };
+        const std::string s1 = orderWithSeed(1234);
+        const std::string s2 = orderWithSeed(1234);
+        const std::string s3 = orderWithSeed(9876);
+        check(s1.size() == 8 && s1 == s2 && s1 != s3,
+              "seeded shuffle is deterministic (same seed => same order)");
     }
 
     fs::remove_all(tmp, ec);

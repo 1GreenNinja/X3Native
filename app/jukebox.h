@@ -58,6 +58,18 @@ public:
         bool        hasSidecar = false;
     };
 
+    // Full configuration in one struct. `shuffleSeed` 0 means "derive from the
+    // clock" (a fresh order every boot); any non-zero value makes the shuffle
+    // reproducible, which is what lets the self-test assert on it.
+    struct Config {
+        std::vector<std::string> dirs;
+        float    defaultBpm  = 120.0f;
+        bool     shuffle     = false;
+        float    volume      = 0.75f;
+        bool     musicOn     = true;
+        uint32_t shuffleSeed = 0;
+    };
+
     // --- Configuration --------------------------------------------------------
     // Read the cvars (snd_clubmusic_dir / _shuffle / _bpm, each overridable by
     // the matching X3_SND_CLUBMUSIC_* env var), resolve the scan folders, and
@@ -70,6 +82,9 @@ public:
     // (bypasses the cvar/settings file so the self-test is hermetic).
     void configure(const std::vector<std::string>& dirs, float defaultBpm,
                    bool shuffle, float vol, bool musicOn);
+
+    // Preferred form. The 5-arg overload above forwards to this with seed 0.
+    void configure(const Config& cfg);
 
     // --- Playback -------------------------------------------------------------
     // Start the current track through the MUSIC channel and retune `club` to its
@@ -113,6 +128,7 @@ private:
     int    m_index      = -1;                 // playing index (-1 = none)
     float  m_defaultBpm = 120.0f;             // snd_clubmusic_bpm
     bool   m_shuffle    = false;              // snd_clubmusic_shuffle
+    uint32_t m_shuffleSeed = 0;               // 0 = derive from clock (F5)
     float  m_vol        = 0.75f;              // music-channel volume for the club
     bool   m_musicOn    = true;               // Settings "Music ON/OFF"
     float  m_toast      = 0.0f;               // seconds remaining on the toast
