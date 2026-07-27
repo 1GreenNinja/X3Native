@@ -153,11 +153,20 @@ void Jukebox::configure(const std::vector<std::string>& dirs, float defaultBpm,
 }
 
 void Jukebox::rescan(float vol, bool musicOn) {
+    // THREE roots, HIGHEST priority first (scan() keeps the first basename it sees):
+    //   1. snd_clubmusic_dir cvar          — explicit per-machine override
+    //   2. <Documents>/X3Native/club_music — the user library (Tim's real music;
+    //                                        these files never enter the repo)
+    //   3. <assetRoot>/audio/club_music    — the committed fixture (README + tone)
+    // The user's copy deliberately WINS over the repo fixture: the repo copy is a
+    // test artifact, the user's is the real track. (This inverts the previous
+    // repo-first order, which would have shadowed a real track with the fixture.)
     std::vector<std::string> dirs;
-    dirs.push_back((fs::path(assetRoot()) / "audio" / "club_music").string());   // repo-local
-    const std::string userDir = cvarStr("snd_clubmusic_dir", "X3_SND_CLUBMUSIC_DIR",
-                                        defaultUserDir());
-    if (!userDir.empty()) dirs.push_back(userDir);                                // user fallback
+    const std::string cvarDir = cvarStr("snd_clubmusic_dir", "X3_SND_CLUBMUSIC_DIR", "");
+    if (!cvarDir.empty()) dirs.push_back(cvarDir);
+    const std::string userDir = defaultUserDir();
+    if (!userDir.empty()) dirs.push_back(userDir);
+    dirs.push_back((fs::path(assetRoot()) / "audio" / "club_music").string());
     configure(dirs,
               cvarFloat("snd_clubmusic_bpm",     "X3_SND_CLUBMUSIC_BPM",     120.0f),
               cvarBool ("snd_clubmusic_shuffle", "X3_SND_CLUBMUSIC_SHUFFLE", false),
@@ -170,8 +179,8 @@ void Jukebox::scan() {
     std::error_code ec;
 
     // NON-recursive scan of each dir (a `samples/` subdir never auto-plays). A
-    // filename already seen in an earlier (higher-priority) dir is skipped, so the
-    // repo-local copy wins over the user-dir copy of the same basename.
+    // filename already seen in an EARLIER (higher-priority) dir is skipped — see
+    // rescan() for the root order: cvar override > user library > repo fixture.
     for (const std::string& dir : m_dirs) {
         if (dir.empty() || !fs::is_directory(dir, ec)) continue;
         for (const auto& de : fs::directory_iterator(dir, ec)) {
@@ -499,6 +508,30 @@ bool runJukeboxSelfTest() {
                            std::fabs(club.beatOffsetS()) < 0.0001f;
         check(parsed && applied && reset,
               "sidecar offset_s parsed and applied to the beat grid (and reset per track)");
+    }
+
+    // (T4b) Root precedence: the SAME basename in two roots resolves to the
+    //       EARLIER root (cvar override > user library > repo fixture).
+    {
+        const fs::path r1 = tmp / "root1", r2 = tmp / "root2";
+        fs::create_directories(r1, ec);
+        fs::create_directories(r2, ec);
+        writeTinyWav(r1 / "shared.wav", 60);
+        { std::ofstream(r1 / "shared.wav.json") << "{ \"bpm\": 111 }\n"; }
+        writeTinyWav(r2 / "shared.wav", 60);
+        { std::ofstream(r2 / "shared.wav.json") << "{ \"bpm\": 222 }\n"; }
+        writeTinyWav(r2 / "only2.wav", 60);
+
+        Jukebox jb;
+        jb.configure({ r1.string(), r2.string() }, 120.0f, false, 0.75f, true);
+        const auto& tr = jb.tracks();
+        bool sharedFromR1 = false, hasOnly2 = false;
+        for (const auto& t : tr) {
+            if (t.name == "shared" && std::fabs(t.bpm - 111.0f) < 0.01f) sharedFromR1 = true;
+            if (t.name == "only2") hasOnly2 = true;
+        }
+        check(tr.size() == 2 && sharedFromR1 && hasOnly2,
+              "scan unions roots and resolves duplicate basenames to the EARLIER root");
     }
 
     fs::remove_all(tmp, ec);

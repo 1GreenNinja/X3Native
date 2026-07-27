@@ -8,11 +8,15 @@
 // BPM. Nothing is bundled or redistributed; the audio files are .gitignored (only
 // a README + one tiny generated test-tone sample ship).
 //
-// Folders (scanned NON-recursively, so a `samples/` subdir never auto-plays):
-//   1) <assetRoot>/audio/club_music/            — repo-local drop folder (README)
-//   2) the `snd_clubmusic_dir` cvar dir         — user fallback, default
-//                                                 %USERPROFILE%/Documents/X3Native/club_music
-// A track present in BOTH by the same filename resolves to the repo-local copy.
+// Folders (scanned NON-recursively, so a `samples/` subdir never auto-plays), in
+// PRIORITY order — the FIRST copy of a given filename wins:
+//   1) the `snd_clubmusic_dir` cvar dir         — explicit per-machine override
+//   2) %USERPROFILE%/Documents/X3Native/club_music — the user library (real music,
+//                                                 never enters the repo)
+//   3) <assetRoot>/audio/club_music/            — committed fixture (README + one
+//                                                 tiny generated test tone)
+// A track present in several roots resolves to the HIGHEST-priority one: the
+// user's real file beats the repo's test fixture.
 //
 // Per-track BPM: an optional sidecar JSON next to the track — `<track>.mp3.json`
 // or `<track>.json` — of the form {"bpm": <float>} retunes the club. No sidecar =>
