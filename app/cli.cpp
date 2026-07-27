@@ -92,6 +92,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-propclip") o.testPropClip = true;     // GATE A ext: dressing prop clip audit
         else if (a == "--test-canonplay") o.testCanonPlay = true;
+        else if (a == "--test-worldswitch") {   // headless canonlevel->flag world-load repro/regression
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.worldSwitchTest = argv[++i];
+            else o.worldSwitchTest = "streamed";
+            o.smoketest = true;   // the harness drives the loop through the smoketest host
+        }
         else if (a == "--test-goldenpath") o.testGoldenPath = true;
         else if (a == "--test-opening") o.testOpening = true;   // opening-flow wake-in-cell contract
         else if (a == "--test-descmech") o.testDescMech = true;   // W9-1 desc-field mechanics (Tier A)

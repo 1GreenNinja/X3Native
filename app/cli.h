@@ -688,6 +688,12 @@ struct CliOptions {
     // PB fold c3538d3); the legacy hand-coded tower stays reachable via --world level1.
     std::string worldMode = "canonlevel";
     bool        worldExplicit = false;   // --world was passed (vs the default)
+    // --test-worldswitch <flag>: HEADLESS regression harness for the runtime
+    // WORLD LOAD (world-menu "LOADS WORLD"). Boots `worldMode` under --smoketest,
+    // then drives main()'s world-load loop into `<flag>` — exercising the exact
+    // teardown->re-dispatch handoff that segfaulted on canonlevel->streamed. Empty
+    // = off. Sets smoketest implicitly.
+    std::string worldSwitchTest;
     bool shotWorldMap = false;   // --screenshot-worldmap (headless map shot sequence)
     // Seamless world streaming tunables (--world streamed; see app/world_stream.*):
     // per-frame stream-work budget (ms) + velocity lookahead (s). Cvar-style CLI
