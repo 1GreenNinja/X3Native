@@ -925,11 +925,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     hitFighter = true;
                     ++localShotsHit;
                     hitConfirmT = 0.15f;   // reticle confirm: the shot LANDED
-                    // POWER FANTASY (owner: "make the player ship do MORE damage
-                    // by FAR"): 20 -> 140 (7x). A single solid hit DISINTEGRATES a
-                    // 60-hull fighter — one clean shot = one massive kill. Enemy-vs-
-                    // player damage is UNCHANGED (the scripted takedown still lands).
-                    constexpr int kPlayerLaserDamage = 140;     // 7x: 1 solid hit downs a fighter
+                    // SKILLFUL TTK (owner: 140 one-shot felt cheap): base per-shot
+                    // = 10, so a 60-hull fighter takes ~6 hits — a loose spray
+                    // whittles it down. But a hit that lands on the FULLY-ACQUIRED
+                    // lock target (red bracket, lockAge >= kAcquireSec) does 2x = 20
+                    // -> ~3 hits: hold the lock and you kill faster. Enemy-vs-player
+                    // damage is UNCHANGED (the scripted takedown still lands).
+                    constexpr int kPlayerLaserBase = 10;        // ~6 hits down a 60-hull fighter
+                    const bool onLockedTarget =
+                        lockHad && lockAge >= kAcquireSec &&
+                        targeting.lockedId() == (uint32_t)best + 1u;   // contact id = 1 + enemyIdx
+                    const int kPlayerLaserDamage =
+                        onLockedTarget ? kPlayerLaserBase * 2 : kPlayerLaserBase;  // 20 on-lock -> ~3 hits
                     const auto& es = enemies.ship((uint32_t)best);
                     const float hp[3] = { es.pos[0], es.pos[1], es.pos[2] };
                     const bool willDie = es.hull <= kPlayerLaserDamage;
