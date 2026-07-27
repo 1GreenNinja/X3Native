@@ -626,13 +626,49 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         { 700.0f,  452.0f,  700.0f,  368.0f },   // Urban District N gate -> pad
     };
     for (int gi = 0; gi < 2; ++gi) {
-        const Gate& g = kGates[gi];
+        Gate g = kGates[gi];   // mutable: the ground node may be nudged to land
+        // NUDGE THE GROUND NODE ONTO DRY LAND. Some gates seed into a harbor
+        // inlet where the terrain is BELOW sea level (Urban gate: y ~ -10) — the
+        // ramps would then descend into the sea instead of onto a navigable
+        // street. Walk the ground node up the terrain gradient (steepest ascent)
+        // until it clears the waterline, capped. Gates already on land (Recife,
+        // y > 0) don't move. The pad target (ex,ez) is unchanged; the gate
+        // avenue re-aims from the nudged node.
+        {
+            constexpr float kGateLandSafe = 2.0f;
+            constexpr float kGateNudge    = 14.0f;
+            constexpr int   kGateNudgeMax = 14;
+            for (int n2 = 0; n2 < kGateNudgeMax &&
+                             hf.heightAt(g.gx, g.gz) < kGateLandSafe; ++n2) {
+                const float hx = hf.heightAt(g.gx + 8.0f, g.gz) - hf.heightAt(g.gx - 8.0f, g.gz);
+                const float hz = hf.heightAt(g.gx, g.gz + 8.0f) - hf.heightAt(g.gx, g.gz - 8.0f);
+                const float gl = std::sqrt(hx * hx + hz * hz);
+                if (gl < 1e-4f) break;                    // flat spot — give up
+                g.gx += (hx / gl) * kGateNudge;
+                g.gz += (hz / gl) * kGateNudge;
+            }
+        }
         const size_t at = nearestRingSample(g.gx, g.gz);
         const RoadSample deck = ringC[at];
         const float gy = hf.heightAt(g.gx, g.gz) + kGroundLift;
-        {   // directional ramp deck -> gate
+        // Deck<->gate chord: the tangent lead is capped to a small multiple of
+        // THIS so the hermite hugs the deck->gate corridor. The old lead =
+        // (deck.y-gy)/grade was UNBOUNDED (hundreds..thousands of m on a mesa
+        // deck) — the hermite then ballooned into a giant swoop that read as a
+        // ramp "curving off into midair" (Tim's tell). Length for grade comes
+        // from the profile smoothstep over arc length, not from oversized
+        // tangents.
+        const float gChord = std::sqrt((g.gx - deck.x) * (g.gx - deck.x) +
+                                       (g.gz - deck.z) * (g.gz - deck.z));
+        {   // directional OFF-ramp: deck -> gate (down to the ground pad node)
             std::vector<RoadSample> d2;
-            const float lead = std::max(120.0f, (deck.y - gy) / kRampMaxGrade);
+            const float grNeed = (deck.y - gy) / kRampMaxGrade;   // len for <=7%
+            // Cap tangents to a small multiple of the chord (no balloon) but with
+            // an absolute floor so a SHORT chord under a HIGH deck (nudged Urban
+            // gate: 11 m chord, 58 m drop) still curves down instead of dropping
+            // as a vertical wall of asphalt.
+            const float lead   = clampf2(grNeed, gChord * 0.8f,
+                                         std::max(gChord * 1.4f, 55.0f));
             for (float t = 0.0f; t <= 1.0f; t += 0.02f) {
                 RoadSample s;
                 hermite(deck.x, deck.z, deck.tx * lead, deck.tz * lead,
@@ -648,6 +684,13 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 ramp[i].y = deck.y + (gy - deck.y) * e;
                 ramp[i].bank = 0.0f;
             }
+            // Pin the terminals: top exactly on the deck (merge onto the ring),
+            // foot exactly on the gate ground node (so Pass-A endpoint capture
+            // ties it into the gate avenue + on-ramp = one interchange node).
+            if (ramp.size() >= 2) {
+                ramp.front().x = deck.x; ramp.front().z = deck.z; ramp.front().y = deck.y;
+                ramp.back().x  = g.gx;   ramp.back().z  = g.gz;   ramp.back().y  = gy;
+            }
             Pending pe;
             pe.cls = RoadClass::Ramp; pe.width = kRampWidth;
             pe.lanesF = 1; pe.lanesB = 0;
@@ -655,7 +698,13 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             pe.s = std::move(ramp);
             P.push_back(std::move(pe));
         }
-        {   // trumpet loop ramp ground -> deck
+        {   // trumpet loop ON-ramp: ground -> spiral up -> MERGE onto the deck.
+            // BUGFIX (Tim's "curving ramps END IN MIDAIR"): the loop arc used to
+            // stop at an arbitrary point 250 deg around a 30 m circle, lifted to
+            // deck height but NEVER at the deck's centerline — so it climbed to
+            // freeway elevation and terminated in open air. We now curve the
+            // arc's exit tangentially INTO the deck attach point and pin the
+            // final sample onto it, so the on-ramp physically merges.
             float px, pz; rperp(deck.tx, deck.tz, px, pz);
             const float cx = g.gx + px * (kLoopR + kRampWidth),
                         cz = g.gz + pz * (kLoopR + kRampWidth);
@@ -668,13 +717,36 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 s.z = cz + std::sin(a0 + a) * kLoopR;
                 d2.push_back(s);
             }
+            // Merge leg: hermite from the arc's exit (tangent-matched) into the
+            // deck point along the deck tangent — this is the "join the freeway"
+            // segment that was missing.
+            if (d2.size() >= 2) {
+                const RoadSample aEnd = d2.back();
+                float etx = aEnd.x - d2[d2.size() - 2].x;
+                float etz = aEnd.z - d2[d2.size() - 2].z;
+                const float el = std::sqrt(etx * etx + etz * etz);
+                if (el > 1e-5f) { etx /= el; etz /= el; }
+                const float mChord = std::sqrt((deck.x - aEnd.x) * (deck.x - aEnd.x) +
+                                               (deck.z - aEnd.z) * (deck.z - aEnd.z));
+                for (float t = 0.04f; t <= 1.0f + 1e-4f; t += 0.04f) {
+                    RoadSample s;
+                    hermite(aEnd.x, aEnd.z, etx * mChord, etz * mChord,
+                            deck.x, deck.z, deck.tx * mChord, deck.tz * mChord,
+                            std::min(t, 1.0f), s.x, s.z);
+                    d2.push_back(s);
+                }
+            }
             std::vector<RoadSample> loop;
             resample(d2, kRampStep, loop);
             for (size_t i = 0; i < loop.size(); ++i) {
                 const float t = (float)i / (float)(loop.size() - 1);
                 const float e = t * t * (3.0f - 2.0f * t);
                 loop[i].y = gy + (deck.y - gy) * e;
-                loop[i].bank = -0.06f;
+                loop[i].bank = -0.06f * (1.0f - e);   // ease bank out into the deck
+            }
+            // Land the final sample EXACTLY on the deck (watertight merge).
+            if (!loop.empty()) {
+                loop.back().x = deck.x; loop.back().z = deck.z; loop.back().y = deck.y;
             }
             Pending pe;
             pe.cls = RoadClass::Ramp; pe.width = kRampWidth;
@@ -693,6 +765,12 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             std::vector<RoadSample> av; resample(d2, kSampleStep, av);
             collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
         }
+        x3::logInfo("[roads] gate " + std::to_string(gi) + " connected: deck(" +
+                    std::to_string((int)deck.x) + "," + std::to_string((int)deck.z) +
+                    ",y" + std::to_string((int)deck.y) + ") <-ramps-> ground(" +
+                    std::to_string((int)g.gx) + "," + std::to_string((int)g.gz) +
+                    ",y" + std::to_string((int)gy) + "); chord " +
+                    std::to_string((int)gChord) + " m");
     }
 
     // ---- 1c. SPUR AVENUES (v2 verbatim) ----------------------------------
