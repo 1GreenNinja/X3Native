@@ -59,6 +59,25 @@ This spec must not preclude either. Where a decision affects them, §10 records 
 | F5 | **`Config` struct incl. `shuffleSeed`** | Seed 0 = derive from clock; a fixed seed makes shuffle deterministic and therefore testable. |
 | F6 | **`drawToast(device, frame)`** | Actually renders the toast. Remote only exposes `toastRemaining()`/`toastText()` and leaves drawing to the host. Serves as the DJ-screen fallback until the screen system lands. |
 
+### Amendment (2026-07-25, found during planning + implementation)
+
+Three corrections, all discovered by reading the real source rather than the spec:
+
+- **F6 (`drawToast`) DROPPED.** `app/world_hosts/host_club.cpp:316-323` *already* renders the
+  toast from `toastRemaining()`/`toastText()`. §4.2 called the remote deficient here; it isn't.
+  Porting the local `drawToast()` would couple a game module to `IRenderDevice` for no
+  user-visible gain, and spec #3's screen system replaces this surface anyway. YAGNI.
+- **F3 required an engine change** not listed in §9: `IAudioSystem::probeAudioFile` (default
+  `true`, overridden by the miniaudio backend using `ma_decoder_init_file`). §9's file list is
+  extended with `engine/audio/IAudioSystem.h` and `engine/audio/MiniaudioSystem.cpp`.
+- **F1 required a new club API.** §5 assumed `setBeatGrid` existed; the real interface was only
+  `setBpm(float)`/`bpm()`. `setBeatGrid(bpm, offsetS)` + `beatOffsetS()` were added, and
+  `club1127.cpp`'s beat clock became `(t - m_beatOffsetS) * beatHz`.
+
+A fourth thing surfaced that §4.4 did not anticipate: `snd_clubmusic_dir` **defaulted to** the
+Documents path, so setting the cvar *replaced* the user library rather than adding to it. The
+three roots are now genuinely three; the cvar defaults to empty.
+
 ### 4.3 Behaviour kept from the remote
 
 - Non-recursive folder scan (a `samples/` subdir never auto-plays).
