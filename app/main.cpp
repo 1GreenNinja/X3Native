@@ -776,6 +776,7 @@ int main(int argc, char** argv) {
     _hc.cliCVars        = o.cliCVars;
     _hc.bootAudioFut    = &bootAudioFut;
     _hc.smoketest       = o.smoketest;
+    _hc.worldSwitchTest = o.worldSwitchTest;   // headless world-load repro/regression
     _hc.testBootTime    = o.testBootTime;
     _hc.testFramePacing = o.testFramePacing;
     _hc.testRt          = o.testRt;
@@ -843,7 +844,14 @@ int main(int argc, char** argv) {
         // Dev flags that pinned the OLD world must not follow us in: a screenshot /
         // smoketest / bench flag would hijack the newly-loaded world and exit.
         _hc.screenshot   = false;
-        _hc.smoketest    = false;
+        // --test-worldswitch: KEEP smoketest ON across the handoff so the arriving
+        // host runs its headless smoketest path (proving it renders on the REUSED
+        // device) and exits cleanly, instead of a windowed interactive loop that
+        // would deref a null window under headless. Clear worldSwitchTest first so
+        // the arriving host doesn't request yet another switch (infinite loop).
+        const bool _wsTest = !_hc.worldSwitchTest.empty();
+        _hc.worldSwitchTest.clear();
+        _hc.smoketest    = _wsTest;
         _hc.bench        = false;
         _hc.shotWorldMap = false;
         _hc.skipIntro    = true;    // the cold-open is a once-per-launch thing

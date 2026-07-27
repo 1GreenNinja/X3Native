@@ -56,6 +56,10 @@ struct HostContext {
     // REQUEST a switch. main() clears both before each dispatch.
     std::string switchWorldTo;
     std::string switchDestKey;
+    // --test-worldswitch <flag>: the default host's smoketest path REQUESTS this
+    // switch after its render frames, so the world-load handoff is exercised
+    // headlessly (see cli.h). "" = normal smoketest (no switch).
+    std::string worldSwitchTest;
     // Set by main()'s world-load loop on the NEW world's dispatch: a destination
     // key the freshly-built world should stand the player at, instead of its own
     // spawn. "" = use the world's normal spawn (every existing launch path).

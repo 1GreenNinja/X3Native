@@ -273,6 +273,8 @@ private:
         float    fx = 0, fz = 0;          // fixture XZ on the ceiling ring
         uint32_t lensEnt = 0xFFFFFFFFu;   // emissive lens (gel + beat breathe)
         uint32_t beamEnt = 0xFFFFFFFFu;   // translucent beam shaft (re-posed)
+        uint32_t coreEnt = 0xFFFFFFFFu;   // hot inner core cone (whiter, sharper)
+        uint32_t headEnt = 0xFFFFFFFFu;   // tiltable head barrel (local mesh, re-posed)
     };
     std::vector<MovingHead>                       m_movingHeads;
     // White phrase-drop strobe over the floor (index into m_lights; color is

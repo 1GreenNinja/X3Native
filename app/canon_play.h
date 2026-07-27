@@ -391,6 +391,26 @@ private:
     void drawManagerCulled(const MonsterManager& mm, x3::rhi::IRenderDevice& device,
                            const x3::rhi::FrameContext& frame, const Scene& scene) const;
 
+    // ---- CHARACTER MUTUAL EXCLUSION (Tim 2026-07-26) ----------------------
+    // Gather every LIVE character into `bodies` (SepBody discs) + a parallel `owners`
+    // array: a movable monster's MonsterSystem* (written back after separation) or
+    // nullptr for a captive/companion/Sarah ANCHOR. Covers every hostile group +
+    // Martinez + the rescue captives + Sarah.
+    void gatherCharacters(std::vector<SepBody>& bodies,
+                          std::vector<MonsterSystem*>& owners);
+    // Runtime enforcement (called at the END of tick): resolve all character overlaps
+    // so no two characters share a volume, then write the corrected positions back to
+    // the movable monsters (captives are anchors — never moved onto a monster).
+    void separateCharacters(x3::phys::IPhysicsWorld& physics);
+    // Spawn-placement guard: return a spot near `want` that does NOT overlap any
+    // already-placed character (outward spiral step-search); `radius` is the
+    // spawnee's collision radius. Prevents a monster spawning merged into a captive.
+    x3::phys::Vec3 clearSpawnPos(const x3::phys::Vec3& want, float radius);
+    // True iff `b` is a non-damageable friendly body (a captive/companion/Sarah). The
+    // weapon aim-ray steps PAST these so a captive never eats an enemy's shot (backup
+    // to mutual exclusion — a captive can still stand between the player and a foe).
+    bool isFriendlyBody(x3::phys::BodyId b) const;
+
     WeaponSystem   m_weapon;       // sidearm pickup in Jake's Cell
     MonsterManager m_mainHall;     // animated squad down the Main Hall
     MonsterManager m_cellGuards;   // a few enemies in side cells

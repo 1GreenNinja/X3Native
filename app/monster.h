@@ -918,6 +918,17 @@ public:
     // Current body-center world position (D-ai: read by the ally query / regroup).
     x3::phys::Vec3 pos() const { return m_pos; }
 
+    // Enemy hitbox half-width (scaled) — the mutual-exclusion collision radius used
+    // by the character-separation pass (no two characters may be closer than the sum
+    // of their radii).
+    float hitRadius() const { return m_hitHalfXZ; }
+
+    // MUTUAL EXCLUSION nudge: set the planar (x,z) position (Y unchanged) and sync the
+    // physics body (respecting the box center offset). Used by the host's
+    // character-separation pass to push a monster OUT of a captive / another monster
+    // it has walked into. No-op once dead or bodyless. Defined in monster.cpp.
+    void setPlanarPos(float x, float z, x3::phys::IPhysicsWorld& physics);
+
     // Club max-out: externally drive an INERT prop's pose (position + heading).
     // Intended ONLY for chaseSpeed-0 / damage-0 character props (the Club 1127
     // dancers) — the caller owns the choreography and calls this each frame
@@ -1709,5 +1720,27 @@ MonsterSystem::Tuning act2BossTuning(Act2BossType t);
 // Logs PASS/FAIL T#, prints "act2bosses: X/Y passed", returns true iff all pass.
 // No window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
 bool runAct2BossesSelfTest();
+
+// ---------------------------------------------------------------------------
+// CHARACTER MUTUAL EXCLUSION (Tim 2026-07-26): no two characters (monster OR
+// captive) may occupy the same volume. A live character is a planar disc (center
+// x,z + collision radius r) that is either MOVABLE (a monster — may be pushed) or
+// an ANCHOR (a captive/companion — immovable; monsters get pushed off it).
+// ---------------------------------------------------------------------------
+struct SepBody {
+    float x = 0.0f, z = 0.0f, r = 0.4f;
+    bool  movable = true;   // false = captive anchor (never moved off a monster)
+};
+
+// Resolve character-vs-character overlap IN PLACE so that, after the pass, no two
+// centers are closer than r_i + r_j. Iterative relaxation over `maxIters` passes:
+// each overlapping pair is separated along its center axis — movable/movable splits
+// the correction 50/50, movable/anchor moves only the movable one the full overlap,
+// anchor/anchor splits (never left merged). Exactly co-located centers get a
+// deterministic seeded jitter axis so the push is stable + reproducible. Returns the
+// number of pair corrections applied on the LAST pass (0 => fully resolved). Pure /
+// allocation-free / headless-testable (--test-canonplay P11). Defined in monster.cpp.
+uint32_t resolveCharacterOverlaps(SepBody* bodies, uint32_t n,
+                                  uint32_t maxIters = 8, uint32_t seed = 0x9E3779B9u);
 
 } // namespace x3::game

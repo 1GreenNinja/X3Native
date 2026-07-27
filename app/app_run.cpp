@@ -6984,10 +6984,27 @@ int runDefaultHost(HostContext& hc) {
         if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
         if (spacePlanetRingMesh.valid()) { device->destroyMesh(spacePlanetRingMesh); spacePlanetRingMesh = {}; }
         docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
+        // ---- W-MENU: HEADLESS WORLD-LOAD HARNESS (--test-worldswitch <flag>) ------
+        // Drive the exact runtime world-load handoff that segfaulted (canonlevel ->
+        // streamed): request the switch here so main()'s loop tears THIS world down
+        // and builds <flag> in the SAME shared device + window. The switch-aware
+        // teardown below must NOT destroy the shared device/window/GLFW when a switch
+        // is pending — the next host still needs them.
+        if (!hc.worldSwitchTest.empty()) {
+            hc.switchWorldTo = hc.worldSwitchTest;
+            x3::logInfo("[test-worldswitch] smoketest world up; requesting WORLD LOAD -> --world " +
+                        hc.switchWorldTo);
+        }
         physics->shutdown();
-        device->shutdown();
-        glfwDestroyWindow(window);
-        glfwTerminate();
+        // W-MENU FIX: device + window + GLFW are created ONCE in main() and reused by
+        // every host in the world-load loop. Only the FINAL host (no switch pending)
+        // may tear them down; destroying them here on a switch left the NEXT host
+        // dereferencing a freed device/window -> segfault (canonlevel->streamed).
+        if (hc.switchWorldTo.empty()) {
+            device->shutdown();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+        }
         return 0;
     }
 
@@ -12105,9 +12122,21 @@ int runDefaultHost(HostContext& hc) {
     worldMap.shutdown(*device);                    // baked map-tile textures
     x3::club_listen::shutdown();                    // close the WASAPI loopback device (idempotent)
     physics->shutdown();
-    device->shutdown();
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    // W-MENU FIX: the world/place menu's "LOADS WORLD" rows break the render loop
+    // with hc.switchWorldTo set so main()'s world-load loop tears THIS world down and
+    // builds the next one in the SAME shared device + window. Those shared resources
+    // are created ONCE in main() and reused across the loop, so ONLY the final host
+    // (no switch pending) may destroy them. Doing it here on a switch left the next
+    // host (e.g. hostStreamed on a canonlevel->streamed pick) dereferencing a freed
+    // device/window during its boot -> segfault. The world's OWN resources are freed
+    // above (game systems, streamers, physics); the shared device/window survive the
+    // handoff and the arriving host renders into them, then tears them down when IT
+    // is the final host.
+    if (hc.switchWorldTo.empty()) {
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+    }
     return bootTestExit;
 
 }

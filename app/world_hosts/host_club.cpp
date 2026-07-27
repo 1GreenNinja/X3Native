@@ -2,6 +2,7 @@
 #include "world_host_common.h"
 #include "../scene.h"
 #include "../club1127.h"
+#include "../club_bedrock.h"                 // solid-earth encasement (underground)
 #include "../jukebox.h"                     // Club Jukebox — Tim's personal-use "Self Radio"
 #include "../crowd.h"
 #include "../player.h"
@@ -49,6 +50,60 @@ int hostClub(HostContext& hc) {
         x3::game::Club1127World club;
         club.build(cscene, *device, *cphys, x3::game::riggedGlbRoot());
 
+        // ==== SOLID-EARTH ENCASEMENT (fix/club-underground-sky) =================
+        // The club is ~800 m (engine Y=-200) underground, but it was authored as a
+        // hollow box in the void: with the sky off you saw the engine's dark HDR
+        // clear ("grayness") through the ceiling hole, and noclipping out dropped
+        // you into black nothing. Carve the club out of a MASSIVE solid-earth body
+        // instead: a big double-sided, non-colliding rock block that fills
+        // everything outside the club cavity, spanning from below the floor UP to
+        // the surface ground plane (Y=0, host_surface_start kGroundY) and WIDE
+        // enough to underlie the whole city above (regions.json `city`: anchor
+        // (-200,0,425), half 750 -> X[-950,550] Z[-325,1175]) plus a wide margin.
+        // So noclipping out in ANY direction — including straight up toward the
+        // surface — stays buried in hundreds of meters of visible rock. The block
+        // is COARSE (6 bulk boxes) so it costs almost nothing; detail only matters
+        // at the carved cavity walls. This is the club's first carved cavity — the
+        // descent / tunnels / Complex carve out of the SAME earth later (see
+        // club_bedrock.h for the carve recipe + CSG upgrade path).
+        //
+        // ARCHITECTURE FOLLOW-UP (@13700k): true surface<->club continuity (walk/dig
+        // from the city DOWN through the strata to the club) means the club should
+        // eventually be a REGION in the streamed region-graph world (--world
+        // streamed), not this standalone --world club. For now the massive earth
+        // lives in the club world so noclip already shows solid earth up toward the
+        // surface; unifying club into the streamed/city world is the real
+        // one-continuous-dig follow-up.
+        // Blue point lights of the Salvari crystal hollows — merged into the light
+        // set the host pushes each frame (club.update re-pushes only club lights).
+        std::vector<x3::rhi::PointLight> bedrockLights;
+        {
+            const auto& cs = club.stats();
+            x3::game::BedrockConfig bc;
+            // Cavity = the club footprint + clearance (a few m of excavation before
+            // rock; keeps the rock off the club's own walls/booth/speakers/orb).
+            bc.cavMinX = cs.roomMinX - 8.0f;   bc.cavMaxX = cs.roomMaxX + 8.0f;
+            bc.cavMinZ = cs.roomMinZ - 14.0f;  bc.cavMaxZ = cs.roomMaxZ + 12.0f;
+            bc.cavMinY = cs.floorY   - 3.0f;   bc.cavMaxY = cs.ceilingY + 4.0f;
+            // Earth block: down 60 m below the club, UP to the surface (Y=0), and
+            // out well beyond the city footprint in both horizontal axes.
+            bc.earthMinY = cs.floorY - 60.0f;  bc.earthMaxY = 0.0f;
+            bc.earthMinX = -1150.0f;           bc.earthMaxX = 750.0f;
+            bc.earthMinZ = -525.0f;            bc.earthMaxZ = 1375.0f;
+            const int nRock = x3::game::buildClubBedrock(cscene, *device, *cphys, bc, &bedrockLights);
+            x3::logInfo("--world club: bedrock encasement — " + std::to_string(nRock) +
+                        " solid-earth blocks (cavity ~" +
+                        std::to_string((int)(bc.cavMaxX - bc.cavMinX)) + "x" +
+                        std::to_string((int)(bc.cavMaxZ - bc.cavMinZ)) + "m, earth up to Y=0)");
+        }
+        // The earth reaches ~200 m UP to the surface and ~1 km OUT under the city,
+        // so the 200 m default far plane would clip the distant rock walls to the
+        // dark HDR clear ("grayness") — the very void we're killing. Push the club's
+        // far plane out so the whole earth body renders (space/streamed use 15-60 km;
+        // 4 km easily covers this block from inside the club AND from an external
+        // vantage). Depth precision at the tiny club is unaffected in practice.
+        device->setCameraFar(4000.0f);
+
         // LIVING WORLD: the dance-floor crowd — 14 club-goers in neon-tinted
         // knots around the floor/bars, bobbing to the beat (CrowdSystem).
         x3::game::CrowdSystem clubCrowd;
@@ -82,8 +137,33 @@ int hostClub(HostContext& hc) {
 
         // Apply the neon/UV point-light set once (the orbiting spot/ring lights are
         // re-pushed each frame by club.update()). The club has NO sky (deep interior).
-        const auto& clights = club.pointLights();
-        device->setPointLights(clights.data(), (uint32_t)clights.size());
+        // pushLights() concatenates the club's own (already-animated) lights with the
+        // Salvari crystal-hollow lights and re-pushes the combined set — call it AFTER
+        // club.update() each frame (update re-pushes only the club lights, which would
+        // otherwise drop the crystal glow). The crystals gently BREATHE (cheap: a sine
+        // on the premultiplied blue).
+        // NOTE: the club already fills the device's 64-point-light cap, so crystal
+        // lights are only added when the camera is NEAR a hollow (prepended, so if
+        // the total spills past 64 it's a far/irrelevant CLUB light that drops, not
+        // the nearby crystal). In the club proper no hollow is near, so the club
+        // keeps its full 64-light show untouched.
+        auto pushLights = [&](float tsec, float cx, float cy, float cz) {
+            const auto& cl = club.pointLights();
+            std::vector<x3::rhi::PointLight> all;
+            all.reserve(cl.size() + bedrockLights.size());
+            for (size_t i = 0; i < bedrockLights.size(); ++i) {
+                const x3::rhi::PointLight& s = bedrockLights[i];
+                const float dx = s.pos[0]-cx, dy = s.pos[1]-cy, dz = s.pos[2]-cz;
+                if (dx*dx + dy*dy + dz*dz > 50.0f * 50.0f) continue;   // only near hollows
+                x3::rhi::PointLight l = s;
+                const float b = 0.78f + 0.22f * std::sin(tsec * 1.6f + (float)i * 1.7f);
+                l.color[0] *= b; l.color[1] *= b; l.color[2] *= b;
+                all.push_back(l);
+            }
+            all.insert(all.end(), cl.begin(), cl.end());
+            device->setPointLights(all.data(), (uint32_t)all.size());
+        };
+        { const auto sp0 = club.spawn(); pushLights(0.0f, sp0.x, sp0.y, sp0.z); }
 
         // ==== INTERIOR ATMOSPHERE (fix/club-relight) ============================
         // THE CLUB WAS A BLACK VOID. It disabled the sky and then set NOTHING else —
@@ -189,6 +269,7 @@ int hostClub(HostContext& hc) {
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                pushLights((float)i * dt, cam[0], cam[1], cam[2]);   // club + nearby Salvari-crystal lights
                 if (i == kSettle - 1 && seqFrames == 0) device->armCapture(outPath.c_str());
                 auto frame = device->beginFrame();
                 if (frame.valid) {
@@ -209,6 +290,7 @@ int hostClub(HostContext& hc) {
                 cphys->step(dt);
                 cscene.update(*cphys);
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                pushLights((float)(kSettle + f) * dt, cam[0], cam[1], cam[2]);
                 device->armCapture(fp);
                 auto frame = device->beginFrame();
                 if (frame.valid) {
@@ -398,6 +480,7 @@ int hostClub(HostContext& hc) {
             if (cw != lastWc || ch != lastHc) { lastWc = cw; lastHc = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
 
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            pushLights((float)now, camX, camY, camZ);   // club + nearby Salvari-crystal lights
             auto frame = device->beginFrame();
             if (frame.valid) {
                 cscene.render(*device, frame);

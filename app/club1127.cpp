@@ -184,6 +184,11 @@ const float kRingGels[4][3] = { {2.0f,0.0f,1.0f},   {0.0f,1.0f,2.0f},  {1.0f,0.0
 // patterns DOWN onto the dance floor): 4 fixtures on this ring over the floor.
 const float kHeadRingR  = 4.0f;    // fixture ring radius
 const float kHeadRingCz = -1.5f;   // ring center Z (the dancer-crowd centroid)
+// Moving-head yoke geometry (fix/club-beams-volumetric): the head TILTS about a pivot
+// this far below the ceiling; the barrel (pivot -> lens mouth) is kHeadLen long. Both
+// build() and update() use these to place + re-aim the articulated head.
+const float kHeadPivotDrop = 0.28f;   // pivot Y below the ceiling
+const float kHeadLen       = 0.32f;   // barrel length: pivot -> lens
 
 // OLED screen emissive strength (the panes set emissiveMap=1, so this is MULTIPLIED
 // by the texel — it is the brightness of a LIT EQ column, not a wash over the pane).
@@ -268,21 +273,136 @@ void makeBeamConeMesh(float radius, float drop,
         }
 }
 
-// Axial gradient for the beam cone (bright at the lens apex, dissolving in the air
-// BEFORE the base rim so the shaft has no hard visible end). LINEAR (srgb=false).
-// Mirrors the proven street-light coneGrad bake (row-flip so v=0/apex is the bright
-// end). RGBA8, W x H.
-std::vector<uint8_t> makeBeamGradRGBA(int W, int H) {
+// A MOVING-HEAD housing barrel (fix/club-beams-volumetric): a short capped cylinder
+// authored in LOCAL space with its BACK cap at the origin, opening along -Y to a
+// slightly flared FRONT rim at y=-len (the lens mouth). poseCone() aims local -Y from
+// the yoke pivot toward the floor pool, so the whole HEAD physically tilts/pans with
+// the beam (articulated moving head, not a static stub). Opaque, world-exact normals.
+void makeHeadBarrelMesh(float rBack, float rFront, float len,
+                        std::vector<x3::rhi::MeshVertex>& verts, std::vector<uint32_t>& idx) {
+    const int kSeg = 20;
+    verts.clear(); idx.clear();
+    const float dr = rFront - rBack;                 // flares wider toward the -Y front
+    const float side = std::sqrt(len * len + dr * dr);
+    const float nAx = dr / std::max(1e-4f, side);    // side normal leans +Y (toward the narrow back)
+    const float nRad = len / std::max(1e-4f, side);
+    // Ring 0 = back (y=0, rBack); ring 1 = front (y=-len, rFront).
+    for (int ring = 0; ring < 2; ++ring) {
+        const float y = (ring == 0) ? 0.0f : -len;
+        const float r = (ring == 0) ? rBack : rFront;
+        for (int s = 0; s <= kSeg; ++s) {
+            const float a = (float)s / (float)kSeg * 2.0f * kPi;
+            const float ca = std::cos(a), sa = std::sin(a);
+            x3::rhi::MeshVertex v{};
+            v.pos[0] = ca * r; v.pos[1] = y; v.pos[2] = sa * r;
+            v.normal[0] = ca * nRad; v.normal[1] = nAx; v.normal[2] = sa * nRad;
+            v.uv[0] = (float)s / (float)kSeg; v.uv[1] = (float)ring;
+            verts.push_back(v);
+        }
+    }
+    const int stride = kSeg + 1;
+    for (int s = 0; s < kSeg; ++s) {
+        const uint32_t a = (uint32_t)s, b = a + 1;
+        const uint32_t c = a + (uint32_t)stride, d = c + 1;
+        idx.insert(idx.end(), { a, c, b,  b, c, d });   // side wall
+    }
+    // Back cap (faces +Y) and front cap (faces -Y), each a triangle fan around a center.
+    auto cap = [&](float y, float r, float ny, bool flip) {
+        const uint32_t center = (uint32_t)verts.size();
+        x3::rhi::MeshVertex cv{}; cv.pos[1] = y; cv.normal[1] = ny; cv.uv[0] = 0.5f; cv.uv[1] = 0.5f;
+        verts.push_back(cv);
+        const uint32_t base = (uint32_t)verts.size();
+        for (int s = 0; s <= kSeg; ++s) {
+            const float a = (float)s / (float)kSeg * 2.0f * kPi;
+            x3::rhi::MeshVertex v{};
+            v.pos[0] = std::cos(a) * r; v.pos[1] = y; v.pos[2] = std::sin(a) * r;
+            v.normal[1] = ny; v.uv[0] = 0.5f + 0.5f * std::cos(a); v.uv[1] = 0.5f + 0.5f * std::sin(a);
+            verts.push_back(v);
+        }
+        for (int s = 0; s < kSeg; ++s) {
+            if (flip) idx.insert(idx.end(), { center, base + (uint32_t)s + 1, base + (uint32_t)s });
+            else      idx.insert(idx.end(), { center, base + (uint32_t)s, base + (uint32_t)s + 1 });
+        }
+    };
+    cap(0.0f,  rBack,  1.0f, false);   // back cap, +Y
+    cap(-len,  rFront, -1.0f, true);   // front (lens) cap, -Y
+}
+
+// The emissive LENS FACE (gel-colored) as a flat disc authored in LOCAL space at
+// y=-yFront facing -Y — posed with the head barrel so the glowing lens tilts too.
+void makeLensDiscMesh(float r, float yFront,
+                      std::vector<x3::rhi::MeshVertex>& verts, std::vector<uint32_t>& idx) {
+    const int kSeg = 20;
+    verts.clear(); idx.clear();
+    x3::rhi::MeshVertex c{}; c.pos[1] = -yFront; c.normal[1] = -1.0f; c.uv[0] = 0.5f; c.uv[1] = 0.5f;
+    verts.push_back(c);
+    for (int s = 0; s <= kSeg; ++s) {
+        const float a = (float)s / (float)kSeg * 2.0f * kPi;
+        x3::rhi::MeshVertex v{};
+        v.pos[0] = std::cos(a) * r; v.pos[1] = -yFront; v.pos[2] = std::sin(a) * r;
+        v.normal[1] = -1.0f; v.uv[0] = 0.5f + 0.5f * std::cos(a); v.uv[1] = 0.5f + 0.5f * std::sin(a);
+        verts.push_back(v);
+    }
+    for (int s = 0; s < kSeg; ++s)
+        idx.insert(idx.end(), { 0u, (uint32_t)s + 2u, (uint32_t)s + 1u });   // faces -Y
+}
+
+// DUSTY VOLUMETRIC BEAM texture (fix/club-beams-volumetric). U (x) runs AROUND the
+// cone circumference, V (y) runs ALONG the axis: v=0 is the LENS/apex, v=1 the floor
+// POOL (matches makeBeamConeMesh's uv.y=t). A real theatrical beam in haze is HOTTEST
+// at the lens and scatters into softer haze as it falls — so brightness is high at the
+// lens and eases down, never to zero (the shaft stays visible its whole length and the
+// base ring reads as the colored floor pool). This REPLACES the old bake, which was
+// inverted (bright + fat at the FLOOR, fading to a faint point at the ceiling — the
+// "cheap solid plastic cone" tell) and flat across the width (no haze structure).
+//
+// DUST: two octaves of value-noise + faint vertical striations so the shaft reads as
+// light scattering through drifting haze/dust rather than a translucent solid. Dust
+// structure is DENSER near the lens (where a real beam's scatter is brightest). LINEAR
+// (srgb=false). RGBA8, W x H. `core=true` bakes the tight HOT-CORE variant: near-white,
+// spiking at the lens and dissolving by mid-shaft (the bright inner spike + lens flare).
+uint32_t clubHash(uint32_t x);   // fwd decl (defined in the MAX-OUT texture section below)
+std::vector<uint8_t> makeBeamGradRGBA(int W, int H, bool core = false) {
+    // Wrapped 2D value noise (seamless around the circumference at integer periods).
+    auto hashf = [](int xi, int yi) -> float {
+        uint32_t h = clubHash((uint32_t)(xi * 73856093) ^ clubHash((uint32_t)(yi * 19349663) + 1u));
+        return (float)(h & 0xffffu) / 65535.0f;
+    };
+    auto vnoise = [&](float x, float y, int period) -> float {
+        int x0 = (int)std::floor(x), y0 = (int)std::floor(y);
+        const float fx = x - x0, fy = y - y0;
+        auto wr = [&](int xi) { return ((xi % period) + period) % period; };   // seam-free in u
+        const float a = hashf(wr(x0),   y0),   b = hashf(wr(x0 + 1), y0);
+        const float c = hashf(wr(x0),   y0+1), d = hashf(wr(x0 + 1), y0+1);
+        const float sx = fx * fx * (3.0f - 2.0f * fx), sy = fy * fy * (3.0f - 2.0f * fy);
+        return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+    };
     std::vector<uint8_t> px((size_t)W * H * 4);
     for (int y = 0; y < H; ++y) {
-        const float v = (float)(H - 1 - y) / (float)(H - 1);      // apex end is bright
-        const float s = std::clamp((v - 0.0f) / 0.82f, 0.0f, 1.0f);
-        const float sm = s * s * (3.0f - 2.0f * s);               // smoothstep(0,0.82,v)
-        const float f = std::pow(1.0f - sm, 2.1f);
-        const uint8_t b = (uint8_t)std::lround(255.0f * f);
+        const float v = (float)y / (float)(H - 1);               // 0 lens .. 1 pool
+        float axial, dustAmt;
+        if (core) {
+            // Tight hot core: white spike at the lens, gone by ~55% down.
+            axial   = std::pow(std::max(0.0f, 1.0f - v / 0.58f), 1.7f);
+            axial  += 0.6f * std::pow(std::max(0.0f, 1.0f - v / 0.10f), 2.0f);   // lens flare
+            dustAmt = 0.20f;
+        } else {
+            // Main shaft: hot at the lens, easing to a soft floor pool (never 0).
+            axial   = 0.30f + 0.70f * std::pow(1.0f - v, 0.62f);
+            axial  += 0.45f * std::pow(std::max(0.0f, 1.0f - v / 0.13f), 2.0f);  // hot lens lift
+            dustAmt = 0.50f + 0.42f * std::pow(1.0f - v, 1.1f);                  // denser near lens
+        }
         for (int x = 0; x < W; ++x) {
+            const float u = (float)x / (float)(W - 1);
+            float dust = 0.40f
+                       + 0.36f * vnoise(u * 6.0f, v * 9.0f, 6)
+                       + 0.24f * vnoise(u * 17.0f, v * 24.0f, 17);
+            dust *= 0.86f + 0.14f * std::sin(u * 2.0f * kPi * 5.0f);             // faint striations
+            float b = axial * ((1.0f - dustAmt) + dustAmt * dust);
+            b = std::clamp(b, 0.0f, 1.0f);
+            const uint8_t bb = (uint8_t)std::lround(255.0f * b);
             uint8_t* p = &px[((size_t)y * W + x) * 4];
-            p[0] = p[1] = p[2] = b; p[3] = 255;
+            p[0] = p[1] = p[2] = bb; p[3] = 255;
         }
     }
     return px;
@@ -588,6 +708,12 @@ std::vector<uint8_t> makeSignRGBA(uint32_t w, uint32_t h, const char* line,
             case 'S': set(0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E); return true;
             case 'P': set(0x1E,0x11,0x11,0x1E,0x10,0x10,0x10); return true;
             case 'D': set(0x1E,0x11,0x11,0x11,0x11,0x11,0x1E); return true;
+            case 'C': set(0x0E,0x11,0x10,0x10,0x10,0x11,0x0E); return true;
+            case 'U': set(0x11,0x11,0x11,0x11,0x11,0x11,0x0E); return true;
+            case 'B': set(0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E); return true;
+            case '1': set(0x04,0x0C,0x04,0x04,0x04,0x04,0x0E); return true;
+            case '2': set(0x0E,0x11,0x01,0x02,0x04,0x08,0x1F); return true;
+            case '7': set(0x1F,0x01,0x02,0x04,0x04,0x04,0x04); return true;
             default:  set(0,0,0,0,0,0,0); return false;   // space / unknown
         }
     };
@@ -1690,10 +1816,11 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             box(brX, 0.9f, brZ, 0.015f, 0.9f, 0.015f, kWood, kEmitOff, false);        // handle
             box(brX, 0.04f, brZ + 0.06f, 0.16f, 0.04f, 0.05f, kBlackR, kEmitOff, false); // bristle head
         }
-        // --- ★ "LATE NIGHT SPEED" neon SIGN, high on the south wall (faces the floor). ---
+        // --- ★ "CLUB 1127" neon SIGN, high on the south wall (faces the floor). ---
+        // (Late Night Speed by day, CLUB 1127 by night — same mount, same red neon.)
         {
             const uint32_t sw = 512, sh = 96;
-            auto sgpx = makeSignRGBA(sw, sh, "LATE NIGHT SPEED", 1.0f, 0.10f, 0.10f);   // hot red neon
+            auto sgpx = makeSignRGBA(sw, sh, "CLUB 1127", 1.0f, 0.10f, 0.10f);   // hot red neon
             const x3::rhi::TextureHandle sgTex = device.createTexture(sgpx.data(), sw, sh, true);
             const float sX = 1.5f, sY = 5.4f, sZ = CL / 2 - 0.42f;   // clear of the wall inner face (~-0.15)
             const float sHW = 3.6f, sHH = sHW * (float)sh / (float)sw;   // keep aspect
@@ -1704,7 +1831,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             x3::prims::PrimMesh sg;
             const float nZ = -1.0f;
             // U flipped (viewer at -Z looking +Z sees +X on the left): U=1 at -X, U=0 at +X
-            // so "LATE NIGHT SPEED" reads left-to-right, not mirrored.
+            // so "CLUB 1127" reads left-to-right, not mirrored.
             sg.verts.push_back({{sX-sHW, wy+sHH, sZ}, {0,0,nZ}, {1,0}});   // TL
             sg.verts.push_back({{sX-sHW, wy-sHH, sZ}, {0,0,nZ}, {1,1}});   // BL
             sg.verts.push_back({{sX+sHW, wy-sHH, sZ}, {0,0,nZ}, {0,1}});   // BR
@@ -1812,7 +1939,10 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // ==================================================================
     {
         const float bH2 = 1.1f;                        // bar height
-        const float wX  = -CW / 2 + 1.0f;              // west-leg counter centre X (0.72 m lane behind)
+        // Counter pulled 1.3 m EAST off the west wall so there's a real bartender
+        // SERVICE LANE behind it: [west wall] -> backbar bottles (wallX) -> lane
+        // (Danny stands here, ~1.5 m) -> counter (wX) -> room.
+        const float wX  = -CW / 2 + 2.3f;              // west-leg counter centre X (~1.5 m service lane behind)
         const float wZ0 = -CL / 2 + 0.3f, wZ1 = CL / 2 - 0.3f;   // west leg Z span (full wall)
         const float nZ  = -CL / 2 + 1.0f;              // north-leg counter centre Z
         const float erWest = -ER_W / 2 - 0.3f;         // north run stops just west of the lounge/ER
@@ -1919,9 +2049,9 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         addLight(m_lights, -10.0f,    oy + bH2 + 1.6f, nZ + 0.3f, 1.70f, 1.55f, 1.35f, 5.5f);
         addLight(m_lights, -5.5f,     oy + bH2 + 1.6f, nZ + 0.3f, 1.70f, 1.55f, 1.35f, 5.5f);
         m_stats.hasGroundBar = true;
-        // ---- DANNY the bartender, behind the L (in the service lane), facing the room.
-        addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
-                     x3::phys::Vec3{ wX - 0.55f, oy + 0.0f, -1.5f }, 1.0f, false, nullptr);
+        // ---- DANNY the bartender stands behind this L, IN the service lane (placed
+        // once, below, as the canon "danny" NPC with BartenderDanny.glb + chat tree).
+        // The old anonymous AnnaCasual prop here was removed (wrong rig + duplicate).
     }
 
 
@@ -2411,21 +2541,60 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             beamMesh = device.createMesh(bv.data(), (uint32_t)bv.size(),
                                          bi.data(), (uint32_t)bi.size());
         }
-        auto bgpx = makeBeamGradRGBA(8, 64);
-        const x3::rhi::TextureHandle beamGrad = device.createTexture(bgpx.data(), 8, 64, false);
+        // HOT CORE: a slim brighter shaft down the beam's centre (whiter, sharper) so
+        // the beam has a hot lens spike that blooms, fading out by mid-shaft.
+        x3::rhi::MeshHandle coreMesh;
+        {
+            std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;
+            makeBeamConeMesh(kBeamPoolR * 0.34f, kBeamDrop, cv, ci);
+            coreMesh = device.createMesh(cv.data(), (uint32_t)cv.size(),
+                                         ci.data(), (uint32_t)ci.size());
+        }
+        // Dusty volumetric bake (hot at the lens, haze structure) + a hotter core bake.
+        auto bgpx = makeBeamGradRGBA(48, 192, false);
+        const x3::rhi::TextureHandle beamGrad = device.createTexture(bgpx.data(), 48, 192, false);
+        auto cgpx = makeBeamGradRGBA(24, 192, true);
+        const x3::rhi::TextureHandle coreGrad = device.createTexture(cgpx.data(), 24, 192, false);
+        // Articulated HEAD: a tiltable housing barrel + emissive lens face (local
+        // meshes re-aimed by poseCone each frame so the physical head pans/tilts with
+        // the beam). Shared geometry; per-fixture emissive gel on the lens.
+        x3::rhi::MeshHandle headMesh, lensMesh;
+        {
+            std::vector<x3::rhi::MeshVertex> hv; std::vector<uint32_t> hi;
+            makeHeadBarrelMesh(0.062f, 0.11f, kHeadLen, hv, hi);
+            headMesh = device.createMesh(hv.data(), (uint32_t)hv.size(), hi.data(), (uint32_t)hi.size());
+            std::vector<x3::rhi::MeshVertex> lv; std::vector<uint32_t> li;
+            makeLensDiscMesh(0.078f, kHeadLen, lv, li);
+            lensMesh = device.createMesh(lv.data(), (uint32_t)lv.size(), li.data(), (uint32_t)li.size());
+        }
         for (int i = 0; i < 4; ++i) {
             const float a = (i + 0.5f) / 4.0f * 2.0f * kPi;   // 45/135/225/315° — clear of THE ORB
             MovingHead mh;
             mh.fx = std::cos(a) * kHeadRingR;
             mh.fz = kHeadRingCz + std::sin(a) * kHeadRingR;
-            // Fixture body, hung from the ceiling: plate -> yoke -> head -> lens.
+            // Fixture body: the STATIC ceiling mount (plate + yoke) + the TILTABLE head.
             box(mh.fx, CH - 0.045f, mh.fz, 0.16f, 0.045f, 0.16f, kMetal, kEmitOff, false, 1.0f, &sMetal);
             box(mh.fx, CH - 0.17f,  mh.fz, 0.05f, 0.09f,  0.05f, kMetal, kEmitOff, false);
-            box(mh.fx, CH - 0.42f,  mh.fz, 0.11f, 0.16f,  0.11f, kSub,   kEmitOff, false);
+            // Pivot: yoke bottom. The head barrel + lens tilt about it (posed each frame).
+            const float pivY = oy + CH - kHeadPivotDrop;
+            {
+                Entity he;
+                he.mesh = headMesh;
+                he.baseColor[0] = 0.06f; he.baseColor[1] = 0.06f; he.baseColor[2] = 0.075f; he.baseColor[3] = 1.0f;
+                he.emissive[3] = 0.0f;
+                he.tag = (uint32_t)Tag::Static;
+                poseCone(he, mh.fx, pivY, mh.fz, mh.fx, oy + 0.05f, mh.fz);
+                mh.headEnt = scene.add(he);
+            }
             {
                 const float* gel = kSpotGels[i & 3];
-                const float lensEm[4] = { gel[0], gel[1], gel[2], 3.0f };
-                mh.lensEnt = box(mh.fx, CH - 0.60f, mh.fz, 0.085f, 0.03f, 0.085f, kTvFrame, lensEm, false);
+                Entity le;
+                le.mesh = lensMesh;
+                le.baseColor[0] = 1.0f; le.baseColor[1] = 1.0f; le.baseColor[2] = 1.0f; le.baseColor[3] = 1.0f;
+                le.emissive[0] = gel[0]; le.emissive[1] = gel[1]; le.emissive[2] = gel[2]; le.emissive[3] = 3.0f;
+                le.tag = (uint32_t)Tag::Static;
+                poseCone(le, mh.fx, pivY, mh.fz, mh.fx, oy + 0.05f, mh.fz);
+                mh.lensEnt = scene.add(le);
             }
             // Beam shaft: a soft VOLUMETRIC LIGHT-CONE (local apex at origin, opening
             // -Y) on the glass ADDITIVE-glow route — the dusty cone that scatters in
@@ -2446,10 +2615,34 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
                 be.glass.refraction = 0.0f;
                 be.glass.roughness = 0.0f;
                 be.glass.specular = 0.0f;
-                be.glass.additive = 2.6f;     // soft cone-silhouette rim fade (dot(N,V)^2.6)
+                be.glass.additive = 3.0f;     // soft cone-silhouette rim fade (dot(N,V)^3.0)
                 be.tag = (uint32_t)Tag::Static;
                 poseCone(be, mh.fx, oy + CH - 0.63f, mh.fz, mh.fx, oy + 0.05f, mh.fz);
                 mh.beamEnt = scene.add(be);
+            }
+            // HOT CORE cone: a slim, whiter, sharper inner shaft that spikes at the
+            // lens (bloom) and dissolves by mid-shaft. Re-aimed lens -> pool with the
+            // beam in update(). Whiter than the gel so the lens reads as a hot source.
+            {
+                const float* gel = kSpotGels[i & 3];
+                Entity ce;
+                ce.mesh = coreMesh;
+                ce.tex  = coreGrad;
+                ce.baseColor[0] = 1.0f; ce.baseColor[1] = 1.0f; ce.baseColor[2] = 1.0f; ce.baseColor[3] = 1.0f;
+                // Lift toward white so the core is a hot lamp, not just a brighter gel.
+                ce.emissive[0] = 0.45f * gel[0] + 0.85f;
+                ce.emissive[1] = 0.45f * gel[1] + 0.85f;
+                ce.emissive[2] = 0.45f * gel[2] + 0.85f;
+                ce.emissive[3] = 2.4f;
+                ce.transparent = true;
+                ce.glass.opacity = 0.0f;
+                ce.glass.refraction = 0.0f;
+                ce.glass.roughness = 0.0f;
+                ce.glass.specular = 0.0f;
+                ce.glass.additive = 4.5f;     // tight core silhouette (dot(N,V)^4.5)
+                ce.tag = (uint32_t)Tag::Static;
+                poseCone(ce, mh.fx, oy + CH - 0.63f, mh.fz, mh.fx, oy + 0.05f, mh.fz);
+                mh.coreEnt = scene.add(ce);
             }
             m_movingHeads.push_back(mh);
         }
@@ -2569,10 +2762,11 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         const float amberC[4] = { 1.25f, 1.05f, 0.85f, 1.0f };  // warm amber (Amara, lounge)
         const float coolC[4]  = { 1.00f, 1.05f, 1.30f, 1.0f };  // cool blue (Emma, club-feed glow)
 
-        // DANNY — dead center of the U-bar curve, inside the U, on the main floor.
-        // The U-bar carcass: uX=3.0, west base at uX-2.5=0.5; Danny stands just
-        // inside/behind it at his "bartender's watchtower", nose toward the entrance.
-        const x3::phys::Vec3 dannyPos{ 1.2f, oy + 0.0f, 0.0f };
+        // DANNY (Danny Kowalski, the canon builder/bartender) — behind the L-bar's
+        // west leg, standing IN the service lane between the west-wall backbar and
+        // the counter (counter centre wX = -CW/2+2.3; lane centre ~ -CW/2+1.26), so
+        // he has real standing room behind the bar, not embedded in wall or counter.
+        const x3::phys::Vec3 dannyPos{ -CW / 2 + 1.26f, oy + 0.0f, -1.5f };
         addCharacter(scene, device, physics, modelDir, "BartenderDanny.glb",
                      dannyPos, 1.0f, false, warmC);
         m_canonNpcs.push_back(CanonNpc{ "danny", "DANNY", "hub",
@@ -2606,7 +2800,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             m_canonNpcs.push_back(CanonNpc{ "emma", "EMMA", "hub",
                                             x3::phys::Vec3{ emmaPos.x, emmaPos.y + 1.0f, emmaPos.z }, 3.5f });
         }
-        x3::logInfo("[club1127] placed 3 canon dialogue NPCs (Danny @ U-bar, "
+        x3::logInfo("[club1127] placed 3 canon dialogue NPCs (Danny @ bar service lane, "
                     "Amara + Emma @ Private Lounge)");
     }
 
@@ -2730,26 +2924,66 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         const float step   = std::floor(eighth) + snap * snap * (3.0f - 2.0f * snap);
         const float sweep  = step * (2.0f * kPi / 16.0f);
         const int   phrase = (int)(beatCount / 8.0f);
+        // A soft kick ENVELOPE that decays across the beat (sharper attack than the
+        // gel breathe) — drives the beam LENGTH + core flare so each beat is a visible
+        // punch, settling between beats. On the beat it lengthens the shaft ~+16%.
+        const float kick = thump * thump;                  // sharpen the attack
         for (int i = 0; i < 4; ++i) {
             auto& mh = m_movingHeads[i];
             const float* gel = kSpotGels[(i + phrase) & 3];
-            // Pool point: a figure-8 on the floor under the fixture.
+            // POOL PATH: a WIDE figure-8 under the fixture, its whole pattern slowly
+            // ROTATED (staggered per fixture) so the beams sweep/pan across the room —
+            // not four beams bobbing in place. Amplitude ~2.6 x 1.9 m => a strong pan/
+            // tilt (was 1.7 x 1.1 — barely a wobble). Steps on the eighth-note grid.
             const float p2 = sweep + i * (kPi / 2.0f);
-            const float px = mh.fx + 1.7f * std::sin(p2);
-            const float pz = mh.fz + 1.1f * std::sin(2.0f * p2);
+            const float dx = 2.6f * std::sin(p2);
+            const float dz = 1.9f * std::sin(2.0f * p2);
+            const float th = beatCount * 0.20f + (float)i * 1.7f;   // slow per-fixture room pan
+            const float ct = std::cos(th), st = std::sin(th);
+            const float px = mh.fx + dx * ct - dz * st;
+            const float pz = mh.fz + dx * st + dz * ct;
             auto& L = m_lights[m_staticLightCount + i];
             L.pos[0] = px; L.pos[2] = pz;                  // Y stays at 1.15 m
             L.color[0] = gel[0] * breathe; L.color[1] = gel[1] * breathe; L.color[2] = gel[2] * breathe;
-            if (mh.lensEnt < scene.size()) {               // lens carries the gel + breathe
+
+            // ARTICULATED HEAD: pivot at the yoke bottom; aim it at the pool so the
+            // physical head + lens TILT/PAN with the beam. Then the beam/core start at
+            // the (now-moved) lens mouth.
+            const float pvx = mh.fx, pvy = kClubY + kCH - kHeadPivotDrop, pvz = mh.fz;
+            const float ax = px - pvx, ay = (kClubY + 0.05f) - pvy, az = pz - pvz;
+            const float al = std::max(1e-4f, std::sqrt(ax * ax + ay * ay + az * az));
+            const float lx = pvx + kHeadLen * ax / al;     // lens mouth (tilted)
+            const float ly = pvy + kHeadLen * ay / al;
+            const float lz = pvz + kHeadLen * az / al;
+            if (mh.headEnt < scene.size())                 // housing barrel tilts about the pivot
+                poseCone(scene.get(mh.headEnt), pvx, pvy, pvz, px, kClubY + 0.05f, pz);
+            if (mh.lensEnt < scene.size()) {               // lens face rides the head + carries the gel + breathe
                 Entity& le = scene.get(mh.lensEnt);
+                poseCone(le, pvx, pvy, pvz, px, kClubY + 0.05f, pz);
                 le.emissive[0] = gel[0]; le.emissive[1] = gel[1]; le.emissive[2] = gel[2];
-                le.emissive[3] = 2.2f + 1.6f * thump;
+                le.emissive[3] = 2.2f + 1.9f * kick;
             }
+            // Length pulse: stretch the beam/core along their axis on the kick (+16%).
+            const float lenPulse = 1.0f + 0.16f * kick;
+            auto stretchAxis = [&](Entity& e) {            // scale the -Y (axis) column
+                e.transform[4] *= lenPulse; e.transform[5] *= lenPulse; e.transform[6] *= lenPulse;
+            };
             if (mh.beamEnt < scene.size()) {               // volumetric beam cone re-aimed lens -> pool
                 Entity& be = scene.get(mh.beamEnt);
                 be.emissive[0] = gel[0]; be.emissive[1] = gel[1]; be.emissive[2] = gel[2];
-                be.emissive[3] = 1.7f + 1.3f * thump;     // soft cone breathing with the beat
-                poseCone(be, mh.fx, kClubY + kCH - 0.63f, mh.fz, px, kClubY + 0.05f, pz);
+                be.emissive[3] = 1.05f + 1.25f * thump;   // dim enough to read the dusty haze; punches on the beat
+                poseCone(be, lx, ly, lz, px, kClubY + 0.05f, pz);
+                stretchAxis(be);
+            }
+            if (mh.coreEnt < scene.size()) {               // hot inner core (whiter, sharper) tracks the beam
+                Entity& ce = scene.get(mh.coreEnt);
+                // Whiter than the gel; flares hard on the kick so the lens pops on the beat.
+                ce.emissive[0] = 0.45f * gel[0] + 0.85f;
+                ce.emissive[1] = 0.45f * gel[1] + 0.85f;
+                ce.emissive[2] = 0.45f * gel[2] + 0.85f;
+                ce.emissive[3] = 1.8f + 2.8f * kick;
+                poseCone(ce, lx, ly, lz, px, kClubY + 0.05f, pz);
+                stretchAxis(ce);
             }
         }
         for (int i = 0; i < 4; ++i) {     // ring lights: half-rate counter-sweep

@@ -5,6 +5,7 @@
 #include "ui.h"
 #include "headless_device.h"   // shared no-op IRenderDevice (for --test-ui)
 #include "world_menu.h"        // U31: the world/place selection menu's own gate
+#include "version_gen.h"       // X3_VERSION_STRING — build stamp on the title screen
 
 #include "engine/core/x3_log.h"
 
@@ -579,6 +580,16 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
     ui.text(resBuf, 16.0f, h - 100.0f, 18.0f, kColText);
     if (ui.button("SET AS DEFAULT", 16.0f, h - 68.0f, 240.0f, 36.0f))
         outSaveDefault = true;
+
+    // BUILD STAMP (bottom-right, low-key): the auto-incrementing version so you can
+    // always tell which build you're running. Same source of truth as the window
+    // title (version_gen.h, regenerated every build). Format: v0.1.<commits>  <sha>  <date>.
+    {
+        const float vPx = 15.0f;
+        const float vW  = UiContext::textWidth(FontRole::Menu, X3_VERSION_STRING, vPx);
+        const float vCol[4] = { 0.55f, 0.60f, 0.62f, 0.85f };  // dim grey
+        ui.text(X3_VERSION_STRING, w - vW - 16.0f, h - 26.0f, vPx, vCol, FontRole::Menu);
+    }
     return next;
 }
 
