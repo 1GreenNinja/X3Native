@@ -1,0 +1,13 @@
+{
+  "skip_assert": true,
+  "author_height": 1.6,
+  "keep_existing": false,
+  "clips": [
+    {"name":"Idle",        "src":"D:/GameDev/X3Native-alienart/assets/rigged_glb/Jake_22_actions.glb", "rig":"meshy_from_mixamo", "action":"Idle",        "loop":true},
+    {"name":"Walk",        "src":"D:/GameDev/X3Native-alienart/assets/rigged_glb/Jake_22_actions.glb", "rig":"meshy_from_mixamo", "action":"Walking",     "loop":true},
+    {"name":"Run",         "src":"D:/GameDev/X3Native-alienart/assets/rigged_glb/Jake_22_actions.glb", "rig":"meshy_from_mixamo", "action":"Riflerun",    "loop":true},
+    {"name":"Attack",      "src":"D:/GameDev/X3Native-alienart/assets/rigged_glb/Jake_22_actions.glb", "rig":"meshy_from_mixamo", "action":"Tossgrenade", "loop":false},
+    {"name":"Hitreaction", "src":"D:/GameDev/X3Native-alienart/assets/rigged_glb/Jake_22_actions.glb", "rig":"meshy_from_mixamo", "action":"Hitreaction", "loop":false},
+    {"name":"Death",       "src":"D:/GameDev/X3Native/assets/rigged_glb/marcus_webb_anim.glb",         "rig":"meshy_from_lr",     "action":"Death",       "loop":false}
+  ]
+}

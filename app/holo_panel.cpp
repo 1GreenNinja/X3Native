@@ -805,6 +805,21 @@ void HoloPanel::build(Scene& scene, x3::rhi::IRenderDevice& device, const HoloPa
     }
 }
 
+void HoloPanel::reposition(x3::phys::Vec3 newPos) {
+    if (!m_scene || m_pane == kNoLink) return;
+    const float dx = newPos.x - m_pos.x, dy = newPos.y - m_pos.y, dz = newPos.z - m_pos.z;
+    if (dx == 0.0f && dy == 0.0f && dz == 0.0f) return;
+    auto shift = [&](uint32_t id) {
+        if (id == kNoLink || id >= m_scene->size()) return;
+        Entity& e = m_scene->get(id);
+        e.transform[12] += dx; e.transform[13] += dy; e.transform[14] += dz;
+    };
+    shift(m_pane);
+    for (uint32_t id : m_decor) shift(id);
+    m_glowPos[0] += dx; m_glowPos[1] += dy; m_glowPos[2] += dz;
+    m_pos = newPos;
+}
+
 void HoloPanel::setContent(const std::vector<uint8_t>& rgba) {
     if (!m_device || m_pane == kNoLink) return;
     x3::rhi::TextureHandle fresh = m_device->createTexture(rgba.data(), m_texN, m_texN, true);

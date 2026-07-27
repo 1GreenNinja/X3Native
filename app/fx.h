@@ -108,20 +108,20 @@ constexpr float kLightningRerollPeriod = 0.065f;
 // kLightningDecay: displacement multiplier per level. THIS IS THE NATURALNESS KNOB
 //   (the fractal dimension): 0.5 = each halving of length halves the wobble.
 constexpr int   kLightningFractalDepth = 6;      // 64 segments on the trunk
-constexpr float kLightningDisplaceFrac = 0.16f;  // first midpoint kick ~16% of length
-constexpr float kLightningDecay        = 0.55f;  // per-level displacement falloff
+constexpr float kLightningDisplaceFrac = 0.06f;  // first midpoint kick ~6% of length (was 0.16, then 0.11 — owner "STILL goes quite wide": ~62% cut so the bolt HUGS the aim line, tight jitter not a wide splay)
+constexpr float kLightningDecay        = 0.43f;  // per-level displacement falloff (was 0.55 — lower so finer subdivisions swing LESS, killing the wild secondary loops while the trunk stays jagged)
 
 // ---- BRANCHING ----
 // Forks are CHILD BOLTS: they inherit the parent's direction rotated off-axis, take a
 // fraction of the remaining parent length, recurse (so branches branch), and inherit
 // REDUCED brightness + thickness. Probability decays with depth so the tree thins out.
 constexpr int   kLightningMaxBranchDepth = 3;     // a fork can fork, up to this depth
-constexpr float kLightningBranchChance   = 0.28f; // per-midpoint chance at depth 0
+constexpr float kLightningBranchChance   = 0.20f; // per-midpoint chance at depth 0 (was 0.28 — trimmed a notch so forks don't fan the beam out wide; some forking kept)
 constexpr float kLightningBranchDecay    = 0.55f; // chance/brightness falloff per level
 // Most branches DIE partway instead of reaching anything — a dead-end tendril that
 // fades is one of the strongest naturalness cues. Only the TRUNK terminates exactly
 // on the hit point.
-constexpr float kLightningBranchLenFrac  = 0.5f;  // branch length vs remaining parent
+constexpr float kLightningBranchLenFrac  = 0.38f; // branch length vs remaining parent (was 0.5 — shorter fork stubs so forks hug the trunk instead of reaching off to the walls/ceiling; forking kept, just less lateral reach)
 // Core / glow thickness (m): a THIN white-hot core ribbon inside a wider, DIMMER blue
 // glow ribbon, both emissive (HDR) so BLOOM builds the halo.
 //
@@ -132,8 +132,8 @@ constexpr float kLightningBranchLenFrac  = 0.5f;  // branch length vs remaining 
 // thick as the trunk. Per docs/DECISIONS.md ("VALUE, NOT LUMENS — don't crank
 // emissive until it's a white blob"), the halo now comes from bloom on a SHARP thread
 // rather than from wide bright geometry. ~3x thinner; brightness comes down with it.
-constexpr float kLightningCoreThick = 0.009f;
-constexpr float kLightningGlowThick = 0.026f;
+constexpr float kLightningCoreThick = 0.007f;   // owner: "quite wide, needs constraining" (post-gamma the halo reads wider)
+constexpr float kLightningGlowThick = 0.015f;   // halo trimmed x0.58 — the corrected sRGB curve shows the full glow now
 
 // ---- Electric-arc tendril ring (lightning impact violence) ----
 // Short-lived mini zigzag arcs crawling on the surface at a lightning hit point.
@@ -176,8 +176,12 @@ public:
     // the muzzle-flash particle burst (a few hot additive sparks at the muzzle).
     // `kind` tints/shapes the beam: Lightning renders as a jagged white-cyan bolt
     // (re-randomized each frame); everything else is the straight hot-yellow tracer.
+    // `widthOverride` (m, full ribbon width; 0 = the on-foot kTracerThickness
+    // default): SPACE bolts pass ~0.5 m — the 0.035 m rifle tracer is sub-pixel
+    // at dogfight range (a 10 m hull judged from 60-300 m).
     void addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to,
-                   WeaponFxKind kind = WeaponFxKind::Default);
+                   WeaponFxKind kind = WeaponFxKind::Default,
+                   float widthOverride = 0.0f);
 
     // ---- Combat-event particle/decal presets (the juice) -------------------
     // Each spawns a tuned burst into the bounded pool / decal ring. Called from the
@@ -215,6 +219,25 @@ public:
     void spawnExplosion(const x3::phys::Vec3& center, float radius);
     // Lingering smoke puff (alpha, slow rise) — used by death + as a generic cue.
     void spawnSmoke(const x3::phys::Vec3& pos);
+
+    // ---- SHIP-SCALE damage-state FX (space combat readability) -------------
+    // The on-foot presets above are sized for a 2 m humanoid at 5-20 m; a
+    // wounded FIGHTER is a ~10 m hull judged from 60-150 m, so these are the
+    // same primitives scaled up ~5x, zero-gravity (space), and velocity-aware
+    // (the puff inherits a fraction of the ship's velocity so the trail STREAMS
+    // behind the flight path instead of hanging in a bead chain). Staging —
+    // which of these fires, how often — is the pure shipai::damageFxProfile.
+    // Spark burst at the hull (additive, no decal — nothing to scorch in vacuum).
+    void spawnShipSparks(const x3::phys::Vec3& pos);
+    // One grey smoke puff of the trail. heavy01: 0 = thin wisp (<50% hull),
+    // 1 = churning black-grey (<25%). `vel` = the ship's velocity.
+    void spawnShipSmoke(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, float heavy01);
+    // Hot ember/fire glow licking the hull (<25% — the "burning" read).
+    void spawnShipEmber(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel);
+    // Ship-scale muzzle flash at a wing hardpoint (the on-foot 0.05 m flash is
+    // invisible from a chase camera): one bright core + a short spray along
+    // the fire direction, so the bolt visibly LEAVES the ship.
+    void spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
     // Drop a scorch decal directly (bullet-hole / impact mark) at a hit point+normal.
     void addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
 
@@ -246,6 +269,7 @@ private:
         x3::phys::Vec3 to{};
         float          life = 0.0f;  // remaining seconds; <= 0 means free slot
         float          age  = 0.0f;  // seconds since spawn (Lightning bolt propagation)
+        float          width = 0.0f; // full ribbon width override (0 = default)
         WeaponFxKind   kind = WeaponFxKind::Default;  // Lightning -> jagged bolt
     };
 

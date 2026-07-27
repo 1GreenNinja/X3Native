@@ -172,7 +172,8 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             device.drawMeshPBR(frame, e.mesh, e.tex, e.normalTex, mr,
                                e.baseColor, e.emissive, e.transform,
                                /*alphaMask*/ false, /*alphaBlend*/ e.alphaBlend,
-                               e.emissiveTex);
+                               e.emissiveTex, /*detailTex*/ {}, /*detailUvScale*/ 1.0f,
+                               e.clearcoat, e.clearcoatRough);
         } else {
             device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
         }

@@ -170,3 +170,33 @@ it ate nine art rounds on the rift gate and every prop on the descent slide.
   carrying its exact material into the same room. Cube blown out + object black = **mirror**, not art.
 - **The invariant is TOTAL, not a list.** `--test-basis` walks every entity of every built world. A
   list of known sites rots the moment someone pastes the idiom into a new file.
+
+## 🕳️ CANON: LEVEL 4.5 IS HIDDEN — THE ELEVATOR IS ITS ONLY ACCESS (Tim, 2026-07-25)
+> *"Spire is on level 4.5... HIDDEN from the other levels, which appear totally normal.
+> Only accessible via Elevator. No stairways get to it."*
+
+The Nexus Chamber (The Chorus) between F4 and F5. Consequences, all shipped on
+`fix/spire-hollow-core`:
+- The Access room's **open-ceiling reveal is DEAD** (it was both a stairway and an
+  F4↔4.5 sightline). The room is a normal sealed F4 room; the cavern has a full rock
+  floor slab above the F4 roofline (`Canon45::floorPlaneY`, data-derived).
+- The cab carries a **code-locked "4.5" stop** (the RIFT-row pattern). Access code is a
+  **PLACEHOLDER (4455)** until Tim assigns a real in-world clue. Arrival = a dressed
+  tunnel from the spine shaft into the cavern's north wall; the scaffold climb starts
+  at the arrival mouth.
+- `--test-levellint` carries a **SEAL-4.5 gate** (no open ceilings, no platform
+  doorways, Access lid rendered) with a red-capable negative control.
+
+## 🪜 CANON: THE FACILITY STAIRWELL (Tim, 2026-07-25)
+> *"we can have stairways accessing the other floors!!! and we should!!! Open
+> stairway, top to bottom."* + *"do NOT skip landings with blank walls.. just put
+> locked doors with keypads!!!"*
+
+Open ZIGZAG SWITCHBACK on the tower's west edge (F1..F7), two lanes + an open railed
+central well, black rubber safety nosing on every tread lip, painted floor numbers
+(numbering SKIPS 4.5), and a locked SM_Door_A + keypad on EVERY landing that has no
+real floor behind it — including the one at 4.5's height, which is deliberately
+**unnumbered**: the hidden floor's tell is a door that won't open, not a blank wall.
+Phantom-door code is a **PLACEHOLDER (4545, unassigned)** — a future secret can open
+one with zero rework. The stairwell NEVER opens into 4.5 (`--test-levellint` STAIR
+gate, negative-controlled).

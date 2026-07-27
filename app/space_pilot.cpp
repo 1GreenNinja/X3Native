@@ -31,7 +31,7 @@ constexpr float kPxToRad     = 0.00132f;   // matches Player/SwimController feel
 constexpr float kBodyRadius  = 1.2f;
 // Laser tuning (showcase + test): cost + cooldown + bolt range.
 constexpr float kLaserCdSec   = 0.18f;
-constexpr float kLaserEnergy  = 8.0f;
+// (kLaserEnergy retired: the per-shot cost is now Tuning.laserEnergyCost, default 8.)
 constexpr float kLaserRange   = 400.0f;
 // Antimatter-boost overspeed bleed-off rate (1/s) once Shift releases. The
 // speed cap eases from the boosted ceiling back toward maxSpeed as
@@ -362,11 +362,15 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // than a boosted charge and escaping a close contact felt impossible.
     for (int k = 0; k < 3; ++k)
         accel[k] += rightW[k] * in.moveStrafe * m_tuning.maxStrafeAccel * boost;
-    // Up impulse (Space mapped to jumpPressed; we re-use the bool as a held
-    // axis here — the showcase wraps the polling so press = +1, release = 0).
-    if (in.jumpPressed) {
+    // Vertical thrust (owner: "Add Space to rise UP and C to drop DOWN with the
+    // ship!!!!"): Space (jumpPressed, host polls it HELD) = +up along the SHIP'S
+    // up axis; C (diveHeld — the existing swim-dive channel reused, no new
+    // PlayerInput field) = -up. Boost-scaled exactly like strafe: Shift+Space /
+    // Shift+C are the vertical dodge moves.
+    const float vertAxis = (in.jumpPressed ? 1.0f : 0.0f) - (in.diveHeld ? 1.0f : 0.0f);
+    if (vertAxis != 0.0f) {
         for (int k = 0; k < 3; ++k)
-            accel[k] += upW[k] * m_tuning.maxStrafeAccel * boost;
+            accel[k] += upW[k] * vertAxis * m_tuning.maxStrafeAccel * boost;
     }
 
     // ---- Integrate linear velocity + drag ----------------------------------
@@ -399,7 +403,7 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
             for (int k = 0; k < 3; ++k)
                 steer[k] = fwdW[k] * std::max(in.moveFwd, 0.0f)
                          + rightW[k] * in.moveStrafe
-                         + upW[k] * (in.jumpPressed ? 1.0f : 0.0f);
+                         + upW[k] * vertAxis;   // Space climb / C drop persist
             float sl = length3(steer);
             if (sl < 1e-3f) { steer[0] = fwdW[0]; steer[1] = fwdW[1]; steer[2] = fwdW[2]; sl = 1.0f; }
             else            { steer[0] /= sl; steer[1] /= sl; steer[2] /= sl; }
@@ -798,12 +802,13 @@ void SpacePilotController::takeDamage(int amount) {
 
 bool SpacePilotController::fireLaser(float dt) {
     tickCooldowns(dt);
+    const float cost = m_tuning.laserEnergyCost;   // default 8 == old kLaserEnergy
     if (m_laserCd > 0.0f)              return false;   // on cooldown
-    if (m_energy < kLaserEnergy)        return false;   // not enough juice
+    if (m_energy < cost)                return false;   // not enough juice
     if (m_hull <= 0)                    return false;   // dead ship
 
     m_laserCd = kLaserCdSec;
-    m_energy -= kLaserEnergy;
+    m_energy -= cost;
     if (m_energy < 0.0f) m_energy = 0.0f;
     return true;
 }
@@ -1034,6 +1039,117 @@ bool runSpaceSelfTest() {
               "T9 setMode swaps feel tuning (health preserved)");
         // Restore the shared latch so an ordering-sensitive host isn't surprised.
         setRequestedFlightMode(FlightMode::Arcade);
+        w->shutdown();
+    }
+
+    // T10 — VERTICAL THRUST (owner: "Space to rise UP and C to drop DOWN"):
+    //       Space (jumpPressed held) climbs, C (diveHeld) drops, symmetric signs
+    //       along the ship's up axis (level spawn -> world +Y). Boost scales both.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t;
+        t.noseFollow = 0.0f;      // isolate the raw thrust axes
+        t.linearDrag = 0.0f;
+        s.spawn(*w, 0.0f, 0.0f, 0.0f, t);
+        PlayerInput up{}; up.jumpPressed = true;                 // Space held
+        for (int i = 0; i < 60; ++i) { s.update(up, kDt, *w); w->step(kDt); }
+        const float vUp = s.velocity().y;
+        bool rises = vUp > 1.0f;
+        PlayerInput dn{}; dn.diveHeld = true;                    // C held
+        for (int i = 0; i < 120; ++i) { s.update(dn, kDt, *w); w->step(kDt); }
+        const float vDn = s.velocity().y;
+        bool drops = vDn < -1.0f;                                // reversed past zero
+        // Boost (Shift) must scale the vertical dodge like strafe: a boosted
+        // climb from rest out-accelerates the unboosted one over the same time.
+        SpacePilotController s2;
+        s2.spawn(*w, 0.0f, 0.0f, 0.0f, t);
+        PlayerInput upB{}; upB.jumpPressed = true; upB.sprint = true;
+        for (int i = 0; i < 60; ++i) { s2.update(upB, kDt, *w); w->step(kDt); }
+        bool boosted = s2.velocity().y > vUp * 1.5f;
+        check(rises && drops && boosted, "T10 Space rises / C drops (boost-scaled)");
+        w->shutdown();
+    }
+
+    // T11 — WEAPON-ENERGY SUSTAIN (owner: "It also runs out after a short
+    //       time!"): with the dogfight-beat energy tuning (regenerating pool),
+    //       holding fire sustains a LONG burst (>= 8 s), the pool recovers to
+    //       full FAST (<= 6.5 s), and a depleted pool never dry-locks longer
+    //       than a beat (the next shot comes within ~1 s of refusal). The sim
+    //       mirrors the flight loop's exact call pattern: update(dt) then
+    //       fireLaser(dt) while the trigger is held (both tick the cooldown —
+    //       the effective fire rate the owner experiences).
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t;
+        t.maxEnergy = 100.0f; t.energyRegenPerSec = 20.0f; t.laserEnergyCost = 2.8f;
+        s.spawn(*w, 0.0f, 0.0f, 0.0f, t);
+        PlayerInput idle{};
+        float sustain = -1.0f;
+        for (int i = 0; i < 60 * 30; ++i) {          // hold fire up to 30 s
+            s.update(idle, kDt, *w); w->step(kDt);
+            if (!s.fireLaser(kDt) && s.energy() < t.laserEnergyCost) {
+                sustain = (float)i * kDt;            // first ENERGY refusal
+                break;
+            }
+        }
+        bool longBurst = sustain >= 8.0f && sustain <= 16.0f;
+        // Sputter, not lockout: the next successful shot comes within ~1 s.
+        float relock = -1.0f;
+        for (int i = 0; i < 240; ++i) {
+            s.update(idle, kDt, *w); w->step(kDt);
+            if (s.fireLaser(kDt)) { relock = (float)i * kDt; break; }
+        }
+        bool noDryLockout = relock >= 0.0f && relock <= 1.0f;
+        // Cease fire: full recovery within 6.5 s.
+        float recover = -1.0f;
+        for (int i = 0; i < 60 * 10; ++i) {
+            s.update(idle, kDt, *w); w->step(kDt);
+            if (s.energy() >= t.maxEnergy - 0.01f) { recover = (float)i * kDt; break; }
+        }
+        bool fastRecover = recover >= 0.0f && recover <= 6.5f;
+        check(longBurst && noDryLockout && fastRecover,
+              "T11 energy pool sustains a long burst + recovers fast (no dry lockout)");
+        if (!longBurst || !fastRecover)
+            x3::logInfo("  [info] T11 sustain=" + std::to_string(sustain) +
+                        "s recover=" + std::to_string(recover) + "s");
+        w->shutdown();
+    }
+
+    // T12 — MUZZLE ON THE HULL (owner: "weapons fire ... looks like it comes
+    //       from anywhere BUT the ship"): the wing muzzles must sit ON the
+    //       ~10 m fighter hull (within 6 m of the ship's center, ahead of
+    //       amidships), and — NEGATIVE CONTROL — far from the 3P chase camera
+    //       the old camera-origin spawn math hung the bolts off of.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t;
+        t.chaseDistance = 22.0f; t.chaseHeight = 5.0f;   // the dogfight chase rig
+        t.defaultThirdPerson = true;
+        s.spawn(*w, 0.0f, 0.0f, 0.0f, t);
+        PlayerInput idle{};
+        for (int i = 0; i < 10; ++i) { s.update(idle, kDt, *w); w->step(kDt); }
+        bool onHull = true, aheadOk = true, offCamera = true;
+        float camP[3], camF[3], camU[3];
+        s.cameraBasis(camP, camF, camU);
+        const x3::phys::Vec3 sp = s.pos();
+        const x3::phys::Vec3 sf = s.forward();
+        for (int side = -1; side <= 1; side += 2) {
+            float mp[3], md[3];
+            s.wingMuzzle(side, mp, md);
+            const float dHull[3] = { mp[0]-sp.x, mp[1]-sp.y, mp[2]-sp.z };
+            const float distHull = std::sqrt(dHull[0]*dHull[0] + dHull[1]*dHull[1] + dHull[2]*dHull[2]);
+            if (distHull > 6.0f) onHull = false;                     // off the hull
+            if (dHull[0]*sf.x + dHull[1]*sf.y + dHull[2]*sf.z <= 0.0f)
+                aheadOk = false;                                      // behind amidships
+            const float dCam[3] = { mp[0]-camP[0], mp[1]-camP[1], mp[2]-camP[2] };
+            if (std::sqrt(dCam[0]*dCam[0] + dCam[1]*dCam[1] + dCam[2]*dCam[2]) < 10.0f)
+                offCamera = false;   // negative control: camera-origin spawn = old bug
+        }
+        check(onHull && aheadOk && offCamera,
+              "T12 wing muzzles sit ON the hull, ahead of amidships, far from the chase cam");
         w->shutdown();
     }
 

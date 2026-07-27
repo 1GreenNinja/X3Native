@@ -1,6 +1,7 @@
 #include "keypad.h"
 
 #include "mesh_prims.h"
+#include "stairwell.h"   // KP7/KP8: the stairwell service-void code classification
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -182,12 +183,19 @@ KeypadHandles buildKeypad(Scene& scene, x3::rhi::IRenderDevice& device,
     KeypadHandles h;
     h.body = addMeshEntity(scene, device, g.body, bodyCol, bodyEmit, roomId);
 
-    const bool locked = (status == KeypadStatus::Locked);
     float scol[4], semit[4];
-    if (locked) { scol[0]=0.9f;  scol[1]=0.15f; scol[2]=0.12f; scol[3]=1.0f;
-                  semit[0]=1.0f; semit[1]=0.10f; semit[2]=0.08f; semit[3]=2.2f; }
-    else        { scol[0]=0.15f; scol[1]=0.95f; scol[2]=0.35f; scol[3]=1.0f;
-                  semit[0]=0.12f; semit[1]=1.0f;  semit[2]=0.30f; semit[3]=2.2f; }
+    switch (status) {
+        case KeypadStatus::Unlocked:
+            scol[0]=0.15f; scol[1]=0.95f; scol[2]=0.35f; scol[3]=1.0f;
+            semit[0]=0.12f; semit[1]=1.0f;  semit[2]=0.30f; semit[3]=2.2f; break;
+        case KeypadStatus::Denied:                       // amber: valid code, sealed anyway
+            scol[0]=0.95f; scol[1]=0.62f; scol[2]=0.12f; scol[3]=1.0f;
+            semit[0]=1.34f; semit[1]=0.80f; semit[2]=0.22f; semit[3]=2.2f; break;
+        case KeypadStatus::Locked:
+        default:
+            scol[0]=0.9f;  scol[1]=0.15f; scol[2]=0.12f; scol[3]=1.0f;
+            semit[0]=1.0f; semit[1]=0.10f; semit[2]=0.08f; semit[3]=2.2f; break;
+    }
     h.screen = addMeshEntity(scene, device, g.glow, scol, semit, roomId);
     return h;
 }
@@ -195,12 +203,20 @@ KeypadHandles buildKeypad(Scene& scene, x3::rhi::IRenderDevice& device,
 void setKeypadStatus(Scene& scene, const KeypadHandles& kp, KeypadStatus status) {
     if (kp.screen == kNoLink || kp.screen >= scene.size()) return;
     Entity& e = scene.get(kp.screen);
-    if (status == KeypadStatus::Unlocked) {
-        e.baseColor[0]=0.15f; e.baseColor[1]=0.95f; e.baseColor[2]=0.35f; e.baseColor[3]=1.0f;
-        e.emissive[0]=0.12f; e.emissive[1]=1.0f; e.emissive[2]=0.30f; e.emissive[3]=2.2f;
-    } else {
-        e.baseColor[0]=0.9f; e.baseColor[1]=0.15f; e.baseColor[2]=0.12f; e.baseColor[3]=1.0f;
-        e.emissive[0]=1.0f; e.emissive[1]=0.10f; e.emissive[2]=0.08f; e.emissive[3]=2.2f;
+    switch (status) {
+        case KeypadStatus::Unlocked:
+            e.baseColor[0]=0.15f; e.baseColor[1]=0.95f; e.baseColor[2]=0.35f; e.baseColor[3]=1.0f;
+            e.emissive[0]=0.12f; e.emissive[1]=1.0f; e.emissive[2]=0.30f; e.emissive[3]=2.2f;
+            break;
+        case KeypadStatus::Denied:                       // amber: the lore-beat flash
+            e.baseColor[0]=0.95f; e.baseColor[1]=0.62f; e.baseColor[2]=0.12f; e.baseColor[3]=1.0f;
+            e.emissive[0]=1.34f; e.emissive[1]=0.80f; e.emissive[2]=0.22f; e.emissive[3]=2.2f;
+            break;
+        case KeypadStatus::Locked:
+        default:
+            e.baseColor[0]=0.9f; e.baseColor[1]=0.15f; e.baseColor[2]=0.12f; e.baseColor[3]=1.0f;
+            e.emissive[0]=1.0f; e.emissive[1]=0.10f; e.emissive[2]=0.08f; e.emissive[3]=2.2f;
+            break;
     }
 }
 
@@ -249,6 +265,41 @@ bool runKeypadSelfTest() {
         float xmin = 1e9f, xmax = -1e9f;
         for (const auto& v : g.body.verts) { xmin = std::min(xmin, v.pos[0]); xmax = std::max(xmax, v.pos[0]); }
         check((xmax - xmin) > 0.25f, "KP6 key grid spans the panel width (3 columns laid out)");
+    }
+
+    // KP7: the stairwell SERVICE-VOID code (feat/secret-code-clues). 4545 is
+    // ACCEPTED — as a denial: a numbered phantom door answers SERVICE VOID (green
+    // -> amber, door sealed); the unnumbered 4.5-height door answers the sublevel
+    // tell. The door itself opens in neither case (submitCode never unlocks).
+    {
+        using CR = FacilityStairwell::CodeResponse;
+        check(FacilityStairwell::classifyCode(4545, false) == CR::ServiceVoid &&
+              FacilityStairwell::classifyCode(4545, true)  == CR::SublevelTell,
+              "KP7 service code 4545 accepted: SERVICE VOID on numbered doors, "
+              "sublevel tell on the unnumbered door");
+        // KP8 NEGATIVE CONTROL: 4544 (and the rest of the keyspace) stays a red
+        // reject, and the phantom DoorSpec sentinel (-4545) can never match any
+        // enterable 4-digit code — the slab is unopenable by keypad, period.
+        bool sentinelSafe = (-FacilityStairwell::kServiceCode < 0);
+        check(FacilityStairwell::classifyCode(4544, false) == CR::NotHandled &&
+              FacilityStairwell::classifyCode(4544, true)  == CR::NotHandled &&
+              FacilityStairwell::classifyCode(0, false)    == CR::NotHandled &&
+              sentinelSafe,
+              "KP8 negative control: 4544 red-rejects; door-code sentinel matches no entry");
+        // KP9: the owner's MASTER BACKUP (7762). classifyCode passes it through
+        // (NotHandled) — it is NOT a lore response; it reaches the door machinery,
+        // where ONLY the unnumbered master door carries it (the lint gate asserts
+        // the plan; the elevator FSM test asserts the cab lock). Distinct from the
+        // service code, 4-digit, and matched by no other phantom slab (they carry
+        // the negative sentinel).
+        check(FacilityStairwell::kMasterCode == 7762 &&
+              FacilityStairwell::kMasterCode != FacilityStairwell::kServiceCode &&
+              FacilityStairwell::kMasterCode >= 1000 &&
+              FacilityStairwell::kMasterCode <= 9999 &&
+              FacilityStairwell::classifyCode(FacilityStairwell::kMasterCode, false) == CR::NotHandled &&
+              FacilityStairwell::classifyCode(FacilityStairwell::kMasterCode, true)  == CR::NotHandled,
+              "KP9 master backup 7762: passes through to the door machinery, "
+              "distinct from the service code");
     }
 
     x3::logInfo("--test-keypad: " + std::to_string(pass) + " passed, " +

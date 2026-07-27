@@ -548,7 +548,7 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
             m_sarah.build(scene, device, physics, m_modelDir,
                           x3::phys::Vec3{ S.cx, roomFloorY(sr, kEnemyFootUp), S.cz },
                           VictimId::Aria /*slot unused — she is NOT in the F2 system*/,
-                          "Sarah", "AnnaBodySuit.glb",
+                          "Sarah", "AnnaBodySuit_anim.glb",
                           /*timer (never runs)*/ 600.0f, dummy);
             m_sarah.setTint(1.0f, 0.94f, 0.90f, 1.0f);      // warm ivory — THE person
             m_sarah.setFacing(std::atan2(1.0f, 0.0f));       // face -X: yaw=atan2(-dirX,-dirZ), dir=(-1,0)

@@ -123,6 +123,13 @@ struct Entity {
     // is already in the HDR target. Default false == every existing entity
     // renders exactly as before.
     bool                   alphaBlend = false;
+    // Optional CLEARCOAT (car-paint / premium-lacquer) lobe: a second fixed-F0 (0.04)
+    // specular layer over the base material (mesh.frag), forwarded on the PBR route only
+    // (mrTex/emissiveTex valid). 0 = none, so every existing entity shades byte-identically.
+    // Used by the elevator cab's brushed-steel rail/jambs to read as clearcoated premium
+    // metal rather than a flat tint. Mirrors env_art/vehicle's drawMeshPBR clearcoat args.
+    float                  clearcoat = 0.0f;
+    float                  clearcoatRough = 0.05f;
     bool                   transparent = false;
     x3::rhi::IRenderDevice::GlassMaterial glass{};
     uint32_t               tag = (uint32_t)Tag::None;

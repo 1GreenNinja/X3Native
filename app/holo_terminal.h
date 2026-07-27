@@ -120,6 +120,10 @@ public:
 
     // World anchor (panel center) for the host's worldToScreen text placement.
     x3::phys::Vec3 anchor() const { return m_pos; }
+    // Rigidly move the whole terminal (glass + frame + ceiling pipe + glow) to a new
+    // anchor — for a MOVING mount like the elevator cab, so the control panel rides down
+    // with the car. Keeps m_pos in sync for worldToScreen text placement.
+    void reposition(x3::phys::Vec3 newPos) { m_panel.reposition(newPos); m_pos = newPos; }
     uint32_t entity() const;          // the platform's screen pane
     bool built() const;
     // The platform fixture (glow-light suggestion, pane entity, teardown).

@@ -100,6 +100,7 @@ struct HostContext {
     bool        perfshopShot = false;       std::string perfshopShotDir;
     bool        ecologyShot = false;        std::string ecologyShotPath;
     bool        crowdShot = false;          std::string crowdShotPath;
+    bool        complexShot = false;        std::string complexShotDir = "docs/screenshots/complex";
 
     // ---- A/B / GI force switches consulted by some hosts' settle logic ----
     bool        ddgiForce = false;          // --ddgi: longer probe-convergence settle
@@ -126,6 +127,7 @@ struct HostContext {
     bool        cityShot = false;       std::string cityShotPath;        // W8-3 city vantage
     bool        captureAi = false;      std::string captureAiDir;
     bool        captureWalk = false;    std::string captureWalkPath;
+    std::string captureWalkRig;         // --capture-walk optional rig GLB
     bool        captureFootIk = false;  std::string captureFootIkPath;
     std::string cutsceneFile;           // --cutscene <file>
     float       cueTime = 0.0f;         // --cuetime <s>

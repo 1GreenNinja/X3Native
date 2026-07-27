@@ -103,3 +103,16 @@ world defects.
 `--test-canonlevel` 16/16 · `--test-canonplay` 10/10 · `--test-level1` 21/21 ·
 `--test-basis` 11/11 · `--test-primlight` 9/9 · `--smoketest` default + canonlevel:
 exit 0, 0 VUID, allocationCount=0.
+
+## GAMMA-RECAL CLOSURE (2026-07-25, fix/gamma-recal)
+
+The deferred lighting-lane rows above are closed by the gamma recalibration
+(the sRGB swapchain fix 5951890b exposed every value tuned on the bent curve;
+retuned from the honest baseline — see docs/screenshots/gamma_recal/):
+
+| row | verdict |
+|-----|---------|
+| D17 F2-F7 cream wash | **CURED** — the corridor-zone recal (near-black warm-neutral fog at real extinction + dense warm pendant rhythm) removed the cream accumulation entirely. Verified: F2 Main Corridor / F3 Specimen Hall / F4 Augmentation Corridor re-shot (zones_before//zones_after) — dark moody runs, floor-identity strips carrying each floor, zero cream. Corridor b-frames run 30-69% void by design (atmosphere, not soup; the a-frames show the lit run). |
+| F5 under-lit floor (+ D11 class) | **RE-JUDGED under the honest curve: largely cured for free.** F5 Main Corridor now rides the corridor recipe (amber hazard band + guide strip read; dim but navigable); Drone Bay Alpha mean ~18 dim-moody with its key. No bespoke F5 work done this pass; the floor remains the least-authored (LIGHTING_AUDIT still owns 'deep rooms need a real rig'). |
+| D8/D18 survey-cam artifacts | still artifacts (F2 corridor a-frame lands in the CrossLevel tube mouth — same class). |
+

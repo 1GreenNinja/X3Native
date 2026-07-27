@@ -82,6 +82,10 @@ void CrowdSkin::spawnOne(uint32_t i, const CrowdSystem& crowd, Scene& scene,
     t.damage     = 0;                  // never attacks
     t.ranged     = false;
     t.noBody     = true;               // pure visual — no Enemy hitbox for rays to eat
+    t.lockRootY  = true;               // crowd Y is BRAIN-owned: a broken baked clip
+                                       // root Y (AnnaCasual_anim Walk/Run bake bug)
+                                       // must never bury/bob a citizen (Sit still
+                                       // lowers the hips — it rides the crossfade)
     t.modelFile  = rig;
     t.modelDirOverride = m_cfg.modelDir;
     t.standUpZtoY = false;             // roster rigs are Y-up (canon-play precedent)
@@ -316,15 +320,22 @@ void CrowdSkin::update(float dt, const CrowdSystem& crowd, Scene& scene,
 
         // ANIM-ENRICH: living-world GESTURES. Map the agent's STATE (while roughly
         // stationary) to an authored calm-loop clip: Converse->talk gesture,
-        // Work->task loop, Play(seated knot)->sit. setCalmLoop fuzzy-finds the clip;
-        // rigs lacking it keep the procedural nod/lean fallback (calm-loop stays -1).
-        // Only re-issue when the desired key CHANGES (no per-frame findClip churn).
+        // Work->task loop, Play(seated knot)->sit. IDLE citizens get living-world
+        // VARIETY -- a stable per-agent pick of look-around / check-a-handheld /
+        // carry-something (one in four just stands) so a settled crowd reads as
+        // people living life, not a rank of identical idlers. setCalmLoop
+        // fuzzy-finds the clip; rigs lacking it keep the procedural nod/lean
+        // fallback (calm-loop stays -1). Only re-issue when the desired key CHANGES
+        // (the pick is stable per agent, so no per-frame findClip churn).
+        static const char* const kIdleGestures[4] = {
+            "lookaround", "checkdevice", "carryidle", nullptr /* plain idle */ };
         const char* want = nullptr;
         if (speed < 0.15f) {
             switch (a.state) {
                 case CrowdState::Converse: want = "converse"; break;
                 case CrowdState::Work:     want = "work";     break;
                 case CrowdState::Play:     want = "sit";      break;  // seated hangout knot
+                case CrowdState::Idle:     want = kIdleGestures[(i + m_cfg.seed) & 3]; break;
                 default: break;
             }
         }

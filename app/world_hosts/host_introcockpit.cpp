@@ -58,7 +58,10 @@ bool buildIntroCockpitRig(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device,
     // Shared 1x1 metallic-roughness map (satin: rough 0.55, metal 0.25). Assigning
     // it forces the PBR route on entities whose material has no MR texture — which
     // is what makes Entity.emissiveTex honored (scene.cpp routes on mrTex.valid()).
-    const uint8_t mrPx[4] = { 255, 140, 64, 255 };   // R=AO(1), G=rough, B=metal
+    const uint8_t mrPx[4] = { 255, 92, 64, 255 };    // R=AO(1), G=rough 0.36, B=metal 0.25
+                                                     // GAMMA-RECAL round 2: rough 0.55 -> 0.36
+                                                     // (owner: speculars carry the hull — tight
+                                                     // glints, panel sparkle as ships rotate)
     rig.mrShared = device.createTexture(mrPx, 1, 1, /*srgb*/false);
     const uint8_t mrGl[4] = { 255, 18, 10, 255 };    // polished near-dielectric (panes)
     rig.mrGlassy = device.createTexture(mrGl, 1, 1, /*srgb*/false);
@@ -154,14 +157,24 @@ void setIntroCockpitLook(x3::rhi::IRenderDevice& device) {
       // under the 1.0 default (a windowless-cell sun). 3.2 gives the hard, sharp
       // single-key modeling that IS the Trek hull look; selfLight fills the dark
       // side (drawIntroShip) so the ship reads bright + dimensional, never gray mush.
-      sp.sunLight = 3.2f;
+      // GAMMA-RECAL (fix/gamma-recal, 2026-07-25): owner verdict on the post-gamma
+      // dogfight, verbatim: "Too bright.. Reduced brightness on all ship models..
+      // Darker night sky! but NOT TOO dark." These values were tuned on the BENT
+      // curve (5951890b). The white-washed hull was mesh.frag's no-IBL fallback
+      // ambient term (ambient x 3.4, albedo-independent): 0.11 x 3.4 = 0.37 flat,
+      // which the honest curve now displays at ~65% grey painted over every hull.
+      // Ambient drops to a real starlight fill; the sun key comes down until hulls
+      // read as lit metal with shadow sides (NOT silhouettes — selfLight + the
+      // emissive window/running-light canon stay); the void goes deep navy-black
+      // but keeps a faint floor so the starfield still carries the frame.
+      sp.sunLight = 2.4f;
       sp.haze = 0.0f;                          // haze 0 == deep space, stars on the full sphere
       sp.exposure = 1.0f;
-      sp.zenith[0]  = 0.003f; sp.zenith[1]  = 0.003f; sp.zenith[2]  = 0.008f;
-      sp.horizon[0] = 0.004f; sp.horizon[1] = 0.005f; sp.horizon[2] = 0.011f;
+      sp.zenith[0]  = 0.0012f; sp.zenith[1]  = 0.0012f; sp.zenith[2]  = 0.0035f;
+      sp.horizon[0] = 0.0018f; sp.horizon[1] = 0.0022f; sp.horizon[2] = 0.0050f;
       device.setSkyParams(sp);
       device.setSkyTime(10.0f);
-      device.setAmbient(0.11f, 0.12f, 0.16f); }
+      device.setAmbient(0.028f, 0.030f, 0.042f); }
     // SSAO/SSGI raster black against an empty space backdrop on the no-RT path
     // (memory-bank finding) — off for the showcase, same as host_space.
     { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; device.setSsaoParams(ap); }
@@ -220,16 +233,49 @@ bool buildIntroCombatArt(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device) {
     return !rig.enemyDraw.empty();
 }
 
-void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
-                   const std::vector<x3::asset::ModelDrawable>& draws,
-                   const float pos[3], const float fwd[3], float scale,
-                   x3::rhi::TextureHandle fallbackMr) {
-    const float yaw = std::atan2(fwd[2], fwd[0]);
-    const float a = 1.5707963f - yaw;             // model +Z forward -> world yaw
-    const float ca = std::cos(a) * scale, sa = std::sin(a) * scale;
-    float T[16] = { ca, 0, -sa, 0,   0, scale, 0, 0,   sa, 0, ca, 0,
-                    pos[0], pos[1], pos[2], 1.0f };
-    const float tint[4] = { 1, 1, 1, 1 };
+void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                        const std::vector<x3::asset::ModelDrawable>& draws,
+                        const float pos[3], const float fwd[3], const float up[3],
+                        float scale, x3::rhi::TextureHandle fallbackMr,
+                        float hitFlash) {
+    // FULL-ORIENTATION ship draw (combat readability + the muzzle fix): model
+    // +Z -> `fwd` (3D — pitch/roll read on the hull, matching the physics quat
+    // the wing muzzles are computed from; the yaw-only legacy draw left the hull
+    // level while the muzzles pitched with the ship, so bolts left "mid-air"),
+    // +Y -> `up`, +X -> up x fwd. Basis is re-orthonormalized here so callers
+    // may pass a roughly-unit fwd + any non-parallel up.
+    float f[3] = { fwd[0], fwd[1], fwd[2] };
+    {
+        const float fl = std::sqrt(f[0]*f[0] + f[1]*f[1] + f[2]*f[2]);
+        if (fl > 1e-6f) { f[0] /= fl; f[1] /= fl; f[2] /= fl; }
+        else            { f[0] = 1.0f; f[1] = 0.0f; f[2] = 0.0f; }
+    }
+    float x[3] = { up[1]*f[2] - up[2]*f[1],
+                   up[2]*f[0] - up[0]*f[2],
+                   up[0]*f[1] - up[1]*f[0] };          // up x fwd
+    {
+        float xl = std::sqrt(x[0]*x[0] + x[1]*x[1] + x[2]*x[2]);
+        if (xl < 1e-5f) {                              // fwd ~parallel to up:
+            x[0] = -f[2]; x[1] = 0.0f; x[2] = f[0];    // rotate fwd 90 deg in XZ
+            xl = std::sqrt(x[0]*x[0] + x[2]*x[2]);
+            if (xl < 1e-6f) { x[0] = 1.0f; x[2] = 0.0f; xl = 1.0f; }
+        }
+        x[0] /= xl; x[1] /= xl; x[2] /= xl;
+    }
+    const float u[3] = { f[1]*x[2] - f[2]*x[1],
+                         f[2]*x[0] - f[0]*x[2],
+                         f[0]*x[1] - f[1]*x[0] };      // fwd x right = true up
+    float T[16] = { x[0]*scale, x[1]*scale, x[2]*scale, 0,
+                    u[0]*scale, u[1]*scale, u[2]*scale, 0,
+                    f[0]*scale, f[1]*scale, f[2]*scale, 0,
+                    pos[0],     pos[1],     pos[2],     1.0f };
+    // HULL HIT-FLASH (combat readability): while `hitFlash` > 0 the whole draw
+    // is tinted brighter/WARM and the self-light lifts, so a registered hit
+    // reads INSTANTLY at dogfight range (the impact sparks alone vanish at
+    // 100 m+). Decays at the caller's rate (EnemyShip::hitFlash / kHitFlashSec).
+    const float fl01 = hitFlash < 0.0f ? 0.0f : (hitFlash > 1.0f ? 1.0f : hitFlash);
+    const float tint[4] = { 1.0f + 2.0f * fl01, 1.0f + 0.9f * fl01,
+                            1.0f + 0.35f * fl01, 1.0f };
     // CANON: SHIPS ARE SELF-LIT (Star Trek rule — owner, over a screenshot of his
     // fighter rendering as a black silhouette: "We need the ship to have emissive
     // tendencies like Star Trek ships do"). Same recipe as host_space drawShipAt:
@@ -238,7 +284,16 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
     // near-black hull paint stays dark) + the shaped selfLight rim so the unlit
     // side reads as a hull, never a cutout. fallbackMr routes MR-less drawables
     // onto the PBR branch so the star has a specular lobe to shape them.
-    constexpr float kIntroShipSelfLight = 0.50f;   // Trek fill (0.35 read dull gray)
+    // GAMMA-RECAL round 2 — owner's material strategy, verbatim: "darken the
+    // lighting... more SPECULAR HIGHLIGHTS and INTERIOR LIGHTING instead of an
+    // overall glow on all ships." The dark side should be DARK (not void): the
+    // silhouette rule is satisfied by windows + engines + the terminator rim,
+    // never by blanket glow. selfLight into his 0.12-0.18 band.
+    // MERGE (combat-readability): the recal's 0.15 WINS over this branch's stale
+    // pre-recal 0.50 — but the hit-flash emissive lift stays: fl01 is 0 at rest,
+    // so the flash boost cannot reintroduce blanket glow.
+    constexpr float kIntroShipSelfLight = 0.15f;
+    const float emisBoost = 1.0f + 2.2f * fl01;
     for (const auto& dr : draws) {
         if (!dr.meshId) continue;
         float fin[16];
@@ -253,9 +308,14 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             emisTex = x3::rhi::TextureHandle{ dr.emissiveTexId ? dr.emissiveTexId
                                                                : dr.baseColorTexId };
         } else {
-            emis[0] = 0.85f; emis[1] = 0.95f; emis[2] = 1.10f; emis[3] = 1.0f;   // Trek window rows: bright, crisp
+            // GAMMA-RECAL round 2: 0.85/0.95/1.10 made the whole light-grey hull
+            // GLOW through the base-color gate (the owner's 'overall glow'). At
+            // 0.30-band only the genuinely bright texels (window rows, strips,
+            // nav markings) read as lit-from-inside; grey hull paint stays paint.
+            emis[0] = 0.30f; emis[1] = 0.34f; emis[2] = 0.40f; emis[3] = 1.0f;   // Trek window rows: crisp, not blanket
             emisTex = x3::rhi::TextureHandle{ dr.baseColorTexId };
         }
+        emis[0] *= emisBoost; emis[1] *= emisBoost * 0.92f; emis[2] *= emisBoost * 0.80f;
         const x3::rhi::TextureHandle mr =
             dr.mrTexId ? x3::rhi::TextureHandle{ dr.mrTexId } : fallbackMr;
         device.drawMeshPBR(frame, x3::rhi::MeshHandle{ dr.meshId },
@@ -268,8 +328,20 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
                            x3::rhi::TextureHandle{ dr.detailTexId },
                            dr.detailUvScale,
                            /*clearcoat=*/0.0f, /*clearcoatRough=*/0.05f,
-                           /*selfLight=*/kIntroShipSelfLight);
+                           /*selfLight=*/kIntroShipSelfLight + 0.45f * fl01);
     }
+}
+
+void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                   const std::vector<x3::asset::ModelDrawable>& draws,
+                   const float pos[3], const float fwd[3], float scale,
+                   x3::rhi::TextureHandle fallbackMr) {
+    // Legacy yaw-only draw (showcase tableau + the capital): flatten fwd to its
+    // XZ heading, world-up — identical matrix to the pre-basis version.
+    const float yaw = std::atan2(fwd[2], fwd[0]);
+    const float f2[3] = { std::cos(yaw), 0.0f, std::sin(yaw) };
+    const float up[3] = { 0.0f, 1.0f, 0.0f };
+    drawIntroShipBasis(device, frame, draws, pos, f2, up, scale, fallbackMr, 0.0f);
 }
 
 void pulseIntroScreens(IntroCockpitRig& rig, float t) {

@@ -135,3 +135,10 @@ build-*/
 # Scratch dirs for the kit re-convert (tools/convert_modular_scifi.py).
 tmp_glb/
 tmp_tex/
+
+# Club Jukebox: Tim's personal-use user music (GTA "Self Radio" style). The
+# audio he drops in club_music/ is LOCAL — never committed. Only the README and
+# the committed samples/ fixture (a tiny generated test tone + BPM sidecar) ship.
+assets/audio/club_music/*
+!assets/audio/club_music/README.txt
+!assets/audio/club_music/samples/

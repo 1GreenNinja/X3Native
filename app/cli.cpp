@@ -151,6 +151,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-thirdperson") o.testThirdPerson = true;
         else if (a == "--test-npctalk") o.testNpcTalk = true;
         else if (a == "--test-chattree") o.testChatTree = true;
+        else if (a == "--test-vigil") o.testVigil = true;
         else if (a == "--test-mission") o.testMission = true;
         else if (a == "--test-destruction") o.testDestruction = true;
         else if (a == "--test-debris") o.testDebris = true;
@@ -226,6 +227,15 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-valley") o.testValley = true;
         else if (a == "--test-cliffs") o.testCliffs = true;
         else if (a == "--test-club") o.testClub = true;
+        else if (a == "--test-gamma") o.testGamma = true;
+        else if (a == "--test-complex") o.testComplex = true;
+        else if (a == "--screenshot-complex") {                                   // 7-level Complex beauty set
+            o.complexShot = true; o.worldMode = "complex"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.complexShotDir = argv[++i];
+        }
+        else if (a == "--test-clubnpcs") o.testClubNpcs = true;
+        else if (a == "--test-jukebox") o.testJukebox = true;
+        else if (a == "--test-listen") o.testListen = true;
         else if (a == "--test-perfshop") o.testPerfshop = true;
         else if (a == "--test-space") o.testSpace = true;
         else if (a == "--test-eva") o.testEva = true;
@@ -478,6 +488,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--capture-walk") {
             o.captureWalk = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWalkPath = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWalkRig  = argv[++i];
         }
         else if (a == "--screenshot-footik") {
             o.captureFootIk = true;

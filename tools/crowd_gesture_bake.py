@@ -18,6 +18,8 @@ Authored gestures (all looping unless noted):
   * Sit        - seated idle: hips lowered/back, thighs forward, shins down, sway.
   * Drink      - raise one hand toward the mouth, hold, lower (loop).
   * Cheer      - both arms up with a small clap/pump + bounce.
+  * CheckDevice- glance down at a two-hand handheld at chest height (reading scan).
+  * CarryIdle  - stand holding something at the waist, slow weight-balance shift.
 
 The runtime plays these one-clip-at-a-time as calm loops (no blending needed), so
 each is a self-contained loop that starts and ends at the same pose.
@@ -237,9 +239,46 @@ def bake_cheer(arm, g, frames=48):
         ke(arm, g["head"], f, rx=-D(5) - pump * D(4))
         kl(arm, g["hips"], f, z=abs(math.sin(p * 2)) * 0.04)    # little bounce
 
+def bake_check_device(arm, g, frames=96):
+    # Glance down at a handheld: both arms come forward-up (NEG rx raises the arm
+    # on this rig), forearms fold so the hands meet at chest reading height, head
+    # tips down with a slow scan, then relax (smooth up-hold-down loop).
+    new_action(arm, "CheckDevice"); zero_pose(arm)
+    for i in range(frames):
+        f = i + 1; t = i / (frames - 1.0); p = (i / frames) * TAU
+        if t < 0.22:   k = math.sin(t / 0.22 * math.pi * 0.5)
+        elif t < 0.82: k = 1.0
+        else:          k = math.cos((t - 0.82) / 0.18 * math.pi * 0.5)
+        for sd, sgn in (("R", -1.0), ("L", 1.0)):
+            ke(arm, g["arm"+sd], f, rx=-D(50) * k, rz=sgn * D(10) * k)
+            ke(arm, g["fore"+sd], f, rx=-D(60) * k, rz=sgn * D(7) * k)
+            ke(arm, g["hand"+sd], f, rx=-D(6) * k)
+        # head tips DOWN to the screen + a slow reading scan
+        ke(arm, g["head"], f, rx=D(20) * k + math.sin(p * 2) * D(2),
+           rz=math.sin(p) * D(3) * k)
+        ke(arm, g["neck"], f, rx=D(5) * k)
+        if g["spine"]: ke(arm, g["spine"][0], f, rx=D(3) * k + math.sin(p) * D(1.0))
+        kl(arm, g["hips"], f, x=math.sin(p) * 0.012)
+
+def bake_carry_idle(arm, g, frames=84):
+    # Stand holding something at the waist: upper arms a touch forward, forearms
+    # folded UP so the hands carry in front, a slow weight-balance shift. Arms
+    # stay MID-RANGE (no overhead extreme -> clean shoulder deformation).
+    new_action(arm, "CarryIdle"); zero_pose(arm)
+    for i in range(frames):
+        f = i + 1; p = (i / frames) * TAU
+        for sd, sgn, ph in (("R", -1.0, 0.0), ("L", 1.0, math.pi)):
+            ke(arm, g["arm"+sd], f, rx=-D(26), rz=sgn * D(6) + math.sin(p + ph) * D(2))
+            ke(arm, g["fore"+sd], f, rx=-D(80) + math.sin(p + ph) * D(3), rz=sgn * D(10))
+            ke(arm, g["hand"+sd], f, rx=-D(8))
+        ke(arm, g["head"], f, rz=math.sin(p) * D(6), rx=D(4) + math.sin(p * 2) * D(2))
+        if g["spine"]: ke(arm, g["spine"][0], f, rx=D(6) + math.sin(p) * D(1.5))
+        kl(arm, g["hips"], f, x=math.sin(p) * 0.015, z=abs(math.sin(p * 2)) * 0.005)
+
 BAKERS = {"lookaround": bake_lookaround, "converse": bake_converse,
           "work": bake_work, "sit": bake_sit, "drink": bake_drink,
-          "cheer": bake_cheer}
+          "cheer": bake_cheer, "checkdevice": bake_check_device,
+          "carryidle": bake_carry_idle}
 
 def main():
     arm = import_target()

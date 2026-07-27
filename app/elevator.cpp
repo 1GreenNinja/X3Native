@@ -36,7 +36,7 @@ static const std::array<StrataLayer, 9> kStrata = {{
     { -80.0f,  -20.0f, "Granite",         {0.30f, 0.28f, 0.32f}, false, {0,0,0} },
     {-140.0f,  -80.0f, "Basalt",          {0.20f, 0.18f, 0.15f}, false, {0,0,0} },
     {-200.0f, -140.0f, "Obsidian",        {0.10f, 0.08f, 0.12f}, false, {0,0,0} },
-    {-260.0f, -200.0f, "Crystal Veins",   {0.12f, 0.08f, 0.18f}, true,  {0.30f, 0.10f, 0.60f} },
+    {-260.0f, -200.0f, "Crystal Veins",   {0.10f, 0.05f, 0.20f}, true,  {0.10f, 0.00f, 1.00f} },
     {-320.0f, -260.0f, "Magma Zone",      {0.25f, 0.06f, 0.02f}, true,  {0.80f, 0.20f, 0.05f} },
     {-400.0f, -320.0f, "Alien Substrate", {0.08f, 0.04f, 0.12f}, true,  {0.20f, 0.04f, 0.40f} },
 }};
@@ -341,6 +341,12 @@ void ElevatorSystem::unlockRift() {
     if (m_riftUnlocked || m_riftStop < 0) return;
     m_riftUnlocked = true;
     x3::logInfo("[elevator] sub-level R1 (RIFT) is now a selectable floor on this cab");
+}
+
+void ElevatorSystem::unlockSecret() {
+    if (m_secretUnlocked || m_secretStop < 0) return;
+    m_secretUnlocked = true;
+    x3::logInfo("[elevator] level 4.5 is now a selectable floor on this cab");
 }
 
 std::string ElevatorSystem::floorLabel(int stopIndex) const {
@@ -656,7 +662,13 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
         std::vector<OledLine> R;
         R.push_back({ "FLOOR DIRECTORY", 0.55f, 0.35f, 0.80f, 13.0f });
         const int n = (int)m_stopsY.size();
-        for (int i = n - 1; i >= 0 && (int)R.size() < 10; --i) {
+        // 9+ stops (RIFT + F1..F7 + the hidden 4.5 row) overflow the 168 px canvas
+        // at the 13/15 px row sizes (10 lines ~ 180 px): the BOTTOM row — RIFT —
+        // baked half off the texture. Compact the rows when the list is long; the
+        // 8-stop bake is pixel-identical to before.
+        const float rowPx = (n >= 9) ? 11.0f : 13.0f;
+        const float curPx = (n >= 9) ? 13.0f : 15.0f;
+        for (int i = n - 1; i >= 0 && (int)R.size() < 11; --i) {
             const char mark = (i == m_curStop) ? '>' : (i == m_target && m_state != ElevState::Idle ? '*' : ' ');
             // W-RIFT: the buried floor reads as a DEAD ROW on the directory until the
             // access code opens it — the panel admits the level exists and nothing more.
@@ -664,9 +676,9 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             if (lockedRow) std::snprintf(buf, sizeof(buf), "%c ---- [LOCKED]", mark);
             else           std::snprintf(buf, sizeof(buf), "%c %s", mark, floorLabel(i).c_str());
             const bool cur = (i == m_curStop);
-            if (lockedRow) R.push_back({ buf, 0.32f, 0.30f, 0.34f, 13.0f });
+            if (lockedRow) R.push_back({ buf, 0.32f, 0.30f, 0.34f, rowPx });
             else R.push_back({ buf, cur ? 0.95f : 0.40f, cur ? 0.95f : 0.42f, cur ? 1.0f : 0.55f,
-                               cur ? 15.0f : 13.0f });
+                               cur ? curPx : rowPx });
         }
         if (m_disco)
             R.push_back({ "** DISCO MODE **", 1.0f, 0.20f, 0.90f, 13.0f });
@@ -714,22 +726,38 @@ void ElevatorSystem::updateMotorAudio(float dt) {
     const float targetHz = m_tune.motorIdleHz + ratio * (m_tune.motorMoveHz - m_tune.motorIdleHz);
     m_motorHz += (targetHz - m_motorHz) * std::min(1.0f, dt * 5.0f);
 
-    if (!m_audio || !m_snd.motor.valid()) return;
+    if (!m_audio) return;                   // no backend: nothing to drive (headless/tests)
 
-    const bool wantHum = m_fsmSpeed > 0.05f;   // only while the cab is actually moving
-    // Pitch the hum from the tracked frequency (idle Hz -> rate 0.6, full -> 1.4).
-    const float rate = 0.6f + (m_motorHz - m_tune.motorIdleHz) /
-                       std::max(1.0f, m_tune.motorMoveHz - m_tune.motorIdleHz) * 0.8f;
-    const float vol  = 0.18f + 0.42f * ratio;  // louder under load
+    if (m_snd.motor.valid()) {              // motor hum needs its WAV; the club swell below does not
+        const bool wantHum = m_fsmSpeed > 0.05f;   // only while the cab is actually moving
+        // Pitch the hum from the tracked frequency (idle Hz -> rate 0.6, full -> 1.4).
+        const float rate = 0.6f + (m_motorHz - m_tune.motorIdleHz) /
+                           std::max(1.0f, m_tune.motorMoveHz - m_tune.motorIdleHz) * 0.8f;
+        const float vol  = 0.18f + 0.42f * ratio;  // louder under load
+        if (wantHum) {
+            if (!m_motorLoop.valid())
+                m_motorLoop = m_audio->startLoop(m_snd.motor, vol, std::max(0.25f, rate));
+            else
+                m_audio->setLoopParams(m_motorLoop, vol, std::max(0.25f, rate));
+        } else if (m_motorLoop.valid()) {
+            m_audio->stopLoop(m_motorLoop);
+            m_motorLoop = x3::audio::LoopHandle{};
+        }
+    }
 
-    if (wantHum) {
-        if (!m_motorLoop.valid())
-            m_motorLoop = m_audio->startLoop(m_snd.motor, vol, std::max(0.25f, rate));
-        else
-            m_audio->setLoopParams(m_motorLoop, vol, std::max(0.25f, rate));
-    } else if (m_motorLoop.valid()) {
-        m_audio->stopLoop(m_motorLoop);
-        m_motorLoop = x3::audio::LoopHandle{};
+    // THE DESCENT CROSSFADE (goal #3, the signature): the club track does not just snap
+    // on at the club — it SWELLS as the cab sinks toward Club 1127, rising from a distant
+    // low bed near the surface to full at the floor, while the cabin muzak DUCKS under it.
+    // So the ride from the 1127 code down to Y=-200 audibly becomes the club. Proximity is
+    // the cab's depth between the surface (Y=0) and the club stop; graceful no-op if either
+    // voice isn't live (music off / headless).
+    if (m_clubStopY > kUninit) {
+        const float depthMix = std::clamp((0.0f - m_pos.y) / std::max(1.0f, 0.0f - m_clubStopY),
+                                          0.0f, 1.0f);
+        if (m_clubLoop.valid())                      // club bed rises 0.20 -> 0.95 by depth
+            m_audio->setLoopParams(m_clubLoop, 0.20f + 0.75f * depthMix, 1.0f);
+        if (m_muzakLoop.valid())                     // muzak ducks out under the swelling club
+            m_audio->setLoopParams(m_muzakLoop, 0.55f * (1.0f - 0.85f * depthMix), 1.0f);
     }
 }
 
@@ -770,6 +798,25 @@ bool ElevatorSystem::keypadDigit(int digit) {
                         ". Descending to the RIFT stop at Y=" +
                         std::to_string(stopY(m_riftStop)));
             startTravelTo(m_riftStop);
+            return true;
+        }
+        // ---- 4455 — LEVEL 4.5 (fix/spire-hollow-core, owner canon 2026-07-25). The
+        // hidden floor between F4 and F5; the elevator is its ONLY access. Same
+        // one-way unlock as the RIFT stop. Taught in-world (feat/secret-code-clues)
+        // by the chief engineer's log on F4 — "double the four, double the five"
+        // (Ch. Eng. Vasquez); the stairwell's unnumbered door sends you to it.
+        // 7762 (kMasterBackupCode) is the owner's undocumented master key — it
+        // opens this lock too, and is taught NOWHERE in-world by design.
+        if ((tail == kNexusAccessCode || tail == kMasterBackupCode) &&
+            m_secretStop >= 0) {
+            m_codeBuf.clear();
+            const bool first = !m_secretUnlocked;
+            unlockSecret();
+            playOneShot(m_snd.ding, 1.0f, 1.25f);   // access granted
+            x3::logInfo(std::string("[elevator] LEVEL 4.5 ACCESS — code accepted") +
+                        (first ? "; the hidden floor is on the panel now" : "") +
+                        ". Travelling to Y=" + std::to_string(stopY(m_secretStop)));
+            startTravelTo(m_secretStop);
             return true;
         }
         const bool ok = (tail == kDiscoCode);
@@ -1579,6 +1626,51 @@ bool runElevatorFsmSelfTest() {
             e2.update(kDt, scene, *physics);
         fcheck(std::fabs(e2.cabCenter().y - (ElevatorSystem::kDefaultClubFloorY + cabHY)) < 0.1f,
                "F4d cab descends all the way to the Club 1127 stop (Y=-200)");
+    }
+
+    // ---- F4.5: the 4455 code (taught by the chief engineer's log on F4) unlocks
+    // the hidden half-floor stop + rides the cab to it; a wrong code does neither.
+    {
+        const float midY = cabHY + 30.0f;   // the hidden stop, mid-shaft
+        ElevatorSystem e45;
+        e45.build(scene, device, *physics, 30.0f, 30.0f, 1.4f, cabHY, 1.4f,
+                  std::vector<float>{ groundY, midY, topY }, 0);   // start at ground
+        e45.enableFsm(true);
+        e45.setSecretStop(1);
+        fcheck(e45.stopLocked(1) && !e45.secretUnlocked(),
+               "F4.5a hidden stop starts LOCKED (dead directory row)");
+        // NEGATIVE CONTROL: 4454 must not unlock, must not move the cab.
+        e45.keypadDigit(4); e45.keypadDigit(4); e45.keypadDigit(5);
+        bool wrongDone = e45.keypadDigit(4);
+        fcheck(!wrongDone && !e45.secretUnlocked() && e45.stopLocked(1) &&
+               e45.state() == ElevState::Idle,
+               "F4.5b wrong code 4454 does NOT unlock the hidden stop");
+        // The real code: 4-4-5-5 — "double the four, double the five".
+        e45.keypadDigit(4); e45.keypadDigit(4); e45.keypadDigit(5);
+        bool rightDone = e45.keypadDigit(5);
+        fcheck(rightDone && e45.secretUnlocked() && !e45.stopLocked(1),
+               "F4.5c code 4455 unlocks the hidden stop (one-way, on the panel now)");
+        for (int i = 0; i < 20000 && e45.state() != ElevState::DoorsOpen &&
+                        !(e45.state() == ElevState::Idle && i > 10); ++i)
+            e45.update(kDt, scene, *physics);
+        fcheck(std::fabs(e45.cabCenter().y - midY) < 0.1f,
+               "F4.5d cab rides to the 4.5 stop after the code");
+
+        // The owner's MASTER BACKUP (7762) also unlocks the 4.5 stop; the
+        // off-by-one 7761 does not (negative control).
+        ElevatorSystem eMk;
+        eMk.build(scene, device, *physics, 40.0f, 40.0f, 1.4f, cabHY, 1.4f,
+                  std::vector<float>{ groundY, midY, topY }, 0);
+        eMk.enableFsm(true);
+        eMk.setSecretStop(1);
+        eMk.keypadDigit(7); eMk.keypadDigit(7); eMk.keypadDigit(6);
+        bool nearMiss = eMk.keypadDigit(1);
+        fcheck(!nearMiss && !eMk.secretUnlocked() && eMk.stopLocked(1),
+               "F4.5e wrong code 7761 does NOT unlock the hidden stop");
+        eMk.keypadDigit(7); eMk.keypadDigit(7); eMk.keypadDigit(6);
+        bool masterDone = eMk.keypadDigit(2);
+        fcheck(masterDone && eMk.secretUnlocked() && !eMk.stopLocked(1),
+               "F4.5f master backup 7762 unlocks the hidden stop (owner key)");
     }
 
     // ---- F5: FREEFALL is reachable + drops the cab.
