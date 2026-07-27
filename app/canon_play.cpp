@@ -608,9 +608,15 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         };
         for (const A& a : atk) {
             if (a.room == kNoRoom) continue;
+            // MUTUAL EXCLUSION spawn guard (Tim 2026-07-26): the attackers pose right
+            // NEXT TO their captive (the mid-assault tableau), so a spawn could land
+            // merged into her. Nudge to the nearest spot clear of every already-placed
+            // character (the captives are built above; the main-hall/cell squads too)
+            // so no attacker spawns INSIDE a hostage. ~0.5 m humanoid radius.
+            const x3::phys::Vec3 desired{ a.ward.x + a.dx, a.ward.y, a.ward.z + a.dz };
+            const x3::phys::Vec3 clear = clearSpawnPos(desired, 0.5f);
             uint32_t i = m_attackers.spawn(scene, device, physics, m_modelDir,
-                              x3::phys::Vec3{ a.ward.x + a.dx, a.ward.y, a.ward.z + a.dz },
-                              tuningFor(a.t));
+                              clear, tuningFor(a.t));
             tagRoom(scene, m_attackers.at(i), a.room);
             // W5-2 wiring: calm attackers play the baked Struggle loop, so the ward
             // reads as an assault IN PROGRESS (the looming tableau), not posted guards.
@@ -898,6 +904,13 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
             }
         }
     }
+
+    // ---- MUTUAL EXCLUSION (Tim 2026-07-26): the HARD runtime constraint. AFTER
+    // every character has moved this frame, resolve character-vs-character overlap
+    // so no monster is ever left standing INSIDE a captive (or another monster) —
+    // the merge that made a monster hide inside a hostage + eat every shot. Runs
+    // last so it corrects the final positions the movement/chase produced. ----
+    separateCharacters(physics);
 }
 
 // W5-3: the endgame gate — latched true once the F7 clone dies.
@@ -980,6 +993,35 @@ FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& di
                              Scene& scene, x3::phys::IPhysicsWorld& physics, int damage,
                              x3::DamageType type) {
     if (!m_built || !m_weapon.hasWeapon()) return FireResult{};
+
+    // ---- AIM-RAY CAPTIVE PASS-THROUGH (backup to mutual exclusion, 2026-07-26).
+    // The Enemy-layer fire ray hits the NEAREST body of any layer, and a captive's
+    // collision box is one of them — so a captive standing between the player and an
+    // enemy would EAT the shot (it resolves to a non-Monster entity => no damage, and
+    // the enemy behind is never reached). Step the fire origin PAST any friendly
+    // (captive/companion/Sarah) body directly in the aim line so the groups' own casts
+    // reach the enemy. Captives stay non-damageable (they're in no MonsterManager);
+    // this only stops them absorbing shots meant for enemies. ----
+    x3::phys::Vec3 fireEye = eye;
+    {
+        float nx = dir.x, ny = dir.y, nz = dir.z;
+        const float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+        if (len > 1e-6f) { nx /= len; ny /= len; nz /= len; }
+        // Step past the WHOLE friendly body (its box is ~0.8 m deep): a tiny epsilon
+        // would leave the re-cast origin INSIDE the captive box (a ray originating in
+        // a convex reports no forward hit), so advance a full body-clearance past the
+        // near face before re-casting for the enemy behind her.
+        constexpr float kFriendlyClearance = 1.0f;
+        for (int guard = 0; guard < 4; ++guard) {   // at most the 3 wards + Sarah
+            const x3::phys::RayHit h =
+                physics.rayCast(fireEye, dir, kFireMaxDist, x3::phys::Layer::Enemy);
+            if (!h.hit || !isFriendlyBody(h.body)) break;   // wall/enemy/miss => stop
+            fireEye = x3::phys::Vec3{ h.point.x + nx * kFriendlyClearance,
+                                      h.point.y + ny * kFriendlyClearance,
+                                      h.point.z + nz * kFriendlyClearance };
+        }
+    }
+
     // Fire against each group; the first that reports a real monster hit took the shot
     // (the nearest body). Keep a geometry-hit result for the tracer end if nothing hit.
     // canon-aliens Adaptive Hide: `type` flows from the player's weapon all the way to
@@ -987,7 +1029,7 @@ FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& di
     // reacts to the player's loadout (currently the SaurianWarlord row).
     FireResult best;
     auto tryGroup = [&](MonsterManager& mm) -> bool {
-        FireResult r = mm.fire(eye, dir, scene, physics, damage, type);
+        FireResult r = mm.fire(fireEye, dir, scene, physics, damage, type);
         if (r.hitMonster) { best = r; return true; }
         if (r.hit && !best.hit) best = r;
         return false;
@@ -999,7 +1041,7 @@ FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& di
     if (tryGroup(m_upperEnemies)) return best;  // R-5: upper-floor squads
     if (tryGroup(m_rescue.bosses())) return best;
     if (m_martinezSpawned) {
-        FireResult r = m_martinez.fire(eye, dir, scene, physics, damage, type);
+        FireResult r = m_martinez.fire(fireEye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;
         if (r.hit && !best.hit) best = r;
     }
@@ -1116,6 +1158,98 @@ void CanonPlay::forEachCorpse(const std::function<void(const x3::phys::Vec3&)>& 
 void CanonPlay::forEachHostileManager(const std::function<void(MonsterManager&)>& fn) {
     fn(m_mainHall); fn(m_cellGuards); fn(m_attackers);
     fn(m_floorBosses); fn(m_upperEnemies); fn(m_rescue.bosses());
+}
+
+// ---- CHARACTER MUTUAL EXCLUSION (Tim 2026-07-26) --------------------------------
+// No two characters (monster OR captive) may occupy the same volume. Every live
+// monster is a MOVABLE disc; every captive/companion (+ Sarah) is an immovable
+// ANCHOR. gatherCharacters() collects them; separateCharacters() resolves overlaps
+// every tick (the HARD runtime constraint); clearSpawnPos() keeps a fresh spawn out
+// of an existing character (the spawn-time guard).
+void CanonPlay::gatherCharacters(std::vector<SepBody>& bodies,
+                                 std::vector<MonsterSystem*>& owners) {
+    bodies.clear();
+    owners.clear();
+    auto addMonster = [&](MonsterSystem& m) {
+        if (!m.alive()) return;
+        const x3::phys::Vec3 p = m.pos();
+        float r = m.hitRadius();
+        if (r < 0.15f) r = 0.15f;                  // floor a degenerate radius
+        bodies.push_back(SepBody{ p.x, p.z, r, /*movable*/true });
+        owners.push_back(&m);
+    };
+    forEachHostileManager([&](MonsterManager& mm) {
+        for (uint32_t i = 0; i < mm.count(); ++i) addMonster(mm.at(i));
+    });
+    if (m_martinezSpawned) addMonster(m_martinez);
+    // Captive/companion ANCHORS (immovable). Expired/extracted victims drop their
+    // body, so body().valid() gates them out (nothing to separate from a ghost).
+    auto addVictim = [&](const RescueVictim& v) {
+        if (!(v.captive() || v.companion()) || !v.body().valid()) return;
+        const x3::phys::Vec3 p = v.pos();
+        bodies.push_back(SepBody{ p.x, p.z, v.collisionRadius(), /*movable*/false });
+        owners.push_back(nullptr);
+    };
+    for (uint32_t i = 0; i < m_rescue.victimCount(); ++i) addVictim(m_rescue.victim(i));
+    if (m_sarahBuilt) addVictim(m_sarah);
+}
+
+void CanonPlay::separateCharacters(x3::phys::IPhysicsWorld& physics) {
+    if (!m_built) return;
+    std::vector<SepBody>        bodies;
+    std::vector<MonsterSystem*> owners;
+    gatherCharacters(bodies, owners);
+    if (bodies.size() < 2) return;
+    resolveCharacterOverlaps(bodies.data(), (uint32_t)bodies.size());
+    // Write back ONLY the movable monsters whose disc actually moved (captives are
+    // anchors — never repositioned onto a monster; unmoved monsters skip the physics
+    // call so a non-overlapping roster is untouched).
+    for (size_t i = 0; i < owners.size(); ++i) {
+        if (!owners[i]) continue;
+        const x3::phys::Vec3 cur = owners[i]->pos();
+        if (std::fabs(cur.x - bodies[i].x) > 1e-5f ||
+            std::fabs(cur.z - bodies[i].z) > 1e-5f)
+            owners[i]->setPlanarPos(bodies[i].x, bodies[i].z, physics);
+    }
+}
+
+x3::phys::Vec3 CanonPlay::clearSpawnPos(const x3::phys::Vec3& want, float radius) {
+    std::vector<SepBody>        bodies;
+    std::vector<MonsterSystem*> owners;
+    gatherCharacters(bodies, owners);
+    auto clearAt = [&](float x, float z) -> bool {
+        for (const auto& b : bodies) {
+            const float minD = b.r + radius;
+            const float dx = b.x - x, dz = b.z - z;
+            if (dx * dx + dz * dz < minD * minD) return false;
+        }
+        return true;
+    };
+    if (clearAt(want.x, want.z)) return want;
+    // Outward spiral: rings of 8 samples at increasing radius until a clear spot.
+    for (int ring = 1; ring <= 6; ++ring) {
+        const float rr = radius * 1.2f * (float)ring;
+        for (int k = 0; k < 8; ++k) {
+            const float a = 6.28318530718f * (float)k / 8.0f;
+            const float x = want.x + std::cos(a) * rr;
+            const float z = want.z + std::sin(a) * rr;
+            if (clearAt(x, z)) return x3::phys::Vec3{ x, want.y, z };
+        }
+    }
+    return want;   // give up — runtime separation resolves it on the next tick anyway
+}
+
+bool CanonPlay::isFriendlyBody(x3::phys::BodyId b) const {
+    if (!b.valid()) return false;
+    for (uint32_t i = 0; i < m_rescue.victimCount(); ++i) {
+        const x3::phys::BodyId vb = m_rescue.victim(i).body();
+        if (vb.valid() && vb.id == b.id) return true;
+    }
+    if (m_sarahBuilt) {
+        const x3::phys::BodyId sb = m_sarah.body();
+        if (sb.valid() && sb.id == b.id) return true;
+    }
+    return false;
 }
 
 uint32_t CanonPlay::queueAlertReinforcements(const CanonFloor& floor,
@@ -1674,6 +1808,117 @@ bool runCanonPlaySelfTest() {
                     " grabbed=" + std::to_string(grabbed ? 1 : 0));
         pcheck(pop && allKinds && grabbed,
                "P10 upper floors populated (>=40 squads, >=20 pickups, all 6 item kinds) + proximity grab collects");
+    }
+
+    // ---- P11: CHARACTER MUTUAL EXCLUSION — the pure separation math (Tim 2026-07-26).
+    // Two co-located movable discs must end up EXACTLY r1+r2 apart; a movable disc
+    // overlapping an immovable ANCHOR must be pushed the full overlap while the anchor
+    // never budges (a captive is never shoved onto a monster). ----
+    {
+        SepBody mm2[2] = { { 0.0f, 0.0f, 0.5f, true }, { 0.0f, 0.0f, 0.4f, true } };
+        resolveCharacterOverlaps(mm2, 2);
+        const float dmm = std::sqrt((mm2[1].x - mm2[0].x) * (mm2[1].x - mm2[0].x) +
+                                    (mm2[1].z - mm2[0].z) * (mm2[1].z - mm2[0].z));
+        const bool a = dmm >= 0.9f - 1e-3f;
+
+        SepBody an2[2] = { { 0.0f, 0.0f, 0.5f, true }, { 0.1f, 0.0f, 0.4f, false } };
+        resolveCharacterOverlaps(an2, 2);
+        const float dan = std::sqrt((an2[1].x - an2[0].x) * (an2[1].x - an2[0].x) +
+                                    (an2[1].z - an2[0].z) * (an2[1].z - an2[0].z));
+        const bool anchorFixed = std::fabs(an2[1].x - 0.1f) < 1e-4f &&
+                                 std::fabs(an2[1].z) < 1e-4f;
+        const bool b = dan >= 0.9f - 1e-3f && anchorFixed;
+        x3::logInfo("    P11 separation: co-located dist=" + std::to_string(dmm) +
+                    " anchor-pair dist=" + std::to_string(dan) +
+                    " anchorFixed=" + std::to_string(anchorFixed ? 1 : 0));
+        pcheck(a && b, "P11 mutual-exclusion math: overlaps resolve to >= r1+r2, captive anchor immovable");
+    }
+
+    // ---- P12: LIVE mutual exclusion — force a monster to occupy a captive's exact
+    // spot (the merge that made it hide inside a hostage), tick once, and assert it is
+    // PUSHED OUT (centers >= r_mon + r_cap apart), the captive is UNHARMED (still a
+    // captive), and the now-separated monster is KILLABLE through the real fire path
+    // firing THROUGH the captive (the aim-ray pass-through backup). ----
+    {
+        RescueSystem& rs = play.rescue();
+        // A captive with a live body (the anchor).
+        const RescueVictim* cap = nullptr;
+        for (uint32_t i = 0; i < rs.victimCount(); ++i)
+            if (rs.victim(i).captive() && rs.victim(i).body().valid()) { cap = &rs.victim(i); break; }
+        // The live monster NEAREST her (a ward attacker on the same floor — so the
+        // through-captive fire geometry is valid, not a Main-Hall enemy teleported to
+        // her XZ at the wrong height).
+        MonsterSystem* mon = nullptr;
+        if (cap) {
+            const x3::phys::Vec3 cpv = cap->pos();
+            float bestD2 = 1e30f;
+            play.forEachHostileManager([&](MonsterManager& g) {
+                for (uint32_t i = 0; i < g.count(); ++i) {
+                    if (!g.at(i).alive()) continue;
+                    const x3::phys::Vec3 p = g.at(i).pos();
+                    const float d2 = (p.x - cpv.x) * (p.x - cpv.x) +
+                                     (p.y - cpv.y) * (p.y - cpv.y) +
+                                     (p.z - cpv.z) * (p.z - cpv.z);
+                    if (d2 < bestD2) { bestD2 = d2; mon = &g.at(i); }
+                }
+            });
+        }
+        if (!cap || !mon) {
+            x3::logInfo("    P12 SKIP — no captive+monster pair on this data");
+            pcheck(true, "P12 mutual exclusion (skipped: no captive/monster pair)");
+        } else {
+            const x3::phys::Vec3 cp = cap->pos();
+            const float cr = cap->collisionRadius(), mr = mon->hitRadius();
+            const float need = mr + cr;
+            // MERGE them: drop the monster exactly onto the captive.
+            mon->setPlanarPos(cp.x, cp.z, *physics);
+            const x3::phys::Vec3 m0 = mon->pos();
+            const float preDist = std::sqrt((m0.x - cp.x) * (m0.x - cp.x) +
+                                            (m0.z - cp.z) * (m0.z - cp.z));
+            // One tick — the AI pulls toward the eye (set AT the captive to STRESS the
+            // merge), then the mutual-exclusion pass must still push the monster clear.
+            play.tick(0.016f, scene, *physics, cp, nullptr, {});
+            const x3::phys::Vec3 m1 = mon->pos();
+            const x3::phys::Vec3 cp1 = cap->pos();
+            const float postDist = std::sqrt((m1.x - cp1.x) * (m1.x - cp1.x) +
+                                             (m1.z - cp1.z) * (m1.z - cp1.z));
+            const bool pushedOut  = postDist >= need - 0.05f;
+            const bool captiveSafe = cap->captive();   // not expired / not harmed
+
+            // Separation axis (captive -> monster). Guaranteed non-degenerate now.
+            float hx = m1.x - cp1.x, hz = m1.z - cp1.z;
+            const float hl = std::sqrt(hx * hx + hz * hz);
+            if (hl > 1e-4f) { hx /= hl; hz /= hl; } else { hx = 1.0f; hz = 0.0f; }
+
+            // KILLABLE THROUGH THE CAPTIVE (the aim-ray pass-through backup): stand the
+            // monster in a CLEAR GAP directly behind the captive along the separation
+            // axis, then fire from behind her toward it. She sits squarely between the
+            // eye and the enemy — the aim-ray must step past her (she can't eat the
+            // shot) and the enemy behind must take the damage. A ~0.6 m gap keeps the
+            // re-cast origin out of the enemy box (not the pathological touching case).
+            const float gap = cr + mr + 0.6f;
+            mon->setPlanarPos(cp1.x + hx * gap, cp1.z + hz * gap, *physics);
+            const x3::phys::Vec3 mg = mon->pos();
+            play.cheatArm(scene);
+            // Aim at mid-captive-box height (cp1.y + 0.5): inside BOTH boxes, so the ray
+            // strikes the captive first (skipped) then the monster behind her.
+            const float aimY = cp1.y + 0.5f;
+            const x3::phys::Vec3 eye{ cp1.x - hx * 0.8f, aimY, cp1.z - hz * 0.8f };
+            const x3::phys::Vec3 dir{ mg.x - eye.x, 0.0f, mg.z - eye.z };
+            const int hp0 = mon->hp();
+            FireResult fr = play.onFire(eye, dir, scene, *physics);
+            const bool killable = fr.hitMonster && mon->hp() < hp0;
+            const bool captiveStillSafe = cap->captive();
+
+            x3::logInfo("    P12 merge: preDist=" + std::to_string(preDist) +
+                        " postDist=" + std::to_string(postDist) + " need=" + std::to_string(need) +
+                        " pushedOut=" + std::to_string(pushedOut ? 1 : 0) +
+                        " captiveSafe=" + std::to_string(captiveSafe ? 1 : 0) +
+                        " fireHit=" + std::to_string(fr.hitMonster ? 1 : 0) +
+                        " hp " + std::to_string(hp0) + "->" + std::to_string(mon->hp()));
+            pcheck(pushedOut && captiveSafe && killable && captiveStillSafe,
+                   "P12 monster forced onto a captive is pushed OUT (>= r1+r2), captive unharmed, monster KILLABLE through her");
+        }
     }
 
     play.shutdown();        // tear down any death-ragdoll bodies BEFORE the physics world
