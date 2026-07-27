@@ -1,12 +1,21 @@
 # Regenerates version_gen.h on EVERY build (driven by an always-run custom target).
-# Stamps the git short hash + dirty flag + build timestamp so the window title
-# tells you EXACTLY which build you are running. (Owner: "put a VERSION NUMBER in
-# the TITLE" — the root cause of a night of debugging the wrong exe.)
+# Stamps the git short hash + dirty flag + build timestamp + an INCREMENTING build
+# number (git commit count) so the window title tells you EXACTLY which build you
+# are running. (Owner: "put a VERSION NUMBER in the TITLE" + "we need incrementing
+# version numbers" — the root cause of a night of debugging the wrong exe.)
 execute_process(
     COMMAND git -C "${SRC}" rev-parse --short HEAD
     OUTPUT_VARIABLE GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT GIT_HASH)
     set(GIT_HASH "nogit")
+endif()
+
+# Incrementing build number = total commit count (monotonic, no manual bumping).
+execute_process(
+    COMMAND git -C "${SRC}" rev-list --count HEAD
+    OUTPUT_VARIABLE GIT_COUNT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT GIT_COUNT)
+    set(GIT_COUNT "0")
 endif()
 
 # Uncommitted changes? mark the build "+dirty" so a local edit is never mistaken
@@ -20,7 +29,7 @@ endif()
 
 string(TIMESTAMP BUILD_TS "%Y-%m-%d %H:%M" UTC)
 
-set(CONTENT "#pragma once\n// AUTO-GENERATED each build by cmake/gen_version.cmake — do not edit.\n#define X3_GIT_HASH \"${GIT_HASH}\"\n#define X3_BUILD_TS \"${BUILD_TS}\"\n#define X3_VERSION_STR \"X3Native  ${GIT_HASH}  (built ${BUILD_TS} UTC)\"\n")
+set(CONTENT "#pragma once\n// AUTO-GENERATED each build by cmake/gen_version.cmake — do not edit.\n#define X3_GIT_HASH \"${GIT_HASH}\"\n#define X3_BUILD_NUM \"${GIT_COUNT}\"\n#define X3_BUILD_TS \"${BUILD_TS}\"\n#define X3_VERSION_STR \"X3Native  v0.${GIT_COUNT}  ${GIT_HASH}  (built ${BUILD_TS} UTC)\"\n")
 
 # Only rewrite if changed, so we don't force a needless relink when nothing moved.
 if(EXISTS "${OUT}")
