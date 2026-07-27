@@ -588,6 +588,12 @@ std::vector<uint8_t> makeSignRGBA(uint32_t w, uint32_t h, const char* line,
             case 'S': set(0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E); return true;
             case 'P': set(0x1E,0x11,0x11,0x1E,0x10,0x10,0x10); return true;
             case 'D': set(0x1E,0x11,0x11,0x11,0x11,0x11,0x1E); return true;
+            case 'C': set(0x0E,0x11,0x10,0x10,0x10,0x11,0x0E); return true;
+            case 'U': set(0x11,0x11,0x11,0x11,0x11,0x11,0x0E); return true;
+            case 'B': set(0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E); return true;
+            case '1': set(0x04,0x0C,0x04,0x04,0x04,0x04,0x0E); return true;
+            case '2': set(0x0E,0x11,0x01,0x02,0x04,0x08,0x1F); return true;
+            case '7': set(0x1F,0x01,0x02,0x04,0x04,0x04,0x04); return true;
             default:  set(0,0,0,0,0,0,0); return false;   // space / unknown
         }
     };
@@ -1690,10 +1696,11 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             box(brX, 0.9f, brZ, 0.015f, 0.9f, 0.015f, kWood, kEmitOff, false);        // handle
             box(brX, 0.04f, brZ + 0.06f, 0.16f, 0.04f, 0.05f, kBlackR, kEmitOff, false); // bristle head
         }
-        // --- ★ "LATE NIGHT SPEED" neon SIGN, high on the south wall (faces the floor). ---
+        // --- ★ "CLUB 1127" neon SIGN, high on the south wall (faces the floor). ---
+        // (Late Night Speed by day, CLUB 1127 by night — same mount, same red neon.)
         {
             const uint32_t sw = 512, sh = 96;
-            auto sgpx = makeSignRGBA(sw, sh, "LATE NIGHT SPEED", 1.0f, 0.10f, 0.10f);   // hot red neon
+            auto sgpx = makeSignRGBA(sw, sh, "CLUB 1127", 1.0f, 0.10f, 0.10f);   // hot red neon
             const x3::rhi::TextureHandle sgTex = device.createTexture(sgpx.data(), sw, sh, true);
             const float sX = 1.5f, sY = 5.4f, sZ = CL / 2 - 0.42f;   // clear of the wall inner face (~-0.15)
             const float sHW = 3.6f, sHH = sHW * (float)sh / (float)sw;   // keep aspect
@@ -1704,7 +1711,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             x3::prims::PrimMesh sg;
             const float nZ = -1.0f;
             // U flipped (viewer at -Z looking +Z sees +X on the left): U=1 at -X, U=0 at +X
-            // so "LATE NIGHT SPEED" reads left-to-right, not mirrored.
+            // so "CLUB 1127" reads left-to-right, not mirrored.
             sg.verts.push_back({{sX-sHW, wy+sHH, sZ}, {0,0,nZ}, {1,0}});   // TL
             sg.verts.push_back({{sX-sHW, wy-sHH, sZ}, {0,0,nZ}, {1,1}});   // BL
             sg.verts.push_back({{sX+sHW, wy-sHH, sZ}, {0,0,nZ}, {0,1}});   // BR
@@ -1812,7 +1819,10 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     // ==================================================================
     {
         const float bH2 = 1.1f;                        // bar height
-        const float wX  = -CW / 2 + 1.0f;              // west-leg counter centre X (0.72 m lane behind)
+        // Counter pulled 1.3 m EAST off the west wall so there's a real bartender
+        // SERVICE LANE behind it: [west wall] -> backbar bottles (wallX) -> lane
+        // (Danny stands here, ~1.5 m) -> counter (wX) -> room.
+        const float wX  = -CW / 2 + 2.3f;              // west-leg counter centre X (~1.5 m service lane behind)
         const float wZ0 = -CL / 2 + 0.3f, wZ1 = CL / 2 - 0.3f;   // west leg Z span (full wall)
         const float nZ  = -CL / 2 + 1.0f;              // north-leg counter centre Z
         const float erWest = -ER_W / 2 - 0.3f;         // north run stops just west of the lounge/ER
@@ -1919,9 +1929,9 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         addLight(m_lights, -10.0f,    oy + bH2 + 1.6f, nZ + 0.3f, 1.70f, 1.55f, 1.35f, 5.5f);
         addLight(m_lights, -5.5f,     oy + bH2 + 1.6f, nZ + 0.3f, 1.70f, 1.55f, 1.35f, 5.5f);
         m_stats.hasGroundBar = true;
-        // ---- DANNY the bartender, behind the L (in the service lane), facing the room.
-        addCharacter(scene, device, physics, modelDir, "AnnaCasual.glb",
-                     x3::phys::Vec3{ wX - 0.55f, oy + 0.0f, -1.5f }, 1.0f, false, nullptr);
+        // ---- DANNY the bartender stands behind this L, IN the service lane (placed
+        // once, below, as the canon "danny" NPC with BartenderDanny.glb + chat tree).
+        // The old anonymous AnnaCasual prop here was removed (wrong rig + duplicate).
     }
 
 
@@ -2569,10 +2579,11 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         const float amberC[4] = { 1.25f, 1.05f, 0.85f, 1.0f };  // warm amber (Amara, lounge)
         const float coolC[4]  = { 1.00f, 1.05f, 1.30f, 1.0f };  // cool blue (Emma, club-feed glow)
 
-        // DANNY — dead center of the U-bar curve, inside the U, on the main floor.
-        // The U-bar carcass: uX=3.0, west base at uX-2.5=0.5; Danny stands just
-        // inside/behind it at his "bartender's watchtower", nose toward the entrance.
-        const x3::phys::Vec3 dannyPos{ 1.2f, oy + 0.0f, 0.0f };
+        // DANNY (Danny Kowalski, the canon builder/bartender) — behind the L-bar's
+        // west leg, standing IN the service lane between the west-wall backbar and
+        // the counter (counter centre wX = -CW/2+2.3; lane centre ~ -CW/2+1.26), so
+        // he has real standing room behind the bar, not embedded in wall or counter.
+        const x3::phys::Vec3 dannyPos{ -CW / 2 + 1.26f, oy + 0.0f, -1.5f };
         addCharacter(scene, device, physics, modelDir, "BartenderDanny.glb",
                      dannyPos, 1.0f, false, warmC);
         m_canonNpcs.push_back(CanonNpc{ "danny", "DANNY", "hub",
@@ -2606,7 +2617,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             m_canonNpcs.push_back(CanonNpc{ "emma", "EMMA", "hub",
                                             x3::phys::Vec3{ emmaPos.x, emmaPos.y + 1.0f, emmaPos.z }, 3.5f });
         }
-        x3::logInfo("[club1127] placed 3 canon dialogue NPCs (Danny @ U-bar, "
+        x3::logInfo("[club1127] placed 3 canon dialogue NPCs (Danny @ bar service lane, "
                     "Amara + Emma @ Private Lounge)");
     }
 
