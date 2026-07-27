@@ -136,8 +136,12 @@ int hostClub(HostContext& hc) {
             // lounge is canon-dark; the live club keeps its 1.0 exposure). Shot path only.
             if (const char* ex = std::getenv("X3_CLUB_EXPOSURE")) device->setExposure((float)std::atof(ex));
             // The CROWD proof needs a longer settle so the dancers desync + drift
-            // into readable knots before the capture.
-            const int kSettle = ddgiForce ? 120 : (crowdShot ? 150 : 24);
+            // into readable knots before the capture. An explicit `--screenshot <path>
+            // <settle>` count wins (lets a capture land at a chosen beat/phrase so the
+            // LASER floor patterns switch + the moving-heads sweep to a specific axis
+            // angle across a still SEQUENCE — otherwise every shot froze at frame 24).
+            const int kSettle = (hc.screenshotSettle > 24) ? hc.screenshotSettle
+                                : ddgiForce ? 120 : (crowdShot ? 150 : 24);
             const float dt = 1.0f / 60.0f;
             // Fallback (headless with no --screenshot, i.e. `--smoketest --world club`):
             // a loose scratch grab in the REPO ROOT, which .gitignore already covers.
