@@ -2122,10 +2122,15 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
                                                     : 90.0f;    // small / horn
             const float w0   = 6.2831853f * fs;
             const float drive = d.posAmp * thump;
-            int   steps = (int)std::ceil(dt * fs * 8.0f);
-            if (steps < 1)  steps = 1;
-            if (steps > 16) steps = 16;                 // bounded: never spiral on a hitch
-            const float h = dt / (float)steps;
+            // Clamp the STEP LENGTH, not the step count. Capping steps is the
+            // wrong lever: on a long stall (alt-tab, a 2 s hitch) it would leave
+            // h = dt/16 huge, w0*h >> 2, and the cone would detonate on the frame
+            // you came back. Clamping dt bounds h instead — the suspension simply
+            // sits still through the stall, which is also what it should look like.
+            const float dtC = (dt > 0.05f) ? 0.05f : dt;   // >=20 fps integrates fully
+            int   steps = (int)std::ceil(dtC * fs * 8.0f); // ~8 steps per cycle
+            if (steps < 1) steps = 1;
+            const float h = dtC / (float)steps;            // ~3-4 ms at any refresh
             for (int s = 0; s < steps; ++s) {
                 const float acc = w0 * w0 * (drive - d.x) - 2.0f * kZeta * w0 * d.v;
                 d.v += acc * h;                          // semi-implicit: v then x
