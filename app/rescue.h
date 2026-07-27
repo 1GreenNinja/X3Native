@@ -193,6 +193,15 @@ public:
     float timerMax()  const { return m_timerMax; }
     x3::phys::Vec3 pos() const { return m_pos; }
 
+    // ---- MUTUAL EXCLUSION + aim-ray pass-through (2026-07-26) --------------
+    // The captive's Enemy-layer collision body (invalid once she ragdolls/expires/
+    // extracts). The host's character-separation pass treats a captive as an
+    // ANCHOR (monsters get pushed off her), and the weapon aim-ray SKIPS this body
+    // so a captive can never eat a shot meant for an enemy behind her.
+    x3::phys::BodyId body() const { return m_body; }
+    // Planar collision radius (matches the standing box half-width kVictimHalf.x).
+    float collisionRadius() const { return 0.4f; }
+
     // ---- Animation queries (BUG #48 + --test-rescue) ----------------------
     // True once bind() found a skinnable model + a usable clip, so tick() drives
     // the Skinner each frame (the girl breathes/idles instead of freezing).

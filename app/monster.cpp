@@ -24,6 +24,56 @@
 namespace x3::game {
 
 // ---------------------------------------------------------------------------
+// CHARACTER MUTUAL EXCLUSION (Tim 2026-07-26). Iterative disc-separation so no two
+// characters occupy the same volume. See app/monster.h SepBody / the header doc.
+// Pure + allocation-free (a fixed LCG for the co-located jitter axis). O(n^2) per
+// pass over the small live roster; converges in one pass for an isolated pair.
+// ---------------------------------------------------------------------------
+uint32_t resolveCharacterOverlaps(SepBody* c, uint32_t n,
+                                  uint32_t maxIters, uint32_t seed) {
+    if (!c || n < 2) return 0;
+    uint32_t rng = seed ? seed : 1u;
+    auto nextAngle = [&]() -> float {
+        rng = rng * 1664525u + 1013904223u;              // Numerical-Recipes LCG
+        return ((float)((rng >> 8) & 0xFFFFu) / 65535.0f) * 6.28318530718f;
+    };
+    uint32_t lastCorrections = 0;
+    for (uint32_t it = 0; it < maxIters; ++it) {
+        uint32_t corrections = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            for (uint32_t j = i + 1; j < n; ++j) {
+                const float minD = c[i].r + c[j].r;
+                float dx = c[j].x - c[i].x, dz = c[j].z - c[i].z;
+                float d2 = dx * dx + dz * dz;
+                if (d2 >= minD * minD) continue;          // discs clear — nothing to do
+                float d, ndx, ndz;
+                if (d2 < 1e-10f) {                        // exactly co-located: seeded axis
+                    const float a = nextAngle();
+                    ndx = std::cos(a); ndz = std::sin(a); d = 0.0f;
+                } else {
+                    d = std::sqrt(d2); ndx = dx / d; ndz = dz / d;
+                }
+                const float overlap = minD - d;
+                // Correction split: only movable discs move; anchor/anchor still
+                // splits so two captives are never left merged (spawn guard should
+                // prevent that, but the invariant must hold unconditionally).
+                float wi, wj;
+                if (c[i].movable && c[j].movable)       { wi = 0.5f; wj = 0.5f; }
+                else if (c[i].movable && !c[j].movable) { wi = 1.0f; wj = 0.0f; }
+                else if (!c[i].movable && c[j].movable) { wi = 0.0f; wj = 1.0f; }
+                else                                    { wi = 0.5f; wj = 0.5f; }
+                c[i].x -= ndx * overlap * wi; c[i].z -= ndz * overlap * wi;
+                c[j].x += ndx * overlap * wj; c[j].z += ndz * overlap * wj;
+                ++corrections;
+            }
+        }
+        lastCorrections = corrections;
+        if (corrections == 0) break;                     // fully resolved
+    }
+    return lastCorrections;
+}
+
+// ---------------------------------------------------------------------------
 // Tuning constants.
 // ---------------------------------------------------------------------------
 namespace {
@@ -744,6 +794,19 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
         if (m_hitReactClip >= 0 && m_attackAnimT < 0.0f) m_hitReactAnimT = 0.0f;
     }
     return r;
+}
+
+// ---------------------------------------------------------------------------
+// MUTUAL EXCLUSION nudge: shove this monster to a new planar (x,z) and re-anchor
+// its Enemy-layer collision body (box center is m_hitCenterOff above the feet). The
+// host's character-separation pass calls this to push a monster off a captive /
+// another monster. No-op once dead or bodyless (a corpse has no body to move).
+// ---------------------------------------------------------------------------
+void MonsterSystem::setPlanarPos(float x, float z, x3::phys::IPhysicsWorld& physics) {
+    if (!m_alive || !m_body.valid()) return;
+    m_pos.x = x; m_pos.z = z;
+    physics.setBodyPosition(m_body,
+        x3::phys::Vec3{ x, m_pos.y + m_hitCenterOff, z });
 }
 
 // ---------------------------------------------------------------------------
