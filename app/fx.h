@@ -132,8 +132,14 @@ constexpr float kLightningBranchLenFrac  = 0.38f; // branch length vs remaining 
 // thick as the trunk. Per docs/DECISIONS.md ("VALUE, NOT LUMENS — don't crank
 // emissive until it's a white blob"), the halo now comes from bloom on a SHARP thread
 // rather than from wide bright geometry. ~3x thinner; brightness comes down with it.
-constexpr float kLightningCoreThick = 0.007f;   // owner: "quite wide, needs constraining" (post-gamma the halo reads wider)
-constexpr float kLightningGlowThick = 0.015f;   // halo trimmed x0.58 — the corrected sRGB curve shows the full glow now
+// PLAYTEST TRIM #2 (Tim, 2026-07-19): still "quite wide.. needs to be constrained a bit."
+// Core + glow narrowed a further ~33% (0.007->0.0047, 0.015->0.010) for a tighter, more
+// focused bolt. Both scale by the SAME factor so the glow/core RATIO (~2.1x) is preserved
+// (glow width = kLightningGlowThick * coreThick/kLightningCoreThick, see drawBoltSegment):
+// length, arcing, brightness and the branch/tendril character are untouched — only the
+// core WIDTH tightens. Bloom still smears the sharp thread into a halo, so it stays visible.
+constexpr float kLightningCoreThick = 0.0047f;  // owner: "quite wide, needs constraining" — trim #2
+constexpr float kLightningGlowThick = 0.010f;   // halo tracks the core (ratio ~2.1x preserved)
 
 // ---- Electric-arc tendril ring (lightning impact violence) ----
 // Short-lived mini zigzag arcs crawling on the surface at a lightning hit point.
