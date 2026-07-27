@@ -176,6 +176,18 @@ public:
     void  setBpm(float bpm) { if (bpm > 20.0f && bpm < 400.0f) m_bpm = bpm; }
     float bpm() const { return m_bpm; }
 
+    // Beat-grid PHASE (Club Jukebox sidecar "offset_s"): seconds from the track's
+    // start to its FIRST DOWNBEAT. update() subtracts this from the clock so beat 0
+    // lands on the music's actual downbeat instead of on level-load time. Without
+    // it the grid runs at the right TEMPO but the wrong PHASE — the subs punch
+    // between the beats instead of on them, which reads as cheap on a dance floor.
+    // Out-of-range values are ignored (treated as 0), matching setBpm's guard style.
+    void  setBeatGrid(float bpm, float offsetS) {
+        setBpm(bpm);
+        m_beatOffsetS = (offsetS > -10.0f && offsetS < 10.0f) ? offsetS : 0.0f;
+    }
+    float beatOffsetS() const { return m_beatOffsetS; }
+
     bool built() const { return m_built; }
 
 private:
@@ -276,6 +288,8 @@ private:
     // house default (matches club_descent.wav); the Club Jukebox retunes it
     // per user track via setBpm(). See setBpm()/bpm() above.
     float                                         m_bpm = kDefaultBpm;
+    // Downbeat phase offset in seconds; see setBeatGrid(). 0 = beat 0 at t=0.
+    float                                         m_beatOffsetS = 0.0f;
     // Inert character prop systems (own the GLB GPU handles for the app lifetime).
     std::vector<std::unique_ptr<MonsterSystem>>   m_chars;
 };

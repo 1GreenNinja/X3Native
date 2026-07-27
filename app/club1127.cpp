@@ -1947,7 +1947,9 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     // own arbitrary rates. Everything music-reactive below derives from these.
     // m_bpm is runtime-configurable (Club Jukebox retunes it per user track). ----
     const float beatHz    = m_bpm / 60.0f;
-    const float beatCount = t * beatHz;                    // absolute beat position
+    // Phase-shifted by the current track's downbeat offset (Club Jukebox sidecar
+    // "offset_s"), so beat 0 lands on the music's first downbeat, not on t=0.
+    const float beatCount = (t - m_beatOffsetS) * beatHz;  // absolute beat position
     const float thump     = std::pow(std::max(0.0f, std::sin(beatCount * kPi)), 6.0f);
     const float breathe   = 0.72f + 0.48f * thump;         // gel beat envelope (floor
                                                            // 0.72: the crowd never drops

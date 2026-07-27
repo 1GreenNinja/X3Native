@@ -425,6 +425,20 @@ bool runJukeboxSelfTest() {
         }
     }
 
+    // (T3b) Beat-grid PHASE: setBeatGrid stores the downbeat offset; a fresh club
+    //       defaults to zero; out-of-range offsets are rejected.
+    {
+        Club1127World club;
+        club.setBeatGrid(128.0f, 0.35f);
+        const bool a = std::fabs(club.bpm() - 128.0f) < 0.01f &&
+                       std::fabs(club.beatOffsetS() - 0.35f) < 0.0001f;
+        club.setBeatGrid(100.0f, 999.0f);          // absurd offset => clamped to 0
+        const bool b = std::fabs(club.beatOffsetS()) < 0.0001f;
+        Club1127World club2;
+        const bool c = std::fabs(club2.beatOffsetS()) < 0.0001f;   // defaults to 0
+        check(a && b && c, "club beat grid stores a downbeat phase offset");
+    }
+
     fs::remove_all(tmp, ec);
     x3::logInfo("jukebox: " + std::to_string(pass) + "/" +
                 std::to_string(pass + fail) + " passed");
