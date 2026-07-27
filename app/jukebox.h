@@ -50,6 +50,7 @@ public:
         std::string name;              // display name (filename stem, no extension)
         std::string sortKey;           // lowercased name for stable alpha ordering
         float       bpm        = 120;  // resolved BPM (sidecar, else default cvar)
+        float       offsetS    = 0.0f; // sidecar downbeat offset, seconds (F1)
         bool        hasSidecar = false;
     };
 
@@ -87,6 +88,7 @@ public:
     int         index()       const { return m_index; }
     const std::string& currentName() const;
     float       currentBpm()  const;
+    float       currentOffsetS() const;   // downbeat offset of the current track
     bool        shuffle()     const { return m_shuffle; }
     float       defaultBpm()  const { return m_defaultBpm; }
     const std::vector<std::string>& scanDirs() const { return m_dirs; }
@@ -118,7 +120,11 @@ private:
 // Resolve the BPM for `audioPath`: probe `<audioPath>.json` then `<stem>.json`
 // for {"bpm": <float>}. Returns true + sets outBpm on a valid sidecar; false
 // (outBpm untouched) when there is no sidecar / it has no usable "bpm" number.
-bool parseBpmSidecar(const std::string& audioPath, float& outBpm);
+// Also resolves the OPTIONAL "offset_s" (seconds from the file's start to its first
+// downbeat). outOffsetS is set to 0 when the key is absent or out of range, so a
+// track without an offset always resets the phase rather than inheriting the
+// previous track's.
+bool parseBpmSidecar(const std::string& audioPath, float& outBpm, float& outOffsetS);
 
 // Headless self-test for `--test-jukebox`: folder scan (alpha order + extension
 // filter), sidecar parse, BPM retune applied to a Club1127World, empty-folder

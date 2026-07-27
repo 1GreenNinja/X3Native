@@ -95,7 +95,26 @@ static bool parseBpmFromText(const std::string& text, float& outBpm) {
     return true;
 }
 
-bool parseBpmSidecar(const std::string& audioPath, float& outBpm) {
+// Optional "offset_s": seconds from the file's start to the first downbeat. Absent
+// or out of range => caller keeps 0 (beat 0 then sits at t=0, the old behaviour).
+static bool parseOffsetFromText(const std::string& text, float& outOffsetS) {
+    const auto key = text.find("\"offset_s\"");
+    if (key == std::string::npos) return false;
+    auto colon = text.find(':', key + 10);
+    if (colon == std::string::npos) return false;
+    size_t i = colon + 1;
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t' ||
+                               text[i] == '\n' || text[i] == '\r')) ++i;
+    if (i >= text.size()) return false;
+    char* end = nullptr;
+    const double v = std::strtod(text.c_str() + i, &end);
+    if (end == text.c_str() + i) return false;    // no number
+    if (!(v > -10.0 && v < 10.0)) return false;   // sane downbeat window
+    outOffsetS = (float)v;
+    return true;
+}
+
+bool parseBpmSidecar(const std::string& audioPath, float& outBpm, float& outOffsetS) {
     std::error_code ec;
     // Probe order: "<track>.mp3.json" (full-name sidecar), then "<stem>.json".
     std::vector<fs::path> candidates;
@@ -110,7 +129,12 @@ bool parseBpmSidecar(const std::string& audioPath, float& outBpm) {
         if (!f) continue;
         std::stringstream ss;
         ss << f.rdbuf();
-        if (parseBpmFromText(ss.str(), outBpm)) return true;
+        const std::string text = ss.str();
+        if (parseBpmFromText(text, outBpm)) {
+            outOffsetS = 0.0f;                       // absent offset_s => no phase shift
+            parseOffsetFromText(text, outOffsetS);   // present + sane => use it
+            return true;
+        }
         x3::logWarn(std::string("[jukebox] sidecar has no usable bpm: ") + c.string());
     }
     return false;
@@ -167,9 +191,10 @@ void Jukebox::scan() {
             t.path = p.string();
             t.name = stem;
             t.sortKey = sortKey;
-            float bpm = m_defaultBpm;
-            t.hasSidecar = parseBpmSidecar(t.path, bpm);
-            t.bpm = t.hasSidecar ? bpm : m_defaultBpm;
+            float bpm = m_defaultBpm, offsetS = 0.0f;
+            t.hasSidecar = parseBpmSidecar(t.path, bpm, offsetS);
+            t.bpm     = t.hasSidecar ? bpm : m_defaultBpm;
+            t.offsetS = t.hasSidecar ? offsetS : 0.0f;
             m_tracks.push_back(std::move(t));
         }
     }
@@ -202,6 +227,11 @@ float Jukebox::currentBpm() const {
     return m_tracks[m_index].bpm;
 }
 
+float Jukebox::currentOffsetS() const {
+    if (m_index < 0 || m_index >= (int)m_tracks.size()) return 0.0f;
+    return m_tracks[m_index].offsetS;
+}
+
 void Jukebox::armToast() {
     if (m_index < 0 || m_index >= (int)m_tracks.size()) return;
     const Track& t = m_tracks[m_index];
@@ -231,7 +261,9 @@ void Jukebox::playCurrent(x3::audio::IAudioSystem& audio, Club1127World& club) {
     const bool loop = (m_tracks.size() == 1);
     audio.setMusicEnabled(m_musicOn);
     audio.playMusic(t.path, loop, m_vol);
-    club.setBpm(t.bpm);   // retune the beat grid (subs/tiles/dancers/lights)
+    // Retune the beat grid (subs/tiles/dancers/lights) to this track's tempo AND
+    // downbeat phase. A track with no offset_s resets the phase to 0.
+    club.setBeatGrid(t.bpm, t.offsetS);
     armToast();
     x3::logInfo("[jukebox] " + m_toastText + (t.hasSidecar ? " [sidecar]" : " [cvar bpm]") +
                 (loop ? " [loop]" : ""));
@@ -437,6 +469,36 @@ bool runJukeboxSelfTest() {
         Club1127World club2;
         const bool c = std::fabs(club2.beatOffsetS()) < 0.0001f;   // defaults to 0
         check(a && b && c, "club beat grid stores a downbeat phase offset");
+    }
+
+    // (T3c) offset_s flows sidecar -> Track -> Club1127World::setBeatGrid, and a
+    //       track WITHOUT an offset resets the phase (it must not inherit).
+    {
+        const fs::path od = tmp / "offset";
+        fs::create_directories(od, ec);
+        writeTinyWav(od / "delta.wav", 60);
+        { std::ofstream(od / "delta.wav.json") << "{ \"bpm\": 128, \"offset_s\": 0.35 }\n"; }
+        writeTinyWav(od / "echo.wav", 60);
+        { std::ofstream(od / "echo.wav.json") << "{ \"bpm\": 90 }\n"; }   // no offset => 0
+
+        Jukebox jb;
+        jb.configure({ od.string() }, 120.0f, false, 0.75f, true);
+        const auto& tr = jb.tracks();
+        const bool parsed = tr.size() == 2 &&
+                            std::fabs(tr[0].offsetS - 0.35f) < 0.0001f &&
+                            std::fabs(tr[1].offsetS) < 0.0001f;
+
+        std::unique_ptr<x3::audio::IAudioSystem> audio(x3::audio::createAudioSystem());
+        audio->init();
+        Club1127World club;
+        jb.begin(*audio, club);       // delta => 128 BPM, phase 0.35
+        const bool applied = std::fabs(club.bpm() - 128.0f) < 0.01f &&
+                             std::fabs(club.beatOffsetS() - 0.35f) < 0.0001f;
+        jb.next(*audio, club);        // echo => 90 BPM, phase reset to 0
+        const bool reset = std::fabs(club.bpm() - 90.0f) < 0.01f &&
+                           std::fabs(club.beatOffsetS()) < 0.0001f;
+        check(parsed && applied && reset,
+              "sidecar offset_s parsed and applied to the beat grid (and reset per track)");
     }
 
     fs::remove_all(tmp, ec);
