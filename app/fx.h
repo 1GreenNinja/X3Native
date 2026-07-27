@@ -32,7 +32,7 @@ namespace x3::game {
 //   Shotgun  : a WIDE, fat muzzle flash + a broad spark spray (heavy boom).
 //   Chaingun : hot + extra-sparky (a busy, glowing auto roar).
 //   Plasma   : BLUE energy — cool tint, soft round flash, no metal sparks.
-//   Lightning: electric CRACKLE — white-cyan, twitchy fast sparks (beam zap).
+//   Lightning: electric CRACKLE — LIGHT ELECTRIC BLUE, twitchy fast sparks (beam zap).
 enum class WeaponFxKind : uint8_t {
     Default = 0,
     Pistol,
@@ -90,7 +90,10 @@ constexpr float kLightningBoltSpeed = 300.0f;
 // Each re-roll lasts ~kLightningRerollPeriod * [0.6, 1.4] (i.e. ~40-90 ms), so the
 // bolt crackles irregularly. Brightness is also re-rolled per bucket (real arcs pulse
 // in INTENSITY, not just in shape).
-constexpr float kLightningRerollPeriod = 0.065f;
+// SIZZLE PASS (Tim, 2026-07-26: "add more sizzle .. a touch faster reroll flicker"):
+// nudged 0.065 -> 0.052 so the bolt re-shapes/re-pulses a hair more often — tighter
+// electric crackle. Still jittered [0.6,1.4] so it never reads as a metronome.
+constexpr float kLightningRerollPeriod = 0.052f;
 
 // ---- FRACTAL BOLT (recursive midpoint displacement) ----
 // Real lightning is SELF-SIMILAR: big lazy bends with smaller kinks riding on them,
@@ -138,12 +141,16 @@ constexpr float kLightningBranchLenFrac  = 0.38f; // branch length vs remaining 
 // (glow width = kLightningGlowThick * coreThick/kLightningCoreThick, see drawBoltSegment):
 // length, arcing, brightness and the branch/tendril character are untouched — only the
 // core WIDTH tightens. Bloom still smears the sharp thread into a halo, so it stays visible.
-constexpr float kLightningCoreThick = 0.0047f;  // owner: "quite wide, needs constraining" — trim #2
-constexpr float kLightningGlowThick = 0.010f;   // halo tracks the core (ratio ~2.1x preserved)
+// POLISH #3 (Tim, 2026-07-26): "slightly thicker beam maybe .. the earlier trim may
+// have gone a touch far." Core widened 0.0047 -> 0.0060 (~+28%) — still a tight thread,
+// just no longer hairline. Glow tracks the SAME ~2.13x ratio (0.0128) so the corona
+// stays proportional (glow width = kLightningGlowThick * coreThick/kLightningCoreThick).
+constexpr float kLightningCoreThick = 0.0060f;  // a hair thicker (Tim: trim went a touch far)
+constexpr float kLightningGlowThick = 0.0128f;  // halo tracks the core (ratio ~2.13x preserved)
 
 // ---- Electric-arc tendril ring (lightning impact violence) ----
 // Short-lived mini zigzag arcs crawling on the surface at a lightning hit point.
-constexpr int   kMaxArcs   = 12;
+constexpr int   kMaxArcs   = 16;      // ring capacity (SIZZLE pass: holds the 9-13 tendril burst)
 constexpr float kArcLife   = 0.14f;   // seconds one tendril lives
 
 // ---- Muzzle flash tuning ----
