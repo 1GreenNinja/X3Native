@@ -56,6 +56,8 @@ public:
         float       bpm        = 120;  // resolved BPM (sidecar, else default cvar)
         float       offsetS    = 0.0f; // sidecar downbeat offset, seconds (F1)
         bool        hasSidecar = false;
+        bool        bad        = false; // failed the decode probe / missing (F3);
+                                        // skipped from then on, logged exactly once
     };
 
     // Full configuration in one struct. `shuffleSeed` 0 means "derive from the

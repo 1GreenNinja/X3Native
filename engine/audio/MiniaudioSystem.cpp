@@ -462,6 +462,18 @@ public:
         m_reverb->wetTarget.store(clamp01(wet), std::memory_order_relaxed);
     }
 
+    // Decode PROBE (Club Jukebox): open a decoder on the file and immediately
+    // close it. Decodes no audio and touches no voice/engine state, so it is safe
+    // to call mid-playback. Silent/no-device => accept (we cannot judge).
+    bool probeAudioFile(std::string_view absPath) override {
+        if (!m_inited || m_silent) return true;
+        ma_decoder dec;
+        const std::string p(absPath);
+        if (ma_decoder_init_file(p.c_str(), nullptr, &dec) != MA_SUCCESS) return false;
+        ma_decoder_uninit(&dec);
+        return true;
+    }
+
     void update(float /*dt*/) override {
         if (!m_inited || m_silent) return;
         // Reap finished voices (free their ma_sound + per-voice lowpass + slot).

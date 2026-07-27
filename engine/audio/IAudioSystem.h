@@ -159,6 +159,15 @@ public:
     // silent mode) this is a harmless store. Default no-op.
     virtual void setReverbParams(float /*t60Seconds*/, float /*wet*/) {}
 
+    // Cheap decode PROBE: can this file be opened and decoded at all? The Club
+    // Jukebox calls it to reject a corrupt track BEFORE trying to play it —
+    // otherwise the player hears a gap while the playlist discovers the track is
+    // dead, and the log fills with one load-failure per lap of the playlist.
+    // Opens a decoder and immediately closes it; decodes no audio.
+    // Default returns true so backends opt in, and so silent/no-device mode never
+    // rejects a track it has no way to test.
+    virtual bool probeAudioFile(std::string_view /*absPath*/) { return true; }
+
     // Per-frame tick: advances any internal bookkeeping (voice cleanup). Cheap.
     virtual void update(float dt) = 0;
 };

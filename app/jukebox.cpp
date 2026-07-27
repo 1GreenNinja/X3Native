@@ -274,11 +274,29 @@ void Jukebox::playCurrent(x3::audio::IAudioSystem& audio, Club1127World& club) {
     // line + advance). A corrupt file that miniaudio cannot decode is handled by
     // playMusic (logs once, no voice) + isMusicFinished()==true => update()
     // auto-advances past it on the next tick, so we do not loop forever.
+    // Skip any track that has vanished since the scan, or that the audio backend
+    // cannot decode (F3). Each is logged ONCE via the per-track `bad` flag — a
+    // wrapping playlist used to re-log the same dead file on every lap.
     std::error_code ec;
     int guard = (int)m_tracks.size();
-    while (guard-- > 0 && !fs::exists(m_tracks[m_index].path, ec)) {
-        x3::logWarn("[jukebox] skipping missing track: " + m_tracks[m_index].path);
+    while (guard-- > 0) {
+        Track& cand = m_tracks[m_index];
+        if (!cand.bad) {
+            if (!fs::exists(cand.path, ec)) {
+                cand.bad = true;
+                x3::logWarn("[jukebox] skipping missing track: " + cand.path);
+            } else if (!audio.probeAudioFile(cand.path)) {
+                cand.bad = true;
+                x3::logWarn("[jukebox] skipping undecodable track: " + cand.path);
+            }
+        }
+        if (!cand.bad) break;                                // playable
         m_index = (m_index + 1) % (int)m_tracks.size();
+    }
+    if (m_tracks[m_index].bad) {
+        x3::logWarn("[jukebox] every track is unplayable — leaving the club's "
+                    "built-in loop alone");
+        return;
     }
 
     const Track& t = m_tracks[m_index];
@@ -579,6 +597,27 @@ bool runJukeboxSelfTest() {
         const std::string s3 = orderWithSeed(9876);
         check(s1.size() == 8 && s1 == s2 && s1 != s3,
               "seeded shuffle is deterministic (same seed => same order)");
+    }
+
+    // (T6b) A corrupt file is PROBED, flagged `bad`, and skipped before playback,
+    //       so the playlist lands on the good track instead of retrying the dead
+    //       one every lap. With no audio device the probe accepts everything
+    //       (it cannot decode), so either landing is tolerated — what must never
+    //       happen is a hang, a crash, or an unplayable current track.
+    {
+        const fs::path pd = tmp / "probe";
+        fs::create_directories(pd, ec);
+        writeTinyWav(pd / "aaa_bad.wav", 60, /*corrupt*/true);
+        writeTinyWav(pd / "bbb_good.wav", 60);
+        std::unique_ptr<x3::audio::IAudioSystem> audio(x3::audio::createAudioSystem());
+        audio->init();
+        Club1127World club;
+        Jukebox jb;
+        jb.configure({ pd.string() }, 120.0f, false, 0.75f, true);
+        jb.begin(*audio, club);
+        const bool landedOk = jb.currentName() == "bbb_good" || jb.currentName() == "aaa_bad";
+        check(jb.hasTracks() && landedOk,
+              "corrupt track is probed and skipped (or tolerated in silent mode)");
     }
 
     fs::remove_all(tmp, ec);
