@@ -109,9 +109,18 @@ x3::rhi::PointLight addSalvariHollow(Scene& scene, x3::rhi::IRenderDevice& devic
         scene.add(e);
     }
     // 2) CRYSTAL CLUSTER: a few angular shards (hex bipyramids) fanned around the
-    //    pocket centre, emissive electric-blue so they bloom and light the rock.
-    const float blueTint[4] = { 0.08f, 0.24f, 0.62f, 1.0f };
-    const float blueEmit[4] = { 0.10f, 0.40f, 1.15f, 1.5f };   // saturated electric-blue -> bloom
+    //    pocket centre, emissive SALVARI-BLUE — a deep saturated sapphire/electric
+    //    blue that reads BLUE at the core, not a blown-out white.
+    //    WHY THE OLD VALUES WENT WHITE: emissive contributes `rgb * strength` to the
+    //    HDR color (mesh.frag: color += emis * vEmissive.a). The old {0.10,0.40,1.15}
+    //    x 1.5 = final {0.15,0.60,1.725} — the blue channel at 1.7 sat FAR past 1.0,
+    //    so the ACES tonemap + bloom stack desaturated the bright core toward WHITE
+    //    (and the 0.60 green tugged it cyan). Fix: keep the peak channel UNDER 1.0 so
+    //    ACES holds the hue, push the ratio hard to blue (blue >> green >> ~0 red) for
+    //    a deep sapphire, and let the point light below carry the blue GLOW halo.
+    const float blueTint[4] = { 0.02f, 0.07f, 0.52f, 1.0f };   // deep sapphire base (lit)
+    const float blueEmit[4] = { 0.015f, 0.07f, 0.62f, 1.0f };  // DEEP saturated blue core: low G/R kills the
+                                                               // cyan/pastel, blue held ~0.6 (bright but not blown)
     struct Shard { float dx, dz, s, r, mid, tip, tilt; };
     const Shard shards[6] = {
         {  0.0f,  0.0f, 1.00f, 0.55f, 1.4f, 1.1f,  0.00f },
@@ -141,11 +150,13 @@ x3::rhi::PointLight addSalvariHollow(Scene& scene, x3::rhi::IRenderDevice& devic
         e.transform[15] = 1.0f;
         scene.add(e);
     }
-    // 3) BLUE POINT LIGHT pooling in the hollow (premultiplied electric blue).
+    // 3) BLUE POINT LIGHT pooling in the hollow — the blue GLOW HALO on the rock.
+    //    Kept (Salvari signature) but shifted BLUER (less green) so the pool reads as
+    //    a deep-blue halo around the sapphire cores, not a cyan wash.
     x3::rhi::PointLight l;
     l.pos[0] = cx; l.pos[1] = cy; l.pos[2] = cz;
     l.range  = 16.0f * scale;
-    l.color[0] = 0.30f; l.color[1] = 0.80f; l.color[2] = 1.90f;
+    l.color[0] = 0.12f; l.color[1] = 0.34f; l.color[2] = 1.90f;
     return l;
 }
 
