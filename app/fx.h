@@ -244,6 +244,14 @@ public:
     // invisible from a chase camera): one bright core + a short spray along
     // the fire direction, so the bolt visibly LEAVES the ship.
     void spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
+    // SHIP DISINTEGRATION blast (space-combat power fantasy): a MASSIVE one-shot
+    // kill burst — a dense hot fireball (scaled up ~5x vs spawnExplosion, more
+    // cores), a huge white-hot central FLASH that blooms hard for a couple frames,
+    // and an expanding SHOCKWAVE shell of fast bright specks flung radially outward.
+    // Zero-gravity (space). Pair with spawnDeath/spawnSmoke (near-field chunks +
+    // plume) + a GPU debris burst (the flung hull fragments) for the full kill.
+    // `radius` sizes the whole event (a ~10 m fighter uses ~9 m).
+    void spawnShipDeathBlast(const x3::phys::Vec3& center, float radius);
     // Drop a scorch decal directly (bullet-hole / impact mark) at a hit point+normal.
     void addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
 

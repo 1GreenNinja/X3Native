@@ -635,6 +635,84 @@ void CombatFx::spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& 
     }
 }
 
+// ---------------------------------------------------------------------------
+// spawnShipDeathBlast: a MASSIVE ship-disintegration burst (space power fantasy).
+// Distinctly bigger than a barrel/infantry pop: a huge white-hot flash that blooms
+// for a couple frames, a dense hot fireball, and an expanding shockwave shell of
+// fast bright specks flung radially outward. Zero-gravity. See fx.h.
+// ---------------------------------------------------------------------------
+void CombatFx::spawnShipDeathBlast(const x3::phys::Vec3& center, float radius) {
+    const float r = (radius > 1.0f) ? radius : 1.0f;
+    // (1) WHITE-HOT FLASH: a few big, near-stationary billboards that flash huge
+    //     then collapse — the bloom-blowing heart of the blast (reads for ~2-3
+    //     frames as a searing white ball before the fireball colours take over).
+    for (int i = 0; i < 4; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * r * 0.15f,
+                                center.y + frandSym() * r * 0.15f,
+                                center.z + frandSym() * r * 0.15f };
+        p.vel = x3::phys::Vec3{ frandSym() * 1.5f, frandSym() * 1.5f, frandSym() * 1.5f };
+        p.life = p.maxLife = 0.30f + frand() * 0.10f;
+        p.size0 = (1.0f + frand() * 0.5f) * r;   // huge searing ball
+        p.size1 = 0.10f * r;
+        p.r = 9.0f; p.g = 7.5f; p.b = 5.5f;      // white-hot (HDR -> hard bloom)
+        p.a0 = 1.0f; p.gravity = 0.0f; p.drag = 3.0f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (2) FIREBALL CORE: a dense ball of hot additive orange/yellow puffs, scaled
+    //     up hard vs spawnExplosion (more, bigger, hotter) so the fireball fills
+    //     the ship's silhouette instead of peppering it.
+    const int nCore = 40;
+    for (int i = 0; i < nCore; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * r * 0.5f,
+                                center.y + frandSym() * r * 0.5f,
+                                center.z + frandSym() * r * 0.5f };
+        const float speed = (2.5f + frand() * 5.0f) * r;
+        p.vel = x3::phys::Vec3{ frandSym() * speed, frandSym() * speed, frandSym() * speed };
+        p.life = p.maxLife = 0.35f + frand() * 0.40f;
+        p.size0 = (0.30f + frand() * 0.25f) * r;   // big hot puff
+        p.size1 = 0.05f * r;
+        p.r = 6.0f; p.g = 2.6f + frand() * 1.2f; p.b = 0.5f;   // hot orange->yellow
+        p.a0 = 1.0f; p.gravity = 0.0f; p.drag = 1.8f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (3) SHOCKWAVE SHELL: fast, bright specks flung radially outward at ~uniform
+    //     speed so they read as an expanding blast ring/sphere sweeping past the
+    //     fireball, then wink out. Thin + short-lived (the leading edge of the blast).
+    const int nShock = 56;
+    const float shockSpeed = 13.0f * r;   // ring lingers near the hull (was 22 = gone in a frame)
+    for (int i = 0; i < nShock; ++i) {
+        float dx = frandSym(), dy = frandSym(), dz = frandSym();
+        float dl = std::sqrt(dx*dx + dy*dy + dz*dz);
+        if (dl < 1e-4f) { dx = 1.0f; dy = 0.0f; dz = 0.0f; dl = 1.0f; }
+        dx /= dl; dy /= dl; dz /= dl;
+        Particle p;
+        p.pos = center;
+        const float sp = shockSpeed * (0.85f + frand() * 0.30f);
+        p.vel = x3::phys::Vec3{ dx * sp, dy * sp, dz * sp };
+        p.life = p.maxLife = 0.28f + frand() * 0.14f;
+        p.size0 = 0.10f * r; p.size1 = 0.02f * r;
+        p.r = 5.5f; p.g = 3.2f; p.b = 1.0f;      // hot leading-edge spark
+        p.a0 = 1.0f; p.gravity = 0.0f; p.drag = 0.8f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (4) Dark rolling SMOKE so the blast leaves a believable plume in its wake.
+    const int nSmoke = 14;
+    for (int i = 0; i < nSmoke; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * r * 0.5f,
+                                center.y + frandSym() * r * 0.5f,
+                                center.z + frandSym() * r * 0.5f };
+        p.vel = x3::phys::Vec3{ frandSym() * 2.0f, frandSym() * 2.0f, frandSym() * 2.0f };
+        p.life = p.maxLife = 1.2f + frand() * 1.4f;
+        p.size0 = 0.5f * r; p.size1 = 2.0f * r;   // grows + dissipates
+        p.r = 0.09f; p.g = 0.08f; p.b = 0.07f;    // sooty dark smoke
+        p.a0 = 0.5f; p.gravity = 0.0f; p.drag = 0.7f; p.additive = false;
+        spawnParticle(p);
+    }
+}
+
 void CombatFx::addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal) {
     Decal& d = m_decalsRing[m_nextDecal];
     m_nextDecal = (m_nextDecal + 1) % kMaxDecals;

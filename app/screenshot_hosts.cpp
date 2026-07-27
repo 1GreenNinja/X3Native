@@ -34,6 +34,7 @@
 #include "wing_dressing.h"     // F2-F7 wing dressing (--screenshot-rescuerooms)
 #include "editor/editor_host.h"
 #include "asset_root.h"
+#include "intro_orchestrator.h"   // X3_INTRO_CAPTURE headless combat-evidence run
 
 #include <memory>
 #include <string>
@@ -102,6 +103,27 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool captureFootIk = hc.captureFootIk;  const std::string& captureFootIkPath = hc.captureFootIkPath;
 
     // ==== VERBATIM handler bodies (device.get() -> device) ====
+    // ---- Headless INTRO-COMBAT evidence capture (X3_INTRO_CAPTURE=<dir>) ---------
+    // Renders the interactive space-combat cold-open beats OFFSCREEN through the
+    // intro orchestrator's built-in captureMode staging (scripted flight + staged
+    // enemy damage + fire windows), writing live_<beat>_s<step>.png frames into
+    // <dir>. The per-enemy DAMAGE METER HUD, the ship-death DISINTEGRATION blast +
+    // GPU debris, and the wing fire all render into these PNGs — the eyeball gate
+    // for the space power-fantasy pass. Env-gated + headless-only: inert in every
+    // normal run (nothing sets X3_INTRO_CAPTURE). runInteractiveIntro is self-
+    // contained (own physics; null-audio safe) and skips the cinematic clips when
+    // there is no window, so only the combat beats render.
+    if (const char* introCapDir = std::getenv("X3_INTRO_CAPTURE");
+        introCapDir && *introCapDir && headless && device) {
+        x3::logInfo(std::string("[intro-capture]: rendering intro combat evidence -> ") + introCapDir);
+        std::error_code ec;
+        std::filesystem::create_directories(introCapDir, ec);
+        (void)x3::intro::runInteractiveIntro(hc);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
     // ---- Headless editor PROOF (--screenshot-editor [path.png]) ------------------
     // Inits ImGui in the headless device (a hidden GLFW window backs the GLFW backend;
     // rendering goes into the offscreen color image), renders ONE frame with the
