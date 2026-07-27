@@ -10394,6 +10394,16 @@ int runDefaultHost(HostContext& hc) {
                         x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rc.hitMonster || (!r.hit && rc.hit)) r = rc;
                     }
+                    // CANON ALIENS (planet): the four hostile species patrol the facility
+                    // exterior in their OWN manager (app_run `canonAliens`). It was MISSING
+                    // from this dispatch chain, so player shots passed clean through the
+                    // Saurians / Grey / Mantis — the "some monsters cannot be shot" playtest
+                    // bug. Route the ray here too: the manager maps the nearest Enemy body to
+                    // its alien and applies damage (the allied Nordic Steward simply ignores it).
+                    if (!r.hitMonster && canonWorld) {
+                        x3::game::FireResult ca = canonAliens.fire(eye, ray.dir, scene, *physics, wdmg, ray.type);
+                        if (ca.hitMonster || (!r.hit && ca.hit)) r = ca;
+                    }
                     // WAVE (cell-door): route the shot through the canon explodable barrels —
                     // a ray into the cell/hall barrel breaks it; it detonates on the next
                     // canonBarrels.update() (DJBooth fireball + splash + chain).
@@ -10507,6 +10517,10 @@ int runDefaultHost(HostContext& hc) {
                     if (!r.hitMonster && canonWorld && canonPlay.built()) {   // canon enemies/boss/girls
                         x3::game::FireResult rc = canonPlay.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
                         if (rc.hitMonster) r = rc;
+                    }
+                    if (!r.hitMonster && canonWorld) {   // canon aliens on the planet (same omission as the hitscan chain)
+                        x3::game::FireResult ca = canonAliens.fire(b.pos, ndir, scene, *physics, b.damage, b.type);
+                        if (ca.hitMonster) r = ca;
                     }
                     if (!r.hitMonster) {   // try the F3/F4/F5 enemies for this bolt
                         x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
