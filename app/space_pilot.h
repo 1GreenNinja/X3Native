@@ -66,6 +66,13 @@ public:
         float maxStrafeAccel  = 12.0f;  // m/s^2 along right/up (A/D + Space/Ctrl)
         float maxAngularAccel = 3.5f;   // rad/s^2 (mouse + Q/E roll)
         float linearDrag      = 0.05f;  // per-second (light cinematic drag)
+        // FLIGHT-ASSIST HOLD (owner, live: "let me STAY IN POSITION in space, not
+        // moving unless I WANT to move"). When > 0 AND no translation input this
+        // frame, the ship brakes toward a dead stop at this rate (1/s) so it HOLDS
+        // station instead of coasting Newtonian-style into whatever it's aimed at.
+        // Any thrust/strafe/vertical input releases the brake. 0 = OFF (pure
+        // Newtonian coast — every existing caller + drift self-tests unchanged).
+        float flightAssist    = 0.0f;
         float angularDrag     = 1.5f;   // per-second (snappier rotational settle)
         float boostMul        = 2.5f;   // sprint -> accel multiplier (eats energy)
         float maxSpeed        = 220.0f; // m/s hard speed cap

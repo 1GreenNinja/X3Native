@@ -281,6 +281,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     tun.laserEnergyCost   = 2.8f;
     tun.noseFollow     = 2.8f;    // arcade steering: the ship GOES where the nose
                                   // points (Newtonian drift read as "axes wrong")
+    tun.flightAssist   = 2.5f;    // FLIGHT-ASSIST HOLD (owner, live: "stay in
+                                  // position ... not moving unless I WANT to move"):
+                                  // release the stick -> coast to a stop over ~1.5 s
+                                  // and HOLD station, instead of drifting into the
+                                  // capital. Any thrust/strafe/vertical releases it.
     // FIRST person: the beats render from inside the cockpit rig. The default
     // 3P chase cam swings on a 12 m arm rotated by the ship's FULL quaternion
     // (roll included) while setCamera() is roll-less Euler — the mismatch reads
