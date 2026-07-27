@@ -898,6 +898,42 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
             }
         }
     }
+
+    // ---- CROSS-MANAGER anti-overlap (Tim: characters NEVER share a cell) ---------
+    // Each MonsterManager already de-overlaps its OWN members; this closes the gap
+    // BETWEEN systems — a following companion (a rescued girl / Sarah) must never clip
+    // into an enemy (or another companion). Gather this frame's live hostile body-
+    // centers once, then push the companions out of any overlap. Enemies are treated
+    // as immovable here (they were already spread by their own pass), so only the
+    // companions move — cheap, no physics query. ----
+    {
+        constexpr uint32_t kMaxHostiles = 128;
+        x3::phys::Vec3 hp[kMaxHostiles];
+        float          hr[kMaxHostiles];
+        uint32_t nh = 0;
+        forEachHostileManager([&](MonsterManager& mm) {
+            for (uint32_t i = 0; i < mm.count() && nh < kMaxHostiles; ++i) {
+                const MonsterSystem& m = mm.at(i);
+                if (!m.alive() || !m.body().valid()) continue;
+                hp[nh] = m.pos(); hr[nh] = m.bodyRadiusXZ(); ++nh;
+            }
+        });
+        if (m_martinezSpawned && m_martinez.alive() && m_martinez.body().valid() &&
+            nh < kMaxHostiles) {
+            hp[nh] = m_martinez.pos(); hr[nh] = m_martinez.bodyRadiusXZ(); ++nh;
+        }
+        // Rescued girls: vs hostiles + each other (RescueSystem owns their bodies).
+        m_rescue.deOverlapCompanions(hp, hr, nh, physics);
+        // Sarah (standalone): vs the same hostiles PLUS any rescued companions.
+        if (m_sarahBuilt && m_sarah.companion()) {
+            for (uint32_t i = 0; i < m_rescue.victimCount() && nh < kMaxHostiles; ++i) {
+                const RescueVictim& v = m_rescue.victim(i);
+                if (!v.companion()) continue;
+                hp[nh] = v.pos(); hr[nh] = v.bodyRadiusXZ(); ++nh;
+            }
+            m_sarah.deOverlapFromPoints(hp, hr, nh, physics);
+        }
+    }
 }
 
 // W5-3: the endgame gate — latched true once the F7 clone dies.

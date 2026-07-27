@@ -621,6 +621,15 @@ struct CliOptions {
     // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
     bool        captureAi    = false;
     std::string captureAiDir = "G:/X3Native/ai_action";
+    // Crowd-spread capture (--capture-crowd-spread [outDir]): the anti-crowding proof.
+    // Spawn a CLUSTER of guards stacked on nearly one point next to a player reference,
+    // step them through the REAL MonsterManager::update (which wires the separation
+    // steering AND the hard de-overlap pass), and capture a TOP-DOWN sequence. The
+    // sequence is its own before/after: t=0 the squad is a stacked pile, by ~t=2.5 s it
+    // has fanned into a clean ring/arc with no two bodies clipping. Default outDir:
+    // docs/screenshots/faccombat.
+    bool        captureCrowdSpread    = false;
+    std::string captureCrowdSpreadDir = "docs/screenshots/faccombat";
     // Walk-capture mode (--capture-walk [outPath] [rigGlb]): build ONE close-up
     // animated guard (the multi-clip *_anim.glb when present), drive the T1
     // locomotion blend toward a steady WALK, settle the blend a fraction of a

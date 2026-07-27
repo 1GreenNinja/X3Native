@@ -2175,6 +2175,51 @@ void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phy
 
     for (auto& m : m_monsters)
         m->update(dt, scene, physics, playerPos, eye, target, fx, onPhase, allies);
+
+    // HARD anti-overlap floor (playtest-fix): after everyone has moved, resolve any
+    // residual body overlap so no two live members occupy the same cell. Separation
+    // steering shapes where they WANT to be; this GUARANTEES they can't clip through
+    // each other even when the equilibrium is briefly overrun (a fresh spawn, a
+    // corner pinch, a knockback stack). Cheap positional correction, no physics query.
+    deOverlapMembers(physics);
+}
+
+// Pairwise planar de-overlap over the live members. For any pair whose centers are
+// closer than the sum of their body radii, push them apart along the connecting
+// vector — split evenly, clamped per-frame so it eases apart rather than popping.
+// O(N^2) over a squad (N is small); no heap alloc, no physics ray. This is the
+// engine-agnostic hard guarantee behind kAiSeparation* steering.
+void MonsterManager::deOverlapMembers(x3::phys::IPhysicsWorld& physics) {
+    // Max shove per agent per frame (m): keeps a deep overlap from snapping across
+    // the map in one tick; it resolves over a few frames instead. Also damps jitter.
+    constexpr float kMaxPush = 0.10f;
+    const uint32_t N = (uint32_t)m_monsters.size();
+    for (uint32_t i = 0; i < N; ++i) {
+        MonsterSystem* a = m_monsters[i].get();
+        if (!a->alive() || !a->body().valid()) continue;
+        const float ra = a->bodyRadiusXZ();
+        for (uint32_t j = i + 1; j < N; ++j) {
+            MonsterSystem* b = m_monsters[j].get();
+            if (!b->alive() || !b->body().valid()) continue;
+            const x3::phys::Vec3 pa = a->pos(), pb = b->pos();
+            float dx = pb.x - pa.x, dz = pb.z - pa.z;
+            float d2 = dx * dx + dz * dz;
+            const float minD = ra + b->bodyRadiusXZ();
+            if (d2 >= minD * minD) continue;                 // not overlapping
+            float d = std::sqrt(d2);
+            if (d < 1e-4f) {                                 // exactly co-located
+                // Deterministic split axis from the entity ids so both agents agree
+                // on opposite directions (no RNG divergence between the two).
+                const float ang = 0.61803399f * (float)(a->entity() + b->entity());
+                dx = std::cos(ang); dz = std::sin(ang); d = 1.0f;
+            }
+            float push = 0.5f * (minD - d);                  // each moves half the gap
+            if (push > kMaxPush) push = kMaxPush;
+            const float ux = dx / d, uz = dz / d;
+            a->nudgePlanar(-ux * push, -uz * push, physics);
+            b->nudgePlanar( ux * push,  uz * push, physics);
+        }
+    }
 }
 
 void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,

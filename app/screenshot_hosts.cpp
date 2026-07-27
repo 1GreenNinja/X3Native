@@ -99,6 +99,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool oceanBaseShot = hc.oceanBaseShot;  const std::string& oceanBaseShotPath = hc.oceanBaseShotPath;
     const bool cityShot = hc.cityShot;            const std::string& cityShotPath = hc.cityShotPath;
     const bool captureAi = hc.captureAi;          const std::string& captureAiDir = hc.captureAiDir;
+    const bool captureCrowdSpread = hc.captureCrowdSpread; const std::string& captureCrowdSpreadDir = hc.captureCrowdSpreadDir;
     const bool captureWalk = hc.captureWalk;      const std::string& captureWalkPath = hc.captureWalkPath;
     const bool captureFootIk = hc.captureFootIk;  const std::string& captureFootIkPath = hc.captureFootIkPath;
 
@@ -2504,6 +2505,198 @@ int dispatchScreenshotHosts(HostContext& hc) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return (frameNo > 0 && gifOk) ? 0 : 1;
+    }
+
+    // ---- Crowd-spread capture (--capture-crowd-spread [outDir]) ------------
+    // The ANTI-CROWDING proof (Tim: "characters must NEVER occupy the same space,
+    // nor DESIRE to"). Spawn a CLUSTER of guards stacked on nearly one point beside a
+    // player reference, then step them through the REAL MonsterManager::update (which
+    // wires the separation STEERING and the hard DE-OVERLAP pass). Capture a top-down
+    // sequence: the same run is its own before/after — t=0 is a stacked pile, and by
+    // ~t=2.5 s the squad has fanned into a clean ring/arc with no two bodies clipping.
+    // A per-frame MIN pairwise-distance readout quantifies the spread honestly.
+    if (captureCrowdSpread) {
+        namespace fs = std::filesystem;
+        x3::logInfo("--capture-crowd-spread: rendering the anti-crowding proof to " +
+                    captureCrowdSpreadDir);
+        std::error_code mkec;
+        fs::create_directories(captureCrowdSpreadDir, mkec);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
+        cphys->init();
+        {
+            const float h = 80.0f;
+            float gv[] = { -h,0,-h,  h,0,-h,  h,0,h,  -h,0,h };
+            uint32_t gidx[] = { 0,2,1, 0,3,2 };
+            cphys->addStaticMesh(gv, 4, gidx, 6);
+        }
+        x3::game::Scene cscene;
+
+        std::vector<x3::rhi::MeshVertex> gvtx; std::vector<uint32_t> gixs;
+        x3::prims::makeGroundQuad(/*half=*/80.0f, /*tiles=*/40.0f, gvtx, gixs);
+        x3::rhi::MeshHandle groundMesh = device->createMesh(
+            gvtx.data(), (uint32_t)gvtx.size(), gixs.data(), (uint32_t)gixs.size());
+        auto groundPx = x3::prims::makeCheckerRGBA(64, 8, 120, 130, 120, 64, 72, 66);
+        x3::rhi::TextureHandle groundTex = device->createTexture(groundPx.data(), 64, 64, true);
+        const float modelGround[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float whiteTint[4] = { 1, 1, 1, 1 };
+
+        x3::prims::PrimMesh markerM = x3::prims::makeBox(0.35f, 0.9f, 0.35f, 0, 0.9f, 0, 0.5f);
+        x3::rhi::MeshHandle markerMesh = device->createMesh(
+            markerM.verts.data(), (uint32_t)markerM.verts.size(),
+            markerM.index.data(), (uint32_t)markerM.index.size());
+        auto markerPx = x3::prims::makeSolidRGBA(4, 250, 235, 120);
+        x3::rhi::TextureHandle markerTex = device->createTexture(markerPx.data(), 4, 4, true);
+
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.45f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+        {
+            x3::rhi::PointLight pl[5];
+            auto setL = [](x3::rhi::PointLight& l, float x, float y, float z,
+                           float r, float g, float b, float range) {
+                l.pos[0]=x; l.pos[1]=y; l.pos[2]=z; l.range=range;
+                l.color[0]=r; l.color[1]=g; l.color[2]=b;
+            };
+            setL(pl[0],   0.0f, 10.0f,  0.0f,  6.0f, 5.9f, 5.5f, 60.0f); // overhead key
+            setL(pl[1],   9.0f, 5.0f,  9.0f,  3.6f, 3.5f, 3.2f, 44.0f);
+            setL(pl[2],  -9.0f, 5.0f,  9.0f,  3.2f, 3.5f, 4.0f, 44.0f);
+            setL(pl[3],   9.0f, 5.0f, -9.0f,  3.5f, 3.4f, 3.2f, 44.0f);
+            setL(pl[4],  -9.0f, 5.0f, -9.0f,  3.2f, 3.5f, 4.0f, 44.0f);
+            device->setPointLights(pl, 5);
+        }
+
+        struct CapTarget final : public x3::game::IDamageSink {
+            x3::phys::Vec3 eye{ 0.0f, 1.6f, 0.0f };
+            bool takeDamage(int) override { return true; }
+            x3::phys::Vec3 damageTargetPos() const override { return eye; }
+            bool isAlive() const override { return true; }
+        };
+        CapTarget player;
+        const x3::phys::Vec3 playerFoot{ 0.0f, 0.0f, 0.0f };
+
+        // A squad of guards spawned in a TIGHT pile ~4 m from the player — deep body
+        // overlap at t=0 (the worst-case "everyone on one tile"). They all chase the
+        // same player, so separation + de-overlap must fan them into a ring/arc.
+        auto pickAnimGlb = [](const std::string& dir, const char* base) -> std::string {
+            namespace fs2 = std::filesystem;
+            std::string b(base);
+            std::string stem = (b.size() > 4 && b.substr(b.size()-4) == ".glb")
+                ? b.substr(0, b.size()-4) : b;
+            std::string anim = stem + "_anim.glb";
+            std::error_code ec;
+            if (fs2::exists(fs2::path(dir) / anim, ec)) return anim;
+            return b;
+        };
+        const std::string modelDir = x3::game::riggedGlbRoot();
+        x3::game::MonsterManager squad;
+        const int kSquad = 8;
+        for (int i = 0; i < kSquad; ++i) {
+            x3::game::MonsterSystem::Tuning t;
+            t.type = x3::game::MonsterType::Guard;
+            t.hp = 100; t.chaseSpeed = 3.2f;
+            // Alternate two tints so overlapping/adjacent bodies are visually separable.
+            if (i & 1) { t.tint[0]=1.7f; t.tint[1]=1.5f; t.tint[2]=1.2f; }
+            else       { t.tint[0]=1.2f; t.tint[1]=1.6f; t.tint[2]=2.0f; }
+            t.tint[3]=1.0f;
+            t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
+            t.ranged = false;
+            t.modelFile = pickAnimGlb(modelDir, "marcus_webb.glb");
+            t.modelDirOverride = modelDir;
+            t.standUpZtoY = false; t.modelScale = 1.0f;
+            // A ~0.3 m jittered pile centered 4 m in +Z (deterministic offsets).
+            const float ox = std::cos((float)i * 2.399963f) * 0.28f;
+            const float oz = std::sin((float)i * 2.399963f) * 0.28f;
+            squad.spawn(cscene, *device, *cphys, modelDir,
+                        x3::phys::Vec3{ ox, 0.0f, 4.0f + oz }, t);
+        }
+
+        // TOP-DOWN-ish camera straight over the action so the ring/arc reads clearly.
+        device->setCamera(0.0f, 15.0f, 6.5f, /*yaw=*/ -1.5708f, /*pitch=*/ -1.06f, 55.0f);
+
+        auto minPairDist = [&]() -> float {
+            float best = 1e30f;
+            for (uint32_t i = 0; i < squad.count(); ++i) {
+                if (!squad.at(i).alive()) continue;
+                for (uint32_t j = i + 1; j < squad.count(); ++j) {
+                    if (!squad.at(j).alive()) continue;
+                    const x3::phys::Vec3 a = squad.at(i).pos(), b = squad.at(j).pos();
+                    const float dx = a.x - b.x, dz = a.z - b.z;
+                    const float d = std::sqrt(dx*dx + dz*dz);
+                    if (d < best) best = d;
+                }
+            }
+            return best;
+        };
+
+        const float dt = 1.0f / 60.0f;
+        // Capture instants (s) -> filename tag. The first is the stacked "before".
+        struct Cap { float t; const char* tag; };
+        const Cap caps[] = {
+            { 0.00f, "t00_stacked" }, { 0.40f, "t04" }, { 0.80f, "t08" },
+            { 1.60f, "t16" }, { 3.00f, "t30_ring" },
+        };
+        const int nCaps = (int)(sizeof(caps) / sizeof(caps[0]));
+        const float duration = 3.05f;
+        const int totalSteps = (int)(duration / dt + 0.5f);
+        x3::game::AttackFxFn noFx{};
+        int nextCap = 0;
+        int wrote = 0;
+
+        auto renderAndMaybeCapture = [&](float t) {
+            const bool doCap = (nextCap < nCaps) && (t + 1e-4f >= caps[nextCap].t);
+            char fpath[512];
+            if (doCap) {
+                std::snprintf(fpath, sizeof(fpath), "%s/crowd_spread_%s.png",
+                              captureCrowdSpreadDir.c_str(), caps[nextCap].tag);
+                device->armCapture(fpath);
+            }
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                device->drawMesh(frame, groundMesh, groundTex, whiteTint, modelGround);
+                const float modelMarker[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                                                player.eye.x, 0.0f, player.eye.z, 1 };
+                device->drawMesh(frame, markerMesh, markerTex, whiteTint, modelMarker);
+                cscene.render(*device, frame);
+                squad.drawAll(*device, frame, cscene);
+            }
+            device->endFrame(frame);
+            if (doCap) {
+                if (device->captureFrame(fpath)) { ++wrote; }
+                char line[192];
+                std::snprintf(line, sizeof(line),
+                    "[crowd-spread] t=%4.2f  minPairDist=%.3f m  -> %s",
+                    t, minPairDist(), fpath);
+                x3::logInfo(line);
+                ++nextCap;
+            }
+        };
+
+        for (int step = 0; step <= totalSteps; ++step) {
+            const float t = step * dt;
+            glfwPollEvents();
+            renderAndMaybeCapture(t);
+            // Advance the squad with the REAL manager update (separation + de-overlap).
+            squad.update(dt, cscene, *cphys, playerFoot, &player, noFx);
+            cphys->step(dt);
+        }
+
+        x3::logInfo("--capture-crowd-spread: wrote " + std::to_string(wrote) +
+                    " frames to " + captureCrowdSpreadDir);
+
+        device->destroyMesh(groundMesh);
+        device->destroyTexture(groundTex);
+        device->destroyMesh(markerMesh);
+        device->destroyTexture(markerTex);
+        squad.shutdown();
+        cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return (wrote > 0) ? 0 : 1;
     }
 
     // ---- Walk-pose capture (--capture-walk [outPath]) ----------------------

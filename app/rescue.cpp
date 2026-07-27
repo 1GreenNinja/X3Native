@@ -740,6 +740,49 @@ bool RescueSystem::tryRescue(const x3::phys::Vec3& playerPos, float reach) {
     return best->tryRescue(playerPos, reach);
 }
 
+// Push a live companion out of every immovable point it overlaps. Full push (the
+// point never moves), clamped per frame so a deep overlap eases apart over a few
+// ticks rather than snapping. Mirrors MonsterManager::deOverlapMembers' math.
+void RescueVictim::deOverlapFromPoints(const x3::phys::Vec3* pts, const float* ptR,
+                                       uint32_t n, x3::phys::IPhysicsWorld& physics) {
+    if (m_state != VictimState::Companion || !m_body.valid()) return;
+    constexpr float kMaxPush = 0.10f;
+    const float ra = kCompanionRadius;
+    for (uint32_t k = 0; k < n; ++k) {
+        float dx = m_pos.x - pts[k].x, dz = m_pos.z - pts[k].z;
+        float d2 = dx * dx + dz * dz;
+        const float minD = ra + ptR[k];
+        if (d2 >= minD * minD) continue;                  // not overlapping
+        float d = std::sqrt(d2);
+        if (d < 1e-4f) { dx = 1.0f; dz = 0.0f; d = 1.0f; } // co-located: fixed axis
+        float push = minD - d;
+        if (push > kMaxPush) push = kMaxPush;
+        nudgePlanar(dx / d * push, dz / d * push, physics);
+    }
+}
+
+void RescueSystem::deOverlapCompanions(const x3::phys::Vec3* hostiles, const float* hostileR,
+                                       uint32_t nHostiles, x3::phys::IPhysicsWorld& physics) {
+    if (!m_built) return;
+    const uint32_t N = (uint32_t)m_victims.size();
+    for (uint32_t i = 0; i < N; ++i) {
+        RescueVictim* a = m_victims[i].get();
+        if (!a->companion()) continue;
+        // (a) vs every live hostile body-center.
+        a->deOverlapFromPoints(hostiles, hostileR, nHostiles, physics);
+        // (b) vs every OTHER live companion (peer treated as immovable — each pushes
+        // the other, which still converges to a clean gap).
+        for (uint32_t j = 0; j < N; ++j) {
+            if (j == i) continue;
+            RescueVictim* b = m_victims[j].get();
+            if (!b->companion()) continue;
+            const x3::phys::Vec3 bp = b->pos();
+            const float br = b->bodyRadiusXZ();
+            a->deOverlapFromPoints(&bp, &br, 1, physics);
+        }
+    }
+}
+
 void RescueSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                         const Scene& scene) const {
     for (const auto& v : m_victims) v->draw(device, frame, scene);

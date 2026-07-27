@@ -336,8 +336,14 @@ constexpr float kAiTurnRate        = 7.0f;
 // move direction at kAiSeparationWeight strength (capped so it nudges, never
 // overrides, the state's intent). Behavioural tuning — the self-tests assert state
 // + facing, not exact spacing, so this is safe.
-constexpr float kAiSeparationRadius = 2.2f;  // allies closer than this push us apart (m)
-constexpr float kAiSeparationWeight = 0.9f;  // how hard separation steers vs the state dir
+// Playtest polish 2026-07 (Tim: "characters must NEVER want to crowd"): the earlier
+// values (2.2m / 0.9) were too weak — a chasing squad still collapsed onto one tile.
+// Widened the feel-radius (they start spreading sooner) and roughly doubled the push
+// so a group forms a loose RING/arc around the target at ~1.2-1.6m spacing instead of
+// stacking. Backed by the HARD de-overlap pass (deOverlapMembers) so overlap is
+// impossible even if the steering equilibrium is briefly overrun.
+constexpr float kAiSeparationRadius = 3.2f;  // allies closer than this push us apart (m)
+constexpr float kAiSeparationWeight = 1.6f;  // how hard separation steers vs the state dir
 // Per-instance decision cadence + jitter so enemies don't all switch in lockstep.
 constexpr float kAiDecisionPeriod  = 0.30f;  // re-evaluate state every ~0.3 s
 constexpr float kAiDecisionJitter  = 0.15f;  // +/- randomization on the cadence (s)
@@ -887,6 +893,21 @@ public:
     // Current body-center world position (D-ai: read by the ally query / regroup).
     x3::phys::Vec3 pos() const { return m_pos; }
 
+    // ---- Anti-overlap (hard de-overlap pass) ------------------------------
+    // Planar collision radius (the Enemy hitbox half-width). Two agents whose
+    // centers are closer than the sum of their radii are considered overlapping.
+    float bodyRadiusXZ() const { return m_hitHalfXZ; }
+    // Apply a planar positional correction and sync the physics body. This is the
+    // HARD "two characters never share a cell" floor that sits on top of the
+    // separation STEERING (which only makes them not WANT to crowd). Small,
+    // per-frame-clamped shoves — no-op on a dead / bodyless agent. Y is untouched.
+    void nudgePlanar(float dx, float dz, x3::phys::IPhysicsWorld& physics) {
+        if (!m_alive || !m_body.valid()) return;
+        m_pos.x += dx; m_pos.z += dz;
+        physics.setBodyPosition(m_body,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z });
+    }
+
     // Club max-out: externally drive an INERT prop's pose (position + heading).
     // Intended ONLY for chaseSpeed-0 / damage-0 character props (the Club 1127
     // dancers) — the caller owns the choreography and calls this each frame
@@ -1245,6 +1266,14 @@ public:
     // Movement-only overload (no attacks): forwards with a null target/empty fx.
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos);
+
+    // Hard de-overlap: NO two live members share a cell. Pairwise planar push so
+    // every pair of centers ends up >= (rA + rB) apart. A cheap positional
+    // correction (split between the pair, clamped per-frame so it eases apart and
+    // never explodes) that GUARANTEES no clipping on top of the separation STEERING
+    // (which only shapes where they WANT to be). Called at the end of update(); also
+    // exposed so a host can run a combined pass across several managers + companions.
+    void deOverlapMembers(x3::phys::IPhysicsWorld& physics);
 
     // Draw every monster (each owns its multi-primitive model).
     void drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

@@ -473,6 +473,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureAiDir = argv[++i];
         }
+        else if (a == "--capture-crowd-spread") {
+            o.captureCrowdSpread = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureCrowdSpreadDir = argv[++i];
+        }
         else if (a == "--capture-walk") {
             o.captureWalk = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWalkPath = argv[++i];
