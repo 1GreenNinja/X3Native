@@ -156,6 +156,13 @@ struct CliOptions {
     // MantisArbiter) on a HeadlessDevice + Jolt world; asserts the roster is
     // complete + ordered, each row builds, and per-species stat invariants hold.
     bool        testCanonAliens = false;
+    // --test-packspiders (PACK-HARVEST ARACHNIDS): the two spider rows harvested
+    // from the licensed "Spiders - characters with animations" pack. Builds each
+    // row on a HeadlessDevice + Jolt world and asserts the roster/stat invariants
+    // AND the harvest itself — the GLB really carries a 70-joint skinned arachnid
+    // rig with all six canonical clips moving, and MonsterSystem's stock fuzzy
+    // resolver binds every clip slot (no overrideClip needed). Additive flag.
+    bool        testPackSpiders = false;
     // --test-clone (THE CLONE — Act-1 finale boss on F7). Builds the 3-phase
     // Clone + the neural-collar minigame on a HeadlessDevice + Jolt world and
     // asserts: SEPARATION spawn (+ restrained non-combat Sarah placeholder), the

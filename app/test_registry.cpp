@@ -61,6 +61,7 @@
 #include "canon_play.h"
 #include "desc_mechanics.h"   // W9-1: runDescMechSelfTest (--test-descmech)
 #include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
+#include "pack_spiders.h"                    // PACK-HARVEST arachnids (Lab Skitterer / Venom Brood) — --test-packspiders
 #include "clone_boss.h"                      // THE CLONE — Act-1 finale 3-phase boss + neural collar — --test-clone
 #include "intro_coldopen.h"
 #include "intro_orchestrator.h"   // x3::intro::runIntroOrchestratorSelfTest (--test-introorch)
@@ -689,6 +690,12 @@ int dispatchTests(const TestFlags& tf) {
                     "Saurian Soldier/Warlord, Grey Tasked, Nordic Steward, Mantis Arbiter) "
                     "self-test...");
         return x3::game::runCanonAliensSelfTest() ? 0 : 1;
+    }
+    if (tf.testPackSpiders) {
+        x3::logInfo("running PACK-HARVEST ARACHNID roster self-test (Lab Skitterer / Venom "
+                    "Brood harvested from the licensed spider pack: real 70-bone arachnid rig "
+                    "+ all six canonical clips bound through the stock fuzzy resolver)...");
+        return x3::game::runPackSpidersSelfTest() ? 0 : 1;
     }
     if (tf.testClone) {
         x3::logInfo("running THE CLONE Act-1 finale boss self-test (3-phase HP-gated machine: SEPARATION -> NEURAL COLLAR -> MUTATED HYBRID, the collar destroy minigame, and the \"Sarah freed\" / \"Clone dead\" integration events)...");
