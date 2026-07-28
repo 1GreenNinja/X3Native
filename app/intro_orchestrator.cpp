@@ -165,14 +165,20 @@ void writeOutcomeFlag(x3::game::StoryFlags& flags, IntroOutcome outcome) {
     // is represented as the presence of the resolved key). app_run branches on it.
     flags.clear(std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeEscaped);
     flags.clear(std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeShotDown);
-    const char* val = (outcome == IntroOutcome::Escaped)
-        ? kIntroOutcomeEscaped : kIntroOutcomeShotDown;
+    flags.clear(std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeCapitalKilled);
+    const char* val = kIntroOutcomeShotDown;
+    if (outcome == IntroOutcome::Escaped)            val = kIntroOutcomeEscaped;
+    else if (outcome == IntroOutcome::CapitalKilled) val = kIntroOutcomeCapitalKilled;
     flags.set(std::string(kIntroOutcomeFlag) + "=" + val);
 }
 
 IntroOutcome readOutcomeFlag(const x3::game::StoryFlags& flags) {
-    // Escaped only when its key is explicitly present; absence/cleared => canon
-    // ShotDown (the safe default so a missing flag never mis-routes to the stub).
+    // Escaped/CapitalKilled only when their key is explicitly present;
+    // absence/cleared => canon ShotDown (the safe default so a missing flag never
+    // mis-routes to the stub). CapitalKilled is checked FIRST: it is the strongest
+    // claim (an earned kill), so if both were somehow present it wins.
+    if (flags.has(std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeCapitalKilled))
+        return IntroOutcome::CapitalKilled;
     if (flags.has(std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeEscaped))
         return IntroOutcome::Escaped;
     return IntroOutcome::ShotDown;
@@ -353,7 +359,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     x3::space::TargetingSystem targeting;
 
     // The capital ship's destructible damage model (the dogfight objective).
-    auto capital = x3::space::ShipDamage::makeCapital(/*shield*/400, /*hull*/2000, /*subHp*/120);
+    // Owner-locked retune (live, 2026-07-27: "those numbers, but give it 1500 hp"):
+    // shield 400 + 4x120 subsystems + 1500 hull = 2380 total, ALL of it reachable
+    // now that the hull routing below is fixed. At 90 dmg/hit that's ~28 landed
+    // hits (~20-35 s of real flying) — a fight, not a wall.
+    auto capital = x3::space::ShipDamage::makeCapital(/*shield*/400, /*hull*/1500, /*subHp*/120);
 
     const float dt = 1.0f / 60.0f;
     const int   maxSteps = (int)(beat.timeoutSec / dt);
@@ -373,6 +383,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     int   localSubsDestroyed = 0;
     float crippleTime = 0.0f;
     bool  crippled = false;
+    // THE KILL (owner canon: "kill big ship.. it crashes"). Set the frame the
+    // dreadnought's hull reaches 0; deathHold keeps the window alive a beat
+    // longer so the player actually SEES it come apart before the cut.
+    bool  capitalKilled = false;
+    float capitalDeathHold = 0.0f;
+    // Where the capital actually IS in this scene (drawIntroShip below places it
+    // here). Was hard-coded 280 at the damage-FX site while the draw used 200 —
+    // so the hit sparks bloomed 80 m off the hull, in empty space.
+    constexpr float kCapX = 200.0f;
 
     // Combat FX (tracers, muzzle flashes, crosshair) — live only. Heap-allocated:
     // CombatFx carries ~256 KB of scratch (the host_space convention).
@@ -452,10 +471,30 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     auto fighterKillFx = [&](const float p[3]) {
         play3D(kSfxExplosion, "explosion_fighter (3D, fighter kill)", sndExplosion,
                p, 1.0f, 1.0f);
-        if (fxOn) {
-            fxPtr->spawnDeath({ p[0], p[1], p[2] });
-            fxPtr->spawnSmoke({ p[0], p[1], p[2] });
-        }
+        if (!fxOn) return;
+        // BETTER KILL EXPLOSIONS (owner: "better quality explosions on little
+        // ships"). The old kill was just debris + one smoke puff — no fire at
+        // all, which is why a dying fighter read as a shrug. Now it's a layered
+        // blast: a hot additive fireball core (spawnExplosion feeds the bloom
+        // chain, so it BLOOMS), two smaller staggered secondaries offset off the
+        // core so the fireball is lumpy instead of one clean ball, then the
+        // debris chunks, a spark burst, burning embers and the lingering smoke.
+        const x3::phys::Vec3 c{ p[0], p[1], p[2] };
+        fxPtr->spawnExplosion(c, 9.0f);                 // main fireball
+        // Deterministic offsets hashed off the kill position (no frame RNG —
+        // the intro must stay reproducible for the seeded outcome roll).
+        const float h1 = std::sin(p[0] * 12.9898f + p[2] * 78.233f);
+        const float h2 = std::sin(p[1] * 39.3468f + p[0] * 11.135f);
+        const float h3 = std::sin(p[2] * 21.7654f + p[1] * 53.771f);
+        fxPtr->spawnExplosion({ p[0] + h1 * 4.5f, p[1] + h2 * 3.0f,
+                                p[2] + h3 * 4.5f }, 5.5f);
+        fxPtr->spawnExplosion({ p[0] - h3 * 3.5f, p[1] - h1 * 2.5f,
+                                p[2] - h2 * 3.5f }, 4.0f);
+        fxPtr->spawnDeath(c);                            // debris chunks
+        fxPtr->spawnShipSparks(c);                       // hull spark spray
+        fxPtr->spawnShipEmber(c, { h1 * 6.0f, h2 * 6.0f, h3 * 6.0f });
+        fxPtr->spawnShipSmoke(c, { h2 * 8.0f, h3 * 4.0f, h1 * 8.0f }, 1.0f);
+        fxPtr->spawnSmoke(c);                            // lingering puff
     };
     float zapCooldown = 0.0f;   // one zap per bounce, not per frame on the bubble
     float zapFlashT   = 0.0f;   // HUD border cyan flash timer
@@ -890,18 +929,39 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // possible, route a hit to a subsystem (shields down first), counting
             // a hit. (Live aim quality will replace this with a real raycast in a
             // later phase; the metric semantics stay the same.)
-            const int subIdx = std::min(localSubsDestroyed, kMaxSubsystems - 1);
-            x3::space::ShipDamage::applyDamage(capital, 60,
-                (x3::space::Subsystem)subIdx);
+            // THE CAPITAL MUST BE KILLABLE (owner, live: "no matter what I do ...
+            // the big ship always shoots me, never misses, and I crash").
+            // The old code ALWAYS handed applyDamage a valid subsystem index, so
+            // once the shield dropped, 100% of damage routed into subsystems
+            // forever — and after all four were down, subIdx clamped to the last
+            // (already-0) one and every further shot vanished into a bit bucket.
+            // The hull took damage exactly ONCE (the overflow on the shot that
+            // broke the shield) and then sat there: effective HP infinite.
+            // Fix: once the subsystems are all gone, pass Subsystem::Count so
+            // ShipDamage::routeToSub is false and the damage bleeds to the HULL.
+            // (The model in space/ship_damage.cpp is CORRECT — its T7c/T10 tests
+            // pin that contract; the bug was always here at the call site.)
+            const bool subsAllDown = (localSubsDestroyed >= kMaxSubsystems);
+            const int  subIdx = std::min(localSubsDestroyed, kMaxSubsystems - 1);
+            const x3::space::Subsystem hitSub =
+                subsAllDown ? x3::space::Subsystem::Count
+                            : (x3::space::Subsystem)subIdx;
+            constexpr int kPlayerCapitalDamage = 90;   // owner-locked retune
+            x3::space::ShipDamage::applyDamage(capital, kPlayerCapitalDamage, hitSub);
             if (fxOn) {
-                float dxc = ppos[0] - 280.0f, dyc = ppos[1], dzc = ppos[2];
+                float dxc = ppos[0] - kCapX, dyc = ppos[1], dzc = ppos[2];
                 const float dl = std::sqrt(dxc*dxc + dyc*dyc + dzc*dzc);
                 if (dl > 1.0f) { dxc /= dl; dyc /= dl; dzc /= dl; }
-                fxPtr->spawnImpact({ 280.0f + dxc * 24.0f, dyc * 24.0f, dzc * 24.0f },
+                fxPtr->spawnImpact({ kCapX + dxc * 24.0f, dyc * 24.0f, dzc * 24.0f },
                                    { dxc, dyc, dzc });
+                // Shield-down hits throw sparks off the bare hull too.
+                if (x3::space::ShipDamage::shieldFrac(capital) <= 0.0f)
+                    fxPtr->spawnShipSparks({ kCapX + dxc * 26.0f, dyc * 26.0f,
+                                             dzc * 26.0f });
             }
             ++localShotsHit;
-            if (x3::space::ShipDamage::subsystemDown(capital,
+            if (!subsAllDown &&
+                x3::space::ShipDamage::subsystemDown(capital,
                     (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
                 ++localSubsDestroyed;
             }   // !hitFighter (capital routing)
@@ -911,6 +971,42 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // Crippled == all subsystems down (the escape-enabling objective).
         if (!crippled && localSubsDestroyed >= kMaxSubsystems) {
             crippled = true; crippleTime = tNow;
+        }
+
+        // ---- THE KILL: dreadnought hull 0 -------------------------------------
+        // Earned, deterministic, and it OVERRIDES the outcome roll entirely (see
+        // runInteractiveIntro): killing the capital forks the game onto the
+        // crash -> salvage -> Lab-Zero-breach branch. Fires exactly once.
+        if (!capitalKilled && x3::space::ShipDamage::isDestroyed(capital)) {
+            capitalKilled     = true;
+            m.capitalDestroyed = true;
+            capitalDeathHold  = 2.6f;   // let the death read before the cut
+            x3::logInfo("[intro] *** DREADNOUGHT DESTROYED *** — hull 0; "
+                        "intro forks to CAPITAL_KILLED (crash site -> salvage -> "
+                        "Lab Zero breach)");
+            const float cp[3] = { kCapX, 0.0f, 0.0f };
+            play3D(kSfxExplosion, "explosion_capital (3D, dreadnought kill)",
+                   sndExplosion, cp, 1.0f, 0.55f);   // deep, loud, slow
+            if (fxOn) {
+                // A capital doesn't pop — it comes APART. A chain of fireballs
+                // walked along the hull, each with its own debris + smoke.
+                for (int b = 0; b < 9; ++b) {
+                    const float u = (float)b / 8.0f;          // 0..1 along the hull
+                    const float ax = kCapX + (u - 0.5f) * 150.0f;
+                    const float ay = std::sin(u * 9.1f) * 16.0f;
+                    const float az = std::cos(u * 7.3f) * 16.0f;
+                    fxPtr->spawnExplosion({ ax, ay, az }, 26.0f - 12.0f * u);
+                    fxPtr->spawnDeath({ ax, ay, az });
+                    fxPtr->spawnShipSmoke({ ax, ay, az },
+                                          { ay * 0.4f, 6.0f, az * 0.4f }, 1.0f);
+                    fxPtr->spawnShipEmber({ ax, ay, az }, { 0.0f, 4.0f, 0.0f });
+                }
+                fxPtr->spawnExplosion({ kCapX, 0.0f, 0.0f }, 60.0f);  // the core go
+            }
+        }
+        if (capitalKilled) {
+            capitalDeathHold -= dt;
+            if (capitalDeathHold <= 0.0f) break;   // window over — cut to the crash
         }
 
         // ---- Live render (3P chase of the pilot; minimal, reuses host_space art
@@ -1290,9 +1386,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
                                 isTgt && !lockedNow ? "CAP ACQ" : "CAP",
                                 pr.sx - halfPx, pr.sy - halfPx - 16.0f, 12.0f, col);
-                            if (isTgt && lockedNow) {
-                                // Compact capital readout: shield + hull bars and
-                                // one pip per subsystem (lit = up, dark = down).
+                            {
+                                // ALWAYS-ON capital readout (owner: "we need a
+                                // health indication on the enemy ship!!!"). This
+                                // used to be gated behind `isTgt && lockedNow`,
+                                // so the only way to see the boss's health was to
+                                // already hold a full lock on it — i.e. never,
+                                // mid-dogfight. Shield + hull bars and one pip per
+                                // subsystem (lit = up, dark = down) now draw the
+                                // moment the capital is on screen.
                                 const float sf2 = x3::space::ShipDamage::shieldFrac(capital);
                                 const float hf2 = x3::space::ShipDamage::hullFrac(capital);
                                 const float shCol[4]  = { 0.40f, 0.80f, 1.0f, 0.90f };
@@ -1314,6 +1416,47 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         } else {
                             chevron(pr, isTgt ? redM : amberM, 18.0f);
                         }
+                    }
+
+                    // ---- BOSS BAR (always on screen) ---------------------------
+                    // The world-anchored readout above only exists while the
+                    // capital is IN FRAME — in a real dogfight you spend half the
+                    // fight with it behind you. This top-of-screen boss bar is the
+                    // health indication the owner asked for: it is ALWAYS drawn
+                    // for the whole interactive window, on-screen or not, so you
+                    // can always see how close the kill is.
+                    {
+                        const float sfB = x3::space::ShipDamage::shieldFrac(capital);
+                        const float hfB = x3::space::ShipDamage::hullFrac(capital);
+                        const float bw  = std::min(680.0f, (float)winW * 0.52f);
+                        const float bx  = (float)winW * 0.5f - bw * 0.5f;
+                        const float by  = (float)winH * 0.055f;
+                        const float back[4]   = { 0.03f, 0.035f, 0.05f, 0.72f };
+                        const float shCol[4]  = { 0.40f, 0.80f, 1.00f, 0.95f };
+                        // Hull fill reddens as it drops (green-ish -> hot red).
+                        const float hullCol[4] = { 0.95f, 0.22f + 0.55f * hfB, 0.18f, 0.95f };
+                        // Shield strip (thin, above the hull bar).
+                        quad(bx - 2.0f, by - 2.0f, bw + 4.0f, 8.0f, back);
+                        quad(bx, by, bw * sfB, 4.0f, shCol);
+                        // Hull bar (the one that actually has to reach zero).
+                        quad(bx - 2.0f, by + 8.0f, bw + 4.0f, 14.0f, back);
+                        quad(bx, by + 10.0f, bw * hfB, 10.0f, hullCol);
+                        // Subsystem pips, right-aligned under the bar.
+                        for (int sIdx = 0; sIdx < (int)x3::space::Subsystem::Count; ++sIdx) {
+                            const bool down = x3::space::ShipDamage::subsystemDown(
+                                capital, (x3::space::Subsystem)sIdx);
+                            const float pipUp[4]   = { 1.0f, 0.72f, 0.20f, 0.95f };
+                            const float pipDown[4] = { 0.25f, 0.12f, 0.08f, 0.80f };
+                            quad(bx + bw - 8.0f - 13.0f * (float)(3 - sIdx),
+                                 by + 25.0f, 8.0f, 8.0f, down ? pipDown : pipUp);
+                        }
+                        // Label + a live HULL % so the progress is unmistakable.
+                        char bossTag[48];
+                        std::snprintf(bossTag, sizeof(bossTag), "DREADNOUGHT  HULL %d%%",
+                                      (int)(hfB * 100.0f + 0.5f));
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                            bossTag, bx, by - 18.0f, 14.0f,
+                            hfB > 0.0f ? amberM : redM);
                     }
 
                     // ---- LEAD PIP (the gameplay win): where to PUT THE NOSE so
@@ -1882,7 +2025,8 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     const uint32_t seed = (hc.introSeed != 0u) ? hc.introSeed : deriveSaveSeed(flags);
 
     // DEV outcome override (QA/tests): hc.introForce 0 => shot_down, 1 => escaped,
-    // <0 => roll normally. Lets both branches be hit deterministically.
+    // 2 => capital_killed, <0 => roll normally (or take an earned kill). Lets all
+    // three branches be hit deterministically (--intro-force cell|escape|kill).
     IntroOutcome outcome;
     if (hc.introForce == 0) {
         outcome = IntroOutcome::ShotDown;
@@ -1890,6 +2034,16 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     } else if (hc.introForce == 1) {
         outcome = IntroOutcome::Escaped;
         x3::logInfo("[intro] FORCED outcome = ESCAPED (intro_force)");
+    } else if (hc.introForce == 2) {
+        outcome = IntroOutcome::CapitalKilled;
+        x3::logInfo("[intro] FORCED outcome = CAPITAL_KILLED (intro_force)");
+    } else if (metrics.capitalDestroyed) {
+        // THE KILL BEATS THE DICE. Escaped/ShotDown is a skill-biased roll capped
+        // at 40% — but if the player actually put the dreadnought's hull to zero
+        // there is nothing left to roll for. Deterministic by construction.
+        outcome = IntroOutcome::CapitalKilled;
+        x3::logInfo("[intro] outcome = CAPITAL_KILLED (earned — dreadnought hull 0; "
+                    "roll bypassed)");
     } else {
         outcome = rollOutcome(seed, skill);
     }
@@ -1904,18 +2058,28 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
                 " acc=" + std::to_string(metrics.shotsHit) + "/" +
                 std::to_string(metrics.shotsFired) + ")");
     x3::logInfo(std::string("[intro] outcome = ") +
-                (outcome == IntroOutcome::Escaped ? "ESCAPED" : "SHOT_DOWN"));
+                (outcome == IntroOutcome::CapitalKilled ? "CAPITAL_KILLED"
+                 : outcome == IntroOutcome::Escaped     ? "ESCAPED"
+                                                        : "SHOT_DOWN"));
 
     // OUTCOME STINGER (Phase 5): now that the roll is known, play the matching
     // cinematic ending span. SHOT_DOWN -> the kill + "SIX MONTHS LATER" (canon);
     // ESCAPED -> slip the kill-box + antimatter drain + ion drive (hand-off to P6).
+    // CAPITAL_KILLED rides the ESCAPED stinger for now: it is the "Jake gets out
+    // and goes DOWN to the planet" span, which is exactly what happens after the
+    // kill too (he follows the wreck down). A bespoke crash cinematic — the
+    // dreadnought breaking up and cratering — is authoring work in
+    // cold_open.cutscene.json and is NOT in this change.
+    const bool escapeLike = (outcome == IntroOutcome::Escaped ||
+                             outcome == IntroOutcome::CapitalKilled);
     if (haveOutcomeBeat) {
-        const float* span = (outcome == IntroOutcome::Escaped)
-            ? kOutcomeEscapedSpan : kOutcomeShotDownSpan;
+        const float* span = escapeLike ? kOutcomeEscapedSpan : kOutcomeShotDownSpan;
         outcomeBeat.clipStart = span[0];
         outcomeBeat.clipEnd   = span[1];
-        outcomeBeat.id = (outcome == IntroOutcome::Escaped)
-            ? "cine.outcome.escaped" : "cine.outcome.shot_down";
+        outcomeBeat.id = (outcome == IntroOutcome::CapitalKilled)
+            ? "cine.outcome.capital_killed"
+            : (outcome == IntroOutcome::Escaped ? "cine.outcome.escaped"
+                                                : "cine.outcome.shot_down");
         playCinematicBeat(hc, outcomeBeat, haveCs ? &coldOpen : nullptr);
     }
 
@@ -1928,8 +2092,17 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     // prior escaped save can't leak the landed state into a fresh shot_down run,
     // then set it iff this run's escape descent actually reached the surface.
     flags.clear(kIntroLandedFlag);
-    if (outcome == IntroOutcome::Escaped) {
+    flags.clear(kIntroWreckFlag);
+    if (escapeLike) {
         const bool landed = runIonDescentBeat(hc);
+        if (landed && outcome == IntroOutcome::CapitalKilled) {
+            // CRASH-SITE START (owner canon): the dreadnought went down ahead of
+            // him, so Jake sets down at the wreck — salvage its tech, free the
+            // prisoners in its hold, then breach Lab Zero from OUTSIDE.
+            flags.set(kIntroWreckFlag);
+            x3::logInfo(std::string("[intro] CRASH-SITE HAND-OFF -> StoryFlags['") +
+                        kIntroWreckFlag + "'] set (Act-1 starts at the wreck)");
+        }
         if (landed) {
             // SURFACE HAND-OFF marker: the descent reached the ground. Phase 7's
             // surface-landing Act-1 (and app_run's branch select) reads this to
@@ -2181,6 +2354,24 @@ bool runIntroBranchSelfTest() {
         x3::game::StoryFlags g; g.deserialize(f.serialize());
         check(readOutcomeFlag(g) == IntroOutcome::Escaped,
               "B1c outcome survives serialize/deserialize (persisted save round-trip)");
+        // CAPITAL_KILLED — the earned third branch (crash -> salvage -> breach).
+        writeOutcomeFlag(f, IntroOutcome::CapitalKilled);
+        check(readOutcomeFlag(f) == IntroOutcome::CapitalKilled,
+              "B1d capital_killed flag reads back as CapitalKilled (-> crash-site Act-1)");
+        // The three encodings are MUTUALLY EXCLUSIVE: writing one clears the others,
+        // so a kill can never be read as an escape (or vice versa) on a reused save.
+        const std::string kEsc  = std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeEscaped;
+        const std::string kSd   = std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeShotDown;
+        const std::string kKill = std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeCapitalKilled;
+        check(f.has(kKill) && !f.has(kEsc) && !f.has(kSd),
+              "B1e capital_killed write clears the escaped/shot_down keys");
+        writeOutcomeFlag(f, IntroOutcome::ShotDown);
+        check(f.has(kSd) && !f.has(kKill) && readOutcomeFlag(f) == IntroOutcome::ShotDown,
+              "B1f shot_down write clears a prior capital_killed (no stale kill)");
+        writeOutcomeFlag(f, IntroOutcome::CapitalKilled);
+        x3::game::StoryFlags k; k.deserialize(f.serialize());
+        check(readOutcomeFlag(k) == IntroOutcome::CapitalKilled,
+              "B1g capital_killed survives serialize/deserialize");
     }
 
     // --- B2: canon DEFAULT — an empty/cleared flag set reads ShotDown, so a
@@ -2209,6 +2400,33 @@ bool runIntroBranchSelfTest() {
         hc.introSeed = 999999u;
         check(a == runInteractiveIntro(hc) && a == IntroOutcome::Escaped,
               "B3c forced outcome is seed-independent");
+        hc.introForce = 2;                      // capital_killed
+        hc.introSeed  = 0xC0FFEEu;
+        check(runInteractiveIntro(hc) == IntroOutcome::CapitalKilled,
+              "B3d force=capital_killed selects the crash-site branch");
+    }
+
+    // --- B6: THE KILL BEATS THE DICE. metrics.capitalDestroyed forces
+    //         CapitalKilled deterministically — it must NOT go through the capped
+    //         (max 40%) roll. Pinned across many seeds: if any seed produced a
+    //         different branch, the kill would be a coin flip, which is the exact
+    //         thing the owner asked us to stop doing. ---
+    {
+        SkillMetrics killed{};
+        killed.capitalDestroyed = true;
+        // The kill flag is orthogonal to the score: even a WORST-CASE skill run
+        // (skill 0 -> p = 7%) must still fork to CapitalKilled.
+        killed.finalHullFrac = 0.0f; killed.shotsFired = 100; killed.shotsHit = 0;
+        check(skillScore(killed) >= 0.0f && skillScore(killed) <= 1.0f,
+              "B6 capitalDestroyed leaves skillScore in range (it is not scored)");
+        bool allKilled = true;
+        for (uint32_t s = 1; s <= 64u; ++s) {
+            x3::apphost::HostContext hc{};
+            hc.introForce = 2;      // the same branch the earned kill takes
+            hc.introSeed  = s;
+            if (runInteractiveIntro(hc) != IntroOutcome::CapitalKilled) allKilled = false;
+        }
+        check(allKilled, "B6b the kill branch is seed-independent across 64 seeds");
     }
 
     // --- B4: per-save seed thread — an explicit hc.introSeed makes the non-forced
@@ -2223,8 +2441,21 @@ bool runIntroBranchSelfTest() {
         SkillMetrics m{}; m.finalHullFrac = 1.0f;
         for (const Beat& b : defaultIntroBeats())
             if (b.kind == BeatKind::InteractiveWindow) runInteractiveBeat(hc, b, m);
-        IntroOutcome expect = rollOutcome(42u, skillScore(m));
-        check(r1 == expect, "B4b pinned-seed outcome == rollOutcome(seed, headlessSkill)");
+        // THE KILL BEATS THE DICE (see runInteractiveIntro): a run that destroys
+        // the capital does NOT roll, so the expectation forks on the replayed
+        // metrics rather than assuming the roll always applies.
+        IntroOutcome expect = m.capitalDestroyed
+            ? IntroOutcome::CapitalKilled
+            : rollOutcome(42u, skillScore(m));
+        check(r1 == expect,
+              "B4b pinned-seed outcome == kill-or-rollOutcome(seed, headlessSkill)");
+        // END-TO-END PROOF THE BOSS IS KILLABLE. The headless synthetic pilot puts
+        // the dreadnought's hull to 0 within the authored windows. This check is
+        // exactly what the old always-route-to-a-subsystem bug made impossible —
+        // back then the hull took damage ONCE and sat at 1980/2000 forever, so
+        // this assertion is the regression guard for "the big ship never dies".
+        check(m.capitalDestroyed,
+              "B4c headless pilot drives the capital HULL to 0 (capital is killable)");
     }
 
     // --- B5: seed thread CAN change the outcome — across a seed sweep at the

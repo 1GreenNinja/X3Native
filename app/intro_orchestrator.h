@@ -44,13 +44,23 @@ namespace x3 { namespace game { class StoryFlags; } }
 namespace x3::intro {
 
 // The branch the intro forks the game start on (spec §1, §5).
-enum class IntroOutcome { ShotDown, Escaped };
+//
+// CapitalKilled is the THIRD outcome (owner canon, 2026-07-27: "kill big ship..
+// it crashes... i land.. recover tech and prisoners from it.. break IN to Lab
+// zero"). Unlike Escaped/ShotDown it is NOT a dice roll — it is EARNED: it fires
+// if and only if the player actually drove the dreadnought's hull to 0 in the
+// climax window. The capital then falls out of orbit and craters on the surface;
+// Jake sets down at the wreck, salvages its tech, frees the prisoners it was
+// carrying, and breaches Lab Zero from OUTSIDE — inverting the canon "wakes up
+// captured in a cell" opening while keeping Lab Zero as the destination.
+enum class IntroOutcome { ShotDown, Escaped, CapitalKilled };
 
 // The StoryFlags key the orchestrator writes the outcome to (spec §5). app_run.cpp
 // (Phase 4) reads this to select the Act-1 build (cell vs surface landing).
 inline constexpr const char* kIntroOutcomeFlag = "intro.outcome";
 inline constexpr const char* kIntroOutcomeEscaped  = "escaped";
 inline constexpr const char* kIntroOutcomeShotDown = "shot_down";
+inline constexpr const char* kIntroOutcomeCapitalKilled = "capital_killed";
 
 // SURFACE HAND-OFF marker (Phase 6 -> Phase 7). On the ESCAPED branch, after the
 // antimatter-drain stinger, the orchestrator runs the ion-pulse atmo-descent
@@ -61,6 +71,13 @@ inline constexpr const char* kIntroOutcomeShotDown = "shot_down";
 // rescuer start) rather than inside the canon cell. It is only ever set on the
 // escape path that ran the full descent; ShotDown never sets it (canon -> cell).
 inline constexpr const char* kIntroLandedFlag = "intro.landed";
+
+// CRASH-SITE hand-off (the CapitalKilled branch). Set alongside kIntroLandedFlag
+// when the player KILLED the dreadnought: the wreck is down on the surface near
+// the facility, and Act-1 is to start at that crash site — salvage its tech,
+// free the prisoners in its hold, then breach Lab Zero from outside. Act-1 reads
+// this to pick the wreck start over the plain rescuer start.
+inline constexpr const char* kIntroWreckFlag = "intro.wreck";
 
 // The deterministic-roll node key (fed to chanceRoll, mirrors a chat-tree nodeKey).
 inline constexpr const char* kIntroRollKey = "intro.outcome";
@@ -109,6 +126,10 @@ struct SkillMetrics {
     int   shotsFired          = 0;   // player laser bolts fired
     float timeToCrippleSec    = 0.0f;// time to cripple the capital ship (s); 0 = never
     float windowDurationSec   = 1.0f;// the climax window length (s; normalizer for time)
+    // THE KILL. True iff the player drove the capital's HULL to 0 in a window.
+    // This is not scored — it OVERRIDES the roll entirely and forces
+    // IntroOutcome::CapitalKilled (the crash -> salvage -> Lab Zero breach).
+    bool  capitalDestroyed    = false;
 };
 
 // Number of destructible capital-ship subsystems (mirrors x3::space::Subsystem::Count).
