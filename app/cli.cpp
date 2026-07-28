@@ -66,6 +66,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-gltf") o.testGltf = true;
         else if (a == "--test-player") o.testPlayer = true;
         else if (a == "--test-interact") o.testInteract = true;
+        else if (a == "--test-doors") o.testDoors = true;   // door-mesh-swap polish gate (D1-D6)
         else if (a == "--test-physprops") o.testPhysprops = true;
         else if (a == "--test-ragdoll") o.testRagdoll = true;
         else if (a == "--test-ragdollskin") o.testRagdollSkin = true;
@@ -397,6 +398,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.showroomFloor2Shot = true;
             o.worldMode = "showroom";
             if (i + 1 < argc && argv[i + 1][0] != '-') o.showroomFloor2ShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-doors") {   // door-mesh-swap visual gate (per floor)
+            o.doorShot = true;
+            o.worldMode = "canonlevel";
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.doorShotDir = argv[++i];
         }
         else if (a == "--screenshot-showroom-door") {
             // Headless proof: the hidden STRUT-FACE door (open by default; closed via env).

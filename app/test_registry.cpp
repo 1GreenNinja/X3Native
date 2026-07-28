@@ -329,6 +329,10 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running button->door interaction (S4) self-test...");
         return x3::game::runInteractSelfTest() ? 0 : 1;
     }
+    if (tf.testDoors) {
+        x3::logInfo("running door-mesh-swap polish self-test (D1-D6)...");
+        return x3::game::runDoorSelfTest() ? 0 : 1;
+    }
     if (tf.testPhysprops) {
         x3::logInfo("running physics-props (hanging cubes / joints) self-test...");
         return x3::game::runPhysPropsSelfTest() ? 0 : 1;

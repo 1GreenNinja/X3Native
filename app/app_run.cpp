@@ -1931,6 +1931,17 @@ int runDefaultHost(HostContext& hc) {
                 audio->load(x3::game::resolveAudio("doors/door_open.wav")),
                 audio->load(x3::game::resolveAudio("doors/door_close.wav")),
                 audio->load(x3::game::resolveAudio("doors/door_locked.wav")));
+            // DOOR-MESH SWAP (mega-polish "audio"): a SUSTAINED servo bed that is
+            // started on the frame the slab begins to move and stopped on the frame
+            // it seats — the elevator's motor-loop pattern (ElevatorSystem::m_motorLoop),
+            // applied to doors. This REPLACES the open/close one-shots as the motion
+            // voice: door_open.wav is 2.19 s against a ~1 s slide, so as a fire-and-
+            // forget voice it audibly ran on after the door had stopped (the chaingun
+            // defect class). The short thunk marks the seat. A missing WAV loads
+            // invalid and the door falls back to the one-shots — never silent.
+            canonDoors.setMotorAudio(
+                audio->load(x3::game::resolveAudio("interact/servo_loop.wav")),
+                audio->load(x3::game::resolveAudio("interact/door_thunk.wav")));
             // W2-A2 (W2-E residual): PVS-gate the canon door slabs. Probe the two
             // rooms flanking each slab (across the wall normal per Door::axis)
             // against the frame's visible-room set; draw if either is visible.

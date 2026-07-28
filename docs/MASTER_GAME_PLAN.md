@@ -51,13 +51,13 @@ Targets (gameplay-side; engine perf is the farm's lane):
 - **Locked 60+ FPS, zero-stutter** (idTech-8 pillar #1). Honor the farm's render budget; stream/LOD content; no per-frame allocs in gameplay.
 - **Movement feel** — `ExtendedUpdate` controller, coyote time + jump buffer, air control, footstep IK (per `J-character-animation.spec`).
 - **Inertialized animation transitions** (no pops), **point-to-crosshair** weapons (✓), recoil/screen-shake/hit-feedback, **active-ragdoll** hit reactions.
-- **Doors/elevator** — real meshes (door-mesh swap next), smooth accel/decel, per-floor doors, audio.
+- **Doors/elevator** — real meshes (SM_Door_A leaf + SM_DoorFrame_A frame seated in every cut opening ✓), accel–cruise–decel easing ✓, per-floor door variants (leaf/frame tint + emissive signage band on the zone-colour ladder; RED while the keycard/keypad gate holds) ✓, servo-loop audio that starts and stops WITH the motion ✓. Gate: `--test-doors` (D1–D6, incl. 1.8 m-capsule passability); visual gate: `--screenshot-doors` → `docs/screenshots/doors/`.
 - **Game feel** — readable objectives, kill feed, damage flash, satisfying SFX (M9 audio), HDR/bloom/SSAO lighting (✓ farm).
 - **No jank**: fix see-through walls (side ✓; end-caps next), no z-fighting (door slimmed ✓), no fall-through, no facing-swivel (`CONVENTIONS.md`).
 
 ## Build order (14900K gameplay/content lane, off current `main`)
 1. **End-cap wall fix** (the remaining see-through) — per-side facing on the cross-walls too.
-2. **Door-mesh swap** — `SM_Door_A.glb` + frame (kills flat-color + ceiling-poke).
+2. **Door-mesh swap** ✓ DONE — `SM_Door_A.glb` leaf + `SM_DoorFrame_A.glb` frame, per-floor variants, eased motion, servo audio.
 3. **Spire floors** — build L1–L8 geometry per Act 1 above; wire the elevator's 7 stops to real floors; the F2 rescue hub; F7 clone boss.
 4. **Club 1127** + **deep tunnels** secrets.
 5. **Act 2 biomes** (lean on the farm's terrain + water) → the faction/alliance content → L48 Mirror.

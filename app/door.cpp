@@ -43,7 +43,8 @@ inline const std::string& kDoorGlbDir() {
     static const std::string d = convertedGlbRoot();
     return d;
 }
-const char* kDoorGlbRel = "ModularSciFi_Interior/SM_Door_A.glb";
+const char* kDoorGlbRel   = "ModularSciFi_Interior/SM_Door_A.glb";
+const char* kFrameGlbRel  = "ModularSciFi_Interior/SM_DoorFrame_A.glb";
 
 // Probed WORLD-space AABB of SM_Door_A AFTER the GLB node TRS is applied (the
 // space makeDrawables() bakes into nodeTransform — measured with python parsing
@@ -57,7 +58,75 @@ inline float gcx(const GlbAabb& a){ return (a.minx+a.maxx)*0.5f; }
 inline float gcz(const GlbAabb& a){ return (a.minz+a.maxz)*0.5f; }
 constexpr float kDoorGlbW = kDoorAabb.maxx - kDoorAabb.minx;  // 2.35 natural width (X)
 constexpr float kDoorGlbH = kDoorAabb.maxy - kDoorAabb.miny;  // 3.50 natural height (Y)
+
+// Probed WORLD-space AABB of SM_DoorFrame_A after its node TRS (the same table
+// cell_dressing.cpp / env_art.cpp measured — kept identical so all three passes
+// seat the same asset the same way): a 6.25 m x 4.446 m x 0.554 m showroom frame.
+constexpr GlbAabb kFrameAabb { -6.250f, -0.043f, -0.277f, 0.0f, 4.403f, 0.277f };
+constexpr float kFrameGlbW = kFrameAabb.maxx - kFrameAabb.minx;   // 6.250
+constexpr float kFrameGlbT = kFrameAabb.maxz - kFrameAabb.minz;   // 0.554
+// The frame's probed AABB base is a thin buried SILL; its VISIBLE jamb starts
+// ~0.69 GLB-units higher (cell_dressing measured this by eye as a 0.40 m drop at
+// its 0.58 scale — 0.40 / 0.58 = 0.69 — and its frames sit correctly on the deck).
+// Anchoring THAT plane on the floor is what stops the ring reading as floating.
+constexpr float kFrameSillGlb = 0.69f;
+constexpr float kFrameGlbH    = kFrameAabb.maxy - (kFrameAabb.miny + kFrameSillGlb);  // 3.756
+
+// ---- PER-FLOOR STYLE TABLE (door.h DoorStyle) ------------------------------
+// Hues follow the SAME canonical zone-colour ladder the rest of the tower already
+// speaks (docs/design/TEXTURE_DESIGN_STRATEGY §1.2; app_run.cpp's per-floor light
+// tints and fog, room_dressing.cpp's Zone recipes): F3 Genetics GREEN, F4
+// Cybernetics CYAN, F5 Drone AMBER, F6 Alien biolume TEAL, F7 Executive BRASS.
+// Doors were the one surface NOT carrying it. `leaf` multiplies an already
+// value-normalized albedo, so every channel is <= 1 and the surface-library VALUE
+// band (0.40 ceiling) still holds — this is a HUE pass, not a brightness cheat.
+constexpr DoorStyle kDoorStyles[kDoorFloorCount] = {
+    // name                leaf (albedo x)           sign (emissive)           frame
+    { "B1 Detention",     {0.72f,0.74f,0.78f}, {1.00f,0.24f,0.14f}, {0.55f,0.57f,0.62f} }, // cold steel + RED detention tell
+    { "F1 Atrium",        {0.92f,0.92f,0.94f}, {0.82f,0.90f,1.00f}, {0.78f,0.80f,0.84f} }, // clean lobby white
+    { "F2 Medical",       {0.90f,0.95f,0.92f}, {0.28f,1.00f,0.70f}, {0.80f,0.86f,0.83f} }, // clinical white-green
+    { "F3 Genetics",      {0.68f,0.86f,0.70f}, {0.36f,1.00f,0.42f}, {0.52f,0.68f,0.54f} }, // vat GREEN
+    { "F4 Cybernetics",   {0.62f,0.76f,0.88f}, {0.30f,0.85f,1.00f}, {0.42f,0.52f,0.62f} }, // cold CYAN over dark steel
+    { "F5 Drone Mfg",     {0.88f,0.72f,0.42f}, {1.00f,0.66f,0.12f}, {0.62f,0.50f,0.30f} }, // industrial AMBER caution
+    { "F6 Alien Tech",    {0.52f,0.78f,0.74f}, {0.24f,1.00f,0.86f}, {0.34f,0.52f,0.50f} }, // biolume TEAL
+    { "F7 Executive",     {0.86f,0.80f,0.62f}, {1.00f,0.86f,0.48f}, {0.70f,0.62f,0.42f} }, // BRASS luxury
+};
+
+// Canonical Spire floor base elevations (X3_WORLD_BLUEPRINT §2.1; the table
+// app/level1.h L1Floor documents): B1=0 F1=5 F2=10 F3=20 F4=30 F5=65 F6=78 F7=91.
+// DUPLICATED here rather than #including level1.h so door.cpp stays independent of
+// the graybox level module — a door built in ANY world still resolves a style.
+constexpr float kFloorBaseY[kDoorFloorCount] = { 0.0f, 5.0f, 10.0f, 20.0f, 30.0f, 65.0f, 78.0f, 91.0f };
+
+// A LOCKED door burns its signage RED whatever floor it is on (see door.h): the
+// live status readout for the existing keycard/keypad gate.
+constexpr float kLockedSign[3] = { 1.00f, 0.16f, 0.10f };
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Motion profile + per-floor style (see door.h for the derivation + the dt rule).
+// ---------------------------------------------------------------------------
+float doorEase(float u, float rampFrac) {
+    if (!(u > 0.0f)) return 0.0f;          // also catches NaN
+    if (u >= 1.0f)   return 1.0f;
+    const float r = std::min(std::max(rampFrac, 0.0f), 0.5f);
+    if (r <= 1e-4f)  return u;             // degenerate ramp: plain linear
+    const float V = 1.0f / (1.0f - r);     // cruise velocity (profile area == 1)
+    if (u <= r)          return V * u * u / (2.0f * r);
+    if (u >= 1.0f - r) { const float w = 1.0f - u; return 1.0f - V * w * w / (2.0f * r); }
+    return V * (r * 0.5f + (u - r));
+}
+
+uint32_t doorFloorForY(float worldY) {
+    uint32_t best = 0;
+    for (uint32_t i = 0; i < kDoorFloorCount; ++i)
+        if (worldY >= kFloorBaseY[i] - 1.5f) best = i;   // 1.5 m slack: doorway Y is floor-ish
+    return best;                                          // below B1 (deep zone/club) -> B1
+}
+
+const DoorStyle& doorStyleFor(uint32_t floorIdx) {
+    return kDoorStyles[floorIdx < kDoorFloorCount ? floorIdx : kDoorFloorCount - 1];
+}
 
 uint32_t DoorSystem::add(const Door& d) {
     uint32_t i = (uint32_t)m_doors.size();
@@ -84,12 +153,52 @@ void DoorSystem::playDoorSound(const Door& d, x3::audio::SoundHandle h, float vo
     m_audio->playSound3D(h, d.closedPos.x, d.closedPos.y, d.closedPos.z, vol, 1.0f);
 }
 
+// ---- SERVO VOICE (door-mesh-swap audio). The ONLY two places a motor voice is
+// created or destroyed. Both are idempotent, and both are called exclusively from
+// DoorSystem::update() — the single function that can move a door OR settle it —
+// so "a live loop" and "a moving slab" are the same condition by construction.
+void DoorSystem::startMotor(Door& d) const {
+    if (!m_audio || !m_sndServo.valid()) return;
+    if (d.motorLoop.valid()) return;          // already humming (mid-slide reversal)
+    // 3D so the hum attenuates + pans against the listener for as long as it runs.
+    // Closing runs a touch lower — the same servo winding down under gravity.
+    const float pitch = (d.state == DoorState::Closing) ? 0.92f : 1.0f;
+    d.motorLoop = m_audio->startLoop3D(m_sndServo, d.closedPos.x, d.closedPos.y,
+                                       d.closedPos.z, 0.55f, pitch);
+}
+
+void DoorSystem::stopMotor(Door& d) const {
+    if (!d.motorLoop.valid()) return;
+    if (m_audio) m_audio->stopLoop(d.motorLoop);
+    d.motorLoop = x3::audio::LoopHandle{};    // cleared even with audio gone: no stale handle
+}
+
+void DoorSystem::stopAllMotors() {
+    for (Door& d : m_doors) stopMotor(d);
+}
+
+uint32_t DoorSystem::liveMotorCount() const {
+    uint32_t n = 0;
+    for (const Door& d : m_doors) if (d.motorLoop.valid()) ++n;
+    return n;
+}
+
+// The legacy fire-and-forget open/close cue. Fired ONLY when no servo loop is
+// wired: doors/door_open.wav is 2.19 s and door_close.wav 1.38 s against a ~1.0 s
+// slide, so as a motion voice it ran on after the slab had stopped. With a servo
+// loop present the motion is voiced by that loop (started/stopped in update()) and
+// this stays silent; without one it is still better than a silent door.
+void DoorSystem::playMotionCue(const Door& d, bool opening, float vol) const {
+    if (m_sndServo.valid()) return;   // the loop owns the motion; no over-running one-shot
+    playDoorSound(d, opening ? m_sndOpen : m_sndClose, vol);
+}
+
 bool DoorSystem::startOpening(Door& d) const {
     if (d.locked) { playDoorSound(d, m_sndLocked, 0.55f); return false; }  // §6.4 + denied buzz
     if (d.state != DoorState::Closed) return false;
     d.state = DoorState::Opening;
     d.t = 0.0f;
-    playDoorSound(d, m_sndOpen, 0.8f);
+    playMotionCue(d, true, 0.8f);
     return true;
 }
 
@@ -98,19 +207,19 @@ bool DoorSystem::toggle(Door& d) const {
         case DoorState::Closed:
             if (d.locked) { playDoorSound(d, m_sndLocked, 0.55f); return false; }  // §6.4
             d.state = DoorState::Opening;         // t is already 0
-            playDoorSound(d, m_sndOpen, 0.8f);
+            playMotionCue(d, true, 0.8f);
             return true;
         case DoorState::Open:
             d.state = DoorState::Closing;         // t is already == duration
-            playDoorSound(d, m_sndClose, 0.8f);
+            playMotionCue(d, false, 0.8f);
             return true;
         case DoorState::Opening:
             d.state = DoorState::Closing;         // reverse mid-slide (keep t)
-            playDoorSound(d, m_sndClose, 0.6f);
+            playMotionCue(d, false, 0.6f);
             return true;
         case DoorState::Closing:
             d.state = DoorState::Opening;         // reverse mid-slide (keep t)
-            playDoorSound(d, m_sndOpen, 0.6f);
+            playMotionCue(d, true, 0.6f);
             return true;
     }
     return false;
@@ -157,10 +266,31 @@ void DoorSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics
             d.t -= dt;
             if (d.t <= 0.0f) { d.t = 0.0f; d.state = DoorState::Closed; }
         } else {
-            continue;   // Closed / Open: nothing to animate this frame
+            // Closed / Open: nothing to animate. Belt-and-braces — a door that
+            // reached a terminal state by ANY path (a host poking `state`, a level
+            // teardown) still surrenders its servo voice here, so a hum can never
+            // survive a stopped slab.
+            if (d.motorLoop.valid()) stopMotor(d);
+            continue;
         }
-        const float u = d.duration > 0.0f ? (d.t / d.duration) : 1.0f;
-        // Lerp closed -> open and drive the body.
+        // ---- MOTOR AUDIO: the voice's lifetime IS the motion's lifetime. We are
+        // inside the "this door moved this frame" branch, and the two cursor tests
+        // above are the ONLY way a door leaves Opening/Closing, so the start and
+        // the stop below bracket the motion exactly — at any duration, any dt.
+        const bool stillMoving = (d.state == DoorState::Opening || d.state == DoorState::Closing);
+        if (stillMoving) {
+            startMotor(d);                        // idempotent: no restart mid-slide
+        } else {
+            stopMotor(d);                         // the frame the slab SEATS
+            playDoorSound(d, m_sndThunk, 0.65f);  // short transient, fires once
+        }
+        // Normalized cursor -> EASED displacement (accel / cruise / decel; door.h).
+        // dt entered only through the `d.t +/- dt` integration above, so this is
+        // frame-rate independent by construction (repo HARD RULE: never per-frame
+        // motion). drawMeshes() runs the identical call on the identical cursor.
+        const float uRaw = d.duration > 0.0f ? (d.t / d.duration) : 1.0f;
+        const float u    = doorEase(uRaw);
+        // Sweep closed -> open and drive the body.
         x3::phys::Vec3 p{
             d.closedPos.x + (d.openPos.x - d.closedPos.x) * u,
             d.closedPos.y + (d.openPos.y - d.closedPos.y) * u,
@@ -239,6 +369,19 @@ void DoorSystem::loadDoorMesh(x3::rhi::IRenderDevice& device, std::string_view c
         x3::logWarn("[door] FAILED to load " + std::string(kDoorGlbRel) +
                     " (graybox door box kept)");
 
+    // ---- SM_DoorFrame_A: the real frame that SEATS the leaf in its opening (LAW 1
+    // "one wall, one hole, one frame seated in that hole"; LAW 4 "prefer a frame
+    // around every opening"). Same asset cell_dressing/env_art already use, loaded
+    // through the same source so it costs one extra model, not a second kit mount.
+    // A frame failure is non-fatal: the leaf still draws, the doorway just loses
+    // its trim.
+    m_frameModel = m_loader->load(kFrameGlbRel);
+    if (m_frameModel.ok) {
+        m_frameDrawables = x3::asset::makeDrawables(m_frameModel);
+        m_frameOk = !m_frameDrawables.empty();
+    }
+    x3::logInfo(std::string("[door] frame ") + kFrameGlbRel + (m_frameOk ? " loaded" : " NOT loaded (doorways untrimmed)"));
+
     // LAW 1 seal: build the shared unit-cube backing slab (see door.h m_fillMesh).
     if (m_meshOk && !m_fillMesh.valid()) {
         x3::prims::PrimMesh geo = x3::prims::makeBox(0.5f, 0.5f, 0.5f, 0, 0, 0, 1.0f);
@@ -274,9 +417,12 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
         // body CENTER positions; the slab bottom is center.y - height/2.
         // Slide factor from the shared cursor — works for Opening, Closing AND
         // the terminal Open/Closed states (Open pins to 1, Closed to 0).
-        const float u = (d.state == DoorState::Open)
+        // EASED, exactly like DoorSystem::update(): same doorEase() on the same
+        // cursor, so the drawn leaf can never drift from its collision box.
+        const float uRaw = (d.state == DoorState::Open)
             ? 1.0f
             : (d.duration > 0.0f ? std::min(std::max(d.t / d.duration, 0.0f), 1.0f) : 0.0f);
+        const float u = doorEase(uRaw);
         const float cxw = d.closedPos.x + (d.openPos.x - d.closedPos.x) * u;
         const float cyw = d.closedPos.y + (d.openPos.y - d.closedPos.y) * u;
         const float czw = d.closedPos.z + (d.openPos.z - d.closedPos.z) * u;
@@ -288,6 +434,60 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
         //   AlongX (axis 1): wall plane z=const, opening runs along X -> yaw 0.
         const float yaw = (d.axis == 0) ? (3.14159265358979f * 0.5f) : 0.0f;
         const float cs = std::cos(yaw), sn = std::sin(yaw);
+
+        // PER-FLOOR VARIANT (door.h DoorStyle): one table lookup, no branching.
+        const DoorStyle& st = doorStyleFor(d.floorStyle);
+
+        // ---- SM_DoorFrame_A, seated STATIC in the opening (it does not slide with
+        // the leaf). Fitted NON-UNIFORMLY so the trim lands ON the cut instead of
+        // overhanging it: the 6.25 x 4.446 showroom frame's aspect (1.41) cannot
+        // match a 1.6 x 2.2 doorway (0.73) under a uniform scale, and both existing
+        // precedents had to pick a side (env_art height-starved it at 2.0 m wide;
+        // cell_dressing height-fit it and ate a 3.6 m overhang). Fitting each axis
+        // separately gives a jamb that straddles the opening by a fixed bezel and a
+        // header that clears the lintel — LAW 1's "frame overlaps the cut by its
+        // bezel", no floating, no guesswork. The frame is a rectilinear trim ring,
+        // so per-axis scale reads correctly.
+        if (d.withFrame && m_frameOk && !d.floorHatch) {
+            const float frBezel = 0.35f;                                   // trim past each jamb
+            const float sRun = (d.halfWidth * 2.0f + frBezel * 2.0f) / kFrameGlbW;
+            const float sYf  = (d.height + 0.30f) / kFrameGlbH;            // + header over the lintel
+            const float sThk = 0.30f / kFrameGlbT;                         // straddles the 0.2 m wall
+            // Anchor the frame's VISIBLE jamb base (not its buried sill) on the deck,
+            // centred on the STATIC doorway (closedPos), never the sliding leaf.
+            const float fax = gcx(kFrameAabb), faz = gcz(kFrameAabb);
+            const float fay = kFrameAabb.miny + kFrameSillGlb;
+            const float sx0 = d.closedPos.x, sz0 = d.closedPos.z;
+            const float sy0 = d.closedPos.y - d.height * 0.5f;             // doorway floor
+            float fmt[16];
+            fmt[0]=cs*sRun; fmt[1]=0;    fmt[2]=-sn*sRun; fmt[3]=0;
+            fmt[4]=0;       fmt[5]=sYf;  fmt[6]=0;        fmt[7]=0;
+            fmt[8]=sn*sThk; fmt[9]=0;    fmt[10]=cs*sThk; fmt[11]=0;
+            fmt[12]=sx0 - (cs*fax*sRun + sn*faz*sThk);
+            fmt[13]=sy0 - fay*sYf;
+            fmt[14]=sz0 - (-sn*fax*sRun + cs*faz*sThk);
+            fmt[15]=1.0f;
+            for (const auto& fr : m_frameDrawables) {
+                float fin[16];
+                x3::asset::mulMat4(fmt, fr.nodeTransform, fin);
+                // Same VALUE normalization the leaf takes (the kit ships hot albedos),
+                // then the floor's frame hue on top.
+                constexpr float kFrameValue = 0.46f;
+                const float bc[4] = { fr.baseColorFactor[0] * kFrameValue * st.frame[0],
+                                      fr.baseColorFactor[1] * kFrameValue * st.frame[1],
+                                      fr.baseColorFactor[2] * kFrameValue * st.frame[2],
+                                      fr.baseColorFactor[3] };
+                const float emis[4] = { fr.emissiveFactor[0], fr.emissiveFactor[1],
+                                        fr.emissiveFactor[2], 1.0f };
+                device.drawMeshPBR(frame,
+                                   x3::rhi::MeshHandle{ fr.meshId },
+                                   x3::rhi::TextureHandle{ fr.baseColorTexId },
+                                   x3::rhi::TextureHandle{ fr.normalTexId },
+                                   x3::rhi::TextureHandle{ fr.mrTexId },
+                                   bc, emis, fin, fr.alphaMask, fr.alphaBlend,
+                                   x3::rhi::TextureHandle{ fr.emissiveTexId });
+            }
+        }
 
         // Column-major TRS: world = T(c) * R_y(yaw) * S(s) * T(-anchor), placing the
         // GLB anchor (ax, ay, az) at the world bottom-center (cxw, bottomY, czw).
@@ -321,9 +521,12 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
             // the room (sweep2/F1_Medical_Bay_a). Same hue-preserving VALUE normalization
             // the library applies: scale value only, 0.40 / 0.78 ≈ 0.51.
             constexpr float kLeafValueTint = 0.51f;
-            const float bc[4] = { dr.baseColorFactor[0] * kLeafValueTint,
-                                  dr.baseColorFactor[1] * kLeafValueTint,
-                                  dr.baseColorFactor[2] * kLeafValueTint,
+            // PER-FLOOR HUE on top of that VALUE normalization (st.leaf channels are
+            // all <= 1, so the band ceiling still holds — this shifts hue, it never
+            // raises brightness).
+            const float bc[4] = { dr.baseColorFactor[0] * kLeafValueTint * st.leaf[0],
+                                  dr.baseColorFactor[1] * kLeafValueTint * st.leaf[1],
+                                  dr.baseColorFactor[2] * kLeafValueTint * st.leaf[2],
                                   dr.baseColorFactor[3] };
             device.drawMeshPBR(frame,
                                x3::rhi::MeshHandle{ dr.meshId },
@@ -361,6 +564,40 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                x3::rhi::TextureHandle{},   // no normal map
                                m_fillMr,                   // matte dielectric MR texel
                                steel, noEmis, fm);
+
+            // ---- PER-FLOOR SIGNAGE BAND. A thin emissive strip across the door
+            // head in the floor's ladder colour — the cheapest, most readable
+            // per-floor tell there is (you see the colour down a dark hall before
+            // you can resolve the leaf). It RIDES the leaf (bottomY is the animated
+            // slab bottom), so the light travels up with the door.
+            //
+            // It doubles as the LIVE readout for the existing keycard/keypad gate:
+            // `locked` burns RED on every floor and flips to the floor colour the
+            // instant unlock()/tryDoorCode() clears the flag. No new lock state —
+            // it reads Door::locked, which the card/code path already owns.
+            const float* sc = d.locked ? kLockedSign : st.sign;
+            const float bandW = d.halfWidth * 2.0f * 0.66f;
+            const float bandH = 0.09f;
+            const float bandT = 0.02f;
+            const float bandY = bottomY + d.height * 0.80f;
+            const float bandOff = 0.085f;    // just proud of the 0.13 m leaf, both faces
+            const float bsx = (d.axis == 0) ? bandT : bandW;
+            const float bsz = (d.axis == 0) ? bandW : bandT;
+            // VALUE, NOT LUMENS (docs/KNOWN_BUGS.md): the first pass drove this at
+            // 2.2 and the band clipped to WHITE in the capture — the hue, which is
+            // the entire point of a per-floor tell, was destroyed by the overdrive.
+            // 0.85 keeps it clearly a lit strip while its colour survives tonemap.
+            const float bandEmis[4] = { sc[0] * 0.85f, sc[1] * 0.85f, sc[2] * 0.85f, 1.0f };
+            const float bandAlb[4]  = { sc[0] * 0.10f, sc[1] * 0.10f, sc[2] * 0.10f, 1.0f };
+            for (int side = -1; side <= 1; side += 2) {   // readable from BOTH rooms
+                const float ox = (d.axis == 0) ? bandOff * (float)side : 0.0f;
+                const float oz = (d.axis == 0) ? 0.0f : bandOff * (float)side;
+                float bm[16] = { bsx, 0, 0, 0,  0, bandH, 0, 0,  0, 0, bsz, 0,
+                                 cxw + ox, bandY, czw + oz, 1.0f };
+                device.drawMeshPBR(frame, m_fillMesh,
+                                   x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                   m_fillMr, bandAlb, bandEmis, bm);
+            }
         }
     }
 }
@@ -535,6 +772,9 @@ uint32_t buildFloorHatch(Scene& scene, DoorSystem& doors,
     d.halfWidth  = spec.halfWidth;
     d.height     = spec.height;
     d.floorHatch = true;
+    d.floorStyle = (spec.floorStyle == kDoorFloorAuto) ? doorFloorForY(spec.doorwayCenter.y)
+                                                       : spec.floorStyle;
+    d.withFrame  = false;                 // a horizontal hatch has no vertical frame
     const uint32_t doorIdx = doors.add(d);
 
     x3::logInfo("buildFloorHatch: two-panel hatch idx " + std::to_string(doorIdx) +
@@ -616,6 +856,11 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
     d.halfWidth = spec.halfWidth;
     d.height    = spec.height;
     d.floorHatch = spec.floorHatch;
+    // PER-FLOOR VARIANT: auto-derive the floor from the doorway's world Y unless the
+    // caller pinned one (door.h DoorSpec::floorStyle).
+    d.floorStyle = (spec.floorStyle == kDoorFloorAuto) ? doorFloorForY(spec.doorwayCenter.y)
+                                                       : spec.floorStyle;
+    d.withFrame = spec.withFrame;
     uint32_t doorIdx = doors.add(d);
 
     // Optional linked button, mounted on the wall beside the doorway, on the
@@ -650,7 +895,9 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
 
     x3::logInfo("buildLevelDoor: door idx " + std::to_string(doorIdx) +
                 " entity " + std::to_string(doorEntId) +
+                " [" + doorStyleFor(d.floorStyle).name + "]" +
                 (spec.locked ? " [LOCKED]" : "") +
+                (spec.withFrame ? " + frame" : "") +
                 (spec.withButton ? " + button" : ""));
     return doorIdx;
 }
@@ -864,6 +1111,304 @@ bool runInteractSelfTest() {
     x3::logInfo(std::string("[interact-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
+}
+
+// ===========================================================================
+// --test-doors: the DOOR-MESH-SWAP polish gate (D1-D6). See door.h.
+//
+// SCOPE, stated plainly: this proves MECHANICS. It cannot prove that the doors
+// LOOK right per floor, that the accel/decel FEELS mechanical, or that the servo
+// bed sits at the right level in the mix. Those are owner eyeball/ear items.
+// ===========================================================================
+namespace {
+
+int h_pass = 0, h_fail = 0;
+void dcheck(bool cond, const char* name) {
+    if (cond) { ++h_pass; x3::logInfo(std::string("[door-test] PASS ") + name); }
+    else      { ++h_fail; x3::logError(std::string("[door-test] FAIL ") + name); }
+}
+
+// A counting IAudioSystem test double. It records the servo loop's lifecycle so
+// D5 can assert the voice is created exactly once per motion and destroyed on the
+// seating frame — the mechanical form of "the sound stops with the motion".
+class CountingAudio final : public x3::audio::IAudioSystem {
+public:
+    int loopsStarted = 0, loopsStopped = 0, oneShots = 0;
+    int liveLoops() const { return loopsStarted - loopsStopped; }
+
+    bool init() override { return true; }
+    void shutdown() override {}
+    x3::audio::SoundHandle load(std::string_view) override { return { ++m_nextSound }; }
+    void playSound2D(x3::audio::SoundHandle, float, float) override { ++oneShots; }
+    void playSound3D(x3::audio::SoundHandle, float, float, float, float, float) override { ++oneShots; }
+    void setListener(float, float, float, float, float) override {}
+    void playMusic(std::string_view, bool, float) override {}
+    void stopMusic() override {}
+    void setMusicVolume(float) override {}
+    void setMusicEnabled(bool) override {}
+    void setMasterSfxVolume(float) override {}
+    x3::audio::LoopHandle startLoop(x3::audio::SoundHandle, float, float) override {
+        ++loopsStarted; return { ++m_nextLoop };
+    }
+    x3::audio::LoopHandle startLoop3D(x3::audio::SoundHandle, float, float, float,
+                                      float, float) override {
+        ++loopsStarted; return { ++m_nextLoop };
+    }
+    void stopLoop(x3::audio::LoopHandle h) override { if (h.valid()) ++loopsStopped; }
+    void update(float) override {}
+private:
+    uint32_t m_nextSound = 0, m_nextLoop = 0;
+};
+
+// Canonical facility doorway dimensions (level_loader.cpp kDoorHalf / kLintel).
+constexpr float kCanonDoorHalf = 0.8f;    // 1.6 m opening
+constexpr float kCanonLintel   = 2.2f;    // clear head height
+
+} // namespace
+
+bool runDoorSelfTest() {
+    h_pass = h_fail = 0;
+
+    // ---- D1: the ease curve is a legal motion profile -----------------------
+    {
+        const bool ends = std::fabs(doorEase(0.0f)) < 1e-6f &&
+                          std::fabs(doorEase(1.0f) - 1.0f) < 1e-6f;
+        // Strictly increasing (monotonic 0 -> 1) across a fine sweep.
+        bool mono = true, inRange = true;
+        float prev = -1.0f;
+        for (int i = 0; i <= 1000; ++i) {
+            const float s = doorEase((float)i / 1000.0f);
+            if (s < prev - 1e-7f) mono = false;
+            if (s < -1e-6f || s > 1.0f + 1e-6f) inRange = false;
+            prev = s;
+        }
+        // Zero slope at BOTH ends (accel out of the jamb, decel into the stop) —
+        // the difference between "mechanical" and "snapped".
+        const float h = 1e-3f;
+        const float v0 = (doorEase(h) - doorEase(0.0f)) / h;
+        const float v1 = (doorEase(1.0f) - doorEase(1.0f - h)) / h;
+        // ...and a real CRUISE in the middle, faster than either end.
+        const float vMid = (doorEase(0.5f + h) - doorEase(0.5f - h)) / (2.0f * h);
+        const bool eased = v0 < 0.15f && v1 < 0.15f && vMid > 1.2f;
+        // Symmetric: opening and closing feel identical.
+        bool sym = true;
+        for (int i = 0; i <= 100; ++i) {
+            const float u = (float)i / 100.0f;
+            if (std::fabs(doorEase(u) + doorEase(1.0f - u) - 1.0f) > 1e-5f) sym = false;
+        }
+        dcheck(ends && mono && inRange && eased && sym,
+               "D1 ease curve monotonic 0->1, zero-slope ends, cruising middle, symmetric");
+    }
+
+    // ---- D2: the motion is DELTA-TIME scaled, not per-frame -----------------
+    // Integrate the SAME 1.0 s door at 60 Hz and at 165 Hz and compare the eased
+    // displacement at matched SIM TIME. A per-frame (dt-blind) profile would run
+    // 2.75x further at 165 Hz; a dt-scaled one lands on the same curve.
+    {
+        auto sweep = [](float dt, float simSeconds) -> float {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init();
+            HeadlessDevice dev; Scene s; DoorSystem dd;
+            DoorSpec spec;
+            spec.doorwayCenter = x3::phys::Vec3{ 0, 0, 0 };
+            spec.halfWidth = kCanonDoorHalf; spec.height = kCanonLintel;
+            spec.duration = 1.0f; spec.withButton = false;
+            buildLevelDoor(s, dd, dev, *w, spec);
+            Door& d = dd.at(0);
+            dd.startOpening(d);
+            const int steps = (int)std::lround(simSeconds / dt);
+            for (int i = 0; i < steps; ++i) dd.update(dt, s, *w);
+            const float y = w->getBodyPosition(d.body).y;
+            w->shutdown();
+            return y;
+        };
+        const float y60  = sweep(1.0f / 60.0f,  0.6f);
+        const float y165 = sweep(1.0f / 165.0f, 0.6f);
+        const float agree = std::fabs(y60 - y165);
+        // ...and the total travel time is duration-governed, not step-count-governed.
+        const float yEnd60  = sweep(1.0f / 60.0f,  1.2f);
+        const float yEnd165 = sweep(1.0f / 165.0f, 1.2f);
+        const bool bothSeated = std::fabs(yEnd60 - yEnd165) < 1e-4f;
+        dcheck(agree < 0.02f && bothSeated,
+               "D2 motion is dt-scaled (60 Hz vs 165 Hz agree mid-sweep and at rest)");
+        x3::logInfo("[door-test]   mid-sweep y: 60Hz=" + std::to_string(y60) +
+                    " 165Hz=" + std::to_string(y165) + " delta=" + std::to_string(agree));
+    }
+
+    // ---- D3: per-floor variants resolve, and resolve DISTINCTLY -------------
+    {
+        // Every canonical floor base Y maps to its own floor index...
+        const float baseY[kDoorFloorCount] = { 0, 5, 10, 20, 30, 65, 78, 91 };
+        bool mapped = true;
+        for (uint32_t i = 0; i < kDoorFloorCount; ++i)
+            if (doorFloorForY(baseY[i]) != i) mapped = false;
+        // ...deep zone / club (below B1) still resolves (to B1), never OOB.
+        const bool deepOk = doorFloorForY(-220.0f) == 0 && doorFloorForY(-5.0f) == 0;
+        // ...an out-of-range index clamps instead of reading past the table.
+        const bool clampOk = doorStyleFor(999).name != nullptr;
+        // ...and no two floors share a signage colour (a floor must READ distinctly).
+        bool distinct = true;
+        for (uint32_t i = 0; i < kDoorFloorCount; ++i)
+            for (uint32_t j = i + 1; j < kDoorFloorCount; ++j) {
+                const DoorStyle& a = doorStyleFor(i);
+                const DoorStyle& b = doorStyleFor(j);
+                const float dd2 = (a.sign[0]-b.sign[0])*(a.sign[0]-b.sign[0]) +
+                                  (a.sign[1]-b.sign[1])*(a.sign[1]-b.sign[1]) +
+                                  (a.sign[2]-b.sign[2])*(a.sign[2]-b.sign[2]);
+                if (dd2 < 0.02f) distinct = false;
+            }
+        // ...the leaf tints stay inside the value band (hue pass, not a brightness cheat).
+        bool valueSafe = true;
+        for (uint32_t i = 0; i < kDoorFloorCount; ++i)
+            for (int k = 0; k < 3; ++k)
+                if (doorStyleFor(i).leaf[k] > 1.0f || doorStyleFor(i).frame[k] > 1.0f)
+                    valueSafe = false;
+        dcheck(mapped && deepOk && clampOk && distinct && valueSafe,
+               "D3 per-floor variants resolve from world Y, clamp safely, read distinctly");
+    }
+
+    // ---- D4: PASSABILITY — the regression that must never come back ---------
+    // A previous bug had doors that visually opened while their collision stayed in
+    // the opening. Build a REAL canonical doorway (jambs + lintel + a door of
+    // level_loader's kDoorHalf/kLintel dims) and walk a STANDING 1.8 m capsule at it.
+    {
+        auto walk = [](bool openIt) -> float {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init();
+            HeadlessDevice dev; Scene s; DoorSystem dd;
+            // Deck.
+            w->addBox(x3::phys::Vec3{ 8.0f, 0.2f, 8.0f }, x3::phys::Vec3{ 0, -0.2f, 0 },
+                      0.0f, x3::phys::Layer::Static);
+            // A wall on the Z=0 plane with a kDoorHalf-wide, kLintel-tall hole cut in it:
+            // two jambs + a header (LAW 1 — one wall, one opening).
+            const float jw = (8.0f - kCanonDoorHalf) * 0.5f;
+            w->addBox(x3::phys::Vec3{ jw, 1.6f, 0.1f },
+                      x3::phys::Vec3{ -(kCanonDoorHalf + jw), 1.6f, 0 }, 0.0f, x3::phys::Layer::Static);
+            w->addBox(x3::phys::Vec3{ jw, 1.6f, 0.1f },
+                      x3::phys::Vec3{  (kCanonDoorHalf + jw), 1.6f, 0 }, 0.0f, x3::phys::Layer::Static);
+            w->addBox(x3::phys::Vec3{ 8.0f, 0.4f, 0.1f },
+                      x3::phys::Vec3{ 0, kCanonLintel + 0.4f, 0 }, 0.0f, x3::phys::Layer::Static);
+            DoorSpec spec;
+            spec.doorwayCenter = x3::phys::Vec3{ 0, 0, 0 };
+            spec.axis = DoorAxis::AlongX;
+            spec.halfWidth = kCanonDoorHalf; spec.height = kCanonLintel;
+            spec.duration = 1.0f; spec.withButton = false;
+            buildLevelDoor(s, dd, dev, *w, spec);
+            Door& d = dd.at(0);
+            if (openIt) {
+                dd.startOpening(d);
+                for (int i = 0; i < 120; ++i) { dd.update(kFixedDt, s, *w); w->step(kFixedDt); }
+                if (d.state != DoorState::Open) { w->shutdown(); return -99.0f; }
+            }
+            // THE STANDING PLAYER: radius 0.3, height 1.8 (the capsule the task names).
+            x3::phys::BodyId chr = w->createCharacter(0.3f, 1.8f, x3::phys::Vec3{ 0, 0.05f, -3.0f });
+            for (int i = 0; i < 30; ++i) { w->moveCharacter(chr, x3::phys::Vec3{0,0,0}, kFixedDt); w->step(kFixedDt); }
+            for (int i = 0; i < 300; ++i) {
+                w->moveCharacter(chr, x3::phys::Vec3{ 0, 0, 4.0f }, kFixedDt);
+                dd.update(kFixedDt, s, *w);
+                w->step(kFixedDt);
+            }
+            const float z = w->getBodyPosition(chr).z;
+            w->shutdown();
+            return z;
+        };
+        const float zClosed = walk(false);
+        const float zOpen   = walk(true);
+        const bool blocked = zClosed < -0.15f;   // never reached the door plane
+        const bool passed  = zOpen   >  1.0f;    // walked clean out the far side
+        dcheck(blocked && passed,
+               "D4 PASSABILITY: 1.8 m capsule blocked by the closed slab, clears the OPEN doorway");
+        x3::logInfo("[door-test]   capsule z: closed=" + std::to_string(zClosed) +
+                    " open=" + std::to_string(zOpen));
+    }
+
+    // ---- D5: the servo voice starts with the motion and STOPS with it -------
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        HeadlessDevice dev; Scene s; DoorSystem dd;
+        CountingAudio audio;
+        dd.setAudio(&audio, audio.load("open"), audio.load("close"), audio.load("locked"));
+        dd.setMotorAudio(audio.load("servo"), audio.load("thunk"));
+        DoorSpec spec;
+        spec.doorwayCenter = x3::phys::Vec3{ 0, 0, 0 };
+        spec.halfWidth = kCanonDoorHalf; spec.height = kCanonLintel;
+        spec.duration = 1.0f; spec.withButton = false;
+        buildLevelDoor(s, dd, dev, *w, spec);
+        Door& d = dd.at(0);
+
+        const int shotsBefore = audio.oneShots;
+        dd.toggle(d);                                   // Closed -> Opening
+        // With a servo loop wired, NO long open/close one-shot may be fired at all.
+        const bool noOverrunShot = (audio.oneShots == shotsBefore);
+        // The loop must not exist before the first update tick, and must exist during.
+        const bool quietBeforeTick = audio.liveLoops() == 0;
+        dd.update(kFixedDt, s, *w);
+        const bool humWhileMoving = audio.liveLoops() == 1 && dd.liveMotorCount() == 1;
+        // Mid-slide, still exactly ONE voice (no per-frame restart).
+        for (int i = 0; i < 30; ++i) dd.update(kFixedDt, s, *w);
+        const bool oneVoiceOnly = audio.loopsStarted == 1 && audio.liveLoops() == 1;
+        // Run past the end: the voice must be gone the moment the slab seats.
+        for (int i = 0; i < 60; ++i) dd.update(kFixedDt, s, *w);
+        const bool seated = d.state == DoorState::Open;
+        const bool silentAtRest = audio.liveLoops() == 0 && dd.liveMotorCount() == 0;
+        // Closing raises a NEW voice and drops it again.
+        dd.toggle(d);
+        for (int i = 0; i < 90; ++i) dd.update(kFixedDt, s, *w);
+        const bool closedClean = d.state == DoorState::Closed &&
+                                 audio.loopsStarted == 2 && audio.liveLoops() == 0;
+        // A locked door refuses to move -> it must never raise a motor voice.
+        d.locked = true;
+        dd.toggle(d);
+        for (int i = 0; i < 30; ++i) dd.update(kFixedDt, s, *w);
+        const bool lockedSilent = audio.liveLoops() == 0 && audio.loopsStarted == 2;
+        // stopAllMotors() on a live door is safe + idempotent (teardown path).
+        d.locked = false;
+        dd.toggle(d);
+        dd.update(kFixedDt, s, *w);
+        dd.stopAllMotors(); dd.stopAllMotors();
+        const bool teardownClean = audio.liveLoops() == 0 &&
+                                   audio.loopsStopped == audio.loopsStarted;
+        w->shutdown();
+        dcheck(noOverrunShot && quietBeforeTick && humWhileMoving && oneVoiceOnly &&
+               seated && silentAtRest && closedClean && lockedSilent && teardownClean,
+               "D5 servo loop brackets the motion exactly (one voice, none at rest, none when locked)");
+    }
+
+    // ---- D6: the per-floor / frame spec plumbing survives the builder -------
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        HeadlessDevice dev; Scene s; DoorSystem dd;
+        // AUTO: a door at F5's elevation resolves the Drone Manufacturing style.
+        DoorSpec a;
+        a.doorwayCenter = x3::phys::Vec3{ 0, 65.0f, 0 };
+        a.halfWidth = kCanonDoorHalf; a.height = kCanonLintel; a.withButton = false;
+        const uint32_t ia = buildLevelDoor(s, dd, dev, *w, a);
+        // PINNED: an explicit index wins over the elevation.
+        DoorSpec b = a;
+        b.doorwayCenter = x3::phys::Vec3{ 10.0f, 65.0f, 0 };
+        b.floorStyle = 2;                 // F2 Medical
+        b.withFrame  = false;
+        const uint32_t ib = buildLevelDoor(s, dd, dev, *w, b);
+        // A floor HATCH never carries a vertical frame.
+        DoorSpec c;
+        c.doorwayCenter = x3::phys::Vec3{ 20.0f, 0.0f, 0 };
+        c.halfWidth = 0.9f; c.thickness = 0.2f; c.floorHatch = true; c.withButton = false;
+        const uint32_t ic = buildLevelDoor(s, dd, dev, *w, c);
+        const bool autoOk   = dd.at(ia).floorStyle == 5 && dd.at(ia).withFrame;
+        const bool pinnedOk = dd.at(ib).floorStyle == 2 && !dd.at(ib).withFrame;
+        const bool hatchOk  = !dd.at(ic).withFrame && dd.at(ic).floorHatch;
+        w->shutdown();
+        dcheck(autoOk && pinnedOk && hatchOk,
+               "D6 floorStyle auto/pinned + withFrame plumb through buildLevelDoor");
+    }
+
+    x3::logInfo(std::string("[door-test] ") + std::to_string(h_pass) + " passed, " +
+                std::to_string(h_fail) + " failed");
+    x3::logInfo("[door-test] NOTE: mechanics only. Door LOOK per floor, motion FEEL and "
+                "servo mix level are owner eyeball/ear items — headless cannot judge them.");
+    return h_fail == 0;
 }
 
 } // namespace x3::game

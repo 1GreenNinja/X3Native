@@ -86,6 +86,9 @@ struct HostContext {
     // ---- Per-host screenshot proof flags + paths (showroom family etc.) ----
     bool        carShot = false;            std::string carShotDir;
     bool        upperShot = false;          std::string upperShotDir;   // R-5: floors 2-7 proof
+    // door-mesh swap: the repeatable DOOR visual gate (per-floor leaf/frame/signage,
+    // closed + mid-slide + open, head-on at a real cut doorway on each floor).
+    bool        doorShot = false;           std::string doorShotDir;
     bool        rescueShot = false;         std::string rescueShotDir;  // F2 rescue-room closeups
     bool        showroomFpShot = false;     std::string showroomFpShotPath;
     bool        showroomRagdollShot = false;std::string showroomRagdollShotPath;

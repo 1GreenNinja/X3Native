@@ -1807,6 +1807,10 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // room. Missing GLB -> the door keeps its graybox box (buildLevelDoor fallback). ----
     if (opts.doors) {
         uint32_t built = 0;
+        // DOOR-MESH SWAP: buildLevelDoor now also seats SM_DoorFrame_A in the opening
+        // (LAW 4 — trim on every opening). CellDressing ALREADY frames every resolved
+        // opening of Jake's Cell, so suppress ours there or that one room double-frames.
+        const uint32_t jakeCellRoom = floor.roomByName("Jake's Cell");
         // Record which DoorSystem slab fills each cut doorway into doorIndex so the portal
         // flood-fill can later query that door's open/closed state.
         for (uint32_t dwi = 0; dwi < (uint32_t)floor.doorways.size(); ++dwi) {
@@ -1822,6 +1826,11 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             spec.halfWidth = kDoorHalf;          // matches the 1.2 m cut opening
             spec.height    = kLintel;            // clears under the lintel header
             spec.withButton = false;             // static drape (no per-door button spam)
+            // Per-floor variant auto-derives from dw.cy (the merged tower authors rooms at
+            // ABSOLUTE elevations, so the doorway's own Y IS its floor). Frame everywhere
+            // except Jake's Cell, which CellDressing already trims.
+            spec.withFrame = (jakeCellRoom == kNoRoom ||
+                              (dw.a != jakeCellRoom && dw.b != jakeCellRoom));
             uint32_t di = buildLevelDoor(scene, *opts.doors, device, physics, spec);
             dw.doorIndex = di;                   // doorway -> DoorSystem slab (flood-fill query)
             // Room-tag the door's entity so it culls with its room's PVS.
