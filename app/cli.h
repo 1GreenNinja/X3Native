@@ -186,7 +186,11 @@ struct CliOptions {
     // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
     // override code opens a floor-hatch to a stocked secret room below. Additive flag.
     bool        testSecretRoom = false;
-    // --test-club (the full Club 1127 "THE DEEP" at Y=-200): build headless + assert
+    // --test-descentfall (the fall shaft + dark room + keypad door + elevator): the
+    // scripted freefall accelerates, the catch decelerates it to a safe landing in the
+    // dark room, the keypad code opens the door, and the elevator rides into the club.
+    bool        testDescentFall = false;
+    // --test-club (the full Club 1127 "THE DEEP" at Y=-800): build headless + assert
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;

@@ -36,6 +36,7 @@ struct TestFlags {
     bool testEditorAi = false;   // --test-editor-ai (AI Architect plan validator)
     bool testGlass = false, testFrustumCull = false, testHoloterm = false;
     bool testSecretRoom = false, testHatch = false, testLlm = false, testEcs = false;
+    bool testDescentFall = false;   // --test-descentfall (fall shaft + dark room + keypad + elevator)
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testKeypad = false;      // --test-keypad (realistic high-poly access keypad, KP1-KP6)
