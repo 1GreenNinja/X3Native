@@ -91,6 +91,57 @@ struct StairwellLayout {
 // lacks the expected floors). Pure — no scene/device.
 StairwellLayout stairwellLayout(const CanonFloor& floor);
 
+// ===== STAIR NAV (feat/stair-nav): the walkable waypoint chain over the stairwell,
+// derived from the SAME plan the builder lays brushes from, so an agent following it
+// rides the real treads. Pure data — no scene/device/physics.
+//
+//   * `spine` runs bottom -> top through the shaft: for every flight, a landing
+//     approach point, the flight's bottom NOSING-LINE point (base + 0.5 risers) and
+//     its top nosing-line point (base + kTreads+0.5 risers), then the far-landing
+//     arrival. Linear interpolation between consecutive spine points therefore
+//     matches the tread tops at every tread CENTER exactly (max deviation between
+//     centers = half a riser, <= 0.1 m — feet stay on the steps).
+//   * `exits` exist for REAL floors ONLY: a spur from the floor's spine landing
+//     point through its connector to a room-side entry. Phantom landings — the
+//     unnumbered 4.5-height door included — are pass-through spine points with NO
+//     exit, so no route can ever END at level 4.5 (the seal is structural here,
+//     exactly like the geometry).
+struct StairNavChain {
+    bool valid = false;
+    struct Wp { float x = 0, y = 0, z = 0; };
+    std::vector<Wp> spine;                 // bottom -> top, ascending Y
+    struct Exit {
+        int      floorNum = 0;             // real floor number (always > 0)
+        uint32_t room     = kNoRoom;       // the room the connector opens into
+        float    floorY   = 0;             // that floor's walking plane
+        uint32_t spineIdx = 0;             // spine waypoint at this floor's landing
+        std::vector<Wp> spur;              // landing -> connector -> room-side entry
+    };
+    std::vector<Exit> exits;               // ascending, real floors only
+    const Exit* exitFor(int floorNum) const {
+        for (const Exit& e : exits) if (e.floorNum == floorNum) return &e;
+        return nullptr;
+    }
+    // The real floor whose walking plane a FEET height sits on (+band above), or
+    // -1 when the height matches no served floor (mid-flight / 4.5 / off-tower).
+    int floorForY(float feetY, float below = 0.6f, float above = 1.2f) const {
+        for (const Exit& e : exits)
+            if (feetY >= e.floorY - below && feetY <= e.floorY + above)
+                return e.floorNum;
+        return -1;
+    }
+};
+
+// Build the chain from a resolved layout. chain.valid == lay.valid.
+StairNavChain stairwellNavChain(const StairwellLayout& lay);
+
+// Assemble the waypoint route from `fromFloor`'s room-side entry, up/down the spine,
+// out to `toFloor`'s room-side entry. Returns false (out untouched) when either
+// floor has no exit in the chain — a 4.5 / phantom target is REFUSED here by
+// construction. `out` is cleared+filled on success (>= 2 points).
+bool stairNavRoute(const StairNavChain& chain, int fromFloor, int toFloor,
+                   std::vector<StairNavChain::Wp>& out);
+
 class FacilityStairwell {
 public:
     // ===== THE SERVICE-VOID CODE (feat/secret-code-clues) =====================

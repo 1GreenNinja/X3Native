@@ -291,6 +291,7 @@ int main(int argc, char** argv) {
         _tf.testLevelLint = o.testLevelLint;
         _tf.testPropClip = o.testPropClip;
         _tf.testCanonPlay = o.testCanonPlay;
+        _tf.testStairNav = o.testStairNav;
         _tf.testGoldenPath = o.testGoldenPath;
         _tf.testOpening = o.testOpening;
         _tf.testDescMech = o.testDescMech;

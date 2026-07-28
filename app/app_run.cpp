@@ -1254,6 +1254,7 @@ int runDefaultHost(HostContext& hc) {
     x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
     x3::game::FacilityStairwell stairwell;     // fix/spire-hollow-core: open switchback stairwell (F1..F7, skips 4.5)
     x3::game::StairwellLayout   stairLayout;   // its shared plan (breach wiring + lint agree)
+    x3::game::StairNavChain     stairNav;      // feat/stair-nav: enemy waypoint chain over the stairwell
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
@@ -2026,6 +2027,10 @@ int runDefaultHost(HostContext& hc) {
             stairwell.build(stairLayout, canonFloor, scene, *device, *physics,
                             &canonDoors, x3::game::assetRoot() + "/surface_library",
                             canonLights);
+            // feat/stair-nav: derive the enemy waypoint chain from the SAME plan
+            // the brushes were laid from (feet ride the real treads); handed to
+            // canonPlay after its build below.
+            stairNav = x3::game::stairwellNavChain(stairLayout);
             if (bootProf) bootProfMs("stairwell");
             // ---- THE SECRET-CODE QUEST CHAIN, CLUES 1 + 2 (feat/secret-code-clues).
             // Two lore HoloTerminals on the platform, the riftLore 4790 pattern.
@@ -2247,6 +2252,41 @@ int runDefaultHost(HostContext& hc) {
             canonPlay.build(canonFloor, scene, *device, *physics,
                             x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath(),
                             /*deferUpperFloors=*/!hc.screenshot);
+            // feat/stair-nav: enemies may now COMMUTE between floors — hand the
+            // stairwell's waypoint chain to the routing pass in canonPlay.tick().
+            if (stairNav.valid) canonPlay.setStairNav(&stairNav);
+            // feat/stair-nav CAPTURE HOOK: X3_STAIRNAV_DEMO=1 poses ONE squad
+            // hostile mid-climb on the F1 flights with a live route toward F3 —
+            // the settle frames walk it up the treads for the still.
+            if (std::getenv("X3_STAIRNAV_DEMO") && stairNav.valid) {
+                std::vector<x3::game::StairNavChain::Wp> wps;
+                x3::game::MonsterSystem* pick = nullptr;
+                canonPlay.forEachHostileManager([&](x3::game::MonsterManager& mm) {
+                    for (uint32_t i = 0; !pick && i < mm.count(); ++i) {
+                        x3::game::MonsterSystem& m = mm.at(i);
+                        if (m.alive() && !m.flyer() && m.usingRealModel()) pick = &m;
+                    }
+                });
+                if (pick && x3::game::stairNavRoute(stairNav, 1, 3, wps) &&
+                    wps.size() > 6) {
+                    // wps: [0..2] spur (room->shaft), [3] F1 approach, [4] flight-0
+                    // bottom nosing, [5] top nosing. Pose at the flight's midpoint.
+                    const auto& a = wps[4]; const auto& b = wps[5];
+                    const float yaw = (b.z > a.z) ? 0.0f : 3.1415926f;   // face along the run
+                    pick->setPropPose(x3::phys::Vec3{ (a.x + b.x) * 0.5f,
+                                                      (a.y + b.y) * 0.5f + 0.4f,
+                                                      (a.z + b.z) * 0.5f }, yaw);
+                    std::vector<x3::phys::Vec3> route;
+                    for (size_t k = 5; k < wps.size(); ++k)
+                        route.push_back(x3::phys::Vec3{ wps[k].x, wps[k].y + 0.4f,
+                                                        wps[k].z });
+                    pick->setStairRoute(route, 3);
+                    if (pick->entity() != x3::game::kNoLink &&
+                        pick->entity() < scene.size())
+                        scene.get(pick->entity()).roomId = x3::game::kNoRoom;
+                    x3::logInfo("X3_STAIRNAV_DEMO: staged one enemy mid-climb on the F1 flight");
+                }
+            }
             // Enemy-SFX: wire the shared enemy cue sink so the canon-level enemies have
             // a VOICE (footsteps, attack swings, take-hit grunts, death, idle taunts) +
             // their impacts land audibly. canonPlay had NO cue sink before — its enemies
