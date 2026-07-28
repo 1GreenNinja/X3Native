@@ -54,6 +54,7 @@ function parseArgs(argv) {
     if (a === "--mesh") out.mesh = argv[++i];
     else if (a === "--clips") out.clips = argv[++i];
     else if (a === "--names") out.names = argv[++i];
+    else if (a === "--bone-prefix") out.bonePrefix = argv[++i];
     else if (a === "--out") out.out = argv[++i];
     else throw new Error(`unknown arg: ${a}`);
   }
@@ -105,7 +106,7 @@ function writeGlb(path, json, bin) {
 const accessorByteLength = (acc) =>
   acc.count * COMP_BYTES[acc.componentType] * TYPE_COUNT[acc.type];
 
-function merge({ mesh, clipPaths, names, out }) {
+function merge({ mesh, clipPaths, names, out, bonePrefix }) {
   const meshDoc = readGlb(mesh);
   const mjson = meshDoc.json;
   const parts = [meshDoc.bin]; // BIN pieces, concatenated at the end
@@ -117,8 +118,44 @@ function merge({ mesh, clipPaths, names, out }) {
   mjson.buffers ??= [{ byteLength: binLen }];
 
   // Bone name -> mesh node index (the retarget table).
+  //
+  // CROSS-RIG NAMING: the same standard humanoid skeleton ships under different
+  // name decorations — Mixamo exports `mixamorigHips` / `mixamorig:Hips`, Meshy
+  // and most DCC exports use bare `Hips`, some carry an `Armature|` scope. A
+  // literal match would silently DROP every channel and produce a GLB with clips
+  // that animate nothing. So we ALSO index each mesh bone under its normalized
+  // (prefix-stripped, case-folded) name and fall back to that. `--bone-prefix X`
+  // forces an explicit prefix when auto-normalization is not enough.
+  const stripPrefix = (s) =>
+    String(s)
+      .replace(/^Armature\|/i, "")
+      .replace(/^mixamorig[:_]?/i, "")
+      .replace(/^(bip01|bip)[:_ ]?/i, "")
+      // Fold ZERO-PADDED indices: `Spine01` -> `spine1` so it matches Mixamo's
+      // `mixamorigSpine1`. Without this the SPINE chain silently fails to match
+      // and every merged clip animates arms/legs over a RIGID TORSO (caught on
+      // the Jake x JakeClone merge, 2026-07-27 — 12 of 72 channels dropped).
+      .replace(/0*(\d+)$/, (_m, d) => String(parseInt(d, 10)))
+      .toLowerCase();
   const meshNodeByName = new Map();
-  mjson.nodes.forEach((n, i) => { if (n.name !== undefined) meshNodeByName.set(n.name, i); });
+  const meshNodeByNorm = new Map();
+  mjson.nodes.forEach((n, i) => {
+    if (n.name === undefined) return;
+    meshNodeByName.set(n.name, i);
+    const norm = stripPrefix(n.name);
+    if (!meshNodeByNorm.has(norm)) meshNodeByNorm.set(norm, i);
+  });
+  // Resolve a clip's bone name onto a mesh node: exact -> explicit prefix -> normalized.
+  const resolveBone = (nm) => {
+    if (nm === undefined) return undefined;
+    let hit = meshNodeByName.get(nm);
+    if (hit !== undefined) return hit;
+    if (bonePrefix) {
+      hit = meshNodeByName.get(bonePrefix + nm);
+      if (hit !== undefined) return hit;
+    }
+    return meshNodeByNorm.get(stripPrefix(nm));
+  };
 
   let nameIdx = 0;
   let animCount = 0;
@@ -162,7 +199,7 @@ function merge({ mesh, clipPaths, names, out }) {
       for (const ch of anim.channels ?? []) {
         const tgt = ch.target?.node;
         const tgtName = tgt !== undefined ? cj.nodes[tgt]?.name : undefined;
-        const meshNode = tgtName !== undefined ? meshNodeByName.get(tgtName) : undefined;
+        const meshNode = resolveBone(tgtName);
         if (meshNode === undefined) { dropped++; continue; }
         let s = samplerMap.get(ch.sampler);
         if (s === undefined) {
@@ -210,4 +247,5 @@ merge({
   clipPaths: args.clips.split(",").map((s) => s.trim()).filter(Boolean),
   names: (args.names ? args.names.split(",").map((s) => s.trim()) : []),
   out: args.out,
+  bonePrefix: args.bonePrefix,
 });
