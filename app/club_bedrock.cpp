@@ -842,35 +842,43 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
             // ALTAR, a ring of shards, and dark carved GLYPH SLABS on the back wall
             // (faint self-glow so the etched Salvari script reads). Environmental-
             // storytelling reward tied to the rescue-the-Salvari arc.
-            // Altar plinth (stepped rock).
-            for (int st = 0; st < 2; ++st) {
-                const float ph = 0.9f - st * 0.3f, pt = y + 0.2f + st * 0.5f;
-                x3::prims::PrimMesh geo = makeSolidRockBox(ph, 0.25f, ph, cavX, pt, SZ, tc.uvScale*1.5f);
+            // Altar PLINTH — a broad stepped stone dais the crystal sits ON (so the
+            // altar reads as built, not just a crystal on the floor).
+            const float steps[3][2] = { {1.6f, 0.35f}, {1.15f, 0.30f}, {0.8f, 0.28f} };
+            float pt = y;
+            for (int st = 0; st < 3; ++st) {
+                const float ph = steps[st][0], hh = steps[st][1];
+                x3::prims::PrimMesh geo = makeSolidRockBox(ph, hh, ph, cavX, pt + hh, SZ, tc.uvScale*1.5f);
                 Entity e;
                 e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                            geo.index.data(), (uint32_t)geo.index.size());
                 e.tex=rockTex;
-                e.baseColor[0]=0.20f;e.baseColor[1]=0.19f;e.baseColor[2]=0.24f;e.baseColor[3]=1.0f;
-                e.emissive[0]=0.02f;e.emissive[1]=0.03f;e.emissive[2]=0.05f;e.emissive[3]=1.0f;
+                e.baseColor[0]=0.22f;e.baseColor[1]=0.20f;e.baseColor[2]=0.26f;e.baseColor[3]=1.0f;
+                e.emissive[0]=0.03f;e.emissive[1]=0.06f;e.emissive[2]=0.12f;e.emissive[3]=1.0f;  // faint votive glow
                 e.tag=(uint32_t)Tag::Static;
-                e.body = physics.addBox(x3::phys::Vec3{ph,0.25f,ph}, x3::phys::Vec3{cavX,pt,SZ}, 0.0f, x3::phys::Layer::Static);
+                e.body = physics.addBox(x3::phys::Vec3{ph,hh,ph}, x3::phys::Vec3{cavX,pt+hh,SZ}, 0.0f, x3::phys::Layer::Static);
                 scene.add(e); ++added;
+                pt += hh * 2.0f;
             }
-            // The altar CRYSTAL — a bright shard on the plinth.
-            addCrystalCluster(scene, device, cavX, y + 0.9f, SZ, 1.5f, 5, 16.0f, outCrystalLights);
-            // GLYPH SLABS on the far/back wall — dark obsidian panels with faint blue
-            // etched-script glow (Salvari canon). Emissive kept low so it reads as
-            // carved script catching the crystal light, not a screen.
+            // The altar CRYSTAL — a modest bright shard cluster ON the dais (smaller so
+            // the plinth stays visible beneath it).
+            addCrystalCluster(scene, device, cavX, pt, SZ, 0.8f, 5, 15.0f, outCrystalLights);
+            // GLYPH STELAE — four tall carved Salvari steles FLANKING the approach (two
+            // each side), etched-blue self-glow so the script reads as you walk up. Dark
+            // obsidian panels catching the altar's crystal light.
             for (int g = 0; g < 4; ++g) {
-                const float gz = SZ - 2.4f + g * 1.6f;
-                x3::prims::PrimMesh geo = makeSolidRockBox(0.12f, 0.9f, 0.55f, rx1 - 0.5f, y + 1.7f, gz, tc.uvScale*2.0f);
+                const float side = (g < 2) ? -1.0f : 1.0f;
+                const float gx = cavX - 3.0f + (g % 2) * 4.5f;
+                const float gz = SZ + side * (floorHalf - 0.5f);
+                x3::prims::PrimMesh geo = makeSolidRockBox(0.5f, 1.35f, 0.16f, gx, y + 1.35f, gz, tc.uvScale*2.2f);
                 Entity e;
                 e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                            geo.index.data(), (uint32_t)geo.index.size());
                 e.tex=rockTex;
-                e.baseColor[0]=0.05f;e.baseColor[1]=0.06f;e.baseColor[2]=0.10f;e.baseColor[3]=1.0f;
-                e.emissive[0]=0.02f;e.emissive[1]=0.10f;e.emissive[2]=0.34f;e.emissive[3]=1.0f;  // etched-blue glyph glow
-                e.tag=(uint32_t)Tag::Static; e.body=x3::phys::BodyId{};
+                e.baseColor[0]=0.05f;e.baseColor[1]=0.06f;e.baseColor[2]=0.11f;e.baseColor[3]=1.0f;
+                e.emissive[0]=0.03f;e.emissive[1]=0.16f;e.emissive[2]=0.52f;e.emissive[3]=1.0f;  // etched-blue glyph glow
+                e.tag=(uint32_t)Tag::Static;
+                e.body = physics.addBox(x3::phys::Vec3{0.5f,1.35f,0.16f}, x3::phys::Vec3{gx,y+1.35f,gz}, 0.0f, x3::phys::Layer::Static);
                 scene.add(e); ++added;
             }
             hollow(cavX - 3.0f, y + 3.2f, SZ - 2.0f, 0.9f);   // a wall pocket for depth
