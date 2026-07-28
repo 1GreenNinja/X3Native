@@ -6087,7 +6087,7 @@ int runDefaultHost(HostContext& hc) {
                                 const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
                                 if (verdict[0] == 'D' && dist > 0.001f) {
                                     const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
-                                    const x3::phys::RayHit los = physics->rayCast(
+                                    const x3::phys::RayHit los = physics->rayCastStrict(
                                         hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
                                     if (los.hit) verdict = "culled:LOS";
                                 }
@@ -11026,7 +11026,10 @@ int runDefaultHost(HostContext& hc) {
                             const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
                             if (dist > 0.001f) {
                                 const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
-                                const x3::phys::RayHit los = physics->rayCast(hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
+                                // STRICT Static — the permissive mask also reports the
+                                // ENEMY'S OWN box (0.6 m half-width vs this 0.3 m
+                                // shortening), so every bar was silently culled.
+                                const x3::phys::RayHit los = physics->rayCastStrict(hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
                                 if (los.hit) continue;   // wall in the way -> hidden
                             }
                             c.y += 2.2f;                 // anchor above the head
@@ -11671,7 +11674,9 @@ int runDefaultHost(HostContext& hc) {
                         bool vis = true;
                         if (dist > 0.01f) {
                             const x3::phys::Vec3 dir{ hx/dist, hy/dist, hz/dist };
-                            x3::phys::RayHit rh = physics->rayCast(eye, dir, dist - 0.5f,
+                            // STRICT Static — the permissive mask reported the enemy's
+                            // own 0.6 m-half-width box and hid every nameplate.
+                            x3::phys::RayHit rh = physics->rayCastStrict(eye, dir, dist - 0.5f,
                                                                    x3::phys::Layer::Static);
                             if (rh.hit) vis = false;   // a wall/door is between the eye and this enemy
                         }

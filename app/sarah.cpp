@@ -276,11 +276,17 @@ bool SarahCompanion::losClear(x3::phys::IPhysicsWorld& physics, const x3::phys::
     const float skip = kSarahHalf.x + 0.15f;
     const x3::phys::Vec3 from{ muzzle.x + nd.x*skip, muzzle.y + nd.y*skip, muzzle.z + nd.z*skip };
     float losLen = dl - skip; if (losLen < 1e-3f) return true;
-    const x3::phys::RayHit wall = physics.rayCast(from, nd, losLen, x3::phys::Layer::Static);
+    // STRICT Static: only real walls/door slabs block her shot. (rayCast()'s mask
+    // is permissive — Static<->Enemy collide in the matrix — which is why the
+    // plain call reported her own TARGET as the "wall" and she never fired.)
+    const x3::phys::RayHit wall =
+        physics.rayCastStrict(from, nd, losLen, x3::phys::Layer::Static);
     if (!wall.hit) return true;
-    // A Layer::Static ray ALSO reports Enemy/Player/Dynamic bodies (see the header
-    // note) — so the "blocker" is usually a hostile, not a wall. Any hit on a body
-    // belonging to a live hostile is shoot-through: that IS what she's firing at.
+    // Belt-and-braces (kept deliberately: the F7 wiring depends on this behaviour,
+    // and it is the last line of defence if anyone reverts the strict cast). Any
+    // hit on a body belonging to a live hostile is shoot-through: that IS what
+    // she's firing at. With rayCastStrict this loop no longer fires — hostiles are
+    // on Layer::Enemy and a strict Static probe cannot report them.
     for (const MonsterSystem* m : hostiles)
         if (m && m->body().valid() && m->body().id == wall.body.id) return true;
     return false;   // a real wall (or Jake) — hold fire
