@@ -1,5 +1,6 @@
 // CAVE / TUNNEL ATMOSPHERE — see cave_atmosphere.h.
 #include "cave_atmosphere.h"
+#include "cave_river.h"
 #include "headless_device.h"
 #include "engine/core/x3_log.h"
 
@@ -257,7 +258,242 @@ bool CaveAtmosphere::runSelfTest() {
 
     x3::logInfo("caveatmos: " + std::to_string(g_pass) + "/" +
                 std::to_string(g_pass + g_fail) + " passed");
+
+    // The UNDERGROUND RIVER folds its own build/emissive/flow assertions into this gate
+    // (feat/cave-river) so --test-caveatmos green also proves the river geometry builds,
+    // is MILD emissive-blue, and flows without blowing out.
+    const bool riverOk = CaveRiver::runSelfTest();
+    if (!riverOk) ++g_fail;
+
     return g_fail == 0;
+}
+
+// ===========================================================================
+// UNDERGROUND RIVER (feat/cave-river) — the self-emissive blue stream. See
+// cave_river.h. Implemented HERE (in the already-compiled cave-atmosphere TU) so no
+// new build-system entry is needed; conceptually it is the water half of the cave
+// atmosphere.
+// ===========================================================================
+namespace {
+
+// A subtle blue water-mottle albedo so the surface catches the pool bank-lights with a
+// hint of ripple detail (self-contained; no pack asset). Deep-blue, low contrast.
+std::vector<uint8_t> makeWaterRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    auto hash = [](int x, int y) {
+        uint32_t h = (uint32_t)(x * 374761393 + y * 668265263);
+        h = (h ^ (h >> 13)) * 1274126177u;
+        return (float)((h ^ (h >> 16)) & 0xFFFF) / 65535.0f;
+    };
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            // two octaves of value noise -> a faint caustic-ish shimmer
+            const float u = (float)x / n, v = (float)y / n;
+            const float a = hash((int)(u * 8) & 7, (int)(v * 8) & 7);
+            const float b = hash((int)(u * 24) & 23, (int)(v * 24) & 23);
+            const float g = 0.6f * a + 0.4f * b;          // 0..1
+            auto c8 = [](float f) { return (uint8_t)(f < 0 ? 0 : f > 1 ? 255 : f * 255.0f + 0.5f); };
+            const uint32_t i = (y * n + x) * 4;
+            px[i + 0] = c8(0.02f + 0.05f * g);            // R low
+            px[i + 1] = c8(0.10f + 0.14f * g);            // G mid-low
+            px[i + 2] = c8(0.45f + 0.40f * g);            // B dominant
+            px[i + 3] = 255;
+        }
+    return px;
+}
+
+// One double-sided flat water-ribbon quad between two river nodes (world-space verts;
+// the Y column bobs for ripple in update()).
+x3::rhi::MeshHandle makeRibbonSeg(x3::rhi::IRenderDevice& device,
+                                  const CaveRiverNode& a, const CaveRiverNode& b,
+                                  float uA, float uB) {
+    std::vector<x3::rhi::MeshVertex> v;
+    std::vector<uint32_t> idx;
+    v.reserve(8); idx.reserve(12);
+    auto push = [&](float x, float y, float z, float u, float vv, float ny) {
+        x3::rhi::MeshVertex mv;
+        mv.pos[0] = x; mv.pos[1] = y; mv.pos[2] = z;
+        mv.normal[0] = 0.0f; mv.normal[1] = ny; mv.normal[2] = 0.0f;
+        mv.uv[0] = u; mv.uv[1] = vv;
+        v.push_back(mv);
+    };
+    // TOP face (normal +Y) — aL,aR,bL,bR.
+    push(a.x, a.y, a.z - a.halfWidth, uA, 0.0f, 1.0f);   // 0
+    push(a.x, a.y, a.z + a.halfWidth, uA, 1.0f, 1.0f);   // 1
+    push(b.x, b.y, b.z - b.halfWidth, uB, 0.0f, 1.0f);   // 2
+    push(b.x, b.y, b.z + b.halfWidth, uB, 1.0f, 1.0f);   // 3
+    idx.insert(idx.end(), { 0, 2, 3,  0, 3, 1 });
+    // BOTTOM copy (normal -Y, reversed winding) — visible from below too (noclip-proof).
+    const uint32_t b2 = (uint32_t)v.size();
+    push(a.x, a.y, a.z - a.halfWidth, uA, 0.0f, -1.0f);
+    push(a.x, a.y, a.z + a.halfWidth, uA, 1.0f, -1.0f);
+    push(b.x, b.y, b.z - b.halfWidth, uB, 0.0f, -1.0f);
+    push(b.x, b.y, b.z + b.halfWidth, uB, 1.0f, -1.0f);
+    idx.insert(idx.end(), { b2 + 0, b2 + 3, b2 + 2,  b2 + 0, b2 + 1, b2 + 3 });
+    return device.createMesh(v.data(), (uint32_t)v.size(), idx.data(), (uint32_t)idx.size());
+}
+
+} // namespace
+
+int CaveRiver::build(Scene& scene, x3::rhi::IRenderDevice& device,
+                     const std::vector<CaveRiverNode>& nodes,
+                     std::vector<x3::rhi::PointLight>* outLights) {
+    m_segs.clear();
+    m_flow = 0.0f;
+    if (nodes.size() < 2) return 0;
+
+    // One shared subtle water-mottle albedo (reused by every ribbon segment).
+    const uint32_t N = 64;
+    const std::vector<uint8_t> wpx = makeWaterRGBA(N);
+    m_tex = device.createTexture(wpx.data(), N, N, true);
+
+    // Cumulative along-river length (breaks contribute 0 — no bridge across two tubes),
+    // for the flow phase s01 + the streamed UV.
+    std::vector<float> cum(nodes.size(), 0.0f);
+    float total = 0.0f;
+    for (size_t i = 1; i < nodes.size(); ++i) {
+        float d = 0.0f;
+        if (!nodes[i - 1].breakSeg) {
+            const float dx = nodes[i].x - nodes[i - 1].x;
+            const float dz = nodes[i].z - nodes[i - 1].z;
+            d = std::sqrt(dx * dx + dz * dz);
+        }
+        total += d;
+        cum[i] = total;
+    }
+    if (total < 1e-3f) total = 1.0f;
+
+    // MILD deep-electric-blue: emissive ratio is blue-dominant, and the animated strength
+    // (below) keeps blue*strength well under 1.0 so ACES holds the hue (a gentle glow, not
+    // a blinding white strip). baseColor is a deep blue the pool lights catch.
+    const float blueBase[4] = { 0.03f, 0.10f, 0.42f, 1.0f };
+    const float blueEmis[3] = { 0.05f, 0.14f, 1.00f };
+
+    int added = 0;
+    for (size_t i = 1; i < nodes.size(); ++i) {
+        const CaveRiverNode& a = nodes[i - 1];
+        const CaveRiverNode& b = nodes[i];
+        if (a.breakSeg) continue;                        // gap between disconnected tubes
+        const float uA = cum[i - 1] / total * 12.0f, uB = cum[i] / total * 12.0f;
+        Entity e;
+        e.mesh = makeRibbonSeg(device, a, b, uA, uB);
+        e.tex  = m_tex;
+        for (int k = 0; k < 4; ++k) e.baseColor[k] = blueBase[k];
+        const float em = 0.5f * (a.emissive + b.emissive);
+        e.emissive[0] = blueEmis[0]; e.emissive[1] = blueEmis[1];
+        e.emissive[2] = blueEmis[2]; e.emissive[3] = em;
+        e.tag  = (uint32_t)Tag::Static;
+        e.body = x3::phys::BodyId{};                     // purely visual (water floats over the floor)
+        const uint32_t id = scene.add(e);
+        ++added;
+
+        Seg sg;
+        sg.id = id;
+        sg.s01 = cum[i - 1] / total;
+        sg.baseEmis = em;
+        sg.pool = a.pool || b.pool;
+        m_segs.push_back(sg);
+
+        // POOL bank light — a DIM blue glow over the pool that softly lights the rock
+        // banks, pushed into the SAME distance-culled crystal/bedrock channel the Salvari
+        // crystals use (host cull @50 m, 64-light cap). A handful total (2 per tube).
+        if (b.pool && outLights) {
+            x3::rhi::PointLight l;
+            l.pos[0] = b.x; l.pos[1] = b.y + 0.5f; l.pos[2] = b.z;
+            l.range  = 12.0f;
+            l.color[0] = 0.10f; l.color[1] = 0.22f; l.color[2] = 0.85f;   // dim, cool, blue-dominant
+            outLights->push_back(l);
+        }
+    }
+    return added;
+}
+
+void CaveRiver::update(float dt, Scene& scene) {
+    if (m_segs.empty()) return;
+    m_flow += dt * 1.7f;                                 // dt-scaled downstream flow rate
+    const float kTwoPi = 6.28318531f;
+    for (const Seg& s : m_segs) {
+        Entity& e = scene.get(s.id);
+        const float phase = s.s01 * 3.0f * kTwoPi;       // ~3 crests spread along the river
+        float strength;
+        if (s.pool) {
+            // Pools BREATHE slower + a touch brighter (a settled shimmer, not a crest).
+            strength = s.baseEmis * (1.02f + 0.10f * std::sin(m_flow * 0.6f + s.s01 * 5.0f));
+        } else {
+            // A bright CREST travels DOWNSTREAM (increasing s01) as m_flow rises, + a
+            // faster micro-shimmer so it reads as living water, not a sliding gradient.
+            const float crest   = 0.5f + 0.5f * std::sin(phase - m_flow);
+            const float shimmer = 0.90f + 0.10f * std::sin(phase * 2.3f - m_flow * 1.7f);
+            strength = s.baseEmis * (0.80f + 0.34f * crest) * shimmer;
+        }
+        e.emissive[3] = strength;
+        // Gentle ripple BOB on the surface Y (verts are world-space; the translation
+        // column oscillates the whole segment). Kept LOW-amplitude + LOW-frequency so
+        // adjacent segments (which share an edge) stay within ~2 mm of each other — a
+        // living undulation with NO visible seam/step between ribbon quads.
+        e.transform[13] = 0.012f * std::sin(s.s01 * 4.5f - m_flow * 1.1f);
+    }
+}
+
+bool CaveRiver::runSelfTest() {
+    int pass = 0, fail = 0;
+    auto chk = [&](bool ok, const char* w) {
+        if (ok) { ++pass; x3::logInfo(std::string("[cave-river-test] PASS ") + w); }
+        else    { ++fail; x3::logError(std::string("[cave-river-test] FAIL ") + w); }
+    };
+
+    // A tiny river: one 5-node run (belly pool at 2, dead-end pool at 4, break at 4).
+    std::vector<CaveRiverNode> nodes;
+    for (int i = 0; i < 5; ++i) {
+        CaveRiverNode n;
+        n.x = 40.0f + (float)i * 2.2f;
+        n.y = -560.0f + 0.05f;
+        n.z = 4.0f;
+        n.halfWidth = (i == 2) ? 3.0f : 0.9f;
+        n.emissive  = (i == 2 || i == 4) ? 0.40f : 0.30f;
+        n.pool      = (i == 2 || i == 4);
+        n.breakSeg  = (i == 4);
+        nodes.push_back(n);
+    }
+
+    HeadlessRenderDevice dev;
+    Scene scene;
+    std::vector<x3::rhi::PointLight> lights;
+    CaveRiver river;
+    const int added = river.build(scene, dev, nodes, &lights);
+    chk(added >= 3 && river.built(), "R1 the water ribbon builds segments from the node polyline");
+
+    // MILD emissive BLUE: blue-dominant, and the final blue add (ratio*strength) held
+    // well under 1.0 so it's a gentle glow, not a blinding white strip.
+    bool blueMild = (scene.size() > 0);
+    for (uint32_t id = 0; id < scene.size(); ++id) {
+        const Entity& e = scene.get(id);
+        if (e.emissive[3] <= 0.0f) { blueMild = false; break; }
+        if (!(e.emissive[2] > e.emissive[0] && e.emissive[2] > e.emissive[1])) blueMild = false;
+        if (e.emissive[2] * e.emissive[3] > 0.7f) blueMild = false;   // mild peak
+    }
+    chk(blueMild, "R2 water is MILD emissive BLUE (blue-dominant, final add < ~0.7, not a white strip)");
+
+    // A handful of DIM, short-range, blue bank lights over the pools.
+    bool banks = !lights.empty() && lights.size() <= 8;
+    for (const auto& l : lights) {
+        if (l.range > 16.0f) banks = false;
+        if (!(l.color[2] > l.color[0] && l.color[2] < 1.2f)) banks = false;
+    }
+    chk(banks, "R3 a HANDFUL of dim short-range blue bank lights light the pools");
+
+    // FLOW animates the surface (a non-pool stream segment's emissive crest MOVES + the
+    // ripple bobs) and stays MILD.
+    const float e0 = scene.get(0).emissive[3];           // entity 0 = first (non-pool) stream seg
+    for (int k = 0; k < 20; ++k) river.update(1.0f / 60.0f, scene);
+    const float e1 = scene.get(0).emissive[3];
+    const float bob = scene.get(0).transform[13];
+    chk(std::fabs(e1 - e0) > 1e-4f && e1 > 0.0f && e1 < 0.7f && std::fabs(bob) < 0.06f,
+        "R4 flow animates (crest moves, surface bobs) and stays mild");
+
+    x3::logInfo("caveriver: " + std::to_string(pass) + "/" +
+                std::to_string(pass + fail) + " passed");
+    return fail == 0;
 }
 
 } // namespace x3::game

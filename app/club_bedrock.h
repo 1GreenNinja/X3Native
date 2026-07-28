@@ -217,6 +217,19 @@ struct TunnelConfig {
 // room, hall, elevator alcove, side-shoot rooms) is built here; the INTERACTIVE
 // layer (the fall-catch, the terminal, the keypad door, the elevator ride) lives in
 // descent_fall.{h,cpp} and reads the world positions from this layout struct.
+// One point on the UNDERGROUND RIVER's centerline (feat/cave-river). The river is a
+// polyline of these threading the low cave-tube floors; buildEarthTunnels() emits them
+// into DescentFallLayout::river, and CaveRiver (cave_river.h) builds the emissive-blue
+// water ribbon + pool lights from them. `breakSeg` ends a run (no quad to the NEXT node
+// — used between disconnected side-shoot tubes).
+struct CaveRiverNode {
+    float x = 0, y = 0, z = 0;      // world position of the water surface centerline
+    float halfWidth = 0.9f;         // ribbon half-width (across, in Z) at this node
+    float emissive  = 0.30f;        // base emissive strength here (pools brighter)
+    bool  pool      = false;        // a POOL widening (brighter, slower breathe, a bank light)
+    bool  breakSeg  = false;        // this node ENDS a river run (no segment to the next)
+};
+
 struct DescentFallLayout {
     // FALL SHAFT (open vertical bore).
     float shaftX = 0, shaftZ = 0;   // bore center XZ
@@ -243,6 +256,10 @@ struct DescentFallLayout {
     // hall into the survival complex's east shell.
     float complexAttachX = 0, complexAttachZ = 0;
     bool  hasUnderHall = false;
+    // UNDERGROUND RIVER centerline (feat/cave-river) — a polyline threading the low
+    // cave-tube floors; CaveRiver builds the emissive-blue water ribbon from it. Empty
+    // when the river is disabled.
+    std::vector<CaveRiverNode> river;
 };
 
 // Build the earth tunnel network into `scene` (+ Jolt collision via `physics`, meshes

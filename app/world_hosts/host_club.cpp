@@ -5,6 +5,7 @@
 #include "../club_bedrock.h"                 // solid-earth encasement (underground)
 #include "../descent_fall.h"                 // THE DESCENT FALL (fall shaft + dark room + keypad + elevator)
 #include "../cave_atmosphere.h"              // CAVE ATMOSPHERE (crystal-only + bass-pulse + fog + singing)
+#include "../cave_river.h"                   // UNDERGROUND RIVER (self-emissive blue flowing stream)
 #include "../survival_complex.h"             // Route-B hub: elevator -> under-club hall -> complex L7
 #include "../jukebox.h"                     // Club Jukebox — Tim's personal-use "Self Radio"
 #include "../crowd.h"
@@ -158,6 +159,24 @@ int hostClub(HostContext& hc) {
             const auto& cs2 = club.stats();
             caveAtmos.configure(descentLayout, cs2.roomMaxX, cs2.floorY, cs2.ceilingY,
                                 descentLayout.mouthY);
+        }
+
+        // ==== UNDERGROUND RIVER (feat/cave-river) ===============================
+        // A mildly-luminescent SELF-EMISSIVE blue stream threading the low side-shoot
+        // cave floors (Cache / Landmark cathedral / Collapse), pooling in the cavern
+        // bellies + dead-ends. NOT the sky-dependent surface-water system (no sun down
+        // here): the water IS the light, a dimmer/cooler cousin of the Salvari crystals.
+        // Its DIM blue pool bank-lights are appended to the SAME distance-culled
+        // bedrockLights channel (so pushLights culls + beat-breathes them like crystals).
+        // update() (each frame, below) scrolls the flow crest + ripple.
+        x3::game::CaveRiver caveRiver;
+        {
+            const int nRiver = caveRiver.build(cscene, *device, descentLayout.river,
+                                               &bedrockLights);
+            x3::logInfo("--world club: underground river — " + std::to_string(nRiver) +
+                        " emissive-blue water segments over " +
+                        std::to_string((int)descentLayout.river.size()) +
+                        " nodes (self-lit, flowing; NOT the sky-water system)");
         }
         // The earth reaches ~200 m UP to the surface and ~1 km OUT under the city,
         // so the 200 m default far plane would clip the distant rock walls to the
@@ -353,6 +372,7 @@ int hostClub(HostContext& hc) {
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
                 // CAVE ATMOSPHERE: crystal-only ambient/IBL + fog for the shot camera.
                 caveAtmos.update(dt, x3::phys::Vec3{ cam[0], cam[1], cam[2] }, *device);
+                caveRiver.update(dt, cscene);   // scroll the river flow crest + ripple
                 pushLights((float)i * dt, cam[0], cam[1], cam[2]);   // club + nearby Salvari-crystal lights
                 if (i == kSettle - 1 && seqFrames == 0) device->armCapture(outPath.c_str());
                 auto frame = device->beginFrame();
@@ -375,6 +395,7 @@ int hostClub(HostContext& hc) {
                 cscene.update(*cphys);
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
                 caveAtmos.update(dt, x3::phys::Vec3{ cam[0], cam[1], cam[2] }, *device);
+                caveRiver.update(dt, cscene);   // scroll the river flow crest + ripple
                 pushLights((float)(kSettle + f) * dt, cam[0], cam[1], cam[2]);
                 device->armCapture(fp);
                 auto frame = device->beginFrame();
@@ -650,6 +671,7 @@ int hostClub(HostContext& hc) {
             // audio + crystal beat-pulse ride the club beat clock.
             const x3::game::CaveAtmosphere::State caveSt =
                 caveAtmos.update(dt, x3::phys::Vec3{ camX, camY, camZ }, *device);
+            caveRiver.update(dt, cscene);   // scroll the river flow crest + ripple
             caveAtmos.updateAudio(x3::phys::Vec3{ camX, camY, camZ }, caveSt, club.beatThump());
             pushLights((float)now, camX, camY, camZ);   // club + nearby Salvari-crystal lights
             auto frame = device->beginFrame();
