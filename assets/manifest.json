@@ -438,6 +438,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/SalvariPrincess_anim.glb",
+      "sha256": "4e637df83a39b8c103eea46339eca72e4387c99ca0f09f2e3dc61fb04779c599",
+      "size": 10628452,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/SpaceShip.glb",
       "sha256": "8285f34ec5864d74b97e330b6c77411f5e080034bf575a8f28e6a4ce59d8ac75",
       "size": 7545756,
