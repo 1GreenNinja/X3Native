@@ -50,8 +50,12 @@ bsdf.inputs["Roughness"].default_value = 0.9
 floor.data.materials.append(mat)
 
 # ---- LEVEL camera: eye ~1.0 m, ~3.4 m out, ZERO pitch --------------------------
-EYE = 1.0
-DIST = 3.4
+# The 1.0 m / 3.4 m defaults frame a HUMAN. A small quadruped/arachnid (a ~0.15 m
+# tall spider) would be a speck at those numbers, so the eye height and distance
+# are overridable via env vars - the grounded METHOD (floor at z=0, ZERO pitch,
+# every clip shot identically) is unchanged, only the framing scales.
+EYE = float(os.environ.get("X3QA_EYE", "1.0"))
+DIST = float(os.environ.get("X3QA_DIST", "3.4"))
 AZ = math.radians(22.0)          # slight 3/4 so the pose reads; still a level cam
 cam_data = bpy.data.cameras.new("Cam"); cam_data.lens = 50
 cam = bpy.data.objects.new("Cam", cam_data)
