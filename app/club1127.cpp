@@ -1304,7 +1304,15 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     }
 
     // ==================================================================
-    // 16 × 85" OLED WALL SCREENS — 4 PER WALL (canon refinement, spec §1.6).
+    // 16 × 83" LG C1 OLED WALL SCREENS — 4 PER WALL (canon refinement, spec §1.6).
+    //   REAL-CLUB CANON (Tim, 2026-07-27): the panels were 83" LG C1 OLEDs. He ran
+    //   EIGHT and sanctioned "a few more", so the 4-per-wall ring stands; only the
+    //   SIZE was wrong. The C-series never shipped an 85" (C1/C2/C3 topped out at
+    //   83") — 85" LG sets of that era were QNED/NanoCell LCD, which these were not.
+    //   83" 16:9 => 1.837 m x 1.033 m of active area, which is what the maths below
+    //   lands on. The OLED distinction is load-bearing, not pedantry: these panels
+    //   go TRUE BLACK between beats, so the visualiser content will float on a void
+    //   instead of sitting on sixteen glowing grey rectangles.
     //   Every screen carries a baked OLED equalizer frame (palette cycles per
     //   screen) + registers for the live emissive shimmer in update().
     //   axis 0 = pane thin in Z (N & S long walls); axis 1 = thin in X (E & W).
@@ -1331,13 +1339,13 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         const float xW = -CW / 2 + 0.07f, xE = CW / 2 - 0.07f;   // W/E short walls
         for (int n = 0; n < 4; ++n) {                            // 4 on each long wall
             const float x = -CW / 2 + CW * (n + 0.5f) / 4.0f;
-            wallTv(85, x, ty, zN, 0);   // north
-            wallTv(85, x, ty, zS, 0);   // south
+            wallTv(83, x, ty, zN, 0);   // north
+            wallTv(83, x, ty, zS, 0);   // south
         }
         for (int n = 0; n < 4; ++n) {                            // 4 on each short wall
             const float z = -CL / 2 + CL * (n + 0.5f) / 4.0f;
-            wallTv(85, xW, ty, z, 1);   // west
-            wallTv(85, xE, ty, z, 1);   // east (elevator wall)
+            wallTv(83, xW, ty, z, 1);   // west
+            wallTv(83, xE, ty, z, 1);   // east (elevator wall)
         }
     }
 

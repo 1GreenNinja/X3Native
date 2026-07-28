@@ -27,7 +27,13 @@
 //   * PA RIG — 4x SVS PB16-Ultra subs (corners), 16x JBL JRX200 (8 stacked pairs)
 //     + 8 amps on the walls, 4x JBL 18" subs flanking the floor, 16x JBL surrounds.
 //   * 28 BLACKLIGHTS — 4 ft UV tubes on the walls at 10 ft intervals, pulsing.
-//   * TV MULTIPLEX — 6 screens (80/85/75/65/55/55") on a POE network.
+//   * OLED WALL — 16x 83" LG C1 OLED screens, 4 per wall, on a POE network.
+//     REAL-CLUB CANON (Tim, 2026-07-27): the real room ran EIGHT 83" C1s; he
+//     sanctioned "a few more", so the 4-per-wall ring stands. They are OLED and
+//     that matters — true black between beats, so visualiser content floats on a
+//     void rather than sitting on lit grey slabs. (Superseded: an earlier comment
+//     here claimed 6 mixed sizes, 80/85/75/65/55/55". That was never what the
+//     code built and was not the real rig.)
 //   * VIP / COUCHES — black couches + end table (SE corner) + a VIP couch (SW).
 //
 // Construction mirrors app/env_art.cpp + app/door.cpp + the prior club:
