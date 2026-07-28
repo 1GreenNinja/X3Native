@@ -8,25 +8,28 @@ room beats anything that merely looks good.
 
 ## 1. The screens: 8 × 85" LG C1 — NOT the 6-screen mixed multiplex
 
-**Current canon is wrong.** `app/club1127.h` says:
-
-> `* TV MULTIPLEX — 6 screens (80/85/75/65/55/55") on a POE network.`
-
-The real club had **EIGHT screens, all the same: 85" LG C1**. Not a mixed bag of sizes.
+The real club had **EIGHT screens, all the same: LG C1**. Not a mixed bag of sizes.
 Tim: *"I had 8 screens, but we can have a few more."*
 
-### What changes
+### What was actually in the code (corrected 2026-07-27)
 
-| | Old canon | Corrected |
-|---|---|---|
-| Count | 6 | **8 minimum** (more is sanctioned) |
-| Sizes | 80/85/75/65/55/55" mixed | **all 85"**, uniform |
-| Type | unspecified "POE multiplex" | **LG C1** |
+An earlier revision of this doc claimed the code built 6 mixed-size screens. **It did not.**
+That was a stale comment in `club1127.h`; the built code already made **16 screens, 4 per
+wall**, and `--test-club` asserted `s.tvScreens == 16`. Only the SIZE was wrong (85").
 
-Uniformity matters visually: eight identical large panels read as an installed *video
-wall*, whereas six mismatched sizes read as scavenged. That difference is the whole look.
+| | Header comment (stale) | Code before | Now |
+|---|---|---|---|
+| Count | 6 | 16 (4/wall) | **16, unchanged** |
+| Size | 80/85/75/65/55/55" | all 85" | **all 83"** |
+| Type | "POE multiplex" | unspecified | **LG C1 OLED** |
 
-`Stats::tvScreens` currently targets 6 — it must move to 8+, and the self-test with it.
+**Count left at 16 deliberately.** Tim ran 8 and sanctioned "a few more"; 16 was already
+built and already in the shots he approved. Halving his video wall unprompted would be the
+wrong call — flagged here instead. If 16 reads as too many, dropping to 8–12 is a one-line
+change to the two `for (int n = 0; n < 4; ++n)` loops.
+
+Uniformity is the point either way: identical large panels read as an installed *video
+wall*; mismatched sizes read as scavenged.
 
 ### Panel geometry — CONFIRMED: 83" LG C1 OLED
 

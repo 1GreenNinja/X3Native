@@ -2918,10 +2918,27 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         // pane brightening and dimming like a lamp behind a sheet. The band is centred
         // on kOledEmit; the old 0.12..0.63 range was a flat-wash floor and would now
         // leave the screens too dim to read as displays.
-        for (size_t i = 0; i < m_oledEnts.size(); ++i) {
+        // SPECTRUM WALL (feat/club-jukebox-merge): the panels used to surge as ONE
+        // on `thump`, so sixteen screens flashed in unison like a single lamp. Now
+        // the measured spectrum is SPREAD ACROSS THE RING — screen 0 sits at the low
+        // end, the last screen at the top — so a kick lights one side of the room
+        // and a hi-hat lights the other, and you can watch a sweep travel the wall.
+        // That is R180 ("blue spectrum analyzer") in behaviour, using the bands
+        // Listen Mode already measures; no render-to-texture needed.
+        //
+        // The 3 measured bands are interpolated to however many panels exist, so
+        // this scales if the count changes. NOTE it needs NO live/open-loop branch:
+        // with no live signal bass==mid==high==thump, so `e` collapses to `thump`
+        // and the look is byte-for-byte what it was before.
+        const size_t nOled = m_oledEnts.size();
+        for (size_t i = 0; i < nOled; ++i) {
             const uint32_t id = m_oledEnts[i];
             if (id >= scene.size()) continue;
-            scene.get(id).emissive[3] = kOledEmit + 0.35f * std::sin(t * 2.3f + i * 1.9f) + 0.45f * thump;
+            const float p = (nOled > 1) ? (float)i / (float)(nOled - 1) : 0.5f;
+            const float e = (p < 0.5f)
+                          ? bandLow + (bandMid  - bandLow) * (p * 2.0f)
+                          : bandMid + (bandHigh - bandMid) * ((p - 0.5f) * 2.0f);
+            scene.get(id).emissive[3] = kOledEmit + 0.35f * std::sin(t * 2.3f + i * 1.9f) + 0.45f * e;
         }
     }
 
