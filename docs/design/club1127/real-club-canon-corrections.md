@@ -28,28 +28,33 @@ wall*, whereas six mismatched sizes read as scavenged. That difference is the wh
 
 `Stats::tvScreens` currently targets 6 — it must move to 8+, and the self-test with it.
 
-### Panel geometry
+### Panel geometry — CONFIRMED: 83" LG C1 OLED
 
-⚠ **Check this before modelling.** The LG **C1** OLED line was 48 / 55 / 65 / 77 / **83"** —
-there was no 85" C1. LG's 85" sets of that era were NanoCell/QNED LCD. So the real screens
-were probably **83" C1 OLEDs** (commonly rounded to "85"), or genuinely 85" QNEDs. Worth a
-word from Tim, because it changes the panel proportions slightly and the bezel a lot.
+Tim confirmed 2026-07-27: **83-inch C1s.** (The C-series never shipped an 85" — C1/C2/C3
+all topped out at 83". "85" is the usual rounding. LG's 85"+ panels were all QNED/NanoCell
+LCD, which these were *not*.)
 
-Working dimensions, 16:9 active area:
+Active area, 16:9:
 
-| Nominal | Diagonal | Width | Height |
+| | Diagonal | Width | Height |
 |---|---|---|---|
-| 83" (C1 OLED) | 2.108 m | **1.837 m** | **1.033 m** |
-| 85" (QNED LCD) | 2.159 m | **1.882 m** | **1.058 m** |
+| **83" C1 OLED** | 2.108 m | **1.837 m** | **1.033 m** |
 
-Either way they are ~1.85 m wide. Eight of them need ~14.8 m of wall before spacing — the
-main room's long axis is `kCW = 30.48 m`, so eight fit comfortably along one wall, and
-twelve would still fit with gaps.
+Eight need ~14.7 m of wall before spacing. The main room's long axis is `kCW = 30.48 m`, so
+eight fit comfortably along one wall and twelve still fit with gaps.
 
-**C1 look notes (if OLED):** near-bezel-less, a very thin top two-thirds with a thicker
-lower chassis, glossy black panel that reflects the room when dark. Per
-`X3_WORLD_RULES` rule 7, dark-glass rounded screens are the display standard — never flat
-bright quads.
+**It is an OLED, and that is the important part.** Modelled correctly it must be:
+
+- **Near-bezel-less** — a hairline frame, not a chunky LCD surround.
+- **Thin upper two-thirds** over a slightly thicker lower chassis (the C1 profile).
+- **Glossy black glass that goes TRUE BLACK.** An OLED between beats is indistinguishable
+  from the wall; an LCD glows dark grey. In a dark club that difference is the whole read,
+  and it is the reason the visualiser wall will look right — content appears to float on a
+  black void rather than sit on eight grey rectangles.
+- Reflective when dark: the panel mirrors the room's neon back at the viewer.
+
+Per `X3_WORLD_RULES` rule 7, dark-glass rounded screens are the display standard — never
+flat bright quads. An 83" C1 is the archetype of that rule.
 
 ### Why this matters beyond decor
 
