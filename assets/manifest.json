@@ -300,6 +300,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/AnnaBodySuit_anim.glb",
+      "sha256": "8e595331d546c48639f9653ec04ffcd6e5c75c81a236f82d6114eb6acd71190c",
+      "size": 8047696,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/AnnaCasual.glb",
       "sha256": "04da619319a0c049b2ab7591a4fc2813d4923272159196cdb5d4fa56cfb6ecc4",
       "size": 12184604,
