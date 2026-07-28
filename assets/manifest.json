@@ -402,6 +402,12 @@
       "source_note": "G:\\GameModels\\rigged_glb; round-trip fetch verified 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/Oracle_anim.glb",
+      "sha256": "62f4727fa1d39b5da5d6c6c499e30482675e6a5959c3d23d0b47a1a195d74056",
+      "size": 6926260,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/OverLordEnforcer99.glb",
       "sha256": "c46f08a1d7fefdba63cbd04b93e73c281231d5df38ecf3fe58da63c0a358c1bb",
       "size": 12087160,
