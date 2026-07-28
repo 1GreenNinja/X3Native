@@ -874,6 +874,34 @@ void flipMeshV(x3::prims::PrimMesh& m) {
     }
 }
 
+// B6-2 — THE BAKED PANELS SHOWED A CROP OF THE BAKE, NOT THE BAKE.
+// ROOT CAUSE: makeBox UVs are TILING METERS (a face spans u = 2*extent*uvScale, v
+// likewise — mesh_prims.h:91-98), and addKit passes uvScale = 1.0. On a wall texture
+// that is the point; on a BAKED, NON-TILING image it is a crop rect. The 0.60 x 0.38 m
+// OLED face sampled uv [0,0.60]x[0,0.38] — the top-left ~60% x 38% of the 256x168 bake
+// (the survey read "DEPTH   90." with every lower row gone), and the 1.80 x 0.32 m
+// indicator plate sampled [0,1.8]x[0,0.32] — "F1" bottom-clipped, off-center, tiled.
+// PROVED, not guessed (before-shots in shots_cab/ + the X3_OLED_DUMP PPMs: the bakes
+// are complete and correct; only the quads crop them). Same survival story as B6:
+// meters-as-UV is invisible on tiling surfaces, and bites exactly the panels that
+// carry a baked image. So: normalize each face quad's UVs to [0,1] and the full bake
+// lands on the face. Applied ONLY to the baked-image panels (with flipV), never to
+// tiling surfaces.
+void fitMeshUV01(x3::prims::PrimMesh& m) {
+    for (size_t i = 0; i + 3 < m.verts.size(); i += 4) {
+        float um = 0.0f, vm = 0.0f;
+        for (int k = 0; k < 4; ++k) {
+            um = std::max(um, m.verts[i + k].uv[0]);
+            vm = std::max(vm, m.verts[i + k].uv[1]);
+        }
+        if (um <= 0.0f || vm <= 0.0f) continue;   // degenerate face — leave it
+        for (int k = 0; k < 4; ++k) {
+            m.verts[i + k].uv[0] /= um;
+            m.verts[i + k].uv[1] /= vm;
+        }
+    }
+}
+
 // Add a tinted (optionally emissive) box entity centered at the cab origin; the
 // per-frame layout offsets it. Returns the entity id (kNoLink on a bad mesh).
 // `flipV` (B6): set for panels that display a BAKED image (the OLEDs, the floor
@@ -882,7 +910,7 @@ uint32_t addKit(Scene& scene, x3::rhi::IRenderDevice& device,
                 float hx, float hy, float hz,
                 const float color[4], const float emissive[4], bool flipV = false) {
     x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, 0, 0, 0, 1.0f);
-    if (flipV) flipMeshV(geo);
+    if (flipV) { flipMeshV(geo); fitMeshUV01(geo); }   // baked image: top-down V + full-bake UV
     Entity e;
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
@@ -1142,9 +1170,14 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     { const float c[4] = {0.0f, 0.05f, 0.10f, 1.0f};
       const float em[4] = {0.0f, 0.40f, 0.80f, 1.2f};
       m_eOledL = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em, /*flipV*/true); }
+    // B6-2: the directory hangs on the +X wall facing -X into the cab, so its WIDE
+    // axis is Z and its THIN axis is X (it was 0.30/0.02 — a fin EDGE-ON to the
+    // rider, the whole display face buried pointing into the door wall; all you saw
+    // was a 4 cm glowing sliver of the bake's left edge. Same mount logic as the
+    // terminal below it: thin X, wide Z.)
     { const float c[4] = {0.05f, 0.0f, 0.08f, 1.0f};
       const float em[4] = {0.30f, 0.10f, 0.60f, 1.0f};
-      m_eOledR = addKit(scene, device, 0.30f, 0.19f, 0.02f, c, em, /*flipV*/true); }
+      m_eOledR = addKit(scene, device, 0.02f, 0.19f, 0.30f, c, em, /*flipV*/true); }
 
     // Access terminal + keypad (right wall, +X). R11: was a GLOWING BLUE BOX (emissive
     // 0.0/0.30/0.90 over its whole body). A terminal is a dark metal housing with a lit

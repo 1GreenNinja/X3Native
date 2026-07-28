@@ -75,7 +75,14 @@ int hostElevator(HostContext& hc) {
             // Drive the lift partway down so the strata shot has rock layers below.
             // X3_ELEV_DISCO=1: enter the 1127 code instead, so the beauty set proves
             // the DISCO cue (ball glow, strobe, magenta terminal/LED, club descent).
-            if (std::getenv("X3_ELEV_DISCO")) {
+            // X3_ELEV_STAY=1: keep the cab PARKED at its start stop (no descent) and
+            // log the cab center, so a --shot-cam interior framing is deterministic —
+            // the in-cab panel QA shots (OLED directory et al) need a cab that holds
+            // still under a fixed camera.
+            const bool stayParked = std::getenv("X3_ELEV_STAY") != nullptr;
+            if (stayParked) {
+                // parked — no call
+            } else if (std::getenv("X3_ELEV_DISCO")) {
                 show.keypadDigit(1); show.keypadDigit(1); show.keypadDigit(2); show.keypadDigit(7);
             } else {
                 show.callClub();
@@ -84,6 +91,12 @@ int hostElevator(HostContext& hc) {
                 show.update(dt, escene, *device, *ephys);
                 const auto& l = show.pointLights(); device->setPointLights(l.data(), (uint32_t)l.size());
                 ephys->step(dt); escene.update(*ephys);
+            }
+            if (stayParked) {
+                const x3::phys::Vec3 cc = show.cabCenter();
+                x3::logInfo("--world elevator: X3_ELEV_STAY parked, cab center " +
+                            std::to_string(cc.x) + " " + std::to_string(cc.y) + " " +
+                            std::to_string(cc.z));
             }
             bool allOk = true;
             for (const Shot& s : shots) {
