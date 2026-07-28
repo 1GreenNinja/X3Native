@@ -197,11 +197,44 @@ struct TunnelConfig {
     bool  crystalOffshoot = true;
 };
 
+// ============================================================================
+// THE DESCENT FALL (feat/descent-fall) — replaces the walkable switchback ramp.
+// ============================================================================
+// buildEarthTunnels() now bores a VERTICAL FALL SHAFT instead of a walkable ramp:
+// you DROP down an open chute through the strata and land in a DARK ROOM just above
+// the club, where a computer terminal + a code-locked keypad door lead down a hall
+// to an elevator that takes the final leg into Club 1127. The geometry (shaft, dark
+// room, hall, elevator alcove, side-shoot rooms) is built here; the INTERACTIVE
+// layer (the fall-catch, the terminal, the keypad door, the elevator ride) lives in
+// descent_fall.{h,cpp} and reads the world positions from this layout struct.
+struct DescentFallLayout {
+    // FALL SHAFT (open vertical bore).
+    float shaftX = 0, shaftZ = 0;   // bore center XZ
+    float shaftHalfW = 4.0f;        // bore half-width (clear radius)
+    float mouthY = -3.0f;           // trapdoor mouth Y (top of the fall)
+    float catchTopY = 0;            // Y where the slowdown/catch volume begins (last ~10 m)
+    // DARK LANDING ROOM (sealed, dark, just above the club).
+    float roomCx = 0, roomCz = 0;   // room center XZ
+    float roomFloorY = 0;           // landing floor Y
+    float roomCeilY = 0;            // room ceiling Y
+    float roomHalfX = 6.0f, roomHalfZ = 6.0f;
+    // KEYPAD DOOR (opening in the room's -X wall) -> HALL.
+    float doorX = 0, doorZ = 0, doorY = 0;   // door opening center (floor level)
+    float doorHalfW = 1.1f;
+    // ELEVATOR (the last leg down into the club).
+    float elevX = 0, elevZ = 0;     // elevator shaft center
+    float elevTopY = 0;             // top stop (hall floor level)
+    float elevBotY = 0;             // bottom stop (club floor)
+    // CLUB east doorway the elevator's bottom connector runs into.
+    float clubDoorX = 0, clubDoorZ = 0;
+};
+
 // Build the earth tunnel network into `scene` (+ Jolt collision via `physics`, meshes
 // via `device`). Returns the number of Scene entities added. `outCrystalLights` is
 // appended with the descent mood lights + the offshoot crystal light (see above).
 int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                       x3::phys::IPhysicsWorld& physics, const TunnelConfig& tc,
-                      std::vector<x3::rhi::PointLight>* outCrystalLights = nullptr);
+                      std::vector<x3::rhi::PointLight>* outCrystalLights = nullptr,
+                      DescentFallLayout* outLayout = nullptr);
 
 } // namespace x3::game

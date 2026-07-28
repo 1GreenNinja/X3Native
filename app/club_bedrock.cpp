@@ -1,6 +1,7 @@
 // Club 1127 BEDROCK ENCASEMENT — see club_bedrock.h for the full rationale.
 #include "club_bedrock.h"
 #include "mesh_prims.h"
+#include "elevator.h"     // ElevatorSystem::strata() — the 9 geology bands the fall shaft walls are colored by
 
 #include <algorithm>
 #include <cmath>
@@ -244,13 +245,16 @@ int buildClubBedrock(Scene& scene, x3::rhi::IRenderDevice& device,
 }
 
 // ============================================================================
-// THE EARTH TUNNEL NETWORK — see club_bedrock.h for the model + the author-next
-// recipe. A vertical switchback DESCENT bore (surface -> club) + a bottom CONNECTOR
-// into the club doorway + 3 OFFSHOOT passages (one holds a Salvari crystal hollow).
+// THE DESCENT FALL (feat/descent-fall) — see club_bedrock.h. A VERTICAL FALL SHAFT
+// (surface mouth -> dark landing room just above the club), strata-colored walls, a
+// keypad DOOR -> HALL -> ELEVATOR alcove into the club, + a few SIDE-SHOOT rooms off
+// the shaft. REPLACES the old walkable switchback ramp. Positions are published into
+// `outLayout` for the interactive descent_fall layer.
 // ============================================================================
 int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                       x3::phys::IPhysicsWorld& physics, const TunnelConfig& tc,
-                      std::vector<x3::rhi::PointLight>* outCrystalLights) {
+                      std::vector<x3::rhi::PointLight>* outCrystalLights,
+                      DescentFallLayout* outLayout) {
     // Shared procedural rock albedo (same generator the earth uses, so the bore rock
     // matches its surround). One upload, reused by every tunnel surface.
     const uint32_t kN = 256;
@@ -294,17 +298,21 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                                        geo.cindex.data(), (uint32_t)geo.cindex.size());
         scene.add(e); ++added;
     };
-    // WALKABLE colliding RAMP wedge (run along +Z, `dir` picks the climb direction).
-    auto addRamp = [&](float cx, float cy, float cz, float halfW, float run,
-                       float rise, float dir) {
-        x3::prims::PrimMesh geo =
-            x3::prims::makeRamp(cx, cy, cz, halfW, run, rise, /*axis*/1u, dir, tc.uvScale);
+    // COLORED colliding rock box (variant of addCol with an explicit tint/emissive —
+    // the fall-shaft walls are colored per STRATA band so the geology rushes past as
+    // you drop; a glowing band carries its emissive so it lights the bore).
+    auto addColC = [&](float x0, float x1, float y0, float y1, float z0, float z1,
+                       const float col[3], const float em[3]) {
+        const float hx = (x1 - x0) * 0.5f, hy = (y1 - y0) * 0.5f, hz = (z1 - z0) * 0.5f;
+        const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f, cz = (z0 + z1) * 0.5f;
+        if (hx <= 0.0f || hy <= 0.0f || hz <= 0.0f) return;
+        x3::prims::PrimMesh geo = makeSolidRockBox(hx, hy, hz, cx, cy, cz, tc.uvScale);
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
         e.tex = rockTex;
-        for (int i = 0; i < 4; ++i) e.baseColor[i] = tc.tint[i];
-        for (int i = 0; i < 4; ++i) e.emissive[i]  = tc.emissive[i];
+        e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=1.0f;
+        e.emissive[0]=em[0]; e.emissive[1]=em[1]; e.emissive[2]=em[2]; e.emissive[3]=1.0f;
         e.tag  = (uint32_t)Tag::Static;
         e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
                                        geo.cindex.data(), (uint32_t)geo.cindex.size());
@@ -341,133 +349,211 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         }
     };
 
-    // ---- descent geometry parameters -----------------------------------------
+    // ================= THE DESCENT FALL — vertical fall shaft ==================
+    // REPLACES the old walkable switchback ramp with a straight VERTICAL BORE: you
+    // DROP the whole way from the surface mouth (topY) down to a DARK ROOM just above
+    // the club, then a code-locked keypad door -> HALL -> ELEVATOR takes the last leg
+    // into Club 1127. The shaft walls are colored per STRATA band so the geology rushes
+    // UP past the falling camera. The interactive layer (fall-catch, terminal, keypad
+    // door, elevator ride) is descent_fall.{h,cpp}; it reads the world positions this
+    // build writes into `outLayout`.
     const float SX = tc.shaftX, SZ = tc.shaftZ;
-    const float halfWX = 4.0f;                       // walkway half-width (8 m clear)
-    const float wxMin = SX - halfWX, wxMax = SX + halfWX;   // [34,42]
-    const float southZ = SZ - 7.0f, northZ = SZ + 7.0f;     // turn-landing centers [-3,11]
-    const float landHz = 2.0f;                       // landing half-depth
-    const float run = northZ - southZ;               // ramp Z run (14 m)
-    const float span = tc.topY - tc.bottomY;         // 197 m
-    const int   nFlights = std::max(2, (int)std::ceil(span / 11.0f));   // ~18 flights
-    const float flightRise = span / (float)nFlights; // ~10.9 m/flight (~38 deg)
-    auto flightY = [&](int k) { return tc.bottomY + (float)k * flightRise; };
-    auto landZ   = [&](int k) { return (k % 2 == 0) ? southZ : northZ; };
+    const float HW = 4.0f;                              // bore half-width (8 m clear chute)
+    const float wxMin = SX - HW, wxMax = SX + HW;
+    const float wzMin = SZ - HW, wzMax = SZ + HW;
+    const float wallT = 1.5f;                           // rock wall thickness
+    const float mouthY = tc.topY;                       // trapdoor mouth Y (top of the fall)
 
-    // Bore liner extents (a touch beyond the walkway; leaves 2-3 m rock to the walls).
-    const float linZ0 = southZ - landHz - 2.0f, linZ1 = northZ + landHz + 2.0f;   // [-7,15]
-    const float linY0 = tc.bottomY - 1.0f, linY1 = tc.topY;                       // [-201,-3]
-    const float linXin = wxMin - 1.0f, linXout = wxMax + 1.0f;                     // wall inner faces
+    // DARK LANDING ROOM: a sealed dark box just above the club (its floor ~12 m over
+    // the club floor, i.e. a couple of m above the club ceiling). The fall drops
+    // through a hole in the room's ceiling and lands on the room floor.
+    const float roomFloorY = tc.bottomY + 12.0f;
+    const float roomCeilY  = roomFloorY + 6.0f;         // 6 m tall dark room
+    const float HRX = 6.0f, HRZ = 6.0f;                 // room half extents (12x12 m)
+    const float rMinX = SX - HRX, rMaxX = SX + HRX;
+    const float rMinZ = SZ - HRZ, rMaxZ = SZ + HRZ;
+    const float shaftBotY = roomCeilY;                  // shaft opens into the room ceiling hole
+    const float catchTopY = roomFloorY + 10.0f;         // last ~10 m: the slowdown/catch volume
 
-    // ---- OFFSHOOTS: choose 3 branch landings (crystal in the middle one) -------
-    const int offK[3]      = { std::max(2, nFlights / 4),
-                               nFlights / 2,
-                               std::min(nFlights - 2, (3 * nFlights) / 4) };
-    const bool offCrystal[3] = { false, tc.crystalOffshoot, false };
-    // Each offshoot exits +X at its landing (Z,Y). Precompute the +X liner door holes.
-    std::vector<Hole> plusXHoles;
-    for (int o = 0; o < 3; ++o) {
-        const float lz = landZ(offK[o]), ly = flightY(offK[o]);
-        plusXHoles.push_back({ lz - 3.0f, lz + 3.0f, ly - 0.5f, ly + 4.2f });
-    }
+    // Dark-vault look for the room / hall / alcove shells (the terminal + elevator
+    // supply the light; the shell itself reads as near-black rock, barely lifted so
+    // it isn't pure void).
+    const float rmCol[3] = { 0.11f, 0.12f, 0.15f };
+    const float rmEm[3]  = { 0.010f, 0.010f, 0.014f };
 
-    // ============================ BUILD =======================================
-    // BOTTOM FLOOR — a full-width colliding floor at the club level (the connector
-    // and flight 0 both meet it). Top surface at bottomY.
-    addCol(wxMin, wxMax, tc.bottomY - 0.6f, tc.bottomY, southZ - landHz, northZ + landHz);
+    // ---- STRATA-COLORED FALL SHAFT WALLS -------------------------------------
+    // Four colliding rock walls contain the bore (the player can't drift out of the
+    // chute), stacked as ~6 m vertical BANDS colored by the geology band covering each
+    // Y — glowing bands (Crystal Veins / Magma / Alien Substrate) carry their emissive
+    // so the deep shaft glows. As you plummet the bands rush up past the camera.
+    const auto& strata = ElevatorSystem::strata();
+    auto bandAt = [&](float y, float outCol[3], float outEm[3]) {
+        for (const auto& s : strata) {
+            if (y >= s.yMin && y <= s.yMax) {
+                outCol[0]=s.rgb[0]; outCol[1]=s.rgb[1]; outCol[2]=s.rgb[2];
+                if (s.glow) { outEm[0]=s.glowRgb[0]*0.16f; outEm[1]=s.glowRgb[1]*0.16f; outEm[2]=s.glowRgb[2]*0.16f; }
+                else        { outEm[0]=tc.emissive[0]; outEm[1]=tc.emissive[1]; outEm[2]=tc.emissive[2]; }
+                return;
+            }
+        }
+        outCol[0]=tc.tint[0]; outCol[1]=tc.tint[1]; outCol[2]=tc.tint[2];
+        outEm[0]=tc.emissive[0]; outEm[1]=tc.emissive[1]; outEm[2]=tc.emissive[2];
+    };
 
-    // SWITCHBACK RAMPS + TURN LANDINGS (walkable spine, bottom -> surface).
-    for (int k = 0; k < nFlights; ++k) {
-        const float y = flightY(k);
-        if (k % 2 == 0) addRamp(SX, y, southZ, halfWX, run, flightRise, +1.0f);  // climb +Z
-        else            addRamp(SX, y, northZ, halfWX, run, flightRise, -1.0f);  // climb -Z
-        // Turn landing at the TOP of this flight (Y_{k+1}, opposite Z end).
-        const float ty = flightY(k + 1), tz = landZ(k + 1);
-        addCol(wxMin, wxMax, ty - 0.6f, ty, tz - landHz, tz + landHz);
-        // A warm WORKLIGHT over each landing — strung down the shaft. Bright enough
-        // to pool on the rock (falloff = depth), so the bore reads as a lit descent
-        // and looking down the shaft shows a receding chain of pools.
-        addLight(SX, ty + 2.0f, tz, 1.45f, 1.15f, 0.82f, 17.0f);
-    }
+    // SIDE SHOOTS (the "room for activities"): a few offshoot rooms branching off the
+    // +X shaft wall at various depths down the 800 m fall — content to discover. Their
+    // mouths are punched out of the +X wall bands (below); one holds a Salvari crystal
+    // hollow. NOTE: the mouths open OUTWARD (east of the bore) so they never block the
+    // fall; reach them by air-steering into a mouth or noclip. Add more via this list.
+    struct Off { float y; bool crystal; float len; };
+    const float fallSpan = mouthY - shaftBotY;          // total fall height (>0)
+    const Off offs[3] = {
+        { shaftBotY + fallSpan * 0.72f, false, 16.0f },
+        { shaftBotY + fallSpan * 0.48f, true,  14.0f },
+        { shaftBotY + fallSpan * 0.24f, false, 20.0f },
+    };
+    const float offMouthHalfZ = 2.0f, offMouthH = 3.2f;
 
-    // BORE LINER — 4 rock walls (framed for the openings) + top cap + it is closed.
-    //  -X wall: solid, MINUS the connector doorway at the bottom (z around the club
-    //           doorway, y just above the floor).
+    // Build the four bands' walls. The +X wall is split in Z around any side-shoot
+    // mouth whose Y-window overlaps the band (a colliding wallXHoles).
     {
-        std::vector<Hole> minusXHoles = {
-            { SZ - 2.2f, SZ + 2.2f, tc.bottomY - 0.5f, tc.bottomY + 5.0f }
-        };
-        wallXHoles(linXin - 1.5f, linXin, linZ0, linZ1, linY0, linY1, minusXHoles);
-    }
-    //  +X wall: solid, MINUS the 3 offshoot doorways.
-    wallXHoles(linXout, linXout + 1.5f, linZ0, linZ1, linY0, linY1, plusXHoles);
-    //  -Z / +Z end walls (full).
-    addVis(linXin - 1.5f, linXout + 1.5f, linY0, linY1, linZ0 - 1.5f, linZ0);
-    addVis(linXin - 1.5f, linXout + 1.5f, linY0, linY1, linZ1, linZ1 + 1.5f);
-    //  Top CAP (fills the bore roof up to the surface ground plane, Y=0).
-    addVis(linXin - 1.5f, linXout + 1.5f, tc.topY, 0.0f, linZ0 - 1.5f, linZ1 + 1.5f);
-
-    // CONNECTOR — a short rock corridor from the shaft bottom WEST into the club
-    // east doorway (walkable; the club shell is open below 2.8 m at the doorway).
-    {
-        const float y  = tc.bottomY;                 // walk at the club floor level
-        const float cx0 = tc.clubDoorX - 2.0f;       // overlap into the club a touch
-        const float cx1 = wxMin + 1.0f;              // overlap into the bore floor
-        const float z0 = tc.clubDoorZ - 2.2f, z1 = tc.clubDoorZ + 2.2f;
-        addCol(cx0, cx1, y - 0.6f, y, z0, z1);                    // floor
-        addVis(cx0, cx1, y, y + 4.6f, z0 - 0.5f, z0);            // -Z wall
-        addVis(cx0, cx1, y, y + 4.6f, z1, z1 + 0.5f);            // +Z wall
-        addVis(cx0, cx1, y + 4.1f, y + 4.6f, z0 - 0.5f, z1 + 0.5f);   // ceiling
-        addLight(tc.clubDoorX + 5.0f, y + 2.4f, tc.clubDoorZ, 1.40f, 1.10f, 0.80f, 16.0f);
-    }
-
-    // OFFSHOOTS — passages branching off the +X liner at the chosen landings.
-    for (int o = 0; o < 3; ++o) {
-        const float lz = landZ(offK[o]), ly = flightY(offK[o]);
-        const float y  = ly;                          // passage floor at the landing Y
-        const float mouthX = linXout + 1.5f;          // just outside the +X wall
-        const float cz0 = lz - 3.0f, cz1 = lz + 3.0f; // corridor Z (matches the door)
-        if (offCrystal[o]) {
-            // CRYSTAL CHAMBER: a short corridor opening into a wider room with a
-            // Salvari crystal hollow (the reward). Corridor:
-            const float corrX = mouthX + 12.0f;
-            addCol(wxMax, corrX, y - 0.6f, y, cz0, cz1);          // floor (from the wall out)
-            addVis(mouthX, corrX, y, y + 4.6f, cz0 - 0.5f, cz0);  // -Z wall
-            addVis(mouthX, corrX, y, y + 4.6f, cz1, cz1 + 0.5f);  // +Z wall
-            addVis(mouthX, corrX, y + 4.1f, y + 4.6f, cz0 - 0.5f, cz1 + 0.5f);  // ceiling
-            // Chamber (wider in Z):
-            const float chX = corrX + 16.0f;
-            const float chz0 = lz - 8.0f, chz1 = lz + 8.0f;
-            const float chTop = y + 8.0f;
-            addCol(corrX, chX, y - 0.6f, y, chz0, chz1);          // floor
-            addVis(corrX, chX, y, chTop, chz0 - 0.5f, chz0);      // -Z wall
-            addVis(corrX, chX, y, chTop, chz1, chz1 + 0.5f);      // +Z wall
-            addVis(chX, chX + 0.5f, y, chTop, chz0 - 0.5f, chz1 + 0.5f);  // far endcap
-            addVis(corrX, chX, chTop - 0.5f, chTop, chz0 - 0.5f, chz1 + 0.5f);  // ceiling
-            addVis(corrX, corrX + 0.5f, y, chTop, chz0, cz0);     // front flank (-Z)
-            addVis(corrX, corrX + 0.5f, y, chTop, cz1, chz1);     // front flank (+Z)
-            // The Salvari crystal hollow — reuse the deepened blue cluster + light.
-            BedrockConfig bc;                          // default look for the hollow liner
-            for (int i = 0; i < 4; ++i) bc.tint[i] = tc.tint[i];
-            for (int i = 0; i < 4; ++i) bc.emissive[i] = tc.emissive[i];
-            bc.uvScale = tc.uvScale;
-            const float hcx = (corrX + chX) * 0.5f, hcz = lz;
-            x3::rhi::PointLight bl =
-                addSalvariHollow(scene, device, rockTex, bc, hcx, y + 4.0f, hcz, 1.05f);
-            added += 7;
-            if (outCrystalLights) outCrystalLights->push_back(bl);
-        } else {
-            // DEAD-END passage: a corridor of connected rock walls ending in a cap.
-            const float endX = mouthX + (o == 0 ? 16.0f : 22.0f);
-            addCol(wxMax, endX, y - 0.6f, y, cz0, cz1);           // floor
-            addVis(mouthX, endX, y, y + 4.6f, cz0 - 0.5f, cz0);   // -Z wall
-            addVis(mouthX, endX, y, y + 4.6f, cz1, cz1 + 0.5f);   // +Z wall
-            addVis(mouthX, endX, y + 4.1f, y + 4.6f, cz0 - 0.5f, cz1 + 0.5f);  // ceiling
-            addVis(endX, endX + 0.5f, y, y + 4.6f, cz0 - 0.5f, cz1 + 0.5f);    // dead-end cap
-            addLight(endX - 3.0f, y + 2.4f, lz, 1.40f, 1.10f, 0.80f, 15.0f);
+        const float bandH = 6.0f;
+        for (float y0 = shaftBotY; y0 < mouthY; y0 += bandH) {
+            const float y1 = std::min(y0 + bandH, mouthY);
+            float col[3], em[3]; bandAt((y0 + y1) * 0.5f, col, em);
+            // -X (west), -Z (south), +Z (north) walls: solid.
+            addColC(wxMin - wallT, wxMin, y0, y1, wzMin - wallT, wzMax + wallT, col, em);
+            addColC(wxMin, wxMax, y0, y1, wzMin - wallT, wzMin, col, em);
+            addColC(wxMin, wxMax, y0, y1, wzMax, wzMax + wallT, col, em);
+            // +X (east) wall: subtract any offshoot mouth active in this band.
+            const Off* act = nullptr;
+            for (const Off& o : offs)
+                if ((y0+y1)*0.5f > o.y && (y0+y1)*0.5f < o.y + offMouthH) { act = &o; break; }
+            if (!act) {
+                addColC(wxMax, wxMax + wallT, y0, y1, wzMin - wallT, wzMax + wallT, col, em);
+            } else {
+                addColC(wxMax, wxMax + wallT, y0, y1, wzMin - wallT, SZ - offMouthHalfZ, col, em); // south of mouth
+                addColC(wxMax, wxMax + wallT, y0, y1, SZ + offMouthHalfZ, wzMax + wallT, col, em); // north of mouth
+            }
         }
     }
 
+    // MOUTH RIM at the top: a colliding rock lip around the chute opening at mouthY so
+    // you can walk to the edge and step off into the fall (the Floor-1 descent point).
+    addColC(wxMin - 2.5f, wxMin,        mouthY - 0.5f, mouthY, wzMin - 2.5f, wzMax + 2.5f, rmCol, rmEm);
+    addColC(wxMax,        wxMax + 2.5f, mouthY - 0.5f, mouthY, wzMin - 2.5f, wzMax + 2.5f, rmCol, rmEm);
+    addColC(wxMin, wxMax, mouthY - 0.5f, mouthY, wzMin - 2.5f, wzMin, rmCol, rmEm);
+    addColC(wxMin, wxMax, mouthY - 0.5f, mouthY, wzMax, wzMax + 2.5f, rmCol, rmEm);
+    addLight(SX, mouthY - 2.0f, SZ, 0.9f, 0.95f, 1.1f, 12.0f);   // a cold worklight at the mouth
+
+    // ---- DARK LANDING ROOM ---------------------------------------------------
+    // Floor (colliding) = the safe landing surface + the catch backstop.
+    addColC(rMinX, rMaxX, roomFloorY - 0.4f, roomFloorY, rMinZ, rMaxZ, rmCol, rmEm);
+    // Ceiling WITH a hole under the bore (4 segments around the shaft opening).
+    addColC(rMinX, wxMin, roomCeilY, roomCeilY + 0.4f, rMinZ, rMaxZ, rmCol, rmEm);  // -X of bore
+    addColC(wxMax, rMaxX, roomCeilY, roomCeilY + 0.4f, rMinZ, rMaxZ, rmCol, rmEm);  // +X of bore
+    addColC(wxMin, wxMax, roomCeilY, roomCeilY + 0.4f, rMinZ, wzMin, rmCol, rmEm);  // -Z strip
+    addColC(wxMin, wxMax, roomCeilY, roomCeilY + 0.4f, wzMax, rMaxZ, rmCol, rmEm);  // +Z strip
+    // Solid walls: +X (east), -Z (south), +Z (north). The -X (west) wall carries the
+    // keypad DOOR opening -> the hall.
+    const float doorHalfW = 1.1f, doorH = 2.6f;
+    const float doorZ = SZ, doorY = roomFloorY;
+    addColC(rMaxX, rMaxX + 0.4f, roomFloorY, roomCeilY, rMinZ, rMaxZ, rmCol, rmEm);            // +X
+    addColC(rMinX, rMaxX, roomFloorY, roomCeilY, rMinZ - 0.4f, rMinZ, rmCol, rmEm);            // -Z
+    addColC(rMinX, rMaxX, roomFloorY, roomCeilY, rMaxZ, rMaxZ + 0.4f, rmCol, rmEm);            // +Z
+    // -X wall in 3 segments around the door opening (south of door / north of door / lintel).
+    addColC(rMinX - 0.4f, rMinX, roomFloorY, roomCeilY, rMinZ, doorZ - doorHalfW, rmCol, rmEm);   // south
+    addColC(rMinX - 0.4f, rMinX, roomFloorY, roomCeilY, doorZ + doorHalfW, rMaxZ, rmCol, rmEm);   // north
+    addColC(rMinX - 0.4f, rMinX, roomFloorY + doorH, roomCeilY, doorZ - doorHalfW, doorZ + doorHalfW, rmCol, rmEm); // lintel
+
+    // ---- HALL: from the room's -X door WEST to the elevator alcove -----------
+    const float elevX = tc.clubDoorX + 8.0f;            // elevator shaft east of the club doorway
+    const float elevZ = SZ;
+    const float hallHalfZ = 2.0f, hallH = 3.4f;
+    const float hallX0 = elevX + 2.0f;                  // hall west end (at the alcove)
+    const float hallX1 = rMinX;                         // hall east end (at the room door)
+    addColC(hallX0, hallX1, roomFloorY - 0.4f, roomFloorY, elevZ - hallHalfZ, elevZ + hallHalfZ, rmCol, rmEm);        // floor
+    addColC(hallX0, hallX1, roomFloorY, roomFloorY + hallH, elevZ - hallHalfZ - 0.4f, elevZ - hallHalfZ, rmCol, rmEm); // -Z wall
+    addColC(hallX0, hallX1, roomFloorY, roomFloorY + hallH, elevZ + hallHalfZ, elevZ + hallHalfZ + 0.4f, rmCol, rmEm); // +Z wall
+    addColC(hallX0, hallX1, roomFloorY + hallH, roomFloorY + hallH + 0.4f, elevZ - hallHalfZ - 0.4f, elevZ + hallHalfZ + 0.4f, rmCol, rmEm); // ceiling
+    addLight(rMinX - 4.0f, roomFloorY + 2.4f, elevZ, 0.85f, 0.80f, 0.72f, 14.0f);
+    addLight(elevX + 3.0f, roomFloorY + 2.4f, elevZ, 0.85f, 0.80f, 0.72f, 12.0f);
+
+    // ---- ELEVATOR ALCOVE + SHAFT: the last leg down into the club ------------
+    // A vertical shaft the elevator car (built by descent_fall.cpp) rides from the
+    // hall level (elevTopY) down to the club floor (elevBotY). Alcove half-size in Z.
+    const float elevTopY = roomFloorY, elevBotY = tc.bottomY;
+    const float ahz = 2.6f;                             // alcove half-Z
+    const float ax0 = elevX - 2.6f, ax1 = elevX + 2.6f;
+    // Shaft walls (colliding), from the club floor up to just over the hall ceiling.
+    addColC(ax0 - 0.4f, ax0, elevBotY, elevTopY + hallH, elevZ - ahz, elevZ + ahz, rmCol, rmEm);   // -X shaft wall
+    addColC(ax1, ax1 + 0.4f, elevBotY, elevTopY + hallH, elevZ - ahz, elevZ + ahz, rmCol, rmEm);   // +X shaft wall
+    addColC(ax0, ax1, elevBotY, elevTopY + hallH, elevZ - ahz - 0.4f, elevZ - ahz, rmCol, rmEm);   // -Z shaft wall
+    addColC(ax0, ax1, elevBotY, elevTopY + hallH, elevZ + ahz, elevZ + ahz + 0.4f, rmCol, rmEm);   // +Z shaft wall
+    addColC(ax0, ax1, elevTopY + hallH, elevTopY + hallH + 0.4f, elevZ - ahz, elevZ + ahz, rmCol, rmEm); // shaft cap
+    // BOTTOM CONNECTOR — from the elevator base WEST into the club's east doorway at
+    // the club floor (the club shell is open below 2.8 m at the doorway).
+    {
+        const float y  = tc.bottomY;
+        const float cx0 = tc.clubDoorX - 2.0f, cx1 = ax1;
+        const float z0 = tc.clubDoorZ - 2.2f, z1 = tc.clubDoorZ + 2.2f;
+        addColC(cx0, cx1, y - 0.6f, y, z0, z1, rmCol, rmEm);                                  // floor
+        addColC(cx0, cx1, y, y + 3.0f, z0 - 0.4f, z0, rmCol, rmEm);                           // -Z wall
+        addColC(cx0, cx1, y, y + 3.0f, z1, z1 + 0.4f, rmCol, rmEm);                           // +Z wall
+        addColC(cx0, cx1, y + 3.0f, y + 3.4f, z0 - 0.4f, z1 + 0.4f, rmCol, rmEm);             // ceiling
+        addLight(tc.clubDoorX + 3.0f, y + 2.2f, tc.clubDoorZ, 1.30f, 1.05f, 0.78f, 15.0f);
+    }
+
+    // ---- SIDE SHOOTS: the offshoot rooms off the fall shaft ------------------
+    for (const Off& o : offs) {
+        const float y  = o.y;                            // room floor at the mouth
+        const float mouthX = wxMax + wallT;              // just outside the +X wall
+        const float cz0 = SZ - offMouthHalfZ, cz1 = SZ + offMouthHalfZ;
+        // Short corridor from the mouth out (+X), then a small room.
+        const float corrX = mouthX + 6.0f;
+        addColC(wxMax, corrX, y - 0.5f, y, cz0, cz1, rmCol, rmEm);                            // corridor floor (ledge out of the bore)
+        addColC(mouthX, corrX, y, y + offMouthH, cz0 - 0.4f, cz0, rmCol, rmEm);               // -Z wall
+        addColC(mouthX, corrX, y, y + offMouthH, cz1, cz1 + 0.4f, rmCol, rmEm);               // +Z wall
+        addColC(mouthX, corrX, y + offMouthH, y + offMouthH + 0.4f, cz0 - 0.4f, cz1 + 0.4f, rmCol, rmEm); // ceiling
+        // Small room beyond.
+        const float rx1 = corrX + o.len;
+        const float rz0 = SZ - 5.0f, rz1 = SZ + 5.0f, rTop = y + 6.0f;
+        addColC(corrX, rx1, y - 0.5f, y, rz0, rz1, rmCol, rmEm);                              // floor
+        addColC(corrX, rx1, y, rTop, rz0 - 0.4f, rz0, rmCol, rmEm);                           // -Z wall
+        addColC(corrX, rx1, y, rTop, rz1, rz1 + 0.4f, rmCol, rmEm);                           // +Z wall
+        addColC(rx1, rx1 + 0.4f, y, rTop, rz0 - 0.4f, rz1 + 0.4f, rmCol, rmEm);               // far endcap
+        addColC(corrX, rx1, rTop, rTop + 0.4f, rz0 - 0.4f, rz1 + 0.4f, rmCol, rmEm);          // ceiling
+        addColC(corrX, corrX + 0.4f, y, rTop, rz0, cz0, rmCol, rmEm);                         // front flank -Z
+        addColC(corrX, corrX + 0.4f, y, rTop, cz1, rz1, rmCol, rmEm);                         // front flank +Z
+        if (o.crystal) {
+            BedrockConfig bc;
+            for (int i = 0; i < 4; ++i) bc.tint[i] = tc.tint[i];
+            for (int i = 0; i < 4; ++i) bc.emissive[i] = tc.emissive[i];
+            bc.uvScale = tc.uvScale;
+            x3::rhi::PointLight bl =
+                addSalvariHollow(scene, device, rockTex, bc, (corrX + rx1) * 0.5f, y + 3.5f, SZ, 1.05f);
+            added += 7;
+            if (outCrystalLights) outCrystalLights->push_back(bl);
+        } else {
+            addLight(rx1 - 3.0f, y + 2.6f, SZ, 1.25f, 1.0f, 0.75f, 14.0f);
+        }
+    }
+
+    // ---- publish the layout for the interactive descent_fall layer -----------
+    if (outLayout) {
+        outLayout->shaftX = SX; outLayout->shaftZ = SZ; outLayout->shaftHalfW = HW;
+        outLayout->mouthY = mouthY; outLayout->catchTopY = catchTopY;
+        outLayout->roomCx = SX; outLayout->roomCz = SZ;
+        outLayout->roomFloorY = roomFloorY; outLayout->roomCeilY = roomCeilY;
+        outLayout->roomHalfX = HRX; outLayout->roomHalfZ = HRZ;
+        outLayout->doorX = rMinX; outLayout->doorZ = doorZ; outLayout->doorY = doorY;
+        outLayout->doorHalfW = doorHalfW;
+        outLayout->elevX = elevX; outLayout->elevZ = elevZ;
+        outLayout->elevTopY = elevTopY; outLayout->elevBotY = elevBotY;
+        outLayout->clubDoorX = tc.clubDoorX; outLayout->clubDoorZ = tc.clubDoorZ;
+    }
+
+    (void)wallXHoles;   // (kept as the visual-liner helper for future authored tunnels)
     return added;
 }
 
