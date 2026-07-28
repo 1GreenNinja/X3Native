@@ -1,0 +1,120 @@
+<meta charset="utf-8">
+<title>Echo Harbor — Pillar Board</title>
+<style>
+  /* ECHO HARBOR PLANNING BUREAU — the sounding board. Same in-world HUD
+     language as the city plan (navy glass, gold, cyan, mono): single-theme
+     by intent. */
+  :root{
+    --ground:#0A0F1A; --panel:#0E1626; --panel2:#111C30; --hair:#1D2A40;
+    --ink:#C9D4E3; --dim:#6E7B90; --gold:#EFC468; --cyan:#3FBFD4;
+    --good:#5BC47E; --warn:#D9A05C; --hot:#E06060; --amber:#C79A4B;
+    --mono:Consolas,"Cascadia Mono",ui-monospace,monospace;
+    --sans:"Segoe UI",system-ui,sans-serif;
+  }
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+       min-height:100vh;padding:34px 18px 60px}
+  .wrap{max-width:980px;margin:0 auto}
+  header{border-left:4px solid var(--cyan);padding-left:18px;margin-bottom:26px}
+  .chip{display:inline-block;padding:3px 10px;background:var(--panel2);
+        border:1px solid var(--hair);color:var(--gold);font-family:var(--mono);
+        font-size:10px;letter-spacing:.22em}
+  h1{font-family:var(--mono);font-size:30px;letter-spacing:.2em;color:var(--gold);
+     margin:10px 0 4px}
+  .sub{font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.14em;margin:0}
+  /* BIG BET callout — the desert gets the marquee */
+  .bigbet{position:relative;background:linear-gradient(105deg,#1A1206 0%,#0E1626 55%);
+          border:1px solid #3A2C14;border-left:5px solid var(--amber);
+          padding:20px 22px 18px;margin:0 0 30px}
+  .bigbet .tag{font-family:var(--mono);font-size:10px;letter-spacing:.3em;color:var(--amber)}
+  .bigbet h2{font-family:var(--mono);font-size:21px;letter-spacing:.12em;color:#F2D9A0;margin:8px 0 8px}
+  .bigbet p{margin:0;color:var(--ink);line-height:1.55;max-width:64ch;font-size:14.5px}
+  .bigbet .assets{margin-top:12px;font-family:var(--mono);font-size:11.5px;color:var(--warn)}
+  /* pillar rows */
+  table{width:100%;border-collapse:collapse}
+  th{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--dim);
+     text-align:left;padding:0 14px 10px;border-bottom:1px solid var(--hair)}
+  td{padding:14px;border-bottom:1px solid var(--hair);vertical-align:middle}
+  tr:hover td{background:var(--panel)}
+  .p-name{font-weight:600;font-size:15px}
+  .p-task{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .bar{height:8px;background:var(--panel2);border:1px solid var(--hair);width:170px}
+  .bar i{display:block;height:100%}
+  .st{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;padding:3px 9px;
+      border:1px solid var(--hair);white-space:nowrap}
+  .st.done{color:var(--good);border-color:#22503A}
+  .st.active{color:var(--cyan);border-color:#1C4A56}
+  .st.next{color:var(--gold);border-color:#54431E}
+  .st.wait{color:var(--dim)}
+  .note{font-size:12.5px;color:var(--dim);line-height:1.45;max-width:40ch}
+  .foot{margin-top:26px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;
+        font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .foot b{color:var(--ink)}
+  .front{margin:26px 0 8px;font-family:var(--mono);font-size:10px;letter-spacing:.24em;color:var(--dim)}
+  .frontrow{display:flex;gap:10px;flex-wrap:wrap}
+  .frontrow span{font-family:var(--mono);font-size:12px;padding:6px 12px;
+                 background:var(--panel);border:1px solid var(--hair);color:var(--cyan)}
+  @media (max-width:700px){ .bar{width:100px} .note{display:none} }
+</style>
+<div class="wrap">
+<header>
+  <span class="chip">ECHO HARBOR PLANNING BUREAU — 2038 // FLEET SOUNDING BOARD</span>
+  <h1>THE PILLAR BOARD</h1>
+  <p class="sub">ECHOTROPOLIS &nbsp;//&nbsp; X3NATIVE &nbsp;//&nbsp; updated 2026-07-27 &nbsp;//&nbsp; tasks 10-23 shipped, streaming M-A+M-B live</p>
+</header>
+
+<div class="bigbet">
+  <div class="tag">★ THE BIG BET — TIM'S CALL</div>
+  <h2>DESERT HIGHWAY FRONTIER</h2>
+  <p>The woodlands road runs out past the ridge and keeps going — hundreds of miles of
+  two-lane blacktop into open desert. Small towns. Gas stations. Working mines. And the
+  set piece: a <b>hidden gold mine under an abandoned gas station</b>. Built from the
+  early-purchase packs that have waited months for this.</p>
+  <div class="assets">FOUND IN THE ARMORY: Fuel_Station · JunkYard · Refinery · Warehouse ·
+  TruckParking · signboards (SB_GasStation…) · palms — Mega Open World City Pack, 109 models
+  &nbsp;|&nbsp; NEEDS: big terrain frame (pairs with fjord #30) + streaming M-C/M-D</div>
+</div>
+
+<table>
+<tr><th>PILLAR</th><th>PROGRESS</th><th>STATE</th><th>NOTES</th></tr>
+<tr><td><div class="p-name">🛣️ Roads</div><div class="p-task">#29 + v6 law</div></td>
+    <td><div class="bar"><i style="width:88%;background:var(--good)"></i></div></td>
+    <td><span class="st done">SHIPPED</span></td>
+    <td class="note">Welded ribbons, banked ring, junctions, collision, THE ZIGZAG LAW (escalating cure, drop as last resort). v7: textures, legacy-deck retirement (#32).</td></tr>
+<tr><td><div class="p-name">👥 Living citizens</div><div class="p-task">#28</div></td>
+    <td><div class="bar"><i style="width:70%;background:var(--good)"></i></div></td>
+    <td><span class="st active">STRONGEST</span></td>
+    <td class="note">Schedules, scan-cards, rigged bodies, play-as, LLM street talk (beyond WD). Next: interiors participation, crime reactions.</td></tr>
+<tr><td><div class="p-name">⚙️ Engine / streaming</div><div class="p-task">#24 · #31</div></td>
+    <td><div class="bar"><i style="width:65%;background:var(--cyan)"></i></div></td>
+    <td><span class="st active">M-B LIVE</span></td>
+    <td class="note">Streamer ticks, vista rule, rollback lever. M-C evictions + M-D fast-boot remain. Perf hunt #31: the 35ms is NOT the districts — proven.</td></tr>
+<tr><td><div class="p-name">🚗 Drivable cars</div><div class="p-task">#26</div></td>
+    <td><div class="bar"><i style="width:35%;background:var(--gold)"></i></div></td>
+    <td><span class="st next">NEXT MOVE</span></td>
+    <td class="note">Full stack exists (E-enter, Jolt wheels, hold-E hack, chase cam) — unwired. Road graph exposes lane centerlines, built for this.</td></tr>
+<tr><td><div class="p-name">🌆 GTA5 housing</div><div class="p-task">#34</div></td>
+    <td><div class="bar"><i style="width:25%;background:var(--gold)"></i></div></td>
+    <td><span class="st next">KIT FOUND</span></td>
+    <td class="note">House On A Hill (house+fence+garden), Mega City civic set, Seaside Town. Secret = street-aligned lots via RoadGraph tangents, not better boxes.</td></tr>
+<tr><td><div class="p-name">🌊 Terrain / fjord</div><div class="p-task">#30</div></td>
+    <td><div class="bar"><i style="width:55%;background:var(--cyan)"></i></div></td>
+    <td><span class="st active">BAKED</span></td>
+    <td class="note">Sea-gorge island generated + staged; ECHO_ISLAND_DIR swap test next. Gateway to the miles-long entry — and the desert's big frame.</td></tr>
+<tr><td><div class="p-name">🏠 Walkable interiors</div><div class="p-task">#27</div></td>
+    <td><div class="bar"><i style="width:15%;background:var(--dim)"></i></div></td>
+    <td><span class="st wait">WAITS M-C</span></td>
+    <td class="note">Streaming Lane A is the front door (wired, empty by design). First rooms: tower lobby, noodle bar — then the gas-station trapdoor.</td></tr>
+<tr><td><div class="p-name">🏜️ Desert frontier</div><div class="p-task">#33 ★</div></td>
+    <td><div class="bar"><i style="width:12%;background:var(--amber)"></i></div></td>
+    <td><span class="st next" style="color:var(--amber);border-color:#54431E">BIG BET</span></td>
+    <td class="note">See marquee above. Consumes: roads graph, streaming, housing kit, interiors, cars. The pillar the other pillars were building.</td></tr>
+</table>
+
+<div class="front">TIM'S ACTIVE FRONT</div>
+<div class="frontrow"><span>#26 CARS</span><span>#25 ART WAVE (water ✓ → houses → trees)</span><span>#31 PERF → 60 FPS</span></div>
+
+<div class="foot">
+  <div>KILLED THIS WINDOW: <b>gamma bug · transparent window · zigzags · white water sheet · cube people · frozen sun · sky trucks</b></div>
+  <div>ECHO HARBOR // <b>1M CONTEXT PER WINDOW</b> // the board survives compaction</div>
+</div>
+</div>
