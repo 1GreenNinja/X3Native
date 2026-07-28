@@ -28,6 +28,8 @@
 #include "world_host_common.h"
 #include "echo_heightfield.h"         // TIER-2: shared island terrain sampler (hoisted from this file)
 #include "echo_roads.h"               // ROADS: curved banked freeway + boulevard + fanned harbor grids
+#include "../world_cars.h"           // CARS PILLAR: findable, drivable, hackable vehicles
+#include "../terrain.h"               // kWorldWaterDry sentinel (water query)
 #include "echo_regions.h"             // TIER-2: EchoRegion containers + WorldStreamer bridge (WP-1)
 #include "echo_region_builders.h"     // TIER-2: crown/mine/district/harbor builders (WP-2)
 #include "echo_woodlands.h"           // TIER-2: 9-cell woodlands + slice self-test (WP-3)
@@ -2089,6 +2091,8 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::HoloTerminal opsScreen;   // CONTROL ROOM: live city-ops dashboard on the crown
     x3::game::NpcLife npcLife; bool npcLifeBuilt = false;   // LIVING CITY: scheduled NPCs
     x3::game::NpcSkin npcSkin;                              // their rigged bodies
+    x3::game::WorldCars worldCars;                          // CARS PILLAR: the street fleet
+    float driveCamYaw = 0.0f, driveCamPitch = -0.22f;       // chase-cam mouse orbit
     bool opsBuilt = false;
     if (physOk) {
         x3::game::CrowdConfig cc;
@@ -2151,6 +2155,40 @@ int hostEchotropolis(HostContext& hc) {
         residentsBuilt = residents.built();
         x3::logInfo(std::string("--world echotropolis: residents ") +
                     (residentsBuilt ? "built (40 citizens, rigged skins loading)" : "FAILED"));
+
+        // ===================== CARS PILLAR (#26 — "wire the cars!!!") =========
+        // The proven world_cars stack (E-enter, Jolt wheels, hold-E hack, chase
+        // cam), parked along the NEW road network. All host-owned ("" region)
+        // for v1 — resident from boot; region ownership can come with M-C.
+        worldCars.setGroundQuery([&hf](float x, float z) {
+            return hf.ok() ? hf.heightAt(x, z) : 0.0f;
+        });
+        worldCars.setWaterQuery([&hf](float x, float z) {
+            // Sea level is y=0; terrain below it means water surface above it.
+            return (hf.ok() && hf.heightAt(x, z) < 0.0f) ? 0.0f : x3::game::kWorldWaterDry;
+        });
+        worldCars.setHackAlarmHook([&](const x3::phys::Vec3& hp) {
+            // A hacked car alarm scatters nearby citizens (crowd + npc cops both
+            // hear it through the residents crowd's violence stimulus).
+            if (residentsBuilt) residents.onViolence(hp);
+        });
+        {
+            std::vector<x3::game::WorldCarDef> carDefs;
+            // THE FIRST FINDABLE CAR — crown drag, steps from spawn, unlocked.
+            carDefs.push_back({ "drag_curb",   -34.0f, 748.0f,  90.0f, false, { 0.82f, 0.08f, 0.08f }, "" });
+            // Crown plaza — LOCKED (the hack tutorial in lamplight).
+            carDefs.push_back({ "plaza_lock",   12.0f, 771.0f, 200.0f, true,  { 0.10f, 0.32f, 0.85f }, "" });
+            // Mine truck lot (end of the V5 spur cul-de-sac).
+            carDefs.push_back({ "mine_lot",   -548.0f, 806.0f, 320.0f, false, { 0.90f, 0.55f, 0.10f }, "" });
+            // Harbor boulevard shoulder — LOCKED getaway bait by the water.
+            carDefs.push_back({ "harbor_blvd", 210.0f, 372.0f,  95.0f, true,  { 0.16f, 0.62f, 0.30f }, "" });
+            // District gates (Urban north + Recife SW approach shoulders).
+            carDefs.push_back({ "urban_gate",  706.0f, 396.0f, 180.0f, false, { 0.93f, 0.90f, 0.86f }, "" });
+            carDefs.push_back({ "recife_gate", 838.0f, 1104.0f, 45.0f, true,  { 0.52f, 0.14f, 0.58f }, "" });
+            worldCars.build(carDefs, device, *phys, x3::game::convertedGlbRoot());
+            x3::logInfo("--world echotropolis: WORLD CARS parked (" +
+                        std::to_string(carDefs.size()) + " on the streets; E enters, hold-E hacks)");
+        }
 
         // GOLD-MINE CREW: a dedicated crowd out at the western mine. Miners trek the
         // truck-lot -> seam Carry route on the mine's OWN terrain plane (kMineGy) and
@@ -3030,7 +3068,37 @@ int hostEchotropolis(HostContext& hc) {
             const float ny = hf.ok() ? hf.heightAt(nx, nz) : a.pos.y;
             npcLife.driveControlled(nx, ny, nz, driveYaw);
         }
-        if (walkMode && physOk && followIdx < 0) {   // frozen while riding along
+        // ---- CARS: interaction + the drive loop --------------------------
+        // E enters / hold-E hacks a parked car (walk mode, not riding a citizen);
+        // while DRIVING, worldCars owns the physics step and WASD becomes
+        // throttle/steer (host_drive mapping), F or E exits at the door.
+        if (physOk && worldCars.built() && (walkMode || worldCars.driving()) && followIdx < 0) {
+            static bool prevCarE = false, prevCarF = false;
+            const bool e2 = kd(GLFW_KEY_E), f2 = kd(GLFW_KEY_F);
+            float pxx, pyy, pzz, pyw2, ppt2; player.camera(pxx, pyy, pzz, pyw2, ppt2);
+            worldCars.interact({ pxx, pyy - 1.2f, pzz }, e2, e2 && !prevCarE,
+                               f2 && !prevCarF, dt, &player, *phys,
+                               audioOn ? eaudio.get() : nullptr);
+            prevCarE = e2; prevCarF = f2;
+        }
+        if (worldCars.driving() && physOk) {
+            driveCamYaw   += ddx * 0.0028f * g_sensMul;
+            driveCamPitch  = clampf(driveCamPitch - ddy * 0.0028f * g_sensMul, -0.9f, 0.5f);
+            x3::phys::VehicleInput vin{};
+            const float fwd2 = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
+            float vel2[3]; worldCars.chassisVelocity(vel2);
+            const float spd2 = std::sqrt(vel2[0]*vel2[0] + vel2[2]*vel2[2]);
+            // host_drive rule: S while rolling forward = BRAKE, from rest = reverse.
+            if (fwd2 < 0.0f && spd2 > 1.5f) { vin.brake = 1.0f; }
+            else vin.throttle = fwd2;
+            vin.steer     = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
+            vin.handBrake = kd(GLFW_KEY_SPACE) ? 1.0f : 0.0f;
+            worldCars.driveInput(vin);
+            worldCars.preStep(dt);
+            phys->step(dt);
+            worldCars.postStep(dt);
+            if (audioOn) worldCars.updateAudio(eaudio.get(), vin.throttle);
+        } else if (walkMode && physOk && followIdx < 0) {   // frozen while riding along
             x3::game::PlayerInput in{};
             in.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
             in.moveStrafe = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
@@ -3423,7 +3491,12 @@ int hostEchotropolis(HostContext& hc) {
         // Roll is per-frame device state like setCamera: latch it every frame so
         // leaving fly mode always returns an upright horizon.
         device->setCameraRoll(flyMode ? flyRoll : 0.0f);
-        if (flyMode) {
+        if (worldCars.driving()) {
+            // CHASE CAM: the drive host's framing, orbited by the mouse.
+            float dcx, dcy, dcz;
+            worldCars.driverCamera(driveCamYaw, driveCamPitch, dcx, dcy, dcz);
+            device->setCamera(dcx, dcy, dcz, driveCamYaw, driveCamPitch, opt.fovDeg);
+        } else if (flyMode) {
             device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, opt.fovDeg);
         } else if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
             // RIDE-ALONG: trail the citizen third-person, looking at their head as they
@@ -3554,6 +3627,7 @@ int hostEchotropolis(HostContext& hc) {
         }
         if (npcLifeBuilt) npcSkin.draw(*device, frame, walkScene);   // named-citizen rigs
         for (auto& sp : streetProps) sp->draw(*device, frame);       // real vendor carts
+        if (worldCars.built()) worldCars.draw(frame);                // CARS: parked fleet + live rig
         if (roads) roads->draw(*device, frame);                      // ECHO ROADS curved network
         if (minersBuilt) minersSkin.draw(*device, frame, walkScene);   // GOLD-MINE crew skins
         if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
@@ -3614,6 +3688,11 @@ int hostEchotropolis(HostContext& hc) {
                   : walkMode ? "GROUND   WASD + mouse   SHIFT run   SPACE jump   G flight   T talk"
                   : "ORBIT   drag pan   RMB rotate   wheel zoom   G ground   V flight";
                 device->drawHudText(frame, mode, 12.0f + pad, 12.0f + barH + 20.0f, 12.0f, silver);
+                if (worldCars.built() && !worldCars.prompt().empty()) {
+                    const float pgold[4] = { 1.0f, 0.85f, 0.45f, 1.0f };
+                    device->drawHudText(frame, worldCars.prompt().c_str(),
+                                        12.0f + pad, 12.0f + barH + 40.0f, 14.0f, pgold);
+                }
             }
 
             // CITY PANEL (TAB): the web-parity dashboard, fed by the live counts.
@@ -3839,6 +3918,7 @@ int hostEchotropolis(HostContext& hc) {
         x3::logInfo(buf);
     }
 
+    if (worldCars.built() && phys) worldCars.shutdown(*phys);   // bodies out before physics dies
     g_hud = nullptr;   // charCB must never touch the dying Hud
     if (audioOn) { for (auto l : audioLoops) eaudio->stopLoop(l); eaudio->shutdown(); }
     device->shutdown();
