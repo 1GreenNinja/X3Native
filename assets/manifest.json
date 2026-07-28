@@ -487,9 +487,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
-      "sha256": "c401e34929d5ad6f77220a2ac6b91a30ae866f4d2a5bfd1c1211ef3159641c82",
-      "size": 64350800,
-      "source_note": "guard-loco 2: + real Attack (chief=Firingrifle aim+recoil, marcus=Tossgrenade 118deg swing) and Attack2 (Tossgrenade 25-72) re-baked from Jake; Death/Hitreaction/Struggle untouched"
+      "sha256": "ef04ede4a2e727e4a4452989e3ba9cf5f8154b86f695fbad4a65173610ce7b7c",
+      "size": 64459072,
+      "source_note": "guard-clips: REAL authored Death (backward shot-collapse, 40f) + Struggle (looming assault loop, 40f) via tools/guardanim/guard_clip_forge.py; old clips were 0.00-rad dead data; Idle/Walk/Run/Jump/Attack/Attack2/Hitreaction untouched"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
@@ -499,9 +499,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
-      "sha256": "c16785b30231f75f7c249e87805680be722f2e91015d06572e8c0bd6675eb68d",
-      "size": 49238576,
-      "source_note": "guard-loco 2: + real Attack (chief=Firingrifle aim+recoil, marcus=Tossgrenade 118deg swing) and Attack2 (Tossgrenade 25-72) re-baked from Jake; Death/Hitreaction/Struggle untouched"
+      "sha256": "2d80df8f9ac344f124b59dd19dc7e73b59b7aab353503545f6dad379c7b64b94",
+      "size": 49253032,
+      "source_note": "guard-clips: REAL authored Death (backward shot-collapse, 40f) + Struggle (looming assault loop, 40f) via tools/guardanim/guard_clip_forge.py; old clips were 0.00-rad dead data; Idle/Walk/Run/Jump/Attack/Attack2/Hitreaction untouched"
     },
     {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",
