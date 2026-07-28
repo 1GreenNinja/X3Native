@@ -140,3 +140,4 @@ tmp_tex/
 # 24-joint rig with library clips; distributed via the asset store, NOT Git LFS
 # (LFS budget exhausted). Hydrate: python tools/asset_store.py fetch --all
 assets/rigged_glb/canon_grey_anim.glb
+assets/rigged_glb/canon_mantis_anim.glb
