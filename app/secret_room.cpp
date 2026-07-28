@@ -137,8 +137,13 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // they slide (no extra entities). Tint lifted 0.55 -> 0.72: the hatch sits in
         // the cell's pooled shadow and at 0.55 the panels rendered DARKER than the deck
         // around them — an unreadable black patch (R6 review shots).
+        // D22 follow-through (QA upper-floors sweep): the deck map is generated with
+        // level1's neutral value lift, so the hatch keeps its authored ~1.3x-brighter-
+        // than-the-deck ratio. Without it the lifted deck would leave the panels 5x
+        // darker than the floor around them — the exact "unreadable black patch" the R6
+        // review fixed, just from the other direction.
         auto floorPx = x3::prims::makeFloorGrateRGBA(kHatchTexN, /*tiles*/2,
-                                                     x3::prims::detail::kNoTint, /*hazard*/true);
+                                                     x3::game::level1DeckMapLift(), /*hazard*/true);
         h.floorTex = device.createTexture(floorPx.data(), kHatchTexN, kHatchTexN, true);
         h.floorTint[0]=0.72f; h.floorTint[1]=0.78f; h.floorTint[2]=0.95f; h.floorTint[3]=1.0f;
         m_hatchIdx = buildLevelDoor(scene, doors, device, physics, h);

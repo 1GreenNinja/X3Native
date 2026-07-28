@@ -6,11 +6,13 @@
 // from the same inputs, without needing a device or physics world).
 #include "level_lint.h"
 #include "level_loader.h"
+#include "level1.h"               // SPIRE block: floor plates, wing rooms, the stairwell
 #include "mesh_prims.h"           // PRIM WINDING check (makeRamp regression gate)
 #include "canon_45.h"             // HIDDEN-4.5 seal gate (fix/spire-hollow-core)
 #include "stairwell.h"            // stairwell connectivity + no-opening-into-4.5 gate
 #include "engine/core/x3_log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -175,6 +177,306 @@ uint32_t primWindingViolations(const x3::prims::PrimMesh& m) {
     }
     return bad;
 }
+} // namespace
+
+// ---- SPIRE LINT (QA upper-floors sweep, 2026-07-27) ------------------------------
+// The canon-tower lint above reads the LevelDoc JSON; the Spire (`--world level1`,
+// app/level1.cpp) is generated in code and was therefore INVISIBLE to GATE A — the
+// x3-level-authoring doctrine's LAW 5 ("if you must generate geometry in code,
+// generate it INTO a form the lint can see"). This block closes that hole for the
+// F2-F7 upper floors: it reads the SAME tables + the SAME stairwell layout the
+// builder emits (level1Rooms / level1WingRooms / spireStair) and applies the
+// doctrine's containment, seam (LAW 2) and height-transition (LAW 3) checks.
+namespace {
+
+struct SpireLintReport {
+    std::vector<std::string> violations;
+    int contain = 0, overlap = 0, keepout = 0, doorProbe = 0;
+    int riser = 0, tread = 0, slope = 0, landing = 0;
+    int zfight = 0, pierce = 0, well = 0, value = 0;
+    bool pass() const { return violations.empty(); }
+};
+
+// Mean LINEAR albedo of a procedural RGBA map (the reflectance the value band judges).
+void meanLinearRGB(const std::vector<uint8_t>& px, float out[3]) {
+    double acc[3] = { 0, 0, 0 };
+    const size_t n = px.size() / 4;
+    if (!n) { out[0] = out[1] = out[2] = 0.0f; return; }
+    for (size_t i = 0; i < n; ++i)
+        for (int c = 0; c < 3; ++c) {
+            const float s = px[i * 4 + c] / 255.0f;
+            acc[c] += (s <= 0.04045f) ? (s / 12.92) : std::pow((s + 0.055) / 1.055, 2.4);
+        }
+    for (int c = 0; c < 3; ++c) out[c] = (float)(acc[c] / (double)n);
+}
+
+// Box overlap on all three axes by more than `eps` = interpenetration (LAW 2 doubled).
+bool boxesInterpenetrate(const SpireStair::Box& a, const SpireStair::Box& b, float eps) {
+    return std::min(a.x1, b.x1) - std::max(a.x0, b.x0) > eps &&
+           std::min(a.y1, b.y1) - std::max(a.y0, b.y0) > eps &&
+           std::min(a.z1, b.z1) - std::max(a.z0, b.z0) > eps;
+}
+
+// True when `b` lies (in XZ) inside the stair well rect the builder cuts from slabs.
+bool insideWell(const SpireStair& S, const SpireStair::Box& b) {
+    if (S.wellX1 - S.wellX0 < 0.01f) return false;   // no well authored at all
+    return b.x0 >= S.wellX0 - kEps && b.x1 <= S.wellX1 + kEps &&
+           b.z0 >= S.wellZ0 - kEps && b.z1 <= S.wellZ1 + kEps;
+}
+
+SpireLintReport lintSpire() {
+    SpireLintReport R;
+    auto V = [&](std::string s) { R.violations.push_back(std::move(s)); };
+
+    const L1RoomDef* F = level1Rooms();
+    uint32_t wingN = 0;
+    const L1WingRoom* W = level1WingRooms(wingN);
+    const SpireStair& S = spireStair();
+    float shX0, shX1, shZ0, shZ1;
+    level1ShaftFootprint(shX0, shX1, shZ0, shZ1);
+
+    auto roomBox = [&](uint32_t i, float& x0, float& x1, float& z0, float& z1) {
+        x0 = W[i].cx - W[i].hw; x1 = W[i].cx + W[i].hw;
+        z0 = W[i].cz - W[i].hd; z1 = W[i].cz + W[i].hd;
+    };
+
+    // 1. CONTAIN — every wing room's shell sits inside its floor plate with wall
+    //    thickness to spare (flush against the plate wall = a doubled coplanar face).
+    for (uint32_t i = 0; i < wingN; ++i) {
+        const L1RoomDef& f = F[(uint32_t)W[i].floor];
+        float x0, x1, z0, z1; roomBox(i, x0, x1, z0, z1);
+        if (x0 < f.x0 + kWallT || x1 > f.x1 - kWallT ||
+            z0 < -f.zHalf + kWallT || z1 > f.zHalf - kWallT) {
+            ++R.contain;
+            V(fmt("SPIRE-CONTAIN room '%s' [%.1f..%.1f]x[%.1f..%.1f] breaches its plate [%.1f..%.1f]x[%.1f..%.1f]",
+                  W[i].name, x0, x1, z0, z1, f.x0, f.x1, -f.zHalf, f.zHalf));
+        }
+    }
+    // 2. OVERLAP — two rooms on one floor may not interpenetrate (sealed slivers +
+    //    z-fighting doubled walls).
+    for (uint32_t i = 0; i < wingN; ++i)
+        for (uint32_t j = i + 1; j < wingN; ++j) {
+            if (W[i].floor != W[j].floor) continue;
+            float ax0, ax1, az0, az1, bx0, bx1, bz0, bz1;
+            roomBox(i, ax0, ax1, az0, az1); roomBox(j, bx0, bx1, bz0, bz1);
+            const float ox = std::min(ax1, bx1) - std::max(ax0, bx0);
+            const float oz = std::min(az1, bz1) - std::max(az0, bz0);
+            if (ox > -kWallT && oz > -kWallT) {
+                ++R.overlap;
+                V(fmt("SPIRE-OVERLAP '%s' and '%s' interpenetrate (dx %.2f, dz %.2f)",
+                      W[i].name, W[j].name, ox, oz));
+            }
+        }
+    // 3. KEEPOUT — nothing may stand in the elevator shaft column.
+    for (uint32_t i = 0; i < wingN; ++i) {
+        float x0, x1, z0, z1; roomBox(i, x0, x1, z0, z1);
+        if (x1 > shX0 && x0 < shX1 && z1 > shZ0 && z0 < shZ1) {
+            ++R.keepout;
+            V(fmt("SPIRE-KEEPOUT room '%s' intersects the elevator shaft column", W[i].name));
+        }
+    }
+    // 4. DOOR-PROBE (LAW 1) — the single opening of each wing room must give onto free
+    //    plate air, not another room's shell and not the outside of the plate.
+    for (uint32_t i = 0; i < wingN; ++i) {
+        const L1RoomDef& f = F[(uint32_t)W[i].floor];
+        float x0, x1, z0, z1; roomBox(i, x0, x1, z0, z1);
+        float px = W[i].cx, pz = W[i].cz;
+        switch (W[i].door) {
+            case 'S': pz = z0 - 1.5f; break;
+            case 'N': pz = z1 + 1.5f; break;
+            case 'E': px = x1 + 1.5f; break;
+            case 'W': px = x0 - 1.5f; break;
+            default:  continue;                       // sealed room: nothing to probe
+        }
+        if (px < f.x0 || px > f.x1 || pz < -f.zHalf || pz > f.zHalf) {
+            ++R.doorProbe;
+            V(fmt("SPIRE-DOOR  room '%s' door '%c' opens outside the plate at (%.1f, %.1f)",
+                  W[i].name, W[i].door, px, pz));
+            continue;
+        }
+        for (uint32_t j = 0; j < wingN; ++j) {
+            if (j == i || W[j].floor != W[i].floor) continue;
+            float bx0, bx1, bz0, bz1; roomBox(j, bx0, bx1, bz0, bz1);
+            if (px >= bx0 - kWallT && px <= bx1 + kWallT && pz >= bz0 - kWallT && pz <= bz1 + kWallT) {
+                ++R.doorProbe;
+                V(fmt("SPIRE-DOOR  room '%s' door '%c' opens into '%s'", W[i].name, W[i].door, W[j].name));
+            }
+        }
+    }
+
+    // ---- THE STAIRWELL (LAW 2 + LAW 3) -------------------------------------------
+    std::vector<SpireStair::Box> all;
+    for (const SpireStair::Flight& fl : S.flights) {
+        // 5. LAW 3 vocabulary: a run is either legal STAIRS (riser <= 0.20 m, tread
+        //    >= 0.28 m) or a legal RAMP (<= 30 deg); either way a landing must break
+        //    the climb every <= 3 m of rise.
+        if (fl.ramp) {
+            const float run  = (fl.axis == 0) ? (fl.solid.x1 - fl.solid.x0) : (fl.solid.z1 - fl.solid.z0);
+            const float rise = fl.topY - fl.baseY;
+            if (run > 0.01f && rise / run > 0.5774f + 1e-3f) {      // tan(30 deg)
+                ++R.slope;
+                V(fmt("SPIRE-SLOPE stair ramp rise %.2f over run %.2f = %.1f deg (> 30 deg, LAW 3)",
+                      rise, run, std::atan2(rise, run) * 57.2958f));
+            }
+        } else {
+            float prevTop = fl.baseY;
+            for (const SpireStair::Box& st : fl.steps) {
+                const float riser = st.y1 - prevTop;
+                const float tread = (fl.axis == 0) ? (st.x1 - st.x0) : (st.z1 - st.z0);
+                if (riser > 0.20f + 1e-3f) {
+                    ++R.riser;
+                    if (R.riser <= 3)
+                        V(fmt("SPIRE-RISER stair riser %.3f m > 0.20 m (LAW 3) at y=%.2f", riser, st.y1));
+                }
+                if (tread < 0.28f - 1e-3f) {
+                    ++R.tread;
+                    if (R.tread <= 3)
+                        V(fmt("SPIRE-TREAD stair tread %.3f m < 0.28 m (LAW 3) at y=%.2f", tread, st.y1));
+                }
+                prevTop = st.y1;
+            }
+        }
+        if (fl.topY - fl.baseY > 3.0f + 1e-3f) {
+            ++R.landing;
+            V(fmt("SPIRE-LANDING stair run climbs %.2f m with no landing (LAW 3 allows <= 3.0 m)",
+                  fl.topY - fl.baseY));
+        }
+        for (const SpireStair::Box& st : fl.steps) all.push_back(st);
+        if (fl.ramp) all.push_back(fl.solid);
+    }
+    for (const SpireStair::Box& b : S.landings) all.push_back(b);
+    for (const SpireStair::Box& b : S.soffits)  all.push_back(b);
+    // 5b. HEADROOM — a switchback stacks its return leg over the leg below. The clear
+    //     height above a walking surface must clear the player capsule (1.8 m + margin).
+    for (const SpireStair::Flight& fl : S.flights) {
+        if (!fl.ramp) continue;
+        float clear = 1e9f;
+        for (const SpireStair::Box& o : all) {
+            if (o.y0 < fl.topY + 0.01f) continue;                   // not above this leg
+            if (std::min(fl.solid.x1, o.x1) - std::max(fl.solid.x0, o.x0) <= 0.01f) continue;
+            if (std::min(fl.solid.z1, o.z1) - std::max(fl.solid.z0, o.z0) <= 0.01f) continue;
+            clear = std::min(clear, o.y0 - fl.topY);
+        }
+        if (clear < 1.9f) {
+            ++R.landing;
+            V(fmt("SPIRE-HEAD  stair leg topping at y=%.2f has only %.2f m of head clearance (< 1.90 m)",
+                  fl.topY, clear));
+            break;
+        }
+    }
+    // 6. ZFIGHT (LAW 2 doubled) — stair solids may touch but never interpenetrate.
+    {
+        int pairs = 0;
+        for (size_t i = 0; i < all.size(); ++i)
+            for (size_t j = i + 1; j < all.size(); ++j)
+                if (boxesInterpenetrate(all[i], all[j], 0.01f)) ++pairs;
+        if (pairs) {
+            R.zfight = pairs;
+            V(fmt("SPIRE-ZFIGHT %d interpenetrating stair solid pair(s) (LAW 2: doubled faces)", pairs));
+        }
+    }
+    // 7. PIERCE (LAW 2) — a stair solid that crosses a floor slab or a ceiling lid must
+    //    lie inside the WELL the builder cuts from those slabs; otherwise it is driven
+    //    straight through solid geometry.
+    {
+        int pierced = 0;
+        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
+            const bool rooftop = (fi == (uint32_t)L1Floor::F7);
+            const float planes[2] = { F[fi].y0, F[fi].y0 + F[fi].ceil };
+            for (int p = 0; p < (rooftop ? 1 : 2); ++p) {
+                for (const SpireStair::Box& b : all) {
+                    if (b.y0 < planes[p] - kEps && b.y1 > planes[p] + kEps && !insideWell(S, b))
+                        ++pierced;
+                }
+            }
+        }
+        if (pierced) {
+            R.pierce = pierced;
+            V(fmt("SPIRE-PIERCE %d stair solid/slab crossing(s) outside the stair well (no cutout)", pierced));
+        }
+    }
+    // 8. WELL — the cutout itself must be inside every plate, clear of the elevator
+    //    shaft, and clear of every room (a hole in a room's floor is a pit).
+    if (S.wellX1 - S.wellX0 > 0.01f) {
+        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
+            const L1RoomDef& f = F[fi];
+            if (S.wellX0 < f.x0 + kWallT || S.wellX1 > f.x1 - kWallT ||
+                S.wellZ0 < -f.zHalf + kWallT || S.wellZ1 > f.zHalf - kWallT) {
+                ++R.well;
+                V(fmt("SPIRE-WELL stair well [%.1f..%.1f]x[%.1f..%.1f] is outside floor %u's plate",
+                      S.wellX0, S.wellX1, S.wellZ0, S.wellZ1, fi));
+            }
+        }
+        if (S.wellX1 > shX0 && S.wellX0 < shX1 && S.wellZ1 > shZ0 && S.wellZ0 < shZ1) {
+            ++R.well; V("SPIRE-WELL stair well overlaps the elevator shaft column");
+        }
+        for (uint32_t i = 0; i < wingN; ++i) {
+            float x0, x1, z0, z1; roomBox(i, x0, x1, z0, z1);
+            if (S.wellX1 > x0 && S.wellX0 < x1 && S.wellZ1 > z0 && S.wellZ0 < z1) {
+                ++R.well;
+                V(fmt("SPIRE-WELL stair well opens a hole in room '%s'", W[i].name));
+            }
+        }
+        uint32_t detN = level1DetentionRoomCount();
+        const L1DetentionRoom* D = level1DetentionRooms();
+        for (uint32_t i = 0; i < detN; ++i) {
+            const float x0 = D[i].cx - D[i].w * 0.5f, x1 = D[i].cx + D[i].w * 0.5f;
+            const float z0 = D[i].cz - D[i].d * 0.5f, z1 = D[i].cz + D[i].d * 0.5f;
+            if (S.wellX1 > x0 && S.wellX0 < x1 && S.wellZ1 > z0 && S.wellZ0 < z1) {
+                ++R.well;
+                V(fmt("SPIRE-WELL stair well opens a hole in detention room '%s'", D[i].name));
+            }
+        }
+    } else {
+        ++R.well;
+        V("SPIRE-WELL the stairwell cuts NO well — every floor slab and ceiling lid it "
+          "crosses is solid, so the stair cannot be climbed");
+    }
+    // 9. REACH — the stair must present a walkable pad at every floor above the base.
+    if (S.arrivalY.size() + 1 != (size_t)L1Floor::Count) {
+        V(fmt("SPIRE-REACH stair serves %u of %u floors",
+              (unsigned)S.arrivalY.size(), (unsigned)L1Floor::Count - 1));
+    } else {
+        for (uint32_t fi = 1; fi < (uint32_t)L1Floor::Count; ++fi)
+            if (std::fabs(S.arrivalY[fi - 1] - F[fi].y0) > 0.05f)
+                V(fmt("SPIRE-REACH stair arrival at floor %u is y=%.2f, plate floor is y=%.2f",
+                      fi, S.arrivalY[fi - 1], F[fi].y0));
+    }
+
+    // 10. VALUE BAND — the graybox tints multiply the procedural maps; the product must
+    //     land in the reflectance band real interiors occupy (surface_library.h:
+    //     0.08..0.40 LINEAR). This is the D14/D15/D16 law applied to the Spire.
+    {
+        float texLin[3][3];
+        {
+            auto fl = x3::prims::makeFloorGrateRGBA(256, 2, level1DeckMapLift(), false);
+            auto wl = x3::prims::makeSciFiPanelRGBA(256, 2, x3::prims::detail::kNoTint,
+                                                    60, 170, 200, 0.16f, x3::prims::WallVariant::Plain);
+            auto cl = x3::prims::makeCeilingPanelRGBA(256, 3, x3::prims::detail::kNoTint, true);
+            meanLinearRGB(fl, texLin[0]);
+            meanLinearRGB(wl, texLin[1]);
+            meanLinearRGB(cl, texLin[2]);
+        }
+        x3::logInfo(fmt("[levellint] spire graybox map albedo (LINEAR mean): floor %.3f wall %.3f ceiling %.3f",
+                        0.2126f*texLin[0][0]+0.7152f*texLin[0][1]+0.0722f*texLin[0][2],
+                        0.2126f*texLin[1][0]+0.7152f*texLin[1][1]+0.0722f*texLin[1][2],
+                        0.2126f*texLin[2][0]+0.7152f*texLin[2][1]+0.0722f*texLin[2][2]));
+        uint32_t surfN = 0;
+        const L1Surface* SS = level1Surfaces(surfN);
+        for (uint32_t i = 0; i < surfN; ++i) {
+            const float* t = texLin[SS[i].kind < 3 ? SS[i].kind : 0];
+            const float r = t[0] * SS[i].tint[0], g = t[1] * SS[i].tint[1], b = t[2] * SS[i].tint[2];
+            const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            if (lum < 0.08f || lum > 0.40f) {
+                ++R.value;
+                V(fmt("SPIRE-VALUE '%s' effective albedo %.3f LINEAR is outside the interior band [0.08, 0.40]",
+                      SS[i].name, lum));
+            }
+        }
+    }
+    return R;
+}
+
 } // namespace
 
 bool runLevelLintSelfTest() {
@@ -422,6 +724,34 @@ bool runLevelLintSelfTest() {
                         (hasEnv ? "checked" : "absent") + "; negative control " +
                         (ctrlOk ? "red-capable" : "BROKEN"));
         }
+    }
+
+    // ---- SPIRE gate (--world level1, app/level1.cpp): the code-generated tower was
+    // never covered by GATE A. Same doctrine, applied to the F2-F7 upper floors.
+    {
+        const SpireLintReport sp = lintSpire();
+        for (const std::string& v : sp.violations) rep.violations.push_back(v);
+        // NEGATIVE CONTROLS: each probe must be able to go red. A doctored stair with a
+        // 0.9 m riser / 0.05 m tread must trip LAW 3, and two nested boxes must trip the
+        // interpenetration probe.
+        bool ctrlOk = true;
+        {
+            SpireStair::Box a{ 0, 2, 0, 2, 0, 2 }, b{ 1, 3, 1, 3, 1, 3 }, c{ 2, 4, 0, 2, 0, 2 };
+            if (!boxesInterpenetrate(a, b, 0.01f)) ctrlOk = false;   // nested -> must trip
+            if (boxesInterpenetrate(a, c, 0.01f))  ctrlOk = false;   // face-touching -> must NOT
+            SpireStair doctored;                                     // no well authored
+            if (insideWell(doctored, a)) ctrlOk = false;
+            doctored.wellX0 = -1; doctored.wellX1 = 5; doctored.wellZ0 = -1; doctored.wellZ1 = 5;
+            if (!insideWell(doctored, a)) ctrlOk = false;
+        }
+        if (!ctrlOk)
+            rep.violations.push_back("SPIRE     NEGATIVE CONTROL FAILED: interpenetration/well probe not red-capable");
+        x3::logInfo(fmt("[levellint] spire (level1 B1-F7): contain=%d overlap=%d keepout=%d door=%d "
+                        "riser=%d tread=%d slope=%d landing=%d zfight=%d pierce=%d well=%d value=%d; "
+                        "negative control %s",
+                        sp.contain, sp.overlap, sp.keepout, sp.doorProbe, sp.riser, sp.tread,
+                        sp.slope, sp.landing, sp.zfight, sp.pierce, sp.well, sp.value,
+                        ctrlOk ? "red-capable" : "BROKEN"));
     }
 
     for (const std::string& v : rep.violations) x3::logWarn("[levellint] " + v);

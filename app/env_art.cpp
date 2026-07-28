@@ -313,19 +313,36 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     // The floor tile's top sits at its AABB max-Y; anchor that to world y=0. The
     // tile is anchored at its XZ center -> world tile center. We tile a grid that
     // covers each room (last row/col may overhang slightly into walls — hidden).
+    // THE STAIR-WELL SKIP (QA upper-floors sweep, D19). The emergency stairwell is a
+    // shaft cut clean through every floor slab and ceiling lid it passes. Tiling GLB
+    // panels over that opening would paint a solid-looking floor across a hole with no
+    // collision under it — art you walk onto and fall through. Skip every tile the well
+    // touches; buildLevel1 lays a graybox apron over exactly the same tiles (minus the
+    // well) so the skip leaves no void ring. ONE shared rect: spireWellTileSpan().
+    const x3::game::SpireStair& stairWell = x3::game::spireStair();
     auto tileSurface = [&](uint32_t asset, const Aabb& ab, bool ceiling) {
         if (asset >= m_assetTable.size() || !m_assetTable[asset].ok) return;
         const float tileX = ab.maxx - ab.minx;   // 4.0
         const float tileZ = ab.maxz - ab.minz;   // 3.0
         const float ax = cx(ab), az = cz(ab);
         const float anchorY = ceiling ? ab.miny : ab.maxy;  // ceiling: bottom; floor: top
-        for (const Room& r : rooms) {
+        for (uint32_t fi = 0; fi < (uint32_t)x3::game::L1Floor::Count; ++fi) {
+            const Room& r = rooms[fi];
+            // The B1 slab is the BOTTOM of the well (never cut); F7 has no lid.
+            const bool wellCut = ceiling ? (fi != (uint32_t)x3::game::L1Floor::F7)
+                                         : (fi != (uint32_t)x3::game::L1Floor::B1);
             const int nx = (int)std::ceil((r.x1 - r.x0) / tileX);
             const int nz = (int)std::ceil((2.0f * r.zHalf) / tileZ);
             for (int ix=0; ix<nx; ++ix) {
                 for (int iz=0; iz<nz; ++iz) {
                     const float wxC = r.x0 + (ix + 0.5f) * tileX;
                     const float wzC = -r.zHalf + (iz + 0.5f) * tileZ;
+                    if (wellCut &&
+                        wxC + tileX * 0.5f > stairWell.wellX0 + 0.01f &&
+                        wxC - tileX * 0.5f < stairWell.wellX1 - 0.01f &&
+                        wzC + tileZ * 0.5f > stairWell.wellZ0 + 0.01f &&
+                        wzC - tileZ * 0.5f < stairWell.wellZ1 - 0.01f)
+                        continue;                       // this tile lands on the shaft
                     // Floor at this floor's base y0; ceiling at y0+ceil (the Spire
                     // is a vertical stack, so the panels follow each plate's height).
                     const float wyC = ceiling ? (r.y0 + r.ceil) : r.y0;
@@ -336,8 +353,12 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
             }
         }
     };
+    // The overlay tile footprint must match the shared art/graybox contract, or the
+    // stair-well skip and the graybox apron would disagree and leave a seam.
+    static_assert(x3::game::kSpireArtTileX == 4.0f && x3::game::kSpireArtTileZ == 3.0f,
+                  "env_art surface tile is 4 x 3 m — keep kSpireArtTile* in level1.h in step");
     if (haveFloor) { tileSurface(floorA, kFloorAabb, /*ceiling*/false); mask.floors = true; }
-    if (haveCeil)  { tileSurface(ceilA,  kCeilAabb,  /*ceiling*/true ); }
+    if (haveCeil)  { tileSurface(ceilA,  kCeilAabb,  /*ceiling*/true ); mask.ceilings = true; }
 
     // ---- WALLS: the panel is 3.0 wide (its local +Z) x 4.45 tall (Y), 1.43 thick
     // (its local X). For the long side walls (run along world X) we yaw +90deg so
