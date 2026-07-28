@@ -7,16 +7,23 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace x3::game {
 
 namespace {
 
-// ---- Procedural mottled rock/dirt albedo -------------------------------------
-// A brown/grey value-noise texture so the earth reads as raw rock, not a flat wall.
-// Self-contained (no pack asset needed) so the headless self-test / fresh clones
-// never break. Two octaves of hash noise -> a rough dirt-and-stone mottle.
+// ---- Procedural ROCKY CRYSTAL-STREAKED DIRT material -------------------------
+// (feat/cave-rock-material) The underground earth/cave/shaft rock used to be a
+// FLAT-SHADED solid-color slab: e.tex was a low-contrast mottle and there was no
+// normal/roughness map, so a big lit box read as a single graybox color. Tim's
+// mandate: DARK, DAMP, DENSE rock shot through with FAINTLY-GLOWING blue crystal
+// veins. We do the whole thing PROCEDURALLY (baked once, no pack asset) from a
+// shared multi-octave height field so albedo + normal + roughness + veins are
+// coherent, and route the rock through the PBR path (normal/MR/emissive maps).
+//
+// hash2 / smoothNoise: value noise, tileable by period wrap. Reused by every map.
 inline float hash2(int x, int y) {
     uint32_t h = (uint32_t)(x * 374761393 + y * 668265263);
     h = (h ^ (h >> 13)) * 1274126177u;
@@ -34,28 +41,165 @@ inline float smoothNoise(float u, float v, int period) {
     float sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
     return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
 }
+// Fractal value noise (4 octaves), tileable. 0..1.
+inline float fbm(float u, float v) {
+    return 0.50f * smoothNoise(u, v, 8)
+         + 0.25f * smoothNoise(u, v, 16)
+         + 0.15f * smoothNoise(u, v, 32)
+         + 0.10f * smoothNoise(u, v, 64);
+}
+// RIDGED domain-warped vein mask: a FEW meandering, forking "ore seam" ridges,
+// 0..1 (1 = on a seam crest, 0 = clean dark rock between seams). Domain-warping a
+// ridged field gives the branching filament topology of mineral veins threading
+// rock. Deliberately LOW-frequency + hard-thresholded so the result is a handful of
+// distinct glowing seams with truly dark stone between them — NOT a dense marbled
+// noise (Tim: "a whisper of light along the veins, not neon"). `freq` scales the
+// network density; `seed` decorrelates channels.
+inline float veinField(float u, float v, float freq, float seed) {
+    // warp the sample point by a low-freq noise so ridges meander (not a grid).
+    const float wx = smoothNoise(u * 1.1f + seed,        v * 1.1f + seed * 0.7f, 8) - 0.5f;
+    const float wy = smoothNoise(u * 1.1f + seed + 5.2f, v * 1.1f + seed * 0.7f, 8) - 0.5f;
+    const float su = u * freq + wx * 0.7f + seed;
+    const float sv = v * freq + wy * 0.7f + seed * 1.7f;
+    // ridged noise: crest where the field crosses 0.5. A weak 2nd octave adds forks.
+    float r1 = 1.0f - std::fabs(2.0f * smoothNoise(su,         sv,         8) - 1.0f);
+    float r2 = 1.0f - std::fabs(2.0f * smoothNoise(su * 1.9f,  sv * 1.9f,  16) - 1.0f);
+    float ridge = 0.78f * r1 + 0.22f * r2;
+    // KEEP only the crest (threshold below ~0.72 -> clean dark rock), then remap the
+    // top band to 0..1 and sharpen — thin, discrete seams, no low-level speckle.
+    ridge = std::max(0.0f, (ridge - 0.72f) / 0.28f);
+    return std::pow(std::min(1.0f, ridge), 1.5f);
+}
+// Damp-rock HEIGHT field: fBm grain minus deep CREVICE cracks (a second ridged
+// field, inverted so seams cut IN). Returns 0..1; the shared source for albedo
+// shading, the normal map + the roughness pooling. `crackOut` returns the crack
+// mask (1 = deep in a crack) so callers can darken/wet the crevices consistently.
+inline float rockHeight(float u, float v, float& crackOut) {
+    const float grain = fbm(u, v);
+    // cracks: a sparse ridged network, inverted (crest -> deep groove).
+    const float cr = veinField(u, v, 3.3f, 11.0f);
+    crackOut = cr;
+    return std::max(0.0f, grain * (1.0f - 0.85f * cr));
+}
+
+// ALBEDO: dark, damp, dense rock. A fairly NEUTRAL grey-brown (so the per-biome
+// baseColor tint sets the hue) with fine grain, darkened crevice cracks, and a
+// mottled damp patchiness. Kept mid-value so the tint reads and the normal/rough
+// maps do the "relief + wet sheen" work.
 std::vector<uint8_t> makeRockRGBA(uint32_t n) {
-    std::vector<uint8_t> px(n * n * 4);
+    std::vector<uint8_t> px((size_t)n * n * 4);
     for (uint32_t y = 0; y < n; ++y)
         for (uint32_t x = 0; x < n; ++x) {
-            float u = (float)x / n, v = (float)y / n;
-            float coarse = smoothNoise(u, v, 8);
-            float fine   = smoothNoise(u, v, 32);
-            float g = 0.55f * coarse + 0.45f * fine;     // 0..1 rock value
-            // dark earthy palette: brown base, grey grit streaks, dark crevices
-            float r = 0.34f + 0.40f * g;
-            float gr = 0.26f + 0.34f * g;
-            float b = 0.20f + 0.26f * g;
-            // deepen crevices (low-noise pockets) toward near-black dirt
-            float crev = smoothNoise(u * 1.7f + 3.1f, v * 1.7f + 7.7f, 16);
-            float dark = 0.45f + 0.55f * crev;
-            r *= dark; gr *= dark; b *= dark;
-            auto clamp8 = [](float f) { return (uint8_t)(f < 0 ? 0 : f > 1 ? 255 : f * 255.0f + 0.5f); };
-            uint32_t i = (y * n + x) * 4;
-            px[i + 0] = clamp8(r); px[i + 1] = clamp8(gr); px[i + 2] = clamp8(b); px[i + 3] = 255;
+            const float u = (float)x / n, v = (float)y / n;
+            float crack; const float h = rockHeight(u, v, crack);
+            // damp patches: broad low-freq mottle that darkens + cools (wet rock).
+            const float damp = smoothNoise(u * 1.6f + 2.3f, v * 1.6f + 8.1f, 8);
+            // base grey rock value, lifted by grain, crushed hard in the cracks.
+            float val = 0.24f + 0.42f * h;              // 0.24 (crack floor) .. 0.66 (grain)
+            val *= (1.0f - 0.55f * crack);              // cracks go dark
+            val *= (0.78f + 0.22f * damp);              // damp mottle
+            // slightly warm-neutral rock (a touch more R than B); wet patches cool it.
+            const float warm = 1.0f - 0.30f * damp;
+            float r = val * (1.02f * warm + 0.0f);
+            float g = val * 0.97f;
+            float b = val * (0.90f + 0.14f * damp);
+            auto c8 = [](float f) { return (uint8_t)(f < 0 ? 0 : f > 1 ? 255 : f * 255.0f + 0.5f); };
+            const uint32_t i = (y * n + x) * 4;
+            px[i + 0] = c8(r); px[i + 1] = c8(g); px[i + 2] = c8(b); px[i + 3] = 255;
         }
     return px;
 }
+
+// NORMAL map (tangent space, linear RGB) derived from the SAME height field via
+// central differences — so raking crystal light catches real surface relief
+// (grain bumps + the crevice cracks bite in) instead of shading a flat plane.
+std::vector<uint8_t> makeRockNormalRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    const float e = 1.0f / (float)n;
+    const float strength = 2.3f;                        // bump amplitude (dense chunky rock)
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            const float u = (float)x / n, v = (float)y / n;
+            float c;
+            const float hL = rockHeight(u - e, v, c), hR = rockHeight(u + e, v, c);
+            const float hD = rockHeight(u, v - e, c), hU = rockHeight(u, v + e, c);
+            float nx = (hL - hR) * strength;
+            float ny = (hD - hU) * strength;
+            float nz = 1.0f;
+            const float l = std::sqrt(nx * nx + ny * ny + nz * nz);
+            nx /= l; ny /= l; nz /= l;
+            auto enc = [](float f) { return (uint8_t)((f * 0.5f + 0.5f) * 255.0f + 0.5f); };
+            const uint32_t i = (y * n + x) * 4;
+            px[i + 0] = enc(nx); px[i + 1] = enc(ny); px[i + 2] = enc(nz); px[i + 3] = 255;
+        }
+    return px;
+}
+
+// METALLIC-ROUGHNESS map (glTF packing: G = roughness, B = metallic). Rock is a
+// dielectric (metal 0). Roughness VARIES: dry grain is rough (matte), but the
+// crevice cracks + low damp pockets hold water -> a low-roughness WET SHEEN, so
+// the rock catches a glossy highlight where it's damp and stays matte where dry.
+std::vector<uint8_t> makeRockMRRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            const float u = (float)x / n, v = (float)y / n;
+            float crack; const float h = rockHeight(u, v, crack);
+            const float damp = smoothNoise(u * 1.6f + 2.3f, v * 1.6f + 8.1f, 8);
+            // dry rough default; wet (cracks + damp low pockets) drops roughness.
+            float rough = 0.90f - 0.10f * h;            // grain slightly glossier on crest
+            const float wet = std::max(crack, std::max(0.0f, damp - 0.55f) * 2.0f);
+            rough = rough * (1.0f - 0.60f * wet) + 0.30f * wet;   // wet -> ~0.30 sheen
+            auto c8 = [](float f) { return (uint8_t)(f < 0 ? 0 : f > 1 ? 255 : f * 255.0f + 0.5f); };
+            const uint32_t i = (y * n + x) * 4;
+            px[i + 0] = 255;                            // R unused
+            px[i + 1] = c8(rough);                      // G = roughness
+            px[i + 2] = 0;                              // B = metallic (dielectric rock)
+            px[i + 3] = 255;
+        }
+    return px;
+}
+
+// EMISSIVE crystal-VEIN map (feat/cave-rock-material #2). Baked so the rock reads
+// as SHOT THROUGH with Salvari crystal: thin FAINTLY-GLOWING seams threading the
+// dark stone (an emissive channel — no new lights). The shader multiplies this by
+// the entity's emissive rgb*strength (mesh.frag: emis = vEmissive.rgb * tex; color
+// += emis * a), so the texture also carries a DIM base floor (the "never pure black
+// void" guarantee the flat emissive used to give). `vr,vg,vb` = the seam glow color
+// (blue for crystal earth, warm orange for magma cracks); `density` scales how much
+// of the rock the veins thread; `baseLift` = the dim ambient floor built into every
+// texel. Kept FAINT — a whisper of light along the seams, not neon.
+std::vector<uint8_t> makeRockVeinsRGBA(uint32_t n, float vr, float vg, float vb,
+                                       float density, float baseLift) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            const float u = (float)x / n, v = (float)y / n;
+            // two overlaid vein networks at different scales/seeds -> a branching web,
+            // but LOW-frequency so only a few bold seams thread each rock tile.
+            const float s1 = veinField(u, v, 2.0f * density, 3.0f);
+            const float s2 = veinField(u, v, 3.4f * density, 19.0f);
+            float seam = std::max(s1, 0.5f * s2);
+            // a soft glow shoulder so the seam isn't a 1px wire (slight bleed into rock).
+            const float glow = 0.6f * seam + 0.4f * seam * seam;
+            auto c8 = [](float f) { return (uint8_t)(f < 0 ? 0 : f > 1 ? 255 : f * 255.0f + 0.5f); };
+            const uint32_t i = (y * n + x) * 4;
+            px[i + 0] = c8(baseLift * 0.9f + vr * glow);
+            px[i + 1] = c8(baseLift * 0.8f + vg * glow);
+            px[i + 2] = c8(baseLift * 1.0f + vb * glow);
+            px[i + 3] = 255;
+        }
+    return px;
+}
+
+// A bundle of the shared rock material maps (baked once per build call, reused by
+// every rock surface). `emissiveVeins` is the per-look emissive seam map; several
+// looks (blue / magma-orange / faint) are baked and chosen per strata biome.
+struct RockMat {
+    x3::rhi::TextureHandle albedo;
+    x3::rhi::TextureHandle normal;
+    x3::rhi::TextureHandle mr;
+};
 
 // ---- Double-sided solid rock box ---------------------------------------------
 // prims::makeBox authors OUTWARD (CCW) faces only; the main mesh pipeline culls
@@ -201,22 +345,30 @@ void addCrystalCluster(Scene& scene, x3::rhi::IRenderDevice& device,
 // the crystal cluster geometry to the scene and returns the pocket's blue point
 // light (the host merges it into the per-frame light set).
 x3::rhi::PointLight addSalvariHollow(Scene& scene, x3::rhi::IRenderDevice& device,
-                                     x3::rhi::TextureHandle rockTex,
+                                     const RockMat& mat, x3::rhi::TextureHandle veinTex,
                                      const BedrockConfig& cfg,
                                      float cx, float cy, float cz, float scale) {
     // 1) POCKET: a small double-sided rock room liner so the hollow has near rock
     //    walls the blue light catches (the surrounding earth is a distant shell).
+    //    Dressed with the full rock material (albedo+normal+MR) + DENSE blue veins
+    //    (the pocket is where the crystal grows, so the seams crowd toward it).
     {
         const float h = 5.5f * scale;
         x3::prims::PrimMesh geo = makeSolidRockBox(h, h * 0.8f, h, cx, cy, cz, cfg.uvScale * 1.6f);
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = rockTex;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
         for (int i = 0; i < 4; ++i) e.baseColor[i] = cfg.tint[i];
-        // pocket walls a touch darker than bulk rock so the blue crystal read pops
-        for (int i = 0; i < 3; ++i) e.emissive[i] = cfg.emissive[i] * 0.6f;
-        e.emissive[3] = 1.0f;
+        // pocket walls a touch darker than bulk rock so the blue crystal read pops.
+        // The dim floor + glowing seams ride the emissive VEIN map (rgb=1, a=strength).
+        if (veinTex.valid()) {
+            e.emissiveTex = veinTex;
+            e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 0.85f;
+        } else {
+            for (int i = 0; i < 3; ++i) e.emissive[i] = cfg.emissive[i] * 0.6f;
+            e.emissive[3] = 1.0f;
+        }
         e.tag  = (uint32_t)Tag::Static;
         e.body = x3::phys::BodyId{};
         scene.add(e);
@@ -280,10 +432,22 @@ int buildClubBedrock(Scene& scene, x3::rhi::IRenderDevice& device,
                      std::vector<x3::rhi::PointLight>* outCrystalLights) {
     (void)physics;   // rock is purely visual (non-colliding) — see header.
 
-    // Shared procedural rock texture (one upload, reused by all six slabs).
+    // Shared procedural ROCK MATERIAL (albedo + normal + MR, one upload each, reused
+    // by every slab) + a faint blue crystal-VEIN emissive map (the deep earth is shot
+    // through with a whisper of Salvari crystal). srgb: albedo yes; normal/MR linear.
     const uint32_t kN = 256;
     auto rockPx = makeRockRGBA(kN);
-    x3::rhi::TextureHandle rockTex = device.createTexture(rockPx.data(), kN, kN, true);
+    auto rockNx = makeRockNormalRGBA(kN);
+    auto rockMx = makeRockMRRGBA(kN);
+    RockMat mat;
+    mat.albedo = device.createTexture(rockPx.data(), kN, kN, true);
+    mat.normal = device.createTexture(rockNx.data(), kN, kN, false);
+    mat.mr     = device.createTexture(rockMx.data(), kN, kN, false);
+    // Faint blue seams for the bulk earth shell; brighter/denser for the crystal pockets.
+    auto veinFaintPx = makeRockVeinsRGBA(kN, 0.05f, 0.12f, 0.32f, 0.6f, 0.050f);
+    auto veinBluePx  = makeRockVeinsRGBA(kN, 0.09f, 0.24f, 0.66f, 1.0f, 0.048f);
+    x3::rhi::TextureHandle veinFaint = device.createTexture(veinFaintPx.data(), kN, kN, true);
+    x3::rhi::TextureHandle veinBlue  = device.createTexture(veinBluePx.data(),  kN, kN, true);
 
     const float ov  = cfg.weld;
     const float uvs = cfg.uvScale;
@@ -303,9 +467,13 @@ int buildClubBedrock(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = rockTex;                                  // procedural rock albedo
+        e.tex = mat.albedo;                               // procedural damp rock albedo
+        e.normalTex = mat.normal;                         // surface relief (grain + cracks)
+        e.mrTex = mat.mr;                                 // dry/wet roughness (dielectric)
         for (int i = 0; i < 4; ++i) e.baseColor[i] = cfg.tint[i];
-        for (int i = 0; i < 4; ++i) e.emissive[i]  = cfg.emissive[i];
+        // The dim self-emissive floor + faint blue crystal seams ride the vein map.
+        e.emissiveTex = veinFaint;
+        e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.0f;
         e.tag  = (uint32_t)Tag::Static;
         e.body = x3::phys::BodyId{};                      // invalid => non-colliding
         scene.add(e);
@@ -346,7 +514,7 @@ int buildClubBedrock(Scene& scene, x3::rhi::IRenderDevice& device,
         };
         for (const Hollow& h : hollows) {
             x3::rhi::PointLight bl =
-                addSalvariHollow(scene, device, rockTex, cfg, h.x, h.y, h.z, h.s);
+                addSalvariHollow(scene, device, mat, veinBlue, cfg, h.x, h.y, h.z, h.s);
             added += 7;   // pocket + 6 shards per hollow (bookkeeping)
             if (outCrystalLights) outCrystalLights->push_back(bl);
         }
@@ -365,11 +533,44 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                       x3::phys::IPhysicsWorld& physics, const TunnelConfig& tc,
                       std::vector<x3::rhi::PointLight>* outCrystalLights,
                       DescentFallLayout* outLayout) {
-    // Shared procedural rock albedo (same generator the earth uses, so the bore rock
-    // matches its surround). One upload, reused by every tunnel surface.
+    // Shared procedural ROCK MATERIAL (albedo + normal + MR — same generators the
+    // earth shell uses, so the bore rock matches its surround) + a set of per-BIOME
+    // emissive crystal-VEIN maps: descending the shaft, the seams shift with the
+    // geology (faint blue in the upper stone, DENSE electric blue in the Crystal
+    // Veins band, warm orange cracks in the Magma zone, near-glassy Obsidian, violet
+    // Alien Substrate). One upload each; chosen per strata band by pickVein() below.
     const uint32_t kN = 256;
     auto rockPx = makeRockRGBA(kN);
-    x3::rhi::TextureHandle rockTex = device.createTexture(rockPx.data(), kN, kN, true);
+    auto rockNx = makeRockNormalRGBA(kN);
+    auto rockMx = makeRockMRRGBA(kN);
+    RockMat mat;
+    mat.albedo = device.createTexture(rockPx.data(), kN, kN, true);
+    mat.normal = device.createTexture(rockNx.data(), kN, kN, false);
+    mat.mr     = device.createTexture(rockMx.data(), kN, kN, false);
+    auto mkVein = [&](float r, float g, float b, float dens, float lift) {
+        auto p = makeRockVeinsRGBA(kN, r, g, b, dens, lift);
+        return device.createTexture(p.data(), kN, kN, true);
+    };
+    // (r,g,b seam glow, density, dim base floor). FAINT = a whisper along the seams.
+    const x3::rhi::TextureHandle veinFaint = mkVein(0.05f, 0.12f, 0.32f, 0.6f, 0.050f); // upper stone
+    const x3::rhi::TextureHandle veinBlue  = mkVein(0.09f, 0.24f, 0.66f, 1.0f, 0.048f); // Crystal Veins (denser)
+    const x3::rhi::TextureHandle veinMagma = mkVein(0.72f, 0.24f, 0.05f, 0.9f, 0.042f); // Magma (orange cracks)
+    const x3::rhi::TextureHandle veinObsid = mkVein(0.05f, 0.10f, 0.22f, 0.35f, 0.028f); // Obsidian (glassy, sparse)
+    const x3::rhi::TextureHandle veinSubst = mkVein(0.26f, 0.05f, 0.46f, 0.9f, 0.048f); // Alien Substrate (violet)
+    // Pick the biome vein map for a world Y from the strata table (names matched).
+    auto pickVein = [&](float y) -> x3::rhi::TextureHandle {
+        for (const auto& s : ElevatorSystem::strata()) {
+            if (y >= s.yMin && y <= s.yMax) {
+                const std::string nm = s.name;
+                if (nm == "Crystal Veins")   return veinBlue;
+                if (nm == "Magma Zone")      return veinMagma;
+                if (nm == "Obsidian")        return veinObsid;
+                if (nm == "Alien Substrate") return veinSubst;
+                return veinFaint;
+            }
+        }
+        return veinFaint;
+    };
 
     int added = 0;
 
@@ -384,9 +585,10 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = rockTex;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
         for (int i = 0; i < 4; ++i) e.baseColor[i] = tc.tint[i];
-        for (int i = 0; i < 4; ++i) e.emissive[i]  = tc.emissive[i];
+        e.emissiveTex = pickVein(cy);                           // crystal seams for the biome
+        e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.0f;
         e.tag  = (uint32_t)Tag::Static;
         e.body = x3::phys::BodyId{};                             // non-colliding shell
         scene.add(e); ++added;
@@ -400,19 +602,24 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = rockTex;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
         for (int i = 0; i < 4; ++i) e.baseColor[i] = tc.tint[i];
-        for (int i = 0; i < 4; ++i) e.emissive[i]  = tc.emissive[i];
+        e.emissiveTex = pickVein(cy);
+        e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.0f;
         e.tag  = (uint32_t)Tag::Static;
         e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
                                        geo.cindex.data(), (uint32_t)geo.cindex.size());
         scene.add(e); ++added;
     };
-    // COLORED colliding rock box (variant of addCol with an explicit tint/emissive —
-    // the fall-shaft walls are colored per STRATA band so the geology rushes past as
-    // you drop; a glowing band carries its emissive so it lights the bore).
+    // COLORED colliding rock box (variant of addCol with an explicit tint — the
+    // fall-shaft walls + side-shoot floors are colored per STRATA band so the geology
+    // rushes past as you drop). `veinTex` (optional): the biome's glowing crystal-seam
+    // emissive map — pass it for cave/earth rock; leave invalid for the man-made
+    // infra shells (dark landing room / hall / elevator alcove), which keep their flat
+    // dark-vault emissive `em[]` and just gain the rock relief (normal + roughness).
     auto addColC = [&](float x0, float x1, float y0, float y1, float z0, float z1,
-                       const float col[3], const float em[3]) {
+                       const float col[3], const float em[3],
+                       x3::rhi::TextureHandle veinTex = {}) {
         const float hx = (x1 - x0) * 0.5f, hy = (y1 - y0) * 0.5f, hz = (z1 - z0) * 0.5f;
         const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f, cz = (z0 + z1) * 0.5f;
         if (hx <= 0.0f || hy <= 0.0f || hz <= 0.0f) return;
@@ -420,9 +627,14 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = rockTex;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
         e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=1.0f;
-        e.emissive[0]=em[0]; e.emissive[1]=em[1]; e.emissive[2]=em[2]; e.emissive[3]=1.0f;
+        if (veinTex.valid()) {
+            e.emissiveTex = veinTex;
+            e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.0f;
+        } else {
+            e.emissive[0]=em[0]; e.emissive[1]=em[1]; e.emissive[2]=em[2]; e.emissive[3]=1.0f;
+        }
         e.tag  = (uint32_t)Tag::Static;
         e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
                                        geo.cindex.data(), (uint32_t)geo.cindex.size());
@@ -541,19 +753,20 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         for (float y0 = shaftBotY; y0 < mouthY; y0 += bandH) {
             const float y1 = std::min(y0 + bandH, mouthY);
             float col[3], em[3]; bandAt((y0 + y1) * 0.5f, col, em);
+            const x3::rhi::TextureHandle vein = pickVein((y0 + y1) * 0.5f);   // biome crystal seams
             // -X (west), -Z (south), +Z (north) walls: solid.
-            addColC(wxMin - wallT, wxMin, y0, y1, wzMin - wallT, wzMax + wallT, col, em);
-            addColC(wxMin, wxMax, y0, y1, wzMin - wallT, wzMin, col, em);
-            addColC(wxMin, wxMax, y0, y1, wzMax, wzMax + wallT, col, em);
+            addColC(wxMin - wallT, wxMin, y0, y1, wzMin - wallT, wzMax + wallT, col, em, vein);
+            addColC(wxMin, wxMax, y0, y1, wzMin - wallT, wzMin, col, em, vein);
+            addColC(wxMin, wxMax, y0, y1, wzMax, wzMax + wallT, col, em, vein);
             // +X (east) wall: subtract any offshoot mouth active in this band.
             const Off* act = nullptr;
             for (const Off& o : offs)
                 if ((y0+y1)*0.5f > o.y && (y0+y1)*0.5f < o.y + offMouthH) { act = &o; break; }
             if (!act) {
-                addColC(wxMax, wxMax + wallT, y0, y1, wzMin - wallT, wzMax + wallT, col, em);
+                addColC(wxMax, wxMax + wallT, y0, y1, wzMin - wallT, wzMax + wallT, col, em, vein);
             } else {
-                addColC(wxMax, wxMax + wallT, y0, y1, wzMin - wallT, SZ - offMouthHalfZ, col, em); // south of mouth
-                addColC(wxMax, wxMax + wallT, y0, y1, SZ + offMouthHalfZ, wzMax + wallT, col, em); // north of mouth
+                addColC(wxMax, wxMax + wallT, y0, y1, wzMin - wallT, SZ - offMouthHalfZ, col, em, vein); // south of mouth
+                addColC(wxMax, wxMax + wallT, y0, y1, SZ + offMouthHalfZ, wzMax + wallT, col, em, vein); // north of mouth
             }
         }
     }
@@ -693,18 +906,25 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         if (he.x <= 0.0f || he.y <= 0.0f || he.z <= 0.0f) return;
         physics.addBox(he, c, 0.0f, x3::phys::Layer::Static);
     };
-    // Lumpy rock tube (VISUAL, non-colliding), tinted to the biome band.
+    // Lumpy rock tube (VISUAL, non-colliding), tinted to the biome band + threaded
+    // with the biome's glowing crystal seams (the cave wall you look at from inside).
     auto addTube = [&](float x0, float x1, float cyc, float czc, float rMin, float rMax,
-                       uint32_t sd, const float col[3], const float em[3]) {
+                       uint32_t sd, const float col[3], const float em[3],
+                       x3::rhi::TextureHandle veinTex) {
         const int rings = std::max(6, (int)((x1 - x0) / 2.2f));
         x3::prims::PrimMesh geo = makeCaveTubeX(x0, x1, cyc, czc, rMin, rMax, 0.34f,
                                                 rings, 12, tc.uvScale, sd);
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = rockTex;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
         e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=1.0f;
-        e.emissive[0]=em[0]; e.emissive[1]=em[1]; e.emissive[2]=em[2]; e.emissive[3]=1.0f;
+        if (veinTex.valid()) {
+            e.emissiveTex = veinTex;
+            e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.0f;
+        } else {
+            e.emissive[0]=em[0]; e.emissive[1]=em[1]; e.emissive[2]=em[2]; e.emissive[3]=1.0f;
+        }
         e.tag = (uint32_t)Tag::Static; e.body = x3::phys::BodyId{};
         scene.add(e); ++added;
     };
@@ -715,7 +935,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = rockTex;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;   // rock relief on the spikes too
         e.baseColor[0]=tc.tint[0]*0.8f; e.baseColor[1]=tc.tint[1]*0.8f; e.baseColor[2]=tc.tint[2]*0.8f; e.baseColor[3]=1.0f;
         e.emissive[0]=tc.emissive[0]*0.5f; e.emissive[1]=tc.emissive[1]*0.5f; e.emissive[2]=tc.emissive[2]*0.5f; e.emissive[3]=1.0f;
         e.tag = (uint32_t)Tag::Static; e.body = x3::phys::BodyId{};
@@ -731,6 +951,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         const float mouthX = wxMax + wallT;              // just outside the +X wall
         const float rx1 = mouthX + o.len;                // far end of the cavern
         float col[3], em[3]; bandAt(y + 3.0f, col, em);  // BIOME: rock tinted to the strata band
+        const x3::rhi::TextureHandle vein = pickVein(y + 3.0f);   // + the biome crystal seams
         const uint32_t sd = (uint32_t)std::lround((y + 4000.0f) * 0.37f);
 
         // Bore sizing by kind (Landmark = a cathedral; Cache = a tight pocket).
@@ -741,9 +962,9 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         const float cyc  = y + 2.0f;                     // tube axis: floor tucks into the lower wall
 
         // Flat colliding+visual floor strip the length of the shoot (walkable rock).
-        addColC(wxMax, rx1, y - 0.6f, y, SZ - floorHalf, SZ + floorHalf, col, em);
+        addColC(wxMax, rx1, y - 0.6f, y, SZ - floorHalf, SZ + floorHalf, col, em, vein);
         // The lumpy rock TUBE you see (pinch -> cathedral -> pinch).
-        addTube(wxMax, rx1 + 0.6f, cyc, SZ, rMin, rMax, sd, col, em);
+        addTube(wxMax, rx1 + 0.6f, cyc, SZ, rMin, rMax, sd, col, em, vein);
         // Invisible containment: side walls + ceiling + endcap keep the player on the floor.
         const float topY = cyc + rMax;
         addColl(wxMax, rx1, y, topY, SZ - floorHalf - 0.3f, SZ - floorHalf);   // -Z wall
@@ -765,7 +986,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
             for (int i = 0; i < 4; ++i) bc.tint[i] = tc.tint[i];
             for (int i = 0; i < 4; ++i) bc.emissive[i] = tc.emissive[i];
             bc.uvScale = tc.uvScale;
-            x3::rhi::PointLight bl = addSalvariHollow(scene, device, rockTex, bc, hx, hy, hz, scale);
+            x3::rhi::PointLight bl = addSalvariHollow(scene, device, mat, vein, bc, hx, hy, hz, scale);
             added += 7;
             if (outCrystalLights) outCrystalLights->push_back(bl);
         };
@@ -827,9 +1048,10 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                 Entity e;
                 e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                            geo.index.data(), (uint32_t)geo.index.size());
-                e.tex = rockTex;
+                e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
                 e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=1.0f;
-                e.emissive[0]=em[0]; e.emissive[1]=em[1]; e.emissive[2]=em[2]; e.emissive[3]=1.0f;
+                e.emissiveTex = vein;                        // tumbled cave rock keeps the seams
+                e.emissive[0]=e.emissive[1]=e.emissive[2]=1.0f; e.emissive[3]=1.0f;
                 e.tag=(uint32_t)Tag::Static;
                 e.body = physics.addBox(x3::phys::Vec3{bs,bs*0.7f,bs}, x3::phys::Vec3{bx,y+bs*0.7f,bz}, 0.0f, x3::phys::Layer::Static);
                 scene.add(e); ++added;
@@ -852,7 +1074,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                 Entity e;
                 e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                            geo.index.data(), (uint32_t)geo.index.size());
-                e.tex=rockTex;
+                e.tex=mat.albedo; e.normalTex=mat.normal; e.mrTex=mat.mr;   // carved stone relief
                 e.baseColor[0]=0.22f;e.baseColor[1]=0.20f;e.baseColor[2]=0.26f;e.baseColor[3]=1.0f;
                 e.emissive[0]=0.03f;e.emissive[1]=0.06f;e.emissive[2]=0.12f;e.emissive[3]=1.0f;  // faint votive glow
                 e.tag=(uint32_t)Tag::Static;
@@ -874,7 +1096,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                 Entity e;
                 e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                            geo.index.data(), (uint32_t)geo.index.size());
-                e.tex=rockTex;
+                e.tex=mat.albedo; e.normalTex=mat.normal; e.mrTex=mat.mr;   // carved stone relief
                 e.baseColor[0]=0.05f;e.baseColor[1]=0.06f;e.baseColor[2]=0.11f;e.baseColor[3]=1.0f;
                 e.emissive[0]=0.03f;e.emissive[1]=0.16f;e.emissive[2]=0.52f;e.emissive[3]=1.0f;  // etched-blue glyph glow
                 e.tag=(uint32_t)Tag::Static;
