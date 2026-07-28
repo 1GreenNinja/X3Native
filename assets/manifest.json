@@ -408,6 +408,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/RexBouncer_anim.glb",
+      "sha256": "1de1022d4e406180bd47c11c44ef2a7aa2a27ae4d196a8a76e5eadd1624eeedf",
+      "size": 4427512,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/SalvariPrincess.glb",
       "sha256": "9e593ec6466f843822321a85b39a823106ab0c5e5c7ff1fa26a92154843b6c38",
       "size": 21431548,
