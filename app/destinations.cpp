@@ -129,6 +129,7 @@ const Destination kDest[] = {
 { "ragdoll",      "Ragdoll Bench",            "Physics test bench: ragdolls.",                                         "ragdoll",           DestGroup::DevWorld,   false },
 { "fromdoc",      "LevelDoc (live edit)",     "Boot straight into a LevelDoc JSON - the editor loop.",                 "fromdoc",           DestGroup::DevWorld,   false },
 { "spacestation", "The Deep-Space Station",   "Solar+fusion station far from Earth: hangar, corridor, stargate ring.", "spacestation",      DestGroup::DevWorld,   false },
+{ "gallery",      "Character Gallery",        "The cast on pedestals - walk up, press E to cycle every clip.",         "gallery",           DestGroup::DevWorld,   false },
 };
 constexpr uint32_t kDestCount = (uint32_t)(sizeof(kDest) / sizeof(kDest[0]));
 

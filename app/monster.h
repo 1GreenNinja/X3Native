@@ -747,6 +747,16 @@ public:
     void setCalmLoop(const char* fuzzyName) {
         if (m_animActive) m_calmLoopClip = m_skinner.findClip({ fuzzyName });
     }
+    // Gallery/dev: pin the calm loop to an EXACT clip index (setCalmLoop is a
+    // fuzzy substring find, which can't distinguish "Idle" from "IdleAlt").
+    // Restarts the loop at t=0 so a cycle always shows the clip from its top.
+    void setCalmLoopClip(int clip) {
+        if (m_animActive && clip >= 0 && (uint32_t)clip < m_skinner.clipCount()) {
+            m_calmLoopClip = clip; m_calmLoopT = 0.0f;
+        }
+    }
+    // The pinned calm-loop clip index, or -1 (gallery clip-cycle HUD readback).
+    int  calmLoopClip() const { return m_calmLoopClip; }
     bool calmLoopActive() const { return m_calmLoopClip >= 0; }
 
     // ---- W9-1: desc-mechanics hooks (docs/DESC_MECHANICS_TODO.md Tier A) ----

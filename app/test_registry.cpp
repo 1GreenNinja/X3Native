@@ -711,6 +711,10 @@ int dispatchTests(const TestFlags& tf) {
                     "self-test...");
         return x3::game::runCanonAliensSelfTest() ? 0 : 1;
     }
+    if (tf.testGallery) {
+        x3::logInfo("running CHARACTER GALLERY (--world gallery) cast + clip-cycle self-test...");
+        return x3::apphost::runGallerySelfTest() ? 0 : 1;
+    }
     if (tf.testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
                     "encounter-content self-test...");

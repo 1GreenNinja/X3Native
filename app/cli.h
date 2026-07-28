@@ -153,6 +153,7 @@ struct CliOptions {
     // MantisArbiter) on a HeadlessDevice + Jolt world; asserts the roster is
     // complete + ordered, each row builds, and per-species stat invariants hold.
     bool        testCanonAliens = false;
+    bool        testGallery = false;      // --test-gallery (character-gallery cast + clip cycle)
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
     // --test-loading (loading-screen pass, Task #49): asserts progress is monotonic

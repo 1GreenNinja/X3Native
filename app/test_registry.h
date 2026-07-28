@@ -74,6 +74,7 @@ struct TestFlags {
     bool testBosses = false, testAct2Bosses = false, testSpireMid = false, testNexus = false;
     bool testAdaptiveHide = false;   // --test-adaptive-hide (canon-aliens rotate-damage rhythm)
     bool testCanonAliens = false;    // --test-canonaliens (canon-alien roster: Mantis/Grey/Reptilian/Nordic)
+    bool testGallery = false;        // --test-gallery (character-gallery cast + clip cycle)
     bool testSpireTop = false, testTimeline = false, testDroneHack = false, testSubLevels = false;
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
