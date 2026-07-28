@@ -65,6 +65,7 @@ struct TestFlags {
     bool testDescentSlide = false;// --test-descentslide (Wave 2C track spec + rider sim, headless)
     bool testWingDressing = false;// --test-wingdressing (F2-F7 wing recipe dressing, headless)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
+    bool testSurfaceHandoff = false;// --test-surfacehandoff ([P0-1] surface -> facility handoff)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;

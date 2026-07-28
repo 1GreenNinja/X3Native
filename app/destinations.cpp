@@ -85,6 +85,10 @@ const Destination kDest[] = {
 { "f5",           "Facility F5",              "Fifth floor of the canonical tower.",                                   "canonlevel",        DestGroup::Facility,   true  },
 { "f6",           "Facility F6",              "Sixth floor of the canonical tower.",                                   "canonlevel",        DestGroup::Facility,   true  },
 { "f7",           "Facility F7 - Executive",  "The top floor. The executive landing.",                                 "canonlevel",        DestGroup::Facility,   true  },
+// [P0-1 EFLZ-GP-1B] The SEAM-2 "Entrance" hallway on the F1 footprint edge — the
+// tower's one real way in off the apron, and the ESCAPED-branch rescuer's arrival
+// spawn (specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §2: the handoff's dest key).
+{ "entrance",     "Facility Entrance",        "The F1 entrance hall - the tower's one real way in, off the apron.",    "canonlevel",        DestGroup::Facility,   true  },
 
 { "granite",      "The Descent - Granite",    "Strata offshoot pocket at -55 m.",                                      "strata",            DestGroup::Underworld, true  },
 { "basalt",       "The Descent - Basalt",     "Strata offshoot pocket at -95 m.",                                      "strata",            DestGroup::Underworld, true  },

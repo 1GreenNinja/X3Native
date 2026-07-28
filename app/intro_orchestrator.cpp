@@ -186,6 +186,18 @@ std::string defaultGameStoryFlagsPath() {
     return "game_flags.txt";
 }
 
+bool importEscapedIntroFlags(x3::game::StoryFlags& into, const std::string& path) {
+    // [P0-1] See the header note. Loads the persisted intro lane into a scratch
+    // set first so a shot_down / absent save NEVER mutates the live flags world.
+    const std::string p = path.empty() ? defaultGameStoryFlagsPath() : path;
+    x3::game::StoryFlags disk;
+    if (!disk.loadFile(p)) return false;                       // no persisted intro
+    if (readOutcomeFlag(disk) != IntroOutcome::Escaped) return false;   // canon path
+    into.set(std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeEscaped);
+    if (disk.has(kIntroLandedFlag)) into.set(kIntroLandedFlag);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Live hosting helpers
 // ---------------------------------------------------------------------------

@@ -62,6 +62,16 @@ const char* const* dispatchedWorldModes(unsigned& count);
 // No window / Vulkan. Returns true iff all sub-checks pass.
 bool runSurfaceStartSelfTest();
 
+// --test-surfacehandoff ([P0-1] EFLZ-GP-1B): headless self-test of the Phase-1
+// SURFACE -> FACILITY handoff (specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §6
+// H2-H5): the breach [E]-interact trigger geometry (+ negative controls), the
+// switchWorldTo=canonlevel @ entrance request, the live-registry "entrance"
+// anchor, the Entrance-room spawn (inside its bounds, OUTSIDE Jake's Cell)
+// against the loaded canon tower data, the armed-arrival WeaponSystem grant,
+// and the escaped-flags import with a shot_down negative control. No window /
+// Vulkan. Returns true iff all sub-checks pass.
+bool runSurfaceHandoffSelfTest();
+
 // --test-introcockpit: the intro cockpit GLB -> Scene-entity rig (PBR route +
 // emissiveTex content screens + transparent canopy glass) standing up on the
 // HeadlessRenderDevice. No window / Vulkan. True iff all sub-checks pass.

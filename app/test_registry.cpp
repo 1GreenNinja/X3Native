@@ -554,6 +554,13 @@ int dispatchTests(const TestFlags& tf) {
                     "facility, player outside + armed, Sarah rescue target, objectives)...");
         return x3::apphost::runSurfaceStartSelfTest() ? 0 : 1;
     }
+    if (tf.testSurfaceHandoff) {
+        x3::logInfo("running [P0-1] SURFACE->FACILITY HANDOFF self-test (EFLZ-GP-1B: "
+                    "breach [E]-interact trigger + canonlevel@entrance request + "
+                    "Entrance-room spawn vs live tower data + armed arrival + "
+                    "escaped-flags import, with shot_down negative controls)...");
+        return x3::apphost::runSurfaceHandoffSelfTest() ? 0 : 1;
+    }
     if (tf.testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
         return x3::game::runPhase2aSelfTest() ? 0 : 1;

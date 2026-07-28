@@ -1747,6 +1747,18 @@ int runDefaultHost(HostContext& hc) {
             out = { hs.x, hs.y + 1.0f, hs.z };
             return true;
         }
+        // --- [P0-1 EFLZ-GP-1B] The facility ENTRANCE (the escaped-rescuer arrival
+        //     spawn, and a plain destination). The canon data authors an "Entrance"
+        //     hallway on the footprint edge (the SEAM-2 breach room) — stand the
+        //     player at its centre, inside F1, free and outside every cell.
+        if (k == "entrance") {
+            if (!canonFloor.valid()) return no("the canonical tower is not built in this world");
+            const uint32_t er = canonFloor.roomByName("Entrance");
+            if (er == x3::game::kNoRoom) return no("the loaded tower data has no Entrance room");
+            const x3::game::CanonRoom& rm = canonFloor.rooms[er];
+            out = { rm.cx, rm.y0() + 1.0f, rm.cz };
+            return true;
+        }
         // --- Back home: the facility, ANY floor. F1 = the detention lobby (the rift is
         //     a two-way door — you are not stranded down there), F7 = the executive floor.
         if (d->group == x3::game::DestGroup::Facility) {
@@ -4080,6 +4092,32 @@ int runDefaultHost(HostContext& hc) {
             coolantGlowDead = true;
             x3::logInfo("[descmech] X3_DESCMECH_SABOTAGE=1 — booted in the sabotaged state");
         }
+    }
+
+    // ---- [P0-1 EFLZ-GP-1B] ESCAPED SURFACE->FACILITY HANDOFF — ARRIVAL SIDE ----
+    // (specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §3.3.4-6.) main()'s world-load
+    // loop re-dispatched canonlevel with spawnAtKey="entrance" because the escaped
+    // rescuer pressed [E] at the surface breach (host_surface_start). The arrival
+    // contract, on the freshly-built canon world:
+    //   * FLAGS (H4): the live flags world starts empty, so import the intro's
+    //     persisted intro.outcome=escaped (+ intro.landed) into chatTrees.flags().
+    //   * ARMED (H3): the rescuer enters with the sidearm LIVE — cheatArm flips
+    //     the same WeaponSystem the cell pickup does, so fire/arsenal/HUD all
+    //     work (never a cosmetic prop after the handoff, spec §3.4).
+    //   * OBJECTIVE (§3.3.6): the surface "RESCUE SARAH" line becomes the
+    //     interior hunt via the free-text objective lane missions already use.
+    // The entrance PLACEMENT itself rides the generic load-and-place path (the
+    // pendingSpawnKey block in the main loop -> riftDestination("entrance")).
+    // Gated on BOTH the spawn key and the persisted escaped outcome, so every
+    // other path (shot_down cell start, menu travel, dev worlds) is byte-identical
+    // (spec §3.5 — importEscapedIntroFlags refuses shot_down/absent saves).
+    if (canonWorld && canonPlay.built() && hc.spawnAtKey == "entrance" &&
+        x3::intro::importEscapedIntroFlags(chatTrees.flags())) {
+        canonPlay.cheatArm(scene);
+        game.objectives().setText("REACH SARAH - SEARCH THE FACILITY");
+        x3::logInfo("[handoff] ESCAPED rescuer arrival: intro flags imported "
+                    "(intro.outcome=escaped), player ARMED, objective -> REACH SARAH; "
+                    "spawning at 'entrance'");
     }
 
     // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the

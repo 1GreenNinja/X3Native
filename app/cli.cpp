@@ -516,6 +516,9 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
+        // [P0-1] both spellings accepted (the plan doc names --test-surface-handoff).
+        else if (a == "--test-surfacehandoff" || a == "--test-surface-handoff")
+            o.testSurfaceHandoff = true;
         else if (a == "--test-starsystems") o.testStarsystems = true;
         else if (a == "--intro-force") {
             // DEV: force the interactive-intro outcome branch.
