@@ -3,6 +3,7 @@
 #include "../scene.h"
 #include "../club1127.h"
 #include "../club_bedrock.h"                 // solid-earth encasement (underground)
+#include "../descent_fall.h"                 // THE DESCENT FALL (fall shaft + dark room + keypad + elevator)
 #include "../jukebox.h"                     // Club Jukebox — Tim's personal-use "Self Radio"
 #include "../crowd.h"
 #include "../player.h"
@@ -34,7 +35,7 @@ int hostClub(HostContext& hc) {
 
     // ==== VERBATIM host body ====
     if (worldMode == "club") {
-        x3::logInfo("--world club: building the full Club 1127 (\"THE DEEP\") at Y=-200");
+        x3::logInfo("--world club: building the full Club 1127 (\"THE DEEP\") at Y=-800");
 
         // Physics world for the club area (separate from the Level-1 path below).
         std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
@@ -77,6 +78,7 @@ int hostClub(HostContext& hc) {
         // Blue point lights of the Salvari crystal hollows — merged into the light
         // set the host pushes each frame (club.update re-pushes only club lights).
         std::vector<x3::rhi::PointLight> bedrockLights;
+        x3::game::DescentFallLayout descentLayout{};   // filled by buildEarthTunnels, used by DescentFall
         {
             const auto& cs = club.stats();
             x3::game::BedrockConfig bc;
@@ -114,10 +116,18 @@ int hostClub(HostContext& hc) {
             tc.shaftZ    = cs.roomMaxZ - 2.75f;              // aligned with the E doorway Z
             tc.clubDoorX = cs.roomMaxX;                      // club east face
             tc.clubDoorZ = cs.roomMaxZ - 2.75f;              // authored elevator-doorway Z
-            const int nTun = x3::game::buildEarthTunnels(cscene, *device, *cphys, tc, &bedrockLights);
-            x3::logInfo("--world club: earth tunnels — " + std::to_string(nTun) +
-                        " pieces (walkable switchback descent Y=-3..-200 + connector + 3 offshoots)");
+            const int nTun = x3::game::buildEarthTunnels(cscene, *device, *cphys, tc,
+                                                         &bedrockLights, &descentLayout);
+            x3::logInfo("--world club: descent fall — " + std::to_string(nTun) +
+                        " pieces (vertical fall shaft Y=" + std::to_string((int)tc.topY) + ".." +
+                        std::to_string((int)tc.bottomY) +
+                        " + dark landing room + keypad door + hall + elevator + 3 side-shoots)");
         }
+        // THE DESCENT FALL interactive layer: the computer terminal + code-locked keypad
+        // door + the elevator, built onto the geometry above (positions from the layout).
+        // Audio is wired later on the live path (null here is fine for the headless shot).
+        x3::game::DescentFall descent;
+        descent.build(cscene, *device, *cphys, descentLayout, x3::game::riggedGlbRoot(), nullptr);
         // The earth reaches ~200 m UP to the surface and ~1 km OUT under the city,
         // so the 200 m default far plane would clip the distant rock walls to the
         // dark HDR clear ("grayness") — the very void we're killing. Push the club's
@@ -287,6 +297,7 @@ int hostClub(HostContext& hc) {
                 glfwPollEvents();
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 clubCrowd.update(dt, cscene);               // the dance-floor crowd
+                descent.tick(dt, cscene, *cphys, x3::phys::Vec3{ cam[0], cam[1], cam[2] });  // bake terminal readouts + doors/elevator
                 cphys->step(dt);
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
@@ -359,7 +370,16 @@ int hostClub(HostContext& hc) {
         }
         bool prevNC = false;   // N-key edge for jukebox next/prev
         x3::game::Player cplayer;
-        cplayer.spawn(*cphys, spawn.x, spawn.y, spawn.z);
+        // X3_DESCENT_TOP=1: spawn at the shaft mouth (near the surface) so you can walk
+        // to the edge and FALL the whole shaft — the intended descent entry. Default =
+        // the normal club spawn at Y=-800.
+        x3::phys::Vec3 useSpawn = spawn;
+        if (const char* dt0 = std::getenv("X3_DESCENT_TOP"); dt0 && dt0[0] == '1') {
+            useSpawn = x3::phys::Vec3{ descentLayout.shaftX, descentLayout.mouthY + 0.1f,
+                                       descentLayout.shaftZ };
+            x3::logInfo("--world club: X3_DESCENT_TOP — spawning at the shaft mouth; walk to the edge to FALL");
+        }
+        cplayer.spawn(*cphys, useSpawn.x, useSpawn.y, useSpawn.z);
 
         // ---- CANON DIALOGUE NPCs (feat/club-npcs) — Danny at the U-bar, Amara +
         // Emma in the Private Lounge. Their x3.chattree/1 trees drive E-to-talk.
@@ -370,6 +390,10 @@ int hostClub(HostContext& hc) {
         clubChat.ctx().timeline = &x3::game::globalTimeline();
         bool prevEc = false;
         bool chatNumPrevC[4] = { false, false, false, false };
+        // Descent-terminal input edge state (E toggle + digit/backspace/enter).
+        x3::game::HoloTerminal* cDescentPad = nullptr;
+        bool prevEDescent = false, prevBksp = false, prevEnter = false;
+        bool prevDigit[10] = { false,false,false,false,false,false,false,false,false,false };
         x3::logInfo("--world club: 3 canon NPCs live (Danny @ U-bar, Amara + Emma @ "
                     "Private Lounge) — walk up + E to talk, 1-4 to answer");
 
@@ -418,17 +442,36 @@ int hostClub(HostContext& hc) {
 
             float camX, camY, camZ, camYaw, camPitch;
             if (!noclipC) {
-                x3::game::PlayerInput in;
-                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
-                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
-                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
-                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
-                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
-                in.jumpPressed = spaceNow && !prevSpaceC;
-                in.lookDX = ddx; in.lookDY = ddy;
-                cplayer.update(in, dt, *cphys);
+                // THE DESCENT FALL: step off the shaft mouth and you DROP. While the
+                // scripted freefall (or its last-10m catch) is controlling the player,
+                // integrate LOOK only and teleport the body down the shaft; otherwise
+                // walk normally, and begin the fall the moment the feet enter the bore.
+                const x3::phys::Vec3 feetB = cplayer.feet();
+                const bool falling = descent.phase() == x3::game::DescentFall::Phase::Falling ||
+                                     descent.phase() == x3::game::DescentFall::Phase::Catching;
+                if (falling || descent.inShaft(feetB)) {
+                    if (!falling) descent.beginFall(feetB);
+                    x3::game::PlayerInput look; look.lookDX = ddx; look.lookDY = ddy;
+                    cplayer.update(look, dt, *cphys);                 // mouse-look only
+                    descent.updateFall(dt, cplayer.feet());
+                    cplayer.setFeetPosition(*cphys, descent.controlledFeet());
+                } else {
+                    x3::game::PlayerInput in;
+                    if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                    if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                    if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                    if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                    in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                    in.jumpPressed = spaceNow && !prevSpaceC;
+                    in.lookDX = ddx; in.lookDY = ddy;
+                    cplayer.update(in, dt, *cphys);
+                }
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 clubCrowd.update(dt, cscene);               // the dance-floor crowd
+                // Descent props (terminal blink + door slide + elevator ride). The
+                // elevator carries the rider: add its per-frame delta to the feet.
+                const float carry = descent.tick(dt, cscene, *cphys, cplayer.feet());
+                if (carry != 0.0f) { auto f = cplayer.feet(); f.y += carry; cplayer.setFeetPosition(*cphys, f); }
                 cphys->step(dt);
                 cscene.update(*cphys);
                 cplayer.camera(camX, camY, camZ, camYaw, camPitch);
@@ -451,11 +494,44 @@ int hostClub(HostContext& hc) {
                 if (kd(GLFW_KEY_LEFT_CONTROL)) flyYc -= spd;
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 clubCrowd.update(dt, cscene);               // the dance-floor crowd
+                descent.tick(dt, cscene, *cphys, x3::phys::Vec3{ flyXc, flyYc, flyZc });  // terminal/doors/elevator animate in noclip too
                 cphys->step(dt);
                 cscene.update(*cphys);
                 camX = flyXc; camY = flyYc; camZ = flyZc; camYaw = flyYawC; camPitch = flyPitchC;
             }
             prevSpaceC = spaceNow;
+
+            // ---- DESCENT TERMINALS: E toggles the nearest (computer or keypad) active;
+            // digits 0-9 type the code, Backspace edits, Enter submits. Takes priority
+            // over the club NPC E (you can't chat with a wall terminal).
+            bool nearDescentPad = false;
+            {
+                const x3::phys::Vec3 eye{ camX, camY, camZ };
+                x3::game::HoloTerminal* pad = descent.nearestTerminal(eye);
+                nearDescentPad = (pad != nullptr) || cDescentPad != nullptr;
+                const bool eNow2 = kd(GLFW_KEY_E);
+                if (eNow2 && !prevEDescent && pad) {
+                    if (cDescentPad && cDescentPad != pad) cDescentPad->setActive(false);
+                    pad->setActive(!pad->active());
+                    cDescentPad = pad->active() ? pad : nullptr;
+                }
+                prevEDescent = eNow2;
+                if (cDescentPad && cDescentPad->active()) {
+                    for (int d = 0; d < 10; ++d) {
+                        const bool dn = kd(GLFW_KEY_0 + d) || kd(GLFW_KEY_KP_0 + d);
+                        if (dn && !prevDigit[d]) cDescentPad->pushChar((char)('0' + d));
+                        prevDigit[d] = dn;
+                    }
+                    const bool bk = kd(GLFW_KEY_BACKSPACE);
+                    if (bk && !prevBksp) cDescentPad->backspace();
+                    prevBksp = bk;
+                    const bool en = kd(GLFW_KEY_ENTER) || kd(GLFW_KEY_KP_ENTER);
+                    if (en && !prevEnter) { cDescentPad->submit(); }
+                    prevEnter = en;
+                } else {
+                    cDescentPad = nullptr;
+                }
+            }
 
             // ---- CANON NPC DIALOGUE (feat/club-npcs). While a conversation is up,
             // 1-4 answer the filtered choices; E advances a no-choice line. Otherwise
@@ -478,7 +554,7 @@ int hostClub(HostContext& hc) {
                 }
 
                 const bool eNow = kd(GLFW_KEY_E);
-                if (eNow && !prevEc) {
+                if (eNow && !prevEc && !nearDescentPad) {   // descent terminal wins E when near one
                     if (clubChat.active()) {
                         if (clubChat.choices().empty()) {   // E advances no-choice lines
                             if (clubChat.advance())
