@@ -102,9 +102,29 @@ bool breachHandoffReady(float feetX, float feetZ, bool approached) {
 // re-dispatches canonlevel with spawnAtKey="entrance" + skipIntro=true (the
 // cold-open never replays, §3.3.4), and app_run's arrival block arms the player
 // + imports the escaped StoryFlags (§3.3.5).
-void requestFacilityHandoff(x3::apphost::HostContext& hc) {
+//
+// The request also PERSISTS the escaped outcome (+landed) to the narrative lane:
+// the surface host IS the escaped branch by construction (product-dispatched only
+// on intro.outcome=escaped), but the dev shortcut `--world surface` reaches this
+// breach with a stale/absent save — and an arrival with a refused flags import
+// would stand the rescuer UNARMED (the spec §3.4 "cosmetic-only weapon" failure,
+// caught in the live windowed run). Idempotent on the product path (the intro
+// already wrote the same outcome); a later intro run rewrites the outcome anyway.
+// `flagsPath` is injectable for the self-test; "" = the real narrative lane.
+void requestFacilityHandoff(x3::apphost::HostContext& hc,
+                            const std::string& flagsPath = std::string()) {
     hc.switchWorldTo = "canonlevel";
     hc.switchDestKey = "entrance";
+    {
+        const std::string p = flagsPath.empty()
+            ? x3::intro::defaultGameStoryFlagsPath() : flagsPath;
+        x3::game::StoryFlags flags;
+        flags.loadFile(p);   // keep whatever else the save carries
+        x3::intro::writeOutcomeFlag(flags, x3::intro::IntroOutcome::Escaped);
+        flags.set(x3::intro::kIntroLandedFlag);
+        if (!flags.saveFile(p))
+            x3::logWarn("--world surface: could not persist escaped outcome to " + p);
+    }
     x3::logInfo("--world surface: [E] ENTER FACILITY -> HANDOFF into the live facility "
                 "(switchWorldTo=canonlevel @ entrance; EFLZ_SURFACE_FACILITY_HANDOFF §3.3)");
 }
@@ -755,11 +775,13 @@ bool runSurfaceHandoffSelfTest() {
     check(!breachHandoffReady(0.0f, 18.0f, true),
           "H2e NEGATIVE: back on the apron (spawn distance) -> no trigger");
 
-    // ---- H2f-h: the request + the world-load-loop contract. ----
+    // ---- H2f-i: the request + the world-load-loop contract. ----
     {
+        const std::string tmpReq = "test_surfacehandoff_reqflags.tmp.txt";
+        std::remove(tmpReq.c_str());
         HostContext hc;
         hc.worldMode = "surface";
-        requestFacilityHandoff(hc);
+        requestFacilityHandoff(hc, tmpReq);
         check(hc.switchWorldTo == "canonlevel" && hc.switchDestKey == "entrance",
               "H2f request = switchWorldTo canonlevel @ entrance (spec Option A)");
         check(hc.switchWorldTo != hc.worldMode,
@@ -770,6 +792,15 @@ bool runSurfaceHandoffSelfTest() {
               d->group == x3::game::DestGroup::Facility,
               "H2h 'entrance' is a LIVE registry row: Facility group, canon anchor, "
               "worldFlag canonlevel (no fallback world)");
+        // H2i: the request PERSISTS the escaped outcome, so the arrival import
+        // always fires after a surface handoff (even from the dev shortcut with
+        // a stale/absent save — the unarmed-arrival hole the live run caught).
+        x3::game::StoryFlags live;
+        check(x3::intro::importEscapedIntroFlags(live, tmpReq) &&
+              x3::intro::readOutcomeFlag(live) == IntroOutcome::Escaped &&
+              live.has(x3::intro::kIntroLandedFlag),
+              "H2i the request persists escaped(+landed) -> the arrival import fires");
+        std::remove(tmpReq.c_str());
     }
 
     // ---- H3: the Entrance-room spawn, against the LIVE tower data. ----
