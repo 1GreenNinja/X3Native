@@ -224,32 +224,49 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.doorCode2 = 0;
         p.hasBoss   = true;
 
-        // ---- F7 rescue captive: SARAH (canon: rescued F7, becomes co-fighter; her
+        // ---- F7 SARAH — THE ONE BODY (canon: freed on F7, becomes co-fighter; her
         // outcome is the Alpha/Beta/Omega timeline lock). Held in an exec-lab holding
-        // cell in the -Z corner. The timer is GATED on the F7
-        // hub being reached (m_f7HubReached, default FALSE) — we do NOT activate it
-        // here, so the 5-min clock cannot expire at load and spawn the mini-boss on the
-        // first frame (the playtest bug spire_mid fixed). The host registers the F7Hub
-        // trigger below; entering it (onTrigger) flips m_f7HubReached and the clock
-        // starts. Distinct mesh (AnnaCasual) from the F5 captive 'Lena' (AnnaTactical).
-        m_victim = std::make_unique<RescueVictim>();
-        m_victim->build(scene, device, physics, m_modelDir, sarahPos,
-                        VictimId::Aria, "Sarah", "AnnaCasual.glb",
-                        kRescueTimer, sarahVictimBossTuning(m_modelDir));
+        // cell in the -Z corner, RESTRAINED (collared, idling, no follow, no combat).
+        //
+        // This is app/sarah.*'s SarahCompanion, NOT a RescueVictim: it is the same
+        // captive-then-companion lifecycle plus the combat the finale actually needs
+        // (follow at a 2.6 m standoff ring, acquire the nearest hostile inside 28 m,
+        // LOS-gated 8-damage hitscan every 0.9 s, downed-not-deleted at 0 HP). The old
+        // RescueVictim was RETIRED rather than layered underneath, because two Sarah
+        // bodies on this plate is the one failure mode this floor cannot survive.
+        //
+        // MESH: "AnnaCasual.glb" — exactly what the retired RescueVictim wore, and a
+        // DELIBERATE HOLD: assets/rigged_glb/Sarah.glb ships nude and she spawns
+        // restrained in a story beat. SarahCompanion::build auto-prefers the committed
+        // AnnaCasual_anim.glb bake (Idle/Walk/Run) off that same stem, so she has real
+        // locomotion while following. Distinct mesh from the F5 captive 'Lena'
+        // (AnnaTactical).
+        //
+        // The rescue clock is GATED on the F7 hub being reached (m_f7HubReached,
+        // default FALSE) — we do NOT activate it here, so the 5-min clock cannot expire
+        // at load and spawn the mini-boss on the first frame (the playtest bug
+        // spire_mid fixed). The host registers the F7Hub trigger below; entering it
+        // (onTrigger) flips m_f7HubReached and the clock starts (see tick()).
+        m_sarah.build(scene, device, physics, m_modelDir, sarahPos, "AnnaCasual.glb");
+        m_sarahTimeLeft = kRescueTimer;
         p.hasVictim = true;
+        // NOTE (two-bodies guard): we deliberately do NOT call
+        // m_clone.buildSarahPlaceholder() — the Clone fight's own restrained-Sarah
+        // tableau is for hosts that own no Sarah. This floor owns her.
 
         // ---- INTEGRATION SEAM: breaking the neural collar (Clone fight Phase 2)
-        // FREES Sarah. Here that means flipping the F7 RescueVictim from Captive to
-        // Companion (stops her 5-min clock, so the mini-boss transform can no longer
-        // fire) — the canon "Sarah wakes" beat. The companion-COMBAT lane hooks the
-        // same CloneBossFight::setOnSarahFreed event for what she does next; this
-        // callback only owns the captive-lifecycle half. Reach is trivially satisfied
-        // (we free her at her own position). ----
+        // FREES Sarah — and now that means she WAKES AND FIGHTS. One event, one body:
+        // SarahCompanion::onFreed() flips Restrained -> Awake (idempotent, latched
+        // inside the fight so it can only fire once), which simultaneously stops the
+        // rescue clock (the countdown in tick() only runs while she is restrained) so
+        // the mini-boss transform can no longer fire. ----
         m_clone.setOnSarahFreed([this]() {
-            if (m_victim && m_victim->tryRescue(m_victim->pos(), 2.0f))
-                x3::logInfo("[spiretop] SARAH FREED — neural collar destroyed; the F7 "
-                            "captive is released (rescue clock stopped)");
+            m_sarah.onFreed();
+            x3::logInfo("[spiretop] SARAH FREED — neural collar destroyed; she is awake "
+                        "and fighting beside Jake (rescue clock stopped)");
         });
+        // ---- The Clone falling is her victory beat (one bark, latched in sarah.*). ----
+        m_clone.setOnCloneDead([this]() { m_sarah.onCloneDown(); });
 
         triggers.add(x3::phys::Vec3{ tbl[(uint32_t)f].x1 - 8.0f, p.baseY,        -6.0f },
                      x3::phys::Vec3{ tbl[(uint32_t)f].x1,        p.baseY + 3.0f,  6.0f },
@@ -264,7 +281,8 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
     x3::logInfo("SpireTopFloors::build complete — F6 ALIEN TECHNOLOGY LAB (7 enemies + "
                 "boss 'Alien Overseer' = 8 combatants, codes 6600/6611), "
                 "F7 EXECUTIVE LABORATORY (boss 'The Clone' + 7 escort = 8 combatants + "
-                "1 rescue captive 'Sarah' [timer gated on F7 hub], code 7700); "
+                "1 restrained companion 'Sarah' [ONE body: collar-destroy wakes her to "
+                "fight; timer gated on F7 hub], code 7700); "
                 "3 keypad doors, 2 floor-hub triggers");
 }
 
@@ -285,18 +303,59 @@ void SpireTopFloors::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
     // integration events (Sarah freed / Clone dead).
     m_clone.tick(dt, scene, physics, eye, playerPos, player, attackFx);
 
-    // F7 rescue victim (Sarah): tick the timer (gated on m_f7HubReached) + companion
-    // follow, and spawn the mini-boss the FRAME the timer expires (mirrors the F5
-    // captive in spire_mid / RescueSystem::tick).
-    if (m_victim) {
-        const bool expiredNow =
-            m_victim->tick(dt, m_f7HubReached, scene, physics, playerPos);
-        if (expiredNow && m_device) {
-            const x3::phys::Vec3 bossAt{ m_victim->pos().x, kEnemyYOff, m_victim->pos().z };
-            m_victimBoss.spawn(scene, *m_device, physics, m_modelDir, bossAt,
-                               m_victim->bossTuning());
-            x3::logInfo("[spiretop] F7 captive 'Sarah' transformed — rooftop mini-boss spawned");
+    // ======================= F7 SARAH — the ONE body ========================
+    // (1) RESCUE CLOCK. Runs only while she is still restrained AND the F7 hub has
+    // fired — the same gate the retired RescueVictim used. Freeing her (collar or the
+    // E fallback) flips her out of Restrained, which stops the clock for good.
+    if (m_sarah.built() && !m_sarahExpired && m_sarah.restrained() && m_f7HubReached) {
+        m_sarahTimeLeft -= dt;
+        if (m_sarahTimeLeft <= 0.0f) {
+            // TRANSFORM-ON-EXPIRY (canon: the unsaved captive becomes a boss). She
+            // leaves the level (vanish drops her body + hides her entity) and the
+            // mini-boss stands in her place — so there is STILL exactly one figure in
+            // that holding cell, never a captive and a boss at once.
+            m_sarahTimeLeft = 0.0f;
+            m_sarahExpired  = true;
+            const x3::phys::Vec3 sp = m_sarah.pos();
+            m_sarah.vanish(scene, physics);
+            if (m_device) {
+                const x3::phys::Vec3 bossAt{ sp.x, kEnemyYOff, sp.z };
+                m_victimBoss.spawn(scene, *m_device, physics, m_modelDir, bossAt,
+                                   sarahVictimBossTuning(m_modelDir));
+                x3::logInfo("[spiretop] F7 captive 'Sarah' transformed — rooftop mini-boss spawned");
+            }
         }
+    }
+
+    // (2) HOSTILE FEED. She needs the live enemy list every frame. We hand her exactly
+    // the F7 combatants: this floor's escort pack + the Clone boss itself. F6's push and
+    // the Alien Overseer are deliberately EXCLUDED — her acquire test is planar
+    // (XZ only), so an enemy standing on the plate directly below would otherwise read
+    // as "2 m away" and she would spend the finale aiming at the floor. The Y band below
+    // is the belt-and-braces version of that same rule, so a future add on another plate
+    // can never confuse her either. (The transformed mini-boss is NOT fed: if it exists
+    // she is gone.)
+    if (m_sarah.built() && !m_sarah.vanished()) {
+        m_sarahHostiles.clear();
+        const float sy = m_sarah.pos().y;
+        auto gather = [&](MonsterManager& mm) {
+            for (uint32_t i = 0; i < mm.count(); ++i) {
+                MonsterSystem& m = mm.at(i);
+                if (!m.alive() || m.isAllied()) continue;
+                if (std::fabs(m.pos().y - sy) > 3.0f) continue;   // same-plate only
+                m_sarahHostiles.push_back(&m);
+            }
+        };
+        gather(m_enemies[(uint32_t)SpireTopFloor::F7]);
+        gather(m_clone.boss());
+
+        // Per-shot tracer FX: route her muzzle->impact beam through the host's sink,
+        // the same one the enemies use. Installed once (the sink is stable per host).
+        if (!m_sarahFxWired && attackFx) { m_sarah.setAttackFx(attackFx); m_sarahFxWired = true; }
+
+        // (3) DRIVE HER. Restrained -> idle in place; Awake -> follow Jake at the
+        // standoff ring + acquire + fire; Incapacitated -> hold the downed pose.
+        m_sarah.tick(dt, scene, physics, playerPos, m_sarahHostiles);
     }
     // The transformed mini-boss chases/attacks like the rescue bosses do.
     m_victimBoss.update(dt, scene, physics, eye, atkTarget, attackFx);
@@ -333,8 +392,16 @@ void SpireTopFloors::onTrigger(uint32_t triggerId) {
 }
 
 bool SpireTopFloors::onRescue(const x3::phys::Vec3& playerPos, float range) {
-    if (!m_victim) return false;
-    return m_victim->tryRescue(playerPos, range);
+    // E-chain FALLBACK (the canon path is the neural collar, which the host tries
+    // first). Reach-gated exactly like RescueVictim::tryRescue was: only a still-
+    // restrained, still-present Sarah inside `range` can be freed, and only once.
+    if (!m_sarah.built() || m_sarahExpired || m_sarah.vanished()) return false;
+    if (!m_sarah.restrained()) return false;
+    const x3::phys::Vec3 sp = m_sarah.pos();
+    const float dx = playerPos.x - sp.x, dy = playerPos.y - sp.y, dz = playerPos.z - sp.z;
+    if (dx * dx + dy * dy + dz * dz > range * range) return false;
+    m_sarah.onFreed();
+    return true;
 }
 
 FireResult SpireTopFloors::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
@@ -367,7 +434,7 @@ void SpireTopFloors::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCo
         m_enemies[i].drawAll(device, frame, scene);
     m_overseer.drawAll(device, frame, scene);   // F6 Alien Overseer
     m_clone.draw(device, frame, scene);         // F7 Clone (+ any placeholder)
-    if (m_victim) m_victim->draw(device, frame, scene);
+    m_sarah.draw(device, frame, scene);         // F7 Sarah — the ONE body
     m_victimBoss.drawAll(device, frame, scene);
 }
 
@@ -410,10 +477,8 @@ bool SpireTopFloors::tryDoorCode(const x3::phys::Vec3& playerPos, int code, floa
 }
 
 bool SpireTopFloors::victimCaptive() const {
-    return m_victim && m_victim->captive();
-}
-float SpireTopFloors::victimTimeLeft() const {
-    return m_victim ? m_victim->timeLeft() : 0.0f;
+    // "Captive" == present, still restrained, not timed out (the RescueVictim meaning).
+    return m_sarah.built() && !m_sarahExpired && !m_sarah.vanished() && m_sarah.restrained();
 }
 
 bool SpireTopFloors::reachableViaElevator(SpireTopFloor f, uint32_t elevatorStopCount) const {
@@ -444,6 +509,28 @@ void roleSplit(const MonsterManager& m, uint32_t& melee, uint32_t& ranged) {
     for (uint32_t i = 0; i < m.count(); ++i) {
         if (m.at(i).ranged()) ++ranged; else ++melee;
     }
+}
+
+// TWO-BODIES GUARD (the F7 failure mode this lane exists to prevent): count the
+// VISIBLE character props sitting inside a box around `p`. Sarah is a Tag::Prop with
+// the render mesh left invalid (draw() owns the multi-primitive draw) — so is the
+// neural collar and every other RescueVictim-style body, while enemies are Monster
+// and level geometry is Static. A second Sarah — a leftover RescueVictim, the Clone
+// fight's own placeholder, anything — would show up here as an extra count.
+uint32_t visiblePropsNear(const Scene& scene, const x3::phys::Vec3& p,
+                          float radiusXZ, float bandY) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < scene.size(); ++i) {
+        const Entity& e = scene.get(i);
+        if (!e.visible || e.tag != (uint32_t)Tag::Prop) continue;
+        const float dx = e.transform[12] - p.x;
+        const float dy = e.transform[13] - p.y;
+        const float dz = e.transform[14] - p.z;
+        if (std::fabs(dy) > bandY) continue;
+        if (dx * dx + dz * dz > radiusXZ * radiusXZ) continue;
+        ++n;
+    }
+    return n;
 }
 
 } // namespace
@@ -659,6 +746,117 @@ bool runSpireTopSelfTest() {
         check(innerOpens, "S16 F6 inner vault door (6611) resolves + opens via 3D proximity");
     }
 
+    // =====================================================================
+    // THE F7 SARAH WIRING (S17-S20) — the whole point of this lane. The Clone
+    // fight and SarahCompanion are each green on their own gates (--test-clone,
+    // --test-companion-combat); what those CANNOT prove is that the two are
+    // actually joined on the live floor. This drives the real F7 encounter end to
+    // end: one body at load -> collar destroyed -> she wakes -> she acquires and
+    // shoots a real F7 hostile -> still exactly one body.
+    // =====================================================================
+    {
+        const SarahCompanion& sc = top.sarah();
+        const x3::phys::Vec3 sSpawn = sc.pos();
+
+        // ---- S17: exactly ONE Sarah body on the plate, restrained, at load. ----
+        {
+            // Structural half: the Clone fight's OWN restrained-Sarah placeholder must
+            // never have been built here (that call is the classic way to end up with
+            // two of her), and the retired RescueVictim is gone by construction.
+            const bool noPlaceholder = !top.cloneFight().sarahPresent();
+            // Scene half: exactly ONE visible character prop at her spot, and still
+            // exactly one across the whole holding-cell corner — so a second Sarah
+            // parked anywhere in that cell would fail this, not just one stacked on
+            // her. (The neural collar is a Prop too, but its box geometry is baked at
+            // world coords into its MESH and its entity transform stays identity, so
+            // it sits at the origin as far as this positional scan is concerned.)
+            const uint32_t atHerSpot = visiblePropsNear(scene, sSpawn, 1.0f, 1.0f);
+            const uint32_t inTheCell = visiblePropsNear(scene, sSpawn, 3.0f, 2.5f);
+            x3::logInfo("[spiretop-test] Sarah-body scan: atHerSpot=" +
+                        std::to_string(atHerSpot) + " inTheCell=" +
+                        std::to_string(inTheCell) + " clonePlaceholder=" +
+                        std::to_string((int)top.cloneFight().sarahPresent()));
+            check(sc.built() && sc.restrained() && !sc.freed() &&
+                  top.victimPresent() && top.victimCaptive() &&
+                  noPlaceholder && atHerSpot == 1 && inTheCell == 1,
+                  "S17 F7 carries exactly ONE Sarah body (restrained; no duplicate "
+                  "placeholder, no leftover captive anywhere in the holding cell)");
+        }
+
+        // A local stepper: one F7 frame (content tick + physics + scene sync).
+        const x3::phys::Vec3 f7Eye = top.plan(SpireTopFloor::F7).arrival;
+        auto stepAt = [&](int frames, const x3::phys::Vec3& at) {
+            for (int i = 0; i < frames; ++i) {
+                top.tick(kFixedDt, scene, *physics, at, at, nullptr, AttackFxFn{});
+                physics->step(kFixedDt);
+                scene.update(*physics);
+            }
+        };
+
+        // ---- S18: the COLLAR DESTROY wakes her (the integration seam). ----
+        MonsterSystem& clone = top.cloneFight().boss().at(0);
+        {
+            // Beat the Clone down into Phase 2 (the collar only arms there).
+            for (int i = 0; i < 400 && clone.alive() &&
+                 top.cloneFight().bossHpFrac() > CloneBossFight::kSeparationEndFrac - 0.02f; ++i)
+                clone.takeMeleeDamage(25, scene, *physics, x3::DamageType::Melee);
+            stepAt(5, f7Eye);
+            const bool armed = top.cloneFight().collarActive();
+            const bool asleepStill = sc.restrained() && !top.sarahFreed();
+            // Three strikes on the collar, through the HOST'S OWN E-hook.
+            const x3::phys::Vec3 collarAt = top.cloneFight().collar().pos;
+            bool consumed = true;
+            for (int i = 0; i < NeuralCollar::kStrikes; ++i)
+                consumed = top.onCollarStrike(collarAt) && consumed;
+            stepAt(10, f7Eye);
+            check(armed && asleepStill && consumed &&
+                  top.sarahFreed() && top.cloneFight().collar().destroyed &&
+                  sc.awake() && sc.freed() && top.sarahFighting() && !top.victimCaptive(),
+                  "S18 collar destroy -> the ONE Sarah WAKES (restrained -> awake, "
+                  "fighting; her rescue clock is closed out)");
+        }
+
+        // ---- S19: awake, she ACQUIRES a real F7 hostile and SHOOTS it. ----
+        {
+            // Make the target unambiguous: kill every escort except the BlueSynth
+            // spawned in the holding-cell corner beside her, and finish the Clone (the
+            // finale's last beat). Whatever damage lands after this can only be hers.
+            MonsterManager& esc = top.enemies(SpireTopFloor::F7);
+            const uint32_t keep = 4;   // the BlueSynth at (5, -5) — ~2 m from her cell
+            for (uint32_t i = 0; i < esc.count(); ++i) {
+                if (i == keep) continue;
+                for (int g = 0; g < 40 && esc.at(i).alive(); ++g)
+                    esc.at(i).takeMeleeDamage(200, scene, *physics, x3::DamageType::Melee);
+            }
+            for (int g = 0; g < 60 && clone.alive(); ++g)
+                clone.takeMeleeDamage(200, scene, *physics, x3::DamageType::Melee);
+            stepAt(5, f7Eye);
+
+            MonsterSystem& tgt = esc.at(keep);
+            const int hpBefore = tgt.hp();
+            // Jake stands beside her in the cell, so she holds her standoff ring here
+            // instead of walking the floor — the encounter's actual shape.
+            const x3::phys::Vec3 jake{ sSpawn.x, sSpawn.y, sSpawn.z + 1.2f };
+            bool targetedIt = false, everFired = false;
+            for (int i = 0; i < 240; ++i) {
+                top.tick(kFixedDt, scene, *physics, jake, jake, nullptr, AttackFxFn{});
+                physics->step(kFixedDt);
+                scene.update(*physics);
+                if (sc.target() == &tgt) targetedIt = true;
+                if (sc.firing())         everFired  = true;
+            }
+            check(targetedIt && everFired && tgt.hp() < hpBefore && sc.awake(),
+                  "S19 awake on F7 she ACQUIRES a live escort hostile and FIRES — its "
+                  "HP drops (the hostile feed + LOS gate are really wired)");
+
+            // ---- S20: still exactly ONE Sarah after the whole sequence. ----
+            const uint32_t atHerSpot = visiblePropsNear(scene, sc.pos(), 1.0f, 1.0f);
+            check(atHerSpot == 1 && !top.cloneFight().sarahPresent() && !sc.vanished(),
+                  "S20 after wake + combat there is STILL exactly one Sarah body");
+        }
+    }
+
+    top.shutdown();
     physics->shutdown();
     x3::logInfo(std::string("spiretop: ") + std::to_string(g_pass) + "/" +
                 std::to_string(g_pass + g_fail) + " passed");
