@@ -70,6 +70,17 @@
 //     "[roads] V5 rim inset: N deck samples migrated inboard"). Expect the
 //     pier colonnade below the west cliff to be GONE in captures; the
 //     max-pier log remains the acceptance gate.
+// 12. V6 — THE ANTI-ZIGZAG LAW + WELDED RIBBONS: every edge passes a final
+//     smooth + per-class curvature clamp (PHASE 1.9; per-edge worst logged,
+//     "[roads] zigzag law: PASS|FAIL"; intentional loops carry lawExempt;
+//     violators respline once then DROP — the owner's law: a missing road
+//     beats a zigzag). The V5 inset is now arc-filtered (80 m ramps — no
+//     staircase switchbacks) and the boulevard east tie is a quadratic
+//     Bezier (the woodlands-zigzag root cause: mismatched hermite tangent
+//     magnitudes). Ribbons/barriers WELD (shared verts, smooth bank
+//     normals, continuous UVs, single-sided tops + index-only deck
+//     undersides; "[roads] weld: ..." logs the savings). If tops cull
+//     wrong on a device: flip kFlipTopWinding in the .cpp — one constant.
 // =======================================================================
 //
 // Deterministic by construction: no rand — the same hash discipline as the

@@ -349,9 +349,24 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
 // Gerstner ocean at sea level 0, lit by the SAME sun as the sky (doctrine: one
 // light). Water color follows the daylight: full color at noon, ember-dark at
 // night (the baked GLB ocean ring darkens automatically via the PBR sun).
-void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSample& s) {
+void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSample& s,
+                float eyeHeight = 0.0f) {
     x3::rhi::IRenderDevice::WaterParams wp{};
     const float daynessGate = (s.sunElevation + 0.06f) / 0.30f;
+    // WATER WAVE 1 (Tim: "The square white wave artifact in the water was
+    // supposed to be handled?"): from ALTITUDE the engine's 240m Gerstner patch
+    // reads as a bright animated SQUARE inside the dark baked ocean ring — the
+    // sheet artifact in every aerial capture. The patch only earns its keep
+    // near sea level (close-up detail water); above kPatchMaxEye the baked
+    // ring owns the ocean alone. Smooth cutover, no pop: the fade band kills
+    // it across 60m of climb.
+    constexpr float kPatchMaxEye = 140.0f;
+    if (eyeHeight > kPatchMaxEye) {
+        x3::rhi::IRenderDevice::WaterParams off{};
+        off.enabled = false;
+        device->setWaterParams(off);
+        return;
+    }
     // DEEP NIGHT: the Gerstner shader's reflection term renders bright white no
     // matter what params we pass (engine-side; flagged to the fleet) — so the
     // patch is DISABLED at night and the island GLB's dark ocean ring owns the
@@ -362,13 +377,19 @@ void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSamp
         device->setWaterParams(off);
         return;
     }
-    wp.enabled = true; wp.seaLevel = 0.0f; wp.time = t;
+    wp.enabled = true; wp.time = t;
+    // WATER WAVE 1b (the black SHARDS freckling the bay): Gerstner troughs
+    // punching below the baked ring (y=-0.4) let the dark ring show through as
+    // triangle shards. 0.26 amplitude still overshot (octave sum); 0.16 + a
+    // +0.10 sea lift gives real margin. Visible swell survives — the LIVING
+    // WATER upgrade (ships rocking on this same function) is the next wave.
+    wp.seaLevel = 0.10f;
     // Amplitude must stay UNDER the island GLB's baked ocean ring (y=-0.4) or the
     // Gerstner troughs punch through it and checker with the ring (seen in P2).
     // NOTE the shader's octave sum overshoots the amplitude param — 0.32 still
     // punched through at night (bright patch vs black ring = checkerboard). 0.26
     // leaves real margin.
-    wp.amplitude = 0.26f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
+    wp.amplitude = 0.16f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
     const float dayness = std::min(1.0f, std::max(0.0f, (s.sunElevation + 0.06f) / 0.30f));
     const float dayF = 0.12f + 0.88f * std::max(0.0f, s.sunElevation);
     wp.deepColor[0]    = 0.015f * dayF; wp.deepColor[1]    = 0.055f * dayF; wp.deepColor[2]    = 0.11f * dayF;
@@ -814,7 +835,12 @@ int hostEchotropolis(HostContext& hc) {
     gNoTaa      = hc.noTaa;
 
     x3::game::TodConfig todCfg;
-    todCfg.dayLengthSeconds = 240.0f;
+    // Tim's pacing order (2026-07-27): "Keep it in each one for 20-30 min" —
+    // a phase (morning/noon/golden/dusk/night...) should hold 20-30 REAL
+    // minutes, so the full cycle runs ~2 hours. ECHO_SKY_DAY_SECONDS overrides;
+    // console `todspeed` still scales live (todspeed 30 ~= the old 4-min day).
+    todCfg.dayLengthSeconds = [](){ const char* e = std::getenv("ECHO_SKY_DAY_SECONDS");
+                                    return e ? (float)std::atof(e) : 7200.0f; }();
     // SUN ELEVATION — the "flat towers / no cast shadows" root cause. The engine
     // default (1.0 = sin of the peak elevation) puts midday at the ZENITH: the sun
     // direction is then ~(0, 0.98, 0.2), so every VERTICAL facade sees N.L <= 0.2
@@ -1750,7 +1776,7 @@ int hostEchotropolis(HostContext& hc) {
             glfwPollEvents();
             applyTodSample(device, shotTod);
             applyAtmosphere(device, shotTod);   // ATMOSPHERE: aerial haze + grade + bloom
-            applyOcean(device, (float)i * dt, shotTod);
+            applyOcean(device, (float)i * dt, shotTod, shotCam[1]);   // shot cam height
             if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
             if (sMinersBuilt) { sMiners.update(dt, sScene); sMinersSkin.update(dt, sMiners, sScene, *device, *sphys); }
             if (sOh1Built) { flyOh1(sOh1, (float)i * dt); sOh1.update(dt, sScene, *sphys, sOh1.pos()); }
@@ -3383,7 +3409,17 @@ int hostEchotropolis(HostContext& hc) {
 
         // Ocean + camera + render. WALK MODE poses the first-person eye camera from
         // the physics character; ORBIT MODE keeps the strategic vista camera.
-        waterTime += dt; applyOcean(device, waterTime, todS);
+        waterTime += dt;
+        {   // WATER: the Gerstner patch gates on the ACTIVE eye's height (see
+            // applyOcean) — fly camera, walk eye, ride-along, or orbit pivot.
+            float wex = 0, wey = 0, wez = 0, wyw = 0, wpt = 0;
+            if (flyMode) { wey = flyY; }
+            else if (walkMode && physOk) { player.camera(wex, wey, wez, wyw, wpt); }
+            else if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount())
+                wey = npcLife.agent((uint32_t)followIdx).pos.y + 2.0f;
+            else wey = rig.sPivotY + rig.sRadius * std::sin(rig.sPitch);
+            applyOcean(device, waterTime, todS, wey);
+        }
         // Roll is per-frame device state like setCamera: latch it every frame so
         // leaving fly mode always returns an upright horizon.
         device->setCameraRoll(flyMode ? flyRoll : 0.0f);
@@ -3531,8 +3567,15 @@ int hostEchotropolis(HostContext& hc) {
         // draw the web-style readout: MON · DAY N · HH:MM · residents · employed ·
         // treasury. Population/employment come from the real NpcLife schedules.
         {
-            simClock += dt / kSimDayLen;
-            while (simClock >= 1.0f) { simClock -= 1.0f; ++simDay; }
+            // ONE CLOCK OWNS TIME (Tim's 12:02-noon-HUD-under-midnight-stars
+            // shot): the HUD clock now READS the sky's day fraction instead of
+            // running its own kSimDayLen race. Economy pacing below still uses
+            // kSimDayLen as its accrual rate — money speed is a design knob,
+            // display time is the sky's truth. Day increments on the sky's
+            // midnight wrap.
+            { const float prevSim = simClock;
+              simClock = tod.dayFraction();
+              if (simClock < prevSim - 0.5f) ++simDay; }
             uint32_t pop = 0, atWork = 0;
             if (npcLifeBuilt) {
                 pop = npcLife.agentCount();

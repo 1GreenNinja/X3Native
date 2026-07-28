@@ -226,7 +226,30 @@ void resample(const std::vector<RoadSample>& dense, float step,
 // ============================ geometry emitters ============================
 struct Buck { std::vector<x3::rhi::MeshVertex>* v; std::vector<uint32_t>* i; };
 
+// V6 WELD — winding escape hatch: if top surfaces cull wrong on the real
+// device (this module cannot query cull mode from here), flip this ONE
+// constant and every single-sided top face reverses.
+constexpr bool kFlipTopWinding = false;
+
+// V6 WELD — unwelded-equivalent vert counter (the v3 emitters spent 4 verts
+// per quad); reset each build(), logged against the welded actual.
+uint32_t g_unweldedEquiv = 0;
+
+inline void pushVert(Buck& bk, float x, float y, float z,
+                     float nx2, float ny, float nz2, float u, float v) {
+    x3::rhi::MeshVertex mv;
+    mv.pos[0]=x; mv.pos[1]=y; mv.pos[2]=z;
+    mv.normal[0]=nx2; mv.normal[1]=ny; mv.normal[2]=nz2;
+    mv.uv[0]=u; mv.uv[1]=v;
+    bk.v->push_back(mv);
+}
+inline void pushTri(Buck& bk, uint32_t a, uint32_t b, uint32_t c, bool flip) {
+    if (flip) { bk.i->push_back(a); bk.i->push_back(c); bk.i->push_back(b); }
+    else      { bk.i->push_back(a); bk.i->push_back(b); bk.i->push_back(c); }
+}
+
 // One DOUBLE-SIDED visual quad; optionally also a SINGLE-SIDED collision quad.
+// (Retained for dashes/box4 — small-volume emitters; ribbons + barriers weld.)
 inline void quad(Buck& bk, const float A[3], const float B[3],
                  const float C[3], const float D[3],
                  const float n[3], float v0, float v1,
@@ -243,6 +266,7 @@ inline void quad(Buck& bk, const float A[3], const float B[3],
     const uint32_t q[12] = { base,base+1,base+2, base,base+2,base+3,
                              base,base+2,base+1, base,base+3,base+2 };
     bk.i->insert(bk.i->end(), q, q + 12);
+    g_unweldedEquiv += 4;
     if (col) {
         const uint32_t cb = (uint32_t)(col->verts.size() / 3);
         const float* ps[4] = { A, B, C, D };
@@ -256,24 +280,60 @@ inline void quad(Buck& bk, const float A[3], const float B[3],
     }
 }
 
+// V6 WELDED ribbon: 2 SHARED verts per sample (was 4 per segment), smooth
+// per-vertex bank-tilted normals, CONTINUOUS arc-length UV (u across, v =
+// meters/10), SINGLE-SIDED +Y top (winding verified analytically: for
+// A=left/near, forward x right = +Y — kFlipTopWinding is the hatch).
+// Elevated asphalt passes underside=true for an INDEX-ONLY underside
+// (shared verts, reversed winding — the same shading compromise the old
+// double-sided quads had, at zero extra verts). Collision welds too.
 void ribbon(Buck bk, const std::vector<RoadSample>& s, float off, float w,
-            float lift, bool applyBank = true, RoadCollisionMesh* col = nullptr) {
-    if (s.size() < 2) return;
-    const float n[3] = { 0, 1, 0 };
+            float lift, bool applyBank = true, RoadCollisionMesh* col = nullptr,
+            bool underside = false) {
+    const size_t n = s.size();
+    if (n < 2) return;
+    const uint32_t base = (uint32_t)bk.v->size();
+    uint32_t cbase = 0;
+    if (col) cbase = (uint32_t)(col->verts.size() / 3);
     float arc = 0.0f;
-    for (size_t i = 0; i + 1 < s.size(); ++i) {
-        const RoadSample& a = s[i]; const RoadSample& b = s[i + 1];
-        float apx, apz, bpx, bpz; rperp(a.tx, a.tz, apx, apz); rperp(b.tx, b.tz, bpx, bpz);
+    for (size_t i = 0; i < n; ++i) {
+        const RoadSample& a = s[i];
+        float px, pz; rperp(a.tx, a.tz, px, pz);
+        const float b = applyBank ? a.bank : 0.0f;
+        const float sb = std::sin(b), cb = std::cos(b);
+        const float nX = -sb * px, nY = cb, nZ = -sb * pz;   // bank-tilted up
         const float aL = off - w * 0.5f, aR = off + w * 0.5f;
-        const float bankA = applyBank ? a.bank : 0.0f, bankB = applyBank ? b.bank : 0.0f;
-        const float A[3] = { a.x + apx*aL, a.y + lift + std::sin(bankA)*aL, a.z + apz*aL };
-        const float B[3] = { a.x + apx*aR, a.y + lift + std::sin(bankA)*aR, a.z + apz*aR };
-        const float dx = b.x - a.x, dz = b.z - a.z;
-        const float seg = std::sqrt(dx*dx + dz*dz);
-        const float C[3] = { b.x + bpx*aR, b.y + lift + std::sin(bankB)*aR, b.z + bpz*aR };
-        const float D[3] = { b.x + bpx*aL, b.y + lift + std::sin(bankB)*aL, b.z + bpz*aL };
-        quad(bk, A, B, C, D, n, arc / 10.0f, (arc + seg) / 10.0f, col);
-        arc += seg;
+        if (i > 0) {
+            const float dx = a.x - s[i-1].x, dz = a.z - s[i-1].z;
+            arc += std::sqrt(dx*dx + dz*dz);
+        }
+        pushVert(bk, a.x + px*aL, a.y + lift + sb*aL, a.z + pz*aL,
+                 nX, nY, nZ, 0.0f, arc / 10.0f);
+        pushVert(bk, a.x + px*aR, a.y + lift + sb*aR, a.z + pz*aR,
+                 nX, nY, nZ, 1.0f, arc / 10.0f);
+        if (col) {
+            col->verts.push_back(a.x + px*aL); col->verts.push_back(a.y + lift + sb*aL);
+            col->verts.push_back(a.z + pz*aL);
+            col->verts.push_back(a.x + px*aR); col->verts.push_back(a.y + lift + sb*aR);
+            col->verts.push_back(a.z + pz*aR);
+        }
+    }
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const uint32_t L0 = base + (uint32_t)(2*i),     R0 = L0 + 1;
+        const uint32_t L1 = base + (uint32_t)(2*(i+1)), R1 = L1 + 1;
+        pushTri(bk, L0, L1, R1, kFlipTopWinding);
+        pushTri(bk, L0, R1, R0, kFlipTopWinding);
+        if (underside) {
+            pushTri(bk, L0, R1, L1, kFlipTopWinding);
+            pushTri(bk, L0, R0, R1, kFlipTopWinding);
+        }
+        if (col) {
+            const uint32_t cL0 = cbase + (uint32_t)(2*i),     cR0 = cL0 + 1;
+            const uint32_t cL1 = cbase + (uint32_t)(2*(i+1)), cR1 = cL1 + 1;
+            col->indices.push_back(cL0); col->indices.push_back(cL1); col->indices.push_back(cR1);
+            col->indices.push_back(cL0); col->indices.push_back(cR1); col->indices.push_back(cR0);
+        }
+        g_unweldedEquiv += 4;
     }
 }
 
@@ -301,26 +361,40 @@ void dashes(Buck bk, const std::vector<RoadSample>& s, float off, float w,
     }
 }
 
+// V6 WELDED barrier: 6 shared verts per sample (outer pair, inner pair, cap
+// pair — each with its own face normal), 3 faces per segment. Faces stay
+// DOUBLE-SIDED: a jersey barrier is a thin wall legitimately seen from both
+// sides; verts are still 4x fewer than the old per-quad emission.
 void barrier(Buck bk, const std::vector<RoadSample>& s, float off) {
-    if (s.size() < 2) return;
-    for (size_t i = 0; i + 1 < s.size(); ++i) {
-        const RoadSample& a = s[i]; const RoadSample& b = s[i + 1];
-        float apx, apz, bpx, bpz; rperp(a.tx,a.tz,apx,apz); rperp(b.tx,b.tz,bpx,bpz);
-        const float hw = kBarrierW * 0.5f;
-        auto P = [&](const RoadSample& sm, float px, float pz, float lat, float up,
-                     float out[3]) {
-            out[0] = sm.x + px * lat; out[1] = sm.y + std::sin(sm.bank)*lat + up;
-            out[2] = sm.z + pz * lat;
+    const size_t n = s.size();
+    if (n < 2) return;
+    const uint32_t base = (uint32_t)bk.v->size();
+    const float hw = kBarrierW * 0.5f;
+    for (size_t i = 0; i < n; ++i) {
+        const RoadSample& a = s[i];
+        float px, pz; rperp(a.tx, a.tz, px, pz);
+        const float bl = std::sin(a.bank);
+        auto P = [&](float lat, float up, float& X, float& Y, float& Z) {
+            X = a.x + px * lat; Y = a.y + bl * lat + up; Z = a.z + pz * lat;
         };
-        float aOL[3], aOH[3], aIL[3], aIH[3], bOL[3], bOH[3], bIL[3], bIH[3];
-        P(a, apx, apz, off + hw, 0, aOL);  P(a, apx, apz, off + hw, kBarrierH, aOH);
-        P(a, apx, apz, off - hw, 0, aIL);  P(a, apx, apz, off - hw, kBarrierH, aIH);
-        P(b, bpx, bpz, off + hw, 0, bOL);  P(b, bpx, bpz, off + hw, kBarrierH, bOH);
-        P(b, bpx, bpz, off - hw, 0, bIL);  P(b, bpx, bpz, off - hw, kBarrierH, bIH);
-        const float nSide[3] = { apx, 0, apz }, nUp[3] = { 0, 1, 0 };
-        quad(bk, aOL, aOH, bOH, bOL, nSide, 0.0f, 0.4f);
-        quad(bk, aIH, aIL, bIL, bIH, nSide, 0.0f, 0.4f);
-        quad(bk, aIH, aOH, bOH, bIH, nUp,   0.0f, 0.4f);
+        float X, Y, Z;
+        P(off + hw, 0.0f, X, Y, Z);        pushVert(bk, X,Y,Z,  px,0,pz, 0.0f, 0.0f);
+        P(off + hw, kBarrierH, X, Y, Z);   pushVert(bk, X,Y,Z,  px,0,pz, 0.0f, 0.4f);
+        P(off - hw, 0.0f, X, Y, Z);        pushVert(bk, X,Y,Z, -px,0,-pz, 0.0f, 0.0f);
+        P(off - hw, kBarrierH, X, Y, Z);   pushVert(bk, X,Y,Z, -px,0,-pz, 0.0f, 0.4f);
+        P(off + hw, kBarrierH, X, Y, Z);   pushVert(bk, X,Y,Z,  0,1,0,    0.0f, 0.0f);
+        P(off - hw, kBarrierH, X, Y, Z);   pushVert(bk, X,Y,Z,  0,1,0,    1.0f, 0.0f);
+    }
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const uint32_t a0 = base + (uint32_t)(6*i), b0 = base + (uint32_t)(6*(i+1));
+        auto quad2 = [&](uint32_t p, uint32_t q, uint32_t r, uint32_t t) {
+            pushTri(bk, p, q, r, false); pushTri(bk, p, r, t, false);   // front
+            pushTri(bk, p, r, q, false); pushTri(bk, p, t, r, false);   // back
+        };
+        quad2(a0 + 0, b0 + 0, b0 + 1, a0 + 1);   // outer face
+        quad2(a0 + 2, b0 + 2, b0 + 3, a0 + 3);   // inner face
+        quad2(a0 + 4, b0 + 4, b0 + 5, a0 + 5);   // cap
+        g_unweldedEquiv += 12;
     }
 }
 
@@ -369,6 +443,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         x3::logWarn("[roads] heightfield not loaded — keeping the legacy freeway");
         return false;
     }
+    g_unweldedEquiv = 0;   // V6 weld accounting (logged at the end of build)
 
     // ======================= PHASE 1 — COLLECT ============================
     // Pending: an edge's centerline + emission recipe, geometry deferred.
@@ -379,7 +454,10 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         bool banked = false, barriers = false, medianPaint = false,
              edgeLines = false, laneDash = false, streetDash = false,
              curbs = false, lamps = false, pillarPair = false,
-             pillarSingle = false, closedLoop = false;
+             pillarSingle = false, closedLoop = false,
+             lawExempt = false;   // V6: intentional tight loops (trumpet curl,
+                                  // cul-de-sac) are LEGAL curves the zigzag law
+                                  // must not execute - see PHASE 1.9.
         float lampEvery = kLampEveryStr, lampH = kLampHStr;
         std::vector<RoadSample> s;
     };
@@ -526,23 +604,51 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             constexpr float kInsetStep    = 6.0f;    // inboard hop
             constexpr float kInsetMaxMove = 120.0f;  // migration cap per sample
             constexpr float kInsetZone    = 620.0f;  // rim zone: within this of the crown
+            // V6 §2: MEASURE the needed displacement per sample first, then
+            // LOW-PASS it along arc length (+-10 samples = 80 m full window,
+            // 2 iters, wrap) so migration ramps in and out — raw independent
+            // hops were the "right-angle switchbacks mid-air" Tim outlawed.
+            constexpr int kInsetFiltHalf  = 10;
+            constexpr int kInsetFiltIters = 2;
+            const size_t nR = ring.size();
+            std::vector<float> want(nR, 0.0f);
             int migrated = 0;
-            for (RoadSample& s : ring) {
+            for (size_t si = 0; si < nR; ++si) {
+                const RoadSample& s = ring[si];
                 const float cdx = kCrownX - s.x, cdz = kCrownZ - s.z;
                 if (cdx*cdx + cdz*cdz > kInsetZone * kInsetZone) continue;
-                float moved = 0.0f;
-                bool did = false;
+                float px, pz; rperp(s.tx, s.tz, px, pz);
+                if (px * cdx + pz * cdz < 0.0f) { px = -px; pz = -pz; }
+                float moved = 0.0f, mx = s.x, mz = s.z;
                 while (moved < kInsetMaxMove) {
-                    const float g = hf.heightAt(s.x, s.z);
-                    if (s.y - g <= kInsetMaxDrop) break;
+                    if (s.y - hf.heightAt(mx, mz) <= kInsetMaxDrop) break;
+                    mx += px * kInsetStep; mz += pz * kInsetStep;
+                    moved += kInsetStep;
+                }
+                if (moved > 0.0f) { want[si] = moved; ++migrated; }
+            }
+            if (migrated > 0) {
+                std::vector<float> smD(nR);
+                for (int it = 0; it < kInsetFiltIters; ++it) {
+                    for (size_t si = 0; si < nR; ++si) {
+                        float acc = 0; int cnt = 0;
+                        for (int k = -kInsetFiltHalf; k <= kInsetFiltHalf; ++k) {
+                            const size_t j = (size_t)((((long)si + k) % (long)nR + (long)nR) % (long)nR);
+                            acc += want[j]; ++cnt;
+                        }
+                        smD[si] = acc / (float)cnt;
+                    }
+                    want = smD;
+                }
+                for (size_t si = 0; si < nR; ++si) {
+                    if (want[si] <= 0.01f) continue;
+                    RoadSample& s = ring[si];
                     float px, pz; rperp(s.tx, s.tz, px, pz);
                     if (px * (kCrownX - s.x) + pz * (kCrownZ - s.z) < 0.0f) {
-                        px = -px; pz = -pz;               // point inboard
+                        px = -px; pz = -pz;
                     }
-                    s.x += px * kInsetStep; s.z += pz * kInsetStep;
-                    moved += kInsetStep; did = true;
+                    s.x += px * want[si]; s.z += pz * want[si];
                 }
-                if (did) ++migrated;
             }
             if (migrated > 0) {
                 // Tangents from the migrated positions (wrap-aware).
@@ -574,7 +680,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 }
             }
             x3::logInfo("[roads] V5 rim inset: " + std::to_string(migrated) +
-                        " deck samples migrated inboard");
+                        " deck samples migrated inboard (arc-filtered, V6)");
         }
         {   // diagnostics (v3.1 acceptance): tallest pier this profile makes
             float maxPier = 0.0f;
@@ -752,6 +858,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             pe.cls = RoadClass::Ramp; pe.width = kRampWidth;
             pe.lanesF = 1; pe.lanesB = 0;
             pe.banked = true; pe.barriers = true; pe.pillarSingle = true;
+            pe.lawExempt = true;   // the 250-deg trumpet curl is intentionally tight
             pe.s = std::move(loop);
             P.push_back(std::move(pe));
         }
@@ -873,6 +980,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 }
                 std::vector<RoadSample> cul; resample(d2, kSampleStep, cul);
                 collectGround(RoadClass::HarborStreet, kStreetWidth, 1, cul);
+                if (!P.empty()) P.back().lawExempt = true;   // 300-deg turnaround is intentional
             }
             x3::logInfo("[roads] V5 mine spur: rim deck (" +
                         std::to_string((int)deck.x) + "," + std::to_string((int)deck.z) +
@@ -959,13 +1067,24 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             std::vector<RoadSample> tmp = blvd;
             collectGround(RoadClass::Avenue, kBlvdWidth, 2, tmp);
         }
-        {   // east tie-in to the Urban gate node
+        {   // east tie-in to the Urban gate node.
+            // V6 §3 — THE WOODLANDS ZIGZAG, root-caused: this edge was a
+            // hermite feeding a 120-scaled boulevard-end tangent against a
+            // hard (0,90) northbound gate tangent; whenever the probed
+            // boulevard ended pointing east/south-east, the mismatched
+            // control magnitudes hooked the curve into Z-reversals on the
+            // woodlands descent (Tim's lamp-trail capture). Re-authored as a
+            // QUADRATIC BEZIER (end, end + tangent*90, gate): the curve lives
+            // inside its control triangle — monotone progression toward the
+            // gate, reversal-impossible by construction.
             const RoadSample& e = blvdC.back();
+            const float c1x = e.x + e.tx * 90.0f, c1z = e.z + e.tz * 90.0f;
             std::vector<RoadSample> d2;
             for (float t = 0.0f; t <= 1.0f; t += 0.04f) {
+                const float u = 1.0f - t;
                 RoadSample s;
-                hermite(e.x, e.z, e.tx * 120.0f, e.tz * 120.0f,
-                        700.0f, 452.0f, 0.0f, 90.0f, t, s.x, s.z);
+                s.x = u*u*e.x + 2.0f*u*t*c1x + t*t*700.0f;
+                s.z = u*u*e.z + 2.0f*u*t*c1z + t*t*452.0f;
                 d2.push_back(s);
             }
             std::vector<RoadSample> av; resample(d2, kSampleStep, av);
@@ -1037,6 +1156,156 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     } else {
         x3::logWarn("[roads] harbor boulevard probe yielded <3 land points — "
                     "harbor district skipped (check shore seeds vs terrain)");
+    }
+
+    // ==================== PHASE 1.9 — THE ZIGZAG LAW ======================
+    // Tim (2026-07-27, after two captures — right-angle switchbacks on the
+    // rim descent, hard Z-reversals on a woodlands avenue): "No roads can
+    // ever be zig zag." The universal FINAL geometry pass: runs after every
+    // authoring/probe/inset/relaxation pass and before junctions read the
+    // centerlines. Smooth every edge, then VALIDATE curvature per class; an
+    // edge that cannot meet its limit after smoothing + one decimate-refit is
+    // DROPPED with a loud log — the owner's ruling: a missing road beats a
+    // zigzag. Intentional loops (trumpet curl, cul-de-sac) carry lawExempt.
+    {
+        constexpr float kMaxTurnStreet = 2.5f;   // deg per meter of centerline
+        constexpr float kMaxTurnRamp   = 1.2f;
+        constexpr float kMaxTurnFwy    = 0.8f;   // ring arc fillets run r~90m
+        auto classLimit = [&](RoadClass c) {
+            return c == RoadClass::Freeway ? kMaxTurnFwy
+                 : c == RoadClass::Ramp    ? kMaxTurnRamp : kMaxTurnStreet;
+        };
+        auto stepOf = [&](const Pending& pe) {
+            return pe.cls == RoadClass::Ramp ? kRampStep : kSampleStep;
+        };
+        auto retangent = [&](Pending& pe) {
+            auto& sv = pe.s; const size_t n = sv.size();
+            for (size_t i = 0; i < n; ++i) {
+                const size_t ip = pe.closedLoop ? (i + n - 1) % n : (i > 0 ? i - 1 : 0);
+                const size_t iq = pe.closedLoop ? (i + 1) % n : (i + 1 < n ? i + 1 : n - 1);
+                float dx = sv[iq].x - sv[ip].x, dz = sv[iq].z - sv[ip].z;
+                const float l = std::sqrt(dx*dx + dz*dz);
+                if (l > 1e-5f) { sv[i].tx = dx / l; sv[i].tz = dz / l; }
+            }
+        };
+        // Worst heading change per meter along the edge (degrees).
+        auto worstTurn = [&](const Pending& pe) {
+            const auto& sv = pe.s; const size_t n = sv.size();
+            if (n < 3) return 0.0f;
+            const float step = stepOf(pe);
+            float worst = 0.0f;
+            const size_t last = pe.closedLoop ? n : n - 1;
+            for (size_t i = 0; i < last; ++i) {
+                const size_t j = (i + 1) % n;
+                const float dot = clampf2(sv[i].tx*sv[j].tx + sv[i].tz*sv[j].tz, -1.0f, 1.0f);
+                worst = std::max(worst, std::acos(dot) * 57.29578f / step);
+            }
+            return worst;
+        };
+        // Lateral smoothing: moving average over a ~40m arc window, 2 passes.
+        // Open edges PIN their first/last 2 samples (junction handoffs must not
+        // move); closed loops wrap. Ground classes re-seat on the terrain after
+        // (smoothing must never float a street); decks keep their graded y,
+        // smoothed by the same window (grade caps already held pre-law).
+        auto smoothOnce = [&](Pending& pe, int halfWin) {
+            auto& sv = pe.s; const size_t n = sv.size();
+            if (n < 5) return;
+            std::vector<RoadSample> src = sv;
+            for (size_t i = 0; i < n; ++i) {
+                if (!pe.closedLoop && (i < 2 || i + 2 >= n)) continue;
+                float ax = 0, ay = 0, az = 0; int c = 0;
+                for (int k = -halfWin; k <= halfWin; ++k) {
+                    long j = (long)i + k;
+                    if (pe.closedLoop) j = ((j % (long)n) + (long)n) % (long)n;
+                    else               j = j < 0 ? 0 : (j >= (long)n ? (long)n - 1 : j);
+                    ax += src[(size_t)j].x; ay += src[(size_t)j].y; az += src[(size_t)j].z; ++c;
+                }
+                sv[i].x = ax / c; sv[i].y = ay / c; sv[i].z = az / c;
+            }
+        };
+        auto reseat = [&](Pending& pe) {
+            if (pe.cls == RoadClass::Avenue || pe.cls == RoadClass::HarborStreet)
+                for (auto& sp : pe.s) sp.y = hf.heightAt(sp.x, sp.z) + kGroundLift;
+        };
+        auto rebank = [&](Pending& pe) {
+            if (!pe.banked) return;
+            auto& sv = pe.s; const size_t n = sv.size();
+            if (n < 3) return;
+            const float step = stepOf(pe);
+            for (size_t i = 0; i < n; ++i) {
+                const RoadSample& pp = sv[pe.closedLoop ? (i + n - 1) % n : (i > 0 ? i - 1 : 0)];
+                const RoadSample& qq = sv[pe.closedLoop ? (i + 1) % n : (i + 1 < n ? i + 1 : n - 1)];
+                const float cross = pp.tx * qq.tz - pp.tz * qq.tx;
+                sv[i].bank = clampf2((cross / (2.0f * step)) * kBankPerKappa, -kBankMax, kBankMax);
+            }
+            for (int pass = 0; pass < 2; ++pass)
+                for (size_t i = 1; i + 1 < n; ++i)
+                    sv[i].bank = (sv[i-1].bank + sv[i].bank + sv[i+1].bank) / 3.0f;
+        };
+        float lawWorstAll = 0.0f; int lawDropped = 0;
+        for (size_t ei = 0; ei < P.size(); ++ei) {
+            Pending& pe = P[ei];
+            if (pe.lawExempt || pe.s.size() < 5) continue;
+            const int halfWin = (int)(20.0f / stepOf(pe)) > 2 ? (int)(20.0f / stepOf(pe)) : 2;
+            for (int it = 0; it < 2; ++it) smoothOnce(pe, halfWin);
+            reseat(pe); retangent(pe);
+            float w = worstTurn(pe);
+            // ESCALATION (first field run: the law DROPPED THE RING — a ~12m
+            // kink at a rim-splice corner that a 40m window cannot flatten).
+            // Before execution, the cure escalates: doubling windows, re-seat,
+            // re-measure. Only geometry that resists a 320m window dies.
+            for (int esc = 1; esc <= 3 && w > classLimit(pe.cls); ++esc) {
+                for (int it = 0; it < 2; ++it) smoothOnce(pe, halfWin << esc);
+                reseat(pe); retangent(pe);
+                w = worstTurn(pe);
+            }
+            if (w > classLimit(pe.cls)) {
+                // Decimate-refit: keep every 4th sample as a waypoint, rebuild
+                // the polyline, resample at the class step, re-smooth once —
+                // kills sample-scale oscillation an averaging window cannot.
+                std::vector<RoadSample> wp2;
+                for (size_t i = 0; i < pe.s.size(); i += 4) wp2.push_back(pe.s[i]);
+                if (!pe.closedLoop) wp2.push_back(pe.s.back());
+                std::vector<RoadSample> dense2;
+                for (size_t i = 0; i + 1 < wp2.size(); ++i)
+                    for (int k = 0; k < 8; ++k) {
+                        const float t = (float)k / 8.0f;
+                        RoadSample ns;
+                        ns.x = wp2[i].x + (wp2[i+1].x - wp2[i].x) * t;
+                        ns.z = wp2[i].z + (wp2[i+1].z - wp2[i].z) * t;
+                        ns.y = wp2[i].y + (wp2[i+1].y - wp2[i].y) * t;
+                        dense2.push_back(ns);
+                    }
+                std::vector<RoadSample> refit; resample(dense2, stepOf(pe), refit);
+                if (refit.size() >= 5) {
+                    pe.s = std::move(refit);
+                    for (int it = 0; it < 2; ++it) smoothOnce(pe, halfWin);
+                    reseat(pe); retangent(pe);
+                    w = worstTurn(pe);
+                }
+            }
+            if (w > classLimit(pe.cls) * 1.15f) {   // 15% grace over the limit
+                x3::logWarn("[roads] zigzag law: DROPPED edge " + std::to_string(ei) +
+                            " (class " + std::to_string((int)pe.cls) + ", worst " +
+                            std::to_string(w) + " deg/m > limit " +
+                            std::to_string(classLimit(pe.cls)) +
+                            ") — a missing road beats a zigzag");
+                pe.s.clear(); ++lawDropped;
+                continue;
+            }
+            rebank(pe);
+            // V6 order: per-edge worst curvature at boot (survivors).
+            x3::logInfo("[roads] curvature: worst " + std::to_string(w) +
+                        " deg/m on class " + std::to_string((int)pe.cls) +
+                        " edge " + std::to_string(ei));
+            lawWorstAll = lawWorstAll > w ? lawWorstAll : w;
+        }
+        P.erase(std::remove_if(P.begin(), P.end(),
+                    [](const Pending& pe){ return pe.s.size() < 2; }), P.end());
+        x3::logInfo(std::string("[roads] zigzag law: ") +
+                    (lawDropped == 0 ? std::string("PASS")
+                                     : ("FAIL (" + std::to_string(lawDropped) + " edges dropped)")) +
+                    " — worst surviving curvature " + std::to_string(lawWorstAll) + " deg/m");
     }
 
     // ======================= PHASE 2 — JUNCTIONS ==========================
@@ -1226,7 +1495,8 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         }
         for (const auto& run : runs) {
             if (run.size() < 2) continue;
-            ribbon(asphalt, run, 0.0f, pe.width, 0.0f, pe.banked, &m_collision);
+            ribbon(asphalt, run, 0.0f, pe.width, 0.0f, pe.banked, &m_collision,
+                   /*underside=*/pe.cls == RoadClass::Freeway || pe.cls == RoadClass::Ramp);
             if (pe.barriers) {
                 barrier(conc, run,  (pe.width * 0.5f - kBarrierInset));
                 barrier(conc, run, -(pe.width * 0.5f - kBarrierInset));
@@ -1365,6 +1635,12 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     x3::logInfo("[roads] junctions: " + std::to_string(m_junctionCount) +
                 " patches; collision: " +
                 std::to_string(m_collision.indices.size() / 3) + " tris");
+    x3::logInfo("[roads] weld: " + std::to_string(m_vertexCount) +
+                " verts vs " + std::to_string(g_unweldedEquiv) +
+                " unwelded-equivalent (" +
+                std::to_string(g_unweldedEquiv > m_vertexCount ?
+                    (int)(100.0f * (1.0f - (float)m_vertexCount / (float)g_unweldedEquiv)) : 0) +
+                "% saved)");
     return true;
 }
 
