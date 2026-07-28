@@ -4,6 +4,7 @@
 #include "elevator.h"     // ElevatorSystem::strata() — the 9 geology bands the fall shaft walls are colored by
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -83,6 +84,115 @@ x3::prims::PrimMesh makeSolidRockBox(float hx, float hy, float hz,
     // Collision geometry is left untouched (outward faces only) — but the caller
     // adds the rock as NON-colliding anyway (visual shell), so it never matters.
     return m;
+}
+
+// ---- Lumpy natural cave TUBE (REAL TUBE GEOMETRY, feat/cave-atmosphere #3) -----
+// A double-sided (seen from INSIDE), NON-colliding rock tube running along the X
+// axis from x0..x1, centered on (cy,cz). The bore RADIUS varies along the length —
+// PINCHED at the two ends (rMin, a tight crawl) and BELLYING OUT to a cathedral
+// cavern (rMax) in the middle — plus per-ring hash lumps so the walls are knobbly
+// rock, not a smooth pipe. That is the tight->vast->tight rhythm the box corridors
+// lacked. Inner-facing faces (the crystal light catches the wall you're looking at);
+// a second outward copy makes it solid from the far side too (noclip-proof, like
+// makeSolidRockBox). Render-only visual shell — a flat colliding floor is laid
+// separately so navigation never fights the round bore.
+inline float tubeHash(int a, int b) {
+    uint32_t h = (uint32_t)(a * 374761393 + b * 668265263);
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return (float)((h ^ (h >> 16)) & 0xFFFF) / 65535.0f;
+}
+x3::prims::PrimMesh makeCaveTubeX(float x0, float x1, float cy, float cz,
+                                  float rMin, float rMax, float lump,
+                                  int rings, int seg, float uvScale, uint32_t sd) {
+    x3::prims::PrimMesh m;
+    const float kTwoPi = 6.28318531f, kPiL = 3.14159265f;
+    auto rad = [&](int i, int s) -> float {
+        const float t = (float)i / (float)rings;             // 0..1 along length
+        const float belly = std::sin(t * kPiL);              // 0 ends, 1 middle: pinch->cathedral->pinch
+        const float base = rMin + (rMax - rMin) * belly;
+        const float n = 0.5f * tubeHash(i + (int)sd, s) + 0.5f * tubeHash(i * 3 + 1, s * 2 + (int)sd);
+        return base * (1.0f + lump * (n - 0.5f));
+    };
+    std::vector<std::vector<std::array<float,3>>> rp((size_t)rings + 1);
+    for (int i = 0; i <= rings; ++i) {
+        const float x = x0 + (x1 - x0) * (float)i / (float)rings;
+        rp[(size_t)i].resize((size_t)seg);
+        for (int s = 0; s < seg; ++s) {
+            const float a = kTwoPi * (float)s / (float)seg;
+            const float r = rad(i, s);
+            rp[(size_t)i][(size_t)s] = { x, cy + std::sin(a) * r, cz + std::cos(a) * r };
+        }
+    }
+    auto emit = [&](const std::array<float,3>& A, const std::array<float,3>& B,
+                    const std::array<float,3>& C, float u0, float v0, float u1, float v1, float u2, float v2) {
+        // inward normal (toward the tube axis line at (·,cy,cz)) so the crystal light
+        // shades the wall the player faces from inside; nx=0 (no axial component).
+        float ny = cy - (A[1]+B[1]+C[1])/3.0f, nz = cz - (A[2]+B[2]+C[2])/3.0f;
+        float l = std::sqrt(ny*ny + nz*nz); if (l < 1e-5f) l = 1.0f; ny /= l; nz /= l;
+        const uint32_t base = (uint32_t)m.verts.size();
+        m.verts.push_back({{A[0],A[1],A[2]},{0,ny,nz},{u0,v0}});
+        m.verts.push_back({{B[0],B[1],B[2]},{0,ny,nz},{u1,v1}});
+        m.verts.push_back({{C[0],C[1],C[2]},{0,ny,nz},{u2,v2}});
+        m.index.insert(m.index.end(), { base, base+1, base+2 });
+        // outward copy (reversed winding, flipped normal) — solid from both sides.
+        const uint32_t b2 = (uint32_t)m.verts.size();
+        m.verts.push_back({{A[0],A[1],A[2]},{0,-ny,-nz},{u0,v0}});
+        m.verts.push_back({{C[0],C[1],C[2]},{0,-ny,-nz},{u2,v2}});
+        m.verts.push_back({{B[0],B[1],B[2]},{0,-ny,-nz},{u1,v1}});
+        m.index.insert(m.index.end(), { b2, b2+1, b2+2 });
+    };
+    for (int i = 0; i < rings; ++i)
+        for (int s = 0; s < seg; ++s) {
+            const int s1 = (s + 1) % seg;
+            const auto& A = rp[(size_t)i][(size_t)s];
+            const auto& B = rp[(size_t)i][(size_t)s1];
+            const auto& C = rp[(size_t)i+1][(size_t)s1];
+            const auto& D = rp[(size_t)i+1][(size_t)s];
+            const float u = (x1 - x0) * uvScale * (float)i / (float)rings;
+            const float u2 = (x1 - x0) * uvScale * (float)(i + 1) / (float)rings;
+            const float v = (float)s * uvScale, v1 = (float)s1 * uvScale;
+            emit(A, B, C, u, v, u, v1, u2, v1);
+            emit(A, C, D, u, v, u2, v1, u2, v);
+        }
+    return m;
+}
+
+// ---- A bare CRYSTAL CLUSTER (no rock pocket) — for embedding glowing shards in an
+// EXISTING wall / cavern (the shaft walls, tube bellies, landmarks). `n` shards,
+// `scale` size, emissive Salvari-blue; appends a blue point light to outLights.
+void addCrystalCluster(Scene& scene, x3::rhi::IRenderDevice& device,
+                       float cx, float cy, float cz, float scale, int n,
+                       float lightRange, std::vector<x3::rhi::PointLight>* outLights,
+                       float upDir = 1.0f) {
+    const float blueTint[4] = { 0.02f, 0.07f, 0.52f, 1.0f };
+    const float blueEmit[4] = { 0.015f, 0.07f, 0.62f, 1.0f };
+    for (int k = 0; k < n; ++k) {
+        const float ph = (float)k * 2.39996f;               // golden-angle fan
+        const float rr = 0.20f + 0.55f * ((k * 37) % 100) / 100.0f;
+        const float dx = std::cos(ph) * rr * scale, dz = std::sin(ph) * rr * scale;
+        const float sc = (0.5f + 0.5f * (((k * 53) % 100) / 100.0f)) * scale;
+        x3::prims::PrimMesh geo = x3::prims::makeCrystal(0.32f * sc, 0.9f * sc, 0.9f * sc);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        for (int i = 0; i < 4; ++i) e.baseColor[i] = blueTint[i];
+        for (int i = 0; i < 4; ++i) e.emissive[i]  = blueEmit[i];
+        e.tag = (uint32_t)Tag::Static; e.body = x3::phys::BodyId{};
+        const float tilt = (((k * 29) % 100) / 100.0f - 0.5f) * 0.7f;
+        const float ct = std::cos(tilt), st = std::sin(tilt) * upDir;
+        e.transform[0]=ct; e.transform[1]=st; e.transform[2]=0; e.transform[3]=0;
+        e.transform[4]=-st;e.transform[5]=ct*upDir; e.transform[6]=0; e.transform[7]=0;
+        e.transform[8]=0;  e.transform[9]=0;  e.transform[10]=1;e.transform[11]=0;
+        e.transform[12]=cx+dx; e.transform[13]=cy+0.9f*sc*upDir; e.transform[14]=cz+dz;
+        e.transform[15]=1.0f;
+        scene.add(e);
+    }
+    if (outLights) {
+        x3::rhi::PointLight l;
+        l.pos[0]=cx; l.pos[1]=cy+0.6f*scale; l.pos[2]=cz;
+        l.range=lightRange; l.color[0]=0.12f; l.color[1]=0.34f; l.color[2]=1.90f;
+        outLights->push_back(l);
+    }
 }
 
 // ---- Ancient Salvari crystal hollow ------------------------------------------
@@ -405,12 +515,22 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
     // mouths are punched out of the +X wall bands (below); one holds a Salvari crystal
     // hollow. NOTE: the mouths open OUTWARD (east of the bore) so they never block the
     // fall; reach them by air-steering into a mouth or noclip. Add more via this list.
-    struct Off { float y; bool crystal; float len; };
+    // Cave KINDS (BRANCHING NETWORK + LANDMARKS, #7 + SALVARI SHRINE, #6): each side-
+    // shoot has its own character so the player navigates by SIGHT, not a corridor.
+    //   Loop     — a branch that forks (a short dead-end spur off the main tube).
+    //   Cache    — a dead-end pocket with a dense crystal CACHE (reward-to-find).
+    //   Shrine   — the ancient SALVARI SHRINE cavern (altar + carved glyph slabs).
+    //   Landmark — a HOUSE-SIZED crystal in a cathedral cavern (a wayfinding beacon).
+    //   Collapse — a collapsed section (fallen rock blocks) with a crystal cache.
+    enum class OffKind { Loop, Cache, Shrine, Landmark, Collapse };
+    struct Off { float y; OffKind kind; float len; };
     const float fallSpan = mouthY - shaftBotY;          // total fall height (>0)
-    const Off offs[3] = {
-        { shaftBotY + fallSpan * 0.72f, false, 16.0f },
-        { shaftBotY + fallSpan * 0.48f, true,  14.0f },
-        { shaftBotY + fallSpan * 0.24f, false, 20.0f },
+    const Off offs[5] = {
+        { shaftBotY + fallSpan * 0.82f, OffKind::Loop,     18.0f },  // high (limestone) — a forking branch
+        { shaftBotY + fallSpan * 0.64f, OffKind::Cache,    14.0f },  // granite — dead-end crystal cache
+        { shaftBotY + fallSpan * 0.46f, OffKind::Shrine,   22.0f },  // obsidian — the SALVARI SHRINE
+        { shaftBotY + fallSpan * 0.28f, OffKind::Landmark, 24.0f },  // crystal veins — HOUSE-SIZED crystal
+        { shaftBotY + fallSpan * 0.14f, OffKind::Collapse, 18.0f },  // deep (near club) — collapsed cache
     };
     const float offMouthHalfZ = 2.0f, offMouthH = 3.2f;
 
@@ -444,7 +564,31 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
     addColC(wxMax,        wxMax + 2.5f, mouthY - 0.5f, mouthY, wzMin - 2.5f, wzMax + 2.5f, rmCol, rmEm);
     addColC(wxMin, wxMax, mouthY - 0.5f, mouthY, wzMin - 2.5f, wzMin, rmCol, rmEm);
     addColC(wxMin, wxMax, mouthY - 0.5f, mouthY, wzMax, wzMax + 2.5f, rmCol, rmEm);
-    addLight(SX, mouthY - 2.0f, SZ, 0.9f, 0.95f, 1.1f, 12.0f);   // a cold worklight at the mouth
+    // A FAINT cold sky-leak at the mouth (near the surface) — barely there; the shaft
+    // is otherwise CRYSTAL-LIT ONLY (#1), the eerie glow of the descent.
+    addLight(SX, mouthY - 2.0f, SZ, 0.35f, 0.40f, 0.52f, 10.0f);
+
+    // ---- CRYSTAL-LIT SHAFT (crystal-only lighting, #1) -----------------------
+    // Salvari crystal clusters embedded just inside the bore walls at intervals down
+    // the fall — the ONLY light in the deep shaft (no worklights): they rush up past
+    // the falling camera as glowing blue veins, doubling as wayfinding (you fall THROUGH
+    // a singing crystal shaft, not a lit mine). Alternate the wall so both sides glow;
+    // DENSER (bigger + brighter range) toward the bottom, luring you down to the club.
+    {
+        const int nCz = 9;
+        for (int k = 1; k < nCz; ++k) {
+            const float fy = shaftBotY + fallSpan * ((float)k / (float)nCz);
+            const bool east = (k & 1);                       // alternate +X / -X wall
+            const float wx = east ? (wxMax - 0.6f) : (wxMin + 0.6f);
+            const float wz = SZ + ((k % 3) - 1) * 1.6f;      // stagger in Z
+            const float depth01 = 1.0f - (fy - shaftBotY) / fallSpan;   // 0 top .. 1 bottom
+            const float sc = 0.9f + 1.3f * depth01;          // bigger toward the club
+            addCrystalCluster(scene, device, wx, fy, wz, sc, 4,
+                              10.0f + 6.0f * depth01, outCrystalLights,
+                              (k & 1) ? 1.0f : -1.0f);
+            added += 4;
+        }
+    }
 
     // ---- DARK LANDING ROOM ---------------------------------------------------
     // Floor (colliding) = the safe landing surface + the catch backstop.
@@ -534,38 +678,203 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         addLight((hx0 + hx1) * 0.5f, y + 2.2f, zc, 1.10f, 0.95f, 0.75f, 16.0f);               // hall worklight
     }
 
-    // ---- SIDE SHOOTS: the offshoot rooms off the fall shaft ------------------
+    // ---- SIDE SHOOTS: NATURAL CAVE tubes off the fall shaft (#3 tubes, #4 biomes,
+    // #1 crystal-only, #6 shrine, #7 landmarks/branching) ---------------------
+    // Each offshoot is a LUMPY ROCK TUBE (pinch mouth -> cathedral belly -> pinch),
+    // not a box corridor: a flat colliding+visual floor is walked, an invisible
+    // containment shell keeps the player over it, and a double-sided lumpy tube mesh
+    // (makeCaveTubeX) is the cave rock you see, tinted to the STRATA BIOME at its
+    // depth. Lit ONLY by Salvari crystals (crystal-only, no worklights). Content
+    // varies by kind (shrine altar / house crystal / collapse / cache / fork).
+    // Collision-only box (invisible) — containment so the player stays inside the tube.
+    auto addColl = [&](float x0, float x1, float y0, float y1, float z0, float z1) {
+        const x3::phys::Vec3 he{ (x1-x0)*0.5f, (y1-y0)*0.5f, (z1-z0)*0.5f };
+        const x3::phys::Vec3 c { (x0+x1)*0.5f, (y0+y1)*0.5f, (z0+z1)*0.5f };
+        if (he.x <= 0.0f || he.y <= 0.0f || he.z <= 0.0f) return;
+        physics.addBox(he, c, 0.0f, x3::phys::Layer::Static);
+    };
+    // Lumpy rock tube (VISUAL, non-colliding), tinted to the biome band.
+    auto addTube = [&](float x0, float x1, float cyc, float czc, float rMin, float rMax,
+                       uint32_t sd, const float col[3], const float em[3]) {
+        const int rings = std::max(6, (int)((x1 - x0) / 2.2f));
+        x3::prims::PrimMesh geo = makeCaveTubeX(x0, x1, cyc, czc, rMin, rMax, 0.34f,
+                                                rings, 12, tc.uvScale, sd);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.tex = rockTex;
+        e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=1.0f;
+        e.emissive[0]=em[0]; e.emissive[1]=em[1]; e.emissive[2]=em[2]; e.emissive[3]=1.0f;
+        e.tag = (uint32_t)Tag::Static; e.body = x3::phys::BodyId{};
+        scene.add(e); ++added;
+    };
+    // A single dark rock STALACTITE (down) / STALAGMITE (up) spike — an elongated,
+    // rock-tinted crystal prim (reuses makeCrystal); render-only cave dressing.
+    auto addSpike = [&](float x, float yTop, float z, float r, float len, float dir) {
+        x3::prims::PrimMesh geo = x3::prims::makeCrystal(r, len * 0.5f, len * 0.5f);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.tex = rockTex;
+        e.baseColor[0]=tc.tint[0]*0.8f; e.baseColor[1]=tc.tint[1]*0.8f; e.baseColor[2]=tc.tint[2]*0.8f; e.baseColor[3]=1.0f;
+        e.emissive[0]=tc.emissive[0]*0.5f; e.emissive[1]=tc.emissive[1]*0.5f; e.emissive[2]=tc.emissive[2]*0.5f; e.emissive[3]=1.0f;
+        e.tag = (uint32_t)Tag::Static; e.body = x3::phys::BodyId{};
+        e.transform[0]=1;e.transform[1]=0;e.transform[2]=0;e.transform[3]=0;
+        e.transform[4]=0;e.transform[5]=dir;e.transform[6]=0;e.transform[7]=0;   // dir=-1 flips to point down
+        e.transform[8]=0;e.transform[9]=0;e.transform[10]=1;e.transform[11]=0;
+        e.transform[12]=x; e.transform[13]=yTop - dir*len*0.5f; e.transform[14]=z; e.transform[15]=1.0f;
+        scene.add(e); ++added;
+    };
+
     for (const Off& o : offs) {
-        const float y  = o.y;                            // room floor at the mouth
+        const float y  = o.y;                            // walkable floor at the mouth
         const float mouthX = wxMax + wallT;              // just outside the +X wall
-        const float cz0 = SZ - offMouthHalfZ, cz1 = SZ + offMouthHalfZ;
-        // Short corridor from the mouth out (+X), then a small room.
-        const float corrX = mouthX + 6.0f;
-        addColC(wxMax, corrX, y - 0.5f, y, cz0, cz1, rmCol, rmEm);                            // corridor floor (ledge out of the bore)
-        addColC(mouthX, corrX, y, y + offMouthH, cz0 - 0.4f, cz0, rmCol, rmEm);               // -Z wall
-        addColC(mouthX, corrX, y, y + offMouthH, cz1, cz1 + 0.4f, rmCol, rmEm);               // +Z wall
-        addColC(mouthX, corrX, y + offMouthH, y + offMouthH + 0.4f, cz0 - 0.4f, cz1 + 0.4f, rmCol, rmEm); // ceiling
-        // Small room beyond.
-        const float rx1 = corrX + o.len;
-        const float rz0 = SZ - 5.0f, rz1 = SZ + 5.0f, rTop = y + 6.0f;
-        addColC(corrX, rx1, y - 0.5f, y, rz0, rz1, rmCol, rmEm);                              // floor
-        addColC(corrX, rx1, y, rTop, rz0 - 0.4f, rz0, rmCol, rmEm);                           // -Z wall
-        addColC(corrX, rx1, y, rTop, rz1, rz1 + 0.4f, rmCol, rmEm);                           // +Z wall
-        addColC(rx1, rx1 + 0.4f, y, rTop, rz0 - 0.4f, rz1 + 0.4f, rmCol, rmEm);               // far endcap
-        addColC(corrX, rx1, rTop, rTop + 0.4f, rz0 - 0.4f, rz1 + 0.4f, rmCol, rmEm);          // ceiling
-        addColC(corrX, corrX + 0.4f, y, rTop, rz0, cz0, rmCol, rmEm);                         // front flank -Z
-        addColC(corrX, corrX + 0.4f, y, rTop, cz1, rz1, rmCol, rmEm);                         // front flank +Z
-        if (o.crystal) {
+        const float rx1 = mouthX + o.len;                // far end of the cavern
+        float col[3], em[3]; bandAt(y + 3.0f, col, em);  // BIOME: rock tinted to the strata band
+        const uint32_t sd = (uint32_t)std::lround((y + 4000.0f) * 0.37f);
+
+        // Bore sizing by kind (Landmark = a cathedral; Cache = a tight pocket).
+        const float floorHalf = (o.kind == OffKind::Landmark) ? 5.0f : 3.4f;
+        const float rMin = floorHalf + 0.6f;
+        const float rMax = (o.kind == OffKind::Landmark) ? 8.5f
+                          : (o.kind == OffKind::Cache)    ? 4.4f : 6.2f;
+        const float cyc  = y + 2.0f;                     // tube axis: floor tucks into the lower wall
+
+        // Flat colliding+visual floor strip the length of the shoot (walkable rock).
+        addColC(wxMax, rx1, y - 0.6f, y, SZ - floorHalf, SZ + floorHalf, col, em);
+        // The lumpy rock TUBE you see (pinch -> cathedral -> pinch).
+        addTube(wxMax, rx1 + 0.6f, cyc, SZ, rMin, rMax, sd, col, em);
+        // Invisible containment: side walls + ceiling + endcap keep the player on the floor.
+        const float topY = cyc + rMax;
+        addColl(wxMax, rx1, y, topY, SZ - floorHalf - 0.3f, SZ - floorHalf);   // -Z wall
+        addColl(wxMax, rx1, y, topY, SZ + floorHalf, SZ + floorHalf + 0.3f);   // +Z wall
+        addColl(mouthX, rx1, topY, topY + 0.4f, SZ - floorHalf, SZ + floorHalf); // ceiling
+        addColl(rx1, rx1 + 0.4f, y, topY, SZ - floorHalf, SZ + floorHalf);     // endcap
+
+        // Stalactites from the dome + a few stalagmites — the tight->vast->tight tube dressing.
+        for (int s = 0; s < 5; ++s) {
+            const float fx = mouthX + o.len * (0.2f + 0.15f * s);
+            const float fz = SZ + ((s % 3) - 1) * (floorHalf * 0.5f);
+            addSpike(fx, cyc + rMax * 0.72f, fz, 0.28f, 1.4f + 0.5f * (s % 2), -1.0f);   // hang down
+            if (s % 2 == 0) addSpike(fx + 1.0f, y + 0.05f, fz + 0.8f, 0.30f, 0.9f, 1.0f); // rise up
+        }
+
+        // Crystal light budget helper — a Salvari hollow (full pocket) reward.
+        auto hollow = [&](float hx, float hy, float hz, float scale) {
             BedrockConfig bc;
             for (int i = 0; i < 4; ++i) bc.tint[i] = tc.tint[i];
             for (int i = 0; i < 4; ++i) bc.emissive[i] = tc.emissive[i];
             bc.uvScale = tc.uvScale;
-            x3::rhi::PointLight bl =
-                addSalvariHollow(scene, device, rockTex, bc, (corrX + rx1) * 0.5f, y + 3.5f, SZ, 1.05f);
+            x3::rhi::PointLight bl = addSalvariHollow(scene, device, rockTex, bc, hx, hy, hz, scale);
             added += 7;
             if (outCrystalLights) outCrystalLights->push_back(bl);
-        } else {
-            addLight(rx1 - 3.0f, y + 2.6f, SZ, 1.25f, 1.0f, 0.75f, 14.0f);
+        };
+
+        const float cavX = (mouthX + rx1) * 0.5f;
+        switch (o.kind) {
+        case OffKind::Cache: {
+            // DEAD-END crystal CACHE — a dense cluster at the tight far end (reward).
+            addCrystalCluster(scene, device, rx1 - 1.6f, y + 0.1f, SZ, 1.6f, 8, 14.0f, outCrystalLights);
+            addCrystalCluster(scene, device, rx1 - 2.6f, y + 0.1f, SZ - 1.4f, 1.0f, 5, 10.0f, outCrystalLights);
+            added += 13;
+        } break;
+        case OffKind::Loop: {
+            // A FORKING BRANCH: a short spur tube off the +Z side of the cavern, with a
+            // crystal at its end — the network forks here (navigate by sight).
+            const float spurZ0 = SZ + floorHalf, spurZ1 = SZ + floorHalf + 10.0f;
+            addColC(cavX - 2.5f, cavX + 2.5f, y - 0.6f, y, spurZ0, spurZ1, col, em);   // spur floor
+            addColl(cavX - 2.8f, cavX - 2.5f, y, y + 4.0f, spurZ0, spurZ1);
+            addColl(cavX + 2.5f, cavX + 2.8f, y, y + 4.0f, spurZ0, spurZ1);
+            addColl(cavX - 2.8f, cavX + 2.8f, y + 4.0f, y + 4.4f, spurZ0, spurZ1);
+            addColl(cavX - 2.8f, cavX + 2.8f, y, y + 4.4f, spurZ1, spurZ1 + 0.3f); // spur endcap
+            addCrystalCluster(scene, device, cavX, y + 0.1f, spurZ1 - 1.4f, 1.2f, 6, 12.0f, outCrystalLights);
+            addCrystalCluster(scene, device, cavX + 1.0f, y + 0.1f, SZ, 0.9f, 4, 9.0f, outCrystalLights);
+            added += 10;
+        } break;
+        case OffKind::Landmark: {
+            // A HOUSE-SIZED CRYSTAL — a single towering shard the player sees from the
+            // shaft and navigates toward (the cavern beacon). Bright blue point light.
+            x3::prims::PrimMesh geo = x3::prims::makeCrystal(1.9f, 2.6f, 2.0f);   // ~9 m tall (fits the cavern)
+            Entity e;
+            e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                       geo.index.data(), (uint32_t)geo.index.size());
+            const float bT[4]={0.02f,0.07f,0.52f,1.0f}, bE[4]={0.015f,0.08f,0.60f,1.0f};
+            for (int i=0;i<4;++i){ e.baseColor[i]=bT[i]; e.emissive[i]=bE[i]; }
+            e.tag=(uint32_t)Tag::Static; e.body=x3::phys::BodyId{};
+            e.transform[0]=1;e.transform[1]=0;e.transform[2]=0;e.transform[3]=0;
+            e.transform[4]=0;e.transform[5]=1;e.transform[6]=0;e.transform[7]=0;
+            e.transform[8]=0;e.transform[9]=0;e.transform[10]=1;e.transform[11]=0;
+            e.transform[12]=cavX; e.transform[13]=y + 4.6f; e.transform[14]=SZ; e.transform[15]=1.0f;
+            scene.add(e); ++added;
+            addColl(cavX-1.4f, cavX+1.4f, y, y + 4.0f, SZ-1.4f, SZ+1.4f);   // can't walk through it
+            if (outCrystalLights) {
+                x3::rhi::PointLight l; l.pos[0]=cavX; l.pos[1]=y+4.0f; l.pos[2]=SZ;
+                l.range=17.0f; l.color[0]=0.13f; l.color[1]=0.36f; l.color[2]=1.30f;   // beacon, not a floodlight
+                outCrystalLights->push_back(l);
+            }
+            // A ring of smaller shards around its base.
+            addCrystalCluster(scene, device, cavX + 3.0f, y + 0.1f, SZ + 2.0f, 1.2f, 5, 11.0f, outCrystalLights);
+            addCrystalCluster(scene, device, cavX - 3.0f, y + 0.1f, SZ - 2.2f, 1.0f, 4, 10.0f, outCrystalLights);
+        } break;
+        case OffKind::Collapse: {
+            // COLLAPSED SECTION — tumbled rock blocks strewn on the floor (a cave-in),
+            // with a crystal cache glinting between them. A LANDMARK you remember.
+            for (int b = 0; b < 6; ++b) {
+                const float bx = mouthX + o.len * (0.35f + 0.09f * b);
+                const float bz = SZ + ((b * 3) % 5 - 2) * 0.9f;
+                const float bs = 0.8f + 0.5f * ((b * 7) % 10) / 10.0f;
+                x3::prims::PrimMesh geo = makeSolidRockBox(bs, bs*0.7f, bs, bx, y + bs*0.7f, bz, tc.uvScale*1.4f);
+                Entity e;
+                e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                           geo.index.data(), (uint32_t)geo.index.size());
+                e.tex = rockTex;
+                e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=1.0f;
+                e.emissive[0]=em[0]; e.emissive[1]=em[1]; e.emissive[2]=em[2]; e.emissive[3]=1.0f;
+                e.tag=(uint32_t)Tag::Static;
+                e.body = physics.addBox(x3::phys::Vec3{bs,bs*0.7f,bs}, x3::phys::Vec3{bx,y+bs*0.7f,bz}, 0.0f, x3::phys::Layer::Static);
+                scene.add(e); ++added;
+            }
+            addCrystalCluster(scene, device, rx1 - 2.0f, y + 0.1f, SZ, 1.3f, 6, 12.0f, outCrystalLights);
+            added += 6;
+        } break;
+        case OffKind::Shrine: {
+            // ANCIENT SALVARI SHRINE (#6) — carved into the cavern: a raised crystal
+            // ALTAR, a ring of shards, and dark carved GLYPH SLABS on the back wall
+            // (faint self-glow so the etched Salvari script reads). Environmental-
+            // storytelling reward tied to the rescue-the-Salvari arc.
+            // Altar plinth (stepped rock).
+            for (int st = 0; st < 2; ++st) {
+                const float ph = 0.9f - st * 0.3f, pt = y + 0.2f + st * 0.5f;
+                x3::prims::PrimMesh geo = makeSolidRockBox(ph, 0.25f, ph, cavX, pt, SZ, tc.uvScale*1.5f);
+                Entity e;
+                e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                           geo.index.data(), (uint32_t)geo.index.size());
+                e.tex=rockTex;
+                e.baseColor[0]=0.20f;e.baseColor[1]=0.19f;e.baseColor[2]=0.24f;e.baseColor[3]=1.0f;
+                e.emissive[0]=0.02f;e.emissive[1]=0.03f;e.emissive[2]=0.05f;e.emissive[3]=1.0f;
+                e.tag=(uint32_t)Tag::Static;
+                e.body = physics.addBox(x3::phys::Vec3{ph,0.25f,ph}, x3::phys::Vec3{cavX,pt,SZ}, 0.0f, x3::phys::Layer::Static);
+                scene.add(e); ++added;
+            }
+            // The altar CRYSTAL — a bright shard on the plinth.
+            addCrystalCluster(scene, device, cavX, y + 0.9f, SZ, 1.5f, 5, 16.0f, outCrystalLights);
+            // GLYPH SLABS on the far/back wall — dark obsidian panels with faint blue
+            // etched-script glow (Salvari canon). Emissive kept low so it reads as
+            // carved script catching the crystal light, not a screen.
+            for (int g = 0; g < 4; ++g) {
+                const float gz = SZ - 2.4f + g * 1.6f;
+                x3::prims::PrimMesh geo = makeSolidRockBox(0.12f, 0.9f, 0.55f, rx1 - 0.5f, y + 1.7f, gz, tc.uvScale*2.0f);
+                Entity e;
+                e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                           geo.index.data(), (uint32_t)geo.index.size());
+                e.tex=rockTex;
+                e.baseColor[0]=0.05f;e.baseColor[1]=0.06f;e.baseColor[2]=0.10f;e.baseColor[3]=1.0f;
+                e.emissive[0]=0.02f;e.emissive[1]=0.10f;e.emissive[2]=0.34f;e.emissive[3]=1.0f;  // etched-blue glyph glow
+                e.tag=(uint32_t)Tag::Static; e.body=x3::phys::BodyId{};
+                scene.add(e); ++added;
+            }
+            hollow(cavX - 3.0f, y + 3.2f, SZ - 2.0f, 0.9f);   // a wall pocket for depth
+        } break;
         }
     }
 
