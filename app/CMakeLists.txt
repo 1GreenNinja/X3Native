@@ -144,6 +144,7 @@ add_executable(X3Engine WIN32
     env_art.cpp
     club1127.cpp
     club_bedrock.cpp
+    cave_atmosphere.cpp
     descent_fall.cpp
     gamma_probe.cpp
     survival_complex.cpp

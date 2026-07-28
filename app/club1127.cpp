@@ -2621,6 +2621,16 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     return m_stats;
 }
 
+float Club1127World::beatThump() const {
+    // The house/jukebox beat envelope — the same pow(sin,6) kick the subs/tiles ride.
+    const float beatHz    = m_bpm / 60.0f;
+    const float beatCount = m_time * beatHz;
+    const float s = std::sin(beatCount * kPi);
+    const float k = s > 0.0f ? s : 0.0f;
+    const float k2 = k * k;
+    return k2 * k2 * k2;   // == pow(max(0,sin),6)
+}
+
 void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& device,
                            x3::phys::IPhysicsWorld& physics) {
     if (!m_built) return;

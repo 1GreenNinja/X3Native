@@ -4,6 +4,7 @@
 #include "../club1127.h"
 #include "../club_bedrock.h"                 // solid-earth encasement (underground)
 #include "../descent_fall.h"                 // THE DESCENT FALL (fall shaft + dark room + keypad + elevator)
+#include "../cave_atmosphere.h"              // CAVE ATMOSPHERE (crystal-only + bass-pulse + fog + singing)
 #include "../survival_complex.h"             // Route-B hub: elevator -> under-club hall -> complex L7
 #include "../jukebox.h"                     // Club Jukebox — Tim's personal-use "Self Radio"
 #include "../crowd.h"
@@ -83,6 +84,12 @@ int hostClub(HostContext& hc) {
         {
             const auto& cs = club.stats();
             x3::game::BedrockConfig bc;
+            // CRYSTAL-ONLY UNDERWORLD (feat/cave-atmosphere #1): drop the rock's dim
+            // self-emissive floor HARD so unlit earth reads near-black and the glowing
+            // blue Salvari crystals are the only real light (eerie pools in the dark).
+            // Still non-zero so noclip-out shows dark VISIBLE rock, never the void.
+            // (sRGB-encode lifts even a tiny linear emissive to a readable dark tone.)
+            bc.emissive[0] = 0.028f; bc.emissive[1] = 0.024f; bc.emissive[2] = 0.026f;
             // Cavity = the club footprint + clearance (a few m of excavation before
             // rock; keeps the rock off the club's own walls/booth/speakers/orb).
             bc.cavMinX = cs.roomMinX - 8.0f;   bc.cavMaxX = cs.roomMaxX + 8.0f;
@@ -138,6 +145,20 @@ int hostClub(HostContext& hc) {
         // Audio is wired later on the live path (null here is fine for the headless shot).
         x3::game::DescentFall descent;
         descent.build(cscene, *device, *cphys, descentLayout, x3::game::riggedGlbRoot(), nullptr);
+
+        // ==== CAVE ATMOSPHERE (feat/cave-atmosphere) ============================
+        // Drive the crystal-only lighting + beat-pulse + fog (+ live bass/singing
+        // audio) on top of the fall-shaft / side-shoot cave geometry. configure() sets
+        // the cave band from the descent layout + club footprint; setClubLook() (below,
+        // after the club atmosphere is applied) remembers the values to restore in the
+        // club. update() runs each frame BEFORE pushLights so ambient/IBL/fog track the
+        // camera; the crystal beat-pulse is applied inside pushLights.
+        x3::game::CaveAtmosphere caveAtmos;
+        {
+            const auto& cs2 = club.stats();
+            caveAtmos.configure(descentLayout, cs2.roomMaxX, cs2.floorY, cs2.ceilingY,
+                                descentLayout.mouthY);
+        }
         // The earth reaches ~200 m UP to the surface and ~1 km OUT under the city,
         // so the 200 m default far plane would clip the distant rock walls to the
         // dark HDR clear ("grayness") — the very void we're killing. Push the club's
@@ -190,16 +211,26 @@ int hostClub(HostContext& hc) {
         // the nearby crystal). In the club proper no hollow is near, so the club
         // keeps its full 64-light show untouched.
         auto pushLights = [&](float tsec, float cx, float cy, float cz) {
+            const float thump = club.beatThump();   // #2 the club's live bass envelope
             const auto& cl = club.pointLights();
             std::vector<x3::rhi::PointLight> all;
             all.reserve(cl.size() + bedrockLights.size());
             for (size_t i = 0; i < bedrockLights.size(); ++i) {
                 const x3::rhi::PointLight& s = bedrockLights[i];
                 const float dx = s.pos[0]-cx, dy = s.pos[1]-cy, dz = s.pos[2]-cz;
-                if (dx*dx + dy*dy + dz*dz > 50.0f * 50.0f) continue;   // only near hollows
+                if (dx*dx + dy*dy + dz*dz > 50.0f * 50.0f) continue;   // only near hollows/crystals
                 x3::rhi::PointLight l = s;
-                const float b = 0.78f + 0.22f * std::sin(tsec * 1.6f + (float)i * 1.7f);
-                l.color[0] *= b; l.color[1] *= b; l.color[2] *= b;
+                if (x3::game::CaveAtmosphere::isCrystal(s)) {
+                    // #2 CRYSTALS PULSING: breathe to the club beat, HARDER the deeper the
+                    // crystal is — the bass throbbing UP from the club through the rock.
+                    const float d = caveAtmos.classify(s.pos[0], s.pos[1]).depth01;
+                    const float p = x3::game::CaveAtmosphere::crystalPulse(thump, d);
+                    l.color[0] *= p; l.color[1] *= p; l.color[2] *= p;
+                } else {
+                    // marker/worklights: the gentle idle breathe (unchanged).
+                    const float b = 0.78f + 0.22f * std::sin(tsec * 1.6f + (float)i * 1.7f);
+                    l.color[0] *= b; l.color[1] *= b; l.color[2] *= b;
+                }
                 all.push_back(l);
             }
             all.insert(all.end(), cl.begin(), cl.end());
@@ -243,6 +274,10 @@ int hostClub(HostContext& hc) {
         device->setAmbient(0.024f, 0.019f, 0.040f);  // low VIOLET floor (club-purple, not gray) — halved
         device->setExposure(1.0f);
         device->setBloom(0.16f);            // let the neon/blacklight/OLED sing WITHOUT blowing the beams milky
+
+        // CAVE ATMOSPHERE: remember the club's OWN look so caveAtmos.update() lerps FROM
+        // it toward the crystal-only cave look (and RESTORES it back in the club).
+        caveAtmos.setClubLook(0.024f, 0.019f, 0.040f, 0.20f);
 
         const x3::phys::Vec3 spawn = club.spawn();
 
@@ -312,6 +347,8 @@ int hostClub(HostContext& hc) {
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                // CAVE ATMOSPHERE: crystal-only ambient/IBL + fog for the shot camera.
+                caveAtmos.update(dt, x3::phys::Vec3{ cam[0], cam[1], cam[2] }, *device);
                 pushLights((float)i * dt, cam[0], cam[1], cam[2]);   // club + nearby Salvari-crystal lights
                 if (i == kSettle - 1 && seqFrames == 0) device->armCapture(outPath.c_str());
                 auto frame = device->beginFrame();
@@ -333,6 +370,7 @@ int hostClub(HostContext& hc) {
                 cphys->step(dt);
                 cscene.update(*cphys);
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                caveAtmos.update(dt, x3::phys::Vec3{ cam[0], cam[1], cam[2] }, *device);
                 pushLights((float)(kSettle + f) * dt, cam[0], cam[1], cam[2]);
                 device->armCapture(fp);
                 auto frame = device->beginFrame();
@@ -378,6 +416,10 @@ int hostClub(HostContext& hc) {
                 }
             }
         }
+        // CAVE ATMOSPHERE audio (live path): the felt BASS-from-below emitter + the
+        // singing-crystal hum. Graceful no-op if there's no audio device.
+        caveAtmos.bindAudio(caudio.get(), club.stats().floorY,
+                            descentLayout.shaftX, descentLayout.shaftZ);
         bool prevNC = false;   // N-key edge for jukebox next/prev
         x3::game::Player cplayer;
         // X3_DESCENT_TOP=1: spawn at the shaft mouth (near the surface) so you can walk
@@ -600,6 +642,11 @@ int hostClub(HostContext& hc) {
             if (cw != lastWc || ch != lastHc) { lastWc = cw; lastHc = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
 
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            // CAVE ATMOSPHERE: crystal-only lighting + fog track the camera; bass/singing
+            // audio + crystal beat-pulse ride the club beat clock.
+            const x3::game::CaveAtmosphere::State caveSt =
+                caveAtmos.update(dt, x3::phys::Vec3{ camX, camY, camZ }, *device);
+            caveAtmos.updateAudio(x3::phys::Vec3{ camX, camY, camZ }, caveSt, club.beatThump());
             pushLights((float)now, camX, camY, camZ);   // club + nearby Salvari-crystal lights
             auto frame = device->beginFrame();
             if (frame.valid) {
@@ -623,6 +670,7 @@ int hostClub(HostContext& hc) {
             device->endFrame(frame);
         }
 
+        caveAtmos.shutdownAudio();
         cphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);

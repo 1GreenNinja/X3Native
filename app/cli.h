@@ -190,6 +190,9 @@ struct CliOptions {
     // scripted freefall accelerates, the catch decelerates it to a safe landing in the
     // dark room, the keypad code opens the door, and the elevator rides into the club.
     bool        testDescentFall = false;
+    // --test-caveatmos (the CAVE ATMOSPHERE runtime): classifier (cave vs club/infra),
+    // depth, crystal beat-pulse, blue-crystal detection, ambient/IBL/fog blend.
+    bool        testCaveAtmos = false;
     // --test-club (the full Club 1127 "THE DEEP" at Y=-800): build headless + assert
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.

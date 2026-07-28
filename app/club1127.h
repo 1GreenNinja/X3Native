@@ -202,6 +202,13 @@ public:
     void  setBpm(float bpm) { if (bpm > 20.0f && bpm < 400.0f) m_bpm = bpm; }
     float bpm() const { return m_bpm; }
 
+    // Current BEAT ENVELOPE (0 at rest .. 1 at the kick) off the house/jukebox clock —
+    // the SAME thump the subs/tiles/dancers ride in update(). Exposed so the CAVE
+    // ATMOSPHERE (feat/cave-atmosphere #2) can feel the club's bass rising up through
+    // the rock and pulse the Salvari crystals to it. Reads m_time/m_bpm (house clock);
+    // it does NOT sample CLUB LISTEN MODE (that's a live-loopback path in update()).
+    float beatThump() const;
+
     bool built() const { return m_built; }
 
 private:
