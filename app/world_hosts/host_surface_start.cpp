@@ -381,7 +381,9 @@ int hostSurfaceStart(HostContext& hc) {
     //      ObjectiveSystem; advances as the player approaches + reaches the breach.
     x3::game::ObjectiveSystem objective;
     objective.set({
-        "REACH THE FACILITY \xE2\x80\x94 FIND SARAH",   // em dash
+        // ASCII '-' (not the em dash): the HUD font atlas is ASCII-only and the
+        // UTF-8 dash rendered as "???" on the live objective line (frame 05).
+        "REACH THE FACILITY - FIND SARAH",
         "BREACH THE FACILITY",
         "RESCUE SARAH",
     });
