@@ -95,6 +95,28 @@ int hostClub(HostContext& hc) {
                         " solid-earth blocks (cavity ~" +
                         std::to_string((int)(bc.cavMaxX - bc.cavMinX)) + "x" +
                         std::to_string((int)(bc.cavMaxZ - bc.cavMinZ)) + "m, earth up to Y=0)");
+
+            // ==== EARTH TUNNEL NETWORK (feat/earth-tunnels) ====================
+            // Bore a WALKABLE strata descent down through the same solid earth from
+            // near the surface (Y~=-3) to the club floor (Y=-200), a bottom connector
+            // into the club's east elevator doorway, and 3 offshoot passages (one
+            // holds a Salvari crystal hollow). The descent is the vertical spine the
+            // elevator rides; the network is the first of "a tunnel network to dig
+            // out" (grow it via the recipe in club_bedrock.h). Its mood + crystal
+            // lights ride the SAME distance-culled bedrockLights channel.
+            x3::game::TunnelConfig tc;
+            tc.tint[0]=bc.tint[0]; tc.tint[1]=bc.tint[1]; tc.tint[2]=bc.tint[2]; tc.tint[3]=bc.tint[3];
+            tc.emissive[0]=bc.emissive[0]; tc.emissive[1]=bc.emissive[1];
+            tc.emissive[2]=bc.emissive[2]; tc.emissive[3]=bc.emissive[3];
+            tc.bottomY   = cs.floorY;                        // club floor (-200)
+            tc.topY      = -3.0f;                            // just under the surface
+            tc.shaftX    = cs.roomMaxX + 22.0f;              // solid earth east of the club
+            tc.shaftZ    = cs.roomMaxZ - 2.75f;              // aligned with the E doorway Z
+            tc.clubDoorX = cs.roomMaxX;                      // club east face
+            tc.clubDoorZ = cs.roomMaxZ - 2.75f;              // authored elevator-doorway Z
+            const int nTun = x3::game::buildEarthTunnels(cscene, *device, *cphys, tc, &bedrockLights);
+            x3::logInfo("--world club: earth tunnels — " + std::to_string(nTun) +
+                        " pieces (walkable switchback descent Y=-3..-200 + connector + 3 offshoots)");
         }
         // The earth reaches ~200 m UP to the surface and ~1 km OUT under the city,
         // so the 200 m default far plane would clip the distant rock walls to the
