@@ -2101,6 +2101,12 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::NpcSkin npcSkin;                              // their rigged bodies
     x3::game::WorldCars worldCars;                          // CARS PILLAR: the street fleet
     float driveCamYaw = 0.0f, driveCamPitch = -0.22f;       // chase-cam mouse orbit
+    // NFS-STYLE VIEW CYCLE (Tim: "the mode i usualy drove in since 1992") —
+    // C cycles while driving: 0 FAR chase (Tim's default), 1 MID, 2 CLOSE,
+    // 3 HOOD (true dashboard view waits on a modeled interior).
+    int  carView = 0; bool prevCarC = false;
+    static constexpr const char* kCarViewName[4] = { "FAR CHASE", "MID CHASE", "CLOSE", "HOOD" };
+    static constexpr float kCarViewDist[3] = { 1.65f, 1.0f, 0.55f };   // scale on the stock boom
     bool opsBuilt = false;
     if (physOk) {
         x3::game::CrowdConfig cc;
@@ -3101,6 +3107,9 @@ int hostEchotropolis(HostContext& hc) {
             else vin.throttle = fwd2;
             vin.steer     = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
             vin.handBrake = kd(GLFW_KEY_SPACE) ? 1.0f : 0.0f;
+            { const bool c2 = kd(GLFW_KEY_C);   // NFS view cycle
+              if (c2 && !prevCarC) carView = (carView + 1) % 4;
+              prevCarC = c2; }
             worldCars.driveInput(vin);
             worldCars.preStep(dt);
             phys->step(dt);
@@ -3500,10 +3509,23 @@ int hostEchotropolis(HostContext& hc) {
         // leaving fly mode always returns an upright horizon.
         device->setCameraRoll(flyMode ? flyRoll : 0.0f);
         if (worldCars.driving()) {
-            // CHASE CAM: the drive host's framing, orbited by the mouse.
-            float dcx, dcy, dcz;
-            worldCars.driverCamera(driveCamYaw, driveCamPitch, dcx, dcy, dcz);
-            device->setCamera(dcx, dcy, dcz, driveCamYaw, driveCamPitch, opt.fovDeg);
+            // NFS VIEW CYCLE: the stock chase boom scaled per view; HOOD rides
+            // the body (no interior yet — dashboard view lands with the
+            // interiors pillar). Mouse orbits every view.
+            const x3::phys::Vec3 cp2 = worldCars.carPosition();
+            if (carView == 3) {
+                const float hx = cp2.x + std::cos(driveCamYaw) * 0.9f;
+                const float hz = cp2.z + std::sin(driveCamYaw) * 0.9f;
+                device->setCamera(hx, cp2.y + 1.25f, hz, driveCamYaw, driveCamPitch * 0.4f, opt.fovDeg + 6.0f);
+            } else {
+                float dcx, dcy, dcz;
+                worldCars.driverCamera(driveCamYaw, driveCamPitch, dcx, dcy, dcz);
+                const float k2 = kCarViewDist[carView];
+                device->setCamera(cp2.x + (dcx - cp2.x) * k2,
+                                  cp2.y + (dcy - cp2.y) * k2 + (carView == 0 ? 0.8f : 0.0f),
+                                  cp2.z + (dcz - cp2.z) * k2,
+                                  driveCamYaw, driveCamPitch, opt.fovDeg);
+            }
         } else if (flyMode) {
             device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, opt.fovDeg);
         } else if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
@@ -3690,7 +3712,11 @@ int hostEchotropolis(HostContext& hc) {
             {   // MODE LABEL (Tim: "visual on screen, silver text"): always shown.
                 const float silver[4] = { 0.80f, 0.83f, 0.88f, 0.95f };
                 const char* mode =
-                    flyMode ? "FLIGHT   WASD + mouse   Q/E roll   SPACE/C up-down   ARROWS fwd + turn   SHIFT fast   G ground   V orbit"
+                    worldCars.driving() ? (carView == 0 ? "DRIVING [FAR CHASE]   WASD drive   SPACE handbrake   C view   F exit"
+                                        :  carView == 1 ? "DRIVING [MID CHASE]   WASD drive   SPACE handbrake   C view   F exit"
+                                        :  carView == 2 ? "DRIVING [CLOSE]   WASD drive   SPACE handbrake   C view   F exit"
+                                                        : "DRIVING [HOOD]   WASD drive   SPACE handbrake   C view   F exit")
+                  : flyMode ? "FLIGHT   WASD + mouse   Q/E roll   SPACE/C up-down   ARROWS fwd + turn   SHIFT fast   G ground   V orbit"
                   : (followIdx >= 0) ? (playAs ? "PLAY AS   WASD drive   E spectate   F release"
                                                : "RIDE-ALONG   E take controls   F release")
                   : walkMode ? "GROUND   WASD + mouse   SHIFT run   SPACE jump   G flight   T talk"
