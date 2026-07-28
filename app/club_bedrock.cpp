@@ -884,6 +884,46 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
             hollow(cavX - 3.0f, y + 3.2f, SZ - 2.0f, 0.9f);   // a wall pocket for depth
         } break;
         }
+
+        // ---- UNDERGROUND RIVER centerline (feat/cave-river) -------------------
+        // Thread a mildly-luminescent blue STREAM down the low floor of the WIDER
+        // caverns (Cache / Landmark cathedral / Collapse), pooling in the belly + at
+        // the dead-end. Emitted as a centerline polyline into the layout; CaveRiver
+        // (cave_river.h) builds the SELF-EMISSIVE blue water ribbon + pool bank-lights
+        // from it (no sky/sun — the water IS the light, like the Salvari crystals).
+        if (outLayout && (o.kind == OffKind::Cache ||
+                          o.kind == OffKind::Landmark ||
+                          o.kind == OffKind::Collapse)) {
+            const float xA = mouthX + 0.6f;              // just inside the tube mouth (shaft side)
+            const float xB = rx1 - 0.4f;                 // near the dead-end wall (downstream)
+            const float span = std::max(1.0f, xB - xA);
+            const int   nSeg = std::max(4, (int)(span / 2.2f));   // ~2.2 m nodes
+            const int   bellyI = (int)std::lround((float)nSeg * 0.5f);
+            const int   endI   = nSeg - 1;
+            const float streamHW = 0.9f;
+            const float poolHW   = std::min(floorHalf * 0.72f, floorHalf - 0.4f);
+            for (int i = 0; i <= nSeg; ++i) {
+                const float t = (float)i / (float)nSeg;  // 0 mouth .. 1 dead-end (downstream +X)
+                CaveRiverNode nd;
+                nd.x = xA + span * t;
+                // gentle meander so it reads as a natural stream, not a straight strip
+                // (kept inside the floor: |zOff| + halfWidth < floorHalf).
+                const float zOff = (floorHalf - streamHW - 0.5f) * 0.55f * std::sin(t * 4.2f + 0.6f);
+                nd.z = SZ + zOff;
+                // Smoothly WIDEN toward the belly (cathedral middle) + the dead-end pool.
+                const float belly = std::exp(-((t - 0.5f) * (t - 0.5f)) / (2.0f * 0.11f * 0.11f));
+                const float endp  = std::max(0.0f, (t - 0.72f) / 0.28f);
+                const float pool01 = std::min(1.0f, std::max(belly, endp));
+                nd.halfWidth = streamHW + (poolHW - streamHW) * pool01;
+                nd.emissive  = 0.30f + 0.10f * pool01;   // pools a touch brighter
+                nd.pool      = (i == bellyI) || (i == endI);   // exactly two bank lights / tube
+                // sits just above the flat floor (top = o.y); a hair higher at the mouth
+                // so the surface tilts DOWN toward the dead-end (the flow direction).
+                nd.y = o.y + 0.05f + 0.05f * (1.0f - t);
+                nd.breakSeg = (i == nSeg);               // don't bridge to the next tube
+                outLayout->river.push_back(nd);
+            }
+        }
     }
 
     // ---- publish the layout for the interactive descent_fall layer -----------
