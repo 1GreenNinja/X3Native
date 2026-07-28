@@ -4,6 +4,7 @@
 #include "../club1127.h"
 #include "../club_bedrock.h"                 // solid-earth encasement (underground)
 #include "../descent_fall.h"                 // THE DESCENT FALL (fall shaft + dark room + keypad + elevator)
+#include "../survival_complex.h"             // Route-B hub: elevator -> under-club hall -> complex L7
 #include "../jukebox.h"                     // Club Jukebox — Tim's personal-use "Self Radio"
 #include "../crowd.h"
 #include "../player.h"
@@ -116,6 +117,15 @@ int hostClub(HostContext& hc) {
             tc.shaftZ    = cs.roomMaxZ - 2.75f;              // aligned with the E doorway Z
             tc.clubDoorX = cs.roomMaxX;                      // club east face
             tc.clubDoorZ = cs.roomMaxZ - 2.75f;              // authored elevator-doorway Z
+            // ROUTE-B HUB: the elevator also drops to the BOTTOM (L7) of Danny's 7-level
+            // survival complex WEST of + below the club, via an under-club hall. Derive
+            // the L7 floor Y from the complex's own constants so it tracks the club depth;
+            // the east-edge attach X + L7 stair-bay Z mirror survival_complex.cpp.
+            using SC = x3::game::SurvivalComplex;
+            tc.underClubHall  = true;
+            tc.complexBottomY = SC::kClubY + (SC::kLoungeY - (float)(SC::kLevels - 1) * SC::kLevelH); // ~-824.23
+            tc.complexAttachX = -15.43f;                     // complex east edge (survival_complex.cpp maxX)
+            tc.complexAttachZ = 5.30f;                       // L7 stair-bay landing Z (survival_complex.cpp zHi)
             const int nTun = x3::game::buildEarthTunnels(cscene, *device, *cphys, tc,
                                                          &bedrockLights, &descentLayout);
             x3::logInfo("--world club: descent fall — " + std::to_string(nTun) +
@@ -392,7 +402,7 @@ int hostClub(HostContext& hc) {
         bool chatNumPrevC[4] = { false, false, false, false };
         // Descent-terminal input edge state (E toggle + digit/backspace/enter).
         x3::game::HoloTerminal* cDescentPad = nullptr;
-        bool prevEDescent = false, prevBksp = false, prevEnter = false;
+        bool prevEDescent = false, prevBksp = false, prevEnter = false, prevEElev = false;
         bool prevDigit[10] = { false,false,false,false,false,false,false,false,false,false };
         x3::logInfo("--world club: 3 canon NPCs live (Danny @ U-bar, Amara + Emma @ "
                     "Private Lounge) — walk up + E to talk, 1-4 to answer");
@@ -531,6 +541,18 @@ int hostClub(HostContext& hc) {
                 } else {
                     cDescentPad = nullptr;
                 }
+                // ELEVATOR HUB: while riding an idle cab and NOT typing at a pad, E calls
+                // the next stop (hall <-> club <-> survival-complex L7) — the Route-B hub.
+                if (!cDescentPad && descent.elevator().playerRiding(eye) &&
+                    !descent.elevator().moving()) {
+                    nearDescentPad = true;                 // E drives the lift, not an NPC
+                    if (eNow2 && !prevEElev) {
+                        descent.elevator().callNext();
+                        x3::logInfo("--world club: elevator hub -> stop " +
+                                    std::to_string(descent.elevator().targetStop()));
+                    }
+                }
+                prevEElev = kd(GLFW_KEY_E);
             }
 
             // ---- CANON NPC DIALOGUE (feat/club-npcs). While a conversation is up,

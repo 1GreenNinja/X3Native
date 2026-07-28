@@ -479,20 +479,23 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
     addLight(rMinX - 4.0f, roomFloorY + 2.4f, elevZ, 0.85f, 0.80f, 0.72f, 14.0f);
     addLight(elevX + 3.0f, roomFloorY + 2.4f, elevZ, 0.85f, 0.80f, 0.72f, 12.0f);
 
-    // ---- ELEVATOR ALCOVE + SHAFT: the last leg down into the club ------------
-    // A vertical shaft the elevator car (built by descent_fall.cpp) rides from the
-    // hall level (elevTopY) down to the club floor (elevBotY). Alcove half-size in Z.
+    // ---- ELEVATOR ALCOVE + SHAFT (THE HUB): club + complex ------------------
+    // The elevator car (built by descent_fall.cpp) rides a shaft from the hall level
+    // (elevTopY) down through the club floor (elevBotY) to the survival-complex L7
+    // floor (complexBottomY) — the Route-B hub. The shaft extends to the DEEPEST stop.
     const float elevTopY = roomFloorY, elevBotY = tc.bottomY;
+    const bool haveHall = tc.underClubHall;
+    const float shaftBottom = haveHall ? std::min(tc.bottomY, tc.complexBottomY) : tc.bottomY;
     const float ahz = 2.6f;                             // alcove half-Z
     const float ax0 = elevX - 2.6f, ax1 = elevX + 2.6f;
-    // Shaft walls (colliding), from the club floor up to just over the hall ceiling.
-    addColC(ax0 - 0.4f, ax0, elevBotY, elevTopY + hallH, elevZ - ahz, elevZ + ahz, rmCol, rmEm);   // -X shaft wall
-    addColC(ax1, ax1 + 0.4f, elevBotY, elevTopY + hallH, elevZ - ahz, elevZ + ahz, rmCol, rmEm);   // +X shaft wall
-    addColC(ax0, ax1, elevBotY, elevTopY + hallH, elevZ - ahz - 0.4f, elevZ - ahz, rmCol, rmEm);   // -Z shaft wall
-    addColC(ax0, ax1, elevBotY, elevTopY + hallH, elevZ + ahz, elevZ + ahz + 0.4f, rmCol, rmEm);   // +Z shaft wall
+    // Shaft walls (colliding), from the deepest stop up to just over the hall ceiling.
+    addColC(ax0 - 0.4f, ax0, shaftBottom, elevTopY + hallH, elevZ - ahz, elevZ + ahz, rmCol, rmEm);   // -X shaft wall
+    addColC(ax1, ax1 + 0.4f, shaftBottom, elevTopY + hallH, elevZ - ahz, elevZ + ahz, rmCol, rmEm);   // +X shaft wall
+    addColC(ax0, ax1, shaftBottom, elevTopY + hallH, elevZ - ahz - 0.4f, elevZ - ahz, rmCol, rmEm);   // -Z shaft wall
+    addColC(ax0, ax1, shaftBottom, elevTopY + hallH, elevZ + ahz, elevZ + ahz + 0.4f, rmCol, rmEm);   // +Z shaft wall
     addColC(ax0, ax1, elevTopY + hallH, elevTopY + hallH + 0.4f, elevZ - ahz, elevZ + ahz, rmCol, rmEm); // shaft cap
-    // BOTTOM CONNECTOR — from the elevator base WEST into the club's east doorway at
-    // the club floor (the club shell is open below 2.8 m at the doorway).
+    // CLUB CONNECTOR — from the elevator's CLUB stop WEST into the club's east doorway
+    // at the club floor (the club shell is open below 2.8 m at the doorway).
     {
         const float y  = tc.bottomY;
         const float cx0 = tc.clubDoorX - 2.0f, cx1 = ax1;
@@ -502,6 +505,33 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         addColC(cx0, cx1, y, y + 3.0f, z1, z1 + 0.4f, rmCol, rmEm);                           // +Z wall
         addColC(cx0, cx1, y + 3.0f, y + 3.4f, z0 - 0.4f, z1 + 0.4f, rmCol, rmEm);             // ceiling
         addLight(tc.clubDoorX + 3.0f, y + 2.2f, tc.clubDoorZ, 1.30f, 1.05f, 0.78f, 15.0f);
+    }
+
+    // ---- UNDER-CLUB HALL (Route-B): from the elevator's BOTTOM stop (complex L7
+    // level) WEST, beneath the club, to the survival complex's east edge. This is the
+    // canon link between the elevator hub and Danny's 7-level complex (L7 bottom). On
+    // --world club the complex itself isn't present, so the hall ends in a capped STUB
+    // landing at the complex east-wall attach point (a marker light) — @13700k punches
+    // a door in the complex east shell at (complexAttachX, complexBottomY, complexAttachZ)
+    // to receive it.
+    if (haveHall) {
+        const float y  = tc.complexBottomY;
+        const float uhz = 2.0f, uh = 3.4f;
+        const float hx0 = tc.complexAttachX, hx1 = ax0;      // from complex east edge to the elevator
+        // Run the hall down the elevator Z; near the west (complex) end, splay Z to
+        // reach the L7 stair-bay landing Z. Keep it a single straight bore at elevZ +
+        // a short jog is future polish; here a straight hall at elevZ suffices.
+        const float zc = elevZ;
+        addColC(hx0, hx1, y - 0.6f, y, zc - uhz, zc + uhz, rmCol, rmEm);                      // floor
+        addColC(hx0, hx1, y, y + uh, zc - uhz - 0.4f, zc - uhz, rmCol, rmEm);                 // -Z wall
+        addColC(hx0, hx1, y, y + uh, zc + uhz, zc + uhz + 0.4f, rmCol, rmEm);                 // +Z wall
+        addColC(hx0, hx1, y + uh, y + uh + 0.4f, zc - uhz - 0.4f, zc + uhz + 0.4f, rmCol, rmEm); // ceiling
+        // STUB landing at the complex attach (a small pad + a marker light so the link
+        // reads on camera and the attach point is obvious).
+        addColC(hx0 - 2.0f, hx0, y - 0.6f, y, tc.complexAttachZ - 2.0f, tc.complexAttachZ + 2.0f, rmCol, rmEm);
+        addColC(hx0 - 2.4f, hx0 - 2.0f, y, y + uh + 1.0f, tc.complexAttachZ - 2.4f, tc.complexAttachZ + 2.4f, rmCol, rmEm); // west cap wall (the door goes HERE)
+        addLight(hx0 - 1.0f, y + 2.2f, tc.complexAttachZ, 0.55f, 0.85f, 1.25f, 14.0f);        // cool marker at the complex link
+        addLight((hx0 + hx1) * 0.5f, y + 2.2f, zc, 1.10f, 0.95f, 0.75f, 16.0f);               // hall worklight
     }
 
     // ---- SIDE SHOOTS: the offshoot rooms off the fall shaft ------------------
@@ -550,7 +580,10 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         outLayout->doorHalfW = doorHalfW;
         outLayout->elevX = elevX; outLayout->elevZ = elevZ;
         outLayout->elevTopY = elevTopY; outLayout->elevBotY = elevBotY;
+        outLayout->complexBottomY = haveHall ? tc.complexBottomY : elevBotY;
         outLayout->clubDoorX = tc.clubDoorX; outLayout->clubDoorZ = tc.clubDoorZ;
+        outLayout->complexAttachX = tc.complexAttachX; outLayout->complexAttachZ = tc.complexAttachZ;
+        outLayout->hasUnderHall = haveHall;
     }
 
     (void)wallXHoles;   // (kept as the visual-liner helper for future authored tunnels)

@@ -128,6 +128,7 @@ private:
     DoorSystem        m_doors;
     uint32_t          m_doorIdx = kNoLink;
     ElevatorSystem    m_elevator;
+    int               m_clubStopIdx = 0;   // the elevator stop that meets the club floor
     x3::audio::IAudioSystem* m_audio = nullptr;
 
     // Fall state.

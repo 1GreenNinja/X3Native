@@ -195,6 +195,16 @@ struct TunnelConfig {
 
     // Seed a Salvari crystal hollow in one offshoot chamber (the reward-to-find).
     bool  crystalOffshoot = true;
+
+    // ---- ROUTE-B HUB (Tim's canon, CLUB_1127_CANON_SPEC "Route B"): the elevator is
+    // a HUB. Besides the club, it drops to the BOTTOM (Level 7) of Danny's 7-level
+    // survival complex WEST of + below the club, via an UNDER-CLUB HALL running west
+    // from the elevator beneath the club. The host supplies the complex L7 world entry
+    // (computed from SurvivalComplex's constants). Set underClubHall=false to skip.
+    bool  underClubHall  = true;
+    float complexBottomY = -824.23f;    // world Y of the complex L7 floor (deepest elevator stop)
+    float complexAttachX = -15.43f;     // complex east edge X (where the under-club hall meets it)
+    float complexAttachZ =   5.30f;     // complex L7 stair-bay landing Z
 };
 
 // ============================================================================
@@ -221,12 +231,18 @@ struct DescentFallLayout {
     // KEYPAD DOOR (opening in the room's -X wall) -> HALL.
     float doorX = 0, doorZ = 0, doorY = 0;   // door opening center (floor level)
     float doorHalfW = 1.1f;
-    // ELEVATOR (the last leg down into the club).
+    // ELEVATOR (the HUB): top stop = the hall/room level (arrive from the fall); mid
+    // stop = the club floor; bottom stop = the survival-complex L7 floor.
     float elevX = 0, elevZ = 0;     // elevator shaft center
     float elevTopY = 0;             // top stop (hall floor level)
-    float elevBotY = 0;             // bottom stop (club floor)
-    // CLUB east doorway the elevator's bottom connector runs into.
+    float elevBotY = 0;             // mid stop (club floor)
+    float complexBottomY = 0;       // bottom stop (survival complex L7 floor) — 0/unused if no under-hall
+    // CLUB east doorway the elevator's club-stop connector runs into.
     float clubDoorX = 0, clubDoorZ = 0;
+    // Under-club hall attach point (complex L7 east entry) — where @13700k wires the
+    // hall into the survival complex's east shell.
+    float complexAttachX = 0, complexAttachZ = 0;
+    bool  hasUnderHall = false;
 };
 
 // Build the earth tunnel network into `scene` (+ Jolt collision via `physics`, meshes

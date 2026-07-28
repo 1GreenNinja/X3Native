@@ -98,19 +98,33 @@ void DescentFall::build(Scene& scene, x3::rhi::IRenderDevice& device,
     });
 
     // ================================================================
-    // 3) THE ELEVATOR — the last leg down into the club. A plain industrial lift
-    //    platform in the alcove at the hall's end, two stops (club floor / hall floor),
-    //    parked at the TOP (where the player arrives from the hall).
+    // 3) THE ELEVATOR (THE HUB) — an industrial lift in the alcove at the hall's end.
+    //    Route-B canon: it serves the HALL (top, where you arrive from the fall), the
+    //    CLUB floor (mid), and — via the under-club hall — the survival-complex L7
+    //    floor (bottom, deepest). Parked at the TOP. Two stops when there's no
+    //    under-club hall.
     // ================================================================
+    std::vector<float> stops;
+    if (layout.hasUnderHall && layout.complexBottomY < layout.elevBotY - 0.5f) {
+        stops = { layout.complexBottomY, layout.elevBotY, layout.elevTopY };  // complex / club / hall
+        m_clubStopIdx = 1;
+    } else {
+        stops = { layout.elevBotY, layout.elevTopY };                          // club / hall
+        m_clubStopIdx = 0;
+    }
+    const int topStop = (int)stops.size() - 1;
     m_elevator.build(scene, device, physics, layout.elevX, layout.elevZ,
-                     /*cabHalf*/2.2f, 0.22f, 2.2f,
-                     std::vector<float>{ layout.elevBotY, layout.elevTopY }, /*startStop*/1);
+                     /*cabHalf*/2.2f, 0.22f, 2.2f, stops, /*startStop*/topStop);
     m_elevator.setSpeed(4.0f);
 
     m_built = true;
     x3::logInfo("[descent] built: computer terminal + code-locked keypad door (code " +
-                std::string(kDescentDoorCode) + ") + elevator (last leg to the club at Y=" +
-                std::to_string((int)std::lround(layout.elevBotY)) + ")");
+                std::string(kDescentDoorCode) + ") + HUB elevator — club at Y=" +
+                std::to_string((int)std::lround(layout.elevBotY)) +
+                (layout.hasUnderHall
+                    ? (", survival-complex L7 at Y=" + std::to_string((int)std::lround(layout.complexBottomY)) +
+                       " via the under-club hall")
+                    : std::string("")));
 }
 
 // ---------------------------------------------------------------------------
@@ -179,14 +193,16 @@ float DescentFall::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics
     m_keypad.update(dt);
     m_doors.update(dt, scene, physics);
 
-    // Elevator: when the player boards at the top and it's idle, auto-descend into the
-    // club (the last leg). It rides back up on its own wrap when re-called.
+    // Elevator (hub): when the player first boards at the TOP (hall) stop and it's
+    // idle, auto-descend to the CLUB stop (the core "hall -> elevator -> club" beat).
+    // From there the host's E-cycle rides deeper to the survival-complex L7 stop.
+    const int topStop = m_elevator.stopCount() - 1;
     const bool riding = m_elevator.playerRiding(playerFeet);
     if (riding && !m_elevCalled && !m_elevator.moving() &&
-        m_elevator.nearestStopTo(playerFeet.y) == 1) {
-        m_elevator.callTo(0);                 // descend to the club floor
+        m_elevator.nearestStopTo(playerFeet.y) == topStop) {
+        m_elevator.callTo(m_clubStopIdx);     // descend to the club floor
         m_elevCalled = true;
-        x3::logInfo("[descent] elevator descending the last leg into Club 1127");
+        x3::logInfo("[descent] elevator descending from the hall into Club 1127");
     }
     if (!riding) m_elevCalled = false;        // re-arm once they step off
     const float dY = m_elevator.update(dt, scene, physics);
@@ -256,7 +272,10 @@ bool DescentFall::runSelfTest() {
     L.doorX = 31.0f; L.doorZ = 4.0f; L.doorY = L.roomFloorY; L.doorHalfW = 1.1f;
     L.elevX = 23.24f; L.elevZ = 4.0f; L.elevTopY = L.roomFloorY; L.elevBotY = -800.0f;
     L.clubDoorX = 15.24f; L.clubDoorZ = 4.0f;
+    L.hasUnderHall = true; L.complexBottomY = -824.23f;   // Route-B: elevator drops to complex L7
+    L.complexAttachX = -15.43f; L.complexAttachZ = 5.30f;
     const float clubFloorY = L.elevBotY;
+    const float complexFloorY = L.complexBottomY;
 
     descent.build(scene, device, *physics, L, "", nullptr);
     check(descent.built(), "D0 descent interactive layer builds (terminal + keypad door + elevator)");
@@ -298,17 +317,21 @@ bool DescentFall::runSelfTest() {
               "D5b the CORRECT code (1127) unlocks + opens the door onto the hall");
     }
 
-    // ---- THE ELEVATOR: rides the last leg down to the club floor. ----
-    {
-        descent.elevator().callTo(0);
+    // ---- THE ELEVATOR HUB: rides to the club floor AND to the complex L7 floor. ----
+    auto rideTo = [&](int stop) {
+        descent.elevator().callTo(stop);
         int eguard = 0;
-        while (descent.elevator().moving() && eguard++ < 4000)
+        while (descent.elevator().moving() && eguard++ < 6000)
             descent.elevator().update(dt, scene, *physics);
-        const float cabTop = descent.elevator().cabTopY();
-        // Cab-center at the bottom stop == club floor; its top ~0.22 above.
-        const bool downAtClub = std::fabs(descent.elevator().cabCenter().y - clubFloorY) < 0.05f;
-        check(downAtClub && cabTop < L.roomFloorY,
-              "D6 the elevator rides the last leg DOWN to the club floor (Y=-800)");
+        return descent.elevator().cabCenter().y;
+    };
+    {
+        const float atClub = rideTo(1);       // mid stop = club floor
+        check(std::fabs(atClub - clubFloorY) < 0.05f,
+              "D6 the elevator rides to the CLUB floor (Y=-800)");
+        const float atComplex = rideTo(0);    // bottom stop = survival-complex L7 floor
+        check(std::fabs(atComplex - complexFloorY) < 0.05f && descent.elevator().stopCount() == 3,
+              "D7 the elevator HUB rides DOWN to the survival-complex L7 floor (Y=-824) — Route B");
     }
 
     physics->shutdown();
