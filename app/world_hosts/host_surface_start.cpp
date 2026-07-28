@@ -54,6 +54,11 @@
 #include "../intro_orchestrator.h"   // IntroOutcome / readOutcomeFlag / kIntroLandedFlag (--test-surfacestart)
 #include "../story_ops.h"            // x3::game::StoryFlags (the branch signal)
 #include "../headless_device.h"      // HeadlessRenderDevice (the headless scene-build self-test)
+#include "../destinations.h"         // [P0-1] findDestination("entrance") — the handoff dest key
+#include "../level_loader.h"         // [P0-1] loadCanonTower/canonBeats — the Entrance-room spawn proof
+#include "../weapon.h"               // [P0-1] WeaponSystem::forceArm — the armed-arrival contract
+#include <cstdio>                    // std::remove (self-test temp flags file)
+#include <cstring>                   // std::strcmp (registry assertions)
 #include <filesystem>
 
 namespace x3 { namespace apphost {
@@ -74,6 +79,55 @@ constexpr float kFacilityHalfD= 16.0f;    // facility half-depth  (Z)
 constexpr float kBreachHalfW  = 2.4f;     // entry breach half-width
 constexpr float kEntryReach   = 6.0f;     // distance to the breach that triggers the hand-off
 constexpr float kApproachZ    = -22.0f;   // crossing this advances "approach" objective
+
+// ---------------------------------------------------------------------------
+// [P0-1 EFLZ-GP-1B] SURFACE -> FACILITY HANDOFF (the spec'd trigger + request).
+// specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md — shipped trigger = §3.2 option 1
+// (INTERACT: "[E] ENTER FACILITY" at the breach), mechanism = §3.3 Option A
+// (hc.switchWorldTo through main()'s world-load loop; no process restart).
+// Both are PURE so the windowed loop and --test-surfacehandoff share one truth.
+// ---------------------------------------------------------------------------
+
+// The breach-reach geometry: the same lane/right-up-to-the-wall window the
+// objective's "RESCUE SARAH" beat uses (one truth — updateObjective calls this).
+bool breachHandoffReady(float feetX, float feetZ, bool approached) {
+    const float dz = feetZ - kFacilityZ;
+    const bool inBreachLane = std::fabs(feetX) <= kBreachHalfW + 1.0f;
+    return approached && inBreachLane && dz <= kEntryReach && dz >= -2.0f;
+}
+
+// The handoff request (spec §3.3.1-2): ask main()'s world-load loop for the LIVE
+// facility world, spawning at the registry's "entrance" key (the SEAM-2 Entrance
+// hallway — the rescuer arrival, NOT the cell). The loop tears this host down,
+// re-dispatches canonlevel with spawnAtKey="entrance" + skipIntro=true (the
+// cold-open never replays, §3.3.4), and app_run's arrival block arms the player
+// + imports the escaped StoryFlags (§3.3.5).
+//
+// The request also PERSISTS the escaped outcome (+landed) to the narrative lane:
+// the surface host IS the escaped branch by construction (product-dispatched only
+// on intro.outcome=escaped), but the dev shortcut `--world surface` reaches this
+// breach with a stale/absent save — and an arrival with a refused flags import
+// would stand the rescuer UNARMED (the spec §3.4 "cosmetic-only weapon" failure,
+// caught in the live windowed run). Idempotent on the product path (the intro
+// already wrote the same outcome); a later intro run rewrites the outcome anyway.
+// `flagsPath` is injectable for the self-test; "" = the real narrative lane.
+void requestFacilityHandoff(x3::apphost::HostContext& hc,
+                            const std::string& flagsPath = std::string()) {
+    hc.switchWorldTo = "canonlevel";
+    hc.switchDestKey = "entrance";
+    {
+        const std::string p = flagsPath.empty()
+            ? x3::intro::defaultGameStoryFlagsPath() : flagsPath;
+        x3::game::StoryFlags flags;
+        flags.loadFile(p);   // keep whatever else the save carries
+        x3::intro::writeOutcomeFlag(flags, x3::intro::IntroOutcome::Escaped);
+        flags.set(x3::intro::kIntroLandedFlag);
+        if (!flags.saveFile(p))
+            x3::logWarn("--world surface: could not persist escaped outcome to " + p);
+    }
+    x3::logInfo("--world surface: [E] ENTER FACILITY -> HANDOFF into the live facility "
+                "(switchWorldTo=canonlevel @ entrance; EFLZ_SURFACE_FACILITY_HANDOFF §3.3)");
+}
 }
 
 int hostSurfaceStart(HostContext& hc) {
@@ -327,7 +381,9 @@ int hostSurfaceStart(HostContext& hc) {
     //      ObjectiveSystem; advances as the player approaches + reaches the breach.
     x3::game::ObjectiveSystem objective;
     objective.set({
-        "REACH THE FACILITY \xE2\x80\x94 FIND SARAH",   // em dash
+        // ASCII '-' (not the em dash): the HUD font atlas is ASCII-only and the
+        // UTF-8 dash rendered as "???" on the live objective line (frame 05).
+        "REACH THE FACILITY - FIND SARAH",
         "BREACH THE FACILITY",
         "RESCUE SARAH",
     });
@@ -412,12 +468,12 @@ int hostSurfaceStart(HostContext& hc) {
             approached = true; objective.advance();
             x3::logInfo("--world surface: approaching the facility -> objective: BREACH THE FACILITY");
         }
-        const float dz = feet.z - kFacilityZ, dx = feet.x;
-        const bool inBreachLane = std::fabs(dx) <= kBreachHalfW + 1.0f;
-        if (!atBreach && approached && inBreachLane && dz <= kEntryReach && dz >= -2.0f) {
+        // [P0-1] one truth with the handoff trigger: the objective's "at the
+        // breach" beat and the [E] ENTER FACILITY interact share this geometry.
+        if (!atBreach && breachHandoffReady(feet.x, feet.z, approached)) {
             atBreach = true; objective.advance();
             x3::logInfo("--world surface: AT THE BREACH -> objective: RESCUE SARAH "
-                        "(hand-off into the facility/rescue content)");
+                        "([E] ENTER FACILITY hands off into the live facility)");
         }
     };
 
@@ -466,8 +522,9 @@ int hostSurfaceStart(HostContext& hc) {
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
+    bool prevEKey = false;   // [P0-1] rising edge for the breach [E] ENTER FACILITY interact
     x3::logInfo("--world surface: WASD move, mouse look, Shift sprint, Space jump, Esc quit. "
-                "Walk to the breach to rescue Sarah.");
+                "Walk to the breach and press E to ENTER THE FACILITY.");
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
@@ -490,6 +547,19 @@ int hostSurfaceStart(HostContext& hc) {
         scene.update(*phys);
         updateObjective(player.feet());
 
+        // ---- [P0-1 EFLZ-GP-1B] THE HANDOFF INTERACT (spec §3.2 trigger 1) ----
+        // At the breach, E requests the world switch and leaves the walk loop; the
+        // teardown below preserves the shared device/window so main()'s world-load
+        // loop can build canonlevel into them (Option A — a real in-engine load).
+        {
+            const bool eNow = kd(GLFW_KEY_E);
+            if (atBreach && eNow && !prevEKey) {
+                requestFacilityHandoff(hc);
+                break;
+            }
+            prevEKey = eNow;
+        }
+
         int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
         if (cw > 0 && ch > 0) device->onResize((uint32_t)cw, (uint32_t)ch);
 
@@ -501,6 +571,18 @@ int hostSurfaceStart(HostContext& hc) {
         if (frame.valid) {
             drawWorld(frame, cx, cy, cz, cyaw, cpit);
             objective.drawCurrent(*device, frame);
+            // [P0-1] discoverable trigger (spec §3.2): the interact prompt, up
+            // whenever the breach interact is armed. Centered above the midline.
+            if (atBreach) {
+                const char* prompt = "[E] ENTER FACILITY";
+                const float px = 22.0f;                       // glyph size (px)
+                const float tx = (float)cw * 0.5f - px * 0.5f * 9.0f;  // ~centered (18 chars)
+                const float ty = (float)ch * 0.62f;
+                const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.85f };
+                const float cl[4] = { 1.0f, 0.84f, 0.35f, 1.0f };      // amber (the breach sign)
+                device->drawHudText(frame, prompt, tx + 2.0f, ty + 2.0f, px, sh);
+                device->drawHudText(frame, prompt, tx, ty, px, cl);
+            }
         }
         device->endFrame(frame);
     }
@@ -508,8 +590,27 @@ int hostSurfaceStart(HostContext& hc) {
     if (shipModel.ok) mloader->unload(shipModel);
     if (pistolModel.ok) mloader->unload(pistolModel);
     device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
-    phys->shutdown(); device->shutdown();
-    if (window) glfwDestroyWindow(window); glfwTerminate();
+    phys->shutdown();
+    // [P0-1] SWITCH-AWARE teardown: the device/window/GLFW are created ONCE in
+    // main() and REUSED across its world-load loop. When this host requested the
+    // facility handoff (switchWorldTo set), the arriving canonlevel host still
+    // needs them — destroying them here would hand the next host a freed device
+    // (the exact canonlevel->streamed segfault class). This world's OWN resources
+    // (scene meshes/textures, physics, models) are freed above either way; only
+    // the FINAL host (no switch pending) tears down the shared objects.
+    if (hc.switchWorldTo.empty()) {
+        device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+    } else {
+        // Phase-1 honesty: the surface world's builder-owned GPU resources
+        // (facility exterior, horizon ring, city massing, rescue rig) have no
+        // per-system teardown yet, so they stay RESIDENT until process exit —
+        // same residual class as the canon-side world switch. Follow-up filed
+        // (builder destroy() methods) — do not paper over it with device reset.
+        x3::logInfo("--world surface: HANDOFF teardown — shared device/window preserved; "
+                    "surface builder resources stay resident until process exit (known "
+                    "Phase-1 residual)");
+    }
     return 0;
 }
 
@@ -629,6 +730,155 @@ bool runSurfaceStartSelfTest() {
 
     char sb[96];
     std::snprintf(sb, sizeof(sb), "surface-start: %d/%d passed", pass, total);
+    x3::logInfo(sb);
+    return pass == total;
+}
+
+// ============================================================================
+// --test-surfacehandoff  ([P0-1 EFLZ-GP-1B] headless, deterministic, no Vulkan).
+//
+// The Phase-1 SURFACE -> FACILITY handoff contract, spec acceptance tests H2-H5
+// (specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §6; H1 is --test-surfacestart's
+// branch selection, H6 is the eyes-on capture):
+//   H2  trigger: the breach interact geometry fires exactly in the breach window,
+//       and requestFacilityHandoff() asks for canonlevel @ entrance (Option A) —
+//       with NEGATIVE CONTROLS (not approached / out of lane / far on the apron).
+//   H2b main-loop contract: the requested world differs from "surface", so
+//       main()'s world-load loop re-dispatches instead of returning (no dead end),
+//       and the dest key resolves in the LIVE registry to a canonlevel anchor
+//       (no fallback world, no 404 signpost).
+//   H3  spawn: the LIVE canon tower data has the "Entrance" room; the arrival
+//       spawn point lies inside its bounds and OUTSIDE Jake's Cell (never the
+//       prisoner start) — asserted against the loaded LevelArchitect JSON.
+//       Plus the armed contract: the WeaponSystem grant the arrival uses
+//       (forceArm — cheatArm's engine) flips hasWeapon.
+//   H4  flags: a persisted ESCAPED save imports into a live flags world
+//       (intro.outcome=escaped + intro.landed readable after the load).
+//   H5  negative control: a persisted SHOT_DOWN save is REFUSED (import returns
+//       false, live flags untouched -> canon cell behavior byte-identical).
+// ============================================================================
+bool runSurfaceHandoffSelfTest() {
+    using x3::intro::IntroOutcome;
+    int pass = 0, total = 0;
+    auto check = [&](bool ok, const char* what) {
+        ++total; if (ok) ++pass;
+        x3::logInfo(std::string(ok ? "  [PASS] " : "  [FAIL] ") + what);
+    };
+
+    // ---- H2: the trigger geometry (one truth with the windowed loop). ----
+    check(breachHandoffReady(0.0f, kFacilityZ + 3.0f, true),
+          "H2a at the breach centre (approached) -> trigger armed");
+    check(breachHandoffReady(kBreachHalfW + 0.9f, kFacilityZ + 1.0f, true),
+          "H2b lane edge (+1 m grace) still armed");
+    check(!breachHandoffReady(0.0f, kFacilityZ + 3.0f, false),
+          "H2c NEGATIVE: not yet approached -> no trigger");
+    check(!breachHandoffReady(kBreachHalfW + 4.0f, kFacilityZ + 3.0f, true),
+          "H2d NEGATIVE: outside the breach lane -> no trigger");
+    check(!breachHandoffReady(0.0f, 18.0f, true),
+          "H2e NEGATIVE: back on the apron (spawn distance) -> no trigger");
+
+    // ---- H2f-i: the request + the world-load-loop contract. ----
+    {
+        const std::string tmpReq = "test_surfacehandoff_reqflags.tmp.txt";
+        std::remove(tmpReq.c_str());
+        HostContext hc;
+        hc.worldMode = "surface";
+        requestFacilityHandoff(hc, tmpReq);
+        check(hc.switchWorldTo == "canonlevel" && hc.switchDestKey == "entrance",
+              "H2f request = switchWorldTo canonlevel @ entrance (spec Option A)");
+        check(hc.switchWorldTo != hc.worldMode,
+              "H2g request differs from 'surface' -> main()'s loop re-dispatches (no dead end)");
+        const x3::game::Destination* d = x3::game::findDestination(hc.switchDestKey);
+        check(d && std::strcmp(d->key, "entrance") == 0 && d->canonAnchor &&
+              std::strcmp(d->worldFlag, "canonlevel") == 0 &&
+              d->group == x3::game::DestGroup::Facility,
+              "H2h 'entrance' is a LIVE registry row: Facility group, canon anchor, "
+              "worldFlag canonlevel (no fallback world)");
+        // H2i: the request PERSISTS the escaped outcome, so the arrival import
+        // always fires after a surface handoff (even from the dev shortcut with
+        // a stale/absent save — the unarmed-arrival hole the live run caught).
+        x3::game::StoryFlags live;
+        check(x3::intro::importEscapedIntroFlags(live, tmpReq) &&
+              x3::intro::readOutcomeFlag(live) == IntroOutcome::Escaped &&
+              live.has(x3::intro::kIntroLandedFlag),
+              "H2i the request persists escaped(+landed) -> the arrival import fires");
+        std::remove(tmpReq.c_str());
+    }
+
+    // ---- H3: the Entrance-room spawn, against the LIVE tower data. ----
+    {
+        const x3::game::CanonFloor cf =
+            x3::game::loadCanonTower(x3::game::canonProjectJsonPath());
+        check(cf.valid(), "H3a canonical tower data loads headless");
+        if (cf.valid()) {
+            const uint32_t er = cf.roomByName("Entrance");
+            check(er != x3::game::kNoRoom, "H3b the data authors an Entrance room");
+            const x3::game::CanonBeats bt = x3::game::canonBeats(cf);
+            check(bt.jakeCell != x3::game::kNoRoom, "H3c Jake's Cell resolves (the NOT-here room)");
+            if (er != x3::game::kNoRoom && bt.jakeCell != x3::game::kNoRoom) {
+                const x3::game::CanonRoom& rm = cf.rooms[er];
+                const float sx = rm.cx, sy = rm.y0() + 1.0f, sz = rm.cz;   // riftDestination's anchor
+                check(sx >= rm.x0() && sx <= rm.x1() && sz >= rm.z0() && sz <= rm.z1() &&
+                      sy > rm.y0() && sy < rm.y1(),
+                      "H3d arrival spawn lies inside the Entrance room bounds");
+                const x3::game::CanonRoom& jc = cf.rooms[bt.jakeCell];
+                const bool inCell = sx >= jc.x0() && sx <= jc.x1() &&
+                                    sz >= jc.z0() && sz <= jc.z1() &&
+                                    sy >= jc.y0() && sy <= jc.y1();
+                check(!inCell, "H3e arrival spawn is OUTSIDE Jake's Cell (never the prisoner start)");
+                check(er != bt.jakeCell, "H3f Entrance and Jake's Cell are distinct rooms");
+            }
+        }
+    }
+    // ---- H3g: the armed-arrival grant (cheatArm's engine). ----
+    {
+        x3::game::Scene scene;
+        x3::game::WeaponSystem weapon;
+        check(!weapon.hasWeapon(), "H3g0 fresh WeaponSystem starts unarmed (control)");
+        weapon.forceArm(scene);
+        check(weapon.hasWeapon(), "H3g forceArm (the arrival's cheatArm) -> hasWeapon TRUE");
+    }
+
+    // ---- H4 / H5: flag carry-over + the shot_down negative control. ----
+    {
+        const std::string tmp = "test_surfacehandoff_flags.tmp.txt";
+        // H4: persisted ESCAPED (+landed) imports into a live flags world.
+        {
+            x3::game::StoryFlags disk;
+            x3::intro::writeOutcomeFlag(disk, IntroOutcome::Escaped);
+            disk.set(x3::intro::kIntroLandedFlag);
+            check(disk.saveFile(tmp), "H4a persisted escaped save writes");
+            x3::game::StoryFlags live;
+            const bool imported = x3::intro::importEscapedIntroFlags(live, tmp);
+            check(imported, "H4b escaped save IMPORTS into the live flags world");
+            check(x3::intro::readOutcomeFlag(live) == IntroOutcome::Escaped,
+                  "H4c intro.outcome=escaped readable AFTER the load (spec H4)");
+            check(live.has(x3::intro::kIntroLandedFlag),
+                  "H4d intro.landed carried over");
+        }
+        // H5: persisted SHOT_DOWN is refused; the live world stays untouched.
+        {
+            x3::game::StoryFlags disk;
+            x3::intro::writeOutcomeFlag(disk, IntroOutcome::ShotDown);
+            check(disk.saveFile(tmp), "H5a persisted shot_down save writes");
+            x3::game::StoryFlags live;
+            const bool imported = x3::intro::importEscapedIntroFlags(live, tmp);
+            check(!imported, "H5b NEGATIVE: shot_down save is REFUSED (no rescuer arrival)");
+            check(x3::intro::readOutcomeFlag(live) == IntroOutcome::ShotDown &&
+                  !live.has(x3::intro::kIntroLandedFlag),
+                  "H5c live flags untouched -> canon cell behavior byte-identical");
+        }
+        // Missing file: also refused (fresh machine / dev world path).
+        std::remove(tmp.c_str());
+        {
+            x3::game::StoryFlags live;
+            check(!x3::intro::importEscapedIntroFlags(live, tmp),
+                  "H5d NEGATIVE: absent save file is refused");
+        }
+    }
+
+    char sb[96];
+    std::snprintf(sb, sizeof(sb), "surface-handoff: %d/%d passed", pass, total);
     x3::logInfo(sb);
     return pass == total;
 }

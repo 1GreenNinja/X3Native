@@ -341,6 +341,11 @@ struct CliOptions {
     // cell-vs-surface branch selection + the surface scene standing up headlessly
     // (glass facility, player outside + armed, Sarah rescue target). No window/Vulkan.
     bool        testSurfaceStart = false;
+    // --test-surfacehandoff ([P0-1] EFLZ-GP-1B): the Phase-1 surface -> facility
+    // handoff contract (breach trigger + canonlevel@entrance request + Entrance
+    // spawn vs the live tower data + armed arrival + escaped-flags import, with
+    // shot_down/absent negative controls). No window/Vulkan.
+    bool        testSurfaceHandoff = false;
     // --test-starsystems (x3.starsys/1): the named-star-system registry integrity
     // gate — every system has a valid star + bodies, lookup by id/name round-trips,
     // a negative control, the dogfight system is far from Sol. No window/Vulkan.
