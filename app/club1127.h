@@ -319,6 +319,12 @@ private:
         float    axis = 1.0f;          // +1 = spin about Y (floor/ceiling disc)
         float    emBase = 2.0f, emAmp = 1.2f;
         float    phase = 0.0f;         // spin phase offset
+        // LASER floor-pattern discs (feat/club-lasers-axis): when `patterns` is
+        // non-empty this disc is a LASER show, not a soft dome-dot field. update()
+        // BEAT-ACCELERATES its spin, pulses it harder, and SWITCHES its bound texture
+        // to patterns[phrase % N] every 8-beat phrase (spirograph -> grid -> fan ->
+        // dots). Empty => a plain dome/starburst projector (spin + breathe only).
+        std::vector<x3::rhi::TextureHandle> patterns;
     };
     std::vector<Projector>                        m_projectors;
     // Canon dialogue NPCs (Danny/Amara/Emma) — talk anchors + chat-tree ids.
