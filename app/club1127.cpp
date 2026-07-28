@@ -2640,6 +2640,14 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
     float beatCount = (t - m_beatOffsetS) * beatHz;        // absolute beat position
     float thump     = std::pow(std::max(0.0f, std::sin(beatCount * kPi)), 6.0f);
 
+    // PER-BAND DRIVE (feat/club-jukebox-merge): real drivers do NOT move together.
+    // A sub follows the kick and bassline; a mid follows vocals and snare; a horn
+    // barely stirs at all. Listen Mode measures all three bands separately, so the
+    // speaker rig can stop moving as one lump. Open-loop (no live signal) has only
+    // the modelled kick envelope, so every band falls back to `thump` and the
+    // behaviour is exactly as before.
+    float bandLow = thump, bandMid = thump, bandHigh = thump;
+
     // ---- CLUB LISTEN MODE (external drive input) ----------------------------
     // When snd_listen is ON and a live signal is captured from the PC's audio
     // (WASAPI loopback), the club rides the LIVE detected beat instead of the
@@ -2657,6 +2665,9 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         beatHz    = lbf.bpm / 60.0f;
         beatCount = lbf.beatCount;
         thump     = lbf.thump;
+        bandLow   = lbf.bass;   // subs ride the bassline, not just the kick
+        bandMid   = lbf.mid;    // mids ride vocals/snare — a different rhythm
+        bandHigh  = lbf.high;   // horns: measured, but they barely move (see below)
     }
 
     const float breathe   = 0.72f + 0.48f * thump;         // gel beat envelope (floor
@@ -2839,11 +2850,23 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         constexpr float kZeta = 0.70f;
         for (auto& d : m_driverCones) {
             if (d.ent >= scene.size()) continue;
-            const float fs   = (d.posAmp >= 0.020f) ? 30.0f     // 18" sub
-                             : (d.posAmp >= 0.006f) ? 55.0f     // 15" mid
-                                                    : 90.0f;    // small / horn
+            // Resonance AND drive band both follow cone size. A driver only moves
+            // for the frequencies it is asked to reproduce: the 18" subs pump on
+            // the BASS, the 15" mids ripple on the MIDS (vocals, snare — a visibly
+            // different rhythm), and the horns track the highs but with almost no
+            // excursion, because at 3 kHz the cone travel is microscopic. Under
+            // Listen Mode these are three independent measured signals, so the rig
+            // stops breathing as one lump; open-loop they all collapse to `thump`.
+            const bool  isSub = (d.posAmp >= 0.020f);
+            const bool  isMid = (!isSub && d.posAmp >= 0.006f);
+            const float fs    = isSub ? 30.0f      // 18" sub
+                              : isMid ? 55.0f      // 15" mid
+                                      : 90.0f;     // small / horn
+            const float band  = isSub ? bandLow
+                              : isMid ? bandMid
+                                      : bandHigh;
             const float w0   = 6.2831853f * fs;
-            const float drive = d.posAmp * thump;
+            const float drive = d.posAmp * band;
             // Clamp the STEP LENGTH, not the step count. Capping steps is the
             // wrong lever: on a long stall (alt-tab, a 2 s hitch) it would leave
             // h = dt/16 huge, w0*h >> 2, and the cone would detonate on the frame
