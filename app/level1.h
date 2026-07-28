@@ -29,6 +29,9 @@
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 
+#include <cstdint>
+#include <vector>
+
 namespace x3::game {
 
 // ---- THE FACILITY'S OWN AIR (fix/prim-point-light, 2026-07-12) --------------------
@@ -117,6 +120,74 @@ struct L1WingRoom {
 // The F2-F7 wing room table + its count. Iterated by buildLevel1 (collision) and
 // wing_dressing.cpp (art). The two stay in lockstep because both read THIS table.
 const L1WingRoom* level1WingRooms(uint32_t& outCount);
+
+// ---- SPIRE EMERGENCY STAIRWELL — the SHARED layout (QA upper-floors sweep, D19-D21).
+// ONE source of truth for the B1->F7 stair, consumed by BOTH buildLevel1() (which turns
+// it into meshes + Jolt bodies + the floor/lid cutouts) and the geometric lint
+// (--test-levellint, SPIRE block). The lint therefore measures the boxes that ACTUALLY
+// ship — it is not a mirror of the builder's arithmetic and cannot go blind when the
+// layout changes (level_lint.cpp's opening comment explains why that matters).
+struct SpireStair {
+    struct Box { float x0, x1, z0, z1, y0, y1; };
+    // One straight run between two level landings. `steps` carries discrete step
+    // blocks (LAW 3 stairs); when `ramp` is true the run is a single wedge whose
+    // slope must stay <= 30 deg (LAW 3 ramp) and `solid` is its bounding box.
+    struct Flight {
+        Box   solid{};
+        float baseY = 0.0f, topY = 0.0f;
+        uint32_t axis = 0;          // 0 = run along X, 1 = run along Z
+        float dir  = 1.0f;          // +1 climbs toward +axis
+        bool  ramp = false;
+        std::vector<Box> steps;
+    };
+    std::vector<Flight> flights;
+    std::vector<Box>    landings;    // level pads; top face (y1) is the walkable surface
+    std::vector<Box>    soffits;     // closed undersides (a wedge has no bottom face)
+    // Enclosure skin. Excluded from the lint's pierce/interpenetration probe on
+    // purpose: like the elevator shaft's own walls (level1.cpp §2) a vertical shaft
+    // skin runs the full height of the tower THROUGH every slab plane by design.
+    std::vector<Box>    walls;
+    // The stair WELL footprint. Every floor slab and ceiling lid is built with this
+    // rectangle cut OUT of it, so the stair never passes through solid geometry.
+    float wellX0 = 0.0f, wellX1 = 0.0f, wellZ0 = 0.0f, wellZ1 = 0.0f;
+    float baseY = 0.0f, topY = 0.0f;
+    float doorZ = 0.0f;              // stairwell doorway center Z on the -X enclosure face
+    std::vector<float> arrivalY;     // walkable pad level at each served floor (B1..F7)
+};
+
+// The resolved stairwell layout (built once, cached). Pure arithmetic — no device.
+const SpireStair& spireStair();
+
+// ---- THE ART/GRAYBOX CONTRACT AT THE STAIR WELL (D19) ----------------------------
+// env_art tiles GLB floor + ceiling panels across each WHOLE plate. Left alone it
+// paints a solid-looking floor straight over the stairwell opening — art you can walk
+// onto and fall through, because the collision slab is (correctly) cut. So the overlay
+// must SKIP every tile the well touches, and the graybox must lay a visible APRON over
+// exactly those skipped tiles minus the well, or the skip leaves a void ring.
+// Both sides therefore agree on ONE rect: spireWellTileSpan().
+constexpr float kSpireArtTileX = 4.0f;   // SM_Floor_A / SM_Ceiling_A footprint (m)
+constexpr float kSpireArtTileZ = 3.0f;
+// The tile-aligned opening on floor `floorIndex` (an L1Floor value): the union of the
+// overlay tiles the well overlaps. x0/x1/z0/z1 are meaningful; y0/y1 are unused.
+SpireStair::Box spireWellTileSpan(uint32_t floorIndex);
+
+// The neutral hue-preserving lift buildLevel1 applies to the procedural deck map so
+// the Spire's walkable surfaces land inside the interior reflectance band (D22).
+const float* level1DeckMapLift();
+
+// The central elevator shaft column footprint in world XZ (constant up the tower).
+// Exported so the lint's keep-out probe reads the builder's own numbers.
+void level1ShaftFootprint(float& x0, float& x1, float& z0, float& z1);
+
+// The graybox surface tints buildLevel1 multiplies over the procedural maps, exported
+// for the lint's reflectance-band probe (surface_library.h: real interior surfaces sit
+// in [0.08, 0.40] LINEAR; D16 fixed the door leaves against the same law).
+struct L1Surface {
+    const char* name;
+    float       tint[4];
+    uint32_t    kind;      // 0 = floor deck, 1 = wall panel, 2 = ceiling panel
+};
+const L1Surface* level1Surfaces(uint32_t& outCount);
 
 // ---- Floor-1 "Detention Level" room table (the authoritative Babylon LevelArchitect
 // transcription — docs/design/SPIRE_LEVELARCHITECT_DIMS.md). One entry per room: a
@@ -246,6 +317,7 @@ struct Level1Layout {
 struct Level1ArtMask {
     bool walls    = false;   // hide graybox side walls + cross walls render
     bool floors   = false;   // hide graybox floor render
+    bool ceilings = false;   // GLB ceiling panels cover the plate lids
 };
 
 // Build the Spire graybox into `scene` (render meshes via `device`, static

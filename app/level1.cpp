@@ -227,6 +227,102 @@ const float kWallTint[4]  = { 1.00f, 1.00f, 1.00f, 1.0f };
 const float kShaftTint[4] = { 0.85f, 0.85f, 0.85f, 1.0f };   // shaft reads a shade darker; NOT bluer
 const float kStairTint[4] = { 0.90f, 0.90f, 0.90f, 1.0f };
 
+// ---- THE EMERGENCY STAIRWELL LAYOUT (see level1.h SpireStair) ---------------------
+// Pure arithmetic, no device: buildLevel1 renders it and --test-levellint measures it.
+//
+// D19/D20/D21 (QA upper-floors sweep, 2026-07-27). What shipped before was not a
+// stairwell: each "step" was a solid COLUMN from the B1 floor (y=0) up to its own top,
+// every floor transition reused the SAME 4 m of X, and no well was ever cut. Measured
+// by the new SPIRE lint: 182 step columns, **920 interpenetrating pairs** (LAW 2
+// doubled faces — a z-fighting mass), **1423 slab/lid crossings** (LAW 2: driven
+// straight through every floor plate and ceiling lid on F1-F6), risers of 0.50 m and
+// treads down to 0.057 m on the 35 m F4->F5 gap (LAW 3: unclimbable — it was a wall).
+// The net effect on EVERY upper floor was a 4 x 2.8 m grey mass standing in the plate
+// at (x 10-14, z 15) that shimmered and could not be walked.
+//
+// REBUILT as the doctrine's legal vocabulary (x3-level-authoring LAW 3): a SWITCHBACK
+// of <= 30 deg RAMP flights broken by level landings every <= 3 m of rise, inside a
+// walled well that is CUT OUT of every floor slab and ceiling lid it passes through
+// (LAW 2), with a 1.2 m doorway onto each floor's arrival pad (LAW 1).
+constexpr float kStairWellX0 = 8.5f,  kStairWellX1 = 15.5f;   // well footprint (X), 7 m
+constexpr float kStairWellZ0 = 12.5f, kStairWellZ1 = 17.5f;   // well footprint (Z), 5 m
+constexpr float kStairPad    = 1.0f;    // turn-landing depth at each end of the run
+constexpr float kStairPadT   = 0.25f;   // landing slab thickness
+constexpr float kStairSoffit = 0.20f;   // closed underside beneath each ramp wedge
+constexpr float kStairDoorZ  = 15.0f;   // doorway center Z on the -X enclosure face
+constexpr float kStairFlightRise = 2.5f;  // target rise per flight (slope + headroom)
+constexpr float kStairWallT  = 0.20f;
+
+SpireStair buildSpireStair() {
+    SpireStair S;
+    S.baseY  = kFloors[0].y0;
+    S.topY   = kFloors[(uint32_t)L1Floor::F7].y0 + 2.5f;   // a head above the top arrival
+    S.doorZ  = kStairDoorZ;
+    S.wellX0 = kStairWellX0; S.wellX1 = kStairWellX1;
+    S.wellZ0 = kStairWellZ0; S.wellZ1 = kStairWellZ1;
+
+    // Two run lanes (the switchback's up-leg and its return leg) and the turn pads.
+    const float runX0 = kStairWellX0 + kStairPad;     //  9.5
+    const float runX1 = kStairWellX1 - kStairPad;     // 14.5
+    const float run   = runX1 - runX0;                //  5.0 m
+    const float zMid  = (kStairWellZ0 + kStairWellZ1) * 0.5f;
+    const float laneZ[2][2] = { { kStairWellZ0, zMid }, { zMid, kStairWellZ1 } };
+
+    for (uint32_t fi = 0; fi + 1 < (uint32_t)L1Floor::Count; ++fi) {
+        const float baseY = kFloors[fi].y0;
+        const float gap   = kFloors[fi + 1].y0 - baseY;
+        // An EVEN flight count means the last leg always returns to the WEST pad —
+        // the side the doorway is on — so every floor is entered off the same landing.
+        int nFlights = (int)std::lround(gap / kStairFlightRise);
+        if (nFlights < 2) nFlights = 2;
+        if (nFlights & 1) ++nFlights;
+        const float rise = gap / (float)nFlights;
+        for (int f = 0; f < nFlights; ++f) {
+            const bool east = ((f & 1) == 0);         // even legs climb toward +X
+            const float y0 = baseY + (float)f * rise;
+            const float y1 = y0 + rise;
+            const int   ln = (f & 1);
+            SpireStair::Flight fl;
+            fl.baseY = y0; fl.topY = y1; fl.axis = 0; fl.dir = east ? 1.0f : -1.0f;
+            fl.ramp  = true;
+            fl.solid = { runX0, runX1, laneZ[ln][0], laneZ[ln][1], y0, y1 };
+            S.flights.push_back(std::move(fl));
+            // Closed underside (makeRamp emits no bottom face — from below a bare wedge
+            // is see-through). Skipped on the bottom flight, which rests on the B1 slab.
+            if (y0 > S.baseY + 0.01f)
+                S.soffits.push_back({ runX0, runX1, laneZ[ln][0], laneZ[ln][1],
+                                      y0 - kStairSoffit, y0 });
+            // Turn landing at the top of this leg (the last one IS the floor's arrival).
+            const float px0 = east ? runX1 : kStairWellX0;
+            const float px1 = east ? kStairWellX1 : runX0;
+            S.landings.push_back({ px0, px1, kStairWellZ0, kStairWellZ1, y1 - kStairPadT, y1 });
+        }
+        S.arrivalY.push_back(kFloors[fi + 1].y0);
+    }
+
+    // ---- Enclosure (LAW 2 containment: the well is a hole in seven floor slabs; the
+    // player must not be able to walk into it except through a doorway). The two
+    // Z-faces span the full X including the corners; the X-faces stop at the well so
+    // no two wall boxes ever overlap. The -X face carries the per-floor doorway.
+    const float wx0 = kStairWellX0 - kStairWallT, wx1 = kStairWellX1 + kStairWallT;
+    const float wz0 = kStairWellZ0 - kStairWallT, wz1 = kStairWellZ1 + kStairWallT;
+    S.walls.push_back({ wx0, wx1, wz0, kStairWellZ0, S.baseY, S.topY });   // -Z face
+    S.walls.push_back({ wx0, wx1, kStairWellZ1, wz1, S.baseY, S.topY });   // +Z face
+    S.walls.push_back({ kStairWellX1, wx1, kStairWellZ0, kStairWellZ1, S.baseY, S.topY });  // +X face
+    // -X face: two full-height side bands plus the header/spandrel stack between the
+    // per-floor doorways (1.2 m wide, 2.1 m head clearance).
+    const float dz0 = kStairDoorZ - kDoorHalf, dz1 = kStairDoorZ + kDoorHalf;
+    S.walls.push_back({ wx0, kStairWellX0, kStairWellZ0, dz0, S.baseY, S.topY });
+    S.walls.push_back({ wx0, kStairWellX0, dz1, kStairWellZ1, S.baseY, S.topY });
+    for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
+        const float head = kFloors[fi].y0 + kLintelBottom;
+        const float next = (fi + 1 < (uint32_t)L1Floor::Count) ? kFloors[fi + 1].y0 : S.topY;
+        if (next > head + 0.01f)
+            S.walls.push_back({ wx0, kStairWellX0, dz0, dz1, head, next });
+    }
+    return S;
+}
+
 // Add one world-baked graybox box (render mesh + optional static collision) to the
 // scene. `visible`: when false the render mesh is omitted (collision-only) so real
 // GLB art can be drawn over this volume without z-fighting (EFLZ art pass).
@@ -260,30 +356,37 @@ void addFloor(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWo
            (uint32_t)Tag::Static, /*collide*/true, visible);
 }
 
-// Floor slab WITH a rectangular hole carved out (4 segments around the hole) — used
-// for the B1 plate so the cell trapdoor (secret_room.*) can drop the player into the
-// secret room below. holeCx/holeCz/holeHalf define the (square) opening; the slab is
-// built as up to 4 rim segments (-X, +X, then the -Z/+Z bands across the hole's X
-// span). If the hole is outside the plate this degrades to a normal full slab.
-void addFloorWithCutout(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-                        float cx, float cz, float hx, float hz, float floorY,
-                        x3::rhi::TextureHandle tex, const float color[4], bool visible,
-                        float holeCx, float holeCz, float holeHalf) {
-    const float x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
-    const float hx0 = holeCx - holeHalf, hx1 = holeCx + holeHalf;
-    const float hz0 = holeCz - holeHalf, hz1 = holeCz + holeHalf;
-    auto slab = [&](float a, float b, float c, float d) {  // x in [a,b], z in [c,d]
-        if (b - a < 0.01f || d - c < 0.01f) return;
-        addBox(scene, device, physics, (b-a)*0.5f, 0.05f, (d-c)*0.5f,
-               (a+b)*0.5f, floorY - 0.05f, (c+d)*0.5f, tex, color,
-               (uint32_t)Tag::Static, /*collide*/true, visible);
-    };
-    // -X segment (full depth), +X segment (full depth), then the -Z / +Z bands across
-    // the hole's X span. Together they tile the slab minus the [hx0,hx1]x[hz0,hz1] hole.
-    slab(x0, hx0, z0, z1);
-    slab(hx1, x1, z0, z1);
-    slab(hx0, hx1, z0, hz0);
-    slab(hx0, hx1, hz1, z1);
+// A rectangular opening to subtract from a slab / lid (world XZ).
+struct SlabHole { float x0, x1, z0, z1; };
+
+// Tile a horizontal slab (floor or ceiling lid) MINUS a list of rectangular holes.
+// Rect subtraction: the first hole that bites the rect splits it into up to 4 pieces,
+// each re-tested against the REMAINING holes (holes already passed cannot bite a
+// subset of a rect they did not bite). Used for the B1 cell trapdoor and — since the
+// QA upper-floors sweep (D19) — the emergency stairwell well, which must be open
+// through every slab and ceiling lid it passes rather than driven through them.
+void addSlabMinusHoles(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                       float x0, float x1, float z0, float z1,
+                       float cy, float halfY,
+                       x3::rhi::TextureHandle tex, const float color[4],
+                       bool visible, const SlabHole* holes, uint32_t nHoles,
+                       bool collide = true) {
+    if (x1 - x0 < 0.01f || z1 - z0 < 0.01f) return;
+    for (uint32_t i = 0; i < nHoles; ++i) {
+        const float ix0 = std::max(x0, holes[i].x0), ix1 = std::min(x1, holes[i].x1);
+        const float iz0 = std::max(z0, holes[i].z0), iz1 = std::min(z1, holes[i].z1);
+        if (ix1 - ix0 <= 0.001f || iz1 - iz0 <= 0.001f) continue;   // this hole misses
+        const SlabHole* rest = holes + i + 1;
+        const uint32_t  nRest = nHoles - i - 1;
+        addSlabMinusHoles(scene, device, physics, x0,  ix0, z0,  z1,  cy, halfY, tex, color, visible, rest, nRest, collide);
+        addSlabMinusHoles(scene, device, physics, ix1, x1,  z0,  z1,  cy, halfY, tex, color, visible, rest, nRest, collide);
+        addSlabMinusHoles(scene, device, physics, ix0, ix1, z0,  iz0, cy, halfY, tex, color, visible, rest, nRest, collide);
+        addSlabMinusHoles(scene, device, physics, ix0, ix1, iz1, z1,  cy, halfY, tex, color, visible, rest, nRest, collide);
+        return;
+    }
+    addBox(scene, device, physics, (x1 - x0) * 0.5f, halfY, (z1 - z0) * 0.5f,
+           (x0 + x1) * 0.5f, cy, (z0 + z1) * 0.5f, tex, color,
+           (uint32_t)Tag::Static, collide, visible);
 }
 
 // A solid wall running along X (its plane is z = const). Spans x in [x0,x1] and
@@ -337,16 +440,9 @@ void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysi
     }
 }
 
-// A ceiling lid over a plate (thin collision slab at floorY+ceilH). Collision-only
-// invisible: the GLB ceiling panels (env_art) provide the visible ceiling; this
-// stops the player/camera leaving through the top. Spans the full plate.
-void addCeiling(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-                float cx, float cz, float hx, float hz, float ceilY,
-                x3::rhi::TextureHandle tex) {
-    const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    addBox(scene, device, physics, hx, kCeilT * 0.5f, hz, cx, ceilY + kCeilT * 0.5f, cz,
-           tex, white, (uint32_t)Tag::Static, /*collide*/true, /*visible*/false);
-}
+// (The plate ceiling lid is built by addSlabMinusHoles — collision-only + invisible,
+// the GLB ceiling panels from env_art provide the visible ceiling — so it can carry
+// the stairwell well cutout like the floor slabs do.)
 
 // ---- Detention-room interior builder (Floor 1). Each room is an axis-aligned box;
 // we build its 4 perimeter walls (running along Z at x=cx±w/2, and along X at z=cz±d/2)
@@ -511,7 +607,16 @@ Level1Layout buildLevel1(Scene& scene,
     // trim is OFF for the main fill: the texture tiles many times across each big plate,
     // so an edge-of-texture caution band would repeat on every tile (a loud yellow grid).
     // The deep seams + diamond tread already read unmistakably as a deck.
-    auto floorPx = x3::prims::makeFloorGrateRGBA(kTexN, /*tiles*/2, x3::prims::detail::kNoTint, /*hazard*/false);
+    // D22 (QA upper-floors sweep): the deck map as authored is a **3.2% reflector** —
+    // darker than asphalt, the exact sr_rubberfloor pathology surface_library.h was
+    // written about, and the per-floor identity tints only ever DARKEN it further
+    // (measured effective albedo 0.018-0.026 LINEAR on all eight plates, against an
+    // interior band of 0.08-0.40). A light lands on the Spire's floors and nothing
+    // comes back. Lift the MAP itself by a neutral, hue-preserving factor at generation
+    // time (kept in sRGB bytes, so no baseColor ever exceeds 1) — the identity tints
+    // then land every plate deck inside the band. --test-levellint's SPIRE-VALUE probe
+    // reads level1DeckMapLift() so the gate and the world can never disagree.
+    auto floorPx = x3::prims::makeFloorGrateRGBA(kTexN, /*tiles*/2, level1DeckMapLift(), /*hazard*/false);
     x3::rhi::TextureHandle floorTex = device.createTexture(floorPx.data(), kTexN, kTexN, true);
     // WALLS: three calm, large-scale (2x2 panel) variants so adjacent corridor surfaces
     // don't read as one repeating tile (the "all walls identical" complaint). The accent
@@ -538,6 +643,13 @@ Level1Layout buildLevel1(Scene& scene,
 
     Level1Layout L;
 
+    // The stairwell layout is resolved BEFORE the plates: every floor slab and ceiling
+    // lid is built with its well cut out (D19).
+    const SpireStair& stair = spireStair();
+    // Neutral value-normalized deck tint for the stair's own walking surfaces (they
+    // span every floor, so they carry no floor identity hue).
+    const float deckTint[4] = { 0.72f, 0.72f, 0.72f, 1.0f };
+
     // ===================================================================
     // 1) FLOOR PLATES — for each floor: floor slab, the 4 SOLID perimeter walls (two
     //    long side walls along X at z=±zHalf, plus the -X and +X end caps), and a
@@ -554,13 +666,30 @@ Level1Layout buildLevel1(Scene& scene,
 
         // Floor slab (every floor including B1; the rooftop still has a deck). B1 gets
         // a HOLE carved under Jake's cell for the code-locked trapdoor (secret_room.*),
-        // so an open hatch actually drops the player into the secret room below.
-        if (fi == (uint32_t)L1Floor::B1) {
-            addFloorWithCutout(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
-                               floorTex, tint, floorVis, kCellHatchCx, kCellHatchCz, kCellHatchHalf);
-        } else {
-            addFloor(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
-                     floorTex, tint, floorVis);
+        // so an open hatch actually drops the player into the secret room below. Every
+        // floor ABOVE B1 gets the stairwell well cut out of it (D19) — B1's slab is the
+        // bottom of that well, so it stays solid.
+        {
+            SlabHole holes[2];
+            uint32_t nh = 0;
+            if (fi == (uint32_t)L1Floor::B1)
+                holes[nh++] = { kCellHatchCx - kCellHatchHalf, kCellHatchCx + kCellHatchHalf,
+                                kCellHatchCz - kCellHatchHalf, kCellHatchCz + kCellHatchHalf };
+            else
+                holes[nh++] = { stair.wellX0, stair.wellX1, stair.wellZ0, stair.wellZ1 };
+            addSlabMinusHoles(scene, device, physics, f.x0, f.x1, -f.zHalf, f.zHalf,
+                              f.y0 - 0.05f, 0.05f, floorTex, tint, floorVis, holes, nh);
+            // APRON: env_art skips every GLB floor tile the well touches (otherwise it
+            // paints a walk-through-able floor over the shaft). Lay the graybox deck
+            // back over exactly those skipped tiles, minus the well — render only, the
+            // slab above already carries the collision.
+            if (artMask.floors && fi != (uint32_t)L1Floor::B1) {
+                const SpireStair::Box sp = spireWellTileSpan(fi);
+                const SlabHole wellHole{ stair.wellX0, stair.wellX1, stair.wellZ0, stair.wellZ1 };
+                addSlabMinusHoles(scene, device, physics, sp.x0, sp.x1, sp.z0, sp.z1,
+                                  f.y0 - 0.05f, 0.05f, floorTex, tint, /*visible*/true,
+                                  &wellHole, 1, /*collide*/false);
+            }
         }
         // Two long side walls (z = ±zHalf), floor-to-ceiling. Pick DIFFERENT wall
         // variants for the two facing side walls AND stagger by floor so no two adjacent
@@ -576,10 +705,22 @@ Level1Layout buildLevel1(Scene& scene,
                      /*withDoorway*/false, f.y0, f.ceil, wallVariants[(fi + 2) % 3], kWallTint, crossWallVis);
         addCrossWall(scene, device, physics, f.x1, -f.zHalf, f.zHalf, 0.0f,
                      /*withDoorway*/false, f.y0, f.ceil, wallVariants[fi % 3], kWallTint, crossWallVis);
-        // Ceiling lid (skip the rooftop: F7 is open to the sky). Collision-only.
-        if (!isRooftop)
-            addCeiling(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf,
-                       f.y0 + f.ceil, ceilTex);
+        // Ceiling lid (skip the rooftop: F7 is open to the sky). Collision-only, and
+        // holed at the stair well so the stairwell is a continuous shaft (D19).
+        if (!isRooftop) {
+            const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+            const SlabHole lidHole{ stair.wellX0, stair.wellX1, stair.wellZ0, stair.wellZ1 };
+            addSlabMinusHoles(scene, device, physics, f.x0, f.x1, -f.zHalf, f.zHalf,
+                              f.y0 + f.ceil + kCeilT * 0.5f, kCeilT * 0.5f,
+                              ceilTex, white, /*visible*/false, &lidHole, 1);
+            // Ceiling apron over the tiles env_art skipped (same contract as the floor).
+            if (artMask.ceilings) {
+                const SpireStair::Box sp = spireWellTileSpan(fi);
+                addSlabMinusHoles(scene, device, physics, sp.x0, sp.x1, sp.z0, sp.z1,
+                                  f.y0 + f.ceil + kCeilT * 0.5f, kCeilT * 0.5f,
+                                  ceilTex, white, /*visible*/true, &lidHole, 1, /*collide*/false);
+            }
+        }
 
         // Fill the per-floor layout result.
         L.floorBaseY[fi]  = f.y0;
@@ -630,34 +771,43 @@ Level1Layout buildLevel1(Scene& scene,
     //    [-6.5,6.5]). Purely collision graybox + tint.
     // ===================================================================
     {
-        const float stairX0 = 10.0f, stairX1 = 14.0f;    // stair well footprint (X) — north band, inside every plate
-        const float stairZ  = 15.0f;                     // +Z north band: clear of detention (z<=9.5) + content (|z|<=6.5)
-        const float kTargetRise = 0.5f;                  // ~0.5 m rise/step target (steps scale with the gap)
-        // Stair-well floor + outer walls spanning all floors (a single tall shaft).
-        const float swBottom = shaftBottom;
-        const float swTop     = kFloors[(uint32_t)L1Floor::F7].y0;
-        const float swH       = swTop - swBottom + 0.5f;
-        // Outer -X wall of the stair well.
-        addBox(scene, device, physics, kWallT * 0.5f, swH * 0.5f, 2.0f,
-               stairX0, swBottom + swH * 0.5f, stairZ,
-               wallTex, kStairTint, (uint32_t)Tag::Static, true, crossWallVis);
-        // Steps: one straight run per floor transition (B1->F1 ... F6->F7); step COUNT is
-        // proportional to that transition's (non-uniform) gap so the top lands on the next
-        // floor.
-        for (uint32_t fi = 0; fi + 1 < (uint32_t)L1Floor::Count; ++fi) {
-            const float baseY = kFloors[fi].y0;
-            const float gap   = kFloors[fi + 1].y0 - baseY;            // this transition's rise
-            const int   nSteps = std::max(1, (int)std::lround(gap / kTargetRise));
-            const float stepRise = gap / (float)nSteps;                // exact rise/step (lands on next floor)
-            const float stepRun  = (stairX1 - stairX0) / (float)nSteps; // run/step (fixed X footprint reused per run)
-            for (int s = 0; s < nSteps; ++s) {
-                const float topY = baseY + (float)(s + 1) * stepRise;  // step top surface
-                const float sx   = stairX0 + ((float)s + 0.5f) * stepRun; // step center X
-                addBox(scene, device, physics, stepRun * 0.5f, topY * 0.5f - swBottom * 0.5f, 1.4f,
-                       sx, (topY + swBottom) * 0.5f, stairZ,
-                       wallTex, kStairTint, (uint32_t)Tag::Static, true, /*visible*/true);
-            }
+        const SpireStair& S = spireStair();
+        auto emit = [&](const SpireStair::Box& b, bool vis) {
+            addBox(scene, device, physics, (b.x1 - b.x0) * 0.5f, (b.y1 - b.y0) * 0.5f, (b.z1 - b.z0) * 0.5f,
+                   (b.x0 + b.x1) * 0.5f, (b.y0 + b.y1) * 0.5f, (b.z0 + b.z1) * 0.5f,
+                   floorTex, deckTint, (uint32_t)Tag::Static, /*collide*/true, vis);
+        };
+        // The RAMP flights (makeRamp wedges — the D13 winding orient applies, so the
+        // walking surface survives backface culling). Deck-surfaced like every other
+        // walkable plane in the tower (the D10 law: ramps wear the floor set, not the
+        // wall set on the unnormalized route).
+        for (const SpireStair::Flight& fl : S.flights) {
+            const float rise = fl.topY - fl.baseY;
+            const float runL = fl.solid.x1 - fl.solid.x0;
+            const float cz   = (fl.solid.z0 + fl.solid.z1) * 0.5f;
+            const float cx   = (fl.dir > 0.0f) ? fl.solid.x0 : fl.solid.x1;
+            x3::prims::PrimMesh geo = x3::prims::makeRamp(cx, fl.baseY, cz,
+                                                          (fl.solid.z1 - fl.solid.z0) * 0.5f,
+                                                          runL, rise, fl.axis, fl.dir, 0.5f);
+            Entity e;
+            e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                       geo.index.data(), (uint32_t)geo.index.size());
+            e.tex = floorTex;
+            for (int i = 0; i < 4; ++i) e.baseColor[i] = deckTint[i];
+            for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
+            e.tag = (uint32_t)Tag::Static;
+            e.visible = true;
+            e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
+                                           geo.cindex.data(), (uint32_t)geo.cindex.size());
+            scene.add(e);
+            for (const SpireStair::Box& b : fl.steps) emit(b, /*visible*/true);
         }
+        for (const SpireStair::Box& b : S.landings) emit(b, /*visible*/true);
+        for (const SpireStair::Box& b : S.soffits) emit(b, /*visible*/true);
+        for (const SpireStair::Box& b : S.walls)
+            addBox(scene, device, physics, (b.x1 - b.x0) * 0.5f, (b.y1 - b.y0) * 0.5f, (b.z1 - b.z0) * 0.5f,
+                   (b.x0 + b.x1) * 0.5f, (b.y0 + b.y1) * 0.5f, (b.z0 + b.z1) * 0.5f,
+                   wallTex, kStairTint, (uint32_t)Tag::Static, /*collide*/true, crossWallVis);
     }
 
     // ===================================================================
@@ -865,6 +1015,67 @@ Level1Layout buildLevel1(Scene& scene,
 
 // Single source of truth for the floor table (shared with env_art.cpp).
 const L1RoomDef* level1Rooms() { return kFloors; }
+
+// The resolved stairwell layout (built once). Shared by buildLevel1 + --test-levellint.
+const SpireStair& spireStair() {
+    static const SpireStair s = buildSpireStair();
+    return s;
+}
+
+// D22: the neutral, hue-preserving lift applied to the procedural deck map at
+// generation time (see buildLevel1). Exported so --test-levellint measures the map the
+// world actually ships, not the unlifted one.
+const float* level1DeckMapLift() {
+    static const float kLift[3] = { 2.6f, 2.6f, 2.6f };
+    return kLift;
+}
+
+// The tile-aligned stair-well opening on one floor (see level1.h). env_art skips these
+// tiles; buildLevel1 aprons the difference so the skip never leaves a void ring.
+SpireStair::Box spireWellTileSpan(uint32_t floorIndex) {
+    const L1RoomDef& f = kFloors[floorIndex < (uint32_t)L1Floor::Count ? floorIndex : 0];
+    const SpireStair& S = spireStair();
+    const float gx = f.x0, gz = -f.zHalf;                  // env_art's tile-grid origin
+    const int ix0 = (int)std::floor((S.wellX0 - gx) / kSpireArtTileX);
+    const int ix1 = (int)std::ceil ((S.wellX1 - gx) / kSpireArtTileX);
+    const int iz0 = (int)std::floor((S.wellZ0 - gz) / kSpireArtTileZ);
+    const int iz1 = (int)std::ceil ((S.wellZ1 - gz) / kSpireArtTileZ);
+    return { gx + (float)ix0 * kSpireArtTileX, gx + (float)ix1 * kSpireArtTileX,
+             gz + (float)iz0 * kSpireArtTileZ, gz + (float)iz1 * kSpireArtTileZ, 0.0f, 0.0f };
+}
+
+void level1ShaftFootprint(float& x0, float& x1, float& z0, float& z1) {
+    x0 = kShaftCx - kShaftHx; x1 = kShaftCx + kShaftHx;
+    z0 = kShaftCz - kShaftHz; z1 = kShaftCz + kShaftHz;
+}
+
+// The tint set buildLevel1 multiplies over the procedural graybox maps (kind routes the
+// probe to the right texture: 0 = floor grate, 1 = wall panel, 2 = ceiling panel).
+const L1Surface* level1Surfaces(uint32_t& outCount) {
+    static const L1Surface kSurf[] = {
+        { "B1 plate deck", { kFloorTints[0][0], kFloorTints[0][1], kFloorTints[0][2], 1.0f }, 0 },
+        { "F1 plate deck", { kFloorTints[1][0], kFloorTints[1][1], kFloorTints[1][2], 1.0f }, 0 },
+        { "F2 plate deck", { kFloorTints[2][0], kFloorTints[2][1], kFloorTints[2][2], 1.0f }, 0 },
+        { "F3 plate deck", { kFloorTints[3][0], kFloorTints[3][1], kFloorTints[3][2], 1.0f }, 0 },
+        { "F4 plate deck", { kFloorTints[4][0], kFloorTints[4][1], kFloorTints[4][2], 1.0f }, 0 },
+        { "F5 plate deck", { kFloorTints[5][0], kFloorTints[5][1], kFloorTints[5][2], 1.0f }, 0 },
+        { "F6 plate deck", { kFloorTints[6][0], kFloorTints[6][1], kFloorTints[6][2], 1.0f }, 0 },
+        { "F7 plate deck", { kFloorTints[7][0], kFloorTints[7][1], kFloorTints[7][2], 1.0f }, 0 },
+        { "B1 side wall",  { kFloorTints[0][0], kFloorTints[0][1], kFloorTints[0][2], 1.0f }, 1 },
+        { "F2 side wall",  { kFloorTints[2][0], kFloorTints[2][1], kFloorTints[2][2], 1.0f }, 1 },
+        { "F3 side wall",  { kFloorTints[3][0], kFloorTints[3][1], kFloorTints[3][2], 1.0f }, 1 },
+        { "F4 side wall",  { kFloorTints[4][0], kFloorTints[4][1], kFloorTints[4][2], 1.0f }, 1 },
+        { "F5 side wall",  { kFloorTints[5][0], kFloorTints[5][1], kFloorTints[5][2], 1.0f }, 1 },
+        { "F6 side wall",  { kFloorTints[6][0], kFloorTints[6][1], kFloorTints[6][2], 1.0f }, 1 },
+        { "F7 side wall",  { kFloorTints[7][0], kFloorTints[7][1], kFloorTints[7][2], 1.0f }, 1 },
+        { "interior wall", { kWallTint[0], kWallTint[1], kWallTint[2], 1.0f }, 1 },
+        { "elevator shaft",{ kShaftTint[0], kShaftTint[1], kShaftTint[2], 1.0f }, 1 },
+        { "stairwell wall",{ kStairTint[0], kStairTint[1], kStairTint[2], 1.0f }, 1 },
+        { "stairwell deck",{ 0.72f, 0.72f, 0.72f, 1.0f }, 0 },
+    };
+    outCount = (uint32_t)(sizeof(kSurf) / sizeof(kSurf[0]));
+    return kSurf;
+}
 
 const L1WingRoom* level1WingRooms(uint32_t& outCount) {
     outCount = kWingRoomCount;

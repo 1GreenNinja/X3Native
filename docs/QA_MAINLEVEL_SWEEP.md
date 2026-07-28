@@ -104,6 +104,75 @@ world defects.
 `--test-basis` 11/11 · `--test-primlight` 9/9 · `--smoketest` default + canonlevel:
 exit 0, 0 VUID, allocationCount=0.
 
+## SESSION 3 (2026-07-27, `fix/qa-upper-floors`) — the UPPER FLOORS of the SPIRE
+
+Sessions 1-2 swept the **canon facility** (`--world canonlevel`, the LevelDoc JSON) and
+left it lint-green. This session finished the F2-F7 pass on the OTHER upper-floor
+tower: the **Spire** (`--world level1`, `app/level1.cpp`) — the code-generated B1->F7
+stack whose F2-F7 plates carry the Medical / Genetics / Cybernetics / Drone / Alien /
+Executive wings.
+
+### THE HEADLINE — GATE A could not see half the game
+
+`--test-levellint` loaded the canonical JSON and lints **only** what the loader
+resolves. The Spire is generated in C++ and was therefore **invisible to the geometric
+lint for its whole life** — precisely the failure the x3-level-authoring doctrine's
+LAW 5 warns about ("if you must generate geometry in code, generate it INTO a form the
+lint can see"). The gate reported PASS while an unwalkable, self-z-fighting mass stood
+in the middle of every upper floor.
+
+**NEW: the SPIRE lint block** (`app/level_lint.cpp`) reads the builder's own tables and
+the SHARED stairwell layout (`spireStair()`, new in `level1.h` — one source, consumed by
+both the builder and the gate, so the lint can never go blind) and applies the doctrine
+to the Spire: CONTAIN / OVERLAP / KEEPOUT / DOOR-PROBE (LAW 1), ZFIGHT / PIERCE / WELL
+(LAW 2), RISER / TREAD / SLOPE / LANDING / HEAD (LAW 3), REACH, and VALUE (the
+surface_library reflectance band). Ships negative controls.
+
+**Objective before -> after** (`--test-levellint`, SPIRE counters):
+
+| probe | before | after |
+|-------|--------|-------|
+| riser (LAW 3) | 182 | 0 |
+| tread (LAW 3) | 162 | 0 |
+| landing (LAW 3) | 7 | 0 |
+| zfight (LAW 2) | 920 pairs | 0 |
+| pierce (LAW 2) | 1423 crossings | 0 |
+| well | 1 | 0 |
+| value band | 8 | 0 |
+| contain / overlap / keepout / door | 0 | 0 |
+| **violation lines** | **24** | **0 — PASS** |
+
+| id | room / where | class | sev | evidence | root cause | status |
+|----|--------------|-------|-----|----------|------------|--------|
+| D19 | the Spire emergency stairwell (x 10-14, z 15) — visible on **every** floor B1-F7 | geometry / doubled + through-solid | **SEV-1** | SPIRE lint: 920 interpenetrating pairs, 1423 slab/lid crossings; AFTER_F2/F4/F6/F7_stairwell_from_plate.png, AFTER_F3_stairwell_apron.png | each "step" was a solid COLUMN from y=0 to its own top and every floor transition reused the SAME 4 m of X, so 182 boxes nested inside one another; no well was ever cut, so the whole mass was driven through every floor slab and ceiling lid on F1-F6 | **FIXED (ROOT)** `level1.cpp`: the stair is now a shared `SpireStair` layout — a switchback of ramp flights + landings inside a **well cut out of every slab and lid it crosses** (`addSlabMinusHoles`, generalised from the B1 trapdoor carve) |
+| D20 | same | geometry / illegal height transition | **SEV-1** | SPIRE lint: 182 risers at 0.500 m, 162 treads down to **0.057 m** (the 35 m F4->F5 gap) | the run split a whole floor-to-floor gap into fixed ~0.5 m rises over a fixed 4 m X footprint — at 35 m that is a 70-step vertical wall. The stair was not climbable on ANY floor, and the uncut ceiling lids blocked it even if it had been | **FIXED (ROOT)** rebuilt in the doctrine's LAW 3 vocabulary: <= 30 deg ramp flights (measured 21-27 deg), a level landing every <= 2.5 m of rise, >= 1.9 m head clearance under the return leg, even flight counts so every floor is entered off the same landing through a 1.2 m doorway in the enclosure (LAW 1) |
+| D21 | the well vs the env_art GLB overlay, F1-F7 | art / walk-through-able floor | **SEV-1** (introduced by D19's cut, caught + fixed in-session) | probe_f3_well_down.png (pre-fix: a GLB floor panel painted straight across the open shaft) vs AFTER_stair_shaft_lookdown.png | `env_art::tileSurface` tiles GLB floor/ceiling panels across each WHOLE plate and knew nothing about the opening — solid-looking art over a hole with no collision under it | **FIXED (ROOT)** ONE shared rect, `spireWellTileSpan()`: env_art SKIPS every tile the well touches; buildLevel1 lays a graybox APRON over exactly those tiles minus the well (render-only; the slab already carries collision) so the skip leaves no void ring |
+| D22 | **every plate deck B1-F7** + the stair's own walking surfaces | surface / value band | SEV-2 | SPIRE-VALUE probe: measured map albedo **0.032 LINEAR**, effective 0.018-0.026 after the per-floor tints, against the interior band 0.08-0.40 | `makeFloorGrateRGBA`'s deck face is sRGB (52,55,62) = a **3.2% reflector, darker than asphalt** — the exact sr_rubberfloor pathology `surface_library.h` was written about — and the per-floor identity tints (0.55-0.78) only ever darken it further. A light lands on the Spire's floors and nothing comes back | **FIXED** a neutral hue-preserving lift on the MAP at generation time (`level1DeckMapLift()`, kept in sRGB bytes so no baseColor exceeds 1): map 0.032 -> **0.223**, every plate deck now 0.12-0.18 in band. Applied to the B1 trapdoor panels too, which are authored to sit ~1.3x brighter than the deck (`secret_room.cpp`). **Scope honesty:** the plate decks are only DRAWN when the GLB floor art is absent (`artMask.floors`); with art on, this fix shows on the stairwell surfaces, the aprons and the hatch |
+
+### Session-3 verdict + what is NOT claimed
+
+Geometry state of the Spire's F2-F7 after this session: the wing-room tables
+(CONTAIN / OVERLAP / KEEPOUT / DOOR-PROBE) were **already clean and were verified so,
+not assumed** — every defect found was in the stairwell, the well's art contract, and
+the deck value. All are root fixes: one layout, one shared rect, one map lift, each
+fixing all seven floors at once rather than per-instance.
+
+Headless gates prove no-crash / no-leak / lint-clean. They do NOT prove it looks right.
+Read `docs/screenshots/qa_upperfloors/` — the stairwell reads as a solid panelled tower
+with a doorway on each floor and a legible ramp inside, no void, no shimmer. The one
+thing that wants the owner's eye is the **graybox apron**: it is a visibly different
+(flatter) deck material from the GLB floor around the stairwell base. It is correct and
+seamless, but it is graybox next to art.
+
+## GATES (session 3)
+`--test-levellint` PASS (**incl. the new SPIRE block, 24 -> 0 violations**) ·
+`--test-propclip` PASS · `--test-level1` 21/21 · `--test-canonlevel` 16/16 ·
+`--test-canonplay` 12/12 · `--test-spiretop` 20/20 · `--test-spiremid` 27/27 ·
+`--test-nexus` 11/11 · `--test-basis` 11/11 · `--test-primlight` 9/9 ·
+`--test-secretroom` 8/8 · `--test-hatch` 8/8 · `--test-elevator` 6/6 ·
+`--test-wingdressing` 6/6 · `--test-sublevels` 22/22 · `--test-goldenpath` 9/9 ·
+`--test-strata` 10/10 · `--test-thirdperson` 19/19.
+
 ## GAMMA-RECAL CLOSURE (2026-07-25, fix/gamma-recal)
 
 The deferred lighting-lane rows above are closed by the gamma recalibration
