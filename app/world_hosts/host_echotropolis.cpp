@@ -296,7 +296,10 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     // Golden-hour blush: sun above the horizon but LOW -> horizon warms to amber,
     // zenith picks up a touch of it. Peaks at elevation 0, gone by ~0.35.
     if (s.sunElevation > 0.0f) {
-        const float low = clamp01(1.0f - s.sunElevation / 0.35f);
+        // DUSTY-DAY FIX (Tim 2026-07-28): 0.35 kept the amber blush alive
+        // through HALF the day arc (midday elev 0.72) — the sky read tan from
+        // mid-morning on. 0.16 confines it to genuine golden hour.
+        const float low = clamp01(1.0f - s.sunElevation / 0.16f);
         constexpr float kAmber[3] = { 0.98f, 0.52f, 0.24f };
         for (int i = 0; i < 3; ++i) {
             sky.horizon[i] += (kAmber[i] - sky.horizon[i]) * (0.65f * low);
@@ -431,7 +434,7 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     // dayness: 0 deep night .. 1 full day (matches applyTodSample's ramp).
     const float dayness = clamp01((s.sunElevation + 0.06f) / 0.30f);
     // low: golden-hour weight — sun up but near the horizon (peaks at elev 0).
-    const float low = (s.sunElevation > 0.0f) ? clamp01(1.0f - s.sunElevation / 0.35f) : 0.0f;
+    const float low = (s.sunElevation > 0.0f) ? clamp01(1.0f - s.sunElevation / 0.16f) : 0.0f;   // DUSTY-DAY FIX: golden hour only
     // night: 1 at deep night, 0 by full day (hoisted — the volumetric block below
     // and the HDR-post block further down both scale by it).
     const float night = 1.0f - dayness;
@@ -449,7 +452,7 @@ void applyAtmosphere(x3::rhi::IRenderDevice* device, const x3::game::TodSample& 
     mix3(fog.color, kFogNight, kFogDay, dayness);              // night -> day base
     // Warm HARD toward saturated gold at golden hour. High weight (not a 50/50
     // blend) so cool-blue + gold never average into gray — the haze reads amber.
-    const float goldW = clamp01(low * 1.35f);
+    const float goldW = clamp01(low * 0.9f);   // DUSTY-DAY FIX: amber accents the hour, never owns the day
     mix3(fog.color, fog.color, kFogGold, goldW);
     // Tuned after Tim's sea-approach screenshot (2026-07-11): the whole 4km island
     // was drowning in amber soup at golden hour. The haze must live at the HORIZON
@@ -874,7 +877,12 @@ int hostEchotropolis(HostContext& hc) {
     Heightfield hf;   // orbit-pivot terrain sampler (windowed only; headless keeps y=0)
     {
         const char* dirEnv = std::getenv("ECHO_ISLAND_DIR");
-        const std::string islandDir = dirEnv ? dirEnv : "D:/GameDev/SimCityLLM2/refs/terrain";
+        // MESA-RIM EXTENSION (Tim: "extend the cliffs out at the top to support
+        // them"): the default island is now the 20260728 rebake — plateau pushed
+        // ~55m past the old rim with steep outcropping falloff, so the west-edge
+        // towers stand on rock instead of air. ECHO_ISLAND_DIR still overrides
+        // (the fjord candidate lives in assets/island_fjord for its own test).
+        const std::string islandDir = dirEnv ? dirEnv : "D:/GameDev/EchoHarbor/assets/island_mesa";
         if (island.buildFromGlb(*device, islandDir, "island_20260530.glb"))
             x3::logInfo("--world echotropolis: island GLB loaded from " + islandDir);
         else

@@ -191,6 +191,12 @@ TodSample TimeOfDay::sampleAt(float t) const {
         s.sky.sunDir[1] = elev;
         s.sky.sunDir[2] = std::cos(az) * cosE * 0.6f + 0.2f;
         s.sunElevation  = elev;
+        // DUSTY-DAY FIX (Tim: "blue sky!") — placed AFTER sunElevation is set
+        // (the first draft read it before assignment): a HIGH sun burns the
+        // analytic haze off, so noon reads blue instead of milk; golden/low
+        // hours keep the authored haze where the atmosphere belongs.
+        if (elev > 0.30f)
+            s.sky.haze *= clamp01(1.0f - (elev - 0.30f) / 0.42f * 0.65f);
 
         // City lights: on whenever the sun is below (or barely above) the horizon.
         s.cityLightsOn = m_cfg.enableCityLights && (elev < 0.08f);
