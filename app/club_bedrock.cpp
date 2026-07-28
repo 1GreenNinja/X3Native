@@ -139,7 +139,7 @@ std::vector<uint8_t> makeRockNormalRGBA(uint32_t n) {
 // dielectric (metal 0). Roughness VARIES: dry grain is rough (matte), but the
 // crevice cracks + low damp pockets hold water -> a low-roughness WET SHEEN, so
 // the rock catches a glossy highlight where it's damp and stays matte where dry.
-std::vector<uint8_t> makeRockMRRGBA(uint32_t n) {
+std::vector<uint8_t> makeRockMRRGBA(uint32_t n, float dryRough = 0.90f, float wetRough = 0.30f) {
     std::vector<uint8_t> px((size_t)n * n * 4);
     for (uint32_t y = 0; y < n; ++y)
         for (uint32_t x = 0; x < n; ++x) {
@@ -147,9 +147,10 @@ std::vector<uint8_t> makeRockMRRGBA(uint32_t n) {
             float crack; const float h = rockHeight(u, v, crack);
             const float damp = smoothNoise(u * 1.6f + 2.3f, v * 1.6f + 8.1f, 8);
             // dry rough default; wet (cracks + damp low pockets) drops roughness.
-            float rough = 0.90f - 0.10f * h;            // grain slightly glossier on crest
+            // A glassy biome (obsidian) passes a low dryRough/wetRough for sharp specular.
+            float rough = dryRough - 0.10f * h;         // grain slightly glossier on crest
             const float wet = std::max(crack, std::max(0.0f, damp - 0.55f) * 2.0f);
-            rough = rough * (1.0f - 0.60f * wet) + 0.30f * wet;   // wet -> ~0.30 sheen
+            rough = rough * (1.0f - 0.60f * wet) + wetRough * wet;   // wet -> sheen
             auto c8 = [](float f) { return (uint8_t)(f < 0 ? 0 : f > 1 ? 255 : f * 255.0f + 0.5f); };
             const uint32_t i = (y * n + x) * 4;
             px[i + 0] = 255;                            // R unused
@@ -560,6 +561,10 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
     mat.albedo = device.createTexture(rockPx.data(), kN, kN, true);
     mat.normal = device.createTexture(rockNx.data(), kN, kN, false);
     mat.mr     = device.createTexture(rockMx.data(), kN, kN, false);
+    // GLASSY MR for the OBSIDIAN band — near-black volcanic glass: a low-roughness
+    // surface throws a sharp specular off the crystal light (#4 per-biome variation).
+    auto rockGlassMx = makeRockMRRGBA(kN, /*dryRough*/0.28f, /*wetRough*/0.10f);
+    const x3::rhi::TextureHandle mrGlass = device.createTexture(rockGlassMx.data(), kN, kN, false);
     auto mkVein = [&](float r, float g, float b, float dens, float lift) {
         auto p = makeRockVeinsRGBA(kN, r, g, b, dens, lift);
         return device.createTexture(p.data(), kN, kN, true);
@@ -587,6 +592,14 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         }
         return veinFaint;
     };
+    // Pick the surface roughness map per biome: OBSIDIAN reads as glassy near-black
+    // volcanic glass (sharp specular); every other stratum is the damp matte rock.
+    auto pickMR = [&](float y) -> x3::rhi::TextureHandle {
+        for (const auto& s : ElevatorSystem::strata())
+            if (y >= s.yMin && y <= s.yMax)
+                return (std::string(s.name) == "Obsidian") ? mrGlass : mat.mr;
+        return mat.mr;
+    };
 
     int added = 0;
 
@@ -601,7 +614,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = pickMR(cy);
         for (int i = 0; i < 4; ++i) e.baseColor[i] = tc.tint[i];
         e.emissiveTex = pickVein(cy);                           // crystal seams for the biome
         e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.0f;
@@ -618,7 +631,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = pickMR(cy);
         for (int i = 0; i < 4; ++i) e.baseColor[i] = tc.tint[i];
         e.emissiveTex = pickVein(cy);
         e.emissive[0] = e.emissive[1] = e.emissive[2] = 1.0f; e.emissive[3] = 1.0f;
@@ -643,7 +656,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = pickMR(cy);
         e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=1.0f;
         if (veinTex.valid()) {
             e.emissiveTex = veinTex;
@@ -933,7 +946,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
-        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = mat.mr;
+        e.tex = mat.albedo; e.normalTex = mat.normal; e.mrTex = pickMR(cyc);
         e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=1.0f;
         if (veinTex.valid()) {
             e.emissiveTex = veinTex;
