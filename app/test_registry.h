@@ -42,6 +42,7 @@ struct TestFlags {
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testPropClip = false;    // --test-propclip (GATE A ext: dressing prop AABB vs room bounds)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
+    bool testStairNav = false;   // feat/stair-nav: enemy stairwell pathing (S1-S5)
     bool testFilmic = false;      // --test-filmic (composite filmic block: CPU-mirror identity probe)
     bool testGoldenPath = false;
     bool testOpening = false;     // --test-opening (opening-flow: the wake-in-cell contract)

@@ -437,6 +437,10 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;
     }
+    if (tf.testStairNav) {
+        x3::logInfo("running the STAIR-NAV self-test (S1-S5: chain vs geometry, 4.5 seal, F1->F3 climb)...");
+        return x3::game::runStairNavSelfTest() ? 0 : 1;
+    }
     if (tf.testGoldenPath) {
         x3::logInfo("running the ENDGAME SPINE self-test (G1-G9: tower -> clone gate -> Sarah -> Helipad WIN)...");
         return x3::game::runGoldenPathSelfTest() ? 0 : 1;

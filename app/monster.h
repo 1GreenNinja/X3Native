@@ -886,6 +886,44 @@ public:
     // The number of waypoints in the current path (0 = none / direct). Diagnostics.
     uint32_t pathWaypointCount() const { return m_follower.waypointCount(); }
 
+    // ---- STAIR ROUTE (feat/stair-nav): inter-floor commute over an authored
+    // waypoint chain (the FacilityStairwell's nav chain — see stairwell.h). While
+    // a route is active it OVERRIDES the state movement each frame: the agent
+    // steers planar toward the next waypoint at chase speed and its Y is LERPED
+    // along the current segment, so feet ride the stair nosing line (+- half a
+    // riser) instead of staying floor-locked. The wall probe is skipped while on
+    // the route (the chain is authored down the clear lane centers). On reaching
+    // the final waypoint the route clears, the arrival floor latches for the host
+    // (takeStairArrivalFloor) and normal per-floor AI resumes. ----
+    void setStairRoute(const std::vector<x3::phys::Vec3>& wps, int targetFloor) {
+        m_stairWps = wps; m_stairIdx = 0;
+        m_stairActive = m_stairWps.size() >= 2;
+        m_stairTargetFloor = m_stairActive ? targetFloor : -1;
+    }
+    void clearStairRoute() {
+        m_stairWps.clear(); m_stairIdx = 0; m_stairActive = false;
+        m_stairTargetFloor = -1;
+    }
+    bool stairRouteActive() const { return m_stairActive; }
+    int  stairTargetFloor() const { return m_stairTargetFloor; }
+    // The floor a finished route delivered this agent to (-1 = none). Latched at
+    // route completion, cleared by this read — the host re-tags the entity's room.
+    int takeStairArrivalFloor() {
+        const int f = m_stairArrivedFloor; m_stairArrivedFloor = -1; return f;
+    }
+    // The stair segment currently walked (a = departed waypoint, b = steered-to).
+    // False before the first waypoint / with no route. Diagnostics + the
+    // --test-stairnav follow assertion (agent Y vs the chain's segment lerp).
+    bool stairSegment(x3::phys::Vec3& a, x3::phys::Vec3& b) const {
+        if (!m_stairActive || m_stairIdx == 0 || m_stairIdx >= m_stairWps.size())
+            return false;
+        a = m_stairWps[m_stairIdx - 1]; b = m_stairWps[m_stairIdx];
+        return true;
+    }
+    // Hovering flyers are excluded from stair routing by the host (they hold their
+    // spawn-floor hover today — a flight lane is a follow-up).
+    bool flyer() const { return m_flyer; }
+
     // The monster's entity id (kNoLink until built) and physics body.
     uint32_t entity() const { return m_entity; }
     x3::phys::BodyId body() const { return m_body; }
@@ -1209,6 +1247,16 @@ private:
     float    m_repathTimer  = 0.0f;          // countdown to rebuild the path (cadence)
     x3::phys::Vec3 m_pathGoal{};             // goal the current path was built toward
     bool     m_hasPath      = false;         // a valid path is being followed
+
+    // ---- STAIR ROUTE state (feat/stair-nav, see setStairRoute) --------------
+    std::vector<x3::phys::Vec3> m_stairWps;  // authored waypoints (with Y)
+    uint32_t m_stairIdx          = 0;        // waypoint currently steered toward
+    bool     m_stairActive       = false;
+    int      m_stairTargetFloor  = -1;       // floor the route ends on
+    int      m_stairArrivedFloor = -1;       // completion latch (host consumes)
+    // Advance along the stair route (planar steer + segment-lerped Y + body sync).
+    // Returns true iff the route drove this frame's movement (state movement skips).
+    bool updateStairRoute(float dt, x3::phys::IPhysicsWorld& physics, float speed);
 };
 
 // ---------------------------------------------------------------------------

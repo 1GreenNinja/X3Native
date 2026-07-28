@@ -44,6 +44,8 @@
 
 namespace x3::game {
 
+struct StairNavChain;   // feat/stair-nav: the stairwell's waypoint chain (stairwell.h)
+
 // ---- Per-girl dialog (staging/girls_dialog.json). 4 lifecycle states, distinct lines
 // per girl. Loaded at build (or a tiny baked fallback if the JSON is absent) so each girl
 // speaks her OWN lines by state instead of the shared makeRescueDialog() table. ----
@@ -192,6 +194,16 @@ public:
     // Lightning battery-cell pickups grant charge through this sink (wire to
     // Arsenal::grantCharge). Called with the charge amount when a cell is collected.
     void setChargeSink(std::function<void(int)> sink) { m_chargeSink = std::move(sink); }
+
+    // ---- STAIR PURSUIT (feat/stair-nav) ------------------------------------
+    // Wire the stairwell's nav chain (stairwellNavChain — borrowed, host-owned).
+    // Once set, tick() routes awake, live, grounded SQUAD hostiles (main hall /
+    // cell guards / attackers / upper squads — NEVER the boss ladder or rescue
+    // bosses, whose arenas are story anchors) up/down the stairwell when the
+    // player is on a different floor and the enemy is within the seek radius of
+    // its floor's stair entry. Level 4.5 is unreachable by construction: the
+    // chain has no exit there, and stairNavRoute refuses non-exit floors.
+    void setStairNav(const StairNavChain* chain) { m_stairNav = chain; }
 
     // ---- [W9-3 RPG] item sink: pickups deposit into the BACKPACK ------------
     // When wired, a walked-over upper-floor pickup is offered to the sink INSTEAD
@@ -424,6 +436,11 @@ private:
     CanonItemSinkFn m_itemSink;   // [W9-3 RPG] backpack deposit (empty = legacy)
     std::string m_modelDir;
 
+    // ---- STAIR PURSUIT state (feat/stair-nav, see setStairNav) --------------
+    const StairNavChain* m_stairNav = nullptr;   // borrowed (host owns)
+    float m_stairRouteTimer = 0.0f;              // routing cadence countdown
+    void routeStairPursuers(Scene& scene, const x3::phys::Vec3& eye);
+
     // ---- Lightning battery-cell pickups (floating, spinning, translucent faceted
     // crystals — the Lab2 crystal language; grant charge to the Lightning Gun). ----
     struct Battery {
@@ -491,5 +508,15 @@ bool runGoldenPathSelfTest();
 // (0 < awake << total). Logs PASS/FAIL O#, returns true iff all pass. Skips (PASS)
 // when the canonical JSON is absent.
 bool runOpeningFlowSelfTest();
+
+// --test-stairnav (feat/stair-nav): asserts the stairwell nav chain matches the
+// built geometry (monotone-Y spine inside the shaft, one exit per REAL floor),
+// the STRUCTURAL 4.5 seal (no exit/waypoint at the 4.5/master height, unserved
+// routes refused, negative control on a doctored chain), and a live MonsterSystem
+// commuting F1 -> F3 over the BUILT tower + stairwell within a bounded headless
+// sim, with a per-step ground-clearance raycast proving feet stay on the treads.
+// Logs PASS/FAIL S#, returns true iff all pass. Skips (PASS) when the canonical
+// JSON is absent.
+bool runStairNavSelfTest();
 
 } // namespace x3::game
