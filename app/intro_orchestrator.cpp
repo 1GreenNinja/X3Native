@@ -45,6 +45,8 @@
 #include "space/ship_ai.h"
 #include "space/targeting.h"
 #include "space/ship_damage.h"
+#include "space/sun_bake.h"   // the living-sun surface bake (flyable star port)
+#include "mesh_prims.h"       // makeUVSphere — the star core / corona shells
 #include "space/space_layer.h"   // x3::space::SpaceLayer (S0 spine; AtmoDescent runner host)
 #include "space/descent.h"       // x3::space::AtmoDescent (the ion-pulse on-rails coast-down)
 
@@ -368,6 +370,22 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     std::to_string(planets.size()) + " bodies + SOL pinpoint");
     }
 
+    // The star's render assets (live-only; the sim above never needs them):
+    // the living-surface bake bound as baseColor AND emissiveTex (host_space
+    // recipe — the granulation modulates the bloom), on a smooth UV sphere
+    // reused for the core, the corona shells and the player's shield bubble.
+    x3::rhi::MeshHandle    sunMesh{};
+    x3::rhi::TextureHandle sunTex{};
+    if (live) {
+        x3::prims::PrimMesh sunm = x3::prims::makeUVSphere(48, 96);
+        sunMesh = hc.device->createMesh(sunm.verts.data(), (uint32_t)sunm.verts.size(),
+                                        sunm.index.data(), (uint32_t)sunm.index.size());
+        auto sunPx = x3::space::sunbake::bakeSunRGBA(384);
+        sunTex = hc.device->createTexture(sunPx.data(), 384, 384, /*srgb=*/true);
+        x3::logInfo("[intro] flyable star hung at 11 km along the sky sun ray "
+                    "(r=1.1 km; heat 7 km, shield-dive inside)");
+    }
+
     x3::space::TargetingSystem targeting;
 
     // The capital ship's destructible damage model (the dogfight objective).
@@ -459,6 +477,31 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     float incomingFlashT = 0.0f;             // turret spool warning flash
     bool  shieldDownCalled = false;          // one "SHIELDS DOWN" bark, not sixty
     float hitConfirmT = 0.0f;                // reticle hit-confirm flicker (shot landed)
+
+    // ---- THE STAR (owner: "the SUN that CommanderIntegrator made which you can
+    // fly into, and the shields") — the host_space flyable star, ported into the
+    // dogfight so space is a PLACE, not a backdrop. A physical emissive body
+    // hung along the intro sky's painted sun direction (so the analytic disc
+    // and the real star coincide from spawn), close enough to reach mid-fight:
+    // heat ladder on approach, SHIELD ENGAGED on breaching the core, a 17 s
+    // drain inside (graze-abort recharge outside), hull lost at 0% -> the
+    // canon ShotDown path. Sim runs ALWAYS (deterministic, cheap — the
+    // headless pilot flies +X toward the capital and never comes near);
+    // draw/FX are live-only. Full kill-cam/rewind cinematics stay host_space's.
+    const float kSunDirV[3] = { 0.25887f, 0.56951f, -0.77662f };  // normalize(0.25,0.55,-0.75)
+    constexpr float kSunDist    = 11000.0f;   // inside the 15 km far plane
+    constexpr float kSunRadius  = 1100.0f;    // core radius (a real disc from spawn)
+    const float kSunCenter[3] = { kSunDirV[0]*kSunDist, kSunDirV[1]*kSunDist,
+                                  kSunDirV[2]*kSunDist };
+    constexpr float kSunHeatStart = 7000.0f;  // surface distance: temp starts climbing
+    constexpr float kSunWarnDist  = 4000.0f;  // "HULL TEMP RISING"
+    constexpr float kSunCritDist  = 2000.0f;  // "CRITICAL - PULL AWAY"
+    constexpr float kSunShieldSecs   = 17.0f; // the shield holds this long inside
+    constexpr float kSunRechargeSecs = 5.0f;  // graze-abort: restores over this
+    float sunShieldPct = 100.0f;
+    bool  sunInside = false;
+    int   sunHeatStage = 0;                   // 0 nominal, 1 warn, 2 crit (one-shot barks)
+    float sunSurfDist = 1e9f;                 // this step's surface distance (HUD)
 
     // Combat FX (tracers, muzzle flashes, crosshair) — live only. Heap-allocated:
     // CombatFx carries ~256 KB of scratch (the host_space convention).
@@ -1000,6 +1043,46 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (incomingFlashT > 0.0f) incomingFlashT -= dt;
         for (auto& cl : callouts) if (cl.t > 0.0f) cl.t -= dt;
 
+        // ---- THE STAR: heat ladder + shield dive (host_space port) -----------
+        // Distance is to the SURFACE (dCenter - radius). Approach barks at the
+        // warn/crit rungs; breaching the core engages the shield (17 s of hold,
+        // the InsideSun contract), leaving grazes it back over 5 s; 0% = hull
+        // lost -> the pilot dies -> the window ends on the canon ShotDown path.
+        {
+            const float sdx = ppos[0]-kSunCenter[0], sdy = ppos[1]-kSunCenter[1],
+                        sdz = ppos[2]-kSunCenter[2];
+            const float dCenter = std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz);
+            sunSurfDist = dCenter - kSunRadius;
+            // Heat rungs (one-shot each way — re-bark only after cooling a rung).
+            const int stage = sunSurfDist < kSunCritDist ? 2
+                            : sunSurfDist < kSunWarnDist ? 1 : 0;
+            if (stage > sunHeatStage) {
+                pushCallout(stage == 2 ? "HULL TEMP CRITICAL - PULL AWAY"
+                                       : "HULL TEMP RISING", stage == 2 ? 1.2f : 0.9f);
+            }
+            sunHeatStage = stage;
+            if (sunSurfDist < 0.0f) {
+                if (!sunInside) {
+                    sunInside = true;
+                    pushCallout("SHIELD ENGAGED - STELLAR CORE", 1.3f);
+                    play2D(kSfxZap, "sun_shield_engage (core breach)", sndZap, 1.0f, 0.7f);
+                }
+                sunShieldPct -= dt * (100.0f / kSunShieldSecs);
+                if (sunShieldPct <= 0.0f && pilot.isAlive()) {
+                    sunShieldPct = 0.0f;
+                    pushCallout("SHIELD FAILED - HULL LOST TO THE STAR", 0.5f);
+                    play2D(kSfxExplosion, "sun_death (shield failed)", sndExplosion,
+                           1.0f, 0.5f);
+                    pilot.takeDamage(1000000);   // the star wins; canon ShotDown
+                }
+            } else {
+                sunInside = false;
+                if (sunShieldPct < 100.0f)
+                    sunShieldPct = std::min(100.0f,
+                        sunShieldPct + dt * (100.0f / kSunRechargeSecs));
+            }
+        }
+
         // ---- Targeting feed: the capital ship is the priority hostile contact. ----
         x3::space::Contact contacts[8]{};
         uint32_t nc = 0;
@@ -1418,6 +1501,79 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (!planets.empty())
                     x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh, planets,
                                                      beatT, cx, cy, cz, ringMesh, 10500.0f);
+                // ---- THE STAR (world-anchored flyable body) ------------------
+                // TWIN-SUN FIX (host_space recipe): the analytic sky paints its
+                // sun disc at INFINITY along sunDir — a fixed dir detaches from
+                // the physical body the moment you translate. Re-aim the disc
+                // down the eye->star ray every frame so the painted glare and
+                // the real surface always coincide. Params mirror
+                // setIntroCockpitLook (host_introcockpit.cpp) except the dir.
+                {
+                    x3::rhi::IRenderDevice::SkyParams sp{};
+                    sp.enabled = true;
+                    float sd[3] = { kSunCenter[0]-cx, kSunCenter[1]-cy, kSunCenter[2]-cz };
+                    const float sdl = std::sqrt(sd[0]*sd[0]+sd[1]*sd[1]+sd[2]*sd[2]);
+                    if (sdl > 1.0f) { sd[0]/=sdl; sd[1]/=sdl; sd[2]/=sdl; }
+                    sp.sunDir[0]=sd[0]; sp.sunDir[1]=sd[1]; sp.sunDir[2]=sd[2];
+                    sp.sunColor[0]=0.85f; sp.sunColor[1]=0.88f; sp.sunColor[2]=1.0f;
+                    sp.sunIntensity = 0.55f;
+                    sp.sunLight = 2.4f;
+                    sp.haze = 0.0f; sp.exposure = 1.0f;
+                    sp.zenith[0]=0.0012f; sp.zenith[1]=0.0012f; sp.zenith[2]=0.0035f;
+                    sp.horizon[0]=0.0018f; sp.horizon[1]=0.0022f; sp.horizon[2]=0.0050f;
+                    hc.device->setSkyParams(sp);
+                }
+                {
+                    // Translate+uniform-scale (+slow yaw for granulation drift).
+                    auto sphM = [](const float c[3], float s, float yaw, float m[16]) {
+                        const float cy2 = std::cos(yaw), sy2 = std::sin(yaw);
+                        m[0]=cy2*s; m[1]=0; m[2]=-sy2*s; m[3]=0;
+                        m[4]=0;     m[5]=s; m[6]=0;      m[7]=0;
+                        m[8]=sy2*s; m[9]=0; m[10]=cy2*s; m[11]=0;
+                        m[12]=c[0]; m[13]=c[1]; m[14]=c[2]; m[15]=1;
+                    };
+                    float sm[16];
+                    // Core: the living-surface bake as baseColor AND emissive so
+                    // granulation/sunspots modulate the bloom (host_space recipe).
+                    sphM(kSunCenter, kSunRadius, beatT * 0.008f, sm);
+                    const float sunBc[4] = { 1.0f, 0.85f, 0.55f, 1.0f };
+                    const float sunEm[4] = { 1.0f, 0.86f, 0.60f, 3.2f };  // past bloom knee
+                    hc.device->drawMeshPBR(frame, sunMesh, sunTex,
+                                           x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                           sunBc, sunEm, sm,
+                                           /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
+                    // Corona: additive translucent shells, warm gradient falling off.
+                    for (int s5 = 0; s5 < 5; ++s5) {
+                        const float k5 = (float)s5 / 4.0f;
+                        sphM(kSunCenter, kSunRadius * (1.05f + 0.22f * (float)s5), 0.0f, sm);
+                        const float cBc[4] = { 1.0f, 0.72f - 0.30f*k5, 0.35f - 0.20f*k5, 1.0f };
+                        const float cEm[4] = { 1.0f, 0.66f - 0.30f*k5, 0.30f - 0.18f*k5,
+                                               0.85f * (1.0f - k5) + 0.10f };
+                        x3::rhi::IRenderDevice::GlassMaterial gm{};
+                        gm.opacity = 0.10f * (1.0f - k5) + 0.02f;
+                        gm.roughness = 1.0f; gm.specular = 0.0f;
+                        gm.tint[0]=1.0f; gm.tint[1]=0.7f; gm.tint[2]=0.35f;
+                        hc.device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{},
+                                                 cBc, cEm, gm, sm, /*alphaBlend=*/true);
+                    }
+                    // Player shield bubble while the star is draining/recharging it
+                    // (the host_space drawShield look: cyan additive shell, pulse,
+                    // intensity riding the remaining %).
+                    if (sunInside || sunShieldPct < 99.95f) {
+                        const float kk = sunShieldPct / 100.0f;
+                        const float pulse = 0.75f + 0.25f * std::sin(beatT * 6.0f);
+                        sphM(ppos, 2.6f, 0.0f, sm);
+                        const float shBc2[4] = { 0.35f, 0.75f, 1.0f, 1.0f };
+                        const float shEm2[4] = { 0.35f, 0.75f, 1.0f,
+                                                 (0.6f + 2.2f * kk) * pulse };
+                        x3::rhi::IRenderDevice::GlassMaterial gm2{};
+                        gm2.opacity = 0.18f + 0.22f * kk;
+                        gm2.roughness = 0.4f; gm2.specular = 0.4f;
+                        gm2.tint[0]=0.4f; gm2.tint[1]=0.75f; gm2.tint[2]=1.0f;
+                        hc.device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{},
+                                                 shBc2, shEm2, gm2, sm);
+                    }
+                }
                 // YOUR fighter, in 3P — at the ship's own position + facing, so it sits
                 // AHEAD of the chase camera. Skipped in 1P (you're inside it).
                 if (pilot.isThirdPerson() && !playerDraw.empty()) {
@@ -1836,6 +1992,36 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
                                 ">> INCOMING <<", (float)winW * 0.5f - 60.0f,
                                 (float)winH * 0.80f, 16.0f, wc);
+                        }
+                        // STAR proximity readout (host_space HUD contract): the
+                        // heat ladder once inside 7 km of the surface, and the
+                        // dive-shield % whenever it is engaged or recharging.
+                        if (sunSurfDist < kSunHeatStart) {
+                            char sunL[56];
+                            const char* heatTxt =
+                                sunSurfDist < kSunCritDist ? "HULL TEMP CRITICAL - PULL AWAY"
+                              : sunSurfDist < kSunWarnDist ? "HULL TEMP RISING"
+                                                           : "SOLAR PROXIMITY";
+                            std::snprintf(sunL, sizeof(sunL), "SUN %.1fkm  %s",
+                                (double)(std::max(0.0f, sunSurfDist) / 1000.0f), heatTxt);
+                            const bool crit = sunSurfDist < kSunCritDist;
+                            const float hcC[4] = { 1.0f, crit ? 0.28f : 0.62f,
+                                                   crit ? 0.15f : 0.20f,
+                                                   crit && std::fmod(beatT, 0.5f) < 0.25f
+                                                       ? 0.45f : 0.95f };
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                sunL, (float)winW * 0.5f - 100.0f,
+                                (float)winH * 0.86f, 14.0f, hcC);
+                        }
+                        if (sunInside || sunShieldPct < 99.95f) {
+                            char shL[40];
+                            std::snprintf(shL, sizeof(shL),
+                                sunInside ? "SHIELD %3.0f%%" : "SHIELD %3.0f%% RECHARGING",
+                                (double)std::max(0.0f, sunShieldPct));
+                            const float scC[4] = { 0.40f, 0.80f, 1.0f, 0.95f };
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                shL, (float)winW * 0.5f - 60.0f,
+                                (float)winH * 0.83f, 16.0f, scC);
                         }
                     }
 
