@@ -135,3 +135,15 @@ build-*/
 # Scratch dirs for the kit re-convert (tools/convert_modular_scifi.py).
 tmp_glb/
 tmp_tex/
+
+# Meshy animation-library wave (2026-07-27): cast *_anim.glb rebuilt on the Meshy
+# 24-joint rig with library clips; distributed via the asset store, NOT Git LFS
+# (LFS budget exhausted). Hydrate: python tools/asset_store.py fetch --all
+assets/rigged_glb/canon_grey_anim.glb
+assets/rigged_glb/canon_mantis_anim.glb
+assets/rigged_glb/canon_nordic_anim.glb
+assets/rigged_glb/RexBouncer_anim.glb
+assets/rigged_glb/BossBreederQueen_anim.glb
+assets/rigged_glb/Oracle_anim.glb
+assets/rigged_glb/AnnaBodySuit_anim.glb
+assets/rigged_glb/SalvariPrincess_anim.glb

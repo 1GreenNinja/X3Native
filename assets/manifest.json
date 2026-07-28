@@ -300,6 +300,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/AnnaBodySuit_anim.glb",
+      "sha256": "8e595331d546c48639f9653ec04ffcd6e5c75c81a236f82d6114eb6acd71190c",
+      "size": 8047696,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/AnnaCasual.glb",
       "sha256": "04da619319a0c049b2ab7591a4fc2813d4923272159196cdb5d4fa56cfb6ecc4",
       "size": 12184604,
@@ -328,6 +334,12 @@
       "sha256": "28652df4ff752336d165c89889d71c106ba7202b9a0aed19351d288bf1c622b6",
       "size": 41145412,
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/BossBreederQueen_anim.glb",
+      "sha256": "cf23c40f9f20460c8e4cdb2593450ebc156816022003045175cdb2284098215d",
+      "size": 19235644,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
     },
     {
       "repo_path": "assets/rigged_glb/BossTheSiren.glb",
@@ -396,6 +408,12 @@
       "source_note": "G:\\GameModels\\rigged_glb; round-trip fetch verified 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/Oracle_anim.glb",
+      "sha256": "62f4727fa1d39b5da5d6c6c499e30482675e6a5959c3d23d0b47a1a195d74056",
+      "size": 6926260,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/OverLordEnforcer99.glb",
       "sha256": "c46f08a1d7fefdba63cbd04b93e73c281231d5df38ecf3fe58da63c0a358c1bb",
       "size": 12087160,
@@ -408,10 +426,22 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/RexBouncer_anim.glb",
+      "sha256": "1de1022d4e406180bd47c11c44ef2a7aa2a27ae4d196a8a76e5eadd1624eeedf",
+      "size": 4427512,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/SalvariPrincess.glb",
       "sha256": "9e593ec6466f843822321a85b39a823106ab0c5e5c7ff1fa26a92154843b6c38",
       "size": 21431548,
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/SalvariPrincess_anim.glb",
+      "sha256": "4e637df83a39b8c103eea46339eca72e4387c99ca0f09f2e3dc61fb04779c599",
+      "size": 10628452,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
     },
     {
       "repo_path": "assets/rigged_glb/SpaceShip.glb",
@@ -478,6 +508,24 @@
       "sha256": "1ef378115ff6a9c46c5b5133273b0ea2b251b277e4deb9031e5ac2d642ddb513",
       "size": 5674476,
       "source_note": ""
+    },
+    {
+      "repo_path": "assets/rigged_glb/canon_grey_anim.glb",
+      "sha256": "5235cd41c55b22fb4d5a9230b2d27e495a73f5ab28c558dfafeb3a0821f750c7",
+      "size": 1987376,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/canon_mantis_anim.glb",
+      "sha256": "46d6ed23a339b8193db52501a23ba093dd9826905a8b2aadf69bfd07e303250d",
+      "size": 2603812,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/canon_nordic_anim.glb",
+      "sha256": "9c7fac25062c021025b08e33d857532e8903cf6007f30e05fd68e6d44d1fcf31",
+      "size": 2322960,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez.glb",
