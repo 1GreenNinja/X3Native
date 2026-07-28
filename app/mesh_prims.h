@@ -149,6 +149,69 @@ inline PrimMesh makeCrystal(float r, float midH, float tipH) {
     return m;
 }
 
+// A real FACETED GEM crystal (feat/cave-rock-material #3) — upgrades the flat hex
+// blob into a cut-gem shard: an 8-sided IRREGULAR girdle (per-vertex radius jitter
+// so no two facets are alike), a stepped CROWN ring rotated a half-facet (brilliant-
+// cut zigzag) rising to a sharp table apex, and a long tapered PAVILION point below.
+// Every triangle carries its own FLAT outward normal, so each facet catches a lit
+// point-light highlight at a different angle — the sharp, gem-like glints a smooth
+// blob can't produce. Drop-in for makeCrystal(r, midH, tipH): girdle radius r, the
+// crown/pavilion reach +/-(midH+tipH). Render-only (no collision). `seed` decorrelates
+// the per-vertex jitter between shards in a cluster.
+inline PrimMesh makeFacetedCrystal(float r, float midH, float tipH, uint32_t seed = 1u) {
+    PrimMesh m;
+    const int N = 8;
+    const float kTwoPi = 6.28318531f;
+    auto jit = [&](int i, uint32_t salt) {
+        uint32_t h = (uint32_t)(i * 374761393 + salt * 668265263 + seed * 2246822519u);
+        h = (h ^ (h >> 13)) * 1274126177u;
+        return (float)((h ^ (h >> 16)) & 0xFFFF) / 65535.0f;     // 0..1
+    };
+    auto pushTri = [&](float ax,float ay,float az, float bx,float by,float bz,
+                       float cx,float cy,float cz) {
+        float ux=bx-ax, uy=by-ay, uz=bz-az, vx=cx-ax, vy=cy-ay, vz=cz-az;
+        float nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+        const float cxm=(ax+bx+cx)/3.0f, cym=(ay+by+cy)/3.0f, czm=(az+bz+cz)/3.0f;
+        if (nx*cxm + nz*czm + ny*cym < 0.0f) {                    // orient outward
+            std::swap(bx,cx); std::swap(by,cy); std::swap(bz,cz);
+            nx=-nx; ny=-ny; nz=-nz;
+        }
+        float l=std::sqrt(nx*nx+ny*ny+nz*nz); if(l<1e-6f)l=1.0f; nx/=l;ny/=l;nz/=l;
+        const uint32_t base=(uint32_t)m.verts.size();
+        m.verts.push_back({{ax,ay,az},{nx,ny,nz},{0,0}});
+        m.verts.push_back({{bx,by,bz},{nx,ny,nz},{1,0}});
+        m.verts.push_back({{cx,cy,cz},{nx,ny,nz},{0.5f,1}});
+        m.index.insert(m.index.end(), {base, base+1, base+2});
+    };
+    // GIRDLE ring: y=0, per-vertex jittered radius (0.82..1.0)*r -> irregular gem.
+    // CROWN ring: rotated a half-facet, smaller radius, lifted -> the brilliant crown.
+    float grx[N], grz[N], crx[N], crz[N];
+    const float crownY = midH * 0.55f, crownR = 0.6f * r;
+    for (int i=0;i<N;++i) {
+        const float a  = kTwoPi * (float)i / (float)N;
+        const float rg = r * (0.82f + 0.18f * jit(i, 11u));
+        grx[i]=std::cos(a)*rg;                   grz[i]=std::sin(a)*rg;
+        const float ah = a + kTwoPi / (2.0f*N);  // half-facet offset (zigzag facets)
+        const float rc = crownR * (0.85f + 0.15f * jit(i, 23u));
+        crx[i]=std::cos(ah)*rc;                  crz[i]=std::sin(ah)*rc;
+    }
+    const float topY = midH + tipH;              // sharp table apex
+    const float botY = -(midH + tipH);           // long pavilion point
+    const float gy   = 0.0f;
+    for (int i=0;i<N;++i) {
+        const int j=(i+1)%N;
+        // Crown: girdle[i]->girdle[j]->crown[j], and girdle[i]->crown[j]->crown[i]
+        // (the half-offset crown ring turns each side into two distinct crown facets).
+        pushTri(grx[i],gy,grz[i], grx[j],gy,grz[j], crx[j],crownY,crz[j]);
+        pushTri(grx[i],gy,grz[i], crx[j],crownY,crz[j], crx[i],crownY,crz[i]);
+        // Table: crown ring -> apex (one facet per segment).
+        pushTri(0,topY,0, crx[i],crownY,crz[i], crx[j],crownY,crz[j]);
+        // Pavilion: girdle -> bottom point (one long facet per segment).
+        pushTri(0,botY,0, grx[i],gy,grz[i], grx[j],gy,grz[j]);
+    }
+    return m;
+}
+
 // A walkable RAMP wedge: a sloped top surface rising from y=0 at the LOW edge to
 // y=`rise` at the HIGH edge, over a horizontal run `run`, `halfW` wide. Built in
 // LOCAL space centered on the run axis at (cx,cy,cz) where cy is the LOW floor:

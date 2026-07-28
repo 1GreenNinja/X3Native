@@ -307,20 +307,25 @@ x3::prims::PrimMesh makeCaveTubeX(float x0, float x1, float cy, float cz,
 void addCrystalCluster(Scene& scene, x3::rhi::IRenderDevice& device,
                        float cx, float cy, float cz, float scale, int n,
                        float lightRange, std::vector<x3::rhi::PointLight>* outLights,
-                       float upDir = 1.0f) {
+                       float upDir = 1.0f, x3::rhi::TextureHandle gemMr = {}) {
     const float blueTint[4] = { 0.02f, 0.07f, 0.52f, 1.0f };
-    const float blueEmit[4] = { 0.015f, 0.07f, 0.62f, 1.0f };
+    // Emissive core held a touch lower than the old flat blob so the per-facet LIT
+    // highlights (from gemMr's low roughness + the cluster point light) read as sharp
+    // gem glints instead of being washed flat by a constant self-glow.
+    const float blueEmit[4] = { 0.015f, 0.06f, 0.50f, 1.0f };
     for (int k = 0; k < n; ++k) {
         const float ph = (float)k * 2.39996f;               // golden-angle fan
         const float rr = 0.20f + 0.55f * ((k * 37) % 100) / 100.0f;
         const float dx = std::cos(ph) * rr * scale, dz = std::sin(ph) * rr * scale;
         const float sc = (0.5f + 0.5f * (((k * 53) % 100) / 100.0f)) * scale;
-        x3::prims::PrimMesh geo = x3::prims::makeCrystal(0.32f * sc, 0.9f * sc, 0.9f * sc);
+        x3::prims::PrimMesh geo = x3::prims::makeFacetedCrystal(0.34f * sc, 0.9f * sc, 0.95f * sc,
+                                                               (uint32_t)(k * 2654435761u + 17u));
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
         for (int i = 0; i < 4; ++i) e.baseColor[i] = blueTint[i];
         for (int i = 0; i < 4; ++i) e.emissive[i]  = blueEmit[i];
+        if (gemMr.valid()) e.mrTex = gemMr;                 // faceted gem highlights
         e.tag = (uint32_t)Tag::Static; e.body = x3::phys::BodyId{};
         const float tilt = (((k * 29) % 100) / 100.0f - 0.5f) * 0.7f;
         const float ct = std::cos(tilt), st = std::sin(tilt) * upDir;
@@ -346,6 +351,7 @@ void addCrystalCluster(Scene& scene, x3::rhi::IRenderDevice& device,
 // light (the host merges it into the per-frame light set).
 x3::rhi::PointLight addSalvariHollow(Scene& scene, x3::rhi::IRenderDevice& device,
                                      const RockMat& mat, x3::rhi::TextureHandle veinTex,
+                                     x3::rhi::TextureHandle gemMr,
                                      const BedrockConfig& cfg,
                                      float cx, float cy, float cz, float scale) {
     // 1) POCKET: a small double-sided rock room liner so the hollow has near rock
@@ -384,8 +390,8 @@ x3::rhi::PointLight addSalvariHollow(Scene& scene, x3::rhi::IRenderDevice& devic
     //    ACES holds the hue, push the ratio hard to blue (blue >> green >> ~0 red) for
     //    a rich sapphire, and let the point light below carry the blue GLOW halo.
     const float blueTint[4] = { 0.02f, 0.07f, 0.52f, 1.0f };   // deep sapphire base (lit)
-    const float blueEmit[4] = { 0.015f, 0.07f, 0.62f, 1.0f };  // DEEP saturated blue core: low G/R kills the
-                                                               // cyan/pastel, blue held ~0.6 (bright but not blown)
+    const float blueEmit[4] = { 0.015f, 0.06f, 0.50f, 1.0f };  // DEEP saturated blue core, held a touch lower
+                                                               // so the faceted gem's lit glints read sharp
     struct Shard { float dx, dz, s, r, mid, tip, tilt; };
     const Shard shards[6] = {
         {  0.0f,  0.0f, 1.00f, 0.55f, 1.4f, 1.1f,  0.00f },
@@ -395,13 +401,16 @@ x3::rhi::PointLight addSalvariHollow(Scene& scene, x3::rhi::IRenderDevice& devic
         { -1.4f, -0.7f, 0.55f, 0.30f, 0.7f, 0.7f, -0.34f },
         {  0.2f,  1.5f, 0.66f, 0.36f, 1.0f, 0.9f,  0.10f },
     };
+    int shIdx = 0;
     for (const Shard& sh : shards) {
-        x3::prims::PrimMesh geo = x3::prims::makeCrystal(sh.r * scale, sh.mid * scale, sh.tip * scale);
+        x3::prims::PrimMesh geo = x3::prims::makeFacetedCrystal(sh.r * scale, sh.mid * scale,
+                                                               sh.tip * scale, (uint32_t)(shIdx++ * 131 + 7));
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
         for (int i = 0; i < 4; ++i) e.baseColor[i] = blueTint[i];
         for (int i = 0; i < 4; ++i) e.emissive[i]  = blueEmit[i];
+        if (gemMr.valid()) e.mrTex = gemMr;
         e.tag  = (uint32_t)Tag::Static;
         e.body = x3::phys::BodyId{};
         // place + tilt via the model transform (crystal authored at local origin).
@@ -448,6 +457,10 @@ int buildClubBedrock(Scene& scene, x3::rhi::IRenderDevice& device,
     auto veinBluePx  = makeRockVeinsRGBA(kN, 0.09f, 0.24f, 0.66f, 1.0f, 0.048f);
     x3::rhi::TextureHandle veinFaint = device.createTexture(veinFaintPx.data(), kN, kN, true);
     x3::rhi::TextureHandle veinBlue  = device.createTexture(veinBluePx.data(),  kN, kN, true);
+    // Low-roughness dielectric MR for the faceted crystals (glTF G=rough, B=metal):
+    // sharp per-facet specular glints from the cluster point lights.
+    const uint8_t gemMrPx[4] = { 255, 28, 0, 255 };
+    x3::rhi::TextureHandle gemMr = device.createTexture(gemMrPx, 1, 1, false);
 
     const float ov  = cfg.weld;
     const float uvs = cfg.uvScale;
@@ -514,7 +527,7 @@ int buildClubBedrock(Scene& scene, x3::rhi::IRenderDevice& device,
         };
         for (const Hollow& h : hollows) {
             x3::rhi::PointLight bl =
-                addSalvariHollow(scene, device, mat, veinBlue, cfg, h.x, h.y, h.z, h.s);
+                addSalvariHollow(scene, device, mat, veinBlue, gemMr, cfg, h.x, h.y, h.z, h.s);
             added += 7;   // pocket + 6 shards per hollow (bookkeeping)
             if (outCrystalLights) outCrystalLights->push_back(bl);
         }
@@ -557,6 +570,9 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
     const x3::rhi::TextureHandle veinMagma = mkVein(0.72f, 0.24f, 0.05f, 0.9f, 0.042f); // Magma (orange cracks)
     const x3::rhi::TextureHandle veinObsid = mkVein(0.05f, 0.10f, 0.22f, 0.35f, 0.028f); // Obsidian (glassy, sparse)
     const x3::rhi::TextureHandle veinSubst = mkVein(0.26f, 0.05f, 0.46f, 0.9f, 0.048f); // Alien Substrate (violet)
+    // Low-roughness dielectric MR for the faceted crystals (sharp facet glints).
+    const uint8_t gemMrPx[4] = { 255, 28, 0, 255 };
+    const x3::rhi::TextureHandle gemMr = device.createTexture(gemMrPx, 1, 1, false);
     // Pick the biome vein map for a world Y from the strata table (names matched).
     auto pickVein = [&](float y) -> x3::rhi::TextureHandle {
         for (const auto& s : ElevatorSystem::strata()) {
@@ -798,7 +814,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
             const float sc = 0.9f + 1.3f * depth01;          // bigger toward the club
             addCrystalCluster(scene, device, wx, fy, wz, sc, 4,
                               10.0f + 6.0f * depth01, outCrystalLights,
-                              (k & 1) ? 1.0f : -1.0f);
+                              (k & 1) ? 1.0f : -1.0f, gemMr);
             added += 4;
         }
     }
@@ -986,7 +1002,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
             for (int i = 0; i < 4; ++i) bc.tint[i] = tc.tint[i];
             for (int i = 0; i < 4; ++i) bc.emissive[i] = tc.emissive[i];
             bc.uvScale = tc.uvScale;
-            x3::rhi::PointLight bl = addSalvariHollow(scene, device, mat, vein, bc, hx, hy, hz, scale);
+            x3::rhi::PointLight bl = addSalvariHollow(scene, device, mat, vein, gemMr, bc, hx, hy, hz, scale);
             added += 7;
             if (outCrystalLights) outCrystalLights->push_back(bl);
         };
@@ -995,8 +1011,8 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
         switch (o.kind) {
         case OffKind::Cache: {
             // DEAD-END crystal CACHE — a dense cluster at the tight far end (reward).
-            addCrystalCluster(scene, device, rx1 - 1.6f, y + 0.1f, SZ, 1.6f, 8, 14.0f, outCrystalLights);
-            addCrystalCluster(scene, device, rx1 - 2.6f, y + 0.1f, SZ - 1.4f, 1.0f, 5, 10.0f, outCrystalLights);
+            addCrystalCluster(scene, device, rx1 - 1.6f, y + 0.1f, SZ, 1.6f, 8, 14.0f, outCrystalLights, 1.0f, gemMr);
+            addCrystalCluster(scene, device, rx1 - 2.6f, y + 0.1f, SZ - 1.4f, 1.0f, 5, 10.0f, outCrystalLights, 1.0f, gemMr);
             added += 13;
         } break;
         case OffKind::Loop: {
@@ -1008,19 +1024,20 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
             addColl(cavX + 2.5f, cavX + 2.8f, y, y + 4.0f, spurZ0, spurZ1);
             addColl(cavX - 2.8f, cavX + 2.8f, y + 4.0f, y + 4.4f, spurZ0, spurZ1);
             addColl(cavX - 2.8f, cavX + 2.8f, y, y + 4.4f, spurZ1, spurZ1 + 0.3f); // spur endcap
-            addCrystalCluster(scene, device, cavX, y + 0.1f, spurZ1 - 1.4f, 1.2f, 6, 12.0f, outCrystalLights);
-            addCrystalCluster(scene, device, cavX + 1.0f, y + 0.1f, SZ, 0.9f, 4, 9.0f, outCrystalLights);
+            addCrystalCluster(scene, device, cavX, y + 0.1f, spurZ1 - 1.4f, 1.2f, 6, 12.0f, outCrystalLights, 1.0f, gemMr);
+            addCrystalCluster(scene, device, cavX + 1.0f, y + 0.1f, SZ, 0.9f, 4, 9.0f, outCrystalLights, 1.0f, gemMr);
             added += 10;
         } break;
         case OffKind::Landmark: {
             // A HOUSE-SIZED CRYSTAL — a single towering shard the player sees from the
             // shaft and navigates toward (the cavern beacon). Bright blue point light.
-            x3::prims::PrimMesh geo = x3::prims::makeCrystal(1.9f, 2.6f, 2.0f);   // ~9 m tall (fits the cavern)
+            x3::prims::PrimMesh geo = x3::prims::makeFacetedCrystal(1.9f, 2.6f, 2.0f, 909u); // ~9 m tall gem beacon
             Entity e;
             e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                        geo.index.data(), (uint32_t)geo.index.size());
-            const float bT[4]={0.02f,0.07f,0.52f,1.0f}, bE[4]={0.015f,0.08f,0.60f,1.0f};
+            const float bT[4]={0.02f,0.07f,0.52f,1.0f}, bE[4]={0.015f,0.07f,0.52f,1.0f};
             for (int i=0;i<4;++i){ e.baseColor[i]=bT[i]; e.emissive[i]=bE[i]; }
+            e.mrTex = gemMr;                                  // faceted gem highlights
             e.tag=(uint32_t)Tag::Static; e.body=x3::phys::BodyId{};
             e.transform[0]=1;e.transform[1]=0;e.transform[2]=0;e.transform[3]=0;
             e.transform[4]=0;e.transform[5]=1;e.transform[6]=0;e.transform[7]=0;
@@ -1034,8 +1051,8 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                 outCrystalLights->push_back(l);
             }
             // A ring of smaller shards around its base.
-            addCrystalCluster(scene, device, cavX + 3.0f, y + 0.1f, SZ + 2.0f, 1.2f, 5, 11.0f, outCrystalLights);
-            addCrystalCluster(scene, device, cavX - 3.0f, y + 0.1f, SZ - 2.2f, 1.0f, 4, 10.0f, outCrystalLights);
+            addCrystalCluster(scene, device, cavX + 3.0f, y + 0.1f, SZ + 2.0f, 1.2f, 5, 11.0f, outCrystalLights, 1.0f, gemMr);
+            addCrystalCluster(scene, device, cavX - 3.0f, y + 0.1f, SZ - 2.2f, 1.0f, 4, 10.0f, outCrystalLights, 1.0f, gemMr);
         } break;
         case OffKind::Collapse: {
             // COLLAPSED SECTION — tumbled rock blocks strewn on the floor (a cave-in),
@@ -1056,7 +1073,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                 e.body = physics.addBox(x3::phys::Vec3{bs,bs*0.7f,bs}, x3::phys::Vec3{bx,y+bs*0.7f,bz}, 0.0f, x3::phys::Layer::Static);
                 scene.add(e); ++added;
             }
-            addCrystalCluster(scene, device, rx1 - 2.0f, y + 0.1f, SZ, 1.3f, 6, 12.0f, outCrystalLights);
+            addCrystalCluster(scene, device, rx1 - 2.0f, y + 0.1f, SZ, 1.3f, 6, 12.0f, outCrystalLights, 1.0f, gemMr);
             added += 6;
         } break;
         case OffKind::Shrine: {
@@ -1084,7 +1101,7 @@ int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
             }
             // The altar CRYSTAL — a modest bright shard cluster ON the dais (smaller so
             // the plinth stays visible beneath it).
-            addCrystalCluster(scene, device, cavX, pt, SZ, 0.8f, 5, 15.0f, outCrystalLights);
+            addCrystalCluster(scene, device, cavX, pt, SZ, 0.8f, 5, 15.0f, outCrystalLights, 1.0f, gemMr);
             // GLYPH STELAE — four tall carved Salvari steles FLANKING the approach (two
             // each side), etched-blue self-glow so the script reads as you walk up. Dark
             // obsidian panels catching the altar's crystal light.
