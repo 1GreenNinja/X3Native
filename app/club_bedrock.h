@@ -195,6 +195,54 @@ struct TunnelConfig {
 
     // Seed a Salvari crystal hollow in one offshoot chamber (the reward-to-find).
     bool  crystalOffshoot = true;
+
+    // ---- ROUTE-B HUB (Tim's canon, CLUB_1127_CANON_SPEC "Route B"): the elevator is
+    // a HUB. Besides the club, it drops to the BOTTOM (Level 7) of Danny's 7-level
+    // survival complex WEST of + below the club, via an UNDER-CLUB HALL running west
+    // from the elevator beneath the club. The host supplies the complex L7 world entry
+    // (computed from SurvivalComplex's constants). Set underClubHall=false to skip.
+    bool  underClubHall  = true;
+    float complexBottomY = -824.23f;    // world Y of the complex L7 floor (deepest elevator stop)
+    float complexAttachX = -15.43f;     // complex east edge X (where the under-club hall meets it)
+    float complexAttachZ =   5.30f;     // complex L7 stair-bay landing Z
+};
+
+// ============================================================================
+// THE DESCENT FALL (feat/descent-fall) — replaces the walkable switchback ramp.
+// ============================================================================
+// buildEarthTunnels() now bores a VERTICAL FALL SHAFT instead of a walkable ramp:
+// you DROP down an open chute through the strata and land in a DARK ROOM just above
+// the club, where a computer terminal + a code-locked keypad door lead down a hall
+// to an elevator that takes the final leg into Club 1127. The geometry (shaft, dark
+// room, hall, elevator alcove, side-shoot rooms) is built here; the INTERACTIVE
+// layer (the fall-catch, the terminal, the keypad door, the elevator ride) lives in
+// descent_fall.{h,cpp} and reads the world positions from this layout struct.
+struct DescentFallLayout {
+    // FALL SHAFT (open vertical bore).
+    float shaftX = 0, shaftZ = 0;   // bore center XZ
+    float shaftHalfW = 4.0f;        // bore half-width (clear radius)
+    float mouthY = -3.0f;           // trapdoor mouth Y (top of the fall)
+    float catchTopY = 0;            // Y where the slowdown/catch volume begins (last ~10 m)
+    // DARK LANDING ROOM (sealed, dark, just above the club).
+    float roomCx = 0, roomCz = 0;   // room center XZ
+    float roomFloorY = 0;           // landing floor Y
+    float roomCeilY = 0;            // room ceiling Y
+    float roomHalfX = 6.0f, roomHalfZ = 6.0f;
+    // KEYPAD DOOR (opening in the room's -X wall) -> HALL.
+    float doorX = 0, doorZ = 0, doorY = 0;   // door opening center (floor level)
+    float doorHalfW = 1.1f;
+    // ELEVATOR (the HUB): top stop = the hall/room level (arrive from the fall); mid
+    // stop = the club floor; bottom stop = the survival-complex L7 floor.
+    float elevX = 0, elevZ = 0;     // elevator shaft center
+    float elevTopY = 0;             // top stop (hall floor level)
+    float elevBotY = 0;             // mid stop (club floor)
+    float complexBottomY = 0;       // bottom stop (survival complex L7 floor) — 0/unused if no under-hall
+    // CLUB east doorway the elevator's club-stop connector runs into.
+    float clubDoorX = 0, clubDoorZ = 0;
+    // Under-club hall attach point (complex L7 east entry) — where @13700k wires the
+    // hall into the survival complex's east shell.
+    float complexAttachX = 0, complexAttachZ = 0;
+    bool  hasUnderHall = false;
 };
 
 // Build the earth tunnel network into `scene` (+ Jolt collision via `physics`, meshes
@@ -202,6 +250,7 @@ struct TunnelConfig {
 // appended with the descent mood lights + the offshoot crystal light (see above).
 int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
                       x3::phys::IPhysicsWorld& physics, const TunnelConfig& tc,
-                      std::vector<x3::rhi::PointLight>* outCrystalLights = nullptr);
+                      std::vector<x3::rhi::PointLight>* outCrystalLights = nullptr,
+                      DescentFallLayout* outLayout = nullptr);
 
 } // namespace x3::game

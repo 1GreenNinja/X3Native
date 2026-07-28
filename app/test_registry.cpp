@@ -83,6 +83,8 @@
 #include "glass_test.h"
 #include "holo_terminal.h"
 #include "secret_room.h"
+#include "descent_fall.h"        // x3::game::DescentFall::runSelfTest (--test-descentfall)
+#include "cave_atmosphere.h"      // x3::game::CaveAtmosphere::runSelfTest (--test-caveatmos)
 #include "headless_device.h"
 #include "ecs_render.h"
 #include "spire_mid.h"
@@ -375,6 +377,16 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testSecretRoom) {
         x3::logInfo("running secret-room (code-locked trapdoor) self-test...");
         return x3::game::runSecretRoomSelfTest() ? 0 : 1;
+    }
+    if (tf.testDescentFall) {
+        x3::logInfo("running descent-fall self-test "
+                    "(fall accelerates -> catch -> land in dark room -> keypad door -> elevator; D0-D6)...");
+        return x3::game::DescentFall::runSelfTest() ? 0 : 1;
+    }
+    if (tf.testCaveAtmos) {
+        x3::logInfo("running cave-atmosphere self-test "
+                    "(crystal-only cave zone vs club/infra, depth, beat pulse, fog blend)...");
+        return x3::game::CaveAtmosphere::runSelfTest() ? 0 : 1;
     }
     if (tf.testHatch) {
         x3::logInfo("running END-TO-END secret-hatch chain self-test "

@@ -276,6 +276,8 @@ int main(int argc, char** argv) {
         _tf.testFrustumCull = o.testFrustumCull;
         _tf.testHoloterm = o.testHoloterm;
         _tf.testSecretRoom = o.testSecretRoom;
+        _tf.testDescentFall = o.testDescentFall;
+        _tf.testCaveAtmos = o.testCaveAtmos;
         _tf.testHatch = o.testHatch;
         _tf.testLlm = o.testLlm;
         _tf.testEcs = o.testEcs;

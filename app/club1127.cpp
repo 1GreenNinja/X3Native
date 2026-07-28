@@ -2978,6 +2978,16 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     return m_stats;
 }
 
+float Club1127World::beatThump() const {
+    // The house/jukebox beat envelope — the same pow(sin,6) kick the subs/tiles ride.
+    const float beatHz    = m_bpm / 60.0f;
+    const float beatCount = m_time * beatHz;
+    const float s = std::sin(beatCount * kPi);
+    const float k = s > 0.0f ? s : 0.0f;
+    const float k2 = k * k;
+    return k2 * k2 * k2;   // == pow(max(0,sin),6)
+}
+
 void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& device,
                            x3::phys::IPhysicsWorld& physics) {
     if (!m_built) return;
@@ -3397,11 +3407,11 @@ bool runClubSelfTest() {
         const float wX = s.roomMaxX - s.roomMinX;   // ~30.48 (100 ft, long axis)
         const float wZ = s.roomMaxZ - s.roomMinZ;   // ~13.11 (43 ft)
         const float h  = s.ceilingY - s.floorY;     // ~9.14
-        const bool yOk   = std::fabs(s.floorY - (-200.0f)) < 0.01f;
+        const bool yOk   = std::fabs(s.floorY - (-800.0f)) < 0.01f;
         const bool footOk = std::fabs(wX - 30.48f) < 0.05f && std::fabs(wZ - 13.106f) < 0.05f;
         const bool ceilOk = std::fabs(h - 9.14f) < 0.05f;
         check(yOk && footOk && ceilOk,
-              "main room is 100x43x30 ft (30.48x13.11x9.14 m) with its floor at Y=-200");
+              "main room is 100x43x30 ft (30.48x13.11x9.14 m) with its floor at Y=-800");
     }
 
     // (2) Suspended DJ booth: platform + turntables + 2 OLED + keypad door.
@@ -3438,14 +3448,14 @@ bool runClubSelfTest() {
     // (9) Dance floor + VIP/couch seating.
     check(s.hasDanceFloor && s.couches >= 3, "dance-floor checkerboard + VIP/couch seating");
 
-    // (10) Player spawn sits inside the room footprint, on the floor at Y=-200.
+    // (10) Player spawn sits inside the room footprint, on the floor at Y=-800.
     {
         const x3::phys::Vec3 sp = club.spawn();
         const bool inX = sp.x > s.roomMinX && sp.x < s.roomMaxX;
         const bool inZ = sp.z > s.roomMinZ && sp.z < s.roomMaxZ;
-        const bool onFloor = sp.y >= -200.0f - 0.01f && sp.y <= -200.0f + 1.0f;
+        const bool onFloor = sp.y >= -800.0f - 0.01f && sp.y <= -800.0f + 1.0f;
         check(inX && inZ && onFloor && std::isfinite(sp.x) && std::isfinite(sp.z),
-              "player spawn is inside the room footprint on the Y=-200 floor");
+              "player spawn is inside the room footprint on the Y=-800 floor");
     }
 
     // (11) Animate a few frames: ORB spins, lights orbit, blacklights pulse. Assert
@@ -3586,11 +3596,11 @@ bool runClubNpcsSelfTest() {
         }
         check(anchorsOk, "every NPC has a finite talk anchor + entry tree + positive reach");
     }
-    // Danny on the main floor (Y ~ -200); Amara + Emma up at the Private Lounge
+    // Danny on the main floor (Y ~ -800); Amara + Emma up at the Private Lounge
     // (well above the club floor). Distinct positions, not stacked.
     if (dN && aN && eN) {
-        const bool dannyFloor = std::fabs(dN->anchor.y - (-200.0f + 1.0f)) < 0.5f;
-        const bool loungeUp   = aN->anchor.y > -196.0f && eN->anchor.y > -196.0f;
+        const bool dannyFloor = std::fabs(dN->anchor.y - (-800.0f + 1.0f)) < 0.5f;
+        const bool loungeUp   = aN->anchor.y > -796.0f && eN->anchor.y > -796.0f;
         const float sep = std::fabs(aN->anchor.x - eN->anchor.x) +
                           std::fabs(aN->anchor.z - eN->anchor.z);
         check(dannyFloor && loungeUp && sep > 0.5f,
@@ -3606,7 +3616,7 @@ bool runClubNpcsSelfTest() {
             if (hit < 0 || club.canonNpcs()[(size_t)hit].chatId != n->chatId) eachResolves = false;
         }
         check(eachResolves, "E-to-talk resolves Danny / Amara / Emma from a point beside each");
-        const int none = club.talkTarget(x3::phys::Vec3{ 9999.0f, -200.0f, 9999.0f });
+        const int none = club.talkTarget(x3::phys::Vec3{ 9999.0f, -800.0f, 9999.0f });
         check(none < 0, "E-to-talk resolves NOTHING from far outside every reach");
     }
 
