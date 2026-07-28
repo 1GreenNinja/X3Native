@@ -492,6 +492,12 @@
       "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
     },
     {
+      "repo_path": "assets/rigged_glb/canon_nordic_anim.glb",
+      "sha256": "9c7fac25062c021025b08e33d857532e8903cf6007f30e05fd68e6d44d1fcf31",
+      "size": 2322960,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/chief_martinez.glb",
       "sha256": "b04828c7d977dacf3e809149db4afecaaad3e9a3124350bcf8853506cc32877e",
       "size": 56139872,
