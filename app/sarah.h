@@ -166,8 +166,11 @@ private:
     // queryHitsLayer() falls through to objectLayersCollide(), and Static collides
     // with Dynamic/Player/Enemy, so a Layer::Static ray ALSO hits enemy bodies. A
     // naive "no Static hit" test therefore always reports blocked: the first thing
-    // the ray hits is the very hostile she is aiming at. So the hit is reconciled
-    // against `hostiles` — a hit on any hostile's own body is NOT a wall.
+    // the ray hits is the very hostile she is aiming at. FIXED at the root — the
+    // probe now uses rayCastStrict(Layer::Static) (exact-layer match, walls only).
+    // The reconciliation against `hostiles` is KEPT as a belt-and-braces fallback
+    // (a hit on any hostile's own body is NOT a wall) so this stays correct even
+    // if the cast is ever reverted.
     bool losClear(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& p,
                   const std::vector<MonsterSystem*>& hostiles) const;
     void bark(const std::string& line);

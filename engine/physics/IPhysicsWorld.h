@@ -96,7 +96,38 @@ public:
     virtual void   setCharacterSwim(BodyId, bool enabled) = 0;
 
     // Queries
+    //
+    // ⚠ TRAP — `mask` is NOT an exclusive layer filter. It names the layer the
+    // query TARGETS, and a body is hit when its layer EQUALS the mask *or* when
+    // the two layers would collide per the body-vs-body matrix (see
+    // queryHitsLayer/objectLayersCollide in JoltPhysicsWorld.cpp). Because
+    // Static/Dynamic/Player/Enemy all collide with each other, a
+    // rayCast(..., Layer::Static) "wall probe" ALSO reports Dynamic props,
+    // Player bodies and — the one that bites — ENEMY bodies.
+    //
+    // That silently breaks the classic line-of-sight idiom "cast at my target,
+    // masked to Static; if it hits, a wall is in the way": the ray hits the
+    // TARGET'S OWN Enemy box (monster hitboxes are 0.6 m half-width, so even a
+    // ray shortened by 0.3 m still lands inside it) and the caller concludes it
+    // is blocked. Sarah's companion combat never fired a single shot for exactly
+    // this reason; enemy health bars / nameplates / crowd chat bubbles were
+    // culled for the same reason.
+    //
+    // For an LOS / wall probe use rayCastStrict(..., Layer::Static) below.
+    // Some callers legitimately DEPEND on the permissive behaviour — e.g.
+    // engine/ai/Navigation.cpp floor-samples with a Dynamic mask and needs the
+    // Static floor back, and monster fire casts an Enemy mask and needs walls to
+    // stop the bullet. Do NOT "fix" this by making the mask exclusive.
     virtual RayHit rayCast(Vec3 origin, Vec3 dir, float maxDist, Layer mask) = 0;
+
+    // STRICT layer query: hits ONLY bodies whose object layer EQUALS `mask` —
+    // no collision-matrix fall-through. This is the primitive an LOS / wall
+    // probe wants: rayCastStrict(from, dir, len, Layer::Static) reports walls,
+    // floors and door slabs (all authored on Layer::Static) and passes cleanly
+    // THROUGH characters, corpses and props. Identical to rayCast in every other
+    // respect (same normalization, same zero-length/zero-dist guards, same
+    // RayHit fields).
+    virtual RayHit rayCastStrict(Vec3 origin, Vec3 dir, float maxDist, Layer mask) = 0;
 
     // Trigger callbacks (overlap-only sensors)
     using TriggerFn = void(*)(BodyId trigger, BodyId other, bool entered, void* user);

@@ -978,8 +978,12 @@ bool MonsterSystem::probeLos(x3::phys::IPhysicsWorld& physics,
     const x3::phys::Vec3 from{ from0.x + nd.x*skip, from0.y + nd.y*skip,
                                from0.z + nd.z*skip };
     float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
+    // STRICT Static: only real walls/floors/door slabs block sight. The permissive
+    // rayCast() also reports Enemy + Dynamic bodies, so a squadmate standing in
+    // front — or a ragdoll corpse on the floor — used to read as "no line of
+    // sight" and the monster behind it would never engage. (See IPhysicsWorld.h.)
     x3::phys::RayHit wall = (losLen > 1e-3f)
-        ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
+        ? physics.rayCastStrict(from, nd, losLen, x3::phys::Layer::Static)
         : x3::phys::RayHit{};
     return !wall.hit;
 }
@@ -1714,8 +1718,10 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                                          muzzle.y + nd.y * skip,
                                          muzzle.z + nd.z * skip };
                     float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
+                    // STRICT Static — a squadmate/corpse between us is not cover
+                    // (the permissive mask reports Enemy/Dynamic bodies too).
                     x3::phys::RayHit wall = (losLen > 1e-3f)
-                        ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
+                        ? physics.rayCastStrict(from, nd, losLen, x3::phys::Layer::Static)
                         : x3::phys::RayHit{};
                     landed = !wall.hit;
                     if (fx) {
@@ -2576,6 +2582,15 @@ public:
                              x3::phys::Layer mask) override {
         ++rayCasts;
         return m_w.rayCast(o, d, maxDist, mask);
+    }
+
+    // The STRICT query counts as world raycast traffic too (the LOS wall probe
+    // uses it), so F5's "exactly ONE world raycast per shot" still measures the
+    // real total.
+    x3::phys::RayHit rayCastStrict(x3::phys::Vec3 o, x3::phys::Vec3 d, float maxDist,
+                                   x3::phys::Layer mask) override {
+        ++rayCasts;
+        return m_w.rayCastStrict(o, d, maxDist, mask);
     }
 
     // ---- pure forwarding below ----
