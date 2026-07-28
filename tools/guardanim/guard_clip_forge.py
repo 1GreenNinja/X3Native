@@ -220,12 +220,16 @@ def clip_death(arm):
     freeze-on-last-frame (the engine holds the final pose as the corpse)."""
     pw = PW(arm, "Death")
     B = BACK
+    # World-axis sign facts (probe-verified, rig faces -Y): +rx tilts the torso
+    # up-vector (+Z) FORWARD but tilts a downward bone (-Z legs/arms) BACKWARD.
+    # So a leg swings forward with NEGATIVE own-rx. Deviations about the shared
+    # world X axis compose additively down the chain (hips + own).
     def pose(f, back, hz, hy, knee, shin, foot, sp, ne, armx, army, elb, roll=0.0):
-        # back: torso backward pitch deg; hz: hips DROP (m); hy: hips shift
-        # toward +back (m); knee: world fwd pitch of thighs (counter-rotation
-        # keeps the legs under the falling body -> knees-up lie); shin/foot:
-        # lower-leg/foot world pitch; sp/ne: extra spine/neck deg; armx: arm
-        # world pitch (fwd+); army: arms flare out deg; elb: elbow bend.
+        # back: hips backward pitch deg (B sign applied); hz: hips DROP (m);
+        # hy: hips shift toward +Y/backward (m); knee/shin/foot: OWN world rx
+        # deviation of thigh/lower-leg/foot (+ = backward for these downward
+        # bones, - = forward); sp: spine+chest extra arch; ne: neck deg; armx:
+        # arm own pitch; army: arm outward flare; elb: elbow bend.
         pw.key(f, "Hips", rx=B * D(back), ry=D(roll),
                loc=(0.0, -B * hy, -hz))
         pw.key(f, "Spine", rx=B * D(sp))
@@ -238,19 +242,23 @@ def clip_death(arm):
             pw.key(f, "UpperArm" + sd, rx=D(armx) * m, rz=s * D(army) * m)
             pw.key(f, "LowerArm" + sd, rx=D(elb) * m)
             pw.key(f, "Hand" + sd)
-            pw.key(f, "UpperLeg" + sd, rx=D(knee) * (1.0 if sd == ".L" else 0.9))
+            pw.key(f, "UpperLeg" + sd, rx=D(knee) * (1.0 if sd == ".L" else 0.92))
             pw.key(f, "LowerLeg" + sd, rx=D(shin))
             pw.key(f, "Foot" + sd, rx=D(foot))
+    # Choreography (feet planted at y~0; the body falls onto its back BEHIND
+    # them, ending head +Y / feet -Y, legs near-straight with a slight knee-up
+    # bend, arms settling to the sides). Leg values solved so knee/ankle stay
+    # ON the floor plane through the fall (thigh theta = -back + knee, etc.).
     #      f  back    hz     hy   knee shin foot  sp   ne  armx army elb roll
     pose(  1,  0.0, 0.000, 0.00,   0,   0,   0,   0,   0,   0,   0,   0)       # standing
-    pose(  4,  6.0, 0.030, 0.00,   4,  -2,   0,   3,  10,  -8,   6,   8)       # impact recoil
-    pose( 10, 22.0, 0.180, 0.04,  18, -14,   6,   6,  14, -14,  10,  16)       # stagger, knees give
-    pose( 16, 48.0, 0.430, 0.14,  38, -26,  12,   9,  10, -20,  14,  22, 4)    # falling
-    pose( 22, 78.0, 0.700, 0.30,  62, -34,  16,  10,   2, -26,  16,  26, 7)    # nearly down
-    pose( 25, 86.0, 0.760, 0.36,  68, -36,  18,  10,  -6, -30,  18,  24, 8)    # floor impact
-    pose( 28, 83.0, 0.745, 0.35,  66, -35,  17,  10,  -2, -28,  17,  22, 8)    # settle bounce
-    pose( 32, 86.0, 0.760, 0.36,  68, -36,  18,  10,  -5, -29,  16,  20, 8)    # settle
-    pose( 40, 86.0, 0.760, 0.36,  68, -36,  18,  10,  -5, -29,  16,  20, 8)    # still (corpse)
+    pose(  4,  6.0, 0.030, 0.00,   4,   6,   2,   3,  10,  -8,   6,   8)       # impact recoil
+    pose( 10, 22.0, 0.170, 0.03,  10,  21,   8,   6,  14, -12,   9,  14)       # stagger, knees give
+    pose( 16, 48.0, 0.400, 0.12,  13,  65,  15,   9,  10, -16,  12,  18, 4)    # buckle: heels lift, sinking
+    pose( 22, 72.0, 0.620, 0.26,   5,  55,  12,   9,   2,  -8,  12,  16, 7)    # rolling onto the back
+    pose( 25, 86.0, 0.720, 0.34, -12,  30,   6,   8,  -6,   3,   9,  12, 8)    # floor impact, legs unfold
+    pose( 28, 83.0, 0.705, 0.33, -10,  28,   6,   8,  -2,   5,   8,  10, 8)    # settle bounce
+    pose( 32, 86.0, 0.720, 0.34, -12,  30,   6,   8,  -5,   3,   7,   9, 8)    # settle
+    pose( 40, 86.0, 0.720, 0.34, -12,  30,   6,   8,  -5,   3,   7,   9, 8)    # still (corpse)
     return 40
 
 def clip_struggle(arm):
@@ -261,35 +269,37 @@ def clip_struggle(arm):
     40 frames ~1.67 s, seamless loop (pure sinusoids, f1 == f41)."""
     pw = PW(arm, "Struggle")
     N = 40
-    B = BACK
+    # +rx = torso forward pitch; a LEG swings forward with NEGATIVE rx (downward
+    # bone); arms come forward-IN around the body via rz yaw (left arm needs
+    # negative rz, right positive -- i.e. -s * yaw).
     for i in range(N + 1):
         f = i + 1
         p = i / float(N)
         rock  = math.sin(2 * TAU * p)            # 2 body rocks per loop
-        pump  = math.sin(2 * TAU * p)            # arm pump, antiphase L/R
         shake = math.sin(3 * TAU * p + 0.7)      # 3 head shakes per loop
-        # torso: bent well forward over the victim, rocking with the effort
-        lean = 34.0 + 5.0 * rock
-        pw.key(f, "Hips", rx=-B * D(10.0 + 2.0 * rock), rz=D(4.0) * math.sin(2 * TAU * p + 1.1),
-               loc=(0.012 * math.sin(2 * TAU * p + 0.5), 0.0, -(0.14 + 0.02 * rock)))
-        pw.key(f, "Spine", rx=-B * D(lean * 0.45))
-        pw.key(f, "Chest", rx=-B * D(lean * 0.55), rz=D(3.0) * rock)
-        pw.key(f, "Neck", rx=-B * D(12.0))
-        pw.key(f, "Head", rx=-B * D(6.0), rz=D(9.0) * shake)
-        # legs: staggered brace (left leg forward), knees flexed, feet planted
-        pw.key(f, "UpperLeg.L", rx=D(26.0 + 2.0 * rock))
-        pw.key(f, "LowerLeg.L", rx=D(-30.0))
-        pw.key(f, "Foot.L", rx=D(10.0))
-        pw.key(f, "UpperLeg.R", rx=D(6.0 - 2.0 * rock))
-        pw.key(f, "LowerLeg.R", rx=D(-18.0))
-        pw.key(f, "Foot.R", rx=D(8.0))
-        # arms: low in front, pinning + pumping alternately; kept close in
+        # torso: bent forward over the victim, rocking with the effort
+        pw.key(f, "Hips", rx=D(6.0 + 1.5 * rock), rz=D(3.0) * math.sin(2 * TAU * p + 1.1),
+               loc=(0.012 * math.sin(2 * TAU * p + 0.5), 0.0, -(0.12 + 0.02 * rock)))
+        pw.key(f, "Spine", rx=D(10.0 + 1.5 * rock))
+        pw.key(f, "Chest", rx=D(13.0 + 2.0 * rock), rz=D(3.0) * rock)
+        pw.key(f, "Neck", rx=D(10.0))
+        pw.key(f, "Head", rx=D(5.0), rz=D(9.0) * shake)
+        # legs: staggered brace (left forward, right back), knees soft, planted
+        pw.key(f, "UpperLeg.L", rx=D(-16.0 - 2.0 * rock))
+        pw.key(f, "LowerLeg.L", rx=D(12.0))
+        pw.key(f, "Foot.L", rx=D(8.0))
+        pw.key(f, "UpperLeg.R", rx=D(10.0 + 2.0 * rock))
+        pw.key(f, "LowerLeg.R", rx=D(20.0))
+        pw.key(f, "Foot.R", rx=D(12.0))
+        # arms: swung forward-IN and DOWN (pinning), pumping alternately;
+        # contained -- never raised above the shoulders
         for sd, ph in ((".L", 0.0), (".R", math.pi)):
             s = 1.0 if sd == ".L" else -1.0
             pu = math.sin(2 * TAU * p + ph)
-            pw.key(f, "Shoulder" + sd, rx=D(4.0) * pu)
-            pw.key(f, "UpperArm" + sd, rx=D(52.0 + 9.0 * pu), rz=s * D(6.0))
-            pw.key(f, "LowerArm" + sd, rx=D(24.0 + 7.0 * pu))
+            pw.key(f, "Shoulder" + sd, rx=D(3.0) * pu)
+            pw.key(f, "UpperArm" + sd, rx=D(28.0 + 8.0 * pu),
+                   rz=-s * D(32.0 + 5.0 * pu))
+            pw.key(f, "LowerArm" + sd, rx=D(26.0 + 8.0 * pu))
             pw.key(f, "Hand" + sd, rx=D(8.0 * pu))
     return N
 
