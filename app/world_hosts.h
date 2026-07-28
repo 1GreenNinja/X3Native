@@ -55,6 +55,15 @@ int dispatchWorldHost(HostContext& hc);
 // gate goes RED — that is the point.
 const char* const* dispatchedWorldModes(unsigned& count);
 
+// [P0-2] The OTHER dispatch site: the `--world` modes the DEFAULT host
+// (runDefaultHost, app/app_run.cpp) handles with its own world branches
+// (canonlevel / intro / level1 / elevator / terrain / ocean / fromdoc /
+// spacestation). Defined in app_run.cpp NEXT TO those branches so there is
+// exactly ONE list, in the same file as the `if (worldMode == ...)` lines it
+// mirrors — the destination-registry self-test used to keep its own hand copy
+// in destinations.cpp, which is the drift class P0-2 exists to kill.
+const char* const* defaultHostWorldModes(unsigned& count);
+
 // --test-surfacestart (Phase 7): headless self-test of the ESCAPED-branch surface
 // start — the cell-vs-surface branch selection (escaped -> surface, shot_down ->
 // cell) AND the surface scene standing up headlessly (glass facility wall, player

@@ -920,6 +920,36 @@ void applyRtaoCVarsForTest(x3::con::IConsole& console, x3::rhi::IRenderDevice& d
 void resetVisSyncForTest() { g_visSync = VisCvarSync{}; g_visPolicy = x3::rhi::VisPolicy{}; }
 const x3::rhi::VisPolicy& visPolicyForTest() { return g_visPolicy; }
 
+// ---------------------------------------------------------------------------
+// [P0-2] THE `--world` MODES THIS DEFAULT HOST HANDLES — the one list, kept in
+// THIS file so it cannot quietly diverge from the branch bools below
+// (introCellWorld / oceanWorld / terrainWorld / elevatorWorld / canonWorld /
+// docWorld — search `worldMode ==` in runDefaultHost). Exported to the
+// destination-registry self-test (app/destinations.cpp), which asserts every
+// one of these is a registry row or a reasoned exclusion, and that every
+// registry worldFlag is dispatched. If you add a `worldMode == "x"` branch,
+// add "x" HERE (same edit, same file) and give it a registry row — the gate
+// goes RED otherwise, and an unlisted flag would silently fall back to the
+// legacy Level-1 build (the "any unrecognized --world lands here" rule).
+// ---------------------------------------------------------------------------
+namespace {
+const char* const kDefaultHostWorldModes[] = {
+    "canonlevel",   // canonWorld — the data-driven canonical tower (THE game)
+    "intro",        // canonWorld entered through the cold-open prologue
+    "level1",       // legacy hand-coded spire (also the unrecognized-flag fallback)
+    "elevator",     // elevatorWorld — Level-1 build, spawn at the elevator
+    "terrain",      // terrainWorld — B2 outdoor tiled terrain
+    "ocean",        // oceanWorld — terrain + animated sea
+    "fromdoc",      // docWorld — boot a LevelDoc JSON (editor loop)
+    "spacestation", // docWorld alias — space_station.leveldoc.json (cli.cpp seeds it)
+};
+} // namespace
+
+const char* const* defaultHostWorldModes(unsigned& count) {
+    count = (unsigned)(sizeof(kDefaultHostWorldModes) / sizeof(kDefaultHostWorldModes[0]));
+    return kDefaultHostWorldModes;
+}
+
 int runDefaultHost(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;

@@ -95,7 +95,9 @@ const Destination& cycleDestination(std::string_view from, int step);
 // on the documented kUnreachableAllowed list and stay unreachable (D9); and a
 // negative control proves the coverage check rejects a fake dispatch-only
 // world (D10). Manual RED proof: run with X3_DEST_TEST_INJECT=<junk> and D7
-// must fail.
+// must fail. The product floor (D11, spec §3.2) pins the six product worlds
+// (canonlevel/intro/surface/rifthub/echotropolis/space) as listed AND
+// dispatched — deleting one from both sides at once is consistent, but loud.
 bool runDestinationsSelfTest();
 
 } // namespace x3::game
