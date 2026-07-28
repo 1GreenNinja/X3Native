@@ -80,13 +80,19 @@ using SarahBarkFn = std::function<void(const std::string& line)>;
 // to wake her, takeDamage() to down her. Mirrors RescueVictim's shape.
 class SarahCompanion {
 public:
-    // Spawn Sarah RESTRAINED at `pos` on the Sarah.glb rig (loaded from `modelDir`,
-    // preferring a Sarah_anim.glb bake when one is present;
+    // Spawn Sarah RESTRAINED at `pos` on `modelFile` (loaded from `modelDir`,
+    // preferring a "<stem>_anim.glb" multi-clip bake when one is on disk;
     // a procedural box stands in on load failure so the level never breaks). She idles
     // but does not follow or fight until onFreed(). Call once.
+    //
+    // MESH CHOICE (deliberate, do not "fix"): the F7 finale passes "AnnaCasual.glb"
+    // — the mesh the F7 captive has always worn. assets/rigged_glb/Sarah.glb (the
+    // default here, used by the self-test) ships NUDE (thigh-highs/heels) and she
+    // spawns restrained in a story beat, so the live game HOLDS that swap.
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::IPhysicsWorld& physics,
-               std::string_view modelDir, const x3::phys::Vec3& pos);
+               std::string_view modelDir, const x3::phys::Vec3& pos,
+               std::string_view modelFile = "Sarah.glb");
 
     // ---- THE CLEAN INTERFACE (Lane A wires these) -------------------------
     // WAKE Sarah: Restrained -> Awake. She now follows Jake + fights. Idempotent
@@ -103,6 +109,15 @@ public:
     // or while Restrained (she can't be hurt before she's in the fight). Returns true
     // the frame she goes down.
     bool takeDamage(int dmg, Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+    // Remove Sarah from the level ENTIRELY — hide her entity + drop her collision
+    // body (the RescueVictim expire/extract vanish pattern; the loaded model stays
+    // owned for the app's lifetime). This is the TRANSFORM-ON-EXPIRY beat: the
+    // unsaved captive is gone and a mini-boss stands in her place. DISTINCT from
+    // Incapacitated, which keeps her visible in a downed pose. Idempotent; once
+    // vanished tick()/draw() are no-ops so there is never a second body.
+    void vanish(Scene& scene, x3::phys::IPhysicsWorld& physics);
+    bool vanished() const { return m_vanished; }
 
     // ---- Per-frame ---------------------------------------------------------
     // Advance one frame. While Restrained: idle in place. While Awake: FOLLOW `playerPos`
@@ -194,6 +209,7 @@ private:
     // ---- Gameplay state ---------------------------------------------------
     SarahState m_state = SarahState::Restrained;
     bool  m_built    = false;
+    bool  m_vanished = false;   // removed from the level (transform-on-expiry)
     bool  m_wasFreed = false;   // she reached Awake at least once (survives incap)
     int   m_hp       = kSarahHp;
     float m_fireCooldown = 0.0f; // counts DOWN to the next shot

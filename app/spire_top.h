@@ -32,10 +32,22 @@
 //                    (8 combatants total — boss + escort), PLUS the F7 rescue objective
 //                    — Sarah, held in a holding cell, present-but-not-active-at-load and
 //                    gated on the F7 hub (mirrors the F2 / F5 RescueSystem::activate()
-//                    gating). Reaching the F7 hub starts her clock; rescuing her (E in
-//                    range) makes her a companion (the canon "Sarah wakes, arms up,
-//                    fights beside Jake" beat); if her timer expires she transforms into
-//                    a mini-boss. A single keypad door gates the lab airlock.
+//                    gating). Reaching the F7 hub starts her clock; BREAKING HER NEURAL
+//                    COLLAR (the Clone fight's Phase-2 gate) WAKES her into a fighting
+//                    companion — the canon "Sarah wakes, arms up, fights beside Jake"
+//                    beat, now literal: she follows Jake at a standoff ring and puts
+//                    ~9 DPS of hitscan into the nearest hostile (app/sarah.*). If her
+//                    timer expires first she transforms into a mini-boss instead. A
+//                    single keypad door gates the lab airlock.
+//
+// ONE SARAH, ONE PATH (2026-07-27): F7 carries exactly ONE Sarah body — the
+// SarahCompanion in m_sarah. The old non-combat RescueVictim placeholder was RETIRED
+// (deleted, not hidden), the Clone fight's optional own placeholder
+// (CloneBossFight::buildSarahPlaceholder) is deliberately never called from here, and
+// the rescue lifecycle the RescueVictim used to own (hub-gated countdown, E-free,
+// transform-on-expiry) was re-homed onto that single body so every pre-existing
+// query (victimPresent/victimCaptive/victimTimerRunning/victimTimeLeft/onRescue) and
+// every pre-existing reader keeps working unchanged.
 //
 // Escalation by design (no unwinnable dogpiles): the counts climb F5(6) -> F6(7) ->
 // F7(8) and the species mix tilts toward ranged + elite + a Boss, but every enemy
@@ -59,6 +71,7 @@
 #include "door.h"
 #include "level1.h"
 #include "clone_boss.h"   // THE CLONE — the F7 Act-1 finale 3-phase boss + neural collar
+#include "sarah.h"        // SARAH — the ONE F7 body: restrained -> freed -> fights
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -67,6 +80,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace x3::game {
 
@@ -136,8 +150,10 @@ public:
     // hub latches its floor-reached flag (objective/alarm hook). Idempotent.
     void onTrigger(uint32_t triggerId);
 
-    // Interact (E in range): try to rescue the F7 captive (Sarah). Returns true iff
-    // rescued.
+    // Interact (E in range): try to free the F7 captive (Sarah) by hand. Returns true
+    // iff she was freed by this call. This is the E-chain FALLBACK — the canon path is
+    // the Clone fight's neural collar (onCollarStrike), which sits AHEAD of this branch
+    // in the host's else-chain, so while the collar is live the collar always wins.
     bool onRescue(const x3::phys::Vec3& playerPos, float range = kRescueReach);
 
     // Fire one shot across all top-floor enemy groups + the boss (the first live
@@ -209,11 +225,25 @@ public:
         return m_clone.collarPrompt(playerPos);
     }
 
+    // ---- SARAH (F7) — THE ONE BODY ----------------------------------------
+    // The F7 companion. She is the SINGLE Sarah on this floor: the old RescueVictim
+    // placeholder was retired outright (not hidden, not layered) so the finale can
+    // never render two of her, and the Clone fight's own optional placeholder
+    // (CloneBossFight::buildSarahPlaceholder) is deliberately never built here.
+    // She spawns RESTRAINED, wakes on the collar-destroy event, then FOLLOWS + FIGHTS.
+    SarahCompanion&       sarah()       { return m_sarah; }
+    const SarahCompanion& sarah() const { return m_sarah; }
+    // True once she is awake and shooting alongside Jake (HUD / gate readback).
+    bool sarahFighting() const { return m_sarah.awake(); }
+
     // The F7 rescue victim (read to assert it is present but NOT active at load).
-    bool   victimPresent() const { return m_victim != nullptr; }
-    bool   victimCaptive() const;          // alive + still a captive (not rescued/expired)
+    // These keep their EXACT pre-existing meaning — the rescue lifecycle (hub-gated
+    // countdown + transform-on-expiry) was re-homed here around the single Sarah body
+    // when the RescueVictim was retired, so every existing reader/test is unchanged.
+    bool   victimPresent() const { return m_sarah.built(); }
+    bool   victimCaptive() const;          // alive + still a captive (not freed/expired)
     bool   victimTimerRunning() const { return m_f7HubReached; }   // clock gated on the F7 hub
-    float  victimTimeLeft() const;
+    float  victimTimeLeft() const { return m_sarahTimeLeft; }
 
     // Reachability: a floor is reachable iff its elevator stop index is inside the
     // elevator's stop range (one stop per floor, 0..kSpireFloorCount-1). The host
@@ -239,10 +269,18 @@ private:
     CloneBossFight m_clone;            // the F7 "Clone" Act-1 finale 3-phase boss + collar
     DoorSystem     m_doors;            // the per-floor keypad doors (F6 x2, F7 x1)
 
-    // F7 rescue captive (Sarah, gated on the F7 hub). Owned here; drawn via
-    // RescueVictim::draw. Transforms into a mini-boss on timer expiry (canon: the
-    // unsaved becomes a boss).
-    std::unique_ptr<RescueVictim> m_victim;
+    // ---- F7 SARAH — the ONE body (sarah.*, replaced the RescueVictim) ----------
+    // She owns her own restrained/awake/incapacitated lifecycle + the combat; this
+    // module owns the F7-specific bookkeeping that used to live inside RescueVictim:
+    // the hub-gated countdown and the canon transform-on-expiry (the unsaved captive
+    // becomes a mini-boss). Ticked/drawn/fed hostiles below.
+    SarahCompanion m_sarah;
+    float          m_sarahTimeLeft = kRescueTimer;   // counts down only once the F7 hub fires
+    bool           m_sarahExpired  = false;          // she timed out -> mini-boss stands in
+    bool           m_sarahFxWired  = false;          // tracer FX sink installed once
+    // Scratch for the per-frame hostile feed (rebuilt each tick; kept as a member so
+    // the finale doesn't heap-churn a vector every frame).
+    std::vector<MonsterSystem*> m_sarahHostiles;
     MonsterManager m_victimBoss;       // the mini-boss spawned if Sarah's timer expires
     x3::rhi::IRenderDevice* m_device = nullptr;  // cached for the on-expiry boss spawn
 

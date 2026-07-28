@@ -51,7 +51,8 @@ float headingToFace(float dirX, float dirZ) {
 // ===========================================================================
 void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
                            x3::phys::IPhysicsWorld& physics,
-                           std::string_view modelDir, const x3::phys::Vec3& pos) {
+                           std::string_view modelDir, const x3::phys::Vec3& pos,
+                           std::string_view modelFile) {
     m_pos    = pos;
     m_state  = SarahState::Restrained;
     m_hp     = kSarahHp;
@@ -59,27 +60,38 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // Warm friendly tint so she reads distinct from the magenta/red hostiles.
     m_tint[0] = 0.85f; m_tint[1] = 0.95f; m_tint[2] = 1.0f; m_tint[3] = 1.0f;
 
-    // ---- Load the REAL Sarah rig (Meshy auto-rig, 24-joint standard humanoid —
-    // bones are Hips/LeftUpLeg/RightHand/Head, NOT mixamorig*) via a mounted loose-dir
-    // asset source (same path as RescueVictim::build). Y-up. Box fallback on failure.
+    // ---- Load her rig (Meshy auto-rig, 24-joint standard humanoid — bones are
+    // Hips/LeftUpLeg/RightHand/Head, NOT mixamorig*) via a mounted loose-dir asset
+    // source (same path as RescueVictim::build). Y-up. Box fallback on failure.
     //
-    // PREFER the multi-clip bake "Sarah_anim.glb" when it is on disk (the same
-    // convention canon_aliens.cpp uses for "<stem>_anim.glb"). Stock Sarah.glb ships
+    // PREFER the multi-clip bake "<stem>_anim.glb" when it is on disk (the same
+    // convention canon_aliens.cpp / crowd_skin.cpp use). A stock single-clip GLB ships
     // ONE unnamed clip ("Armature|clip0|baselayer"), so the idle/walk/run/aim/death
     // lookups below all MISS and she runs as a one-pose (but correctly posed) figure.
     //
-    // STATUS 2026-07-25: NO Sarah_anim.glb is committed — the first retarget attempt
-    // (tools/sarah_anim_build.ps1 + sarah_clips.manifest.json, borrowing clips off
-    // JakeClone_player.glb's identical Meshy skeleton) baked without error but DEFORMS
-    // her badly; see the manifest's "_status" block and docs/screenshots/sarah/. So
-    // this resolves to stock Sarah.glb today. The preference is left wired on purpose:
-    // when a good bake lands it is picked up with ZERO code change. ----
-    std::string file = "Sarah.glb";
+    // STATUS 2026-07-27:
+    //   * Sarah.glb (the DEFAULT, used by --test-companion-combat): NO Sarah_anim.glb
+    //     is committed — the first retarget attempt (tools/sarah_anim_build.ps1 +
+    //     sarah_clips.manifest.json, borrowing clips off JakeClone_player.glb's
+    //     identical Meshy skeleton) baked without error but DEFORMS her badly; see the
+    //     manifest's "_status" block and docs/screenshots/sarah/.
+    //   * AnnaCasual.glb (what the LIVE F7 finale passes): AnnaCasual_anim.glb IS
+    //     committed and carries Idle/Walk/Run/Talk — so the live Sarah gets real
+    //     locomotion. It carries NO aim/fire and NO death clip, so m_aimClip /
+    //     m_deathClip stay -1 and she shoots from the locomotion pose (see driveAnim).
+    //     That is a KNOWN art gap, not a wiring bug: bake an Aim + Death clip onto
+    //     AnnaCasual_anim.glb and both are picked up with ZERO code change. ----
+    std::string file = std::string(modelFile.empty() ? std::string_view("Sarah.glb")
+                                                     : modelFile);
     {
         std::error_code ec;
-        const std::filesystem::path animPath =
-            std::filesystem::path(std::string(modelDir)) / "Sarah_anim.glb";
-        if (std::filesystem::exists(animPath, ec)) file = "Sarah_anim.glb";
+        const std::filesystem::path base(file);
+        const std::string stem = base.stem().string();
+        if (stem.size() < 5 || stem.compare(stem.size() - 5, 5, "_anim") != 0) {
+            const std::filesystem::path animPath =
+                std::filesystem::path(std::string(modelDir)) / (stem + "_anim.glb");
+            if (std::filesystem::exists(animPath, ec)) file = stem + "_anim.glb";
+        }
     }
     m_assets.reset(x3::asset::createAssetSource());
     if (m_assets->mountDir(std::string(modelDir), 0)) {
@@ -98,6 +110,14 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // Bind the skeletal-animation runtime so she idles/walks/aims instead of
         // freezing at bind/T-pose (mirrors RescueVictim / MonsterSystem).
         if (m_model.ok && m_skinner.bind(m_model)) {
+            // ROOT-Y LOCK (buried/bouncing guard — the same one RescueVictim takes,
+            // rescue.cpp): Sarah's world Y is owned by her spawn + the follow AI, so a
+            // clip with a broken baked root Y must never sink or bob her through the
+            // floor. AnnaCasual_anim.glb's Walk/Run are EXACTLY that family (the Jake
+            // -0.9488 armature-offset retarget bug, see anim.h setRootYLock), and she is
+            // a FOLLOWER — she walks constantly, so without this she would swim through
+            // the F7 plate. Idle sway/lean is untouched (X/Z + rotations pass through).
+            m_skinner.setRootYLock(true);
             const bool gpuSkin = m_skinner.enableGpuSkinning(device, m_model);
             m_idleClip = m_skinner.findClip({ "idle", "stand", "breath", "loop" });
             m_walkClip = m_skinner.findClip({ "walk" });
@@ -214,6 +234,7 @@ void SarahCompanion::driveAnim(float dt, float planarSpeed) {
 }
 
 void SarahCompanion::onFreed() {
+    if (m_vanished) return;                          // she is no longer in the level
     if (m_state != SarahState::Restrained) return;   // idempotent / no-op if downed
     m_state    = SarahState::Awake;
     m_wasFreed = true;
@@ -228,8 +249,9 @@ void SarahCompanion::onCloneDown() {
 }
 
 bool SarahCompanion::takeDamage(int dmg, Scene& scene, x3::phys::IPhysicsWorld& physics) {
-    // She can only be hurt once in the fight (never while restrained / already down).
-    if (m_state != SarahState::Awake || dmg <= 0) return false;
+    // She can only be hurt once in the fight (never while restrained / already down /
+    // once she has left the level).
+    if (m_vanished || m_state != SarahState::Awake || dmg <= 0) return false;
     m_hp -= dmg;
     if (m_hp > 0) return false;
     // ---- INCAPACITATED (the emotional beat): NOT deleted. Drop her combat state,
@@ -249,6 +271,23 @@ bool SarahCompanion::takeDamage(int dmg, Scene& scene, x3::phys::IPhysicsWorld& 
     x3::logInfo("[sarah] DOWN — incapacitated (not deleted)");
     bark("...go. I'll... hold here.");
     return true;
+}
+
+void SarahCompanion::vanish(Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    if (!m_built || m_vanished) return;
+    m_vanished  = true;
+    m_target    = nullptr;
+    m_fireAnimT = -1.0f;
+    // The RescueVictim expire/extract vanish pattern: hide the entity + drop the
+    // collision body. The loaded model stays owned (app lifetime) like every other
+    // character system, so nothing dangles and nothing can draw her again.
+    if (m_entity != kNoLink && m_entity < scene.size()) {
+        Entity& me = scene.get(m_entity);
+        me.visible = false;
+        me.body    = x3::phys::BodyId{};
+    }
+    if (m_body.valid()) { physics.removeBody(m_body); m_body = x3::phys::BodyId{}; }
+    x3::logInfo("[sarah] VANISHED — removed from the level (transform-on-expiry)");
 }
 
 MonsterSystem* SarahCompanion::acquireNearest(const std::vector<MonsterSystem*>& hostiles) const {
@@ -296,7 +335,7 @@ void SarahCompanion::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
                           const x3::phys::Vec3& playerPos,
                           const std::vector<MonsterSystem*>& hostiles,
                           const std::vector<x3::phys::Vec3>& allies) {
-    if (!m_built) return;
+    if (!m_built || m_vanished) return;   // gone from the level: nothing to drive
 
     // ---- Restrained: idle in place (breathe), do not follow or fight. ----
     if (m_state == SarahState::Restrained) {
