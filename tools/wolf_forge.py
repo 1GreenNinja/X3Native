@@ -231,6 +231,91 @@ def fallback_weights(mesh, arm):
             groups[nm].add([v.index], -w / tot, 'REPLACE')
     log("fallback skinning done:", len(segs), "deform bones")
 
+# Chain-projection redistribution: capsule falloff alone lets overlapping
+# armor shells along a limb disagree with the inner tube (shredding at deep
+# folds). For each leg/tail chain, take each vertex's TOTAL chain weight and
+# re-split it purely by arc-length projection onto the chain polyline with a
+# narrow linear blend window at the joints -- every shell that hugs the limb
+# then deforms identically.
+def chain_redistribute(mesh, arm):
+    chains = []
+    for sd in (".L", ".R"):
+        chains.append(["FrontUpper" + sd, "FrontLower" + sd, "FrontFoot" + sd])
+        chains.append(["HindUpper" + sd, "HindLower" + sd, "HindFoot" + sd])
+    chains.append(["Tail1", "Tail2", "Tail3", "Tail4", "Tail5", "Tail6"])
+    groups = {g.name: g for g in mesh.vertex_groups}
+    name2idx = {g.name: g.index for g in mesh.vertex_groups}
+    mw = mesh.matrix_world
+    geom = []   # per chain: (pts, radii, group-index set)
+    for chain in chains:
+        pts = [arm.matrix_world @ arm.data.bones[b].head_local for b in chain]
+        pts.append(arm.matrix_world @ arm.data.bones[chain[-1]].tail_local)
+        geom.append((pts, [_bone_radius(b) for b in chain],
+                     set(name2idx[b] for b in chain if b in name2idx)))
+    all_chain_idx = set()
+    for _, _, idxs in geom: all_chain_idx |= idxs
+    idx2vg = {g.index: g for g in mesh.vertex_groups}
+    moved = 0
+    for v in mesh.data.vertices:
+        cap_total = sum(ge.weight for ge in v.groups if ge.group in all_chain_idx)
+        # snapshot body entries BEFORE any writes (writes may grow v.groups)
+        body_entries = [(ge.group, ge.weight) for ge in v.groups
+                        if ge.group not in all_chain_idx]
+        co = mw @ v.co
+        # Per-chain: min distance, nearest-segment radius, per-segment soft
+        # weights (inv-dist^4 -- winner-take-all projection is discontinuous at
+        # the outer corner of a folded joint, exactly where hock points/fins
+        # sit, and shreds them).
+        per_chain = []
+        for pts, radii, _ in geom:
+            raw = []; dmin = 1e9; rnear = radii[0]
+            for k in range(len(radii)):
+                a, b = pts[k], pts[k + 1]
+                d = b - a
+                t = max(0.0, min(1.0, (co - a).dot(d) / max(1e-8, d.length_squared)))
+                dist = (co - (a + d * t)).length
+                if dist < dmin: dmin = dist; rnear = radii[k]
+                raw.append((radii[k] / max(dist, 0.02)) ** 4)
+            per_chain.append((dmin, rnear, raw))
+        # GEOMETRIC chain ownership: capsule+smoothing history differs between
+        # interleaved shells (inner tube vs armor plate), leaving salt-and-
+        # pepper body-owned verts INSIDE a limb that shear when it folds. A
+        # vert well inside a chain's tube belongs to that chain regardless of
+        # history; ownership fades smoothly at the hip/shoulder creases.
+        tgeo = []
+        for dmin, rnear, _ in per_chain:
+            closeness = rnear * 1.35 / max(dmin, 0.02)
+            tgeo.append(max(0.0, min(1.0, (closeness - 0.85) / 0.45)))
+        if cap_total < 1e-4 and max(tgeo) <= 0.0:
+            continue
+        # inter-chain competition (tail tip hangs between the hind legs):
+        # sharp inverse-distance share so exactly one chain wins locally.
+        share = [(1.0 / max(d, 0.02)) ** 6 for d, _, _ in per_chain]
+        stot = sum(share)
+        masses = []
+        for ci in range(len(chains)):
+            s = share[ci] / stot
+            masses.append(max(cap_total * s, tgeo[ci] * s))
+        chain_total = min(1.0, sum(masses))
+        scale = chain_total / max(1e-8, sum(masses))
+        for ci, (chain, (dmin, rnear, raw)) in enumerate(zip(chains, per_chain)):
+            cm = masses[ci] * scale
+            rtot = sum(raw)
+            for bname, r in zip(chain, raw):
+                groups[bname].add([v.index], cm * r / rtot, 'REPLACE')
+        # rescale the vert's body (non-chain) weights to the remainder
+        body_now = sum(w for _, w in body_entries)
+        remainder = 1.0 - chain_total
+        if body_now > 1e-8:
+            f = remainder / body_now
+            for gidx, w in body_entries:
+                vg = idx2vg.get(gidx)
+                if vg is not None:
+                    vg.add([v.index], w * f, 'REPLACE')
+        moved += 1
+    log("chain_redistribute: resolved", moved, "limb/tail verts across",
+        len(chains), "chains")
+
 # ---------------------------------------------------------------------------
 # Stage: rig
 # ---------------------------------------------------------------------------
@@ -303,7 +388,7 @@ def stage_rig(src, workdir):
     if weighted < len(mesh.data.vertices) * 0.5:
         log("bone heat FAILED -> procedural capsule-distance fallback")
         fallback_weights(mesh, arm)
-    # Smooth (weight-paint op; best effort in background).
+    # Smooth FIRST (weight-paint op; best effort in background)...
     try:
         select_only([mesh], mesh)
         bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
@@ -315,6 +400,10 @@ def stage_rig(src, workdir):
         log("weight smooth skipped:", e)
         try: bpy.ops.object.mode_set(mode='OBJECT')
         except Exception: pass
+    # ...then the chain solve gets the LAST WORD on limb/tail weights: the
+    # topological smooth works per shell, so overlapping armor shells drift
+    # apart again if it runs after the redistribution (=> shredding at folds).
+    chain_redistribute(mesh, arm)
     # Influence hygiene: max 4 joints/vert (glTF standard), clean crumbs, renorm.
     select_only([mesh], mesh)
     bpy.ops.object.vertex_group_limit_total(group_select_mode='ALL', limit=4)
@@ -402,10 +491,356 @@ def stage_rig(src, workdir):
     log("stage rig OK")
 
 # ---------------------------------------------------------------------------
-# Stage: anim -- defined in a later edit pass (stage 2).
+# Stage: anim -- author the 10 clips + export + grounded QA renders.
+#
+# World-rotation sign conventions (verified via the stage-rig stress renders):
+#   legs:  -rx = protract (swing forward), +rx = retract (swing back)
+#   FrontLower +rx = fold foot up;  HindLower -rx = fold hock up
+#   Neck/Head: +rx = muzzle down, -rx = muzzle up;  Jaw +rx = OPEN
+#   Tail: +rx = raise/curl harder, -rx = flatten;  rz = lateral lash
+#   Pelvis loc: -y = lunge toward the head, +z = up. Root loc z = whole body.
 # ---------------------------------------------------------------------------
+FPS = 24.0
+
+class PW:
+    """Pose writer: composes a WORLD-euler pose per bone per frame and keys it."""
+    def __init__(self, arm, name):
+        self.arm = arm
+        if not arm.animation_data:
+            arm.animation_data_create()
+        act = bpy.data.actions.new(name)
+        act.use_fake_user = True
+        arm.animation_data.action = act
+        try:  # Blender 5.x slotted actions forward-compat
+            if getattr(act, "slots", None) is not None and len(act.slots) == 0:
+                act.slots.new(id_type='OBJECT', name=arm.name)
+                arm.animation_data.action_slot = act.slots[0]
+        except Exception:
+            pass
+        self.act = act
+        clear_pose(arm)
+
+    def key(self, f, bone, rx=0.0, ry=0.0, rz=0.0, loc=None, scale=None):
+        pb = set_wrot(self.arm, bone, rx, ry, rz)
+        if pb is None:
+            log("WARN missing bone", bone); return
+        pb.keyframe_insert("rotation_quaternion", frame=f)
+        if loc is not None:
+            set_wloc(self.arm, bone, *loc)
+            pb.keyframe_insert("location", frame=f)
+        if scale is not None:
+            pb.scale = (scale, scale, scale)
+            pb.keyframe_insert("scale", frame=f)
+
+LEGS = ("FrontUpper", "FrontLower", "FrontFoot", "HindUpper", "HindLower", "HindFoot")
+
+def _leg_gait(pw, f, side, kind, phase, A, B, C):
+    """One leg at cycle phase [0..1). Stance p<0.5 sweeps back, swing p>=0.5
+    returns forward with the joint folded so the foot clears the floor."""
+    s = math.sin(TAU * phase)          # + first half (stance), - second (swing)
+    lift = max(0.0, -s)                # 0 in stance, up to 1 mid-swing
+    up = -A * math.cos(TAU * phase)    # -A touchdown ... +A liftoff ... back
+    sd = "." + side
+    if kind == "F":
+        pw.key(f, "FrontUpper" + sd, rx=up)
+        pw.key(f, "FrontLower" + sd, rx=B * lift)
+        pw.key(f, "FrontFoot" + sd, rx=-C * lift)
+    else:
+        pw.key(f, "HindUpper" + sd, rx=up)
+        pw.key(f, "HindLower" + sd, rx=-B * lift)
+        pw.key(f, "HindFoot" + sd, rx=C * 0.6 * lift)
+
+def clip_walk(arm):
+    pw = PW(arm, "Walk")
+    N = 28
+    # classic 4-beat lateral walk: LF, RH, RF, LH each a quarter-cycle apart
+    ph = {("F", "L"): 0.00, ("H", "R"): 0.25, ("F", "R"): 0.50, ("H", "L"): 0.75}
+    for i in range(N + 1):
+        f = i + 1
+        p = i / float(N)
+        for (kind, side), off in ph.items():
+            _leg_gait(pw, f, side, kind, (p + off) % 1.0, D(17), D(26), D(12))
+        pw.key(f, "Pelvis", ry=D(3) * math.sin(TAU * p),
+               loc=(0, 0, 0.025 * math.sin(2 * TAU * p)))
+        pw.key(f, "Chest", ry=D(-2.5) * math.sin(TAU * p))
+        pw.key(f, "Neck", rx=D(2.5) * math.sin(2 * TAU * p + 0.8))
+        pw.key(f, "Head", rx=D(-1.5) * math.sin(2 * TAU * p + 0.8))
+        for k, tb in enumerate(("Tail2", "Tail3", "Tail4", "Tail5", "Tail6")):
+            pw.key(f, tb, rz=D(7) * math.sin(TAU * p - 0.55 * k),
+                   rx=D(2) * math.sin(2 * TAU * p - 0.5 * k))
+    return N
+
+def clip_run(arm):
+    pw = PW(arm, "Run")
+    N = 16
+    # bounding gallop: front pair nearly together, hind pair half a cycle out
+    ph = {("F", "L"): 0.00, ("F", "R"): 0.12, ("H", "R"): 0.50, ("H", "L"): 0.62}
+    for i in range(N + 1):
+        f = i + 1
+        p = i / float(N)
+        for (kind, side), off in ph.items():
+            A = D(34) if kind == "F" else D(40)
+            _leg_gait(pw, f, side, kind, (p + off) % 1.0, A, D(44), D(18))
+        # spine gallop flex: chest extends when the hinds drive (p~0.55),
+        # crunches when the fronts land (p~0.05)
+        flex = math.sin(TAU * (p + 0.30))
+        pw.key(f, "Spine1", rx=D(7) * flex)
+        pw.key(f, "Chest", rx=D(10) * flex)
+        pw.key(f, "Pelvis", rx=D(-6) * flex,
+               loc=(0, 0, 0.07 * math.sin(TAU * (p + 0.15))))
+        pw.key(f, "Neck", rx=D(-6) * flex - D(4))
+        pw.key(f, "Head", rx=D(3) * flex + D(2))
+        pw.key(f, "Jaw", rx=D(9))          # maw open on the charge
+        for k, tb in enumerate(("Tail2", "Tail3", "Tail4", "Tail5", "Tail6")):
+            pw.key(f, tb, rx=D(8) * math.sin(TAU * (p + 0.3) - 0.5 * k),
+                   rz=D(3) * math.sin(TAU * p - 0.5 * k))
+    return N
+
+def clip_idle(arm):
+    pw = PW(arm, "Idle")
+    N = 60
+    for i in range(N + 1):
+        f = i + 1
+        p = i / float(N)
+        br = math.sin(2 * TAU * p)               # 2 breaths per loop
+        pw.key(f, "Chest", rx=D(1.3) * br, scale=1.0 + 0.012 * br)
+        pw.key(f, "Spine1", rx=D(0.8) * br)
+        # head scan: one slow look-around with a lagged head
+        pw.key(f, "Neck", rz=D(9) * math.sin(TAU * p),
+               rx=D(1.5) * math.sin(2 * TAU * p + 1.2))
+        pw.key(f, "Head", rz=D(7) * math.sin(TAU * p - 0.6))
+        pw.key(f, "Pelvis", ry=D(1.6) * math.sin(TAU * p + 0.5),
+               loc=(0.008 * math.sin(TAU * p), 0, 0))
+        for k, tb in enumerate(("Tail3", "Tail4", "Tail5", "Tail6")):
+            pw.key(f, tb, rz=D(9) * math.sin(TAU * p - 0.7 * k),
+                   rx=D(2.5) * math.sin(TAU * p - 0.7 * k + 0.8))
+    return N
+
+def clip_crouch(arm):
+    pw = PW(arm, "Crouch")
+    N = 48
+    for i in range(N + 1):
+        f = i + 1
+        p = i / float(N)
+        sway = math.sin(TAU * p)
+        pw.key(f, "Pelvis", ry=D(2.2) * sway, loc=(0, 0, -0.23 + 0.012 * math.sin(2 * TAU * p)))
+        # legs folded to keep the feet near the floor under the dropped body
+        pw.key(f, "FrontUpper.L", rx=D(11) + D(1.5) * sway)
+        pw.key(f, "FrontUpper.R", rx=D(11) - D(1.5) * sway)
+        pw.key(f, "FrontLower.L", rx=D(21)); pw.key(f, "FrontLower.R", rx=D(21))
+        pw.key(f, "FrontFoot.L", rx=D(-11)); pw.key(f, "FrontFoot.R", rx=D(-11))
+        pw.key(f, "HindUpper.L", rx=D(-13)); pw.key(f, "HindUpper.R", rx=D(-13))
+        pw.key(f, "HindLower.L", rx=D(-22)); pw.key(f, "HindLower.R", rx=D(-22))
+        pw.key(f, "HindFoot.L", rx=D(20)); pw.key(f, "HindFoot.R", rx=D(20))
+        pw.key(f, "Chest", rx=D(2))
+        pw.key(f, "Neck", rx=D(11))          # head dropped, thrust forward
+        pw.key(f, "Head", rx=D(-7))          # eyes level, hunting glare
+        pw.key(f, "Jaw", rx=D(6))
+        # tail LOW and almost still (stalking)
+        for k, tb in enumerate(("Tail2", "Tail3", "Tail4", "Tail5", "Tail6")):
+            pw.key(f, tb, rx=D(-6), rz=D(1.5) * math.sin(TAU * p - 0.5 * k))
+    return N
+
+def clip_attack(arm):
+    pw = PW(arm, "Attack")
+    def pose(f, neck, head, jaw, chest, ply, plz, fu, fl, hu):
+        pw.key(f, "Neck", rx=neck); pw.key(f, "Head", rx=head)
+        pw.key(f, "Jaw", rx=jaw); pw.key(f, "Chest", rx=chest)
+        pw.key(f, "Pelvis", loc=(0, ply, plz))
+        for sd in (".L", ".R"):
+            pw.key(f, "FrontUpper" + sd, rx=fu)
+            pw.key(f, "FrontLower" + sd, rx=fl)
+            pw.key(f, "HindUpper" + sd, rx=hu)
+    pose(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    pose(6, D(-20), D(-9), D(20), D(-6), 0.03, 0.02, D(9), D(4), D(-7))   # coil
+    pose(9, D(20), D(10), D(48), D(8), -0.19, -0.06, D(-19), D(11), D(6)) # strike+gape
+    pose(11, D(24), D(12), D(6), D(8), -0.20, -0.07, D(-21), D(12), D(7)) # SNAP shut
+    pose(12, D(24), D(12), D(6), D(8), -0.20, -0.07, D(-21), D(12), D(7)) # hold bite
+    pose(16, D(10), D(5), D(14), D(3), -0.07, -0.03, D(-8), D(5), D(2))   # recoil
+    pose(22, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    for f in (1, 6, 9, 11, 12, 16, 22):  # tail punctuates the strike
+        t = {1: 0, 6: D(8), 9: D(-14), 11: D(-16), 12: D(-16), 16: D(-5), 22: 0}[f]
+        for tb in ("Tail3", "Tail4", "Tail5"):
+            pw.key(f, tb, rx=t)
+    return 22
+
+def clip_hitreaction(arm):
+    pw = PW(arm, "Hitreaction")
+    def pose(f, neck, head, chest, ply, ful):
+        pw.key(f, "Neck", rx=neck); pw.key(f, "Head", rx=head)
+        pw.key(f, "Chest", rx=chest); pw.key(f, "Pelvis", loc=(0, ply, 0))
+        pw.key(f, "FrontUpper.L", rx=ful)
+    pose(1, 0, 0, 0, 0, 0)
+    pose(3, D(-24), D(-12), D(-7), 0.06, D(-12))   # sharp recoil, paw jerks
+    pose(6, D(6), D(3), D(2), -0.015, D(3))        # overshoot
+    pose(10, 0, 0, 0, 0, 0)
+    return 10
+
+def clip_death(arm):
+    # Distributed collapse: the roll spreads over Pelvis+Spine1+Chest (single-
+    # joint 60-degree rolls shred the mesh and bury the head), body sinks only
+    # to barrel-rest height, neck stays nearly relaxed so the head settles with
+    # the body instead of twisting against it.
+    pw = PW(arm, "Death")
+    def key_all(f, plz=0.0, ryp=0.0, rys=0.0, ryc=0.0, nrx=0.0, nry=0.0,
+                jaw=0.0, fu=0.0, fl=0.0, hu=0.0, hl=0.0, tail=0.0, srx=0.0):
+        pw.key(f, "Pelvis", ry=ryp, loc=(0, 0, plz))
+        pw.key(f, "Spine1", ry=rys, rx=srx); pw.key(f, "Chest", ry=ryc, rx=srx)
+        pw.key(f, "Neck", rx=nrx, ry=nry); pw.key(f, "Jaw", rx=jaw)
+        for sd, m in ((".L", 1.0), (".R", 0.8)):
+            pw.key(f, "FrontUpper" + sd, rx=fu * m)
+            pw.key(f, "FrontLower" + sd, rx=fl * m)
+            pw.key(f, "HindUpper" + sd, rx=hu * m)
+            pw.key(f, "HindLower" + sd, rx=hl * m)
+        for tb in ("Tail2", "Tail3", "Tail4", "Tail5"):
+            pw.key(f, tb, rx=tail)
+    key_all(1)
+    key_all(6, plz=-0.08, nrx=D(8), jaw=D(12),
+            fu=D(6), fl=D(10), hu=D(-6), hl=D(-10))                    # stagger
+    key_all(12, plz=-0.26, ryp=D(10), nrx=D(12), jaw=D(16),
+            fu=D(8), fl=D(28), hu=D(-10), hl=D(-28))                   # buckle
+    key_all(20, plz=-0.50, ryp=D(26), rys=D(10), ryc=D(8), nrx=D(8),
+            nry=D(12), jaw=D(18), fu=D(28), fl=D(46), hu=D(-16),
+            hl=D(-26), tail=D(-14), srx=D(6))                          # fall
+    for f in (26, 34):                                                 # settle
+        key_all(f, plz=-0.55, ryp=D(30), rys=D(12), ryc=D(9), nrx=D(6),
+                nry=D(16), jaw=D(15), fu=D(32), fl=D(50), hu=D(-18),
+                hl=D(-28), tail=D(-18), srx=D(8))
+    return 34
+
+def clip_struggle(arm):
+    pw = PW(arm, "Struggle")
+    N = 36
+    offs = {("FrontUpper", "L"): 0.0, ("FrontUpper", "R"): 0.5,
+            ("HindUpper", "L"): 0.3, ("HindUpper", "R"): 0.8}
+    for i in range(N + 1):
+        f = i + 1
+        p = i / float(N)
+        pw.key(f, "Pelvis", rz=D(9) * math.sin(2 * TAU * p),
+               ry=D(6) * math.sin(2 * TAU * p + 1.2))
+        pw.key(f, "Chest", rz=D(-6) * math.sin(2 * TAU * p))
+        for (bn, sd), off in offs.items():
+            s = math.sin(2 * TAU * (p + off))
+            pw.key(f, bn + "." + sd, rx=D(20) * s)
+            pw.key(f, bn.replace("Upper", "Lower") + "." + sd,
+                   rx=D(-24) * s if bn.startswith("Hind") else D(24) * s)
+        pw.key(f, "Neck", rx=D(10) * math.sin(3 * TAU * p))
+        pw.key(f, "Head", rz=D(16) * math.sin(3 * TAU * p + 0.7))
+        pw.key(f, "Jaw", rx=D(15) + D(14) * math.sin(2 * TAU * p + 0.3))
+        for k, tb in enumerate(("Tail2", "Tail3", "Tail4", "Tail5", "Tail6")):
+            pw.key(f, tb, rz=D(16) * math.sin(2 * TAU * p - 0.6 * k))
+    return N
+
+def clip_leap(arm):
+    pw = PW(arm, "Leap")
+    def pose(f, rootz, plz, prx, fu, fl, hu, hl, neck, jaw, tail):
+        pw.key(f, "Root", loc=(0, 0, rootz))
+        pw.key(f, "Pelvis", rx=prx, loc=(0, 0, plz))
+        for sd in (".L", ".R"):
+            pw.key(f, "FrontUpper" + sd, rx=fu); pw.key(f, "FrontLower" + sd, rx=fl)
+            pw.key(f, "HindUpper" + sd, rx=hu); pw.key(f, "HindLower" + sd, rx=hl)
+        pw.key(f, "Neck", rx=neck); pw.key(f, "Jaw", rx=jaw)
+        for tb in ("Tail3", "Tail4", "Tail5"):
+            pw.key(f, tb, rx=tail)
+    #      f  root   plz   prx     fu      fl      hu      hl     neck    jaw   tail
+    pose(  1, 0.00,  0.00, 0,      0,      0,      0,      0,     0,      0,    0)
+    pose(  4, 0.00, -0.22, D(4),  D(10),  D(16), D(-18), D(-30), D(8),  D(6),  D(10))   # coil
+    pose(  7, 0.22,  0.00, D(-12), D(-26), D(22), D(28),  D(18), D(-12), D(18), D(-12)) # launch
+    pose( 10, 0.42,  0.00, D(-6),  D(-16), D(42), D(34),  D(-10), D(-6), D(26), D(-8))  # airborne tuck
+    pose( 14, 0.16,  0.00, D(10),  D(-12), D(2),  D(-14), D(-24), D(6),  D(12), D(4))   # descend, reach
+    pose( 16, 0.00, -0.16, D(4),   D(4),   D(18), D(-8),  D(-16), D(9),  D(4),  D(6))   # land absorb
+    pose( 20, 0.00,  0.00, 0,      0,      0,      0,      0,     0,     0,     0)      # settle
+    return 20
+
+def clip_snarl(arm):
+    pw = PW(arm, "Snarl")
+    N = 34
+    # sharp head jerks + jaw snap pattern as sparse keys over a coiled base
+    jawk = {1: 8, 3: 38, 5: 38, 7: 33, 12: 40, 14: 10, 16: 36, 22: 38, 26: 34, 30: 12, 34: 8}
+    yawk = {1: 0, 4: 0, 6: -13, 10: -11, 12: 2, 16: 0, 18: 13, 22: 11, 26: 0, 30: -5, 34: 0}
+    frames = sorted(set(list(jawk) + list(yawk)))
+    jf = sorted(jawk); yf = sorted(yawk)
+    def lerp_at(keys, ks, f):
+        if f <= ks[0]: return keys[ks[0]]
+        for a, b in zip(ks, ks[1:]):
+            if a <= f <= b:
+                t = (f - a) / float(b - a)
+                return keys[a] * (1 - t) + keys[b] * t
+        return keys[ks[-1]]
+    for i in range(N + 1):
+        f = i + 1
+        p = i / float(N)
+        # coiled-low aggressive base
+        pw.key(f, "Pelvis", loc=(0, 0, -0.06 + 0.006 * math.sin(3 * TAU * p)))
+        pw.key(f, "Chest", rx=D(3))
+        for sd in (".L", ".R"):
+            pw.key(f, "FrontUpper" + sd, rx=D(7))
+            pw.key(f, "FrontLower" + sd, rx=D(10))
+            pw.key(f, "HindUpper" + sd, rx=D(-6))
+        pw.key(f, "Neck", rx=D(18), rz=D(0.5) * lerp_at(yawk, yf, f))
+        pw.key(f, "Head", rx=D(-6) + D(1.8) * math.sin(6 * TAU * p),
+               rz=D(1.3) * lerp_at(yawk, yf, f))
+        pw.key(f, "Jaw", rx=D(1.12) * lerp_at(jawk, jf, f))
+        # tail stiff and high with fast tip lashes
+        pw.key(f, "Tail2", rx=D(8)); pw.key(f, "Tail3", rx=D(13))
+        pw.key(f, "Tail4", rx=D(16), rz=D(7) * math.sin(3 * TAU * p))
+        pw.key(f, "Tail5", rz=D(22) * math.sin(3 * TAU * p - 0.7))
+        pw.key(f, "Tail6", rz=D(20) * math.sin(3 * TAU * p - 1.2))
+    return N
+
 def stage_anim(workdir, out):
-    raise SystemExit("anim stage not implemented yet")
+    reset_factory()
+    blend = os.path.join(workdir, "wolf_rig.blend")
+    bpy.ops.wm.open_mainfile(filepath=blend)
+    arm = bpy.data.objects["Arm"]
+    mesh = bpy.data.objects["Character"]
+    for a in list(bpy.data.actions):
+        bpy.data.actions.remove(a)
+    bpy.context.scene.render.fps = int(FPS)
+
+    builders = [clip_idle, clip_walk, clip_run, clip_attack, clip_hitreaction,
+                clip_death, clip_struggle, clip_leap, clip_crouch, clip_snarl]
+    lengths = {}
+    for b in builders:
+        n = b(arm)
+        nm = arm.animation_data.action.name
+        lengths[nm] = n
+        log("clip %-12s %2d frames  %.2fs" % (nm, n, n / FPS))
+    arm.animation_data.action = None
+    clear_pose(arm)
+
+    pack_textures()
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    bpy.ops.export_scene.gltf(
+        filepath=out, export_format='GLB', export_yup=True, use_selection=False,
+        export_animations=True, export_animation_mode='ACTIONS',
+        export_nla_strips=False, export_force_sampling=True, export_apply=False,
+        export_materials='EXPORT', export_image_format='AUTO',
+        export_texcoords=True, export_normals=True, export_skins=True)
+    log("EXPORTED:", out, os.path.getsize(out), "bytes")
+
+    # ---- grounded multi-frame QA renders --------------------------------
+    qa_scene()
+    shots = {
+        "Walk": [1, 8, 15, 22, 28], "Run": [1, 5, 9, 13],
+        "Idle": [1, 30], "Crouch": [1, 24],
+        "Attack": [6, 9, 11, 15], "Hitreaction": [3, 6],
+        "Death": [12, 20, 34], "Struggle": [10, 28],
+        "Leap": [4, 7, 10, 14, 16], "Snarl": [3, 6, 14, 18],
+    }
+    for nm, frames in shots.items():
+        act = bpy.data.actions.get(nm)
+        if act is None:
+            log("QA WARN: no action", nm); continue
+        arm.animation_data.action = act
+        for f in frames:
+            bpy.context.scene.frame_set(f)
+            c = Vector((0, 0, 1.35)) if nm == "Leap" else Vector((0, 0, 0.9))
+            qa_shot(os.path.join(workdir, "clip_%s_f%02d_side.png" % (nm, f)), "side", c)
+            if nm in ("Run", "Attack", "Leap", "Snarl", "Death"):
+                qa_shot(os.path.join(workdir, "clip_%s_f%02d_34.png" % (nm, f)), "persp", c)
+    arm.animation_data.action = None
+    log("stage anim OK")
 
 if __name__ == "__main__":
     if STAGE == "rig":

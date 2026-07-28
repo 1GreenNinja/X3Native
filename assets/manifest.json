@@ -469,9 +469,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/alien_crawler_anim.glb",
-      "sha256": "24a306f7b53a17401939cfa2ab79de5a3a2af9954ce10ed4748c0f4714f57bfa",
-      "size": 11109252,
-      "source_note": "W5-2 Struggle loop baked (tools/struggle_bake.py)"
+      "sha256": "dfdaf5d2d7f3792222415c4f0bcdd4e4179a4a3d23c7dd398d4b10bb3440433b",
+      "size": 11337836,
+      "source_note": "CyberWolf real quadruped rig: 27 bones + 10 authored clips (Idle/Walk/Run/Attack/Hitreaction/Death/Struggle/Leap/Crouch/Snarl) via tools/wolf_forge.py"
     },
     {
       "repo_path": "assets/rigged_glb/blueshark.glb",
