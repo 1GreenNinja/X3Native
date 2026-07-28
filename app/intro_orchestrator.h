@@ -23,10 +23,16 @@
 //   2. Accumulates a normalized skillScore in [0,1] from the interactive windows
 //      (subsystems destroyed, final hull %, salvos dodged, hit accuracy,
 //      time-to-cripple — see kSkillWeights in the .cpp for the exact weighting).
-//   3. Computes p = clamp(0.07 + skillScore*(0.40-0.07), 0.07, 0.40) and rolls
-//      the EXISTING deterministic x3::game::chanceRoll(seed, "intro.outcome") < p
-//      -> Escaped, else ShotDown (save-seed deterministic; not frame RNG).
-//   4. Writes the result to StoryFlags key "intro.outcome" = "escaped"|"shot_down".
+//   3. Decides the branch by what the player DID (EARNED, deterministic — the
+//      original spec §4 hidden skill->p->chanceRoll was replaced 2026-07-27;
+//      a flawless run can no longer coin-flip into shot-down):
+//        * dreadnought hull 0                          -> CapitalKilled
+//        * all 4 hardpoints down + pilot alive at end  -> Escaped
+//        * anything less (died, bailed, timed out)     -> ShotDown (canon)
+//      skillScore/outcomeProbability/rollOutcome survive as pure, self-tested
+//      telemetry (difficulty tuning reads them); they no longer pick the branch.
+//   4. Writes the result to StoryFlags key "intro.outcome" =
+//      "escaped"|"shot_down"|"capital_killed".
 //
 // This is "game/slice" code; engine/ stays pure. The interactive-window HOSTING
 // (drawing the live space scene, reading GLFW input) is driven by the host that
@@ -83,6 +89,9 @@ inline constexpr const char* kIntroWreckFlag = "intro.wreck";
 inline constexpr const char* kIntroRollKey = "intro.outcome";
 
 // p-mapping bounds (spec §4). p = clamp(kFloorP + skill*(kCeilP-kFloorP)).
+// LEGACY/TELEMETRY since 2026-07-27: the mapping is pure, self-tested, and used
+// for difficulty telemetry — it no longer decides the branch (outcomes are
+// EARNED; see the header block above).
 inline constexpr float kFloorP = 0.07f;   // ~7% floor (canon: almost always shot down)
 inline constexpr float kCeilP  = 0.40f;   // ~40% ceiling for a flawless run
 
@@ -146,6 +155,8 @@ float outcomeProbability(float skillScore01);
 // Roll the outcome deterministically from (seed, skillScore) using the SAME
 // chanceRoll the dialog/mission {chance} op uses. p computed via outcomeProbability.
 // Pure: same (seed, skill) always yields the same IntroOutcome.
+// LEGACY/TELEMETRY since 2026-07-27: kept pure + self-tested; the live branch is
+// the earned mapping in runInteractiveIntro, not this roll.
 IntroOutcome rollOutcome(uint32_t seed, float skillScore01);
 
 // Write the outcome to StoryFlags under kIntroOutcomeFlag (escaped|shot_down).
@@ -192,9 +203,10 @@ bool runIntroOrchestratorSelfTest();
 // asserts the branch-selection logic app_run.cpp drives — forcing the outcome to
 // escaped writes/reads intro.outcome=escaped (the surface-stub path); forcing
 // shot_down writes/reads intro.outcome=shot_down (the canon cell); a default
-// (no force) headless run is deterministic per seed and round-trips through the
-// persisted StoryFlags; and the seed thread is honored (different seeds can roll
-// differently; the same seed+force is stable). Returns true iff all sub-checks pass.
+// (no force) headless run is deterministic, matches the EARNED mapping of its
+// replayed metrics (kill -> capital_killed, cripple+survive -> escaped, else
+// shot_down), and is SEED-INDEPENDENT (outcomes are earned, never rolled).
+// Returns true iff all sub-checks pass.
 bool runIntroBranchSelfTest();
 
 } // namespace x3::intro
