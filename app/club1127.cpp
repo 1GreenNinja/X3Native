@@ -11,7 +11,7 @@
 // MAPPING NOTES (JS -> native):
 //   * The JS parents everything to a TransformNode at (originX, D.Y, originZ) and
 //     positions children RELATIVE. Native addBox authors WORLD-space geometry, so
-//     we keep originX/Z = 0 and ADD the club Y (kClubY = -200) to every center Y.
+//     we keep originX/Z = 0 and ADD the club Y (kClubY = -800) to every center Y.
 //     A child at JS-local y becomes world y = (kClubY + y).
 //   * JS axes: Babylon is left-handed (+Z forward). X3Native is right-handed
 //     (-Z forward; docs/CONVENTIONS.md). The club is mirror-symmetric front/back
@@ -1036,7 +1036,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     const uint32_t entsBefore = scene.size();
 
     // The club Y origin: everything authored at JS-local y is offset by oy.
-    const float oy = kClubY;          // -200
+    const float oy = kClubY;          // -800
     const float CW = kCW, CL = kCL, CH = kCH;
     const float HL = CW / 2, HW = CL / 2;   // half-extents: X (long) / Z (short)
     const float T  = 0.3f;            // wall thickness (JS WALL_T)
