@@ -330,6 +330,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/BossBreederQueen_anim.glb",
+      "sha256": "cf23c40f9f20460c8e4cdb2593450ebc156816022003045175cdb2284098215d",
+      "size": 19235644,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/BossTheSiren.glb",
       "sha256": "a04486e87f5400a1cbfaeb54a563a239b7728c9243e7232c2e0c8a86537d4d2d",
       "size": 22803612,
