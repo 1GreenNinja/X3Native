@@ -73,8 +73,13 @@ namespace x3::game {
 // fixture census the headless `--test-club` self-test asserts against.
 class Club1127World {
 public:
-    // The club's world Y (floor of the main room). Canon: Y = -200 (§2.3).
-    static constexpr float kClubY = -200.0f;
+    // The club's world Y (floor of the main room). Canon: THE DEEP sits ~800 m
+    // underground. Relocated 2026-07 from Y=-200 to Y=-800 (Tim: "800M gives a lot
+    // more room for activities — side shoots, rooms" along the descent shaft). The
+    // whole club builds relative to this via its `oy` offset, so moving the constant
+    // moves the club; the surrounding earth/strata + the descent fall shaft extend
+    // down to cover the new depth (see club_bedrock.cpp / descent_fall.cpp).
+    static constexpr float kClubY = -800.0f;
 
     // Real Club 1127 main-room footprint (Tim's OWN bar2_architecture.js blueprint;
     // meters). CANON-PORT (feat/club-canon-port): the authoritative axis convention

@@ -29,16 +29,22 @@ namespace x3::game {
 // Alien Substrate). Atmospheric geology — see blueprint §2.2: the band runs to
 // -400 m even though the real shaft bottoms higher.
 // ===========================================================================
+// Y bands STRETCHED (2026-07) so the geology reaches the relocated Club 1127 at
+// Y=-800 (was -200): the DESCENT FALL SHAFT bores ~800 m through these bands and
+// colors its rock walls per band as they rush up past the falling camera. Same 9
+// named layers, same bottom-three glow (Crystal Veins / Magma / Alien Substrate) —
+// only the depth ranges widen, so the elevator telemetry + --test-elevator F2 (9
+// named layers, index-8 = "Alien Substrate", bottom-3 glow) are unchanged.
 static const std::array<StrataLayer, 9> kStrata = {{
     {  80.0f,  200.0f, "Sky & Concrete",  {0.40f, 0.50f, 0.60f}, false, {0,0,0} },
     {  20.0f,   80.0f, "Foundation Stone",{0.35f, 0.30f, 0.25f}, false, {0,0,0} },
-    { -20.0f,   20.0f, "Limestone",       {0.55f, 0.52f, 0.45f}, false, {0,0,0} },
-    { -80.0f,  -20.0f, "Granite",         {0.30f, 0.28f, 0.32f}, false, {0,0,0} },
-    {-140.0f,  -80.0f, "Basalt",          {0.20f, 0.18f, 0.15f}, false, {0,0,0} },
-    {-200.0f, -140.0f, "Obsidian",        {0.10f, 0.08f, 0.12f}, false, {0,0,0} },
-    {-260.0f, -200.0f, "Crystal Veins",   {0.10f, 0.05f, 0.20f}, true,  {0.10f, 0.00f, 1.00f} },
-    {-320.0f, -260.0f, "Magma Zone",      {0.25f, 0.06f, 0.02f}, true,  {0.80f, 0.20f, 0.05f} },
-    {-400.0f, -320.0f, "Alien Substrate", {0.08f, 0.04f, 0.12f}, true,  {0.20f, 0.04f, 0.40f} },
+    { -40.0f,   20.0f, "Limestone",       {0.55f, 0.52f, 0.45f}, false, {0,0,0} },
+    {-180.0f,  -40.0f, "Granite",         {0.30f, 0.28f, 0.32f}, false, {0,0,0} },
+    {-340.0f, -180.0f, "Basalt",          {0.20f, 0.18f, 0.15f}, false, {0,0,0} },
+    {-520.0f, -340.0f, "Obsidian",        {0.10f, 0.08f, 0.12f}, false, {0,0,0} },
+    {-660.0f, -520.0f, "Crystal Veins",   {0.10f, 0.05f, 0.20f}, true,  {0.10f, 0.00f, 1.00f} },
+    {-760.0f, -660.0f, "Magma Zone",      {0.25f, 0.06f, 0.02f}, true,  {0.80f, 0.20f, 0.05f} },
+    {-860.0f, -760.0f, "Alien Substrate", {0.08f, 0.04f, 0.12f}, true,  {0.20f, 0.04f, 0.40f} },
 }};
 
 // ---- OLED text raster (the HoloTerminal stb_truetype move, panel-sized) ----

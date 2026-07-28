@@ -219,14 +219,19 @@ int buildClubBedrock(Scene& scene, x3::rhi::IRenderDevice& device,
     // space, chosen to sit in solid earth (outside the club cavity, inside the
     // block).
     if (cfg.salvariCrystals) {
+        // Ys are expressed RELATIVE to the cavity (club) so the hollows stay near the
+        // club at whatever depth it sits (relocated to Y=-800, 2026-07) instead of the
+        // old hardcoded ~-200 band. cy0 = cavity mid; dig UP toward the strata / city
+        // and DOWN into the base rock from there.
+        const float cy0 = (cfg.cavMinY + cfg.cavMaxY) * 0.5f;
         struct Hollow { float x, y, z, s; };
         const Hollow hollows[6] = {
-            {  cfg.cavMaxX + 22.0f, -195.0f,   6.0f, 1.10f },  // just E of the club
-            { -12.0f,               -196.0f, cfg.cavMinZ - 24.0f, 0.95f }, // just N of the club
-            {  38.0f,               -120.0f,  46.0f, 1.30f },  // up in the strata (dig up)
-            { -64.0f,                -64.0f, 150.0f, 1.15f },  // higher, under the city
-            {  46.0f,               -232.0f,  34.0f, 1.00f },  // down in the base rock
-            { -44.0f,               -216.0f, -34.0f, 0.85f },  // down, other side
+            {  cfg.cavMaxX + 22.0f, cy0 + 1.0f,        6.0f,               1.10f },  // just E of the club
+            { -12.0f,               cy0,               cfg.cavMinZ - 24.0f, 0.95f }, // just N of the club
+            {  38.0f,               cy0 + 75.0f,       46.0f,              1.30f },  // up in the strata (dig up)
+            { -64.0f,               cy0 + 130.0f,      150.0f,             1.15f },  // higher, under the city
+            {  46.0f,               cfg.cavMinY - 30.0f, 34.0f,            1.00f },  // down in the base rock
+            { -44.0f,               cfg.cavMinY - 15.0f, -34.0f,           0.85f },  // down, other side
         };
         for (const Hollow& h : hollows) {
             x3::rhi::PointLight bl =
