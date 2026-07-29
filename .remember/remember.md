@@ -21,6 +21,15 @@ default (Tim: 20-30min/phase), HUD clock reads sky. STABILITY: Tim's M-B session
 Tim's active front: #25 art wave, #26 cars, #31 perf (35ms NOT in districts/woodlands/crown
 — proven by region bisect; suspects: 72 skinned rigs/TLAS, island GLB, ocean, post).
 
+## WAVE-1 LANDED (2026-07-29 late): V7 surfaces + interiors are IN (see last commit).
+OPEN: (a) WATER V2 Sonnet agent still running when window closed — its report + files
+(echo_water.*, island_to_glb WATER_V2 flag) need INTEGRATION: CMake, host hookups
+(echoShipPose in poseBoat, splashes via submitParticles, swell preset), bake w/ WATER_V2=1
++ ring repaint, restage island_mesa. (b) V7.1: one CA on-ramp law-dropped (11.6 deg/m
+hook) — retune the hermite bow so both gates have on-ramps. (c) Tim live-verify list:
+cars E-enter + C views, vendor buy prompts (Tess $8 DODOG), condo shells by day (floaters
+gone?), night glow heads, noodle bar corner. (d) M-C makes interior cells actually gate.
+
 ## THE NEXT WINDOW = "MATERIALS + INTERIORS" (Tim's orders 2026-07-29)
 1. #35 ROAD V7 SURFACE PASS: textures (SD-gen tiles on 5090), shoulders, crosswalks,
    debris scatter, CA sweeping ramps, lamp emissive heads.
