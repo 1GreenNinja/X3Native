@@ -1480,7 +1480,9 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     // Grime: the blotch tile crushed DARK — reads as rubber + oil on asphalt.
     const float cGrime[4]    = { 0.16f, 0.16f, 0.17f, 1.0f };
     // NightGlow: warm HDR lamp heads (drawn by drawNightGlow with emissive).
-    const float cGlow[4]     = { 2.1f, 1.45f, 0.62f, 1.0f };
+    // Tim slop-pass 2026-07-29: 2.1 HDR at close range bloomed into a street-
+    // swallowing supernova. Warm and visible, not nuclear.
+    const float cGlow[4]     = { 1.05f, 0.72f, 0.34f, 1.0f };
     std::copy(cAsphalt,  cAsphalt + 4,  m_buckets[kBucketAsphalt].color);
     std::copy(cPaint,    cPaint + 4,    m_buckets[kBucketPaint].color);
     std::copy(cConcrete, cConcrete + 4, m_buckets[kBucketConcrete].color);
