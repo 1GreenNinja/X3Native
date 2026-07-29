@@ -469,7 +469,11 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // Whole-scene brightness dial (live). Multiplies the composite pre-tonemap exposure;
     // 1.0 = unchanged. The in-game "showroom brightness" knob: `r_exposure 1.5` brightens,
     // `r_exposure 0.7` dims. Type it in the console (~) and the scene updates immediately.
-    console.registerCVar("r_exposure", "1.0", "whole-scene brightness (pre-tonemap exposure multiplier; live)");
+    // PLAYTEST TRIM (Tim, 2026-07-19): the facility interior read "a HAIR too hot/bright"
+    // under the corrected sRGB baseline (5951890b). Default nudged 1.0 -> 0.88 (a ~12%
+    // whole-scene trim) — a clean post-tonemap multiply that auto-exposure never
+    // compensates (unlike lowering the lights). Subtle; NOT a darkening. Live/overridable.
+    console.registerCVar("r_exposure", "0.88", "whole-scene brightness (pre-tonemap exposure multiplier; live; 0.88 = 12% playtest trim)");
     // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
@@ -918,6 +922,36 @@ void applyRtaoCVarsForTest(x3::con::IConsole& console, x3::rhi::IRenderDevice& d
 void resetVisSyncForTest() { g_visSync = VisCvarSync{}; g_visPolicy = x3::rhi::VisPolicy{}; }
 const x3::rhi::VisPolicy& visPolicyForTest() { return g_visPolicy; }
 
+// ---------------------------------------------------------------------------
+// [P0-2] THE `--world` MODES THIS DEFAULT HOST HANDLES — the one list, kept in
+// THIS file so it cannot quietly diverge from the branch bools below
+// (introCellWorld / oceanWorld / terrainWorld / elevatorWorld / canonWorld /
+// docWorld — search `worldMode ==` in runDefaultHost). Exported to the
+// destination-registry self-test (app/destinations.cpp), which asserts every
+// one of these is a registry row or a reasoned exclusion, and that every
+// registry worldFlag is dispatched. If you add a `worldMode == "x"` branch,
+// add "x" HERE (same edit, same file) and give it a registry row — the gate
+// goes RED otherwise, and an unlisted flag would silently fall back to the
+// legacy Level-1 build (the "any unrecognized --world lands here" rule).
+// ---------------------------------------------------------------------------
+namespace {
+const char* const kDefaultHostWorldModes[] = {
+    "canonlevel",   // canonWorld — the data-driven canonical tower (THE game)
+    "intro",        // canonWorld entered through the cold-open prologue
+    "level1",       // legacy hand-coded spire (also the unrecognized-flag fallback)
+    "elevator",     // elevatorWorld — Level-1 build, spawn at the elevator
+    "terrain",      // terrainWorld — B2 outdoor tiled terrain
+    "ocean",        // oceanWorld — terrain + animated sea
+    "fromdoc",      // docWorld — boot a LevelDoc JSON (editor loop)
+    "spacestation", // docWorld alias — space_station.leveldoc.json (cli.cpp seeds it)
+};
+} // namespace
+
+const char* const* defaultHostWorldModes(unsigned& count) {
+    count = (unsigned)(sizeof(kDefaultHostWorldModes) / sizeof(kDefaultHostWorldModes[0]));
+    return kDefaultHostWorldModes;
+}
+
 int runDefaultHost(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
@@ -1252,6 +1286,7 @@ int runDefaultHost(HostContext& hc) {
     x3::game::Canon45     canon45;             // W5-1: LEVEL 4.5 — the Nexus Chamber (cavern + climb + whispers + apex)
     x3::game::FacilityStairwell stairwell;     // fix/spire-hollow-core: open switchback stairwell (F1..F7, skips 4.5)
     x3::game::StairwellLayout   stairLayout;   // its shared plan (breach wiring + lint agree)
+    x3::game::StairNavChain     stairNav;      // feat/stair-nav: enemy waypoint chain over the stairwell
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
@@ -1765,6 +1800,18 @@ int runDefaultHost(HostContext& hc) {
             out = { hs.x, hs.y + 1.0f, hs.z };
             return true;
         }
+        // --- [P0-1 EFLZ-GP-1B] The facility ENTRANCE (the escaped-rescuer arrival
+        //     spawn, and a plain destination). The canon data authors an "Entrance"
+        //     hallway on the footprint edge (the SEAM-2 breach room) — stand the
+        //     player at its centre, inside F1, free and outside every cell.
+        if (k == "entrance") {
+            if (!canonFloor.valid()) return no("the canonical tower is not built in this world");
+            const uint32_t er = canonFloor.roomByName("Entrance");
+            if (er == x3::game::kNoRoom) return no("the loaded tower data has no Entrance room");
+            const x3::game::CanonRoom& rm = canonFloor.rooms[er];
+            out = { rm.cx, rm.y0() + 1.0f, rm.cz };
+            return true;
+        }
         // --- Back home: the facility, ANY floor. F1 = the detention lobby (the rift is
         //     a two-way door — you are not stranded down there), F7 = the executive floor.
         if (d->group == x3::game::DestGroup::Facility) {
@@ -2055,6 +2102,10 @@ int runDefaultHost(HostContext& hc) {
             stairwell.build(stairLayout, canonFloor, scene, *device, *physics,
                             &canonDoors, x3::game::assetRoot() + "/surface_library",
                             canonLights);
+            // feat/stair-nav: derive the enemy waypoint chain from the SAME plan
+            // the brushes were laid from (feet ride the real treads); handed to
+            // canonPlay after its build below.
+            stairNav = x3::game::stairwellNavChain(stairLayout);
             if (bootProf) bootProfMs("stairwell");
             // ---- THE SECRET-CODE QUEST CHAIN, CLUES 1 + 2 (feat/secret-code-clues).
             // Two lore HoloTerminals on the platform, the riftLore 4790 pattern.
@@ -2276,6 +2327,41 @@ int runDefaultHost(HostContext& hc) {
             canonPlay.build(canonFloor, scene, *device, *physics,
                             x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath(),
                             /*deferUpperFloors=*/!hc.screenshot);
+            // feat/stair-nav: enemies may now COMMUTE between floors — hand the
+            // stairwell's waypoint chain to the routing pass in canonPlay.tick().
+            if (stairNav.valid) canonPlay.setStairNav(&stairNav);
+            // feat/stair-nav CAPTURE HOOK: X3_STAIRNAV_DEMO=1 poses ONE squad
+            // hostile mid-climb on the F1 flights with a live route toward F3 —
+            // the settle frames walk it up the treads for the still.
+            if (std::getenv("X3_STAIRNAV_DEMO") && stairNav.valid) {
+                std::vector<x3::game::StairNavChain::Wp> wps;
+                x3::game::MonsterSystem* pick = nullptr;
+                canonPlay.forEachHostileManager([&](x3::game::MonsterManager& mm) {
+                    for (uint32_t i = 0; !pick && i < mm.count(); ++i) {
+                        x3::game::MonsterSystem& m = mm.at(i);
+                        if (m.alive() && !m.flyer() && m.usingRealModel()) pick = &m;
+                    }
+                });
+                if (pick && x3::game::stairNavRoute(stairNav, 1, 3, wps) &&
+                    wps.size() > 6) {
+                    // wps: [0..2] spur (room->shaft), [3] F1 approach, [4] flight-0
+                    // bottom nosing, [5] top nosing. Pose at the flight's midpoint.
+                    const auto& a = wps[4]; const auto& b = wps[5];
+                    const float yaw = (b.z > a.z) ? 0.0f : 3.1415926f;   // face along the run
+                    pick->setPropPose(x3::phys::Vec3{ (a.x + b.x) * 0.5f,
+                                                      (a.y + b.y) * 0.5f + 0.4f,
+                                                      (a.z + b.z) * 0.5f }, yaw);
+                    std::vector<x3::phys::Vec3> route;
+                    for (size_t k = 5; k < wps.size(); ++k)
+                        route.push_back(x3::phys::Vec3{ wps[k].x, wps[k].y + 0.4f,
+                                                        wps[k].z });
+                    pick->setStairRoute(route, 3);
+                    if (pick->entity() != x3::game::kNoLink &&
+                        pick->entity() < scene.size())
+                        scene.get(pick->entity()).roomId = x3::game::kNoRoom;
+                    x3::logInfo("X3_STAIRNAV_DEMO: staged one enemy mid-climb on the F1 flight");
+                }
+            }
             // Enemy-SFX: wire the shared enemy cue sink so the canon-level enemies have
             // a VOICE (footsteps, attack swings, take-hit grunts, death, idle taunts) +
             // their impacts land audibly. canonPlay had NO cue sink before — its enemies
@@ -4120,6 +4206,32 @@ int runDefaultHost(HostContext& hc) {
             coolantGlowDead = true;
             x3::logInfo("[descmech] X3_DESCMECH_SABOTAGE=1 — booted in the sabotaged state");
         }
+    }
+
+    // ---- [P0-1 EFLZ-GP-1B] ESCAPED SURFACE->FACILITY HANDOFF — ARRIVAL SIDE ----
+    // (specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §3.3.4-6.) main()'s world-load
+    // loop re-dispatched canonlevel with spawnAtKey="entrance" because the escaped
+    // rescuer pressed [E] at the surface breach (host_surface_start). The arrival
+    // contract, on the freshly-built canon world:
+    //   * FLAGS (H4): the live flags world starts empty, so import the intro's
+    //     persisted intro.outcome=escaped (+ intro.landed) into chatTrees.flags().
+    //   * ARMED (H3): the rescuer enters with the sidearm LIVE — cheatArm flips
+    //     the same WeaponSystem the cell pickup does, so fire/arsenal/HUD all
+    //     work (never a cosmetic prop after the handoff, spec §3.4).
+    //   * OBJECTIVE (§3.3.6): the surface "RESCUE SARAH" line becomes the
+    //     interior hunt via the free-text objective lane missions already use.
+    // The entrance PLACEMENT itself rides the generic load-and-place path (the
+    // pendingSpawnKey block in the main loop -> riftDestination("entrance")).
+    // Gated on BOTH the spawn key and the persisted escaped outcome, so every
+    // other path (shot_down cell start, menu travel, dev worlds) is byte-identical
+    // (spec §3.5 — importEscapedIntroFlags refuses shot_down/absent saves).
+    if (canonWorld && canonPlay.built() && hc.spawnAtKey == "entrance" &&
+        x3::intro::importEscapedIntroFlags(chatTrees.flags())) {
+        canonPlay.cheatArm(scene);
+        game.objectives().setText("REACH SARAH - SEARCH THE FACILITY");
+        x3::logInfo("[handoff] ESCAPED rescuer arrival: intro flags imported "
+                    "(intro.outcome=escaped), player ARMED, objective -> REACH SARAH; "
+                    "spawning at 'entrance'");
     }
 
     // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the
@@ -10605,6 +10717,16 @@ int runDefaultHost(HostContext& hc) {
                         x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rc.hitMonster || (!r.hit && rc.hit)) r = rc;
                     }
+                    // CANON ALIENS (planet): the four hostile species patrol the facility
+                    // exterior in their OWN manager (app_run `canonAliens`). It was MISSING
+                    // from this dispatch chain, so player shots passed clean through the
+                    // Saurians / Grey / Mantis — the "some monsters cannot be shot" playtest
+                    // bug. Route the ray here too: the manager maps the nearest Enemy body to
+                    // its alien and applies damage (the allied Nordic Steward simply ignores it).
+                    if (!r.hitMonster && canonWorld) {
+                        x3::game::FireResult ca = canonAliens.fire(eye, ray.dir, scene, *physics, wdmg, ray.type);
+                        if (ca.hitMonster || (!r.hit && ca.hit)) r = ca;
+                    }
                     // WAVE (cell-door): route the shot through the canon explodable barrels —
                     // a ray into the cell/hall barrel breaks it; it detonates on the next
                     // canonBarrels.update() (DJBooth fireball + splash + chain).
@@ -10718,6 +10840,10 @@ int runDefaultHost(HostContext& hc) {
                     if (!r.hitMonster && canonWorld && canonPlay.built()) {   // canon enemies/boss/girls
                         x3::game::FireResult rc = canonPlay.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
                         if (rc.hitMonster) r = rc;
+                    }
+                    if (!r.hitMonster && canonWorld) {   // canon aliens on the planet (same omission as the hitscan chain)
+                        x3::game::FireResult ca = canonAliens.fire(b.pos, ndir, scene, *physics, b.damage, b.type);
+                        if (ca.hitMonster) r = ca;
                     }
                     if (!r.hitMonster) {   // try the F3/F4/F5 enemies for this bolt
                         x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);

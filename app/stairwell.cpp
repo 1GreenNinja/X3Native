@@ -221,6 +221,104 @@ StairwellLayout stairwellLayout(const CanonFloor& floor) {
 }
 
 // =====================================================================================
+// STAIR NAV (feat/stair-nav) — the walkable waypoint chain over the plan above.
+// Shares the flight constants with the builder so the chain rides the REAL treads.
+// =====================================================================================
+namespace {
+// Landing standoff from the run edge: keeps a landing waypoint clear of both the
+// first tread's nosing and the well parapet (landing depth is 2.4 m; 0.7 m in).
+constexpr float kNavLandIn = 0.7f;
+
+StairNavChain::Wp navWp(float x, float y, float z) { return StairNavChain::Wp{ x, y, z }; }
+} // namespace
+
+StairNavChain stairwellNavChain(const StairwellLayout& lay) {
+    StairNavChain c;
+    if (!lay.valid) return c;
+
+    // ---- Spine: every story's flights in zigzag order, bottom -> top. ----
+    for (size_t s = 0; s + 1 < lay.floors.size(); ++s) {
+        const float yA = lay.floors[s].floorY, yB = lay.floors[s + 1].floorY;
+        const int   n = flightsForRise(yB - yA);
+        const float fRise = (yB - yA) / (float)n;
+        const float riser = fRise / (float)(kTreads + 1);
+        for (int j = 0; j < n; ++j) {
+            const float base  = yA + fRise * (float)j;
+            const bool  toS   = (j % 2) == 0;               // even: N->S in the WEST lane
+            const float laneC = toS ? kLaneWC : kLaneEC;
+            const float zStart = toS ? kRunZ1 : kRunZ0;     // run edge at the start landing
+            const float zEnd   = toS ? kRunZ0 : kRunZ1;
+            const float inS    = toS ? kNavLandIn : -kNavLandIn;
+            // Approach on the start landing (lane X, landing interior), the flight's
+            // nosing line bottom -> top, then the arrival on the far landing.
+            c.spine.push_back(navWp(laneC, base, zStart + inS));
+            c.spine.push_back(navWp(laneC, base + 0.5f * riser, zStart));
+            c.spine.push_back(navWp(laneC, base + ((float)kTreads + 0.5f) * riser, zEnd));
+            c.spine.push_back(navWp(laneC, base + fRise, zEnd - inS));
+        }
+    }
+    if (c.spine.empty()) return c;
+
+    // ---- Exits: REAL floors only (phantom landings never get one — the 4.5 seal
+    // is structural in the chain exactly like the geometry). ----
+    for (size_t f = 0; f < lay.floors.size(); ++f) {
+        const StairwellLayout::FloorEntry& fe = lay.floors[f];
+        StairNavChain::Exit ex;
+        ex.floorNum = fe.floorNum;
+        ex.room     = fe.room;
+        ex.floorY   = fe.floorY;
+        // The spine waypoint at this floor's NORTH landing: nearest spine point at
+        // the floor's Y on the north landing band (every floor lands north; flights
+        // are even per story so both the story-start approach and the story-end
+        // arrival sit at z = kRunZ1 + kNavLandIn).
+        uint32_t best = 0; float bestD = 1e9f;
+        for (uint32_t i = 0; i < (uint32_t)c.spine.size(); ++i) {
+            const StairNavChain::Wp& w = c.spine[i];
+            if (w.z < kRunZ1 - 0.01f) continue;             // north landing band only
+            const float d = std::fabs(w.y - fe.floorY);
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        if (bestD > 0.05f) continue;                        // no landing at this floor (defensive)
+        ex.spineIdx = best;
+        if (fe.floorNum == 1) {
+            // F1 exits NORTH through the L-connector into Bottom Hall.
+            const float legX = (kLegNX0 + kLegNX1) * 0.5f;  // -0.7, the leg center
+            ex.spur.push_back(navWp(legX, fe.floorY, kIZ1 - 0.6f));
+            ex.spur.push_back(navWp(legX, fe.floorY, kLegEZ));
+            ex.spur.push_back(navWp(fe.roomWallX + kNavLandIn, fe.floorY, kLegEZ));
+        } else {
+            // Upper floors exit EAST through the connector at kDoorZ.
+            ex.spur.push_back(navWp(kIX1 - 0.6f, fe.floorY, kDoorZ));
+            if (fe.roomWallX > kSX1 + 0.05f)
+                ex.spur.push_back(navWp((kSX1 + fe.roomWallX) * 0.5f, fe.floorY, kDoorZ));
+            ex.spur.push_back(navWp(fe.roomWallX + kNavLandIn, fe.floorY, kDoorZ));
+        }
+        c.exits.push_back(ex);
+    }
+    c.valid = c.exits.size() >= 2;
+    return c;
+}
+
+bool stairNavRoute(const StairNavChain& chain, int fromFloor, int toFloor,
+                   std::vector<StairNavChain::Wp>& out) {
+    if (!chain.valid || fromFloor == toFloor) return false;
+    const StairNavChain::Exit* a = chain.exitFor(fromFloor);
+    const StairNavChain::Exit* b = chain.exitFor(toFloor);
+    if (!a || !b) return false;                  // 4.5 / phantom / unserved: REFUSED
+    out.clear();
+    // Room-side entry -> connector -> the from-floor landing (spur reversed) ...
+    for (size_t i = a->spur.size(); i-- > 0;) out.push_back(a->spur[i]);
+    // ... up/down the spine between the two landings ...
+    if (a->spineIdx <= b->spineIdx)
+        for (uint32_t i = a->spineIdx; i <= b->spineIdx; ++i) out.push_back(chain.spine[i]);
+    else
+        for (uint32_t i = a->spineIdx + 1; i-- > b->spineIdx;) out.push_back(chain.spine[i]);
+    // ... then out the to-floor connector to its room-side entry.
+    for (const StairNavChain::Wp& w : b->spur) out.push_back(w);
+    return out.size() >= 2;
+}
+
+// =====================================================================================
 // BUILD.
 // =====================================================================================
 void FacilityStairwell::build(const StairwellLayout& lay, CanonFloor& floor, Scene& scene,

@@ -39,6 +39,7 @@ struct CliOptions {
          testVigil = false,      // --test-vigil: VIGIL bark system (trigger/cooldown/no-repeat/gate/idle)
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
+         testStairNav = false,
          testPropClip = false,    // --test-propclip: dressing-layer prop AABB vs room bounds (GATE A ext)
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
@@ -171,6 +172,7 @@ struct CliOptions {
     // "Sarah freed" once + mutating into P3, and the kill firing "Clone dead"
     // once (the descent-gate flag). Headless. Additive flag.
     bool        testClone = false;
+    bool        testGallery = false;      // --test-gallery (character-gallery cast + clip cycle)
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
     // --test-loading (loading-screen pass, Task #49): asserts progress is monotonic
@@ -388,6 +390,11 @@ struct CliOptions {
     // cell-vs-surface branch selection + the surface scene standing up headlessly
     // (glass facility, player outside + armed, Sarah rescue target). No window/Vulkan.
     bool        testSurfaceStart = false;
+    // --test-surfacehandoff ([P0-1] EFLZ-GP-1B): the Phase-1 surface -> facility
+    // handoff contract (breach trigger + canonlevel@entrance request + Entrance
+    // spawn vs the live tower data + armed arrival + escaped-flags import, with
+    // shot_down/absent negative controls). No window/Vulkan.
+    bool        testSurfaceHandoff = false;
     // --test-starsystems (x3.starsys/1): the named-star-system registry integrity
     // gate — every system has a valid star + bodies, lookup by id/name round-trips,
     // a negative control, the dogfight system is far from Sol. No window/Vulkan.
@@ -676,6 +683,15 @@ struct CliOptions {
     // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
     bool        captureAi    = false;
     std::string captureAiDir = "G:/X3Native/ai_action";
+    // Crowd-spread capture (--capture-crowd-spread [outDir]): the anti-crowding proof.
+    // Spawn a CLUSTER of guards stacked on nearly one point next to a player reference,
+    // step them through the REAL MonsterManager::update (which wires the separation
+    // steering AND the hard de-overlap pass), and capture a TOP-DOWN sequence. The
+    // sequence is its own before/after: t=0 the squad is a stacked pile, by ~t=2.5 s it
+    // has fanned into a clean ring/arc with no two bodies clipping. Default outDir:
+    // docs/screenshots/faccombat.
+    bool        captureCrowdSpread    = false;
+    std::string captureCrowdSpreadDir = "docs/screenshots/faccombat";
     // Walk-capture mode (--capture-walk [outPath] [rigGlb]): build ONE close-up
     // animated guard (the multi-clip *_anim.glb when present), drive the T1
     // locomotion blend toward a steady WALK, settle the blend a fraction of a

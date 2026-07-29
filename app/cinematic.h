@@ -589,13 +589,15 @@ struct CinAudioMap {
         charge = audio->load(x3::game::resolveAudio("weapons/loops/Vefects_Zap_Medium_01.wav"));
         bolt   = audio->load(x3::game::resolveAudio("weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav"));
         boom   = audio->load(x3::game::resolveAudio("Free Pack/Explosion 1.wav"));
-        musicPath = x3::game::resolveAudio("Sci-Fi Music Pack 1/Loops/SMP1_LOOP_Zero8 _1.wav");
+        // Owner order (Tim): kill the awful synth cinematic loop. No default cinematic music bed.
+        // Cinematics/intro still play all their SFX (alarm/rumble/charge/bolt/boom); music stays silent.
+        musicPath.clear();
     }
     void fire(const x3::cut::AudioCue& cue) {
         if (!audio) return;
         if (cue.music) {
             if (cue.sound == "music.stop") audio->stopMusic();
-            else audio->playMusic(musicPath, /*loop=*/true, cue.gain);
+            else if (!musicPath.empty()) audio->playMusic(musicPath, /*loop=*/true, cue.gain);
             return;
         }
         if (cue.sound == "music.stop")           { audio->stopMusic(); return; }

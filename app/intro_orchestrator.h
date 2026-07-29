@@ -141,6 +141,18 @@ IntroOutcome readOutcomeFlag(const x3::game::StoryFlags& flags);
 // intro_complete file. Honors LOCALAPPDATA like the cutscene flags path.
 std::string defaultGameStoryFlagsPath();
 
+// [P0-1 EFLZ-GP-1B] SURFACE->FACILITY HANDOFF, flag carry-over (spec
+// specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §3.3.5 / H4). The arriving canon
+// world's live StoryFlags start empty (chatTrees.loadDefault() loads dialog, not
+// flags), so the intro's persisted narrative lane must be IMPORTED or the
+// escaped outcome is unreadable after the world load. Reads `path` (default:
+// defaultGameStoryFlagsPath()); iff the persisted outcome is ESCAPED, sets
+// intro.outcome=escaped (+ intro.landed when present) on `into` and returns
+// true. Any other state (missing file, shot_down) returns false and leaves
+// `into` untouched — the ShotDown path stays byte-identical (spec §3.5).
+bool importEscapedIntroFlags(x3::game::StoryFlags& into,
+                             const std::string& path = std::string());
+
 // ---------------------------------------------------------------------------
 // The entry point (spec §3). Runs the beat sequence (cinematic clips blocking via
 // CutscenePlayer, interactive windows handing control to the combat stack with

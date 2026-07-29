@@ -300,6 +300,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/AnnaBodySuit_anim.glb",
+      "sha256": "af4b819ccf4a9609bda8a6e56f6519771b9fcbae17a63d259803f1d2c4135cfa",
+      "size": 8091724,
+      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+    },
+    {
       "repo_path": "assets/rigged_glb/AnnaCasual.glb",
       "sha256": "04da619319a0c049b2ab7591a4fc2813d4923272159196cdb5d4fa56cfb6ecc4",
       "size": 12184604,
@@ -328,6 +334,12 @@
       "sha256": "28652df4ff752336d165c89889d71c106ba7202b9a0aed19351d288bf1c622b6",
       "size": 41145412,
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/BossBreederQueen_anim.glb",
+      "sha256": "cf23c40f9f20460c8e4cdb2593450ebc156816022003045175cdb2284098215d",
+      "size": 19235644,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
     },
     {
       "repo_path": "assets/rigged_glb/BossTheSiren.glb",
@@ -396,6 +408,12 @@
       "source_note": "G:\\GameModels\\rigged_glb; round-trip fetch verified 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/Oracle_anim.glb",
+      "sha256": "1b3194e4a69ca49e52d55ecdf667830474dc9764cb0618d66977dbf040c0f906",
+      "size": 6997804,
+      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+    },
+    {
       "repo_path": "assets/rigged_glb/OverLordEnforcer99.glb",
       "sha256": "c46f08a1d7fefdba63cbd04b93e73c281231d5df38ecf3fe58da63c0a358c1bb",
       "size": 12087160,
@@ -408,10 +426,22 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/RexBouncer_anim.glb",
+      "sha256": "1de1022d4e406180bd47c11c44ef2a7aa2a27ae4d196a8a76e5eadd1624eeedf",
+      "size": 4427512,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
       "repo_path": "assets/rigged_glb/SalvariPrincess.glb",
       "sha256": "9e593ec6466f843822321a85b39a823106ab0c5e5c7ff1fa26a92154843b6c38",
       "size": 21431548,
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/SalvariPrincess_anim.glb",
+      "sha256": "8d2a274f512c83c841d46a0c040a8a3731798acdffbb1c0dec822748d7cda439",
+      "size": 10683464,
+      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
     },
     {
       "repo_path": "assets/rigged_glb/SpaceShip.glb",
@@ -469,15 +499,33 @@
     },
     {
       "repo_path": "assets/rigged_glb/alien_crawler_anim.glb",
-      "sha256": "6f61ad486f64af60a2bea8169cba834c83c5790b88541c5ef588d68c3d695513",
-      "size": 11098836,
-      "source_note": "baked Attack/Hit/Death clips spliced onto Idle/Walk/Run rigs (monster-behavior pass 2026-07-18)"
+      "sha256": "dfdaf5d2d7f3792222415c4f0bcdd4e4179a4a3d23c7dd398d4b10bb3440433b",
+      "size": 11337836,
+      "source_note": "CyberWolf real quadruped rig: 27 bones + 10 authored clips (Idle/Walk/Run/Attack/Hitreaction/Death/Struggle/Leap/Crouch/Snarl) via tools/wolf_forge.py"
     },
     {
       "repo_path": "assets/rigged_glb/blueshark.glb",
       "sha256": "1ef378115ff6a9c46c5b5133273b0ea2b251b277e4deb9031e5ac2d642ddb513",
       "size": 5674476,
       "source_note": ""
+    },
+    {
+      "repo_path": "assets/rigged_glb/canon_grey_anim.glb",
+      "sha256": "5235cd41c55b22fb4d5a9230b2d27e495a73f5ab28c558dfafeb3a0821f750c7",
+      "size": 1987376,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/canon_mantis_anim.glb",
+      "sha256": "46d6ed23a339b8193db52501a23ba093dd9826905a8b2aadf69bfd07e303250d",
+      "size": 2603812,
+      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/canon_nordic_anim.glb",
+      "sha256": "49bb6843a29c57a24fafaf443aafe2f26d64b7385464144c4295a54398b6ad01",
+      "size": 2382596,
+      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez.glb",
@@ -487,9 +535,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
-      "sha256": "c401e34929d5ad6f77220a2ac6b91a30ae866f4d2a5bfd1c1211ef3159641c82",
-      "size": 64350800,
-      "source_note": "guard-loco 2: + real Attack (chief=Firingrifle aim+recoil, marcus=Tossgrenade 118deg swing) and Attack2 (Tossgrenade 25-72) re-baked from Jake; Death/Hitreaction/Struggle untouched"
+      "sha256": "ef04ede4a2e727e4a4452989e3ba9cf5f8154b86f695fbad4a65173610ce7b7c",
+      "size": 64459072,
+      "source_note": "guard-clips: REAL authored Death (backward shot-collapse, 40f) + Struggle (looming assault loop, 40f) via tools/guardanim/guard_clip_forge.py; old clips were 0.00-rad dead data; Idle/Walk/Run/Jump/Attack/Attack2/Hitreaction untouched"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
@@ -499,9 +547,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
-      "sha256": "c16785b30231f75f7c249e87805680be722f2e91015d06572e8c0bd6675eb68d",
-      "size": 49238576,
-      "source_note": "guard-loco 2: + real Attack (chief=Firingrifle aim+recoil, marcus=Tossgrenade 118deg swing) and Attack2 (Tossgrenade 25-72) re-baked from Jake; Death/Hitreaction/Struggle untouched"
+      "sha256": "2d80df8f9ac344f124b59dd19dc7e73b59b7aab353503545f6dad379c7b64b94",
+      "size": 49253032,
+      "source_note": "guard-clips: REAL authored Death (backward shot-collapse, 40f) + Struggle (looming assault loop, 40f) via tools/guardanim/guard_clip_forge.py; old clips were 0.00-rad dead data; Idle/Walk/Run/Jump/Attack/Attack2/Hitreaction untouched"
     },
     {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",

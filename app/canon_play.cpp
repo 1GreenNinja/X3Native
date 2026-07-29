@@ -8,6 +8,7 @@
 #include "asset_root.h"
 #include "headless_device.h"
 #include "mesh_prims.h"   // R-5: x3::prims::makeBox for the upper-floor pickup props
+#include "stairwell.h"    // feat/stair-nav: StairNavChain / stairNavRoute
 
 #include "engine/core/x3_log.h"
 
@@ -33,6 +34,12 @@ constexpr float kEnemyFootUp = 0.4f;
 constexpr float kBossFootUp  = 0.6f;
 constexpr float kPickupUp    = 1.0f;   // sidearm hovers ~1 m off the cell floor (waist height)
 constexpr float kCanonPickupReach = 1.4f;   // R-5: upper-floor item proximity grab radius
+
+// feat/stair-nav: routing cadence + how near the floor's stair entry an enemy must
+// be to commute ("in/near the stairwell region" — a guard across the tower holds
+// its floor; a follow-up pairs this with per-floor nav grids for the room leg).
+constexpr float kStairRouteCadence = 1.0f;   // seconds between routing passes
+constexpr float kStairSeekRadius   = 24.0f;  // planar m from the room-side entry
 
 // ---------------------------------------------------------------------------
 // Minimal JSON parser (self-contained — staging/girls_dialog.json). Same lean style as
@@ -870,6 +877,13 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                         canonItemKindName(it.kind));
         }
     }
+    // ---- STAIR PURSUIT (feat/stair-nav): on a cadence, route awake grounded
+    // squad hostiles up/down the stairwell when the player changed floors. ----
+    m_stairRouteTimer -= dt;
+    if (m_stairNav && m_stairRouteTimer <= 0.0f) {
+        m_stairRouteTimer = kStairRouteCadence;
+        routeStairPursuers(scene, eye);
+    }
     if (m_martinezSpawned)
         m_martinez.update(dt, scene, physics, eye, player, attackFx);
     // W4-1: MARTINEZ ENTRANCE BEAT — the first time the player steps into the Boss
@@ -1153,6 +1167,67 @@ void CanonPlay::forEachCorpse(const std::function<void(const x3::phys::Vec3&)>& 
     scan(m_mainHall); scan(m_cellGuards); scan(m_attackers);
     scan(m_floorBosses); scan(m_upperEnemies); scan(m_rescue.bosses());
     if (m_martinezSpawned && !m_martinez.alive()) fn(m_martinez.pos());
+}
+
+// ---------------------------------------------------------------------------
+// STAIR PURSUIT (feat/stair-nav). One routing pass: (1) consume arrival latches
+// (re-tag the commuter's entity to its destination floor's connector room so the
+// per-room cull owns it again); (2) for every awake, live, grounded SQUAD hostile
+// whose floor differs from the player's and who stands within the seek radius of
+// its floor's stair entry, assemble entry -> flights -> exit and hand it the
+// route. Boss ladder + rescue bosses are NEVER routed (arena anchors). 4.5 is
+// unreachable: the chain has no exit there and stairNavRoute refuses it.
+// ---------------------------------------------------------------------------
+void CanonPlay::routeStairPursuers(Scene& scene, const x3::phys::Vec3& eye) {
+    const StairNavChain& chain = *m_stairNav;
+    if (!chain.valid) return;
+    // The player's floor from the EYE height (~1.7 m over the walking plane).
+    // -1 (mid-flight / elevator / 4.5 / off-tower) routes nobody.
+    const int playerFloor = chain.floorForY(eye.y, 0.4f, 2.6f);
+    MonsterManager* squads[] = { &m_mainHall, &m_cellGuards, &m_attackers,
+                                 &m_upperEnemies };
+    for (MonsterManager* mm : squads) {
+        for (uint32_t i = 0; i < mm->count(); ++i) {
+            MonsterSystem& m = mm->at(i);
+            // Arrival bookkeeping runs even for dead/re-idled agents: a commuter
+            // that finished its route gets its entity re-tagged to the exit room.
+            const int arrived = m.takeStairArrivalFloor();
+            if (arrived > 0) {
+                const StairNavChain::Exit* ex = chain.exitFor(arrived);
+                if (ex && m.entity() != kNoLink && m.entity() < scene.size())
+                    scene.get(m.entity()).roomId = ex->room;
+                x3::logInfo("[canonplay] stair pursuit: enemy ARRIVED on F" +
+                            std::to_string(arrived) + " — resuming floor AI");
+                continue;                       // fight this floor from here on
+            }
+            if (!m.alive() || m.stairRouteActive() || m.dormant() ||
+                m.isAllied() || m.flyer())
+                continue;
+            if (playerFloor <= 0) continue;
+            // The enemy's own floor from its FEET baseline (canon spawns stand
+            // kEnemyFootUp over the deck).
+            const int myFloor = chain.floorForY(m.pos().y - kEnemyFootUp, 0.5f, 1.2f);
+            if (myFloor <= 0 || myFloor == playerFloor) continue;
+            const StairNavChain::Exit* entry = chain.exitFor(myFloor);
+            if (!entry || entry->spur.empty()) continue;
+            // Seek gate: commute only from near this floor's stair entry.
+            const StairNavChain::Wp& ep = entry->spur.back();   // room-side point
+            const float dx = m.pos().x - ep.x, dz = m.pos().z - ep.z;
+            if (dx * dx + dz * dz > kStairSeekRadius * kStairSeekRadius) continue;
+            std::vector<StairNavChain::Wp> wps;
+            if (!stairNavRoute(chain, myFloor, playerFloor, wps)) continue;
+            std::vector<x3::phys::Vec3> route;
+            route.reserve(wps.size());
+            for (const StairNavChain::Wp& w : wps)   // keep the standing baseline
+                route.push_back(x3::phys::Vec3{ w.x, w.y + kEnemyFootUp, w.z });
+            m.setStairRoute(route, playerFloor);
+            if (m.entity() != kNoLink && m.entity() < scene.size())
+                scene.get(m.entity()).roomId = kNoRoom;   // visible while commuting
+            x3::logInfo("[canonplay] stair pursuit: enemy F" + std::to_string(myFloor) +
+                        " -> F" + std::to_string(playerFloor) + " via the stairwell (" +
+                        std::to_string((uint32_t)route.size()) + " waypoints)");
+        }
+    }
 }
 
 void CanonPlay::forEachHostileManager(const std::function<void(MonsterManager&)>& fn) {
@@ -2161,6 +2236,206 @@ bool runOpeningFlowSelfTest() {
     play.shutdown();
     physics->shutdown();
     x3::logInfo("--test-opening: " + std::to_string(g_cpass) + " passed, " +
+                std::to_string(g_cfail) + " failed");
+    return g_cfail == 0;
+}
+
+// ===========================================================================
+// --test-stairnav (feat/stair-nav): enemies path between floors on the REAL
+// stairwell. Chain geometry vs the layout, the structural 4.5 seal (+ negative
+// control), and a headless F1 -> F3 climb of a live MonsterSystem over the BUILT
+// tower + stairwell geometry with a per-step ground-clearance raycast (feet on
+// the treads — no clipping below, no floating).
+// ===========================================================================
+bool runStairNavSelfTest() {
+    g_cpass = g_cfail = 0;
+    auto scheck = [](bool cond, const char* name) { pcheck(cond, name); };
+
+    CanonFloor floor = loadCanonTower(canonProjectJsonPath());
+    if (!floor.valid()) {
+        x3::logInfo("  SKIP canonical JSON not present on this machine");
+        x3::logInfo("--test-stairnav: SKIPPED (no JSON) — treating as PASS");
+        return true;
+    }
+    const StairwellLayout lay = stairwellLayout(floor);
+    const StairNavChain chain = stairwellNavChain(lay);
+
+    // ---- S1: the chain resolves and serves exactly the layout's REAL floors. ----
+    {
+        bool ok = lay.valid && chain.valid &&
+                  chain.exits.size() == lay.floors.size();
+        if (ok)
+            for (size_t i = 0; i < chain.exits.size(); ++i)
+                ok = ok && chain.exits[i].floorNum == lay.floors[i].floorNum &&
+                     chain.exits[i].floorNum > 0 &&
+                     std::fabs(chain.exits[i].floorY - lay.floors[i].floorY) < 0.01f;
+        scheck(ok, "S1 chain valid + one exit per REAL floor (numbers/heights match the layout)");
+    }
+
+    // ---- S2: the spine is monotone in Y bottom -> top, every flight spans its
+    // fRise, and every spine point stays inside the shaft interior. ----
+    {
+        bool mono = !chain.spine.empty(), inside = true;
+        for (size_t i = 0; i < chain.spine.size(); ++i) {
+            const StairNavChain::Wp& w = chain.spine[i];
+            if (i > 0 && w.y < chain.spine[i - 1].y - 1e-4f) mono = false;
+            if (w.x < lay.sx0 || w.x > lay.sx1 || w.z < lay.sz0 || w.z > lay.sz1)
+                inside = false;
+        }
+        const bool ends = !chain.spine.empty() &&
+            std::fabs(chain.spine.front().y - lay.baseY) < 0.01f &&
+            std::fabs(chain.spine.back().y - lay.floors.back().floorY) < 0.01f;
+        scheck(mono,   "S2a spine Y is monotone non-decreasing bottom -> top");
+        scheck(inside, "S2b every spine waypoint stays inside the shaft box");
+        scheck(ends,   "S2c spine spans base floor -> top floor exactly");
+    }
+
+    // ---- S3: the STRUCTURAL 4.5 SEAL. No waypoint east of the shaft at a
+    // non-floor height, no exit anywhere near the 4.5 plane / the unnumbered
+    // landing, routes to unserved floors REFUSED — plus a negative control. ----
+    {
+        // The seal checker (shared with the negative control): true = SEALED.
+        auto sealed = [&](const StairNavChain& c) {
+            for (const StairNavChain::Exit& ex : c.exits) {
+                if (ex.floorNum <= 0) return false;                 // phantom exit
+                if (lay.master.present &&
+                    std::fabs(ex.floorY - lay.master.landingY) < 0.8f) return false;
+                if (lay.master.present &&
+                    std::fabs(ex.floorY - lay.master.floorY) < 0.8f) return false;
+                for (const StairNavChain::Wp& w : ex.spur) {
+                    if (w.x <= lay.sx1 + 0.05f) continue;           // inside the shaft
+                    // East of the shaft: must sit at a REAL floor plane.
+                    bool onFloor = false;
+                    for (const auto& fe : lay.floors)
+                        if (std::fabs(w.y - fe.floorY) < 0.3f) onFloor = true;
+                    if (!onFloor) return false;
+                }
+            }
+            return true;
+        };
+        scheck(lay.master.present, "S3a the unnumbered 4.5-height landing exists in the layout (context)");
+        scheck(sealed(chain),      "S3b no exit/spur waypoint at the 4.5 / master-landing height");
+        std::vector<StairNavChain::Wp> refused;
+        scheck(!stairNavRoute(chain, 1, 45, refused) && refused.empty(),
+               "S3c route to an unserved floor number is REFUSED");
+        // NEGATIVE CONTROL: doctor a copy with an exit spur at the master landing
+        // height reaching east of the shaft — the checker must FLAG it.
+        StairNavChain doctored = chain;
+        if (lay.master.present) {
+            StairNavChain::Exit evil;
+            evil.floorNum = 45; evil.floorY = lay.master.landingY;
+            evil.spineIdx = 0;
+            evil.spur.push_back(StairNavChain::Wp{ lay.sx1 + 2.0f,
+                                                   lay.master.landingY, -17.9f });
+            doctored.exits.push_back(evil);
+        }
+        scheck(lay.master.present && !sealed(doctored),
+               "S3d NEGATIVE CONTROL: doctored 4.5-height exit IS detected");
+    }
+
+    // ---- S4/S5: a LIVE MonsterSystem climbs F1 -> F3 over the BUILT geometry,
+    // feet on the treads, within a bounded sim time. ----
+    {
+        HeadlessRenderDevice device;
+        std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+        physics->init();
+        Scene scene;
+        buildCanonFloor(floor, scene, device, *physics);
+        FacilityStairwell sw;
+        std::vector<CanonLight> lights;
+        sw.build(lay, floor, scene, device, *physics, /*doors*/nullptr,
+                 assetRoot() + "/surface_library", lights);
+
+        // ---- S4a: STATIC audit — the chain's nosing lines match the BUILT treads.
+        // Sampled BEFORE any enemy exists (a Static-mask ray also matches Enemy
+        // bodies), straight down the lane centers: every flight sample's line Y
+        // must sit within half a riser + the nosing lip of the raycast ground. ----
+        {
+            int flightSamples = 0, offTread = 0;
+            float worst = 0.0f;
+            for (size_t i = 1; i < chain.spine.size(); ++i) {
+                const StairNavChain::Wp& a = chain.spine[i - 1];
+                const StairNavChain::Wp& b = chain.spine[i];
+                if (std::fabs(b.y - a.y) < 0.3f) continue;      // flights only
+                for (float t = 0.1f; t < 0.95f; t += 0.2f) {
+                    const float sx = a.x + (b.x - a.x) * t;
+                    const float sy = a.y + (b.y - a.y) * t;
+                    const float sz = a.z + (b.z - a.z) * t;
+                    const auto hit = physics->rayCast(
+                        x3::phys::Vec3{ sx, sy + 1.0f, sz },
+                        x3::phys::Vec3{ 0, -1, 0 }, 3.0f, x3::phys::Layer::Static);
+                    if (!hit.hit) { ++offTread; continue; }
+                    const float dev = sy - hit.point.y;         // line over ground
+                    if (std::fabs(dev) > std::fabs(worst)) worst = dev;
+                    if (std::fabs(dev) > 0.16f) ++offTread;     // half riser + lip + margin
+                    ++flightSamples;
+                }
+            }
+            x3::logInfo("    S4 static audit: " + std::to_string(flightSamples) +
+                        " nosing-line samples vs built treads, worst dev " +
+                        std::to_string(worst) + " m, offTread=" + std::to_string(offTread));
+            scheck(flightSamples > 100 && offTread == 0,
+                   "S4a chain nosing lines ride the BUILT treads (raycast, half-riser tolerance)");
+        }
+
+        std::vector<StairNavChain::Wp> wps;
+        const bool haveRoute = stairNavRoute(chain, 1, 3, wps) && wps.size() >= 8;
+        scheck(haveRoute, "S4b route F1 -> F3 assembles (entry + flights + exit)");
+        bool reached = false, latched = false;
+        int followSamples = 0, followBad = 0;
+        float worstFollow = 0.0f;
+        if (haveRoute) {
+            std::vector<x3::phys::Vec3> route;
+            for (const StairNavChain::Wp& w : wps)
+                route.push_back(x3::phys::Vec3{ w.x, w.y + kEnemyFootUp, w.z });
+            MonsterSystem m;
+            m.buildMonster(scene, device, *physics, "", route.front());
+            m.setStairRoute(route, 3);
+            const x3::phys::Vec3 playerAt = route.back();
+            const float dt = 1.0f / 60.0f;
+            for (int step = 0; step < 60 * 90 && !reached; ++step) {
+                m.update(dt, scene, *physics, playerAt);
+                const x3::phys::Vec3 p = m.pos();
+                // ---- S5: FOLLOW audit — the agent's Y tracks the chain segment
+                // it is walking (projected onto the segment's planar direction).
+                // With S4a proving chain == built treads, a bounded follow error
+                // proves feet stay on the steps (no floor-locked Y, no falling
+                // through, no floating). ----
+                x3::phys::Vec3 sa, sb;
+                if (m.stairSegment(sa, sb)) {
+                    const float segX = sb.x - sa.x, segZ = sb.z - sa.z;
+                    const float len2 = segX * segX + segZ * segZ;
+                    if (len2 > 1e-4f) {
+                        float t = ((p.x - sa.x) * segX + (p.z - sa.z) * segZ) / len2;
+                        t = std::min(1.0f, std::max(0.0f, t));
+                        const float yExp = sa.y + (sb.y - sa.y) * t;
+                        const float dev = p.y - yExp;
+                        if (std::fabs(dev) > std::fabs(worstFollow)) worstFollow = dev;
+                        if (std::fabs(dev) > 0.30f) ++followBad;
+                        ++followSamples;
+                    }
+                }
+                if (m.takeStairArrivalFloor() == 3) latched = true;
+                if (latched) {
+                    const float ddx = p.x - playerAt.x, ddz = p.z - playerAt.z;
+                    reached = (ddx * ddx + ddz * ddz < 4.0f) &&
+                              std::fabs(p.y - playerAt.y) < 0.25f;
+                }
+            }
+            x3::logInfo("    S5 follow: " + std::to_string(followSamples) +
+                        " samples, worst dev " + std::to_string(worstFollow) +
+                        " m, out-of-tolerance=" + std::to_string(followBad));
+        }
+        scheck(latched && reached,
+               "S4c enemy commuted F1 -> F3 within the bounded sim (arrival latched at F3)");
+        scheck(followSamples > 500,
+               "S5a the climb produced a real follow-sample population");
+        scheck(followBad == 0,
+               "S5b agent Y rides the chain within tolerance (feet on the treads, no clip/float)");
+        physics->shutdown();
+    }
+
+    x3::logInfo("--test-stairnav: " + std::to_string(g_cpass) + " passed, " +
                 std::to_string(g_cfail) + " failed");
     return g_cfail == 0;
 }

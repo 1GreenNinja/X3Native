@@ -91,6 +91,10 @@ int hostElevator(HostContext& hc) {
                 shots = { {0, screenshot ? "" : "", 1e9f} };   // single --screenshot
             }
             // Settle a few frames so the holo bakes its glass + the show spins up.
+            // X3_ELEV_STAY=1: keep the cab PARKED at its start stop (no descent) so a
+            // --shot-cam interior framing is deterministic — the in-cab panel QA shots
+            // (OLED directory et al) need a cab that holds still under a fixed camera.
+            const bool stayParked = std::getenv("X3_ELEV_STAY") != nullptr;
             for (int i = 0; i < 20; ++i) {
                 show.update(dt, escene, *device, *ephys);
                 const auto& l = show.pointLights(); device->setPointLights(l.data(), (uint32_t)l.size());
@@ -114,9 +118,15 @@ int hostElevator(HostContext& hc) {
                     ephys->step(dt); escene.update(*ephys);
                 }
             };
+            if (stayParked) {
+                const x3::phys::Vec3 cc = show.cabCenter();
+                x3::logInfo("--world elevator: X3_ELEV_STAY parked, cab center " +
+                            std::to_string(cc.x) + " " + std::to_string(cc.y) + " " +
+                            std::to_string(cc.z));
+            }
             bool allOk = true;
             for (const Shot& s : shots) {
-                if (s.driveToY < 1e8f) descendTo(s.driveToY);
+                if (!stayParked && s.driveToY < 1e8f) descendTo(s.driveToY);
                 std::string outPath = elevShot ? (elevShotDir + "/" + s.name) : screenshotPath;
                 float cam[5]; show.showcaseCamera(s.variant, cam);
                 if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];

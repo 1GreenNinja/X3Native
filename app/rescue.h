@@ -77,6 +77,7 @@ constexpr float kRescueReach = 3.0f;
 constexpr float kCompanionSpeed   = 4.0f;   // m/s toward the player (a touch faster than walk-pace enemies)
 constexpr float kCompanionStop    = 2.2f;   // hold this far behind the player (don't crowd)
 constexpr float kCompanionTeleport= 25.0f;  // if left this far behind (e.g. an elevator), snap to the player
+constexpr float kCompanionRadius  = 0.40f;  // planar body radius for the anti-overlap pass (matches enemy hitbox)
 
 // One rescue victim: a loaded character GLB + a Tag::Prop entity + a collision
 // box, plus the lifecycle state + countdown. Self-contained like MonsterSystem.
@@ -201,6 +202,23 @@ public:
     x3::phys::BodyId body() const { return m_body; }
     // Planar collision radius (matches the standing box half-width kVictimHalf.x).
     float collisionRadius() const { return 0.4f; }
+    // ---- Anti-overlap (companion never shares a cell) ---------------------
+    // Planar collision radius, matched to the enemy body half-width (~0.4m) so a
+    // companion and an enemy are held the same 0.8m apart as two enemies are.
+    float bodyRadiusXZ() const { return kCompanionRadius; }
+    // Apply a planar positional correction + sync the body (like the monster
+    // de-overlap). Only a live COMPANION is pushed — a captive stays put in her
+    // cell. Y untouched. No-op on a bodyless / non-companion victim.
+    void nudgePlanar(float dx, float dz, x3::phys::IPhysicsWorld& physics) {
+        if (m_state != VictimState::Companion || !m_body.valid()) return;
+        m_pos.x += dx; m_pos.z += dz;
+        physics.setBodyPosition(m_body, m_pos);
+    }
+    // If this is a live companion, push it out of every immovable point it overlaps
+    // (each `pts[k]` has planar radius `ptR[k]`). The companion takes the full
+    // correction, clamped per-frame. No-op unless a live companion.
+    void deOverlapFromPoints(const x3::phys::Vec3* pts, const float* ptR, uint32_t n,
+                             x3::phys::IPhysicsWorld& physics);
 
     // ---- Animation queries (BUG #48 + --test-rescue) ----------------------
     // True once bind() found a skinnable model + a usable clip, so tick() drives
@@ -403,6 +421,15 @@ public:
     // Interact hook (E in range). Rescue the nearest captive within `reach` of the
     // player. Returns true iff a victim was rescued this call (the host logs / SFX).
     bool tryRescue(const x3::phys::Vec3& playerPos, float reach = kRescueReach);
+
+    // ---- Anti-overlap (companion never shares a cell) ---------------------
+    // Push every live COMPANION out of any overlap with (a) the given hostile body-
+    // centers and (b) the other companions. The hostiles/peers are treated as
+    // immovable (they de-overlap within their own manager), so a companion takes the
+    // full correction — clamped per-frame. Call AFTER tick() + the enemy managers'
+    // update() so it corrects this frame's final positions. No-op with no companions.
+    void deOverlapCompanions(const x3::phys::Vec3* hostiles, const float* hostileR,
+                             uint32_t nHostiles, x3::phys::IPhysicsWorld& physics);
 
     // Draw all victims (live captives + companions). Bosses are drawn by the boss
     // MonsterManager (call drawBosses too / it is folded into draw()).

@@ -1851,6 +1851,78 @@ bool runAnimSelfTest() {
         }
     }
 
+    // ---- T7 GUARD Death/Struggle are ALIVE (real internal motion). The T6
+    // "plays" check compares one sample against Idle, which a DEAD static clip
+    // passes (its frozen pose differs from Idle) — exactly how the guards'
+    // 0.00-rad Death/Struggle hid for weeks (docs/KNOWN_BUGS.md L12 lesson).
+    // T7 asserts motion WITHIN the clip on both facility guards:
+    //   * Death + Struggle exist, duration >= 1.2 s;
+    //   * cumulative palette travel across 12 samples clears a real-motion
+    //     floor (a 2-key static clip measures ~0);
+    //   * Death ENDS far from where it starts (the collapse goes somewhere);
+    //   * Struggle is loop-closed: first/last palettes match to well under the
+    //     clip's own internal travel (seamless calm-loop for the ward tableau).
+    // Present-asset only (skipped, still PASS, on a clean checkout).
+    {
+        auto l1 = [](const std::vector<float>& a, const std::vector<float>& b) {
+            double d = 0.0; size_t n = std::min(a.size(), b.size());
+            for (size_t k = 0; k < n; ++k) d += std::fabs(a[k] - b[k]);
+            return (float)d;
+        };
+        const char* guards[] = { "chief_martinez_anim.glb", "marcus_webb_anim.glb" };
+        for (const char* g : guards) {
+            const std::string glb = x3::game::riggedGlbRoot() + "/" + g;
+            const std::string tagName = std::string("T7 ") + g + " ";
+            if (!fs::exists(glb)) {
+                x3::logInfo("[anim-test] (" + std::string(g) + " absent — skipping T7 guard-clip checks)");
+                continue;
+            }
+            fs::path p(glb);
+            std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+            src->mountDir(p.parent_path().string(), 0);
+            std::unique_ptr<x3::asset::IModelLoader> ld(x3::asset::createModelLoader(nullptr, src.get()));
+            x3::asset::Model m = ld->load(p.filename().string());
+            Skinner sk; bool b = sk.bind(m);
+            int dth = sk.findClip({ "death", "die", "collapse" });
+            int str = sk.findClip({ "struggle", "writhe", "grapple" });
+            check(b && dth >= 0 && str >= 0, (tagName + "has Death + Struggle").c_str());
+            if (!b || dth < 0 || str < 0) { ld->unload(m); continue; }
+
+            auto clipStats = [&](int clip, float& travel, float& endDist, float& dur) {
+                dur = sk.clipDuration((uint32_t)clip);
+                std::vector<float> first, prev, cur;
+                sk.computePalette(m, (uint32_t)clip, 0.0f, first);
+                prev = first; travel = 0.0f;
+                const int kSamples = 12;
+                for (int i = 1; i <= kSamples; ++i) {
+                    // NOTE: the sampler WRAPS t==dur back to t==0, so the final
+                    // sample sits ONE FRAME shy of the end (the last authored
+                    // pose) — otherwise endDist/loopGap trivially read 0.
+                    float t = dur * (float)i / (float)kSamples;
+                    if (i == kSamples) t = dur - 1.0f / 24.0f;
+                    sk.computePalette(m, (uint32_t)clip, t, cur);
+                    travel += l1(prev, cur);
+                    prev.swap(cur);
+                }
+                endDist = l1(first, prev);   // prev now holds the last-frame palette
+            };
+            float dTravel, dEnd, dDur, sTravel, sEnd, sDur;
+            clipStats(dth, dTravel, dEnd, dDur);
+            clipStats(str, sTravel, sEnd, sDur);
+            x3::logInfo("[anim-test] T7 " + std::string(g) +
+                        " Death: dur=" + std::to_string(dDur) + " travel=" + std::to_string(dTravel) +
+                        " endDist=" + std::to_string(dEnd) +
+                        " | Struggle: dur=" + std::to_string(sDur) + " travel=" + std::to_string(sTravel) +
+                        " loopGap=" + std::to_string(sEnd));
+            check(dDur >= 1.2f && sDur >= 1.2f, (tagName + "Death/Struggle durations >= 1.2 s").c_str());
+            check(dTravel > 1.0f, (tagName + "Death has real internal motion (travel floor)").c_str());
+            check(dEnd > 0.5f, (tagName + "Death collapse ends far from its start pose").c_str());
+            check(sTravel > 1.0f, (tagName + "Struggle has real internal motion (travel floor)").c_str());
+            check(sEnd < 0.25f * sTravel, (tagName + "Struggle loop is closed (first ~= last)").c_str());
+            ld->unload(m);
+        }
+    }
+
     x3::logInfo("[anim-test] " + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;

@@ -186,6 +186,18 @@ std::string defaultGameStoryFlagsPath() {
     return "game_flags.txt";
 }
 
+bool importEscapedIntroFlags(x3::game::StoryFlags& into, const std::string& path) {
+    // [P0-1] See the header note. Loads the persisted intro lane into a scratch
+    // set first so a shot_down / absent save NEVER mutates the live flags world.
+    const std::string p = path.empty() ? defaultGameStoryFlagsPath() : path;
+    x3::game::StoryFlags disk;
+    if (!disk.loadFile(p)) return false;                       // no persisted intro
+    if (readOutcomeFlag(disk) != IntroOutcome::Escaped) return false;   // canon path
+    into.set(std::string(kIntroOutcomeFlag) + "=" + kIntroOutcomeEscaped);
+    if (disk.has(kIntroLandedFlag)) into.set(kIntroLandedFlag);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Live hosting helpers
 // ---------------------------------------------------------------------------
@@ -374,6 +386,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     std::unique_ptr<x3::game::CombatFx> fxPtr;
     const bool fxOn = live && cockpit != nullptr;
     if (fxOn) { fxPtr = std::make_unique<x3::game::CombatFx>(); fxPtr->init(*hc.device); }
+    // GPU debris pool, configured for SPACE: zero gravity, no ground plane (push it
+    // far below), minimal damping so kill-gib chunks coast outward and read as a
+    // ship breaking apart. app_run re-configures this pool for the ground world
+    // after the intro, so there is no cross-beat conflict.
+    if (fxOn) {
+        x3::rhi::IRenderDevice::GpuDebrisParams gp{};
+        gp.gravity[0] = 0.0f; gp.gravity[1] = 0.0f; gp.gravity[2] = 0.0f;
+        gp.groundY = -100000.0f;   // no floor in space
+        gp.restitution = 0.0f; gp.friction = 0.0f;
+        gp.linearDamping = 0.06f; gp.sleepFrames = 240;
+        hc.device->gpuDebrisConfig(gp);
+    }
 
     // ---- COMBAT SFX (dogfight-feel): every combat event now SOUNDS. ---------
     // Cues are COMMITTED under assets/audio/space/dogfight/ (resolveAudio tries
@@ -444,12 +468,28 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // deaths are detected AT THE DAMAGE SITE (EnemyShipManager swap-removes a
     // dead ship immediately, so a post-update hull scan can never see one; the
     // old prevHull compare below was dead code).
+    // MASSIVE disintegration blast radius for a ship kill. A barrel death uses
+    // radius ~1.6; a ~10 m fighter hull erupting reads MUCH bigger, so the fireball
+    // is scaled up hard (owner: "massive explosions when they disintegrate").
+    constexpr float kShipDeathBlastRadius = 12.0f;
     auto fighterKillFx = [&](const float p[3]) {
         play3D(kSfxExplosion, "explosion_fighter (3D, fighter kill)", sndExplosion,
                p, 1.0f, 1.0f);
         if (fxOn) {
-            fxPtr->spawnDeath({ p[0], p[1], p[2] });
-            fxPtr->spawnSmoke({ p[0], p[1], p[2] });
+            const x3::phys::Vec3 c{ p[0], p[1], p[2] };
+            // (1) The ship DISINTEGRATES: a huge fireball + white-hot flash + an
+            //     expanding shockwave shell — distinctly bigger than any barrel pop.
+            fxPtr->spawnShipDeathBlast(c, kShipDeathBlastRadius);
+            // (2) Death debris/smoke sprites (the near-field chunks + lingering plume).
+            fxPtr->spawnDeath(c);
+            fxPtr->spawnSmoke(c);
+            // (3) HEAVY GPU debris BURST: the hull breaks into big metal chunks flung
+            //     outward in zero-G (the pool is configured for space at beat start).
+            const uint32_t seed = 0x5D3Bu ^ (uint32_t)(c.x * 131.0f)
+                                          ^ ((uint32_t)(c.z * 977.0f) << 8);
+            const float bp[3] = { p[0], p[1], p[2] };
+            hc.device->gpuDebrisSpawnBurst(bp, /*count*/40u, /*speed*/44.0f,
+                                           /*lifetime*/4.0f, /*halfExtent*/0.95f, seed);
         }
     };
     float zapCooldown = 0.0f;   // one zap per bounce, not per frame on the bubble
@@ -537,6 +577,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // capital + clear the wing, when you die, or when you press Esc — never on a clock.
     // Headless (deterministic tests / boot-time / captures) STILL stops at maxSteps, or
     // it would loop forever with no player to end it.
+    // Capture-only disintegration staging: blow up the most-centered fighter just
+    // before the s660 frame so the shot catches the blast near screen center.
+    float capKillPos[3] = { 0.0f, 0.0f, 0.0f };
+    bool  capKilled = false;
+    (void)capKillPos;
     for (int step = 0; interactive || step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
@@ -649,6 +694,40 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 // 460 so the later shots return to the flight framing.
                 if (step == 396) pilot.addFreeLook(150.0f, -30.0f);
                 else if (step > 396 && step < 460) pilot.addFreeLook(0.0f, 0.0f);
+                // SHIP DISINTEGRATION evidence (space power fantasy): ~0.08 s before
+                // the s660 capture, disintegrate a fighter and stage the blast at a
+                // CLOSE point on the camera's forward ray (~90 m out, at the crosshair)
+                // so the MASSIVE fireball + white-hot flash + flung glowing chunks all
+                // READ at ship scale, CENTERED in frame — the framing a real close-
+                // range kill produces (you shot the ship in your sights). A real
+                // fighter is destroyed too so CONTACTS drops. Capture-only.
+                if (step == 655 && !capKilled && fxOn) {
+                    const float fhp = std::cos(pilot.pitch());
+                    const float fw[3] = { fhp * std::cos(pilot.yaw()),
+                                          std::sin(pilot.pitch()),
+                                          fhp * std::sin(pilot.yaw()) };
+                    const x3::phys::Vec3 pp = pilot.pos();
+                    // Kill the most-forward real fighter (gameplay-honest: CONTACTS drops).
+                    if (enemies.count() >= 1) {
+                        int best = 0; float bestDot = -2.0f;
+                        for (uint32_t i = 0; i < enemies.count(); ++i) {
+                            const auto& es = enemies.ship(i);
+                            const float oc[3] = { es.pos[0]-pp.x, es.pos[1]-pp.y, es.pos[2]-pp.z };
+                            const float l = std::sqrt(oc[0]*oc[0]+oc[1]*oc[1]+oc[2]*oc[2]);
+                            if (l < 1e-3f) continue;
+                            const float dd = (oc[0]*fw[0]+oc[1]*fw[1]+oc[2]*fw[2]) / l;
+                            if (dd > bestDot) { bestDot = dd; best = (int)i; }
+                        }
+                        enemies.damageShip((uint32_t)best, 100000);
+                    }
+                    // The disintegration FX, framed close + centered on the crosshair.
+                    const float blast[3] = { pp.x + fw[0]*90.0f,
+                                             pp.y + fw[1]*90.0f,
+                                             pp.z + fw[2]*90.0f };
+                    fighterKillFx(blast);
+                    capKilled = true;
+                    capKillPos[0]=blast[0]; capKillPos[1]=blast[1]; capKillPos[2]=blast[2];
+                }
             }
         }
         // ANTIMATTER BOOST: one whoosh per Shift ENGAGE (edge-detected — the
@@ -858,7 +937,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     hitFighter = true;
                     ++localShotsHit;
                     hitConfirmT = 0.15f;   // reticle confirm: the shot LANDED
-                    constexpr int kPlayerLaserDamage = 20;      // 3 hits downs a fighter
+                    // SKILLFUL TTK (owner: 140 one-shot felt cheap): base per-shot
+                    // = 10, so a 60-hull fighter takes ~6 hits — a loose spray
+                    // whittles it down. But a hit that lands on the FULLY-ACQUIRED
+                    // lock target (red bracket, lockAge >= kAcquireSec) does 2x = 20
+                    // -> ~3 hits: hold the lock and you kill faster. Enemy-vs-player
+                    // damage is UNCHANGED (the scripted takedown still lands).
+                    constexpr int kPlayerLaserBase = 10;        // ~6 hits down a 60-hull fighter
+                    const bool onLockedTarget =
+                        lockHad && lockAge >= kAcquireSec &&
+                        targeting.lockedId() == (uint32_t)best + 1u;   // contact id = 1 + enemyIdx
+                    const int kPlayerLaserDamage =
+                        onLockedTarget ? kPlayerLaserBase * 2 : kPlayerLaserBase;  // 20 on-lock -> ~3 hits
                     const auto& es = enemies.ship((uint32_t)best);
                     const float hp[3] = { es.pos[0], es.pos[1], es.pos[2] };
                     const bool willDie = es.hull <= kPlayerLaserDamage;
@@ -1067,6 +1157,16 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (fxOn) {
                     fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
                     fxPtr->submit(*hc.device, frame);
+                    // KILL-GIB debris: step the GPU pool + draw the live chunks so a
+                    // disintegrating ship's flung hull fragments read in-frame. Dark
+                    // scorched-metal tint. Cheap: one compute pass + one instanced draw,
+                    // and a no-op when the pool is empty (no kills yet).
+                    hc.device->gpuDebrisStep(dt);
+                    // Hot glowing scorched-metal chunks: a warm HDR tint (>1 feeds
+                    // bloom) so the flung hull fragments READ as superheated debris
+                    // against the black starfield instead of vanishing as dark grey.
+                    const float debrisTint[4] = { 1.5f, 0.78f, 0.32f, 1.0f };
+                    hc.device->gpuDebrisDraw(frame, debrisTint);
                 }
                 // FORCE-FIELD FLASH: a one-blink cyan border while the zap timer
                 // runs (pushOut bounced us this instant) — cheap: four hud quads.
@@ -1209,6 +1309,21 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         quad(bx - w * 0.5f - 1.0f, byTop - 1.0f, w + 2.0f, 6.0f, back);
                         quad(bx - w * 0.5f, byTop, w * f, 4.0f, fill);
                     };
+                    // DAMAGE METER (owner: "damage meter on the enemy ships"): a
+                    // per-ship health bar shown above EVERY visible, alive enemy,
+                    // reflecting hull/maxHull with a classic green -> yellow -> red
+                    // ramp (full = green, ~half = yellow, near-dead = red). Drawn
+                    // for all on-screen contacts, not just the locked target, so you
+                    // always read how close each ship is to disintegrating.
+                    auto dmgMeter = [&](float bx, float byTop, float w, float frac01) {
+                        const float f  = frac01 < 0.0f ? 0.0f : (frac01 > 1.0f ? 1.0f : frac01);
+                        const float rr = std::min(1.0f, 2.0f * (1.0f - f));  // 0 full -> 1 empty
+                        const float gg = std::min(1.0f, 2.0f * f);           // 1 full -> 0 empty
+                        const float back[4] = { 0.03f, 0.04f, 0.03f, 0.72f };
+                        const float fill[4] = { 0.12f + 0.85f * rr, 0.18f + 0.78f * gg, 0.14f, 0.95f };
+                        quad(bx - w * 0.5f - 1.0f, byTop - 1.0f, w + 2.0f, 6.0f, back);
+                        quad(bx - w * 0.5f, byTop, w * f, 4.0f, fill);
+                    };
                     const float neutral[4] = { 0.85f, 0.88f, 0.92f, 0.50f };
                     const float amberM[4]  = { 1.0f, 0.72f, 0.20f, 0.95f };
                     const float redM[4]    = { 1.0f, 0.30f, 0.22f, 0.95f };
@@ -1239,6 +1354,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                              x3::space::shipai::visCompFactor(pr.zf);
                         const float halfPx = std::min(120.0f,
                             std::max(16.0f, worldR * pr.pxPerM)) + 6.0f;
+                        // The damage meter rides above the bracket for EVERY visible
+                        // enemy (targeted or not) — width scales with the silhouette,
+                        // clamped legible.
+                        const float meterW  = std::min(140.0f, std::max(30.0f, halfPx * 1.5f));
+                        const float meterY  = pr.sy - halfPx - 12.0f;
+                        dmgMeter(pr.sx, meterY, meterW,
+                                 e.maxHull > 0 ? (float)e.hull / (float)e.maxHull : 0.0f);
                         if (!isTgt) {
                             bracket(pr.sx, pr.sy, halfPx, 1.0f, neutral);
                             continue;
@@ -1256,16 +1378,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                 "ACQ", pr.sx - halfT, pr.sy - halfT - 16.0f, 12.0f, staged);
                         } else {
                             // LOCKED: a brief solid ring flourish that fades out
-                            // right after the snap, the warm-dim hull bar above
-                            // the bracket, and a compact LOCK + range tag.
+                            // right after the snap + a compact LOCK + range tag. The
+                            // damage meter is already drawn above (for every enemy),
+                            // so no separate hull bar here.
                             const float since = lockAge - kAcquireSec;
                             if (since < 0.35f) {
                                 float ringCol[4] = { redM[0], redM[1], redM[2],
                                                      0.95f * (1.0f - since / 0.35f) };
                                 ringDots(pr.sx, pr.sy, halfT * 1.18f, 24, 3.0f, ringCol, 1.0f);
                             }
-                            hullBar(pr.sx, pr.sy - halfT - 10.0f, halfT * 2.0f,
-                                    e.maxHull > 0 ? (float)e.hull / (float)e.maxHull : 0.0f);
                             char tag[24];
                             std::snprintf(tag, sizeof(tag), "LOCK %dm", (int)pr.zf);
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,

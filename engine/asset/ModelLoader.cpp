@@ -1336,6 +1336,24 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
         d.clearcoatRough = mat.clearcoatRough;
     }
     for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
+    // SKINNED primitives: strip the mesh-node world SCALE. Per the glTF spec a
+    // skinned mesh's node transform is ignored outright (the joint palette already
+    // composes the entire hierarchy, armature root included), so composing it into
+    // the draw double-applies it. Every legacy rig authored an identity mesh-node
+    // world and never noticed — until the Meshy-rigged cast (animlib wave
+    // 2026-07-27) shipped an armature-root scale of ~0.0095-0.0133 and every one
+    // of them drew 2 cm tall (i.e. vanished fleet-wide). Only the SCALE is
+    // normalized here (not rotation/translation) because the third-person Jake
+    // path empirically tuned its floor-plant (kTp userYOff) around the node
+    // TRANSLATION being applied — stripping R/T would silently re-float shipped
+    // content. Identity-scale rigs (all legacy) are bit-identical through this.
+    if (p.skinned) {
+        for (int c = 0; c < 3; ++c) {
+            float* col = &d.nodeTransform[c * 4];
+            const float len = std::sqrt(col[0]*col[0] + col[1]*col[1] + col[2]*col[2]);
+            if (len > 1e-6f) { col[0] /= len; col[1] /= len; col[2] /= len; }
+        }
+    }
     return true;
 }
 } // namespace

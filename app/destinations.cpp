@@ -17,40 +17,34 @@ namespace {
 // ---------------------------------------------------------------------------
 // THE `--world` FLAGS THIS PROGRAM ACTUALLY DISPATCHES.
 //
-// [P0-2] Two dispatch sites, two very different truths:
+// [P0-2] Two dispatch sites, BOTH exported live — nothing is copied here:
 //
-//   * app/world_hosts/world_hosts.cpp — dispatchWorldHost(). NOT copied here
-//     any more. Its route table is exported (dispatchedWorldModes()) and the
-//     self-test walks the LIVE table. The old hand copy drifted 8 worlds
-//     behind in one week; a copy of a list is where honesty goes to die.
-//   * app/app_run.cpp — the default host's own world branches. Those are
-//     bare `if (worldMode == ...)` lines with nothing enumerable to export
-//     (yet — the app_run split will fix that), so they stay a hand list
-//     below. It is 7 stable names and each is asserted registry-covered.
+//   * app/world_hosts/world_hosts.cpp — dispatchWorldHost(). Its route table
+//     is exported (dispatchedWorldModes()) and the self-test walks the LIVE
+//     table. The old hand copy drifted 8 worlds behind in one week; a copy
+//     of a list is where honesty goes to die.
+//   * app/app_run.cpp — the default host's own world branches, exported as
+//     defaultHostWorldModes() from the SAME FILE as the `if (worldMode ==...)`
+//     lines (this file used to keep a second hand copy of those 8 names —
+//     same drift class, now dead too).
 //
 // Note what is NOT dispatched: `act2` and `act2caves`. rift_console.cpp's old
 // kWorlds whitelist offered both as re-target options and runRifthubSelfTest()
 // asserted they were "real --world targets" — but neither has had a host since
 // the Act-2 split. `city` and `perfshop` are in the same boat (a screenshot
 // host forces --world drive / a region inside canonlevel; there is no
-// `--world city`). And `echotropolis` (Echo Harbor) has NO host on this line —
-// its host ships on the echotropolis branch — so its registry row carries an
-// empty worldFlag and the menu shows it UNAVAILABLE. Never a flag that 404s.
+// `--world city`). Never a flag that 404s.
 // ---------------------------------------------------------------------------
-const char* const kDefaultHostWorlds[] = {
-    // default host (app_run.cpp world branches — see header comment)
-    "canonlevel", "intro", "level1", "elevator", "terrain", "ocean", "fromdoc",
-    // `spacestation` is a LevelDoc alias dispatched by the default host (it sets
-    // docWorld and boots assets/levels/space_station.leveldoc.json).
-    "spacestation",
-};
 
-// The union of both dispatch sites: the default-host hand list + the LIVE
-// world_hosts route table. THIS is what "dispatchable" means to the self-test.
+// The union of both dispatch sites: the default host's exported world modes +
+// the LIVE world_hosts route table. THIS is what "dispatchable" means to the
+// self-test.
 std::vector<const char*> dispatchedFlagUnion() {
-    std::vector<const char*> all(std::begin(kDefaultHostWorlds),
-                                 std::end(kDefaultHostWorlds));
+    std::vector<const char*> all;
     unsigned n = 0;
+    const char* const* defaults = x3::apphost::defaultHostWorldModes(n);
+    for (unsigned i = 0; i < n; ++i) all.push_back(defaults[i]);
+    n = 0;
     const char* const* hosted = x3::apphost::dispatchedWorldModes(n);
     for (unsigned i = 0; i < n; ++i) all.push_back(hosted[i]);
     return all;
@@ -85,6 +79,10 @@ const Destination kDest[] = {
 { "f5",           "Facility F5",              "Fifth floor of the canonical tower.",                                   "canonlevel",        DestGroup::Facility,   true  },
 { "f6",           "Facility F6",              "Sixth floor of the canonical tower.",                                   "canonlevel",        DestGroup::Facility,   true  },
 { "f7",           "Facility F7 - Executive",  "The top floor. The executive landing.",                                 "canonlevel",        DestGroup::Facility,   true  },
+// [P0-1 EFLZ-GP-1B] The SEAM-2 "Entrance" hallway on the F1 footprint edge — the
+// tower's one real way in off the apron, and the ESCAPED-branch rescuer's arrival
+// spawn (specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §2: the handoff's dest key).
+{ "entrance",     "Facility Entrance",        "The F1 entrance hall - the tower's one real way in, off the apron.",    "canonlevel",        DestGroup::Facility,   true  },
 
 { "granite",      "The Descent - Granite",    "Strata offshoot pocket at -55 m.",                                      "strata",            DestGroup::Underworld, true  },
 { "basalt",       "The Descent - Basalt",     "Strata offshoot pocket at -95 m.",                                      "strata",            DestGroup::Underworld, true  },
@@ -131,6 +129,7 @@ const Destination kDest[] = {
 { "ragdoll",      "Ragdoll Bench",            "Physics test bench: ragdolls.",                                         "ragdoll",           DestGroup::DevWorld,   false },
 { "fromdoc",      "LevelDoc (live edit)",     "Boot straight into a LevelDoc JSON - the editor loop.",                 "fromdoc",           DestGroup::DevWorld,   false },
 { "spacestation", "The Deep-Space Station",   "Solar+fusion station far from Earth: hangar, corridor, stargate ring.", "spacestation",      DestGroup::DevWorld,   false },
+{ "gallery",      "Character Gallery",        "The cast on pedestals - walk up, press E to cycle every clip.",         "gallery",           DestGroup::DevWorld,   false },
 };
 constexpr uint32_t kDestCount = (uint32_t)(sizeof(kDest) / sizeof(kDest[0]));
 
@@ -284,8 +283,9 @@ bool dispatchedFlagCovered(const char* flag) {
 bool runDestinationsSelfTest() {
     dt_pass = dt_fail = 0;
 
-    // The dispatchable-world set, straight off the live route table (plus the
-    // 7 default-host names). X3_DEST_TEST_INJECT=<flag> appends a pretend
+    // The dispatchable-world set, straight off BOTH live dispatch exports
+    // (world_hosts' route table + app_run's default-host world modes).
+    // X3_DEST_TEST_INJECT=<flag> appends a pretend
     // dispatch-only world — a manual negative control: set it to any junk name
     // and D7 must go RED, proving this gate actually bites on drift.
     std::vector<const char*> dispatched = dispatchedFlagUnion();
@@ -447,6 +447,34 @@ bool runDestinationsSelfTest() {
     //       fake, D7 is a rubber stamp and the whole gate is theatre.
     dtCheck(!dispatchedFlagCovered("zz-fake-drifted-world"),
             "D10 negative control: a fake unregistered dispatch flag is CAUGHT");
+
+    // D11 — THE PRODUCT FLOOR (spec §3.2): the known product worlds must each be
+    //       dispatched AND carry a registry row naming that flag. D2/D7 keep the
+    //       two lists equal, but only THIS check notices if a product world is
+    //       dropped from BOTH sides at once (host deleted + row deleted is a
+    //       consistent lie — for these six it must be a loud one).
+    {
+        const char* const kProductFloor[] = {
+            "canonlevel",   // EFLZ main
+            "intro",        // EFLZ cold-open entry
+            "surface",      // Escaped landing
+            "rifthub",      // the hub
+            "echotropolis", // Echo Harbor
+            "space",        // space-combat slice
+        };
+        bool ok = true;
+        for (const char* f : kProductFloor) {
+            bool hasRow = false;
+            for (uint32_t i = 0; i < kDestCount; ++i)
+                if (std::strcmp(kDest[i].worldFlag, f) == 0) { hasRow = true; break; }
+            if (!hasRow || !isDispatched(dispatched, f)) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   product world '") + f +
+                             (hasRow ? "' is not dispatched" : "' has no registry row"));
+            }
+        }
+        dtCheck(ok, "D11 product floor: the six product worlds are listed AND dispatched");
+    }
 
     x3::logInfo("destinations: " + std::to_string(dt_pass) + "/" +
                 std::to_string(dt_pass + dt_fail) + " passed");

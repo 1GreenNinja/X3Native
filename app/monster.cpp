@@ -989,6 +989,48 @@ bool MonsterSystem::probeLos(x3::phys::IPhysicsWorld& physics,
 }
 
 // ---------------------------------------------------------------------------
+// STAIR ROUTE follow (feat/stair-nav). Planar steer toward the next authored
+// waypoint at `speed`; Y is lerped along the current segment in proportion to the
+// planar step, so between a flight's bottom and top nosing-line points the feet
+// track the stair surface (exact at every tread center, +- half a riser between).
+// No wall probe: the chain is authored down the clear lane centers and landings.
+// Returns true iff the route drove this frame (the caller skips state movement).
+// ---------------------------------------------------------------------------
+bool MonsterSystem::updateStairRoute(float dt, x3::phys::IPhysicsWorld& physics,
+                                     float speed) {
+    if (!m_stairActive) return false;
+    if (m_stairIdx >= m_stairWps.size() || speed <= 0.0f || !m_body.valid()) {
+        clearStairRoute();
+        return false;
+    }
+    const x3::phys::Vec3& wp = m_stairWps[m_stairIdx];
+    const float dx = wp.x - m_pos.x, dz = wp.z - m_pos.z;
+    const float d = std::sqrt(dx * dx + dz * dz);
+    constexpr float kArrive = 0.35f;
+    if (d <= kArrive) {
+        m_pos.y = wp.y;                      // land the segment's Y exactly
+        ++m_stairIdx;
+        if (m_stairIdx >= m_stairWps.size()) {
+            m_stairArrivedFloor = m_stairTargetFloor;   // host re-tags the room
+            clearStairRoute();
+            physics.setBodyPosition(m_body,
+                x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z });
+            return true;                     // consumed this frame; AI resumes next
+        }
+    } else {
+        const float step = std::min(speed * dt, d);
+        const float ux = dx / d, uz = dz / d;
+        m_pos.x += ux * step;
+        m_pos.z += uz * step;
+        m_pos.y += (wp.y - m_pos.y) * (step / d);       // linear along the segment
+        m_yawTarget = headingToFace(ux, uz);            // face where we're going
+        physics.setBodyPosition(m_body,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z });
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Per-frame: decay hit-flash; run the death pop; else face + chase the player.
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -1358,6 +1400,14 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         }
     }
 
+    // ---- STAIR ROUTE (feat/stair-nav): an assigned inter-floor route OVERRIDES
+    // the state movement — the agent commutes along the stairwell's authored
+    // waypoint chain (planar steer + segment-lerped Y so feet ride the treads).
+    // The decision machine above keeps running (an attacked climber still flinches
+    // and the attack block below still fires when the player is in reach); only
+    // the movement source changes while the route is live. ----
+    const bool stairDrove = updateStairRoute(dt, physics, chaseSpeed);
+    if (!stairDrove)
     switch (m_ai) {
         case AiState::Advance: {
             // Move toward + FACE the player. With a nav grid, steer along the A* path
@@ -2494,6 +2544,55 @@ void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phy
 
     for (auto& m : m_monsters)
         m->update(dt, scene, physics, playerPos, eye, target, fx, onPhase, allies);
+
+    // HARD anti-overlap floor (playtest-fix): after everyone has moved, resolve any
+    // residual body overlap so no two live members occupy the same cell. Separation
+    // steering shapes where they WANT to be; this GUARANTEES they can't clip through
+    // each other even when the equilibrium is briefly overrun (a fresh spawn, a
+    // corner pinch, a knockback stack). Cheap positional correction, no physics query.
+    deOverlapMembers(physics);
+}
+
+// Pairwise planar de-overlap over the live members. For any pair whose centers are
+// closer than the sum of their body radii, push them apart along the connecting
+// vector — split evenly, clamped per-frame so it eases apart rather than popping.
+// O(N^2) over a squad (N is small); no heap alloc, no physics ray. This is the
+// engine-agnostic hard guarantee behind kAiSeparation* steering.
+void MonsterManager::deOverlapMembers(x3::phys::IPhysicsWorld& physics) {
+    // Max shove per agent per frame (m): keeps a deep overlap from snapping across
+    // the map in one tick; it resolves over a few frames instead. Also damps jitter.
+    constexpr float kMaxPush = 0.10f;
+    const uint32_t N = (uint32_t)m_monsters.size();
+    for (uint32_t i = 0; i < N; ++i) {
+        MonsterSystem* a = m_monsters[i].get();
+        if (!a->alive() || !a->body().valid()) continue;
+        const float ra = a->bodyRadiusXZ();
+        for (uint32_t j = i + 1; j < N; ++j) {
+            MonsterSystem* b = m_monsters[j].get();
+            if (!b->alive() || !b->body().valid()) continue;
+            const x3::phys::Vec3 pa = a->pos(), pb = b->pos();
+            // feat/stair-nav: agents on DIFFERENT floors (or stacked on the stair
+            // run) never overlap bodily — a planar push across a floor slab would
+            // shove a climber off the flight / an upstairs guard off its beat.
+            if (std::fabs(pb.y - pa.y) > 1.8f) continue;
+            float dx = pb.x - pa.x, dz = pb.z - pa.z;
+            float d2 = dx * dx + dz * dz;
+            const float minD = ra + b->bodyRadiusXZ();
+            if (d2 >= minD * minD) continue;                 // not overlapping
+            float d = std::sqrt(d2);
+            if (d < 1e-4f) {                                 // exactly co-located
+                // Deterministic split axis from the entity ids so both agents agree
+                // on opposite directions (no RNG divergence between the two).
+                const float ang = 0.61803399f * (float)(a->entity() + b->entity());
+                dx = std::cos(ang); dz = std::sin(ang); d = 1.0f;
+            }
+            float push = 0.5f * (minD - d);                  // each moves half the gap
+            if (push > kMaxPush) push = kMaxPush;
+            const float ux = dx / d, uz = dz / d;
+            a->nudgePlanar(-ux * push, -uz * push, physics);
+            b->nudgePlanar( ux * push,  uz * push, physics);
+        }
+    }
 }
 
 void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,

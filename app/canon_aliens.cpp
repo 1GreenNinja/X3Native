@@ -350,6 +350,98 @@ bool runCanonAliensSelfTest() {
               "T8 every canon-alien row has its canon GLB wired + present on disk");
     }
 
+    // ---- T9: SHOOTABLE — every HOSTILE canon alien takes player fire. Regression
+    // guard for the "some monsters cannot be shot" playtest bug: the planet aliens
+    // ship with freshly Meshy-rigged GLBs (new authored heights) AND the app spawns
+    // them into their OWN MonsterManager (app_run canonAliens). This test proves two
+    // things at once: (a) the Enemy-layer hit body derived for each new GLB actually
+    // covers the torso (a shot at chest height REGISTERS), and (b) routing a shot
+    // through the manager that OWNS the alien lands damage. The shipped bug was (b):
+    // canonAliens was left out of app_run's fire-dispatch chain, so shots passed
+    // through. Fire each hostile row via its manager and assert HP drops. The allied
+    // Nordic Steward is EXCLUDED (startAllied — never meant to be shot). ----
+    {
+        using HeadlessDevice = x3::game::HeadlessRenderDevice;
+        HeadlessDevice fdev;
+        const CanonAlien hostiles[] = {
+            CanonAlien::SaurianSoldier, CanonAlien::GreyTasked,
+            CanonAlien::MantisArbiter,  CanonAlien::SaurianWarlord,
+        };
+        int shot = 0;
+        for (CanonAlien ca : hostiles) {
+            const CanonAlienDef& d = canonAlienDef(ca);
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init();
+            Scene scene;
+            MonsterManager mgr;
+            const uint32_t idx = mgr.spawn(scene, fdev, *w, riggedGlbRoot(),
+                                           x3::phys::Vec3{ 0.0f, 0.0f, 0.0f }, d.tuning);
+            const int hp0 = mgr.at(idx).maxHp();
+            // Eye 3 m in front (toward the alien along +Z) at torso height. The ground
+            // hit box spans feet-0.4 .. feet + ~2*scale, so a chest-height ray hits.
+            const x3::phys::Vec3 eye{ 0.0f, 1.0f, -3.0f };
+            const x3::phys::Vec3 dir{ 0.0f, 0.0f, 1.0f };
+            FireResult r = mgr.fire(eye, dir, scene, *w, 30, x3::DamageType::Kinetic);
+            const bool damaged = r.hitMonster && mgr.at(idx).hp() < hp0;
+            if (damaged) ++shot;
+            else x3::logError(std::string("[canonaliens-test] NOT SHOOTABLE: ") + d.name +
+                              " (hitMonster=" + std::to_string(r.hitMonster) +
+                              " hp " + std::to_string(mgr.at(idx).hp()) + "/" +
+                              std::to_string(hp0) + ")");
+            mgr.shutdown();
+            w->shutdown();
+        }
+        check(shot == (int)(sizeof(hostiles) / sizeof(hostiles[0])),
+              "T9 every HOSTILE canon alien takes player fire (chest-height ray drops HP)");
+    }
+
+    // ---- T10: DISPATCH root-cause reproduction. The shipped bug was NOT a bad hit
+    // body (T9 proves the body is fine) — it was that the player-fire dispatch chain
+    // OMITTED the canonAliens manager. MonsterManager::fire() casts ONE Enemy-layer
+    // ray and only damages a body it OWNS; a hit on another manager's Enemy body is
+    // kept as a mere geometry hit (hitMonster=false, no damage) — so an alien routed
+    // to the WRONG manager silently absorbs the shot. This test reproduces exactly
+    // that: fire through a manager that does NOT own the alien (a decoy monster sits
+    // behind it, so the manager's ray still returns the alien as the nearest Enemy
+    // body) -> the alien takes NO damage. Then fire through the alien's OWN manager
+    // -> it DOES. That is the before/after of the app_run.cpp routing fix. ----
+    {
+        using HeadlessDevice = x3::game::HeadlessRenderDevice;
+        HeadlessDevice fdev;
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        Scene scene;
+        MonsterManager alienMgr;   // owns the canon alien (app_run `canonAliens`)
+        MonsterManager decoyMgr;   // a DIFFERENT group that receives the shot instead
+
+        const CanonAlienDef& d = canonAlienDef(CanonAlien::MantisArbiter);
+        const uint32_t ai = alienMgr.spawn(scene, fdev, *w, riggedGlbRoot(),
+                                           x3::phys::Vec3{ 0.0f, 0.0f, 0.0f }, d.tuning);
+        // Decoy sits BEHIND the alien (further along +Z) so the shared ray's nearest
+        // Enemy body is still the alien — the decoy manager "sees" a foreign hit.
+        decoyMgr.spawn(scene, fdev, *w, riggedGlbRoot(),
+                       x3::phys::Vec3{ 0.0f, 0.0f, 6.0f },
+                       tuningFor(EnemyType::DominionTrooper));
+
+        const x3::phys::Vec3 eye{ 0.0f, 1.0f, -3.0f };
+        const x3::phys::Vec3 dir{ 0.0f, 0.0f, 1.0f };
+        const int hpFull = alienMgr.at(ai).maxHp();
+
+        // BUG path: shot routed only to the decoy manager -> alien absorbs, no damage.
+        FireResult bug = decoyMgr.fire(eye, dir, scene, *w, 40, x3::DamageType::Kinetic);
+        const bool bugAbsorbed = !bug.hitMonster && alienMgr.at(ai).hp() == hpFull;
+
+        // FIX path: shot routed to the alien's OWN manager -> damage lands.
+        FireResult fix = alienMgr.fire(eye, dir, scene, *w, 40, x3::DamageType::Kinetic);
+        const bool fixDamages = fix.hitMonster && alienMgr.at(ai).hp() < hpFull;
+
+        check(bugAbsorbed && fixDamages,
+              "T10 dispatch: wrong-manager shot is absorbed (no dmg); owning-manager shot damages");
+        alienMgr.shutdown();
+        decoyMgr.shutdown();
+        w->shutdown();
+    }
+
     x3::logInfo(std::string("canonaliens: ") + std::to_string(g_pass) + "/" +
                 std::to_string(g_pass + g_fail) + " passed");
     return g_fail == 0;

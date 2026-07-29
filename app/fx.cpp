@@ -148,8 +148,9 @@ MuzzleStyle muzzleStyleFor(WeaponFxKind k) {
             return { 6.0f, 3.0f, 0.7f,  7.0f, 4.0f, 1.2f, 18, 0.95f,1.25f, 2.6f, 0.30f };
         case WeaponFxKind::Plasma:    // BLUE energy: soft round flash, no metal sparks
             return { 0.8f, 2.4f, 6.0f,  1.2f, 3.0f, 7.0f,  8, 1.2f, 0.85f, 1.4f, 0.40f };
-        case WeaponFxKind::Lightning: // electric crackle: white-cyan, twitchy fast
-            return { 3.5f, 6.0f, 6.5f,  4.0f, 6.5f, 7.0f, 14, 0.7f, 1.5f,  3.2f, 0.26f };
+        case WeaponFxKind::Lightning: // electric crackle: LIGHT BLUE, twitchy fast (blue-forward,
+                                      // fewer/smaller sparks so the muzzle doesn't read as white dots)
+            return { 1.8f, 4.0f, 7.2f,  2.0f, 4.5f, 7.5f, 9, 0.55f, 1.5f,  3.2f, 0.26f };
         case WeaponFxKind::Pistol:
         case WeaponFxKind::Default:
         default:                      // original hot orange-white ballistic look
@@ -216,8 +217,10 @@ ImpactStyle impactStyleFor(WeaponFxKind k) {
     switch (k) {
         case WeaponFxKind::Plasma:    // blue energy splash, no metal dust
             return { 0.7f, 2.2f, 6.0f, 16, 1.25f, false };
-        case WeaponFxKind::Lightning: // electric: few tiny fast sparks (arcs carry it)
-            return { 3.0f, 5.5f, 6.5f, 6, 0.4f,  false };
+        case WeaponFxKind::Lightning: // electric: a FEW tiny fast LIGHT-BLUE specks (arcs carry the
+                                      // read). Dimmed + fewer so their additive centers don't bloom to
+                                      // white dots at the strike (Tim: "the white dots — eliminate that").
+            return { 0.7f, 1.8f, 4.2f, 4, 0.34f, false };
         case WeaponFxKind::Shotgun:   // wide hot spark spray + dust
             return { 4.5f, 2.6f, 0.8f, 20, 1.2f,  true  };
         case WeaponFxKind::Chaingun:  // busy hot sparks + dust
@@ -275,21 +278,13 @@ void CombatFx::spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& norm
             spawnParticle(p);
         }
     }
-    // LIGHTNING impact = electric VIOLENCE, not white puffballs (Tim): a tight
-    // blue-white flash + a whipping ring of short crackling arc tendrils crawling
-    // off the hit (drawn in draw() as re-rolled mini zigzags). The round sparks are
-    // already cut to a few tiny fast specks above.
+    // LIGHTNING impact = electric SIZZLE, not a white dot (Tim, 2026-07-26: "the white
+    // dots — eliminate that .. add more sizzle"). The bright additive flash CORE that
+    // used to sit on the strike WAS the white blob — REMOVED. The electric read now
+    // comes entirely from the whipping ring of short crackling arc tendrils (crawling
+    // off the hit as re-rolled mini zigzags) plus the few tiny fast blue specks above:
+    // a small electric impact, no white cloud.
     if (kind == WeaponFxKind::Lightning) {
-        Particle f;                       // one tight blue-white flash core
-        f.pos = pos;
-        f.life = f.maxLife = 0.08f;
-        // SMALL + brief. At 0.30 m this additive sprite was a white BLOB sitting on the
-        // strike — the exact "snowball" the arc tendrils exist to replace. It should be
-        // a spark of light at the contact point, not the subject of the frame.
-        f.size0 = 0.13f; f.size1 = 0.02f;
-        f.r = 1.8f; f.g = 2.5f; f.b = 3.8f; f.a0 = 1.0f;
-        f.gravity = 0.0f; f.drag = 0.0f; f.additive = true;
-        spawnParticle(f);
         spawnArcs(pos, nrm);
     }
     // Persistent scorch mark on the surface.
@@ -307,7 +302,7 @@ void CombatFx::spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal
                                                     : x3::phys::Vec3{ 1, 0, 0 };
     x3::phys::Vec3 u = normalize(cross(ref, nrm));
     x3::phys::Vec3 v = cross(nrm, u);
-    const int n = 6 + (int)(frand() * 4.0f);   // 6-9 tendrils
+    const int n = 9 + (int)(frand() * 5.0f);   // 9-13 tendrils (SIZZLE pass: more crackle)
     for (int i = 0; i < n; ++i) {
         Arc& a = m_arcs[m_nextArc];
         m_nextArc = (m_nextArc + 1) % kMaxArcs;
@@ -339,7 +334,7 @@ void CombatFx::boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, Weap
     switch (kind) {
         case WeaponFxKind::Plasma:    cr = 0.5f; cg = 1.9f; cb = 6.0f; coreSize = 0.16f; break; // blue-cyan
         case WeaponFxKind::Rocket:    cr = 6.0f; cg = 2.2f; cb = 0.5f; coreSize = 0.20f; break; // orange fire
-        case WeaponFxKind::Lightning: cr = 2.0f; cg = 3.0f; cb = 4.0f; coreSize = 0.12f; break; // white-blue
+        case WeaponFxKind::Lightning: cr = 0.9f; cg = 2.4f; cb = 5.0f; coreSize = 0.12f; break; // light electric blue
         default:                      cr = 5.0f; cg = 3.4f; cb = 1.0f; coreSize = 0.13f; break; // hot yellow
     }
     // Hot core at the bolt position (near-static: it just marks where the bolt is
@@ -635,6 +630,84 @@ void CombatFx::spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& 
     }
 }
 
+// ---------------------------------------------------------------------------
+// spawnShipDeathBlast: a MASSIVE ship-disintegration burst (space power fantasy).
+// Distinctly bigger than a barrel/infantry pop: a huge white-hot flash that blooms
+// for a couple frames, a dense hot fireball, and an expanding shockwave shell of
+// fast bright specks flung radially outward. Zero-gravity. See fx.h.
+// ---------------------------------------------------------------------------
+void CombatFx::spawnShipDeathBlast(const x3::phys::Vec3& center, float radius) {
+    const float r = (radius > 1.0f) ? radius : 1.0f;
+    // (1) WHITE-HOT FLASH: a few big, near-stationary billboards that flash huge
+    //     then collapse — the bloom-blowing heart of the blast (reads for ~2-3
+    //     frames as a searing white ball before the fireball colours take over).
+    for (int i = 0; i < 4; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * r * 0.15f,
+                                center.y + frandSym() * r * 0.15f,
+                                center.z + frandSym() * r * 0.15f };
+        p.vel = x3::phys::Vec3{ frandSym() * 1.5f, frandSym() * 1.5f, frandSym() * 1.5f };
+        p.life = p.maxLife = 0.30f + frand() * 0.10f;
+        p.size0 = (1.0f + frand() * 0.5f) * r;   // huge searing ball
+        p.size1 = 0.10f * r;
+        p.r = 9.0f; p.g = 7.5f; p.b = 5.5f;      // white-hot (HDR -> hard bloom)
+        p.a0 = 1.0f; p.gravity = 0.0f; p.drag = 3.0f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (2) FIREBALL CORE: a dense ball of hot additive orange/yellow puffs, scaled
+    //     up hard vs spawnExplosion (more, bigger, hotter) so the fireball fills
+    //     the ship's silhouette instead of peppering it.
+    const int nCore = 40;
+    for (int i = 0; i < nCore; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * r * 0.5f,
+                                center.y + frandSym() * r * 0.5f,
+                                center.z + frandSym() * r * 0.5f };
+        const float speed = (2.5f + frand() * 5.0f) * r;
+        p.vel = x3::phys::Vec3{ frandSym() * speed, frandSym() * speed, frandSym() * speed };
+        p.life = p.maxLife = 0.35f + frand() * 0.40f;
+        p.size0 = (0.30f + frand() * 0.25f) * r;   // big hot puff
+        p.size1 = 0.05f * r;
+        p.r = 6.0f; p.g = 2.6f + frand() * 1.2f; p.b = 0.5f;   // hot orange->yellow
+        p.a0 = 1.0f; p.gravity = 0.0f; p.drag = 1.8f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (3) SHOCKWAVE SHELL: fast, bright specks flung radially outward at ~uniform
+    //     speed so they read as an expanding blast ring/sphere sweeping past the
+    //     fireball, then wink out. Thin + short-lived (the leading edge of the blast).
+    const int nShock = 56;
+    const float shockSpeed = 13.0f * r;   // ring lingers near the hull (was 22 = gone in a frame)
+    for (int i = 0; i < nShock; ++i) {
+        float dx = frandSym(), dy = frandSym(), dz = frandSym();
+        float dl = std::sqrt(dx*dx + dy*dy + dz*dz);
+        if (dl < 1e-4f) { dx = 1.0f; dy = 0.0f; dz = 0.0f; dl = 1.0f; }
+        dx /= dl; dy /= dl; dz /= dl;
+        Particle p;
+        p.pos = center;
+        const float sp = shockSpeed * (0.85f + frand() * 0.30f);
+        p.vel = x3::phys::Vec3{ dx * sp, dy * sp, dz * sp };
+        p.life = p.maxLife = 0.28f + frand() * 0.14f;
+        p.size0 = 0.10f * r; p.size1 = 0.02f * r;
+        p.r = 5.5f; p.g = 3.2f; p.b = 1.0f;      // hot leading-edge spark
+        p.a0 = 1.0f; p.gravity = 0.0f; p.drag = 0.8f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (4) Dark rolling SMOKE so the blast leaves a believable plume in its wake.
+    const int nSmoke = 14;
+    for (int i = 0; i < nSmoke; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * r * 0.5f,
+                                center.y + frandSym() * r * 0.5f,
+                                center.z + frandSym() * r * 0.5f };
+        p.vel = x3::phys::Vec3{ frandSym() * 2.0f, frandSym() * 2.0f, frandSym() * 2.0f };
+        p.life = p.maxLife = 1.2f + frand() * 1.4f;
+        p.size0 = 0.5f * r; p.size1 = 2.0f * r;   // grows + dissipates
+        p.r = 0.09f; p.g = 0.08f; p.b = 0.07f;    // sooty dark smoke
+        p.a0 = 0.5f; p.gravity = 0.0f; p.drag = 0.7f; p.additive = false;
+        spawnParticle(p);
+    }
+}
+
 void CombatFx::addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal) {
     Decal& d = m_decalsRing[m_nextDecal];
     m_nextDecal = (m_nextDecal + 1) % kMaxDecals;
@@ -875,7 +948,7 @@ void CombatFx::drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::Fr
         float model[16];
         const float gw = kLightningGlowThick * (coreThick / kLightningCoreThick);
         composeTRS3(model, w, nrm, dir, gw, gw * 0.30f, len, mid);
-        const float emis[4] = { 0.10f, 0.38f, 1.00f, 0.80f * brightness };  // blue corona
+        const float emis[4] = { 0.14f, 0.52f, 1.25f, 0.85f * brightness };  // LIGHT ELECTRIC BLUE corona
         device.drawMeshEmissive(frame, m_box, x3::rhi::TextureHandle{}, blackBase, emis, model);
     }
     // CORE ribbon: a THIN white-hot thread — the only genuinely hot surface, and ~4x
@@ -886,7 +959,11 @@ void CombatFx::drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::Fr
     {
         float model[16];
         composeTRS3(model, w, nrm, dir, coreThick, coreThick * 0.5f, len, mid);
-        const float emis[4] = { 1.3f, 1.9f, 3.0f, 2.5f * brightness };      // white-blue core
+        // LIGHT ELECTRIC BLUE core (Tim 2026-07-26, headline: "another one, a light
+        // bluish color!!!"). Was {1.3,1.9,3.0} which, at 2.5x, saturated toward WHITE
+        // at the center. Red pulled DOWN and blue pushed UP so the hue stays a bright
+        // blue-forward arc even where it blooms hot — reads as electric blue, not white.
+        const float emis[4] = { 0.55f, 1.5f, 3.7f, 2.6f * brightness };     // light electric blue core
         device.drawMeshEmissive(frame, m_box, x3::rhi::TextureHandle{}, blackBase, emis, model);
     }
 }

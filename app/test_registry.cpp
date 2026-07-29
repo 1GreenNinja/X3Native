@@ -448,6 +448,10 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;
     }
+    if (tf.testStairNav) {
+        x3::logInfo("running the STAIR-NAV self-test (S1-S5: chain vs geometry, 4.5 seal, F1->F3 climb)...");
+        return x3::game::runStairNavSelfTest() ? 0 : 1;
+    }
     if (tf.testGoldenPath) {
         x3::logInfo("running the ENDGAME SPINE self-test (G1-G9: tower -> clone gate -> Sarah -> Helipad WIN)...");
         return x3::game::runGoldenPathSelfTest() ? 0 : 1;
@@ -565,6 +569,13 @@ int dispatchTests(const TestFlags& tf) {
                     "facility, player outside + armed, Sarah rescue target, objectives)...");
         return x3::apphost::runSurfaceStartSelfTest() ? 0 : 1;
     }
+    if (tf.testSurfaceHandoff) {
+        x3::logInfo("running [P0-1] SURFACE->FACILITY HANDOFF self-test (EFLZ-GP-1B: "
+                    "breach [E]-interact trigger + canonlevel@entrance request + "
+                    "Entrance-room spawn vs live tower data + armed arrival + "
+                    "escaped-flags import, with shot_down negative controls)...");
+        return x3::apphost::runSurfaceHandoffSelfTest() ? 0 : 1;
+    }
     if (tf.testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
         return x3::game::runPhase2aSelfTest() ? 0 : 1;
@@ -610,26 +621,46 @@ int dispatchTests(const TestFlags& tf) {
         int idle = sk.findClip({ "idle" });
         int walk = sk.findClip({ "walk" });
         int run  = sk.findClip({ "run" });
+        int attack = sk.findClip({ "attack", "strike", "bite" });
         x3::logInfo("--list-clips: findClip idle=" + std::to_string(idle) +
-                    " walk=" + std::to_string(walk) + " run=" + std::to_string(run));
+                    " walk=" + std::to_string(walk) + " run=" + std::to_string(run) +
+                    " attack=" + std::to_string(attack));
         bool ok = sk.clipCount() > 1 && walk >= 0 && run >= 0;
-        // Confirm Walk is a live clip: palette differs between t=0 and t=0.5,
-        // and (when an idle clip exists) Walk@0 differs from Idle@0.
-        if (walk >= 0) {
-            std::vector<float> w0, w5, i0;
-            sk.computePalette(model, (uint32_t)walk, 0.0f, w0);
-            sk.computePalette(model, (uint32_t)walk, 0.5f, w5);
-            float dWalk = 0.0f;
-            for (size_t i = 0; i < w0.size() && i < w5.size(); ++i)
-                dWalk = std::max(dWalk, std::fabs(w0[i] - w5[i]));
-            x3::logInfo("--list-clips: Walk palette max-delta t0->t0.5 = " + std::to_string(dWalk));
-            ok = ok && dWalk > 1e-3f;
-            if (idle >= 0) {
-                sk.computePalette(model, (uint32_t)idle, 0.0f, i0);
+        // Machine-prove the gait clips: each present clip (Walk, Run, and
+        // Attack when the rig ships one) must be LIVE -- its palette changes
+        // over time -- and DISTINCT from Idle@0 (a slid/tilted copy of Idle
+        // would pass a mere name check; the CyberWolf shipped exactly that
+        // failure mode for months on a single Root bone).
+        std::vector<float> i0;
+        if (idle >= 0) sk.computePalette(model, (uint32_t)idle, 0.0f, i0);
+        struct ClipCheck { const char* name; int clip; bool required; };
+        const ClipCheck checks[] = {
+            { "Walk", walk, true }, { "Run", run, true }, { "Attack", attack, false },
+        };
+        for (const ClipCheck& c : checks) {
+            if (c.clip < 0) {
+                if (c.required) ok = false;
+                continue;
+            }
+            const float dur = model.animations[(size_t)c.clip].duration;
+            const float tMid = std::max(0.05f, 0.4f * dur);
+            std::vector<float> p0, pMid;
+            sk.computePalette(model, (uint32_t)c.clip, 0.0f, p0);
+            sk.computePalette(model, (uint32_t)c.clip, tMid, pMid);
+            float dLive = 0.0f;
+            for (size_t i = 0; i < p0.size() && i < pMid.size(); ++i)
+                dLive = std::max(dLive, std::fabs(p0[i] - pMid[i]));
+            x3::logInfo(std::string("--list-clips: ") + c.name +
+                        " palette max-delta t0->tMid = " + std::to_string(dLive));
+            ok = ok && dLive > 1e-3f;
+            if (idle >= 0 && c.clip != idle) {
+                // compare the clip's MID pose vs Idle@0: one-shot clips
+                // (Attack) legitimately START at the neutral/idle pose.
                 float dVsIdle = 0.0f;
-                for (size_t i = 0; i < w0.size() && i < i0.size(); ++i)
-                    dVsIdle = std::max(dVsIdle, std::fabs(w0[i] - i0[i]));
-                x3::logInfo("--list-clips: Walk@0 vs Idle@0 max-delta = " + std::to_string(dVsIdle));
+                for (size_t i = 0; i < pMid.size() && i < i0.size(); ++i)
+                    dVsIdle = std::max(dVsIdle, std::fabs(pMid[i] - i0[i]));
+                x3::logInfo(std::string("--list-clips: ") + c.name +
+                            "@mid vs Idle@0 max-delta = " + std::to_string(dVsIdle));
                 ok = ok && dVsIdle > 1e-3f;
             }
         }
@@ -700,6 +731,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testClone) {
         x3::logInfo("running THE CLONE Act-1 finale boss self-test (3-phase HP-gated machine: SEPARATION -> NEURAL COLLAR -> MUTATED HYBRID, the collar destroy minigame, and the \"Sarah freed\" / \"Clone dead\" integration events)...");
         return x3::game::runCloneBossSelfTest() ? 0 : 1;
+    }
+    if (tf.testGallery) {
+        x3::logInfo("running CHARACTER GALLERY (--world gallery) cast + clip-cycle self-test...");
+        return x3::apphost::runGallerySelfTest() ? 0 : 1;
     }
     if (tf.testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "

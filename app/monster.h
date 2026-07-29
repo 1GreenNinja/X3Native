@@ -336,8 +336,14 @@ constexpr float kAiTurnRate        = 7.0f;
 // move direction at kAiSeparationWeight strength (capped so it nudges, never
 // overrides, the state's intent). Behavioural tuning — the self-tests assert state
 // + facing, not exact spacing, so this is safe.
-constexpr float kAiSeparationRadius = 2.2f;  // allies closer than this push us apart (m)
-constexpr float kAiSeparationWeight = 0.9f;  // how hard separation steers vs the state dir
+// Playtest polish 2026-07 (Tim: "characters must NEVER want to crowd"): the earlier
+// values (2.2m / 0.9) were too weak — a chasing squad still collapsed onto one tile.
+// Widened the feel-radius (they start spreading sooner) and roughly doubled the push
+// so a group forms a loose RING/arc around the target at ~1.2-1.6m spacing instead of
+// stacking. Backed by the HARD de-overlap pass (deOverlapMembers) so overlap is
+// impossible even if the steering equilibrium is briefly overrun.
+constexpr float kAiSeparationRadius = 3.2f;  // allies closer than this push us apart (m)
+constexpr float kAiSeparationWeight = 1.6f;  // how hard separation steers vs the state dir
 // Per-instance decision cadence + jitter so enemies don't all switch in lockstep.
 constexpr float kAiDecisionPeriod  = 0.30f;  // re-evaluate state every ~0.3 s
 constexpr float kAiDecisionJitter  = 0.15f;  // +/- randomization on the cadence (s)
@@ -741,6 +747,16 @@ public:
     void setCalmLoop(const char* fuzzyName) {
         if (m_animActive) m_calmLoopClip = m_skinner.findClip({ fuzzyName });
     }
+    // Gallery/dev: pin the calm loop to an EXACT clip index (setCalmLoop is a
+    // fuzzy substring find, which can't distinguish "Idle" from "IdleAlt").
+    // Restarts the loop at t=0 so a cycle always shows the clip from its top.
+    void setCalmLoopClip(int clip) {
+        if (m_animActive && clip >= 0 && (uint32_t)clip < m_skinner.clipCount()) {
+            m_calmLoopClip = clip; m_calmLoopT = 0.0f;
+        }
+    }
+    // The pinned calm-loop clip index, or -1 (gallery clip-cycle HUD readback).
+    int  calmLoopClip() const { return m_calmLoopClip; }
     bool calmLoopActive() const { return m_calmLoopClip >= 0; }
 
     // ---- CLIP-SLOT OVERRIDE (Clone boss). The locomotion/combat clip slots are
@@ -911,6 +927,44 @@ public:
     // The number of waypoints in the current path (0 = none / direct). Diagnostics.
     uint32_t pathWaypointCount() const { return m_follower.waypointCount(); }
 
+    // ---- STAIR ROUTE (feat/stair-nav): inter-floor commute over an authored
+    // waypoint chain (the FacilityStairwell's nav chain — see stairwell.h). While
+    // a route is active it OVERRIDES the state movement each frame: the agent
+    // steers planar toward the next waypoint at chase speed and its Y is LERPED
+    // along the current segment, so feet ride the stair nosing line (+- half a
+    // riser) instead of staying floor-locked. The wall probe is skipped while on
+    // the route (the chain is authored down the clear lane centers). On reaching
+    // the final waypoint the route clears, the arrival floor latches for the host
+    // (takeStairArrivalFloor) and normal per-floor AI resumes. ----
+    void setStairRoute(const std::vector<x3::phys::Vec3>& wps, int targetFloor) {
+        m_stairWps = wps; m_stairIdx = 0;
+        m_stairActive = m_stairWps.size() >= 2;
+        m_stairTargetFloor = m_stairActive ? targetFloor : -1;
+    }
+    void clearStairRoute() {
+        m_stairWps.clear(); m_stairIdx = 0; m_stairActive = false;
+        m_stairTargetFloor = -1;
+    }
+    bool stairRouteActive() const { return m_stairActive; }
+    int  stairTargetFloor() const { return m_stairTargetFloor; }
+    // The floor a finished route delivered this agent to (-1 = none). Latched at
+    // route completion, cleared by this read — the host re-tags the entity's room.
+    int takeStairArrivalFloor() {
+        const int f = m_stairArrivedFloor; m_stairArrivedFloor = -1; return f;
+    }
+    // The stair segment currently walked (a = departed waypoint, b = steered-to).
+    // False before the first waypoint / with no route. Diagnostics + the
+    // --test-stairnav follow assertion (agent Y vs the chain's segment lerp).
+    bool stairSegment(x3::phys::Vec3& a, x3::phys::Vec3& b) const {
+        if (!m_stairActive || m_stairIdx == 0 || m_stairIdx >= m_stairWps.size())
+            return false;
+        a = m_stairWps[m_stairIdx - 1]; b = m_stairWps[m_stairIdx];
+        return true;
+    }
+    // Hovering flyers are excluded from stair routing by the host (they hold their
+    // spawn-floor hover today — a flight lane is a follow-up).
+    bool flyer() const { return m_flyer; }
+
     // The monster's entity id (kNoLink until built) and physics body.
     uint32_t entity() const { return m_entity; }
     x3::phys::BodyId body() const { return m_body; }
@@ -928,6 +982,20 @@ public:
     // character-separation pass to push a monster OUT of a captive / another monster
     // it has walked into. No-op once dead or bodyless. Defined in monster.cpp.
     void setPlanarPos(float x, float z, x3::phys::IPhysicsWorld& physics);
+    // ---- Anti-overlap (hard de-overlap pass) ------------------------------
+    // Planar collision radius (the Enemy hitbox half-width). Two agents whose
+    // centers are closer than the sum of their radii are considered overlapping.
+    float bodyRadiusXZ() const { return m_hitHalfXZ; }
+    // Apply a planar positional correction and sync the physics body. This is the
+    // HARD "two characters never share a cell" floor that sits on top of the
+    // separation STEERING (which only makes them not WANT to crowd). Small,
+    // per-frame-clamped shoves — no-op on a dead / bodyless agent. Y is untouched.
+    void nudgePlanar(float dx, float dz, x3::phys::IPhysicsWorld& physics) {
+        if (!m_alive || !m_body.valid()) return;
+        m_pos.x += dx; m_pos.z += dz;
+        physics.setBodyPosition(m_body,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z });
+    }
 
     // Club max-out: externally drive an INERT prop's pose (position + heading).
     // Intended ONLY for chaseSpeed-0 / damage-0 character props (the Club 1127
@@ -1255,6 +1323,16 @@ private:
     float    m_repathTimer  = 0.0f;          // countdown to rebuild the path (cadence)
     x3::phys::Vec3 m_pathGoal{};             // goal the current path was built toward
     bool     m_hasPath      = false;         // a valid path is being followed
+
+    // ---- STAIR ROUTE state (feat/stair-nav, see setStairRoute) --------------
+    std::vector<x3::phys::Vec3> m_stairWps;  // authored waypoints (with Y)
+    uint32_t m_stairIdx          = 0;        // waypoint currently steered toward
+    bool     m_stairActive       = false;
+    int      m_stairTargetFloor  = -1;       // floor the route ends on
+    int      m_stairArrivedFloor = -1;       // completion latch (host consumes)
+    // Advance along the stair route (planar steer + segment-lerped Y + body sync).
+    // Returns true iff the route drove this frame's movement (state movement skips).
+    bool updateStairRoute(float dt, x3::phys::IPhysicsWorld& physics, float speed);
 };
 
 // ---------------------------------------------------------------------------
@@ -1312,6 +1390,14 @@ public:
     // Movement-only overload (no attacks): forwards with a null target/empty fx.
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos);
+
+    // Hard de-overlap: NO two live members share a cell. Pairwise planar push so
+    // every pair of centers ends up >= (rA + rB) apart. A cheap positional
+    // correction (split between the pair, clamped per-frame so it eases apart and
+    // never explodes) that GUARANTEES no clipping on top of the separation STEERING
+    // (which only shapes where they WANT to be). Called at the end of update(); also
+    // exposed so a host can run a combined pass across several managers + companions.
+    void deOverlapMembers(x3::phys::IPhysicsWorld& physics);
 
     // Draw every monster (each owns its multi-primitive model).
     void drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

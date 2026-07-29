@@ -98,6 +98,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             else o.worldSwitchTest = "streamed";
             o.smoketest = true;   // the harness drives the loop through the smoketest host
         }
+        else if (a == "--test-stairnav") o.testStairNav = true;   // feat/stair-nav: enemies path floors via the stairwell
         else if (a == "--test-goldenpath") o.testGoldenPath = true;
         else if (a == "--test-opening") o.testOpening = true;   // opening-flow wake-in-cell contract
         else if (a == "--test-descmech") o.testDescMech = true;   // W9-1 desc-field mechanics (Tier A)
@@ -123,6 +124,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-canonaliens") o.testCanonAliens = true;
         else if (a == "--test-packspiders") o.testPackSpiders = true;
         else if (a == "--test-clone") o.testClone = true;
+        else if (a == "--test-gallery") o.testGallery = true;
         // (chain break — restart the if/else-if ladder so MSVC stays under the
         // C1061 block-nesting limit; flags are exact == matches, all unique, so a
         // matched arg simply falls through the second ladder without re-matching)
@@ -497,6 +499,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureAiDir = argv[++i];
         }
+        else if (a == "--capture-crowd-spread") {
+            o.captureCrowdSpread = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureCrowdSpreadDir = argv[++i];
+        }
         else if (a == "--capture-walk") {
             o.captureWalk = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureWalkPath = argv[++i];
@@ -536,6 +542,9 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
+        // [P0-1] both spellings accepted (the plan doc names --test-surface-handoff).
+        else if (a == "--test-surfacehandoff" || a == "--test-surface-handoff")
+            o.testSurfaceHandoff = true;
         else if (a == "--test-starsystems") o.testStarsystems = true;
         else if (a == "--intro-force") {
             // DEV: force the interactive-intro outcome branch.

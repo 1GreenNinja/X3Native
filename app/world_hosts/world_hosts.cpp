@@ -53,6 +53,7 @@ const HostRoute kHostRoutes[] = {
     { "elevator-showcase", hostElevator        },
     { "rifthub",           hostRifthub         },
     { "echotropolis",      hostEchotropolis    },
+    { "gallery",           hostGallery         },
 };
 constexpr unsigned kHostRouteCount =
     (unsigned)(sizeof(kHostRoutes) / sizeof(kHostRoutes[0]));
@@ -67,9 +68,9 @@ const char* const kHostRouteFlags[kHostRouteCount] = {
     kHostRoutes[15].flag, kHostRoutes[16].flag, kHostRoutes[17].flag,
     kHostRoutes[18].flag, kHostRoutes[19].flag, kHostRoutes[20].flag,
     kHostRoutes[21].flag, kHostRoutes[22].flag, kHostRoutes[23].flag,
-    kHostRoutes[24].flag, kHostRoutes[25].flag,
+    kHostRoutes[24].flag, kHostRoutes[25].flag, kHostRoutes[26].flag,
 };
-static_assert(kHostRouteCount == 26, "update kHostRouteFlags when adding a route");
+static_assert(kHostRouteCount == 27, "update kHostRouteFlags when adding a route");
 
 } // namespace
 

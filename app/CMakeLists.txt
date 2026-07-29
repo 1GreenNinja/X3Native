@@ -32,6 +32,7 @@ add_executable(X3Engine WIN32
     # Phase 7 — ESCAPED-branch Act-1 surface-landing start (--world surface)
     world_hosts/host_surface_start.cpp
     world_hosts/host_rifthub.cpp
+    world_hosts/host_gallery.cpp
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp

@@ -165,10 +165,23 @@ BONE_MAP_MESHY_FROM_MIXAMO = {
     "RightFoot": "mixamorigRightFoot",
 }
 
+# MESHY-humanoid TARGET fed a MESHY-rig SOURCE (identity: the Animation-Library
+# wave -- Meshy's own animation API bakes a library clip onto a fresh Meshy
+# auto-rig of the SAME character, so source and target share the exact 24-joint
+# naming. Includes Spine01 + toes (real curves exist on them); head_end/headfront
+# are leaf tips left to rest.
+BONE_MAP_MESHY_FROM_MESHY = {k: k for k in (
+    "Hips", "Spine02", "Spine01", "Spine", "neck", "Head",
+    "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand",
+    "RightShoulder", "RightArm", "RightForeArm", "RightHand",
+    "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase",
+    "RightUpLeg", "RightLeg", "RightFoot", "RightToeBase")}
+
 RIG_MAPS = {"mixamo": BONE_MAP_MIXAMO, "starter": BONE_MAP_STARTER, "lr": BONE_MAP_LR,
             "meshy": BONE_MAP_MESHY,
             "meshy_from_lr": BONE_MAP_MESHY_FROM_LR,
-            "meshy_from_mixamo": BONE_MAP_MESHY_FROM_MIXAMO}
+            "meshy_from_mixamo": BONE_MAP_MESHY_FROM_MIXAMO,
+            "meshy_from_meshy": BONE_MAP_MESHY_FROM_MESHY}
 
 
 def _foot_keys(bmap):
