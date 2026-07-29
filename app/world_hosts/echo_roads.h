@@ -13,6 +13,16 @@
 // crown crossing, and the woodlands corridor keep-out all still line up.
 //
 // ============================= INTEGRATION =============================
+//  V7 SURFACE PASS (new obligations):
+//   7. TEXTURES: assets/roads/{asphalt,concrete,sidewalk,grime}_tile.png are
+//      loaded at build() via stb_image + device.createTexture (sRGB). Missing
+//      files log a warning and fall back to the flat v6 colors — ship the
+//      four PNGs with the world.
+//   8. NIGHT GLOW: after roads.draw(...), ALSO call
+//          if (tod.sample().cityLightsOn) roads.drawNightGlow(*device, frame);
+//      in BOTH the live and headless fans — lamp heads glow at night only.
+//   9. The CA sweep on-ramps replaced the trumpet curls; law exemption dropped
+//      (they must PASS the ramp curvature law — check the boot PASS line).
 // (for WP-0 / the host integrator — this module is complete but UNWIRED)
 //  1. CMake: add world_hosts/echo_roads.cpp to app/CMakeLists.txt.
 //  2. Build once at boot (after hf.load, before first frame):
@@ -176,6 +186,9 @@ public:
     // Draw all buckets (no-op before build). Identity model; one drawMeshPBR
     // per bucket, alphaMask/Blend off, zero emissive (lighting is lights()).
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+    // V7: lamp-head glow (warm emissive quads). Call ONLY at night
+    // (tod.sample().cityLightsOn) — the module never day-gates itself.
+    void drawNightGlow(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
 
     // Static lamp slice (freeway poles + harbor street lamps). Host gates by
     // cityLightsOn and merges into its nearest-K per-frame selection. V3:
@@ -198,9 +211,15 @@ private:
         std::vector<x3::rhi::MeshVertex> v;
         std::vector<uint32_t>            i;
         x3::rhi::MeshHandle              mesh;
+        x3::rhi::TextureHandle           tex;    // V7: albedo tile (invalid = flat color)
         float                            color[4] = { 1, 1, 1, 1 };
     };
+    // V7 SURFACE PASS buckets: Shoulder = worn light asphalt bands flanking the
+    // freeway deck; Grime = skid marks + oil stains (dark-tinted grime tile);
+    // NightGlow = lamp-head glow quads — NOT drawn by draw(): the integrator
+    // calls drawNightGlow() only when tod.cityLightsOn (see INTEGRATION notes).
     enum { kBucketAsphalt = 0, kBucketPaint, kBucketConcrete, kBucketSidewalk,
+           kBucketShoulder, kBucketGrime, kBucketNightGlow,
            kBucketCount };
 
     Bucket m_buckets[kBucketCount];

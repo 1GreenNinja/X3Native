@@ -33,6 +33,9 @@
 #include "echo_roads.h"
 
 #include "engine/core/x3_log.h"
+#include "../asset_root.h"     // V7: texture tiles resolve under assetRoot()/roads
+#include <stb_image.h>          // V7: PNG decode (STBI_NO_STDIO — memory loader)
+#include <fstream>
 
 #include <algorithm>
 #include <cmath>
@@ -77,6 +80,7 @@ constexpr float kBankMax        = 0.10f;
 // (kSmoothWin retired in V3.1 — the profile's grade bound IS the smoothness;
 //  box smoothing was re-inflating valleys back toward summit height.)
 constexpr float kBarrierInset   = 0.35f;
+constexpr float kShoulderW      = 1.6f;    // V7: worn shoulder band each side of the deck
 constexpr float kBarrierW       = 0.35f;
 constexpr float kBarrierH       = 1.00f;
 constexpr float kEdgeLineInset  = 0.90f;
@@ -804,62 +808,53 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             pe.s = std::move(ramp);
             P.push_back(std::move(pe));
         }
-        {   // trumpet loop ON-ramp: ground -> spiral up -> MERGE onto the deck.
-            // BUGFIX (Tim's "curving ramps END IN MIDAIR"): the loop arc used to
-            // stop at an arbitrary point 250 deg around a 30 m circle, lifted to
-            // deck height but NEVER at the deck's centerline — so it climbed to
-            // freeway elevation and terminated in open air. We now curve the
-            // arc's exit tangentially INTO the deck attach point and pin the
-            // final sample onto it, so the on-ramp physically merges.
-            float px, pz; rperp(deck.tx, deck.tz, px, pz);
-            const float cx = g.gx + px * (kLoopR + kRampWidth),
-                        cz = g.gz + pz * (kLoopR + kRampWidth);
-            const float a0 = std::atan2(g.gz - cz, g.gx - cx);
-            const float sweep = kLoopSweepDeg * 3.1415926f / 180.0f;
+        {   // V7 CALIFORNIA ON-RAMP (Tim: "California style swooping ramps,
+            // with arc"): the tight 250-deg trumpet curl (r=30) is retired.
+            // The on-ramp is now ONE long sweeping arc — foot at the gate
+            // ground node, head merging TANGENTIALLY onto a deck sample well
+            // DOWNSTREAM of the off-ramp's, so the pair reads as a wide
+            // parclo: traffic leaves the deck, sweeps down, and rejoins it
+            // 100-160m later in the direction of travel. Effective radius
+            // 60-90m => ~0.7-1.0 deg/m: PASSES the ramp law WITHOUT an
+            // exemption (the law is the gate now, as it should be).
+            const size_t nR = ringC.size();
+            const size_t at2 = (at + (size_t)(140.0f / kSampleStep)) % nR;
+            const RoadSample deck2 = ringC[at2];
+            const float mChord2 = std::sqrt((deck2.x - g.gx)*(deck2.x - g.gx) +
+                                            (deck2.z - g.gz)*(deck2.z - g.gz));
+            // Long tangents bow the hermite outward into the sweep; the foot
+            // tangent aims 35 deg off the direct chord so the curve arcs wide
+            // instead of cutting straight.
+            const float cdx = (deck2.x - g.gx) / mChord2, cdz = (deck2.z - g.gz) / mChord2;
+            const float rot = 0.61f;   // ~35 deg outward bow at the foot
+            const float fdx = cdx * std::cos(rot) - cdz * std::sin(rot);
+            const float fdz = cdx * std::sin(rot) + cdz * std::cos(rot);
+            const float lead2 = std::max(mChord2 * 0.9f, 90.0f);
             std::vector<RoadSample> d2;
-            for (float a = 0.0f; a <= sweep; a += 0.05f) {
-                RoadSample s;
-                s.x = cx + std::cos(a0 + a) * kLoopR;
-                s.z = cz + std::sin(a0 + a) * kLoopR;
-                d2.push_back(s);
+            for (float t = 0.0f; t <= 1.0f; t += 0.015f) {
+                RoadSample sr;
+                hermite(g.gx, g.gz, fdx * lead2, fdz * lead2,
+                        deck2.x, deck2.z, deck2.tx * lead2 * 0.8f, deck2.tz * lead2 * 0.8f,
+                        t, sr.x, sr.z);
+                d2.push_back(sr);
             }
-            // Merge leg: hermite from the arc's exit (tangent-matched) into the
-            // deck point along the deck tangent — this is the "join the freeway"
-            // segment that was missing.
-            if (d2.size() >= 2) {
-                const RoadSample aEnd = d2.back();
-                float etx = aEnd.x - d2[d2.size() - 2].x;
-                float etz = aEnd.z - d2[d2.size() - 2].z;
-                const float el = std::sqrt(etx * etx + etz * etz);
-                if (el > 1e-5f) { etx /= el; etz /= el; }
-                const float mChord = std::sqrt((deck.x - aEnd.x) * (deck.x - aEnd.x) +
-                                               (deck.z - aEnd.z) * (deck.z - aEnd.z));
-                for (float t = 0.04f; t <= 1.0f + 1e-4f; t += 0.04f) {
-                    RoadSample s;
-                    hermite(aEnd.x, aEnd.z, etx * mChord, etz * mChord,
-                            deck.x, deck.z, deck.tx * mChord, deck.tz * mChord,
-                            std::min(t, 1.0f), s.x, s.z);
-                    d2.push_back(s);
-                }
+            std::vector<RoadSample> swp;
+            resample(d2, kRampStep, swp);
+            for (size_t i = 0; i < swp.size(); ++i) {
+                const float t = (float)i / (float)(swp.size() - 1);
+                const float e2 = t * t * (3.0f - 2.0f * t);
+                swp[i].y = gy + (deck2.y - gy) * e2;
             }
-            std::vector<RoadSample> loop;
-            resample(d2, kRampStep, loop);
-            for (size_t i = 0; i < loop.size(); ++i) {
-                const float t = (float)i / (float)(loop.size() - 1);
-                const float e = t * t * (3.0f - 2.0f * t);
-                loop[i].y = gy + (deck.y - gy) * e;
-                loop[i].bank = -0.06f * (1.0f - e);   // ease bank out into the deck
-            }
-            // Land the final sample EXACTLY on the deck (watertight merge).
-            if (!loop.empty()) {
-                loop.back().x = deck.x; loop.back().z = deck.z; loop.back().y = deck.y;
+            if (swp.size() >= 2) {
+                swp.front().x = g.gx;    swp.front().z = g.gz;    swp.front().y = gy;
+                swp.back().x  = deck2.x; swp.back().z  = deck2.z; swp.back().y  = deck2.y;
             }
             Pending pe;
             pe.cls = RoadClass::Ramp; pe.width = kRampWidth;
             pe.lanesF = 1; pe.lanesB = 0;
-            pe.banked = true; pe.barriers = true; pe.pillarSingle = true;
-            pe.lawExempt = true;   // the 250-deg trumpet curl is intentionally tight
-            pe.s = std::move(loop);
+            pe.banked = true;   // the law's rebank paints continuous superelevation
+            pe.barriers = true; pe.pillarSingle = true;
+            pe.s = std::move(swp);
             P.push_back(std::move(pe));
         }
         {   // gate avenue into the pad
@@ -1441,14 +1436,58 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     Buck paint   { &m_buckets[kBucketPaint].v,    &m_buckets[kBucketPaint].i };
     Buck conc    { &m_buckets[kBucketConcrete].v, &m_buckets[kBucketConcrete].i };
     Buck walk    { &m_buckets[kBucketSidewalk].v, &m_buckets[kBucketSidewalk].i };
-    const float cAsphalt[4]  = { 0.085f, 0.088f, 0.095f, 1.0f };
+    Buck shoul   { &m_buckets[kBucketShoulder].v, &m_buckets[kBucketShoulder].i };
+    Buck grime   { &m_buckets[kBucketGrime].v,    &m_buckets[kBucketGrime].i };
+    Buck nglow   { &m_buckets[kBucketNightGlow].v,&m_buckets[kBucketNightGlow].i };
+    // V7 SURFACE PASS: textured buckets. The tint is a MULTIPLIER on the tile
+    // albedo (v1's road-metric UVs finally collect their bet) — near-unity for
+    // textured buckets; the old flat colors remain the no-texture fallback.
+    {
+        auto loadTile = [&](const char* rel) -> x3::rhi::TextureHandle {
+            const std::string path = assetRoot() + "/roads/" + rel;
+            std::ifstream f(path, std::ios::binary);
+            if (!f) { x3::logWarn(std::string("[roads] V7 texture MISSING: ") + path); return {}; }
+            std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(f)),
+                                              std::istreambuf_iterator<char>());
+            int w = 0, h = 0, comp = 0;
+            unsigned char* d = stbi_load_from_memory(bytes.data(), (int)bytes.size(),
+                                                     &w, &h, &comp, 4);
+            if (!d) { x3::logWarn(std::string("[roads] V7 texture DECODE failed: ") + path); return {}; }
+            x3::rhi::TextureHandle t = device.createTexture(d, (uint32_t)w, (uint32_t)h, true);
+            stbi_image_free(d);
+            return t;
+        };
+        m_buckets[kBucketAsphalt].tex  = loadTile("asphalt_tile.png");
+        m_buckets[kBucketConcrete].tex = loadTile("concrete_tile.png");
+        m_buckets[kBucketSidewalk].tex = loadTile("sidewalk_tile.png");
+        m_buckets[kBucketShoulder].tex = m_buckets[kBucketAsphalt].tex;   // same tile, worn tint
+        m_buckets[kBucketGrime].tex    = loadTile("grime_tile.png");
+        const int texOk = (m_buckets[kBucketAsphalt].tex.valid() ? 1 : 0) +
+                          (m_buckets[kBucketConcrete].tex.valid() ? 1 : 0) +
+                          (m_buckets[kBucketSidewalk].tex.valid() ? 1 : 0) +
+                          (m_buckets[kBucketGrime].tex.valid() ? 1 : 0);
+        x3::logInfo("[roads] V7 textures: " + std::to_string(texOk) + "/4 tiles loaded");
+    }
+    const bool texA = m_buckets[kBucketAsphalt].tex.valid();
+    const float cAsphalt[4]  = { texA ? 0.95f : 0.085f, texA ? 0.95f : 0.088f, texA ? 1.0f : 0.095f, 1.0f };
     const float cPaint[4]    = { 0.80f,  0.82f,  0.85f,  1.0f };
-    const float cConcrete[4] = { 0.42f,  0.41f,  0.39f,  1.0f };
-    const float cWalk[4]     = { 0.295f, 0.30f,  0.31f,  1.0f };
+    const bool texC = m_buckets[kBucketConcrete].tex.valid();
+    const float cConcrete[4] = { texC ? 0.95f : 0.42f, texC ? 0.95f : 0.41f, texC ? 0.95f : 0.39f, 1.0f };
+    const bool texW = m_buckets[kBucketSidewalk].tex.valid();
+    const float cWalk[4]     = { texW ? 0.92f : 0.295f, texW ? 0.92f : 0.30f, texW ? 0.92f : 0.31f, 1.0f };
+    // Shoulder: same asphalt tile pushed LIGHTER — sun-bleached, traffic-free.
+    const float cShoulder[4] = { texA ? 1.45f : 0.16f, texA ? 1.45f : 0.165f, texA ? 1.42f : 0.17f, 1.0f };
+    // Grime: the blotch tile crushed DARK — reads as rubber + oil on asphalt.
+    const float cGrime[4]    = { 0.16f, 0.16f, 0.17f, 1.0f };
+    // NightGlow: warm HDR lamp heads (drawn by drawNightGlow with emissive).
+    const float cGlow[4]     = { 2.1f, 1.45f, 0.62f, 1.0f };
     std::copy(cAsphalt,  cAsphalt + 4,  m_buckets[kBucketAsphalt].color);
     std::copy(cPaint,    cPaint + 4,    m_buckets[kBucketPaint].color);
     std::copy(cConcrete, cConcrete + 4, m_buckets[kBucketConcrete].color);
     std::copy(cWalk,     cWalk + 4,     m_buckets[kBucketSidewalk].color);
+    std::copy(cShoulder, cShoulder + 4, m_buckets[kBucketShoulder].color);
+    std::copy(cGrime,    cGrime + 4,    m_buckets[kBucketGrime].color);
+    std::copy(cGlow,     cGlow + 4,     m_buckets[kBucketNightGlow].color);
 
     uint32_t lampCount = 0;
     for (size_t e = 0; e < P.size(); ++e) {
@@ -1481,6 +1520,22 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                                      s.z + pz*(-wHalf) + s.tz*kStopBarW*0.5f };
                 const float n[3] = { 0, 1, 0 };
                 quad(paint, A, B, C, D, n, 0.0f, 0.05f);
+                // V7 CROSSWALK: zebra stripes just outboard of the stop bar
+                // (ground streets/avenues only — WD2's street language).
+                {
+                    const int nStripes = (int)(wHalf * 2.0f / 0.9f);
+                    for (int st2 = 0; st2 < nStripes; ++st2) {
+                        const float l0 = -wHalf + (float)st2 * 0.9f + 0.15f;
+                        const float l1 = l0 + 0.55f;
+                        const float f0 = kStopBarW * 0.5f + 0.5f;
+                        const float f1 = f0 + 2.4f;
+                        const float CA2[3] = { s.x + px*l0 + s.tx*f0, s.y + kPaintLift, s.z + pz*l0 + s.tz*f0 };
+                        const float CB2[3] = { s.x + px*l1 + s.tx*f0, s.y + kPaintLift, s.z + pz*l1 + s.tz*f0 };
+                        const float CC2[3] = { s.x + px*l1 + s.tx*f1, s.y + kPaintLift, s.z + pz*l1 + s.tz*f1 };
+                        const float CD2[3] = { s.x + px*l0 + s.tx*f1, s.y + kPaintLift, s.z + pz*l0 + s.tz*f1 };
+                        quad(paint, CA2, CB2, CC2, CD2, n, 0.0f, 0.24f);
+                    }
+                }
             }
         }
         // Split into kept runs; emit each with the edge's recipe.
@@ -1497,9 +1552,60 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             if (run.size() < 2) continue;
             ribbon(asphalt, run, 0.0f, pe.width, 0.0f, pe.banked, &m_collision,
                    /*underside=*/pe.cls == RoadClass::Freeway || pe.cls == RoadClass::Ramp);
+            // V7 SHOULDERS (Tim: "does it have a shoulder?"): a worn, lighter
+            // 1.6m band each side of the deck, DRIVABLE (in the collision mesh);
+            // barriers move outboard of them.
+            const bool hasShoulder = (pe.cls == RoadClass::Freeway);
+            if (hasShoulder) {
+                const float so = pe.width * 0.5f + kShoulderW * 0.5f;
+                ribbon(shoul, run,  so, kShoulderW, 0.0f, pe.banked, &m_collision, true);
+                ribbon(shoul, run, -so, kShoulderW, 0.0f, pe.banked, &m_collision, true);
+            }
             if (pe.barriers) {
-                barrier(conc, run,  (pe.width * 0.5f - kBarrierInset));
-                barrier(conc, run, -(pe.width * 0.5f - kBarrierInset));
+                const float bo = hasShoulder ? (pe.width * 0.5f + kShoulderW - kBarrierInset)
+                                             : (pe.width * 0.5f - kBarrierInset);
+                barrier(conc, run,  bo);
+                barrier(conc, run, -bo);
+            }
+            // V7 SKID MARKS: dark rubber streaks in the wheel lanes through
+            // banked curves — deterministic (hash on edge index + arc bucket).
+            if (pe.cls == RoadClass::Freeway || pe.cls == RoadClass::Ramp) {
+                float arc2 = 0.0f;
+                for (size_t i = 0; i + 3 < run.size(); i += 3) {
+                    const float dx = run[i+3].x - run[i].x, dz = run[i+3].z - run[i].z;
+                    const float seg = std::sqrt(dx*dx + dz*dz);
+                    if (std::fabs(run[i].bank) > 0.025f &&
+                        h01((uint32_t)e * 97u + (uint32_t)(arc2 * 0.13f)) > 0.62f) {
+                        std::vector<RoadSample> sk(run.begin() + i,
+                                                   run.begin() + std::min(i + 4, run.size()));
+                        const float lane = ((uint32_t)(arc2) & 1u) ? kLaneWidth : -kLaneWidth;
+                        const float drift = (h01((uint32_t)(arc2 * 7.0f)) - 0.5f) * 0.7f;
+                        ribbon(grime, sk, lane + drift, 0.30f, kPaintLift * 0.6f, pe.banked);
+                        ribbon(grime, sk, lane + drift + 1.55f, 0.30f, kPaintLift * 0.6f, pe.banked);
+                    }
+                    arc2 += seg;
+                }
+            }
+            // V7 ROADSIDE DEBRIS: hash-scattered crates/barrier blocks on the
+            // verges of ground roads (never on the deck itself).
+            if (pe.cls == RoadClass::Avenue || pe.cls == RoadClass::HarborStreet) {
+                float since2 = 40.0f * h01((uint32_t)e * 53u);
+                for (size_t i = 0; i + 1 < run.size(); ++i) {
+                    const float dx = run[i+1].x - run[i].x, dz = run[i+1].z - run[i].z;
+                    since2 += std::sqrt(dx*dx + dz*dz);
+                    if (since2 < 85.0f) continue;
+                    since2 = 0.0f;
+                    const uint32_t hsd = (uint32_t)e * 131u + (uint32_t)i * 17u;
+                    if (h01(hsd) > 0.55f) continue;      // sparse, not littered
+                    const RoadSample& sm2 = run[i];
+                    float px2, pz2; rperp(sm2.tx, sm2.tz, px2, pz2);
+                    const float side2 = (h01(hsd + 3u) > 0.5f) ? 1.0f : -1.0f;
+                    const float lat2 = side2 * (pe.width * 0.5f + kCurbW + kWalkW + 0.9f);
+                    const float bx2 = sm2.x + px2 * lat2, bz2 = sm2.z + pz2 * lat2;
+                    const float gy2 = hf.heightAt(bx2, bz2);
+                    const float hh2 = 0.45f + 0.5f * h01(hsd + 7u);
+                    box4(conc, bx2, bz2, gy2, gy2 + hh2, 0.35f + 0.25f * h01(hsd + 11u));
+                }
             }
             if (pe.edgeLines) {
                 ribbon(paint, run,  (pe.width * 0.5f - kEdgeLineInset), kPaintW, kPaintLift, pe.banked);
@@ -1576,6 +1682,20 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                     const float D[3] = { lx - px*0.06f + ax2*kArmLen, ay, lz - pz*0.06f + az2*kArmLen };
                     const float nA[3] = { 0, 1, 0 };
                     quad(conc, A, B, C, D, nA, 0.0f, kArmLen / 10.0f);
+                    // V7 NIGHT GLOW HEAD: a small warm quad under the arm tip —
+                    // emitted always, DRAWN only via drawNightGlow (integrator
+                    // gates on cityLightsOn; slop-sweep finding D).
+                    {
+                        const float gx2 = lx + ax2 * (kArmLen - 0.25f);
+                        const float gz2 = lz + az2 * (kArmLen - 0.25f);
+                        const float gy3 = ay - 0.12f;
+                        const float GA[3] = { gx2 - px*0.35f, gy3, gz2 - pz*0.35f };
+                        const float GB[3] = { gx2 + px*0.35f, gy3, gz2 + pz*0.35f };
+                        const float GC[3] = { gx2 + px*0.35f + ax2*0.7f, gy3, gz2 + pz*0.35f + az2*0.7f };
+                        const float GD[3] = { gx2 - px*0.35f + ax2*0.7f, gy3, gz2 - pz*0.35f + az2*0.7f };
+                        const float gn[3] = { 0, -1, 0 };
+                        quad(nglow, GA, GB, GC, GD, gn, 0.0f, 1.0f);
+                    }
                 }
             }
         }
@@ -1650,10 +1770,24 @@ void EchoRoads::draw(x3::rhi::IRenderDevice& device,
     static const float kIdent[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
     static const float kNoEmis[4] = { 0, 0, 0, 0 };
     for (int b = 0; b < kBucketCount; ++b) {
+        if (b == kBucketNightGlow) continue;   // V7: night-gated (drawNightGlow)
         const Bucket& bk = m_buckets[b];
         if (!bk.mesh.valid()) continue;
-        device.drawMeshPBR(frame, bk.mesh, {}, {}, {}, bk.color, kNoEmis, kIdent);
+        device.drawMeshPBR(frame, bk.mesh, bk.tex, {}, {}, bk.color, kNoEmis, kIdent);
     }
+}
+
+void EchoRoads::drawNightGlow(x3::rhi::IRenderDevice& device,
+                              const x3::rhi::FrameContext& frame) const {
+    // V7: warm emissive lamp heads — the INTEGRATOR calls this only when
+    // tod.sample().cityLightsOn (the module never day-gates itself; the
+    // noon-lamp slop class dies at the call site).
+    if (!m_built) return;
+    static const float kIdent[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    const Bucket& bk = m_buckets[kBucketNightGlow];
+    if (!bk.mesh.valid()) return;
+    const float emis[4] = { bk.color[0], bk.color[1], bk.color[2], 1.0f };
+    device.drawMeshPBR(frame, bk.mesh, {}, {}, {}, bk.color, emis, kIdent);
 }
 
 } // namespace x3::game

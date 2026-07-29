@@ -61,6 +61,7 @@
 //     forest/houses respectively).
 
 #include "echo_region_builders.h"
+#include "echo_interiors.h"    // condo-room sub-region + vendor dressing
 #include "echo_woodlands.h"   // WP-3's harvestDistrictLights() — see loadDistrictInto's note
 
 #include "../env_art.h"
@@ -424,38 +425,48 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
         }
     }
 
-    // ===================== LIVING CONDOS ===== (host ~1654-1696)
+    // ===================== LIVING CONDOS — THE SHELLS (interiors pillar) ====
+    // Tim's #1 sweep slop (2026-07-29): the lit rooms rendered SHELL-LESS —
+    // floating window grids in daylight. The ROOMS moved to the gated
+    // `int_condo_rooms` sub-region (echo_interiors.cpp — bit-identical
+    // loops); buildCrown now owns only the EXTERIOR: one textured tower body
+    // per stack (TheHotel_Model, bbox-verified 21.2x23.0x25.7m base-centered,
+    // non-uniformly scaled to wrap the 22.5m-wide room grid) + a ctOS
+    // "entry kiosk" beside each ground-floor door.
     {
-        const std::string condodir = "D:/GameDev/EchoHarbor/assets/interiors";
-        static const char* kRooms[] = { "cond_tv.glb", "cond_kitchen.glb", "cond_romance.glb",
-                                        "cond_kids.glb", "cond_novelist.glb" };   // domestic (lab is hidden)
-        int condosBuilt = 0;
-        auto room = [&](const char* glb, float x, float y, float z, float yaw, float s){
-            const float c=std::cos(yaw), sn=std::sin(yaw);
-            const float T[16] = { c*s,0,-sn*s,0, 0,s,0,0, sn*s,0,c*s,0, x, y, z, 1 };
-            auto e = std::make_unique<EnvArtSystem>();
-            if (e->buildFromGlbAt(ctx.device, condodir, glb, T)) { region.addArt(std::move(e)); ++condosBuilt; }
-        };
-        auto condo = [&](float wx, float wz, float yaw, int cols, int floors, float s,
-                         uint32_t seed, bool hasLab){
+        const char* kMega = "D:/Assets/_glb/prefab_buildings/Mega Open World City Pack/Assets/Mega City Environment/Models";
+        int shells = 0;
+        auto shell = [&](float wx, float wz, int floors){
             const float gy = ctx.hf.ok()?ctx.hf.heightAt(wx,wz):190.0f;
-            const float rw = 3.75f*s, rh = 3.25f*s, c=std::cos(yaw), sn=std::sin(yaw);
-            for (int f=0; f<floors; ++f)
-              for (int j=0; j<cols; ++j) {
-                const float lx = (j - (cols-1)*0.5f) * rw;
-                const float x = wx + c*lx, z = wz - sn*lx, y = gy + f*rh;
-                const char* g = kRooms[hashi(seed + f*7u + j*13u) % 5];
-                if (hasLab && f==floors-1 && j==cols-1) g = "cond_lab.glb";   // the hidden lab, top corner
-                room(g, x, y, z, yaw, s);
-              }
+            const float sx = 24.0f / 21.237f;                       // wrap 22.5m grid + margin
+            const float sy = (floors * 6.5f + 2.5f) / 22.998f;      // grid height + parapet
+            const float sz = 12.0f / 25.665f;                       // rooms run wz..wz+5.7
+            const float T[16] = { sx,0,0,0, 0,sy,0,0, 0,0,sz,0,
+                                  wx, gy, wz + 2.9f, 1 };
+            auto e = std::make_unique<EnvArtSystem>();
+            if (e->buildFromGlbAt(ctx.device, kMega, "TheHotel_Model.glb", T)) {
+                region.addArt(std::move(e)); ++shells;
+            }
+            // Entry kiosk (the door marker; the walk-in lobby lives in the
+            // int_condo_rooms sub-region — see echo_interiors.cpp).
+            const float K[16] = { -0.842f,0,0,0, 0,0.842f,0,0, 0,0,-0.842f,0,
+                                  wx - 4.5f, gy, wz + 6.5f, 1 };
+            auto k = std::make_unique<EnvArtSystem>();
+            if (k->buildFromGlbAt(ctx.device,
+                    "D:/GameDev/EchoHarbor/assets/meshy/props", "ctos_terminal.glb", K)) {
+                region.addArt(std::move(k)); ++shells;
+            }
         };
-        // STREET-FRONT HIGH-RISES lining the north avenue (z=818 lane).
-        condo(-100.0f, 842.0f, 3.14159f, 3, 5, 2.0f, 11u, false);
-        condo( -20.0f, 842.0f, 3.14159f, 3, 6, 2.0f, 29u, true);   // block WITH the hidden lab
-        condo(  60.0f, 842.0f, 3.14159f, 3, 5, 2.0f, 47u, false);
-        x3::logInfo("[region] LIVING CONDOS — " + std::to_string(condosBuilt) +
-                    " lit rooms (TV/kitchen/romance/kids/novelist + 1 hidden lab)");
+        shell(-100.0f, 842.0f, 5);
+        shell( -20.0f, 842.0f, 6);   // the stack with the hidden lab
+        shell(  60.0f, 842.0f, 5);
+        x3::logInfo("[region] LIVING CONDOS — " + std::to_string(shells) +
+                    " shell/kiosk pieces (rooms -> int_condo_rooms sub-region)");
     }
+
+    // VENDOR DRESSING (always-visible street furniture: Tess's stall + sign,
+    // Fixer's table, Preacher's torches) — echo_interiors.cpp owns the set.
+    buildVendorDressing(region, ctx);
 
     // ===================== HACKABLES (Meshy-generated ctOS props) ===== (host ~1862-1924)
     EnvArtSystem* hackDronePtr = nullptr;

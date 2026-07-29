@@ -29,6 +29,7 @@
 #include "echo_heightfield.h"         // TIER-2: shared island terrain sampler (hoisted from this file)
 #include "echo_roads.h"               // ROADS: curved banked freeway + boulevard + fanned harbor grids
 #include "../world_cars.h"           // CARS PILLAR: findable, drivable, hackable vehicles
+#include "echo_interiors.h"           // INTERIORS PILLAR: gated cells + vendor stalls
 #include "../terrain.h"               // kWorldWaterDry sentinel (water query)
 #include "echo_regions.h"             // TIER-2: EchoRegion containers + WorldStreamer bridge (WP-1)
 #include "echo_region_builders.h"     // TIER-2: crown/mine/district/harbor builders (WP-2)
@@ -1001,6 +1002,11 @@ int hostEchotropolis(HostContext& hc) {
         reg("district_recife",   x3::game::buildDistrictRecife);
         reg("district_hivemind", x3::game::buildDistrictHivemind);
         reg("harbor_bay",        x3::game::buildHarborBay);
+        // INTERIORS PILLAR: streaming interior cells (Lane-B sub-regions with
+        // small radii — realize on approach, evict on leave once M-C ticks).
+        reg("int_condo_rooms",   x3::game::buildCondoRooms);
+        reg("int_noodle_bar",    x3::game::buildNoodleBar);
+        reg("int_harbor_shop",   x3::game::buildHarborShop);
         // Woodlands cells: JSON ids <-> (cellIx 0=west..2=east, cellIz 0=south..2=north),
         // the convention echo_woodlands.cpp documents at woodlandsCellRect().
         struct CellId { const char* id; int ix, iz; };
@@ -1886,6 +1892,7 @@ int hostEchotropolis(HostContext& hc) {
                                         if(p.navG)p.navG->draw(*device,frame); if(p.navW)p.navW->draw(*device,frame); } }
             for (auto& c : cars) { poseCar(c, (float)i * dt); c.body->draw(*device, frame); }  // street traffic
             if (roads) roads->draw(*device, frame);   // ECHO ROADS (headless parity)
+            if (roads && shotTod.cityLightsOn) roads->drawNightGlow(*device, frame);   // V7 glow parity
             if (sResBuilt) { sScene.render(*device, frame); sSkin.draw(*device, frame, sScene); }
             else if (sMinersBuilt) sScene.render(*device, frame);
             if (sMinersBuilt) sMinersSkin.draw(*device, frame, sScene);
@@ -2100,6 +2107,7 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::NpcLife npcLife; bool npcLifeBuilt = false;   // LIVING CITY: scheduled NPCs
     x3::game::NpcSkin npcSkin;                              // their rigged bodies
     x3::game::WorldCars worldCars;                          // CARS PILLAR: the street fleet
+    const char* vendorPrompt = nullptr;                     // vendor buy-loop HUD line
     float driveCamYaw = 0.0f, driveCamPitch = -0.22f;       // chase-cam mouse orbit
     // NFS-STYLE VIEW CYCLE (Tim: "the mode i usualy drove in since 1992") —
     // C cycles while driving: 0 FAR chase (Tim's default), 1 MID, 2 CLOSE,
@@ -3093,6 +3101,21 @@ int hostEchotropolis(HostContext& hc) {
             worldCars.interact({ pxx, pyy - 1.2f, pzz }, e2, e2 && !prevCarE,
                                f2 && !prevCarF, dt, &player, *phys,
                                audioOn ? eaudio.get() : nullptr);
+            // VENDOR BUY LOOP (interiors pillar): cars keep first claim on E;
+            // if no car consumed it and a vendor is in radius, E transacts.
+            vendorPrompt = nullptr;
+            if (!worldCars.driving() && worldCars.prompt().empty()) {
+                for (const auto& v : x3::game::kVendorInteractions) {
+                    const float dvx = v.x - pxx, dvz = v.z - pzz;
+                    if (dvx*dvx + dvz*dvz > v.radius * v.radius) continue;
+                    vendorPrompt = v.promptLine;
+                    if (e2 && !prevCarE) {
+                        treasury += (double)v.price;   // negative = the player pays
+                        uiSfx(sfxAccept, 0.8f);
+                    }
+                    break;
+                }
+            }
             prevCarE = e2; prevCarF = f2;
         }
         if (worldCars.driving() && physOk) {
@@ -3658,6 +3681,7 @@ int hostEchotropolis(HostContext& hc) {
         if (npcLifeBuilt) npcSkin.draw(*device, frame, walkScene);   // named-citizen rigs
         for (auto& sp : streetProps) sp->draw(*device, frame);       // real vendor carts
         if (worldCars.built()) worldCars.draw(frame);                // CARS: parked fleet + live rig
+        if (roads && todS.cityLightsOn) roads->drawNightGlow(*device, frame);   // V7 lamp heads (night)
         if (roads) roads->draw(*device, frame);                      // ECHO ROADS curved network
         if (minersBuilt) minersSkin.draw(*device, frame, walkScene);   // GOLD-MINE crew skins
         if (todS.cityLightsOn) {       // P4 night lights: sweeping beam + fissure embers
@@ -3725,6 +3749,10 @@ int hostEchotropolis(HostContext& hc) {
                 if (worldCars.built() && !worldCars.prompt().empty()) {
                     const float pgold[4] = { 1.0f, 0.85f, 0.45f, 1.0f };
                     device->drawHudText(frame, worldCars.prompt().c_str(),
+                                        12.0f + pad, 12.0f + barH + 40.0f, 14.0f, pgold);
+                } else if (vendorPrompt) {
+                    const float pgold[4] = { 1.0f, 0.85f, 0.45f, 1.0f };
+                    device->drawHudText(frame, vendorPrompt,
                                         12.0f + pad, 12.0f + barH + 40.0f, 14.0f, pgold);
                 }
             }
