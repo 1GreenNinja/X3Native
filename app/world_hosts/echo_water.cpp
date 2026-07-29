@@ -151,7 +151,7 @@ void EchoSplashes::spawnBowSpray(const x3::phys::Vec3& pos, const x3::phys::Vec3
     // doesn't blow the pool in one frame.
     const int count = std::min(10, 2 + (int)(speed * 0.6f));
     const float invSpeed = 1.0f / speed;
-    const float nx = vel.x * invSpeed, ny = vel.y * invSpeed, nz = vel.z * invSpeed;
+    const float nx = vel.x * invSpeed, nz = vel.z * invSpeed;   // horizontal heading (Y ignored: bow spray kicks up, not along vertical velocity)
     for (int i = 0; i < count; ++i) {
         SplashParticle p;
         p.pos = pos;
