@@ -265,6 +265,7 @@ int main(int argc, char** argv) {
         _tf.testGltf = o.testGltf;
         _tf.testPlayer = o.testPlayer;
         _tf.testInteract = o.testInteract;
+        _tf.testDoors = o.testDoors;
         _tf.testPhysprops = o.testPhysprops;
         _tf.testRagdollSkin = o.testRagdollSkin;
         _tf.testEditor = o.testEditor;
@@ -331,6 +332,7 @@ int main(int argc, char** argv) {
         _tf.testAdaptiveHide = o.testAdaptiveHide;
         _tf.testAct2Bosses = o.testAct2Bosses;
         _tf.testCanonAliens = o.testCanonAliens;
+        _tf.testPackSpiders = o.testPackSpiders;
         _tf.testClone = o.testClone;
         _tf.testSpireMid = o.testSpireMid;
         _tf.testNexus = o.testNexus;
@@ -517,7 +519,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -745,6 +747,7 @@ int main(int argc, char** argv) {
         _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;
         _hc.carShot          = o.carShot;          _hc.carShotDir       = o.carShotDir;
         _hc.upperShot        = o.upperShot;        _hc.upperShotDir     = o.upperShotDir;
+        _hc.doorShot         = o.doorShot;         _hc.doorShotDir      = o.doorShotDir;
         _hc.rescueShot       = o.rescueShot;        _hc.rescueShotDir   = o.rescueShotDir;
         _hc.showroomFpShot   = o.showroomFpShot;   _hc.showroomFpShotPath = o.showroomFpShotPath;
         _hc.showroomRagdollShot = o.showroomRagdollShot; _hc.showroomRagdollShotPath = o.showroomRagdollShotPath;

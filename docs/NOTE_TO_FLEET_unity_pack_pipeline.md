@@ -101,3 +101,57 @@ Full method lives in `.claude/skills/x3native-environments` (stage 2). Use that 
 ANY Unity-pack → native-engine art pass.
 
 — Opus 4.8 (1M context), feat/doors-death-anim, 2026-05-30
+
+---
+
+# ADDENDUM — RIGGED + ANIMATED **CHARACTER** packs (2026-07-27)
+
+The pipeline above harvests *environment* packs. Character/creature packs that
+already ship a **rig + authored clips** are a different (and much cheaper) path,
+proven by the first harvest: the arachnids in `app/pack_spiders.*`
+(`assets/rigged_glb/pack_spider_anim.glb`, `pack_spider_blue_anim.glb`) from the
+licensed **"Spiders - characters with animations"** pack.
+
+**Tool:** `tools/prep_pack_spider.py` (headless Blender; poll `<out>.done` +
+`<out>.log`, the Store launcher detaches). One pass per creature: FBX in,
+engine-ready multi-clip GLB out.
+
+**Why a dedicated prep and not `convert_fbx_glb.py` — three traps, all silent:**
+
+1. **The material exports 100% TRANSPARENT.** Blender's FBX importer wires the
+   FBX `TransparencyFactor` into `Principled.Alpha` through a Math chain and
+   leaves `blend_method = HASHED`. On this pack that alpha evaluates to ~0.
+   Unity ignored the factor; glTF does not. The GLB then loads fine, skins fine,
+   reports correct bounds — and **renders nothing**. (First QA pass here: six
+   grounded frames of empty floor.) Fix: cut the Alpha link, pin Alpha = 1,
+   delete the dangling Math nodes, force OPAQUE.
+2. **The clips are named outside the engine's vocabulary.** `MonsterSystem`'s
+   fuzzy resolver (`app/monster.cpp`) wants idle/walk/run/attack/attack2/death.
+   The pack ships `dead` (matches NEITHER "death" nor "die") and `attack_2`
+   (does not match "attack2"), so two slots would resolve to **-1** with no
+   error. Fix: rename the Blender ACTIONS to the canonical names at harvest —
+   then every slot binds with **zero** `MonsterSystem::overrideClip` calls.
+3. **Facing is backwards.** Our rigged GLBs are authored facing **+Z in glTF**
+   (see the FACING FIX in `monster.cpp`). Blender's default FBX axis conversion
+   lands a Unity `+Z`-facing creature at `+Y` in Blender == `-Z` in glTF: 180
+   out. Fix: import with `use_manual_orientation=True, axis_forward='Z',
+   axis_up='Y'` — **the axis args are IGNORED without `use_manual_orientation`**,
+   which is how a backwards spider nearly shipped. Verify with an orthographic
+   top-down render, not a 3/4 view.
+
+**Bonus:** the pack had no `run`. `Run` is DERIVED by copying `Walk` and scaling
+its keyframe timing to 0.62 — a legitimate scuttle, but it is derived, not
+authored, and is flagged as such in the harvest log.
+
+**Gate:** `--test-packspiders` loads each harvested GLB headlessly and asserts a
+REAL rig (>= 32 skinned joints — a fake single-bone rig has exactly 1) plus all
+six canonical clips carrying real motion, then builds the monster and asserts
+every clip slot binds through the stock resolver. Any future harvest should copy
+that test shape.
+
+**QA:** judge clips ONLY via `tools/pose_render_grounded.py` (floor + level cam).
+It now honours `X3QA_EYE` / `X3QA_DIST` env vars so a 0.2 m-tall creature can be
+framed without abandoning the grounded method (a human's 1.0 m / 3.4 m defaults
+make a spider a speck).
+
+— Opus 5 (1M context), feat/pack-spiders, 2026-07-27

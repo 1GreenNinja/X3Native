@@ -383,8 +383,11 @@ void drawChatterBubbles(x3::rhi::IRenderDevice& device,
             // and the speaker's head hides the bubble.
             if (physics && dist > 0.001f) {
                 const x3::phys::Vec3 nd{ dx / dist, dy / dist, dz / dist };
+                // STRICT Static — the permissive mask also reports the SPEAKER'S
+                // own body (and any crowd member between), which culled bubbles
+                // that had no wall in front of them at all.
                 const x3::phys::RayHit los =
-                    physics->rayCast(eye, nd, dist - 0.3f, x3::phys::Layer::Static);
+                    physics->rayCastStrict(eye, nd, dist - 0.3f, x3::phys::Layer::Static);
                 if (los.hit) continue;
             }
             float sx = 0.0f, sy = 0.0f;

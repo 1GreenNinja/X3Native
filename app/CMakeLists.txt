@@ -173,6 +173,7 @@ add_executable(X3Engine WIN32
     hud.cpp
     loading_screen.cpp
     canon_aliens.cpp
+    pack_spiders.cpp
     clone_boss.cpp
     item_db.cpp
     inventory.cpp

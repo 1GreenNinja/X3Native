@@ -34,9 +34,65 @@
 
 namespace x3::game {
 
+// ---------------------------------------------------------------------------
+// MOTION PROFILE — accel / cruise / decel (mega-polish, MASTER_GAME_PLAN
+// "Doors/elevator ... smooth accel/decel"). Replaces the old LINEAR lerp.
+//
+// `u` is the NORMALIZED cursor t/duration in [0,1]; the return is the
+// normalized DISPLACEMENT in [0,1]. Velocity is a TRAPEZOID: it ramps linearly
+// 0 -> V over [0,r], cruises at V over [r,1-r], and ramps V -> 0 over [1-r,1].
+// Forcing the area (== total displacement) to 1 gives V = 1/(1-r), so
+//   u <= r      : s = V u^2 / (2r)                (accelerating)
+//   r < u < 1-r : s = V (r/2 + (u - r))           (cruising)
+//   u >= 1-r    : s = 1 - V (1-u)^2 / (2r)        (decelerating)
+// Properties runDoorSelfTest() asserts: s(0)=0, s(1)=1, strictly increasing,
+// s'(0)=s'(1)=0 (the door eases off the jamb and settles instead of snapping),
+// and s(u) + s(1-u) == 1 (symmetric, so open and close feel identical).
+//
+// DELTA TIME (repo HARD RULE — never per-frame motion): doorEase is a PURE
+// function of the normalized cursor. ALL time enters through
+// DoorSystem::update()'s `d.t += dt` integration, so the profile is dt-scaled
+// by construction and identical at 60 Hz and 165 Hz. drawMeshes() calls the
+// SAME function on the SAME cursor, so the visual never drifts from collision.
+inline constexpr float kDoorRampFrac = 0.30f;   // ramp fraction at EACH end
+float doorEase(float u, float rampFrac = kDoorRampFrac);
+
+// ---------------------------------------------------------------------------
+// PER-FLOOR DOOR VARIANTS. The Spire's floors have identities (B1 Detention,
+// F2 Medical, F3 Genetics, F4 Cybernetics, F5 Drone Manufacturing, F6 Alien
+// Tech, F7 Executive) and the doors carry them, so a floor reads distinctly the
+// moment you look down a hall: a per-floor LEAF tint (multiplies the GLB
+// albedo — value-safe, every channel <= 1 so the surface-library VALUE band
+// still holds), a per-floor FRAME tint, and an emissive SIGNAGE BAND across the
+// door head.
+//
+// The signage band is ALSO the live status tell for the EXISTING keycard/keypad
+// lock system (kKeycardSecurity, Door::code / Door::keycard): a door that is
+// still `locked` burns RED regardless of floor, and reverts to its floor colour
+// the instant the card/code unlocks it. That EXTENDS the lock system rather
+// than duplicating it — no new lock state is introduced.
+//
+// Index matches app/level1.h L1Floor (B1=0, F1=1 ... F7=7).
+inline constexpr uint32_t kDoorFloorCount = 8;
+inline constexpr uint32_t kDoorFloorAuto  = 0xFFFFFFFFu;   // derive from doorway Y
+
+struct DoorStyle {
+    const char* name;
+    float leaf[3];    // multiplies the SM_Door_A leaf albedo
+    float sign[3];    // signage band EMISSIVE colour
+    float frame[3];   // SM_DoorFrame_A bezel tint
+};
+
+// Map a world Y to a Spire floor index (0..kDoorFloorCount-1). Anything below
+// B1 (the deep zone / secret room / club) resolves to B1.
+uint32_t doorFloorForY(float worldY);
+
+// The style table entry for a floor index (clamped in range — never OOB).
+const DoorStyle& doorStyleFor(uint32_t floorIdx);
+
 // Door animation state machine. A single progress cursor `t` in [0, duration]
-// drives the lerp closed(t=0) -> open(t=duration): Opening increases t, Closing
-// decreases it, so a toggle mid-slide reverses seamlessly without a pop.
+// drives the eased sweep closed(t=0) -> open(t=duration): Opening increases t,
+// Closing decreases it, so a toggle mid-slide reverses seamlessly without a pop.
 enum class DoorState : uint32_t {
     Closed  = 0,
     Opening = 1,
@@ -93,6 +149,18 @@ struct Door {
     uint32_t          entity2  = kNoLink;// second panel's Scene entity
     x3::phys::Vec3    closedPos2{};      // panel 2 closed body-centre
     x3::phys::Vec3    openPos2{};        // panel 2 open body-centre
+
+    // ---- PER-FLOOR VARIANT (see DoorStyle). Resolved once at build time from
+    // DoorSpec::floorStyle (or auto-derived from the doorway's world Y), so the
+    // draw path is a table lookup with no per-frame branching. ----
+    uint32_t          floorStyle = 0;    // index into the DoorStyle table
+    bool              withFrame  = false;// draw SM_DoorFrame_A seated in the opening
+
+    // ---- MOTOR AUDIO. The live servo voice for THIS door, started on the frame
+    // the slab begins to move and stopped on the frame it seats. Invalid (id 0)
+    // whenever the door is at rest — that invariant IS the "the sound never
+    // outlives the motion" guarantee, and runDoorSelfTest() asserts it. ----
+    x3::audio::LoopHandle motorLoop{};
 };
 
 // Registry of doors in a level. Kept in the game layer (not the Scene) so the
@@ -168,6 +236,33 @@ public:
         m_audio = audio; m_sndOpen = open; m_sndClose = close; m_sndLocked = locked;
     }
 
+    // ---- MOTOR/SERVO AUDIO (door-mesh-swap: "audio ... with a proper start/stop,
+    // not a one-shot that outlives the motion").
+    //
+    // `servoLoop` is a LOOPING motor bed (interact/servo_loop.wav) played through
+    // startLoop3D at the door and stopped with stopLoop the frame the slab seats —
+    // so it is EXACTLY as long as the motion, at any duration, at any frame rate.
+    // `seatThunk` is a short transient fired once on that same seating frame.
+    //
+    // WHY THIS REPLACES THE ONE-SHOTS: doors/door_open.wav is 2.19 s and
+    // door_close.wav 1.38 s against a ~1.0 s slide — a fire-and-forget voice that
+    // audibly ran on after the door had stopped (the same defect class as the
+    // chaingun that roared for 5-7 s after release). Once a servo loop is wired the
+    // open/close one-shots are NO LONGER fired for motion; without one (clean
+    // machine, missing WAV) the code falls back to them so doors are never silent.
+    // The `locked` buzz is a genuine 0.51 s transient and is untouched.
+    void setMotorAudio(x3::audio::SoundHandle servoLoop, x3::audio::SoundHandle seatThunk) {
+        m_sndServo = servoLoop; m_sndThunk = seatThunk;
+    }
+
+    // Hard-stop every live servo voice (level teardown / world switch / pause).
+    // Idempotent; safe with no audio wired.
+    void stopAllMotors();
+
+    // Number of doors currently holding a live servo voice. At rest this MUST be
+    // 0 — the self-test asserts it after every motion completes.
+    uint32_t liveMotorCount() const;
+
     // ---- W2-A2: room-visibility gate for drawMeshes (W2-E residual). Walls cull
     // per-room but door slabs drew unconditionally — from outside the shell they
     // floated in void. The host installs a query (canonlevel: probe the two rooms
@@ -179,8 +274,19 @@ private:
     // Emit a door sound at the door's world position (3D). Silent if unwired.
     void playDoorSound(const Door& d, x3::audio::SoundHandle h, float vol) const;
 
+    // The legacy open/close one-shot — suppressed whenever a servo LOOP is wired
+    // (that loop is the motion voice and it cannot outlive the motion).
+    void playMotionCue(const Door& d, bool opening, float vol) const;
+
+    // Servo-voice lifecycle. startMotor is idempotent (a door already humming is
+    // left alone, so a mid-slide reversal does not restart the bed); stopMotor is
+    // idempotent AND clears the handle, so double-stop is safe.
+    void startMotor(Door& d) const;
+    void stopMotor(Door& d) const;
+
     x3::audio::IAudioSystem* m_audio = nullptr;
     x3::audio::SoundHandle   m_sndOpen, m_sndClose, m_sndLocked;
+    x3::audio::SoundHandle   m_sndServo, m_sndThunk;   // motor bed + seat transient
     VisQueryFn               m_visQuery;
 
     std::vector<Door> m_doors;
@@ -206,6 +312,14 @@ private:
     // notch. Created in loadDoorMesh(); drawn per-door in drawMeshes().
     x3::rhi::MeshHandle m_fillMesh{};   // unit cube, half-extents 0.5, origin-centred
     x3::rhi::TextureHandle m_fillMr{};  // 1x1 matte dielectric MR texel (rough 0.85, metal 0)
+
+    // ---- SM_DoorFrame_A: the real frame mesh SEATED in the opening (LAW 1: "one
+    // wall, one hole, one frame seated in that hole" / LAW 4: "prefer a frame
+    // around every opening"). Loaded alongside the leaf; drawn STATIC (it does not
+    // slide with the leaf) at each door whose `withFrame` is set.
+    x3::asset::Model                      m_frameModel;
+    std::vector<x3::asset::ModelDrawable> m_frameDrawables;
+    bool m_frameOk = false;
 };
 
 // Resolve which door (if any) a use-ray is aiming at: raycast from `eye` along
@@ -265,6 +379,15 @@ struct DoorSpec {
     // doorwayCenter.y (matching the surrounding floor slab top).
     x3::rhi::TextureHandle floorTex;                          // invalid => use `tint`
     float          floorTint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };  // floor texel tint
+    // ---- PER-FLOOR VARIANT + FRAME (door-mesh-swap). floorStyle == kDoorFloorAuto
+    // derives the floor from doorwayCenter.y via doorFloorForY(); pass an explicit
+    // index for a door that must read as a floor it does not physically sit on
+    // (e.g. an elevator lobby door announcing the floor it serves).
+    uint32_t       floorStyle = kDoorFloorAuto;
+    // Seat SM_DoorFrame_A in the opening. Default ON: LAW 4 wants trim on every
+    // opening. Turn it OFF where another pass already frames that opening (cell
+    // dressing frames Jake's Cell) so the level never double-frames a doorway.
+    bool           withFrame  = true;
 };
 
 // Build a generalized door (+ optional linked button) per `spec`, registering
@@ -295,5 +418,19 @@ uint32_t buildFloorHatch(Scene& scene, DoorSystem& doors,
 // window/Vulkan: render meshes are created on a headless device stub. Mirrors
 // runPhysicsSelfTest()/runPlayerSelfTest().
 bool runInteractSelfTest();
+
+// Headless DOOR-MESH-SWAP self-test (--test-doors). Asserts the four mechanical
+// contracts of the polish pass, none of which needs a window or a GPU:
+//   D1 the ease curve is monotonic 0 -> 1 with zero slope at both ends,
+//   D2 the motion is DELTA-TIME scaled (60 Hz and 165 Hz integrations agree),
+//   D3 every per-floor variant resolves to a distinct style,
+//   D4 PASSABILITY — a standing 1.8 m capsule is blocked by the closed slab and
+//      walks clean through the OPEN one at canonical doorway dimensions,
+//   D5 the servo voice starts with the motion and stops with it (no live loop at
+//      rest, and no long one-shot fired while a servo loop is wired),
+//   D6 the per-floor / frame spec plumbing survives buildLevelDoor.
+// Logs PASS/FAIL D#, returns true iff all pass. NOTE this proves MECHANICS ONLY —
+// how the doors LOOK and FEEL is an owner eyeball, not a headless assertion.
+bool runDoorSelfTest();
 
 } // namespace x3::game

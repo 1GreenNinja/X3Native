@@ -89,6 +89,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool showroomShot = hc.showroomShot;    const std::string& showroomShotPath = hc.showroomShotPath;
     const bool carShot = hc.carShot;              const std::string& carShotDir = hc.carShotDir;
     const bool upperShot = hc.upperShot;          const std::string& upperShotDir = hc.upperShotDir;
+    const bool doorShot  = hc.doorShot;           const std::string& doorShotDir  = hc.doorShotDir;
     const bool rescueShot = hc.rescueShot;        const std::string& rescueShotDir = hc.rescueShotDir;
     const bool planetShot = hc.planetShot;        const std::string& planetShotPath = hc.planetShotPath;
     const bool nightskyShot = hc.nightskyShot;    const std::string& nightskyShotPath = hc.nightskyShotPath;
@@ -1188,6 +1189,151 @@ int dispatchScreenshotHosts(HostContext& hc) {
             uplay.shutdown();
         }
         uphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
+    }
+
+    // ======================================================================
+    // DOOR-MESH-SWAP visual gate (--screenshot-doors [outDir]).
+    //
+    // Every other canon capture path builds with CanonBuildOpts::doors == nullptr,
+    // so NO capture in this repo has ever actually drawn a door. This one builds
+    // the canon tower WITH a DoorSystem, then shoots a real cut doorway on each
+    // floor that has one — head-on from the approach side at standing eye height —
+    // at CLOSED, MID-SLIDE and OPEN. That is what GATE B (the visual review) needs
+    // to judge: per-floor leaf tint + signage colour, the frame seated in the cut,
+    // and that the OPEN leaf is genuinely clear of the opening.
+    // ======================================================================
+    if (doorShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(doorShotDir, mkec);
+        x3::logInfo("--screenshot-doors: building canon tower + doors, capturing to " + doorShotDir);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> dphys(x3::phys::createPhysicsWorld());
+        dphys->init();
+        x3::game::Scene dscene;
+        x3::game::DoorSystem ddoors;
+        x3::game::CanonFloor dfloor = x3::game::loadCanonTower(x3::game::canonProjectJsonPath());
+        bool ok = true;
+        if (!dfloor.valid()) {
+            x3::logError("--screenshot-doors: canonical JSON absent — cannot capture");
+            ok = false;
+        } else {
+            x3::game::CanonBuildOpts dopts;
+            dopts.doors = &ddoors;
+            dopts.lockSecuredRooms = true;   // so a LOCKED door's red signage is in the set
+            x3::game::buildCanonFloor(dfloor, dscene, *device, *dphys, dopts);
+
+            device->setAmbient(0.30f, 0.30f, 0.34f);
+            { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+            std::vector<uint32_t> vis; vis.reserve(dfloor.rooms.size());
+            for (uint32_t i = 0; i < (uint32_t)dfloor.rooms.size(); ++i) vis.push_back(i);
+            dscene.setVisibleRooms(vis.data(), (uint32_t)vis.size());
+
+            // Shoot one door head-on. `back` is how far the eye stands off the slab
+            // along the wall normal (the approach room), so the leaf fills the frame.
+            auto doorShotAt = [&](const x3::game::Door& d, const std::string& outPath,
+                                  const char* what) -> bool {
+                const float bottomY = d.closedPos.y - d.height * 0.5f;
+                // WHICH SIDE TO STAND ON. A fixed side put the camera inside wall meat
+                // (or in a 2 m closet staring at a blank face) on half the floors, which
+                // is exactly the sort of thing that makes a "visual gate" a lie. Probe
+                // both flanking sides, take whichever room is DEEPER along the wall
+                // normal, and pull the eye in so it stays inside that room.
+                const float ux = (d.axis == 0) ? 1.0f : 0.0f;   // axis 0: wall plane X=const
+                const float uz = (d.axis == 0) ? 0.0f : 1.0f;
+                const float probeY = bottomY + 1.0f;
+                float side = -1.0f, bestDepth = 0.0f;
+                for (int sgn = -1; sgn <= 1; sgn += 2) {
+                    const float px = d.closedPos.x + ux * 1.2f * (float)sgn;
+                    const float pz = d.closedPos.z + uz * 1.2f * (float)sgn;
+                    const uint32_t r = dfloor.roomAt(px, probeY, pz);
+                    if (r == x3::game::kNoRoom) continue;
+                    const x3::game::CanonRoom& R = dfloor.rooms[r];
+                    const float depth = (d.axis == 0)
+                        ? ((sgn > 0) ? (R.x1() - d.closedPos.x) : (d.closedPos.x - R.x0()))
+                        : ((sgn > 0) ? (R.z1() - d.closedPos.z) : (d.closedPos.z - R.z0()));
+                    if (depth > bestDepth) { bestDepth = depth; side = (float)sgn; }
+                }
+                if (bestDepth <= 0.0f) bestDepth = 3.4f;        // no room resolved: fall back
+                const float back = std::min(3.4f, std::max(1.6f, bestDepth - 0.6f));
+                const float nx = ux * side, nz = uz * side;     // outward toward the eye
+                const float ex = d.closedPos.x + nx * back;
+                const float ey = bottomY + 1.65f;               // standing eye height
+                const float ez = d.closedPos.z + nz * back;
+                const float ax = d.closedPos.x, ay = bottomY + 1.20f, az = d.closedPos.z;
+                const float dx = ax - ex, dy = ay - ey, dz = az - ez;
+                device->setCamera(ex, ey, ez, std::atan2(dz, dx),
+                                  std::atan2(dy, std::sqrt(dx*dx + dz*dz)), 70.0f);
+                // Two practicals bracketing the doorway so the trim + signage read.
+                x3::rhi::PointLight pl{};
+                pl.range = 12.0f; pl.color[0]=5.0f; pl.color[1]=4.8f; pl.color[2]=4.4f;
+                x3::rhi::PointLight l0=pl, l1=pl;
+                l0.pos[0]=ex; l0.pos[1]=bottomY+2.6f; l0.pos[2]=ez;
+                l1.pos[0]=d.closedPos.x + nx*1.2f; l1.pos[1]=bottomY+2.6f;
+                l1.pos[2]=d.closedPos.z + nz*1.2f;
+                x3::rhi::PointLight ls[2] = { l0, l1 };
+                device->setPointLights(ls, 2);
+                const int kSettle = 6;
+                for (int i = 0; i < kSettle; ++i) {
+                    glfwPollEvents();
+                    if (i == kSettle-1) device->armCapture(outPath.c_str());
+                    auto f = device->beginFrame();
+                    if (f.valid) { dscene.render(*device, f); ddoors.drawMeshes(*device, f); }
+                    device->endFrame(f);
+                }
+                const bool wrote = device->captureFrame(outPath.c_str());
+                x3::logInfo(std::string(wrote ? "  wrote " : "  FAILED ") + outPath +
+                            std::string(" (") + what + ")");
+                return wrote;
+            };
+
+            // Pick the FIRST ordinary (unlocked, non-hatch) door on each floor index —
+            // one representative per floor identity.
+            uint32_t pick[x3::game::kDoorFloorCount];
+            for (uint32_t i = 0; i < x3::game::kDoorFloorCount; ++i) pick[i] = UINT32_MAX;
+            uint32_t lockedPick = UINT32_MAX;
+            for (uint32_t i = 0; i < ddoors.count(); ++i) {
+                const x3::game::Door& d = ddoors.at(i);
+                if (d.floorHatch) continue;
+                if (d.locked) { if (lockedPick == UINT32_MAX) lockedPick = i; continue; }
+                if (d.floorStyle < x3::game::kDoorFloorCount && pick[d.floorStyle] == UINT32_MAX)
+                    pick[d.floorStyle] = i;
+            }
+            for (uint32_t f = 0; f < x3::game::kDoorFloorCount; ++f) {
+                if (pick[f] == UINT32_MAX) {
+                    x3::logInfo(std::string("  (no door on ") + x3::game::doorStyleFor(f).name + ")");
+                    continue;
+                }
+                const std::string tag = "f" + std::to_string(f);
+                ok &= doorShotAt(ddoors.at(pick[f]), doorShotDir + "/" + tag + "_closed.png",
+                                 x3::game::doorStyleFor(f).name);
+            }
+            // MOTION + CLEARANCE on one representative door: closed -> ~40% -> open.
+            // The OPEN frame is the passability eyeball (headless D4 proves collision;
+            // this proves the LEAF is visually clear of the opening too).
+            {
+                uint32_t hero = UINT32_MAX;
+                for (uint32_t f = 0; f < x3::game::kDoorFloorCount && hero == UINT32_MAX; ++f)
+                    if (pick[f] != UINT32_MAX) hero = pick[f];
+                if (hero != UINT32_MAX) {
+                    x3::game::Door& d = ddoors.at(hero);
+                    ddoors.startOpening(d);
+                    for (int i = 0; i < 24; ++i) ddoors.update(1.0f/60.0f, dscene, *dphys);
+                    ok &= doorShotAt(d, doorShotDir + "/motion_mid.png", "mid-slide (eased)");
+                    for (int i = 0; i < 90; ++i) ddoors.update(1.0f/60.0f, dscene, *dphys);
+                    ok &= doorShotAt(d, doorShotDir + "/motion_open.png", "OPEN — clearance eyeball");
+                }
+            }
+            // A LOCKED door: its signage must burn RED regardless of floor.
+            if (lockedPick != UINT32_MAX)
+                ok &= doorShotAt(ddoors.at(lockedPick), doorShotDir + "/locked_red.png",
+                                 "LOCKED — red signage over the floor colour");
+            ddoors.stopAllMotors();
+        }
+        dphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();

@@ -19,6 +19,9 @@ namespace x3 { namespace apphost {
 struct CliOptions {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
+         // --test-doors: door-mesh-swap polish gate (ease curve / dt-scaling /
+         // per-floor variants / 1.8 m capsule PASSABILITY / servo start-stop).
+         testDoors = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBlockout = false,
          testBarrels = false, testGlass = false, testHoloterm = false, testLlm = false, testEditorAi = false, testEcs = false, testEcsRender = false,
@@ -153,6 +156,13 @@ struct CliOptions {
     // MantisArbiter) on a HeadlessDevice + Jolt world; asserts the roster is
     // complete + ordered, each row builds, and per-species stat invariants hold.
     bool        testCanonAliens = false;
+    // --test-packspiders (PACK-HARVEST ARACHNIDS): the two spider rows harvested
+    // from the licensed "Spiders - characters with animations" pack. Builds each
+    // row on a HeadlessDevice + Jolt world and asserts the roster/stat invariants
+    // AND the harvest itself — the GLB really carries a 70-joint skinned arachnid
+    // rig with all six canonical clips moving, and MonsterSystem's stock fuzzy
+    // resolver binds every clip slot (no overrideClip needed). Additive flag.
+    bool        testPackSpiders = false;
     // --test-clone (THE CLONE — Act-1 finale boss on F7). Builds the 3-phase
     // Clone + the neural-collar minigame on a HeadlessDevice + Jolt world and
     // asserts: SEPARATION spawn (+ restrained non-combat Sarah placeholder), the
@@ -471,6 +481,13 @@ struct CliOptions {
     // spaces. Headless; exits after. (Re-homed from playable-build eab7ff4.)
     bool        upperShot = false;
     std::string upperShotDir = "docs/screenshots/upper_floors";
+    // --screenshot-doors [outDir]: DOOR-MESH-SWAP visual gate. Builds the canon
+    // tower WITH its DoorSystem and shoots a real cut doorway on each floor that
+    // has one, head-on from the approach side, at closed / mid-slide / open. This
+    // is the only capture path that draws DoorSystem::drawMeshes (the upper-floors
+    // host builds with opts.doors == nullptr, so it has never shown a door).
+    bool        doorShot = false;
+    std::string doorShotDir = "docs/screenshots/doors";
     bool        rescueShot = false;                  // F2 three-captive rescue-room closeups
     std::string rescueShotDir = "captures";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME

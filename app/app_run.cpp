@@ -1931,6 +1931,17 @@ int runDefaultHost(HostContext& hc) {
                 audio->load(x3::game::resolveAudio("doors/door_open.wav")),
                 audio->load(x3::game::resolveAudio("doors/door_close.wav")),
                 audio->load(x3::game::resolveAudio("doors/door_locked.wav")));
+            // DOOR-MESH SWAP (mega-polish "audio"): a SUSTAINED servo bed that is
+            // started on the frame the slab begins to move and stopped on the frame
+            // it seats — the elevator's motor-loop pattern (ElevatorSystem::m_motorLoop),
+            // applied to doors. This REPLACES the open/close one-shots as the motion
+            // voice: door_open.wav is 2.19 s against a ~1 s slide, so as a fire-and-
+            // forget voice it audibly ran on after the door had stopped (the chaingun
+            // defect class). The short thunk marks the seat. A missing WAV loads
+            // invalid and the door falls back to the one-shots — never silent.
+            canonDoors.setMotorAudio(
+                audio->load(x3::game::resolveAudio("interact/servo_loop.wav")),
+                audio->load(x3::game::resolveAudio("interact/door_thunk.wav")));
             // W2-A2 (W2-E residual): PVS-gate the canon door slabs. Probe the two
             // rooms flanking each slab (across the wall normal per Door::axis)
             // against the frame's visible-room set; draw if either is visible.
@@ -6076,7 +6087,7 @@ int runDefaultHost(HostContext& hc) {
                                 const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
                                 if (verdict[0] == 'D' && dist > 0.001f) {
                                     const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
-                                    const x3::phys::RayHit los = physics->rayCast(
+                                    const x3::phys::RayHit los = physics->rayCastStrict(
                                         hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
                                     if (los.hit) verdict = "culled:LOS";
                                 }
@@ -11015,7 +11026,10 @@ int runDefaultHost(HostContext& hc) {
                             const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
                             if (dist > 0.001f) {
                                 const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
-                                const x3::phys::RayHit los = physics->rayCast(hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
+                                // STRICT Static — the permissive mask also reports the
+                                // ENEMY'S OWN box (0.6 m half-width vs this 0.3 m
+                                // shortening), so every bar was silently culled.
+                                const x3::phys::RayHit los = physics->rayCastStrict(hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
                                 if (los.hit) continue;   // wall in the way -> hidden
                             }
                             c.y += 2.2f;                 // anchor above the head
@@ -11660,7 +11674,9 @@ int runDefaultHost(HostContext& hc) {
                         bool vis = true;
                         if (dist > 0.01f) {
                             const x3::phys::Vec3 dir{ hx/dist, hy/dist, hz/dist };
-                            x3::phys::RayHit rh = physics->rayCast(eye, dir, dist - 0.5f,
+                            // STRICT Static — the permissive mask reported the enemy's
+                            // own 0.6 m-half-width box and hid every nameplate.
+                            x3::phys::RayHit rh = physics->rayCastStrict(eye, dir, dist - 0.5f,
                                                                    x3::phys::Layer::Static);
                             if (rh.hit) vis = false;   // a wall/door is between the eye and this enemy
                         }

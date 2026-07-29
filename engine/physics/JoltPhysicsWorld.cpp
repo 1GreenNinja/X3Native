@@ -674,6 +674,21 @@ public:
     }
 
     RayHit rayCast(Vec3 origin, Vec3 dir, float maxDist, Layer mask) override {
+        // Object-layer filter restricts the ray to bodies in layers the mask
+        // targets (see queryHitsLayer) — permissive: it also reports bodies the
+        // mask's layer would COLLIDE with. See the trap note in IPhysicsWorld.h.
+        MaskObjFilter of(mask);
+        return castWithFilter(origin, dir, maxDist, of);
+    }
+
+    RayHit rayCastStrict(Vec3 origin, Vec3 dir, float maxDist, Layer mask) override {
+        // EXACT layer match only — the LOS / wall-probe primitive.
+        StrictObjFilter of(mask);
+        return castWithFilter(origin, dir, maxDist, of);
+    }
+
+    RayHit castWithFilter(Vec3 origin, Vec3 dir, float maxDist,
+                          const JPH::ObjectLayerFilter& of) {
         RayHit out;
         float len = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
         if (len < 1e-6f || maxDist <= 0.0f) return out; // zero-length dir -> no hit
@@ -682,11 +697,9 @@ public:
         JPH::RRayCast ray{ toRJ(origin), d * maxDist };
 
         JPH::RayCastResult hit;
-        // Object-layer filter restricts the ray to bodies in layers the mask
-        // targets (see queryHitsLayer). Broadphase filter accepts everything;
-        // the object-layer filter does the real narrowing.
+        // Broadphase filter accepts everything; the object-layer filter does the
+        // real narrowing.
         JPH::BroadPhaseLayerFilter bpf;
-        MaskObjFilter of(mask);
         const JPH::NarrowPhaseQuery& npq = m_system->GetNarrowPhaseQuery();
         if (npq.CastRay(ray, hit, bpf, of)) {
             out.hit = true;
@@ -902,6 +915,16 @@ private:
         bool ShouldCollide(JPH::ObjectLayer l) const override {
             return queryHitsLayer(m_mask, l);
         }
+    private:
+        JPH::ObjectLayer m_mask;
+    };
+
+    // STRICT ray filter: EXACT object-layer match, no collision-matrix
+    // fall-through. Backs rayCastStrict() — the LOS / wall-probe primitive.
+    class StrictObjFilter final : public JPH::ObjectLayerFilter {
+    public:
+        explicit StrictObjFilter(Layer mask) : m_mask(toObjLayer(mask)) {}
+        bool ShouldCollide(JPH::ObjectLayer l) const override { return l == m_mask; }
     private:
         JPH::ObjectLayer m_mask;
     };
@@ -1483,6 +1506,62 @@ bool runPhysicsSelfTest() {
         Vec3 p = w->getBodyPosition(b2);
         check(b2.valid() && approx(p.y, 0.5f, 0.06f),
               "T12 stale/invalid removeBody is a no-op; world stays functional");
+        w->shutdown();
+    }
+
+    // ---- T13 (LOS MASK REGRESSION): a line-of-sight probe toward a hostile
+    // standing IN THE OPEN must read CLEAR, and must read BLOCKED once a real
+    // wall is interposed.
+    //
+    // This is the bug that made Sarah's companion combat never fire a shot and
+    // culled every enemy health bar / nameplate / chat bubble: rayCast's `mask`
+    // is permissive (Static<->Enemy collide in the matrix), so a Static-masked
+    // "wall probe" cast at a hostile HITS THE HOSTILE and the caller concludes
+    // it is blocked. rayCastStrict() is the fix. The first two asserts pin the
+    // TRAP itself so nobody "simplifies" the two entry points back into one.
+    {
+        std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+        w->init();
+        // Shooter at the origin (eye y=1.2). Down +Z, 6 m away: a HOSTILE standing
+        // in the open, its Enemy hitbox sized like a real monster (0.6 m half-width,
+        // see monster.cpp). Down -Z, 3 m away: a DYNAMIC prop / corpse.
+        const Vec3 eye{ 0.0f, 1.2f, 0.0f };
+        const Vec3 fwd{ 0.0f, 0.0f, 1.0f };
+        const Vec3 back{ 0.0f, 0.0f, -1.0f };
+        w->addBox(Vec3{0.6f, 1.0f, 0.6f}, Vec3{0.0f, 1.0f,  6.0f}, 0.0f, Layer::Enemy);
+        // NOTE mass>0: addBox with mass<=0 on Layer::Dynamic is silently re-layered
+        // to ObjLayers::Static by createBody(), which would make this a real wall.
+        w->addBox(Vec3{0.4f, 0.4f, 0.4f}, Vec3{0.0f, 1.2f, -3.0f}, 5.0f, Layer::Dynamic);
+        for (int i = 0; i < 2; ++i) w->step(kFixedDt);
+
+        // The probe an LOS caller writes: stop short of the target's centre.
+        const float losLen = 6.0f - 0.3f;
+
+        // (a) THE TRAP, pinned: the permissive mask reports the hostile as a "wall".
+        const bool trapStillReal =
+            w->rayCast(eye, fwd, losLen, Layer::Static).hit;
+        // (b) STRICT sees only real static geometry -> hostile in the open = CLEAR.
+        const bool clearInOpen =
+            !w->rayCastStrict(eye, fwd, losLen, Layer::Static).hit;
+        // (c) strict still finds the hostile when you actually ask for Enemy.
+        const bool strictFindsEnemy =
+            w->rayCastStrict(eye, fwd, losLen, Layer::Enemy).hit;
+        // (d) a DYNAMIC prop / corpse is not a wall either: the permissive mask
+        //     calls it one, strict sees straight past it.
+        const bool seesPastProp =
+            !w->rayCastStrict(eye, back, 5.0f, Layer::Static).hit &&
+             w->rayCast(eye, back, 5.0f, Layer::Static).hit;
+
+        // Now interpose a genuine WALL at z=3 (spans the whole line of fire).
+        w->addBox(Vec3{4.0f, 3.0f, 0.2f}, Vec3{0.0f, 3.0f, 3.0f}, 0.0f, Layer::Static);
+        for (int i = 0; i < 2; ++i) w->step(kFixedDt);
+        const RayHit walled = w->rayCastStrict(eye, fwd, losLen, Layer::Static);
+        const bool blockedByWall = walled.hit && approx(walled.distance, 2.8f, 0.35f);
+
+        check(trapStillReal && clearInOpen && strictFindsEnemy && blockedByWall &&
+              seesPastProp,
+              "T13 LOS probe: strict Static is CLEAR through a hostile/prop, "
+              "BLOCKED by a real wall (rayCast mask is permissive by design)");
         w->shutdown();
     }
 
