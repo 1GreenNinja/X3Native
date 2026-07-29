@@ -11,7 +11,7 @@
 // MAPPING NOTES (JS -> native):
 //   * The JS parents everything to a TransformNode at (originX, D.Y, originZ) and
 //     positions children RELATIVE. Native addBox authors WORLD-space geometry, so
-//     we keep originX/Z = 0 and ADD the club Y (kClubY = -200) to every center Y.
+//     we keep originX/Z = 0 and ADD the club Y (kClubY = -800) to every center Y.
 //     A child at JS-local y becomes world y = (kClubY + y).
 //   * JS axes: Babylon is left-handed (+Z forward). X3Native is right-handed
 //     (-Z forward; docs/CONVENTIONS.md). The club is mirror-symmetric front/back
@@ -626,6 +626,125 @@ std::vector<uint8_t> makeStarburstRGBA(uint32_t n) {
     return px;
 }
 
+// ==================================================================
+// ★ LASER FLOOR-PATTERN textures (feat/club-lasers-axis, Tim 2026-07-19).
+// The REAL Late Night Speed laser signature (from Tim's photos): a red ceiling
+// laser box + cheap projectors throwing THIN BRIGHT CRISP lines — spirograph
+// swirls, a grid/mesh, radial fan sweeps, and a dot field — across the concrete
+// dance floor, reacting to the music. Authored as ADDITIVE emissive pattern discs
+// (ZERO point lights — the 64 cap is maxed): BLACK background adds nothing, the
+// laser lines add their saturated colour over the glossy floor and pool in its wet
+// reflection. update() SPINS + BEAT-ACCELERATES them and SWITCHES the pattern every
+// phrase so the show cycles (spirograph -> grid -> fan -> dots), never static.
+//
+// These differ from the DOME-DOT projectors above by drawing CRISP THIN LINES
+// (a ~1px core, not a soft glow blob): the laser look. Bright saturated laser
+// colours — laser GREEN especially (per the photos), plus red + blue.
+// ==================================================================
+
+// Additive line-point stamp for the laser textures: a THIN CRISP ~1px core (a
+// tight (1-d) falloff, NOT the soft dome-dot blob) so the traced curve reads as a
+// bright laser line over the black bg. Saturates each channel at 255 (additive).
+static inline void laserStamp(std::vector<uint8_t>& px, uint32_t n, float x, float y,
+                              float r, float g, float b, float gain) {
+    const int ix = (int)std::floor(x), iy = (int)std::floor(y);
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx) {
+            const int sx = ix + dx, sy = iy + dy;
+            if (sx < 0 || sy < 0 || sx >= (int)n || sy >= (int)n) continue;
+            const float ddx = (sx + 0.5f) - x, ddy = (sy + 0.5f) - y;
+            const float d = std::sqrt(ddx * ddx + ddy * ddy);
+            const float f = std::max(0.0f, 1.0f - d) * gain;   // crisp ~1px core
+            if (f <= 0.0f) continue;
+            uint8_t* p = &px[((size_t)sy * n + sx) * 4];
+            p[0] = (uint8_t)std::min(255.0f, p[0] + r * f * 255.0f);
+            p[1] = (uint8_t)std::min(255.0f, p[1] + g * f * 255.0f);
+            p[2] = (uint8_t)std::min(255.0f, p[2] + b * f * 255.0f);
+        }
+}
+
+// SPIROGRAPH swirl: a hypotrochoid traced in thin laser-green lines (the classic
+// spinning club-laser rose). Black bg (additive). Spun in update() so it swirls.
+std::vector<uint8_t> makeLaserSpiroRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    for (size_t i = 0; i < (size_t)n * n; ++i) px[i * 4 + 3] = 255;   // opaque; additive uses rgb
+    const float c = n * 0.5f;
+    const float R = 0.40f * n, r = 0.156f * n, d = 0.30f * n;         // hypotrochoid radii (px)
+    const float k = (R - r) / r;
+    const float lg[3] = { 0.20f, 1.0f, 0.28f };                       // laser green
+    // Trace enough loops to close the rose (r/gcd ~ many turns); fine step = crisp line.
+    const int steps = 9000;
+    for (int s = 0; s < steps; ++s) {
+        const float t = (float)s / steps * 2.0f * kPi * 8.0f;
+        const float x = c + (R - r) * std::cos(t) + d * std::cos(k * t);
+        const float y = c + (R - r) * std::sin(t) - d * std::sin(k * t);
+        laserStamp(px, n, x, y, lg[0], lg[1], lg[2], 0.9f);
+    }
+    return px;
+}
+
+// LASER GRID/mesh: thin crisp perpendicular lines (a projected laser grid on the
+// floor). Cyan lines one way, green the other, so the mesh reads in two colours.
+std::vector<uint8_t> makeLaserGridRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    for (size_t i = 0; i < (size_t)n * n; ++i) px[i * 4 + 3] = 255;
+    const int lines = 9;                                             // 9x9 laser mesh
+    const float cyan[3] = { 0.15f, 0.85f, 1.0f }, grn[3] = { 0.20f, 1.0f, 0.30f };
+    for (int l = 0; l <= lines; ++l) {
+        const float p = (0.06f + 0.88f * (float)l / lines) * n;      // inset from the rim
+        for (int t = 0; t < (int)n; ++t) {
+            laserStamp(px, n, p, (float)t, cyan[0], cyan[1], cyan[2], 0.85f);   // vertical (cyan)
+            laserStamp(px, n, (float)t, p, grn[0], grn[1], grn[2], 0.85f);      // horizontal (green)
+        }
+    }
+    return px;
+}
+
+// RADIAL FAN: a bright center throwing thin crisp laser rays outward (the fan
+// sweep). Alternating red/green/blue rays so the fan reads as a multi-colour rake.
+std::vector<uint8_t> makeLaserFanRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    for (size_t i = 0; i < (size_t)n * n; ++i) px[i * 4 + 3] = 255;
+    const float c = n * 0.5f;
+    const int rays = 20;
+    const float cols[3][3] = { {1.0f,0.12f,0.12f}, {0.20f,1.0f,0.28f}, {0.20f,0.45f,1.0f} };
+    for (int rr = 0; rr < rays; ++rr) {
+        const float a = (float)rr / rays * 2.0f * kPi;
+        const float ca = std::cos(a), sa = std::sin(a);
+        const float* col = cols[rr % 3];
+        const float rMax = n * 0.47f;
+        for (float rad = 0.0f; rad < rMax; rad += 0.5f) {
+            const float fade = 1.0f - rad / rMax;                    // fade toward the rim
+            laserStamp(px, n, c + ca * rad, c + sa * rad, col[0], col[1], col[2], 0.55f + 0.45f * fade);
+        }
+    }
+    return px;
+}
+
+// LASER DOT field: crisp bright dots on concentric rings (a laser dot-matrix, NOT
+// the soft dome mushroom dots) — laser green / red / blue, saturated + tight.
+std::vector<uint8_t> makeLaserDotsRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    for (size_t i = 0; i < (size_t)n * n; ++i) px[i * 4 + 3] = 255;
+    const float c = n * 0.5f;
+    const float cols[3][3] = { {0.20f,1.0f,0.28f}, {1.0f,0.14f,0.16f}, {0.24f,0.5f,1.0f} };
+    const int rings = 4;
+    for (int rg = 0; rg < rings; ++rg) {
+        const float rad = (0.14f + 0.24f * rg) * n;
+        const int dots = 8 + rg * 6;
+        for (int dd = 0; dd < dots; ++dd) {
+            const float a = (float)dd / dots * 2.0f * kPi + rg * 0.3f;
+            const float dcx = c + std::cos(a) * rad, dcy = c + std::sin(a) * rad;
+            const float* col = cols[(rg + dd) % 3];
+            // A crisp 2px dot (a couple of stamps clustered) — brighter than a single texel.
+            for (int oy = -1; oy <= 1; ++oy)
+                for (int ox = -1; ox <= 1; ++ox)
+                    laserStamp(px, n, dcx + ox * 0.6f, dcy + oy * 0.6f, col[0], col[1], col[2], 0.7f);
+        }
+    }
+    return px;
+}
+
 // Mirror-ball facets: silver tile grid with per-tile hashed brightness (sparkle)
 // and dark grout — reads as hundreds of tiny mirrors under the moving lights.
 std::vector<uint8_t> makeFacetRGBA(uint32_t n) {
@@ -917,7 +1036,7 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     const uint32_t entsBefore = scene.size();
 
     // The club Y origin: everything authored at JS-local y is offset by oy.
-    const float oy = kClubY;          // -200
+    const float oy = kClubY;          // -800
     const float CW = kCW, CL = kCL, CH = kCH;
     const float HL = CW / 2, HW = CL / 2;   // half-extents: X (long) / Z (short)
     const float T  = 0.3f;            // wall thickness (JS WALL_T)
@@ -1916,6 +2035,50 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
         // tilted flat but placed near the wall so its dots read on the CMU block.
         addProjectorDisc(3.4f, -10.0f, oy + 0.16f, 3.5f, 1.0f, dotTex0, 0.75f, 2.0f, 1.2f, 3.1f);
 
+        // ★ LASER FLOOR PATTERNS (feat/club-lasers-axis) — thin bright crisp laser lines
+        // (spirograph / grid / fan / dots) projected on the dance floor, ABOVE the dome
+        // dots (oy+0.19/0.20 so they layer over the soft dots + still pool/reflect in the
+        // wet checkerboard). One texture per look; update() SWITCHES the bound texture
+        // each phrase so each disc cycles through all four patterns, BEAT-ACCELERATES its
+        // swirl, and pulses hard on the kick. ADDITIVE emissive geometry — ZERO new point
+        // lights (the 64 cap is untouched). Bright emBase + big emAmp = a saturated laser
+        // punch on every beat.
+        auto laserSpiro = makeLaserSpiroRGBA(kDotN);
+        auto laserGrid  = makeLaserGridRGBA(kDotN);
+        auto laserFan   = makeLaserFanRGBA(kDotN);
+        auto laserDots  = makeLaserDotsRGBA(kDotN);
+        const x3::rhi::TextureHandle lSpiro = device.createTexture(laserSpiro.data(), kDotN, kDotN, true);
+        const x3::rhi::TextureHandle lGrid  = device.createTexture(laserGrid.data(),  kDotN, kDotN, true);
+        const x3::rhi::TextureHandle lFan   = device.createTexture(laserFan.data(),   kDotN, kDotN, true);
+        const x3::rhi::TextureHandle lDots  = device.createTexture(laserDots.data(),  kDotN, kDotN, true);
+        // Place a LASER pattern disc: seeds it with `first` and hands update() the full
+        // 4-pattern cycle to switch through per phrase (offset per disc so the two floor
+        // lasers show DIFFERENT patterns at once — a fuller show).
+        auto addLaserDisc = [&](float R, float wx, float wz, float spin, float phase,
+                                x3::rhi::TextureHandle first,
+                                std::vector<x3::rhi::TextureHandle> cyc) {
+            x3::prims::PrimMesh g = makeDisc(R, 1.0f);
+            Entity e;
+            e.mesh = device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                       g.index.data(), (uint32_t)g.index.size());
+            e.tex = first; e.emissiveTex = first;
+            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+            e.emissive[0] = 1.0f; e.emissive[1] = 1.0f; e.emissive[2] = 1.0f; e.emissive[3] = 2.6f;
+            e.transparent = true;
+            e.glass.opacity = 0.0f; e.glass.refraction = 0.0f;
+            e.glass.roughness = 0.0f; e.glass.specular = 0.0f; e.glass.additive = 1.0f;
+            e.transform[12] = wx; e.transform[13] = oy + 0.19f; e.transform[14] = wz;
+            e.tag = (uint32_t)Tag::Static;
+            const uint32_t id = scene.add(e);
+            Projector pj{ id, wx, oy + 0.19f, wz, spin, 1.0f, 2.6f, 3.2f, phase };
+            pj.patterns = std::move(cyc);
+            m_projectors.push_back(std::move(pj));
+        };
+        // Two laser discs over the dance floor, spinning opposite ways, phase-offset so
+        // they're on different patterns of the cycle at any moment (spiro over grid, etc).
+        addLaserDisc(5.2f, -6.0f, -1.5f,  0.9f, 0.0f, lSpiro, { lSpiro, lGrid, lFan, lDots });
+        addLaserDisc(4.0f,  0.5f,  1.5f, -1.3f, 2.0f, lFan,   { lFan, lDots, lSpiro, lGrid });
+
         // Visible DOME/MUSHROOM PROJECTOR FIXTURES on the ceiling (the cheap party
         // lights themselves): a stem + a multi-faceted emissive dome throwing colour.
         auto domeFixture = [&](float fx, float fz, const float* domeEm) {
@@ -2815,6 +2978,16 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
     return m_stats;
 }
 
+float Club1127World::beatThump() const {
+    // The house/jukebox beat envelope — the same pow(sin,6) kick the subs/tiles ride.
+    const float beatHz    = m_bpm / 60.0f;
+    const float beatCount = m_time * beatHz;
+    const float s = std::sin(beatCount * kPi);
+    const float k = s > 0.0f ? s : 0.0f;
+    const float k2 = k * k;
+    return k2 * k2 * k2;   // == pow(max(0,sin),6)
+}
+
 void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& device,
                            x3::phys::IPhysicsWorld& physics) {
     if (!m_built) return;
@@ -2867,18 +3040,37 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         e.emissive[3] = 0.14f + 0.14f * thump;
     }
 
-    // --- SPIN the DIY dome/starburst PROJECTOR discs (transform 3x3 = Y-rotation about
-    // their own centre; translation kept) + breathe their emissive on the beat. This
-    // throws the signature spinning colored dots across the floor/ceiling. ---
+    // --- SPIN the DIY dome/starburst PROJECTOR discs + drive the LASER FLOOR PATTERNS
+    // (transform 3x3 = Y-rotation about their own centre; translation kept) + breathe
+    // their emissive on the beat. Dome discs: steady spin + soft breathe (spinning dots).
+    // LASER discs (pj.patterns non-empty): the swirl BEAT-ACCELERATES (the rose spins
+    // faster right on the kick), the emissive PULSES hard, and the bound texture SWITCHES
+    // every 8-beat phrase so the show cycles spirograph -> grid -> fan -> dots. ---
+    const int projPhrase = (int)(beatCount / 8.0f);
     for (const auto& pj : m_projectors) {
         if (pj.ent >= scene.size()) continue;
-        const float ang = t * pj.spin + pj.phase;
-        const float c = std::cos(ang), s = std::sin(ang);
         Entity& e = scene.get(pj.ent);
-        // Y-rotation in the upper 3x3 (disc lies in XZ), translation columns untouched.
-        e.transform[0] = c;  e.transform[2] = -s;
-        e.transform[8] = s;  e.transform[10] = c;
-        e.emissive[3] = pj.emBase + pj.emAmp * thump;   // dots pulse to the track
+        if (!pj.patterns.empty()) {
+            // LASER: beat-accelerated swirl (base drift + a kick-driven surge so the
+            // pattern lurches faster on each beat) and a HARD emissive punch.
+            const float kick  = thump * thump;
+            const float accel = t * pj.spin + 3.5f * kick * (pj.spin >= 0.0f ? 1.0f : -1.0f);
+            const float ang = accel + pj.phase;
+            const float c = std::cos(ang), s = std::sin(ang);
+            e.transform[0] = c;  e.transform[2] = -s;
+            e.transform[8] = s;  e.transform[10] = c;
+            e.emissive[3] = pj.emBase + pj.emAmp * thump;   // saturated laser punch on the beat
+            // Switch the pattern every phrase (spiro -> grid -> fan -> dots), offset per disc.
+            const x3::rhi::TextureHandle tex = pj.patterns[(size_t)projPhrase % pj.patterns.size()];
+            e.tex = tex; e.emissiveTex = tex;
+        } else {
+            const float ang = t * pj.spin + pj.phase;
+            const float c = std::cos(ang), s = std::sin(ang);
+            // Y-rotation in the upper 3x3 (disc lies in XZ), translation columns untouched.
+            e.transform[0] = c;  e.transform[2] = -s;
+            e.transform[8] = s;  e.transform[10] = c;
+            e.emissive[3] = pj.emBase + pj.emAmp * thump;   // dots pulse to the track
+        }
     }
 
     // --- POLISH: MIRROR-BALL SPARKLE DOTS. The cluster of colored point lights orbits
@@ -2931,17 +3123,23 @@ void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& devic
         for (int i = 0; i < 4; ++i) {
             auto& mh = m_movingHeads[i];
             const float* gel = kSpotGels[(i + phrase) & 3];
-            // POOL PATH: a WIDE figure-8 under the fixture, its whole pattern slowly
-            // ROTATED (staggered per fixture) so the beams sweep/pan across the room —
-            // not four beams bobbing in place. Amplitude ~2.6 x 1.9 m => a strong pan/
-            // tilt (was 1.7 x 1.1 — barely a wobble). Steps on the eighth-note grid.
-            const float p2 = sweep + i * (kPi / 2.0f);
-            const float dx = 2.6f * std::sin(p2);
-            const float dz = 1.9f * std::sin(2.0f * p2);
-            const float th = beatCount * 0.20f + (float)i * 1.7f;   // slow per-fixture room pan
-            const float ct = std::cos(th), st = std::sin(th);
-            const float px = mh.fx + dx * ct - dz * st;
-            const float pz = mh.fz + dx * st + dz * ct;
+            // POOL PATH — CLEAN AXIS SWEEP (feat/club-lasers-axis, Tim: "move ON AN AXIS
+            // like real DJ moving heads"). Each head PANS about its vertical yoke axis +
+            // TILTS, so the beam pool traces a clean CIRCULAR/ARC path around the room —
+            // NOT the old figure-8 wobble-in-place. The pan is BEAT-STEPPED (rides the
+            // eased eighth-note staircase `step` so it JERKS forward on each beat like a
+            // real fixture) plus a slow continuous drift; rate + direction + phase are
+            // STAGGERED per head so the 4 beams sweep at different speeds and CROSS.
+            static const float kPanRate[4]  = {  0.42f, -0.30f,  0.55f, -0.38f };  // rad per eighth-step (beat jerk)
+            static const float kPanPhase[4] = {  0.0f, kPi * 0.5f, kPi, kPi * 1.5f }; // start bearings (fan them out)
+            static const float kPanDrift[4] = {  0.11f, -0.08f,  0.14f, -0.10f };  // rad/beat continuous drift
+            const float pan = kPanPhase[i] + kPanRate[i] * step + kPanDrift[i] * beatCount;
+            // TILT: the pool RADIUS from directly under the fixture breathes on its own
+            // slow clock, so the clean circle becomes a sweeping ARC (the head raising +
+            // lowering its aim = a visible tilt), phase-offset per head.
+            const float tilt = 2.2f + 1.0f * std::sin(beatCount * 0.33f + (float)i * 1.3f);
+            const float px = mh.fx + tilt * std::cos(pan);
+            const float pz = mh.fz + tilt * std::sin(pan);
             auto& L = m_lights[m_staticLightCount + i];
             L.pos[0] = px; L.pos[2] = pz;                  // Y stays at 1.15 m
             L.color[0] = gel[0] * breathe; L.color[1] = gel[1] * breathe; L.color[2] = gel[2] * breathe;
@@ -3209,11 +3407,11 @@ bool runClubSelfTest() {
         const float wX = s.roomMaxX - s.roomMinX;   // ~30.48 (100 ft, long axis)
         const float wZ = s.roomMaxZ - s.roomMinZ;   // ~13.11 (43 ft)
         const float h  = s.ceilingY - s.floorY;     // ~9.14
-        const bool yOk   = std::fabs(s.floorY - (-200.0f)) < 0.01f;
+        const bool yOk   = std::fabs(s.floorY - (-800.0f)) < 0.01f;
         const bool footOk = std::fabs(wX - 30.48f) < 0.05f && std::fabs(wZ - 13.106f) < 0.05f;
         const bool ceilOk = std::fabs(h - 9.14f) < 0.05f;
         check(yOk && footOk && ceilOk,
-              "main room is 100x43x30 ft (30.48x13.11x9.14 m) with its floor at Y=-200");
+              "main room is 100x43x30 ft (30.48x13.11x9.14 m) with its floor at Y=-800");
     }
 
     // (2) Suspended DJ booth: platform + turntables + 2 OLED + keypad door.
@@ -3250,14 +3448,14 @@ bool runClubSelfTest() {
     // (9) Dance floor + VIP/couch seating.
     check(s.hasDanceFloor && s.couches >= 3, "dance-floor checkerboard + VIP/couch seating");
 
-    // (10) Player spawn sits inside the room footprint, on the floor at Y=-200.
+    // (10) Player spawn sits inside the room footprint, on the floor at Y=-800.
     {
         const x3::phys::Vec3 sp = club.spawn();
         const bool inX = sp.x > s.roomMinX && sp.x < s.roomMaxX;
         const bool inZ = sp.z > s.roomMinZ && sp.z < s.roomMaxZ;
-        const bool onFloor = sp.y >= -200.0f - 0.01f && sp.y <= -200.0f + 1.0f;
+        const bool onFloor = sp.y >= -800.0f - 0.01f && sp.y <= -800.0f + 1.0f;
         check(inX && inZ && onFloor && std::isfinite(sp.x) && std::isfinite(sp.z),
-              "player spawn is inside the room footprint on the Y=-200 floor");
+              "player spawn is inside the room footprint on the Y=-800 floor");
     }
 
     // (11) Animate a few frames: ORB spins, lights orbit, blacklights pulse. Assert
@@ -3398,11 +3596,11 @@ bool runClubNpcsSelfTest() {
         }
         check(anchorsOk, "every NPC has a finite talk anchor + entry tree + positive reach");
     }
-    // Danny on the main floor (Y ~ -200); Amara + Emma up at the Private Lounge
+    // Danny on the main floor (Y ~ -800); Amara + Emma up at the Private Lounge
     // (well above the club floor). Distinct positions, not stacked.
     if (dN && aN && eN) {
-        const bool dannyFloor = std::fabs(dN->anchor.y - (-200.0f + 1.0f)) < 0.5f;
-        const bool loungeUp   = aN->anchor.y > -196.0f && eN->anchor.y > -196.0f;
+        const bool dannyFloor = std::fabs(dN->anchor.y - (-800.0f + 1.0f)) < 0.5f;
+        const bool loungeUp   = aN->anchor.y > -796.0f && eN->anchor.y > -796.0f;
         const float sep = std::fabs(aN->anchor.x - eN->anchor.x) +
                           std::fabs(aN->anchor.z - eN->anchor.z);
         check(dannyFloor && loungeUp && sep > 0.5f,
@@ -3418,7 +3616,7 @@ bool runClubNpcsSelfTest() {
             if (hit < 0 || club.canonNpcs()[(size_t)hit].chatId != n->chatId) eachResolves = false;
         }
         check(eachResolves, "E-to-talk resolves Danny / Amara / Emma from a point beside each");
-        const int none = club.talkTarget(x3::phys::Vec3{ 9999.0f, -200.0f, 9999.0f });
+        const int none = club.talkTarget(x3::phys::Vec3{ 9999.0f, -800.0f, 9999.0f });
         check(none < 0, "E-to-talk resolves NOTHING from far outside every reach");
     }
 

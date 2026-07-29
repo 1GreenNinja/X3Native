@@ -73,8 +73,13 @@ namespace x3::game {
 // fixture census the headless `--test-club` self-test asserts against.
 class Club1127World {
 public:
-    // The club's world Y (floor of the main room). Canon: Y = -200 (§2.3).
-    static constexpr float kClubY = -200.0f;
+    // The club's world Y (floor of the main room). Canon: THE DEEP sits ~800 m
+    // underground. Relocated 2026-07 from Y=-200 to Y=-800 (Tim: "800M gives a lot
+    // more room for activities — side shoots, rooms" along the descent shaft). The
+    // whole club builds relative to this via its `oy` offset, so moving the constant
+    // moves the club; the surrounding earth/strata + the descent fall shaft extend
+    // down to cover the new depth (see club_bedrock.cpp / descent_fall.cpp).
+    static constexpr float kClubY = -800.0f;
 
     // Real Club 1127 main-room footprint (Tim's OWN bar2_architecture.js blueprint;
     // meters). CANON-PORT (feat/club-canon-port): the authoritative axis convention
@@ -196,6 +201,13 @@ public:
     static constexpr float kDefaultBpm = 85.5f;   // matches club_descent.wav
     void  setBpm(float bpm) { if (bpm > 20.0f && bpm < 400.0f) m_bpm = bpm; }
     float bpm() const { return m_bpm; }
+
+    // Current BEAT ENVELOPE (0 at rest .. 1 at the kick) off the house/jukebox clock —
+    // the SAME thump the subs/tiles/dancers ride in update(). Exposed so the CAVE
+    // ATMOSPHERE (feat/cave-atmosphere #2) can feel the club's bass rising up through
+    // the rock and pulse the Salvari crystals to it. Reads m_time/m_bpm (house clock);
+    // it does NOT sample CLUB LISTEN MODE (that's a live-loopback path in update()).
+    float beatThump() const;
 
     bool built() const { return m_built; }
 
@@ -319,6 +331,12 @@ private:
         float    axis = 1.0f;          // +1 = spin about Y (floor/ceiling disc)
         float    emBase = 2.0f, emAmp = 1.2f;
         float    phase = 0.0f;         // spin phase offset
+        // LASER floor-pattern discs (feat/club-lasers-axis): when `patterns` is
+        // non-empty this disc is a LASER show, not a soft dome-dot field. update()
+        // BEAT-ACCELERATES its spin, pulses it harder, and SWITCHES its bound texture
+        // to patterns[phrase % N] every 8-beat phrase (spirograph -> grid -> fan ->
+        // dots). Empty => a plain dome/starburst projector (spin + breathe only).
+        std::vector<x3::rhi::TextureHandle> patterns;
     };
     std::vector<Projector>                        m_projectors;
     // Canon dialogue NPCs (Danny/Amara/Emma) — talk anchors + chat-tree ids.

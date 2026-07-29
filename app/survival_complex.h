@@ -55,8 +55,8 @@ namespace x3::game {
 
 class SurvivalComplex {
 public:
-    // World Y of the club main floor — MUST match Club1127World::kClubY (-200).
-    static constexpr float kClubY   = -200.0f;
+    // World Y of the club main floor — MUST match Club1127World::kClubY (-800).
+    static constexpr float kClubY   = -800.0f;
     // L1 (Private Lounge) floor, club-local Y — matches club1127.cpp LOUNGE_Y.
     static constexpr float kLoungeY = 4.57f;
     // Vertical pitch between levels (m). 6 drops L1->L7 = 28.8 m ~ 94.5 ft

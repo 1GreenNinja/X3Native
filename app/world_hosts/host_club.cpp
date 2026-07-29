@@ -3,6 +3,10 @@
 #include "../scene.h"
 #include "../club1127.h"
 #include "../club_bedrock.h"                 // solid-earth encasement (underground)
+#include "../descent_fall.h"                 // THE DESCENT FALL (fall shaft + dark room + keypad + elevator)
+#include "../cave_atmosphere.h"              // CAVE ATMOSPHERE (crystal-only + bass-pulse + fog + singing)
+#include "../cave_river.h"                   // UNDERGROUND RIVER (self-emissive blue flowing stream)
+#include "../survival_complex.h"             // Route-B hub: elevator -> under-club hall -> complex L7
 #include "../jukebox.h"                     // Club Jukebox — Tim's personal-use "Self Radio"
 #include "../crowd.h"
 #include "../player.h"
@@ -34,7 +38,7 @@ int hostClub(HostContext& hc) {
 
     // ==== VERBATIM host body ====
     if (worldMode == "club") {
-        x3::logInfo("--world club: building the full Club 1127 (\"THE DEEP\") at Y=-200");
+        x3::logInfo("--world club: building the full Club 1127 (\"THE DEEP\") at Y=-800");
 
         // Physics world for the club area (separate from the Level-1 path below).
         std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
@@ -77,9 +81,16 @@ int hostClub(HostContext& hc) {
         // Blue point lights of the Salvari crystal hollows — merged into the light
         // set the host pushes each frame (club.update re-pushes only club lights).
         std::vector<x3::rhi::PointLight> bedrockLights;
+        x3::game::DescentFallLayout descentLayout{};   // filled by buildEarthTunnels, used by DescentFall
         {
             const auto& cs = club.stats();
             x3::game::BedrockConfig bc;
+            // CRYSTAL-ONLY UNDERWORLD (feat/cave-atmosphere #1): drop the rock's dim
+            // self-emissive floor HARD so unlit earth reads near-black and the glowing
+            // blue Salvari crystals are the only real light (eerie pools in the dark).
+            // Still non-zero so noclip-out shows dark VISIBLE rock, never the void.
+            // (sRGB-encode lifts even a tiny linear emissive to a readable dark tone.)
+            bc.emissive[0] = 0.028f; bc.emissive[1] = 0.024f; bc.emissive[2] = 0.026f;
             // Cavity = the club footprint + clearance (a few m of excavation before
             // rock; keeps the rock off the club's own walls/booth/speakers/orb).
             bc.cavMinX = cs.roomMinX - 8.0f;   bc.cavMaxX = cs.roomMaxX + 8.0f;
@@ -95,6 +106,77 @@ int hostClub(HostContext& hc) {
                         " solid-earth blocks (cavity ~" +
                         std::to_string((int)(bc.cavMaxX - bc.cavMinX)) + "x" +
                         std::to_string((int)(bc.cavMaxZ - bc.cavMinZ)) + "m, earth up to Y=0)");
+
+            // ==== EARTH TUNNEL NETWORK (feat/earth-tunnels) ====================
+            // Bore a WALKABLE strata descent down through the same solid earth from
+            // near the surface (Y~=-3) to the club floor (Y=-200), a bottom connector
+            // into the club's east elevator doorway, and 3 offshoot passages (one
+            // holds a Salvari crystal hollow). The descent is the vertical spine the
+            // elevator rides; the network is the first of "a tunnel network to dig
+            // out" (grow it via the recipe in club_bedrock.h). Its mood + crystal
+            // lights ride the SAME distance-culled bedrockLights channel.
+            x3::game::TunnelConfig tc;
+            tc.tint[0]=bc.tint[0]; tc.tint[1]=bc.tint[1]; tc.tint[2]=bc.tint[2]; tc.tint[3]=bc.tint[3];
+            tc.emissive[0]=bc.emissive[0]; tc.emissive[1]=bc.emissive[1];
+            tc.emissive[2]=bc.emissive[2]; tc.emissive[3]=bc.emissive[3];
+            tc.bottomY   = cs.floorY;                        // club floor (-200)
+            tc.topY      = -3.0f;                            // just under the surface
+            tc.shaftX    = cs.roomMaxX + 22.0f;              // solid earth east of the club
+            tc.shaftZ    = cs.roomMaxZ - 2.75f;              // aligned with the E doorway Z
+            tc.clubDoorX = cs.roomMaxX;                      // club east face
+            tc.clubDoorZ = cs.roomMaxZ - 2.75f;              // authored elevator-doorway Z
+            // ROUTE-B HUB: the elevator also drops to the BOTTOM (L7) of Danny's 7-level
+            // survival complex WEST of + below the club, via an under-club hall. Derive
+            // the L7 floor Y from the complex's own constants so it tracks the club depth;
+            // the east-edge attach X + L7 stair-bay Z mirror survival_complex.cpp.
+            using SC = x3::game::SurvivalComplex;
+            tc.underClubHall  = true;
+            tc.complexBottomY = SC::kClubY + (SC::kLoungeY - (float)(SC::kLevels - 1) * SC::kLevelH); // ~-824.23
+            tc.complexAttachX = -15.43f;                     // complex east edge (survival_complex.cpp maxX)
+            tc.complexAttachZ = 5.30f;                       // L7 stair-bay landing Z (survival_complex.cpp zHi)
+            const int nTun = x3::game::buildEarthTunnels(cscene, *device, *cphys, tc,
+                                                         &bedrockLights, &descentLayout);
+            x3::logInfo("--world club: descent fall — " + std::to_string(nTun) +
+                        " pieces (vertical fall shaft Y=" + std::to_string((int)tc.topY) + ".." +
+                        std::to_string((int)tc.bottomY) +
+                        " + dark landing room + keypad door + hall + elevator + 3 side-shoots)");
+        }
+        // THE DESCENT FALL interactive layer: the computer terminal + code-locked keypad
+        // door + the elevator, built onto the geometry above (positions from the layout).
+        // Audio is wired later on the live path (null here is fine for the headless shot).
+        x3::game::DescentFall descent;
+        descent.build(cscene, *device, *cphys, descentLayout, x3::game::riggedGlbRoot(), nullptr);
+
+        // ==== CAVE ATMOSPHERE (feat/cave-atmosphere) ============================
+        // Drive the crystal-only lighting + beat-pulse + fog (+ live bass/singing
+        // audio) on top of the fall-shaft / side-shoot cave geometry. configure() sets
+        // the cave band from the descent layout + club footprint; setClubLook() (below,
+        // after the club atmosphere is applied) remembers the values to restore in the
+        // club. update() runs each frame BEFORE pushLights so ambient/IBL/fog track the
+        // camera; the crystal beat-pulse is applied inside pushLights.
+        x3::game::CaveAtmosphere caveAtmos;
+        {
+            const auto& cs2 = club.stats();
+            caveAtmos.configure(descentLayout, cs2.roomMaxX, cs2.floorY, cs2.ceilingY,
+                                descentLayout.mouthY);
+        }
+
+        // ==== UNDERGROUND RIVER (feat/cave-river) ===============================
+        // A mildly-luminescent SELF-EMISSIVE blue stream threading the low side-shoot
+        // cave floors (Cache / Landmark cathedral / Collapse), pooling in the cavern
+        // bellies + dead-ends. NOT the sky-dependent surface-water system (no sun down
+        // here): the water IS the light, a dimmer/cooler cousin of the Salvari crystals.
+        // Its DIM blue pool bank-lights are appended to the SAME distance-culled
+        // bedrockLights channel (so pushLights culls + beat-breathes them like crystals).
+        // update() (each frame, below) scrolls the flow crest + ripple.
+        x3::game::CaveRiver caveRiver;
+        {
+            const int nRiver = caveRiver.build(cscene, *device, descentLayout.river,
+                                               &bedrockLights);
+            x3::logInfo("--world club: underground river — " + std::to_string(nRiver) +
+                        " emissive-blue water segments over " +
+                        std::to_string((int)descentLayout.river.size()) +
+                        " nodes (self-lit, flowing; NOT the sky-water system)");
         }
         // The earth reaches ~200 m UP to the surface and ~1 km OUT under the city,
         // so the 200 m default far plane would clip the distant rock walls to the
@@ -148,16 +230,26 @@ int hostClub(HostContext& hc) {
         // the nearby crystal). In the club proper no hollow is near, so the club
         // keeps its full 64-light show untouched.
         auto pushLights = [&](float tsec, float cx, float cy, float cz) {
+            const float thump = club.beatThump();   // #2 the club's live bass envelope
             const auto& cl = club.pointLights();
             std::vector<x3::rhi::PointLight> all;
             all.reserve(cl.size() + bedrockLights.size());
             for (size_t i = 0; i < bedrockLights.size(); ++i) {
                 const x3::rhi::PointLight& s = bedrockLights[i];
                 const float dx = s.pos[0]-cx, dy = s.pos[1]-cy, dz = s.pos[2]-cz;
-                if (dx*dx + dy*dy + dz*dz > 50.0f * 50.0f) continue;   // only near hollows
+                if (dx*dx + dy*dy + dz*dz > 50.0f * 50.0f) continue;   // only near hollows/crystals
                 x3::rhi::PointLight l = s;
-                const float b = 0.78f + 0.22f * std::sin(tsec * 1.6f + (float)i * 1.7f);
-                l.color[0] *= b; l.color[1] *= b; l.color[2] *= b;
+                if (x3::game::CaveAtmosphere::isCrystal(s)) {
+                    // #2 CRYSTALS PULSING: breathe to the club beat, HARDER the deeper the
+                    // crystal is — the bass throbbing UP from the club through the rock.
+                    const float d = caveAtmos.classify(s.pos[0], s.pos[1]).depth01;
+                    const float p = x3::game::CaveAtmosphere::crystalPulse(thump, d);
+                    l.color[0] *= p; l.color[1] *= p; l.color[2] *= p;
+                } else {
+                    // marker/worklights: the gentle idle breathe (unchanged).
+                    const float b = 0.78f + 0.22f * std::sin(tsec * 1.6f + (float)i * 1.7f);
+                    l.color[0] *= b; l.color[1] *= b; l.color[2] *= b;
+                }
                 all.push_back(l);
             }
             all.insert(all.end(), cl.begin(), cl.end());
@@ -202,6 +294,10 @@ int hostClub(HostContext& hc) {
         device->setExposure(1.0f);
         device->setBloom(0.16f);            // let the neon/blacklight/OLED sing WITHOUT blowing the beams milky
 
+        // CAVE ATMOSPHERE: remember the club's OWN look so caveAtmos.update() lerps FROM
+        // it toward the crystal-only cave look (and RESTORES it back in the club).
+        caveAtmos.setClubLook(0.024f, 0.019f, 0.040f, 0.20f);
+
         const x3::phys::Vec3 spawn = club.spawn();
 
         // ===== Headless screenshot path: pose the showcase camera, settle, grab. =
@@ -216,8 +312,12 @@ int hostClub(HostContext& hc) {
             // lounge is canon-dark; the live club keeps its 1.0 exposure). Shot path only.
             if (const char* ex = std::getenv("X3_CLUB_EXPOSURE")) device->setExposure((float)std::atof(ex));
             // The CROWD proof needs a longer settle so the dancers desync + drift
-            // into readable knots before the capture.
-            const int kSettle = ddgiForce ? 120 : (crowdShot ? 150 : 24);
+            // into readable knots before the capture. An explicit `--screenshot <path>
+            // <settle>` count wins (lets a capture land at a chosen beat/phrase so the
+            // LASER floor patterns switch + the moving-heads sweep to a specific axis
+            // angle across a still SEQUENCE — otherwise every shot froze at frame 24).
+            const int kSettle = (hc.screenshotSettle > 24) ? hc.screenshotSettle
+                                : ddgiForce ? 120 : (crowdShot ? 150 : 24);
             const float dt = 1.0f / 60.0f;
             // Fallback (headless with no --screenshot, i.e. `--smoketest --world club`):
             // a loose scratch grab in the REPO ROOT, which .gitignore already covers.
@@ -265,10 +365,14 @@ int hostClub(HostContext& hc) {
                 glfwPollEvents();
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 clubCrowd.update(dt, cscene);               // the dance-floor crowd
+                descent.tick(dt, cscene, *cphys, x3::phys::Vec3{ cam[0], cam[1], cam[2] });  // bake terminal readouts + doors/elevator
                 cphys->step(dt);
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                // CAVE ATMOSPHERE: crystal-only ambient/IBL + fog for the shot camera.
+                caveAtmos.update(dt, x3::phys::Vec3{ cam[0], cam[1], cam[2] }, *device);
+                caveRiver.update(dt, cscene);   // scroll the river flow crest + ripple
                 pushLights((float)i * dt, cam[0], cam[1], cam[2]);   // club + nearby Salvari-crystal lights
                 if (i == kSettle - 1 && seqFrames == 0) device->armCapture(outPath.c_str());
                 auto frame = device->beginFrame();
@@ -290,6 +394,8 @@ int hostClub(HostContext& hc) {
                 cphys->step(dt);
                 cscene.update(*cphys);
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                caveAtmos.update(dt, x3::phys::Vec3{ cam[0], cam[1], cam[2] }, *device);
+                caveRiver.update(dt, cscene);   // scroll the river flow crest + ripple
                 pushLights((float)(kSettle + f) * dt, cam[0], cam[1], cam[2]);
                 device->armCapture(fp);
                 auto frame = device->beginFrame();
@@ -335,9 +441,22 @@ int hostClub(HostContext& hc) {
                 }
             }
         }
+        // CAVE ATMOSPHERE audio (live path): the felt BASS-from-below emitter + the
+        // singing-crystal hum. Graceful no-op if there's no audio device.
+        caveAtmos.bindAudio(caudio.get(), club.stats().floorY,
+                            descentLayout.shaftX, descentLayout.shaftZ);
         bool prevNC = false;   // N-key edge for jukebox next/prev
         x3::game::Player cplayer;
-        cplayer.spawn(*cphys, spawn.x, spawn.y, spawn.z);
+        // X3_DESCENT_TOP=1: spawn at the shaft mouth (near the surface) so you can walk
+        // to the edge and FALL the whole shaft — the intended descent entry. Default =
+        // the normal club spawn at Y=-800.
+        x3::phys::Vec3 useSpawn = spawn;
+        if (const char* dt0 = std::getenv("X3_DESCENT_TOP"); dt0 && dt0[0] == '1') {
+            useSpawn = x3::phys::Vec3{ descentLayout.shaftX, descentLayout.mouthY + 0.1f,
+                                       descentLayout.shaftZ };
+            x3::logInfo("--world club: X3_DESCENT_TOP — spawning at the shaft mouth; walk to the edge to FALL");
+        }
+        cplayer.spawn(*cphys, useSpawn.x, useSpawn.y, useSpawn.z);
 
         // ---- CANON DIALOGUE NPCs (feat/club-npcs) — Danny at the U-bar, Amara +
         // Emma in the Private Lounge. Their x3.chattree/1 trees drive E-to-talk.
@@ -348,6 +467,10 @@ int hostClub(HostContext& hc) {
         clubChat.ctx().timeline = &x3::game::globalTimeline();
         bool prevEc = false;
         bool chatNumPrevC[4] = { false, false, false, false };
+        // Descent-terminal input edge state (E toggle + digit/backspace/enter).
+        x3::game::HoloTerminal* cDescentPad = nullptr;
+        bool prevEDescent = false, prevBksp = false, prevEnter = false, prevEElev = false;
+        bool prevDigit[10] = { false,false,false,false,false,false,false,false,false,false };
         x3::logInfo("--world club: 3 canon NPCs live (Danny @ U-bar, Amara + Emma @ "
                     "Private Lounge) — walk up + E to talk, 1-4 to answer");
 
@@ -396,17 +519,36 @@ int hostClub(HostContext& hc) {
 
             float camX, camY, camZ, camYaw, camPitch;
             if (!noclipC) {
-                x3::game::PlayerInput in;
-                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
-                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
-                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
-                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
-                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
-                in.jumpPressed = spaceNow && !prevSpaceC;
-                in.lookDX = ddx; in.lookDY = ddy;
-                cplayer.update(in, dt, *cphys);
+                // THE DESCENT FALL: step off the shaft mouth and you DROP. While the
+                // scripted freefall (or its last-10m catch) is controlling the player,
+                // integrate LOOK only and teleport the body down the shaft; otherwise
+                // walk normally, and begin the fall the moment the feet enter the bore.
+                const x3::phys::Vec3 feetB = cplayer.feet();
+                const bool falling = descent.phase() == x3::game::DescentFall::Phase::Falling ||
+                                     descent.phase() == x3::game::DescentFall::Phase::Catching;
+                if (falling || descent.inShaft(feetB)) {
+                    if (!falling) descent.beginFall(feetB);
+                    x3::game::PlayerInput look; look.lookDX = ddx; look.lookDY = ddy;
+                    cplayer.update(look, dt, *cphys);                 // mouse-look only
+                    descent.updateFall(dt, cplayer.feet());
+                    cplayer.setFeetPosition(*cphys, descent.controlledFeet());
+                } else {
+                    x3::game::PlayerInput in;
+                    if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                    if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                    if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                    if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                    in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                    in.jumpPressed = spaceNow && !prevSpaceC;
+                    in.lookDX = ddx; in.lookDY = ddy;
+                    cplayer.update(in, dt, *cphys);
+                }
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 clubCrowd.update(dt, cscene);               // the dance-floor crowd
+                // Descent props (terminal blink + door slide + elevator ride). The
+                // elevator carries the rider: add its per-frame delta to the feet.
+                const float carry = descent.tick(dt, cscene, *cphys, cplayer.feet());
+                if (carry != 0.0f) { auto f = cplayer.feet(); f.y += carry; cplayer.setFeetPosition(*cphys, f); }
                 cphys->step(dt);
                 cscene.update(*cphys);
                 cplayer.camera(camX, camY, camZ, camYaw, camPitch);
@@ -429,11 +571,56 @@ int hostClub(HostContext& hc) {
                 if (kd(GLFW_KEY_LEFT_CONTROL)) flyYc -= spd;
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 clubCrowd.update(dt, cscene);               // the dance-floor crowd
+                descent.tick(dt, cscene, *cphys, x3::phys::Vec3{ flyXc, flyYc, flyZc });  // terminal/doors/elevator animate in noclip too
                 cphys->step(dt);
                 cscene.update(*cphys);
                 camX = flyXc; camY = flyYc; camZ = flyZc; camYaw = flyYawC; camPitch = flyPitchC;
             }
             prevSpaceC = spaceNow;
+
+            // ---- DESCENT TERMINALS: E toggles the nearest (computer or keypad) active;
+            // digits 0-9 type the code, Backspace edits, Enter submits. Takes priority
+            // over the club NPC E (you can't chat with a wall terminal).
+            bool nearDescentPad = false;
+            {
+                const x3::phys::Vec3 eye{ camX, camY, camZ };
+                x3::game::HoloTerminal* pad = descent.nearestTerminal(eye);
+                nearDescentPad = (pad != nullptr) || cDescentPad != nullptr;
+                const bool eNow2 = kd(GLFW_KEY_E);
+                if (eNow2 && !prevEDescent && pad) {
+                    if (cDescentPad && cDescentPad != pad) cDescentPad->setActive(false);
+                    pad->setActive(!pad->active());
+                    cDescentPad = pad->active() ? pad : nullptr;
+                }
+                prevEDescent = eNow2;
+                if (cDescentPad && cDescentPad->active()) {
+                    for (int d = 0; d < 10; ++d) {
+                        const bool dn = kd(GLFW_KEY_0 + d) || kd(GLFW_KEY_KP_0 + d);
+                        if (dn && !prevDigit[d]) cDescentPad->pushChar((char)('0' + d));
+                        prevDigit[d] = dn;
+                    }
+                    const bool bk = kd(GLFW_KEY_BACKSPACE);
+                    if (bk && !prevBksp) cDescentPad->backspace();
+                    prevBksp = bk;
+                    const bool en = kd(GLFW_KEY_ENTER) || kd(GLFW_KEY_KP_ENTER);
+                    if (en && !prevEnter) { cDescentPad->submit(); }
+                    prevEnter = en;
+                } else {
+                    cDescentPad = nullptr;
+                }
+                // ELEVATOR HUB: while riding an idle cab and NOT typing at a pad, E calls
+                // the next stop (hall <-> club <-> survival-complex L7) — the Route-B hub.
+                if (!cDescentPad && descent.elevator().playerRiding(eye) &&
+                    !descent.elevator().moving()) {
+                    nearDescentPad = true;                 // E drives the lift, not an NPC
+                    if (eNow2 && !prevEElev) {
+                        descent.elevator().callNext();
+                        x3::logInfo("--world club: elevator hub -> stop " +
+                                    std::to_string(descent.elevator().targetStop()));
+                    }
+                }
+                prevEElev = kd(GLFW_KEY_E);
+            }
 
             // ---- CANON NPC DIALOGUE (feat/club-npcs). While a conversation is up,
             // 1-4 answer the filtered choices; E advances a no-choice line. Otherwise
@@ -456,7 +643,7 @@ int hostClub(HostContext& hc) {
                 }
 
                 const bool eNow = kd(GLFW_KEY_E);
-                if (eNow && !prevEc) {
+                if (eNow && !prevEc && !nearDescentPad) {   // descent terminal wins E when near one
                     if (clubChat.active()) {
                         if (clubChat.choices().empty()) {   // E advances no-choice lines
                             if (clubChat.advance())
@@ -480,6 +667,12 @@ int hostClub(HostContext& hc) {
             if (cw != lastWc || ch != lastHc) { lastWc = cw; lastHc = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
 
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            // CAVE ATMOSPHERE: crystal-only lighting + fog track the camera; bass/singing
+            // audio + crystal beat-pulse ride the club beat clock.
+            const x3::game::CaveAtmosphere::State caveSt =
+                caveAtmos.update(dt, x3::phys::Vec3{ camX, camY, camZ }, *device);
+            caveRiver.update(dt, cscene);   // scroll the river flow crest + ripple
+            caveAtmos.updateAudio(x3::phys::Vec3{ camX, camY, camZ }, caveSt, club.beatThump());
             pushLights((float)now, camX, camY, camZ);   // club + nearby Salvari-crystal lights
             auto frame = device->beginFrame();
             if (frame.valid) {
@@ -503,6 +696,7 @@ int hostClub(HostContext& hc) {
             device->endFrame(frame);
         }
 
+        caveAtmos.shutdownAudio();
         cphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);

@@ -119,4 +119,155 @@ int buildClubBedrock(Scene& scene, x3::rhi::IRenderDevice& device,
                      x3::phys::IPhysicsWorld& physics, const BedrockConfig& cfg,
                      std::vector<x3::rhi::PointLight>* outCrystalLights = nullptr);
 
+// ============================================================================
+// THE EARTH TUNNEL NETWORK (feat/earth-tunnels) — "a tunnel network to dig out".
+// ============================================================================
+// AUTHORED passages bored through the solid club_bedrock earth (the engine has no
+// voxel/CSG, so the network is hand-authored coarse geometry — the model
+// club_bedrock.h §"CARVING THE NEXT CAVITY" describes). This is the FIRST tunnel
+// growth: a vertical STRATA DESCENT from near the surface (Y~=-3) down to the club
+// floor (Y=-200) plus a few OFFSHOOT passages/chambers branching off it. Called
+// ONCE from host_club.cpp right after buildClubBedrock(), so the descent is embedded
+// in the same earth body (the earth is its surround; these tunnels are the cavities).
+//
+// WHAT IT BUILDS (all inside the earth block, east of the club):
+//   * DESCENT SHAFT — a rock-walled, fully-enclosed vertical bore centered at
+//     (shaftX, shaftZ) with a WALKABLE SWITCHBACK RAMP inside (colliding ramps +
+//     turn landings zig-zagging up the bore, ~38 deg slope, well under the 50 deg
+//     Jolt walk limit). This is the vertical spine the elevator/descent rides. The
+//     bore is lined by 4 double-sided rock walls (framed around the openings) + a
+//     top rock cap at the surface + a bottom floor at the club level.
+//   * CONNECTOR — a short horizontal rock corridor at Y=-200 from the shaft bottom
+//     WEST into the club's east elevator doorway (the club shell east wall is open
+//     below 2.8 m at z~=3.8): walk out of the club, into the connector, up the shaft.
+//   * OFFSHOOTS — 3 passages branching off descent landings through the shaft's +X
+//     wall: two DEAD-END passages + one that opens into a small CHAMBER holding a
+//     Salvari crystal hollow (the reward-to-find). The beginnings of the network.
+//
+// WALKABLE END TO END: every floor/ramp/landing/corridor floor carries Jolt
+// collision (addStaticMesh); the rock walls/ceilings are the earth's own visual
+// non-colliding shell. `outCrystalLights` is appended with the descent's dim mood
+// lights + the offshoot crystal-hollow blue light (host merges them into the set it
+// pushes each frame, distance-culled — same channel as buildClubBedrock's lights).
+//
+// AUTHOR THE *NEXT* TUNNEL (so the network can grow) — the recipe:
+//   1) Pick where the new passage BRANCHES: a descent landing (use its world Y =
+//      tc.bottomY + k*flightRise and its Z = south/north turn) or an existing
+//      chamber wall.
+//   2) Punch its MOUTH: add the new opening rect to the wall it exits through so the
+//      framed liner leaves a doorway there (see wallXHoles() — a wall minus a list of
+//      z/y hole rects, built as horizontal bands; add your rect to that list).
+//   3) Lay the CORRIDOR as connected rock-walled segments following the path: a
+//      colliding FLOOR box (top at the walk Y) + two visual side walls + a visual
+//      ceiling per segment, welding segment ends by a small overlap (as the earth
+//      slabs weld). Turns = a landing box where two segments meet.
+//   4) Cap the far end (endcap wall) OR open it into a CHAMBER (a wider room: floor +
+//      4 walls + ceiling, with short "front flank" walls framing the corridor mouth
+//      where the room is wider than the passage).
+//   5) Reward/hook: drop content in the chamber — e.g. addSalvariHollow() for a
+//      crystal pocket (push its returned blue light into outCrystalLights), a prop,
+//      or a trigger. Add a dim mood point light so the passage reads on camera.
+//   Keep it COARSE (boxes + ramps); the earth is ~1k tris and the whole network
+//   should stay a modest few thousand. CSG UPGRADE PATH: see buildClubBedrock's doc
+//   (author the earth+all cavities as one boolean-subtracted Blender mesh when the
+//   network outgrows hand-authored boxes).
+struct TunnelConfig {
+    // Rock look — matches the surrounding earth (tint * procedural rock texel + a
+    // dim self-emissive floor so the bore reads as dark rock, not black void).
+    float tint[4]     = { 0.42f, 0.30f, 0.22f, 1.0f };
+    float emissive[4] = { 0.085f, 0.065f, 0.048f, 1.0f };
+    float uvScale     = 0.14f;
+
+    // Vertical span of the descent (world Y). topY ~ just under the surface ground
+    // plane (Y=0); bottomY = the club floor level (the connector runs in at this Y).
+    float topY    =   -3.0f;
+    float bottomY = -200.0f;
+
+    // Descent shaft center XZ — solid earth just EAST of the club; the switchback
+    // walkway (and the elevator spine) live here.
+    float shaftX = 38.0f;
+    float shaftZ =  4.0f;
+
+    // Club east elevator doorway the bottom connector walks into (x = club shell
+    // east face, z = the doorway center). Defaults are the authored Club 1127 values.
+    float clubDoorX = 15.24f;
+    float clubDoorZ =  3.8f;
+
+    // Seed a Salvari crystal hollow in one offshoot chamber (the reward-to-find).
+    bool  crystalOffshoot = true;
+
+    // ---- ROUTE-B HUB (Tim's canon, CLUB_1127_CANON_SPEC "Route B"): the elevator is
+    // a HUB. Besides the club, it drops to the BOTTOM (Level 7) of Danny's 7-level
+    // survival complex WEST of + below the club, via an UNDER-CLUB HALL running west
+    // from the elevator beneath the club. The host supplies the complex L7 world entry
+    // (computed from SurvivalComplex's constants). Set underClubHall=false to skip.
+    bool  underClubHall  = true;
+    float complexBottomY = -824.23f;    // world Y of the complex L7 floor (deepest elevator stop)
+    float complexAttachX = -15.43f;     // complex east edge X (where the under-club hall meets it)
+    float complexAttachZ =   5.30f;     // complex L7 stair-bay landing Z
+};
+
+// ============================================================================
+// THE DESCENT FALL (feat/descent-fall) — replaces the walkable switchback ramp.
+// ============================================================================
+// buildEarthTunnels() now bores a VERTICAL FALL SHAFT instead of a walkable ramp:
+// you DROP down an open chute through the strata and land in a DARK ROOM just above
+// the club, where a computer terminal + a code-locked keypad door lead down a hall
+// to an elevator that takes the final leg into Club 1127. The geometry (shaft, dark
+// room, hall, elevator alcove, side-shoot rooms) is built here; the INTERACTIVE
+// layer (the fall-catch, the terminal, the keypad door, the elevator ride) lives in
+// descent_fall.{h,cpp} and reads the world positions from this layout struct.
+// One point on the UNDERGROUND RIVER's centerline (feat/cave-river). The river is a
+// polyline of these threading the low cave-tube floors; buildEarthTunnels() emits them
+// into DescentFallLayout::river, and CaveRiver (cave_river.h) builds the emissive-blue
+// water ribbon + pool lights from them. `breakSeg` ends a run (no quad to the NEXT node
+// — used between disconnected side-shoot tubes).
+struct CaveRiverNode {
+    float x = 0, y = 0, z = 0;      // world position of the water surface centerline
+    float halfWidth = 0.9f;         // ribbon half-width (across, in Z) at this node
+    float emissive  = 0.30f;        // base emissive strength here (pools brighter)
+    bool  pool      = false;        // a POOL widening (brighter, slower breathe, a bank light)
+    bool  breakSeg  = false;        // this node ENDS a river run (no segment to the next)
+};
+
+struct DescentFallLayout {
+    // FALL SHAFT (open vertical bore).
+    float shaftX = 0, shaftZ = 0;   // bore center XZ
+    float shaftHalfW = 4.0f;        // bore half-width (clear radius)
+    float mouthY = -3.0f;           // trapdoor mouth Y (top of the fall)
+    float catchTopY = 0;            // Y where the slowdown/catch volume begins (last ~10 m)
+    // DARK LANDING ROOM (sealed, dark, just above the club).
+    float roomCx = 0, roomCz = 0;   // room center XZ
+    float roomFloorY = 0;           // landing floor Y
+    float roomCeilY = 0;            // room ceiling Y
+    float roomHalfX = 6.0f, roomHalfZ = 6.0f;
+    // KEYPAD DOOR (opening in the room's -X wall) -> HALL.
+    float doorX = 0, doorZ = 0, doorY = 0;   // door opening center (floor level)
+    float doorHalfW = 1.1f;
+    // ELEVATOR (the HUB): top stop = the hall/room level (arrive from the fall); mid
+    // stop = the club floor; bottom stop = the survival-complex L7 floor.
+    float elevX = 0, elevZ = 0;     // elevator shaft center
+    float elevTopY = 0;             // top stop (hall floor level)
+    float elevBotY = 0;             // mid stop (club floor)
+    float complexBottomY = 0;       // bottom stop (survival complex L7 floor) — 0/unused if no under-hall
+    // CLUB east doorway the elevator's club-stop connector runs into.
+    float clubDoorX = 0, clubDoorZ = 0;
+    // Under-club hall attach point (complex L7 east entry) — where @13700k wires the
+    // hall into the survival complex's east shell.
+    float complexAttachX = 0, complexAttachZ = 0;
+    bool  hasUnderHall = false;
+    // UNDERGROUND RIVER centerline (feat/cave-river) — a polyline threading the low
+    // cave-tube floors; CaveRiver builds the emissive-blue water ribbon from it. Empty
+    // when the river is disabled.
+    std::vector<CaveRiverNode> river;
+};
+
+// Build the earth tunnel network into `scene` (+ Jolt collision via `physics`, meshes
+// via `device`). Returns the number of Scene entities added. `outCrystalLights` is
+// appended with the descent mood lights + the offshoot crystal light (see above).
+int buildEarthTunnels(Scene& scene, x3::rhi::IRenderDevice& device,
+                      x3::phys::IPhysicsWorld& physics, const TunnelConfig& tc,
+                      std::vector<x3::rhi::PointLight>* outCrystalLights = nullptr,
+                      DescentFallLayout* outLayout = nullptr);
+
 } // namespace x3::game
