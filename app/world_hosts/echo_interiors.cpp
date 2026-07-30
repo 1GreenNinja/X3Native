@@ -145,6 +145,12 @@ void buildHarborShop(EchoRegion& region, EchoRegionCtx& ctx) {
     if (place(region, ctx, kMegaDir, "Shops01_Model.glb", T)) ++built;
     yawScaleAt(gx - 6.0f, gy, gz - 8.0f, 0.6f, 0.842f, T);    // door kiosk
     if (place(region, ctx, kMeshyProps, "ctos_terminal.glb", T)) ++built;
+    // LANE 2 SIGNAGE: the boulevard frontage carries boards too.
+    yawScaleAt(gx + 8.5f, gy + 3.2f, gz - 6.5f, 0.6f, 0.7f, T);
+    if (place(region, ctx, kMegaSigns, "SB_KarachiPort.glb", T)) ++built;
+    yawScaleAt(gx + 82.0f, (ctx.hf.ok() ? ctx.hf.heightAt(gx + 82.0f, gz + 6.0f) : gy) + 3.2f,
+               gz + 6.0f, -2.5416f, 0.7f, T);
+    if (place(region, ctx, kMegaSigns, "SB_Clifton.glb", T)) ++built;
     x3::logInfo("[interiors] int_harbor_shop — " + std::to_string(built) + " pieces");
 }
 
@@ -173,8 +179,24 @@ void buildVendorDressing(EchoRegion& region, EchoRegionCtx& ctx) {
     if (place(region, ctx, kSeasideProps, "SM_PROP_standing_torch_frame_town.glb", T)) ++built;
     yawScaleAt(13.5f, gy(13.5f, 771.0f), 771.0f, 0.0f, 1.0f, T);
     if (place(region, ctx, kSeasideProps, "SM_PROP_standing_torch_frame_town.glb", T)) ++built;
+    // LANE 2 SIGNAGE PASS (WD2 punchlist §5): 19 of the pack's 20 boards sat
+    // unused while the drag read as empty — the north frontage claims five
+    // civic boards + one billboard so the street reads as a shopping drag.
+    struct Board { const char* glb; float x, z, lift, yaw, s; };
+    static const Board kDragBoards[] = {
+        { "SB_BusTerminal.glb",   -14.0f, 752.5f, 3.4f,  3.14159f, 0.70f },
+        { "SB_DolmenMall.glb",    -52.0f, 752.5f, 3.6f,  3.14159f, 0.75f },
+        { "SB_ConsDepot.glb",      40.0f, 752.5f, 3.4f,  3.14159f, 0.70f },
+        { "SB_PoliceStation.glb",  62.0f, 752.5f, 3.5f,  3.14159f, 0.70f },
+        { "SB_ClockTower.glb",     20.0f, 764.0f, 3.8f,  3.14159f, 0.70f },
+        { "BillBoard_Model.glb",   80.0f, 754.0f, 0.0f, -1.5708f,  1.10f },
+    };
+    for (const auto& b : kDragBoards) {
+        yawScaleAt(b.x, gy(b.x, b.z) + b.lift, b.z, b.yaw, b.s, T);
+        if (place(region, ctx, kMegaSigns, b.glb, T)) ++built;
+    }
     x3::logInfo("[interiors] vendor dressing — " + std::to_string(built) +
-                " stall/sign/torch pieces (always visible)");
+                " stall/sign/torch/board pieces (always visible)");
 }
 
 } // namespace x3::game

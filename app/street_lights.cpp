@@ -304,7 +304,11 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
             Entity e;
             e.mesh = kit.disc;
             e.tex  = kit.discGrad;
-            composeYawScale(hx, groundY + 0.235f, hz, 0.0f,
+            // Seat the pool on LOCAL terrain when a query is wired — a row-y
+            // disc on undulating ground is buried and the pool never reads.
+            const float discY = m_ground ? m_ground(hx, hz) + 0.30f
+                                         : groundY + 0.235f;
+            composeYawScale(hx, discY, hz, 0.0f,
                             look.poolR * 0.95f, 1.0f, look.poolR * 0.95f, e.transform);
             e.baseColor[3] = 1.0f;
             e.emissive[0] = l.color[0]; e.emissive[1] = l.color[1]; e.emissive[2] = l.color[2];
@@ -448,9 +452,20 @@ void StreetLights::buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& devi
     // a facade. Env-tunable so the falloff can be A/B'd without a rebuild.
     const float rMul = [](){ const char* e = std::getenv("ECHO_LAMP_RANGE_MUL"); return e ? (float)std::atof(e) : 3.2f; }();
     const float iMul = [](){ const char* e = std::getenv("ECHO_LAMP_INT_MUL");   return e ? (float)std::atof(e) : 2.2f; }();
+    // POOL READ (Lane 2 A/Bs, 2026-07-30, hash-verified live): (a) the island
+    // TERRAIN never catches pooled point lights — 8x intensity still left the
+    // street black while tower facades DID brighten; (b) the emissive disc
+    // renders invisibly on the crown at ANY strength (40x, +2.5 m lift — all
+    // no-ops), so the glass-pass fake-volumetric branch's flat-pool path needs
+    // a shader-side look before this knob can carry the night ground. Neutral
+    // default; env knob stays for the A/B loop.
+    const float pMul = [](){ const char* e = std::getenv("ECHO_LAMP_POOL_MUL");  return e ? (float)std::atof(e) : 1.0f; }();
     for (size_t i = first; i < m_lamps.size(); ++i) {
         m_lamps[i].range     *= rMul;   // ~17 -> ~54 m: reaches the facades
         m_lamps[i].intensity *= iMul;   // carry the extra distance
+        m_lamps[i].discMul    = pMul;
+        if (Entity* e = scene.getChecked(m_lamps[i].discEnt))
+            e->emissive[3] = zoneLook(m_lamps[i].zone).discStr * pMul;
     }
     logBuild("district rows", first);
 }
@@ -502,7 +517,7 @@ void StreetLights::update(float dt, Scene& scene) {
         l.level = 1.0f;
         const ZoneLook& look = zoneLook(l.zone);
         if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr;
-        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.discMul;
         if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr;
     }
     for (Lamp& l : m_lamps) {
@@ -540,7 +555,7 @@ void StreetLights::update(float dt, Scene& scene) {
 
         const ZoneLook& look = zoneLook(l.zone);
         if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr * l.level;
-        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.level;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.discMul * l.level;
         if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr * l.level;
     }
 }

@@ -1418,6 +1418,10 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::Scene lampScene;
     x3::game::StreetLights streetLamps;
     {
+        // Pools seat on LOCAL terrain (crown drag undulates; row-y buried them).
+        streetLamps.setGroundQuery([&hf](float x, float z) {
+            return hf.ok() ? hf.heightAt(x, z) : 190.0f;
+        });
         auto seatOf = [&](float cx, float cz){
             float gy = hf.ok() ? hf.heightAt(cx, cz) : 190.0f;
             if (hf.ok()) {
@@ -1430,14 +1434,25 @@ int hostEchotropolis(HostContext& hc) {
         const float rs = seatOf(950.0f, 1250.0f);    // Recife pad seat
         const float us = seatOf(700.0f, 350.0f);     // Urban bay pad seat
         const float hs = seatOf(1340.0f, 1000.0f);   // HIVEMIND pad seat
+        // Crown drag + harbor boulevard are REAL local terrain (not raised
+        // district pads) — the 3x3 max probe seats their lamps meters in the
+        // air (first capture: cones floating over a black street). Flat seat.
+        const float cs = (hf.ok() ? hf.heightAt(0.0f, 748.0f) : 195.0f) + 0.4f;
+        const float hb = (hf.ok() ? hf.heightAt(200.0f, 366.0f) : 0.0f) + 0.4f;
         const float rows[][6] = {
             { 975.0f, 1222.0f, 1090.0f, 1222.0f, rs, 26.0f },   // Recife alley N row
             { 975.0f, 1258.0f, 1090.0f, 1258.0f, rs, 26.0f },   // Recife alley S row
             { 560.0f,  350.0f,  840.0f,  350.0f, us, 30.0f },   // Urban main drag E-W
             { 700.0f,  240.0f,  700.0f,  470.0f, us, 30.0f },   // Urban cross street N-S
             {1240.0f, 1000.0f, 1440.0f, 1000.0f, hs, 30.0f },   // HIVEMIND main street
+            // LANE 2 (WD2 punchlist #3): the black-ground night fix — the crown
+            // drag/plaza + harbor boulevard carried ZERO lamps; every night
+            // capture at the drag stood in the dark.
+            { -85.0f,  748.0f,   95.0f,  748.0f, cs, 26.0f },   // CROWN main drag E-W
+            {  12.0f,  705.0f,   12.0f,  800.0f, cs, 28.0f },   // CROWN plaza cross N-S
+            { 140.0f,  366.0f,  265.0f,  366.0f, hb, 28.0f },   // HARBOR boulevard
         };
-        streetLamps.buildDistrictLamps(lampScene, *device, rows, 5);
+        streetLamps.buildDistrictLamps(lampScene, *device, rows, 8);
     }
 
     // (TIER-2 M-A: HARBOR BOATS + poseBoat moved to buildHarborBay.)
