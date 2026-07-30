@@ -427,9 +427,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/RexBouncer_anim.glb",
-      "sha256": "1de1022d4e406180bd47c11c44ef2a7aa2a27ae4d196a8a76e5eadd1624eeedf",
-      "size": 4427512,
-      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+      "sha256": "28b1481b8130eae38175d976095b9edd97a496b5c0f2a6f77e347be5ddfaa9b8",
+      "size": 4360728,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/SalvariPrincess.glb",
