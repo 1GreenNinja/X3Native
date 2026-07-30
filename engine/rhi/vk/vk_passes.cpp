@@ -284,6 +284,15 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
             const DrawRecord& dr = m_drawRecords[i];
             if (!m_rt.hasBlas(dr.meshId)) continue;
+            // GLASS never enters the TLAS (2026-07-30). A translucent draw as an
+            // RT occluder is a lie the rays can't see through: the street lamps'
+            // fake-volumetric GLOW CONES enveloped their own emitters, so every
+            // point-shadow ray from the ground hit the shaft and the whole city
+            // floor read vis=0 — pitch black at night while debugview 2 showed
+            // the light landing (the 2026-07-30 hunt; debugview 7 = the A/B).
+            // Refraction/reflection through real panes never used the TLAS
+            // anyway (screen-space scene copy), so nothing else changes.
+            if (dr.flags & kFlagGlass) continue;
             VulkanRT::TlasInstance inst{};
             inst.meshId = dr.meshId;
             // instanceCustomIndex = the record's SSBO row this frame (filled by

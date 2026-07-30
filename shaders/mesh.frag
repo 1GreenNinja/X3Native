@@ -897,6 +897,10 @@ void main() {
                 --rtshRaysLeft;
                 vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
             }
+            // r_debugview 7: point RT shadows forced lit — the A/B that caught
+            // the glass-in-TLAS self-occlusion (2026-07-30). Kept: zero cost,
+            // and it splits "light missing" from "light shadowed" instantly.
+            if (ssao.rtsh1.w > 6.5) vis = 1.0;
             atten *= vis;
 #endif
             lit += brdf(N, Vd, NoVd, L, F0d, albedo.rgb, aD, kPointDiffuseW)

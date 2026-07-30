@@ -301,6 +301,7 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
         // pooled-light budget). additive ~0 => no view-angle fade, so the pool
         // still reads down a grazing street view.
         {
+            static const bool kPoolDiag = std::getenv("ECHO_POOL_DIAG") != nullptr;
             Entity e;
             e.mesh = kit.disc;
             e.tex  = kit.discGrad;
@@ -316,7 +317,16 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
             e.transparent = true;
             e.glass.opacity = 0.0f; e.glass.refraction = 0.0f;
             e.glass.roughness = 0.0f; e.glass.specular = 0.0f;
-            e.glass.additive = 0.05f;
+            // DIAG (2026-07-30): 1.8 == the cone's proven-visible additive; the
+            // shipped 0.05 "flat pool" mode never showed a pixel on the crown.
+            e.glass.additive = [](){ const char* d = std::getenv("ECHO_POOL_ADDITIVE");
+                                     return d ? (float)std::atof(d) : 0.05f; }();
+            if (kPoolDiag) {   // ECHO_POOL_DIAG: unmistakable opaque red marker
+                e.tex = {}; e.transparent = false; e.glass = {};
+                e.baseColor[0] = 1.0f; e.baseColor[1] = 0.05f; e.baseColor[2] = 0.05f;
+                e.emissive[0] = 1.0f; e.emissive[1] = 0.0f; e.emissive[2] = 0.0f;
+                e.emissive[3] = 3.0f;
+            }
             e.tag = (uint32_t)Tag::Prop;
             l.discEnt = scene.handle(scene.add(e));
         }
