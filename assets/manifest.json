@@ -523,9 +523,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/canon_nordic_anim.glb",
-      "sha256": "49bb6843a29c57a24fafaf443aafe2f26d64b7385464144c4295a54398b6ad01",
-      "size": 2382596,
-      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+      "sha256": "ef1865a3c33b6c934ada83ec362cd3412150f12313f69eb8ab81c087bfc1dcd6",
+      "size": 2393248,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez.glb",
