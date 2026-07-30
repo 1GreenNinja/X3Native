@@ -439,9 +439,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/SalvariPrincess_anim.glb",
-      "sha256": "8d2a274f512c83c841d46a0c040a8a3731798acdffbb1c0dec822748d7cda439",
-      "size": 10683464,
-      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+      "sha256": "079cca7d2f6970f85bc9ffa3e22fb822700586fcbc81661780dfcde52f241d3f",
+      "size": 9955480,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/SpaceShip.glb",
