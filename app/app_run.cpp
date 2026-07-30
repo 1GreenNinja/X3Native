@@ -7903,6 +7903,34 @@ int runDefaultHost(HostContext& hc) {
     bool  prevWorldMenuKey = false;
     bool  worldLoadRequested = false;   // a "LOADS WORLD" pick -> main()'s world-load loop
 
+    // ---- `gallery` / `arena`: console fast-travel to the CHARACTER GALLERY ----------
+    // Tim's mirror of Predator II's `arena` console command. Reuses EXACTLY the world
+    // menu's "LOADS WORLD" mechanism above: resolve the registry row, set
+    // hc.switchWorldTo/switchDestKey, raise worldLoadRequested — the frame loop breaks
+    // at the top of the next frame and main()'s world-load loop tears this world down
+    // and builds --world gallery into the SAME window + device (no process relaunch).
+    // Registered HERE (not with the cheat block above) because worldLoadRequested must
+    // exist to be captured. `arena` is a plain alias of the same lambda.
+    {
+        const x3::con::CommandFn galleryTravel =
+            [&hc, &worldLoadRequested, &console](const std::vector<std::string>&) {
+                const x3::game::Destination* d = x3::game::findDestination("gallery");
+                if (!d || !d->worldFlag[0]) {   // registry row gone: say so, do nothing
+                    console->print("gallery: not in the destination registry - cannot travel");
+                    return;
+                }
+                hc.switchWorldTo = d->worldFlag;
+                hc.switchDestKey = d->key;
+                worldLoadRequested = true;
+                console->print("traveling to THE GALLERY...");
+                x3::logInfo(std::string("[console] gallery -> WORLD LOAD --world ") + d->worldFlag);
+            };
+        console->registerCommand("gallery", galleryTravel,
+                                 "travel to the CHARACTER GALLERY (loads --world gallery)");
+        console->registerCommand("arena", galleryTravel,
+                                 "alias of gallery - travel to the character gallery");
+    }
+
     // ---- W-RIFT: THE RIFT CONSOLE, IN THE CANON GAME LOOP ---------------------------
     // The consoles used to run ONLY under `--world rifthub`, because the canon loop had
     // no UiContext to draw a control surface into. It has several now (the map screen,
