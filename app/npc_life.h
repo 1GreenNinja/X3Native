@@ -156,6 +156,12 @@ struct NpcLifeConfig {
     // self-test). A streamed host passes its district room (e.g. kStreamedExteriorRoom)
     // so the living NPCs are PVS-culled with the city exactly like the crowd blockouts.
     uint32_t roomId            = kNoRoom;
+    // LEISURE MAGNET (Lane 4 — "citizens ENTER buildings"): when set, the
+    // social archetypes (Electrician / Courier / Gardener / OffShiftDrone)
+    // take their leisure AT this spot (the noodle bar counter) instead of
+    // their default corners — patrons appear on schedule and leave on it.
+    bool     leisureMagnet     = false;
+    float    leisureMagnetX    = 0.0f, leisureMagnetZ = 0.0f;
 };
 
 // Alarm sink: the host wires this to AlertSystem::reportGunshot so the heist trips real heat.

@@ -376,6 +376,14 @@ void NpcLife::build(const NpcLifeConfig& cfg, Scene& scene, x3::rhi::IRenderDevi
             sc = { cx-20+idx*40.0f, cz+9, cx+idx*20.0f, cz-9, cx, cz+9, 0.10f,0.90f, 0.10f,0.90f }; break;
         default: sc = { cx, cz, cx, cz, cx, cz, 0.3f,0.66f, 0.66f,0.86f }; break;
         }
+        // LEISURE MAGNET: the social archetypes spend their leisure window at
+        // the host's spot (the noodle bar counter) — real patrons on schedule.
+        if (m_cfg.leisureMagnet &&
+            (arch == Archetype::Electrician || arch == Archetype::Courier ||
+             arch == Archetype::Gardener    || arch == Archetype::OffShiftDrone)) {
+            sc.leisureX = m_cfg.leisureMagnetX + (float)(idx % 3) * 1.4f - 1.4f;
+            sc.leisureZ = m_cfg.leisureMagnetZ + (float)((idx / 3) % 2) * 1.2f;
+        }
         a.sched = sc;
         // Start at home (or the post for static archetypes), a touch of jitter.
         const Persona& p = persona(arch);

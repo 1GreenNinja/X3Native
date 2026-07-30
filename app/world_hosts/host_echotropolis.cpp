@@ -2262,6 +2262,8 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::NpcSkin npcSkin;                              // their rigged bodies
     x3::game::WorldCars worldCars;                          // CARS PILLAR: the street fleet
     const char* vendorPrompt = nullptr;                     // vendor buy-loop HUD line
+    const char* doorPrompt = nullptr;                       // LANE 4: interior door line
+    int playerInCell = -1;                                  // which cell the player is inside
     float driveCamYaw = 0.0f, driveCamPitch = -0.22f;       // chase-cam mouse orbit
     // NFS-STYLE VIEW CYCLE (Tim: "the mode i usualy drove in since 1992") —
     // C cycles while driving: 0 FAR chase (Tim's default), 1 MID, 2 CLOSE,
@@ -2305,6 +2307,11 @@ int hostEchotropolis(HostContext& hc) {
             lc.centerX = kWalkX; lc.centerZ = kWalkZ;
             lc.groundY = kWalkGroundY;
             lc.freewayMovers = 0;
+            // LANE 4: leisure hours draw the social archetypes to the noodle
+            // bar counter — patrons arrive on schedule, dwell, and leave.
+            lc.leisureMagnet  = true;
+            lc.leisureMagnetX = x3::game::kInteriorCells[1].doorX + 0.8f;
+            lc.leisureMagnetZ = x3::game::kInteriorCells[1].doorZ + 1.4f;
             // NO LLM here (Tim's call): passing it queued a background generation
             // for EVERY citizen at build time — 23 inferences grinding the CPU
             // under the game. Authored persona details are plenty; the LLM is
@@ -3449,6 +3456,38 @@ int hostEchotropolis(HostContext& hc) {
                     break;
                 }
             }
+            // LANE 4 DOOR PORTALS v1: the interior cells greet the player at
+            // the kiosk — E steps in, E steps back out (teleport past the
+            // door; the real swinging door is M-C-era polish per the header).
+            doorPrompt = nullptr;
+            if (!worldCars.driving() && worldCars.prompt().empty() && !vendorPrompt &&
+                !kd(GLFW_KEY_H)) {
+                static constexpr struct { int cell; float inX, inZ;
+                                          const char* enter; const char* leave; }
+                kDoorIn[] = {
+                    { 0, -0.5f,  3.0f, "[E] ENTER CONDO LOBBY", "[E] LEAVE CONDO LOBBY" },
+                    { 2,  2.0f, -4.0f, "[E] ENTER HARBOR SHOP", "[E] LEAVE HARBOR SHOP" },
+                };
+                for (const auto& din : kDoorIn) {
+                    const auto& cell = x3::game::kInteriorCells[din.cell];
+                    const float ddx2 = cell.doorX - pxx, ddz2 = cell.doorZ - pzz;
+                    const float rr = cell.radius + 4.0f;   // inside point stays in reach
+                    if (ddx2 * ddx2 + ddz2 * ddz2 > rr * rr) continue;
+                    const bool inside = (playerInCell == din.cell);
+                    doorPrompt = inside ? din.leave : din.enter;
+                    if (e2 && !prevCarE) {
+                        const float ix = inside ? cell.doorX - din.inX * 0.6f
+                                                : cell.doorX + din.inX;
+                        const float iz = inside ? cell.doorZ - din.inZ * 0.6f
+                                                : cell.doorZ + din.inZ;
+                        const float gy2 = hf.ok() ? hf.heightAt(ix, iz) : pyy;
+                        player.spawn(*phys, ix, gy2 + 1.2f, iz);
+                        playerInCell = inside ? -1 : din.cell;
+                        uiSfx(sfxConfirm, 0.7f);
+                    }
+                    break;
+                }
+            }
             prevCarE = e2; prevCarF = f2;
         }
         // ---- WD2 NETHACK: hold H to reveal, aim + E to hack ---------------
@@ -4135,6 +4174,10 @@ int hostEchotropolis(HostContext& hc) {
                 } else if (vendorPrompt) {
                     const float pgold[4] = { 1.0f, 0.85f, 0.45f, 1.0f };
                     device->drawHudText(frame, vendorPrompt,
+                                        12.0f + pad, 12.0f + barH + 40.0f, 14.0f, pgold);
+                } else if (doorPrompt) {
+                    const float pgold[4] = { 0.75f, 0.95f, 1.0f, 1.0f };
+                    device->drawHudText(frame, doorPrompt,
                                         12.0f + pad, 12.0f + barH + 40.0f, 14.0f, pgold);
                 } else if (hackAim != x3::game::kNoLink && hax.highlight()) {
                     const auto& ho = hax.at(hackAim);
