@@ -1,3 +1,9 @@
+# WRITER SEAT (2026-07-30): a NEW session is live on LANES 1-4 — it now owns
+# host_echotropolis.cpp + CMakeLists + cmake builds + exe launches. The elder
+# window (this file's last author) has STOOD DOWN from all repo writes.
+# New session: read SESSION_LANES.md + your punchlists; honor capture-review,
+# tasklist-check for Tim's exe, and per-milestone commits. Lanes 5-7 unclaimed.
+
 # Handoff
 
 ## THE PILLAR BOARD (Tim: "keep track of these pillars!!!!")
