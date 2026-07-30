@@ -461,7 +461,9 @@ void StreetLights::buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& devi
     // 17 m from a lamp hung ~8 m up is a ~9 m ground pool — it dies long before
     // a facade. Env-tunable so the falloff can be A/B'd without a rebuild.
     const float rMul = [](){ const char* e = std::getenv("ECHO_LAMP_RANGE_MUL"); return e ? (float)std::atof(e) : 3.2f; }();
-    const float iMul = [](){ const char* e = std::getenv("ECHO_LAMP_INT_MUL");   return e ? (float)std::atof(e) : 2.2f; }();
+    // 2.2 was tuned while the TLAS glass bug ate every ground photon; with the
+    // rays fixed (3fe89811) Tim called the night "a HAIR bright" — pulled back.
+    const float iMul = [](){ const char* e = std::getenv("ECHO_LAMP_INT_MUL");   return e ? (float)std::atof(e) : 1.5f; }();
     // POOL READ (Lane 2 A/Bs, 2026-07-30, hash-verified live): (a) the island
     // TERRAIN never catches pooled point lights — 8x intensity still left the
     // street black while tower facades DID brighten; (b) the emissive disc

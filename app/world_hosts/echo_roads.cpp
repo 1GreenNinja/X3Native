@@ -80,7 +80,10 @@ constexpr float kBankMax        = 0.10f;
 // (kSmoothWin retired in V3.1 — the profile's grade bound IS the smoothness;
 //  box smoothing was re-inflating valleys back toward summit height.)
 constexpr float kBarrierInset   = 0.35f;
-constexpr float kShoulderW      = 1.6f;    // V7: worn shoulder band each side of the deck
+// V7.2 (Tim, on the gate vista): a REAL breakdown lane, not a worn strip —
+// "what if your tranny blows on your stolen joy ride?" CA standard ~3 m:
+// room to pull a car fully out of lane 2 against the barrier.
+constexpr float kShoulderW      = 3.2f;
 constexpr float kBarrierW       = 0.35f;
 constexpr float kBarrierH       = 1.00f;
 constexpr float kEdgeLineInset  = 0.90f;
@@ -88,8 +91,10 @@ constexpr float kPaintW         = 0.16f;
 constexpr float kPaintLift      = 0.03f;
 constexpr float kDashOn         = 3.0f, kDashOff = 9.0f;
 constexpr float kStreetDashOn   = 2.0f, kStreetDashOff = 6.0f;
-constexpr float kPillarEvery    = 35.0f;
-constexpr float kPillarHalf     = 1.30f;
+// V7.2 (Tim): CA viaducts run MUCH longer unsupported spans — half the pier
+// count, each pier a touch heavier so the longer span reads structural.
+constexpr float kPillarEvery    = 70.0f;
+constexpr float kPillarHalf     = 1.55f;
 constexpr float kPillarMinAir   = 3.0f;
 constexpr float kCurbW          = 0.35f, kCurbLift = 0.13f;
 constexpr float kWalkW          = 1.80f, kWalkLift = 0.12f;
