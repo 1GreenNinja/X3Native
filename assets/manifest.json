@@ -337,9 +337,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/BossBreederQueen_anim.glb",
-      "sha256": "cf23c40f9f20460c8e4cdb2593450ebc156816022003045175cdb2284098215d",
-      "size": 19235644,
-      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+      "sha256": "c59c882b0c944038120c9e6ae7682868d20e971b31466d29e11b830d26439f35",
+      "size": 19239576,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/BossTheSiren.glb",
