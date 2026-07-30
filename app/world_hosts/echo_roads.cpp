@@ -96,6 +96,12 @@ constexpr float kStreetDashOn   = 2.0f, kStreetDashOff = 6.0f;
 constexpr float kPillarEvery    = 70.0f;
 constexpr float kPillarHalf     = 1.55f;
 constexpr float kPillarMinAir   = 3.0f;
+// V7.3 STRUCTURAL PASS (slop verdict: "paper ribbon on black toothpicks"):
+// the elevated deck gets a real BOX SECTION — side fascia + soffit at this
+// depth — and piers get footing/taper/hammerhead (see pillar()).
+constexpr float kDeckDepth      = 1.8f;    // fascia/soffit drop below deck top
+constexpr float kCapDepth       = 1.7f;    // hammerhead cap beam height
+constexpr float kCapHalfLen     = 5.2f;    // cap half-length across the deck
 constexpr float kCurbW          = 0.35f, kCurbLift = 0.13f;
 constexpr float kWalkW          = 1.80f, kWalkLift = 0.12f;
 constexpr float kGroundLift     = 0.15f;
@@ -407,6 +413,82 @@ void barrier(Buck bk, const std::vector<RoadSample>& s, float off) {
     }
 }
 
+// V7.3: the elevated deck's BOX SECTION — side fascia walls + a soffit at
+// -kDeckDepth, welded per sample like ribbon(). Kills the knife-edge/monorail
+// read (slop verdict: "the deck has literally zero thickness"). `w` = the FULL
+// top surface (lanes + shoulders); banked edges follow the superelevation.
+void deckFascia(Buck bk, const std::vector<RoadSample>& s, float w,
+                bool applyBank = true) {
+    const size_t n = s.size();
+    if (n < 2) return;
+    const uint32_t base = (uint32_t)bk.v->size();
+    float arc = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        const RoadSample& a = s[i];
+        float px, pz; rperp(a.tx, a.tz, px, pz);
+        const float b = applyBank ? a.bank : 0.0f;
+        const float sb = std::sin(b);
+        const float aL = -w * 0.5f, aR = w * 0.5f;
+        if (i > 0) {
+            const float dx = a.x - s[i-1].x, dz = a.z - s[i-1].z;
+            arc += std::sqrt(dx*dx + dz*dz);
+        }
+        const float v = arc / 10.0f;
+        // 6 verts/sample: topL, botL (left fascia, -perp normal), botL, botR
+        // (soffit, -Y), botR, topR (right fascia, +perp normal).
+        const float xL = a.x + px*aL, yL = a.y + sb*aL, zL = a.z + pz*aL;
+        const float xR = a.x + px*aR, yR = a.y + sb*aR, zR = a.z + pz*aR;
+        pushVert(bk, xL, yL,             zL, -px, 0, -pz, 0.0f, v);
+        pushVert(bk, xL, yL - kDeckDepth, zL, -px, 0, -pz, 0.18f, v);
+        pushVert(bk, xL, yL - kDeckDepth, zL, 0, -1, 0, 0.0f, v);
+        pushVert(bk, xR, yR - kDeckDepth, zR, 0, -1, 0, 1.0f, v);
+        pushVert(bk, xR, yR - kDeckDepth, zR,  px, 0,  pz, 0.18f, v);
+        pushVert(bk, xR, yR,             zR,  px, 0,  pz, 0.0f, v);
+    }
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const uint32_t a0 = base + (uint32_t)(6*i), b0 = base + (uint32_t)(6*(i+1));
+        auto face = [&](uint32_t p, uint32_t q, uint32_t r, uint32_t t) {
+            pushTri(bk, p, q, r, false); pushTri(bk, p, r, t, false);
+            pushTri(bk, p, r, q, false); pushTri(bk, p, t, r, false);
+        };
+        face(a0 + 0, b0 + 0, b0 + 1, a0 + 1);   // left fascia
+        face(a0 + 2, b0 + 2, b0 + 3, a0 + 3);   // soffit
+        face(a0 + 4, b0 + 4, b0 + 5, a0 + 5);   // right fascia
+        g_unweldedEquiv += 12;
+    }
+}
+
+// V7.3: an ORIENTED box (hammerhead cap) — axis (ax,az) horizontal, half
+// extents halfA along the axis / halfB across, y0..y1 tall. 4 sides + lid +
+// soffit via quad() (cheap; caps are rare).
+void obox(Buck bk, float cx, float cz, float y0, float y1,
+          float ax, float az, float halfA, float halfB) {
+    const float bx2 = -az, bz2 = ax;   // horizontal perp
+    const float cor[4][2] = {
+        { cx + ax*halfA + bx2*halfB, cz + az*halfA + bz2*halfB },
+        { cx + ax*halfA - bx2*halfB, cz + az*halfA - bz2*halfB },
+        { cx - ax*halfA - bx2*halfB, cz - az*halfA - bz2*halfB },
+        { cx - ax*halfA + bx2*halfB, cz - az*halfA + bz2*halfB },
+    };
+    for (int f = 0; f < 4; ++f) {
+        const int g = (f + 1) % 4;
+        const float A[3] = { cor[f][0], y0, cor[f][1] };
+        const float B[3] = { cor[g][0], y0, cor[g][1] };
+        const float C[3] = { cor[g][0], y1, cor[g][1] };
+        const float D[3] = { cor[f][0], y1, cor[f][1] };
+        const float n[3] = { cor[f][0] + cor[g][0] - 2*cx, 0,
+                             cor[f][1] + cor[g][1] - 2*cz };
+        quad(bk, A, B, C, D, n, 0.0f, (y1 - y0) / 10.0f);
+    }
+    const float T0[3] = { cor[0][0], y1, cor[0][1] }, T1[3] = { cor[1][0], y1, cor[1][1] };
+    const float T2[3] = { cor[2][0], y1, cor[2][1] }, T3[3] = { cor[3][0], y1, cor[3][1] };
+    const float nu[3] = { 0, 1, 0 }, nd[3] = { 0, -1, 0 };
+    quad(bk, T0, T1, T2, T3, nu, 0.0f, 1.0f);
+    const float B0[3] = { cor[0][0], y0, cor[0][1] }, B1[3] = { cor[1][0], y0, cor[1][1] };
+    const float B2[3] = { cor[2][0], y0, cor[2][1] }, B3[3] = { cor[3][0], y0, cor[3][1] };
+    quad(bk, B3, B2, B1, B0, nd, 0.0f, 1.0f);
+}
+
 // Square shaft between two heights (piers AND lamp poles share this).
 void box4(Buck bk, float x, float z, float y0, float y1, float half) {
     if (y1 <= y0) return;
@@ -422,18 +504,32 @@ void box4(Buck bk, float x, float z, float y0, float y1, float half) {
     }
 }
 
-void pillar(Buck bk, float x, float z, float yTop, float yGround) {
-    // V3.1 polish: tall piers read slab-like at height — split anything over
-    // 20 m into a wider base section + a standard upper shaft (still one
-    // bucket, ~4 extra quads). Short piers keep the single shaft.
+// V7.3 STRUCTURAL (slop verdict: "the piers are black sticks — 61:1, no cap,
+// no taper, no bearing seat"): footing pad at grade, a tapered shaft (more
+// sections the taller the pier), and a HAMMERHEAD cap beam seated under the
+// deck, oriented across it via the caller's perp (px,pz). Lamp poles keep
+// raw box4 — this is piers only.
+void pillar(Buck bk, float x, float z, float yTop, float yGround,
+            float px = 1.0f, float pz = 0.0f) {
     const float h = yTop - yGround;
-    if (h > 20.0f) {
-        const float mid = yGround + h * 0.5f;
-        box4(bk, x, z, yGround - 1.5f, mid,        kPillarHalf * 1.4f);
-        box4(bk, x, z, mid - 0.5f,     yTop - 0.5f, kPillarHalf);
-    } else {
-        box4(bk, x, z, yGround - 1.5f, yTop - 0.5f, kPillarHalf);
+    if (h <= 0.0f) return;
+    // Footing: squat pad half-buried at grade (contact, not lawn-spearing).
+    box4(bk, x, z, yGround - 1.2f, yGround + 0.9f, kPillarHalf * 2.2f);
+    // Tapered shaft up to the cap seat: 1.9x at the base -> 1.15x at the top,
+    // in 1-3 sections (each section overlaps the next 0.3 m — no gaps).
+    const float capBase = yTop - kDeckDepth - kCapDepth;
+    const float shaftTop = std::max(capBase + 0.3f, yGround + 1.0f);
+    const int secs = h > 60.0f ? 3 : (h > 20.0f ? 2 : 1);
+    for (int i = 0; i < secs; ++i) {
+        const float t0 = (float)i / (float)secs, t1 = (float)(i + 1) / (float)secs;
+        const float half = kPillarHalf * (1.9f - 0.75f * t0);
+        const float y0 = yGround + 0.6f + (shaftTop - yGround - 0.6f) * t0;
+        const float y1 = yGround + 0.6f + (shaftTop - yGround - 0.6f) * t1;
+        box4(bk, x, z, y0 - 0.3f, y1, half);
     }
+    // Hammerhead: the transverse cap beam the deck bears on.
+    obox(bk, x, z, capBase, capBase + kCapDepth + 0.25f, px, pz,
+         kCapHalfLen, kPillarHalf * 1.15f);
 }
 
 } // namespace
@@ -1514,9 +1610,11 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         m_buckets[kBucketAsphalt].tex  = loadTile("asphalt_tile.png");
         m_buckets[kBucketConcrete].tex = loadTile("concrete_tile.png");
         m_buckets[kBucketSidewalk].tex = loadTile("sidewalk_tile.png");
-        // V7.2: shoulders only exist on the (concrete) freeway deck — same
-        // pour as the deck, sun-bleached lighter by the tint below.
-        m_buckets[kBucketShoulder].tex = m_buckets[kBucketConcrete].tex;
+        // V7.3 (slop verdict: "your huge shoulders are invisible"): the
+        // breakdown lane goes back to ASPHALT, crushed dark below — a hard
+        // value break against the pale concrete lanes that reads at vista
+        // range, with the white edge line dividing them.
+        m_buckets[kBucketShoulder].tex = m_buckets[kBucketAsphalt].tex;
         m_buckets[kBucketGrime].tex    = loadTile("grime_tile.png");
         const int texOk = (m_buckets[kBucketAsphalt].tex.valid() ? 1 : 0) +
                           (m_buckets[kBucketConcrete].tex.valid() ? 1 : 0) +
@@ -1531,8 +1629,8 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     const float cConcrete[4] = { texC ? 0.95f : 0.42f, texC ? 0.95f : 0.41f, texC ? 0.95f : 0.39f, 1.0f };
     const bool texW = m_buckets[kBucketSidewalk].tex.valid();
     const float cWalk[4]     = { texW ? 0.92f : 0.295f, texW ? 0.92f : 0.30f, texW ? 0.92f : 0.31f, 1.0f };
-    // Shoulder: same asphalt tile pushed LIGHTER — sun-bleached, traffic-free.
-    const float cShoulder[4] = { texA ? 1.45f : 0.16f, texA ? 1.45f : 0.165f, texA ? 1.42f : 0.17f, 1.0f };
+    // Shoulder (V7.3): asphalt crushed DARK — the value break vs pale lanes.
+    const float cShoulder[4] = { texA ? 0.55f : 0.10f, texA ? 0.55f : 0.10f, texA ? 0.60f : 0.11f, 1.0f };
     // Grime: the blotch tile crushed DARK — reads as rubber + oil on asphalt.
     const float cGrime[4]    = { 0.16f, 0.16f, 0.17f, 1.0f };
     // NightGlow: warm HDR lamp heads (drawn by drawNightGlow with emissive).
@@ -1614,7 +1712,15 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             const bool elevated = pe.cls == RoadClass::Freeway ||
                                   pe.cls == RoadClass::Ramp;
             ribbon(elevated ? conc : asphalt, run, 0.0f, pe.width, 0.0f,
-                   pe.banked, &m_collision, /*underside=*/elevated);
+                   pe.banked, &m_collision, /*underside=*/false);
+            // V7.3: the box section replaces the old reversed-index underside
+            // sheet — real fascia walls + a soffit at -kDeckDepth spanning the
+            // FULL top surface (lanes + shoulders on the freeway).
+            if (elevated) {
+                const float fullW = pe.width +
+                    (pe.cls == RoadClass::Freeway ? 2.0f * kShoulderW : 0.0f);
+                deckFascia(conc, run, fullW, pe.banked);
+            }
             // V7 SHOULDERS (Tim: "does it have a shoulder?"): a worn, lighter
             // 1.6m band each side of the deck, DRIVABLE (in the collision mesh);
             // barriers move outboard of them.
@@ -1701,12 +1807,13 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                     const RoadSample& s = run[i];
                     const float g = hf.heightAt(s.x, s.z);
                     if (s.y - g <= kPillarMinAir) continue;
+                    // V7.3: piers carry the deck perp for their hammerheads.
+                    float px, pz; rperp(s.tx, s.tz, px, pz);
                     if (pe.pillarPair) {
-                        float px, pz; rperp(s.tx, s.tz, px, pz);
-                        pillar(conc, s.x + px * 4.8f, s.z + pz * 4.8f, s.y, g);
-                        pillar(conc, s.x - px * 4.8f, s.z - pz * 4.8f, s.y, g);
+                        pillar(conc, s.x + px * 4.8f, s.z + pz * 4.8f, s.y, g, px, pz);
+                        pillar(conc, s.x - px * 4.8f, s.z - pz * 4.8f, s.y, g, px, pz);
                     } else {
-                        pillar(conc, s.x, s.z, s.y, g);
+                        pillar(conc, s.x, s.z, s.y, g, px, pz);
                     }
                 }
             }
