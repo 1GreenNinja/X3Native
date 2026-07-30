@@ -1,3 +1,19 @@
+# LANE 7 ORDERS — TIM'S iPAD ANNOTATIONS (2026-07-30, on fjord captures):
+# 1. BLUE: GOLDEN GATE-STYLE SUSPENSION BRIDGE spanning the gorge mouth (city
+#    side) — towers + catenary main cables + hangers + deck tied into the road
+#    graph. New module (echo_bridge or a Bridge edge class in EchoRoads).
+# 2. YELLOW: EXPAND THE CLIFF BLUFF — the channel headland grows per his traced
+#    footprint (carve v4 target zone: the isolated bluff + adjoining walls).
+# 3. RED: SEA-CAVE WATERWAY -> LARGE UNDERGROUND CAVERN behind the cliff face.
+#    Heightfield is 2.5D — cavern = authored cave geometry (engine has
+#    act2_caves.cpp + cave kits) + carved entrance notch + interior water plane;
+#    perfect streaming Lane-A cell + future hidden-mine/smuggler set piece.
+# 4. WAVE ARTIFACT on fjord world: honest answer — the white-sheet fixes (ring
+#    repaint + trough margin) landed on island_mesa's bake; assets/island_fjord
+#    is an OLDER bake without WATER_V2. Fjord needs a WATER_V2 rebake; ALSO the
+#    surface-level patch-vs-ring contrast at eye<140m remains open everywhere
+#    (Lane 5 water tier 2).
+
 # WRITER SEAT (2026-07-30): a NEW session is live on LANES 1-4 — it now owns
 # host_echotropolis.cpp + CMakeLists + cmake builds + exe launches. The elder
 # window (this file's last author) has STOOD DOWN from all repo writes.
@@ -5,6 +21,38 @@
 # tasklist-check for Tim's exe, and per-milestone commits. Lanes 5-7 unclaimed.
 
 # Handoff
+
+## LANES 1-4 EXECUTED (2026-07-30, this window — commits 6d97692a..6711a20f, PUSHED)
+Tribunal mandate landed, all "wire what exists": (1) WD2 STACK LIVE — npcLife.build
+got &hax (scan-cards lit), 48 hackables (7 cams/4 jboxes/4 ATMs/4 signals/6 cars/23
+citizens), H=nethack vision, aim+E hacks, K=skill tree (console-modal), XP from
+hacks/DODOGs/driving, heat=new AlertSystem + karma=TimelineState + junction hack =
+StreetLights::killNear 45s blackout; RPG persists at echotropolis.rpg.txt. (2) V7.1
+per-gate on-ramps — zigzag law PASS (gate 1's V7 bow hooked post-smooth 11.6->8.3;
+20-deg bow to 200m merge passes; NO local metric predicts the law — its pinned-end
+smooth + central-diff tangents must be measured by running it). (3) LANE 1 TRAFFIC —
+22 cars route the WHOLE RoadGraph (seeded multi-edge walks, positional 10m supernode
+clustering — RoadNodes share no indices!), 10s signal cycle holds cars at junctions,
+TrafficSignal hack = real 20s gridlock. (4) LANE 2 — crown drag/plaza + harbor lamp
+rows (35->51; crown seats FLAT — the 3x3 max probe floated them), 6 SB_* boards +
+billboard on the drag + 2 harbor. ✅ NIGHT-GROUND SOLVED (3fe89811, same window):
+root cause was GLASS IN THE TLAS — the lamps' fake-volumetric glow cones entered
+the RT accel structure as solid occluders, so every point-shadow ray from the
+ground hit its own lamp's cone shell (vis=0) and the whole city floor read black.
+One-line fix (kFlagGlass filter in the TLAS instance loop, vk_passes.cpp) — drag
++ plaza now read in warm pools, facades catch lamp light. Debug lane r_debugview 7
+(point RT shadows forced lit) kept — it's the A/B that cracked it. Pool discs were
+NEVER broken (foreshortened slivers at street level, by design; top-down proof).
+⚠ lamps were tuned while shadow-dead — night may read HOT; ECHO_LAMP_INT_MUL is
+Tim's knob. hf/PNG/mesh all AGREE (python probe) — seat everything via hf freely. (5) LANE 4 v1 — NpcLifeConfig::
+leisureMagnet sends Electrician/Courier/Gardener/OffShiftDrone to the noodle bar on
+schedule; [E] ENTER/LEAVE door portals (condo lobby + harbor shop). (6) NFS LAYER —
+PerfShop OPEN at (-130,726): WorldCars::liveCar() accessor, treasury=wallet, lift-pad
+flow, UP/DOWN/ENTER browse+buy, LEFT/RIGHT boost, P dyno, R repair, N nitrous.
+TIM LIVE-VERIFY: H/E/K feel, marker/card visuals, bar patrons at leisure hours, door
+feel, shop flow + a bought upgrade on a lap, signal-cycle feel (only 1 junction
+supernode found — expected ~3, check clustering radius). Drift tuning deferred (needs
+hands). Screenshot path exits BEFORE worldCars/npcLife/shop build — live-mode only.
 
 ## THE PILLAR BOARD (Tim: "keep track of these pillars!!!!")
 | Pillar | Task | State |
