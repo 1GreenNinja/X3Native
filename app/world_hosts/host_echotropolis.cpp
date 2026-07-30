@@ -1263,6 +1263,17 @@ int hostEchotropolis(HostContext& hc) {
     struct Car { std::unique_ptr<x3::game::EnvArtSystem> body;
                  float sx, sz, dx, dz, len, speed, off; };
     std::vector<Car> cars;
+    // ---- LANE 1 TRAFFIC v1 (GTA punchlist #1): whole-graph kinematic routing.
+    // Each car gets a seeded multi-edge ROUTE over the real RoadGraph (freeway,
+    // ramps, avenues, harbor streets) with lane offsets; junction-end signals
+    // hold cars on a global 10 s cycle (even edges then odd edges), and the
+    // TrafficSignal hack forces ALL-RED — "SIGNAL SPOOFED - GRIDLOCK" is real.
+    struct TrafficLeg   { uint32_t edge; bool fwd; float len; bool exitSignalled; };
+    struct TrafficRoute { std::vector<TrafficLeg> legs; float total = 0.0f; };
+    std::vector<TrafficRoute> carRoutes;         // index == cars index
+    std::vector<float> carRouteDist, carLastT;   // signals need integrator state
+    std::vector<uint32_t> juncNodes;             // RoadGraph nodes, degree >= 3
+    float trafficSpoofT = 0.0f;                  // hack: all-red seconds left
     auto addCar = [&](int variant, float sx, float sz, float dx, float dz, float len,
                       float speed, float off){
         const float L = std::sqrt(dx*dx + dz*dz); dx/=L; dz/=L;
@@ -1294,37 +1305,56 @@ int hostEchotropolis(HostContext& hc) {
         x3::logInfo("--world echotropolis: STREET TRAFFIC — " + std::to_string(cars.size()) + " cars");
     }
     auto poseCar = [&](Car& c, float t){
-        // TIM ("pick up trucks floating in the sky by the mine"): the old
-        // straight lanes died with the ribbon freeway, but the cars kept
-        // driving them at deck altitude. Traffic now drives the REAL road
-        // graph — the EchoRoads freeway ring's centerline samples, exactly
-        // the consumer RoadGraph::laneCenterOffset was designed for (first
-        // taste of the car-AI pillar). Lane + direction derive from the
-        // car's own phase constant, so assignment is deterministic.
-        const x3::game::RoadEdge* fe = nullptr;
-        if (roads) {
-            for (const auto& e : roads->graph().edges)
-                if (e.cls == x3::game::RoadClass::Freeway && e.center.size() > 2) { fe = &e; break; }
-        }
-        if (fe) {
-            const bool  rev  = ((int)(c.off * 100.0f) & 1) != 0;
-            const int   lane = ((int)(c.off * 10.0f)  & 1);
-            float d = std::fmod(c.off + t * c.speed, fe->length);
-            if (rev) d = fe->length - d;
-            const size_t n  = fe->center.size();
-            const float  fi = (d / fe->length) * (float)(n - 1);
+        // LANE 1 TRAFFIC v1: the car follows its multi-edge ROUTE over the
+        // real RoadGraph (was: one freeway edge). Distance is STATE (not
+        // f(t)) because a red signal genuinely holds the car. Lane + class
+        // speed derive deterministically; laneCenterOffset does the lane math.
+        const size_t ci = (size_t)(&c - cars.data());
+        if (roads && ci < carRoutes.size() && !carRoutes[ci].legs.empty()) {
+            const auto& g = roads->graph();
+            const TrafficRoute& R = carRoutes[ci];
+            float dt2 = 0.0f;
+            if (carLastT[ci] >= 0.0f) dt2 = std::max(0.0f, t - carLastT[ci]);
+            else carRouteDist[ci] = std::fmod(std::max(0.0f, c.off), R.total);
+            carLastT[ci] = t;
+            // Locate the current leg.
+            float d = carRouteDist[ci];
+            uint32_t li = 0; float acc = 0.0f;
+            while (li + 1 < (uint32_t)R.legs.size() && d > acc + R.legs[li].len) {
+                acc += R.legs[li].len; ++li;
+            }
+            const TrafficLeg& L = R.legs[li];
+            const auto& e = g.edges[L.edge];
+            const float dl = std::min(std::max(d - acc, 0.0f), L.len);
+            // Class speed: freeway pace, cautious ramps, street pace.
+            float v = c.speed * (e.cls == x3::game::RoadClass::Freeway ? 1.0f :
+                                 e.cls == x3::game::RoadClass::Ramp    ? 0.55f : 0.45f);
+            // Signal: hold short of a junction exit on red (or spoofed gridlock).
+            if (L.exitSignalled && L.len - dl < 14.0f) {
+                const float cyc = std::fmod(t, 10.0f);
+                const bool green = trafficSpoofT <= 0.0f &&
+                    (((L.edge & 1u) == 0u) ? (cyc < 5.0f) : (cyc >= 5.0f));
+                if (!green) v = 0.0f;
+            }
+            carRouteDist[ci] = std::fmod(carRouteDist[ci] + v * dt2, R.total);
+            // Sample the centerline at dl along the leg (direction-aware).
+            const size_t n = e.center.size();
+            float fi = ((L.fwd ? dl : (L.len - dl)) / e.length) * (float)(n - 1);
+            if (fi < 0.0f) fi = 0.0f;
             const size_t i0 = std::min((size_t)fi, n - 2);
             const float  ft = fi - (float)i0;
-            const auto&  s0 = fe->center[i0];
-            const auto&  s1 = fe->center[i0 + 1];
+            const auto&  s0 = e.center[i0];
+            const auto&  s1 = e.center[i0 + 1];
             const float  x0 = s0.x + (s1.x - s0.x) * ft;
             const float  y0 = s0.y + (s1.y - s0.y) * ft + 0.35f;
             const float  z0 = s0.z + (s1.z - s0.z) * ft;
             float tx = s0.tx + (s1.tx - s0.tx) * ft, tz = s0.tz + (s1.tz - s0.tz) * ft;
             const float tl = std::sqrt(tx*tx + tz*tz); if (tl > 1e-5f) { tx /= tl; tz /= tl; }
-            const float lat = roads->graph().laneCenterOffset(*fe, lane, !rev);
+            const int lane = (int)(ci & 1u) < (L.fwd ? e.lanesF : e.lanesB) ? (int)(ci & 1u) : 0;
+            const float lat = x3::game::RoadGraph::laneCenterOffset(e, lane, L.fwd);
             const float x = x0 + tz * lat, z = z0 - tx * lat;   // right-perp = (tz,-tx)
-            const float heading = std::atan2(rev ? -tx : tx, rev ? -tz : tz) + kCarYaw;
+            const float dirX = L.fwd ? tx : -tx, dirZ = L.fwd ? tz : -tz;
+            const float heading = std::atan2(dirX, dirZ) + kCarYaw;
             const float sc = kCarScale, ch = std::cos(heading), sh = std::sin(heading);
             const float M[16] = { ch*sc,0,-sh*sc,0, 0,sc,0,0, sh*sc,0,ch*sc,0, x, y0, z, 1 };
             c.body->setInstanceTransform(0, M);
@@ -1338,6 +1368,79 @@ int hostEchotropolis(HostContext& hc) {
         const float s = kCarScale, ch = std::cos(heading), sh = std::sin(heading);
         const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, kCarY, z, 1 };
         c.body->setInstanceTransform(0, M);
+    };
+    // Route construction: seeded walks over the RoadGraph. Called once after
+    // roads->build (adjacency comes from the edges' positional node joins).
+    auto buildTrafficRoutes = [&](){
+        if (!roads) return;
+        const auto& g = roads->graph();
+        const uint32_t ne = (uint32_t)g.edges.size();
+        if (!ne || cars.empty()) return;
+        // RoadNodes are POSITIONAL joins (no shared indices across edges) —
+        // cluster them within 10 m into supernodes before adjacency.
+        std::vector<uint32_t> super(g.nodes.size());
+        std::vector<std::pair<float,float>> superPos;
+        for (uint32_t ni = 0; ni < (uint32_t)g.nodes.size(); ++ni) {
+            uint32_t s = (uint32_t)superPos.size();
+            for (uint32_t sj = 0; sj < (uint32_t)superPos.size(); ++sj) {
+                const float dx = superPos[sj].first - g.nodes[ni].x;
+                const float dz = superPos[sj].second - g.nodes[ni].z;
+                if (dx * dx + dz * dz < 100.0f) { s = sj; break; }
+            }
+            if (s == (uint32_t)superPos.size())
+                superPos.push_back({ g.nodes[ni].x, g.nodes[ni].z });
+            super[ni] = s;
+        }
+        std::vector<std::vector<uint32_t>> adj(superPos.size());
+        for (uint32_t ei = 0; ei < ne; ++ei) {
+            const auto& e = g.edges[ei];
+            if (e.center.size() < 3) continue;
+            if (e.a < super.size()) adj[super[e.a]].push_back(ei);
+            if (e.b < super.size() && super[e.b] != super[e.a])
+                adj[super[e.b]].push_back(ei);
+        }
+        juncNodes.clear();
+        for (uint32_t ni = 0; ni < (uint32_t)adj.size(); ++ni)
+            if (adj[ni].size() >= 3) juncNodes.push_back(ni);
+        carRoutes.assign(cars.size(), {});
+        carRouteDist.assign(cars.size(), 0.0f);
+        carLastT.assign(cars.size(), -1.0f);
+        uint32_t routed = 0;
+        for (size_t ci = 0; ci < cars.size(); ++ci) {
+            uint32_t rng = (uint32_t)(ci * 2654435761u) | 1u;
+            auto rnd = [&rng](){ rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; };
+            uint32_t ei = rnd() % ne;
+            for (uint32_t k = 0; k < ne && g.edges[ei].center.size() < 3; ++k) ei = (ei + 1) % ne;
+            if (g.edges[ei].center.size() < 3) continue;
+            bool fwd = (rnd() & 1u) != 0u;
+            TrafficRoute R;
+            for (int leg = 0; leg < 10 && R.total < 1500.0f; ++leg) {
+                const auto& e = g.edges[ei];
+                const uint32_t rawExit = fwd ? e.b : e.a;
+                const uint32_t exitS = rawExit < super.size() ? super[rawExit]
+                                                              : (uint32_t)adj.size();
+                const bool sig = exitS < adj.size() && adj[exitS].size() >= 3;
+                R.legs.push_back({ ei, fwd, e.length, sig });
+                R.total += e.length;
+                if (exitS >= (uint32_t)adj.size() || adj[exitS].empty()) break;
+                const auto& out = adj[exitS];
+                uint32_t next = ei;
+                for (int tries = 0; tries < 4; ++tries) {
+                    const uint32_t cand = out[rnd() % out.size()];
+                    if (cand != ei || out.size() == 1) { next = cand; break; }
+                }
+                if (next == ei && out.size() > 1) next = (out[0] == ei) ? out[1] : out[0];
+                if (next == ei || g.edges[next].center.size() < 3) break;
+                fwd = (g.edges[next].a < super.size() &&
+                       super[g.edges[next].a] == exitS);
+                ei = next;
+            }
+            if (!R.legs.empty()) { carRoutes[ci] = std::move(R); ++routed; }
+        }
+        x3::logInfo("[traffic] " + std::to_string(routed) + "/" +
+                    std::to_string(cars.size()) + " cars routed over the graph (" +
+                    std::to_string(juncNodes.size()) +
+                    " junction nodes, 10 s signal cycle; spoof hack = gridlock)");
     };
 
     // ===================== CITY INFRASTRUCTURE (roads / freeway / metro) =====
@@ -1395,6 +1498,7 @@ int hostEchotropolis(HostContext& hc) {
         if (roads->build(*device, hf)) {
             x3::logInfo("--world echotropolis: ECHO ROADS — curved network live "
                         "(old freeway ribbons retired)");
+            buildTrafficRoutes();   // LANE 1: the fleet takes the whole graph
         } else {
             roads.reset();
             x3::logWarn("--world echotropolis: EchoRoads build FAILED — no freeway this boot");
@@ -2499,6 +2603,9 @@ int hostEchotropolis(HostContext& hc) {
         sinks.onResult = [&](const x3::game::HackResult& r) {
             hackCard = r; hackCardT = 5.0f;
             if (r.credits > 0) treasury += (double)r.credits;
+            // SIGNAL SPOOFED - GRIDLOCK is real: every signal runs red 20 s.
+            if (r.type == x3::game::HackableType::TrafficSignal)
+                trafficSpoofT = 20.0f;
             grantXp(kXpHack);
         };
         hax.setSinks(sinks);
@@ -3776,6 +3883,7 @@ int hostEchotropolis(HostContext& hc) {
             cityAlert.update(dt, { apx, apy, apz }, nullptr, 0, false);
         }
         if (hackCardT > 0.0f) hackCardT -= dt;
+        if (trafficSpoofT > 0.0f) trafficSpoofT -= dt;
         talkPoll();       // CITIZEN TALK: drain streamed reply tokens (non-blocking, every frame)
         ambientTick(dt);  // AMBIENT CHATTER: occasionally an idle citizen mutters (opt-in)
         ambientPoll();
