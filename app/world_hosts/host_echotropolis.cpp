@@ -56,6 +56,8 @@
 #include "../skilltree.h"              // WD2 STACK: the dormant skill stack, live (K screen)
 #include "../progression.h"            // WD2 STACK: XP from hacks / drives / DODOGs
 #include "../rpg_ui.h"                 // WD2 STACK: skills screen + LV/XP HUD chip
+#include "../vehparts.h"               // NFS LAYER: the parts catalog + the build
+#include "../perfshop.h"               // NFS LAYER: the dormant performance shop, live
 #include "../hud.h"                    // ENGINE CONSOLE: D6 IConsole + Hud drop-down front-end
 #include "engine/core/IConsole.h"
 #include <string>
@@ -2261,6 +2263,18 @@ int hostEchotropolis(HostContext& hc) {
     x3::game::NpcLife npcLife; bool npcLifeBuilt = false;   // LIVING CITY: scheduled NPCs
     x3::game::NpcSkin npcSkin;                              // their rigged bodies
     x3::game::WorldCars worldCars;                          // CARS PILLAR: the street fleet
+    // NFS LAYER (Lane 1): the EFLZ performance shop, wired to the street
+    // fleet. Roll onto the lift pad, stop, and the shop takes the frame:
+    // engine/brakes/tires/nitrous tiers land on the live Jolt rig via
+    // ComposedBuild::tuning (1:1 WheeledTuning). Treasury is the wallet.
+    x3::game::vehparts::Catalog      partsCat;
+    x3::game::vehparts::VehicleBuild carBuild;
+    x3::game::PerfShop               shop;
+    bool shopBuilt = false;
+    bool prevShopUp = false, prevShopDown = false, prevShopEnter = false,
+         prevShopBack = false, prevShopTab = false, prevShopL = false,
+         prevShopR = false, prevShopP = false, prevShopFix = false,
+         prevShopN = false;
     const char* vendorPrompt = nullptr;                     // vendor buy-loop HUD line
     const char* doorPrompt = nullptr;                       // LANE 4: interior door line
     int playerInCell = -1;                                  // which cell the player is inside
@@ -2373,6 +2387,21 @@ int hostEchotropolis(HostContext& hc) {
             worldCars.build(carDefs, device, *phys, x3::game::convertedGlbRoot());
             x3::logInfo("--world echotropolis: WORLD CARS parked (" +
                         std::to_string(carDefs.size()) + " on the streets; E enters, hold-E hacks)");
+        }
+
+        // NFS LAYER: the performance shop rises west of the drag. build()
+        // picks the flattest candidate near the anchor; catalog missing ->
+        // shop disabled with a loud log (host_drive precedent).
+        if (partsCat.loadFile(x3::game::vehparts::defaultCatalogPath())) {
+            carBuild.loadFile(x3::game::vehparts::defaultBuildSavePath());
+            shopBuilt = shop.build(walkScene, *device, *phys, &partsCat, &carBuild,
+                                   -130.0f, 726.0f);
+            if (shopBuilt) shop.recompose(worldCars.liveCar());
+            x3::logInfo(std::string("--world echotropolis: PERF SHOP ") +
+                        (shopBuilt ? "OPEN west of the drag (roll onto the lift, stop)"
+                                   : "build FAILED"));
+        } else {
+            x3::logWarn("--world echotropolis: parts catalog missing — perf shop disabled");
         }
 
         // GOLD-MINE CREW: a dedicated crowd out at the western mine. Miners trek the
@@ -3288,7 +3317,7 @@ int hostEchotropolis(HostContext& hc) {
               glfwGetCursorPos(window, &mx, &my);   // re-baseline: no look snap
               lastMX = mx; lastMY = my; ddx = 0.0f; ddy = 0.0f;
           } }
-        { const bool tb = kd(GLFW_KEY_TAB); if (tb && !prevTab) { cityPanelOpen = !cityPanelOpen; uiSfx(sfxConfirm, 0.75f); } prevTab = tb; }
+        { const bool tb = kd(GLFW_KEY_TAB); if (tb && !prevTab && !(shopBuilt && shop.shopMode())) { cityPanelOpen = !cityPanelOpen; uiSfx(sfxConfirm, 0.75f); } prevTab = tb; }
         // BUILD MODE (B): orbit-only; entering walk mode drops it.
         { const bool b = kd(GLFW_KEY_B); if (b && !prevB && !walkMode && !flyMode) { buildMode = !buildMode; uiSfx(sfxConfirm, 0.6f); } prevB = b; }
         if (walkMode) buildMode = false;
@@ -3539,6 +3568,7 @@ int hostEchotropolis(HostContext& hc) {
             { const bool c2 = kd(GLFW_KEY_C);   // NFS view cycle
               if (c2 && !prevCarC) carView = (carView + 1) % 4;
               prevCarC = c2; }
+            if (shopBuilt && shop.shopMode()) { vin = {}; vin.brake = 1.0f; }
             worldCars.driveInput(vin);
             worldCars.preStep(dt);
             phys->step(dt);
@@ -3550,6 +3580,53 @@ int hostEchotropolis(HostContext& hc) {
                 driveXpOdo -= kDriveLegMeters;
                 grantXp(kXpDriveLeg);
             }
+        }
+        // ---- NFS PERF SHOP: lift pad, purchase UI, live tuning ------------
+        if (shopBuilt && physOk) {
+            if (worldCars.driving()) {
+                const x3::phys::Vec3 scp = worldCars.carPosition();
+                const float sp3[3] = { scp.x, scp.y, scp.z };
+                const float fspd = std::fabs(worldCars.forwardSpeed());
+                if (!shop.shopMode() && fspd < 0.8f && shop.onLiftPad(sp3)) {
+                    shop.setShopMode(true);
+                    carBuild.credits = (int)treasury;   // treasury IS the wallet
+                    uiSfx(sfxConfirm, 0.7f);
+                } else if (shop.shopMode() && !shop.onLiftPad(sp3)) {
+                    shop.setShopMode(false);
+                }
+            } else if (shop.shopMode()) {
+                shop.setShopMode(false);
+            }
+            if (shop.shopMode()) {
+                const bool su = kd(GLFW_KEY_UP),        sd = kd(GLFW_KEY_DOWN),
+                           se = kd(GLFW_KEY_ENTER) || kd(GLFW_KEY_KP_ENTER),
+                           sb = kd(GLFW_KEY_BACKSPACE), st = kd(GLFW_KEY_TAB),
+                           sl = kd(GLFW_KEY_LEFT),      sr = kd(GLFW_KEY_RIGHT),
+                           sp2 = kd(GLFW_KEY_P),        sf = kd(GLFW_KEY_R),
+                           sn = kd(GLFW_KEY_N);
+                if (su && !prevShopUp)    shop.uiUp();
+                if (sd && !prevShopDown)  shop.uiDown();
+                if (se && !prevShopEnter) shop.uiSelect();
+                if (sb && !prevShopBack)  shop.uiBack();
+                if (st && !prevShopTab)   shop.uiTab();
+                if (sl && !prevShopL)     shop.adjustTune(0, -1);
+                if (sr && !prevShopR)     shop.adjustTune(0, +1);
+                if (sp2 && !prevShopP)    shop.startPull();
+                if (sf && !prevShopFix)   shop.repairEngine();
+                if (sn && !prevShopN)     shop.refillNitrous();
+                prevShopUp = su; prevShopDown = sd; prevShopEnter = se;
+                prevShopBack = sb; prevShopTab = st; prevShopL = sl;
+                prevShopR = sr; prevShopP = sp2; prevShopFix = sf; prevShopN = sn;
+                treasury = (double)carBuild.credits;   // purchases settle live
+            }
+            shop.update(dt, worldCars.liveCar(),
+                        audioOn ? eaudio.get() : nullptr, sfxDeny);
+            if (shop.consumeNeedSave())
+                carBuild.saveFile(x3::game::vehparts::defaultBuildSavePath());
+            // Nitrous rides the composed build while actually driving.
+            if (worldCars.driving() && !shop.shopMode() &&
+                shop.composed().nitrousMult > 0.0f && carBuild.nitrousRemaining > 0.0f)
+                if (auto* lc2 = worldCars.liveCar()) lc2->setTorqueBoost(shop.composed().nitrousMult);
         } else if (walkMode && physOk && followIdx < 0) {   // frozen while riding along
             x3::game::PlayerInput in{};
             in.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
@@ -3957,7 +4034,10 @@ int hostEchotropolis(HostContext& hc) {
             // the body (no interior yet — dashboard view lands with the
             // interiors pillar). Mouse orbits every view.
             const x3::phys::Vec3 cp2 = worldCars.carPosition();
-            if (carView == 3) {
+            if (shopBuilt && shop.shopMode()) {
+                float oc[5]; shop.orbitCam(oc);   // the shop owns the frame
+                device->setCamera(oc[0], oc[1], oc[2], oc[3], oc[4], opt.fovDeg);
+            } else if (carView == 3) {
                 const float hx = cp2.x + std::cos(driveCamYaw) * 0.9f;
                 const float hz = cp2.z + std::sin(driveCamYaw) * 0.9f;
                 device->setCamera(hx, cp2.y + 1.25f, hz, driveCamYaw, driveCamPitch * 0.4f, opt.fovDeg + 6.0f);
@@ -4034,6 +4114,7 @@ int hostEchotropolis(HostContext& hc) {
             else if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
             std::vector<x3::rhi::PointLight> pls;
             streetLamps.selectLights(lx, ly, lz, pls, 8);
+            if (shopBuilt) shop.selectLights(lx, ly, lz, pls, 8);   // shop interior glow
             regionSet.appendNearLights(lx, lz, pls, 64);   // TIER-2: was appendDistrictLights
             // ECHO ROADS lamps: nearest-first from the static slice, ONLY at night
             // (the module bakes no emissive by design — the day/night gate lives
@@ -4498,6 +4579,7 @@ int hostEchotropolis(HostContext& hc) {
         x3::logInfo(buf);
     }
 
+    if (shopBuilt && phys) shop.shutdown(walkScene, *device, *phys);   // shop bodies out first
     // WD2 STACK: persist progression (the app_run additive-text format).
     {
         FILE* wf = std::fopen(kRpgSavePath, "wb");

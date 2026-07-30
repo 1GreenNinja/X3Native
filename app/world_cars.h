@@ -134,6 +134,9 @@ public:
     x3::phys::Vec3 carPosition() const;             // live car (driving) or origin
     float forwardSpeed() const { return m_driveBuilt ? m_drive.forwardSpeed() : 0.0f; }
     float engineRPM() const    { return m_driveBuilt ? m_drive.engineRPM() : 0.0f; }
+    // PERF SHOP (NFS layer): the live rig for tuning/nitrous — PerfShop takes
+    // a DriveDemo* and tolerates null (no car spawned yet / not driving).
+    DriveDemo* liveCar() { return m_driveBuilt ? &m_drive : nullptr; }
 
     // Deep-water read on the LIVE car (engine-kill condition): water present
     // AND >= ~1.3 m deep over the local ground AND the hull is actually in it.
