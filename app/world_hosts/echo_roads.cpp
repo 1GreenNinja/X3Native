@@ -818,15 +818,30 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             // 60-90m => ~0.7-1.0 deg/m: PASSES the ramp law WITHOUT an
             // exemption (the law is the gate now, as it should be).
             const size_t nR = ringC.size();
-            const size_t at2 = (at + (size_t)(140.0f / kSampleStep)) % nR;
+            // V7.1: PER-GATE bow + merge, chosen against the LAW'S OWN
+            // verdicts (probe experiments 2026-07-30 — no local metric
+            // predicted the post-smooth result, because the law measures
+            // central-difference tangents after a pinned-end smooth over the
+            // node-captured edge, not the authored hermite):
+            //   gate 0: the V7 arc (35 deg bow, 140 m merge) — law 0.02 deg/m.
+            //   gate 1: the V7 arc hooked post-smooth (11.6 then 8.3 deg/m,
+            //           DROPPED — the "one CA on-ramp" of the punchlist); a
+            //           gentler 20 deg bow to the 200 m merge PASSES.
+            // The zigzag law stays the loud runtime gate: if a terrain bake
+            // ever re-breaks a ramp it drops with a WARN, not a zigzag.
+            static constexpr float kOnRampRot[]   = { 0.61f, 0.35f };
+            static constexpr float kOnRampMerge[] = { 140.0f, 200.0f };
+            const size_t gci = gi < 2 ? (size_t)gi : 1;
+            const float rot    = kOnRampRot[gci];
+            const float mergeM = kOnRampMerge[gci];
+            const size_t at2 = (at + (size_t)(mergeM / kSampleStep)) % nR;
             const RoadSample deck2 = ringC[at2];
             const float mChord2 = std::sqrt((deck2.x - g.gx)*(deck2.x - g.gx) +
                                             (deck2.z - g.gz)*(deck2.z - g.gz));
             // Long tangents bow the hermite outward into the sweep; the foot
-            // tangent aims 35 deg off the direct chord so the curve arcs wide
+            // tangent aims `rot` off the direct chord so the curve arcs wide
             // instead of cutting straight.
             const float cdx = (deck2.x - g.gx) / mChord2, cdz = (deck2.z - g.gz) / mChord2;
-            const float rot = 0.61f;   // ~35 deg outward bow at the foot
             const float fdx = cdx * std::cos(rot) - cdz * std::sin(rot);
             const float fdz = cdx * std::sin(rot) + cdz * std::cos(rot);
             const float lead2 = std::max(mChord2 * 0.9f, 90.0f);
@@ -849,6 +864,9 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 swp.front().x = g.gx;    swp.front().z = g.gz;    swp.front().y = gy;
                 swp.back().x  = deck2.x; swp.back().z  = deck2.z; swp.back().y  = deck2.y;
             }
+            x3::logInfo("[roads] on-ramp gate " + std::to_string(gi) + ": bow " +
+                        std::to_string(rot) + " rad, merge " +
+                        std::to_string((int)mergeM) + " m (V7.1 per-gate arc)");
             Pending pe;
             pe.cls = RoadClass::Ramp; pe.width = kRampWidth;
             pe.lanesF = 1; pe.lanesB = 0;

@@ -470,8 +470,41 @@ void StreetLights::logBuild(const char* who, uint32_t first) const {
 // ---------------------------------------------------------------------------
 // Flicker (irregular 8-13 Hz bursts, deterministic per lamp, dt-scaled).
 // ---------------------------------------------------------------------------
+uint32_t StreetLights::killNear(Scene& scene, float x, float z,
+                                float radius, float seconds) {
+    uint32_t n = 0;
+    const float r2 = radius * radius;
+    for (Lamp& l : m_lamps) {
+        if (l.workLight) continue;               // the dock rig never dies
+        const float dx = l.head[0] - x, dz = l.head[2] - z;
+        if (dx * dx + dz * dz > r2) continue;
+        if (l.state != State::Dead) l.preState = l.state;
+        l.state = State::Dead;
+        l.deadUntil = std::max(l.deadUntil, seconds);
+        l.level = 0.0f;
+        if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = 0.0f;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = 0.0f;
+        if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = 0.0f;
+        ++n;
+    }
+    return n;
+}
+
 void StreetLights::update(float dt, Scene& scene) {
     if (dt <= 0.0f) return;
+    // Grid-cut blackout timers: expiry strikes the lamp back to life.
+    for (Lamp& l : m_lamps) {
+        if (l.deadUntil <= 0.0f) continue;
+        l.deadUntil -= dt;
+        if (l.deadUntil > 0.0f) continue;
+        l.deadUntil = 0.0f;
+        l.state = l.preState;
+        l.level = 1.0f;
+        const ZoneLook& look = zoneLook(l.zone);
+        if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr;
+        if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr;
+    }
     for (Lamp& l : m_lamps) {
         if (l.state != State::Flicker) continue;
         auto frand = [&l]() {

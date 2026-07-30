@@ -59,6 +59,10 @@ public:
         bool  workLight = false;          // the dock rig (never dead/flickering)
         bool  cityOwned = false;          // true = region-ledger lifetime
         float level     = 1.0f;           // live flicker level (1 = steady)
+        // WD2 GRID CUT (junction-box hack): a blackout timer. While > 0 the
+        // lamp is forced Dead; expiry strikes it back to its pre-cut state.
+        float deadUntil = 0.0f;
+        State preState  = State::Lit;
         // Flicker state machine (deterministic xorshift stream, dt-scaled).
         float    t = 0.0f, next = 0.0f, period = 0.1f, phase = 0.0f;
         bool     burst = false, on = true;
@@ -92,6 +96,11 @@ public:
     // Per-frame: advance the flicker machines (dt-scaled, irregular 8-13 Hz
     // bursts) and write cone/head/disc emissive levels into the scene.
     void update(float dt, Scene& scene);
+
+    // WD2 GRID CUT: force every lamp within `radius` of (x,z) Dead for
+    // `seconds` (emissives zeroed now; update() strikes them back after the
+    // timer). The dock work light is exempt. Returns lamps cut.
+    uint32_t killNear(Scene& scene, float x, float z, float radius, float seconds);
 
     // Append the nearest-K LIT lamps (dead excluded, flicker scaled by its
     // live level) to `out` as pooled PointLights. Returns how many appended.

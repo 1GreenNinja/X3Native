@@ -50,6 +50,12 @@
 #include "engine/audio/IAudioSystem.h" // CYBERPUNK AUDIO: rainy-city bed + positional hums + UI SFX
 #include "engine/llm/ILlmSystem.h"     // CITIZEN TALK: local LLM conversations with residents
 #include "../street_lights.h"          // DISTRICT NIGHT: warm lamp rows through the pack districts
+#include "../hackables.h"              // WD2 STACK: city-wide hackables (H = nethack vision, E = hack)
+#include "../alert.h"                  // WD2 STACK: every hack raises HEAT (AlertSystem)
+#include "../timeline.h"               // WD2 STACK: karma — hacking the vulnerable costs you
+#include "../skilltree.h"              // WD2 STACK: the dormant skill stack, live (K screen)
+#include "../progression.h"            // WD2 STACK: XP from hacks / drives / DODOGs
+#include "../rpg_ui.h"                 // WD2 STACK: skills screen + LV/XP HUD chip
 #include "../hud.h"                    // ENGINE CONSOLE: D6 IConsole + Hud drop-down front-end
 #include "engine/core/IConsole.h"
 #include <string>
@@ -2006,6 +2012,35 @@ int hostEchotropolis(HostContext& hc) {
     const  int kMiners = 8;          // resident gold-mining crew (work the seam)
     static const char* kDow[7] = { "MON","TUE","WED","THU","FRI","SAT","SUN" };
 
+    // ===================== WD2 STACK (Lane 3) ============================
+    // City-wide hackables + heat + karma + the RPG progression layer. The
+    // registry is declared HERE — before the NpcLife build — so every citizen
+    // registers a scan-card into it; street objects are placed after the
+    // districts exist (the carDefs pattern). Sinks wire to the REAL systems
+    // below (AlertSystem heat, TimelineState karma, StreetLights blackout,
+    // treasury credits). H holds the nethack reveal; E (while aiming) hacks;
+    // K opens the skill tree (console's frozen-frame modal pattern).
+    x3::game::HackableRegistry hax;
+    x3::game::AlertSystem      cityAlert;
+    x3::game::TimelineState    cityTimeline;
+    x3::game::Progression      progression;
+    x3::game::SkillTree        skillTree;
+    x3::game::RpgUi            rpgUi;
+    x3::game::PlayerStatMods   rpgMods;
+    x3::game::Inventory        rpgInv;     // empty v1 — the chip reads LV/XP
+    x3::game::ItemDb           rpgItems;
+    std::vector<x3::phys::Vec3> hackPropPos;   // hackable entity-id -> world pos
+    x3::game::HackResult hackCard;             // last hack result (confirm card)
+    float hackCardT = 0.0f;                    // seconds the card stays up
+    float driveXpOdo = 0.0f;                   // meters banked toward drive XP
+    bool  prevRpgK = false, prevRpgUp = false, prevRpgDown = false,
+          prevRpgLeft = false, prevRpgRight = false, prevRpgEnter = false,
+          prevHackE = false;
+    skillTree.load(x3::game::skillTreeJsonPath());
+    static constexpr const char* kRpgSavePath = "echotropolis.rpg.txt";
+    static constexpr int kXpHack = 30, kXpDodog = 10, kXpDriveLeg = 25;
+    static constexpr float kDriveLegMeters = 400.0f;
+
     x3::logInfo("--world echotropolis: LMB/MMB-drag or WASD pan (grab-the-ground), "
                 "wheel zoom, RMB-drag or Q/E orbit-rotate; TOD keys 1=golden 2=dusk "
                 "3=night 4=noon, T pauses the cycle; Esc to quit");
@@ -2155,7 +2190,9 @@ int hostEchotropolis(HostContext& hc) {
             // for EVERY citizen at build time — 23 inferences grinding the CPU
             // under the game. Authored persona details are plenty; the LLM is
             // reserved for the player-facing TALK system (visible NPC, on demand).
-            npcLife.build(lc, walkScene, *device, nullptr, nullptr);
+            // WD2 STACK: &hax lights the citizen scan-cards (the playability-wave
+            // triage passed nullptr here and left them dark — tribunal item #1).
+            npcLife.build(lc, walkScene, *device, &hax, nullptr);
             npcLifeBuilt = npcLife.built();
             x3::logInfo(std::string("--world echotropolis: living-city NpcLife ") +
                         (npcLifeBuilt ? "built" : "off"));
@@ -2386,6 +2423,142 @@ int hostEchotropolis(HostContext& hc) {
                     std::to_string(audioLoops.size()) + " loops (bed/rain/music/mine/drone/harbor) + UI SFX");
     }
     auto uiSfx = [&](x3::audio::SoundHandle s, float v){ if (audioOn && s.valid()) eaudio->playSound2D(s, v, 1.0f); };
+
+    // ===================== WD2 STACK WIRING (Lane 3) =====================
+    // Everything the sinks touch exists by now: streetLamps, residents,
+    // worldCars, npcLife, treasury, player. The registry got the citizens at
+    // NpcLife::build; here the STREET tech joins them and the sinks go live.
+    auto applyRpgStats = [&]() {
+        rpgMods = skillTree.mods();
+        player.setMaxHpBonus(rpgMods.maxHpBonus);
+        player.setSpeedMult(rpgMods.speedMult);
+        progression.setXpMult(rpgMods.xpMult);
+    };
+    auto grantXp = [&](int amount) {
+        if (progression.addXp(amount) > 0) rpgUi.notifyLevelUp(progression.level());
+    };
+    {
+        // Persisted progression (additive text file, the app_run format).
+        FILE* rf = std::fopen(kRpgSavePath, "rb");
+        if (rf) {
+            std::string blob;
+            char line[160];
+            while (std::fgets(line, sizeof(line), rf)) {
+                blob += line;
+                char id[96] = {};
+                if (std::sscanf(line, "skill %95s", id) == 1) skillTree.setOwned(id);
+            }
+            std::fclose(rf);
+            progression.deserialize(blob);   // reads xp; ignores unknown lines
+            progression.setSpentPoints(skillTree.ownedCost());
+            x3::logInfo("--world echotropolis: RPG save loaded (LV " +
+                        std::to_string(progression.level()) + ", " +
+                        std::to_string(skillTree.ownedCount()) + " skills)");
+        }
+        applyRpgStats();
+    }
+    if (npcLifeBuilt) {
+        // The robbery alarm now rings the REAL city bell: heat + crowd scatter.
+        npcLife.setAlarmSink([&](const x3::phys::Vec3& p, int) {
+            cityAlert.reportTerminalHack(p);
+            if (residentsBuilt) residents.onViolence(p);
+        });
+    }
+    {
+        x3::game::HackSinks sinks;
+        sinks.onHeat = [&](const x3::phys::Vec3& p, int) {
+            cityAlert.reportTerminalHack(p);
+        };
+        sinks.onKarma = [&](int d) { cityTimeline.adjustKarma(d); };
+        sinks.onLightsOut = [&](uint32_t ent) {
+            // Junction box: grid cut — nearby lamps go dark, then recover.
+            if (ent < hackPropPos.size())
+                streetLamps.killNear(lampScene, hackPropPos[ent].x,
+                                     hackPropPos[ent].z, 60.0f, 45.0f);
+        };
+        sinks.onVehicle = [&](uint32_t ent) {
+            // Popped vehicle: the alarm scatters the street, same as hold-E.
+            if (ent < hackPropPos.size() && residentsBuilt)
+                residents.onViolence(hackPropPos[ent]);
+        };
+        sinks.onResult = [&](const x3::game::HackResult& r) {
+            hackCard = r; hackCardT = 5.0f;
+            if (r.credits > 0) treasury += (double)r.credits;
+            grantXp(kXpHack);
+        };
+        hax.setSinks(sinks);
+
+        // ---- CITY-WIDE PLACEMENT (the carDefs pattern) ----
+        // Cameras watch the gates/plazas, junction boxes feed the lamp rows,
+        // ATMs skim, signals spoof. Positions ride the district anchors that
+        // already exist (lamp rows, gates, vendors, shop fronts).
+        auto addHack = [&](x3::game::HackableType t, float x, float z,
+                           float lift, int credits, const char* label) {
+            x3::game::HackableObject o;
+            o.type = t;
+            const float gy = hf.ok() ? hf.heightAt(x, z) : 0.0f;
+            o.pos = { x, gy + lift, z };
+            o.entity = (uint32_t)hackPropPos.size();
+            o.credits = credits;
+            o.label = label ? label : "";
+            hackPropPos.push_back(o.pos);
+            hax.add(o);
+        };
+        using HT = x3::game::HackableType;
+        // Cameras (head height ~4 m).
+        addHack(HT::Camera, 18.0f, 764.0f, 4.0f, 0, "PLAZA CAM 01");
+        addHack(HT::Camera, -66.0f, 742.0f, 4.0f, 0, "NOODLE CAM");
+        addHack(HT::Camera, 155.0f, 368.0f, 4.0f, 0, "HARBOR CAM");
+        addHack(HT::Camera, 700.0f, 390.0f, 4.0f, 0, "URBAN GATE CAM");
+        addHack(HT::Camera, 832.0f, 1098.0f, 4.0f, 0, "RECIFE GATE CAM");
+        addHack(HT::Camera, 1290.0f, 995.0f, 4.0f, 0, "HIVEMIND CAM");
+        addHack(HT::Camera, -542.0f, 800.0f, 4.0f, 0, "MINE LOT CAM");
+        // Junction boxes (waist height) — each near a real lamp row.
+        addHack(HT::JunctionBox, -40.0f, 752.0f, 1.0f, 0, "CROWN GRID");
+        addHack(HT::JunctionBox, 700.0f, 346.0f, 1.0f, 0, "URBAN GRID");
+        addHack(HT::JunctionBox, 1030.0f, 1226.0f, 1.0f, 0, "RECIFE GRID");
+        addHack(HT::JunctionBox, 1390.0f, 1004.0f, 1.0f, 0, "HIVEMIND GRID");
+        // ATMs (screen height) — skimmable credits into the treasury.
+        addHack(HT::ATM, 6.0f, 766.0f, 1.2f, 240, "PLAZA ATM");
+        addHack(HT::ATM, 146.0f, 356.0f, 1.2f, 180, "HARBOR ATM");
+        addHack(HT::ATM, 760.0f, 354.0f, 1.2f, 320, "URBAN ATM");
+        addHack(HT::ATM, 1010.0f, 1254.0f, 1.2f, 150, "RECIFE ATM");
+        // Traffic signals (mast height) — repeatable spoofs at the junctions.
+        addHack(HT::TrafficSignal, 700.0f, 350.0f, 4.5f, 0, "URBAN CROSS");
+        addHack(HT::TrafficSignal, 706.0f, 402.0f, 4.5f, 0, "URBAN GATE");
+        addHack(HT::TrafficSignal, 838.0f, 1110.0f, 4.5f, 0, "RECIFE GATE");
+        addHack(HT::TrafficSignal, -20.0f, 748.0f, 4.5f, 0, "CROWN DRAG");
+        // The parked street fleet joins the registry (markers + pop effect);
+        // hold-E on the door stays the real unlock path.
+        if (worldCars.built()) {
+            for (uint32_t ci = 0; ci < worldCars.carCount(); ++ci) {
+                const x3::phys::Vec3 cp = worldCars.parkedPos(ci);
+                x3::game::HackableObject o;
+                o.type = HT::Vehicle;
+                o.pos = { cp.x, cp.y + 0.8f, cp.z };
+                o.entity = (uint32_t)hackPropPos.size();
+                o.label = worldCars.def(ci).id;
+                hackPropPos.push_back(o.pos);
+                hax.add(o);
+            }
+        }
+        // ATM street props: the ctos terminal reads as a street unit.
+        static constexpr float kAtmSpots[4][2] = {
+            { 6.0f, 766.0f }, { 146.0f, 356.0f },
+            { 760.0f, 354.0f }, { 1010.0f, 1254.0f } };
+        for (const auto& ap : kAtmSpots) {
+            float T[16];
+            buildXf(ap[0], ap[1], 0.0f, 1.0f, 0.95f, T);
+            auto atm = std::make_unique<x3::game::EnvArtSystem>();
+            if (atm->buildFromGlbAt(*device, x3::game::assetRoot() + "/meshy/props",
+                                    "ctos_terminal.glb", T))
+                streetProps.push_back(std::move(atm));
+        }
+        x3::logInfo("--world echotropolis: WD2 HACKABLES live — " +
+                    std::to_string(hax.count()) + " objects (" +
+                    std::to_string(hax.countType(HT::Npc)) + " citizen scan-cards); "
+                    "H reveals, E hacks, K opens skills");
+    }
 
     // ================= CITIZEN TALK actions (npcLife + audio exist by now) ======
     // NOTHING here blocks: talkAsk() enqueues onto the LLM's inference thread and
@@ -2904,6 +3077,40 @@ int hostEchotropolis(HostContext& hc) {
             continue;   // world (and its key handlers) frozen while typing
         }
 
+        // ===== SKILL TREE (K): the WD2 progression screen over a frozen frame
+        // — exactly the console's modal pattern, so no key bleeds into the
+        // world while browsing. ESC or K closes. =====
+        { const bool kk = kd(GLFW_KEY_K);
+          if (kk && !prevRpgK && !menuOpen) rpgUi.toggleSkills();
+          prevRpgK = kk; }
+        if (rpgUi.anyOpen()) {
+            if (glfwGetInputMode(window, GLFW_CURSOR) != GLFW_CURSOR_NORMAL)
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            if (kd(GLFW_KEY_ESCAPE)) rpgUi.closeAll();
+            x3::game::RpgUi::Input rin{};
+            rin.ui.mouseX = (float)mx; rin.ui.mouseY = (float)my;
+            rin.ui.mouseDown = mbd(GLFW_MOUSE_BUTTON_LEFT);
+            rin.ui.mousePressed = rin.ui.mouseDown && !prevLmb;
+            prevLmb = rin.ui.mouseDown;
+            { const bool u = kd(GLFW_KEY_UP),    d2 = kd(GLFW_KEY_DOWN),
+                         lf = kd(GLFW_KEY_LEFT), rt = kd(GLFW_KEY_RIGHT),
+                         en = kd(GLFW_KEY_ENTER) || kd(GLFW_KEY_KP_ENTER);
+              rin.navUp    = u  && !prevRpgUp;    rin.navDown  = d2 && !prevRpgDown;
+              rin.navLeft  = lf && !prevRpgLeft;  rin.navRight = rt && !prevRpgRight;
+              rin.activate = en && !prevRpgEnter;
+              prevRpgUp = u; prevRpgDown = d2; prevRpgLeft = lf;
+              prevRpgRight = rt; prevRpgEnter = en; }
+            auto frame = device->beginFrame();
+            island.draw(*device, frame);
+            props.draw(*device, frame);
+            rpgUi.drawSkills(*device, frame, rin, skillTree, progression,
+                             applyRpgStats);
+            device->endFrame(frame);
+            fpsAccum += dt; ++fpsFrames;
+            if (fpsAccum >= 1.0) { fpsAccum = 0.0; fpsFrames = 0; }
+            continue;   // world frozen while the tree is open
+        }
+
         // ---- WALK MODE toggle (G) + first-person character step -------------
         // G toggles GROUND <-> FLIGHT (Tim's spec). Landing drops you onto the
         // terrain right under the fly camera; takeoff lifts from the walk eye.
@@ -3112,11 +3319,49 @@ int hostEchotropolis(HostContext& hc) {
                     if (e2 && !prevCarE) {
                         treasury += (double)v.price;   // negative = the player pays
                         uiSfx(sfxAccept, 0.8f);
+                        // The DODOG economy (echo_interiors spec): buying local
+                        // is a small karma tick — and XP toward the next level.
+                        cityTimeline.adjustKarma(+1);
+                        grantXp(kXpDodog);
                     }
                     break;
                 }
             }
             prevCarE = e2; prevCarF = f2;
+        }
+        // ---- WD2 NETHACK: hold H to reveal, aim + E to hack ---------------
+        // Cars keep first claim on E, vendors second; the hack verb fires only
+        // when neither consumed it. Works on foot (walk mode, not riding).
+        uint32_t hackAim = x3::game::kNoLink;
+        {
+            const bool hHeld = kd(GLFW_KEY_H) && walkMode && followIdx < 0;
+            hax.setHighlight(hHeld);
+            if (hHeld) {
+                float hex, hey, hez, hyw, hpt;
+                player.camera(hex, hey, hez, hyw, hpt);
+                const x3::phys::Vec3 eye{ hex, hey, hez };
+                const x3::phys::Vec3 fwd{ std::cos(hpt) * std::cos(hyw),
+                                          std::sin(hpt),
+                                          std::cos(hpt) * std::sin(hyw) };
+                hackAim = hax.lookTarget(eye, fwd, 30.0f, 0.966f);
+                const bool he = kd(GLFW_KEY_E);
+                if (he && !prevHackE && hackAim != x3::game::kNoLink &&
+                    !worldCars.driving() && worldCars.prompt().empty() &&
+                    !vendorPrompt) {
+                    const bool wasNpc =
+                        hax.at(hackAim).type == x3::game::HackableType::Npc;
+                    const x3::game::HackResult hr = hax.hack(hackAim);
+                    if (hr.ok) {
+                        if (wasNpc && npcLifeBuilt) npcLife.notifyHacked(hackAim);
+                        uiSfx(sfxAccept, 0.8f);
+                    } else {
+                        uiSfx(sfxDeny, 0.7f);
+                    }
+                }
+                prevHackE = he;
+            } else {
+                prevHackE = false;
+            }
         }
         if (worldCars.driving() && physOk) {
             driveCamYaw   += ddx * 0.0028f * g_sensMul;
@@ -3138,6 +3383,12 @@ int hostEchotropolis(HostContext& hc) {
             phys->step(dt);
             worldCars.postStep(dt);
             if (audioOn) worldCars.updateAudio(eaudio.get(), vin.throttle);
+            // Drive XP: every leg of real road banked earns progression.
+            driveXpOdo += spd2 * dt;
+            if (driveXpOdo >= kDriveLegMeters) {
+                driveXpOdo -= kDriveLegMeters;
+                grantXp(kXpDriveLeg);
+            }
         } else if (walkMode && physOk && followIdx < 0) {   // frozen while riding along
             x3::game::PlayerInput in{};
             in.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
@@ -3502,6 +3753,14 @@ int hostEchotropolis(HostContext& hc) {
             }
             residentsSkin.update(dt, residents, walkScene, *device, *phys);
         }
+        // WD2 HEAT: the city's alert state decays toward calm each frame; the
+        // street cops are its eyes (they hear hacks city-wide already).
+        {
+            float apx = flyX, apy = flyY, apz = flyZ;
+            if (walkMode) { float ayw, apt; player.camera(apx, apy, apz, ayw, apt); }
+            cityAlert.update(dt, { apx, apy, apz }, nullptr, 0, false);
+        }
+        if (hackCardT > 0.0f) hackCardT -= dt;
         talkPoll();       // CITIZEN TALK: drain streamed reply tokens (non-blocking, every frame)
         ambientTick(dt);  // AMBIENT CHATTER: occasionally an idle citizen mutters (opt-in)
         ambientPoll();
@@ -3743,7 +4002,7 @@ int hostEchotropolis(HostContext& hc) {
                   : flyMode ? "FLIGHT   WASD + mouse   Q/E roll   SPACE/C up-down   ARROWS fwd + turn   SHIFT fast   G ground   V orbit"
                   : (followIdx >= 0) ? (playAs ? "PLAY AS   WASD drive   E spectate   F release"
                                                : "RIDE-ALONG   E take controls   F release")
-                  : walkMode ? "GROUND   WASD + mouse   SHIFT run   SPACE jump   G flight   T talk"
+                  : walkMode ? "GROUND   WASD + mouse   SHIFT run   SPACE jump   G flight   T talk   H scan   K skills"
                   : "ORBIT   drag pan   RMB rotate   wheel zoom   G ground   V flight";
                 device->drawHudText(frame, mode, 12.0f + pad, 12.0f + barH + 20.0f, 12.0f, silver);
                 if (worldCars.built() && !worldCars.prompt().empty()) {
@@ -3754,8 +4013,101 @@ int hostEchotropolis(HostContext& hc) {
                     const float pgold[4] = { 1.0f, 0.85f, 0.45f, 1.0f };
                     device->drawHudText(frame, vendorPrompt,
                                         12.0f + pad, 12.0f + barH + 40.0f, 14.0f, pgold);
+                } else if (hackAim != x3::game::kNoLink && hax.highlight()) {
+                    const auto& ho = hax.at(hackAim);
+                    const std::string hp = std::string("[E] HACK - ") +
+                        x3::game::hackableEffectVerb(ho.type) +
+                        (ho.label.empty() ? "" : ("   (" + ho.label + ")")) +
+                        (ho.hacked ? "   [SPENT]" : "");
+                    const float pcyan[4] = { 0.45f, 0.95f, 1.0f, 1.0f };
+                    device->drawHudText(frame, hp.c_str(),
+                                        12.0f + pad, 12.0f + barH + 40.0f, 14.0f, pcyan);
                 }
             }
+
+            // ---- WD2 NETHACK OVERLAY: hold H — every hackable in 60 m gets a
+            // through-wall marker (HUD pass has no depth test — the wallhack
+            // comes free). Aimed target draws hot; the rest cool cyan.
+            if (hax.highlight() && walkMode) {
+                float mex, mey, mez, myw, mpt;
+                player.camera(mex, mey, mez, myw, mpt);
+                std::vector<uint32_t> near2;
+                hax.nearby({ mex, mey, mez }, 60.0f, near2);
+                for (uint32_t hi : near2) {
+                    const auto& o = hax.at(hi);
+                    float sx = 0.0f, sy = 0.0f;
+                    if (!device->worldToScreen(o.pos.x, o.pos.y, o.pos.z, sx, sy))
+                        continue;
+                    const bool aimed = (hi == hackAim);
+                    const float a2 = o.hacked ? 0.35f : (aimed ? 1.0f : 0.75f);
+                    float mc[4] = { 0.45f, 0.95f, 1.0f, a2 };          // cool cyan
+                    if (aimed) { mc[0] = 1.0f; mc[1] = 0.85f; mc[2] = 0.3f; }
+                    const float s2 = aimed ? 10.0f : 6.0f;
+                    device->drawHudQuad(frame, sx - s2 * 0.5f, sy - s2 * 0.5f,
+                                        s2, s2, mc);
+                    if (aimed || o.type == x3::game::HackableType::Npc) {
+                        const float dxm = o.pos.x - mex, dzm = o.pos.z - mez;
+                        const int dm = (int)std::sqrt(dxm*dxm + dzm*dzm);
+                        std::string tag = std::string(
+                            x3::game::hackableTypeName(o.type)) +
+                            " " + std::to_string(dm) + "m";
+                        device->drawHudText(frame, tag.c_str(),
+                                            sx + 8.0f, sy - 6.0f, 10.0f, mc);
+                    }
+                }
+            }
+
+            // ---- WD2 HACK CARD: the scan-card / effect confirm (5 s hold).
+            if (hackCardT > 0.0f) {
+                uint32_t hw2 = 0, hh2 = 0; device->hudSize(hw2, hh2);
+                const float cw = 420.0f, chh = hackCard.scanName.empty() ? 96.0f : 150.0f;
+                const float cx2 = hw2 * 0.5f - cw * 0.5f;
+                const float cy2 = hh2 - chh - 96.0f;
+                const float fade = hackCardT < 0.8f ? hackCardT / 0.8f : 1.0f;
+                const float bg[4] = { 0.03f, 0.07f, 0.09f, 0.82f * fade };
+                const float rim[4] = { 0.45f, 0.95f, 1.0f, 0.9f * fade };
+                const float ink[4] = { 0.75f, 0.95f, 1.0f, fade };
+                const float gold[4] = { 1.0f, 0.85f, 0.45f, fade };
+                device->drawHudQuad(frame, cx2, cy2, cw, chh, bg);
+                device->drawHudQuad(frame, cx2, cy2, cw, 2.0f, rim);
+                std::string head = std::string(
+                    x3::game::hackableTypeName(hackCard.type)) + " HACKED";
+                device->drawHudText(frame, head.c_str(), cx2 + 16.0f, cy2 + 14.0f, 13.0f, rim);
+                device->drawHudText(frame, hackCard.effect.c_str(),
+                                    cx2 + 16.0f, cy2 + 36.0f, 12.0f, ink);
+                float ly = cy2 + 58.0f;
+                if (!hackCard.scanName.empty()) {
+                    device->drawHudText(frame, hackCard.scanName.c_str(),
+                                        cx2 + 16.0f, ly, 14.0f, gold); ly += 22.0f;
+                    device->drawHudText(frame, hackCard.scanOccupation.c_str(),
+                                        cx2 + 16.0f, ly, 11.0f, ink); ly += 18.0f;
+                    device->drawHudText(frame, hackCard.scanDetail.c_str(),
+                                        cx2 + 16.0f, ly, 11.0f, ink); ly += 18.0f;
+                }
+                if (hackCard.credits > 0) {
+                    const std::string cr = "+$" + std::to_string(hackCard.credits) + " SKIMMED";
+                    device->drawHudText(frame, cr.c_str(), cx2 + 16.0f, ly, 12.0f, gold);
+                }
+            }
+
+            // ---- WD2 HEAT + KARMA readout (top-right, only when non-calm).
+            {
+                uint32_t hw3 = 0, hh3 = 0; device->hudSize(hw3, hh3);
+                const int alvl = cityAlert.level();
+                if (alvl > 0) {
+                    const float hot[4] = { 1.0f, 0.35f + 0.1f * (3 - std::min(alvl, 3)),
+                                           0.25f, 1.0f };
+                    std::string ht = std::string("HEAT ") +
+                        x3::game::alertLevelName(alvl);
+                    device->drawHudText(frame, ht.c_str(),
+                                        hw3 - 14.0f * (float)ht.size() - 24.0f,
+                                        58.0f, 14.0f, hot);
+                }
+            }
+
+            // ---- RPG chip: LV + XP sliver (walking/driving, no other surface).
+            if ((walkMode || worldCars.driving()) && !menuOpen && !buildMode)
+                rpgUi.drawHudChip(*device, frame, rpgInv, rpgItems, progression, dt);
 
             // CITY PANEL (TAB): the web-parity dashboard, fed by the live counts.
             if (cityPanelOpen) {
@@ -3980,6 +4332,16 @@ int hostEchotropolis(HostContext& hc) {
         x3::logInfo(buf);
     }
 
+    // WD2 STACK: persist progression (the app_run additive-text format).
+    {
+        FILE* wf = std::fopen(kRpgSavePath, "wb");
+        if (wf) {
+            std::fputs("x3rpg 1\n", wf);
+            std::fputs(progression.serialize().c_str(), wf);
+            std::fputs(skillTree.serializeOwned().c_str(), wf);
+            std::fclose(wf);
+        }
+    }
     if (worldCars.built() && phys) worldCars.shutdown(*phys);   // bodies out before physics dies
     g_hud = nullptr;   // charCB must never touch the dying Hud
     if (audioOn) { for (auto l : audioLoops) eaudio->stopLoop(l); eaudio->shutdown(); }
