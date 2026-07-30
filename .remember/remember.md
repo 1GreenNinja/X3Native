@@ -1,3 +1,10 @@
+# MEMORY LEAK HUNT (Tim 2026-07-30, Lane 6 first move): (1) 30-60min soak logging
+# RSS + VRAM (vmaCalculateStatistics) per 60s — monotonic growth = leak; (2)
+# Vulkan validation layer shutdown audit; (3) re-check DELIBERATE leaks under
+# M-C evictions: lampScene/StreetLights per-rebuild, EnvArt shared textures,
+# model-cache refs; (4) crowd/npc re-attach cycles must not grow pools.
+# ART_WAVE_AUDIT.md = Lane 5 burn-down, top-down, blocks first.
+
 # ALSO UNDER THE NO-REFILING RULE (Tim, laughing, 2026-07-30): (a) BOAT LANES
 # still cross dry land (galleon through the village) — depth-gate routes vs
 # active hf, filed twice/built zero, fix WITH #34's wave. (b) HOUSES ON WATER
