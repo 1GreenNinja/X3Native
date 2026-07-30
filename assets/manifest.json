@@ -409,9 +409,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/Oracle_anim.glb",
-      "sha256": "1b3194e4a69ca49e52d55ecdf667830474dc9764cb0618d66977dbf040c0f906",
-      "size": 6997804,
-      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+      "sha256": "50435f6c314b104d8091fdd762b68ac173ebaaded014d1b1de18714414e5d09a",
+      "size": 6920568,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/OverLordEnforcer99.glb",
