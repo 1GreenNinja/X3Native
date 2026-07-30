@@ -1,3 +1,12 @@
+# iPAD QUESTION (Tim 2026-07-30): native M5 iPad build = FEASIBLE, weeks-class
+# future lane: MoltenVK (Vulkan->Metal, mature), Jolt+llama.cpp run great on
+# Apple silicon (llama METAL backend = faster citizens), GLFW must be replaced
+# (iOS windowing + TOUCH control design), RT tier-gates off gracefully. Sequence
+# AFTER perf hunt. NEAR-TERM ANSWER: Moonlight/Sunshine streaming from the 5090
+# box = Echo Harbor on the iPad tonight, zero port. Fleet GPU correction: NO
+# 1080 Tis anywhere (13700K + Predator both regunned, GPUs unknown) — Michigan
+# 1060 box is the only min-spec bench.
+
 # MEMORY LEAK HUNT (Tim 2026-07-30, Lane 6 first move): (1) 30-60min soak logging
 # RSS + VRAM (vmaCalculateStatistics) per 60s — monotonic growth = leak; (2)
 # Vulkan validation layer shutdown audit; (3) re-check DELIBERATE leaks under
