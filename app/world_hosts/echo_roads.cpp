@@ -1483,7 +1483,9 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         m_buckets[kBucketAsphalt].tex  = loadTile("asphalt_tile.png");
         m_buckets[kBucketConcrete].tex = loadTile("concrete_tile.png");
         m_buckets[kBucketSidewalk].tex = loadTile("sidewalk_tile.png");
-        m_buckets[kBucketShoulder].tex = m_buckets[kBucketAsphalt].tex;   // same tile, worn tint
+        // V7.2: shoulders only exist on the (concrete) freeway deck — same
+        // pour as the deck, sun-bleached lighter by the tint below.
+        m_buckets[kBucketShoulder].tex = m_buckets[kBucketConcrete].tex;
         m_buckets[kBucketGrime].tex    = loadTile("grime_tile.png");
         const int texOk = (m_buckets[kBucketAsphalt].tex.valid() ? 1 : 0) +
                           (m_buckets[kBucketConcrete].tex.valid() ? 1 : 0) +
@@ -1575,8 +1577,13 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         }
         for (const auto& run : runs) {
             if (run.size() < 2) continue;
-            ribbon(asphalt, run, 0.0f, pe.width, 0.0f, pe.banked, &m_collision,
-                   /*underside=*/pe.cls == RoadClass::Freeway || pe.cls == RoadClass::Ramp);
+            // V7.2 (Tim: "the bridge still looks like asphalt"): elevated
+            // decks are CONCRETE — CA pours its viaducts, it doesn't pave
+            // them. Ground classes stay asphalt.
+            const bool elevated = pe.cls == RoadClass::Freeway ||
+                                  pe.cls == RoadClass::Ramp;
+            ribbon(elevated ? conc : asphalt, run, 0.0f, pe.width, 0.0f,
+                   pe.banked, &m_collision, /*underside=*/elevated);
             // V7 SHOULDERS (Tim: "does it have a shoulder?"): a worn, lighter
             // 1.6m band each side of the deck, DRIVABLE (in the collision mesh);
             // barriers move outboard of them.
