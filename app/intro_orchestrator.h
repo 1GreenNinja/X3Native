@@ -23,10 +23,16 @@
 //   2. Accumulates a normalized skillScore in [0,1] from the interactive windows
 //      (subsystems destroyed, final hull %, salvos dodged, hit accuracy,
 //      time-to-cripple — see kSkillWeights in the .cpp for the exact weighting).
-//   3. Computes p = clamp(0.07 + skillScore*(0.40-0.07), 0.07, 0.40) and rolls
-//      the EXISTING deterministic x3::game::chanceRoll(seed, "intro.outcome") < p
-//      -> Escaped, else ShotDown (save-seed deterministic; not frame RNG).
-//   4. Writes the result to StoryFlags key "intro.outcome" = "escaped"|"shot_down".
+//   3. Decides the branch by what the player DID (EARNED, deterministic — the
+//      original spec §4 hidden skill->p->chanceRoll was replaced 2026-07-27;
+//      a flawless run can no longer coin-flip into shot-down):
+//        * dreadnought hull 0                          -> CapitalKilled
+//        * all 4 hardpoints down + pilot alive at end  -> Escaped
+//        * anything less (died, bailed, timed out)     -> ShotDown (canon)
+//      skillScore/outcomeProbability/rollOutcome survive as pure, self-tested
+//      telemetry (difficulty tuning reads them); they no longer pick the branch.
+//   4. Writes the result to StoryFlags key "intro.outcome" =
+//      "escaped"|"shot_down"|"capital_killed".
 //
 // This is "game/slice" code; engine/ stays pure. The interactive-window HOSTING
 // (drawing the live space scene, reading GLFW input) is driven by the host that
@@ -44,13 +50,23 @@ namespace x3 { namespace game { class StoryFlags; } }
 namespace x3::intro {
 
 // The branch the intro forks the game start on (spec §1, §5).
-enum class IntroOutcome { ShotDown, Escaped };
+//
+// CapitalKilled is the THIRD outcome (owner canon, 2026-07-27: "kill big ship..
+// it crashes... i land.. recover tech and prisoners from it.. break IN to Lab
+// zero"). Unlike Escaped/ShotDown it is NOT a dice roll — it is EARNED: it fires
+// if and only if the player actually drove the dreadnought's hull to 0 in the
+// climax window. The capital then falls out of orbit and craters on the surface;
+// Jake sets down at the wreck, salvages its tech, frees the prisoners it was
+// carrying, and breaches Lab Zero from OUTSIDE — inverting the canon "wakes up
+// captured in a cell" opening while keeping Lab Zero as the destination.
+enum class IntroOutcome { ShotDown, Escaped, CapitalKilled };
 
 // The StoryFlags key the orchestrator writes the outcome to (spec §5). app_run.cpp
 // (Phase 4) reads this to select the Act-1 build (cell vs surface landing).
 inline constexpr const char* kIntroOutcomeFlag = "intro.outcome";
 inline constexpr const char* kIntroOutcomeEscaped  = "escaped";
 inline constexpr const char* kIntroOutcomeShotDown = "shot_down";
+inline constexpr const char* kIntroOutcomeCapitalKilled = "capital_killed";
 
 // SURFACE HAND-OFF marker (Phase 6 -> Phase 7). On the ESCAPED branch, after the
 // antimatter-drain stinger, the orchestrator runs the ion-pulse atmo-descent
@@ -62,10 +78,20 @@ inline constexpr const char* kIntroOutcomeShotDown = "shot_down";
 // escape path that ran the full descent; ShotDown never sets it (canon -> cell).
 inline constexpr const char* kIntroLandedFlag = "intro.landed";
 
+// CRASH-SITE hand-off (the CapitalKilled branch). Set alongside kIntroLandedFlag
+// when the player KILLED the dreadnought: the wreck is down on the surface near
+// the facility, and Act-1 is to start at that crash site — salvage its tech,
+// free the prisoners in its hold, then breach Lab Zero from outside. Act-1 reads
+// this to pick the wreck start over the plain rescuer start.
+inline constexpr const char* kIntroWreckFlag = "intro.wreck";
+
 // The deterministic-roll node key (fed to chanceRoll, mirrors a chat-tree nodeKey).
 inline constexpr const char* kIntroRollKey = "intro.outcome";
 
 // p-mapping bounds (spec §4). p = clamp(kFloorP + skill*(kCeilP-kFloorP)).
+// LEGACY/TELEMETRY since 2026-07-27: the mapping is pure, self-tested, and used
+// for difficulty telemetry — it no longer decides the branch (outcomes are
+// EARNED; see the header block above).
 inline constexpr float kFloorP = 0.07f;   // ~7% floor (canon: almost always shot down)
 inline constexpr float kCeilP  = 0.40f;   // ~40% ceiling for a flawless run
 
@@ -109,6 +135,10 @@ struct SkillMetrics {
     int   shotsFired          = 0;   // player laser bolts fired
     float timeToCrippleSec    = 0.0f;// time to cripple the capital ship (s); 0 = never
     float windowDurationSec   = 1.0f;// the climax window length (s; normalizer for time)
+    // THE KILL. True iff the player drove the capital's HULL to 0 in a window.
+    // This is not scored — it OVERRIDES the roll entirely and forces
+    // IntroOutcome::CapitalKilled (the crash -> salvage -> Lab Zero breach).
+    bool  capitalDestroyed    = false;
 };
 
 // Number of destructible capital-ship subsystems (mirrors x3::space::Subsystem::Count).
@@ -125,6 +155,8 @@ float outcomeProbability(float skillScore01);
 // Roll the outcome deterministically from (seed, skillScore) using the SAME
 // chanceRoll the dialog/mission {chance} op uses. p computed via outcomeProbability.
 // Pure: same (seed, skill) always yields the same IntroOutcome.
+// LEGACY/TELEMETRY since 2026-07-27: kept pure + self-tested; the live branch is
+// the earned mapping in runInteractiveIntro, not this roll.
 IntroOutcome rollOutcome(uint32_t seed, float skillScore01);
 
 // Write the outcome to StoryFlags under kIntroOutcomeFlag (escaped|shot_down).
@@ -183,9 +215,10 @@ bool runIntroOrchestratorSelfTest();
 // asserts the branch-selection logic app_run.cpp drives — forcing the outcome to
 // escaped writes/reads intro.outcome=escaped (the surface-stub path); forcing
 // shot_down writes/reads intro.outcome=shot_down (the canon cell); a default
-// (no force) headless run is deterministic per seed and round-trips through the
-// persisted StoryFlags; and the seed thread is honored (different seeds can roll
-// differently; the same seed+force is stable). Returns true iff all sub-checks pass.
+// (no force) headless run is deterministic, matches the EARNED mapping of its
+// replayed metrics (kill -> capital_killed, cripple+survive -> escaped, else
+// shot_down), and is SEED-INDEPENDENT (outcomes are earned, never rolled).
+// Returns true iff all sub-checks pass.
 bool runIntroBranchSelfTest();
 
 } // namespace x3::intro

@@ -554,6 +554,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
                 const std::string v = argv[++i];
                 if      (v == "escaped"   || v == "escape") o.introForce = 1;
                 else if (v == "shot_down" || v == "shotdown" || v == "cell") o.introForce = 0;
+                // The earned third branch: kill the dreadnought -> it crashes ->
+                // Act-1 starts at the wreck (salvage, prisoners, Lab Zero breach).
+                else if (v == "capital_killed" || v == "kill" || v == "wreck")
+                    o.introForce = 2;
             }
         }
     }

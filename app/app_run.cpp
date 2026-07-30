@@ -1175,6 +1175,26 @@ int runDefaultHost(HostContext& hc) {
                 return 0;
             }
 
+            if (outcome == x3::intro::IntroOutcome::CapitalKilled) {
+                // KILL PATH (owner canon 2026-07-27: "kill big ship.. it crashes...
+                // i land.. recover tech and prisoners from it.. break IN to Lab
+                // zero"). Earned, never rolled. The dreadnought is down on the
+                // surface and StoryFlags["intro.wreck"] is set beside
+                // ["intro.landed"], so Act-1 starts at the CRASH SITE: salvage the
+                // wreck's tech, free the prisoners in its hold, then breach Lab
+                // Zero from outside. It shares the surface world host with the
+                // escape path (same "land outside the facility, free and armed"
+                // shape) — the wreck flag is what makes the start differ. Same
+                // teardown contract as the escape branch below.
+                x3::logInfo("[intro] CAPITAL_KILLED -> crash-site Act-1 "
+                            "(host_surface_start + intro.wreck: salvage -> prisoners "
+                            "-> breach Lab Zero)");
+                loading.shutdown(*device);
+                physics->shutdown();
+                hc.worldMode = "surface";
+                return x3::apphost::dispatchWorldHost(hc);
+            }
+
             if (outcome == x3::intro::IntroOutcome::Escaped) {
                 // ESCAPE PATH (Phase 7): the REAL surface-landing Act-1. The ion-pulse
                 // descent (Phase 6) set StoryFlags["intro.landed"]; instead of waking

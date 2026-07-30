@@ -378,6 +378,19 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // Drag: dv/dt = -drag * v.
     const float dragK = std::min(1.0f, m_tuning.linearDrag * dt);
     for (int k = 0; k < 3; ++k) m_vel[k] -= m_vel[k] * dragK;
+    // FLIGHT-ASSIST HOLD: with the assist on and NO translation input, brake hard
+    // toward a dead stop so the ship holds station instead of drifting (owner:
+    // "stay in position ... not moving unless I WANT to move"). Any thrust/strafe/
+    // vertical input this frame releases it. flightAssist == 0 -> pure Newtonian.
+    if (m_tuning.flightAssist > 0.0f) {
+        const bool anyMove = std::fabs(in.moveFwd)    > 0.01f
+                           || std::fabs(in.moveStrafe) > 0.01f
+                           || std::fabs(vertAxis)      > 0.01f;
+        if (!anyMove) {
+            const float brakeK = std::min(1.0f, m_tuning.flightAssist * dt);
+            for (int k = 0; k < 3; ++k) m_vel[k] -= m_vel[k] * brakeK;
+        }
+    }
     // Nose-follow (arcade steering, Tuning.noseFollow rad-equivalent per sec;
     // 0 = off, pure Newtonian — every existing caller unchanged). Swings the
     // VELOCITY DIRECTION toward the ship's facing while preserving speed, so
@@ -389,7 +402,20 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // (owner: "STRAFE DOES NOT WORK"). While A/D is held, nose-follow stands down so
     // the strafe thrust becomes a REAL lateral slide (drag-only decay). Released, it
     // resumes and the ship self-aligns to its heading.
-    if (m_tuning.noseFollow > 0.0f && std::fabs(in.moveStrafe) < 0.01f) {
+    // Stand down for EVERY evasive input, not just strafe: reverse (S / negative
+    // moveFwd) and vertical (Space/C) each translate the ship, but nose-follow
+    // renormalizes velocity onto the NOSE and eats them — a reverse thrust was
+    // instantly rotated straight back at whatever the nose was aimed at, so
+    // pointing at the capital to fire SUCKED the player into it with no way to
+    // back off (owner, live: "when I shoot the big ship I get sucked toward it,
+    // I cannot back away ... I need control in ALL directions"). Also gate on the
+    // velocity already pointing forward (vDotNose > 0) so releasing the reverse
+    // key never flips a deliberate back-off around toward the nose.
+    const float vDotNose = m_vel[0]*fwdW[0] + m_vel[1]*fwdW[1] + m_vel[2]*fwdW[2];
+    const bool evasiveInput = std::fabs(in.moveStrafe) > 0.01f
+                            || std::fabs(vertAxis)     > 0.01f
+                            || in.moveFwd < -0.01f;
+    if (m_tuning.noseFollow > 0.0f && !evasiveInput && vDotNose > 0.0f) {
         const float spd0 = length3(m_vel);
         if (spd0 > 1e-3f) {
             // Steer toward the direction the pilot is COMMANDING, not the bare nose.
