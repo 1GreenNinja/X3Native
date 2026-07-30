@@ -445,6 +445,37 @@ float RoadGraph::laneCenterOffset(const RoadEdge& e, int lane, bool forward) {
     return forward ? off : -off;
 }
 
+// #34a CORRIDOR AUDIT: point-vs-corridor over every edge's centerline. The
+// samples are arc-even (~kSampleStep), so testing sample CIRCLES of radius
+// (halfCorridor + clear + step/2) covers the swept ribbon without segment
+// math — boot-time placement audits don't need better.
+bool EchoRoads::corridorHits(float x, float z, float clear) const {
+    for (const RoadEdge& e : m_graph.edges) {
+        const bool elevated = e.cls == RoadClass::Freeway || e.cls == RoadClass::Ramp;
+        const float half = e.width * 0.5f + (elevated ? kShoulderW + kBarrierW : 0.5f);
+        const float r = half + clear + kSampleStep * 0.5f;
+        const float r2 = r * r;
+        for (const RoadSample& s : e.center) {
+            const float dx = s.x - x, dz = s.z - z;
+            if (dx * dx + dz * dz < r2) return true;
+        }
+    }
+    return false;
+}
+
+bool EchoRoads::corridorHitsAABB(float minX, float minZ, float maxX, float maxZ,
+                                 float clear) const {
+    for (const RoadEdge& e : m_graph.edges) {
+        const bool elevated = e.cls == RoadClass::Freeway || e.cls == RoadClass::Ramp;
+        const float half = e.width * 0.5f + (elevated ? kShoulderW + kBarrierW : 0.5f);
+        const float g = half + clear + kSampleStep * 0.5f;
+        for (const RoadSample& s : e.center)
+            if (s.x > minX - g && s.x < maxX + g &&
+                s.z > minZ - g && s.z < maxZ + g) return true;
+    }
+    return false;
+}
+
 // ================================ build ====================================
 bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     if (m_built) return true;
@@ -1780,6 +1811,29 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     }
     device.endUploadBatch();
     m_built = true;
+    // #34a: ECHO_EXPORT_CORRIDORS=<path> — dump the corridor polylines for the
+    // OFFLINE bakes (SimCityLLM2 place_props.py): the baked skyline/props GLB
+    // predates the road network, so its towers stand in the freeway's footprint
+    // (Tim's pier-through-tower capture). The bake consumes this and avoids.
+    if (const char* cp = std::getenv("ECHO_EXPORT_CORRIDORS")) {
+        std::ofstream cf(cp);
+        if (cf) {
+            cf << "{\"corridors\":[\n";
+            for (size_t ei = 0; ei < m_graph.edges.size(); ++ei) {
+                const RoadEdge& e = m_graph.edges[ei];
+                const bool elevated = e.cls == RoadClass::Freeway || e.cls == RoadClass::Ramp;
+                const float half = e.width * 0.5f + (elevated ? kShoulderW + kBarrierW : 0.5f);
+                cf << "{\"cls\":" << (int)e.cls << ",\"half\":" << half << ",\"pts\":[";
+                for (size_t i = 0; i < e.center.size(); i += 2) {
+                    if (i) cf << ",";
+                    cf << "[" << e.center[i].x << "," << e.center[i].z << "]";
+                }
+                cf << "]}" << (ei + 1 < m_graph.edges.size() ? ",\n" : "\n");
+            }
+            cf << "]}\n";
+            x3::logInfo(std::string("[roads] corridors exported -> ") + cp);
+        }
+    }
     x3::logInfo("[roads] network built — " + std::to_string((int)m_pavedMeters) +
                 " paved m, " + std::to_string(m_graph.edges.size()) + " edges, " +
                 std::to_string(m_vertexCount) + " verts, " +

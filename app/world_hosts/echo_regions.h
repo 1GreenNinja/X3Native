@@ -90,6 +90,12 @@ struct EchoRegionCtx {
     // Asset roots (island/models/districts dirs, assetRoot()) resolved once by
     // the integrator — plain data, no behavior. WP-1 does not interpret these.
     std::string modelsDir, districtsTxt, vegDir, houseForgeDir, cityDir;
+    // #34a CORRIDOR AUDIT: the road network, when the integrator built it
+    // before the regions (echotropolis does since V7.2). Builders consult
+    // EchoRoads::corridorHits so placements never spawn inside a road/deck
+    // corridor. Null => no audit (legacy order / roads failed) — placements
+    // behave exactly as before.
+    const class EchoRoads*  roads = nullptr;
 };
 
 // ---------------------------------------------------------------------------

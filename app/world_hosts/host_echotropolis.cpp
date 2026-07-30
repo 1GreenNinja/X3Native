@@ -976,13 +976,27 @@ int hostEchotropolis(HostContext& hc) {
     // milestones can hard-gate on it.
     x3::game::Scene walkScene;   // hoisted (was declared just before the crowd builds):
                                  // EchoRegionCtx binds it; population is unchanged below.
+    // #34a CORRIDOR AUDIT: the road network now builds BEFORE the regions so
+    // every placement pass can consult EchoRoads::corridorHits — Tim's capture
+    // had piers running THROUGH a Recife tower because district layouts never
+    // knew the freeway existed. Decl hoisted from the infra block below; the
+    // traffic-route build stays down there (it needs the car fleet).
+    std::unique_ptr<x3::game::EchoRoads> roads = std::make_unique<x3::game::EchoRoads>();
+    if (roads->build(*device, hf)) {
+        x3::logInfo("--world echotropolis: ECHO ROADS — curved network live "
+                    "(pre-region build; placements audit the corridors)");
+    } else {
+        roads.reset();
+        x3::logWarn("--world echotropolis: EchoRoads build FAILED — no freeway this boot");
+    }
     x3::game::EchoRegionCtx regionCtx{
         *device, hf, walkScene,
         /*modelsDir*/     "D:/GameDev/SimCityLLM2/refs/models",
         /*districtsTxt*/  "assets/districts/districts.txt",
         /*vegDir*/        "D:/GameDev/EchoHarbor/assets/veg",
         /*houseForgeDir*/ "D:/Assets/_glb/prefab_buildings/HouseForge",
-        /*cityDir*/       "" };
+        /*cityDir*/       "",
+        /*roads*/         roads.get() };
     x3::game::WorldRegionGraph regionGraph;
     x3::game::WorldStreamer    regionStreamer;   // wired at M-A, first ticked at M-B
     x3::game::EchoRegionSet    regionSet;
@@ -1261,7 +1275,7 @@ int hostEchotropolis(HostContext& hc) {
     const float kCarYaw   = [](){ const char* e=std::getenv("ECHO_CAR_YAW");   return e?(float)std::atof(e):0.0f; }();
     const float kCarY = hf.ok() ? hf.heightAt(-20.0f, 760.0f) : 190.0f;   // crown ground (= tower bases)
     // Declared ahead of the Car lambdas: poseCar drives the graph (see below).
-    std::unique_ptr<x3::game::EchoRoads> roads;   // the curved network (replaces the old ribbons)
+    // (#34a: `roads` decl+build hoisted ABOVE the region boot — see there.)
     struct Car { std::unique_ptr<x3::game::EnvArtSystem> body;
                  float sx, sz, dx, dz, len, speed, off; };
     std::vector<Car> cars;
@@ -1496,15 +1510,9 @@ int hostEchotropolis(HostContext& hc) {
         // the shore-probed Harbor Boulevard, and five fanned harbor grid blocks
         // (Tim's sketch). placeDeckP/placePillar stay for future one-off decks.
         (void)placeDeckP; (void)placePillar;
-        roads = std::make_unique<x3::game::EchoRoads>();
-        if (roads->build(*device, hf)) {
-            x3::logInfo("--world echotropolis: ECHO ROADS — curved network live "
-                        "(old freeway ribbons retired)");
-            buildTrafficRoutes();   // LANE 1: the fleet takes the whole graph
-        } else {
-            roads.reset();
-            x3::logWarn("--world echotropolis: EchoRoads build FAILED — no freeway this boot");
-        }
+        // #34a: roads already built pre-regions; only the traffic routes
+        // wait until here (they need the car fleet declared above).
+        if (roads) buildTrafficRoutes();   // LANE 1: the fleet takes the whole graph
     }
 
     // (TIER-2 M-A: LIVING CONDOS moved to buildCrown — echo_region_builders.cpp.)

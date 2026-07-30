@@ -197,6 +197,18 @@ public:
 
     const RoadGraph& graph() const { return m_graph; }
 
+    // #34a CORRIDOR AUDIT (Tim's capture: piers THROUGH a tower).
+    // True when world (x,z) lies within `clear` meters of any road corridor —
+    // for elevated classes that is the DECK footprint projected to ground
+    // (width + shoulders), so buildings can't spawn under the freeway either.
+    // Placement passes call this at boot; O(total samples) per query.
+    bool corridorHits(float x, float z, float clear) const;
+    // AABB flavor for baked-layout content whose per-piece position lives in
+    // the mesh (the skyline towers): true when the XZ rect grown by `clear`
+    // touches any corridor.
+    bool corridorHitsAABB(float minX, float minZ, float maxX, float maxZ,
+                          float clear) const;
+
     // V3: drivable-surface collision (see RoadCollisionMesh). Valid after
     // build(); empty before. The integrator owns the physics body.
     const RoadCollisionMesh& collisionMesh() const { return m_collision; }

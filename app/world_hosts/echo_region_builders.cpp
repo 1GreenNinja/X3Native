@@ -62,6 +62,7 @@
 
 #include "echo_region_builders.h"
 #include "echo_interiors.h"    // condo-room sub-region + vendor dressing
+#include "echo_roads.h"        // #34a corridor audit (EchoRoads::corridorHits)
 #include "echo_woodlands.h"   // WP-3's harvestDistrictLights() — see loadDistrictInto's note
 
 #include "../env_art.h"
@@ -189,7 +190,7 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
     placeDeck(region, ctx, "road_asphalt.glb", ccx, ccz, gy - 0.05f, 0.0f, cw, cl);
     const float S = padScale, pc = std::cos(padYaw) * S, ps = std::sin(padYaw) * S;
     const float P[9] = { pc, 0.0f, -ps,   0.0f, S, 0.0f,   ps, 0.0f, pc };
-    int placed = 0;
+    int placed = 0, audited = 0;   // audited = pieces the corridor audit vetoed
     for (const Piece& pcs : pieces) {
         const char* name = pcs.glb.c_str();
         const float px=pcs.px, py=pcs.py, pz=pcs.pz, qx=pcs.qx, qy=pcs.qy, qz=pcs.qz, qw=pcs.qw,
@@ -220,6 +221,12 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
         const float tx = padX + P[0]*px + P[3]*py + P[6]*pz;
         const float ty = gy + padYOff + P[1]*px + P[4]*py + P[7]*pz;
         const float tz = padZ + P[2]*px + P[5]*py + P[8]*pz;
+        // #34a CORRIDOR AUDIT (Tim's capture: piers THROUGH a tower): a
+        // layout piece whose world seat lands inside a road/deck corridor is
+        // SKIPPED — a missing building beats a skewered one (the zigzag-law
+        // doctrine, applied to placement). 8 m clearance covers the span
+        // between a piece's pivot and its walls for the pack's tower shells.
+        if (ctx.roads && ctx.roads->corridorHits(tx, tz, 8.0f)) { ++audited; continue; }
         const float T[16] = { W[0],W[1],W[2],0, W[3],W[4],W[5],0, W[6],W[7],W[8],0, tx,ty,tz,1 };
         if (d->addGlbInstance(name, T)) ++placed;
         // (Light harvesting is NOT done here — see this function's doc
@@ -227,6 +234,9 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
         // SAME per-piece name classification in its own pass over this file.)
     }
     float mn[3], mx[3]; d->worldBounds(mn, mx);
+    if (audited > 0)
+        x3::logInfo(std::string("[region] DISTRICT ") + tag + " — corridor audit VETOED " +
+                    std::to_string(audited) + " pieces (road/deck footprint)");
     x3::logInfo(std::string("[region] DISTRICT ") + tag + " — " +
                 std::to_string(placed) + " prefabs placed at (" +
                 std::to_string((int)padX) + "," + std::to_string((int)padZ) + "), world bounds X[" +
@@ -293,8 +303,10 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
     {
         const std::string hdir = ctx.houseForgeDir.empty() ?
             "D:/Assets/_glb/prefab_buildings/HouseForge" : ctx.houseForgeDir;
-        int housesBuilt = 0;
+        int housesBuilt = 0, housesVetoed = 0;
         auto addHouse = [&](const char* glb, float x, float z, float yaw, float lift) {
+            // #34a CORRIDOR AUDIT: no house under the freeway / on an avenue.
+            if (ctx.roads && ctx.roads->corridorHits(x, z, 12.0f)) { ++housesVetoed; return; }
             const float gy = ctx.hf.ok() ? ctx.hf.heightAt(x, z) : 190.0f;
             const float s = 0.01f, c = std::cos(yaw), sn = std::sin(yaw);
             const float T[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
@@ -337,7 +349,8 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
         }
         x3::logInfo("[region] REAL BUILDINGS — " +
                     std::to_string(housesBuilt) + " textured HouseForge houses (" +
-                    std::to_string(neigh) + " draped into neighbourhoods)");
+                    std::to_string(neigh) + " draped into neighbourhoods; " +
+                    std::to_string(housesVetoed) + " corridor-vetoed)");
     }
 
     // ===================== DOWNTOWN SKYLINE (Urban Night City) ===== (host ~1008-1047)
@@ -363,13 +376,27 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
             "Building 36","Building 38","Building 39","Building 40","Building 41",
             "Building 43",
         };
-        int towersBuilt = 0;
+        int towersBuilt = 0, towersVetoed = 0;
         for (const char* b : kBld) {
             auto t = std::make_unique<EnvArtSystem>();
-            if (t->buildFromGlbAt(ctx.device, cdir, std::string(b) + ".glb", M)) { region.addArt(std::move(t)); ++towersBuilt; }
+            if (t->buildFromGlbAt(ctx.device, cdir, std::string(b) + ".glb", M)) {
+                // #34a CORRIDOR AUDIT: each tower's world position is baked in
+                // its GLB (one shared layout transform), so the test runs on
+                // the LOADED footprint — a tower straddling a road/deck
+                // corridor is vetoed whole (piers through towers, Tim's
+                // capture). The dropped system's GPU load is released with it.
+                float mn[3], mx[3]; t->worldBounds(mn, mx);
+                if (ctx.roads && ctx.roads->corridorHitsAABB(mn[0], mn[2],
+                                                             mx[0], mx[2], 2.0f)) {
+                    ++towersVetoed;
+                    continue;
+                }
+                region.addArt(std::move(t)); ++towersBuilt;
+            }
         }
         x3::logInfo("[region] DOWNTOWN SKYLINE — " +
-                    std::to_string(towersBuilt) + " Urban Night City towers on the crown");
+                    std::to_string(towersBuilt) + " Urban Night City towers on the crown (" +
+                    std::to_string(towersVetoed) + " corridor-vetoed)");
     }
 
     // ===================== CITY INFRASTRUCTURE — crown portion ===== (host ~1511-1638)
