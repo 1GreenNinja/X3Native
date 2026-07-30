@@ -1,3 +1,11 @@
+# ALSO UNDER THE NO-REFILING RULE (Tim, laughing, 2026-07-30): (a) BOAT LANES
+# still cross dry land (galleon through the village) — depth-gate routes vs
+# active hf, filed twice/built zero, fix WITH #34's wave. (b) HOUSES ON WATER
+# on the fjord world: authored-position content ignores the changed coastline —
+# fjord prerequisite: a boot-time COASTLINE AUDIT (every authored placement
+# re-validates vs active hf; relocate or skip+log). Same class as the
+# gorge-arcing highway.
+
 # ★★ STANDING ACCOUNTABILITY (Tim, 2026-07-30): task #34 CITY BLOCKS/STREETS was
 # filed FOUR times (spec, agenda, punchlists, lane 5) and built ZERO times —
 # named 'well-documented procrastination'. RULE: #34 is Lane 5's FIRST commit,
