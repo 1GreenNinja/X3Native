@@ -1,3 +1,12 @@
+# ★★ STANDING ACCOUNTABILITY (Tim, 2026-07-30): task #34 CITY BLOCKS/STREETS was
+# filed FOUR times (spec, agenda, punchlists, lane 5) and built ZERO times —
+# named 'well-documented procrastination'. RULE: #34 is Lane 5's FIRST commit,
+# before any other art item. Scope: crown street grid + blocks, towers/houses
+# re-seated on street-aligned lots (RoadGraph tangents), avenues tied to the
+# ring via interchanges. ALSO: freeway STRUCTURAL pass (box-girder underdeck,
+# pier caps, haunches, CA curve-follow supports, larger texture tiles) — the
+# piers are bare box columns; V7 did surface only. No more refiling either one.
+
 # LANE 7 ORDERS — TIM'S iPAD ANNOTATIONS (2026-07-30, on fjord captures):
 # 1. BLUE: GOLDEN GATE-STYLE SUSPENSION BRIDGE spanning the gorge mouth (city
 #    side) — towers + catenary main cables + hangers + deck tied into the road
