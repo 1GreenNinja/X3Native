@@ -301,9 +301,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/AnnaBodySuit_anim.glb",
-      "sha256": "af4b819ccf4a9609bda8a6e56f6519771b9fcbae17a63d259803f1d2c4135cfa",
-      "size": 8091724,
-      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+      "sha256": "ab2ad59e0a218dd9a1ddc480970d04367da9eae0e5220ada778b1cebf13e88df",
+      "size": 7916060,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaCasual.glb",
