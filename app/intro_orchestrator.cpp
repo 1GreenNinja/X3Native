@@ -499,9 +499,44 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     constexpr float kSunShieldSecs   = 17.0f; // the shield holds this long inside
     constexpr float kSunRechargeSecs = 5.0f;  // graze-abort: restores over this
     float sunShieldPct = 100.0f;
-    bool  sunInside = false;
     int   sunHeatStage = 0;                   // 0 nominal, 1 warn, 2 crit (one-shot barks)
     float sunSurfDist = 1e9f;                 // this step's surface distance (HUD)
+    // SPECTACLE CAM (owner: "add the spectacle Cam.. 30 seconds earlier") — the
+    // full host_space sun-death phase machine, ported: Flying -> InsideSun
+    // (LIVE graze window, 17 s countdown) -> Detonation (external kill-cam,
+    // blast + coronal ejection) -> Rewind (1 s backwards scrub) -> TitleCard
+    // ("30 SECONDS EARLIER…") -> Replay (the recorded approach flown back in)
+    // -> Respawn (fade, re-seed, "HULL LOST TO THE SUN") -> Flying. Any key
+    // from Detonation onward skips to Respawn. NOTE the intro-specific ending:
+    // the star no longer hard-kills the run — after the spectacle you respawn
+    // at the arena origin and the DOGFIGHT CONTINUES (capital damage persists);
+    // outcomes stay earned by the fight, not lost to sightseeing.
+    enum class SunPhase { Flying, InsideSun, Detonation, Rewind, TitleCard, Replay, Respawn };
+    SunPhase sunPhase = SunPhase::Flying;
+    float sunPhaseT = 0.0f;
+    bool  sunRespawned = false;
+    bool  sunPrevAny = false;                 // any-key edge for the cinematic skip
+    float sunShieldFlashT = -1.0f;            // one-shot SHIELD ENGAGED flash; <0 idle
+    constexpr float kSunFlashSecs = 1.5f;
+    constexpr float kDetonateSecs = 4.5f;     // blast + coronal ejection
+    constexpr float kRewindSecs   = 1.0f;     // backwards-scrub stinger
+    constexpr float kTitleSecs    = 2.6f;     // the film card (incl. fades)
+    constexpr float kReplaySecs   = 6.5f;     // forward re-entry replay
+    constexpr float kSunFadeSecs  = 1.0f;     // respawn fade out/hold/in
+    constexpr int   kSunDebris    = 24;       // coronal-ejection fragments
+    // Trajectory ring: 15 Hz x 32 s of ship poses (>= the 30 s the card
+    // promises), recorded through Flying + InsideSun, replayed by the kill-cam.
+    struct TrajSample { float p[3], f[3], u[3], r[3]; };
+    constexpr float kTrajHz  = 15.0f;
+    constexpr int   kTrajLen = (int)(kTrajHz * 32.0f);
+    std::vector<TrajSample> trajRing((size_t)kTrajLen);
+    int   trajHead = 0, trajCount = 0;
+    float trajTimer = 0.0f;
+    std::vector<TrajSample> trajPlay;         // linearised oldest->entry at detonation
+    float sunEntryPos[3] = { 0, 0, 0 };       // surface impact point (ejecta origin)
+    float sunEntryNrm[3] = { 0, 1, 0 };
+    float cineCamPos[3] = { 0, 0, 0 };        // frozen external kill-cam
+    float cineYaw = 0.0f, cinePit = 0.0f;
 
     // Combat FX (tracers, muzzle flashes, crosshair) — live only. Heap-allocated:
     // CombatFx carries ~256 KB of scratch (the host_space convention).
@@ -739,6 +774,241 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     }
     float beatT = 0.0f;
 
+    // ---- Star / spectacle-cam render helpers (shared by the normal combat
+    //      frame AND the external kill-cam frames, so the recipe lives once). --
+    auto sphM = [](const float c[3], float s, float yaw, float m[16]) {
+        const float cy2 = std::cos(yaw), sy2 = std::sin(yaw);
+        m[0]=cy2*s; m[1]=0; m[2]=-sy2*s; m[3]=0;
+        m[4]=0;     m[5]=s; m[6]=0;      m[7]=0;
+        m[8]=sy2*s; m[9]=0; m[10]=cy2*s; m[11]=0;
+        m[12]=c[0]; m[13]=c[1]; m[14]=c[2]; m[15]=1;
+    };
+    auto smoothC = [](float e0, float e1, float x) -> float {
+        float d = e1 - e0;
+        if (std::fabs(d) < 1e-6f) d = (d < 0.0f) ? -1e-6f : 1e-6f;
+        float t = (x - e0) / d;
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        return t * t * (3.0f - 2.0f * t);
+    };
+    // TWIN-SUN FIX (host_space recipe): re-aim the painted sky disc down the
+    // eye->star ray every frame; params mirror setIntroCockpitLook otherwise.
+    auto aimSkyAtStar = [&](float ex, float ey, float ez) {
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        float sd[3] = { kSunCenter[0]-ex, kSunCenter[1]-ey, kSunCenter[2]-ez };
+        const float sdl = std::sqrt(sd[0]*sd[0]+sd[1]*sd[1]+sd[2]*sd[2]);
+        if (sdl > 1.0f) { sd[0]/=sdl; sd[1]/=sdl; sd[2]/=sdl; }
+        sp.sunDir[0]=sd[0]; sp.sunDir[1]=sd[1]; sp.sunDir[2]=sd[2];
+        sp.sunColor[0]=0.85f; sp.sunColor[1]=0.88f; sp.sunColor[2]=1.0f;
+        sp.sunIntensity = 0.55f;
+        sp.sunLight = 2.4f;
+        sp.haze = 0.0f; sp.exposure = 1.0f;
+        sp.zenith[0]=0.0012f; sp.zenith[1]=0.0012f; sp.zenith[2]=0.0035f;
+        sp.horizon[0]=0.0018f; sp.horizon[1]=0.0022f; sp.horizon[2]=0.0050f;
+        hc.device->setSkyParams(sp);
+    };
+    // The star: living-surface core (bake as baseColor AND emissive) + corona.
+    auto drawStar = [&](const x3::rhi::FrameContext& frame) {
+        float sm[16];
+        sphM(kSunCenter, kSunRadius, beatT * 0.008f, sm);
+        const float sunBc[4] = { 1.0f, 0.85f, 0.55f, 1.0f };
+        const float sunEm[4] = { 1.0f, 0.86f, 0.60f, 3.2f };  // past bloom knee
+        hc.device->drawMeshPBR(frame, sunMesh, sunTex,
+                               x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                               sunBc, sunEm, sm,
+                               /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
+        for (int s5 = 0; s5 < 5; ++s5) {
+            const float k5 = (float)s5 / 4.0f;
+            sphM(kSunCenter, kSunRadius * (1.05f + 0.22f * (float)s5), 0.0f, sm);
+            const float cBc[4] = { 1.0f, 0.72f - 0.30f*k5, 0.35f - 0.20f*k5, 1.0f };
+            const float cEm[4] = { 1.0f, 0.66f - 0.30f*k5, 0.30f - 0.18f*k5,
+                                   0.85f * (1.0f - k5) + 0.10f };
+            x3::rhi::IRenderDevice::GlassMaterial gm{};
+            gm.opacity = 0.10f * (1.0f - k5) + 0.02f;
+            gm.roughness = 1.0f; gm.specular = 0.0f;
+            gm.tint[0]=1.0f; gm.tint[1]=0.7f; gm.tint[2]=0.35f;
+            hc.device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{},
+                                     cBc, cEm, gm, sm, /*alphaBlend=*/true);
+        }
+    };
+    // Small float[3] helpers for the kill-cam / ejecta geometry.
+    auto v3norm = [](float v[3]) {
+        const float l = std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+        if (l > 1e-6f) { v[0]/=l; v[1]/=l; v[2]/=l; }
+    };
+    auto v3cross = [](const float a[3], const float b[3], float o[3]) {
+        o[0] = a[1]*b[2] - a[2]*b[1];
+        o[1] = a[2]*b[0] - a[0]*b[2];
+        o[2] = a[0]*b[1] - a[1]*b[0];
+    };
+    // Frame the external kill-cam: sun ~half the screen, impact point centred,
+    // camera ~1.6 radii off the surface (host_space framing math).
+    auto setupKillCam = [&](const float shipP[3]) {
+        float n[3] = { shipP[0]-kSunCenter[0], shipP[1]-kSunCenter[1],
+                       shipP[2]-kSunCenter[2] };
+        const float nl = std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+        if (nl > 1e-3f) { n[0]/=nl; n[1]/=nl; n[2]/=nl; }
+        else            { n[0]=0; n[1]=1; n[2]=0; }
+        for (int a2 = 0; a2 < 3; ++a2) {
+            sunEntryNrm[a2] = n[a2];
+            sunEntryPos[a2] = kSunCenter[a2] + n[a2] * kSunRadius;
+        }
+        float upv[3] = { 0, 1, 0 };
+        if (std::fabs(n[1]) >= 0.95f) { upv[0] = 1; upv[1] = 0; }
+        float lat[3]; v3cross(n, upv, lat); v3norm(lat);
+        float cdir[3] = { n[0]*0.55f + lat[0]*0.83f, n[1]*0.55f + lat[1]*0.83f,
+                          n[2]*0.55f + lat[2]*0.83f };
+        v3norm(cdir);
+        const float camDist = kSunRadius + 3200.0f;
+        for (int a2 = 0; a2 < 3; ++a2)
+            cineCamPos[a2] = kSunCenter[a2] + cdir[a2] * camDist;
+        float d[3] = { sunEntryPos[0]-cineCamPos[0], sunEntryPos[1]-cineCamPos[1],
+                       sunEntryPos[2]-cineCamPos[2] };
+        v3norm(d);
+        cinePit = std::asin(std::max(-1.0f, std::min(1.0f, d[1])));
+        cineYaw = std::atan2(d[2], d[0]);
+    };
+    // Linearise the ring (oldest -> entry) for scrub/replay.
+    auto snapshotTraj = [&]() {
+        trajPlay.clear();
+        for (int i = 0; i < trajCount; ++i) {
+            const int idx = ((trajHead - trajCount + i) % kTrajLen + kTrajLen) % kTrajLen;
+            trajPlay.push_back(trajRing[(size_t)idx]);
+        }
+    };
+    // Draw the recorded ship pose; g 0->1 walks oldest->entry, lerped.
+    auto drawReplayShip = [&](const x3::rhi::FrameContext& frame, float g) {
+        if (trajPlay.size() < 2 || playerDraw.empty() || !cockpit) return;
+        g = g < 0.0f ? 0.0f : (g > 1.0f ? 1.0f : g);
+        const float fi = g * (float)(trajPlay.size() - 1);
+        int i0 = (int)fi; if (i0 < 0) i0 = 0;
+        const int i1 = std::min(i0 + 1, (int)trajPlay.size() - 1);
+        const float fr = fi - (float)i0;
+        const auto& A = trajPlay[(size_t)i0]; const auto& B = trajPlay[(size_t)i1];
+        float p[3], f[3], u[3];
+        for (int a2 = 0; a2 < 3; ++a2) {
+            p[a2] = A.p[a2] + (B.p[a2]-A.p[a2]) * fr;
+            f[a2] = A.f[a2] + (B.f[a2]-A.f[a2]) * fr;
+            u[a2] = A.u[a2] + (B.u[a2]-A.u[a2]) * fr;
+        }
+        v3norm(f); v3norm(u);
+        x3::apphost::drawIntroShipBasis(*hc.device, frame, playerDraw,
+                                        p, f, u, 1.0f, cockpit->mrShared);
+    };
+    // Coronal ejection: expanding shockwave shells at the impact point + a cone
+    // of decelerating emissive fragments (host_space drawEjecta, compacted).
+    auto drawEjecta = [&](const x3::rhi::FrameContext& frame, float t) {
+        float m[16];
+        for (int s2 = 0; s2 < 2; ++s2) {
+            const float lt = t - (float)s2 * 0.6f;
+            if (lt < 0.0f || lt > 2.4f) continue;
+            const float a = 1.0f - lt / 2.4f;
+            sphM(sunEntryPos, kSunRadius * (0.25f + lt * 0.9f), 0.0f, m);
+            const float bc[4] = { 1.0f, 0.7f, 0.35f, 1.0f };
+            const float em[4] = { 1.0f, 0.7f, 0.35f, 2.5f * a };
+            x3::rhi::IRenderDevice::GlassMaterial gm{};
+            gm.opacity = 0.14f * a; gm.roughness = 1.0f; gm.specular = 0.0f;
+            gm.tint[0]=1.0f; gm.tint[1]=0.7f; gm.tint[2]=0.35f;
+            hc.device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{},
+                                     bc, em, gm, m);
+        }
+        float upv[3] = { 0, 1, 0 };
+        if (std::fabs(sunEntryNrm[1]) >= 0.95f) { upv[0] = 1; upv[1] = 0; }
+        float ta[3]; v3cross(upv, sunEntryNrm, ta); v3norm(ta);
+        float tb[3]; v3cross(sunEntryNrm, ta, tb);
+        using x3::space::sunbake::hashF;
+        for (int i = 0; i < kSunDebris; ++i) {
+            const float h1 = hashF((uint32_t)(i*5+1)), h2 = hashF((uint32_t)(i*5+2));
+            const float h3 = hashF((uint32_t)(i*5+3)), h4 = hashF((uint32_t)(i*5+4));
+            const float ang  = h1 * 6.2831853f;
+            const float cone = 0.35f + 0.5f * h2;
+            float dir[3];
+            for (int a2 = 0; a2 < 3; ++a2)
+                dir[a2] = sunEntryNrm[a2] +
+                          (ta[a2]*std::cos(ang) + tb[a2]*std::sin(ang)) * cone;
+            v3norm(dir);
+            const float v0 = kSunRadius * (0.9f + 1.6f * h3);
+            const float tt = std::min(t, 3.5f);
+            const float dist = v0 * (tt - 0.12f * tt * tt);
+            const float life = std::min(1.0f, t / 3.5f);
+            const float str  = (3.5f - 3.0f * life) * (0.6f + 0.6f * h4);
+            if (str < 0.05f) continue;
+            const float c2[3] = { sunEntryPos[0] + dir[0]*dist,
+                                  sunEntryPos[1] + dir[1]*dist,
+                                  sunEntryPos[2] + dir[2]*dist };
+            sphM(c2, 14.0f + 26.0f * h2, 0.0f, m);
+            const float bc[4] = { 1.0f, 0.72f, 0.30f, 1.0f };
+            const float em[4] = { 1.0f, 0.72f, 0.30f, str };
+            hc.device->drawMeshEmissive(frame, sunMesh, x3::rhi::TextureHandle{},
+                                        bc, em, m);
+        }
+    };
+    // The cinematic overlay: SHIELD ENGAGED flash, molten wash + countdown,
+    // detonation flash, << REWIND tag, the film card, replay entry flash, and
+    // the respawn fade/captions (host_space drawCinematic, compacted).
+    auto drawSunOverlay = [&](const x3::rhi::FrameContext& frame, float W, float H) {
+        using x3::rhi::FontRole;
+        auto full = [&](float r, float g, float b, float a) {
+            if (a <= 0.001f) return;
+            const float c[4] = { r, g, b, a };
+            hc.device->drawHudQuad(frame, 0, 0, W, H, c);
+        };
+        auto center = [&](const char* s, float px, float y, const float col[4]) {
+            const float w = hc.device->textAdvance(FontRole::Title, s, px);
+            hc.device->drawHudTextF(frame, FontRole::Title, s,
+                                    W*0.5f - w*0.5f, y, px, col);
+        };
+        if (sunShieldFlashT >= 0.0f) {
+            const float decay = 1.0f - smoothC(0.0f, kSunFlashSecs, sunShieldFlashT);
+            full(0.55f, 0.80f, 1.0f, decay * decay * 0.85f);
+            const float capA = 1.0f - smoothC(kSunFlashSecs * 0.55f, kSunFlashSecs,
+                                              sunShieldFlashT);
+            if (capA > 0.02f) {
+                const float col[4] = { 0.55f, 0.85f, 1.0f, capA };
+                center("SHIELD ENGAGED", 30.0f, H*0.30f, col);
+            }
+        }
+        if (sunPhase == SunPhase::InsideSun) {
+            const float pulse = 0.42f + 0.10f * std::sin(beatT * 5.0f);
+            full(1.0f, 0.45f, 0.12f, pulse);
+            const float rem = std::max(0.0f, kSunShieldSecs - sunPhaseT);
+            const float k = rem / kSunShieldSecs;
+            char cd[48];
+            std::snprintf(cd, sizeof(cd), "SHIELD FAILING IN %4.1fs", (double)rem);
+            const float col[4] = { 1.0f, 0.30f + 0.55f*k, 0.20f*k, 1.0f };
+            center(cd, 40.0f, H*0.62f, col);
+        } else if (sunPhase == SunPhase::Detonation) {
+            const float fl = 1.0f - smoothC(0.0f, 0.6f, sunPhaseT);
+            full(1.0f, 0.96f, 0.9f, fl * 0.95f);
+        } else if (sunPhase == SunPhase::Rewind) {
+            full(0.0f, 0.0f, 0.02f, 0.28f);
+            const float col[4] = { 0.8f, 0.85f, 1.0f, 0.9f };
+            center("<< REWIND", 30.0f, H*0.12f, col);
+        } else if (sunPhase == SunPhase::TitleCard) {
+            const float aIn  = smoothC(0.0f, 0.6f, sunPhaseT);
+            const float aOut = 1.0f - smoothC(kTitleSecs - 0.6f, kTitleSecs, sunPhaseT);
+            const float a = std::min(aIn, aOut);
+            full(0.0f, 0.0f, 0.0f, 0.72f + 0.28f * a);
+            const float col[4] = { 0.92f, 0.90f, 0.85f, a };
+            center("3 0   S E C O N D S   E A R L I E R", 30.0f, H*0.46f, col);
+        } else if (sunPhase == SunPhase::Replay) {
+            const float fl = smoothC(kReplaySecs - 0.5f, kReplaySecs, sunPhaseT);
+            full(1.0f, 0.9f, 0.7f, fl * 0.85f);
+        } else if (sunPhase == SunPhase::Respawn) {
+            float a;
+            if (sunPhaseT < kSunFadeSecs)            a = smoothC(0.0f, kSunFadeSecs, sunPhaseT);
+            else if (sunPhaseT < kSunFadeSecs + 0.8f) a = 1.0f;
+            else a = 1.0f - smoothC(kSunFadeSecs + 0.8f, 2.0f*kSunFadeSecs + 0.8f, sunPhaseT);
+            full(0.0f, 0.0f, 0.0f, a);
+            if (sunPhaseT > kSunFadeSecs * 0.7f) {
+                const float col[4]  = { 0.95f, 0.55f, 0.35f, std::min(1.0f, a) };
+                center("HULL LOST TO THE SUN", 26.0f, H*0.44f, col);
+                const float col2[4] = { 0.8f, 0.85f, 1.0f, std::min(1.0f, a) };
+                center("SHIELD HELD 17.0s - BACK TO THE FIGHT", 16.0f, H*0.44f + 40.0f, col2);
+            }
+        }
+    };
+
     // Captured-cursor mouse-look for the live window (host_space pattern). The
     // cursor is restored to NORMAL on every exit path below (the cinematic beats
     // + the cutscene player expect a visible cursor).
@@ -897,6 +1167,168 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (in.sprint && !prevSprint)
             play2D(kSfxBoost, "boost_antimatter (Shift engage)", sndBoost, 0.9f, 1.0f);
         prevSprint = in.sprint;
+
+        // ---- THE STAR phase machine (the host_space spectacle contract). Runs
+        // every step BEFORE the pilot update so Detonation onward can freeze the
+        // world; headless the pilot never nears the star, so phase stays Flying
+        // and every pinned metric is untouched. ------------------------------
+        {
+            const x3::phys::Vec3 sp3 = pilot.pos();
+            const float sdx = sp3.x-kSunCenter[0], sdy = sp3.y-kSunCenter[1],
+                        sdz = sp3.z-kSunCenter[2];
+            const float dCenter = std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz);
+            sunSurfDist = dCenter - kSunRadius;
+            // Heat-rung barks (approach feedback; only meaningful in live flight).
+            const int stage = sunSurfDist < kSunCritDist ? 2
+                            : sunSurfDist < kSunWarnDist ? 1 : 0;
+            if (stage > sunHeatStage &&
+                (sunPhase == SunPhase::Flying || sunPhase == SunPhase::InsideSun))
+                pushCallout(stage == 2 ? "HULL TEMP CRITICAL - PULL AWAY"
+                                       : "HULL TEMP RISING", stage == 2 ? 1.2f : 0.9f);
+            sunHeatStage = stage;
+            if (sunShieldFlashT >= 0.0f) {
+                sunShieldFlashT += dt;
+                if (sunShieldFlashT > kSunFlashSecs) sunShieldFlashT = -1.0f;
+            }
+            // Trajectory ring: record through LIVE flight (Flying + the graze
+            // window) so a real detonation replays the whole approach.
+            if (sunPhase == SunPhase::Flying || sunPhase == SunPhase::InsideSun) {
+                trajTimer += dt;
+                if (trajTimer >= 1.0f / kTrajHz) {
+                    trajTimer = 0.0f;
+                    const x3::phys::Vec3 f3 = pilot.forward();
+                    const x3::phys::Vec3 u3 = pilot.up();
+                    const x3::phys::Vec3 r3 = pilot.right();
+                    trajRing[(size_t)trajHead] = {
+                        { sp3.x, sp3.y, sp3.z }, { f3.x, f3.y, f3.z },
+                        { u3.x, u3.y, u3.z },    { r3.x, r3.y, r3.z } };
+                    trajHead = (trajHead + 1) % kTrajLen;
+                    if (trajCount < kTrajLen) ++trajCount;
+                }
+            }
+            // Any-key edge — the cinematic skip (Detonation onward ONLY; a key
+            // during InsideSun means "fly the graze-abort", never "skip my death").
+            const bool anyNow = fire || in.sprint || in.jumpPressed || in.diveHeld ||
+                                std::fabs(in.moveFwd) > 0.01f ||
+                                std::fabs(in.moveStrafe) > 0.01f;
+            const bool skipEdge = anyNow && !sunPrevAny;
+            sunPrevAny = anyNow;
+            switch (sunPhase) {
+                case SunPhase::Flying:
+                    if (sunShieldPct < 100.0f)
+                        sunShieldPct = std::min(100.0f,
+                            sunShieldPct + dt * (100.0f / kSunRechargeSecs));
+                    if (dCenter < kSunRadius) {         // breached the core
+                        sunPhase = SunPhase::InsideSun; sunPhaseT = 0.0f;
+                        sunShieldPct = 100.0f; sunShieldFlashT = 0.0f;
+                        pushCallout("SHIELD ENGAGED - STELLAR CORE", 1.3f);
+                        play2D(kSfxZap, "sun_shield_engage (core breach)",
+                               sndZap, 1.0f, 0.7f);
+                        const float spArr[3] = { sp3.x, sp3.y, sp3.z };
+                        setupKillCam(spArr);
+                    }
+                    break;
+                case SunPhase::InsideSun:
+                    sunPhaseT += dt;
+                    sunShieldPct = 100.0f *
+                        std::max(0.0f, 1.0f - sunPhaseT / kSunShieldSecs);
+                    if (dCenter >= kSunRadius) {        // GRAZE: pulled back out
+                        sunPhase = SunPhase::Flying; sunPhaseT = 0.0f;
+                    } else if (sunPhaseT >= kSunShieldSecs) {
+                        snapshotTraj();
+                        sunPhase = SunPhase::Detonation; sunPhaseT = 0.0f;
+                        play2D(kSfxExplosion, "sun_detonation (antimatter blast)",
+                               sndExplosion, 1.0f, 0.45f);
+                        x3::logInfo("[intro] STAR DETONATION — spectacle cam rolling "
+                                    "(rewind -> 30 SECONDS EARLIER -> replay -> respawn)");
+                    }
+                    break;
+                case SunPhase::Detonation:
+                    sunPhaseT += dt;
+                    if (skipEdge) { sunPhase = SunPhase::Respawn; sunPhaseT = 0.0f; sunRespawned = false; break; }
+                    if (sunPhaseT >= kDetonateSecs) { sunPhase = SunPhase::Rewind; sunPhaseT = 0.0f; }
+                    break;
+                case SunPhase::Rewind:
+                    sunPhaseT += dt;
+                    if (skipEdge) { sunPhase = SunPhase::Respawn; sunPhaseT = 0.0f; sunRespawned = false; break; }
+                    if (sunPhaseT >= kRewindSecs) { sunPhase = SunPhase::TitleCard; sunPhaseT = 0.0f; }
+                    break;
+                case SunPhase::TitleCard:
+                    sunPhaseT += dt;
+                    if (skipEdge) { sunPhase = SunPhase::Respawn; sunPhaseT = 0.0f; sunRespawned = false; break; }
+                    if (sunPhaseT >= kTitleSecs) { sunPhase = SunPhase::Replay; sunPhaseT = 0.0f; }
+                    break;
+                case SunPhase::Replay:
+                    sunPhaseT += dt;
+                    if (skipEdge) { sunPhase = SunPhase::Respawn; sunPhaseT = 0.0f; sunRespawned = false; break; }
+                    if (sunPhaseT >= kReplaySecs) { sunPhase = SunPhase::Respawn; sunPhaseT = 0.0f; sunRespawned = false; }
+                    break;
+                case SunPhase::Respawn:
+                    sunPhaseT += dt;
+                    if (!sunRespawned && sunPhaseT >= kSunFadeSecs) {  // re-seed at black
+                        pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
+                        trajHead = trajCount = 0; trajTimer = 0.0f;
+                        sunShieldPct = 100.0f;
+                        sunRespawned = true;
+                    }
+                    if (sunPhaseT >= 2.0f * kSunFadeSecs + 0.8f) {
+                        sunPhase = SunPhase::Flying; sunPhaseT = 0.0f;
+                        pushCallout("BACK IN THE FIGHT", 1.0f);
+                    }
+                    break;
+            }
+        }
+        // ---- SPECTACLE CAM frames (Detonation..Replay): the external kill-cam
+        // owns the frame; the combat world holds its breath (pilot frozen, no AI,
+        // no fire, no damage — exactly the host's cineNow contract). Respawn runs
+        // the NORMAL loop underneath its fade (the re-seeded ship is flyable the
+        // moment the black lifts). --------------------------------------------
+        if (sunPhase == SunPhase::Detonation || sunPhase == SunPhase::Rewind ||
+            sunPhase == SunPhase::TitleCard  || sunPhase == SunPhase::Replay) {
+            if (live) {
+                beatT += dt;
+                hc.device->setCamera(cineCamPos[0], cineCamPos[1], cineCamPos[2],
+                                     cineYaw, cinePit, 60.0f);
+                if (sfx) {
+                    sfx->setListener(cineCamPos[0], cineCamPos[1], cineCamPos[2],
+                                     cineYaw, cinePit);
+                    if (humLoop.valid())    sfx->setLoopParams(humLoop, 0.0f, 1.0f);
+                    if (thrustLoop.valid()) sfx->setLoopParams(thrustLoop, 0.0f, 1.0f);
+                    sfx->update(dt);
+                }
+                auto frame = hc.device->beginFrame();
+                if (frame.valid && cockpit) {
+                    int winW = (int)hc.W, winH = (int)hc.H;
+                    if (hc.window) glfwGetWindowSize(hc.window, &winW, &winH);
+                    aimSkyAtStar(cineCamPos[0], cineCamPos[1], cineCamPos[2]);
+                    if (!planets.empty())
+                        x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh,
+                            planets, beatT, cineCamPos[0], cineCamPos[1], cineCamPos[2],
+                            ringMesh, 10500.0f);
+                    drawStar(frame);
+                    if (sunPhase == SunPhase::Detonation) {
+                        drawEjecta(frame, sunPhaseT);
+                    } else if (sunPhase == SunPhase::Rewind) {
+                        drawEjecta(frame, kDetonateSecs * (1.0f - sunPhaseT / kRewindSecs));
+                        drawReplayShip(frame, 1.0f);
+                    } else if (sunPhase == SunPhase::Replay) {
+                        drawReplayShip(frame, sunPhaseT / kReplaySecs);
+                    }
+                    drawSunOverlay(frame, (float)winW, (float)winH);
+                }
+                hc.device->endFrame(frame);
+                if (interactive) {
+                    const double target  = (double)(step + 1) * (double)dt;
+                    const double elapsed = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - tStart).count();
+                    if (elapsed < target)
+                        std::this_thread::sleep_for(
+                            std::chrono::duration<double>(target - elapsed));
+                }
+            }
+            continue;   // the combat world is frozen under the kill-cam
+        }
+
         pilot.setRollInput(rollAxis);
         pilot.update(in, dt, *phys);
 
@@ -1043,45 +1475,9 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (incomingFlashT > 0.0f) incomingFlashT -= dt;
         for (auto& cl : callouts) if (cl.t > 0.0f) cl.t -= dt;
 
-        // ---- THE STAR: heat ladder + shield dive (host_space port) -----------
-        // Distance is to the SURFACE (dCenter - radius). Approach barks at the
-        // warn/crit rungs; breaching the core engages the shield (17 s of hold,
-        // the InsideSun contract), leaving grazes it back over 5 s; 0% = hull
-        // lost -> the pilot dies -> the window ends on the canon ShotDown path.
-        {
-            const float sdx = ppos[0]-kSunCenter[0], sdy = ppos[1]-kSunCenter[1],
-                        sdz = ppos[2]-kSunCenter[2];
-            const float dCenter = std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz);
-            sunSurfDist = dCenter - kSunRadius;
-            // Heat rungs (one-shot each way — re-bark only after cooling a rung).
-            const int stage = sunSurfDist < kSunCritDist ? 2
-                            : sunSurfDist < kSunWarnDist ? 1 : 0;
-            if (stage > sunHeatStage) {
-                pushCallout(stage == 2 ? "HULL TEMP CRITICAL - PULL AWAY"
-                                       : "HULL TEMP RISING", stage == 2 ? 1.2f : 0.9f);
-            }
-            sunHeatStage = stage;
-            if (sunSurfDist < 0.0f) {
-                if (!sunInside) {
-                    sunInside = true;
-                    pushCallout("SHIELD ENGAGED - STELLAR CORE", 1.3f);
-                    play2D(kSfxZap, "sun_shield_engage (core breach)", sndZap, 1.0f, 0.7f);
-                }
-                sunShieldPct -= dt * (100.0f / kSunShieldSecs);
-                if (sunShieldPct <= 0.0f && pilot.isAlive()) {
-                    sunShieldPct = 0.0f;
-                    pushCallout("SHIELD FAILED - HULL LOST TO THE STAR", 0.5f);
-                    play2D(kSfxExplosion, "sun_death (shield failed)", sndExplosion,
-                           1.0f, 0.5f);
-                    pilot.takeDamage(1000000);   // the star wins; canon ShotDown
-                }
-            } else {
-                sunInside = false;
-                if (sunShieldPct < 100.0f)
-                    sunShieldPct = std::min(100.0f,
-                        sunShieldPct + dt * (100.0f / kSunRechargeSecs));
-            }
-        }
+        // (The star's heat/shield/death sim now lives in the SunPhase machine at
+        //  the top of the loop — the host_space spectacle contract: detonation
+        //  kill-cam, rewind, "30 SECONDS EARLIER", replay, respawn.)
 
         // ---- Targeting feed: the capital ship is the priority hostile contact. ----
         x3::space::Contact contacts[8]{};
@@ -1501,78 +1897,27 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (!planets.empty())
                     x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh, planets,
                                                      beatT, cx, cy, cz, ringMesh, 10500.0f);
-                // ---- THE STAR (world-anchored flyable body) ------------------
-                // TWIN-SUN FIX (host_space recipe): the analytic sky paints its
-                // sun disc at INFINITY along sunDir — a fixed dir detaches from
-                // the physical body the moment you translate. Re-aim the disc
-                // down the eye->star ray every frame so the painted glare and
-                // the real surface always coincide. Params mirror
-                // setIntroCockpitLook (host_introcockpit.cpp) except the dir.
-                {
-                    x3::rhi::IRenderDevice::SkyParams sp{};
-                    sp.enabled = true;
-                    float sd[3] = { kSunCenter[0]-cx, kSunCenter[1]-cy, kSunCenter[2]-cz };
-                    const float sdl = std::sqrt(sd[0]*sd[0]+sd[1]*sd[1]+sd[2]*sd[2]);
-                    if (sdl > 1.0f) { sd[0]/=sdl; sd[1]/=sdl; sd[2]/=sdl; }
-                    sp.sunDir[0]=sd[0]; sp.sunDir[1]=sd[1]; sp.sunDir[2]=sd[2];
-                    sp.sunColor[0]=0.85f; sp.sunColor[1]=0.88f; sp.sunColor[2]=1.0f;
-                    sp.sunIntensity = 0.55f;
-                    sp.sunLight = 2.4f;
-                    sp.haze = 0.0f; sp.exposure = 1.0f;
-                    sp.zenith[0]=0.0012f; sp.zenith[1]=0.0012f; sp.zenith[2]=0.0035f;
-                    sp.horizon[0]=0.0018f; sp.horizon[1]=0.0022f; sp.horizon[2]=0.0050f;
-                    hc.device->setSkyParams(sp);
-                }
-                {
-                    // Translate+uniform-scale (+slow yaw for granulation drift).
-                    auto sphM = [](const float c[3], float s, float yaw, float m[16]) {
-                        const float cy2 = std::cos(yaw), sy2 = std::sin(yaw);
-                        m[0]=cy2*s; m[1]=0; m[2]=-sy2*s; m[3]=0;
-                        m[4]=0;     m[5]=s; m[6]=0;      m[7]=0;
-                        m[8]=sy2*s; m[9]=0; m[10]=cy2*s; m[11]=0;
-                        m[12]=c[0]; m[13]=c[1]; m[14]=c[2]; m[15]=1;
-                    };
+                // ---- THE STAR (world-anchored flyable body; shared recipe with
+                // the spectacle-cam frames — see aimSkyAtStar/drawStar above). --
+                aimSkyAtStar(cx, cy, cz);
+                drawStar(frame);
+                // Player shield bubble while the star is draining/recharging it
+                // (the host_space drawShield look: cyan additive shell, pulse,
+                // intensity riding the remaining %).
+                if (sunPhase == SunPhase::InsideSun || sunShieldPct < 99.95f) {
                     float sm[16];
-                    // Core: the living-surface bake as baseColor AND emissive so
-                    // granulation/sunspots modulate the bloom (host_space recipe).
-                    sphM(kSunCenter, kSunRadius, beatT * 0.008f, sm);
-                    const float sunBc[4] = { 1.0f, 0.85f, 0.55f, 1.0f };
-                    const float sunEm[4] = { 1.0f, 0.86f, 0.60f, 3.2f };  // past bloom knee
-                    hc.device->drawMeshPBR(frame, sunMesh, sunTex,
-                                           x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
-                                           sunBc, sunEm, sm,
-                                           /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
-                    // Corona: additive translucent shells, warm gradient falling off.
-                    for (int s5 = 0; s5 < 5; ++s5) {
-                        const float k5 = (float)s5 / 4.0f;
-                        sphM(kSunCenter, kSunRadius * (1.05f + 0.22f * (float)s5), 0.0f, sm);
-                        const float cBc[4] = { 1.0f, 0.72f - 0.30f*k5, 0.35f - 0.20f*k5, 1.0f };
-                        const float cEm[4] = { 1.0f, 0.66f - 0.30f*k5, 0.30f - 0.18f*k5,
-                                               0.85f * (1.0f - k5) + 0.10f };
-                        x3::rhi::IRenderDevice::GlassMaterial gm{};
-                        gm.opacity = 0.10f * (1.0f - k5) + 0.02f;
-                        gm.roughness = 1.0f; gm.specular = 0.0f;
-                        gm.tint[0]=1.0f; gm.tint[1]=0.7f; gm.tint[2]=0.35f;
-                        hc.device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{},
-                                                 cBc, cEm, gm, sm, /*alphaBlend=*/true);
-                    }
-                    // Player shield bubble while the star is draining/recharging it
-                    // (the host_space drawShield look: cyan additive shell, pulse,
-                    // intensity riding the remaining %).
-                    if (sunInside || sunShieldPct < 99.95f) {
-                        const float kk = sunShieldPct / 100.0f;
-                        const float pulse = 0.75f + 0.25f * std::sin(beatT * 6.0f);
-                        sphM(ppos, 2.6f, 0.0f, sm);
-                        const float shBc2[4] = { 0.35f, 0.75f, 1.0f, 1.0f };
-                        const float shEm2[4] = { 0.35f, 0.75f, 1.0f,
-                                                 (0.6f + 2.2f * kk) * pulse };
-                        x3::rhi::IRenderDevice::GlassMaterial gm2{};
-                        gm2.opacity = 0.18f + 0.22f * kk;
-                        gm2.roughness = 0.4f; gm2.specular = 0.4f;
-                        gm2.tint[0]=0.4f; gm2.tint[1]=0.75f; gm2.tint[2]=1.0f;
-                        hc.device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{},
-                                                 shBc2, shEm2, gm2, sm);
-                    }
+                    const float kk = sunShieldPct / 100.0f;
+                    const float pulse = 0.75f + 0.25f * std::sin(beatT * 6.0f);
+                    sphM(ppos, 2.6f, 0.0f, sm);
+                    const float shBc2[4] = { 0.35f, 0.75f, 1.0f, 1.0f };
+                    const float shEm2[4] = { 0.35f, 0.75f, 1.0f,
+                                             (0.6f + 2.2f * kk) * pulse };
+                    x3::rhi::IRenderDevice::GlassMaterial gm2{};
+                    gm2.opacity = 0.18f + 0.22f * kk;
+                    gm2.roughness = 0.4f; gm2.specular = 0.4f;
+                    gm2.tint[0]=0.4f; gm2.tint[1]=0.75f; gm2.tint[2]=1.0f;
+                    hc.device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{},
+                                             shBc2, shEm2, gm2, sm);
                 }
                 // YOUR fighter, in 3P — at the ship's own position + facing, so it sits
                 // AHEAD of the chase camera. Skipped in 1P (you're inside it).
@@ -2013,10 +2358,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                 sunL, (float)winW * 0.5f - 100.0f,
                                 (float)winH * 0.86f, 14.0f, hcC);
                         }
-                        if (sunInside || sunShieldPct < 99.95f) {
+                        if (sunPhase == SunPhase::InsideSun || sunShieldPct < 99.95f) {
                             char shL[40];
                             std::snprintf(shL, sizeof(shL),
-                                sunInside ? "SHIELD %3.0f%%" : "SHIELD %3.0f%% RECHARGING",
+                                sunPhase == SunPhase::InsideSun
+                                    ? "SHIELD %3.0f%%" : "SHIELD %3.0f%% RECHARGING",
                                 (double)std::max(0.0f, sunShieldPct));
                             const float scC[4] = { 0.40f, 0.80f, 1.0f, 0.95f };
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
@@ -2249,6 +2595,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         dot(cxm, cym, 7.0f, pcol);
                     }
                 }
+                // Sun-cinematic overlay LAST (over the HUD): the SHIELD ENGAGED
+                // flash, the InsideSun molten wash + failing countdown, and the
+                // respawn fade/captions all render here on the normal path
+                // (Detonation..Replay draw theirs in the spectacle-cam block).
+                drawSunOverlay(frame, (float)winW, (float)winH);
             }
             hc.device->endFrame(frame);
             if (evShot)
