@@ -989,6 +989,10 @@ int hostEchotropolis(HostContext& hc) {
         roads.reset();
         x3::logWarn("--world echotropolis: EchoRoads build FAILED — no freeway this boot");
     }
+    // WD2 STACK: the hackable registry is born BEFORE the regions so builders
+    // saturate the city with cameras as they place content (Tim: "just like
+    // Watch Dogs 2"); the citizens and street tech join it further down.
+    x3::game::HackableRegistry hax;
     x3::game::EchoRegionCtx regionCtx{
         *device, hf, walkScene,
         /*modelsDir*/     "D:/GameDev/SimCityLLM2/refs/models",
@@ -996,7 +1000,8 @@ int hostEchotropolis(HostContext& hc) {
         /*vegDir*/        "D:/GameDev/EchoHarbor/assets/veg",
         /*houseForgeDir*/ "D:/Assets/_glb/prefab_buildings/HouseForge",
         /*cityDir*/       "",
-        /*roads*/         roads.get() };
+        /*roads*/         roads.get(),
+        /*hax*/           &hax };
     x3::game::WorldRegionGraph regionGraph;
     x3::game::WorldStreamer    regionStreamer;   // wired at M-A, first ticked at M-B
     x3::game::EchoRegionSet    regionSet;
@@ -2149,7 +2154,7 @@ int hostEchotropolis(HostContext& hc) {
     // below (AlertSystem heat, TimelineState karma, StreetLights blackout,
     // treasury credits). H holds the nethack reveal; E (while aiming) hacks;
     // K opens the skill tree (console's frozen-frame modal pattern).
-    x3::game::HackableRegistry hax;
+    // (hax hoisted before the region boot — WD2 camera saturation.)
     x3::game::AlertSystem      cityAlert;
     x3::game::TimelineState    cityTimeline;
     x3::game::Progression      progression;

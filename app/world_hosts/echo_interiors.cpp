@@ -5,6 +5,8 @@
 
 #include "echo_interiors.h"
 
+#include "../hackables.h"   // WD2 camera saturation (interior cams via ctx.hax)
+
 #include "engine/core/x3_log.h"
 
 #include <cmath>
@@ -105,6 +107,14 @@ void buildCondoRooms(EchoRegion& region, EchoRegionCtx& ctx) {
     { float T[16]; yawScaleAt(-24.5f, ctx.hf.ok()?ctx.hf.heightAt(-24,848):190.0f,
                               848.5f, 3.14159f, 0.842f, T);
       place(region, ctx, kMeshyProps, "ctos_terminal.glb", T); }
+    // WD2 CAMERA SATURATION: lobby cam over the elevator panel.
+    if (ctx.hax) {
+        HackableObject cam;
+        cam.type = HackableType::Camera;
+        cam.pos = { -24.5f, (ctx.hf.ok() ? ctx.hf.heightAt(-24, 848) : 190.0f) + 3.0f, 848.5f };
+        cam.label = "CONDO LOBBY CAM";
+        ctx.hax->add(cam);
+    }
     x3::logInfo("[interiors] int_condo_rooms — " + std::to_string(rooms) +
                 " lit rooms + lobby (sub-region gated)");
 }
@@ -128,6 +138,14 @@ void buildNoodleBar(EchoRegion& region, EchoRegionCtx& ctx) {
     if (place(region, ctx, kSeasideProps, "SM_PROP_standing_torch_bowl_town.glb", T)) ++built;
     yawScaleAt(gx, gy + 3.4f, gz - 1.2f, 1.5708f, 0.8f, T);   // restaurant signboard
     if (place(region, ctx, kMegaSigns, "SB_Resturant.glb", T)) ++built;
+    // WD2 CAMERA SATURATION: counter cam inside the shelter.
+    if (ctx.hax) {
+        HackableObject cam;
+        cam.type = HackableType::Camera;
+        cam.pos = { gx + 1.2f, gy + 2.8f, gz - 0.8f };
+        cam.label = "NOODLE COUNTER CAM";
+        ctx.hax->add(cam);
+    }
     x3::logInfo("[interiors] int_noodle_bar — " + std::to_string(built) + " pieces");
 }
 
@@ -151,6 +169,19 @@ void buildHarborShop(EchoRegion& region, EchoRegionCtx& ctx) {
     yawScaleAt(gx + 82.0f, (ctx.hf.ok() ? ctx.hf.heightAt(gx + 82.0f, gz + 6.0f) : gy) + 3.2f,
                gz + 6.0f, -2.5416f, 0.7f, T);
     if (place(region, ctx, kMegaSigns, "SB_Clifton.glb", T)) ++built;
+    // WD2 CAMERA SATURATION: one inside the shop, one on the frontage.
+    if (ctx.hax) {
+        HackableObject cin;
+        cin.type = HackableType::Camera;
+        cin.pos = { gx + 2.0f, gy + 3.0f, gz - 2.0f };
+        cin.label = "SHOP FLOOR CAM";
+        ctx.hax->add(cin);
+        HackableObject cout;
+        cout.type = HackableType::Camera;
+        cout.pos = { gx - 7.0f, gy + 3.4f, gz - 9.0f };
+        cout.label = "SHOP DOOR CAM";
+        ctx.hax->add(cout);
+    }
     x3::logInfo("[interiors] int_harbor_shop — " + std::to_string(built) + " pieces");
 }
 

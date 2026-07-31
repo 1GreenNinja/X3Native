@@ -63,6 +63,7 @@
 #include "echo_region_builders.h"
 #include "echo_interiors.h"    // condo-room sub-region + vendor dressing
 #include "echo_roads.h"        // #34a corridor audit (EchoRoads::corridorHits)
+#include "../hackables.h"      // WD2 camera saturation (builders register cams)
 #include "echo_woodlands.h"   // WP-3's harvestDistrictLights() — see loadDistrictInto's note
 
 #include "../env_art.h"
@@ -190,7 +191,7 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
     placeDeck(region, ctx, "road_asphalt.glb", ccx, ccz, gy - 0.05f, 0.0f, cw, cl);
     const float S = padScale, pc = std::cos(padYaw) * S, ps = std::sin(padYaw) * S;
     const float P[9] = { pc, 0.0f, -ps,   0.0f, S, 0.0f,   ps, 0.0f, pc };
-    int placed = 0, audited = 0;   // audited = pieces the corridor audit vetoed
+    int placed = 0, audited = 0, cams = 0;   // audited = corridor-audit vetoes
     for (const Piece& pcs : pieces) {
         const char* name = pcs.glb.c_str();
         const float px=pcs.px, py=pcs.py, pz=pcs.pz, qx=pcs.qx, qy=pcs.qy, qz=pcs.qz, qw=pcs.qw,
@@ -228,7 +229,19 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
         // between a piece's pivot and its walls for the pack's tower shells.
         if (ctx.roads && ctx.roads->corridorHits(tx, tz, 8.0f)) { ++audited; continue; }
         const float T[16] = { W[0],W[1],W[2],0, W[3],W[4],W[5],0, W[6],W[7],W[8],0, tx,ty,tz,1 };
-        if (d->addGlbInstance(name, T)) ++placed;
+        if (d->addGlbInstance(name, T)) {
+            ++placed;
+            // WD2 CAMERA SATURATION: every ~40th placed piece hosts a street/
+            // wall camera at head-of-wall height ("cameras IN and outside of
+            // most buildings, just like Watch Dogs 2").
+            if (ctx.hax && (placed % 40) == 0) {
+                HackableObject cam;
+                cam.type = HackableType::Camera;
+                cam.pos = { tx, ty + 3.6f, tz };
+                cam.label = std::string(tag) + " CAM " + std::to_string(++cams);
+                ctx.hax->add(cam);
+            }
+        }
         // (Light harvesting is NOT done here — see this function's doc
         // comment: harvestDistrictLights(), WP-3's echo_woodlands.*, does the
         // SAME per-piece name classification in its own pass over this file.)
@@ -237,6 +250,9 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
     if (audited > 0)
         x3::logInfo(std::string("[region] DISTRICT ") + tag + " — corridor audit VETOED " +
                     std::to_string(audited) + " pieces (road/deck footprint)");
+    if (cams > 0)
+        x3::logInfo(std::string("[region] DISTRICT ") + tag + " — " +
+                    std::to_string(cams) + " WD2 cameras registered");
     x3::logInfo(std::string("[region] DISTRICT ") + tag + " — " +
                 std::to_string(placed) + " prefabs placed at (" +
                 std::to_string((int)padX) + "," + std::to_string((int)padZ) + "), world bounds X[" +
@@ -312,7 +328,17 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
             const float T[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
                                   sn*s, 0.0f,  c*s, 0.0f,   x, gy + lift, z, 1.0f };
             auto h = std::make_unique<EnvArtSystem>();
-            if (h->buildFromGlbAt(ctx.device, hdir, glb, T)) { region.addArt(std::move(h)); ++housesBuilt; }
+            if (h->buildFromGlbAt(ctx.device, hdir, glb, T)) {
+                region.addArt(std::move(h)); ++housesBuilt;
+                // WD2 CAMERA SATURATION: every 4th house watches its street.
+                if (ctx.hax && (housesBuilt % 4) == 0) {
+                    HackableObject cam;
+                    cam.type = HackableType::Camera;
+                    cam.pos = { x, gy + 3.2f, z };
+                    cam.label = "NEIGHBORHOOD CAM " + std::to_string(housesBuilt / 4);
+                    ctx.hax->add(cam);
+                }
+            }
         };
         // Five hero houses (hand-placed on the crown foothills).
         addHouse("PF_MetalHouse01.glb",      60.0f, 700.0f, 0.4f, 11.73f);
@@ -390,6 +416,16 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
                                                              mx[0], mx[2], 2.0f)) {
                     ++towersVetoed;
                     continue;
+                }
+                // WD2 CAMERA SATURATION: one high camera per skyline tower.
+                if (ctx.hax) {
+                    HackableObject cam;
+                    cam.type = HackableType::Camera;
+                    cam.pos = { (mn[0] + mx[0]) * 0.5f,
+                                mn[1] + (mx[1] - mn[1]) * 0.75f,
+                                (mn[2] + mx[2]) * 0.5f };
+                    cam.label = std::string(b) + " CAM";
+                    ctx.hax->add(cam);
                 }
                 region.addArt(std::move(t)); ++towersBuilt;
             }
@@ -923,6 +959,14 @@ void buildWaterfrontRow(EchoRegion& region, EchoRegionCtx& ctx) {
         t->setInstanceTransform(0, M);
         region.addArt(std::move(t));
         ++placed;
+        // WD2 CAMERA SATURATION: a promenade cam on every glass tower.
+        if (ctx.hax) {
+            HackableObject cam;
+            cam.type = HackableType::Camera;
+            cam.pos = { r.x, gy + 9.0f, r.z };
+            cam.label = "PROMENADE CAM " + std::to_string(placed);
+            ctx.hax->add(cam);
+        }
     }
     x3::logInfo("[region] WATERFRONT ROW — " + std::to_string(placed) +
                 " glass towers on the waterline (" + std::to_string(vetoed) +

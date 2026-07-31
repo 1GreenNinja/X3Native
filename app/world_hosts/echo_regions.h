@@ -96,6 +96,10 @@ struct EchoRegionCtx {
     // corridor. Null => no audit (legacy order / roads failed) — placements
     // behave exactly as before.
     const class EchoRoads*  roads = nullptr;
+    // WD2 CAMERA SATURATION (Tim: "cameras IN and outside of most buildings,
+    // just like Watch Dogs 2"): builders register Camera hackables as they
+    // place content. Null => no registration (legacy hosts / self-tests).
+    class HackableRegistry* hax = nullptr;
 };
 
 // ---------------------------------------------------------------------------
