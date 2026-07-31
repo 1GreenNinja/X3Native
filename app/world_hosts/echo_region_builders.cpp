@@ -879,8 +879,59 @@ void buildWestShoulder(EchoRegion& region, EchoRegionCtx& ctx) {
 // matching districts.txt row, data-driven exactly like the host. See
 // host_echotropolis.cpp ~1698-1844 and assets/districts/districts.txt.
 // ===========================================================================
+// #34b WATERFRONT ROW (Tim: "sleek night city glass, placed along the water
+// in a streamlined fashion"): real Urban Night City glass towers in an evenly
+// spaced promenade row on the TRUE terrain waterline — spots traced offline
+// from the live height PNG (~55 m spacing, 26 m inland, yaw facing the
+// water). Each tower's baked layout offset is cancelled after load (origin
+// AABB) so the GLB seats exactly on its spot. Corridor-audited (#34a).
+void buildWaterfrontRow(EchoRegion& region, EchoRegionCtx& ctx) {
+    static const struct { float x, z, yaw; } kRow[] = {
+        {  849.2f, -240.1f,  2.182f }, {  870.4f, -189.1f,  2.251f },
+        {  926.8f, -114.7f,  2.391f }, {  990.6f,  -48.6f,  2.531f },
+        { 1030.9f,   34.0f,  2.670f }, { 1017.3f,  134.7f,  2.810f },
+        {  967.7f,  191.3f,  2.880f }, {  929.0f,  236.9f,  2.950f },
+        {  901.4f,  306.3f,  3.089f }, {  896.3f,  369.0f, -3.054f },
+        {  882.6f,  429.9f, -2.915f }, {  868.2f,  490.5f, -2.775f },
+        {  841.8f,  547.2f, -2.635f }, {  791.8f,  587.6f, -2.496f },
+        {  721.5f,  601.5f, -2.356f }, {  642.6f,  585.6f, -2.217f },
+        {  570.2f,  546.9f, -2.077f }, {  509.6f,  525.1f, -1.868f },
+        {  453.3f,  518.0f, -1.588f }, {  403.4f,  569.5f, -1.379f },
+    };
+    static const char* kGlass[] = {
+        "Building 01", "Building 05", "Building 14", "Building 21",
+        "Building 24", "Building 33", "Building 38", "Building 43",
+    };
+    const std::string cdir =
+        "D:/Assets/_glb/tech/Urban Night City - Open World/Assets/GeeZyyGames/buildings/FBX";
+    const float ts = 0.34f;
+    int placed = 0, vetoed = 0;
+    for (size_t i = 0; i < sizeof(kRow) / sizeof(kRow[0]); ++i) {
+        const auto& r = kRow[i];
+        if (ctx.roads && ctx.roads->corridorHits(r.x, r.z, 10.0f)) { ++vetoed; continue; }
+        const float gy = ctx.hf.ok() ? ctx.hf.heightAt(r.x, r.z) : 0.0f;
+        const float c = std::cos(r.yaw), sn = std::sin(r.yaw);
+        const float S0[16] = { c*ts,0,-sn*ts,0,  0,ts,0,0,  sn*ts,0,c*ts,0,  0,0,0,1 };
+        auto t = std::make_unique<EnvArtSystem>();
+        if (!t->buildFromGlbAt(ctx.device, cdir,
+                std::string(kGlass[i % (sizeof(kGlass) / sizeof(kGlass[0]))]) + ".glb", S0))
+            continue;
+        float mn[3], mx[3]; t->worldBounds(mn, mx);
+        const float M[16] = { c*ts,0,-sn*ts,0,  0,ts,0,0,  sn*ts,0,c*ts,0,
+                              r.x - (mn[0] + mx[0]) * 0.5f, gy - mn[1],
+                              r.z - (mn[2] + mx[2]) * 0.5f, 1 };
+        t->setInstanceTransform(0, M);
+        region.addArt(std::move(t));
+        ++placed;
+    }
+    x3::logInfo("[region] WATERFRONT ROW — " + std::to_string(placed) +
+                " glass towers on the waterline (" + std::to_string(vetoed) +
+                " corridor-vetoed)");
+}
+
 void buildDistrictUrban(EchoRegion& region, EchoRegionCtx& ctx) {
     buildOneDistrict(region, ctx, "URBAN DISTRICT");
+    buildWaterfrontRow(region, ctx);   // #34b: the sleek glass promenade
 }
 void buildDistrictRecife(EchoRegion& region, EchoRegionCtx& ctx) {
     buildOneDistrict(region, ctx, "RECIFE 2050");
