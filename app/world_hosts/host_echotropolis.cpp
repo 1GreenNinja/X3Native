@@ -2725,6 +2725,34 @@ int hostEchotropolis(HostContext& hc) {
                                     "ctos_terminal.glb", T))
                 streetProps.push_back(std::move(atm));
         }
+        // WD2 CAMERA PROPS (Tim: "are we using a great lookin camera model?"):
+        // every registered Camera hackable mounts the Recife pack's real CCTV
+        // unit at its marker point — visible on the wall before the scanner
+        // ever opens. One EnvArt system, shared upload, N instances.
+        {
+            auto camSys = std::make_unique<x3::game::EnvArtSystem>();
+            if (camSys->beginFromDir(*device,
+                    "D:/Assets/_glb/prefab_buildings/Cyberpunk City Recife Environment")) {
+                int cctv = 0;
+                for (uint32_t hi = 0; hi < hax.count(); ++hi) {
+                    const auto& o = hax.at(hi);
+                    if (o.type != x3::game::HackableType::Camera) continue;
+                    // Real unit is 22 cm; x1.6 reads at street distance
+                    // (WD2's cams run slightly oversized too).
+                    const float cs2 = 1.6f;
+                    const float cy2 = std::cos((float)hi * 2.399963f) * cs2;
+                    const float sy2 = std::sin((float)hi * 2.399963f) * cs2;
+                    const float T[16] = { cy2,0,-sy2,0, 0,cs2,0,0, sy2,0,cy2,0,
+                                          o.pos.x, o.pos.y, o.pos.z, 1 };
+                    if (camSys->addGlbInstance("SM_Camera_01_Camera.glb", T)) ++cctv;
+                }
+                if (cctv > 0) {
+                    x3::logInfo("--world echotropolis: " + std::to_string(cctv) +
+                                " CCTV props mounted (Recife SM_Camera_01)");
+                    streetProps.push_back(std::move(camSys));
+                }
+            }
+        }
         x3::logInfo("--world echotropolis: WD2 HACKABLES live — " +
                     std::to_string(hax.count()) + " objects (" +
                     std::to_string(hax.countType(HT::Npc)) + " citizen scan-cards); "
