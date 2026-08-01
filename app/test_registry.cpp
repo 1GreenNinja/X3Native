@@ -53,6 +53,10 @@
 #include "level_lint.h"
 #include "qa_propclip.h"          // x3::game::runPropClipSelfTest (--test-propclip)
 #include "keypad.h"      // PB fold: --test-keypad (realistic access keypad geometry)
+
+// labzero -- Escape from Lab Zero S0 sim suite (app/labzero/labzero_tests.cpp).
+// Global namespace by design: the sim layer is std-only and engine-free (LABZERO_PORT_RFC).
+bool runLabZeroSimSelfTest();
 #include "leveldoc_world.h"
 #include "player.h"
 #include "monster.h"
@@ -447,6 +451,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testKeypad) {
         x3::logInfo("running realistic keypad geometry self-test (KP1-KP6)...");
         return x3::game::runKeypadSelfTest() ? 0 : 1;
+    }
+    if (tf.testLabzero) {
+        x3::logInfo("running Escape from Lab Zero S0 sim self-test (9 tests)...");
+        return runLabZeroSimSelfTest() ? 0 : 1;
     }
     if (tf.testLevelLint) {
         x3::logInfo("running GATE A geometric level lint (door-seat/junction/cut-span/reach)...");

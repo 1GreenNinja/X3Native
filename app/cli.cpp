@@ -92,6 +92,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-level1") o.testLevel1 = true;
         else if (a == "--test-canonlevel") o.testCanonLevel = true;
         else if (a == "--test-keypad") o.testKeypad = true;   // realistic keypad geometry (KP1-KP6)
+        else if (a == "--test-labzero") o.testLabzero = true; // Lab Zero S0 sim suite (9 tests)
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-propclip") o.testPropClip = true;     // GATE A ext: dressing prop clip audit
         else if (a == "--test-canonplay") o.testCanonPlay = true;

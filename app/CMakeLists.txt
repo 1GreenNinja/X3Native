@@ -3,6 +3,7 @@ add_executable(X3Engine WIN32
     bindings.cpp
     self_tests.cpp
     test_registry.cpp
+    labzero/labzero_tests.cpp    # labzero -- Escape from Lab Zero (LABZERO_PORT_RFC)
     cinematic.cpp
     # x3.starsys/1 — named star-systems registry (data + validator + self-test)
     star_systems.cpp

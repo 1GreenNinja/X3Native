@@ -42,6 +42,7 @@ struct TestFlags {
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testKeypad = false;      // --test-keypad (realistic high-poly access keypad, KP1-KP6)
+    bool testLabzero = false;     // --test-labzero (Escape from Lab Zero S0 sim suite, 9 tests)
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testPropClip = false;    // --test-propclip (GATE A ext: dressing prop AABB vs room bounds)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;

@@ -42,6 +42,7 @@ struct CliOptions {
          testStairNav = false,
          testPropClip = false,    // --test-propclip: dressing-layer prop AABB vs room bounds (GATE A ext)
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
+         testLabzero = false,     // --test-labzero: Escape from Lab Zero S0 sim suite (T1-T17, 9 tests)
          testGoldenPath = false,   // --test-goldenpath: W5-3 endgame spine (cell -> Sarah -> Helipad win)
          testOpening = false,      // --test-opening: opening-flow wake-in-cell contract (O1-O5)
          testDescMech = false,      // --test-descmech: W9-1 desc-field mechanics (Tier A verbs)
