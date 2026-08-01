@@ -54,6 +54,7 @@ No machine used a third-party engine checkout as a source for this code.
 | Forward+ lighting | (in `rhi`) | DONE | 16 point lights + hemispheric ambient + ACES tonemap |
 | Skeletal animation | (in `app`/`engine`) | DONE | CPU skinning, glTF skins, idle clip |
 | Navigation + pathfinding | `INavigation` | DONE | nav grid (physics-sampled walkability) + 8-connected A* + string-pull + path-follow; from public A*/navmesh refs (no Recast source); 5/5 `--test-nav` |
+| Lab Zero S0 sim (feel layer) | `app/labzero/labzero_sim.h` (std-only) | DONE | C++ port of the C# behavioral spec (LABZERO_PORT_RFC); deterministic fixed-timestep; 9/9 `--test-labzero` — first native run 2026-08-01 on RTX A1000 box (i7-265), MSVC 14.5x Release; determinism hash `bbf005534952a0bd`, apex 105.00 px exact, aim settle 32 steps |
 | Audio | `IAudioSystem` | IN PROGRESS | miniaudio backend |
 | Material/shader pipeline | `IMaterialSystem` | PLANNED | original GLSL→SPIR-V |
 | Cascaded shadow maps | `IShadowRenderer` | PLANNED | from RTR4 / GPU Gems |
