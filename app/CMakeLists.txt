@@ -160,6 +160,7 @@ add_executable(X3Engine WIN32
     world_cars.cpp
     street_lights.cpp
     vehparts.cpp
+    refl_denoise_test.cpp
     perfshop.cpp
     ecology.cpp
     fish.cpp
@@ -272,6 +273,14 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_temporal.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_blur.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_apply.frag
+    # REFLECTION DENOISE (r_refldenoise) — the stage the reflection chain was
+    # missing; the GI equivalent of ssgi_blur.frag above. Plain compute, no ray
+    # query, so it belongs in the default (non-RT) list.
+    # refl_aux.comp rebuilds the normal + view distance the denoiser weighs taps
+    # against. Its own shader rather than a few lines in refl.comp, so refl.comp's
+    # SPIR-V stays byte-identical and r_refldenoise 0 stays bit-exact.
+    ${CMAKE_SOURCE_DIR}/shaders/refl_aux.comp
+    ${CMAKE_SOURCE_DIR}/shaders/refl_denoise.comp
     ${CMAKE_SOURCE_DIR}/shaders/ibl_brdf_lut.frag
     ${CMAKE_SOURCE_DIR}/shaders/ibl_env.frag
     ${CMAKE_SOURCE_DIR}/shaders/ibl_irradiance.frag
@@ -359,10 +368,25 @@ add_custom_command(
     COMMENT "glslc mesh.frag (ray-query soft shadows) -> mesh_rt.frag.spv"
     VERBATIM)
 list(APPEND SPV_FILES ${SPV_DIR}/mesh_rt.frag.spv)
-add_custom_target(x3shaders DEPENDS ${SPV_FILES})
+# Copy compiled .spv next to the exe so runtime loads <exedir>/shaders/*.spv.
+#
+# BUILD BUG THIS FIXES (found by Lane 3 / csm, replicated here): the copy used to
+# be a POST_BUILD on X3Engine. POST_BUILD only runs when the TARGET is relinked,
+# so editing ONLY a shader recompiled the .spv into ${SPV_DIR} and then never
+# copied it — the exe kept loading the previous SPIR-V. Shader-only iterations
+# silently did nothing, and the trap is invisible because a build that also
+# touches any .cpp relinks and copies, so it works "most of the time". Hanging
+# the copy off x3shaders (which X3Engine already depends on) makes it run
+# whenever a .spv is regenerated.
+add_custom_target(x3shaders
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/bin/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${SPV_DIR} ${CMAKE_BINARY_DIR}/bin/shaders
+    DEPENDS ${SPV_FILES}
+    COMMENT "copy compiled SPIR-V -> bin/shaders")
 add_dependencies(X3Engine x3shaders)
 
-# Copy compiled .spv next to the exe so runtime loads <exedir>/shaders/*.spv
+# Belt and braces for multi-config generators, where the exe may not live in
+# ${CMAKE_BINARY_DIR}/bin: relink-time copy as well (cheap, idempotent).
 add_custom_command(TARGET X3Engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:X3Engine>/shaders
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${SPV_DIR} $<TARGET_FILE_DIR:X3Engine>/shaders)

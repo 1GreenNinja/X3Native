@@ -132,6 +132,19 @@ struct CliOptions {
     bool        testRt = false;
     bool        testReflections = false;   // --test-reflections: SSR + ray-query refl under validation
     bool        noRefl = false;            // --norefl: reflections off, TAA on (refl A/B isolate)
+    // --test-refldenoise: the reflection-DENOISE self-test (edge preservation,
+    // energy conservation, off-is-identity, plus a permanent NEGATIVE CONTROL).
+    // Pure CPU — engine/rhi/ReflDenoise.cpp is deliberately Vulkan-free.
+    bool        testReflDenoise = false;
+    // --refldn N / --refldn-disc S: reflection DENOISE knobs for the A/B that
+    // proves the stage works. -1 = leave the device/cvar default; 0 iterations =
+    // stage OFF, which is bit-exact to the pre-denoise renderer and is the
+    // "before" side of the measurement. The screenshot hosts do not run the
+    // per-frame cvar sync, so this is how the rig reaches them.
+    int         reflDenoise = -1;
+    float       reflDnDisc  = -1.0f;
+    float       reflDnNormal = -1.0f;   // --refldn-normal: normal edge-stop exponent (<0 = default)
+    float       reflDnDepth  = -1.0f;   // --refldn-depth: depth edge-stop sigma (<0 = default)
     // --test-ddgi (DDGI probe-grid GI): headless smoketest with r_ddgi forced ON so
     // the BLAS/TLAS build + ddgi_rays/ddgi_update compute + mesh.frag sampling run
     // under Vulkan validation. No-op on non-RT / no-position-fetch devices.
@@ -473,6 +486,8 @@ struct CliOptions {
     // --notaa A/B: disable TAA only (jitter fully off + resolve skipped) so
     // before/after screenshots isolate exactly the TAA contribution.
     bool        noTaa = false;
+    // (Reflection DENOISE A/B, --refldn N / --refldn-disc S, is declared with the
+    //  other reflection flags above.)
     // Showroom preview (--screenshot-showroom [path.png]): load the baked Unity scene
     // export (assets/converted_glb/ShowRoom_Vol30/Example_01.glb), frame the camera on
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.

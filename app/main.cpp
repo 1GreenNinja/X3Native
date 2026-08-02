@@ -384,6 +384,7 @@ int main(int argc, char** argv) {
         _tf.testVehicle = o.testVehicle;
         _tf.testCanonVehicle = o.testCanonVehicle;
         _tf.testVehParts = o.testVehParts;
+        _tf.testReflDenoise = o.testReflDenoise;   // reflection DENOISE filter (no GPU needed)
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testNpcLife = o.testNpcLife;
@@ -778,6 +779,13 @@ int main(int argc, char** argv) {
         // reflections still ON. (They are assigned again below; harmless.)
         _hc.noTaa            = o.noTaa;
         _hc.noRefl           = o.noRefl;
+        // Reflection DENOISE A/B — same rule as noTaa/noRefl above: it MUST be
+        // assigned BEFORE the dispatch or the screenshot hosts never see it.
+        // That is the exact bug 02146c10 had to fix for --norefl.
+        _hc.reflDenoise      = o.reflDenoise;
+        _hc.reflDnDisc       = o.reflDnDisc;
+        _hc.reflDnNormal     = o.reflDnNormal;
+        _hc.reflDnDepth      = o.reflDnDepth;
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;
@@ -805,6 +813,10 @@ int main(int argc, char** argv) {
     _hc.legacyPost      = o.legacyPost;
     _hc.noTaa           = o.noTaa;
     _hc.noRefl          = o.noRefl;
+    _hc.reflDenoise     = o.reflDenoise;
+    _hc.reflDnDisc      = o.reflDnDisc;
+    _hc.reflDnNormal    = o.reflDnNormal;
+    _hc.reflDnDepth     = o.reflDnDepth;
     _hc.skipIntro       = o.skipIntro;
     _hc.introForce      = o.introForce;        // DEV --intro-force outcome override
     _hc.editorMode      = o.editorMode;

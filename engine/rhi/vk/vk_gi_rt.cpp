@@ -65,7 +65,9 @@ bool VulkanRenderDevice::createSsao() {
             const uint32_t nFrames = kFramesInFlight;
             VkDescriptorPoolSize sizes[3]{};
             sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            sizes[0].descriptorCount = nFrames /*ssao depth*/ + nFrames * 4 /*mesh ao + refl + ddgi irr/vis*/ + 2 /*blur*/;
+            sizes[0].descriptorCount = nFrames /*ssao depth*/
+                                     + nFrames * 5 /*mesh ao + refl + ddgi irr/vis + DENOISED refl (binding 6)*/
+                                     + 2 /*blur*/;
             sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             sizes[1].descriptorCount = nFrames /*ssao ubo*/ + nFrames /*ctrl ubo*/;
             // RT devices: mesh set3 carries the TLAS at binding 5 (r_rtshadows).
@@ -530,8 +532,21 @@ void VulkanRenderDevice::writeSsaoDescriptors() {
             VkDescriptorImageInfo dgv{ m_ssaoLinearSampler,
                                        m_ddgiVisView ? m_ddgiVisView : m_ssaoBlurView,
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            // DENOISED reflection buffer (binding 6, r_refldenoise). Points at
+            // the a-trous chain's FINAL target when the stage is built and
+            // enabled; otherwise at the RAW reflection view — which is the same
+            // image binding 2 has, and is precisely what makes r_refldenoise 0
+            // bit-exact (same texels, and mesh.frag's disc scale is then exactly
+            // 1.0 because SsaoControl.refl.w stays 0). Before the refl chain
+            // exists at all, the blurred-AO view is the layout-valid placeholder,
+            // same rule as bindings 2/3/4.
+            VkImageView dnView = m_ssaoBlurView;
+            if (m_reflView)                                     dnView = m_reflView;
+            if (m_reflDenoiseIters > 0 && m_reflDnView[0])       dnView = m_reflDnView[0];
+            VkDescriptorImageInfo ddn{ m_ssaoLinearSampler, dnView,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             VkDescriptorBufferInfo bi{ m_ssaoCtrlBuf[i], 0, sizeof(SsaoControl) };
-            VkWriteDescriptorSet w[5]{};
+            VkWriteDescriptorSet w[6]{};
             w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[0].dstSet = m_meshAoSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
             w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &da;
@@ -547,7 +562,10 @@ void VulkanRenderDevice::writeSsaoDescriptors() {
             w[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[4].dstSet = m_meshAoSet[i]; w[4].dstBinding = 4; w[4].descriptorCount = 1;
             w[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[4].pImageInfo = &dgv;
-            vkUpdateDescriptorSets(m_dev.device, 5, w, 0, nullptr);
+            w[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[5].dstSet = m_meshAoSet[i]; w[5].dstBinding = 6; w[5].descriptorCount = 1;
+            w[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[5].pImageInfo = &ddn;
+            vkUpdateDescriptorSets(m_dev.device, 6, w, 0, nullptr);
         }
         // RT soft shadows (r_rtshadows): re-point set3 binding5 at the TLAS when
         // one exists (resize path — the sets were just rewritten above; keep the
@@ -979,6 +997,26 @@ bool VulkanRenderDevice::ensureReflReady() {
             if (!createReflTargets()) { m_refl.ssr = false; return false; }
             writeReflDescriptors();
             writeSsaoDescriptors();
+            m_reflDenoiseIters = 0;    // force the binding-6 rewrite below
+        }
+        // Live r_refldenoise switch. Only CROSSING zero matters: mesh.frag's set3
+        // binding 6 points at the denoise chain's final image when the stage is
+        // on and at the RAW reflection view when it is off (that aliasing is the
+        // bit-exactness mechanism). Changing the ITERATION COUNT does not move
+        // the binding — the parity rule in reflDenoiseDstIdx() guarantees the
+        // final write always lands in m_reflDnImg[0] — so no rewrite is needed
+        // for a count change, only for an on/off transition. Same one-time
+        // device wait the r_reflquality switch takes, and for the same reason:
+        // set3 is bound by frames that may still be executing.
+        const bool dnWant = reflDenoiseWanted();
+        if ((m_reflDenoiseIters > 0) != dnWant) {
+            vkDeviceWaitIdle(m_dev.device);
+            m_reflDenoiseIters = dnWant ? m_refl.denoiseIters : 0;
+            writeSsaoDescriptors();
+            logInfo(dnWant ? "[rhi] reflection DENOISE stage ON (edge-aware a-trous)"
+                           : "[rhi] reflection DENOISE stage OFF (raw buffer; bit-exact legacy)");
+        } else {
+            m_reflDenoiseIters = dnWant ? m_refl.denoiseIters : 0;
         }
         return m_reflImg != VK_NULL_HANDLE && m_reflPipe != VK_NULL_HANDLE;
     }
@@ -990,6 +1028,14 @@ bool VulkanRenderDevice::createRefl() {
         // hit object's real albedo/emissive via instanceCustomIndex, exactly as
         // the DDGI ray pass does — replacing refl.comp's old flat-constant fill).
         {
+            // NOTE: refl.comp is DELIBERATELY untouched by the reflection-denoise
+            // lane. The aux G-buffer the denoiser needs (normal + view distance)
+            // would naturally have been published from here — this shader already
+            // computes both — but doing that perturbs the compiler's scheduling
+            // and FMA contraction enough to move ~0.17% of subpixels by +-1 LSB,
+            // which breaks the `r_refldenoise 0` bit-exactness contract. It comes
+            // from a separate refl_aux.comp dispatch instead, so this shader's
+            // SPIR-V is byte-identical to the pre-denoise build.
             VkDescriptorSetLayoutBinding b[6]{};
             b[0].binding = 0; b[0].descriptorCount = 1;
             b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1095,6 +1141,104 @@ bool VulkanRenderDevice::createRefl() {
             if (!m_reflPipeRt)
                 logError("[rhi] reflections: ray-query pipeline unavailable — SSR-only");
         }
+        // ---- DENOISE stage (shaders/refl_denoise.comp) -----------------------
+        // Non-fatal by design: if any of it fails the reflection chain still runs
+        // and simply behaves as it did before this lane existed (r_refldenoise 0
+        // semantics), rather than taking reflections down with it.
+        {
+            // ---- AUX pass (refl_aux.comp): 0 = depth (sampled), 1 = aux (storage).
+            // Its own shader, NOT two lines in refl.comp — see the comment on the
+            // refl set layout above and the header of shaders/refl_aux.comp.
+            VkDescriptorSetLayoutBinding ab[2]{};
+            ab[0].binding = 0; ab[0].descriptorCount = 1;
+            ab[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            ab[1].binding = 1; ab[1].descriptorCount = 1;
+            ab[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            for (int i = 0; i < 2; ++i) ab[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo aci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            aci.bindingCount = 2; aci.pBindings = ab;
+            bool aok = vkCreateDescriptorSetLayout(m_dev.device, &aci, nullptr, &m_reflAuxSetLayout) == VK_SUCCESS;
+            if (aok) {
+                VkPushConstantRange pcr{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ReflAuxPush) };
+                VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+                pl.setLayoutCount = 1; pl.pSetLayouts = &m_reflAuxSetLayout;
+                pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+                aok = vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_reflAuxLayout) == VK_SUCCESS;
+            }
+            if (aok) {
+                VkShaderModule cs = loadShaderModule("shaders\\refl_aux.comp.spv");
+                aok = cs != VK_NULL_HANDLE;
+                if (aok) {
+                    VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+                    cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+                    cpci.layout = m_reflAuxLayout;
+                    aok = x3CreateComputePipelines(1, &cpci, nullptr, &m_reflAuxPipe) == VK_SUCCESS;
+                    vkDestroyShaderModule(m_dev.device, cs, nullptr);
+                }
+            }
+            if (!aok) m_reflAuxPipe = VK_NULL_HANDLE;
+        }
+        {
+            // Set layout: 0 = src (sampled), 1 = dst (storage), 2 = aux (sampled).
+            VkDescriptorSetLayoutBinding b[3]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            for (int i = 0; i < 3; ++i) b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 3; ci.pBindings = b;
+            bool ok = vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_reflDnSetLayout) == VK_SUCCESS;
+            if (ok) {
+                // FOUR static sets cover every (src, dst) pair the ping-pong can
+                // produce (see the m_reflDnSet comment in the internal header),
+                // so no set is ever rewritten per frame.
+                // 4 denoise sets + 1 aux set; all reference static views only, so
+                // they are written ONCE at build time and never per frame.
+                VkDescriptorPoolSize sizes[2]{};
+                sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[0].descriptorCount = 4 * 2 + 1;
+                sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          sizes[1].descriptorCount = 4 + 1;
+                VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+                pci.maxSets = 5; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+                ok = x3CreateDescriptorPool(&pci, nullptr, &m_reflDnPool) == VK_SUCCESS;
+            }
+            for (int i = 0; ok && i < 4; ++i) {
+                VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                ai.descriptorPool = m_reflDnPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_reflDnSetLayout;
+                ok = vkAllocateDescriptorSets(m_dev.device, &ai, &m_reflDnSet[i]) == VK_SUCCESS;
+            }
+            if (ok && m_reflAuxSetLayout) {
+                VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                ai.descriptorPool = m_reflDnPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_reflAuxSetLayout;
+                ok = vkAllocateDescriptorSets(m_dev.device, &ai, &m_reflAuxSet) == VK_SUCCESS;
+            }
+            if (ok) {
+                VkPushConstantRange pcr{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ReflDnPush) };
+                VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+                pl.setLayoutCount = 1; pl.pSetLayouts = &m_reflDnSetLayout;
+                pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+                ok = vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_reflDnLayout) == VK_SUCCESS;
+            }
+            if (ok) {
+                VkShaderModule cs = loadShaderModule("shaders\\refl_denoise.comp.spv");
+                ok = cs != VK_NULL_HANDLE;
+                if (ok) {
+                    VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+                    cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+                    cpci.layout = m_reflDnLayout;
+                    ok = x3CreateComputePipelines(1, &cpci, nullptr, &m_reflDnPipe) == VK_SUCCESS;
+                    vkDestroyShaderModule(m_dev.device, cs, nullptr);
+                }
+            }
+            if (!ok) {
+                m_reflDnPipe = VK_NULL_HANDLE;
+                logError("[rhi] reflections: DENOISE stage unavailable — raw reflection buffer (r_refldenoise 0 behaviour)");
+            }
+        }
         return true;
     }
 
@@ -1106,10 +1250,33 @@ bool VulkanRenderDevice::createReflTargets() {
         const VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         if (!createColorTarget(kReflFormat, m_reflExtent.width, m_reflExtent.height, usage,
                                m_reflImg, m_reflAlloc, m_reflView)) return false;
+        // DENOISE targets: the aux geometry buffer refl.comp publishes, plus the
+        // two a-trous ping-pong images. Created ONCE with the refl target (they
+        // track the same extent), never per frame. If any fails, the denoise
+        // stage stays off and the chain behaves exactly as it did before.
+        bool dnOk = createColorTarget(kReflAuxFormat, m_reflExtent.width, m_reflExtent.height, usage,
+                                      m_reflAuxImg, m_reflAuxAlloc, m_reflAuxView);
+        for (int i = 0; dnOk && i < 2; ++i)
+            dnOk = createColorTarget(kReflFormat, m_reflExtent.width, m_reflExtent.height, usage,
+                                     m_reflDnImg[i], m_reflDnAlloc[i], m_reflDnView[i]);
+        if (!dnOk) logError("[rhi] reflections: denoise targets failed — stage disabled");
         const bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
             iblBarrierTex2D(cmd, m_reflImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            // Same one-time transition for the denoise images: mesh.frag's set3
+            // binding 6 is ALWAYS bound and statically sampled, so whichever view
+            // it points at must be layout-valid even on a frame where the denoise
+            // passes did not run.
+            for (int i = 0; i < 2; ++i)
+                if (m_reflDnImg[i])
+                    iblBarrierTex2D(cmd, m_reflDnImg[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            if (m_reflAuxImg)
+                iblBarrierTex2D(cmd, m_reflAuxImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         });
         if (!ok) { logError("[rhi] reflections: target init transition failed"); return false; }
         return true;
@@ -1118,6 +1285,12 @@ bool VulkanRenderDevice::createReflTargets() {
 void VulkanRenderDevice::destroyReflTargets() {
         if (m_reflView) { vkDestroyImageView(m_dev.device, m_reflView, nullptr); m_reflView = VK_NULL_HANDLE; }
         if (m_reflImg)  { vmaDestroyImage(m_alloc, m_reflImg, m_reflAlloc); m_reflImg = VK_NULL_HANDLE; m_reflAlloc = nullptr; }
+        for (int i = 0; i < 2; ++i) {
+            if (m_reflDnView[i]) { vkDestroyImageView(m_dev.device, m_reflDnView[i], nullptr); m_reflDnView[i] = VK_NULL_HANDLE; }
+            if (m_reflDnImg[i])  { vmaDestroyImage(m_alloc, m_reflDnImg[i], m_reflDnAlloc[i]); m_reflDnImg[i] = VK_NULL_HANDLE; m_reflDnAlloc[i] = nullptr; }
+        }
+        if (m_reflAuxView) { vkDestroyImageView(m_dev.device, m_reflAuxView, nullptr); m_reflAuxView = VK_NULL_HANDLE; }
+        if (m_reflAuxImg)  { vmaDestroyImage(m_alloc, m_reflAuxImg, m_reflAuxAlloc); m_reflAuxImg = VK_NULL_HANDLE; m_reflAuxAlloc = nullptr; }
     }
 
 void VulkanRenderDevice::writeReflDescriptors() {
@@ -1156,6 +1329,40 @@ void VulkanRenderDevice::writeReflDescriptors() {
                 }
             }
         }
+        // ---- DENOISE ping-pong sets. Written ONCE here (they reference only
+        // static views), which is why the per-frame path allocates and rewrites
+        // nothing. Index mapping matches m_reflDnSet's comment:
+        //   [0] refl -> dn[0]   [1] refl -> dn[1]   [2] dn[1] -> dn[0]   [3] dn[0] -> dn[1]
+        if (m_reflDnPipe && m_reflAuxView && m_reflDnView[0] && m_reflDnView[1]) {
+            // AUX pass set: depth (NEAREST, DEPTH_READ_ONLY — the layout the graph
+            // transitions it to) + the aux storage image.
+            if (m_reflAuxSet) {
+                VkDescriptorImageInfo di{ m_depthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo ai{ VK_NULL_HANDLE, m_reflAuxView, VK_IMAGE_LAYOUT_GENERAL };
+                VkWriteDescriptorSet w[2]{};
+                w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_reflAuxSet; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+                w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &di;
+                w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_reflAuxSet; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+                w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &ai;
+                vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+            }
+            VkDescriptorImageInfo aux{ m_ssaoLinearSampler, m_reflAuxView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            const VkImageView srcViews[4] = { m_reflView, m_reflView, m_reflDnView[1], m_reflDnView[0] };
+            const VkImageView dstViews[4] = { m_reflDnView[0], m_reflDnView[1], m_reflDnView[0], m_reflDnView[1] };
+            for (int s = 0; s < 4; ++s) {
+                if (!m_reflDnSet[s]) continue;
+                VkDescriptorImageInfo si{ m_ssaoLinearSampler, srcViews[s], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkDescriptorImageInfo di{ VK_NULL_HANDLE, dstViews[s], VK_IMAGE_LAYOUT_GENERAL };
+                VkWriteDescriptorSet w[3]{};
+                w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_reflDnSet[s]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+                w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &si;
+                w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_reflDnSet[s]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+                w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &di;
+                w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_reflDnSet[s]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
+                w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &aux;
+                vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+            }
+        }
         // The TLAS (RT sets, binding 4) may already exist (e.g. RT AO enabled
         // first): point the fresh sets at it now; otherwise rewriteRtaoTlas()
         // fills it after the first build.
@@ -1165,6 +1372,17 @@ void VulkanRenderDevice::writeReflDescriptors() {
 void VulkanRenderDevice::destroyRefl() {
         if (!m_dev.device) return;
         destroyReflTargets();
+        if (m_reflDnPipe)      { vkDestroyPipeline(m_dev.device, m_reflDnPipe, nullptr); m_reflDnPipe = VK_NULL_HANDLE; }
+        if (m_reflDnLayout)    { vkDestroyPipelineLayout(m_dev.device, m_reflDnLayout, nullptr); m_reflDnLayout = VK_NULL_HANDLE; }
+        if (m_reflAuxPipe)      { vkDestroyPipeline(m_dev.device, m_reflAuxPipe, nullptr); m_reflAuxPipe = VK_NULL_HANDLE; }
+        if (m_reflAuxLayout)    { vkDestroyPipelineLayout(m_dev.device, m_reflAuxLayout, nullptr); m_reflAuxLayout = VK_NULL_HANDLE; }
+        if (m_reflDnPool)      { vkDestroyDescriptorPool(m_dev.device, m_reflDnPool, nullptr); m_reflDnPool = VK_NULL_HANDLE; }
+        if (m_reflDnSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_reflDnSetLayout, nullptr); m_reflDnSetLayout = VK_NULL_HANDLE; }
+        if (m_reflAuxSetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_reflAuxSetLayout, nullptr); m_reflAuxSetLayout = VK_NULL_HANDLE; }
+        for (int i = 0; i < 4; ++i) m_reflDnSet[i] = VK_NULL_HANDLE;
+        m_reflAuxSet = VK_NULL_HANDLE;
+        m_reflDenoiseIters = 0;
+        m_reflDenoiseThisFrame = 0;
         if (m_reflPipeRt)      { vkDestroyPipeline(m_dev.device, m_reflPipeRt, nullptr); m_reflPipeRt = VK_NULL_HANDLE; }
         if (m_reflPipe)        { vkDestroyPipeline(m_dev.device, m_reflPipe, nullptr); m_reflPipe = VK_NULL_HANDLE; }
         if (m_reflLayoutRt)    { vkDestroyPipelineLayout(m_dev.device, m_reflLayoutRt, nullptr); m_reflLayoutRt = VK_NULL_HANDLE; }

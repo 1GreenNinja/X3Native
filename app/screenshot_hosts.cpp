@@ -1677,8 +1677,20 @@ int dispatchScreenshotHosts(HostContext& hc) {
             x3::rhi::IRenderDevice::ReflectionParams rf{};
             const bool on = !hc.noRefl;
             rf.ssr = on; rf.rtFallback = on; rf.fullRes = on; rf.intensity = 1.0f;
+            // DENOISE STAGE A/B (--refldn N, --refldn-disc S), threaded for
+            // exactly the same reason as --norefl above: this host never runs the
+            // per-frame cvar sync, so the CLI is the only way the knob can reach
+            // it. `--refldn 0` disables the stage and is BIT-EXACT to the
+            // pre-denoise renderer — that is the "before" side of the door-skin
+            // blotch measurement this lane exists to move.
+            if (hc.reflDenoise  >= 0)    rf.denoiseIters      = hc.reflDenoise;
+            if (hc.reflDnDisc   >= 0.0f) rf.denoiseDiscScale  = hc.reflDnDisc;
+            if (hc.reflDnNormal >= 0.0f) rf.denoiseNormalPow  = hc.reflDnNormal;
+            if (hc.reflDnDepth  >= 0.0f) rf.denoiseDepthSigma = hc.reflDnDepth;
             device->setReflectionParams(rf);
             x3::logInfo(std::string("--screenshot-car: reflections ") + (on ? "ON" : "OFF (--norefl)") +
+                        "; denoise iters=" + std::to_string(rf.denoiseIters) +
+                        " disc=" + std::to_string(rf.denoiseDiscScale) +
                         "; rayTracingSupported=" +
                         (device->rayTracingSupported() ? "YES" : "NO"));
         }

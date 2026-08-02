@@ -62,6 +62,15 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--legacypost2") o.legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough
         else if (a == "--notaa")       o.noTaa = true;     // A/B: TAA off (jitter + resolve disabled)
         else if (a == "--norefl")      o.noRefl = true;    // A/B: reflections off (TAA stays on)
+        // Reflection DENOISE (r_refldenoise) A/B for the screenshot rigs, which
+        // do NOT run the per-frame cvar sync — this is how the knob reaches them.
+        // --refldn 0 is the "before" side and is bit-exact to the pre-denoise
+        // renderer.
+        else if (a == "--refldn" && i + 1 < argc)      o.reflDenoise = (int)std::strtol(argv[++i], nullptr, 10);
+        else if (a == "--refldn-disc" && i + 1 < argc)   o.reflDnDisc   = (float)std::atof(argv[++i]);
+        else if (a == "--refldn-normal" && i + 1 < argc) o.reflDnNormal = (float)std::atof(argv[++i]);
+        else if (a == "--refldn-depth" && i + 1 < argc)  o.reflDnDepth  = (float)std::atof(argv[++i]);
+        else if (a == "--test-refldenoise") o.testReflDenoise = true;   // denoise filter self-test (pure CPU)
         else if (a == "--test-rt") { o.smoketest = true; o.testRt = true; }
         else if (a == "--test-reflections") { o.smoketest = true; o.testReflections = true; }
         else if (a == "--test-jobs") o.testJobs = true;

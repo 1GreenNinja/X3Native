@@ -522,6 +522,19 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_rtreflections", "1", "ray-query reflection fallback where SSR misses (RT hardware only; SSR-only otherwise)");
     console.registerCVar("r_reflquality",   "0", "reflection buffer resolution: 0 = half-res (default), 1 = full-res");
     console.registerCVar("r_reflintensity", "1", "reflection blend weight scale [0..1] on the IBL-specular replace");
+    // REFLECTION DENOISE — the stage the reflection chain was missing. GI has
+    // gather -> temporal -> denoise -> apply; reflections had refl.comp write and
+    // mesh.frag consume RAW. An edge-aware a-trous filter with depth + normal
+    // edge stops now sits between them. It fixes the blotchy mottling measured on
+    // real car paint (flat door skin, mean |px - 9x9 local mean|: 5.53 with
+    // reflections off vs 7.69 shipped) that the consumer-side blur could not
+    // reach — sweeping that blur 0/6/14/24 moved it only 7.70/7.92/7.69/7.56,
+    // because the noise is in the BUFFER. All live.
+    // r_refldenoise 0 = OFF and BIT-EXACT to the pre-denoise renderer.
+    console.registerCVar("r_refldenoise",   "4",    "reflection denoise: a-trous iterations (tap spacing doubles each); 0 = off (raw buffer, bit-identical)");
+    console.registerCVar("r_refldn_depth",  "0.06", "reflection denoise depth edge stop, RELATIVE to view distance (smaller = stricter)");
+    console.registerCVar("r_refldn_normal", "16",   "reflection denoise normal edge stop exponent (larger = stricter across curvature)");
+    console.registerCVar("r_refldn_disc",   "0.4",  "scale on mesh.frag's roughness glossy disc when the denoise stage ran (1 = legacy width)");
     // DDGI — dynamic diffuse global illumination (probe-grid ray-query GI). The
     // probe field replaces the ambient DIFFUSE term (flat ambient / IBL irradiance)
     // with traced bounce light; specular stays IBL/reflections. Requires ray-query
@@ -765,6 +778,12 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     rf.rtFallback = console.getInt("r_rtreflections") != 0;
     rf.fullRes    = console.getInt("r_reflquality") != 0;
     rf.intensity  = console.getFloat("r_reflintensity");
+    // Denoise stage (live). 0 disables the passes entirely and restores the
+    // pre-denoise, bit-exact behaviour.
+    rf.denoiseIters      = console.getInt("r_refldenoise");
+    rf.denoiseDepthSigma = console.getFloat("r_refldn_depth");
+    rf.denoiseNormalPow  = console.getFloat("r_refldn_normal");
+    rf.denoiseDiscScale  = console.getFloat("r_refldn_disc");
     device.setReflectionParams(rf);
     // DDGI probe-grid GI (live). The device tier-gates on ray-query + position-
     // fetch hardware; on anything else this is a harmless no-op store.

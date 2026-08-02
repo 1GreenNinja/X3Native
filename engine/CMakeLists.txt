@@ -13,6 +13,7 @@ add_library(x3core STATIC
     rhi/vk/vk_passes.cpp
     rhi/vk/vk_graph.cpp
     rhi/RenderGraph.cpp
+    rhi/ReflDenoise.cpp
     rhi/GpuCull.cpp
     rhi/Visibility.cpp
     rhi/vma_impl.cpp

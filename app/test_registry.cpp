@@ -119,6 +119,7 @@
 #include "save.h"
 #include "dialog.h"
 #include "vehparts.h"
+#include "refl_denoise_test.h"   // --test-refldenoise (reflection DENOISE filter, pure CPU)
 #include "ecology.h"
 #include "crowd.h"
 #include "npc_life.h"   // --test-npclife (LIVING CITY daily-life system)
@@ -1026,6 +1027,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
                     "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
         return x3::game::vehparts::runVehPartsSelfTest() ? 0 : 1;
+    }
+    if (tf.testReflDenoise) {
+        x3::logInfo("running REFLECTION DENOISE self-test "
+                    "(edge-aware a-trous: depth-edge + normal-crease preservation, energy "
+                    "conservation, premultiplied confidence, off-is-identity, NEGATIVE CONTROL)...");
+        return x3::game::runReflDenoiseSelfTest() ? 0 : 1;
     }
     if (tf.testEcology) {
         x3::logInfo("running AMBIENT ECOLOGY self-test "
