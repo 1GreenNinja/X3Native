@@ -272,6 +272,16 @@ bool WorldCars::enterCar(int idx, Player* player, x3::phys::IPhysicsWorld& physi
         }
         if (!ok) { x3::logError("world-cars: live rig build FAILED"); return false; }
         m_driveBuilt = true;
+        // The rig is built LAZILY, here, on first entry -- long after the host
+        // composed the performance-parts tuning at boot. Replay the cached tuning
+        // now, otherwise every installed part / ECU tune silently does nothing on
+        // the car actually driven in the game (the applyTuning() call at boot ran
+        // while m_driveBuilt was still false and returned false).
+        if (m_haveTuning) {
+            const bool tuned = m_drive.applyTuning(m_pendingTuning);
+            x3::logInfo(std::string("[vehparts] canon car tuning applied on entry: ") +
+                        (tuned ? "OK" : "REJECTED"));
+        }
     } else {
         physics.setBodyPosition(m_drive.chassis(), x3::phys::Vec3{ sx, sy, sz });
     }

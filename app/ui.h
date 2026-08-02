@@ -364,6 +364,15 @@ struct SettingsModel {
     // flight-mode latch + persists it. Kept a plain int so this UI layer stays
     // engine/game-agnostic (no space_pilot.h dependency).
     int   flightMode = 0;
+
+    // ---- Advanced (dev) group -------------------------------------------
+    // Collapsed by default so the shipping Settings panel reads unchanged.
+    // advancedOpen is pure UI state (NOT persisted); the rows nested under it
+    // are dev conveniences the host persists individually.
+    bool  advancedOpen = false;    // "ADVANCED" section expanded this session
+    bool  skipIntro    = false;    // "Skip Intro" -> host skips the intro sequence
+                                   // (persisted; equivalent to --skipintro. F9
+                                   // still skips a running intro at any time.)
 };
 
 // The main menu screen. Pure UI: returns an action via the state it requests.

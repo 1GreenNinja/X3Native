@@ -741,6 +741,33 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     }
     ry += rh + gap;
 
+    // ---- ADVANCED (dev) group: a collapsed header row + its nested rows. The
+    // header composes label-left / button-right like the Flight Mode row above.
+    // Collapsed by default, so the shipping panel reads exactly as before; the
+    // nested rows only consume focus slots + vertical space while open. ----
+    {
+        const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
+        ui.label("Advanced", rx + 4.0f, ry + (rh - notePx) * 0.5f, notePx, kColText);
+        const float abw = std::min(190.0f, rw * 0.46f);
+        if (ui.button(model.advancedOpen ? "HIDE" : "SHOW", rx + rw - abw, ry, abw, rh)) {
+            model.advancedOpen = !model.advancedOpen;
+            // Pure UI state — no outChanged (nothing to persist or apply).
+        }
+        ry += rh + gap;
+
+        if (model.advancedOpen) {
+            // Nested rows are indented and slightly narrower so the grouping reads
+            // visually, matching the label inset used elsewhere in this panel.
+            const float ix = rx + 18.0f;
+            const float iw = rw - 18.0f;
+            if (ui.toggle("Skip Intro (dev)", model.skipIntro, ix, ry, iw, rh)) {
+                model.skipIntro = !model.skipIntro;
+                outChanged = true;   // host persists it; applies on next launch
+            }
+            ry += rh + gap;
+        }
+    }
+
     // Resolution row: LIVE framebuffer size on the left (updates as the window is
     // dragged) + a "SET DEFAULT" button on the RIGHT (where the old --width/--height
     // note used to sit). The button persists the current size as the startup default.

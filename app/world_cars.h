@@ -132,9 +132,20 @@ public:
     // tune and the whole knock model had ZERO effect on the car actually driven
     // in the game world. This forwards a composed tuning onto the live rig, the
     // same call the shop makes. Safe before the rig exists (no-op).
+    // NOTE the LAZY BUILD: the live rig is not created by build() -- it is created
+    // on the first enterCar() (world_cars.cpp, m_driveBuilt = true). A caller that
+    // tunes right after build() therefore finds m_driveBuilt == false and the call
+    // would silently do nothing (this is exactly what happened when the canon-car
+    // tuning was first wired: the boot log printed the catalog line but the tuning
+    // never reached the car). So CACHE the tuning and re-apply it the moment the
+    // rig exists; enterCar() replays it.
     bool applyTuning(const x3::phys::WheeledTuning& t) {
+        m_pendingTuning = t;
+        m_haveTuning    = true;
         return m_driveBuilt ? m_drive.applyTuning(t) : false;
     }
+    // True once the tuning has actually reached the live rig (not merely cached).
+    bool tuningApplied() const { return m_driveBuilt && m_haveTuning; }
     // True once the live rig exists (so the host knows when applyTuning will stick).
     bool driveBuilt() const { return m_driveBuilt; }
     // Chase camera (the drive host's framing: 10 m back, 3.5 m up, orbits the
@@ -212,6 +223,9 @@ private:
     std::string m_glbDir;
     DriveDemo m_drive;
     bool m_driveBuilt = false;
+    // Performance-parts tuning cached at boot, replayed when the lazy rig builds.
+    x3::phys::WheeledTuning m_pendingTuning{};
+    bool m_haveTuning = false;
     bool m_driving = false;
     int  m_drivenIdx = -1;
     x3::phys::BodyId m_limboSlab{};

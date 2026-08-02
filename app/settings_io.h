@@ -68,14 +68,32 @@ inline int readFlightMode() {
     }
     return mode;
 }
-// Write ALL persisted settings (window size + audio + flight mode) in one shot.
+// Skip-intro (Settings > Advanced, dev convenience) persists in the same cfg.
+// Optional; default false when the key is missing/garbled. Equivalent to the
+// --skipintro CLI flag; the host ORs the two so either path wins.
+inline bool readSkipIntro() {
+    std::ifstream f(x3SettingsPath());
+    if (!f) return false;
+    bool skip = false; std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (line.substr(0, eq) == "skipIntro")
+            skip = (std::strtol(line.c_str() + eq + 1, nullptr, 10) != 0);
+    }
+    return skip;
+}
+// Write ALL persisted settings (window size + audio + flight mode + skip-intro)
+// in one shot. skipIntro is a TRAILING DEFAULTED param so every pre-existing
+// call site keeps its meaning (and keeps compiling) unchanged.
 inline void writeSettings(uint32_t w, uint32_t h, bool musicOn, float musicVol, float sfxVol,
-                          int flightMode = 0) {
+                          int flightMode = 0, bool skipIntro = false) {
     std::ofstream f(x3SettingsPath());
     if (f) f << "width=" << w << "\nheight=" << h << "\n"
              << "musicOn=" << (musicOn ? 1 : 0) << "\n"
              << "musicVol=" << musicVol << "\nsfxVol=" << sfxVol << "\n"
-             << "flightMode=" << flightMode << "\n";
+             << "flightMode=" << flightMode << "\n"
+             << "skipIntro=" << (skipIntro ? 1 : 0) << "\n";
 }
 
 }} // namespace x3::apphost
