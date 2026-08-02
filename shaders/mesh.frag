@@ -100,6 +100,38 @@ layout(set = 3, binding = 1) uniform SsaoControl {
 // gated by ssao.refl.x — when 0 this texture is never read and the IBL path is
 // byte-for-byte the pre-reflections math.
 layout(set = 3, binding = 2) uniform sampler2D reflTex;
+
+// ---- GLOSSY (roughness-aware) reflection sampling -------------------------
+// The reflection pass traces ONE mirror ray per pixel, so a single tap gives
+// every surface a chrome-sharp reflection. The previous consumer compensated by
+// FADING reflections out entirely as roughness rose (gone by ~0.6), which meant
+// brushed metal, satin paint and polished concrete got NO traced reflection at
+// all -- only the low-res prefiltered env cube.
+//
+// Instead, widen a small disc of taps with roughness: a mirror surface still
+// takes exactly ONE tap (bit-identical to the old path at rough <= 0.05), and
+// rougher surfaces get a genuinely BLURRED reflection, which is what those
+// materials actually look like. Golden-angle spiral so the taps decorrelate
+// without a LUT; TAA integrates the residual.
+//
+// NOTE: `texel` is the FULL-RES pixel size (ssao.ctrl.zw). When the reflection
+// buffer is half-res its own texels are twice this, so the disc is a
+// conservative UNDER-estimate of the true blur radius -- deliberately, since
+// over-blurring reads as a smear while under-blurring merely reads as sharper.
+const float kReflBlurPx = 14.0;   // disc radius in full-res pixels at rough = 1
+vec4 sampleReflGlossy(vec2 uv, float rough, vec2 texel) {
+    vec4 c = texture(reflTex, uv);
+    if (rough <= 0.05) return c;              // mirror: one tap, unchanged
+    const int   kTaps = 6;
+    const float kGolden = 2.39996323;         // radians
+    float r = rough * kReflBlurPx;
+    for (int i = 0; i < kTaps; ++i) {
+        float a  = float(i) * kGolden;
+        float rr = sqrt((float(i) + 0.5) / float(kTaps)) * r;
+        c += texture(reflTex, uv + vec2(cos(a), sin(a)) * rr * texel);
+    }
+    return c / float(kTaps + 1);
+}
 // DDGI probe atlases (set3 bindings 3/4, r_ddgi). Octahedral-encoded per-probe
 // irradiance (8x8 tiles: 6x6 interior + 1px border, RGBA16F) and mean/mean^2
 // visibility depth (16x16 tiles: 14x14 + border, RG16F), produced by the
@@ -617,9 +649,14 @@ vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRou
     // out by rough 0.6 where the prefiltered (properly blurred) env takes over.
     if (ssao.refl.x > 0.5) {
         vec2 ruv = gl_FragCoord.xy * ssao.ctrl.zw;       // pixel -> [0,1] screen UV
-        vec4 rr  = texture(reflTex, ruv);
+        // Roughness-aware: blur the traced reflection instead of discarding it,
+        // so glossy-but-not-mirror surfaces keep real reflected detail. The
+        // hand-off to the prefiltered env now happens much later (0.55 -> 0.95)
+        // because the reflection is no longer wrong at mid roughness -- it is
+        // simply softer. Mirror surfaces are unchanged (single tap, same weight).
+        vec4 rr  = sampleReflGlossy(ruv, perceptualRough, ssao.ctrl.zw);
         float rw = clamp(rr.a, 0.0, 1.0) * clamp(ssao.refl.y, 0.0, 1.0)
-                 * (1.0 - smoothstep(0.25, 0.6, perceptualRough));
+                 * (1.0 - smoothstep(0.55, 0.95, perceptualRough));
         prefiltered = mix(prefiltered, rr.rgb, rw);
     }
 
@@ -1056,9 +1093,13 @@ void main() {
             vec3 pre = textureLod(prefilterCube, Rc, ccR * max(ssao.ibl.z, 0.0)).rgb;
             if (ssao.refl.x > 0.5) {
                 vec2 ruv = gl_FragCoord.xy * ssao.ctrl.zw;
-                vec4 rr  = texture(reflTex, ruv);
+                // Clearcoat lobe: same glossy treatment. A coat is usually very
+                // smooth (ccR small), so this is normally the single-tap path --
+                // but a satin/matte coat now blurs rather than losing the
+                // reflection, which is exactly the car-paint case.
+                vec4 rr  = sampleReflGlossy(ruv, ccR, ssao.ctrl.zw);
                 float rw = clamp(rr.a, 0.0, 1.0) * clamp(ssao.refl.y, 0.0, 1.0)
-                         * (1.0 - smoothstep(0.25, 0.6, ccR));
+                         * (1.0 - smoothstep(0.55, 0.95, ccR));
                 pre = mix(pre, rr.rgb, rw);
             }
             vec2 ab = texture(brdfLUT, vec2(NoVc, ccR)).rg;
