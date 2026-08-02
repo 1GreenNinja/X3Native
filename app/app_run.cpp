@@ -978,7 +978,9 @@ int runDefaultHost(HostContext& hc) {
     const int legacyPost = hc.legacyPost;
     const bool noTaa = hc.noTaa;
     const bool noRefl = hc.noRefl;
-    const bool skipIntro = hc.skipIntro;
+    // Skip-intro: the --skipintro CLI flag OR the persisted Settings > Advanced
+    // toggle. Either path wins; F9 still skips a running intro at any time.
+    const bool skipIntro = hc.skipIntro || x3::apphost::readSkipIntro();
     // LEVEL EDITOR: no longer boot-only. It can be entered LIVE from the pause menu
     // (dev row, cvar ui_editor), so this is no longer const — see the wantEditor()
     // handler below, which lazy-inits ImGui the first time it is actually opened.
@@ -3386,6 +3388,25 @@ int runDefaultHost(HostContext& hc) {
         carDefs.push_back({ "scrap_lot_a", -566.0f, 500.0f,  90.0f, true,  { 0.52f, 0.14f, 0.58f }, "city" });
         carDefs.push_back({ "scrap_lot_b", -630.0f, 486.0f, 300.0f, false, { 0.13f, 0.13f, 0.16f }, "city" });
         worldCars.build(carDefs, device, *physics, x3::game::convertedGlbRoot());
+        // PERFORMANCE PARTS -> THE CANON CAR. The perf shop composes onto the
+        // --world drive DriveDemo only, so until now every installed part, the
+        // ECU tune and the entire knock model had ZERO effect on the car driven
+        // in the actual game world. Load the persisted build (same vehbuild.json
+        // the shop writes), compose it against the catalog and lower it onto the
+        // live rig. All three steps degrade quietly: a missing catalog or save
+        // simply leaves the car stock, exactly as before.
+        {
+            x3::game::vehparts::Catalog cat;
+            if (cat.loadFile(x3::game::vehparts::defaultCatalogPath())) {
+                x3::game::vehparts::VehicleBuild vb;
+                const bool haveSave = vb.loadFile(x3::game::vehparts::defaultBuildSavePath());
+                const auto composed = x3::game::vehparts::compose(cat, vb);
+                if (worldCars.applyTuning(composed.tuning)) {
+                    x3::logInfo(std::string("[vehparts] canon car tuned from ") +
+                                (haveSave ? "saved build" : "stock baseline"));
+                }
+            }
+        }
         x3::boot::mark("WORLD CARS (host set parked)");
     }
 
@@ -7151,7 +7172,7 @@ int runDefaultHost(HostContext& hc) {
         return 0;
     }
 
-    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, C crouch, Ctrl crawl, E use, V super-strength melee (LMB fire when armed), F noclip, ` console, Esc to quit");
+    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, C crouch, Ctrl crawl, E use/enter, F punch (super-strength melee; V/MMB alias), R reload, LMB fire when armed, G noclip, U idkfa, ` console, Esc to quit");
 
     // ---- Walking player (S3). Spawn at the Level 1 cell spawn point (Jake wakes
     // in the detention cell), facing +X down the level spine — or, in the terrain
@@ -7377,6 +7398,9 @@ int runDefaultHost(HostContext& hc) {
     // (super-strength melee), and the left mouse button (fire). A small fire
     // cooldown gates the gun's rate; the melee cooldown lives in the MeleeSystem.
     bool prevSpace = false, prevF = false, prevE = false, prevFire = false, prevMelee = false;
+    // G = noclip (moved off F, which is now PUNCH). U = idkfa hotkey (the console
+    // command of the same name, bound to a key for playtesting).
+    bool prevG = false, prevU = false;
     bool prevF3 = false;                 // F3 toggles the perf stats overlay
     // ---- W10 polish: swim host state. prevSwimming drives the surface-exit
     // splash edge (item 2); swimVmAmt is the smoothed 0..1 viewmodel-LOWER blend
@@ -7945,6 +7969,10 @@ int runDefaultHost(HostContext& hc) {
         sm.flightMode = x3::apphost::readFlightMode();
         x3::game::setRequestedFlightMode(
             (x3::game::FlightMode)((sm.flightMode < 0 || sm.flightMode > 2) ? 0 : sm.flightMode));
+        // Skip-intro (Settings > Advanced): seed the row from the resolved value so
+        // it shows what will apply on the NEXT launch. A --skipintro run also shows
+        // ON (same intent) without rewriting the cfg.
+        sm.skipIntro = skipIntro;
         gameUi.init(*device, console.get(), sm);
         gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
@@ -7956,6 +7984,9 @@ int runDefaultHost(HostContext& hc) {
     // Track the Settings "Flight Mode" row so we bridge + persist only on an
     // actual user change (never fighting the `flightmode` console command).
     int prevMenuFlightMode = gameUi.settings().flightMode;
+    // Same edge-detect for the Settings > Advanced "Skip Intro (dev)" row: persist
+    // ONLY on a real user change, so we never rewrite the cfg every frame.
+    bool prevMenuSkipIntro = gameUi.settings().skipIntro;
     // Cursor is shown in any menu OR while the console is open; hidden only while
     // actively playing with the console closed. Tracked so we only call GLFW on a
     // transition. Start in the menu => cursor visible.
@@ -8204,15 +8235,25 @@ int runDefaultHost(HostContext& hc) {
         // input capture so they still receive keystrokes while they are active.
         auto rawKey = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
 
-        // F toggles noclip via the SAME Player flag the `idclip` console command drives
+        // G toggles noclip via the SAME Player flag the `idclip` console command drives
         // (single source of truth — previously F drove a local var and idclip drove
         // player.noclip(), so the console command did nothing for movement).
-        bool fNow = keyDown(GLFW_KEY_F);
-        // WORLD CARS: while DRIVING, F is the alternate EXIT key (consumed by the
-        // vehicle interact block below), never the noclip toggle.
-        if (fNow && !prevF && !worldCars.driving()) player.setNoclip(!player.noclip());
-        const bool fEdge = fNow && !prevF;   // vehicle exit edge (read below)
-        prevF = fNow;
+        // MOVED OFF F (2026-08): noclip was only ever a testing shortcut; F is now
+        // the PUNCH key (see the melee block below).
+        bool gNow = keyDown(GLFW_KEY_G);
+        if (gNow && !prevG && !worldCars.driving()) player.setNoclip(!player.noclip());
+        prevG = gNow;
+        // U = IDKFA hotkey (playtest aid): runs the console command of the same name
+        // (god + full health + all weapons + unlimited ammo) so the cheat is one key
+        // instead of opening the console. Gated on !consoleOpen so typing a 'u' into
+        // the console never fires it.
+        const bool uNow = keyDown(GLFW_KEY_U);
+        if (uNow && !prevU && !consoleOpen) console->exec("idkfa");
+        prevU = uNow;
+        // F is FULLY FREED for PUNCH (see the melee block). E remains the vehicle
+        // enter/exit key — it was always the primary; F was only an alternate exit,
+        // so dropping it costs nothing and removes the punch/exit conflict.
+        const bool fEdge = false;   // (was the F alt-exit edge; E covers exit)
         // Mirror the Player's noclip flag (set by F OR idclip) into the local `noclip`
         // the movement uses; seed the fly camera from the current view on the rising
         // edge so the transition is seamless either way.
@@ -10539,7 +10580,10 @@ int runDefaultHost(HostContext& hc) {
         const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode ||
                                chatTrees.active() || worldMapOpen ||
                                rpgUi.anyOpen();   // [W9-3 RPG] no firing through the backpack
-        bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_V) ||
+        // PUNCH: F is the primary key (2026-08; F used to be the noclip test toggle,
+        // now on G). V and MMB are kept as aliases so existing muscle memory and the
+        // startup-log contract still work.
+        bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_F) || keyDown(GLFW_KEY_V) ||
             glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
@@ -12126,9 +12170,20 @@ int runDefaultHost(HostContext& hc) {
                     const int fmi = (asm_.flightMode < 0 || asm_.flightMode > 2) ? 0 : asm_.flightMode;
                     x3::game::setRequestedFlightMode((x3::game::FlightMode)fmi);
                     writeSettings((uint32_t)cw, (uint32_t)ch, asm_.musicOn, asm_.musicVol,
-                                  asm_.sfxVol, fmi);
+                                  asm_.sfxVol, fmi, asm_.skipIntro);
                     x3::logInfo(std::string("[settings] flight mode -> ") +
                                 x3::game::flightModeName((x3::game::FlightMode)fmi) + " (persisted)");
+                }
+                // Settings > Advanced "Skip Intro (dev)" -> persist on change. Takes
+                // effect on the NEXT launch (the intro decision happens at boot);
+                // F9 remains the in-the-moment skip for the running intro.
+                if (asm_.skipIntro != prevMenuSkipIntro) {
+                    prevMenuSkipIntro = asm_.skipIntro;
+                    const int fmi = (asm_.flightMode < 0 || asm_.flightMode > 2) ? 0 : asm_.flightMode;
+                    writeSettings((uint32_t)cw, (uint32_t)ch, asm_.musicOn, asm_.musicVol,
+                                  asm_.sfxVol, fmi, asm_.skipIntro);
+                    x3::logInfo(std::string("[settings] skip intro -> ") +
+                                (asm_.skipIntro ? "ON" : "OFF") + " (persisted; applies next launch)");
                 }
             }
 
@@ -12138,7 +12193,8 @@ int runDefaultHost(HostContext& hc) {
                 gameUi.clearSaveDefaults();
                 const x3::ui::SettingsModel& s = gameUi.settings();
                 writeSettings((uint32_t)cw, (uint32_t)ch, s.musicOn, s.musicVol, s.sfxVol,
-                              (s.flightMode < 0 || s.flightMode > 2) ? 0 : s.flightMode);
+                              (s.flightMode < 0 || s.flightMode > 2) ? 0 : s.flightMode,
+                              s.skipIntro);
                 x3::logInfo("[settings] saved defaults: resolution " +
                             std::to_string(cw) + "x" + std::to_string(ch) +
                             ", musicOn=" + (s.musicOn ? "1" : "0"));

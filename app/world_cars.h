@@ -127,6 +127,16 @@ public:
     void driveInput(const x3::phys::VehicleInput& in) { if (m_driveBuilt) m_drive.setInput(in); }
     void preStep(float dt)  { if (m_driveBuilt) m_drive.preStep(dt); }
     void postStep(float dt) { if (m_driveBuilt) m_drive.postStep(dt); }
+    // PERFORMANCE PARTS -> the CANON car. The perf shop (app/perfshop.cpp) only
+    // ever reached the --world drive DriveDemo, so every installed part, the ECU
+    // tune and the whole knock model had ZERO effect on the car actually driven
+    // in the game world. This forwards a composed tuning onto the live rig, the
+    // same call the shop makes. Safe before the rig exists (no-op).
+    bool applyTuning(const x3::phys::WheeledTuning& t) {
+        return m_driveBuilt ? m_drive.applyTuning(t) : false;
+    }
+    // True once the live rig exists (so the host knows when applyTuning will stick).
+    bool driveBuilt() const { return m_driveBuilt; }
     // Chase camera (the drive host's framing: 10 m back, 3.5 m up, orbits the
     // player's look angles).
     void driverCamera(float yaw, float pitch, float& x, float& y, float& z) const;

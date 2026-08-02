@@ -162,7 +162,23 @@ constexpr float kDamagePowerScale = 0.85f;   // popped engine torque penalty
 // ===========================================================================
 // Catalog
 // ===========================================================================
-std::string defaultCatalogPath() { return assetRoot() + "/vehicles/parts.json"; }
+// The catalog is REPO data (assets/vehicles/parts.json), not converted-model
+// data, so resolving it purely against the asset root broke every setup whose
+// asset root is a separate model share: --test-vehparts failed at P1 and the
+// perf shop silently found no catalog (so no part was ever purchasable). Try
+// the asset root FIRST (a deployed build may ship it there), then fall back to
+// the repo-relative path the file actually lives at.
+std::string defaultCatalogPath() {
+    const std::string rooted = assetRoot() + "/vehicles/parts.json";
+    { std::ifstream f(rooted); if (f.good()) return rooted; }
+    for (const char* rel : { "assets/vehicles/parts.json",
+                             "../assets/vehicles/parts.json",
+                             "../../assets/vehicles/parts.json" }) {
+        std::ifstream f(rel);
+        if (f.good()) return rel;
+    }
+    return rooted;   // nothing found: keep the original path so the error names it
+}
 
 bool Catalog::loadFile(const std::string& path) {
     const std::string js = readFile(path);
