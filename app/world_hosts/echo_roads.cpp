@@ -38,8 +38,11 @@
 #include <fstream>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 namespace x3::game {
@@ -541,36 +544,11 @@ float RoadGraph::laneCenterOffset(const RoadEdge& e, int lane, bool forward) {
     return forward ? off : -off;
 }
 
-// #34a CORRIDOR AUDIT: point-vs-corridor over every edge's centerline. The
-// samples are arc-even (~kSampleStep), so testing sample CIRCLES of radius
-// (halfCorridor + clear + step/2) covers the swept ribbon without segment
-// math — boot-time placement audits don't need better.
-bool EchoRoads::corridorHits(float x, float z, float clear) const {
-    for (const RoadEdge& e : m_graph.edges) {
-        const bool elevated = e.cls == RoadClass::Freeway || e.cls == RoadClass::Ramp;
-        const float half = e.width * 0.5f + (elevated ? kShoulderW + kBarrierW : 0.5f);
-        const float r = half + clear + kSampleStep * 0.5f;
-        const float r2 = r * r;
-        for (const RoadSample& s : e.center) {
-            const float dx = s.x - x, dz = s.z - z;
-            if (dx * dx + dz * dz < r2) return true;
-        }
-    }
-    return false;
-}
-
-bool EchoRoads::corridorHitsAABB(float minX, float minZ, float maxX, float maxZ,
-                                 float clear) const {
-    for (const RoadEdge& e : m_graph.edges) {
-        const bool elevated = e.cls == RoadClass::Freeway || e.cls == RoadClass::Ramp;
-        const float half = e.width * 0.5f + (elevated ? kShoulderW + kBarrierW : 0.5f);
-        const float g = half + clear + kSampleStep * 0.5f;
-        for (const RoadSample& s : e.center)
-            if (s.x > minX - g && s.x < maxX + g &&
-                s.z > minZ - g && s.z < maxZ + g) return true;
-    }
-    return false;
-}
+// (V8: EchoRoads::corridorHits / corridorHitsAABB used to live here — the #34a
+// audit four placement passes called to DELETE whatever their hash scatters
+// dropped onto a road. Placement is structural now — see the CITY BLOCKS
+// section at the bottom of this file — so nothing calls them and they are
+// gone. Grep-anchor for anyone looking: "corridor audit", "#34a".)
 
 // ================================ build ====================================
 bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
@@ -1644,6 +1622,10 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     std::copy(cShoulder, cShoulder + 4, m_buckets[kBucketShoulder].color);
     std::copy(cGrime,    cGrime + 4,    m_buckets[kBucketGrime].color);
     std::copy(cGlow,     cGlow + 4,     m_buckets[kBucketNightGlow].color);
+    // V8 CITY EXTRAS: plinth concrete, a shade warmer than the road concrete so
+    // a building's base slab reads as a base and not as more sidewalk.
+    const float cExtra[4]    = { 0.50f, 0.48f, 0.45f, 1.0f };
+    std::copy(cExtra,    cExtra + 4,    m_cityExtra.color);
 
     uint32_t lampCount = 0;
     for (size_t e = 0; e < P.size(); ++e) {
@@ -1968,6 +1950,1299 @@ void EchoRoads::draw(x3::rhi::IRenderDevice& device,
         if (!bk.mesh.valid()) continue;
         device.drawMeshPBR(frame, bk.mesh, bk.tex, {}, {}, bk.color, kNoEmis, kIdent);
     }
+    // V8 CITY EXTRAS: plinths (+ the ECHO_CITY_PROXY blockout) arrive AFTER
+    // build(), from the region placement pass — upload on the first draw that
+    // sees them, then behave like any other bucket.
+    if (m_extraDirty && !m_cityExtra.v.empty()) {
+        device.beginUploadBatch();
+        m_cityExtra.mesh = device.createMesh(m_cityExtra.v.data(),
+                                             (uint32_t)m_cityExtra.v.size(),
+                                             m_cityExtra.i.data(),
+                                             (uint32_t)m_cityExtra.i.size());
+        device.endUploadBatch();
+        m_extraDirty = false;
+        x3::logInfo("[roads] city extras uploaded — " +
+                    std::to_string(m_cityExtra.v.size()) + " verts");
+    }
+    if (m_cityExtra.mesh.valid())
+        device.drawMeshPBR(frame, m_cityExtra.mesh, {}, {}, {},
+                           m_cityExtra.color, kNoEmis, kIdent);
+}
+
+// ###########################################################################
+// V8 — CITY BLOCKS / LOTS / FRONTAGE
+//
+// PROVENANCE (docs/CLEANROOM_PROCESS.md): clean-room. The planar face
+// extraction is the textbook minimal-cycle / rotation-system construction
+// (sort incident half-edges by angle; the successor of a half-edge is the one
+// immediately clockwise from its reverse; the outer face falls out with the
+// opposite signed area) — derived from first principles and hand-verified on
+// the triangle case in the comment at traceFaces(). Half-plane clipping is
+// Sutherland-Hodgman. No GPL / id Tech / RBDOOM / UE source consulted; the
+// only code referenced was this file's own V7 ROADSIDE DEBRIS block, which
+// already computed a frontage point correctly and is what sampleFrontage()
+// generalizes.
+// ###########################################################################
+
+namespace {
+
+// The distance from a road CENTERLINE to the first buildable ground: half the
+// paved width, the curb, the sidewalk, and the caller's setback. This single
+// expression is the whole contract between the road module and the city — it
+// is what echo_roads.h's RoadClass comment specified and it is used by BOTH
+// sampleFrontage() (per point) and the block inset (per ring segment).
+inline float lotOffset(float roadWidth, float setback) {
+    return roadWidth * 0.5f + kCurbW + kWalkW + setback;
+}
+
+// --- small 2D helpers (XZ plane; u = x, v = z; CCW = positive shoelace) -----
+inline float polyArea2(const std::vector<float>& p) {   // 2 * signed area
+    const size_t n = p.size() / 2;
+    if (n < 3) return 0.0f;
+    float a = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        const size_t j = (i + 1) % n;
+        a += p[i*2] * p[j*2+1] - p[j*2] * p[i*2+1];
+    }
+    return a;
+}
+inline void polyCentroid(const std::vector<float>& p, float& cx, float& cz) {
+    const size_t n = p.size() / 2;
+    cx = cz = 0.0f;
+    if (n == 0) return;
+    const float a2 = polyArea2(p);
+    if (std::fabs(a2) < 1e-4f) {           // degenerate: fall back to the mean
+        for (size_t i = 0; i < n; ++i) { cx += p[i*2]; cz += p[i*2+1]; }
+        cx /= (float)n; cz /= (float)n; return;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const size_t j = (i + 1) % n;
+        const float cr = p[i*2] * p[j*2+1] - p[j*2] * p[i*2+1];
+        cx += (p[i*2] + p[j*2]) * cr;
+        cz += (p[i*2+1] + p[j*2+1]) * cr;
+    }
+    cx /= (3.0f * a2); cz /= (3.0f * a2);
+}
+
+// Point-vs-simple-polygon (ray crossing). Boundary counts as inside-ish; the
+// callers all use it with a margin so the tie case never decides anything.
+bool pointInPoly(const std::vector<float>& p, float x, float z) {
+    const size_t n = p.size() / 2;
+    bool in = false;
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+        const float xi = p[i*2], zi = p[i*2+1], xj = p[j*2], zj = p[j*2+1];
+        if (((zi > z) != (zj > z)) &&
+            (x < (xj - xi) * (z - zi) / (zj - zi + 1e-20f) + xi)) in = !in;
+    }
+    return in;
+}
+
+inline bool segSegIsect(float ax, float az, float bx, float bz,
+                        float cx, float cz, float dx, float dz,
+                        float& t, float& u) {
+    const float rx = bx - ax, rz = bz - az, sx = dx - cx, sz = dz - cz;
+    const float den = rx * sz - rz * sx;
+    if (std::fabs(den) < 1e-9f) return false;          // parallel / collinear
+    const float qx = cx - ax, qz = cz - az;
+    t = (qx * sz - qz * sx) / den;
+    u = (qx * rz - qz * rx) / den;
+    return t >= 0.0f && t <= 1.0f && u >= 0.0f && u <= 1.0f;
+}
+
+// Squared distance from (px,pz) to segment (ax,az)-(bx,bz).
+inline float distSqPointSeg(float px, float pz, float ax, float az,
+                            float bx, float bz) {
+    const float vx = bx - ax, vz = bz - az;
+    const float l2 = vx*vx + vz*vz;
+    float t = (l2 > 1e-12f) ? ((px - ax) * vx + (pz - az) * vz) / l2 : 0.0f;
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const float dx = px - (ax + vx * t), dz = pz - (az + vz * t);
+    return dx*dx + dz*dz;
+}
+
+// A polygon whose EDGES carry a tag (which block ring segment produced them,
+// or -1 for an internal cut). The tag is how "does this lot still have street
+// frontage?" is answered exactly instead of by re-measuring distances.
+struct TagPoly {
+    std::vector<float> p;      // x,z pairs
+    std::vector<int>   tag;    // tag of the edge STARTING at vertex i
+};
+
+// Sutherland-Hodgman clip of a (possibly concave) polygon by ONE half-plane
+// { q : dot(q - o, n) >= 0 }. Exact; tags propagate — the segment introduced
+// along the cut gets `cutTag`, surviving/partial segments keep theirs.
+void clipHalfPlane(const TagPoly& in, float ox, float oz, float nx, float nz,
+                   int cutTag, TagPoly& out) {
+    out.p.clear(); out.tag.clear();
+    const size_t n = in.p.size() / 2;
+    if (n < 3) return;
+    auto side = [&](size_t i) {
+        return (in.p[i*2] - ox) * nx + (in.p[i*2+1] - oz) * nz;
+    };
+    for (size_t i = 0; i < n; ++i) {
+        const size_t j = (i + 1) % n;
+        const float di = side(i), dj = side(j);
+        const bool ini = di >= 0.0f, inj = dj >= 0.0f;
+        if (ini) { out.p.push_back(in.p[i*2]); out.p.push_back(in.p[i*2+1]);
+                   out.tag.push_back(in.tag[i]); }
+        if (ini != inj) {
+            const float t = di / (di - dj);
+            out.p.push_back(in.p[i*2]   + (in.p[j*2]   - in.p[i*2])   * t);
+            out.p.push_back(in.p[i*2+1] + (in.p[j*2+1] - in.p[i*2+1]) * t);
+            // Leaving -> the boundary now runs ALONG the cut (tag = cutTag).
+            // Entering -> the rest of edge i is the original edge (tag kept).
+            out.tag.push_back(ini ? cutTag : in.tag[i]);
+        }
+    }
+    // Drop duplicate/degenerate vertices (clipping a vertex exactly on the
+    // plane emits it twice); a zero-length edge breaks the tangent math.
+    TagPoly cl;
+    const size_t m = out.p.size() / 2;
+    for (size_t i = 0; i < m; ++i) {
+        const size_t j = (i + 1) % m;
+        const float dx = out.p[j*2] - out.p[i*2], dz = out.p[j*2+1] - out.p[i*2+1];
+        if (dx*dx + dz*dz < 1e-4f) continue;
+        cl.p.push_back(out.p[i*2]); cl.p.push_back(out.p[i*2+1]);
+        cl.tag.push_back(out.tag[i]);
+    }
+    out = std::move(cl);
+    if (out.p.size() < 6) { out.p.clear(); out.tag.clear(); }
+}
+
+// Exact "is this oriented box entirely inside this simple polygon?" — all four
+// corners in, and no box edge crossing any polygon edge. Corner-only is wrong
+// for concave lots, and a concave lot is exactly where a building would poke
+// out into a street.
+bool boxInsidePoly(const std::vector<float>& poly,
+                   float cx, float cz, float ax, float az,
+                   float halfA, float halfB) {
+    const float bx = -az, bz = ax;
+    float c[4][2];
+    c[0][0] = cx + ax*halfA + bx*halfB; c[0][1] = cz + az*halfA + bz*halfB;
+    c[1][0] = cx + ax*halfA - bx*halfB; c[1][1] = cz + az*halfA - bz*halfB;
+    c[2][0] = cx - ax*halfA - bx*halfB; c[2][1] = cz - az*halfA - bz*halfB;
+    c[3][0] = cx - ax*halfA + bx*halfB; c[3][1] = cz - az*halfA + bz*halfB;
+    for (int k = 0; k < 4; ++k)
+        if (!pointInPoly(poly, c[k][0], c[k][1])) return false;
+    const size_t n = poly.size() / 2;
+    for (int k = 0; k < 4; ++k) {
+        const int g = (k + 1) & 3;
+        for (size_t i = 0; i < n; ++i) {
+            const size_t j = (i + 1) % n;
+            float t, u;
+            if (segSegIsect(c[k][0], c[k][1], c[g][0], c[g][1],
+                            poly[i*2], poly[i*2+1], poly[j*2], poly[j*2+1], t, u))
+                return false;
+        }
+    }
+    return true;
+}
+
+// ---- the planar arrangement ------------------------------------------------
+constexpr float kWeldEps      = 4.0f;    // vertices closer than this are ONE
+constexpr float kMinChainLen  = 3.0f;    // shorter chains are welded away
+constexpr int   kMaxFaceEdges = 4096;    // trace runaway guard
+
+struct PVert { float x = 0, z = 0; std::vector<uint32_t> out; };
+struct PHalf {
+    uint32_t from = 0, to = 0, twin = 0;
+    float    ang  = 0;                    // atan2(dz, dx) of the outgoing step
+    uint32_t roadEdge = 0;
+    RoadClass cls = RoadClass::Avenue;
+    float    width = 9.0f;
+    std::vector<float> pts;               // x,z, from -> to INCLUSIVE
+    bool     used = false;
+    bool     dead = false;
+};
+
+struct Arrangement {
+    std::vector<PVert> V;
+    std::vector<PHalf> H;
+};
+
+// Weld-or-create a vertex.
+uint32_t vertAt(Arrangement& A, float x, float z) {
+    for (uint32_t i = 0; i < (uint32_t)A.V.size(); ++i) {
+        const float dx = A.V[i].x - x, dz = A.V[i].z - z;
+        if (dx*dx + dz*dz < kWeldEps * kWeldEps) return i;
+    }
+    A.V.push_back({ x, z, {} });
+    return (uint32_t)A.V.size() - 1;
+}
+
+// PLANARIZE. Every selected edge's centerline is cut at (a) real segment
+// intersections with every other selected centerline and (b) endpoints that
+// land on another centerline (PHASE 2 already EXTENDED stop-short ends into
+// their target corridor, so those touch geometrically — this picks them up).
+// The resulting chains are the half-edges of a proper planar graph.
+void planarize(const RoadGraph& g, uint32_t clsMask, float ringStep,
+               Arrangement& A) {
+    struct Line { uint32_t edge; std::vector<float> p; RoadClass cls; float width; };
+    std::vector<Line> L;
+    for (uint32_t e = 0; e < (uint32_t)g.edges.size(); ++e) {
+        const RoadEdge& re = g.edges[e];
+        if (!(clsMask & roadClassBit(re.cls))) continue;
+        if (re.center.size() < 2) continue;
+        Line ln; ln.edge = e; ln.cls = re.cls; ln.width = re.width;
+        ln.p.reserve(re.center.size() * 2);
+        for (const RoadSample& s : re.center) { ln.p.push_back(s.x); ln.p.push_back(s.z); }
+        L.push_back(std::move(ln));
+    }
+    if (L.empty()) return;
+
+    // Per-line AABB for the O(N^2) reject.
+    struct Box { float x0, z0, x1, z1; };
+    std::vector<Box> bb(L.size());
+    for (size_t i = 0; i < L.size(); ++i) {
+        Box b{ 1e30f, 1e30f, -1e30f, -1e30f };
+        for (size_t k = 0; k < L[i].p.size(); k += 2) {
+            b.x0 = std::min(b.x0, L[i].p[k]);   b.x1 = std::max(b.x1, L[i].p[k]);
+            b.z0 = std::min(b.z0, L[i].p[k+1]); b.z1 = std::max(b.z1, L[i].p[k+1]);
+        }
+        bb[i] = b;
+    }
+
+    // (segment index, parameter) cut list per line; 0 and end are implicit.
+    std::vector<std::vector<std::pair<float, uint32_t>>> cuts(L.size());  // (arcParam, vert)
+    auto lineParam = [&](size_t li, size_t seg, float t) {
+        return (float)seg + t;
+    };
+    // (a) real crossings
+    for (size_t a = 0; a < L.size(); ++a) {
+        for (size_t b = a + 1; b < L.size(); ++b) {
+            if (bb[a].x1 < bb[b].x0 - kWeldEps || bb[b].x1 < bb[a].x0 - kWeldEps ||
+                bb[a].z1 < bb[b].z0 - kWeldEps || bb[b].z1 < bb[a].z0 - kWeldEps) continue;
+            const size_t na = L[a].p.size() / 2, nb = L[b].p.size() / 2;
+            for (size_t i = 0; i + 1 < na; ++i)
+                for (size_t j = 0; j + 1 < nb; ++j) {
+                    float t, u;
+                    if (!segSegIsect(L[a].p[i*2], L[a].p[i*2+1],
+                                     L[a].p[(i+1)*2], L[a].p[(i+1)*2+1],
+                                     L[b].p[j*2], L[b].p[j*2+1],
+                                     L[b].p[(j+1)*2], L[b].p[(j+1)*2+1], t, u)) continue;
+                    const float px = L[a].p[i*2]   + (L[a].p[(i+1)*2]   - L[a].p[i*2])   * t;
+                    const float pz = L[a].p[i*2+1] + (L[a].p[(i+1)*2+1] - L[a].p[i*2+1]) * t;
+                    const uint32_t v = vertAt(A, px, pz);
+                    cuts[a].push_back({ lineParam(a, i, t), v });
+                    cuts[b].push_back({ lineParam(b, j, u), v });
+                }
+        }
+    }
+    // (b) endpoints landing on another line (tees the extension pass made touch)
+    for (size_t a = 0; a < L.size(); ++a) {
+        const size_t na = L[a].p.size() / 2;
+        for (int end = 0; end < 2; ++end) {
+            const size_t ei = end ? na - 1 : 0;
+            const float ex = L[a].p[ei*2], ez = L[a].p[ei*2+1];
+            float best = 1e30f; size_t bl = SIZE_MAX, bs = 0; float bt = 0.0f;
+            for (size_t b = 0; b < L.size(); ++b) {
+                if (b == a) continue;
+                const size_t nb = L[b].p.size() / 2;
+                for (size_t j = 0; j + 1 < nb; ++j) {
+                    const float ax = L[b].p[j*2], az = L[b].p[j*2+1];
+                    const float bx = L[b].p[(j+1)*2], bz = L[b].p[(j+1)*2+1];
+                    const float d = distSqPointSeg(ex, ez, ax, az, bx, bz);
+                    if (d < best) {
+                        best = d; bl = b; bs = j;
+                        const float vx = bx - ax, vz = bz - az;
+                        const float l2 = vx*vx + vz*vz;
+                        float t = (l2 > 1e-12f) ? ((ex-ax)*vx + (ez-az)*vz) / l2 : 0.0f;
+                        bt = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+                    }
+                }
+            }
+            const float snap = 0.55f * (L[a].width + (bl == SIZE_MAX ? 0.0f : L[bl].width));
+            if (bl == SIZE_MAX || best > snap * snap) continue;
+            const uint32_t v = vertAt(A, ex, ez);
+            cuts[a].push_back({ lineParam(a, ei ? na - 2 : 0, ei ? 1.0f : 0.0f), v });
+            cuts[bl].push_back({ lineParam(bl, bs, bt), v });
+        }
+    }
+
+    // Build the chains.
+    for (size_t a = 0; a < L.size(); ++a) {
+        auto& cv = cuts[a];
+        std::sort(cv.begin(), cv.end(),
+                  [](const std::pair<float,uint32_t>& x, const std::pair<float,uint32_t>& y) {
+                      return x.first < y.first;
+                  });
+        // Collapse cuts that resolved to the same vertex or the same param.
+        std::vector<std::pair<float,uint32_t>> c2;
+        for (const auto& c : cv) {
+            if (!c2.empty() && (c.second == c2.back().second ||
+                                c.first - c2.back().first < 1e-4f)) continue;
+            c2.push_back(c);
+        }
+        if (c2.size() < 2) continue;    // a line with <2 junctions bounds nothing
+        const std::vector<float>& P = L[a].p;
+        auto at = [&](float param, float& x, float& z) {
+            const size_t n = P.size() / 2;
+            size_t s = (size_t)param;
+            if (s + 1 >= n) { s = n - 2; param = (float)s + 1.0f; }
+            const float t = param - (float)s;
+            x = P[s*2]   + (P[(s+1)*2]   - P[s*2])   * t;
+            z = P[s*2+1] + (P[(s+1)*2+1] - P[s*2+1]) * t;
+        };
+        for (size_t k = 0; k + 1 < c2.size(); ++k) {
+            const uint32_t v0 = c2[k].second, v1 = c2[k+1].second;
+            if (v0 == v1) continue;
+            // Chain geometry: the true centerline between the two cuts,
+            // decimated to ringStep so a curved boulevard stays curved but a
+            // block ring does not carry 200 vertices.
+            std::vector<float> pts;
+            float sx, sz; at(c2[k].first, sx, sz);
+            pts.push_back(A.V[v0].x); pts.push_back(A.V[v0].z);
+            float acc = 0.0f, lx = sx, lz = sz;
+            const size_t i0 = (size_t)c2[k].first + 1, i1 = (size_t)c2[k+1].first;
+            for (size_t i = i0; i <= i1 && (i + 1) * 2 <= P.size(); ++i) {
+                const float px = P[i*2], pz = P[i*2+1];
+                acc += std::sqrt((px-lx)*(px-lx) + (pz-lz)*(pz-lz));
+                lx = px; lz = pz;
+                if (acc >= ringStep) { pts.push_back(px); pts.push_back(pz); acc = 0.0f; }
+            }
+            pts.push_back(A.V[v1].x); pts.push_back(A.V[v1].z);
+            // Drop chains that are all weld-noise.
+            float clen = 0.0f;
+            for (size_t i = 0; i + 3 < pts.size(); i += 2)
+                clen += std::sqrt((pts[i+2]-pts[i])*(pts[i+2]-pts[i]) +
+                                  (pts[i+3]-pts[i+1])*(pts[i+3]-pts[i+1]));
+            if (clen < kMinChainLen) continue;
+
+            PHalf h, r;
+            h.from = v0; h.to = v1; h.roadEdge = L[a].edge; h.cls = L[a].cls;
+            h.width = L[a].width; h.pts = pts;
+            r.from = v1; r.to = v0; r.roadEdge = L[a].edge; r.cls = L[a].cls;
+            r.width = L[a].width;
+            r.pts.assign(pts.rbegin(), pts.rend());
+            for (size_t i = 0; i + 1 < r.pts.size(); i += 2)
+                std::swap(r.pts[i], r.pts[i+1]);       // rbegin reversed the PAIRS too
+            const uint32_t ih = (uint32_t)A.H.size();
+            h.twin = ih + 1; r.twin = ih;
+            A.H.push_back(std::move(h));
+            A.H.push_back(std::move(r));
+        }
+    }
+
+    // Outgoing lists + angles (angle of the FIRST real step away from `from`).
+    for (uint32_t i = 0; i < (uint32_t)A.H.size(); ++i) {
+        PHalf& h = A.H[i];
+        float dx = 0.0f, dz = 0.0f;
+        for (size_t k = 2; k + 1 < h.pts.size(); k += 2) {
+            dx = h.pts[k] - h.pts[0]; dz = h.pts[k+1] - h.pts[1];
+            if (dx*dx + dz*dz > 1e-4f) break;
+        }
+        h.ang = std::atan2(dz, dx);
+        A.V[h.from].out.push_back(i);
+    }
+    // PRUNE dangling chains (degree-1 vertices): a dead end bounds no face and
+    // would otherwise be traversed twice, producing a zero-width spike in it.
+    for (bool again = true; again; ) {
+        again = false;
+        for (uint32_t v = 0; v < (uint32_t)A.V.size(); ++v) {
+            uint32_t live = 0, only = 0;
+            for (uint32_t hi : A.V[v].out) if (!A.H[hi].dead) { ++live; only = hi; }
+            if (live != 1) continue;
+            A.H[only].dead = true; A.H[A.H[only].twin].dead = true;
+            again = true;
+        }
+    }
+    for (PVert& v : A.V) {
+        v.out.erase(std::remove_if(v.out.begin(), v.out.end(),
+                                    [&](uint32_t i) { return A.H[i].dead; }),
+                    v.out.end());
+        std::sort(v.out.begin(), v.out.end(),
+                  [&](uint32_t a2, uint32_t b2) { return A.H[a2].ang < A.H[b2].ang; });
+    }
+}
+
+// TRACE FACES. Successor of half-edge h (u->v) is, among v's outgoing
+// half-edges sorted by angle, the one immediately BEFORE twin(h) — i.e. the
+// next one CLOCKWISE from the reverse. Hand-verified on the triangle
+// A(0,0) B(1,0) C(0,1): starting A->B this yields A->B->C->A with shoelace
+// +1 (the interior), and starting A->C yields A->C->B->A with -1 (the outer
+// face). So: KEEP faces with POSITIVE signed area, drop the rest. That test
+// is per-connected-component correct automatically, which matters here — the
+// harbor grid, the boulevard and the gate avenues are several components.
+void traceFaces(Arrangement& A, std::vector<std::vector<uint32_t>>& faces) {
+    for (uint32_t s = 0; s < (uint32_t)A.H.size(); ++s) {
+        if (A.H[s].dead || A.H[s].used) continue;
+        std::vector<uint32_t> f;
+        uint32_t cur = s;
+        for (int guard = 0; guard < kMaxFaceEdges; ++guard) {
+            A.H[cur].used = true;
+            f.push_back(cur);
+            const uint32_t tw = A.H[cur].twin;
+            const std::vector<uint32_t>& out = A.V[A.H[cur].to].out;
+            const size_t n = out.size();
+            size_t at = 0;
+            for (size_t i = 0; i < n; ++i) if (out[i] == tw) { at = i; break; }
+            const uint32_t nxt = out[(at + n - 1) % n];
+            if (nxt == s) break;
+            if (A.H[nxt].used) { f.clear(); break; }   // malformed — discard
+            cur = nxt;
+        }
+        if (f.size() >= 2) faces.push_back(std::move(f));
+    }
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// TIER 0 — the missing public API.
+// ---------------------------------------------------------------------------
+void sampleFrontage(const RoadGraph& g, uint32_t clsMask, float pitch,
+                    float setback, std::vector<Frontage>& out) {
+    out.clear();
+    if (pitch < 0.5f) pitch = 0.5f;
+    for (uint32_t e = 0; e < (uint32_t)g.edges.size(); ++e) {
+        const RoadEdge& re = g.edges[e];
+        if (!(clsMask & roadClassBit(re.cls))) continue;
+        if (re.center.size() < 2) continue;
+        const float lat = lotOffset(re.width, setback);
+        float arc = 0.0f, since = pitch;          // emit on the first sample
+        for (uint32_t i = 0; i < (uint32_t)re.center.size(); ++i) {
+            if (i) {
+                const float dx = re.center[i].x - re.center[i-1].x;
+                const float dz = re.center[i].z - re.center[i-1].z;
+                const float d = std::sqrt(dx*dx + dz*dz);
+                arc += d; since += d;
+            }
+            if (since < pitch) continue;
+            since = 0.0f;
+            const RoadSample& s = re.center[i];
+            float px, pz; rperp(s.tx, s.tz, px, pz);      // right of travel
+            for (int sd = 0; sd < 2; ++sd) {
+                const float sgn = sd ? -1.0f : 1.0f;
+                Frontage f;
+                f.nx = px * sgn; f.nz = pz * sgn;
+                f.x  = s.x + f.nx * lat;
+                f.z  = s.z + f.nz * lat;
+                // The header's spec, literally: yaw = atan2(tangent) +/- 90.
+                // In this engine's convention (local +Z -> (sin yaw, cos yaw))
+                // a building FACES the road when +Z points back down -n.
+                f.yaw = std::atan2(-f.nx, -f.nz);
+                f.tx = s.tx; f.tz = s.tz; f.roadY = s.y;
+                f.width = re.width; f.arc = arc; f.edge = e; f.sample = i;
+                f.side = sgn > 0.0f ? 1 : -1; f.cls = re.cls;
+                out.push_back(f);
+            }
+        }
+    }
+}
+
+void EchoRoads::sampleFrontage(uint32_t clsMask, float pitch, float setback,
+                               std::vector<Frontage>& out) const {
+    x3::game::sampleFrontage(m_graph, clsMask, pitch, setback, out);
+}
+
+// ---------------------------------------------------------------------------
+// Position-derived seeds + the weighted palette draw.
+// ---------------------------------------------------------------------------
+uint32_t seedMix(uint32_t n, uint32_t k) {
+    n ^= k * 0x9e3779b9u;
+    n = (n ^ 61u) ^ (n >> 16); n *= 9u; n ^= n >> 4; n *= 0x27d4eb2du; n ^= n >> 15;
+    return n;
+}
+uint32_t seedAt(float x, float z) {
+    // floor(), not truncation: -0.5 and +0.5 must not collapse to the same cell.
+    const int32_t ix = (int32_t)std::floor(x), iz = (int32_t)std::floor(z);
+    return seedMix((uint32_t)ix * 73856093u ^ (uint32_t)iz * 19349663u, 0x5bd1u);
+}
+float seedFloat(uint32_t seed) {
+    return (float)(seedMix(seed, 0u) & 0xffffffu) / (float)0x1000000;
+}
+int seedWeighted(uint32_t seed, const float* weights, int n) {
+    if (n <= 0) return -1;
+    float total = 0.0f;
+    for (int i = 0; i < n; ++i) total += (weights[i] > 0.0f ? weights[i] : 0.0f);
+    if (total <= 0.0f) return (int)(seedFloat(seed) * (float)n) % n;
+    float r = seedFloat(seed) * total, acc = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        acc += (weights[i] > 0.0f ? weights[i] : 0.0f);
+        if (r < acc) return i;
+    }
+    return n - 1;
+}
+
+// ---------------------------------------------------------------------------
+// FOOTPRINT-CORNER TERRAIN SEATING.
+// ---------------------------------------------------------------------------
+FootprintSeat seatFootprint(const Heightfield& hf, float cx, float cz, float yaw,
+                            float halfX, float halfZ, float plinthThresh) {
+    FootprintSeat s;
+    if (!hf.ok()) return s;
+    const float c = std::cos(yaw), sn = std::sin(yaw);
+    // Local (+X right, +Z forward) -> world, matching every placement transform
+    // in this project: worldX = c*lx + sn*lz, worldZ = -sn*lx + c*lz.
+    const float off[5][2] = { { 0, 0 }, { -halfX, -halfZ }, { halfX, -halfZ },
+                              { halfX, halfZ }, { -halfX, halfZ } };
+    float lo = 1e30f, hi = -1e30f;
+    for (int k = 0; k < 5; ++k) {
+        const float wx = cx + c * off[k][0] + sn * off[k][1];
+        const float wz = cz - sn * off[k][0] + c * off[k][1];
+        const float h = hf.heightAt(wx, wz);
+        lo = std::min(lo, h); hi = std::max(hi, h);
+    }
+    s.ok = true; s.y = hi; s.yMin = lo; s.spread = hi - lo;
+    s.plinth = s.spread > plinthThresh;
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// TIER 1 — blocks, inset, lots.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Subdivide one buildable polygon into lots. The ONLY hard rule: never accept
+// a split whose child has no street frontage. Everything else (which axis,
+// where along it) is preference.
+void subdivide(const TagPoly& poly, const CityBlock& blk, const CityPlanRules& r,
+               uint32_t blockIdx, int depth, std::vector<CityLot>& out,
+               uint32_t& rejected) {
+    const float a2 = polyArea2(poly.p);
+    const float area = std::fabs(a2) * 0.5f;
+    if (poly.p.size() < 6 || area < r.minLotArea) return;
+
+    // Street frontage of a tagged polygon: the total length of edges whose tag
+    // points at a GROUND-class ring segment. This is exact — the tag says
+    // which road half-plane produced that edge.
+    auto frontageOf = [&](const TagPoly& q, float& bestLen, size_t& bestSeg,
+                          int& distinctRoads) {
+        bestLen = 0.0f; bestSeg = SIZE_MAX; distinctRoads = 0;
+        float total = 0.0f;
+        uint32_t seenRoad[8]; int seen = 0;
+        const size_t n = q.p.size() / 2;
+        for (size_t i = 0; i < n; ++i) {
+            const int t = q.tag[i];
+            if (t < 0 || (size_t)t >= blk.edge.size()) continue;
+            const RoadClass c = blk.edge[t].cls;
+            if (!(kRcGround & roadClassBit(c))) continue;
+            const size_t j = (i + 1) % n;
+            const float dx = q.p[j*2] - q.p[i*2], dz = q.p[j*2+1] - q.p[i*2+1];
+            const float len = std::sqrt(dx*dx + dz*dz);
+            total += len;
+            if (len > bestLen) { bestLen = len; bestSeg = i; }
+            const uint32_t re = blk.edge[t].roadEdge;
+            bool have = false;
+            for (int k = 0; k < seen; ++k) if (seenRoad[k] == re) { have = true; break; }
+            if (!have && seen < 8) seenRoad[seen++] = re;
+        }
+        distinctRoads = seen;
+        return total;
+    };
+
+    float bestLen = 0.0f; size_t bestSeg = SIZE_MAX; int distinct = 0;
+    const float front = frontageOf(poly, bestLen, bestSeg, distinct);
+    if (front <= 0.0f || bestSeg == SIZE_MAX) return;    // no frontage: not a lot
+
+    const size_t n = poly.p.size() / 2;
+    const size_t js = (bestSeg + 1) % n;
+    float ax = poly.p[js*2] - poly.p[bestSeg*2];
+    float az = poly.p[js*2+1] - poly.p[bestSeg*2+1];
+    const float al = std::sqrt(ax*ax + az*az);
+    if (al < 1e-4f) return;
+    ax /= al; az /= al;
+    const float inx = -az, inz = ax;      // CCW polygon: interior is to the LEFT
+
+    const bool tooSmall = area < 2.0f * r.targetLotArea;
+    if (!tooSmall && depth < r.maxDepth) {
+        // Extents along the two candidate cut normals.
+        float uLo = 1e30f, uHi = -1e30f, vLo = 1e30f, vHi = -1e30f;
+        for (size_t i = 0; i < n; ++i) {
+            const float u = poly.p[i*2] * ax + poly.p[i*2+1] * az;
+            const float v = poly.p[i*2] * inx + poly.p[i*2+1] * inz;
+            uLo = std::min(uLo, u); uHi = std::max(uHi, u);
+            vLo = std::min(vLo, v); vHi = std::max(vHi, v);
+        }
+        // Candidate 0 = cut PERPENDICULAR to the frontage (normal = along the
+        // street): children sit side by side down the block, both keep the
+        // street. Candidate 1 = cut parallel to the street (front row / back
+        // row) — only legal when the block has a street on the far side too,
+        // which the frontage rejection below decides for us.
+        struct Cand { float nx, nz, lo, hi; };
+        Cand cand[2] = { { ax, az, uLo, uHi }, { inx, inz, vLo, vHi } };
+        if ((vHi - vLo) > (uHi - uLo) * 1.35f) std::swap(cand[0], cand[1]);
+        for (int ci = 0; ci < 2; ++ci) {
+            const Cand& cd = cand[ci];
+            const float span = cd.hi - cd.lo;
+            if (span < 2.0f * r.minFrontage) continue;
+            float cxp, czp; polyCentroid(poly.p, cxp, czp);
+            // POSITION-derived jitter: the same polygon always splits the same
+            // way no matter what order blocks/lots were generated in.
+            const float jit = (seedFloat(seedMix(seedAt(cxp, czp), (uint32_t)depth)) - 0.5f)
+                              * 2.0f * r.splitJitter;
+            const float mid = cd.lo + span * (0.5f + jit);
+            const float ox = cd.nx * mid, oz = cd.nz * mid;
+            TagPoly lo2, hi2;
+            clipHalfPlane(poly, ox, oz, -cd.nx, -cd.nz, -1, lo2);
+            clipHalfPlane(poly, ox, oz,  cd.nx,  cd.nz, -1, hi2);
+            float bl; size_t bs; int dr;
+            const float fA = (lo2.p.size() >= 6) ? frontageOf(lo2, bl, bs, dr) : 0.0f;
+            const float fB = (hi2.p.size() >= 6) ? frontageOf(hi2, bl, bs, dr) : 0.0f;
+            const float aA = std::fabs(polyArea2(lo2.p)) * 0.5f;
+            const float aB = std::fabs(polyArea2(hi2.p)) * 0.5f;
+            // THE RULE: a split that leaves a child landlocked is not a split.
+            if (fA < r.minFrontage || fB < r.minFrontage ||
+                aA < r.minLotArea  || aB < r.minLotArea) { ++rejected; continue; }
+            subdivide(lo2, blk, r, blockIdx, depth + 1, out, rejected);
+            subdivide(hi2, blk, r, blockIdx, depth + 1, out, rejected);
+            return;
+        }
+    }
+
+    // ---- emit one lot -----------------------------------------------------
+    CityLot lot;
+    lot.block = blockIdx;
+    lot.roadEdge = blk.edge[poly.tag[bestSeg]].roadEdge;
+    lot.roadCls  = blk.edge[poly.tag[bestSeg]].cls;
+    lot.ax = ax; lot.az = az; lot.nx = inx; lot.nz = inz;
+    lot.frontLen = bestLen;
+    lot.corner = distinct >= 2;
+    lot.area = area;
+    lot.poly = poly.p; lot.tag = poly.tag;
+    lot.frontX = (poly.p[bestSeg*2]   + poly.p[js*2])   * 0.5f;
+    lot.frontZ = (poly.p[bestSeg*2+1] + poly.p[js*2+1]) * 0.5f;
+    // Faces the street: the OUTWARD side of the fronting edge is -in.
+    lot.frontYaw = std::atan2(-inx, -inz);
+
+    // OBB in the (along-street, inward) frame, then shrunk until it is
+    // provably INSIDE the lot polygon. Everything downstream (footprint fits,
+    // no overlap, no road intersection) rests on that guarantee.
+    float uLo = 1e30f, uHi = -1e30f, vLo = 1e30f, vHi = -1e30f;
+    for (size_t i = 0; i < n; ++i) {
+        const float u = poly.p[i*2] * ax  + poly.p[i*2+1] * az;
+        const float v = poly.p[i*2] * inx + poly.p[i*2+1] * inz;
+        uLo = std::min(uLo, u); uHi = std::max(uHi, u);
+        vLo = std::min(vLo, v); vHi = std::max(vHi, v);
+    }
+    float hw = (uHi - uLo) * 0.5f, hd = (vHi - vLo) * 0.5f;
+    const float uc = (uLo + uHi) * 0.5f, vc = (vLo + vHi) * 0.5f;
+    float bcx = ax * uc + inx * vc, bcz = az * uc + inz * vc;
+    float sLo = 0.0f, sHi = 1.0f;
+    if (!boxInsidePoly(poly.p, bcx, bcz, ax, az, hw, hd)) {
+        for (int it = 0; it < 16; ++it) {
+            const float m = (sLo + sHi) * 0.5f;
+            if (boxInsidePoly(poly.p, bcx, bcz, ax, az, hw * m, hd * m)) sLo = m;
+            else sHi = m;
+        }
+    } else sLo = 1.0f;
+    hw *= sLo; hd *= sLo;
+    // Guaranteed gap between neighbours: half on each side.
+    hw -= r.sideGap * 0.5f;
+    if (hw < 2.0f || hd < 2.0f) return;
+    lot.halfW = hw; lot.halfD = hd; lot.cx = bcx; lot.cz = bcz;
+    out.push_back(std::move(lot));
+}
+
+} // namespace
+
+void buildCityPlan(const RoadGraph& g, uint32_t clsMask,
+                   const CityPlanRules& rules, CityPlan& out) {
+    out.blocks.clear(); out.lots.clear();
+    out.rejectedFaces = 0; out.rejectedSplits = 0;
+
+    Arrangement A;
+    planarize(g, clsMask, rules.ringStep, A);
+    if (A.H.empty()) return;
+    std::vector<std::vector<uint32_t>> faces;
+    traceFaces(A, faces);
+
+    for (const std::vector<uint32_t>& f : faces) {
+        CityBlock b;
+        for (uint32_t hi : f) {
+            const PHalf& h = A.H[hi];
+            const size_t np = h.pts.size() / 2;
+            for (size_t i = 0; i + 1 < np; ++i) {     // last point = next chain's first
+                b.ring.push_back(h.pts[i*2]); b.ring.push_back(h.pts[i*2+1]);
+                CityBlockEdge be;
+                be.roadEdge = h.roadEdge; be.cls = h.cls; be.width = h.width;
+                float dx = h.pts[(i+1)*2] - h.pts[i*2];
+                float dz = h.pts[(i+1)*2+1] - h.pts[i*2+1];
+                be.len = std::sqrt(dx*dx + dz*dz);
+                if (be.len > 1e-5f) { be.tx = dx / be.len; be.tz = dz / be.len; }
+                b.edge.push_back(be);
+            }
+        }
+        if (b.ring.size() < 6) { ++out.rejectedFaces; continue; }
+        // CANONICAL ROTATION. Which half-edge the trace happened to start from
+        // depends on the order the edges were inserted into the RoadGraph, and
+        // everything downstream (which ring segment is "the longest frontage",
+        // the order the inset half-planes are clipped in, the tags they leave)
+        // reads the ring in index order. Rotating every ring to start at its
+        // lexicographically smallest vertex makes the block — and therefore
+        // every lot on it — a pure function of GEOMETRY. This is the same
+        // discipline as the position-derived seeds, applied to topology.
+        {
+            const size_t nv = b.ring.size() / 2;
+            size_t k0 = 0;
+            for (size_t i = 1; i < nv; ++i) {
+                if (b.ring[i*2] < b.ring[k0*2] ||
+                    (b.ring[i*2] == b.ring[k0*2] && b.ring[i*2+1] < b.ring[k0*2+1]))
+                    k0 = i;
+            }
+            if (k0) {
+                std::vector<float> r2; r2.reserve(b.ring.size());
+                std::vector<CityBlockEdge> e2; e2.reserve(b.edge.size());
+                for (size_t i = 0; i < nv; ++i) {
+                    const size_t s = (k0 + i) % nv;
+                    r2.push_back(b.ring[s*2]); r2.push_back(b.ring[s*2+1]);
+                    e2.push_back(b.edge[s]);
+                }
+                b.ring.swap(r2); b.edge.swap(e2);
+            }
+        }
+        const float a2 = polyArea2(b.ring);
+        // The OUTER face of each connected component comes out NEGATIVE under
+        // this traversal (see traceFaces). This one test discards it.
+        if (a2 <= 0.0f) { ++out.rejectedFaces; continue; }
+        b.area = a2 * 0.5f;
+        if (b.area < rules.minBlockArea) { ++out.rejectedFaces; continue; }
+        polyCentroid(b.ring, b.cx, b.cz);
+
+        // ---- INSET: each ring segment by ITS OWN road's half-width + curb +
+        // sidewalk + setback. The result is the BUILDABLE polygon; nothing
+        // placed inside it can touch a road, which is exactly the invariant
+        // corridorHits() used to restore by deleting buildings.
+        TagPoly cur;
+        cur.p = b.ring;
+        cur.tag.resize(b.edge.size());
+        for (size_t i = 0; i < b.edge.size(); ++i) cur.tag[i] = (int)i;
+        for (size_t i = 0; i < b.edge.size(); ++i) {
+            const CityBlockEdge& be = b.edge[i];
+            if (be.len < 1e-4f) continue;
+            const float inx = -be.tz, inz = be.tx;      // CCW -> interior on the left
+            const float d = lotOffset(be.width, rules.setback);
+            const float ox = b.ring[i*2]   + inx * d;
+            const float oz = b.ring[i*2+1] + inz * d;
+            TagPoly nxt;
+            clipHalfPlane(cur, ox, oz, inx, inz, (int)i, nxt);
+            cur = std::move(nxt);
+            if (cur.p.size() < 6) break;
+        }
+        b.build = cur.p; b.buildTag = cur.tag;
+        out.blocks.push_back(std::move(b));
+    }
+
+    // ORDER INDEPENDENCE, part 2: the FACE ORDER still depends on which
+    // half-edge the trace started from. Sort the blocks by position BEFORE
+    // subdividing, so lot indices, lot order and CityLot::block are all a pure
+    // function of geometry too. (Sorting afterwards would have left every
+    // lot's `block` index pointing at the wrong block — a real bug this
+    // ordering fixes rather than papers over.)
+    std::sort(out.blocks.begin(), out.blocks.end(),
+              [](const CityBlock& a, const CityBlock& b) {
+                  if (a.cx != b.cx) return a.cx < b.cx;
+                  return a.cz < b.cz;
+              });
+    for (uint32_t bi = 0; bi < (uint32_t)out.blocks.size(); ++bi) {
+        const CityBlock& blk = out.blocks[bi];
+        if (blk.build.size() < 6) continue;
+        TagPoly tp; tp.p = blk.build; tp.tag = blk.buildTag;
+        subdivide(tp, blk, rules, bi, 0, out.lots, out.rejectedSplits);
+    }
+    std::sort(out.lots.begin(), out.lots.end(),
+              [](const CityLot& a, const CityLot& b) {
+                  if (a.cx != b.cx) return a.cx < b.cx;
+                  return a.cz < b.cz;
+              });
+}
+
+const CityPlan& EchoRoads::cityPlan(const CityPlanRules& rules,
+                                    uint32_t clsMask) const {
+    if (!m_planBuilt) {
+        buildCityPlan(m_graph, clsMask, rules, m_plan);
+        m_planBuilt = true;
+        uint32_t buildable = 0; float ringM2 = 0.0f, lotM2 = 0.0f;
+        for (const CityBlock& b : m_plan.blocks) {
+            ringM2 += b.area;
+            if (b.build.size() >= 6) ++buildable;
+        }
+        for (const CityLot& l : m_plan.lots) lotM2 += l.area;
+        x3::logInfo("[roads] CITY PLAN — " + std::to_string(m_plan.blocks.size()) +
+                    " blocks (" + std::to_string(buildable) +
+                    " with buildable ground, " + std::to_string((int)ringM2) +
+                    " m2 enclosed), " + std::to_string(m_plan.lots.size()) +
+                    " lots (" + std::to_string((int)lotM2) + " m2); " +
+                    std::to_string(m_plan.rejectedFaces) + " faces dropped, " +
+                    std::to_string(m_plan.rejectedSplits) +
+                    " splits refused for killing a child's frontage");
+        // ECHO_CITY_DUMP=<path> — the plan as plain text (block rings + lot
+        // centres/yaws/extents), the same escape hatch ECHO_EXPORT_CORRIDORS
+        // gives the road polylines. For framing captures and for eyeballing a
+        // suspicious block without a debug renderer.
+        if (const char* dp = std::getenv("ECHO_CITY_DUMP")) {
+            std::ofstream df(dp);
+            if (df) {
+                df << "# blocks " << m_plan.blocks.size()
+                   << " lots " << m_plan.lots.size() << "\n";
+                for (size_t i = 0; i < m_plan.blocks.size(); ++i) {
+                    const CityBlock& b = m_plan.blocks[i];
+                    df << "block " << i << " c " << b.cx << " " << b.cz
+                       << " area " << b.area << " ringv " << (b.ring.size()/2)
+                       << " buildv " << (b.build.size()/2) << "\n";
+                }
+                for (size_t i = 0; i < m_plan.lots.size(); ++i) {
+                    const CityLot& l = m_plan.lots[i];
+                    df << "lot " << i << " blk " << l.block << " c " << l.cx << " " << l.cz
+                       << " yaw " << l.frontYaw << " hw " << l.halfW << " hd " << l.halfD
+                       << " front " << l.frontLen << (l.corner ? " CORNER" : "") << "\n";
+                }
+                x3::logInfo(std::string("[roads] city plan dumped -> ") + dp);
+            }
+        }
+    }
+    return m_plan;
+}
+
+// ---------------------------------------------------------------------------
+// City extras (plinths + the optional massing blockout).
+// ---------------------------------------------------------------------------
+void EchoRoads::addPlinth(float cx, float cz, float yaw, float halfX, float halfZ,
+                          float y0, float y1) const {
+    if (y1 <= y0) return;
+    Buck bk{ &m_cityExtra.v, &m_cityExtra.i };
+    // yaw's local +Z is (sin,cos); obox wants the axis it calls (ax,az).
+    obox(bk, cx, cz, y0, y1, std::sin(yaw), std::cos(yaw), halfZ, halfX);
+    m_extraDirty = true;
+}
+void EchoRoads::addMassingBox(float cx, float cz, float yaw, float halfX, float halfZ,
+                              float y0, float y1) const {
+    addPlinth(cx, cz, yaw, halfX, halfZ, y0, y1);
+}
+
+// ###########################################################################
+// --test-cityblocks — the headless self-test.
+//
+// Everything under test is pure geometry over a RoadGraph, so the whole thing
+// runs with no device, no heightfield PNG and no art. The five properties are
+// exactly the ones the four deleted corridorHits() veto sites used to try to
+// restore after the fact:
+//   1. face extraction finds the RIGHT NUMBER of blocks for a known graph
+//   2. every emitted lot has NON-ZERO street frontage
+//   3. no two buildings overlap
+//   4. no building intersects a road corridor
+//   5. determinism, and independence from the order edges were inserted in
+// Plus a permanent NEGATIVE CONTROL: the same checkers are pointed at a
+// reconstruction of the OLD polar-hash-ring placement and must REJECT it. A
+// checker that cannot fail proves nothing.
+// ###########################################################################
+namespace {
+
+int g_cbFail = 0;
+void cbCheck(bool cond, const std::string& what) {
+    if (cond) x3::logInfo("[cityblocks]   PASS  " + what);
+    else    { x3::logError("[cityblocks]   FAIL  " + what); ++g_cbFail; }
+}
+
+// A synthetic street: straight line a->b, arc-even samples, tangents set.
+RoadEdge cbStreet(float ax, float az, float bx, float bz, RoadClass cls,
+                  float width, float step = 4.0f) {
+    RoadEdge e; e.cls = cls; e.width = width;
+    float dx = bx - ax, dz = bz - az;
+    const float L = std::sqrt(dx*dx + dz*dz);
+    dx /= L; dz /= L;
+    const int n = std::max(2, (int)(L / step) + 1);
+    for (int i = 0; i < n; ++i) {
+        const float t = (float)i / (float)(n - 1);
+        RoadSample s;
+        s.x = ax + (bx - ax) * t; s.z = az + (bz - az) * t; s.y = 0.0f;
+        s.tx = dx; s.tz = dz;
+        e.center.push_back(s);
+    }
+    e.length = L;
+    return e;
+}
+
+// 3 streets each way on a `pitch` grid over [0, 2*pitch]^2 => 2x2 = 4 faces.
+RoadGraph cbGrid(int lines, float pitch, float width) {
+    RoadGraph g;
+    const float span = pitch * (float)(lines - 1);
+    for (int i = 0; i < lines; ++i) {
+        const float o = pitch * (float)i;
+        g.edges.push_back(cbStreet(0.0f, o, span, o, RoadClass::HarborStreet, width));
+        g.edges.push_back(cbStreet(o, 0.0f, o, span, RoadClass::HarborStreet, width));
+    }
+    for (RoadEdge& e : g.edges) {
+        g.nodes.push_back({ e.center.front().x, e.center.front().z });
+        g.nodes.push_back({ e.center.back().x,  e.center.back().z  });
+        e.a = (uint32_t)g.nodes.size() - 2;
+        e.b = (uint32_t)g.nodes.size() - 1;
+    }
+    return g;
+}
+
+// The four OBB corners of a lot's building box, shrunk to a footprint.
+void cbCorners(const CityLot& L, float halfW, float halfD, float c[4][2]) {
+    const float bx = -L.az, bz = L.ax;
+    c[0][0] = L.cx + L.ax*halfW + bx*halfD; c[0][1] = L.cz + L.az*halfW + bz*halfD;
+    c[1][0] = L.cx + L.ax*halfW - bx*halfD; c[1][1] = L.cz + L.az*halfW - bz*halfD;
+    c[2][0] = L.cx - L.ax*halfW - bx*halfD; c[2][1] = L.cz - L.az*halfW - bz*halfD;
+    c[3][0] = L.cx - L.ax*halfW + bx*halfD; c[3][1] = L.cz - L.az*halfW + bz*halfD;
+}
+
+// SAT overlap test for two oriented boxes given as corner quads.
+bool cbBoxesOverlap(const float a[4][2], const float b[4][2]) {
+    for (int poly = 0; poly < 2; ++poly) {
+        const float (*p)[2] = poly ? b : a;
+        for (int i = 0; i < 4; ++i) {
+            const int j = (i + 1) & 3;
+            float nx = -(p[j][1] - p[i][1]), nz = p[j][0] - p[i][0];
+            const float l = std::sqrt(nx*nx + nz*nz);
+            if (l < 1e-6f) continue;
+            nx /= l; nz /= l;
+            float a0 = 1e30f, a1 = -1e30f, b0 = 1e30f, b1 = -1e30f;
+            for (int k = 0; k < 4; ++k) {
+                const float pa = a[k][0]*nx + a[k][1]*nz;
+                const float pb = b[k][0]*nx + b[k][1]*nz;
+                a0 = std::min(a0, pa); a1 = std::max(a1, pa);
+                b0 = std::min(b0, pb); b1 = std::max(b1, pb);
+            }
+            if (a1 <= b0 + 1e-4f || b1 <= a0 + 1e-4f) return false;   // separated
+        }
+    }
+    return true;
+}
+
+// Closest distance from a point to ANY selected road centerline.
+float cbDistToRoad(const RoadGraph& g, uint32_t clsMask, float x, float z,
+                   float& widthAtClosest) {
+    float best = 1e30f; widthAtClosest = 0.0f;
+    for (const RoadEdge& e : g.edges) {
+        if (!(clsMask & roadClassBit(e.cls))) continue;
+        for (size_t i = 0; i + 1 < e.center.size(); ++i) {
+            const float d = distSqPointSeg(x, z, e.center[i].x, e.center[i].z,
+                                           e.center[i+1].x, e.center[i+1].z);
+            if (d < best) { best = d; widthAtClosest = e.width; }
+        }
+    }
+    return std::sqrt(best);
+}
+
+// Does this set of (centre, yaw, half-extent) placements pass the four
+// structural properties? Returns the number of violations. Used BOTH on the
+// real lots (must be 0) and on the negative control (must be > 0).
+struct CbPlacement { float cx, cz, yaw, halfW, halfD; float frontLen; };
+int cbAudit(const RoadGraph& g, uint32_t clsMask,
+            const std::vector<CbPlacement>& P,
+            int& noFrontage, int& overlaps, int& inRoad) {
+    noFrontage = overlaps = inRoad = 0;
+    std::vector<std::array<std::array<float,2>,4>> box(P.size());
+    for (size_t i = 0; i < P.size(); ++i) {
+        if (P[i].frontLen <= 0.0f) ++noFrontage;
+        const float c = std::cos(P[i].yaw), s = std::sin(P[i].yaw);
+        // local +Z is (s, c); local +X is (c, -s)
+        const float ex = c * P[i].halfW, ez = -s * P[i].halfW;
+        const float fx = s * P[i].halfD, fz =  c * P[i].halfD;
+        box[i][0] = { P[i].cx + ex + fx, P[i].cz + ez + fz };
+        box[i][1] = { P[i].cx + ex - fx, P[i].cz + ez - fz };
+        box[i][2] = { P[i].cx - ex - fx, P[i].cz - ez - fz };
+        box[i][3] = { P[i].cx - ex + fx, P[i].cz - ez + fz };
+        for (int k = 0; k < 4; ++k) {
+            float w = 0.0f;
+            const float d = cbDistToRoad(g, clsMask, box[i][k][0], box[i][k][1], w);
+            // The corridor a building must never enter: paved half-width plus
+            // curb plus sidewalk. (The plan actually clears setback more.)
+            if (d < w * 0.5f + kCurbW + kWalkW - 0.05f) { ++inRoad; break; }
+        }
+    }
+    for (size_t i = 0; i < P.size(); ++i)
+        for (size_t j = i + 1; j < P.size(); ++j) {
+            float A[4][2], B[4][2];
+            for (int k = 0; k < 4; ++k) {
+                A[k][0] = box[i][k][0]; A[k][1] = box[i][k][1];
+                B[k][0] = box[j][k][0]; B[k][1] = box[j][k][1];
+            }
+            if (cbBoxesOverlap(A, B)) ++overlaps;
+        }
+    return noFrontage + overlaps + inRoad;
+}
+
+// Reduce a plan to a comparable signature (for determinism / order tests).
+std::string cbSig(const CityPlan& p) {
+    std::string s = "B" + std::to_string(p.blocks.size()) +
+                    "L" + std::to_string(p.lots.size());
+    char buf[192];
+    for (const CityLot& l : p.lots) {
+        std::snprintf(buf, sizeof(buf), "|%.3f,%.3f,%.4f,%.3f,%.3f,%d",
+                      l.cx, l.cz, l.frontYaw, l.halfW, l.halfD, l.corner ? 1 : 0);
+        s += buf;
+    }
+    return s;
+}
+
+} // namespace
+
+bool runCityBlocksSelfTest() {
+    g_cbFail = 0;
+    x3::logInfo("[cityblocks] ===== CITY BLOCK / LOT / FRONTAGE self-test =====");
+
+    // ---- 1. TIER 0: sampleFrontage on one straight street ------------------
+    {
+        RoadGraph g;
+        g.edges.push_back(cbStreet(-100.0f, 0.0f, 100.0f, 0.0f,
+                                   RoadClass::HarborStreet, 9.0f));
+        std::vector<Frontage> fr;
+        sampleFrontage(g, kRcGround, 20.0f, 4.0f, fr);
+        const float want = 9.0f * 0.5f + kCurbW + kWalkW + 4.0f;
+        cbCheck(!fr.empty(), "sampleFrontage emits points on a street");
+        bool geomOk = true, yawOk = true, sidesOk = false;
+        int left = 0, right = 0;
+        for (const Frontage& f : fr) {
+            // the street runs +X at z=0, so frontage must sit at |z| == want
+            if (std::fabs(std::fabs(f.z) - want) > 1e-3f) geomOk = false;
+            if (std::fabs(f.x) > 100.1f) geomOk = false;
+            // FACING: local +Z of `yaw` must point back at the road, i.e. at
+            // -n. This is the whole "a lot faces the road" contract.
+            const float fxd = std::sin(f.yaw), fzd = std::cos(f.yaw);
+            if (fxd * f.nx + fzd * f.nz > -0.999f) yawOk = false;
+            if (f.side > 0) ++right; else ++left;
+        }
+        sidesOk = (left > 0 && right > 0 && left == right);
+        cbCheck(geomOk, "frontage sits at exactly width/2 + curb + walk + setback");
+        cbCheck(yawOk,  "frontage yaw FACES the road (dot(+Z, outward) == -1)");
+        cbCheck(sidesOk, "both sides of the street are sampled, evenly");
+        // pitch honoured
+        float maxGap = 0.0f;
+        for (size_t i = 2; i < fr.size(); i += 2) {
+            const float d = std::fabs(fr[i].arc - fr[i-2].arc);
+            maxGap = std::max(maxGap, d);
+        }
+        cbCheck(maxGap <= 24.5f, "frontage pitch honoured (<= 20 m + one sample)");
+    }
+
+    // ---- 2. TIER 1: face extraction on a KNOWN graph ------------------------
+    // 3 x 3 streets on a 90 m pitch = 2 x 2 = FOUR interior blocks. Nothing
+    // else: the outer face and the four half-open border strips are not faces.
+    CityPlanRules rules;
+    RoadGraph grid = cbGrid(3, 90.0f, 9.0f);
+    CityPlan plan;
+    buildCityPlan(grid, kRcGround, rules, plan);
+    cbCheck(plan.blocks.size() == 4,
+            "3x3 grid -> 4 blocks (got " + std::to_string(plan.blocks.size()) + ")");
+    {
+        bool areaOk = !plan.blocks.empty();
+        for (const CityBlock& b : plan.blocks)
+            if (b.area < 90.0f*90.0f*0.95f || b.area > 90.0f*90.0f*1.05f) areaOk = false;
+        cbCheck(areaOk, "each block's ring area == the 90x90 m cell");
+        bool ccw = true;
+        for (const CityBlock& b : plan.blocks) if (polyArea2(b.ring) <= 0.0f) ccw = false;
+        cbCheck(ccw, "every block ring is CCW (the outer face was discarded)");
+        bool buildOk = !plan.blocks.empty();
+        for (const CityBlock& b : plan.blocks) if (b.build.size() < 6) buildOk = false;
+        cbCheck(buildOk, "every block has a non-empty buildable polygon after inset");
+    }
+    // A 5x5 grid must give 4x4 = 16.
+    {
+        CityPlan p5;
+        buildCityPlan(cbGrid(5, 90.0f, 9.0f), kRcGround, rules, p5);
+        cbCheck(p5.blocks.size() == 16,
+                "5x5 grid -> 16 blocks (got " + std::to_string(p5.blocks.size()) + ")");
+    }
+    // A lone street (no cycle) must give ZERO blocks, not a degenerate one.
+    {
+        RoadGraph one; one.edges.push_back(cbStreet(0,0, 200,0, RoadClass::Avenue, 9.0f));
+        CityPlan p1; buildCityPlan(one, kRcGround, rules, p1);
+        cbCheck(p1.blocks.empty() && p1.lots.empty(),
+                "a graph with no cycle yields no blocks and no lots");
+    }
+
+    // ---- FRONTAGE PRESERVATION, where it actually bites --------------------
+    // On a pure street grid every ring edge is a street, so no split can ever
+    // strand a child. The rule earns its place on a block that BACKS ONTO THE
+    // FREEWAY: an elevated deck bounds the face but is not street frontage, so
+    // a depth split would leave the back strip landlocked against it. That
+    // split must be refused, and the block must still produce lots.
+    {
+        RoadGraph fw;
+        const float S = 150.0f;
+        fw.edges.push_back(cbStreet(0, 0, S, 0, RoadClass::HarborStreet, 9.0f));   // south st
+        fw.edges.push_back(cbStreet(0, 0, 0, S, RoadClass::HarborStreet, 9.0f));   // west  st
+        fw.edges.push_back(cbStreet(S, 0, S, S, RoadClass::HarborStreet, 9.0f));   // east  st
+        fw.edges.push_back(cbStreet(0, S, S, S, RoadClass::Freeway, 14.0f));       // north DECK
+        for (RoadEdge& e : fw.edges) {
+            fw.nodes.push_back({ e.center.front().x, e.center.front().z });
+            fw.nodes.push_back({ e.center.back().x,  e.center.back().z  });
+            e.a = (uint32_t)fw.nodes.size() - 2; e.b = (uint32_t)fw.nodes.size() - 1;
+        }
+        CityPlan pf;
+        buildCityPlan(fw, kRcGround | kRcFreeway, rules, pf);
+        cbCheck(pf.blocks.size() == 1,
+                "one face bounded by three streets and a freeway deck (got " +
+                std::to_string(pf.blocks.size()) + ")");
+        cbCheck(pf.rejectedSplits > 0,
+                "the frontage-preservation rule FIRED (" +
+                std::to_string(pf.rejectedSplits) + " splits refused) — a child "
+                "with only the freeway behind it is not a lot");
+        cbCheck(!pf.lots.empty(), "the freeway-backed block still yields lots");
+        bool allStreet = true;
+        for (const CityLot& l : pf.lots)
+            if (l.frontLen <= 0.0f || l.roadCls == RoadClass::Freeway) allStreet = false;
+        cbCheck(allStreet, "every lot on it fronts a STREET, never the deck");
+    }
+
+    // ---- 3/4/5. the structural properties on the real lots ------------------
+    cbCheck(!plan.lots.empty(),
+            "the grid produced lots (" + std::to_string(plan.lots.size()) + ")");
+    {
+        bool allFront = true;
+        for (const CityLot& l : plan.lots) if (l.frontLen <= 0.0f) allFront = false;
+        cbCheck(allFront, "EVERY lot has non-zero street frontage");
+        // The frontage-preservation rule is not just a filter on what gets
+        // EMITTED (subdivide refuses to emit a frontage-less polygon anyway) —
+        // it decides whether a split happens at all. Drop the rule and the
+        // landlocked children are silently DISCARDED instead, so the lots stop
+        // covering the block. Coverage is therefore what actually tests it.
+        float lotArea = 0.0f, buildArea = 0.0f;
+        for (const CityLot& l : plan.lots)  lotArea   += l.area;
+        for (const CityBlock& b : plan.blocks) buildArea += std::fabs(polyArea2(b.build)) * 0.5f;
+        cbCheck(buildArea > 0.0f && lotArea >= buildArea * 0.90f,
+                "lots cover >=90% of the buildable ground (" +
+                std::to_string((int)lotArea) + " of " + std::to_string((int)buildArea) +
+                " m2) — no block is silently half-abandoned");
+        bool inBlock = true;
+        for (const CityLot& l : plan.lots) {
+            float c[4][2]; cbCorners(l, l.halfW, l.halfD, c);
+            for (int k = 0; k < 4; ++k)
+                if (!pointInPoly(l.poly, c[k][0], c[k][1])) inBlock = false;
+        }
+        cbCheck(inBlock, "every lot's building OBB lies inside its lot polygon");
+
+        std::vector<CbPlacement> P;
+        for (const CityLot& l : plan.lots)
+            P.push_back({ l.cx, l.cz, l.frontYaw, l.halfW, l.halfD, l.frontLen });
+        int nf = 0, ov = 0, ir = 0;
+        const int bad = cbAudit(grid, kRcGround, P, nf, ov, ir);
+        cbCheck(ov == 0, "no two buildings overlap (SAT over every pair)");
+        cbCheck(ir == 0, "no building intersects a road corridor");
+        cbCheck(bad == 0, "structural audit clean");
+
+        bool yawOk = true;
+        for (const CityLot& l : plan.lots) {
+            // The lot's building must face AWAY from the block interior, i.e.
+            // toward the street it fronts. ZERO jitter: frontYaw is derived,
+            // never perturbed.
+            const float fx = std::sin(l.frontYaw), fz = std::cos(l.frontYaw);
+            if (fx * l.nx + fz * l.nz > -0.999f) yawOk = false;
+        }
+        cbCheck(yawOk, "every lot's frontYaw faces its street exactly (no jitter)");
+    }
+
+    // ---- determinism + insertion-order independence -------------------------
+    {
+        CityPlan again; buildCityPlan(grid, kRcGround, rules, again);
+        cbCheck(cbSig(plan) == cbSig(again), "determinism: two runs are identical");
+
+        RoadGraph rev; rev.nodes = grid.nodes;
+        rev.edges.assign(grid.edges.rbegin(), grid.edges.rend());
+        CityPlan pr; buildCityPlan(rev, kRcGround, rules, pr);
+        cbCheck(cbSig(plan) == cbSig(pr),
+                "insertion order: reversing the edge list changes nothing");
+
+        // Rotate the edge list (a different permutation again) AND append one
+        // extra street outside the grid: the existing lots must not re-roll.
+        RoadGraph rot; rot.nodes = grid.nodes;
+        for (size_t i = 0; i < grid.edges.size(); ++i)
+            rot.edges.push_back(grid.edges[(i + 7) % grid.edges.size()]);
+        rot.edges.push_back(cbStreet(-400.0f, -400.0f, -400.0f, -200.0f,
+                                     RoadClass::HarborStreet, 9.0f));
+        CityPlan pt; buildCityPlan(rot, kRcGround, rules, pt);
+        cbCheck(cbSig(plan) == cbSig(pt),
+                "inserting an unrelated street does not re-roll the existing lots");
+    }
+
+    // ---- position-derived seeds -------------------------------------------
+    {
+        cbCheck(seedAt(123.4f, -56.7f) == seedAt(123.4f, -56.7f),
+                "seedAt is a pure function of position");
+        cbCheck(seedAt(123.4f, -56.7f) != seedAt(124.4f, -56.7f),
+                "seedAt separates adjacent cells");
+        cbCheck(seedAt(-0.5f, 0.0f) != seedAt(0.5f, 0.0f),
+                "seedAt uses floor(), not truncation (no +/-0 collapse)");
+        const float w[4] = { 1.0f, 3.0f, 0.0f, 6.0f };
+        int hits[4] = { 0, 0, 0, 0 };
+        for (int i = 0; i < 4000; ++i) hits[seedWeighted(seedMix(99u, (uint32_t)i), w, 4)]++;
+        cbCheck(hits[2] == 0, "seedWeighted never draws a zero-weight entry");
+        cbCheck(hits[3] > hits[1] && hits[1] > hits[0],
+                "seedWeighted respects the weights (6 > 3 > 1)");
+        // The old code was `(r + k*2) % 5` — a periodic ABCDE cycle. Assert the
+        // new draw is NOT periodic along a straight run of positions.
+        bool periodic = true;
+        for (int i = 0; i < 40; ++i) {
+            const int a = seedWeighted(seedAt((float)i, 0.0f), w, 4);
+            const int b = seedWeighted(seedAt((float)(i + 5), 0.0f), w, 4);
+            if (a != b) { periodic = false; break; }
+        }
+        cbCheck(!periodic, "the palette draw is not a period-5 cycle");
+    }
+
+    // ---- footprint-corner terrain seating ----------------------------------
+    {
+        Heightfield hf;   // synthetic 64x64 ramp: height rises with +x
+        hf.w = hf.h = 64;
+        hf.px.resize(64 * 64);
+        for (int z = 0; z < 64; ++z)
+            for (int x = 0; x < 64; ++x)
+                hf.px[(size_t)z * 64 + x] =
+                    (uint16_t)(Heightfield::kSeaNorm * 65535.0f +
+                               (float)x / 63.0f * 6000.0f);
+        cbCheck(hf.ok(), "synthetic heightfield loads");
+        const FootprintSeat s = seatFootprint(hf, 0.0f, 0.0f, 0.0f, 30.0f, 30.0f);
+        const float centre = hf.heightAt(0.0f, 0.0f);
+        const float east   = hf.heightAt(30.0f, 0.0f);
+        cbCheck(s.ok, "seatFootprint reports ok on a loaded heightfield");
+        cbCheck(std::fabs(s.y - east) < 0.05f,
+                "seat is the MAX of the footprint corners, not the pivot probe");
+        cbCheck(s.y > centre + 0.1f, "seating a slope lifts above the pivot probe");
+        cbCheck(s.plinth && s.spread > 0.3f, "a sloped footprint asks for a plinth");
+        const FootprintSeat f2 = seatFootprint(hf, 0.0f, 0.0f, 0.0f, 0.2f, 0.2f);
+        cbCheck(!f2.plinth, "a tiny footprint on the same slope needs no plinth");
+        Heightfield none;
+        cbCheck(!seatFootprint(none, 0, 0, 0, 5, 5).ok,
+                "seatFootprint reports NOT-ok without a heightfield");
+    }
+
+    // ---- NEGATIVE CONTROL --------------------------------------------------
+    // Reconstruct the placement this lane replaced — four concentric POLAR
+    // HASH RINGS, yaw = ring angle + 90 deg +/- 34 deg jitter, radius jitter
+    // +/-23 m, NO min-spacing test — over the SAME grid, and point the SAME
+    // checkers at it. They must FAIL. A checker that cannot fail is decoration.
+    {
+        auto hh0 = [](uint32_t n) {
+            n = (n ^ 61u) ^ (n >> 16); n *= 9u; n ^= n >> 4;
+            n *= 0x27d4eb2du; n ^= n >> 15;
+            return (float)(n & 0xffffffu) / (float)0x1000000;
+        };
+        std::vector<CbPlacement> P;
+        const float ringR[4] = { 30.0f, 55.0f, 80.0f, 105.0f };
+        for (int r = 0; r < 4; ++r) {
+            const int cnt = 7 + r * 3;
+            for (int k = 0; k < cnt; ++k) {
+                const uint32_t seed = (uint32_t)(r * 101 + k);     // INDEX-derived
+                const float ang = ((float)k + hh0(seed) * 0.7f) * (6.2831853f / cnt);
+                const float rr  = ringR[r] + (hh0(seed * 7u + 3u) - 0.5f) * 46.0f;
+                CbPlacement p;
+                p.cx = 90.0f + std::cos(ang) * rr;
+                p.cz = 90.0f + std::sin(ang) * rr;
+                p.yaw = ang + 1.5708f + (hh0(seed * 13u + 5u) - 0.5f) * 1.2f;
+                p.halfW = 6.0f; p.halfD = 6.0f; p.frontLen = 0.0f;   // faces nothing
+                P.push_back(p);
+            }
+        }
+        int nf = 0, ov = 0, ir = 0;
+        const int bad = cbAudit(grid, kRcGround, P, nf, ov, ir);
+        x3::logInfo("[cityblocks]   negative control: " + std::to_string(P.size()) +
+                    " ring-placed houses -> " + std::to_string(nf) + " frontage-less, " +
+                    std::to_string(ov) + " overlapping pairs, " +
+                    std::to_string(ir) + " inside a road corridor");
+        cbCheck(bad > 0, "NEGATIVE CONTROL: the polar-ring layout FAILS the audit");
+        cbCheck(ov > 0,  "NEGATIVE CONTROL: rings overlap (no min-spacing test)");
+        cbCheck(ir > 0,  "NEGATIVE CONTROL: rings land in road corridors");
+        cbCheck(nf > 0,  "NEGATIVE CONTROL: rings have no street frontage");
+    }
+
+    if (g_cbFail == 0) x3::logInfo("[cityblocks] ===== ALL CHECKS PASSED =====");
+    else x3::logError("[cityblocks] ===== " + std::to_string(g_cbFail) + " CHECK(S) FAILED =====");
+    return g_cbFail == 0;
 }
 
 void EchoRoads::drawNightGlow(x3::rhi::IRenderDevice& device,

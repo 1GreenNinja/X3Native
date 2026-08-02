@@ -62,7 +62,7 @@
 
 #include "echo_region_builders.h"
 #include "echo_interiors.h"    // condo-room sub-region + vendor dressing
-#include "echo_roads.h"        // #34a corridor audit (EchoRoads::corridorHits)
+#include "echo_roads.h"        // V8: the city block/lot/frontage generator
 #include "../hackables.h"      // WD2 camera saturation (builders register cams)
 #include "echo_woodlands.h"   // WP-3's harvestDistrictLights() — see loadDistrictInto's note
 
@@ -105,6 +105,247 @@ inline uint32_t hashi(uint32_t n) {
 // infradir carries no ECHO_* override in the host (a fixed literal at every
 // call site) — baked in here rather than threaded through every signature.
 constexpr const char* kInfraDir = "D:/GameDev/EchoHarbor/assets/infra";
+
+// ===========================================================================
+// V8 — LOT-DRIVEN PLACEMENT (Lane 4).
+//
+// WHAT THIS REPLACED. Four independent, geometry-blind placement systems that
+// guessed at positions and were reconciled afterwards by DELETION:
+//   * four concentric POLAR HASH RINGS around (-20,760), yaw = ring angle
+//     + 90 deg +/- 34 deg of jitter (facing an imaginary circular road that
+//     does not exist), radius jitter +/-23 m with NO min-spacing test at all,
+//     asset picked by `(r + k*2) % 5` (a periodic ABCDE cycle), ground contact
+//     from ONE heightAt() probe at the pivot;
+//   * the district prefab pads, seated at MAX terrain height + 1 m;
+//   * 36 skyline towers sharing ONE baked transform and ONE height probe;
+//   * 20 hand-traced literal (x,z,yaw) waterfront triples.
+// and `EchoRoads::corridorHits()` at four sites, deleting whatever landed on a
+// road. All four vetoes are GONE: a building now comes from a LOT or from a
+// FRONTAGE POINT, both of which are outside every road corridor by
+// construction. See echo_roads.h's CITY BLOCKS section and --test-cityblocks.
+// ===========================================================================
+
+// A placed footprint, for the min-spacing test the rings never had. Stored as
+// an oriented box: centre, local +X axis, half extents.
+struct PlacedBox { float cx, cz, ax, az, halfW, halfD; };
+
+inline void obbCorners(const PlacedBox& b, float c[4][2]) {
+    // local +X = (ax,az); local +Z = (-az? no) — yaw's +Z is the perpendicular
+    // (-az, ax) is +X rotated 90; we store +X directly and derive +Z.
+    const float fx = -b.az, fz = b.ax;              // local +Z
+    c[0][0] = b.cx + b.ax*b.halfW + fx*b.halfD; c[0][1] = b.cz + b.az*b.halfW + fz*b.halfD;
+    c[1][0] = b.cx + b.ax*b.halfW - fx*b.halfD; c[1][1] = b.cz + b.az*b.halfW - fz*b.halfD;
+    c[2][0] = b.cx - b.ax*b.halfW - fx*b.halfD; c[2][1] = b.cz - b.az*b.halfW - fz*b.halfD;
+    c[3][0] = b.cx - b.ax*b.halfW + fx*b.halfD; c[3][1] = b.cz - b.az*b.halfW + fz*b.halfD;
+}
+bool obbOverlap(const PlacedBox& A, const PlacedBox& B) {
+    float a[4][2], b[4][2];
+    obbCorners(A, a); obbCorners(B, b);
+    for (int poly = 0; poly < 2; ++poly) {
+        const float (*p)[2] = poly ? b : a;
+        for (int i = 0; i < 4; ++i) {
+            const int j = (i + 1) & 3;
+            float nx = -(p[j][1] - p[i][1]), nz = p[j][0] - p[i][0];
+            const float l = std::sqrt(nx*nx + nz*nz);
+            if (l < 1e-6f) continue;
+            nx /= l; nz /= l;
+            float a0 = 1e30f, a1 = -1e30f, b0 = 1e30f, b1 = -1e30f;
+            for (int k = 0; k < 4; ++k) {
+                const float pa = a[k][0]*nx + a[k][1]*nz, pb = b[k][0]*nx + b[k][1]*nz;
+                a0 = std::min(a0, pa); a1 = std::max(a1, pa);
+                b0 = std::min(b0, pb); b1 = std::max(b1, pb);
+            }
+            if (a1 <= b0 || b1 <= a0) return false;
+        }
+    }
+    return true;
+}
+
+// The occupancy set for one region's placement pass. Everything that takes up
+// ground goes in here — buildings, AND the crown's five hardcoded straight
+// "crown lanes", which are a SECOND road system EchoRoads knows nothing about
+// (they predate it). Registering them as occupancy instead of adding a fifth
+// veto site keeps "no building on a road" a single mechanism.
+struct Occupancy {
+    std::vector<PlacedBox> boxes;
+    bool free(float cx, float cz, float yaw, float halfW, float halfD) const {
+        PlacedBox q{ cx, cz, std::cos(yaw), -std::sin(yaw), halfW, halfD };
+        for (const PlacedBox& b : boxes) if (obbOverlap(q, b)) return false;
+        return true;
+    }
+    void take(float cx, float cz, float yaw, float halfW, float halfD) {
+        boxes.push_back({ cx, cz, std::cos(yaw), -std::sin(yaw), halfW, halfD });
+    }
+    void takeAxis(float cx, float cz, float dx, float dz, float halfLen, float halfWid) {
+        const float l = std::sqrt(dx*dx + dz*dz);
+        if (l < 1e-5f) return;
+        boxes.push_back({ cx, cz, dx / l, dz / l, halfLen, halfWid });
+    }
+};
+
+// One palette entry. `footW`/`footD` are the FOOTPRINT TABLE: authored nominal
+// metres at the placement scale, refined at boot from the loaded GLB where the
+// loader can report a real extent. The point of the table is that
+// "does this building fit on this lot?" is a LOOKUP, not load-then-veto.
+struct BuildingAsset {
+    const char* glb;
+    float weight;          // seeded WEIGHTED draw — replaces the `% 5` cycle
+    float footW, footD;    // footprint (m) in local X / Z after `scale`
+    float height;          // nominal height (m) — the ECHO_CITY_PROXY blockout
+    float lift;            // pivot lift above the terrain seat
+};
+struct BuildingPalette {
+    const char*          dir;
+    const BuildingAsset* a;
+    int                  n;
+    float                scale;
+};
+
+// CROWN NEIGHBOURHOOD (HouseForge, cm-scale GLBs at 0.01). The five `lift`
+// values are the host's originals. The footprints are AUTHORED nominal sizes:
+// EnvArtSystem::worldBounds reports the AABB of drawable ORIGINS, not mesh
+// extents, so it cannot measure a single-node prefab — see measurePalette().
+const BuildingAsset kCrownHouseAssets[] = {
+    { "PF_MetalHouse01.glb",     1.0f, 12.0f, 10.0f,  7.0f, 11.73f },
+    { "PF_MetalHouse02.glb",     1.0f, 11.5f,  9.5f,  6.5f,  2.13f },
+    { "PF_PrimitiveHouse01.glb", 1.7f, 10.5f,  9.0f,  6.0f,  3.17f },
+    { "PF_PrimitiveHouse02.glb", 1.7f, 10.0f,  8.5f,  5.5f,  1.00f },
+    { "PF_PrimitiveHouse03.glb", 1.3f, 11.0f,  9.5f,  6.5f,  8.59f },
+};
+
+// WATERFRONT PROMENADE (Urban Night City glass towers at 0.34).
+const BuildingAsset kGlassTowerAssets[] = {
+    { "Building 01.glb", 1.0f, 26.0f, 26.0f, 60.0f, 0.0f },
+    { "Building 05.glb", 1.0f, 24.0f, 24.0f, 52.0f, 0.0f },
+    { "Building 14.glb", 1.0f, 28.0f, 24.0f, 66.0f, 0.0f },
+    { "Building 21.glb", 0.8f, 22.0f, 22.0f, 48.0f, 0.0f },
+    { "Building 24.glb", 0.8f, 25.0f, 25.0f, 58.0f, 0.0f },
+    { "Building 33.glb", 1.0f, 27.0f, 23.0f, 72.0f, 0.0f },
+    { "Building 38.glb", 0.7f, 23.0f, 23.0f, 44.0f, 0.0f },
+    { "Building 43.glb", 0.7f, 26.0f, 22.0f, 64.0f, 0.0f },
+};
+
+// ECHO_CITY_LEGACY=1 — THE FALLBACK CVAR (standing requirement 5). Restores the
+// pre-V8 placement exactly: the four polar hash rings with their index-derived
+// seeds, ring-angle-plus-jitter yaws, `% 5` asset cycle, single-probe seat and
+// no min-spacing test — AND the corridorHits veto that used to clean up after
+// them, reproduced locally (legacyCorridorHit below) so the comparison is
+// honest rather than flattering. It is what the before/after captures in
+// docs/screenshots/city-blocks were shot with; one binary, one camera.
+bool cityLegacyOn() {
+    static const bool on = [](){ const char* e = std::getenv("ECHO_CITY_LEGACY");
+                                 return e && *e && *e != '0'; }();
+    return on;
+}
+
+// The DELETED #34a corridor audit, kept alive ONLY inside the ECHO_CITY_LEGACY
+// path. Byte-for-byte the test that used to live in EchoRoads::corridorHits:
+// sample circles of radius (half corridor + clear + step/2) over every edge.
+bool legacyCorridorHit(const EchoRoads* roads, float x, float z, float clear) {
+    if (!roads) return false;
+    for (const x3::game::RoadEdge& e : roads->graph().edges) {
+        const bool elevated = e.cls == x3::game::RoadClass::Freeway ||
+                              e.cls == x3::game::RoadClass::Ramp;
+        const float half = e.width * 0.5f + (elevated ? 3.2f + 0.35f : 0.5f);
+        const float r = half + clear + 2.0f;      // kShoulderW/kBarrierW/kSampleStep*0.5
+        const float r2 = r * r;
+        for (const x3::game::RoadSample& s : e.center) {
+            const float dx = s.x - x, dz = s.z - z;
+            if (dx * dx + dz * dz < r2) return true;
+        }
+    }
+    return false;
+}
+
+// ECHO_CITY_PROXY=1 — draw a blockout mass at each building's exact footprint
+// and yaw instead of the GLB. This exists so the LAYOUT can be photographed on
+// a checkout where the building packs are absent (they live under D:/Assets on
+// the authoring box and are not in the repo). OFF by default: unset, this file
+// behaves exactly as if the proxy code were not here.
+bool cityProxyOn() {
+    static const bool on = [](){ const char* e = std::getenv("ECHO_CITY_PROXY");
+                                 return e && *e && *e != '0'; }();
+    return on;
+}
+
+// Boot-time refinement of the footprint table. Loads each palette entry ONCE
+// (the loader caches by path, so the placement pass below re-uses the upload)
+// and takes a real extent from it when the GLB has enough nodes for
+// worldBounds to mean anything. Everything after this is table lookups.
+struct FootprintTable {
+    std::vector<float> w, d, wt;
+    int   measured = 0, authored = 0, missing = 0;
+    void build(EchoRegionCtx& ctx, const BuildingPalette& p) {
+        w.resize(p.n); d.resize(p.n); wt.resize(p.n);
+        for (int i = 0; i < p.n; ++i) {
+            w[i] = p.a[i].footW; d[i] = p.a[i].footD; wt[i] = p.a[i].weight;
+            EnvArtSystem probe;
+            const float S[16] = { p.scale,0,0,0, 0,p.scale,0,0, 0,0,p.scale,0, 0,0,0,1 };
+            if (!probe.buildFromGlbAt(ctx.device, p.dir, p.a[i].glb, S)) {
+                // Absent asset: never drawn from — UNLESS the proxy blockout is
+                // on, whose entire job is to stand in for exactly this.
+                if (!cityProxyOn()) wt[i] = 0.0f;
+                ++missing; ++authored;
+                continue;
+            }
+            float mn[3], mx[3]; probe.worldBounds(mn, mx);
+            const float ew = mx[0] - mn[0], ed = mx[2] - mn[2];
+            if (ew > 1.0f && ed > 1.0f) { w[i] = ew; d[i] = ed; ++measured; }
+            else ++authored;
+        }
+    }
+    // THE LOOKUP: the largest-weighted asset that fits, drawn by seeded weight
+    // from those that do. Returns -1 when nothing in the palette fits the lot.
+    int pick(uint32_t seed, float availW, float availD) const {
+        std::vector<float> ok(wt.size(), 0.0f);
+        bool any = false;
+        for (size_t i = 0; i < wt.size(); ++i)
+            if (wt[i] > 0.0f && w[i] <= availW && d[i] <= availD) { ok[i] = wt[i]; any = true; }
+        if (!any) return -1;
+        return x3::game::seedWeighted(seed, ok.data(), (int)ok.size());
+    }
+};
+
+// Place ONE building. Every placement in this file goes through here, so the
+// footprint-corner terrain seat (and the plinth under an overhang) is not
+// something a call site can forget.
+bool placeSeated(EchoRegion& region, EchoRegionCtx& ctx, const BuildingPalette& p,
+                 const FootprintTable& ft, int idx,
+                 float cx, float cz, float yaw, EnvArtSystem* pack) {
+    const float halfX = ft.w[idx] * 0.5f, halfZ = ft.d[idx] * 0.5f;
+    const x3::game::FootprintSeat seat =
+        x3::game::seatFootprint(ctx.hf, cx, cz, yaw, halfX, halfZ);
+    const float gy = seat.ok ? seat.y : 190.0f;
+    const float s = p.scale, c = std::cos(yaw), sn = std::sin(yaw);
+    const float T[16] = { c*s, 0, -sn*s, 0,  0, s, 0, 0,  sn*s, 0, c*s, 0,
+                          cx, gy + p.a[idx].lift, cz, 1 };
+    bool placed = false;
+    if (pack) placed = pack->addGlbInstance(p.a[idx].glb, T);
+    else {
+        auto e = std::make_unique<EnvArtSystem>();
+        if (e->buildFromGlbAt(ctx.device, p.dir, p.a[idx].glb, T)) {
+            region.addArt(std::move(e)); placed = true;
+        }
+    }
+    if (ctx.roads) {
+        // PLINTH: the footprint-corner probe measured how far the ground drops
+        // away under this building. Seating at MAX stops it sinking; the
+        // plinth stops it floating. One heightAt() at the pivot could not tell
+        // you either way — that is the bug this replaces.
+        if (seat.ok && seat.plinth)
+            ctx.roads->addPlinth(cx, cz, yaw, halfX * 1.04f, halfZ * 1.04f,
+                                 seat.yMin - 0.4f, gy + 0.10f);
+        // ECHO_CITY_PROXY=1: a blockout mass at the exact footprint/yaw, for
+        // photographing the LAYOUT on checkouts where the building GLBs are
+        // not present. Off by default; emits nothing otherwise.
+        if (cityProxyOn() && !placed) {
+            ctx.roads->addMassingBox(cx, cz, yaw, halfX, halfZ, gy - 0.5f,
+                                     gy + p.a[idx].height);
+            placed = true;
+        }
+    }
+    return placed;
+}
 
 // Place a flat plane GLB (local 1x1 in X/Z, +Y up) as a road/deck: centre
 // (cx,cz), height y, oriented yaw=atan2(dir.x,dir.z), scaled width(X) x
@@ -181,17 +422,30 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
     const float cl = (lmaxz - lminz) * padScale + 40.0f;
     const float ccx = padX + (lminx + lmaxx) * 0.5f * padScale;
     const float ccz = padZ + (lminz + lmaxz) * 0.5f * padScale;
+    // V8 PAD SEAT: same MAX-over-the-pad rule (a dense 20 m scan beats the
+    // 5-point footprint probe on a 300 m slab), but the MINIMUM is tracked too
+    // — the pad seated at MAX over sloping ground is exactly what made the
+    // district "float as a mesa with a hard asphalt edge". The drop is now
+    // filled with a plinth skirt instead of being left as an air gap.
     float gy = ctx.hf.ok() ? ctx.hf.heightAt(ccx, ccz) : 190.0f;
+    float gyMin = gy;
     if (ctx.hf.ok()) {
         for (float ox = -cw*0.5f; ox <= cw*0.5f; ox += 20.0f)
-            for (float oz = -cl*0.5f; oz <= cl*0.5f; oz += 20.0f)
-                gy = std::max(gy, ctx.hf.heightAt(ccx + ox, ccz + oz));
+            for (float oz = -cl*0.5f; oz <= cl*0.5f; oz += 20.0f) {
+                const float s = ctx.hf.heightAt(ccx + ox, ccz + oz);
+                gy = std::max(gy, s); gyMin = std::min(gyMin, s);
+            }
         gy += 1.0f;   // safety: heightfield bumps narrower than the stride
     }
     placeDeck(region, ctx, "road_asphalt.glb", ccx, ccz, gy - 0.05f, 0.0f, cw, cl);
+    if (ctx.roads && gy - gyMin > 0.30f) {
+        ctx.roads->addPlinth(ccx, ccz, 0.0f, cw * 0.5f, cl * 0.5f, gyMin - 0.5f, gy - 0.04f);
+        x3::logInfo(std::string("[region] DISTRICT ") + tag + " — pad plinth " +
+                    std::to_string((int)(gy - gyMin)) + " m (terrain drops away under the slab)");
+    }
     const float S = padScale, pc = std::cos(padYaw) * S, ps = std::sin(padYaw) * S;
     const float P[9] = { pc, 0.0f, -ps,   0.0f, S, 0.0f,   ps, 0.0f, pc };
-    int placed = 0, audited = 0, cams = 0;   // audited = corridor-audit vetoes
+    int placed = 0, cams = 0;
     for (const Piece& pcs : pieces) {
         const char* name = pcs.glb.c_str();
         const float px=pcs.px, py=pcs.py, pz=pcs.pz, qx=pcs.qx, qy=pcs.qy, qz=pcs.qz, qw=pcs.qw,
@@ -222,12 +476,11 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
         const float tx = padX + P[0]*px + P[3]*py + P[6]*pz;
         const float ty = gy + padYOff + P[1]*px + P[4]*py + P[7]*pz;
         const float tz = padZ + P[2]*px + P[5]*py + P[8]*pz;
-        // #34a CORRIDOR AUDIT (Tim's capture: piers THROUGH a tower): a
-        // layout piece whose world seat lands inside a road/deck corridor is
-        // SKIPPED — a missing building beats a skewered one (the zigzag-law
-        // doctrine, applied to placement). 8 m clearance covers the span
-        // between a piece's pivot and its walls for the pack's tower shells.
-        if (ctx.roads && ctx.roads->corridorHits(tx, tz, 8.0f)) { ++audited; continue; }
+        // V8: the #34a corridor VETO that used to stand here is GONE. It was
+        // one of four sites that deleted whatever a geometry-blind placement
+        // dropped onto a road. This pack is a REPLAYED UNITY LAYOUT — its
+        // piece positions are authored data, not a guess, and the pad it sits
+        // on is chosen clear of the network; there is nothing left to veto.
         const float T[16] = { W[0],W[1],W[2],0, W[3],W[4],W[5],0, W[6],W[7],W[8],0, tx,ty,tz,1 };
         if (d->addGlbInstance(name, T)) {
             ++placed;
@@ -247,9 +500,6 @@ void loadDistrictInto(EchoRegion& region, EchoRegionCtx& ctx,
         // SAME per-piece name classification in its own pass over this file.)
     }
     float mn[3], mx[3]; d->worldBounds(mn, mx);
-    if (audited > 0)
-        x3::logInfo(std::string("[region] DISTRICT ") + tag + " — corridor audit VETOED " +
-                    std::to_string(audited) + " pieces (road/deck footprint)");
     if (cams > 0)
         x3::logInfo(std::string("[region] DISTRICT ") + tag + " — " +
                     std::to_string(cams) + " WD2 cameras registered");
@@ -315,68 +565,202 @@ void buildOneDistrict(EchoRegion& region, EchoRegionCtx& ctx, const char* wantTa
 // ~951-2043 + ~2878-2911 for the source blocks.
 // ===========================================================================
 void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
-    // ===================== REAL BUILDINGS (Phase B) ===== (host ~945-1006)
+    // ============ REAL BUILDINGS — LOT-DRIVEN (V8, was: polar hash rings) ====
+    // The rings are gone. Houses come from the road graph now: first every LOT
+    // the block/lot generator found (Tier 1), then a FRONTAGE WALK down the
+    // streets that bound no closed block (Tier 0) — which is most of the crown,
+    // where the avenues are radial spokes rather than a grid. Both paths give a
+    // yaw that faces the street with ZERO jitter, a footprint that is known to
+    // fit before anything loads, a min-spacing test (the rings had none), and a
+    // four-corner terrain seat. Nothing is vetoed afterwards because nothing is
+    // ever placed on a road.
     {
         const std::string hdir = ctx.houseForgeDir.empty() ?
             "D:/Assets/_glb/prefab_buildings/HouseForge" : ctx.houseForgeDir;
-        int housesBuilt = 0, housesVetoed = 0;
-        auto addHouse = [&](const char* glb, float x, float z, float yaw, float lift) {
-            // #34a CORRIDOR AUDIT: no house under the freeway / on an avenue.
-            if (ctx.roads && ctx.roads->corridorHits(x, z, 12.0f)) { ++housesVetoed; return; }
-            const float gy = ctx.hf.ok() ? ctx.hf.heightAt(x, z) : 190.0f;
-            const float s = 0.01f, c = std::cos(yaw), sn = std::sin(yaw);
-            const float T[16] = { c*s, 0.0f, -sn*s, 0.0f,  0.0f, s, 0.0f, 0.0f,
-                                  sn*s, 0.0f,  c*s, 0.0f,   x, gy + lift, z, 1.0f };
-            auto h = std::make_unique<EnvArtSystem>();
-            if (h->buildFromGlbAt(ctx.device, hdir, glb, T)) {
-                region.addArt(std::move(h)); ++housesBuilt;
-                // WD2 CAMERA SATURATION: every 4th house watches its street.
-                if (ctx.hax && (housesBuilt % 4) == 0) {
-                    HackableObject cam;
-                    cam.type = HackableType::Camera;
-                    cam.pos = { x, gy + 3.2f, z };
-                    cam.label = "NEIGHBORHOOD CAM " + std::to_string(housesBuilt / 4);
-                    ctx.hax->add(cam);
+        const BuildingPalette pal{ hdir.c_str(), kCrownHouseAssets,
+                                   (int)(sizeof(kCrownHouseAssets)/sizeof(kCrownHouseAssets[0])),
+                                   0.01f };
+        FootprintTable ft; ft.build(ctx, pal);
+
+        // ONE EnvArtSystem for the whole neighbourhood: the district loader's
+        // instancing path. The old code built one system PER HOUSE.
+        auto pack = std::make_unique<EnvArtSystem>();
+        EnvArtSystem* packPtr = pack->beginFromDir(ctx.device, hdir) ? pack.get() : nullptr;
+
+        Occupancy occ;
+        // The crown's five hardcoded straight "crown lanes" (CITY
+        // INFRASTRUCTURE, below) are a second road system EchoRoads knows
+        // nothing about. Reserve their footprints so placement avoids them the
+        // same way it avoids other buildings — one mechanism, not a fifth veto.
+        {
+            const struct { float sx,sz,dx,dz,len; } rlanes[] = {
+                {-330,702,1,0,620},{290,742,-1,0,620},{-330,818,1,0,620},
+                {2,560,0,1,400},{-150,960,0,-1,400},
+            };
+            for (const auto& L : rlanes)
+                occ.takeAxis(L.sx + L.dx*L.len*0.5f, L.sz + L.dz*L.len*0.5f,
+                             L.dx, L.dz, L.len*0.5f, 9.5f);   // 15 m road + verge
+        }
+
+        // ---- ECHO_CITY_LEGACY=1: the pre-V8 polar hash rings, verbatim ----
+        if (cityLegacyOn()) {
+            static const int kCat[5] = { 0, 1, 2, 3, 4 };
+            const float ringR[4] = { 135.0f, 215.0f, 300.0f, 395.0f };
+            int built = 0, vetoed = 0, neigh = 0;
+            auto addLegacy = [&](int a, float x, float z, float yaw) {
+                if (legacyCorridorHit(ctx.roads, x, z, 12.0f)) { ++vetoed; return; }
+                // ONE heightAt() probe at the pivot — the old ground contact.
+                const float gy = ctx.hf.ok() ? ctx.hf.heightAt(x, z) : 190.0f;
+                const float s = 0.01f, c = std::cos(yaw), sn = std::sin(yaw);
+                const float T[16] = { c*s,0,-sn*s,0, 0,s,0,0, sn*s,0,c*s,0,
+                                      x, gy + kCrownHouseAssets[a].lift, z, 1 };
+                bool ok = packPtr ? packPtr->addGlbInstance(kCrownHouseAssets[a].glb, T) : false;
+                if (!ok && cityProxyOn() && ctx.roads) {
+                    ctx.roads->addMassingBox(x, z, yaw, ft.w[a] * 0.5f, ft.d[a] * 0.5f,
+                                             gy - 0.5f, gy + kCrownHouseAssets[a].height);
+                    ok = true;
+                }
+                if (ok) ++built;
+            };
+            addLegacy(0,  60.0f, 700.0f, 0.4f); addLegacy(1, 125.0f, 745.0f, 2.1f);
+            addLegacy(2,  10.0f, 675.0f, 3.6f); addLegacy(3, 150.0f, 690.0f, 5.0f);
+            addLegacy(4,  85.0f, 640.0f, 1.2f);
+            for (int r = 0; r < 4; ++r) {
+                const int cnt = 7 + r * 3;
+                for (int k = 0; k < cnt; ++k) {
+                    const uint32_t seed = (uint32_t)(r * 101 + k);   // INDEX-derived
+                    const float ang = ((float)k + hh(seed) * 0.7f) * (6.2831853f / cnt);
+                    const float rr  = ringR[r] + (hh(seed * 7u + 3u) - 0.5f) * 46.0f;
+                    const float x = -20.0f + std::cos(ang) * rr;
+                    const float z = 760.0f + std::sin(ang) * rr;
+                    const float gy = ctx.hf.ok() ? ctx.hf.heightAt(x, z) : 190.0f;
+                    if (gy < 34.0f) continue;
+                    const int a = kCat[(uint32_t)(r + k * 2) % 5u];   // periodic ABCDE
+                    const float yaw = ang + 1.5708f + (hh(seed * 13u + 5u) - 0.5f) * 1.2f;
+                    addLegacy(a, x, z, yaw);
+                    ++neigh;
                 }
             }
-        };
-        // Five hero houses (hand-placed on the crown foothills).
-        addHouse("PF_MetalHouse01.glb",      60.0f, 700.0f, 0.4f, 11.73f);
-        addHouse("PF_MetalHouse02.glb",     125.0f, 745.0f, 2.1f,  2.13f);
-        addHouse("PF_PrimitiveHouse01.glb",  10.0f, 675.0f, 3.6f,  3.17f);
-        addHouse("PF_PrimitiveHouse02.glb", 150.0f, 690.0f, 5.0f,  1.00f);
-        addHouse("PF_PrimitiveHouse03.glb",  85.0f, 640.0f, 1.2f,  8.59f);
+            x3::logWarn("[region] ECHO_CITY_LEGACY=1 — PRE-V8 PLACEMENT: " +
+                        std::to_string(built) + " houses on 4 polar hash rings (" +
+                        std::to_string(neigh) + " ring candidates, " +
+                        std::to_string(vetoed) + " deleted by the corridor audit)");
+            if (packPtr) region.addArt(std::move(pack));
+        } else {   // ---- V8: the structural path ----
 
-        // NEIGHBOURHOOD DRAPE: deterministic hash jitter (no rand — identical
-        // every launch/capture) rings around the crown.
-        struct HouseDef { const char* glb; float lift; };
-        static const HouseDef kCat[5] = {
-            {"PF_MetalHouse01.glb", 11.73f}, {"PF_MetalHouse02.glb", 2.13f},
-            {"PF_PrimitiveHouse01.glb", 3.17f}, {"PF_PrimitiveHouse02.glb", 1.00f},
-            {"PF_PrimitiveHouse03.glb", 8.59f},
+        int fromLots = 0, fromFrontage = 0, noFit = 0, spaced = 0, wet = 0, cams = 0;
+        auto camAt = [&](float x, float z, float gy) {
+            if (!ctx.hax) return;
+            ++cams;
+            if ((cams % 4) != 0) return;
+            HackableObject cam;
+            cam.type = HackableType::Camera;
+            cam.pos = { x, gy + 3.2f, z };
+            cam.label = "NEIGHBORHOOD CAM " + std::to_string(cams / 4);
+            ctx.hax->add(cam);
         };
-        const float ringR[4] = { 135.0f, 215.0f, 300.0f, 395.0f };
-        int neigh = 0;
-        for (int r = 0; r < 4; ++r) {
-            const int cnt = 7 + r * 3;                     // fuller outer rings
-            for (int k = 0; k < cnt; ++k) {
-                const uint32_t seed = (uint32_t)(r * 101 + k);
-                const float ang = ((float)k + hh(seed) * 0.7f) * (6.2831853f / cnt);
-                const float rr  = ringR[r] + (hh(seed * 7u + 3u) - 0.5f) * 46.0f;
-                const float x = -20.0f + std::cos(ang) * rr;
-                const float z = 760.0f + std::sin(ang) * rr;
-                const float gy = ctx.hf.ok() ? ctx.hf.heightAt(x, z) : 190.0f;
-                if (gy < 34.0f) continue;                  // shoreline / water → skip
-                const HouseDef& hd = kCat[(uint32_t)(r + k * 2) % 5u];
-                const float yaw = ang + 1.5708f + (hh(seed * 13u + 5u) - 0.5f) * 1.2f;
-                addHouse(hd.glb, x, z, yaw, hd.lift);
-                ++neigh;
+        auto landOk = [&](float x, float z) {
+            return !ctx.hf.ok() || ctx.hf.heightAt(x, z) >= 2.5f;
+        };
+
+        // ---- TIER 1: one building per LOT --------------------------------
+        if (ctx.roads) {
+            x3::game::CityPlanRules rules;
+            const x3::game::CityPlan& plan = ctx.roads->cityPlan(rules, x3::game::kRcGround);
+            for (const x3::game::CityLot& lot : plan.lots) {
+                // Front the building on its street: push in from the fronting
+                // edge by half the depth, so the block gets a street WALL
+                // rather than a row of centred islands.
+                const uint32_t seed = x3::game::seedAt(lot.cx, lot.cz);
+                const int idx = ft.pick(seed, lot.halfW * 2.0f, lot.halfD * 2.0f);
+                if (idx < 0) { ++noFit; continue; }
+                const float halfD = ft.d[idx] * 0.5f, halfW = ft.w[idx] * 0.5f;
+                float px = lot.frontX + lot.nx * halfD;
+                float pz = lot.frontZ + lot.nz * halfD;
+                // Keep the footprint inside the lot's guaranteed-inside OBB.
+                const float du = (px - lot.cx) * lot.ax + (pz - lot.cz) * lot.az;
+                const float dv = (px - lot.cx) * lot.nx + (pz - lot.cz) * lot.nz;
+                const float cu = std::max(-(lot.halfW - halfW), std::min(lot.halfW - halfW, du));
+                const float cv = std::max(-(lot.halfD - halfD), std::min(lot.halfD - halfD, dv));
+                px = lot.cx + lot.ax * cu + lot.nx * cv;
+                pz = lot.cz + lot.az * cu + lot.nz * cv;
+                if (!landOk(px, pz)) { ++wet; continue; }
+                if (!occ.free(px, pz, lot.frontYaw, halfW, halfD)) { ++spaced; continue; }
+                if (!placeSeated(region, ctx, pal, ft, idx, px, pz, lot.frontYaw, packPtr))
+                    continue;
+                occ.take(px, pz, lot.frontYaw, halfW, halfD);
+                ++fromLots;
+                camAt(px, pz, ctx.hf.ok() ? ctx.hf.heightAt(px, pz) : 190.0f);
             }
+
+            // ---- TIER 0: FRONTAGE WALK for the streets that bound no block -
+            // This is the direct replacement for the four polar rings: instead
+            // of guessing an angle around a point, walk the real centreline and
+            // set the house down where a house goes.
+            std::vector<x3::game::Frontage> fr;
+            ctx.roads->sampleFrontage(x3::game::kRcGround, 26.0f, 3.5f, fr);
+            for (const x3::game::Frontage& f : fr) {
+                const uint32_t seed = x3::game::seedAt(f.x, f.z);
+                // Deterministic thinning FROM POSITION — a gappy street reads
+                // as a neighbourhood; a solid wall of prefabs does not.
+                if (x3::game::seedFloat(x3::game::seedMix(seed, 11u)) > 0.62f) continue;
+                const int idx = ft.pick(seed, 18.0f, 16.0f);
+                if (idx < 0) { ++noFit; continue; }
+                const float halfW = ft.w[idx] * 0.5f, halfD = ft.d[idx] * 0.5f;
+                // The frontage point is the front FACE; the pivot sits halfD in.
+                const float px = f.x + f.nx * halfD, pz = f.z + f.nz * halfD;
+                if (!landOk(px, pz)) { ++wet; continue; }
+                if (!occ.free(px, pz, f.yaw, halfW + 1.2f, halfD + 1.2f)) { ++spaced; continue; }
+                if (!placeSeated(region, ctx, pal, ft, idx, px, pz, f.yaw, packPtr)) continue;
+                occ.take(px, pz, f.yaw, halfW + 1.2f, halfD + 1.2f);
+                ++fromFrontage;
+                camAt(px, pz, ctx.hf.ok() ? ctx.hf.heightAt(px, pz) : 190.0f);
+            }
+            x3::logInfo("[region] REAL BUILDINGS — " + std::to_string(fromLots) +
+                        " on lots + " + std::to_string(fromFrontage) +
+                        " on street frontage (" + std::to_string(noFit) +
+                        " lots no palette entry fit, " + std::to_string(spaced) +
+                        " min-spacing, " + std::to_string(wet) + " off dry land); " +
+                        std::to_string(ft.measured) + "/" +
+                        std::to_string(ft.measured + ft.authored) +
+                        " footprints measured at boot, rest authored");
+        } else {
+            x3::logWarn("[region] REAL BUILDINGS — no road graph: the crown "
+                        "neighbourhood is road-derived and has nothing to sit on");
         }
-        x3::logInfo("[region] REAL BUILDINGS — " +
-                    std::to_string(housesBuilt) + " textured HouseForge houses (" +
-                    std::to_string(neigh) + " draped into neighbourhoods; " +
-                    std::to_string(housesVetoed) + " corridor-vetoed)");
+
+        // Five HERO houses, hand-placed on the crown foothills since Phase B.
+        // The positions are authored and kept; what changes is that the yaw is
+        // now taken from the nearest street's tangent instead of an authored
+        // number, and the seat is a four-corner probe.
+        {
+            static const struct { int asset; float x, z, fallbackYaw; } kHero[] = {
+                { 0,  60.0f, 700.0f, 0.4f }, { 1, 125.0f, 745.0f, 2.1f },
+                { 2,  10.0f, 675.0f, 3.6f }, { 3, 150.0f, 690.0f, 5.0f },
+                { 4,  85.0f, 640.0f, 1.2f },
+            };
+            std::vector<x3::game::Frontage> fr;
+            if (ctx.roads) ctx.roads->sampleFrontage(x3::game::kRcGround, 8.0f, 3.5f, fr);
+            int heroes = 0;
+            for (const auto& h : kHero) {
+                float yaw = h.fallbackYaw, best = 60.0f * 60.0f;
+                for (const x3::game::Frontage& f : fr) {
+                    const float dx = f.x - h.x, dz = f.z - h.z;
+                    const float d = dx*dx + dz*dz;
+                    if (d < best) { best = d; yaw = f.yaw; }
+                }
+                const float halfW = ft.w[h.asset] * 0.5f, halfD = ft.d[h.asset] * 0.5f;
+                if (!occ.free(h.x, h.z, yaw, halfW, halfD)) continue;
+                if (!placeSeated(region, ctx, pal, ft, h.asset, h.x, h.z, yaw, packPtr))
+                    continue;
+                occ.take(h.x, h.z, yaw, halfW, halfD);
+                ++heroes;
+            }
+            x3::logInfo("[region] HERO HOUSES — " + std::to_string(heroes) +
+                        "/5 seated (yaw from the nearest street tangent)");
+        }
+        if (packPtr) region.addArt(std::move(pack));
+        }   // end of the V8 branch (see ECHO_CITY_LEGACY above)
     }
 
     // ===================== DOWNTOWN SKYLINE (Urban Night City) ===== (host ~1008-1047)
@@ -402,37 +786,53 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
             "Building 36","Building 38","Building 39","Building 40","Building 41",
             "Building 43",
         };
-        int towersBuilt = 0, towersVetoed = 0;
+        int towersBuilt = 0, reseated = 0;
         for (const char* b : kBld) {
             auto t = std::make_unique<EnvArtSystem>();
-            if (t->buildFromGlbAt(ctx.device, cdir, std::string(b) + ".glb", M)) {
-                // #34a CORRIDOR AUDIT: each tower's world position is baked in
-                // its GLB (one shared layout transform), so the test runs on
-                // the LOADED footprint — a tower straddling a road/deck
-                // corridor is vetoed whole (piers through towers, Tim's
-                // capture). The dropped system's GPU load is released with it.
-                float mn[3], mx[3]; t->worldBounds(mn, mx);
-                if (ctx.roads && ctx.roads->corridorHitsAABB(mn[0], mn[2],
-                                                             mx[0], mx[2], 2.0f)) {
-                    ++towersVetoed;
-                    continue;
+            if (!t->buildFromGlbAt(ctx.device, cdir, std::string(b) + ".glb", M)) continue;
+            float mn[3], mx[3]; t->worldBounds(mn, mx);
+            // V8: the corridorHitsAABB VETO that stood here is GONE. What it
+            // was actually compensating for was that all 36 towers shared ONE
+            // baked transform seated from ONE heightAt() probe at (tcx,tcz) —
+            // so every tower away from that probe was floating or buried, and
+            // deleting the ones over a road was the only lever anyone had.
+            // Each tower is now RE-SEATED on its own ground: read where the
+            // load actually put it, probe THAT footprint's corners, and slide
+            // the instance in Y. One probe for downtown becomes one per tower.
+            if (ctx.hf.ok() && mx[0] >= mn[0]) {
+                const float bcx = (mn[0] + mx[0]) * 0.5f, bcz = (mn[2] + mx[2]) * 0.5f;
+                const float hx = std::max(4.0f, (mx[0] - mn[0]) * 0.5f);
+                const float hz = std::max(4.0f, (mx[2] - mn[2]) * 0.5f);
+                const x3::game::FootprintSeat seat =
+                    x3::game::seatFootprint(ctx.hf, bcx, bcz, 0.0f, hx, hz);
+                const float dy = seat.y - mn[1];
+                if (std::fabs(dy) > 0.05f) {
+                    const float M2[16] = { ts,0,0,0, 0,ts,0,0, 0,0,ts,0,
+                                           Tx, gy + tlift + dy, Tz, 1 };
+                    t->setInstanceTransform(0, M2);
+                    t->worldBounds(mn, mx);
+                    ++reseated;
                 }
-                // WD2 CAMERA SATURATION: one high camera per skyline tower.
-                if (ctx.hax) {
-                    HackableObject cam;
-                    cam.type = HackableType::Camera;
-                    cam.pos = { (mn[0] + mx[0]) * 0.5f,
-                                mn[1] + (mx[1] - mn[1]) * 0.75f,
-                                (mn[2] + mx[2]) * 0.5f };
-                    cam.label = std::string(b) + " CAM";
-                    ctx.hax->add(cam);
-                }
-                region.addArt(std::move(t)); ++towersBuilt;
+                if (ctx.roads && seat.ok && seat.plinth)
+                    ctx.roads->addPlinth(bcx, bcz, 0.0f, hx, hz,
+                                         seat.yMin - 0.6f, seat.y + 0.1f);
             }
+            // WD2 CAMERA SATURATION: one high camera per skyline tower.
+            if (ctx.hax) {
+                HackableObject cam;
+                cam.type = HackableType::Camera;
+                cam.pos = { (mn[0] + mx[0]) * 0.5f,
+                            mn[1] + (mx[1] - mn[1]) * 0.75f,
+                            (mn[2] + mx[2]) * 0.5f };
+                cam.label = std::string(b) + " CAM";
+                ctx.hax->add(cam);
+            }
+            region.addArt(std::move(t)); ++towersBuilt;
         }
         x3::logInfo("[region] DOWNTOWN SKYLINE — " +
                     std::to_string(towersBuilt) + " Urban Night City towers on the crown (" +
-                    std::to_string(towersVetoed) + " corridor-vetoed)");
+                    std::to_string(reseated) + " re-seated on their own terrain; "
+                    "the one-probe-for-all-downtown seat is gone)");
     }
 
     // ===================== CITY INFRASTRUCTURE — crown portion ===== (host ~1511-1638)
@@ -934,43 +1334,72 @@ void buildWaterfrontRow(EchoRegion& region, EchoRegionCtx& ctx) {
         {  570.2f,  546.9f, -2.077f }, {  509.6f,  525.1f, -1.868f },
         {  453.3f,  518.0f, -1.588f }, {  403.4f,  569.5f, -1.379f },
     };
-    static const char* kGlass[] = {
-        "Building 01", "Building 05", "Building 14", "Building 21",
-        "Building 24", "Building 33", "Building 38", "Building 43",
-    };
     const std::string cdir =
         "D:/Assets/_glb/tech/Urban Night City - Open World/Assets/GeeZyyGames/buildings/FBX";
-    const float ts = 0.34f;
-    int placed = 0, vetoed = 0;
-    for (size_t i = 0; i < sizeof(kRow) / sizeof(kRow[0]); ++i) {
-        const auto& r = kRow[i];
-        if (ctx.roads && ctx.roads->corridorHits(r.x, r.z, 10.0f)) { ++vetoed; continue; }
-        const float gy = ctx.hf.ok() ? ctx.hf.heightAt(r.x, r.z) : 0.0f;
-        const float c = std::cos(r.yaw), sn = std::sin(r.yaw);
-        const float S0[16] = { c*ts,0,-sn*ts,0,  0,ts,0,0,  sn*ts,0,c*ts,0,  0,0,0,1 };
-        auto t = std::make_unique<EnvArtSystem>();
-        if (!t->buildFromGlbAt(ctx.device, cdir,
-                std::string(kGlass[i % (sizeof(kGlass) / sizeof(kGlass[0]))]) + ".glb", S0))
-            continue;
-        float mn[3], mx[3]; t->worldBounds(mn, mx);
-        const float M[16] = { c*ts,0,-sn*ts,0,  0,ts,0,0,  sn*ts,0,c*ts,0,
-                              r.x - (mn[0] + mx[0]) * 0.5f, gy - mn[1],
-                              r.z - (mn[2] + mx[2]) * 0.5f, 1 };
-        t->setInstanceTransform(0, M);
-        region.addArt(std::move(t));
+    const BuildingPalette pal{ cdir.c_str(), kGlassTowerAssets,
+                               (int)(sizeof(kGlassTowerAssets)/sizeof(kGlassTowerAssets[0])),
+                               0.34f };
+    FootprintTable ft; ft.build(ctx, pal);
+
+    // V8: the promenade is now a FRONTAGE WALK down the Harbor Boulevard's
+    // SEAWARD side instead of 20 hand-traced (x,z,yaw) triples whose yaws were
+    // eyeballed off a height PNG and 30% of which the corridor audit deleted.
+    // The boulevard is already probed onto the true waterline by the road
+    // module, so walking it puts the towers exactly where the literals were
+    // trying to be — but square to the street, evenly spaced, and never on it.
+    // The literals remain as the no-road-graph fallback.
+    struct Spot { float x, z, yaw; };
+    std::vector<Spot> spots;
+    bool fromRoads = false;
+    if (ctx.roads && !cityLegacyOn()) {   // fallback cvar: the authored literals
+        std::vector<x3::game::Frontage> fr;
+        ctx.roads->sampleFrontage(x3::game::kRcAvenue, 55.0f, 12.0f, fr);
+        for (const x3::game::Frontage& f : fr) {
+            // Seaward side only: the frontage point must be closer to water
+            // than the centreline is. (heightAt < land threshold outboard.)
+            if (!ctx.hf.ok()) continue;
+            const float probe = ctx.hf.heightAt(f.x + f.nx * 30.0f, f.z + f.nz * 30.0f);
+            const float here  = ctx.hf.heightAt(f.x, f.z);
+            if (here < 2.5f) continue;                 // the pad itself is wet
+            if (probe > 2.5f) continue;                // inland side — skip
+            spots.push_back({ f.x, f.z, f.yaw });
+        }
+        fromRoads = !spots.empty();
+    }
+    if (!fromRoads)
+        for (const auto& r : kRow) spots.push_back({ r.x, r.z, r.yaw });
+
+    Occupancy occ;
+    int placed = 0, spacedOut = 0, noFit = 0;
+    for (const Spot& s : spots) {
+        // ECHO_CITY_LEGACY: the deleted #34a veto, reproduced so the A/B is fair.
+        if (cityLegacyOn() && legacyCorridorHit(ctx.roads, s.x, s.z, 10.0f)) { ++spacedOut; continue; }
+        const uint32_t seed = x3::game::seedAt(s.x, s.z);
+        const int idx = ft.pick(seed, 40.0f, 40.0f);
+        if (idx < 0) { ++noFit; continue; }
+        const float halfW = ft.w[idx] * 0.5f, halfD = ft.d[idx] * 0.5f;
+        // Pivot sits halfD inland of the frontage face, facing the street.
+        const float fx = std::sin(s.yaw), fz = std::cos(s.yaw);
+        const float px = s.x - fx * halfD, pz = s.z - fz * halfD;
+        if (!occ.free(px, pz, s.yaw, halfW + 3.0f, halfD + 3.0f)) { ++spacedOut; continue; }
+        if (!placeSeated(region, ctx, pal, ft, idx, px, pz, s.yaw, nullptr)) continue;
+        occ.take(px, pz, s.yaw, halfW + 3.0f, halfD + 3.0f);
         ++placed;
         // WD2 CAMERA SATURATION: a promenade cam on every glass tower.
         if (ctx.hax) {
             HackableObject cam;
             cam.type = HackableType::Camera;
-            cam.pos = { r.x, gy + 9.0f, r.z };
+            cam.pos = { px, (ctx.hf.ok() ? ctx.hf.heightAt(px, pz) : 0.0f) + 9.0f, pz };
             cam.label = "PROMENADE CAM " + std::to_string(placed);
             ctx.hax->add(cam);
         }
     }
     x3::logInfo("[region] WATERFRONT ROW — " + std::to_string(placed) +
-                " glass towers on the waterline (" + std::to_string(vetoed) +
-                " corridor-vetoed)");
+                " glass towers, " + (fromRoads ? "frontage-walked down the boulevard"
+                                               : "from the authored fallback row") +
+                " (" + std::to_string(spacedOut) + " min-spacing, " +
+                std::to_string(noFit) + " no fit); zero corridor vetoes — "
+                "the promenade cannot land on the road it is walking");
 }
 
 void buildDistrictUrban(EchoRegion& region, EchoRegionCtx& ctx) {

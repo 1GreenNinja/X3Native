@@ -42,6 +42,7 @@ struct CliOptions {
          testProgression = false,  // --test-progression: W9-3 XP -> level -> skill points + save round-trip
          testSkillTree = false,    // --test-skilltree: W9-3 prereq/cost/apply + mods reach the player
          testStrata = false,        // --test-strata (R-3 fold: THE DESCENT chain)
+         testCityBlocks = false,    // --test-cityblocks (Lane 4: block/lot/frontage generator)
          testElevatorShowcase = false,  // --test-elevator-showcase (R-4 fold)
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->

@@ -90,11 +90,17 @@ struct EchoRegionCtx {
     // Asset roots (island/models/districts dirs, assetRoot()) resolved once by
     // the integrator — plain data, no behavior. WP-1 does not interpret these.
     std::string modelsDir, districtsTxt, vegDir, houseForgeDir, cityDir;
-    // #34a CORRIDOR AUDIT: the road network, when the integrator built it
-    // before the regions (echotropolis does since V7.2). Builders consult
-    // EchoRoads::corridorHits so placements never spawn inside a road/deck
-    // corridor. Null => no audit (legacy order / roads failed) — placements
-    // behave exactly as before.
+    // THE ROAD NETWORK, when the integrator built it before the regions
+    // (echotropolis does since V7.2).
+    //
+    // V8 (Lane 4): this is no longer an AUDIT handle, it is the PLACEMENT
+    // SOURCE. Builders ask it for city blocks, lots and street frontage
+    // (echo_roads.h, CITY BLOCKS section) and put buildings on what it
+    // returns, so a building is outside every road corridor BY CONSTRUCTION.
+    // The four `corridorHits()` veto sites that used to delete whatever a
+    // hash-scatter dropped onto a road are gone, and so is corridorHits().
+    // Null => no road graph: the road-derived content simply is not built
+    // (there is nothing sensible to fall back to — that is the point).
     const class EchoRoads*  roads = nullptr;
     // WD2 CAMERA SATURATION (Tim: "cameras IN and outside of most buildings,
     // just like Watch Dogs 2"): builders register Camera hackables as they

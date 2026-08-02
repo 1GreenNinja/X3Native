@@ -152,6 +152,163 @@ struct RoadGraph {
     static float laneCenterOffset(const RoadEdge& e, int lane, bool forward);
 };
 
+// ===========================================================================
+// CITY BLOCKS / LOTS / FRONTAGE — V8, "the missing consumer".
+//
+// The RoadClass comment above (HOUSE/STREET ALIGNMENT) has specified this
+// since v1 and nothing ever implemented it: the graph was a real road network
+// and the buildings were four independent hash scatters reconciled afterwards
+// by DELETION (corridorHits). Everything below turns the graph into PLACES TO
+// BUILD, so placement is correct BY CONSTRUCTION and there is nothing to veto.
+//
+//   sampleFrontage()   TIER 0 — walk an edge, emit the points where a lot's
+//                      front door goes. Same math the roadside-debris scatter
+//                      already used correctly (echo_roads.cpp, V7 ROADSIDE
+//                      DEBRIS) — promoted to a public API.
+//   buildCityPlan()    TIER 1 — planarize the graph, extract the minimal
+//                      cycles (= CITY BLOCKS), inset each block by its own
+//                      ring's road half-widths (= the BUILDABLE polygon), and
+//                      recursively split it into LOTS that each keep street
+//                      frontage. A lot carries frontYaw; a building takes it
+//                      with ZERO jitter and is inside the lot by construction.
+//
+// Pure geometry over a RoadGraph: no device, no assets, no rand, no globals.
+// Deterministic AND insertion-order independent (position-derived seeds) —
+// see --test-cityblocks.
+// ===========================================================================
+
+// Class selector for sampleFrontage()/buildCityPlan(). One bit per RoadClass.
+enum RoadClassMask : uint32_t {
+    kRcFreeway      = 1u << (uint32_t)RoadClass::Freeway,
+    kRcRamp         = 1u << (uint32_t)RoadClass::Ramp,
+    kRcAvenue       = 1u << (uint32_t)RoadClass::Avenue,
+    kRcHarborStreet = 1u << (uint32_t)RoadClass::HarborStreet,
+    kRcGround       = kRcAvenue | kRcHarborStreet,   // the classes that bound blocks
+    kRcAll          = kRcFreeway | kRcRamp | kRcGround,
+};
+inline uint32_t roadClassBit(RoadClass c) { return 1u << (uint32_t)c; }
+
+// One buildable point on a street edge. `yaw` is the ENGINE yaw convention
+// used by every placement transform in this project (local +Z maps to
+// (sin yaw, 0, cos yaw)), so a prop placed with this yaw FACES THE ROAD —
+// literally the header's own spec: yaw = atan2(tangent) +/- 90 degrees,
+// position = sample +/- perp * (width/2 + curb + walk + setback).
+struct Frontage {
+    float x = 0, z = 0;          // world XZ of the frontage point (lot side of the walk)
+    float yaw = 0;               // building yaw: +Z local points at the road
+    float tx = 0, tz = 1;        // road centerline tangent at the parent sample
+    float nx = 0, nz = 0;        // unit outward normal (road -> lot)
+    float roadY = 0;             // finished road surface height at the parent sample
+    float width = 9.0f;          // parent edge's paved width
+    float arc = 0;               // meters along the parent edge
+    uint32_t edge = 0;           // RoadGraph edge index
+    uint32_t sample = 0;         // index into RoadEdge::center
+    int   side = 1;              // +1 = right of travel, -1 = left
+    RoadClass cls = RoadClass::Avenue;
+};
+
+// One segment of a block's ring (ring[i] -> ring[i+1]) and the road it came
+// from. `width`/`cls` drive that segment's own inset, so a block bounded by a
+// 9 m harbor street on one side and a 16 m boulevard on the other insets
+// correctly on each side instead of by one global number.
+struct CityBlockEdge {
+    uint32_t  roadEdge = 0;
+    RoadClass cls   = RoadClass::Avenue;
+    float     width = 9.0f;
+    float     tx = 0, tz = 1;    // road tangent along this segment
+    float     len = 0;
+};
+
+// A minimal cycle of the planarized road graph: one city block.
+struct CityBlock {
+    std::vector<float>         ring;      // x,z pairs — CCW in (x,z), road CENTERLINES
+    std::vector<CityBlockEdge> edge;      // one per ring segment
+    std::vector<float>         build;     // x,z pairs — ring inset to the BUILDABLE polygon
+    std::vector<int>           buildTag;  // per build segment: index into `edge`, or -1
+    float area = 0;                       // ring area (m^2, positive)
+    float cx = 0, cz = 0;                 // ring centroid
+};
+
+// One lot. The building's transform is fully determined here: `frontYaw` is
+// the yaw (no jitter, ever), and the footprint must fit inside the OBB
+// (halfW along `ax`, halfD along the inward normal) which is guaranteed to lie
+// inside the lot polygon — which is inside the buildable polygon — which
+// excludes every road corridor. That chain is the whole point: it is what
+// corridorHits() used to enforce by deleting buildings afterwards.
+struct CityLot {
+    uint32_t  block    = 0;
+    uint32_t  roadEdge = 0;
+    RoadClass roadCls  = RoadClass::Avenue;
+    float cx = 0, cz = 0;        // OBB centre (world XZ)
+    float frontYaw = 0;          // faces its street
+    float ax = 0, az = 1;        // unit "along street" axis
+    float nx = 0, nz = 0;        // unit inward normal (street -> block interior)
+    float halfW = 0, halfD = 0;  // OBB half-extents (W along ax, D along nx)
+    float frontX = 0, frontZ = 0;// midpoint of the fronting edge
+    float frontLen = 0;          // meters of street frontage (ALWAYS > 0)
+    float area = 0;              // lot polygon area
+    bool  corner = false;        // fronts two or more distinct roads
+    std::vector<float> poly;     // lot polygon, x,z pairs, CCW
+    std::vector<int>   tag;      // per poly segment: CityBlock::edge index, or -1
+};
+
+struct CityPlanRules {
+    float setback       = 3.5f;   // building face to the far edge of the sidewalk
+    float sideGap       = 2.5f;   // guaranteed gap between neighbouring buildings
+    float minFrontage   = 9.0f;   // a lot narrower than this is not a lot
+    float minLotArea    = 130.0f;
+    float targetLotArea = 620.0f; // stop splitting below ~2x this
+    float minBlockArea  = 420.0f;
+    float ringStep      = 8.0f;   // ring decimation (m) — keeps curved blocks curved
+    int   maxDepth      = 7;
+    float splitJitter   = 0.14f;  // +/- fraction of the span, seeded FROM POSITION
+};
+
+struct CityPlan {
+    std::vector<CityBlock> blocks;
+    std::vector<CityLot>   lots;
+    uint32_t rejectedFaces = 0;   // faces dropped (outer / too small / degenerate)
+    uint32_t rejectedSplits = 0;  // splits refused for killing a child's frontage
+};
+
+// --- the two public entry points (free functions: no device, self-test-able) --
+void sampleFrontage(const RoadGraph& g, uint32_t clsMask, float pitch,
+                    float setback, std::vector<Frontage>& out);
+void buildCityPlan(const RoadGraph& g, uint32_t clsMask,
+                   const CityPlanRules& rules, CityPlan& out);
+
+// --- placement primitives every call site is routed through -----------------
+// POSITION-DERIVED SEED. Replaces index-derived seeds (`r*101 + k`) so that
+// inserting/removing one building does not re-roll every other one, and so the
+// same spot always draws the same asset regardless of iteration order.
+uint32_t seedAt(float x, float z);
+uint32_t seedMix(uint32_t seed, uint32_t k);
+float    seedFloat(uint32_t seed);                       // [0,1)
+// Seeded WEIGHTED draw from a palette — replaces the `% 5` / `% 8` periodic
+// ABCDE cycles. Returns [0,n).
+int      seedWeighted(uint32_t seed, const float* weights, int n);
+
+// FOOTPRINT-CORNER TERRAIN SEATING. One heightAt() probe at the pivot is what
+// made houses float a corner or sink one; this probes the four footprint
+// corners plus the centre and seats at the MAX so nothing floats, reporting
+// the spread so the caller can drop a plinth under the overhang.
+struct FootprintSeat {
+    bool  ok      = false;   // false when the heightfield is not loaded
+    float y       = 0;       // seat height (MAX of the 5 probes)
+    float yMin    = 0;       // lowest probe
+    float spread  = 0;       // y - yMin
+    bool  plinth  = false;   // spread exceeded the threshold
+};
+FootprintSeat seatFootprint(const Heightfield& hf, float cx, float cz, float yaw,
+                            float halfX, float halfZ, float plinthThresh = 0.30f);
+
+// --test-cityblocks. Headless, no device, no assets: builds known synthetic
+// road graphs and asserts face count, frontage, non-overlap, road clearance,
+// determinism and insertion-order independence, and — as a permanent negative
+// control — that the SAME checkers reject the polar-hash-ring layout this
+// work replaced. Returns true on pass.
+bool runCityBlocksSelfTest();
+
 // ---------------------------------------------------------------------------
 // EchoRoads — build once, draw every frame. One mesh per material bucket
 // (asphalt / paint / concrete / sidewalk), identity transform, flat PBR colors
@@ -197,17 +354,39 @@ public:
 
     const RoadGraph& graph() const { return m_graph; }
 
-    // #34a CORRIDOR AUDIT (Tim's capture: piers THROUGH a tower).
-    // True when world (x,z) lies within `clear` meters of any road corridor —
-    // for elevated classes that is the DECK footprint projected to ground
-    // (width + shoulders), so buildings can't spawn under the freeway either.
-    // Placement passes call this at boot; O(total samples) per query.
-    bool corridorHits(float x, float z, float clear) const;
-    // AABB flavor for baked-layout content whose per-piece position lives in
-    // the mesh (the skyline towers): true when the XZ rect grown by `clear`
-    // touches any corridor.
-    bool corridorHitsAABB(float minX, float minZ, float maxX, float maxZ,
-                          float clear) const;
+    // ---- V8 CITY BLOCKS ---------------------------------------------------
+    // TIER 0: walk the selected edges' arc-even centerline samples and emit a
+    // frontage point every `pitch` meters on BOTH sides. See Frontage.
+    void sampleFrontage(uint32_t clsMask, float pitch, float setback,
+                        std::vector<Frontage>& out) const;
+
+    // TIER 1: the block/lot plan for this graph, built once and cached (the
+    // first call with a given rules struct builds; later calls reuse). Ground
+    // classes only by default — a freeway deck is grade-separated and does not
+    // bound a block.
+    const CityPlan& cityPlan(const CityPlanRules& rules = CityPlanRules(),
+                             uint32_t clsMask = kRcGround) const;
+
+    // CITY EXTRAS (concrete bucket, lazily uploaded on the first draw() after
+    // they are added — placement runs AFTER build(), so this cannot go through
+    // the build() upload). `addPlinth` is what seatFootprint's `spread` result
+    // feeds: a base slab under a building whose footprint overhangs its slope.
+    // `addMassingBox` is the ECHO_CITY_PROXY=1 blockout used to photograph the
+    // layout on checkouts where the building GLBs are absent — OFF by default,
+    // it emits nothing unless a caller asks for it.
+    // (const + mutable: the placement builders hold `const EchoRoads*`.)
+    void addPlinth(float cx, float cz, float yaw, float halfX, float halfZ,
+                   float y0, float y1) const;
+    void addMassingBox(float cx, float cz, float yaw, float halfX, float halfZ,
+                       float y0, float y1) const;
+
+    // (V8: `corridorHits()` / `corridorHitsAABB()` used to live here — the
+    // #34a audit that four placement passes called to DELETE whatever their
+    // hash scatters dropped onto a road. Placement is structural now
+    // (cityPlan/sampleFrontage above), so there is nothing to veto and the
+    // API is gone rather than left lying around for a fifth veto site to
+    // rediscover. The ECHO_EXPORT_CORRIDORS dump for the OFFLINE bakes is
+    // unaffected — that is a separate export in build().)
 
     // V3: drivable-surface collision (see RoadCollisionMesh). Valid after
     // build(); empty before. The integrator owns the physics body.
@@ -235,6 +414,14 @@ private:
            kBucketCount };
 
     Bucket m_buckets[kBucketCount];
+    // V8 CITY EXTRAS — plinths (+ the ECHO_CITY_PROXY massing blockout). NOT
+    // one of the kBucket* buckets because it is filled AFTER build() by the
+    // region placement pass (which holds a `const EchoRoads*`), so it uploads
+    // lazily on the first draw() that sees it dirty.
+    mutable Bucket   m_cityExtra;
+    mutable bool     m_extraDirty = false;
+    mutable CityPlan m_plan;
+    mutable bool     m_planBuilt = false;
     RoadGraph m_graph;
     std::vector<x3::rhi::PointLight> m_lights;
     RoadCollisionMesh m_collision;
