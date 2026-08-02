@@ -640,6 +640,11 @@ struct CliOptions {
     // sky read clearly, settle a few frames, and capture a PNG. Default path when
     // omitted: G:\X3Native-wt-terrain\terrain.png.
     bool        csmShot = false;    std::string csmShotDir = "docs/screenshots/csm";
+    // Lane 5: VERTEX COMPRESSION format version (--vtxfmt N). A DEVICE-INIT
+    // decision, not a cvar: the vertex input is baked into every PSO. 0 = the
+    // legacy 32 B layout (bit-exact), 1 = 24 B (packed normal), 2 = 20 B (packed
+    // normal + half UV). See engine/rhi/VertexPack.h.
+    uint32_t    vertexFormat = 0;
     // Lane 5: discrete mesh LOD proof capture (3 distances x LOD off/on + perf).
     bool        geoLodShot = false; std::string geoLodShotDir = "docs/screenshots/geo-lod";
     bool        terrainShot = false;

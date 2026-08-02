@@ -16,6 +16,7 @@
 // inline->out-of-line mechanics (qualify names, hoist shared helpers) changed.
 
 #include "vk/VulkanRenderDevice_internal.h"
+#include "VertexPack.h"
 
 namespace x3::rhi {
 
@@ -188,6 +189,37 @@ bool VulkanRenderDevice::init(const DeviceDesc& desc) {
                 " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)" +
                 (m_headless ? " [HEADLESS: offscreen target, no surface/swapchain]" : ""));
         x3::boot::mark("rhi: instance+device");
+
+        // ---- VERTEX COMPRESSION (Lane 5): resolve the mesh vertex format ONCE.
+        // Vertex input is baked into every PSO, so this must be settled before the
+        // first pipeline is created and can never change afterwards. A device that
+        // cannot use the packed formats as VERTEX BUFFERS falls back to the legacy
+        // 32 B layout rather than producing garbage geometry.
+        m_vtxFmt = (desc.vertexFormat < kVtxFmtCount) ? desc.vertexFormat : 0u;
+        if (m_vtxFmt != kVtxFmtLegacy) {
+            auto vertexCapable = [&](VkFormat f) {
+                VkFormatProperties fp{};
+                vkGetPhysicalDeviceFormatProperties(m_dev.physical_device, f, &fp);
+                return (fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) != 0;
+            };
+            const bool okN = vertexCapable(VK_FORMAT_A2B10G10R10_SNORM_PACK32);
+            const bool okU = (m_vtxFmt != kVtxFmtNormal10Uv16) || vertexCapable(VK_FORMAT_R16G16_SFLOAT);
+            if (!okN || !okU) {
+                logError("[rhi] --vtxfmt " + std::to_string(m_vtxFmt) +
+                         ": device does not support the packed vertex formats "
+                         "(A2B10G10R10_SNORM vertex=" + std::to_string((int)okN) +
+                         ", R16G16_SFLOAT vertex=" + std::to_string((int)okU) +
+                         ") -- falling back to the legacy 32-byte layout");
+                m_vtxFmt = kVtxFmtLegacy;
+            }
+        }
+        m_vtxStride = vertexStrideFor(m_vtxFmt);
+        if (m_vtxFmt != kVtxFmtLegacy)
+            logInfo("[rhi] mesh vertex format " + std::to_string(m_vtxFmt) + ": " +
+                    std::to_string(m_vtxStride) + " B/vertex (" +
+                    std::to_string(100 - (int)(100u * m_vtxStride / 32u)) + "% smaller than the "
+                    "legacy 32 B) -- GPU skinning is DISABLED for this run (skin.comp writes "
+                    "the legacy layout); callers fall back to CPU skinning");
 
         // VMA allocator (needed by the swapchain's depth image + graphics buffers)
         VmaAllocatorCreateInfo aci{};
@@ -1409,6 +1441,13 @@ void VulkanRenderDevice::hudSize(uint32_t& outW, uint32_t& outH) const {
         outW = m_extent.width; outH = m_extent.height;
     }
 
-bool VulkanRenderDevice::supportsGpuSkinning() const { return m_skinPipeline != VK_NULL_HANDLE; }
+bool VulkanRenderDevice::supportsGpuSkinning() const {
+    // skin.comp writes an 8-float (32 B) MeshVertex-layout output buffer, which the
+    // draw passes bind directly. Under a PACKED vertex format that buffer no longer
+    // matches the PSO's vertex input, so GPU skinning is off and callers take the
+    // CPU path (updateMesh, which packs). Packing skin.comp's output is a follow-up.
+    if (m_vtxFmt != kVtxFmtLegacy) return false;
+    return m_skinPipeline != VK_NULL_HANDLE;
+}
 
 } // namespace x3::rhi

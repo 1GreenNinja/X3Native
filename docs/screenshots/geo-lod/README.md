@@ -50,3 +50,74 @@ Draw calls go UP slightly with LOD on (6 -> 14 at `near`, 6 -> 6 at `far`): the
 renderer groups by mesh id, so a chain whose instances land on several different
 levels emits one indirect draw per level in use. That is the intended trade —
 8 extra draw calls for 14.8 M fewer triangles.
+
+---
+
+# Vertex compression (piece 2)
+
+`--vtxfmt N` picks the mesh vertex layout at DEVICE INIT (the vertex input is
+baked into every PSO, so it cannot be a runtime cvar). See
+`engine/rhi/VertexPack.h`.
+
+| N | layout | stride | vs legacy |
+|---|---|---|---|
+| 0 | pos f32x3 / nrm f32x3 / uv f32x2 | 32 B | — (today, bit-exact) |
+| 1 | pos f32x3 / nrm A2B10G10R10_SNORM / uv f32x2 | 24 B | **-25%** |
+| 2 | pos f32x3 / nrm A2B10G10R10_SNORM / uv f16x2 | 20 B | **-37.5%** |
+
+There is no shader-side unpack: these are real Vulkan vertex-buffer formats, so
+the fixed-function fetch converts them and `mesh.vert` / `depth.vert` /
+`shadow.vert` / `velocity.vert` / the cutout verts / `mesh_probe.vert` are all
+UNCHANGED (which also keeps this lane out of `shaders/inc/*`).
+
+## Measured, on the rig above (RTX 5070 Ti, 1280x720)
+
+**Memory — the guaranteed win, exactly as advertised:**
+
+| stride | mesh vertex buffers |
+|---|---|
+| 32 B | 3,762,304 B (3.59 MB) |
+| 24 B | 2,821,728 B (2.69 MB) — **-25.0%** |
+| 20 B | 2,351,440 B (2.24 MB) — **-37.5%** |
+
+**Frame time — NO measurable win. This is the honest result:**
+
+| stride | 21.6 M tris, r_csm 0 | 21.6 M tris, r_csm 1 (4 cascades) |
+|---|---|---|
+| 32 B | 3.179 ms | 5.817 ms |
+| 24 B | 3.177 ms | 5.823 ms |
+| 20 B | 3.177 ms | 5.829 ms |
+
+Spread 0.2%, i.e. run-to-run noise. Even with the depth pre-pass plus four CSM
+cascades re-fetching all 21.6 M triangles, this GPU is triangle-setup bound, not
+vertex-fetch-bandwidth bound, so narrowing the vertex buys nothing on the clock.
+The win may still be real on a bandwidth-starved part (Pascal / integrated /
+handheld) — untested here.
+
+**Image cost — effectively free:**
+
+| format | max per-channel delta vs `--vtxfmt 0` | pixels differing >2/255 |
+|---|---|---|
+| 1 (24 B) | 1 / 255 | 0.000% |
+| 2 (20 B) | 9 / 255 | 0.023% |
+
+`vtxfmt2/near_lod_off.png` is the 20 B capture; the 32 B capture is
+`near_lod_off.png` in this directory, and the two are indistinguishable.
+
+**Fallback: `--vtxfmt 0` reproduces today BIT-EXACTLY.** Every one of the six
+captures above rendered with `--vtxfmt 0` is MD5-identical to the same capture
+taken before the compression commit existed.
+
+## Known limitation, measured not hand-waved
+
+`--vtxfmt 2` stores UV as binary16, which loses absolute precision as the
+exponent grows. `--test-geolod` V4 measures it: over a 0..64 tiled UV range the
+worst error is 0.0155 uv units = **63.5 texels of a 4096 map**. Format 1 (full
+precision UV, still -25%) exists exactly for tiled surfaces, and is why format 2
+is opt-in rather than the default.
+
+`--vtxfmt` != 0 also disables GPU skinning for the run: `shaders/skin.comp`
+writes a 32 B `MeshVertex`-layout output buffer the draw passes bind directly,
+which no longer matches the PSO's vertex input. `supportsGpuSkinning()` returns
+false and callers transparently take the CPU skinning path (which packs, because
+it goes through `updateMesh`). Packing skin.comp's output is a follow-up.

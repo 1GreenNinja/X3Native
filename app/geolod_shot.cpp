@@ -22,6 +22,8 @@
 #include "mesh_prims.h"
 #include "scene.h"
 #include "asset_root.h"
+#include "app_run.h"          // registerViewmodelCVarsForTest / applyRtaoCVarsForTest
+#include "engine/core/IConsole.h"
 #include "engine/core/x3_log.h"
 #include "engine/rhi/IRenderDevice.h"
 
@@ -45,6 +47,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace x3::game {
@@ -419,6 +422,59 @@ int runGeoLodShot(IRenderDevice& device, const std::string& outDir) {
                     "  PSNR = " + fmt(r.psnr, 1) + " dB" +
                     "  pixels differing >2/>8/>32: " + fmt(r.pctOver2, 3) + "% / " +
                     fmt(r.pctOver8, 3) + "% / " + fmt(r.pctOver32, 3) + "%");
+    }
+
+    // ---- VERTEX COMPRESSION probe (Lane 5, piece 2) --------------------------
+    // The colour pass above is triangle-setup bound, not vertex-FETCH bound, so a
+    // narrower vertex shows up as nothing there. The case the narrowing is FOR is
+    // the one where the same geometry is re-fetched several times per frame with
+    // almost no shading attached: the depth pre-pass plus the four CSM cascades.
+    // Measure that explicitly instead of quoting the colour pass and hoping.
+    {
+        std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
+        x3::apphost::registerViewmodelCVarsForTest(*console);
+        console->set("r_ssao", "0");
+        console->set("r_ssgi", "0");
+        console->set("r_taa",  "0");
+
+        auto sweep = [&](const char* csm, bool lodOn, int frames, int warmup) {
+            console->set("r_csm", csm);
+            // Set r_meshlod through the CONSOLE, not lodPolicy() directly:
+            // applyRtaoCVarsForTest re-reads the cvar every frame and would
+            // otherwise stamp the policy straight back to the cvar's value.
+            console->set("r_meshlod", lodOn ? "1" : "0");
+            scene.resetLodState();
+            double sum = 0.0; int n = 0;
+            uint64_t tris = 0;
+            for (int i = 0; i < frames; ++i) {
+                glfwPollEvents();
+                x3::apphost::applyRtaoCVarsForTest(*console, device);
+                device.setCamera(shots[1].camX, shots[1].camY, shots[1].camZ,
+                                 shots[1].yaw, shots[1].pitch, shots[1].fov);
+                auto frame = device.beginFrame();
+                if (frame.valid) scene.render(device, frame);
+                device.endFrame(frame);
+                const RenderStats st = device.stats();
+                if (i >= warmup) { sum += st.gpuFrameMs; ++n; }
+                tris = st.triangles;
+            }
+            const double ms = (n > 0) ? sum / (double)n : 0.0;
+            x3::logInfo(std::string("[geolod-shot] VTXFMT PROBE  stride=") +
+                        std::to_string(device.meshVertexStride()) + " B  r_csm=" + csm +
+                        "  r_meshlod=" + (lodOn ? "1" : "0") +
+                        "  tris=" + withCommas(tris) +
+                        "  gpu = " + fmt(ms, 3) + " ms");
+        };
+        x3::logInfo("[geolod-shot] VTXFMT MEMORY  stride=" +
+                    std::to_string(device.meshVertexStride()) + " B  mesh vertex buffers = " +
+                    withCommas(device.meshVertexBytes()) + " bytes (" +
+                    fmt((double)device.meshVertexBytes() / (1024.0 * 1024.0), 2) + " MB)");
+        // LOD OFF is the interesting one: 21.6 M triangles fetched once for the
+        // depth pre-pass, four more times for the cascades, once for colour.
+        sweep("0", false, 140, 60);
+        sweep("1", false, 140, 60);
+        sweep("1", true,  140, 60);
+        console->set("r_csm", "0");
     }
 
     pol.enabled = true;

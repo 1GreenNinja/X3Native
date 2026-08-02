@@ -235,7 +235,7 @@ bool VulkanRenderDevice::buildRtSceneAS() {
                 const VkDeviceAddress ibAddr = vkGetBufferDeviceAddress(m_dev.device, &ii);
                 ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (skinned BLAS)
                 if (m_rt.ensureSkinnedBlas(mid, vbAddr, m.vertexCount,
-                                           (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount)) {
+                                           m_vtxStride /* Lane 5: packed vertex stride; POSITION is still float3 @0 */, ibAddr, m.indexCount)) {
                     ++skBuilt;
                     m_skinnedRtThisFrame = true;
                 }
@@ -257,7 +257,7 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             const VkDeviceAddress vbAddr = vkGetBufferDeviceAddress(m_dev.device, &vi);
             const VkDeviceAddress ibAddr = vkGetBufferDeviceAddress(m_dev.device, &ii);
             ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (new BLAS)
-            if (m_rt.ensureBlas(mid, vbAddr, m.vertexCount, (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount))
+            if (m_rt.ensureBlas(mid, vbAddr, m.vertexCount, m_vtxStride /* Lane 5: packed vertex stride; POSITION is still float3 @0 */, ibAddr, m.indexCount))
                 ++built;
         }
         m_rt.endBlasBatch();

@@ -344,6 +344,9 @@ public:
                                 const uint32_t* const* idx, const uint32_t* icount,
                                 uint32_t levels, MeshHandle* outMeshes) override;
 
+    uint32_t meshVertexStride() const override { return m_vtxStride; }
+    uint64_t meshVertexBytes() const override;
+
     void cameraLodInfo(float outEye[3], float& outFovYDeg, uint32_t& outHeightPx) const override;
 
     bool meshBounds(MeshHandle h, float outMin[3], float outMax[3]) const override;
@@ -2307,6 +2310,23 @@ private:
     struct VboShare { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation alloc = nullptr; uint32_t refs = 0; };
     std::unordered_map<uint32_t, VboShare> m_vboShares;
     uint32_t m_nextVboShare = 1;
+
+    // ---- VERTEX COMPRESSION (Lane 5) ---------------------------------------
+    // The ACTIVE packed mesh-vertex layout (engine/rhi/VertexPack.h), resolved
+    // ONCE in init() from DeviceDesc::vertexFormat and then immutable: the
+    // vertex input is baked into every PSO. 0 / 32 is the legacy layout, and
+    // every byte the upload path writes in that case is identical to before.
+    uint32_t m_vtxFmt    = 0;
+    uint32_t m_vtxStride = 32;
+    // Fill the mesh vertex input for the ACTIVE format. One helper so the four
+    // places that declare it (opaque, shadow, depth pre-pass, velocity) cannot
+    // drift apart. Always 3 attributes at locations 0/1/2.
+    void meshVertexInput(VkVertexInputBindingDescription& bind,
+                         VkVertexInputAttributeDescription attrs[3]) const;
+    // Pack `verts` into `staging` using the active format and return the byte
+    // count. For the legacy format this is a plain memcpy.
+    size_t packMeshVertices(const MeshVertex* verts, uint32_t vcount,
+                            std::vector<uint8_t>& staging) const;
 
     // Depth (sized to swapchain)
     VkFormat      m_depthFormat = VK_FORMAT_D32_SFLOAT;

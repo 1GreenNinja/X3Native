@@ -748,12 +748,13 @@ bool VulkanRenderDevice::createGraphics() {
         stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
 
-        VkVertexInputBindingDescription bind{ 0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX };
-        VkVertexInputAttributeDescription attrs[3]{
-            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    },
-            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
-            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv)     },
-        };
+        // VERTEX COMPRESSION (Lane 5): the layout comes from the ACTIVE format,
+        // which is the legacy 32 B float3/float3/float2 unless --vtxfmt says
+        // otherwise. The shader still declares vec3/vec3/vec2 either way — the
+        // fixed-function vertex fetch does the unpack.
+        VkVertexInputBindingDescription bind{};
+        VkVertexInputAttributeDescription attrs[3]{};
+        meshVertexInput(bind, attrs);
         VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
         vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
         vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attrs;
@@ -1270,12 +1271,13 @@ bool VulkanRenderDevice::createShadowPipeline() {
         stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stage.stage = VK_SHADER_STAGE_VERTEX_BIT; stage.module = vs; stage.pName = "main";
 
-        VkVertexInputBindingDescription bind{ 0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX };
-        VkVertexInputAttributeDescription attrs[3]{
-            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    },
-            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
-            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv)     },
-        };
+        // VERTEX COMPRESSION (Lane 5): the layout comes from the ACTIVE format,
+        // which is the legacy 32 B float3/float3/float2 unless --vtxfmt says
+        // otherwise. The shader still declares vec3/vec3/vec2 either way — the
+        // fixed-function vertex fetch does the unpack.
+        VkVertexInputBindingDescription bind{};
+        VkVertexInputAttributeDescription attrs[3]{};
+        meshVertexInput(bind, attrs);
         VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
         vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
         vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attrs;

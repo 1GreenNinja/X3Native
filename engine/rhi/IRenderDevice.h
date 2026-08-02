@@ -31,6 +31,17 @@ struct DeviceDesc {
     // device init (post stack, SSAO/GI, RT precompile…). May be null.
     void (*onUploadReady)(void* user) = nullptr;
     void* onUploadReadyUser           = nullptr;
+    // ---- VERTEX COMPRESSION (Lane 5; --vtxfmt N) ---------------------------
+    // Which packed mesh-vertex layout every PSO's vertex input is built with:
+    //   0 = the legacy 32 B float3/float3/float2 (today, BIT-EXACT)
+    //   1 = 24 B, normal as A2B10G10R10_SNORM (UV still full precision)
+    //   2 = 20 B, and UV as half2
+    // See engine/rhi/VertexPack.h for the layouts and why this is a device-wide
+    // startup decision rather than a per-mesh or runtime one. Silently falls
+    // back to 0 (with a log line) if the device cannot use the packed formats as
+    // vertex buffers. Non-zero disables GPU skinning (skin.comp writes the
+    // legacy layout) — callers transparently take the CPU skinning path.
+    uint32_t vertexFormat = 0;
 };
 
 struct FrameContext {
@@ -512,6 +523,18 @@ public:
         }
         return n;
     }
+
+    // Byte stride of the mesh vertex format this device actually resolved at
+    // init (see DeviceDesc::vertexFormat / engine/rhi/VertexPack.h). 32 unless a
+    // packed format was requested AND the device supports it — so a caller that
+    // wants to REPORT the compression must read this, not the requested value.
+    virtual uint32_t meshVertexStride() const { return 32; }
+
+    // Total bytes of mesh VERTEX buffer memory currently allocated, counting a
+    // shared LOD-chain vertex buffer once. This is the part of the compression
+    // win that is guaranteed rather than hardware-dependent: it is exactly
+    // (sum of vertex counts) * meshVertexStride().
+    virtual uint64_t meshVertexBytes() const { return 0; }
 
     // Camera state the app-side LOD selector needs (app/mesh_lod.h): the eye
     // position and vertical FOV last handed to setCamera/setCameraBasis, plus the

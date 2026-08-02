@@ -19,6 +19,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // Lane 3: cascaded-shadow-map proof suite (A/B at 3 distances, a camera
         // pan proving edges do not swim, and a cascade-boundary framing).
         // Declared OUTSIDE the big else-if chain: MSVC C1061 nesting limit.
+        // Lane 5: vertex-format version. Outside the else-if chain (C1061).
+        if (a == "--vtxfmt") {
+            if (i + 1 < argc) o.vertexFormat = (uint32_t)std::atoi(argv[++i]);
+            continue;
+        }
         // Lane 5: mesh-LOD proof suite. Declared OUTSIDE the big else-if chain
         // for the same MSVC C1061 nesting reason as --screenshot-csm.
         if (a == "--screenshot-geolod") {

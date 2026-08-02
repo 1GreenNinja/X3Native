@@ -3,8 +3,47 @@
 // (VulkanRenderDevice:: qualification, default-arg/override stripping) changed.
 // See VulkanRenderDevice_internal.h for the class declaration.
 #include "VulkanRenderDevice_internal.h"
+#include "../VertexPack.h"
+#include <unordered_set>
 
 namespace x3::rhi {
+
+// ---------------------------------------------------------------------------
+// VERTEX COMPRESSION (Lane 5) — the two helpers every upload/PSO site shares.
+// See engine/rhi/VertexPack.h for the formats and why this is device-wide.
+// ---------------------------------------------------------------------------
+void VulkanRenderDevice::meshVertexInput(VkVertexInputBindingDescription& bind,
+                                         VkVertexInputAttributeDescription attrs[3]) const {
+        bind = { 0, m_vtxStride, VK_VERTEX_INPUT_RATE_VERTEX };
+        // Position is float3 at offset 0 in EVERY format (the RT BLAS build and
+        // the velocity pass's prev-position binding both rely on that).
+        attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 };
+        switch (m_vtxFmt) {
+            case kVtxFmtNormal10:
+                attrs[1] = { 1, 0, VK_FORMAT_A2B10G10R10_SNORM_PACK32, 12 };
+                attrs[2] = { 2, 0, VK_FORMAT_R32G32_SFLOAT,            16 };
+                break;
+            case kVtxFmtNormal10Uv16:
+                attrs[1] = { 1, 0, VK_FORMAT_A2B10G10R10_SNORM_PACK32, 12 };
+                attrs[2] = { 2, 0, VK_FORMAT_R16G16_SFLOAT,            16 };
+                break;
+            default:
+                attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, (uint32_t)offsetof(MeshVertex, normal) };
+                attrs[2] = { 2, 0, VK_FORMAT_R32G32_SFLOAT,    (uint32_t)offsetof(MeshVertex, uv)     };
+                break;
+        }
+    }
+
+size_t VulkanRenderDevice::packMeshVertices(const MeshVertex* verts, uint32_t vcount,
+                                            std::vector<uint8_t>& staging) const {
+        const size_t bytes = (size_t)vcount * m_vtxStride;
+        staging.resize(bytes);
+        if (m_vtxFmt == kVtxFmtLegacy) {
+            std::memcpy(staging.data(), verts, bytes);   // byte-identical to before
+            return bytes;
+        }
+        return packVertices(verts, vcount, m_vtxFmt, staging.data());
+    }
 
 MeshHandle VulkanRenderDevice::createMesh(const MeshVertex* verts, uint32_t vcount,
                       const uint32_t* idx, uint32_t icount) {
@@ -14,7 +53,10 @@ MeshHandle VulkanRenderDevice::createMesh(const MeshVertex* verts, uint32_t vcou
         // the shared batch-record happens under the lock inside
         // createDeviceLocalBuffer, and the registry write locks below.
         Mesh m{};
-        const VkDeviceSize vbBytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+        // VERTEX COMPRESSION: the public API still takes 32 B MeshVertex (214 call
+        // sites are untouched); the packing happens HERE, once, on upload.
+        std::vector<uint8_t> vbStage;
+        const VkDeviceSize vbBytes = (VkDeviceSize)packMeshVertices(verts, vcount, vbStage);
         const VkDeviceSize ibBytes = (VkDeviceSize)icount * sizeof(uint32_t);
         // When hardware RT is available, the mesh's vertex/index buffers must be
         // readable as BLAS build inputs (SHADER_DEVICE_ADDRESS) + flagged as AS
@@ -31,7 +73,7 @@ MeshHandle VulkanRenderDevice::createMesh(const MeshVertex* verts, uint32_t vcou
                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
             vbUsage |= rtUsage; ibUsage |= rtUsage;
         }
-        if (!createDeviceLocalBuffer(verts, vbBytes, vbUsage, m.vbo, m.vboAlloc)) return {};
+        if (!createDeviceLocalBuffer(vbStage.data(), vbBytes, vbUsage, m.vbo, m.vboAlloc)) return {};
         if (!createDeviceLocalBuffer(idx, ibBytes, ibUsage, m.ibo, m.iboAlloc)) {
             vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc); return {};
         }
@@ -91,7 +133,8 @@ uint32_t VulkanRenderDevice::createMeshLodChain(const MeshVertex* verts, uint32_
                 if (idx[l][k] >= vcount) return 0;
         }
 
-        const VkDeviceSize vbBytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+        std::vector<uint8_t> vbStage;
+        const VkDeviceSize vbBytes = (VkDeviceSize)packMeshVertices(verts, vcount, vbStage);
         VkBufferUsageFlags vbUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         VkBufferUsageFlags ibUsage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
         if (m_rtSupported) {
@@ -102,7 +145,7 @@ uint32_t VulkanRenderDevice::createMeshLodChain(const MeshVertex* verts, uint32_
         }
         VkBuffer      sharedVbo   = VK_NULL_HANDLE;
         VmaAllocation sharedAlloc = nullptr;
-        if (!createDeviceLocalBuffer(verts, vbBytes, vbUsage, sharedVbo, sharedAlloc)) return 0;
+        if (!createDeviceLocalBuffer(vbStage.data(), vbBytes, vbUsage, sharedVbo, sharedAlloc)) return 0;
 
         std::lock_guard<std::recursive_mutex> lk(m_uploadMu);
         const uint32_t share = m_nextVboShare++;
@@ -170,6 +213,20 @@ void VulkanRenderDevice::cameraLodInfo(float outEye[3], float& outFovYDeg,
         // the geometry is actually rasterized at, which is what a pixel-error
         // budget must be measured against.
         outHeightPx = (m_height > 0) ? m_height : 1080u;
+    }
+
+uint64_t VulkanRenderDevice::meshVertexBytes() const {
+        uint64_t total = 0;
+        std::unordered_set<uint32_t> countedShares;
+        for (const auto& kv : m_meshes) {
+            const Mesh& m = kv.second;
+            if (m.vboShare != 0) {
+                if (!countedShares.insert(m.vboShare).second) continue;   // shared: count once
+            }
+            const uint32_t slots = m.dynamic ? kFramesInFlight : 1u;
+            total += (uint64_t)m.vertexCount * m_vtxStride * slots;
+        }
+        return total;
     }
 
 bool VulkanRenderDevice::meshBounds(MeshHandle h, float outMin[3], float outMax[3]) const {
@@ -248,7 +305,8 @@ void VulkanRenderDevice::updateMesh(MeshHandle h, const MeshVertex* verts, uint3
             logError("[rhi] updateMesh on an LOD-chain mesh is not supported (shared vertex buffer)");
             return;
         }
-        const VkDeviceSize bytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+        std::vector<uint8_t> vbStage;
+        const VkDeviceSize bytes = (VkDeviceSize)packMeshVertices(verts, vcount, vbStage);
         // Keep the frustum-cull bounds in sync with the new pose (cheap; skinned
         // meshes are typically marked ALWAYS_VISIBLE so this is mostly belt-and-braces).
         computeLocalSphere(verts, vcount, m.boundsCenter, m.boundsRadius);
@@ -286,7 +344,7 @@ void VulkanRenderDevice::updateMesh(MeshHandle h, const MeshVertex* verts, uint3
                     logError("[rhi] updateMesh: dynamic vbo map failed"); allocFailed = true; break;
                 }
                 m.dynVbo[i] = nb; m.dynVboAlloc[i] = na; m.dynMapped[i] = mapped;
-                std::memcpy(mapped, verts, (size_t)bytes);          // seed all slots
+                std::memcpy(mapped, vbStage.data(), (size_t)bytes);   // seed all slots (packed)
                 vmaFlushAllocation(m_alloc, na, 0, bytes);
             }
             if (allocFailed) {
@@ -313,7 +371,7 @@ void VulkanRenderDevice::updateMesh(MeshHandle h, const MeshVertex* verts, uint3
         // buffer (last bound kFramesInFlight frames ago), so this overwrite cannot
         // race a GPU read — no device wait, no WAR/RAW hazard.
         const uint32_t fi = m_frameIdx;
-        std::memcpy(m.dynMapped[fi], verts, (size_t)bytes);
+        std::memcpy(m.dynMapped[fi], vbStage.data(), (size_t)bytes);
         // HOST_VISIBLE allocations from VMA_MEMORY_USAGE_AUTO may not be coherent;
         // flush so the GPU sees the write (no-op if host-coherent).
         vmaFlushAllocation(m_alloc, m.dynVboAlloc[fi], 0, bytes);

@@ -161,12 +161,13 @@ bool VulkanRenderDevice::createDepthPrePipeline() {
         stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stage.stage = VK_SHADER_STAGE_VERTEX_BIT; stage.module = vs; stage.pName = "main";
 
-        VkVertexInputBindingDescription bind{ 0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX };
-        VkVertexInputAttributeDescription attrs[3]{
-            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    },
-            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
-            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv)     },
-        };
+        // VERTEX COMPRESSION (Lane 5): the layout comes from the ACTIVE format,
+        // which is the legacy 32 B float3/float3/float2 unless --vtxfmt says
+        // otherwise. The shader still declares vec3/vec3/vec2 either way — the
+        // fixed-function vertex fetch does the unpack.
+        VkVertexInputBindingDescription bind{};
+        VkVertexInputAttributeDescription attrs[3]{};
+        meshVertexInput(bind, attrs);
         VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
         vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
         vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attrs;
@@ -296,15 +297,19 @@ bool VulkanRenderDevice::createVelocityResources() {
         // Two vertex bindings: 0 = current verts (pos/normal/uv), 1 = previous
         // verts (only pos consumed, at location 3). For static meshes both bind
         // the SAME buffer so prevPos == curPos (no skinning term).
+        // VERTEX COMPRESSION (Lane 5): binding 0 uses the active packed layout;
+        // binding 1 reads only POSITION, which is float3 at offset 0 in every
+        // format, so it just needs the matching stride.
+        VkVertexInputBindingDescription bind0{};
+        VkVertexInputAttributeDescription a3[3]{};
+        meshVertexInput(bind0, a3);
         VkVertexInputBindingDescription binds[2]{
-            { 0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX },
-            { 1, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX },
+            bind0,
+            { 1, bind0.stride, VK_VERTEX_INPUT_RATE_VERTEX },
         };
         VkVertexInputAttributeDescription attrs[4]{
-            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    },
-            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
-            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv)     },
-            { 3, 1, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    }, // prev pos
+            a3[0], a3[1], a3[2],
+            { 3, 1, VK_FORMAT_R32G32B32_SFLOAT, 0 },   // prev pos
         };
         VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
         vin.vertexBindingDescriptionCount = 2; vin.pVertexBindingDescriptions = binds;

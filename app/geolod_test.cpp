@@ -24,6 +24,12 @@
 //       on every step
 //   L6  r_meshlod 0 forces LOD0 for every object at every distance (the fallback
 //       contract that keeps today's behaviour reachable)
+//   V1  VERTEX COMPRESSION: the packed strides are the advertised 32 / 24 / 20 B
+//   V2  format 0 round-trips BIT-EXACTLY (this is the fallback contract)
+//   V3  the 10-10-10 normal round-trips within 0.15 deg over a sphere sweep, and
+//       stays unit length
+//   V4  half2 UV round-trips within 1e-3 over 0..1, and the test MEASURES the
+//       precision loss at tiled UVs instead of pretending it is not there
 //   L7  NEGATIVE CONTROL: the same rig with DISTANCE-ONLY selection FAILS L4 —
 //       the large and the small object swap at the same distance. That is what
 //       proves L4 is a real assertion and not a tautology, and it is the bar
@@ -33,6 +39,7 @@
 
 #include "mesh_decimate.h"
 #include "mesh_lod.h"
+#include "engine/rhi/VertexPack.h"
 #include "engine/core/x3_log.h"
 
 #include <cmath>
@@ -376,6 +383,114 @@ void testFallback() {
                    "(today's behaviour stays reachable and bit-exact)");
 }
 
+// ---- V1..V4: vertex compression -------------------------------------------
+void testVertexPack() {
+    using namespace x3::rhi;
+
+    check(vertexStrideFor(kVtxFmtLegacy) == 32 &&
+          vertexStrideFor(kVtxFmtNormal10) == 24 &&
+          vertexStrideFor(kVtxFmtNormal10Uv16) == 20,
+          "V1 packed strides are 32 / 24 / 20 bytes (-0% / -25% / -37.5%)");
+
+    // ---- V2: the legacy format is a bit-exact identity ----
+    {
+        bool exact = true;
+        uint8_t buf[32];
+        for (int i = 0; i < 4096; ++i) {
+            MeshVertex v{};
+            v.pos[0] = (float)i * 0.37f - 700.0f;
+            v.pos[1] = (float)i * -1.9f + 3.5f;
+            v.pos[2] = std::sin((float)i) * 512.0f;
+            v.normal[0] = std::cos((float)i * 0.11f);
+            v.normal[1] = std::sin((float)i * 0.07f);
+            v.normal[2] = std::cos((float)i * 0.29f);
+            v.uv[0] = (float)i * 0.013f;
+            v.uv[1] = (float)i * -0.0071f;
+            packVertex(v, kVtxFmtLegacy, buf);
+            MeshVertex r{};
+            unpackVertex(buf, kVtxFmtLegacy, r);
+            for (int k = 0; k < 3; ++k) {
+                if (r.pos[k] != v.pos[k] || r.normal[k] != v.normal[k]) exact = false;
+            }
+            if (r.uv[0] != v.uv[0] || r.uv[1] != v.uv[1]) exact = false;
+        }
+        check(exact, "V2 format 0 round-trips BIT-EXACTLY over 4096 vertices "
+                     "(exact float compare — the --vtxfmt 0 fallback contract)");
+    }
+
+    // ---- V3: the 10-10-10 normal ----
+    {
+        double worstDeg = 0.0, worstLen = 0.0;
+        uint8_t buf[24];
+        for (int a = 0; a < 180; ++a)
+            for (int b = 0; b < 360; b += 3) {
+                const float th = (float)a * 3.14159265f / 180.0f;
+                const float ph = (float)b * 3.14159265f / 180.0f;
+                MeshVertex v{};
+                v.normal[0] = std::sin(th) * std::cos(ph);
+                v.normal[1] = std::cos(th);
+                v.normal[2] = std::sin(th) * std::sin(ph);
+                packVertex(v, kVtxFmtNormal10, buf);
+                MeshVertex r{};
+                unpackVertex(buf, kVtxFmtNormal10, r);
+                const double len = std::sqrt((double)r.normal[0] * r.normal[0] +
+                                             (double)r.normal[1] * r.normal[1] +
+                                             (double)r.normal[2] * r.normal[2]);
+                double d = (double)r.normal[0] * v.normal[0] +
+                           (double)r.normal[1] * v.normal[1] +
+                           (double)r.normal[2] * v.normal[2];
+                if (len > 1e-9) d /= len;
+                d = std::max(-1.0, std::min(1.0, d));
+                worstDeg = std::max(worstDeg, std::acos(d) * 180.0 / 3.14159265358979);
+                worstLen = std::max(worstLen, std::abs(len - 1.0));
+            }
+        check(worstDeg < 0.15,
+              "V3 A2B10G10R10_SNORM normal round-trips within " + f2s(worstDeg) +
+              " deg over a full sphere sweep (budget 0.15 deg)");
+        check(worstLen < 0.005,
+              "V3 and stays unit length to " + f2s(worstLen) + " (budget 0.005)");
+    }
+
+    // ---- V4: the half2 UV, INCLUDING where it stops being good enough ----
+    {
+        double worst01 = 0.0;
+        uint8_t buf[20];
+        for (int i = 0; i <= 4000; ++i) {
+            MeshVertex v{};
+            v.uv[0] = (float)i / 4000.0f;
+            v.uv[1] = 1.0f - (float)i / 4000.0f;
+            packVertex(v, kVtxFmtNormal10Uv16, buf);
+            MeshVertex r{};
+            unpackVertex(buf, kVtxFmtNormal10Uv16, r);
+            worst01 = std::max({ worst01,
+                                 (double)std::abs(r.uv[0] - v.uv[0]),
+                                 (double)std::abs(r.uv[1] - v.uv[1]) });
+        }
+        check(worst01 < 1.0e-3,
+              "V4 half2 UV round-trips within " + f2s(worst01) + " over the 0..1 range "
+              "(budget 1e-3 == a quarter texel of a 4096 map)");
+
+        // The known limitation, MEASURED rather than hand-waved: half floats lose
+        // absolute precision as the exponent grows, so a tiled UV is where format 2
+        // stops being free. This is why format 1 (full-precision UV) exists and why
+        // format 2 is not the default.
+        double worstTiled = 0.0;
+        for (int i = 0; i <= 4000; ++i) {
+            MeshVertex v{};
+            v.uv[0] = 64.0f * (float)i / 4000.0f;
+            v.uv[1] = v.uv[0];
+            packVertex(v, kVtxFmtNormal10Uv16, buf);
+            MeshVertex r{};
+            unpackVertex(buf, kVtxFmtNormal10Uv16, r);
+            worstTiled = std::max(worstTiled, (double)std::abs(r.uv[0] - v.uv[0]));
+        }
+        check(worstTiled > 1.0e-3,
+              "V4 and DEGRADES at tiled UVs as expected: worst error over 0..64 is " +
+              f2s(worstTiled) + " uv units (" + f2s(worstTiled * 4096.0) +
+              " texels of a 4096 map) — the documented reason --vtxfmt 2 is opt-in");
+    }
+}
+
 } // namespace
 
 bool runGeoLodSelfTest() {
@@ -391,6 +506,7 @@ bool runGeoLodSelfTest() {
     testSizeSplit();
     testHysteresis();
     testFallback();
+    testVertexPack();
     testNegativeControl();
 
     x3::logInfo("[geolod-test] " + std::to_string(g_pass) + " passed, " +

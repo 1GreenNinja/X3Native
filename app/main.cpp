@@ -608,6 +608,9 @@ int main(int argc, char** argv) {
         };
         desc.onUploadReadyUser = &preloadCtx;
     }
+    // Lane 5 VERTEX COMPRESSION: settled here because the vertex input is baked
+    // into every PSO the device creates during init().
+    desc.vertexFormat = o.vertexFormat;
     desc.nativeWindowHandle = window ? glfwGetWin32Window(window) : nullptr;
     desc.width  = W;
     desc.height = H;
