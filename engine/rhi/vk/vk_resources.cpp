@@ -56,6 +56,122 @@ MeshHandle VulkanRenderDevice::createMesh(const MeshVertex* verts, uint32_t vcou
         return { id };
     }
 
+// ---------------------------------------------------------------------------
+// LOD CHAIN — N index buffers over ONE shared vertex buffer (Lane 5).
+//
+// The decimator (app/mesh_decimate.h) uses SUBSET placement, so every coarse
+// level's indices address vertices level 0 already contains. That is what makes
+// one vertex buffer sufficient: the chain costs one VBO plus N small IBOs
+// instead of N full copies of the geometry.
+//
+// Each level becomes an ordinary Mesh with its own id, so the group/indirect
+// draw path, the GPU cull and the CSM shadow loop need NO changes at all — an
+// LOD switch is just the app submitting a different handle, and every instance
+// that picked the same level batches into one indirect draw for free. The only
+// thing that distinguishes a chain member is Mesh::vboShare, which refcounts the
+// shared vertex buffer so the levels can be destroyed in any order.
+//
+// Bounds are computed PER LEVEL from the vertices that level actually
+// references, not from the whole vertex array: a coarse level that dropped the
+// tip of a spire genuinely has a smaller sphere, and the frustum cull should see
+// the real one.
+// ---------------------------------------------------------------------------
+uint32_t VulkanRenderDevice::createMeshLodChain(const MeshVertex* verts, uint32_t vcount,
+                                                const uint32_t* const* idx, const uint32_t* icount,
+                                                uint32_t levels, MeshHandle* outMeshes) {
+        if (!verts || vcount == 0 || !idx || !icount || levels == 0 || !outMeshes) return 0;
+        if (levels > 8) levels = 8;
+        for (uint32_t i = 0; i < levels; ++i) outMeshes[i] = MeshHandle{};
+
+        // Validate before allocating anything: every index in range, every level
+        // at least one triangle.
+        for (uint32_t l = 0; l < levels; ++l) {
+            if (!idx[l] || icount[l] < 3) return 0;
+            for (uint32_t k = 0; k < icount[l]; ++k)
+                if (idx[l][k] >= vcount) return 0;
+        }
+
+        const VkDeviceSize vbBytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+        VkBufferUsageFlags vbUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        VkBufferUsageFlags ibUsage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (m_rtSupported) {
+            const VkBufferUsageFlags rtUsage =
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+            vbUsage |= rtUsage; ibUsage |= rtUsage;
+        }
+        VkBuffer      sharedVbo   = VK_NULL_HANDLE;
+        VmaAllocation sharedAlloc = nullptr;
+        if (!createDeviceLocalBuffer(verts, vbBytes, vbUsage, sharedVbo, sharedAlloc)) return 0;
+
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);
+        const uint32_t share = m_nextVboShare++;
+        uint32_t made = 0;
+        for (uint32_t l = 0; l < levels; ++l) {
+            Mesh m{};
+            m.vbo      = sharedVbo;
+            m.vboAlloc = sharedAlloc;
+            m.vboShare = share;                 // aliased: destroyMesh must refcount
+            const VkDeviceSize ibBytes = (VkDeviceSize)icount[l] * sizeof(uint32_t);
+            if (!createDeviceLocalBuffer(idx[l], ibBytes, ibUsage, m.ibo, m.iboAlloc)) break;
+            m.indexCount  = icount[l];
+            m.vertexCount = vcount;
+
+            float bmin[3] = {  std::numeric_limits<float>::max(),
+                               std::numeric_limits<float>::max(),
+                               std::numeric_limits<float>::max() };
+            float bmax[3] = { -std::numeric_limits<float>::max(),
+                              -std::numeric_limits<float>::max(),
+                              -std::numeric_limits<float>::max() };
+            for (uint32_t k = 0; k < icount[l]; ++k) {
+                const MeshVertex& v = verts[idx[l][k]];
+                for (int a = 0; a < 3; ++a) {
+                    if (v.pos[a] < bmin[a]) bmin[a] = v.pos[a];
+                    if (v.pos[a] > bmax[a]) bmax[a] = v.pos[a];
+                }
+            }
+            for (int a = 0; a < 3; ++a) { m.bmin[a] = bmin[a]; m.bmax[a] = bmax[a]; }
+            m.boundsCenter = glm::vec3(0.5f * (bmin[0] + bmax[0]),
+                                       0.5f * (bmin[1] + bmax[1]),
+                                       0.5f * (bmin[2] + bmax[2]));
+            float r2 = 0.0f;
+            for (uint32_t k = 0; k < icount[l]; ++k) {
+                const MeshVertex& v = verts[idx[l][k]];
+                const float dx = v.pos[0] - m.boundsCenter.x;
+                const float dy = v.pos[1] - m.boundsCenter.y;
+                const float dz = v.pos[2] - m.boundsCenter.z;
+                r2 = std::max(r2, dx * dx + dy * dy + dz * dz);
+            }
+            m.boundsRadius = std::sqrt(r2);
+
+            const uint32_t id = m_nextMeshId++;
+            m_meshes.emplace(id, m);
+            outMeshes[l] = MeshHandle{ id };
+            ++made;
+        }
+
+        if (made == 0) {                        // nothing took: don't leak the VBO
+            vmaDestroyBuffer(m_alloc, sharedVbo, sharedAlloc);
+            return 0;
+        }
+        VboShare vs{};
+        vs.buf = sharedVbo; vs.alloc = sharedAlloc; vs.refs = made;
+        m_vboShares.emplace(share, vs);
+        return made;
+    }
+
+void VulkanRenderDevice::cameraLodInfo(float outEye[3], float& outFovYDeg,
+                                       uint32_t& outHeightPx) const {
+        outEye[0] = m_camPos.x; outEye[1] = m_camPos.y; outEye[2] = m_camPos.z;
+        // m_camFov is the VERTICAL field of view: vk_passes.cpp builds the
+        // projection with glm::perspective(glm::radians(m_camFov), aspect, ...).
+        outFovYDeg = m_camFov;
+        // m_height is the INTERNAL render height (m_outH * ssaa) — the resolution
+        // the geometry is actually rasterized at, which is what a pixel-error
+        // budget must be measured against.
+        outHeightPx = (m_height > 0) ? m_height : 1080u;
+    }
+
 bool VulkanRenderDevice::meshBounds(MeshHandle h, float outMin[3], float outMax[3]) const {
         auto it = m_meshes.find(h.id);
         if (it == m_meshes.end() || it->second.vertexCount == 0) return false;
@@ -77,6 +193,18 @@ void VulkanRenderDevice::destroyMesh(MeshHandle h) {
         if (m.dynamic) {
             for (uint32_t i = 0; i < kFramesInFlight; ++i)
                 deferDestroyBuffer(m.dynVbo[i], m.dynVboAlloc[i]);
+        } else if (m.vboShare != 0) {
+            // LOD-chain member: the vertex buffer is SHARED with the chain's other
+            // levels. Release one reference and only defer the free when this was
+            // the last level standing, so the levels may be destroyed in any order.
+            auto sit = m_vboShares.find(m.vboShare);
+            if (sit != m_vboShares.end()) {
+                if (sit->second.refs > 0) --sit->second.refs;
+                if (sit->second.refs == 0) {
+                    deferDestroyBuffer(sit->second.buf, sit->second.alloc);
+                    m_vboShares.erase(sit);
+                }
+            }
         } else if (m.vbo) {
             deferDestroyBuffer(m.vbo, m.vboAlloc);
         }
@@ -112,6 +240,14 @@ void VulkanRenderDevice::updateMesh(MeshHandle h, const MeshVertex* verts, uint3
         if (it == m_meshes.end()) return;
         Mesh& m = it->second;
         if (vcount != m.vertexCount) return;  // count must match the original mesh
+        // LOD-chain members ALIAS one vertex buffer. Promoting one of them to
+        // dynamic would free a buffer the other levels still bind, so a chain is
+        // static by contract: refuse rather than corrupt. (Nothing in the engine
+        // does this; the guard exists so a future caller fails loudly, not subtly.)
+        if (m.vboShare != 0) {
+            logError("[rhi] updateMesh on an LOD-chain mesh is not supported (shared vertex buffer)");
+            return;
+        }
         const VkDeviceSize bytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
         // Keep the frustum-cull bounds in sync with the new pose (cheap; skinned
         // meshes are typically marked ALWAYS_VISIBLE so this is mostly belt-and-braces).

@@ -31,7 +31,7 @@ struct CliOptions {
          testStreaming = false, testWorldStream = false, testWorldMap = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testCompanionCombat = false, testDestruction = false,
-         testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testCsm = false,
+         testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testCsm = false, testGeoLod = false,
          testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
@@ -640,6 +640,8 @@ struct CliOptions {
     // sky read clearly, settle a few frames, and capture a PNG. Default path when
     // omitted: G:\X3Native-wt-terrain\terrain.png.
     bool        csmShot = false;    std::string csmShotDir = "docs/screenshots/csm";
+    // Lane 5: discrete mesh LOD proof capture (3 distances x LOD off/on + perf).
+    bool        geoLodShot = false; std::string geoLodShotDir = "docs/screenshots/geo-lod";
     bool        terrainShot = false;
     std::string terrainShotPath = "G:/X3Native-wt-terrain/terrain.png";
     // City vantage mode (--screenshot-city [path.png]) — W8-3: builds the city

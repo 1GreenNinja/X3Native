@@ -11,6 +11,7 @@
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "mesh_lod.h"   // Lane 5: MeshLodChain / screen-space-error selection
 
 #include <cstdint>
 #include <unordered_map>
@@ -21,6 +22,10 @@ namespace x3::game {
 
 // Sentinel for Entity::link meaning "not linked to anything".
 constexpr uint32_t kNoLink = 0xFFFFFFFFu;
+
+// Sentinel for Entity::lodChain meaning "no LOD chain — always draws Entity::mesh"
+// (the default, and what every entity in the engine did before Lane 5).
+constexpr uint32_t kNoLodChain = 0xFFFFFFFFu;
 
 // Sentinel for Entity::roomId meaning "no room — ALWAYS visible" (the default).
 // Per-room occlusion culling (level_loader.*) tags every built room shell/prop with
@@ -144,6 +149,18 @@ struct Entity {
     // the data-driven level loader culls the 7-floor tower down to the player's
     // current room + its doorway-reachable neighbours (a simple portal PVS).
     uint32_t               roomId = kNoRoom;
+    // ---- DISCRETE MESH LOD (Lane 5) ---------------------------------------
+    // Index into the Scene's chain table (addLodChain), or kNoLodChain. When set,
+    // render() picks a level by SCREEN-SPACE ERROR (app/mesh_lod.h) and submits
+    // that level's handle INSTEAD of `mesh`; `mesh` is kept as the LOD0 fallback
+    // so an entity whose chain is dropped, or the r_meshlod 0 path, draws exactly
+    // what it drew before. Every existing entity leaves this at kNoLodChain and
+    // is therefore byte-for-byte unaffected.
+    uint32_t               lodChain = kNoLodChain;
+    // Last level this entity selected — the hysteresis state. `mutable` because
+    // render() is const and LOD selection is a per-frame render decision, exactly
+    // like the room-cull counter next to it.
+    mutable uint8_t        lodLevel = 0;
 };
 
 class Scene {
@@ -265,8 +282,30 @@ public:
     std::vector<Entity>&       entities()       { return m_entities; }
     const std::vector<Entity>& entities() const { return m_entities; }
 
+    // ---- DISCRETE MESH LOD (Lane 5) ---------------------------------------
+    // Register a chain and get the index to store in Entity::lodChain. The Scene
+    // does NOT own the GPU handles — whoever built the chain destroys it (the
+    // Scene's own releaseGpu deliberately does not, so a chain shared by many
+    // entities is not freed N times).
+    uint32_t addLodChain(const MeshLodChain& c) {
+        m_lodChains.push_back(c);
+        return (uint32_t)m_lodChains.size() - 1u;
+    }
+    const MeshLodChain* lodChain(uint32_t i) const {
+        return (i < m_lodChains.size()) ? &m_lodChains[i] : nullptr;
+    }
+    uint32_t lodChainCount() const { return (uint32_t)m_lodChains.size(); }
+    // Receipts from the LAST render(): how many chained entities landed on each
+    // level, and the triangle count that bought (vs. what LOD0 would have cost).
+    const LodFrameStats& lodStats() const { return m_lodStats; }
+    // Reset every entity's hysteresis state — used by the A/B capture rig so an
+    // "LOD off" pass cannot leak state into the following "LOD on" pass.
+    void resetLodState() { for (Entity& e : m_entities) e.lodLevel = 0; }
+
 private:
     std::vector<Entity> m_entities;
+    std::vector<MeshLodChain> m_lodChains;
+    mutable LodFrameStats m_lodStats{};
     // Per-room occlusion cull state. m_roomCullActive flips true the first time a
     // non-empty visible set is installed; cleared by clearVisibleRooms(). Stored as a
     // set for O(1) membership in render()'s hot loop.

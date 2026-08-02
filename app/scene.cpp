@@ -130,6 +130,18 @@ uint32_t Scene::drawnCount() const {
 
 void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
     m_lastRoomCulled = 0;
+    // ---- DISCRETE MESH LOD (Lane 5) ---------------------------------------
+    // The camera comes from the DEVICE, not from a Scene-side copy, so the level
+    // a mesh is drawn at can never disagree with the matrix it is drawn with.
+    // Selection is one pixel-error compare per chained entity; entities without a
+    // chain (i.e. every entity that existed before this lane) never reach it, and
+    // with r_meshlod 0 the whole block is skipped.
+    const LodPolicy& lodPol = lodPolicy();
+    const bool lodActive = !m_lodChains.empty();
+    LodView lodView{};
+    if (lodActive) lodView = lodViewFromDevice(device);
+    m_lodStats = LodFrameStats{};
+
     for (const Entity& e : m_entities) {
         if (!e.visible || !e.mesh.valid())
             continue;
@@ -142,13 +154,41 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             ++m_lastRoomCulled;
             continue;
         }
+        // ---- LOD level selection --------------------------------------------
+        // Swapping the submitted mesh HANDLE is the whole integration: the render
+        // device groups draws by mesh id, so every instance that picked the same
+        // level lands in the same group and the same single indirect draw. No
+        // parallel submission path, and the depth / CSM / colour passes all
+        // replay the same group list they always did.
+        x3::rhi::MeshHandle mesh = e.mesh;
+        if (lodActive && e.lodChain != kNoLodChain) {
+            if (const MeshLodChain* c = lodChain(e.lodChain)) {
+                if (c->hasChain()) {
+                    const uint32_t prev = e.lodLevel;
+                    // With r_meshlod 0 the selector returns 0 unconditionally, so
+                    // the handle is never overridden and this entity draws exactly
+                    // the mesh it drew before the lane. The stats below are still
+                    // rolled up in that case, which is what makes the A/B triangle
+                    // comparison in --screenshot-geolod a measurement of the SAME
+                    // scene rather than of two different ones.
+                    const uint32_t lvl  = lodSelectHysteretic(lodView, lodPol, *c, e.transform, prev);
+                    e.lodLevel = (uint8_t)lvl;
+                    if (lodPol.enabled && lvl > 0 && c->mesh[lvl].valid()) mesh = c->mesh[lvl];
+                    ++m_lodStats.chained;
+                    if (lvl < kMaxLodLevels) ++m_lodStats.perLevel[lvl];
+                    m_lodStats.trisSelected += c->triangles[lvl];
+                    m_lodStats.trisLod0     += c->triangles[0];
+                    if (lvl != prev) ++m_lodStats.switches;
+                }
+            }
+        }
         // Translucent glass entities route through the dedicated transparent pass (real
         // see-through glass), keeping their emissive glow; everything else is opaque. The
         // default emissive {0,0,0,0} makes the opaque path identical to the old drawMesh()
         // for every existing entity; club1127's neon/crystal
         // boxes set a non-zero emissive so they glow + feed the bloom chain.
         if (e.transparent) {
-            device.drawMeshGlass(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.glass, e.transform);
+            device.drawMeshGlass(frame, mesh, e.tex, e.baseColor, e.emissive, e.glass, e.transform);
         } else if (e.mrTex.valid() || e.emissiveTex.valid()) {
             // Entity carries a metallic-roughness map: full PBR path (Cook-Torrance
             // + IBL/SSR reflections). normalTex rides along when set (invalid =>
@@ -169,13 +209,13 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
                 }
                 mr = m_mrMatte;
             }
-            device.drawMeshPBR(frame, e.mesh, e.tex, e.normalTex, mr,
+            device.drawMeshPBR(frame, mesh, e.tex, e.normalTex, mr,
                                e.baseColor, e.emissive, e.transform,
                                /*alphaMask*/ false, /*alphaBlend*/ e.alphaBlend,
                                e.emissiveTex, /*detailTex*/ {}, /*detailUvScale*/ 1.0f,
                                e.clearcoat, e.clearcoatRough);
         } else {
-            device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
+            device.drawMeshEmissive(frame, mesh, e.tex, e.baseColor, e.emissive, e.transform);
         }
     }
 }

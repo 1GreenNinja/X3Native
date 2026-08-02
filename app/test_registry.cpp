@@ -120,6 +120,7 @@
 #include "dialog.h"
 #include "vehparts.h"
 #include "csm_test.h"
+#include "geolod_test.h"   // Lane 5: --test-geolod
 #include "ecology.h"
 #include "crowd.h"
 #include "npc_life.h"   // --test-npclife (LIVING CITY daily-life system)
@@ -1033,6 +1034,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(practical splits + frustum-slice containment + texel-snap stability + "
                     "rotation invariance + bit-exact r_csm 0 + NEGATIVE CONTROL)...");
         return x3::game::runCsmSelfTest() ? 0 : 1;
+    }
+    if (tf.testGeoLod) {
+        x3::logInfo("running MESH LOD + VERTEX COMPRESSION self-test "
+                    "(QEM decimation + screen-space-error selection + monotonicity + "
+                    "hysteresis + no-chain fallback + NEGATIVE CONTROL)...");
+        return x3::game::runGeoLodSelfTest() ? 0 : 1;
     }
     if (tf.testEcology) {
         x3::logInfo("running AMBIENT ECOLOGY self-test "

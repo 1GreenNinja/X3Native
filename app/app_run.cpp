@@ -626,6 +626,8 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // along the camera axis so the shadowed region leads the car instead of being
     // centred on it. Independent of r_csm. 0 = the historical camera-centred box.
     console.registerCVar("r_shadowforward", "0.0", "slide the LEGACY single shadow cascade forward along the camera axis (meters); 0 = historical");
+    // ---- DISCRETE MESH LOD (Lane 5): r_meshlod / r_meshlod_err / r_meshlod_hyst.
+    x3::game::registerLodCVars(console);
 }
 
 // ---- Unified visibility sync state (vis-unify) -----------------------------
@@ -838,6 +840,9 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     csmp.forwardBias = console.getFloat("r_shadowforward");
     csmp.debug       = console.getInt("r_csm_debug") != 0;
     device.setCsmParams(csmp);
+    // DISCRETE MESH LOD (Lane 5): a CPU-side policy, so it lands in the process
+    // policy rather than on the device. Scene::render reads it each frame.
+    x3::game::applyLodCVars(console);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.

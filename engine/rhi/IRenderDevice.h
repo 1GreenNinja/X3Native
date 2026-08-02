@@ -478,6 +478,52 @@ public:
     // environment art never calls this. Validation-clean: the call waits for any
     // in-flight GPU use of the buffer before overwriting it. No-op on bad input.
     virtual void          updateMesh(MeshHandle, const MeshVertex* verts, uint32_t vcount) = 0;
+
+    // ---- DISCRETE MESH LOD chain (Lane 5) -----------------------------------
+    // Create N meshes that SHARE ONE device-local vertex buffer and differ only
+    // in their index buffer. `idx[i]` / `icount[i]` are the index list of level
+    // i (0 = full detail); every index must address `verts`. Returns the number
+    // of levels actually created and writes their handles to outMeshes[0..n).
+    //
+    // WHY THIS SHAPE: the renderer already keys draw GROUPS on the mesh id and
+    // emits exactly one VkDrawIndexedIndirectCommand per group (firstIndex 0,
+    // vertexOffset 0). Handing each LOD its own mesh id therefore needs ZERO
+    // changes to the group/indirect path, the GPU cull, or the CSM shadow loop —
+    // selecting a level is just submitting a different handle, and all instances
+    // that picked the same level batch into one indirect draw automatically.
+    // A single mesh carrying multiple index RANGES would instead need (mesh,lod)
+    // group keys and a per-LOD firstIndex threaded through cull.comp.
+    // Sharing the vertex buffer is what keeps the chain cheap: the decimator uses
+    // SUBSET placement (app/mesh_decimate.h), so coarse levels only ever
+    // reference vertices level 0 already uploaded.
+    //
+    // Each level gets its own bounding sphere/AABB, computed from the vertices it
+    // actually references. Destroying the levels in any order is safe (the shared
+    // vertex buffer is refcounted). Default impl creates INDEPENDENT meshes via
+    // createMesh so a null/stub device still works.
+    virtual uint32_t createMeshLodChain(const MeshVertex* verts, uint32_t vcount,
+                                        const uint32_t* const* idx, const uint32_t* icount,
+                                        uint32_t levels, MeshHandle* outMeshes) {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < levels; ++i) {
+            outMeshes[i] = createMesh(verts, vcount, idx[i], icount[i]);
+            if (!outMeshes[i].valid()) break;
+            ++n;
+        }
+        return n;
+    }
+
+    // Camera state the app-side LOD selector needs (app/mesh_lod.h): the eye
+    // position and vertical FOV last handed to setCamera/setCameraBasis, plus the
+    // render height in pixels. Kept as a query rather than plumbed through every
+    // host so LOD selection cannot drift out of sync with the camera the frame is
+    // actually drawn with. Default reports a benign 60 deg / 1080p at the origin.
+    virtual void cameraLodInfo(float outEye[3], float& outFovYDeg, uint32_t& outHeightPx) const {
+        outEye[0] = outEye[1] = outEye[2] = 0.0f;
+        outFovYDeg = 60.0f;
+        outHeightPx = 1080;
+    }
+
     // Create a sampled texture from tightly-packed RGBA8 (w*h*4 bytes). `srgb`
     // selects the storage format (sRGB for color, UNORM for data/linear).
     virtual TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) = 0;

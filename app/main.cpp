@@ -37,6 +37,7 @@
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
 #include "room_dressing.h"                 // recipeSurfaceSets() (boot prewarm, task #4)
 #include "prim_light_test.h"               // --test-primlight: ONE LIGHTING PATH (prim vs GLB radiance parity)
+#include "geolod_shot.h"                   // --screenshot-geolod: Lane 5 mesh-LOD proof capture
 #include "cluster_light_test.h"            // --test-clusterlights: froxel grid + r_clusterlights 0-vs-1 bit identity
 #include "surface_library.h"               // prewarmSurfaceSetsAsync (boot prewarm, task #4)
 #include "asset_manifest_check.h"          // fleet asset-store manifest boot check (Phase A)
@@ -386,6 +387,7 @@ int main(int argc, char** argv) {
         _tf.testCanonVehicle = o.testCanonVehicle;
         _tf.testVehParts = o.testVehParts;
         _tf.testCsm      = o.testCsm;
+        _tf.testGeoLod   = o.testGeoLod;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testNpcLife = o.testNpcLife;
@@ -526,7 +528,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -680,6 +682,18 @@ int main(int argc, char** argv) {
     // as --test-primlight (self-contained rig on the real device, no world
     // build): CPU froxel-assignment checks against a brute-force reference, then
     // an r_clusterlights 0-vs-1 bit-identity A/B render. ----
+    // ---- --screenshot-geolod: the DISCRETE MESH LOD proof capture (Lane 5).
+    // Self-contained rig on the real device (no world build), same shape as
+    // --test-clusterlights: real GLB art, generated LOD chains, three camera
+    // distances captured with r_meshlod 0 and 1, plus triangle/frame-time numbers.
+    if (o.geoLodShot) {
+        const int rc = x3::game::runGeoLodShot(*device, o.geoLodShotDir);
+        device.reset();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return rc;
+    }
+
     if (o.testClusterLights) {
         const int rc = x3::game::runClusterLightTest(*device, o.clusterLightsOutDir);
         device.reset();

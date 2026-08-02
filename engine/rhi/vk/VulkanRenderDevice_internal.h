@@ -339,6 +339,13 @@ public:
     MeshHandle createMesh(const MeshVertex* verts, uint32_t vcount,
                           const uint32_t* idx, uint32_t icount) override;
 
+    // Lane 5: N LOD levels sharing ONE vertex buffer. See IRenderDevice.h.
+    uint32_t createMeshLodChain(const MeshVertex* verts, uint32_t vcount,
+                                const uint32_t* const* idx, const uint32_t* icount,
+                                uint32_t levels, MeshHandle* outMeshes) override;
+
+    void cameraLodInfo(float outEye[3], float& outFovYDeg, uint32_t& outHeightPx) const override;
+
     bool meshBounds(MeshHandle h, float outMin[3], float outMax[3]) const override;
 
     void destroyMesh(MeshHandle h) override;
@@ -486,6 +493,15 @@ private:
         // no write-while-read hazard. Static meshes leave dynamic=false and use
         // only vbo (the device-local buffer); dynVbo[]/dynMapped[] stay null.
         bool     dynamic = false;
+        // ---- LOD-chain shared vertex buffer (Lane 5) -------------------------
+        // A mesh created through createMeshLodChain() gets its OWN index buffer
+        // but ALIASES the chain's single vertex buffer. `vboShare` names the
+        // chain (a share id minted per chain; 0 == "I own my vbo exclusively",
+        // which is every mesh that existed before this feature). destroyMesh
+        // decrements the share's refcount and frees the vbo only when it reaches
+        // zero, so LOD levels may be destroyed in any order. Nothing in the draw
+        // path can tell the difference: drawVbo() still returns `vbo`.
+        uint32_t vboShare = 0;
         VkBuffer      dynVbo[kFramesInFlight]    = {};   // per-frame HOST_VISIBLE vbos
         VmaAllocation dynVboAlloc[kFramesInFlight] = {};
         void*         dynMapped[kFramesInFlight] = {};   // persistent maps
@@ -2282,6 +2298,15 @@ private:
     uint32_t m_nextMeshId = 1;
     uint32_t m_nextTexId  = 1;
     Texture  m_whiteTex{};   // built-in 1x1 white default
+
+    // ---- LOD-chain shared vertex buffers (Lane 5) --------------------------
+    // Keyed by Mesh::vboShare (never 0). refs is the number of live meshes still
+    // aliasing this vertex buffer; the last destroyMesh to release it defers the
+    // buffer free. Meshes created the ordinary way have vboShare == 0 and never
+    // touch this map, so their lifetime handling is byte-for-byte as before.
+    struct VboShare { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation alloc = nullptr; uint32_t refs = 0; };
+    std::unordered_map<uint32_t, VboShare> m_vboShares;
+    uint32_t m_nextVboShare = 1;
 
     // Depth (sized to swapchain)
     VkFormat      m_depthFormat = VK_FORMAT_D32_SFLOAT;

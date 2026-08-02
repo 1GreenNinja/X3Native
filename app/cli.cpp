@@ -19,6 +19,13 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // Lane 3: cascaded-shadow-map proof suite (A/B at 3 distances, a camera
         // pan proving edges do not swim, and a cascade-boundary framing).
         // Declared OUTSIDE the big else-if chain: MSVC C1061 nesting limit.
+        // Lane 5: mesh-LOD proof suite. Declared OUTSIDE the big else-if chain
+        // for the same MSVC C1061 nesting reason as --screenshot-csm.
+        if (a == "--screenshot-geolod") {
+            o.geoLodShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.geoLodShotDir = argv[++i];
+            continue;
+        }
         if (a == "--screenshot-csm") {
             o.csmShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.csmShotDir = argv[++i];
@@ -204,6 +211,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-csm") o.testCsm = true;   // Lane 3: cascaded shadow maps (no GPU needed)
+        else if (a == "--test-geolod") o.testGeoLod = true;   // Lane 5: mesh LOD + vertex compression (no GPU needed)
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;
         else if (a == "--test-npclife") o.testNpcLife = true;
