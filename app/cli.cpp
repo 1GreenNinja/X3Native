@@ -118,6 +118,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-anim") o.testAnim = true;
         else if (a == "--test-terrain") o.testTerrain = true;
         else if (a == "--test-terrainplace") o.testTerrainPlace = true;
+        else if (a == "--test-terraincorridor") o.testTerrainCorridor = true;
         else if (a == "--test-streaming") o.testStreaming = true;
         else if (a == "--test-ai") o.testAi = true;
         else if (a == "--test-bestiary") o.testBestiary = true;

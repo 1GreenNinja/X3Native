@@ -689,6 +689,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running terrain placement API self-test (height/normal/place)...");
         return x3::game::runTerrainPlaceSelfTest() ? 0 : 1;
     }
+    if (tf.testTerrainCorridor) {
+        x3::logInfo("running TERRAIN CORRIDOR DEPRESSION self-test (no-regression / "
+                    "centreline depth / tile seam / joint continuity / determinism)...");
+        return x3::game::runTerrainCorridorSelfTest() ? 0 : 1;
+    }
     if (tf.testStreaming) {
         x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");
         return x3::game::runStreamingSelfTest() ? 0 : 1;
