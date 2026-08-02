@@ -152,7 +152,11 @@ int hostLabZero3D(HostContext& hc) {
     {
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
-        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        // Low raking sun (~13 deg): a side-scroller rail is read across, so the
+        // light that gives the hillside its shape is the one that skims it. It is
+        // also the only sun angle under which the shadow range is testable at all
+        // — a noon sun casts nothing long enough to leave a 45 m box.
+        sp.sunDir[0] = 1.0f; sp.sunDir[1] = 0.23f; sp.sunDir[2] = 0.30f;
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
         sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
         device->setSkyParams(sp);
@@ -160,6 +164,12 @@ int hostLabZero3D(HostContext& hc) {
     // Horizon: the rail's whole point is that the mountains it skirts are REAL
     // geometry receding into depth, so the far plane has to reach them.
     device->setCameraFar(15000.0f);
+    // Open-world sun shadows. The stock box is 45 m half-extent centered on the
+    // camera; on a rail that reads 200 m of hillside per frame that runs out of
+    // shadow almost immediately. 160 m across, biased ahead of the lens and
+    // texel-snapped, covers the readable frame. (Costs shadow resolution: ~7.8 cm
+    // per texel here vs 4.4 cm stock — the trade is documented on the API.)
+    device->setShadowFollowRange(160.0f);
 
     x3::game::TerrainStreamer stream;
     stream.init(scene, *device, *phys, jobs.get(), cfg, kRailX, kRailZ0, /*radius=*/8);

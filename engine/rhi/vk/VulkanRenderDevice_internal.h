@@ -196,6 +196,7 @@ public:
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override;
     void setShadowCutout(bool enable) override;
+    void setShadowFollowRange(float meters) override;
 
     // Interior reflection probe: when ON, the IBL environment cube is baked from the
     // SCENE geometry (around the camera) instead of the analytic sky, so glossy metals
@@ -2840,6 +2841,10 @@ private:
     glm::vec3             m_shadowCenter{ 0.0f };
     float                 m_shadowOrtho = kShadowOrtho;
     float                 m_shadowDepthHalf = kShadowDepthHalf;
+    // OPEN-WORLD sun-shadow fit (setShadowFollowRange). 0 = the historic
+    // camera-centered kShadowOrtho box; > 0 = a box this many metres ACROSS,
+    // biased ahead of the view and texel-snapped. See computeLightViewProj.
+    float                 m_shadowFollowRange = 0.0f;
     uint32_t              m_curImageIndex  = 0;
 
     // ---- Render graph (perf-stack B) --------------------------------------

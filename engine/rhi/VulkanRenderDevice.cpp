@@ -638,6 +638,12 @@ void VulkanRenderDevice::setShadowCutout(bool enable) {
         m_shadowCutout = enable;
     }
 
+void VulkanRenderDevice::setShadowFollowRange(float meters) {
+        // Negative/NaN in, historic behaviour out — a bad range must not be able
+        // to produce a degenerate ortho box.
+        m_shadowFollowRange = (meters > 0.0f && meters < 100000.0f) ? meters : 0.0f;
+    }
+
 void VulkanRenderDevice::setIblProbe(bool enable) {
         if (m_iblProbeScene != enable) { m_iblProbeScene = enable; m_iblDirty = true; }
     }

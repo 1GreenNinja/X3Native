@@ -782,13 +782,60 @@ glm::mat4 VulkanRenderDevice::computeLightViewProj() const {
         const glm::vec3 sunDir = glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
         // Default: ~45 m box following the camera (Level1). Override (setShadowBounds): a fixed
         // box on a scene AABB so large scenes (showroom) fall inside the shadow map.
-        const glm::vec3 center = m_shadowOverride ? m_shadowCenter : m_camPos;
-        const float     ortho  = m_shadowOverride ? m_shadowOrtho : kShadowOrtho;
-        const float     dHalf  = m_shadowOverride ? m_shadowDepthHalf : kShadowDepthHalf;
-        const glm::vec3 eye = center + sunDir * dHalf;
-        // Up vector not parallel to sunDir.
+        glm::vec3 center = m_shadowOverride ? m_shadowCenter : m_camPos;
+        float     ortho  = m_shadowOverride ? m_shadowOrtho : kShadowOrtho;
+        float     dHalf  = m_shadowOverride ? m_shadowDepthHalf : kShadowDepthHalf;
+
+        // OPEN-WORLD FIT (setShadowFollowRange > 0, and only when a host has not
+        // pinned an explicit box). Two changes, both of which matter outdoors:
+        //
+        //  1. BIAS THE BOX AHEAD OF THE VIEW. A box centered on the camera spends
+        //     half its area behind the viewer. Pushing the center forward by 60%
+        //     of the half-extent along the FLATTENED view direction (flattened so
+        //     looking up at the sky doesn't drag the box off the ground) buys most
+        //     of that area back for geometry that is actually on screen.
+        //  2. SNAP THE CENTER TO WHOLE TEXELS. The reason a bigger box normally
+        //     looks worse is crawl: as the camera moves, every shadow texel lands
+        //     on a slightly different world position and edges shimmer. Quantising
+        //     the box center in LIGHT SPACE to the texel pitch means the texel grid
+        //     is world-stable and the crawl disappears.
+        const bool openWorldFit = (!m_shadowOverride && m_shadowFollowRange > 1.0f);
+        if (openWorldFit) {
+            ortho = m_shadowFollowRange * 0.5f;
+            // The depth range has to grow with the box or tall terrain behind the
+            // camera clips out of the light frustum and stops casting.
+            dHalf = std::max(kShadowDepthHalf, m_shadowFollowRange);
+
+            glm::vec3 fwd = m_camHasBasis
+                ? m_camFwd
+                : glm::vec3(std::cos(m_camPitch) * std::cos(m_camYaw),
+                            std::sin(m_camPitch),
+                            std::cos(m_camPitch) * std::sin(m_camYaw));
+            glm::vec3 flat(fwd.x, 0.0f, fwd.z);
+            const float fl = glm::length(flat);
+            // Looking straight up or down leaves no usable heading — keep the box
+            // on the camera rather than sending it somewhere arbitrary.
+            if (fl > 1e-3f) center = m_camPos + (flat / fl) * (ortho * 0.6f);
+            else            center = m_camPos;
+        }
+
         const glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
         glm::vec3 upPick = (std::abs(glm::dot(sunDir, up)) > 0.99f) ? glm::vec3(0,0,1) : up;
+
+        if (openWorldFit) {
+            // Snap in light space: build a provisional light view, quantise the
+            // center's X/Y to the texel pitch, then bring it back to world space.
+            const glm::mat4 view0 = glm::lookAt(center + sunDir * dHalf, center, upPick);
+            glm::vec3 cLS = glm::vec3(view0 * glm::vec4(center, 1.0f));
+            const float texel = (2.0f * ortho) / (float)kShadowDim;
+            if (texel > 1e-6f) {
+                cLS.x = std::floor(cLS.x / texel) * texel;
+                cLS.y = std::floor(cLS.y / texel) * texel;
+                center = glm::vec3(glm::inverse(view0) * glm::vec4(cLS, 1.0f));
+            }
+        }
+
+        const glm::vec3 eye = center + sunDir * dHalf;
         glm::mat4 view = glm::lookAt(eye, center, upPick);
         // Ortho with Vulkan's [0,1] Z (GLM_FORCE_DEPTH_ZERO_TO_ONE), reverse-Y clip.
         glm::mat4 proj = glm::ortho(-ortho, ortho, -ortho, ortho, 0.0f, 2.0f * dHalf);

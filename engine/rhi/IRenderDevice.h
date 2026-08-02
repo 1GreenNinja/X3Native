@@ -211,6 +211,26 @@ public:
     // geometry fall inside the shadow map and actually cast shadows. Non-pure (no-op default).
     virtual void setShadowBounds(float cx, float cy, float cz, float halfExtent) {}
 
+    // OPEN-WORLD SUN SHADOWS. The default box is ~45 m of half-extent CENTERED on
+    // the camera, which spends half its texels behind the viewer and runs out of
+    // shadow a few metres down a hillside — fine for the 60 m interiors it was
+    // sized for, useless on streamed terrain where the interesting geometry is
+    // hundreds of metres out. Setting a range > 0 switches the default (non-
+    // override) path to an open-world fit:
+    //   * the box is `meters` ACROSS and biased AHEAD of the camera along the
+    //     flattened view direction, so nearly all of it covers what you can see;
+    //   * its center is SNAPPED to whole shadow-map texels each frame, which is
+    //     what stops the shadow edges from crawling as the camera moves (without
+    //     the snap a wider box makes the crawl worse, not better);
+    //   * the depth range grows with the box so tall terrain still fits.
+    // This is a resolution trade, not free: 2048 texels over 45 m is ~4.4 cm per
+    // texel, over 300 m it is ~29 cm, so wide ranges soften contact shadows. Pick
+    // the smallest range that covers the shot.
+    // 0 (default) = the historic camera-centered box, bit-for-bit. Non-pure
+    // (no-op default) so headless / other devices are unaffected, and NO existing
+    // world changes unless it opts in.
+    virtual void setShadowFollowRange(float meters) { (void)meters; }
+
     // ALPHA-CUTOUT SHADOWS. The shadow pass is depth-only (no fragment stage), so an
     // alphaMode==MASK billboard (a snow fir, a people sprite) casts the shadow of its
     // FULL QUAD — under a high sun that reads as hard black rectangles on the ground.
