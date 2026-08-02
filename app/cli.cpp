@@ -21,6 +21,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.ddgiShotDir = argv[++i];
             continue;
         }
+        if (a == "--screenshot-reflverify") {
+            o.reflVerifyShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.reflVerifyShotDir = argv[++i];
+            continue;
+        }
         // RT soft-shadow flags — handled OUTSIDE the chain (same C1061 reason).
         if (a == "--test-rtshadows") { o.smoketest = true; o.testRtShadows = true; continue; }
         // Zero-stutter flythrough — handled OUTSIDE the chain (same C1061 reason).

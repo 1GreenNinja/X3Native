@@ -123,6 +123,7 @@ struct HostContext {
     bool        loaderShot = false;     std::string loaderShotPath;
     bool        skyShot = false;        std::string skyShotPath;
     bool        ddgiShot = false;       std::string ddgiShotDir;
+    bool        reflVerifyShot = false; std::string reflVerifyShotDir;
     bool        rtshShot = false;       std::string rtshShotDir;
     bool        showroomShot = false;   std::string showroomShotPath;
     bool        planetShot = false;     std::string planetShotPath;

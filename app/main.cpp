@@ -524,7 +524,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -734,6 +734,7 @@ int main(int argc, char** argv) {
         _hc.loaderShot       = o.loaderShot;       _hc.loaderShotPath   = o.loaderShotPath;
         _hc.skyShot          = o.skyShot;          _hc.skyShotPath      = o.skyShotPath;
         _hc.ddgiShot         = o.ddgiShot;         _hc.ddgiShotDir      = o.ddgiShotDir;
+        _hc.reflVerifyShot   = o.reflVerifyShot;   _hc.reflVerifyShotDir = o.reflVerifyShotDir;
         _hc.rtshShot         = o.rtshShot;         _hc.rtshShotDir      = o.rtshShotDir;
         _hc.showroomShot     = o.showroomShot;     _hc.showroomShotPath = o.showroomShotPath;
         _hc.planetShot       = o.planetShot;       _hc.planetShotPath   = o.planetShotPath;

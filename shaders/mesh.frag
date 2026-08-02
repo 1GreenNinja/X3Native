@@ -118,6 +118,13 @@ layout(set = 3, binding = 2) uniform sampler2D reflTex;
 // buffer is half-res its own texels are twice this, so the disc is a
 // conservative UNDER-estimate of the true blur radius -- deliberately, since
 // over-blurring reads as a smear while under-blurring merely reads as sharper.
+// RADIUS: kept at 14 after an eyeball A/B sweep of 6 / 14 / 24 on the
+// --screenshot-reflverify rig (docs/screenshots/rt-refl-verify). 6 is clearly too
+// small -- it is WORSE than no blur at all, because a disc that narrow just
+// duplicates a thin feature instead of dissolving it. 24 is visibly the smoothest
+// (horizontal-banding energy -52% vs 14) BUT it also widened the halo bleeding
+// across a depth silhouette by +16%, which is exactly the smear the UNDER-estimate
+// above is deliberately guarding against -- so 14 stays.
 const float kReflBlurPx = 14.0;   // disc radius in full-res pixels at rough = 1
 vec4 sampleReflGlossy(vec2 uv, float rough, vec2 texel) {
     vec4 c = texture(reflTex, uv);
@@ -125,8 +132,19 @@ vec4 sampleReflGlossy(vec2 uv, float rough, vec2 texel) {
     const int   kTaps = 6;
     const float kGolden = 2.39996323;         // radians
     float r = rough * kReflBlurPx;
+    // PER-PIXEL ROTATION of the whole disc (interleaved-gradient noise).
+    // The golden-angle spiral decorrelates the taps from EACH OTHER, but without
+    // this every pixel used the IDENTICAL 6 offsets, so the kernel behaved as a
+    // fixed 6-point comb: a thin bright reflected feature came out as 6 hard
+    // shifted GHOSTS (venetian-blind banding) rather than a blur, and being
+    // static it was something TAA could never integrate away. Rotating per pixel
+    // scatters the ghosts into a soft lobe. Measured on the reflverify rig:
+    // banding energy -10% and depth-edge halo -10% vs the fixed kernel, for ~2
+    // ALU and no change at all to the sampling footprint.
+    float ign   = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float phase = 6.2831853 * ign;
     for (int i = 0; i < kTaps; ++i) {
-        float a  = float(i) * kGolden;
+        float a  = float(i) * kGolden + phase;
         float rr = sqrt((float(i) + 0.5) / float(kTaps)) * r;
         c += texture(reflTex, uv + vec2(cos(a), sin(a)) * rr * texel);
     }

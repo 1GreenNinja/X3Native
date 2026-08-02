@@ -608,6 +608,12 @@ struct CliOptions {
     // over ~120 settle frames before each ON capture.
     bool        ddgiShot = false;
     std::string ddgiShotDir = "docs/screenshots/ddgi";
+    // REFLECTION VERIFY rig (--screenshot-reflverify [outDir]): a fully PROCEDURAL
+    // A/B bench for the rt-refl shader work -- a roughness-ramp metal floor under
+    // three deliberately OFF-SCREEN coloured/emissive bars, so the RT ray-query
+    // fallback is the only thing that can shade their reflection. Needs no GLBs.
+    bool        reflVerifyShot = false;
+    std::string reflVerifyShotDir = "docs/screenshots/rt-refl-verify";
     // RT soft-shadow gate-shot proof (--screenshot-rtshadows [outDir]): build a
     // detention-cell rig (a single ceiling lamp + occluders at two distances from
     // the wall), capture lamp-shadow OFF/ON A/Bs (tier 0 vs 2), a sun CSM-vs-RT
